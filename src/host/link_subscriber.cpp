@@ -156,25 +156,38 @@ int main()
 
     LOG_INFO(LINK_SUB_LOG_SOURCE, "starting");
 
-    /* Read initial tempo from file written by shim (falls back to 120) */
+    /* Read last-known session tempo. Written by our own setTempoCallback so
+     * each subsequent launch reuses the tempo that was last agreed upon,
+     * avoiding a default-120 proposal that would hijack the session if we
+     * happen to win the Link session-merge. */
+    const char *LAST_TEMPO_PATH = "/data/UserData/schwung/last-tempo";
     double initial_tempo = 120.0;
     {
-        FILE *fp = fopen("/tmp/link-tempo", "r");
+        FILE *fp = fopen(LAST_TEMPO_PATH, "r");
         if (fp) {
             double t = 0.0;
             if (fscanf(fp, "%lf", &t) == 1 && t >= 20.0 && t <= 999.0) {
                 initial_tempo = t;
-                printf("link-subscriber: using set tempo %.1f BPM\n", t);
+                printf("link-subscriber: using last-known tempo %.2f BPM\n", t);
             }
             fclose(fp);
         }
         if (initial_tempo == 120.0) {
-            printf("link-subscriber: using default tempo 120.0 BPM\n");
+            printf("link-subscriber: no last-known tempo, defaulting to 120.0 BPM\n");
         }
     }
 
     /* Join Link session and enable audio */
     ableton::LinkAudio link(initial_tempo, "Schwung");
+    link.setTempoCallback([LAST_TEMPO_PATH](double bpm) {
+        /* Persist each session-tempo change so the next subscriber launch
+         * inherits it. Link fires this on our own thread (non-RT). */
+        FILE *fp = fopen(LAST_TEMPO_PATH, "w");
+        if (fp) {
+            fprintf(fp, "%.4f\n", bpm);
+            fclose(fp);
+        }
+    });
     link.enable(true);
     link.enableLinkAudio(true);
 
