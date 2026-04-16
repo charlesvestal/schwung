@@ -16,6 +16,7 @@
 #include "shadow_set_pages.h"
 #include "shadow_sampler.h"
 #include "shadow_dbus.h"
+#include "shadow_state.h"
 #include "unified_log.h"
 
 /* ============================================================================
@@ -552,6 +553,7 @@ void shadow_apply_mute(int slot, int is_muted) {
     char msg[64];
     snprintf(msg, sizeof(msg), "Mute: slot %d %s", slot, is_muted ? "muted" : "unmuted");
     shadow_log(msg);
+    shadow_save_state();
 }
 
 void shadow_toggle_solo(int slot) {
@@ -575,6 +577,7 @@ void shadow_toggle_solo(int slot) {
     for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
         shadow_ui_state_update_slot(i);
     }
+    shadow_save_state();
 }
 
 /* ============================================================================
