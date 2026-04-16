@@ -17,6 +17,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <signal.h>
+#include <ucontext.h>
 #include <time.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
@@ -1913,7 +1914,7 @@ static int shadow_shm_initialized = 0;
 /* Initialize shadow shared memory segments */
 
 /* Signal handler for crash diagnostics - async-signal-safe */
-static void crash_signal_handler(int sig)
+static void crash_signal_handler(int sig, siginfo_t *si, void *uctx_v)
 {
     const char *name;
     switch (sig) {
@@ -1924,13 +1925,50 @@ static void crash_signal_handler(int sig)
         case SIGINT:  name = "SIGINT";  break;
         default:      name = "UNKNOWN"; break;
     }
-    /* Build message: "Caught <signal> - terminating (pid=<pid>)" */
-    char msg[128];
+    /* Build async-signal-safe message including faulting address and PC.
+     * Hex-format by hand since snprintf is not AS-safe. */
+    char msg[256];
     int pos = 0;
-    const char prefix[] = "Caught ";
+    const char *prefix = "Caught ";
     for (int i = 0; prefix[i]; i++) msg[pos++] = prefix[i];
     for (int i = 0; name[i]; i++) msg[pos++] = name[i];
-    const char suffix[] = " - terminating";
+
+    /* Append si_addr if available (only meaningful for SIGSEGV/SIGBUS). */
+    if (si && (sig == SIGSEGV || sig == SIGBUS)) {
+        const char *at = " si_addr=0x";
+        for (int i = 0; at[i]; i++) msg[pos++] = at[i];
+        uintptr_t a = (uintptr_t)si->si_addr;
+        /* 16 hex digits for 64-bit address, skip leading zeros */
+        char hex[17]; int hp = 0;
+        if (a == 0) { hex[hp++] = '0'; }
+        else {
+            char tmp[17]; int tp = 0;
+            while (a) { int d = a & 0xf; tmp[tp++] = (char)(d < 10 ? '0'+d : 'a'+(d-10)); a >>= 4; }
+            while (tp > 0) hex[hp++] = tmp[--tp];
+        }
+        for (int i = 0; i < hp; i++) msg[pos++] = hex[i];
+    }
+
+    /* Append PC from ucontext if available (Linux aarch64: uc_mcontext.pc). */
+    if (uctx_v) {
+        ucontext_t *uctx = (ucontext_t *)uctx_v;
+        const char *at = " pc=0x";
+        for (int i = 0; at[i]; i++) msg[pos++] = at[i];
+        uintptr_t pc = 0;
+#if defined(__aarch64__)
+        pc = (uintptr_t)uctx->uc_mcontext.pc;
+#endif
+        char hex[17]; int hp = 0;
+        if (pc == 0) { hex[hp++] = '0'; }
+        else {
+            char tmp[17]; int tp = 0;
+            while (pc) { int d = pc & 0xf; tmp[tp++] = (char)(d < 10 ? '0'+d : 'a'+(d-10)); pc >>= 4; }
+            while (tp > 0) hex[hp++] = tmp[--tp];
+        }
+        for (int i = 0; i < hp; i++) msg[pos++] = hex[i];
+    }
+
+    const char *suffix = " - terminating";
     for (int i = 0; suffix[i]; i++) msg[pos++] = suffix[i];
     msg[pos] = '\0';
 
@@ -2025,10 +2063,17 @@ static void init_shadow_shm(void)
     unified_log_init();
 
     /* Install crash signal handlers */
-    signal(SIGSEGV, crash_signal_handler);
-    signal(SIGBUS,  crash_signal_handler);
-    signal(SIGABRT, crash_signal_handler);
-    signal(SIGTERM, crash_signal_handler);
+    {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_sigaction = crash_signal_handler;
+        sa.sa_flags = SA_SIGINFO;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGSEGV, &sa, NULL);
+        sigaction(SIGBUS,  &sa, NULL);
+        sigaction(SIGABRT, &sa, NULL);
+        sigaction(SIGTERM, &sa, NULL);
+    }
 
     /* Log startup identity (always-on, no flag needed) */
     {
