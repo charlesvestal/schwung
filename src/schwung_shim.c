@@ -160,6 +160,12 @@ static volatile int link_audio_receive_via_sidecar_flag = 0; /* Migration flag: 
 /* Link Audio publisher shared memory (shim → link_subscriber) */
 static link_audio_pub_shm_t *shadow_pub_audio_shm = NULL;
 
+/* Read-only consumer of Move audio written by link-subscriber sidecar.
+ * Sidecar may not have started yet — retry from non-RT context if missing. */
+static link_audio_in_shm_t *shadow_in_audio_shm = NULL;
+static int shadow_in_audio_shm_fd = -1;
+static int try_attach_in_audio_shm(void);
+
 /* PFX per-track audio shared memory (shim → PFX DSP plugin) */
 
 static void load_feature_config(void);
@@ -2333,6 +2339,15 @@ static void init_shadow_shm(void)
         }
     } else {
         printf("Shadow: Failed to create pub audio shm\n");
+    }
+
+    /* Try to attach read-only to the sidecar's Move-audio ring. Sidecar may
+     * not have started yet; the retry thread in shim_spi_init will keep
+     * trying for ~30s. No consumer yet (flag-gated in later tasks). */
+    if (try_attach_in_audio_shm()) {
+        printf("Shadow: Link Audio in shm attached at init\n");
+    } else {
+        printf("Shadow: Link Audio in shm not ready yet; retry thread will attempt\n");
     }
 
     /* Initialize Link Audio state */
@@ -5864,6 +5879,49 @@ post_timing:
 }
 
 /* ============================================================================
+ * LINK-IN AUDIO SHM ATTACH (non-RT, with retry)
+ * ============================================================================
+ * Attaches read-only to /schwung-link-in, written by the link-subscriber
+ * sidecar. The sidecar is a separate process and may not have created the
+ * segment yet when the shim starts, so we retry from a short-lived non-RT
+ * thread. shm_open/mmap/LOG_INFO are not RT-safe — never call from the SPI
+ * callback path.
+ * ============================================================================ */
+static int try_attach_in_audio_shm(void)
+{
+    if (shadow_in_audio_shm) return 1;
+    int fd = shm_open(SHM_LINK_AUDIO_IN, O_RDONLY, 0);
+    if (fd < 0) return 0;  /* sidecar not up yet, try later */
+    link_audio_in_shm_t *shm = (link_audio_in_shm_t *)mmap(NULL,
+        sizeof(link_audio_in_shm_t), PROT_READ, MAP_SHARED, fd, 0);
+    close(fd);
+    if (shm == MAP_FAILED) return 0;
+    if (shm->magic != LINK_AUDIO_IN_SHM_MAGIC) {
+        munmap(shm, sizeof(link_audio_in_shm_t));
+        return 0;
+    }
+    shadow_in_audio_shm = shm;
+    LOG_INFO("shim", "/schwung-link-in attached (version=%u)", shm->version);
+    return 1;
+}
+
+static void *link_in_attach_retry_thread(void *arg)
+{
+    (void)arg;
+    /* Retry every 500ms for up to ~30s. Exits once attached or after giveup. */
+    const int max_attempts = 60;
+    for (int i = 0; i < max_attempts; i++) {
+        if (try_attach_in_audio_shm()) return NULL;
+        usleep(500000);  /* 500ms */
+    }
+    if (!shadow_in_audio_shm) {
+        LOG_WARN("shim", "/schwung-link-in never appeared after %d attempts (~%ds) — sidecar not running?",
+                 max_attempts, max_attempts / 2);
+    }
+    return NULL;
+}
+
+/* ============================================================================
  * BACKGROUND TIMING LOGGER THREAD
  * ============================================================================
  * Drains the spi_snap structure and writes to unified_log every ~5 seconds.
@@ -5964,6 +6022,15 @@ static void shim_spi_init(void)
     {
         pthread_t tid;
         pthread_create(&tid, NULL, spi_timing_logger_thread, NULL);
+        pthread_detach(tid);
+    }
+
+    /* Start short-lived thread to retry attaching /schwung-link-in read-only.
+     * Sidecar may not be up yet at shim load; this exits once attached or
+     * after ~30s of retries. Non-RT: shm_open/mmap are not RT-safe. */
+    if (!shadow_in_audio_shm) {
+        pthread_t tid;
+        pthread_create(&tid, NULL, link_in_attach_retry_thread, NULL);
         pthread_detach(tid);
     }
 }
