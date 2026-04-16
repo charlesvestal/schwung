@@ -152,6 +152,7 @@ static bool shadow_ui_enabled = true;      /* Shadow UI enabled by default */
 static bool display_mirror_enabled = false; /* Display mirror off by default */
 static bool set_pages_enabled = true;      /* Set pages enabled by default */
 static bool skipback_require_volume = false; /* false=Shift+Capture, true=Shift+Vol+Capture */
+static volatile int link_audio_receive_via_sidecar_flag = 0; /* Migration flag: read Move audio from /schwung-link-in instead of sendto() hook. Default off; no consumer yet. */
 /* Long-press Track/Menu/Step2 shortcuts — always enabled */
 
 /* Link Audio state, process management — moved to shadow_link_audio.c, shadow_process.c */
@@ -685,6 +686,22 @@ static void load_feature_config(void)
         }
     }
 
+    /* Parse link_audio_receive_via_sidecar (defaults to false).
+     * Migration flag for reading Move audio from /schwung-link-in (written by
+     * link-subscriber sidecar) instead of the in-process sendto() hook. No
+     * consumer reads this flag yet — see Task 3.4. */
+    const char *receive_via_sidecar_key = strstr(config_buf, "\"link_audio_receive_via_sidecar\"");
+    if (receive_via_sidecar_key) {
+        const char *colon = strchr(receive_via_sidecar_key, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ' || *colon == '\t') colon++;
+            if (strncmp(colon, "true", 4) == 0) {
+                link_audio_receive_via_sidecar_flag = 1;
+            }
+        }
+    }
+
     /* Parse display_mirror_enabled (defaults to false) */
     const char *display_mirror_key = strstr(config_buf, "\"display_mirror_enabled\"");
     if (display_mirror_key) {
@@ -726,9 +743,10 @@ static void load_feature_config(void)
 
     char log_msg[256];
     snprintf(log_msg, sizeof(log_msg),
-             "Features: shadow_ui=%s, link_audio=%s, display_mirror=%s, set_pages=%s, skipback=%s",
+             "Features: shadow_ui=%s, link_audio=%s, link_audio_rx_sidecar=%s, display_mirror=%s, set_pages=%s, skipback=%s",
              shadow_ui_enabled ? "enabled" : "disabled",
              link_audio.enabled ? "enabled" : "disabled",
+             link_audio_receive_via_sidecar_flag ? "enabled" : "disabled",
              display_mirror_enabled ? "enabled" : "disabled",
              set_pages_enabled ? "enabled" : "disabled",
              skipback_require_volume ? "Shift+Vol+Capture" : "Shift+Capture");
