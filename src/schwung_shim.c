@@ -480,27 +480,6 @@ ssize_t send(int sockfd, const void *buf, size_t len, int flags)
 }
 
 
-/* sendto() hook — intercepts Link Audio packets from Move.
- * Logic moved to shadow_link_audio.c. */
-static ssize_t (*real_sendto)(int, const void *, size_t, int,
-                              const struct sockaddr *, socklen_t) = NULL;
-
-ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
-               const struct sockaddr *dest_addr, socklen_t addrlen)
-{
-    if (!real_sendto) {
-        real_sendto = (ssize_t (*)(int, const void *, size_t, int,
-                       const struct sockaddr *, socklen_t))dlsym(RTLD_NEXT, "sendto");
-    }
-
-    /* Delegate Link Audio packet handling to extracted module */
-    if (link_audio.enabled && len >= 12) {
-        link_audio_on_sendto(sockfd, (const uint8_t *)buf, len, dest_addr, addrlen);
-    }
-
-    return real_sendto(sockfd, buf, len, flags, dest_addr, addrlen);
-}
-
 
 /* sd_bus hooks, send_screenreader_announcement, D-Bus filter/thread/start/stop —
  * all moved to shadow_dbus.c. Thin hook stubs remain here. */
@@ -3073,14 +3052,7 @@ static void shim_init_subsystems(void)
     /* Initialize shadow shared memory when we detect the SPI mailbox */
     init_shadow_shm();
     /* Initialize link audio subsystem (before load_feature_config sets link_audio.enabled) */
-    {
-        link_audio_host_t la_host = {
-            .log = shadow_log,
-            .real_sendto_ptr = &real_sendto,
-            .chain_slots = shadow_chain_slots,
-        };
-        shadow_link_audio_init(&la_host);
-    }
+    shadow_link_audio_init();
     load_feature_config();  /* Load feature flags from config */
 
     /* Initialize chain management subsystem (must be before sampler - provides shadow_log) */
@@ -3781,14 +3753,6 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
         }
     }
 
-    /* Link subscriber stale/restart recovery runs in a background monitor thread
-     * to keep process management and waitpid() out of this real-time path. */
-    if (link_audio.enabled) {
-        uint32_t la_pkts_now = link_audio.packets_intercepted;
-        if (la_pkts_now > link_sub_ever_received) {
-            link_sub_ever_received = la_pkts_now;
-        }
-    }
 
     /* Check if previous frame overran - if so, consider skipping expensive work */
     if (spi_last_frame_total_us > OVERRUN_THRESHOLD_US) {
@@ -3937,8 +3901,7 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
             shadow_pub_audio_shm->slots[LINK_AUDIO_PUB_MASTER_IDX].active = 0;
             shadow_pub_audio_shm->num_slots = 0;
         } else {
-            int la_flowing = (link_audio.packets_intercepted > 0 &&
-                              shim_move_channel_count() >= 4);
+            int la_flowing = (shim_move_channel_count() >= 4);
             for (int i = 0; i < LINK_AUDIO_SHADOW_CHANNELS; i++) {
                 int is_active = la_flowing ||
                                 (i < SHADOW_CHAIN_INSTANCES &&
