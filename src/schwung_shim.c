@@ -5963,10 +5963,10 @@ post_timing:
 static int try_attach_in_audio_shm(void)
 {
     if (shadow_in_audio_shm) return 1;
-    int fd = shm_open(SHM_LINK_AUDIO_IN, O_RDONLY, 0);
+    int fd = shm_open(SHM_LINK_AUDIO_IN, O_RDWR, 0);
     if (fd < 0) return 0;  /* sidecar not up yet, try later */
     link_audio_in_shm_t *shm = (link_audio_in_shm_t *)mmap(NULL,
-        sizeof(link_audio_in_shm_t), PROT_READ, MAP_SHARED, fd, 0);
+        sizeof(link_audio_in_shm_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     close(fd);
     if (shm == MAP_FAILED) return 0;
     if (shm->magic != LINK_AUDIO_IN_SHM_MAGIC) {
