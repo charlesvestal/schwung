@@ -341,6 +341,55 @@ Under Link Audio rebuild mode (`rebuild_from_la`), the mailbox is composited
 from per-track routed audio at unity via `shadow_chain_process_fx`, MFX runs
 on the mailbox, then master volume is applied for DAC output.
 
+## Link Audio
+
+Move's firmware publishes per-track and master audio over Ableton Link Audio
+(UDP/IPv6, proprietary `chnnlsv` framing). Schwung consumes this so shadow
+FX chains can process Move's tracks before output.
+
+### Architecture (post-migration, 2026-04)
+
+```
+Move firmware audio engine
+          │
+          ▼ (Link Audio source subscription)
+┌──────────────────────────────┐
+│ link-subscriber sidecar      │  src/host/link_subscriber.cpp
+│   subscribes to Move/1-MIDI… │  - C++, links against libs/link
+│   Move/Main via LinkAudio    │  - runs as a separate process
+│   SDK                        │
+│   writes incoming samples    │
+│   into /schwung-link-in      │
+└──────────────────────────────┘
+          │ SHM /schwung-link-in
+          ▼
+┌──────────────────────────────┐
+│ schwung_shim.c (LD_PRELOAD)  │
+│   link_audio_read_channel_shm│
+│   feeds shadow chain mixer   │
+│   shadow_inprocess_mix_from_buffer
+└──────────────────────────────┘
+```
+
+`/schwung-link-in` is a 5-slot SPSC ring (1-MIDI, 2-MIDI, 3-MIDI, 4-MIDI,
+Main). Layout: `link_audio_in_shm_t` in `src/host/link_audio.h`.
+
+The sidecar also writes shadow-slot output back to Live as `ME-N` Link Audio
+channels via `/schwung-pub-audio` → `LinkAudioSink`s.
+
+### Migration history (2026-04)
+
+The shim used to intercept Move's chnnlsv UDP packets via an `LD_PRELOAD`
+`sendto()` hook in `src/schwung_shim.c` and parse them in
+`src/host/shadow_link_audio.c`. That path was deleted when the public
+`abl_link` audio C API landed upstream (2026-03-30). The sidecar is now
+the single reception path; `src/host/shadow_link_audio.c` holds only the
+SHM reader and a capture buffer used by the publisher-SHM writer.
+
+See `docs/plans/2026-04-17-link-audio-official-api-migration.md` for the
+full migration plan and `docs/link-audio-crackle-followup.md` for the
+double-FX-per-frame crackle diagnosis + fix.
+
 ## Signal Chain Module
 
 The `chain` module implements a modular signal chain for combining components:

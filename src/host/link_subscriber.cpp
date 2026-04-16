@@ -24,6 +24,7 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
@@ -111,6 +112,26 @@ static link_audio_pub_shm_t *open_pub_shm()
     return shm;
 }
 
+/* Create (or open if already existing) the Move->shim audio SHM segment.
+ * Written by the link-subscriber source callback (future Phase 2.x task),
+ * read by the shim to mix Move audio into shadow output. */
+static link_audio_in_shm_t *open_or_create_in_shm()
+{
+    int fd = shm_open(SHM_LINK_AUDIO_IN, O_CREAT | O_RDWR, 0666);
+    if (fd < 0) return nullptr;
+    if (ftruncate(fd, sizeof(link_audio_in_shm_t)) < 0) { close(fd); return nullptr; }
+    auto *shm = (link_audio_in_shm_t *)mmap(nullptr, sizeof(link_audio_in_shm_t),
+        PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    close(fd);
+    if (shm == MAP_FAILED) return nullptr;
+    if (shm->magic != LINK_AUDIO_IN_SHM_MAGIC) {
+        memset(shm, 0, sizeof(*shm));
+        shm->magic = LINK_AUDIO_IN_SHM_MAGIC;
+        shm->version = LINK_AUDIO_IN_SHM_VERSION;
+    }
+    return shm;
+}
+
 /* Per-slot publisher state */
 struct SlotPublisher {
     ableton::LinkAudioSink *sink = nullptr;
@@ -158,6 +179,16 @@ int main()
     link.enableLinkAudio(true);
 
     printf("link-subscriber: Link session joined\n");
+
+    /* Create Move->shim audio SHM segment. No consumers yet — Phase 2.x will
+     * teach the source callback to write samples into this ring. */
+    link_audio_in_shm_t *in_shm = open_or_create_in_shm();
+    if (in_shm) {
+        LOG_INFO(LINK_SUB_LOG_SOURCE, "in shm opened/created");
+    } else {
+        LOG_ERROR(LINK_SUB_LOG_SOURCE, "failed to open/create in shm: errno=%d", errno);
+    }
+    (void)in_shm; /* Phase 2.x will consume this */
 
     /* Create a dummy sink so that our PeerAnnouncements include at least one
      * channel.  Move's Sink handler looks up ChannelRequest.peerId in
@@ -233,11 +264,84 @@ int main()
             for (const auto& pc : pending) {
                 LOG_INFO(LINK_SUB_LOG_SOURCE, "subscribing to %s/%s...",
                          pc.peerName.c_str(), pc.name.c_str());
+
+                /* Resolve Move channels to fixed slot indices. Non-Move peers
+                 * get no slot (they're still subscribed for other reasons, but
+                 * don't feed /schwung-link-in). */
+                int slot_idx = -1;
+                if (pc.peerName == "Move") {
+                    if (pc.name == "1-MIDI") slot_idx = 0;
+                    else if (pc.name == "2-MIDI") slot_idx = 1;
+                    else if (pc.name == "3-MIDI") slot_idx = 2;
+                    else if (pc.name == "4-MIDI") slot_idx = 3;
+                    else if (pc.name == "Main")   slot_idx = LINK_AUDIO_IN_MAIN_IDX;
+                }
+
+                if (slot_idx >= 0 && slot_idx < LINK_AUDIO_IN_SLOT_COUNT && in_shm) {
+                    link_audio_in_slot_t *slot = &in_shm->slots[slot_idx];
+                    /* First time we see this slot, stamp the name. */
+                    if (slot->name[0] == '\0') {
+                        strncpy(slot->name, pc.name.c_str(), sizeof(slot->name) - 1);
+                        slot->name[sizeof(slot->name) - 1] = '\0';
+                        LOG_INFO(LINK_SUB_LOG_SOURCE, "slot %d \xe2\x86\x90 Move|%s",
+                                 slot_idx, pc.name.c_str());
+                    }
+                }
+
                 try {
-                    sources.emplace_back(link, pc.id,
-                        [](ableton::LinkAudioSource::BufferHandle) {
-                            g_buffers_received.fetch_add(1, std::memory_order_relaxed);
-                        });
+                    if (slot_idx >= 0 && slot_idx < LINK_AUDIO_IN_SLOT_COUNT && in_shm) {
+                        /* Move channel: write received audio into the per-slot
+                         * SPSC ring in /schwung-link-in so the shim (or future
+                         * consumer) can mix it with shadow output.
+                         *
+                         * Callback runs on a Link-managed audio thread.
+                         * MUST be realtime-safe: no logging, no allocation,
+                         * no locks. Only lock-free ring writes + atomics. */
+                        int slot_idx_cap = slot_idx;
+                        link_audio_in_shm_t *in_shm_cap = in_shm;
+                        sources.emplace_back(link, pc.id,
+                            [slot_idx_cap, in_shm_cap](ableton::LinkAudioSource::BufferHandle h) {
+                                g_buffers_received.fetch_add(1, std::memory_order_relaxed);
+
+                                const size_t num_frames   = h.info.numFrames;
+                                const size_t num_channels = h.info.numChannels;
+                                const int16_t *samples    = h.samples;
+
+                                /* Drop non-stereo / empty / null buffers. */
+                                if (num_channels != 2) return;
+                                if (num_frames == 0) return;
+                                if (!samples) return;
+
+                                link_audio_in_slot_t *slot =
+                                    &in_shm_cap->slots[slot_idx_cap];
+
+                                const uint32_t to_copy =
+                                    (uint32_t)(num_frames * num_channels); /* samples */
+                                uint32_t wp = slot->write_pos;
+                                /* Use a volatile pointer + explicit memory fence.
+                                 * The non-volatile ring[] array is otherwise
+                                 * "unobservable" in this TU, so the compiler can
+                                 * (and does, with -O3) elide the stores as dead. */
+                                volatile int16_t *ring = slot->ring;
+                                for (uint32_t i = 0; i < to_copy; ++i) {
+                                    ring[(wp + i) & LINK_AUDIO_IN_RING_MASK] =
+                                        samples[i];
+                                }
+                                __sync_synchronize();
+                                __atomic_store_n(&slot->write_pos, wp + to_copy,
+                                                 __ATOMIC_RELEASE);
+                                __atomic_store_n(&slot->active, 1,
+                                                 __ATOMIC_RELAXED);
+                            });
+                    } else {
+                        /* Non-Move channel (e.g. ME-Ack loopback) — keep the
+                         * original no-op so we don't regress the session /
+                         * peer-announcement keepalive path. */
+                        sources.emplace_back(link, pc.id,
+                            [](ableton::LinkAudioSource::BufferHandle) {
+                                g_buffers_received.fetch_add(1, std::memory_order_relaxed);
+                            });
+                    }
                     LOG_INFO(LINK_SUB_LOG_SOURCE, "subscription OK");
                 } catch (const std::exception& e) {
                     LOG_ERROR(LINK_SUB_LOG_SOURCE, "subscription failed: %s", e.what());

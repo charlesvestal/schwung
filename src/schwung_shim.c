@@ -17,6 +17,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <signal.h>
+#include <ucontext.h>
 #include <time.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
@@ -158,6 +159,31 @@ static bool skipback_require_volume = false; /* false=Shift+Capture, true=Shift+
 
 /* Link Audio publisher shared memory (shim → link_subscriber) */
 static link_audio_pub_shm_t *shadow_pub_audio_shm = NULL;
+
+/* Read-only consumer of Move audio written by link-subscriber sidecar.
+ * Sidecar may not have started yet — retry from non-RT context if missing. */
+static link_audio_in_shm_t *shadow_in_audio_shm = NULL;
+static int shadow_in_audio_shm_fd = -1;
+static int try_attach_in_audio_shm(void);
+
+/* Read one Move channel of audio from /schwung-link-in (written by the
+ * link-subscriber sidecar). Returns 1 on full read, 0 on starvation /
+ * inactive slot / SHM not yet attached. */
+static inline int shim_read_move_channel(int s, int16_t *out, int frames)
+{
+    return link_audio_read_channel_shm(shadow_in_audio_shm, s, out, frames);
+}
+
+/* Return the number of active Move channels from the sidecar SHM. */
+static inline int shim_move_channel_count(void)
+{
+    if (!shadow_in_audio_shm) return 0;
+    int count = 0;
+    for (int i = 0; i < LINK_AUDIO_IN_SLOT_COUNT; ++i) {
+        if (shadow_in_audio_shm->slots[i].active) ++count;
+    }
+    return count;
+}
 
 /* PFX per-track audio shared memory (shim → PFX DSP plugin) */
 
@@ -453,27 +479,6 @@ ssize_t send(int sockfd, const void *buf, size_t len, int flags)
 }
 
 
-/* sendto() hook — intercepts Link Audio packets from Move.
- * Logic moved to shadow_link_audio.c. */
-static ssize_t (*real_sendto)(int, const void *, size_t, int,
-                              const struct sockaddr *, socklen_t) = NULL;
-
-ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
-               const struct sockaddr *dest_addr, socklen_t addrlen)
-{
-    if (!real_sendto) {
-        real_sendto = (ssize_t (*)(int, const void *, size_t, int,
-                       const struct sockaddr *, socklen_t))dlsym(RTLD_NEXT, "sendto");
-    }
-
-    /* Delegate Link Audio packet handling to extracted module */
-    if (link_audio.enabled && len >= 12) {
-        link_audio_on_sendto(sockfd, (const uint8_t *)buf, len, dest_addr, addrlen);
-    }
-
-    return real_sendto(sockfd, buf, len, flags, dest_addr, addrlen);
-}
-
 
 /* sd_bus hooks, send_screenreader_announcement, D-Bus filter/thread/start/stop —
  * all moved to shadow_dbus.c. Thin hook stubs remain here. */
@@ -684,6 +689,7 @@ static void load_feature_config(void)
             }
         }
     }
+
 
     /* Parse display_mirror_enabled (defaults to false) */
     const char *display_mirror_key = strstr(config_buf, "\"display_mirror_enabled\"");
@@ -1242,7 +1248,22 @@ static void shadow_inprocess_render_to_buffer(void) {
              * When synth is idle, FX still runs on zeros for tail decay.
              * When both synth AND FX are idle, skip entirely. */
         slot_run_deferred_fx:
-            if (same_frame_fx && shadow_chain_process_fx) {
+            /* When the sidecar SHM is attached, the main-mix path will run
+             * FX on (synth + move_track) in post-ioctl. Calling FX here too
+             * advances the plugin's internal state a second time per frame,
+             * causing aliasing / comb-filter artifacts. The deferred output
+             * (shadow_slot_fx_deferred) isn't consumed in rebuild_from_la
+             * mode anyway, so skip it. */
+            int skip_deferred_fx = (shadow_in_audio_shm != NULL);
+
+            if (skip_deferred_fx) {
+                /* Mark valid with zeros so downstream non-rebuild path, if
+                 * it ran, would get silence — but in practice main path
+                 * replaces mailbox entirely so this is just for safety. */
+                memset(shadow_slot_fx_deferred[s], 0,
+                       sizeof(shadow_slot_fx_deferred[s]));
+                shadow_slot_fx_deferred_valid[s] = 1;
+            } else if (same_frame_fx && shadow_chain_process_fx) {
                 if (shadow_slot_fx_idle[s] && shadow_slot_idle[s]) {
                     /* Both idle — FX output is silence */
                     shadow_slot_fx_deferred_valid[s] = 1;
@@ -1343,7 +1364,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
     }
     int any_overtake_dsp = (overtake_dsp_fx && overtake_dsp_fx_inst);
     int any_la_rebuild = (link_audio.enabled && link_audio_routing_enabled &&
-                         shadow_chain_process_fx && link_audio.move_channel_count >= 4);
+                         shadow_chain_process_fx && shim_move_channel_count() >= 4);
     int any_capture = (sampler_source == SAMPLER_SOURCE_RESAMPLE);
 
     if (!any_slot && !any_mfx && !any_overtake_dsp && !any_la_rebuild && !any_capture) {
@@ -1381,19 +1402,18 @@ static void shadow_inprocess_mix_from_buffer(void) {
      * Session announcements set move_channel_count but don't mean audio
      * is streaming.  Without a subscriber triggering ChannelRequests,
      * the ring buffers are empty and zeroing the mailbox kills all audio. */
-    uint32_t la_cur = link_audio.packets_intercepted;
-    if (la_cur > la_prev_intercepted) {
-        la_stale_frames = 0;
-        la_prev_intercepted = la_cur;
-    } else if (la_cur > 0) {
-        la_stale_frames++;
+    /* Link Audio is active once at least one slot in /schwung-link-in has
+     * received a buffer (sidecar sets `active` on first write). */
+    int la_receiving = 0;
+    if (shadow_in_audio_shm) {
+        for (int i = 0; i < LINK_AUDIO_IN_SLOT_COUNT; i++) {
+            if (shadow_in_audio_shm->slots[i].active) { la_receiving = 1; break; }
+        }
     }
-    /* Consider Link Audio active if packets arrived within the last ~290ms */
-    int la_receiving = (la_cur > 0 && la_stale_frames < 100);
 
     int rebuild_from_la = (link_audio.enabled && link_audio_routing_enabled &&
                            shadow_chain_process_fx &&
-                           link_audio.move_channel_count >= 4 &&
+                           shim_move_channel_count() >= 4 &&
                            la_receiving);
 
     /* Mix JACK/RNBO audio at mv level to match Move's attenuated audio.
@@ -1422,9 +1442,11 @@ static void shadow_inprocess_mix_from_buffer(void) {
         memset(mailbox_audio, 0, FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
 
         /* Read all Link Audio channels once upfront */
-        for (int s = 0; s < SHADOW_CHAIN_INSTANCES && s < link_audio.move_channel_count; s++) {
-            la_cache_valid[s] = link_audio_read_channel(s, la_cache[s], FRAMES_PER_BLOCK);
+        int la_channel_count = shim_move_channel_count();
+        for (int s = 0; s < SHADOW_CHAIN_INSTANCES && s < la_channel_count; s++) {
+            la_cache_valid[s] = shim_read_move_channel(s, la_cache[s], FRAMES_PER_BLOCK);
         }
+
 
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
             int16_t *move_track = la_cache[s];
@@ -1450,9 +1472,59 @@ static void shadow_inprocess_mix_from_buffer(void) {
                     fx_buf[i] = (int16_t)combined;
                 }
 
-                /* Run FX chain */
-                shadow_chain_process_fx(shadow_chain_slots[s].instance,
-                                        fx_buf, MOVE_FRAMES_PER_BLOCK);
+                /* Main-mix dump (rebuild_from_la path). Gated on
+                 * /data/UserData/schwung/main_fx_dump_trigger — touch to arm.
+                 * Dumps slot<s>_main_pre_fx.pcm + slot<s>_main_post_fx.pcm. */
+                {
+                    static FILE *mpre_f[SHADOW_CHAIN_INSTANCES] = {0};
+                    static FILE *mpost_f[SHADOW_CHAIN_INSTANCES] = {0};
+                    static int main_dump_frames = 0;
+                    if (main_dump_frames > 0) {
+                        if (mpre_f[s])
+                            fwrite(fx_buf, sizeof(int16_t),
+                                   FRAMES_PER_BLOCK * 2, mpre_f[s]);
+                    }
+                    /* Arm check only on slot==0 to avoid redundant stats. */
+                    if (s == 0 && main_dump_frames == 0 &&
+                        access("/data/UserData/schwung/main_fx_dump_trigger",
+                               F_OK) == 0) {
+                        for (int t = 0; t < SHADOW_CHAIN_INSTANCES; t++) {
+                            char p[96];
+                            snprintf(p, sizeof(p),
+                                "/data/UserData/schwung/slot%d_main_pre_fx.pcm", t);
+                            mpre_f[t] = fopen(p, "wb");
+                            snprintf(p, sizeof(p),
+                                "/data/UserData/schwung/slot%d_main_post_fx.pcm", t);
+                            mpost_f[t] = fopen(p, "wb");
+                        }
+                        main_dump_frames = 100;
+                        unlink("/data/UserData/schwung/main_fx_dump_trigger");
+                        /* Record this frame too */
+                        if (mpre_f[s])
+                            fwrite(fx_buf, sizeof(int16_t),
+                                   FRAMES_PER_BLOCK * 2, mpre_f[s]);
+                    }
+
+                    /* Run FX chain */
+                    shadow_chain_process_fx(shadow_chain_slots[s].instance,
+                                            fx_buf, MOVE_FRAMES_PER_BLOCK);
+
+                    if (main_dump_frames > 0) {
+                        if (mpost_f[s])
+                            fwrite(fx_buf, sizeof(int16_t),
+                                   FRAMES_PER_BLOCK * 2, mpost_f[s]);
+                        /* Decrement once per frame (at slot 0) */
+                        if (s == SHADOW_CHAIN_INSTANCES - 1) {
+                            main_dump_frames--;
+                            if (main_dump_frames == 0) {
+                                for (int t = 0; t < SHADOW_CHAIN_INSTANCES; t++) {
+                                    if (mpre_f[t])  { fclose(mpre_f[t]);  mpre_f[t] = NULL; }
+                                    if (mpost_f[t]) { fclose(mpost_f[t]); mpost_f[t] = NULL; }
+                                }
+                            }
+                        }
+                    }
+                }
 
                 /* Track FX output silence for phase 2 idle */
                 int fx_silent = 1;
@@ -1861,7 +1933,7 @@ static int shadow_shm_initialized = 0;
 /* Initialize shadow shared memory segments */
 
 /* Signal handler for crash diagnostics - async-signal-safe */
-static void crash_signal_handler(int sig)
+static void crash_signal_handler(int sig, siginfo_t *si, void *uctx_v)
 {
     const char *name;
     switch (sig) {
@@ -1872,13 +1944,50 @@ static void crash_signal_handler(int sig)
         case SIGINT:  name = "SIGINT";  break;
         default:      name = "UNKNOWN"; break;
     }
-    /* Build message: "Caught <signal> - terminating (pid=<pid>)" */
-    char msg[128];
+    /* Build async-signal-safe message including faulting address and PC.
+     * Hex-format by hand since snprintf is not AS-safe. */
+    char msg[256];
     int pos = 0;
-    const char prefix[] = "Caught ";
+    const char *prefix = "Caught ";
     for (int i = 0; prefix[i]; i++) msg[pos++] = prefix[i];
     for (int i = 0; name[i]; i++) msg[pos++] = name[i];
-    const char suffix[] = " - terminating";
+
+    /* Append si_addr if available (only meaningful for SIGSEGV/SIGBUS). */
+    if (si && (sig == SIGSEGV || sig == SIGBUS)) {
+        const char *at = " si_addr=0x";
+        for (int i = 0; at[i]; i++) msg[pos++] = at[i];
+        uintptr_t a = (uintptr_t)si->si_addr;
+        /* 16 hex digits for 64-bit address, skip leading zeros */
+        char hex[17]; int hp = 0;
+        if (a == 0) { hex[hp++] = '0'; }
+        else {
+            char tmp[17]; int tp = 0;
+            while (a) { int d = a & 0xf; tmp[tp++] = (char)(d < 10 ? '0'+d : 'a'+(d-10)); a >>= 4; }
+            while (tp > 0) hex[hp++] = tmp[--tp];
+        }
+        for (int i = 0; i < hp; i++) msg[pos++] = hex[i];
+    }
+
+    /* Append PC from ucontext if available (Linux aarch64: uc_mcontext.pc). */
+    if (uctx_v) {
+        ucontext_t *uctx = (ucontext_t *)uctx_v;
+        const char *at = " pc=0x";
+        for (int i = 0; at[i]; i++) msg[pos++] = at[i];
+        uintptr_t pc = 0;
+#if defined(__aarch64__)
+        pc = (uintptr_t)uctx->uc_mcontext.pc;
+#endif
+        char hex[17]; int hp = 0;
+        if (pc == 0) { hex[hp++] = '0'; }
+        else {
+            char tmp[17]; int tp = 0;
+            while (pc) { int d = pc & 0xf; tmp[tp++] = (char)(d < 10 ? '0'+d : 'a'+(d-10)); pc >>= 4; }
+            while (tp > 0) hex[hp++] = tmp[--tp];
+        }
+        for (int i = 0; i < hp; i++) msg[pos++] = hex[i];
+    }
+
+    const char *suffix = " - terminating";
     for (int i = 0; suffix[i]; i++) msg[pos++] = suffix[i];
     msg[pos] = '\0';
 
@@ -1973,10 +2082,17 @@ static void init_shadow_shm(void)
     unified_log_init();
 
     /* Install crash signal handlers */
-    signal(SIGSEGV, crash_signal_handler);
-    signal(SIGBUS,  crash_signal_handler);
-    signal(SIGABRT, crash_signal_handler);
-    signal(SIGTERM, crash_signal_handler);
+    {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_sigaction = crash_signal_handler;
+        sa.sa_flags = SA_SIGINFO;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGSEGV, &sa, NULL);
+        sigaction(SIGBUS,  &sa, NULL);
+        sigaction(SIGABRT, &sa, NULL);
+        sigaction(SIGTERM, &sa, NULL);
+    }
 
     /* Log startup identity (always-on, no flag needed) */
     {
@@ -2315,6 +2431,15 @@ static void init_shadow_shm(void)
         }
     } else {
         printf("Shadow: Failed to create pub audio shm\n");
+    }
+
+    /* Try to attach read-only to the sidecar's Move-audio ring. Sidecar may
+     * not have started yet; the retry thread in shim_spi_init will keep
+     * trying for ~30s. No consumer yet (flag-gated in later tasks). */
+    if (try_attach_in_audio_shm()) {
+        printf("Shadow: Link Audio in shm attached at init\n");
+    } else {
+        printf("Shadow: Link Audio in shm not ready yet; retry thread will attempt\n");
     }
 
     /* Initialize Link Audio state */
@@ -2906,14 +3031,7 @@ static void shim_init_subsystems(void)
     /* Initialize shadow shared memory when we detect the SPI mailbox */
     init_shadow_shm();
     /* Initialize link audio subsystem (before load_feature_config sets link_audio.enabled) */
-    {
-        link_audio_host_t la_host = {
-            .log = shadow_log,
-            .real_sendto_ptr = &real_sendto,
-            .chain_slots = shadow_chain_slots,
-        };
-        shadow_link_audio_init(&la_host);
-    }
+    shadow_link_audio_init();
     load_feature_config();  /* Load feature flags from config */
 
     /* Initialize chain management subsystem (must be before sampler - provides shadow_log) */
@@ -3614,14 +3732,6 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
         }
     }
 
-    /* Link subscriber stale/restart recovery runs in a background monitor thread
-     * to keep process management and waitpid() out of this real-time path. */
-    if (link_audio.enabled) {
-        uint32_t la_pkts_now = link_audio.packets_intercepted;
-        if (la_pkts_now > link_sub_ever_received) {
-            link_sub_ever_received = la_pkts_now;
-        }
-    }
 
     /* Check if previous frame overran - if so, consider skipping expensive work */
     if (spi_last_frame_total_us > OVERRUN_THRESHOLD_US) {
@@ -3770,8 +3880,7 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
             shadow_pub_audio_shm->slots[LINK_AUDIO_PUB_MASTER_IDX].active = 0;
             shadow_pub_audio_shm->num_slots = 0;
         } else {
-            int la_flowing = (link_audio.packets_intercepted > 0 &&
-                              link_audio.move_channel_count >= 4);
+            int la_flowing = (shim_move_channel_count() >= 4);
             for (int i = 0; i < LINK_AUDIO_SHADOW_CHANNELS; i++) {
                 int is_active = la_flowing ||
                                 (i < SHADOW_CHAIN_INSTANCES &&
@@ -5846,6 +5955,49 @@ post_timing:
 }
 
 /* ============================================================================
+ * LINK-IN AUDIO SHM ATTACH (non-RT, with retry)
+ * ============================================================================
+ * Attaches read-only to /schwung-link-in, written by the link-subscriber
+ * sidecar. The sidecar is a separate process and may not have created the
+ * segment yet when the shim starts, so we retry from a short-lived non-RT
+ * thread. shm_open/mmap/LOG_INFO are not RT-safe — never call from the SPI
+ * callback path.
+ * ============================================================================ */
+static int try_attach_in_audio_shm(void)
+{
+    if (shadow_in_audio_shm) return 1;
+    int fd = shm_open(SHM_LINK_AUDIO_IN, O_RDWR, 0);
+    if (fd < 0) return 0;  /* sidecar not up yet, try later */
+    link_audio_in_shm_t *shm = (link_audio_in_shm_t *)mmap(NULL,
+        sizeof(link_audio_in_shm_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    close(fd);
+    if (shm == MAP_FAILED) return 0;
+    if (shm->magic != LINK_AUDIO_IN_SHM_MAGIC) {
+        munmap(shm, sizeof(link_audio_in_shm_t));
+        return 0;
+    }
+    shadow_in_audio_shm = shm;
+    LOG_INFO("shim", "/schwung-link-in attached (version=%u)", shm->version);
+    return 1;
+}
+
+static void *link_in_attach_retry_thread(void *arg)
+{
+    (void)arg;
+    /* Retry every 500ms for up to ~30s. Exits once attached or after giveup. */
+    const int max_attempts = 60;
+    for (int i = 0; i < max_attempts; i++) {
+        if (try_attach_in_audio_shm()) return NULL;
+        usleep(500000);  /* 500ms */
+    }
+    if (!shadow_in_audio_shm) {
+        LOG_WARN("shim", "/schwung-link-in never appeared after %d attempts (~%ds) — sidecar not running?",
+                 max_attempts, max_attempts / 2);
+    }
+    return NULL;
+}
+
+/* ============================================================================
  * BACKGROUND TIMING LOGGER THREAD
  * ============================================================================
  * Drains the spi_snap structure and writes to unified_log every ~5 seconds.
@@ -5946,6 +6098,15 @@ static void shim_spi_init(void)
     {
         pthread_t tid;
         pthread_create(&tid, NULL, spi_timing_logger_thread, NULL);
+        pthread_detach(tid);
+    }
+
+    /* Start short-lived thread to retry attaching /schwung-link-in read-only.
+     * Sidecar may not be up yet at shim load; this exits once attached or
+     * after ~30s of retries. Non-RT: shm_open/mmap are not RT-safe. */
+    if (!shadow_in_audio_shm) {
+        pthread_t tid;
+        pthread_create(&tid, NULL, link_in_attach_retry_thread, NULL);
         pthread_detach(tid);
     }
 }
