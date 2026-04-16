@@ -167,31 +167,23 @@ static link_audio_in_shm_t *shadow_in_audio_shm = NULL;
 static int shadow_in_audio_shm_fd = -1;
 static int try_attach_in_audio_shm(void);
 
-/* Read one Move channel of audio, choosing the new /schwung-link-in SHM path
- * when link_audio_receive_via_sidecar_flag is on (and the sidecar SHM has
- * attached), otherwise falling back to the legacy sendto-hook ring buffers.
- * Returns 1 on full read, 0 on starvation / inactive slot. */
+/* Read one Move channel of audio from /schwung-link-in (written by the
+ * link-subscriber sidecar). Returns 1 on full read, 0 on starvation /
+ * inactive slot / SHM not yet attached. */
 static inline int shim_read_move_channel(int s, int16_t *out, int frames)
 {
-    if (link_audio_receive_via_sidecar_flag && shadow_in_audio_shm) {
-        return link_audio_read_channel_shm(shadow_in_audio_shm, s, out, frames);
-    }
-    return link_audio_read_channel(s, out, frames);
+    return link_audio_read_channel_shm(shadow_in_audio_shm, s, out, frames);
 }
 
-/* Return the number of active Move channels for runtime routing decisions.
- * When reading from the sidecar SHM, count `active` slots there; otherwise
- * use the value the sendto hook has written to link_audio.move_channel_count. */
+/* Return the number of active Move channels from the sidecar SHM. */
 static inline int shim_move_channel_count(void)
 {
-    if (link_audio_receive_via_sidecar_flag && shadow_in_audio_shm) {
-        int count = 0;
-        for (int i = 0; i < LINK_AUDIO_IN_SLOT_COUNT; ++i) {
-            if (shadow_in_audio_shm->slots[i].active) ++count;
-        }
-        return count;
+    if (!shadow_in_audio_shm) return 0;
+    int count = 0;
+    for (int i = 0; i < LINK_AUDIO_IN_SLOT_COUNT; ++i) {
+        if (shadow_in_audio_shm->slots[i].active) ++count;
     }
-    return link_audio.move_channel_count;
+    return count;
 }
 
 /* PFX per-track audio shared memory (shim → PFX DSP plugin) */
@@ -1452,25 +1444,13 @@ static void shadow_inprocess_mix_from_buffer(void) {
      * Session announcements set move_channel_count but don't mean audio
      * is streaming.  Without a subscriber triggering ChannelRequests,
      * the ring buffers are empty and zeroing the mailbox kills all audio. */
-    uint32_t la_cur = link_audio.packets_intercepted;
-    if (la_cur > la_prev_intercepted) {
-        la_stale_frames = 0;
-        la_prev_intercepted = la_cur;
-    } else if (la_cur > 0) {
-        la_stale_frames++;
-    }
-    /* Consider Link Audio active if packets arrived within the last ~290ms.
-     * On the sidecar path, packets_intercepted is no longer load-bearing —
-     * derive liveness from the SHM slots' active flags instead. */
-    int la_receiving;
-    if (link_audio_receive_via_sidecar_flag && shadow_in_audio_shm) {
-        int any_active = 0;
+    /* Link Audio is active once at least one slot in /schwung-link-in has
+     * received a buffer (sidecar sets `active` on first write). */
+    int la_receiving = 0;
+    if (shadow_in_audio_shm) {
         for (int i = 0; i < LINK_AUDIO_IN_SLOT_COUNT; i++) {
-            if (shadow_in_audio_shm->slots[i].active) { any_active = 1; break; }
+            if (shadow_in_audio_shm->slots[i].active) { la_receiving = 1; break; }
         }
-        la_receiving = any_active;
-    } else {
-        la_receiving = (la_cur > 0 && la_stale_frames < 100);
     }
 
     int rebuild_from_la = (link_audio.enabled && link_audio_routing_enabled &&
