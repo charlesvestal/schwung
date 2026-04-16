@@ -377,18 +377,18 @@ Main). Layout: `link_audio_in_shm_t` in `src/host/link_audio.h`.
 The sidecar also writes shadow-slot output back to Live as `ME-N` Link Audio
 channels via `/schwung-pub-audio` → `LinkAudioSink`s.
 
-### Feature flag: `link_audio_receive_via_sidecar`
+### Migration history (2026-04)
 
-Defaults **true**. Set to `false` in `/data/UserData/schwung/config/features.json`
-to fall back to the legacy `sendto()`-hook reception path (still present in
-`src/schwung_shim.c` + `src/host/shadow_link_audio.c`) for A/B debugging. The
-legacy path is slated for removal once the new path is crackle-free.
+The shim used to intercept Move's chnnlsv UDP packets via an `LD_PRELOAD`
+`sendto()` hook in `src/schwung_shim.c` and parse them in
+`src/host/shadow_link_audio.c`. That path was deleted when the public
+`abl_link` audio C API landed upstream (2026-03-30). The sidecar is now
+the single reception path; `src/host/shadow_link_audio.c` holds only the
+SHM reader and a capture buffer used by the publisher-SHM writer.
 
-### Known issues
-
-- Audible crackle on the sidecar path due to clock drift between the Link SDK
-  audio thread and Move's SPI callback. See `docs/link-audio-crackle-followup.md`.
-  Likely needs ASRC in the sidecar callback.
+See `docs/plans/2026-04-17-link-audio-official-api-migration.md` for the
+full migration plan and `docs/link-audio-crackle-followup.md` for the
+double-FX-per-frame crackle diagnosis + fix.
 
 ## Signal Chain Module
 
