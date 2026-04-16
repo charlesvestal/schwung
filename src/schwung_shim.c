@@ -1331,6 +1331,30 @@ static void shadow_inprocess_mix_from_buffer(void) {
     if (!shadow_inprocess_ready || !global_mmap_addr) return;
     if (!shadow_deferred_dsp_valid) return;  /* No buffer to mix yet */
 
+    /* Fast path: nothing active. Leave Move's mailbox untouched. Snapshot the
+     * Move component so any bridge query sees a coherent state, then return. */
+    int any_slot = 0;
+    for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
+        if (shadow_chain_slots[s].instance) { any_slot = 1; break; }
+    }
+    int any_mfx = 0;
+    for (int fx = 0; fx < MASTER_FX_SLOTS; fx++) {
+        if (shadow_master_fx_slots[fx].instance) { any_mfx = 1; break; }
+    }
+    int any_overtake_dsp = (overtake_dsp_fx && overtake_dsp_fx_inst);
+    int any_la_rebuild = (link_audio.enabled && link_audio_routing_enabled &&
+                         shadow_chain_process_fx && link_audio.move_channel_count >= 4);
+    int any_capture = (sampler_source == SAMPLER_SOURCE_RESAMPLE);
+
+    if (!any_slot && !any_mfx && !any_overtake_dsp && !any_la_rebuild && !any_capture) {
+        int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
+        memcpy(native_bridge_move_component, mailbox_audio, AUDIO_BUFFER_SIZE);
+        memset(native_bridge_me_component, 0, AUDIO_BUFFER_SIZE);
+        native_bridge_capture_mv = shadow_master_volume;
+        native_bridge_split_valid = 1;
+        return;
+    }
+
     int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
     float mv = shadow_master_volume;
     (void)shadow_master_fx_chain_active();  /* MFX slots processed unconditionally below */
