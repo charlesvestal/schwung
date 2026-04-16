@@ -264,6 +264,30 @@ int main()
             for (const auto& pc : pending) {
                 LOG_INFO(LINK_SUB_LOG_SOURCE, "subscribing to %s/%s...",
                          pc.peerName.c_str(), pc.name.c_str());
+
+                /* Resolve Move channels to fixed slot indices. Non-Move peers
+                 * get no slot (they're still subscribed for other reasons, but
+                 * don't feed /schwung-link-in). */
+                int slot_idx = -1;
+                if (pc.peerName == "Move") {
+                    if (pc.name == "1-MIDI") slot_idx = 0;
+                    else if (pc.name == "2-MIDI") slot_idx = 1;
+                    else if (pc.name == "3-MIDI") slot_idx = 2;
+                    else if (pc.name == "4-MIDI") slot_idx = 3;
+                    else if (pc.name == "Main")   slot_idx = LINK_AUDIO_IN_MAIN_IDX;
+                }
+
+                if (slot_idx >= 0 && slot_idx < LINK_AUDIO_IN_SLOT_COUNT && in_shm) {
+                    link_audio_in_slot_t *slot = &in_shm->slots[slot_idx];
+                    /* First time we see this slot, stamp the name. */
+                    if (slot->name[0] == '\0') {
+                        strncpy(slot->name, pc.name.c_str(), sizeof(slot->name) - 1);
+                        slot->name[sizeof(slot->name) - 1] = '\0';
+                        LOG_INFO(LINK_SUB_LOG_SOURCE, "slot %d \xe2\x86\x90 Move|%s",
+                                 slot_idx, pc.name.c_str());
+                    }
+                }
+
                 try {
                     sources.emplace_back(link, pc.id,
                         [](ableton::LinkAudioSource::BufferHandle) {
