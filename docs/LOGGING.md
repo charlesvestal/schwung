@@ -211,9 +211,9 @@ aliasing). Self-limits to 100 frames; trigger is consumed and deleted.
 # While the issue is audible:
 ssh ableton@move.local "touch /data/UserData/schwung/slot_fx_dump_trigger"
 sleep 1
-scp ableton@move.local:/data/UserData/schwung/slot_pre_fx.pcm .
-scp ableton@move.local:/data/UserData/schwung/slot_post_fx.pcm .
-# Import into Audacity: raw s16le, 44100 Hz, stereo, little-endian
+# Dumps all 4 slots (indices 0..3 = UI slots 1..4):
+scp 'ableton@move.local:/data/UserData/schwung/slot*_*_fx.pcm' .
+# Import each into Audacity: raw s16le, 44100 Hz, stereo, little-endian
 ```
 
 Compare pre vs post to isolate whether aliasing is introduced BY the slot FX
