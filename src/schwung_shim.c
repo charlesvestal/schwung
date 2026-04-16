@@ -5664,6 +5664,39 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
 
         shadow_inprocess_render_to_buffer();  /* Slow: actual DSP rendering */
 
+        /* Slot FX aliasing diagnostic (flag-gated, zero cost when inactive).
+         * Pattern mirrors /data/UserData/schwung/spi_snap_trigger — touch the
+         * trigger file while the bug is audible to capture ~290ms of slot 0
+         * audio before and after the chain FX pass. See docs/LOGGING.md for
+         * usage. Output files:
+         *   /data/UserData/schwung/slot_pre_fx.pcm   (raw s16le stereo @44.1k)
+         *   /data/UserData/schwung/slot_post_fx.pcm
+         * Both are overwritten each trigger fire. Self-limits to 100 frames. */
+        {
+            static FILE *slot_pre_f = NULL;
+            static FILE *slot_post_f = NULL;
+            static int slot_dump_frames = 0;
+            if (slot_dump_frames > 0) {
+                if (slot_pre_f)
+                    fwrite(shadow_slot_deferred[0], sizeof(int16_t),
+                           FRAMES_PER_BLOCK * 2, slot_pre_f);
+                if (slot_post_f)
+                    fwrite(shadow_slot_fx_deferred[0], sizeof(int16_t),
+                           FRAMES_PER_BLOCK * 2, slot_post_f);
+                slot_dump_frames--;
+                if (slot_dump_frames == 0) {
+                    if (slot_pre_f)  { fclose(slot_pre_f);  slot_pre_f  = NULL; }
+                    if (slot_post_f) { fclose(slot_post_f); slot_post_f = NULL; }
+                }
+            } else if (access("/data/UserData/schwung/slot_fx_dump_trigger",
+                              F_OK) == 0) {
+                slot_pre_f  = fopen("/data/UserData/schwung/slot_pre_fx.pcm",  "wb");
+                slot_post_f = fopen("/data/UserData/schwung/slot_post_fx.pcm", "wb");
+                slot_dump_frames = 100;  /* ~290ms */
+                unlink("/data/UserData/schwung/slot_fx_dump_trigger");
+            }
+        }
+
         clock_gettime(CLOCK_MONOTONIC, &render_end);
         uint64_t render_us = (render_end.tv_sec - render_start.tv_sec) * 1000000 +
                               (render_end.tv_nsec - render_start.tv_nsec) / 1000;
