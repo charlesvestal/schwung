@@ -212,6 +212,11 @@ void shadow_save_state(void)
             host_chain_slots[1].forward_channel,
             host_chain_slots[2].forward_channel,
             host_chain_slots[3].forward_channel);
+    fprintf(f, "  \"slot_transpose\": [%d, %d, %d, %d],\n",
+            host_chain_slots[0].transpose,
+            host_chain_slots[1].transpose,
+            host_chain_slots[2].transpose,
+            host_chain_slots[3].transpose);
     fprintf(f, "  \"slot_muted\": [%d, %d, %d, %d],\n",
             host_chain_slots[0].muted,
             host_chain_slots[1].muted,
@@ -333,6 +338,32 @@ void shadow_load_state(void)
                 char msg[128];
                 snprintf(msg, sizeof(msg), "Loaded slot fwd channels: [%d, %d, %d, %d]",
                          f0, f1, f2, f3);
+                if (host_log) host_log(msg);
+            }
+        }
+    }
+
+    /* Parse slot_transpose array */
+    const char *tr_key = "\"slot_transpose\":";
+    char *tr_pos = strstr(json, tr_key);
+    if (tr_pos) {
+        tr_pos = strchr(tr_pos, '[');
+        if (tr_pos) {
+            int t0, t1, t2, t3;
+            if (sscanf(tr_pos, "[%d, %d, %d, %d]", &t0, &t1, &t2, &t3) == 4) {
+                int *vals[4] = {&t0, &t1, &t2, &t3};
+                for (int i = 0; i < 4; i++) {
+                    if (*vals[i] < -12) *vals[i] = -12;
+                    if (*vals[i] > 12) *vals[i] = 12;
+                }
+                host_chain_slots[0].transpose = t0;
+                host_chain_slots[1].transpose = t1;
+                host_chain_slots[2].transpose = t2;
+                host_chain_slots[3].transpose = t3;
+
+                char msg[128];
+                snprintf(msg, sizeof(msg), "Loaded slot transpose: [%d, %d, %d, %d]",
+                         t0, t1, t2, t3);
                 if (host_log) host_log(msg);
             }
         }

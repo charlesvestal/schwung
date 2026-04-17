@@ -1357,6 +1357,7 @@ const CHAIN_SETTINGS_ITEMS = [
     { key: "slot:soloed", label: "Soloed", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 0, max: 16, step: 1 },
     { key: "slot:forward_channel", label: "Fwd Ch", type: "int", min: -2, max: 15, step: 1 },  // -2 = passthrough, -1 = auto, 0-15 = ch 1-16
+    { key: "slot:transpose", label: "Transpose", type: "int", min: -12, max: 12, step: 1 },
     { key: "mpe_mode", label: "MPE Mode", type: "int", min: 0, max: 1, step: 1 },
     { key: "lfo1", label: "LFO 1", type: "action" },
     { key: "lfo2", label: "LFO 2", type: "action" },
@@ -6490,6 +6491,11 @@ function getChainSettingValue(slot, setting) {
     if (setting.key === "slot:receive_channel") {
         const ch = parseInt(val);
         return ch === 0 ? "All" : `Ch ${val}`;
+    }
+    if (setting.key === "slot:transpose") {
+        const n = parseInt(val) || 0;
+        if (n === 0) return "0 st";
+        return `${n > 0 ? "+" : ""}${n} st`;
     }
     return String(val);
 }

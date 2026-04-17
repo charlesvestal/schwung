@@ -8,6 +8,8 @@
 #include "shadow_chain_mgmt.h"
 #include "shadow_led_queue.h"
 
+static void shadow_chain_transpose_reset(void);
+
 /* ============================================================================
  * Host callbacks (set by midi_routing_init)
  * ============================================================================ */
@@ -71,6 +73,8 @@ void midi_routing_init(const midi_host_t *host)
     host_slot_silence_frames = host->slot_silence_frames;
     host_slot_fx_idle = host->slot_fx_idle;
     host_slot_fx_silence_frames = host->slot_fx_silence_frames;
+
+    shadow_chain_transpose_reset();
 }
 
 /* ============================================================================
@@ -96,6 +100,74 @@ uint8_t shadow_chain_remap_channel(int slot, uint8_t status)
         return status;  /* Recv=All + Fwd=Auto → passthrough */
     }
     return (status & 0xF0) | (uint8_t)host_chain_slots[slot].channel;
+}
+
+/* Per-slot active-note tracker: remembers the *transposed* note value that
+ * was actually dispatched on note-on, keyed by (slot, channel, original note).
+ * 0xFF means the note is not currently held.
+ *
+ * This lets a note-off close the same note that its note-on opened, even if
+ * the slot's transpose amount changed while the note was held — otherwise
+ * changing transpose during a sustained note leaves stuck notes because the
+ * note-off arrives with a different transposed value than the note-on used. */
+static uint8_t slot_active_note[SHADOW_CHAIN_INSTANCES][16][128];
+
+static void shadow_chain_transpose_reset(void)
+{
+    memset(slot_active_note, 0xFF, sizeof(slot_active_note));
+}
+
+/* Apply per-slot semitone transpose to a 3-byte MIDI message in place.
+ * Only affects note-off (0x80), note-on (0x90), and poly aftertouch (0xA0) —
+ * all other channel-voice messages pass through unchanged.
+ * Returns 1 if the message should be dispatched, 0 if a note-on would fall
+ * outside 0-127 (and must be dropped without registering as held). */
+static int shadow_chain_apply_transpose(int slot, uint8_t *msg)
+{
+    uint8_t type = msg[0] & 0xF0;
+    if (type != 0x80 && type != 0x90 && type != 0xA0) return 1;
+
+    uint8_t ch = msg[0] & 0x0F;
+    uint8_t orig = msg[1];
+    int transpose = host_chain_slots[slot].transpose;
+
+    /* Note-on with velocity > 0: apply current transpose and remember it. */
+    if (type == 0x90 && msg[2] > 0) {
+        int note = (int)orig + transpose;
+        if (note < 0 || note > 127) return 0;
+        slot_active_note[slot][ch][orig] = (uint8_t)note;
+        msg[1] = (uint8_t)note;
+        return 1;
+    }
+
+    /* Note-off (or note-on with vel 0): reuse the transposed value from
+     * note-on so the synth closes the correct voice regardless of current
+     * transpose. Fall back to current transpose if we have no record. */
+    if (type == 0x80 || type == 0x90) {
+        uint8_t held = slot_active_note[slot][ch][orig];
+        if (held != 0xFF) {
+            msg[1] = held;
+            slot_active_note[slot][ch][orig] = 0xFF;
+            return 1;
+        }
+        if (transpose == 0) return 1;
+        int note = (int)orig + transpose;
+        if (note < 0 || note > 127) return 0;
+        msg[1] = (uint8_t)note;
+        return 1;
+    }
+
+    /* Poly aftertouch: match the held note's transposed value if we know it. */
+    uint8_t held = slot_active_note[slot][ch][orig];
+    if (held != 0xFF) {
+        msg[1] = held;
+        return 1;
+    }
+    if (transpose == 0) return 1;
+    int note = (int)orig + transpose;
+    if (note < 0 || note > 127) return 0;
+    msg[1] = (uint8_t)note;
+    return 1;
 }
 
 /* ============================================================================
@@ -158,8 +230,10 @@ void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *mi
         /* Send MIDI to this slot */
         if (pv2 && pv2->on_midi) {
             uint8_t msg[3] = { shadow_chain_remap_channel(i, pkt[1]), pkt[2], pkt[3] };
-            pv2->on_midi(host_chain_slots[i].instance, msg, 3,
-                         MOVE_MIDI_SOURCE_EXTERNAL);
+            if (shadow_chain_apply_transpose(i, msg)) {
+                pv2->on_midi(host_chain_slots[i].instance, msg, 3,
+                             MOVE_MIDI_SOURCE_EXTERNAL);
+            }
         }
         dispatched++;
     }
@@ -500,8 +574,10 @@ void shadow_dispatch_direct_external_midi(void)
 
             /* Send with original channel preserved (THRU mode) */
             uint8_t msg[3] = { status, d1, d2 };
-            pv2->on_midi(host_chain_slots[s].instance, msg, 3,
-                         MOVE_MIDI_SOURCE_EXTERNAL);
+            if (shadow_chain_apply_transpose(s, msg)) {
+                pv2->on_midi(host_chain_slots[s].instance, msg, 3,
+                             MOVE_MIDI_SOURCE_EXTERNAL);
+            }
         }
 
         /* Broadcast to audio FX on all active slots */

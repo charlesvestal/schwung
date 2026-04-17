@@ -31,6 +31,7 @@ export const SLOT_SETTINGS = [
     { key: "slot:soloed", label: "Soloed", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 0, max: 16, step: 1 },
     { key: "slot:forward_channel", label: "Fwd Ch", type: "int", min: -2, max: 15, step: 1 },
+    { key: "slot:transpose", label: "Transpose", type: "int", min: -12, max: 12, step: 1 },
     { key: "mpe_mode", label: "MPE Mode", type: "int", min: 0, max: 1, step: 1 },
 ];
 
@@ -80,6 +81,11 @@ export function getSlotSettingValue(slot, setting) {
     if (setting.key === "slot:receive_channel") {
         const ch = parseInt(val);
         return ch === 0 ? "All" : `Ch ${val}`;
+    }
+    if (setting.key === "slot:transpose") {
+        const n = parseInt(val) || 0;
+        if (n === 0) return "0 st";
+        return `${n > 0 ? "+" : ""}${n} st`;
     }
     return val;
 }
