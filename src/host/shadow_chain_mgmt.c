@@ -362,6 +362,7 @@ void shadow_chain_defaults(void) {
         shadow_chain_slots[i].muted = 0;
         shadow_chain_slots[i].soloed = 0;
         shadow_chain_slots[i].forward_channel = -1;
+        shadow_chain_slots[i].transpose = 0;
         capture_clear(&shadow_chain_slots[i].capture);
         shadow_chain_slots[i].fade.gain = 0.0f;
         shadow_chain_slots[i].fade.target = 0.0f;
@@ -1631,6 +1632,14 @@ int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
         }
         return 1;
     }
+    if (strcmp(key, "slot:transpose") == 0) {
+        int t = atoi(value);
+        if (t < -12) t = -12;
+        if (t > 12) t = 12;
+        shadow_chain_slots[slot].transpose = t;
+        shadow_ui_state_update_slot(slot);
+        return 1;
+    }
     return 0;
 }
 
@@ -1650,6 +1659,9 @@ int shadow_handle_slot_param_get(int slot, const char *key, char *buf, int buf_l
     if (strcmp(key, "slot:receive_channel") == 0) {
         int ch = shadow_chain_slots[slot].channel;
         return snprintf(buf, buf_len, "%d", (ch < 0) ? 0 : ch + 1);
+    }
+    if (strcmp(key, "slot:transpose") == 0) {
+        return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].transpose);
     }
     if (strcmp(key, "active_set") == 0) {
         /* Return "uuid\nname" for UI thread to write active_set.txt */
