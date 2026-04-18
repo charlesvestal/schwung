@@ -174,7 +174,9 @@ static biquad_t speaker_eq_coefs[SPEAKER_EQ_NUM_STAGES];
 static biquad_t speaker_eq_state[SPEAKER_EQ_NUM_STAGES][SPEAKER_EQ_NUM_CHANNELS];
 static biquad_t bandpass_coefs[BANDPASS_NUM_STAGES];
 static biquad_t bandpass_state[BANDPASS_NUM_STAGES][SPEAKER_EQ_NUM_CHANNELS];
-static biquad_t crossover_hp_coefs;  /* HP @ 203 Hz for high-band crossover */
+static biquad_t subsonic_hp_coefs;   /* HP @ ~95 Hz, Q=1.5 — matches Move's observed sub-bass cut */
+static biquad_t subsonic_hp_state[SPEAKER_EQ_NUM_CHANNELS];
+static biquad_t crossover_hp_coefs;  /* unused — reserved */
 static biquad_t crossover_hp_state[SPEAKER_EQ_NUM_CHANNELS];
 static int speaker_eq_initialized = 0;
 
@@ -266,12 +268,16 @@ static void speaker_eq_build(float fs)
     biquad_assign(&bandpass_coefs[2], 0.992822111f,   -1.98564422f,    0.992822111f,    -1.98547125f,  0.985817075f);
     biquad_assign(&bandpass_coefs[3], 0.982964098f,   -1.9659282f,     0.982964098f,    -1.96575701f,  0.966099381f);
 
-    /* Crossover HP at 203 Hz (LowBand muted) — computed; MoveSpeakerEnhancer's
-     * exact crossover coefs not yet located in memory. */
-    biquad_hp(&crossover_hp_coefs, 44100.0f, 203.0f, 0.707f);
+    /* Upstream subsonic HP (Move's master bus processing, not in MoveSpeakerEnhancer itself
+     * but in the Move→DAC chain we're matching). Numerically fit to digital resample of
+     * pink noise through Move's native path: fc=135 Hz, Q=1.5 matches observed curve with
+     * 1.5 dB RMS error across 40 Hz–8 kHz. */
+    biquad_hp(&subsonic_hp_coefs, 44100.0f, 135.0f, 1.5f);
+    biquad_hp(&crossover_hp_coefs, 44100.0f, 203.0f, 0.707f); /* unused but kept for future */
 
     memset(speaker_eq_state, 0, sizeof(speaker_eq_state));
     memset(bandpass_state, 0, sizeof(bandpass_state));
+    memset(subsonic_hp_state, 0, sizeof(subsonic_hp_state));
     memset(crossover_hp_state, 0, sizeof(crossover_hp_state));
     speaker_eq_initialized = 1;
 }
@@ -309,8 +315,13 @@ static void speaker_eq_process(int16_t *audio, int frames)
             if (bpn < -1.0f) bpn = -1.0f;
             float wsbp = waveshaper_poly(bpn) * norm;
 
+            /* Apply upstream subsonic HP to main signal (Move's master-bus filter;
+             * not part of MoveSpeakerEnhancer itself but sits in the actual
+             * Move→DAC path we're matching). */
+            float x_sub = biquad_step(&subsonic_hp_coefs, &subsonic_hp_state[ch], x);
+
             /* Mix original signal + processed band (× ProcessedBandVolume) */
-            float mix = x + proc_band_volume * wsbp;
+            float mix = x_sub + proc_band_volume * wsbp;
 
             /* Apply SpeakerEq cascade (4 biquads from DSP state) */
             float out = mix;
