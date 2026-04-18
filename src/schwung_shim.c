@@ -153,7 +153,177 @@ static bool shadow_ui_enabled = true;      /* Shadow UI enabled by default */
 static bool display_mirror_enabled = false; /* Display mirror off by default */
 static bool set_pages_enabled = true;      /* Set pages enabled by default */
 static bool skipback_require_volume = false; /* false=Shift+Capture, true=Shift+Vol+Capture */
+static bool speaker_eq_compensation_enabled = false; /* Compensate for MoveSpeakerEnhancer on rebuild_from_la DAC */
+static int shadow_speaker_active = 1;      /* 1=built-in speaker, 0=headphones/line-out (from CC 115) */
 /* Long-press Track/Menu/Step2 shortcuts — always enabled */
+
+/* ----- RBJ biquad (direct form I transposed) for speaker-EQ compensation -----
+ * Approximates the MoveSpeakerEnhancer response derived from on-device white-noise
+ * and log-sweep measurements (2026-04-18). Applied only on the rebuild_from_la
+ * DAC output path so captures/headphones stay neutral. Coefficients are computed
+ * once at startup — no per-frame allocations. */
+typedef struct {
+    float b0, b1, b2, a1, a2;    /* normalized biquad coefficients */
+    float z1, z2;                /* state (per channel) */
+} biquad_t;
+
+#define SPEAKER_EQ_NUM_STAGES 4      /* SpeakerEq 4-biquad cascade */
+#define BANDPASS_NUM_STAGES 4        /* Processed-band 4-biquad cascade */
+#define SPEAKER_EQ_NUM_CHANNELS 2
+static biquad_t speaker_eq_coefs[SPEAKER_EQ_NUM_STAGES];
+static biquad_t speaker_eq_state[SPEAKER_EQ_NUM_STAGES][SPEAKER_EQ_NUM_CHANNELS];
+static biquad_t bandpass_coefs[BANDPASS_NUM_STAGES];
+static biquad_t bandpass_state[BANDPASS_NUM_STAGES][SPEAKER_EQ_NUM_CHANNELS];
+static biquad_t crossover_hp_coefs;  /* HP @ 203 Hz for high-band crossover */
+static biquad_t crossover_hp_state[SPEAKER_EQ_NUM_CHANNELS];
+static int speaker_eq_initialized = 0;
+
+static inline float waveshaper_poly(float x)
+{
+    /* y = c1*x + c2*x^2 + c3*x^3 + c4*x^4 + c5*x^5 using Horner's method. */
+    return x * (2.4f + x * (-1.2f + x * (-5.6f + x * (1.2f + x * 4.48f))));
+}
+
+static void biquad_hp(biquad_t *f, float fs, float fc, float q)
+{
+    float w0 = 2.0f * (float)M_PI * fc / fs;
+    float cw = cosf(w0), sw = sinf(w0);
+    float alpha = sw / (2.0f * q);
+    float b0 = (1.0f + cw) * 0.5f;
+    float b1 = -(1.0f + cw);
+    float b2 = (1.0f + cw) * 0.5f;
+    float a0 = 1.0f + alpha;
+    float a1 = -2.0f * cw;
+    float a2 = 1.0f - alpha;
+    f->b0 = b0 / a0; f->b1 = b1 / a0; f->b2 = b2 / a0;
+    f->a1 = a1 / a0; f->a2 = a2 / a0;
+}
+
+static void biquad_peak(biquad_t *f, float fs, float fc, float q, float gain_db)
+{
+    float A = powf(10.0f, gain_db / 40.0f);
+    float w0 = 2.0f * (float)M_PI * fc / fs;
+    float cw = cosf(w0), sw = sinf(w0);
+    float alpha = sw / (2.0f * q);
+    float b0 = 1.0f + alpha * A;
+    float b1 = -2.0f * cw;
+    float b2 = 1.0f - alpha * A;
+    float a0 = 1.0f + alpha / A;
+    float a1 = -2.0f * cw;
+    float a2 = 1.0f - alpha / A;
+    f->b0 = b0 / a0; f->b1 = b1 / a0; f->b2 = b2 / a0;
+    f->a1 = a1 / a0; f->a2 = a2 / a0;
+}
+
+static void biquad_hs(biquad_t *f, float fs, float fc, float s, float gain_db)
+{
+    float A = powf(10.0f, gain_db / 40.0f);
+    float w0 = 2.0f * (float)M_PI * fc / fs;
+    float cw = cosf(w0), sw = sinf(w0);
+    float alpha = sw * 0.5f * sqrtf((A + 1.0f/A) * (1.0f/s - 1.0f) + 2.0f);
+    float two_sqrtA_alpha = 2.0f * sqrtf(A) * alpha;
+    float b0 = A * ((A + 1.0f) + (A - 1.0f) * cw + two_sqrtA_alpha);
+    float b1 = -2.0f * A * ((A - 1.0f) + (A + 1.0f) * cw);
+    float b2 = A * ((A + 1.0f) + (A - 1.0f) * cw - two_sqrtA_alpha);
+    float a0 = (A + 1.0f) - (A - 1.0f) * cw + two_sqrtA_alpha;
+    float a1 = 2.0f * ((A - 1.0f) - (A + 1.0f) * cw);
+    float a2 = (A + 1.0f) - (A - 1.0f) * cw - two_sqrtA_alpha;
+    f->b0 = b0 / a0; f->b1 = b1 / a0; f->b2 = b2 / a0;
+    f->a1 = a1 / a0; f->a2 = a2 / a0;
+}
+
+static inline void biquad_assign(biquad_t *f, float b0, float b1, float b2, float a1, float a2)
+{
+    f->b0 = b0; f->b1 = b1; f->b2 = b2; f->a1 = a1; f->a2 = a2;
+}
+
+static void speaker_eq_build(float fs)
+{
+    /* Coefficients copied verbatim from live MoveOriginal DSP state memory
+     * (2026-04-18). SpeakerEq = Set 1 (4 biquads at 0x5592ef8060+0x0c onwards),
+     * Bandpass = Set 2 (4 biquads at 0x5592ef80e0 onwards). The cascades
+     * produce the measured speaker-voicing curve (-7 dB @ 50, +3.6 dB @ 200,
+     * -4.6 dB @ 800, +3 dB @ 16k) and a steep bandpass at 131-200 Hz for the
+     * harmonic exciter path.
+     *
+     * Signal flow per sample:
+     *   1. hb = crossover_hp(x)           high band (> 203 Hz)
+     *   2. bp = bandpass_cascade(x)       131-200 Hz extracted
+     *   3. wsbp = waveshaper(bp/norm)*norm  harmonic exciter
+     *   4. mix = hb + 1.365 × wsbp
+     *   5. out = speaker_eq_cascade(mix)  final speaker tuning */
+    (void)fs;
+
+    /* SpeakerEq cascade (from 0x5592ef8060+0x0c) — format (b0,b1,b2,a1,a2) */
+    biquad_assign(&speaker_eq_coefs[0], 0.992062628f, -1.98412526f,  0.992062628f, -1.98406231f, 0.984188318f);
+    biquad_assign(&speaker_eq_coefs[1], 1.01622748f,  -1.9452281f,   0.92980653f,  -1.9452281f,  0.946034133f);
+    biquad_assign(&speaker_eq_coefs[2], 0.962782085f, -1.83911681f,  0.888346255f, -1.83911681f, 0.851128399f);
+    biquad_assign(&speaker_eq_coefs[3], 1.33173597f,  -1.80474436f,  0.611439228f, -1.25587428f, 0.394305021f);
+
+    /* Bandpass cascade (from 0x5592ef80e0) — first 2 LP, then 2 HP (131-200 Hz) */
+    biquad_assign(&bandpass_coefs[0], 0.000200790499f, 0.000401580997f, 0.000200790499f, -1.97762573f,  0.9784289f);
+    biquad_assign(&bandpass_coefs[1], 0.000197773843f, 0.000395547686f, 0.000197773843f, -1.94791412f,  0.948705196f);
+    biquad_assign(&bandpass_coefs[2], 0.992822111f,   -1.98564422f,    0.992822111f,    -1.98547125f,  0.985817075f);
+    biquad_assign(&bandpass_coefs[3], 0.982964098f,   -1.9659282f,     0.982964098f,    -1.96575701f,  0.966099381f);
+
+    /* Crossover HP at 203 Hz (LowBand muted) — computed; MoveSpeakerEnhancer's
+     * exact crossover coefs not yet located in memory. */
+    biquad_hp(&crossover_hp_coefs, 44100.0f, 203.0f, 0.707f);
+
+    memset(speaker_eq_state, 0, sizeof(speaker_eq_state));
+    memset(bandpass_state, 0, sizeof(bandpass_state));
+    memset(crossover_hp_state, 0, sizeof(crossover_hp_state));
+    speaker_eq_initialized = 1;
+}
+
+/* Process one sample through a single biquad (transposed direct form II). */
+static inline float biquad_step(biquad_t *c, biquad_t *st, float x)
+{
+    float y = c->b0 * x + st->z1;
+    st->z1 = c->b1 * x - c->a1 * y + st->z2;
+    st->z2 = c->b2 * x - c->a2 * y;
+    return y;
+}
+
+/* MoveSpeakerEnhancer emulation using exact biquad coefficients + exact polynomial
+ * waveshaper extracted from live DSP state. SpeakerEq cascade already contains
+ * a HP component (Biquad 1 ≈ HP @ 85 Hz) that handles the LowBandVolume=0
+ * sub-bass cut — no separate crossover HP needed. */
+static void speaker_eq_process(int16_t *audio, int frames)
+{
+    const float proc_band_volume = 1.365f;
+    const float inv_norm = 1.0f / 32768.0f;
+    const float norm = 32768.0f;
+    for (int i = 0; i < frames; i++) {
+        for (int ch = 0; ch < SPEAKER_EQ_NUM_CHANNELS; ch++) {
+            float x = (float)audio[i * 2 + ch];
+
+            /* Bandpass cascade (131-200 Hz via 4-biquad cascade from DSP state) */
+            float bp = x;
+            for (int s = 0; s < BANDPASS_NUM_STAGES; s++) {
+                bp = biquad_step(&bandpass_coefs[s], &bandpass_state[s][ch], bp);
+            }
+            /* Waveshape in normalized [-1, 1] range, generates 4th/5th harmonics */
+            float bpn = bp * inv_norm;
+            if (bpn > 1.0f) bpn = 1.0f;
+            if (bpn < -1.0f) bpn = -1.0f;
+            float wsbp = waveshaper_poly(bpn) * norm;
+
+            /* Mix original signal + processed band (× ProcessedBandVolume) */
+            float mix = x + proc_band_volume * wsbp;
+
+            /* Apply SpeakerEq cascade (4 biquads from DSP state) */
+            float out = mix;
+            for (int s = 0; s < SPEAKER_EQ_NUM_STAGES; s++) {
+                out = biquad_step(&speaker_eq_coefs[s], &speaker_eq_state[s][ch], out);
+            }
+
+            if (out > 32767.0f) out = 32767.0f;
+            if (out < -32768.0f) out = -32768.0f;
+            audio[i * 2 + ch] = (int16_t)lroundf(out);
+        }
+    }
+}
 
 /* Link Audio state, process management — moved to shadow_link_audio.c, shadow_process.c */
 
@@ -730,14 +900,28 @@ static void load_feature_config(void)
         }
     }
 
+    /* Parse speaker_eq_compensation (defaults to false) */
+    const char *speakeq_key = strstr(config_buf, "\"speaker_eq_compensation\"");
+    if (speakeq_key) {
+        const char *colon = strchr(speakeq_key, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ' || *colon == '\t') colon++;
+            if (strncmp(colon, "true", 4) == 0) {
+                speaker_eq_compensation_enabled = true;
+            }
+        }
+    }
+
     char log_msg[256];
     snprintf(log_msg, sizeof(log_msg),
-             "Features: shadow_ui=%s, link_audio=%s, display_mirror=%s, set_pages=%s, skipback=%s",
+             "Features: shadow_ui=%s, link_audio=%s, display_mirror=%s, set_pages=%s, skipback=%s, speaker_eq=%s",
              shadow_ui_enabled ? "enabled" : "disabled",
              link_audio.enabled ? "enabled" : "disabled",
              display_mirror_enabled ? "enabled" : "disabled",
              set_pages_enabled ? "enabled" : "disabled",
-             skipback_require_volume ? "Shift+Vol+Capture" : "Shift+Capture");
+             skipback_require_volume ? "Shift+Vol+Capture" : "Shift+Capture",
+             speaker_eq_compensation_enabled ? "enabled" : "disabled");
     shadow_log(log_msg);
 }
 
@@ -1828,6 +2012,18 @@ skip_la_rebuild:
             if (scaled < -32768.0f) scaled = -32768.0f;
             mailbox_audio[i] = (int16_t)lroundf(scaled);
         }
+    }
+
+    /* Speaker-EQ compensation: on rebuild_from_la the DAC mailbox bypasses
+     * MoveSpeakerEnhancer (which sits on Move's master bus after per-track sum).
+     * Apply our biquad approximation in its place. Captures and unity_view
+     * are already snapshotted above so this only colors the DAC path.
+     * Runtime toggle lives in shadow_control; static flag is boot default. */
+    int speaker_eq_runtime = shadow_control ? shadow_control->speaker_eq_compensation
+                                            : speaker_eq_compensation_enabled;
+    if (rebuild_from_la && speaker_eq_runtime && shadow_speaker_active &&
+        speaker_eq_initialized) {
+        speaker_eq_process(mailbox_audio, FRAMES_PER_BLOCK);
     }
 
     /* Poll sampler commands from shadow UI (via shared memory) */
@@ -3114,6 +3310,13 @@ static void shim_init_subsystems(void)
         shadow_control->set_pages_enabled = set_pages_enabled ? 1 : 0;
         shadow_control->skipback_require_volume = skipback_require_volume ? 1 : 0;
         shadow_control->long_press_shadow = 1; /* always enabled */
+        shadow_control->speaker_eq_compensation = speaker_eq_compensation_enabled ? 1 : 0;
+        shadow_control->speaker_active = 1; /* assume speaker at boot; CC 115 will correct */
+    }
+
+    /* Precompute speaker-EQ biquad coefficients. SR is 44.1 kHz (Move's audio engine). */
+    if (!speaker_eq_initialized) {
+        speaker_eq_build(44100.0f);
     }
     /* Initialize process management subsystem */
     {
@@ -4951,6 +5154,24 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
 
             /* CC messages (CIN 0x0B) */
             if (cin == 0x0B && type == 0xB0) {
+                /* Line-out / headphone jack detect: runs unconditionally, independent of
+                 * overtake mode. Polarity is a guess on first deploy — adjust if
+                 * speaker vs headphone logic is inverted. */
+                if (d1 == CC_LINE_OUT_DETECT) {
+                    int new_speaker = (d2 == 0) ? 1 : 0;  /* val=0 → speaker active; val=127 → jack inserted */
+                    if (new_speaker != shadow_speaker_active) {
+                        shadow_speaker_active = new_speaker;
+                        if (shadow_control) shadow_control->speaker_active = (uint8_t)new_speaker;
+                        /* Reset filter state on output switch to avoid thump */
+                        memset(speaker_eq_state, 0, sizeof(speaker_eq_state));
+                        char msg[64];
+                        snprintf(msg, sizeof(msg),
+                                 "CC 115 line-out detect: val=%d → speaker_active=%d",
+                                 d2, new_speaker);
+                        shadow_log(msg);
+                    }
+                }
+
                 /* In overtake mode, skip all shortcuts except Shift+Vol+Jog Click (exit)
                  * and Shift+Vol+Back (suspend) */
                 if (overtake_active &&
