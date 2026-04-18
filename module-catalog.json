@@ -691,6 +691,17 @@
       "min_host_version": "0.5.8"
     },
     {
+      "id": "euclidrum",
+      "name": "Euclidrum",
+      "description": "8-lane generative Euclidean drum sequencer — 32 presets, polymetric rates, mutation/drift, per-lane freq/decay CC output. Purpose-built companion for Weird Dreams.",
+      "author": "Vincent Fillion",
+      "component_type": "midi_fx",
+      "github_repo": "fillioning/euclidrum-move",
+      "default_branch": "master",
+      "asset_name": "euclidrum-module.tar.gz",
+      "min_host_version": "0.5.8"
+    },
+    {
       "id": "branchage",
       "name": "Branchage",
       "description": "Grids drum maps with per-lane Branches-style note branching",
