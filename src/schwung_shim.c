@@ -1605,17 +1605,26 @@ static void shadow_inprocess_mix_from_buffer(void) {
                            shim_move_channel_count() >= 4 &&
                            la_receiving);
 
-    /* Path-flip telemetry: every flip between rebuild and passthrough is a
-     * potential seam, because the two paths composite the mailbox
-     * differently. Track transitions so the background logger can surface
-     * rate of flipping alongside Link Audio ring stats. Single-writer
-     * (SPI path), single-reader (logger thread). */
+    /* Path-flip telemetry + 0→1 drain. Every flip between rebuild and
+     * passthrough is a potential seam, because the two paths composite the
+     * mailbox differently. Worse: during passthrough nobody reads
+     * /schwung-link-in, but the sidecar keeps writing, so a 0→1 flip
+     * finds a stale backlog that trips catch-up and drops a long chunk of
+     * audio. Snap read_pos = write_pos per slot on 0→1 so the first
+     * rebuild frame starts clean. Single-writer (SPI path), single-reader
+     * (logger thread) for the counter. */
     extern volatile uint32_t shim_la_rebuild_flip_count;
     {
         static int rebuild_prev = -1;
         if (rebuild_prev < 0) rebuild_prev = rebuild_from_la;
         if (rebuild_prev != rebuild_from_la) {
             shim_la_rebuild_flip_count++;
+            if (rebuild_from_la && shadow_in_audio_shm) {
+                for (int s = 0; s < LINK_AUDIO_IN_SLOT_COUNT; s++) {
+                    shadow_in_audio_shm->slots[s].read_pos =
+                        shadow_in_audio_shm->slots[s].write_pos;
+                }
+            }
             rebuild_prev = rebuild_from_la;
         }
     }
