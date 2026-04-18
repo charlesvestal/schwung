@@ -202,6 +202,7 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 | [SID Control](https://github.com/charlesvestal/schwung-sidcontrol) | MIDI controller for SIDaster III synthesizer | charlesvestal |
 | [Custom MIDI Control](https://github.com/chaolue/move-anything-control) | Custom MIDI controller with 16 banks of configurable pads/knobs/buttons | chaolue |
 | [Performance FX](https://github.com/charlesvestal/schwung-performance-fx) | 32 punch-in audio FX with pressure control, latch, and tempo sync | charlesvestal |
+| [TwinSampler](https://github.com/jrucho/schwung-twinsampler) | Dual-grid overtake sampler with 16 banks, auto-slicing, per-pad controls, MIDI loopers and session management | jrucho |
 
 ### Tools
 
