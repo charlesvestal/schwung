@@ -3730,6 +3730,25 @@ function autosaveAllSlots() {
         const hasFx2 = cfg && cfg.fx2 && cfg.fx2.module;
         const hasMidiFx = cfg && cfg.midiFx && cfg.midiFx.module;
         if (!hasSynth && !hasFx1 && !hasFx2 && !hasMidiFx) {
+            /* Cross-check before clobbering: if the user has a preset
+             * assigned to this slot (slots[i].name non-empty) but the shim
+             * is currently reporting "no modules", that's a shim-side
+             * glitch (e.g. boot-time patch load failure for slot 3 we
+             * diagnosed 2026-04-18) — NOT a real "user removed the chain"
+             * action. Preserve the existing slot_N.json so the next boot
+             * has a chance to reload it. Without this guard, one transient
+             * load failure permanently erases the user's preset assignment.
+             *
+             * Only write the empty marker when both shim and shadow_ui's
+             * in-memory slot name agree the slot is empty. */
+            const slotName = (slots[i] && slots[i].name) || "";
+            if (slotName !== "") {
+                debugLog("autosave: slot " + i + " shim reports empty but " +
+                         "preset name=\"" + slotName + "\" — preserving " +
+                         "existing slot_" + i + ".json (likely shim glitch)");
+                slotDirtyCache[i] = false;
+                continue;
+            }
             /* Empty slot - write empty marker to clear autosave */
             host_write_file(
                 activeSlotStateDir + "/slot_" + i + ".json",
