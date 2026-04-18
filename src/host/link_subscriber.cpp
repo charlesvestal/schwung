@@ -186,11 +186,16 @@ int main()
     ableton::LinkAudio link(initial_tempo, "Schwung");
     link.setTempoCallback([LAST_TEMPO_PATH](double bpm) {
         /* Persist each session-tempo change so the next subscriber launch
-         * inherits it. Link fires this on our own thread (non-RT). */
-        FILE *fp = fopen(LAST_TEMPO_PATH, "w");
+         * inherits it. Link fires this on our own thread (non-RT).
+         * Write-then-rename so a crash mid-write can't leave a
+         * half-written number that fails the fscanf validation on the
+         * next launch. */
+        std::string tmp = std::string(LAST_TEMPO_PATH) + ".tmp";
+        FILE *fp = fopen(tmp.c_str(), "w");
         if (fp) {
             fprintf(fp, "%.4f\n", bpm);
             fclose(fp);
+            (void)rename(tmp.c_str(), LAST_TEMPO_PATH);
         }
     });
     link.enable(true);
@@ -269,6 +274,20 @@ int main()
             if (pending.empty()) {
                 LOG_INFO(LINK_SUB_LOG_SOURCE, "channels changed but no Move channels found, keeping existing sources");
                 continue;
+            }
+
+            /* Clear slot active flags before tearing down sources. Tracks
+             * that disappeared this cycle won't be re-subscribed → stay
+             * active=0 → shim falls through to native passthrough for that
+             * slot instead of reading a stale silent ring forever. Slots
+             * that ARE re-subscribed have active re-set by the source
+             * callback on its first write. Relaxed atomics are fine — the
+             * shim reads active with __sync_synchronize() anyway. */
+            if (in_shm) {
+                for (int i = 0; i < LINK_AUDIO_IN_SLOT_COUNT; i++) {
+                    __atomic_store_n(&in_shm->slots[i].active, 0,
+                                     __ATOMIC_RELAXED);
+                }
             }
 
             sources.clear();

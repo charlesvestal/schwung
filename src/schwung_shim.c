@@ -1620,9 +1620,15 @@ static void shadow_inprocess_mix_from_buffer(void) {
         if (rebuild_prev != rebuild_from_la) {
             shim_la_rebuild_flip_count++;
             if (rebuild_from_la && shadow_in_audio_shm) {
+                /* Acquire/release pair against sidecar write_pos updates
+                 * so ring writes are visible before we publish read_pos. */
                 for (int s = 0; s < LINK_AUDIO_IN_SLOT_COUNT; s++) {
-                    shadow_in_audio_shm->slots[s].read_pos =
-                        shadow_in_audio_shm->slots[s].write_pos;
+                    uint32_t wp = __atomic_load_n(
+                        &shadow_in_audio_shm->slots[s].write_pos,
+                        __ATOMIC_ACQUIRE);
+                    __atomic_store_n(
+                        &shadow_in_audio_shm->slots[s].read_pos,
+                        wp, __ATOMIC_RELEASE);
                 }
             }
             rebuild_prev = rebuild_from_la;
@@ -2040,7 +2046,14 @@ skip_la_rebuild:
      * MoveSpeakerEnhancer (which sits on Move's master bus after per-track sum).
      * Apply our emulation in its place. Only active when the built-in speaker
      * is the output — headphones stay neutral. Captures/unity_view snapshotted
-     * above so this only colors the DAC path. */
+     * above so this only colors the DAC path.
+     *
+     * Known simplification: this runs AFTER master volume was applied above.
+     * Stock Move's order is more like enhancer_then_mv. The cascade is LTI so
+     * the frequency response is unchanged, but any waveshaper/soft-clipper
+     * stage inside the emulation will generate slightly different harmonic
+     * content at non-unity mv than stock Move does. Audibility at <-6 dB is
+     * negligible; revisit if measurements show a mismatch at loud volumes. */
     if (rebuild_from_la && shadow_speaker_active && speaker_eq_initialized) {
         speaker_eq_process(mailbox_audio, FRAMES_PER_BLOCK);
     }
@@ -3810,6 +3823,23 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
 {
     (void)ctx;
     (void)size;
+
+    /* Flush-to-zero denormals on the SPI thread so IIR filters (speaker EQ,
+     * subsonic HP, etc.) don't grind through gradual-underflow range during
+     * long silent tails. FPCR is per-thread — set once on first callback.
+     * aarch64 FPCR bit 24 = FZ (flush single/double denormals to zero). */
+    {
+        static int fpcr_fz_set = 0;
+        if (!fpcr_fz_set) {
+#if defined(__aarch64__)
+            unsigned long fpcr;
+            __asm__ __volatile__ ("mrs %0, fpcr" : "=r"(fpcr));
+            fpcr |= (1UL << 24);
+            __asm__ __volatile__ ("msr fpcr, %0" :: "r"(fpcr));
+#endif
+            fpcr_fz_set = 1;
+        }
+    }
 
     /* SPI buffer snapshot: dump full buffer to file when trigger exists */
     {
@@ -6255,9 +6285,13 @@ static int try_attach_in_audio_shm(void)
     /* Drain any producer-side backlog accumulated during the attach-retry
      * window. Without this, startup turns into a cascade of catchups
      * (instrumentation observed ~9k-sample backlogs = ~200 ms of pre-run
-     * audio). Safe because we hold the only reader reference. */
+     * audio). Safe because we hold the only reader reference.
+     * Acquire/release pair against the sidecar's RELEASE store of
+     * write_pos so ring writes become visible before read_pos moves. */
     for (int i = 0; i < LINK_AUDIO_IN_SLOT_COUNT; i++) {
-        shm->slots[i].read_pos = shm->slots[i].write_pos;
+        uint32_t wp = __atomic_load_n(&shm->slots[i].write_pos,
+                                      __ATOMIC_ACQUIRE);
+        __atomic_store_n(&shm->slots[i].read_pos, wp, __ATOMIC_RELEASE);
     }
     shadow_in_audio_shm = shm;
     LOG_INFO("shim", "/schwung-link-in attached (version=%u)", shm->version);
@@ -6376,20 +6410,16 @@ static void *spi_timing_logger_thread(void *arg)
             for (int s = 0; s < LINK_AUDIO_IN_SLOT_COUNT; s++) {
                 link_audio_in_slot_t *sl = &shadow_in_audio_shm->slots[s];
                 slot_active[s]        = sl->active;
-                slot_starve[s]        = sl->starve_count;
-                slot_catchup[s]       = sl->catchup_count;
-                slot_dropped[s]       = sl->catchup_samples_dropped;
-                slot_max_avail[s]     = sl->max_avail_seen;
-                slot_produced[s]      = sl->produced_count;
-                slot_would_overrun[s] = sl->would_overrun_count;
-                slot_max_frames[s]    = sl->max_frames_seen;
-                sl->starve_count           = 0;
-                sl->catchup_count          = 0;
-                sl->catchup_samples_dropped = 0;
-                sl->max_avail_seen         = 0;
-                sl->produced_count         = 0;
-                sl->would_overrun_count    = 0;
-                sl->max_frames_seen        = 0;
+                /* Atomic exchange read+reset so SPI-path increments landing
+                 * during the read window aren't lost. RELAXED is fine —
+                 * telemetry is informational. */
+                slot_starve[s]        = __atomic_exchange_n(&sl->starve_count, 0, __ATOMIC_RELAXED);
+                slot_catchup[s]       = __atomic_exchange_n(&sl->catchup_count, 0, __ATOMIC_RELAXED);
+                slot_dropped[s]       = __atomic_exchange_n(&sl->catchup_samples_dropped, 0, __ATOMIC_RELAXED);
+                slot_max_avail[s]     = __atomic_exchange_n(&sl->max_avail_seen, 0, __ATOMIC_RELAXED);
+                slot_produced[s]      = __atomic_exchange_n(&sl->produced_count, 0, __ATOMIC_RELAXED);
+                slot_would_overrun[s] = __atomic_exchange_n(&sl->would_overrun_count, 0, __ATOMIC_RELAXED);
+                slot_max_frames[s]    = __atomic_exchange_n(&sl->max_frames_seen, 0, __ATOMIC_RELAXED);
                 if (slot_starve[s] || slot_catchup[s] || slot_would_overrun[s])
                     any_nonzero = 1;
             }
