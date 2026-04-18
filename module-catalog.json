@@ -711,6 +711,17 @@
       "default_branch": "main",
       "asset_name": "branchage-module.tar.gz",
       "min_host_version": "0.1.0"
+    },
+    {
+      "id": "twinsampler",
+      "name": "TwinSampler",
+      "description": "Dual-grid overtake sampler with 16 banks, auto-slicing, per-pad controls, MIDI loopers and session management",
+      "author": "jrucho",
+      "component_type": "overtake",
+      "github_repo": "jrucho/schwung-twinsampler",
+      "default_branch": "main",
+      "asset_name": "twinsampler-module.tar.gz",
+      "min_host_version": "0.3.6"
     }
   ]
 }
