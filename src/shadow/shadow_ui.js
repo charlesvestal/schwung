@@ -822,7 +822,6 @@ const GLOBAL_SETTINGS_SECTIONS = [
               options: ["Native", "Schwung Mix"], values: [0, 2] },
             { key: "skipback_shortcut", label: "Skipback", type: "enum",
               options: ["Sh+Cap", "Sh+Vol+Cap"], values: [0, 1] },
-            { key: "speaker_eq", label: "Speaker EQ Comp", type: "bool" },
             { key: "browser_preview", label: "Browser Preview", type: "bool" }
         ]
     },
@@ -9925,9 +9924,6 @@ function getMasterFxSettingValue(setting) {
         const val = typeof skipback_shortcut_get === "function" ? (skipback_shortcut_get() ? 1 : 0) : 0;
         return ["Sh+Cap", "Sh+Vol+Cap"][val] || "Sh+Cap";
     }
-    if (setting.key === "speaker_eq") {
-        return (typeof speaker_eq_get === "function" && speaker_eq_get()) ? "On" : "Off";
-    }
     if (setting.key === "auto_update_check") {
         return autoUpdateCheckEnabled ? "On" : "Off";
     }
@@ -10077,13 +10073,6 @@ function adjustMasterFxSetting(setting, delta) {
         if (idx < 0) idx = 0;
         const nextIdx = (idx + (delta > 0 ? 1 : values.length - 1)) % values.length;
         skipback_shortcut_set(values[nextIdx]);
-        return;
-    }
-
-    if (setting.key === "speaker_eq") {
-        if (typeof speaker_eq_set !== "function") return;
-        const current = typeof speaker_eq_get === "function" ? speaker_eq_get() : false;
-        speaker_eq_set(current ? 0 : 1);
         return;
     }
 
