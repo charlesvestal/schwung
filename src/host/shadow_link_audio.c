@@ -55,10 +55,17 @@ int link_audio_read_channel_shm(link_audio_in_shm_t *shm, int slot_idx,
     uint32_t avail = wp - rp;       /* wraps correctly on unsigned overflow */
     uint32_t need = (uint32_t)(frames * 2);
 
-    if (avail > slot->max_avail_seen) slot->max_avail_seen = avail;
+    /* Telemetry RMWs use relaxed atomics. Plain RMWs raced the background
+     * logger's read+reset and undercounted drops. The values are purely
+     * informational so RELAXED ordering is enough. */
+    uint32_t prev_max = __atomic_load_n(&slot->max_avail_seen,
+                                        __ATOMIC_RELAXED);
+    if (avail > prev_max) {
+        __atomic_store_n(&slot->max_avail_seen, avail, __ATOMIC_RELAXED);
+    }
 
     if (avail < need) {
-        slot->starve_count++;
+        __atomic_fetch_add(&slot->starve_count, 1, __ATOMIC_RELAXED);
         return 0;
     }
 
@@ -71,8 +78,9 @@ int link_audio_read_channel_shm(link_audio_in_shm_t *shm, int slot_idx,
      * exists, max_avail_seen will rise steadily and surface in the logger. */
     if (avail > need * 12) {
         uint32_t new_rp = wp - need;
-        slot->catchup_samples_dropped += (new_rp - rp);
-        slot->catchup_count++;
+        __atomic_fetch_add(&slot->catchup_samples_dropped,
+                           (new_rp - rp), __ATOMIC_RELAXED);
+        __atomic_fetch_add(&slot->catchup_count, 1, __ATOMIC_RELAXED);
         rp = new_rp;
     }
 
