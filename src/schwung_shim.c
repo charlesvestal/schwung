@@ -153,7 +153,6 @@ static bool shadow_ui_enabled = true;      /* Shadow UI enabled by default */
 static bool display_mirror_enabled = false; /* Display mirror off by default */
 static bool set_pages_enabled = true;      /* Set pages enabled by default */
 static bool skipback_require_volume = false; /* false=Shift+Capture, true=Shift+Vol+Capture */
-static bool speaker_eq_compensation_enabled = false; /* Compensate for MoveSpeakerEnhancer on rebuild_from_la DAC */
 static int shadow_speaker_active = 1;      /* 1=built-in speaker, 0=headphones/line-out (from CC 115) */
 /* Long-press Track/Menu/Step2 shortcuts — always enabled */
 
@@ -911,28 +910,14 @@ static void load_feature_config(void)
         }
     }
 
-    /* Parse speaker_eq_compensation (defaults to false) */
-    const char *speakeq_key = strstr(config_buf, "\"speaker_eq_compensation\"");
-    if (speakeq_key) {
-        const char *colon = strchr(speakeq_key, ':');
-        if (colon) {
-            colon++;
-            while (*colon == ' ' || *colon == '\t') colon++;
-            if (strncmp(colon, "true", 4) == 0) {
-                speaker_eq_compensation_enabled = true;
-            }
-        }
-    }
-
     char log_msg[256];
     snprintf(log_msg, sizeof(log_msg),
-             "Features: shadow_ui=%s, link_audio=%s, display_mirror=%s, set_pages=%s, skipback=%s, speaker_eq=%s",
+             "Features: shadow_ui=%s, link_audio=%s, display_mirror=%s, set_pages=%s, skipback=%s",
              shadow_ui_enabled ? "enabled" : "disabled",
              link_audio.enabled ? "enabled" : "disabled",
              display_mirror_enabled ? "enabled" : "disabled",
              set_pages_enabled ? "enabled" : "disabled",
-             skipback_require_volume ? "Shift+Vol+Capture" : "Shift+Capture",
-             speaker_eq_compensation_enabled ? "enabled" : "disabled");
+             skipback_require_volume ? "Shift+Vol+Capture" : "Shift+Capture");
     shadow_log(log_msg);
 }
 
@@ -2027,13 +2012,10 @@ skip_la_rebuild:
 
     /* Speaker-EQ compensation: on rebuild_from_la the DAC mailbox bypasses
      * MoveSpeakerEnhancer (which sits on Move's master bus after per-track sum).
-     * Apply our biquad approximation in its place. Captures and unity_view
-     * are already snapshotted above so this only colors the DAC path.
-     * Runtime toggle lives in shadow_control; static flag is boot default. */
-    int speaker_eq_runtime = shadow_control ? shadow_control->speaker_eq_compensation
-                                            : speaker_eq_compensation_enabled;
-    if (rebuild_from_la && speaker_eq_runtime && shadow_speaker_active &&
-        speaker_eq_initialized) {
+     * Apply our emulation in its place. Only active when the built-in speaker
+     * is the output — headphones stay neutral. Captures/unity_view snapshotted
+     * above so this only colors the DAC path. */
+    if (rebuild_from_la && shadow_speaker_active && speaker_eq_initialized) {
         speaker_eq_process(mailbox_audio, FRAMES_PER_BLOCK);
     }
 
@@ -3321,7 +3303,6 @@ static void shim_init_subsystems(void)
         shadow_control->set_pages_enabled = set_pages_enabled ? 1 : 0;
         shadow_control->skipback_require_volume = skipback_require_volume ? 1 : 0;
         shadow_control->long_press_shadow = 1; /* always enabled */
-        shadow_control->speaker_eq_compensation = speaker_eq_compensation_enabled ? 1 : 0;
         shadow_control->speaker_active = 1; /* assume speaker at boot; CC 115 will correct */
     }
 
