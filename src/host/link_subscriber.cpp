@@ -124,7 +124,12 @@ static link_audio_in_shm_t *open_or_create_in_shm()
         PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     close(fd);
     if (shm == MAP_FAILED) return nullptr;
-    if (shm->magic != LINK_AUDIO_IN_SHM_MAGIC) {
+    /* Re-init on EITHER a missing magic (fresh segment) OR a stale version
+     * (previous sidecar left a different layout). Without the version
+     * check, a shim upgrade that added fields would leave the old segment
+     * intact and the new shim would refuse to attach. */
+    if (shm->magic != LINK_AUDIO_IN_SHM_MAGIC ||
+        shm->version != LINK_AUDIO_IN_SHM_VERSION) {
         memset(shm, 0, sizeof(*shm));
         shm->magic = LINK_AUDIO_IN_SHM_MAGIC;
         shm->version = LINK_AUDIO_IN_SHM_VERSION;
@@ -337,6 +342,16 @@ int main()
                                 const uint32_t to_copy =
                                     (uint32_t)(num_frames * num_channels); /* samples */
                                 uint32_t wp = slot->write_pos;
+                                uint32_t rp = __atomic_load_n(&slot->read_pos,
+                                                              __ATOMIC_ACQUIRE);
+                                /* Producer telemetry: count overwrites of
+                                 * un-read data. Diagnostic only; we still
+                                 * write (matches pre-v2 behavior). */
+                                uint32_t pending = wp - rp;
+                                if (pending + to_copy > LINK_AUDIO_IN_RING_SAMPLES) {
+                                    __atomic_fetch_add(&slot->would_overrun_count,
+                                                       1, __ATOMIC_RELAXED);
+                                }
                                 /* Use a volatile pointer + explicit memory fence.
                                  * The non-volatile ring[] array is otherwise
                                  * "unobservable" in this TU, so the compiler can
@@ -351,6 +366,16 @@ int main()
                                                  __ATOMIC_RELEASE);
                                 __atomic_store_n(&slot->active, 1,
                                                  __ATOMIC_RELAXED);
+                                __atomic_fetch_add(&slot->produced_count, 1,
+                                                   __ATOMIC_RELAXED);
+                                uint32_t nframes_u32 = (uint32_t)num_frames;
+                                uint32_t prev_max = __atomic_load_n(
+                                    &slot->max_frames_seen, __ATOMIC_RELAXED);
+                                if (nframes_u32 > prev_max) {
+                                    __atomic_store_n(&slot->max_frames_seen,
+                                                     nframes_u32,
+                                                     __ATOMIC_RELAXED);
+                                }
                             });
                     } else {
                         /* Non-Move channel (e.g. ME-Ack loopback) — keep the

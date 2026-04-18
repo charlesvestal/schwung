@@ -55,13 +55,25 @@ int link_audio_read_channel_shm(link_audio_in_shm_t *shm, int slot_idx,
     uint32_t avail = wp - rp;       /* wraps correctly on unsigned overflow */
     uint32_t need = (uint32_t)(frames * 2);
 
-    if (avail < need) return 0;
+    if (avail > slot->max_avail_seen) slot->max_avail_seen = avail;
 
-    /* Catch-up: if producer got ahead by more than 4 blocks, jump to the most
-     * recent block. Mirrors the legacy link_audio_read_channel() behavior —
-     * prevents unbounded latency drift when producer/consumer clocks differ. */
-    if (avail > need * 4) {
-        rp = wp - need;
+    if (avail < need) {
+        slot->starve_count++;
+        return 0;
+    }
+
+    /* Catch-up: if producer got ahead by more than 12 blocks (~70 ms), jump
+     * to the most recent block. Every catch-up is an audible drop, so the
+     * threshold has to tolerate real producer-thread jitter — the Link audio
+     * SDK thread can pause ~25 ms and then flush buffered audio. Raised from
+     * need*4 (1024 samples) to need*12 (3072) after instrumentation showed
+     * observed bursts were consistently <30 ms. If true long-term drift
+     * exists, max_avail_seen will rise steadily and surface in the logger. */
+    if (avail > need * 12) {
+        uint32_t new_rp = wp - need;
+        slot->catchup_samples_dropped += (new_rp - rp);
+        slot->catchup_count++;
+        rp = new_rp;
     }
 
     for (uint32_t i = 0; i < need; i++) {

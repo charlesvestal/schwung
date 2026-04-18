@@ -1605,6 +1605,21 @@ static void shadow_inprocess_mix_from_buffer(void) {
                            shim_move_channel_count() >= 4 &&
                            la_receiving);
 
+    /* Path-flip telemetry: every flip between rebuild and passthrough is a
+     * potential seam, because the two paths composite the mailbox
+     * differently. Track transitions so the background logger can surface
+     * rate of flipping alongside Link Audio ring stats. Single-writer
+     * (SPI path), single-reader (logger thread). */
+    extern volatile uint32_t shim_la_rebuild_flip_count;
+    {
+        static int rebuild_prev = -1;
+        if (rebuild_prev < 0) rebuild_prev = rebuild_from_la;
+        if (rebuild_prev != rebuild_from_la) {
+            shim_la_rebuild_flip_count++;
+            rebuild_prev = rebuild_from_la;
+        }
+    }
+
     /* Mix JACK/RNBO audio at mv level to match Move's attenuated audio.
      * Both sources then prescale to unity together, go through master FX,
      * and get captured by skipback/sampler at the same consistent level. */
@@ -1643,6 +1658,8 @@ static void shadow_inprocess_mix_from_buffer(void) {
             /* SHM is empty across all slots — sidecar isn't producing fast
              * enough this frame. Skip the rebuild; treat this frame like
              * the non-rebuild path so we don't drop into silence. */
+            extern volatile uint32_t shim_la_starve_fallback_count;
+            shim_la_starve_fallback_count++;
             rebuild_from_la = 0;
             goto skip_la_rebuild;
         }
@@ -3724,6 +3741,11 @@ typedef struct {
 } spi_timing_snapshot_t;
 
 static volatile spi_timing_snapshot_t spi_snap = {0};
+
+/* Link Audio path-flip counters (single-writer from SPI path, single-reader
+ * from the background logger thread). Declared extern where incremented. */
+volatile uint32_t shim_la_rebuild_flip_count = 0;
+volatile uint32_t shim_la_starve_fallback_count = 0;
 
 /* Granular pre-ioctl timing */
 static struct timespec spi_section_start, spi_section_end;
@@ -6214,6 +6236,20 @@ static int try_attach_in_audio_shm(void)
         munmap(shm, sizeof(link_audio_in_shm_t));
         return 0;
     }
+    if (shm->version != LINK_AUDIO_IN_SHM_VERSION) {
+        LOG_WARN("shim", "/schwung-link-in version mismatch: shm=%u expected=%u "
+                        "— rebuild link-subscriber sidecar",
+                 shm->version, LINK_AUDIO_IN_SHM_VERSION);
+        munmap(shm, sizeof(link_audio_in_shm_t));
+        return 0;
+    }
+    /* Drain any producer-side backlog accumulated during the attach-retry
+     * window. Without this, startup turns into a cascade of catchups
+     * (instrumentation observed ~9k-sample backlogs = ~200 ms of pre-run
+     * audio). Safe because we hold the only reader reference. */
+    for (int i = 0; i < LINK_AUDIO_IN_SLOT_COUNT; i++) {
+        shm->slots[i].read_pos = shm->slots[i].write_pos;
+    }
     shadow_in_audio_shm = shm;
     LOG_INFO("shim", "/schwung-link-in attached (version=%u)", shm->version);
     return 1;
@@ -6304,6 +6340,71 @@ static void *spi_timing_logger_thread(void *arg)
                         ? (100.0 * spi_snap.jack_audio_misses /
                            (spi_snap.jack_audio_hits + spi_snap.jack_audio_misses))
                         : 0.0);
+            }
+        }
+
+        /* === Link Audio drop telemetry (v2 SHM stats) === */
+        /* Per-slot starvation / catch-up / producer-overrun counters + path
+         * flips. These are THE numbers to watch when diagnosing Move→Schwung
+         * dropouts: a catch-up or a would-overrun on any slot is (almost
+         * always) an audible discontinuity. */
+        if (shadow_in_audio_shm) {
+            uint32_t flips = shim_la_rebuild_flip_count;
+            uint32_t fallback = shim_la_starve_fallback_count;
+            shim_la_rebuild_flip_count = 0;
+            shim_la_starve_fallback_count = 0;
+
+            int any_nonzero = (flips || fallback);
+            uint32_t slot_starve[LINK_AUDIO_IN_SLOT_COUNT];
+            uint32_t slot_catchup[LINK_AUDIO_IN_SLOT_COUNT];
+            uint32_t slot_dropped[LINK_AUDIO_IN_SLOT_COUNT];
+            uint32_t slot_max_avail[LINK_AUDIO_IN_SLOT_COUNT];
+            uint32_t slot_produced[LINK_AUDIO_IN_SLOT_COUNT];
+            uint32_t slot_would_overrun[LINK_AUDIO_IN_SLOT_COUNT];
+            uint32_t slot_max_frames[LINK_AUDIO_IN_SLOT_COUNT];
+            int slot_active[LINK_AUDIO_IN_SLOT_COUNT];
+
+            for (int s = 0; s < LINK_AUDIO_IN_SLOT_COUNT; s++) {
+                link_audio_in_slot_t *sl = &shadow_in_audio_shm->slots[s];
+                slot_active[s]        = sl->active;
+                slot_starve[s]        = sl->starve_count;
+                slot_catchup[s]       = sl->catchup_count;
+                slot_dropped[s]       = sl->catchup_samples_dropped;
+                slot_max_avail[s]     = sl->max_avail_seen;
+                slot_produced[s]      = sl->produced_count;
+                slot_would_overrun[s] = sl->would_overrun_count;
+                slot_max_frames[s]    = sl->max_frames_seen;
+                sl->starve_count           = 0;
+                sl->catchup_count          = 0;
+                sl->catchup_samples_dropped = 0;
+                sl->max_avail_seen         = 0;
+                sl->produced_count         = 0;
+                sl->would_overrun_count    = 0;
+                sl->max_frames_seen        = 0;
+                if (slot_starve[s] || slot_catchup[s] || slot_would_overrun[s])
+                    any_nonzero = 1;
+            }
+
+            if (any_nonzero) {
+                /* One line per active slot to keep the format tight but
+                 * immediately useful: starve+catchup = "we dropped audio",
+                 * would_overrun = "producer lapped us", max_avail /
+                 * max_frames = headroom at edges. */
+                for (int s = 0; s < LINK_AUDIO_IN_SLOT_COUNT; s++) {
+                    if (!slot_active[s]) continue;
+                    if (!slot_starve[s] && !slot_catchup[s] &&
+                        !slot_would_overrun[s]) continue;
+                    unified_log("link_audio", LOG_LEVEL_WARN,
+                        "slot=%d name=%s starve=%u catchup=%u dropped_samples=%u "
+                        "max_avail=%u produced=%u would_overrun=%u max_frames=%u",
+                        s, shadow_in_audio_shm->slots[s].name,
+                        slot_starve[s], slot_catchup[s], slot_dropped[s],
+                        slot_max_avail[s], slot_produced[s],
+                        slot_would_overrun[s], slot_max_frames[s]);
+                }
+                unified_log("link_audio", LOG_LEVEL_DEBUG,
+                    "path: rebuild_flips=%u la_starve_fallback=%u",
+                    flips, fallback);
             }
         }
     }
