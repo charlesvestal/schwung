@@ -1447,14 +1447,28 @@ static void shadow_inprocess_mix_from_buffer(void) {
     memset(la_cache_valid, 0, sizeof(la_cache_valid));
 
     if (rebuild_from_la) {
-        /* Zero the mailbox — all audio reconstructed from Link Audio */
-        memset(mailbox_audio, 0, FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
-
-        /* Read all Link Audio channels once upfront */
+        /* Read all Link Audio channels FIRST so we can decide whether to
+         * actually rebuild. If every slot starves (e.g. during a Move set
+         * transition when the audio engine briefly stops publishing), zeroing
+         * the mailbox would produce total silence. In that case fall through
+         * to the legacy non-rebuild path so Move's native audio (already in
+         * the mailbox from Move's own write) survives. */
         int la_channel_count = shim_move_channel_count();
+        int any_la_valid = 0;
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES && s < la_channel_count; s++) {
             la_cache_valid[s] = shim_read_move_channel(s, la_cache[s], FRAMES_PER_BLOCK);
+            if (la_cache_valid[s]) any_la_valid = 1;
         }
+        if (!any_la_valid) {
+            /* SHM is empty across all slots — sidecar isn't producing fast
+             * enough this frame. Skip the rebuild; treat this frame like
+             * the non-rebuild path so we don't drop into silence. */
+            rebuild_from_la = 0;
+            goto skip_la_rebuild;
+        }
+
+        /* Zero the mailbox — all audio reconstructed from Link Audio */
+        memset(mailbox_audio, 0, FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
 
 
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
@@ -1606,7 +1620,9 @@ static void shadow_inprocess_mix_from_buffer(void) {
             }
         }
 
-    } else if (shadow_chain_process_fx) {
+    }
+skip_la_rebuild:
+    if (!rebuild_from_la && shadow_chain_process_fx) {
         /* No Link Audio — use deferred FX output from post-ioctl (fast path) */
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
             if (!shadow_chain_slots[s].instance) continue;
