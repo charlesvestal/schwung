@@ -164,15 +164,27 @@ typedef struct {
     volatile uint32_t read_pos;                 /* shim (consumer) */
     volatile int      active;                   /* 1 once first packet received */
     char     name[32];                          /* "1-MIDI", "Main", … */
+
+    /* Drop / jitter counters (v2). Monotonically increasing, reset by the
+     * background logger when it reads them. Writers use relaxed atomics —
+     * torn reads are harmless (pure telemetry). */
+    volatile uint32_t starve_count;             /* reader: avail < need */
+    volatile uint32_t catchup_count;            /* reader: avail > need*4 jump fired */
+    volatile uint32_t catchup_samples_dropped;  /* reader: samples skipped by jump */
+    volatile uint32_t max_avail_seen;           /* reader: peak pending samples */
+    volatile uint32_t produced_count;           /* writer: source-callback invocations */
+    volatile uint32_t would_overrun_count;      /* writer: ring lapped read_pos */
+    volatile uint32_t max_frames_seen;          /* writer: peak num_frames per cb */
+    uint32_t          _stats_pad[1];            /* keep 8-byte alignment */
 } link_audio_in_slot_t;
 
 typedef struct {
     volatile uint32_t magic;    /* 0x4C41494E = "LAIN" */
-    volatile uint32_t version;  /* 1 */
+    volatile uint32_t version;  /* 2 */
     link_audio_in_slot_t slots[LINK_AUDIO_IN_SLOT_COUNT];
 } link_audio_in_shm_t;
 
 #define LINK_AUDIO_IN_SHM_MAGIC   0x4C41494E
-#define LINK_AUDIO_IN_SHM_VERSION 1
+#define LINK_AUDIO_IN_SHM_VERSION 2
 
 #endif /* LINK_AUDIO_H */
