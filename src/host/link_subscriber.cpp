@@ -281,13 +281,19 @@ int main()
                 /* Resolve Move channels to fixed slot indices. Non-Move peers
                  * get no slot (they're still subscribed for other reasons, but
                  * don't feed /schwung-link-in). */
+                /* Move publishes per-track audio with track-type suffixes:
+                 * "1-MIDI" / "2-MIDI" / ... for MIDI tracks, "1-Audio" / ...
+                 * for audio tracks (which Move 2.0 sets can have a mix of).
+                 * The leading digit identifies the track and is enough to
+                 * pick the slot regardless of the suffix. */
                 int slot_idx = -1;
-                if (pc.peerName == "Move") {
-                    if (pc.name == "1-MIDI") slot_idx = 0;
-                    else if (pc.name == "2-MIDI") slot_idx = 1;
-                    else if (pc.name == "3-MIDI") slot_idx = 2;
-                    else if (pc.name == "4-MIDI") slot_idx = 3;
-                    else if (pc.name == "Main")   slot_idx = LINK_AUDIO_IN_MAIN_IDX;
+                if (pc.peerName == "Move" && pc.name.size() >= 2) {
+                    char d = pc.name[0];
+                    if (d >= '1' && d <= '4' && pc.name[1] == '-') {
+                        slot_idx = d - '1';
+                    } else if (pc.name == "Main") {
+                        slot_idx = LINK_AUDIO_IN_MAIN_IDX;
+                    }
                 }
 
                 if (slot_idx >= 0 && slot_idx < LINK_AUDIO_IN_SLOT_COUNT && in_shm) {
