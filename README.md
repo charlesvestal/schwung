@@ -191,6 +191,7 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 | [Super Arp](https://github.com/handcraftedcc/move-everything-superarp) | Advanced MIDI arpeggiator with progression patterns, rhythm presets, and seeded modifiers | handcraftedcc |
 | [Eucalypso](https://github.com/handcraftedcc/move-everything-eucalypso) | Deterministic 4-lane Euclidean MIDI sequencer with held/scale note registers, retrigger modes, and seeded modulation | handcraftedcc |
 | [Genera](https://github.com/fillioning/genera-move) | Generative note and chord sequencer with 7 generation modes, stutter engine with beat-repeat, 20 scales, chord stacking, capture/loop, and humanize | Vincent Fillion |
+| [Euclidrum](https://github.com/fillioning/euclidrum-move) | 8-lane generative Euclidean drum sequencer — 32 presets, polymetric rates, mutation/drift, per-lane freq/decay CC output. Purpose-built companion for Weird Dreams. | Vincent Fillion |
 | [Branchage](https://github.com/broduoliviercontact-web/Schwung-Midi-Fx-branchages-Multi-Random-generator) | Grids drum maps with per-lane Branches-style note branching | Mutable Instruments ideas / port for Schwung Move |
 
 ### Overtake
