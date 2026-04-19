@@ -163,17 +163,16 @@ export function drawMenuList({
         ? (text_width("M") || DEFAULT_CHAR_WIDTH)
         : DEFAULT_CHAR_WIDTH;
 
-    const v2LineHeight = v2 ? V2_LIST_LINE_HEIGHT : lineHeight;
-    const v2HighlightOffset = v2 ? V2_LIST_HIGHLIGHT_OFFSET : highlightOffset;
-    const v2HighlightPadding = v2 ? V2_HIGHLIGHT_PADDING : 0;
-    const v2TopYOverride = v2 ? V2_LIST_TOP_Y : null;
+    const resolvedLineHeight = v2 ? V2_LIST_LINE_HEIGHT : lineHeight;
+    const resolvedHighlightOffset = v2 ? V2_LIST_HIGHLIGHT_OFFSET : highlightOffset;
+    const resolvedTopYOverride = v2 ? V2_LIST_TOP_Y : null;
 
     const totalItems = items.length;
-    const itemHeight = getSubLabel ? (v2LineHeight + subLabelOffset) : v2LineHeight;
+    const itemHeight = getSubLabel ? (resolvedLineHeight + subLabelOffset) : resolvedLineHeight;
     const itemHighlightHeight = getSubLabel
-        ? (v2LineHeight + subLabelOffset + 2)
-        : (v2 ? v2LineHeight + v2HighlightPadding : highlightHeight);
-    const resolvedTopY = v2TopYOverride !== null ? v2TopYOverride : (listArea?.topY ?? topY);
+        ? (resolvedLineHeight + subLabelOffset + 2)
+        : (v2 ? resolvedLineHeight + V2_HIGHLIGHT_PADDING : highlightHeight);
+    const resolvedTopY = resolvedTopYOverride !== null ? resolvedTopYOverride : (listArea?.topY ?? topY);
     const resolvedBottomY = listArea?.bottomY ?? indicatorBottomY;
     const computedMaxVisible = maxVisible > 0
         ? maxVisible
@@ -264,7 +263,7 @@ export function drawMenuList({
         }
 
         if (isSelected) {
-            fill_rect(0, y - v2HighlightOffset, SCREEN_WIDTH, itemHighlightHeight, 1);
+            fill_rect(0, y - resolvedHighlightOffset, SCREEN_WIDTH, itemHighlightHeight, 1);
             print(labelX, y, `${labelPrefix}${label}`, 0);
             if (displayValue) {
                 /* Show brackets around value when in edit mode */
