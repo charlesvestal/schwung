@@ -51,7 +51,8 @@ import {
     hideOverlay,
     tickOverlay,
     drawOverlay,
-    menuLayoutDefaults
+    menuLayoutDefaults,
+    reloadMenuStyle
 } from '/data/UserData/schwung/shared/menu_layout.mjs';
 
 import {
@@ -810,7 +811,8 @@ const GLOBAL_SETTINGS_SECTIONS = [
             { key: "overlay_knobs", label: "Overlay Knobs", type: "enum",
               options: ["+Shift", "+Jog Touch", "Off", "Native"], values: [0, 1, 2, 3] },
             { key: "pad_typing", label: "Pad Typing", type: "bool" },
-            { key: "text_preview", label: "Text Preview", type: "bool" }
+            { key: "text_preview", label: "Text Preview", type: "bool" },
+            { key: "menu_style_v2", label: "Menu Style v2", type: "bool" }
         ]
     },
     {
@@ -9883,6 +9885,9 @@ function getMasterFxSettingValue(setting) {
     if (setting.key === "display_mirror") {
         return (typeof display_mirror_get === "function" && display_mirror_get()) ? "On" : "Off";
     }
+    if (setting.key === "menu_style_v2") {
+        return (typeof menu_style_v2_get === "function" && menu_style_v2_get()) ? "On" : "Off";
+    }
     if (setting.key === "screen_reader_enabled") {
         return (typeof tts_get_enabled === "function" && tts_get_enabled()) ? "On" : "Off";
     }
@@ -10007,6 +10012,16 @@ function adjustMasterFxSetting(setting, delta) {
         /* Toggle boolean */
         const current = typeof display_mirror_get === "function" ? display_mirror_get() : false;
         display_mirror_set(!current ? 1 : 0);
+        return;
+    }
+
+    if (setting.key === "menu_style_v2" && typeof menu_style_v2_set === "function") {
+        const current = typeof menu_style_v2_get === "function" ? menu_style_v2_get() : false;
+        menu_style_v2_set(!current ? 1 : 0);
+        /* Live-reload the cached flag so the toggle takes effect without restart */
+        try {
+            if (typeof reloadMenuStyle === 'function') reloadMenuStyle();
+        } catch (e) {}
         return;
     }
 
