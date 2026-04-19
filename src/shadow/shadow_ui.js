@@ -13312,9 +13312,14 @@ globalThis.init = function() {
     }
     saveSlotsToConfig(slots);
 
-    /* Analytics: send module census and diff against previous snapshot */
+    /* Analytics: emit app_launched + census + diff against previous snapshot.
+     * app_launched must emit here (not in shadow_ui.c main()) because
+     * analytics_enabled() returns false until the opt-in prompt resolves,
+     * which is JS-side — firing from C would drop the first-boot event. */
     if (typeof host_track_event === "function" && typeof host_get_analytics_enabled === "function" && host_get_analytics_enabled()) {
         try {
+            host_track_event('app_launched', '');
+
             const modules = host_list_modules();
             if (modules && modules.length > 0) {
                 /* Send census */
