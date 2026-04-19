@@ -66,13 +66,21 @@ export function reloadMenuStyle() {
     _loadMenuStyle();
 }
 
-/* V2 layout constants (override classic when flag is on) */
+/* V2 layout constants (override classic when flag is on).
+ * Tamzen-15.png is 15px tall in the bitmap but the visible glyph is rows 2-14:
+ *   - rows 0-1: empty top padding
+ *   - rows 2-11: main text (10px, ascender to baseline)
+ *   - rows 12-14: descenders only
+ * That's why line_height=11 fits cleanly: items step 11px, visible glyphs step
+ * 11px from one baseline to the next without overlap. The highlight rect must
+ * be tall enough to cover the visible glyph (rows 2-14 → 13px) so selected
+ * black-on-white text isn't drawn black-on-black past the highlight. */
 export const V2_TITLE_Y = -1;
 export const V2_TITLE_RULE_Y = 7;
 export const V2_LIST_TOP_Y = 6;
 export const V2_LIST_LINE_HEIGHT = 11;
-export const V2_LIST_HIGHLIGHT_OFFSET = 3;
-export const V2_HIGHLIGHT_PADDING = -2;       /* shrink highlight rect by 2px */
+export const V2_LIST_HIGHLIGHT_OFFSET = 3;            /* highlight starts 3px above text origin */
+export const V2_LIST_HIGHLIGHT_HEIGHT = 17;           /* covers visible glyph (offset 3 + glyph rows 2-14 = 17) */
 export const V2_HEADER_FONT = '/data/UserData/schwung/host/fonts/tamzen-9.png';
 export const V2_LIST_FONT = '/data/UserData/schwung/host/fonts/tamzen-15.png';
 export const V2_DEFAULT_FONT = '/data/UserData/schwung/host/font.png';
@@ -171,7 +179,7 @@ export function drawMenuList({
     const itemHeight = getSubLabel ? (resolvedLineHeight + subLabelOffset) : resolvedLineHeight;
     const itemHighlightHeight = getSubLabel
         ? (resolvedLineHeight + subLabelOffset + 2)
-        : (v2 ? resolvedLineHeight + V2_HIGHLIGHT_PADDING : highlightHeight);
+        : (v2 ? V2_LIST_HIGHLIGHT_HEIGHT : highlightHeight);
     const resolvedTopY = resolvedTopYOverride !== null ? resolvedTopYOverride : (listArea?.topY ?? topY);
     const resolvedBottomY = listArea?.bottomY ?? indicatorBottomY;
     const computedMaxVisible = maxVisible > 0
