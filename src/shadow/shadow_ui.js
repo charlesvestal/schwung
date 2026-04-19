@@ -13714,6 +13714,28 @@ globalThis.tick = function() {
             /* 10. Load RNBO graph for this set (if RNBO is running) */
             loadRnboGraphFromDir(activeSlotStateDir);
 
+            /* 10b. Request Link tempo override to match the new set's tempo.
+             * link-subscriber picks this up and only applies when numPeers==1
+             * (Move alone), so we don't clobber collaboration with Live. */
+            if (uuid && setName) {
+                try {
+                    const songPath = "/data/UserData/UserLibrary/Sets/" + uuid + "/" + setName + "/Song.abl";
+                    const songJson = host_read_file(songPath);
+                    if (songJson) {
+                        const m = songJson.match(/"tempo"\s*:\s*([0-9.]+)/);
+                        if (m && m[1]) {
+                            const bpm = parseFloat(m[1]);
+                            if (bpm >= 20 && bpm <= 999) {
+                                host_write_file("/data/UserData/schwung/desired-tempo", bpm.toFixed(4) + "\n");
+                                debugLog("SET_CHANGED: requested Link tempo override " + bpm.toFixed(2) + " BPM");
+                            }
+                        }
+                    }
+                } catch (e) {
+                    debugLog("SET_CHANGED: tempo-override write failed: " + e);
+                }
+            }
+
             /* 11. Clear flag */
             if (typeof shadow_clear_ui_flags === "function") {
                 shadow_clear_ui_flags(SHADOW_UI_FLAG_SET_CHANGED);
