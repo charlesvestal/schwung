@@ -37,6 +37,46 @@ export const DEFAULT_VALUE_PADDING_RIGHT = 2;
 let lastAnnouncedIndex = -1;
 let lastAnnouncedLabel = "";
 
+/* === Menu Style v2 (feature-flagged) === */
+let _menuStyleV2 = false;
+let _menuStyleLoaded = false;
+
+function _loadMenuStyle() {
+    try {
+        const raw = (typeof host_read_file === 'function')
+            ? host_read_file('/data/UserData/schwung/config/features.json')
+            : null;
+        if (raw) {
+            const cfg = JSON.parse(raw);
+            _menuStyleV2 = cfg && cfg.menu_style_v2 === true;
+        }
+    } catch (e) {
+        _menuStyleV2 = false;
+    }
+    _menuStyleLoaded = true;
+}
+
+export function isMenuStyleV2() {
+    if (!_menuStyleLoaded) _loadMenuStyle();
+    return _menuStyleV2;
+}
+
+export function reloadMenuStyle() {
+    _menuStyleLoaded = false;
+    _loadMenuStyle();
+}
+
+/* V2 layout constants (override classic when flag is on) */
+export const V2_TITLE_Y = -1;
+export const V2_TITLE_RULE_Y = 7;
+export const V2_LIST_TOP_Y = 6;
+export const V2_LIST_LINE_HEIGHT = 11;
+export const V2_LIST_HIGHLIGHT_OFFSET = 3;
+export const V2_HIGHLIGHT_PADDING = -2;       /* shrink highlight rect by 2px */
+export const V2_HEADER_FONT = '/data/UserData/schwung/host/fonts/tamzen-9.png';
+export const V2_LIST_FONT = '/data/UserData/schwung/host/fonts/tamzen-15.png';
+export const V2_DEFAULT_FONT = '/data/UserData/schwung/host/font.png';
+
 export function drawMenuHeader(title, titleRight = "") {
     print(2, TITLE_Y, title, 1);
 
