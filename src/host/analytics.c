@@ -237,17 +237,14 @@ void analytics_diff_modules(const char (*ids)[64], const char (*versions)[32], i
     int old_count = load_snapshot(old_entries, MAX_SNAPSHOT_MODULES);
 
     if (old_count > 0) {
-        /* Compare current vs old */
+        /* Compare current vs old — only emit upgrades. module_added was
+         * removed as noisy: it fires for sideloads AND first-boot floods
+         * and couldn't reliably distinguish the two. Install base is
+         * derivable from module_census; Store-flow installs still emit
+         * module_installed separately. */
         for (int i = 0; i < count; i++) {
             const snapshot_entry_t *old = find_in_snapshot(old_entries, old_count, ids[i]);
-            if (!old) {
-                /* New module */
-                char props[256];
-                snprintf(props, sizeof(props),
-                    "\"module_id\":\"%s\",\"module_version\":\"%s\"",
-                    ids[i], versions[i]);
-                analytics_track("module_added", props);
-            } else if (strcmp(old->version, versions[i]) != 0) {
+            if (old && strcmp(old->version, versions[i]) != 0) {
                 /* Version changed */
                 char props[256];
                 snprintf(props, sizeof(props),
