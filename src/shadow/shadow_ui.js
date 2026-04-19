@@ -10020,8 +10020,10 @@ function adjustMasterFxSetting(setting, delta) {
         menu_style_v2_set(!current ? 1 : 0);
         /* Live-reload the cached flag so the toggle takes effect without restart */
         try {
-            if (typeof reloadMenuStyle === 'function') reloadMenuStyle();
-        } catch (e) {}
+            if (typeof reloadMenuStyle === "function") reloadMenuStyle();
+        } catch (e) {
+            console.log("menu_style_v2 reload failed:", e && e.message ? e.message : e);
+        }
         return;
     }
 
