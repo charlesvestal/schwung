@@ -19,7 +19,9 @@ Covers all commits since `v0.9.6` (Apr 14) through `89c1d749`.
 - **Long-press shortcuts** always on, setting removed (330615eb).
 - **Analytics opt-out** with first-run prompt (5f56cd25).
 - **Tempo persistence** across subscriber restarts; **mute/solo
-  persistence** across power cycles.
+  persistence** across power cycles. Set-change also now forces Link
+  to the new set's tempo when only Move is a peer (defers to Link
+  arbitration when Live or other peers are present).
 - **Link peer/channel rename**: `ME` → `Schwung` (breaking change for
   existing Live sets).
 - **Configurable Skipback length**: new "Skipback Len" setting in
@@ -96,8 +98,13 @@ Breaking change:
 
 - [ ] **Mute** (`395a9527`): mute a slot, power cycle, still muted.
 - [ ] **Solo** (`395a9527`): solo a slot, power cycle, solo persists.
-- [ ] **Session tempo** (`d563e24e`): set Move project tempo to e.g.
-      87 BPM, power cycle, comes back at 87 not 120.
+- [ ] **Session tempo** (`d563e24e`, `8c033714`): set Move project
+      tempo to e.g. 87 BPM, power cycle, comes back at 87 not 120.
+      Switch between sets with different tempos (e.g. Set A @ 87,
+      Set B @ 140) with only Move connected — each set-change brings
+      Link to the new set's tempo. Connect Live alongside Move and
+      switch sets — tempo is NOT overridden (Link arbitration handles
+      it, we defer when peers ≥ 2).
 - [ ] **Routing toggle** (`8030bfda`): Move→Schwung routing off →
       Schwung synth+FX still audible. Back on → Move audio rejoins in
       a few seconds.
