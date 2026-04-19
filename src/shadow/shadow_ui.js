@@ -5332,6 +5332,23 @@ function saveMasterFxChainConfig() {
 
             config.master_fx_chain[key] = slotConfig;
 
+            /* Guard against clobbering a good state file with empty data.
+             * If every state/chain_params query came back empty (shim stalled,
+             * teardown in progress, module not yet fully loaded), preserve the
+             * existing file — same pattern as slot autosave (see ~line 3615). */
+            let snapshotOk = false;
+            if (stateObj) {
+                snapshotOk = true;
+            } else if (paramsObj) {
+                const realKeys = Object.keys(paramsObj).filter(k => k !== "plugin_id");
+                if (realKeys.length > 0) snapshotOk = true;
+            }
+
+            if (!snapshotOk) {
+                debugLog(`MFX save: skipping ${key} write — no state/params from shim (preserving existing file)`);
+                continue;
+            }
+
             /* Write per-slot state file for shim-side restore at boot */
             const stateFile = {
                 module_path: dspPath,
