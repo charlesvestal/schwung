@@ -153,6 +153,14 @@ static bool shadow_ui_enabled = true;      /* Shadow UI enabled by default */
 static bool display_mirror_enabled = false; /* Display mirror off by default */
 static bool set_pages_enabled = true;      /* Set pages enabled by default */
 static bool skipback_require_volume = false; /* false=Shift+Capture, true=Shift+Vol+Capture */
+static int skipback_seconds_setting = SKIPBACK_DEFAULT_SECONDS; /* Skipback rolling buffer length */
+
+/* Worker that performs the skipback buffer resize off the audio path. */
+static void *skipback_resize_thread(void *arg) {
+    (void)arg;
+    skipback_resize(skipback_seconds_setting);
+    return NULL;
+}
 static int shadow_speaker_active = 1;      /* 1=built-in speaker, 0=headphones/line-out (from CC 115) */
 /* Long-press Track/Menu/Step2 shortcuts — always enabled */
 
@@ -910,14 +918,30 @@ static void load_feature_config(void)
         }
     }
 
+    /* Parse skipback_seconds (defaults to SKIPBACK_DEFAULT_SECONDS, clamped) */
+    const char *skipback_secs_key = strstr(config_buf, "\"skipback_seconds\"");
+    if (skipback_secs_key) {
+        const char *colon = strchr(skipback_secs_key, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ' || *colon == '\t') colon++;
+            int parsed = atoi(colon);
+            if (parsed > 0) {
+                if (parsed > SKIPBACK_MAX_SECONDS) parsed = SKIPBACK_MAX_SECONDS;
+                skipback_seconds_setting = parsed;
+            }
+        }
+    }
+
     char log_msg[256];
     snprintf(log_msg, sizeof(log_msg),
-             "Features: shadow_ui=%s, link_audio=%s, display_mirror=%s, set_pages=%s, skipback=%s",
+             "Features: shadow_ui=%s, link_audio=%s, display_mirror=%s, set_pages=%s, skipback=%s, skipback_buf=%ds",
              shadow_ui_enabled ? "enabled" : "disabled",
              link_audio.enabled ? "enabled" : "disabled",
              display_mirror_enabled ? "enabled" : "disabled",
              set_pages_enabled ? "enabled" : "disabled",
-             skipback_require_volume ? "Shift+Vol+Capture" : "Shift+Capture");
+             skipback_require_volume ? "Shift+Vol+Capture" : "Shift+Capture",
+             skipback_seconds_setting);
     shadow_log(log_msg);
 }
 
@@ -2074,6 +2098,25 @@ skip_la_rebuild:
             }
         }
 
+        /* Skipback buffer resize: settings UI writes new desired length to
+         * shadow_control->skipback_seconds. We compare against the actually
+         * allocated size and dispatch a worker thread to resize. The worker
+         * holds skipback_saving briefly, so audio capture pauses for the
+         * ~tens-of-ms it takes to malloc + memcpy the new buffer. */
+        {
+            int desired = (int)shadow_control->skipback_seconds;
+            if (desired > 0 && desired != skipback_get_seconds()
+                && skipback_seconds_setting != desired) {
+                skipback_seconds_setting = desired;
+                pthread_t rt;
+                /* Pass desired via the static; resize itself reads
+                 * skipback_seconds_setting via its arg. */
+                if (pthread_create(&rt, NULL, skipback_resize_thread, NULL) == 0) {
+                    pthread_detach(rt);
+                }
+            }
+        }
+
         uint8_t cmd = shadow_control->sampler_cmd;
         if (cmd == 1) {
             /* Start recording — path in file */
@@ -2136,7 +2179,7 @@ skip_la_rebuild:
         sampler_capture_audio_from_buffer(unity_view);
         sampler_tick_preroll();
         /* Skipback: always capture Resample source into rolling buffer */
-        skipback_init();
+        skipback_init(skipback_seconds_setting);
         skipback_capture(unity_view);
     }
 
@@ -3341,6 +3384,7 @@ static void shim_init_subsystems(void)
         shadow_control->display_mirror = display_mirror_enabled ? 1 : 0;
         shadow_control->set_pages_enabled = set_pages_enabled ? 1 : 0;
         shadow_control->skipback_require_volume = skipback_require_volume ? 1 : 0;
+        shadow_control->skipback_seconds = (uint16_t)skipback_seconds_setting;
         shadow_control->long_press_shadow = 1; /* always enabled */
         shadow_control->speaker_active = 1; /* assume speaker at boot; CC 115 will correct */
     }
@@ -4808,7 +4852,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
         sampler_capture_audio();
         sampler_tick_preroll();
         /* Skipback: always capture Move Input source into rolling buffer */
-        skipback_init();
+        skipback_init(skipback_seconds_setting);
         skipback_capture((int16_t *)(hw + AUDIO_IN_OFFSET));
     }
 

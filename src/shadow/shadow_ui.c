@@ -1955,6 +1955,76 @@ static JSValue js_skipback_shortcut_get(JSContext *ctx, JSValueConst this_val,
     return JS_NewBool(ctx, shadow_control->skipback_require_volume != 0);
 }
 
+/* skipback_seconds_set(seconds) - Persist to features.json + write SHM.
+ * Valid values: 30, 60, 120, 180, 240, 300. The shim watches SHM and
+ * dispatches the buffer resize off the audio path. */
+static JSValue js_skipback_seconds_set(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_UNDEFINED;
+
+    int seconds = 0;
+    JS_ToInt32(ctx, &seconds, argv[0]);
+    if (seconds < 30) seconds = 30;
+    if (seconds > 300) seconds = 300;
+
+    shadow_control->skipback_seconds = (uint16_t)seconds;
+
+    /* Persist to features.json. */
+    const char *config_path = "/data/UserData/schwung/config/features.json";
+    char buf[1024];
+    size_t len = 0;
+    FILE *f = fopen(config_path, "r");
+    if (f) {
+        len = fread(buf, 1, sizeof(buf) - 1, f);
+        fclose(f);
+    }
+    buf[len] = '\0';
+
+    char value_str[16];
+    snprintf(value_str, sizeof(value_str), "%d", seconds);
+
+    char *key = strstr(buf, "\"skipback_seconds\"");
+    if (key) {
+        char *colon = strchr(key, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ') colon++;
+            char *val_end = colon;
+            while (*val_end && *val_end != ',' && *val_end != '\n' && *val_end != '}') val_end++;
+            char newbuf[1024];
+            int prefix_len = (int)(colon - buf);
+            int suffix_start = (int)(val_end - buf);
+            snprintf(newbuf, sizeof(newbuf), "%.*s%s%s",
+                     prefix_len, buf, value_str, buf + suffix_start);
+            f = fopen(config_path, "w");
+            if (f) { fputs(newbuf, f); fclose(f); }
+        }
+    } else if (len > 0) {
+        char *brace = strrchr(buf, '}');
+        if (brace) {
+            char newbuf[1024];
+            int prefix_len = (int)(brace - buf);
+            snprintf(newbuf, sizeof(newbuf), "%.*s,\n  \"skipback_seconds\": %s\n}",
+                     prefix_len, buf, value_str);
+            f = fopen(config_path, "w");
+            if (f) { fputs(newbuf, f); fclose(f); }
+        }
+    }
+
+    return JS_UNDEFINED;
+}
+
+/* skipback_seconds_get() -> int - Read currently configured length from SHM */
+static JSValue js_skipback_seconds_get(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewInt32(ctx, 30);
+    int v = (int)shadow_control->skipback_seconds;
+    if (v <= 0) v = 30;
+    return JS_NewInt32(ctx, v);
+}
+
 
 /* tts_set_speed(speed) - Write to shared memory */
 static JSValue js_tts_set_speed(JSContext *ctx, JSValueConst this_val,
@@ -2440,6 +2510,8 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     /* Register skipback shortcut functions */
     JS_SetPropertyStr(ctx, global_obj, "skipback_shortcut_set", JS_NewCFunction(ctx, js_skipback_shortcut_set, "skipback_shortcut_set", 1));
     JS_SetPropertyStr(ctx, global_obj, "skipback_shortcut_get", JS_NewCFunction(ctx, js_skipback_shortcut_get, "skipback_shortcut_get", 0));
+    JS_SetPropertyStr(ctx, global_obj, "skipback_seconds_set", JS_NewCFunction(ctx, js_skipback_seconds_set, "skipback_seconds_set", 1));
+    JS_SetPropertyStr(ctx, global_obj, "skipback_seconds_get", JS_NewCFunction(ctx, js_skipback_seconds_get, "skipback_seconds_get", 0));
 
     /* Register overlay state functions (sampler/skipback state from shim) */
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_overlay_sequence", JS_NewCFunction(ctx, js_shadow_get_overlay_sequence, "shadow_get_overlay_sequence", 0));

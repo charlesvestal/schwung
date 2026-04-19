@@ -1778,6 +1778,7 @@ var settingsToFeatures = map[string]string{
 	"set_pages_enabled": "set_pages_enabled",
 	"link_audio_routing": "link_audio_enabled",
 	"skipback_shortcut": "skipback_require_volume",
+	"skipback_seconds":  "skipback_seconds",
 }
 
 func (app *App) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -1805,6 +1806,17 @@ func (app *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 				values[schemaKey] = float64(1)
 			} else {
 				values[schemaKey] = float64(0)
+			}
+		} else if schemaKey == "skipback_seconds" {
+			// skipback_seconds (number) — fall back to 30 if missing/invalid
+			if v, ok := ft[featKey]; ok {
+				if n, ok2 := v.(float64); ok2 {
+					values[schemaKey] = n
+				} else {
+					values[schemaKey] = float64(30)
+				}
+			} else {
+				values[schemaKey] = float64(30)
 			}
 		} else if schemaKey == "link_audio_routing" {
 			// link_audio_enabled -> link_audio_routing (bool)
@@ -1870,6 +1882,9 @@ func (app *App) handleConfigValues(w http.ResponseWriter, r *http.Request) {
 		values["screen_reader_debounce"] = float64(app.shm.TTSDebounce())
 		values["set_pages_enabled"] = app.shm.SetPagesEnabled()
 		values["skipback_shortcut"] = float64(boolToInt(app.shm.SkipbackRequireVolume()))
+		if s := app.shm.SkipbackSeconds(); s > 0 {
+			values["skipback_seconds"] = float64(s)
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -1926,6 +1941,15 @@ func (app *App) handleConfigSetSetting(w http.ResponseWriter, r *http.Request) {
 		case "skipback_shortcut":
 			val, _ := strconv.Atoi(value)
 			ft[featKey] = val != 0
+		case "skipback_seconds":
+			val, err := strconv.Atoi(value)
+			if err != nil || val < 30 {
+				val = 30
+			}
+			if val > 300 {
+				val = 300
+			}
+			ft[featKey] = val
 		default:
 			ft[featKey] = value == "true"
 		}
@@ -1935,7 +1959,19 @@ func (app *App) handleConfigSetSetting(w http.ResponseWriter, r *http.Request) {
 		}
 		// Also write to shadow_config.json for live sync with shadow UI.
 		sc := readJSONFile(shadowPath)
-		sc[key] = value == "true"
+		switch item.Type {
+		case "enum":
+			if n, err := strconv.ParseFloat(value, 64); err == nil {
+				sc[key] = n
+			} else {
+				sc[key] = value
+			}
+		case "int":
+			n, _ := strconv.Atoi(value)
+			sc[key] = n
+		default:
+			sc[key] = value == "true"
+		}
 		writeJSONFile(shadowPath, sc)
 	} else {
 		// Shadow config — read, update, write shadow_config.json.
@@ -2033,6 +2069,16 @@ func (app *App) applyShmSetting(key, value string) {
 		app.shm.SetSetPagesEnabled(value == "true")
 	case "skipback_shortcut":
 		app.shm.SetSkipbackRequireVolume(value != "0" && value != "false")
+	case "skipback_seconds":
+		if v, err := strconv.Atoi(value); err == nil {
+			if v < 30 {
+				v = 30
+			}
+			if v > 300 {
+				v = 300
+			}
+			app.shm.SetSkipbackSeconds(uint16(v))
+		}
 	}
 }
 

@@ -110,6 +110,19 @@ static int skipback_saving = 0;
 static pthread_t skipback_writer_thread;
 volatile int skipback_overlay_timeout = 0;
 
+/* Runtime size of the rolling buffer (in samples per channel × frames).
+ * Established by skipback_init(); may be changed by skipback_resize(). */
+static volatile int skipback_seconds_actual = 0;
+static volatile size_t skipback_total_samples = 0;  /* skipback_seconds_actual * SR * channels */
+static pthread_mutex_t skipback_resize_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* Clamp/snap a requested seconds value to a sane range. */
+static int skipback_clamp_seconds(int seconds) {
+    if (seconds <= 0) return SKIPBACK_DEFAULT_SECONDS;
+    if (seconds > SKIPBACK_MAX_SECONDS) return SKIPBACK_MAX_SECONDS;
+    return seconds;
+}
+
 /* ============================================================================
  * Initialization
  * ============================================================================ */
@@ -1037,22 +1050,34 @@ void sampler_on_clock(uint8_t status) {
  * Skipback
  * ============================================================================ */
 
-void skipback_init(void) {
+void skipback_init(int seconds) {
     if (skipback_buffer) return;
-    skipback_buffer = (int16_t *)calloc(SKIPBACK_SAMPLES * SAMPLER_NUM_CHANNELS, sizeof(int16_t));
+    int sec = skipback_clamp_seconds(seconds);
+    size_t samples = (size_t)SAMPLER_SAMPLE_RATE * (size_t)sec * (size_t)SAMPLER_NUM_CHANNELS;
+    skipback_buffer = (int16_t *)calloc(samples, sizeof(int16_t));
     if (skipback_buffer) {
         skipback_write_pos = 0;
         skipback_buffer_full = 0;
-        s_host.log("Skipback: allocated 30s rolling buffer");
+        skipback_seconds_actual = sec;
+        skipback_total_samples = samples;
+        char msg[96];
+        snprintf(msg, sizeof(msg), "Skipback: allocated %ds rolling buffer (%.1f MB)",
+                 sec, (double)(samples * sizeof(int16_t)) / (1024.0 * 1024.0));
+        s_host.log(msg);
     } else {
         s_host.log("Skipback: failed to allocate buffer");
     }
 }
 
+int skipback_get_seconds(void) {
+    return skipback_seconds_actual;
+}
+
 void skipback_capture(int16_t *audio) {
     if (!skipback_buffer || !audio || __atomic_load_n(&skipback_saving, __ATOMIC_ACQUIRE)) return;
 
-    size_t total_samples = SKIPBACK_SAMPLES * SAMPLER_NUM_CHANNELS;
+    size_t total_samples = skipback_total_samples;
+    if (total_samples == 0) return;
     size_t block_samples = SAMPLER_FRAMES_PER_BLOCK * SAMPLER_NUM_CHANNELS;
     size_t wp = skipback_write_pos;
 
@@ -1069,7 +1094,8 @@ void skipback_capture(int16_t *audio) {
 void skipback_amend(const int16_t *audio) {
     if (!skipback_buffer || !audio || __atomic_load_n(&skipback_saving, __ATOMIC_ACQUIRE)) return;
 
-    size_t total_samples = SKIPBACK_SAMPLES * SAMPLER_NUM_CHANNELS;
+    size_t total_samples = skipback_total_samples;
+    if (total_samples == 0) return;
     size_t block_samples = SAMPLER_FRAMES_PER_BLOCK * SAMPLER_NUM_CHANNELS;
     /* Mix into the block that was just written by skipback_capture */
     size_t start = (skipback_write_pos + total_samples - block_samples) % total_samples;
@@ -1080,6 +1106,96 @@ void skipback_amend(const int16_t *audio) {
         if (sum < -32768) sum = -32768;
         skipback_buffer[pos] = (int16_t)sum;
     }
+}
+
+void skipback_resize(int new_seconds) {
+    int sec = skipback_clamp_seconds(new_seconds);
+
+    /* Serialize concurrent resize requests. */
+    pthread_mutex_lock(&skipback_resize_mutex);
+
+    if (!skipback_buffer || sec == skipback_seconds_actual) {
+        pthread_mutex_unlock(&skipback_resize_mutex);
+        return;
+    }
+
+    /* If a save is in progress, defer — caller can retry later. */
+    int expected = 0;
+    if (!__atomic_compare_exchange_n(&skipback_saving, &expected, 1,
+                                     0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        pthread_mutex_unlock(&skipback_resize_mutex);
+        s_host.log("Skipback: resize deferred (save in progress)");
+        return;
+    }
+    /* skipback_saving==1 now gates skipback_capture/amend on the audio thread. */
+
+    size_t old_total = skipback_total_samples;
+    int16_t *old_buf = skipback_buffer;
+    size_t old_wp = skipback_write_pos;
+    int old_full = skipback_buffer_full;
+
+    size_t new_total = (size_t)SAMPLER_SAMPLE_RATE * (size_t)sec * (size_t)SAMPLER_NUM_CHANNELS;
+    int16_t *new_buf = (int16_t *)calloc(new_total, sizeof(int16_t));
+    if (!new_buf) {
+        s_host.log("Skipback: resize allocation failed");
+        __atomic_store_n(&skipback_saving, 0, __ATOMIC_RELEASE);
+        pthread_mutex_unlock(&skipback_resize_mutex);
+        return;
+    }
+
+    /* Determine how many samples of valid audio currently exist (linear). */
+    size_t valid;
+    size_t start_pos;
+    if (old_full) {
+        valid = old_total;
+        start_pos = old_wp;  /* oldest sample */
+    } else {
+        valid = old_wp;
+        start_pos = 0;
+    }
+
+    /* Decide what to keep when shrinking: the most recent N samples. */
+    size_t keep = (valid < new_total) ? valid : new_total;
+    if (keep < valid) {
+        size_t skip = valid - keep;
+        start_pos = (start_pos + skip) % old_total;
+    }
+
+    /* Copy keep samples from old ring (starting at start_pos, wrapping)
+     * into new buffer linearly starting at index 0. */
+    size_t remaining = keep;
+    size_t src = start_pos;
+    size_t dst = 0;
+    while (remaining > 0) {
+        size_t chunk = remaining;
+        if (src + chunk > old_total) chunk = old_total - src;
+        memcpy(new_buf + dst, old_buf + src, chunk * sizeof(int16_t));
+        dst += chunk;
+        src = (src + chunk) % old_total;
+        remaining -= chunk;
+    }
+
+    /* Publish new buffer state. Pointer write is atomic on aligned aarch64,
+     * but the audio thread is gated by skipback_saving anyway. */
+    skipback_buffer = new_buf;
+    skipback_total_samples = new_total;
+    skipback_write_pos = (keep < new_total) ? keep : 0;
+    skipback_buffer_full = (keep == new_total);
+    skipback_seconds_actual = sec;
+    __sync_synchronize();
+
+    free(old_buf);
+
+    char msg[128];
+    snprintf(msg, sizeof(msg),
+             "Skipback: resized to %ds (kept %.1fs, %.1f MB)",
+             sec,
+             (double)keep / ((double)SAMPLER_NUM_CHANNELS * (double)SAMPLER_SAMPLE_RATE),
+             (double)(new_total * sizeof(int16_t)) / (1024.0 * 1024.0));
+    s_host.log(msg);
+
+    __atomic_store_n(&skipback_saving, 0, __ATOMIC_RELEASE);
+    pthread_mutex_unlock(&skipback_resize_mutex);
 }
 
 static void *skipback_writer_func(void *arg) {
@@ -1131,7 +1247,7 @@ static void *skipback_writer_func(void *arg) {
     }
 
     /* Determine how much data to write */
-    size_t total_samples = SKIPBACK_SAMPLES * SAMPLER_NUM_CHANNELS;
+    size_t total_samples = skipback_total_samples;
     size_t wp = skipback_write_pos;
     size_t data_samples;
     size_t start_pos;
@@ -1220,7 +1336,9 @@ void skipback_trigger_save(void) {
         return;
     }
     pthread_detach(t);
-    s_host.log("Skipback: saving last 30 seconds...");
+    char msg[64];
+    snprintf(msg, sizeof(msg), "Skipback: saving last %d seconds...", skipback_seconds_actual);
+    s_host.log(msg);
 }
 
 /* ============================================================================
