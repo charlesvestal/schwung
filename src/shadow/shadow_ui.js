@@ -2638,6 +2638,11 @@ function suspendOvertakeMode() {
     if (overtakeSuspendKeepsJs && overtakeModuleCallbacks && overtakeModuleId) {
         debugLog("suspendOvertakeMode: suspend_keeps_js — parking " + overtakeModuleId + " in background");
 
+        /* Snapshot LED state BEFORE deactivation clears the queues. Modules that
+         * only write LEDs on-change rely on this snapshot to reappear on resume. */
+        const ledNotesSnapshot = Object.assign({}, ledQueueNotes);
+        const ledCCsSnapshot = Object.assign({}, ledQueueCCs);
+
         deactivateLedQueue();
 
         /* Pending init? Call it now — the module expects init() before its first tick. */
@@ -2657,7 +2662,9 @@ function suspendOvertakeMode() {
         suspendedOvertakes[overtakeModuleId] = {
             id: overtakeModuleId,
             path: overtakeModulePath,
-            callbacks: overtakeModuleCallbacks
+            callbacks: overtakeModuleCallbacks,
+            ledNotes: ledNotesSnapshot,
+            ledCCs: ledCCsSnapshot
         };
 
         /* Clear active-module state so a different module can be loaded next. */
@@ -2739,6 +2746,12 @@ function resumeOvertakeModule(moduleId) {
     overtakeInitPending = false;  /* Already ran */
     overtakeExitPending = false;
 
+    /* Re-activate LED queue and restore the snapshot so LEDs the module had set
+     * before suspend reappear. Needed for modules that write LEDs on-change. */
+    activateLedQueue();
+    if (parked.ledNotes) Object.assign(ledQueueNotes, parked.ledNotes);
+    if (parked.ledCCs) Object.assign(ledQueueCCs, parked.ledCCs);
+
     delete suspendedOvertakes[moduleId];
 
     if (typeof shadow_set_suspend_overtake === "function") {
@@ -2750,6 +2763,8 @@ function resumeOvertakeModule(moduleId) {
 
     setView(VIEWS.OVERTAKE_MODULE);
     needsRedraw = true;
+    /* Flush restored LEDs to SHM so they render this frame. */
+    flushLedQueue();
     return true;
 }
 
