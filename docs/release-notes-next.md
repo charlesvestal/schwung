@@ -22,6 +22,9 @@ Covers all commits since `v0.9.6` (Apr 14) through `89c1d749`.
   persistence** across power cycles.
 - **Link peer/channel rename**: `ME` → `Schwung` (breaking change for
   existing Live sets).
+- **Configurable Skipback length**: new "Skipback Len" setting in
+  Audio (30s/1m/2m/3m/4m/5m). Changing the length preserves whatever
+  audio is already in the rolling buffer.
 
 ## Pre-ship test plan
 

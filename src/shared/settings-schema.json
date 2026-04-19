@@ -18,6 +18,8 @@
         "options": ["Native", "Schwung Mix"], "values": [0, 2] },
       { "key": "skipback_shortcut", "label": "Skipback", "type": "enum",
         "options": ["Shift+Capture", "Shift+Vol+Capture"], "values": [0, 1] },
+      { "key": "skipback_seconds", "label": "Skipback Length", "type": "enum",
+        "options": ["30s", "1m", "2m", "3m", "4m", "5m"], "values": [30, 60, 120, 180, 240, 300] },
       { "key": "browser_preview", "label": "Browser Preview", "type": "bool" }
     ]
   },

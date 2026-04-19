@@ -53,9 +53,10 @@ const (
 	offTTSDebounce    = 42 // uint16 (aligned to 2)
 	offSetPages       = 44 // uint8
 	// ... more fields follow but not needed for config
-	offSkipbackReqVol = 52 // uint8
-	offOpenToolCmd    = 56 // uint8 — 0=none, 1=open tool
-	shmControlSize    = 64
+	offSkipbackReqVol  = 52 // uint8
+	offOpenToolCmd     = 56 // uint8 — 0=none, 1=open tool
+	offSkipbackSeconds = 60 // uint16 — 30/60/120/180/240/300
+	shmControlSize     = 64
 )
 
 const shmPath = "/dev/shm/schwung-control"
@@ -146,6 +147,9 @@ func (s *ShmConfig) SetSetPagesEnabled(v bool) { s.setU8(offSetPages, boolU8(v))
 
 func (s *ShmConfig) SkipbackRequireVolume() bool     { return s.getU8(offSkipbackReqVol) != 0 }
 func (s *ShmConfig) SetSkipbackRequireVolume(v bool)  { s.setU8(offSkipbackReqVol, boolU8(v)) }
+
+func (s *ShmConfig) SkipbackSeconds() uint16          { return s.getU16(offSkipbackSeconds) }
+func (s *ShmConfig) SetSkipbackSeconds(v uint16)      { s.setU16(offSkipbackSeconds, v) }
 
 func (s *ShmConfig) SetOpenToolCmd(v uint8) { s.setU8(offOpenToolCmd, v) }
 

@@ -380,11 +380,11 @@ Uses MIDI clock for accurate bar timing, falling back to project tempo if no clo
 
 ### Skipback
 
-Press **Shift+Capture** (default) to save the last 30 seconds of audio to disk.
+Press **Shift+Capture** (default) to save the most recent audio to disk.
 
-Schwung continuously maintains a 30-second rolling buffer of audio. When triggered, it dumps this buffer to a WAV file instantly without interrupting playback.
+Schwung continuously maintains a rolling buffer of audio (30 seconds by default, up to 5 minutes). When triggered, it dumps this buffer to a WAV file instantly without interrupting playback.
 
-The shortcut can be changed in **Global Settings > Audio > Skipback** to **Sh+Vol+Cap** if Shift+Capture conflicts with other uses.
+The shortcut can be changed in **Global Settings > Audio > Skipback** to **Sh+Vol+Cap** if Shift+Capture conflicts with other uses. The buffer length can be set in **Global Settings > Audio > Skipback Len** (30s, 1m, 2m, 3m, 4m, 5m). Changing the length preserves whatever audio is already in the buffer (truncating the oldest samples if shrinking).
 
 Files are saved to `Samples/Schwung/Skipback/YYYY-MM-DD/`. Uses the same source setting as the Quantized Sampler (Resample or Move Input).
 

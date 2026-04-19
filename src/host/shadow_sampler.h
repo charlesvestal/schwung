@@ -82,9 +82,8 @@ typedef struct {
 #define SAMPLER_RING_BUFFER_SIZE (SAMPLER_RING_BUFFER_SAMPLES * SAMPLER_NUM_CHANNELS * sizeof(int16_t))
 #define SAMPLER_RECORDINGS_DIR "/data/UserData/UserLibrary/Samples/Schwung/Resampler"
 
-#define SKIPBACK_SECONDS 30
-#define SKIPBACK_SAMPLES (SAMPLER_SAMPLE_RATE * SKIPBACK_SECONDS)
-#define SKIPBACK_BUFFER_SIZE (SKIPBACK_SAMPLES * SAMPLER_NUM_CHANNELS * sizeof(int16_t))
+#define SKIPBACK_DEFAULT_SECONDS 30
+#define SKIPBACK_MAX_SECONDS 300
 #define SKIPBACK_DIR "/data/UserData/UserLibrary/Samples/Schwung/Skipback"
 #define SKIPBACK_OVERLAY_FRAMES 171
 
@@ -190,11 +189,22 @@ void sampler_capture_audio_from_buffer(const int16_t *src);
 /* Process MIDI clock/start/stop messages */
 void sampler_on_clock(uint8_t status);
 
-/* Skipback: allocate buffer, capture audio, trigger save */
-void skipback_init(void);
+/* Skipback: allocate buffer, capture audio, trigger save.
+ * Pass desired duration in seconds (clamped to [SKIPBACK_DEFAULT_SECONDS, SKIPBACK_MAX_SECONDS]).
+ * Calling skipback_init() multiple times is safe; size is established on first call. */
+void skipback_init(int seconds);
 void skipback_capture(int16_t *audio);
 void skipback_amend(const int16_t *audio);
 void skipback_trigger_save(void);
+
+/* Resize the rolling buffer in place, preserving as much existing audio as
+ * fits in the new size (oldest samples truncated when shrinking). Safe to
+ * call from any non-realtime thread; gates the audio thread via the saving
+ * flag for the duration of the swap. No-op if a save is in progress. */
+void skipback_resize(int new_seconds);
+
+/* Returns the currently allocated skipback duration in seconds (0 if not yet init). */
+int skipback_get_seconds(void);
 
 /* Amend: mix additional audio into the last captured sampler block */
 void sampler_amend_audio(const int16_t *audio);
