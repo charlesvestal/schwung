@@ -101,6 +101,11 @@ Breaking change:
 - [ ] **Routing toggle** (`8030bfda`): Move→Schwung routing off →
       Schwung synth+FX still audible. Back on → Move audio rejoins in
       a few seconds.
+- [ ] **Master FX params** (`0ae817a2`): load a MFX module (e.g.
+      superboom, tapescam), tweak several params, power cycle. Modules
+      and their param values both come back — not just the module. Prior
+      bug: `master_fx_N.json` could be overwritten with `params: {}` if a
+      save fired while the shim was mid-teardown, losing all tweaks.
 
 ### 6 — Regression watch
 
