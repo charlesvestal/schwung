@@ -156,10 +156,24 @@ export function drawMenuList({
     prioritizeSelectedValue = false,
     selectedMinLabelChars = 6
 }) {
+    const v2 = isMenuStyleV2();
+    if (v2 && typeof set_font === 'function') set_font(V2_LIST_FONT);
+
+    const charW = (v2 && typeof text_width === 'function')
+        ? (text_width("M") || DEFAULT_CHAR_WIDTH)
+        : DEFAULT_CHAR_WIDTH;
+
+    const v2LineHeight = v2 ? V2_LIST_LINE_HEIGHT : lineHeight;
+    const v2HighlightOffset = v2 ? V2_LIST_HIGHLIGHT_OFFSET : highlightOffset;
+    const v2HighlightPadding = v2 ? V2_HIGHLIGHT_PADDING : 0;
+    const v2TopYOverride = v2 ? V2_LIST_TOP_Y : null;
+
     const totalItems = items.length;
-    const itemHeight = getSubLabel ? (lineHeight + subLabelOffset) : lineHeight;
-    const itemHighlightHeight = getSubLabel ? (lineHeight + subLabelOffset + 2) : highlightHeight;
-    const resolvedTopY = listArea?.topY ?? topY;
+    const itemHeight = getSubLabel ? (v2LineHeight + subLabelOffset) : v2LineHeight;
+    const itemHighlightHeight = getSubLabel
+        ? (v2LineHeight + subLabelOffset + 2)
+        : (v2 ? v2LineHeight + v2HighlightPadding : highlightHeight);
+    const resolvedTopY = v2TopYOverride !== null ? v2TopYOverride : (listArea?.topY ?? topY);
     const resolvedBottomY = listArea?.bottomY ?? indicatorBottomY;
     const computedMaxVisible = maxVisible > 0
         ? maxVisible
@@ -212,17 +226,17 @@ export function drawMenuList({
             let valueXFloor = valueX;
             if (isSelected && prioritizeSelectedValue) {
                 const minLabelChars = Math.max(0, selectedMinLabelChars | 0);
-                const minLabelWidth = ((labelPrefix.length + minLabelChars) * DEFAULT_CHAR_WIDTH) + labelGap;
+                const minLabelWidth = ((labelPrefix.length + minLabelChars) * charW) + labelGap;
                 valueXFloor = labelX + minLabelWidth;
             }
 
-            resolvedValueX = SCREEN_WIDTH - (fullValue.length * DEFAULT_CHAR_WIDTH) - valuePaddingRight;
+            resolvedValueX = SCREEN_WIDTH - (fullValue.length * charW) - valuePaddingRight;
             if (resolvedValueX < valueXFloor) {
                 resolvedValueX = valueXFloor;
             }
 
             const maxValueWidth = Math.max(0, SCREEN_WIDTH - valuePaddingRight - resolvedValueX);
-            const maxValueChars = Math.floor(maxValueWidth / DEFAULT_CHAR_WIDTH);
+            const maxValueChars = Math.floor(maxValueWidth / charW);
             if (maxValueChars > 0 && fullValue.length > maxValueChars) {
                 if (isSelected && scrollSelectedValue) {
                     displayValue = labelScroller.getScrolledText(fullValue, maxValueChars);
@@ -232,11 +246,11 @@ export function drawMenuList({
             }
 
             const maxLabelWidth = Math.max(0, resolvedValueX - labelX - labelGap);
-            maxLabelChars = Math.floor((maxLabelWidth - (labelPrefix.length * DEFAULT_CHAR_WIDTH)) / DEFAULT_CHAR_WIDTH);
+            maxLabelChars = Math.floor((maxLabelWidth - (labelPrefix.length * charW)) / charW);
         } else {
             /* No value, label can use full width minus prefix and indicator */
             const maxLabelWidth = indicatorX - labelX - labelGap;
-            maxLabelChars = Math.floor((maxLabelWidth - (labelPrefix.length * DEFAULT_CHAR_WIDTH)) / DEFAULT_CHAR_WIDTH);
+            maxLabelChars = Math.floor((maxLabelWidth - (labelPrefix.length * charW)) / charW);
         }
 
         if (maxLabelChars > 0) {
@@ -250,14 +264,14 @@ export function drawMenuList({
         }
 
         if (isSelected) {
-            fill_rect(0, y - highlightOffset, SCREEN_WIDTH, itemHighlightHeight, 1);
+            fill_rect(0, y - v2HighlightOffset, SCREEN_WIDTH, itemHighlightHeight, 1);
             print(labelX, y, `${labelPrefix}${label}`, 0);
             if (displayValue) {
                 /* Show brackets around value when in edit mode */
                 const shownValue = editMode ? `[${displayValue}]` : displayValue;
                 /* When valueAlignRight and editMode, shift left to account for added brackets */
                 const editValueX = (editMode && valueAlignRight)
-                    ? resolvedValueX - (1 * DEFAULT_CHAR_WIDTH)  /* Shift left for right bracket */
+                    ? resolvedValueX - (1 * charW)  /* Shift left for right bracket */
                     : resolvedValueX;
                 print(editValueX, y, shownValue, 0);
             }
@@ -272,7 +286,7 @@ export function drawMenuList({
             const subLabel = getSubLabel(item, i);
             if (subLabel) {
                 const subY = y + subLabelOffset;
-                const subX = labelX + (2 * DEFAULT_CHAR_WIDTH);
+                const subX = labelX + (2 * charW);
                 print(subX, subY, subLabel, isSelected ? 0 : 1);
             }
         }
@@ -284,6 +298,8 @@ export function drawMenuList({
     if (endIdx < totalItems) {
         drawArrowDown(indicatorX, resolvedBottomY - 2);
     }
+
+    if (v2 && typeof set_font === 'function') set_font(V2_DEFAULT_FONT);
 }
 
 export const menuLayoutDefaults = {
