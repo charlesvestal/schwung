@@ -465,6 +465,12 @@ let overtakeModulePath = "";      // Path to loaded overtake module
 let overtakeModuleId = "";         // ID of loaded overtake module (for per-module exit hooks)
 let previousView = VIEWS.SLOTS;   // View to return to after overtake
 let overtakeModuleCallbacks = null; // {init, tick, onMidiMessageInternal} for loaded module
+let overtakeSuspendKeepsJs = false; // Current module opted in to JS-alive suspend
+/* Map of suspended overtake modules keyed by moduleId. Each entry:
+ *   { id, path, uiPath, basePath, capabilities, callbacks, suspendedAt }
+ * Ticks are fired for every entry every frame until the module is resumed
+ * (by re-selecting it in the overtake menu) or fully exited. */
+let suspendedOvertakes = {};
 
 /* Analytics prompt state */
 const ANALYTICS_PROMPTED_PATH = "/data/UserData/schwung/analytics-prompted";
@@ -2601,10 +2607,17 @@ function exitOvertakeMode() {
         debugLog("exitOvertakeMode: SKIPPED file write - id=" + overtakeModuleId + " fn=" + (typeof host_write_file));
     }
 
+    /* If this module is in the suspended map (shouldn't be normally — active
+     * means not-suspended — but exit-from-paused flows can land here), drop it. */
+    if (overtakeModuleId && suspendedOvertakes[overtakeModuleId]) {
+        delete suspendedOvertakes[overtakeModuleId];
+    }
+
     overtakeModuleLoaded = false;
     overtakeModulePath = "";
     overtakeModuleId = "";
     overtakeModuleCallbacks = null;
+    overtakeSuspendKeepsJs = false;
 
     /* Reset encoder accumulation */
     for (let k = 0; k < NUM_KNOBS; k++) overtakeKnobDelta[k] = 0;
@@ -2622,6 +2635,58 @@ function exitOvertakeMode() {
 
 /* Suspend overtake mode — leave background processes running */
 function suspendOvertakeMode() {
+    if (overtakeSuspendKeepsJs && overtakeModuleCallbacks && overtakeModuleId) {
+        debugLog("suspendOvertakeMode: suspend_keeps_js — parking " + overtakeModuleId + " in background");
+
+        deactivateLedQueue();
+
+        /* Pending init? Call it now — the module expects init() before its first tick. */
+        if (overtakeInitPending && overtakeModuleCallbacks.init) {
+            overtakeInitPending = false;
+            ledClearIndex = 0;
+            try { overtakeModuleCallbacks.init(); } catch (e) {
+                debugLog("suspendOvertakeMode: init() threw " + e);
+            }
+        }
+
+        /* Reset encoder accumulation — any pending deltas belong to the pre-suspend UI. */
+        for (let k = 0; k < NUM_KNOBS; k++) overtakeKnobDelta[k] = 0;
+        overtakeJogDelta = 0;
+
+        /* Park this module in the suspended map. Callbacks stay alive via closure. */
+        suspendedOvertakes[overtakeModuleId] = {
+            id: overtakeModuleId,
+            path: overtakeModulePath,
+            callbacks: overtakeModuleCallbacks
+        };
+
+        /* Clear active-module state so a different module can be loaded next. */
+        overtakeModuleLoaded = false;
+        overtakeModuleCallbacks = null;
+        overtakeSuspendKeepsJs = false;
+
+        /* Tell shim to skip exit hook (module stays loaded). */
+        if (typeof shadow_set_suspend_overtake === "function") {
+            shadow_set_suspend_overtake(1);
+        }
+
+        /* Drop overtake mode so shim stops routing events to the (now-parked) module. */
+        if (typeof shadow_set_overtake_mode === "function") {
+            shadow_set_overtake_mode(0);
+        }
+        if (typeof shadow_set_skip_led_clear === "function") {
+            shadow_set_skip_led_clear(0);
+        }
+
+        /* Dismiss shadow UI entirely so Move's native UI returns. */
+        setView(VIEWS.SLOTS);
+        if (typeof shadow_request_exit === "function") {
+            shadow_request_exit();
+        }
+        needsRedraw = true;
+        return;
+    }
+
     debugLog("suspendOvertakeMode: suspending overtake, JACK keeps running");
 
     /* Deactivate LED queue */
@@ -2656,6 +2721,36 @@ function suspendOvertakeMode() {
     /* Begin LED clearing ceremony, then return to Move */
     overtakeExitPending = true;
     needsRedraw = true;
+}
+
+/* Resume a previously suspended overtake module by id.
+ * Called when the user re-selects a suspended module in the overtake menu. */
+function resumeOvertakeModule(moduleId) {
+    const parked = suspendedOvertakes[moduleId];
+    if (!parked || !parked.callbacks) return false;
+    debugLog("resumeOvertakeModule: resuming " + moduleId);
+
+    /* Restore active-module state from the parked entry. */
+    overtakeModuleCallbacks = parked.callbacks;
+    overtakeModulePath = parked.path;
+    overtakeModuleId = parked.id;
+    overtakeModuleLoaded = true;
+    overtakeSuspendKeepsJs = true;
+    overtakeInitPending = false;  /* Already ran */
+    overtakeExitPending = false;
+
+    delete suspendedOvertakes[moduleId];
+
+    if (typeof shadow_set_suspend_overtake === "function") {
+        shadow_set_suspend_overtake(0);
+    }
+    if (typeof shadow_set_overtake_mode === "function") {
+        shadow_set_overtake_mode(2);
+    }
+
+    setView(VIEWS.OVERTAKE_MODULE);
+    needsRedraw = true;
+    return true;
 }
 
 /* Direct exit for interactive tools - skip LED clearing ceremony */
@@ -2799,6 +2894,14 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
     if (!moduleInfo || !moduleInfo.uiPath) {
         debugLog("loadOvertakeModule: no moduleInfo or uiPath");
         return false;
+    }
+
+    /* If this module is already running in the background (suspended), just resume it
+     * instead of reloading. User re-picking a suspended module from the overtake menu
+     * should pop them back into it with state intact. */
+    if (moduleInfo.id && suspendedOvertakes[moduleInfo.id]) {
+        debugLog("loadOvertakeModule: " + moduleInfo.id + " is suspended — resuming");
+        return resumeOvertakeModule(moduleInfo.id);
     }
 
     try {
@@ -2960,6 +3063,7 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
                  " midi:" + !!overtakeModuleCallbacks.onMidiMessageInternal);
 
         overtakeModuleLoaded = true;
+        overtakeSuspendKeepsJs = !!(moduleInfo.capabilities && moduleInfo.capabilities.suspend_keeps_js);
 
         /* Track module load for analytics */
         if (typeof host_track_event === "function" && moduleInfo.id) {
@@ -13379,11 +13483,52 @@ globalThis.init = function() {
 globalThis.shadow_save_state_now = function() {
     autosaveAllSlots();
     saveMasterFxChainConfig();
+    /* Also persist volumes/channels/mute/solo — otherwise the set's
+     * shadow_chain_config.json drifts from slot_N.json across reboots,
+     * e.g. toggling MPE (recv=All) before shutdown would revert on boot. */
+    saveChainConfigToDir(activeSlotStateDir);
     debugLog("shadow_save_state_now: flushed set state before exit");
     return true;
 };
 
 globalThis.tick = function() {
+    /* Background tick for JS-suspended overtake modules.
+     * Each parked module's tick() keeps firing so it can emit MIDI or advance
+     * internal state. Display and LED bindings are swapped for no-ops so the
+     * suspended module can't stomp on whatever view is currently on screen. */
+    {
+        const parkedIds = Object.keys(suspendedOvertakes);
+        if (parkedIds.length > 0) {
+            const _noop = function() {};
+            const _saved = {
+                clear_screen: globalThis.clear_screen,
+                print: globalThis.print,
+                draw_rect: globalThis.draw_rect,
+                fill_rect: globalThis.fill_rect,
+                draw_line: globalThis.draw_line,
+                draw_image: globalThis.draw_image,
+                move_midi_internal_send: globalThis.move_midi_internal_send
+            };
+            for (const k in _saved) globalThis[k] = _noop;
+            try {
+                for (let i = 0; i < parkedIds.length; i++) {
+                    const id = parkedIds[i];
+                    const parked = suspendedOvertakes[id];
+                    if (parked && parked.callbacks && parked.callbacks.tick) {
+                        try {
+                            parked.callbacks.tick();
+                        } catch (e) {
+                            debugLog("suspended overtake (" + id + ") tick() exception: " + e);
+                            delete suspendedOvertakes[id];
+                        }
+                    }
+                }
+            } finally {
+                for (const k in _saved) globalThis[k] = _saved[k];
+            }
+        }
+    }
+
     /* Splash screen on boot */
     if (splashActive) {
         splashTick++;
@@ -13502,12 +13647,11 @@ globalThis.tick = function() {
                 }
             }
             if (flags & SHADOW_UI_FLAG_JUMP_TO_OVERTAKE) {
-                debugLog("OVERTAKE flag detected, view=" + view);
-                /* Toggle overtake mode */
+                const suspendedCount = Object.keys(suspendedOvertakes).length;
+                debugLog("OVERTAKE flag detected, view=" + view + " suspended=" + suspendedCount);
+                const isSuspend = (typeof shadow_get_suspend_overtake === "function") &&
+                                  shadow_get_suspend_overtake() !== 0;
                 if (view === VIEWS.OVERTAKE_MODULE) {
-                    /* Check if shim set suspend_overtake (Shift+Vol+Back) */
-                    const isSuspend = (typeof shadow_get_suspend_overtake === "function") &&
-                                      shadow_get_suspend_overtake() !== 0;
                     if (isSuspend) {
                         debugLog("suspending overtake mode (shim-initiated)");
                         suspendOvertakeMode();
@@ -13516,8 +13660,8 @@ globalThis.tick = function() {
                         exitOvertakeMode();
                     }
                 } else {
-                    /* Enter (or re-enter) overtake menu — always rescan */
-                    /* Enter overtake menu */
+                    /* Enter (or re-enter) overtake menu — suspended entries will
+                     * resume when re-selected (handled in loadOvertakeModule). */
                     debugLog("entering overtake menu");
                     enterOvertakeMenu();
                 }
@@ -13531,6 +13675,7 @@ globalThis.tick = function() {
             debugLog("SAVE_STATE flag detected — shutdown imminent, saving all state");
             autosaveAllSlots();
             saveMasterFxChainConfig();
+            saveChainConfigToDir(activeSlotStateDir);
             if (typeof shadow_clear_ui_flags === "function") {
                 shadow_clear_ui_flags(SHADOW_UI_FLAG_SAVE_STATE);
             }
@@ -14380,6 +14525,21 @@ globalThis.onMidiMessageInternal = function(data) {
                 }
                 return;
             }
+        }
+
+        /* Back button handling for suspend_keeps_js modules — Wave Editor convention.
+         * Back alone: suspend (module parks in background, ticks continue).
+         * Shift+Back: full exit (unload module). */
+        if ((status & 0xF0) === 0xB0 && d1 === MoveBack && d2 > 0 && overtakeSuspendKeepsJs) {
+            if (hostShiftHeld) {
+                debugLog("HOST: Shift+Back → full exit (suspend_keeps_js module)");
+                if (toolOvertakeActive) exitToolOvertake();
+                else exitOvertakeMode();
+            } else {
+                debugLog("HOST: Back → suspend (module parks in background)");
+                suspendOvertakeMode();
+            }
+            return;
         }
 
         /* Accumulate encoder/jog CCs instead of forwarding immediately.
