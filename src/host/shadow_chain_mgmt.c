@@ -2678,6 +2678,50 @@ void shadow_inprocess_handle_param_request(void) {
                 shadow_chain_slots[slot].active = 1;
     shadow_chain_slots[slot].fade.target = 1.0f;
             }
+            if (strcmp(key_copy, "load_file") == 0) {
+                /* JS uses load_file on SET_CHANGED to restore slots from
+                 * per-set state. Unlike synth:module / fx*:module /
+                 * load_patch, load_file does not pass through the
+                 * explicit-activation branches above — so without this
+                 * the slot stays inactive until lazy activation fires on
+                 * a matching MIDI event. If MIDI never hits the slot's
+                 * channel post-load (or the query races the instance
+                 * state), the slot remains silent even though the patch
+                 * and synth are correctly loaded in the DSP. Query the
+                 * instance and activate eagerly to mirror the other load
+                 * paths. */
+                if (shadow_plugin_v2->get_param) {
+                    char buf[64];
+                    int loaded = 0;
+                    int len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
+                        "synth_module", buf, sizeof(buf));
+                    if (len > 0) {
+                        buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
+                        if (buf[0] != '\0') loaded = 1;
+                    }
+                    if (!loaded) {
+                        len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
+                            "fx1_module", buf, sizeof(buf));
+                        if (len > 0) {
+                            buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
+                            if (buf[0] != '\0') loaded = 1;
+                        }
+                    }
+                    if (!loaded) {
+                        len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
+                            "fx2_module", buf, sizeof(buf));
+                        if (len > 0) {
+                            buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
+                            if (buf[0] != '\0') loaded = 1;
+                        }
+                    }
+                    if (loaded) {
+                        shadow_chain_slots[slot].active = 1;
+                        shadow_chain_slots[slot].fade.target = 1.0f;
+                        shadow_ui_state_update_slot(slot);
+                    }
+                }
+            }
             if (strcmp(key_copy, "load_patch") == 0 ||
                 strcmp(key_copy, "patch") == 0) {
                 int idx = atoi(value_copy);
