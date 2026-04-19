@@ -13347,10 +13347,15 @@ globalThis.init = function() {
                 host_write_file(snapshotPath, snapshot);
             }
 
-            /* Track modules loaded in each slot at startup */
+            /* Track modules loaded in each slot at startup.
+             * Filter out non-module-id responses (we've seen the shim
+             * occasionally return a stale float like "0.005000" when the
+             * slot instance isn't fully initialized yet — reject anything
+             * that doesn't look like a module id). */
+            const MODULE_ID_RE = /^[a-z][a-z0-9_-]*$/;
             for (let i = 0; i < 4; i++) {
                 const synthModule = getSlotParam(i, "synth_module");
-                if (synthModule) {
+                if (synthModule && MODULE_ID_RE.test(synthModule)) {
                     host_track_event('module_loaded', '"module_id":"' + synthModule + '","source":"startup","slot":' + i);
                 }
             }
