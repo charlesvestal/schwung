@@ -78,15 +78,23 @@ export const V2_LIST_FONT = '/data/UserData/schwung/host/fonts/tamzen-15.png';
 export const V2_DEFAULT_FONT = '/data/UserData/schwung/host/font.png';
 
 export function drawMenuHeader(title, titleRight = "") {
-    print(2, TITLE_Y, title, 1);
+    const v2 = isMenuStyleV2();
+    if (v2 && typeof set_font === 'function') set_font(V2_HEADER_FONT);
+
+    const titleY = v2 ? V2_TITLE_Y : TITLE_Y;
+    const ruleY = v2 ? V2_TITLE_RULE_Y : TITLE_RULE_Y;
+
+    print(2, titleY, title, 1);
 
     if (titleRight) {
         const rightW = (typeof text_width === 'function') ? text_width(titleRight) : (titleRight.length * DEFAULT_CHAR_WIDTH);
         const rightX = SCREEN_WIDTH - rightW - 2;
-        print(Math.max(2, rightX), TITLE_Y, titleRight, 1);
+        print(Math.max(2, rightX), titleY, titleRight, 1);
     }
 
-    fill_rect(0, TITLE_RULE_Y, SCREEN_WIDTH, 1, 1);
+    fill_rect(0, ruleY, SCREEN_WIDTH, 1, 1);
+
+    if (v2 && typeof set_font === 'function') set_font(V2_DEFAULT_FONT);
 }
 
 export function drawMenuFooter(text, y = FOOTER_TEXT_Y) {
