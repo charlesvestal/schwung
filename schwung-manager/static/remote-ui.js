@@ -277,7 +277,7 @@
     function handleParamUpdate(slot, msg) {
         if (!msg.params) return;
         var s = slots[slot];
-        var count = 0;
+        var compsWithNonPresetKeys = {};
         for (var prefixedKey in msg.params) {
             // Route to correct component based on prefix.
             var parts = splitPrefix(prefixedKey);
@@ -285,16 +285,24 @@
             if (comp) {
                 comp.params[prefixedKey] = msg.params[prefixedKey];
             }
-            count++;
+            // Track which components received param values beyond preset metadata,
+            // so we can clear the preset-change loading state when fresh values arrive.
+            if (parts.key !== "preset" && parts.key !== "preset_count" && parts.key !== "preset_name") {
+                compsWithNonPresetKeys[parts.comp] = true;
+            }
+        }
+        // Clear preset-loading markers for any component that just received real values.
+        for (var ck in compsWithNonPresetKeys) {
+            if (s.components[ck] && s.components[ck].pendingPresetChange) {
+                s.components[ck].pendingPresetChange = false;
+                if (slot === activeSlot) {
+                    var sec = slotContentEl.querySelector('.component-section[data-component="' + ck + '"]');
+                    if (sec) sec.classList.remove('loading-preset');
+                }
+            }
         }
         if (slot === activeSlot) {
-            // Large batch (initial load) — full re-render to ensure all values display.
-            // Small batch (live updates) — incremental update for smoothness.
-            if (count > 4) {
-                renderSlot();
-            } else {
-                updateParamValues(slot, msg.params);
-            }
+            updateParamValues(slot, msg.params);
         }
         // Forward to custom UI iframe if subscribed.
         if (customUISubscribed && customUIIframe && slot === activeSlot) {
@@ -593,7 +601,7 @@
             valPath = describeArc(cx, cy, KNOB_RADIUS, ARC_START_DEG, valSweep);
         }
 
-        var svg = '<svg class="knob-svg" width="' + KNOB_SIZE + '" height="' + KNOB_SIZE + '" viewBox="0 0 ' + KNOB_SIZE + ' ' + KNOB_SIZE + '">';
+        var svg = '<svg class="knob-svg" data-raw-value="' + numVal + '" width="' + KNOB_SIZE + '" height="' + KNOB_SIZE + '" viewBox="0 0 ' + KNOB_SIZE + ' ' + KNOB_SIZE + '">';
         svg += '<path d="' + bgPath + '" fill="none" stroke="#444" stroke-width="4" stroke-linecap="round"/>';
         if (valPath) {
             svg += '<path class="knob-value-arc" d="' + valPath + '" fill="none" stroke="#e8a84c" stroke-width="4" stroke-linecap="round"/>';
@@ -818,6 +826,8 @@
             cancelAnimationFrame(knobAnimations[prefixedKey].raf);
         }
 
+        var valEl = container.querySelector('[data-knob-value="' + prefixedKey + '"]');
+
         var anim = { from: currentVal, to: targetVal, start: performance.now(), duration: KNOB_ANIM_DURATION };
         knobAnimations[prefixedKey] = anim;
 
@@ -909,6 +919,12 @@
         container.className = "preset-browser";
         container.setAttribute("data-preset-browser", compPrefix);
 
+        function markPresetLoading() {
+            compState.pendingPresetChange = true;
+            var sec = slotContentEl.querySelector('.component-section[data-component="' + compPrefix + '"]');
+            if (sec) sec.classList.add('loading-preset');
+        }
+
         var prevBtn = document.createElement("button");
         prevBtn.className = "preset-nav-btn";
         prevBtn.textContent = "\u25C0";
@@ -916,6 +932,7 @@
         prevBtn.onclick = function () {
             if (current > 0) {
                 sendParamValue(activeSlot, compPrefix, level.list_param, current - 1);
+                markPresetLoading();
             }
         };
 
@@ -926,6 +943,7 @@
         nextBtn.onclick = function () {
             if (current < count - 1) {
                 sendParamValue(activeSlot, compPrefix, level.list_param, current + 1);
+                markPresetLoading();
             }
         };
 
@@ -1148,43 +1166,75 @@
                 }
             }
 
-            // Update preset browser if relevant
+            // Update preset browser if relevant — check all navStack levels
+            // since the preset browser may render from an ancestor (e.g. root).
             var presetBrowser = slotContentEl.querySelector('[data-preset-browser="' + parts.comp + '"]');
-            if (presetBrowser) {
-                var level = getCompCurrentLevel(compState);
-                if (level && (parts.key === level.list_param ||
-                              parts.key === level.name_param ||
-                              parts.key === level.count_param)) {
-                    needsFullRender = true;
+            if (presetBrowser && compState.hierarchy && compState.hierarchy.levels) {
+                for (var psi = 0; psi < compState.navStack.length; psi++) {
+                    var psLevel = compState.hierarchy.levels[compState.navStack[psi]];
+                    if (psLevel && (parts.key === psLevel.list_param ||
+                                    parts.key === psLevel.name_param ||
+                                    parts.key === psLevel.count_param)) {
+                        needsFullRender = true;
+                        break;
+                    }
                 }
             }
 
-            // Update mapped knob values
-            var knobMatch = prefixedKey.match(/knob_(\d+)_value$/);
-            if (knobMatch) {
-                var knobValEl = slotContentEl.querySelector('[data-mapped-knob-value="' + knobMatch[1] + '"]');
-                if (knobValEl) knobValEl.textContent = value || "-";
+            // Update mapped knob name — triggers re-render if section not yet in DOM
+            var knobNameMatch = prefixedKey.match(/knob_(\d+)_name$/);
+            if (knobNameMatch) {
+                var knobNameIdx = knobNameMatch[1];
+                var knobNameContainer = slotContentEl.querySelector('[data-mapped-knob="' + knobNameIdx + '"]');
+                if (!knobNameContainer) {
+                    needsFullRender = true;
+                } else {
+                    var knobLabelEl = knobNameContainer.querySelector('.knob-label');
+                    if (knobLabelEl) knobLabelEl.textContent = value;
+                }
             }
 
-            // Update slot settings inline
+            // Update mapped knob value — text and SVG arc
+            var knobMatch = prefixedKey.match(/knob_(\d+)_value$/);
+            if (knobMatch) {
+                var knobValIdx = knobMatch[1];
+                var knobValContainer = slotContentEl.querySelector('[data-mapped-knob="' + knobValIdx + '"]');
+                if (knobValContainer) {
+                    var knobValEl = knobValContainer.querySelector('[data-mapped-knob-value="' + knobValIdx + '"]');
+                    if (knobValEl) knobValEl.textContent = value || "-";
+                    var numVal = parseFloat(value);
+                    if (!isNaN(numVal)) {
+                        var norm;
+                        if (String(value).indexOf("%") >= 0) norm = Math.max(0, Math.min(1, numVal / 100));
+                        else if (numVal >= 0 && numVal <= 1) norm = numVal;
+                        else if (numVal >= 0 && numVal <= 127) norm = numVal / 127;
+                        else norm = 0.5;
+                        var svgEl = knobValContainer.querySelector(".knob-svg");
+                        if (svgEl) updateKnobSVGInPlace(svgEl, norm, { min: 0, max: 1, type: "float" });
+                    }
+                }
+            }
+
+            // Update slot settings / LFO params inline
             var settingRow = slotContentEl.querySelector('[data-setting-row="' + prefixedKey + '"]');
             if (settingRow) {
                 var sInput = settingRow.querySelector('[data-setting-input="' + prefixedKey + '"]');
                 if (sInput) sInput.value = value;
+                var sMeta = findSettingMeta(prefixedKey);
                 var sVal = settingRow.querySelector('[data-setting-value="' + prefixedKey + '"]');
                 if (sVal) {
-                    var sMeta = SLOT_SETTINGS.find(function(s) { return s.key === prefixedKey; });
                     if (sMeta && sMeta.format) sVal.textContent = sMeta.format(value);
-                    else if (sMeta && sMeta.type === "float") sVal.textContent = Math.round(parseFloat(value) * 100) + "%";
-                    else sVal.textContent = value;
+                    else sVal.textContent = value || "—";
                 }
                 var sToggle = settingRow.querySelector('.setting-toggle');
                 if (sToggle) {
                     sToggle.textContent = value === "1" ? "On" : "Off";
                     sToggle.className = "setting-toggle" + (value === "1" ? " active" : "");
                 }
-                var sHidden = settingRow.querySelector('[data-setting-input-hidden="' + prefixedKey + '"]');
-                if (sHidden) sHidden.value = value;
+                // If this is the sync field, the rate_hz/rate_div visibility depends on it.
+                if (/lfo\d:sync$/.test(prefixedKey)) {
+                    needsFullRender = true;
+                }
             }
         }
 
@@ -1197,7 +1247,7 @@
 
     function renderComponentSection(compKey, compState, isCollapsed) {
         var section = document.createElement("div");
-        section.className = "component-section";
+        section.className = "component-section" + (compState.pendingPresetChange ? " loading-preset" : "");
         section.setAttribute("data-component", compKey);
 
         // Header bar
@@ -1246,9 +1296,23 @@
             return section;
         }
 
-        // Preset browser
+        // Preset browser — render from the first navStack level that has one,
+        // so modules that put their preset selector on "root" (auto-nav parent
+        // via children) still show a preset picker at the current level.
+        var presetLevel = null;
         if (level.list_param && level.count_param) {
-            var presetEl = renderPresetBrowser(level, compKey, compState);
+            presetLevel = level;
+        } else if (compState.hierarchy && compState.hierarchy.levels) {
+            for (var pi = 0; pi < compState.navStack.length; pi++) {
+                var ancestor = compState.hierarchy.levels[compState.navStack[pi]];
+                if (ancestor && ancestor.list_param && ancestor.count_param) {
+                    presetLevel = ancestor;
+                    break;
+                }
+            }
+        }
+        if (presetLevel) {
+            var presetEl = renderPresetBrowser(presetLevel, compKey, compState);
             if (presetEl) body.appendChild(presetEl);
         }
 
@@ -1322,22 +1386,14 @@
             }
         }
 
-        if (!hasAnyData && !hasAnyModule) {
-            if (waitingForData || !isConnected) {
-                debugEl.innerHTML = '<div class="loading-state"><span class="loading-spinner"></span> Loading slot...</div>';
-            } else {
-                debugEl.innerHTML = '<p class="text-muted">No module loaded</p>';
-            }
-            return;
-        }
-
-        if (!hasAnyModule) {
-            slotContentEl.innerHTML = '<p class="text-muted">No module loaded</p>';
+        // Before any data arrives, show a loading spinner.
+        if (!hasAnyData && !hasAnyModule && (waitingForData || !isConnected)) {
+            debugEl.innerHTML = '<div class="loading-state"><span class="loading-spinner"></span> Loading slot...</div>';
             return;
         }
 
         // Check for custom web UI on synth component.
-        if (s.customUI && s.customUI.url) {
+        if (s.customUI && s.customUI.url && hasAnyModule) {
             renderCustomUI(s);
             return;
         }
@@ -1359,8 +1415,14 @@
             renderedCount++;
         }
 
+        // If no modules are loaded, note it — but still fall through to render
+        // slot settings (volume, channels, LFOs) since those work independently
+        // of modules and users may want to configure them first.
         if (renderedCount === 0 && !knobSection) {
-            slotContentEl.innerHTML = '<p class="text-muted">No modules loaded in this slot</p>';
+            var emptyNote = document.createElement("p");
+            emptyNote.className = "text-muted";
+            emptyNote.textContent = "No modules loaded in this slot";
+            slotContentEl.appendChild(emptyNote);
         }
 
         // Render slot settings (including LFO) at the bottom
@@ -1430,44 +1492,249 @@
     // Slot Settings section
     // ------------------------------------------------------------------
 
-    var SLOT_SETTINGS = [
-        { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 4, step: 0.05 },
-        { key: "slot:muted", label: "Muted", type: "bool" },
-        { key: "slot:soloed", label: "Soloed", type: "bool" },
-        { key: "slot:receive_channel", label: "Receive Channel", type: "int", min: 0, max: 16, step: 1,
-          format: function(v) { var n = parseInt(v); return n === 0 ? "All" : String(n); } },
-        { key: "slot:forward_channel", label: "Forward Channel", type: "int", min: -2, max: 15, step: 1,
-          format: function(v) {
-              var n = parseInt(v);
-              if (n === -2) return "THRU";
-              if (n === -1) return "Auto";
-              return String(n + 1);
-          }
-        }
+    var LFO_SHAPES = ["Sine", "Tri", "Saw", "Square", "S&H", "Swishy"];
+    var LFO_DIVISIONS = [
+        "16bar", "15bar", "14bar", "13bar", "12bar", "11bar", "10bar", "9bar",
+        "8bar", "7bar", "6bar", "5bar", "4bar", "3bar", "2bar",
+        "1/1", "1/1T", "1/2", "1/2T", "1/4", "1/4T", "1/8", "1/8T",
+        "1/16", "1/16T", "1/32", "1/32T"
     ];
 
+    var SLOT_SETTINGS = [
+        { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 4, step: 0.05,
+          format: function(v) { var n = parseFloat(v); if (isNaN(n)) return "—"; return Math.round(n * 100) + "%"; } },
+        { key: "slot:muted", label: "Muted", type: "bool" },
+        { key: "slot:soloed", label: "Soloed", type: "bool" },
+        { key: "slot:receive_channel", label: "Receive Channel", type: "enum_int",
+          options: (function() {
+              var opts = [{ val: "0", label: "All" }];
+              for (var i = 1; i <= 16; i++) opts.push({ val: String(i), label: String(i) });
+              return opts;
+          })() },
+        { key: "slot:forward_channel", label: "Forward Channel", type: "enum_int",
+          options: (function() {
+              var opts = [
+                  { val: "-2", label: "THRU" },
+                  { val: "-1", label: "Auto" }
+              ];
+              for (var i = 0; i <= 15; i++) opts.push({ val: String(i), label: String(i + 1) });
+              return opts;
+          })() }
+    ];
+
+    function lfoParams(n) {
+        var pfx = "lfo" + n + ":";
+        return [
+            { key: pfx + "shape", label: "Shape", type: "enum_int",
+              options: LFO_SHAPES.map(function(name, i) { return { val: String(i), label: name }; }) },
+            { key: pfx + "polarity", label: "Mode", type: "enum_int",
+              options: [{ val: "0", label: "Unipolar" }, { val: "1", label: "Bipolar" }] },
+            { key: pfx + "sync", label: "Sync", type: "enum_int",
+              options: [{ val: "0", label: "Free" }, { val: "1", label: "Sync" }] },
+            { key: pfx + "rate_hz", label: "Rate", type: "float", min: 0.1, max: 20.0, step: 0.1,
+              format: function(v) { var n = parseFloat(v); if (isNaN(n)) return "—"; return n.toFixed(1) + " Hz"; },
+              showWhen: pfx + "sync", showEqual: "0" },
+            { key: pfx + "rate_div", label: "Rate Div", type: "enum_int",
+              options: LFO_DIVISIONS.map(function(name, i) { return { val: String(i), label: name }; }),
+              showWhen: pfx + "sync", showEqual: "1" },
+            { key: pfx + "depth", label: "Depth", type: "float", min: -1, max: 1, step: 0.01,
+              format: function(v) { var n = parseFloat(v); if (isNaN(n)) return "—"; return Math.round(n * 100) + "%"; } },
+            { key: pfx + "target", label: "Target", type: "lfo_target" },
+            { key: pfx + "target_param", label: "Param", type: "lfo_target_param", targetKey: pfx + "target" }
+        ];
+    }
+
     var LFO_SETTINGS = [
-        { id: "lfo1", label: "LFO 1", enableKey: "lfo1:enabled", params: [
-            { key: "lfo1:shape_name", label: "Shape", type: "readonly" },
-            { key: "lfo1:depth", label: "Depth", type: "float", min: 0, max: 1, step: 0.01 },
-            { key: "lfo1:rate_hz", label: "Rate (Hz)", type: "readonly" },
-            { key: "lfo1:sync", label: "Sync", type: "readonly" },
-            { key: "lfo1:rate_div", label: "Rate (Sync)", type: "readonly" },
-            { key: "lfo1:target", label: "Target", type: "lfo_target" },
-            { key: "lfo1:target_param", label: "Param", type: "lfo_target_param", targetKey: "lfo1:target" }
-        ]},
-        { id: "lfo2", label: "LFO 2", enableKey: "lfo2:enabled", params: [
-            { key: "lfo2:shape_name", label: "Shape", type: "readonly" },
-            { key: "lfo2:depth", label: "Depth", type: "float", min: 0, max: 1, step: 0.01 },
-            { key: "lfo2:rate_hz", label: "Rate (Hz)", type: "readonly" },
-            { key: "lfo2:sync", label: "Sync", type: "readonly" },
-            { key: "lfo2:rate_div", label: "Rate (Sync)", type: "readonly" },
-            { key: "lfo2:target", label: "Target", type: "lfo_target" },
-            { key: "lfo2:target_param", label: "Param", type: "lfo_target_param", targetKey: "lfo2:target" }
-        ]}
+        { id: "lfo1", label: "LFO 1", enableKey: "lfo1:enabled", params: lfoParams(1) },
+        { id: "lfo2", label: "LFO 2", enableKey: "lfo2:enabled", params: lfoParams(2) }
     ];
 
     var lfoCollapsed = { lfo1: true, lfo2: true };
+
+    // findSettingMeta returns the metadata entry for a slot-level or LFO param
+    // key, used by incremental updateParamValues to format and reconcile values.
+    function findSettingMeta(key) {
+        for (var i = 0; i < SLOT_SETTINGS.length; i++) {
+            if (SLOT_SETTINGS[i].key === key) return SLOT_SETTINGS[i];
+        }
+        for (var li = 0; li < LFO_SETTINGS.length; li++) {
+            var ps = LFO_SETTINGS[li].params;
+            for (var pi = 0; pi < ps.length; pi++) {
+                if (ps[pi].key === key) return ps[pi];
+            }
+            if (LFO_SETTINGS[li].enableKey === key) return { type: "bool" };
+        }
+        return null;
+    }
+
+    // readSlotParam reads a slot-level param from synthParams, checking both
+    // prefixed ("synth:key") and unprefixed ("key") forms.
+    function readSlotParam(synthParams, key) {
+        var v = synthParams["synth:" + key];
+        if (v === undefined || v === "") v = synthParams[key];
+        return v === undefined ? "" : v;
+    }
+
+    // renderSettingRow renders a single slot/LFO param row with full editing
+    // support for all the types used in SLOT_SETTINGS and LFO_SETTINGS.
+    // Returns null if the setting is gated by showWhen and should be hidden.
+    function renderSettingRow(setting, synthParams, slotState, extraClass) {
+        if (setting.showWhen) {
+            var guard = readSlotParam(synthParams, setting.showWhen);
+            if (String(guard) !== String(setting.showEqual)) return null;
+        }
+
+        var rawVal = readSlotParam(synthParams, setting.key);
+
+        var row = document.createElement("div");
+        row.className = "param-row" + (extraClass ? " " + extraClass : "");
+        row.setAttribute("data-setting-row", setting.key);
+
+        var label = document.createElement("span");
+        label.className = "param-label";
+        label.textContent = setting.label;
+        row.appendChild(label);
+
+        if (setting.type === "bool") {
+            var btn = document.createElement("button");
+            btn.className = "setting-toggle" + (rawVal === "1" ? " active" : "");
+            btn.textContent = rawVal === "1" ? "On" : "Off";
+            btn.onclick = (function(key) {
+                return function(e) {
+                    if (e) e.stopPropagation();
+                    var isOn = this.classList.contains("active");
+                    send({ type: "set_param", slot: activeSlot, key: key, value: isOn ? "0" : "1" });
+                };
+            })(setting.key);
+            row.appendChild(btn);
+
+        } else if (setting.type === "float") {
+            var input = document.createElement("input");
+            input.type = "range";
+            input.min = setting.min;
+            input.max = setting.max;
+            input.step = setting.step;
+            input.value = (rawVal === "" ? setting.min : rawVal);
+            input.setAttribute("data-setting-input", setting.key);
+            input.oninput = (function(key, fmt) {
+                return function(e) {
+                    send({ type: "set_param", slot: activeSlot, key: key, value: e.target.value });
+                    var disp = e.target.parentElement.querySelector('[data-setting-value]');
+                    if (disp) disp.textContent = fmt ? fmt(e.target.value) : e.target.value;
+                };
+            })(setting.key, setting.format);
+            row.appendChild(input);
+
+            var valDisp = document.createElement("span");
+            valDisp.className = "param-value";
+            valDisp.setAttribute("data-setting-value", setting.key);
+            valDisp.textContent = setting.format ? setting.format(rawVal) : (rawVal || "—");
+            row.appendChild(valDisp);
+
+        } else if (setting.type === "enum_int") {
+            var sel = document.createElement("select");
+            sel.className = "lfo-select";
+            sel.setAttribute("data-setting-input", setting.key);
+            var opts = setting.options || [];
+            var foundMatch = false;
+            for (var oi = 0; oi < opts.length; oi++) {
+                var opt = document.createElement("option");
+                opt.value = opts[oi].val;
+                opt.textContent = opts[oi].label;
+                if (String(rawVal) === String(opts[oi].val)) {
+                    opt.selected = true;
+                    foundMatch = true;
+                }
+                sel.appendChild(opt);
+            }
+            if (!foundMatch && rawVal !== "") {
+                // Keep UI in sync with current server value even if it's not
+                // in our options list (don't lose state on unexpected values).
+                var fallback = document.createElement("option");
+                fallback.value = rawVal;
+                fallback.textContent = rawVal;
+                fallback.selected = true;
+                sel.appendChild(fallback);
+            }
+            sel.onchange = (function(key) {
+                return function(e) {
+                    send({ type: "set_param", slot: activeSlot, key: key, value: e.target.value });
+                    // If toggling sync, re-render to swap rate_hz <-> rate_div
+                    if (/lfo\d:sync$/.test(key)) setTimeout(function() { renderSlot(); }, 50);
+                };
+            })(setting.key);
+            row.appendChild(sel);
+
+        } else if (setting.type === "lfo_target") {
+            var tgtSelect = document.createElement("select");
+            tgtSelect.className = "lfo-select";
+            tgtSelect.setAttribute("data-setting-input", setting.key);
+            var tgtOpts = [{ val: "", label: "(none)" }];
+            for (var ci = 0; ci < COMPONENT_KEYS.length; ci++) {
+                var ck = COMPONENT_KEYS[ci];
+                if (slotState.components[ck] && slotState.components[ck].module) {
+                    tgtOpts.push({ val: ck, label: ck + " (" + slotState.components[ck].module + ")" });
+                }
+            }
+            for (var ti = 0; ti < tgtOpts.length; ti++) {
+                var topt = document.createElement("option");
+                topt.value = tgtOpts[ti].val;
+                topt.textContent = tgtOpts[ti].label;
+                if (tgtOpts[ti].val === rawVal) topt.selected = true;
+                tgtSelect.appendChild(topt);
+            }
+            tgtSelect.onchange = (function(key) {
+                return function(e) {
+                    send({ type: "set_param", slot: activeSlot, key: key, value: e.target.value });
+                    var paramKey = key.replace(":target", ":target_param");
+                    send({ type: "set_param", slot: activeSlot, key: paramKey, value: "" });
+                    setTimeout(function() { renderSlot(); }, 100);
+                };
+            })(setting.key);
+            row.appendChild(tgtSelect);
+
+        } else if (setting.type === "lfo_target_param") {
+            var targetComp = readSlotParam(synthParams, setting.targetKey);
+            var paramSelect = document.createElement("select");
+            paramSelect.className = "lfo-select";
+            paramSelect.setAttribute("data-setting-input", setting.key);
+            var noneOpt = document.createElement("option");
+            noneOpt.value = "";
+            noneOpt.textContent = "(none)";
+            paramSelect.appendChild(noneOpt);
+            if (targetComp && slotState.components[targetComp] && slotState.components[targetComp].chainParams) {
+                var cp = slotState.components[targetComp].chainParams;
+                for (var cpi = 0; cpi < cp.length; cpi++) {
+                    var cpItem = cp[cpi];
+                    if (!cpItem || !cpItem.key) continue;
+                    var cpType = (cpItem.type || "").toLowerCase();
+                    if (cpType === "float" || cpType === "int" || cpType === "" ||
+                        (cpItem.min !== undefined && cpItem.max !== undefined)) {
+                        var pOpt = document.createElement("option");
+                        pOpt.value = cpItem.key;
+                        pOpt.textContent = cpItem.name || cpItem.key;
+                        if (cpItem.key === rawVal) pOpt.selected = true;
+                        paramSelect.appendChild(pOpt);
+                    }
+                }
+            }
+            paramSelect.onchange = (function(key) {
+                return function(e) {
+                    send({ type: "set_param", slot: activeSlot, key: key, value: e.target.value });
+                };
+            })(setting.key);
+            row.appendChild(paramSelect);
+
+        } else {
+            var valSpan = document.createElement("span");
+            valSpan.className = "param-value";
+            valSpan.setAttribute("data-setting-value", setting.key);
+            valSpan.textContent = rawVal || "—";
+            row.appendChild(valSpan);
+        }
+
+        return row;
+    }
 
     function renderSlotSettings(s) {
         var section = document.createElement("div");
@@ -1482,110 +1749,8 @@
 
         for (var i = 0; i < SLOT_SETTINGS.length; i++) {
             var setting = SLOT_SETTINGS[i];
-
-            if (setting.type === "divider") {
-                var divider = document.createElement("div");
-                divider.className = "settings-divider";
-                divider.textContent = setting.label;
-                section.appendChild(divider);
-                continue;
-            }
-
-            var rawVal = synthParams["synth:" + setting.key] || synthParams[setting.key] || "";
-            var row = document.createElement("div");
-            row.className = "param-row";
-            row.setAttribute("data-setting-row", setting.key);
-
-            var label = document.createElement("span");
-            label.className = "param-label";
-            label.textContent = setting.label;
-            row.appendChild(label);
-
-            if (setting.type === "readonly") {
-                var roSpan = document.createElement("span");
-                roSpan.className = "param-value";
-                roSpan.setAttribute("data-setting-value", setting.key);
-                roSpan.textContent = rawVal || "-";
-                row.appendChild(roSpan);
-            } else if (setting.type === "bool") {
-                var btn = document.createElement("button");
-                btn.className = "setting-toggle" + (rawVal === "1" ? " active" : "");
-                btn.textContent = rawVal === "1" ? "On" : "Off";
-                btn.setAttribute("data-setting-key", setting.key);
-                btn.onclick = (function(key, currentVal) {
-                    return function() {
-                        var newVal = currentVal === "1" ? "0" : "1";
-                        send({ type: "set_param", slot: activeSlot, key: key, value: newVal });
-                    };
-                })(setting.key, rawVal);
-                row.appendChild(btn);
-            } else if (setting.type === "float") {
-                var input = document.createElement("input");
-                input.type = "range";
-                input.min = setting.min;
-                input.max = setting.max;
-                input.step = setting.step;
-                input.value = rawVal || setting.min;
-                input.setAttribute("data-setting-input", setting.key);
-                input.oninput = (function(key) {
-                    return function(e) {
-                        send({ type: "set_param", slot: activeSlot, key: key, value: e.target.value });
-                        var disp = e.target.parentElement.querySelector('[data-setting-value]');
-                        if (disp) disp.textContent = Math.round(parseFloat(e.target.value) * 100) + "%";
-                    };
-                })(setting.key);
-                row.appendChild(input);
-
-                var valDisp = document.createElement("span");
-                valDisp.className = "param-value";
-                valDisp.setAttribute("data-setting-value", setting.key);
-                var displayVal = rawVal ? Math.round(parseFloat(rawVal) * 100) + "%" : "100%";
-                valDisp.textContent = displayVal;
-                row.appendChild(valDisp);
-            } else {
-                // Int with optional format
-                var valSpan = document.createElement("span");
-                valSpan.className = "param-value";
-                valSpan.setAttribute("data-setting-value", setting.key);
-                var formatted = setting.format ? setting.format(rawVal) : rawVal;
-                valSpan.textContent = formatted || "-";
-                row.appendChild(valSpan);
-
-                var minusBtn = document.createElement("button");
-                minusBtn.className = "setting-step-btn";
-                minusBtn.textContent = "-";
-                minusBtn.onclick = (function(key, min) {
-                    return function() {
-                        var el = document.querySelector('[data-setting-input-hidden="' + key + '"]');
-                        var cur = el ? parseInt(el.value) : 0;
-                        var newVal = Math.max(min, cur - 1);
-                        send({ type: "set_param", slot: activeSlot, key: key, value: String(newVal) });
-                    };
-                })(setting.key, setting.min);
-
-                var plusBtn = document.createElement("button");
-                plusBtn.className = "setting-step-btn";
-                plusBtn.textContent = "+";
-                plusBtn.onclick = (function(key, max) {
-                    return function() {
-                        var el = document.querySelector('[data-setting-input-hidden="' + key + '"]');
-                        var cur = el ? parseInt(el.value) : 0;
-                        var newVal = Math.min(max, cur + 1);
-                        send({ type: "set_param", slot: activeSlot, key: key, value: String(newVal) });
-                    };
-                })(setting.key, setting.max);
-
-                var hidden = document.createElement("input");
-                hidden.type = "hidden";
-                hidden.value = rawVal || "0";
-                hidden.setAttribute("data-setting-input-hidden", setting.key);
-
-                row.appendChild(minusBtn);
-                row.appendChild(plusBtn);
-                row.appendChild(hidden);
-            }
-
-            section.appendChild(row);
+            var row = renderSettingRow(setting, synthParams, s);
+            if (row) section.appendChild(row);
         }
 
         // Collapsible LFO sections
@@ -1633,120 +1798,20 @@
                 var enableBtn = document.createElement("button");
                 enableBtn.className = "setting-toggle" + (isEnabled ? " active" : "");
                 enableBtn.textContent = isEnabled ? "On" : "Off";
-                enableBtn.onclick = (function(key, cur) {
+                enableBtn.onclick = (function(key) {
                     return function(e) {
                         e.stopPropagation();
-                        send({ type: "set_param", slot: activeSlot, key: key, value: cur === "1" ? "0" : "1" });
+                        var isOn = this.classList.contains("active");
+                        send({ type: "set_param", slot: activeSlot, key: key, value: isOn ? "0" : "1" });
                     };
-                })(lfo.enableKey, enableVal);
+                })(lfo.enableKey);
                 enableRow.appendChild(enableLabel);
                 enableRow.appendChild(enableBtn);
                 section.appendChild(enableRow);
 
-                // LFO param rows
                 for (var pi = 0; pi < lfo.params.length; pi++) {
-                    var lp = lfo.params[pi];
-                    var lpVal = synthParams["synth:" + lp.key] || synthParams[lp.key] || "";
-                    var lpRow = document.createElement("div");
-                    lpRow.className = "param-row lfo-param-row";
-                    lpRow.setAttribute("data-setting-row", lp.key);
-
-                    var lpLabel = document.createElement("span");
-                    lpLabel.className = "param-label";
-                    lpLabel.textContent = lp.label;
-                    lpRow.appendChild(lpLabel);
-
-                    if (lp.type === "float") {
-                        var lpInput = document.createElement("input");
-                        lpInput.type = "range";
-                        lpInput.min = lp.min;
-                        lpInput.max = lp.max;
-                        lpInput.step = lp.step;
-                        lpInput.value = lpVal || lp.min;
-                        lpInput.setAttribute("data-setting-input", lp.key);
-                        lpInput.oninput = (function(key) {
-                            return function(e) {
-                                send({ type: "set_param", slot: activeSlot, key: key, value: e.target.value });
-                                var d = e.target.parentElement.querySelector('[data-setting-value]');
-                                if (d) d.textContent = Math.round(parseFloat(e.target.value) * 100) + "%";
-                            };
-                        })(lp.key);
-                        lpRow.appendChild(lpInput);
-                        var lpDisp = document.createElement("span");
-                        lpDisp.className = "param-value";
-                        lpDisp.setAttribute("data-setting-value", lp.key);
-                        lpDisp.textContent = lpVal ? Math.round(parseFloat(lpVal) * 100) + "%" : "0%";
-                        lpRow.appendChild(lpDisp);
-                    } else if (lp.type === "lfo_target") {
-                        // Dropdown of loaded components
-                        var tgtSelect = document.createElement("select");
-                        tgtSelect.className = "lfo-select";
-                        tgtSelect.setAttribute("data-setting-input", lp.key);
-                        var tgtOpts = [{ val: "", label: "(none)" }];
-                        for (var ci = 0; ci < COMPONENT_KEYS.length; ci++) {
-                            var ck = COMPONENT_KEYS[ci];
-                            if (s.components[ck] && s.components[ck].module) {
-                                tgtOpts.push({ val: ck, label: ck + " (" + s.components[ck].module + ")" });
-                            }
-                        }
-                        for (var oi = 0; oi < tgtOpts.length; oi++) {
-                            var opt = document.createElement("option");
-                            opt.value = tgtOpts[oi].val;
-                            opt.textContent = tgtOpts[oi].label;
-                            if (tgtOpts[oi].val === lpVal) opt.selected = true;
-                            tgtSelect.appendChild(opt);
-                        }
-                        tgtSelect.onchange = (function(key) {
-                            return function(e) {
-                                send({ type: "set_param", slot: activeSlot, key: key, value: e.target.value });
-                                // Clear target_param when target changes
-                                var paramKey = key.replace(":target", ":target_param");
-                                send({ type: "set_param", slot: activeSlot, key: paramKey, value: "" });
-                                setTimeout(function() { renderSlot(); }, 100);
-                            };
-                        })(lp.key);
-                        lpRow.appendChild(tgtSelect);
-                    } else if (lp.type === "lfo_target_param") {
-                        // Dropdown of numeric params from the target component
-                        var targetComp = synthParams["synth:" + lp.targetKey] || synthParams[lp.targetKey] || "";
-                        var paramSelect = document.createElement("select");
-                        paramSelect.className = "lfo-select";
-                        paramSelect.setAttribute("data-setting-input", lp.key);
-                        var noneOpt = document.createElement("option");
-                        noneOpt.value = "";
-                        noneOpt.textContent = "(none)";
-                        paramSelect.appendChild(noneOpt);
-                        if (targetComp && s.components[targetComp] && s.components[targetComp].chainParams) {
-                            var cp = s.components[targetComp].chainParams;
-                            for (var cpi = 0; cpi < cp.length; cpi++) {
-                                var cpItem = cp[cpi];
-                                if (!cpItem || !cpItem.key) continue;
-                                var cpType = (cpItem.type || "").toLowerCase();
-                                // Only numeric params are valid LFO targets
-                                if (cpType === "float" || cpType === "int" || cpType === "" ||
-                                    (cpItem.min !== undefined && cpItem.max !== undefined)) {
-                                    var pOpt = document.createElement("option");
-                                    pOpt.value = cpItem.key;
-                                    pOpt.textContent = cpItem.name || cpItem.key;
-                                    if (cpItem.key === lpVal) pOpt.selected = true;
-                                    paramSelect.appendChild(pOpt);
-                                }
-                            }
-                        }
-                        paramSelect.onchange = (function(key) {
-                            return function(e) {
-                                send({ type: "set_param", slot: activeSlot, key: key, value: e.target.value });
-                            };
-                        })(lp.key);
-                        lpRow.appendChild(paramSelect);
-                    } else {
-                        var lpSpan = document.createElement("span");
-                        lpSpan.className = "param-value";
-                        lpSpan.setAttribute("data-setting-value", lp.key);
-                        lpSpan.textContent = lpVal || "-";
-                        lpRow.appendChild(lpSpan);
-                    }
-                    section.appendChild(lpRow);
+                    var row = renderSettingRow(lfo.params[pi], synthParams, s, "lfo-param-row");
+                    if (row) section.appendChild(row);
                 }
             }
         }
@@ -1970,9 +2035,23 @@
             return section;
         }
 
-        // Preset browser
+        // Preset browser — render from the first navStack level that has one,
+        // so modules that put their preset selector on "root" (auto-nav parent
+        // via children) still show a preset picker at the current level.
+        var presetLevel = null;
         if (level.list_param && level.count_param) {
-            var presetEl = renderPresetBrowser(level, compKey, compState);
+            presetLevel = level;
+        } else if (compState.hierarchy && compState.hierarchy.levels) {
+            for (var pi = 0; pi < compState.navStack.length; pi++) {
+                var ancestor = compState.hierarchy.levels[compState.navStack[pi]];
+                if (ancestor && ancestor.list_param && ancestor.count_param) {
+                    presetLevel = ancestor;
+                    break;
+                }
+            }
+        }
+        if (presetLevel) {
+            var presetEl = renderPresetBrowser(presetLevel, compKey, compState);
             if (presetEl) body.appendChild(presetEl);
         }
 

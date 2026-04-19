@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"net/http"
 	"os"
@@ -182,14 +183,17 @@ func (ru *RemoteUI) Start(ctx context.Context) {
 // Catches any missed values from initial load or state drift. Runs every 5s
 // with batched reads + yields to minimize impact on shadow_ui.js.
 func (ru *RemoteUI) refreshLoop(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
+	// Wait a long gap BETWEEN iterations rather than a fixed ticker interval.
+	// sendInitialParamValues for a large module (Surge ~277 params) can take
+	// 7–14 seconds; a 5s ticker would queue ticks and hammer the shm channel
+	// continuously, starving handleSubscribe / sendHierarchy of access.
+	const interval = 30 * time.Second
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-time.After(interval):
 		}
 
 		shm := ru.ensureShm()
@@ -204,7 +208,6 @@ func (ru *RemoteUI) refreshLoop(ctx context.Context) {
 				if err != nil || modID == "" {
 					continue
 				}
-				// Send refreshed values to all subscribers
 				for _, c := range ru.subscribedClients(slot) {
 					ru.sendInitialParamValues(ctx, c, slot, comp)
 				}
@@ -300,6 +303,11 @@ func (ru *RemoteUI) handleSubscribe(ctx context.Context, c *ruClient, msg wsMess
 	// Send slot info (which components are loaded).
 	ru.sendSlotInfo(ctx, c, slot)
 
+	// Send slot-level settings + mapped knobs FIRST so the top of the UI
+	// populates immediately — otherwise they'd be blocked behind potentially
+	// many seconds of sendInitialParamValues for param-heavy modules.
+	ru.sendSlotSettings(ctx, c, slot)
+
 	// Send hierarchy and chain_params for all loaded components.
 	for _, comp := range componentPrefixes {
 		moduleKey := comp + "_module"
@@ -318,28 +326,27 @@ func (ru *RemoteUI) handleSubscribe(ctx context.Context, c *ruClient, msg wsMess
 		// Fetch initial param values (one-time on subscribe).
 		ru.sendInitialParamValues(ctx, c, slot, comp)
 	}
-
-	// Send slot-level settings and knob mappings.
-	ru.sendSlotSettings(ctx, c, slot)
 }
 
 // slotSettingKeys are the slot-level params to send to the web UI.
 var slotSettingKeys = []string{
 	"slot:volume", "slot:muted", "slot:soloed",
 	"slot:receive_channel", "slot:forward_channel",
-	"lfo1:enabled", "lfo1:shape_name", "lfo1:rate_hz", "lfo1:rate_div",
+	"lfo1:enabled", "lfo1:shape", "lfo1:shape_name", "lfo1:rate_hz", "lfo1:rate_div",
 	"lfo1:sync", "lfo1:depth", "lfo1:polarity", "lfo1:target", "lfo1:target_param",
-	"lfo2:enabled", "lfo2:shape_name", "lfo2:rate_hz", "lfo2:rate_div",
+	"lfo2:enabled", "lfo2:shape", "lfo2:shape_name", "lfo2:rate_hz", "lfo2:rate_div",
 	"lfo2:sync", "lfo2:depth", "lfo2:polarity", "lfo2:target", "lfo2:target_param",
 }
 
 func (ru *RemoteUI) sendSlotSettings(ctx context.Context, c *ruClient, slot uint8) {
 	params := make(map[string]string)
 
-	// Slot settings
+	// Slot settings — use getParamWithRetry so a transient busy shm channel
+	// during subscribe doesn't leave dropdowns (recv/fwd channel etc.) stuck
+	// defaulted to their first option instead of the real device value.
 	for _, key := range slotSettingKeys {
-		val, err := ru.shm.GetParam(slot, key)
-		if err == nil && val != "" {
+		val := ru.getParamWithRetry(slot, key, 3)
+		if val != "" {
 			params[key] = val
 		}
 	}
@@ -348,10 +355,10 @@ func (ru *RemoteUI) sendSlotSettings(ctx context.Context, c *ruClient, slot uint
 	for i := 1; i <= 8; i++ {
 		nameKey := fmt.Sprintf("knob_%d_name", i)
 		valKey := fmt.Sprintf("knob_%d_value", i)
-		if name, err := ru.shm.GetParam(slot, nameKey); err == nil && name != "" {
+		if name := ru.getParamWithRetry(slot, nameKey, 2); name != "" {
 			params[nameKey] = name
 		}
-		if val, err := ru.shm.GetParam(slot, valKey); err == nil && val != "" {
+		if val := ru.getParamWithRetry(slot, valKey, 2); val != "" {
 			params[valKey] = val
 		}
 	}
@@ -361,9 +368,21 @@ func (ru *RemoteUI) sendSlotSettings(ctx context.Context, c *ruClient, slot uint
 	}
 }
 
-// sendInitialParamValues reads chain_params to discover keys, then fetches
-// each value and sends a single param_update. Only called on subscribe.
+// sendInitialParamValues sends all current param values for a component.
+// Prefers the module's "all" key (single shm call returning a JSON object of
+// every value) for speed; falls back to fetching each chain_params entry
+// individually when "all" isn't supported.
 func (ru *RemoteUI) sendInitialParamValues(ctx context.Context, c *ruClient, slot uint8, comp string) {
+	// Fetch hierarchy-level params first so the preset browser (count/name)
+	// populates BEFORE the slower value fetch — otherwise the user sees
+	// "1/0 Preset 0" until all individual params arrive.
+	ru.sendHierarchyParams(ctx, c, slot, comp)
+
+	// Fast path: "all" returns every param in one round-trip.
+	if ru.sendAllParamsAtOnce(ctx, c, slot, comp) {
+		return
+	}
+
 	raw, err := ru.shm.GetParam(slot, comp+":chain_params")
 	if err != nil || raw == "" {
 		return
@@ -406,10 +425,44 @@ func (ru *RemoteUI) sendInitialParamValues(ctx context.Context, c *ruClient, slo
 	}
 
 	ru.logger.Info("initial params: done", "slot", slot, "comp", comp, "fetched", fetched)
+}
 
-	// Also fetch hierarchy-level params (preset count, index, name) that
-	// aren't in chain_params but are needed by the preset browser.
-	ru.sendHierarchyParams(ctx, c, slot, comp)
+// sendAllParamsAtOnce asks the plugin for the "state" key (a JSON object of
+// every param value used for save/restore). If the plugin supports it, sends
+// everything in one param_update. Returns true on success. Modules with many
+// params (e.g. Surge ~280) go from ~10s to one shm round-trip.
+func (ru *RemoteUI) sendAllParamsAtOnce(ctx context.Context, c *ruClient, slot uint8, comp string) bool {
+	raw, err := ru.shm.GetParam(slot, comp+":state")
+	if err != nil || raw == "" || raw[0] != '{' {
+		return false
+	}
+	var values map[string]any
+	if json.Unmarshal([]byte(raw), &values) != nil {
+		return false
+	}
+	params := make(map[string]string, len(values))
+	for k, v := range values {
+		switch tv := v.(type) {
+		case string:
+			params[comp+":"+k] = tv
+		case float64:
+			params[comp+":"+k] = strconv.FormatFloat(tv, 'f', -1, 64)
+		case bool:
+			if tv {
+				params[comp+":"+k] = "1"
+			} else {
+				params[comp+":"+k] = "0"
+			}
+		default:
+			// Skip null/array/object fields
+		}
+	}
+	if len(params) == 0 {
+		return false
+	}
+	ru.writeJSON(ctx, c, wsParamUpdate{Type: "param_update", Slot: slot, Params: params})
+	ru.logger.Info("initial params: sent via 'state'", "slot", slot, "comp", comp, "count", len(params))
+	return true
 }
 
 // sendHierarchyParams extracts preset-browser params (count_param, list_param,
@@ -474,19 +527,19 @@ func (ru *RemoteUI) handleSetParam(ctx context.Context, c *ruClient, msg wsMessa
 		return
 	}
 
-	// After setting a preset-related param, re-read dependent values
-	// (preset name, count) and push to all subscribers so the browser
-	// preset browser updates immediately.
+	// After setting a preset-related param, re-read all component params
+	// plus hierarchy params (preset name/count) and push to all subscribers.
+	// A preset change reshuffles every param inside the module, so we need
+	// to refetch the full set — not just the preset metadata.
 	parts := strings.SplitN(msg.Key, ":", 2)
 	if len(parts) == 2 {
 		comp := parts[0]
 		paramKey := parts[1]
-		// Check if this looks like a preset/list param change
 		if paramKey == "preset" || paramKey == "preset_index" || strings.HasSuffix(paramKey, "_index") {
 			go func() {
 				time.Sleep(50 * time.Millisecond) // Let the plugin process the change
 				for _, sub := range ru.subscribedClients(slot) {
-					ru.sendHierarchyParams(ctx, sub, slot, comp)
+					ru.sendInitialParamValues(ctx, sub, slot, comp)
 				}
 			}()
 		}
