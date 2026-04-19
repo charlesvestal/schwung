@@ -852,6 +852,24 @@ fi
 # (e.g., import from '/data/UserData/move-anything/shared/constants.mjs')
 ssh_root_with_retry "if [ ! -L /data/UserData/move-anything ] && [ ! -d /data/UserData/move-anything ]; then ln -s /data/UserData/schwung /data/UserData/move-anything; fi" || true
 
+# Rebuild schwung-manager before upload so static files are always current
+if [ "$use_local" = true ] && command -v go &>/dev/null && [ -d "$REPO_ROOT/schwung-manager" ]; then
+    echo "Rebuilding schwung-manager..."
+    (cd "$REPO_ROOT/schwung-manager" && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o "$REPO_ROOT/build/schwung-manager" -ldflags="-s -w" .) || echo "Warning: schwung-manager build failed, using existing binary in tarball"
+    if [ -f "$REPO_ROOT/build/schwung-manager" ]; then
+        tar_file="${local_file%.gz}"
+        gunzip -k "$local_file" -f
+        (cd "$REPO_ROOT/build" && \
+            if tar --version 2>/dev/null | grep -q GNU; then
+                tar --format=posix -rf "$tar_file" --transform 's,^\.,schwung,' ./schwung-manager
+            else
+                tar -rf "$tar_file" -s ',^\.,schwung,' ./schwung-manager
+            fi)
+        gzip -f "$tar_file"
+        echo "Updated tarball with fresh schwung-manager"
+    fi
+fi
+
 # Copy and extract main tarball with retry (Windows mDNS can be flaky)
 scp_with_retry "$local_file" "$username@$hostname:./$remote_filename" || fail "Failed to copy tarball to device"
 # Validate tar payload layout before extraction.
@@ -1542,8 +1560,10 @@ if $ssh_ableton "test -x /data/UserData/schwung/schwung-manager" 2>/dev/null; th
     else
         qecho "Starting schwung-manager web UI..."
     fi
-    # Truncate oversized logs (cleanup for pre-0.9.6 installs with runaway logging)
-    ssh_root_with_retry "for f in /data/UserData/schwung/schwung-manager.log /data/UserData/schwung/debug.log; do if [ -f \"\$f\" ]; then sz=\$(wc -c < \"\$f\" 2>/dev/null || echo 0); if [ \"\$sz\" -gt 102400 ]; then tail -c 102400 \"\$f\" > \"\$f.tmp\" && mv \"\$f.tmp\" \"\$f\"; fi; fi; done" || true
+    # Truncate oversized logs (cleanup for pre-0.9.6 installs with runaway logging).
+    # Preserve original owner on the replacement file — the shim writes debug.log
+    # as uid=ableton, so a root-owned replacement would silently fail future appends.
+    ssh_root_with_retry "for f in /data/UserData/schwung/schwung-manager.log /data/UserData/schwung/debug.log; do if [ -f \"\$f\" ]; then sz=\$(wc -c < \"\$f\" 2>/dev/null || echo 0); if [ \"\$sz\" -gt 102400 ]; then own=\$(stat -c '%u:%g' \"\$f\" 2>/dev/null || echo '1000:100'); tail -c 102400 \"\$f\" > \"\$f.tmp\" && chown \"\$own\" \"\$f.tmp\" && mv \"\$f.tmp\" \"\$f\"; fi; fi; done" || true
     ssh_root_with_retry "start-stop-daemon --start --background --make-pidfile --pidfile /data/UserData/schwung/schwung-manager.pid --startas /bin/sh -- -c 'exec /data/UserData/schwung/schwung-manager -port 7700 -roots /data/UserData/ >> /data/UserData/schwung/schwung-manager.log 2>&1'" || true
     qecho "  Web UI available at http://move.local:7700"
 fi

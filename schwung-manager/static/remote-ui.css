@@ -74,6 +74,33 @@
     to { transform: rotate(360deg); }
 }
 
+.component-section.loading-preset .component-body {
+    opacity: 0.45;
+    pointer-events: none;
+    transition: opacity 0.12s;
+}
+.component-section.loading-preset .preset-browser {
+    opacity: 1;
+}
+.component-section.loading-preset .preset-name {
+    position: relative;
+    color: transparent;
+}
+.component-section.loading-preset .preset-name::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 16px;
+    height: 16px;
+    margin-top: -8px;
+    margin-left: -8px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
 /* ---- Tab Bar ---- */
 .remote-ui-tabs {
     display: flex;
