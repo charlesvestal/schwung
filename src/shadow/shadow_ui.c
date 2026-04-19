@@ -1893,6 +1893,75 @@ static JSValue js_long_press_shadow_get(JSContext *ctx, JSValueConst this_val,
     return JS_NewBool(ctx, shadow_control->long_press_shadow != 0);
 }
 
+/* menu_style_v2_set(enabled) - Write to shared memory + persist to features.json */
+static JSValue js_menu_style_v2_set(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_UNDEFINED;
+
+    int enabled = 0;
+    JS_ToInt32(ctx, &enabled, argv[0]);
+    shadow_control->menu_style_v2 = enabled ? 1 : 0;
+
+    /* Persist to features.json */
+    const char *config_path = "/data/UserData/schwung/config/features.json";
+    char buf[512];
+    size_t len = 0;
+    FILE *f = fopen(config_path, "r");
+    if (f) {
+        len = fread(buf, 1, sizeof(buf) - 1, f);
+        fclose(f);
+    }
+    buf[len] = '\0';
+
+    char *key = strstr(buf, "\"menu_style_v2\"");
+    if (key) {
+        char *colon = strchr(key, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ') colon++;
+            char *val_end = colon;
+            while (*val_end && *val_end != ',' && *val_end != '\n' && *val_end != '}') val_end++;
+            char newbuf[512];
+            int prefix_len = (int)(colon - buf);
+            int suffix_start = (int)(val_end - buf);
+            snprintf(newbuf, sizeof(newbuf), "%.*s%s%s",
+                     prefix_len, buf,
+                     enabled ? "true" : "false",
+                     buf + suffix_start);
+            f = fopen(config_path, "w");
+            if (f) { fputs(newbuf, f); fclose(f); }
+        }
+    } else if (len > 0) {
+        char *brace = strrchr(buf, '}');
+        if (brace) {
+            char newbuf[512];
+            int prefix_len = (int)(brace - buf);
+            snprintf(newbuf, sizeof(newbuf), "%.*s,\n  \"menu_style_v2\": %s\n}",
+                     prefix_len, buf, enabled ? "true" : "false");
+            f = fopen(config_path, "w");
+            if (f) { fputs(newbuf, f); fclose(f); }
+        }
+    } else {
+        /* features.json missing or empty - create with just this key */
+        f = fopen(config_path, "w");
+        if (f) {
+            fprintf(f, "{\n  \"menu_style_v2\": %s\n}\n", enabled ? "true" : "false");
+            fclose(f);
+        }
+    }
+
+    return JS_UNDEFINED;
+}
+
+/* menu_style_v2_get() -> bool - Read from shared memory */
+static JSValue js_menu_style_v2_get(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewBool(ctx, 0);
+    return JS_NewBool(ctx, shadow_control->menu_style_v2 != 0);
+}
+
 /* skipback_shortcut_set(require_volume) - Write to shared memory + persist to features.json */
 static JSValue js_skipback_shortcut_set(JSContext *ctx, JSValueConst this_val,
                                         int argc, JSValueConst *argv) {
@@ -2436,6 +2505,10 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "long_press_shadow_set", JS_NewCFunction(ctx, js_long_press_shadow_set, "long_press_shadow_set", 1));
     JS_SetPropertyStr(ctx, global_obj, "long_press_shadow_get", JS_NewCFunction(ctx, js_long_press_shadow_get, "long_press_shadow_get", 0));
     JS_SetPropertyStr(ctx, global_obj, "long_press_shadow_set_shm", JS_NewCFunction(ctx, js_long_press_shadow_set_shm, "long_press_shadow_set_shm", 1));
+
+    /* Register menu style v2 functions */
+    JS_SetPropertyStr(ctx, global_obj, "menu_style_v2_set", JS_NewCFunction(ctx, js_menu_style_v2_set, "menu_style_v2_set", 1));
+    JS_SetPropertyStr(ctx, global_obj, "menu_style_v2_get", JS_NewCFunction(ctx, js_menu_style_v2_get, "menu_style_v2_get", 0));
 
     /* Register skipback shortcut functions */
     JS_SetPropertyStr(ctx, global_obj, "skipback_shortcut_set", JS_NewCFunction(ctx, js_skipback_shortcut_set, "skipback_shortcut_set", 1));

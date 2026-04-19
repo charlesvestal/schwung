@@ -153,6 +153,7 @@ static bool shadow_ui_enabled = true;      /* Shadow UI enabled by default */
 static bool display_mirror_enabled = false; /* Display mirror off by default */
 static bool set_pages_enabled = true;      /* Set pages enabled by default */
 static bool skipback_require_volume = false; /* false=Shift+Capture, true=Shift+Vol+Capture */
+static bool menu_style_v2_enabled = false; /* false=classic menu, true=tamzen v2 menu layout */
 static int shadow_speaker_active = 1;      /* 1=built-in speaker, 0=headphones/line-out (from CC 115) */
 /* Long-press Track/Menu/Step2 shortcuts — always enabled */
 
@@ -910,14 +911,28 @@ static void load_feature_config(void)
         }
     }
 
+    /* Parse menu_style_v2 (defaults to false) */
+    const char *menu_style_v2_key = strstr(config_buf, "\"menu_style_v2\"");
+    if (menu_style_v2_key) {
+        const char *colon = strchr(menu_style_v2_key, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ' || *colon == '\t') colon++;
+            if (strncmp(colon, "true", 4) == 0) {
+                menu_style_v2_enabled = true;
+            }
+        }
+    }
+
     char log_msg[256];
     snprintf(log_msg, sizeof(log_msg),
-             "Features: shadow_ui=%s, link_audio=%s, display_mirror=%s, set_pages=%s, skipback=%s",
+             "Features: shadow_ui=%s, link_audio=%s, display_mirror=%s, set_pages=%s, skipback=%s, menu_style_v2=%s",
              shadow_ui_enabled ? "enabled" : "disabled",
              link_audio.enabled ? "enabled" : "disabled",
              display_mirror_enabled ? "enabled" : "disabled",
              set_pages_enabled ? "enabled" : "disabled",
-             skipback_require_volume ? "Shift+Vol+Capture" : "Shift+Capture");
+             skipback_require_volume ? "Shift+Vol+Capture" : "Shift+Capture",
+             menu_style_v2_enabled ? "enabled" : "disabled");
     shadow_log(log_msg);
 }
 
@@ -3343,6 +3358,7 @@ static void shim_init_subsystems(void)
         shadow_control->skipback_require_volume = skipback_require_volume ? 1 : 0;
         shadow_control->long_press_shadow = 1; /* always enabled */
         shadow_control->speaker_active = 1; /* assume speaker at boot; CC 115 will correct */
+        shadow_control->menu_style_v2 = menu_style_v2_enabled ? 1 : 0;
     }
 
     /* Precompute speaker-EQ biquad coefficients. SR is 44.1 kHz (Move's audio engine). */
