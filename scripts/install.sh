@@ -1015,13 +1015,15 @@ fi
 existing_link_audio=$(get_existing_feature "link_audio_enabled" "$link_audio_val")
 existing_display_mirror=$(get_existing_feature "display_mirror_enabled" "false")
 existing_long_press=$(get_existing_feature "long_press_shadow" "false")
+existing_menu_style_v2=$(get_existing_feature "menu_style_v2" "false")
 
 # Build features.json content
 features_json="{
   \"shadow_ui_enabled\": $shadow_ui_val,
   \"link_audio_enabled\": $existing_link_audio,
   \"display_mirror_enabled\": $existing_display_mirror,
-  \"long_press_shadow\": $existing_long_press
+  \"long_press_shadow\": $existing_long_press,
+  \"menu_style_v2\": $existing_menu_style_v2
 }"
 
 # Write features.json
