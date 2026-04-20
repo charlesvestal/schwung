@@ -1062,7 +1062,10 @@ static void shadow_inprocess_process_midi(void) {
     const uint8_t *out_src = global_mmap_addr + MIDI_OUT_OFFSET;
     int log_on = shadow_midi_out_log_enabled();
     static int midi_log_count = 0;
-    for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
+    /* Hardware MIDI_OUT region is 80 bytes (20 × 4-byte USB-MIDI packets).
+     * Display data starts at offset 80; reading past this and dispatching
+     * to the DSP would feed display bytes as spurious MIDI. */
+    for (int i = 0; i < HW_MIDI_OUT_SIZE; i += 4) {
         const uint8_t *pkt = &out_src[i];
         if (pkt[0] == 0 && pkt[1] == 0 && pkt[2] == 0 && pkt[3] == 0) continue;
 

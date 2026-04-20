@@ -13658,8 +13658,12 @@ globalThis.tick = function() {
                         try {
                             parked.callbacks.tick();
                         } catch (e) {
+                            /* Don't evict on a transient tick() exception — that
+                             * silently drops the parked module and the user's
+                             * next "open" lands on a fresh load with stale DSP
+                             * state. Log and keep it parked; re-entry will
+                             * resume normally. */
                             debugLog("suspended overtake (" + id + ") tick() exception: " + e);
-                            delete suspendedOvertakes[id];
                         }
                     }
                 }
