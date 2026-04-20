@@ -369,7 +369,9 @@ direct_start_move_with_shim() {
   qecho "Init service did not relaunch Move; trying direct launch fallback..."
 
   ssh_root_with_retry "for name in MoveOriginal Move MoveLauncher MoveMessageDisplay shadow_ui schwung link-subscriber display-server schwung-manager; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done" || true
-  ssh_root_with_retry "rm -f /dev/shm/move-shadow-* /dev/shm/move-display-*" || true
+  # Also remove Link Audio ring SHMs — these persist wp/rp across restarts
+  # and can leave one slot stuck at a stale offset after an in-flight upgrade.
+  ssh_root_with_retry "rm -f /dev/shm/move-shadow-* /dev/shm/move-display-* /dev/shm/schwung-link-in /dev/shm/schwung-pub-audio" || true
   ssh_root_with_retry "pids=\$(fuser /dev/ablspi0.0 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids || true; fi" || true
   ssh_root_with_retry "su -s /bin/sh ableton -c 'nohup /opt/move/Move >/tmp/move-shim.log 2>&1 &'" || return 1
 
@@ -810,7 +812,9 @@ if [ "$use_reenable" = true ]; then
   iecho "Restarting Move..."
   ssh_root_with_retry "/etc/init.d/move stop >/dev/null 2>&1 || true" || true
   ssh_root_with_retry "for name in MoveOriginal Move MoveLauncher MoveMessageDisplay shadow_ui schwung link-subscriber display-server schwung-manager; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done" || true
-  ssh_root_with_retry "rm -f /dev/shm/move-shadow-* /dev/shm/move-display-*" || true
+  # Also remove Link Audio ring SHMs — these persist wp/rp across restarts
+  # and can leave one slot stuck at a stale offset after an in-flight upgrade.
+  ssh_root_with_retry "rm -f /dev/shm/move-shadow-* /dev/shm/move-display-* /dev/shm/schwung-link-in /dev/shm/schwung-pub-audio" || true
   ssh_root_with_retry "pids=\$(fuser /dev/ablspi0.0 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids || true; fi" || true
   ssh_ableton_with_retry "sleep 2" || true
 
@@ -1539,8 +1543,10 @@ iecho "Restarting Move..."
 # Use retry wrappers because Windows mDNS resolution can be flaky.
 ssh_root_with_retry "/etc/init.d/move stop >/dev/null 2>&1 || true" || true
 ssh_root_with_retry "for name in MoveOriginal Move MoveLauncher MoveMessageDisplay shadow_ui schwung link-subscriber display-server schwung-manager; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done" || true
-# Clean up stale shared memory so it's recreated with correct permissions
-ssh_root_with_retry "rm -f /dev/shm/move-shadow-* /dev/shm/move-display-*" || true
+# Clean up stale shared memory so it's recreated with correct permissions.
+# Also remove Link Audio ring SHMs — they persist wp/rp across restarts
+# and can leave one slot stuck at a stale offset after an in-flight upgrade.
+ssh_root_with_retry "rm -f /dev/shm/move-shadow-* /dev/shm/move-display-* /dev/shm/schwung-link-in /dev/shm/schwung-pub-audio" || true
 # Free the SPI device if anything still holds it (prevents "communication error" on restart)
 ssh_root_with_retry "pids=\$(fuser /dev/ablspi0.0 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids || true; fi" || true
 ssh_ableton_with_retry "sleep 2" || true

@@ -1659,23 +1659,33 @@ static void shadow_inprocess_mix_from_buffer(void) {
     extern volatile uint32_t shim_la_rebuild_flip_count;
     {
         static int rebuild_prev = -1;
-        if (rebuild_prev < 0) rebuild_prev = rebuild_from_la;
-        if (rebuild_prev != rebuild_from_la) {
+        int prev_in_rebuild = (rebuild_prev == 1);
+        int entering_rebuild = (!prev_in_rebuild && rebuild_from_la);
+        int leaving_rebuild  = (prev_in_rebuild && !rebuild_from_la);
+        /* Only count real 0↔1 flips, not the startup-seed transition from
+         * uninitialized (-1) to current value. */
+        if (rebuild_prev >= 0 && (entering_rebuild || leaving_rebuild)) {
             shim_la_rebuild_flip_count++;
-            if (rebuild_from_la && shadow_in_audio_shm) {
-                /* Acquire/release pair against sidecar write_pos updates
-                 * so ring writes are visible before we publish read_pos. */
-                for (int s = 0; s < LINK_AUDIO_IN_SLOT_COUNT; s++) {
-                    uint32_t wp = __atomic_load_n(
-                        &shadow_in_audio_shm->slots[s].write_pos,
-                        __ATOMIC_ACQUIRE);
-                    __atomic_store_n(
-                        &shadow_in_audio_shm->slots[s].read_pos,
-                        wp, __ATOMIC_RELEASE);
-                }
-            }
-            rebuild_prev = rebuild_from_la;
         }
+        /* Snap read_pos = write_pos on any entry into rebuild mode,
+         * including startup-with-rebuild-already-true. try_attach_in_audio_shm()
+         * drains on attach, but a subscriber-write burst between attach and
+         * the first rebuild frame can leave a stale backlog that lands under
+         * the 70 ms catch-up threshold and leaves one slot permanently
+         * offset — audible as pitch/sample-rate drift on that track. */
+        if (entering_rebuild && shadow_in_audio_shm) {
+            /* Acquire/release pair against sidecar write_pos updates
+             * so ring writes are visible before we publish read_pos. */
+            for (int s = 0; s < LINK_AUDIO_IN_SLOT_COUNT; s++) {
+                uint32_t wp = __atomic_load_n(
+                    &shadow_in_audio_shm->slots[s].write_pos,
+                    __ATOMIC_ACQUIRE);
+                __atomic_store_n(
+                    &shadow_in_audio_shm->slots[s].read_pos,
+                    wp, __ATOMIC_RELEASE);
+            }
+        }
+        rebuild_prev = rebuild_from_la;
     }
 
     /* Mix JACK/RNBO audio at mv level to match Move's attenuated audio.
