@@ -4,8 +4,8 @@
     "name": "Schwung",
     "github_repo": "charlesvestal/schwung",
     "asset_name": "schwung.tar.gz",
-    "latest_version": "0.9.7",
-    "download_url": "https://github.com/charlesvestal/schwung/releases/download/v0.9.7/schwung.tar.gz",
+    "latest_version": "0.9.8",
+    "download_url": "https://github.com/charlesvestal/schwung/releases/download/v0.9.8/schwung.tar.gz",
     "min_host_version": "0.1.0"
   },
   "modules": [
@@ -722,6 +722,17 @@
       "default_branch": "main",
       "asset_name": "twinsampler-module.tar.gz",
       "min_host_version": "0.3.6"
+    },
+    {
+      "id": "tb3po",
+      "name": "TB-3PO",
+      "description": "Generative 303-style acid-bassline sequencer with density/accent/slide probabilities, pattern banks, mutate, and scale-locked notes",
+      "author": "djphazer / Hemisphere Suite (port: charlesvestal)",
+      "component_type": "tool",
+      "github_repo": "charlesvestal/schwung-tb3po",
+      "default_branch": "main",
+      "asset_name": "tb3po-module.tar.gz",
+      "min_host_version": "0.9.8"
     }
   ]
 }

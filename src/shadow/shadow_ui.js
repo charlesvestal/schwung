@@ -2547,6 +2547,26 @@ function scanForOvertakeModules() {
     return result;
 }
 
+/* Invoke a module's optional onUnload() callback before we clear callbacks.
+ * Wrapped in try/catch so a buggy module can't block the exit path. As a safety
+ * net, we also emit "all notes off" on every MIDI channel so any hanging note
+ * from a sequencer module gets released even if the module's onUnload missed it. */
+function invokeModuleOnUnload(callbacks, moduleId) {
+    if (callbacks && typeof callbacks.onUnload === "function") {
+        try {
+            debugLog("invokeModuleOnUnload: " + moduleId);
+            callbacks.onUnload();
+        } catch (e) {
+            debugLog("invokeModuleOnUnload(" + moduleId + ") threw: " + e);
+        }
+    }
+    if (typeof shadow_send_midi_to_dsp === "function") {
+        for (let ch = 0; ch < 16; ch++) {
+            shadow_send_midi_to_dsp([0xB0 | ch, 123, 0]);  // CC 123 = All Notes Off
+        }
+    }
+}
+
 /* Enter the overtake module selection menu */
 function enterOvertakeMenu() {
     /* Reset overtake state — but preserve it if a tool has a hidden session
@@ -2587,6 +2607,9 @@ let overtakeExitPending = false;
 
 /* Exit overtake mode back to Move */
 function exitOvertakeMode() {
+    /* Let the module clean up (send note-offs, etc.) before we tear callbacks down. */
+    invokeModuleOnUnload(overtakeModuleCallbacks, overtakeModuleId);
+
     /* Deactivate LED queue before cleanup - restores original move_midi_internal_send */
     deactivateLedQueue();
 
@@ -2771,6 +2794,9 @@ function resumeOvertakeModule(moduleId) {
 /* Direct exit for interactive tools - skip LED clearing ceremony */
 function exitToolOvertake() {
     debugLog("exitToolOvertake: direct tool exit, nonOvertake=" + toolNonOvertake);
+
+    /* Let the module clean up before teardown. */
+    invokeModuleOnUnload(overtakeModuleCallbacks, overtakeModuleId);
 
     /* Deactivate LED queue (no-op if never activated for non-overtake tools) */
     deactivateLedQueue();
@@ -3065,13 +3091,15 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
         overtakeModuleCallbacks = {
             init: (globalThis.init !== savedInit) ? globalThis.init : null,
             tick: (globalThis.tick !== savedTick) ? globalThis.tick : null,
-            onMidiMessageInternal: (globalThis.onMidiMessageInternal !== savedMidi) ? globalThis.onMidiMessageInternal : null
+            onMidiMessageInternal: (globalThis.onMidiMessageInternal !== savedMidi) ? globalThis.onMidiMessageInternal : null,
+            onUnload: (typeof globalThis.onUnload === "function") ? globalThis.onUnload : null
         };
 
         /* Restore shadow UI's globals */
         globalThis.init = savedInit;
         globalThis.tick = savedTick;
         globalThis.onMidiMessageInternal = savedMidi;
+        if (typeof globalThis.onUnload === "function") delete globalThis.onUnload;
 
         debugLog("loadOvertakeModule: callbacks captured - init:" + !!overtakeModuleCallbacks.init +
                  " tick:" + !!overtakeModuleCallbacks.tick +
