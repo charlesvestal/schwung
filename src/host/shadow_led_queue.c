@@ -163,6 +163,7 @@ void shadow_queue_led(uint8_t cin, uint8_t status, uint8_t data1, uint8_t data2)
 /* Queue all-off for only the real hardware LEDs */
 static void queue_hw_leds_off(void) {
     shadow_init_led_queue();
+    const uint8_t *passthrough = host.passthrough_ccs;
     for (int j = 0; j < (int)HW_NOTE_LED_COUNT; j++) {
         int i = hw_note_leds[j];
         shadow_pending_note_color[i] = 0;
@@ -171,6 +172,8 @@ static void queue_hw_leds_off(void) {
     }
     for (int j = 0; j < (int)HW_CC_LED_COUNT; j++) {
         int i = hw_cc_leds[j];
+        /* Passthrough CCs stay driven by Move firmware — don't force them off. */
+        if (passthrough && i >= 0 && i < 128 && passthrough[i]) continue;
         shadow_pending_cc_color[i] = 0;
         shadow_pending_cc_status[i] = 0xB0;
         shadow_pending_cc_cin[i] = 0x0B;
@@ -181,6 +184,7 @@ static void queue_hw_leds_off(void) {
  * restore snapshotted color, or off if snapshot was -1 */
 static void queue_hw_leds_restore(void) {
     shadow_init_led_queue();
+    const uint8_t *passthrough = host.passthrough_ccs;
     for (int j = 0; j < (int)HW_NOTE_LED_COUNT; j++) {
         int i = hw_note_leds[j];
         if (snapshot_note_color[i] >= 0) {
@@ -195,6 +199,9 @@ static void queue_hw_leds_restore(void) {
     }
     for (int j = 0; j < (int)HW_CC_LED_COUNT; j++) {
         int i = hw_cc_leds[j];
+        /* Passthrough CCs have been driven live by Move during overtake —
+         * hardware already matches firmware. Snapshot is stale; skip restore. */
+        if (passthrough && i >= 0 && i < 128 && passthrough[i]) continue;
         if (snapshot_cc_color[i] >= 0) {
             shadow_pending_cc_color[i] = snapshot_cc_color[i];
             shadow_pending_cc_status[i] = snapshot_cc_status[i];
@@ -294,10 +301,23 @@ void shadow_clear_move_leds_if_overtake(void) {
     if (!cur_overtake) return;
     if (ctrl && ctrl->skip_led_clear) return;
 
+    /* Per-module passthrough list: CCs the module yielded to Move
+     * (capabilities.button_passthrough) keep their firmware LEDs. */
+    const uint8_t *passthrough = host.passthrough_ccs;
+
     for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
         uint8_t cable = (midi_out[i] >> 4) & 0x0F;
         uint8_t type = midi_out[i+1] & 0xF0;
-        if (cable == 0 && (type == 0x90 || type == 0xB0)) {
+        if (cable != 0) continue;
+        if (type == 0x90) {
+            /* Note LEDs (pads) — always cleared; no passthrough list. */
+            midi_out[i] = 0;
+            midi_out[i+1] = 0;
+            midi_out[i+2] = 0;
+            midi_out[i+3] = 0;
+        } else if (type == 0xB0) {
+            uint8_t d1 = midi_out[i+2];
+            if (passthrough && d1 < 128 && passthrough[d1]) continue;
             midi_out[i] = 0;
             midi_out[i+1] = 0;
             midi_out[i+2] = 0;

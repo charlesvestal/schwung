@@ -3507,6 +3507,7 @@ static void shim_init_subsystems(void)
             .midi_out_buf = shadow_buf + MIDI_OUT_OFFSET,
             .shadow_control = &shadow_control,
             .shadow_ui_midi_shm = &shadow_ui_midi_shm,
+            .passthrough_ccs = overtake_passthrough_ccs,
         };
         led_queue_init(&led_host);
     }
