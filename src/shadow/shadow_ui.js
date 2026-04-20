@@ -822,6 +822,8 @@ const GLOBAL_SETTINGS_SECTIONS = [
               options: ["Native", "Schwung Mix"], values: [0, 2] },
             { key: "skipback_shortcut", label: "Skipback", type: "enum",
               options: ["Sh+Cap", "Sh+Vol+Cap"], values: [0, 1] },
+            { key: "skipback_seconds", label: "Skipback Len", type: "enum",
+              options: ["30s", "1m", "2m", "3m", "4m", "5m"], values: [30, 60, 120, 180, 240, 300] },
             { key: "browser_preview", label: "Browser Preview", type: "bool" }
         ]
     },
@@ -9924,6 +9926,11 @@ function getMasterFxSettingValue(setting) {
         const val = typeof skipback_shortcut_get === "function" ? (skipback_shortcut_get() ? 1 : 0) : 0;
         return ["Sh+Cap", "Sh+Vol+Cap"][val] || "Sh+Cap";
     }
+    if (setting.key === "skipback_seconds") {
+        const sec = typeof skipback_seconds_get === "function" ? skipback_seconds_get() : 30;
+        if (sec >= 60) return (sec / 60) + "m";
+        return sec + "s";
+    }
     if (setting.key === "auto_update_check") {
         return autoUpdateCheckEnabled ? "On" : "Off";
     }
@@ -10073,6 +10080,17 @@ function adjustMasterFxSetting(setting, delta) {
         if (idx < 0) idx = 0;
         const nextIdx = (idx + (delta > 0 ? 1 : values.length - 1)) % values.length;
         skipback_shortcut_set(values[nextIdx]);
+        return;
+    }
+
+    if (setting.key === "skipback_seconds") {
+        if (typeof skipback_seconds_set !== "function") return;
+        const current = typeof skipback_seconds_get === "function" ? skipback_seconds_get() : 30;
+        const values = setting.values;
+        let idx = values.indexOf(current);
+        if (idx < 0) idx = 0;
+        const nextIdx = (idx + (delta > 0 ? 1 : values.length - 1)) % values.length;
+        skipback_seconds_set(values[nextIdx]);
         return;
     }
 
