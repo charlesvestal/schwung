@@ -229,7 +229,7 @@ void shadow_clear_move_leds_if_overtake(void) {
      * also cache since Move's LEDs are passing through and we want an up-to-date
      * snapshot for restore on exit. */
     if (!cur_overtake || (ctrl && ctrl->skip_led_clear)) {
-        for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
+        for (int i = 0; i < HW_MIDI_OUT_SIZE; i += 4) {
             uint8_t cable = (midi_out[i] >> 4) & 0x0F;
             uint8_t type = midi_out[i+1] & 0xF0;
             if (cable == 0 && (type == 0x90 || type == 0xB0)) {
@@ -305,7 +305,7 @@ void shadow_clear_move_leds_if_overtake(void) {
      * (capabilities.button_passthrough) keep their firmware LEDs. */
     const uint8_t *passthrough = host.passthrough_ccs;
 
-    for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
+    for (int i = 0; i < HW_MIDI_OUT_SIZE; i += 4) {
         uint8_t cable = (midi_out[i] >> 4) & 0x0F;
         uint8_t type = midi_out[i+1] & 0xF0;
         if (cable != 0) continue;
@@ -337,7 +337,7 @@ void shadow_flush_pending_leds(void) {
 
     /* Count how many slots are already used */
     int used = 0;
-    for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
+    for (int i = 0; i < HW_MIDI_OUT_SIZE; i += 4) {
         if (midi_out[i] != 0 || midi_out[i+1] != 0 ||
             midi_out[i+2] != 0 || midi_out[i+3] != 0) {
             used += 4;
@@ -348,7 +348,7 @@ void shadow_flush_pending_leds(void) {
      * In normal mode stay within safe limit to coexist with Move's packets.
      * During restore, use a higher budget to get LEDs back quickly. */
     int skip_led_clear = ctrl && ctrl->skip_led_clear;
-    int max_bytes = overtake ? MIDI_BUFFER_SIZE : SHADOW_LED_QUEUE_SAFE_BYTES;
+    int max_bytes = overtake ? HW_MIDI_OUT_SIZE : SHADOW_LED_QUEUE_SAFE_BYTES;
     int available = (max_bytes - used) / 4;
     int budget;
     if (overtake) {
@@ -375,7 +375,7 @@ void shadow_flush_pending_leds(void) {
             /* When skip_led_clear is active, first try to replace Move's
              * existing packet for the same note (buffer may be full). */
             if (skip_led_clear) {
-                for (int s = 0; s < MIDI_BUFFER_SIZE; s += 4) {
+                for (int s = 0; s < HW_MIDI_OUT_SIZE; s += 4) {
                     uint8_t type = midi_out[s+1] & 0xF0;
                     if (type == 0x90 && midi_out[s+2] == (uint8_t)i) {
                         slot = s;
@@ -385,14 +385,14 @@ void shadow_flush_pending_leds(void) {
             }
             /* Fall back to finding an empty slot */
             if (slot < 0) {
-                while (hw_offset < MIDI_BUFFER_SIZE) {
+                while (hw_offset < HW_MIDI_OUT_SIZE) {
                     if (midi_out[hw_offset] == 0 && midi_out[hw_offset+1] == 0 &&
                         midi_out[hw_offset+2] == 0 && midi_out[hw_offset+3] == 0) {
                         break;
                     }
                     hw_offset += 4;
                 }
-                if (hw_offset < MIDI_BUFFER_SIZE) {
+                if (hw_offset < HW_MIDI_OUT_SIZE) {
                     slot = hw_offset;
                     hw_offset += 4;
                 }
@@ -417,7 +417,7 @@ void shadow_flush_pending_leds(void) {
         if (shadow_pending_cc_color[i] >= 0) {
             int slot = -1;
             if (skip_led_clear) {
-                for (int s = 0; s < MIDI_BUFFER_SIZE; s += 4) {
+                for (int s = 0; s < HW_MIDI_OUT_SIZE; s += 4) {
                     uint8_t type = midi_out[s+1] & 0xF0;
                     if (type == 0xB0 && midi_out[s+2] == (uint8_t)i) {
                         slot = s;
@@ -426,14 +426,14 @@ void shadow_flush_pending_leds(void) {
                 }
             }
             if (slot < 0) {
-                while (hw_offset < MIDI_BUFFER_SIZE) {
+                while (hw_offset < HW_MIDI_OUT_SIZE) {
                     if (midi_out[hw_offset] == 0 && midi_out[hw_offset+1] == 0 &&
                         midi_out[hw_offset+2] == 0 && midi_out[hw_offset+3] == 0) {
                         break;
                     }
                     hw_offset += 4;
                 }
-                if (hw_offset < MIDI_BUFFER_SIZE) {
+                if (hw_offset < HW_MIDI_OUT_SIZE) {
                     slot = hw_offset;
                     hw_offset += 4;
                 }
@@ -454,14 +454,14 @@ void shadow_flush_pending_leds(void) {
 
     /* Flush raw packet queue (sysex, etc.) */
     while (raw_queue_tail != raw_queue_head && sent < budget) {
-        while (hw_offset < MIDI_BUFFER_SIZE) {
+        while (hw_offset < HW_MIDI_OUT_SIZE) {
             if (midi_out[hw_offset] == 0 && midi_out[hw_offset+1] == 0 &&
                 midi_out[hw_offset+2] == 0 && midi_out[hw_offset+3] == 0) {
                 break;
             }
             hw_offset += 4;
         }
-        if (hw_offset >= MIDI_BUFFER_SIZE) break;
+        if (hw_offset >= HW_MIDI_OUT_SIZE) break;
 
         midi_out[hw_offset]   = raw_queue[raw_queue_tail][0];
         midi_out[hw_offset+1] = raw_queue[raw_queue_tail][1];
@@ -577,7 +577,7 @@ void shadow_flush_pending_input_leds(void) {
         if (shadow_input_pending_note_color[i] >= 0) {
             /* Find empty slot in UI MIDI buffer */
             int found = 0;
-            for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
+            for (int slot = 0; slot < HW_MIDI_OUT_SIZE; slot += 4) {
                 if (ui_midi[slot] == 0) {
                     ui_midi[slot] = shadow_input_pending_note_cin[i];
                     ui_midi[slot + 1] = shadow_input_pending_note_status[i];
@@ -768,7 +768,7 @@ int led_queue_jack_sysex_restore_pending(void) {
  * `from` in midi_out. Returns the byte offset of the block, or -1 if not found. */
 static int find_contiguous_empty_block(const uint8_t *midi_out, int from, int count) {
     int need = count * 4;  /* bytes needed */
-    for (int s = from; s <= MIDI_BUFFER_SIZE - need; s += 4) {
+    for (int s = from; s <= HW_MIDI_OUT_SIZE - need; s += 4) {
         int ok = 1;
         for (int p = 0; p < count; p++) {
             int pos = s + p * 4;
@@ -798,7 +798,7 @@ int led_queue_flush_jack_sysex_restore(int max_leds) {
 
     /* Clear any cable-0 sysex packets already in the buffer. */
     int cleared = 0;
-    for (int s = 0; s < MIDI_BUFFER_SIZE; s += 4) {
+    for (int s = 0; s < HW_MIDI_OUT_SIZE; s += 4) {
         uint8_t cin_type = midi_out[s] & 0x0F;
         uint8_t cable = (midi_out[s] >> 4) & 0x0F;
         if (cable == 0 && cin_type >= 0x04 && cin_type <= 0x07) {

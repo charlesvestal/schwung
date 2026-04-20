@@ -367,14 +367,15 @@ void shadow_inject_ui_midi_out(void)
         }
 
         /* All other messages: copy directly to mailbox */
-        while (hw_offset < MIDI_BUFFER_SIZE) {
+        /* MIDI_OUT region is 80 bytes; display starts at 80. Don't write past. */
+        while (hw_offset < HW_MIDI_OUT_SIZE) {
             if (midi_out[hw_offset] == 0 && midi_out[hw_offset+1] == 0 &&
                 midi_out[hw_offset+2] == 0 && midi_out[hw_offset+3] == 0) {
                 break;
             }
             hw_offset += 4;
         }
-        if (hw_offset >= MIDI_BUFFER_SIZE) break;  /* Buffer full */
+        if (hw_offset >= HW_MIDI_OUT_SIZE) break;  /* Buffer full */
 
         memcpy(&midi_out[hw_offset], &local_buf[i], 4);
         hw_offset += 4;

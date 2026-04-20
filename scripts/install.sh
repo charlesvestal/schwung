@@ -1561,9 +1561,12 @@ if $ssh_ableton "test -x /data/UserData/schwung/schwung-manager" 2>/dev/null; th
         qecho "Starting schwung-manager web UI..."
     fi
     # Truncate oversized logs (cleanup for pre-0.9.6 installs with runaway logging).
-    # Preserve original owner on the replacement file — the shim writes debug.log
-    # as uid=ableton, so a root-owned replacement would silently fail future appends.
-    ssh_root_with_retry "for f in /data/UserData/schwung/schwung-manager.log /data/UserData/schwung/debug.log; do if [ -f \"\$f\" ]; then sz=\$(wc -c < \"\$f\" 2>/dev/null || echo 0); if [ \"\$sz\" -gt 102400 ]; then own=\$(stat -c '%u:%g' \"\$f\" 2>/dev/null || echo '1000:100'); tail -c 102400 \"\$f\" > \"\$f.tmp\" && chown \"\$own\" \"\$f.tmp\" && mv \"\$f.tmp\" \"\$f\"; fi; fi; done" || true
+    # Must be in-place (same inode) — the shim holds an append-mode FILE* to
+    # debug.log and we just restarted MoveOriginal, so it'd be writing to a
+    # fresh inode. A `mv` replaces the inode and orphans the shim's FD
+    # (writes silently disappear). Use `dd conv=notrunc` to overwrite in place
+    # then truncate to keep the same inode intact.
+    ssh_root_with_retry "for f in /data/UserData/schwung/schwung-manager.log /data/UserData/schwung/debug.log; do if [ -f \"\$f\" ]; then sz=\$(wc -c < \"\$f\" 2>/dev/null || echo 0); if [ \"\$sz\" -gt 102400 ]; then tail -c 102400 \"\$f\" > \"\$f.keep\" && dd if=\"\$f.keep\" of=\"\$f\" conv=notrunc bs=102400 count=1 2>/dev/null && kept_sz=\$(wc -c < \"\$f.keep\") && truncate -s \"\$kept_sz\" \"\$f\" && rm -f \"\$f.keep\"; fi; fi; done" || true
     ssh_root_with_retry "start-stop-daemon --start --background --make-pidfile --pidfile /data/UserData/schwung/schwung-manager.pid --startas /bin/sh -- -c 'exec /data/UserData/schwung/schwung-manager -port 7700 -roots /data/UserData/ >> /data/UserData/schwung/schwung-manager.log 2>&1'" || true
     qecho "  Web UI available at http://move.local:7700"
 fi
