@@ -4328,14 +4328,17 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
 
     /* Native Move display is visible either when shadow mode is off, when
      * plain volume-touch temporarily hides shadow UI to reveal Move overlays,
-     * or when a PIN challenge is active (so the PIN scanner can read the PIN). */
+     * or when a PIN challenge is active (so the PIN scanner can read the PIN).
+     * shadow_swap_display() hands the frame back to Move on plain volume
+     * touch in overtake too, so we scan the volume bar regardless of
+     * overtake_mode — otherwise audio scales to whatever volume was active
+     * when overtake engaged. */
     int pin_challenge = shadow_control && shadow_control->pin_challenge_active == 1;
     int native_display_visible = (!shadow_display_mode) ||
                                  (shadow_display_mode &&
                                   shadow_volume_knob_touched &&
                                   !shadow_shift_held &&
-                                  shadow_control &&
-                                  !shadow_control->overtake_mode) ||
+                                  shadow_control) ||
                                  pin_challenge;
 
     if (global_mmap_addr && native_display_visible) {
