@@ -21,6 +21,7 @@
 
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <atomic>
@@ -252,6 +253,12 @@ int main()
     uint64_t last_tx_count = 0;
     int tick = 0;
 
+    /* Tempo override protocol: shim/UI writes desired BPM to this file on set
+     * change; we pick it up here and propose it to the session — but only when
+     * numPeers() == 1 (Move alone), so we never clobber collaboration. */
+    const char *DESIRED_TEMPO_PATH = "/data/UserData/schwung/desired-tempo";
+    time_t last_desired_mtime = 0;
+
     while (g_running) {
         /* Use a shorter sleep to poll the publisher shm more frequently.
          * The shim writes at ~344 Hz (every ~2.9ms). We poll at ~100 Hz
@@ -259,6 +266,37 @@ int main()
          * The SDK handles the 128→125 repacketing internally. */
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         tick++;
+
+        /* Poll for tempo-override requests (set-change on device). */
+        {
+            struct stat st;
+            if (stat(DESIRED_TEMPO_PATH, &st) == 0 && st.st_mtime != last_desired_mtime) {
+                last_desired_mtime = st.st_mtime;
+                FILE *fp = fopen(DESIRED_TEMPO_PATH, "r");
+                if (fp) {
+                    double bpm = 0.0;
+                    if (fscanf(fp, "%lf", &bpm) == 1 && bpm >= 20.0 && bpm <= 999.0) {
+                        size_t peers = link.numPeers();
+                        if (peers <= 1) {
+                            /* peers==0: alone, or Move hasn't joined yet —
+                             * our proposal will be the session tempo.
+                             * peers==1: just Move — force the set's tempo. */
+                            auto state = link.captureAppSessionState();
+                            state.setTempo(bpm, link.clock().micros());
+                            link.commitAppSessionState(state);
+                            LOG_INFO(LINK_SUB_LOG_SOURCE,
+                                     "tempo override applied: %.2f BPM (peers=%zu)",
+                                     bpm, peers);
+                        } else {
+                            LOG_INFO(LINK_SUB_LOG_SOURCE,
+                                     "tempo override skipped: %.2f BPM requested, peers=%zu",
+                                     bpm, peers);
+                        }
+                    }
+                    fclose(fp);
+                }
+            }
+        }
 
         /* Create sources when channels change (every ~500ms worth of ticks) */
         if (g_channels_changed.exchange(false)) {
