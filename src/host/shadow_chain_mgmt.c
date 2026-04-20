@@ -125,6 +125,50 @@ void shadow_midi_out_logf(const char *fmt, ...) {
 }
 
 /* ============================================================================
+ * Patch channel application
+ * ============================================================================ */
+
+/* Apply the patch's saved receive/forward channels to the slot.
+ * The chain plugin returns an empty string (len==0) for a field that wasn't
+ * present in the patch file, so we only override when the plugin reports a
+ * value — this preserves the shim's shadow_chain_config.json for legacy
+ * patches that lacked channel info.
+ *
+ * receive_channel encoding: 0 = All, 1-16 = specific channel.
+ * forward_channel encoding: -2 = passthrough (THRU), -1 = auto, 0-15 = channel. */
+static void shadow_apply_patch_channels(int slot) {
+    if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) return;
+    if (!shadow_plugin_v2 || !shadow_plugin_v2->get_param) return;
+    if (!shadow_chain_slots[slot].instance) return;
+
+    char ch_buf[16];
+    int len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
+        "patch:receive_channel", ch_buf, sizeof(ch_buf));
+    if (len > 0) {
+        ch_buf[len < (int)sizeof(ch_buf) ? len : (int)sizeof(ch_buf) - 1] = '\0';
+        int recv_ch = atoi(ch_buf);
+        if (recv_ch == 0) {
+            shadow_chain_slots[slot].channel = -1;  /* All */
+        } else if (recv_ch >= 1 && recv_ch <= 16) {
+            shadow_chain_slots[slot].channel = recv_ch - 1;
+        }
+    }
+
+    len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
+        "patch:forward_channel", ch_buf, sizeof(ch_buf));
+    if (len > 0) {
+        ch_buf[len < (int)sizeof(ch_buf) ? len : (int)sizeof(ch_buf) - 1] = '\0';
+        int fwd_ch = atoi(ch_buf);
+        /* Preserve the pre-existing (fwd>0)?fwd-1:fwd mapping used by the
+         * other load paths; value range is -2..16 to accept both 0-indexed
+         * internal values and legacy 1-indexed saves. */
+        if (fwd_ch >= -2 && fwd_ch <= 16) {
+            shadow_chain_slots[slot].forward_channel = (fwd_ch > 0) ? fwd_ch - 1 : fwd_ch;
+        }
+    }
+}
+
+/* ============================================================================
  * Capture Rules
  * ============================================================================ */
 
@@ -1026,28 +1070,7 @@ int shadow_inprocess_load_chain(void) {
                         }
                     }
                 }
-                if (shadow_plugin_v2->get_param) {
-                    char ch_buf[16];
-                    int len;
-                    len = shadow_plugin_v2->get_param(shadow_chain_slots[i].instance,
-                        "patch:receive_channel", ch_buf, sizeof(ch_buf));
-                    if (len > 0) {
-                        ch_buf[len < (int)sizeof(ch_buf) ? len : (int)sizeof(ch_buf) - 1] = '\0';
-                        int recv_ch = atoi(ch_buf);
-                        if (recv_ch != 0) {
-                            shadow_chain_slots[i].channel = (recv_ch >= 1 && recv_ch <= 16) ? recv_ch - 1 : -1;
-                        }
-                    }
-                    len = shadow_plugin_v2->get_param(shadow_chain_slots[i].instance,
-                        "patch:forward_channel", ch_buf, sizeof(ch_buf));
-                    if (len > 0) {
-                        ch_buf[len < (int)sizeof(ch_buf) ? len : (int)sizeof(ch_buf) - 1] = '\0';
-                        int fwd_ch = atoi(ch_buf);
-                        if (fwd_ch != 0) {
-                            shadow_chain_slots[i].forward_channel = (fwd_ch > 0) ? fwd_ch - 1 : fwd_ch;
-                        }
-                    }
-                }
+                shadow_apply_patch_channels(i);
                 {
                     char msg[256];
                     snprintf(msg, sizeof(msg), "Shadow inprocess: slot %d loaded from autosave", i);
@@ -1085,28 +1108,7 @@ int shadow_inprocess_load_chain(void) {
                     }
                 }
             }
-            if (shadow_plugin_v2->get_param) {
-                char ch_buf[16];
-                int len;
-                len = shadow_plugin_v2->get_param(shadow_chain_slots[i].instance,
-                    "patch:receive_channel", ch_buf, sizeof(ch_buf));
-                if (len > 0) {
-                    ch_buf[len < (int)sizeof(ch_buf) ? len : (int)sizeof(ch_buf) - 1] = '\0';
-                    int recv_ch = atoi(ch_buf);
-                    if (recv_ch != 0) {
-                        shadow_chain_slots[i].channel = (recv_ch >= 1 && recv_ch <= 16) ? recv_ch - 1 : -1;
-                    }
-                }
-                len = shadow_plugin_v2->get_param(shadow_chain_slots[i].instance,
-                    "patch:forward_channel", ch_buf, sizeof(ch_buf));
-                if (len > 0) {
-                    ch_buf[len < (int)sizeof(ch_buf) ? len : (int)sizeof(ch_buf) - 1] = '\0';
-                    int fwd_ch = atoi(ch_buf);
-                    if (fwd_ch != 0) {
-                        shadow_chain_slots[i].forward_channel = (fwd_ch > 0) ? fwd_ch - 1 : fwd_ch;
-                    }
-                }
-            }
+            shadow_apply_patch_channels(i);
         } else {
             char msg[128];
             snprintf(msg, sizeof(msg), "Shadow inprocess: patch not found: %s",
@@ -1437,29 +1439,7 @@ void shadow_inprocess_handle_ui_request(void) {
 
     shadow_slot_load_capture(slot, patch_index);
 
-    /* Apply channel settings saved in patch */
-    if (shadow_plugin_v2->get_param) {
-        char ch_buf[16];
-        int len;
-        len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
-            "patch:receive_channel", ch_buf, sizeof(ch_buf));
-        if (len > 0) {
-            ch_buf[len < (int)sizeof(ch_buf) ? len : (int)sizeof(ch_buf) - 1] = '\0';
-            int recv_ch = atoi(ch_buf);
-            if (recv_ch != 0) {
-                shadow_chain_slots[slot].channel = (recv_ch >= 1 && recv_ch <= 16) ? recv_ch - 1 : -1;
-            }
-        }
-        len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
-            "patch:forward_channel", ch_buf, sizeof(ch_buf));
-        if (len > 0) {
-            ch_buf[len < (int)sizeof(ch_buf) ? len : (int)sizeof(ch_buf) - 1] = '\0';
-            int fwd_ch = atoi(ch_buf);
-            if (fwd_ch != 0) {
-                shadow_chain_slots[slot].forward_channel = (fwd_ch > 0) ? fwd_ch - 1 : fwd_ch;
-            }
-        }
-    }
+    shadow_apply_patch_channels(slot);
 
     shadow_ui_state_update_slot(slot);
 
@@ -1543,29 +1523,7 @@ void shadow_process_fade_completions(void) {
 
             shadow_slot_load_capture(slot, patch_index);
 
-            /* Apply channel settings saved in patch */
-            if (shadow_plugin_v2->get_param) {
-                char ch_buf[16];
-                int len;
-                len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
-                    "patch:receive_channel", ch_buf, sizeof(ch_buf));
-                if (len > 0) {
-                    ch_buf[len < (int)sizeof(ch_buf) ? len : (int)sizeof(ch_buf) - 1] = '\0';
-                    int recv_ch = atoi(ch_buf);
-                    if (recv_ch != 0) {
-                        shadow_chain_slots[slot].channel = (recv_ch >= 1 && recv_ch <= 16) ? recv_ch - 1 : -1;
-                    }
-                }
-                len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
-                    "patch:forward_channel", ch_buf, sizeof(ch_buf));
-                if (len > 0) {
-                    ch_buf[len < (int)sizeof(ch_buf) ? len : (int)sizeof(ch_buf) - 1] = '\0';
-                    int fwd_ch = atoi(ch_buf);
-                    if (fwd_ch != 0) {
-                        shadow_chain_slots[slot].forward_channel = (fwd_ch > 0) ? fwd_ch - 1 : fwd_ch;
-                    }
-                }
-            }
+            shadow_apply_patch_channels(slot);
 
             shadow_ui_state_update_slot(slot);
 
@@ -2238,11 +2196,12 @@ void shadow_inprocess_handle_param_request(void) {
     if (req_type == 0) return;
     uint32_t req_id = shadow_param->request_id;
 
-    /* Handle shim-specific params (jack:*, suspend_overtake) before slot dispatch */
+    /* Handle shim-specific params (jack:*, suspend_overtake, passthrough) */
     if (host.handle_param_special) {
         const char *key = shadow_param->key;
         if (strncmp(key, "jack:", 5) == 0 ||
-            strcmp(key, "suspend_overtake") == 0) {
+            strcmp(key, "suspend_overtake") == 0 ||
+            strcmp(key, "passthrough") == 0) {
             if (host.handle_param_special(req_type, req_id)) {
                 shadow_param_publish_response(req_id);
                 return;
