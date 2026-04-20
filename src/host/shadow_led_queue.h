@@ -29,6 +29,10 @@ typedef struct {
     uint8_t *midi_out_buf;             /* shadow_mailbox + MIDI_OUT_OFFSET (static) */
     shadow_control_t *volatile *shadow_control;  /* Ptr to shim's shadow_control ptr */
     uint8_t *volatile *shadow_ui_midi_shm;       /* Ptr to shim's shadow_ui_midi_shm ptr */
+    /* 128-byte bitmap: if passthrough_ccs[cc] != 0, the CC is yielded to
+     * Move firmware during overtake (MIDI_OUT CC packets with this d1 are
+     * left untouched so Move's LED writes reach hardware). */
+    const uint8_t *passthrough_ccs;
 } led_queue_host_t;
 
 /* ============================================================================
