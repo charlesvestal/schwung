@@ -5,7 +5,7 @@
  * with support for value editing mode.
  */
 
-import { MenuItemType, isEditable, isSubmenu, isBack } from './menu_items.mjs';
+import { MenuItemType, isEditable, isSubmenu, isBack, isDivider } from './menu_items.mjs';
 import { decodeDelta, decodeAcceleratedDelta } from './input_filter.mjs';
 
 /* CC values from constants.mjs */
@@ -59,7 +59,7 @@ export function handleMenuInput({ cc, value, items, state, stack, onBack, shiftH
             /* Use simple delta for menu navigation (1 step at a time) */
             const delta = decodeDelta(value);
             if (delta !== 0) {
-                const newIndex = clamp(state.selectedIndex + delta, 0, items.length - 1);
+                const newIndex = stepOverDividers(items, state.selectedIndex, delta);
                 if (newIndex !== state.selectedIndex) {
                     state.selectedIndex = newIndex;
                     needsRedraw = true;
@@ -70,13 +70,15 @@ export function handleMenuInput({ cc, value, items, state, stack, onBack, shiftH
 
     /* Jog click - enter submenu, start/confirm edit, execute action */
     if (cc === CC_JOG_CLICK && isDown) {
-        needsRedraw = handleClick(item, state, stack, onBack);
+        if (!isDivider(item)) {
+            needsRedraw = handleClick(item, state, stack, onBack);
+        }
     }
 
     /* Up/Down arrows - scroll list */
     if (cc === CC_UP && isDown) {
         if (!state.editing) {
-            const newIndex = Math.max(state.selectedIndex - 1, 0);
+            const newIndex = stepOverDividers(items, state.selectedIndex, -1);
             if (newIndex !== state.selectedIndex) {
                 state.selectedIndex = newIndex;
                 needsRedraw = true;
@@ -85,7 +87,7 @@ export function handleMenuInput({ cc, value, items, state, stack, onBack, shiftH
     }
     if (cc === CC_DOWN && isDown) {
         if (!state.editing) {
-            const newIndex = Math.min(state.selectedIndex + 1, items.length - 1);
+            const newIndex = stepOverDividers(items, state.selectedIndex, 1);
             if (newIndex !== state.selectedIndex) {
                 state.selectedIndex = newIndex;
                 needsRedraw = true;
@@ -266,4 +268,26 @@ function clamp(val, min, max) {
     if (val < min) return min;
     if (val > max) return max;
     return val;
+}
+
+/**
+ * Move the selection by `delta` steps, skipping over divider items.
+ * Stops at the list boundary without wrapping.
+ */
+function stepOverDividers(items, fromIndex, delta) {
+    if (!items || items.length === 0) return fromIndex;
+    const step = delta > 0 ? 1 : -1;
+    let remaining = Math.abs(delta);
+    let idx = fromIndex;
+    while (remaining > 0) {
+        let next = idx + step;
+        /* Skip consecutive dividers */
+        while (next >= 0 && next < items.length && isDivider(items[next])) {
+            next += step;
+        }
+        if (next < 0 || next >= items.length) break;
+        idx = next;
+        remaining--;
+    }
+    return idx;
 }

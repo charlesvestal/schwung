@@ -353,6 +353,7 @@ static link_audio_pub_shm_t *shadow_pub_audio_shm = NULL;
 static link_audio_in_shm_t *shadow_in_audio_shm = NULL;
 static int shadow_in_audio_shm_fd = -1;
 static int try_attach_in_audio_shm(void);
+static void *link_in_attach_retry_thread(void *arg);
 
 /* Read one Move channel of audio from /schwung-link-in (written by the
  * link-subscriber sidecar). Returns 1 on full read, 0 on starvation /
@@ -414,6 +415,12 @@ static void *overtake_dsp_gen_inst = NULL;          /* Generator instance */
 static audio_fx_api_v2_t *overtake_dsp_fx = NULL;  /* V2 FX plugin */
 static void *overtake_dsp_fx_inst = NULL;           /* FX instance */
 static host_api_v1_t overtake_host_api;             /* Host API provided to plugin */
+
+/* Per-CC passthrough bitmap. When an overtake module declares
+ * capabilities.button_passthrough = [cc, ...], those CCs are routed through
+ * overtake_mode=2's filter unchanged — both the press events reach Move
+ * firmware and Move's own LED writes reach hardware. Indexed by CC number. */
+static uint8_t overtake_passthrough_ccs[128] = {0};
 
 /* Forward declarations for overtake DSP */
 static void shadow_overtake_dsp_load(const char *path);
@@ -1073,7 +1080,16 @@ static void shadow_inprocess_process_midi(void) {
                 sampler_on_clock(status_usb);
             }
 
-            /* Only broadcast cable 2 (external USB) clock to slots.
+            /* Deliver realtime messages to the overtake DSP from cable 2 only
+             * (external USB MIDI clock). Move's internal cable 0 mirrors the
+             * same tempo, so using just cable 2 avoids double-counting while
+             * still covering the user's "clock from external device" case. */
+            if (cable == 2 && overtake_dsp_gen && overtake_dsp_gen_inst && overtake_dsp_gen->on_midi) {
+                uint8_t msg[1] = { status_usb };
+                overtake_dsp_gen->on_midi(overtake_dsp_gen_inst, msg, 1, MOVE_MIDI_SOURCE_EXTERNAL);
+            }
+
+            /* Only broadcast cable 2 (external USB) clock to shadow slots.
              * Cable 0 = internal, cable 1 = TRS - both are Move's own output */
             if (cable != 2) {
                 continue;
@@ -3165,6 +3181,42 @@ static int shim_handle_param_special(uint8_t req_type, uint32_t req_id) {
         return 1;
     }
 
+    /* "passthrough" — value is a CSV of CC numbers (0-127). Clears the
+     * passthrough bitmap and sets the listed CCs in a single write.
+     * Doing it atomically avoids the fire-and-forget race that back-to-back
+     * passthrough_clear + passthrough_add calls ran into (overtake_mode=2
+     * makes shadow_set_param non-blocking, so consecutive writes overwrite
+     * before the shim reads them). */
+    if (strcmp(key, "passthrough") == 0) {
+        if (req_type == 1) {
+            memset(overtake_passthrough_ccs, 0, sizeof(overtake_passthrough_ccs));
+            const char *p = shadow_param->value;
+            while (p && *p) {
+                while (*p == ' ' || *p == ',') p++;
+                if (!*p) break;
+                int cc = atoi(p);
+                if (cc >= 0 && cc < 128) overtake_passthrough_ccs[cc] = 1;
+                while (*p && *p != ',') p++;
+            }
+            /* Log so we can verify registration in the debug log. */
+            char dbg[128];
+            int off = snprintf(dbg, sizeof(dbg), "passthrough set: value=\"%s\" ccs=[",
+                               shadow_param->value ? shadow_param->value : "");
+            for (int i = 0; i < 128 && off < (int)sizeof(dbg) - 4; i++) {
+                if (overtake_passthrough_ccs[i]) {
+                    off += snprintf(dbg + off, sizeof(dbg) - off, "%d,", i);
+                }
+            }
+            snprintf(dbg + off, sizeof(dbg) - off, "]");
+            shadow_log(dbg);
+            shadow_param->error = 0;
+            shadow_param->result_len = 0;
+        }
+        shadow_param->response_ready = 1;
+        shadow_param->response_id = shadow_param->request_id;
+        return 1;
+    }
+
     if (strcmp(key, "suspend_overtake") == 0) {
         if (req_type == 1 && shadow_control) {  /* SET */
             shadow_control->suspend_overtake = (shadow_param->value[0] == '1') ? 1 : 0;
@@ -3226,7 +3278,23 @@ static int shim_handle_param_special(uint8_t req_type, uint32_t req_id) {
         if (strcmp(fx_key, "link_audio_routing") == 0) {
             if (req_type == 1) {
                 int val = atoi(shadow_param->value);
+                int prev = link_audio_routing_enabled;
                 link_audio_routing_enabled = val ? 1 : 0;
+                /* On 0→1, re-attempt /schwung-link-in attach. The init-time
+                 * retry thread exits after ~30s; if routing was off at boot
+                 * (or the sidecar lost the race), shadow_in_audio_shm stays
+                 * NULL and rebuild_from_la never engages. Respawn the retry
+                 * thread here so toggling routing on later actually works. */
+                if (!prev && link_audio_routing_enabled && !shadow_in_audio_shm) {
+                    if (!try_attach_in_audio_shm()) {
+                        pthread_t tid;
+                        if (pthread_create(&tid, NULL,
+                                           link_in_attach_retry_thread,
+                                           NULL) == 0) {
+                            pthread_detach(tid);
+                        }
+                    }
+                }
                 {
                     char msg[64];
                     snprintf(msg, sizeof(msg), "Link Audio routing: %s",
@@ -4995,6 +5063,14 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         d1 == 8) {
                         filter = 0;
                     }
+                    /* Per-CC passthrough list (from the module's
+                     * capabilities.button_passthrough). Used to let Play,
+                     * Record etc. reach Move firmware so Move handles them
+                     * natively — button press flows through, and Move's own
+                     * LED writes back aren't blocked. */
+                    if (cin == 0x0B && type == 0xB0 && d1 < 128 && overtake_passthrough_ccs[d1]) {
+                        filter = 0;
+                    }
                 } else if (overtake_mode == 1) {
                     filter = 1;
                     if (cin == 0x0B && type == 0xB0 && d1 == CC_MASTER_KNOB) {
@@ -5003,6 +5079,12 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     if ((cin == 0x09 || cin == 0x08) &&
                         (type == 0x90 || type == 0x80) &&
                         d1 == 8) {
+                        filter = 0;
+                    }
+                    /* Same per-CC passthrough list applies at mode 1 (tool
+                     * with skipOvertake) so hardware buttons the module
+                     * doesn't claim reach Move firmware unchanged. */
+                    if (cin == 0x0B && type == 0xB0 && d1 < 128 && overtake_passthrough_ccs[d1]) {
                         filter = 0;
                     }
                 } else {

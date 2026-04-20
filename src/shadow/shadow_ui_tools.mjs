@@ -120,10 +120,10 @@ export function drawToolsMenu() {
         return;
     }
 
-    const items = toolModules.map(m => ({
-        label: m.name,
-        value: ""
-    }));
+    const items = toolModules.map(m => {
+        if (m.type === 'divider') return { type: 'divider', label: m.label || '' };
+        return { label: m.name, value: "" };
+    });
     drawMenuList({
         items,
         selectedIndex: toolsMenuIndex,

@@ -459,7 +459,7 @@ When selecting a module, "[Get more...]" opens the Module Store to download addi
 
 ## Overtake Modules
 
-Overtake modules take full control of Move's display and controls. Access via **Shift+Vol + Jog Click**.
+Overtake modules take full control of Move's display and controls. They live in the **Tools menu** below a divider — open Tools with **Shift+Vol + Jog Click** or **Shift+Vol + Step 13**, then select an overtake module from the list.
 
 To exit an overtake module: **Shift+Vol + Jog Click** (works anytime)
 
@@ -473,11 +473,11 @@ Requires [RNBO for Move](https://rnbo.cycling74.com) to be installed separately.
 
 **Getting started:**
 1. Install RNBO for Move (follow Cycling '74 instructions)
-2. Open Overtake menu (Shift+Vol + Jog Click)
-3. Select RNBO Runner
+2. Open the Tools menu (Shift+Vol + Jog Click or Shift+Vol + Step 13)
+3. Select RNBO Runner (below the Overtake divider)
 
 **Features:**
-- **Suspend/Resume**: Shift+Vol+Back suspends RNBO Runner — it keeps running in the background. Re-enter via the Overtake menu to resume with LED state restored.
+- **Suspend/Resume**: Shift+Vol+Back suspends RNBO Runner — it keeps running in the background. Re-open Tools and re-select it to resume with LED state restored.
 - **MIDI from Move**: RNBO receives MIDI from Move's sequencer on Channel 16. You can sequence RNBO devices from Move, use MIDI capture, etc.
 - **Per-set state**: The current RNBO graph and all parameter tweaks are saved automatically with each Schwung set. Switch sets and your RNBO sound follows.
 - **Display mirroring**: Works with Schwung's display mirror feature.
@@ -598,7 +598,7 @@ The file browser serves the `/data/UserData` directory, giving you access to sam
 ### Notes
 
 - File Browser is **off by default** and must be enabled via the settings toggle
-- The built-in file manager in Schwung Manager (`schwung.local/files`) is available without enabling this
+- The built-in file manager in Schwung Manager (`move.local:7700/files`) is available without enabling this
 - No authentication is required — anyone on the network can access it
 
 ---
