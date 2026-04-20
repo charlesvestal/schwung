@@ -13332,11 +13332,10 @@ globalThis.init = function() {
                         if (eq > 0) oldSnap[line.substring(0, eq)] = line.substring(eq + 1);
                     }
 
+                    /* Only emit upgrades. module_added was removed as
+                     * noisy — see analytics.c for details. */
                     for (const mod of modules) {
-                        if (!oldSnap[mod.id]) {
-                            host_track_event('module_added',
-                                `"module_id":"${mod.id}","module_version":"${mod.version || 'unknown'}"`);
-                        } else if (oldSnap[mod.id] !== mod.version) {
+                        if (oldSnap[mod.id] && oldSnap[mod.id] !== mod.version) {
                             host_track_event('module_upgraded',
                                 `"module_id":"${mod.id}","old_version":"${oldSnap[mod.id]}","new_version":"${mod.version || 'unknown'}"`);
                         }
