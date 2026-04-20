@@ -306,6 +306,10 @@ let refreshCounter = 0;
 let autosaveCounter = 0;
 let autosaveSuppressUntil = 0;  /* suppress autosave after set change */
 let slotDirtyCache = [false, false, false, false];
+/* Module signature ("synth|midiFx|fx1|fx2") from the last successful autosave.
+ * Used to relax the "empty state → bail" guard when the user swaps to a module
+ * that lacks state get/set — a module change makes the prior file stale anyway. */
+let lastSavedSlotSignature = ["", "", "", ""];
 
 /* Splash screen state */
 let splashActive = true;
@@ -466,6 +470,8 @@ let overtakeModuleId = "";         // ID of loaded overtake module (for per-modu
 let previousView = VIEWS.SLOTS;   // View to return to after overtake
 let overtakeModuleCallbacks = null; // {init, tick, onMidiMessageInternal} for loaded module
 let overtakeSuspendKeepsJs = false; // Current module opted in to JS-alive suspend
+let overtakePassthroughCCs = [];    // CCs declared in capabilities.button_passthrough — shim lets these
+                                    // reach Move firmware directly, and we skip them during LED clear.
 /* Map of suspended overtake modules keyed by moduleId. Each entry:
  *   { id, path, uiPath, basePath, capabilities, callbacks, suspendedAt }
  * Ticks are fired for every entry every frame until the module is resumed
@@ -508,34 +514,25 @@ function clearLedBatch() {
     /* Pads (68-99) */
     for (let i = 68; i <= 99; i++) noteLeds.push(i);
 
-    /* All button/indicator CCs with LEDs */
-    const ccLeds = [];
-    /* Step icon LEDs (16-31) - CCs, separate from step note LEDs */
-    for (let i = 16; i <= 31; i++) ccLeds.push(i);
-    /* Tracks/Rows */
-    ccLeds.push(40, 41, 42, 43);
-    /* Shift */
-    ccLeds.push(49);
-    /* Menu, Back, Capture */
-    ccLeds.push(50, 51, 52);
-    /* Down, Up */
-    ccLeds.push(54, 55);
-    /* Undo */
-    ccLeds.push(56);
-    /* Loop */
-    ccLeds.push(58);
-    /* Copy */
-    ccLeds.push(60);
-    /* Left, Right */
-    ccLeds.push(62, 63);
-    /* Knob indicators */
-    ccLeds.push(71, 72, 73, 74, 75, 76, 77, 78);
-    /* Play, Rec */
-    ccLeds.push(85, 86);
-    /* Mute */
-    ccLeds.push(88);
-    /* Record, Delete */
-    ccLeds.push(118, 119);
+    /* All button/indicator CCs with LEDs. Full set candidates below; any CC
+     * the module declared in capabilities.button_passthrough is filtered out
+     * so Move firmware keeps owning its LED. */
+    const passthrough = new Set(overtakePassthroughCCs);
+    const candidates = [];
+    for (let i = 16; i <= 31; i++) candidates.push(i);       // step icon LEDs
+    candidates.push(40, 41, 42, 43);                         // tracks/rows
+    candidates.push(49);                                     // shift
+    candidates.push(50, 51, 52);                             // menu, back, capture
+    candidates.push(54, 55);                                 // -, +
+    candidates.push(56);                                     // undo
+    candidates.push(58);                                     // loop
+    candidates.push(60);                                     // copy
+    candidates.push(62, 63);                                 // left, right
+    candidates.push(71, 72, 73, 74, 75, 76, 77, 78);         // knob indicators
+    candidates.push(85, 86);                                 // play, rec
+    candidates.push(88);                                     // mute
+    candidates.push(118, 119);                               // record, delete
+    const ccLeds = candidates.filter((c) => !passthrough.has(c));
 
     const totalItems = noteLeds.length + ccLeds.length;
     const start = ledClearIndex;
@@ -2569,6 +2566,14 @@ function invokeModuleOnUnload(callbacks, moduleId) {
 
 /* Enter the overtake module selection menu */
 function enterOvertakeMenu() {
+    /* Flush set state before entering overtake — periodic autosave is gated
+     * on !isOvertakeActive, so without this a slot change made seconds before
+     * Shift+Vol+Jog would be lost on reboot. */
+    autosaveAllSlots();
+    saveMasterFxChainConfig();
+    saveChainConfigToDir(activeSlotStateDir);
+    debugLog("enterOvertakeMenu: flushed set state before overtake");
+
     /* Reset overtake state — but preserve it if a tool has a hidden session
      * (DSP still running, waiting for reconnect). */
     if (!toolHiddenFile) {
@@ -2607,6 +2612,14 @@ let overtakeExitPending = false;
 
 /* Exit overtake mode back to Move */
 function exitOvertakeMode() {
+    /* Flush set state on the way out — defensive, since chain state is not
+     * edited during overtake, but keeps the invariant "all transitions
+     * persist state" honest. */
+    autosaveAllSlots();
+    saveMasterFxChainConfig();
+    saveChainConfigToDir(activeSlotStateDir);
+    debugLog("exitOvertakeMode: flushed set state on exit");
+
     /* Let the module clean up (send note-offs, etc.) before we tear callbacks down. */
     invokeModuleOnUnload(overtakeModuleCallbacks, overtakeModuleId);
 
@@ -2641,6 +2654,10 @@ function exitOvertakeMode() {
     overtakeModuleId = "";
     overtakeModuleCallbacks = null;
     overtakeSuspendKeepsJs = false;
+    overtakePassthroughCCs = [];
+    if (typeof shadow_set_param === "function") {
+        shadow_set_param(0, "passthrough", "");  /* clear list */
+    }
 
     /* Reset encoder accumulation */
     for (let k = 0; k < NUM_KNOBS; k++) overtakeKnobDelta[k] = 0;
@@ -2937,6 +2954,16 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
         return false;
     }
 
+    /* Flush set state before entering overtake — covers the Tools-menu path
+     * (enterToolsMenu → pick tool) which bypasses enterOvertakeMenu, and the
+     * suspended-module resume path below. Periodic autosave is suppressed
+     * once view == OVERTAKE_MODULE, so recent slot edits would otherwise be
+     * lost on reboot. */
+    autosaveAllSlots();
+    saveMasterFxChainConfig();
+    saveChainConfigToDir(activeSlotStateDir);
+    debugLog("loadOvertakeModule: flushed set state before overtake");
+
     /* If this module is already running in the background (suspended), just resume it
      * instead of reloading. User re-picking a suspended module from the overtake menu
      * should pop them back into it with state intact. */
@@ -3107,6 +3134,17 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
 
         overtakeModuleLoaded = true;
         overtakeSuspendKeepsJs = !!(moduleInfo.capabilities && moduleInfo.capabilities.suspend_keeps_js);
+
+        /* button_passthrough: array of CC numbers for buttons the module yields
+         * to Move firmware (press events reach Move, LEDs stay Move-driven).
+         * We push as a single CSV write because overtake_mode=2 makes
+         * shadow_set_param fire-and-forget; multiple consecutive writes would
+         * overwrite the shared buffer before the shim reads them. */
+        const bp = moduleInfo.capabilities && moduleInfo.capabilities.button_passthrough;
+        overtakePassthroughCCs = Array.isArray(bp) ? bp.slice().filter((c) => typeof c === "number" && c >= 0 && c < 128) : [];
+        if (typeof shadow_set_param === "function") {
+            shadow_set_param(0, "passthrough", overtakePassthroughCCs.join(","));
+        }
 
         /* Track module load for analytics */
         if (typeof host_track_event === "function" && moduleInfo.id) {
@@ -3736,9 +3774,18 @@ function generateUniquePresetName(baseName) {
  * Note: save_patch expects raw chain content (synth, audio_fx at root)
  * with "custom_name" for the name. It wraps it with name/version/chain.
  */
-function buildSlotPatchJson(slotIndex, name, forAutosave) {
+function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
     const cfg = chainConfigs[slotIndex];
     if (!cfg) return null;
+
+    /* Reason for moduleChanged: the "state query returned empty" guard
+     * below exists to avoid clobbering a good file when a shim round-trip
+     * times out. But it also blocks legitimate saves when the user swaps
+     * to a module that doesn't implement get_param("state") at all. When
+     * the signature differs from the last-saved one, the old file's state
+     * is inapplicable anyway — save with whatever we have (possibly empty)
+     * so the module selection survives a reboot. */
+    const bailIfEmpty = forAutosave && !moduleChanged;
 
     const patch = {
         custom_name: name,
@@ -3759,9 +3806,9 @@ function buildSlotPatchJson(slotIndex, name, forAutosave) {
                 /* State is not JSON (e.g. key=value pairs) — store as opaque string */
                 synthConfig = { state: stateJson };
             }
-        } else if (forAutosave) {
-            /* State query timed out - skip autosave to avoid clobbering
-             * a good file with empty config (synth reverts to defaults) */
+        } else if (bailIfEmpty) {
+            /* State query timed out AND the module is unchanged — skip autosave
+             * to avoid clobbering a good file (synth would revert to defaults). */
             return null;
         }
         patch.synth = {
@@ -3782,7 +3829,7 @@ function buildSlotPatchJson(slotIndex, name, forAutosave) {
                 /* State is not JSON — store as opaque string */
                 midiFxConfig = { state: midiFxStateJson };
             }
-        } else if (forAutosave) {
+        } else if (bailIfEmpty) {
             return null;
         }
         patch.midi_fx = [{
@@ -3803,7 +3850,7 @@ function buildSlotPatchJson(slotIndex, name, forAutosave) {
                 /* State is not JSON (e.g. key=value pairs) — store as opaque string */
                 fx1Config = { state: fx1StateJson };
             }
-        } else if (forAutosave) {
+        } else if (bailIfEmpty) {
             return null;
         }
         patch.audio_fx.push({
@@ -3823,7 +3870,7 @@ function buildSlotPatchJson(slotIndex, name, forAutosave) {
                 /* State is not JSON (e.g. key=value pairs) — store as opaque string */
                 fx2Config = { state: fx2StateJson };
             }
-        } else if (forAutosave) {
+        } else if (bailIfEmpty) {
             return null;
         }
         patch.audio_fx.push({
@@ -3910,7 +3957,9 @@ function autosaveAllSlots() {
         const dirty = getSlotParam(i, "dirty");
         slotDirtyCache[i] = (dirty === "1");
 
-        const patchJson = buildSlotPatchJson(i, slots[i].name || "Untitled", true);
+        const currentSig = getSlotModuleSignature(i);
+        const moduleChanged = currentSig !== lastSavedSlotSignature[i];
+        const patchJson = buildSlotPatchJson(i, slots[i].name || "Untitled", true, moduleChanged);
         if (!patchJson) continue;
 
         /* Wrap with name, version, modified flag */
@@ -3925,6 +3974,7 @@ function autosaveAllSlots() {
             activeSlotStateDir + "/slot_" + i + ".json",
             JSON.stringify(wrapper, null, 2) + "\n"
         );
+        lastSavedSlotSignature[i] = currentSig;
     }
 }
 
@@ -10620,12 +10670,26 @@ function handleJog(delta) {
                 announceMenuItem("Module", om.name || om.id || "Unknown");
             }
             break;
-        case VIEWS.TOOLS:
-            toolsMenuIndex = Math.max(0, Math.min(toolModules.length - 1, toolsMenuIndex + delta));
-            if (toolModules.length > 0) {
+        case VIEWS.TOOLS: {
+            /* Skip divider rows when moving the cursor. */
+            const step = delta > 0 ? 1 : -1;
+            let remaining = Math.abs(delta);
+            let idx = toolsMenuIndex;
+            while (remaining > 0) {
+                let next = idx + step;
+                while (next >= 0 && next < toolModules.length && toolModules[next]?.type === 'divider') {
+                    next += step;
+                }
+                if (next < 0 || next >= toolModules.length) break;
+                idx = next;
+                remaining--;
+            }
+            toolsMenuIndex = idx;
+            if (toolModules.length > 0 && toolModules[toolsMenuIndex]?.type !== 'divider') {
                 announce(toolModules[toolsMenuIndex].name);
             }
             break;
+        }
         case VIEWS.TOOL_FILE_BROWSER:
             toolBrowserNavigate(delta);
             break;
@@ -11485,6 +11549,13 @@ function handleSelect() {
             debugLog("TOOLS SELECT: idx=" + toolsMenuIndex + " count=" + toolModules.length);
             if (toolsMenuIndex >= 0 && toolsMenuIndex < toolModules.length) {
                 const tool = toolModules[toolsMenuIndex];
+                if (tool.type === 'divider') break;
+                if (tool.kind === 'overtake') {
+                    debugLog("TOOLS SELECT overtake: " + tool.id);
+                    announce(`Loading ${tool.name || tool.id}`);
+                    loadOvertakeModule(tool);
+                    break;
+                }
                 debugLog("TOOLS SELECT tool: " + tool.id + " config=" + JSON.stringify(tool.tool_config));
                 if (tool.tool_config && tool.tool_config.set_picker) {
                     debugLog("TOOLS SELECT: entering set picker");
@@ -13062,7 +13133,25 @@ function drawMasterFx() { _drawMasterFx(); }
 function getMasterFxDisplayName() { return _getMasterFxDisplayName(); }
 function enterMasterFxSettings() { _enterMasterFxSettings(); }
 function scanForToolModules() { return _scanForToolModules(); }
-function enterToolsMenu() { _enterToolsMenu(); }
+function enterToolsMenu() {
+    _enterToolsMenu();
+    try {
+        const overtakes = scanForOvertakeModules();
+        if (!Array.isArray(overtakes) || overtakes.length === 0) return;
+        const tools = Array.isArray(toolModules) ? toolModules : [];
+        const merged = [];
+        for (const t of tools) merged.push(Object.assign({}, t, { kind: 'tool' }));
+        if (tools.length > 0) merged.push({ type: 'divider', label: 'Overtake Modules' });
+        for (const o of overtakes) merged.push(Object.assign({}, o, { kind: 'overtake' }));
+        toolModules = merged;
+        if (toolsMenuIndex == null || toolsMenuIndex < 0 || toolsMenuIndex >= merged.length
+            || (merged[toolsMenuIndex] && merged[toolsMenuIndex].type === 'divider')) {
+            toolsMenuIndex = 0;
+        }
+    } catch (e) {
+        debugLog("enterToolsMenu overtake merge failed: " + e);
+    }
+}
 function drawToolsMenu() { _drawToolsMenu(); }
 function drawToolFileBrowser() { _drawToolFileBrowser(); }
 function drawToolEngineSelect() { _drawToolEngineSelect(); }
@@ -13651,7 +13740,12 @@ globalThis.tick = function() {
             /* Settings/Screenreader flags take priority (clear conflicting SLOT flag) */
             if (flags & SHADOW_UI_FLAG_JUMP_TO_TOOLS) {
                 debugLog("TOOLS flag detected, entering Tools menu");
-                enterToolsMenu();
+                try {
+                    enterToolsMenu();
+                } catch (e) {
+                    debugLog("TOOLS flag: enterToolsMenu threw: " + e + " stack=" + (e && e.stack ? e.stack : "none"));
+                }
+                /* Always clear flag, even on exception, so we don't loop forever */
                 if (typeof shadow_clear_ui_flags === "function") {
                     shadow_clear_ui_flags(SHADOW_UI_FLAG_JUMP_TO_TOOLS | SHADOW_UI_FLAG_JUMP_TO_SLOT);
                 }
@@ -13694,21 +13788,23 @@ globalThis.tick = function() {
                 debugLog("OVERTAKE flag detected, view=" + view + " suspended=" + suspendedCount);
                 const isSuspend = (typeof shadow_get_suspend_overtake === "function") &&
                                   shadow_get_suspend_overtake() !== 0;
-                if (view === VIEWS.OVERTAKE_MODULE) {
-                    if (isSuspend) {
-                        debugLog("suspending overtake mode (shim-initiated)");
-                        suspendOvertakeMode();
+                try {
+                    if (view === VIEWS.OVERTAKE_MODULE) {
+                        if (isSuspend) {
+                            debugLog("suspending overtake mode (shim-initiated)");
+                            suspendOvertakeMode();
+                        } else {
+                            debugLog("exiting overtake mode");
+                            exitOvertakeMode();
+                        }
                     } else {
-                        debugLog("exiting overtake mode");
-                        exitOvertakeMode();
+                        debugLog("entering tools menu (overtake merged)");
+                        enterToolsMenu();
                     }
-                } else {
-                    /* Enter (or re-enter) overtake menu — suspended entries will
-                     * resume when re-selected (handled in loadOvertakeModule). */
-                    debugLog("entering overtake menu");
-                    enterOvertakeMenu();
+                } catch (e) {
+                    debugLog("OVERTAKE flag handler threw: " + e + " stack=" + (e && e.stack ? e.stack : "none"));
                 }
-                /* Clear the flag */
+                /* Always clear flag so we don't loop */
                 if (typeof shadow_clear_ui_flags === "function") {
                     shadow_clear_ui_flags(SHADOW_UI_FLAG_JUMP_TO_OVERTAKE);
                 }
