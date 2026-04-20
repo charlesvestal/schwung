@@ -2596,7 +2596,10 @@ int main(int argc, char *argv[]) {
             fclose(vf);
         }
         analytics_init(version);
-        analytics_track("app_launched", NULL);
+        /* NOTE: app_launched is emitted from shadow_ui.js, not here. If we
+         * emit from C, first-boot-after-install users miss the event —
+         * analytics_enabled() is false until the JS opt-in prompt resolves,
+         * so analytics_track() silently drops the call. */
     }
 
     JSRuntime *rt = NULL;
