@@ -1585,10 +1585,17 @@ func (app *App) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer out.Close()
-	io.Copy(out, file)
+	n, copyErr := io.Copy(out, file)
+	closeErr := out.Close()
 
-	app.logger.Info("file uploaded", "target", target)
+	app.logger.Info("file uploaded",
+		"target", target,
+		"content_length", r.ContentLength,
+		"part_size", header.Size,
+		"bytes_written", n,
+		"copy_err", copyErr,
+		"close_err", closeErr,
+		"user_agent", r.Header.Get("User-Agent"))
 	// For AJAX/fetch requests, return 200 instead of redirect.
 	if r.Header.Get("X-CSRF-Token") != "" {
 		w.WriteHeader(http.StatusOK)
