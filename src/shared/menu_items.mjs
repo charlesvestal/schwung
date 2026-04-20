@@ -12,7 +12,8 @@ export const MenuItemType = {
     TOGGLE: 'toggle',
     ACTION: 'action',
     BACK: 'back',
-    INFO: 'info'
+    INFO: 'info',
+    DIVIDER: 'divider'
 };
 
 /**
@@ -136,6 +137,26 @@ export function createInfo(label, value) {
         label,
         value
     };
+}
+
+/**
+ * Create a non-selectable divider (renders as a line; optional caption).
+ * @param {string} [label=''] - Optional small caption rendered inside the divider.
+ * @returns {Object} Divider item
+ */
+export function createDivider(label = '') {
+    return {
+        type: MenuItemType.DIVIDER,
+        label
+    };
+}
+
+/**
+ * @param {Object} item
+ * @returns {boolean} True if item is a divider (non-selectable)
+ */
+export function isDivider(item) {
+    return item && item.type === MenuItemType.DIVIDER;
 }
 
 /**
