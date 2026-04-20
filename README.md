@@ -214,7 +214,6 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 | [Stems](https://github.com/charlesvestal/schwung-stems) | Separate audio into stems: drums, vocals, accompaniment (0.5x realtime) | charlesvestal |
 | [DJ Deck](https://github.com/djhardrich/move-anything-dj) | CDJ/turntable-style 4-track stem player with Bungee timestretch/pitchshift | DJ Hard Rich |
 | [Tuner](https://github.com/CatsAreCool710/Move-Everything-Tuner) | Chromatic and instrument tuner with step guide feedback | Jeremiah Ticket |
-| [TB-3PO](https://github.com/charlesvestal/schwung-tb3po) | Generative 303-style acid-bassline sequencer with density/accent/slide probabilities, pattern banks, mutate, and scale-locked notes | djphazer / Hemisphere Suite (port: charlesvestal) |
 
 <!-- MODULE_TABLE_END -->
 
