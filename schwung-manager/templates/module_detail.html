@@ -155,15 +155,15 @@
             <dt>Version</dt>
             <dd>
                 {{if isInstalled .Module.ID .Installed}}
-                    <code>{{versionStr (index .Installed .Module.ID).Version}}</code>
+                    <a href="{{releaseURL .Module.GithubRepo (index .Installed .Module.ID).Version}}" target="_blank" rel="noopener noreferrer"><code>{{versionStr (index .Installed .Module.ID).Version}}</code></a>
                     {{if hasUpdate .Module.ID .Installed .ReleaseMeta}}
-                        <span class="update-available">{{versionStr (releaseMeta .Module.ID .ReleaseMeta).Version}} available</span>
+                        <a class="update-available" href="{{releaseURL .Module.GithubRepo (releaseMeta .Module.ID .ReleaseMeta).Version}}" target="_blank" rel="noopener noreferrer">{{versionStr (releaseMeta .Module.ID .ReleaseMeta).Version}} available</a>
                     {{else}}
                         <span class="text-muted">up to date</span>
                     {{end}}
                 {{else}}
                     {{if (releaseMeta .Module.ID .ReleaseMeta).Version}}
-                        <code>{{versionStr (releaseMeta .Module.ID .ReleaseMeta).Version}}</code>
+                        <a href="{{releaseURL .Module.GithubRepo (releaseMeta .Module.ID .ReleaseMeta).Version}}" target="_blank" rel="noopener noreferrer"><code>{{versionStr (releaseMeta .Module.ID .ReleaseMeta).Version}}</code></a>
                     {{else}}
                         <span class="text-muted">—</span>
                     {{end}}
@@ -181,6 +181,7 @@
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <button type="submit" class="btn btn-primary">Update to {{versionStr (releaseMeta .Module.ID .ReleaseMeta).Version}}</button>
         </form>
+        <a class="release-notes-link" href="{{releaseURL .Module.GithubRepo (releaseMeta .Module.ID .ReleaseMeta).Version}}" target="_blank" rel="noopener noreferrer">release notes</a>
         {{end}}
         <form method="POST" action="/modules/{{.Module.ID}}/uninstall" class="inline-form" data-confirm="Uninstall {{.Module.Name}}?" data-confirm-title="Uninstall" data-confirm-label="Uninstall" data-confirm-danger="true">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
@@ -191,6 +192,9 @@
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <button type="submit" class="btn btn-primary">Install {{.Module.Name}}</button>
         </form>
+        {{if (releaseMeta .Module.ID .ReleaseMeta).Version}}
+        <a class="release-notes-link" href="{{releaseURL .Module.GithubRepo (releaseMeta .Module.ID .ReleaseMeta).Version}}" target="_blank" rel="noopener noreferrer">release notes</a>
+        {{end}}
         {{end}}
     </div>
     {{else}}

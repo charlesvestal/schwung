@@ -12,7 +12,7 @@
         <h2>Schwung Host</h2>
         <dl class="detail-list">
             <dt>Version</dt>
-            <dd>{{.Version}}</dd>
+            <dd>{{if .HostRepo}}<a href="{{releaseURL .HostRepo .Version}}" target="_blank" rel="noopener noreferrer">{{.Version}}</a>{{else}}{{.Version}}{{end}}</dd>
         </dl>
         <div class="system-actions">
             <form method="POST" action="/system/check-update" class="inline-form">
@@ -25,6 +25,7 @@
                 <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                 <button type="submit" class="btn btn-primary">Upgrade to {{.LatestVersion}}</button>
             </form>
+            <a class="release-notes-link" href="{{releaseURL .HostRepo .LatestVersion}}" target="_blank" rel="noopener noreferrer">release notes</a>
             {{end}}
         </div>
     </section>
