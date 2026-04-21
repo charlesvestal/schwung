@@ -2725,18 +2725,30 @@ int main(int argc, char *argv[])
         if (analytics_enabled() && g_module_manager.module_count > 0) {
             int mc = g_module_manager.module_count;
 
-            /* Build census event */
+            /* Dev/test harness ids that ship with the host but aren't
+             * meaningful user choices — keep them out of the census. */
+            static const char *INTERNAL_IDS[] = {"ui-test", "text-test", "splash-test"};
+            const int N_INTERNAL = (int)(sizeof(INTERNAL_IDS) / sizeof(INTERNAL_IDS[0]));
+
             char modules_list[768] = "";
             int pos = 0;
+            int reported = 0;
             for (int i = 0; i < mc && pos < (int)sizeof(modules_list) - 68; i++) {
-                if (i > 0) modules_list[pos++] = ',';
+                const char *id = g_module_manager.modules[i].id;
+                int skip = 0;
+                for (int k = 0; k < N_INTERNAL; k++) {
+                    if (strcmp(id, INTERNAL_IDS[k]) == 0) { skip = 1; break; }
+                }
+                if (skip) continue;
+                if (reported > 0) modules_list[pos++] = ',';
                 pos += snprintf(modules_list + pos, sizeof(modules_list) - pos,
-                    "\"%s\"", g_module_manager.modules[i].id);
+                    "\"%s\"", id);
+                reported++;
             }
             char props[1024];
             snprintf(props, sizeof(props),
                 "\"module_count\":%d,\"modules\":[%s]",
-                mc, modules_list);
+                reported, modules_list);
             analytics_track("module_census", props);
 
             /* Diff against previous snapshot — fires module_added/module_upgraded */
