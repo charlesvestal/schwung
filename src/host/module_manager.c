@@ -378,6 +378,22 @@ static int scan_directory(module_manager_t *mm, const char *dir_path) {
                 }
             }
 
+            /* Dedupe: same id may exist in both modules/ root and a category
+             * subdir (e.g. after a manual copy or a mid-migration upgrade).
+             * First occurrence wins; drop subsequent duplicates. */
+            int is_dupe = 0;
+            for (int i = 0; i < mm->module_count; i++) {
+                if (strcmp(mm->modules[i].id, parsed->id) == 0) {
+                    is_dupe = 1;
+                    break;
+                }
+            }
+            if (is_dupe) {
+                printf("mm: skipping duplicate '%s' at %s\n", parsed->id, module_path);
+                memset(parsed, 0, sizeof(*parsed));
+                continue;
+            }
+
             if (parsed->scan_packs[0]) {
                 /* Module has scan_packs — expand into virtual entries.
                  * Don't add the base module itself (hidden). */
