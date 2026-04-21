@@ -77,7 +77,6 @@ if [ -x "$SCHWUNG_MGR" ]; then
         fi
         "$SCHWUNG_MGR" -port 7700 -roots /data/UserData/ >>"$SCHWUNG_MGR_LOG" 2>&1 &
         echo $! > "$SCHWUNG_MGR_PID"
-        # schwung-manager handles mDNS for schwung.local via embedded responder
     fi
 fi
 

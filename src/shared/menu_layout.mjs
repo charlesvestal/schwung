@@ -133,7 +133,7 @@ export function drawMenuList({
     labelScroller.tick();  /* Auto-tick during draw */
 
     /* Announce selected item to screen reader if changed */
-    if (selectedIndex >= 0 && selectedIndex < totalItems) {
+    if (selectedIndex >= 0 && selectedIndex < totalItems && items[selectedIndex]?.type !== 'divider') {
         const selectedItem = items[selectedIndex];
         const selectedLabel = getLabel(selectedItem, selectedIndex);
         const selectedValue = getValue ? getValue(selectedItem, selectedIndex) : "";
@@ -150,6 +150,24 @@ export function drawMenuList({
         const y = resolvedTopY + (i - startIdx) * itemHeight;
         const item = items[i];
         const isSelected = i === selectedIndex;
+
+        /* Divider: horizontal rule across the row with optional small caption */
+        if (item && item.type === 'divider') {
+            const midY = y + Math.floor(itemHeight / 2);
+            if (item.label) {
+                const captionW = item.label.length * DEFAULT_CHAR_WIDTH;
+                const captionX = labelX;
+                /* Line left of caption */
+                fill_rect(0, midY, captionX - 2, 1, 1);
+                print(captionX, midY - 3, item.label, 1);
+                /* Line right of caption */
+                const rightStart = captionX + captionW + 2;
+                fill_rect(rightStart, midY, SCREEN_WIDTH - rightStart, 1, 1);
+            } else {
+                fill_rect(2, midY, SCREEN_WIDTH - 4, 1, 1);
+            }
+            continue;
+        }
 
         const labelPrefix = isSelected ? "> " : "  ";
         let label = getLabel(item, i);

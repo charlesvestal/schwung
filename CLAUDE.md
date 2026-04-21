@@ -534,7 +534,7 @@ Shadow Mode runs custom signal chains alongside stock Move. The shim intercepts 
 - **Shift+Vol+Menu**: Jump directly to Master FX settings
 - **Shift+Vol+Step2**: Open Global Settings
 - **Shift+Vol+Step13**: Open Tools menu
-- **Shift+Vol+Jog Click**: Open Overtake menu (or exit overtake module)
+- **Shift+Vol+Jog Click**: Open Tools menu (overtake modules live below the divider), or exit active overtake module
 - **Shift+Sample**: Open Quantized Sampler
 - **Shift+Capture**: Skipback (save last 30 seconds)
 
@@ -618,7 +618,7 @@ Shadow mode includes a 4-slot Master FX chain that processes mixed output from a
 
 ### Overtake Modules
 
-Overtake modules take complete control of Move's UI in shadow mode. They're accessed via the shadow UI's "Overtake Modules" menu.
+Overtake modules take complete control of Move's UI in shadow mode. They're listed in the Tools menu below an "Overtake" divider (Shift+Vol+Step13 or Shift+Vol+Jog Click). Keeping `component_type: "overtake"` preserves the overtake lifecycle (LED clear, ~500ms init delay, Shift+Vol+Jog-Click exit).
 
 **Module Requirements:**
 - Set `"component_type": "overtake"` in module.json

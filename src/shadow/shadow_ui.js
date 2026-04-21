@@ -2655,8 +2655,10 @@ function exitOvertakeMode() {
     overtakeModuleCallbacks = null;
     overtakeSuspendKeepsJs = false;
     overtakePassthroughCCs = [];
-    if (typeof shadow_set_param === "function") {
-        shadow_set_param(0, "passthrough", "");  /* clear list */
+    if (typeof shadow_set_param_timeout === "function") {
+        shadow_set_param_timeout(0, "passthrough", "", 100);  /* clear list */
+    } else if (typeof shadow_set_param === "function") {
+        shadow_set_param(0, "passthrough", "");
     }
 
     /* Reset encoder accumulation */
@@ -3142,7 +3144,13 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
          * overwrite the shared buffer before the shim reads them. */
         const bp = moduleInfo.capabilities && moduleInfo.capabilities.button_passthrough;
         overtakePassthroughCCs = Array.isArray(bp) ? bp.slice().filter((c) => typeof c === "number" && c >= 0 && c < 128) : [];
-        if (typeof shadow_set_param === "function") {
+        /* Blocking write: the caller (loadTool) fires more shadow_set_param
+         * calls immediately after this returns. In overtake_mode=2 plain
+         * shadow_set_param is fire-and-forget, which clobbers the request
+         * before the shim reads it. */
+        if (typeof shadow_set_param_timeout === "function") {
+            shadow_set_param_timeout(0, "passthrough", overtakePassthroughCCs.join(","), 100);
+        } else if (typeof shadow_set_param === "function") {
             shadow_set_param(0, "passthrough", overtakePassthroughCCs.join(","));
         }
 
