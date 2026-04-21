@@ -1,6 +1,8 @@
 /* shadow_process.c - Shadow UI and Link subscriber process management
  * Extracted from schwung_shim.c for maintainability. */
 
+#define _GNU_SOURCE  /* CPU_ZERO/CPU_SET/sched_setaffinity */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -303,6 +305,22 @@ void launch_link_subscriber(void) {
     int pid = fork();
     if (pid < 0) return;
     if (pid == 0) {
+        /* Drop inherited SCHED_FIFO 70 from MoveOriginal's audio thread.
+         * Without this the sidecar runs at the same RT priority as Move's
+         * UI/audio threads and can preempt them on any core. Mirrors the
+         * reset launch_shadow_ui does — same bug, same fix. */
+        struct sched_param sp = { .sched_priority = 0 };
+        sched_setscheduler(0, SCHED_OTHER, &sp);
+
+        /* Pin to cores 0-2, leaving core 3 free for the SPI SCHED_FIFO 90
+         * callback. Matches the RNBO pinning from the JACK-glitch fix. */
+        cpu_set_t mask;
+        CPU_ZERO(&mask);
+        CPU_SET(0, &mask);
+        CPU_SET(1, &mask);
+        CPU_SET(2, &mask);
+        sched_setaffinity(0, sizeof(mask), &mask);
+
         setsid();
         freopen("/dev/null", "w", stdout);
         freopen("/dev/null", "a", stderr);
