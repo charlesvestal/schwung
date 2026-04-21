@@ -12,12 +12,18 @@
 #include <ctype.h>
 #include <dlfcn.h>
 #include <dirent.h>
+#include <limits.h>
 #include <time.h>
 #include <pthread.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <pwd.h>
 #include <malloc.h>
+
+/* Sentinel for "channel field not present in patch file".
+ * Distinguishes genuine absence from the legal 0 values used by
+ * receive_channel (0=All) and forward_channel (0=ch 1 internal). */
+#define PATCH_CHANNEL_UNSET INT_MIN
 
 #include "host/plugin_api_v1.h"
 #include "host/audio_fx_api_v1.h"
@@ -284,8 +290,8 @@ typedef struct {
     midi_input_t midi_input;
     knob_mapping_t knob_mappings[MAX_KNOB_MAPPINGS];
     int knob_mapping_count;
-    int receive_channel;   /* 0=not saved, 1-16=specific channel (from saved preset) */
-    int forward_channel;   /* 0=not saved, -2=passthrough, -1=auto, 1-16=specific (from saved preset) */
+    int receive_channel;   /* PATCH_CHANNEL_UNSET=absent, 0=All, 1-16=specific channel */
+    int forward_channel;   /* PATCH_CHANNEL_UNSET=absent, -2=passthrough, -1=auto, 0-15=channel */
     lfo_state_t lfos[LFO_COUNT];  /* LFO configuration */
 } patch_info_t;
 
@@ -523,8 +529,8 @@ typedef struct chain_instance {
 
     /* Channel settings from last load_file (autosave restore).
      * Used as fallback when current_patch == -1 (file-based load, not library). */
-    int loaded_receive_channel;   /* 0=not set, 1-16=specific channel */
-    int loaded_forward_channel;   /* 0=not set, -2=passthrough, -1=auto, 1-16=channel */
+    int loaded_receive_channel;   /* PATCH_CHANNEL_UNSET=absent, 0=All, 1-16=specific */
+    int loaded_forward_channel;   /* PATCH_CHANNEL_UNSET=absent, -2=passthrough, -1=auto, 0-15=channel */
 } chain_instance_t;
 
 /* ============================================================================
@@ -4655,6 +4661,11 @@ static void* v2_create_instance(const char *module_dir, const char *config_json)
 
     strncpy(inst->module_dir, module_dir, MAX_PATH_LEN - 1);
 
+    /* Channel fields default to "absent" — getters return empty length until
+     * a patch sets them, so callers won't clobber the shim's slot config. */
+    inst->loaded_receive_channel = PATCH_CHANNEL_UNSET;
+    inst->loaded_forward_channel = PATCH_CHANNEL_UNSET;
+
     /* Initialize mutex and condition for recording thread */
     pthread_mutex_init(&inst->ring_mutex, NULL);
     pthread_cond_init(&inst->ring_cond, NULL);
@@ -5775,6 +5786,9 @@ static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_i
     fclose(f);
 
     memset(patch, 0, sizeof(*patch));
+    /* Mark channel fields as absent; json_get_int only overwrites if present. */
+    patch->receive_channel = PATCH_CHANNEL_UNSET;
+    patch->forward_channel = PATCH_CHANNEL_UNSET;
 
     /* Parse name */
     json_get_string(json, "name", patch->name, MAX_NAME_LEN);
@@ -7631,24 +7645,24 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         return snprintf(buf, buf_len, "%d", inst->current_patch);
     }
     if (strcmp(key, "patch:receive_channel") == 0) {
+        int v = PATCH_CHANNEL_UNSET;
         if (inst->current_patch >= 0 && inst->current_patch < inst->patch_count) {
-            return snprintf(buf, buf_len, "%d", inst->patches[inst->current_patch].receive_channel);
+            v = inst->patches[inst->current_patch].receive_channel;
+        } else if (inst->loaded_receive_channel != PATCH_CHANNEL_UNSET) {
+            v = inst->loaded_receive_channel;
         }
-        /* Fallback for file-based loads (current_patch == -1) */
-        if (inst->loaded_receive_channel != 0) {
-            return snprintf(buf, buf_len, "%d", inst->loaded_receive_channel);
-        }
-        return snprintf(buf, buf_len, "0");
+        if (v == PATCH_CHANNEL_UNSET) return 0;  /* absent — caller skips */
+        return snprintf(buf, buf_len, "%d", v);
     }
     if (strcmp(key, "patch:forward_channel") == 0) {
+        int v = PATCH_CHANNEL_UNSET;
         if (inst->current_patch >= 0 && inst->current_patch < inst->patch_count) {
-            return snprintf(buf, buf_len, "%d", inst->patches[inst->current_patch].forward_channel);
+            v = inst->patches[inst->current_patch].forward_channel;
+        } else if (inst->loaded_forward_channel != PATCH_CHANNEL_UNSET) {
+            v = inst->loaded_forward_channel;
         }
-        /* Fallback for file-based loads (current_patch == -1) */
-        if (inst->loaded_forward_channel != 0) {
-            return snprintf(buf, buf_len, "%d", inst->loaded_forward_channel);
-        }
-        return snprintf(buf, buf_len, "0");
+        if (v == PATCH_CHANNEL_UNSET) return 0;  /* absent — caller skips */
+        return snprintf(buf, buf_len, "%d", v);
     }
     if (strncmp(key, "patch_name_", 11) == 0) {
         int idx = atoi(key + 11);
