@@ -257,7 +257,14 @@ int main()
      * change; we pick it up here and propose it to the session — but only when
      * numPeers() == 1 (Move alone), so we never clobber collaboration. */
     const char *DESIRED_TEMPO_PATH = "/data/UserData/schwung/desired-tempo";
+    /* Seed with the file's current mtime so a leftover from a previous session
+     * (only rewritten on set-switch, not on in-set tempo edits) doesn't replay
+     * and clobber the freshly-loaded last-tempo on boot. */
     time_t last_desired_mtime = 0;
+    {
+        struct stat st;
+        if (stat(DESIRED_TEMPO_PATH, &st) == 0) last_desired_mtime = st.st_mtime;
+    }
 
     while (g_running) {
         /* Use a shorter sleep to poll the publisher shm more frequently.
