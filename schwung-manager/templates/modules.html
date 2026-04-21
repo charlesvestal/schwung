@@ -51,7 +51,7 @@
         {{range .Modules}}{{if isInstalled .ID $.Installed}}
         <article class="module-card" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="yes" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" role="link" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();window.location.href=this.dataset.href}" style="cursor:pointer">
             <div class="module-card-header">
-                <h3><a href="/modules/{{.ID}}">{{.Name}}</a> <span class="module-version-inline">{{versionStr (index $.Installed .ID).Version}}</span></h3>
+                <h3><a href="/modules/{{.ID}}">{{.Name}}</a> <a class="module-version-inline" href="{{releaseURL .GithubRepo (index $.Installed .ID).Version}}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">{{versionStr (index $.Installed .ID).Version}}</a></h3>
                 <span class="badge badge-installed">Installed</span>
             </div>
             <p class="module-description">{{.Description}}</p>
@@ -77,7 +77,7 @@
         {{range .Modules}}{{if not (isInstalled .ID $.Installed)}}
         <article class="module-card" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="no" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" role="link" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();window.location.href=this.dataset.href}" style="cursor:pointer">
             <div class="module-card-header">
-                <h3><a href="/modules/{{.ID}}">{{.Name}}</a>{{if (releaseMeta .ID $.ReleaseMeta).Version}} <span class="module-version-inline">{{versionStr (releaseMeta .ID $.ReleaseMeta).Version}}</span>{{end}}</h3>
+                <h3><a href="/modules/{{.ID}}">{{.Name}}</a>{{if (releaseMeta .ID $.ReleaseMeta).Version}} <a class="module-version-inline" href="{{releaseURL .GithubRepo (releaseMeta .ID $.ReleaseMeta).Version}}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">{{versionStr (releaseMeta .ID $.ReleaseMeta).Version}}</a>{{end}}</h3>
             </div>
             <p class="module-description">{{.Description}}</p>
             <div class="module-meta">
@@ -112,7 +112,7 @@
             <tbody>
                 {{range .Modules}}{{if isInstalled .ID $.Installed}}
                 <tr class="module-row" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="yes" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();window.location.href=this.dataset.href}" style="cursor:pointer">
-                    <td><span class="module-list-name">{{.Name}}</span> <span class="module-version-inline">{{versionStr (index $.Installed .ID).Version}}</span></td>
+                    <td><span class="module-list-name">{{.Name}}</span> <a class="module-version-inline" href="{{releaseURL .GithubRepo (index $.Installed .ID).Version}}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">{{versionStr (index $.Installed .ID).Version}}</a></td>
                     <td><span class="badge badge-{{.ComponentType}} badge-inline">{{categoryLabel .ComponentType}}</span></td>
                     <td class="module-list-author" title="{{.Author}}">{{.Author}}</td>
                     <td>
@@ -144,7 +144,7 @@
             <tbody>
                 {{range .Modules}}{{if not (isInstalled .ID $.Installed)}}
                 <tr class="module-row" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="no" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();window.location.href=this.dataset.href}" style="cursor:pointer">
-                    <td><span class="module-list-name">{{.Name}}</span>{{if (releaseMeta .ID $.ReleaseMeta).Version}} <span class="module-version-inline">{{versionStr (releaseMeta .ID $.ReleaseMeta).Version}}</span>{{end}}</td>
+                    <td><span class="module-list-name">{{.Name}}</span>{{if (releaseMeta .ID $.ReleaseMeta).Version}} <a class="module-version-inline" href="{{releaseURL .GithubRepo (releaseMeta .ID $.ReleaseMeta).Version}}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">{{versionStr (releaseMeta .ID $.ReleaseMeta).Version}}</a>{{end}}</td>
                     <td><span class="badge badge-{{.ComponentType}} badge-inline">{{categoryLabel .ComponentType}}</span></td>
                     <td class="module-list-author" title="{{.Author}}">{{.Author}}</td>
                     <td>

@@ -421,6 +421,15 @@ var funcMap = template.FuncMap{
 		}
 		return v
 	},
+	"releaseURL": func(repo, version string) string {
+		if repo == "" || version == "" {
+			return ""
+		}
+		if !strings.HasPrefix(version, "v") {
+			version = "v" + version
+		}
+		return "https://github.com/" + repo + "/releases/tag/" + version
+	},
 	"settingValue": func(key string, values map[string]any) any {
 		if v, ok := values[key]; ok {
 			return v
@@ -2100,11 +2109,12 @@ func (app *App) handleSystem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Best-effort catalog fetch for update check.
-	var latestVersion string
+	var latestVersion, hostRepo string
 	var updateAvailable bool
 	cat, err := app.catalogSvc.Fetch()
 	if err == nil && cat != nil {
 		latestVersion = cat.Host.LatestVersion
+		hostRepo = cat.Host.GithubRepo
 		updateAvailable = latestVersion != "" && latestVersion != version
 	}
 
@@ -2120,6 +2130,7 @@ func (app *App) handleSystem(w http.ResponseWriter, r *http.Request) {
 		"Title":          "System",
 		"Version":        version,
 		"LatestVersion":  latestVersion,
+		"HostRepo":       hostRepo,
 		"UpdateAvailable": updateAvailable,
 		"DiskTotal":      int64(diskTotal),
 		"DiskFree":       int64(diskFree),
