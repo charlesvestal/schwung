@@ -45,6 +45,10 @@
  * ============================================================================ */
 
 #define MIDI_BUFFER_SIZE    256   /* Hardware mailbox MIDI area: 64 USB-MIDI packets */
+/* Hardware MIDI_OUT region is 20 × 4-byte USB-MIDI packets = 80 bytes.
+ * The display buffer starts immediately after at offset 80. Writes to
+ * MIDI_OUT must be bounded by this to avoid corrupting the display. */
+#define HW_MIDI_OUT_SIZE    80
 #define DISPLAY_BUFFER_SIZE 1024  /* 128x64 @ 1bpp = 1024 bytes */
 #define CONTROL_BUFFER_SIZE 64
 #define SHADOW_UI_BUFFER_SIZE     512
