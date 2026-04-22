@@ -3156,7 +3156,7 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
 
         /* Track module load for analytics */
         if (typeof host_track_event === "function" && moduleInfo.id) {
-            host_track_event('module_loaded', '"module_id":"' + moduleInfo.id + '"');
+            host_track_event('module_loaded', '"module_id":"' + moduleInfo.id + '","source":"overtake"');
         }
 
         /* Step 6: Defer init() call - LEDs will be cleared progressively during loading screen.
@@ -11558,6 +11558,11 @@ function handleSelect() {
             if (toolsMenuIndex >= 0 && toolsMenuIndex < toolModules.length) {
                 const tool = toolModules[toolsMenuIndex];
                 if (tool.type === 'divider') break;
+                /* Track tool selection. Overtake tools are tracked inside
+                 * loadOvertakeModule → skip here to avoid a double event. */
+                if (tool.kind !== 'overtake' && typeof host_track_event === "function" && tool.id) {
+                    host_track_event('module_loaded', '"module_id":"' + tool.id + '","source":"tools"');
+                }
                 if (tool.kind === 'overtake') {
                     debugLog("TOOLS SELECT overtake: " + tool.id);
                     announce(`Loading ${tool.name || tool.id}`);
@@ -13566,10 +13571,13 @@ globalThis.init = function() {
 
             const modules = host_list_modules();
             if (modules && modules.length > 0) {
-                /* Send census */
-                const ids = modules.map(m => `"${m.id}"`).join(',');
+                /* Send census, excluding dev/test harness modules that ship
+                 * with the host but aren't meaningful user choices. */
+                const INTERNAL_IDS = new Set(['ui-test', 'text-test', 'splash-test']);
+                const reportable = modules.filter(m => !INTERNAL_IDS.has(m.id));
+                const ids = reportable.map(m => `"${m.id}"`).join(',');
                 host_track_event('module_census',
-                    `"module_count":${modules.length},"modules":[${ids}]`);
+                    `"module_count":${reportable.length},"modules":[${ids}]`);
 
                 /* Diff against previous snapshot (skip on first run) */
                 const snapshotPath = "/data/UserData/schwung/module-snapshot.txt";
