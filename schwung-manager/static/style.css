@@ -953,6 +953,30 @@ h2.section-header + .module-list {
     font-family: var(--font-mono);
 }
 
+a.module-version-inline,
+a.update-available {
+    text-decoration: none;
+}
+
+a.module-version-inline:hover,
+a.module-version-inline:focus,
+a.update-available:hover,
+a.update-available:focus {
+    text-decoration: underline;
+}
+
+.release-notes-link {
+    color: var(--text-muted);
+    font-size: 0.8125rem;
+    margin-left: var(--space-sm);
+    text-decoration: underline;
+}
+
+.release-notes-link:hover,
+.release-notes-link:focus {
+    color: var(--accent);
+}
+
 /* Category badges */
 .badge-sound_generator {
     background: var(--badge-synth);
