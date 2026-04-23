@@ -1363,6 +1363,7 @@ const CHAIN_SETTINGS_ITEMS = [
     { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 0, max: 16, step: 1 },
     { key: "slot:forward_channel", label: "Fwd Ch", type: "int", min: -2, max: 15, step: 1 },  // -2 = passthrough, -1 = auto, 0-15 = ch 1-16
     { key: "slot:transpose", label: "Transpose", type: "int", min: -12, max: 12, step: 1 },
+    { key: "midi_fx_pre_mode", label: "MIDI FX", type: "int", min: 0, max: 1, step: 1 },  // 0 = Post (slot synth only), 1 = Pre (also inject to Move native)
     { key: "mpe_mode", label: "MPE Mode", type: "int", min: 0, max: 1, step: 1 },
     { key: "lfo1", label: "LFO 1", type: "action" },
     { key: "lfo2", label: "LFO 2", type: "action" },
@@ -3892,6 +3893,10 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
     const fwdCh = getSlotParam(slotIndex, "slot:forward_channel");
     if (recvCh !== null) patch.receive_channel = parseInt(recvCh);
     if (fwdCh !== null) patch.forward_channel = parseInt(fwdCh);
+
+    /* Include MIDI FX placement (Pre/Post) */
+    const preMode = getSlotParam(slotIndex, "midi_fx_pre_mode");
+    if (preMode !== null) patch.midi_fx_pre_mode = parseInt(preMode) ? 1 : 0;
 
     /* Include knob mappings */
     const knobMappingsJson = getSlotParam(slotIndex, "knob_mappings");
@@ -6670,6 +6675,17 @@ function applyComponentSelection() {
         if (moduleId && typeof host_track_event === "function") {
             host_track_event('module_loaded', '"module_id":"' + moduleId + '","source":"picker","component":"' + comp.key + '"');
         }
+
+        /* First-placement default for Pre/Post: if the MIDI FX declares
+         * pre_capable in module.json, default the slot to Pre; otherwise
+         * leave the current setting alone. User can still toggle either
+         * direction afterwards. */
+        if (comp.key === "midiFx" && moduleId && success) {
+            const capable = parseInt(getSlotParam(selectedSlot, "midi_fx:pre_capable") || "0");
+            if (capable === 1) {
+                setSlotParam(selectedSlot, "midi_fx_pre_mode", "1");
+            }
+        }
     }
 
     /* Force sync chainConfigs from DSP and reset caches after module change.
@@ -6739,6 +6755,9 @@ function getChainSettingValue(slot, setting) {
         const n = parseInt(val) || 0;
         if (n === 0) return "0 st";
         return `${n > 0 ? "+" : ""}${n} st`;
+    }
+    if (setting.key === "midi_fx_pre_mode") {
+        return parseInt(val) ? "Pre" : "Post";
     }
     return String(val);
 }
