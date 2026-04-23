@@ -86,6 +86,20 @@ typedef struct host_api_v1 {
      * NULL if host does not support tempo. */
     float (*get_bpm)(void);
 
+    /* Inject a USB-MIDI packet into Move's MIDI_IN as if it came from
+     * internal hardware (pads/knobs). The drain forces cable 0 so Move
+     * treats the event as native input — no MIDI_OUT cable-2 echo.
+     *
+     * msg: 4-byte USB-MIDI packet [cable|CIN, status, data1, data2]
+     *      The cable nibble is ignored (always forced to 0 by the drain).
+     * len: must be 4
+     * Returns: bytes queued, or 0 on failure (SHM unavailable, ring full).
+     *
+     * NULL if host does not support MIDI-IN injection (non-shadow host).
+     * Rate-limited to 8 packets/tick at the drain; callers should not
+     * burst more than that per render block. */
+    int (*midi_inject_to_move)(const uint8_t *msg, int len);
+
 } host_api_v1_t;
 
 /*

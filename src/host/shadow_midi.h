@@ -130,6 +130,11 @@ void shadow_drain_ui_midi_dsp(void);
 /* Drain MIDI inject buffer into Move's MIDI_IN (post-ioctl). */
 void shadow_drain_midi_inject(void);
 
+/* Queue a 4-byte USB-MIDI packet for MIDI_IN injection (Pre-mode MIDI FX).
+ * Cable nibble is ignored by the drain (forced to 0).
+ * Returns 4 on success, 0 if SHM unavailable or ring full. */
+int shadow_chain_midi_inject(const uint8_t *msg, int len);
+
 /* Copy incoming MIDI from mailbox to shadow shared memory. */
 void shadow_forward_midi(void);
 
