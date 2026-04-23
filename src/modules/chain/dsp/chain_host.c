@@ -292,6 +292,7 @@ typedef struct {
     int knob_mapping_count;
     int receive_channel;   /* PATCH_CHANNEL_UNSET=absent, 0=All, 1-16=specific channel */
     int forward_channel;   /* PATCH_CHANNEL_UNSET=absent, -2=passthrough, -1=auto, 0-15=channel */
+    int midi_fx_pre_mode;  /* 0 = Post (default), 1 = Pre (additive inject to Move MIDI_IN) */
     lfo_state_t lfos[LFO_COUNT];  /* LFO configuration */
 } patch_info_t;
 
@@ -531,6 +532,17 @@ typedef struct chain_instance {
      * Used as fallback when current_patch == -1 (file-based load, not library). */
     int loaded_receive_channel;   /* PATCH_CHANNEL_UNSET=absent, 0=All, 1-16=specific */
     int loaded_forward_channel;   /* PATCH_CHANNEL_UNSET=absent, -2=passthrough, -1=auto, 0-15=channel */
+
+    /* MIDI FX placement: 0 = Post (default, output goes to slot synth only),
+     * 1 = Pre (output also injected into Move's MIDI_IN cable 0 so Move's
+     * native instrument on the slot's forward_channel plays it additively).
+     * Only meaningful when a MIDI FX is loaded. */
+    int midi_fx_pre_mode;
+
+    /* Cached "pre_capable" hint from the loaded MIDI FX module.json.
+     * Informs the Shadow UI default on first placement; does not gate the
+     * per-slot toggle (legacy FX can still be switched to Pre manually). */
+    int midi_fx_pre_capable[MAX_MIDI_FX];
 } chain_instance_t;
 
 /* ============================================================================
@@ -1478,6 +1490,10 @@ static void unload_all_audio_fx(void) {
     chain_log("All audio FX unloaded");
 }
 
+/* Forward decl — definition lives further down with the other JSON helpers. */
+static int json_get_int_in_section(const char *json, const char *section_key,
+                                   const char *field_key, int *out_val);
+
 /* Load a MIDI FX plugin into an instance slot */
 static int v2_load_midi_fx(chain_instance_t *inst, const char *fx_name) {
     char msg[256];
@@ -1555,6 +1571,33 @@ static int v2_load_midi_fx(chain_instance_t *inst, const char *fx_name) {
 
     parse_ui_hierarchy_cache(fx_dir, inst->midi_fx_ui_hierarchy[slot], sizeof(inst->midi_fx_ui_hierarchy[slot]));
 
+    /* Read optional "pre_capable" hint from module.json capabilities.
+     * This informs the Shadow UI default on first placement; does not gate
+     * the per-slot Pre/Post toggle (the user can still flip it manually). */
+    inst->midi_fx_pre_capable[slot] = 0;
+    char mj_path[MAX_PATH_LEN];
+    snprintf(mj_path, sizeof(mj_path), "%s/module.json", fx_dir);
+    FILE *mj = fopen(mj_path, "r");
+    if (mj) {
+        fseek(mj, 0, SEEK_END);
+        long mj_size = ftell(mj);
+        fseek(mj, 0, SEEK_SET);
+        if (mj_size > 0 && mj_size < 65536) {
+            char *mj_buf = malloc(mj_size + 1);
+            if (mj_buf) {
+                size_t nr = fread(mj_buf, 1, mj_size, mj);
+                mj_buf[nr] = '\0';
+                int cap = 0;
+                if (json_get_int_in_section(mj_buf, "capabilities", "pre_capable", &cap) == 0
+                    && cap) {
+                    inst->midi_fx_pre_capable[slot] = 1;
+                }
+                free(mj_buf);
+            }
+        }
+        fclose(mj);
+    }
+
     inst->midi_fx_count++;
 
     snprintf(msg, sizeof(msg), "MIDI FX loaded: %s (slot %d)", fx_name, slot);
@@ -1585,6 +1628,7 @@ static void v2_unload_all_midi_fx(chain_instance_t *inst) {
         inst->midi_fx_param_counts[i] = 0;
         inst->mod_param_refresh_ms_midi_fx[i] = 0;
         inst->midi_fx_ui_hierarchy[i][0] = '\0';
+        inst->midi_fx_pre_capable[i] = 0;
     }
     inst->midi_fx_count = 0;
 }
@@ -1676,6 +1720,30 @@ static void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
                 inst->synth_plugin_v2->on_midi(inst->synth_instance, out_msgs[i], out_lens[i], 0);
             } else if (inst->synth_plugin && inst->synth_plugin->on_midi) {
                 inst->synth_plugin->on_midi(out_msgs[i], out_lens[i], 0);
+            }
+        }
+
+        /* Pre mode: also inject into Move's MIDI_IN so the native instrument
+         * on the slot's forward_channel plays it additively. Channel byte is
+         * already correct (upstream shadow_chain_remap_channel, or — for
+         * tick-generated output — the FX inherits the held note's channel). */
+        if (inst->midi_fx_pre_mode && inst->host && inst->host->midi_inject_to_move) {
+            for (int i = 0; i < count; i++) {
+                if (out_lens[i] < 1) continue;
+                uint8_t type = out_msgs[i][0] & 0xF0;
+                uint8_t cin;
+                switch (type) {
+                    case 0x80: cin = 0x08; break;  /* Note-off */
+                    case 0x90: cin = 0x09; break;  /* Note-on */
+                    case 0xA0: cin = 0x0A; break;  /* Poly AT */
+                    case 0xB0: cin = 0x0B; break;  /* CC */
+                    case 0xC0: cin = 0x0C; break;  /* Program */
+                    case 0xD0: cin = 0x0D; break;  /* Channel AT */
+                    case 0xE0: cin = 0x0E; break;  /* Pitch bend */
+                    default:   continue;           /* Skip sysex/realtime */
+                }
+                uint8_t pkt[4] = { cin, out_msgs[i][0], out_msgs[i][1], out_msgs[i][2] };
+                inst->host->midi_inject_to_move(pkt, 4);
             }
         }
     }
@@ -6395,6 +6463,9 @@ static int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_i
     json_get_int(json, "receive_channel", &patch->receive_channel);
     json_get_int(json, "forward_channel", &patch->forward_channel);
 
+    /* Parse midi_fx_pre_mode (top-level; absence = Post). */
+    json_get_int(json, "midi_fx_pre_mode", &patch->midi_fx_pre_mode);
+
     /* Parse LFO config: "lfos": { "lfo1": { ... }, "lfo2": ... } */
     const char *lfos_pos = strstr(json, "\"lfos\"");
     if (lfos_pos) {
@@ -6685,6 +6756,7 @@ static int v2_load_patch(chain_instance_t *inst, int patch_idx) {
     int rc = v2_load_from_patch_info(inst, &inst->patches[patch_idx]);
     if (rc == 0) {
         inst->current_patch = patch_idx;
+        inst->midi_fx_pre_mode = inst->patches[patch_idx].midi_fx_pre_mode ? 1 : 0;
         inst->dirty = 0;
     }
     return rc;
@@ -6867,6 +6939,30 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
         }
     }
 
+    /* Pre mode: also inject into Move's MIDI_IN (cable 0, forced by drain)
+     * so Move's native instrument on the slot's forward_channel plays the
+     * transformed stream additively. Channel byte was already remapped by
+     * shadow_chain_remap_channel upstream, so we can inject as-is. */
+    if (inst->midi_fx_pre_mode && inst->host && inst->host->midi_inject_to_move) {
+        for (int i = 0; i < out_count; i++) {
+            if (out_lens[i] < 1) continue;
+            uint8_t type = out_msgs[i][0] & 0xF0;
+            uint8_t cin;
+            switch (type) {
+                case 0x80: cin = 0x08; break;
+                case 0x90: cin = 0x09; break;
+                case 0xA0: cin = 0x0A; break;
+                case 0xB0: cin = 0x0B; break;
+                case 0xC0: cin = 0x0C; break;
+                case 0xD0: cin = 0x0D; break;
+                case 0xE0: cin = 0x0E; break;
+                default:   continue;
+            }
+            uint8_t pkt[4] = { cin, out_msgs[i][0], out_msgs[i][1], out_msgs[i][2] };
+            inst->host->midi_inject_to_move(pkt, 4);
+        }
+    }
+
     /* Forward MIDI to audio FX that have on_midi (e.g. ducker) */
     for (int f = 0; f < inst->fx_count; f++) {
         if (inst->fx_on_midi[f] && inst->fx_instances[f]) {
@@ -6932,6 +7028,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             /* Preserve channel settings for getter fallback (current_patch == -1) */
             inst->loaded_receive_channel = temp_patch.receive_channel;
             inst->loaded_forward_channel = temp_patch.forward_channel;
+            inst->midi_fx_pre_mode = temp_patch.midi_fx_pre_mode ? 1 : 0;
             /* Check for "modified" field to restore dirty state */
             FILE *mf = fopen(val, "r");
             if (mf) {
@@ -6957,6 +7054,13 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         inst->current_patch = -1;
         inst->dirty = 0;
         malloc_trim(0);
+    }
+    else if (strcmp(key, "midi_fx_pre_mode") == 0) {
+        int new_mode = (val && atoi(val)) ? 1 : 0;
+        if (new_mode != inst->midi_fx_pre_mode) {
+            inst->midi_fx_pre_mode = new_mode;
+            inst->dirty = 1;
+        }
     }
     /* Master preset commands */
     else if (strcmp(key, "save_master_preset") == 0) {
@@ -7663,6 +7767,18 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         }
         if (v == PATCH_CHANNEL_UNSET) return 0;  /* absent — caller skips */
         return snprintf(buf, buf_len, "%d", v);
+    }
+    if (strcmp(key, "midi_fx_pre_mode") == 0) {
+        return snprintf(buf, buf_len, "%d", inst->midi_fx_pre_mode ? 1 : 0);
+    }
+    if (strcmp(key, "midi_fx:pre_capable") == 0) {
+        /* Hint from the loaded MIDI FX's module.json. Aggregated as OR
+         * across slots — in practice only one MIDI FX is loaded per slot. */
+        int cap = 0;
+        for (int i = 0; i < inst->midi_fx_count; i++) {
+            if (inst->midi_fx_pre_capable[i]) { cap = 1; break; }
+        }
+        return snprintf(buf, buf_len, "%d", cap);
     }
     if (strncmp(key, "patch_name_", 11) == 0) {
         int idx = atoi(key + 11);
