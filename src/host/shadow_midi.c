@@ -443,6 +443,33 @@ void shadow_drain_midi_inject(void)
     }
 }
 
+/* Queue a 4-byte USB-MIDI packet for MIDI_IN injection.
+ * Called by chain MIDI FX in Pre mode so Move's native instrument receives
+ * the transformed stream alongside the slot synth. Cable nibble is ignored
+ * by the drain (forced to 0), so events look like internal hardware and are
+ * not echoed back on MIDI_OUT cable 2.
+ *
+ * The drain rate-limits to 8 packets/tick; callers should not burst more
+ * than that per render block. Same-thread as the drain (both run in the
+ * shim's SPI loop), so no extra synchronization is needed beyond the
+ * existing ring pattern. */
+int shadow_chain_midi_inject(const uint8_t *msg, int len)
+{
+    if (!msg || len != 4) return 0;
+    if (!host_shadow_midi_inject_shm) return 0;
+    shadow_midi_inject_t *shm = *host_shadow_midi_inject_shm;
+    if (!shm) return 0;
+
+    int wr = shm->write_idx;
+    if (wr + 4 > (int)SHADOW_MIDI_INJECT_BUFFER_SIZE) return 0;
+
+    memcpy(&shm->buffer[wr], msg, 4);
+    shm->write_idx = (uint8_t)(wr + 4);
+    __sync_synchronize();
+    shm->ready++;
+    return 4;
+}
+
 /* Drain MIDI-to-DSP buffer from shadow UI and dispatch to chain slots. */
 void shadow_drain_ui_midi_dsp(void)
 {
