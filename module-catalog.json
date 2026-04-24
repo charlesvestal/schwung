@@ -722,6 +722,17 @@
       "default_branch": "main",
       "asset_name": "twinsampler-module.tar.gz",
       "min_host_version": "0.3.6"
+    },
+    {
+      "id": "impressive-chords",
+      "name": "Impressive Chords",
+      "description": "Advanced chord generator with strumming and clock-synced retriggering",
+      "author": "mestela",
+      "component_type": "midi_fx",
+      "github_repo": "mestela/schwung-impressive-chords",
+      "default_branch": "main",
+      "asset_name": "impressive-chords.tar.gz",
+      "min_host_version": "0.9.0"
     }
   ]
 }
