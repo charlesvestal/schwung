@@ -1771,14 +1771,17 @@ static void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
                     case 0xE0: cin = 0x0E; break;  /* Pitch bend */
                     default:   continue;           /* Skip sysex/realtime */
                 }
-                /* Skip notes currently held via pad — Move's track already
-                 * plays them natively from the pad press, and injecting
-                 * would bump the echo refcount so the pad-release note-off
-                 * gets falsely filtered (arp-hang bug). Applies to note
-                 * events only; CC/aftertouch etc. pass through. */
-                if (out_lens[i] >= 2 &&
-                    (type == 0x80 || type == 0x90 || type == 0xA0) &&
-                    out_msgs[i][1] < 128 &&
+                /* Skip note-ONs on pitches currently held by a pad — Move's
+                 * track already plays them natively, and injecting would
+                 * bump pre_injected_notes so the pad-release note-off gets
+                 * falsely echo-filtered (arp-hang bug). Do NOT apply this
+                 * to note-offs: note-off injections don't touch the echo
+                 * refcount, and suppressing them strands chord voices on
+                 * Move's track when pre_pad_held has accumulated (it can
+                 * leak > 0 when a real pad release gets caught by the echo
+                 * filter and the decrement below never runs). */
+                int is_note_on = (type == 0x90 && out_lens[i] >= 3 && out_msgs[i][2] > 0);
+                if (is_note_on && out_msgs[i][1] < 128 &&
                     inst->pre_pad_held[out_msgs[i][1]] > 0) {
                     continue;
                 }
