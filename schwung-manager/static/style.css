@@ -1226,7 +1226,9 @@ a.update-available:focus {
 }
 
 .setting-row select,
-.setting-row input[type="number"] {
+.setting-row input[type="number"],
+.setting-row input[type="text"],
+.setting-row input[type="password"] {
     width: auto;
     min-width: 0;
     max-width: 200px;
@@ -1237,6 +1239,93 @@ a.update-available:focus {
     padding: var(--space-xs) var(--space-sm);
     font-size: 0.875rem;
     min-height: 36px;
+}
+
+/* Stacked variant: label sits above the input, follow-up notes
+ * (e.g. the API key security warning) flow below at full width
+ * instead of being squashed by the parent flex layout. */
+.setting-row-stacked {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-sm);
+}
+.setting-row-stacked > label {
+    align-self: flex-start;
+}
+.setting-row-stacked .text-input-wrap {
+    width: 100%;
+}
+.setting-row-stacked .text-input-wrap input,
+.setting-row-stacked .text-input-wrap textarea {
+    width: 100%;
+    max-width: 100%;
+}
+.setting-row-stacked .requires-note {
+    margin: 0;
+    font-size: 0.85rem;
+    line-height: 1.4;
+}
+
+.settings-textarea {
+    width: 100%;
+    resize: vertical;
+    font-family: var(--font-mono, ui-monospace, "IBM Plex Mono", Menlo, monospace);
+    font-size: 0.9rem;
+    line-height: 1.45;
+    padding: var(--space-sm) var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-card);
+    color: var(--text);
+    min-height: 200px;
+}
+
+.textarea-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: var(--space-xs);
+}
+
+.btn-link {
+    background: none;
+    border: none;
+    color: var(--accent);
+    font: inherit;
+    padding: 0;
+    cursor: pointer;
+    font-size: 0.85rem;
+    text-decoration: underline;
+}
+.btn-link:hover { opacity: 0.8; }
+
+/* Per-module settings helper text (e.g. "create a free key at <url>"). */
+.settings-help {
+    margin: var(--space-xs) 0 0;
+    font-size: 0.85rem;
+    color: var(--text-muted, var(--text));
+    opacity: 0.8;
+}
+.settings-help a { color: var(--accent); }
+
+/* Module settings index on /config. */
+.module-settings-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+.module-settings-list li {
+    padding: var(--space-sm) var(--space-md);
+    border-bottom: 1px solid var(--border);
+}
+.module-settings-list li:last-child {
+    border-bottom: none;
+}
+.module-settings-list a {
+    color: var(--text);
+    text-decoration: none;
+}
+.module-settings-list a:hover {
+    color: var(--accent);
 }
 
 /* Toggle switch */

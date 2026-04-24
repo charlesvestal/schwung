@@ -162,15 +162,35 @@ type SettingsSection struct {
 }
 
 // SettingsItem describes a single setting within a section.
+//
+// The core Schwung settings schema (shared/settings-schema.json) uses a
+// subset of these fields (key/label/type/options/values/min/max/step).
+// Per-module schemas (modules/<...>/<id>/settings-schema.json) may
+// additionally declare Default, DefaultSource, Rows, Help, HelpUrl for
+// richer rendering of password/textarea/string fields.
 type SettingsItem struct {
-	Key     string  `json:"key"`
-	Label   string  `json:"label"`
-	Type    string  `json:"type"`
+	Key     string   `json:"key"`
+	Label   string   `json:"label"`
+	Type    string   `json:"type"`
 	Options []string `json:"options,omitempty"`
-	Values  []any   `json:"values,omitempty"`
-	Min     float64 `json:"min,omitempty"`
-	Max     float64 `json:"max,omitempty"`
-	Step    float64 `json:"step,omitempty"`
+	Values  []any    `json:"values,omitempty"`
+	Min     float64  `json:"min,omitempty"`
+	Max     float64  `json:"max,omitempty"`
+	Step    float64  `json:"step,omitempty"`
+	Default any      `json:"default,omitempty"`
+	// DefaultSource is a file path relative to the module's install
+	// directory whose contents are used as the default value for a
+	// string/textarea field when no value has been saved. Lets a module
+	// ship a long default (e.g. an LLM system prompt) as a plain text
+	// file rather than inlining it in JSON. Ignored for core schema.
+	DefaultSource string `json:"default_source,omitempty"`
+	// Rows hints the rendered row count for textarea fields.
+	Rows int `json:"rows,omitempty"`
+	// Help is optional prose rendered below the input (e.g. "get a free
+	// API key at <url>"). Plain text; HelpUrl renders as a clickable
+	// link after the Help text.
+	Help    string `json:"help,omitempty"`
+	HelpUrl string `json:"help_url,omitempty"`
 }
 
 // HelpNode represents a node in the help content tree.
@@ -626,6 +646,7 @@ func loadTemplates() (templateMap, error) {
 		"templates/module_detail.html",
 		"templates/files.html",
 		"templates/config.html",
+		"templates/config_module.html",
 		"templates/system.html",
 		"templates/install.html",
 		"templates/help.html",
@@ -991,6 +1012,20 @@ func (app *App) installModule(mod *CatalogModule) error {
 		return fmt.Errorf("creating category dir: %w", err)
 	}
 
+	// Preserve user-owned state across upgrade. The contract is that
+	// tarballs ship settings-schema.json (immutable) but never ship
+	// config.json or secrets/ (mutable, user-owned). Tar's default is
+	// non-destructive for untouched destination files, so these would
+	// normally survive — but a misbehaving tarball that includes them
+	// would clobber the user's data. Snapshot + restore protects
+	// against that.
+	modDir := filepath.Join(categoryDir, mod.ID)
+	preserved, restoreErr := snapshotModuleUserState(modDir)
+	if restoreErr != nil {
+		app.logger.Warn("failed to snapshot user state pre-upgrade",
+			"id", mod.ID, "err", restoreErr)
+	}
+
 	// Extract using tar command (busybox tar on Move).
 	app.logger.Info("extracting module", "id", mod.ID, "dest", categoryDir)
 	cmd := exec.Command("tar", "-xzf", tmpPath, "-C", categoryDir)
@@ -998,8 +1033,14 @@ func (app *App) installModule(mod *CatalogModule) error {
 		return fmt.Errorf("extracting tarball: %w\noutput: %s", err, output)
 	}
 
+	if preserved != nil {
+		if err := restoreModuleUserState(modDir, preserved); err != nil {
+			app.logger.Warn("failed to restore user state post-upgrade",
+				"id", mod.ID, "err", err)
+		}
+	}
+
 	// Fix ownership — schwung-manager runs as root but modules should be owned by ableton.
-	modDir := filepath.Join(categoryDir, mod.ID)
 	chown := exec.Command("chown", "-R", "ableton:users", modDir)
 	if out, err := chown.CombinedOutput(); err != nil {
 		app.logger.Warn("chown failed (non-fatal)", "id", mod.ID, "err", err, "output", string(out))
@@ -1849,12 +1890,35 @@ func (app *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Modules that ship a settings-schema.json get a link in a
+	// "Modules" index at the bottom of the page. Rendering only
+	// needs id/name/label — not the sections themselves.
+	moduleSchemas := discoverModuleSchemas(app.basePath)
+	type moduleIndexEntry struct {
+		ID    string
+		Name  string
+		Label string
+	}
+	var moduleIndex []moduleIndexEntry
+	for _, ms := range moduleSchemas {
+		label := ms.Label
+		if label == "" {
+			label = ms.Name
+		}
+		moduleIndex = append(moduleIndex, moduleIndexEntry{
+			ID:    ms.ID,
+			Name:  ms.Name,
+			Label: label,
+		})
+	}
+
 	data := map[string]any{
-		"Title":    "Settings",
-		"Flash":    r.URL.Query().Get("flash"),
-		"Active":   "config",
-		"Sections": sections,
-		"Values":   values,
+		"Title":       "Settings",
+		"Flash":       r.URL.Query().Get("flash"),
+		"Active":      "config",
+		"Sections":    sections,
+		"Values":      values,
+		"ModuleIndex": moduleIndex,
 	}
 	app.render(w, r, "config.html", data)
 }
@@ -2930,6 +2994,13 @@ func main() {
 	mux.HandleFunc("GET /config/values", app.handleConfigValues)
 	mux.HandleFunc("POST /config/set", app.handleConfigSetSetting)
 
+	// Per-module config pages. Each module that ships a
+	// settings-schema.json gets its own page; values and secrets are
+	// stored inside the module's install directory.
+	mux.HandleFunc("GET /config/modules/{id}", app.handleConfigModule)
+	mux.HandleFunc("GET /config/modules/{id}/values", app.handleConfigModuleValues)
+	mux.HandleFunc("POST /config/modules/{id}/set", app.handleConfigModuleSet)
+
 	// System.
 	mux.HandleFunc("GET /system", app.handleSystem)
 	mux.HandleFunc("POST /system/check-update", app.handleSystemCheckUpdate)
@@ -2988,9 +3059,12 @@ func main() {
 	mux.Handle("GET /stream-auto", displayProxy)
 
 	// Apply middleware.  WebSocket paths bypass CSRF (upgrades don't carry tokens).
+	// SecurityHeaders runs outermost so headers are set even on responses
+	// generated by inner middleware (e.g. CSRF rejections).
 	var handler http.Handler = mux
 	handler = middleware.PathTraversalProtection(allowedRoots)(handler)
 	handler = middleware.CSRFProtectionWithExemptions(handler, []string{"/ws/"})
+	handler = middleware.SecurityHeaders(handler)
 
 	// Never bind port 80 — old entrypoints may pass -port 80 but we must not
 	// interfere with stock MoveWebService.

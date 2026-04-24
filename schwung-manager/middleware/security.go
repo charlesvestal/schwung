@@ -80,6 +80,29 @@ func PathTraversalProtection(allowedRoots []string) func(http.Handler) http.Hand
 	}
 }
 
+// SecurityHeaders adds defense-in-depth response headers on every response.
+//
+//   - X-Frame-Options: DENY blocks the manager from being embedded in an
+//     iframe (clickjacking defense — prevents another LAN page from
+//     overlaying UI to capture keystrokes in password fields).
+//   - X-Content-Type-Options: nosniff prevents MIME-sniffing attacks.
+//   - Referrer-Policy: no-referrer keeps manager URLs out of any subsequent
+//     navigation's Referer header.
+//
+// These are defense in depth on top of CSRF. They do NOT make HTTP
+// confidential — the manager still serves over plain HTTP on the LAN.
+// Treat the local network as the trust boundary for any secrets typed
+// into the config page.
+func SecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r)
+	})
+}
+
 // generateCSRFToken creates a cryptographically random hex token.
 func generateCSRFToken() string {
 	b := make([]byte, 32)

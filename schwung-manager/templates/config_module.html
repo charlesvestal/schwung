@@ -1,0 +1,180 @@
+{{template "base" .}}
+
+{{define "title"}}{{.Title}} - Schwung Manager{{end}}
+
+{{define "content"}}
+<div class="page-header">
+    <p><a href="/config">← Settings</a></p>
+    <h1>{{.ModuleName}}</h1>
+    <p>Module-specific settings. Values are stored inside the module's install directory.</p>
+</div>
+
+{{range .Sections}}
+<section class="info-card">
+    <fieldset>
+        {{if .Label}}<legend class="legend-heading">{{.Label}}</legend>{{end}}
+
+        {{range .Items}}
+        <div class="setting-row{{if or (eq .Type "password") (eq .Type "textarea")}} setting-row-stacked{{end}}">
+            {{if eq .Type "bool"}}
+            <label for="{{.Key}}">{{.Label}}</label>
+            <div class="toggle-wrap">
+                <input type="checkbox" id="{{.Key}}" class="toggle-input" role="switch" data-setting-key="{{.Key}}" {{if settingChecked .Key $.Values}}checked{{end}} onchange="setModuleSetting('{{.Key}}', this.checked)">
+                <label for="{{.Key}}" class="toggle-label"></label>
+            </div>
+
+            {{else if eq .Type "enum"}}
+            <label for="{{.Key}}">{{.Label}}</label>
+            <select id="{{.Key}}" data-setting-key="{{.Key}}" onchange="setModuleSetting('{{.Key}}', this.value)">
+                {{$key := .Key}}
+                {{$values := $.Values}}
+                {{range enumOptions .}}
+                <option value="{{.Value}}" {{if settingSelected .Value $key $values}}selected{{end}}>{{.Label}}</option>
+                {{end}}
+            </select>
+
+            {{else if or (eq .Type "int") (eq .Type "float")}}
+            <label for="{{.Key}}">{{.Label}}</label>
+            <div class="number-input-wrap">
+                <input type="number" id="{{.Key}}" data-setting-key="{{.Key}}"
+                       value="{{settingValue .Key $.Values}}" min="{{.Min}}" max="{{.Max}}" step="{{.Step}}">
+            </div>
+
+            {{else if eq .Type "string"}}
+            <label for="{{.Key}}">{{.Label}}</label>
+            <div class="text-input-wrap">
+                <input type="text" id="{{.Key}}" data-setting-key="{{.Key}}"
+                       value="{{settingValue .Key $.Values}}" autocomplete="off" spellcheck="false">
+            </div>
+
+            {{else if eq .Type "textarea"}}
+            <label for="{{.Key}}">{{.Label}}</label>
+            <div class="text-input-wrap">
+                <textarea id="{{.Key}}" data-setting-key="{{.Key}}"
+                          rows="{{if .Rows}}{{.Rows}}{{else}}12{{end}}"
+                          spellcheck="false"
+                          class="settings-textarea">{{settingValue .Key $.Values}}</textarea>
+            </div>
+            {{if .DefaultSource}}
+            <div class="textarea-actions">
+                <button type="button" class="btn-link" onclick="resetModuleTextareaToDefault('{{.Key}}')">Reset to default</button>
+            </div>
+            {{end}}
+
+            {{else if eq .Type "password"}}
+            <label for="{{.Key}}">{{.Label}}</label>
+            <div class="text-input-wrap">
+                {{$set := index $.SecretSet .Key}}
+                <input type="password" id="{{.Key}}" data-setting-key="{{.Key}}"
+                       value="" placeholder="{{if $set}}(set — leave blank to keep){{else}}(not set){{end}}"
+                       autocomplete="off" spellcheck="false">
+            </div>
+            {{if .Help}}
+            <p class="settings-help">{{.Help}}{{if .HelpUrl}} <a href="{{.HelpUrl}}" target="_blank" rel="noopener noreferrer">{{.HelpUrl}}</a>{{end}}</p>
+            {{end}}
+            <p class="requires-note">
+                <strong>Only enter this on a Wi-Fi network you trust.</strong>
+                Schwung Manager is served over plain HTTP, so anyone on the same network can read this value in transit.
+            </p>
+            {{end}}
+        </div>
+        {{end}}
+    </fieldset>
+</section>
+{{end}}
+
+<script>
+var MODULE_ID = {{.ModuleID}};
+var CSRF = (document.cookie.match(/(^| )csrf_token=([^;]+)/) || [])[2] || '';
+
+function setModuleSetting(key, value) {
+    var fd = new FormData();
+    fd.append('key', key);
+    fd.append('value', String(value));
+    fd.append('csrf_token', CSRF);
+    return fetch('/config/modules/' + MODULE_ID + '/set', {
+        method: 'POST',
+        body: fd,
+        credentials: 'same-origin',
+        headers: { 'X-CSRF-Token': CSRF }
+    }).then(function(r) {
+        if (!r.ok) console.error('Setting failed:', key, r.status);
+    });
+}
+
+var _pollPaused = false;
+setInterval(function() {
+    if (_pollPaused) return;
+    fetch('/config/modules/' + MODULE_ID + '/values', { credentials: 'same-origin' })
+        .then(function(r) { return r.json(); })
+        .then(function(values) {
+            for (var key in values) {
+                var el = document.querySelector('[data-setting-key="' + key + '"]');
+                if (!el) continue;
+                if (el.type === 'checkbox') {
+                    var checked = !!values[key];
+                    if (el.checked !== checked) el.checked = checked;
+                } else if (el.type === 'password') {
+                    /* Don't overwrite password value — we never know it. */
+                } else if (el.tagName === 'SELECT' || el.type === 'number' || el.type === 'text' || el.tagName === 'TEXTAREA') {
+                    var val = String(values[key]);
+                    if (el.value !== val) el.value = val;
+                }
+            }
+        })
+        .catch(function() {});
+}, 2000);
+
+document.querySelectorAll('[data-setting-key]').forEach(function(el) {
+    el.addEventListener('focus', function() { _pollPaused = true; });
+    el.addEventListener('blur', function() { _pollPaused = false; });
+});
+
+/* Number and text inputs: save on blur or Enter, not on every keystroke. */
+document.querySelectorAll('input[type="number"][data-setting-key], input[type="text"][data-setting-key]').forEach(function(el) {
+    el.addEventListener('blur', function() { setModuleSetting(el.dataset.settingKey, el.value); });
+    el.addEventListener('keydown', function(e) { if (e.key === 'Enter') el.blur(); });
+});
+
+/* Textareas: save on blur or Ctrl/Cmd+Enter. */
+document.querySelectorAll('textarea[data-setting-key]').forEach(function(el) {
+    el.addEventListener('blur', function() { setModuleSetting(el.dataset.settingKey, el.value); });
+    el.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); el.blur(); }
+    });
+});
+
+/* Password inputs: save only on blur or Enter, skip if blank. */
+document.querySelectorAll('input[type="password"][data-setting-key]').forEach(function(el) {
+    var commit = function() {
+        if (el.value === '') return;
+        setModuleSetting(el.dataset.settingKey, el.value);
+        el.value = '';
+        el.placeholder = '(set — leave blank to keep)';
+        el.blur();
+    };
+    el.addEventListener('blur', commit);
+    el.addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); commit(); } });
+});
+
+/* "Reset to default" — POST blank value to clear the saved override,
+ * then re-fetch values. The server returns the default_source content
+ * when no value is saved. */
+function resetModuleTextareaToDefault(key) {
+    var fd = new FormData();
+    fd.append('key', key);
+    fd.append('value', '');
+    fd.append('csrf_token', CSRF);
+    fetch('/config/modules/' + MODULE_ID + '/set', {
+        method: 'POST', body: fd, credentials: 'same-origin',
+        headers: { 'X-CSRF-Token': CSRF }
+    }).then(function() {
+        return fetch('/config/modules/' + MODULE_ID + '/values', { credentials: 'same-origin' });
+    }).then(function(r) { return r.json(); })
+      .then(function(values) {
+          var el = document.getElementById(key);
+          if (el && typeof values[key] === 'string') el.value = values[key];
+      }).catch(function() {});
+}
+</script>
+{{end}}
