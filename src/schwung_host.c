@@ -2727,7 +2727,7 @@ int main(int argc, char *argv[])
 
             /* Dev/test harness ids that ship with the host but aren't
              * meaningful user choices — keep them out of the census. */
-            static const char *INTERNAL_IDS[] = {"ui-test", "text-test", "splash-test"};
+            static const char *INTERNAL_IDS[] = {"ui-test", "text-test", "splash-test", "seq-test"};
             const int N_INTERNAL = (int)(sizeof(INTERNAL_IDS) / sizeof(INTERNAL_IDS[0]));
 
             char modules_list[768] = "";
