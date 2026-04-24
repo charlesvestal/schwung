@@ -1257,6 +1257,7 @@ static void shadow_overtake_dsp_load(const char *path) {
     overtake_host_api.midi_send_internal = overtake_midi_send_internal;
     overtake_host_api.midi_send_external = overtake_midi_send_external;
     overtake_host_api.get_bpm = shim_get_bpm;
+    overtake_host_api.midi_inject_to_move = shadow_chain_midi_inject;
 
     /* Extract module directory from dsp path */
     char module_dir[256];
