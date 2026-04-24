@@ -439,6 +439,21 @@ else
     echo "Skipping chain DSP (up to date)"
 fi
 
+# Build Seq Test tool DSP
+mkdir -p ./build/modules/tools/seq-test/
+if needs_rebuild build/modules/tools/seq-test/dsp.so \
+    src/modules/tools/seq-test/dsp/seq-test.c \
+    src/host/plugin_api_v1.h; then
+    echo "Building seq-test tool DSP..."
+    "${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
+        src/modules/tools/seq-test/dsp/seq-test.c \
+        -o build/modules/tools/seq-test/dsp.so \
+        -Isrc \
+        -lm
+else
+    echo "Skipping seq-test DSP (up to date)"
+fi
+
 echo "Building Audio FX plugins..."
 
 # Build Freeverb audio FX
