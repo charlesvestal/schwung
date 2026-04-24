@@ -1,0 +1,19 @@
+{
+    "id": "seq-test",
+    "name": "Seq Test",
+    "version": "0.1.0",
+    "author": "Schwung",
+    "description": "Minimal 4-step sequencer that injects to a Move track via host_api.midi_inject_to_move — validates the generator-tool path independent of the chain.",
+    "component_type": "tool",
+    "dsp": "dsp.so",
+    "tool_config": {
+        "interactive": true,
+        "skip_file_browser": true,
+        "overtake": true
+    },
+    "capabilities": {
+        "midi_out": true,
+        "suspend_keeps_js": true,
+        "button_passthrough": [85]
+    }
+}
