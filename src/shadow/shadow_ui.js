@@ -13582,7 +13582,7 @@ globalThis.init = function() {
             if (modules && modules.length > 0) {
                 /* Send census, excluding dev/test harness modules that ship
                  * with the host but aren't meaningful user choices. */
-                const INTERNAL_IDS = new Set(['ui-test', 'text-test', 'splash-test']);
+                const INTERNAL_IDS = new Set(['ui-test', 'text-test', 'splash-test', 'seq-test']);
                 const reportable = modules.filter(m => !INTERNAL_IDS.has(m.id));
                 const ids = reportable.map(m => `"${m.id}"`).join(',');
                 host_track_event('module_census',
