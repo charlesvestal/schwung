@@ -815,7 +815,8 @@ Detailed documentation is in the `docs/` directory:
 - `docs/DISPLAY.md` - Generic Display protocol (SHM format, WebSocket wire format, touch back-channel)
 - `docs/SPI_PROTOCOL.md` - Full SPI protocol reference (buffer layout, MIDI event formats, display chunking, ioctl commands)
 - `docs/REALTIME_SAFETY.md` - Realtime safety rules and JACK audio glitch root cause analysis
-- `docs/MIDI_INJECTION.md` - MIDI cable-2 injection, echo filter problem, and approaches tried
+- `docs/MIDI_INJECTION.md` - MIDI cable-2 injection, echo filter problem, and approaches tried (historical)
+- `docs/ADDRESSING_MOVE_SYNTHS.md` - Implementation guide for sending MIDI to Move tracks / slot synths from tools, overtake modules, and chain MIDI FX (Schw+Move). Reference: `src/modules/tools/seq-test/`.
 - `MANUAL.md` - User-facing manual (shortcuts, slots, recording, tools, modules)
 - `BUILDING.md` - Build system and cross-compilation
 
