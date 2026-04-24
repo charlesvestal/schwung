@@ -6676,16 +6676,6 @@ function applyComponentSelection() {
             host_track_event('module_loaded', '"module_id":"' + moduleId + '","source":"picker","component":"' + comp.key + '"');
         }
 
-        /* First-placement default for Pre/Post: if the MIDI FX declares
-         * pre_capable in module.json, default the slot to Pre; otherwise
-         * leave the current setting alone. User can still toggle either
-         * direction afterwards. */
-        if (comp.key === "midiFx" && moduleId && success) {
-            const capable = parseInt(getSlotParam(selectedSlot, "midi_fx:pre_capable") || "0");
-            if (capable === 1) {
-                setSlotParam(selectedSlot, "midi_fx_pre_mode", "1");
-            }
-        }
     }
 
     /* Force sync chainConfigs from DSP and reset caches after module change.
