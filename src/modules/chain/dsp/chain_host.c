@@ -548,20 +548,17 @@ typedef struct chain_instance {
      * into Move's MIDI_IN cable 2. Move plays the injection and echoes it
      * back on MIDI_OUT cable 2, which the shim routes to slot chains — we
      * must drop those echoes before they re-enter MIDI FX processing or
-     * the chain would transform and re-inject them (feedback loop). The
-     * per-note refcount survives chord overlaps; note-off echoes decrement
-     * so later note-ons on the same pitch aren't falsely filtered. */
-    uint8_t pre_injected_notes[128];
-
-    /* Pre-mode pad-held tracker: counts how many times each note is
-     * currently held by a pad via cable-2 MIDI_OUT from Move. Tick-path
-     * MIDI FX (arp) must NOT inject a note that's held by a pad, because
-     * that would leave our refcount > 0 for the pad's pitch and the real
-     * pad-release note-off would get mistaken for an injection echo and
-     * eaten (symptom: arp keeps running after pad release). The set is
-     * maintained in v2_on_midi after the echo filter so only real pad
-     * events — not our own injection echoes — affect it. */
-    uint8_t pre_pad_held[128];
+     * the chain would transform and re-inject them (feedback loop).
+     *
+     * Time-windowed so arp can inject held pitches additively. On inject,
+     * stamp the current render frame. An incoming event matches as an echo
+     * only if the stamp is within PRE_ECHO_WINDOW_FRAMES — past that, the
+     * refcount is treated as stale and the event passes through. This lets
+     * a pad release note-off arrive late (well after all related arp echoes
+     * have settled) without being misidentified as an echo. */
+    uint8_t  pre_injected_notes[128];
+    uint32_t pre_injected_frame[128];  /* render-frame stamp on last inject */
+    uint32_t pre_render_frame;         /* monotonically incremented each render_block */
 } chain_instance_t;
 
 /* ============================================================================
@@ -1656,10 +1653,10 @@ static void v2_unload_all_midi_fx(chain_instance_t *inst) {
     inst->midi_fx_count = 0;
 
     /* Stale refcount entries from a now-unloaded MIDI FX would orphan
-     * future note-ons. Reset with the FX chain, along with the pad-held
-     * tracker — whichever FX replaces this one starts clean. */
+     * future note-ons. Reset with the FX chain; the frame-stamps only
+     * matter while refcount > 0 so clearing them alongside is sufficient. */
     memset(inst->pre_injected_notes, 0, sizeof(inst->pre_injected_notes));
-    memset(inst->pre_pad_held, 0, sizeof(inst->pre_pad_held));
+    memset(inst->pre_injected_frame, 0, sizeof(inst->pre_injected_frame));
 }
 
 /* Process MIDI through all loaded MIDI FX modules */
@@ -1770,17 +1767,6 @@ static void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
                     case 0xD0: cin = 0x0D; break;  /* Channel AT */
                     case 0xE0: cin = 0x0E; break;  /* Pitch bend */
                     default:   continue;           /* Skip sysex/realtime */
-                }
-                /* Skip notes currently held via pad — Move's track already
-                 * plays them natively from the pad press, and injecting
-                 * would bump the echo refcount so the pad-release note-off
-                 * gets falsely filtered (arp-hang bug). Applies to note
-                 * events only; CC/aftertouch etc. pass through. */
-                if (out_lens[i] >= 2 &&
-                    (type == 0x80 || type == 0x90 || type == 0xA0) &&
-                    out_msgs[i][1] < 128 &&
-                    inst->pre_pad_held[out_msgs[i][1]] > 0) {
-                    continue;
                 }
                 uint8_t pkt[4] = { (2 << 4) | cin, out_msgs[i][0], out_msgs[i][1], out_msgs[i][2] };
                 if (inst->host->midi_inject_to_move(pkt, 4) > 0) {
@@ -6808,11 +6794,25 @@ static int v2_load_patch(chain_instance_t *inst, int patch_idx) {
  * Per-instance MIDI FX helpers (for V2 API)
  * ========================================================================== */
 
+/* Echo window in render frames. 1 frame ≈ 2.9ms (128 samples @ 44.1kHz).
+ * Move's cable-2 echo of an injected event typically returns within 1–3
+ * frames. 16 frames (~46ms) gives generous margin for jitter while still
+ * being short enough that a deliberate user pad release past that window
+ * passes through as a real event. */
+#define PRE_ECHO_WINDOW_FRAMES 16
+
 /* Check whether an incoming note event is an echo of one we just injected
- * into Move's MIDI_IN (Pre mode). On match, note-off echoes decrement the
- * refcount so future note-ons on the same pitch are processed normally.
- * Returns 1 if the event should be dropped entirely (do not run MIDI FX,
- * do not dispatch to synth), 0 otherwise. */
+ * into Move's MIDI_IN (Pre mode).
+ *
+ * Refcount alone is ambiguous — arp continuously injects on/off for held
+ * pitches, so the refcount stays non-zero throughout a held pad, and a
+ * naive filter would eat the real pad-release note-off. Fix: time-window
+ * the match. An event is an echo only if refcount > 0 AND the last inject
+ * was within PRE_ECHO_WINDOW_FRAMES. Stale refcount (no matching echo
+ * arrived in time) is reset to zero so a later real event can pass.
+ *
+ * Note-off echoes decrement refcount; note-on echoes do not (they're
+ * consumed but the pair's note-off is still pending). */
 static int pre_mode_is_echo(chain_instance_t *inst, const uint8_t *msg, int len) {
     if (!inst || !inst->midi_fx_pre_mode || len < 3) return 0;
     uint8_t type = msg[0] & 0xF0;
@@ -6820,6 +6820,13 @@ static int pre_mode_is_echo(chain_instance_t *inst, const uint8_t *msg, int len)
     uint8_t note = msg[1];
     if (note >= 128) return 0;
     if (inst->pre_injected_notes[note] == 0) return 0;
+
+    uint32_t age = inst->pre_render_frame - inst->pre_injected_frame[note];
+    if (age >= PRE_ECHO_WINDOW_FRAMES) {
+        /* Stale — no echo arrived in time. Clear and treat as real. */
+        inst->pre_injected_notes[note] = 0;
+        return 0;
+    }
 
     int is_note_off = (type == 0x80) || (type == 0x90 && msg[2] == 0);
     if (is_note_off) inst->pre_injected_notes[note]--;
@@ -6829,7 +6836,8 @@ static int pre_mode_is_echo(chain_instance_t *inst, const uint8_t *msg, int len)
 /* Track one injected note-on so we can recognize its cable-2 echo and drop
  * it in pre_mode_is_echo. Called for every packet we write to the inject
  * SHM; note-off injections don't touch the refcount (the decrement happens
- * when the echo arrives). */
+ * when the echo arrives). Also stamps the render frame for time-window
+ * matching. */
 static inline void pre_mode_track_inject(chain_instance_t *inst,
                                          const uint8_t *out_msg, int out_len) {
     if (!inst || out_len < 3) return;
@@ -6838,6 +6846,7 @@ static inline void pre_mode_track_inject(chain_instance_t *inst,
     uint8_t note = out_msg[1];
     if (note < 128 && inst->pre_injected_notes[note] < 255) {
         inst->pre_injected_notes[note]++;
+        inst->pre_injected_frame[note] = inst->pre_render_frame;
     }
 }
 
@@ -6893,27 +6902,9 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
     /* Pre-mode echo filter: drop cable-2 MIDI_OUT echoes of notes we just
      * injected into Move's MIDI_IN. Must run before MIDI FX processing or
      * chord/arp would transform and re-inject the echo → feedback loop.
-     * The pad-originated event (what the user played) is not tracked, so
-     * it passes through normally. */
+     * Time-windowed so a late-arriving pad release isn't misidentified as
+     * an echo when arp has been continuously injecting the held pitch. */
     if (pre_mode_is_echo(inst, msg, len)) return;
-
-    /* Pre-mode pad-held tracker: only real (non-echo) pad notes reach here.
-     * Track so the tick-path can avoid injecting notes the user is
-     * currently holding — otherwise the injection refcount for that pitch
-     * would stay > 0 and the pad's note-off would be falsely filtered as
-     * an echo. Updated after the echo filter so our own injections don't
-     * pollute the set. */
-    if (inst->midi_fx_pre_mode && len >= 3) {
-        uint8_t type = msg[0] & 0xF0;
-        uint8_t note = msg[1];
-        if (note < 128) {
-            if (type == 0x90 && msg[2] > 0) {
-                if (inst->pre_pad_held[note] < 255) inst->pre_pad_held[note]++;
-            } else if (type == 0x80 || (type == 0x90 && msg[2] == 0)) {
-                if (inst->pre_pad_held[note] > 0) inst->pre_pad_held[note]--;
-            }
-        }
-    }
 
     /* Handle knob CC mappings */
     if (len >= 3 && (msg[0] & 0xF0) == 0xB0) {
@@ -7176,13 +7167,10 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         if (new_mode != inst->midi_fx_pre_mode) {
             inst->midi_fx_pre_mode = new_mode;
             inst->dirty = 1;
-            /* Toggling clears any in-flight refcount so a stale echo can't
-             * orphan a future note-on once Pre is re-enabled. The pad-held
-             * set also resets — off→on re-enters Pre with clean state; on→off
-             * means we stop tracking anyway (but a leftover count would
-             * suppress the first inject after a later toggle-on). */
+            /* Clear any in-flight refcount + frame-stamps so a stale echo
+             * can't orphan a future note-on once Pre is re-enabled. */
             memset(inst->pre_injected_notes, 0, sizeof(inst->pre_injected_notes));
-            memset(inst->pre_pad_held, 0, sizeof(inst->pre_pad_held));
+            memset(inst->pre_injected_frame, 0, sizeof(inst->pre_injected_frame));
         }
     }
     /* Master preset commands */
@@ -8617,6 +8605,9 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
         memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
         return;
     }
+
+    /* Pre-mode echo filter uses render-frame count for age-based expiry. */
+    inst->pre_render_frame++;
 
     /* Update smoothed parameters and send interpolated values to sub-plugins */
     {
