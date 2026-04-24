@@ -552,6 +552,16 @@ typedef struct chain_instance {
      * per-note refcount survives chord overlaps; note-off echoes decrement
      * so later note-ons on the same pitch aren't falsely filtered. */
     uint8_t pre_injected_notes[128];
+
+    /* Pre-mode pad-held tracker: counts how many times each note is
+     * currently held by a pad via cable-2 MIDI_OUT from Move. Tick-path
+     * MIDI FX (arp) must NOT inject a note that's held by a pad, because
+     * that would leave our refcount > 0 for the pad's pitch and the real
+     * pad-release note-off would get mistaken for an injection echo and
+     * eaten (symptom: arp keeps running after pad release). The set is
+     * maintained in v2_on_midi after the echo filter so only real pad
+     * events — not our own injection echoes — affect it. */
+    uint8_t pre_pad_held[128];
 } chain_instance_t;
 
 /* ============================================================================
@@ -1646,8 +1656,10 @@ static void v2_unload_all_midi_fx(chain_instance_t *inst) {
     inst->midi_fx_count = 0;
 
     /* Stale refcount entries from a now-unloaded MIDI FX would orphan
-     * future note-ons. Reset with the FX chain. */
+     * future note-ons. Reset with the FX chain, along with the pad-held
+     * tracker — whichever FX replaces this one starts clean. */
     memset(inst->pre_injected_notes, 0, sizeof(inst->pre_injected_notes));
+    memset(inst->pre_pad_held, 0, sizeof(inst->pre_pad_held));
 }
 
 /* Process MIDI through all loaded MIDI FX modules */
@@ -1758,6 +1770,17 @@ static void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
                     case 0xD0: cin = 0x0D; break;  /* Channel AT */
                     case 0xE0: cin = 0x0E; break;  /* Pitch bend */
                     default:   continue;           /* Skip sysex/realtime */
+                }
+                /* Skip notes currently held via pad — Move's track already
+                 * plays them natively from the pad press, and injecting
+                 * would bump the echo refcount so the pad-release note-off
+                 * gets falsely filtered (arp-hang bug). Applies to note
+                 * events only; CC/aftertouch etc. pass through. */
+                if (out_lens[i] >= 2 &&
+                    (type == 0x80 || type == 0x90 || type == 0xA0) &&
+                    out_msgs[i][1] < 128 &&
+                    inst->pre_pad_held[out_msgs[i][1]] > 0) {
+                    continue;
                 }
                 uint8_t pkt[4] = { (2 << 4) | cin, out_msgs[i][0], out_msgs[i][1], out_msgs[i][2] };
                 if (inst->host->midi_inject_to_move(pkt, 4) > 0) {
@@ -6874,6 +6897,24 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
      * it passes through normally. */
     if (pre_mode_is_echo(inst, msg, len)) return;
 
+    /* Pre-mode pad-held tracker: only real (non-echo) pad notes reach here.
+     * Track so the tick-path can avoid injecting notes the user is
+     * currently holding — otherwise the injection refcount for that pitch
+     * would stay > 0 and the pad's note-off would be falsely filtered as
+     * an echo. Updated after the echo filter so our own injections don't
+     * pollute the set. */
+    if (inst->midi_fx_pre_mode && len >= 3) {
+        uint8_t type = msg[0] & 0xF0;
+        uint8_t note = msg[1];
+        if (note < 128) {
+            if (type == 0x90 && msg[2] > 0) {
+                if (inst->pre_pad_held[note] < 255) inst->pre_pad_held[note]++;
+            } else if (type == 0x80 || (type == 0x90 && msg[2] == 0)) {
+                if (inst->pre_pad_held[note] > 0) inst->pre_pad_held[note]--;
+            }
+        }
+    }
+
     /* Handle knob CC mappings */
     if (len >= 3 && (msg[0] & 0xF0) == 0xB0) {
         uint8_t cc = msg[1];
@@ -7136,8 +7177,12 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             inst->midi_fx_pre_mode = new_mode;
             inst->dirty = 1;
             /* Toggling clears any in-flight refcount so a stale echo can't
-             * orphan a future note-on once Pre is re-enabled. */
+             * orphan a future note-on once Pre is re-enabled. The pad-held
+             * set also resets — off→on re-enters Pre with clean state; on→off
+             * means we stop tracking anyway (but a leftover count would
+             * suppress the first inject after a later toggle-on). */
             memset(inst->pre_injected_notes, 0, sizeof(inst->pre_injected_notes));
+            memset(inst->pre_pad_held, 0, sizeof(inst->pre_pad_held));
         }
     }
     /* Master preset commands */
