@@ -390,8 +390,49 @@ void shadow_drain_midi_inject(void)
 {
     shadow_midi_inject_t *inject_shm = *host_shadow_midi_inject_shm;
     static uint8_t last_ready = 0;
+    /* MIDI_IN events are 8 bytes each (4 USB-MIDI + 4 timestamp). Scanning
+     * at 4-byte stride would land mid-event and corrupt Move's parse (Move
+     * terminates the scan at the first zero slot, so any gap loses all
+     * following real events). Use 8-byte stride + byte-0 check for empty. */
+    const int MIDI_IN_EVT_STRIDE = 8;
+    const int MIDI_IN_MAX_EVTS   = 31;              /* SCHWUNG_MIDI_IN_MAX */
+    const int MIDI_IN_MAX_BYTES  = MIDI_IN_EVT_STRIDE * MIDI_IN_MAX_EVTS;
 
     if (!inject_shm) return;
+
+    /* Defer cable-2 injection when there's cable-0 hardware activity in the
+     * SAME tick. Injecting concurrently with a live pad event appears to
+     * race Move's firmware (observed: SIGABRT deep in Move's stack after
+     * ~1s of arp tick-path injections). The note-path injections (chord)
+     * escape this because they fire only AFTER Move has echoed the pad on
+     * cable-2 MIDI_OUT — at which point cable-0 MIDI_IN has been consumed.
+     * Tick-path injections (arp, generator-style FX) run every SPI cycle
+     * independently, so they need an explicit gate.
+     *
+     * Rule: if MIDI_IN has any cable-0 events this tick, reset the defer
+     * counter and hold the SHM contents. Otherwise, drain only once the
+     * counter has climbed to 2 (≈6ms at 2.9ms/tick). Pattern is from
+     * chord-mode-native (shadow_chord.c CHORD_DEFER_FRAMES). */
+    const int DEFER_FRAMES = 2;
+    static int defer_counter = 0;
+    uint8_t *midi_in_scan = host_shadow_mailbox + MIDI_IN_OFFSET;
+    int cable0_active = 0;
+    for (int j = 0; j < MIDI_IN_MAX_BYTES; j += MIDI_IN_EVT_STRIDE) {
+        if (midi_in_scan[j] == 0) break;      /* end-of-events */
+        if ((midi_in_scan[j] >> 4) == 0) {    /* cable 0 */
+            cable0_active = 1;
+            break;
+        }
+    }
+    if (cable0_active) {
+        defer_counter = 0;
+        return;
+    }
+    if (defer_counter < DEFER_FRAMES) {
+        defer_counter++;
+        return;
+    }
+
     if (inject_shm->ready == last_ready) return;
 
     last_ready = inject_shm->ready;
@@ -412,14 +453,6 @@ void shadow_drain_midi_inject(void)
 
     /* Inject into shadow_mailbox at MIDI_IN_OFFSET */
     uint8_t *midi_in = host_shadow_mailbox + MIDI_IN_OFFSET;
-
-    /* MIDI_IN events are 8 bytes each (4 USB-MIDI + 4 timestamp). Scanning
-     * at 4-byte stride would land mid-event and corrupt Move's parse (Move
-     * terminates the scan at the first zero slot, so any gap loses all
-     * following real events). Use 8-byte stride + byte-0 check for empty. */
-    const int MIDI_IN_EVT_STRIDE = 8;
-    const int MIDI_IN_MAX_EVTS   = 31;              /* SCHWUNG_MIDI_IN_MAX */
-    const int MIDI_IN_MAX_BYTES  = MIDI_IN_EVT_STRIDE * MIDI_IN_MAX_EVTS;
 
     int hw_offset = 0;
     int injected = 0;
@@ -445,7 +478,7 @@ void shadow_drain_midi_inject(void)
         char dbg[128];
         snprintf(dbg, sizeof(dbg), "MIDI inject: drained %d/%d pkts at offset %d",
                  injected, copy_len / 4,
-                 injected > 0 ? (hw_offset - injected * 4) : -1);
+                 hw_offset - injected * MIDI_IN_EVT_STRIDE);
         host_log(dbg);
     }
 }
