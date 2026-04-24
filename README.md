@@ -193,6 +193,7 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 | [Genera](https://github.com/fillioning/genera-move) | Generative note and chord sequencer with 7 generation modes, stutter engine with beat-repeat, 20 scales, chord stacking, capture/loop, and humanize | Vincent Fillion |
 | [Euclidrum](https://github.com/fillioning/euclidrum-move) | 8-lane generative Euclidean drum sequencer — 32 presets, polymetric rates, mutation/drift, per-lane freq/decay CC output. Purpose-built companion for Weird Dreams. | Vincent Fillion |
 | [Branchage](https://github.com/broduoliviercontact-web/Schwung-Midi-Fx-branchages-Multi-Random-generator) | Grids drum maps with per-lane Branches-style note branching | Mutable Instruments ideas / port for Schwung Move |
+| [Impressive Chords](https://github.com/mestela/schwung-impressive-chords) | Advanced chord generator with strumming and clock-synced retriggering | mestela |
 
 ### Overtake
 
