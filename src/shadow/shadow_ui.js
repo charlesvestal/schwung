@@ -6757,7 +6757,7 @@ function getChainSettingValue(slot, setting) {
         return `${n > 0 ? "+" : ""}${n} st`;
     }
     if (setting.key === "midi_fx_pre_mode") {
-        return parseInt(val) ? "Pre" : "Post";
+        return parseInt(val) ? "Schw+Move" : "Schw";
     }
     return String(val);
 }
