@@ -543,6 +543,15 @@ typedef struct chain_instance {
      * Informs the Shadow UI default on first placement; does not gate the
      * per-slot toggle (legacy FX can still be switched to Pre manually). */
     int midi_fx_pre_capable[MAX_MIDI_FX];
+
+    /* Pre-mode echo refcount: per-note counter tracking notes we injected
+     * into Move's MIDI_IN cable 2. Move plays the injection and echoes it
+     * back on MIDI_OUT cable 2, which the shim routes to slot chains — we
+     * must drop those echoes before they re-enter MIDI FX processing or
+     * the chain would transform and re-inject them (feedback loop). The
+     * per-note refcount survives chord overlaps; note-off echoes decrement
+     * so later note-ons on the same pitch aren't falsely filtered. */
+    uint8_t pre_injected_notes[128];
 } chain_instance_t;
 
 /* ============================================================================
@@ -1494,6 +1503,10 @@ static void unload_all_audio_fx(void) {
 static int json_get_int_in_section(const char *json, const char *section_key,
                                    const char *field_key, int *out_val);
 
+/* Forward decls — definitions live further down with the v2 on_midi helpers. */
+static inline void pre_mode_track_inject(chain_instance_t *inst,
+                                         const uint8_t *out_msg, int out_len);
+
 /* Load a MIDI FX plugin into an instance slot */
 static int v2_load_midi_fx(chain_instance_t *inst, const char *fx_name) {
     char msg[256];
@@ -1631,6 +1644,10 @@ static void v2_unload_all_midi_fx(chain_instance_t *inst) {
         inst->midi_fx_pre_capable[i] = 0;
     }
     inst->midi_fx_count = 0;
+
+    /* Stale refcount entries from a now-unloaded MIDI FX would orphan
+     * future note-ons. Reset with the FX chain. */
+    memset(inst->pre_injected_notes, 0, sizeof(inst->pre_injected_notes));
 }
 
 /* Process MIDI through all loaded MIDI FX modules */
@@ -1742,8 +1759,10 @@ static void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
                     case 0xE0: cin = 0x0E; break;  /* Pitch bend */
                     default:   continue;           /* Skip sysex/realtime */
                 }
-                uint8_t pkt[4] = { cin, out_msgs[i][0], out_msgs[i][1], out_msgs[i][2] };
-                inst->host->midi_inject_to_move(pkt, 4);
+                uint8_t pkt[4] = { (2 << 4) | cin, out_msgs[i][0], out_msgs[i][1], out_msgs[i][2] };
+                if (inst->host->midi_inject_to_move(pkt, 4) > 0) {
+                    pre_mode_track_inject(inst, out_msgs[i], out_lens[i]);
+                }
             }
         }
     }
@@ -6766,6 +6785,39 @@ static int v2_load_patch(chain_instance_t *inst, int patch_idx) {
  * Per-instance MIDI FX helpers (for V2 API)
  * ========================================================================== */
 
+/* Check whether an incoming note event is an echo of one we just injected
+ * into Move's MIDI_IN (Pre mode). On match, note-off echoes decrement the
+ * refcount so future note-ons on the same pitch are processed normally.
+ * Returns 1 if the event should be dropped entirely (do not run MIDI FX,
+ * do not dispatch to synth), 0 otherwise. */
+static int pre_mode_is_echo(chain_instance_t *inst, const uint8_t *msg, int len) {
+    if (!inst || !inst->midi_fx_pre_mode || len < 3) return 0;
+    uint8_t type = msg[0] & 0xF0;
+    if (type != 0x80 && type != 0x90) return 0;
+    uint8_t note = msg[1];
+    if (note >= 128) return 0;
+    if (inst->pre_injected_notes[note] == 0) return 0;
+
+    int is_note_off = (type == 0x80) || (type == 0x90 && msg[2] == 0);
+    if (is_note_off) inst->pre_injected_notes[note]--;
+    return 1;
+}
+
+/* Track one injected note-on so we can recognize its cable-2 echo and drop
+ * it in pre_mode_is_echo. Called for every packet we write to the inject
+ * SHM; note-off injections don't touch the refcount (the decrement happens
+ * when the echo arrives). */
+static inline void pre_mode_track_inject(chain_instance_t *inst,
+                                         const uint8_t *out_msg, int out_len) {
+    if (!inst || out_len < 3) return;
+    uint8_t type = out_msg[0] & 0xF0;
+    if (type != 0x90 || out_msg[2] == 0) return;  /* only real note-ons */
+    uint8_t note = out_msg[1];
+    if (note < 128 && inst->pre_injected_notes[note] < 255) {
+        inst->pre_injected_notes[note]++;
+    }
+}
+
 /* Send a note to synth with optional transposition (for chords) */
 static void inst_send_note_to_synth(chain_instance_t *inst, const uint8_t *msg, int len, int source, int interval) {
     if (!inst || len < 3) return;
@@ -6814,6 +6866,13 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
         }
         return;
     }
+
+    /* Pre-mode echo filter: drop cable-2 MIDI_OUT echoes of notes we just
+     * injected into Move's MIDI_IN. Must run before MIDI FX processing or
+     * chord/arp would transform and re-inject the echo → feedback loop.
+     * The pad-originated event (what the user played) is not tracked, so
+     * it passes through normally. */
+    if (pre_mode_is_echo(inst, msg, len)) return;
 
     /* Handle knob CC mappings */
     if (len >= 3 && (msg[0] & 0xF0) == 0xB0) {
@@ -6939,13 +6998,27 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
         }
     }
 
-    /* Pre mode: also inject into Move's MIDI_IN (cable 0, forced by drain)
-     * so Move's native instrument on the slot's forward_channel plays the
-     * transformed stream additively. Channel byte was already remapped by
-     * shadow_chain_remap_channel upstream, so we can inject as-is. */
-    if (inst->midi_fx_pre_mode && inst->host && inst->host->midi_inject_to_move) {
+    /* Pre mode: also inject into Move's MIDI_IN (cable 2) so Move's native
+     * instrument on the slot's forward_channel plays the transformed stream
+     * additively. Channel byte was already remapped by
+     * shadow_chain_remap_channel upstream so we inject as-is.
+     *
+     * Root-match skip: if an output note matches the input note exactly
+     * (same status + data1), Move's pad already triggered it via the
+     * cable-0 pad path. Injecting would double-trigger the same note on
+     * the track instrument. Chord-style FX emit root+intervals; only the
+     * intervals need injecting. */
+    if (inst->midi_fx_pre_mode && inst->host && inst->host->midi_inject_to_move
+        && len >= 2) {
         for (int i = 0; i < out_count; i++) {
             if (out_lens[i] < 1) continue;
+
+            /* Skip injection for events identical to the input pad event */
+            if (out_lens[i] >= 2 &&
+                out_msgs[i][0] == msg[0] && out_msgs[i][1] == msg[1]) {
+                continue;
+            }
+
             uint8_t type = out_msgs[i][0] & 0xF0;
             uint8_t cin;
             switch (type) {
@@ -6958,11 +7031,10 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
                 case 0xE0: cin = 0x0E; break;
                 default:   continue;
             }
-            /* Cable 2 = external USB. Move routes by channel to the track
-             * instrument. Cable 0 wouldn't work — it's Move's internal
-             * prefix protocol (pads 68-99, steps 16-31, track CCs 40-43). */
             uint8_t pkt[4] = { (2 << 4) | cin, out_msgs[i][0], out_msgs[i][1], out_msgs[i][2] };
-            inst->host->midi_inject_to_move(pkt, 4);
+            if (inst->host->midi_inject_to_move(pkt, 4) > 0) {
+                pre_mode_track_inject(inst, out_msgs[i], out_lens[i]);
+            }
         }
     }
 
@@ -7063,6 +7135,9 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         if (new_mode != inst->midi_fx_pre_mode) {
             inst->midi_fx_pre_mode = new_mode;
             inst->dirty = 1;
+            /* Toggling clears any in-flight refcount so a stale echo can't
+             * orphan a future note-on once Pre is re-enabled. */
+            memset(inst->pre_injected_notes, 0, sizeof(inst->pre_injected_notes));
         }
     }
     /* Master preset commands */
