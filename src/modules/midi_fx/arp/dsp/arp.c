@@ -86,7 +86,9 @@ typedef struct {
     /* Held notes (sorted low to high) */
     uint8_t held_notes[MAX_ARP_NOTES];
     uint8_t held_velocities[MAX_ARP_NOTES];
+    uint8_t held_channels[MAX_ARP_NOTES];  /* MIDI channel (0-15) per held note */
     int held_count;
+    uint8_t last_out_channel;              /* Channel to reuse when no notes held */
 
     /* Sequencer state */
     int step;
@@ -183,7 +185,8 @@ static void arp_destroy_instance(void *instance) {
 }
 
 /* Add note to held notes array (sorted insertion) */
-static void arp_add_note(arp_instance_t *inst, uint8_t note, uint8_t velocity) {
+static void arp_add_note(arp_instance_t *inst, uint8_t note, uint8_t velocity,
+                         uint8_t channel) {
     if (inst->held_count >= MAX_ARP_NOTES) return;
 
     /* Find insertion point to keep sorted */
@@ -197,14 +200,18 @@ static void arp_add_note(arp_instance_t *inst, uint8_t note, uint8_t velocity) {
     for (int j = inst->held_count; j > i; j--) {
         inst->held_notes[j] = inst->held_notes[j - 1];
         inst->held_velocities[j] = inst->held_velocities[j - 1];
+        inst->held_channels[j] = inst->held_channels[j - 1];
     }
 
     /* Insert new note */
     inst->held_notes[i] = note;
     inst->held_velocities[i] = velocity;
+    inst->held_channels[i] = channel;
     inst->held_count++;
 
-    /* Use first note's velocity for arp */
+    /* Remember channel for note-offs after release, and use first note's
+     * velocity for arp output */
+    inst->last_out_channel = channel;
     if (inst->held_count == 1) {
         inst->velocity = velocity;
     }
@@ -225,6 +232,7 @@ static void arp_remove_note(arp_instance_t *inst, uint8_t note) {
         for (int i = found; i < inst->held_count - 1; i++) {
             inst->held_notes[i] = inst->held_notes[i + 1];
             inst->held_velocities[i] = inst->held_velocities[i + 1];
+            inst->held_channels[i] = inst->held_channels[i + 1];
         }
         inst->held_count--;
 
@@ -237,7 +245,7 @@ static void arp_remove_note(arp_instance_t *inst, uint8_t note) {
 }
 
 /* Get next note in arp sequence and advance step */
-static int arp_get_next_note(arp_instance_t *inst) {
+static int arp_get_next_note(arp_instance_t *inst, uint8_t *out_channel) {
     if (inst->held_count == 0) return -1;
 
     int note_idx = inst->step;
@@ -274,6 +282,7 @@ static int arp_get_next_note(arp_instance_t *inst) {
             break;
     }
 
+    if (out_channel) *out_channel = inst->held_channels[note_idx];
     return inst->held_notes[note_idx];
 }
 
@@ -281,9 +290,10 @@ static int arp_get_next_note(arp_instance_t *inst) {
 static int arp_trigger_step(arp_instance_t *inst, uint8_t out_msgs[][3], int out_lens[], int max_out) {
     int count = 0;
 
-    /* Note off for previous note */
+    /* Note off for previous note — reuse last output channel so the off
+     * routes to the same track as the on that triggered it. */
     if (inst->last_note >= 0 && count < max_out) {
-        out_msgs[count][0] = 0x80;
+        out_msgs[count][0] = 0x80 | (inst->last_out_channel & 0x0F);
         out_msgs[count][1] = (uint8_t)inst->last_note;
         out_msgs[count][2] = 0;
         out_lens[count] = 3;
@@ -291,14 +301,16 @@ static int arp_trigger_step(arp_instance_t *inst, uint8_t out_msgs[][3], int out
     }
 
     /* Get and play next note */
-    int next = arp_get_next_note(inst);
+    uint8_t next_ch = inst->last_out_channel;
+    int next = arp_get_next_note(inst, &next_ch);
     if (next >= 0 && count < max_out) {
-        out_msgs[count][0] = 0x90;  /* Note on */
+        out_msgs[count][0] = 0x90 | (next_ch & 0x0F);  /* Note on, inherited channel */
         out_msgs[count][1] = (uint8_t)next;
         out_msgs[count][2] = inst->velocity;
         out_lens[count] = 3;
         count++;
         inst->last_note = (int8_t)next;
+        inst->last_out_channel = next_ch;
     }
 
     return count;
@@ -337,7 +349,7 @@ static int arp_process_midi(void *instance,
             inst->clock_running = 0;
             /* Send note off if playing */
             if (inst->last_note >= 0 && max_out > 0) {
-                out_msgs[0][0] = 0x80;
+                out_msgs[0][0] = 0x80 | (inst->last_out_channel & 0x0F);
                 out_msgs[0][1] = (uint8_t)inst->last_note;
                 out_msgs[0][2] = 0;
                 out_lens[0] = 3;
@@ -356,9 +368,10 @@ static int arp_process_midi(void *instance,
     if (inst->mode != ARP_OFF && (status_type == 0x90 || status_type == 0x80) && in_len >= 3) {
         uint8_t note = in_msg[1];
         uint8_t velocity = in_msg[2];
+        uint8_t channel = in_msg[0] & 0x0F;
 
         if (status_type == 0x90 && velocity > 0) {
-            arp_add_note(inst, note, velocity);
+            arp_add_note(inst, note, velocity, channel);
         } else {
             arp_remove_note(inst, note);
         }
@@ -386,7 +399,7 @@ static int arp_tick(void *instance,
     /* If arp is off or no notes held, send note-off for any sounding note */
     if (inst->mode == ARP_OFF || inst->held_count == 0) {
         if (inst->last_note >= 0 && count < max_out) {
-            out_msgs[count][0] = 0x80;  /* Note off */
+            out_msgs[count][0] = 0x80 | (inst->last_out_channel & 0x0F);  /* Note off */
             out_msgs[count][1] = (uint8_t)inst->last_note;
             out_msgs[count][2] = 0;
             out_lens[count] = 3;
