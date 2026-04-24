@@ -413,24 +413,31 @@ void shadow_drain_midi_inject(void)
     /* Inject into shadow_mailbox at MIDI_IN_OFFSET */
     uint8_t *midi_in = host_shadow_mailbox + MIDI_IN_OFFSET;
 
+    /* MIDI_IN events are 8 bytes each (4 USB-MIDI + 4 timestamp). Scanning
+     * at 4-byte stride would land mid-event and corrupt Move's parse (Move
+     * terminates the scan at the first zero slot, so any gap loses all
+     * following real events). Use 8-byte stride + byte-0 check for empty. */
+    const int MIDI_IN_EVT_STRIDE = 8;
+    const int MIDI_IN_MAX_EVTS   = 31;              /* SCHWUNG_MIDI_IN_MAX */
+    const int MIDI_IN_MAX_BYTES  = MIDI_IN_EVT_STRIDE * MIDI_IN_MAX_EVTS;
+
     int hw_offset = 0;
     int injected = 0;
     for (int i = 0; i < copy_len && injected < 8; i += 4) {
-        /* Force cable 0 (internal hardware) */
-        local_buf[i] = (local_buf[i] & 0x0F) | 0x00;
-
-        /* Find empty 4-byte slot */
-        while (hw_offset < MIDI_BUFFER_SIZE) {
-            if (midi_in[hw_offset] == 0 && midi_in[hw_offset+1] == 0 &&
-                midi_in[hw_offset+2] == 0 && midi_in[hw_offset+3] == 0) {
-                break;
-            }
-            hw_offset += 4;
+        /* Find empty 8-byte slot (byte 0 == 0 means no cable/CIN, unused) */
+        while (hw_offset < MIDI_IN_MAX_BYTES) {
+            if (midi_in[hw_offset] == 0) break;
+            hw_offset += MIDI_IN_EVT_STRIDE;
         }
-        if (hw_offset >= MIDI_BUFFER_SIZE) break;  /* Buffer full */
+        if (hw_offset >= MIDI_IN_MAX_BYTES) break;  /* Buffer full */
 
+        /* Write 4-byte USB-MIDI packet + zero the 4-byte timestamp.
+         * Cable nibble in local_buf[i] is preserved — callers choose cable:
+         * 0 for internal hardware (pads/buttons, Move-prefix protocol),
+         * 2 for external USB (general MIDI, routed to tracks by channel). */
         memcpy(&midi_in[hw_offset], &local_buf[i], 4);
-        hw_offset += 4;
+        memset(&midi_in[hw_offset + 4], 0, 4);
+        hw_offset += MIDI_IN_EVT_STRIDE;
         injected++;
     }
 
@@ -445,9 +452,12 @@ void shadow_drain_midi_inject(void)
 
 /* Queue a 4-byte USB-MIDI packet for MIDI_IN injection.
  * Called by chain MIDI FX in Pre mode so Move's native instrument receives
- * the transformed stream alongside the slot synth. Cable nibble is ignored
- * by the drain (forced to 0), so events look like internal hardware and are
- * not echoed back on MIDI_OUT cable 2.
+ * the transformed stream alongside the slot synth.
+ *
+ * The cable nibble in msg[0] is preserved by the drain. For Pre-mode chain
+ * use, set cable = 2 (external USB) so Move routes by channel to the track
+ * instrument; cable 0 is reserved for Move's pad/button prefix protocol and
+ * won't reach track instruments for pitched notes.
  *
  * The drain rate-limits to 8 packets/tick; callers should not burst more
  * than that per render block. Same-thread as the drain (both run in the

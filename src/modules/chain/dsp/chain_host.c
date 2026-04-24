@@ -6958,7 +6958,10 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
                 case 0xE0: cin = 0x0E; break;
                 default:   continue;
             }
-            uint8_t pkt[4] = { cin, out_msgs[i][0], out_msgs[i][1], out_msgs[i][2] };
+            /* Cable 2 = external USB. Move routes by channel to the track
+             * instrument. Cable 0 wouldn't work — it's Move's internal
+             * prefix protocol (pads 68-99, steps 16-31, track CCs 40-43). */
+            uint8_t pkt[4] = { (2 << 4) | cin, out_msgs[i][0], out_msgs[i][1], out_msgs[i][2] };
             inst->host->midi_inject_to_move(pkt, 4);
         }
     }
