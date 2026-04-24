@@ -168,12 +168,18 @@ The last position in each slot contains settings:
 | **Volume** | Slot volume level |
 | **Receive Ch** | MIDI channel this slot listens to (match your Move track's MIDI Out) |
 | **Forward Ch** | MIDI channel sent to the synth module (see below) |
+| **MIDI FX** | Schw (default) or Schw+Move — where the slot's MIDI FX output lands (see below) |
 | **LFO 1 / LFO 2** | Modulation LFOs (see below) |
 
 **Forward Channel modes:**
 - **Auto** (default): Remaps MIDI to the slot's receive channel. If Receive Ch is "All", passes through unchanged.
 - **Thru**: Passes the original MIDI channel through unchanged — useful for multitimbral synths that respond differently on each channel.
 - **1-16**: Forces all MIDI to a specific channel regardless of what was received.
+
+**MIDI FX modes (Schw vs Schw+Move):**
+- **Schw** (default): The slot's MIDI FX output goes only to the slot synth. Move's native track instrument keeps playing whatever you played on the pad (unchanged from pre-0.10 behaviour).
+- **Schw+Move**: The MIDI FX output *also* gets injected back into Move's MIDI input on the slot's forward channel, so Move's native track instrument plays the transformed stream additively alongside the slot synth. Best use: a **Chord MIDI FX** — hold one pad, Move plays the root (from the pad) while the chord's harmony notes also play on Move's native track.
+- **Limitations**: a generator-style MIDI FX (e.g., Arp) emitting the same pitch you're holding on the pad won't retrigger that pitch on Move — its pattern is silent on Move for a single-pad hold. This is a technical limitation of telling our injected echoes apart from your pad release on the same note. Chord works because it emits harmony pitches distinct from the pad's note.
 
 ### Slot LFOs
 
