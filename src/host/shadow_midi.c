@@ -385,7 +385,7 @@ void shadow_inject_ui_midi_out(void)
 /* Drain MIDI inject buffer into Move's MIDI_IN (post-ioctl).
  * Copies USB-MIDI packets from SHM into empty slots in shadow_mailbox+MIDI_IN_OFFSET,
  * making Move process them as if they came from physical hardware.
- * Rate-limited to 8 packets per tick to avoid flooding. */
+ * Rate-limited to 16 packets per tick to avoid flooding. */
 void shadow_drain_midi_inject(void)
 {
     shadow_midi_inject_t *inject_shm = *host_shadow_midi_inject_shm;
@@ -456,7 +456,8 @@ void shadow_drain_midi_inject(void)
 
     int hw_offset = 0;
     int injected = 0;
-    for (int i = 0; i < copy_len && injected < 8; i += 4) {
+    int consumed_bytes = 0;
+    for (int i = 0; i < copy_len && injected < 16; i += 4) {
         /* Find empty 8-byte slot (byte 0 == 0 means no cable/CIN, unused) */
         while (hw_offset < MIDI_IN_MAX_BYTES) {
             if (midi_in[hw_offset] == 0) break;
@@ -472,13 +473,34 @@ void shadow_drain_midi_inject(void)
         memset(&midi_in[hw_offset + 4], 0, 4);
         hw_offset += MIDI_IN_EVT_STRIDE;
         injected++;
+        consumed_bytes = i + 4;
+    }
+
+    /* Carry over any undrained packets so they fire in subsequent frames.
+     * Without this, bursts that exceed the 8-per-frame cap (or pile up
+     * during DEFER_FRAMES while cable-0 is active) lose events when the
+     * snapshot resets write_idx above — which strands note-offs and leaves
+     * voices hanging on Move's track. Safe to rewrite inject_shm->buffer
+     * here because shadow_chain_midi_inject runs on the same SPI thread. */
+    int remaining = copy_len - consumed_bytes;
+    if (remaining > 0) {
+        /* write_idx is uint8_t (0..255) and the inject guard checks wr+4 <= 256,
+         * so write_idx must never exceed 252 (63 packets). Cap carryover at
+         * 252 so a new inject from chain_host can still land. */
+        if (remaining > 252) remaining = 252;
+        memcpy(inject_shm->buffer, &local_buf[consumed_bytes], remaining);
+        inject_shm->write_idx = (uint8_t)remaining;
+        inject_shm->ready++;  /* re-arm so next frame drains without waiting
+                               * for a new inject to bump ready */
     }
 
     if (host_log && injected > 0) {
         char dbg[128];
-        snprintf(dbg, sizeof(dbg), "MIDI inject: drained %d/%d pkts at offset %d",
+        snprintf(dbg, sizeof(dbg),
+                 "MIDI inject: drained %d/%d pkts at offset %d%s",
                  injected, copy_len / 4,
-                 hw_offset - injected * MIDI_IN_EVT_STRIDE);
+                 hw_offset - injected * MIDI_IN_EVT_STRIDE,
+                 remaining > 0 ? " [carryover]" : "");
         host_log(dbg);
     }
 }
@@ -504,7 +526,17 @@ int shadow_chain_midi_inject(const uint8_t *msg, int len)
     if (!shm) return 0;
 
     int wr = shm->write_idx;
-    if (wr + 4 > (int)SHADOW_MIDI_INJECT_BUFFER_SIZE) return 0;
+    if (wr + 4 > (int)SHADOW_MIDI_INJECT_BUFFER_SIZE) {
+        if (host_log) {
+            char dbg[96];
+            uint8_t type = msg[1] & 0xF0;
+            snprintf(dbg, sizeof(dbg),
+                     "MIDI inject FULL: wr=%d dropped status=0x%02x n=%d v=%d",
+                     wr, msg[1], msg[2], msg[3]);
+            host_log(dbg);
+        }
+        return 0;
+    }
 
     memcpy(&shm->buffer[wr], msg, 4);
     shm->write_idx = (uint8_t)(wr + 4);
