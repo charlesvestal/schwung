@@ -1,0 +1,17 @@
+{
+    "id": "config-test",
+    "label": "Config Test",
+    "items": [
+        { "key": "enabled", "label": "Enabled", "type": "bool", "default": false },
+        { "key": "mode", "label": "Mode", "type": "enum",
+          "options": ["Off", "Low", "High"], "values": ["off", "low", "high"], "default": "off" },
+        { "key": "count", "label": "Count", "type": "int", "min": 0, "max": 100, "default": 7 },
+        { "key": "ratio", "label": "Ratio", "type": "float", "min": 0, "max": 1, "step": 0.01, "default": 0.5 },
+        { "key": "label_text", "label": "Label", "type": "string", "default": "hello" },
+        { "key": "system_prompt", "label": "System Prompt", "type": "textarea", "rows": 8,
+          "default_source": "default_system_prompt.txt" },
+        { "key": "api_key", "label": "API Key", "type": "password",
+          "help": "Anything will do — this is a throwaway harness. Try:",
+          "help_url": "https://example.com/" }
+    ]
+}

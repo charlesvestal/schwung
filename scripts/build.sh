@@ -656,7 +656,7 @@ ln -sf schwung ./build/move-anything
 # Copy all module files (js, mjs, json, sh) - preserves directory structure
 # Compiled .so files are built separately above
 echo "Copying module files..."
-find ./src/modules -type f \( -name "*.js" -o -name "*.mjs" -o -name "*.json" -o -name "*.sh" -o -name "*.py" \) \
+find ./src/modules -type f \( -name "*.js" -o -name "*.mjs" -o -name "*.json" -o -name "*.sh" -o -name "*.py" -o -name "*.txt" \) \
     -not -path "*/splash-test/*" -not -path "*/text-test/*" -not -path "*/standalone-example/*" | while IFS= read -r src; do
     dest="./build/${src#./src/}"
     mkdir -p "$(dirname "$dest")"

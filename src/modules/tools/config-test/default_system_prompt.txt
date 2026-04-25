@@ -1,0 +1,3 @@
+This text was loaded from default_system_prompt.txt via the
+default_source field of the settings schema. If you reset the
+textarea in the web UI you should see this content again.
