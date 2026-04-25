@@ -17,7 +17,7 @@ func TestLoadTemplates(t *testing.T) {
 	}
 	required := []string{
 		"config.html",
-		"config_module.html",
+		"module_detail.html",
 	}
 	for _, name := range required {
 		if _, ok := m[name]; !ok {
@@ -124,12 +124,13 @@ func TestModuleIDFromPath(t *testing.T) {
 	cases := []struct {
 		path, want string
 	}{
-		{"/config/modules/guitar-tuner", "guitar-tuner"},
-		{"/config/modules/guitar-tuner/set", "guitar-tuner"},
-		{"/config/modules/guitar-tuner/values", "guitar-tuner"},
-		{"/config/modules/", ""},
-		{"/config/modules/BAD", ""},
-		{"/config/modules/../etc", ""},
+		{"/modules/guitar-tuner", "guitar-tuner"},
+		{"/modules/guitar-tuner/settings/set", "guitar-tuner"},
+		{"/modules/guitar-tuner/settings/values", "guitar-tuner"},
+		{"/modules/", ""},
+		{"/modules/BAD", ""},
+		{"/modules/../etc", ""},
+		{"/config/modules/guitar-tuner", ""},
 		{"/config", ""},
 	}
 	for _, c := range cases {
