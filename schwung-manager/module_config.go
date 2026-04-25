@@ -23,12 +23,32 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
 )
+
+// chownToAbleton flips a file's owner to ableton:users. schwung-manager
+// runs as root on the device, so anything it creates inside a module
+// directory is root-owned by default — but the module's ui.js runs as
+// ableton and needs to read its own config and secrets. Failures are
+// non-fatal in dev environments where ableton:users may not exist.
+func chownToAbleton(path string) {
+	u, err := user.Lookup("ableton")
+	if err != nil {
+		return
+	}
+	uid, _ := strconv.Atoi(u.Uid)
+	gid, _ := strconv.Atoi(u.Gid)
+	if g, gerr := user.LookupGroup("users"); gerr == nil {
+		gid, _ = strconv.Atoi(g.Gid)
+	}
+	// Lchown so we never follow a (newly-introduced) symlink.
+	_ = os.Lchown(path, uid, gid)
+}
 
 // ModuleSettingsSchema is one module's settings-schema.json, annotated
 // with the module's install directory so handlers know where to write
@@ -205,7 +225,14 @@ func writeModuleConfigKey(moduleDir, key string, value any) error {
 		cleanupTmp()
 		return err
 	}
-	return os.Rename(tmpPath, cfgPath)
+	if err := os.Rename(tmpPath, cfgPath); err != nil {
+		return err
+	}
+	// schwung-manager runs as root; the module process runs as
+	// ableton. Hand ownership over so the module can read its own
+	// config back.
+	chownToAbleton(cfgPath)
+	return nil
 }
 
 // writeModuleSecret writes a secret value to <moduleDir>/secrets/<key>.txt
@@ -233,6 +260,7 @@ func writeModuleSecret(moduleDir, key, value string) error {
 	if err := os.MkdirAll(secretsDir, 0700); err != nil {
 		return err
 	}
+	chownToAbleton(secretsDir)
 	secretPath := filepath.Join(secretsDir, key+".txt")
 	// Pre-remove any existing file. Remove (not RemoveAll) unlinks the
 	// path without following the final-component symlink.
@@ -251,7 +279,11 @@ func writeModuleSecret(moduleDir, key, value string) error {
 		os.Remove(secretPath)
 		return err
 	}
-	return fd.Close()
+	if err := fd.Close(); err != nil {
+		return err
+	}
+	chownToAbleton(secretPath)
+	return nil
 }
 
 // isModuleSecretSet reports whether <moduleDir>/secrets/<key>.txt exists
@@ -417,18 +449,18 @@ func restoreModuleUserState(moduleDir string, state *moduleUserState) error {
 		return nil
 	}
 	if state.configJSON != nil {
-		if err := os.WriteFile(
-			filepath.Join(moduleDir, "config.json"),
-			state.configJSON, 0644,
-		); err != nil {
+		cfgPath := filepath.Join(moduleDir, "config.json")
+		if err := os.WriteFile(cfgPath, state.configJSON, 0644); err != nil {
 			return err
 		}
+		chownToAbleton(cfgPath)
 	}
 	if len(state.secrets) > 0 {
 		secretsDir := filepath.Join(moduleDir, "secrets")
 		if err := os.MkdirAll(secretsDir, 0700); err != nil {
 			return err
 		}
+		chownToAbleton(secretsDir)
 		for name, data := range state.secrets {
 			path := filepath.Join(secretsDir, name)
 			// O_NOFOLLOW: if the tarball planted a symlink at this
@@ -450,6 +482,7 @@ func restoreModuleUserState(moduleDir string, state *moduleUserState) error {
 			if err := fd.Close(); err != nil {
 				return err
 			}
+			chownToAbleton(path)
 		}
 	}
 	return nil
