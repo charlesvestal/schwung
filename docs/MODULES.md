@@ -6,12 +6,16 @@ Modules are self-contained packages that extend Schwung with new functionality.
 
 ```
 src/modules/your-module/
-  module.json       # Required: module metadata
-  ui.js             # Optional: JavaScript UI
-  ui_chain.js       # Optional: Signal Chain UI shim
-  dsp.so            # Optional: native DSP plugin
-  dsp/              # Optional: DSP source code
+  module.json              # Required: module metadata
+  ui.js                    # Optional: JavaScript UI
+  ui_chain.js              # Optional: Signal Chain UI shim
+  dsp.so                   # Optional: native DSP plugin
+  dsp/                     # Optional: DSP source code
     your_plugin.c
+  settings-schema.json     # Optional: per-module settings (web UI)
+  config.json              # Mutable: written by schwung-manager (do not ship)
+  secrets/                 # Mutable: 0600 secret files (do not ship)
+    <key>.txt
 ```
 
 ## module.json
@@ -110,6 +114,136 @@ Use `defaults` to pass initial parameters to DSP plugins at load time:
     }
 }
 ```
+
+## Per-Module Settings
+
+A module that wants user-configurable settings exposed in the
+Schwung Manager web UI ships a `settings-schema.json` next to its
+`module.json`. schwung-manager auto-discovers it and renders a
+Settings section inline on the module's detail page
+(`http://move.local:7700/modules/<id>`). Saved values land in
+`<module_dir>/config.json`; password-typed fields land in
+`<module_dir>/secrets/<key>.txt`. The module reads its own values
+at runtime via `host_read_file`.
+
+Available since host **0.9.8** — set `min_host_version` accordingly
+in your `module.json` and catalog entry if your module depends on
+this system.
+
+### Schema fragment
+
+```json
+{
+    "id": "your-module",
+    "label": "Your Module",
+    "items": [
+        { "key": "enabled", "label": "Enabled", "type": "bool", "default": true },
+        { "key": "mode", "label": "Mode", "type": "enum",
+          "options": ["Off", "Low", "High"], "values": ["off", "low", "high"], "default": "off" },
+        { "key": "ratio", "label": "Ratio", "type": "float", "min": 0, "max": 1, "step": 0.01, "default": 0.5 },
+        { "key": "label", "label": "Label", "type": "string", "default": "" },
+        { "key": "system_prompt", "label": "System Prompt", "type": "textarea",
+          "rows": 12, "default_source": "default_system_prompt.txt" },
+        { "key": "api_key", "label": "API Key", "type": "password",
+          "help": "Get a free key at", "help_url": "https://example.com/" }
+    ]
+}
+```
+
+**Required:** the schema's `id` MUST equal the parent directory
+name (matches the module's catalog id). Mismatched fragments are
+silently dropped at discovery time — this prevents a tampered
+schema from impersonating a neighbor module.
+
+**Two layouts are accepted.** The flat shorthand above (single
+implicit section), or explicit sections:
+
+```json
+{
+    "id": "your-module",
+    "sections": [
+        { "id": "general",  "label": "General",  "items": [...] },
+        { "id": "advanced", "label": "Advanced", "items": [...] }
+    ]
+}
+```
+
+### Field types
+
+| Type | Storage | Notes |
+|------|---------|-------|
+| `bool` | `config.json` | Renders as a toggle. |
+| `enum` | `config.json` | Pair `options[]` (display labels) with `values[]` (saved values). |
+| `int` | `config.json` | Supports `min`, `max`, `step`. |
+| `float` | `config.json` | Supports `min`, `max`, `step`. |
+| `string` | `config.json` | Single-line text input. |
+| `textarea` | `config.json` | Multi-line. Set `rows` for height. Use `default_source` to load a default from a file shipped with the module. |
+| `password` | `<module>/secrets/<key>.txt` (0600) | Never round-tripped through the web UI. Field shows `••••••••` when set, with an `(×)` button to clear. Optional `help` + `help_url` render under the input. |
+
+Common item fields: `key` (snake_case, required), `label`
+(required), `type` (required), `default` (any JSON value matching
+the type), `default_source` (textarea only, path relative to the
+module dir, must stay inside it).
+
+### Reading values at runtime
+
+The module owns its own defaults — schwung-manager only writes
+saved values, never schema defaults. Read your config from
+`<module_dir>/config.json`:
+
+```javascript
+const MODULE_DIR = "/data/UserData/schwung/modules/tools/your-module";
+
+const cfg = JSON.parse(host_read_file(MODULE_DIR + "/config.json") || "{}");
+const enabled = cfg.enabled === undefined ? true : !!cfg.enabled;  // schema default: true
+const mode    = cfg.mode || "off";
+const ratio   = cfg.ratio === undefined ? 0.5 : cfg.ratio;
+
+const apiKey = (host_read_file(MODULE_DIR + "/secrets/api_key.txt") || "").trim();
+```
+
+For a more robust pattern that reads `default` and `default_source`
+straight out of the schema and merges them under saved values, see
+`src/modules/tools/config-test/ui.js`.
+
+To pick up changes the user makes in the web UI without a reload,
+re-read `config.json` periodically from `tick()` (e.g. once a
+second).
+
+### Upgrade and uninstall behavior
+
+- `settings-schema.json` is **overwritten** by the new tarball on
+  every install/upgrade — it ships with the module and reflects
+  the version's feature set.
+- `config.json` is **preserved** across upgrades. The user's saved
+  values survive.
+- `secrets/*.txt` are **preserved** across upgrades. API keys
+  survive.
+- `default_source` files (e.g. `default_system_prompt.txt`) are
+  **overwritten** — they're part of the shipped module.
+
+Uninstall removes the entire module directory atomically — schema,
+config, and secrets all go away together.
+
+**Do not ship `config.json` or `secrets/` in your release tarball.**
+schwung-manager defends against this by snapshotting and restoring
+both before/after extraction, but the cleanest module tarball
+contains neither.
+
+### File ownership
+
+schwung-manager runs as root on the device but the module's
+`ui.js` runs as `ableton`. schwung-manager `Lchown`s every file
+it writes inside a module directory (`config.json`, `secrets/`,
+each secret file) to `ableton:users` so the module can read its
+own values.
+
+### Build script
+
+If you have files referenced by `default_source`, make sure your
+build/packaging includes them. The main repo's `scripts/build.sh`
+copies `*.{js,mjs,json,sh,py,txt}` from `src/modules/`; module
+repos typically mirror that pattern.
 
 ## Drop-In Modules
 
