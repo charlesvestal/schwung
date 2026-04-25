@@ -45,20 +45,6 @@
 </section>
 {{end}}
 
-{{if .ModuleIndex}}
-<section class="info-card">
-    <fieldset>
-        <legend class="legend-heading">Modules</legend>
-        <p>Per-module settings are stored inside each module's install directory.</p>
-        <ul class="module-settings-list">
-            {{range .ModuleIndex}}
-            <li><a href="/config/modules/{{.ID}}">{{.Name}}{{if and .Label (ne .Label .Name)}} — {{.Label}}{{end}}</a></li>
-            {{end}}
-        </ul>
-    </fieldset>
-</section>
-{{end}}
-
 <script>
 function setSetting(key, value) {
     var csrfToken = (document.cookie.match(/(^| )csrf_token=([^;]+)/) || [])[2] || '';

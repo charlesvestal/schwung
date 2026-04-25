@@ -646,7 +646,6 @@ func loadTemplates() (templateMap, error) {
 		"templates/module_detail.html",
 		"templates/files.html",
 		"templates/config.html",
-		"templates/config_module.html",
 		"templates/system.html",
 		"templates/install.html",
 		"templates/help.html",
@@ -905,6 +904,31 @@ func (app *App) handleModuleDetail(w http.ResponseWriter, r *http.Request) {
 		folderStatuses = assetGroups[0].FolderStatuses
 	}
 
+	// Per-module settings: if this module ships a settings-schema.json,
+	// surface it inline on the detail page. Saved values + secret
+	// "is_set" markers are looked up the same way as the JSON values
+	// endpoint so the rendered form matches whatever the file system
+	// holds right now.
+	var moduleSchema *ModuleSettingsSchema
+	settingValues := map[string]any{}
+	secretSet := map[string]bool{}
+	if schema := findModuleSchema(app.basePath, id); schema != nil {
+		moduleSchema = schema
+		saved := readModuleConfig(schema.ModuleDir)
+		for _, section := range schema.Sections {
+			for i := range section.Items {
+				item := &section.Items[i]
+				if item.Type == "password" {
+					secretSet[item.Key] = isModuleSecretSet(schema.ModuleDir, item.Key)
+					continue
+				}
+				if v := moduleConfigValue(schema, item, saved); v != nil {
+					settingValues[item.Key] = v
+				}
+			}
+		}
+	}
+
 	data := map[string]any{
 		"Title":          mod.Name,
 		"Module":         mod,
@@ -918,6 +942,9 @@ func (app *App) handleModuleDetail(w http.ResponseWriter, r *http.Request) {
 		"BuiltIn":        builtIn,
 		"ReleaseMeta":    app.catalogSvc.GetReleaseMeta(),
 		"Active":         "modules",
+		"ModuleSchema":   moduleSchema,
+		"SettingValues":  settingValues,
+		"SecretSet":      secretSet,
 	}
 	app.render(w, r, "module_detail.html", data)
 }
@@ -1890,35 +1917,12 @@ func (app *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Modules that ship a settings-schema.json get a link in a
-	// "Modules" index at the bottom of the page. Rendering only
-	// needs id/name/label — not the sections themselves.
-	moduleSchemas := discoverModuleSchemas(app.basePath)
-	type moduleIndexEntry struct {
-		ID    string
-		Name  string
-		Label string
-	}
-	var moduleIndex []moduleIndexEntry
-	for _, ms := range moduleSchemas {
-		label := ms.Label
-		if label == "" {
-			label = ms.Name
-		}
-		moduleIndex = append(moduleIndex, moduleIndexEntry{
-			ID:    ms.ID,
-			Name:  ms.Name,
-			Label: label,
-		})
-	}
-
 	data := map[string]any{
-		"Title":       "Settings",
-		"Flash":       r.URL.Query().Get("flash"),
-		"Active":      "config",
-		"Sections":    sections,
-		"Values":      values,
-		"ModuleIndex": moduleIndex,
+		"Title":    "Settings",
+		"Flash":    r.URL.Query().Get("flash"),
+		"Active":   "config",
+		"Sections": sections,
+		"Values":   values,
 	}
 	app.render(w, r, "config.html", data)
 }
@@ -2994,12 +2998,12 @@ func main() {
 	mux.HandleFunc("GET /config/values", app.handleConfigValues)
 	mux.HandleFunc("POST /config/set", app.handleConfigSetSetting)
 
-	// Per-module config pages. Each module that ships a
-	// settings-schema.json gets its own page; values and secrets are
+	// Per-module settings live inline on the module detail page
+	// (/modules/{id}). These endpoints are the JSON read/write
+	// API the page polls and posts to. Values and secrets are
 	// stored inside the module's install directory.
-	mux.HandleFunc("GET /config/modules/{id}", app.handleConfigModule)
-	mux.HandleFunc("GET /config/modules/{id}/values", app.handleConfigModuleValues)
-	mux.HandleFunc("POST /config/modules/{id}/set", app.handleConfigModuleSet)
+	mux.HandleFunc("GET /modules/{id}/settings/values", app.handleConfigModuleValues)
+	mux.HandleFunc("POST /modules/{id}/settings/set", app.handleConfigModuleSet)
 
 	// System.
 	mux.HandleFunc("GET /system", app.handleSystem)

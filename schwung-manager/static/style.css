@@ -1307,25 +1307,16 @@ a.update-available:focus {
 }
 .settings-help a { color: var(--accent); }
 
-/* Module settings index on /config. */
-.module-settings-list {
-    list-style: none;
-    padding: 0;
-    margin: 0;
+/* Module settings section on the module detail page. */
+.module-settings-section {
+    margin-top: var(--space-lg);
 }
-.module-settings-list li {
-    padding: var(--space-sm) var(--space-md);
-    border-bottom: 1px solid var(--border);
-}
-.module-settings-list li:last-child {
-    border-bottom: none;
-}
-.module-settings-list a {
+.settings-subheading {
+    font-size: 0.95rem;
+    font-weight: 600;
+    margin: var(--space-md) 0 var(--space-sm);
+    padding-left: var(--space-md);
     color: var(--text);
-    text-decoration: none;
-}
-.module-settings-list a:hover {
-    color: var(--accent);
 }
 
 /* Toggle switch */

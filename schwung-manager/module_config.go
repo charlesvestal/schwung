@@ -459,11 +459,11 @@ func restoreModuleUserState(moduleDir string, state *moduleUserState) error {
 // HTTP handlers
 // ---------------------------------------------------------------------------
 
-// moduleIDFromPath extracts the <id> segment from /config/modules/<id>
-// and /config/modules/<id>/set and /config/modules/<id>/values. Returns
-// the empty string if the path doesn't match.
+// moduleIDFromPath extracts the <id> segment from
+// /modules/<id>/settings/{values,set}. Returns the empty string if the
+// path doesn't match a known shape.
 func moduleIDFromPath(p string) string {
-	const prefix = "/config/modules/"
+	const prefix = "/modules/"
 	if !strings.HasPrefix(p, prefix) {
 		return ""
 	}
@@ -477,52 +477,8 @@ func moduleIDFromPath(p string) string {
 	return rest
 }
 
-// handleConfigModule renders a single module's settings page.
-// GET /config/modules/<id>
-func (app *App) handleConfigModule(w http.ResponseWriter, r *http.Request) {
-	id := moduleIDFromPath(r.URL.Path)
-	if id == "" {
-		http.NotFound(w, r)
-		return
-	}
-	schema := findModuleSchema(app.basePath, id)
-	if schema == nil {
-		http.NotFound(w, r)
-		return
-	}
-
-	saved := readModuleConfig(schema.ModuleDir)
-	values := make(map[string]any)
-	secretSet := make(map[string]bool)
-	for _, section := range schema.Sections {
-		for i := range section.Items {
-			item := &section.Items[i]
-			if item.Type == "password" {
-				secretSet[item.Key] = isModuleSecretSet(schema.ModuleDir, item.Key)
-				continue
-			}
-			if v := moduleConfigValue(schema, item, saved); v != nil {
-				values[item.Key] = v
-			}
-		}
-	}
-
-	data := map[string]any{
-		"Title":     "Settings — " + schema.Name,
-		"Active":    "config",
-		"Flash":     r.URL.Query().Get("flash"),
-		"ModuleID":  schema.ID,
-		"ModuleName": schema.Name,
-		"Schema":    schema,
-		"Sections":  schema.Sections,
-		"Values":    values,
-		"SecretSet": secretSet,
-	}
-	app.render(w, r, "config_module.html", data)
-}
-
 // handleConfigModuleValues returns current values for polling.
-// GET /config/modules/<id>/values
+// GET /modules/<id>/settings/values
 func (app *App) handleConfigModuleValues(w http.ResponseWriter, r *http.Request) {
 	id := moduleIDFromPath(r.URL.Path)
 	if id == "" {
@@ -553,7 +509,7 @@ func (app *App) handleConfigModuleValues(w http.ResponseWriter, r *http.Request)
 }
 
 // handleConfigModuleSet writes one key's value.
-// POST /config/modules/<id>/set  (form: key, value)
+// POST /modules/<id>/settings/set  (form: key, value)
 func (app *App) handleConfigModuleSet(w http.ResponseWriter, r *http.Request) {
 	id := moduleIDFromPath(r.URL.Path)
 	if id == "" {
@@ -607,5 +563,5 @@ func (app *App) handleConfigModuleSet(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"ok":true}`))
 		return
 	}
-	http.Redirect(w, r, "/config/modules/"+id, http.StatusSeeOther)
+	http.Redirect(w, r, "/modules/"+id, http.StatusSeeOther)
 }
