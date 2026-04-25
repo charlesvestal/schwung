@@ -1,0 +1,11 @@
+{
+    "id": "config-test",
+    "name": "Config Test",
+    "version": "0.1.0",
+    "description": "Throwaway harness for the per-module config system. Reads its own config.json and renders the values to OLED so we can verify schwung-manager is writing the right places.",
+    "component_type": "tool",
+    "tool_config": {
+        "interactive": true,
+        "skip_file_browser": true
+    }
+}
