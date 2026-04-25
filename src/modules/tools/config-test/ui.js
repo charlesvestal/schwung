@@ -9,6 +9,7 @@
 
 const MODULE_DIR = "/data/UserData/schwung/modules/tools/config-test";
 const CONFIG_PATH = MODULE_DIR + "/config.json";
+const SCHEMA_PATH = MODULE_DIR + "/settings-schema.json";
 const SECRET_PATH = MODULE_DIR + "/secrets/api_key.txt";
 
 const SCREEN_W = 128;
@@ -20,14 +21,43 @@ let cfg = {};
 let secretLen = 0;
 let promptPreview = "";
 
+/* Load schema defaults once at init. Modules are responsible for their
+ * own defaults — schwung-manager only writes saved values, never the
+ * full schema-default-merged state. */
+let schemaDefaults = {};
+function loadSchemaDefaults() {
+    schemaDefaults = {};
+    let raw = "";
+    try { raw = host_read_file(SCHEMA_PATH) || ""; } catch (e) { return; }
+    if (!raw) return;
+    let schema;
+    try { schema = JSON.parse(raw); } catch (e) { return; }
+    /* Schemas can be either {items:[...]} flat or {sections:[{items:[...]}]}. */
+    const sections = schema.sections || [{ items: schema.items || [] }];
+    for (const s of sections) {
+        for (const it of (s.items || [])) {
+            if (it.type === "password") continue;
+            if (it.default_source) {
+                /* Resolve relative to module dir, same rules as the host. */
+                let v = "";
+                try { v = host_read_file(MODULE_DIR + "/" + it.default_source) || ""; } catch (e) { v = ""; }
+                if (v) schemaDefaults[it.key] = v;
+            } else if (it.default !== undefined) {
+                schemaDefaults[it.key] = it.default;
+            }
+        }
+    }
+}
+
 function refreshConfig() {
     let raw = "";
     try { raw = host_read_file(CONFIG_PATH) || ""; } catch (e) { raw = ""; }
+    let saved = {};
     if (raw) {
-        try { cfg = JSON.parse(raw); } catch (e) { cfg = {}; }
-    } else {
-        cfg = {};
+        try { saved = JSON.parse(raw); } catch (e) { saved = {}; }
     }
+    /* Merge: schema defaults first, saved values win. */
+    cfg = Object.assign({}, schemaDefaults, saved);
     /* Secret: never read the value, just report whether it's set
      * and how long it is — same shape the host's "is_set" marker
      * uses, useful for proving the file landed at 0600 in the
@@ -52,6 +82,7 @@ function fmt(label, value) {
 
 globalThis.init = function() {
     frameCount = 0;
+    loadSchemaDefaults();
     refreshConfig();
 };
 
