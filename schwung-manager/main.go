@@ -3004,6 +3004,7 @@ func main() {
 	// stored inside the module's install directory.
 	mux.HandleFunc("GET /modules/{id}/settings/values", app.handleConfigModuleValues)
 	mux.HandleFunc("POST /modules/{id}/settings/set", app.handleConfigModuleSet)
+	mux.HandleFunc("POST /modules/{id}/settings/clear", app.handleConfigModuleClearSecret)
 
 	// System.
 	mux.HandleFunc("GET /system", app.handleSystem)

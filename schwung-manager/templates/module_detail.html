@@ -205,7 +205,6 @@
     <section class="info-card module-settings-section">
         <fieldset>
             <legend class="legend-heading">Settings</legend>
-            <p class="text-muted">Stored in the module's install directory.</p>
             {{range .ModuleSchema.Sections}}
             {{if .Label}}<h3 class="settings-subheading">{{.Label}}</h3>{{end}}
             {{range .Items}}
@@ -257,11 +256,15 @@
 
                 {{else if eq .Type "password"}}
                 <label for="{{.Key}}">{{.Label}}</label>
-                <div class="text-input-wrap">
+                <div class="text-input-wrap password-input-wrap" data-secret-key="{{.Key}}">
                     {{$set := index $.SecretSet .Key}}
                     <input type="password" id="{{.Key}}" data-setting-key="{{.Key}}"
-                           value="" placeholder="{{if $set}}(set — leave blank to keep){{else}}(not set){{end}}"
+                           value="{{if $set}}••••••••{{end}}"
+                           placeholder="{{if not $set}}(not set){{end}}"
                            autocomplete="off" spellcheck="false">
+                    <button type="button" class="password-clear" aria-label="Clear"
+                            data-clear-key="{{.Key}}"
+                            {{if not $set}}hidden{{end}}>×</button>
                 </div>
                 {{if .Help}}
                 <p class="settings-help">{{.Help}}{{if .HelpUrl}} <a href="{{.HelpUrl}}" target="_blank" rel="noopener noreferrer">{{.HelpUrl}}</a>{{end}}</p>
@@ -450,13 +453,22 @@ document.querySelectorAll('.asset-upload-form input[type="file"]').forEach(funct
             .then(function(r) { return r.json(); })
             .then(function(values) {
                 for (var key in values) {
+                    /* Password fields are reported as <key>__is_set (bool),
+                     * not as the secret value itself. Repaint dots /
+                     * clear button when not focused. */
+                    var isSetMatch = key.match(/^(.+)__is_set$/);
+                    if (isSetMatch) {
+                        var passEl = document.querySelector('.module-settings-section input[type="password"][data-setting-key="' + isSetMatch[1] + '"]');
+                        if (passEl && document.activeElement !== passEl) {
+                            paintPassword(passEl, !!values[key]);
+                        }
+                        continue;
+                    }
                     var el = document.querySelector('.module-settings-section [data-setting-key="' + key + '"]');
                     if (!el) continue;
                     if (el.type === 'checkbox') {
                         var checked = !!values[key];
                         if (el.checked !== checked) el.checked = checked;
-                    } else if (el.type === 'password') {
-                        /* never overwrite */
                     } else if (el.tagName === 'SELECT' || el.type === 'number' || el.type === 'text' || el.tagName === 'TEXTAREA') {
                         var val = String(values[key]);
                         if (el.value !== val) el.value = val;
@@ -482,16 +494,65 @@ document.querySelectorAll('.asset-upload-form input[type="file"]').forEach(funct
         });
     });
 
-    document.querySelectorAll('.module-settings-section input[type="password"][data-setting-key]').forEach(function(el) {
-        var commit = function() {
-            if (el.value === '') return;
-            setModuleSetting(el.dataset.settingKey, el.value);
+    /* Password fields: the value="••••••••" we render server-side is a
+     * fake placeholder, not a real secret. Blank it on focus so the
+     * user types into an empty field; on blur, save only if they
+     * actually typed something. */
+    function paintPassword(el, isSet) {
+        if (isSet) {
+            el.value = '••••••••';
+            el.placeholder = '';
+        } else {
             el.value = '';
-            el.placeholder = '(set — leave blank to keep)';
-            el.blur();
+            el.placeholder = '(not set)';
+        }
+        var wrap = el.closest('.password-input-wrap');
+        if (wrap) {
+            var btn = wrap.querySelector('.password-clear');
+            if (btn) btn.hidden = !isSet;
+        }
+    }
+
+    document.querySelectorAll('.module-settings-section input[type="password"][data-setting-key]').forEach(function(el) {
+        var initialIsSet = el.value !== '';
+        el.dataset.dirty = '0';
+        el.addEventListener('focus', function() {
+            /* Clear the fake dots so the user types into a blank field. */
+            if (el.value === '••••••••') el.value = '';
+            el.dataset.dirty = '1';
+        });
+        var commit = function() {
+            if (el.dataset.dirty === '1' && el.value !== '') {
+                setModuleSetting(el.dataset.settingKey, el.value).then(function() {
+                    paintPassword(el, true);
+                    el.dataset.dirty = '0';
+                });
+            } else {
+                /* No change — restore the placeholder dots / not-set state. */
+                paintPassword(el, initialIsSet);
+                el.dataset.dirty = '0';
+            }
         };
         el.addEventListener('blur', commit);
         el.addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); commit(); } });
+    });
+
+    /* (×) clear buttons. */
+    document.querySelectorAll('.module-settings-section .password-clear').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            var key = btn.dataset.clearKey;
+            var fd = new FormData();
+            fd.append('key', key);
+            fd.append('csrf_token', CSRF);
+            fetch('/modules/' + MODULE_ID + '/settings/clear', {
+                method: 'POST', body: fd, credentials: 'same-origin',
+                headers: { 'X-CSRF-Token': CSRF }
+            }).then(function(r) {
+                if (!r.ok) { console.error('clear failed:', key, r.status); return; }
+                var el = document.getElementById(key);
+                if (el) paintPassword(el, false);
+            });
+        });
     });
 
     window.resetModuleTextareaToDefault = function(key) {

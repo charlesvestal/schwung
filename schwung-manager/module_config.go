@@ -287,8 +287,8 @@ func writeModuleSecret(moduleDir, key, value string) error {
 }
 
 // isModuleSecretSet reports whether <moduleDir>/secrets/<key>.txt exists
-// and has non-zero size. Used to render the "(set — leave blank to
-// keep)" placeholder on password fields without exposing the secret.
+// and has non-zero size. Used to swap the password input's placeholder
+// to dots when the secret is already set, without exposing the secret.
 func isModuleSecretSet(moduleDir, key string) bool {
 	if !settingKeyPattern.MatchString(key) {
 		return false
@@ -298,6 +298,19 @@ func isModuleSecretSet(moduleDir, key string) bool {
 		return false
 	}
 	return st.Size() > 0
+}
+
+// clearModuleSecret unlinks <moduleDir>/secrets/<key>.txt. Returns nil
+// if the file didn't exist (idempotent — repeated clears are fine).
+func clearModuleSecret(moduleDir, key string) error {
+	if !settingKeyPattern.MatchString(key) {
+		return fmt.Errorf("invalid secret key %q", key)
+	}
+	path := filepath.Join(moduleDir, "secrets", key+".txt")
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // resolveModuleDefaultSource reads a default-source file shipped inside
@@ -597,4 +610,33 @@ func (app *App) handleConfigModuleSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/modules/"+id, http.StatusSeeOther)
+}
+
+// handleConfigModuleClearSecret deletes a stored secret.
+// POST /modules/<id>/settings/clear  (form: key)
+func (app *App) handleConfigModuleClearSecret(w http.ResponseWriter, r *http.Request) {
+	id := moduleIDFromPath(r.URL.Path)
+	if id == "" {
+		http.NotFound(w, r)
+		return
+	}
+	schema := findModuleSchema(app.basePath, id)
+	if schema == nil {
+		http.NotFound(w, r)
+		return
+	}
+	key := r.FormValue("key")
+	item := schema.findItem(key)
+	if item == nil || item.Type != "password" {
+		http.Error(w, `{"ok":false,"error":"unknown secret key"}`, http.StatusBadRequest)
+		return
+	}
+	if err := clearModuleSecret(schema.ModuleDir, key); err != nil {
+		app.logger.Error("module secret clear failed", "module", id, "key", key, "err", err)
+		http.Error(w, `{"ok":false,"error":"clear failed"}`, http.StatusInternalServerError)
+		return
+	}
+	app.logger.Info("module secret cleared", "module", id, "key", key)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"ok":true}`))
 }

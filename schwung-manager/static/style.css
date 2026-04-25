@@ -1319,6 +1319,35 @@ a.update-available:focus {
     color: var(--text);
 }
 
+/* Password input + (×) clear button laid out side by side. */
+.password-input-wrap {
+    display: flex;
+    align-items: stretch;
+    gap: var(--space-xs);
+}
+.password-input-wrap input[type="password"] {
+    flex: 1;
+}
+.password-clear {
+    background: var(--bg-card-hover);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    width: 36px;
+    min-height: 36px;
+    cursor: pointer;
+    font-size: 1.1rem;
+    line-height: 1;
+    padding: 0;
+}
+.password-clear:hover {
+    background: var(--bg-card);
+    color: var(--accent);
+}
+.password-clear[hidden] {
+    display: none;
+}
+
 /* Toggle switch */
 .toggle-wrap {
     position: relative;
