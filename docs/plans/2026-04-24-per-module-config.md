@@ -82,19 +82,36 @@ A minimal fragment, placed at `<module_dir>/settings-schema.json`:
 }
 ```
 
-- `id` MUST match the module's `module.json` id. schwung-manager
-  discards fragments whose id doesn't match the parent directory.
-- `label` is the rendered section/page header.
-- `items[]` shape matches today's `SettingsItem` struct (`main.go:159`)
-  plus the extensions #61 already adds (`password`, `textarea`,
-  `string`, `default`, `rows`, `help`, `help_url`).
-- **Keys are local to the module.** No namespacing required — the
-  module reads its own `config.json`, so `accidental_style` never
-  collides with another module's `accidental_style`.
+- `id` MUST match the parent directory name. schwung-manager
+  discards fragments whose id doesn't match (containment guarantee:
+  a tampered schema cannot impersonate a neighbor module).
+- `id` must match `^[a-z0-9][a-z0-9-]*$`.
+- `label` is the rendered section header on the module's page.
+- `items[]` shape extends `SettingsItem` with `default`,
+  `default_source`, `rows`, `help`, `help_url`.
+- **Two layouts accepted.** Either a flat shorthand:
+
+  ```json
+  { "id": "guitar-tuner", "label": "Tuner", "items": [...] }
+  ```
+
+  or explicit sections:
+
+  ```json
+  { "id": "guitar-tuner", "sections": [
+      { "id": "general", "label": "General", "items": [...] },
+      { "id": "advanced", "label": "Advanced", "items": [...] }
+  ]}
+  ```
+
+  The flat form is normalized to a single section at load time.
+- **Keys are local to the module** and must match
+  `^[a-z0-9][a-z0-9_]*$` (snake_case allowed). No namespacing
+  required — the module reads its own `config.json`, so
+  `accidental_style` never collides with another module's
+  `accidental_style`.
 
 ### Field types
-
-Start with what #61 has, minus AI-specific baggage:
 
 | Type | Storage | Notes |
 |------|---------|-------|
@@ -102,61 +119,96 @@ Start with what #61 has, minus AI-specific baggage:
 | `enum` | `config.json` | existing |
 | `int` | `config.json` | existing |
 | `float` | `config.json` | existing |
-| `string` | `config.json` | from #61 |
-| `textarea` | `config.json` | from #61; multi-line preserved |
-| `password` | `<module>/secrets/<key>.txt` (0600) | from #61; never round-tripped through web UI |
+| `string` | `config.json` | new |
+| `textarea` | `config.json` | new; multi-line preserved (only trailing CR/LF/space trimmed) |
+| `password` | `<module>/secrets/<key>.txt` (0600) | new; never round-tripped through web UI |
 
-A `default` field on the schema item is surfaced when `config.json` has
-no value saved for that key.
+A `default` field on the schema item is surfaced as the rendered
+value when `config.json` has no key for it. For `textarea`,
+`default_source` (a path inside the module dir) lets a module ship
+its default value as a separate text file. **Modules are responsible
+for applying their own defaults at runtime** — schwung-manager never
+writes a default into `config.json`; it only writes saved values.
+
+#### Password UX
+
+Renders an empty `(not set)` placeholder when no secret is on disk.
+When set, the field is rendered with eight bullets (`••••••••`) and
+an `(×)` clear button next to it. Focusing the field blanks the
+dots so the user types into an empty box; on blur, the new value is
+saved if the field is non-empty, or the dots are restored if the
+user typed nothing. The `(×)` button posts to a dedicated
+`POST /modules/<id>/settings/clear` endpoint that unlinks the
+secret file (idempotent).
 
 ### Secrets: per-module dir, no root-owned central dir
 
-Each module gets its own `<module_dir>/secrets/`. Files are created by
-schwung-manager with `O_CREAT | O_EXCL | O_NOFOLLOW`, mode `0600`,
-owned by `ableton:users`.
+Each module gets its own `<module_dir>/secrets/`. Files are created
+with `O_CREATE | O_EXCL | O_NOFOLLOW`, mode `0600`. The module's
+`ui.js` runs as the `ableton` user, so schwung-manager (which runs
+as root on the device) Lchowns both the `secrets/` directory and
+each secret file to `ableton:users` immediately after creation.
+The same Lchown happens for `config.json` writes so the module's
+JS can read its own settings back. `Lchown` (not `Chown`) refuses
+to follow a symlink at the path.
 
 We drop the root-owned `0710 secrets/` directory from #61. Reasoning:
 - The device only has one non-root user (`ableton`). There is no
   lower-privileged user to defend against.
 - Putting secrets inside the module directory means uninstall removes
   them atomically.
-- The module already owns the directory via the install tarball's
-  ownership; no ownership dance.
 - The real security properties from #61 we keep: secret bytes never
-  live in `shadow_config.json`, never round-trip through
-  `/config/values`, and the write uses `O_NOFOLLOW` to block
-  symlink-swap.
+  live in `shadow_config.json`, never round-trip through the values
+  endpoint (only an `<key>__is_set` boolean), and the write uses
+  `O_NOFOLLOW` to block symlink-swap.
 
 ### schwung-manager changes
 
-**Schema discovery.** On each request that needs schemas (and once at
-startup), `loadSettingsSchema()` returns:
+**Schema discovery.** Per-module schemas are completely separate from
+the core `shared/settings-schema.json` loader (no merge). The new
+`discoverModuleSchemas(basePath)` (in `module_config.go`) walks each
+known category dir (`modules/`, `modules/sound_generators/`,
+`modules/audio_fx/`, `modules/midi_fx/`, `modules/tools/`,
+`modules/overtake/`, `modules/utilities/`), reads each child's
+`settings-schema.json` if present, and rejects fragments whose
+declared `id` does not match the parent directory basename. The core
+`shared/settings-schema.json` and its `loadSettingsSchema()` flow
+are untouched.
 
-1. The core fragment, renamed to `core-settings-schema.json` (or kept
-   as `shared/settings-schema.json` but stripped down to core-only
-   items: General section, display, input curves, etc.).
-2. One fragment per module, discovered by globbing
-   `modules/**/settings-schema.json`. Fragment files whose parent dir
-   basename doesn't match `id` are logged and skipped.
+**Settings live on the module detail page.** Per-module settings
+are rendered inline on `/modules/<id>` (the module's existing
+detail page), not under `/config/`. `handleModuleDetail` calls
+`findModuleSchema(basePath, id)`; if a schema is found, it loads
+the saved `config.json`, the per-key `is_set` markers for password
+fields, and passes them to `module_detail.html` which renders a
+Settings fieldset above the install actions block. `/config` keeps
+its current shape — core settings only, no Modules index.
 
-**Routing.** Two new endpoints:
+**API endpoints (called from the module detail page's JS).** Three:
 
-- `GET /config/modules/<id>` — renders that module's settings page
-  using its fragment + its `config.json` values.
-- `POST /config/modules/<id>/set` — writes one key to
-  `modules/<category>/<id>/config.json`, or to
-  `modules/<category>/<id>/secrets/<key>.txt` for password fields.
-  CSRF + path validation as today.
+- `GET /modules/{id}/settings/values` — returns the current saved
+  config merged with `default_source`/`default` fallbacks for any
+  unsaved keys, plus a `<key>__is_set` boolean for each password
+  field.
+- `POST /modules/{id}/settings/set` — writes one key. For
+  non-secret types, value is coerced (`bool`, `int`, `float`,
+  `enum`, `string`, `textarea`) and merged into `config.json`
+  via write-to-tmp + atomic rename. For `password`, value is
+  written to `secrets/<key>.txt` with `O_EXCL | O_NOFOLLOW` 0600,
+  Lchowned to `ableton:users`. A blank value is a no-op
+  (preserve-existing) — clears go through the `clear` endpoint.
+- `POST /modules/{id}/settings/clear` — unlinks
+  `secrets/<key>.txt` (password fields only). Idempotent.
 
-The existing `/config` page stays as core settings, with a "Modules"
-index at the bottom listing each module that declared a schema, linking
-to `/config/modules/<id>`.
+CSRF and path validation are inherited from the existing middleware.
 
-**Path constraints.** schwung-manager resolves all module config/secret
-writes to `filepath.Join(basePath, "modules", category, id, ...)` and
-rejects anything that does not stay under that dir after
-`filepath.Clean` (mirrors the existing `default_source` guard in #61).
-Modules cannot escape their own directory, by construction.
+**Path constraints.** Module IDs are validated against
+`^[a-z0-9][a-z0-9-]*$`, secret keys against `^[a-z0-9][a-z0-9_]*$`,
+before either is composed into a filesystem path. Schemas whose `id`
+field doesn't match the parent directory are dropped at discovery
+time — modules cannot declare settings for a neighbor module.
+`default_source` is resolved via `filepath.EvalSymlinks` and
+rejected if the result escapes the module directory.
 
 **`default_source` retained, relative to module dir.** A textarea's
 `default_source: "default_system_prompt.txt"` resolves to
@@ -207,9 +259,17 @@ When a module tarball is extracted during install/upgrade:
 - `default_*` files referenced by `default_source` are **overwritten**
   (they're part of the shipped module).
 
-Install script / `install_module_from_tar` does this today for the
-module dir as a whole — we'd change it to extract into a tmpdir, then
-sync across, preserving `config.json` and `secrets/` if present.
+Implementation: `installModule` calls `snapshotModuleUserState`
+before tar extraction (reads `config.json` + `secrets/*.txt` into
+memory), then `restoreModuleUserState` after extraction (writes
+them back, re-Lchowning to `ableton:users`). This is defense in
+depth on top of tar's default non-destructive behavior — even if a
+misbehaving tarball includes `config.json` or `secrets/`, the user's
+data wins.
+
+Uninstall is unchanged (`os.RemoveAll(modDir)`) — the whole module
+directory including `config.json`, `secrets/`, and the schema goes
+away atomically.
 
 ### Versioning
 
@@ -225,14 +285,20 @@ field type.
 
 ## Migration of the two PRs
 
-### Core (new PR, lands first)
+### Core (landed in commits `d0eed941..719aa16d` on `main`)
 
-- Add schema discovery + per-module config writers to `schwung-manager`.
-- Add `password`, `textarea`, `string` field types and the
-  `SecurityHeaders` middleware (these are generic and come from #61).
-- Bump host version, add `min_host_version` hint for modules that want
-  the new loader.
-- No changes to shim / shadow_ui / settings-schema.json core content.
+- Schema discovery + per-module config/secret writers in
+  `schwung-manager/module_config.go`.
+- `password`, `textarea`, `string` field types and the
+  `SecurityHeaders` middleware (generic — ported from #61's surface).
+- Module-detail page renders Settings inline; new
+  `/modules/{id}/settings/{values,set,clear}` endpoints.
+- Install-time `snapshotModuleUserState` / `restoreModuleUserState`
+  protect `config.json` and `secrets/` across tarball extraction.
+- Smoke-test harness module at `src/modules/tools/config-test/`.
+- Smoke tests in `schwung-manager/templates_test.go`.
+- No changes to shim / shadow_ui / `shared/settings-schema.json`.
+- `min_host_version` to bump on next host tag.
 
 ### #61 (revised)
 
@@ -247,12 +313,18 @@ Keeps:
 - `build.sh` change to copy `.txt` module files.
 - `song-mode` explicit `host_sampler_set_source(0)` before recording.
 
-Drops:
+Drops (now provided generically on `main`, would conflict on rebase):
 - Assistant section from `src/shared/settings-schema.json`.
-- `secretKeyFiles` map in `schwung-manager/main.go`.
-- Root-owned central `secrets/` directory (`ensureSecretsDir`).
-- `default_source` resolver in its current form — re-added by the
-  core PR but scoped to module directory.
+- `secretKeyFiles` map and `ensureSecretsDir` in
+  `schwung-manager/main.go`.
+- Password / textarea / string field-type branches in
+  `handleConfig`/`handleConfigValues`/`handleConfigSetSetting`.
+- `Default`/`DefaultSource`/`Rows`/`Help`/`HelpUrl` additions to
+  `SettingsItem` (already on `main`).
+- `readDefaultSource` helper (replaced by per-module-scoped
+  `resolveModuleDefaultSource`).
+- `SecurityHeaders` middleware (already on `main`).
+- Stacked-row / textarea / password / settings-help CSS.
 
 The AI Assistant and AI Manual external repos then ship their own
 `settings-schema.json`, `default_system_prompt.txt`, and write their
@@ -270,14 +342,14 @@ keys into `<module_dir>/secrets/`.
 - **Core schema file rename.** Do we rename `shared/settings-schema.json`
   to `shared/core-settings-schema.json` for clarity, or leave it and
   just stop adding module items to it? Leaning leave-as-is; rename is
-  churn without payoff.
-- **Modules index UI.** Flat list, grouped by category, or something
-  smarter? Start flat; iterate when we have more than ~6 modules with
-  settings.
-- **Per-module `config.json` write atomicity.** Today
-  `writeJSONFile` is a plain write. Fine for our threat model but
-  worth confirming the module is never mid-read when schwung-manager
-  writes.
+  churn without payoff. **Resolved: left as-is.**
+- ~~**Modules index UI.**~~ **Resolved:** dropped. Per-module
+  settings live inline on `/modules/<id>` rather than under a
+  separate `/config/modules/<id>` page, so no index is needed.
+- **Per-module `config.json` write atomicity.** `writeModuleConfigKey`
+  uses write-to-temp + `os.Rename`, so a concurrent reader sees
+  either the old or the new full file, never a partial write. Fine
+  for our threat model. ✅
 - **Built-in tools.** `song-mode`, `file-browser`, `wav-player` live
   in the main repo. Do they migrate to per-module config or stay on
   `shadow_config.json`? Leaning: stay on `shadow_config.json` for now,
