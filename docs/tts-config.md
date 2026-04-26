@@ -12,9 +12,11 @@ Create this file to customize the TTS voice. If the file doesn't exist, default 
 
 ```json
 {
+  "engine": "espeak",
   "speed": 1.0,
   "pitch": 110.0,
-  "volume": 70
+  "volume": 70,
+  "debounce_ms": 300
 }
 ```
 
@@ -22,21 +24,23 @@ Create this file to customize the TTS voice. If the file doesn't exist, default 
 
 | Parameter | Type | Range | Default | Description |
 |-----------|------|-------|---------|-------------|
-| `speed` | float | 0.5 - 2.0 | 1.0 | Speech rate (0.5 = half speed, 1.0 = normal, 2.0 = double speed) |
-| `pitch` | float | 80.0 - 180.0 | 110.0 | Voice pitch in Hz (lower = deeper, higher = more high-pitched) |
-| `volume` | int | 0 - 100 | 70 | TTS output volume percentage |
+| `engine` | string | `espeak` \| `flite` | `espeak` | TTS engine. eSpeak-NG is the default; Flite is bundled when the build includes its runtime. |
+| `speed` | float | 0.5 – 6.0 | 1.0 | Speech rate (1.0 = normal). Higher = faster. |
+| `pitch` | float | 80.0 – 180.0 | 110.0 | Voice pitch in Hz (lower = deeper). |
+| `volume` | int | 0 – 100 | 70 | TTS output volume percentage. |
+| `debounce_ms` | int | 0 – 1000 | 300 | How long to wait for further updates (e.g. while a knob is moving) before speaking. |
 
 ### When Changes Take Effect
 
-- Configuration file is loaded during TTS initialization (lazy init on first use)
-- To apply new settings: restart Move or reload the Schwung host
+- The Shadow UI exposes these settings live under **Global Settings → Screen Reader** and writes them straight to `/data/UserData/schwung/config/tts.json` via the `tts_set_*` bindings — no restart needed.
+- Editing the JSON file by hand is also supported; the engine re-reads it on next init. To force a re-read without rebooting, toggle the screen reader off and back on in Global Settings.
 
 ## Programmatic Control
 
-The TTS engine also exposes C API functions for runtime control:
+The TTS engine exposes C API functions and matching JS bindings (in the shadow UI) for runtime control:
 
 ```c
-/* Set speech speed (0.5 to 2.0) */
+/* Set speech speed (0.5 to 6.0) */
 void tts_set_speed(float speed);
 
 /* Set voice pitch in Hz (80 to 180) */
@@ -44,9 +48,18 @@ void tts_set_pitch(float pitch_hz);
 
 /* Set output volume (0 to 100) */
 void tts_set_volume(int volume);
+
+/* Select engine: "espeak" or "flite" */
+void tts_set_engine(const char *name);
+
+/* Tune debounce window in ms (0 to 1000) */
+void tts_set_debounce(int ms);
 ```
 
-Changes via these functions take effect immediately for the next spoken phrase.
+The same functions are exposed to the Shadow UI as `tts_set_speed`,
+`tts_set_pitch`, `tts_set_volume`, `tts_set_engine`, and
+`tts_set_debounce`. Changes take effect immediately for the next
+spoken phrase.
 
 ## Examples
 

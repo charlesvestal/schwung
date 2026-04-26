@@ -3,6 +3,22 @@
 Captured from Move firmware 2.0 beta with Link Audio enabled, streaming to Ableton Live 12.4 beta.
 Protocol prefix: `chnnlsv` — likely "channel server" v1.
 
+> **Status (2026-04).** Reception was migrated from a `sendto()` hook +
+> chnnlsv parser inside the shim to the public `abl_link` audio C API
+> via the standalone `link-subscriber` sidecar. The hook-based
+> reception path described in older revisions of this document was
+> deleted; the sidecar writes per-channel audio into a `/schwung-link-in`
+> SHM ring that the shim reads. Publishing is also implemented now,
+> via `LinkAudioSink` in the same sidecar.
+>
+> The wire-format sections (audio packets, session announcements, TLV,
+> `_asdp_v1` ALIVE) are still accurate as a description of what Move
+> emits and serve as protocol reference. The "Architecture",
+> "Implementation Status", and "Lessons Learned" sections describe the
+> retired path and are kept for history; cross-reference the migration
+> plan at `docs/plans/2026-04-17-link-audio-official-api-migration.md`
+> for current behavior.
+
 ## Setup
 
 To enable per-track audio processing on Move 2.0+ devices:
