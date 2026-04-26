@@ -23,18 +23,38 @@
  * UserLibrary every ~50ms idle and ~170ms interactive; these routines run
  * on every poll.
  *
- * Symbol-wrap rationale (verified via `llvm-objdump -T MoveOriginal`,
- * 2026-04-27, glibc 2.33+):
- *   - MoveOriginal directly imports `open`, `open64`, `stat`, `stat64`,
- *     `lstat`, `lstat64` (no `__xstat`/`__lxstat` family — those were
- *     removed when stat/lstat became proper exports in glibc 2.33).
- *   - `openat` and `access`/`faccessat` are NOT directly imported by
- *     MoveOriginal, but we still wrap them defensively because (a) other
- *     binaries we may LD_PRELOAD into could use them, and (b) future
- *     MoveOriginal builds may add them. Wrapping costs nothing if no
- *     caller invokes the symbol.
- *   - `opendir`, `readlink`, `mkdir`, `unlink`, `rename`, etc. are
- *     deferred to Task 1.3 per the plan.
+ * Symbol-wrap rationale (verified via `objdump -T MoveOriginal`,
+ * 2026-04-27, glibc 2.17/2.33/2.34):
+ *   Task 1.2 wrappers:
+ *     - `open`, `open64` — directly imported (GLIBC_2.17).
+ *     - `stat`, `stat64`, `lstat`, `lstat64` — directly imported
+ *       (GLIBC_2.33; no `__xstat`/`__lxstat` family — those were removed
+ *       when stat/lstat became proper exports in glibc 2.33).
+ *     - `openat`, `access`, `faccessat` — NOT directly imported, but
+ *       wrapped defensively (future binaries may use them).
+ *
+ *   Task 1.3 additions (this commit), verified via objdump:
+ *     - `opendir`, `readlink`, `realpath`, `mkdir`, `rmdir`, `unlink`,
+ *       `rename`, `symlink`, `chmod`, `utime`, `fopen`, `fopen64` —
+ *       all directly imported by MoveOriginal.
+ *     - Two-path wrappers (`rename`, `symlink`) use TWO independent
+ *       stack scratch buffers; sharing one would corrupt the first
+ *       remap when computing the second.
+ *
+ *   Task 1.3 explicitly NOT wrapped (verified absent from import table):
+ *     - `*at` variants (`renameat`, `unlinkat`, `mkdirat`, `symlinkat`,
+ *       `linkat`, `fchmodat`, `readlinkat`, `utimensat`) — MoveOriginal
+ *       uses the path-only variants. Wrapping absent symbols only adds
+ *       overhead and risks resolving differently for other LD_PRELOAD
+ *       consumers.
+ *     - `link` — not imported.
+ *     - `freopen`, `freopen64` — not imported.
+ *     - `statfs`, `statvfs` — not imported (only `fstatfs64`, which
+ *       takes an fd, not a path).
+ *     - `chown`, `lchown`, `mknod`, `truncate`, `utimes` — not imported.
+ *     - `getcwd`, `chdir`, `fchdir`, `readdir`, `getdents64` — by design
+ *       (don't take a path, or operate on fd whose path was already
+ *       remapped at open/opendir time).
  */
 
 #include "move_mux_shim.h"
@@ -148,11 +168,13 @@ const char *mux_resolve(const char *in, char *scratch, size_t scratch_sz) {
 #ifdef __linux__
 
 #include <dlfcn.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <stdarg.h>
 #include <errno.h>
+#include <utime.h>
 
 /* Scratch buffer size for in-wrapper path remap. 1024 bytes is plenty —
  * the recon trace shows no UserData path approaches this length. If a
@@ -160,15 +182,29 @@ const char *mux_resolve(const char *in, char *scratch, size_t scratch_sz) {
  * (see `mux_resolve`). Stack allocation keeps wrappers reentrant. */
 #define MUX_SCRATCH_SZ 1024
 
-typedef int  (*open_fn)    (const char *, int, ...);
-typedef int  (*open64_fn)  (const char *, int, ...);
-typedef int  (*openat_fn)  (int, const char *, int, ...);
-typedef int  (*stat_fn)    (const char *, struct stat *);
-typedef int  (*stat64_fn)  (const char *, struct stat64 *);
-typedef int  (*lstat_fn)   (const char *, struct stat *);
-typedef int  (*lstat64_fn) (const char *, struct stat64 *);
-typedef int  (*access_fn)  (const char *, int);
-typedef int  (*faccessat_fn)(int, const char *, int, int);
+typedef int    (*open_fn)     (const char *, int, ...);
+typedef int    (*open64_fn)   (const char *, int, ...);
+typedef int    (*openat_fn)   (int, const char *, int, ...);
+typedef int    (*stat_fn)     (const char *, struct stat *);
+typedef int    (*stat64_fn)   (const char *, struct stat64 *);
+typedef int    (*lstat_fn)    (const char *, struct stat *);
+typedef int    (*lstat64_fn)  (const char *, struct stat64 *);
+typedef int    (*access_fn)   (const char *, int);
+typedef int    (*faccessat_fn)(int, const char *, int, int);
+
+/* Task 1.3 additions: */
+typedef DIR *  (*opendir_fn)  (const char *);
+typedef ssize_t(*readlink_fn) (const char *, char *, size_t);
+typedef char * (*realpath_fn) (const char *, char *);
+typedef int    (*mkdir_fn)    (const char *, mode_t);
+typedef int    (*rmdir_fn)    (const char *);
+typedef int    (*unlink_fn)   (const char *);
+typedef int    (*rename_fn)   (const char *, const char *);
+typedef int    (*symlink_fn)  (const char *, const char *);
+typedef int    (*chmod_fn)    (const char *, mode_t);
+typedef int    (*utime_fn)    (const char *, const struct utimbuf *);
+typedef FILE * (*fopen_fn)    (const char *, const char *);
+typedef FILE * (*fopen64_fn)  (const char *, const char *);
 
 static open_fn      real_open      = NULL;
 static open64_fn    real_open64    = NULL;
@@ -179,6 +215,19 @@ static lstat_fn     real_lstat     = NULL;
 static lstat64_fn   real_lstat64   = NULL;
 static access_fn    real_access    = NULL;
 static faccessat_fn real_faccessat = NULL;
+
+static opendir_fn   real_opendir   = NULL;
+static readlink_fn  real_readlink  = NULL;
+static realpath_fn  real_realpath  = NULL;
+static mkdir_fn     real_mkdir     = NULL;
+static rmdir_fn     real_rmdir     = NULL;
+static unlink_fn    real_unlink    = NULL;
+static rename_fn    real_rename    = NULL;
+static symlink_fn   real_symlink   = NULL;
+static chmod_fn     real_chmod     = NULL;
+static utime_fn     real_utime     = NULL;
+static fopen_fn     real_fopen     = NULL;
+static fopen64_fn   real_fopen64   = NULL;
 
 __attribute__((constructor))
 static void mux_init(void) {
@@ -191,6 +240,19 @@ static void mux_init(void) {
     real_lstat64   = (lstat64_fn)   dlsym(RTLD_NEXT, "lstat64");
     real_access    = (access_fn)    dlsym(RTLD_NEXT, "access");
     real_faccessat = (faccessat_fn) dlsym(RTLD_NEXT, "faccessat");
+
+    real_opendir   = (opendir_fn)   dlsym(RTLD_NEXT, "opendir");
+    real_readlink  = (readlink_fn)  dlsym(RTLD_NEXT, "readlink");
+    real_realpath  = (realpath_fn)  dlsym(RTLD_NEXT, "realpath");
+    real_mkdir     = (mkdir_fn)     dlsym(RTLD_NEXT, "mkdir");
+    real_rmdir     = (rmdir_fn)     dlsym(RTLD_NEXT, "rmdir");
+    real_unlink    = (unlink_fn)    dlsym(RTLD_NEXT, "unlink");
+    real_rename    = (rename_fn)    dlsym(RTLD_NEXT, "rename");
+    real_symlink   = (symlink_fn)   dlsym(RTLD_NEXT, "symlink");
+    real_chmod     = (chmod_fn)     dlsym(RTLD_NEXT, "chmod");
+    real_utime     = (utime_fn)     dlsym(RTLD_NEXT, "utime");
+    real_fopen     = (fopen_fn)     dlsym(RTLD_NEXT, "fopen");
+    real_fopen64   = (fopen64_fn)   dlsym(RTLD_NEXT, "fopen64");
 
     /* Diagnostic: if any expected symbol is missing, complain to stderr
      * (constructor is off the hot path). We do NOT abort — the wrapper
@@ -329,6 +391,130 @@ int faccessat(int dirfd, const char *pathname, int mode, int flags) {
         p = mux_resolve(pathname, scratch, sizeof(scratch));
     }
     return real_faccessat(dirfd, p, mode, flags);
+}
+
+/* ===========================================================
+ * Task 1.3 wrappers.
+ * ===========================================================
+ *
+ * Each is a 3-line trivial over `mux_resolve`. The two-path wrappers
+ * (`rename`, `symlink`) declare TWO independent stack scratch buffers;
+ * a single shared buffer would be overwritten when computing the second
+ * path's remap, corrupting the first. */
+
+__attribute__((visibility("default")))
+DIR *opendir(const char *name) {
+    if (!real_opendir) { errno = ENOSYS; return NULL; }
+    char scratch[MUX_SCRATCH_SZ];
+    const char *p = mux_resolve(name, scratch, sizeof(scratch));
+    return real_opendir(p);
+}
+
+__attribute__((visibility("default")))
+ssize_t readlink(const char *pathname, char *buf, size_t bufsiz) {
+    if (!real_readlink) { errno = ENOSYS; return -1; }
+    char scratch[MUX_SCRATCH_SZ];
+    const char *p = mux_resolve(pathname, scratch, sizeof(scratch));
+    /* Input-only remap: do NOT munge the output buffer. If MoveOriginal
+     * reads /proc/self/cwd, the kernel will return the actual current
+     * working directory (which is already inside the per-instance tree
+     * thanks to chdir-time remapping at parent-process start). */
+    return real_readlink(p, buf, bufsiz);
+}
+
+__attribute__((visibility("default")))
+char *realpath(const char *path, char *resolved_path) {
+    if (!real_realpath) { errno = ENOSYS; return NULL; }
+    char scratch[MUX_SCRATCH_SZ];
+    const char *p = mux_resolve(path, scratch, sizeof(scratch));
+    /* The canonicalized output naturally contains the remapped prefix
+     * because the kernel resolves the path we hand it (which we just
+     * remapped). No output munging needed. */
+    return real_realpath(p, resolved_path);
+}
+
+__attribute__((visibility("default")))
+int mkdir(const char *pathname, mode_t mode) {
+    if (!real_mkdir) return mux_enosys();
+    char scratch[MUX_SCRATCH_SZ];
+    const char *p = mux_resolve(pathname, scratch, sizeof(scratch));
+    return real_mkdir(p, mode);
+}
+
+__attribute__((visibility("default")))
+int rmdir(const char *pathname) {
+    if (!real_rmdir) return mux_enosys();
+    char scratch[MUX_SCRATCH_SZ];
+    const char *p = mux_resolve(pathname, scratch, sizeof(scratch));
+    return real_rmdir(p);
+}
+
+__attribute__((visibility("default")))
+int unlink(const char *pathname) {
+    if (!real_unlink) return mux_enosys();
+    char scratch[MUX_SCRATCH_SZ];
+    const char *p = mux_resolve(pathname, scratch, sizeof(scratch));
+    return real_unlink(p);
+}
+
+/* Two-path: BOTH oldpath and newpath are filesystem paths. They MUST
+ * use independent scratch buffers — `mux_resolve` writes into the
+ * caller's buffer, and reusing one buffer would clobber the first
+ * remap when the second is computed. This is Sets atomic-save's
+ * `Song.tmp` -> `Song.abl` rename, observed in Phase 0 Pass B. */
+__attribute__((visibility("default")))
+int rename(const char *oldpath, const char *newpath) {
+    if (!real_rename) return mux_enosys();
+    char scratch_old[MUX_SCRATCH_SZ];
+    char scratch_new[MUX_SCRATCH_SZ];
+    const char *po = mux_resolve(oldpath, scratch_old, sizeof(scratch_old));
+    const char *pn = mux_resolve(newpath, scratch_new, sizeof(scratch_new));
+    return real_rename(po, pn);
+}
+
+/* Two-path. `target` is the symlink contents (a string stored in the
+ * inode); it is NOT a path the kernel resolves at symlink() time, so we
+ * intentionally do NOT remap it — remapping would change the on-disk
+ * meaning of the symlink. Only `linkpath` (the FS location where the
+ * symlink is created) is remapped. */
+__attribute__((visibility("default")))
+int symlink(const char *target, const char *linkpath) {
+    if (!real_symlink) return mux_enosys();
+    char scratch[MUX_SCRATCH_SZ];
+    const char *pl = mux_resolve(linkpath, scratch, sizeof(scratch));
+    return real_symlink(target, pl);
+}
+
+__attribute__((visibility("default")))
+int chmod(const char *pathname, mode_t mode) {
+    if (!real_chmod) return mux_enosys();
+    char scratch[MUX_SCRATCH_SZ];
+    const char *p = mux_resolve(pathname, scratch, sizeof(scratch));
+    return real_chmod(p, mode);
+}
+
+__attribute__((visibility("default")))
+int utime(const char *pathname, const struct utimbuf *times) {
+    if (!real_utime) return mux_enosys();
+    char scratch[MUX_SCRATCH_SZ];
+    const char *p = mux_resolve(pathname, scratch, sizeof(scratch));
+    return real_utime(p, times);
+}
+
+__attribute__((visibility("default")))
+FILE *fopen(const char *pathname, const char *mode) {
+    if (!real_fopen) { errno = ENOSYS; return NULL; }
+    char scratch[MUX_SCRATCH_SZ];
+    const char *p = mux_resolve(pathname, scratch, sizeof(scratch));
+    return real_fopen(p, mode);
+}
+
+__attribute__((visibility("default")))
+FILE *fopen64(const char *pathname, const char *mode) {
+    if (!real_fopen64) { errno = ENOSYS; return NULL; }
+    char scratch[MUX_SCRATCH_SZ];
+    const char *p = mux_resolve(pathname, scratch, sizeof(scratch));
+    return real_fopen64(p, mode);
 }
 
 #endif /* __linux__ */
