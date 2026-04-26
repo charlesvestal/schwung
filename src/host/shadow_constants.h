@@ -33,6 +33,8 @@
 #define SHM_DISPLAY_LIVE    "/schwung-display-live"    /* Live display for remote viewer */
 #define SHM_WEB_PARAM_SET   "/schwung-web-param-set"   /* Web UI → shim param set ring */
 #define SHM_WEB_PARAM_NOTIFY "/schwung-web-param-notify" /* Shim → web UI param change ring */
+#define SHM_MOVE_B_TX       "/schwung-move-b-tx"       /* Dual-Move: B's TX → A broker */
+#define SHM_MOVE_B_RX       "/schwung-move-b-rx"       /* Dual-Move: A broker → B's RX */
 
 /* ============================================================================
  * Audio Constants
@@ -58,6 +60,9 @@
 #define SHADOW_MIDI_INJECT_BUFFER_SIZE 256    /* MIDI inject buffer (64 packets) */
 #define SHADOW_SCREENREADER_BUFFER_SIZE 8448  /* Screen reader message buffer */
 #define SHADOW_OVERLAY_BUFFER_SIZE 256        /* Overlay state buffer */
+
+/* Dual-Move SPI broker rendezvous buffers (sizeof schwung_move_xx_shm_t) */
+#define MOVE_B_SHM_SIZE     776  /* 4 seq + 768 payload + 4 pad */
 
 /* Web UI ring buffer sizes */
 #define WEB_PARAM_KEY_LEN     64
@@ -151,8 +156,14 @@ typedef struct shadow_control_t {
     volatile uint8_t speaker_active;    /* 1=built-in speaker active (from CC 115 line-out detect) */
     /* Compiler inserts 1 byte of padding here for uint16 alignment. */
     volatile uint16_t skipback_seconds; /* Skipback rolling buffer length: 30/60/120/180/240/300 */
-    volatile uint8_t reserved[2];
+    volatile uint8_t active_move_instance; /* Dual-Move focus: 0=A (stock), 1=B */
+    volatile uint8_t reserved[1];
 } shadow_control_t;
+
+typedef enum {
+    ACTIVE_MOVE_A = 0,
+    ACTIVE_MOVE_B = 1,
+} active_move_t;
 
 /*
  * UI state structure for slot information.
@@ -342,8 +353,33 @@ typedef struct shadow_overlay_state_t {
     volatile uint8_t  pad_led_colors[32];  /* velocity/color for each pad */
 } shadow_overlay_state_t;
 
+/* ============================================================================
+ * Dual-Move SPI broker rendezvous (A = broker, B = client)
+ * ============================================================================
+ * payload[] mirrors the 768-byte SPI ioctl buffer (see docs/SPI_PROTOCOL.md):
+ *   offset 0:    20 × 4-byte USB-MIDI = 80 bytes (MIDI OUT)
+ *   offset 80:   4 status + 172 data  = 176 bytes (display OUT)
+ *   offset 256:  128 stereo int16     = 512 bytes (audio OUT)
+ *   for RX (input region) the layout is offset-shifted but same total.
+ * seq is monotonic, written AFTER payload (release-store): readers see a
+ * consistent buffer without locks.
+ */
+typedef struct schwung_move_tx_shm_t {
+    volatile uint32_t seq;
+    uint8_t  payload[768];
+    uint32_t pad;  /* align to 8 */
+} schwung_move_tx_shm_t;
+
+typedef struct schwung_move_rx_shm_t {
+    volatile uint32_t seq;
+    uint8_t  payload[768];
+    uint32_t pad;
+} schwung_move_rx_shm_t;
+
 /* Compile-time size checks */
 typedef char shadow_control_size_check[(sizeof(shadow_control_t) == CONTROL_BUFFER_SIZE) ? 1 : -1];
+typedef char schwung_move_tx_size_check[(sizeof(schwung_move_tx_shm_t) == MOVE_B_SHM_SIZE) ? 1 : -1];
+typedef char schwung_move_rx_size_check[(sizeof(schwung_move_rx_shm_t) == MOVE_B_SHM_SIZE) ? 1 : -1];
 typedef char shadow_ui_state_size_check[(sizeof(shadow_ui_state_t) <= SHADOW_UI_BUFFER_SIZE) ? 1 : -1];
 typedef char shadow_param_size_check[(sizeof(shadow_param_t) <= SHADOW_PARAM_BUFFER_SIZE) ? 1 : -1];
 typedef char shadow_screenreader_size_check[(sizeof(shadow_screenreader_t) <= SHADOW_SCREENREADER_BUFFER_SIZE) ? 1 : -1];
