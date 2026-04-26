@@ -134,6 +134,18 @@ static web_param_notify_ring_t *web_param_notify_shm = NULL;  /* Shim → web UI
 static shadow_screenreader_t *shadow_screenreader_shm = NULL;  /* Forward declaration for D-Bus handler */
 static shadow_overlay_state_t *shadow_overlay_shm = NULL;     /* Overlay state for JS rendering */
 
+/* ----- Dual-Move SPI broker (see docs/dual-move-spi-broker-design.md) -----
+ * move_role: 0 = A (broker; default — stock MoveOriginal under LD_PRELOAD)
+ *            1 = B (client; set by MOVE_INSTANCE_ROLE=client in env)
+ * A creates and reads /schwung-move-b-tx, writes /schwung-move-b-rx.
+ * Slice 1 implements only A-mode audio summing. Slice 2 will add B-mode. */
+static int move_role = 0;
+static schwung_move_tx_shm_t *move_b_tx_shm = NULL;
+static schwung_move_rx_shm_t *move_b_rx_shm = NULL;
+/* Track B's last-seen seq + stale-frame count so A no-ops when no B is running. */
+static uint32_t move_b_last_seq = 0;
+static uint32_t move_b_stale_frames = 0;
+
 /* Recording dot: use wall clock for consistent flash rate regardless of call frequency */
 static inline int rec_dot_visible(void) {
     struct timespec ts;
@@ -2777,6 +2789,49 @@ static void init_shadow_shm(void)
         printf("Shadow: Failed to create overlay shm\n");
     }
 
+    /* Dual-Move SPI broker: open rendezvous SHM segments.
+     * A creates with O_CREAT and reads B's TX (zeroed by ftruncate, seq=0
+     * means "no client yet" → broker no-ops, byte-identical to single-instance).
+     * B (Slice 2) will reuse the same segments. */
+    {
+        const char *role_env = getenv("MOVE_INSTANCE_ROLE");
+        move_role = (role_env && strcmp(role_env, "client") == 0) ? 1 : 0;
+        printf("Shadow: dual-move role = %s\n", move_role ? "B (client)" : "A (broker)");
+
+        int tx_fd = shm_open(SHM_MOVE_B_TX, O_CREAT | O_RDWR, 0666);
+        if (tx_fd >= 0) {
+            ftruncate(tx_fd, MOVE_B_SHM_SIZE);
+            move_b_tx_shm = (schwung_move_tx_shm_t *)mmap(NULL, MOVE_B_SHM_SIZE,
+                PROT_READ | PROT_WRITE, MAP_SHARED, tx_fd, 0);
+            if (move_b_tx_shm == MAP_FAILED) {
+                move_b_tx_shm = NULL;
+                printf("Shadow: Failed to mmap move-b TX shm\n");
+            } else if (move_role == 0) {
+                /* A is the creator; clear seq so we don't see stale data
+                 * from a previous run. Don't memset payload — B may already
+                 * be writing if it raced ahead. */
+                move_b_tx_shm->seq = 0;
+            }
+        } else {
+            printf("Shadow: Failed to create move-b TX shm\n");
+        }
+
+        int rx_fd = shm_open(SHM_MOVE_B_RX, O_CREAT | O_RDWR, 0666);
+        if (rx_fd >= 0) {
+            ftruncate(rx_fd, MOVE_B_SHM_SIZE);
+            move_b_rx_shm = (schwung_move_rx_shm_t *)mmap(NULL, MOVE_B_SHM_SIZE,
+                PROT_READ | PROT_WRITE, MAP_SHARED, rx_fd, 0);
+            if (move_b_rx_shm == MAP_FAILED) {
+                move_b_rx_shm = NULL;
+                printf("Shadow: Failed to mmap move-b RX shm\n");
+            } else if (move_role == 0) {
+                move_b_rx_shm->seq = 0;
+            }
+        } else {
+            printf("Shadow: Failed to create move-b RX shm\n");
+        }
+    }
+
     /* TTS engine uses lazy initialization - will init on first speak */
     tts_set_volume(70);  /* Set volume early (safe, doesn't require TTS init) */
     printf("Shadow: TTS engine configured (will init on first use)\n");
@@ -5003,6 +5058,31 @@ pre_done:
         }
     }
     TIME_SECTION_END(spi_jack_disp_sum, spi_jack_disp_max);
+
+    /* Dual-Move broker (Slice 1): if A and a B client is publishing audio,
+     * sum it into the mailbox. Stale-seq detection (no advance for ≥2 frames)
+     * keeps this byte-identical to single-instance behavior when no B runs.
+     * No file I/O / locks / allocations — just a cheap memory load + saturating
+     * add of 256 int16s. */
+    if (move_role == 0 && move_b_tx_shm) {
+        uint32_t cur = move_b_tx_shm->seq;  /* acquire-load via volatile */
+        if (cur != move_b_last_seq) {
+            move_b_last_seq = cur;
+            move_b_stale_frames = 0;
+        } else if (move_b_stale_frames < 4) {
+            move_b_stale_frames++;
+        }
+        if (move_b_stale_frames < 2) {
+            const int16_t *bb = (const int16_t *)(move_b_tx_shm->payload + AUDIO_OUT_OFFSET);
+            int16_t *mb = (int16_t *)(shadow + AUDIO_OUT_OFFSET);
+            for (int i = 0; i < FRAMES_PER_BLOCK * 2; ++i) {
+                int32_t s = (int32_t)mb[i] + (int32_t)bb[i];
+                if (s > 32767) s = 32767;
+                else if (s < -32768) s = -32768;
+                mb[i] = (int16_t)s;
+            }
+        }
+    }
 
     /* Mute Move's audio output when requested (e.g. during silent clip switching).
      * Zero the audio region in shadow BEFORE the library copies shadow→hw. */

@@ -1,6 +1,8 @@
 # Dual-MoveOriginal — progress as of 2026-04-27
 
-Branch: `dual-move-instances`. Last commit: `43363153 poc: dual-MoveOriginal feasibility proven — only SPI broker left`.
+Branch: `dual-move-instances`. Latest commit at last update: see `git log
+dual-move-instances -- docs/dual-move-progress.md src/schwung_shim.c
+src/host/shadow_constants.h`.
 
 This is the running progress / hand-off doc for the "two MoveOriginal
 instances on one device" experiment. Read alongside:
@@ -143,7 +145,73 @@ path. See `docs/REALTIME_SAFETY.md`.
 
 The user has uncommitted WIP in `src/schwung_shim.c` (~89 lines, an XMOS
 SysEx logger for jack-detect investigation). Resolve that — commit, stash,
-or accept and rebase — before doing the broker surgery.
+or accept and rebase — before doing the broker surgery. **(Resolved
+2026-04-27: committed as `shim: XMOS SysEx logger for jack-detect
+investigation`.)**
+
+## Slice 1 status (2026-04-27, parked)
+
+**Landed on `dual-move-instances`** — see commits at the tip of the branch:
+
+- Header: `src/host/shadow_constants.h` adds `SHM_MOVE_B_TX`, `SHM_MOVE_B_RX`,
+  `MOVE_B_SHM_SIZE = 776`, `schwung_move_tx_shm_t`, `schwung_move_rx_shm_t`,
+  `active_move_t` enum, `shadow_control_t::active_move_instance` (one byte
+  stolen from existing `reserved[2]`; total stays 64 → size-check still
+  passes).
+- Shim (`src/schwung_shim.c`):
+  - Role detection from `MOVE_INSTANCE_ROLE` env (default A/broker).
+  - `shm_open(SHM_MOVE_B_{TX,RX}, O_CREAT|O_RDWR, 0666)` + `ftruncate(776)`
+    + `mmap` in `shim_init_subsystems` next to the other shadow SHM.
+  - End-of-`shim_pre_transfer` audio sum: read B's TX `seq`; if stale ≥2
+    frames, no-op. Otherwise saturating-add 256 int16s from
+    `payload[AUDIO_OUT_OFFSET..]` into the mailbox.
+  - Inserted right BEFORE the `mute_move_audio` memset so muting Move
+    also mutes B's contribution.
+  - File-scope statics: `move_role`, `move_b_{tx,rx}_shm`,
+    `move_b_last_seq`, `move_b_stale_frames`.
+  - Compile-time size-checks pass (`MOVE_B_SHM_SIZE == sizeof(...)`).
+- Build: cross-compiles cleanly with `./scripts/build.sh`.
+- Deploy: `./scripts/install.sh local --skip-modules --skip-confirmation`
+  succeeded; `/dev/shm/schwung-move-b-{tx,rx}` exist at 776 bytes; A's
+  log emits `dual-move role = A (broker)` (printf, captured by
+  MoveLauncher logs not unified logger).
+- Verified single-instance (no B running): `seq=0` reads correctly,
+  stale-frame counter trips on frame 2.
+
+### Open issue — audio glitches with Slice 1 enabled
+
+User reports audio works but there are SPI-related audio issues with the
+Slice 1 build deployed. Parked the work and reverted the device to `main`
+to keep the device usable. Suspects (not investigated yet):
+
+1. **First-touch page faults on the new SHM pages.** On the first ~2 SPI
+   frames, reading `move_b_tx_shm->payload + AUDIO_OUT_OFFSET` walks
+   pages that were ftruncate'd but never faulted in. Page-fault inside
+   the SPI callback (FIFO 90, ~900µs budget) is RT-unsafe.
+   - Fix: pre-fault the payload at init with a single `read` /
+     `memset(0)` of the whole region (in `shim_init_subsystems`, NOT
+     in the callback), and `mlock` the mapping.
+2. **Cache pollution of the audio inner loop.** The new 512-byte SHM
+   mailbox plus existing mailbox doubles the working set of the
+   pre-transfer audio path. Probably small, but worth profiling once
+   page-faults are ruled out.
+3. **`volatile` read of `seq` is not a real acquire fence on aarch64.**
+   Even with no B running, the seq=0 path matches and we still execute
+   the saturating-add over 256 int16s of zeros for the first 2 frames.
+   That alone shouldn't glitch audio, but might combine with #1.
+4. **Background `link_in_attach_retry_thread` and TTS init noise.** Not
+   from Slice 1, but worth checking timing logs to confirm the spike is
+   from the new code path and not a coincident init storm.
+
+Diagnostic step before resuming: enable shim timing logs (the
+`spi_section_*` counters in `schwung_shim.c`) and confirm whether the
+spike correlates with the new audio-sum block.
+
+## Slices 2-5
+
+Unchanged from the design doc. Don't begin until Slice 1's audio
+behavior is byte-identical to today (or the regression is root-caused
+and fixed).
 
 ## Quick references
 
