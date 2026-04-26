@@ -22,7 +22,7 @@ We want to ship v2 as the default eventually, but flip safely with rollback.
 
 - New flag: `menu_style_v2` in `/data/UserData/schwung/config/features.json`
 - Default: `false` initially; flip to `true` after on-device validation
-- C-side setter `menu_style_set(v2)` in `shadow_ui.c`, mirroring the existing `display_mirror_set` / `set_pages_set` / `long_press_shadow_set` patterns at lines 1670, 1748, 1822
+- C-side setter `menu_style_set(v2)` in `shadow_ui.c`, mirroring the existing `display_mirror_set` / `set_pages_set` / `shadow_ui_trigger_set` patterns
 - Setting UI: one new line in Global Settings (`Shift+Vol+Step2`), "Menu Style: Classic / V2"
 
 ### Read path

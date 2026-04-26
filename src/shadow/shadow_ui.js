@@ -849,6 +849,13 @@ const GLOBAL_SETTINGS_SECTIONS = [
         ]
     },
     {
+        id: "shortcuts", label: "Shortcuts",
+        items: [
+            { key: "shadow_ui_trigger", label: "Shadow UI Trigger", type: "enum",
+              options: ["Long Press", "Shift+Vol", "Both"], values: [0, 1, 2] }
+        ]
+    },
+    {
         id: "services", label: "Services",
         items: [
             { key: "filebrowser_enabled", label: "File Browser", type: "bool" },
@@ -5816,6 +5823,17 @@ function syncSettingsFromConfigFile() {
             const cur = typeof set_pages_get === "function" ? !!set_pages_get() : true;
             if (!!c.set_pages_enabled !== cur) set_pages_set_shm(c.set_pages_enabled ? 1 : 0);
         }
+        /* Shadow UI trigger (Long Press / Shift+Vol / Both) */
+        if (c.shadow_ui_trigger !== undefined && typeof shadow_ui_trigger_set_shm === "function") {
+            const map = { long_press: 0, shift_vol: 1, both: 2 };
+            let val = (typeof c.shadow_ui_trigger === "number")
+                ? c.shadow_ui_trigger
+                : map[c.shadow_ui_trigger];
+            if (typeof val === "number" && val >= 0 && val <= 2) {
+                const cur = typeof shadow_ui_trigger_get === "function" ? shadow_ui_trigger_get() : 2;
+                if (val !== cur) shadow_ui_trigger_set_shm(val);
+            }
+        }
         /* Auto update check */
         if (c.auto_update_check !== undefined) {
             autoUpdateCheckEnabled = c.auto_update_check;
@@ -10153,6 +10171,11 @@ function getMasterFxSettingValue(setting) {
     if (setting.key === "set_pages_enabled") {
         return (typeof set_pages_get === "function" && set_pages_get()) ? "On" : "Off";
     }
+    if (setting.key === "shadow_ui_trigger") {
+        const val = typeof shadow_ui_trigger_get === "function" ? shadow_ui_trigger_get() : 2;
+        const labels = (setting && Array.isArray(setting.options)) ? setting.options : ["Long Press", "Shift+Vol", "Both"];
+        return labels[val] || labels[2] || "Both";
+    }
     if (setting.key === "skipback_shortcut") {
         const val = typeof skipback_shortcut_get === "function" ? (skipback_shortcut_get() ? 1 : 0) : 0;
         return ["Sh+Cap", "Sh+Vol+Cap"][val] || "Sh+Cap";
@@ -10300,6 +10323,19 @@ function adjustMasterFxSetting(setting, delta) {
     if (setting.key === "set_pages_enabled" && typeof set_pages_set === "function") {
         const current = typeof set_pages_get === "function" ? set_pages_get() : true;
         set_pages_set(!current ? 1 : 0);
+        return;
+    }
+
+    if (setting.key === "shadow_ui_trigger") {
+        if (typeof shadow_ui_trigger_set !== "function") return;
+        const current = typeof shadow_ui_trigger_get === "function" ? shadow_ui_trigger_get() : 2;
+        const values = (setting && Array.isArray(setting.values) && setting.values.length > 0)
+            ? setting.values
+            : [0, 1, 2];
+        let idx = values.indexOf(current);
+        if (idx < 0) idx = values.length - 1;
+        const nextIdx = (idx + (delta > 0 ? 1 : values.length - 1)) % values.length;
+        shadow_ui_trigger_set(values[nextIdx]);
         return;
     }
 

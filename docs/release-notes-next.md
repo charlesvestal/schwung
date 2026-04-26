@@ -16,7 +16,12 @@ Covers all commits since `v0.9.6` (Apr 14) through `89c1d749`.
   captures are always at full level.
 - **Idle fast-path** in `shadow_inprocess_mix_from_buffer` — no CPU cost
   when no slots / FX loaded.
-- **Long-press shortcuts** always on, setting removed (330615eb).
+- **Shadow UI Trigger setting** (Global Settings → Shortcuts): pick
+  between **Long Press**, **Shift+Vol**, or **Both** (default). Replaces
+  the always-on long-press behavior. Adjusting a track's volume by
+  holding the track button and touching the volume knob no longer opens
+  the shadow UI — once the knob is touched during a track hold, that
+  track's long-press is suppressed for the rest of the press.
 - **Analytics opt-out** with first-run prompt (5f56cd25).
 - **Tempo persistence** across subscriber restarts; **mute/solo
   persistence** across power cycles. Set-change also now forces Link
@@ -59,15 +64,34 @@ Covers all commits since `v0.9.6` (Apr 14) through `89c1d749`.
       native audio passes through untouched, no CPU spikes in `spi_timing`
       logs.
 
-### 2 — Long-press shortcuts (always-on per `330615eb`)
+### 2 — Shadow UI Trigger setting
 
-- [ ] Long-press Track 1..4: opens slot settings.
-- [ ] Long-press Menu: opens master FX settings.
-- [ ] Long-press Step 2: opens global settings.
-- [ ] Long-press Step 13: opens tools menu.
-- [ ] Long-press Jog click: opens overtake menu.
-- [ ] Confirm none of these fire accidentally during normal Shift+Vol
-      combos.
+- [ ] Global Settings → Shortcuts → Shadow UI Trigger cycles
+      Long Press / Shift+Vol / Both.
+- [ ] Mode = **Both** (default):
+  - [ ] Long-press Track 1..4 opens slot settings.
+  - [ ] Long-press Menu opens master FX settings.
+  - [ ] Long-press Shift+Step 2 opens global settings.
+  - [ ] Shift+Step 13 (immediate) opens tools menu.
+  - [ ] All Shift+Vol combos still work (Track / Menu / Step 2 / Step 13
+        / Jog Click / Back / Capture / Left-Right).
+- [ ] Mode = **Long Press**:
+  - [ ] Long-press shortcuts work.
+  - [ ] Shift+Vol combos do nothing (CC reaches Move).
+- [ ] Mode = **Shift+Vol**:
+  - [ ] Shift+Vol combos work.
+  - [ ] Holding a track / Menu / Shift+Step 2 past 500ms does NOT open
+        anything (Move handles natively).
+- [ ] Volume-tweak suppression (any mode with long-press active):
+  - [ ] Shadow UI not active. Hold Track 1, touch volume knob, adjust
+        track 1 volume on Move, release knob, keep holding track. Wait
+        2 seconds. Release. Shadow UI stays closed.
+  - [ ] Shadow UI not active. Hold Track 2, touch knob briefly, release
+        knob immediately, release track. Shadow UI stays closed.
+- [ ] Setting persists across reboot (features.json
+      `shadow_ui_trigger` key written).
+- [ ] Existing installs migrate from legacy `long_press_shadow` bool
+      (true→both, false→shift_vol, missing→both).
 
 ### 3 — Display / analytics / misc
 
