@@ -79,6 +79,12 @@ int sampler_menu_cursor = SAMPLER_MENU_SOURCE;
 int16_t sampler_vu_peak = 0;
 int sampler_vu_hold_frames = 0;
 
+/* Diagnostic: max sample magnitude observed during the active recording.
+ * Reset on start_recording, logged on stop. Helps tell silent-capture from
+ * silent-output (e.g. did MOVE_INPUT actually deliver audio at all). */
+static int32_t sampler_recording_max_peak = 0;
+static uint64_t sampler_recording_blocks_captured = 0;
+
 /* Full-screen mode flag */
 int sampler_fullscreen_active = 0;
 
@@ -492,8 +498,8 @@ void sampler_start_recording_to(const char *output_path) {
         return;
     }
 
-    /* Force resample source */
-    sampler_source = SAMPLER_SOURCE_RESAMPLE;
+    /* Honor whatever source the caller selected via host_sampler_set_source.
+     * Older callers that want the Schwung mix should request source 0 first. */
 
     /* Create parent directory */
     char dir_buf[256];
@@ -559,6 +565,8 @@ void sampler_start_recording_to(const char *output_path) {
     sampler_writer_running = 1;
     sampler_state = SAMPLER_RECORDING;
     sampler_fade_in_remaining = SAMPLER_FADE_SAMPLES;
+    sampler_recording_max_peak = 0;
+    sampler_recording_blocks_captured = 0;
     /* Don't touch overlay — this is driven by external JS, not the sampler UI */
 
     char msg[256];
@@ -740,7 +748,15 @@ void sampler_stop_recording(void) {
 
     if (!sampler_writer_running) return;
 
-    s_host.log("Sampler: stopping recording");
+    {
+        char msg[160];
+        snprintf(msg, sizeof(msg),
+                 "Sampler: stopping recording (source=%d blocks=%llu max_peak=%d)",
+                 (int)sampler_source,
+                 (unsigned long long)sampler_recording_blocks_captured,
+                 (int)sampler_recording_max_peak);
+        s_host.log(msg);
+    }
 
     /* Signal writer thread to exit */
     pthread_mutex_lock(&sampler_ring_mutex);
@@ -843,6 +859,7 @@ static void sampler_capture_audio_common(const int16_t *audio) {
     /* Write to ring buffer if space available */
     if (sampler_ring_available_write() >= samples_to_write) {
         size_t write_pos = __atomic_load_n(&sampler_ring_write_pos, __ATOMIC_ACQUIRE);
+        int32_t block_peak = 0;
         for (size_t i = 0; i < samples_to_write; i++) {
             int16_t sample = audio[i];
             /* Apply fade-in ramp on first block(s) to avoid click */
@@ -851,9 +868,13 @@ static void sampler_capture_audio_common(const int16_t *audio) {
                 sample = (int16_t)((int32_t)sample * pos / SAMPLER_FADE_SAMPLES);
                 sampler_fade_in_remaining--;
             }
+            int32_t mag = sample < 0 ? -(int32_t)sample : (int32_t)sample;
+            if (mag > block_peak) block_peak = mag;
             sampler_ring_buffer[write_pos] = sample;
             write_pos = (write_pos + 1) % buffer_samples;
         }
+        if (block_peak > sampler_recording_max_peak) sampler_recording_max_peak = block_peak;
+        sampler_recording_blocks_captured++;
         __atomic_store_n(&sampler_ring_write_pos, write_pos, __ATOMIC_RELEASE);
 
         pthread_mutex_lock(&sampler_ring_mutex);

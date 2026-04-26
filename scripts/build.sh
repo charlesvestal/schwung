@@ -51,27 +51,56 @@ if [ -z "$CROSS_PREFIX" ] && [ ! -f "/.dockerenv" ]; then
         -e REQUIRE_SCREEN_READER="$REQUIRE_SCREEN_READER" \
         "$IMAGE_NAME"
 
-    # Build schwung-manager (Go, cross-compiles natively — no Docker needed)
-    if command -v go &>/dev/null && [ -d "$REPO_ROOT/schwung-manager" ]; then
+    # Build schwung-manager (Go, ARM64 cross-compile).
+    # Prefer local `go` when available (fast). Fall back to a Docker
+    # `golang:1.26-bookworm` container so the build still produces a fresh
+    # binary on hosts without Go installed. If neither is available, warn
+    # loudly — silently skipping leaves a stale binary in the tarball and
+    # any new schwung-manager endpoints will appear broken on-device.
+    if [ -d "$REPO_ROOT/schwung-manager" ]; then
         echo ""
         echo "=== Building schwung-manager (Go) ==="
-        cd "$REPO_ROOT/schwung-manager"
-        GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o "$REPO_ROOT/build/schwung-manager" -ldflags="-s -w" .
-        echo "Built: schwung-manager ($(wc -c < "$REPO_ROOT/build/schwung-manager" | tr -d ' ') bytes)"
-        cd "$REPO_ROOT"
-        # Inject into existing tarball (append the file with the schwung/ prefix)
-        if [ -f "$REPO_ROOT/schwung.tar.gz" ]; then
-            cd build
-            # gunzip, append, re-gzip (tar -r doesn't work on .gz)
-            gunzip -k "$REPO_ROOT/schwung.tar.gz" -f
-            if tar --version 2>/dev/null | grep -q GNU; then
-                tar --format=posix -rf "$REPO_ROOT/schwung.tar" --transform 's,^\.,schwung,' ./schwung-manager
-            else
-                tar -rf "$REPO_ROOT/schwung.tar" -s ',^\.,schwung,' ./schwung-manager
-            fi
-            gzip -f "$REPO_ROOT/schwung.tar"
+        sm_built=0
+        if command -v go &>/dev/null; then
+            cd "$REPO_ROOT/schwung-manager"
+            GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o "$REPO_ROOT/build/schwung-manager" -ldflags="-s -w" .
             cd "$REPO_ROOT"
-            echo "Injected schwung-manager into tarball"
+            sm_built=1
+        elif command -v docker &>/dev/null; then
+            echo "Local 'go' not found — building via golang:1.26-bookworm container"
+            docker run --rm \
+                -v "$REPO_ROOT/schwung-manager:/src" \
+                -v "$REPO_ROOT/build:/out" \
+                -u "$(id -u):$(id -g)" \
+                -w /src \
+                -e GOOS=linux -e GOARCH=arm64 -e CGO_ENABLED=0 \
+                -e GOCACHE=/tmp/.gocache -e GOMODCACHE=/tmp/.gomodcache \
+                golang:1.26-bookworm \
+                go build -buildvcs=false -o /out/schwung-manager -ldflags="-s -w" .
+            sm_built=1
+        else
+            echo "WARNING: neither 'go' nor 'docker' available — skipping schwung-manager rebuild."
+            echo "         The tarball will contain whatever stale binary is committed at"
+            echo "         schwung-manager/schwung-manager-arm64. Any new schwung-manager"
+            echo "         endpoints (e.g. per-module config UI) will not work on-device."
+        fi
+
+        if [ "$sm_built" = "1" ]; then
+            echo "Built: schwung-manager ($(wc -c < "$REPO_ROOT/build/schwung-manager" | tr -d ' ') bytes)"
+            # Inject into existing tarball (append the file with the schwung/ prefix)
+            if [ -f "$REPO_ROOT/schwung.tar.gz" ]; then
+                cd build
+                # gunzip, append, re-gzip (tar -r doesn't work on .gz)
+                gunzip -k "$REPO_ROOT/schwung.tar.gz" -f
+                if tar --version 2>/dev/null | grep -q GNU; then
+                    tar --format=posix -rf "$REPO_ROOT/schwung.tar" --transform 's,^\.,schwung,' ./schwung-manager
+                else
+                    tar -rf "$REPO_ROOT/schwung.tar" -s ',^\.,schwung,' ./schwung-manager
+                fi
+                gzip -f "$REPO_ROOT/schwung.tar"
+                cd "$REPO_ROOT"
+                echo "Injected schwung-manager into tarball"
+            fi
         fi
     fi
 
@@ -546,6 +575,13 @@ if [ -f ".cache/move_manual.json" ]; then
     echo "Bundled Move Manual"
 else
     echo "Warning: .cache/move_manual.json not found - no bundled manual"
+fi
+
+# Bundle Schwung's own user manual so the Assistant tool can include it
+# in the LLM system prompt (and other tools could reference it too).
+if [ -f "MANUAL.md" ]; then
+    cp -u MANUAL.md ./build/shared/MANUAL.md
+    echo "Bundled Schwung MANUAL.md"
 fi
 
 # Copy host files (only if source is newer)
