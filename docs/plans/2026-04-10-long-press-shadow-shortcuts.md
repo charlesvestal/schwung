@@ -1,7 +1,9 @@
 # Long-Press Shortcuts for Shadow UI
 
 **Date:** 2026-04-10
-**Status:** Design
+**Status:** Shipped (then superseded — long-press was made always-on in
+`330615eb`, then re-gated by the `shadow_ui_trigger` enum setting in
+2026-04-26: Long Press / Shift+Vol / Both).
 
 ## Summary
 

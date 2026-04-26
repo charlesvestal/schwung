@@ -1,5 +1,11 @@
 # Long-Press Shadow Shortcuts Implementation Plan
 
+> **Status (2026-04-26):** Superseded — long-press is now selectable via
+> the `shadow_ui_trigger` enum in features.json (Long Press / Shift+Vol /
+> Both). The old `long_press_shadow` bool is read for backward compat
+> only. Don't follow the steps in this plan; they describe an obsolete
+> shape of the feature.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Add optional long-press detection on Track/Menu/Step2 buttons as an alternative to Shift+Vol combos for entering shadow UI.

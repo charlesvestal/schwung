@@ -101,9 +101,9 @@ All shortcuts use **Shift + touch Volume knob** as a modifier:
 
 **Tip:** You can access slots directly from normal Move mode - you don't need to be in shadow mode first.
 
-### Long-Press Shortcuts (Optional)
+### Long-Press Shortcuts
 
-If you prefer not to use the Shift+Vol combo, you can enable **Long Press** mode in **Global Settings > Shortcuts**. This adds alternative shortcuts that don't require touching the volume knob:
+Long-press is an alternative way to enter shadow UI without touching the volume knob:
 
 | Shortcut | Action |
 |----------|--------|
@@ -114,9 +114,17 @@ If you prefer not to use the Shift+Vol combo, you can enable **Long Press** mode
 | **Tap Track** (while shadow UI is shown) | Dismiss shadow UI |
 | **Tap Note/Session** (while shadow UI is shown) | Dismiss shadow UI |
 
-When enabled, holding Shift also lights the Step 2 and Step 13 LEDs as a reminder.
+When long-press is active, holding Shift also lights the Step 2 and Step 13 LEDs as a reminder.
 
-The original Shift+Vol shortcuts continue to work regardless of this setting.
+#### Choosing Long Press / Shift+Vol / Both
+
+In **Global Settings > Shortcuts**, the **Shadow UI Trigger** setting selects which gestures open the shadow UI:
+
+- **Long Press** — only long-press shortcuts; Shift+Vol combos do nothing
+- **Shift+Vol** — only Shift+Vol shortcuts; long-press is disabled
+- **Both** (default) — both gestures work
+
+Adjusting a track's volume by holding the track button and touching the knob never opens the shadow UI — once the volume knob is touched during a track hold, that track's long-press is suppressed for the rest of the press.
 
 ### Overlay Knob Shortcut
 
@@ -674,7 +682,7 @@ Muted slots are silenced but continue processing MIDI. Solo isolates a single sl
 
 ## Analytics
 
-Schwung sends anonymous usage statistics to help prioritize development. On first launch, you'll be asked whether to enable this — the default is **Yes**. You can change this at any time in Settings > Analytics.
+Schwung can send anonymous usage statistics to help prioritize development. Analytics are **off by default** — on first launch you'll be prompted to choose; nothing is sent until you opt in. You can change this at any time in Settings > Analytics.
 
 ### What is collected
 

@@ -147,7 +147,7 @@ typedef struct shadow_control_t {
     volatile uint8_t pad_block;            /* 1=suppress pad notes (68-99) from reaching Move */
     volatile uint8_t suspend_overtake;  /* 1=suspend (skip exit hook), 0=normal exit */
     volatile uint8_t open_tool_cmd;     /* 0=none, 1=open tool (path in /data/UserData/schwung/open_tool_cmd.json) */
-    volatile uint8_t long_press_shadow; /* 1=enable long-press Track/Menu/Step2 shortcuts */
+    volatile uint8_t shadow_ui_trigger; /* Shadow UI trigger mode: 0=long-press only, 1=Shift+Vol only, 2=both */
     volatile uint8_t speaker_active;    /* 1=built-in speaker active (from CC 115 line-out detect) */
     /* Compiler inserts 1 byte of padding here for uint16 alignment. */
     volatile uint16_t skipback_seconds; /* Skipback rolling buffer length: 30/60/120/180/240/300 */

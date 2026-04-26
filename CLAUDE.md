@@ -530,6 +530,14 @@ Shadow Mode runs custom signal chains alongside stock Move. The shim intercepts 
 
 ### Shadow Mode Shortcuts
 
+Shadow UI access is gated by **Global Settings → Shortcuts → Shadow UI Trigger** (`shadow_ui_trigger` in `features.json`):
+
+- **Both** (default): both Shift+Vol and long-press work
+- **Long Press**: only long-press works; Shift+Vol combos pass through to Move
+- **Shift+Vol**: only Shift+Vol works; long-press is suppressed
+
+Shift+Vol combos (active in modes Both / Shift+Vol):
+
 - **Shift+Vol+Track 1-4**: Open shadow mode / jump to slot settings (works from Move or Shadow UI)
 - **Shift+Vol+Menu**: Jump directly to Master FX settings
 - **Shift+Vol+Step2**: Open Global Settings
@@ -537,6 +545,16 @@ Shadow Mode runs custom signal chains alongside stock Move. The shim intercepts 
 - **Shift+Vol+Jog Click**: Open Tools menu (overtake modules live below the divider), or exit active overtake module
 - **Shift+Sample**: Open Quantized Sampler
 - **Shift+Capture**: Skipback (save last 30 seconds)
+
+Long-press shortcuts (active in modes Both / Long Press):
+
+- **Hold Track 1-4 (500ms)**: Open that slot's editor
+- **Hold Menu (500ms)**: Open Master FX
+- **Shift + hold Step 2 (500ms)**: Open Global Settings
+- **Shift + Step 13** (immediate): Open Tools menu
+- **Tap Track / Menu** while shadow UI shown: Dismiss shadow UI
+
+Long-press is suppressed for the rest of a track press as soon as the volume knob is touched (so Track-hold + knob to adjust track volume never opens shadow UI). Tracked by `track_vol_touched_during_press[]` in `schwung_shim.c`.
 
 ### Quantized Sampler
 
