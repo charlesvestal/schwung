@@ -85,7 +85,7 @@ curl -L https://raw.githubusercontent.com/charlesvestal/schwung/main/scripts/uni
 
 ## Modes
 
-- **Shadow UI**: Runs custom signal chains alongside stock Move so you can layer additional synths and effects. Use Shift+Vol+Track (and +Menu) to access these signal chain slots.
+- **Shadow UI**: Runs custom signal chains alongside stock Move so you can layer additional synths and effects. By default, both **Shift+Vol+Track** (and +Menu) and a long-press on Track/Menu open the Shadow UI; the trigger style is selectable in **Global Settings > Shortcuts**.
 - **Overtake modules**: Full-screen modules that temporarily take over the Move UI (e.g., MIDI controller apps). Use Shift+Vol+Jog click to access overtake modules.
 - **Quantized Sampler**: Shift+Sample opens a sampler that records to `Samples/Schwung/Resampler/YYYY-MM-DD/`. Choose resample (including Schwung synths) or Move Input, set duration in bars, and recording starts on a note event or pressing play.
 - **Skipback**: Shift+Capture writes the last 30 seconds of audio to `Samples/Schwung/Skipback/YYYY-MM-DD/`.
@@ -98,15 +98,13 @@ Usage details, shortcuts, and workflows are documented in [MANUAL.md](MANUAL.md)
 
 ## Native Sampler Bridge
 
-In **Master FX > Settings**, `Resample Src` controls whether Schwung audio is fed into native Move sampling workflows:
+In **Global Settings > Audio**, `Sample Src` controls whether Schwung audio is fed into native Move sampling workflows:
 
-- `Off`: Disabled (default)
-- `Replace`: Replaces native sampler input with Schwung master output
-
-`Mix` is retained only as a legacy config value and is treated as `Replace`.
+- `Native`: Disabled — sampler uses Move's normal input (default)
+- `Schwung Mix`: Replaces native sampler input with Schwung master output
 
 For the most reliable native sampling behavior with this feature:
-- Set `Resample Src` to **Replace**
+- Set `Sample Src` to **Schwung Mix**
 - In Move's sampler, set sample source to **Line In**
 - Set monitoring to **Off**
 
@@ -225,7 +223,7 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 
 ## Community
 
-- Discord: [https://discord.gg/Zn33eRvTyK](https://discord.gg/GHWaZCC9bQ)
+- Discord: [https://discord.gg/GHWaZCC9bQ](https://discord.gg/GHWaZCC9bQ)
 - Contributors: @talktogreg, @impbox, @deets, @bobbyd, @chaolue, @charlesvestal
 
 

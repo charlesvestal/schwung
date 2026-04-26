@@ -2,6 +2,18 @@
 
 This document describes the JavaScript API available for developing Schwung modules.
 
+> **Note on contexts.** Two QuickJS hosts register JS bindings:
+> `src/schwung_host.c` (the standalone `schwung` host binary) and
+> `src/shadow/shadow_ui.c` (the shadow-UI process the shim launches).
+> In production, only **shadow_ui** runs — `schwung_host.c main()` is
+> not invoked on device. Modules executed inside the Shadow UI see the
+> `shadow_*`, `tts_*`, `display_mirror_*`, `set_pages_*`,
+> `overlay_knobs_*`, `host_sampler_*`, `move_midi_inject_to_move`,
+> `unified_log`, and `shadow_ui_trigger_*` bindings in addition to the
+> generic `host_*` set. Bindings registered only in `schwung_host.c`
+> are listed below for completeness but won't be reachable on hardware
+> until/unless the standalone host runtime ships.
+
 ## Display
 
 The Move has a 128x64 pixel 1-bit (black/white) display.
@@ -70,7 +82,9 @@ globalThis.init = function() {
     // Initialize state, set up LEDs, etc.
 }
 
-// Called every frame (~60fps)
+// Called every audio block (~344 ticks/sec; 128 frames @ 44.1kHz).
+// Display is rendered out at the configured refresh rate (default ~11Hz,
+// adjustable via host_set_refresh_rate). Avoid heavy per-tick work.
 globalThis.tick = function() {
     // Update display, handle animations
 }
@@ -181,6 +195,65 @@ host_wake_all_slots()         // Clear idle flags on all shadow slots
 host_mute_move_audio(bool)    // Mute/unmute Move's audio output
 host_http_download_background(url, dest) // Background HTTP download
 host_sampler_set_external_stop(bool)     // Set external stop flag for sampler
+host_sampler_pause()          // Pause active recording
+host_sampler_resume()         // Resume paused recording
+host_sampler_is_paused()      // -> bool
+host_sampler_get_samples_written() // -> int
+host_pad_block(bool)          // Suppress pad notes (68-99) from reaching Move
+host_preview_play(path)       // Play a WAV preview through Move's speakers
+host_preview_stop()
+host_send_screenreader(text)  // Same as host_announce_screenreader
+host_get_analytics_enabled()  // -> 0/1
+host_set_analytics_enabled(v) // 0/1
+host_track_event(name, props) // Send analytics event (if enabled)
+
+// Shadow control / state queries (shadow_ui only)
+shadow_get_param(slot, key) / shadow_set_param(slot, key, val)
+shadow_set_param_timeout(ms)
+shadow_get_slots() / shadow_set_focused_slot(slot)
+shadow_get_selected_slot() / shadow_get_ui_slot()
+shadow_get_display_mode() / shadow_set_display_overlay(mode)
+shadow_get_overlay_state() / shadow_get_overlay_sequence()
+shadow_get_pad_led_snapshot()
+shadow_get_shift_held()
+shadow_get_move_ui_mode()
+shadow_get_open_tool_cmd()
+shadow_get_ui_flags() / shadow_clear_ui_flags(mask)
+shadow_get_suspend_overtake() / shadow_set_suspend_overtake(v)
+shadow_set_overtake_mode(mode)
+shadow_set_skip_led_clear(v)
+shadow_request_patch(slot, name) / shadow_request_exit()
+shadow_send_midi_to_dsp(slot, msg)
+shadow_load_ui_module(path)
+shadow_log(msg)
+shadow_control_restart()
+
+// Global setting bindings (shadow_ui only)
+display_mirror_get() / display_mirror_set(v) / display_mirror_set_shm(v)
+set_pages_get() / set_pages_set(v) / set_pages_set_shm(v)
+overlay_knobs_get_mode() / overlay_knobs_set_mode(v)
+skipback_seconds_get() / skipback_seconds_set(v)
+skipback_shortcut_get() / skipback_shortcut_set(v)
+shadow_ui_trigger_get() / shadow_ui_trigger_set(v) / shadow_ui_trigger_set_shm(v)
+
+// TTS / screen reader bindings (shadow_ui only)
+tts_get_enabled() / tts_set_enabled(v)
+tts_get_engine() / tts_set_engine(name)   // "espeak" or "flite"
+tts_get_speed() / tts_set_speed(f)        // 0.5–6.0
+tts_get_pitch() / tts_set_pitch(hz)       // 80–180
+tts_get_volume() / tts_set_volume(v)      // 0–100
+tts_get_debounce() / tts_set_debounce(ms) // 0–1000
+
+// Unified logger (shadow_ui only)
+unified_log(source, level, msg)
+unified_log_enabled() // -> bool
+move_midi_inject_to_move([type, status, d1, d2])
+
+// Drawing helpers (in addition to clear_screen/print/set_pixel/draw_rect/fill_rect/text_width)
+fill_circle(x, y, r, value)
+draw_line(x1, y1, x2, y2, value)
+draw_image(x, y, image)
+get_int16(buf, off) / set_int16(buf, off, v)
 ```
 
 `host_module_send_midi` accepts a 3-byte array `[status, data1, data2]` and an optional `source` (`"internal"`, `"external"`, or `"host"`).
@@ -191,7 +264,9 @@ host_sampler_set_external_stop(bool)     // Set external stop flag for sampler
 
 ```javascript
 exit()                        // Exit Schwung, return to stock Move
-console.log(msg)              // Log to /data/UserData/schwung/schwung.log
+console.log(msg)              // Routed to the unified logger when enabled
+                              // (file: /data/UserData/schwung/debug.log).
+                              // See docs/LOGGING.md for enable/disable.
 ```
 
 ## Move Hardware MIDI Mapping
@@ -223,7 +298,7 @@ console.log(msg)              // Log to /data/UserData/schwung/schwung.log
 | 85  | Play              |                                |
 | 86  | Record            |                                |
 | 88  | Mute              |                                |
-| 118 | Record button     | LED: RGB (use Note for input)  |
+| 118 | Sample            | Also acts as Record on some firmwares; LED is RGB |
 | 119 | Delete            |                                |
 
 ### Knob Touch (Capacitive)
