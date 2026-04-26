@@ -1819,15 +1819,26 @@ static JSValue js_set_pages_get(JSContext *ctx, JSValueConst this_val,
     return JS_NewBool(ctx, shadow_control->set_pages_enabled != 0);
 }
 
-/* long_press_shadow_set(enabled) - Write to shared memory + persist to features.json */
-static JSValue js_long_press_shadow_set(JSContext *ctx, JSValueConst this_val,
+/* shadow_ui_trigger value names. Index matches the uint8 stored in shadow_control. */
+static const char *SHADOW_UI_TRIGGER_NAMES[3] = {"long_press", "shift_vol", "both"};
+
+static int clamp_shadow_ui_trigger(int v) {
+    if (v < 0) return 0;
+    if (v > 2) return 2;
+    return v;
+}
+
+/* shadow_ui_trigger_set(mode) - Write to shared memory + persist to features.json.
+ * mode: 0=long_press, 1=shift_vol, 2=both. */
+static JSValue js_shadow_ui_trigger_set(JSContext *ctx, JSValueConst this_val,
                                         int argc, JSValueConst *argv) {
     (void)this_val;
     if (argc < 1 || !shadow_control) return JS_UNDEFINED;
 
-    int enabled = 0;
-    JS_ToInt32(ctx, &enabled, argv[0]);
-    shadow_control->long_press_shadow = enabled ? 1 : 0;
+    int mode = 0;
+    JS_ToInt32(ctx, &mode, argv[0]);
+    mode = clamp_shadow_ui_trigger(mode);
+    shadow_control->shadow_ui_trigger = (uint8_t)mode;
 
     /* Persist to features.json */
     const char *config_path = "/data/UserData/schwung/config/features.json";
@@ -1840,7 +1851,8 @@ static JSValue js_long_press_shadow_set(JSContext *ctx, JSValueConst this_val,
     }
     buf[len] = '\0';
 
-    char *key = strstr(buf, "\"long_press_shadow\"");
+    const char *new_val = SHADOW_UI_TRIGGER_NAMES[mode];
+    char *key = strstr(buf, "\"shadow_ui_trigger\"");
     if (key) {
         char *colon = strchr(key, ':');
         if (colon) {
@@ -1851,20 +1863,21 @@ static JSValue js_long_press_shadow_set(JSContext *ctx, JSValueConst this_val,
             char newbuf[512];
             int prefix_len = (int)(colon - buf);
             int suffix_start = (int)(val_end - buf);
-            snprintf(newbuf, sizeof(newbuf), "%.*s%s%s",
-                     prefix_len, buf,
-                     enabled ? "true" : "false",
-                     buf + suffix_start);
+            snprintf(newbuf, sizeof(newbuf), "%.*s\"%s\"%s",
+                     prefix_len, buf, new_val, buf + suffix_start);
             f = fopen(config_path, "w");
             if (f) { fputs(newbuf, f); fclose(f); }
         }
     } else if (len > 0) {
+        /* Append a new entry before the closing brace. Any legacy "long_press_shadow"
+         * key lingers harmlessly — load_feature_config prefers shadow_ui_trigger,
+         * and install.sh rewrites features.json on next install. */
         char *brace = strrchr(buf, '}');
         if (brace) {
             char newbuf[512];
             int prefix_len = (int)(brace - buf);
-            snprintf(newbuf, sizeof(newbuf), "%.*s,\n  \"long_press_shadow\": %s\n}",
-                     prefix_len, buf, enabled ? "true" : "false");
+            snprintf(newbuf, sizeof(newbuf), "%.*s,\n  \"shadow_ui_trigger\": \"%s\"\n}",
+                     prefix_len, buf, new_val);
             f = fopen(config_path, "w");
             if (f) { fputs(newbuf, f); fclose(f); }
         }
@@ -1873,24 +1886,24 @@ static JSValue js_long_press_shadow_set(JSContext *ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
-/* long_press_shadow_set_shm(enabled) - Write to shared memory ONLY (no file I/O).
+/* shadow_ui_trigger_set_shm(mode) - Write to shared memory ONLY (no file I/O).
  * Safe to call from tick() for web→device config sync. */
-static JSValue js_long_press_shadow_set_shm(JSContext *ctx, JSValueConst this_val,
-                                             int argc, JSValueConst *argv) {
+static JSValue js_shadow_ui_trigger_set_shm(JSContext *ctx, JSValueConst this_val,
+                                            int argc, JSValueConst *argv) {
     (void)this_val;
     if (argc < 1 || !shadow_control) return JS_UNDEFINED;
-    int enabled = 0;
-    JS_ToInt32(ctx, &enabled, argv[0]);
-    shadow_control->long_press_shadow = enabled ? 1 : 0;
+    int mode = 0;
+    JS_ToInt32(ctx, &mode, argv[0]);
+    shadow_control->shadow_ui_trigger = (uint8_t)clamp_shadow_ui_trigger(mode);
     return JS_UNDEFINED;
 }
 
-/* long_press_shadow_get() -> bool - Read from shared memory */
-static JSValue js_long_press_shadow_get(JSContext *ctx, JSValueConst this_val,
+/* shadow_ui_trigger_get() -> int (0=long_press, 1=shift_vol, 2=both) */
+static JSValue js_shadow_ui_trigger_get(JSContext *ctx, JSValueConst this_val,
                                         int argc, JSValueConst *argv) {
     (void)this_val; (void)argc; (void)argv;
-    if (!shadow_control) return JS_NewBool(ctx, 0);
-    return JS_NewBool(ctx, shadow_control->long_press_shadow != 0);
+    if (!shadow_control) return JS_NewInt32(ctx, 2);
+    return JS_NewInt32(ctx, clamp_shadow_ui_trigger(shadow_control->shadow_ui_trigger));
 }
 
 /* skipback_shortcut_set(require_volume) - Write to shared memory + persist to features.json */
@@ -2503,9 +2516,9 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "set_pages_set_shm", JS_NewCFunction(ctx, js_set_pages_set_shm, "set_pages_set_shm", 1));
 
     /* Register long-press shadow shortcut functions */
-    JS_SetPropertyStr(ctx, global_obj, "long_press_shadow_set", JS_NewCFunction(ctx, js_long_press_shadow_set, "long_press_shadow_set", 1));
-    JS_SetPropertyStr(ctx, global_obj, "long_press_shadow_get", JS_NewCFunction(ctx, js_long_press_shadow_get, "long_press_shadow_get", 0));
-    JS_SetPropertyStr(ctx, global_obj, "long_press_shadow_set_shm", JS_NewCFunction(ctx, js_long_press_shadow_set_shm, "long_press_shadow_set_shm", 1));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_ui_trigger_set", JS_NewCFunction(ctx, js_shadow_ui_trigger_set, "shadow_ui_trigger_set", 1));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_ui_trigger_get", JS_NewCFunction(ctx, js_shadow_ui_trigger_get, "shadow_ui_trigger_get", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_ui_trigger_set_shm", JS_NewCFunction(ctx, js_shadow_ui_trigger_set_shm, "shadow_ui_trigger_set_shm", 1));
 
     /* Register skipback shortcut functions */
     JS_SetPropertyStr(ctx, global_obj, "skipback_shortcut_set", JS_NewCFunction(ctx, js_skipback_shortcut_set, "skipback_shortcut_set", 1));
