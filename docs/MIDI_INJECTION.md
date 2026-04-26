@@ -1,5 +1,13 @@
 # MIDI Injection and Echo Filter Problem
 
+> **Status: historical.** This document captures the design journey
+> behind injecting transformed MIDI back into Move's native synth
+> engine, including the multi-pad echo race that we never fully solved
+> via refcounting. The shipped solution is documented in
+> [ADDRESSING_MOVE_SYNTHS.md](ADDRESSING_MOVE_SYNTHS.md); read this
+> file only if you need the historical context for why that API looks
+> the way it does.
+
 Documents attempts to inject MIDI events into Move's SPI mailbox to make shadow chain MIDI FX (chord, arp, strum) play on Move's native synth engine.
 
 ## Goal

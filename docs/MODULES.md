@@ -69,14 +69,24 @@ for keys anywhere in `module.json`).
 | `audio_out` | Module produces audio |
 | `audio_in` | Module uses audio input |
 | `midi_in` | Module processes MIDI input |
-| `midi_out` | Module sends MIDI output |
+| `midi_out` | Module sends MIDI output (chain MIDI FX, generator tools) |
 | `aftertouch` | Module uses aftertouch |
 | `claims_master_knob` | Module handles volume knob (CC 79) instead of host |
 | `raw_midi` | Skip host MIDI transforms (velocity curve, aftertouch filter); module may also bypass internal MIDI filters when set |
 | `raw_ui` | Module owns UI input handling; host won't intercept Back to return to menu (use `host_return_to_menu()` to exit) |
 | `chainable` | Marks a module as usable inside Signal Chain patches (metadata) |
 | `skip_led_clear` | Host skips clearing LEDs on module load/unload — preserves Move's native pad colors (useful for modules that overlay highlights on existing clip colors) |
+| `default_forward_channel` | Default Forward Channel for shadow slots loading this module. `-2` = passthrough (preserve original MIDI channel, required for MPE), `1`–`16` = remap to a specific channel. |
+| `button_passthrough` | Array of CC numbers the module wants Move to keep handling (e.g. `[85]` to let Play reach Move while the module is active). |
+| `suspend_keeps_js` | Tool/overtake modules: pressing Back suspends the UI but the DSP keeps ticking; full exit requires Shift+Back. Useful for sequencers that should keep playing while you browse Move. |
 | `component_type` | Module category: `sound_generator`, `audio_fx`, `midi_fx`, `utility`, `system`, `featured`, `overtake`, or `tool` |
+
+> **Where these are read.** `src/host/module_manager.c` (used by the
+> standalone host runtime) currently parses only `claims_master_knob`,
+> `raw_midi`, and `raw_ui`. The remaining flags are honored in the
+> shim and shadow UI code paths that actually run on device — search
+> for the flag name in `src/schwung_shim.c`, `src/shadow/shadow_ui.{c,js}`,
+> and `src/modules/chain/dsp/chain_host.c` to find the consumer.
 
 ### Tool Config
 
@@ -98,7 +108,7 @@ Tool modules (`"component_type": "tool"`) appear in the Tools menu and support a
 | `input_extensions` | Array of file extensions the tool accepts (e.g., `[".wav"]`) |
 | `allow_new_file` | Show a "+ New File" action in the file browser |
 | `command` | Shell command to run for non-interactive tools |
-| `overtake` | Set to `false` to prevent tool from using overtake display mode |
+| `overtake` | `true` to use overtake display mode (full LED clear, ~500ms init delay, Shift+Vol+Jog-Click exit). Default is `false`. |
 
 Interactive tools use `host_exit_module()` to return to the tools menu when the user presses Back.
 

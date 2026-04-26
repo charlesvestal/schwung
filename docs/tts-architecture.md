@@ -2,7 +2,14 @@
 
 ## Overview
 
-The Schwung TTS system provides accessibility by speaking screen reader announcements. It intercepts screen reader D-Bus signals from the stock Move firmware, synthesizes speech using Flite, and mixes the audio into the output stream.
+The Schwung TTS system provides accessibility by speaking screen reader announcements. It intercepts screen reader D-Bus signals from the stock Move firmware, synthesizes speech, and mixes the audio into the output stream.
+
+Two engines are supported, selected at runtime via the `engine` field in `tts.json` (or **Global Settings → Screen Reader → TTS Engine**):
+
+- **eSpeak-NG** — small, fast formant synthesizer; current default.
+- **Flite** — slightly higher-quality concatenative synth; only available when the build bundles the Flite runtime.
+
+The engine choice is dispatched by `src/host/tts_engine_dispatch.c`; the Flite path described below still applies when Flite is selected.
 
 ## System Components
 
@@ -406,17 +413,21 @@ TTS voice parameters can be customized via a JSON config file:
 ```
 
 **Parameters:**
-- **speed**: Speech rate (0.5 = half speed, 1.0 = normal, 2.0 = double speed)
-- **pitch**: Voice pitch in Hz (range: 80-180, default: 110)
-- **volume**: Output volume (0-100, default: 70)
+- **engine**: `espeak` (default) or `flite`
+- **speed**: Speech rate (range: 0.5–6.0, default: 1.0)
+- **pitch**: Voice pitch in Hz (range: 80–180, default: 110)
+- **volume**: Output volume (range: 0–100, default: 70)
+- **debounce_ms**: Quiet window before speaking (range: 0–1000, default: 300)
 
-Settings are loaded on TTS initialization (first `tts_speak()` call due to lazy init).
+Settings are loaded on TTS initialization (first `tts_speak()` call due to lazy init) and can be changed live via the Shadow UI or the C/JS APIs below.
 
-**API functions** (callable from host code):
+**API functions** (callable from host code; mirrored as JS bindings in the Shadow UI):
 ```c
-void tts_set_speed(float speed);      // 0.5 to 2.0
-void tts_set_pitch(float pitch_hz);   // 80 to 180 Hz
-void tts_set_volume(int volume);      // 0 to 100
+void tts_set_engine(const char *name); // "espeak" | "flite"
+void tts_set_speed(float speed);       // 0.5 to 6.0
+void tts_set_pitch(float pitch_hz);    // 80 to 180 Hz
+void tts_set_volume(int volume);       // 0 to 100
+void tts_set_debounce(int ms);         // 0 to 1000
 ```
 
 Changes via API take effect immediately for the next spoken phrase.

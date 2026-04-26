@@ -21,7 +21,7 @@ The `ui_flags` field is a single `uint8_t` (8 bits) in `shadow_control_t`. All 8
 
 ### Fork extension flags
 
-Forks that need additional flags should use the `reserved16` field in `shadow_control_t` (currently at byte offset 10, after `ui_patch_index`). To use it as fork-specific UI flags:
+Forks that need additional flags should use the `reserved16` field in `shadow_control_t`. To use it as fork-specific UI flags:
 
 ```c
 /* In your fork's header */
@@ -37,34 +37,31 @@ This gives forks 16 additional flag bits without modifying the upstream struct l
 
 ## Struct Layout Rules
 
-`shadow_control_t` must be exactly `CONTROL_BUFFER_SIZE` (64) bytes. It is mapped into shared memory between the shim and shadow UI processes.
+`shadow_control_t` must be exactly `CONTROL_BUFFER_SIZE` (64) bytes — enforced by the compile-time check at the bottom of `src/host/shadow_constants.h`. It is mapped into shared memory between the shim and shadow UI processes.
 
 ### Rules
 
-1. **Never shrink the struct** - both shim and shadow UI map the same shared memory
-2. **Add new fields by consuming `reserved` bytes from the end** - the `reserved[19]` array at the end is the expansion area
-3. **Keep byte alignment in mind** - `uint16_t` fields need 2-byte alignment, `uint32_t` and `float` need 4-byte alignment
-4. **Never reorder existing fields** - the shim and shadow UI may be different versions during an upgrade
+1. **Never shrink the struct** — both shim and shadow UI map the same shared memory.
+2. **Add new fields by consuming the trailing `reserved` array.** The expansion area is currently down to `reserved[2]` (most of the original budget has been spent on `display_overlay`, `tts_debounce_ms`, `set_pages_enabled`, `skipback_*`, `shadow_ui_trigger`, etc.). At this point, new fields almost always require freeing space first — repurpose unused legacy fields, pack flags into `reserved16`, or land an upstream change to grow `CONTROL_BUFFER_SIZE`. Coordinate with upstream before bumping the size.
+3. **Keep byte alignment in mind** — `uint16_t` fields need 2-byte alignment, `uint32_t` and `float` need 4-byte alignment.
+4. **Never reorder existing fields** — the shim and shadow UI may be different versions during an upgrade.
 
 ### Example: adding a new field
 
 ```c
 /* BEFORE: */
-volatile uint8_t set_pages_enabled;
-volatile uint8_t reserved[19];  /* 19 bytes available */
+volatile uint8_t shadow_ui_trigger;
+volatile uint16_t skipback_seconds;
+volatile uint8_t reserved[2];   /* 2 bytes available */
 
-/* AFTER: consuming 1 byte from reserved */
-volatile uint8_t set_pages_enabled;
-volatile uint8_t my_new_field;     /* New field */
-volatile uint8_t reserved[18];     /* 18 bytes remaining */
+/* AFTER: consume 1 byte from reserved */
+volatile uint8_t shadow_ui_trigger;
+volatile uint16_t skipback_seconds;
+volatile uint8_t my_new_field;  /* New field */
+volatile uint8_t reserved[1];   /* 1 byte remaining */
 ```
 
-For multi-byte fields, consume from the end and adjust alignment:
-```c
-volatile uint8_t set_pages_enabled;
-volatile uint8_t reserved[15];     /* Padding for alignment */
-volatile uint32_t my_new_counter;  /* New 4-byte field at end */
-```
+If you need more than the remaining bytes, prefer packing into `reserved16` (16 fork-specific flag bits) before growing the struct.
 
 ## Build Script Conventions
 
