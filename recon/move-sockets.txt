@@ -1,14 +1,30 @@
 # UNIX domain sockets and IP endpoints MoveOriginal connect()s / bind()s.
-# Sourced from /Volumes/ExtFS/charlesvestal/github/schwung-parent/schwung/recon/move-strace-passA.log.
+# Sourced from recon/move-strace-passA.log + recon/move-strace-passB.log.
+#
+# Pass A: 60s root strace, idle.
+# Pass B: 90s root strace, interactive (open Set, save Set, change track,
+#         plug/unplug USB MIDI, tap pads, turn knob).
+#
+# Note: persistent connections (system D-Bus, sdbus-c++ private buses,
+# avahi, /dev/log, /tmp/sockinstctrl, /tmp/swupdateprog) were established
+# at boot, before strace attached. They appear in /proc/<pid>/net/unix
+# and fd/ symlinks but never as connect() lines below. See proc-passA.log
+# and proc-passB.log for the authoritative endpoint list.
 
-## connect() targets (UDS + IP)
+## connect() targets (UDS + IP) — Pass A
 connect(61<socket:[89874]>, {sa_family=AF_INET, sin_port=htons(443)
 connect(62<socket:[89873]>, {sa_family=AF_INET6, sin6_port=htons(443)
 connect(63<socket:[90585]>, {sa_family=AF_INET6, sin6_port=htons(53)
 connect(63<socket:[90587]>, {sa_family=AF_INET, sin_port=htons(443)
 connect(63<socket:[90588]>, {sa_family=AF_INET6, sin6_port=htons(443)
 
-## bind() targets
+## connect() targets (UDS + IP) — Pass B
+connect(62<socket:[99752]>, {sa_family=AF_INET6, sin6_port=htons(443)
+connect(64<socket:[101377]>, {sa_family=AF_INET, sin_port=htons(443)
+connect(64<socket:[101378]>, {sa_family=AF_INET6, sin6_port=htons(443)
+connect(64<socket:[99751]>, {sa_family=AF_INET6, sin6_port=htons(53)
+
+## bind() targets — Pass A
 bind(62<socket:[89978]>, {sa_family=AF_NETLINK, nl_pid=0, nl_groups=00000000}, 12)
 bind(62<socket:[90025]>, {sa_family=AF_NETLINK, nl_pid=0, nl_groups=00000000}, 12)
 bind(62<socket:[90665]>, {sa_family=AF_NETLINK, nl_pid=0, nl_groups=00000000}, 12)
@@ -18,5 +34,46 @@ bind(62<socket:[92371]>, {sa_family=AF_NETLINK, nl_pid=0, nl_groups=00000000}, 1
 bind(62<socket:[92401]>, {sa_family=AF_NETLINK, nl_pid=0, nl_groups=00000000}, 12)
 bind(63<socket:[90586]>, {sa_family=AF_NETLINK, nl_pid=0, nl_groups=00000000}, 12)
 
-## socket() families/types
+## bind() targets — Pass B (no UDS binds; 5 AF_INET ephemeral + 19 AF_NETLINK)
+bind(54<socket:[99837]>, {sa_family=AF_INET, sin_port=htons(0)
+bind(55<socket:[100054]>, {sa_family=AF_NETLINK, nl_pid=0, nl_groups=00000000}, 12)
+bind(55<socket:[100098]>, {sa_family=AF_NETLINK, nl_pid=0, nl_groups=00000000}, 12)
+bind(55<socket:[100123]>, {sa_family=AF_NETLINK, nl_pid=0, nl_groups=00000000}, 12)
+bind(55<socket:[100170]>, {sa_family=AF_NETLINK, nl_pid=0, nl_groups=00000000}, 12)
+bind(55<socket:[100954]>, {sa_family=AF_NETLINK, nl_pid=0, nl_groups=00000000}, 12)
+bind(55<socket:[101460]>, {sa_family=AF_NETLINK, nl_pid=0, nl_groups=00000000}, 12)
+bind(55<socket:[101482]>, {sa_family=AF_NETLINK, nl_pid=0, nl_groups=00000000}, 12)
+bind(55<socket:[101503]>, {sa_family=AF_NETLINK, nl_pid=0, nl_groups=00000000}, 12)
+bind(55<socket:[101513]>, {sa_family=AF_NETLINK, nl_pid=0, nl_groups=00000000}, 12)
+bind(55<socket:[101547]>, {sa_family=AF_NETLINK, nl_pid=0, nl_groups=00000000}, 12)
+bind(55<socket:[102549]>, {sa_family=AF_NETLINK, nl_pid=0, nl_groups=00000000}, 12)
+bind(56<socket:[101444]>, {sa_family=AF_NETLINK, nl_pid=0, nl_groups=00000000}, 12)
+bind(57<socket:[99842]>, {sa_family=AF_INET, sin_port=htons(0)
+bind(58<socket:[99844]>, {sa_family=AF_INET, sin_port=htons(0)
+bind(61<socket:[101412]>, {sa_family=AF_NETLINK, nl_pid=0, nl_groups=00000000}, 12)
+bind(61<socket:[101429]>, {sa_family=AF_NETLINK, nl_pid=0, nl_groups=00000000}, 12)
+bind(61<socket:[99778]>, {sa_family=AF_NETLINK, nl_pid=0, nl_groups=00000000}, 12)
+bind(61<socket:[99846]>, {sa_family=AF_INET6, sin6_port=htons(0)
+bind(63<socket:[99848]>, {sa_family=AF_INET6, sin6_port=htons(0)
+bind(64<socket:[93184]>, {sa_family=AF_NETLINK, nl_pid=0, nl_groups=00000000}, 12)
+
+## socket() families/types — Pass A + Pass B
 socket(AF_UNIX, SOCK_DGRAM|SOCK_CLOEXEC, 0)
+
+# === Notes ===
+#
+# All AF_UNIX SOCK_DGRAM sockets are libc resolver / nscd-probe pattern
+# (DNS thread tid 1490 in Pass B opened 728 of these in 90s — no UDS
+# connects fired, so they're transient probes that fail and fall back
+# to direct DNS).
+#
+# All AF_INET / AF_INET6 connects are cloud-auth (Google Cloud LB at
+# 34.160.81.0:443 + ::1:53 DNS). Same in both passes.
+#
+# All AF_NETLINK binds are libc's NETLINK_ROUTE interface lookup
+# (`if_nametoindex`-style) used by the cloud-auth thread. Not
+# NETLINK_KOBJECT_UEVENT — the uevent listener was opened at boot
+# (visible in /proc/<pid>/net/netlink, not as a bind() in the trace).
+#
+# Zero new system-bus / sdbus-c++ private-bus connect()s in either pass.
+# Persistent bus connections were already open at attach time.

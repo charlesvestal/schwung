@@ -1,4 +1,24 @@
-# /dev/* opens by MoveOriginal during passA pass.
-# Sourced from /Volumes/ExtFS/charlesvestal/github/schwung-parent/schwung/recon/move-strace-passA.log.
+# /dev/* opens by MoveOriginal across recon passes.
+# Sourced from recon/move-strace-passA.log + recon/move-strace-passB.log.
+#
+# Pass A (60s idle): only /dev/urandom.
+# Pass B (90s interactive — open Set, save, change track, plug/unplug
+#         USB MIDI, tap pads, turn knob): only /dev/urandom.
 
 /dev/urandom
+
+# === Notes ===
+#
+# Pass B explicitly exercised USB MIDI plug/unplug. The trace shows
+# zero /dev/bus/usb/*, zero /sys/bus/usb/*, zero /dev/snd/*, zero
+# /dev/input/* opens. USB MIDI flows through the SPI cable-2 mailbox
+# at the device level, not through Linux ALSA / libusb on the
+# application side. libusb-1.0.so is mapped into MoveOriginal but
+# is dead code w.r.t. MIDI on this build.
+#
+# /dev/ablspi0.0 is held open by the Schwung shim (fd 23 in MoveOriginal
+# as a side effect), not opened by MoveOriginal directly.
+#
+# /dev/log (syslog UDS) and /dev/shm/schwung-* (Schwung shadow SHM)
+# appear in fd/ symlinks but were established at boot, before strace
+# attached.
