@@ -733,6 +733,30 @@
       "default_branch": "main",
       "asset_name": "impressive-chords.tar.gz",
       "min_host_version": "0.9.0"
+    },
+    {
+      "id": "ai-manual",
+      "name": "AI Manual",
+      "description": "Voice-driven manual for Ableton Move and Schwung. Hold a bottom-row pad to ask, release to send. Configure provider + API keys at move.local:7700/modules/ai-manual.",
+      "author": "eightfour",
+      "component_type": "tool",
+      "github_repo": "eightfour-dev/schwung-ai-manual",
+      "default_branch": "main",
+      "asset_name": "ai-manual-module.tar.gz",
+      "min_host_version": "0.9.8",
+      "requires": "Gemini or OpenAI API key (free Gemini key at aistudio.google.com)"
+    },
+    {
+      "id": "ai-assistant",
+      "name": "AI Assistant",
+      "description": "General-purpose voice assistant on Move. Best for songwriting prompts, creative sparks, and brainstorming. Long-form replies, optionally read aloud via TTS. Configure provider + API keys at move.local:7700/modules/ai-assistant.",
+      "author": "eightfour",
+      "component_type": "tool",
+      "github_repo": "eightfour-dev/schwung-ai-assistant",
+      "default_branch": "main",
+      "asset_name": "ai-assistant-module.tar.gz",
+      "min_host_version": "0.9.8",
+      "requires": "Gemini or OpenAI API key (free Gemini key at aistudio.google.com)"
     }
   ]
 }
