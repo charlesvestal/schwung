@@ -1078,6 +1078,404 @@ static JSValue js_host_http_download_background(JSContext *ctx, JSValueConst thi
     return JS_UNDEFINED;
 }
 
+/* ----------------------------------------------------------------
+ * host_http_request_background
+ *
+ * General-purpose HTTP client wrapping the bundled curl binary.
+ * Supports POST/PUT/etc, custom headers (kept out of `ps` via -K
+ * config file with mode 0600), JSON or multipart bodies, and reports
+ * completion to JS via a status file.
+ *
+ * Options object:
+ *   url             string  required. http(s) only.
+ *   method          string  optional, default "GET".
+ *   headers         array   optional, strings like "Authorization: Bearer ...".
+ *   body_path       string  optional, path under BASE_DIR with raw body.
+ *   body_form       array   optional, multipart parts.
+ *                           {name, value} or {name, file, type}.
+ *   response_path   string  required, where curl writes the body.
+ *   status_path     string  required, written when curl exits with
+ *                           {"http_status":N,"curl_exit":N}.
+ *   timeout_seconds number  optional, default 60.
+ *
+ * body_path and body_form are mutually exclusive.
+ * Returns true if launched, false on validation failure.
+ * ---------------------------------------------------------------- */
+
+/* Write a curl -K config file containing headers, mode 0600.
+ * Returns 0 on success, -1 on failure. Empty headers list -> deletes the
+ * file if it existed and returns 0. */
+static int write_curl_headers_config(const char *path,
+                                     char **headers,
+                                     int header_count) {
+    if (header_count <= 0) {
+        unlink(path);
+        return 0;
+    }
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) return -1;
+    FILE *f = fdopen(fd, "w");
+    if (!f) {
+        close(fd);
+        return -1;
+    }
+    for (int i = 0; i < header_count; i++) {
+        const char *h = headers[i];
+        /* Reject CR/LF to prevent header injection */
+        if (strchr(h, '\r') || strchr(h, '\n')) {
+            fclose(f);
+            unlink(path);
+            return -1;
+        }
+        fputs("header = \"", f);
+        for (const char *p = h; *p; p++) {
+            if (*p == '\\' || *p == '"') fputc('\\', f);
+            fputc(*p, f);
+        }
+        fputs("\"\n", f);
+    }
+    fclose(f);
+    return 0;
+}
+
+/* Fork+exec curl in the background. Reads curl's stdout (the http_code from
+ * -w "%{http_code}"), waits for it to exit, then writes a JSON status file.
+ * If cleanup_path is non-NULL it is unlinked after curl exits. The runner
+ * frees argv_storage and headers_storage on the way out. */
+static void run_curl_with_status_background(char **argv_storage,
+                                            int argv_owned_count,
+                                            char *cleanup_path,
+                                            char *status_path) {
+    pid_t pid = fork();
+    if (pid != 0) {
+        /* parent: free our copies */
+        for (int i = 0; i < argv_owned_count; i++) free(argv_storage[i]);
+        free(argv_storage);
+        free(cleanup_path);
+        free(status_path);
+        return;
+    }
+
+    /* child: detach */
+    setsid();
+    int devnull = open("/dev/null", O_RDWR);
+    if (devnull >= 0) dup2(devnull, STDIN_FILENO);
+
+    int pipe_fd[2] = {-1, -1};
+    if (pipe(pipe_fd) != 0) {
+        if (status_path) {
+            FILE *f = fopen(status_path, "w");
+            if (f) { fputs("{\"http_status\":0,\"curl_exit\":-1}", f); fclose(f); }
+        }
+        _exit(1);
+    }
+
+    pid_t curl_pid = fork();
+    if (curl_pid == 0) {
+        /* grandchild: run curl */
+        close(pipe_fd[0]);
+        dup2(pipe_fd[1], STDOUT_FILENO);
+        if (devnull >= 0) dup2(devnull, STDERR_FILENO);
+        close(pipe_fd[1]);
+        if (devnull > 2) close(devnull);
+        execvp(argv_storage[0], argv_storage);
+        _exit(127);
+    }
+
+    close(pipe_fd[1]);
+    if (devnull >= 0) close(devnull);
+
+    char status_buf[64];
+    int total = 0;
+    while (total < (int)sizeof(status_buf) - 1) {
+        ssize_t n = read(pipe_fd[0], status_buf + total,
+                         sizeof(status_buf) - 1 - total);
+        if (n <= 0) break;
+        total += n;
+    }
+    status_buf[total] = '\0';
+    close(pipe_fd[0]);
+
+    int wstat = 0;
+    waitpid(curl_pid, &wstat, 0);
+    int exit_code = WIFEXITED(wstat) ? WEXITSTATUS(wstat) : -1;
+    int http_code = atoi(status_buf);
+
+    if (cleanup_path) unlink(cleanup_path);
+
+    if (status_path) {
+        FILE *f = fopen(status_path, "w");
+        if (f) {
+            fprintf(f, "{\"http_status\":%d,\"curl_exit\":%d}",
+                    http_code, exit_code);
+            fclose(f);
+        }
+    }
+    _exit(0);
+}
+
+/* Helper: get a string property from a JS object. Caller must JS_FreeCString. */
+static const char *js_get_str_prop(JSContext *ctx, JSValueConst obj,
+                                   const char *name) {
+    JSValue v = JS_GetPropertyStr(ctx, obj, name);
+    if (JS_IsUndefined(v) || JS_IsNull(v)) {
+        JS_FreeValue(ctx, v);
+        return NULL;
+    }
+    const char *s = JS_ToCString(ctx, v);
+    JS_FreeValue(ctx, v);
+    return s;
+}
+
+/* Append a heap-allocated copy of `s` to argv at index *idx, growing *idx. */
+static int argv_push_dup(char ***argv, int *idx, int *cap, const char *s) {
+    if (*idx + 1 >= *cap) {
+        int new_cap = *cap * 2;
+        char **new_argv = realloc(*argv, sizeof(char *) * new_cap);
+        if (!new_argv) return -1;
+        *argv = new_argv;
+        *cap = new_cap;
+    }
+    char *copy = strdup(s ? s : "");
+    if (!copy) return -1;
+    (*argv)[(*idx)++] = copy;
+    return 0;
+}
+
+static JSValue js_host_http_request_background(JSContext *ctx,
+                                               JSValueConst this_val,
+                                               int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !JS_IsObject(argv[0])) return JS_FALSE;
+    JSValueConst opts = argv[0];
+
+    const char *url = js_get_str_prop(ctx, opts, "url");
+    const char *response_path = js_get_str_prop(ctx, opts, "response_path");
+    const char *status_path = js_get_str_prop(ctx, opts, "status_path");
+    const char *method = js_get_str_prop(ctx, opts, "method");
+    const char *body_path = js_get_str_prop(ctx, opts, "body_path");
+
+    if (!url || !response_path || !status_path) goto fail;
+
+    if (strncmp(url, "https://", 8) != 0 && strncmp(url, "http://", 7) != 0) {
+        fprintf(stderr, "host_http_request: bad URL scheme\n");
+        goto fail;
+    }
+    if (!validate_path(response_path) || !validate_path(status_path)) {
+        fprintf(stderr, "host_http_request: bad response/status path\n");
+        goto fail;
+    }
+    if (body_path && !validate_path(body_path)) {
+        fprintf(stderr, "host_http_request: bad body_path\n");
+        goto fail;
+    }
+
+    /* timeout */
+    int timeout = 60;
+    JSValue tv = JS_GetPropertyStr(ctx, opts, "timeout_seconds");
+    if (!JS_IsUndefined(tv) && !JS_IsNull(tv)) {
+        int t = 0;
+        if (JS_ToInt32(ctx, &t, tv) == 0 && t > 0 && t <= 600) timeout = t;
+    }
+    JS_FreeValue(ctx, tv);
+
+    /* headers -> write config file alongside status_path */
+    JSValue headers_v = JS_GetPropertyStr(ctx, opts, "headers");
+    char **header_strs = NULL;
+    int header_count = 0;
+    int has_headers = 0;
+    if (JS_IsArray(ctx, headers_v)) {
+        JSValue len_v = JS_GetPropertyStr(ctx, headers_v, "length");
+        int n = 0;
+        JS_ToInt32(ctx, &n, len_v);
+        JS_FreeValue(ctx, len_v);
+        if (n > 0) {
+            header_strs = calloc(n, sizeof(char *));
+            if (!header_strs) { JS_FreeValue(ctx, headers_v); goto fail; }
+            for (int i = 0; i < n; i++) {
+                JSValue h = JS_GetPropertyUint32(ctx, headers_v, (uint32_t)i);
+                const char *hs = JS_ToCString(ctx, h);
+                JS_FreeValue(ctx, h);
+                if (!hs) {
+                    for (int j = 0; j < header_count; j++) free(header_strs[j]);
+                    free(header_strs);
+                    JS_FreeValue(ctx, headers_v);
+                    goto fail;
+                }
+                header_strs[header_count++] = strdup(hs);
+                JS_FreeCString(ctx, hs);
+            }
+            has_headers = 1;
+        }
+    }
+    JS_FreeValue(ctx, headers_v);
+
+    char *cfg_path = NULL;
+    if (has_headers) {
+        size_t cl = strlen(status_path) + 5;
+        cfg_path = malloc(cl);
+        if (!cfg_path) goto fail_headers;
+        snprintf(cfg_path, cl, "%s.cfg", status_path);
+        if (write_curl_headers_config(cfg_path, header_strs, header_count) != 0) {
+            fprintf(stderr, "host_http_request: failed to write headers cfg\n");
+            free(cfg_path);
+            cfg_path = NULL;
+            goto fail_headers;
+        }
+    }
+
+    /* Free our copies of the header strings now that they are persisted. */
+    for (int i = 0; i < header_count; i++) free(header_strs[i]);
+    free(header_strs);
+    header_strs = NULL;
+    header_count = 0;
+
+    /* Build curl argv */
+    int cap = 32;
+    char **cargv = malloc(sizeof(char *) * cap);
+    if (!cargv) goto fail_cfg;
+    int ci = 0;
+
+    char timeout_str[16];
+    snprintf(timeout_str, sizeof(timeout_str), "%d", timeout);
+
+    if (argv_push_dup(&cargv, &ci, &cap, CURL_PATH) ||
+        argv_push_dup(&cargv, &ci, &cap, "-sSk") ||
+        argv_push_dup(&cargv, &ci, &cap, "-w") ||
+        argv_push_dup(&cargv, &ci, &cap, "%{http_code}") ||
+        argv_push_dup(&cargv, &ci, &cap, "--connect-timeout") ||
+        argv_push_dup(&cargv, &ci, &cap, "10") ||
+        argv_push_dup(&cargv, &ci, &cap, "--max-time") ||
+        argv_push_dup(&cargv, &ci, &cap, timeout_str) ||
+        argv_push_dup(&cargv, &ci, &cap, "-o") ||
+        argv_push_dup(&cargv, &ci, &cap, response_path)) goto fail_argv;
+
+    if (method) {
+        if (argv_push_dup(&cargv, &ci, &cap, "-X") ||
+            argv_push_dup(&cargv, &ci, &cap, method)) goto fail_argv;
+    }
+    if (cfg_path) {
+        if (argv_push_dup(&cargv, &ci, &cap, "-K") ||
+            argv_push_dup(&cargv, &ci, &cap, cfg_path)) goto fail_argv;
+    }
+    if (body_path) {
+        char data_arg[PATH_MAX + 2];
+        snprintf(data_arg, sizeof(data_arg), "@%s", body_path);
+        if (argv_push_dup(&cargv, &ci, &cap, "--data-binary") ||
+            argv_push_dup(&cargv, &ci, &cap, data_arg)) goto fail_argv;
+    }
+
+    /* body_form: array of {name, value} or {name, file, type?} */
+    JSValue form_v = JS_GetPropertyStr(ctx, opts, "body_form");
+    if (JS_IsArray(ctx, form_v)) {
+        JSValue len_v = JS_GetPropertyStr(ctx, form_v, "length");
+        int fn = 0;
+        JS_ToInt32(ctx, &fn, len_v);
+        JS_FreeValue(ctx, len_v);
+        for (int i = 0; i < fn; i++) {
+            JSValue part = JS_GetPropertyUint32(ctx, form_v, (uint32_t)i);
+            const char *pname = js_get_str_prop(ctx, part, "name");
+            const char *pvalue = js_get_str_prop(ctx, part, "value");
+            const char *pfile = js_get_str_prop(ctx, part, "file");
+            const char *ptype = js_get_str_prop(ctx, part, "type");
+            if (!pname || (!pvalue && !pfile)) {
+                if (pname) JS_FreeCString(ctx, pname);
+                if (pvalue) JS_FreeCString(ctx, pvalue);
+                if (pfile) JS_FreeCString(ctx, pfile);
+                if (ptype) JS_FreeCString(ctx, ptype);
+                JS_FreeValue(ctx, part);
+                JS_FreeValue(ctx, form_v);
+                goto fail_argv;
+            }
+            if (pfile && !validate_path(pfile)) {
+                fprintf(stderr, "host_http_request: bad form file path\n");
+                JS_FreeCString(ctx, pname);
+                if (pvalue) JS_FreeCString(ctx, pvalue);
+                JS_FreeCString(ctx, pfile);
+                if (ptype) JS_FreeCString(ctx, ptype);
+                JS_FreeValue(ctx, part);
+                JS_FreeValue(ctx, form_v);
+                goto fail_argv;
+            }
+            char part_buf[PATH_MAX + 256];
+            if (pfile) {
+                if (ptype && *ptype) {
+                    snprintf(part_buf, sizeof(part_buf), "%s=@%s;type=%s",
+                             pname, pfile, ptype);
+                } else {
+                    snprintf(part_buf, sizeof(part_buf), "%s=@%s",
+                             pname, pfile);
+                }
+            } else {
+                snprintf(part_buf, sizeof(part_buf), "%s=%s", pname, pvalue);
+            }
+            JS_FreeCString(ctx, pname);
+            if (pvalue) JS_FreeCString(ctx, pvalue);
+            if (pfile) JS_FreeCString(ctx, pfile);
+            if (ptype) JS_FreeCString(ctx, ptype);
+            JS_FreeValue(ctx, part);
+
+            if (argv_push_dup(&cargv, &ci, &cap, "-F") ||
+                argv_push_dup(&cargv, &ci, &cap, part_buf)) {
+                JS_FreeValue(ctx, form_v);
+                goto fail_argv;
+            }
+        }
+    }
+    JS_FreeValue(ctx, form_v);
+
+    if (argv_push_dup(&cargv, &ci, &cap, url)) goto fail_argv;
+
+    /* Sentinel NULL */
+    if (ci + 1 >= cap) {
+        char **na = realloc(cargv, sizeof(char *) * (cap + 1));
+        if (!na) goto fail_argv;
+        cargv = na;
+        cap++;
+    }
+    cargv[ci] = NULL;
+
+    /* Pre-clear status file so JS poll only sees the new result */
+    unlink(status_path);
+
+    /* Hand ownership of cfg_path to the background runner (it'll unlink the
+     * file and free the string). NULL our local so the fail_cfg cleanup path
+     * doesn't double-free if status_dup fails. */
+    char *cleanup_dup = cfg_path;
+    cfg_path = NULL;
+    char *status_dup = strdup(status_path);
+    if (!status_dup) { free(cleanup_dup); goto fail_argv; }
+
+    run_curl_with_status_background(cargv, ci, cleanup_dup, status_dup);
+
+    JS_FreeCString(ctx, url);
+    JS_FreeCString(ctx, response_path);
+    JS_FreeCString(ctx, status_path);
+    if (method) JS_FreeCString(ctx, method);
+    if (body_path) JS_FreeCString(ctx, body_path);
+    return JS_TRUE;
+
+fail_argv:
+    if (cargv) {
+        for (int i = 0; i < ci; i++) free(cargv[i]);
+        free(cargv);
+    }
+fail_cfg:
+    if (cfg_path) { unlink(cfg_path); free(cfg_path); }
+fail_headers:
+    if (header_strs) {
+        for (int i = 0; i < header_count; i++) free(header_strs[i]);
+        free(header_strs);
+    }
+fail:
+    if (url) JS_FreeCString(ctx, url);
+    if (response_path) JS_FreeCString(ctx, response_path);
+    if (status_path) JS_FreeCString(ctx, status_path);
+    if (method) JS_FreeCString(ctx, method);
+    if (body_path) JS_FreeCString(ctx, body_path);
+    return JS_FALSE;
+}
+
 /* host_extract_tar(tar_path, dest_dir) -> bool */
 static JSValue js_host_extract_tar(JSContext *ctx, JSValueConst this_val,
                                    int argc, JSValueConst *argv) {
@@ -2378,6 +2776,108 @@ static JSValue js_host_sampler_is_recording(JSContext *ctx, JSValueConst this_va
     return (shadow_control->sampler_state_val == 2) ? JS_TRUE : JS_FALSE;  /* 2 = SAMPLER_RECORDING */
 }
 
+/* Minimal RFC-4648 base64 encoder used by host_read_file_base64 below.
+ * Standalone so we don't pull in mbedTLS/OpenSSL just for this one spot. */
+static char *shadow_b64_encode(const unsigned char *in, size_t len, size_t *out_len) {
+    static const char alpha[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t outlen = 4 * ((len + 2) / 3);
+    char *out = (char *)malloc(outlen + 1);
+    if (!out) return NULL;
+    size_t i, j;
+    for (i = 0, j = 0; i + 2 < len; i += 3, j += 4) {
+        uint32_t t = ((uint32_t)in[i] << 16) | ((uint32_t)in[i + 1] << 8)
+                    | (uint32_t)in[i + 2];
+        out[j]     = alpha[(t >> 18) & 0x3F];
+        out[j + 1] = alpha[(t >> 12) & 0x3F];
+        out[j + 2] = alpha[(t >> 6) & 0x3F];
+        out[j + 3] = alpha[t & 0x3F];
+    }
+    if (i < len) {
+        uint32_t t = (uint32_t)in[i] << 16;
+        if (i + 1 < len) t |= (uint32_t)in[i + 1] << 8;
+        out[j]     = alpha[(t >> 18) & 0x3F];
+        out[j + 1] = alpha[(t >> 12) & 0x3F];
+        out[j + 2] = (i + 1 < len) ? alpha[(t >> 6) & 0x3F] : '=';
+        out[j + 3] = '=';
+        j += 4;
+    }
+    out[j] = '\0';
+    if (out_len) *out_len = j;
+    return out;
+}
+
+/* host_read_file_base64(path) -> string | null
+ * Reads the raw bytes of a file and returns a base64-encoded string.
+ * Needed for providers like Gemini that take audio inline via JSON as
+ * base64 rather than multipart form. Caps input at 16 MB to keep memory
+ * usage bounded on the device. */
+static JSValue js_host_read_file_base64(JSContext *ctx, JSValueConst this_val,
+                                         int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1) return JS_NULL;
+    const char *path = JS_ToCString(ctx, argv[0]);
+    if (!path) return JS_NULL;
+    if (!validate_path(path)) {
+        JS_FreeCString(ctx, path);
+        return JS_NULL;
+    }
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        JS_FreeCString(ctx, path);
+        return JS_NULL;
+    }
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f); JS_FreeCString(ctx, path); return JS_NULL;
+    }
+    long size = ftell(f);
+    if (size < 0 || size > 16L * 1024 * 1024) {
+        fclose(f); JS_FreeCString(ctx, path); return JS_NULL;
+    }
+    rewind(f);
+    unsigned char *buf = (unsigned char *)malloc((size_t)size + 1);
+    if (!buf) { fclose(f); JS_FreeCString(ctx, path); return JS_NULL; }
+    size_t n = fread(buf, 1, (size_t)size, f);
+    fclose(f);
+    JS_FreeCString(ctx, path);
+
+    size_t b64_len = 0;
+    char *b64 = shadow_b64_encode(buf, n, &b64_len);
+    free(buf);
+    if (!b64) return JS_NULL;
+    JSValue result = JS_NewStringLen(ctx, b64, b64_len);
+    free(b64);
+    return result;
+}
+
+/* host_sampler_set_source(source) - request sampler source change.
+ * source: 0 = Resample (Schwung mix), 1 = Move Input (mic / line-in).
+ * Applied by shim on next idle tick. Returns true if request submitted. */
+static JSValue js_host_sampler_set_source(JSContext *ctx, JSValueConst this_val,
+                                           int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_FALSE;
+    int src = 0;
+    JS_ToInt32(ctx, &src, argv[0]);
+    /* shim encoding: 1 = Resample, 2 = Move Input (0 = "no request") */
+    shadow_control->sampler_source_request = (src == 1) ? 2 : 1;
+    return JS_TRUE;
+}
+
+/* host_sampler_set_silent(enabled) - suppress sampler screen-reader chatter.
+ * Tools that record audio behind the user's back call set_silent(true) on
+ * entry so the system "Sample saved" voice prompt stays out of the way of
+ * their own replies. Reset to false on exit. */
+static JSValue js_host_sampler_set_silent(JSContext *ctx, JSValueConst this_val,
+                                           int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_FALSE;
+    int enabled = 0;
+    JS_ToInt32(ctx, &enabled, argv[0]);
+    shadow_control->sampler_silent = enabled ? 1 : 0;
+    return JS_TRUE;
+}
+
 /* host_sampler_get_samples_written() - return number of samples written so far */
 static JSValue js_host_sampler_get_samples_written(JSContext *ctx, JSValueConst this_val,
                                                     int argc, JSValueConst *argv) {
@@ -2471,9 +2971,11 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     /* Register host functions for store operations */
     JS_SetPropertyStr(ctx, global_obj, "host_file_exists", JS_NewCFunction(ctx, js_host_file_exists, "host_file_exists", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_read_file", JS_NewCFunction(ctx, js_host_read_file, "host_read_file", 1));
+    JS_SetPropertyStr(ctx, global_obj, "host_read_file_base64", JS_NewCFunction(ctx, js_host_read_file_base64, "host_read_file_base64", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_write_file", JS_NewCFunction(ctx, js_host_write_file, "host_write_file", 2));
     JS_SetPropertyStr(ctx, global_obj, "host_http_download", JS_NewCFunction(ctx, js_host_http_download, "host_http_download", 2));
     JS_SetPropertyStr(ctx, global_obj, "host_http_download_background", JS_NewCFunction(ctx, js_host_http_download_background, "host_http_download_background", 2));
+    JS_SetPropertyStr(ctx, global_obj, "host_http_request_background", JS_NewCFunction(ctx, js_host_http_request_background, "host_http_request_background", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_extract_tar", JS_NewCFunction(ctx, js_host_extract_tar, "host_extract_tar", 2));
     JS_SetPropertyStr(ctx, global_obj, "host_extract_tar_strip", JS_NewCFunction(ctx, js_host_extract_tar_strip, "host_extract_tar_strip", 3));
     JS_SetPropertyStr(ctx, global_obj, "host_system_cmd", JS_NewCFunction(ctx, js_host_system_cmd, "host_system_cmd", 1));
@@ -2542,6 +3044,8 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "host_sampler_start", JS_NewCFunction(ctx, js_host_sampler_start, "host_sampler_start", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_sampler_stop", JS_NewCFunction(ctx, js_host_sampler_stop, "host_sampler_stop", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_sampler_is_recording", JS_NewCFunction(ctx, js_host_sampler_is_recording, "host_sampler_is_recording", 0));
+    JS_SetPropertyStr(ctx, global_obj, "host_sampler_set_source", JS_NewCFunction(ctx, js_host_sampler_set_source, "host_sampler_set_source", 1));
+    JS_SetPropertyStr(ctx, global_obj, "host_sampler_set_silent", JS_NewCFunction(ctx, js_host_sampler_set_silent, "host_sampler_set_silent", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_sampler_get_samples_written", JS_NewCFunction(ctx, js_host_sampler_get_samples_written, "host_sampler_get_samples_written", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_sampler_set_external_stop", JS_NewCFunction(ctx, js_host_sampler_set_external_stop, "host_sampler_set_external_stop", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_sampler_pause", JS_NewCFunction(ctx, js_host_sampler_pause, "host_sampler_pause", 0));

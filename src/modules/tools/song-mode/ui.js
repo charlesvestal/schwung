@@ -831,6 +831,10 @@ function drainInjectQueue() {
             playStartTime = Date.now();
             /* Start deferred recording now that transport is stable */
             if (recordPendingPath) {
+                /* Song mode records the Schwung mix output, not mic. */
+                if (typeof host_sampler_set_source === "function") {
+                    host_sampler_set_source(0); /* 0 = Resample */
+                }
                 host_sampler_start(recordPendingPath);
                 console.log("song-mode: recording started -> " + recordPendingPath);
                 recordPendingPath = "";
