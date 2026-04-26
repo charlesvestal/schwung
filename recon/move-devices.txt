@@ -1,0 +1,4 @@
+# /dev/* opens by MoveOriginal during passA pass.
+# Sourced from /Volumes/ExtFS/charlesvestal/github/schwung-parent/schwung/recon/move-strace-passA.log.
+
+/dev/urandom
