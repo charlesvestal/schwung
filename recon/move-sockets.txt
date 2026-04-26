@@ -1,0 +1,14 @@
+# UNIX domain sockets MoveOriginal connects to (from /proc/<pid>/net/unix)
+/dev/log
+/run/avahi-daemon/socket
+/run/dbus/system_bus_socket
+/run/udev/control
+/tmp/sockinstctrl
+/tmp/swupdateprog
+
+# Abstract D-Bus session-bus addresses MoveOriginal participates in
+@109f3a349d2bf7e7/bus/SystemDBusServi/system
+@1e77820fa1723b74/bus/MoveLauncher/system
+@4b789f1e6e57e5e5/bus/MoveOriginal/system
+@e8754fe8a766ea3a/bus/UpdateDBusServi/system
+@eefd4942b8b4a404/bus/MoveWebService/system

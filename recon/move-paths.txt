@@ -1,0 +1,7 @@
+/data/UserData/schwung/strace-move.sh:
+/dev/log
+/run/avahi-daemon/socket
+/run/dbus/system_bus_socket
+/run/udev/control
+/tmp/sockinstctrl
+/tmp/swupdateprog

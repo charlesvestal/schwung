@@ -22,3 +22,7 @@ build/cache/
 *.asd
 move_audio_recv
 libs/memfault-firmware-sdk/
+
+# Phase 0 recon — keep curated outputs under recon/ but skip the raw strace
+# log (large, redundant, unstable).
+recon/move-strace.log
