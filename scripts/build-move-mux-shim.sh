@@ -14,8 +14,10 @@
 #
 # Output: build/move-mux-shim.so
 #
-# Sanity check: the .so should be ~10-20KB and export `open`, `openat`,
-# `stat`, `lstat`, `access`, plus `mux_remap_path`/`mux_resolve`.
+# Sanity check: the .so should be ~10-20KB and export the path-remap
+# wrappers (open, openat, stat, lstat, access, opendir, readlink,
+# realpath, mkdir, rmdir, unlink, rename, symlink, chmod, utime, fopen)
+# plus `mux_remap_path`/`mux_resolve`.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -69,7 +71,7 @@ if command -v "${CROSS_PREFIX}objdump" >/dev/null 2>&1; then
     echo ""
     echo "Exported wrapper symbols:"
     "${CROSS_PREFIX}objdump" -T build/move-mux-shim.so 2>/dev/null \
-        | grep -E '\b(open|openat|stat|lstat|access|faccessat|mux_)' \
+        | grep -E '\b(open|openat|stat|lstat|access|faccessat|opendir|readlink|realpath|mkdir|rmdir|unlink|rename|symlink|chmod|utime|fopen|mux_)' \
         | grep -v '\*UND\*' \
         | awk '{print "  " $NF}' \
         | sort -u

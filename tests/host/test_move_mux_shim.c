@@ -109,9 +109,41 @@ static void test_mux_resolve(void) {
     setenv("MOVE_INSTANCE_ID", "", 1);
 }
 
+/*
+ * Two-path wrappers (rename, symlink) call mux_resolve twice with two
+ * independent stack scratch buffers. This test documents that contract:
+ * resolving two different paths into two separate buffers must yield
+ * two distinct, correctly-remapped strings — sharing one buffer would
+ * cause the second resolve to clobber the first.
+ *
+ * The wrapper code itself is a static-analysis property (each wrapper
+ * declares two `char scratch[MUX_SCRATCH_SZ]` locals), but this test
+ * pins the underlying invariant: mux_resolve writes only into the
+ * scratch buffer it was handed, so two independent calls cannot
+ * interfere.
+ */
+static void test_two_path_independent_scratch(void) {
+    setenv("MOVE_INSTANCE_ID", "a", 1);
+    char scratch_old[256];
+    char scratch_new[256];
+    const char *p_old = mux_resolve("/data/UserData/Sets/Song.tmp",
+                                     scratch_old, sizeof(scratch_old));
+    const char *p_new = mux_resolve("/data/UserData/Sets/Song.abl",
+                                     scratch_new, sizeof(scratch_new));
+    /* Both paths got remapped. */
+    assert(p_old == scratch_old);
+    assert(p_new == scratch_new);
+    /* Each scratch holds only its own remap; the first wasn't clobbered
+     * by computing the second (sets-atomic-save invariant). */
+    assert(strcmp(p_old, "/data/UserData/move-a/Sets/Song.tmp") == 0);
+    assert(strcmp(p_new, "/data/UserData/move-a/Sets/Song.abl") == 0);
+    setenv("MOVE_INSTANCE_ID", "", 1);
+}
+
 int main(void) {
     test_mux_remap_path();
     test_mux_resolve();
+    test_two_path_independent_scratch();
     printf("OK\n");
     return 0;
 }
