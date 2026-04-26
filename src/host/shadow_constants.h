@@ -50,7 +50,7 @@
  * MIDI_OUT must be bounded by this to avoid corrupting the display. */
 #define HW_MIDI_OUT_SIZE    80
 #define DISPLAY_BUFFER_SIZE 1024  /* 128x64 @ 1bpp = 1024 bytes */
-#define CONTROL_BUFFER_SIZE 64
+#define CONTROL_BUFFER_SIZE 72  /* bumped for sampler_source_request + sampler_silent (PR #61); leaves headroom in reserved[] */
 #define SHADOW_UI_BUFFER_SIZE     512
 #define SHADOW_PARAM_BUFFER_SIZE  65664  /* Large buffer for complex ui_hierarchy */
 #define SHADOW_MIDI_OUT_BUFFER_SIZE 512  /* MIDI out buffer from shadow UI (128 packets) */
@@ -152,7 +152,7 @@ typedef struct shadow_control_t {
     volatile uint8_t sampler_source_request; /* 0=no request, 1=set Resample, 2=set Move Input. Shim resets to 0 after applying. */
     volatile uint8_t sampler_silent;     /* 1=suppress sampler screen-reader announcements (e.g. "Sample saved") for tool-driven recordings */
     volatile uint16_t skipback_seconds; /* Skipback rolling buffer length: 30/60/120/180/240/300 */
-    volatile uint8_t reserved[2];
+    volatile uint8_t reserved[8];
 } shadow_control_t;
 
 /*
