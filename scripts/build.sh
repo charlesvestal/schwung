@@ -577,6 +577,13 @@ else
     echo "Warning: .cache/move_manual.json not found - no bundled manual"
 fi
 
+# Bundle Schwung's own user manual so the Assistant tool can include it
+# in the LLM system prompt (and other tools could reference it too).
+if [ -f "MANUAL.md" ]; then
+    cp -u MANUAL.md ./build/shared/MANUAL.md
+    echo "Bundled Schwung MANUAL.md"
+fi
+
 # Copy host files (only if source is newer)
 cp -u ./src/host/menu_ui.js ./build/host/
 cp -u ./src/host/*.mjs ./build/host/ 2>/dev/null || true
