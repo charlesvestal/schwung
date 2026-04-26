@@ -1,0 +1,22 @@
+2026-04-27T13:50:15.886562: warning: Failed to read FeatureFlags file: Feature flags file does not exist
+2026-04-27T13:50:15.920671: info: Setting virtual memory limit to: 1782.44 MB
+2026-04-27T13:50:15.921150: error: Aborting Sentry initialization. Executable is running as root.
+2026-04-27T13:50:15.921245: info: -------------- System Info --------------
+2026-04-27T13:50:15.921326: info: Version: 2.0.0b8
+2026-04-27T13:50:15.921418: info: Branch: move/release-v2.0.0b8
+2026-04-27T13:50:15.921496: info: Commit Date: 2026-04-16
+2026-04-27T13:50:15.921574: info: Ableton OS: AbletonOS v3.18
+2026-04-27T13:50:15.921826: info: SSH key installed
+2026-04-27T13:50:15.921907: info: -----------------------------------------
+2026-04-27T13:50:15.922085: info: Found Core Library 0.54
+2026-04-27T13:50:15.956231: info: Registering Connman Agent
+2026-04-27T13:50:15.958890: info: Wi-Fi is now connected
+2026-04-27T13:50:15.984369: info: Start reading software update state
+2026-04-27T13:50:16.293376: info: No Ableton Cloud refresh token found
+2026-04-27T13:50:16.293742: info: Cloud Base URL changed. Marking all Songs for resyncing.
+2026-04-27T13:50:16.310621: info: Loading initial song
+2026-04-27T13:50:16.310823: info: No song found at "/home/root/UserLibrary/Sets/2840c2a7-9370-47d2-840a-ef8dbd73e285/Set 1/Song.abl"
+2026-04-27T13:50:16.310933: info: About to load default song
+2026-04-27T13:50:16.367419: info: Memory Usage: 121.91 MB (121905152 bytes)
+2026-04-27T13:50:16.598483: error: Couldn't start Move's D-Bus services (is your D-Bus config file set up correctly?): [org.freedesktop.DBus.Error.FileExists] Failed to request bus name (File exists)
+2026-04-27T13:50:16.635322: error: Exception caught in SPI Connection: Can't open device
