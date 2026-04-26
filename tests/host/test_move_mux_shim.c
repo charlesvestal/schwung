@@ -10,7 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "move_mux_shim.h"
+#include "../../src/move_mux_shim.h"
 
 int main(void) {
     char out[512];
