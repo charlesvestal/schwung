@@ -3966,6 +3966,10 @@ static uint64_t spi_fwd_ext_cc_sum = 0, spi_fwd_ext_cc_max = 0;
 static uint64_t spi_direct_midi_sum = 0, spi_direct_midi_max = 0;
 static int spi_granular_count = 0;
 
+/* XMOS SysEx logger state — shared between pre/post transfer callbacks. */
+static int xmos_log_fd = -1;
+static uint32_t xmos_frame = 0;
+
 #define TIME_SECTION_START() clock_gettime(CLOCK_MONOTONIC, &spi_section_start)
 #define TIME_SECTION_END(sum_var, max_var) do { \
     clock_gettime(CLOCK_MONOTONIC, &spi_section_end); \
@@ -4083,6 +4087,67 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
 
             inject_cooldown = 44;
             shadow_log("SPI SysEx inject: audio source change sent");
+        }
+    }
+
+    /* SysEx-only logger for XMOS jack-detect investigation.
+     * Flag: /data/UserData/schwung/log_xmos_sysex_on
+     * Output: /data/UserData/schwung/xmos_sysex.txt
+     * Logs only cin 0x04/0x05/0x06/0x07 packets (SysEx framing) in MIDI_OUT
+     * at PRE-transfer (this point) and POST-transfer (after hw→shadow memcpy).
+     * Pre/post comparison reveals: (a) does XMOS clear slots after consuming,
+     * (b) does our memcpy stomp fresh data, (c) does any 0x37 SysEx get split
+     * or interleaved with another writer's packets. */
+    {
+        static int xmos_log_checked = 0;
+        if (xmos_log_checked++ % 44 == 0) {  /* check every ~1s */
+            int want = (access("/data/UserData/schwung/log_xmos_sysex_on", F_OK) == 0);
+            if (want && xmos_log_fd < 0) {
+                xmos_log_fd = open("/data/UserData/schwung/xmos_sysex.txt",
+                                   O_WRONLY | O_CREAT | O_APPEND, 0644);
+            } else if (!want && xmos_log_fd >= 0) {
+                close(xmos_log_fd);
+                xmos_log_fd = -1;
+            }
+        }
+        if (xmos_log_fd >= 0) {
+            xmos_frame++;
+            char line[128];
+            const uint8_t *midi_out = shadow + MIDI_OUT_OFFSET;
+            int any = 0;
+            for (int i = 0; i < 80; i += 4) {
+                uint8_t cin = midi_out[i] & 0x0F;
+                if (cin >= 0x04 && cin <= 0x07) {
+                    int n = snprintf(line, sizeof(line),
+                        "[f%u] PRE  slot=%2d cable=%d cin=0x%x : %02x %02x %02x %02x\n",
+                        xmos_frame, i, (midi_out[i] >> 4) & 0xF, cin,
+                        midi_out[i], midi_out[i+1], midi_out[i+2], midi_out[i+3]);
+                    write(xmos_log_fd, line, n);
+                    any = 1;
+                }
+            }
+            if (any) {
+                int n = snprintf(line, sizeof(line), "[f%u] PRE  end\n", xmos_frame);
+                write(xmos_log_fd, line, n);
+            }
+            /* Also scan MIDI_IN for cc=114 / cc=115 (jack-detect from XMOS).
+             * MIDI_IN events are 8 bytes (4 USB-MIDI + 4 timestamp) at offset 2048. */
+            unsigned char *hw_buf2 = schwung_spi_get_hw(g_spi_handle);
+            if (hw_buf2) {
+                const uint8_t *midi_in = hw_buf2 + 2048;
+                for (int i = 0; i < 248; i += 8) {
+                    uint8_t cin = midi_in[i] & 0x0F;
+                    uint8_t status = midi_in[i+1];
+                    uint8_t d1 = midi_in[i+2];
+                    if (cin == 0x0B && (status & 0xF0) == 0xB0 && (d1 == 114 || d1 == 115)) {
+                        int n = snprintf(line, sizeof(line),
+                            "[f%u] IN   slot=%2d cable=%d CC %d val=%d (jack-detect)\n",
+                            xmos_frame, i, (midi_in[i] >> 4) & 0xF,
+                            d1, midi_in[i+3]);
+                        write(xmos_log_fd, line, n);
+                    }
+                }
+            }
         }
     }
 
@@ -4964,6 +5029,30 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
 
     /* Timing: reuse statics from pre-transfer (same translation unit) */
     /* spi_post_start is at file scope */
+
+    /* XMOS SysEx logger — log hw[MIDI_OUT] BEFORE the hw→shadow memcpy below.
+     * This shows what XMOS left in the slots after consuming, which tells us
+     * whether XMOS clears slots and whether our memcpy is about to stomp
+     * fresh data. */
+    if (xmos_log_fd >= 0) {
+        int any = 0;
+        char line[128];
+        for (int i = 0; i < 80; i += 4) {
+            uint8_t cin = hw[i] & 0x0F;
+            if (cin >= 0x04 && cin <= 0x07) {
+                int n = snprintf(line, sizeof(line),
+                    "[f%u] POSThw slot=%2d cable=%d cin=0x%x : %02x %02x %02x %02x\n",
+                    xmos_frame, i, (hw[i] >> 4) & 0xF, cin,
+                    hw[i], hw[i+1], hw[i+2], hw[i+3]);
+                write(xmos_log_fd, line, n);
+                any = 1;
+            }
+        }
+        if (any) {
+            int n = snprintf(line, sizeof(line), "[f%u] POSThw end\n", xmos_frame);
+            write(xmos_log_fd, line, n);
+        }
+    }
 
     /* Sync output regions from hardware→shadow.
      * The library only copies the input region (SCHWUNG_OFF_IN_BASE+).
