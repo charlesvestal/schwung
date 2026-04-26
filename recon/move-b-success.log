@@ -1,0 +1,51 @@
+2026-04-27T14:08:11.450691: warning: Failed to read FeatureFlags file: Feature flags file does not exist
+2026-04-27T14:08:11.485292: info: Setting virtual memory limit to: 1782.44 MB
+2026-04-27T14:08:11.485781: error: Aborting Sentry initialization. Executable is running as root.
+2026-04-27T14:08:11.485875: info: -------------- System Info --------------
+2026-04-27T14:08:11.485959: info: Version: 2.0.0b8
+2026-04-27T14:08:11.486040: info: Branch: move/release-v2.0.0b8
+2026-04-27T14:08:11.486120: info: Commit Date: 2026-04-16
+2026-04-27T14:08:11.486199: info: Ableton OS: AbletonOS v3.18
+2026-04-27T14:08:11.486388: info: SSH key installed
+2026-04-27T14:08:11.486468: info: -----------------------------------------
+2026-04-27T14:08:11.486648: info: Found Core Library 0.54
+2026-04-27T14:08:11.517356: info: Registering Connman Agent
+2026-04-27T14:08:11.517646: error: Couldn't get Wi-Fi services. D-Bus error: [org.freedesktop.DBus.Error.ServiceUnknown] The name net.connman was not provided by any .service files
+2026-04-27T14:08:11.517816: error: Couldn't get initial Wi-Fi powered state. D-Bus error: [org.freedesktop.DBus.Error.ServiceUnknown] The name net.connman was not provided by any .service files
+2026-04-27T14:08:11.517956: error: Couldn't get initial Wi-Fi online state. D-Bus error: [org.freedesktop.DBus.Error.ServiceUnknown] The name net.connman was not provided by any .service files
+2026-04-27T14:08:11.518597: error: Couldn't initialize WifiConnector. D-Bus error: [org.freedesktop.DBus.Error.ServiceUnknown] The name net.connman was not provided by any .service files
+2026-04-27T14:08:11.519642: error: Couldn't get host name: [org.freedesktop.DBus.Error.ServiceUnknown] The name com.ableton.system was not provided by any .service files
+2026-04-27T14:08:11.519986: error: Couldn't get host name: [org.freedesktop.DBus.Error.ServiceUnknown] The name org.freedesktop.Avahi was not provided by any .service files
+2026-04-27T14:08:11.540442: info: Start reading software update state
+2026-04-27T14:08:11.717712: info: No Ableton Cloud refresh token found
+2026-04-27T14:08:11.719202: info: Loading initial song
+2026-04-27T14:08:11.719352: info: No song found at "/home/root/UserLibrary/Sets/fe59c41f-0ea2-405f-9e9a-b4d75708d8da/Set 1/Song.abl"
+2026-04-27T14:08:11.719447: info: About to load default song
+2026-04-27T14:08:11.762808: info: Memory Usage: 121.91 MB (121905152 bytes)
+2026-04-27T14:08:11.941836: info: Registering Browser D-Bus service
+2026-04-27T14:08:11.942098: info: Registering Performance Recording D-Bus service
+2026-04-27T14:08:11.942222: info: Registering Screen Reader D-Bus service
+2026-04-27T14:08:11.942370: info: Registering SSH Keys D-Bus service
+2026-04-27T14:08:11.942473: info: Registering Song Renderer D-Bus service
+2026-04-27T14:08:11.942581: info: Registering Settings D-Bus service
+2026-04-27T14:08:11.942680: info: Registering Web Service Authentication D-Bus service
+2026-04-27T14:08:11.942778: info: Registering Cloud Authentication D-Bus service
+2026-04-27T14:08:11.985302: error: Unable to register successful system startup: [org.freedesktop.DBus.Error.ServiceUnknown] The name com.ableton.update was not provided by any .service files
+2026-04-27T14:08:12.030029: info: Memory Usage: 255.99 MB (255987712 bytes)
+2026-04-27T14:08:12.030315: info: Audio file cache size: 1.98 MB
+2026-04-27T14:08:12.030413: info: Wavetable sprite cache size: 0 bytes
+2026-04-27T14:08:12.067159: info: LedBinningCodes{
+ rgbBrightness: 7B,
+ rgbColor: 06,
+ monochromeBrightness: 5C,
+ monochromeColor: L6
+}
+2026-04-27T14:08:12.068005: info: PowerState{
+ isPsuConnected: true,
+ chargingState: fullyCharged,
+ batteryCharge: 100,
+ lowPowerAlarm: false,
+ shortPressed: false,
+ xmosInShutdown: false
+}
+2026-04-27T14:08:12.077780: warning: frames-dropped:5
