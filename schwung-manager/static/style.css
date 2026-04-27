@@ -968,8 +968,8 @@ a.update-available:focus {
 .release-notes-link {
     color: var(--text-muted);
     font-size: 0.8125rem;
-    margin-left: var(--space-sm);
     text-decoration: underline;
+    align-self: center;
 }
 
 .release-notes-link:hover,
