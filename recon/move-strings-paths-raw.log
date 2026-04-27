@@ -1,0 +1,23 @@
+=== strings /opt/move/MoveOriginal | absolute paths ===
+
+/dev/
+/dev/ablspi0.0
+/dev/urandom
+/etc/os-release
+/etc/ssl/certs
+/etc/ssl/certs/ca-certificates.crt
+/opt/move
+/proc/
+/proc/cpuinfo
+/proc/self/auxv
+/proc/self/exe
+/proc/self/fd
+/proc/self/maps
+/proc/self/oom_score_adj
+/proc/self/statm
+/proc/sys/fs/nr_open
+/proc/sys/fs/nr_open format error
+/proc/sys/kernel/yama/ptrace_scope
+/sys/firmware/devicetree/base/serial-number
+/usr/lib/os-release
+/usr/share/common-licenses
