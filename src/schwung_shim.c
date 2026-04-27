@@ -2171,6 +2171,23 @@ skip_la_rebuild:
             }
         }
 
+        /* Sampler source request from shadow UI (used by tool modules that need
+         * to record from a specific source — e.g. the assistant needs Move Input
+         * for voice). 1=Resample, 2=Move Input. Reset to 0 after applying.
+         * Processed BEFORE sampler_cmd so a "set source then start" sequence in
+         * the same tick captures audio from the requested source. */
+        uint8_t src_req = shadow_control->sampler_source_request;
+        if (src_req != 0) {
+            shadow_control->sampler_source_request = 0;
+            sampler_source = (src_req == 2)
+                ? SAMPLER_SOURCE_MOVE_INPUT
+                : SAMPLER_SOURCE_RESAMPLE;
+            shadow_overlay_sync();
+            unified_log("shim", LOG_LEVEL_INFO,
+                       "sampler source request applied: req=%u -> source=%d (0=Resample,1=MoveInput)",
+                       src_req, (int)sampler_source);
+        }
+
         /* Skipback buffer resize: settings UI writes new desired length to
          * shadow_control->skipback_seconds. We compare against the actually
          * allocated size and dispatch a worker thread to resize. The worker
@@ -2204,6 +2221,9 @@ skip_la_rebuild:
                 fclose(pf);
             }
             if (path_buf[0]) {
+                unified_log("shim", LOG_LEVEL_INFO,
+                           "sampler start: path=%s source=%d (0=Resample,1=MoveInput)",
+                           path_buf, (int)sampler_source);
                 sampler_start_recording_to(path_buf);
             }
         } else if (cmd == 2) {
@@ -3433,6 +3453,16 @@ static ssize_t (*real_read)(int fd, void *buf, size_t count) = NULL;
  * ============================================================================ */
 static int shim_subsystems_initialized = 0;
 
+/* Sampler-specific announce wrapper. Tool modules that drive the sampler
+ * programmatically set shadow_control->sampler_silent to suppress the
+ * system "Sample saved" / "Recording failed" voice messages so the user
+ * only hears the tool's own TTS (if any). */
+static void sampler_announce_maybe_silent(const char *msg)
+{
+    if (shadow_control && shadow_control->sampler_silent) return;
+    send_screenreader_announcement(msg);
+}
+
 static void shim_init_subsystems(void)
 {
     if (shim_subsystems_initialized) return;
@@ -3474,11 +3504,16 @@ static void shim_init_subsystems(void)
         };
         chain_mgmt_init(&cm_host);
     }
-    /* Initialize sampler subsystem with callbacks to shim functions */
+    /* Sampler announce wrapper: defined inline above so this scope can
+     * reference it. (Hoisted via the prototype near the top of the file.) */
+    /* Initialize sampler subsystem with callbacks to shim functions.
+     * Use a wrapper for `announce` so tool modules can suppress sampler
+     * chatter ("Sample saved", etc.) by setting
+     * shadow_control->sampler_silent. */
     {
         sampler_host_t sampler_host = {
             .log = shadow_log,
-            .announce = send_screenreader_announcement,
+            .announce = sampler_announce_maybe_silent,
             .overlay_sync = shadow_overlay_sync,
             .run_command = shim_run_command,
             .global_mmap_addr = &global_mmap_addr,
