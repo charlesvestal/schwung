@@ -1,0 +1,367 @@
+Warning: Permanently added 'move.local' (ED25519) to the list of known hosts.
+########################################################################
+# /usr/share/dbus-1/system.conf
+########################################################################
+<!-- This configuration file controls the systemwide message bus.
+     Add a system-local.conf and edit that rather than changing this 
+     file directly. -->
+
+<!-- Note that there are any number of ways you can hose yourself
+     security-wise by screwing up this file; in particular, you
+     probably don't want to listen on any more addresses, add any more
+     auth mechanisms, run as a different user, etc. -->
+
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+
+  <!-- Our well-known bus type, do not change this -->
+  <type>system</type>
+
+  <!-- Run as special user -->
+  <user>messagebus</user>
+
+  <!-- Fork into daemon mode -->
+  <fork/>
+
+  <!-- We use system service launching using a helper -->
+  <standard_system_servicedirs/>
+
+  <!-- This is a setuid helper that is used to launch system services -->
+  <servicehelper>/usr/libexec/dbus-daemon-launch-helper</servicehelper>
+
+  <!-- Write a pid file -->
+  <pidfile>/run/dbus/pid</pidfile>
+
+  <!-- Enable logging to syslog -->
+  <syslog/>
+
+  <!-- Only allow socket-credentials-based authentication -->
+  <auth>EXTERNAL</auth>
+
+  <!-- Only listen on a local socket. (abstract=/path/to/socket 
+       means use abstract namespace, don't really create filesystem 
+       file; only Linux supports this. Use path=/whatever on other 
+       systems.) -->
+  <listen>unix:path=/run/dbus/system_bus_socket</listen>
+
+  <policy context="default">
+    <!-- All users can connect to system bus -->
+    <allow user="*"/>
+
+    <!-- Holes must be punched in service configuration files for
+         name ownership and sending method calls -->
+    <deny own="*"/>
+    <deny send_type="method_call"/>
+
+    <!-- Signals and reply messages (method returns, errors) are allowed
+         by default -->
+    <allow send_type="signal"/>
+    <allow send_requested_reply="true" send_type="method_return"/>
+    <allow send_requested_reply="true" send_type="error"/>
+
+    <!-- All messages may be received by default -->
+    <allow receive_type="method_call"/>
+    <allow receive_type="method_return"/>
+    <allow receive_type="error"/>
+    <allow receive_type="signal"/>
+
+    <!-- Allow anyone to talk to the message bus -->
+    <allow send_destination="org.freedesktop.DBus"
+           send_interface="org.freedesktop.DBus" />
+    <allow send_destination="org.freedesktop.DBus"
+           send_interface="org.freedesktop.DBus.Introspectable"/>
+    <allow send_destination="org.freedesktop.DBus"
+           send_interface="org.freedesktop.DBus.Properties"/>
+    <allow send_destination="org.freedesktop.DBus"
+           send_interface="org.freedesktop.DBus.Containers1"/>
+    <!-- But disallow some specific bus services -->
+    <deny send_destination="org.freedesktop.DBus"
+          send_interface="org.freedesktop.DBus"
+          send_member="UpdateActivationEnvironment"/>
+    <deny send_destination="org.freedesktop.DBus"
+          send_interface="org.freedesktop.DBus.Debug.Stats"/>
+    <deny send_destination="org.freedesktop.DBus"
+          send_interface="org.freedesktop.systemd1.Activator"/>
+  </policy>
+
+  <!-- Only systemd, which runs as root, may report activation failures. -->
+  <policy user="root">
+    <allow send_destination="org.freedesktop.DBus"
+           send_interface="org.freedesktop.systemd1.Activator"/>
+  </policy>
+
+  <!-- root may monitor the system bus. -->
+  <policy user="root">
+    <allow send_destination="org.freedesktop.DBus"
+           send_interface="org.freedesktop.DBus.Monitoring"/>
+  </policy>
+
+  <!-- If the Stats interface was enabled at compile-time, root may use it.
+       Copy this into system.local.conf or system.d/*.conf if you want to
+       enable other privileged users to view statistics and debug info -->
+  <policy user="root">
+    <allow send_destination="org.freedesktop.DBus"
+           send_interface="org.freedesktop.DBus.Debug.Stats"/>
+  </policy>
+
+  <!-- Include legacy configuration location -->
+  <include ignore_missing="yes">/etc/dbus-1/system.conf</include>
+
+  <!-- The defaults for these limits are hard-coded in dbus-daemon.
+       Some clarifications:
+       Times are in milliseconds (ms); 1000ms = 1 second
+       133169152 bytes = 127 MiB
+       33554432 bytes = 32 MiB
+       150000ms = 2.5 minutes -->
+  <!-- <limit name="max_incoming_bytes">133169152</limit> -->
+  <!-- <limit name="max_incoming_unix_fds">64</limit> -->
+  <!-- <limit name="max_outgoing_bytes">133169152</limit> -->
+  <!-- <limit name="max_outgoing_unix_fds">64</limit> -->
+  <!-- <limit name="max_message_size">33554432</limit> -->
+  <!-- <limit name="max_message_unix_fds">16</limit> -->
+  <!-- <limit name="service_start_timeout">25000</limit> -->
+  <!-- <limit name="auth_timeout">5000</limit> -->
+  <!-- <limit name="pending_fd_timeout">150000</limit> -->
+  <!-- <limit name="max_completed_connections">2048</limit> -->
+  <!-- <limit name="max_incomplete_connections">64</limit> -->
+  <!-- <limit name="max_connections_per_user">256</limit> -->
+  <!-- <limit name="max_pending_service_starts">512</limit> -->
+  <!-- <limit name="max_names_per_connection">512</limit> -->
+  <!-- <limit name="max_match_rules_per_connection">512</limit> -->
+  <!-- <limit name="max_replies_per_connection">128</limit> -->
+
+  <!-- Config files are placed here that among other things, punch 
+       holes in the above policy for specific services. -->
+  <includedir>system.d</includedir>
+
+  <includedir>/etc/dbus-1/system.d</includedir>
+
+  <!-- This is included last so local configuration can override what's 
+       in this standard file -->
+  <include ignore_missing="yes">/etc/dbus-1/system-local.conf</include>
+
+  <include if_selinux_enabled="yes" selinux_root_relative="yes">contexts/dbus_contexts</include>
+
+</busconfig>
+
+########################################################################
+# /etc/dbus-1/system.conf  (if exists / different)
+########################################################################
+<!--
+This configuration file is no longer required and may be removed.
+
+In older versions of dbus, this file defined the behaviour of the well-known
+system bus. That behaviour is now determined by
+/usr/share/dbus-1/system.conf, which should not be edited.
+
+For local configuration changes, create a file
+system-local.conf or files matching system.d/*.conf in the same directory
+as this one, with a <busconfig> element containing configuration directives.
+These directives can override D-Bus or OS defaults.
+
+For upstream or distribution-wide defaults that can be overridden
+by a local sysadmin, create files matching
+/usr/share/dbus-1/system.d/*.conf instead.
+-->
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig></busconfig>
+
+########################################################################
+# /etc/dbus-1/system.d/move.conf
+########################################################################
+<!DOCTYPE busconfig PUBLIC
+ "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+    <policy user="root">
+        <allow own="com.ableton.move"/>
+        <allow send_destination="com.ableton.move"/>
+        <allow send_interface="com.ableton.move"/>
+        <allow receive_sender="com.ableton.move"/>
+    </policy>
+    <policy user="root">
+        <allow own="com.ableton.update"/>
+        <allow send_destination="com.ableton.update"/>
+        <allow send_interface="com.ableton.update"/>
+        <allow receive_sender="com.ableton.update"/>
+    </policy>
+    <policy user="root">
+        <allow own="com.ableton.system"/>
+        <allow send_destination="com.ableton.system"/>
+        <allow send_interface="com.ableton.system"/>
+        <allow receive_sender="com.ableton.system"/>
+    </policy>
+    <policy user="ableton">
+        <allow own="com.ableton.move"/>
+        <allow send_destination="com.ableton.move"/>
+        <allow send_interface="com.ableton.move"/>
+        <allow receive_sender="com.ableton.move"/>
+    </policy>
+    <policy user="ableton">
+        <allow own="com.ableton.update"/>
+        <allow send_destination="com.ableton.update"/>
+        <allow send_interface="com.ableton.update"/>
+        <allow receive_sender="com.ableton.update"/>
+    </policy>
+    <policy user="ableton">
+        <allow own="com.ableton.system"/>
+        <allow send_destination="com.ableton.system"/>
+        <allow send_interface="com.ableton.system"/>
+        <allow receive_sender="com.ableton.system"/>
+    </policy>
+</busconfig>
+
+########################################################################
+# /etc/dbus-1/system.d/avahi-dbus.conf
+########################################################################
+<!DOCTYPE busconfig PUBLIC
+          "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
+          "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+
+  <!-- Only root or user avahi can own the Avahi service -->
+  <policy user="avahi">
+    <allow own="org.freedesktop.Avahi"/>
+  </policy>
+  <policy user="root">
+    <allow own="org.freedesktop.Avahi"/>
+  </policy>
+
+  <!-- Allow anyone to invoke methods on Avahi server, except SetHostName -->
+  <policy context="default">
+    <allow send_destination="org.freedesktop.Avahi"/>
+    <allow receive_sender="org.freedesktop.Avahi"/>
+
+    <deny send_destination="org.freedesktop.Avahi"
+          send_interface="org.freedesktop.Avahi.Server" send_member="SetHostName"/>
+  </policy>
+
+  <!-- Allow everything, including access to SetHostName to users of the group "adm" -->
+  <policy group="adm">
+    <allow send_destination="org.freedesktop.Avahi"/>
+    <allow receive_sender="org.freedesktop.Avahi"/>
+  </policy>
+  <policy user="root">
+    <allow send_destination="org.freedesktop.Avahi"/>
+    <allow receive_sender="org.freedesktop.Avahi"/>
+  </policy>
+</busconfig>
+
+########################################################################
+# /etc/dbus-1/system.d/connman.conf
+########################################################################
+<!DOCTYPE busconfig PUBLIC
+ "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+        <policy user="ableton">
+                <allow send_destination="net.connman"/>
+                <allow send_interface="net.connman"/>
+                <allow receive_sender="net.connman" receive_type="signal"/>
+        </policy>
+        <policy user="root">
+                <allow send_destination="net.connman"/>
+                <allow send_interface="net.connman"/>
+                <allow receive_sender="net.connman" receive_type="signal"/>
+        </policy>
+        <policy context="default">
+                <deny own="net.connman"/>
+                <deny send_destination="net.connman"/>
+                <deny receive_sender="net.connman" receive_type="signal"/>
+        </policy>
+</busconfig>
+
+
+########################################################################
+# /etc/dbus-1/system.d/dbus-wpa_supplicant.conf
+########################################################################
+<!DOCTYPE busconfig PUBLIC
+ "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+        <policy user="root">
+                <allow own="fi.w1.wpa_supplicant1"/>
+
+                <allow send_destination="fi.w1.wpa_supplicant1"/>
+                <allow send_interface="fi.w1.wpa_supplicant1"/>
+                <allow receive_sender="fi.w1.wpa_supplicant1" receive_type="signal"/>
+        </policy>
+        <policy context="default">
+                <deny own="fi.w1.wpa_supplicant1"/>
+                <deny send_destination="fi.w1.wpa_supplicant1"/>
+                <deny receive_sender="fi.w1.wpa_supplicant1" receive_type="signal"/>
+        </policy>
+</busconfig>
+
+########################################################################
+# /usr/share/dbus-1/system.d/connman.conf
+########################################################################
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+    <policy user="root">
+        <allow own="net.connman"/>
+        <allow send_destination="net.connman"/>
+        <allow send_interface="net.connman.Agent"/>
+        <allow send_interface="net.connman.Counter"/>
+        <allow send_interface="net.connman.Notification"/>
+    </policy>
+    <policy at_console="true">
+        <allow send_destination="net.connman"/>
+    </policy>
+    <policy context="default">
+        <deny send_destination="net.connman"/>
+    </policy>
+</busconfig>
+
+########################################################################
+# /usr/share/dbus-1/system-services/com.ableton.system.service
+########################################################################
+[D-BUS Service]
+Name=com.ableton.system
+Exec=/opt/move/SystemDBusService
+User=root
+SystemdService=system.service
+
+########################################################################
+# /usr/share/dbus-1/system-services/com.ableton.update.service
+########################################################################
+[D-BUS Service]
+Name=com.ableton.update
+Exec=/opt/move/UpdateDBusService
+User=root
+SystemdService=update.service
+
+########################################################################
+# /usr/share/dbus-1/system-services/fi.w1.wpa_supplicant1.service
+########################################################################
+[D-BUS Service]
+Name=fi.w1.wpa_supplicant1
+Exec=/usr/sbin/wpa_supplicant -u
+User=root
+SystemdService=wpa_supplicant.service
+
+########################################################################
+# /etc/dbus-1/session.conf
+########################################################################
+<!--
+This configuration file is no longer required and may be removed.
+
+In older versions of dbus, this file defined the behaviour of the well-known
+session bus. That behaviour is now determined by
+/usr/share/dbus-1/session.conf, which should not be edited.
+
+For local configuration changes, create a file
+session-local.conf or files matching session.d/*.conf in the same directory
+as this one, with a <busconfig> element containing configuration directives.
+These directives can override D-Bus or OS defaults.
+
+For upstream or distribution-wide defaults that can be overridden
+by a local sysadmin, create files matching
+/usr/share/dbus-1/session.d/*.conf instead.
+-->
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig></busconfig>
