@@ -683,6 +683,10 @@ mkdir -p ./build/scripts
 cp ./scripts/post-update.sh ./build/scripts/
 chmod +x ./build/scripts/post-update.sh
 
+# Copy diagnostic capture script (for users to bundle SysEx/jack-detect logs).
+cp ./scripts/collect-diagnostics.sh ./build/scripts/
+chmod +x ./build/scripts/collect-diagnostics.sh
+
 # Backwards-compat symlinks for 0.7.x → 0.8.x upgrades (Module Store + Shadow UI updater).
 # The old /usr/lib/move-anything-shim.so symlink needs a target to resolve,
 # and the 0.7.x shadow UI updater checks for 'move-anything' binary by name.

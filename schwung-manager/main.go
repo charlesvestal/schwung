@@ -1178,6 +1178,38 @@ func (app *App) handleModuleUpdateAll(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/modules?flash="+msg, http.StatusSeeOther)
 }
 
+func (app *App) handleModuleInstallAll(w http.ResponseWriter, r *http.Request) {
+	cat, err := app.catalogSvc.Fetch()
+	if err != nil {
+		app.logger.Error("install-all: fetch catalog failed", "err", err)
+		http.Redirect(w, r, "/modules?flash=Install+all+failed:+"+err.Error(), http.StatusSeeOther)
+		return
+	}
+	installed := discoverInstalledModules(app.basePath)
+	var ok, failed, skipped int
+	for i := range cat.Modules {
+		mod := &cat.Modules[i]
+		if _, alreadyInstalled := installed[mod.ID]; alreadyInstalled {
+			skipped++
+			continue
+		}
+		if err := app.installModule(mod); err != nil {
+			app.logger.Error("install-all: module install failed", "id", mod.ID, "err", err)
+			failed++
+		} else {
+			ok++
+		}
+	}
+	msg := fmt.Sprintf("Installed+%d+modules", ok)
+	if failed > 0 {
+		msg += fmt.Sprintf(",+%d+failed", failed)
+	}
+	if skipped > 0 {
+		msg += fmt.Sprintf(",+%d+already+installed", skipped)
+	}
+	http.Redirect(w, r, "/modules?flash="+msg, http.StatusSeeOther)
+}
+
 func (app *App) handleCustomInstall(w http.ResponseWriter, r *http.Request) {
 	source := r.FormValue("source")
 	switch source {
@@ -2973,6 +3005,7 @@ func main() {
 	mux.HandleFunc("POST /modules/{id}/uninstall", app.handleModuleUninstall)
 	mux.HandleFunc("POST /modules/{id}/update", app.handleModuleUpdate)
 	mux.HandleFunc("POST /modules/update-all", app.handleModuleUpdateAll)
+	mux.HandleFunc("POST /modules/install-all", app.handleModuleInstallAll)
 	mux.HandleFunc("POST /modules/install-custom", app.handleCustomInstall)
 
 	// Module assets.
