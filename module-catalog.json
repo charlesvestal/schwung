@@ -91,6 +91,18 @@
       "min_host_version": "0.3.0"
     },
     {
+      "id": "midiverb",
+      "name": "Midiverb",
+      "description": "Alesis Midiverb / Midifex / Midiverb II emulator (lo-fi 23.4 kHz reverb)",
+      "author": "thement (DSP) · Charles Vestal (port)",
+      "component_type": "audio_fx",
+      "github_repo": "charlesvestal/schwung-midiverb",
+      "default_branch": "main",
+      "asset_name": "midiverb-module.tar.gz",
+      "min_host_version": "0.3.0",
+      "requires": "Optional: original Midiverb / Midifex / Midiverb II ROM dumps for cycle-accurate emulation"
+    },
+    {
       "id": "tapescam",
       "name": "TAPESCAM",
       "description": "Tape saturation and degradation effect",
