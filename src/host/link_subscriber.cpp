@@ -344,20 +344,6 @@ int main()
             sources.reserve(pending.size());
 
             for (const auto& pc : pending) {
-                /* Skip Move's Main mix: the shim rebuilds Move's output from
-                 * per-track slots 0-3 and never consumes Main. Subscribing to
-                 * Main still forces Move to publish it on its Audio Worker
-                 * threads every frame — measurable CPU on Move for zero
-                 * benefit to us. Observed 2026-04-24: Main's ring overran
-                 * every write (would_overrun == produced, max_avail == 0)
-                 * confirming no consumer. Dropping the subscription removes
-                 * ~20% of Move's Link publish load. */
-                if (pc.peerName == "Move" && pc.name == "Main") {
-                    LOG_INFO(LINK_SUB_LOG_SOURCE,
-                             "skipping Move/Main (no consumer)");
-                    continue;
-                }
-
                 LOG_INFO(LINK_SUB_LOG_SOURCE, "subscribing to %s/%s...",
                          pc.peerName.c_str(), pc.name.c_str());
 
@@ -374,6 +360,8 @@ int main()
                     char d = pc.name[0];
                     if (d >= '1' && d <= '4' && pc.name[1] == '-') {
                         slot_idx = d - '1';
+                    } else if (pc.name == "Main") {
+                        slot_idx = LINK_AUDIO_IN_MAIN_IDX;
                     }
                 }
 

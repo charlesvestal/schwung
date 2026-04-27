@@ -154,10 +154,7 @@ typedef struct {
 #define LINK_AUDIO_IN_RING_SAMPLES   (LINK_AUDIO_IN_BLOCK_SAMPLES * LINK_AUDIO_IN_RING_BLOCKS)
 #define LINK_AUDIO_IN_RING_MASK      (LINK_AUDIO_IN_RING_SAMPLES - 1)
 
-/* Slots 0-3: per-track audio from Move. Slot 4 (Main) is reserved but
- * unsubscribed by link_subscriber to keep Move's Audio Worker threads free
- * from a publish we don't consume. The shim rebuilds Move's output from the
- * per-track slots under rebuild_from_la. */
+/* One slot per Move-published channel: 1-MIDI..4-MIDI + Main = 5. */
 #define LINK_AUDIO_IN_SLOT_COUNT   LINK_AUDIO_MOVE_CHANNELS
 #define LINK_AUDIO_IN_MAIN_IDX     (LINK_AUDIO_MOVE_CHANNELS - 1)
 
