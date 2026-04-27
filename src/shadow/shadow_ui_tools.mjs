@@ -122,7 +122,8 @@ export function drawToolsMenu() {
 
     const items = toolModules.map(m => {
         if (m.type === 'divider') return { type: 'divider', label: m.label || '' };
-        return { label: m.name, value: "" };
+        const label = m.suspended ? ('* ' + m.name) : m.name;
+        return { label: label, value: "" };
     });
     drawMenuList({
         items,

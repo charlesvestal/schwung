@@ -768,6 +768,10 @@ static struct timespec step2_press_time;
 static uint8_t step2_longpress_pending;
 static uint8_t step2_longpress_fired;
 
+static struct timespec step13_press_time;
+static uint8_t step13_longpress_pending;
+static uint8_t step13_longpress_fired;
+
 static inline int long_press_elapsed(const struct timespec *start) {
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
@@ -4946,6 +4950,19 @@ pre_done:
             launch_shadow_ui();
             shadow_log("Shift+Step2 long-press: opening global settings");
         }
+        /* Shift + Step 13 long-press: resume most-recently-suspended tool */
+        if (step13_longpress_pending && !step13_longpress_fired &&
+            shadow_shift_held && !shadow_volume_knob_touched &&
+            long_press_elapsed(&step13_press_time)) {
+            step13_longpress_fired = 1;
+            step13_longpress_pending = 0;
+            shadow_control->resume_last_tool = 1;
+            shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_TOOLS;
+            shadow_display_mode = 1;
+            shadow_control->display_mode = 1;
+            launch_shadow_ui();
+            shadow_log("Shift+Step13 long-press: resuming last tool");
+        }
     }
 
     /* Capture the SPI fd for use by overtake_midi_send_external */
@@ -5083,6 +5100,27 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             __sync_synchronize();
             shadow_midi_inject_shm->ready++;
             shadow_log("Overtake exit: injected shift-off, volume-touch-off, back-off, jog-click-off");
+        }
+        /* Symmetric inject on overtake ENTRY (0→non-zero): if Shift was held when
+         * overtake activated (e.g. Shift+long-press-Step13 → resume tool fires while
+         * the user is still physically holding Shift), inject Shift-off so Move's
+         * firmware doesn't stay in shift-mode (which slows the volume knob, etc.).
+         * Cable-0 input is filtered during overtake, so the eventual physical release
+         * never reaches Move otherwise. */
+        if (prev_overtake_mode == 0 && overtake_mode != 0 && shadow_midi_inject_shm &&
+            shadow_shift_held) {
+            int wr = shadow_midi_inject_shm->write_idx;
+            if (wr + 4 <= SHADOW_MIDI_INJECT_BUFFER_SIZE) {
+                shadow_midi_inject_shm->buffer[wr]     = 0x0B;
+                shadow_midi_inject_shm->buffer[wr + 1] = 0xB0;
+                shadow_midi_inject_shm->buffer[wr + 2] = CC_SHIFT;
+                shadow_midi_inject_shm->buffer[wr + 3] = 0;
+                wr += 4;
+                shadow_midi_inject_shm->write_idx = wr;
+                __sync_synchronize();
+                shadow_midi_inject_shm->ready++;
+                shadow_log("Overtake entry with shift held: injected shift-off");
+            }
         }
         /* Clear JACK display override on overtake exit (always — Move needs display back) */
         if (prev_overtake_mode != 0 && overtake_mode == 0 && g_jack_shm) {
@@ -5807,16 +5845,24 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
                     } else if (LONG_PRESS_ACTIVE() && shadow_shift_held &&
                                !shadow_volume_knob_touched && shadow_control && shadow_ui_enabled) {
-                        /* Shift+Step13 without Vol — immediate tools shortcut */
+                        /* Shift+Step13 without Vol — immediate tools shortcut.
+                         * Also start a long-press timer; if held past 500ms we
+                         * fire the resume-last-tool path. */
                         shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_TOOLS;
                         shadow_display_mode = 1;
                         shadow_control->display_mode = 1;
                         launch_shadow_ui();
+                        clock_gettime(CLOCK_MONOTONIC, &step13_press_time);
+                        step13_longpress_pending = 1;
+                        step13_longpress_fired = 0;
                         uint8_t *sh = shadow + MIDI_IN_OFFSET;
                         sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
                         src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
                         shadow_log("Shift+Step13: opening tools");
                     }
+                }
+                if (d1 == 28 && (type == 0x80 || (type == 0x90 && d2 == 0))) {
+                    step13_longpress_pending = 0;
                 }
 
                 /* Shift + Step button while shadow UI is displayed = dismiss shadow UI

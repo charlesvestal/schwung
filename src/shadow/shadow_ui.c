@@ -406,6 +406,17 @@ static JSValue js_shadow_get_suspend_overtake(JSContext *ctx, JSValueConst this_
     return JS_NewInt32(ctx, shadow_control->suspend_overtake);
 }
 
+/* shadow_consume_resume_last_tool() -> int
+ * Read-and-clear the resume_last_tool hint set by the shim on Shift+Step13 long-press.
+ */
+static JSValue js_shadow_consume_resume_last_tool(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewInt32(ctx, 0);
+    int v = shadow_control->resume_last_tool ? 1 : 0;
+    shadow_control->resume_last_tool = 0;
+    return JS_NewInt32(ctx, v);
+}
+
 /* shadow_set_skip_led_clear(flag) -> void
  * Set skip_led_clear flag so the LED queue preserves pad colors on overtake entry.
  * Must be called BEFORE shadow_set_overtake_mode(2).
@@ -2948,6 +2959,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_skip_led_clear", JS_NewCFunction(ctx, js_shadow_set_skip_led_clear, "shadow_set_skip_led_clear", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_suspend_overtake", JS_NewCFunction(ctx, js_shadow_set_suspend_overtake, "shadow_set_suspend_overtake", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_suspend_overtake", JS_NewCFunction(ctx, js_shadow_get_suspend_overtake, "shadow_get_suspend_overtake", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_consume_resume_last_tool", JS_NewCFunction(ctx, js_shadow_consume_resume_last_tool, "shadow_consume_resume_last_tool", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_mute_move_audio", JS_NewCFunction(ctx, js_host_mute_move_audio, "host_mute_move_audio", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_pad_led_snapshot", JS_NewCFunction(ctx, js_shadow_get_pad_led_snapshot, "shadow_get_pad_led_snapshot", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_request_exit", JS_NewCFunction(ctx, js_shadow_request_exit, "shadow_request_exit", 0));
