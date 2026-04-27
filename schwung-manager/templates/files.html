@@ -332,11 +332,12 @@
     var dragCounter = 0;
     var uploadUrl = '/files/upload';
 
-    function uploadOneFile(file, destDir, onProgress) {
+    function uploadOneFile(file, destDir, onProgress, filenameOverride) {
         var fd = new FormData();
         fd.append('csrf_token', csrfToken);
         fd.append('path', destDir);
-        fd.append('file', file, file.name);
+        var filename = filenameOverride || file.name;
+        fd.append('file', file, filename);
         return new Promise(function(resolve, reject) {
             var xhr = new XMLHttpRequest();
             xhr.open('POST', uploadUrl, true);
@@ -433,6 +434,9 @@
                     entry.file(function(file) {
                         results.push({ file: file, destDir: parentDir });
                         resolve();
+                    }, function(err) {
+                        console.error('entry.file failed', entry.fullPath, err);
+                        resolve();
                     });
                 });
             } else if (entry.isDirectory) {
@@ -448,20 +452,38 @@
             var reader = dirEntry.createReader();
             return new Promise(function(resolve) {
                 var allEntries = [];
+                // readEntries can return an empty batch before the directory
+                // is actually exhausted on large/deep trees in Chrome and
+                // Safari. Only treat empty as done after two consecutive
+                // empty reads. Always pass an error callback so failures
+                // don't hang the chain silently.
+                var emptyStreak = 0;
+                function finish() {
+                    var chain = Promise.resolve();
+                    for (var i = 0; i < allEntries.length; i++) {
+                        (function(e) {
+                            chain = chain.then(function() { return readEntryAsync(e, dirPath, relPath); });
+                        })(allEntries[i]);
+                    }
+                    chain.then(resolve);
+                }
                 function readBatch() {
                     reader.readEntries(function(batch) {
                         if (batch.length === 0) {
-                            var chain = Promise.resolve();
-                            for (var i = 0; i < allEntries.length; i++) {
-                                (function(e) {
-                                    chain = chain.then(function() { return readEntryAsync(e, dirPath, relPath); });
-                                })(allEntries[i]);
+                            emptyStreak++;
+                            if (emptyStreak >= 2) {
+                                finish();
+                            } else {
+                                readBatch();
                             }
-                            chain.then(resolve);
                         } else {
+                            emptyStreak = 0;
                             for (var i = 0; i < batch.length; i++) allEntries.push(batch[i]);
                             readBatch();
                         }
+                    }, function(err) {
+                        console.error('readEntries failed', dirEntry.fullPath, err);
+                        finish();
                     });
                 }
                 readBatch();
@@ -507,6 +529,29 @@
                 mkdirRemote(item.mkdir.replace(currentDir + '/', '')).then(nextMkdir).catch(nextMkdir);
             }
 
+            // Safari's drag-drop sandbox can drop file content reads after a
+            // few minutes / a few thousand files in a single drag session,
+            // resulting in 0-byte uploads. Materializing each file's bytes
+            // into a Blob before upload moves the read off the upload-time
+            // path, which can dodge the limit. Fallback to the raw File if
+            // arrayBuffer is unavailable or fails.
+            function materializeFile(file) {
+                if (!file.arrayBuffer) return Promise.resolve(file);
+                return file.arrayBuffer().then(function(buf) {
+                    if (file.size > 0 && buf.byteLength === 0) {
+                        // Sandbox already dropped this; nothing we can do.
+                        console.warn('arrayBuffer returned empty', file.name, 'declared size', file.size);
+                        return null;
+                    }
+                    var blob = new Blob([buf], { type: file.type || 'application/octet-stream' });
+                    blob.name = file.name;
+                    return blob;
+                }).catch(function(err) {
+                    console.warn('arrayBuffer failed', file.name, err);
+                    return file; // fall back to original File
+                });
+            }
+
             function nextFile() {
                 if (current >= files.length) {
                     statusEl.textContent = 'Done!';
@@ -518,14 +563,21 @@
                 var item = files[current];
                 current++;
                 showProgress(current, total, item.file.name, 0);
-                uploadOneFile(item.file, item.destDir, function(pct) {
-                    showProgress(current, total, item.file.name, pct);
-                })
-                    .then(nextFile)
-                    .catch(function(err) {
-                        console.error('Upload error:', err, item.file.name);
+                materializeFile(item.file).then(function(blob) {
+                    if (!blob) {
+                        // arrayBuffer returned empty; skip upload — would
+                        // produce a 0-byte file otherwise.
                         nextFile();
-                    });
+                        return;
+                    }
+                    var name = item.file.name;
+                    return uploadOneFile(blob, item.destDir, function(pct) {
+                        showProgress(current, total, name, pct);
+                    }, name).then(nextFile);
+                }).catch(function(err) {
+                    console.error('Upload error:', err, item.file.name);
+                    nextFile();
+                });
             }
 
             nextMkdir();
