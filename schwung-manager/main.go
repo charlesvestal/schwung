@@ -764,11 +764,15 @@ func (app *App) handleModules(w http.ResponseWriter, r *http.Request) {
 		if catalogIDs[id] || hiddenIDs[id] {
 			continue
 		}
+		author := mod.Author
+		if author == "" {
+			author = "Unknown"
+		}
 		modules = append(modules, CatalogModule{
 			ID:            id,
 			Name:          mod.Name,
 			Description:   mod.Description,
-			Author:        "Schwung",
+			Author:        author,
 			ComponentType: mod.ComponentType,
 			GithubRepo:    "charlesvestal/schwung",
 			MinHostVer:    "0.1.0",
