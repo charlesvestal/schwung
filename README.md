@@ -161,6 +161,7 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 | Module | Description | Author |
 |--------|-------------|--------|
 | [CloudSeed](https://github.com/charlesvestal/schwung-cloudseed) | Algorithmic reverb by Ghost Note Audio | Ghost Note Audio (port: charlesvestal) |
+| [Midiverb](https://github.com/charlesvestal/schwung-midiverb) | Alesis Midiverb / Midifex / Midiverb II emulator (lo-fi 23.4 kHz reverb) | thement (DSP) · Charles Vestal (port) |
 | [TAPESCAM](https://github.com/charlesvestal/schwung-tapescam) | Tape saturation and degradation effect | Charles Vestal |
 | [PSX Verb](https://github.com/charlesvestal/schwung-psxverb) | PlayStation 1 SPU reverb emulation | Charles Vestal |
 | [TapeDelay](https://github.com/charlesvestal/schwung-space-delay) | Tape delay with flutter and tone shaping | Charles Vestal |
