@@ -4977,34 +4977,33 @@ pre_done:
     TIME_SECTION_END(spi_screenreader_sum, spi_screenreader_max);
 
     /* === SHORTCUT INDICATOR LEDS ===
-     * When Shift+Vol held, light step icon LEDs (CCs 16-31 = icons below steps).
-     * When long_press enabled and Shift held (without Vol), light Step 2 and Step 13.
-     * Uses shadow_queue_led which gets flushed by shadow_flush_pending_leds above. */
+     * Step 2 icon (CC 17) = Settings; Step 13 icon (CC 28) = Tools. Both
+     * targets are reachable in either trigger mode (Shift+Vol+Step{2,13}
+     * and long-press Shift+Step{2,13}), so light both whenever Shift is
+     * held — regardless of whether the volume knob is also touched. */
     {
-        static int shortcut_leds_on = 0;
-        static int longpress_leds_on = 0;
+        static int step2_lit = 0;
+        static int step13_lit = 0;
 
         int want_shiftvol = SHIFT_VOL_ACTIVE() && shadow_shift_held && shadow_volume_knob_touched;
         int want_longpress = LONG_PRESS_ACTIVE() && shadow_shift_held && !shadow_volume_knob_touched;
+        int want_step2 = want_shiftvol || want_longpress;
+        int want_step13 = want_shiftvol || want_longpress;
 
-        if (want_shiftvol && !shortcut_leds_on) {
-            shadow_queue_led(0x0B, 0xB0, 28, 118);  /* Step 13 icon = LightGrey (Tools) */
-            shortcut_leds_on = 1;
-        } else if (!want_shiftvol && shortcut_leds_on) {
-            shadow_queue_led(0x0B, 0xB0, 28, 0);
-            shortcut_leds_on = 0;
+        if (want_step2 && !step2_lit) {
+            shadow_queue_led(0x0B, 0xB0, 17, 118);  /* Step 2 icon = LightGrey (Settings) */
+            step2_lit = 1;
+        } else if (!want_step2 && step2_lit) {
+            shadow_queue_led(0x0B, 0xB0, 17, 0);
+            step2_lit = 0;
         }
 
-        if (want_longpress && !longpress_leds_on) {
-            shadow_queue_led(0x0B, 0xB0, 17, 118);  /* Step 2 icon = LightGrey (Settings) */
+        if (want_step13 && !step13_lit) {
             shadow_queue_led(0x0B, 0xB0, 28, 118);  /* Step 13 icon = LightGrey (Tools) */
-            longpress_leds_on = 1;
-        } else if (!want_longpress && longpress_leds_on) {
-            shadow_queue_led(0x0B, 0xB0, 17, 0);
-            if (!shortcut_leds_on) {
-                shadow_queue_led(0x0B, 0xB0, 28, 0);
-            }
-            longpress_leds_on = 0;
+            step13_lit = 1;
+        } else if (!want_step13 && step13_lit) {
+            shadow_queue_led(0x0B, 0xB0, 28, 0);
+            step13_lit = 0;
         }
     }
 
