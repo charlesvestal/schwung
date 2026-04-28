@@ -199,20 +199,29 @@ void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *mi
         if (host_chain_slots[i].channel != (int)midi_ch && host_chain_slots[i].channel != -1)
             continue;
 
-        /* Lazy activation check */
+        /* Lazy activation check — any loaded component (synth, audio FX,
+         * or MIDI FX) is enough to activate. MIDI-FX-only slots in Pre
+         * mode have no synth or audio FX but still need to dispatch
+         * incoming MIDI to drive the FX and inject to Move. */
         if (!host_chain_slots[i].active) {
             if (pv2 && pv2->get_param &&
                 host_chain_slots[i].instance) {
-                char buf[64];
-                int len = pv2->get_param(host_chain_slots[i].instance,
-                                          "synth_module", buf, sizeof(buf));
-                if (len > 0) {
+                static const char *probe_keys[] = {
+                    "synth_module", "fx1_module", "fx2_module",
+                    "midi_fx1_module", "midi_fx2_module"
+                };
+                for (size_t k = 0; k < sizeof(probe_keys)/sizeof(probe_keys[0]); k++) {
+                    char buf[64];
+                    int len = pv2->get_param(host_chain_slots[i].instance,
+                                              probe_keys[k], buf, sizeof(buf));
+                    if (len <= 0) continue;
                     if (len < (int)sizeof(buf)) buf[len] = '\0';
                     else buf[sizeof(buf) - 1] = '\0';
                     if (buf[0] != '\0') {
                         host_chain_slots[i].active = 1;
                         if (host_ui_state_update_slot)
                             host_ui_state_update_slot(i);
+                        break;
                     }
                 }
             }
