@@ -28,7 +28,6 @@
 #define SHM_SHADOW_MIDI_OUT   "/schwung-midi-out"   /* MIDI output from shadow UI */
 #define SHM_SHADOW_MIDI_DSP   "/schwung-midi-dsp"   /* MIDI from shadow UI to DSP slots */
 #define SHM_SHADOW_MIDI_INJECT "/schwung-midi-inject" /* MIDI inject into Move's MIDI_IN */
-#define SHM_SHADOW_EXT_MIDI_REMAP "/schwung-ext-midi-remap" /* Cable-2 channel remap table */
 #define SHM_SHADOW_SCREENREADER "/schwung-screenreader" /* Screen reader announcements */
 #define SHM_SHADOW_OVERLAY  "/schwung-overlay"  /* Overlay state (sampler/skipback) */
 #define SHM_DISPLAY_LIVE    "/schwung-display-live"    /* Live display for remote viewer */
@@ -225,29 +224,6 @@ typedef struct shadow_midi_inject_t {
 } shadow_midi_inject_t;
 
 /*
- * Cable-2 (external USB) MIDI channel remap table.
- * Active overtake module writes; shim reads on every SPI frame and
- * rewrites the channel byte of cable-2 MIDI_IN events before Move
- * firmware processes them. Solves the cable-2 echo cascade by
- * remapping in-place rather than re-injecting from JS.
- *
- * Disabled globally whenever any chain slot is configured forward=THRU
- * (MPE passthrough). Reset to all-passthrough by the shim on overtake
- * exit (forced — never trusted to JS, since shadow_ui cleanup may not
- * run on crash).
- */
-typedef struct schwung_ext_midi_remap_t {
-    volatile uint8_t version;        /* 1 = current contract version */
-    volatile uint8_t enabled;        /* 0 = bypass, 1 = active */
-    volatile uint8_t remap[16];      /* remap[in_ch] = out_ch (0-indexed).
-                                      * 0xFF = passthrough for that channel. */
-    uint8_t _reserved[46];           /* reserved for v2 (per-source remap, etc) */
-} schwung_ext_midi_remap_t;          /* 64 bytes total */
-
-#define EXT_MIDI_REMAP_PASSTHROUGH 0xFF
-#define EXT_MIDI_REMAP_VERSION     1
-
-/*
  * Web UI param set ring — web server writes, shim drains each audio block.
  * Fire-and-forget: no response needed. ~3ms latency (one audio block).
  * Uses linear buffer with toggle-ready pattern (same as MIDI inject).
@@ -374,6 +350,5 @@ typedef char shadow_ui_state_size_check[(sizeof(shadow_ui_state_t) <= SHADOW_UI_
 typedef char shadow_param_size_check[(sizeof(shadow_param_t) <= SHADOW_PARAM_BUFFER_SIZE) ? 1 : -1];
 typedef char shadow_screenreader_size_check[(sizeof(shadow_screenreader_t) <= SHADOW_SCREENREADER_BUFFER_SIZE) ? 1 : -1];
 typedef char shadow_overlay_size_check[(sizeof(shadow_overlay_state_t) == SHADOW_OVERLAY_BUFFER_SIZE) ? 1 : -1];
-typedef char schwung_ext_midi_remap_size_check[(sizeof(schwung_ext_midi_remap_t) == 64) ? 1 : -1];
 
 #endif /* SHADOW_CONSTANTS_H */
