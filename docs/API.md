@@ -184,14 +184,6 @@ host_exit_module()            // Exit current tool module, return to tools menu 
 // MIDI injection (inject MIDI into Move's firmware input path)
 move_midi_inject_to_move([type, status, d1, d2]) // Simulate hardware MIDI input
 
-// Cable-2 (external USB) MIDI channel remap — overtake modules only.
-// Rewrites the channel byte of incoming external MIDI before Move's firmware
-// processes it. Solves live-external-MIDI ↔ Move-track routing without the
-// cable-2 echo cascade. See CLAUDE.md "Cable-2 Channel Remap" for behavior.
-host_ext_midi_remap_set(in_ch, out_ch) // 0-15. out_ch >= 16 or < 0 = passthrough
-host_ext_midi_remap_clear()            // reset all 16 entries to passthrough
-host_ext_midi_remap_enable(on)         // bool: global enable/disable
-
 // Sampler (record audio output to WAV)
 host_sampler_start(path)      // Start recording to the given WAV file path
 host_sampler_stop()           // Stop recording

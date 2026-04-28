@@ -25,10 +25,6 @@ typedef struct slot_fade_t {
 #define SLOT_FADE_SAMPLES 2205
 #define SLOT_FADE_STEP (1.0f / SLOT_FADE_SAMPLES)
 
-/* forward_channel sentinel values */
-#define SHADOW_FORWARD_THRU (-2)  /* passthrough: preserve original MIDI channel */
-#define SHADOW_FORWARD_AUTO (-1)  /* auto: remap to slot's receive channel */
-
 typedef struct shadow_chain_slot_t {
     void *instance;
     int channel;
