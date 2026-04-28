@@ -2645,7 +2645,9 @@ void shadow_inprocess_handle_param_request(void) {
             }
             if (!shadow_chain_slots[slot].active &&
                 (strcmp(key_copy, "fx1:module") == 0 ||
-                 strcmp(key_copy, "fx2:module") == 0) &&
+                 strcmp(key_copy, "fx2:module") == 0 ||
+                 strcmp(key_copy, "midi_fx1:module") == 0 ||
+                 strcmp(key_copy, "midi_fx2:module") == 0) &&
                 value_copy[0] != '\0') {
                 shadow_chain_slots[slot].active = 1;
     shadow_chain_slots[slot].fade.target = 1.0f;
@@ -2682,6 +2684,22 @@ void shadow_inprocess_handle_param_request(void) {
                     if (!loaded) {
                         len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
                             "fx2_module", buf, sizeof(buf));
+                        if (len > 0) {
+                            buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
+                            if (buf[0] != '\0') loaded = 1;
+                        }
+                    }
+                    if (!loaded) {
+                        len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
+                            "midi_fx1_module", buf, sizeof(buf));
+                        if (len > 0) {
+                            buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
+                            if (buf[0] != '\0') loaded = 1;
+                        }
+                    }
+                    if (!loaded) {
+                        len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
+                            "midi_fx2_module", buf, sizeof(buf));
                         if (len > 0) {
                             buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
                             if (buf[0] != '\0') loaded = 1;
