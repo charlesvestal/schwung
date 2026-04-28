@@ -69,38 +69,19 @@ int link_audio_read_channel_shm(link_audio_in_shm_t *shm, int slot_idx,
         return 0;
     }
 
-    /* Hard catch-up: if producer got ahead by more than 12 blocks (~70 ms),
-     * jump to the most recent block. Burst-protection only — kicks in when
-     * the SDK thread paused and flushed a long backlog. Soft slip below
-     * handles steady-state rate drift without an audible cliff. */
+    /* Catch-up: if producer got ahead by more than 12 blocks (~70 ms), jump
+     * to the most recent block. Every catch-up is an audible drop, so the
+     * threshold has to tolerate real producer-thread jitter — the Link audio
+     * SDK thread can pause ~25 ms and then flush buffered audio. Raised from
+     * need*4 (1024 samples) to need*12 (3072) after instrumentation showed
+     * observed bursts were consistently <30 ms. If true long-term drift
+     * exists, max_avail_seen will rise steadily and surface in the logger. */
     if (avail > need * 12) {
         uint32_t new_rp = wp - need;
         __atomic_fetch_add(&slot->catchup_samples_dropped,
                            (new_rp - rp), __ATOMIC_RELAXED);
         __atomic_fetch_add(&slot->catchup_count, 1, __ATOMIC_RELAXED);
         rp = new_rp;
-    }
-
-    /* Soft slip: when producer rate slightly exceeds consumer rate the ring
-     * fills steadily. Without intervention it grows until the hard catch-up
-     * fires and dumps ~70 ms in one go (audible glitch). Instead, when avail
-     * stays above target for several consecutive reads, drop one stereo
-     * frame per call — 1/128 sample ≈ 0.78% rate adjustment, inaudible.
-     * Per-slot static is fine: SPSC, single reader thread per slot.
-     *
-     * Target: 2 blocks of headroom (need*2). Anything above means we're
-     * accumulating; below, we're at or near steady state. */
-    static int slip_streak[LINK_AUDIO_IN_SLOT_COUNT] = {0};
-    const uint32_t slip_target = need * 2;
-    if (avail > slip_target) {
-        if (++slip_streak[slot_idx] >= 8) {
-            slip_streak[slot_idx] = 0;
-            rp += 2;  /* drop one stereo frame */
-            __atomic_fetch_add(&slot->catchup_samples_dropped, 2,
-                               __ATOMIC_RELAXED);
-        }
-    } else {
-        slip_streak[slot_idx] = 0;
     }
 
     for (uint32_t i = 0; i < need; i++) {

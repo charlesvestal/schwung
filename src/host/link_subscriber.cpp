@@ -420,23 +420,13 @@ int main()
                                 uint32_t wp = slot->write_pos;
                                 uint32_t rp = __atomic_load_n(&slot->read_pos,
                                                               __ATOMIC_ACQUIRE);
-                                /* If this write would wrap past unread data,
-                                 * advance read_pos to drop the oldest unread
-                                 * chunk instead of overwriting it in place.
-                                 * Pre-v2 behavior wrote anyway, leaving torn
-                                 * samples for the reader and turning slow
-                                 * producer/consumer rate drift into gradually
-                                 * worsening distortion. Now the ring acts as
-                                 * a "newest wins" buffer: one glitch when the
-                                 * ring first fills, then steady state. */
+                                /* Producer telemetry: count overwrites of
+                                 * un-read data. Diagnostic only; we still
+                                 * write (matches pre-v2 behavior). */
                                 uint32_t pending = wp - rp;
                                 if (pending + to_copy > LINK_AUDIO_IN_RING_SAMPLES) {
                                     __atomic_fetch_add(&slot->would_overrun_count,
                                                        1, __ATOMIC_RELAXED);
-                                    /* Drop oldest: leave room for to_copy. */
-                                    uint32_t new_rp = wp + to_copy - LINK_AUDIO_IN_RING_SAMPLES;
-                                    __atomic_store_n(&slot->read_pos, new_rp,
-                                                     __ATOMIC_RELEASE);
                                 }
                                 /* Use a volatile pointer + explicit memory fence.
                                  * The non-volatile ring[] array is otherwise
