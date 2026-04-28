@@ -152,6 +152,7 @@ static volatile float shadow_master_volume;  /* Defined later */
 static bool shadow_ui_enabled = true;      /* Shadow UI enabled by default */
 static bool display_mirror_enabled = false; /* Display mirror off by default */
 static bool set_pages_enabled = true;      /* Set pages enabled by default */
+static bool ext_midi_remap_feature_enabled = true; /* Cable-2 channel remap on by default */
 static bool skipback_require_volume = false; /* false=Shift+Capture, true=Shift+Vol+Capture */
 static int skipback_seconds_setting = SKIPBACK_DEFAULT_SECONDS; /* Skipback rolling buffer length */
 /* Shadow UI trigger mode: 0=long-press only, 1=Shift+Vol only, 2=both. Default=both. */
@@ -911,6 +912,19 @@ static void load_feature_config(void)
             while (*colon == ' ' || *colon == '\t') colon++;
             if (strncmp(colon, "true", 4) == 0) {
                 display_mirror_enabled = true;
+            }
+        }
+    }
+
+    /* Parse ext_midi_remap_enabled (defaults to true) */
+    const char *ext_midi_remap_key = strstr(config_buf, "\"ext_midi_remap_enabled\"");
+    if (ext_midi_remap_key) {
+        const char *colon = strchr(ext_midi_remap_key, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ' || *colon == '\t') colon++;
+            if (strncmp(colon, "false", 5) == 0) {
+                ext_midi_remap_feature_enabled = false;
             }
         }
     }
@@ -2308,6 +2322,7 @@ static uint8_t last_shadow_midi_out_ready = 0;
 static shadow_midi_dsp_t *shadow_midi_dsp_shm = NULL;  /* MIDI to DSP from shadow UI */
 static uint8_t last_shadow_midi_dsp_ready = 0;
 static shadow_midi_inject_t *shadow_midi_inject_shm = NULL;  /* MIDI inject into Move's MIDI_IN */
+static schwung_ext_midi_remap_t *ext_midi_remap_shm = NULL;  /* Cable-2 channel remap table */
 
 static uint32_t last_screenreader_sequence = 0;  /* Track last spoken message */
 static uint64_t last_speech_time_ms = 0;  /* Rate limiting for TTS */
@@ -2326,6 +2341,7 @@ static int shm_param_fd = -1;
 static int shm_midi_out_fd = -1;
 static int shm_midi_dsp_fd = -1;
 static int shm_midi_inject_fd = -1;
+static int shm_ext_midi_remap_fd = -1;
 static int shm_screenreader_fd = -1;
 static int shm_pub_audio_fd = -1;
 static int shm_overlay_fd = -1;
@@ -2775,6 +2791,27 @@ static void init_shadow_shm(void)
         }
     } else {
         printf("Shadow: Failed to create midi_inject shm\n");
+    }
+
+    /* Create/open cable-2 channel remap shared memory (active overtake module writes,
+     * shim reads on every SPI frame to rewrite cable-2 MIDI_IN channel byte). */
+    shm_ext_midi_remap_fd = shm_open(SHM_SHADOW_EXT_MIDI_REMAP, O_CREAT | O_RDWR, 0666);
+    if (shm_ext_midi_remap_fd >= 0) {
+        ftruncate(shm_ext_midi_remap_fd, sizeof(schwung_ext_midi_remap_t));
+        ext_midi_remap_shm = (schwung_ext_midi_remap_t *)mmap(NULL, sizeof(schwung_ext_midi_remap_t),
+                                                              PROT_READ | PROT_WRITE,
+                                                              MAP_SHARED, shm_ext_midi_remap_fd, 0);
+        if (ext_midi_remap_shm == MAP_FAILED) {
+            ext_midi_remap_shm = NULL;
+            printf("Shadow: Failed to mmap ext_midi_remap shm\n");
+        } else {
+            memset(ext_midi_remap_shm, 0, sizeof(schwung_ext_midi_remap_t));
+            ext_midi_remap_shm->version = EXT_MIDI_REMAP_VERSION;
+            ext_midi_remap_shm->enabled = 0;
+            memset((void *)ext_midi_remap_shm->remap, EXT_MIDI_REMAP_PASSTHROUGH, 16);
+        }
+    } else {
+        printf("Shadow: Failed to create ext_midi_remap shm\n");
     }
 
     /* Create/open screen reader shared memory (for accessibility: TTS and D-Bus announcements) */
@@ -5106,6 +5143,61 @@ pre_done:
     }
 }
 
+/* === Cable-2 (external USB) MIDI channel remap ===
+ *
+ * Active overtake modules can write a 16-entry channel remap table into
+ * /schwung-ext-midi-remap. The shim reads this table on every SPI frame
+ * (in post_transfer, after the ioctl populates hw MIDI_IN with the
+ * current frame's events, before the ioctl wrapper returns to Move) and
+ * rewrites the channel byte of cable-2 MIDI_IN events in-place. Both the
+ * hw mailbox and shadow buffer are mutated so Move firmware and shim
+ * pre-transfer readers (next frame) see consistent data.
+ *
+ * The remap is bypassed globally whenever any chain slot is configured
+ * forward=THRU (MPE passthrough), because remapping channels destroys
+ * per-channel expression data MPE relies on.
+ *
+ * Solves the cable-2 echo cascade documented in docs/MIDI_INJECTION.md
+ * by rewriting in-place rather than re-injecting from JS.
+ */
+static int any_thru_slot_active(void) {
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
+        if (shadow_chain_slots[i].forward_channel == SHADOW_FORWARD_THRU) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void shim_remap_cable2_channels(uint8_t *shadow) {
+    if (!ext_midi_remap_feature_enabled) return;  /* Feature flag kill switch */
+    if (!ext_midi_remap_shm || !ext_midi_remap_shm->enabled) return;
+    if (any_thru_slot_active()) return;  /* MPE escape hatch */
+    if (!hardware_mmap_addr) return;
+
+    /* Mutate both hw (so Move sees remapped channels on this frame) and
+     * shadow (so next frame's pre-transfer readers — cable-2 echo filter,
+     * shadow_forward_external_cc_to_out — see consistent data). */
+    uint8_t *targets[2] = { hardware_mmap_addr, shadow };
+    for (int t = 0; t < 2; t++) {
+        uint8_t *buf = targets[t];
+        if (!buf) continue;
+        buf += MIDI_IN_OFFSET;
+        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+            uint8_t header = buf[j];
+            if (header == 0) continue;            /* empty slot */
+            uint8_t cable = (header >> 4) & 0x0F;
+            if (cable != 2) continue;             /* only cable-2 (external USB) */
+            uint8_t status = buf[j + 1];
+            if ((status & 0xF0) == 0xF0) continue; /* system messages — channelless */
+            uint8_t in_ch = status & 0x0F;
+            uint8_t mapped = ext_midi_remap_shm->remap[in_ch];
+            if (mapped == EXT_MIDI_REMAP_PASSTHROUGH || mapped >= 16) continue;
+            buf[j + 1] = (status & 0xF0) | (mapped & 0x0F);
+        }
+    }
+}
+
 /* ============================================================================
  * SPI POST-TRANSFER CALLBACK
  * ============================================================================
@@ -5123,6 +5215,13 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
 
     /* Timing: reuse statics from pre-transfer (same translation unit) */
     /* spi_post_start is at file scope */
+
+    /* Cable-2 channel remap: rewrite incoming external MIDI channel bytes in
+     * both hw mailbox (so Move firmware sees remapped channels this frame)
+     * and shadow buffer (so next frame's pre-transfer readers stay
+     * consistent). Must run before any post-transfer logic that reads
+     * MIDI_IN. */
+    shim_remap_cable2_channels(shadow);
 
     /* XMOS SysEx logger — POST-transfer view of hw[MIDI_OUT] BEFORE the
      * hw→shadow memcpy below. Lets us see what XMOS left in the slots
@@ -5233,6 +5332,15 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             __sync_synchronize();
             shadow_midi_inject_shm->ready++;
             shadow_log("Overtake exit: injected shift-off, volume-touch-off, back-off, jog-click-off");
+        }
+        /* Forced reset of cable-2 channel remap on overtake exit. The active
+         * module owns the table during overtake; on exit, clear it so a
+         * stale table from a crashed module can't bleed into the next
+         * session or into Move's normal operation. */
+        if (prev_overtake_mode != 0 && overtake_mode == 0 && ext_midi_remap_shm) {
+            memset((void *)ext_midi_remap_shm->remap, EXT_MIDI_REMAP_PASSTHROUGH, 16);
+            ext_midi_remap_shm->enabled = 0;
+            __sync_synchronize();
         }
         /* Symmetric inject on overtake ENTRY (0→non-zero): if Shift was held when
          * overtake activated (e.g. Shift+long-press-Step13 → resume tool fires while

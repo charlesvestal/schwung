@@ -40,6 +40,7 @@ static shadow_param_t *shadow_param = NULL;
 static shadow_midi_out_t *shadow_midi_out = NULL;
 static shadow_midi_dsp_t *shadow_midi_dsp = NULL;
 static shadow_midi_inject_t *shadow_midi_inject = NULL;
+static schwung_ext_midi_remap_t *ext_midi_remap = NULL;
 static shadow_screenreader_t *shadow_screenreader = NULL;
 static shadow_overlay_state_t *shadow_overlay = NULL;
 
@@ -111,6 +112,13 @@ static int open_shadow_shm(void) {
         shadow_midi_inject = (shadow_midi_inject_t *)mmap(NULL, sizeof(shadow_midi_inject_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         close(fd);
         if (shadow_midi_inject == MAP_FAILED) shadow_midi_inject = NULL;
+    }
+
+    fd = shm_open(SHM_SHADOW_EXT_MIDI_REMAP, O_RDWR, 0666);
+    if (fd >= 0) {
+        ext_midi_remap = (schwung_ext_midi_remap_t *)mmap(NULL, sizeof(schwung_ext_midi_remap_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        close(fd);
+        if (ext_midi_remap == MAP_FAILED) ext_midi_remap = NULL;
     }
 
     fd = shm_open(SHM_SHADOW_SCREENREADER, O_RDWR, 0666);
@@ -815,6 +823,51 @@ static JSValue js_shadow_send_midi_to_dsp(JSContext *ctx, JSValueConst this_val,
     __sync_synchronize();
     shadow_midi_dsp->ready++;
 
+    return JS_TRUE;
+}
+
+/* host_ext_midi_remap_set(in_ch, out_ch) -> bool
+ * Set cable-2 channel remap entry. in_ch and out_ch are 0-indexed (0-15).
+ * out_ch >= 16 (or 0xFF) means passthrough for that input channel.
+ * Returns true on success, false if SHM unavailable or args invalid.
+ */
+static JSValue js_host_ext_midi_remap_set(JSContext *ctx, JSValueConst this_val,
+                                          int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!ext_midi_remap || argc < 2) return JS_FALSE;
+    int32_t in_ch = 0, out_ch = 0;
+    if (JS_ToInt32(ctx, &in_ch, argv[0]) < 0) return JS_FALSE;
+    if (JS_ToInt32(ctx, &out_ch, argv[1]) < 0) return JS_FALSE;
+    if (in_ch < 0 || in_ch > 15) return JS_FALSE;
+    uint8_t mapped = (out_ch < 0 || out_ch > 15) ? EXT_MIDI_REMAP_PASSTHROUGH : (uint8_t)out_ch;
+    ext_midi_remap->remap[in_ch] = mapped;
+    __sync_synchronize();
+    return JS_TRUE;
+}
+
+/* host_ext_midi_remap_clear() -> bool
+ * Clear all remap entries (full passthrough). Does not change enabled flag.
+ */
+static JSValue js_host_ext_midi_remap_clear(JSContext *ctx, JSValueConst this_val,
+                                            int argc, JSValueConst *argv) {
+    (void)ctx; (void)this_val; (void)argc; (void)argv;
+    if (!ext_midi_remap) return JS_FALSE;
+    memset((void *)ext_midi_remap->remap, EXT_MIDI_REMAP_PASSTHROUGH, 16);
+    __sync_synchronize();
+    return JS_TRUE;
+}
+
+/* host_ext_midi_remap_enable(on) -> bool
+ * Enable or disable the remap feature. Disabled = bypass entire codepath in shim.
+ */
+static JSValue js_host_ext_midi_remap_enable(JSContext *ctx, JSValueConst this_val,
+                                             int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!ext_midi_remap || argc < 1) return JS_FALSE;
+    int on = JS_ToBool(ctx, argv[0]);
+    if (on < 0) return JS_FALSE;
+    ext_midi_remap->enabled = on ? 1 : 0;
+    __sync_synchronize();
     return JS_TRUE;
 }
 
@@ -2974,6 +3027,9 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "move_midi_internal_send", JS_NewCFunction(ctx, js_move_midi_internal_send, "move_midi_internal_send", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_send_midi_to_dsp", JS_NewCFunction(ctx, js_shadow_send_midi_to_dsp, "shadow_send_midi_to_dsp", 1));
     JS_SetPropertyStr(ctx, global_obj, "move_midi_inject_to_move", JS_NewCFunction(ctx, js_move_midi_inject_to_move, "move_midi_inject_to_move", 1));
+    JS_SetPropertyStr(ctx, global_obj, "host_ext_midi_remap_set", JS_NewCFunction(ctx, js_host_ext_midi_remap_set, "host_ext_midi_remap_set", 2));
+    JS_SetPropertyStr(ctx, global_obj, "host_ext_midi_remap_clear", JS_NewCFunction(ctx, js_host_ext_midi_remap_clear, "host_ext_midi_remap_clear", 0));
+    JS_SetPropertyStr(ctx, global_obj, "host_ext_midi_remap_enable", JS_NewCFunction(ctx, js_host_ext_midi_remap_enable, "host_ext_midi_remap_enable", 1));
 
     /* Register logging function for JS modules */
     JS_SetPropertyStr(ctx, global_obj, "shadow_log", JS_NewCFunction(ctx, js_shadow_log, "shadow_log", 1));
