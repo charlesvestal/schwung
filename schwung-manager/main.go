@@ -2993,6 +2993,10 @@ func main() {
 	// didn't clean up (e.g., the old manager was killed mid-upgrade).
 	app.setUpgradeStatus("")
 
+	// Audio capture watchdog: disarm a stale flag from before the manager
+	// restart, or reschedule auto-disarm for the remaining time.
+	app.startupAudioCaptureWatchdog()
+
 	mux := http.NewServeMux()
 
 	// Static files.
@@ -3049,6 +3053,12 @@ func main() {
 	mux.HandleFunc("POST /system/upgrade", app.handleSystemUpgrade)
 	mux.HandleFunc("GET /system/upgrade-status", app.handleUpgradeStatus)
 	mux.HandleFunc("GET /system/logs", app.handleSystemLogs)
+	// Audio behavior diagnostic capture (see audio_capture.go).
+	mux.HandleFunc("POST /system/audio-capture/arm", app.handleAudioCaptureArm)
+	mux.HandleFunc("POST /system/audio-capture/stop", app.handleAudioCaptureStop)
+	mux.HandleFunc("GET /system/audio-capture/status", app.handleAudioCaptureStatus)
+	mux.HandleFunc("GET /system/audio-capture/download", app.handleAudioCaptureDownload)
+	mux.HandleFunc("POST /system/audio-capture/delete", app.handleAudioCaptureDelete)
 
 	// Help.
 	mux.HandleFunc("GET /help", app.handleHelp)
