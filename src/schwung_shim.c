@@ -165,6 +165,7 @@ static void *skipback_resize_thread(void *arg) {
     return NULL;
 }
 static int shadow_speaker_active = 1;      /* 1=built-in speaker, 0=headphones/line-out (from CC 115) */
+static int shadow_speaker_active_known = 0; /* 1 once any CC 115 jack-detect has been observed */
 /* Long-press Track/Menu/Step2 shortcuts — always enabled */
 
 /* ----- RBJ biquad (direct form I transposed) for speaker-EQ compensation -----
@@ -2169,7 +2170,16 @@ skip_la_rebuild:
      * stage inside the emulation will generate slightly different harmonic
      * content at non-unity mv than stock Move does. Audibility at <-6 dB is
      * negligible; revisit if measurements show a mismatch at loud volumes. */
-    if (rebuild_from_la && shadow_speaker_active && speaker_eq_initialized) {
+    /* Speaker EQ requires us to know which output is active. We boot with
+     * shadow_speaker_active=1 as a guess, but defer applying EQ until we've
+     * actually observed a CC 115 jack-detect event from XMOS. Otherwise an
+     * already-plugged HP at boot (or after an in-flight install.sh restart
+     * where XMOS doesn't re-broadcast jack state) gets the speaker EQ wrongly
+     * applied — phasey/hollow audio that only resolves on jack replug.
+     * XMOS broadcasts CC 115 within ~180ms of shim init at every boot, so the
+     * gate clears almost immediately on a real session. */
+    if (rebuild_from_la && shadow_speaker_active && shadow_speaker_active_known
+        && speaker_eq_initialized) {
         speaker_eq_process(mailbox_audio, FRAMES_PER_BLOCK);
     }
 
@@ -4199,6 +4209,15 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
         if (xmos_log_fd >= 0 && xmos_log_bytes < XMOS_LOG_MAX_BYTES) {
             xmos_frame++;
             char line[128];
+            /* Mark the first frame after arming so boot captures are easy to find. */
+            static int xmos_log_first_frame_written = 0;
+            if (!xmos_log_first_frame_written) {
+                int n = snprintf(line, sizeof(line),
+                    "[f%u] BOOT first armed frame (xmos_frame counter resets per shim load)\n",
+                    xmos_frame);
+                if (write(xmos_log_fd, line, n) > 0) xmos_log_bytes += (uint64_t)n;
+                xmos_log_first_frame_written = 1;
+            }
             const uint8_t *midi_out = shadow + MIDI_OUT_OFFSET;
             int any = 0;
             for (int i = 0; i < 80; i += 4) {
@@ -4216,11 +4235,13 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
                 int n = snprintf(line, sizeof(line), "[f%u] PRE  end\n", xmos_frame);
                 if (write(xmos_log_fd, line, n) > 0) xmos_log_bytes += (uint64_t)n;
             }
-            /* Scan MIDI_IN for cc=114 / cc=115 jack-detect events from XMOS.
-             * MIDI_IN events are 8 bytes (4 USB-MIDI + 4 timestamp) at offset 2048. */
+            /* Scan MIDI_IN for jack-detect CCs (114/115) AND incoming SysEx
+             * framing (cin 0x04..0x07) from XMOS. MIDI_IN events are 8 bytes
+             * (4 USB-MIDI + 4 timestamp) at offset 2048. */
             unsigned char *hw_buf2 = schwung_spi_get_hw(g_spi_handle);
             if (hw_buf2) {
                 const uint8_t *midi_in = hw_buf2 + 2048;
+                int in_any = 0;
                 for (int i = 0; i < 248; i += 8) {
                     uint8_t cin = midi_in[i] & 0x0F;
                     uint8_t status = midi_in[i+1];
@@ -4232,6 +4253,18 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
                             d1, midi_in[i+3]);
                         if (write(xmos_log_fd, line, n) > 0) xmos_log_bytes += (uint64_t)n;
                     }
+                    if (cin >= 0x04 && cin <= 0x07) {
+                        int n = snprintf(line, sizeof(line),
+                            "[f%u] INsys slot=%2d cable=%d cin=0x%x : %02x %02x %02x %02x\n",
+                            xmos_frame, i, (midi_in[i] >> 4) & 0xF, cin,
+                            midi_in[i], midi_in[i+1], midi_in[i+2], midi_in[i+3]);
+                        if (write(xmos_log_fd, line, n) > 0) xmos_log_bytes += (uint64_t)n;
+                        in_any = 1;
+                    }
+                }
+                if (in_any) {
+                    int n = snprintf(line, sizeof(line), "[f%u] INsys end\n", xmos_frame);
+                    if (write(xmos_log_fd, line, n) > 0) xmos_log_bytes += (uint64_t)n;
                 }
             }
         }
@@ -5665,6 +5698,37 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
 
     /* Skip post-ioctl processing in baseline mode */
     if (spi_baseline_mode) goto post_timing;
+
+    /* === EARLY (UNGATED) CC 115 / CC 114 JACK-DETECT ===
+     * The full handler below is gated on shadow_inprocess_ready, which is
+     * set ~hundreds of ms into boot after shadow chain init runs. XMOS
+     * broadcasts CC 115 within ~180ms of shim init at every boot, so the
+     * gated handler usually misses the only CC 115 we get. That left
+     * shadow_speaker_active stuck at its default of 1, applying speaker EQ
+     * to headphone output (the "hollow / phasey" bug). Detect CC 115 here,
+     * before any gating, so we have correct jack state from frame 1.
+     * MIDI_IN events are 8 bytes (4 USB-MIDI + 4 timestamp). */
+    if (hardware_mmap_addr) {
+        const uint8_t *src_early = hardware_mmap_addr + MIDI_IN_OFFSET;
+        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
+            uint8_t cin   = src_early[j] & 0x0F;
+            uint8_t cable = (src_early[j] >> 4) & 0x0F;
+            if (cable != 0x00) continue;
+            if (cin != 0x0B) continue;
+            uint8_t status = src_early[j + 1];
+            uint8_t d1     = src_early[j + 2];
+            uint8_t d2     = src_early[j + 3];
+            if ((status & 0xF0) != 0xB0) continue;
+            if (d1 != CC_LINE_OUT_DETECT) continue;
+            int new_speaker = (d2 == 0) ? 1 : 0;
+            shadow_speaker_active_known = 1;
+            if (new_speaker != shadow_speaker_active) {
+                shadow_speaker_active = new_speaker;
+                if (shadow_control) shadow_control->speaker_active = (uint8_t)new_speaker;
+                memset(speaker_eq_state, 0, sizeof(speaker_eq_state));
+            }
+        }
+    }
 
     /* === POST-IOCTL: TRACK BUTTON AND VOLUME KNOB DETECTION ===
      * Scan for track button CCs (40-43) for D-Bus volume sync,
