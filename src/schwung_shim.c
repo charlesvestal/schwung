@@ -4005,6 +4005,20 @@ static uint64_t spi_fwd_ext_cc_sum = 0, spi_fwd_ext_cc_max = 0;
 static uint64_t spi_direct_midi_sum = 0, spi_direct_midi_max = 0;
 static int spi_granular_count = 0;
 
+/* XMOS jack-detect / SysEx logger — dormant unless flag file exists.
+ * Flag: /data/UserData/schwung/log_xmos_sysex_on
+ * Output: /data/UserData/schwung/xmos_sysex.txt
+ * Used by scripts/collect-diagnostics.sh and the schwung-manager web UI to
+ * capture host↔XMOS MIDI traffic during the "hollow / phasey audio" bug
+ * investigation. Zero overhead when the flag file is absent.
+ * State shared between pre/post transfer callbacks.
+ * Hard size cap (XMOS_LOG_MAX_BYTES) protects against runaway log growth
+ * if a user leaves the flag armed indefinitely. */
+#define XMOS_LOG_MAX_BYTES (8 * 1024 * 1024)  /* 8 MB safety cap */
+static int xmos_log_fd = -1;
+static uint32_t xmos_frame = 0;
+static uint64_t xmos_log_bytes = 0;
+
 #define TIME_SECTION_START() clock_gettime(CLOCK_MONOTONIC, &spi_section_start)
 #define TIME_SECTION_END(sum_var, max_var) do { \
     clock_gettime(CLOCK_MONOTONIC, &spi_section_end); \
@@ -4122,6 +4136,67 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
 
             inject_cooldown = 44;
             shadow_log("SPI SysEx inject: audio source change sent");
+        }
+    }
+
+    /* XMOS SysEx + jack-detect logger — dormant unless flag file exists.
+     * Captures cin 0x04..0x07 (SysEx framing) packets in MIDI_OUT and
+     * cc=114/115 (line-in / line-out detect) events in MIDI_IN.
+     * PRE-transfer log point: this block. POST-transfer (hw view) log
+     * point: just before the hw→shadow memcpy in shim_post_transfer. */
+    {
+        static int xmos_log_checked = 0;
+        if (xmos_log_checked++ % 44 == 0) {  /* check every ~1s */
+            int want = (access("/data/UserData/schwung/log_xmos_sysex_on", F_OK) == 0);
+            if (want && xmos_log_fd < 0) {
+                xmos_log_fd = open("/data/UserData/schwung/xmos_sysex.txt",
+                                   O_WRONLY | O_CREAT | O_APPEND, 0644);
+                xmos_log_bytes = 0;
+            } else if (!want && xmos_log_fd >= 0) {
+                close(xmos_log_fd);
+                xmos_log_fd = -1;
+            }
+        }
+        /* Hard size cap: stop writing once the file exceeds XMOS_LOG_MAX_BYTES.
+         * Don't close the fd — the next flag-check tick will close it cleanly. */
+        if (xmos_log_fd >= 0 && xmos_log_bytes < XMOS_LOG_MAX_BYTES) {
+            xmos_frame++;
+            char line[128];
+            const uint8_t *midi_out = shadow + MIDI_OUT_OFFSET;
+            int any = 0;
+            for (int i = 0; i < 80; i += 4) {
+                uint8_t cin = midi_out[i] & 0x0F;
+                if (cin >= 0x04 && cin <= 0x07) {
+                    int n = snprintf(line, sizeof(line),
+                        "[f%u] PRE  slot=%2d cable=%d cin=0x%x : %02x %02x %02x %02x\n",
+                        xmos_frame, i, (midi_out[i] >> 4) & 0xF, cin,
+                        midi_out[i], midi_out[i+1], midi_out[i+2], midi_out[i+3]);
+                    if (write(xmos_log_fd, line, n) > 0) xmos_log_bytes += (uint64_t)n;
+                    any = 1;
+                }
+            }
+            if (any) {
+                int n = snprintf(line, sizeof(line), "[f%u] PRE  end\n", xmos_frame);
+                if (write(xmos_log_fd, line, n) > 0) xmos_log_bytes += (uint64_t)n;
+            }
+            /* Scan MIDI_IN for cc=114 / cc=115 jack-detect events from XMOS.
+             * MIDI_IN events are 8 bytes (4 USB-MIDI + 4 timestamp) at offset 2048. */
+            unsigned char *hw_buf2 = schwung_spi_get_hw(g_spi_handle);
+            if (hw_buf2) {
+                const uint8_t *midi_in = hw_buf2 + 2048;
+                for (int i = 0; i < 248; i += 8) {
+                    uint8_t cin = midi_in[i] & 0x0F;
+                    uint8_t status = midi_in[i+1];
+                    uint8_t d1 = midi_in[i+2];
+                    if (cin == 0x0B && (status & 0xF0) == 0xB0 && (d1 == 114 || d1 == 115)) {
+                        int n = snprintf(line, sizeof(line),
+                            "[f%u] IN   slot=%2d cable=%d CC %d val=%d (jack-detect)\n",
+                            xmos_frame, i, (midi_in[i] >> 4) & 0xF,
+                            d1, midi_in[i+3]);
+                        if (write(xmos_log_fd, line, n) > 0) xmos_log_bytes += (uint64_t)n;
+                    }
+                }
+            }
         }
     }
 
@@ -5016,6 +5091,32 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
 
     /* Timing: reuse statics from pre-transfer (same translation unit) */
     /* spi_post_start is at file scope */
+
+    /* XMOS SysEx logger — POST-transfer view of hw[MIDI_OUT] BEFORE the
+     * hw→shadow memcpy below. Lets us see what XMOS left in the slots
+     * (does it clear after consuming, or does data persist?). Pre/post
+     * comparison reveals slot stomping or stale replay. Dormant unless
+     * /data/UserData/schwung/log_xmos_sysex_on exists; honors the same
+     * size cap as the pre-transfer block. */
+    if (xmos_log_fd >= 0 && xmos_log_bytes < XMOS_LOG_MAX_BYTES) {
+        int any = 0;
+        char line[128];
+        for (int i = 0; i < 80; i += 4) {
+            uint8_t cin = hw[i] & 0x0F;
+            if (cin >= 0x04 && cin <= 0x07) {
+                int n = snprintf(line, sizeof(line),
+                    "[f%u] POSThw slot=%2d cable=%d cin=0x%x : %02x %02x %02x %02x\n",
+                    xmos_frame, i, (hw[i] >> 4) & 0xF, cin,
+                    hw[i], hw[i+1], hw[i+2], hw[i+3]);
+                if (write(xmos_log_fd, line, n) > 0) xmos_log_bytes += (uint64_t)n;
+                any = 1;
+            }
+        }
+        if (any) {
+            int n = snprintf(line, sizeof(line), "[f%u] POSThw end\n", xmos_frame);
+            if (write(xmos_log_fd, line, n) > 0) xmos_log_bytes += (uint64_t)n;
+        }
+    }
 
     /* Sync output regions from hardware→shadow.
      * The library only copies the input region (SCHWUNG_OFF_IN_BASE+).
