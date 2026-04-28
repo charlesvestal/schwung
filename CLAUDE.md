@@ -630,6 +630,27 @@ The shim filters MIDI by USB cable number in the hardware MIDI buffers:
 
 **Important:** If Move tracks are configured to listen and output on the same MIDI channel, external MIDI may be echoed back. Configure Move tracks to use different channels than your external device to avoid interference.
 
+### Cable-2 Channel Remap (Overtake Modules)
+
+Overtake modules can rewrite the MIDI channel of incoming external (cable-2) MIDI before Move's firmware processes it. This solves the "live external MIDI ↔ Move native track" routing problem without re-injecting from JS (which causes the cable-2 echo cascade documented in `docs/MIDI_INJECTION.md`).
+
+**JS API** (available inside `shadow_ui.js` and overtake module contexts):
+
+```javascript
+host_ext_midi_remap_set(in_ch, out_ch)  // 0-15. out_ch >= 16 or < 0 = passthrough
+host_ext_midi_remap_clear()             // reset all 16 entries to passthrough
+host_ext_midi_remap_enable(on)          // global enable/disable
+```
+
+**Behavior:**
+- The shim reads the remap table on every SPI frame (in post-transfer, before the ioctl wrapper returns to Move) and rewrites the channel byte of cable-2 MIDI_IN events in-place. Both the hw mailbox and shadow buffer are mutated, so Move firmware and shim pre-transfer readers see consistent data.
+- System messages (status `0xF*`) are skipped (channelless).
+- The remap is **bypassed globally** whenever any chain slot is configured forward=THRU (MPE passthrough), because remapping channels destroys MPE per-channel expression.
+- The shim **forces a reset** to all-passthrough + `enabled=0` on overtake exit. JS modules don't have to clean up explicitly; even a crashed module won't leak a stale table into the next session.
+- Gated globally by the `ext_midi_remap_enabled` flag in `features.json` (default `true`). Setting this to `false` kills the entire codepath.
+
+**SHM contract:** `/schwung-ext-midi-remap`, 64 bytes, struct `schwung_ext_midi_remap_t` in `src/host/shadow_constants.h`. Version 1 = current.
+
 ### Master FX Chain
 
 Shadow mode includes a 4-slot Master FX chain that processes mixed output from all shadow slots. Access via Shift+Vol+Menu.
