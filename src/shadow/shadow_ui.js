@@ -478,6 +478,11 @@ let overtakePassthroughCCs = [];    // CCs declared in capabilities.button_passt
  * (by re-selecting it in the overtake menu) or fully exited. */
 let suspendedOvertakes = {};
 
+/* Most-recently-suspended tool id. Shift+Vol+Step13 double-tap resumes it. */
+let lastSuspendedToolId = "";
+let lastToolsShortcutMs = 0;
+const TOOLS_DOUBLE_TAP_MS = 500;
+
 /* Analytics prompt state */
 const ANALYTICS_PROMPTED_PATH = "/data/UserData/schwung/analytics-prompted";
 let analyticsPromptSelection = 0;  // 0 = Yes (default), 1 = No
@@ -2716,6 +2721,7 @@ function suspendOvertakeMode() {
             ledNotes: ledNotesSnapshot,
             ledCCs: ledCCsSnapshot
         };
+        lastSuspendedToolId = overtakeModuleId;
 
         /* Clear active-module state so a different module can be loaded next. */
         overtakeModuleLoaded = false;
@@ -2803,6 +2809,7 @@ function resumeOvertakeModule(moduleId) {
     if (parked.ledCCs) Object.assign(ledQueueCCs, parked.ledCCs);
 
     delete suspendedOvertakes[moduleId];
+    if (lastSuspendedToolId === moduleId) lastSuspendedToolId = "";
 
     if (typeof shadow_set_suspend_overtake === "function") {
         shadow_set_suspend_overtake(0);
@@ -10739,7 +10746,8 @@ function handleJog(delta) {
             }
             toolsMenuIndex = idx;
             if (toolModules.length > 0 && toolModules[toolsMenuIndex]?.type !== 'divider') {
-                announce(toolModules[toolsMenuIndex].name);
+                const item = toolModules[toolsMenuIndex];
+                announce(item.suspended ? (item.name + ", suspended") : item.name);
             }
             break;
         }
@@ -13198,9 +13206,15 @@ function enterToolsMenu() {
         if (!Array.isArray(overtakes) || overtakes.length === 0) return;
         const tools = Array.isArray(toolModules) ? toolModules : [];
         const merged = [];
-        for (const t of tools) merged.push(Object.assign({}, t, { kind: 'tool' }));
+        for (const t of tools) {
+            const isSuspended = !!(t.id && suspendedOvertakes[t.id]);
+            merged.push(Object.assign({}, t, { kind: 'tool', suspended: isSuspended }));
+        }
         if (tools.length > 0) merged.push({ type: 'divider', label: 'Overtake Modules' });
-        for (const o of overtakes) merged.push(Object.assign({}, o, { kind: 'overtake' }));
+        for (const o of overtakes) {
+            const isSuspended = !!(o.id && suspendedOvertakes[o.id]);
+            merged.push(Object.assign({}, o, { kind: 'overtake', suspended: isSuspended }));
+        }
         toolModules = merged;
         if (toolsMenuIndex == null || toolsMenuIndex < 0 || toolsMenuIndex >= merged.length
             || (merged[toolsMenuIndex] && merged[toolsMenuIndex].type === 'divider')) {
@@ -13209,6 +13223,29 @@ function enterToolsMenu() {
     } catch (e) {
         debugLog("enterToolsMenu overtake merge failed: " + e);
     }
+}
+
+/* Tools shortcut → resume the most-recently-suspended tool when triggered
+ * via double-tap of Shift+Vol+Step13 OR Shift+long-press-Step13 (shim sets the
+ * resume_last_tool hint for the latter). Returns true if the resume fired,
+ * false if the caller should fall through to the normal Tools-menu open. */
+function tryResumeSuspendedTool() {
+    const now = Date.now();
+    const isDoubleTap = (now - lastToolsShortcutMs) < TOOLS_DOUBLE_TAP_MS;
+    lastToolsShortcutMs = now;
+    let shimHint = false;
+    try {
+        if (typeof shadow_consume_resume_last_tool === "function") {
+            shimHint = shadow_consume_resume_last_tool() !== 0;
+        }
+    } catch (e) { /* ignore */ }
+    if (!isDoubleTap && !shimHint) return false;
+    if (!lastSuspendedToolId || !suspendedOvertakes[lastSuspendedToolId]) {
+        debugLog("tryResumeSuspendedTool: nothing suspended (lastId=" + lastSuspendedToolId + ")");
+        return false;
+    }
+    debugLog("Tools shortcut " + (shimHint ? "long-press" : "double-tap") + " → resuming " + lastSuspendedToolId);
+    return resumeOvertakeModule(lastSuspendedToolId);
 }
 function drawToolsMenu() { _drawToolsMenu(); }
 function drawToolFileBrowser() { _drawToolFileBrowser(); }
@@ -13806,7 +13843,9 @@ globalThis.tick = function() {
             if (flags & SHADOW_UI_FLAG_JUMP_TO_TOOLS) {
                 debugLog("TOOLS flag detected, entering Tools menu");
                 try {
-                    enterToolsMenu();
+                    if (!tryResumeSuspendedTool()) {
+                        enterToolsMenu();
+                    }
                 } catch (e) {
                     debugLog("TOOLS flag: enterToolsMenu threw: " + e + " stack=" + (e && e.stack ? e.stack : "none"));
                 }
