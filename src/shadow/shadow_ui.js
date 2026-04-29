@@ -310,6 +310,12 @@ let slotDirtyCache = [false, false, false, false];
  * Used to relax the "empty state → bail" guard when the user swaps to a module
  * that lacks state get/set — a module change makes the prior file stale anyway. */
 let lastSavedSlotSignature = ["", "", "", ""];
+/* Set when the user explicitly empties every component in a slot via the
+ * picker. Lets autosave bypass the "shim reports empty but slot has a
+ * preset name" guard (which protects against transient boot-load failures)
+ * for genuine user removals. Reset when the user picks any module, when a
+ * set is loaded, or after the empty marker has been written. */
+let slotUserCleared = [false, false, false, false];
 
 /* Splash screen state */
 let splashActive = true;
@@ -2840,6 +2846,30 @@ function exitToolOvertake() {
         shadow_set_param(0, "overtake_dsp:unload", "1");
     }
 
+    /* Evict any parked suspend_keeps_js modules. Their DSP was already
+     * unloaded when *this* foreground module loaded its own (the shim
+     * has only one overtake_dsp slot — see schwung_shim.c:1284-1296),
+     * so they're talking to nothing. Worse, we're about to delete the
+     * host_module_set_param/get_param shims below; if we leave parked
+     * entries in place the parked-tick loop (see ~line 13745) keeps
+     * calling their tick() into deleted globals — silent set-failures
+     * and 100% null get-reads, indefinitely. Fully unload them now. */
+    var parkedIds = Object.keys(suspendedOvertakes);
+    for (var pi = 0; pi < parkedIds.length; pi++) {
+        var pid = parkedIds[pi];
+        var parked = suspendedOvertakes[pid];
+        if (parked && parked.callbacks) {
+            invokeModuleOnUnload(parked.callbacks, pid);
+        }
+        delete suspendedOvertakes[pid];
+    }
+    if (parkedIds.length > 0) {
+        debugLog("exitToolOvertake: evicted " + parkedIds.length + " parked module(s): " + parkedIds.join(","));
+        if (lastSuspendedToolId && parkedIds.indexOf(lastSuspendedToolId) >= 0) {
+            lastSuspendedToolId = "";
+        }
+    }
+
     /* Clean up shims */
     delete globalThis.host_module_set_param;
     delete globalThis.host_module_set_param_blocking;
@@ -3953,19 +3983,19 @@ function autosaveAllSlots() {
         const hasFx2 = cfg && cfg.fx2 && cfg.fx2.module;
         const hasMidiFx = cfg && cfg.midiFx && cfg.midiFx.module;
         if (!hasSynth && !hasFx1 && !hasFx2 && !hasMidiFx) {
-            /* Cross-check before clobbering: if the user has a preset
-             * assigned to this slot (slots[i].name non-empty) but the shim
-             * is currently reporting "no modules", that's a shim-side
-             * glitch (e.g. boot-time patch load failure for slot 3 we
-             * diagnosed 2026-04-18) — NOT a real "user removed the chain"
-             * action. Preserve the existing slot_N.json so the next boot
-             * has a chance to reload it. Without this guard, one transient
-             * load failure permanently erases the user's preset assignment.
+            /* Cross-check before clobbering: if the slot has a preset name
+             * but the shim is reporting "no modules" AND the user did not
+             * explicitly clear the slot via the picker, it's a transient
+             * shim-side glitch (e.g. boot-time patch load failure
+             * diagnosed 2026-04-18). Preserve the existing slot_N.json so
+             * the next boot has a chance to reload it.
              *
-             * Only write the empty marker when both shim and shadow_ui's
-             * in-memory slot name agree the slot is empty. */
+             * slotUserCleared[i] = true means the user picked None for
+             * every component in the slot, so the empty state is real and
+             * must be persisted (otherwise removals never save — diagnosed
+             * 2026-04-29). */
             const slotName = (slots[i] && slots[i].name) || "";
-            if (slotName !== "") {
+            if (!slotUserCleared[i] && slotName !== "") {
                 debugLog("autosave: slot " + i + " shim reports empty but " +
                          "preset name=\"" + slotName + "\" — preserving " +
                          "existing slot_" + i + ".json (likely shim glitch)");
@@ -3978,6 +4008,7 @@ function autosaveAllSlots() {
                 "{}\n"
             );
             slotDirtyCache[i] = false;
+            slotUserCleared[i] = false;
             continue;
         }
 
@@ -6669,6 +6700,12 @@ function applyComponentSelection() {
         cfg[comp.key] = null;
     }
     chainConfigs[selectedSlot] = cfg;
+
+    /* Track explicit user-removal so autosave can bypass the boot-glitch
+     * guard. Set when the slot is now fully empty; reset on any non-empty
+     * pick (the user is rebuilding the slot). */
+    slotUserCleared[selectedSlot] =
+        !cfg.synth && !cfg.fx1 && !cfg.fx2 && !cfg.midiFx;
 
     /* Apply to DSP - map component key to param key */
     const moduleId = selected && selected.id ? selected.id : "";
@@ -13844,6 +13881,25 @@ globalThis.tick = function() {
                 debugLog("TOOLS flag detected, entering Tools menu");
                 try {
                     if (!tryResumeSuspendedTool()) {
+                        /* Park (or fully exit) the active overtake before
+                         * the view flips to TOOLS — otherwise its DSP and
+                         * JS callbacks orphan: not in suspendedOvertakes
+                         * (no * marker), still loaded in slot 0. Re-selecting
+                         * the same module from the menu then takes the
+                         * fresh-load path and the shim destroys+recreates
+                         * the DSP, wiping all sequencer state. */
+                        if (overtakeModuleLoaded && overtakeModuleCallbacks) {
+                            if (overtakeSuspendKeepsJs) {
+                                debugLog("TOOLS flag: suspending active overtake before menu");
+                                suspendOvertakeMode();
+                            } else if (toolOvertakeActive) {
+                                debugLog("TOOLS flag: exiting active tool before menu");
+                                exitToolOvertake();
+                            } else {
+                                debugLog("TOOLS flag: exiting active overtake before menu");
+                                exitOvertakeMode();
+                            }
+                        }
                         enterToolsMenu();
                     }
                 } catch (e) {
@@ -14039,6 +14095,10 @@ globalThis.tick = function() {
             for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
                 lastSlotModuleSignatures[i] = "";  /* force refresh */
                 refreshSlotModuleSignature(i);
+                /* Drop any pending user-cleared flag from the outgoing set;
+                 * the new set's emptiness/non-emptiness is determined by its
+                 * own files, not by what the user did before the switch. */
+                slotUserCleared[i] = false;
             }
 
             /* Suppress autosave briefly so async DSP settling doesn't
