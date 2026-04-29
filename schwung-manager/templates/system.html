@@ -62,5 +62,96 @@
         </div>
         <pre id="log-output" class="log-display" aria-label="Debug log output" aria-busy="false"></pre>
     </section>
+
+    <section class="info-card" id="audio-capture-card">
+        <h2>Capture audio behavior logs</h2>
+        <p>If you're hitting the rare "hollow / phasey audio" bug (fixed by unplugging and replugging headphones), capture logs so we can debug it.</p>
+        <ol class="audio-capture-steps">
+            <li>Click <strong>Arm capture</strong> below.</li>
+            <li>Reboot the Move and reproduce the bug (play stereo content on headphones).</li>
+            <li>Come back to this page and click <strong>Stop &amp; download</strong>.</li>
+            <li>Send the downloaded file to Charles.</li>
+        </ol>
+        <p class="audio-capture-note">Captures persist across reboots. The flag auto-disarms after 5 minutes if you forget. Log content: MIDI traffic and system info — no audio, no project data.</p>
+        <div id="audio-capture-state" class="audio-capture-actions" data-state="loading">
+            <button id="audio-capture-arm" type="button" class="btn btn-secondary" hidden>Arm capture</button>
+            <button id="audio-capture-stop" type="button" class="btn btn-primary" hidden>Stop &amp; download</button>
+            <a id="audio-capture-download" class="btn btn-secondary" href="/system/audio-capture/download" hidden>Download last bundle</a>
+            <button id="audio-capture-delete" type="button" class="btn btn-secondary" hidden>Delete bundles</button>
+            <span id="audio-capture-status-text" class="audio-capture-status" aria-live="polite"></span>
+        </div>
+    </section>
 </div>
+
+<script>
+(function () {
+    var armBtn = document.getElementById("audio-capture-arm");
+    var stopBtn = document.getElementById("audio-capture-stop");
+    var dlLink = document.getElementById("audio-capture-download");
+    var delBtn = document.getElementById("audio-capture-delete");
+    var statusText = document.getElementById("audio-capture-status-text");
+    var card = document.getElementById("audio-capture-state");
+    if (!armBtn || !stopBtn) return;
+
+    function csrfToken() {
+        var m = document.cookie.match(/csrf_token=([^;]+)/);
+        return m ? decodeURIComponent(m[1]) : "";
+    }
+
+    function refresh() {
+        fetch("/system/audio-capture/status", { cache: "no-store" })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                card.dataset.state = data.state;
+                if (data.state === "armed") {
+                    armBtn.hidden = true;
+                    stopBtn.hidden = false;
+                    var mins = data.seconds_until_auto_disarm != null
+                        ? Math.max(0, Math.ceil(data.seconds_until_auto_disarm / 60))
+                        : null;
+                    statusText.textContent = "Capture armed — reboot the Move and reproduce the bug" +
+                        (mins != null ? " (auto-disarm in ~" + mins + " min)" : "") + ".";
+                } else {
+                    armBtn.hidden = false;
+                    stopBtn.hidden = true;
+                    statusText.textContent = data.bundle_name
+                        ? "Last bundle: " + data.bundle_name
+                        : "";
+                }
+                dlLink.hidden = !data.bundle_name;
+                if (delBtn) delBtn.hidden = !data.bundle_name;
+            })
+            .catch(function () { statusText.textContent = "Status unavailable."; });
+    }
+
+    function postAction(path, busyText) {
+        statusText.textContent = busyText;
+        armBtn.disabled = true;
+        stopBtn.disabled = true;
+        fetch(path, {
+            method: "POST",
+            headers: { "X-CSRF-Token": csrfToken() }
+        })
+            .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+            .catch(function (err) { statusText.textContent = "Error: " + err.message; })
+            .finally(function () {
+                armBtn.disabled = false;
+                stopBtn.disabled = false;
+                refresh();
+            });
+    }
+
+    armBtn.addEventListener("click", function () { postAction("/system/audio-capture/arm", "Arming…"); });
+    stopBtn.addEventListener("click", function () { postAction("/system/audio-capture/stop", "Building bundle…"); });
+    if (delBtn) {
+        delBtn.addEventListener("click", function () {
+            if (!confirm("Delete all capture bundles on the device?")) return;
+            postAction("/system/audio-capture/delete", "Deleting bundles…");
+        });
+    }
+
+    refresh();
+    setInterval(refresh, 5000);
+})();
+</script>
 {{end}}
