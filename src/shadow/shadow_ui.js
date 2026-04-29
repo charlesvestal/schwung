@@ -117,14 +117,6 @@ import {
 } from '/data/UserData/schwung/shared/sampler_overlay.mjs';
 
 import {
-    confirmLineInput,
-    maybeConfirmForModule,
-    feedbackGateActive,
-    feedbackGateDraw,
-    feedbackGateInput,
-} from '/data/UserData/schwung/shared/feedback_gate.mjs';
-
-import {
     buildFilepathBrowserState,
     refreshFilepathBrowser,
     moveFilepathBrowserSelection,
@@ -1087,9 +1079,6 @@ let helpReturnView = null;    /* View to return to from help viewer */
 
 /* patchDetail, editingComponent, componentParams, selectedParam,
  * editingValue moved to shadow_ui_patches.mjs */
-
-/* Feedback gate: previous sampler source for transition detection */
-let lastSamplerSource = -1; /* -1 = unknown; 0 = Resample; 1 = Move Input */
 
 /* Chain editing state */
 let chainConfigs = [];         // In-memory chain configs per slot
@@ -14381,26 +14370,6 @@ globalThis.tick = function() {
         }
     }
 
-    /* Feedback gate: detect sampler source flip to Move Input.
-     * The C-side toggle (jog click on the sampler source row) flips
-     * sampler_source unconditionally; if speakers are on and no line-in
-     * cable is plugged, we surface a confirm modal and revert on No. */
-    if (overlayState) {
-        const curSource = overlayState.samplerSource;
-        if (typeof curSource === 'number' && curSource !== lastSamplerSource) {
-            if (lastSamplerSource !== -1 && curSource === 1) {
-                /* User just flipped to Move Input. Gate. */
-                confirmLineInput('Move Input').then((ok) => {
-                    if (!ok && typeof host_sampler_set_source === 'function') {
-                        /* host_sampler_set_source: 0 = Resample, 1 = Move Input */
-                        host_sampler_set_source(0);
-                    }
-                });
-            }
-            lastSamplerSource = curSource;
-        }
-    }
-
     redrawCounter++;
     /* Force redraw every frame when overlay is active (for VU meter + flash) */
     const overlayActive = overlayState && overlayState.type !== OVERLAY_NONE;
@@ -14700,11 +14669,6 @@ globalThis.tick = function() {
             drawMessageOverlay(warningTitle, warningLines);
         }
 
-        /* Feedback gate modal — drawn on top of warning so it's always visible */
-        if (feedbackGateActive()) {
-            feedbackGateDraw();
-        }
-
         /* Draw overlay on top of main view (uses shared overlay system) */
         drawOverlay();
     }
@@ -14764,14 +14728,6 @@ globalThis.onMidiMessageInternal = function(data) {
     /* Always track shift state (CC 49), even when canvas or other views consume MIDI */
     if ((status & 0xF0) === 0xB0 && d1 === 49) {
         hostShiftHeld = (d2 > 0);
-    }
-
-    /* Feedback gate intercepts CC input while modal is showing */
-    if (feedbackGateActive() && (status & 0xF0) === 0xB0) {
-        if (feedbackGateInput(d1, d2)) {
-            needsRedraw = true;
-            return;
-        }
     }
 
     /* Debug: log all MIDI when in overtake mode to diagnose escape issues */
