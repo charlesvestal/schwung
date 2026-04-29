@@ -451,4 +451,39 @@ export function drawMessageOverlay(title, messageLines, showOk = true) {
     }
 }
 
+/**
+ * Draw a Yes/No confirm overlay. Caller manages the active state and reads input.
+ * Footer is fixed: "Back:No  Jog:Yes".
+ * @param {string} title - Title (e.g., "Speaker Feedback Risk")
+ * @param {string[]} messageLines - Pre-wrapped message lines. Caller should
+ *   wrap to ≤ 20 chars per line; lines beyond the first 5 are dropped.
+ */
+export function drawConfirmOverlay(title, messageLines) {
+    /* 8px body line spacing (vs 10 in drawMessageOverlay) lets a 5-line
+     * confirm message fit the 64 px display without clipping the title. */
+    const lineCount = Math.min(messageLines ? messageLines.length : 0, 5);
+    const boxHeight = 36 + lineCount * 8;
+    const boxX = (SCREEN_WIDTH - STATUS_OVERLAY_WIDTH) / 2;
+    const boxY = (SCREEN_HEIGHT - boxHeight) / 2;
+
+    fill_rect(boxX, boxY, STATUS_OVERLAY_WIDTH, boxHeight, 0);
+    drawRect(boxX, boxY, STATUS_OVERLAY_WIDTH, boxHeight, 1);
+    drawRect(boxX + 1, boxY + 1, STATUS_OVERLAY_WIDTH - 2, boxHeight - 2, 1);
+
+    const titleW = title.length * 6;
+    print(Math.floor((SCREEN_WIDTH - titleW) / 2), boxY + 6, title, 1);
+
+    if (messageLines) {
+        for (let i = 0; i < lineCount; i++) {
+            const line = messageLines[i];
+            const lineW = line.length * 6;
+            print(Math.floor((SCREEN_WIDTH - lineW) / 2), boxY + 18 + i * 8, line, 1);
+        }
+    }
+
+    const footer = 'Back:No  Jog:Yes';
+    const footerW = footer.length * 6;
+    print(Math.floor((SCREEN_WIDTH - footerW) / 2), boxY + boxHeight - 12, footer, 1);
+}
+
 /* Note: Label scroller is auto-ticked inside drawMenuList() */

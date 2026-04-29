@@ -194,6 +194,11 @@ host_rescan_modules()
 host_get_volume()             // -> int (0-100)
 host_set_volume(vol)          // set host volume
 
+// Jack state and module metadata (used by feedback-protection gate)
+host_speaker_active()         // -> bool (true = built-in speakers, false = headphones plugged)
+host_line_in_connected()      // -> bool (true = line-in cable plugged, false = internal mic)
+host_get_module_metadata(id)  // -> parsed module.json object | null
+
 // Host input settings
 host_get_setting(key)         // -> value (velocity_curve, aftertouch_enabled, aftertouch_deadzone)
 host_set_setting(key, val)    // set setting
@@ -565,6 +570,29 @@ Long-press is suppressed for the rest of a track press as soon as the volume kno
 - Recordings are saved to `Samples/Schwung/Resampler/YYYY-MM-DD/`
 
 Works for resampling your Move, including Schwung synths, or a line-in source or microphone. You can use Move's built-in count-in for line-in recordings too.
+
+### Feedback Protection
+
+When loading a chain module or launching a tool that consumes line-in
+audio, schwung shows a "Speaker Feedback Risk" warning if built-in
+speakers are active AND no line-in cable is plugged. Press jog click
+to proceed, Back to abort.
+
+The gate fires when:
+- The picked module's `capabilities.audio_in` is `true`, AND
+- Its `component_type` is NOT `audio_fx` or `midi_fx`, AND
+- `shadow_speaker_active` is true (no headphones), AND
+- `shadow_line_in_connected` is false (no line-in cable).
+
+Implementation: `src/shared/feedback_gate.mjs` (predicate +
+Promise-based modal), `src/shadow/shadow_ui.js` (call sites in chain
+slot module pick and tools menu launch), `src/schwung_shim.c`
+(tracks XMOS CC 114 line-in detect alongside CC 115 line-out).
+
+Out of scope: Move firmware's native autosample / line-in
+monitoring; Quantized Sampler "Move Input" source toggle (deferred —
+the fullscreen sampler menu makes a JS-side modal inert; see
+`docs/plans/2026-04-30-feedback-protection-design.md`).
 
 ### Skipback
 

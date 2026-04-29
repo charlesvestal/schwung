@@ -402,6 +402,27 @@ The shortcut can be changed in **Global Settings > Audio > Skipback** to **Sh+Vo
 
 Files are saved to `Samples/Schwung/Skipback/YYYY-MM-DD/`. Uses the same source setting as the Quantized Sampler (Resample or Move Input).
 
+### Feedback protection
+
+When you load a module or launch a tool that uses the line input
+(such as Line In or AutoSample) with the built-in speakers active
+and no line-in cable plugged, schwung will show a warning:
+
+> Speaker Feedback Risk
+> Speakers are active!
+> Monitoring mic input
+> creates feedback.
+> Plug in headphones
+> or use line-in.
+>
+> Back: No    Jog: Yes
+
+Press jog click to proceed (e.g., if you're recording with the
+internal mic and have already turned the speakers down) or Back
+to cancel and choose a different module.
+
+Plug in headphones or a line-in cable to bypass the warning.
+
 ---
 
 ## Available Modules
