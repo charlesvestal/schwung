@@ -21,6 +21,7 @@
  */
 
 import { drawConfirmOverlay } from '/data/UserData/schwung/shared/menu_layout.mjs';
+import { announce } from '/data/UserData/schwung/shared/screen_reader.mjs';
 
 let gateActive = false;
 let gateContinuation = null;
@@ -66,6 +67,7 @@ export function confirmLineInput(label, cb) {
     if (gateActive) { cb(false); return; }
     gateActive = true;
     gateContinuation = cb;
+    announce('Speaker feedback risk. Speakers and mic active. Plug in headphones. Jog click for yes, back for no.');
 }
 
 /**
@@ -121,5 +123,6 @@ function resolveGate(answer) {
     const cb = gateContinuation;
     gateActive = false;
     gateContinuation = null;
+    announce(answer ? 'Confirmed.' : 'Cancelled.');
     if (cb) cb(answer);
 }
