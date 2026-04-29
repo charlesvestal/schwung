@@ -155,6 +155,7 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 | [Essaim](https://github.com/fillioning/essaim-move) | 32-voice rhythmic oscillator swarm — polyphonic self-triggering voices with envelope→FM, SVF filtering, LFO modulation routing, scale quantization, delay, and saturation | fillioning |
 | [Wurl](https://github.com/fillioning/wurl-move) | Physically-modeled Wurlitzer 200A electric piano (OpenWurli port) | hal0zer0 (port: fillioning) |
 | [Denis](https://github.com/fillioning/denis-move) | Monophonic West Coast synthesizer inspired by Serge Modular — bipolar modulation matrix, complex oscillators, stiffness-based geometry, and portamento | fillioning |
+| [303](https://github.com/charlesvestal/schwung-303) | TB-303 emulator (Open303 + Devilfish + Soft/RAT drive) | Robin Schmidt / midilab / davemollen (port: charlesvestal) |
 
 ### Audio FX
 
@@ -214,6 +215,7 @@ Modules are installable via the Module Store or the desktop installer. See [modu
 | [Stems](https://github.com/charlesvestal/schwung-stems) | Separate audio into stems: drums, vocals, accompaniment (0.5x realtime) | charlesvestal |
 | [DJ Deck](https://github.com/djhardrich/move-anything-dj) | CDJ/turntable-style 4-track stem player with Bungee timestretch/pitchshift | DJ Hard Rich |
 | [Tuner](https://github.com/CatsAreCool710/Move-Everything-Tuner) | Chromatic and instrument tuner with step guide feedback | Jeremiah Ticket |
+| [TB-3PO](https://github.com/charlesvestal/schwung-tb3po) | Generative 303-style acid-bassline sequencer with dual slots and 303 CC mode | djphazer / Hemisphere Suite (port: charlesvestal) |
 
 <!-- MODULE_TABLE_END -->
 
