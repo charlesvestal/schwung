@@ -510,18 +510,51 @@ git commit -m "feedback_gate: add jack-aware Yes/No modal primitive"
 
 ---
 
-## Task 7: Wire feedback gate into Quantized Sampler source toggle
+## Task 7: DEFERRED — Quantized Sampler source toggle
+
+**Status:** dropped from this branch.
+
+**Why:** The sampler source toggle is owned by C in the shim
+(`src/schwung_shim.c:6041`). When the sampler menu is fullscreen the
+shim consumes jog-click and back CCs before they reach JS, AND the
+fullscreen sampler overlay early-returns from `tick()` before the
+shadow-UI modal can render. A working JS-side gate would require shim
+cooperation: a SHM flag that JS can set to ask the shim to stop
+consuming the relevant CCs while the gate is active, and a reordered
+draw path so the modal renders on top of the sampler overlay. Roughly
+30 lines of C plus a few JS tweaks. Feasible but not required for this
+release — the originally reported incident was the AutoSample tool
+(Task 9).
+
+If revisited:
+- Add `volatile uint8_t feedback_gate_active` to `shadow_control_t`.
+- JS sets/clears it from a `tick()` block alongside `feedbackGateActive()`.
+- In `src/schwung_shim.c` sampler-menu CC consumption (`6034`,
+  `6046`, `6063`), early-return when the flag is set so input flows
+  through to JS.
+- Move the modal draw call into the fullscreen sampler branch in
+  `shadow_ui.js` so it renders on top of the sampler overlay.
+
+---
+
+## Task 8: Wire feedback gate into chain slot module pick
 
 **Files:**
-- Modify: `src/shadow/shadow_ui.js` (import the gate, render in tick, forward input, watch source toggle)
+- Modify: `src/shadow/shadow_ui.js`
+  - Top of file: import the feedback_gate primitives.
+  - Around line 14668-14669 (after the existing `drawMessageOverlay(warningTitle, ...)` block in tick): render the gate's modal.
+  - In the MIDI handler (`onMidiMessageInternal`): forward CC input to the gate before view routing.
+  - Around line 6700-6740 (the `applyComponentSelection` function): call the gate at module pick.
 
-**Step 1: Import the gate at the top of shadow_ui.js**
+This task lands the modal-render and CC-intercept wiring once. Task 9
+reuses both via the same imports.
 
-Find the existing imports near line 117 (`import { ... } from '/data/UserData/schwung/shared/sampler_overlay.mjs';`). Add:
+**Step 1: Import the gate at the top of `shadow_ui.js`**
+
+Find the existing `sampler_overlay.mjs` import block (around line 117) and add immediately after:
 
 ```javascript
 import {
-    confirmLineInput,
     maybeConfirmForModule,
     feedbackGateActive,
     feedbackGateDraw,
@@ -529,41 +562,9 @@ import {
 } from '/data/UserData/schwung/shared/feedback_gate.mjs';
 ```
 
-**Step 2: Detect sampler source flips to MOVE_INPUT in tick**
+**Step 2: Render the modal in `tick()`**
 
-Find the shadow_ui.js tick function (search for `globalThis.tick = `). Add module-scope state:
-
-```javascript
-let lastSamplerSource = -1; /* -1 = unknown; 0 = Resample; 1 = Move Input */
-```
-
-In the tick function, after the shadow_overlay state is read but before drawing, add:
-
-```javascript
-/* Feedback gate: detect sampler source flip to Move Input */
-if (typeof shadow_overlay !== 'undefined' && shadow_overlay) {
-    const curSource = shadow_overlay.sampler_source ?? -1;
-    if (curSource !== lastSamplerSource) {
-        if (lastSamplerSource !== -1 && curSource === 1) {
-            /* User just flipped to Move Input. Gate. */
-            confirmLineInput('Move Input').then((ok) => {
-                if (!ok && typeof host_sampler_set_source === 'function') {
-                    /* Revert to Resample. shim encoding: 0 = Resample, 1 = Move Input
-                     * (the binding internally maps to its own request encoding). */
-                    host_sampler_set_source(0);
-                }
-            });
-        }
-        lastSamplerSource = curSource;
-    }
-}
-```
-
-**Note:** `shadow_overlay` is the JS-side mirror of the SHM overlay struct. Confirm the field name by reading `src/shadow/shadow_ui.c:2676` — it's `samplerSource` when set on a JS object via `JS_SetPropertyStr`. Use `samplerSource` rather than `sampler_source` if that's how it appears in JS context. Adjust accordingly when implementing.
-
-**Step 3: Render the modal in tick after main draw**
-
-In tick, after the existing `drawMessageOverlay` block (around line 14668-14669), add:
+Find the existing `drawMessageOverlay(warningTitle, warningLines)` block (around line 14668-14669). Add immediately after:
 
 ```javascript
 if (feedbackGateActive()) {
@@ -571,11 +572,20 @@ if (feedbackGateActive()) {
 }
 ```
 
-**Step 4: Forward input to the gate before regular handling**
+This places the modal AFTER the warning overlay, so it sits on top of any
+view that would otherwise render. Note: the fullscreen sampler overlay
+early-returns from `tick()` before this point — that's why the sampler
+source-toggle gate (Task 7) is deferred. Chain UI and tools menu run
+through the regular view pipeline so this draw is reachable.
 
-Find the MIDI handler (search for `globalThis.onMidiMessageInternal` or similar). Add at the top of CC handling (after the basic decode, before any view-specific handling):
+**Step 3: Forward CC input to the gate in the MIDI handler**
+
+Find the MIDI handler (search for `globalThis.onMidiMessageInternal` or
+similar). After the byte decode (`status`, `d1`, `d2`) but BEFORE any
+view-specific routing, add:
 
 ```javascript
+/* Feedback gate intercepts CC input while modal is showing */
 if (feedbackGateActive() && (status & 0xF0) === 0xB0) {
     if (feedbackGateInput(d1, d2)) {
         needsRedraw = true;
@@ -584,44 +594,11 @@ if (feedbackGateActive() && (status & 0xF0) === 0xB0) {
 }
 ```
 
-**Step 5: Build and deploy**
-
-```bash
-./scripts/build.sh && ./scripts/install.sh local --skip-modules --skip-confirmation
-```
-
-**Step 6: Manual test on hardware**
-
-1. Boot the device.
-2. Make sure no headphones, no line-in cable.
-3. Turn master volume to ~50%.
-4. Press Shift+Sample to open Quantized Sampler.
-5. Use jog wheel to navigate to "Source", press jog click to flip to "Move Input".
-6. **Expect:** modal appears, says "Speakers are active! Monitoring mic input creates feedback. Plug in headphones or use line-in."
-7. Press Back. **Expect:** modal closes; source reverts to "Resample".
-8. Repeat steps 5-6, this time press jog click. **Expect:** modal closes; source stays "Move Input".
-9. Plug headphones. Repeat step 5. **Expect:** no modal; source flips silently.
-10. Unplug headphones, plug a line-in cable. Repeat step 5. **Expect:** no modal; source flips silently.
-
-**Step 7: Commit**
-
-```bash
-git add src/shadow/shadow_ui.js
-git commit -m "shadow_ui: gate Quantized Sampler Move Input source with feedback modal"
-```
-
----
-
-## Task 8: Wire feedback gate into chain slot module pick
-
-**Files:**
-- Modify: `src/shadow/shadow_ui.js:6700-6740` (the `applyComponentSelection` function)
-
-**Step 1: Locate `applyComponentSelection`**
+**Step 4: Locate `applyComponentSelection`**
 
 Search for the line `case "synth": paramKey = "synth:module";` (around line 6714). The surrounding function is the chain slot module pick handler.
 
-**Step 2: Add the gate before `setSlotParam`**
+**Step 5: Add the gate before `setSlotParam`**
 
 Around line 6728 (just before `if (paramKey)` and the `setSlotParam` call), insert:
 
@@ -647,7 +624,7 @@ if (paramKey && moduleId) {
 }
 ```
 
-**Step 3: Extract a `applyComponentSelectionConfirmed` helper**
+**Step 6: Extract a `applyComponentSelectionConfirmed` helper**
 
 Extract the existing post-`paramKey` logic (lines ~6728-6751) into a new function:
 
@@ -672,16 +649,16 @@ function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp) {
 
 The original `applyComponentSelection` body becomes:
 1. Compute `paramKey` and `moduleId` (lines 6710-6726, unchanged).
-2. If `paramKey && moduleId`, run the gate path (Step 2 code).
+2. If `paramKey && moduleId`, run the gate path (Step 5 code).
 3. Else (clearing a slot — `moduleId === ""`), call `applyComponentSelectionConfirmed` directly (no gate needed for clearing).
 
-**Step 4: Build and deploy**
+**Step 7: Build and deploy**
 
 ```bash
 ./scripts/build.sh && ./scripts/install.sh local --skip-modules --skip-confirmation
 ```
 
-**Step 5: Manual test on hardware**
+**Step 8: Manual test on hardware**
 
 1. Boot, no headphones, no line-in cable, volume ~50%.
 2. Open shadow UI, enter slot editor for slot 1, navigate to chain edit, pick the synth slot, browse to `Line In` module.
@@ -690,7 +667,7 @@ The original `applyComponentSelection` body becomes:
 5. Plug headphones, pick `Line In` again. **Expect:** no modal; loads silently.
 6. Unplug headphones. Pick a non-line-in module (e.g. SF2 if installed). **Expect:** no modal; loads silently.
 
-**Step 6: Commit**
+**Step 9: Commit**
 
 ```bash
 git add src/shadow/shadow_ui.js

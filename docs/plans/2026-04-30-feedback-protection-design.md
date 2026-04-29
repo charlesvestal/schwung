@@ -24,16 +24,23 @@ speakers are active and the only input source is the internal mic.
 
 In scope:
 
-- Schwung Quantized Sampler when `Move Input` is selected as source.
-- Built-in `linein` chain sound generator.
-- AutoSample tool module (`samplerobot`).
-- Any future schwung-controlled module whose declarations indicate it
-  pulls line-in.
+- Built-in `linein` chain sound generator (gated at chain slot module pick).
+- AutoSample tool module (`samplerobot`) and any future tool with audio_in
+  (gated at tool launch from the Tools menu).
+- Any future schwung-controlled chain or tool module whose declarations
+  indicate it pulls line-in.
 
 Out of scope:
 
 - Move firmware's native autosample / line-in monitoring (no schwung
   control).
+- Schwung Quantized Sampler "Move Input" source toggle. The toggle is
+  owned by C in the shim; the shim consumes input CCs (jog-click, back)
+  during the fullscreen sampler menu before they reach JS, and the
+  fullscreen sampler overlay early-returns from `tick()` before any
+  shadow-UI modal can draw. A working gate would require shim
+  cooperation (SHM flag + CC pass-through). Deferred — the reported
+  incident was the AutoSample tool, which is gated.
 - Skipback (passive — pressing it cannot open a feedback path; at worst
   it captures already-occurring feedback to disk).
 - Active feedback DSP detection.
@@ -175,23 +182,6 @@ matches the rest of the UI:
 
 ### Call sites
 
-**Quantized Sampler source picker** (`src/shared/sampler_overlay.mjs`
-or wherever the resample / Move Input toggle lives):
-
-```javascript
-if (newSource === 'move_input') {
-    const ok = await confirmLineInput('Move Input');
-    if (!ok) {
-        // revert UI to previous source
-        return;
-    }
-}
-commitSource(newSource);
-```
-
-The picker must visually revert on `false` — not just abort the backend
-commit.
-
 **Chain slot module pick** (`src/modules/chain/ui.js`):
 
 ```javascript
@@ -215,27 +205,24 @@ proceedWithToolLaunch(toolId);
 - `src/schwung_host.c` — `host_speaker_active`, `host_line_in_connected`,
   `host_get_module_metadata` JS bindings.
 - `src/shared/feedback_gate.mjs` — new file.
-- `src/modules/chain/ui.js` — call gate at module pick.
-- `src/shared/sampler_overlay.mjs` (or sampler picker file) — call gate.
-- Tools menu launcher (find in `src/shared/`) — call gate.
+- `src/shadow/shadow_ui.js` — call gate at chain slot module pick and
+  tool launch; render modal and forward CC input while active.
 
 ## Manual test plan
 
 Hardware-only; no automated tests.
 
 1. Headphones plugged, load `linein` → no modal, silent pass. Same for
-   `samplerobot` and Sampler Move Input.
+   `samplerobot` via Tools menu.
 2. Cable in line-in jack, repeat — no modal in any case.
 3. Built-in speakers, nothing plugged, load `linein` → modal appears.
    Back leaves slot empty; jog click loads.
 4. Same as 3 for `samplerobot` via Tools menu.
-5. Same as 3 for Quantized Sampler Move Input pick — picker reverts to
-   `resample` on Back.
-6. Plug headphones, repeat 3–5 — no modal.
-7. Cold boot, immediately attempt a line-in module before XMOS
+5. Plug headphones, repeat 3–4 — no modal.
+6. Cold boot, immediately attempt a line-in module before XMOS
    broadcasts CC 114/115 (~180 ms window) — modal should appear (safe
    default).
-8. Load an audio_fx module (e.g. reverb) with no jack — no modal
+7. Load an audio_fx module (e.g. reverb) with no jack — no modal
    (heuristic excludes audio_fx).
 
 ## Edge cases acknowledged but not handled
