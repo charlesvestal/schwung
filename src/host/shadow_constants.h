@@ -150,11 +150,12 @@ typedef struct shadow_control_t {
     volatile uint8_t open_tool_cmd;     /* 0=none, 1=open tool (path in /data/UserData/schwung/open_tool_cmd.json) */
     volatile uint8_t shadow_ui_trigger; /* Shadow UI trigger mode: 0=long-press only, 1=Shift+Vol only, 2=both */
     volatile uint8_t speaker_active;    /* 1=built-in speaker active (from CC 115 line-out detect) */
+    volatile uint8_t line_in_connected; /* 1=line-in cable plugged (from CC 114 mic-in detect); 0=internal mic */
     volatile uint8_t sampler_source_request; /* 0=no request, 1=set Resample, 2=set Move Input. Shim resets to 0 after applying. */
     volatile uint8_t sampler_silent;     /* 1=suppress sampler screen-reader announcements (e.g. "Sample saved") for tool-driven recordings */
     volatile uint16_t skipback_seconds; /* Skipback rolling buffer length: 30/60/120/180/240/300 */
     volatile uint8_t resume_last_tool;  /* 1=JUMP_TO_TOOLS should resume the most-recently-suspended tool instead of opening the menu */
-    volatile uint8_t reserved[7];
+    volatile uint8_t reserved[6];
 } shadow_control_t;
 
 /*

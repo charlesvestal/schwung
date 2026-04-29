@@ -117,6 +117,13 @@ import {
 } from '/data/UserData/schwung/shared/sampler_overlay.mjs';
 
 import {
+    maybeConfirmForModule,
+    feedbackGateActive,
+    feedbackGateDraw,
+    feedbackGateInput,
+} from '/data/UserData/schwung/shared/feedback_gate.mjs';
+
+import {
     buildFilepathBrowserState,
     refreshFilepathBrowser,
     moveFilepathBrowserSelection,
@@ -4621,6 +4628,44 @@ function generateNewFilePath(dir) {
     return dir + "/New_" + stamp + ext;
 }
 
+/* Launch a tool from the tools menu after the feedback gate has run (or
+ * been bypassed when the tool has no id). Mirrors the original VIEWS.TOOLS
+ * select dispatch — every launch path (overtake / set_picker /
+ * skip_file_browser+interactive / file browser / standalone / fallback)
+ * must be preserved here. */
+function launchToolConfirmed(tool) {
+    /* Track tool selection. Overtake tools are tracked inside
+     * loadOvertakeModule → skip here to avoid a double event. */
+    if (tool.kind !== 'overtake' && typeof host_track_event === "function" && tool.id) {
+        host_track_event('module_loaded', '"module_id":"' + tool.id + '","source":"tools"');
+    }
+    if (tool.kind === 'overtake') {
+        debugLog("TOOLS SELECT overtake: " + tool.id);
+        announce(`Loading ${tool.name || tool.id}`);
+        loadOvertakeModule(tool);
+        return;
+    }
+    debugLog("TOOLS SELECT tool: " + tool.id + " config=" + JSON.stringify(tool.tool_config));
+    if (tool.tool_config && tool.tool_config.set_picker) {
+        debugLog("TOOLS SELECT: entering set picker");
+        enterToolSetPicker(tool);
+    } else if (tool.tool_config && tool.tool_config.skip_file_browser && tool.tool_config.interactive) {
+        debugLog("TOOLS SELECT: skip_file_browser, launching interactive directly");
+        startInteractiveTool(tool, "");
+    } else if (tool.tool_config && (tool.tool_config.command || tool.tool_config.interactive || tool.tool_config.engines)) {
+        debugLog("TOOLS SELECT: entering file browser");
+        enterToolFileBrowser(tool);
+    } else if (tool.standalone) {
+        debugLog("TOOLS SELECT: launching standalone binary");
+        announce(`Launching ${tool.name}`);
+        const binaryPath = tool.path + "/standalone";
+        host_system_cmd("sh /data/UserData/schwung/launch-standalone.sh " + binaryPath);
+    } else {
+        debugLog("TOOLS SELECT: tool not available");
+        announce("Tool not available");
+    }
+}
+
 function enterToolFileBrowser(toolModule) {
     debugLog("enterToolFileBrowser: " + toolModule.id);
     toolActiveTool = toolModule;
@@ -6725,9 +6770,45 @@ function applyComponentSelection() {
             break;
     }
 
+    /* Feedback gate: if the picked module pulls line-in, warn about speakers.
+     * Callback-based — schwung's QuickJS doesn't pump pending jobs so
+     * Promise.then never fires. */
+    if (paramKey && moduleId) {
+        const slotIndex = selectedSlot;  /* capture — shim JUMP_TO_SLOT path can mutate selectedSlot */
+        let meta = null;
+        try {
+            if (typeof host_get_module_metadata === 'function') {
+                meta = host_get_module_metadata(moduleId);
+            }
+        } catch (err) {
+            if (typeof host_log === 'function') {
+                host_log(`applyComponentSelection: feedback gate metadata error for ${moduleId}: ${err}`);
+            }
+        }
+        maybeConfirmForModule(meta, (ok) => {
+            if (!ok) {
+                if (typeof host_log === 'function') {
+                    host_log(`applyComponentSelection: declined feedback gate for ${moduleId}`);
+                }
+                loadChainConfigFromSlot(slotIndex);
+                slotUserCleared[slotIndex] = false;
+                setView(VIEWS.CHAIN_EDIT);
+                needsRedraw = true;
+                return;
+            }
+            applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp);
+        });
+        return;
+    }
+
+    /* Clearing a slot (empty moduleId) — no feedback risk, run directly. */
+    applyComponentSelectionConfirmed(selectedSlot, paramKey, moduleId, comp);
+}
+
+function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp) {
     if (paramKey) {
-        if (typeof host_log === "function") host_log(`applyComponentSelection: slot=${selectedSlot} param=${paramKey} module=${moduleId}`);
-        const success = setSlotParam(selectedSlot, paramKey, moduleId);
+        if (typeof host_log === "function") host_log(`applyComponentSelection: slot=${slotIndex} param=${paramKey} module=${moduleId}`);
+        const success = setSlotParam(slotIndex, paramKey, moduleId);
         if (typeof host_log === "function") host_log(`applyComponentSelection: setSlotParam returned ${success}`);
         if (!success) {
             print(2, 50, "Failed to apply", 1);
@@ -6744,8 +6825,8 @@ function applyComponentSelection() {
      * Without this, the knob overlay can show the old module's name and params
      * because the periodic refreshSlotModuleSignature (every 30 ticks) hasn't
      * run yet to sync the in-memory state with DSP. */
-    loadChainConfigFromSlot(selectedSlot);
-    lastSlotModuleSignatures[selectedSlot] = getSlotModuleSignature(selectedSlot);
+    loadChainConfigFromSlot(slotIndex);
+    lastSlotModuleSignatures[slotIndex] = getSlotModuleSignature(slotIndex);
     invalidateKnobContextCache();
     setView(VIEWS.CHAIN_EDIT);
     needsRedraw = true;
@@ -11648,36 +11729,31 @@ function handleSelect() {
             if (toolsMenuIndex >= 0 && toolsMenuIndex < toolModules.length) {
                 const tool = toolModules[toolsMenuIndex];
                 if (tool.type === 'divider') break;
-                /* Track tool selection. Overtake tools are tracked inside
-                 * loadOvertakeModule → skip here to avoid a double event. */
-                if (tool.kind !== 'overtake' && typeof host_track_event === "function" && tool.id) {
-                    host_track_event('module_loaded', '"module_id":"' + tool.id + '","source":"tools"');
-                }
-                if (tool.kind === 'overtake') {
-                    debugLog("TOOLS SELECT overtake: " + tool.id);
-                    announce(`Loading ${tool.name || tool.id}`);
-                    loadOvertakeModule(tool);
+                if (tool.id) {
+                    let meta = null;
+                    try {
+                        if (typeof host_get_module_metadata === 'function') {
+                            meta = host_get_module_metadata(tool.id);
+                        }
+                    } catch (err) {
+                        if (typeof host_log === 'function') {
+                            host_log(`tools: feedback gate metadata error for ${tool.id}: ${err}`);
+                        }
+                    }
+                    maybeConfirmForModule(meta, (ok) => {
+                        if (!ok) {
+                            if (typeof host_log === 'function') {
+                                host_log(`tools: declined feedback gate for ${tool.id}`);
+                            }
+                            needsRedraw = true;
+                            return;
+                        }
+                        launchToolConfirmed(tool);
+                    });
                     break;
                 }
-                debugLog("TOOLS SELECT tool: " + tool.id + " config=" + JSON.stringify(tool.tool_config));
-                if (tool.tool_config && tool.tool_config.set_picker) {
-                    debugLog("TOOLS SELECT: entering set picker");
-                    enterToolSetPicker(tool);
-                } else if (tool.tool_config && tool.tool_config.skip_file_browser && tool.tool_config.interactive) {
-                    debugLog("TOOLS SELECT: skip_file_browser, launching interactive directly");
-                    startInteractiveTool(tool, "");
-                } else if (tool.tool_config && (tool.tool_config.command || tool.tool_config.interactive || tool.tool_config.engines)) {
-                    debugLog("TOOLS SELECT: entering file browser");
-                    enterToolFileBrowser(tool);
-                } else if (tool.standalone) {
-                    debugLog("TOOLS SELECT: launching standalone binary");
-                    announce(`Launching ${tool.name}`);
-                    const binaryPath = tool.path + "/standalone";
-                    host_system_cmd("sh /data/UserData/schwung/launch-standalone.sh " + binaryPath);
-                } else {
-                    debugLog("TOOLS SELECT: tool not available");
-                    announce("Tool not available");
-                }
+                /* No tool.id (shouldn't happen, but defensive): launch directly. */
+                launchToolConfirmed(tool);
             }
             break;
         case VIEWS.TOOL_FILE_BROWSER:
@@ -14669,6 +14745,10 @@ globalThis.tick = function() {
             drawMessageOverlay(warningTitle, warningLines);
         }
 
+        if (feedbackGateActive()) {
+            feedbackGateDraw();
+        }
+
         /* Draw overlay on top of main view (uses shared overlay system) */
         drawOverlay();
     }
@@ -14733,6 +14813,14 @@ globalThis.onMidiMessageInternal = function(data) {
     /* Debug: log all MIDI when in overtake mode to diagnose escape issues */
     if (view === VIEWS.OVERTAKE_MODULE || view === VIEWS.OVERTAKE_MENU) {
         debugLog(`MIDI_IN: view=${view} status=${status} d1=${d1} d2=${d2} loaded=${overtakeModuleLoaded} callbacks=${!!overtakeModuleCallbacks}`);
+    }
+
+    /* Feedback gate intercepts CC input while modal is showing */
+    if (feedbackGateActive() && (status & 0xF0) === 0xB0) {
+        if (feedbackGateInput(d1, d2)) {
+            needsRedraw = true;
+            return;
+        }
     }
 
     if (view === VIEWS.CANVAS && (status & 0xF0) === 0xB0) {

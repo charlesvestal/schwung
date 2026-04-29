@@ -2914,6 +2914,78 @@ static JSValue js_host_read_file_base64(JSContext *ctx, JSValueConst this_val,
     return result;
 }
 
+/* host_speaker_active() -> bool. True when built-in speakers active (no headphones plugged). */
+static JSValue js_host_speaker_active(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_FALSE;
+    return shadow_control->speaker_active ? JS_TRUE : JS_FALSE;
+}
+
+/* host_line_in_connected() -> bool. True when a cable is plugged into the line-in jack. */
+static JSValue js_host_line_in_connected(JSContext *ctx, JSValueConst this_val,
+                                         int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_FALSE;
+    return shadow_control->line_in_connected ? JS_TRUE : JS_FALSE;
+}
+
+/* host_get_module_metadata(id) -> object | null
+ * Returns the parsed module.json contents for the given module id, or null
+ * if not found. Used by feedback_gate to inspect capabilities/component_type. */
+static JSValue js_host_get_module_metadata(JSContext *ctx, JSValueConst this_val,
+                                            int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1) return JS_NULL;
+    const char *id = JS_ToCString(ctx, argv[0]);
+    if (!id) return JS_NULL;
+
+    /* Defense in depth: reject ids that could escape the modules tree. */
+    if (strchr(id, '/') || strstr(id, "..")) {
+        JS_FreeCString(ctx, id);
+        return JS_NULL;
+    }
+
+    /* NOTE: parse_module_json in module_manager.c does similar file I/O but
+     * parses into a module_info_t struct; this binding needs the raw JSValue
+     * for JS-side inspection, so the read path is duplicated here. */
+    /* Try each category dir until module.json found. */
+    static const char *bases[] = {
+        "/data/UserData/schwung/modules",
+        "/data/UserData/schwung/modules/sound_generators",
+        "/data/UserData/schwung/modules/audio_fx",
+        "/data/UserData/schwung/modules/midi_fx",
+        "/data/UserData/schwung/modules/tools",
+    };
+    char path[512];
+    FILE *f = NULL;
+    for (size_t i = 0; i < sizeof(bases) / sizeof(bases[0]); i++) {
+        snprintf(path, sizeof(path), "%s/%s/module.json", bases[i], id);
+        f = fopen(path, "r");
+        if (f) break;
+    }
+    JS_FreeCString(ctx, id);
+    if (!f) return JS_NULL;
+
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz <= 0 || sz > 65536) { fclose(f); return JS_NULL; }
+    char *buf = malloc((size_t)sz + 1);
+    if (!buf) { fclose(f); return JS_NULL; }
+    size_t n = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    buf[n] = '\0';
+
+    JSValue parsed = JS_ParseJSON(ctx, buf, n, "module.json");
+    free(buf);
+    if (JS_IsException(parsed)) {
+        JS_FreeValue(ctx, parsed);
+        return JS_NULL;
+    }
+    return parsed;
+}
+
 /* host_sampler_set_source(source) - request sampler source change.
  * source: 0 = Resample (Schwung mix), 1 = Move Input (mic / line-in).
  * Applied by shim on next idle tick. Returns true if request submitted. */
@@ -3107,6 +3179,11 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     /* Register preview player functions */
     JS_SetPropertyStr(ctx, global_obj, "host_preview_play", JS_NewCFunction(ctx, js_host_preview_play, "host_preview_play", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_preview_stop", JS_NewCFunction(ctx, js_host_preview_stop, "host_preview_stop", 0));
+
+    /* Register host hardware-state query functions (feedback gate, etc.) */
+    JS_SetPropertyStr(ctx, global_obj, "host_speaker_active", JS_NewCFunction(ctx, js_host_speaker_active, "host_speaker_active", 0));
+    JS_SetPropertyStr(ctx, global_obj, "host_line_in_connected", JS_NewCFunction(ctx, js_host_line_in_connected, "host_line_in_connected", 0));
+    JS_SetPropertyStr(ctx, global_obj, "host_get_module_metadata", JS_NewCFunction(ctx, js_host_get_module_metadata, "host_get_module_metadata", 1));
 
     /* Register sampler control functions */
     JS_SetPropertyStr(ctx, global_obj, "host_sampler_start", JS_NewCFunction(ctx, js_host_sampler_start, "host_sampler_start", 1));
