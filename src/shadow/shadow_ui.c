@@ -2914,6 +2914,22 @@ static JSValue js_host_read_file_base64(JSContext *ctx, JSValueConst this_val,
     return result;
 }
 
+/* host_speaker_active() -> bool. True when built-in speakers active (no headphones plugged). */
+static JSValue js_host_speaker_active(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_FALSE;
+    return shadow_control->speaker_active ? JS_TRUE : JS_FALSE;
+}
+
+/* host_line_in_connected() -> bool. True when a cable is plugged into the line-in jack. */
+static JSValue js_host_line_in_connected(JSContext *ctx, JSValueConst this_val,
+                                         int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_FALSE;
+    return shadow_control->line_in_connected ? JS_TRUE : JS_FALSE;
+}
+
 /* host_sampler_set_source(source) - request sampler source change.
  * source: 0 = Resample (Schwung mix), 1 = Move Input (mic / line-in).
  * Applied by shim on next idle tick. Returns true if request submitted. */
@@ -3107,6 +3123,10 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     /* Register preview player functions */
     JS_SetPropertyStr(ctx, global_obj, "host_preview_play", JS_NewCFunction(ctx, js_host_preview_play, "host_preview_play", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_preview_stop", JS_NewCFunction(ctx, js_host_preview_stop, "host_preview_stop", 0));
+
+    /* Register host hardware-state query functions (feedback gate, etc.) */
+    JS_SetPropertyStr(ctx, global_obj, "host_speaker_active", JS_NewCFunction(ctx, js_host_speaker_active, "host_speaker_active", 0));
+    JS_SetPropertyStr(ctx, global_obj, "host_line_in_connected", JS_NewCFunction(ctx, js_host_line_in_connected, "host_line_in_connected", 0));
 
     /* Register sampler control functions */
     JS_SetPropertyStr(ctx, global_obj, "host_sampler_start", JS_NewCFunction(ctx, js_host_sampler_start, "host_sampler_start", 1));
