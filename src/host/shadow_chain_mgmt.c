@@ -41,6 +41,19 @@ void (*shadow_chain_set_inject_audio)(void *instance, int16_t *buf, int frames) 
 void (*shadow_chain_set_external_fx_mode)(void *instance, int mode) = NULL;
 void (*shadow_chain_process_fx)(void *instance, int16_t *buf, int frames) = NULL;
 host_api_v1_t shadow_host_api;
+
+/* Look up the slot owning a chain plugin instance and return its live
+ * receive channel. Used by chain MIDI FX in Pre mode to address Move
+ * tracks via the recv channel (not the synth-internal forward_channel). */
+static int shadow_chain_slot_recv_channel(void *instance) {
+    if (!instance) return -2;
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
+        if (shadow_chain_slots[i].instance == instance) {
+            return shadow_chain_slots[i].channel;
+        }
+    }
+    return -2;
+}
 int shadow_inprocess_ready = 0;
 
 /* Master FX slots */
@@ -160,11 +173,8 @@ static void shadow_apply_patch_channels(int slot) {
     if (len > 0) {
         ch_buf[len < (int)sizeof(ch_buf) ? len : (int)sizeof(ch_buf) - 1] = '\0';
         int fwd_ch = atoi(ch_buf);
-        /* Preserve the pre-existing (fwd>0)?fwd-1:fwd mapping used by the
-         * other load paths; value range is -2..16 to accept both 0-indexed
-         * internal values and legacy 1-indexed saves. */
-        if (fwd_ch >= -2 && fwd_ch <= 16) {
-            shadow_chain_slots[slot].forward_channel = (fwd_ch > 0) ? fwd_ch - 1 : fwd_ch;
+        if (fwd_ch >= -2 && fwd_ch <= 15) {
+            shadow_chain_slots[slot].forward_channel = fwd_ch;
         }
     }
 }
@@ -502,14 +512,14 @@ void shadow_chain_load_config(void) {
             }
         }
 
-        /* Parse forward_channel (-2 = passthrough, -1 = auto, 1-16 = channel) */
+        /* Parse forward_channel (-2 = passthrough, -1 = auto, 0-15 = channel) */
         char *fwd_pos = strstr(name_pos, "\"forward_channel\"");
         if (fwd_pos) {
             char *fwd_colon = strchr(fwd_pos, ':');
             if (fwd_colon) {
                 int ch = atoi(fwd_colon + 1);
-                if (ch >= -2 && ch <= 16) {
-                    shadow_chain_slots[i].forward_channel = (ch > 0) ? ch - 1 : ch;
+                if (ch >= -2 && ch <= 15) {
+                    shadow_chain_slots[i].forward_channel = ch;
                 }
             }
         }
@@ -943,6 +953,7 @@ int shadow_inprocess_load_chain(void) {
     shadow_host_api.log = shadow_log;
     shadow_host_api.get_bpm = host.get_bpm;  /* Tempo query for LFO sync */
     shadow_host_api.midi_inject_to_move = shadow_chain_midi_inject;
+    shadow_host_api.slot_recv_channel = shadow_chain_slot_recv_channel;
 
     move_plugin_init_v2_fn init_v2 = (move_plugin_init_v2_fn)dlsym(
         shadow_dsp_handle, MOVE_PLUGIN_INIT_V2_SYMBOL);

@@ -100,6 +100,16 @@ typedef struct host_api_v1 {
      * burst more than that per render block. */
     int (*midi_inject_to_move)(const uint8_t *msg, int len);
 
+    /* Return the receive channel for the slot owning this plugin instance.
+     * -1 = All (no filter), 0-15 = specific channel byte, -2 = instance not
+     * registered (e.g. master FX, host-level plugin).
+     *
+     * Use this to address Move tracks via midi_inject_to_move: the inject
+     * channel must be the slot's recv channel, NOT the slot's
+     * forward_channel (which is purely an internal synth-side routing hint,
+     * e.g. minijv part 6). NULL if the host doesn't expose slot context. */
+    int (*slot_recv_channel)(void *instance);
+
 } host_api_v1_t;
 
 /*

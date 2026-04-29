@@ -1752,11 +1752,16 @@ static void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
             }
         }
 
-        /* Pre mode: also inject into Move's MIDI_IN so the native instrument
-         * on the slot's forward_channel plays it additively. Channel byte is
-         * already correct (upstream shadow_chain_remap_channel, or — for
-         * tick-generated output — the FX inherits the held note's channel). */
+        /* Pre mode: also inject into Move's MIDI_IN so Move's native
+         * instrument on the slot's recv channel plays it additively. We
+         * override the channel byte with the slot's live recv channel —
+         * forward_channel is the synth-internal routing hint and must
+         * never reach Move. */
         if (inst->midi_fx_pre_mode && inst->host && inst->host->midi_inject_to_move) {
+            int recv_ch = -2;
+            if (inst->host->slot_recv_channel) {
+                recv_ch = inst->host->slot_recv_channel((void *)inst);
+            }
             for (int i = 0; i < count; i++) {
                 if (out_lens[i] < 1) continue;
                 uint8_t type = out_msgs[i][0] & 0xF0;
@@ -1785,7 +1790,11 @@ static void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
                     inst->pre_pad_held[out_msgs[i][1]] > 0) {
                     continue;
                 }
-                uint8_t pkt[4] = { (2 << 4) | cin, out_msgs[i][0], out_msgs[i][1], out_msgs[i][2] };
+                uint8_t inject_status = out_msgs[i][0];
+                if (recv_ch >= 0 && recv_ch <= 15) {
+                    inject_status = (inject_status & 0xF0) | (uint8_t)recv_ch;
+                }
+                uint8_t pkt[4] = { (2 << 4) | cin, inject_status, out_msgs[i][1], out_msgs[i][2] };
                 if (inst->host->midi_inject_to_move(pkt, 4) > 0) {
                     pre_mode_track_inject(inst, out_msgs[i], out_lens[i]);
                 }
@@ -7043,9 +7052,11 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
     }
 
     /* Pre mode: also inject into Move's MIDI_IN (cable 2) so Move's native
-     * instrument on the slot's forward_channel plays the transformed stream
-     * additively. Channel byte was already remapped by
-     * shadow_chain_remap_channel upstream so we inject as-is.
+     * instrument on the slot's recv channel plays the transformed stream
+     * additively. The channel byte must be the slot's RECV channel — not
+     * the FX output's channel (which carries forward_channel from the
+     * synth-side remap). forward_channel is purely a synth-internal hint
+     * (e.g. minijv part 6); Move tracks listen on recv.
      *
      * Root-match skip: if an output note matches the input note exactly
      * (same status + data1), Move's pad already triggered it via the
@@ -7054,6 +7065,10 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
      * intervals need injecting. */
     if (inst->midi_fx_pre_mode && inst->host && inst->host->midi_inject_to_move
         && len >= 2) {
+        int recv_ch = -2;
+        if (inst->host->slot_recv_channel) {
+            recv_ch = inst->host->slot_recv_channel(instance);
+        }
         for (int i = 0; i < out_count; i++) {
             if (out_lens[i] < 1) continue;
 
@@ -7075,7 +7090,11 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
                 case 0xE0: cin = 0x0E; break;
                 default:   continue;
             }
-            uint8_t pkt[4] = { (2 << 4) | cin, out_msgs[i][0], out_msgs[i][1], out_msgs[i][2] };
+            uint8_t inject_status = out_msgs[i][0];
+            if (recv_ch >= 0 && recv_ch <= 15) {
+                inject_status = (inject_status & 0xF0) | (uint8_t)recv_ch;
+            }
+            uint8_t pkt[4] = { (2 << 4) | cin, inject_status, out_msgs[i][1], out_msgs[i][2] };
             if (inst->host->midi_inject_to_move(pkt, 4) > 0) {
                 pre_mode_track_inject(inst, out_msgs[i], out_lens[i]);
             }

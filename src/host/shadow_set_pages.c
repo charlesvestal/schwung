@@ -269,8 +269,8 @@ int shadow_load_config_from_dir(const char *dir) {
             char *fwd_colon = strchr(fwd_pos, ':');
             if (fwd_colon) {
                 int ch = atoi(fwd_colon + 1);
-                if (ch >= -2 && ch <= 16)
-                    host.chain_slots[i].forward_channel = (ch > 0) ? ch - 1 : ch;
+                if (ch >= -2 && ch <= 15)
+                    host.chain_slots[i].forward_channel = ch;
             }
         }
         char *muted_pos = strstr(name_pos, "\"muted\"");
