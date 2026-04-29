@@ -2940,6 +2940,15 @@ static JSValue js_host_get_module_metadata(JSContext *ctx, JSValueConst this_val
     const char *id = JS_ToCString(ctx, argv[0]);
     if (!id) return JS_NULL;
 
+    /* Defense in depth: reject ids that could escape the modules tree. */
+    if (strchr(id, '/') || strstr(id, "..")) {
+        JS_FreeCString(ctx, id);
+        return JS_NULL;
+    }
+
+    /* NOTE: parse_module_json in module_manager.c does similar file I/O but
+     * parses into a module_info_t struct; this binding needs the raw JSValue
+     * for JS-side inspection, so the read path is duplicated here. */
     /* Try each category dir until module.json found. */
     static const char *bases[] = {
         "/data/UserData/schwung/modules",
