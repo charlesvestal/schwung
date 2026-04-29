@@ -181,7 +181,7 @@
                 <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                 <input type="hidden" name="source" value="tarball">
                 <label for="tarball-upload" class="sr-only">Module tarball file</label>
-                <input type="file" id="tarball-upload" name="file" accept=".tar.gz,.tgz" required>
+                <input type="file" id="tarball-upload" name="file" accept=".tar.gz,.tgz,.gz,application/gzip,application/x-gzip,application/x-tar,application/x-compressed-tar" required>
                 <button type="submit" class="btn btn-primary">Install from File</button>
             </form>
         </div>
