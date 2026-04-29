@@ -20,7 +20,6 @@
 import { drawConfirmOverlay } from '/data/UserData/schwung/shared/menu_layout.mjs';
 
 let gateActive = false;
-let gateLabel = '';
 let gateResolve = null;
 
 /**
@@ -64,7 +63,6 @@ export function confirmLineInput(label) {
         return Promise.resolve(false);
     }
     gateActive = true;
-    gateLabel = label || 'Line input';
     return new Promise((resolve) => {
         gateResolve = resolve;
     });
@@ -123,7 +121,6 @@ export function feedbackGateInput(cc, val) {
 function resolveGate(answer) {
     const r = gateResolve;
     gateActive = false;
-    gateLabel = '';
     gateResolve = null;
     if (r) r(answer);
 }
