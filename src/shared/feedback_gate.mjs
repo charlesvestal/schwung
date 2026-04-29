@@ -6,8 +6,7 @@
  * (so the input source defaults to the internal mic, which picks up the
  * speakers).
  *
- * Three callers:
- *   - Quantized Sampler source toggle (when source flips to "Move Input")
+ * Two callers:
  *   - Chain slot module pick (when picked module's metadata indicates it
  *     consumes line-in audio)
  *   - Tool module launch (same heuristic on the tool's metadata)
@@ -15,12 +14,16 @@
  * The modal renders via drawConfirmOverlay from menu_layout. The caller is
  * responsible for invoking feedbackGateDraw each tick while the gate is
  * active; this module exposes the state and input handling.
+ *
+ * NOTE: callback-based, NOT Promise-based. The schwung host's QuickJS
+ * runtime does not pump pending jobs (no JS_ExecutePendingJob calls), so
+ * Promise.then callbacks never fire. Callers pass a continuation function.
  */
 
 import { drawConfirmOverlay } from '/data/UserData/schwung/shared/menu_layout.mjs';
 
 let gateActive = false;
-let gateResolve = null;
+let gateContinuation = null;
 
 /**
  * Heuristic: true if the module pulls audio in from the line-in / internal mic.
@@ -49,31 +52,29 @@ function feedbackRiskPresent() {
 }
 
 /**
- * Begin a confirm flow. Returns a Promise that resolves to true (Yes) or false (No).
- * If conditions are safe, resolves to true immediately without showing the modal.
+ * Begin a confirm flow. Calls `cb(true)` immediately if no risk. Otherwise
+ * shows the modal and calls `cb(true)` on Yes / `cb(false)` on No once the
+ * user resolves it. If a gate is already active, calls `cb(false)`.
  *
  * Caller must:
  *   1. Pump feedbackGateDraw() in the tick path while feedbackGateActive() is true.
- *   2. Forward jog-click and back-button input via feedbackGateInput(cc, val).
+ *   2. Forward CC input via feedbackGateInput(cc, val).
  */
-export function confirmLineInput(label) {
-    if (!feedbackRiskPresent()) return Promise.resolve(true);
-    if (gateActive) {
-        /* Already showing — refuse to stack. */
-        return Promise.resolve(false);
-    }
+export function confirmLineInput(label, cb) {
+    if (typeof cb !== 'function') return;
+    if (!feedbackRiskPresent()) { cb(true); return; }
+    if (gateActive) { cb(false); return; }
     gateActive = true;
-    return new Promise((resolve) => {
-        gateResolve = resolve;
-    });
+    gateContinuation = cb;
 }
 
 /**
  * Combined helper: check meta + condition in one call.
  */
-export function maybeConfirmForModule(meta) {
-    if (!consumesLineInput(meta)) return Promise.resolve(true);
-    return confirmLineInput((meta && meta.name) || (meta && meta.id) || 'Module');
+export function maybeConfirmForModule(meta, cb) {
+    if (typeof cb !== 'function') return;
+    if (!consumesLineInput(meta)) { cb(true); return; }
+    confirmLineInput((meta && meta.name) || (meta && meta.id) || 'Module', cb);
 }
 
 /**
@@ -89,11 +90,9 @@ export function feedbackGateActive() {
 export function feedbackGateDraw() {
     if (!gateActive) return;
     drawConfirmOverlay('Speaker Feedback Risk', [
-        'Speakers are active!',
-        'Monitoring mic input',
-        'creates feedback.',
-        'Plug in headphones',
-        'or use line-in.',
+        'Speakers + Mic',
+        'Active!',
+        'Plug in headphones.',
     ]);
 }
 
@@ -119,8 +118,8 @@ export function feedbackGateInput(cc, val) {
 }
 
 function resolveGate(answer) {
-    const r = gateResolve;
+    const cb = gateContinuation;
     gateActive = false;
-    gateResolve = null;
-    if (r) r(answer);
+    gateContinuation = null;
+    if (cb) cb(answer);
 }
