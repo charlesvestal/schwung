@@ -1147,11 +1147,14 @@ static void shadow_inprocess_process_midi(void) {
                 sampler_on_clock(status_usb);
             }
 
-            /* Deliver realtime messages to the overtake DSP from cable 2 only
-             * (external USB MIDI clock). Move's internal cable 0 mirrors the
-             * same tempo, so using just cable 2 avoids double-counting while
-             * still covering the user's "clock from external device" case. */
-            if (cable == 2 && overtake_dsp_gen && overtake_dsp_gen_inst && overtake_dsp_gen->on_midi) {
+            /* Deliver realtime to overtake DSP from cable 0 (Move's internal
+             * transport). Cable 0 always carries Move's transport state when
+             * running, including when Move is slaved to an external master,
+             * so it works regardless of the user's MIDI Clock Out preference.
+             * Cable 2 was tried previously but is only populated when clock-
+             * out is enabled, so users with clock-out off saw 3po never start
+             * on Play. Mirrors the sampler_on_clock cable-0 choice above. */
+            if (cable == 0 && overtake_dsp_gen && overtake_dsp_gen_inst && overtake_dsp_gen->on_midi) {
                 uint8_t msg[1] = { status_usb };
                 overtake_dsp_gen->on_midi(overtake_dsp_gen_inst, msg, 1, MOVE_MIDI_SOURCE_EXTERNAL);
             }
