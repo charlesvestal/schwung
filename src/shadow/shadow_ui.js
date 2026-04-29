@@ -4628,6 +4628,44 @@ function generateNewFilePath(dir) {
     return dir + "/New_" + stamp + ext;
 }
 
+/* Launch a tool from the tools menu after the feedback gate has run (or
+ * been bypassed when the tool has no id). Mirrors the original VIEWS.TOOLS
+ * select dispatch — every launch path (overtake / set_picker /
+ * skip_file_browser+interactive / file browser / standalone / fallback)
+ * must be preserved here. */
+function launchToolConfirmed(tool) {
+    /* Track tool selection. Overtake tools are tracked inside
+     * loadOvertakeModule → skip here to avoid a double event. */
+    if (tool.kind !== 'overtake' && typeof host_track_event === "function" && tool.id) {
+        host_track_event('module_loaded', '"module_id":"' + tool.id + '","source":"tools"');
+    }
+    if (tool.kind === 'overtake') {
+        debugLog("TOOLS SELECT overtake: " + tool.id);
+        announce(`Loading ${tool.name || tool.id}`);
+        loadOvertakeModule(tool);
+        return;
+    }
+    debugLog("TOOLS SELECT tool: " + tool.id + " config=" + JSON.stringify(tool.tool_config));
+    if (tool.tool_config && tool.tool_config.set_picker) {
+        debugLog("TOOLS SELECT: entering set picker");
+        enterToolSetPicker(tool);
+    } else if (tool.tool_config && tool.tool_config.skip_file_browser && tool.tool_config.interactive) {
+        debugLog("TOOLS SELECT: skip_file_browser, launching interactive directly");
+        startInteractiveTool(tool, "");
+    } else if (tool.tool_config && (tool.tool_config.command || tool.tool_config.interactive || tool.tool_config.engines)) {
+        debugLog("TOOLS SELECT: entering file browser");
+        enterToolFileBrowser(tool);
+    } else if (tool.standalone) {
+        debugLog("TOOLS SELECT: launching standalone binary");
+        announce(`Launching ${tool.name}`);
+        const binaryPath = tool.path + "/standalone";
+        host_system_cmd("sh /data/UserData/schwung/launch-standalone.sh " + binaryPath);
+    } else {
+        debugLog("TOOLS SELECT: tool not available");
+        announce("Tool not available");
+    }
+}
+
 function enterToolFileBrowser(toolModule) {
     debugLog("enterToolFileBrowser: " + toolModule.id);
     toolActiveTool = toolModule;
@@ -11689,36 +11727,28 @@ function handleSelect() {
             if (toolsMenuIndex >= 0 && toolsMenuIndex < toolModules.length) {
                 const tool = toolModules[toolsMenuIndex];
                 if (tool.type === 'divider') break;
-                /* Track tool selection. Overtake tools are tracked inside
-                 * loadOvertakeModule → skip here to avoid a double event. */
-                if (tool.kind !== 'overtake' && typeof host_track_event === "function" && tool.id) {
-                    host_track_event('module_loaded', '"module_id":"' + tool.id + '","source":"tools"');
-                }
-                if (tool.kind === 'overtake') {
-                    debugLog("TOOLS SELECT overtake: " + tool.id);
-                    announce(`Loading ${tool.name || tool.id}`);
-                    loadOvertakeModule(tool);
+                if (tool.id) {
+                    const meta = (typeof host_get_module_metadata === 'function')
+                        ? host_get_module_metadata(tool.id) : null;
+                    maybeConfirmForModule(meta).then((ok) => {
+                        if (!ok) {
+                            if (typeof host_log === 'function') {
+                                host_log(`tools: declined feedback gate for ${tool.id}`);
+                            }
+                            needsRedraw = true;
+                            return;
+                        }
+                        launchToolConfirmed(tool);
+                    }).catch((err) => {
+                        if (typeof host_log === 'function') {
+                            host_log(`tools: feedback gate error for ${tool.id}: ${err}`);
+                        }
+                        launchToolConfirmed(tool);
+                    });
                     break;
                 }
-                debugLog("TOOLS SELECT tool: " + tool.id + " config=" + JSON.stringify(tool.tool_config));
-                if (tool.tool_config && tool.tool_config.set_picker) {
-                    debugLog("TOOLS SELECT: entering set picker");
-                    enterToolSetPicker(tool);
-                } else if (tool.tool_config && tool.tool_config.skip_file_browser && tool.tool_config.interactive) {
-                    debugLog("TOOLS SELECT: skip_file_browser, launching interactive directly");
-                    startInteractiveTool(tool, "");
-                } else if (tool.tool_config && (tool.tool_config.command || tool.tool_config.interactive || tool.tool_config.engines)) {
-                    debugLog("TOOLS SELECT: entering file browser");
-                    enterToolFileBrowser(tool);
-                } else if (tool.standalone) {
-                    debugLog("TOOLS SELECT: launching standalone binary");
-                    announce(`Launching ${tool.name}`);
-                    const binaryPath = tool.path + "/standalone";
-                    host_system_cmd("sh /data/UserData/schwung/launch-standalone.sh " + binaryPath);
-                } else {
-                    debugLog("TOOLS SELECT: tool not available");
-                    announce("Tool not available");
-                }
+                /* No tool.id (shouldn't happen, but defensive): launch directly. */
+                launchToolConfirmed(tool);
             }
             break;
         case VIEWS.TOOL_FILE_BROWSER:
