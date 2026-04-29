@@ -87,33 +87,6 @@ To permanently delete Schwung data instead of exporting a backup:
 curl -L https://raw.githubusercontent.com/charlesvestal/schwung/main/scripts/uninstall.sh | sh -s -- --purge-data
 ```
 
-## Modes
-
-- **Shadow UI**: Runs custom signal chains alongside stock Move so you can layer additional synths and effects. By default, both **Shift+Vol+Track** (and +Menu) and a long-press on Track/Menu open the Shadow UI; the trigger style is selectable in **Global Settings > Shortcuts**.
-- **Overtake modules**: Full-screen modules that temporarily take over the Move UI (e.g., MIDI controller apps). Use Shift+Vol+Jog click to access overtake modules.
-- **Quantized Sampler**: Shift+Sample opens a sampler that records to `Samples/Schwung/Resampler/YYYY-MM-DD/`. Choose resample (including Schwung synths) or Move Input, set duration in bars, and recording starts on a note event or pressing play.
-- **Skipback**: Shift+Capture writes the last 30 seconds of audio to `Samples/Schwung/Skipback/YYYY-MM-DD/`.
-- **Screen Reader**: Optional TTS announcements for accessibility. Toggle via Shadow UI settings, or Shift+Menu when Shadow UI is disabled.
-- **Schwung Manager**: Web interface at `move.local:7700` for managing modules, files, settings, and system updates from any browser. Screen mirroring at `move.local:7700/mirror`.
-
-In **Global Settings > Display > Overlay Knobs**, you can change the knob overlay trigger between `+Shift` (default), `+Jog Touch`, or `Off`. If `Shift+Knob` interferes with native Move actions (like fine control), use `+Jog Touch` or `Off`.
-
-Usage details, shortcuts, and workflows are documented in the [Schwung Manual](https://schwung.dev/manual.html).
-
-## Native Sampler Bridge
-
-In **Global Settings > Audio**, `Sample Src` controls whether Schwung audio is fed into native Move sampling workflows:
-
-- `Native`: Disabled — sampler uses Move's normal input (default)
-- `Schwung Mix`: Replaces native sampler input with Schwung master output
-
-For the most reliable native sampling behavior with this feature:
-- Set `Sample Src` to **Schwung Mix**
-- In Move's sampler, set sample source to **Line In**
-- Set monitoring to **Off**
-
-If monitoring is on (or source/routing is configured differently), audio feedback may occur.
-
 ## Documentation
 
 - [Schwung Manual](https://schwung.dev/manual.html) - User guide and shortcuts
@@ -135,8 +108,6 @@ Browse the full module catalog at [schwung.dev/catalog.html](https://schwung.dev
 ## Community
 
 - Discord: [https://discord.gg/GHWaZCC9bQ](https://discord.gg/GHWaZCC9bQ)
-- Contributors: @talktogreg, @impbox, @deets, @bobbyd, @chaolue, @charlesvestal
-
 
 ## AI Assistance Disclaimer
 
