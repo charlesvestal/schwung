@@ -1181,16 +1181,17 @@ func (app *App) handleCustomInstall(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var mj struct {
-			ID           string `json:"id"`
-			Capabilities struct {
+			ID            string `json:"id"`
+			ComponentType string `json:"component_type"`
+			Capabilities  struct {
 				ComponentType string `json:"component_type"`
 			} `json:"capabilities"`
 		}
 		json.Unmarshal(mjData, &mj)
 
-		componentType := mj.Capabilities.ComponentType
+		componentType := mj.ComponentType
 		if componentType == "" {
-			componentType = "other"
+			componentType = mj.Capabilities.ComponentType
 		}
 
 		// Move to the correct category directory.
@@ -1254,16 +1255,17 @@ func (app *App) handleCustomInstall(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var mj struct {
-			ID           string `json:"id"`
-			Capabilities struct {
+			ID            string `json:"id"`
+			ComponentType string `json:"component_type"`
+			Capabilities  struct {
 				ComponentType string `json:"component_type"`
 			} `json:"capabilities"`
 		}
 		json.Unmarshal(mjData, &mj)
 
-		componentType := mj.Capabilities.ComponentType
+		componentType := mj.ComponentType
 		if componentType == "" {
-			componentType = "other"
+			componentType = mj.Capabilities.ComponentType
 		}
 
 		categoryDir := filepath.Join(app.basePath, "modules", getInstallSubdir(componentType))
