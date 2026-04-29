@@ -1024,7 +1024,7 @@ existing_ext_midi_remap=$(get_existing_feature "ext_midi_remap_enabled" "true")
 # legacy bool "long_press_shadow" exists, migrate (true→both, false→shift_vol).
 existing_trigger=""
 if [ -n "$existing_features" ]; then
-    existing_trigger=$(echo "$existing_features" | grep -o '"shadow_ui_trigger"[[:space:]]*:[[:space:]]*"[a-z_]*"' | grep -o '"[a-z_]*"$' | tr -d '"' | head -1)
+    existing_trigger=$(echo "$existing_features" | grep -o '"shadow_ui_trigger"[[:space:]]*:[[:space:]]*"[a-z_]*"' | grep -o '"[a-z_]*"$' | tr -d '"' | head -1 || true)
 fi
 if [ -z "$existing_trigger" ]; then
     legacy_long_press=$(get_existing_feature "long_press_shadow" "")
