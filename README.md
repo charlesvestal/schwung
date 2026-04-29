@@ -4,7 +4,11 @@
 
 An unofficial framework for running custom instruments, effects, and controllers on Ableton Move.
 
-Schwung adds a Shadow UI that runs alongside stock Move, enabling additional Synths, FX, and other tools to run in parallel to the usual UI. 
+Schwung adds a Shadow UI that runs alongside stock Move, enabling additional Synths, FX, and other tools to run in parallel to the usual UI.
+
+- **Website:** [schwung.dev](https://schwung.dev)
+- **Manual:** [schwung.dev/manual.html](https://schwung.dev/manual.html)
+- **Module catalog:** [schwung.dev/catalog.html](https://schwung.dev/catalog.html)
 
 ## License
 
@@ -67,7 +71,7 @@ The installer will:
 
 For managing files on your Move, you can also use [Cyberduck](https://cyberduck.io) (SFTP to `move.local`, select your SSH private key).
 
-For troubleshooting and manual setup, see [MANUAL.md](MANUAL.md).
+For troubleshooting and manual setup, see the [Schwung Manual](https://schwung.dev/manual.html).
 
 ## Uninstall
 
@@ -94,7 +98,7 @@ curl -L https://raw.githubusercontent.com/charlesvestal/schwung/main/scripts/uni
 
 In **Global Settings > Display > Overlay Knobs**, you can change the knob overlay trigger between `+Shift` (default), `+Jog Touch`, or `Off`. If `Shift+Knob` interferes with native Move actions (like fine control), use `+Jog Touch` or `Off`.
 
-Usage details, shortcuts, and workflows are documented in [MANUAL.md](MANUAL.md).
+Usage details, shortcuts, and workflows are documented in the [Schwung Manual](https://schwung.dev/manual.html).
 
 ## Native Sampler Bridge
 
@@ -112,7 +116,7 @@ If monitoring is on (or source/routing is configured differently), audio feedbac
 
 ## Documentation
 
-- [MANUAL.md](MANUAL.md) - User guide and shortcuts 
+- [Schwung Manual](https://schwung.dev/manual.html) - User guide and shortcuts
 - [BUILDING.md](BUILDING.md) - Build instructions
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - System and Shadow UI architecture
 - [docs/MODULES.md](docs/MODULES.md) - Module development, Shadow UI integration, overtake modules
@@ -121,103 +125,7 @@ If monitoring is on (or source/routing is configured differently), audio feedbac
 
 ## Available Modules
 
-Modules are installable via the Module Store or the desktop installer. See [module-catalog.json](module-catalog.json) for full details.
-
-<!-- MODULE_TABLE_START -->
-### Sound Generators
-
-| Module | Description | Author |
-|--------|-------------|--------|
-| [Dexed](https://github.com/charlesvestal/schwung-dx7) | 6-operator FM synthesizer (Dexed/MSFA) with .syx patch support | Dexed/MSFA by google/asb2m10 (port: charlesvestal) |
-| [SF2 Synth](https://github.com/charlesvestal/schwung-sf2) | SoundFont (.sf2) synthesizer using FluidLite | FluidLite by Robin Lobel (port: charlesvestal) |
-| [SFZ Player](https://github.com/charlesvestal/schwung-sfz) | SFZ and DecentSampler (.dspreset) sample player using sfizz engine | sfizz by sfztools (port: charlesvestal) |
-| [Mini-JV](https://github.com/charlesvestal/schwung-jv880) | ROM-based PCM rompler emulator | nukeykt/giulioz (port: charlesvestal) |
-| [OB-Xd](https://github.com/charlesvestal/schwung-obxd) | Virtual analog synthesizer based on Oberheim OB-X | reales (port: charlesvestal) |
-| [Braids](https://github.com/charlesvestal/schwung-braids) | Macro oscillator with 47 synthesis algorithms (Mutable Instruments) | Emilie Gillet (port: charlesvestal) |
-| [Hera](https://github.com/charlesvestal/schwung-hera) | Juno-60 emulation synthesizer with BBD chorus | jpcima (port: charlesvestal) |
-| [Surge XT](https://github.com/charlesvestal/schwung-surge) | Hybrid synthesizer - wavetable, FM, subtractive, and physical modeling with 600+ presets | Surge Synth Team (port: charlesvestal) |
-| [RaffoSynth](https://github.com/charlesvestal/schwung-moog) | Monophonic synthesizer with 4 oscillators and Moog ladder filter | Nicolas Roulet, Julian Palladino (port: charlesvestal) |
-| [Webstream](https://github.com/charlesvestal/schwung-webstream) | Web audio search and streaming generator with bundled yt-dlp + ffmpeg runtime | charlesvestal |
-| [Radio Garden](https://github.com/charlesvestal/schwung-radiogarden) | Browse and stream live radio from 200 cities worldwide via Radio Garden | charlesvestal |
-| [AirPlay](https://github.com/charlesvestal/schwung-airplay) | AirPlay audio receiver - stream from iPhone, iPad, or Mac to Move's signal chain | charlesvestal |
-| [StreamRTSP](https://github.com/handcraftedcc/schwung-StreamRTSP) | Local RTSP audio receiver for Android ScreenStream and other RTSP senders | dom |
-| [Chiptune](https://github.com/charlesvestal/schwung-chiptune) | NES 2A03 & Game Boy DMG chiptune synthesizer with 32 presets | blargg (port: charlesvestal) |
-| [Osirus](https://github.com/charlesvestal/schwung-virus) | Access Virus DSP56300 emulator via Gearmulator JIT engine | dsp56300/gearmulator (port: charlesvestal) |
-| [Granny](https://github.com/handcraftedcc/move-everything-granny) | Granular sample instrument with scan controls and file browser | handcraftedcc |
-| [MrHyde](https://github.com/handcraftedcc/move-everything-mrhyde) | MicroFreak-inspired macro oscillator based on Mutable Instruments Plaits | handcraftedcc |
-| [MrDrums](https://github.com/handcraftedcc/move-everything-mrdrums) | 16-pad sample drum module with per-pad controls and dynamic pad editing | handcraftedcc |
-| [REX Player](https://github.com/charlesvestal/schwung-rex) | Propellerhead ReCycle (.rx2/.rex) slice player with DWOP lossless decoder | charlesvestal |
-| [HUSH ONE](https://github.com/charlesvestal/schwung-hush1) | Monophonic subtractive synthesizer emulating the Roland SH-101 | charlesvestal |
-| [NuSaw](https://github.com/charlesvestal/schwung-nusaw) | Polyphonic detuned multi-saw synthesizer with resonant filter, dual envelopes, chorus, and delay | charlesvestal |
-| [Plaits](https://github.com/j3threejay/move-anything-plaits) | Macro oscillator with 24 synthesis engines (Mutable Instruments Plaits) | Emilie Gillet (port: charlesvestal) |
-| [Sample Slicer](https://github.com/j3threejay/move-anything-slicer) | Transient-detecting sample slicer with 32-pad polyphonic playback | Justin Joe |
-| [Weird Dreams](https://github.com/fillioning/weird-dreams-move) | 8-voice analog drum machine — 64 kits, 41 voice presets, dynamic pad-selected voice editing, master bus FX | fillioning (DSP: dfilaretti) |
-| [Essaim](https://github.com/fillioning/essaim-move) | 32-voice rhythmic oscillator swarm — polyphonic self-triggering voices with envelope→FM, SVF filtering, LFO modulation routing, scale quantization, delay, and saturation | fillioning |
-| [Wurl](https://github.com/fillioning/wurl-move) | Physically-modeled Wurlitzer 200A electric piano (OpenWurli port) | hal0zer0 (port: fillioning) |
-| [Denis](https://github.com/fillioning/denis-move) | Monophonic West Coast synthesizer inspired by Serge Modular — bipolar modulation matrix, complex oscillators, stiffness-based geometry, and portamento | fillioning |
-| [303](https://github.com/charlesvestal/schwung-303) | TB-303 emulator (Open303 + Devilfish + Soft/RAT drive) | Robin Schmidt / midilab / davemollen (port: charlesvestal) |
-
-### Audio FX
-
-| Module | Description | Author |
-|--------|-------------|--------|
-| [CloudSeed](https://github.com/charlesvestal/schwung-cloudseed) | Algorithmic reverb by Ghost Note Audio | Ghost Note Audio (port: charlesvestal) |
-| [Midiverb](https://github.com/charlesvestal/schwung-midiverb) | Alesis Midiverb / Midifex / Midiverb II emulator (lo-fi 23.4 kHz reverb) | thement (DSP) · Charles Vestal (port) |
-| [TAPESCAM](https://github.com/charlesvestal/schwung-tapescam) | Tape saturation and degradation effect | Charles Vestal |
-| [PSX Verb](https://github.com/charlesvestal/schwung-psxverb) | PlayStation 1 SPU reverb emulation | Charles Vestal |
-| [TapeDelay](https://github.com/charlesvestal/schwung-space-delay) | Tape delay with flutter and tone shaping | Charles Vestal |
-| [Junologue Chorus](https://github.com/charlesvestal/schwung-junologue-chorus) | Junologue Chorus - Juno-60 chorus emulation (I, I+II, II modes) | Peter Allwin (port: charlesvestal) |
-| [NAM](https://github.com/charlesvestal/schwung-nam) | Neural Amp Modeler - neural network guitar amp/effect emulation | NeuralAudio by Mike Oliphant (port: charlesvestal) |
-| [Ducker](https://github.com/charlesvestal/schwung-ducker) | MIDI-triggered sidechain ducker - classic pumping without an audio sidechain | charlesvestal |
-| [CLAP FX](https://github.com/charlesvestal/schwung-clap) | Host for CLAP audio effect plugins | charlesvestal |
-| [Gate](https://github.com/charlesvestal/schwung-gate) | Noise gate and downward expander | charlesvestal |
-| [Key Detect](https://github.com/charlesvestal/schwung-keydetect) | Detects the musical key of audio passing through it | charlesvestal |
-| [Vocoder](https://github.com/charlesvestal/schwung-vocoder) | Channel vocoder - uses mic/line-in as modulator to shape synth carrier | charlesvestal |
-| [Usefulity](https://github.com/charlesvestal/schwung-usefulity) | Stereo utility - channel select, width, bass mono, gain, pan, phase, mute, DC filter | charlesvestal |
-| [Boris Granular](https://github.com/fillioning/move-anything-boris) | Real-time granular audio effect with live input capture and MIDI sync | Alessandro Gaiba (port: fillioning) |
-| [Super Boom](https://github.com/fillioning/super-boom-move) | OTO Boum-inspired master bus destructor with 8-band filterbank, 10 preamp models, vocoder mode, and tape stage | fillioning |
-| [Verglas](https://github.com/fillioning/move-everything-verglas) | Mutable Instruments Clouds granular processor — granular, stretch, looper, and spectral modes with output filters and limiter | Emilie Gillet (port: fillioning) |
-| [Dragonfly Hall](https://github.com/wolfrenegade1976/move-anything-dragonfly-hall) | Dragonfly Hall Reverb — lush hall reverb with 25 presets and full parameter control | bradcoomber |
-| [Punch-In FX](https://github.com/fillioning/MovePunchFX) | PO-33 style punch-in effects with pressure control — 16 effects on left 4x4 pad grid | fillioning |
-| [Structor](https://github.com/fillioning/move-everything-structor) | Musique concrete sound deconstructor/reconstructor — 8 algorithmic modes with per-grain DJ filtering, randomization, and sequencer | fillioning |
-| [Dissolver](https://github.com/fillioning/dissolver-move) | Spectral smearing pad generator — dissolves transients into evolving ambient pads via FFT magnitude analysis and random phase reconstruction | fillioning |
-| [Spectra](https://github.com/fillioning/spectra-move) | Multiband spectral resonator — pitch-tracking SVF resonator bank with scale quantizer, 12 scales x 12 roots, chord drift | fillioning |
-| [CHOWTape](https://github.com/charlesvestal/schwung-chowtape) | Analog tape model with Jiles-Atherton magnetic hysteresis, loss filter, wow & flutter, chew, and degradation | Jatin Chowdhury (port: charlesvestal) |
-
-### MIDI FX
-
-| Module | Description | Author |
-|--------|-------------|--------|
-| [Super Arp](https://github.com/handcraftedcc/move-everything-superarp) | Advanced MIDI arpeggiator with progression patterns, rhythm presets, and seeded modifiers | handcraftedcc |
-| [Eucalypso](https://github.com/handcraftedcc/move-everything-eucalypso) | Deterministic 4-lane Euclidean MIDI sequencer with held/scale note registers, retrigger modes, and seeded modulation | handcraftedcc |
-| [Genera](https://github.com/fillioning/genera-move) | Generative note and chord sequencer with 7 generation modes, stutter engine with beat-repeat, 20 scales, chord stacking, capture/loop, and humanize | Vincent Fillion |
-| [Euclidrum](https://github.com/fillioning/euclidrum-move) | 8-lane generative Euclidean drum sequencer — 32 presets, polymetric rates, mutation/drift, per-lane freq/decay CC output. Purpose-built companion for Weird Dreams. | Vincent Fillion |
-| [Branchage](https://github.com/broduoliviercontact-web/Schwung-Midi-Fx-branchages-Multi-Random-generator) | Grids drum maps with per-lane Branches-style note branching | Mutable Instruments ideas / port for Schwung Move |
-| [Impressive Chords](https://github.com/mestela/schwung-impressive-chords) | Advanced chord generator with strumming and clock-synced retriggering | mestela |
-
-### Overtake
-
-| Module | Description | Author |
-|--------|-------------|--------|
-| [M8 LPP Emulator](https://github.com/charlesvestal/schwung-m8) | Novation Launchpad Pro emulation for Dirtywave M8 | bobbydigitales (port: charlesvestal) |
-| [SID Control](https://github.com/charlesvestal/schwung-sidcontrol) | MIDI controller for SIDaster III synthesizer | charlesvestal |
-| [Custom MIDI Control](https://github.com/chaolue/move-anything-control) | Custom MIDI controller with 16 banks of configurable pads/knobs/buttons | chaolue |
-| [Performance FX](https://github.com/charlesvestal/schwung-performance-fx) | 32 punch-in audio FX with pressure control, latch, and tempo sync | charlesvestal |
-| [TwinSampler](https://github.com/jrucho/schwung-twinsampler) | Dual-grid overtake sampler with 16 banks, auto-slicing, per-pad controls, MIDI loopers and session management | jrucho |
-
-### Tools
-
-| Module | Description | Author |
-|--------|-------------|--------|
-| [AutoSample](https://github.com/charlesvestal/schwung-autosample) | Autosample external MIDI gear to create multisampled SFZ instruments | charlesvestal |
-| [Wave Edit](https://github.com/charlesvestal/schwung-waveform-editor) | Trim, gain adjust, and edit audio files on the Move | charlesvestal |
-| [Time Stretch](https://github.com/charlesvestal/schwung-stretch) | Real-time audio time stretching with Bungee | charlesvestal |
-| [Stems](https://github.com/charlesvestal/schwung-stems) | Separate audio into stems: drums, vocals, accompaniment (0.5x realtime) | charlesvestal |
-| [DJ Deck](https://github.com/djhardrich/move-anything-dj) | CDJ/turntable-style 4-track stem player with Bungee timestretch/pitchshift | DJ Hard Rich |
-| [Tuner](https://github.com/CatsAreCool710/Move-Everything-Tuner) | Chromatic and instrument tuner with step guide feedback | Jeremiah Ticket |
-| [TB-3PO](https://github.com/charlesvestal/schwung-tb3po) | Generative 303-style acid-bassline sequencer with dual slots and 303 CC mode | djphazer / Hemisphere Suite (port: charlesvestal) |
-
-<!-- MODULE_TABLE_END -->
+Browse the full module catalog at [schwung.dev/catalog.html](https://schwung.dev/catalog.html). Modules are installable via the Module Store or the desktop installer. The catalog source lives in [module-catalog.json](module-catalog.json).
 
 ## Related Repositories
 
