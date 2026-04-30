@@ -6770,12 +6770,22 @@ function applyComponentSelection() {
             break;
     }
 
-    /* Feedback gate: if the picked module pulls line-in, warn about speakers */
+    /* Feedback gate: if the picked module pulls line-in, warn about speakers.
+     * Callback-based — schwung's QuickJS doesn't pump pending jobs so
+     * Promise.then never fires. */
     if (paramKey && moduleId) {
-        const slotIndex = selectedSlot;  /* capture before async — shim JUMP_TO_SLOT path can mutate selectedSlot */
-        const meta = (typeof host_get_module_metadata === 'function')
-            ? host_get_module_metadata(moduleId) : null;
-        maybeConfirmForModule(meta).then((ok) => {
+        const slotIndex = selectedSlot;  /* capture — shim JUMP_TO_SLOT path can mutate selectedSlot */
+        let meta = null;
+        try {
+            if (typeof host_get_module_metadata === 'function') {
+                meta = host_get_module_metadata(moduleId);
+            }
+        } catch (err) {
+            if (typeof host_log === 'function') {
+                host_log(`applyComponentSelection: feedback gate metadata error for ${moduleId}: ${err}`);
+            }
+        }
+        maybeConfirmForModule(meta, (ok) => {
             if (!ok) {
                 if (typeof host_log === 'function') {
                     host_log(`applyComponentSelection: declined feedback gate for ${moduleId}`);
@@ -6785,14 +6795,6 @@ function applyComponentSelection() {
                 setView(VIEWS.CHAIN_EDIT);
                 needsRedraw = true;
                 return;
-            }
-            applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp);
-        }).catch((err) => {
-            /* Metadata fetch / heuristic threw — treat as non-risky pick and proceed.
-             * Without this, an exception would leave the optimistic chainConfigs
-             * mutation in place with no setSlotParam, causing UI/DSP desync. */
-            if (typeof host_log === 'function') {
-                host_log(`applyComponentSelection: feedback gate error for ${moduleId}: ${err}`);
             }
             applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp);
         });
@@ -11728,20 +11730,23 @@ function handleSelect() {
                 const tool = toolModules[toolsMenuIndex];
                 if (tool.type === 'divider') break;
                 if (tool.id) {
-                    const meta = (typeof host_get_module_metadata === 'function')
-                        ? host_get_module_metadata(tool.id) : null;
-                    maybeConfirmForModule(meta).then((ok) => {
+                    let meta = null;
+                    try {
+                        if (typeof host_get_module_metadata === 'function') {
+                            meta = host_get_module_metadata(tool.id);
+                        }
+                    } catch (err) {
+                        if (typeof host_log === 'function') {
+                            host_log(`tools: feedback gate metadata error for ${tool.id}: ${err}`);
+                        }
+                    }
+                    maybeConfirmForModule(meta, (ok) => {
                         if (!ok) {
                             if (typeof host_log === 'function') {
                                 host_log(`tools: declined feedback gate for ${tool.id}`);
                             }
                             needsRedraw = true;
                             return;
-                        }
-                        launchToolConfirmed(tool);
-                    }).catch((err) => {
-                        if (typeof host_log === 'function') {
-                            host_log(`tools: feedback gate error for ${tool.id}: ${err}`);
                         }
                         launchToolConfirmed(tool);
                     });
