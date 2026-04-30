@@ -6734,24 +6734,29 @@ function applyComponentSelection() {
 
     /* Feedback gate: if the picked module pulls line-in, warn about speakers */
     if (paramKey && moduleId) {
+        const slotIndex = selectedSlot;  /* capture before async — shim JUMP_TO_SLOT path can mutate selectedSlot */
         const meta = (typeof host_get_module_metadata === 'function')
             ? host_get_module_metadata(moduleId) : null;
-        /* Use synchronous fast-path if no risk; otherwise await modal */
         maybeConfirmForModule(meta).then((ok) => {
             if (!ok) {
-                /* User declined — abort. Slot stays as it was; no setSlotParam.
-                 * Resync chainConfigs from DSP to undo the optimistic mutation
-                 * applied above (cfg[comp.key]). */
                 if (typeof host_log === 'function') {
                     host_log(`applyComponentSelection: declined feedback gate for ${moduleId}`);
                 }
-                loadChainConfigFromSlot(selectedSlot);
-                slotUserCleared[selectedSlot] = false;
+                loadChainConfigFromSlot(slotIndex);
+                slotUserCleared[slotIndex] = false;
                 setView(VIEWS.CHAIN_EDIT);
                 needsRedraw = true;
                 return;
             }
-            applyComponentSelectionConfirmed(selectedSlot, paramKey, moduleId, comp);
+            applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp);
+        }).catch((err) => {
+            /* Metadata fetch / heuristic threw — treat as non-risky pick and proceed.
+             * Without this, an exception would leave the optimistic chainConfigs
+             * mutation in place with no setSlotParam, causing UI/DSP desync. */
+            if (typeof host_log === 'function') {
+                host_log(`applyComponentSelection: feedback gate error for ${moduleId}: ${err}`);
+            }
+            applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp);
         });
         return;
     }
