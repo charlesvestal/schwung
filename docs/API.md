@@ -175,6 +175,11 @@ host_extract_tar_strip(tarball, dir, strip) // Extract with --strip-components
 host_ensure_dir(path)         // Create directory if it doesn't exist, returns bool
 host_remove_dir(path)         // Recursively remove directory, returns bool
 
+// Jack state and module metadata (used by feedback-protection gate)
+host_speaker_active()         // Returns bool - true when built-in speakers active (no headphones)
+host_line_in_connected()      // Returns bool - true when line-in cable plugged (vs internal mic)
+host_get_module_metadata(id)  // Returns parsed module.json object, or null if not installed
+
 // Screen reader
 host_announce_screenreader(text) // Speak text via TTS (if screen reader enabled)
 
@@ -267,6 +272,14 @@ get_int16(buf, off) / set_int16(buf, off, v)
 `host_module_send_midi` accepts a 3-byte array `[status, data1, data2]` and an optional `source` (`"internal"`, `"external"`, or `"host"`).
 `host_load_ui_module` returns a boolean and loads the file as an ES module without invoking `globalThis.init`.
 `host_exit_module` is dynamically created for tool modules only — it is not available in the main host context.
+
+### Jack state and module metadata
+
+`host_speaker_active()` — returns `true` when built-in speakers are active (no headphones plugged), `false` otherwise. Reflects XMOS CC 115 line-out detect, observed at SPI frame ~180ms after boot.
+
+`host_line_in_connected()` — returns `true` when a line-in cable is plugged, `false` otherwise (internal mic active). Reflects XMOS CC 114 mic-in detect.
+
+`host_get_module_metadata(id)` — returns the parsed `module.json` for the given module id, or `null` if the module isn't installed. Used by the feedback-protection gate to inspect `capabilities.audio_in` and `component_type`.
 
 ## Utility Functions
 
