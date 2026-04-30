@@ -745,6 +745,28 @@
       "default_branch": "main",
       "asset_name": "impressive-chords.tar.gz",
       "min_host_version": "0.9.0"
+    },
+    {
+      "id": "303",
+      "name": "303",
+      "description": "TB-303 emulator (Open303 + Devilfish + Soft/RAT drive)",
+      "author": "Robin Schmidt / midilab / davemollen (port: charlesvestal)",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/schwung-303",
+      "default_branch": "main",
+      "asset_name": "303-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
+      "id": "tb3po",
+      "name": "TB-3PO",
+      "description": "Generative 303-style acid-bassline sequencer with dual slots and 303 CC mode",
+      "author": "djphazer / Hemisphere Suite (port: charlesvestal)",
+      "component_type": "tool",
+      "github_repo": "charlesvestal/schwung-tb3po",
+      "default_branch": "main",
+      "asset_name": "tb3po-module.tar.gz",
+      "min_host_version": "0.9.8"
     }
   ]
 }
