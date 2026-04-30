@@ -117,6 +117,13 @@ import {
 } from '/data/UserData/schwung/shared/sampler_overlay.mjs';
 
 import {
+    maybeConfirmForModule,
+    feedbackGateActive,
+    feedbackGateDraw,
+    feedbackGateInput,
+} from '/data/UserData/schwung/shared/feedback_gate.mjs';
+
+import {
     buildFilepathBrowserState,
     refreshFilepathBrowser,
     moveFilepathBrowserSelection,
@@ -6725,9 +6732,38 @@ function applyComponentSelection() {
             break;
     }
 
+    /* Feedback gate: if the picked module pulls line-in, warn about speakers */
+    if (paramKey && moduleId) {
+        const meta = (typeof host_get_module_metadata === 'function')
+            ? host_get_module_metadata(moduleId) : null;
+        /* Use synchronous fast-path if no risk; otherwise await modal */
+        maybeConfirmForModule(meta).then((ok) => {
+            if (!ok) {
+                /* User declined — abort. Slot stays as it was; no setSlotParam.
+                 * Resync chainConfigs from DSP to undo the optimistic mutation
+                 * applied above (cfg[comp.key]). */
+                if (typeof host_log === 'function') {
+                    host_log(`applyComponentSelection: declined feedback gate for ${moduleId}`);
+                }
+                loadChainConfigFromSlot(selectedSlot);
+                slotUserCleared[selectedSlot] = false;
+                setView(VIEWS.CHAIN_EDIT);
+                needsRedraw = true;
+                return;
+            }
+            applyComponentSelectionConfirmed(selectedSlot, paramKey, moduleId, comp);
+        });
+        return;
+    }
+
+    /* Clearing a slot (empty moduleId) — no feedback risk, run directly. */
+    applyComponentSelectionConfirmed(selectedSlot, paramKey, moduleId, comp);
+}
+
+function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp) {
     if (paramKey) {
-        if (typeof host_log === "function") host_log(`applyComponentSelection: slot=${selectedSlot} param=${paramKey} module=${moduleId}`);
-        const success = setSlotParam(selectedSlot, paramKey, moduleId);
+        if (typeof host_log === "function") host_log(`applyComponentSelection: slot=${slotIndex} param=${paramKey} module=${moduleId}`);
+        const success = setSlotParam(slotIndex, paramKey, moduleId);
         if (typeof host_log === "function") host_log(`applyComponentSelection: setSlotParam returned ${success}`);
         if (!success) {
             print(2, 50, "Failed to apply", 1);
@@ -6744,8 +6780,8 @@ function applyComponentSelection() {
      * Without this, the knob overlay can show the old module's name and params
      * because the periodic refreshSlotModuleSignature (every 30 ticks) hasn't
      * run yet to sync the in-memory state with DSP. */
-    loadChainConfigFromSlot(selectedSlot);
-    lastSlotModuleSignatures[selectedSlot] = getSlotModuleSignature(selectedSlot);
+    loadChainConfigFromSlot(slotIndex);
+    lastSlotModuleSignatures[slotIndex] = getSlotModuleSignature(slotIndex);
     invalidateKnobContextCache();
     setView(VIEWS.CHAIN_EDIT);
     needsRedraw = true;
@@ -14669,6 +14705,10 @@ globalThis.tick = function() {
             drawMessageOverlay(warningTitle, warningLines);
         }
 
+        if (feedbackGateActive()) {
+            feedbackGateDraw();
+        }
+
         /* Draw overlay on top of main view (uses shared overlay system) */
         drawOverlay();
     }
@@ -14733,6 +14773,14 @@ globalThis.onMidiMessageInternal = function(data) {
     /* Debug: log all MIDI when in overtake mode to diagnose escape issues */
     if (view === VIEWS.OVERTAKE_MODULE || view === VIEWS.OVERTAKE_MENU) {
         debugLog(`MIDI_IN: view=${view} status=${status} d1=${d1} d2=${d2} loaded=${overtakeModuleLoaded} callbacks=${!!overtakeModuleCallbacks}`);
+    }
+
+    /* Feedback gate intercepts CC input while modal is showing */
+    if (feedbackGateActive() && (status & 0xF0) === 0xB0) {
+        if (feedbackGateInput(d1, d2)) {
+            needsRedraw = true;
+            return;
+        }
     }
 
     if (view === VIEWS.CANVAS && (status & 0xF0) === 0xB0) {
