@@ -166,6 +166,8 @@ static void *skipback_resize_thread(void *arg) {
 }
 static int shadow_speaker_active = 1;      /* 1=built-in speaker, 0=headphones/line-out (from CC 115) */
 static int shadow_speaker_active_known = 0; /* 1 once any CC 115 jack-detect has been observed */
+static int shadow_line_in_connected = 0;       /* 1 = cable plugged, 0 = internal mic active (from CC 114) */
+static int shadow_line_in_connected_known = 0; /* 1 once any CC 114 jack-detect has been observed */
 /* Long-press Track/Menu/Step2 shortcuts — always enabled */
 
 /* ----- RBJ biquad (direct form I transposed) for speaker-EQ compensation -----
@@ -3598,6 +3600,7 @@ static void shim_init_subsystems(void)
         shadow_control->skipback_seconds = (uint16_t)skipback_seconds_setting;
         shadow_control->shadow_ui_trigger = shadow_ui_trigger_setting;
         shadow_control->speaker_active = 1; /* assume speaker at boot; CC 115 will correct */
+        shadow_control->line_in_connected = 0; /* assume internal mic at boot; CC 114 will correct */
     }
 
     /* Precompute speaker-EQ biquad coefficients. SR is 44.1 kHz (Move's audio engine). */
@@ -5727,13 +5730,22 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             uint8_t d1     = src_early[j + 2];
             uint8_t d2     = src_early[j + 3];
             if ((status & 0xF0) != 0xB0) continue;
-            if (d1 != CC_LINE_OUT_DETECT) continue;
-            int new_speaker = (d2 == 0) ? 1 : 0;
-            shadow_speaker_active_known = 1;
-            if (new_speaker != shadow_speaker_active) {
-                shadow_speaker_active = new_speaker;
-                if (shadow_control) shadow_control->speaker_active = (uint8_t)new_speaker;
-                memset(speaker_eq_state, 0, sizeof(speaker_eq_state));
+
+            if (d1 == CC_LINE_OUT_DETECT) {
+                int new_speaker = (d2 == 0) ? 1 : 0;
+                shadow_speaker_active_known = 1;
+                if (new_speaker != shadow_speaker_active) {
+                    shadow_speaker_active = new_speaker;
+                    if (shadow_control) shadow_control->speaker_active = (uint8_t)new_speaker;
+                    memset(speaker_eq_state, 0, sizeof(speaker_eq_state));
+                }
+            } else if (d1 == CC_MIC_IN_DETECT) {
+                int new_line_in = (d2 == 0) ? 0 : 1;  /* d2=0 → no cable (internal mic); d2=127 → cable plugged */
+                shadow_line_in_connected_known = 1;
+                if (new_line_in != shadow_line_in_connected) {
+                    shadow_line_in_connected = new_line_in;
+                    if (shadow_control) shadow_control->line_in_connected = (uint8_t)new_line_in;
+                }
             }
         }
     }
@@ -5771,6 +5783,19 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         snprintf(msg, sizeof(msg),
                                  "CC 115 line-out detect: val=%d → speaker_active=%d",
                                  d2, new_speaker);
+                        shadow_log(msg);
+                    }
+                }
+
+                if (d1 == CC_MIC_IN_DETECT) {
+                    int new_line_in = (d2 == 0) ? 0 : 1;
+                    if (new_line_in != shadow_line_in_connected) {
+                        shadow_line_in_connected = new_line_in;
+                        if (shadow_control) shadow_control->line_in_connected = (uint8_t)new_line_in;
+                        char msg[64];
+                        snprintf(msg, sizeof(msg),
+                                 "CC 114 line-in detect: val=%d → line_in_connected=%d",
+                                 d2, new_line_in);
                         shadow_log(msg);
                     }
                 }
