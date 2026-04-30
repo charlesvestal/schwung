@@ -5183,9 +5183,17 @@ static void shim_remap_cable2_channels(uint8_t *shadow) {
         uint8_t *buf = targets[t];
         if (!buf) continue;
         buf += MIDI_IN_OFFSET;
-        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+        /* MIDI_IN events are 8 bytes (4 USB-MIDI + 4 timestamp). 4-byte
+         * stride visits timestamps and rewrites their bytes when a
+         * timestamp byte happens to look like cable-2 + a non-system
+         * status — corrupts the contiguous event run that Move's MIDI_IN
+         * parser scans (it terminates at the first zero slot). Sparse
+         * buffer hides this; transport-running + external MIDI fills the
+         * buffer and produces SIGABRT deep in Move's stack. */
+        const int MIDI_IN_MAX_BYTES = 8 * 31;     /* 31 events × 8 bytes */
+        for (int j = 0; j < MIDI_IN_MAX_BYTES; j += 8) {
             uint8_t header = buf[j];
-            if (header == 0) continue;            /* empty slot */
+            if (header == 0) break;               /* end-of-events */
             uint8_t cable = (header >> 4) & 0x0F;
             if (cable != 2) continue;             /* only cable-2 (external USB) */
             uint8_t status = buf[j + 1];
