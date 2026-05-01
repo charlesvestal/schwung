@@ -43,6 +43,7 @@ Optional fields: `description`, `author`, `ui`, `ui_chain`, `dsp`, `defaults`, `
 - `abbrev`: Short display name (3-6 chars) for Shadow UI slot display (e.g., "SF2", "Dexed", "CLAP")
 - `module.json` is parsed by a minimal JSON reader. Use double quotes for keys, lowercase `true`/`false`, and avoid comments.
 - Keep `module.json` reasonably small (the loader caps it at 8KB).
+- `dsp`: any filename inside the module directory. The host loads whatever path you specify here, so `dsp.so`, `<module-id>.so`, or anything else is fine for standalone modules. **Exception — `audio_fx` modules used inside Signal Chain:** the chain host loads the FX directly as `modules/audio_fx/<id>/<id>.so` (it does not consult the FX's `module.json`), so audio FX shared libraries **must** be named `<module-id>.so`. Sound generators and MIDI sources loaded by the chain are hardcoded to `dsp.so`.
 
 ### Capabilities
 
@@ -1328,6 +1329,8 @@ Note: Audio input routing depends on the last selected input in the stock Move i
 ## Audio FX Plugin API
 
 Audio effects use an in-place processing API. The v2 API supports multiple instances:
+
+**Filename:** When loaded inside Signal Chain, the chain host expects the shared library at `modules/audio_fx/<id>/<id>.so` — it does not read `module.json`'s `dsp` field. Name your audio FX shared library `<module-id>.so` (e.g. `freeverb.so`, `cloudseed.so`), not `dsp.so`.
 
 ```c
 typedef struct audio_fx_api_v2 {
