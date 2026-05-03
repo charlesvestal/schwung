@@ -3084,6 +3084,7 @@ func main() {
 	mux.HandleFunc("POST /api/download", app.handleAPIDownload)
 	mux.HandleFunc("GET /api/download/status/{id}", app.handleAPIDownloadStatus)
 	mux.HandleFunc("POST /api/open-in-tool", app.handleAPIOpenInTool)
+	mux.HandleFunc("POST /api/show-rebooting", app.handleShowRebooting)
 
 	// Graceful shutdown context — created early so RemoteUI can use it.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
