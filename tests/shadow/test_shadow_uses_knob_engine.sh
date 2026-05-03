@@ -20,9 +20,15 @@ if ! rg -F -q 'knobTick(' "$shadow_file"; then
   exit 1
 fi
 
-# adjustHierSelectedParam should no longer use the bare linear math
-if rg -F -q 'num + delta * step' "$shadow_file"; then
-  echo "FAIL: linear delta math still present in shadow_ui.js" >&2
+# Verify adjustHierSelectedParam does NOT use the bare linear math anymore
+adjust_body=$(awk '
+  /^function adjustHierSelectedParam\(/ { capture=1 }
+  capture { print }
+  capture && /^}/ { capture=0 }
+' "$shadow_file")
+
+if echo "$adjust_body" | grep -F -q 'num + delta * step'; then
+  echo "FAIL: linear delta math still present in adjustHierSelectedParam" >&2
   exit 1
 fi
 

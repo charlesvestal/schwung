@@ -8849,7 +8849,7 @@ function processPendingHierKnob() {
     const step = fineWavEdit
         ? (fineStep > 0 ? fineStep : baseStep)
         : (baseStep * accel);
-    const newVal = Math.max(min, Math.min(max, num + (delta * step)));
+    const newVal = Math.max(min, Math.min(max, num + delta * step));
 
     /* Update local cache — no IPC read needed on next turn */
     knobValueCache[knobIndex] = newVal;
