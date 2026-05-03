@@ -38,6 +38,10 @@ import {
 
 import { decodeDelta } from '/data/UserData/schwung/shared/input_filter.mjs';
 import { knobInit, knobTick, knobConfigFromMeta } from '/data/UserData/schwung/shared/knob_engine.mjs';
+import {
+    formatParamValue as ufFormatParamValue,
+    formatParamForSet as ufFormatParamForSet,
+} from '/data/UserData/schwung/shared/param_format.mjs';
 
 /* Volume touch note for Shift+Vol+Jog detection */
 const VOLUME_TOUCH_NOTE = 8;
@@ -8112,49 +8116,16 @@ function getWavPositionSetPrecision(meta) {
 
 /* Format a param value for setting (respects type) */
 function formatParamForSet(val, meta) {
-    if (meta && meta.type === "int") {
-        return Math.round(val).toString();
-    }
     if (meta && meta.ui_type === "wav_position") {
         if (meta.display_unit === "ms") return Math.round(val).toString();
         const precision = getWavPositionSetPrecision(meta);
         return Number(val).toFixed(precision);
     }
-    return val.toFixed(3);
-}
-
-/* Format a param value for overlay display (respects type and range) */
-function applyDisplayFormat(fmt, num, meta) {
-    if (!fmt) return null;
-    /* Support printf-inspired format strings: .4f, .2%, %.2f, etc. */
-    const match = fmt.match(/^%?\.?(\d+)(f|%)$/);
-    if (!match) return null;
-    const decimals = parseInt(match[1]);
-    /* Replicate C-side scaling: if unit is "%" and max <= 1, scale to 0-100 */
-    let displayVal = num;
-    if (meta && meta.unit === "%" && typeof meta.max === "number" && meta.max <= 1) {
-        displayVal = num * 100.0;
-    }
-    if (match[2] === "%") {
-        return (num * 100).toFixed(decimals) + "%";
-    }
-    const formatted = displayVal.toFixed(decimals);
-    /* Append unit suffix if present (matching C-side behavior) */
-    if (meta && meta.unit) return formatted + (meta.unit === "%" ? "%" : " " + meta.unit);
-    return formatted;
+    return ufFormatParamForSet(val, meta);
 }
 
 function formatParamForOverlay(val, meta) {
-    if (meta && meta.type === "int") {
-        return Math.round(val).toString();
-    }
-    /* Enum/bool: show value as-is (string) */
-    if (meta && (meta.type === "enum" || meta.type === "bool")) {
-        if (meta.picker_type && (val === "" || val === null || val === undefined)) {
-            return meta.none_label || "(none)";
-        }
-        return String(formatMetaOptionValue(meta, val));
-    }
+    /* Local-only special cases that param_format.mjs intentionally doesn't know about */
     if (meta && meta.ui_type === "wav_position") {
         return formatWavPositionDisplayValue(val, meta);
     }
@@ -8164,18 +8135,30 @@ function formatParamForOverlay(val, meta) {
     if (meta && meta.type === "canvas") {
         return formatCanvasDisplayValue(val, meta);
     }
-    /* Use display_format if provided by module metadata */
-    if (meta && meta.display_format) {
-        const formatted = applyDisplayFormat(meta.display_format, val, meta);
-        if (formatted !== null) return formatted;
+    /* picker enum with empty value -> none_label */
+    if (meta && (meta.type === "enum" || meta.type === "bool") &&
+        meta.picker_type && (val === "" || val === null || val === undefined)) {
+        return meta.none_label || "(none)";
     }
-    /* Float: show as percentage if 0-1 or 0-2 range */
+    /* enum/bool — go through formatMetaOptionValue (handles index↔label dual format) */
+    if (meta && (meta.type === "enum" || meta.type === "bool")) {
+        return String(formatMetaOptionValue(meta, val));
+    }
+    /* If the param has a unit or display_format, hand off to the shared formatter */
+    if (meta && (meta.unit || meta.display_format)) {
+        return ufFormatParamValue(val, meta);
+    }
+    /* Legacy auto-percent fallback for un-tagged floats in 0..(1..4] range —
+     * preserves visual behavior of un-migrated modules until they declare unit:"%". */
+    if (meta && meta.type === "int") {
+        return Math.round(val).toString();
+    }
     const min = meta && typeof meta.min === "number" ? meta.min : 0;
     const max = meta && typeof meta.max === "number" ? meta.max : 1;
     if (min === 0 && max >= 1 && max <= 4) {
         return Math.round(val * 100) + "%";
     }
-    return val.toFixed(2);
+    return Number(val).toFixed(2);
 }
 
 function getHierarchyLevelDef() {
