@@ -774,8 +774,12 @@ if [ "$use_reenable" = true ]; then
   # Clean stale ld.so.preload entries
   ssh_root_with_retry "if [ -f /etc/ld.so.preload ] && grep -q 'schwung-shim.so' /etc/ld.so.preload; then ts=\$(date +%Y%m%d-%H%M%S); cp /etc/ld.so.preload /etc/ld.so.preload.bak-schwung-\$ts; grep -v 'schwung-shim.so' /etc/ld.so.preload > /tmp/ld.so.preload.new || true; if [ -s /tmp/ld.so.preload.new ]; then cat /tmp/ld.so.preload.new > /etc/ld.so.preload; else rm -f /etc/ld.so.preload; fi; rm -f /tmp/ld.so.preload.new; fi" || true
 
-  # Symlink shim to /usr/lib/ + setuid
-  ssh_root_with_retry "rm -f /usr/lib/schwung-shim.so && ln -s /data/UserData/schwung/schwung-shim.so /usr/lib/schwung-shim.so" || fail "Failed to install shim"
+  # Install shim to /usr/lib/ + setuid.
+  # Use cp (with ln fallback): glibc 2.35+ rejects symlinked .so under
+  # AT_SECURE (MoveOriginal has file capabilities → secure-exec), so a real
+  # copy is required on newer images. Mirrors post-update.sh.
+  ssh_root_with_retry "rm -f /usr/lib/schwung-shim.so && (cp /data/UserData/schwung/schwung-shim.so /usr/lib/schwung-shim.so 2>/dev/null || ln -sf /data/UserData/schwung/schwung-shim.so /usr/lib/schwung-shim.so)" || fail "Failed to install shim"
+  ssh_root_with_retry "chmod u+s /usr/lib/schwung-shim.so" || true
   ssh_root_with_retry "chmod u+s /data/UserData/schwung/schwung-shim.so" || fail "Failed to set shim permissions"
   ssh_root_with_retry "test -u /data/UserData/schwung/schwung-shim.so" || fail "Shim setuid bit missing"
 
@@ -928,8 +932,12 @@ fi
 # Ensure shim isn't globally preloaded (breaks XMOS firmware check and causes communication error)
 ssh_root_with_retry "if [ -f /etc/ld.so.preload ] && grep -q 'schwung-shim.so' /etc/ld.so.preload; then ts=\$(date +%Y%m%d-%H%M%S); cp /etc/ld.so.preload /etc/ld.so.preload.bak-schwung-\$ts; grep -v 'schwung-shim.so' /etc/ld.so.preload > /tmp/ld.so.preload.new || true; if [ -s /tmp/ld.so.preload.new ]; then cat /tmp/ld.so.preload.new > /etc/ld.so.preload; else rm -f /etc/ld.so.preload; fi; rm -f /tmp/ld.so.preload.new; fi" || true
 
-# Symlink shim to /usr/lib/ (root partition has no free space for copies)
-ssh_root_with_retry "rm -f /usr/lib/schwung-shim.so && ln -s /data/UserData/schwung/schwung-shim.so /usr/lib/schwung-shim.so" || fail "Failed to install shim after retries"
+# Install shim to /usr/lib/ + setuid.
+# Use cp (with ln fallback): glibc 2.35+ rejects symlinked .so under
+# AT_SECURE (MoveOriginal has file capabilities → secure-exec), so a real
+# copy is required on newer images. Mirrors post-update.sh.
+ssh_root_with_retry "rm -f /usr/lib/schwung-shim.so && (cp /data/UserData/schwung/schwung-shim.so /usr/lib/schwung-shim.so 2>/dev/null || ln -sf /data/UserData/schwung/schwung-shim.so /usr/lib/schwung-shim.so)" || fail "Failed to install shim after retries"
+ssh_root_with_retry "chmod u+s /usr/lib/schwung-shim.so" || true
 ssh_root_with_retry "chmod u+s /data/UserData/schwung/schwung-shim.so" || fail "Failed to set shim permissions"
 ssh_root_with_retry "test -u /data/UserData/schwung/schwung-shim.so" || fail "Shim setuid bit missing after install"
 
