@@ -27,7 +27,7 @@ export function precisionForStep(step, fallback = 2) {
     return 4;
 }
 
-function applyDisplayFormat(fmt, num) {
+export function applyDisplayFormat(fmt, num) {
     const match = String(fmt).match(/^%?\.(\d{1,2})(f|%)$/);
     if (!match) return null;
     const decimals = parseInt(match[1], 10);
