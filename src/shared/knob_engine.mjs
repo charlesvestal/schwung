@@ -12,6 +12,15 @@
  * Int:   accumulate ticks; emit ±1 once accum reaches divisor.
  * Enum:  enum_divisor = clamp(800/enumCount, 2, 40); accumulate; emit ±1.
  *        (Equates "full enum sweep" to "full float 0→1 sweep" in physical effort.)
+ *
+ * Staleness: gap > 2000ms resets the engine to cold-start (lastTickMs=0),
+ * so re-entering an editor after a long pause feels like a fresh edit
+ * rather than continuing a stale acceleration curve.
+ *
+ * Batched deltas: |direction| > 1 produces proportional motion. The
+ * accumulator emits floor(|accum|/divisor) steps per call (int/enum) or
+ * step*direction/divisor (float), preserving the old linear "delta * step"
+ * behavior under fast jog wheel input.
  */
 
 export const KNOB_TYPE_FLOAT = "float";
@@ -20,6 +29,7 @@ export const KNOB_TYPE_ENUM = "enum";
 
 const KNOB_ACCEL_FAST_MS = 50;
 const KNOB_ACCEL_MED_MS = 150;
+const KNOB_STALE_MS = 2000;   // gap above this → treat as cold start (engine self-resets)
 
 export function knobInit(initialValue) {
     return { lastTickMs: 0, value: initialValue, tickAccum: 0 };
@@ -34,6 +44,12 @@ function clampf(v, lo, hi) {
 function tickDivisor(state, nowMs) {
     if (state.lastTickMs === 0) return 1;
     const delta = nowMs > state.lastTickMs ? nowMs - state.lastTickMs : 0;
+    /* Stale state — engine self-resets so re-entry feels like a fresh edit. */
+    if (delta > KNOB_STALE_MS) {
+        state.lastTickMs = 0;
+        state.tickAccum = 0;
+        return 1;
+    }
     if (delta > KNOB_ACCEL_MED_MS) return 16;
     if (delta > KNOB_ACCEL_FAST_MS) return 8;
     return 4;
@@ -50,10 +66,10 @@ export function knobTick(state, config, direction, nowMs) {
     } else if (config.type === KNOB_TYPE_INT) {
         /* Accumulator must drain before reversing — eats first N reverse ticks (anti-jitter). */
         state.tickAccum += direction;
-        if (state.tickAccum >= divisor || state.tickAccum <= -divisor) {
-            const sign = state.tickAccum > 0 ? 1 : -1;
-            state.value = clampf(state.value + sign, config.min, config.max);
-            state.tickAccum = 0;
+        const steps = Math.trunc(state.tickAccum / divisor);
+        if (steps !== 0) {
+            state.value = clampf(state.value + steps, config.min, config.max);
+            state.tickAccum -= steps * divisor;
         }
     } else if (config.type === KNOB_TYPE_ENUM) {
         if (!config.enumCount || config.enumCount <= 0) {
@@ -66,13 +82,13 @@ export function knobTick(state, config, direction, nowMs) {
         const enumDivisor = perOption;
         /* Accumulator must drain before reversing — eats first N reverse ticks (anti-jitter). */
         state.tickAccum += direction;
-        if (state.tickAccum >= enumDivisor || state.tickAccum <= -enumDivisor) {
-            const sign = state.tickAccum > 0 ? 1 : -1;
-            let iv = Math.round(state.value) + sign;
+        const steps = Math.trunc(state.tickAccum / enumDivisor);
+        if (steps !== 0) {
+            let iv = Math.round(state.value) + steps;
             if (iv < 0) iv = 0;
             if (iv >= config.enumCount) iv = config.enumCount - 1;
             state.value = iv;
-            state.tickAccum = 0;
+            state.tickAccum -= steps * enumDivisor;
         }
     }
     return state.value;
