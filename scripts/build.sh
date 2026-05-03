@@ -662,6 +662,19 @@ else
     echo "Skipping jack_midi_connect (up to date)"
 fi
 
+# Build schwung-heal (setuid-root helper that mirrors data-partition shim
+# and entrypoint to /usr/lib + /opt/move). Needed because everything from
+# MoveLauncher down runs as ableton; this is the only way ableton-context
+# code (entrypoint, schwung-manager) can refresh the live shim.
+if needs_rebuild build/bin/schwung-heal src/schwung-heal.c; then
+    echo "Building schwung-heal..."
+    "${CROSS_PREFIX}gcc" -g -O2 -static \
+        src/schwung-heal.c \
+        -o build/bin/schwung-heal
+else
+    echo "Skipping schwung-heal (up to date)"
+fi
+
 # Copy shadow UI files (always — ExFAT timestamps can confuse cp -u)
 cp ./src/shadow/shadow_ui.js ./build/shadow/
 cp ./src/shadow/*.mjs ./build/shadow/ 2>/dev/null || true
