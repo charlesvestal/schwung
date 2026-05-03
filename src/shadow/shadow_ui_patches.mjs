@@ -22,6 +22,11 @@ import {
 import {
     announce, announceMenuItem, announceParameter
 } from '/data/UserData/schwung/shared/screen_reader.mjs';
+import {
+    formatParamValue as ufFormatParamValue,
+    formatParamForSet as ufFormatParamForSet,
+} from '/data/UserData/schwung/shared/param_format.mjs';
+import { knobInit, knobTick, knobConfigFromMeta } from '/data/UserData/schwung/shared/knob_engine.mjs';
 
 /* ---- Constants ---------------------------------------------------------- */
 
@@ -170,33 +175,26 @@ function fetchComponentParams(slot, component) {
     return result;
 }
 
+/* Per-key knob state — engine self-resets after a long idle gap (KNOB_STALE_MS). */
+const patchKnobStates = new Map();
+
 function formatParamValue(param) {
-    if (param.type === "float") {
-        const num = parseFloat(param.value);
-        if (isNaN(num)) return param.value;
-        return num.toFixed(2);
-    }
-    return param.value;
+    return ufFormatParamValue(param.value, param);
 }
 
 function adjustParamValue(param, delta) {
-    const { KNOB_BASE_STEP_FLOAT } = ctx;
-    let val;
-    if (param.type === "float") {
-        val = parseFloat(param.value) || 0;
-        const step = (param.step > 0) ? param.step : KNOB_BASE_STEP_FLOAT;
-        val += delta * step;
+    const cfg = knobConfigFromMeta(param);
+    const cur = parseFloat(param.value);
+    const seed = isNaN(cur) ? 0 : cur;
+    let st = patchKnobStates.get(param.key);
+    if (!st) {
+        st = knobInit(seed);
+        patchKnobStates.set(param.key, st);
     } else {
-        val = parseInt(param.value) || 0;
-        val += delta;
+        st.value = seed;
     }
-
-    val = Math.max(param.min, Math.min(param.max, val));
-
-    if (param.type === "float") {
-        return val.toFixed(4);
-    }
-    return String(Math.round(val));
+    const newVal = knobTick(st, cfg, delta, Date.now());
+    return ufFormatParamForSet(newVal, param);
 }
 
 export function applyPatchSelection() {
