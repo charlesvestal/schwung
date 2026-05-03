@@ -228,6 +228,14 @@ function updateHost() {
         return;
     }
 
+    /* Run post-update.sh now (as ableton — root ops will fail, but ableton-level
+     * setup still happens). Boot-time entrypoint re-runs it as root to finish
+     * /usr/lib/ and /opt/move/ writes. Without this call, the breadcrumb file
+     * never lands until the next boot. */
+    if (typeof host_file_exists === 'function' && host_file_exists(BASE_DIR + '/scripts/post-update.sh')) {
+        host_system_cmd('sh "' + BASE_DIR + '/scripts/post-update.sh"');
+    }
+
     state = STATE_RESULT;
     resultMessage = 'Updated! Restart to apply';
 }
