@@ -8,6 +8,31 @@
     <p>Browse and manage Schwung modules from the catalog.</p>
 </div>
 
+<section class="host-summary {{if .HostUpdateAvailable}}host-summary-update{{end}}" aria-label="Schwung Host">
+    <div class="host-summary-info">
+        <h2 class="host-summary-title">Schwung Host</h2>
+        <p class="host-summary-version">
+            Installed:
+            {{if .HostRepo}}<a href="{{releaseURL .HostRepo .HostVersion}}" target="_blank" rel="noopener noreferrer">v{{.HostVersion}}</a>{{else}}v{{.HostVersion}}{{end}}
+            {{if .HostUpdateAvailable}}
+            <span class="host-summary-latest">&rarr; v{{.HostLatestVersion}} available</span>
+            {{end}}
+        </p>
+    </div>
+    <div class="host-summary-actions">
+        {{if .HostUpdateAvailable}}
+        <form method="POST" action="/system/upgrade" class="inline-form"
+              data-confirm="Upgrade to {{.HostLatestVersion}}? This will restart the service." data-confirm-title="Upgrade Schwung" data-confirm-label="Upgrade">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <button type="submit" class="btn btn-primary">Upgrade to v{{.HostLatestVersion}}</button>
+        </form>
+        {{if .HostRepo}}<a class="release-notes-link" href="{{releaseURL .HostRepo .HostLatestVersion}}" target="_blank" rel="noopener noreferrer">release notes</a>{{end}}
+        {{else}}
+        <a href="/system" class="btn btn-secondary btn-small">System</a>
+        {{end}}
+    </div>
+</section>
+
 {{if not .Modules}}
 <div class="empty-state">
     <p>Could not load module catalog. Check your network connection.</p>
@@ -70,6 +95,9 @@
         </article>
         {{end}}{{end}}
     </div>
+    <div class="bulk-actions bulk-actions-update" style="display:flex;gap:.5rem;margin-top:.75rem;align-items:center;flex-wrap:wrap">
+        <button type="button" class="btn btn-secondary btn-update-all">Update All</button>
+    </div>
     {{end}}
 
     <h2 class="section-header" id="grid-available-header">Available</h2>
@@ -128,6 +156,9 @@
             </tbody>
         </table>
     </div>
+    <div class="bulk-actions bulk-actions-update" style="display:flex;gap:.5rem;margin-top:.75rem;align-items:center;flex-wrap:wrap">
+        <button type="button" class="btn btn-secondary btn-update-all">Update All</button>
+    </div>
     {{end}}
 
     <h2 class="section-header" id="list-available-header">Available</h2>
@@ -162,7 +193,6 @@
 
 <div class="bulk-actions" style="display:flex;gap:.5rem;margin-top:1rem;align-items:center;flex-wrap:wrap">
     <button type="button" class="btn btn-primary" id="btn-install-all">Install All</button>
-    <button type="button" class="btn btn-secondary" id="btn-update-all">Update All</button>
     <div class="bulk-progress" id="bulk-progress" style="display:none;flex:1;min-width:240px;margin-left:.5rem" aria-live="polite">
         <div style="display:flex;justify-content:space-between;font-size:.85rem">
             <span id="bulk-status">Working…</span>
@@ -178,7 +208,7 @@
 (function() {
     var csrfToken = (document.cookie.match(/(^| )csrf_token=([^;]+)/) || [])[2] || '';
     var installBtn = document.getElementById('btn-install-all');
-    var updateBtn = document.getElementById('btn-update-all');
+    var updateBtns = document.querySelectorAll('.btn-update-all');
     var progressEl = document.getElementById('bulk-progress');
     var statusEl = document.getElementById('bulk-status');
     var detailEl = document.getElementById('bulk-detail');
@@ -225,17 +255,20 @@
         return targets;
     }
 
+    function setBtnsDisabled(disabled) {
+        installBtn.disabled = disabled;
+        updateBtns.forEach(function(b) { b.disabled = disabled; });
+    }
+
     function runBulk(label, suffix, emptyMsg) {
-        installBtn.disabled = true;
-        updateBtn.disabled = true;
+        setBtnsDisabled(true);
         var targets = collectTargets(suffix);
         if (targets.length === 0) {
             progressEl.style.display = '';
             statusEl.textContent = emptyMsg;
             detailEl.textContent = '';
             barFill.style.width = '100%';
-            installBtn.disabled = false;
-            updateBtn.disabled = false;
+            setBtnsDisabled(false);
             return;
         }
         var ok = 0, failed = 0, idx = 0;
@@ -261,9 +294,11 @@
         if (!confirm('Install every uninstalled module from the catalog?')) return;
         runBulk('Installing', 'install', 'All modules already installed');
     });
-    updateBtn.addEventListener('click', function() {
-        if (!confirm('Update every module that has an update available?')) return;
-        runBulk('Updating', 'update', 'All modules are up to date');
+    updateBtns.forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            if (!confirm('Update every module that has an update available?')) return;
+            runBulk('Updating', 'update', 'All modules are up to date');
+        });
     });
 })();
 </script>
