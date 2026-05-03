@@ -2,10 +2,11 @@
  * knob_engine.mjs — unified knob acceleration + value-stepping.
  * Port of schwung-rewrite/src/domains/knob_engine.c into JS.
  *
- * Same divisor curve used in every chain/master-FX/slot param edit:
- *   gap < 50ms   → divisor 4   (fast sweep)
- *   gap < 150ms  → divisor 8
- *   gap >= 150ms → divisor 16  (fine control)
+ * Divisor curve (gap = nowMs - lastTickMs):
+ *   gap >  150ms → divisor 16   (fine control)
+ *   gap >   50ms → divisor 8
+ *   gap == 0 or <= 50ms → divisor 4   (fast sweep)
+ *   first tick (lastTickMs == 0) → divisor 1   (intentional "click" on motion start)
  *
  * Float: step / divisor per tick.
  * Int:   accumulate ticks; emit ±1 once accum reaches divisor.
@@ -31,8 +32,8 @@ function clampf(v, lo, hi) {
 }
 
 function tickDivisor(state, nowMs) {
-    if (state.lastTickMs === 0 || nowMs <= state.lastTickMs) return 1;
-    const delta = nowMs - state.lastTickMs;
+    if (state.lastTickMs === 0) return 1;
+    const delta = nowMs > state.lastTickMs ? nowMs - state.lastTickMs : 0;
     if (delta > KNOB_ACCEL_MED_MS) return 16;
     if (delta > KNOB_ACCEL_FAST_MS) return 8;
     return 4;
@@ -47,6 +48,7 @@ export function knobTick(state, config, direction, nowMs) {
         const delta = (step / divisor) * direction;
         state.value = clampf(state.value + delta, config.min, config.max);
     } else if (config.type === KNOB_TYPE_INT) {
+        /* Accumulator must drain before reversing — eats first N reverse ticks (anti-jitter). */
         state.tickAccum += direction;
         if (state.tickAccum >= divisor || state.tickAccum <= -divisor) {
             const sign = state.tickAccum > 0 ? 1 : -1;
@@ -54,19 +56,21 @@ export function knobTick(state, config, direction, nowMs) {
             state.tickAccum = 0;
         }
     } else if (config.type === KNOB_TYPE_ENUM) {
-        let enumDivisor = divisor;
-        if (config.enumCount && config.enumCount > 0) {
-            let perOption = Math.floor(800 / config.enumCount);
-            if (perOption < 2) perOption = 2;
-            if (perOption > 40) perOption = 40;
-            enumDivisor = perOption;
+        if (!config.enumCount || config.enumCount <= 0) {
+            state.tickAccum = 0;
+            return state.value;
         }
+        let perOption = Math.floor(800 / config.enumCount);
+        if (perOption < 2) perOption = 2;
+        if (perOption > 40) perOption = 40;
+        const enumDivisor = perOption;
+        /* Accumulator must drain before reversing — eats first N reverse ticks (anti-jitter). */
         state.tickAccum += direction;
         if (state.tickAccum >= enumDivisor || state.tickAccum <= -enumDivisor) {
             const sign = state.tickAccum > 0 ? 1 : -1;
             let iv = Math.round(state.value) + sign;
             if (iv < 0) iv = 0;
-            if (config.enumCount && iv >= config.enumCount) iv = config.enumCount - 1;
+            if (iv >= config.enumCount) iv = config.enumCount - 1;
             state.value = iv;
             state.tickAccum = 0;
         }

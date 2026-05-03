@@ -45,6 +45,19 @@ import("./src/shared/knob_engine.mjs").then((m) => {
   knobTick(st, enumCfg, 1, 1000 + 16 * 10);
   if (st.value !== 1) { console.log("FAIL enum 17 fast ticks:", st.value); process.exit(1); }
 
+  // Same-ms ticks should NOT use cold-start divisor=1 (regression: was bypassing acceleration)
+  st = knobInit(0.5);
+  knobTick(st, { type: KNOB_TYPE_FLOAT, min: 0, max: 1, step: 0.1 }, 1, 1000); // first → divisor 1, +0.1
+  v = knobTick(st, { type: KNOB_TYPE_FLOAT, min: 0, max: 1, step: 0.1 }, 1, 1000); // same ms → fast bucket, +0.025
+  if (Math.abs(v - 0.625) > 1e-6) { console.log("FAIL same-ms fast bucket:", v); process.exit(1); }
+
+  // enumCount=0 should not advance (was: ran unbounded)
+  st = knobInit(0);
+  knobTick(st, { type: KNOB_TYPE_ENUM, min: 0, max: 0, step: 1, enumCount: 0 }, 1, 1000);
+  knobTick(st, { type: KNOB_TYPE_ENUM, min: 0, max: 0, step: 1, enumCount: 0 }, 1, 1010);
+  knobTick(st, { type: KNOB_TYPE_ENUM, min: 0, max: 0, step: 1, enumCount: 0 }, 1, 1020);
+  if (st.value !== 0) { console.log("FAIL enum count=0 advance:", st.value); process.exit(1); }
+
   console.log("PASS knob_engine");
 }).catch((e) => { console.log("FAIL import:", e); process.exit(1); });
 '
