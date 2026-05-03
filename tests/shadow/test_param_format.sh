@@ -49,6 +49,25 @@ import("./src/shared/param_format.mjs").then((m) => {
   // Enum with options_as_string=true sends the option string
   if (formatParamForSet(2, { type:"enum", options:["A","B","C"], options_as_string:true }) !== "C") { console.log("FAIL set enum str"); process.exit(1); }
 
+  // Enum string label → index in wire format
+  if (formatParamForSet("up", { type:"enum", options:["off","up","down"] }) !== "1") { console.log("FAIL set enum string→index"); process.exit(1); }
+  if (formatParamForSet("up", { type:"enum", options:["off","up","down"], options_as_string:true }) !== "up") { console.log("FAIL set enum string passthrough"); process.exit(1); }
+  // Unknown enum label falls back to index 0
+  if (formatParamForSet("nope", { type:"enum", options:["off","up","down"] }) !== "0") { console.log("FAIL set enum unknown→0"); process.exit(1); }
+  // Numeric rawValue still works
+  if (formatParamForSet(2, { type:"enum", options:["off","up","down"] }) !== "2") { console.log("FAIL set enum numeric"); process.exit(1); }
+
+  // display_format + unit interaction (regression vs legacy formatter)
+  if (formatParamValue(440, { type:"float", unit:"Hz", display_format:"%.2f" }) !== "440.00 Hz") { console.log("FAIL display_format+Hz"); process.exit(1); }
+  // display_format ending in % suppresses unit (% is already in the format)
+  if (formatParamValue(0.5, { type:"float", unit:"%", display_format:"%.1%" }) !== "50.0%") { console.log("FAIL display_format %"); process.exit(1); }
+  // Unparseable display_format falls back to unit logic
+  if (formatParamValue(0.5, { type:"float", unit:"dB", step:0.1, display_format:"garbage" }) !== "0.5 dB") { console.log("FAIL display_format garbage falls back"); process.exit(1); }
+  // Hz auto-kHz at >=1000
+  if (formatParamValue(1500, { type:"float", unit:"Hz", step:1 }) !== "1.50 kHz") { console.log("FAIL kHz autoscale"); process.exit(1); }
+  // Negative dB
+  if (formatParamValue(-12.5, { type:"float", unit:"dB", step:0.1 }) !== "-12.5 dB") { console.log("FAIL negative dB"); process.exit(1); }
+
   console.log("PASS param_format");
 }).catch((e) => { console.log("FAIL import:", e); process.exit(1); });
 '
