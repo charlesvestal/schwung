@@ -2995,6 +2995,13 @@ func main() {
 	// didn't clean up (e.g., the old manager was killed mid-upgrade).
 	app.setUpgradeStatus("")
 
+	// Self-heal stale shim/entrypoint. On-device update paths run as ableton
+	// and silently fail post-update.sh's /usr/lib/ + /opt/move/ writes, so
+	// users who upgraded host on-device end up with new files in /data/.../
+	// but stale ones at the OS-level locations. We run as root via the
+	// entrypoint, so we can finish the install and reboot once.
+	app.healShimIfStale()
+
 	// Audio capture watchdog: disarm a stale flag from before the manager
 	// restart, or reschedule auto-disarm for the remaining time.
 	app.startupAudioCaptureWatchdog()
