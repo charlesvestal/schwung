@@ -28,7 +28,7 @@ export function precisionForStep(step, fallback = 2) {
 }
 
 function applyDisplayFormat(fmt, num) {
-    const match = String(fmt).match(/^%?\.?(\d+)(f|%)$/);
+    const match = String(fmt).match(/^%?\.(\d{1,2})(f|%)$/);
     if (!match) return null;
     const decimals = parseInt(match[1], 10);
     if (match[2] === "%") return (num * 100).toFixed(decimals) + "%";
@@ -38,13 +38,12 @@ function applyDisplayFormat(fmt, num) {
 function fmtPercent(num, meta) {
     const max = (meta && typeof meta.max === "number") ? meta.max : 1;
     const display = (max <= 1) ? num * 100 : num;
-    /* Default % to 0 decimals unless step is sub-step-of-1-percent. */
+    /* Default % to 0 decimals unless step is sub-1%-of-the-displayed-range. */
     let decimals = 0;
     if (meta && typeof meta.step === "number" && meta.step > 0) {
         if (max <= 1 && meta.step < 0.01) decimals = precisionForStep(meta.step) - 2;
         else if (max > 1 && meta.step < 1) decimals = precisionForStep(meta.step);
     }
-    if (decimals < 0) decimals = 0;
     return display.toFixed(decimals) + "%";
 }
 
@@ -78,7 +77,12 @@ export function formatParamValue(rawValue, meta) {
 
     if (meta.display_format) {
         const out = applyDisplayFormat(meta.display_format, num);
-        if (out !== null) return out;
+        if (out !== null) {
+            /* applyDisplayFormat already adds % when format ends in %; otherwise
+               append the meta unit (skipping % since the format itself injects it). */
+            if (out.endsWith("%")) return out;
+            return meta.unit && meta.unit !== "%" ? out + " " + meta.unit : out;
+        }
     }
 
     if (meta.type === "int" && !meta.unit) {
@@ -108,9 +112,16 @@ export function formatParamForSet(rawValue, meta) {
     }
     if (meta.type === "int") return String(Math.round(Number(rawValue)));
     if (meta.type === "enum") {
-        const idx = Math.round(Number(rawValue));
+        let idx;
+        if (Array.isArray(meta.options)) {
+            const labelIdx = meta.options.indexOf(String(rawValue));
+            idx = labelIdx >= 0 ? labelIdx : Math.round(Number(rawValue));
+        } else {
+            idx = Math.round(Number(rawValue));
+        }
+        if (!isFinite(idx) || idx < 0) idx = 0;
         if (meta.options_as_string && Array.isArray(meta.options) &&
-            idx >= 0 && idx < meta.options.length) {
+            idx < meta.options.length) {
             return meta.options[idx];
         }
         return String(idx);
