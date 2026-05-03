@@ -137,7 +137,9 @@ export function drawStorePickerResult() {
      * (e.g. the Update Schwung pointer) — render each line stacked. */
     const lines = String(msg).split('\n');
     const lineHeight = 10;
-    const startY = 28;
+    /* startY chosen to place the first body line directly under the
+     * header bar with no leading blank-line gap. */
+    const startY = 18;
     for (let i = 0; i < lines.length; i++) {
         print(2, startY + i * lineHeight, lines[i], 1);
     }
