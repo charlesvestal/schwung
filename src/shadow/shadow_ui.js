@@ -6352,45 +6352,33 @@ function componentKeyToCategoryId(componentKey) {
     }
 }
 
-/* Enter the store picker for a specific component type */
+/* Enter the store picker for a specific component type — disabled.
+ *
+ * Was the gateway from "[Get more...]" entries in the overtake / master FX
+ * / chain component module pickers into the on-device store browser. The
+ * browser flow ended in installs/updates that silently failed for users
+ * without root, so we redirect every "Get more" tap straight at the web
+ * manager pointer screen — same destination as Settings → Module Store.
+ *
+ * Preserves the entry-context flags (storePickerFromOvertake /
+ * storePickerFromMasterFx / storePickerCategory) so the result-screen
+ * jog-click can return to wherever the user came from instead of dumping
+ * them on Global Settings or the empty STORE_PICKER_LIST. */
 function enterStorePicker(componentKey) {
     const categoryId = componentKeyToCategoryId(componentKey);
     if (!categoryId) return;
 
     storePickerCategory = categoryId;
-    storePickerSelectedIndex = 0;
     storePickerCurrentModule = null;
-    storePickerActionIndex = 0;
-    storePickerResultTitle = '';  /* Reset to default 'Module Store' */
     storePickerFromOvertake = (componentKey === 'overtake');
     storePickerFromMasterFx = (componentKey === 'master_fx');
+    storePickerFromSettings = false;
 
-    /* Check if we need to fetch catalog */
-    if (!storeCatalog) {
-        setView(VIEWS.STORE_PICKER_LOADING);
-        storePickerLoadingTitle = 'Module Store';
-        storePickerLoadingMessage = 'Loading catalog...';
-        announce("Loading catalog");
-        needsRedraw = true;
-
-        /* Fetch catalog (blocking) */
-        fetchStoreCatalogSync();
-        /* Force display update after catalog load */
-        needsRedraw = true;
-    } else {
-        /* Catalog already loaded, go to list */
-        storePickerModules = getModulesForCategory(storeCatalog, categoryId);
-        setView(VIEWS.STORE_PICKER_LIST);
-        needsRedraw = true;
-        /* Announce menu title + initial selection with status */
-        if (storePickerModules.length > 0) {
-            const module = storePickerModules[0];
-            const statusLabel = getStoreModuleStatusLabel(module);
-            announce(`Module Store, ${module.name}` + (statusLabel ? `, ${statusLabel}` : ""));
-        } else {
-            announce("Module Store, No modules available");
-        }
-    }
+    storePickerResultTitle = 'Module Store';
+    storePickerMessage = 'Module store available at\nhttp://move.local:7700';
+    setView(VIEWS.STORE_PICKER_RESULT);
+    needsRedraw = true;
+    announce(storePickerMessage);
 }
 
 /* Fetch catalog synchronously (blocking) */
@@ -6738,20 +6726,51 @@ function handleStorePickerDetailSelect() {
 
 /* Handle selection in store picker result */
 function handleStorePickerResultSelect() {
-    /* Honor storeReturnView so callers from Global Settings (Check
-     * Updates / Module Store pointer screens) get sent back there
-     * instead of into the now-disabled STORE_PICKER_LIST view (which
-     * shows "No modules available" because the categories were never
-     * built). */
+    /* Honor the entry-context flags so dismissing the pointer screen
+     * sends the user back to wherever they came from. These mirror
+     * handleStorePickerBack's STORE_PICKER_LIST dispatch — the only
+     * reason the back-button and click-dismiss diverged historically
+     * is that the result screen used to terminate install flows that
+     * could only sensibly return to the module list. With the install
+     * paths gone, every result screen is informational, and dismiss
+     * should round-trip to the entry context. */
+    storePickerCurrentModule = null;
+
     if (storeReturnView === VIEWS.GLOBAL_SETTINGS) {
         storeReturnView = null;
-        storePickerCurrentModule = null;
         enterGlobalSettings();
         return;
     }
-    /* Default: return to module list (legacy install flows). */
+    if (storePickerFromOvertake) {
+        overtakeModules = scanForOvertakeModules();
+        setView(VIEWS.OVERTAKE_MENU);
+        storePickerFromOvertake = false;
+        storeCatalog = null;
+        storePickerCategory = null;
+        storePickerModules = [];
+        return;
+    }
+    if (storePickerFromMasterFx) {
+        MASTER_FX_OPTIONS = scanForAudioFxModules();
+        enterMasterFxModuleSelect(selectedMasterFxComponent);
+        setView(VIEWS.MASTER_FX);
+        storePickerFromMasterFx = false;
+        storeCatalog = null;
+        storePickerCategory = null;
+        storePickerModules = [];
+        return;
+    }
+    if (storePickerCategory) {
+        /* Came from the chain component picker. */
+        availableModules = scanModulesForType(CHAIN_COMPONENTS[selectedChainComponent].key);
+        setView(VIEWS.COMPONENT_SELECT);
+        storeCatalog = null;
+        storePickerCategory = null;
+        storePickerModules = [];
+        return;
+    }
+    /* Last-resort fallback (legacy callers). */
     setView(VIEWS.STORE_PICKER_LIST);
-    storePickerCurrentModule = null;
     needsRedraw = true;
 }
 
