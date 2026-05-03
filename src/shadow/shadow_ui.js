@@ -1117,26 +1117,30 @@ let storePickerFromSettings = false;  // True if entered from MFX settings (full
 let storeCategoryIndex = 0;           // Selected index in category browser
 let storeCategoryItems = [];          // Built category list with counts
 
-/* Check if host update is available and create pseudo-module if so */
+/* Check if host update is available and create pseudo-module if so.
+ * On-device host updates are disabled — they extract as ableton and
+ * silently fail post-update.sh's privileged writes, leaving users
+ * with stale /usr/lib/schwung-shim.so. Direct users to the web manager
+ * (move.local:7700) which runs as root and can complete the install. */
 function getHostUpdateModule() {
-    if (!storeCatalog || !storeCatalog.host) return null;
-    const host = storeCatalog.host;
-    if (!host.latest_version || !host.download_url) return null;
-    if (!isNewerVersion(host.latest_version, storeHostVersion)) return null;
+    return null;
+}
+
+/* On-device host updates are disabled. Surface a clear instruction to
+ * users so they know where to update from instead. */
+function performCoreUpdate(_mod) {
     return {
-        id: "__core_update__",
-        name: "Core Update",
-        description: "Update Schwung core",
-        latest_version: host.latest_version,
-        download_url: host.download_url,
-        component_type: "core",
-        _isHostUpdate: true
+        success: false,
+        error: 'Update Schwung from a browser at move.local:7700'
     };
 }
 
-/* Perform a staged core update with verification and backup.
- * Returns { success: bool, error: string? } */
-function performCoreUpdate(mod) {
+/* Legacy implementation kept for reference / future re-enable path —
+ * disabled because the privileged setup post-extract (see post-update.sh
+ * /usr/lib/ + /opt/move/ writes) cannot run as ableton on-device. The
+ * only reliable on-device upgrade path requires root, which the JS layer
+ * doesn't have. */
+function performCoreUpdate_disabled(mod) {
     const BASE = '/data/UserData/schwung';
     const TMP = BASE + '/tmp';
     const STAGING = BASE + '/update-staging';
@@ -1264,23 +1268,13 @@ function checkForUpdatesInBackground() {
     drawStatusOverlay('Updates', 'Checking...');
     host_flush_display();
 
-    /* Check core update */
+    /* Refresh host version (still needed for module compatibility checks).
+     * Core updates are no longer offered on-device — users update via the
+     * web manager (move.local:7700). The check is suppressed so the
+     * "Update All" flow doesn't try to perform a core upgrade that the
+     * JS layer can't complete with the right privileges. */
     storeHostVersion = getHostVersion();
     debugLog("checkForUpdatesInBackground: hostVersion=" + storeHostVersion);
-    const coreRelease = fetchReleaseJsonQuick('charlesvestal/schwung');
-    debugLog("checkForUpdatesInBackground: coreRelease=" + JSON.stringify(coreRelease));
-    if (coreRelease && isNewerVersion(coreRelease.version, storeHostVersion)) {
-        debugLog("checkForUpdatesInBackground: core update available " + storeHostVersion + " -> " + coreRelease.version);
-        updates.push({
-            id: '__core_update__',
-            name: 'Core',
-            from: storeHostVersion,
-            to: coreRelease.version,
-            _isHostUpdate: true,
-            download_url: coreRelease.download_url,
-            latest_version: coreRelease.version
-        });
-    }
 
     /* Check module updates */
     clear_screen();
