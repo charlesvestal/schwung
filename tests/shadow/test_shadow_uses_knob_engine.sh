@@ -20,26 +20,48 @@ if ! rg -F -q 'knobTick(' "$shadow_file"; then
   exit 1
 fi
 
-# Verify adjustHierSelectedParam does NOT use the bare linear math anymore
+# adjustHierSelectedParam SHOULD use simple linear math (no acceleration)
 adjust_body=$(awk '
-  /^function adjustHierSelectedParam\(/ { capture=1 }
-  capture { print }
-  capture && /^}/ { capture=0 }
+  /^function adjustHierSelectedParam\(/ { flag=1; print; next }
+  flag && /^function / { flag=0 }
+  flag { print }
 ' "$shadow_file")
 
-if echo "$adjust_body" | grep -F -q 'num + delta * step'; then
-  echo "FAIL: linear delta math still present in adjustHierSelectedParam" >&2
+if ! echo "$adjust_body" | grep -F -q 'num + delta * step'; then
+  echo "FAIL: adjustHierSelectedParam should use simple linear math (jog click = one step)" >&2
   exit 1
 fi
 
-# State map should be defined and cleared somewhere
-if ! rg -F -q 'hierKnobStates' "$shadow_file"; then
-  echo "FAIL: hierKnobStates map missing" >&2
+# processPendingHierKnob (physical knobs 1-8) SHOULD use knob_engine, NOT linear math
+phys_body=$(awk '
+  /^function processPendingHierKnob\(/ { flag=1; print; next }
+  flag && /^function / { flag=0 }
+  flag { print }
+' "$shadow_file")
+
+if echo "$phys_body" | grep -F -q 'num + delta * step'; then
+  echo "FAIL: processPendingHierKnob still uses linear math instead of knob_engine" >&2
   exit 1
 fi
 
-if ! rg -F -q 'clearHierKnobStates' "$shadow_file"; then
-  echo "FAIL: clearHierKnobStates helper missing" >&2
+if ! echo "$phys_body" | grep -F -q 'knobTick('; then
+  echo "FAIL: processPendingHierKnob does not call knobTick" >&2
+  exit 1
+fi
+
+if ! echo "$phys_body" | grep -F -q 'getPhysKnobState'; then
+  echo "FAIL: processPendingHierKnob does not use the physKnobStates cache" >&2
+  exit 1
+fi
+
+# physKnobStates map and clearer must be defined at top level
+if ! rg -F -q 'physKnobStates' "$shadow_file"; then
+  echo "FAIL: physKnobStates map missing" >&2
+  exit 1
+fi
+
+if ! rg -F -q 'clearPhysKnobStates' "$shadow_file"; then
+  echo "FAIL: clearPhysKnobStates helper missing" >&2
   exit 1
 fi
 
