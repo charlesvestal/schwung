@@ -37,6 +37,7 @@ import {
 } from '/data/UserData/schwung/shared/chain_ui_views.mjs';
 
 import { decodeDelta } from '/data/UserData/schwung/shared/input_filter.mjs';
+import { knobInit, knobTick, knobConfigFromMeta } from '/data/UserData/schwung/shared/knob_engine.mjs';
 
 /* Volume touch note for Shift+Vol+Jog detection */
 const VOLUME_TOUCH_NOTE = 8;
@@ -1514,6 +1515,20 @@ let hierEditorEditMode = false;   // true when editing a param value
 let hierEditorEditKey = "";       // full key currently being edited
 let hierEditorEditValue = null;   // stable value during edit mode
 let hierEditorChainParams = [];   // metadata from chain_params
+
+/* Knob state per fullKey for acceleration continuity across consecutive jog turns. */
+const hierKnobStates = new Map();
+function getHierKnobState(fullKey, currentValue) {
+    let st = hierKnobStates.get(fullKey);
+    if (!st) {
+        st = knobInit(currentValue);
+        hierKnobStates.set(fullKey, st);
+    } else {
+        st.value = currentValue;
+    }
+    return st;
+}
+function clearHierKnobStates() { hierKnobStates.clear(); }
 
 /* Master FX flag - when true, exit returns to MASTER_FX view instead of CHAIN_EDIT */
 let hierEditorIsMasterFx = false;
@@ -8280,21 +8295,18 @@ function adjustHierSelectedParam(delta) {
         return;
     }
 
-    /* Handle numeric types */
+    /* Handle numeric types via shared knob engine */
     const num = parseFloat(currentVal);
     if (isNaN(num)) return;
 
-    /* Get step from metadata - default 1 for int, 0.02 for float */
-    const isInt = meta && meta.type === "int";
-    let step = meta && meta.step ? meta.step : (isInt ? 1 : 0.02);
+    const knobCfg = knobConfigFromMeta(meta);
+    /* Shift fine-step override (existing wav_position behavior) */
     if (meta && meta.ui_type === "wav_position" && isShiftHeld()) {
-        const fineStep = Math.abs(step) * getWavPositionShiftMultiplier(meta);
-        if (fineStep > 0) step = fineStep;
+        const fineStep = Math.abs(knobCfg.step) * getWavPositionShiftMultiplier(meta);
+        if (fineStep > 0) knobCfg.step = fineStep;
     }
-    const min = meta && typeof meta.min === "number" ? meta.min : 0;
-    const max = meta && typeof meta.max === "number" ? meta.max : 1;
-
-    const newVal = Math.max(min, Math.min(max, num + delta * step));
+    const st = getHierKnobState(fullKey, num);
+    const newVal = knobTick(st, knobCfg, delta, Date.now());
     const formatted = formatParamForSet(newVal, meta);
     setSlotParam(hierEditorSlot, fullKey, formatted);
     if (usingStableEditVal) {
@@ -8718,6 +8730,7 @@ function getKnobCachedValue(knobIndex, ctx) {
 function invalidateKnobValueCache() {
     knobValueCache.fill(null);
     knobValueCacheKey.fill("");
+    clearHierKnobStates();
 }
 
 /*
@@ -8836,7 +8849,7 @@ function processPendingHierKnob() {
     const step = fineWavEdit
         ? (fineStep > 0 ? fineStep : baseStep)
         : (baseStep * accel);
-    const newVal = Math.max(min, Math.min(max, num + delta * step));
+    const newVal = Math.max(min, Math.min(max, num + (delta * step)));
 
     /* Update local cache — no IPC read needed on next turn */
     knobValueCache[knobIndex] = newVal;
