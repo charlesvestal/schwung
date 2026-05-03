@@ -383,6 +383,12 @@ func discoverInstalledModules(base string) map[string]InstalledModule {
 // ---------------------------------------------------------------------------
 
 var funcMap = template.FuncMap{
+	// needsRepair returns true when the device's entrypoint at
+	// /opt/move/Move is the legacy version that doesn't run schwung-heal
+	// at boot. base.html uses this to render the repair banner on every
+	// page so users who landed in the bootstrap-needed state see what
+	// to do (SSH command + GUI installer fallback). 30s cache.
+	"needsRepair": bootstrapNeeded,
 	"dict": func(pairs ...any) map[string]any {
 		m := make(map[string]any, len(pairs)/2)
 		for i := 0; i+1 < len(pairs); i += 2 {
@@ -651,6 +657,7 @@ func loadTemplates() (templateMap, error) {
 		"templates/help.html",
 		"templates/remote_ui.html",
 		"templates/download.html",
+		"templates/repair.html",
 	}
 
 	m := make(templateMap, len(pages))
@@ -2270,6 +2277,36 @@ func (app *App) handleSystem(w http.ResponseWriter, r *http.Request) {
 	app.render(w, r, "system.html", data)
 }
 
+// handleSystemRepair shows the dedicated repair page with the SSH
+// bootstrap command + GUI installer fallback. Reachable from the
+// banner on every page (see partials/repair_banner.html).
+func (app *App) handleSystemRepair(w http.ResponseWriter, r *http.Request) {
+	host := r.Host
+	// Strip port if present so the SSH command says move.local rather
+	// than move.local:7700. The banner asks for a hostname/IP for ssh.
+	if i := strings.IndexByte(host, ':'); i >= 0 {
+		host = host[:i]
+	}
+	if host == "" {
+		host = "move.local"
+	}
+	data := map[string]any{
+		"Title":       "Repair",
+		"Active":      "system",
+		"Hostname":    host,
+		"NeedsRepair": bootstrapNeeded(),
+	}
+	app.render(w, r, "repair.html", data)
+}
+
+// handleSystemRepairRecheck invalidates the bootstrap-needed cache and
+// redirects back to /system/repair so the user can verify their fix
+// took without waiting 30s for the cache to expire.
+func (app *App) handleSystemRepairRecheck(w http.ResponseWriter, r *http.Request) {
+	invalidateRepairCache()
+	http.Redirect(w, r, "/system/repair", http.StatusSeeOther)
+}
+
 func (app *App) handleSystemCheckUpdate(w http.ResponseWriter, r *http.Request) {
 	cat, err := app.catalogSvc.Fetch()
 	if err != nil {
@@ -2388,14 +2425,39 @@ func (app *App) handleSystemUpgrade(w http.ResponseWriter, r *http.Request) {
 		// Clean up tarball.
 		os.Remove(tarPath)
 
-		app.setUpgradeStatus("Restarting...")
+		app.setUpgradeStatus("Rebooting...")
 
-		// Restart Move to pick up new binaries.
-		restartScript := filepath.Join(app.basePath, "restart-move.sh")
-		if _, err := os.Stat(restartScript); err == nil {
-			exec.Command("sh", restartScript).Run()
+		// Reboot the device. The legacy `killall MoveOriginal MoveLauncher`
+		// path produced unsupervised orphans that froze the device 100% of
+		// the time — same bug install.sh hit, fixed by switching to a real
+		// reboot. shim-entrypoint.sh runs schwung-heal at boot which
+		// mirrors the now-current /data shim into /usr/lib before
+		// LD_PRELOAD takes over, so the new shim is what MoveOriginal
+		// loads on the way back up.
+		//
+		// Also draw the "Rebooting Move..." overlay onto the device's
+		// display first so the user sees explicit feedback during the
+		// ~30-45s blank period.
+		var frame [1024]byte
+		msg := "Rebooting Move..."
+		startX := (dispW - len(msg)*6) / 2
+		if startX < 0 {
+			startX = 0
+		}
+		renderText(frame[:], startX, 28, msg)
+		_ = os.WriteFile(dispSHM, frame[:], 0644)
+
+		// schwung-manager runs as ableton; reboot needs root. schwung-heal
+		// is setuid-root and supports --reboot — the canonical privileged
+		// helper. Background it so the HTTP goroutine isn't held by the
+		// shutdown.
+		heal := filepath.Join(app.basePath, "bin", "schwung-heal")
+		if _, err := os.Stat(heal); err == nil {
+			exec.Command("sh", "-c", "(sleep 1; "+heal+" --reboot) &").Run()
 		} else {
-			exec.Command("killall", "MoveOriginal", "MoveLauncher").Run()
+			app.logger.Error("upgrade: schwung-heal missing, cannot reboot",
+				"path", heal)
+			app.setUpgradeStatus("Reboot helper missing — please reboot manually")
 		}
 	}()
 
@@ -3014,6 +3076,13 @@ func main() {
 	// didn't clean up (e.g., the old manager was killed mid-upgrade).
 	app.setUpgradeStatus("")
 
+	// Self-heal stale shim/entrypoint. On-device update paths run as ableton
+	// and silently fail post-update.sh's /usr/lib/ + /opt/move/ writes, so
+	// users who upgraded host on-device end up with new files in /data/.../
+	// but stale ones at the OS-level locations. We run as root via the
+	// entrypoint, so we can finish the install and reboot once.
+	app.healShimIfStale()
+
 	// Audio capture watchdog: disarm a stale flag from before the manager
 	// restart, or reschedule auto-disarm for the remaining time.
 	app.startupAudioCaptureWatchdog()
@@ -3070,6 +3139,8 @@ func main() {
 
 	// System.
 	mux.HandleFunc("GET /system", app.handleSystem)
+	mux.HandleFunc("GET /system/repair", app.handleSystemRepair)
+	mux.HandleFunc("POST /system/repair/recheck", app.handleSystemRepairRecheck)
 	mux.HandleFunc("POST /system/check-update", app.handleSystemCheckUpdate)
 	mux.HandleFunc("POST /system/upgrade", app.handleSystemUpgrade)
 	mux.HandleFunc("GET /system/upgrade-status", app.handleUpgradeStatus)
@@ -3096,6 +3167,7 @@ func main() {
 	mux.HandleFunc("POST /api/download", app.handleAPIDownload)
 	mux.HandleFunc("GET /api/download/status/{id}", app.handleAPIDownloadStatus)
 	mux.HandleFunc("POST /api/open-in-tool", app.handleAPIOpenInTool)
+	mux.HandleFunc("POST /api/show-rebooting", app.handleShowRebooting)
 
 	// Graceful shutdown context — created early so RemoteUI can use it.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
