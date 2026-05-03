@@ -383,6 +383,12 @@ func discoverInstalledModules(base string) map[string]InstalledModule {
 // ---------------------------------------------------------------------------
 
 var funcMap = template.FuncMap{
+	// needsRepair returns true when the device's entrypoint at
+	// /opt/move/Move is the legacy version that doesn't run schwung-heal
+	// at boot. base.html uses this to render the repair banner on every
+	// page so users who landed in the bootstrap-needed state see what
+	// to do (SSH command + GUI installer fallback). 30s cache.
+	"needsRepair": bootstrapNeeded,
 	"dict": func(pairs ...any) map[string]any {
 		m := make(map[string]any, len(pairs)/2)
 		for i := 0; i+1 < len(pairs); i += 2 {
@@ -651,6 +657,7 @@ func loadTemplates() (templateMap, error) {
 		"templates/help.html",
 		"templates/remote_ui.html",
 		"templates/download.html",
+		"templates/repair.html",
 	}
 
 	m := make(templateMap, len(pages))
@@ -2251,6 +2258,36 @@ func (app *App) handleSystem(w http.ResponseWriter, r *http.Request) {
 	app.render(w, r, "system.html", data)
 }
 
+// handleSystemRepair shows the dedicated repair page with the SSH
+// bootstrap command + GUI installer fallback. Reachable from the
+// banner on every page (see partials/repair_banner.html).
+func (app *App) handleSystemRepair(w http.ResponseWriter, r *http.Request) {
+	host := r.Host
+	// Strip port if present so the SSH command says move.local rather
+	// than move.local:7700. The banner asks for a hostname/IP for ssh.
+	if i := strings.IndexByte(host, ':'); i >= 0 {
+		host = host[:i]
+	}
+	if host == "" {
+		host = "move.local"
+	}
+	data := map[string]any{
+		"Title":       "Repair",
+		"Active":      "system",
+		"Hostname":    host,
+		"NeedsRepair": bootstrapNeeded(),
+	}
+	app.render(w, r, "repair.html", data)
+}
+
+// handleSystemRepairRecheck invalidates the bootstrap-needed cache and
+// redirects back to /system/repair so the user can verify their fix
+// took without waiting 30s for the cache to expire.
+func (app *App) handleSystemRepairRecheck(w http.ResponseWriter, r *http.Request) {
+	invalidateRepairCache()
+	http.Redirect(w, r, "/system/repair", http.StatusSeeOther)
+}
+
 func (app *App) handleSystemCheckUpdate(w http.ResponseWriter, r *http.Request) {
 	cat, err := app.catalogSvc.Fetch()
 	if err != nil {
@@ -3083,6 +3120,8 @@ func main() {
 
 	// System.
 	mux.HandleFunc("GET /system", app.handleSystem)
+	mux.HandleFunc("GET /system/repair", app.handleSystemRepair)
+	mux.HandleFunc("POST /system/repair/recheck", app.handleSystemRepairRecheck)
 	mux.HandleFunc("POST /system/check-update", app.handleSystemCheckUpdate)
 	mux.HandleFunc("POST /system/upgrade", app.handleSystemUpgrade)
 	mux.HandleFunc("GET /system/upgrade-status", app.handleUpgradeStatus)

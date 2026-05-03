@@ -1987,3 +1987,73 @@ code {
     }
 }
 /* BUILD_MARKER_XYZ_123 */
+
+/* ---- Repair banner: shown on every page when self-heal isn't installed ---- */
+.repair-banner {
+    background: #b03030;
+    color: #fff;
+    padding: 0.55rem 1rem;
+    font-size: 0.95rem;
+    border-bottom: 1px solid #802020;
+}
+.repair-banner-inner {
+    max-width: 1100px;
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+.repair-banner a {
+    color: #fff;
+    text-decoration: underline;
+    margin-left: auto;
+}
+
+/* ---- Repair page styling ---- */
+.repair-step {
+    background: #1f1f2e;
+    border: 1px solid #303040;
+    border-radius: 6px;
+    padding: 1rem 1.25rem;
+    margin: 1rem 0;
+}
+.repair-step h3 {
+    margin: 0 0 0.5rem;
+    font-size: 1rem;
+}
+.repair-step pre {
+    background: #0d0d18;
+    color: #e0e0e0;
+    padding: 0.75rem;
+    border-radius: 4px;
+    overflow-x: auto;
+    font-size: 0.85rem;
+}
+.repair-status-ok {
+    color: #4caf50;
+    font-weight: bold;
+}
+.repair-status-bad {
+    color: #ff6b6b;
+    font-weight: bold;
+}
+
+.repair-copy-row {
+    display: flex;
+    gap: 0.5rem;
+    align-items: stretch;
+}
+.repair-copy-row pre {
+    flex: 1;
+    margin: 0;
+}
+.repair-copy-btn {
+    flex-shrink: 0;
+    align-self: stretch;
+    padding: 0 1rem;
+}
+.repair-copy-btn.btn-copied {
+    background: #4caf50;
+    color: #fff;
+}

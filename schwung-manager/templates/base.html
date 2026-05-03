@@ -28,6 +28,8 @@
 <body>
     <a href="#main-content" class="skip-link">Skip to main content</a>
 
+    {{if needsRepair}}{{template "repair_banner" .}}{{end}}
+
     <header>
         <div class="header-inner">
             <a href="/modules" class="site-name">Schwung Manager</a>

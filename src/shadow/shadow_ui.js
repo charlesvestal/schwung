@@ -503,6 +503,15 @@ let analyticsPromptSelection = 0;  // 0 = Yes (default), 1 = No
 /* Auto-update state */
 let autoUpdateCheckEnabled = true;   // Default: enabled (opt-out)
 let pendingUpdates = [];              // Updates found on startup
+
+/* Bootstrap-needed banner state. The self-heal mechanism (schwung-heal
+ * setuid + entrypoint that invokes it at boot) requires one-time root
+ * setup that the on-device update path can't perform. Detect at startup
+ * whether the live entrypoint at /opt/move/Move is the new version
+ * (contains the 'schwung-heal' invocation); if not, flag for a one-shot
+ * banner that points the user at the web manager / GUI installer. */
+let shimBootstrapNeeded = false;
+let shimBootstrapPromptShown = false;
 let pendingUpdateIndex = 0;           // Selected update in prompt
 let updateRestartFromVersion = '';    // For restart prompt display
 let updateRestartToVersion = '';
@@ -1140,30 +1149,67 @@ function showUpdatesAvailableScreen() {
     announce("Checking for updates");
     checkForUpdatesInBackground();
 
-    const total = pendingUpdates.length;
+    /* Distinguish host pointer from module updates so the user knows
+     * what's actually outdated. checkForUpdatesInBackground pushes a
+     * single _hostPointer entry to the queue when the catalog has a
+     * newer host; everything else is a module update. */
+    let hostNewer = '';
+    let moduleCount = 0;
+    for (let i = 0; i < pendingUpdates.length; i++) {
+        const upd = pendingUpdates[i];
+        if (upd._hostPointer) {
+            hostNewer = upd.to || '';
+        } else {
+            moduleCount++;
+        }
+    }
+
     /* Reset so the dead UPDATE_PROMPT view isn't shown if the user lands
      * here a second time without clearing state. */
     pendingUpdates = [];
     pendingUpdateIndex = 0;
-    /* Make sure the result-screen click routes back to GLOBAL_SETTINGS
-     * (not the empty STORE_PICKER_CATEGORIES "no modules available"
-     * fallback). storePickerFromSettings was the legacy "browse came
-     * from settings" flag — we don't want it set; storeReturnView is
-     * the new flag that the result-click handler honours. */
+    /* Route the result-screen click back to GLOBAL_SETTINGS (not the
+     * empty STORE_PICKER_CATEGORIES "no modules available" fallback). */
     storePickerFromSettings = false;
     storeReturnView = VIEWS.GLOBAL_SETTINGS;
 
     storePickerResultTitle = 'Updates';
-    if (total === 0) {
+    if (!hostNewer && moduleCount === 0) {
         storePickerMessage = buildNoUpdatesMessage();
     } else {
-        storePickerMessage = total + ' update' + (total === 1 ? '' : 's') + ' available\n' +
-                             'Update Schwung at\n' +
-                             'http://move.local:7700';
+        const lines = [];
+        if (hostNewer) {
+            lines.push('Schwung ' + hostNewer + ' available');
+        }
+        if (moduleCount > 0) {
+            lines.push(moduleCount + ' module update' + (moduleCount === 1 ? '' : 's'));
+        }
+        lines.push('Update at');
+        lines.push('http://move.local:7700');
+        storePickerMessage = lines.join('\n');
     }
     view = VIEWS.STORE_PICKER_RESULT;
     needsRedraw = true;
     announce(storePickerMessage);
+}
+
+/* Detect whether the live entrypoint at /opt/move/Move includes the
+ * boot-time `schwung-heal` invocation. If not, the self-heal mechanism
+ * isn't running on this device, /usr/lib/schwung-shim.so will silently
+ * drift out of sync with /data after web-manager updates, and the user
+ * needs the one-time bootstrap (web manager, GUI installer, or SSH).
+ *
+ * Reads the entrypoint via std.loadFile (it's a ~4KB shell script).
+ * Returns true when the bootstrap is missing, false when it's present
+ * or the file can't be read (in which case we don't want to nag). */
+function detectShimBootstrapNeeded() {
+    try {
+        const entry = std.loadFile('/opt/move/Move');
+        if (!entry) return false;
+        return entry.indexOf('schwung-heal') < 0;
+    } catch (_e) {
+        return false;
+    }
 }
 
 /* Pointer to the web manager — same routing semantics as the updates
@@ -13834,6 +13880,14 @@ globalThis.init = function() {
 
     /* Auto-update check is manual only (Settings → Updates → Check Updates) */
 
+    /* Detect whether the self-heal entrypoint is installed. If not, the
+     * device is in the "needs bootstrap" state — first tick will surface
+     * a one-shot banner pointing at the web manager / GUI installer. */
+    shimBootstrapNeeded = detectShimBootstrapNeeded();
+    if (shimBootstrapNeeded) {
+        debugLog("init: self-heal bootstrap needed (entrypoint at /opt/move/Move lacks schwung-heal)");
+    }
+
     /* Process any HTML left by a prior background download, then kick off
      * a new background download if the cache is stale. Both are non-blocking. */
     try { processDownloadedHtml(); } catch (e) { debugLog("Manual process: " + e); }
@@ -14007,6 +14061,23 @@ globalThis.tick = function() {
                 analyticsPromptSelection = 0;
                 announce("Usage Statistics, Send anonymous data? Yes");
                 /* Don't dismiss display — keep showing prompt */
+            } else if (shimBootstrapNeeded && !shimBootstrapPromptShown) {
+                /* One-shot repair prompt: the live entrypoint at /opt/move/Move
+                 * doesn't include the schwung-heal call, so the self-heal
+                 * mechanism isn't running. Updates via web manager will
+                 * silently no-op at the privileged-write step until this is
+                 * repaired (web manager / GUI installer / SSH). Show the
+                 * pointer screen once per boot so the user is unmistakeably
+                 * informed instead of staring at a silently-stale install. */
+                shimBootstrapPromptShown = true;
+                storePickerResultTitle = 'Schwung Repair';
+                storePickerMessage = 'Repair needed. visit\n' +
+                                     'http://move.local:7700\n' +
+                                     'or rerun GUI installer';
+                storePickerFromSettings = false;
+                storeReturnView = null;
+                view = VIEWS.STORE_PICKER_RESULT;
+                announce(storePickerMessage);
             } else {
                 /* Dismiss shadow display mode — return to Move's native UI */
                 if (typeof shadow_request_exit === "function") {

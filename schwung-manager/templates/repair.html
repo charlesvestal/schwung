@@ -1,0 +1,91 @@
+{{define "content"}}
+<h1>Schwung Repair</h1>
+
+{{if .NeedsRepair}}
+<p class="repair-status-bad">Self-heal is not installed on this device.</p>
+<p>
+    A bootstrap step that requires root privileges hasn't run yet. Without it,
+    every future update to Schwung will silently fail at the privileged-write
+    step, leaving you on whatever shim version is currently in
+    <code>/usr/lib/schwung-shim.so</code>. Pick whichever path is easier:
+</p>
+
+<div class="repair-step">
+    <h3>Option 1 &mdash; SSH (one command, fastest)</h3>
+    <p>
+        From a Mac/Linux/WSL terminal on the same network. Replace
+        <code>{{.Hostname}}</code> with your device's IP if mDNS isn't available.
+    </p>
+    <div class="repair-copy-row">
+        <pre id="repair-ssh-cmd">ssh root@{{.Hostname}} 'chmod 4755 /data/UserData/schwung/bin/schwung-heal &amp;&amp; /data/UserData/schwung/bin/schwung-heal --reboot'</pre>
+        <button type="button" class="btn repair-copy-btn" id="repair-copy-btn">Copy</button>
+    </div>
+    <p>
+        Move will reboot once. After it comes back up, this banner will be gone.
+    </p>
+</div>
+
+<div class="repair-step">
+    <h3>Option 2 &mdash; GUI Installer (no terminal needed)</h3>
+    <p>
+        Download the latest installer from
+        <a href="https://github.com/charlesvestal/schwung-installer/releases/latest" target="_blank" rel="noopener noreferrer">the installer releases page</a>,
+        run it, and click <em>Reinstall</em>. The installer SSHes as root and
+        sets up the missing pieces.
+    </p>
+</div>
+
+<form method="POST" action="/system/repair/recheck" class="form">
+    <input type="hidden" name="csrf_token" value="">
+    <button class="btn" type="submit">Re-check now</button>
+</form>
+
+{{else}}
+<p class="repair-status-ok">&#10003; Self-heal is installed and active.</p>
+<p>
+    The boot-time entrypoint at <code>/opt/move/Move</code> invokes
+    <code>schwung-heal</code> on every boot, which mirrors any drift between
+    <code>/data/UserData/schwung/schwung-shim.so</code> and
+    <code>/usr/lib/schwung-shim.so</code> before MoveOriginal loads the shim.
+    No manual intervention is needed for future updates.
+</p>
+{{end}}
+
+<script>
+(function() {
+    var form = document.querySelector('form[action="/system/repair/recheck"]');
+    if (form) {
+        var t = (document.cookie.match(/csrf_token=([^;]+)/) || [])[1];
+        if (t) form.querySelector('input[name="csrf_token"]').value = t;
+    }
+
+    var copyBtn = document.getElementById('repair-copy-btn');
+    var cmdEl = document.getElementById('repair-ssh-cmd');
+    if (copyBtn && cmdEl && navigator.clipboard) {
+        copyBtn.addEventListener('click', function() {
+            navigator.clipboard.writeText(cmdEl.textContent).then(function() {
+                var orig = copyBtn.textContent;
+                copyBtn.textContent = 'Copied!';
+                copyBtn.classList.add('btn-copied');
+                setTimeout(function() {
+                    copyBtn.textContent = orig;
+                    copyBtn.classList.remove('btn-copied');
+                }, 1500);
+            }, function(err) {
+                copyBtn.textContent = 'Copy failed';
+                console.error('Copy failed:', err);
+                setTimeout(function() { copyBtn.textContent = 'Copy'; }, 2000);
+            });
+        });
+    } else if (copyBtn) {
+        // navigator.clipboard unavailable (e.g. http origin without secure context).
+        // Hide rather than confuse users with a button that does nothing.
+        copyBtn.style.display = 'none';
+    }
+})();
+</script>
+{{end}}
+
+{{define "title"}}Repair - Schwung Manager{{end}}
+
+{{template "base" .}}
