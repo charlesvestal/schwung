@@ -508,6 +508,15 @@ let analyticsPromptSelection = 0;  // 0 = Yes (default), 1 = No
 /* Auto-update state */
 let autoUpdateCheckEnabled = true;   // Default: enabled (opt-out)
 let pendingUpdates = [];              // Updates found on startup
+
+/* Bootstrap-needed banner state. The self-heal mechanism (schwung-heal
+ * setuid + entrypoint that invokes it at boot) requires one-time root
+ * setup that the on-device update path can't perform. Detect at startup
+ * whether the live entrypoint at /opt/move/Move is the new version
+ * (contains the 'schwung-heal' invocation); if not, flag for a one-shot
+ * banner that points the user at the web manager / GUI installer. */
+let shimBootstrapNeeded = false;
+let shimBootstrapPromptShown = false;
 let pendingUpdateIndex = 0;           // Selected update in prompt
 let updateRestartFromVersion = '';    // For restart prompt display
 let updateRestartToVersion = '';
@@ -889,8 +898,14 @@ const GLOBAL_SETTINGS_SECTIONS = [
     {
         id: "updates", label: "Updates",
         items: [
+            /* Detection runs on-device (catalog scan + version compare) so
+             * users can see what's outdated without opening a browser. The
+             * actual install always happens via the web manager (or the
+             * GUI installer as fallback) — the on-device install paths
+             * silently failed for users without a current shim, so we
+             * removed them. */
             { key: "check_updates", label: "[Check Updates]", type: "action" },
-            { key: "module_store", label: "[Module Store]", type: "action" }
+            { key: "module_store",  label: "[Module Store]",  type: "action" }
         ]
     },
     {
@@ -1122,26 +1137,131 @@ let storePickerFromSettings = false;  // True if entered from MFX settings (full
 let storeCategoryIndex = 0;           // Selected index in category browser
 let storeCategoryItems = [];          // Built category list with counts
 
-/* Check if host update is available and create pseudo-module if so */
+/* Check if host update is available and create pseudo-module if so.
+ * On-device host updates are disabled — they extract as ableton and
+ * silently fail post-update.sh's privileged writes, leaving users
+ * with stale /usr/lib/schwung-shim.so. Direct users to the web manager
+ * (move.local:7700) which runs as root and can complete the install. */
 function getHostUpdateModule() {
-    if (!storeCatalog || !storeCatalog.host) return null;
-    const host = storeCatalog.host;
-    if (!host.latest_version || !host.download_url) return null;
-    if (!isNewerVersion(host.latest_version, storeHostVersion)) return null;
+    return null;
+}
+
+/* Run detection + show a result screen listing what's outdated, with the
+ * web-manager pointer. No install actions — those only happen via the
+ * web manager. checkForUpdatesInBackground populates pendingUpdates as
+ * a side effect; we read length, then never touch the install flow. */
+function showUpdatesAvailableScreen() {
+    announce("Checking for updates");
+    checkForUpdatesInBackground();
+
+    /* Distinguish host pointer from module updates so the user knows
+     * what's actually outdated. checkForUpdatesInBackground pushes a
+     * single _hostPointer entry to the queue when the catalog has a
+     * newer host; everything else is a module update. */
+    let hostNewer = '';
+    let moduleCount = 0;
+    for (let i = 0; i < pendingUpdates.length; i++) {
+        const upd = pendingUpdates[i];
+        if (upd._hostPointer) {
+            hostNewer = upd.to || '';
+        } else {
+            moduleCount++;
+        }
+    }
+
+    /* Reset so the dead UPDATE_PROMPT view isn't shown if the user lands
+     * here a second time without clearing state. */
+    pendingUpdates = [];
+    pendingUpdateIndex = 0;
+    /* Route the result-screen click back to GLOBAL_SETTINGS (not the
+     * empty STORE_PICKER_CATEGORIES "no modules available" fallback). */
+    storePickerFromSettings = false;
+    storeReturnView = VIEWS.GLOBAL_SETTINGS;
+
+    storePickerResultTitle = 'Updates';
+    if (!hostNewer && moduleCount === 0) {
+        storePickerMessage = buildNoUpdatesMessage();
+    } else {
+        const lines = [];
+        if (hostNewer) {
+            lines.push('Schwung ' + hostNewer + ' available');
+        }
+        if (moduleCount > 0) {
+            lines.push(moduleCount + ' module update' + (moduleCount === 1 ? '' : 's'));
+        }
+        lines.push('Update at');
+        lines.push('http://move.local:7700');
+        storePickerMessage = lines.join('\n');
+    }
+    view = VIEWS.STORE_PICKER_RESULT;
+    needsRedraw = true;
+    announce(storePickerMessage);
+}
+
+/* Detect whether the live entrypoint at /opt/move/Move includes the
+ * boot-time `schwung-heal` invocation. If not, the self-heal mechanism
+ * isn't running on this device, /usr/lib/schwung-shim.so will silently
+ * drift out of sync with /data after web-manager updates, and the user
+ * needs the one-time bootstrap (web manager, GUI installer, or SSH).
+ *
+ * Reads the entrypoint via std.loadFile (it's a ~4KB shell script).
+ * Returns true when the bootstrap is missing, false when it's present
+ * or the file can't be read (in which case we don't want to nag). */
+function detectShimBootstrapNeeded() {
+    try {
+        const entry = std.loadFile('/opt/move/Move');
+        if (!entry) return false;
+        return entry.indexOf('schwung-heal') < 0;
+    } catch (_e) {
+        return false;
+    }
+}
+
+/* Pointer to the web manager — same routing semantics as the updates
+ * screen: result-click returns to GLOBAL_SETTINGS via storeReturnView. */
+function showModuleStorePointer() {
+    storePickerFromSettings = false;
+    storeReturnView = VIEWS.GLOBAL_SETTINGS;
+    storePickerResultTitle = 'Module Store';
+    storePickerMessage = 'Module store available at\nhttp://move.local:7700';
+    view = VIEWS.STORE_PICKER_RESULT;
+    needsRedraw = true;
+    announce(storePickerMessage);
+}
+
+/* Return a no-updates message that surfaces "host updates live in the
+ * web manager" when the catalog says a newer host is available. Hiding
+ * the on-device action without telling users where to update otherwise
+ * leaves them silently stuck on old versions. */
+function buildNoUpdatesMessage() {
+    try {
+        if (storeCatalog && storeCatalog.host && storeCatalog.host.latest_version) {
+            const cur = storeHostVersion || getHostVersion();
+            if (isNewerVersion(storeCatalog.host.latest_version, cur)) {
+                return 'Schwung ' + storeCatalog.host.latest_version + ' available\n' +
+                       'Update Schwung at\n' +
+                       'http://move.local:7700';
+            }
+        }
+    } catch (_e) { /* fall through */ }
+    return 'No updates available';
+}
+
+/* On-device host updates are disabled. Surface a clear instruction to
+ * users so they know where to update from instead. */
+function performCoreUpdate(_mod) {
     return {
-        id: "__core_update__",
-        name: "Core Update",
-        description: "Update Schwung core",
-        latest_version: host.latest_version,
-        download_url: host.download_url,
-        component_type: "core",
-        _isHostUpdate: true
+        success: false,
+        error: 'Update Schwung at\nhttp://move.local:7700'
     };
 }
 
-/* Perform a staged core update with verification and backup.
- * Returns { success: bool, error: string? } */
-function performCoreUpdate(mod) {
+/* Legacy implementation kept for reference / future re-enable path —
+ * disabled because the privileged setup post-extract (see post-update.sh
+ * /usr/lib/ + /opt/move/ writes) cannot run as ableton on-device. The
+ * only reliable on-device upgrade path requires root, which the JS layer
+ * doesn't have. */
+function performCoreUpdate_disabled(mod) {
     const BASE = '/data/UserData/schwung';
     const TMP = BASE + '/tmp';
     const STAGING = BASE + '/update-staging';
@@ -1269,23 +1389,13 @@ function checkForUpdatesInBackground() {
     drawStatusOverlay('Updates', 'Checking...');
     host_flush_display();
 
-    /* Check core update */
+    /* Refresh host version (still needed for module compatibility checks).
+     * Core updates are no longer offered on-device — users update via the
+     * web manager (move.local:7700). The check is suppressed so the
+     * "Update All" flow doesn't try to perform a core upgrade that the
+     * JS layer can't complete with the right privileges. */
     storeHostVersion = getHostVersion();
     debugLog("checkForUpdatesInBackground: hostVersion=" + storeHostVersion);
-    const coreRelease = fetchReleaseJsonQuick('charlesvestal/schwung');
-    debugLog("checkForUpdatesInBackground: coreRelease=" + JSON.stringify(coreRelease));
-    if (coreRelease && isNewerVersion(coreRelease.version, storeHostVersion)) {
-        debugLog("checkForUpdatesInBackground: core update available " + storeHostVersion + " -> " + coreRelease.version);
-        updates.push({
-            id: '__core_update__',
-            name: 'Core',
-            from: storeHostVersion,
-            to: coreRelease.version,
-            _isHostUpdate: true,
-            download_url: coreRelease.download_url,
-            latest_version: coreRelease.version
-        });
-    }
 
     /* Check module updates */
     clear_screen();
@@ -1300,6 +1410,26 @@ function checkForUpdatesInBackground() {
     });
     debugLog("checkForUpdatesInBackground: catalog success=" + catalogResult.success);
     if (catalogResult.success) {
+        /* Cache catalog so buildNoUpdatesMessage can read host.latest_version
+         * when there are no module updates — otherwise users hitting Check
+         * for Updates have no signal that a host upgrade is available. */
+        storeCatalog = catalogResult.catalog;
+        /* Surface a non-actionable "Schwung X.Y.Z available" pointer at the
+         * top of the update prompt when the catalog has a newer host. We
+         * can't perform host upgrades on-device (privileged paths blocked
+         * for ableton), so this is informational — selecting it shows the
+         * web manager pointer message and Update All skips it entirely. */
+        const cat = catalogResult.catalog;
+        if (cat && cat.host && cat.host.latest_version &&
+            isNewerVersion(cat.host.latest_version, storeHostVersion)) {
+            updates.push({
+                id: '__host_pointer__',
+                name: 'Schwung ' + cat.host.latest_version,
+                from: storeHostVersion,
+                to: cat.host.latest_version,
+                _hostPointer: true
+            });
+        }
         for (const mod of catalogResult.catalog.modules || []) {
             const status = getModuleStatus(mod, installed);
             if (status.installed && status.hasUpdate) {
@@ -1334,8 +1464,15 @@ function processAllUpdates() {
     let moduleCount = 0;
     const total = pendingUpdates.length;
 
+    let pointerSeen = false;
     for (let i = 0; i < pendingUpdates.length; i++) {
         const upd = pendingUpdates[i];
+
+        /* Host pointer is informational only — skip during Update All. */
+        if (upd._hostPointer) {
+            pointerSeen = true;
+            continue;
+        }
 
         /* Show progress overlay */
         const progressLabel = (i + 1) + '/' + total + ': ' + (upd.name || upd.id || 'update');
@@ -1377,7 +1514,19 @@ function processAllUpdates() {
     } else if (moduleCount > 0) {
         storeInstalledModules = scanInstalledModules();
         storePickerResultTitle = 'Updates';
-        storePickerMessage = 'Updated ' + moduleCount + ' module' + (moduleCount > 1 ? 's' : '');
+        let msg = 'Updated ' + moduleCount + ' module' + (moduleCount > 1 ? 's' : '');
+        if (pointerSeen) {
+            msg += '\nUpdate Schwung at\nhttp://move.local:7700';
+        }
+        storePickerMessage = msg;
+        view = VIEWS.STORE_PICKER_RESULT;
+        needsRedraw = true;
+        announce(storePickerMessage);
+    } else if (pointerSeen) {
+        /* Only the host pointer was in the queue — treat as no-op + show
+         * the web-manager pointer message. */
+        storePickerResultTitle = 'Updates';
+        storePickerMessage = 'Update Schwung at\nhttp://move.local:7700';
         view = VIEWS.STORE_PICKER_RESULT;
         needsRedraw = true;
         announce(storePickerMessage);
@@ -4569,19 +4718,11 @@ function handleMasterFxSettingsAction(key) {
         announceSavePreview(masterPendingSaveName, masterNamePreviewIndex);
         needsRedraw = true;
     } else if (key === "check_updates") {
-        /* Check for updates now */
-        checkForUpdatesInBackground();
-        if (pendingUpdates.length === 0) {
-            /* No updates found — show a brief message via store result view */
-            storePickerResultTitle = 'Updates';
-            storePickerMessage = 'No updates available';
-            view = VIEWS.STORE_PICKER_RESULT;
-            needsRedraw = true;
-        }
-        /* If updates found, checkForUpdatesInBackground already set view to UPDATE_PROMPT */
+        /* Detection only — no install actions on-device. */
+        showUpdatesAvailableScreen();
     } else if (key === "module_store") {
-        /* Open full module store with category browser */
-        enterStoreFromSettings();
+        /* Browsing on-device is disabled — point at the web manager. */
+        showModuleStorePointer();
     } else if (key === "delete") {
         /* Delete - confirm */
         masterConfirmingDelete = true;
@@ -5448,21 +5589,11 @@ function handleGlobalSettingsAction(key) {
     }
     if (key === "check_updates") {
         storeReturnView = VIEWS.GLOBAL_SETTINGS;
-        announce("Checking for updates");
-        checkForUpdatesInBackground();
-        if (pendingUpdates.length === 0) {
-            storePickerResultTitle = 'Updates';
-            storePickerMessage = 'No updates available';
-            view = VIEWS.STORE_PICKER_RESULT;
-            needsRedraw = true;
-            announce("No updates available");
-        }
-        /* If updates found, checkForUpdatesInBackground already announced */
+        showUpdatesAvailableScreen();
         return;
     }
     if (key === "module_store") {
-        storeReturnView = VIEWS.GLOBAL_SETTINGS;
-        enterStoreFromSettings();
+        showModuleStorePointer();
         return;
     }
 }
@@ -6359,14 +6490,17 @@ function buildStoreCategoryItems() {
     storeHostVersion = getHostVersion();
     storeInstalledModules = scanInstalledModules();
 
-    /* Core update at top if available */
-    const hostUpdate = getHostUpdateModule();
-    if (hostUpdate) {
+    /* Core update at top if available — disabled on-device, but if catalog
+     * has a newer host we still surface a non-actionable info row pointing
+     * users at the web manager. Otherwise they have no signal that they're
+     * out of date. */
+    if (storeCatalog && storeCatalog.host && storeCatalog.host.latest_version &&
+        isNewerVersion(storeCatalog.host.latest_version, storeHostVersion)) {
         storeCategoryItems.push({
-            id: '__host_update__',
-            label: 'Update Host',
-            value: storeHostVersion + ' -> ' + hostUpdate.latest_version,
-            _hostUpdate: hostUpdate
+            id: '__host_update_info__',
+            label: 'Schwung ' + storeCatalog.host.latest_version + ' available',
+            value: 'move.local:7700',
+            _info: true
         });
     }
 
@@ -6428,6 +6562,18 @@ function handleStoreCategorySelect() {
         storePickerActionIndex = 0;
         setView(VIEWS.STORE_PICKER_DETAIL);
         announce("Core Update, " + storeHostVersion + " to " + item._hostUpdate.latest_version);
+        needsRedraw = true;
+        return;
+    }
+
+    if (item.id === '__host_update_info__') {
+        /* Info-only entry: tell the user to update from the web manager.
+         * On-device host updates can't write the privileged paths required
+         * to actually swap the live shim. */
+        storePickerResultTitle = 'Update Schwung';
+        storePickerMessage = 'Update Schwung at\nhttp://move.local:7700';
+        setView(VIEWS.STORE_PICKER_RESULT);
+        announce(storePickerMessage);
         needsRedraw = true;
         return;
     }
@@ -6592,7 +6738,18 @@ function handleStorePickerDetailSelect() {
 
 /* Handle selection in store picker result */
 function handleStorePickerResultSelect() {
-    /* Return to list */
+    /* Honor storeReturnView so callers from Global Settings (Check
+     * Updates / Module Store pointer screens) get sent back there
+     * instead of into the now-disabled STORE_PICKER_LIST view (which
+     * shows "No modules available" because the categories were never
+     * built). */
+    if (storeReturnView === VIEWS.GLOBAL_SETTINGS) {
+        storeReturnView = null;
+        storePickerCurrentModule = null;
+        enterGlobalSettings();
+        return;
+    }
+    /* Default: return to module list (legacy install flows). */
     setView(VIEWS.STORE_PICKER_LIST);
     storePickerCurrentModule = null;
     needsRedraw = true;
@@ -11633,6 +11790,15 @@ function handleSelect() {
                 /* "Update All" - install directly */
                 announce("Installing all updates");
                 processAllUpdates();
+            } else if (pendingUpdateIndex >= 0 && pendingUpdateIndex < pendingUpdates.length &&
+                       pendingUpdates[pendingUpdateIndex]._hostPointer) {
+                /* Host pointer: not actionable on-device; show web manager
+                 * instruction screen instead of the install detail view. */
+                storePickerResultTitle = 'Update Schwung';
+                storePickerMessage = 'Update Schwung at\nhttp://move.local:7700';
+                view = VIEWS.STORE_PICKER_RESULT;
+                needsRedraw = true;
+                announce(storePickerMessage);
             } else if (pendingUpdateIndex >= 0 && pendingUpdateIndex < pendingUpdates.length) {
                 const upd = pendingUpdates[pendingUpdateIndex];
                 updateDetailModule = upd;
@@ -13716,6 +13882,14 @@ globalThis.init = function() {
 
     /* Auto-update check is manual only (Settings → Updates → Check Updates) */
 
+    /* Detect whether the self-heal entrypoint is installed. If not, the
+     * device is in the "needs bootstrap" state — first tick will surface
+     * a one-shot banner pointing at the web manager / GUI installer. */
+    shimBootstrapNeeded = detectShimBootstrapNeeded();
+    if (shimBootstrapNeeded) {
+        debugLog("init: self-heal bootstrap needed (entrypoint at /opt/move/Move lacks schwung-heal)");
+    }
+
     /* Process any HTML left by a prior background download, then kick off
      * a new background download if the cache is stale. Both are non-blocking. */
     try { processDownloadedHtml(); } catch (e) { debugLog("Manual process: " + e); }
@@ -13889,6 +14063,23 @@ globalThis.tick = function() {
                 analyticsPromptSelection = 0;
                 announce("Usage Statistics, Send anonymous data? Yes");
                 /* Don't dismiss display — keep showing prompt */
+            } else if (shimBootstrapNeeded && !shimBootstrapPromptShown) {
+                /* One-shot repair prompt: the live entrypoint at /opt/move/Move
+                 * doesn't include the schwung-heal call, so the self-heal
+                 * mechanism isn't running. Updates via web manager will
+                 * silently no-op at the privileged-write step until this is
+                 * repaired (web manager / GUI installer / SSH). Show the
+                 * pointer screen once per boot so the user is unmistakeably
+                 * informed instead of staring at a silently-stale install. */
+                shimBootstrapPromptShown = true;
+                storePickerResultTitle = 'Schwung Repair';
+                storePickerMessage = 'Repair needed. visit\n' +
+                                     'http://move.local:7700\n' +
+                                     'or rerun GUI installer';
+                storePickerFromSettings = false;
+                storeReturnView = null;
+                view = VIEWS.STORE_PICKER_RESULT;
+                announce(storePickerMessage);
             } else {
                 /* Dismiss shadow display mode — return to Move's native UI */
                 if (typeof shadow_request_exit === "function") {
