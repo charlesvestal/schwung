@@ -39,11 +39,11 @@ import("./src/shared/knob_engine.mjs").then((m) => {
   st = knobInit(0);
   st.lastTickMs = 990;
   const enumCfg = { type: KNOB_TYPE_ENUM, min: 0, max: 46, step: 1, enumCount: 47 };
-  // fast turns (10ms apart) → 3200/47 ≈ 68 (clamped to [8,160])
-  for (let i = 0; i < 67; i++) knobTick(st, enumCfg, 1, 1000 + i * 10);
-  if (st.value !== 0) { console.log("FAIL enum 67 fast ticks:", st.value); process.exit(1); }
-  knobTick(st, enumCfg, 1, 1000 + 67 * 10);
-  if (st.value !== 1) { console.log("FAIL enum 68 fast ticks:", st.value); process.exit(1); }
+  // fast turns (10ms apart) → 2100/47 ≈ 44 (clamped to [6,100])
+  for (let i = 0; i < 43; i++) knobTick(st, enumCfg, 1, 1000 + i * 10);
+  if (st.value !== 0) { console.log("FAIL enum 43 fast ticks:", st.value); process.exit(1); }
+  knobTick(st, enumCfg, 1, 1000 + 43 * 10);
+  if (st.value !== 1) { console.log("FAIL enum 44 fast ticks:", st.value); process.exit(1); }
 
   // Same-ms ticks should NOT use cold-start divisor=1 (regression: was bypassing acceleration)
   st = knobInit(0.5);
@@ -80,11 +80,11 @@ import("./src/shared/knob_engine.mjs").then((m) => {
       console.log("FAIL int batched delta=10:", st.value, "accum:", st.tickAccum); process.exit(1);
   }
 
-  // Enum batched delta: enumCount=47 → enumDivisor=68; delta=136 should emit 2 steps
+  // Enum batched delta: enumCount=47 → enumDivisor=44; delta=88 should emit 2 steps
   st = knobInit(0);
   st.lastTickMs = 990;
-  knobTick(st, { type: KNOB_TYPE_ENUM, min: 0, max: 46, step: 1, enumCount: 47 }, 136, 1000);
-  if (st.value !== 2) { console.log("FAIL enum batched delta=136:", st.value); process.exit(1); }
+  knobTick(st, { type: KNOB_TYPE_ENUM, min: 0, max: 46, step: 1, enumCount: 47 }, 88, 1000);
+  if (st.value !== 2) { console.log("FAIL enum batched delta=88:", st.value); process.exit(1); }
 
   console.log("PASS knob_engine");
 }).catch((e) => { console.log("FAIL import:", e); process.exit(1); });
