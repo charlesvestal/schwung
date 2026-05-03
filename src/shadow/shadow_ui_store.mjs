@@ -133,7 +133,14 @@ export function drawStorePickerResult() {
     drawHeader(storePickerResultTitle || 'Module Store');
 
     const msg = storePickerMessage || 'Done';
-    print(2, 28, msg, 1);
+    /* Multi-line support: callers may set the message with embedded "\n"
+     * (e.g. the Update Schwung pointer) — render each line stacked. */
+    const lines = String(msg).split('\n');
+    const lineHeight = 10;
+    const startY = 28;
+    for (let i = 0; i < lines.length; i++) {
+        print(2, startY + i * lineHeight, lines[i], 1);
+    }
 
     drawFooter('Press to continue');
 }
