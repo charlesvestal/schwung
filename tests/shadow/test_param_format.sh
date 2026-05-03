@@ -68,6 +68,14 @@ import("./src/shared/param_format.mjs").then((m) => {
   // Negative dB
   if (formatParamValue(-12.5, { type:"float", unit:"dB", step:0.1 }) !== "-12.5 dB") { console.log("FAIL negative dB"); process.exit(1); }
 
+  // display_format + unit interaction at the inline hierarchy display call site (regression Task 4 fix)
+  if (formatParamValue(5, { type:"int", unit:"ms", display_format:"%.1f", step:0.5 }) !== "5.0 ms") {
+      console.log("FAIL int ms with display_format"); process.exit(1);
+  }
+  if (formatParamValue(-6, { type:"float", unit:"dB", display_format:"%.1f", step:0.1 }) !== "-6.0 dB") {
+      console.log("FAIL dB with display_format"); process.exit(1);
+  }
+
   console.log("PASS param_format");
 }).catch((e) => { console.log("FAIL import:", e); process.exit(1); });
 '

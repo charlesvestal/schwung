@@ -41,7 +41,6 @@ import { knobInit, knobTick, knobConfigFromMeta } from '/data/UserData/schwung/s
 import {
     formatParamValue as ufFormatParamValue,
     formatParamForSet as ufFormatParamForSet,
-    applyDisplayFormat as ufApplyDisplayFormat,
 } from '/data/UserData/schwung/shared/param_format.mjs';
 
 /* Volume touch note for Shift+Vol+Jog detection */
@@ -8889,10 +8888,9 @@ function formatHierDisplayValue(key, val) {
     const num = parseFloat(val);
     if (isNaN(num)) return val;
 
-    /* Use display_format if provided by module metadata */
-    if (meta && meta.display_format) {
-        const formatted = ufApplyDisplayFormat(meta.display_format, num);
-        if (formatted !== null) return formatted;
+    /* Unit or display_format → unified formatter (handles "440.00 Hz", "5.0 ms", etc.) */
+    if (meta && (meta.unit || meta.display_format)) {
+        return ufFormatParamValue(num, meta);
     }
 
     /* Show as percentage for 0-1 float values */
