@@ -2369,14 +2369,39 @@ func (app *App) handleSystemUpgrade(w http.ResponseWriter, r *http.Request) {
 		// Clean up tarball.
 		os.Remove(tarPath)
 
-		app.setUpgradeStatus("Restarting...")
+		app.setUpgradeStatus("Rebooting...")
 
-		// Restart Move to pick up new binaries.
-		restartScript := filepath.Join(app.basePath, "restart-move.sh")
-		if _, err := os.Stat(restartScript); err == nil {
-			exec.Command("sh", restartScript).Run()
+		// Reboot the device. The legacy `killall MoveOriginal MoveLauncher`
+		// path produced unsupervised orphans that froze the device 100% of
+		// the time — same bug install.sh hit, fixed by switching to a real
+		// reboot. shim-entrypoint.sh runs schwung-heal at boot which
+		// mirrors the now-current /data shim into /usr/lib before
+		// LD_PRELOAD takes over, so the new shim is what MoveOriginal
+		// loads on the way back up.
+		//
+		// Also draw the "Rebooting Move..." overlay onto the device's
+		// display first so the user sees explicit feedback during the
+		// ~30-45s blank period.
+		var frame [1024]byte
+		msg := "Rebooting Move..."
+		startX := (dispW - len(msg)*6) / 2
+		if startX < 0 {
+			startX = 0
+		}
+		renderText(frame[:], startX, 28, msg)
+		_ = os.WriteFile(dispSHM, frame[:], 0644)
+
+		// schwung-manager runs as ableton; reboot needs root. schwung-heal
+		// is setuid-root and supports --reboot — the canonical privileged
+		// helper. Background it so the HTTP goroutine isn't held by the
+		// shutdown.
+		heal := filepath.Join(app.basePath, "bin", "schwung-heal")
+		if _, err := os.Stat(heal); err == nil {
+			exec.Command("sh", "-c", "(sleep 1; "+heal+" --reboot) &").Run()
 		} else {
-			exec.Command("killall", "MoveOriginal", "MoveLauncher").Run()
+			app.logger.Error("upgrade: schwung-heal missing, cannot reboot",
+				"path", heal)
+			app.setUpgradeStatus("Reboot helper missing — please reboot manually")
 		}
 	}()
 
