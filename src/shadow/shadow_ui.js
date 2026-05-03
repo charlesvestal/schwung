@@ -41,6 +41,7 @@ import { knobInit, knobTick, knobConfigFromMeta } from '/data/UserData/schwung/s
 import {
     formatParamValue as ufFormatParamValue,
     formatParamForSet as ufFormatParamForSet,
+    applyDisplayFormat as ufApplyDisplayFormat,
 } from '/data/UserData/schwung/shared/param_format.mjs';
 
 /* Volume touch note for Shift+Vol+Jog detection */
@@ -8890,7 +8891,7 @@ function formatHierDisplayValue(key, val) {
 
     /* Use display_format if provided by module metadata */
     if (meta && meta.display_format) {
-        const formatted = applyDisplayFormat(meta.display_format, num, meta);
+        const formatted = ufApplyDisplayFormat(meta.display_format, num);
         if (formatted !== null) return formatted;
     }
 

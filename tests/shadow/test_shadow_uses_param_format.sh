@@ -26,10 +26,19 @@ if ! rg -F -q "from '/data/UserData/schwung/shared/knob_engine.mjs'" "$patches_f
   exit 1
 fi
 
-# Old inline applyDisplayFormat helper in shadow_ui.js must be removed (now lives in param_format.mjs)
+# Old inline applyDisplayFormat helper must be removed (now lives in param_format.mjs)
 inline_count=$(rg -F -c 'function applyDisplayFormat' "$shadow_file" || true)
 if [ "${inline_count:-0}" != "0" ]; then
   echo "FAIL: applyDisplayFormat still defined inline in shadow_ui.js" >&2
+  exit 1
+fi
+
+# Also no dangling references to the unqualified applyDisplayFormat symbol
+# (must be imported as ufApplyDisplayFormat or fully-qualified).
+dangling=$(rg -F -n 'applyDisplayFormat' "$shadow_file" | rg -v 'ufApplyDisplayFormat' || true)
+if [ -n "$dangling" ]; then
+  echo "FAIL: dangling reference(s) to applyDisplayFormat in shadow_ui.js:" >&2
+  echo "$dangling" >&2
   exit 1
 fi
 
