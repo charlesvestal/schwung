@@ -8958,9 +8958,17 @@ function processPendingHierKnob() {
                 currentIndex = 0;
             }
         }
-        let newIndex = currentIndex + (delta > 0 ? 1 : -1);
-        if (newIndex < 0) newIndex = 0;
-        if (newIndex >= ctx.meta.options.length) newIndex = ctx.meta.options.length - 1;
+        /* Run through knob_engine so the divisor curve applies — many ticks
+         * required per option change, with the same staleness reset semantics. */
+        const enumCfg = knobConfigFromMeta(ctx.meta);
+        const st = getPhysKnobState(ctx.fullKey, currentIndex);
+        const newIndex = knobTick(st, enumCfg, delta, Date.now());
+        if (newIndex === currentIndex) {
+            /* No option crossed yet — only update the overlay so the user sees
+             * something happening, but DON'T setSlotParam (no value change). */
+            showOverlay(ctx.title, formatMetaOptionValue(ctx.meta, ctx.meta.options[currentIndex]));
+            return;
+        }
         const newVal = ctx.meta.options[newIndex];
         /* Cache the value in the same format the plugin returned (string or index) */
         const pluginUsesIndex = (ctx.meta.options.indexOf(currentVal) < 0);
