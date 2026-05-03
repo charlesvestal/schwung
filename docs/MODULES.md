@@ -1103,9 +1103,10 @@ adjust path runs through the same engine.
 `int` and `enum` params accumulate raw ticks until the divisor threshold,
 then emit `floor(|accum| / divisor)` integer steps per call so a fast jog
 sweep (batched delta) advances proportionally — a delta of 8 with divisor=4
-emits 2 steps. `enum` types normalize the accumulator to an `~800-tick` full
-sweep so a 47-option list and a `0..1` float require the same physical
-effort to traverse end-to-end.
+emits 2 steps. `enum` types use a `~3200-tick` full-sweep budget
+(`enum_divisor = clamp(3200/count, 8, 160)`), tuned so a 47-option list
+takes about 68 ticks per option — deliberate selection rather than a
+free-spinning sweep.
 
 The engine **self-resets** after a >2 second idle gap, so re-entering a
 parameter editor after a long pause feels like a fresh edit rather than
