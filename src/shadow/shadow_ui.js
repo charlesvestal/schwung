@@ -1534,6 +1534,20 @@ function getHierKnobState(fullKey, currentValue) {
 }
 function clearHierKnobStates() { hierKnobStates.clear(); }
 
+/* Knob state per fullKey for the PHYSICAL knobs 1-8 (separate from jog edit mode). */
+const physKnobStates = new Map();
+function getPhysKnobState(fullKey, currentValue) {
+    let st = physKnobStates.get(fullKey);
+    if (!st) {
+        st = knobInit(currentValue);
+        physKnobStates.set(fullKey, st);
+    } else {
+        st.value = currentValue;
+    }
+    return st;
+}
+function clearPhysKnobStates() { physKnobStates.clear(); }
+
 /* Master FX flag - when true, exit returns to MASTER_FX view instead of CHAIN_EDIT */
 let hierEditorIsMasterFx = false;
 let hierEditorMasterFxSlot = -1;      // Which Master FX slot (0-3) we're editing
@@ -8278,18 +8292,19 @@ function adjustHierSelectedParam(delta) {
         return;
     }
 
-    /* Handle numeric types via shared knob engine */
+    /* Handle numeric types — jog-click semantics: one declared step per click, no accel. */
     const num = parseFloat(currentVal);
     if (isNaN(num)) return;
 
-    const knobCfg = knobConfigFromMeta(meta);
-    /* Shift fine-step override (existing wav_position behavior) */
+    const isInt = meta && meta.type === "int";
+    let step = (meta && meta.step > 0) ? meta.step : (isInt ? 1 : 0.01);
     if (meta && meta.ui_type === "wav_position" && isShiftHeld()) {
-        const fineStep = Math.abs(knobCfg.step) * getWavPositionShiftMultiplier(meta);
-        if (fineStep > 0) knobCfg.step = fineStep;
+        const fineStep = Math.abs(step) * getWavPositionShiftMultiplier(meta);
+        if (fineStep > 0) step = fineStep;
     }
-    const st = getHierKnobState(fullKey, num);
-    const newVal = knobTick(st, knobCfg, delta, Date.now());
+    const min = meta && typeof meta.min === "number" ? meta.min : 0;
+    const max = meta && typeof meta.max === "number" ? meta.max : 1;
+    const newVal = Math.max(min, Math.min(max, num + delta * step));
     const formatted = formatParamForSet(newVal, meta);
     setSlotParam(hierEditorSlot, fullKey, formatted);
     if (usingStableEditVal) {
@@ -8816,23 +8831,15 @@ function processPendingHierKnob() {
     const num = (typeof currentVal === "number") ? currentVal : parseFloat(currentVal);
     if (isNaN(num)) return;
 
-    /* Calculate step and bounds from metadata */
-    const isInt = ctx.meta && ctx.meta.type === "int";
-    const defaultStep = isInt ? KNOB_BASE_STEP_INT : KNOB_BASE_STEP_FLOAT;
-    const baseStep = ctx.meta && ctx.meta.step ? ctx.meta.step : defaultStep;
-    const min = ctx.meta && typeof ctx.meta.min === "number" ? ctx.meta.min : 0;
-    const max = ctx.meta && typeof ctx.meta.max === "number" ? ctx.meta.max : 1;
-
-    /* Shift provides fine control for wav_position editing. */
-    const fineWavEdit = !!(ctx.meta && ctx.meta.ui_type === "wav_position" && isShiftHeld());
-    const accel = fineWavEdit ? 1 : calcKnobAccel(knobIndex, isInt);
-
-    /* Apply accumulated delta with acceleration and clamp */
-    const fineStep = Math.abs(baseStep) * getWavPositionShiftMultiplier(ctx.meta);
-    const step = fineWavEdit
-        ? (fineStep > 0 ? fineStep : baseStep)
-        : (baseStep * accel);
-    const newVal = Math.max(min, Math.min(max, num + delta * step));
+    /* Build knob config from meta. */
+    const knobCfg = knobConfigFromMeta(ctx.meta);
+    /* Shift fine-step override for wav_position. */
+    if (ctx.meta && ctx.meta.ui_type === "wav_position" && isShiftHeld()) {
+        const fineStep = Math.abs(knobCfg.step) * getWavPositionShiftMultiplier(ctx.meta);
+        if (fineStep > 0) knobCfg.step = fineStep;
+    }
+    const st = getPhysKnobState(ctx.fullKey, num);
+    const newVal = knobTick(st, knobCfg, delta, Date.now());
 
     /* Update local cache — no IPC read needed on next turn */
     knobValueCache[knobIndex] = newVal;
