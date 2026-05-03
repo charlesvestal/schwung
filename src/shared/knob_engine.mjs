@@ -10,9 +10,8 @@
  *
  * Float: step / divisor per tick.
  * Int:   accumulate ticks; emit ±1 once accum reaches divisor.
- * Enum:  enum_divisor = clamp(2100/enumCount, 6, 100); accumulate; emit ±1.
- *        (Tuned so a fast wrist sweep covers a 47-option list end-to-end —
- *        ~2100 ticks for full sweep, ~44 ticks per option.)
+ * Enum:  fixed enum_divisor = 10 ticks per option, regardless of count.
+ *        Binary toggles and 47-option pickers feel equally snappy.
  *
  * Staleness: gap > 2000ms resets the engine to cold-start (lastTickMs=0),
  * so re-entering an editor after a long pause feels like a fresh edit
@@ -77,10 +76,9 @@ export function knobTick(state, config, direction, nowMs) {
             state.tickAccum = 0;
             return state.value;
         }
-        let perOption = Math.floor(2100 / config.enumCount);
-        if (perOption < 6) perOption = 6;
-        if (perOption > 100) perOption = 100;
-        const enumDivisor = perOption;
+        /* Fixed ticks-per-option for enums — independent of count so binary
+         * toggles feel as snappy as 47-option pickers. Tunable single number. */
+        const enumDivisor = 10;
         /* Accumulator must drain before reversing — eats first N reverse ticks (anti-jitter). */
         state.tickAccum += direction;
         const steps = Math.trunc(state.tickAccum / enumDivisor);
