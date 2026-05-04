@@ -119,7 +119,7 @@ if ! rg -F -q "const defaultStep = displayUnit === \"ms\" ? 1 : 0.01;" "$shadow_
   exit 1
 fi
 
-if ! rg -F -q "Math.abs(baseStep) * getWavPositionShiftMultiplier(ctx.meta)" "$shadow_file"; then
+if ! rg -F -q "Math.abs(knobCfg.step) * getWavPositionShiftMultiplier(ctx.meta)" "$shadow_file"; then
   echo "FAIL: wav_position knob shift step should use metadata multiplier" >&2
   exit 1
 fi

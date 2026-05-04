@@ -766,7 +766,7 @@
       "github_repo": "charlesvestal/schwung-tb3po",
       "default_branch": "main",
       "asset_name": "tb3po-module.tar.gz",
-      "min_host_version": "0.9.8"
+      "min_host_version": "0.9.10"
     }
   ]
 }

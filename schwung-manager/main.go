@@ -801,14 +801,33 @@ func (app *App) handleModules(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Host version + update check (mirrors handleSystem so the modules
+	// landing page can surface a Schwung host upgrade prominently).
+	verBytes, _ := os.ReadFile(filepath.Join(app.basePath, "host", "version.txt"))
+	hostVersion := strings.TrimSpace(string(verBytes))
+	if hostVersion == "" {
+		hostVersion = "unknown"
+	}
+	var hostLatestVersion, hostRepo string
+	var hostUpdateAvailable bool
+	if cat != nil {
+		hostLatestVersion = cat.Host.LatestVersion
+		hostRepo = cat.Host.GithubRepo
+		hostUpdateAvailable = hostLatestVersion != "" && hostLatestVersion != hostVersion
+	}
+
 	data := map[string]any{
-		"Title":        "Modules",
-		"Modules":      modules,
-		"Installed":    installed,
-		"HasInstalled": len(installed) > 0,
-		"HasAnyUpdate": hasAnyUpdate,
-		"ReleaseMeta":  releaseMeta,
-		"Active":       "modules",
+		"Title":               "Modules",
+		"Modules":             modules,
+		"Installed":           installed,
+		"HasInstalled":        len(installed) > 0,
+		"HasAnyUpdate":        hasAnyUpdate,
+		"ReleaseMeta":         releaseMeta,
+		"Active":              "modules",
+		"HostVersion":         hostVersion,
+		"HostLatestVersion":   hostLatestVersion,
+		"HostRepo":            hostRepo,
+		"HostUpdateAvailable": hostUpdateAvailable,
 	}
 	app.render(w, r, "modules.html", data)
 }

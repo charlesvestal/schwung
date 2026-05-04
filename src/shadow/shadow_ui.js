@@ -37,6 +37,11 @@ import {
 } from '/data/UserData/schwung/shared/chain_ui_views.mjs';
 
 import { decodeDelta } from '/data/UserData/schwung/shared/input_filter.mjs';
+import { knobInit, knobTick, knobConfigFromMeta } from '/data/UserData/schwung/shared/knob_engine.mjs';
+import {
+    formatParamValue as ufFormatParamValue,
+    formatParamForSet as ufFormatParamForSet,
+} from '/data/UserData/schwung/shared/param_format.mjs';
 
 /* Volume touch note for Shift+Vol+Jog detection */
 const VOLUME_TOUCH_NOTE = 8;
@@ -986,18 +991,32 @@ let wavPlayerPendingFile = "";  /* deferred file_path after DSP load */
 let wavPlayerLoadWait = 0;      /* ticks to wait after loading DSP */
 const WAV_PLAYER_DSP = "/data/UserData/schwung/modules/tools/wav-player/dsp.so";
 
+/* Slot 0 overtake-DSP slot is single-tenant. Tracking what's currently loaded
+ * lets resumeOvertakeModule detect "another tool clobbered my DSP" and reload
+ * (Bug C, captured 2026-05-04). All overtake_dsp:load/unload sites must go
+ * through these helpers so the tracker stays accurate. */
+let currentSlot0DspPath = "";
+function loadOvertakeDsp(path) {
+    if (typeof shadow_set_param !== "function") return;
+    shadow_set_param(0, "overtake_dsp:load", path);
+    currentSlot0DspPath = path || "";
+}
+function unloadOvertakeDsp() {
+    if (typeof shadow_set_param !== "function") return;
+    shadow_set_param(0, "overtake_dsp:unload", "1");
+    currentSlot0DspPath = "";
+}
+
 function loadWavPlayerDsp() {
     if (wavPlayerLoaded) return;
-    if (typeof shadow_set_param !== "function") return;
-    shadow_set_param(0, "overtake_dsp:load", WAV_PLAYER_DSP);
+    loadOvertakeDsp(WAV_PLAYER_DSP);
     wavPlayerLoaded = true;
     wavPlayerLoadWait = 2; /* wait 2 ticks for C-side to process load */
 }
 
 function unloadWavPlayerDsp() {
     if (!wavPlayerLoaded) return;
-    if (typeof shadow_set_param !== "function") return;
-    shadow_set_param(0, "overtake_dsp:unload", "1");
+    unloadOvertakeDsp();
     wavPlayerLoaded = false;
     wavPlayerPendingFile = "";
     wavPlayerLoadWait = 0;
@@ -1663,6 +1682,34 @@ let hierEditorEditMode = false;   // true when editing a param value
 let hierEditorEditKey = "";       // full key currently being edited
 let hierEditorEditValue = null;   // stable value during edit mode
 let hierEditorChainParams = [];   // metadata from chain_params
+
+/* Knob state per fullKey for acceleration continuity across consecutive jog turns. */
+const hierKnobStates = new Map();
+function getHierKnobState(fullKey, currentValue) {
+    let st = hierKnobStates.get(fullKey);
+    if (!st) {
+        st = knobInit(currentValue);
+        hierKnobStates.set(fullKey, st);
+    } else {
+        st.value = currentValue;
+    }
+    return st;
+}
+function clearHierKnobStates() { hierKnobStates.clear(); }
+
+/* Knob state per fullKey for the PHYSICAL knobs 1-8 (separate from jog edit mode). */
+const physKnobStates = new Map();
+function getPhysKnobState(fullKey, currentValue) {
+    let st = physKnobStates.get(fullKey);
+    if (!st) {
+        st = knobInit(currentValue);
+        physKnobStates.set(fullKey, st);
+    } else {
+        st.value = currentValue;
+    }
+    return st;
+}
+function clearPhysKnobStates() { physKnobStates.clear(); }
 
 /* Master FX flag - when true, exit returns to MASTER_FX view instead of CHAIN_EDIT */
 let hierEditorIsMasterFx = false;
@@ -2802,9 +2849,7 @@ function exitOvertakeMode() {
     deactivateLedQueue();
 
     /* Unload overtake DSP if loaded */
-    if (typeof shadow_set_param === "function") {
-        shadow_set_param(0, "overtake_dsp:unload", "1");
-    }
+    unloadOvertakeDsp();
     delete globalThis.host_module_set_param;
     delete globalThis.host_module_set_param_blocking;
     delete globalThis.host_module_get_param;
@@ -2875,13 +2920,16 @@ function suspendOvertakeMode() {
         for (let k = 0; k < NUM_KNOBS; k++) overtakeKnobDelta[k] = 0;
         overtakeJogDelta = 0;
 
-        /* Park this module in the suspended map. Callbacks stay alive via closure. */
+        /* Park this module in the suspended map. Callbacks stay alive via closure.
+         * Stash dspPath so resume can detect "another tool clobbered slot 0" and
+         * reload the DSP (Bug C, 2026-05-04). */
         suspendedOvertakes[overtakeModuleId] = {
             id: overtakeModuleId,
             path: overtakeModulePath,
             callbacks: overtakeModuleCallbacks,
             ledNotes: ledNotesSnapshot,
-            ledCCs: ledCCsSnapshot
+            ledCCs: ledCCsSnapshot,
+            dspPath: currentSlot0DspPath
         };
         lastSuspendedToolId = overtakeModuleId;
 
@@ -2970,6 +3018,16 @@ function resumeOvertakeModule(moduleId) {
     if (parked.ledNotes) Object.assign(ledQueueNotes, parked.ledNotes);
     if (parked.ledCCs) Object.assign(ledQueueCCs, parked.ledCCs);
 
+    /* Bug C fix: slot-0 overtake DSP is single-tenant. If another tool loaded
+     * its DSP since we suspended, ours got destroyed — reload before the JS
+     * module starts polling host_module_get_param against a dead/wrong DSP. */
+    if (parked.dspPath && parked.dspPath !== currentSlot0DspPath) {
+        debugLog("resumeOvertakeModule: slot 0 DSP mismatch (current=" +
+                 (currentSlot0DspPath || "(empty)") + " parked=" + parked.dspPath +
+                 ") — reloading DSP");
+        loadOvertakeDsp(parked.dspPath);
+    }
+
     delete suspendedOvertakes[moduleId];
     if (lastSuspendedToolId === moduleId) lastSuspendedToolId = "";
 
@@ -2998,9 +3056,7 @@ function exitToolOvertake() {
     deactivateLedQueue();
 
     /* Unload overtake DSP */
-    if (typeof shadow_set_param === "function") {
-        shadow_set_param(0, "overtake_dsp:unload", "1");
-    }
+    unloadOvertakeDsp();
 
     /* Evict any parked suspend_keeps_js modules. Their DSP was already
      * unloaded when *this* foreground module loaded its own (the shim
@@ -3216,7 +3272,7 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
         if (moduleInfo.dsp && typeof shadow_set_param === "function") {
             const dspPath = moduleInfo.basePath + "/" + moduleInfo.dsp;
             debugLog("loadOvertakeModule: loading DSP from " + dspPath);
-            shadow_set_param(0, "overtake_dsp:load", dspPath);
+            loadOvertakeDsp(dspPath);
         }
 
         /* Step 3: Install host_module_set_param / host_module_get_param shims BEFORE
@@ -3301,9 +3357,7 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
                 overtakeModuleCallbacks = null;
                 delete globalThis.host_module_set_param;
                 delete globalThis.host_module_get_param;
-                if (typeof shadow_set_param === "function") {
-                    shadow_set_param(0, "overtake_dsp:unload", "1");
-                }
+                unloadOvertakeDsp();
                 if (typeof shadow_set_overtake_mode === "function") {
                     shadow_set_overtake_mode(0);
                 }
@@ -3385,9 +3439,7 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
         overtakeModuleLoaded = false;
         overtakeModuleCallbacks = null;
         /* Clean up DSP and param shims on error */
-        if (typeof shadow_set_param === "function") {
-            shadow_set_param(0, "overtake_dsp:unload", "1");
-        }
+        unloadOvertakeDsp();
         delete globalThis.host_module_set_param;
         delete globalThis.host_module_get_param;
         delete globalThis.host_exit_module;
@@ -5194,9 +5246,7 @@ function startInteractiveTool(toolModule, filePath) {
             debugLog("startInteractiveTool: different file, discarding hidden session");
             /* DSP may already be unloaded if another tool ran since hide */
             if (overtakeModuleLoaded) {
-                if (typeof shadow_set_param === "function") {
-                    shadow_set_param(0, "overtake_dsp:unload", "1");
-                }
+                unloadOvertakeDsp();
             }
             overtakeModuleLoaded = false;
             overtakeModulePath = "";
@@ -8273,49 +8323,16 @@ function getWavPositionSetPrecision(meta) {
 
 /* Format a param value for setting (respects type) */
 function formatParamForSet(val, meta) {
-    if (meta && meta.type === "int") {
-        return Math.round(val).toString();
-    }
     if (meta && meta.ui_type === "wav_position") {
         if (meta.display_unit === "ms") return Math.round(val).toString();
         const precision = getWavPositionSetPrecision(meta);
         return Number(val).toFixed(precision);
     }
-    return val.toFixed(3);
-}
-
-/* Format a param value for overlay display (respects type and range) */
-function applyDisplayFormat(fmt, num, meta) {
-    if (!fmt) return null;
-    /* Support printf-inspired format strings: .4f, .2%, %.2f, etc. */
-    const match = fmt.match(/^%?\.?(\d+)(f|%)$/);
-    if (!match) return null;
-    const decimals = parseInt(match[1]);
-    /* Replicate C-side scaling: if unit is "%" and max <= 1, scale to 0-100 */
-    let displayVal = num;
-    if (meta && meta.unit === "%" && typeof meta.max === "number" && meta.max <= 1) {
-        displayVal = num * 100.0;
-    }
-    if (match[2] === "%") {
-        return (num * 100).toFixed(decimals) + "%";
-    }
-    const formatted = displayVal.toFixed(decimals);
-    /* Append unit suffix if present (matching C-side behavior) */
-    if (meta && meta.unit) return formatted + (meta.unit === "%" ? "%" : " " + meta.unit);
-    return formatted;
+    return ufFormatParamForSet(val, meta);
 }
 
 function formatParamForOverlay(val, meta) {
-    if (meta && meta.type === "int") {
-        return Math.round(val).toString();
-    }
-    /* Enum/bool: show value as-is (string) */
-    if (meta && (meta.type === "enum" || meta.type === "bool")) {
-        if (meta.picker_type && (val === "" || val === null || val === undefined)) {
-            return meta.none_label || "(none)";
-        }
-        return String(formatMetaOptionValue(meta, val));
-    }
+    /* Local-only special cases that param_format.mjs intentionally doesn't know about */
     if (meta && meta.ui_type === "wav_position") {
         return formatWavPositionDisplayValue(val, meta);
     }
@@ -8325,18 +8342,30 @@ function formatParamForOverlay(val, meta) {
     if (meta && meta.type === "canvas") {
         return formatCanvasDisplayValue(val, meta);
     }
-    /* Use display_format if provided by module metadata */
-    if (meta && meta.display_format) {
-        const formatted = applyDisplayFormat(meta.display_format, val, meta);
-        if (formatted !== null) return formatted;
+    /* picker enum with empty value -> none_label */
+    if (meta && (meta.type === "enum" || meta.type === "bool") &&
+        meta.picker_type && (val === "" || val === null || val === undefined)) {
+        return meta.none_label || "(none)";
     }
-    /* Float: show as percentage if 0-1 or 0-2 range */
+    /* enum/bool — go through formatMetaOptionValue (handles index↔label dual format) */
+    if (meta && (meta.type === "enum" || meta.type === "bool")) {
+        return String(formatMetaOptionValue(meta, val));
+    }
+    /* If the param has a unit or display_format, hand off to the shared formatter */
+    if (meta && (meta.unit || meta.display_format)) {
+        return ufFormatParamValue(val, meta);
+    }
+    /* Legacy auto-percent fallback for un-tagged floats in 0..(1..4] range —
+     * preserves visual behavior of un-migrated modules until they declare unit:"%". */
+    if (meta && meta.type === "int") {
+        return Math.round(val).toString();
+    }
     const min = meta && typeof meta.min === "number" ? meta.min : 0;
     const max = meta && typeof meta.max === "number" ? meta.max : 1;
     if (min === 0 && max >= 1 && max <= 4) {
         return Math.round(val * 100) + "%";
     }
-    return val.toFixed(2);
+    return Number(val).toFixed(2);
 }
 
 function getHierarchyLevelDef() {
@@ -8456,20 +8485,18 @@ function adjustHierSelectedParam(delta) {
         return;
     }
 
-    /* Handle numeric types */
+    /* Handle numeric types — jog-click semantics: one declared step per click, no accel. */
     const num = parseFloat(currentVal);
     if (isNaN(num)) return;
 
-    /* Get step from metadata - default 1 for int, 0.02 for float */
     const isInt = meta && meta.type === "int";
-    let step = meta && meta.step ? meta.step : (isInt ? 1 : 0.02);
+    let step = (meta && meta.step > 0) ? meta.step : (isInt ? 1 : 0.01);
     if (meta && meta.ui_type === "wav_position" && isShiftHeld()) {
         const fineStep = Math.abs(step) * getWavPositionShiftMultiplier(meta);
         if (fineStep > 0) step = fineStep;
     }
     const min = meta && typeof meta.min === "number" ? meta.min : 0;
     const max = meta && typeof meta.max === "number" ? meta.max : 1;
-
     const newVal = Math.max(min, Math.min(max, num + delta * step));
     const formatted = formatParamForSet(newVal, meta);
     setSlotParam(hierEditorSlot, fullKey, formatted);
@@ -8894,6 +8921,7 @@ function getKnobCachedValue(knobIndex, ctx) {
 function invalidateKnobValueCache() {
     knobValueCache.fill(null);
     knobValueCacheKey.fill("");
+    clearHierKnobStates();
 }
 
 /*
@@ -8966,9 +8994,17 @@ function processPendingHierKnob() {
                 currentIndex = 0;
             }
         }
-        let newIndex = currentIndex + (delta > 0 ? 1 : -1);
-        if (newIndex < 0) newIndex = 0;
-        if (newIndex >= ctx.meta.options.length) newIndex = ctx.meta.options.length - 1;
+        /* Run through knob_engine so the divisor curve applies — many ticks
+         * required per option change, with the same staleness reset semantics. */
+        const enumCfg = knobConfigFromMeta(ctx.meta);
+        const st = getPhysKnobState(ctx.fullKey, currentIndex);
+        const newIndex = knobTick(st, enumCfg, delta, Date.now());
+        if (newIndex === currentIndex) {
+            /* No option crossed yet — only update the overlay so the user sees
+             * something happening, but DON'T setSlotParam (no value change). */
+            showOverlay(ctx.title, formatMetaOptionValue(ctx.meta, ctx.meta.options[currentIndex]));
+            return;
+        }
         const newVal = ctx.meta.options[newIndex];
         /* Cache the value in the same format the plugin returned (string or index) */
         const pluginUsesIndex = (ctx.meta.options.indexOf(currentVal) < 0);
@@ -8996,23 +9032,15 @@ function processPendingHierKnob() {
     const num = (typeof currentVal === "number") ? currentVal : parseFloat(currentVal);
     if (isNaN(num)) return;
 
-    /* Calculate step and bounds from metadata */
-    const isInt = ctx.meta && ctx.meta.type === "int";
-    const defaultStep = isInt ? KNOB_BASE_STEP_INT : KNOB_BASE_STEP_FLOAT;
-    const baseStep = ctx.meta && ctx.meta.step ? ctx.meta.step : defaultStep;
-    const min = ctx.meta && typeof ctx.meta.min === "number" ? ctx.meta.min : 0;
-    const max = ctx.meta && typeof ctx.meta.max === "number" ? ctx.meta.max : 1;
-
-    /* Shift provides fine control for wav_position editing. */
-    const fineWavEdit = !!(ctx.meta && ctx.meta.ui_type === "wav_position" && isShiftHeld());
-    const accel = fineWavEdit ? 1 : calcKnobAccel(knobIndex, isInt);
-
-    /* Apply accumulated delta with acceleration and clamp */
-    const fineStep = Math.abs(baseStep) * getWavPositionShiftMultiplier(ctx.meta);
-    const step = fineWavEdit
-        ? (fineStep > 0 ? fineStep : baseStep)
-        : (baseStep * accel);
-    const newVal = Math.max(min, Math.min(max, num + delta * step));
+    /* Build knob config from meta. */
+    const knobCfg = knobConfigFromMeta(ctx.meta);
+    /* Shift fine-step override for wav_position. */
+    if (ctx.meta && ctx.meta.ui_type === "wav_position" && isShiftHeld()) {
+        const fineStep = Math.abs(knobCfg.step) * getWavPositionShiftMultiplier(ctx.meta);
+        if (fineStep > 0) knobCfg.step = fineStep;
+    }
+    const st = getPhysKnobState(ctx.fullKey, num);
+    const newVal = knobTick(st, knobCfg, delta, Date.now());
 
     /* Update local cache — no IPC read needed on next turn */
     knobValueCache[knobIndex] = newVal;
@@ -9068,10 +9096,9 @@ function formatHierDisplayValue(key, val) {
     const num = parseFloat(val);
     if (isNaN(num)) return val;
 
-    /* Use display_format if provided by module metadata */
-    if (meta && meta.display_format) {
-        const formatted = applyDisplayFormat(meta.display_format, num, meta);
-        if (formatted !== null) return formatted;
+    /* Unit or display_format → unified formatter (handles "440.00 Hz", "5.0 ms", etc.) */
+    if (meta && (meta.unit || meta.display_format)) {
+        return ufFormatParamValue(num, meta);
     }
 
     /* Show as percentage for 0-1 float values */
