@@ -351,7 +351,7 @@ scp_ableton="scp -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new"
 ssh_root="ssh -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -n root@$hostname"
 
 wait_for_move_shim_mapping() {
-  local attempts="${1:-15}"
+  local attempts="${1:-30}"
   local i
 
   for i in $(seq 1 "$attempts"); do
@@ -365,23 +365,57 @@ wait_for_move_shim_mapping() {
   return 1
 }
 
-direct_start_move_with_shim() {
-  qecho "Init service did not relaunch Move; trying direct launch fallback..."
+# Reboot the device and wait for it to come back up over SSH with the
+# new shim mapped into MoveOriginal. The previous su+nohup fallback
+# (when /etc/init.d/move start failed) left an orphaned process that
+# froze in 100% of observed cases — a real reboot is the only reliable
+# way back to a known-good state. Visible progress messages each step
+# so users don't think the install hung during the 30-45s wait.
+reboot_and_wait_for_shim() {
+  local fail_msg="$1"
+  local boot_attempts="${2:-60}"
 
-  ssh_root_with_retry "for name in MoveOriginal Move MoveLauncher MoveMessageDisplay shadow_ui schwung link-subscriber display-server schwung-manager; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done" || true
-  # Also remove Link Audio ring SHMs — these persist wp/rp across restarts
-  # and can leave one slot stuck at a stale offset after an in-flight upgrade.
-  ssh_root_with_retry "rm -f /dev/shm/move-shadow-* /dev/shm/move-display-* /dev/shm/schwung-link-in /dev/shm/schwung-pub-audio" || true
-  ssh_root_with_retry "pids=\$(fuser /dev/ablspi0.0 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids || true; fi" || true
-  ssh_root_with_retry "su -s /bin/sh ableton -c 'nohup /opt/move/Move >/tmp/move-shim.log 2>&1 &'" || return 1
+  # Best-effort: ask schwung-manager to draw "Rebooting Move..." on the
+  # device's display so the user sees something during the ~30s blank
+  # period instead of assuming a freeze. Non-fatal if the endpoint isn't
+  # available (older host without the route, manager down, etc.).
+  curl -s -m 3 -X POST "http://${hostname}:7700/api/show-rebooting" >/dev/null 2>&1 || true
 
-  return 0
+  # Background the reboot so the SSH connection doesn't block on it.
+  ssh_root_with_retry "(sync; (sleep 1; reboot) &) >/dev/null 2>&1" || true
+
+  # Wait for the device to actually go down. Without this we may catch
+  # the still-running pre-reboot SSH and falsely conclude it came back.
+  iecho "  Waiting for device to go down..."
+  local i
+  for i in $(seq 1 30); do
+    sleep 1
+    if ! $ssh_ableton "echo ok" >/dev/null 2>&1; then
+      iecho "  Device down after ${i}s, waiting for boot..."
+      break
+    fi
+  done
+
+  # Wait for SSH to come back.
+  for i in $(seq 1 "$boot_attempts"); do
+    sleep 1
+    if $ssh_ableton "echo ok" >/dev/null 2>&1; then
+      iecho "  SSH up after ${i}s, waiting for shim mapping..."
+      break
+    fi
+  done
+
+  # Now wait for MoveOriginal to be loaded with our shim.
+  if wait_for_move_shim_mapping 60; then
+    iecho "  Shim mapped — Move is up with the new install."
+    return 0
+  fi
+  fail "$fail_msg"
 }
 
 restart_move_with_fallback() {
   local fail_msg="$1"
-  local init_attempts="${2:-15}"
-  local fallback_attempts="${3:-30}"
+  local init_attempts="${2:-30}"
 
   ssh_root_with_retry "/etc/init.d/move start >/dev/null 2>&1" || fail "Failed to restart Move service"
 
@@ -389,8 +423,11 @@ restart_move_with_fallback() {
     return 0
   fi
 
-  direct_start_move_with_shim || fail "$fail_msg"
-  wait_for_move_shim_mapping "$fallback_attempts" || fail "$fail_msg"
+  # Init service didn't bring Move up cleanly. Don't try the legacy
+  # su+nohup fallback — it produced orphaned processes that froze the
+  # device every time. Reboot is more reliable and matches what users
+  # had to do manually anyway.
+  reboot_and_wait_for_shim "$fail_msg"
 }
 
 # Parse arguments
@@ -774,8 +811,12 @@ if [ "$use_reenable" = true ]; then
   # Clean stale ld.so.preload entries
   ssh_root_with_retry "if [ -f /etc/ld.so.preload ] && grep -q 'schwung-shim.so' /etc/ld.so.preload; then ts=\$(date +%Y%m%d-%H%M%S); cp /etc/ld.so.preload /etc/ld.so.preload.bak-schwung-\$ts; grep -v 'schwung-shim.so' /etc/ld.so.preload > /tmp/ld.so.preload.new || true; if [ -s /tmp/ld.so.preload.new ]; then cat /tmp/ld.so.preload.new > /etc/ld.so.preload; else rm -f /etc/ld.so.preload; fi; rm -f /tmp/ld.so.preload.new; fi" || true
 
-  # Symlink shim to /usr/lib/ + setuid
-  ssh_root_with_retry "rm -f /usr/lib/schwung-shim.so && ln -s /data/UserData/schwung/schwung-shim.so /usr/lib/schwung-shim.so" || fail "Failed to install shim"
+  # Install shim to /usr/lib/ + setuid.
+  # Use cp (with ln fallback): glibc 2.35+ rejects symlinked .so under
+  # AT_SECURE (MoveOriginal has file capabilities → secure-exec), so a real
+  # copy is required on newer images. Mirrors post-update.sh.
+  ssh_root_with_retry "rm -f /usr/lib/schwung-shim.so && (cp /data/UserData/schwung/schwung-shim.so /usr/lib/schwung-shim.so 2>/dev/null || ln -sf /data/UserData/schwung/schwung-shim.so /usr/lib/schwung-shim.so)" || fail "Failed to install shim"
+  ssh_root_with_retry "chmod u+s /usr/lib/schwung-shim.so" || true
   ssh_root_with_retry "chmod u+s /data/UserData/schwung/schwung-shim.so" || fail "Failed to set shim permissions"
   ssh_root_with_retry "test -u /data/UserData/schwung/schwung-shim.so" || fail "Shim setuid bit missing"
 
@@ -790,6 +831,18 @@ if [ "$use_reenable" = true ]; then
 
   # Ensure entrypoint is executable
   ssh_root_with_retry "chmod +x /data/UserData/schwung/shim-entrypoint.sh" || fail "Failed to set entrypoint permissions"
+
+  # Install schwung-heal as setuid root (re-enable path mirror of full
+  # install). Without this the entrypoint's boot-time heal silently
+  # no-ops and /usr/lib drift never recovers.
+  iecho "[heal] Installing schwung-heal setuid helper..."
+  if ssh_ableton_with_retry "test -f /data/UserData/schwung/bin/schwung-heal"; then
+    ssh_root_with_retry "chown root:root /data/UserData/schwung/bin/schwung-heal && chmod 4755 /data/UserData/schwung/bin/schwung-heal" || fail "Failed to set schwung-heal setuid"
+    ssh_root_with_retry "test -u /data/UserData/schwung/bin/schwung-heal" || fail "schwung-heal setuid bit missing after install"
+    iecho "[heal] schwung-heal setuid bit set"
+  else
+    iecho "[heal] WARNING: /data/UserData/schwung/bin/schwung-heal not found in payload — self-heal will not work"
+  fi
 
   # Backup original Move binary if MoveOriginal doesn't exist yet
   if $ssh_root "test ! -f /opt/move/MoveOriginal" 2>/dev/null; then
@@ -928,8 +981,12 @@ fi
 # Ensure shim isn't globally preloaded (breaks XMOS firmware check and causes communication error)
 ssh_root_with_retry "if [ -f /etc/ld.so.preload ] && grep -q 'schwung-shim.so' /etc/ld.so.preload; then ts=\$(date +%Y%m%d-%H%M%S); cp /etc/ld.so.preload /etc/ld.so.preload.bak-schwung-\$ts; grep -v 'schwung-shim.so' /etc/ld.so.preload > /tmp/ld.so.preload.new || true; if [ -s /tmp/ld.so.preload.new ]; then cat /tmp/ld.so.preload.new > /etc/ld.so.preload; else rm -f /etc/ld.so.preload; fi; rm -f /tmp/ld.so.preload.new; fi" || true
 
-# Symlink shim to /usr/lib/ (root partition has no free space for copies)
-ssh_root_with_retry "rm -f /usr/lib/schwung-shim.so && ln -s /data/UserData/schwung/schwung-shim.so /usr/lib/schwung-shim.so" || fail "Failed to install shim after retries"
+# Install shim to /usr/lib/ + setuid.
+# Use cp (with ln fallback): glibc 2.35+ rejects symlinked .so under
+# AT_SECURE (MoveOriginal has file capabilities → secure-exec), so a real
+# copy is required on newer images. Mirrors post-update.sh.
+ssh_root_with_retry "rm -f /usr/lib/schwung-shim.so && (cp /data/UserData/schwung/schwung-shim.so /usr/lib/schwung-shim.so 2>/dev/null || ln -sf /data/UserData/schwung/schwung-shim.so /usr/lib/schwung-shim.so)" || fail "Failed to install shim after retries"
+ssh_root_with_retry "chmod u+s /usr/lib/schwung-shim.so" || true
 ssh_root_with_retry "chmod u+s /data/UserData/schwung/schwung-shim.so" || fail "Failed to set shim permissions"
 ssh_root_with_retry "test -u /data/UserData/schwung/schwung-shim.so" || fail "Shim setuid bit missing after install"
 
@@ -959,6 +1016,19 @@ fi
 
 # Ensure the replacement Move script exists and is executable
 ssh_root_with_retry "chmod +x /data/UserData/schwung/shim-entrypoint.sh" || fail "Failed to set entrypoint permissions"
+
+# Install schwung-heal as setuid root. This is the only privileged code
+# path on the device for ableton-context callers (entrypoint, schwung-
+# manager) to refresh /usr/lib/schwung-shim.so and /opt/move/Move when
+# they drift. Hardcoded paths, no CLI input — see src/schwung-heal.c.
+iecho "[heal] Installing schwung-heal setuid helper..."
+if ssh_ableton_with_retry "test -f /data/UserData/schwung/bin/schwung-heal"; then
+  ssh_root_with_retry "chown root:root /data/UserData/schwung/bin/schwung-heal && chmod 4755 /data/UserData/schwung/bin/schwung-heal" || fail "Failed to set schwung-heal setuid"
+  ssh_root_with_retry "test -u /data/UserData/schwung/bin/schwung-heal" || fail "schwung-heal setuid bit missing after install"
+  iecho "[heal] schwung-heal setuid bit set"
+else
+  iecho "[heal] WARNING: /data/UserData/schwung/bin/schwung-heal not found in payload — self-heal will not work"
+fi
 
 # Backup original only once, and only if current Move exists
 # IMPORTANT: Use mv (not cp) on root partition — it's nearly full (~460MB, <25MB free).
@@ -1552,46 +1622,31 @@ ssh_root_with_retry "chown -R ableton:users '/data/UserData/UserLibrary/Track Pr
 # Restore setuid on shim (chown clears it)
 ssh_root_with_retry "chmod u+s /data/UserData/schwung/schwung-shim.so" || true
 
-qecho ""
-iecho "Restarting Move..."
-
-# Stop Move via init service (kills MoveLauncher + Move + all children cleanly)
-# Use retry wrappers because Windows mDNS resolution can be flaky.
-ssh_root_with_retry "/etc/init.d/move stop >/dev/null 2>&1 || true" || true
-ssh_root_with_retry "for name in MoveOriginal Move MoveLauncher MoveMessageDisplay shadow_ui schwung link-subscriber display-server schwung-manager; do pids=\$(pidof \$name 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids 2>/dev/null || true; fi; done" || true
-# Clean up stale shared memory so it's recreated with correct permissions.
-# Also remove Link Audio ring SHMs — they persist wp/rp across restarts
-# and can leave one slot stuck at a stale offset after an in-flight upgrade.
-ssh_root_with_retry "rm -f /dev/shm/move-shadow-* /dev/shm/move-display-* /dev/shm/schwung-link-in /dev/shm/schwung-pub-audio" || true
-# Free the SPI device if anything still holds it (prevents "communication error" on restart)
-ssh_root_with_retry "pids=\$(fuser /dev/ablspi0.0 2>/dev/null || true); if [ -n \"\$pids\" ]; then kill -9 \$pids || true; fi" || true
-ssh_ableton_with_retry "sleep 2" || true
-
-ssh_ableton_with_retry "test -x /opt/move/Move" || fail "Missing /opt/move/Move"
-
-# Restart via init service (starts MoveLauncher which starts Move with proper lifecycle)
-restart_move_with_fallback "Move started without active shim mapping (LD_PRELOAD env/maps check failed)"
-
-# Start or restart schwung-manager web UI.
-# Graceful restart: SIGTERM allows clean shutdown, then start the new binary.
-# Brief downtime (~1s) is acceptable; mDNS re-advertises on startup.
-if $ssh_ableton "test -x /data/UserData/schwung/schwung-manager" 2>/dev/null; then
-    if ssh_root_with_retry "pidof schwung-manager >/dev/null 2>&1" 2>/dev/null; then
-        qecho "Restarting schwung-manager with new binary..."
-        ssh_root_with_retry "killall schwung-manager 2>/dev/null; sleep 1; killall -9 schwung-manager 2>/dev/null" || true
-    else
-        qecho "Starting schwung-manager web UI..."
-    fi
-    # Truncate oversized logs (cleanup for pre-0.9.6 installs with runaway logging).
-    # Must be in-place (same inode) — the shim holds an append-mode FILE* to
-    # debug.log and we just restarted MoveOriginal, so it'd be writing to a
-    # fresh inode. A `mv` replaces the inode and orphans the shim's FD
-    # (writes silently disappear). Use `dd conv=notrunc` to overwrite in place
-    # then truncate to keep the same inode intact.
-    ssh_root_with_retry "for f in /data/UserData/schwung/schwung-manager.log /data/UserData/schwung/debug.log; do if [ -f \"\$f\" ]; then sz=\$(wc -c < \"\$f\" 2>/dev/null || echo 0); if [ \"\$sz\" -gt 102400 ]; then tail -c 102400 \"\$f\" > \"\$f.keep\" && dd if=\"\$f.keep\" of=\"\$f\" conv=notrunc bs=102400 count=1 2>/dev/null && kept_sz=\$(wc -c < \"\$f.keep\") && truncate -s \"\$kept_sz\" \"\$f\" && rm -f \"\$f.keep\"; fi; fi; done" || true
-    ssh_root_with_retry "start-stop-daemon --start --background --make-pidfile --pidfile /data/UserData/schwung/schwung-manager.pid --startas /bin/sh -- -c 'exec /data/UserData/schwung/schwung-manager -port 7700 -roots /data/UserData/ >> /data/UserData/schwung/schwung-manager.log 2>&1'" || true
-    qecho "  Web UI available at http://move.local:7700"
+# Restore root:root + setuid on schwung-heal helper. The chown -R above
+# changes its owner from root to ableton, which clears the setuid bit;
+# without it the helper can't escalate when invoked from the entrypoint
+# or schwung-manager (both run as ableton). Must come AFTER the chown.
+if ssh_ableton_with_retry "test -f /data/UserData/schwung/bin/schwung-heal"; then
+  ssh_root_with_retry "chown root:root /data/UserData/schwung/bin/schwung-heal && chmod 4755 /data/UserData/schwung/bin/schwung-heal" || fail "Failed to set schwung-heal setuid (post-chown restore)"
+  ssh_root_with_retry "test -u /data/UserData/schwung/bin/schwung-heal" || fail "schwung-heal setuid bit missing after restore"
+  iecho "[heal] schwung-heal setuid bit restored after recursive chown"
 fi
+
+qecho ""
+iecho "Rebooting Move (~30-45s)..."
+
+# Truncate oversized logs (cleanup for pre-0.9.6 installs with runaway logging)
+# in-place before reboot — keep the same inode so any open FILE* survives.
+ssh_root_with_retry "for f in /data/UserData/schwung/schwung-manager.log /data/UserData/schwung/debug.log; do if [ -f \"\$f\" ]; then sz=\$(wc -c < \"\$f\" 2>/dev/null || echo 0); if [ \"\$sz\" -gt 102400 ]; then tail -c 102400 \"\$f\" > \"\$f.keep\" && dd if=\"\$f.keep\" of=\"\$f\" conv=notrunc bs=102400 count=1 2>/dev/null && kept_sz=\$(wc -c < \"\$f.keep\") && truncate -s \"\$kept_sz\" \"\$f\" && rm -f \"\$f.keep\"; fi; fi; done" || true
+
+# Reboot. We previously did /etc/init.d/move stop && start with a su+nohup
+# fallback when init failed, but the fallback produced an orphaned process
+# that froze the device every time, requiring a hard power cycle. A real
+# reboot re-runs init from scratch and reliably loads the new shim — same
+# thing users were doing manually anyway.
+ssh_ableton_with_retry "test -x /opt/move/Move" || fail "Missing /opt/move/Move"
+reboot_and_wait_for_shim "Move came back up but the new shim isn't mapped — install incomplete?"
+qecho "  Web UI available at http://move.local:7700"
 
 iecho ""
 iecho "Installation complete!"

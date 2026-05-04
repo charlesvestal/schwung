@@ -192,44 +192,16 @@ function checkHostUpdate() {
     hostUpdateAvailable = isNewerVersion(catalog.host.latest_version, hostVersion);
 }
 
-/* Update the host */
+/* Update the host.
+ *
+ * On-device host updates are disabled. The JS layer runs as ableton and
+ * can't complete the privileged setup post-extract (post-update.sh's
+ * writes to /usr/lib/schwung-shim.so and /opt/move/Move), which leaves
+ * users with a stale shim and broken overtake transport. Direct them to
+ * the web manager which runs as root and can finish the install. */
 function updateHost() {
-    if (!catalog || !catalog.host) {
-        state = STATE_RESULT;
-        resultMessage = 'No host info';
-        return;
-    }
-
-    if (!catalog.host.download_url) {
-        state = STATE_RESULT;
-        resultMessage = 'No release available';
-        return;
-    }
-
-    state = STATE_UPDATING_HOST;
-    loadingTitle = 'Updating Host';
-    loadingMessage = `v${catalog.host.latest_version}`;
-
-    const tarPath = `${TMP_DIR}/schwung.tar.gz`;
-
-    /* Download the host tarball */
-    const downloadOk = host_http_download(catalog.host.download_url, tarPath);
-    if (!downloadOk) {
-        state = STATE_RESULT;
-        resultMessage = 'Download failed';
-        return;
-    }
-
-    /* Extract over existing installation - strip schwung/ prefix from tarball */
-    const extractOk = host_extract_tar_strip(tarPath, BASE_DIR, 1);
-    if (!extractOk) {
-        state = STATE_RESULT;
-        resultMessage = 'Extract failed';
-        return;
-    }
-
     state = STATE_RESULT;
-    resultMessage = 'Updated! Restart to apply';
+    resultMessage = 'Update Schwung from a browser at move.local:7700';
 }
 
 /* Scan installed modules - wrapper that updates global state */

@@ -47,6 +47,19 @@ if grep -q 'move-anything-shim.so' /opt/move/Move 2>/dev/null; then
     chmod +x /opt/move/Move
 fi
 
+# === Self-heal /usr/lib shim and /opt/move entrypoint at every boot ===
+# /etc/init.d/move launches us via `start-stop-daemon -c ableton`, so this
+# script (and everything it spawns) runs as ableton — which can't write
+# /usr/lib or /opt/move directly. schwung-heal is a tiny setuid-root
+# helper (no CLI input, hardcoded paths) that mirrors the data-partition
+# shim and entrypoint to their system locations when stale. Idempotent.
+# Runs BEFORE LD_PRELOAD exec so the corrected shim is what MoveOriginal
+# loads — no reboot needed.
+SCHWUNG_HEAL="$SCHWUNG_DIR/bin/schwung-heal"
+if [ -x "$SCHWUNG_HEAL" ]; then
+    "$SCHWUNG_HEAL" >>"$SCHWUNG_DIR/heal-boot.log" 2>&1
+fi
+
 # Set library path for bundled TTS libraries
 export LD_LIBRARY_PATH=$SCHWUNG_DIR/lib:$LD_LIBRARY_PATH
 
