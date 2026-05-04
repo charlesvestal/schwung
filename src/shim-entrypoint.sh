@@ -47,15 +47,17 @@ if grep -q 'move-anything-shim.so' /opt/move/Move 2>/dev/null; then
     chmod +x /opt/move/Move
 fi
 
-# === Run post-update setup at every boot (idempotent) ===
-# On-device update paths (Module Store, shadow_ui) run as ableton and
-# silently fail on /usr/lib/ and /opt/move/ writes. The entrypoint is
-# launched by init as root, so re-running post-update.sh here self-heals
-# any drift left behind by an unprivileged on-device update — e.g. stale
-# /usr/lib/schwung-shim.so after a Module Store host update.
-POST_UPDATE_SCRIPT="$SCHWUNG_DIR/scripts/post-update.sh"
-if [ -f "$POST_UPDATE_SCRIPT" ]; then
-    sh "$POST_UPDATE_SCRIPT" >>"$SCHWUNG_DIR/post-update-boot.log" 2>&1
+# === Self-heal /usr/lib shim and /opt/move entrypoint at every boot ===
+# /etc/init.d/move launches us via `start-stop-daemon -c ableton`, so this
+# script (and everything it spawns) runs as ableton — which can't write
+# /usr/lib or /opt/move directly. schwung-heal is a tiny setuid-root
+# helper (no CLI input, hardcoded paths) that mirrors the data-partition
+# shim and entrypoint to their system locations when stale. Idempotent.
+# Runs BEFORE LD_PRELOAD exec so the corrected shim is what MoveOriginal
+# loads — no reboot needed.
+SCHWUNG_HEAL="$SCHWUNG_DIR/bin/schwung-heal"
+if [ -x "$SCHWUNG_HEAL" ]; then
+    "$SCHWUNG_HEAL" >>"$SCHWUNG_DIR/heal-boot.log" 2>&1
 fi
 
 # Set library path for bundled TTS libraries

@@ -795,6 +795,18 @@ if [ "$use_reenable" = true ]; then
   # Ensure entrypoint is executable
   ssh_root_with_retry "chmod +x /data/UserData/schwung/shim-entrypoint.sh" || fail "Failed to set entrypoint permissions"
 
+  # Install schwung-heal as setuid root (re-enable path mirror of full
+  # install). Without this the entrypoint's boot-time heal silently
+  # no-ops and /usr/lib drift never recovers.
+  iecho "[heal] Installing schwung-heal setuid helper..."
+  if ssh_ableton_with_retry "test -f /data/UserData/schwung/bin/schwung-heal"; then
+    ssh_root_with_retry "chown root:root /data/UserData/schwung/bin/schwung-heal && chmod 4755 /data/UserData/schwung/bin/schwung-heal" || fail "Failed to set schwung-heal setuid"
+    ssh_root_with_retry "test -u /data/UserData/schwung/bin/schwung-heal" || fail "schwung-heal setuid bit missing after install"
+    iecho "[heal] schwung-heal setuid bit set"
+  else
+    iecho "[heal] WARNING: /data/UserData/schwung/bin/schwung-heal not found in payload — self-heal will not work"
+  fi
+
   # Backup original Move binary if MoveOriginal doesn't exist yet
   if $ssh_root "test ! -f /opt/move/MoveOriginal" 2>/dev/null; then
     ssh_root_with_retry "test -f /opt/move/Move" || fail "Missing /opt/move/Move"
@@ -967,6 +979,19 @@ fi
 
 # Ensure the replacement Move script exists and is executable
 ssh_root_with_retry "chmod +x /data/UserData/schwung/shim-entrypoint.sh" || fail "Failed to set entrypoint permissions"
+
+# Install schwung-heal as setuid root. This is the only privileged code
+# path on the device for ableton-context callers (entrypoint, schwung-
+# manager) to refresh /usr/lib/schwung-shim.so and /opt/move/Move when
+# they drift. Hardcoded paths, no CLI input — see src/schwung-heal.c.
+iecho "[heal] Installing schwung-heal setuid helper..."
+if ssh_ableton_with_retry "test -f /data/UserData/schwung/bin/schwung-heal"; then
+  ssh_root_with_retry "chown root:root /data/UserData/schwung/bin/schwung-heal && chmod 4755 /data/UserData/schwung/bin/schwung-heal" || fail "Failed to set schwung-heal setuid"
+  ssh_root_with_retry "test -u /data/UserData/schwung/bin/schwung-heal" || fail "schwung-heal setuid bit missing after install"
+  iecho "[heal] schwung-heal setuid bit set"
+else
+  iecho "[heal] WARNING: /data/UserData/schwung/bin/schwung-heal not found in payload — self-heal will not work"
+fi
 
 # Backup original only once, and only if current Move exists
 # IMPORTANT: Use mv (not cp) on root partition — it's nearly full (~460MB, <25MB free).
@@ -1559,6 +1584,16 @@ ssh_root_with_retry "chown -R ableton:users '/data/UserData/UserLibrary/Samples/
 ssh_root_with_retry "chown -R ableton:users '/data/UserData/UserLibrary/Track Presets/Schwung' 2>/dev/null" || true
 # Restore setuid on shim (chown clears it)
 ssh_root_with_retry "chmod u+s /data/UserData/schwung/schwung-shim.so" || true
+
+# Restore root:root + setuid on schwung-heal helper. The chown -R above
+# changes its owner from root to ableton, which clears the setuid bit;
+# without it the helper can't escalate when invoked from the entrypoint
+# or schwung-manager (both run as ableton). Must come AFTER the chown.
+if ssh_ableton_with_retry "test -f /data/UserData/schwung/bin/schwung-heal"; then
+  ssh_root_with_retry "chown root:root /data/UserData/schwung/bin/schwung-heal && chmod 4755 /data/UserData/schwung/bin/schwung-heal" || fail "Failed to set schwung-heal setuid (post-chown restore)"
+  ssh_root_with_retry "test -u /data/UserData/schwung/bin/schwung-heal" || fail "schwung-heal setuid bit missing after restore"
+  iecho "[heal] schwung-heal setuid bit restored after recursive chown"
+fi
 
 qecho ""
 iecho "Restarting Move..."
