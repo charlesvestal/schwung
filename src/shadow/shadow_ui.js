@@ -991,18 +991,32 @@ let wavPlayerPendingFile = "";  /* deferred file_path after DSP load */
 let wavPlayerLoadWait = 0;      /* ticks to wait after loading DSP */
 const WAV_PLAYER_DSP = "/data/UserData/schwung/modules/tools/wav-player/dsp.so";
 
+/* Slot 0 overtake-DSP slot is single-tenant. Tracking what's currently loaded
+ * lets resumeOvertakeModule detect "another tool clobbered my DSP" and reload
+ * (Bug C, captured 2026-05-04). All overtake_dsp:load/unload sites must go
+ * through these helpers so the tracker stays accurate. */
+let currentSlot0DspPath = "";
+function loadOvertakeDsp(path) {
+    if (typeof shadow_set_param !== "function") return;
+    shadow_set_param(0, "overtake_dsp:load", path);
+    currentSlot0DspPath = path || "";
+}
+function unloadOvertakeDsp() {
+    if (typeof shadow_set_param !== "function") return;
+    shadow_set_param(0, "overtake_dsp:unload", "1");
+    currentSlot0DspPath = "";
+}
+
 function loadWavPlayerDsp() {
     if (wavPlayerLoaded) return;
-    if (typeof shadow_set_param !== "function") return;
-    shadow_set_param(0, "overtake_dsp:load", WAV_PLAYER_DSP);
+    loadOvertakeDsp(WAV_PLAYER_DSP);
     wavPlayerLoaded = true;
     wavPlayerLoadWait = 2; /* wait 2 ticks for C-side to process load */
 }
 
 function unloadWavPlayerDsp() {
     if (!wavPlayerLoaded) return;
-    if (typeof shadow_set_param !== "function") return;
-    shadow_set_param(0, "overtake_dsp:unload", "1");
+    unloadOvertakeDsp();
     wavPlayerLoaded = false;
     wavPlayerPendingFile = "";
     wavPlayerLoadWait = 0;
@@ -2835,9 +2849,7 @@ function exitOvertakeMode() {
     deactivateLedQueue();
 
     /* Unload overtake DSP if loaded */
-    if (typeof shadow_set_param === "function") {
-        shadow_set_param(0, "overtake_dsp:unload", "1");
-    }
+    unloadOvertakeDsp();
     delete globalThis.host_module_set_param;
     delete globalThis.host_module_set_param_blocking;
     delete globalThis.host_module_get_param;
@@ -2908,13 +2920,16 @@ function suspendOvertakeMode() {
         for (let k = 0; k < NUM_KNOBS; k++) overtakeKnobDelta[k] = 0;
         overtakeJogDelta = 0;
 
-        /* Park this module in the suspended map. Callbacks stay alive via closure. */
+        /* Park this module in the suspended map. Callbacks stay alive via closure.
+         * Stash dspPath so resume can detect "another tool clobbered slot 0" and
+         * reload the DSP (Bug C, 2026-05-04). */
         suspendedOvertakes[overtakeModuleId] = {
             id: overtakeModuleId,
             path: overtakeModulePath,
             callbacks: overtakeModuleCallbacks,
             ledNotes: ledNotesSnapshot,
-            ledCCs: ledCCsSnapshot
+            ledCCs: ledCCsSnapshot,
+            dspPath: currentSlot0DspPath
         };
         lastSuspendedToolId = overtakeModuleId;
 
@@ -3003,6 +3018,16 @@ function resumeOvertakeModule(moduleId) {
     if (parked.ledNotes) Object.assign(ledQueueNotes, parked.ledNotes);
     if (parked.ledCCs) Object.assign(ledQueueCCs, parked.ledCCs);
 
+    /* Bug C fix: slot-0 overtake DSP is single-tenant. If another tool loaded
+     * its DSP since we suspended, ours got destroyed — reload before the JS
+     * module starts polling host_module_get_param against a dead/wrong DSP. */
+    if (parked.dspPath && parked.dspPath !== currentSlot0DspPath) {
+        debugLog("resumeOvertakeModule: slot 0 DSP mismatch (current=" +
+                 (currentSlot0DspPath || "(empty)") + " parked=" + parked.dspPath +
+                 ") — reloading DSP");
+        loadOvertakeDsp(parked.dspPath);
+    }
+
     delete suspendedOvertakes[moduleId];
     if (lastSuspendedToolId === moduleId) lastSuspendedToolId = "";
 
@@ -3031,9 +3056,7 @@ function exitToolOvertake() {
     deactivateLedQueue();
 
     /* Unload overtake DSP */
-    if (typeof shadow_set_param === "function") {
-        shadow_set_param(0, "overtake_dsp:unload", "1");
-    }
+    unloadOvertakeDsp();
 
     /* Evict any parked suspend_keeps_js modules. Their DSP was already
      * unloaded when *this* foreground module loaded its own (the shim
@@ -3249,7 +3272,7 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
         if (moduleInfo.dsp && typeof shadow_set_param === "function") {
             const dspPath = moduleInfo.basePath + "/" + moduleInfo.dsp;
             debugLog("loadOvertakeModule: loading DSP from " + dspPath);
-            shadow_set_param(0, "overtake_dsp:load", dspPath);
+            loadOvertakeDsp(dspPath);
         }
 
         /* Step 3: Install host_module_set_param / host_module_get_param shims BEFORE
@@ -3334,9 +3357,7 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
                 overtakeModuleCallbacks = null;
                 delete globalThis.host_module_set_param;
                 delete globalThis.host_module_get_param;
-                if (typeof shadow_set_param === "function") {
-                    shadow_set_param(0, "overtake_dsp:unload", "1");
-                }
+                unloadOvertakeDsp();
                 if (typeof shadow_set_overtake_mode === "function") {
                     shadow_set_overtake_mode(0);
                 }
@@ -3418,9 +3439,7 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
         overtakeModuleLoaded = false;
         overtakeModuleCallbacks = null;
         /* Clean up DSP and param shims on error */
-        if (typeof shadow_set_param === "function") {
-            shadow_set_param(0, "overtake_dsp:unload", "1");
-        }
+        unloadOvertakeDsp();
         delete globalThis.host_module_set_param;
         delete globalThis.host_module_get_param;
         delete globalThis.host_exit_module;
@@ -5227,9 +5246,7 @@ function startInteractiveTool(toolModule, filePath) {
             debugLog("startInteractiveTool: different file, discarding hidden session");
             /* DSP may already be unloaded if another tool ran since hide */
             if (overtakeModuleLoaded) {
-                if (typeof shadow_set_param === "function") {
-                    shadow_set_param(0, "overtake_dsp:unload", "1");
-                }
+                unloadOvertakeDsp();
             }
             overtakeModuleLoaded = false;
             overtakeModulePath = "";
