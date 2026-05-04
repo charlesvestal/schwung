@@ -1044,6 +1044,80 @@ These map to knobs 1-8 in the Shadow UI for quick access.
 }
 ```
 
+### Recognized Units
+
+The shared shadow-UI formatter (`src/shared/param_format.mjs`) renders any
+`chain_params` entry that declares a `unit` field consistently across modules.
+Recognized units:
+
+| Unit  | Behavior                                                 | Example display     |
+|-------|----------------------------------------------------------|---------------------|
+| `dB`  | Signed, decimals from `step` (fallback 1)                | `-6.0 dB`           |
+| `Hz`  | Auto-scales to kHz at >= 1000                            | `440 Hz`, `1.50 kHz`|
+| `ms`  | Non-negative, decimals from `step` (fallback 1)          | `12.5 ms`           |
+| `sec` | Non-negative, decimals from `step` (fallback 3)          | `1.234 sec`         |
+| `%`   | Values in `0..1` are scaled ×100; values >1 shown raw    | `50%`               |
+| `st`  | Semitones; signed integer with explicit `+` prefix       | `+7 st`, `-3 st`    |
+| `BPM` | Integer                                                  | `120 BPM`           |
+
+Other unit strings are appended verbatim with a leading space (e.g. `unit:"cents"` → `"200 cents"`).
+
+`display_format` (printf-style `.Nf` or `.N%`) overrides decimal selection but
+still appends the unit suffix when present (e.g. `display_format:"%.2f"` with
+`unit:"Hz"` → `"440.00 Hz"`).
+
+For raw `set_param` writes the wire value never includes the unit suffix —
+just the numeric string, with at least 3 decimals for floats.
+
+#### `%` units and `max`
+
+When using `unit:"%"`, **declare `max` explicitly** so the formatter knows
+whether your raw values are normalized (`0..1`) or already in display range
+(`0..100`). Without `max`, the default is `1` and the formatter scales by
+×100 — a module that stores percentages as `0..100` and forgets `max:100`
+will see `50` displayed as `5000%`.
+
+#### Enum wire format
+
+By default the formatter sends the option's numeric INDEX over the
+`set_param` wire. If your DSP plugin only accepts the option's STRING label
+(no `atoi` fallback in `set_param`), declare `options_as_string: true` on the
+chain_params entry. The shadow UI's enum cycle path is independent of this
+setting (it auto-detects from the plugin's `get_param` echo), so most modules
+don't need to set it.
+
+### Knob Acceleration
+
+All chain / master-FX / slot / patch param knob edits share one acceleration
+curve from `src/shared/knob_engine.mjs`. Modules don't opt in — every numeric
+adjust path runs through the same engine.
+
+| Time since last tick | Step divisor          |
+|----------------------|-----------------------|
+| First tick (cold)    | 1 (unscaled "click")  |
+| < 50 ms              | 4 (fast sweep)        |
+| 50 – 150 ms          | 8                     |
+| > 150 ms             | 16 (fine control)     |
+| > 2 seconds          | self-reset (staleness)|
+
+`int` and `enum` params accumulate raw ticks until the divisor threshold,
+then emit `floor(|accum| / divisor)` integer steps per call so a fast jog
+sweep (batched delta) advances proportionally — a delta of 8 with divisor=4
+emits 2 steps. `enum` types use a fixed `enum_divisor = 10` ticks per option
+regardless of count — binary toggles and 47-option pickers feel equally
+snappy.
+
+The engine **self-resets** after a >2 second idle gap, so re-entering a
+parameter editor after a long pause feels like a fresh edit rather than
+continuing a stale acceleration curve. There's no JS-side lifecycle plumbing
+to maintain — the engine handles it internally.
+
+Default float step (when a chain_params entry doesn't declare `step`) is
+`0.01`. Default int step is `1`. Modules that need a different feel should
+declare `step` explicitly. (Note: this is half the previous default of
+`0.02` for floats — most modules already declare step, so this is invisible
+in practice.)
+
 ## Shared Utilities
 
 Import path from modules: `../../shared/<file>.mjs`
