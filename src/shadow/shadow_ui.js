@@ -1145,6 +1145,13 @@ function showUpdatesAvailableScreen() {
      * here a second time without clearing state. */
     pendingUpdates = [];
     pendingUpdateIndex = 0;
+    /* Make sure the result-screen click routes back to GLOBAL_SETTINGS
+     * (not the empty STORE_PICKER_CATEGORIES "no modules available"
+     * fallback). storePickerFromSettings was the legacy "browse came
+     * from settings" flag — we don't want it set; storeReturnView is
+     * the new flag that the result-click handler honours. */
+    storePickerFromSettings = false;
+    storeReturnView = VIEWS.GLOBAL_SETTINGS;
 
     storePickerResultTitle = 'Updates';
     if (total === 0) {
@@ -1154,6 +1161,18 @@ function showUpdatesAvailableScreen() {
                              'Update Schwung at\n' +
                              'http://move.local:7700';
     }
+    view = VIEWS.STORE_PICKER_RESULT;
+    needsRedraw = true;
+    announce(storePickerMessage);
+}
+
+/* Pointer to the web manager — same routing semantics as the updates
+ * screen: result-click returns to GLOBAL_SETTINGS via storeReturnView. */
+function showModuleStorePointer() {
+    storePickerFromSettings = false;
+    storeReturnView = VIEWS.GLOBAL_SETTINGS;
+    storePickerResultTitle = 'Module Store';
+    storePickerMessage = 'Module store available at\nhttp://move.local:7700';
     view = VIEWS.STORE_PICKER_RESULT;
     needsRedraw = true;
     announce(storePickerMessage);
@@ -4624,11 +4643,7 @@ function handleMasterFxSettingsAction(key) {
         showUpdatesAvailableScreen();
     } else if (key === "module_store") {
         /* Browsing on-device is disabled — point at the web manager. */
-        storePickerResultTitle = 'Module Store';
-        storePickerMessage = 'Module store available at\nhttp://move.local:7700';
-        view = VIEWS.STORE_PICKER_RESULT;
-        needsRedraw = true;
-        announce(storePickerMessage);
+        showModuleStorePointer();
     } else if (key === "delete") {
         /* Delete - confirm */
         masterConfirmingDelete = true;
@@ -5499,12 +5514,7 @@ function handleGlobalSettingsAction(key) {
         return;
     }
     if (key === "module_store") {
-        storeReturnView = VIEWS.GLOBAL_SETTINGS;
-        storePickerResultTitle = 'Module Store';
-        storePickerMessage = 'Module store available at\nhttp://move.local:7700';
-        view = VIEWS.STORE_PICKER_RESULT;
-        needsRedraw = true;
-        announce(storePickerMessage);
+        showModuleStorePointer();
         return;
     }
 }
@@ -6649,7 +6659,18 @@ function handleStorePickerDetailSelect() {
 
 /* Handle selection in store picker result */
 function handleStorePickerResultSelect() {
-    /* Return to list */
+    /* Honor storeReturnView so callers from Global Settings (Check
+     * Updates / Module Store pointer screens) get sent back there
+     * instead of into the now-disabled STORE_PICKER_LIST view (which
+     * shows "No modules available" because the categories were never
+     * built). */
+    if (storeReturnView === VIEWS.GLOBAL_SETTINGS) {
+        storeReturnView = null;
+        storePickerCurrentModule = null;
+        enterGlobalSettings();
+        return;
+    }
+    /* Default: return to module list (legacy install flows). */
     setView(VIEWS.STORE_PICKER_LIST);
     storePickerCurrentModule = null;
     needsRedraw = true;
