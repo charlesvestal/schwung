@@ -571,6 +571,17 @@
       "min_host_version": "0.3.0"
     },
     {
+      "id": "guitar-tuner",
+      "name": "Guitar Tuner",
+      "description": "Chromatic tuner for guitar (and any other instrument). Nearest note and cents deviation on the OLED; big letter glyph on the pad grid. Uses the Move's mic or 3.5mm line-in.",
+      "author": "eightfour",
+      "component_type": "tool",
+      "github_repo": "eightfour-dev/schwung-guitar-tuner",
+      "default_branch": "main",
+      "asset_name": "guitar-tuner-module.tar.gz",
+      "min_host_version": "0.9.8"
+    },
+    {
       "id": "tuner",
       "name": "Tuner",
       "description": "Chromatic and instrument tuner with step guide feedback",
