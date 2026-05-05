@@ -2922,14 +2922,23 @@ function suspendOvertakeMode() {
 
         /* Park this module in the suspended map. Callbacks stay alive via closure.
          * Stash dspPath so resume can detect "another tool clobbered slot 0" and
-         * reload the DSP (Bug C, 2026-05-04). */
+         * reload the DSP (Bug C, 2026-05-04).
+         * Snapshot the param-shim handles too: chain-component editors mutate
+         * globalThis.host_module_get_param/_set_param/_set_param_blocking, which
+         * would otherwise leave the parked tick talking to the wrong shim
+         * (or to a deleted global → SHIM MISS). The parked-tick loop swaps
+         * these in for the duration of each tick(); resume restores them
+         * back to globalThis. (Bug D, 2026-05-06.) */
         suspendedOvertakes[overtakeModuleId] = {
             id: overtakeModuleId,
             path: overtakeModulePath,
             callbacks: overtakeModuleCallbacks,
             ledNotes: ledNotesSnapshot,
             ledCCs: ledCCsSnapshot,
-            dspPath: currentSlot0DspPath
+            dspPath: currentSlot0DspPath,
+            shimGet: globalThis.host_module_get_param,
+            shimSet: globalThis.host_module_set_param,
+            shimSetBlocking: globalThis.host_module_set_param_blocking
         };
         lastSuspendedToolId = overtakeModuleId;
 
@@ -3027,6 +3036,14 @@ function resumeOvertakeModule(moduleId) {
                  ") — reloading DSP");
         loadOvertakeDsp(parked.dspPath);
     }
+
+    /* Bug D fix: chain-component editor may have overwritten or deleted the
+     * overtake param-shim globals while we were parked. Restore the snapshot
+     * captured at suspend so the resumed module's tick/UI sees its own shims
+     * regardless of what's currently on globalThis. */
+    if (parked.shimGet) globalThis.host_module_get_param = parked.shimGet;
+    if (parked.shimSet) globalThis.host_module_set_param = parked.shimSet;
+    if (parked.shimSetBlocking) globalThis.host_module_set_param_blocking = parked.shimSetBlocking;
 
     delete suspendedOvertakes[moduleId];
     if (lastSuspendedToolId === moduleId) lastSuspendedToolId = "";
@@ -14073,11 +14090,23 @@ globalThis.tick = function() {
                 move_midi_internal_send: globalThis.move_midi_internal_send
             };
             for (const k in _saved) globalThis[k] = _noop;
+            /* Bug D fix: param-shim globals may have been mutated by a chain-
+             * component editor while we were parked. Snapshot whatever is on
+             * globalThis now (so we can restore it after the tick run), then
+             * swap in each parked entry's own captured shims for its tick().
+             * Per-parked: each module's tick sees ITS OWN overtake-DSP shim,
+             * so multiple parked modules stay isolated. */
+            const _savedShimGet = globalThis.host_module_get_param;
+            const _savedShimSet = globalThis.host_module_set_param;
+            const _savedShimSetBlocking = globalThis.host_module_set_param_blocking;
             try {
                 for (let i = 0; i < parkedIds.length; i++) {
                     const id = parkedIds[i];
                     const parked = suspendedOvertakes[id];
                     if (parked && parked.callbacks && parked.callbacks.tick) {
+                        if (parked.shimGet) globalThis.host_module_get_param = parked.shimGet;
+                        if (parked.shimSet) globalThis.host_module_set_param = parked.shimSet;
+                        if (parked.shimSetBlocking) globalThis.host_module_set_param_blocking = parked.shimSetBlocking;
                         try {
                             parked.callbacks.tick();
                         } catch (e) {
@@ -14092,6 +14121,12 @@ globalThis.tick = function() {
                 }
             } finally {
                 for (const k in _saved) globalThis[k] = _saved[k];
+                if (_savedShimGet === undefined) delete globalThis.host_module_get_param;
+                else globalThis.host_module_get_param = _savedShimGet;
+                if (_savedShimSet === undefined) delete globalThis.host_module_set_param;
+                else globalThis.host_module_set_param = _savedShimSet;
+                if (_savedShimSetBlocking === undefined) delete globalThis.host_module_set_param_blocking;
+                else globalThis.host_module_set_param_blocking = _savedShimSetBlocking;
             }
         }
     }
