@@ -54,7 +54,7 @@ _Note: Uses `-sL` (silent) for minimal output, suitable for screen readers._
 The installer will:
 1. **Guide you through SSH setup** if needed (generates key, shows how to add it to Move)
 2. **Download and install** the Schwung framework
-3. **Offer to install modules** (synths, effects) from the Module Store
+3. **Offer to install modules** (synths, effects) from the catalog
 4. **Copy assets** for modules that need them (ROMs, SoundFonts, etc.)
 
 **Installation options:**
@@ -98,7 +98,7 @@ curl -L https://raw.githubusercontent.com/charlesvestal/schwung/main/scripts/uni
 
 ## Available Modules
 
-Browse the full module catalog at [schwung.dev/catalog.html](https://schwung.dev/catalog.html). Modules are installable via the Module Store or the desktop installer. The catalog source lives in [module-catalog.json](module-catalog.json).
+Browse the full module catalog at [schwung.dev/catalog.html](https://schwung.dev/catalog.html). Modules are installable via [Schwung Manager](http://move.local:7700) on the device or the desktop installer. The catalog source lives in [module-catalog.json](module-catalog.json).
 
 ## Related Repositories
 
