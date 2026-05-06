@@ -1937,18 +1937,28 @@ function normalizeExpandedParamMeta(key, meta) {
 
 function formatMetaOptionValue(meta, rawValue) {
     if (!meta) return rawValue;
+    const lookup = String(rawValue);
     /* Try option_labels map first (key → display label) */
     if (meta.option_labels && typeof meta.option_labels === "object") {
-        const lookup = String(rawValue);
         if (Object.prototype.hasOwnProperty.call(meta.option_labels, lookup)) {
             return meta.option_labels[lookup];
         }
     }
-    /* Fall back to options array by index (plugin returned numeric index like "0") */
     if (Array.isArray(meta.options)) {
-        const idx = parseInt(rawValue, 10);
-        if (!isNaN(idx) && idx >= 0 && idx < meta.options.length) {
-            return meta.options[idx];
+        /* If the plugin returned an option label as-is (e.g. "1/8"), keep it.
+         * parseInt would otherwise stop at the first non-digit and resolve
+         * fraction strings like "1/4" / "1/8" / "1/16" all to index 1. */
+        if (meta.options.indexOf(lookup) >= 0) {
+            return lookup;
+        }
+        /* Plugin returned a numeric index like "7". Use Number() rather than
+         * parseInt() so trailing non-numeric characters disqualify the value. */
+        const num = Number(lookup);
+        if (Number.isFinite(num)) {
+            const idx = Math.round(num);
+            if (idx >= 0 && idx < meta.options.length) {
+                return meta.options[idx];
+            }
         }
     }
     return rawValue;
