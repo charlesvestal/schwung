@@ -802,6 +802,17 @@
       "default_branch": "main",
       "asset_name": "tb3po-module.tar.gz",
       "min_host_version": "0.9.10"
+    },
+    {
+      "id": "breakbeat",
+      "name": "BB Gen",
+      "description": "Breakbeat generator with algorithmic slicing, retriggering, fills, and per-sample chance blending",
+      "author": "mestela",
+      "component_type": "sound_generator",
+      "github_repo": "mestela/schwung-breakbeat",
+      "default_branch": "main",
+      "asset_name": "breakbeat-module.tar.gz",
+      "min_host_version": "0.9.0"
     }
   ]
 }
