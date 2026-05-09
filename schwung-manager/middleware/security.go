@@ -147,6 +147,11 @@ func CSRFProtectionWithExemptions(next http.Handler, exemptPrefixes []string) ht
 				SameSite: http.SameSiteStrictMode,
 			})
 			cookie = &http.Cookie{Name: "csrf_token", Value: token}
+			// Make the freshly generated token visible to downstream
+			// handlers (e.g. render() reads r.Cookie to embed CSRFToken
+			// in form fields). Without this, the very first GET renders
+			// an empty token and the next POST 403s.
+			r.AddCookie(cookie)
 		}
 
 		// For state-changing methods, verify the token.
