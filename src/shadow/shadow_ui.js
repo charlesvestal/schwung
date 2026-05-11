@@ -3923,7 +3923,12 @@ function loadChainConfigFromDir(dir) {
         for (let i = 0; i < SHADOW_UI_SLOTS && i < data.slots.length; i++) {
             const s = data.slots[i];
             if (typeof s.volume === "number") setSlotParamWithTimeout(i, "slot:volume", String(s.volume), 500);
-            if (typeof s.channel === "number") setSlotParamWithTimeout(i, "slot:receive_channel", String(s.channel), 500);
+            /* Always write receive_channel: use saved value if present, else
+             * default to slot index + 1. Chain configs written before
+             * 072d3fd3 (or saved by older host code) can lack the field —
+             * silently skipping leaves shim.channel stale from the prior set. */
+            const recvCh = (typeof s.channel === "number") ? s.channel : (i + 1);
+            setSlotParamWithTimeout(i, "slot:receive_channel", String(recvCh), 500);
             if (typeof s.forward_channel === "number") setSlotParamWithTimeout(i, "slot:forward_channel", String(s.forward_channel), 500);
             if (typeof s.muted === "number") setSlotParamWithTimeout(i, "slot:muted", String(s.muted), 500);
             if (typeof s.soloed === "number") setSlotParamWithTimeout(i, "slot:soloed", String(s.soloed), 500);
@@ -4058,6 +4063,26 @@ function generateUniquePresetName(baseName) {
     return `${baseName}_${Date.now() % 10000}`;
 }
 
+/* Query a slot:component state via shadow_get_param, retrying briefly if
+ * the first call returns empty. The shim audio thread can be momentarily
+ * busy during set-change / heavy SPI activity, which makes a single 100ms
+ * round-trip race and return "" — silently dropping the save and losing
+ * recent edits (diagnosed 2026-05-12). 3 retries adds up to ~400ms worst
+ * case which is well under typical set-change duration. */
+function getSlotStateWithRetry(slotIndex, key) {
+    let state = getSlotParam(slotIndex, key);
+    if (state) return state;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        state = getSlotParam(slotIndex, key);
+        if (state) {
+            debugLog("getSlotStateWithRetry: slot " + slotIndex + " " +
+                     key + " succeeded on retry " + attempt);
+            return state;
+        }
+    }
+    return null;
+}
+
 /* Build patch JSON for saving
  * Note: save_patch expects raw chain content (synth, audio_fx at root)
  * with "custom_name" for the name. It wraps it with name/version/chain.
@@ -4085,7 +4110,7 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
     if (cfg.synth && cfg.synth.module) {
         /* Try to get full state from synth plugin */
         let synthConfig = cfg.synth.params || {};
-        const stateJson = getSlotParam(slotIndex, "synth:state");
+        const stateJson = getSlotStateWithRetry(slotIndex, "synth:state");
         if (stateJson) {
             try {
                 const state = JSON.parse(stateJson);
@@ -4097,6 +4122,9 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
         } else if (bailIfEmpty) {
             /* State query timed out AND the module is unchanged — skip autosave
              * to avoid clobbering a good file (synth would revert to defaults). */
+            debugLog("buildSlotPatchJson: slot " + slotIndex +
+                     " synth:state empty after retries — bailing (preserving existing slot_" +
+                     slotIndex + ".json)");
             return null;
         }
         patch.synth = {
@@ -4108,7 +4136,7 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
     if (cfg.midiFx && cfg.midiFx.module) {
         /* Try to get full state from midi_fx plugin */
         let midiFxConfig = cfg.midiFx.params || {};
-        const midiFxStateJson = getSlotParam(slotIndex, "midi_fx1:state");
+        const midiFxStateJson = getSlotStateWithRetry(slotIndex, "midi_fx1:state");
         if (midiFxStateJson) {
             try {
                 const state = JSON.parse(midiFxStateJson);
@@ -4118,6 +4146,9 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
                 midiFxConfig = { state: midiFxStateJson };
             }
         } else if (bailIfEmpty) {
+            debugLog("buildSlotPatchJson: slot " + slotIndex +
+                     " midi_fx1:state empty after retries — bailing (preserving existing slot_" +
+                     slotIndex + ".json)");
             return null;
         }
         patch.midi_fx = [{
@@ -4129,7 +4160,7 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
     if (cfg.fx1 && cfg.fx1.module) {
         /* Try to get full state from fx1 plugin */
         let fx1Config = cfg.fx1.params || {};
-        const fx1StateJson = getSlotParam(slotIndex, "fx1:state");
+        const fx1StateJson = getSlotStateWithRetry(slotIndex, "fx1:state");
         if (fx1StateJson) {
             try {
                 const state = JSON.parse(fx1StateJson);
@@ -4139,6 +4170,9 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
                 fx1Config = { state: fx1StateJson };
             }
         } else if (bailIfEmpty) {
+            debugLog("buildSlotPatchJson: slot " + slotIndex +
+                     " fx1:state empty after retries — bailing (preserving existing slot_" +
+                     slotIndex + ".json)");
             return null;
         }
         patch.audio_fx.push({
@@ -4149,7 +4183,7 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
     if (cfg.fx2 && cfg.fx2.module) {
         /* Try to get full state from fx2 plugin */
         let fx2Config = cfg.fx2.params || {};
-        const fx2StateJson = getSlotParam(slotIndex, "fx2:state");
+        const fx2StateJson = getSlotStateWithRetry(slotIndex, "fx2:state");
         if (fx2StateJson) {
             try {
                 const state = JSON.parse(fx2StateJson);
@@ -4159,6 +4193,9 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
                 fx2Config = { state: fx2StateJson };
             }
         } else if (bailIfEmpty) {
+            debugLog("buildSlotPatchJson: slot " + slotIndex +
+                     " fx2:state empty after retries — bailing (preserving existing slot_" +
+                     slotIndex + ".json)");
             return null;
         }
         patch.audio_fx.push({
@@ -14405,6 +14442,24 @@ globalThis.tick = function() {
                         host_write_file(newDir + "/slot_" + i + ".json", "{}\n");
                         host_write_file(newDir + "/master_fx_" + i + ".json", "{}\n");
                     }
+                    /* Seed a default chain config so receive channels reset to
+                     * per-track defaults (Ch 1-4). Without this, the upcoming
+                     * loadChainConfigFromDir silently bails and the shim's
+                     * slot.channel keeps stale values from the prior set —
+                     * symptom: no audio on new sets until user toggles Recv Ch. */
+                    const defaultCfg = { slots: [] };
+                    for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+                        defaultCfg.slots.push({
+                            name: "",
+                            channel: i + 1,
+                            volume: 1.0,
+                            forward_channel: -1,
+                            muted: 0,
+                            soloed: 0
+                        });
+                    }
+                    host_write_file(newDir + "/shadow_chain_config.json",
+                        JSON.stringify(defaultCfg, null, 2) + "\n");
                 }
             }
 
