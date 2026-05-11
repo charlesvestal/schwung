@@ -49,8 +49,13 @@
 #define LINK_AUDIO_PUB_BLOCK_FRAMES  128   /* matches FRAMES_PER_BLOCK */
 #define LINK_AUDIO_PUB_BLOCK_SAMPLES (LINK_AUDIO_PUB_BLOCK_FRAMES * 2) /* stereo */
 
-/* Per-slot ring in shared memory: 8 blocks deep = ~23ms buffer */
-#define LINK_AUDIO_PUB_SHM_BLOCKS   8
+/* Per-slot ring in shared memory: 16 blocks deep = ~46ms buffer.
+ * MUST stay larger than the consumer catch-up threshold in
+ * link_audio_read_channel_shm (need * 12 = 3072 samples) — otherwise
+ * Link Audio SDK bursts overrun the ring before catch-up trips and
+ * the consumer reads partially-overwritten samples (sounds like
+ * sample-rate corruption). */
+#define LINK_AUDIO_PUB_SHM_BLOCKS   16
 #define LINK_AUDIO_PUB_SHM_RING_SAMPLES (LINK_AUDIO_PUB_BLOCK_SAMPLES * LINK_AUDIO_PUB_SHM_BLOCKS)
 #define LINK_AUDIO_PUB_SHM_RING_MASK   (LINK_AUDIO_PUB_SHM_RING_SAMPLES - 1)
 
