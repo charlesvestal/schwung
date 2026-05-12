@@ -118,6 +118,11 @@ void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *mi
  * correct channels. */
 void shadow_dispatch_direct_external_midi(void);
 
+/* Dispatch cable-2 (USB-A external MIDI) note/voice messages to chain slots
+ * matched by configured receive channel.  Used when no tool module is active
+ * so that Schwung instruments respond to external MIDI by channel. */
+void shadow_dispatch_cable2_channeled_slots(void);
+
 /* Forward CC/pitch bend/aftertouch from external MIDI (cable 2) into MIDI_OUT. */
 void shadow_forward_external_cc_to_out(void);
 
