@@ -839,7 +839,9 @@ static JSValue js_host_ext_midi_remap_set(JSContext *ctx, JSValueConst this_val,
     if (JS_ToInt32(ctx, &in_ch, argv[0]) < 0) return JS_FALSE;
     if (JS_ToInt32(ctx, &out_ch, argv[1]) < 0) return JS_FALSE;
     if (in_ch < 0 || in_ch > 15) return JS_FALSE;
-    uint8_t mapped = (out_ch < 0 || out_ch > 15) ? EXT_MIDI_REMAP_PASSTHROUGH : (uint8_t)out_ch;
+    uint8_t mapped = (out_ch == (int32_t)EXT_MIDI_REMAP_BLOCK) ? EXT_MIDI_REMAP_BLOCK :
+                     (out_ch < 0 || out_ch > 15) ? EXT_MIDI_REMAP_PASSTHROUGH :
+                     (uint8_t)out_ch;
     ext_midi_remap->remap[in_ch] = mapped;
     __sync_synchronize();
     return JS_TRUE;
