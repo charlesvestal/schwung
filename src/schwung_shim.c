@@ -5192,37 +5192,69 @@ static int any_thru_slot_active(void) {
 static void shim_remap_cable2_channels(uint8_t *shadow) {
     if (!ext_midi_remap_feature_enabled) return;  /* Feature flag kill switch */
     if (!ext_midi_remap_shm || !ext_midi_remap_shm->enabled) return;
-    if (any_thru_slot_active()) return;  /* MPE escape hatch */
     if (!hardware_mmap_addr) return;
 
-    /* Mutate both hw (so Move sees remapped channels on this frame) and
-     * shadow (so next frame's pre-transfer readers — cable-2 echo filter,
-     * shadow_forward_external_cc_to_out — see consistent data). */
-    uint8_t *targets[2] = { hardware_mmap_addr, shadow };
-    for (int t = 0; t < 2; t++) {
-        uint8_t *buf = targets[t];
-        if (!buf) continue;
-        buf += MIDI_IN_OFFSET;
-        /* MIDI_IN events are 8 bytes (4 USB-MIDI + 4 timestamp). 4-byte
-         * stride visits timestamps and rewrites their bytes when a
-         * timestamp byte happens to look like cable-2 + a non-system
-         * status — corrupts the contiguous event run that Move's MIDI_IN
-         * parser scans (it terminates at the first zero slot). Sparse
-         * buffer hides this; transport-running + external MIDI fills the
-         * buffer and produces SIGABRT deep in Move's stack. */
-        const int MIDI_IN_MAX_BYTES = 8 * 31;     /* 31 events × 8 bytes */
-        for (int j = 0; j < MIDI_IN_MAX_BYTES; j += 8) {
-            uint8_t header = buf[j];
-            if (header == 0) break;               /* end-of-events */
-            uint8_t cable = (header >> 4) & 0x0F;
-            if (cable != 2) continue;             /* only cable-2 (external USB) */
-            uint8_t status = buf[j + 1];
-            if ((status & 0xF0) == 0xF0) continue; /* system messages — channelless */
-            uint8_t in_ch = status & 0x0F;
-            uint8_t mapped = ext_midi_remap_shm->remap[in_ch];
-            if (mapped == EXT_MIDI_REMAP_PASSTHROUGH || mapped >= 16) continue;
-            buf[j + 1] = (status & 0xF0) | (mapped & 0x0F);
+    /* MIDI_IN events are 8 bytes (4 USB-MIDI + 4 timestamp); stride at 8.
+     * 4-byte stride would hit timestamp bytes, corrupt the contiguous event
+     * run, and produce SIGABRT deep in Move's stack. */
+    uint8_t *hw_buf = hardware_mmap_addr + MIDI_IN_OFFSET;
+    uint8_t *sh_buf = shadow ? (shadow + MIDI_IN_OFFSET) : NULL;
+    const int MIDI_IN_MAX_BYTES = 8 * 31;     /* 31 events × 8 bytes */
+
+    for (int j = 0; j < MIDI_IN_MAX_BYTES; j += 8) {
+        uint8_t header = hw_buf[j];
+        if (header == 0) break;               /* end-of-events */
+        uint8_t cable = (header >> 4) & 0x0F;
+        if (cable != 2) continue;             /* only cable-2 (external USB) */
+        uint8_t status = hw_buf[j + 1];
+        if ((status & 0xF0) == 0xF0) continue; /* system messages — channelless */
+        uint8_t in_ch = status & 0x0F;
+        uint8_t mapped = ext_midi_remap_shm->remap[in_ch];
+
+        if (mapped == EXT_MIDI_REMAP_PASSTHROUGH) continue;
+
+        if (mapped == EXT_MIDI_REMAP_BLOCK) {
+            /* Leave hardware_mmap_addr untouched — writing the MIDI_IN region
+             * of the hardware SPI mmap crashes Move's process.  The shadow
+             * buffer (sh_midi) is patched to a proper note-off after the
+             * sh_midi copy loop via shim_block_cable2_in_sh_midi(). */
+            continue;
         }
+
+        /* Normal channel remap: rewrite channel byte in both hw and shadow so
+         * Move firmware and next-frame internal readers see consistent data. */
+        if (mapped >= 16) continue;  /* guard: treat unknown values as passthrough */
+        hw_buf[j + 1] = (status & 0xF0) | (mapped & 0x0F);
+        if (sh_buf) sh_buf[j + 1] = (status & 0xF0) | (mapped & 0x0F);
+    }
+}
+
+/* Patch sh_midi (shadow buffer, 4-byte stride) to suppress BLOCK channels from
+ * reaching Move's firmware.  Called AFTER the sh_midi copy loop so the patch
+ * survives the overwrite.  Converts note-ons on BLOCK channels to proper
+ * note-offs (CIN 8 / status 0x80) rather than zeroing velocity, avoiding any
+ * firmware edge-case on velocity=0 note-ons.  hardware_mmap_addr is left
+ * untouched — writing MIDI_IN there crashes Move's process. */
+static void shim_block_cable2_in_sh_midi(uint8_t *sh_midi) {
+    if (!ext_midi_remap_feature_enabled) return;
+    if (!ext_midi_remap_shm || !ext_midi_remap_shm->enabled) return;
+    /* MIDI_IN events are 8 bytes (4 USB-MIDI + 4 timestamp). Must stride by 8
+     * so we only inspect the USB-MIDI header bytes and never accidentally
+     * interpret or corrupt timestamp bytes. */
+    const int MIDI_IN_MAX_BYTES = 8 * 31;
+    for (int j = 0; j < MIDI_IN_MAX_BYTES; j += 8) {
+        if (sh_midi[j] == 0) break;                    /* end of events */
+        uint8_t cable = (sh_midi[j] >> 4) & 0x0F;
+        if (cable != 2) continue;
+        uint8_t status = sh_midi[j + 1];
+        if ((status & 0xF0) != 0x90) continue;         /* note-on only */
+        if (sh_midi[j + 3] == 0) continue;             /* already velocity=0 */
+        uint8_t in_ch = status & 0x0F;
+        if (ext_midi_remap_shm->remap[in_ch] != EXT_MIDI_REMAP_BLOCK) continue;
+        /* Convert to proper note-off so Move ignores it cleanly */
+        sh_midi[j]     = (sh_midi[j] & 0xF0) | 0x08;  /* CIN 8 = note-off */
+        sh_midi[j + 1] = 0x80 | in_ch;                 /* note-off status */
+        sh_midi[j + 3] = 0x40;                         /* standard note-off vel */
     }
 }
 
@@ -5577,6 +5609,11 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
         /* Not in shadow mode - copy MIDI_IN directly */
         memcpy(sh_midi, hw_midi, MIDI_BUFFER_SIZE);
     }
+
+    /* Convert BLOCK-channel cable-2 note-ons to note-offs in shadow so Move
+     * ignores them.  Must run AFTER the sh_midi loop (which overwrites shadow
+     * from hw_midi) and only touches shadow — never hardware_mmap_addr. */
+    shim_block_cable2_in_sh_midi(sh_midi);
 
     /* === SHIFT+MENU SHORTCUT DETECTION AND BLOCKING (POST-IOCTL) ===
      * Scan hardware MIDI_IN for Shift+Menu, perform action, and block from reaching Move.
@@ -6483,6 +6520,11 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                                        (d1 >= 40 && d1 <= 43)));           /* track buttons */
                     if (!is_ui_event) continue;  /* Skip non-UI events in menu mode */
                 }
+
+                /* BLOCK channels: hardware_mmap_addr is NOT modified (writing
+                 * MIDI_IN hardware crashes Move), so src here has the original
+                 * velocity.  Forward the note-on normally so SEQ8 can route it.
+                 * Move won't play it because sh_midi has the patched note-off. */
 
                 /* Queue cable 2 note-on messages (external LED commands like M8)
                  * for rate-limited forwarding to prevent buffer overflow */
