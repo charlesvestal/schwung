@@ -1168,7 +1168,10 @@ func (app *App) handleModuleUninstall(w http.ResponseWriter, r *http.Request) {
 		app.moduleRedirect(w, r, id, "Uninstall+failed:+"+err.Error())
 		return
 	}
-	app.moduleRedirect(w, r, id, "Module+uninstalled")
+	// Sideloaded modules without a catalog entry have no detail page once
+	// removed, so going back to the Referer 404s. Send the user to the
+	// modules list instead — same destination as install-all/update-all.
+	http.Redirect(w, r, "/modules?flash=Module+uninstalled", http.StatusSeeOther)
 }
 
 func (app *App) handleModuleUpdate(w http.ResponseWriter, r *http.Request) {
