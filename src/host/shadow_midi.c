@@ -409,31 +409,26 @@ void shadow_drain_midi_inject(void)
 
     if (!inject_shm) return;
 
-    /* Defer cable-2 injection when there's cable-0 hardware activity in the
-     * SAME tick. Injecting concurrently with a live pad event appears to
-     * race Move's firmware (observed: SIGABRT deep in Move's stack after
-     * ~1s of arp tick-path injections). The note-path injections (chord)
-     * escape this because they fire only AFTER Move has echoed the pad on
-     * cable-2 MIDI_OUT — at which point cable-0 MIDI_IN has been consumed.
-     * Tick-path injections (arp, generator-style FX) run every SPI cycle
-     * independently, so they need an explicit gate.
+    /* Defer inject when MIDI_IN has ANY hardware events this tick.
+     * All cables share Move's firmware MIDI read path — injecting concurrently
+     * with hardware events on ANY cable races Move's internal processing and
+     * causes SIGABRT. The original guard only checked cable-0 (pads), but
+     * empirically the crash occurs with inject at offset 24 when events on
+     * other cables occupy offsets 0/8/16 — confirming the guard must be
+     * cable-agnostic.  Move also partially consumes MIDI_IN (clearing slot 0
+     * while leaving events at higher offsets), so checking only slot 0 misses
+     * residual events; scan all slots.
      *
-     * Rule: if MIDI_IN has any cable-0 events this tick, reset the defer
-     * counter and hold the SHM contents. Otherwise, drain only once the
-     * counter has climbed to 2 (≈6ms at 2.9ms/tick). Pattern is from
-     * chord-mode-native (shadow_chord.c CHORD_DEFER_FRAMES). */
+     * Rule: if any MIDI_IN slot is non-zero this tick, reset the defer counter.
+     * Otherwise, drain once the counter has climbed to 2 (≈6ms at 2.9ms/tick).
+     * Pattern from chord-mode-native (shadow_chord.c CHORD_DEFER_FRAMES). */
     const int DEFER_FRAMES = 2;
     static int defer_counter = 0;
     uint8_t *midi_in_scan = host_shadow_mailbox + MIDI_IN_OFFSET;
-    int cable0_active = 0;
-    for (int j = 0; j < MIDI_IN_MAX_BYTES; j += MIDI_IN_EVT_STRIDE) {
-        if (midi_in_scan[j] == 0) break;      /* end-of-events */
-        if ((midi_in_scan[j] >> 4) == 0) {    /* cable 0 */
-            cable0_active = 1;
-            break;
-        }
-    }
-    if (cable0_active) {
+    int hw_cable_active = 0;
+    for (int j = 0; j < MIDI_IN_MAX_BYTES; j += MIDI_IN_EVT_STRIDE)
+        if (midi_in_scan[j] != 0) { hw_cable_active = 1; break; }
+    if (hw_cable_active) {
         defer_counter = 0;
         return;
     }
@@ -468,11 +463,20 @@ void shadow_drain_midi_inject(void)
     int consumed_bytes = 0;
     for (int i = 0; i < copy_len && injected < 16; i += 4) {
         /* Find empty 8-byte slot (byte 0 == 0 means no cable/CIN, unused) */
+        int saw_existing = 0;
         while (hw_offset < MIDI_IN_MAX_BYTES) {
             if (midi_in[hw_offset] == 0) break;
+            saw_existing = 1;
             hw_offset += MIDI_IN_EVT_STRIDE;
         }
         if (hw_offset >= MIDI_IN_MAX_BYTES) break;  /* Buffer full */
+        /* If we skipped over pre-existing events to find an empty slot, bail
+         * and carry remaining packets to the next frame.  The defer guard has
+         * a narrow race window: events can appear in MIDI_IN between the guard
+         * check and the write.  Injecting alongside hardware events (at a
+         * non-zero offset) races Move's firmware MIDI read path and causes
+         * SIGABRT — empirically the crash always fires at a non-zero offset. */
+        if (saw_existing) break;
 
         /* Write 4-byte USB-MIDI packet + zero the 4-byte timestamp.
          * Cable nibble in local_buf[i] is preserved — callers choose cable:
