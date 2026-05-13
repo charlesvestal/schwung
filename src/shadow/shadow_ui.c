@@ -3210,13 +3210,16 @@ static int process_shadow_midi(JSContext *ctx, JSValue *onInternal, JSValue *onE
     if (!shadow_ui_midi_shm) return 0;
     int handled = 0;
     for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
-        uint8_t cin = shadow_ui_midi_shm[i] & 0x0F;
-        uint8_t cable = (shadow_ui_midi_shm[i] >> 4) & 0x0F;
+        /* Acquire-load the gate byte: pairs with the producer's release-store
+         * in shadow_ui_midi_publish() (schwung_shim.c). Ensures bytes 1-3 are
+         * visible whenever byte 0 is nonzero. */
+        uint8_t head = __atomic_load_n(&shadow_ui_midi_shm[i], __ATOMIC_ACQUIRE);
+        uint8_t cin = head & 0x0F;
+        uint8_t cable = (head >> 4) & 0x0F;
 
         /* CIN 0x04-0x07: SysEx, CIN 0x08-0x0E: Note/CC/etc */
         if (cin < 0x04 || cin > 0x0E) continue;
         uint8_t msg[3] = { shadow_ui_midi_shm[i + 1], shadow_ui_midi_shm[i + 2], shadow_ui_midi_shm[i + 3] };
-        if (msg[0] + msg[1] + msg[2] == 0) continue;
         handled = 1;
         if (cable == 2) {
             /* Re-lookup onMidiMessageExternal each time in case overtake module replaced it */
@@ -3228,6 +3231,9 @@ static int process_shadow_midi(JSContext *ctx, JSValue *onInternal, JSValue *onE
         } else {
             callGlobalFunction(ctx, onInternal, msg);
         }
+        /* Release the slot back to the producer. Producer overwrites bytes
+         * 1-3 unconditionally on next claim, so we only need to clear byte 0. */
+        __atomic_store_n(&shadow_ui_midi_shm[i], 0, __ATOMIC_RELEASE);
     }
     return handled;
 }
@@ -3317,13 +3323,12 @@ int main(int argc, char *argv[]) {
          * This eliminates one full loop iteration of display latency. */
         if (shadow_control && shadow_control->midi_ready != last_midi_ready) {
             last_midi_ready = shadow_control->midi_ready;
+            /* process_shadow_midi releases each slot byte-0 individually after
+             * dispatch — do NOT wholesale-memset here. Wiping the whole ring
+             * after dispatch races with the shim writer and silently drops
+             * events written between the shim's slot-empty check and our
+             * clear (manifested as dropped pad note-offs under burst). */
             process_shadow_midi(ctx, &JSonMidiMessageInternal, &JSonMidiMessageExternal);
-            /* Always clear buffer after processing - even if no events were found,
-             * the buffer may contain data the shim wrote that we couldn't parse.
-             * This prevents the buffer from filling up and blocking new writes. */
-            if (shadow_ui_midi_shm) {
-                memset(shadow_ui_midi_shm, 0, MIDI_BUFFER_SIZE);
-            }
         }
 
         if (jsTickIsDefined) {
