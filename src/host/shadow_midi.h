@@ -118,6 +118,11 @@ void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *mi
  * correct channels. */
 void shadow_dispatch_direct_external_midi(void);
 
+/* Dispatch cable-2 (USB-A external MIDI) note/voice messages to chain slots
+ * matched by configured receive channel.  Used when no tool module is active
+ * so that Schwung instruments respond to external MIDI by channel. */
+void shadow_dispatch_cable2_channeled_slots(void);
+
 /* Forward CC/pitch bend/aftertouch from external MIDI (cable 2) into MIDI_OUT. */
 void shadow_forward_external_cc_to_out(void);
 
@@ -131,7 +136,10 @@ void shadow_drain_ui_midi_dsp(void);
 void shadow_drain_midi_inject(void);
 
 /* Queue a 4-byte USB-MIDI packet for MIDI_IN injection (Pre-mode MIDI FX).
- * Cable nibble is ignored by the drain (forced to 0).
+ * The cable nibble in msg[0] is preserved by the drain. Callers choose:
+ *   cable 0 → internal hardware (Move treats as pad/button input)
+ *   cable 2 → external USB MIDI (routed by channel to Move's track synths)
+ * See shadow_midi.c for the full drain semantics.
  * Returns 4 on success, 0 if SHM unavailable or ring full. */
 int shadow_chain_midi_inject(const uint8_t *msg, int len);
 

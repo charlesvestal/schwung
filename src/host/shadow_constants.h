@@ -246,6 +246,7 @@ typedef struct schwung_ext_midi_remap_t {
 } schwung_ext_midi_remap_t;          /* 64 bytes total */
 
 #define EXT_MIDI_REMAP_PASSTHROUGH 0xFF
+#define EXT_MIDI_REMAP_BLOCK       0xFE  /* block note-ons from Move; shadow_ui still sees original */
 #define EXT_MIDI_REMAP_VERSION     1
 
 /*

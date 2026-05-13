@@ -409,31 +409,26 @@ void shadow_drain_midi_inject(void)
 
     if (!inject_shm) return;
 
-    /* Defer cable-2 injection when there's cable-0 hardware activity in the
-     * SAME tick. Injecting concurrently with a live pad event appears to
-     * race Move's firmware (observed: SIGABRT deep in Move's stack after
-     * ~1s of arp tick-path injections). The note-path injections (chord)
-     * escape this because they fire only AFTER Move has echoed the pad on
-     * cable-2 MIDI_OUT — at which point cable-0 MIDI_IN has been consumed.
-     * Tick-path injections (arp, generator-style FX) run every SPI cycle
-     * independently, so they need an explicit gate.
+    /* Defer inject when MIDI_IN has ANY hardware events this tick.
+     * All cables share Move's firmware MIDI read path — injecting concurrently
+     * with hardware events on ANY cable races Move's internal processing and
+     * causes SIGABRT. The original guard only checked cable-0 (pads), but
+     * empirically the crash occurs with inject at offset 24 when events on
+     * other cables occupy offsets 0/8/16 — confirming the guard must be
+     * cable-agnostic.  Move also partially consumes MIDI_IN (clearing slot 0
+     * while leaving events at higher offsets), so checking only slot 0 misses
+     * residual events; scan all slots.
      *
-     * Rule: if MIDI_IN has any cable-0 events this tick, reset the defer
-     * counter and hold the SHM contents. Otherwise, drain only once the
-     * counter has climbed to 2 (≈6ms at 2.9ms/tick). Pattern is from
-     * chord-mode-native (shadow_chord.c CHORD_DEFER_FRAMES). */
+     * Rule: if any MIDI_IN slot is non-zero this tick, reset the defer counter.
+     * Otherwise, drain once the counter has climbed to 2 (≈6ms at 2.9ms/tick).
+     * Pattern from chord-mode-native (shadow_chord.c CHORD_DEFER_FRAMES). */
     const int DEFER_FRAMES = 2;
     static int defer_counter = 0;
     uint8_t *midi_in_scan = host_shadow_mailbox + MIDI_IN_OFFSET;
-    int cable0_active = 0;
-    for (int j = 0; j < MIDI_IN_MAX_BYTES; j += MIDI_IN_EVT_STRIDE) {
-        if (midi_in_scan[j] == 0) break;      /* end-of-events */
-        if ((midi_in_scan[j] >> 4) == 0) {    /* cable 0 */
-            cable0_active = 1;
-            break;
-        }
-    }
-    if (cable0_active) {
+    int hw_cable_active = 0;
+    for (int j = 0; j < MIDI_IN_MAX_BYTES; j += MIDI_IN_EVT_STRIDE)
+        if (midi_in_scan[j] != 0) { hw_cable_active = 1; break; }
+    if (hw_cable_active) {
         defer_counter = 0;
         return;
     }
@@ -468,11 +463,20 @@ void shadow_drain_midi_inject(void)
     int consumed_bytes = 0;
     for (int i = 0; i < copy_len && injected < 16; i += 4) {
         /* Find empty 8-byte slot (byte 0 == 0 means no cable/CIN, unused) */
+        int saw_existing = 0;
         while (hw_offset < MIDI_IN_MAX_BYTES) {
             if (midi_in[hw_offset] == 0) break;
+            saw_existing = 1;
             hw_offset += MIDI_IN_EVT_STRIDE;
         }
         if (hw_offset >= MIDI_IN_MAX_BYTES) break;  /* Buffer full */
+        /* If we skipped over pre-existing events to find an empty slot, bail
+         * and carry remaining packets to the next frame.  The defer guard has
+         * a narrow race window: events can appear in MIDI_IN between the guard
+         * check and the write.  Injecting alongside hardware events (at a
+         * non-zero offset) races Move's firmware MIDI read path and causes
+         * SIGABRT — empirically the crash always fires at a non-zero offset. */
+        if (saw_existing) break;
 
         /* Write 4-byte USB-MIDI packet + zero the 4-byte timestamp.
          * Cable nibble in local_buf[i] is preserved — callers choose cable:
@@ -706,6 +710,90 @@ void shadow_dispatch_direct_external_midi(void)
             uint8_t msg[3] = { status, d1, d2 };
             if (host_master_fx_forward_midi)
                 host_master_fx_forward_midi(msg, 3, MOVE_MIDI_SOURCE_EXTERNAL);
+        }
+    }
+}
+
+/* Dispatch cable-2 (USB-A external MIDI) note/voice messages to chain slots
+ * matched by configured receive channel.  Called when no tool module is
+ * active so that Schwung chain instruments respond to external MIDI by channel
+ * just as they would via Move's normal MIDI routing when Schwung is not
+ * installed. */
+void shadow_dispatch_cable2_channeled_slots(void)
+{
+    if (!*host_shadow_inprocess_ready || !*host_global_mmap_addr) return;
+
+    const plugin_api_v2_t *pv2 = *host_plugin_v2;
+    if (!pv2 || !pv2->on_midi) return;
+
+    uint8_t *in_src = *host_global_mmap_addr + MIDI_IN_OFFSET;
+
+    for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
+        uint8_t header = in_src[i];
+        if (header == 0) break;
+
+        uint8_t cable = (header >> 4) & 0x0F;
+        if (cable != 0x02) continue;   /* only cable-2 (USB-A external MIDI) */
+
+        uint8_t cin    = header & 0x0F;
+        uint8_t status = in_src[i + 1];
+        uint8_t type   = status & 0xF0;
+        uint8_t d1     = in_src[i + 2];
+        uint8_t d2     = in_src[i + 3];
+
+        /* Channel voice messages only */
+        if (cin < 0x08 || cin > 0x0E) continue;
+        if (type < 0x80 || type > 0xE0) continue;
+        if (cin != (type >> 4)) continue;
+
+        /* Data bytes must be 0-127 */
+        if ((d1 & 0x80) || (d2 & 0x80)) continue;
+
+        /* Filter knob-touch notes (internal Move notes 0-9) */
+        if ((type == 0x90 || type == 0x80) && d1 < 10) continue;
+
+        uint8_t in_ch = status & 0x0F;
+
+        for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
+            int slot_ch = host_chain_slots[s].channel;
+
+            /* Skip THRU slots — already handled by shadow_dispatch_direct_external_midi */
+            if (slot_ch == -1 && host_chain_slots[s].forward_channel == -2) continue;
+
+            /* Channel filter: -1 = receive all; >= 0 = specific channel */
+            if (slot_ch >= 0 && slot_ch != (int)in_ch) continue;
+
+            /* Lazy activation */
+            if (!host_chain_slots[s].active) {
+                if (host_chain_slots[s].instance) {
+                    char buf[64];
+                    int len = pv2->get_param(host_chain_slots[s].instance,
+                                              "synth_module", buf, sizeof(buf));
+                    if (len > 0) {
+                        if (len < (int)sizeof(buf)) buf[len] = '\0';
+                        else buf[sizeof(buf) - 1] = '\0';
+                        if (buf[0] != '\0') {
+                            host_chain_slots[s].active = 1;
+                            if (host_ui_state_update_slot)
+                                host_ui_state_update_slot(s);
+                        }
+                    }
+                }
+                if (!host_chain_slots[s].active) continue;
+            }
+
+            /* Wake from idle */
+            if (host_slot_idle[s] || host_slot_fx_idle[s]) {
+                host_slot_idle[s]          = 0;
+                host_slot_silence_frames[s] = 0;
+                host_slot_fx_idle[s]        = 0;
+                host_slot_fx_silence_frames[s] = 0;
+            }
+
+            uint8_t msg[3] = { status, d1, d2 };
+            if (shadow_chain_apply_transpose(s, msg))
+                pv2->on_midi(host_chain_slots[s].instance, msg, 3,
+                             MOVE_MIDI_SOURCE_EXTERNAL);
         }
     }
 }
