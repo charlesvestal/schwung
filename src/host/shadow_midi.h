@@ -136,7 +136,10 @@ void shadow_drain_ui_midi_dsp(void);
 void shadow_drain_midi_inject(void);
 
 /* Queue a 4-byte USB-MIDI packet for MIDI_IN injection (Pre-mode MIDI FX).
- * Cable nibble is ignored by the drain (forced to 0).
+ * The cable nibble in msg[0] is preserved by the drain. Callers choose:
+ *   cable 0 → internal hardware (Move treats as pad/button input)
+ *   cable 2 → external USB MIDI (routed by channel to Move's track synths)
+ * See shadow_midi.c for the full drain semantics.
  * Returns 4 on success, 0 if SHM unavailable or ring full. */
 int shadow_chain_midi_inject(const uint8_t *msg, int len);
 

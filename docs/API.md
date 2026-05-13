@@ -186,8 +186,15 @@ host_announce_screenreader(text) // Speak text via TTS (if screen reader enabled
 // Tool module lifecycle
 host_exit_module()            // Exit current tool module, return to tools menu (tool modules only)
 
-// MIDI injection (inject MIDI into Move's firmware input path)
-move_midi_inject_to_move([type, status, d1, d2]) // Simulate hardware MIDI input
+// MIDI injection (inject MIDI into Move's firmware input path).
+// packet[0] is the USB-MIDI byte: high nibble = cable, low nibble = CIN.
+//   cable 0 (e.g. 0x09 note-on, 0x08 note-off) → Move treats as a physical
+//     pad/button press; use this to simulate the surface.
+//   cable 2 (e.g. 0x29, 0x28) → Move routes by channel to its track
+//     instruments, as if the event came from a USB-A MIDI device.
+// The cable nibble is preserved as-is (no rewrite). See
+// docs/ADDRESSING_MOVE_SYNTHS.md for the cable-2 routing flow.
+move_midi_inject_to_move([packet0, status, d1, d2])
 
 // Cable-2 (external USB) MIDI channel remap — overtake modules only.
 // Rewrites the channel byte of incoming external MIDI before Move's firmware
