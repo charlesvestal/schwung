@@ -269,24 +269,82 @@ type ReleaseMeta struct {
 }
 
 // CatalogService fetches and caches the remote module catalog.
+//
+// Cache layers: in-memory (5min TTL) and on-disk (last-known-good, no TTL).
+// The disk cache lets the manager render — and let users remove/repair
+// installed modules — when the network is down or GitHub Pages is flaky.
 type CatalogService struct {
-	URL          string
-	catalog      *Catalog
-	releaseMeta  map[string]ReleaseMeta
-	fetched      time.Time
-	client       *http.Client
+	URL         string
+	CacheDir    string // root directory for persisted cache files
+	catalog     *Catalog
+	releaseMeta map[string]ReleaseMeta
+	fetched     time.Time
+	client      *http.Client
 }
 
 const releaseMetaURL = "https://charlesvestal.github.io/schwung-catalog-site/data/release-metadata.json"
 
-func NewCatalogService(url string) *CatalogService {
-	return &CatalogService{
-		URL:    url,
-		client: &http.Client{Timeout: 15 * time.Second},
+func NewCatalogService(url, cacheDir string) *CatalogService {
+	cs := &CatalogService{
+		URL:      url,
+		CacheDir: cacheDir,
+		client:   &http.Client{Timeout: 15 * time.Second},
+	}
+	cs.loadFromDisk()
+	return cs
+}
+
+func (cs *CatalogService) catalogCachePath() string {
+	if cs.CacheDir == "" {
+		return ""
+	}
+	return filepath.Join(cs.CacheDir, "manager-cache", "catalog.json")
+}
+
+func (cs *CatalogService) metaCachePath() string {
+	if cs.CacheDir == "" {
+		return ""
+	}
+	return filepath.Join(cs.CacheDir, "manager-cache", "release-metadata.json")
+}
+
+func (cs *CatalogService) loadFromDisk() {
+	if p := cs.catalogCachePath(); p != "" {
+		if data, err := os.ReadFile(p); err == nil {
+			var cat Catalog
+			if json.Unmarshal(data, &cat) == nil {
+				cs.catalog = &cat
+			}
+		}
+	}
+	if p := cs.metaCachePath(); p != "" {
+		if data, err := os.ReadFile(p); err == nil {
+			var meta map[string]ReleaseMeta
+			if json.Unmarshal(data, &meta) == nil {
+				cs.releaseMeta = meta
+			}
+		}
 	}
 }
 
-// Fetch retrieves the catalog, caching for 5 minutes.
+func (cs *CatalogService) saveToDisk(path string, v any) {
+	if path == "" {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
+	}
+	data, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(path, data, 0o644)
+}
+
+// Fetch retrieves the catalog, caching for 5 minutes in memory.
+// On HTTP/decode failure it returns the last-known catalog (from memory or
+// disk) along with the error, so callers can render a usable page when the
+// network is unavailable.
 func (cs *CatalogService) Fetch() (*Catalog, error) {
 	if cs.catalog != nil && time.Since(cs.fetched) < 5*time.Minute {
 		return cs.catalog, nil
@@ -305,6 +363,7 @@ func (cs *CatalogService) Fetch() (*Catalog, error) {
 	}
 	cs.catalog = &cat
 	cs.fetched = time.Now()
+	cs.saveToDisk(cs.catalogCachePath(), &cat)
 
 	// Fetch release metadata (best-effort, don't fail if unavailable).
 	if metaResp, err := cs.client.Get(releaseMetaURL); err == nil {
@@ -313,6 +372,7 @@ func (cs *CatalogService) Fetch() (*Catalog, error) {
 			var meta map[string]ReleaseMeta
 			if json.NewDecoder(metaResp.Body).Decode(&meta) == nil {
 				cs.releaseMeta = meta
+				cs.saveToDisk(cs.metaCachePath(), meta)
 			}
 		}
 	}
@@ -3064,7 +3124,7 @@ func main() {
 	app := &App{
 		tmpl:         tmpl,
 		fileSvc:      &FileService{AllowedRoots: allowedRoots},
-		catalogSvc:   NewCatalogService(*catalogURL),
+		catalogSvc:   NewCatalogService(*catalogURL, basePath),
 		basePath:     basePath,
 		logger:       logger,
 		shm:          shm,
