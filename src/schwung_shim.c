@@ -2332,6 +2332,30 @@ static schwung_ext_midi_remap_t *ext_midi_remap_shm = NULL;  /* Cable-2 channel 
 static uint32_t last_screenreader_sequence = 0;  /* Track last spoken message */
 static uint64_t last_speech_time_ms = 0;  /* Rate limiting for TTS */
 
+/* Publish a 4-byte USB-MIDI event into the shim → shadow_ui SHM ring.
+ *
+ * The ring uses byte 0 as the "slot full" gate. Producer writes bytes 1-3
+ * first, then commits with a release-store of byte 0. Consumer
+ * (shadow_ui.c::process_shadow_midi) acquire-loads byte 0 to detect a
+ * filled slot and release-stores 0 to release it. Without this ordering,
+ * a wholesale memset on the consumer side could wipe events written
+ * between the producer's slot-empty check and the consumer's clear,
+ * dropping note-offs under burst (4-pad simultaneous release, etc.). */
+static inline void shadow_ui_midi_publish(uint8_t head, uint8_t status,
+                                          uint8_t d1, uint8_t d2) {
+    if (head == 0 || !shadow_ui_midi_shm || !shadow_control) return;
+    for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
+        if (__atomic_load_n(&shadow_ui_midi_shm[slot], __ATOMIC_ACQUIRE) == 0) {
+            shadow_ui_midi_shm[slot + 1] = status;
+            shadow_ui_midi_shm[slot + 2] = d1;
+            shadow_ui_midi_shm[slot + 3] = d2;
+            __atomic_store_n(&shadow_ui_midi_shm[slot], head, __ATOMIC_RELEASE);
+            shadow_control->midi_ready++;
+            return;
+        }
+    }
+}
+
 /* LED queue constants and state — moved to shadow_led_queue.c */
 
 /* Shadow shared memory file descriptors */
@@ -6458,16 +6482,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 }
 
                 /* All other messages: forward directly */
-                for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
-                    if (shadow_ui_midi_shm[slot] == 0) {
-                        shadow_ui_midi_shm[slot] = src[j];
-                        shadow_ui_midi_shm[slot + 1] = status;
-                        shadow_ui_midi_shm[slot + 2] = d1;
-                        shadow_ui_midi_shm[slot + 3] = d2;
-                        shadow_control->midi_ready++;
-                        break;
-                    }
-                }
+                shadow_ui_midi_publish(src[j], status, d1, d2);
                 continue;  /* Skip normal processing in overtake mode */
             }
 
@@ -6481,16 +6496,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                                          (d1 >= 40 && d1 <= 43) || (d1 >= 71 && d1 <= 78));
 
                 if (forward_to_shadow && shadow_ui_midi_shm) {
-                    for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
-                        if (shadow_ui_midi_shm[slot] == 0) {
-                            shadow_ui_midi_shm[slot] = 0x0B;
-                            shadow_ui_midi_shm[slot + 1] = status;
-                            shadow_ui_midi_shm[slot + 2] = d1;
-                            shadow_ui_midi_shm[slot + 3] = d2;
-                            shadow_control->midi_ready++;
-                            break;
-                        }
-                    }
+                    shadow_ui_midi_publish(0x0B, status, d1, d2);
                 }
 
                 /* Check capture rules for CCs (beyond the hardcoded blocks) */
@@ -6517,46 +6523,19 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             if (type == 0x90 || type == 0x80) {
                 /* Forward track notes (40-43) to shadow UI for slot switching */
                 if (d1 >= 40 && d1 <= 43 && shadow_ui_midi_shm) {
-                    for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
-                        if (shadow_ui_midi_shm[slot] == 0) {
-                            shadow_ui_midi_shm[slot] = (type == 0x90) ? 0x09 : 0x08;
-                            shadow_ui_midi_shm[slot + 1] = status;
-                            shadow_ui_midi_shm[slot + 2] = d1;
-                            shadow_ui_midi_shm[slot + 3] = d2;
-                            shadow_control->midi_ready++;
-                            break;
-                        }
-                    }
+                    shadow_ui_midi_publish((type == 0x90) ? 0x09 : 0x08, status, d1, d2);
                 }
 
                 /* Forward knob touch notes (0-7) to shadow UI for peek-at-value */
                 if (d1 <= 7 && shadow_ui_midi_shm) {
-                    for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
-                        if (shadow_ui_midi_shm[slot] == 0) {
-                            shadow_ui_midi_shm[slot] = (type == 0x90) ? 0x09 : 0x08;
-                            shadow_ui_midi_shm[slot + 1] = status;
-                            shadow_ui_midi_shm[slot + 2] = d1;
-                            shadow_ui_midi_shm[slot + 3] = d2;
-                            shadow_control->midi_ready++;
-                            break;
-                        }
-                    }
+                    shadow_ui_midi_publish((type == 0x90) ? 0x09 : 0x08, status, d1, d2);
                 }
 
                 /* Forward pad notes (68-99) to shadow UI when pad_block is active,
                  * and skip DSP routing so pads only reach the text entry handler */
                 if (shadow_control && shadow_control->pad_block &&
                     d1 >= 68 && d1 <= 99 && shadow_ui_midi_shm) {
-                    for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
-                        if (shadow_ui_midi_shm[slot] == 0) {
-                            shadow_ui_midi_shm[slot] = (type == 0x90) ? 0x09 : 0x08;
-                            shadow_ui_midi_shm[slot + 1] = status;
-                            shadow_ui_midi_shm[slot + 2] = d1;
-                            shadow_ui_midi_shm[slot + 3] = d2;
-                            shadow_control->midi_ready++;
-                            break;
-                        }
-                    }
+                    shadow_ui_midi_publish((type == 0x90) ? 0x09 : 0x08, status, d1, d2);
                     continue;  /* Skip DSP routing for blocked pads */
                 }
 
@@ -6601,16 +6580,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             /* Forward polyphonic aftertouch on pad notes when pad_block is active */
             if (type == 0xA0 && shadow_control && shadow_control->pad_block &&
                 d1 >= 68 && d1 <= 99 && shadow_ui_midi_shm) {
-                for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
-                    if (shadow_ui_midi_shm[slot] == 0) {
-                        shadow_ui_midi_shm[slot] = 0x0A;
-                        shadow_ui_midi_shm[slot + 1] = status;
-                        shadow_ui_midi_shm[slot + 2] = d1;
-                        shadow_ui_midi_shm[slot + 3] = d2;
-                        shadow_control->midi_ready++;
-                        break;
-                    }
-                }
+                shadow_ui_midi_publish(0x0A, status, d1, d2);
                 continue;
             }
         }
