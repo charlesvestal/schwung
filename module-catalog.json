@@ -824,6 +824,17 @@
       "default_branch": "master",
       "asset_name": "signal-module.tar.gz",
       "min_host_version": "0.9.0"
+    },
+    {
+      "id": "krautdrums",
+      "name": "KrautDrums",
+      "description": "16-voice tonal drum machine modeled on the 1969 Elka Drummer One, with V72/A80/Synthi pre-FX, EP-3/Echorec/RE-201 delay, EMT 140/BX20/chamber reverb, and EMT 156-style bus comp",
+      "author": "Vincent Filliforme",
+      "component_type": "sound_generator",
+      "github_repo": "filliformes/krautdrums-move",
+      "default_branch": "main",
+      "asset_name": "krautdrums-module.tar.gz",
+      "min_host_version": "0.9.0"
     }
   ]
 }
