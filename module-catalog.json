@@ -835,6 +835,17 @@
       "default_branch": "main",
       "asset_name": "krautdrums-module.tar.gz",
       "min_host_version": "0.9.0"
+    },
+    {
+      "id": "forge",
+      "name": "Forge",
+      "description": "8-voice FM/subtractive hybrid drum synthesiser with Kit A↔B morph across 16 pads, 5 voice algorithms, per-voice resonator, dual filter with Comb modes, three concurrent FX buses, 64 factory kits",
+      "author": "Vincent Fillion",
+      "component_type": "sound_generator",
+      "github_repo": "filliformes/forge-move",
+      "default_branch": "master",
+      "asset_name": "forge-module.tar.gz",
+      "min_host_version": "0.9.0"
     }
   ]
 }
