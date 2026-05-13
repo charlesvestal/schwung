@@ -875,8 +875,21 @@ static JSValue js_host_ext_midi_remap_enable(JSContext *ctx, JSValueConst this_v
 
 /* move_midi_inject_to_move([cin, status, d1, d2, ...]) -> bool
  * Injects USB-MIDI packets into Move's MIDI_IN buffer via shared memory.
- * Move processes these as if they came from physical hardware.
- * Forces cable 0 on all injected events.
+ * Move processes these as if they came from a hardware MIDI source.
+ *
+ * Cable bits in packet[0] are preserved as-is. The caller chooses how
+ * Move firmware routes the event:
+ *
+ *   cable 0 (CIN nibble 0x0X) — internal hardware. Move treats the
+ *     event as a physical pad / button / knob press. Use this to
+ *     simulate the surface (song-mode auto-playback triggers pads
+ *     this way: pkt[0] = 0x09 for note-on, 0x08 for note-off).
+ *
+ *   cable 2 (CIN nibble 0x2X) — external USB MIDI input. Move treats
+ *     the event as if it arrived from a USB-A MIDI device. Routes
+ *     through Move's track-input dispatcher and reaches the
+ *     internal track synths. Use this when JS wants to play a Move
+ *     track instrument as MIDI.
  */
 static JSValue js_move_midi_inject_to_move(JSContext *ctx, JSValueConst this_val,
                                            int argc, JSValueConst *argv) {
@@ -904,8 +917,9 @@ static JSValue js_move_midi_inject_to_move(JSContext *ctx, JSValueConst this_val
             packet[j] = (uint8_t)(val & 0xFF);
         }
 
-        /* Force cable 0 (internal hardware) */
-        packet[0] = (packet[0] & 0x0F) | 0x00;
+        /* Cable bits in packet[0] preserved as-is — caller picks the
+         * route (cable 0 = pad simulation, cable 2 = external MIDI in
+         * to the track synth). See function docblock. */
 
         /* Find space in buffer and write */
         int write_offset = shadow_midi_inject->write_idx;
