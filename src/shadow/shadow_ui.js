@@ -10331,8 +10331,14 @@ function drawHierarchyEditor() {
             const numX = Math.floor((SCREEN_WIDTH - presetNum.length * 5) / 2);
             print(numX, centerY - 8, presetNum, 1);
 
-            /* Show preset name */
-            const name = truncateText(hierEditorPresetName || "(unnamed)", 22);
+            /* Show preset name — re-fetch each draw so plugins can publish
+             * transient state (e.g. "Loading... <name> <spinner>") that
+             * updates without requiring another preset-change. Falls back to
+             * the cached value while the IPC read settles. */
+            const freshPresetName = getSlotParam(hierEditorSlot, `${prefix}:preset_name`);
+            const presetNameForDraw = (freshPresetName && freshPresetName.length > 0)
+                ? freshPresetName : hierEditorPresetName;
+            const name = truncateText(presetNameForDraw || "(unnamed)", 22);
             const nameX = Math.floor((SCREEN_WIDTH - name.length * 5) / 2);
             print(nameX, centerY + 4, name, 1);
 
