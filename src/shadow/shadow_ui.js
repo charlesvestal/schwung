@@ -846,7 +846,8 @@ const GLOBAL_SETTINGS_SECTIONS = [
             { key: "overlay_knobs", label: "Overlay Knobs", type: "enum",
               options: ["+Shift", "+Jog Touch", "Off", "Native"], values: [0, 1, 2, 3] },
             { key: "pad_typing", label: "Pad Typing", type: "bool" },
-            { key: "text_preview", label: "Text Preview", type: "bool" }
+            { key: "text_preview", label: "Text Preview", type: "bool" },
+            { key: "midi_indicator_enabled", label: "MIDI Channel", type: "bool" }
         ]
     },
     {
@@ -926,6 +927,19 @@ let toolModules = [];           // Populated by scanForToolModules()
 
 /* Filebrowser state */
 let filebrowserEnabled = false;    // Off by default, toggle in Settings > Services
+
+/* MIDI channel indicator state.
+ * Reflects the sentinel file at /data/UserData/schwung/midi_indicator_on.
+ * Initialised from the file at startup (see initMidiIndicatorEnabled). */
+let midiIndicatorEnabled = false;
+const MIDI_INDICATOR_FLAG_PATH = "/data/UserData/schwung/midi_indicator_on";
+function initMidiIndicatorEnabled() {
+    if (typeof host_read_file === "function") {
+        const v = host_read_file(MIDI_INDICATOR_FLAG_PATH);
+        midiIndicatorEnabled = (typeof v === "string" && v.length > 0 && v[0] === "1");
+    }
+}
+initMidiIndicatorEnabled();
 
 /* Preview player state */
 let previewEnabled = true;         // Global setting: auto-preview in file browser
@@ -11042,6 +11056,9 @@ function getMasterFxSettingValue(setting) {
     if (setting.key === "filebrowser_enabled") {
         return filebrowserEnabled ? "On" : "Off";
     }
+    if (setting.key === "midi_indicator_enabled") {
+        return midiIndicatorEnabled ? "On" : "Off";
+    }
     if (setting.key === "analytics_enabled") {
         return (typeof host_get_analytics_enabled === "function" && host_get_analytics_enabled()) ? "On" : "Off";
     }
@@ -11265,6 +11282,14 @@ function adjustMasterFxSetting(setting, delta) {
         if (typeof host_set_analytics_enabled === "function") {
             const current = typeof host_get_analytics_enabled === "function" && host_get_analytics_enabled();
             host_set_analytics_enabled(current ? 0 : 1);
+        }
+        return;
+    }
+
+    if (setting.key === "midi_indicator_enabled") {
+        midiIndicatorEnabled = !midiIndicatorEnabled;
+        if (typeof host_write_file === "function") {
+            host_write_file(MIDI_INDICATOR_FLAG_PATH, midiIndicatorEnabled ? "1" : "0");
         }
         return;
     }
