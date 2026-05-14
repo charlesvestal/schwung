@@ -270,15 +270,14 @@
     },
     {
       "id": "clap",
-      "name": "CLAP FX",
-      "description": "Host for CLAP audio effect plugins",
-      "author": "charlesvestal",
+      "name": "Airwindows",
+      "description": "Airwindows audio effects (500+ plugins via airwin2rack)",
+      "author": "charlesvestal, Chris Johnson (Airwindows)",
       "component_type": "audio_fx",
-      "github_repo": "charlesvestal/schwung-clap",
+      "github_repo": "charlesvestal/schwung-airwindows",
       "default_branch": "main",
       "asset_name": "clap-module.tar.gz",
-      "min_host_version": "0.3.0",
-      "requires": ".clap plugin files (place in module's plugins/ folder)"
+      "min_host_version": "0.3.0"
     },
     {
       "id": "gate",
