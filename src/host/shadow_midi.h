@@ -123,6 +123,18 @@ void shadow_dispatch_direct_external_midi(void);
  * so that Schwung instruments respond to external MIDI by channel. */
 void shadow_dispatch_cable2_channeled_slots(void);
 
+/* External cable-2 dispatch ring.  Used by shadow_inprocess_process_midi to
+ * detect MIDI_OUT echoes of external cable-2 events that were already
+ * dispatched to chain slots via the MIDI_IN path.  The MIDI_IN scan alone is
+ * unreliable under chord bursts because Move can consume or reuse the cable-2
+ * slot between the dispatch frame and the echo frame, leaving no signature
+ * for the echo check to find.  Recording at dispatch time gives a stable
+ * cross-frame signal.  Tick the ring once per SPI frame so stale entries age
+ * out within a small window. */
+void shadow_external_dispatch_tick(void);
+void shadow_external_dispatch_record(uint8_t status, uint8_t d1, uint8_t d2);
+int  shadow_external_dispatch_was_recent(uint8_t status, uint8_t d1, uint8_t d2);
+
 /* Forward CC/pitch bend/aftertouch from external MIDI (cable 2) into MIDI_OUT. */
 void shadow_forward_external_cc_to_out(void);
 

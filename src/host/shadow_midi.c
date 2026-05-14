@@ -11,6 +11,146 @@
 static void shadow_chain_transpose_reset(void);
 
 /* ============================================================================
+ * External cable-2 dispatch ring
+ * ============================================================================ */
+
+#define DISPATCHED_EXT_RING_SIZE 32
+#define DISPATCHED_EXT_MAX_AGE_TICKS 8
+
+typedef struct {
+    uint8_t status;
+    uint8_t d1;
+    uint8_t d2;
+    uint8_t valid;
+    uint32_t tick;
+} dispatched_ext_entry_t;
+
+static dispatched_ext_entry_t g_dispatched_ext_ring[DISPATCHED_EXT_RING_SIZE];
+static int g_dispatched_ext_head = 0;
+static uint32_t g_dispatched_ext_tick = 0;
+
+/* Canonicalize note-off forms so the same release event matches whether the
+ * keyboard sent 0x8X vel=N or Move's track echoed it as 0x9X vel=0 — possibly
+ * on a different channel after Move's track-auto-map.  Channel is collapsed
+ * for note-off forms; release-velocity is normalized to 0.  Note-on events
+ * keep their channel so a same-pitch retrigger on another channel doesn't
+ * get falsely suppressed. */
+static void canonicalize_for_ring(uint8_t *status, uint8_t *d1, uint8_t *d2)
+{
+    (void)d1;
+    uint8_t type = *status & 0xF0;
+    if (type == 0x90 && *d2 == 0) {
+        *status = 0x80;   /* channel-agnostic note-off */
+    } else if (type == 0x80) {
+        *status = 0x80;   /* channel-agnostic note-off */
+        *d2 = 0;
+    }
+}
+
+void shadow_external_dispatch_tick(void)
+{
+    g_dispatched_ext_tick++;
+}
+
+void shadow_external_dispatch_record(uint8_t status, uint8_t d1, uint8_t d2)
+{
+    canonicalize_for_ring(&status, &d1, &d2);
+    dispatched_ext_entry_t *e = &g_dispatched_ext_ring[g_dispatched_ext_head];
+    e->status = status;
+    e->d1 = d1;
+    e->d2 = d2;
+    e->tick = g_dispatched_ext_tick;
+    e->valid = 1;
+    g_dispatched_ext_head = (g_dispatched_ext_head + 1) % DISPATCHED_EXT_RING_SIZE;
+}
+
+int shadow_external_dispatch_was_recent(uint8_t status, uint8_t d1, uint8_t d2)
+{
+    uint8_t lookup_type = status & 0xF0;
+    int is_noteoff_lookup = (lookup_type == 0x80) ||
+                            (lookup_type == 0x90 && d2 == 0);
+    canonicalize_for_ring(&status, &d1, &d2);
+    for (int i = 0; i < DISPATCHED_EXT_RING_SIZE; i++) {
+        const dispatched_ext_entry_t *e = &g_dispatched_ext_ring[i];
+        if (!e->valid) continue;
+        if ((g_dispatched_ext_tick - e->tick) > DISPATCHED_EXT_MAX_AGE_TICKS) continue;
+        if (e->status == status && e->d1 == d1 && e->d2 == d2) return 1;
+        /* A NoteOff lookup also matches any recent NoteOn at the same pitch.
+         * Move's track router can emit a phantom NoteOff to MIDI_OUT cable-2
+         * immediately after receiving a NoteOn (short-gate / auto-output
+         * behavior); without this match the phantom dispatches to chain
+         * slots and clips the held note.  The real keyboard release follows
+         * the MIDI_IN path and reaches the plugin via direct dispatch, so
+         * suppressing the MIDI_OUT NoteOff here doesn't lose any legitimate
+         * note-off — it only filters echoes/phantoms of recently-played
+         * notes. */
+        if (is_noteoff_lookup &&
+            (e->status & 0xF0) == 0x90 && e->d2 > 0 && e->d1 == d1) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Per-dispatcher event-id dedup ring.  MIDI_IN events are 8 bytes: a 4-byte
+ * USB-MIDI packet plus a 4-byte XMOS-set timestamp that's unique per physical
+ * event.  Using the full 8-byte payload as a key, the same physical event
+ * dedupes correctly whether it persists at the same offset across frames or
+ * shifts down as Move consumes slot 0.  A retriggered note (new XMOS event)
+ * has a fresh timestamp, so its key differs and it dispatches normally.
+ *
+ * Injected packets (chain MIDI FX, davebox ROUTE_MOVE) carry a zero timestamp
+ * — they collide if they share USB-MIDI bytes within the staleness window,
+ * but they don't reach this dispatcher in normal operation (Move's firmware
+ * routes them out of MIDI_IN cable-2 quickly via the cable-0 inject path). */
+#define EVENT_DEDUP_RING_SIZE 64
+#define EVENT_DEDUP_MAX_AGE_TICKS 16
+
+typedef struct {
+    uint8_t key[8];
+    uint32_t tick;
+    uint8_t valid;
+} event_dedup_entry_t;
+
+static event_dedup_entry_t g_thru_dedup[EVENT_DEDUP_RING_SIZE];
+static int g_thru_dedup_head = 0;
+static event_dedup_entry_t g_ch_dedup[EVENT_DEDUP_RING_SIZE];
+static int g_ch_dedup_head = 0;
+
+/* Returns 1 if this 8-byte event was recently dispatched and should be
+ * skipped, 0 otherwise.  Records the event in the ring when it passes.
+ *
+ * Events with a zero timestamp bypass the dedup ring entirely (return 0,
+ * no record).  shadow_drain_midi_inject memsets the timestamp field, and
+ * fast-repeating same-pitch injects (e.g. an arpeggiator pulsing a held
+ * note) would otherwise key-collide with each other and be silently
+ * swallowed.  This means cable-2 re-injects from shim_forward_cable2_to_move
+ * are not deduped via this path — that's handled separately by injecting
+ * those re-injects as cable-0 so the cable-2 dispatchers don't see them.
+ *
+ * Events with a non-zero timestamp (XMOS-written external MIDI) go through
+ * the ring: same physical event keeps its timestamp across frames whether
+ * it persists at the same offset or shifts as Move clears slot 0, so the
+ * dispatcher fires exactly once per physical event. */
+static int event_dedup_check_and_record(event_dedup_entry_t *ring, int *head,
+                                        const uint8_t *key)
+{
+    int has_timestamp = key[4] || key[5] || key[6] || key[7];
+    if (!has_timestamp) return 0;
+    for (int i = 0; i < EVENT_DEDUP_RING_SIZE; i++) {
+        if (!ring[i].valid) continue;
+        if ((g_dispatched_ext_tick - ring[i].tick) > EVENT_DEDUP_MAX_AGE_TICKS) continue;
+        if (memcmp(ring[i].key, key, 8) == 0) return 1;
+    }
+    event_dedup_entry_t *e = &ring[*head];
+    memcpy(e->key, key, 8);
+    e->tick = g_dispatched_ext_tick;
+    e->valid = 1;
+    *head = (*head + 1) % EVENT_DEDUP_RING_SIZE;
+    return 0;
+}
+
+/* ============================================================================
  * Host callbacks (set by midi_routing_init)
  * ============================================================================ */
 
@@ -630,7 +770,12 @@ void shadow_dispatch_direct_external_midi(void)
 
     uint8_t *in_src = *host_global_mmap_addr + MIDI_IN_OFFSET;
 
-    for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
+    /* Walk MIDI_IN at the protocol-correct 8-byte stride (4 bytes USB-MIDI +
+     * 4 bytes XMOS timestamp).  Don't break on zero — Move's firmware
+     * partially consumes MIDI_IN and events at higher offsets may shift
+     * down or persist across frames; we rely on the timestamp-keyed dedup
+     * to skip duplicates regardless of where the event lives. */
+    for (int i = 0; i + 8 <= MIDI_BUFFER_SIZE; i += 8) {
         uint8_t cin = in_src[i] & 0x0F;
         uint8_t cable = (in_src[i] >> 4) & 0x0F;
 
@@ -654,6 +799,15 @@ void shadow_dispatch_direct_external_midi(void)
 
         /* Filter knob touch notes (0-9) from internal MIDI */
         if ((type == 0x90 || type == 0x80) && d1 < 10) continue;
+
+        /* Skip if we already dispatched this physical event (same content +
+         * timestamp) within the recent window. */
+        if (event_dedup_check_and_record(g_thru_dedup, &g_thru_dedup_head, &in_src[i]))
+            continue;
+
+        /* Record valid cable-2 voice events so the MIDI_OUT echo check can
+         * identify them even after the MIDI_IN slot has been reused. */
+        shadow_external_dispatch_record(status, d1, d2);
 
         /* Dispatch to qualifying slots: receive=All, forward=THRU */
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
@@ -728,9 +882,10 @@ void shadow_dispatch_cable2_channeled_slots(void)
 
     uint8_t *in_src = *host_global_mmap_addr + MIDI_IN_OFFSET;
 
-    for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
+    /* 8-byte stride (USB-MIDI + timestamp); don't break on zero. */
+    for (int i = 0; i + 8 <= MIDI_BUFFER_SIZE; i += 8) {
         uint8_t header = in_src[i];
-        if (header == 0) break;
+        if (header == 0) continue;
 
         uint8_t cable = (header >> 4) & 0x0F;
         if (cable != 0x02) continue;   /* only cable-2 (USB-A external MIDI) */
@@ -751,6 +906,15 @@ void shadow_dispatch_cable2_channeled_slots(void)
 
         /* Filter knob-touch notes (internal Move notes 0-9) */
         if ((type == 0x90 || type == 0x80) && d1 < 10) continue;
+
+        /* Skip if this physical event (content + timestamp) was already
+         * dispatched recently. */
+        if (event_dedup_check_and_record(g_ch_dedup, &g_ch_dedup_head, &in_src[i]))
+            continue;
+
+        /* Record valid cable-2 voice events so the MIDI_OUT echo check can
+         * identify them even after the MIDI_IN slot has been reused. */
+        shadow_external_dispatch_record(status, d1, d2);
 
         uint8_t in_ch = status & 0x0F;
 

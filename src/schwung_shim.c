@@ -1205,9 +1205,13 @@ static void shadow_inprocess_process_midi(void) {
             }
 
             /* Check if this MIDI_OUT packet is an echo of external USB MIDI.
-             * If the same status+data exists in MIDI_IN cable 2, it's an echo
-             * and direct-dispatch slots already handle it from MIDI_IN.
-             * If not, it's from pads/sequencer and all slots should see it. */
+             * Two signals, either of which marks it as an echo:
+             *   1. The same status+data is still in MIDI_IN cable 2 right now.
+             *   2. The same status+data was dispatched by one of the MIDI_IN
+             *      cable-2 readers within the last few frames (ring-based).
+             * Signal 1 alone is unreliable under chord bursts because Move
+             * consumes/reuses MIDI_IN cable-2 slots between the dispatch
+             * frame and the echo frame.  The ring closes that race. */
             int is_external_echo = 0;
             const uint8_t *in_buf = global_mmap_addr + MIDI_IN_OFFSET;
             for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
@@ -1219,7 +1223,23 @@ static void shadow_inprocess_process_midi(void) {
                     break;
                 }
             }
-            shadow_chain_dispatch_midi_to_slots(pkt, log_on, &midi_log_count, is_external_echo);
+            if (!is_external_echo &&
+                shadow_external_dispatch_was_recent(p1, p2, p3)) {
+                is_external_echo = 1;
+            }
+            /* In non-overtake (or suspended-overtake) regime,
+             * shadow_dispatch_direct_external_midi already handled THRU slots
+             * and shadow_dispatch_cable2_channeled_slots already handled
+             * channel-matched slots from MIDI_IN. Dispatching the MIDI_OUT
+             * echo to chain slots would deliver the same event twice. */
+            if (is_external_echo && shadow_control &&
+                (shadow_control->overtake_mode == 0 ||
+                 shadow_control->suspend_overtake)) {
+                /* skip chain dispatch; overtake DSP routing below is a no-op
+                 * when no overtake module is loaded */
+            } else {
+                shadow_chain_dispatch_midi_to_slots(pkt, log_on, &midi_log_count, is_external_echo);
+            }
 
             /* Also route to overtake DSP if loaded */
             if (overtake_dsp_gen && overtake_dsp_gen_inst && overtake_dsp_gen->on_midi) {
@@ -4473,6 +4493,9 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     shadow_forward_external_cc_to_out();
     TIME_SECTION_END(spi_fwd_ext_cc_sum, spi_fwd_ext_cc_max);
 
+    /* Advance the external-dispatch ring's age counter once per frame. */
+    shadow_external_dispatch_tick();
+
     /* Direct MIDI dispatch for MPE passthrough slots (receive=All, forward=THRU).
      * Reads MIDI_IN cable 2 and dispatches all message types directly to these
      * slots, bypassing Move's MIDI_OUT channel remapping. */
@@ -5297,7 +5320,14 @@ static void shim_forward_cable2_to_move(void) {
         if (((header >> 4) & 0x0F) != 2) continue;  /* cable-2 only */
         uint8_t cin = header & 0x0F;
         if (cin != 0x08 && cin != 0x09) continue;   /* note-off / note-on only */
-        const uint8_t pkt[4] = { header, hw_buf[j+1], hw_buf[j+2], hw_buf[j+3] };
+        /* Inject as cable-0 (clear cable nibble, preserve CIN).  Empirically
+         * Move's track router only emits its own NoteOn+NoteOff echo to
+         * MIDI_OUT cable-2 when fed cable-2; with cable-0 the inject reaches
+         * the same routing without producing a phantom track-output NoteOff
+         * after every NoteOn.  This also avoids leaving a second cable-2 copy
+         * alongside the XMOS-written original in MIDI_IN, which our
+         * cable-2 dispatchers would otherwise dispatch twice. */
+        const uint8_t pkt[4] = { (uint8_t)(header & 0x0F), hw_buf[j+1], hw_buf[j+2], hw_buf[j+3] };
         shadow_chain_midi_inject(pkt, 4);
     }
 }
