@@ -46,6 +46,13 @@ extern char shift_knob_overlay_patch[64];
 extern char shift_knob_overlay_param[64];
 extern char shift_knob_overlay_value[32];
 
+/* MIDI channel indicator: stores the most recent channel (1-16, 0 = none yet)
+ * that received a note-on. Drawn in the bottom-right corner as "ccN" when
+ * the user has enabled the indicator in settings AND the active-note
+ * counter below is positive, so the label tracks "is a key being held". */
+extern int midi_indicator_last_channel;
+extern int midi_indicator_active_notes;
+
 /* Font data */
 extern const uint8_t overlay_font_5x7[96][7];
 
@@ -66,6 +73,10 @@ void overlay_draw_shift_knob(uint8_t *buf);
 
 /* Draw the skipback toast onto a display buffer */
 void overlay_draw_skipback_toast(uint8_t *buf);
+
+/* Draw the MIDI channel indicator ("ccN" / "cc-") onto a display buffer.
+ * No-op when the user-visible indicator is disabled. */
+void overlay_draw_midi_indicator(uint8_t *buf);
 
 /* Update overlay state when a knob CC is processed in Move mode with Shift held */
 void shift_knob_update_overlay(int slot, int knob_num, uint8_t cc_value);

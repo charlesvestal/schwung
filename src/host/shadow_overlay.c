@@ -28,6 +28,26 @@ char shift_knob_overlay_patch[64] = "";
 char shift_knob_overlay_param[64] = "";
 char shift_knob_overlay_value[32] = "";
 
+/* MIDI channel indicator state.
+ *
+ * `midi_indicator_last_channel` holds the 1-based MIDI channel (1-16) of the
+ * most recent note-on observed by the host's chain dispatch path, or 0 if
+ * nothing has been seen yet.
+ *
+ * `midi_indicator_enabled_flag` is a cached user toggle, refreshed by the
+ * shim from the sentinel file at /data/UserData/schwung/midi_indicator_on
+ * (the shadow UI writes "1"/"0" into that file when the user toggles the
+ * setting). Keeping it as a plain int means shadow_overlay.c has no
+ * dependency on settings or path conventions.
+ *
+ * `midi_indicator_active_notes` is incremented on each velocity>0 note-on
+ * and decremented on note-off (or velocity=0 note-on). The label only
+ * renders while the counter is > 0, so the indicator visibly tracks
+ * "currently holding a note" rather than flashing once per event. */
+int midi_indicator_last_channel = 0;
+int midi_indicator_enabled_flag = 0;
+int midi_indicator_active_notes = 0;
+
 /* ============================================================================
  * Init
  * ============================================================================ */
@@ -251,6 +271,27 @@ void overlay_draw_skipback_toast(uint8_t *buf)
     int msg_len = 15;  /* strlen("Skipback saved!") */
     int msg_x = (128 - msg_len * 6) / 2;
     overlay_draw_string(buf, msg_x, box_y + 7, msg, 1);
+}
+
+void overlay_draw_midi_indicator(uint8_t *buf)
+{
+    if (!midi_indicator_enabled_flag) return;
+    if (midi_indicator_active_notes <= 0) return;
+    if (midi_indicator_last_channel < 1 || midi_indicator_last_channel > 16) return;
+
+    /* Render "ccN" (1-16) in the bottom-right corner while at least one note
+     * is being held. shadow_chain_dispatch_midi_to_slots maintains the
+     * active-note counter so the label tracks key-down state directly. */
+    char text[6];
+    snprintf(text, sizeof(text), "cc%d", midi_indicator_last_channel);
+
+    int char_count = (int)strlen(text);
+    int text_w = char_count * 6;        /* 5px glyph + 1px gap */
+    int x = 128 - text_w - 1;
+    int y = 64 - 7 - 1;                 /* 7px font, 1px from bottom edge */
+
+    overlay_fill_rect(buf, x - 1, y - 1, text_w + 1, 7 + 2, 0);
+    overlay_draw_string(buf, x, y, text, 1);
 }
 
 void shift_knob_update_overlay(int slot, int knob_num, uint8_t cc_value)
