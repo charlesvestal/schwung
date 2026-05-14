@@ -77,13 +77,19 @@ scp_with_retry() {
 # Retry wrapper for SSH commands (Windows mDNS can be flaky)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# Retry only on SSH transport failures (exit 255). A non-zero exit from the
+# remote command (e.g. `test -d` returning 1 because a dir doesn't exist)
+# is propagated immediately — it's a real result, not a connection problem.
 ssh_root_with_retry() {
   local cmd="$1"
   local max_retries=3
   local retry=0
+  local rc
   while [ $retry -lt $max_retries ]; do
-    if $ssh_root "$cmd" 2>/dev/null; then
-      return 0
+    $ssh_root "$cmd" 2>/dev/null
+    rc=$?
+    if [ $rc -ne 255 ]; then
+      return $rc
     fi
     retry=$((retry + 1))
     if [ $retry -lt $max_retries ]; then
@@ -92,16 +98,19 @@ ssh_root_with_retry() {
     fi
   done
   qecho "  SSH command failed after $max_retries attempts"
-  return 1
+  return 255
 }
 
 ssh_ableton_with_retry() {
   local cmd="$1"
   local max_retries=3
   local retry=0
+  local rc
   while [ $retry -lt $max_retries ]; do
-    if $ssh_ableton "$cmd" 2>/dev/null; then
-      return 0
+    $ssh_ableton "$cmd" 2>/dev/null
+    rc=$?
+    if [ $rc -ne 255 ]; then
+      return $rc
     fi
     retry=$((retry + 1))
     if [ $retry -lt $max_retries ]; then
@@ -110,7 +119,7 @@ ssh_ableton_with_retry() {
     fi
   done
   qecho "  SSH command failed after $max_retries attempts"
-  return 1
+  return 255
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -118,11 +127,19 @@ ssh_ableton_with_retry() {
 # ═══════════════════════════════════════════════════════════════════════════════
 
 ssh_test_ableton() {
-  ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -n ableton@move.local true 2>&1
+  if [ "${password_mode:-false}" = true ]; then
+    sshpass -f "$ableton_pw_file" ssh $ssh_port_opt -o ConnectTimeout=5 -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -n "$username@$hostname" true 2>&1
+  else
+    ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -n "${username:-ableton}@${hostname:-move.local}" true 2>&1
+  fi
 }
 
 ssh_test_root() {
-  ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -n root@move.local true 2>&1
+  if [ "${password_mode:-false}" = true ]; then
+    sshpass -f "$root_pw_file" ssh $ssh_port_opt -o ConnectTimeout=5 -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -n "$root_user@$hostname" true 2>&1
+  else
+    ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -n "root@${hostname:-move.local}" true 2>&1
+  fi
 }
 
 ssh_get_configured_key() {
@@ -346,9 +363,66 @@ ssh_ensure_connection() {
 remote_filename=schwung.tar.gz
 hostname=move.local
 username=ableton
-ssh_ableton="ssh -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -n $username@$hostname"
-scp_ableton="scp -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new"
-ssh_root="ssh -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -n root@$hostname"
+root_user=root
+password_mode=false
+ssh_port_opt=""
+scp_port_opt=""
+ableton_pw_file=""
+root_pw_file=""
+
+# Optional overrides for custom Move images. Supports --host=IP / --host IP,
+# --user, --password, --root-user, --root-password, --port (= or space form).
+# When a password is supplied, sshpass is used and pubkey auth is disabled.
+_prev_flag=""
+for arg in "$@"; do
+  if [ -n "$_prev_flag" ]; then
+    case "$_prev_flag" in
+      --host)          hostname="$arg" ;;
+      --user)          username="$arg" ;;
+      --password)      _ableton_pw="$arg" ;;
+      --root-user)     root_user="$arg" ;;
+      --root-password) _root_pw="$arg" ;;
+      --port)          ssh_port_opt="-p $arg"; scp_port_opt="-P $arg" ;;
+    esac
+    _prev_flag=""
+    continue
+  fi
+  case "$arg" in
+    --host=*)          hostname="${arg#--host=}" ;;
+    --user=*)          username="${arg#--user=}" ;;
+    --password=*)      _ableton_pw="${arg#--password=}" ;;
+    --root-user=*)     root_user="${arg#--root-user=}" ;;
+    --root-password=*) _root_pw="${arg#--root-password=}" ;;
+    --port=*)          ssh_port_opt="-p ${arg#--port=}"; scp_port_opt="-P ${arg#--port=}" ;;
+    --host|--user|--password|--root-user|--root-password|--port) _prev_flag="$arg" ;;
+  esac
+done
+unset _prev_flag
+
+if [ -n "${_ableton_pw:-}" ] || [ -n "${_root_pw:-}" ]; then
+  password_mode=true
+  : "${_root_pw:=$_ableton_pw}"
+  : "${_ableton_pw:=$_root_pw}"
+  command -v sshpass >/dev/null 2>&1 || fail "sshpass is required for --password. Install it (e.g. 'sudo pacman -S sshpass', 'sudo apt install sshpass', 'brew install hudochenkov/sshpass/sshpass')."
+  ableton_pw_file=$(mktemp)
+  chmod 600 "$ableton_pw_file"
+  printf '%s' "$_ableton_pw" > "$ableton_pw_file"
+  root_pw_file=$(mktemp)
+  chmod 600 "$root_pw_file"
+  printf '%s' "$_root_pw" > "$root_pw_file"
+  unset _ableton_pw _root_pw
+  trap 'rm -f "$ableton_pw_file" "$root_pw_file"' EXIT
+fi
+
+if [ "$password_mode" = true ]; then
+  ssh_ableton="sshpass -f $ableton_pw_file ssh $ssh_port_opt -o PreferredAuthentications=password -o PubkeyAuthentication=no -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -n $username@$hostname"
+  scp_ableton="sshpass -f $ableton_pw_file scp $scp_port_opt -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new"
+  ssh_root="sshpass -f $root_pw_file ssh $ssh_port_opt -o PreferredAuthentications=password -o PubkeyAuthentication=no -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -n $root_user@$hostname"
+else
+  ssh_ableton="ssh $ssh_port_opt -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -n $username@$hostname"
+  scp_ableton="scp $scp_port_opt -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new"
+  ssh_root="ssh $ssh_port_opt -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -n $root_user@$hostname"
+fi
 
 wait_for_move_shim_mapping() {
   local attempts="${1:-30}"
@@ -459,6 +533,14 @@ for arg in "$@"; do
       echo "  --skip-confirmation      Skip unsupported/liability confirmation prompt"
       echo "  --enable-screen-reader   Enable screen reader (TTS) by default"
       echo "  --disable-shadow-ui      Disable shadow UI (slot configuration interface)"
+      echo ""
+      echo "Custom SSH target (e.g. for non-stock Move images):"
+      echo "  --host=IP|HOSTNAME       Override target host (default: move.local)"
+      echo "  --user=NAME              SSH user for ableton-level ops (default: ableton)"
+      echo "  --root-user=NAME         SSH user for root-level ops (default: root)"
+      echo "  --password=PASS          Password for --user (requires sshpass installed)"
+      echo "  --root-password=PASS     Password for --root-user (defaults to --password)"
+      echo "  --port=N                 SSH port (default: 22)"
       echo ""
       echo "Module management:"
       echo "  uninstall-module <id>              Remove an installed module"
@@ -576,12 +658,17 @@ if [ -n "$ssh_result" ]; then
   # SSH failed - check if it's a network issue first
   if echo "$ssh_result" | grep -qi "Could not resolve\|No route to host\|Connection timed out\|Network is unreachable"; then
     echo
-    echo "Cannot reach move.local on the network."
+    echo "Cannot reach $hostname on the network."
     echo
     echo "Please check that:"
     echo "  - Your Move is powered on"
-    echo "  - Your Move is connected to the same WiFi network as this computer"
-    echo "  - You can access http://move.local in your browser"
+    echo "  - Your Move is connected to the same network as this computer"
+    if [ "$hostname" = "move.local" ]; then
+      echo "  - You can access http://move.local in your browser"
+    else
+      echo "  - You can reach $hostname (e.g. 'ping $hostname')"
+    fi
+    echo "  Detail: $ssh_result"
     echo
     fail "Network connection to Move failed"
   fi
@@ -589,6 +676,12 @@ if [ -n "$ssh_result" ]; then
   # SSH failed for auth/key reasons - offer wizard (interactive only)
   echo
   echo "SSH connection failed."
+  echo "  Detail: $ssh_result"
+
+  if [ "$password_mode" = true ]; then
+    # Explicit credentials were supplied; wizard can't help. Fail with detail.
+    fail "SSH connection to $username@$hostname failed with the supplied password."
+  fi
 
   if [ "$skip_confirmation" = true ]; then
     # Non-interactive mode (GUI installer) - fail immediately
