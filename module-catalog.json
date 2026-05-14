@@ -757,6 +757,18 @@
       "min_host_version": "0.9.0"
     },
     {
+      "id": "midi-player",
+      "name": "MIDI Player",
+      "description": "Play .mid files into the slot's sound generator, synced to Move's clock",
+      "author": "Charles Vestal",
+      "component_type": "midi_fx",
+      "github_repo": "charlesvestal/schwung-midi-player",
+      "default_branch": "main",
+      "asset_name": "midi-player-module.tar.gz",
+      "min_host_version": "0.9.13",
+      "requires": "Drop .mid files into modules/midi_fx/midi-player/MIDI/ via SSH or SMB"
+    },
+    {
       "id": "ai-manual",
       "name": "AI Manual",
       "description": "Voice-driven manual for Ableton Move and Schwung. Hold a bottom-row pad to ask, release to send. Configure provider + API keys at move.local:7700/modules/ai-manual.",
