@@ -1,10 +1,15 @@
-#!/bin/sh
+#!/bin/bash
 # Launch a standalone module, then restart Move when it exits.
 # Usage: launch-standalone.sh /path/to/standalone/binary
 #
 # Called via host_launch_standalone() from the host process.
 # This process inherits Move's file descriptors including /dev/ablspi0.0.
 # We MUST close them before killing Move.
+#
+# bash (not /bin/sh): some custom Move images symlink /bin/sh to dash, which
+# uses FDs 10-19 internally for builtin redirections. The "close all FDs 3+"
+# loop below silently breaks the shell mid-script on dash. Force bash to
+# avoid the issue while keeping the script behavior identical on stock Move.
 
 BINARY="$1"
 if [ -z "$BINARY" ] || [ ! -x "$BINARY" ]; then
@@ -12,7 +17,7 @@ if [ -z "$BINARY" ] || [ ! -x "$BINARY" ]; then
     exit 1
 fi
 
-setsid sh -c '
+setsid bash -c '
     BINARY="$1"
     LOG_HELPER=/data/UserData/schwung/unified-log
 
