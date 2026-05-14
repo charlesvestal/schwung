@@ -7,6 +7,7 @@
 #include "shadow_midi.h"
 #include "shadow_chain_mgmt.h"
 #include "shadow_led_queue.h"
+#include "shadow_overlay.h"  /* MIDI channel indicator globals */
 
 static void shadow_chain_transpose_reset(void);
 
@@ -309,6 +310,25 @@ void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *mi
     uint8_t midi_ch = status_usb & 0x0F;
     uint8_t note = pkt[2];
     int dispatched = 0;
+
+    /* Maintain the MIDI channel indicator's active-note count.
+     *
+     * Velocity>0 note-on increments and updates the displayed channel;
+     * note-off (or velocity=0 note-on, which most controllers send instead
+     * of an explicit 0x80) decrements. We deliberately allow the counter
+     * to go to zero — but never negative — so the label hides the moment
+     * all keys are released. The counter can occasionally drift if a
+     * note-off arrives without a matching note-on (e.g. after All Notes
+     * Off), so a periodic reset somewhere upstream would harden this; for
+     * now the worst case is a sticky label until the next clean release. */
+    if (type == 0x90 && pkt[3] > 0) {
+        midi_indicator_last_channel = (int)midi_ch + 1;
+        midi_indicator_active_notes++;
+    } else if (type == 0x80 || (type == 0x90 && pkt[3] == 0)) {
+        if (midi_indicator_active_notes > 0) {
+            midi_indicator_active_notes--;
+        }
+    }
 
     for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
         /* Skip direct-dispatch slots when processing MIDI_OUT.

@@ -3385,10 +3385,39 @@ static void shadow_swap_display(void)
         shadow_overlay_sync();
     }
 
-    /* Recording dot overlay on shadow display */
-    if (sampler_state == SAMPLER_RECORDING && rec_dot_visible()) {
+    /* Refresh the MIDI indicator setting from its sentinel file roughly every
+     * 200 ticks. The host writes "1" or "0" into the file on toggle; we read
+     * the first byte rather than testing existence so the shadow UI's
+     * host_write_file can disable the indicator without needing access to
+     * host_remove_dir (whose allowlist excludes /data/UserData/schwung/). */
+    {
+        extern int midi_indicator_enabled_flag;
+        static int midi_ind_cache_counter = 0;
+        if ((midi_ind_cache_counter++ % 200) == 0) {
+            int new_flag = 0;
+            FILE *f = fopen("/data/UserData/schwung/midi_indicator_on", "r");
+            if (f) {
+                int c = fgetc(f);
+                fclose(f);
+                if (c == '1') new_flag = 1;
+            }
+            midi_indicator_enabled_flag = new_flag;
+        }
+    }
+
+    /* Recording dot + optional MIDI channel indicator overlay on shadow display */
+    int draw_rec_dot = (sampler_state == SAMPLER_RECORDING && rec_dot_visible());
+    extern int midi_indicator_enabled_flag;
+    extern int midi_indicator_active_notes;
+    int draw_midi_ind = midi_indicator_enabled_flag && midi_indicator_active_notes > 0;
+    if (draw_rec_dot || draw_midi_ind) {
         memcpy(shadow_composited, shadow_display_shm, DISPLAY_BUFFER_SIZE);
-        overlay_fill_rect(shadow_composited, 123, 1, 4, 4, 1);
+        if (draw_rec_dot) {
+            overlay_fill_rect(shadow_composited, 123, 1, 4, 4, 1);
+        }
+        if (draw_midi_ind) {
+            overlay_draw_midi_indicator(shadow_composited);
+        }
         display_src = shadow_composited;
     }
 
@@ -5130,6 +5159,7 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
         if (sampler_state == SAMPLER_RECORDING && rec_dot_visible()) {
             overlay_fill_rect(composited_jack_display, 123, 1, 4, 4, 1);
         }
+        overlay_draw_midi_indicator(composited_jack_display);
         jack_display_composited = 1;
     }
 
