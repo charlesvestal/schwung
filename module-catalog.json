@@ -846,6 +846,17 @@
       "default_branch": "master",
       "asset_name": "forge-module.tar.gz",
       "min_host_version": "0.9.0"
+    },
+    {
+      "id": "davebox",
+      "name": "dAVEBOx",
+      "description": "8-track creative MIDI sequencer with per-clip effects chains, polyrhythmic drum lanes, live recording, and a 24-mod performance mode",
+      "author": "legsmechanical",
+      "component_type": "tool",
+      "github_repo": "legsmechanical/schwung-davebox",
+      "default_branch": "main",
+      "asset_name": "davebox-module.tar.gz",
+      "min_host_version": "0.9.13"
     }
   ]
 }
