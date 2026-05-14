@@ -316,6 +316,40 @@ function isValidModuleId(id) {
     return true;
 }
 
+/* Pin the installed module.json's version to match the release.json version
+ * we just installed from. Some publishers ship tarballs whose bundled
+ * module.json reports an older version than the release.json that drove
+ * the install — Module Store would then compare installed (old) against
+ * release.json (new), conclude an update is available, download the same
+ * tarball, and loop forever. Rewriting the version field on disk breaks
+ * the loop regardless of which side of the publish flow regressed. */
+function pinInstalledModuleVersion(mod, expectedVersion) {
+    if (!expectedVersion) return;
+    if (!globalThis.host_read_file || !globalThis.host_write_file) return;
+
+    const subdir = getInstallSubdir(mod.component_type);
+    const moduleJsonPath = subdir
+        ? `${MODULES_DIR}/${subdir}/${mod.id}/module.json`
+        : `${MODULES_DIR}/${mod.id}/module.json`;
+
+    const jsonStr = globalThis.host_read_file(moduleJsonPath);
+    if (!jsonStr) return;
+
+    let data;
+    try {
+        data = JSON.parse(jsonStr);
+    } catch (e) {
+        console.log(`pinInstalledModuleVersion: parse failed for ${moduleJsonPath}: ${e}`);
+        return;
+    }
+
+    if (data.version === expectedVersion) return;
+
+    console.log(`pinInstalledModuleVersion: ${mod.id} tarball reports ${data.version}, release.json says ${expectedVersion}; rewriting to ${expectedVersion}`);
+    data.version = expectedVersion;
+    globalThis.host_write_file(moduleJsonPath, JSON.stringify(data, null, 2) + '\n');
+}
+
 /* Install a module, returns { success, error } */
 export function installModule(mod, hostVersion, onProgress) {
     if (!isValidModuleId(mod.id)) {
@@ -365,6 +399,11 @@ export function installModule(mod, hostVersion, onProgress) {
     if (!extractOk) {
         return { success: false, error: 'Extract failed' };
     }
+
+    /* Pin module.json version to match the release.json we installed
+     * from, so publisher tarball/release.json mismatches don't trap the
+     * user in an endless update loop. */
+    pinInstalledModuleVersion(mod, mod.latest_version);
 
     /* Rescan modules */
     globalThis.host_rescan_modules();
