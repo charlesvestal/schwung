@@ -495,7 +495,7 @@
       "id": "plaits",
       "name": "Plaits",
       "description": "Macro oscillator with 24 synthesis engines (Mutable Instruments Plaits)",
-      "author": "Emilie Gillet (port: charlesvestal)",
+      "author": "Emilie Gillet (port: Justin Joe)",
       "component_type": "sound_generator",
       "github_repo": "j3threejay/move-anything-plaits",
       "default_branch": "master",
