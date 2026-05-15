@@ -2951,6 +2951,30 @@ static void init_shadow_shm(void)
             shadow_control->ui_flags = 0;
             shadow_control->ui_patch_index = 0;
             shadow_control->ui_request_id = 0;
+            /* Reset overtake state on every shim init.
+             *
+             * The control SHM is backed by /dev/shm/schwung-control on a
+             * tmpfs that survives across process restarts. restart-move.sh
+             * kills MoveOriginal + shadow_ui + the shim but leaves the
+             * SHM file intact, so without an explicit reset here the new
+             * shim inherits whatever overtake state the prior session
+             * left behind. Concrete symptom (reproduced on hardware
+             * 2026-05-15): a `make deploy` from inside an overtake module
+             * leaves overtake_mode=2 in the SHM; the new MoveOriginal
+             * boots, sees overtake_mode=2, treats the surface as owned
+             * by an overtake module that no longer exists, and stops
+             * emitting LED commands to MIDI_OUT. The whole hardware
+             * surface stays dark until the user provokes some code path
+             * (e.g. a track-button press) that re-evaluates overtake
+             * state and finally clears it.
+             *
+             * Suspend_overtake follows the same logic — it gates several
+             * overtake passthrough decisions and a stale "1" lets the
+             * shim drop input that no parked module will ever pick up. */
+            shadow_control->overtake_mode    = 0;
+            shadow_control->suspend_overtake = 0;
+            shadow_control->selected_slot    = 0;
+            shadow_control->skip_led_clear   = 0;
             /* Initialize TTS defaults */
             shadow_control->tts_enabled = 0;    /* Screen Reader off by default */
             shadow_control->tts_volume = 70;    /* 70% volume */
