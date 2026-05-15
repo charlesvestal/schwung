@@ -877,7 +877,7 @@ See `BUILDING.md` for detailed documentation.
 
 Detailed documentation is in the `docs/` directory:
 - `docs/API.md` - Full JS API reference (display, MIDI, host functions, LED colors)
-- `docs/MODULES.md` - Module development guide (module.json, capabilities, tool_config, DSP plugin API, Signal Chain integration)
+- `docs/MODULES.md` - Module development guide (module.json, capabilities, tool_config, DSP plugin API, Signal Chain integration, Remote UI `web_ui.html` + `schwungRemote` postMessage API)
 - `docs/LOGGING.md` - Unified logging guide (enable/disable, JS and C APIs, log format)
 - `docs/DISPLAY.md` - Generic Display protocol (SHM format, WebSocket wire format, touch back-channel)
 - `docs/SPI_PROTOCOL.md` - Full SPI protocol reference (buffer layout, MIDI event formats, display chunking, ioctl commands)

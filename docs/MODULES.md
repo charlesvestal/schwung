@@ -256,6 +256,131 @@ build/packaging includes them. The main repo's `scripts/build.sh`
 copies `*.{js,mjs,json,sh,py,txt}` from `src/modules/`; module
 repos typically mirror that pattern.
 
+## Remote UI Custom HTML (web_ui.html)
+
+A module that wants a fully custom browser-based UI ships a
+`web_ui.html` next to its `module.json`. schwung-manager
+auto-discovers it and loads it in a sandboxed iframe on the Remote
+UI page (`http://move.local:7700/remote-ui`) whenever the module
+is loaded as the synth component of a shadow slot. The iframe
+replaces the auto-generated knob/slider UI for that component;
+the slot's FX and MIDI FX sections still render below it.
+
+**Synth slot only.** The iframe path is detected on the `synth`
+component of a shadow slot (`remote_ui.go` only checks there).
+Audio FX, MIDI FX, and master FX modules cannot supply a custom
+web UI — they always use the auto-generated controls.
+
+### File layout
+
+```
+modules/<category>/<your-module>/
+  module.json
+  web_ui.html         # entry point loaded into the iframe
+  assets/             # optional: any sibling files (js, css, png, …)
+    app.js
+    style.css
+```
+
+Anything under the module directory is served at
+`/api/remote-ui/module-assets/<module-id>/<path>` (see
+`handleModuleWebUIAsset` in `schwung-manager/main.go`). Relative
+URLs in `web_ui.html` (e.g. `<link href="assets/style.css">`)
+resolve against that prefix, so a single module folder is
+self-contained.
+
+The asset endpoint rejects `..`, absolute paths, and any
+`module.json`/`config.json`/`secrets/` request — those stay
+private to the device.
+
+### schwungRemote JavaScript API
+
+schwung-manager exposes a small postMessage bridge to the iframe.
+Include the bundled helper to get a Promise-based wrapper:
+
+```html
+<script src="/static/schwung-remote-api.js"></script>
+<script>
+  // Subscribe to parameter changes (hardware knobs, other clients).
+  schwungRemote.onParamChange(function (params) {
+    // params is { "synth:cutoff": "0.42", ... }
+  });
+
+  // Read a single value (resolves with the current cached string).
+  schwungRemote.getParam("synth:cutoff").then(function (val) { ... });
+
+  // Write a value. Fire-and-forget; goes straight to the device.
+  schwungRemote.setParam("synth:cutoff", "0.75");
+
+  // Read structural metadata once on load.
+  schwungRemote.getHierarchy().then(function (hier) { ... });   // ui_hierarchy
+  schwungRemote.getChainParams().then(function (params) { ... }); // chain_params array
+</script>
+```
+
+| Method | Direction | Notes |
+|--------|-----------|-------|
+| `onParamChange(cb)` | device → iframe | Subscribes the iframe to all `param_update` messages for the active slot. Includes hardware knob changes and updates from other browser clients. |
+| `getParam(key)` | local cache | Returns the **last value the iframe has seen** for `key`, not a fresh device read. If you need a value before any update has arrived, call `onParamChange` first and seed from the initial burst. |
+| `setParam(key, value)` | iframe → device | Goes through the WebSocket `set_param` path. Value is coerced to a string. |
+| `getHierarchy()` | local cache | Returns the parsed `ui_hierarchy` object for the synth component (or `null` if the module didn't expose one). |
+| `getChainParams()` | local cache | Returns the parsed `chain_params` array (or `null`). |
+
+**Param keys are component-prefixed.** Use `"synth:cutoff"`, not
+`"cutoff"`. Slot-level keys like `slot:volume` and `knob_1_value`
+also flow through `onParamChange` if you want to mirror the
+slot/knob state.
+
+### Iframe sandbox
+
+The iframe is created with `sandbox="allow-scripts allow-same-origin"`.
+That means:
+- `<script>` runs and `fetch`/`XHR` to same-origin URLs works.
+- No top-level navigation, popups, form submission, or pointer
+  lock — design the UI to stay in-frame.
+- No access to the parent window beyond `window.parent.postMessage`,
+  which is exactly what `schwungRemote` uses.
+
+### Minimal example
+
+```html
+<!doctype html>
+<html><head><meta charset="utf-8"><title>My Module</title>
+<style>
+  body { font-family: system-ui; margin: 1em; }
+  input[type=range] { width: 100%; }
+</style>
+</head><body>
+  <label>Cutoff <input id="cutoff" type="range" min="0" max="1" step="0.01"></label>
+
+  <script src="/static/schwung-remote-api.js"></script>
+  <script>
+    const cutoff = document.getElementById("cutoff");
+    cutoff.addEventListener("input", () => {
+      schwungRemote.setParam("synth:cutoff", cutoff.value);
+    });
+    schwungRemote.onParamChange((params) => {
+      if (params["synth:cutoff"] !== undefined) {
+        cutoff.value = params["synth:cutoff"];
+      }
+    });
+  </script>
+</body></html>
+```
+
+### Notes
+
+- The custom UI **adds to**, not replaces, the hardware UI on the
+  Move display. Modules still need a working `ui.js` (or a chain
+  shim) — the iframe only affects the browser view.
+- `web_ui.html` is reloaded whenever the slot's synth module
+  changes. Persist any iframe-side UI state via `setParam` or
+  your own storage; don't rely on the iframe surviving slot swaps.
+- Available since schwung-manager landed the Remote UI custom
+  HTML support (see `docs/plans/2026-04-08-remote-ui-plan.md`
+  Task 5). Bump `min_host_version` in your catalog entry if your
+  module depends on it.
+
 ## Drop-In Modules
 
 Modules are discovered at runtime from `/data/UserData/schwung/modules`.
