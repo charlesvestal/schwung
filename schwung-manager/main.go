@@ -669,6 +669,35 @@ func validateAssets(assetsDir string, assets *ModuleAssets) ([]AssetFileStatus, 
 }
 
 // templateMap maps page template names to their parsed template sets.
+// hostVersionString returns the trimmed contents of host/version.txt, or
+// "" if the file is unreadable. Used by compat checks that need to fail
+// open on dev builds where the version file may be missing.
+func (app *App) hostVersionString() string {
+	b, err := os.ReadFile(filepath.Join(app.basePath, "host", "version.txt"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// checkHostCompat returns an error if minVersion is set and is newer
+// than the installed host version. A missing/unreadable host version
+// is treated as compatible — refusing installs when version.txt can't
+// be read would brick recovery on broken setups.
+func (app *App) checkHostCompat(minVersion string) error {
+	if minVersion == "" {
+		return nil
+	}
+	hostVersion := app.hostVersionString()
+	if hostVersion == "" || hostVersion == "unknown" {
+		return nil
+	}
+	if isNewerSemver(minVersion, hostVersion) {
+		return fmt.Errorf("requires host %s or later (installed: %s)", minVersion, hostVersion)
+	}
+	return nil
+}
+
 // isNewerSemver returns true if `latest` is a newer version than `current`.
 // Handles v-prefixed versions. Returns false if versions are equal or
 // latest is older (avoids phantom upgrade prompts from stale metadata).
@@ -888,6 +917,7 @@ func (app *App) handleModules(w http.ResponseWriter, r *http.Request) {
 		"HostLatestVersion":   hostLatestVersion,
 		"HostRepo":            hostRepo,
 		"HostUpdateAvailable": hostUpdateAvailable,
+		"Flash":               r.URL.Query().Get("flash"),
 	}
 	app.render(w, r, "modules.html", data)
 }
@@ -1035,6 +1065,7 @@ func (app *App) handleModuleDetail(w http.ResponseWriter, r *http.Request) {
 		"ModuleSchema":   moduleSchema,
 		"SettingValues":  settingValues,
 		"SecretSet":      secretSet,
+		"Flash":          r.URL.Query().Get("flash"),
 	}
 	app.render(w, r, "module_detail.html", data)
 }
@@ -1067,6 +1098,10 @@ type ReleaseJSON struct {
 
 // installModule downloads and extracts a module from its GitHub release.
 func (app *App) installModule(mod *CatalogModule) error {
+	if err := app.checkHostCompat(mod.MinHostVer); err != nil {
+		return err
+	}
+
 	client := &http.Client{Timeout: 120 * time.Second}
 
 	// 1. Fetch release.json to get download URL.
@@ -2414,6 +2449,12 @@ func (app *App) handleSystemUpgrade(w http.ResponseWriter, r *http.Request) {
 
 	if latestVersion != "" && latestVersion == installedVersion {
 		http.Redirect(w, r, "/system?flash=Already+up+to+date+("+installedVersion+")", http.StatusSeeOther)
+		return
+	}
+
+	if err := app.checkHostCompat(cat.Host.MinHostVersion); err != nil {
+		app.logger.Warn("host upgrade blocked", "min", cat.Host.MinHostVersion, "installed", installedVersion, "err", err)
+		http.Redirect(w, r, "/system?flash=Upgrade+blocked:+"+err.Error(), http.StatusSeeOther)
 		return
 	}
 
