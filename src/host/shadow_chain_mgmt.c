@@ -656,6 +656,7 @@ void shadow_master_fx_slot_unload(int slot) {
     }
     s->module_path[0] = '\0';
     s->module_id[0] = '\0';
+    s->bypassed = 0;
     capture_clear(&s->capture);
     mfx_runtime_chain_params_cached[slot] = 0;
     mfx_runtime_chain_params_cache[slot][0] = '\0';
@@ -2345,6 +2346,23 @@ void shadow_inprocess_handle_param_request(void) {
         }
 
         master_fx_slot_t *mfx = &shadow_master_fx_slots[mfx_slot];
+
+        /* Bypass: handled host-side at the MFX render loop. Caught before the
+         * generic plugin set_param/get_param dispatch so the key never reaches
+         * the sub-plugin (which doesn't know about it). */
+        if (has_slot_prefix && strcmp(param_key, "bypassed") == 0) {
+            if (req_type == 1) {  /* SET */
+                mfx->bypassed = (shadow_param->value[0] && atoi(shadow_param->value)) ? 1 : 0;
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
+            } else if (req_type == 2) {  /* GET */
+                snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%d", mfx->bypassed ? 1 : 0);
+                shadow_param->error = 0;
+                shadow_param->result_len = strlen(shadow_param->value);
+            }
+            shadow_param_publish_response(req_id);
+            return;
+        }
 
         if (req_type == 1) {  /* SET */
             if (strcmp(param_key, "module") == 0) {
