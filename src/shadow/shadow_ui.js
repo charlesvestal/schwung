@@ -526,6 +526,7 @@ let updateDetailModule = null;        // Module being viewed in update detail
 /* Host-side tracking for Shift+Vol+Jog escape (redundant with shim, but ensures escape always works) */
 let hostVolumeKnobTouched = false;
 let hostShiftHeld = false;  /* Local shift tracking - shim tracking doesn't work in overtake mode */
+let hostMuteHeld = false;   /* Mute (CC 88) held — used as a modifier for Mute+JogClick bypass */
 
 /* Deferred module init - clear LEDs and wait before calling init() */
 let overtakeInitPending = false;
@@ -4271,7 +4272,8 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
         }
         patch.synth = {
             module: cfg.synth.module,
-            config: synthConfig
+            config: synthConfig,
+            bypassed: parseInt(getSlotParam(slotIndex, "synth:bypassed") || "0", 10) === 1 ? 1 : 0
         };
     }
 
@@ -4295,7 +4297,8 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
         }
         patch.midi_fx = [{
             type: cfg.midiFx.module,
-            params: midiFxConfig
+            params: midiFxConfig,
+            bypassed: parseInt(getSlotParam(slotIndex, "midi_fx1:bypassed") || "0", 10) === 1 ? 1 : 0
         }];
     }
 
@@ -4319,7 +4322,8 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
         }
         patch.audio_fx.push({
             type: cfg.fx1.module,
-            params: fx1Config
+            params: fx1Config,
+            bypassed: parseInt(getSlotParam(slotIndex, "fx1:bypassed") || "0", 10) === 1 ? 1 : 0
         });
     }
     if (cfg.fx2 && cfg.fx2.module) {
@@ -4342,7 +4346,8 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
         }
         patch.audio_fx.push({
             type: cfg.fx2.module,
-            params: fx2Config
+            params: fx2Config,
+            bypassed: parseInt(getSlotParam(slotIndex, "fx2:bypassed") || "0", 10) === 1 ? 1 : 0
         });
     }
 
@@ -6070,6 +6075,15 @@ function saveMasterFxChainConfig() {
             if (slotIdx === 0 && masterFxLfoConfig) {
                 stateFile.lfos = masterFxLfoConfig;
             }
+            /* Persist bypass — restored by loadMasterFxChainFromConfig at boot
+             * via setSlotParam, since the shim's MFX load path doesn't carry
+             * this flag through. */
+            const bypassedVal = (typeof shadow_get_param === "function")
+                ? parseInt(shadow_get_param(0, `master_fx:${key}:bypassed`) || "0", 10)
+                : 0;
+            if (bypassedVal === 1) {
+                stateFile.bypassed = 1;
+            }
             host_write_file(stateFilePath, JSON.stringify(stateFile, null, 2) + "\n");
         }
 
@@ -6441,6 +6455,12 @@ function loadMasterFxChainFromConfig() {
                     if (stateFile.module_id) {
                         masterFxConfig[key].module = stateFile.module_id;
                         debugLog(`MFX sync ${key}: module=${stateFile.module_id} (loaded by shim)`);
+                    }
+                    /* Restore bypass via setSlotParam — the shim doesn't carry
+                     * this flag through its load_file path, so we apply it
+                     * after autosave has settled. */
+                    if (stateFile.bypassed && typeof shadow_set_param === "function") {
+                        shadow_set_param(0, `master_fx:${key}:bypassed`, "1");
                     }
                     if (i === 0 && stateFile.lfos && typeof shadow_set_param === "function") {
                         for (let li = 1; li <= 2; li++) {
@@ -11819,6 +11839,18 @@ function handleSelect() {
                 } else {
                     /* FX slot - check if module is loaded with hierarchy */
                     const moduleData = masterFxConfig[selectedComp.key];
+
+                    /* Mute+JogClick: toggle bypass on a populated MFX slot */
+                    if (hostMuteHeld && moduleData && moduleData.module) {
+                        const fullKey = `master_fx:${selectedComp.key}:bypassed`;
+                        const cur = parseInt(shadow_get_param(0, fullKey) || "0", 10);
+                        const next = cur ? 0 : 1;
+                        shadow_set_param(0, fullKey, String(next));
+                        announce(next ? `${selectedComp.label} bypassed` : `${selectedComp.label} active`);
+                        needsRedraw = true;
+                        break;
+                    }
+
                     if (moduleData && moduleData.module) {
                         /* Module is loaded - try hierarchy editor first */
                         const hierarchy = getMasterFxHierarchy(selectedMasterFxComponent);
@@ -11859,6 +11891,18 @@ function handleSelect() {
                 const comp = CHAIN_COMPONENTS[selectedChainComponent];
                 const cfg = chainConfigs[selectedSlot];
                 const moduleData = cfg && cfg[comp.key];
+
+                /* Mute+JogClick: toggle bypass on a populated module */
+                if (hostMuteHeld && moduleData && moduleData.module) {
+                    const dspPrefix = comp.key === "midiFx" ? "midi_fx1" : comp.key;
+                    const key = `${dspPrefix}:bypassed`;
+                    const cur = parseInt(getSlotParam(selectedSlot, key) || "0", 10);
+                    const next = cur ? 0 : 1;
+                    setSlotParam(selectedSlot, key, String(next));
+                    announce(next ? `${comp.label} bypassed` : `${comp.label} active`);
+                    needsRedraw = true;
+                    break;
+                }
 
                 debugLog(`CHAIN_EDIT select: slot=${selectedSlot}, comp=${comp?.key}, moduleData=${JSON.stringify(moduleData)}`);
 
@@ -13269,6 +13313,24 @@ function drawChainEdit() {
         const textY = BOX_Y + 5;
         print(textX, textY, abbrev, textColor);
 
+        /* Draw bypass 'B' marker above box, same style as the LFO `~N` indicator
+         * (4px-high glyph). Positioned at left so it doesn't collide with the
+         * centered LFO marker when both are present. */
+        let bypassed = false;
+        if (comp.key !== "settings") {
+            const dspPrefix = comp.key === "midiFx" ? "midi_fx1" : comp.key;
+            bypassed = parseInt(getSlotParam(selectedSlot, `${dspPrefix}:bypassed`) || "0", 10) === 1;
+        }
+        if (bypassed) {
+            const bx = x + 1;
+            const by = BOX_Y - 6;
+            /* "B" glyph: ##. / #.# / ##. / ### */
+            set_pixel(bx,     by,     1); set_pixel(bx + 1, by,     1);
+            set_pixel(bx,     by + 1, 1); set_pixel(bx + 2, by + 1, 1);
+            set_pixel(bx,     by + 2, 1); set_pixel(bx + 1, by + 2, 1);
+            set_pixel(bx,     by + 3, 1); set_pixel(bx + 1, by + 3, 1); set_pixel(bx + 2, by + 3, 1);
+        }
+
         /* Draw LFO indicator above box: ~1, ~2, or ~1+2 using 4px-high tiny digits */
         const lfoInfo = lfoTargets[comp.key];
         if (lfoInfo) {
@@ -14484,7 +14546,10 @@ globalThis.init = function() {
     for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
         const dirty = getSlotParam(i, "dirty");
         slotDirtyCache[i] = (dirty === "1");
-        /* Sync slot names from autosave if present */
+        /* Sync slot names + per-component bypass from autosave if present.
+         * The shim's load_file restores synth/FX/MIDI-FX modules + params via
+         * the chain_host parser, but bypass flags are not in the C parser path;
+         * apply them here via setSlotParam after autosave has settled. */
         const path = activeSlotStateDir + "/slot_" + i + ".json";
         if (host_file_exists(path)) {
             const raw = host_read_file(path);
@@ -14492,6 +14557,28 @@ globalThis.init = function() {
                 const m = raw.match(/"name"\s*:\s*"([^"]+)"/);
                 if (m && m[1] && !slots[i].name) {
                     slots[i].name = m[1];
+                }
+                try {
+                    const parsed = JSON.parse(raw);
+                    /* Autosave wraps the patch as {name, version, modified, chain: ...}.
+                     * Older legacy files might be unwrapped — accept either shape. */
+                    const chain = (parsed && parsed.chain) ? parsed.chain : parsed;
+                    if (chain && chain.synth && chain.synth.bypassed) {
+                        setSlotParam(i, "synth:bypassed", "1");
+                    }
+                    if (chain && Array.isArray(chain.midi_fx) && chain.midi_fx[0] && chain.midi_fx[0].bypassed) {
+                        setSlotParam(i, "midi_fx1:bypassed", "1");
+                    }
+                    if (chain && Array.isArray(chain.audio_fx)) {
+                        for (let fx = 0; fx < chain.audio_fx.length && fx < 4; fx++) {
+                            if (chain.audio_fx[fx] && chain.audio_fx[fx].bypassed) {
+                                setSlotParam(i, `fx${fx + 1}:bypassed`, "1");
+                            }
+                        }
+                    }
+                } catch (e) {
+                    /* JSON parse failed — autosave is malformed or partial; skip
+                     * bypass restore for this slot. Slot continues with bypass=0. */
                 }
             }
         }
@@ -15603,6 +15690,10 @@ globalThis.onMidiMessageInternal = function(data) {
     /* Always track shift state (CC 49), even when canvas or other views consume MIDI */
     if ((status & 0xF0) === 0xB0 && d1 === 49) {
         hostShiftHeld = (d2 > 0);
+    }
+    /* Always track mute state (CC 88) — modifier for Mute+JogClick module-bypass shortcut */
+    if ((status & 0xF0) === 0xB0 && d1 === 88) {
+        hostMuteHeld = (d2 > 0);
     }
 
     /* Debug: log all MIDI when in overtake mode to diagnose escape issues */
