@@ -2,147 +2,93 @@
 
 Instructions for Claude Code when working with this repository.
 
-## Maintaining This File
+Schwung is a framework for custom JavaScript and native DSP modules on Ableton Move hardware (pads, encoders, buttons, 128x64 1-bit display, audio I/O, MIDI via USB-A).
 
-Keep CLAUDE.md up to date as the codebase evolves. When you add new JS host functions, module capabilities, component types, shared utilities, deployment paths, shortcuts, or other API surface, update the relevant sections here. Also update `docs/API.md`, `docs/MODULES.md`, and `MANUAL.md` as appropriate — see the Documentation section below for what each covers.
-
-## Project Overview
-
-Schwung is a framework for custom JavaScript and native DSP modules on Ableton Move hardware. It provides access to pads, encoders, buttons, display (128x64 1-bit), audio I/O, and MIDI via USB-A.
+Keep this file, `MANUAL.md`, `docs/API.md`, and `docs/MODULES.md` in sync with code changes (see Release Checklist).
 
 ## Code Style
 
-**C**: Snake_case for functions/variables. Prefix module manager functions with `mm_`, JS host bindings with `js_`. Log with descriptive prefixes (e.g., `mm:`, `host:`, `shim:`).
+**C**: snake_case. Prefix module manager fns `mm_`, JS host bindings `js_`. Log with `mm:`, `host:`, `shim:` prefixes.
+**JavaScript**: `.mjs` = shared ES modules, `.js` = UI modules. Host fns are `snake_case` (`host_load_module`).
+**Naming**: Module IDs lowercase-hyphenated (`song-mode`). Param keys lowercase_underscored (`tail_bars`). LED colors PascalCase (`BrightRed`).
 
-**JavaScript**: `.mjs` for shared utilities (ES modules), `.js` for UI modules. Host-exposed functions use `snake_case` (e.g., `host_load_module`).
-
-**Naming**: Module IDs are lowercase hyphenated (`song-mode`). Parameter keys are lowercase underscored (`tail_bars`). LED color constants are PascalCase (`BrightRed`).
-
-## Build Commands
+## Build / Deploy
 
 ```bash
-./scripts/build.sh           # Build with Docker (auto-detects, recommended)
+./scripts/build.sh           # Build with Docker
 ./scripts/package.sh         # Create schwung.tar.gz
-./scripts/clean.sh           # Remove build/ and dist/
 ./scripts/install.sh         # Deploy from GitHub release
 ./scripts/install.sh local   # Deploy from local build
 ./scripts/uninstall.sh       # Restore stock Move
 ```
 
-Cross-compilation uses `${CROSS_PREFIX}gcc` for the Move's ARM architecture.
+**Deploy shortcut**: `./scripts/install.sh local --skip-modules --skip-confirmation` — **never scp individual files**. The install script handles setuid, symlinks, feature config, and service restart.
 
-**Deployment shortcut**: `./scripts/install.sh local --skip-modules --skip-confirmation` — never scp individual files; the install script handles setuid, symlinks, feature config, and service restart.
+Cross-compile via `${CROSS_PREFIX}gcc` for Move's ARM. See `BUILDING.md`.
 
 ## Testing
 
-No automated test suite. Testing is done manually on hardware. After deploying, enable the unified logger and check logs on device:
+No automated suite — testing is manual on hardware. Enable the unified logger:
 
 ```bash
 ssh ableton@move.local "touch /data/UserData/schwung/debug_log_on"
 ssh ableton@move.local "tail -f /data/UserData/schwung/debug.log"
 ```
 
-See `docs/LOGGING.md` for the full unified logging guide. In JS use `console.log()` (auto-routed) or import from `shared/logger.mjs`. In C use `LOG_DEBUG("source", "msg")` etc. from `host/unified_log.h`.
+JS: `console.log()` (auto-routed) or import `shared/logger.mjs`. C: `LOG_DEBUG("source", "msg")` from `host/unified_log.h`. See `docs/LOGGING.md`.
 
 ## Device Constraints
 
-**Never write to `/tmp` on the Move device.** The root filesystem (`/`) is tiny (~463MB) and nearly always 100% full. `/tmp` is on rootfs. Writing there **will** fill the disk and break things. Always use `/data/UserData/` which has ~49GB free.
-
-This applies to logs, recordings, temp files, test output — everything. Use paths under `/data/UserData/` (e.g., `/data/UserData/UserLibrary/Recordings/`). The unified logger already writes to `/data/UserData/schwung/debug.log`.
+**Never write to `/tmp` on the Move device.** Root FS (`/`) is ~463MB and usually 100% full; `/tmp` lives there. **Always** use `/data/UserData/` (~49GB free) for logs, recordings, temp files, everything. The unified logger already writes to `/data/UserData/schwung/debug.log`.
 
 ## Architecture
 
-### Host + Module System
-
 ```
 Host (schwung):
-  - Owns /dev/ablspi0.0 for hardware communication
-  - Embeds QuickJS for JavaScript execution
+  - Owns /dev/ablspi0.0 for hardware I/O
+  - Embeds QuickJS for JS execution
   - Manages module discovery and lifecycle
   - Routes MIDI to JS UI and DSP plugin
 
 Modules (src/modules/<id>/):
-  - module.json: metadata
-  - ui.js: JavaScript UI (init, tick, onMidiMessage*)
-  - ui_chain.js: optional Signal Chain UI shim
-  - dsp.so: optional native DSP plugin
-```
-
-### Key Source Files
-
-- **src/schwung_host.c**: Main host runtime
-- **src/schwung_shim.c**: LD_PRELOAD shim
-- **src/host/plugin_api_v1.h**: DSP plugin C API
-- **src/host/module_manager.c**: Module loading
-- **src/host/menu_ui.js**: Host menu for module selection
-
-### Module Structure
-
-```
-src/modules/<id>/
   module.json       # Required - metadata and capabilities
   ui.js             # JavaScript UI
+  ui_chain.js       # Optional Signal Chain UI shim
   dsp.so            # Optional native DSP plugin
 ```
 
-Built-in modules (in main repo):
-- `chain` - Signal Chain for combining components
-- `store` - Module Store for downloading external modules
-- `file-browser` - File/folder browser (tool)
-- `song-mode` - Song arranger for sequencing clips (tool)
-- `wav-player` - WAV file playback (tool, used by file browser)
+Key sources: `src/schwung_host.c` (host runtime), `src/schwung_shim.c` (LD_PRELOAD shim), `src/host/module_manager.c`, `src/host/menu_ui.js`, `src/host/plugin_api_v1.h`.
 
-Source-only (kept for reference, not shipped in release tarball):
-- `controller` - MIDI Controller; superseded by catalog `control` module (chaolue)
-- `tools/{ui,seq,config,splash}-test`, `text-test` - dev scaffolding
+Built-in modules: `chain`, `store`, `file-browser`, `song-mode`, `wav-player`.
+Source-only (not in release tarball): `controller` (superseded by catalog `control`), `tools/{ui,seq,config,splash}-test`, `text-test`.
 
 ### JS Module Lifecycle
 
-Every UI module exports four functions via `globalThis`:
+Every UI module exports four globals:
 
 ```javascript
-globalThis.init = function() { }                        // Called once on load
-globalThis.tick = function() { }                        // Called ~44x/sec (128 frames @ 44.1kHz)
-globalThis.onMidiMessageInternal = function(data) { }   // Internal Move hardware MIDI
+globalThis.init = function() { }                        // Once on load
+globalThis.tick = function() { }                        // ~44x/sec (128 frames @ 44.1kHz)
+globalThis.onMidiMessageInternal = function(data) { }   // Move hardware MIDI
 globalThis.onMidiMessageExternal = function(data) { }   // External USB MIDI (overtake only)
 ```
 
-`data` is a Uint8Array: `[status, cc/note, value]`. Always filter noise with `shouldFilterMessage(data)` from `input_filter.mjs`.
+`data` is a Uint8Array `[status, cc/note, value]`. Filter noise with `shouldFilterMessage()` from `input_filter.mjs`.
 
-Three module loading styles exist:
-- `host_load_module(id)` — Full load (DSP + UI), auto-calls `init()`
-- `host_load_ui_module(path)` — UI-only, caller captures globals and calls `init()` manually (used by Chain)
-- `shadow_load_ui_module(path)` — Overtake modules, deferred `init()` after LED clearing
+Loading styles:
+- `host_load_module(id)` — full load (DSP + UI), auto-calls `init()`
+- `host_load_ui_module(path)` — UI-only; caller captures globals and calls `init()` (used by Chain)
+- `shadow_load_ui_module(path)` — Overtake modules; deferred `init()` after LED clearing
 
-See `docs/API.md` for full display, LED, and MIDI API reference.
+See `docs/API.md` for full display, LED, MIDI API.
 
 ### Module Categorization
 
-Modules declare their category via `component_type` in module.json:
+`component_type` in module.json determines menu placement: `featured`, `sound_generator`, `audio_fx`, `midi_fx`, `utility`, `overtake`, `tool`, `system`.
 
-```json
-{
-    "id": "my-module",
-    "name": "My Module",
-    "component_type": "sound_generator"
-}
-```
+### Plugin API
 
-Valid component types:
-- `featured` - Featured modules (Signal Chain), shown first
-- `sound_generator` - Synths and samplers
-- `audio_fx` - Audio effects
-- `midi_fx` - MIDI processors
-- `utility` - Utility modules
-- `overtake` - Overtake modules (full UI control in shadow mode)
-- `tool` - Tool modules (accessed via Tools menu, e.g. File Browser, Song Mode)
-- `system` - System modules (Module Store), shown last
-
-The main menu automatically organizes modules by category, reading from each module's `component_type` field.
-
-### Plugin API v2 (Recommended)
-
-V2 supports multiple instances and is required for Signal Chain integration:
+**v2 (recommended, multi-instance, required for Signal Chain)** — see `src/host/plugin_api_v1.h`:
 
 ```c
 typedef struct plugin_api_v2 {
@@ -154,326 +100,131 @@ typedef struct plugin_api_v2 {
     int (*get_param)(void *instance, const char *key, char *buf, int buf_len);
     void (*render_block)(void *instance, int16_t *out_lr, int frames);
 } plugin_api_v2_t;
-
-// Entry point
 extern "C" plugin_api_v2_t* move_plugin_init_v2(const host_api_v1_t *host);
 ```
 
-### Plugin API v1 (Deprecated)
-
-V1 is a singleton API - only one instance can exist. Do not use for new modules:
-
-```c
-typedef struct plugin_api_v1 {
-    uint32_t api_version;
-    int (*on_load)(const char *module_dir, const char *json_defaults);
-    void (*on_unload)(void);
-    void (*on_midi)(const uint8_t *msg, int len, int source);
-    void (*set_param)(const char *key, const char *val);
-    int (*get_param)(const char *key, char *buf, int buf_len);
-    void (*render_block)(int16_t *out_interleaved_lr, int frames);
-} plugin_api_v1_t;
-```
-
-Audio: 44100 Hz, 128 frames/block, stereo interleaved int16.
+**v1 (deprecated, singleton)** — kept for legacy modules. Audio: 44100 Hz, 128 frames/block, stereo interleaved int16.
 
 ### JS Host Functions
 
-```javascript
-// Module management
-host_list_modules()           // -> [{id, name, version, component_type}, ...]
-host_load_module(id_or_index)
-host_load_ui_module(path)
-host_unload_module()
-host_return_to_menu()
-host_module_set_param(key, val)
-host_module_get_param(key)
-host_module_send_midi(msg, source)
-host_is_module_loaded()
-host_get_current_module()
-host_rescan_modules()
+Module management: `host_list_modules`, `host_load_module`, `host_load_ui_module`, `host_unload_module`, `host_return_to_menu`, `host_module_set_param/get_param/send_midi`, `host_is_module_loaded`, `host_get_current_module`, `host_rescan_modules`, `host_get_module_metadata(id)`.
 
-// Host volume control
-host_get_volume()             // -> int (0-100)
-host_set_volume(vol)          // set host volume
+Volume / settings: `host_get_volume`, `host_set_volume`, `host_get_setting/set_setting/save_settings/reload_settings` (keys: `velocity_curve`, `aftertouch_enabled`, `aftertouch_deadzone`).
 
-// Jack state and module metadata (used by feedback-protection gate)
-host_speaker_active()         // -> bool (true = built-in speakers, false = headphones plugged)
-host_line_in_connected()      // -> bool (true = line-in cable plugged, false = internal mic)
-host_get_module_metadata(id)  // -> parsed module.json object | null
+Jack state (for feedback gate): `host_speaker_active()` (true = speakers, false = headphones), `host_line_in_connected()`.
 
-// Host input settings
-host_get_setting(key)         // -> value (velocity_curve, aftertouch_enabled, aftertouch_deadzone)
-host_set_setting(key, val)    // set setting
-host_save_settings()          // persist to disk
-host_reload_settings()        // reload from disk
+Display: `host_flush_display`, `host_set_refresh_rate(hz)`, `host_get_refresh_rate`.
 
-// Display control
-host_flush_display()          // Force immediate display update
-host_set_refresh_rate(hz)     // Set display refresh rate
-host_get_refresh_rate()       // Get current refresh rate
+Filesystem: `host_file_exists`, `host_read_file`, `host_write_file`, `host_http_download`, `host_extract_tar(_strip)`, `host_ensure_dir`, `host_remove_dir`.
 
-// File system utilities
-host_file_exists(path)        // -> bool
-host_read_file(path)          // -> string or null
-host_write_file(path, content) // -> bool
-host_http_download(url, dest) // -> bool
-host_extract_tar(tarball, dir) // -> bool
-host_extract_tar_strip(tarball, dir, strip) // -> bool (with --strip-components)
-host_ensure_dir(path)         // -> bool (mkdir -p)
-host_remove_dir(path)         // -> bool
+Tool lifecycle: `host_exit_module()`. MIDI injection: `move_midi_inject_to_move([type, status, d1, d2])`. Sampler: `host_sampler_start(path)`, `host_sampler_stop()`, `host_sampler_is_recording()`.
 
-// Tool module lifecycle
-host_exit_module()            // Exit tool module, return to tools menu
+CC 79 is the host volume knob by default. Modules can claim it via `capabilities.claims_master_knob: true`.
 
-// MIDI injection (simulate hardware input to Move firmware)
-move_midi_inject_to_move(packet) // [type, status, d1, d2]
+### Shared JS Utilities (`src/shared/`)
 
-// Sampler (record audio to WAV)
-host_sampler_start(path)      // Start recording to WAV path
-host_sampler_stop()           // Stop recording
-host_sampler_is_recording()   // -> bool
-```
-
-### Host Volume Control
-
-The volume knob (CC 79) controls host-level output volume by default. Volume is applied after module DSP rendering but before audio output.
-
-Modules can claim the volume knob for their own use by setting `"claims_master_knob": true` in their module.json capabilities section. When claimed, the host passes the CC through to the module instead of adjusting volume.
-
-### Shared JS Utilities
-
-Located in `src/shared/`:
-- `constants.mjs` - MIDI CC/note mappings and LED colors
-- `input_filter.mjs` - Capacitive touch filtering, delta decoding, LED helpers
-- `move_display.mjs` - Display utilities
-- `menu_layout.mjs` - Title/list/footer menu layout helpers
-- `menu_render.mjs` - Menu rendering utilities
-- `menu_nav.mjs` - Menu navigation state
-- `menu_items.mjs` - Menu item types
-- `menu_stack.mjs` - Menu stack management
-- `screen_reader.mjs` - Screen reader announce/announceMenuItem/announceView helpers
-- `store_utils.mjs` - Module Store catalog fetching and install/remove functions
-- `filepath_browser.mjs` - File/folder browser component
-- `text_entry.mjs` - On-screen keyboard for text input
-- `sampler_overlay.mjs` - Quantized sampler UI overlay
+`constants.mjs` (MIDI/LED), `input_filter.mjs` (touch filtering, delta decoding, LED helpers), `move_display.mjs`, `menu_layout/render/nav/items/stack.mjs`, `screen_reader.mjs`, `store_utils.mjs`, `filepath_browser.mjs`, `text_entry.mjs`, `sampler_overlay.mjs`, `feedback_gate.mjs`.
 
 ## Move Hardware MIDI
 
-Pads: Notes 68-99
-Steps: Notes 16-31
-Tracks: CCs 40-43 (reversed: CC43=Track1, CC40=Track4)
+Pads notes 68–99. Steps notes 16–31. Tracks CCs 40–43 (**reversed**: CC43=Track1, CC40=Track4). Key CCs: 3 (jog click), 14 (jog turn), 49 (shift), 50 (menu), 51 (back), 71–78 (knobs). Notes 0–9: capacitive knob touch (filter if unused).
 
-Key CCs: 3 (jog click), 14 (jog turn), 49 (shift), 50 (menu), 51 (back), 71-78 (knobs)
+## SPI Protocol
 
-Notes 0-9: Capacitive touch from knobs (filter if not needed)
-
-## SPI Protocol Summary
-
-The Move communicates via SPI (`/dev/ablspi0.0`). 768-byte transfers at 20 MHz, mmap'd to 4096 bytes.
+`/dev/ablspi0.0`, 768-byte transfers at 20 MHz, mmap'd to 4096.
 
 ```
-OUTPUT (TX) — offset 0:
-  0     MIDI OUT: 20 × 4-byte USB-MIDI packets = 80 bytes
-  80    Display status (4 bytes) + data (172 bytes)
-  256   Audio OUT: 128 frames × stereo int16 = 512 bytes
-
-INPUT (RX) — offset 2048:
-  2048  MIDI IN: 31 × 8-byte events = 248 bytes
-  2296  Display status (4 bytes)
-  2304  Audio IN: 128 frames × stereo int16 = 512 bytes
+TX (offset 0):                       RX (offset 2048):
+  0     MIDI OUT: 20 × 4 bytes        2048  MIDI IN: 31 × 8 bytes
+  80    Display status + data         2296  Display status
+  256   Audio OUT: 128 stereo int16   2304  Audio IN: 128 stereo int16
 ```
 
-**Critical:** MIDI_IN events are **8 bytes** (4-byte USB-MIDI + 4-byte timestamp), not 4. MIDI_OUT events are 4 bytes. Injecting 4-byte events into MIDI_IN causes misalignment and SIGABRT.
+**Critical:** MIDI_IN events are **8 bytes** (4-byte USB-MIDI + 4-byte timestamp), MIDI_OUT events are 4 bytes. Injecting 4-byte events into MIDI_IN → misalignment → SIGABRT.
 
-Cable numbers: 0 = internal hardware, 2 = external USB, 14 = system, 15 = SPI protocol.
-
-See `docs/SPI_PROTOCOL.md` for full details.
+Cable numbers: 0 = internal hw, 2 = external USB, 14 = system, 15 = SPI protocol. See `docs/SPI_PROTOCOL.md`.
 
 ## Realtime Safety
 
-The SPI callback runs at SCHED_FIFO 90 on core 3. Budget is ~900µs per frame after the ~2ms hardware transfer.
+SPI callback runs SCHED_FIFO 90 on core 3. Budget ~900µs/frame after the ~2ms transfer.
 
-**Never do these in the SPI callback path:**
-- Call `unified_log()`, `fprintf()`, `fopen()`, or any file I/O
-- Allocate memory
-- Take locks that non-realtime threads hold
+**Never in the SPI callback path:** `unified_log()`, `fprintf()`, `fopen()`, any file I/O; allocation; locks held by non-RT threads.
 
-**FIFO scheduling inheritance:** The shim runs inside MoveOriginal's FIFO 70 threads. Any child process (shadow_ui, host_system_cmd) must reset to SCHED_OTHER before exec. This is handled by `shadow_process.c` and `shadow_ui.c` — don't bypass them.
+**FIFO inheritance:** Shim runs in MoveOriginal's FIFO 70 threads. Any child process (`shadow_ui`, `host_system_cmd`) must reset to SCHED_OTHER before exec — handled by `shadow_process.c` and `shadow_ui.c`, don't bypass.
 
-**CPU pinning:** Keep core 3 free for SPI. Pin compute-heavy processes (RNBO, etc.) to cores 0-2 (`taskset 0x7`).
+**CPU pinning:** Keep core 3 free for SPI. Pin compute-heavy procs (RNBO) to cores 0–2 (`taskset 0x7`). See `docs/REALTIME_SAFETY.md`.
 
-See `docs/REALTIME_SAFETY.md` for full investigation and root causes.
+## Deployment Layout
 
-## Deployment
-
-On-device layout:
 ```
 /data/UserData/schwung/
-  schwung                     # Host binary
-  schwung-shim.so       # Shim (also at /usr/lib/)
+  schwung                # Host binary
+  schwung-shim.so        # Shim (also /usr/lib/)
   host/menu_ui.js
   shared/
   modules/
-    chain/, store/                  # Built-in modules (root level)
-    sound_generators/<id>/          # External sound generators
-    audio_fx/<id>/                  # External audio effects
-    midi_fx/<id>/                   # External MIDI effects
-    tools/<id>/                     # Tool modules (File Browser, Song Mode)
+    chain/, store/                  # Built-in
+    sound_generators/<id>/          # External (by component_type)
+    audio_fx/<id>/, midi_fx/<id>/, tools/<id>/
 ```
 
-The device is accessed via SSH at `move.local` (e.g., `ssh ableton@move.local`).
-
-External modules are installed to category subdirectories based on their `component_type`.
-
-Original Move preserved as `/opt/move/MoveOriginal`.
+Device: `ssh ableton@move.local`. Stock firmware preserved at `/opt/move/MoveOriginal`.
 
 ## Gain Staging (MFX ME-Only Bus)
 
-Master FX processes only Schwung's internal audio (slot synths, slot FX,
-overtake DSP) — never Move's own audio. The shim builds:
-
-- `mailbox` (DAC output) = Move audio at `mv` + `me_bus × mv`
+Master FX processes only Schwung's internal audio (slot synths, slot FX, overtake DSP) — never Move's. Shim builds:
+- `mailbox` (DAC out) = Move audio at `mv` + `me_bus × mv`
 - `unity_view` (captures) = Move reconstructed at unity + `me_bus` post-MFX
 
-Skipback, quantized sampler, and the native resample bridge read `unity_view`
-so captures are independent of master volume. Clean-idle (no modules loaded)
-leaves Move's mailbox untouched; no round-trip.
+Skipback, quantized sampler, and the native resample bridge read `unity_view` → captures independent of master volume. Clean-idle leaves Move's mailbox untouched (no round-trip).
 
-Master volume is estimated from scanning Move's on-screen volume bar
-(`shadow_master_volume` in `schwung_shim.c`). This has ±2 dB calibration error
-at extreme knob positions; capture accuracy degrades below ~15% display
-position as a result (the amplification clamp kicks in at `mv < 0.02`).
+Master volume is estimated from Move's on-screen volume bar (`shadow_master_volume` in `schwung_shim.c`). ±2 dB calibration error at extremes; capture degrades below ~15% (amplification clamps at `mv < 0.02`).
 
-Under Link Audio rebuild mode (`rebuild_from_la`), the mailbox is composited
-from per-track routed audio at unity via `shadow_chain_process_fx`, MFX runs
-on the mailbox, then master volume is applied for DAC output.
+Under Link Audio rebuild mode (`rebuild_from_la`), mailbox is composited from per-track routed audio at unity via `shadow_chain_process_fx`, MFX runs on the mailbox, then master volume is applied for DAC out.
 
 ## Link Audio
 
-Move's firmware publishes per-track and master audio over Ableton Link Audio
-(UDP/IPv6, proprietary `chnnlsv` framing). Schwung consumes this so shadow
-FX chains can process Move's tracks before output.
-
-### Architecture (post-migration, 2026-04)
+Move's firmware publishes per-track + master audio over Ableton Link Audio (UDP/IPv6, `chnnlsv` framing). Schwung consumes this so shadow FX can process Move's tracks.
 
 ```
-Move firmware audio engine
-          │
-          ▼ (Link Audio source subscription)
-┌──────────────────────────────┐
-│ link-subscriber sidecar      │  src/host/link_subscriber.cpp
-│   subscribes to Move/1-MIDI… │  - C++, links against libs/link
-│   Move/Main via LinkAudio    │  - runs as a separate process
-│   SDK                        │
-│   writes incoming samples    │
-│   into /schwung-link-in      │
-└──────────────────────────────┘
-          │ SHM /schwung-link-in
-          ▼
-┌──────────────────────────────┐
-│ schwung_shim.c (LD_PRELOAD)  │
-│   link_audio_read_channel_shm│
-│   feeds shadow chain mixer   │
-│   shadow_inprocess_mix_from_buffer
-└──────────────────────────────┘
+Move firmware → link-subscriber sidecar (C++, libs/link)
+              → SHM /schwung-link-in (5-slot SPSC ring: 1-MIDI..4-MIDI, Main)
+              → schwung_shim.c link_audio_read_channel_shm → shadow mixer
 ```
 
-`/schwung-link-in` is a 5-slot SPSC ring (1-MIDI, 2-MIDI, 3-MIDI, 4-MIDI,
-Main). Layout: `link_audio_in_shm_t` in `src/host/link_audio.h`.
+Sidecar: `src/host/link_subscriber.cpp`. SHM layout: `link_audio_in_shm_t` in `src/host/link_audio.h`. Sidecar also writes shadow-slot output back as `ME-N` Link Audio channels via `/schwung-pub-audio` → `LinkAudioSink`s.
 
-The sidecar also writes shadow-slot output back to Live as `ME-N` Link Audio
-channels via `/schwung-pub-audio` → `LinkAudioSink`s.
+The old `sendto()`-hook reception path was deleted when the public `abl_link` audio API landed (2026-03-30). Sidecar is now the only reception path; `src/host/shadow_link_audio.c` is just the SHM reader + capture buffer. See `docs/plans/2026-04-17-link-audio-official-api-migration.md`.
 
-### Migration history (2026-04)
+### Latency Comp
 
-The shim used to intercept Move's chnnlsv UDP packets via an `LD_PRELOAD`
-`sendto()` hook in `src/schwung_shim.c` and parse them in
-`src/host/shadow_link_audio.c`. That path was deleted when the public
-`abl_link` audio C API landed upstream (2026-03-30). The sidecar is now
-the single reception path; `src/host/shadow_link_audio.c` holds only the
-SHM reader and a capture buffer used by the publisher-SHM writer.
+Move's per-track audio round-trips with ~5–14 ms unpredictable drift. Slot synths render locally at ~0 ms → fire ahead of Move audio on the same beat. **Latency Comp** (Global Settings → Audio, default OFF) only runs when `rebuild_from_la = 1`:
 
-See `docs/plans/2026-04-17-link-audio-official-api-migration.md` for the
-full migration plan and `docs/link-audio-crackle-followup.md` for the
-double-FX-per-frame crackle diagnosis + fix.
+1. **Link Audio nudge** (`link_audio_read_channel_shm`): drops/dups one stereo frame every 16 reads outside a ±32-sample dead band around 800 stereo samples (~9.07 ms). Burst mode (8 frames/period) when error > 512. Effective rate change <0.3%.
+2. **Schwung-side delay buffer** (`shadow_latency_delay_apply`): per-slot 2048-sample ring delays `shadow_slot_deferred[s]` by 800 samples before combining with `move_track`. Bypassed when `rebuild_from_la = 0`.
 
-### Latency Comp (Move↔Schwung audio alignment)
+Toggle mid-playback → ~9 ms artifact (audio hole on OFF→ON, dup on ON→OFF) as ring resets.
 
-Move's per-track audio round-trips through Link Audio with ~5–14 ms of
-unpredictable, drifting delay (set by initial ring fill + SDK jitter
-plateaus). Schwung slot synths render locally with ~0 ms delay, so by
-default they fire 5–14 ms ahead of any Move drumrack/synth audio on the
-same beat. Global Settings → Audio → **Latency Comp** (default OFF)
-opts into a two-piece alignment fix that only runs when Move>Schwung is
-active (`rebuild_from_la = 1`):
-
-1. **Link Audio nudge** (`src/host/shadow_link_audio.c`
-   `link_audio_read_channel_shm`): drops or duplicates one stereo frame
-   every 16 reads when outside a ±32-sample dead band around
-   `LATENCY_COMP_TARGET_SAMPLES` (800 stereo samples ≈ 9.07 ms). Burst
-   mode (8 frames per period) engages when error > 512 samples for fast
-   initial convergence. Effective rate change stays under 0.3% — well
-   below click and pitch-shift audibility.
-2. **Schwung-side delay buffer** (`shadow_inprocess_mix_from_buffer` →
-   `shadow_latency_delay_apply`): per-slot 2048-sample ring delays
-   `shadow_slot_deferred[s]` by 800 samples before combining with
-   `move_track`. Bypassed when `rebuild_from_la = 0` so non-routed
-   sessions pay zero latency.
-
-Active state (`latency_comp_active`) follows the user toggle
-(`latency_comp_user_enabled`) immediately. Flipping mid-playback
-produces a ~9 ms transition artifact (audio hole on OFF→ON, duplicate
-on ON→OFF) as the delay ring resets — accepted cost of toggling a
-delay buffer mid-stream.
-
-Telemetry that earned its keep during development:
-
-- Touch `/data/UserData/schwung/link_audio_avail_log_on` to enable
-  per-slot min/mean/max `avail` logging every 5 s. With comp active the
-  mean should lock to ~9.07 ms; without comp it wanders.
-- Touch `/data/UserData/schwung/align_dump_trigger` to capture ~2.9 s
-  of slot-0 `move_track` and post-delay `synth_src` as separate raw
-  s16le stereo PCM files in `/data/UserData/schwung/` for offline
-  cross-correlation.
+Telemetry: `touch /data/UserData/schwung/link_audio_avail_log_on` for 5 s slot avail logs; `touch /data/UserData/schwung/align_dump_trigger` for ~2.9 s of raw s16le PCM dumps in `/data/UserData/schwung/`.
 
 ## Signal Chain Module
-
-The `chain` module implements a modular signal chain for combining components:
 
 ```
 [Input or MIDI Source] → [MIDI FX] → [Sound Generator] → [Audio FX] → [Output]
 ```
 
-### Module Capabilities for Chaining
-
-Modules declare chainability in module.json:
-```json
-{
-    "capabilities": {
-        "chainable": true,
-        "component_type": "sound_generator"
-    }
-}
-```
-
-Component types: `sound_generator`, `audio_fx`, `midi_fx`
+Modules declare chainability in module.json: `capabilities.chainable: true` + `component_type: sound_generator|audio_fx|midi_fx`.
 
 ### Shadow UI Parameter Hierarchy
 
-Modules expose parameters to the Shadow UI via `ui_hierarchy` in their get_param response. The hierarchy defines menu structure, knob mappings, and navigation.
+Modules expose `ui_hierarchy` (menu structure + knob mappings) via get_param:
 
-**Structure:**
 ```json
 {
   "modes": null,
   "levels": {
     "root": {
-      "label": "SF2",
-      "list_param": "preset",
-      "count_param": "preset_count",
-      "name_param": "preset_name",
-      "children": null,
+      "label": "SF2", "list_param": "preset", "count_param": "preset_count", "name_param": "preset_name",
       "knobs": ["octave_transpose", "gain"],
       "params": [
         {"key": "octave_transpose", "label": "Octave"},
@@ -481,479 +232,222 @@ Modules expose parameters to the Shadow UI via `ui_hierarchy` in their get_param
         {"level": "soundfont", "label": "Choose Soundfont"}
       ]
     },
-    "soundfont": {
-      "label": "Soundfont",
-      "items_param": "soundfont_list",
-      "select_param": "soundfont_index",
-      "children": null,
-      "knobs": [],
-      "params": []
-    }
+    "soundfont": {"label": "Soundfont", "items_param": "soundfont_list", "select_param": "soundfont_index"}
   }
 }
 ```
 
-**Key fields:**
-
-- `knobs`: Array of **strings** (parameter keys) mapped to physical knobs 1-8
-- `params`: Array for menu items. Each entry is either:
-  - **String**: Parameter key (e.g., `"gain"`)
-  - **Editable param object**: `{"key": "gain", "label": "Gain"}`
-  - **Navigation object**: `{"level": "soundfont", "label": "Choose Soundfont"}`
-- `list_param`/`count_param`/`name_param`: For preset browser levels
-- `items_param`/`select_param`: For dynamic item selection levels
-
-**Important:** Use `key` (not `param`) for editable parameter objects. Metadata (type, min, max) comes from `chain_params`.
+- `knobs`: array of param-key **strings** mapped to physical knobs 1–8
+- `params` items: string (param key), `{key, label}` (editable), or `{level, label}` (navigation)
+- Preset levels use `list_param`/`count_param`/`name_param`; selection levels use `items_param`/`select_param`
+- **Use `key`, not `param`**, for editable entries. Metadata comes from `chain_params`.
 
 ### Chain Parameters
 
-Modules expose parameter metadata via `chain_params` in their get_param response. This is **required** for the Shadow UI to properly edit parameters (with correct step sizes, ranges, and enum options):
+`chain_params` (get_param JSON array) is **required** for Shadow UI to know step sizes, ranges, enum options:
 
 ```c
-if (strcmp(key, "chain_params") == 0) {
-    const char *json = "["
-        "{\"key\":\"cutoff\",\"name\":\"Cutoff\",\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01},"
-        "{\"key\":\"mode\",\"name\":\"Mode\",\"type\":\"enum\",\"options\":[\"LP\",\"HP\",\"BP\"]}"
-    "]";
-    strcpy(buf, json);
-    return strlen(json);
-}
+"[{\"key\":\"cutoff\",\"name\":\"Cutoff\",\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01},"
+ "{\"key\":\"mode\",\"name\":\"Mode\",\"type\":\"enum\",\"options\":[\"LP\",\"HP\",\"BP\"]}]"
 ```
 
-Parameter types: `float` (with `min`, `max`, `step`), `int` (with `min`, `max`), `enum` (with `options` array).
-Optional fields: `default`, `unit`, `display_format`.
-
-These provide metadata for the Shadow UI parameter editor alongside `ui_hierarchy` (which defines menu structure and knob mappings).
+Types: `float` (min/max/step), `int` (min/max), `enum` (options). Optional: `default`, `unit`, `display_format`.
 
 ### Chain Architecture
 
-- Chain host (`modules/chain/dsp/chain_host.c`) loads sub-plugins via dlopen
-- Forwards MIDI to sound generator, routes audio through effects
-- Patch files stored in `/data/UserData/schwung/patches/*.json` on device define chain configurations
-- MIDI FX: chord generator, arpeggiator (up, down, up_down, random)
-- Audio FX: freeverb
-- MIDI sources (optional): DSP modules that generate MIDI; can provide `ui_chain.js` for full-screen chain UI
+Chain host (`modules/chain/dsp/chain_host.c`) dlopens sub-plugins, forwards MIDI to sound generator, routes audio through FX. Patches in `/data/UserData/schwung/patches/*.json`. Built-in MIDI FX: chord, arp (up/down/up_down/random). Built-in audio FX: freeverb. MIDI sources can provide `ui_chain.js` for fullscreen chain UI.
 
 ### Recording
 
-Signal Chain supports recording audio output to WAV files:
-
-- **Record Button** (CC 118): Toggles recording on/off
-- **LED States**: Off (no patch), White (patch loaded), Red (recording)
-- **Output**: Recordings saved to `/data/UserData/schwung/recordings/rec_YYYYMMDD_HHMMSS.wav`
-- **Format**: 44.1kHz, 16-bit stereo WAV
-
-Recording uses a background thread with a 2-second ring buffer to prevent audio dropouts during disk I/O. Recording requires a patch to be loaded.
-
-### External Modules
-
-External modules are maintained in separate repositories and available via Module Store:
-
-**Sound Generators:**
-- `braids` - Mutable Instruments macro oscillator (47 algorithms)
-- `rings` - Mutable Instruments resonator
-- `sf2` - SoundFont synthesizer (TinySoundFont)
-- `dexed` - 6-operator FM synthesizer (Dexed/MSFA)
-- `minijv` - ROM-based PCM rompler emulator
-- `obxd` - Oberheim OB-X emulator
-- `clap` - CLAP plugin host
-
-**Audio FX:**
-- `cloudseed` - Algorithmic reverb
-- `psxverb` - PlayStation SPU reverb
-- `tapescam` - Tape saturation
-- `tapedelay` - Tape delay with flutter and saturation
-
-**Utilities/Overtake:**
-- `m8` - Dirtywave M8 Launchpad Pro emulator
-- `sidcontrol` - SID Control for SIDaster III
-- `control` - Custom MIDI Controller with 16 banks (chaolue, catalog)
-
-External modules install their own Signal Chain presets via their install scripts.
+Record button CC 118 toggles. LEDs: off (no patch), white (loaded), red (recording). Output: `/data/UserData/schwung/recordings/rec_YYYYMMDD_HHMMSS.wav` (44.1k/16/stereo). Background thread + 2 s ring buffer prevents dropouts. Requires loaded patch.
 
 ## Shadow Mode
 
-Shadow Mode runs custom signal chains alongside stock Move. The shim intercepts hardware I/O to mix shadow audio with Move's output.
+Shim intercepts hardware I/O to mix shadow audio with Move's output.
 
-### Shadow Mode Shortcuts
+### Shortcuts
 
-Shadow UI access is gated by **Global Settings → Shortcuts → Shadow UI Trigger** (`shadow_ui_trigger` in `features.json`):
+Shadow UI access gated by **Global Settings → Shortcuts → Shadow UI Trigger** (`shadow_ui_trigger` in `features.json`): `Both` (default) / `Long Press` / `Shift+Vol`.
 
-- **Both** (default): both Shift+Vol and long-press work
-- **Long Press**: only long-press works; Shift+Vol combos pass through to Move
-- **Shift+Vol**: only Shift+Vol works; long-press is suppressed
+**Shift+Vol combos** (modes Both / Shift+Vol):
+- **Shift+Vol+Track 1–4** — open shadow / jump to slot settings
+- **Shift+Vol+Menu** — Master FX
+- **Shift+Vol+Step2** — Global Settings
+- **Shift+Vol+Step13** / **Shift+Vol+Jog Click** — Tools menu (overtake modules below the divider). Jog-click also exits an active overtake module.
+- **Shift+Sample** — Quantized Sampler
+- **Shift+Capture** — Skipback (last 30 s)
 
-Shift+Vol combos (active in modes Both / Shift+Vol):
+**Long-press** (modes Both / Long Press):
+- Hold Track 1–4 (500ms) → slot editor
+- Hold Menu (500ms) → Master FX
+- Shift + hold Step 2 (500ms) → Global Settings
+- Shift + Step 13 (immediate) → Tools menu
+- Tap Track / Menu while shadow UI shown → dismiss
 
-- **Shift+Vol+Track 1-4**: Open shadow mode / jump to slot settings (works from Move or Shadow UI)
-- **Shift+Vol+Menu**: Jump directly to Master FX settings
-- **Shift+Vol+Step2**: Open Global Settings
-- **Shift+Vol+Step13**: Open Tools menu
-- **Shift+Vol+Jog Click**: Open Tools menu (overtake modules live below the divider), or exit active overtake module
-- **Shift+Sample**: Open Quantized Sampler
-- **Shift+Capture**: Skipback (save last 30 seconds)
+Long-press is suppressed once the volume knob is touched during a track press (so Track-hold + knob adjusts track volume without opening shadow UI). See `track_vol_touched_during_press[]` in `schwung_shim.c`.
 
-Long-press shortcuts (active in modes Both / Long Press):
+**While shadow UI shown** (any mode):
+- **Mute + Jog Click** on focused chain/MFX module — toggle bypass. Audio passes through; MIDI FX become passthrough; synth render silenced while MIDI flows (state advances, tails ring out, clean unbypass). 4-row 'B' glyph above the module box.
+- **Mute + Track 1–4** — slot mute. **Shift + Mute + Track 1–4** — slot solo.
 
-- **Hold Track 1-4 (500ms)**: Open that slot's editor
-- **Hold Menu (500ms)**: Open Master FX
-- **Shift + hold Step 2 (500ms)**: Open Global Settings
-- **Shift + Step 13** (immediate): Open Tools menu
-- **Tap Track / Menu** while shadow UI shown: Dismiss shadow UI
-
-Long-press is suppressed for the rest of a track press as soon as the volume knob is touched (so Track-hold + knob to adjust track volume never opens shadow UI). Tracked by `track_vol_touched_during_press[]` in `schwung_shim.c`.
-
-Other shortcuts (active in any mode while shadow UI is shown):
-
-- **Mute + Jog Click** on a focused chain or Master FX module: Toggle bypass for that module. Audio passes through unchanged; MIDI FX become passthrough; synth render is silenced while MIDI still flows so the synth state advances (downstream FX tails ring out, and unbypass is clean). A 4-row 'B' glyph appears above the module's box, in the same style as the LFO `~N` indicator.
-- **Mute + Track 1-4**: Toggle shadow slot mute (existing).
-- **Shift + Mute + Track 1-4**: Toggle shadow slot solo (existing).
-
-Plain Mute is blocked from reaching Move firmware while shadow UI is shown, so a stray Mute press doesn't toggle Move's selected-track mute mid-combo. Move's native Mute behavior is unchanged when shadow UI is dismissed.
-
-Bypass state persists across reboot via the per-slot autosave (`slot_N.json` for chain components, `master_fx_N.json` for Master FX). Patch-library reloads start with bypass=0 — bypass is a runtime toggle, not part of saved presets.
+Plain Mute is blocked from reaching Move firmware while shadow UI is shown. Bypass persists via per-slot autosave (`slot_N.json`, `master_fx_N.json`); patch-library reloads start with bypass=0.
 
 ### Quantized Sampler
 
-- Shift+Sample opens the sampler
-- Choose source: resample (including Schwung synths), or Move Input (whatever is set in the regular sample flow)
-- Choose duration in bars (or until stopped). Uses MIDI clock to determine tempo, falling back to project tempo if not found.
-- Starts on a note event or pressing play
-- Recordings are saved to `Samples/Schwung/Resampler/YYYY-MM-DD/`
-
-Works for resampling your Move, including Schwung synths, or a line-in source or microphone. You can use Move's built-in count-in for line-in recordings too.
+Shift+Sample. Source: resample (incl. Schwung synths) or Move Input. Duration in bars (or until stopped); uses MIDI clock, falls back to project tempo. Starts on note event or play. Saved to `Samples/Schwung/Resampler/YYYY-MM-DD/`.
 
 ### Feedback Protection
 
-When loading a chain module or launching a tool that consumes line-in
-audio, schwung shows a "Speaker Feedback Risk" warning if built-in
-speakers are active AND no line-in cable is plugged. Press jog click
-to proceed, Back to abort.
+Loading a chain module / tool that consumes line-in shows "Speaker Feedback Risk" warning if speakers active AND no line-in cable. Jog-click proceeds, Back aborts.
 
-The gate fires when:
-- The picked module's `capabilities.audio_in` is `true`, AND
-- Its `component_type` is NOT `audio_fx` or `midi_fx`, AND
-- `shadow_speaker_active` is true (no headphones), AND
-- `shadow_line_in_connected` is false (no line-in cable).
+Gate fires when: module's `capabilities.audio_in == true` AND `component_type` is NOT `audio_fx`/`midi_fx` AND `shadow_speaker_active` AND NOT `shadow_line_in_connected`.
 
-Implementation: `src/shared/feedback_gate.mjs` (predicate +
-Promise-based modal), `src/shadow/shadow_ui.js` (call sites in chain
-slot module pick and tools menu launch), `src/schwung_shim.c`
-(tracks XMOS CC 114 line-in detect alongside CC 115 line-out).
-
-Out of scope: Move firmware's native autosample / line-in
-monitoring; Quantized Sampler "Move Input" source toggle (deferred —
-the fullscreen sampler menu makes a JS-side modal inert; see
-`docs/plans/2026-04-30-feedback-protection-design.md`).
+Impl: `src/shared/feedback_gate.mjs` (predicate + modal), `src/shadow/shadow_ui.js` (call sites), `src/schwung_shim.c` (XMOS CC 114 line-in, CC 115 line-out). Out of scope: Move firmware's autosample / line-in monitoring; Quantized Sampler "Move Input" toggle (fullscreen menu makes JS modal inert). See `docs/plans/2026-04-30-feedback-protection-design.md`.
 
 ### Skipback
 
-Shift+Capture writes the last 30 seconds of audio to disk. Uses the same source as the quantized sampler (resample or Move Input). Saved to `Samples/Schwung/Skipback/YYYY-MM-DD/`.
+Shift+Capture saves last 30 s. Same source as sampler. Output: `Samples/Schwung/Skipback/YYYY-MM-DD/`.
 
 ### Shadow Architecture
 
-```
-src/schwung_shim.c    # LD_PRELOAD shim - intercepts ioctl, mixes audio
-src/shadow/shadow_ui.js     # Shadow UI - slot/patch management
-src/host/shadow_constants.h # Shared memory structures
-```
+`src/schwung_shim.c` (LD_PRELOAD, intercepts ioctl, mixes audio), `src/shadow/shadow_ui.js` (slot/patch UI), `src/host/shadow_constants.h` (SHM structs).
 
-Key shared memory segments:
-- `/schwung-audio` - Shadow's mixed audio output
-- `/schwung-control` - Control flags and state (shadow_control_t)
-- `/schwung-param` - Parameter get/set requests (shadow_param_t)
-- `/schwung-ui` - UI state for slot info (shadow_ui_state_t)
+SHM segments: `/schwung-audio` (mixed shadow output), `/schwung-control` (`shadow_control_t`), `/schwung-param` (param requests, `shadow_param_t`), `/schwung-ui` (`shadow_ui_state_t`).
 
-### Shadow UI Flags
-
-Communication between shim and Shadow UI uses flags in `shadow_control_t.ui_flags`:
-- `SHADOW_UI_FLAG_JUMP_TO_SLOT (0x01)` - Jump to slot settings on open
-- `SHADOW_UI_FLAG_JUMP_TO_MASTER_FX (0x02)` - Jump to Master FX on open
-- `SHADOW_UI_FLAG_JUMP_TO_OVERTAKE (0x04)` - Jump to overtake module menu
+`shadow_control_t.ui_flags`: `JUMP_TO_SLOT (0x01)`, `JUMP_TO_MASTER_FX (0x02)`, `JUMP_TO_OVERTAKE (0x04)`.
 
 ### Shadow Slot Features
 
-Each of the 4 shadow slots has:
-- **Receive channel**: MIDI channel to listen on (default 1-4), or All (-1)
-- **Forward channel**: Remap MIDI to specific channel (-1 = auto, -2 = passthrough/THRU)
-  - Auto: remaps to receive channel (if receive=All, acts as passthrough)
-  - THRU (-2): always preserves original MIDI channel
-  - Modules can declare `default_forward_channel` in module.json capabilities (supports -2 for passthrough, or 1-16 for specific channel)
-- **Volume**: Per-slot volume control
-- **State persistence**: Synth, audio FX, and MIDI FX states saved/restored automatically
+Each of the 4 slots has:
+- **Receive channel**: 1–4 (default) or All (−1)
+- **Forward channel**: 1–16 or −1 (auto: remap to receive ch, or passthrough if receive=All) or −2 (THRU: preserve original ch). Modules can declare `default_forward_channel` in capabilities.
+- **Volume**, **state persistence** (synth + FX + MIDI FX).
 
-#### MPE Controllers
-
-For MPE controllers (LinnStrument, Roli, Sensel Morph, etc.), the slot must be configured to pass all MIDI channels through unmodified:
-1. Set **Receive Channel = All** — accepts MIDI on all 16 channels (MPE member channels)
-2. Set **Forward Channel = THRU** — preserves per-channel note expression data
-3. Enable **MPE** in the synth module's settings (if supported)
-
-Without this, the slot remaps all channels to one, destroying MPE's per-note pitch bend, pressure, and slide data.
+**MPE controllers** (LinnStrument, Roli, Sensel): set Receive=All, Forward=THRU, enable MPE in the synth. Otherwise channel remap destroys per-note bend/pressure/slide.
 
 ### MIDI Cable Filtering
 
-The shim filters MIDI by USB cable number in the hardware MIDI buffers:
+MIDI_IN (offset 2048): cable 0 = Move hw controls, cable 2 = external USB MIDI.
+MIDI_OUT (offset 0): cable 0 = Move internal out, cable 2 = external USB out.
 
-**MIDI_IN buffer (offset 2048):**
-- Cable 0: Internal Move hardware controls (pads, knobs, buttons)
-- Cable 2: External USB MIDI input (devices connected to Move's USB-A port)
+Normal shadow: only cable 0 processed. Overtake: all cables forwarded; cable 2 → `onMidiMessageExternal`. If Move tracks listen+output on same channel as external device, MIDI echoes back — use different channels.
 
-**MIDI_OUT buffer (offset 0):**
-- Cable 0: Move's internal MIDI output
-- Cable 2: External USB MIDI output
+### Cable-2 Channel Remap (Overtake)
 
-**Routing rules:**
-- Normal shadow mode: Only cable 0 (internal controls) is processed
-- Overtake mode: All cables are forwarded, including external USB MIDI (cable 2)
-- External MIDI from cable 2 is routed to `onMidiMessageExternal` in overtake modules
+Overtake modules can rewrite cable-2 MIDI_IN channel before Move firmware sees it (solves live-external ↔ Move-native routing without the JS-reinject cascade in `docs/MIDI_INJECTION.md`).
 
-**Important:** If Move tracks are configured to listen and output on the same MIDI channel, external MIDI may be echoed back. Configure Move tracks to use different channels than your external device to avoid interference.
+JS API: `host_ext_midi_remap_set(in_ch, out_ch)` (0–15; out_ch >= 16 or < 0 = passthrough), `host_ext_midi_remap_clear()`, `host_ext_midi_remap_enable(on)`.
 
-### Cable-2 Channel Remap (Overtake Modules)
+Shim reads the table every SPI frame (post-transfer), rewrites channel byte in-place in both hw mailbox and shadow buffer. System messages (`0xF*`) skipped. **Bypassed globally** if any chain slot is forward=THRU (MPE preservation). **Force-reset** to all-passthrough + disabled on overtake exit. Gated by `ext_midi_remap_enabled` in `features.json` (default `true`).
 
-Overtake modules can rewrite the MIDI channel of incoming external (cable-2) MIDI before Move's firmware processes it. This solves the "live external MIDI ↔ Move native track" routing problem without re-injecting from JS (which causes the cable-2 echo cascade documented in `docs/MIDI_INJECTION.md`).
-
-**JS API** (available inside `shadow_ui.js` and overtake module contexts):
-
-```javascript
-host_ext_midi_remap_set(in_ch, out_ch)  // 0-15. out_ch >= 16 or < 0 = passthrough
-host_ext_midi_remap_clear()             // reset all 16 entries to passthrough
-host_ext_midi_remap_enable(on)          // global enable/disable
-```
-
-**Behavior:**
-- The shim reads the remap table on every SPI frame (in post-transfer, before the ioctl wrapper returns to Move) and rewrites the channel byte of cable-2 MIDI_IN events in-place. Both the hw mailbox and shadow buffer are mutated, so Move firmware and shim pre-transfer readers see consistent data.
-- System messages (status `0xF*`) are skipped (channelless).
-- The remap is **bypassed globally** whenever any chain slot is configured forward=THRU (MPE passthrough), because remapping channels destroys MPE per-channel expression.
-- The shim **forces a reset** to all-passthrough + `enabled=0` on overtake exit. JS modules don't have to clean up explicitly; even a crashed module won't leak a stale table into the next session.
-- Gated globally by the `ext_midi_remap_enabled` flag in `features.json` (default `true`). Setting this to `false` kills the entire codepath.
-
-**SHM contract:** `/schwung-ext-midi-remap`, 64 bytes, struct `schwung_ext_midi_remap_t` in `src/host/shadow_constants.h`. Version 1 = current.
+SHM: `/schwung-ext-midi-remap`, 64 bytes, `schwung_ext_midi_remap_t` in `src/host/shadow_constants.h`. v1.
 
 ### Master FX Chain
 
-Shadow mode includes a 4-slot Master FX chain that processes mixed output from all shadow slots. Access via Shift+Vol+Menu.
+4-slot Master FX processes mixed shadow output. Access: Shift+Vol+Menu.
 
 ### Overtake Modules
 
-Overtake modules take complete control of Move's UI in shadow mode. They're listed in the Tools menu below an "Overtake" divider (Shift+Vol+Step13 or Shift+Vol+Jog Click). Keeping `component_type: "overtake"` preserves the overtake lifecycle (LED clear, ~500ms init delay, Shift+Vol+Jog-Click exit).
+Take full UI control in shadow mode. Listed in Tools menu below "Overtake" divider. Set `component_type: "overtake"` to keep the overtake lifecycle (LED clear, ~500 ms init delay, Shift+Vol+Jog-Click exit).
 
-**Module Requirements:**
-- Set `"component_type": "overtake"` in module.json
-- Use progressive LED initialization (buffer holds ~64 packets)
-- Handle all MIDI input via `onMidiMessageInternal`/`onMidiMessageExternal`
-
-**Lifecycle:**
-1. Host clears all LEDs progressively (shows "Loading...")
-2. ~500ms delay before calling module's `init()`
-3. Module runs with full UI control
-4. Shift+Vol+Jog Click triggers exit (host-level, always works)
-5. Host clears LEDs progressively (shows "Exiting...")
-6. Returns to Move
-
-**LED Buffer Constraint:**
-The MIDI output buffer holds ~64 USB-MIDI packets. Sending more than 60 LED commands per frame causes overflow. Use progressive LED initialization:
+Requirements: handle all MIDI via `onMidiMessageInternal/External`; use progressive LED init (output buffer holds ~64 packets, >60/frame overflows):
 
 ```javascript
-const LEDS_PER_FRAME = 8;
 let ledInitPending = true;
 let ledInitIndex = 0;
-
 globalThis.tick = function() {
-    if (ledInitPending) {
-        // Set 8 LEDs per frame
-        setupLedBatch();
-    }
+    if (ledInitPending) setupLedBatch();  // 8 LEDs/frame
     drawUI();
 };
 ```
 
-**Key Files:**
-- `src/shadow/shadow_ui.js` - Overtake module loading and lifecycle
-- `src/modules/controller/ui.js` - Example overtake module
+Lifecycle: host clears LEDs ("Loading...") → ~500 ms → `init()` → run → Shift+Vol+Jog Click → host clears LEDs ("Exiting...") → return to Move.
 
-**External Device Protocols:**
-If your overtake module communicates with an external USB device that expects an initialization handshake (like the M8's Launchpad Pro protocol), be proactive—don't wait for the device to initiate. The device may have already sent its request before your module loaded due to the ~500ms init delay. Instead:
-- Send your identification/init message in `init()` immediately
-- Optionally retry periodically in `tick()` until connection is confirmed
-- Detect connection from any valid response (not just the specific handshake message)
+Reference: `src/modules/controller/ui.js`.
+
+**External device handshakes** (e.g. M8 Launchpad Pro): be proactive — send your init in `init()` immediately; device may have sent its request during the ~500 ms delay. Optionally retry in `tick()` until any valid response confirms connection.
 
 ## Module Store
 
-The Module Store (`store` module) downloads and installs external modules from GitHub releases. The catalog is fetched from:
-`https://raw.githubusercontent.com/charlesvestal/schwung/main/module-catalog.json`
+`store` module downloads + installs externals from GitHub releases. Catalog: `https://raw.githubusercontent.com/charlesvestal/schwung/main/module-catalog.json`.
 
 ### Catalog Format (v2)
 
 ```json
 {
   "catalog_version": 2,
-  "host": {
-    "name": "Schwung",
-    "github_repo": "charlesvestal/schwung",
-    "asset_name": "schwung.tar.gz",
-    "latest_version": "0.3.11",
-    "download_url": "https://github.com/.../schwung.tar.gz",
-    "min_host_version": "0.1.0"
-  },
-  "modules": [
-    {
-      "id": "mymodule",
-      "name": "My Module",
-      "description": "What it does",
-      "author": "Your Name",
-      "component_type": "sound_generator",
-      "github_repo": "username/move-anything-mymodule",
-      "default_branch": "main",
-      "asset_name": "mymodule-module.tar.gz",
-      "min_host_version": "0.1.0",
-      "requires": "Optional: external assets needed (e.g. ROM files, .sf2 soundfonts)"
-    }
-  ]
+  "host": {"name": "Schwung", "github_repo": "charlesvestal/schwung",
+           "asset_name": "schwung.tar.gz", "latest_version": "0.3.11",
+           "download_url": "https://.../schwung.tar.gz", "min_host_version": "0.1.0"},
+  "modules": [{
+    "id": "mymodule", "name": "My Module", "description": "...", "author": "...",
+    "component_type": "sound_generator",
+    "github_repo": "username/move-anything-mymodule", "default_branch": "main",
+    "asset_name": "mymodule-module.tar.gz", "min_host_version": "0.1.0",
+    "requires": "Optional: external assets (ROM, .sf2, etc.)"
+  }]
 }
 ```
 
-### How the Store Works
+### Flow
 
-1. Fetches `module-catalog.json` and extracts `catalog.modules` array
-2. For each module, fetches `release.json` from the module's GitHub repo (on `default_branch`)
-3. Compares `release.json` version to installed version
-4. Downloads tarball from `release.json`'s `download_url`
-5. Extracts tarball to category subdirectory (e.g., `modules/sound_generators/<id>/`)
+1. Fetch `module-catalog.json` → `modules[]`
+2. For each module, fetch `release.json` from its repo on `default_branch`
+3. Compare version to installed
+4. Download tarball from `release.json.download_url`
+5. Extract to category subdir (`modules/<component_type>s/<id>/`)
 
-### release.json
-
-Each module repo must have a `release.json` on its main branch. The Module Store reads this to determine the latest version and download URL. The release workflow should auto-update this file on each tagged release.
+### release.json (on module's main branch)
 
 ```json
-{
-  "version": "0.2.0",
-  "download_url": "https://github.com/username/move-anything-mymodule/releases/download/v0.2.0/mymodule-module.tar.gz"
-}
+{"version": "0.2.0",
+ "download_url": "https://github.com/user/move-anything-mymodule/releases/download/v0.2.0/mymodule-module.tar.gz"}
 ```
 
-Optional fields: `install_path`, `name`, `description`, `requires`, `post_install`, `repo_url`.
+Optional: `install_path`, `name`, `description`, `requires`, `post_install`, `repo_url`. Release workflow should auto-update this file on each tagged release.
 
-### Catalog Entry Fields
+### Catalog Entry
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `id` | Yes | Module ID (lowercase hyphenated) |
-| `name` | Yes | Display name |
-| `description` | Yes | Short description |
-| `author` | Yes | Author name |
-| `component_type` | Yes | `sound_generator`, `audio_fx`, `midi_fx`, `overtake`, `utility`, `tool` |
-| `github_repo` | Yes | GitHub `owner/repo` |
-| `default_branch` | Yes | Branch to fetch `release.json` from (usually `main`) |
-| `asset_name` | Yes | Expected tarball filename |
-| `min_host_version` | Yes | Minimum compatible host version |
-| `requires` | No | User-facing note about required external assets (e.g. ROM files, samples) |
-
-### Adding a Module to the Catalog
-
-Edit `module-catalog.json` and add an entry to the `modules` array (see format above). Ensure the module repo has a valid `release.json` on its main branch.
+Required: `id`, `name`, `description`, `author`, `component_type`, `github_repo`, `default_branch`, `asset_name`, `min_host_version`. Optional: `requires` (user-facing note about external assets like ROMs).
 
 ## External Module Development
 
-External modules live in separate repos (e.g., `move-anything-sf2`, `move-anything-obxd`).
-
-### Module Repo Structure
+External modules live in separate repos (e.g. `move-anything-sf2`, `move-anything-obxd`). Each has:
 
 ```
-move-anything-<id>/
-  src/
-    module.json       # Module metadata (id, name, version, capabilities)
-    ui.js             # JavaScript UI
-    dsp/              # Native DSP code (if applicable)
-      plugin.c/cpp
-  scripts/
-    build.sh          # Build script (creates dist/ and tarball)
-    install.sh        # Deploy to Move device
-    Dockerfile        # Cross-compilation environment
-  .github/
-    workflows/
-      release.yml     # Automated release on tag push
+src/{module.json, ui.js, dsp/}
+scripts/{build.sh, install.sh, Dockerfile}
+.github/workflows/release.yml   # Triggers on v* tags, runs build.sh in Docker, attaches dist/<id>-module.tar.gz
 ```
 
-### Build Script Requirements
+`build.sh` must cross-compile DSP for ARM64 (Docker), package to `dist/<id>/`, and produce `dist/<id>-module.tar.gz`.
 
-`scripts/build.sh` must:
-1. Cross-compile DSP code for ARM64 (via Docker)
-2. Package files to `dist/<module-id>/`
-3. Create tarball at `dist/<module-id>-module.tar.gz`
+Release: bump `src/module.json` version → commit → `git tag v0.2.0 && git push --tags`. Module Store sees it within minutes. See `BUILDING.md`.
 
-Example tarball creation (at end of build.sh):
-```bash
-# Create tarball for release
-cd dist
-tar -czvf mymodule-module.tar.gz mymodule/
-cd ..
-```
+## Documentation Index
 
-### Release Workflow
-
-`.github/workflows/release.yml` triggers on version tags:
-```yaml
-name: Release
-on:
-  push:
-    tags: ['v*']
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - run: |
-          docker build -t module-builder -f scripts/Dockerfile .
-          docker run --rm -v "$PWD:/build" -w /build module-builder ./scripts/build.sh
-      - uses: softprops/action-gh-release@v1
-        with:
-          files: dist/<module-id>-module.tar.gz
-```
-
-### Releasing a New Version
-
-1. Update version in `src/module.json`
-2. Commit: `git commit -am "bump version to 0.2.0"`
-3. Tag and push: `git tag v0.2.0 && git push --tags`
-4. GitHub Actions builds and uploads tarball to release
-
-The Module Store will see the new version within minutes.
-
-See `BUILDING.md` for detailed documentation.
-
-## Documentation
-
-Detailed documentation is in the `docs/` directory:
-- `docs/API.md` - Full JS API reference (display, MIDI, host functions, LED colors)
-- `docs/MODULES.md` - Module development guide (module.json, capabilities, tool_config, DSP plugin API, Signal Chain integration, Remote UI `web_ui.html` + `schwungRemote` postMessage API)
-- `docs/LOGGING.md` - Unified logging guide (enable/disable, JS and C APIs, log format)
-- `docs/DISPLAY.md` - Generic Display protocol (SHM format, WebSocket wire format, touch back-channel)
-- `docs/SPI_PROTOCOL.md` - Full SPI protocol reference (buffer layout, MIDI event formats, display chunking, ioctl commands)
-- `docs/REALTIME_SAFETY.md` - Realtime safety rules and JACK audio glitch root cause analysis
-- `docs/MIDI_INJECTION.md` - MIDI cable-2 injection, echo filter problem, and approaches tried (historical)
-- `docs/ADDRESSING_MOVE_SYNTHS.md` - Implementation guide for sending MIDI to Move tracks / slot synths from tools, overtake modules, and chain MIDI FX (Schw+Move). Reference: `src/modules/tools/seq-test/`.
-- `MANUAL.md` - User-facing manual (shortcuts, slots, recording, tools, modules)
-- `BUILDING.md` - Build system and cross-compilation
+- `docs/API.md` — JS API reference (display, MIDI, host fns, LED colors)
+- `docs/MODULES.md` — Module development guide (module.json, capabilities, tool_config, DSP API, Signal Chain integration, Remote UI `web_ui.html` + `schwungRemote` postMessage)
+- `docs/LOGGING.md` — Unified logging
+- `docs/DISPLAY.md` — Generic Display protocol (SHM, WebSocket, touch back-channel)
+- `docs/SPI_PROTOCOL.md` — Full SPI reference
+- `docs/REALTIME_SAFETY.md` — RT rules and JACK glitch root causes
+- `docs/MIDI_INJECTION.md` — Cable-2 injection / echo filter history
+- `docs/ADDRESSING_MOVE_SYNTHS.md` — Sending MIDI to Move tracks/slot synths from tools, overtake modules, chain MIDI FX. Ref: `src/modules/tools/seq-test/`.
+- `MANUAL.md` — User-facing manual
+- `BUILDING.md` — Build system, cross-compilation
 
 ## Release Checklist
 
-Before tagging a new host release:
-
 1. **Build**: `./scripts/build.sh` succeeds
-2. **Deploy and test**: `./scripts/install.sh local --skip-modules --skip-confirmation`, verify on hardware
-3. **Version**: Update `src/host/version.txt` and `module-catalog.json` (host latest_version + download URL)
-4. **Documentation**: Update `CLAUDE.md`, `MANUAL.md`, `docs/API.md`, `docs/MODULES.md` for any new features, APIs, or changed behavior
-5. **Help files**: Update `help.json` in any modified tool modules
-6. **Module catalog**: Update `min_host_version` for any modules that depend on new host features
-7. **Commit, tag, push**: `git tag v0.X.0 && git push --tags`
-8. **Release notes**: Add notes to the GitHub release via `gh release edit`
+2. **Deploy + test**: `./scripts/install.sh local --skip-modules --skip-confirmation`, verify on hardware
+3. **Version**: bump `src/host/version.txt` and `module-catalog.json` (host `latest_version` + download URL)
+4. **Docs**: update `CLAUDE.md`, `MANUAL.md`, `docs/API.md`, `docs/MODULES.md` for new features / changed behavior
+5. **Help files**: update `help.json` in modified tool modules
+6. **Module catalog**: bump `min_host_version` for modules depending on new host features
+7. **Commit + tag**: `git tag v0.X.0 && git push --tags`
+8. **Release notes**: `gh release edit` with concise bullets
 
 ## Dependencies
 
-- QuickJS: libs/quickjs/
-- stb_image.h: src/lib/
-- curl: libs/curl/ (for Module Store downloads)
+QuickJS (`libs/quickjs/`), stb_image.h (`src/lib/`), curl (`libs/curl/`, for Module Store).
