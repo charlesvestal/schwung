@@ -87,11 +87,14 @@ src/modules/<id>/
 
 Built-in modules (in main repo):
 - `chain` - Signal Chain for combining components
-- `controller` - MIDI Controller with 16 banks
 - `store` - Module Store for downloading external modules
 - `file-browser` - File/folder browser (tool)
 - `song-mode` - Song arranger for sequencing clips (tool)
 - `wav-player` - WAV file playback (tool, used by file browser)
+
+Source-only (kept for reference, not shipped in release tarball):
+- `controller` - MIDI Controller; superseded by catalog `control` module (chaolue)
+- `tools/{ui,seq,config,splash}-test`, `text-test` - dev scaffolding
 
 ### JS Module Lifecycle
 
@@ -312,7 +315,7 @@ On-device layout:
   host/menu_ui.js
   shared/
   modules/
-    chain/, controller/, store/     # Built-in modules (root level)
+    chain/, store/                  # Built-in modules (root level)
     sound_generators/<id>/          # External sound generators
     audio_fx/<id>/                  # External audio effects
     midi_fx/<id>/                   # External MIDI effects
@@ -564,7 +567,7 @@ External modules are maintained in separate repositories and available via Modul
 **Utilities/Overtake:**
 - `m8` - Dirtywave M8 Launchpad Pro emulator
 - `sidcontrol` - SID Control for SIDaster III
-- `controller` - MIDI Controller with 16 banks (built-in)
+- `control` - Custom MIDI Controller with 16 banks (chaolue, catalog)
 
 External modules install their own Signal Chain presets via their install scripts.
 
