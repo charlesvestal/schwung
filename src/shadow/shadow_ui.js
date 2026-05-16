@@ -1685,28 +1685,137 @@ let hierEditorEditKey = "";       // full key currently being edited
 let hierEditorEditValue = null;   // stable value during edit mode
 let hierEditorChainParams = [];   // metadata from chain_params
 
-/* wav_position view-local zoom state per fullKey.
- * Opt-in: only populated when the param's meta has enable_zoom=true.
+/* wav_position view-local zoom state.
+ * Storage keyed by:
+ *   - view_group: "group:<slot>::<view_group>"  → shared by all sibling markers
+ *   - else fullKey
  * Range: zoom 0..8 = 1× .. 256× viewport width. Pan auto-tracks the
- * current marker value (no separate pan field needed).
- * Cleared on slot/module change. */
+ * active marker value (no separate pan field needed).
+ * Cleared on hierarchy editor exit. */
 const wavPositionZoomStates = new Map();
-function getWavZoomLevel(fullKey) {
-    const st = wavPositionZoomStates.get(fullKey);
+function getWavZoomStorageKey(slot, meta, fullKey) {
+    if (meta && meta.view_group) return `group:${slot}::${meta.view_group}`;
+    return fullKey;
+}
+function getWavZoomLevel(slot, meta, fullKey) {
+    const st = wavPositionZoomStates.get(getWavZoomStorageKey(slot, meta, fullKey));
     return st ? st.zoom : 0;
 }
-function setWavZoomLevel(fullKey, zoom) {
-    let z = Math.floor(Number(zoom) || 0);
-    if (z < 0) z = 0;
+function setWavZoomLevel(slot, meta, fullKey, zoom) {
+    const k = getWavZoomStorageKey(slot, meta, fullKey);
+    let z = Number(zoom);
+    if (!Number.isFinite(z) || z < 0) z = 0;
     if (z > 8) z = 8;
-    if (z === 0) {
-        wavPositionZoomStates.delete(fullKey);
+    if (z <= 0.0001) {
+        wavPositionZoomStates.delete(k);
         return 0;
     }
-    wavPositionZoomStates.set(fullKey, { zoom: z });
+    wavPositionZoomStates.set(k, { zoom: z });
     return z;
 }
-function clearWavZoomStates() { wavPositionZoomStates.clear(); }
+/* Knob-engine accumulator state for the multi-marker zoom override (knob 8). */
+const wavZoomKnobStates = new Map();
+function getWavZoomKnobState(groupKey, currentZoom) {
+    let st = wavZoomKnobStates.get(groupKey);
+    if (!st) {
+        st = knobInit(currentZoom);
+        wavZoomKnobStates.set(groupKey, st);
+    } else {
+        st.value = currentZoom;
+    }
+    return st;
+}
+function clearWavZoomStates() {
+    wavPositionZoomStates.clear();
+    wavZoomKnobStates.clear();
+}
+
+/* Collect wav_position params in the current hierarchy level that declare
+ * the given view_group. Returns ordered list of {key, fullKey, meta},
+ * ordered as they appear in hierEditorParams (declaration order). */
+function getWavViewGroupMembers(viewGroup) {
+    if (!viewGroup) return [];
+    const out = [];
+    const seen = new Set();
+    for (const p of hierEditorParams) {
+        const key = (typeof p === "string") ? p : (p && p.key ? p.key : null);
+        if (!key || seen.has(key)) continue;
+        const meta = getParamMetadata(key);
+        if (!meta || meta.ui_type !== "wav_position") continue;
+        if (meta.view_group !== viewGroup) continue;
+        seen.add(key);
+        out.push({ key, fullKey: buildHierarchyParamKey(key), meta });
+    }
+    return out;
+}
+
+/* Returns the active view group members if the user is currently editing
+ * a wav_position with view_group set; otherwise []. */
+function getActiveWavViewGroup() {
+    if (!hierEditorEditMode) return [];
+    const sel = getSelectedHierarchyEditableKey();
+    if (!sel) return [];
+    const meta = getParamMetadata(sel);
+    if (!meta || meta.ui_type !== "wav_position" || !meta.view_group) return [];
+    return getWavViewGroupMembers(meta.view_group);
+}
+
+/* True when the user is currently inside a wav_position fullscreen editor. */
+function isInWavPositionEditor() {
+    if (view !== VIEWS.HIERARCHY_EDITOR) return false;
+    if (!hierEditorEditMode) return false;
+    const sel = getSelectedHierarchyEditableKey();
+    if (!sel) return false;
+    const meta = getParamMetadata(sel);
+    return !!(meta && meta.ui_type === "wav_position");
+}
+
+/* Per-knob role while inside a wav_position editor (single or multi marker).
+ *   { type: "zoom",   ... }    knobIndex === 7  → always the zoom knob
+ *   { type: "marker", member } knobIndex < N    → group member (multi only)
+ *   { type: "silent" }         multi-marker, other knob → swallowed
+ *   null                       → not in editor, or single-marker non-zoom knob
+ *                                (let normal flow handle it, with enum silencing). */
+function getMultiMarkerKnobRole(knobIndex) {
+    if (!isInWavPositionEditor()) return null;
+    const sel = getSelectedHierarchyEditableKey();
+    const selMeta = getParamMetadata(sel);
+    const selFullKey = buildHierarchyParamKey(sel);
+    const group = selMeta.view_group ? getWavViewGroupMembers(selMeta.view_group) : [];
+    const isMulti = group.length > 1;
+
+    if (knobIndex === 7) {
+        /* Anchor for zoom state: prefer first group member when grouped,
+         * else the selected param itself. */
+        const anchor = isMulti
+            ? group[0]
+            : { key: sel, fullKey: selFullKey, meta: selMeta };
+        return { type: "zoom", group, anchor };
+    }
+    if (isMulti) {
+        if (knobIndex >= 0 && knobIndex < group.length) {
+            return { type: "marker", member: group[knobIndex], group };
+        }
+        return { type: "silent", group };
+    }
+    return null;
+}
+
+/* Set the multi-marker view's active marker to the given group member by
+ * retargeting hierEditor selection state. */
+function selectActiveWavMarker(member) {
+    if (!member || !member.key) return;
+    const idx = hierEditorParams.findIndex((p) => {
+        const k = (typeof p === "string") ? p : (p && p.key ? p.key : null);
+        return k === member.key;
+    });
+    if (idx < 0) return;
+    if (hierEditorSelectedIdx === idx) return;
+    hierEditorSelectedIdx = idx;
+    hierEditorEditKey = member.fullKey;
+    hierEditorEditValue = null;  /* force renderer to re-read the new marker's value */
+    needsRedraw = true;
+}
 
 /* Knob state per fullKey for acceleration continuity across consecutive jog turns. */
 const hierKnobStates = new Map();
@@ -1915,6 +2024,8 @@ function buildWavPositionParamMeta(meta) {
         : 0.1;
     const filepathParam = String(getMetaOption(meta, "filepath_param", "") || "");
     const enableZoom = parseMetaBool(getMetaOption(meta, "enable_zoom", false));
+    const viewGroup = String(getMetaOption(meta, "view_group", "") || "");
+    const markerLabel = String(getMetaOption(meta, "marker_label", "") || "");
     return {
         ...meta,
         type: "float",
@@ -1927,6 +2038,8 @@ function buildWavPositionParamMeta(meta) {
         wav_mode: mode,
         filepath_param: filepathParam,
         enable_zoom: enableZoom,
+        view_group: viewGroup,
+        marker_label: markerLabel,
         expanded_type: "wav_position"
     };
 }
@@ -8454,9 +8567,15 @@ function getWavPositionSetPrecision(meta) {
     const baseStep = Math.abs(parseMetaNumber(meta && meta.step, 0.01));
     const shiftMult = getWavPositionShiftMultiplier(meta);
     const fineStep = baseStep > 0 ? Math.abs(baseStep * shiftMult) : 0;
-    const effectiveStep = fineStep > 0
+    let effectiveStep = fineStep > 0
         ? Math.min(baseStep || fineStep, fineStep)
         : baseStep;
+    /* When the knob can zoom, step is dynamically divided by up to 2^8 (256x).
+     * Account for the smallest possible step or formatParamForSet will round
+     * away sub-thousandth changes and the marker won't move at high zoom. */
+    if (meta && meta.enable_zoom) {
+        effectiveStep = effectiveStep / 256;
+    }
     const fallback = (unit === "sec" || unit === "s") ? 3 : 2;
     const precision = getStepPrecision(effectiveStep, fallback);
     return Math.max(fallback, precision);
@@ -8626,11 +8745,12 @@ function adjustHierSelectedParam(delta) {
         return;
     }
 
-    /* wav_position with enable_zoom: Shift+jog adjusts sticky zoom level
-     * instead of value (one zoom step per click, no value change). */
-    if (meta && meta.ui_type === "wav_position" && meta.enable_zoom && isShiftHeld()) {
-        const cur = getWavZoomLevel(fullKey);
-        setWavZoomLevel(fullKey, cur + (delta > 0 ? 1 : -1));
+    /* Legacy single-marker zoom (no view_group): Shift+jog still adjusts zoom
+     * one step per click. Multi-marker (view_group) views use the dedicated
+     * zoom knob instead — Shift+jog there is plain fine-step value editing. */
+    if (meta && meta.ui_type === "wav_position" && meta.enable_zoom && !meta.view_group && isShiftHeld()) {
+        const cur = getWavZoomLevel(hierEditorSlot, meta, fullKey);
+        setWavZoomLevel(hierEditorSlot, meta, fullKey, cur + (delta > 0 ? 1 : -1));
         needsRedraw = true;
         return;
     }
@@ -8648,7 +8768,7 @@ function adjustHierSelectedParam(delta) {
     /* wav_position with enable_zoom: when zoomed in, scale step inversely
      * so jog-click moves a proportional fraction of the visible viewport. */
     if (meta && meta.ui_type === "wav_position" && meta.enable_zoom) {
-        const z = getWavZoomLevel(fullKey);
+        const z = getWavZoomLevel(hierEditorSlot, meta, fullKey);
         if (z > 0) step = step / Math.pow(2, z);
     }
     const min = meta && typeof meta.min === "number" ? meta.min : 0;
@@ -8698,6 +8818,25 @@ function buildKnobContextForKnob(knobIndex) {
             displayName,
             title: `S${hierEditorSlot + 1}: ${pluginName} ${displayName}`
         };
+    }
+    /* Multi-marker editor view: knob 8 is the dedicated zoom knob even if the
+     * level didn't declare a 7th knob, and knobs 1..N map to group members
+     * (overriding whatever the level put there). Return a synthetic ctx so
+     * adjustKnobAndShow / processPendingHierKnob can intercept. */
+    if (view === VIEWS.HIERARCHY_EDITOR) {
+        const mmRole = getMultiMarkerKnobRole(knobIndex);
+        if (mmRole && (mmRole.type === "zoom" || mmRole.type === "marker")) {
+            return {
+                slot: hierEditorSlot,
+                key: null,
+                fullKey: null,
+                meta: null,
+                pluginName: "",
+                displayName: mmRole.type === "zoom" ? "Zoom" : (mmRole.member.meta.name || mmRole.member.key),
+                title: mmRole.type === "zoom" ? "Zoom" : (mmRole.member.meta.name || mmRole.member.key),
+                noMapping: true
+            };
+        }
     }
 
     /* Chain editor with component selected */
@@ -9015,11 +9154,18 @@ function adjustKnobAndShow(knobIndex, delta) {
             return true;
         }
         if (ctx.noMapping || !ctx.fullKey) {
-            /* No mapping - show "not mapped" */
-            debugLog(`adjustKnobAndShow: noMapping or no fullKey, showing not mapped`);
-            showOverlay(`Knob ${knobIndex + 1}`, "not mapped");
-            needsRedraw = true;
-            return true;
+            /* Multi-marker view overrides the level's knob row — knob 8 is
+             * the zoom override and knobs 1..N are group markers, both of
+             * which need to accumulate delta even when the level didn't
+             * declare them. */
+            const mmRole = getMultiMarkerKnobRole(knobIndex);
+            const overrideAccepts = mmRole && (mmRole.type === "zoom" || mmRole.type === "marker");
+            if (!overrideAccepts) {
+                debugLog(`adjustKnobAndShow: noMapping or no fullKey, showing not mapped`);
+                showOverlay(`Knob ${knobIndex + 1}`, "not mapped");
+                needsRedraw = true;
+                return true;
+            }
         }
 
         /* Accumulate delta for throttled processing */
@@ -9118,8 +9264,71 @@ function processPendingHierKnob() {
     const delta = pendingHierKnobDelta;
     pendingHierKnobDelta = 0;  /* Clear accumulated delta */
 
+    /* Multi-marker view overrides the level's knob row entirely. Compute the
+     * knob's role first so non-group knob mappings (loop_mode, xfade, etc.)
+     * don't leak into the editor. */
+    const mmRole = getMultiMarkerKnobRole(knobIndex);
+    if (mmRole) {
+        if (mmRole.type === "zoom") {
+            const anchor = mmRole.anchor;
+            const groupKey = anchor.meta.view_group
+                ? `group:${hierEditorSlot}::${anchor.meta.view_group}`
+                : `single:${anchor.fullKey}`;
+            const cur = getWavZoomLevel(hierEditorSlot, anchor.meta, anchor.fullKey);
+            /* Float zoom with step 0.5 → half-octave per click; knob_engine
+             * accel divides further so slow turns feel smooth, fast turns snap. */
+            const cfg = { type: "float", min: 0, max: 8, step: 0.5 };
+            const st = getWavZoomKnobState(groupKey, cur);
+            const newZoom = knobTick(st, cfg, delta, Date.now());
+            setWavZoomLevel(hierEditorSlot, anchor.meta, anchor.fullKey, newZoom);
+            needsRedraw = true;
+            const factor = Math.pow(2, newZoom);
+            const label = newZoom > 0.01 ? `${factor.toFixed(factor < 10 ? 1 : 0)}x` : "1x (off)";
+            showOverlay("Zoom", label);
+            return;
+        }
+        if (mmRole.type === "marker") {
+            const m = mmRole.member;
+            const slot = hierEditorSlot;
+            /* Read current via the same path other handlers use. */
+            const currentMarkerVal = getSlotParam(slot, m.fullKey);
+            if (currentMarkerVal === null) return;
+            const num = parseFloat(currentMarkerVal);
+            if (isNaN(num)) return;
+            const knobCfg = knobConfigFromMeta(m.meta);
+            const z = getWavZoomLevel(slot, m.meta, m.fullKey);
+            if (z > 0) knobCfg.step = knobCfg.step / Math.pow(2, z);
+            const st = getPhysKnobState(m.fullKey, num);
+            const newVal = knobTick(st, knobCfg, delta, Date.now());
+            const formatted = formatParamForSet(newVal, m.meta);
+            setSlotParam(slot, m.fullKey, formatted);
+            if (hierEditorEditMode && hierEditorEditKey === m.fullKey) {
+                hierEditorEditValue = formatted;
+            }
+            knobValueCache[knobIndex] = newVal;
+            showOverlay(m.meta.name || m.key, formatParamForOverlay(newVal, m.meta));
+            needsRedraw = true;
+            return;
+        }
+        /* unmapped — swallow the turn silently */
+        return;
+    }
+
     const ctx = getKnobContext(knobIndex);
     if (!ctx || ctx.noMapping || !ctx.fullKey) return;
+
+    /* Single-marker wav_position editor view: silence enum knob turns so the
+     * user can't toggle e.g. loop_mode by accident from the editor. The
+     * multi-marker path already covered this by routing knobs 1..N to group
+     * members; this catches the single-marker case (where the group has 0
+     * or 1 visible members because dependent params are hidden). */
+    if (hierEditorEditMode && ctx.meta && ctx.meta.type === "enum") {
+        const sel = getSelectedHierarchyEditableKey();
+        const selMeta = sel ? getParamMetadata(sel) : null;
+        if (selMeta && selMeta.ui_type === "wav_position") {
+            return;
+        }
+    }
 
     /* Get current value from cache (one-time IPC read, then local) */
     const currentVal = getKnobCachedValue(knobIndex, ctx);
@@ -9198,7 +9407,7 @@ function processPendingHierKnob() {
     /* wav_position with enable_zoom: scale step by 1/2^zoom so knob movement
      * stays proportional to the visible viewport. */
     if (ctx.meta && ctx.meta.ui_type === "wav_position" && ctx.meta.enable_zoom) {
-        const z = getWavZoomLevel(ctx.fullKey);
+        const z = getWavZoomLevel(ctx.slot, ctx.meta, ctx.fullKey);
         if (z > 0) knobCfg.step = knobCfg.step / Math.pow(2, z);
     }
     const st = getPhysKnobState(ctx.fullKey, num);
@@ -9208,7 +9417,15 @@ function processPendingHierKnob() {
     knobValueCache[knobIndex] = newVal;
 
     /* Set the new value (fire-and-forget write, no blocking read) */
-    setSlotParam(ctx.slot, ctx.fullKey, formatParamForSet(newVal, ctx.meta));
+    const formattedKnobVal = formatParamForSet(newVal, ctx.meta);
+    setSlotParam(ctx.slot, ctx.fullKey, formattedKnobVal);
+
+    /* If a wav_position fullscreen editor is showing this param, keep its
+     * stable edit value in sync — otherwise the renderer reads stale state
+     * and the marker doesn't move when turning the knob. */
+    if (hierEditorEditMode && hierEditorEditKey === ctx.fullKey) {
+        hierEditorEditValue = formattedKnobVal;
+    }
 
     /* Skip refreshHierarchyVisibility for float/int turns — it does IPC
      * (evaluateVisibilityCondition) and invalidates the context cache
@@ -9862,7 +10079,7 @@ function drawWavPositionEditor(selectedKey, selectedMeta) {
     const ratio = Math.max(0, Math.min(1, Number(preview.ratio) || 0));
     const shiftHeld = isShiftHeld();
     const enableZoom = !!(selectedMeta && selectedMeta.enable_zoom);
-    const zoomLevel = enableZoom ? getWavZoomLevel(fullKey) : 0;
+    const zoomLevel = enableZoom ? getWavZoomLevel(hierEditorSlot, selectedMeta, fullKey) : 0;
     /* Two regimes:
      *   enable_zoom + state-driven sticky zoom (zoomLevel > 0 → window = 1/2^z)
      *   legacy: shift-held preview zoom (10% window) when no sticky state
@@ -9873,6 +10090,7 @@ function drawWavPositionEditor(selectedKey, selectedMeta) {
     } else {
         zoomWindow = shiftHeld ? 0.1 : 1.0;
     }
+    /* Center viewport on the active marker (= currently edited param). */
     const zoomStart = Math.max(0, Math.min(1 - zoomWindow, ratio - (zoomWindow / 2)));
     const zoomEnd = zoomStart + zoomWindow;
     const zoomRange = Math.max(0.000001, zoomEnd - zoomStart);
@@ -9890,13 +10108,22 @@ function drawWavPositionEditor(selectedKey, selectedMeta) {
         ? String(selectedMeta.label || selectedMeta.name)
         : selectedKey;
     let suffix = "";
-    if (zoomLevel > 0) {
-        suffix = ` ${Math.pow(2, zoomLevel)}x`;
+    if (zoomLevel > 0.01) {
+        const factor = Math.pow(2, zoomLevel);
+        suffix = ` ${factor.toFixed(factor < 10 ? 1 : 0)}x`;
     } else if (shiftHeld) {
         suffix = " [fine]";
     }
     const valueText = `${getWavPositionDisplayText(preview.value, selectedMeta, preview.durationSec)}${suffix}`;
     const sourceText = wavPositionGetBaseName(preview.path || "") || "(no file)";
+
+    /* Multi-marker overlay support: when this wav_position is part of a
+     * view_group, collect all sibling wav_position members in the same
+     * group so we can draw their markers on the same waveform. */
+    const groupMembers = (selectedMeta && selectedMeta.view_group)
+        ? getWavViewGroupMembers(selectedMeta.view_group)
+        : [];
+    const isMultiMarker = groupMembers.length > 1;
 
     print(Math.max(0, Math.floor((SCREEN_WIDTH - label.length * 5) / 2)), 2, truncateText(label, 24), 1);
     draw_rect(plotX, plotY, plotW, plotH, 1);
@@ -9915,6 +10142,10 @@ function drawWavPositionEditor(selectedKey, selectedMeta) {
             const mode = preview.mode === "start" || preview.mode === "end"
                 ? preview.mode
                 : "position";
+            /* In multi-marker mode the outline-on-one-side shading is
+             * misleading because there are several reference points;
+             * fall back to plain filled waveform. */
+            const drawOutline = !isMultiMarker;
             for (let i = 0; i < innerW; i++) {
                 const colStartNorm = zoomStart + ((i / innerW) * zoomRange);
                 const colEndNorm = zoomStart + (((i + 1) / innerW) * zoomRange);
@@ -9925,8 +10156,10 @@ function drawWavPositionEditor(selectedKey, selectedMeta) {
                 const top = Math.max(plotY + 1, midY - half);
                 const bottom = Math.min(plotY + plotH - 2, midY + half);
                 let outline = false;
-                if (mode === "start" && x <= cursorX) outline = true;
-                if (mode === "end" && x >= cursorX) outline = true;
+                if (drawOutline) {
+                    if (mode === "start" && x <= cursorX) outline = true;
+                    if (mode === "end" && x >= cursorX) outline = true;
+                }
 
                 if (!outline) {
                     for (let y = top; y <= bottom; y++) {
@@ -9941,8 +10174,46 @@ function drawWavPositionEditor(selectedKey, selectedMeta) {
         }
     }
 
-    for (let y = plotY + 1; y < plotY + plotH - 1; y++) {
-        set_pixel(cursorX, y, 1);
+    if (isMultiMarker) {
+        /* Draw all sibling markers; active = solid line, others = dashed. */
+        for (const m of groupMembers) {
+            const mPreview = getWavPositionPreviewData(m.fullKey, m.meta);
+            const mRatio = Math.max(0, Math.min(1, Number(mPreview.ratio) || 0));
+            const isActive = (m.fullKey === fullKey);
+            let mX;
+            let offscreen = 0;  /* -1 = left, +1 = right, 0 = in view */
+            if (mRatio < zoomStart) {
+                mX = plotX + 1;
+                offscreen = -1;
+            } else if (mRatio > zoomEnd) {
+                mX = plotX + innerW;
+                offscreen = 1;
+            } else {
+                const norm = (mRatio - zoomStart) / zoomRange;
+                mX = plotX + 1 + Math.round(norm * (innerW - 1));
+            }
+            /* Marker line: active solid every pixel, others every other pixel */
+            for (let y = plotY + 1; y < plotY + plotH - 1; y++) {
+                if (isActive || ((y & 1) === 0)) {
+                    set_pixel(mX, y, 1);
+                }
+            }
+            /* Tiny label above plot. */
+            const lbl = (m.meta && m.meta.marker_label) ? m.meta.marker_label
+                       : (m.meta && m.meta.name ? String(m.meta.name).slice(0, 2) : String(m.key).slice(0, 2));
+            const lblX = Math.max(0, Math.min(SCREEN_WIDTH - lbl.length * 5, mX - Math.floor(lbl.length * 5 / 2)));
+            print(lblX, plotY - 8, lbl, 1);
+            /* Offscreen arrow at clamped edge. */
+            if (offscreen !== 0) {
+                const arrow = offscreen < 0 ? "<" : ">";
+                print(mX - (offscreen < 0 ? 0 : 4), midY - 3, arrow, 1);
+            }
+        }
+    } else {
+        /* Single-marker legacy: just the active cursor. */
+        for (let y = plotY + 1; y < plotY + plotH - 1; y++) {
+            set_pixel(cursorX, y, 1);
+        }
     }
 
     drawFooter({
@@ -11961,10 +12232,14 @@ function handleSelect() {
                         if (!hierEditorEditMode) {
                             if (beginHierarchyParamEdit(selectedKey)) {
                                 hierEditorEditMode = true;
+                                /* Knob context override depends on edit mode +
+                                 * multi-marker role; force re-evaluation. */
+                                invalidateKnobContextCache();
                             }
                         } else {
                             hierEditorEditMode = false;
                             resetHierarchyEditState();
+                            invalidateKnobContextCache();
                         }
                     }
                 }
@@ -15541,6 +15816,32 @@ globalThis.onMidiMessageInternal = function(data) {
     if ((status & 0xF0) === MidiNoteOn && d2 > 0) {
         if (d1 >= MoveKnob1Touch && d1 <= MoveKnob8Touch) {
             const knobIndex = d1 - MoveKnob1Touch;
+
+            /* Multi-marker view overrides the level's knob row:
+             *   marker knobs (1..N) → switch active marker + show its value
+             *   zoom knob (8)       → show current zoom level
+             *   unmapped (rest)     → silent, no overlay */
+            const mmRole = getMultiMarkerKnobRole(knobIndex);
+            if (mmRole) {
+                if (mmRole.type === "marker") {
+                    selectActiveWavMarker(mmRole.member);
+                    const val = getSlotParam(hierEditorSlot, mmRole.member.fullKey);
+                    showOverlay(mmRole.member.meta.name || mmRole.member.key,
+                                formatParamForOverlay(parseFloat(val), mmRole.member.meta));
+                    return;
+                }
+                if (mmRole.type === "zoom") {
+                    const anchor = mmRole.anchor;
+                    const cur = getWavZoomLevel(hierEditorSlot, anchor.meta, anchor.fullKey);
+                    const factor = Math.pow(2, cur);
+                    const label = cur > 0.01 ? `${factor.toFixed(factor < 10 ? 1 : 0)}x` : "1x (off)";
+                    showOverlay("Zoom", label);
+                    return;
+                }
+                /* unmapped — swallow the touch so the user doesn't see
+                 * stale level mappings (like loop_mode). */
+                return;
+            }
 
             /* Use shared knob overlay for hierarchy/chain editor contexts */
             if (showKnobOverlay(knobIndex)) {
