@@ -526,6 +526,7 @@ let updateDetailModule = null;        // Module being viewed in update detail
 /* Host-side tracking for Shift+Vol+Jog escape (redundant with shim, but ensures escape always works) */
 let hostVolumeKnobTouched = false;
 let hostShiftHeld = false;  /* Local shift tracking - shim tracking doesn't work in overtake mode */
+let hostMuteHeld = false;   /* Mute (CC 88) held — used as a modifier for Mute+JogClick bypass */
 
 /* Deferred module init - clear LEDs and wait before calling init() */
 let overtakeInitPending = false;
@@ -11495,6 +11496,18 @@ function handleSelect() {
                 const cfg = chainConfigs[selectedSlot];
                 const moduleData = cfg && cfg[comp.key];
 
+                /* Mute+JogClick: toggle bypass on a populated module */
+                if (hostMuteHeld && moduleData && moduleData.module) {
+                    const dspPrefix = comp.key === "midiFx" ? "midi_fx1" : comp.key;
+                    const key = `${dspPrefix}:bypassed`;
+                    const cur = parseInt(getSlotParam(selectedSlot, key) || "0", 10);
+                    const next = cur ? 0 : 1;
+                    setSlotParam(selectedSlot, key, String(next));
+                    announce(next ? `${comp.label} bypassed` : `${comp.label} active`);
+                    needsRedraw = true;
+                    break;
+                }
+
                 debugLog(`CHAIN_EDIT select: slot=${selectedSlot}, comp=${comp?.key}, moduleData=${JSON.stringify(moduleData)}`);
 
                 if (moduleData && moduleData.module) {
@@ -12899,6 +12912,22 @@ function drawChainEdit() {
         const textX = x + Math.floor((BOX_W - abbrev.length * 5) / 2);
         const textY = BOX_Y + 5;
         print(textX, textY, abbrev, textColor);
+
+        /* Draw bypass 'B' marker inside box top-right when this component is bypassed.
+         * 3x4 glyph; inverts color with the box fill like the abbrev does. */
+        if (comp.key !== "settings") {
+            const dspPrefix = comp.key === "midiFx" ? "midi_fx1" : comp.key;
+            if (parseInt(getSlotParam(selectedSlot, `${dspPrefix}:bypassed`) || "0", 10) === 1) {
+                const bx = x + BOX_W - 5;
+                const by = BOX_Y + 2;
+                const bc = textColor;
+                /* "B" glyph: ##. / #.# / ##. / ### */
+                set_pixel(bx,     by,     bc); set_pixel(bx + 1, by,     bc);
+                set_pixel(bx,     by + 1, bc); set_pixel(bx + 2, by + 1, bc);
+                set_pixel(bx,     by + 2, bc); set_pixel(bx + 1, by + 2, bc);
+                set_pixel(bx,     by + 3, bc); set_pixel(bx + 1, by + 3, bc); set_pixel(bx + 2, by + 3, bc);
+            }
+        }
 
         /* Draw LFO indicator above box: ~1, ~2, or ~1+2 using 4px-high tiny digits */
         const lfoInfo = lfoTargets[comp.key];
@@ -15234,6 +15263,10 @@ globalThis.onMidiMessageInternal = function(data) {
     /* Always track shift state (CC 49), even when canvas or other views consume MIDI */
     if ((status & 0xF0) === 0xB0 && d1 === 49) {
         hostShiftHeld = (d2 > 0);
+    }
+    /* Always track mute state (CC 88) — modifier for Mute+JogClick module-bypass shortcut */
+    if ((status & 0xF0) === 0xB0 && d1 === 88) {
+        hostMuteHeld = (d2 > 0);
     }
 
     /* Debug: log all MIDI when in overtake mode to diagnose escape issues */
