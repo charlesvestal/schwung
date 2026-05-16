@@ -4242,11 +4242,13 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
     }
 
     if (synth_loaded()) {
-        /* Get audio from synth (or silence if bypassed — MIDI still flows) */
+        /* Always render so synth state advances (envelopes, LFOs, phases).
+         * If bypassed, zero the output afterward — downstream FX still see
+         * silence as input, but the synth's internal time doesn't freeze, so
+         * unbypass resumes cleanly without a burst. */
+        synth_render_block(out_interleaved_lr, frames);
         if (g_synth_bypassed) {
             memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
-        } else {
-            synth_render_block(out_interleaved_lr, frames);
         }
 
         /* Process through audio FX chain */
@@ -8802,14 +8804,18 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
     /* Process MIDI FX tick (for arpeggiator timing) */
     v2_tick_midi_fx(inst, frames);
 
-    /* Render synth (or silence if bypassed — MIDI still flows so voices age) */
-    if (inst->synth_bypassed) {
-        memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
-    } else if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->render_block) {
+    /* Always render so synth state advances (envelopes, LFOs, phases).
+     * If bypassed, zero the buffer afterward — downstream FX still see
+     * silence as input but the synth's internal time doesn't freeze, so
+     * unbypass resumes cleanly without a burst. */
+    if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->render_block) {
         inst->synth_plugin_v2->render_block(inst->synth_instance, out_interleaved_lr, frames);
     } else if (inst->synth_plugin && inst->synth_plugin->render_block) {
         inst->synth_plugin->render_block(out_interleaved_lr, frames);
     } else {
+        memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
+    }
+    if (inst->synth_bypassed) {
         memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
     }
 
