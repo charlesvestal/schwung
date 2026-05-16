@@ -14191,15 +14191,18 @@ globalThis.init = function() {
                 }
                 try {
                     const parsed = JSON.parse(raw);
-                    if (parsed && parsed.synth && parsed.synth.bypassed) {
+                    /* Autosave wraps the patch as {name, version, modified, chain: ...}.
+                     * Older legacy files might be unwrapped — accept either shape. */
+                    const chain = (parsed && parsed.chain) ? parsed.chain : parsed;
+                    if (chain && chain.synth && chain.synth.bypassed) {
                         setSlotParam(i, "synth:bypassed", "1");
                     }
-                    if (parsed && Array.isArray(parsed.midi_fx) && parsed.midi_fx[0] && parsed.midi_fx[0].bypassed) {
+                    if (chain && Array.isArray(chain.midi_fx) && chain.midi_fx[0] && chain.midi_fx[0].bypassed) {
                         setSlotParam(i, "midi_fx1:bypassed", "1");
                     }
-                    if (parsed && Array.isArray(parsed.audio_fx)) {
-                        for (let fx = 0; fx < parsed.audio_fx.length && fx < 4; fx++) {
-                            if (parsed.audio_fx[fx] && parsed.audio_fx[fx].bypassed) {
+                    if (chain && Array.isArray(chain.audio_fx)) {
+                        for (let fx = 0; fx < chain.audio_fx.length && fx < 4; fx++) {
+                            if (chain.audio_fx[fx] && chain.audio_fx[fx].bypassed) {
                                 setSlotParam(i, `fx${fx + 1}:bypassed`, "1");
                             }
                         }
