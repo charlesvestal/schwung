@@ -561,6 +561,16 @@ Long-press shortcuts (active in modes Both / Long Press):
 
 Long-press is suppressed for the rest of a track press as soon as the volume knob is touched (so Track-hold + knob to adjust track volume never opens shadow UI). Tracked by `track_vol_touched_during_press[]` in `schwung_shim.c`.
 
+Other shortcuts (active in any mode while shadow UI is shown):
+
+- **Mute + Jog Click** on a focused chain or Master FX module: Toggle bypass for that module. Audio passes through unchanged; MIDI FX become passthrough; synth render is silenced while MIDI still flows so the synth state advances (downstream FX tails ring out, and unbypass is clean). A 4-row 'B' glyph appears above the module's box, in the same style as the LFO `~N` indicator.
+- **Mute + Track 1-4**: Toggle shadow slot mute (existing).
+- **Shift + Mute + Track 1-4**: Toggle shadow slot solo (existing).
+
+Plain Mute is blocked from reaching Move firmware while shadow UI is shown, so a stray Mute press doesn't toggle Move's selected-track mute mid-combo. Move's native Mute behavior is unchanged when shadow UI is dismissed.
+
+Bypass state persists across reboot via the per-slot autosave (`slot_N.json` for chain components, `master_fx_N.json` for Master FX). Patch-library reloads start with bypass=0 — bypass is a runtime toggle, not part of saved presets.
+
 ### Quantized Sampler
 
 - Shift+Sample opens the sampler
