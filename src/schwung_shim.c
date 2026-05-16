@@ -1714,6 +1714,52 @@ static void shadow_inprocess_render_to_buffer(void) {
  * Tracks without active FX pass through at Move's volume level.
  * This eliminates dry signal leakage entirely (no subtraction needed).
  */
+/* ============================================================================
+ * Latency comp: Schwung-side delay ring
+ * ============================================================================
+ * When latency_comp_active and rebuild_from_la are both true, the Schwung
+ * slot synth output is delayed by LATENCY_COMP_TARGET_SAMPLES stereo samples
+ * before combining with the (already-delayed) Move-track Link Audio. This
+ * aligns the two signals at the mailbox, so MFX and DAC see them as a
+ * single coherent moment.
+ *
+ * Ring is 2048 stereo samples (~23 ms) — well over the target so we have
+ * room to tune without resizing. Per-slot, file-static. Only touched from
+ * the SPI-callback mixer path (single writer/reader). */
+#define SHADOW_LATENCY_DELAY_RING_SAMPLES 2048
+#define SHADOW_LATENCY_DELAY_RING_MASK    (SHADOW_LATENCY_DELAY_RING_SAMPLES - 1)
+static int16_t shadow_latency_delay_ring[SHADOW_CHAIN_INSTANCES]
+                                        [SHADOW_LATENCY_DELAY_RING_SAMPLES];
+static uint32_t shadow_latency_delay_wp[SHADOW_CHAIN_INSTANCES];
+
+void shadow_latency_delay_reset(void) {
+    memset(shadow_latency_delay_ring, 0, sizeof(shadow_latency_delay_ring));
+    for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
+        shadow_latency_delay_wp[s] = 0;
+    }
+}
+
+/* Read `delay_samples` behind the write pointer into `out`, then write
+ * `in` at the current write pointer. Both buffers are FRAMES_PER_BLOCK*2
+ * stereo samples. `delay_samples` must be ≤ ring size minus block size. */
+static void shadow_latency_delay_apply(int slot, const int16_t *in,
+                                       int16_t *out,
+                                       uint32_t delay_samples)
+{
+    uint32_t wp = shadow_latency_delay_wp[slot];
+    /* Read delay_samples behind wp first (so we don't read what we're
+     * about to write). */
+    uint32_t rp = (wp - delay_samples) & SHADOW_LATENCY_DELAY_RING_MASK;
+    for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+        out[i] = shadow_latency_delay_ring[slot]
+                                          [(rp + i) & SHADOW_LATENCY_DELAY_RING_MASK];
+    }
+    for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+        shadow_latency_delay_ring[slot][(wp + i) & SHADOW_LATENCY_DELAY_RING_MASK] = in[i];
+    }
+    shadow_latency_delay_wp[slot] = wp + FRAMES_PER_BLOCK * 2;
+}
+
 static void shadow_inprocess_mix_from_buffer(void) {
     if (!shadow_inprocess_ready || !global_mmap_addr) return;
     if (!shadow_deferred_dsp_valid) return;  /* No buffer to mix yet */
@@ -1819,6 +1865,31 @@ static void shadow_inprocess_mix_from_buffer(void) {
                     wp, __ATOMIC_RELEASE);
             }
         }
+        /* Latency comp re-engage policy: latch the user toggle into the
+         * active flag only on a clean 0→1 rebuild entry. Toggling mid-
+         * playback would either punch a 9 ms hole (OFF→ON) or produce
+         * a 9 ms duplicate (ON→OFF) in Schwung audio. Also clear the
+         * Schwung-side delay ring so the first frame starts clean. */
+        if (entering_rebuild && latency_comp_active != latency_comp_user_enabled) {
+            latency_comp_active = latency_comp_user_enabled;
+            link_audio_reset_nudge_state();
+            extern void shadow_latency_delay_reset(void);
+            shadow_latency_delay_reset();
+            {
+                char msg[80];
+                snprintf(msg, sizeof(msg),
+                    "Latency Comp: now %s on Move>Schwung engage",
+                    latency_comp_active ? "ACTIVE" : "BYPASSED");
+                shadow_log(msg);
+            }
+        }
+        /* On leaving rebuild, deactivate so the delay buffer can't add
+         * latency to a path that doesn't need it. */
+        if (leaving_rebuild && latency_comp_active) {
+            latency_comp_active = 0;
+            extern void shadow_latency_delay_reset(void);
+            shadow_latency_delay_reset();
+        }
         rebuild_prev = rebuild_from_la;
     }
 
@@ -1883,10 +1954,64 @@ static void shadow_inprocess_mix_from_buffer(void) {
                  * AND no Link Audio track data is flowing for this slot */
                 if (shadow_slot_fx_idle[s] && shadow_slot_idle[s] && !have_move_track) continue;
 
+                /* Latency comp: delay the local synth output to match the
+                 * Link Audio path before combining. The nudge in
+                 * link_audio_read_channel_shm keeps the Move side stable
+                 * at LATENCY_COMP_TARGET_SAMPLES; delaying the synth by
+                 * the same amount aligns both into the FX chain. */
+                const int16_t *synth_src = shadow_slot_deferred[s];
+                int16_t synth_delayed[FRAMES_PER_BLOCK * 2];
+                if (latency_comp_active) {
+                    shadow_latency_delay_apply(s, shadow_slot_deferred[s],
+                                               synth_delayed,
+                                               LATENCY_COMP_TARGET_SAMPLES);
+                    synth_src = synth_delayed;
+                }
+
+                /* Latency alignment dump (slot 0 only). Touch
+                 * /data/UserData/schwung/align_dump_trigger to arm;
+                 * captures 300 blocks (~870 ms) of:
+                 *   slot0_move_track.pcm  — Move Link Audio (post-nudge)
+                 *   slot0_synth_src.pcm   — Schwung synth (post-delay if
+                 *                            comp active)
+                 * Both s16le stereo @44.1k. Cross-correlate them to
+                 * measure the actual sample offset between Move and
+                 * Schwung audio paths. */
+                if (s == 0) {
+                    static FILE *align_move_f  = NULL;
+                    static FILE *align_synth_f = NULL;
+                    static int align_dump_frames = 0;
+                    if (align_dump_frames == 0 &&
+                        access("/data/UserData/schwung/align_dump_trigger",
+                               F_OK) == 0) {
+                        align_move_f = fopen(
+                            "/data/UserData/schwung/slot0_move_track.pcm", "wb");
+                        align_synth_f = fopen(
+                            "/data/UserData/schwung/slot0_synth_src.pcm", "wb");
+                        align_dump_frames = 1000;  /* ~2.9 s */
+                        unlink("/data/UserData/schwung/align_dump_trigger");
+                    }
+                    if (align_dump_frames > 0) {
+                        if (align_move_f && have_move_track) {
+                            fwrite(move_track, sizeof(int16_t),
+                                   FRAMES_PER_BLOCK * 2, align_move_f);
+                        }
+                        if (align_synth_f) {
+                            fwrite(synth_src, sizeof(int16_t),
+                                   FRAMES_PER_BLOCK * 2, align_synth_f);
+                        }
+                        align_dump_frames--;
+                        if (align_dump_frames == 0) {
+                            if (align_move_f)  { fclose(align_move_f);  align_move_f = NULL; }
+                            if (align_synth_f) { fclose(align_synth_f); align_synth_f = NULL; }
+                        }
+                    }
+                }
+
                 /* Active slot: combine synth + Link Audio, run through FX */
                 int16_t fx_buf[FRAMES_PER_BLOCK * 2];
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                    int32_t combined = (int32_t)shadow_slot_deferred[s][i];
+                    int32_t combined = (int32_t)synth_src[i];
                     if (have_move_track)
                         combined += (int32_t)move_track[i];
                     if (combined > 32767) combined = 32767;
@@ -3549,6 +3674,32 @@ static int shim_handle_param_special(uint8_t req_type, uint32_t req_id) {
             } else if (req_type == 2) {
                 shadow_param->result_len = snprintf(shadow_param->value,
                     SHADOW_PARAM_VALUE_LEN, "%d", link_audio_publish_enabled);
+                shadow_param->error = 0;
+            }
+            return 1;
+        }
+        /* master_fx:latency_comp_enabled — user toggle. Applies
+         * immediately; the brief ~9 ms transition artifact (audio hole on
+         * OFF→ON, duplicate on ON→OFF) is accepted as a known cost of
+         * flipping a delay buffer mid-playback. */
+        if (strcmp(fx_key, "latency_comp_enabled") == 0) {
+            if (req_type == 1) {
+                int val = atoi(shadow_param->value) ? 1 : 0;
+                latency_comp_user_enabled = val;
+                if (val != latency_comp_active) {
+                    latency_comp_active = val;
+                    link_audio_reset_nudge_state();
+                    shadow_latency_delay_reset();
+                    char msg[64];
+                    snprintf(msg, sizeof(msg), "Latency Comp: %s",
+                             latency_comp_active ? "ACTIVE" : "BYPASSED");
+                    shadow_log(msg);
+                }
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
+            } else if (req_type == 2) {
+                shadow_param->result_len = snprintf(shadow_param->value,
+                    SHADOW_PARAM_VALUE_LEN, "%d", latency_comp_user_enabled);
                 shadow_param->error = 0;
             }
             return 1;
@@ -7198,6 +7349,36 @@ static void *spi_timing_logger_thread(void *arg)
                 unified_log("link_audio", LOG_LEVEL_DEBUG,
                     "path: rebuild_flips=%u la_starve_fallback=%u",
                     flips, fallback);
+            }
+        }
+
+        /* === Move→Schwung latency profiling ===
+         * Touch /data/UserData/schwung/link_audio_avail_log_on to enable.
+         * Per active slot, emits min/mean/max of the read-time `avail`
+         * counter over the last 5 s cycle. `avail` is stereo-sample count;
+         * (avail/2/44.1) ms is the instantaneous Move-side pending
+         * latency. Use to characterize variance before committing to a
+         * static vs dynamic Schwung-side compensation delay. */
+        if (shadow_in_audio_shm &&
+            access("/data/UserData/schwung/link_audio_avail_log_on",
+                   F_OK) == 0) {
+            for (int s = 0; s < LINK_AUDIO_IN_SLOT_COUNT; s++) {
+                if (!shadow_in_audio_shm->slots[s].active) continue;
+                uint32_t a_min = 0, a_max = 0, a_ct = 0;
+                uint64_t a_sum = 0;
+                link_audio_drain_avail_stats(s, &a_min, &a_max,
+                                             &a_sum, &a_ct);
+                if (a_ct == 0) continue;
+                double mean = (double)a_sum / (double)a_ct;
+                /* avail is stereo samples → /2 frames → /44.1 ms */
+                unified_log("link_audio", LOG_LEVEL_INFO,
+                    "avail slot=%d name=%s n=%u "
+                    "min=%u (%.2f ms) mean=%.1f (%.2f ms) "
+                    "max=%u (%.2f ms)",
+                    s, shadow_in_audio_shm->slots[s].name, a_ct,
+                    a_min, (double)a_min / 2.0 / 44.1,
+                    mean,  mean         / 2.0 / 44.1,
+                    a_max, (double)a_max / 2.0 / 44.1);
             }
         }
     }

@@ -853,6 +853,7 @@ const GLOBAL_SETTINGS_SECTIONS = [
         items: [
             { key: "link_audio_routing", label: "Move->Schwung", type: "bool" },
             { key: "link_audio_publish", label: "Schwung->Link", type: "bool" },
+            { key: "latency_comp_enabled", label: "Latency Comp", type: "bool" },
             { key: "resample_bridge", label: "Sample Src", type: "enum",
               options: ["Native", "Schwung Mix"], values: [0, 2] },
             { key: "skipback_shortcut", label: "Skipback", type: "enum",
@@ -1638,6 +1639,7 @@ let inMasterPresetPicker = false;    // True when showing preset picker
 let cachedResampleBridgeMode = 0;
 let cachedLinkAudioRouting = false;
 let cachedLinkAudioPublish = false;
+let cachedLatencyCompEnabled = false;
 let systemLinkEnabled = null; /* null = not checked yet */
 
 /* Master preset CRUD state (reuse pattern from slot presets) */
@@ -1682,6 +1684,29 @@ let hierEditorEditMode = false;   // true when editing a param value
 let hierEditorEditKey = "";       // full key currently being edited
 let hierEditorEditValue = null;   // stable value during edit mode
 let hierEditorChainParams = [];   // metadata from chain_params
+
+/* wav_position view-local zoom state per fullKey.
+ * Opt-in: only populated when the param's meta has enable_zoom=true.
+ * Range: zoom 0..8 = 1× .. 256× viewport width. Pan auto-tracks the
+ * current marker value (no separate pan field needed).
+ * Cleared on slot/module change. */
+const wavPositionZoomStates = new Map();
+function getWavZoomLevel(fullKey) {
+    const st = wavPositionZoomStates.get(fullKey);
+    return st ? st.zoom : 0;
+}
+function setWavZoomLevel(fullKey, zoom) {
+    let z = Math.floor(Number(zoom) || 0);
+    if (z < 0) z = 0;
+    if (z > 8) z = 8;
+    if (z === 0) {
+        wavPositionZoomStates.delete(fullKey);
+        return 0;
+    }
+    wavPositionZoomStates.set(fullKey, { zoom: z });
+    return z;
+}
+function clearWavZoomStates() { wavPositionZoomStates.clear(); }
 
 /* Knob state per fullKey for acceleration continuity across consecutive jog turns. */
 const hierKnobStates = new Map();
@@ -1889,6 +1914,7 @@ function buildWavPositionParamMeta(meta) {
         ? shiftMultiplierRaw
         : 0.1;
     const filepathParam = String(getMetaOption(meta, "filepath_param", "") || "");
+    const enableZoom = parseMetaBool(getMetaOption(meta, "enable_zoom", false));
     return {
         ...meta,
         type: "float",
@@ -1900,6 +1926,7 @@ function buildWavPositionParamMeta(meta) {
         display_unit: displayUnit,
         wav_mode: mode,
         filepath_param: filepathParam,
+        enable_zoom: enableZoom,
         expanded_type: "wav_position"
     };
 }
@@ -5945,6 +5972,7 @@ function saveMasterFxChainConfig() {
         config.resample_bridge_mode = cachedResampleBridgeMode;
         config.link_audio_routing = cachedLinkAudioRouting;
         config.link_audio_publish = cachedLinkAudioPublish;
+        config.latency_comp_enabled = cachedLatencyCompEnabled;
 
         host_write_file(configPath, JSON.stringify(config, null, 2));
     } catch (e) {
@@ -6129,6 +6157,14 @@ function syncSettingsFromConfigFile() {
                 cachedLinkAudioPublish = val;
             }
         }
+        /* Latency comp */
+        if (c.latency_comp_enabled !== undefined && typeof shadow_set_param === "function") {
+            const val = !!c.latency_comp_enabled;
+            if (val !== cachedLatencyCompEnabled) {
+                shadow_set_param(0, "master_fx:latency_comp_enabled", val ? "1" : "0");
+                cachedLatencyCompEnabled = val;
+            }
+        }
         /* Resample bridge (Sample Source) */
         if (c.resample_bridge_mode !== undefined && typeof shadow_set_param === "function") {
             const mode = parseResampleBridgeMode(c.resample_bridge_mode);
@@ -6268,6 +6304,10 @@ function loadMasterFxChainFromConfig() {
         if (config.link_audio_publish !== undefined && typeof shadow_set_param === "function") {
             shadow_set_param(0, "master_fx:link_audio_publish", config.link_audio_publish ? "1" : "0");
             cachedLinkAudioPublish = !!config.link_audio_publish;
+        }
+        if (config.latency_comp_enabled !== undefined && typeof shadow_set_param === "function") {
+            shadow_set_param(0, "master_fx:latency_comp_enabled", config.latency_comp_enabled ? "1" : "0");
+            cachedLatencyCompEnabled = !!config.latency_comp_enabled;
         }
 
         /* Restore loaded preset name */
@@ -8255,6 +8295,7 @@ function exitHierarchyEditor() {
     pendingHierKnobDelta = 0;
 
     clearModuleParamShims();
+    clearWavZoomStates();
 
     /* Determine return view based on whether we're editing Master FX */
     const returnToMasterFx = hierEditorIsMasterFx;
@@ -8585,6 +8626,15 @@ function adjustHierSelectedParam(delta) {
         return;
     }
 
+    /* wav_position with enable_zoom: Shift+jog adjusts sticky zoom level
+     * instead of value (one zoom step per click, no value change). */
+    if (meta && meta.ui_type === "wav_position" && meta.enable_zoom && isShiftHeld()) {
+        const cur = getWavZoomLevel(fullKey);
+        setWavZoomLevel(fullKey, cur + (delta > 0 ? 1 : -1));
+        needsRedraw = true;
+        return;
+    }
+
     /* Handle numeric types — jog-click semantics: one declared step per click, no accel. */
     const num = parseFloat(currentVal);
     if (isNaN(num)) return;
@@ -8594,6 +8644,12 @@ function adjustHierSelectedParam(delta) {
     if (meta && meta.ui_type === "wav_position" && isShiftHeld()) {
         const fineStep = Math.abs(step) * getWavPositionShiftMultiplier(meta);
         if (fineStep > 0) step = fineStep;
+    }
+    /* wav_position with enable_zoom: when zoomed in, scale step inversely
+     * so jog-click moves a proportional fraction of the visible viewport. */
+    if (meta && meta.ui_type === "wav_position" && meta.enable_zoom) {
+        const z = getWavZoomLevel(fullKey);
+        if (z > 0) step = step / Math.pow(2, z);
     }
     const min = meta && typeof meta.min === "number" ? meta.min : 0;
     const max = meta && typeof meta.max === "number" ? meta.max : 1;
@@ -9138,6 +9194,12 @@ function processPendingHierKnob() {
     if (ctx.meta && ctx.meta.ui_type === "wav_position" && isShiftHeld()) {
         const fineStep = Math.abs(knobCfg.step) * getWavPositionShiftMultiplier(ctx.meta);
         if (fineStep > 0) knobCfg.step = fineStep;
+    }
+    /* wav_position with enable_zoom: scale step by 1/2^zoom so knob movement
+     * stays proportional to the visible viewport. */
+    if (ctx.meta && ctx.meta.ui_type === "wav_position" && ctx.meta.enable_zoom) {
+        const z = getWavZoomLevel(ctx.fullKey);
+        if (z > 0) knobCfg.step = knobCfg.step / Math.pow(2, z);
     }
     const st = getPhysKnobState(ctx.fullKey, num);
     const newVal = knobTick(st, knobCfg, delta, Date.now());
@@ -9799,7 +9861,18 @@ function drawWavPositionEditor(selectedKey, selectedMeta) {
     const preview = getWavPositionPreviewData(fullKey, selectedMeta);
     const ratio = Math.max(0, Math.min(1, Number(preview.ratio) || 0));
     const shiftHeld = isShiftHeld();
-    const zoomWindow = shiftHeld ? 0.1 : 1.0;
+    const enableZoom = !!(selectedMeta && selectedMeta.enable_zoom);
+    const zoomLevel = enableZoom ? getWavZoomLevel(fullKey) : 0;
+    /* Two regimes:
+     *   enable_zoom + state-driven sticky zoom (zoomLevel > 0 → window = 1/2^z)
+     *   legacy: shift-held preview zoom (10% window) when no sticky state
+     */
+    let zoomWindow;
+    if (zoomLevel > 0) {
+        zoomWindow = 1 / Math.pow(2, zoomLevel);
+    } else {
+        zoomWindow = shiftHeld ? 0.1 : 1.0;
+    }
     const zoomStart = Math.max(0, Math.min(1 - zoomWindow, ratio - (zoomWindow / 2)));
     const zoomEnd = zoomStart + zoomWindow;
     const zoomRange = Math.max(0.000001, zoomEnd - zoomStart);
@@ -9816,7 +9889,13 @@ function drawWavPositionEditor(selectedKey, selectedMeta) {
     const label = selectedMeta && (selectedMeta.label || selectedMeta.name)
         ? String(selectedMeta.label || selectedMeta.name)
         : selectedKey;
-    const valueText = `${getWavPositionDisplayText(preview.value, selectedMeta, preview.durationSec)}${shiftHeld ? " [fine]" : ""}`;
+    let suffix = "";
+    if (zoomLevel > 0) {
+        suffix = ` ${Math.pow(2, zoomLevel)}x`;
+    } else if (shiftHeld) {
+        suffix = " [fine]";
+    }
+    const valueText = `${getWavPositionDisplayText(preview.value, selectedMeta, preview.durationSec)}${suffix}`;
     const sourceText = wavPositionGetBaseName(preview.path || "") || "(no file)";
 
     print(Math.max(0, Math.floor((SCREEN_WIDTH - label.length * 5) / 2)), 2, truncateText(label, 24), 1);
@@ -10587,6 +10666,10 @@ function getMasterFxSettingValue(setting) {
         const val = shadow_get_param(0, "master_fx:link_audio_publish");
         return (val === "1") ? "On" : "Off";
     }
+    if (setting.key === "latency_comp_enabled") {
+        const val = shadow_get_param(0, "master_fx:latency_comp_enabled");
+        return (val === "1") ? "On" : "Off";
+    }
     if (setting.key === "resample_bridge") {
         const modeRaw = shadow_get_param(0, "master_fx:resample_bridge");
         const mode = parseResampleBridgeMode(modeRaw);
@@ -10699,6 +10782,14 @@ function adjustMasterFxSetting(setting, delta) {
         cachedLinkAudioPublish = (newVal === "1");
         saveMasterFxChainConfig();
         if (newVal === "1") warnIfLinkDisabled("Schwung->Link");
+        return;
+    }
+    if (setting.key === "latency_comp_enabled") {
+        const current = shadow_get_param(0, "master_fx:latency_comp_enabled");
+        const newVal = (current === "1") ? "0" : "1";
+        shadow_set_param(0, "master_fx:latency_comp_enabled", newVal);
+        cachedLatencyCompEnabled = (newVal === "1");
+        saveMasterFxChainConfig();
         return;
     }
     if (setting.key === "resample_bridge") {
