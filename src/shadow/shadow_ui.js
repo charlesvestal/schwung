@@ -12913,20 +12913,22 @@ function drawChainEdit() {
         const textY = BOX_Y + 5;
         print(textX, textY, abbrev, textColor);
 
-        /* Draw bypass 'B' marker inside box top-right when this component is bypassed.
-         * 3x4 glyph; inverts color with the box fill like the abbrev does. */
+        /* Draw bypass 'B' marker above box, same style as the LFO `~N` indicator
+         * (4px-high glyph). Positioned at left so it doesn't collide with the
+         * centered LFO marker when both are present. */
+        let bypassed = false;
         if (comp.key !== "settings") {
             const dspPrefix = comp.key === "midiFx" ? "midi_fx1" : comp.key;
-            if (parseInt(getSlotParam(selectedSlot, `${dspPrefix}:bypassed`) || "0", 10) === 1) {
-                const bx = x + BOX_W - 5;
-                const by = BOX_Y + 2;
-                const bc = textColor;
-                /* "B" glyph: ##. / #.# / ##. / ### */
-                set_pixel(bx,     by,     bc); set_pixel(bx + 1, by,     bc);
-                set_pixel(bx,     by + 1, bc); set_pixel(bx + 2, by + 1, bc);
-                set_pixel(bx,     by + 2, bc); set_pixel(bx + 1, by + 2, bc);
-                set_pixel(bx,     by + 3, bc); set_pixel(bx + 1, by + 3, bc); set_pixel(bx + 2, by + 3, bc);
-            }
+            bypassed = parseInt(getSlotParam(selectedSlot, `${dspPrefix}:bypassed`) || "0", 10) === 1;
+        }
+        if (bypassed) {
+            const bx = x + 1;
+            const by = BOX_Y - 6;
+            /* "B" glyph: ##. / #.# / ##. / ### */
+            set_pixel(bx,     by,     1); set_pixel(bx + 1, by,     1);
+            set_pixel(bx,     by + 1, 1); set_pixel(bx + 2, by + 1, 1);
+            set_pixel(bx,     by + 2, 1); set_pixel(bx + 1, by + 2, 1);
+            set_pixel(bx,     by + 3, 1); set_pixel(bx + 1, by + 3, 1); set_pixel(bx + 2, by + 3, 1);
         }
 
         /* Draw LFO indicator above box: ~1, ~2, or ~1+2 using 4px-high tiny digits */
