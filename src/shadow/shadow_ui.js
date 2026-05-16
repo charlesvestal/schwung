@@ -11455,6 +11455,18 @@ function handleSelect() {
                 } else {
                     /* FX slot - check if module is loaded with hierarchy */
                     const moduleData = masterFxConfig[selectedComp.key];
+
+                    /* Mute+JogClick: toggle bypass on a populated MFX slot */
+                    if (hostMuteHeld && moduleData && moduleData.module) {
+                        const fullKey = `master_fx:${selectedComp.key}:bypassed`;
+                        const cur = parseInt(shadow_get_param(0, fullKey) || "0", 10);
+                        const next = cur ? 0 : 1;
+                        shadow_set_param(0, fullKey, String(next));
+                        announce(next ? `${selectedComp.label} bypassed` : `${selectedComp.label} active`);
+                        needsRedraw = true;
+                        break;
+                    }
+
                     if (moduleData && moduleData.module) {
                         /* Module is loaded - try hierarchy editor first */
                         const hierarchy = getMasterFxHierarchy(selectedMasterFxComponent);
