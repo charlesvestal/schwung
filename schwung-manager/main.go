@@ -2529,7 +2529,7 @@ func (app *App) handleSystemUpgrade(w http.ResponseWriter, r *http.Request) {
 		// Clean up tarball.
 		os.Remove(tarPath)
 
-		app.setUpgradeStatus("Rebooting...")
+		app.setUpgradeStatus("Update applied — restart device if it doesn't reboot")
 
 		// Reboot the device. The legacy `killall MoveOriginal MoveLauncher`
 		// path produced unsupervised orphans that froze the device 100% of
@@ -2604,7 +2604,7 @@ func (app *App) handleSystemUpgrade(w http.ResponseWriter, r *http.Request) {
     <li id="s-download" class="active">Downloading update...</li>
     <li id="s-extract" class="pending">Extracting files</li>
     <li id="s-configure" class="pending">Configuring</li>
-    <li id="s-restart" class="pending">Restarting</li>
+    <li id="s-restart" class="pending">Restart device to finish</li>
   </ul>
   <p id="error">The server did not come back. You may need to check the device manually.</p>
 </div>
@@ -2616,7 +2616,7 @@ func (app *App) handleSystemUpgrade(w http.ResponseWriter, r *http.Request) {
     "Downloading...": "s-download",
     "Extracting update...": "s-extract",
     "Configuring...": "s-configure",
-    "Restarting...": "s-restart"
+    "Update applied — restart device if it doesn't reboot": "s-restart"
   };
   var order = ["s-download", "s-extract", "s-configure", "s-restart"];
   var serverDown = false;
