@@ -125,6 +125,17 @@
       "min_host_version": "0.3.0"
     },
     {
+      "id": "mverb",
+      "name": "MVerb",
+      "description": "Algorithmic plate reverb based on Martin Eastwood's MVerb",
+      "author": "Andre Louis (DSP: Martin Eastwood)",
+      "component_type": "audio_fx",
+      "github_repo": "charlesvestal/schwung-mverb",
+      "default_branch": "main",
+      "asset_name": "mverb-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
       "id": "tapedelay",
       "name": "TapeDelay",
       "description": "Tape delay with flutter and tone shaping",
