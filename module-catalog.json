@@ -868,6 +868,18 @@
       "default_branch": "main",
       "asset_name": "davebox-module.tar.gz",
       "min_host_version": "0.9.13"
+    },
+    {
+      "id": "mrsample",
+      "name": "MrSample",
+      "description": "Chromatic single-sample player with AHDSR, multimode filter, LFO, loop+crossfade. Loads WAV/MP3/FLAC/AIFF.",
+      "author": "charlesvestal",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/schwung-mrsample",
+      "default_branch": "main",
+      "asset_name": "mrsample-module.tar.gz",
+      "min_host_version": "0.7.4",
+      "requires": "audio files in /data/UserData/UserLibrary/Samples/ (.wav, .mp3, .flac, .aif)"
     }
   ]
 }
