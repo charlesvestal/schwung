@@ -4251,9 +4251,16 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
             memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
         }
 
-        /* Process through audio FX chain */
+        /* Process through audio FX chain.
+         * Always process so FX state advances (delay buffers, reverb tails).
+         * If bypassed, save the dry input and restore it after process_block,
+         * so audio passes through unchanged but FX internals stay live. */
         for (int i = 0; i < g_fx_count; i++) {
-            if (i < MAX_AUDIO_FX && g_fx_bypassed[i]) continue;
+            int bypassed = (i < MAX_AUDIO_FX && g_fx_bypassed[i]);
+            int16_t fx_dry[FRAMES_PER_BLOCK * 2];
+            if (bypassed) {
+                memcpy(fx_dry, out_interleaved_lr, frames * 2 * sizeof(int16_t));
+            }
             if (g_fx_is_v2[i]) {
                 if (g_fx_plugins_v2[i] && g_fx_instances[i] && g_fx_plugins_v2[i]->process_block) {
                     g_fx_plugins_v2[i]->process_block(g_fx_instances[i], out_interleaved_lr, frames);
@@ -4262,6 +4269,9 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
                 if (g_fx_plugins[i] && g_fx_plugins[i]->process_block) {
                     g_fx_plugins[i]->process_block(out_interleaved_lr, frames);
                 }
+            }
+            if (bypassed) {
+                memcpy(out_interleaved_lr, fx_dry, frames * 2 * sizeof(int16_t));
             }
         }
     } else {
@@ -8838,9 +8848,16 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
         inst->inject_audio_frames = 0;
     }
 
-    /* Process through audio FX chain */
+    /* Process through audio FX chain.
+     * Always process so FX state advances (delay buffers, reverb tails).
+     * If bypassed, save the dry input and restore it after process_block,
+     * so audio passes through unchanged but FX internals stay live. */
     for (int i = 0; i < inst->fx_count; i++) {
-        if (i < MAX_AUDIO_FX && inst->fx_bypassed[i]) continue;
+        int bypassed = (i < MAX_AUDIO_FX && inst->fx_bypassed[i]);
+        int16_t fx_dry[FRAMES_PER_BLOCK * 2];
+        if (bypassed) {
+            memcpy(fx_dry, out_interleaved_lr, frames * 2 * sizeof(int16_t));
+        }
         if (inst->fx_is_v2[i]) {
             if (inst->fx_plugins_v2[i] && inst->fx_instances[i] && inst->fx_plugins_v2[i]->process_block) {
                 inst->fx_plugins_v2[i]->process_block(inst->fx_instances[i], out_interleaved_lr, frames);
@@ -8849,6 +8866,9 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
             if (inst->fx_plugins[i] && inst->fx_plugins[i]->process_block) {
                 inst->fx_plugins[i]->process_block(out_interleaved_lr, frames);
             }
+        }
+        if (bypassed) {
+            memcpy(out_interleaved_lr, fx_dry, frames * 2 * sizeof(int16_t));
         }
     }
 }
@@ -8906,7 +8926,11 @@ void chain_process_fx(void *instance, int16_t *buf, int frames) {
     chain_instance_t *inst = (chain_instance_t *)instance;
     if (!inst) return;
     for (int i = 0; i < inst->fx_count; i++) {
-        if (i < MAX_AUDIO_FX && inst->fx_bypassed[i]) continue;
+        int bypassed = (i < MAX_AUDIO_FX && inst->fx_bypassed[i]);
+        int16_t fx_dry[FRAMES_PER_BLOCK * 2];
+        if (bypassed) {
+            memcpy(fx_dry, buf, frames * 2 * sizeof(int16_t));
+        }
         if (inst->fx_is_v2[i]) {
             if (inst->fx_plugins_v2[i] && inst->fx_instances[i] && inst->fx_plugins_v2[i]->process_block) {
                 inst->fx_plugins_v2[i]->process_block(inst->fx_instances[i], buf, frames);
@@ -8915,6 +8939,9 @@ void chain_process_fx(void *instance, int16_t *buf, int frames) {
             if (inst->fx_plugins[i] && inst->fx_plugins[i]->process_block) {
                 inst->fx_plugins[i]->process_block(buf, frames);
             }
+        }
+        if (bypassed) {
+            memcpy(buf, fx_dry, frames * 2 * sizeof(int16_t));
         }
     }
 }
