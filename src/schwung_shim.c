@@ -6630,9 +6630,11 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 /* CCs to forward to shadow UI:
                  * - CC 14 (jog wheel), CC 3 (jog click), CC 51 (back)
                  * - CC 40-43 (track buttons)
-                 * - CC 71-78 (knobs) */
+                 * - CC 71-78 (knobs)
+                 * - CC 88 (mute) — used as a modifier for Mute+JogClick module bypass */
                 int forward_to_shadow = (d1 == 14 || d1 == 3 || d1 == 51 ||
-                                         (d1 >= 40 && d1 <= 43) || (d1 >= 71 && d1 <= 78));
+                                         (d1 >= 40 && d1 <= 43) || (d1 >= 71 && d1 <= 78) ||
+                                         d1 == 88);
 
                 if (forward_to_shadow && shadow_ui_midi_shm) {
                     shadow_ui_midi_publish(0x0B, status, d1, d2);
