@@ -1442,6 +1442,17 @@ static void shadow_overtake_dsp_unload(void) {
     overtake_dsp_fx_inst = NULL;
 }
 
+/* Per-slot render breakdown counters (added 2026-05-15 for render spike hunt).
+ * Forward-declared here so shadow_inprocess_render_to_buffer can update them;
+ * snapshot/reset live with the other spi_timing statics further below. */
+#ifndef SHADOW_CHAIN_INSTANCES
+#define SHADOW_CHAIN_INSTANCES 4
+#endif
+static uint64_t spi_slot_render_max[SHADOW_CHAIN_INSTANCES];
+static uint64_t spi_slot_synth_max[SHADOW_CHAIN_INSTANCES];  /* render_block only */
+static uint64_t spi_slot_fx_max[SHADOW_CHAIN_INSTANCES];     /* chain_process_fx only */
+static uint32_t spi_slot_probe_burst_max;
+
 /* === DEFERRED DSP RENDERING ===
  * Render DSP into buffer (slow, ~300µs) - called POST-ioctl
  * This renders audio for the NEXT frame, adding one frame of latency (~3ms)
@@ -1467,9 +1478,17 @@ static void shadow_inprocess_render_to_buffer(void) {
     int same_frame_fx = (shadow_chain_set_external_fx_mode != NULL &&
                          shadow_chain_process_fx != NULL);
 
+    /* Probe-burst diagnostic: count slots whose idle probe fires this frame.
+     * If 2-3 slots' silence counters align on the same probe-frame the
+     * render cost stacks into a single ~1ms spike. */
+    uint32_t probe_burst_this_frame = 0;
     if (shadow_plugin_v2 && shadow_plugin_v2->render_block) {
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
             if (!shadow_chain_slots[s].active || !shadow_chain_slots[s].instance) continue;
+
+            /* Per-slot timing for the render+fx work below */
+            struct timespec slot_t0, slot_t1;
+            clock_gettime(CLOCK_MONOTONIC, &slot_t0);
 
             /* Wake slot from idle if fade is ramping (otherwise gain stays at 0) */
             if (shadow_chain_slots[s].fade.gain != shadow_chain_slots[s].fade.target) {
@@ -1479,24 +1498,37 @@ static void shadow_inprocess_render_to_buffer(void) {
 
             /* Idle gate: skip render_block if synth output has been silent.
              * Buffer is already zeroed; FX still runs for tail decay.
-             * Probe every ~0.5s to detect self-generating audio (LFOs, arps). */
+             * Probe every ~0.5s to detect self-generating audio (LFOs, arps).
+             *
+             * Stagger: slots that go idle on the same frame (common at boot)
+             * have aligned silence_frames counters and would all probe the
+             * same frame, stacking render+FX cost into one ~1ms spike. The
+             * per-slot offset (s * 43) spreads probes evenly across the
+             * 172-frame window so at most one slot probes per frame. */
             if (shadow_slot_idle[s]) {
                 shadow_slot_silence_frames[s]++;
-                if (shadow_slot_silence_frames[s] % 172 != 0) {
+                if ((shadow_slot_silence_frames[s] + s * 43) % 172 != 0) {
                     /* Not a probe frame — skip synth render.
                      * Buffer is zeros; FX below still runs for tail decay. */
                     shadow_slot_deferred_valid[s] = 1;
                     goto slot_run_deferred_fx;
                 }
                 /* Probe frame: fall through to render and check output */
+                probe_burst_this_frame++;
             }
 
             if (same_frame_fx) {
                 /* Synth only → per-slot buffer. FX deferred below. */
                 shadow_chain_set_external_fx_mode(shadow_chain_slots[s].instance, 1);
+                struct timespec synth_t0, synth_t1;
+                clock_gettime(CLOCK_MONOTONIC, &synth_t0);
                 shadow_plugin_v2->render_block(shadow_chain_slots[s].instance,
                                                shadow_slot_deferred[s],
                                                MOVE_FRAMES_PER_BLOCK);
+                clock_gettime(CLOCK_MONOTONIC, &synth_t1);
+                uint64_t synth_us = (synth_t1.tv_sec - synth_t0.tv_sec) * 1000000ULL +
+                                    (synth_t1.tv_nsec - synth_t0.tv_nsec) / 1000;
+                if (synth_us > spi_slot_synth_max[s]) spi_slot_synth_max[s] = synth_us;
                 shadow_slot_deferred_valid[s] = 1;
             } else {
                 /* Fallback: full render (synth + FX) → accumulated buffer.
@@ -1590,8 +1622,14 @@ static void shadow_inprocess_render_to_buffer(void) {
                 } else {
                     int16_t fx_buf[FRAMES_PER_BLOCK * 2];
                     memcpy(fx_buf, shadow_slot_deferred[s], sizeof(fx_buf));
+                    struct timespec fx_t0, fx_t1;
+                    clock_gettime(CLOCK_MONOTONIC, &fx_t0);
                     shadow_chain_process_fx(shadow_chain_slots[s].instance,
                                             fx_buf, MOVE_FRAMES_PER_BLOCK);
+                    clock_gettime(CLOCK_MONOTONIC, &fx_t1);
+                    uint64_t fx_us = (fx_t1.tv_sec - fx_t0.tv_sec) * 1000000ULL +
+                                     (fx_t1.tv_nsec - fx_t0.tv_nsec) / 1000;
+                    if (fx_us > spi_slot_fx_max[s]) spi_slot_fx_max[s] = fx_us;
                     memcpy(shadow_slot_fx_deferred[s], fx_buf, sizeof(fx_buf));
                     shadow_slot_fx_deferred_valid[s] = 1;
 
@@ -1613,8 +1651,16 @@ static void shadow_inprocess_render_to_buffer(void) {
                     }
                 }
             }
+
+            /* End per-slot timing (added 2026-05-15 for render spike hunt) */
+            clock_gettime(CLOCK_MONOTONIC, &slot_t1);
+            uint64_t slot_us = (slot_t1.tv_sec - slot_t0.tv_sec) * 1000000ULL +
+                               (slot_t1.tv_nsec - slot_t0.tv_nsec) / 1000;
+            if (slot_us > spi_slot_render_max[s]) spi_slot_render_max[s] = slot_us;
         }
     }
+    if (probe_burst_this_frame > spi_slot_probe_burst_max)
+        spi_slot_probe_burst_max = probe_burst_this_frame;
 
     /* Overtake DSP generator: mix its output into the deferred buffer */
     if (overtake_dsp_gen && overtake_dsp_gen_inst && overtake_dsp_gen->render_block) {
@@ -4056,6 +4102,15 @@ typedef struct {
     uint64_t jack_pre_avg, jack_pre_max;
     uint64_t jack_disp_avg, jack_disp_max;
     uint64_t pin_avg, pin_max;
+    /* Post-ioctl un-instrumented chunks (added 2026-05-15 for overrun hunt) */
+    uint64_t post_midi_scan_avg, post_midi_scan_max;  /* lines ~5841-6696 */
+    uint64_t post_drain_dsp_avg, post_drain_dsp_max;  /* shadow_drain_ui_midi_dsp */
+    uint64_t post_render_avg, post_render_max;        /* shadow_inprocess_render_to_buffer + slot dump */
+    /* Per-slot render breakdown (added 2026-05-15 for render spike hunt) */
+    uint64_t slot_render_max[4];
+    uint64_t slot_synth_max[4];
+    uint64_t slot_fx_max[4];
+    uint32_t slot_probe_burst_max;
     /* JACK audio double-buffer stats */
     uint32_t jack_audio_hits;
     uint32_t jack_audio_misses;
@@ -4100,6 +4155,11 @@ static uint64_t spi_jack_disp_sum = 0, spi_jack_disp_max = 0;
 static uint64_t spi_pin_sum = 0, spi_pin_max = 0;
 static uint64_t spi_fwd_ext_cc_sum = 0, spi_fwd_ext_cc_max = 0;
 static uint64_t spi_direct_midi_sum = 0, spi_direct_midi_max = 0;
+/* Post-ioctl un-instrumented chunks (added 2026-05-15 for overrun hunt) */
+static uint64_t spi_post_midi_scan_sum = 0, spi_post_midi_scan_max = 0;
+static uint64_t spi_post_drain_dsp_sum = 0, spi_post_drain_dsp_max = 0;
+static uint64_t spi_post_render_sum = 0, spi_post_render_max = 0;
+/* Per-slot render breakdown forward-declared near shadow_inprocess_render_to_buffer */
 static int spi_granular_count = 0;
 
 /* XMOS jack-detect / SysEx logger — dormant unless flag file exists.
@@ -5808,6 +5868,9 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
     /* Skip post-ioctl processing in baseline mode */
     if (spi_baseline_mode) goto post_timing;
 
+    /* Diagnostic: time the post-ioctl MIDI scan block (added 2026-05-15) */
+    TIME_SECTION_START();
+
     /* === EARLY (UNGATED) CC 115 / CC 114 JACK-DETECT ===
      * The full handler below is gated on shadow_inprocess_ready, which is
      * set ~hundreds of ms into boot after shadow chain init runs. XMOS
@@ -6690,19 +6753,25 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
     }
 #endif /* !SHADOW_DISABLE_POST_IOCTL_MIDI */
 
+    /* End post-ioctl MIDI scan diagnostic (added 2026-05-15) */
+    TIME_SECTION_END(spi_post_midi_scan_sum, spi_post_midi_scan_max);
+
 #if SHADOW_INPROCESS_POC
     /* === POST-IOCTL: SECOND MIDI-TO-DSP DRAIN ===
      * Catch any MIDI that the shadow UI JS process wrote between the
      * pre-ioctl drain and now.  This roughly doubles the time window
      * for overtake modules calling shadow_send_midi_to_dsp(), reducing
      * the chance of a note being delayed by one frame (~2.9 ms). */
+    TIME_SECTION_START();
     shadow_drain_ui_midi_dsp();
+    TIME_SECTION_END(spi_post_drain_dsp_sum, spi_post_drain_dsp_max);
 
     /* === POST-IOCTL: DEFERRED DSP RENDERING (SLOW, ~300µs) ===
      * Render DSP for the NEXT frame. This happens AFTER the ioctl returns,
      * so Move gets to process pad events before we do heavy DSP work.
      * The rendered audio will be mixed in pre-ioctl of the next frame.
      */
+    TIME_SECTION_START();
     {
         static uint64_t render_time_sum = 0;
         static int render_time_count = 0;
@@ -6780,6 +6849,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             render_time_max = 0;
         }
     }
+    TIME_SECTION_END(spi_post_render_sum, spi_post_render_max);
 #endif
 
     /* === POST-IOCTL: CHECK FOR RESTART REQUEST === */
@@ -6870,6 +6940,18 @@ post_timing:
         spi_snap.jack_pre_avg = spi_jack_pre_sum / n; spi_snap.jack_pre_max = spi_jack_pre_max;
         spi_snap.jack_disp_avg = spi_jack_disp_sum / n; spi_snap.jack_disp_max = spi_jack_disp_max;
         spi_snap.pin_avg = spi_pin_sum / n; spi_snap.pin_max = spi_pin_max;
+        spi_snap.post_midi_scan_avg = spi_post_midi_scan_sum / n;
+        spi_snap.post_midi_scan_max = spi_post_midi_scan_max;
+        spi_snap.post_drain_dsp_avg = spi_post_drain_dsp_sum / n;
+        spi_snap.post_drain_dsp_max = spi_post_drain_dsp_max;
+        spi_snap.post_render_avg = spi_post_render_sum / n;
+        spi_snap.post_render_max = spi_post_render_max;
+        for (int s = 0; s < SHADOW_CHAIN_INSTANCES && s < 4; s++) {
+            spi_snap.slot_render_max[s] = spi_slot_render_max[s];
+            spi_snap.slot_synth_max[s] = spi_slot_synth_max[s];
+            spi_snap.slot_fx_max[s] = spi_slot_fx_max[s];
+        }
+        spi_snap.slot_probe_burst_max = spi_slot_probe_burst_max;
         spi_snap.jack_audio_hits = schwung_jack_bridge_get_hit_count();
         spi_snap.jack_audio_misses = schwung_jack_bridge_get_miss_count();
         spi_snap.granular_ready = 1;
@@ -6887,6 +6969,15 @@ post_timing:
         spi_jack_disp_sum = spi_jack_disp_max = spi_pin_sum = spi_pin_max = 0;
         spi_fwd_ext_cc_sum = spi_fwd_ext_cc_max = 0;
         spi_direct_midi_sum = spi_direct_midi_max = 0;
+        spi_post_midi_scan_sum = spi_post_midi_scan_max = 0;
+        spi_post_drain_dsp_sum = spi_post_drain_dsp_max = 0;
+        spi_post_render_sum = spi_post_render_max = 0;
+        for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
+            spi_slot_render_max[s] = 0;
+            spi_slot_synth_max[s] = 0;
+            spi_slot_fx_max[s] = 0;
+        }
+        spi_slot_probe_burst_max = 0;
         spi_granular_count = 0;
     }
 
@@ -7006,7 +7097,8 @@ static void *spi_timing_logger_thread(void *arg)
             unified_log("spi_timing", LOG_LEVEL_DEBUG,
                 "Post(us): clear_leds=%llu/%llu jack_midi=%llu/%llu ui_midi=%llu/%llu "
                 "flush_leds=%llu/%llu screenreader=%llu/%llu jack_pre=%llu/%llu "
-                "jack_disp=%llu/%llu pin=%llu/%llu",
+                "jack_disp=%llu/%llu pin=%llu/%llu "
+                "midi_scan=%llu/%llu drain_dsp2=%llu/%llu render=%llu/%llu",
                 (unsigned long long)spi_snap.clear_leds_avg, (unsigned long long)spi_snap.clear_leds_max,
                 (unsigned long long)spi_snap.jack_midi_avg, (unsigned long long)spi_snap.jack_midi_max,
                 (unsigned long long)spi_snap.ui_midi_avg, (unsigned long long)spi_snap.ui_midi_max,
@@ -7014,7 +7106,28 @@ static void *spi_timing_logger_thread(void *arg)
                 (unsigned long long)spi_snap.screenreader_avg, (unsigned long long)spi_snap.screenreader_max,
                 (unsigned long long)spi_snap.jack_pre_avg, (unsigned long long)spi_snap.jack_pre_max,
                 (unsigned long long)spi_snap.jack_disp_avg, (unsigned long long)spi_snap.jack_disp_max,
-                (unsigned long long)spi_snap.pin_avg, (unsigned long long)spi_snap.pin_max);
+                (unsigned long long)spi_snap.pin_avg, (unsigned long long)spi_snap.pin_max,
+                (unsigned long long)spi_snap.post_midi_scan_avg, (unsigned long long)spi_snap.post_midi_scan_max,
+                (unsigned long long)spi_snap.post_drain_dsp_avg, (unsigned long long)spi_snap.post_drain_dsp_max,
+                (unsigned long long)spi_snap.post_render_avg, (unsigned long long)spi_snap.post_render_max);
+            unified_log("spi_timing", LOG_LEVEL_DEBUG,
+                "Slot render max(us): s0=%llu s1=%llu s2=%llu s3=%llu probe_burst_max=%u",
+                (unsigned long long)spi_snap.slot_render_max[0],
+                (unsigned long long)spi_snap.slot_render_max[1],
+                (unsigned long long)spi_snap.slot_render_max[2],
+                (unsigned long long)spi_snap.slot_render_max[3],
+                spi_snap.slot_probe_burst_max);
+            unified_log("spi_timing", LOG_LEVEL_DEBUG,
+                "Slot synth max(us): s0=%llu s1=%llu s2=%llu s3=%llu | "
+                "Slot fx max(us): s0=%llu s1=%llu s2=%llu s3=%llu",
+                (unsigned long long)spi_snap.slot_synth_max[0],
+                (unsigned long long)spi_snap.slot_synth_max[1],
+                (unsigned long long)spi_snap.slot_synth_max[2],
+                (unsigned long long)spi_snap.slot_synth_max[3],
+                (unsigned long long)spi_snap.slot_fx_max[0],
+                (unsigned long long)spi_snap.slot_fx_max[1],
+                (unsigned long long)spi_snap.slot_fx_max[2],
+                (unsigned long long)spi_snap.slot_fx_max[3]);
             if (spi_snap.jack_audio_hits > 0 || spi_snap.jack_audio_misses > 0) {
                 unified_log("spi_timing", LOG_LEVEL_DEBUG,
                     "JACK audio: hits=%u misses=%u (%.3f%% miss)",
