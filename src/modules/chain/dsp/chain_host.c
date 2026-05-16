@@ -562,6 +562,11 @@ typedef struct chain_instance {
      * maintained in v2_on_midi after the echo filter so only real pad
      * events — not our own injection echoes — affect it. */
     uint8_t pre_pad_held[128];
+
+    /* Per-component bypass flags. 1 = bypassed (skip processing), 0 = active. */
+    int synth_bypassed;
+    int midi_fx_bypassed[MAX_MIDI_FX];
+    int fx_bypassed[MAX_AUDIO_FX];
 } chain_instance_t;
 
 /* ============================================================================
@@ -590,6 +595,11 @@ static audio_fx_api_v2_t *g_fx_plugins_v2[MAX_AUDIO_FX];     /* v2 API */
 static void *g_fx_instances[MAX_AUDIO_FX];                   /* v2 instances */
 static int g_fx_is_v2[MAX_AUDIO_FX];                         /* 1 if using v2 */
 static int g_fx_count = 0;
+
+/* Per-component bypass flags. 1 = bypassed (skip processing), 0 = active. */
+static int g_synth_bypassed = 0;
+static int g_midi_fx1_bypassed = 0;
+static int g_fx_bypassed[MAX_AUDIO_FX] = {0, 0, 0, 0};
 
 /* Synth V1/V2 helper functions */
 static inline int synth_loaded(void) {
@@ -1396,6 +1406,7 @@ static void unload_synth(void) {
     }
     g_synth_is_v2 = 0;
     g_current_synth_module[0] = '\0';
+    g_synth_bypassed = 0;
 }
 
 /* Load an audio FX plugin */
@@ -1504,6 +1515,7 @@ static void unload_all_audio_fx(void) {
         g_fx_plugins_v2[i] = NULL;
         g_fx_instances[i] = NULL;
         g_fx_is_v2[i] = 0;
+        g_fx_bypassed[i] = 0;
     }
     g_fx_count = 0;
     chain_log("All audio FX unloaded");
@@ -1652,6 +1664,7 @@ static void v2_unload_all_midi_fx(chain_instance_t *inst) {
         inst->mod_param_refresh_ms_midi_fx[i] = 0;
         inst->midi_fx_ui_hierarchy[i][0] = '\0';
         inst->midi_fx_pre_capable[i] = 0;
+        inst->midi_fx_bypassed[i] = 0;
     }
     inst->midi_fx_count = 0;
 
@@ -3827,6 +3840,33 @@ static void plugin_set_param(const char *key, const char *val) {
         return;
     }
 
+    /* Per-component bypass flags. Handled BEFORE the prefix routes below
+     * so we don't forward "bypassed" down to the sub-plugin's set_param. */
+    if (strcmp(key, "synth:bypassed") == 0) {
+        g_synth_bypassed = (val && atoi(val)) ? 1 : 0;
+        return;
+    }
+    if (strcmp(key, "midi_fx1:bypassed") == 0) {
+        g_midi_fx1_bypassed = (val && atoi(val)) ? 1 : 0;
+        return;
+    }
+    if (strcmp(key, "fx1:bypassed") == 0) {
+        g_fx_bypassed[0] = (val && atoi(val)) ? 1 : 0;
+        return;
+    }
+    if (strcmp(key, "fx2:bypassed") == 0) {
+        g_fx_bypassed[1] = (val && atoi(val)) ? 1 : 0;
+        return;
+    }
+    if (strcmp(key, "fx3:bypassed") == 0) {
+        g_fx_bypassed[2] = (val && atoi(val)) ? 1 : 0;
+        return;
+    }
+    if (strcmp(key, "fx4:bypassed") == 0) {
+        g_fx_bypassed[3] = (val && atoi(val)) ? 1 : 0;
+        return;
+    }
+
     /* Route to synth with synth: prefix */
     if (strncmp(key, "synth:", 6) == 0) {
         const char *subkey = key + 6;
@@ -3900,6 +3940,27 @@ static int plugin_get_param(const char *key, char *buf, int buf_len) {
             return g_source_plugin->get_param(subkey, buf, buf_len);
         }
         return -1;
+    }
+
+    /* Per-component bypass flags. Handled BEFORE the prefix routes below
+     * so we return our cached flag instead of forwarding to the sub-plugin. */
+    if (strcmp(key, "synth:bypassed") == 0) {
+        return snprintf(buf, buf_len, "%d", g_synth_bypassed ? 1 : 0);
+    }
+    if (strcmp(key, "midi_fx1:bypassed") == 0) {
+        return snprintf(buf, buf_len, "%d", g_midi_fx1_bypassed ? 1 : 0);
+    }
+    if (strcmp(key, "fx1:bypassed") == 0) {
+        return snprintf(buf, buf_len, "%d", g_fx_bypassed[0] ? 1 : 0);
+    }
+    if (strcmp(key, "fx2:bypassed") == 0) {
+        return snprintf(buf, buf_len, "%d", g_fx_bypassed[1] ? 1 : 0);
+    }
+    if (strcmp(key, "fx3:bypassed") == 0) {
+        return snprintf(buf, buf_len, "%d", g_fx_bypassed[2] ? 1 : 0);
+    }
+    if (strcmp(key, "fx4:bypassed") == 0) {
+        return snprintf(buf, buf_len, "%d", g_fx_bypassed[3] ? 1 : 0);
     }
 
     /* Route to synth with synth: prefix */
@@ -4910,6 +4971,7 @@ static void v2_unload_synth(chain_instance_t *inst) {
     inst->synth_param_count = 0;
     inst->mod_param_refresh_ms_synth = 0;
     inst->synth_default_forward_channel = -1;
+    inst->synth_bypassed = 0;
 }
 
 /* V2 unload all audio FX */
@@ -4945,6 +5007,7 @@ static void v2_unload_all_audio_fx(chain_instance_t *inst) {
         inst->mod_param_refresh_ms_fx[i] = 0;
         inst->current_fx_modules[i][0] = '\0';
         inst->fx_ui_hierarchy[i][0] = '\0';
+        inst->fx_bypassed[i] = 0;
     }
     inst->fx_count = 0;
 }
@@ -4980,6 +5043,7 @@ static void v2_unload_audio_fx_slot(chain_instance_t *inst, int slot) {
     inst->mod_param_refresh_ms_fx[slot] = 0;
     inst->current_fx_modules[slot][0] = '\0';
     inst->fx_ui_hierarchy[slot][0] = '\0';
+    inst->fx_bypassed[slot] = 0;
 }
 
 /* V2 load audio FX into a specific slot */
@@ -7122,6 +7186,33 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         parse_debug_log(dbg);
     }
 
+    /* Per-component bypass flags. Handled BEFORE the prefix routes below
+     * so we don't forward "bypassed" down to the sub-plugin's set_param. */
+    if (strcmp(key, "synth:bypassed") == 0) {
+        inst->synth_bypassed = (val && atoi(val)) ? 1 : 0;
+        return;
+    }
+    if (strcmp(key, "midi_fx1:bypassed") == 0) {
+        inst->midi_fx_bypassed[0] = (val && atoi(val)) ? 1 : 0;
+        return;
+    }
+    if (strcmp(key, "fx1:bypassed") == 0) {
+        inst->fx_bypassed[0] = (val && atoi(val)) ? 1 : 0;
+        return;
+    }
+    if (strcmp(key, "fx2:bypassed") == 0) {
+        inst->fx_bypassed[1] = (val && atoi(val)) ? 1 : 0;
+        return;
+    }
+    if (strcmp(key, "fx3:bypassed") == 0) {
+        inst->fx_bypassed[2] = (val && atoi(val)) ? 1 : 0;
+        return;
+    }
+    if (strcmp(key, "fx4:bypassed") == 0) {
+        inst->fx_bypassed[3] = (val && atoi(val)) ? 1 : 0;
+        return;
+    }
+
     if (strcmp(key, "load_patch") == 0 || strcmp(key, "patch") == 0) {
         int idx = atoi(val);
         if (idx < 0) {
@@ -7883,6 +7974,27 @@ static chain_param_info_t* find_param_by_key(chain_instance_t *inst, const char 
 static int v2_get_param(void *instance, const char *key, char *buf, int buf_len) {
     chain_instance_t *inst = (chain_instance_t *)instance;
     if (!inst) return -1;
+
+    /* Per-component bypass flags. Handled BEFORE the prefix routes below
+     * so we return our cached flag instead of forwarding to the sub-plugin. */
+    if (strcmp(key, "synth:bypassed") == 0) {
+        return snprintf(buf, buf_len, "%d", inst->synth_bypassed ? 1 : 0);
+    }
+    if (strcmp(key, "midi_fx1:bypassed") == 0) {
+        return snprintf(buf, buf_len, "%d", inst->midi_fx_bypassed[0] ? 1 : 0);
+    }
+    if (strcmp(key, "fx1:bypassed") == 0) {
+        return snprintf(buf, buf_len, "%d", inst->fx_bypassed[0] ? 1 : 0);
+    }
+    if (strcmp(key, "fx2:bypassed") == 0) {
+        return snprintf(buf, buf_len, "%d", inst->fx_bypassed[1] ? 1 : 0);
+    }
+    if (strcmp(key, "fx3:bypassed") == 0) {
+        return snprintf(buf, buf_len, "%d", inst->fx_bypassed[2] ? 1 : 0);
+    }
+    if (strcmp(key, "fx4:bypassed") == 0) {
+        return snprintf(buf, buf_len, "%d", inst->fx_bypassed[3] ? 1 : 0);
+    }
 
     if (strcmp(key, "dirty") == 0) {
         return snprintf(buf, buf_len, "%d", inst->dirty);
