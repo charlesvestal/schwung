@@ -1252,6 +1252,7 @@ static void shadow_inprocess_process_midi(void) {
 
         }
     }
+
 }
 
 /* === OVERTAKE DSP LOAD/UNLOAD ===
@@ -6752,6 +6753,22 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             uint8_t type = status & 0xF0;
             uint8_t d1 = src[j + 2];
             uint8_t d2 = src[j + 3];
+
+            /* Deliver internal cable-0 note events (d1 >= 10, excludes
+             * knob-touch reserved range 0–9) to the loaded overtake DSP
+             * via its audio-thread on_midi hook.  Enables overtake tools
+             * like dAVEBOx to handle pad input on the audio thread
+             * instead of through the JS round-trip below. */
+            if (overtake_mode == 2 && cable == 0x00 &&
+                (type == 0x90 || type == 0x80) && d1 >= 10) {
+                if (overtake_dsp_gen && overtake_dsp_gen_inst && overtake_dsp_gen->on_midi) {
+                    uint8_t msg[3] = { status, d1, d2 };
+                    overtake_dsp_gen->on_midi(overtake_dsp_gen_inst, msg, 3, MOVE_MIDI_SOURCE_INTERNAL);
+                } else if (overtake_dsp_fx && overtake_dsp_fx_inst && overtake_dsp_fx->on_midi) {
+                    uint8_t msg[3] = { status, d1, d2 };
+                    overtake_dsp_fx->on_midi(overtake_dsp_fx_inst, msg, 3, MOVE_MIDI_SOURCE_INTERNAL);
+                }
+            }
 
             /* In overtake mode, forward events to shadow UI.
              * overtake_mode=1 (menu): only forward UI events (jog, click, back)
