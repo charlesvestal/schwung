@@ -1703,6 +1703,7 @@ static int v2_process_midi_fx(chain_instance_t *inst,
     current_lens[0] = in_len;
 
     for (int fx = 0; fx < inst->midi_fx_count; fx++) {
+        if (fx < MAX_MIDI_FX && inst->midi_fx_bypassed[fx]) continue;
         midi_fx_api_v1_t *api = inst->midi_fx_plugins[fx];
         void *fx_inst = inst->midi_fx_instances[fx];
         if (!api || !fx_inst || !api->process_midi) continue;
@@ -1747,6 +1748,7 @@ static void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
     if (!inst) return;
 
     for (int fx = 0; fx < inst->midi_fx_count; fx++) {
+        if (fx < MAX_MIDI_FX && inst->midi_fx_bypassed[fx]) continue;
         midi_fx_api_v1_t *api = inst->midi_fx_plugins[fx];
         void *fx_inst = inst->midi_fx_instances[fx];
         if (!api || !fx_inst || !api->tick) continue;
@@ -4240,8 +4242,12 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
     }
 
     if (synth_loaded()) {
-        /* Get audio from synth */
-        synth_render_block(out_interleaved_lr, frames);
+        /* Get audio from synth (or silence if bypassed — MIDI still flows) */
+        if (g_synth_bypassed) {
+            memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
+        } else {
+            synth_render_block(out_interleaved_lr, frames);
+        }
 
         /* Process through audio FX chain */
         for (int i = 0; i < g_fx_count; i++) {
@@ -8796,8 +8802,10 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
     /* Process MIDI FX tick (for arpeggiator timing) */
     v2_tick_midi_fx(inst, frames);
 
-    /* Render synth */
-    if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->render_block) {
+    /* Render synth (or silence if bypassed — MIDI still flows so voices age) */
+    if (inst->synth_bypassed) {
+        memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
+    } else if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->render_block) {
         inst->synth_plugin_v2->render_block(inst->synth_instance, out_interleaved_lr, frames);
     } else if (inst->synth_plugin && inst->synth_plugin->render_block) {
         inst->synth_plugin->render_block(out_interleaved_lr, frames);
