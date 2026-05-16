@@ -6640,20 +6640,6 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     shadow_ui_midi_publish(0x0B, status, d1, d2);
                 }
 
-                /* While shadow UI is shown, block plain Mute (CC 88) from
-                 * reaching Move firmware so a stray Mute press doesn't toggle
-                 * Move's selected track. Shim has already updated
-                 * shadow_mute_held above, so Mute+Track (shadow slot mute) and
-                 * Shift+Mute+Track (solo) and Mute+JogClick (module bypass)
-                 * all still work — those combos consume the modifier locally
-                 * without needing Move firmware to see the Mute CC. */
-                if (d1 == 88 && shadow_display_mode) {
-                    uint8_t *sh = shadow + MIDI_IN_OFFSET;
-                    sh[j] = 0; sh[j + 1] = 0; sh[j + 2] = 0; sh[j + 3] = 0;
-                    src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
-                    continue;
-                }
-
                 /* Check capture rules for CCs (beyond the hardcoded blocks) */
                 /* Skip knobs - they're handled by shadow UI, not routed to DSP */
                 int is_knob_cc = (d1 >= 71 && d1 <= 78);
