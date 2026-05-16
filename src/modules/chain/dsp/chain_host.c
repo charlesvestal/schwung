@@ -4245,6 +4245,7 @@ static void plugin_render_block(int16_t *out_interleaved_lr, int frames) {
 
         /* Process through audio FX chain */
         for (int i = 0; i < g_fx_count; i++) {
+            if (i < MAX_AUDIO_FX && g_fx_bypassed[i]) continue;
             if (g_fx_is_v2[i]) {
                 if (g_fx_plugins_v2[i] && g_fx_instances[i] && g_fx_plugins_v2[i]->process_block) {
                     g_fx_plugins_v2[i]->process_block(g_fx_instances[i], out_interleaved_lr, frames);
@@ -8825,6 +8826,7 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
 
     /* Process through audio FX chain */
     for (int i = 0; i < inst->fx_count; i++) {
+        if (i < MAX_AUDIO_FX && inst->fx_bypassed[i]) continue;
         if (inst->fx_is_v2[i]) {
             if (inst->fx_plugins_v2[i] && inst->fx_instances[i] && inst->fx_plugins_v2[i]->process_block) {
                 inst->fx_plugins_v2[i]->process_block(inst->fx_instances[i], out_interleaved_lr, frames);
@@ -8890,6 +8892,7 @@ void chain_process_fx(void *instance, int16_t *buf, int frames) {
     chain_instance_t *inst = (chain_instance_t *)instance;
     if (!inst) return;
     for (int i = 0; i < inst->fx_count; i++) {
+        if (i < MAX_AUDIO_FX && inst->fx_bypassed[i]) continue;
         if (inst->fx_is_v2[i]) {
             if (inst->fx_plugins_v2[i] && inst->fx_instances[i] && inst->fx_plugins_v2[i]->process_block) {
                 inst->fx_plugins_v2[i]->process_block(inst->fx_instances[i], buf, frames);
