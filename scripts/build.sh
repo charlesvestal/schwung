@@ -468,20 +468,7 @@ else
     echo "Skipping chain DSP (up to date)"
 fi
 
-# Build Seq Test tool DSP
-mkdir -p ./build/modules/tools/seq-test/
-if needs_rebuild build/modules/tools/seq-test/dsp.so \
-    src/modules/tools/seq-test/dsp/seq-test.c \
-    src/host/plugin_api_v1.h; then
-    echo "Building seq-test tool DSP..."
-    "${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
-        src/modules/tools/seq-test/dsp/seq-test.c \
-        -o build/modules/tools/seq-test/dsp.so \
-        -Isrc \
-        -lm
-else
-    echo "Skipping seq-test DSP (up to date)"
-fi
+# seq-test is dev-only (Addressing Move Synths reference); not built or shipped.
 
 echo "Building Audio FX plugins..."
 
@@ -704,13 +691,35 @@ ln -sf schwung ./build/move-anything
 
 # Copy all module files (js, mjs, json, sh) - preserves directory structure
 # Compiled .so files are built separately above
+# Dev-only modules excluded from release tarball (source kept in src/modules/):
+#   - tools/{ui,seq,config,splash}-test: dev scaffolding
+#   - text-test, standalone-example: dev scaffolding
+#   - controller: superseded by catalog "control" module (chaolue)
 echo "Copying module files..."
 find ./src/modules -type f \( -name "*.js" -o -name "*.mjs" -o -name "*.json" -o -name "*.sh" -o -name "*.py" -o -name "*.txt" \) \
-    -not -path "*/splash-test/*" -not -path "*/text-test/*" -not -path "*/standalone-example/*" | while IFS= read -r src; do
+    -not -path "*/splash-test/*" \
+    -not -path "*/text-test/*" \
+    -not -path "*/standalone-example/*" \
+    -not -path "*/ui-test/*" \
+    -not -path "*/seq-test/*" \
+    -not -path "*/config-test/*" \
+    -not -path "*/controller/*" | while IFS= read -r src; do
     dest="./build/${src#./src/}"
     mkdir -p "$(dirname "$dest")"
     cp -u "$src" "$dest"
 done
+
+# Scrub any stale build artifacts from prior incremental builds so excluded
+# modules don't ship just because their directory still exists in ./build/.
+rm -rf \
+    ./build/modules/controller \
+    ./build/modules/text-test \
+    ./build/modules/tools/ui-test \
+    ./build/modules/tools/seq-test \
+    ./build/modules/tools/config-test \
+    ./build/modules/tools/splash-test \
+    2>/dev/null || true
+
 # Make shell scripts in modules executable
 find ./build/modules -type f -name "*.sh" -exec chmod +x {} \;
 
