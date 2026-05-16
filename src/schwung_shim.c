@@ -4132,8 +4132,6 @@ static uint64_t spi_last_frame_total_us = 0;
 #define OVERRUN_THRESHOLD_US 2850  /* Start worrying at 2850µs (98% of budget) */
 #define SKIP_DSP_THRESHOLD 3       /* Skip DSP after 3 consecutive overruns */
 
-static void shim_forward_cable2_to_move(void); /* defined after shim_remap_cable2_channels */
-
 /* ============================================================================
  * SPI PRE-TRANSFER CALLBACK
  * ============================================================================
@@ -4503,15 +4501,14 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     shadow_dispatch_direct_external_midi();
     TIME_SECTION_END(spi_direct_midi_sum, spi_direct_midi_max);
 
-    /* When no tool module is active (or a module is suspended), restore Move's
-     * native cable-2 routing.  Two cooperating operations:
-     *   1. Inject cable-2 events as cable-0 so Move's DSP routes them to
-     *      native instruments by MIDI channel (shim_forward_cable2_to_move).
-     *   2. Dispatch cable-2 events to Schwung chain slots by channel so
-     *      Schwung instruments also respond (shadow_dispatch_cable2_channeled_slots). */
+    /* When no tool module is active (or a module is suspended), dispatch
+     * cable-2 events to Schwung chain slots by channel so Schwung instruments
+     * respond.  Move's native instruments already receive cable-2 directly
+     * via the firmware DSP's channel router — no shim-side reinjection
+     * needed (PR #78's cable-0 reinjection caused channel-1 notes to trip
+     * Move's pad/clip protocol; removed). */
     if (shadow_control &&
         (shadow_control->overtake_mode == 0 || shadow_control->suspend_overtake)) {
-        shim_forward_cable2_to_move();
         shadow_dispatch_cable2_channeled_slots();
     }
 
@@ -5302,33 +5299,6 @@ static void shim_block_cable2_in_sh_midi(uint8_t *sh_midi) {
         sh_midi[j]     = (sh_midi[j] & 0xF0) | 0x08;  /* CIN 8 = note-off */
         sh_midi[j + 1] = 0x80 | in_ch;                 /* note-off status */
         sh_midi[j + 3] = 0x40;                         /* standard note-off vel */
-    }
-}
-
-/* Inject cable-2 (USB-A external MIDI) note-on/off events into Move's MIDI_IN
- * inject ring as cable-0 packets.  The inject drain forces cable nibble to 0,
- * so Move's DSP receives them as cable-0 and routes them to native instruments
- * by MIDI channel — the same path used when Schwung is not installed.
- * Called only when no tool module is active or a module is suspended. */
-static void shim_forward_cable2_to_move(void) {
-    if (!hardware_mmap_addr) return;
-    uint8_t *hw_buf = hardware_mmap_addr + MIDI_IN_OFFSET;
-    const int MIDI_IN_MAX_BYTES = 8 * 31;   /* 31 events × 8-byte stride */
-    for (int j = 0; j < MIDI_IN_MAX_BYTES; j += 8) {
-        uint8_t header = hw_buf[j];
-        if (header == 0) break;                     /* end-of-events sentinel */
-        if (((header >> 4) & 0x0F) != 2) continue;  /* cable-2 only */
-        uint8_t cin = header & 0x0F;
-        if (cin != 0x08 && cin != 0x09) continue;   /* note-off / note-on only */
-        /* Inject as cable-0 (clear cable nibble, preserve CIN).  Empirically
-         * Move's track router only emits its own NoteOn+NoteOff echo to
-         * MIDI_OUT cable-2 when fed cable-2; with cable-0 the inject reaches
-         * the same routing without producing a phantom track-output NoteOff
-         * after every NoteOn.  This also avoids leaving a second cable-2 copy
-         * alongside the XMOS-written original in MIDI_IN, which our
-         * cable-2 dispatchers would otherwise dispatch twice. */
-        const uint8_t pkt[4] = { (uint8_t)(header & 0x0F), hw_buf[j+1], hw_buf[j+2], hw_buf[j+3] };
-        shadow_chain_midi_inject(pkt, 4);
     }
 }
 
