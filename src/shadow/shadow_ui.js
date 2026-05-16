@@ -4268,11 +4268,32 @@ function autosaveAllSlots() {
              * 2026-04-29). */
             const slotName = (slots[i] && slots[i].name) || "";
             if (!slotUserCleared[i] && slotName !== "") {
-                debugLog("autosave: slot " + i + " shim reports empty but " +
-                         "preset name=\"" + slotName + "\" — preserving " +
-                         "existing slot_" + i + ".json (likely shim glitch)");
-                slotDirtyCache[i] = false;
-                continue;
+                /* Only guard when there's actually content on disk to protect.
+                 * If slot_N.json is missing/empty, the chain-config name has
+                 * drifted from the saved state — writing the empty marker is
+                 * safe and stops the every-autosave log spam. */
+                const existing = host_read_file(
+                    activeSlotStateDir + "/slot_" + i + ".json");
+                let hasSavedChain = false;
+                if (existing) {
+                    try {
+                        const parsed = JSON.parse(existing);
+                        hasSavedChain = !!(parsed && parsed.chain &&
+                            ((parsed.chain.synth && parsed.chain.synth.module) ||
+                             (parsed.chain.audio_fx && parsed.chain.audio_fx.length) ||
+                             (parsed.chain.midi_fx && parsed.chain.midi_fx.length)));
+                    } catch (e) { /* malformed → treat as no content */ }
+                }
+                if (hasSavedChain) {
+                    debugLog("autosave: slot " + i + " shim reports empty but " +
+                             "preset name=\"" + slotName + "\" and slot_" + i +
+                             ".json has chain — preserving (likely shim glitch)");
+                    slotDirtyCache[i] = false;
+                    continue;
+                }
+                /* No saved chain on disk — chain-config name is stale. Fall
+                 * through to write the empty marker so future autosaves stop
+                 * tripping this branch. */
             }
             /* Empty slot - write empty marker to clear autosave */
             host_write_file(
@@ -8209,6 +8230,21 @@ function changeHierPreset(delta) {
     } else {
         hierEditorChainParams = getComponentChainParams(hierEditorSlot, hierEditorComponent);
     }
+    /* Re-fetch ui_hierarchy too — plugins (e.g. schwung-sfz xsynth fork)
+     * emit a different param/knob set per preset. Without this the menu
+     * keeps the previous preset's slot list with stale labels until the
+     * user exits and re-enters. */
+    let newHierarchy = null;
+    if (hierEditorIsMasterFx) {
+        newHierarchy = getMasterFxHierarchy(hierEditorMasterFxSlot);
+    } else {
+        newHierarchy = getComponentHierarchy(hierEditorSlot, hierEditorComponent);
+    }
+    if (newHierarchy) {
+        hierEditorHierarchy = newHierarchy;
+        /* Rebuild the visible param list from the new hierarchy. */
+        loadHierarchyLevel();
+    }
     invalidateKnobContextCache();
 }
 
@@ -10249,6 +10285,13 @@ function drawFilepathBrowser() {
     drawFooter({ left: actionText, right: "Jog: scroll" });
 }
 
+/* Track plugin async-load state per draw so a preset switch's deferred
+ * convert/load can refresh ui_hierarchy + chain_params once it completes.
+ * The schwung-sfz xsynth fork (and similar) defer the actual SFZ load by
+ * a few audio blocks after setSlotParam("preset", N); a naive refetch
+ * inside changeHierPreset observes the previous preset's knob list. */
+let hierEditorPrevLoading = false;
+
 /* Draw the hierarchy-based parameter editor */
 function drawHierarchyEditor() {
     clear_screen();
@@ -10257,6 +10300,30 @@ function drawHierarchyEditor() {
      * when we entered the hierarchy editor (e.g., Virus ROM loading) */
     if (!hierEditorChainParams || hierEditorChainParams.length === 0) {
         refreshHierarchyChainParams();
+    }
+
+    /* Poll is_loading and re-fetch hierarchy + chain_params on the
+     * loading→ready transition. */
+    {
+        const prefix2 = getComponentParamPrefix(hierEditorComponent);
+        const loadingStr = getSlotParam(hierEditorSlot, `${prefix2}:is_loading`);
+        const loadingNow = loadingStr === "1";
+        if (hierEditorPrevLoading && !loadingNow) {
+            let newHier = null;
+            if (hierEditorIsMasterFx) {
+                hierEditorChainParams = getMasterFxChainParams(hierEditorMasterFxSlot);
+                newHier = getMasterFxHierarchy(hierEditorMasterFxSlot);
+            } else {
+                hierEditorChainParams = getComponentChainParams(hierEditorSlot, hierEditorComponent);
+                newHier = getComponentHierarchy(hierEditorSlot, hierEditorComponent);
+            }
+            if (newHier) {
+                hierEditorHierarchy = newHier;
+                loadHierarchyLevel();
+            }
+            invalidateKnobContextCache();
+        }
+        hierEditorPrevLoading = loadingNow;
     }
 
     /* Get plugin info */
@@ -11728,6 +11795,22 @@ function handleSelect() {
                         hierEditorLevel = parentLevel;
                     }
                     hierEditorSelectedIdx = 0;
+                    /* Selecting a dynamic item (e.g. an instrument from
+                     * the library browser) loads a new SFZ/preset, which
+                     * for plugins like schwung-sfz changes the emitted
+                     * ui_hierarchy + chain_params. Re-fetch both before
+                     * rebuilding the level so the next param list shows
+                     * the freshly-loaded preset's knobs instead of the
+                     * previous one's stale slots. */
+                    let newHierarchy = null;
+                    if (hierEditorIsMasterFx) {
+                        hierEditorChainParams = getMasterFxChainParams(hierEditorMasterFxSlot);
+                        newHierarchy = getMasterFxHierarchy(hierEditorMasterFxSlot);
+                    } else {
+                        hierEditorChainParams = getComponentChainParams(hierEditorSlot, hierEditorComponent);
+                        newHierarchy = getComponentHierarchy(hierEditorSlot, hierEditorComponent);
+                    }
+                    if (newHierarchy) hierEditorHierarchy = newHierarchy;
                     loadHierarchyLevel();
                     invalidateKnobContextCache();
                     break;
