@@ -61,6 +61,14 @@ extern volatile native_sampler_source_t native_sampler_source_last_known;
 extern volatile int link_audio_routing_enabled;
 extern volatile int link_audio_publish_enabled;
 
+/* Latency compensation: aligns Schwung slot output with Move audio that
+ * round-trips through Link Audio. User toggle (latency_comp_user_enabled)
+ * is read whenever Link Audio routing 0→1 engages, latched into
+ * latency_comp_active. This avoids audible discontinuity from flipping the
+ * delay buffer mid-playback. */
+extern volatile int latency_comp_user_enabled;
+extern volatile int latency_comp_active;
+
 /* Snapshot and component buffers - written by shim rendering, read by apply */
 extern int16_t native_total_mix_snapshot[];
 extern volatile int native_total_mix_snapshot_valid;
