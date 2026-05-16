@@ -2288,8 +2288,14 @@ skip_la_rebuild:
      * processes mailbox (Task 8 revisits). */
     for (int fx = 0; fx < MASTER_FX_SLOTS; fx++) {
         master_fx_slot_t *s = &shadow_master_fx_slots[fx];
-        if (s->instance && s->api && s->api->process_block) {
-            s->api->process_block(s->instance, fx_target, FRAMES_PER_BLOCK);
+        if (!(s->instance && s->api && s->api->process_block)) continue;
+        int16_t mfx_dry[FRAMES_PER_BLOCK * 2];
+        if (s->bypassed) {
+            memcpy(mfx_dry, fx_target, FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
+        }
+        s->api->process_block(s->instance, fx_target, FRAMES_PER_BLOCK);
+        if (s->bypassed) {
+            memcpy(fx_target, mfx_dry, FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
         }
     }
 
@@ -6781,12 +6787,28 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 /* CCs to forward to shadow UI:
                  * - CC 14 (jog wheel), CC 3 (jog click), CC 51 (back)
                  * - CC 40-43 (track buttons)
-                 * - CC 71-78 (knobs) */
+                 * - CC 71-78 (knobs)
+                 * - CC 88 (mute) — used as a modifier for Mute+JogClick module bypass */
                 int forward_to_shadow = (d1 == 14 || d1 == 3 || d1 == 51 ||
-                                         (d1 >= 40 && d1 <= 43) || (d1 >= 71 && d1 <= 78));
+                                         (d1 >= 40 && d1 <= 43) || (d1 >= 71 && d1 <= 78) ||
+                                         d1 == 88);
 
                 if (forward_to_shadow && shadow_ui_midi_shm) {
                     shadow_ui_midi_publish(0x0B, status, d1, d2);
+                }
+
+                /* While shadow UI is shown, block plain Mute (CC 88) from
+                 * reaching Move firmware so a stray Mute press doesn't toggle
+                 * Move's selected track. Shim has already updated
+                 * shadow_mute_held above, so Mute+Track (shadow slot mute) and
+                 * Shift+Mute+Track (solo) and Mute+JogClick (module bypass)
+                 * all still work — those combos consume the modifier locally
+                 * without needing Move firmware to see the Mute CC. */
+                if (d1 == 88 && shadow_display_mode) {
+                    uint8_t *sh = shadow + MIDI_IN_OFFSET;
+                    sh[j] = 0; sh[j + 1] = 0; sh[j + 2] = 0; sh[j + 3] = 0;
+                    src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+                    continue;
                 }
 
                 /* Check capture rules for CCs (beyond the hardcoded blocks) */
