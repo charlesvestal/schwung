@@ -25,6 +25,8 @@ volatile native_sampler_source_t native_sampler_source = NATIVE_SAMPLER_SOURCE_U
 volatile native_sampler_source_t native_sampler_source_last_known = NATIVE_SAMPLER_SOURCE_UNKNOWN;
 volatile int link_audio_routing_enabled = 0;
 volatile int link_audio_publish_enabled = 0;
+volatile int latency_comp_user_enabled = 0;
+volatile int latency_comp_active = 0;
 
 /* Snapshot and component buffers */
 int16_t native_total_mix_snapshot[FRAMES_PER_BLOCK * 2];
@@ -66,6 +68,8 @@ void resample_init(const resample_host_t *h) {
     native_sampler_source_last_known = NATIVE_SAMPLER_SOURCE_UNKNOWN;
     link_audio_routing_enabled = 0;
     link_audio_publish_enabled = 0;
+    latency_comp_user_enabled = 0;
+    latency_comp_active = 0;
     native_total_mix_snapshot_valid = 0;
     native_bridge_split_valid = 0;
     native_bridge_capture_mv = 1.0f;

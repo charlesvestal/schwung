@@ -39,4 +39,27 @@ void link_audio_reset_state(void);
 int link_audio_read_channel_shm(link_audio_in_shm_t *shm, int slot_idx,
                                 int16_t *out_lr, int frames);
 
+/* Latency compensation target — the steady-state ring fill we nudge toward
+ * when `latency_comp_active` is set. 800 stereo samples ≈ 9.07 ms at
+ * 44.1 kHz, chosen from on-device measurement: organically settled means
+ * range 8–14 ms with worst-case bursts to ~18 ms, so 9 ms is below average
+ * (saves latency) and well above producer jitter floor (~3 ms). */
+#define LATENCY_COMP_TARGET_SAMPLES 800
+
+/* Reset the nudge counters used by link_audio_read_channel_shm. Called
+ * when latency comp engages so the first window of correction starts
+ * from a known state. */
+void link_audio_reset_nudge_state(void);
+
+/* Drain shim-local read-time `avail` statistics for one slot (min/max/sum/
+ * count over the window since the last drain). Used by the background
+ * timing logger to characterize Move→Schwung Link Audio latency stability
+ * before deciding on static vs dynamic compensation. RELAXED atomics —
+ * informational only. */
+void link_audio_drain_avail_stats(int slot_idx,
+                                  uint32_t *out_min,
+                                  uint32_t *out_max,
+                                  uint64_t *out_sum,
+                                  uint32_t *out_count);
+
 #endif /* SHADOW_LINK_AUDIO_H */
