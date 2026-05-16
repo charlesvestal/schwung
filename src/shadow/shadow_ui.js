@@ -4130,7 +4130,8 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
         }
         patch.synth = {
             module: cfg.synth.module,
-            config: synthConfig
+            config: synthConfig,
+            bypassed: parseInt(getSlotParam(slotIndex, "synth:bypassed") || "0", 10) === 1 ? 1 : 0
         };
     }
 
@@ -4154,7 +4155,8 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
         }
         patch.midi_fx = [{
             type: cfg.midiFx.module,
-            params: midiFxConfig
+            params: midiFxConfig,
+            bypassed: parseInt(getSlotParam(slotIndex, "midi_fx1:bypassed") || "0", 10) === 1 ? 1 : 0
         }];
     }
 
@@ -4178,7 +4180,8 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
         }
         patch.audio_fx.push({
             type: cfg.fx1.module,
-            params: fx1Config
+            params: fx1Config,
+            bypassed: parseInt(getSlotParam(slotIndex, "fx1:bypassed") || "0", 10) === 1 ? 1 : 0
         });
     }
     if (cfg.fx2 && cfg.fx2.module) {
@@ -4201,7 +4204,8 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
         }
         patch.audio_fx.push({
             type: cfg.fx2.module,
-            params: fx2Config
+            params: fx2Config,
+            bypassed: parseInt(getSlotParam(slotIndex, "fx2:bypassed") || "0", 10) === 1 ? 1 : 0
         });
     }
 
@@ -5929,6 +5933,15 @@ function saveMasterFxChainConfig() {
             if (slotIdx === 0 && masterFxLfoConfig) {
                 stateFile.lfos = masterFxLfoConfig;
             }
+            /* Persist bypass — restored by loadMasterFxChainFromConfig at boot
+             * via setSlotParam, since the shim's MFX load path doesn't carry
+             * this flag through. */
+            const bypassedVal = (typeof shadow_get_param === "function")
+                ? parseInt(shadow_get_param(0, `master_fx:${key}:bypassed`) || "0", 10)
+                : 0;
+            if (bypassedVal === 1) {
+                stateFile.bypassed = 1;
+            }
             host_write_file(stateFilePath, JSON.stringify(stateFile, null, 2) + "\n");
         }
 
@@ -6287,6 +6300,12 @@ function loadMasterFxChainFromConfig() {
                     if (stateFile.module_id) {
                         masterFxConfig[key].module = stateFile.module_id;
                         debugLog(`MFX sync ${key}: module=${stateFile.module_id} (loaded by shim)`);
+                    }
+                    /* Restore bypass via setSlotParam — the shim doesn't carry
+                     * this flag through its load_file path, so we apply it
+                     * after autosave has settled. */
+                    if (stateFile.bypassed && typeof shadow_set_param === "function") {
+                        shadow_set_param(0, `master_fx:${key}:bypassed`, "1");
                     }
                     if (i === 0 && stateFile.lfos && typeof shadow_set_param === "function") {
                         for (let li = 1; li <= 2; li++) {
@@ -14158,7 +14177,10 @@ globalThis.init = function() {
     for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
         const dirty = getSlotParam(i, "dirty");
         slotDirtyCache[i] = (dirty === "1");
-        /* Sync slot names from autosave if present */
+        /* Sync slot names + per-component bypass from autosave if present.
+         * The shim's load_file restores synth/FX/MIDI-FX modules + params via
+         * the chain_host parser, but bypass flags are not in the C parser path;
+         * apply them here via setSlotParam after autosave has settled. */
         const path = activeSlotStateDir + "/slot_" + i + ".json";
         if (host_file_exists(path)) {
             const raw = host_read_file(path);
@@ -14166,6 +14188,25 @@ globalThis.init = function() {
                 const m = raw.match(/"name"\s*:\s*"([^"]+)"/);
                 if (m && m[1] && !slots[i].name) {
                     slots[i].name = m[1];
+                }
+                try {
+                    const parsed = JSON.parse(raw);
+                    if (parsed && parsed.synth && parsed.synth.bypassed) {
+                        setSlotParam(i, "synth:bypassed", "1");
+                    }
+                    if (parsed && Array.isArray(parsed.midi_fx) && parsed.midi_fx[0] && parsed.midi_fx[0].bypassed) {
+                        setSlotParam(i, "midi_fx1:bypassed", "1");
+                    }
+                    if (parsed && Array.isArray(parsed.audio_fx)) {
+                        for (let fx = 0; fx < parsed.audio_fx.length && fx < 4; fx++) {
+                            if (parsed.audio_fx[fx] && parsed.audio_fx[fx].bypassed) {
+                                setSlotParam(i, `fx${fx + 1}:bypassed`, "1");
+                            }
+                        }
+                    }
+                } catch (e) {
+                    /* JSON parse failed — autosave is malformed or partial; skip
+                     * bypass restore for this slot. Slot continues with bypass=0. */
                 }
             }
         }
