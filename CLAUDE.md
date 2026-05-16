@@ -395,6 +395,45 @@ See `docs/plans/2026-04-17-link-audio-official-api-migration.md` for the
 full migration plan and `docs/link-audio-crackle-followup.md` for the
 double-FX-per-frame crackle diagnosis + fix.
 
+### Latency Comp (Move↔Schwung audio alignment)
+
+Move's per-track audio round-trips through Link Audio with ~5–14 ms of
+unpredictable, drifting delay (set by initial ring fill + SDK jitter
+plateaus). Schwung slot synths render locally with ~0 ms delay, so by
+default they fire 5–14 ms ahead of any Move drumrack/synth audio on the
+same beat. Global Settings → Audio → **Latency Comp** (default OFF)
+opts into a two-piece alignment fix that only runs when Move>Schwung is
+active (`rebuild_from_la = 1`):
+
+1. **Link Audio nudge** (`src/host/shadow_link_audio.c`
+   `link_audio_read_channel_shm`): drops or duplicates one stereo frame
+   every 16 reads when outside a ±32-sample dead band around
+   `LATENCY_COMP_TARGET_SAMPLES` (800 stereo samples ≈ 9.07 ms). Burst
+   mode (8 frames per period) engages when error > 512 samples for fast
+   initial convergence. Effective rate change stays under 0.3% — well
+   below click and pitch-shift audibility.
+2. **Schwung-side delay buffer** (`shadow_inprocess_mix_from_buffer` →
+   `shadow_latency_delay_apply`): per-slot 2048-sample ring delays
+   `shadow_slot_deferred[s]` by 800 samples before combining with
+   `move_track`. Bypassed when `rebuild_from_la = 0` so non-routed
+   sessions pay zero latency.
+
+Active state (`latency_comp_active`) follows the user toggle
+(`latency_comp_user_enabled`) immediately. Flipping mid-playback
+produces a ~9 ms transition artifact (audio hole on OFF→ON, duplicate
+on ON→OFF) as the delay ring resets — accepted cost of toggling a
+delay buffer mid-stream.
+
+Telemetry that earned its keep during development:
+
+- Touch `/data/UserData/schwung/link_audio_avail_log_on` to enable
+  per-slot min/mean/max `avail` logging every 5 s. With comp active the
+  mean should lock to ~9.07 ms; without comp it wanders.
+- Touch `/data/UserData/schwung/align_dump_trigger` to capture ~2.9 s
+  of slot-0 `move_track` and post-delay `synth_src` as separate raw
+  s16le stereo PCM files in `/data/UserData/schwung/` for offline
+  cross-correlation.
+
 ## Signal Chain Module
 
 The `chain` module implements a modular signal chain for combining components:
