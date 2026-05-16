@@ -2163,8 +2163,14 @@ skip_la_rebuild:
      * processes mailbox (Task 8 revisits). */
     for (int fx = 0; fx < MASTER_FX_SLOTS; fx++) {
         master_fx_slot_t *s = &shadow_master_fx_slots[fx];
-        if (s->instance && s->api && s->api->process_block) {
-            s->api->process_block(s->instance, fx_target, FRAMES_PER_BLOCK);
+        if (!(s->instance && s->api && s->api->process_block)) continue;
+        int16_t mfx_dry[FRAMES_PER_BLOCK * 2];
+        if (s->bypassed) {
+            memcpy(mfx_dry, fx_target, FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
+        }
+        s->api->process_block(s->instance, fx_target, FRAMES_PER_BLOCK);
+        if (s->bypassed) {
+            memcpy(fx_target, mfx_dry, FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
         }
     }
 
