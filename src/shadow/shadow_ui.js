@@ -1784,14 +1784,16 @@ function getMultiMarkerKnobRole(knobIndex) {
     const group = selMeta.view_group ? getWavViewGroupMembers(selMeta.view_group) : [];
     const isMulti = group.length > 1;
 
-    if (knobIndex === 7) {
-        /* Anchor for zoom state: prefer first group member when grouped,
-         * else the selected param itself. */
+    /* Knob 8 zoom override is opt-in via enable_zoom. Modules without it
+     * (MrDrums pad_start, REX slice points, etc.) keep their declared
+     * knob 8 mapping. */
+    if (knobIndex === 7 && selMeta.enable_zoom) {
         const anchor = isMulti
             ? group[0]
             : { key: sel, fullKey: selFullKey, meta: selMeta };
         return { type: "zoom", group, anchor };
     }
+    /* Multi-marker knob remap is opt-in via view_group. */
     if (isMulti) {
         if (knobIndex >= 0 && knobIndex < group.length) {
             return { type: "marker", member: group[knobIndex], group };
@@ -9318,14 +9320,15 @@ function processPendingHierKnob() {
     if (!ctx || ctx.noMapping || !ctx.fullKey) return;
 
     /* Single-marker wav_position editor view: silence enum knob turns so the
-     * user can't toggle e.g. loop_mode by accident from the editor. The
-     * multi-marker path already covered this by routing knobs 1..N to group
-     * members; this catches the single-marker case (where the group has 0
-     * or 1 visible members because dependent params are hidden). */
+     * user can't toggle e.g. loop_mode by accident from the editor. Only
+     * applies when the active wav_position has opted into the new editor
+     * (enable_zoom or view_group); legacy modules like MrDrums still let
+     * the user turn enum knobs while editing pad_start. */
     if (hierEditorEditMode && ctx.meta && ctx.meta.type === "enum") {
         const sel = getSelectedHierarchyEditableKey();
         const selMeta = sel ? getParamMetadata(sel) : null;
-        if (selMeta && selMeta.ui_type === "wav_position") {
+        if (selMeta && selMeta.ui_type === "wav_position" &&
+            (selMeta.enable_zoom || selMeta.view_group)) {
             return;
         }
     }
