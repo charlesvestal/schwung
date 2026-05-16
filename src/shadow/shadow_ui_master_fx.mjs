@@ -149,6 +149,28 @@ export function drawMasterFx() {
         print(textX, textY, abbrev, textColor);
     }
 
+    /* Draw bypass 'B' marker above box, left side. Same style as the chain
+     * editor: 3-wide × 4-tall glyph at iy=BOX_Y-6. Sits left of where the LFO
+     * indicator is centered, so they coexist without overlap. */
+    if (typeof shadow_get_param === "function") {
+        for (let i = 0; i < MASTER_FX_CHAIN_COMPONENTS.length; i++) {
+            const comp = MASTER_FX_CHAIN_COMPONENTS[i];
+            if (comp.key === "settings") continue;
+            const bypassed = parseInt(
+                shadow_get_param(0, `master_fx:${comp.key}:bypassed`) || "0", 10
+            ) === 1;
+            if (!bypassed) continue;
+            const x = START_X + i * (BOX_W + GAP);
+            const bx = x + 1;
+            const by = BOX_Y - 6;
+            /* "B" glyph: ##. / #.# / ##. / ### */
+            set_pixel(bx,     by,     1); set_pixel(bx + 1, by,     1);
+            set_pixel(bx,     by + 1, 1); set_pixel(bx + 2, by + 1, 1);
+            set_pixel(bx,     by + 2, 1); set_pixel(bx + 1, by + 2, 1);
+            set_pixel(bx,     by + 3, 1); set_pixel(bx + 1, by + 3, 1); set_pixel(bx + 2, by + 3, 1);
+        }
+    }
+
     /* Draw LFO indicators above targeted FX boxes */
     if (typeof shadow_get_param === "function") {
         const mfxLfoTargets = {};
