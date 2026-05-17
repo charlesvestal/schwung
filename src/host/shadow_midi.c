@@ -30,20 +30,20 @@ static int g_dispatched_ext_head = 0;
 static uint32_t g_dispatched_ext_tick = 0;
 
 /* Canonicalize note-off forms so the same release event matches whether the
- * keyboard sent 0x8X vel=N or Move's track echoed it as 0x9X vel=0 — possibly
- * on a different channel after Move's track-auto-map.  Channel is collapsed
- * for note-off forms; release-velocity is normalized to 0.  Note-on events
- * keep their channel so a same-pitch retrigger on another channel doesn't
- * get falsely suppressed. */
+ * keyboard sent 0x8X vel=N or Move's track echoed it as 0x9X vel=0.  Status
+ * type is normalized to 0x8X (preserving channel) and release-velocity is
+ * normalized to 0.  Channel is PRESERVED so MIDI_OUT echoes that Move's
+ * firmware re-emitted on a different channel (track-auto-map) do not falsely
+ * match a ring entry recorded from cable-2 on the original channel. */
 static void canonicalize_for_ring(uint8_t *status, uint8_t *d1, uint8_t *d2)
 {
     (void)d1;
     uint8_t type = *status & 0xF0;
+    uint8_t ch   = *status & 0x0F;
     if (type == 0x90 && *d2 == 0) {
-        *status = 0x80;   /* channel-agnostic note-off */
+        *status = (uint8_t)(0x80 | ch);   /* note-off form, channel kept */
     } else if (type == 0x80) {
-        *status = 0x80;   /* channel-agnostic note-off */
-        *d2 = 0;
+        *d2 = 0;                          /* normalize release velocity */
     }
 }
 
@@ -66,28 +66,12 @@ void shadow_external_dispatch_record(uint8_t status, uint8_t d1, uint8_t d2)
 
 int shadow_external_dispatch_was_recent(uint8_t status, uint8_t d1, uint8_t d2)
 {
-    uint8_t lookup_type = status & 0xF0;
-    int is_noteoff_lookup = (lookup_type == 0x80) ||
-                            (lookup_type == 0x90 && d2 == 0);
     canonicalize_for_ring(&status, &d1, &d2);
     for (int i = 0; i < DISPATCHED_EXT_RING_SIZE; i++) {
         const dispatched_ext_entry_t *e = &g_dispatched_ext_ring[i];
         if (!e->valid) continue;
         if ((g_dispatched_ext_tick - e->tick) > DISPATCHED_EXT_MAX_AGE_TICKS) continue;
         if (e->status == status && e->d1 == d1 && e->d2 == d2) return 1;
-        /* A NoteOff lookup also matches any recent NoteOn at the same pitch.
-         * Move's track router can emit a phantom NoteOff to MIDI_OUT cable-2
-         * immediately after receiving a NoteOn (short-gate / auto-output
-         * behavior); without this match the phantom dispatches to chain
-         * slots and clips the held note.  The real keyboard release follows
-         * the MIDI_IN path and reaches the plugin via direct dispatch, so
-         * suppressing the MIDI_OUT NoteOff here doesn't lose any legitimate
-         * note-off — it only filters echoes/phantoms of recently-played
-         * notes. */
-        if (is_noteoff_lookup &&
-            (e->status & 0xF0) == 0x90 && e->d2 > 0 && e->d1 == d1) {
-            return 1;
-        }
     }
     return 0;
 }
