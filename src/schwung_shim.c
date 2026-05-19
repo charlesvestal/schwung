@@ -1327,7 +1327,7 @@ static int overtake_midi_send_external(const uint8_t *msg, int len) {
     uint32_t tail = overtake_ext_ring.tail;
     __sync_synchronize();  /* acquire */
     if ((uint32_t)(head - tail) >= OVERTAKE_EXT_RING_PACKETS) {
-        overtake_ext_drops++;  /* silently — readers can poll for diagnostics */
+        overtake_ext_drops++;  /* silently — counter only; no get_param binding yet */
         return 0;
     }
     uint32_t idx = head % OVERTAKE_EXT_RING_PACKETS;
@@ -1506,6 +1506,15 @@ static void shadow_overtake_dsp_unload(void) {
     overtake_dsp_gen_inst = NULL;
     overtake_dsp_fx = NULL;
     overtake_dsp_fx_inst = NULL;
+
+    /* Discard any ROUTE_EXTERNAL packets the unloaded DSP left in the ring.
+     * Without this, the next overtake load would drain the previous module's
+     * leftover packets into Move's MIDI_OUT region — up to 64 stray events
+     * shipped to USB-A across the first ~4 audio blocks after load. The
+     * producer (destroyed instance) can no longer fire, so the ring is
+     * inert here and a non-atomic reset is safe. */
+    overtake_ext_ring.head = 0;
+    overtake_ext_ring.tail = 0;
 }
 
 /* Per-slot render breakdown counters (added 2026-05-15 for render spike hunt).
