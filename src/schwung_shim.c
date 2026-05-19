@@ -154,6 +154,7 @@ static bool display_mirror_enabled = false; /* Display mirror off by default */
 static bool set_pages_enabled = true;      /* Set pages enabled by default */
 static bool ext_midi_remap_feature_enabled = true; /* Cable-2 channel remap on by default */
 static bool skipback_require_volume = false; /* false=Shift+Capture, true=Shift+Vol+Capture */
+static bool midi_indicator_enabled_setting = false; /* Off by default; persisted in features.json */
 static int skipback_seconds_setting = SKIPBACK_DEFAULT_SECONDS; /* Skipback rolling buffer length */
 /* Shadow UI trigger mode: 0=long-press only, 1=Shift+Vol only, 2=both. Default=both. */
 static uint8_t shadow_ui_trigger_setting = 2;
@@ -953,6 +954,19 @@ static void load_feature_config(void)
             while (*colon == ' ' || *colon == '\t') colon++;
             if (strncmp(colon, "true", 4) == 0) {
                 skipback_require_volume = true;
+            }
+        }
+    }
+
+    /* Parse midi_indicator_enabled (defaults to false) */
+    const char *midi_ind_key = strstr(config_buf, "\"midi_indicator_enabled\"");
+    if (midi_ind_key) {
+        const char *colon = strchr(midi_ind_key, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ' || *colon == '\t') colon++;
+            if (strncmp(colon, "true", 4) == 0) {
+                midi_indicator_enabled_setting = true;
             }
         }
     }
@@ -3385,10 +3399,22 @@ static void shadow_swap_display(void)
         shadow_overlay_sync();
     }
 
-    /* Recording dot overlay on shadow display */
-    if (sampler_state == SAMPLER_RECORDING && rec_dot_visible()) {
+    /* Recording dot + optional MIDI channel indicator overlay on shadow display.
+     * The indicator's enable bit lives in shadow_control->midi_indicator_enabled
+     * (set by the shadow UI's midi_indicator_set binding). Reading it here is
+     * lock-free and RT-safe — no file I/O on the SPI callback path. */
+    int draw_rec_dot = (sampler_state == SAMPLER_RECORDING && rec_dot_visible());
+    extern int midi_indicator_active_notes;
+    int draw_midi_ind = shadow_control && shadow_control->midi_indicator_enabled
+                        && midi_indicator_active_notes > 0;
+    if (draw_rec_dot || draw_midi_ind) {
         memcpy(shadow_composited, shadow_display_shm, DISPLAY_BUFFER_SIZE);
-        overlay_fill_rect(shadow_composited, 123, 1, 4, 4, 1);
+        if (draw_rec_dot) {
+            overlay_fill_rect(shadow_composited, 123, 1, 4, 4, 1);
+        }
+        if (draw_midi_ind) {
+            overlay_draw_midi_indicator(shadow_composited);
+        }
         display_src = shadow_composited;
     }
 
@@ -3850,6 +3876,7 @@ static void shim_init_subsystems(void)
         shadow_control->skipback_require_volume = skipback_require_volume ? 1 : 0;
         shadow_control->skipback_seconds = (uint16_t)skipback_seconds_setting;
         shadow_control->shadow_ui_trigger = shadow_ui_trigger_setting;
+        shadow_control->midi_indicator_enabled = midi_indicator_enabled_setting ? 1 : 0;
         shadow_control->speaker_active = 1; /* assume speaker at boot; CC 115 will correct */
         shadow_control->line_in_connected = 0; /* assume internal mic at boot; CC 114 will correct */
     }
@@ -5129,6 +5156,11 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
         }
         if (sampler_state == SAMPLER_RECORDING && rec_dot_visible()) {
             overlay_fill_rect(composited_jack_display, 123, 1, 4, 4, 1);
+        }
+        extern int midi_indicator_active_notes;
+        if (shadow_control && shadow_control->midi_indicator_enabled
+            && midi_indicator_active_notes > 0) {
+            overlay_draw_midi_indicator(composited_jack_display);
         }
         jack_display_composited = 1;
     }

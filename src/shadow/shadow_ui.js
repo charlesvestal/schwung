@@ -846,7 +846,8 @@ const GLOBAL_SETTINGS_SECTIONS = [
             { key: "overlay_knobs", label: "Overlay Knobs", type: "enum",
               options: ["+Shift", "+Jog Touch", "Off", "Native"], values: [0, 1, 2, 3] },
             { key: "pad_typing", label: "Pad Typing", type: "bool" },
-            { key: "text_preview", label: "Text Preview", type: "bool" }
+            { key: "text_preview", label: "Text Preview", type: "bool" },
+            { key: "midi_indicator_enabled", label: "MIDI Channel", type: "bool" }
         ]
     },
     {
@@ -926,6 +927,11 @@ let toolModules = [];           // Populated by scanForToolModules()
 
 /* Filebrowser state */
 let filebrowserEnabled = false;    // Off by default, toggle in Settings > Services
+
+/* MIDI channel indicator state. Backed by shadow_control->midi_indicator_enabled
+ * (read by the SPI callback path) and persisted in features.json via the
+ * midi_indicator_set host binding. */
+let midiIndicatorEnabled = (typeof midi_indicator_get === "function") ? !!midi_indicator_get() : false;
 
 /* Preview player state */
 let previewEnabled = true;         // Global setting: auto-preview in file browser
@@ -11042,6 +11048,9 @@ function getMasterFxSettingValue(setting) {
     if (setting.key === "filebrowser_enabled") {
         return filebrowserEnabled ? "On" : "Off";
     }
+    if (setting.key === "midi_indicator_enabled") {
+        return midiIndicatorEnabled ? "On" : "Off";
+    }
     if (setting.key === "analytics_enabled") {
         return (typeof host_get_analytics_enabled === "function" && host_get_analytics_enabled()) ? "On" : "Off";
     }
@@ -11265,6 +11274,14 @@ function adjustMasterFxSetting(setting, delta) {
         if (typeof host_set_analytics_enabled === "function") {
             const current = typeof host_get_analytics_enabled === "function" && host_get_analytics_enabled();
             host_set_analytics_enabled(current ? 0 : 1);
+        }
+        return;
+    }
+
+    if (setting.key === "midi_indicator_enabled") {
+        midiIndicatorEnabled = !midiIndicatorEnabled;
+        if (typeof midi_indicator_set === "function") {
+            midi_indicator_set(midiIndicatorEnabled ? 1 : 0);
         }
         return;
     }
