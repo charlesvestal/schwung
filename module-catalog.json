@@ -881,6 +881,17 @@
       "min_host_version": "0.9.13"
     },
     {
+      "id": "chorddex",
+      "name": "ChordDex",
+      "description": "Real-time chord & note recognizer for Move's pads. Names the chord on screen and routes MIDI to a Move track so you hear the chord through any loaded instrument.",
+      "author": "dony01001",
+      "component_type": "tool",
+      "github_repo": "dony01001/ChordDex",
+      "default_branch": "main",
+      "asset_name": "chorddex-module.tar.gz",
+      "min_host_version": "0.7.11"
+    },
+    {
       "id": "mrsample",
       "name": "MrSample",
       "description": "Chromatic single-sample player with AHDSR, multimode filter, LFO, loop+crossfade. Loads WAV/MP3/FLAC/AIFF.",
