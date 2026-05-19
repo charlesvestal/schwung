@@ -155,7 +155,8 @@ typedef struct shadow_control_t {
     volatile uint8_t sampler_silent;     /* 1=suppress sampler screen-reader announcements (e.g. "Sample saved") for tool-driven recordings */
     volatile uint16_t skipback_seconds; /* Skipback rolling buffer length: 30/60/120/180/240/300 */
     volatile uint8_t resume_last_tool;  /* 1=JUMP_TO_TOOLS should resume the most-recently-suspended tool instead of opening the menu */
-    volatile uint8_t reserved[6];
+    volatile uint8_t midi_indicator_enabled; /* 1=draw "ccN" MIDI channel indicator while a note is held */
+    volatile uint8_t reserved[5];
 } shadow_control_t;
 
 /*
