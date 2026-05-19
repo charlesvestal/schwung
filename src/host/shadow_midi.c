@@ -312,15 +312,12 @@ void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *mi
     int dispatched = 0;
 
     /* Maintain the MIDI channel indicator's active-note count.
-     *
      * Velocity>0 note-on increments and updates the displayed channel;
-     * note-off (or velocity=0 note-on, which most controllers send instead
-     * of an explicit 0x80) decrements. We deliberately allow the counter
-     * to go to zero — but never negative — so the label hides the moment
-     * all keys are released. The counter can occasionally drift if a
-     * note-off arrives without a matching note-on (e.g. after All Notes
-     * Off), so a periodic reset somewhere upstream would harden this; for
-     * now the worst case is a sticky label until the next clean release. */
+     * note-off (or velocity=0 note-on, which most controllers send in place
+     * of an explicit 0x80) decrements but never goes negative. CC 123 (All
+     * Notes Off) and CC 120 (All Sound Off) zero the counter — without that
+     * reset the label can stick when a controller sends those CCs without
+     * matching individual note-offs. */
     if (type == 0x90 && pkt[3] > 0) {
         midi_indicator_last_channel = (int)midi_ch + 1;
         midi_indicator_active_notes++;
@@ -328,6 +325,8 @@ void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *mi
         if (midi_indicator_active_notes > 0) {
             midi_indicator_active_notes--;
         }
+    } else if (type == 0xB0 && (pkt[2] == 120 || pkt[2] == 123)) {
+        midi_indicator_active_notes = 0;
     }
 
     for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {

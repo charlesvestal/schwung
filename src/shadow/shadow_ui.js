@@ -928,18 +928,10 @@ let toolModules = [];           // Populated by scanForToolModules()
 /* Filebrowser state */
 let filebrowserEnabled = false;    // Off by default, toggle in Settings > Services
 
-/* MIDI channel indicator state.
- * Reflects the sentinel file at /data/UserData/schwung/midi_indicator_on.
- * Initialised from the file at startup (see initMidiIndicatorEnabled). */
-let midiIndicatorEnabled = false;
-const MIDI_INDICATOR_FLAG_PATH = "/data/UserData/schwung/midi_indicator_on";
-function initMidiIndicatorEnabled() {
-    if (typeof host_read_file === "function") {
-        const v = host_read_file(MIDI_INDICATOR_FLAG_PATH);
-        midiIndicatorEnabled = (typeof v === "string" && v.length > 0 && v[0] === "1");
-    }
-}
-initMidiIndicatorEnabled();
+/* MIDI channel indicator state. Backed by shadow_control->midi_indicator_enabled
+ * (read by the SPI callback path) and persisted in features.json via the
+ * midi_indicator_set host binding. */
+let midiIndicatorEnabled = (typeof midi_indicator_get === "function") ? !!midi_indicator_get() : false;
 
 /* Preview player state */
 let previewEnabled = true;         // Global setting: auto-preview in file browser
@@ -11288,8 +11280,8 @@ function adjustMasterFxSetting(setting, delta) {
 
     if (setting.key === "midi_indicator_enabled") {
         midiIndicatorEnabled = !midiIndicatorEnabled;
-        if (typeof host_write_file === "function") {
-            host_write_file(MIDI_INDICATOR_FLAG_PATH, midiIndicatorEnabled ? "1" : "0");
+        if (typeof midi_indicator_set === "function") {
+            midi_indicator_set(midiIndicatorEnabled ? 1 : 0);
         }
         return;
     }

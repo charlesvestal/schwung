@@ -2309,6 +2309,70 @@ static JSValue js_set_pages_get(JSContext *ctx, JSValueConst this_val,
     return JS_NewBool(ctx, shadow_control->set_pages_enabled != 0);
 }
 
+/* midi_indicator_set(enabled) - Write to shared memory + persist to features.json.
+ * The shim reads the SHM byte from the SPI callback path, so updates take effect
+ * on the next frame without any file I/O on the realtime path. */
+static JSValue js_midi_indicator_set(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_UNDEFINED;
+
+    int enabled = 0;
+    JS_ToInt32(ctx, &enabled, argv[0]);
+    shadow_control->midi_indicator_enabled = enabled ? 1 : 0;
+
+    /* Persist to features.json (off the SPI callback path - safe). */
+    const char *config_path = "/data/UserData/schwung/config/features.json";
+    char buf[512];
+    size_t len = 0;
+    FILE *f = fopen(config_path, "r");
+    if (f) {
+        len = fread(buf, 1, sizeof(buf) - 1, f);
+        fclose(f);
+    }
+    buf[len] = '\0';
+
+    char *key = strstr(buf, "\"midi_indicator_enabled\"");
+    if (key) {
+        char *colon = strchr(key, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ') colon++;
+            char *val_end = colon;
+            while (*val_end && *val_end != ',' && *val_end != '\n' && *val_end != '}') val_end++;
+            char newbuf[512];
+            int prefix_len = (int)(colon - buf);
+            int suffix_start = (int)(val_end - buf);
+            snprintf(newbuf, sizeof(newbuf), "%.*s%s%s",
+                     prefix_len, buf,
+                     enabled ? "true" : "false",
+                     buf + suffix_start);
+            f = fopen(config_path, "w");
+            if (f) { fputs(newbuf, f); fclose(f); }
+        }
+    } else if (len > 0) {
+        char *brace = strrchr(buf, '}');
+        if (brace) {
+            char newbuf[512];
+            int prefix_len = (int)(brace - buf);
+            snprintf(newbuf, sizeof(newbuf), "%.*s,\n  \"midi_indicator_enabled\": %s\n}",
+                     prefix_len, buf, enabled ? "true" : "false");
+            f = fopen(config_path, "w");
+            if (f) { fputs(newbuf, f); fclose(f); }
+        }
+    }
+
+    return JS_UNDEFINED;
+}
+
+/* midi_indicator_get() -> bool - Read from shared memory */
+static JSValue js_midi_indicator_get(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewBool(ctx, 0);
+    return JS_NewBool(ctx, shadow_control->midi_indicator_enabled != 0);
+}
+
 /* shadow_ui_trigger value names. Index matches the uint8 stored in shadow_control. */
 static const char *SHADOW_UI_TRIGGER_NAMES[3] = {"long_press", "shift_vol", "both"};
 
@@ -3185,6 +3249,10 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "set_pages_set", JS_NewCFunction(ctx, js_set_pages_set, "set_pages_set", 1));
     JS_SetPropertyStr(ctx, global_obj, "set_pages_get", JS_NewCFunction(ctx, js_set_pages_get, "set_pages_get", 0));
     JS_SetPropertyStr(ctx, global_obj, "set_pages_set_shm", JS_NewCFunction(ctx, js_set_pages_set_shm, "set_pages_set_shm", 1));
+
+    /* Register MIDI channel indicator functions */
+    JS_SetPropertyStr(ctx, global_obj, "midi_indicator_set", JS_NewCFunction(ctx, js_midi_indicator_set, "midi_indicator_set", 1));
+    JS_SetPropertyStr(ctx, global_obj, "midi_indicator_get", JS_NewCFunction(ctx, js_midi_indicator_get, "midi_indicator_get", 0));
 
     /* Register long-press shadow shortcut functions */
     JS_SetPropertyStr(ctx, global_obj, "shadow_ui_trigger_set", JS_NewCFunction(ctx, js_shadow_ui_trigger_set, "shadow_ui_trigger_set", 1));

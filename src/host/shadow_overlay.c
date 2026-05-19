@@ -32,20 +32,13 @@ char shift_knob_overlay_value[32] = "";
  *
  * `midi_indicator_last_channel` holds the 1-based MIDI channel (1-16) of the
  * most recent note-on observed by the host's chain dispatch path, or 0 if
- * nothing has been seen yet.
- *
- * `midi_indicator_enabled_flag` is a cached user toggle, refreshed by the
- * shim from the sentinel file at /data/UserData/schwung/midi_indicator_on
- * (the shadow UI writes "1"/"0" into that file when the user toggles the
- * setting). Keeping it as a plain int means shadow_overlay.c has no
- * dependency on settings or path conventions.
- *
- * `midi_indicator_active_notes` is incremented on each velocity>0 note-on
- * and decremented on note-off (or velocity=0 note-on). The label only
- * renders while the counter is > 0, so the indicator visibly tracks
- * "currently holding a note" rather than flashing once per event. */
+ * nothing has been seen yet. `midi_indicator_active_notes` is incremented on
+ * each velocity>0 note-on and decremented on note-off (or velocity=0 note-on);
+ * the label only renders while the counter is > 0 so the indicator tracks
+ * "currently holding a note" rather than flashing once per event. The user
+ * toggle lives in shadow_control->midi_indicator_enabled (read in the draw
+ * fn) so the SPI callback never touches the filesystem. */
 int midi_indicator_last_channel = 0;
-int midi_indicator_enabled_flag = 0;
 int midi_indicator_active_notes = 0;
 
 /* ============================================================================
@@ -275,7 +268,8 @@ void overlay_draw_skipback_toast(uint8_t *buf)
 
 void overlay_draw_midi_indicator(uint8_t *buf)
 {
-    if (!midi_indicator_enabled_flag) return;
+    shadow_control_t *ctrl = host.shadow_control ? *host.shadow_control : NULL;
+    if (!ctrl || !ctrl->midi_indicator_enabled) return;
     if (midi_indicator_active_notes <= 0) return;
     if (midi_indicator_last_channel < 1 || midi_indicator_last_channel > 16) return;
 
