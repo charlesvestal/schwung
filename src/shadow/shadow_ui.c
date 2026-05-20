@@ -335,6 +335,18 @@ static JSValue js_shadow_inbound_pad_midi_active(JSContext *ctx, JSValueConst th
     return JS_NewInt32(ctx, 1);
 }
 
+/* shadow_overtake_send_external_async_active() -> int
+ * Returns 1 if this build of the shim performs the ROUTE_EXTERNAL SPI
+ * ioctl off the audio thread (Phase 2 worker). Capability sentinel for
+ * tools that want to call overtake_host_api.midi_send_external directly
+ * from their audio thread without the kernel-ioctl deadlock risk:
+ * `typeof shadow_overtake_send_external_async_active === 'function'`.
+ * The function's mere existence is the signal; return value reserved. */
+static JSValue js_shadow_overtake_send_external_async_active(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    return JS_NewInt32(ctx, 1);
+}
+
 /* shadow_get_selected_slot() -> int
  * Returns the track-selected slot (0-3) for playback/knobs.
  */
@@ -3166,6 +3178,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_ui_flags", JS_NewCFunction(ctx, js_shadow_get_ui_flags, "shadow_get_ui_flags", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_clear_ui_flags", JS_NewCFunction(ctx, js_shadow_clear_ui_flags, "shadow_clear_ui_flags", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_inbound_pad_midi_active", JS_NewCFunction(ctx, js_shadow_inbound_pad_midi_active, "shadow_inbound_pad_midi_active", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_overtake_send_external_async_active", JS_NewCFunction(ctx, js_shadow_overtake_send_external_async_active, "shadow_overtake_send_external_async_active", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_open_tool_cmd",
         JS_NewCFunction(ctx, js_shadow_get_open_tool_cmd, "shadow_get_open_tool_cmd", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_selected_slot", JS_NewCFunction(ctx, js_shadow_get_selected_slot, "shadow_get_selected_slot", 0));

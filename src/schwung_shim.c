@@ -1287,38 +1287,89 @@ static int overtake_midi_send_internal(const uint8_t *msg, int len) {
     return len;
 }
 
-/* MIDI send callback for overtake DSP → external USB MIDI
- * Writes to SPI outgoing_midi buffer (offset 0 of hardware mapped memory)
- * and triggers the SPI ioctl to flush to USB. */
-static int overtake_ext_midi_log_count = 0;
+/* === Phase 2: Audio-thread-safe ROUTE_EXTERNAL MIDI send =================
+ *
+ * overtake_midi_send_external() is called from an overtake DSP's audio
+ * thread (e.g. dAVEBOx's pfx_emit). The pre-Phase-2 body did its own
+ * synchronous real_ioctl(SPI), which works only by accident — it ships
+ * a partial 768-byte mailbox (including stale audio at offset 256-767)
+ * out of step with the audio thread's own per-block ioctl.
+ *
+ * Move's SPI is single-channel: ONE ioctl(0xa, 0x300) per audio block
+ * ships the whole mailbox (MIDI OUT @0-79, display, audio @256-767) as
+ * one atomic transfer. There is no MIDI-only flush. So we enqueue
+ * 4-byte USB-MIDI packets into a lock-free SPSC ring; the audio thread
+ * drains the ring into mailbox bytes 0-79 inside shim_pre_transfer, just
+ * before its existing ioctl fires. This makes ROUTE_EXTERNAL ride the
+ * audio-block cadence (~2.9 ms at 44100/128) and removes the audio-
+ * destruction symptom of the pre-Phase-2 sync body.
+ *
+ * Capability sentinel shadow_overtake_send_external_async_active() lets
+ * opt-in tools call this with the audio-thread guarantee. */
 
+#define OVERTAKE_EXT_RING_PACKETS 64           /* 64 slots × 4 bytes USB-MIDI = 256 B */
+
+typedef struct {
+    uint8_t pkt[OVERTAKE_EXT_RING_PACKETS][4];
+    volatile uint32_t head;  /* producer writes (any audio thread) */
+    volatile uint32_t tail;  /* consumer writes (shim_pre_transfer) */
+} overtake_ext_ring_t;
+
+static overtake_ext_ring_t overtake_ext_ring;
+static volatile int overtake_ext_drops = 0;     /* incremented on ring-full; no log from audio thread */
+
+/* Audio-thread producer. Lock-free SPSC enqueue. Drop-newest on full.
+ * No logging — runs at FIFO 70 with ~900µs total SPI-callback budget. */
 static int overtake_midi_send_external(const uint8_t *msg, int len) {
     if (!msg || len < 4) return 0;
 
-    if (overtake_ext_midi_log_count < 10) {
-        char log_msg[256];
-        snprintf(log_msg, sizeof(log_msg),
-                 "overtake_midi_send_ext: [%02x %02x %02x %02x] len=%d hw_mmap=%p spi_fd=%d",
-                 msg[0], msg[1], msg[2], msg[3], len,
-                 (void*)hardware_mmap_addr, shadow_spi_fd);
-        shadow_log(log_msg);
-        overtake_ext_midi_log_count++;
+    uint32_t head = overtake_ext_ring.head;
+    uint32_t tail = overtake_ext_ring.tail;
+    __sync_synchronize();  /* acquire */
+    if ((uint32_t)(head - tail) >= OVERTAKE_EXT_RING_PACKETS) {
+        overtake_ext_drops++;  /* silently — readers can poll for diagnostics */
+        return 0;
     }
-
-    if (!hardware_mmap_addr || shadow_spi_fd < 0) return 0;
-
-    /* Clear outgoing_midi area, write our packet, flush */
-    memset(hardware_mmap_addr, 0, 256);
-    memcpy(hardware_mmap_addr, msg, 4);
-    int result = real_ioctl(shadow_spi_fd, _IOC(_IOC_NONE, 0, 0xa, 0), (void*)0x300);
-
-    if (overtake_ext_midi_log_count <= 10) {
-        char log_msg[128];
-        snprintf(log_msg, sizeof(log_msg), "overtake_midi_send_ext: ioctl result=%d", result);
-        shadow_log(log_msg);
-    }
-
+    uint32_t idx = head % OVERTAKE_EXT_RING_PACKETS;
+    memcpy(overtake_ext_ring.pkt[idx], msg, 4);
+    __sync_synchronize();   /* release — packet data visible before head bump */
+    overtake_ext_ring.head = head + 1;
     return len;
+}
+
+/* Audio-thread consumer. Drains up to 20 packets from the ring into empty
+ * 4-byte slots of the MIDI_OUT region (shadow + MIDI_OUT_OFFSET, 80 bytes).
+ * Called from shim_pre_transfer once per block, BEFORE the JACK MIDI writer
+ * so sequencer notes get slot priority over JACK chain output.
+ * Capacity: 20 slots/block * ~344 blocks/sec ≈ 6880 pkt/sec sustained;
+ * realistic chord-rate sequencer traffic is well under this. */
+static void overtake_ext_drain_into_shadow(uint8_t *shadow) {
+    if (!shadow) return;
+    uint32_t tail = overtake_ext_ring.tail;
+    uint32_t head = overtake_ext_ring.head;
+    __sync_synchronize();  /* acquire — see packet data the producer published */
+    if (tail == head) return;
+
+    uint8_t *midi_out = shadow + MIDI_OUT_OFFSET;
+    int slot = 0;
+    while (tail != head) {
+        /* Find next empty 4-byte slot. */
+        while (slot < 80 &&
+               (midi_out[slot] || midi_out[slot+1] ||
+                midi_out[slot+2] || midi_out[slot+3])) {
+            slot += 4;
+        }
+        if (slot >= 80) break;  /* no slots left this block — leave rest in ring */
+        uint32_t idx = tail % OVERTAKE_EXT_RING_PACKETS;
+        midi_out[slot]   = overtake_ext_ring.pkt[idx][0];
+        midi_out[slot+1] = overtake_ext_ring.pkt[idx][1];
+        midi_out[slot+2] = overtake_ext_ring.pkt[idx][2];
+        midi_out[slot+3] = overtake_ext_ring.pkt[idx][3];
+        slot += 4;
+        tail++;
+    }
+    __sync_synchronize();
+    overtake_ext_ring.tail = tail;
 }
 
 static void shadow_overtake_dsp_load(const char *path) {
@@ -3981,6 +4032,10 @@ static void shim_init_subsystems(void)
         start_link_sub_monitor();
     }
     native_resample_bridge_load_mode_from_shadow_config();  /* Restore bridge mode on Move restart */
+
+    /* Phase 2: ROUTE_EXTERNAL packets are drained on the audio thread
+     * inside shim_pre_transfer via overtake_ext_drain_into_shadow().
+     * No worker thread — see the comment block on overtake_midi_send_external. */
 #if SHADOW_INPROCESS_POC
     shadow_inprocess_load_chain();
     /* Initialize D-Bus subsystem with callbacks to shim functions */
@@ -5218,6 +5273,13 @@ pre_done:
     TIME_SECTION_START();
     shadow_clear_move_leds_if_overtake();  /* Free buffer space before inject */
     TIME_SECTION_END(spi_clear_leds_sum, spi_clear_leds_max);
+
+    /* Phase 2: drain ROUTE_EXTERNAL ring (overtake DSPs pushed into it via
+     * g_host->midi_send_external on their audio thread) into the mailbox
+     * MIDI_OUT region. Runs BEFORE the JACK writer so sequencer notes get
+     * slot priority over JACK chain MIDI when both compete for the 20-slot
+     * budget. Audio-thread safe (no syscalls, no logging). */
+    overtake_ext_drain_into_shadow(shadow);
 
     /* Route JACK MIDI output to SPI buffer.
      * The JACK driver writes packets to midi_from_jack[] and sets count.
