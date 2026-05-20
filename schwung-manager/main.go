@@ -1084,13 +1084,14 @@ func (app *App) installModule(mod *CatalogModule) error {
 		app.logger.Warn("release.json not found, using fallback URL", "status", resp.StatusCode)
 	}
 
-	var downloadURL string
+	var downloadURL, releaseVersion string
 	if resp.StatusCode == http.StatusOK {
 		var rel ReleaseJSON
 		if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
 			return fmt.Errorf("decoding release.json: %w", err)
 		}
 		downloadURL = rel.DownloadURL
+		releaseVersion = rel.Version
 	}
 	if downloadURL == "" {
 		// Fallback: use GitHub releases latest download.
@@ -1157,6 +1158,15 @@ func (app *App) installModule(mod *CatalogModule) error {
 		}
 	}
 
+	// Pin module.json's version field to the release.json version we
+	// installed from. Without this, a publisher tarball whose bundled
+	// module.json is one bump behind release.json traps the user in an
+	// endless update loop: compare installed (old) vs release (new) →
+	// "update available" → re-download same tarball → repeat.
+	if err := pinInstalledModuleVersion(modDir, releaseVersion, app.logger); err != nil {
+		app.logger.Warn("failed to pin module.json version", "id", mod.ID, "err", err)
+	}
+
 	// Fix ownership — schwung-manager runs as root but modules should be owned by ableton.
 	chown := exec.Command("chown", "-R", "ableton:users", modDir)
 	if out, err := chown.CombinedOutput(); err != nil {
@@ -1165,6 +1175,45 @@ func (app *App) installModule(mod *CatalogModule) error {
 
 	app.logger.Info("module installed", "id", mod.ID, "path", categoryDir)
 	return nil
+}
+
+// pinInstalledModuleVersion rewrites the installed module.json's "version"
+// field to match expectedVersion (the release.json version that drove the
+// install). No-ops if expectedVersion is empty, module.json is missing or
+// unparseable, or the version already matches.
+func pinInstalledModuleVersion(modDir, expectedVersion string, logger *slog.Logger) error {
+	if expectedVersion == "" {
+		return nil
+	}
+	modJsonPath := filepath.Join(modDir, "module.json")
+	raw, err := os.ReadFile(modJsonPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("reading module.json: %w", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		logger.Warn("module.json parse failed during version pin",
+			"path", modJsonPath, "err", err)
+		return nil
+	}
+	currentVersion, _ := parsed["version"].(string)
+	if currentVersion == expectedVersion {
+		return nil
+	}
+	logger.Info("pinning module.json version",
+		"id", filepath.Base(modDir),
+		"tarball_version", currentVersion,
+		"release_version", expectedVersion)
+	parsed["version"] = expectedVersion
+	out, err := json.MarshalIndent(parsed, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling module.json: %w", err)
+	}
+	out = append(out, '\n')
+	return os.WriteFile(modJsonPath, out, 0644)
 }
 
 // uninstallModule removes a module from disk.
