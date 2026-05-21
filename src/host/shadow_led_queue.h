@@ -80,6 +80,16 @@ int led_queue_jack_sysex_restore_pending(void);
 void led_queue_freeze_jack_sysex_cache(void);  /* Call on suspend */
 int led_queue_jack_sysex_debug_info(int *starts, int *cached, int *last_cin);
 
+/* Move firmware sysex LED cache (parallel to the JACK one). Move firmware
+ * emits RGB LED colors for the track row, knobs, transport, etc. via the
+ * same Ableton sysex format as RNBO. Cached automatically from MIDI_OUT
+ * in shadow_clear_move_leds_if_overtake; replayed on overtake exit. */
+void led_queue_move_sysex_packet(uint8_t cin, uint8_t b1, uint8_t b2, uint8_t b3);
+void led_queue_restore_move_sysex_leds(void);
+void led_queue_freeze_move_sysex_cache(void);
+int led_queue_move_sysex_restore_pending(void);
+int led_queue_flush_move_sysex_restore(int max_leds);
+
 /* ============================================================================
  * MIDI_OUT cable-0 capture (diagnostic, gated by flag file).
  * SPI path records every cable-0 note/CC packet into a ring; a non-RT
