@@ -78,6 +78,8 @@ static const int hw_note_leds[] = {
 #define HW_NOTE_LED_COUNT (sizeof(hw_note_leds) / sizeof(hw_note_leds[0]))
 
 static const int hw_cc_leds[] = {
+    /* UI buttons below sequencer steps */
+    16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
     /* Track row LEDs */
     40, 41, 42, 43,
     /* White LED buttons */
@@ -358,11 +360,13 @@ void shadow_flush_pending_leds(void) {
     } else {
         budget = SHADOW_LED_MAX_UPDATES_PER_TICK;
     }
-    /* When skip_led_clear is active, Move's packets fill the buffer.
-     * We can still replace matching packets, so don't bail on available<=0. */
-    if (!skip_led_clear && (available <= 0 || budget <= 0)) return;
+    /* When skip_led_clear or a restore is active, Move's packets fill the
+     * buffer. We can still replace matching packets, so don't bail on
+     * available<=0 in those cases. */
+    int replace_in_place = skip_led_clear || move_led_restore_pending;
+    if (!replace_in_place && (available <= 0 || budget <= 0)) return;
     if (budget <= 0) return;
-    if (!skip_led_clear && budget > available) budget = available;
+    if (!replace_in_place && budget > available) budget = available;
 
     int sent = 0;
     int hw_offset = 0;
@@ -372,9 +376,9 @@ void shadow_flush_pending_leds(void) {
     for (int i = 0; i < 128 && sent < budget; i++) {
         if (shadow_pending_note_color[i] >= 0) {
             int slot = -1;
-            /* When skip_led_clear is active, first try to replace Move's
-             * existing packet for the same note (buffer may be full). */
-            if (skip_led_clear) {
+            /* When skip_led_clear or restore is active, first try to replace
+             * Move's existing packet for the same note (buffer may be full). */
+            if (replace_in_place) {
                 for (int s = 0; s < HW_MIDI_OUT_SIZE; s += 4) {
                     uint8_t type = midi_out[s+1] & 0xF0;
                     if (type == 0x90 && midi_out[s+2] == (uint8_t)i) {
@@ -416,7 +420,7 @@ void shadow_flush_pending_leds(void) {
     for (int i = 0; i < 128 && sent < budget; i++) {
         if (shadow_pending_cc_color[i] >= 0) {
             int slot = -1;
-            if (skip_led_clear) {
+            if (replace_in_place) {
                 for (int s = 0; s < HW_MIDI_OUT_SIZE; s += 4) {
                     uint8_t type = midi_out[s+1] & 0xF0;
                     if (type == 0xB0 && midi_out[s+2] == (uint8_t)i) {
