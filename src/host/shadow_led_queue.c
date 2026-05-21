@@ -2,8 +2,60 @@
  * Extracted from schwung_shim.c for maintainability. */
 
 #include <string.h>
+#include <time.h>
 #include "shadow_led_queue.h"
 #include "unified_log.h"
+
+/* ============================================================================
+ * MIDI_OUT cable-0 capture ring (diagnostic)
+ * ============================================================================ */
+#define LED_CAPTURE_RING_SIZE 2048  /* power of 2 */
+static led_capture_entry_t led_capture_ring[LED_CAPTURE_RING_SIZE];
+static volatile uint32_t led_capture_head = 0;
+static volatile int led_capture_enabled = 0;
+
+static inline uint64_t led_capture_now_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)(ts.tv_nsec / 1000);
+}
+
+static inline void led_capture_record(uint8_t cable, uint8_t status,
+                                      uint8_t d1, uint8_t d2) {
+    if (!led_capture_enabled) return;
+    uint32_t seq = ++led_capture_head;
+    uint32_t idx = (seq - 1) & (LED_CAPTURE_RING_SIZE - 1);
+    led_capture_ring[idx].seq = seq;
+    led_capture_ring[idx].ts_us = led_capture_now_us();
+    led_capture_ring[idx].cable = cable;
+    led_capture_ring[idx].status = status;
+    led_capture_ring[idx].d1 = d1;
+    led_capture_ring[idx].d2 = d2;
+}
+
+void led_queue_set_capture_enabled(int on) { led_capture_enabled = on ? 1 : 0; }
+int led_queue_capture_enabled(void) { return led_capture_enabled; }
+
+int led_queue_drain_capture(uint32_t *last_seq, led_capture_entry_t *out,
+                            int max_out) {
+    if (!last_seq || !out || max_out <= 0) return 0;
+    uint32_t head = led_capture_head;
+    if (head == *last_seq) return 0;
+    uint32_t start = *last_seq + 1;
+    uint32_t available = head - *last_seq;
+    if (available > LED_CAPTURE_RING_SIZE) {
+        start = head - LED_CAPTURE_RING_SIZE + 1;
+    }
+    int n = 0;
+    for (uint32_t s = start; s != head + 1 && n < max_out; s++) {
+        uint32_t idx = (s - 1) & (LED_CAPTURE_RING_SIZE - 1);
+        led_capture_entry_t e = led_capture_ring[idx];
+        if (e.seq != s) continue;  /* slot reused mid-read */
+        out[n++] = e;
+    }
+    *last_seq = head;
+    return n;
+}
 
 /* ============================================================================
  * Static host callbacks
@@ -78,6 +130,8 @@ static const int hw_note_leds[] = {
 #define HW_NOTE_LED_COUNT (sizeof(hw_note_leds) / sizeof(hw_note_leds[0]))
 
 static const int hw_cc_leds[] = {
+    /* UI buttons below sequencer steps */
+    16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
     /* Track row LEDs */
     40, 41, 42, 43,
     /* White LED buttons */
@@ -231,19 +285,30 @@ void shadow_clear_move_leds_if_overtake(void) {
     if (!cur_overtake || (ctrl && ctrl->skip_led_clear)) {
         for (int i = 0; i < HW_MIDI_OUT_SIZE; i += 4) {
             uint8_t cable = (midi_out[i] >> 4) & 0x0F;
+            uint8_t cin_type = midi_out[i] & 0x0F;
             uint8_t type = midi_out[i+1] & 0xF0;
-            if (cable == 0 && (type == 0x90 || type == 0xB0)) {
+            if (cable == 0 && (type == 0x90 || type == 0x80 || type == 0xB0)) {
                 uint8_t d1 = midi_out[i+2];
                 uint8_t d2 = midi_out[i+3];
-                if (type == 0x90) {
-                    move_note_led_state[d1] = d2;
-                    move_note_led_status[d1] = midi_out[i+1];
-                    move_note_led_cin[d1] = midi_out[i];
+                if (type == 0x90 || type == 0x80) {
+                    /* Move turns pad LEDs off via note-off (0x80); normalize
+                     * to note-on with d2=0 so restore emits a uniform 0x90. */
+                    int color = (type == 0x80) ? 0 : d2;
+                    move_note_led_state[d1] = color;
+                    move_note_led_status[d1] = 0x90;
+                    move_note_led_cin[d1] = 0x09;
                 } else {
                     move_cc_led_state[d1] = d2;
                     move_cc_led_status[d1] = midi_out[i+1];
                     move_cc_led_cin[d1] = midi_out[i];
                 }
+                led_capture_record(cable, midi_out[i+1], d1, d2);
+            } else if (cable == 0 && cin_type >= 0x04 && cin_type <= 0x07) {
+                /* Cable-0 sysex from Move firmware. Feed the Move-side parser
+                 * so we can cache RGB LED commands for overtake-exit restore. */
+                led_queue_move_sysex_packet(midi_out[i], midi_out[i+1],
+                                            midi_out[i+2], midi_out[i+3]);
+                led_capture_record(cable, midi_out[i+1], midi_out[i+2], midi_out[i+3]);
             }
         }
     }
@@ -274,6 +339,9 @@ void shadow_clear_move_leds_if_overtake(void) {
             move_led_clear_pending = 1;
             move_led_restore_pending = 0;
             move_led_pass_count = 1;
+            /* Freeze the Move sysex cache so the tool's own sysex doesn't
+             * pollute the pre-overtake RGB snapshot. Unfrozen after restore. */
+            led_queue_freeze_move_sysex_cache();
         }
     }
 
@@ -288,6 +356,9 @@ void shadow_clear_move_leds_if_overtake(void) {
             move_led_restore_pending = 1;
             move_led_clear_pending = 0;
             move_led_pass_count = 1;
+            /* Also restore Move-firmware-side sysex RGB commands so track row
+             * and other RGB LEDs get their pre-overtake colors back. */
+            led_queue_restore_move_sysex_leds();
         }
         snapshot_skip_restore = 0;
     }
@@ -359,10 +430,14 @@ void shadow_flush_pending_leds(void) {
         budget = SHADOW_LED_MAX_UPDATES_PER_TICK;
     }
     /* When skip_led_clear is active, Move's packets fill the buffer.
-     * We can still replace matching packets, so don't bail on available<=0. */
-    if (!skip_led_clear && (available <= 0 || budget <= 0)) return;
+     * We can still replace matching packets, so don't bail on available<=0.
+     * Note: restore-pending intentionally does NOT replace in place — letting
+     * Move's fresh post-exit packets win avoids restoring stale snapshot
+     * values from views that no longer match (e.g. mid-Shift session/note). */
+    int replace_in_place = skip_led_clear;
+    if (!replace_in_place && (available <= 0 || budget <= 0)) return;
     if (budget <= 0) return;
-    if (!skip_led_clear && budget > available) budget = available;
+    if (!replace_in_place && budget > available) budget = available;
 
     int sent = 0;
     int hw_offset = 0;
@@ -372,9 +447,9 @@ void shadow_flush_pending_leds(void) {
     for (int i = 0; i < 128 && sent < budget; i++) {
         if (shadow_pending_note_color[i] >= 0) {
             int slot = -1;
-            /* When skip_led_clear is active, first try to replace Move's
-             * existing packet for the same note (buffer may be full). */
-            if (skip_led_clear) {
+            /* When skip_led_clear or restore is active, first try to replace
+             * Move's existing packet for the same note (buffer may be full). */
+            if (replace_in_place) {
                 for (int s = 0; s < HW_MIDI_OUT_SIZE; s += 4) {
                     uint8_t type = midi_out[s+1] & 0xF0;
                     if (type == 0x90 && midi_out[s+2] == (uint8_t)i) {
@@ -416,7 +491,7 @@ void shadow_flush_pending_leds(void) {
     for (int i = 0; i < 128 && sent < budget; i++) {
         if (shadow_pending_cc_color[i] >= 0) {
             int slot = -1;
-            if (skip_led_clear) {
+            if (replace_in_place) {
                 for (int s = 0; s < HW_MIDI_OUT_SIZE; s += 4) {
                     uint8_t type = midi_out[s+1] & 0xF0;
                     if (type == 0xB0 && midi_out[s+2] == (uint8_t)i) {
@@ -494,6 +569,7 @@ void shadow_flush_pending_leds(void) {
      * sysex message per SPI frame. Sending 2 causes the second to be
      * dropped. We do multiple passes for reliability. */
     led_queue_flush_jack_sysex_restore(1);
+    led_queue_flush_move_sysex_restore(1);
 }
 
 /* ============================================================================
@@ -865,6 +941,185 @@ int led_queue_flush_jack_sysex_restore(int max_leds) {
             sysex_restore_pending = 0;
             sysex_cache_frozen = 0;  /* Unfreeze — RNBO's live updates can cache again */
             /* No I/O in SPI path */
+        }
+    }
+
+    return leds_sent;
+}
+
+/* ============================================================================
+ * Move firmware Sysex LED Cache
+ *
+ * Move firmware emits RGB LED colors for the track row, knob LEDs, transport,
+ * etc. via the same Ableton sysex format as RNBO (F0 00 21 1D 01 01 3B 10
+ * <idx> <rgb> F7). The CC packets (e.g. CC 43 d2=122 = "track 1 selected")
+ * are just latch triggers — the actual color comes from the sysex.
+ *
+ * We cache Move's sysex commands per (subcmd, idx). On overtake entry we
+ * freeze the cache. On overtake exit we replay the cached packets so the
+ * RGB buffer in XMOS gets restored to what Move firmware had set, not what
+ * the tool left behind.
+ *
+ * This is a parallel cache to the JACK one — same wire format, same cache
+ * structure, but separate parser state and instance to avoid interleaving
+ * when both sources emit sysex in the same SPI frame.
+ * ============================================================================ */
+
+static jack_sysex_led_entry_t move_sysex_led_cache[JACK_SYSEX_SUBCMD_COUNT][JACK_SYSEX_MAX_LEDS];
+static int move_sysex_cache_frozen = 0;
+
+/* Sysex reassembly state for Move-firmware-side. */
+static uint8_t move_sysex_buf[32];
+static int move_sysex_buf_len = 0;
+static int move_sysex_active = 0;
+static uint8_t move_sysex_raw_packets[8][4];
+static int move_sysex_raw_count = 0;
+
+/* Progressive restore state. */
+static int move_sysex_restore_pending = 0;
+static int move_sysex_restore_subcmd = 0;
+static int move_sysex_restore_index = 0;
+static int move_sysex_restore_pass = 0;
+
+void led_queue_move_sysex_packet(uint8_t cin, uint8_t b1, uint8_t b2, uint8_t b3) {
+    uint8_t cin_type = cin & 0x0F;
+
+    if (cin_type == 0x04) {
+        if (b1 == 0xF0) {
+            move_sysex_buf_len = 0;
+            move_sysex_active = 1;
+            move_sysex_raw_count = 0;
+        }
+        if (move_sysex_active && move_sysex_buf_len + 3 <= (int)sizeof(move_sysex_buf)) {
+            move_sysex_buf[move_sysex_buf_len++] = b1;
+            move_sysex_buf[move_sysex_buf_len++] = b2;
+            move_sysex_buf[move_sysex_buf_len++] = b3;
+        }
+        if (move_sysex_active && move_sysex_raw_count < 8) {
+            move_sysex_raw_packets[move_sysex_raw_count][0] = cin;
+            move_sysex_raw_packets[move_sysex_raw_count][1] = b1;
+            move_sysex_raw_packets[move_sysex_raw_count][2] = b2;
+            move_sysex_raw_packets[move_sysex_raw_count][3] = b3;
+            move_sysex_raw_count++;
+        }
+    }
+    else if (cin_type >= 0x05 && cin_type <= 0x07) {
+        int end_bytes = cin_type - 0x04;
+        if (move_sysex_active && move_sysex_buf_len + end_bytes <= (int)sizeof(move_sysex_buf)) {
+            move_sysex_buf[move_sysex_buf_len++] = b1;
+            if (end_bytes >= 2) move_sysex_buf[move_sysex_buf_len++] = b2;
+            if (end_bytes >= 3) move_sysex_buf[move_sysex_buf_len++] = b3;
+        }
+        if (move_sysex_active && move_sysex_raw_count < 8) {
+            move_sysex_raw_packets[move_sysex_raw_count][0] = cin;
+            move_sysex_raw_packets[move_sysex_raw_count][1] = b1;
+            move_sysex_raw_packets[move_sysex_raw_count][2] = b2;
+            move_sysex_raw_packets[move_sysex_raw_count][3] = b3;
+            move_sysex_raw_count++;
+        }
+
+        if (move_sysex_active && move_sysex_buf_len >= 16 &&
+            move_sysex_buf[0] == 0xF0 && move_sysex_buf[1] == 0x00 &&
+            move_sysex_buf[2] == 0x21 && move_sysex_buf[3] == 0x1D &&
+            move_sysex_buf[4] == 0x01 && move_sysex_buf[5] == 0x01 &&
+            move_sysex_buf[6] == 0x3B &&
+            (move_sysex_buf[7] == 0x10 || move_sysex_buf[7] == 0x00) &&
+            move_sysex_raw_count == JACK_SYSEX_PACKETS_PER_LED) {
+            uint8_t subcmd = move_sysex_buf[7];
+            uint8_t idx = move_sysex_buf[8];
+            int slot = (subcmd == 0x10) ? 1 : 0;
+            if (idx < JACK_SYSEX_MAX_LEDS && !move_sysex_cache_frozen) {
+                for (int p = 0; p < JACK_SYSEX_PACKETS_PER_LED; p++) {
+                    for (int b = 0; b < 4; b++) {
+                        move_sysex_led_cache[slot][idx].packets[p][b] = move_sysex_raw_packets[p][b];
+                    }
+                }
+                move_sysex_led_cache[slot][idx].valid = 1;
+            }
+        }
+
+        move_sysex_active = 0;
+        move_sysex_buf_len = 0;
+        move_sysex_raw_count = 0;
+    }
+}
+
+void led_queue_restore_move_sysex_leds(void) {
+    move_sysex_restore_pending = 1;
+    move_sysex_restore_subcmd = 0;
+    move_sysex_restore_index = 0;
+    move_sysex_restore_pass = 0;
+}
+
+void led_queue_freeze_move_sysex_cache(void) {
+    move_sysex_cache_frozen = 1;
+}
+
+int led_queue_move_sysex_restore_pending(void) {
+    return move_sysex_restore_pending;
+}
+
+int led_queue_flush_move_sysex_restore(int max_leds) {
+    if (!move_sysex_restore_pending) return 0;
+
+    uint8_t *midi_out = host.midi_out_buf;
+    if (!midi_out) return 0;
+
+    for (int s = 0; s < HW_MIDI_OUT_SIZE; s += 4) {
+        uint8_t cin_type = midi_out[s] & 0x0F;
+        uint8_t cable = (midi_out[s] >> 4) & 0x0F;
+        if (cable == 0 && cin_type >= 0x04 && cin_type <= 0x07) {
+            midi_out[s] = 0;
+            midi_out[s+1] = 0;
+            midi_out[s+2] = 0;
+            midi_out[s+3] = 0;
+        }
+    }
+
+    int leds_sent = 0;
+    int search_from = 0;
+
+    while (leds_sent < max_leds) {
+        while (move_sysex_restore_subcmd < JACK_SYSEX_SUBCMD_COUNT) {
+            if (move_sysex_restore_index >= JACK_SYSEX_MAX_LEDS) {
+                move_sysex_restore_subcmd++;
+                move_sysex_restore_index = 0;
+                continue;
+            }
+            if (move_sysex_led_cache[move_sysex_restore_subcmd][move_sysex_restore_index].valid)
+                break;
+            move_sysex_restore_index++;
+        }
+        if (move_sysex_restore_subcmd >= JACK_SYSEX_SUBCMD_COUNT)
+            break;
+
+        int block = find_contiguous_empty_block(midi_out, search_from,
+                                                JACK_SYSEX_PACKETS_PER_LED);
+        if (block < 0) break;
+
+        jack_sysex_led_entry_t *entry =
+            &move_sysex_led_cache[move_sysex_restore_subcmd][move_sysex_restore_index];
+        for (int p = 0; p < JACK_SYSEX_PACKETS_PER_LED; p++) {
+            int pos = block + p * 4;
+            midi_out[pos]   = entry->packets[p][0];
+            midi_out[pos+1] = entry->packets[p][1];
+            midi_out[pos+2] = entry->packets[p][2];
+            midi_out[pos+3] = entry->packets[p][3];
+        }
+        search_from = block + JACK_SYSEX_PACKETS_PER_LED * 4;
+
+        move_sysex_restore_index++;
+        leds_sent++;
+    }
+
+    if (move_sysex_restore_subcmd >= JACK_SYSEX_SUBCMD_COUNT) {
+        move_sysex_restore_pass++;
+        if (move_sysex_restore_pass < SYSEX_RESTORE_PASSES) {
+            move_sysex_restore_subcmd = 0;
+            move_sysex_restore_index = 0;
+        } else {
+            move_sysex_restore_pending = 0;
+            move_sysex_cache_frozen = 0;
         }
     }
 
