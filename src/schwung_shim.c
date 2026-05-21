@@ -7345,6 +7345,64 @@ static void *link_in_attach_retry_thread(void *arg)
  * Drains the spi_snap structure and writes to unified_log every ~5 seconds.
  * All file I/O happens here, never in the SPI callback path.
  * ============================================================================ */
+#define LED_CAPTURE_FLAG_PATH "/data/UserData/schwung/led_capture_on"
+#define LED_CAPTURE_LOG_PATH  "/data/UserData/schwung/led_capture.log"
+
+static void *led_capture_logger_thread(void *arg)
+{
+    (void)arg;
+    uint32_t last_seq = 0;
+    int prev_enabled = 0;
+    FILE *log_fp = NULL;
+
+    while (1) {
+        usleep(200000);  /* 200ms */
+        int enabled = (access(LED_CAPTURE_FLAG_PATH, F_OK) == 0) ? 1 : 0;
+        if (enabled != prev_enabled) {
+            led_queue_set_capture_enabled(enabled);
+            if (enabled) {
+                if (!log_fp) log_fp = fopen(LED_CAPTURE_LOG_PATH, "a");
+                if (log_fp) {
+                    time_t now = time(NULL);
+                    fprintf(log_fp, "=== led capture enabled: %s", ctime(&now));
+                    fflush(log_fp);
+                }
+                last_seq = 0;  /* reset; capture buffer cleared by toggle */
+            } else {
+                if (log_fp) {
+                    time_t now = time(NULL);
+                    fprintf(log_fp, "=== led capture disabled: %s", ctime(&now));
+                    fflush(log_fp);
+                    fclose(log_fp);
+                    log_fp = NULL;
+                }
+            }
+            prev_enabled = enabled;
+        }
+        if (!enabled || !log_fp) continue;
+
+        led_capture_entry_t batch[128];
+        int n;
+        while ((n = led_queue_drain_capture(&last_seq, batch, 128)) > 0) {
+            for (int i = 0; i < n; i++) {
+                uint8_t type = batch[i].status & 0xF0;
+                uint8_t ch = batch[i].status & 0x0F;
+                const char *type_str = (type == 0x90) ? "NoteOn"
+                                     : (type == 0xB0) ? "CC" : "?";
+                fprintf(log_fp,
+                        "t=%llu.%03llu seq=%u cbl=%u st=0x%02X ch=%u %s d1=%u d2=%u\n",
+                        (unsigned long long)(batch[i].ts_us / 1000),
+                        (unsigned long long)(batch[i].ts_us % 1000),
+                        batch[i].seq, batch[i].cable, batch[i].status,
+                        ch, type_str, batch[i].d1, batch[i].d2);
+            }
+            if (n < 128) break;
+        }
+        fflush(log_fp);
+    }
+    return NULL;
+}
+
 static void *spi_timing_logger_thread(void *arg)
 {
     (void)arg;
@@ -7553,6 +7611,13 @@ static void shim_spi_init(void)
     {
         pthread_t tid;
         pthread_create(&tid, NULL, spi_timing_logger_thread, NULL);
+        pthread_detach(tid);
+    }
+
+    /* Start LED capture logger thread (gated by flag file) */
+    {
+        pthread_t tid;
+        pthread_create(&tid, NULL, led_capture_logger_thread, NULL);
         pthread_detach(tid);
     }
 
