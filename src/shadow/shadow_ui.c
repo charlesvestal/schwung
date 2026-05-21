@@ -2012,11 +2012,6 @@ static JSValue js_host_list_modules(JSContext *ctx, JSValueConst this_val,
 
             if (id[0] == '\0') continue;  /* Skip if no id */
 
-            /* Debug: log every module scanned */
-            {
-                FILE *dbgf = fopen("/tmp/schwung-scan-packs.log", "a");
-                if (dbgf) { fprintf(dbgf, "module id='%s' scan_packs='%s' path='%s'\n", id, scan_packs, module_json_path); fclose(dbgf); }
-            }
             if (scan_packs[0]) {
                 /* Expand packs: scan subdirectory for extracted pack directories
                  * with info.json. Each pack becomes a separate module entry.
