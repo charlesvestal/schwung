@@ -2,8 +2,60 @@
  * Extracted from schwung_shim.c for maintainability. */
 
 #include <string.h>
+#include <time.h>
 #include "shadow_led_queue.h"
 #include "unified_log.h"
+
+/* ============================================================================
+ * MIDI_OUT cable-0 capture ring (diagnostic)
+ * ============================================================================ */
+#define LED_CAPTURE_RING_SIZE 2048  /* power of 2 */
+static led_capture_entry_t led_capture_ring[LED_CAPTURE_RING_SIZE];
+static volatile uint32_t led_capture_head = 0;
+static volatile int led_capture_enabled = 0;
+
+static inline uint64_t led_capture_now_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)(ts.tv_nsec / 1000);
+}
+
+static inline void led_capture_record(uint8_t cable, uint8_t status,
+                                      uint8_t d1, uint8_t d2) {
+    if (!led_capture_enabled) return;
+    uint32_t seq = ++led_capture_head;
+    uint32_t idx = (seq - 1) & (LED_CAPTURE_RING_SIZE - 1);
+    led_capture_ring[idx].seq = seq;
+    led_capture_ring[idx].ts_us = led_capture_now_us();
+    led_capture_ring[idx].cable = cable;
+    led_capture_ring[idx].status = status;
+    led_capture_ring[idx].d1 = d1;
+    led_capture_ring[idx].d2 = d2;
+}
+
+void led_queue_set_capture_enabled(int on) { led_capture_enabled = on ? 1 : 0; }
+int led_queue_capture_enabled(void) { return led_capture_enabled; }
+
+int led_queue_drain_capture(uint32_t *last_seq, led_capture_entry_t *out,
+                            int max_out) {
+    if (!last_seq || !out || max_out <= 0) return 0;
+    uint32_t head = led_capture_head;
+    if (head == *last_seq) return 0;
+    uint32_t start = *last_seq + 1;
+    uint32_t available = head - *last_seq;
+    if (available > LED_CAPTURE_RING_SIZE) {
+        start = head - LED_CAPTURE_RING_SIZE + 1;
+    }
+    int n = 0;
+    for (uint32_t s = start; s != head + 1 && n < max_out; s++) {
+        uint32_t idx = (s - 1) & (LED_CAPTURE_RING_SIZE - 1);
+        led_capture_entry_t e = led_capture_ring[idx];
+        if (e.seq != s) continue;  /* slot reused mid-read */
+        out[n++] = e;
+    }
+    *last_seq = head;
+    return n;
+}
 
 /* ============================================================================
  * Static host callbacks
@@ -234,18 +286,22 @@ void shadow_clear_move_leds_if_overtake(void) {
         for (int i = 0; i < HW_MIDI_OUT_SIZE; i += 4) {
             uint8_t cable = (midi_out[i] >> 4) & 0x0F;
             uint8_t type = midi_out[i+1] & 0xF0;
-            if (cable == 0 && (type == 0x90 || type == 0xB0)) {
+            if (cable == 0 && (type == 0x90 || type == 0x80 || type == 0xB0)) {
                 uint8_t d1 = midi_out[i+2];
                 uint8_t d2 = midi_out[i+3];
-                if (type == 0x90) {
-                    move_note_led_state[d1] = d2;
-                    move_note_led_status[d1] = midi_out[i+1];
-                    move_note_led_cin[d1] = midi_out[i];
+                if (type == 0x90 || type == 0x80) {
+                    /* Move turns pad LEDs off via note-off (0x80); normalize
+                     * to note-on with d2=0 so restore emits a uniform 0x90. */
+                    int color = (type == 0x80) ? 0 : d2;
+                    move_note_led_state[d1] = color;
+                    move_note_led_status[d1] = 0x90;
+                    move_note_led_cin[d1] = 0x09;
                 } else {
                     move_cc_led_state[d1] = d2;
                     move_cc_led_status[d1] = midi_out[i+1];
                     move_cc_led_cin[d1] = midi_out[i];
                 }
+                led_capture_record(cable, midi_out[i+1], d1, d2);
             }
         }
     }
@@ -360,10 +416,12 @@ void shadow_flush_pending_leds(void) {
     } else {
         budget = SHADOW_LED_MAX_UPDATES_PER_TICK;
     }
-    /* When skip_led_clear or a restore is active, Move's packets fill the
-     * buffer. We can still replace matching packets, so don't bail on
-     * available<=0 in those cases. */
-    int replace_in_place = skip_led_clear || move_led_restore_pending;
+    /* When skip_led_clear is active, Move's packets fill the buffer.
+     * We can still replace matching packets, so don't bail on available<=0.
+     * Note: restore-pending intentionally does NOT replace in place — letting
+     * Move's fresh post-exit packets win avoids restoring stale snapshot
+     * values from views that no longer match (e.g. mid-Shift session/note). */
+    int replace_in_place = skip_led_clear;
     if (!replace_in_place && (available <= 0 || budget <= 0)) return;
     if (budget <= 0) return;
     if (!replace_in_place && budget > available) budget = available;
