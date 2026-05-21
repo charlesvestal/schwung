@@ -584,7 +584,7 @@ func (ru *RemoteUI) handleSubscribeMasterFx(ctx context.Context, c *ruClient) {
 
 	// Send hierarchy and chain_params for each loaded master FX slot.
 	for _, fxSlot := range masterFxSlots {
-		moduleKey := "master_fx:" + fxSlot + "_module"
+		moduleKey := "master_fx:" + fxSlot + ":module"
 		modID, err := ru.shm.GetParam(0, moduleKey)
 		if err != nil || modID == "" {
 			continue
@@ -651,7 +651,7 @@ func (ru *RemoteUI) sendSlotInfo(ctx context.Context, c *ruClient, slot uint8) {
 func (ru *RemoteUI) sendMasterFxInfo(ctx context.Context, c *ruClient) {
 	info := wsMasterFxInfo{Type: "master_fx_info"}
 	for _, fxSlot := range masterFxSlots {
-		moduleKey := "master_fx:" + fxSlot + "_module"
+		moduleKey := "master_fx:" + fxSlot + ":module"
 		modID, _ := ru.shm.GetParam(0, moduleKey)
 		switch fxSlot {
 		case "fx1":
@@ -777,9 +777,16 @@ func (ru *RemoteUI) notifyLoop(ctx context.Context) {
 			continue
 		}
 
-		// Group changes by slot for efficient broadcasting.
+		// Group changes by slot, splitting master FX keys (slot 0,
+		// "master_fx:" prefix) into their own bucket so master-FX-only
+		// subscribers receive them without needing a slot 0 subscription.
 		slotChanges := make(map[uint8]map[string]string)
+		masterFxChanges := make(map[string]string)
 		for _, c := range changes {
+			if c.Slot == 0 && strings.HasPrefix(c.Key, "master_fx:") {
+				masterFxChanges[c.Key] = c.Value
+				continue
+			}
 			m, ok := slotChanges[c.Slot]
 			if !ok {
 				m = make(map[string]string)
@@ -801,6 +808,18 @@ func (ru *RemoteUI) notifyLoop(ctx context.Context) {
 			for _, c := range clients {
 				c.mu.Lock()
 				subscribed := c.subs[slot]
+				c.mu.Unlock()
+				if subscribed {
+					ru.writeJSON(ctx, c, update)
+				}
+			}
+		}
+
+		if len(masterFxChanges) > 0 {
+			update := wsParamUpdate{Type: "param_update", Slot: 0, Params: masterFxChanges}
+			for _, c := range clients {
+				c.mu.Lock()
+				subscribed := c.masterFxSub
 				c.mu.Unlock()
 				if subscribed {
 					ru.writeJSON(ctx, c, update)
@@ -977,7 +996,7 @@ func (ru *RemoteUI) broadcastChainParams(ctx context.Context, slot uint8, compon
 func (ru *RemoteUI) pollMasterFx(ctx context.Context, cache *slotCache) {
 	for _, fxSlot := range masterFxSlots {
 		compName := "master_fx:" + fxSlot
-		moduleKey := "master_fx:" + fxSlot + "_module"
+		moduleKey := "master_fx:" + fxSlot + ":module"
 
 		modID, ok, _ := ru.shm.TryGetParam(0, moduleKey)
 		if !ok {
