@@ -80,4 +80,25 @@ int led_queue_jack_sysex_restore_pending(void);
 void led_queue_freeze_jack_sysex_cache(void);  /* Call on suspend */
 int led_queue_jack_sysex_debug_info(int *starts, int *cached, int *last_cin);
 
+/* ============================================================================
+ * MIDI_OUT cable-0 capture (diagnostic, gated by flag file).
+ * SPI path records every cable-0 note/CC packet into a ring; a non-RT
+ * thread drains and logs them. RT-safe: just memory writes.
+ * ============================================================================ */
+
+typedef struct {
+    uint32_t seq;       /* monotonic; 0 = unused */
+    uint64_t ts_us;     /* CLOCK_MONOTONIC microseconds */
+    uint8_t cable;
+    uint8_t status;     /* full status byte incl. channel */
+    uint8_t d1;
+    uint8_t d2;
+} led_capture_entry_t;
+
+void led_queue_set_capture_enabled(int on);
+int led_queue_capture_enabled(void);
+/* Drain entries with seq > *last_seq into out[]. Updates *last_seq to the
+ * newest seq drained. Returns number of entries written. */
+int led_queue_drain_capture(uint32_t *last_seq, led_capture_entry_t *out, int max_out);
+
 #endif /* SHADOW_LED_QUEUE_H */
