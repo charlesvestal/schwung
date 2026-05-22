@@ -156,8 +156,65 @@ typedef struct shadow_control_t {
     volatile uint16_t skipback_seconds; /* Skipback rolling buffer length: 30/60/120/180/240/300 */
     volatile uint8_t resume_last_tool;  /* 1=JUMP_TO_TOOLS should resume the most-recently-suspended tool instead of opening the menu */
     volatile uint8_t midi_indicator_enabled; /* 1=draw "ccN" MIDI channel indicator while a note is held */
-    volatile uint8_t reserved[5];
+    volatile int8_t corun_chain_edit_slot; /* -1=off, 0-3=chain-edit co-runs with the active tool, owning OLED + jog + track buttons */
+    volatile int8_t corun_move_native_track; /* -1=off, 0-7=Move firmware co-runs (OLED + jog + track buttons + knobs) for the active tool's track */
+    volatile uint16_t corun_keep_mask;   /* co-run input manifest: bitfield of CORUN_GRP_* the tool KEEPS; the rest cede to the co-run UI. 0 = use CORUN_KEEP_DEFAULT (back-compat for callers that set only the target gate). */
+    volatile uint8_t reserved[1];
 } shadow_control_t;
+
+/* Co-run control-surface groups. A co-running overtake tool declares which
+ * groups it KEEPS (corun_keep_mask); every other group's input cedes to the
+ * co-run UI (Schwung's chain editor, or Move firmware). One canonical
+ * event->group map (corun_group_for_event) is shared by every routing site so
+ * the let-through and suppress-from-tool decisions can never drift apart. */
+#define CORUN_GRP_OLED          (1u << 0)
+#define CORUN_GRP_PADS          (1u << 1)
+#define CORUN_GRP_STEPS         (1u << 2)
+#define CORUN_GRP_TRANSPORT     (1u << 3)
+#define CORUN_GRP_JOG           (1u << 4)  /* jog turn (CC 14) + jog click (CC 3) */
+#define CORUN_GRP_TRACK_BUTTONS (1u << 5)  /* CC 40-43 */
+#define CORUN_GRP_KNOBS         (1u << 6)  /* CC 71-78 */
+#define CORUN_GRP_MASTER        (1u << 7)  /* CC 79 */
+#define CORUN_GRP_SHIFT         (1u << 8)  /* CC 49 */
+#define CORUN_GRP_BACK          (1u << 9)  /* CC 51 */
+#define CORUN_GRP_MENU          (1u << 10) /* CC 50 — framework exit gesture */
+#define CORUN_GRP_TOUCH         (1u << 11) /* capacitive-touch notes 0-9 */
+
+/* Default keep-set: reproduces the original dAVEBOx co-run split (tool keeps
+ * pads, step buttons, transport, and Menu; cedes the nav surface + screen).
+ * Used whenever corun_keep_mask == 0. */
+#define CORUN_KEEP_DEFAULT (CORUN_GRP_PADS | CORUN_GRP_STEPS | CORUN_GRP_TRANSPORT | CORUN_GRP_MENU)
+
+/* Map a raw cable-0 MIDI event to its control-surface group, or 0 if it isn't a
+ * routable surface control (those always stay with the tool). type is the
+ * status nibble (0xB0 CC, 0x90/0x80 note); d1 the data byte. Steps/transport
+ * are intentionally unclassified for now (always kept) — they have no settled
+ * CC map and no co-run consumer cedes them. */
+static inline uint16_t corun_group_for_event(uint8_t type, uint8_t d1) {
+    if (type == 0xB0) {
+        switch (d1) {
+            case 3:  case 14: return CORUN_GRP_JOG;
+            case 40: case 41: case 42: case 43: return CORUN_GRP_TRACK_BUTTONS;
+            case 49: return CORUN_GRP_SHIFT;
+            case 50: return CORUN_GRP_MENU;
+            case 51: return CORUN_GRP_BACK;
+            case 79: return CORUN_GRP_MASTER;
+            default: if (d1 >= 71 && d1 <= 78) return CORUN_GRP_KNOBS;
+                     return 0;
+        }
+    }
+    if (type == 0x90 || type == 0x80) {
+        if (d1 <= 9) return CORUN_GRP_TOUCH;
+        if (d1 >= 68 && d1 <= 99) return CORUN_GRP_PADS;
+    }
+    return 0;
+}
+
+/* Effective keep-mask: callers that set only the target gate leave keep_mask 0,
+ * which means "use the default split". */
+static inline uint16_t corun_keep_mask_eff(uint16_t keep_mask) {
+    return keep_mask ? keep_mask : CORUN_KEEP_DEFAULT;
+}
 
 /*
  * UI state structure for slot information.

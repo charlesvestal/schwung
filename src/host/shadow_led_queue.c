@@ -370,6 +370,35 @@ void shadow_clear_move_leds_if_overtake(void) {
      * If skip_led_clear is set, let Move's LEDs pass through (e.g. song-mode
      * wants Move's pad colors to update as clips play). */
     if (!cur_overtake) return;
+
+    /* Move-native co-run (dAVEBOx Edit Synth...): the tool sets skip_led_clear=1
+     * so Move's CC + sysex LED writes pass through (track buttons, knob rings,
+     * master). But Move also re-asserts the pad grid (note-on/off) and other
+     * native button/transport CCs, which would clobber the surfaces the tool
+     * keeps. Strip pads + track buttons + steps/transport CCs; leave sysex
+     * untouched (knob-ring + master colors are sysex idx 71-79). Keep only the
+     * master CC latch (79). Track buttons (40-43) are tool-owned in co-run — the
+     * tool blinks them itself — so strip Move's track-button CC writes too; we no
+     * longer surface Move's native track colors (they were unreliable to cache/
+     * land). Runs BEFORE the skip_led_clear early-return so it takes priority. */
+    if (ctrl && ctrl->corun_move_native_track >= 0) {
+        for (int i = 0; i < HW_MIDI_OUT_SIZE; i += 4) {
+            uint8_t cable = (midi_out[i] >> 4) & 0x0F;
+            if (cable != 0) continue;
+            uint8_t type = midi_out[i+1] & 0xF0;
+            if (type == 0x90 || type == 0x80) {
+                /* Move's pad LEDs (on via note-on, off via note-off) — tool keeps pads. */
+                midi_out[i] = 0; midi_out[i+1] = 0; midi_out[i+2] = 0; midi_out[i+3] = 0;
+            } else if (type == 0xB0) {
+                uint8_t d1 = midi_out[i+2];
+                if (d1 == 79) continue;  /* keep master; everything else tool-owned */
+                /* Strip track buttons (40-43) + steps/transport/other native CCs. */
+                midi_out[i] = 0; midi_out[i+1] = 0; midi_out[i+2] = 0; midi_out[i+3] = 0;
+            }
+        }
+        return;
+    }
+
     if (ctrl && ctrl->skip_led_clear) return;
 
     /* Per-module passthrough list: CCs the module yielded to Move
