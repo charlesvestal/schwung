@@ -691,6 +691,17 @@
       "min_host_version": "0.3.0"
     },
     {
+      "id": "ambiotica",
+      "name": "Ambiotica",
+      "description": "Ambient effect chain: rolling looper -> granular shimmer -> freeze layer -> modulated reverb. Tempo-aware, 4 mode presets, 8-knob performance.",
+      "author": "charlesvestal",
+      "component_type": "audio_fx",
+      "github_repo": "charlesvestal/schwung-ambiotica",
+      "default_branch": "main",
+      "asset_name": "ambiotica-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
       "id": "wurl",
       "name": "Wurl",
       "description": "Physically-modeled Wurlitzer 200A electric piano (OpenWurli port)",
