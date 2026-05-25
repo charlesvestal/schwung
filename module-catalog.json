@@ -923,7 +923,7 @@
       "github_repo": "boorch/dronage-move-release",
       "default_branch": "master",
       "asset_name": "dronage-tool-module.tar.gz",
-      "min_host_version": "0.8.8"
+      "min_host_version": "0.9.8"
     }
   ]
 }
