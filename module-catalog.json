@@ -914,16 +914,16 @@
       "min_host_version": "0.7.4",
       "requires": "audio files in /data/UserData/UserLibrary/Samples/ (.wav, .mp3, .flac, .aif)"
     },
-   {
-     "id": "dronage-tool",
-     "name": "Dronage Move",
-     "description": "Ambient drone workstation (standalone takeover)",
-     "author": "boorch",
-     "component_type": "tool",
-     "github_repo": "boorch/dronage-move-release",
-     "default_branch": "master",
-     "asset_name": "dronage-tool-module.tar.gz",
-     "min_host_version": "0.8.8"
-   }
+    {
+      "id": "dronage-tool",
+      "name": "Dronage Move",
+      "description": "Ambient drone workstation (standalone takeover)",
+      "author": "boorch",
+      "component_type": "tool",
+      "github_repo": "boorch/dronage-move-release",
+      "default_branch": "master",
+      "asset_name": "dronage-tool-module.tar.gz",
+      "min_host_version": "0.8.8"
+    }
   ]
 }
