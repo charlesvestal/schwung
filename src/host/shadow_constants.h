@@ -194,6 +194,14 @@ typedef struct shadow_control_t {
  * to the peer. Used whenever corun_keep_mask == 0. */
 #define CORUN_KEEP_DEFAULT (CORUN_GRP_PADS | CORUN_GRP_STEPS | CORUN_GRP_TRANSPORT | CORUN_GRP_MENU)
 
+/* Opt-out flag for tools that prefer their own exit gesture. When this bit is
+ * set in keep_mask, the framework does NOT auto-exit on Back press — Back
+ * routes per normal keep_mask rules (cedes to peer for sub-view nav unless
+ * the tool also keeps CORUN_GRP_BACK). Default (bit unset) reserves Back as
+ * the framework exit gesture regardless of keep_mask. Lives in the high half
+ * of keep_mask; doesn't collide with any CORUN_GRP_* bit. */
+#define CORUN_KEEP_BACK (1u << 15)
+
 /* Map a raw cable-0 MIDI event to its control-surface group, or 0 if it isn't a
  * routable surface control (those always stay with the tool). type is the
  * status nibble (0xB0 CC, 0x90/0x80 note); d1 the data byte. Steps/transport
@@ -270,6 +278,16 @@ static inline uint16_t corun_keep_mask(const volatile shadow_control_t *ctrl) {
 static inline corun_owner_t corun_event_owner(const volatile shadow_control_t *ctrl, uint8_t type, uint8_t d1) {
     if (!corun_active(ctrl)) return CORUN_OWNER_TOOL;
     uint16_t grp = corun_group_for_event(type, d1);
+    /* Back: framework-reserved as the exit gesture by default — the shim's
+     * own handler ends the session on press, neither side sees the event.
+     * Tools that prefer their own exit gesture set CORUN_KEEP_BACK in
+     * keep_mask; Back then routes per normal keep_mask rules (cedes to peer
+     * for sub-view nav unless CORUN_GRP_BACK is also kept), and the framework
+     * stays out of its way. (Menu remains tool-owned by default via
+     * keep_mask.) */
+    if (grp == CORUN_GRP_BACK && !(ctrl->corun.keep_mask & CORUN_KEEP_BACK)) {
+        return CORUN_OWNER_NONE;
+    }
     if (!grp) return CORUN_OWNER_TOOL; /* unclassified events always stay with tool */
     uint16_t keep = corun_keep_mask_eff(ctrl->corun.keep_mask);
     return (keep & grp) ? CORUN_OWNER_TOOL : CORUN_OWNER_PEER;
