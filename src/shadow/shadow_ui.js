@@ -14813,7 +14813,7 @@ function dispatchCoRunDraw() {
              * own UI module takes over shadow_ui's drawing/MIDI/IPC and starves
              * the active tool. drawComponentEdit() is the simple preset-browser
              * fallback that lets the user pick patches without the deep
-             * module-specific editor — still useful, and keeps dAVEBOx alive. */
+             * module-specific editor — still useful, and keeps the tool alive. */
             drawComponentEdit();
             break;
         case VIEWS.HIERARCHY_EDITOR:     drawHierarchyEditor(); break;
@@ -15572,25 +15572,30 @@ globalThis.tick = function() {
     /* Flush deferred wav player file_path after DSP load */
     wavPlayerTick();
 
-    /* CO-RUN: sync chain-edit slot from SHM. Active tool module sets this via
-     * shadow_set_corun_chain_edit() to share OLED + jog + track buttons with
-     * the chain editor while keeping pads/steps/knobs/transport for itself. */
-    if (typeof shadow_get_corun_keep_mask === "function") {
-        coRunKeepMask = shadow_get_corun_keep_mask() | 0;
-    }
-    if (typeof shadow_get_corun_chain_edit === "function") {
-        const _new = shadow_get_corun_chain_edit();
-        if (_new !== coRunChainEditSlot) {
-            coRunChainEditSlot = _new;
-            if (_new >= 0) {
+    /* CO-RUN: reconcile chain-edit slot from SHM each frame. The tool calls
+     * shadow_corun_begin(CORUN_TARGET_CHAIN_EDIT, slot, keep_mask) to enter;
+     * the framework calls shadow_corun_end() on Back press, after which
+     * shadow_corun_state() returns null and we tear down the editor. */
+    if (typeof shadow_corun_state === "function") {
+        const _st = shadow_corun_state();
+        const _slot = (_st && _st.target === CORUN_TARGET_CHAIN_EDIT) ? _st.id : -1;
+        coRunKeepMask = (_st && typeof _st.keep_mask === "number") ? (_st.keep_mask | 0) : 0;
+        if (_slot !== coRunChainEditSlot) {
+            coRunChainEditSlot = _slot;
+            if (_slot >= 0) {
                 /* Entering co-run: prime the chain editor's state for slot N.
                  * Mirrors enterChainEdit() but does NOT touch the outer view
                  * (must stay VIEWS.OVERTAKE_MODULE so the tool keeps ticking). */
-                selectedSlot = _new;
-                if (typeof updateFocusedSlot === "function") updateFocusedSlot(_new);
-                selectedChainComponent = lastChainComponent[_new] || 0;
-                if (typeof loadChainConfigFromSlot === "function") loadChainConfigFromSlot(_new);
+                selectedSlot = _slot;
+                if (typeof updateFocusedSlot === "function") updateFocusedSlot(_slot);
+                selectedChainComponent = lastChainComponent[_slot] || 0;
+                if (typeof loadChainConfigFromSlot === "function") loadChainConfigFromSlot(_slot);
                 coRunView = VIEWS.CHAIN_EDIT;
+                needsRedraw = true;
+            } else {
+                /* Framework ended co-run (Back press) — drop back to the tool
+                 * view; the chain editor stops drawing on next tick. */
+                coRunView = VIEWS.OVERTAKE_MODULE;
                 needsRedraw = true;
             }
         }
@@ -16046,8 +16051,8 @@ globalThis.onMidiMessageInternal = function(data) {
          * keeps everything else (pads, step buttons, knobs, transport, Shift).
          * Back is conditionally intercepted: when the editor is in a sub-view
          * (PATCHES, COMPONENT_*, KNOB_*, etc.) Back navigates up within the
-         * editor; when the editor is at CHAIN_EDIT (the top level) Back falls
-         * through to the tool so dAVEBOx can exit co-run. */
+         * editor; at CHAIN_EDIT (the top level) Back is silent so the tool's
+         * own exit gesture (e.g. Menu) takes over. */
         if (coRunChainEditSlot >= 0 && (status & 0xF0) === 0xB0) {
             if (d1 === MoveMainKnob && coRunCedes(CORUN_GRP_JOG)) {
                 const delta = decodeDelta(d2);
@@ -16071,11 +16076,11 @@ globalThis.onMidiMessageInternal = function(data) {
                 needsRedraw = true;
                 return;
             }
-            /* Back: always claimed by the chain editor while co-run is on.
-             * Deeper views navigate up; CHAIN_EDIT is the top — eat the event
-             * so it doesn't reach the tool (handleBack at CHAIN_EDIT would
-             * call shadow_request_exit, which is also wrong). User exits co-run
-             * via Menu button instead. */
+            /* Back during co-run: deeper views call handleBack() to navigate
+             * up within the chain editor; at CHAIN_EDIT (the top level) we
+             * eat the event silently. The tool is responsible for the
+             * corun-exit gesture (e.g. Menu); shadow_ui doesn't handle it
+             * here. */
             if (d1 === MoveBack && d2 > 0 && coRunCedes(CORUN_GRP_BACK)) {
                 if (coRunView !== VIEWS.CHAIN_EDIT) {
                     runCoRunChainEdit(function() { handleBack(); });
@@ -16086,20 +16091,9 @@ globalThis.onMidiMessageInternal = function(data) {
             /* Shift (CC 49): give it ONLY to the chain editor. hostShiftHeld
              * was already updated earlier (line ~15091) before this branch, so
              * the editor's isShiftHeld()-based code paths see the right state.
-             * Eating it here prevents the tool from reacting (e.g. dAVEBOx's
-             * own Shift+button shortcuts while you're navigating the editor). */
+             * Eating it here prevents the tool from reacting (e.g. its own
+             * Shift+button shortcuts while you're navigating the editor). */
             if (d1 === 49 && coRunCedes(CORUN_GRP_SHIFT)) {
-                needsRedraw = true;
-                return;
-            }
-            /* Menu (CC 50): exit co-run entirely. shadow_clear_corun_chain_edit
-             * updates SHM; the tool reads it from its own poll and clears its
-             * mirror, restoring full OLED + jog ownership. */
-            if (d1 === 50 && d2 > 0) {
-                if (typeof shadow_set_corun_chain_edit === "function") {
-                    shadow_set_corun_chain_edit(-1);
-                }
-                coRunChainEditSlot = -1;
                 needsRedraw = true;
                 return;
             }
@@ -16113,7 +16107,7 @@ globalThis.onMidiMessageInternal = function(data) {
                     selectedChainComponent = lastChainComponent[_slot] || 0;
                     if (typeof loadChainConfigFromSlot === "function") loadChainConfigFromSlot(_slot);
                     coRunView = VIEWS.CHAIN_EDIT;
-                    if (typeof shadow_set_corun_chain_edit === "function") shadow_set_corun_chain_edit(_slot);
+                    if (typeof shadow_corun_begin === "function") shadow_corun_begin(CORUN_TARGET_CHAIN_EDIT, _slot, 0);
                     needsRedraw = true;
                 }
                 return;
@@ -16123,7 +16117,7 @@ globalThis.onMidiMessageInternal = function(data) {
              * handleKnobTurn slot-global fallback). Wrapped in runCoRunChainEdit
              * so getKnobContext resolves against the editor's view rather than
              * OVERTAKE_MODULE (the context cache is keyed on view). Returns
-             * before the tool knob-accumulation below, so dAVEBOx no longer
+             * before the tool knob-accumulation below, so the tool no longer
              * receives knob turns while co-run is active. Knob TOUCH notes still
              * forward to the tool — intentional turn-only split. */
             if (d1 >= KNOB_CC_START && d1 <= KNOB_CC_END && coRunCedes(CORUN_GRP_KNOBS)) {
@@ -16160,7 +16154,7 @@ globalThis.onMidiMessageInternal = function(data) {
          * value-peek on touch and overlay dismiss on release, mirroring the
          * non-overtake touch handlers, wrapped so getKnobContext resolves under
          * the editor's view. Does NOT return — falls through to the tool forward
-         * below so dAVEBOx still receives both touch edges (it already gets these
+         * below so the tool still receives both touch edges (it already gets these
          * notes pre-change; keeping that avoids a stranded knobTouched on exit).
          * Release drains BOTH the hierarchy (pendingHierKnob) and slot-global
          * (pendingKnob) paths, which is what actually clears the value popup. */
