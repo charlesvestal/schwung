@@ -1290,7 +1290,7 @@ static int overtake_midi_send_internal(const uint8_t *msg, int len) {
 /* === Phase 2: Audio-thread-safe ROUTE_EXTERNAL MIDI send =================
  *
  * overtake_midi_send_external() is called from an overtake DSP's audio
- * thread (e.g. dAVEBOx's pfx_emit). The pre-Phase-2 body did its own
+ * thread. The pre-Phase-2 body did its own
  * synchronous real_ioctl(SPI), which works only by accident — it ships
  * a partial 768-byte mailbox (including stale audio at offset 256-767)
  * out of step with the audio thread's own per-block ioctl.
@@ -2951,9 +2951,10 @@ static void init_shadow_shm(void)
             shadow_control->ui_flags = 0;
             shadow_control->ui_patch_index = 0;
             shadow_control->ui_request_id = 0;
-            shadow_control->corun_chain_edit_slot = -1;  /* chain-edit co-run inactive at boot */
-            shadow_control->corun_move_native_track = -1;  /* Move-native co-run inactive at boot */
-            shadow_control->corun_keep_mask = 0;  /* 0 = default split when a co-run target is set without a manifest */
+            shadow_control->corun.target = CORUN_TARGET_NONE;  /* co-run inactive at boot */
+            shadow_control->corun.id = -1;
+            shadow_control->corun.keep_mask = 0;  /* 0 = default split when a target is set without a manifest */
+            shadow_control->shadow_display_owner = DISPLAY_OWNER_SCHWUNG_UI; /* splash boots into shadow UI */
             /* Initialize TTS defaults */
             shadow_control->tts_enabled = 0;    /* Screen Reader off by default */
             shadow_control->tts_volume = 70;    /* 70% volume */
@@ -3428,12 +3429,13 @@ static void shadow_swap_display(void)
         display_phase = 0;
         return;
     }
-    /* Move-native co-run: yield OLED to Move firmware (preset browser /
-     * device-edit pages) while keeping shadow_display_mode = 1 so the MIDI
-     * filter at the sh_midi sync site stays active. Without this bypass we'd
-     * have to drop display_mode = 0 to expose Move's framebuffer, which would
-     * also disable the filter and let pads/transport leak through to Move. */
-    if (shadow_control->corun_move_native_track >= 0) {
+    /* Display-owner split (see shadow_display_owner_t in shadow_constants.h):
+     * shadow_display_mode says "the shadow session is active" (filters/MIDI
+     * routing are armed). shadow_display_owner says "who is actually rendering
+     * the OLED right now". During move_native co-run the session is active but
+     * the OLED belongs to Move firmware — yield without tearing down the
+     * session. */
+    if (shadow_control->shadow_display_owner == DISPLAY_OWNER_MOVE_FIRMWARE) {
         display_phase = 0;
         return;
     }
@@ -4957,11 +4959,14 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
      * overtake_mode — otherwise audio scales to whatever volume was active
      * when overtake engaged. */
     int pin_challenge = shadow_control && shadow_control->pin_challenge_active == 1;
+    int corun_owns_native_oled = shadow_control &&
+        shadow_control->shadow_display_owner == DISPLAY_OWNER_MOVE_FIRMWARE;
     int native_display_visible = (!shadow_display_mode) ||
                                  (shadow_display_mode &&
                                   shadow_volume_knob_touched &&
                                   !shadow_shift_held &&
                                   shadow_control) ||
+                                 corun_owns_native_oled ||
                                  pin_challenge;
 
     if (global_mmap_addr && native_display_visible) {
@@ -5892,32 +5897,15 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     if (cin == 0x0B && type == 0xB0 && d1 < 128 && overtake_passthrough_ccs[d1]) {
                         filter = 0;
                     }
-                    /* Move-native co-run: while corun_move_native_track >= 0,
-                     * let Move firmware see the navigation surface it needs to
-                     * drive its preset browser / device-edit pages, while the
-                     * tool keeps the rest. Cable-0 only (handled by the outer
-                     * `if (cable == 0x00)`). Touch notes 0-9 (jog + knob cap)
-                     * also flow through so Move can detect engagement.
-                     *  - CC 3   = jog click
-                     *  - CC 14  = jog turn
-                     *  - CC 40-43 = track buttons
-                     *  - CC 49  = Shift
-                     *  - CC 51  = Back
-                     *  - CC 71-78 = device-edit knobs (8 knobs)
-                     *  - CC 79  = master knob (already in passthrough for dAVEBOx,
-                     *             listed here for clarity in case a tool doesn't
-                     *             include it in button_passthrough). */
-                    if (shadow_control->corun_move_native_track >= 0) {
-                        /* Cede this event to Move firmware iff its control-surface
-                         * group is NOT in the tool's keep-mask. corun_group_for_event
-                         * + corun_keep_mask_eff (shadow_constants.h) are the single
-                         * shared source for this decision, mirrored at the
-                         * shadow_ui_midi_shm forward-filter below. keep_mask == 0
-                         * falls back to the default split. */
-                        uint16_t grp = corun_group_for_event(type, d1);
-                        if (grp && !(corun_keep_mask_eff(shadow_control->corun_keep_mask) & grp)) {
-                            filter = 0;
-                        }
+                    /* Move-native co-run: let Move firmware see whichever
+                     * control-surface events the tool cedes via its keep_mask.
+                     * corun_event_owner (shadow_constants.h) is the single
+                     * source of truth — same predicate runs at the forward-to-
+                     * shadow_ui suppress site below, so the two routes can
+                     * never drift. */
+                    if (corun_target(shadow_control) == CORUN_TARGET_MOVE_NATIVE &&
+                        corun_event_owner(shadow_control, type, d1) == CORUN_OWNER_PEER) {
+                        filter = 0;
                     }
                 } else if (overtake_mode == 1) {
                     filter = 1;
@@ -6899,8 +6887,8 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             /* Deliver internal cable-0 note events (d1 >= 10, excludes
              * knob-touch reserved range 0–9) to the loaded overtake DSP
              * via its audio-thread on_midi hook.  Enables overtake tools
-             * like dAVEBOx to handle pad input on the audio thread
-             * instead of through the JS round-trip below. */
+             * to handle pad input on the audio thread instead of through
+             * the JS round-trip below. */
             if (overtake_mode == 2 && cable == 0x00 &&
                 (type == 0x90 || type == 0x80) && d1 >= 10) {
                 if (overtake_dsp_gen && overtake_dsp_gen_inst && overtake_dsp_gen->on_midi) {
@@ -6924,20 +6912,18 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     if (!is_ui_event) continue;  /* Skip non-UI events in menu mode */
                 }
 
-                /* Move-native co-run: suppress from the tool the same nav CCs
-                 * + touch notes that we let through to Move firmware above
-                 * (sh_midi filter). Cable-0 only — cable-2 external MIDI is
-                 * unaffected. Mirror of the let-through list at the sh_midi
-                 * filter site; keep them in sync. */
+                /* Co-run forward-suppress: when the peer is a SEPARATE process
+                 * (Move firmware in move_native), we gate the publish here so
+                 * the tool doesn't see events that already went to Move via
+                 * the pre-ioctl filter. For chain-edit the peer IS shadow_ui
+                 * (same process as the tool dispatch), so shadow_ui.js handles
+                 * routing internally via coRunCedes() — we MUST let publish
+                 * through, otherwise the chain editor never receives jog,
+                 * track buttons, etc. */
                 if (overtake_mode == 2 && cable == 0x00 &&
-                    shadow_control->corun_move_native_track >= 0) {
-                    /* Mirror of the sh_midi let-through above: suppress from the
-                     * tool exactly the groups it cedes to Move firmware. Shared
-                     * event->group map keeps the two sites in lockstep. */
-                    uint16_t grp = corun_group_for_event(type, d1);
-                    if (grp && !(corun_keep_mask_eff(shadow_control->corun_keep_mask) & grp)) {
-                        continue;
-                    }
+                    corun_target(shadow_control) == CORUN_TARGET_MOVE_NATIVE &&
+                    corun_event_owner(shadow_control, type, d1) == CORUN_OWNER_PEER) {
+                    continue;
                 }
 
                 /* BLOCK channels: hardware_mmap_addr is NOT modified (writing
