@@ -372,28 +372,24 @@ void shadow_clear_move_leds_if_overtake(void) {
     if (!cur_overtake) return;
 
     /* Move-native co-run: the tool sets skip_led_clear=1 so Move's CC + sysex
-     * LED writes pass through (track buttons, knob rings, master). But Move
-     * also re-asserts the pad grid (note-on/off) and other native
-     * button/transport CCs, which would clobber the surfaces the tool keeps.
-     * Strip pads + track buttons + steps/transport CCs; leave sysex untouched
-     * (knob-ring + master colors are sysex idx 71-79). Keep only the master
-     * CC latch (79). Track buttons (40-43) are tool-owned in co-run — the
-     * tool repaints them itself — so strip Move's track-button CC writes too;
-     * we no longer surface Move's native track colors (they were unreliable
-     * to cache/land). Runs BEFORE the skip_led_clear early-return so it
-     * takes priority. */
+     * LED writes pass through (knob rings, master, track buttons, etc.). But
+     * Move also re-asserts the surfaces the tool keeps (per keep_mask), which
+     * would clobber the tool's own LED rendering. Strip Move's CC / note-on /
+     * note-off LED writes for any surface group the tool keeps; events the
+     * tool cedes pass through so Move's LEDs reach hardware. Sysex writes
+     * (status 0xF0-0xF7) and unclassified events aren't currently
+     * group-mapped and pass through unchanged — sysex carries knob-ring +
+     * master colors (palette idx 71-79) and the framework leaves those alone.
+     * Runs BEFORE the skip_led_clear early-return so it takes priority. */
     if (corun_target(ctrl) == CORUN_TARGET_MOVE_NATIVE) {
+        uint16_t keep = corun_keep_mask_eff(ctrl->corun.keep_mask);
         for (int i = 0; i < HW_MIDI_OUT_SIZE; i += 4) {
             uint8_t cable = (midi_out[i] >> 4) & 0x0F;
             if (cable != 0) continue;
             uint8_t type = midi_out[i+1] & 0xF0;
-            if (type == 0x90 || type == 0x80) {
-                /* Move's pad LEDs (on via note-on, off via note-off) — tool keeps pads. */
-                midi_out[i] = 0; midi_out[i+1] = 0; midi_out[i+2] = 0; midi_out[i+3] = 0;
-            } else if (type == 0xB0) {
-                uint8_t d1 = midi_out[i+2];
-                if (d1 == 79) continue;  /* keep master; everything else tool-owned */
-                /* Strip track buttons (40-43) + steps/transport/other native CCs. */
+            uint8_t d1 = midi_out[i+2];
+            uint16_t grp = corun_group_for_event(type, d1);
+            if (grp && (keep & grp)) {
                 midi_out[i] = 0; midi_out[i+1] = 0; midi_out[i+2] = 0; midi_out[i+3] = 0;
             }
         }
