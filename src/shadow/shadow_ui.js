@@ -16064,11 +16064,14 @@ globalThis.onMidiMessageInternal = function(data) {
                 needsRedraw = true;
                 return;
             }
-            /* Back during co-run: deeper views call handleBack() to navigate
-             * up within the chain editor; at CHAIN_EDIT (the top level) we
-             * eat the event silently. The tool is responsible for the
-             * corun-exit gesture (e.g. Menu); shadow_ui doesn't handle it
-             * here. */
+            /* Back during co-run: framework-reserved as exit gesture UNLESS
+             * the tool set CORUN_KEEP_BACK in its keep_mask (opts out of the
+             * framework auto-exit so its peer UI can use Back for sub-view
+             * pop). The chain editor's deeper views call handleBack(); at
+             * CHAIN_EDIT (the top level) we eat the event silently — when
+             * the tool has opted out, it provides its own exit gesture
+             * (typically Menu, which is tool-routed under the default
+             * keep-mask). */
             if (d1 === MoveBack && d2 > 0 && coRunCedes(CORUN_GRP_BACK)) {
                 if (coRunView !== VIEWS.CHAIN_EDIT) {
                     runCoRunChainEdit(function() { handleBack(); });
