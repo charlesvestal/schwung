@@ -40,9 +40,14 @@ shadow_corun_begin(CORUN_TARGET_CHAIN_EDIT, slot,
 
 When this bit is set, the framework leaves Back alone: Back routes per the
 normal `keep_mask` rules (cedes to peer unless `CORUN_GRP_BACK` is also kept).
-The tool is then responsible for providing its own exit gesture and calling
-`shadow_corun_end()` itself; `menu` is the obvious choice since it's
-tool-routed under the default keep-mask.
+For `CORUN_TARGET_CHAIN_EDIT`, shadow_ui's own Back handler still ends the
+session when the chain editor is at its top-level view (`CHAIN_EDIT`) — it
+owns the view stack and can tell, so it provides Charles's "Back exits at
+top, navigates within" UX for free even under the opt-out. For other
+targets like `CORUN_TARGET_MOVE_NATIVE`, the peer UI's depth isn't
+observable from the framework, so the tool is responsible for its own
+exit gesture (typically Menu, which is tool-routed under the default
+keep-mask) and for calling `shadow_corun_end()` itself.
 
 `CORUN_KEEP_BACK` lives in the high half of `keep_mask` (bit 15) so it doesn't
 collide with any `CORUN_GRP_*` bit.
