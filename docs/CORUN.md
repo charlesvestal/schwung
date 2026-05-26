@@ -7,15 +7,17 @@ or while the Move firmware's native preset/synth editor takes its knobs.
 
 Two co-run targets ship today:
 
-| Target                    | Peer UI                  | Default cessions                                  |
-| ------------------------- | ------------------------ | ------------------------------------------------- |
-| `CORUN_TARGET_CHAIN_EDIT` | Schwung shadow_ui editor | OLED, jog, track buttons (tool keeps the rest)    |
-| `CORUN_TARGET_MOVE_NATIVE`| Move firmware            | OLED, jog, track buttons, knobs (71-78), Shift, touch notes 0-9, master CC 79 |
+| Target                    | Peer UI                                 |
+| ------------------------- | --------------------------------------- |
+| `CORUN_TARGET_CHAIN_EDIT` | Schwung shadow_ui's chain-slot editor   |
+| `CORUN_TARGET_MOVE_NATIVE`| Move firmware's native preset / synth editor |
 
-The default split is encoded as `CORUN_KEEP_DEFAULT = PADS | STEPS | TRANSPORT
-| MENU` — the tool keeps those control-surface groups and cedes everything
-else to the peer. Tools can override by passing an explicit `keep_mask` to
-`shadow_corun_begin()`.
+Both targets share the same default split, encoded as `CORUN_KEEP_DEFAULT =
+PADS | STEPS | TRANSPORT | MENU` — the tool keeps those control-surface
+groups and cedes everything else (OLED, jog, track buttons, knobs 71-78,
+master CC 79, Shift, touch notes 0-9) to the peer. Back is framework-reserved
+as the exit gesture by default; see [Exit gesture](#exit-gesture). Tools can
+override by passing an explicit `keep_mask` to `shadow_corun_begin()`.
 
 ## Exit gesture
 
@@ -74,8 +76,8 @@ shadow_corun_state()
 
 Enum constants are registered as JS globals: `CORUN_TARGET_NONE`,
 `CORUN_TARGET_CHAIN_EDIT`, `CORUN_TARGET_MOVE_NATIVE`, plus
-`CORUN_GRP_OLED` ... `CORUN_GRP_TOUCH` and `CORUN_KEEP_DEFAULT` (matching
-`shadow_constants.h`).
+`CORUN_GRP_OLED` ... `CORUN_GRP_TOUCH`, `CORUN_KEEP_DEFAULT`, and
+`CORUN_KEEP_BACK` (matching `shadow_constants.h`).
 
 ### Capability gate
 
@@ -121,6 +123,18 @@ tool's MIDI is enough to pressure Move's SPI window. That's a tool-side
 characteristic worth documenting in the consumer's manual; pushing the
 coalesce to multi-frame intervals trades knob latency for a problem most
 tools won't hit.
+
+### LED ownership
+
+For symmetry with input routing, Move's LED writes are gated by `keep_mask`
+during `CORUN_TARGET_MOVE_NATIVE`: Move's outbound CC / note-on / note-off
+LED messages for any surface group the tool **keeps** (per `keep_mask`) are
+stripped before reaching hardware, so the tool's own LED rendering on those
+surfaces stays uncontested. Surfaces the tool **cedes** pass through —
+Move's LEDs reach the buttons / pads / knob rings directly. Sysex LED writes
+aren't classified by group and pass through unchanged; the framework leaves
+sysex (and the palette entries it carries for knob-ring + master colors,
+idx 71-79) alone.
 
 ## Single source of truth
 
