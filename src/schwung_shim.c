@@ -6919,11 +6919,27 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                  * (same process as the tool dispatch), so shadow_ui.js handles
                  * routing internally via coRunCedes() — we MUST let publish
                  * through, otherwise the chain editor never receives jog,
-                 * track buttons, etc. */
-                if (overtake_mode == 2 && cable == 0x00 &&
-                    corun_target(shadow_control) == CORUN_TARGET_MOVE_NATIVE &&
-                    corun_event_owner(shadow_control, type, d1) == CORUN_OWNER_PEER) {
-                    continue;
+                 * track buttons, etc. Back-as-framework-exit also lives here:
+                 * when corun_event_owner returns NONE (Back without
+                 * CORUN_KEEP_BACK opt-out), end the session and suppress. */
+                if (overtake_mode == 2 && cable == 0x00 && corun_active(shadow_control)) {
+                    corun_owner_t owner = corun_event_owner(shadow_control, type, d1);
+                    if (owner == CORUN_OWNER_NONE && type == 0xB0 && d1 == CC_BACK && d2 > 0) {
+                        shadow_control->corun.target = CORUN_TARGET_NONE;
+                        shadow_control->corun.id = -1;
+                        shadow_control->corun.keep_mask = 0;
+                        shadow_control->shadow_display_owner = DISPLAY_OWNER_SCHWUNG_UI;
+                        shadow_log("Back: exiting co-run");
+                        continue;
+                    }
+                    /* Move-native only: cede-to-peer events go to Move via the
+                     * pre-ioctl filter, so suppress the duplicate to shadow_ui
+                     * here. For chain-edit the peer is shadow_ui itself — let
+                     * publish through and rely on its coRunCedes() gating. */
+                    if (corun_target(shadow_control) == CORUN_TARGET_MOVE_NATIVE &&
+                        (owner == CORUN_OWNER_PEER || owner == CORUN_OWNER_NONE)) {
+                        continue;
+                    }
                 }
 
                 /* BLOCK channels: hardware_mmap_addr is NOT modified (writing

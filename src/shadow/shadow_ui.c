@@ -3265,6 +3265,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_MENU",          JS_NewInt32(ctx, CORUN_GRP_MENU));
     JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_TOUCH",         JS_NewInt32(ctx, CORUN_GRP_TOUCH));
     JS_SetPropertyStr(ctx, global_obj, "CORUN_KEEP_DEFAULT",      JS_NewInt32(ctx, CORUN_KEEP_DEFAULT));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_KEEP_BACK",         JS_NewInt32(ctx, CORUN_KEEP_BACK));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_open_tool_cmd",
         JS_NewCFunction(ctx, js_shadow_get_open_tool_cmd, "shadow_get_open_tool_cmd", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_selected_slot", JS_NewCFunction(ctx, js_shadow_get_selected_slot, "shadow_get_selected_slot", 0));
