@@ -567,6 +567,11 @@ typedef struct chain_instance {
     int synth_bypassed;
     int midi_fx_bypassed[MAX_MIDI_FX];
     int fx_bypassed[MAX_AUDIO_FX];
+
+    /* 1 = audio FX declared capabilities.requires_continuous_processing in
+     * module.json; shim must never park the slot as fx_idle so stateful FX
+     * (loopers, modulated delays) keep advancing internal time during silence. */
+    int fx_requires_continuous[MAX_AUDIO_FX];
 } chain_instance_t;
 
 /* ============================================================================
@@ -5063,6 +5068,7 @@ static void v2_unload_audio_fx_slot(chain_instance_t *inst, int slot) {
     inst->current_fx_modules[slot][0] = '\0';
     inst->fx_ui_hierarchy[slot][0] = '\0';
     inst->fx_bypassed[slot] = 0;
+    inst->fx_requires_continuous[slot] = 0;
 }
 
 /* V2 load audio FX into a specific slot */
@@ -5160,6 +5166,36 @@ static int v2_load_audio_fx_slot(chain_instance_t *inst, int slot, const char *f
     }
     parse_ui_hierarchy_cache(fx_dir, inst->fx_ui_hierarchy[slot], sizeof(inst->fx_ui_hierarchy[slot]));
     inst->mod_param_refresh_ms_fx[slot] = 0;
+
+    /* Read capabilities.requires_continuous_processing from module.json — stateful
+     * FX (loopers, modulated delays) opt out of the shim's silence-skip so their
+     * internal time advances even when audio I/O has been silent for >1s. */
+    inst->fx_requires_continuous[slot] = 0;
+    {
+        char mj_path[MAX_PATH_LEN];
+        snprintf(mj_path, sizeof(mj_path), "%s/module.json", fx_dir);
+        FILE *mj = fopen(mj_path, "r");
+        if (mj) {
+            fseek(mj, 0, SEEK_END);
+            long mj_size = ftell(mj);
+            fseek(mj, 0, SEEK_SET);
+            if (mj_size > 0 && mj_size < 65536) {
+                char *mj_buf = malloc(mj_size + 1);
+                if (mj_buf) {
+                    size_t nr = fread(mj_buf, 1, mj_size, mj);
+                    mj_buf[nr] = '\0';
+                    int cap = 0;
+                    if (json_get_int_in_section(mj_buf, "capabilities",
+                                                "requires_continuous_processing", &cap) == 0
+                        && cap) {
+                        inst->fx_requires_continuous[slot] = 1;
+                    }
+                    free(mj_buf);
+                }
+            }
+            fclose(mj);
+        }
+    }
 
     /* Update fx_count to include this slot */
     if (slot >= inst->fx_count) {
@@ -8944,4 +8980,17 @@ void chain_process_fx(void *instance, int16_t *buf, int frames) {
             memcpy(buf, fx_dry, frames * 2 * sizeof(int16_t));
         }
     }
+}
+
+/* Exported: 1 if any audio FX slot opted out of the shim's silence-skip via
+ * capabilities.requires_continuous_processing in its module.json. Read by the
+ * shim per SPI frame to keep stateful FX (loopers, modulated delays) running
+ * during silence. */
+int chain_fx_requires_continuous(void *instance) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    if (!inst) return 0;
+    for (int i = 0; i < inst->fx_count; i++) {
+        if (inst->fx_requires_continuous[i]) return 1;
+    }
+    return 0;
 }

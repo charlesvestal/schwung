@@ -1708,7 +1708,11 @@ static void shadow_inprocess_render_to_buffer(void) {
                     memcpy(shadow_slot_fx_deferred[s], fx_buf, sizeof(fx_buf));
                     shadow_slot_fx_deferred_valid[s] = 1;
 
-                    /* Track FX output silence for phase 2 idle */
+                    /* Track FX output silence for phase 2 idle.
+                     * Stateful FX (loopers, modulated delays) opt out via
+                     * capabilities.requires_continuous_processing — without
+                     * this, a 6 s looper's write_pos stops advancing during
+                     * silence and the loop "only returns when there's signal". */
                     int fx_silent = 1;
                     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
                         if (fx_buf[i] > DSP_SILENCE_LEVEL || fx_buf[i] < -DSP_SILENCE_LEVEL) {
@@ -1716,7 +1720,12 @@ static void shadow_inprocess_render_to_buffer(void) {
                             break;
                         }
                     }
-                    if (fx_silent) {
+                    int fx_keep_alive = (shadow_chain_fx_requires_continuous &&
+                                         shadow_chain_fx_requires_continuous(shadow_chain_slots[s].instance));
+                    if (fx_keep_alive) {
+                        shadow_slot_fx_silence_frames[s] = 0;
+                        shadow_slot_fx_idle[s] = 0;
+                    } else if (fx_silent) {
                         shadow_slot_fx_silence_frames[s]++;
                         if (shadow_slot_fx_silence_frames[s] >= DSP_IDLE_THRESHOLD)
                             shadow_slot_fx_idle[s] = 1;

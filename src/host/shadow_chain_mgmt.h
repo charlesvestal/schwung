@@ -101,6 +101,10 @@ extern const plugin_api_v2_t *shadow_plugin_v2;
 extern void (*shadow_chain_set_inject_audio)(void *instance, int16_t *buf, int frames);
 extern void (*shadow_chain_set_external_fx_mode)(void *instance, int mode);
 extern void (*shadow_chain_process_fx)(void *instance, int16_t *buf, int frames);
+/* Optional: returns 1 if any audio FX in this chain instance opted out of
+ * silence-skip via capabilities.requires_continuous_processing. NULL when the
+ * loaded chain DSP is older than v0.3.12 — caller must null-check. */
+extern int (*shadow_chain_fx_requires_continuous)(void *instance);
 extern host_api_v1_t shadow_host_api;
 extern int shadow_inprocess_ready;
 
