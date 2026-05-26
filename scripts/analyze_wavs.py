@@ -22,7 +22,7 @@ def ffprobe_stream(path):
         "default=noprint_wrappers=1",
         path,
     ]
-    out = subprocess.check_output(cmd, text=True)
+    out = subprocess.check_output(cmd, text=True, shell=False)
     info = {}
     for line in out.strip().splitlines():
         if "=" in line:
@@ -46,7 +46,7 @@ def decode_stereo_f32(path):
         "2",
         "-",
     ]
-    raw = subprocess.check_output(cmd)
+    raw = subprocess.check_output(cmd, shell=False)
     sample_count = len(raw) // 4
     if sample_count == 0:
         return ()
