@@ -5940,6 +5940,23 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
     }
 
     if (shadow_display_mode && shadow_control) {
+        /* Move-native co-run knob coalescing: Move firmware spends ~900µs per
+         * CC 71-78 it receives (synth-param write + OLED redraw). Multiple
+         * detents in one audio frame stack their cost and overrun the SPI
+         * frame budget, which manifests as sequencer stutter while the user
+         * spins a knob. Sum incoming detents per knob within this frame and
+         * emit ONE consolidated CC at the end of the filter loop instead of
+         * letting every detent through individually. Per-frame collapse is
+         * the framework's contract; tools generating unusually heavy
+         * concurrent MIDI traffic (simultaneous pad fire + step LEDs +
+         * automation lanes during transport, etc.) may still see residual
+         * stutter on very fast knob spins and should document that as a
+         * tool-side characteristic. See docs/CORUN.md. */
+        int16_t corun_knob_delta[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+        int corun_knob_coalesce =
+            (corun_target(shadow_control) == CORUN_TARGET_MOVE_NATIVE) &&
+            !(corun_keep_mask_eff(shadow_control->corun.keep_mask) & CORUN_GRP_KNOBS);
+
         /* Filter MIDI_IN: zero out jog/back/knobs */
         for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
             uint8_t cin = hw_midi[j] & 0x0F;
@@ -5947,6 +5964,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             uint8_t status = hw_midi[j + 1];
             uint8_t type = status & 0xF0;
             uint8_t d1 = hw_midi[j + 2];
+            uint8_t d2 = hw_midi[j + 3];
 
             int filter = 0;
 
@@ -5985,6 +6003,17 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     if (corun_target(shadow_control) == CORUN_TARGET_MOVE_NATIVE &&
                         corun_event_owner(shadow_control, type, d1) == CORUN_OWNER_PEER) {
                         filter = 0;
+                        /* CC 71-78 detents: accumulate and emit once per frame
+                         * (see corun_knob_delta declaration above). Suppress
+                         * the individual event by re-asserting filter=1; the
+                         * post-loop pass will inject one consolidated CC. */
+                        if (corun_knob_coalesce && type == 0xB0 && d1 >= 71 && d1 <= 78) {
+                            int16_t delta = 0;
+                            if (d2 >= 1 && d2 <= 63) delta = d2;
+                            else if (d2 >= 65 && d2 <= 127) delta = (int16_t)d2 - 128;
+                            corun_knob_delta[d1 - 71] += delta;
+                            filter = 1;
+                        }
                     }
                 } else if (overtake_mode == 1) {
                     filter = 1;
@@ -6054,6 +6083,29 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 sh_midi[j + 1] = hw_midi[j + 1];
                 sh_midi[j + 2] = hw_midi[j + 2];
                 sh_midi[j + 3] = hw_midi[j + 3];
+            }
+        }
+
+        /* Move-native knob coalesce: emit one consolidated CC per knob whose
+         * detents we suppressed above. Find empty (zeroed) slots in sh_midi
+         * and inject. Clamp deltas into the one-byte signed encoding (±63);
+         * any leftover spills to the next frame's accumulator naturally on
+         * the next inbound detent. */
+        for (int k = 0; k < 8; k++) {
+            if (corun_knob_delta[k] == 0) continue;
+            int16_t delta = corun_knob_delta[k];
+            if (delta > 63) delta = 63;
+            else if (delta < -63) delta = -63;
+            uint8_t d2 = (delta >= 0) ? (uint8_t)delta : (uint8_t)(delta + 128);
+            for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+                if (sh_midi[j] == 0 && sh_midi[j + 1] == 0 &&
+                    sh_midi[j + 2] == 0 && sh_midi[j + 3] == 0) {
+                    sh_midi[j]     = 0x0B;     /* cable 0, CIN 0x0B = CC */
+                    sh_midi[j + 1] = 0xB0;     /* status: CC, channel 0 */
+                    sh_midi[j + 2] = (uint8_t)(71 + k);
+                    sh_midi[j + 3] = d2;
+                    break;
+                }
             }
         }
     } else {
