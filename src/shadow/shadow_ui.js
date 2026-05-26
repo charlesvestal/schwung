@@ -8427,6 +8427,10 @@ function changeHierPreset(delta) {
         loadHierarchyLevel();
     }
     invalidateKnobContextCache();
+    /* Plugin set_param("preset", N) may have overwritten knob-mapped values
+     * internally (e.g. ambiotica mode change rewrites all 8 knobs). The
+     * cached values are now stale, so force a re-read on next knob touch. */
+    invalidateKnobValueCache();
 }
 
 /* Exit hierarchy editor */
@@ -10701,6 +10705,10 @@ function drawHierarchyEditor() {
                 loadHierarchyLevel();
             }
             invalidateKnobContextCache();
+            /* Async preset load just landed — plugin may have overwritten
+             * knob-mapped values during the deferred load. Cached values
+             * predate the load, so drop them and re-read on next touch. */
+            invalidateKnobValueCache();
         }
         hierEditorPrevLoading = loadingNow;
     }
@@ -12239,6 +12247,10 @@ function handleSelect() {
                     if (newHierarchy) hierEditorHierarchy = newHierarchy;
                     loadHierarchyLevel();
                     invalidateKnobContextCache();
+                    /* Dynamic-item commit (e.g. select a mode/soundfont) may
+                     * have rewritten knob-mapped param values inside the
+                     * plugin. Drop stale cached values so next touch re-reads. */
+                    invalidateKnobValueCache();
                     break;
                 }
                 if (selectedParam === SWAP_MODULE_ACTION) {
