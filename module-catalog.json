@@ -924,6 +924,17 @@
       "default_branch": "master",
       "asset_name": "dronage-tool-module.tar.gz",
       "min_host_version": "0.9.8"
+    },
+    {
+      "id": "juno_control",
+      "name": "Alpha Juno 2 Ctrl",
+      "description": "SysEx patch editor and controller for Roland Alpha Juno 1/2 and MKS-50",
+      "author": "madeinspace",
+      "component_type": "overtake",
+      "github_repo": "madeinspace/move-juno-controller",
+      "default_branch": "main",
+      "asset_name": "juno_control-module.tar.gz",
+      "min_host_version": "0.3.6"
     }
   ]
 }
