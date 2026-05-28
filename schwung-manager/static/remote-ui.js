@@ -257,12 +257,70 @@
         if (slot === activeSlot) renderSlot();
     }
 
+    /** Preserve the open submenu (navStack) across a hierarchy re-broadcast when
+     * the structure is unchanged. The poll loop re-sends ui_hierarchy whenever
+     * its JSON changes — and that JSON embeds live param values, so an edit
+     * (from the web, from Move, or from an LFO) makes it differ and triggers a
+     * rebroadcast every couple seconds. Resetting navStack unconditionally
+     * collapses the user's open submenu (and can render blank when a stale level
+     * is referenced). Keep the existing navStack if every level it points to
+     * still exists in the new hierarchy; otherwise fall back to root. */
+    function reconcileNavStack(c, newData) {
+        var levels = newData && newData.levels;
+        if (!levels || !Array.isArray(c.navStack) || c.navStack.length === 0) {
+            return ["root"];
+        }
+        for (var i = 0; i < c.navStack.length; i++) {
+            if (!levels[c.navStack[i]]) return ["root"];
+        }
+        return c.navStack;
+    }
+
+    /** Build a fingerprint of the navigation STRUCTURE only — level names plus
+     * each level's param/child identifiers, knob mappings, and list/select
+     * param keys. Excludes labels and any embedded values. Used to decide
+     * whether a hierarchy re-broadcast actually changed the structure or is
+     * just value churn (some modules bake live values into ui_hierarchy, which
+     * makes the poll loop re-send it every couple seconds). When the structure
+     * is unchanged we skip the full re-render — live values still arrive via the
+     * param-notify path (updateParamValues), so nothing is lost but the flicker. */
+    function hierarchyStructureKey(data) {
+        if (!data || !data.levels) return "";
+        var levelNames = Object.keys(data.levels).sort();
+        var parts = [];
+        for (var i = 0; i < levelNames.length; i++) {
+            var ln = levelNames[i];
+            var lvl = data.levels[ln] || {};
+            var ids = [];
+            if (Array.isArray(lvl.params)) {
+                for (var j = 0; j < lvl.params.length; j++) {
+                    var p = lvl.params[j];
+                    if (typeof p === "string") ids.push(p);
+                    else if (p && p.key) ids.push("k:" + p.key);
+                    else if (p && p.level) ids.push("L:" + p.level);
+                }
+            }
+            if (Array.isArray(lvl.knobs)) ids.push("kb:" + lvl.knobs.join(","));
+            var selFields = ["list_param", "count_param", "items_param", "select_param"];
+            for (var s = 0; s < selFields.length; s++) {
+                if (lvl[selFields[s]]) ids.push(selFields[s] + ":" + lvl[selFields[s]]);
+            }
+            parts.push(ln + "{" + ids.join("|") + "}");
+        }
+        return parts.join(";");
+    }
+
     function handleHierarchy(slot, msg) {
         var comp = msg.component || "synth";
         var c = slots[slot].components[comp];
         if (!c) return;
+        var sameStructure = c.hierarchy &&
+            hierarchyStructureKey(c.hierarchy) === hierarchyStructureKey(msg.data);
+        c.navStack = reconcileNavStack(c, msg.data);
         c.hierarchy = msg.data;
-        c.navStack = ["root"];
+        /* Value-only churn (structure unchanged): skip the re-render to avoid
+         * periodic flicker; values update via the notify path. */
+        if (sameStructure) return;
         if (slot === activeSlot) renderSlot();
     }
 
@@ -325,8 +383,13 @@
     function handleMasterFxHierarchy(comp, msg) {
         var c = masterFx.components[comp];
         if (!c) return;
+        var sameStructure = c.hierarchy &&
+            hierarchyStructureKey(c.hierarchy) === hierarchyStructureKey(msg.data);
+        c.navStack = reconcileNavStack(c, msg.data);
         c.hierarchy = msg.data;
-        c.navStack = ["root"];
+        /* Value-only churn (structure unchanged): skip the re-render to avoid
+         * periodic flicker; values update via the notify path. */
+        if (sameStructure) return;
         if (activeSlot === "master") renderSlot();
     }
 
