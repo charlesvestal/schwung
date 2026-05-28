@@ -6318,10 +6318,13 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                             src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
                         }
 
-                        /* Shift + Track (without Volume) while shadow UI is displayed = dismiss shadow UI
-                         * and let the Track CC pass through to Move for native track settings */
+                        /* Shift + Track (without Volume / Mute) while shadow UI is displayed = dismiss shadow UI
+                         * and let the Track CC pass through to Move for native track settings.
+                         * Excluded: Shift+Mute+Track is the solo combo handled above — must not
+                         * also dismiss shadow UI (leaks the Mute release to Move firmware and
+                         * leaves Mute "latched" on the hardware). */
                         if (shadow_display_mode && shadow_shift_held && !shadow_volume_knob_touched &&
-                            shadow_control) {
+                            !shadow_mute_held && shadow_control) {
                             shadow_display_mode = 0;
                             shadow_control->display_mode = 0;
                             shadow_log("Shift+Track: dismissing shadow UI");
