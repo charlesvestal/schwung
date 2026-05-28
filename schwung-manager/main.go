@@ -2553,16 +2553,44 @@ func (app *App) handleSystemUpgrade(w http.ResponseWriter, r *http.Request) {
 		app.setUpgradeStatus("Extracting update...")
 
 		// Extract tarball. Use -o to ignore tarball ownership.
-		extractCmd := exec.Command("tar", "-xzof", tarPath, "-C", app.basePath, "--strip-components=1")
+		// EXCLUDE bin/schwung-heal: overwriting it here (as ableton) strips its
+		// setuid-root bit, after which it can no longer reboot, mirror the new
+		// shim into /usr/lib, or install its own replacement. We preserve the
+		// live setuid heal and stage the new one separately (below) for it to
+		// install with privilege.
+		extractCmd := exec.Command("tar", "-xzof", tarPath, "-C", app.basePath,
+			"--strip-components=1", "--exclude=*/bin/schwung-heal")
 		if output, err := extractCmd.CombinedOutput(); err != nil {
 			app.setUpgradeStatus("Extract failed")
 			app.logger.Error("extract failed", "err", err, "output", string(output))
 			return
 		}
 
+		// Stage the new schwung-heal as bin/schwung-heal.new. The live (still
+		// setuid-root) heal installs it as root-owned 04755 on its next run
+		// (hardcoded .new path in schwung-heal.c), so the helper self-updates
+		// without ever losing its privilege.
+		healStage := filepath.Join(app.basePath, "upgrade-heal")
+		os.RemoveAll(healStage)
+		if err := os.MkdirAll(healStage, 0755); err == nil {
+			stageCmd := exec.Command("tar", "-xzof", tarPath, "-C", healStage,
+				"--strip-components=2", "schwung/bin/schwung-heal")
+			if output, err := stageCmd.CombinedOutput(); err != nil {
+				app.logger.Warn("upgrade: staging new heal failed (keeping existing heal)",
+					"err", err, "output", string(output))
+			} else {
+				if err := os.Rename(filepath.Join(healStage, "schwung-heal"),
+					filepath.Join(app.basePath, "bin", "schwung-heal.new")); err != nil {
+					app.logger.Warn("upgrade: could not stage heal.new", "err", err)
+				}
+			}
+			os.RemoveAll(healStage)
+		}
+
 		app.setUpgradeStatus("Configuring...")
 
-		// Restore setuid bit on shim (required for LD_PRELOAD under AT_SECURE).
+		// Belt-and-suspenders: set the setuid bit on the /data shim. The live
+		// heal re-mirrors it to /usr/lib as root-owned 04755 below regardless.
 		shimPath := filepath.Join(app.basePath, "schwung-shim.so")
 		exec.Command("chmod", "u+s", shimPath).Run()
 
@@ -2600,17 +2628,50 @@ func (app *App) handleSystemUpgrade(w http.ResponseWriter, r *http.Request) {
 		renderText(frame[:], startX, 28, msg)
 		_ = os.WriteFile(dispSHM, frame[:], 0644)
 
-		// schwung-manager runs as ableton; reboot needs root. schwung-heal
-		// is setuid-root and supports --reboot — the canonical privileged
-		// helper. Background it so the HTTP goroutine isn't held by the
-		// shutdown.
+		// schwung-manager runs as ableton; reboot needs root. schwung-heal is
+		// setuid-root and supports --reboot. Call it DIRECTLY (synchronously),
+		// not as a backgrounded `sh -c "(... ) &"`: the orphaned subshell form
+		// proved unreliable in practice (it didn't always reach reboot()), and
+		// this goroutine already slept 2s after the HTTP response was sent, so
+		// nothing needs the manager to stay responsive. Capture heal's output
+		// so a non-reboot (e.g. a mirror error that sets heal's rc!=0, which
+		// makes heal skip its own reboot) is diagnosable instead of a silent
+		// stuck splash.
 		heal := filepath.Join(app.basePath, "bin", "schwung-heal")
-		if _, err := os.Stat(heal); err == nil {
-			exec.Command("sh", "-c", "(sleep 1; "+heal+" --reboot) &").Run()
+		healNew := heal + ".new"
+		fi, statErr := os.Stat(heal)
+		if statErr == nil && fi.Mode()&os.ModeSetuid != 0 {
+			// Privileged live heal: installs the staged new heal as root-owned
+			// 04755, mirrors the new shim to /usr/lib, then reboots.
+			rebootCmd := exec.Command(heal, "--reboot")
+			if lf, e := os.Create(filepath.Join(app.basePath, "heal-reboot.log")); e == nil {
+				rebootCmd.Stdout, rebootCmd.Stderr = lf, lf
+			}
+			_ = rebootCmd.Run()
+			// Reaching here means heal returned without rebooting.
+			app.logger.Error("upgrade: heal --reboot returned without rebooting — see heal-reboot.log")
+			app.setUpgradeStatus("Update applied — reboot did not fire; please restart the device")
 		} else {
-			app.logger.Error("upgrade: schwung-heal missing, cannot reboot",
-				"path", heal)
-			app.setUpgradeStatus("Reboot helper missing — please reboot manually")
+			// No privileged heal — it's missing, or present but not setuid-root
+			// (e.g. a device that never ran install.sh, or upgraded before this
+			// fix). schwung-manager runs as ableton and cannot create a
+			// setuid-root file, reboot, or write /usr/lib. Put the new heal file
+			// in place (non-setuid) so it at least exists for install.sh to
+			// bless, then tell the user how to finish.
+			if _, nerr := os.Stat(healNew); nerr == nil {
+				if err := os.Rename(healNew, heal); err != nil {
+					app.logger.Warn("upgrade: could not place new heal", "err", err)
+				}
+			}
+			if statErr != nil {
+				app.logger.Error("upgrade: schwung-heal not installed — privileged steps skipped",
+					"path", heal)
+				app.setUpgradeStatus("Update staged — schwung-heal missing; run install.sh, then reboot")
+			} else {
+				app.logger.Error("upgrade: schwung-heal lacks setuid — privileged steps skipped",
+					"path", heal, "mode", fi.Mode().String())
+				app.setUpgradeStatus("Update staged — run install.sh, then reboot (heal not privileged)")
+			}
 		}
 	}()
 
