@@ -125,13 +125,13 @@ type AssetFolderStatus struct {
 
 // InstalledModule is read from a module.json on disk.
 type InstalledModule struct {
-	ID            string         `json:"id"`
-	Name          string         `json:"name"`
-	Version       string         `json:"version"`
-	ComponentType string         `json:"component_type"`
-	Description   string         `json:"description"`
-	Author        string         `json:"author"`
-	Assets        []ModuleAssets `json:"-"` // custom unmarshal: single object or array
+	ID            string          `json:"id"`
+	Name          string          `json:"name"`
+	Version       string          `json:"version"`
+	ComponentType string          `json:"component_type"`
+	Description   string          `json:"description"`
+	Author        string          `json:"author"`
+	Assets        []ModuleAssets  `json:"-"` // custom unmarshal: single object or array
 	RawAssets     json.RawMessage `json:"assets,omitempty"`
 }
 
@@ -773,12 +773,12 @@ func loadTemplates() (templateMap, error) {
 // ---------------------------------------------------------------------------
 
 type downloadJob struct {
-	ID       string `json:"job_id"`
-	State    string `json:"state"`            // "downloading", "done", "error"
-	Message  string `json:"message,omitempty"` // progress detail
-	Title    string `json:"title,omitempty"`   // resolved title
-	Path     string `json:"path,omitempty"`
-	Error    string `json:"error,omitempty"`
+	ID      string `json:"job_id"`
+	State   string `json:"state"`             // "downloading", "done", "error"
+	Message string `json:"message,omitempty"` // progress detail
+	Title   string `json:"title,omitempty"`   // resolved title
+	Path    string `json:"path,omitempty"`
+	Error   string `json:"error,omitempty"`
 }
 
 type App struct {
@@ -787,9 +787,9 @@ type App struct {
 	catalogSvc    *CatalogService
 	basePath      string // e.g. /data/UserData/schwung
 	logger        *slog.Logger
-	shm           *ShmConfig  // shared memory for live config sync (nil if not on device)
-	shmParams     *ShmParams  // shared memory for param get/set (nil if not on device)
-	upgradeStatus string      // current upgrade step (empty = not upgrading)
+	shm           *ShmConfig // shared memory for live config sync (nil if not on device)
+	shmParams     *ShmParams // shared memory for param get/set (nil if not on device)
+	upgradeStatus string     // current upgrade step (empty = not upgrading)
 	downloadJobs  map[string]*downloadJob
 	downloadMu    sync.Mutex
 }
@@ -981,9 +981,9 @@ func (app *App) handleModuleDetail(w http.ResponseWriter, r *http.Request) {
 
 	// Build asset groups from installed module.json assets field.
 	type AssetGroup struct {
-		Assets        ModuleAssets
-		AssetsDir     string
-		FileStatuses  []AssetFileStatus
+		Assets         ModuleAssets
+		AssetsDir      string
+		FileStatuses   []AssetFileStatus
 		FolderStatuses []AssetFolderStatus
 	}
 	var assetGroups []AssetGroup
@@ -2069,11 +2069,11 @@ var settingsToShadowConfig = map[string]string{
 
 // settingsToFeatures maps schema keys to features.json keys.
 var settingsToFeatures = map[string]string{
-	"display_mirror":    "display_mirror_enabled",
-	"set_pages_enabled": "set_pages_enabled",
+	"display_mirror":     "display_mirror_enabled",
+	"set_pages_enabled":  "set_pages_enabled",
 	"link_audio_routing": "link_audio_enabled",
-	"skipback_shortcut": "skipback_require_volume",
-	"skipback_seconds":  "skipback_seconds",
+	"skipback_shortcut":  "skipback_require_volume",
+	"skipback_seconds":   "skipback_seconds",
 }
 
 func (app *App) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -2406,17 +2406,17 @@ func (app *App) handleSystem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := map[string]any{
-		"Title":          "System",
-		"Version":        version,
-		"LatestVersion":  latestVersion,
-		"HostRepo":       hostRepo,
+		"Title":           "System",
+		"Version":         version,
+		"LatestVersion":   latestVersion,
+		"HostRepo":        hostRepo,
 		"UpdateAvailable": updateAvailable,
-		"DiskTotal":      int64(diskTotal),
-		"DiskFree":       int64(diskFree),
-		"DiskUsed":       int64(diskTotal - diskFree),
-		"DiskPercent":    0,
-		"Flash":          r.URL.Query().Get("flash"),
-		"Active":         "system",
+		"DiskTotal":       int64(diskTotal),
+		"DiskFree":        int64(diskFree),
+		"DiskUsed":        int64(diskTotal - diskFree),
+		"DiskPercent":     0,
+		"Flash":           r.URL.Query().Get("flash"),
+		"Active":          "system",
 	}
 	if diskTotal > 0 {
 		data["DiskPercent"] = int((diskTotal - diskFree) * 100 / diskTotal)
@@ -2643,14 +2643,32 @@ func (app *App) handleSystemUpgrade(w http.ResponseWriter, r *http.Request) {
 		if statErr == nil && fi.Mode()&os.ModeSetuid != 0 {
 			// Privileged live heal: installs the staged new heal as root-owned
 			// 04755, mirrors the new shim to /usr/lib, then reboots.
+			//
+			// CRITICAL: launch heal in a fully DETACHED new session, not as a
+			// plain child of this Go daemon. Verified on-device: `heal --reboot`
+			// reboots reliably from a clean shell (ssh/nohup) but HANGS when run
+			// as a direct child of schwung-manager — heal inherits the daemon's
+			// session, signal state, and file descriptors and stalls before
+			// reaching reboot(). Setsid + a clean stdio set (/dev/null in, log
+			// file out) reproduces the working shell context. We Start() and do
+			// not Wait(): heal reboots the box, so there is nothing to wait for,
+			// and not waiting keeps the daemon out of heal's process group.
 			rebootCmd := exec.Command(heal, "--reboot")
+			rebootCmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+			if devnull, e := os.Open(os.DevNull); e == nil {
+				rebootCmd.Stdin = devnull
+			}
 			if lf, e := os.Create(filepath.Join(app.basePath, "heal-reboot.log")); e == nil {
 				rebootCmd.Stdout, rebootCmd.Stderr = lf, lf
 			}
-			_ = rebootCmd.Run()
-			// Reaching here means heal returned without rebooting.
-			app.logger.Error("upgrade: heal --reboot returned without rebooting — see heal-reboot.log")
-			app.setUpgradeStatus("Update applied — reboot did not fire; please restart the device")
+			if err := rebootCmd.Start(); err != nil {
+				app.logger.Error("upgrade: failed to launch heal --reboot", "err", err)
+				app.setUpgradeStatus("Update applied — reboot helper failed to launch; please restart the device")
+			} else {
+				_ = rebootCmd.Process.Release() // fully detach; don't reap/wait
+				app.logger.Info("upgrade: heal --reboot launched (detached); device rebooting")
+				app.setUpgradeStatus("Update applied — rebooting…")
+			}
 		} else {
 			// No privileged heal — it's missing, or present but not setuid-root
 			// (e.g. a device that never ran install.sh, or upgraded before this
@@ -3201,7 +3219,6 @@ func (app *App) handleModuleWebUIAsset(w http.ResponseWriter, r *http.Request) {
 
 	http.ServeFile(w, r, fullPath)
 }
-
 
 // ---------------------------------------------------------------------------
 // Main
