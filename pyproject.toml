@@ -1,3 +1,5 @@
 [tool.pyright]
-extraPaths = ["tests/print_stems"]
 include = ["tests/print_stems"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/print_stems"]
