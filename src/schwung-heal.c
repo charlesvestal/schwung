@@ -217,6 +217,17 @@ int main(int argc, char **argv) {
     if (do_reboot && rc == 0) {
         sync();
         fprintf(stderr, "schwung-heal: rebooting\n");
+        /* Reboot via the sysvinit `reboot` COMMAND (orderly shutdown through
+         * init) — this is what install.sh uses and it is reliable on the Move.
+         * The raw reboot(RB_AUTOBOOT) syscall (== reboot -f, immediate/forced)
+         * was flaky here: ~1/3 of the time it silently failed to reboot.
+         * Absolute path first (caller's PATH may not include /sbin), then a
+         * PATH search, then fall back to the syscall only if both execs fail. */
+        fflush(NULL);
+        execl("/sbin/reboot", "reboot", (char *)NULL);
+        execlp("reboot", "reboot", (char *)NULL);
+        fprintf(stderr, "schwung-heal: exec reboot failed (%s); using syscall\n",
+                strerror(errno));
         if (reboot(RB_AUTOBOOT) < 0) {
             fprintf(stderr, "schwung-heal: reboot: %s\n", strerror(errno));
             return 3;
