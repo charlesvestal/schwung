@@ -2,6 +2,12 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
+> **RESUME POINT (pinned 2026-05-29):** Phases 0/1/2 complete; Phase 3 Tasks 3.1–3.3 complete and hardware-verified. **Next: Task 3.4** (single-pass capture state machine). All work committed on branch `print-stems` (latest `58435190`). Working tree's only uncommitted items (`.serena/project.yml`, `docs/plans/2026-05-27-chordism-*.md`) are pre-existing and unrelated.
+> - **Done:** SHM ring + capture writer (both non-LA and LA-rebuild paths) + JS API `host_print_capture_read`/`_write_index`; 25 Python tests; tool module loads with grid parse (`abl_io.mjs:parseClipGrid`) + pad-firing primitives (`fireColumn`/`stopAllTracks`/inject queue with deferred note-offs).
+> - **Open spikes:** 0.4 (set-browser refresh) and 0.5 (sampleUri subdirs) — needed before Phase 6 output assembly.
+> - **Deviation:** the Song.abl *parser* was pulled forward from Phase 6 into `abl_io.mjs`; Phase 6 Task 6.1 now *adds* `buildStemsSongAbl`+`sampleUri` to that file instead of porting from scratch.
+> - **Resume detail:** Task 3.4 should anchor capture-window lengths to `host_print_capture_write_index()` block counts (344/s), use wall-clock `barDurationMs` only for fire timing (~1 beat before a boundary), and repurpose the current jog-click `fireColumn(0)` manual test into the orchestrator. See memory `project_print_stems_status`.
+
 **Goal:** Bounce every populated clip in the active Move set to its own per-track stereo WAV, packaged as a sibling Move audio-clip set, so Schwung-driven arrangements can move into Move audio sets or Live without DAW glue.
 
 **Architecture:** Parallel per-track capture from pre-MFX buses (`shadow_slot_fx_deferred[t]` for Schwung slots — post-slot-FX, gated by valid flag, per Task 0.1; per-track Link Audio for Move-native tracks). One pass per column with adaptive inter-pass tail-clear. Output is a sibling `<setname> Stems` set whose audio clips reference flat WAV files in `UserLibrary/Recordings/`.
