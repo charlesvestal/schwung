@@ -2,6 +2,7 @@
 
 Mirrors src/modules/tools/song-mode/ui.js:parseSong for clip-grid extraction.
 """
+import urllib.parse
 
 NUM_TRACKS = 4
 NUM_COLS = 8
@@ -74,3 +75,92 @@ def parse_clip_grid(song):
         "time_signature": song.get("timeSignature") or {"upper": 4, "lower": 4},
         "cells": cells,
     }
+
+
+def _sample_uri(filename):
+    """Encode a bare WAV filename into a user-library Recordings URI."""
+    return "ableton:/user-library/Recordings/" + urllib.parse.quote(filename, safe="")
+
+
+def build_stems_song_abl(source_song, grid, set_name, stem_filename_for):
+    """Build a sibling audio-clip Song.abl from the parsed source.
+
+    See the print-stems plan / docstring in the test file for the field spec.
+    """
+    src_tracks = source_song.get("tracks") or []
+    tempo = source_song.get("tempo")
+
+    tracks = []
+    for t in range(NUM_TRACKS):
+        src_track = src_tracks[t] if t < len(src_tracks) else None
+        name = (src_track or {}).get("name", "") if src_track else ""
+        color = (src_track or {}).get("color", 1) if src_track else 1
+
+        clip_slots = []
+        for c in range(NUM_COLS):
+            cell = grid["cells"][t][c]
+            if not cell["exists"]:
+                clip_slots.append({"hasStop": True, "clip": None})
+                continue
+            beats = cell["beats"]
+            clip = {
+                "name": "",
+                "color": cell["color"],
+                "isEnabled": True,
+                "timeSignature": {"upper": 4, "lower": 4},
+                "region": {
+                    "start": 0.0,
+                    "end": beats,
+                    "loop": {
+                        "start": 0.0,
+                        "end": beats,
+                        "isEnabled": cell["loop_enabled"],
+                    },
+                },
+                "stepEditorScrollPosition": 0.0,
+                "sampleUri": _sample_uri(stem_filename_for(t, c)),
+                "warping": {
+                    "markers": [],
+                    "tempoAfterLastMarker": tempo,
+                },
+                "gain": 0.0,
+                "transpose": 0,
+                "detune": 0.0,
+                "envelopes": [],
+            }
+            clip_slots.append({"hasStop": True, "clip": clip})
+
+        tracks.append({
+            "kind": "audio",
+            "name": name,
+            "color": color,
+            "isSelected": False,
+            "clipSlots": clip_slots,
+            "devices": [],
+            "mixer": {
+                "pan": 0.0,
+                "solo-cue": False,
+                "speakerOn": True,
+                "volume": 0.0,
+                "sends": [],
+            },
+        })
+
+    out = {}
+    for k in (
+        "$schema",
+        "stepEditorResolution",
+        "tempo",
+        "globalGrooveAmount",
+        "timeSignature",
+        "rootNote",
+        "scale",
+        "melodicLayout",
+    ):
+        if k in source_song:
+            out[k] = source_song[k]
+    out["tracks"] = tracks
+    for k in ("returnTracks", "masterTrack", "scenes", "grooves", "metadata"):
+        if k in source_song:
+            out[k] = source_song[k]
+    return out

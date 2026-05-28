@@ -1,8 +1,9 @@
 """Tests for tests/print_stems/abl_io.py — Song.abl parser."""
 import json
 import os
+import urllib.parse
 
-from abl_io import parse_clip_grid
+from abl_io import build_stems_song_abl, parse_clip_grid
 
 FIXTURE_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fixtures"
@@ -157,3 +158,138 @@ def test_clip_slots_clamped_to_eight():
     for c in range(8):
         assert row[c]["exists"] is True
         assert row[c]["beats"] == float(c + 1)
+
+
+# ---------------------------------------------------------------------------
+# build_stems_song_abl
+# ---------------------------------------------------------------------------
+
+
+def _set26_stem_filename(t, c):
+    """Set 26 fixture filename convention: 'Set 26 Stem T<t+1> <A/B/C...>.wav'."""
+    return f"Set 26 Stem T{t + 1} {chr(ord('A') + c)}.wav"
+
+
+def test_build_stems_matches_fixture():
+    """build_stems_song_abl(set26-source, grid, ...) == set26-stems-expected."""
+    src = json.load(open(os.path.join(FIXTURE_DIR, "set26-source.abl")))
+    expected = json.load(open(os.path.join(FIXTURE_DIR, "set26-stems-expected.abl")))
+    grid = parse_clip_grid(src)
+    out = build_stems_song_abl(src, grid, "Set 26", _set26_stem_filename)
+
+    # Top-level fields copied verbatim
+    for k in (
+        "$schema",
+        "tempo",
+        "timeSignature",
+        "stepEditorResolution",
+        "globalGrooveAmount",
+        "rootNote",
+        "scale",
+        "melodicLayout",
+        "returnTracks",
+        "masterTrack",
+        "scenes",
+        "grooves",
+        "metadata",
+    ):
+        assert out.get(k) == expected.get(k), f"top-level field {k} mismatch"
+
+    # Track list
+    assert len(out["tracks"]) == 4
+    for t in range(4):
+        out_track = out["tracks"][t]
+        exp_track = expected["tracks"][t]
+        assert out_track["kind"] == "audio"
+        assert out_track["name"] == exp_track["name"]
+        assert out_track["color"] == exp_track["color"]
+        assert out_track["isSelected"] == exp_track["isSelected"]
+        assert out_track["devices"] == exp_track["devices"]
+        assert out_track["mixer"] == exp_track["mixer"]
+        assert len(out_track["clipSlots"]) == 8
+        for c in range(8):
+            assert out_track["clipSlots"][c] == exp_track["clipSlots"][c], (
+                f"clipSlots[{t}][{c}] mismatch"
+            )
+
+
+def test_build_emits_four_audio_tracks_for_short_source():
+    """Source with 2 audio tracks → 4 audio tracks out; last 2 all-empty clipSlots."""
+    src = {
+        "$schema": "x",
+        "tempo": 120.0,
+        "timeSignature": {"upper": 4, "lower": 4},
+        "tracks": [
+            {
+                "kind": "audio",
+                "name": "",
+                "color": 1,
+                "clipSlots": [
+                    {"clip": {"color": 1, "region": {"start": 0, "end": 4}}}
+                ],
+            },
+            {
+                "kind": "audio",
+                "name": "",
+                "color": 2,
+                "clipSlots": [],
+            },
+        ],
+    }
+    grid = parse_clip_grid(src)
+    out = build_stems_song_abl(src, grid, "Test Set", lambda t, c: f"x_{t}_{c}.wav")
+    assert len(out["tracks"]) == 4
+    for t in range(4):
+        assert out["tracks"][t]["kind"] == "audio"
+    # Tracks 2 and 3 (zero-indexed) → all empty
+    for t in (2, 3):
+        for c in range(8):
+            assert out["tracks"][t]["clipSlots"][c] == {"hasStop": True, "clip": None}
+
+
+def test_build_empty_cells_have_null_clip():
+    """Empty cell → {'hasStop': True, 'clip': None} exactly."""
+    src = {
+        "$schema": "x",
+        "tempo": 100.0,
+        "timeSignature": {"upper": 4, "lower": 4},
+        "tracks": [{"kind": "audio", "name": "", "color": 1, "clipSlots": []}],
+    }
+    grid = parse_clip_grid(src)
+    out = build_stems_song_abl(src, grid, "Test", lambda t, c: "x.wav")
+    slot = out["tracks"][0]["clipSlots"][0]
+    assert slot == {"hasStop": True, "clip": None}
+
+
+def test_build_calls_filename_callback_with_correct_indices():
+    """Callback is called once per populated cell with the right (t, c)."""
+    src = {
+        "$schema": "x",
+        "tempo": 100.0,
+        "timeSignature": {"upper": 4, "lower": 4},
+        "tracks": [
+            {"kind": "audio", "name": "", "color": 1, "clipSlots": []},
+            {
+                "kind": "audio",
+                "name": "",
+                "color": 2,
+                "clipSlots": [
+                    {}, {}, {},
+                    {"clip": {"color": 5, "region": {"start": 0, "end": 4}}},
+                ],
+            },
+        ],
+    }
+    grid = parse_clip_grid(src)
+    calls = []
+
+    def cb(t, c):
+        calls.append((t, c))
+        return f"stem_{t}_{c}.wav"
+
+    out = build_stems_song_abl(src, grid, "Test", cb)
+    assert calls == [(1, 3)]
+    encoded = urllib.parse.quote("stem_1_3.wav", safe="")
+    assert out["tracks"][1]["clipSlots"][3]["clip"]["sampleUri"] == (
+        "ableton:/user-library/Recordings/" + encoded
+    )
