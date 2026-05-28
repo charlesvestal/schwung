@@ -3,7 +3,7 @@ import json
 import os
 import urllib.parse
 
-from .abl_io import build_stems_song_abl, parse_clip_grid
+from .abl_io import build_stems_song_abl, parse_clip_grid, sample_uri
 
 FIXTURE_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fixtures"
@@ -158,6 +158,44 @@ def test_clip_slots_clamped_to_eight():
     for c in range(8):
         assert row[c]["exists"] is True
         assert row[c]["beats"] == float(c + 1)
+
+
+# ---------------------------------------------------------------------------
+# sample_uri
+# ---------------------------------------------------------------------------
+
+
+def test_sample_uri_simple():
+    assert sample_uri("foo.wav") == "ableton:/user-library/Recordings/foo.wav"
+
+
+def test_sample_uri_spaces():
+    assert sample_uri("Set 26 Stem T1 A.wav") == (
+        "ableton:/user-library/Recordings/Set%2026%20Stem%20T1%20A.wav"
+    )
+
+
+def test_sample_uri_apostrophe():
+    # Real-world set names like "My Set's Bounce.wav"
+    assert sample_uri("My Set's Bounce.wav") == (
+        "ableton:/user-library/Recordings/My%20Set%27s%20Bounce.wav"
+    )
+
+
+def test_sample_uri_slash_is_encoded():
+    # Critical: safe="" must encode "/" — verifies we're not using default safe="/"
+    assert sample_uri("a/b.wav") == "ableton:/user-library/Recordings/a%2Fb.wav"
+
+
+def test_sample_uri_parens():
+    assert sample_uri("Take (2).wav") == (
+        "ableton:/user-library/Recordings/Take%20%282%29.wav"
+    )
+
+
+def test_sample_uri_non_ascii():
+    # Non-ASCII like 'é' — UTF-8 encoded then percent-encoded
+    assert sample_uri("Café.wav") == "ableton:/user-library/Recordings/Caf%C3%A9.wav"
 
 
 # ---------------------------------------------------------------------------

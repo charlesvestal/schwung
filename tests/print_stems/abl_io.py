@@ -77,8 +77,13 @@ def parse_clip_grid(song):
     }
 
 
-def _sample_uri(filename):
-    """Encode a bare WAV filename into a user-library Recordings URI."""
+def sample_uri(filename):
+    """Encode a bare WAV filename into a user-library Recordings URI.
+
+    Uses urllib.parse.quote with safe="" so that every reserved character
+    (including "/") is percent-encoded. This matches the on-device URI shape
+    Move firmware writes for clip sampleUri fields.
+    """
     return "ableton:/user-library/Recordings/" + urllib.parse.quote(filename, safe="")
 
 
@@ -118,7 +123,7 @@ def build_stems_song_abl(source_song, grid, set_name, stem_filename_for):
                     },
                 },
                 "stepEditorScrollPosition": 0.0,
-                "sampleUri": _sample_uri(stem_filename_for(t, c)),
+                "sampleUri": sample_uri(stem_filename_for(t, c)),
                 "warping": {
                     "markers": [],
                     "tempoAfterLastMarker": tempo,
