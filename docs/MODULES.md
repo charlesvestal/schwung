@@ -76,6 +76,7 @@ for keys anywhere in `module.json`).
 | `raw_midi` | Skip host MIDI transforms (velocity curve, aftertouch filter); module may also bypass internal MIDI filters when set |
 | `raw_ui` | Module owns UI input handling; host won't intercept Back to return to menu (use `host_return_to_menu()` to exit) |
 | `chainable` | Marks a module as usable inside Signal Chain patches (metadata) |
+| `requires_continuous_processing` | Audio FX that owns non-trivial internal time (rolling loopers, granular, modulated delays/reverb). Keeps the slot's DSP rendering through silence instead of idle-parking it after the silence threshold, so the plugin's internal clock doesn't freeze and resume at a wrong offset. Read by `chain_host.c`; null-checked so older chain DSPs still load. |
 | `skip_led_clear` | Host skips clearing LEDs on module load/unload — preserves Move's native pad colors (useful for modules that overlay highlights on existing clip colors) |
 | `default_forward_channel` | Default Forward Channel for shadow slots loading this module. `-2` = passthrough (preserve original MIDI channel, required for MPE), `1`–`16` = remap to a specific channel. |
 | `button_passthrough` | Array of CC numbers the module wants Move to keep handling (e.g. `[85]` to let Play reach Move while the module is active). |
