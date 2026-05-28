@@ -1650,7 +1650,45 @@ int shadow_handle_slot_param_get(int slot, const char *key, char *buf, int buf_l
 /* Direct set_param without touching shadow_param_t shared memory.
  * Called from web UI ring buffer drain — safe to call alongside JS requests.
  * Handles slot-level params (slot:volume, etc.) and plugin params (synth:cutoff). */
+/* Forward decl — defined later in this file; needed by the master_fx branch
+ * of shadow_direct_set_param below. */
+static void mfx_lfo_update_base_from_set_param(int slot_idx,
+                                               const char *key,
+                                               const char *value);
+
 void shadow_direct_set_param(uint8_t slot, const char *key, const char *value) {
+
+    /* Master FX params (web set-ring path). Web-originated sets arrive here via
+     * shadow_drain_web_param_set, which bypasses shadow_param. Without explicit
+     * master_fx routing these keys fall through to the chain-slot plugin below
+     * (the wrong target) and are silently dropped — so dragging a Master FX
+     * param in the remote UI changed nothing on-device. Mirror the fxN:/bypass
+     * routing from the shadow_param handler. (LFO sub-params and shim-special
+     * keys like resample_bridge still go through the shadow_param path, not
+     * here — the remote UI's param knobs only emit master_fx:fxN:<key>.) */
+    if (strncmp(key, "master_fx:", 10) == 0) {
+        const char *fx_key = key + 10;
+        int mfx_slot = -1;
+        const char *param_key = fx_key;
+        if      (strncmp(fx_key, "fx1:", 4) == 0) { mfx_slot = 0; param_key = fx_key + 4; }
+        else if (strncmp(fx_key, "fx2:", 4) == 0) { mfx_slot = 1; param_key = fx_key + 4; }
+        else if (strncmp(fx_key, "fx3:", 4) == 0) { mfx_slot = 2; param_key = fx_key + 4; }
+        else if (strncmp(fx_key, "fx4:", 4) == 0) { mfx_slot = 3; param_key = fx_key + 4; }
+
+        if (mfx_slot >= 0) {
+            master_fx_slot_t *mfx = &shadow_master_fx_slots[mfx_slot];
+            if (strcmp(param_key, "bypassed") == 0) {
+                mfx->bypassed = (value[0] && atoi(value)) ? 1 : 0;
+            } else if (mfx->api && mfx->instance && mfx->api->set_param) {
+                mfx->api->set_param(mfx->instance, param_key, value);
+                mfx_lfo_update_base_from_set_param(mfx_slot, param_key, value);
+            }
+            if (host.on_param_changed) host.on_param_changed(slot, key, value);
+        }
+        /* Unrecognized master_fx:* keys (lfo*, specials): don't misroute to the
+         * chain-slot plugin below — leave for the shadow_param path. */
+        return;
+    }
 
     /* Try slot-level params first */
     if (shadow_handle_slot_param_set(slot, key, value)) {
