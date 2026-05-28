@@ -1747,27 +1747,10 @@ static void shadow_inprocess_render_to_buffer(void) {
     if (probe_burst_this_frame > spi_slot_probe_burst_max)
         spi_slot_probe_burst_max = probe_burst_this_frame;
 
-    /* Print Stems capture: stash per-slot post-FX into /schwung-print-capture ring (Task 1.2).
-     * Insert point: AFTER all 4 slots' shadow_slot_fx_deferred[s] are finalized for this
-     * block on the non-LA path, BEFORE MFX runs (MFX is applied later in mix_from_buffer).
-     * RT-safe: single producer, lock-free atomic write_index, no logging/alloc/locks.
-     * TODO: LA mode capture in v2 — under rebuild_from_la, slot FX runs inside the LA
-     * rebuild branch in shadow_inprocess_mix_from_buffer, so this insert captures silence
-     * for slots routed via Link Audio. Documented v1 limitation. */
-    if (shadow_print_capture_shm) {
-        uint64_t idx = __atomic_load_n(&shadow_print_capture_shm->write_index, __ATOMIC_RELAXED);
-        uint64_t slot = idx % PRINT_CAPTURE_RING_BLOCKS;
-        for (int t = 0; t < PRINT_CAPTURE_NUM_TRACKS; t++) {
-            int16_t *dst = &shadow_print_capture_shm->rings[t][slot * PRINT_CAPTURE_FRAMES_PER_BLOCK * 2];
-            if (shadow_slot_fx_deferred_valid[t]) {
-                memcpy(dst, shadow_slot_fx_deferred[t],
-                       PRINT_CAPTURE_FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
-            } else {
-                memset(dst, 0, PRINT_CAPTURE_FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
-            }
-        }
-        __atomic_store_n(&shadow_print_capture_shm->write_index, idx + 1, __ATOMIC_RELEASE);
-    }
+    /* Print Stems capture is performed in shadow_inprocess_mix_from_buffer
+     * (Task 1.3 refactor): the mixer's LA-rebuild and non-LA branches each
+     * stage the per-track post-FX audio they consume, so capture is in-phase
+     * with the mailbox and covers both routing modes. */
 
     /* Overtake DSP generator: mix its output into the deferred buffer */
     if (overtake_dsp_gen && overtake_dsp_gen_inst && overtake_dsp_gen->render_block) {
@@ -1900,6 +1883,14 @@ static void shadow_inprocess_mix_from_buffer(void) {
     (void)shadow_master_fx_chain_active();  /* MFX slots processed unconditionally below */
     /* Always build the mix at unity level so sampler/skipback capture audio
      * at full gain (independent of master volume).  Apply mv at the end. */
+
+    /* Print Stems per-frame per-track staging (Task 1.2 + 1.3). Populated below
+     * by whichever path runs — LA-rebuild branch stores fx_buf for active slots
+     * and move_track for passthrough; non-LA path stores shadow_slot_fx_deferred.
+     * Committed once at end-of-function, so one ring advance per SPI frame
+     * regardless of routing mode. Slots left unwritten capture as silence. */
+    int16_t print_capture_frame[PRINT_CAPTURE_NUM_TRACKS][PRINT_CAPTURE_FRAMES_PER_BLOCK * 2];
+    memset(print_capture_frame, 0, sizeof(print_capture_frame));
 
     /* Save Move's audio for bridge split (before zeroing) */
     memcpy(native_bridge_move_component, mailbox_audio, AUDIO_BUFFER_SIZE);
@@ -2180,6 +2171,13 @@ static void shadow_inprocess_mix_from_buffer(void) {
                     }
                 }
 
+                /* Print Stems capture (Task 1.3, LA-rebuild path): stage
+                 * post-FX audio for this active slot. */
+                if (s < PRINT_CAPTURE_NUM_TRACKS) {
+                    memcpy(print_capture_frame[s], fx_buf,
+                           PRINT_CAPTURE_FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
+                }
+
                 /* Track FX output silence for phase 2 idle */
                 int fx_silent = 1;
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
@@ -2237,6 +2235,12 @@ static void shadow_inprocess_mix_from_buffer(void) {
                     if (mixed < -32768) mixed = -32768;
                     mailbox_audio[i] = (int16_t)mixed;
                 }
+                /* Print Stems capture (Task 1.3, LA-rebuild passthrough): stage
+                 * Move-native per-track audio for slots without a Schwung synth. */
+                if (s < PRINT_CAPTURE_NUM_TRACKS) {
+                    memcpy(print_capture_frame[s], move_track,
+                           PRINT_CAPTURE_FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
+                }
                 /* Publish Move track audio to ME channel even without a synth loaded */
                 if (s < LINK_AUDIO_SHADOW_CHANNELS && shadow_pub_audio_shm) {
                     link_audio_pub_slot_t *ps = &shadow_pub_audio_shm->slots[s];
@@ -2263,6 +2267,12 @@ skip_la_rebuild:
                 if (shadow_slot_fx_idle[s] && shadow_slot_idle[s]) continue;
 
                 int16_t *fx_buf = shadow_slot_fx_deferred[s];
+
+                /* Print Stems capture (Task 1.2 non-LA, deferred-FX path). */
+                if (s < PRINT_CAPTURE_NUM_TRACKS) {
+                    memcpy(print_capture_frame[s], fx_buf,
+                           PRINT_CAPTURE_FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
+                }
 
                 /* Write to publisher shared memory for link_subscriber */
                 if (link_audio.enabled && s < LINK_AUDIO_SHADOW_CHANNELS && shadow_pub_audio_shm) {
@@ -2293,6 +2303,12 @@ skip_la_rebuild:
                 memcpy(fx_buf, shadow_slot_deferred[s], sizeof(fx_buf));
                 shadow_chain_process_fx(shadow_chain_slots[s].instance,
                                         fx_buf, MOVE_FRAMES_PER_BLOCK);
+
+                /* Print Stems capture (Task 1.2 non-LA, inline-FX fallback). */
+                if (s < PRINT_CAPTURE_NUM_TRACKS) {
+                    memcpy(print_capture_frame[s], fx_buf,
+                           PRINT_CAPTURE_FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
+                }
 
                 if (link_audio.enabled && s < LINK_AUDIO_SHADOW_CHANNELS && shadow_pub_audio_shm) {
                     float cap_vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
@@ -2611,6 +2627,27 @@ skip_la_rebuild:
         /* Skipback: always capture Resample source into rolling buffer */
         skipback_init(skipback_seconds_setting);
         skipback_capture(unity_view);
+    }
+
+    /* Print Stems capture commit (Task 1.2 + 1.3): one SHM ring slot per SPI
+     * frame. Staging was populated above by the LA-rebuild branch (fx_buf for
+     * active slots, move_track for Move-native passthrough) and the non-LA
+     * path (shadow_slot_fx_deferred[s] or inline FX output). Tracks not
+     * written stay at zeros (e.g. Move-native in non-LA mode, where the
+     * Move firmware bypasses Schwung — print stems require LA-rebuild for
+     * those tracks). RT-safe: memcpy + atomic store, no logging/alloc/locks. */
+    if (shadow_print_capture_shm) {
+        uint64_t idx = __atomic_load_n(&shadow_print_capture_shm->write_index,
+                                       __ATOMIC_RELAXED);
+        uint64_t ring_slot = idx % PRINT_CAPTURE_RING_BLOCKS;
+        for (int t = 0; t < PRINT_CAPTURE_NUM_TRACKS; t++) {
+            int16_t *dst = &shadow_print_capture_shm->rings[t]
+                            [ring_slot * PRINT_CAPTURE_FRAMES_PER_BLOCK * 2];
+            memcpy(dst, print_capture_frame[t],
+                   PRINT_CAPTURE_FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
+        }
+        __atomic_store_n(&shadow_print_capture_shm->write_index, idx + 1,
+                         __ATOMIC_RELEASE);
     }
 
 }
