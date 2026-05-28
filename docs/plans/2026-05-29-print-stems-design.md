@@ -204,7 +204,15 @@ After print ends (or on cancel), restore the snapshot. Restore must run even on 
 1. **Empty audio clipSlot shape.** Set 26's `clipSlots` array has 8 entries even when most are empty. Need to confirm the JSON shape of an empty slot (`{ "hasStop": false }` or `{}` or missing key entirely) by inspecting an empty slot in Set 26.
 2. **Subdirs in `sampleUri`.** Test whether `ableton:/user-library/Recordings/Subdir/foo.wav` resolves. If yes, prefer per-set subdirs for cleanliness.
 3. **Default mixer values.** Pull exact `volume`, `pan` defaults from Set 26's tracks. Match them.
-4. **Clip launch quantization.** Confirm whether `move_midi_inject_to_move(NoteOn, padNote)` fires at next-bar quantization (Move's default clip launch) or immediately. If immediate, we need our own bar-boundary wait.
+4. **Clip launch quantization.** RESOLVED (2026-05-29): **quantized to the next bar
+   boundary**, confirmed via song-mode's working engine (`ui.js:686`), not a fresh spike.
+   `move_midi_inject_to_move(NoteOn, padNote)` is treated as a clip launch; it does not
+   fire immediately. We fire a column's pads ~1 beat before a bar boundary and treat the
+   following boundary as audio onset. Timing mirrors song-mode (wall-clock `barDurationMs`,
+   `playStartTime` anchored on `transportPlaying` confirmation, note-offs deferred ~10
+   ticks). Capture-window lengths are measured in shim block counts
+   (`host_print_capture_write_index`), not wall clock. No custom immediate-launch path
+   needed.
 5. **Set browser refresh.** Confirm Move picks up new sets dropped into `Sets/<uuid>/` without firmware restart.
 6. **Per-track Link Audio read surface.** Verify the per-track pre-MFX buffer is reachable from a non-RT print thread, or add a thin SHM/snapshot surface for it. The latency-comp ring (`shadow_latency_delay_apply`) already produces the right buffer; we just need read access without breaking the SPI callback's RT guarantees.
 7. **`shadow_slot_deferred[t]` position in the slot chain.** Confirm this buffer is post–slot-FX (otherwise the "slot FX in" half of the contract fails). If it's pre-FX, identify the correct downstream buffer.
