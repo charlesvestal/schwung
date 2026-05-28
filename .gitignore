@@ -22,3 +22,7 @@ build/cache/
 *.asd
 move_audio_recv
 libs/memfault-firmware-sdk/
+
+# Python
+__pycache__/
+*.pyc
