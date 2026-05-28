@@ -1747,6 +1747,28 @@ static void shadow_inprocess_render_to_buffer(void) {
     if (probe_burst_this_frame > spi_slot_probe_burst_max)
         spi_slot_probe_burst_max = probe_burst_this_frame;
 
+    /* Print Stems capture: stash per-slot post-FX into /schwung-print-capture ring (Task 1.2).
+     * Insert point: AFTER all 4 slots' shadow_slot_fx_deferred[s] are finalized for this
+     * block on the non-LA path, BEFORE MFX runs (MFX is applied later in mix_from_buffer).
+     * RT-safe: single producer, lock-free atomic write_index, no logging/alloc/locks.
+     * TODO: LA mode capture in v2 — under rebuild_from_la, slot FX runs inside the LA
+     * rebuild branch in shadow_inprocess_mix_from_buffer, so this insert captures silence
+     * for slots routed via Link Audio. Documented v1 limitation. */
+    if (shadow_print_capture_shm) {
+        uint64_t idx = __atomic_load_n(&shadow_print_capture_shm->write_index, __ATOMIC_RELAXED);
+        uint64_t slot = idx % PRINT_CAPTURE_RING_BLOCKS;
+        for (int t = 0; t < PRINT_CAPTURE_NUM_TRACKS; t++) {
+            int16_t *dst = &shadow_print_capture_shm->rings[t][slot * PRINT_CAPTURE_FRAMES_PER_BLOCK * 2];
+            if (shadow_slot_fx_deferred_valid[t]) {
+                memcpy(dst, shadow_slot_fx_deferred[t],
+                       PRINT_CAPTURE_FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
+            } else {
+                memset(dst, 0, PRINT_CAPTURE_FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
+            }
+        }
+        __atomic_store_n(&shadow_print_capture_shm->write_index, idx + 1, __ATOMIC_RELEASE);
+    }
+
     /* Overtake DSP generator: mix its output into the deferred buffer */
     if (overtake_dsp_gen && overtake_dsp_gen_inst && overtake_dsp_gen->render_block) {
         /* Restore raw hardware audio_in so overtake plugins can read line-in.
