@@ -1226,7 +1226,7 @@ fi
 if [ "$quiet_mode" = false ]; then
     echo "Features configured:"
     echo "  Shadow UI: $([ "$shadow_ui_val" = "true" ] && echo "enabled" || echo "disabled")"
-    echo "  Screen Reader: $([ "$enable_screen_reader" = true ] && echo "enabled" || echo "disabled (toggle with shift+vol+menu)")"
+    echo "  Screen Reader: $([ "$enable_screen_reader" = true ] && echo "enabled" || echo "disabled (toggle with Shift+Menu)")"
 fi
 
 # Optional: Install modules from the Module Store (before restart so they're available immediately)
