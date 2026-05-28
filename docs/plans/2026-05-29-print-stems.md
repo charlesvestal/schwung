@@ -77,12 +77,37 @@ Pad note formula: `padNote(t, c) = (92 - 8*t) + c`.
 - If immediate → we need our own bar-boundary wait (host fn or read Move's clock SHM in JS).
 - If quantized → Move's default launch quantization works, no extra work.
 
-**Outcome to fill in:** _[immediate / quantized — and if immediate, the chosen bar-sync mechanism]_
+**Outcome (filled 2026-05-29, resolved by reading song-mode instead of a throwaway spike):**
+**Quantized.** `move_midi_inject_to_move([0x90|t, padNote, vel])` is treated by Move
+firmware as a clip launch and is **quantized to the next bar boundary** — it does NOT
+fire immediately. Confirmed by song-mode's working playback engine
+(`src/modules/tools/song-mode/ui.js:686`: "Move quantizes clip launches to bar
+boundaries") and its pre-trigger strategy (line 693: it injects the next entry's pads
+~0.25 bar / 1 beat *before* the boundary so they start on time).
 
-**Step 4:** Delete the spike module.
+Implications for Print Stems (Tasks 3.3 / 3.4):
+- **No custom immediate-launch mechanism needed.** We lean on Move's bar quantization.
+- The capture state machine must account for the **inject→audio latency of up to one
+  bar.** Fire a column's pads ~1 beat before a bar boundary; the actual audio onset is
+  the *next* boundary.
+- **Timing model (mirrored from song-mode):**
+  - `barDurationMs = (60000 / tempo) * 4` (4/4 assumed for v1).
+  - Anchor `playStartTime = Date.now()` only after transport is confirmed running via
+    `shadow_get_overlay_state().transportPlaying` (Link quantize delay; ~5 s timeout
+    fallback). Bar position = `(Date.now() - playStartTime) / barDurationMs`.
+  - Inject note-ons via a queue at ~50 ms spacing (`INJECT_INTERVAL_MS`).
+  - **Defer note-offs ~10 ticks** after the note-on — on+off in the same MIDI_IN frame
+    makes Move ignore the press.
+  - Pre-warm slots with `host_wake_all_slots()` before audio arrives (avoids first-frame
+    glitch under Link Audio).
+- **Capture-length precision:** use the shim's monotonic block counter
+  (`host_print_capture_write_index()`, 344/s) to measure pre-roll / stem / tail lengths
+  in audio blocks (sample-accurate), reserving wall-clock bar math only for *when* to
+  fire pads. This decouples capture accuracy from JS tick jitter.
+
+**Step 4:** No spike module was created (resolved from existing code), so nothing to delete.
 ```bash
-rm -rf src/modules/tools/quant-test
-git add docs/plans/2026-05-29-print-stems.md
+git add docs/plans/2026-05-29-print-stems.md docs/plans/2026-05-29-print-stems-design.md
 git commit -m "docs(print-stems): record clip launch quantization from spike 0.2"
 ```
 
