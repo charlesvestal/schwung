@@ -924,6 +924,17 @@
       "default_branch": "master",
       "asset_name": "dronage-tool-module.tar.gz",
       "min_host_version": "0.9.8"
+    },
+    {
+      "id": "chordism",
+      "name": "Chordism",
+      "description": "Chord-based polyphonic synth — one pad in, 4 voices out, with 16 chord types, 25 scales, FM matrix, morphing level/pan, modulation routing, and 30 presets",
+      "author": "charlesvestal",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/schwung-chordism",
+      "default_branch": "main",
+      "asset_name": "chordism-module.tar.gz",
+      "min_host_version": "0.9.0"
     }
   ]
 }
