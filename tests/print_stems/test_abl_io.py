@@ -3,7 +3,7 @@ import json
 import os
 import urllib.parse
 
-from abl_io import build_stems_song_abl, parse_clip_grid
+from .abl_io import build_stems_song_abl, parse_clip_grid
 
 FIXTURE_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fixtures"
