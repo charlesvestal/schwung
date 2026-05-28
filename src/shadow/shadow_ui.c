@@ -43,6 +43,7 @@ static shadow_midi_inject_t *shadow_midi_inject = NULL;
 static schwung_ext_midi_remap_t *ext_midi_remap = NULL;
 static shadow_screenreader_t *shadow_screenreader = NULL;
 static shadow_overlay_state_t *shadow_overlay = NULL;
+static shadow_print_capture_t *shadow_print_capture = NULL;
 
 static int global_exit_flag = 0;
 static uint8_t last_midi_ready = 0;
@@ -140,6 +141,23 @@ static int open_shadow_shm(void) {
             shadow_overlay = NULL;
         } else {
             unified_log("shadow_ui", LOG_LEVEL_DEBUG, "Shadow overlay shm mapped: %p", shadow_overlay);
+        }
+    }
+
+    /* Print Stems per-track audio ring (read-only consumer; producer is the shim). */
+    fd = shm_open(SHM_PRINT_CAPTURE, O_RDONLY, 0666);
+    if (fd >= 0) {
+        shadow_print_capture = (shadow_print_capture_t *)mmap(NULL, sizeof(shadow_print_capture_t),
+                                                              PROT_READ, MAP_SHARED, fd, 0);
+        close(fd);
+        if (shadow_print_capture == MAP_FAILED) {
+            shadow_print_capture = NULL;
+        } else {
+            unified_log("shadow_ui", LOG_LEVEL_DEBUG,
+                        "Print capture shm mapped: %p (magic=0x%x v%u)",
+                        shadow_print_capture,
+                        shadow_print_capture->magic,
+                        shadow_print_capture->version);
         }
     }
 
@@ -2939,6 +2957,84 @@ static JSValue js_host_sampler_is_recording(JSContext *ctx, JSValueConst this_va
     return (shadow_control->sampler_state_val == 2) ? JS_TRUE : JS_FALSE;  /* 2 = SAMPLER_RECORDING */
 }
 
+/* host_print_capture_read(track, blocks) -> Int16Array | null
+ * Returns the most-recent `blocks` blocks of per-track pre-MFX stereo audio
+ * for the given track (0..3). Each block is 128 stereo frames; the returned
+ * array has length blocks * 128 * 2 (interleaved L,R,L,R...).
+ * Returns null on invalid args, missing SHM, or stale/corrupt segment.
+ * If the ring has not yet accumulated `blocks` blocks (cold start), the
+ * pre-history portion is zero-filled.
+ */
+static JSValue js_host_print_capture_read(JSContext *ctx, JSValueConst this_val,
+                                          int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 2) return JS_NULL;
+    int32_t track, blocks;
+    if (JS_ToInt32(ctx, &track, argv[0])) return JS_NULL;
+    if (JS_ToInt32(ctx, &blocks, argv[1])) return JS_NULL;
+    if (!shadow_print_capture) return JS_NULL;
+    if (shadow_print_capture->magic != PRINT_CAPTURE_MAGIC) return JS_NULL;
+    if (track < 0 || track >= PRINT_CAPTURE_NUM_TRACKS) return JS_NULL;
+    if (blocks <= 0 || blocks > PRINT_CAPTURE_RING_BLOCKS) return JS_NULL;
+
+    /* Acquire-load pairs with the shim's release-store on write_index. */
+    uint64_t w = __atomic_load_n(&shadow_print_capture->write_index, __ATOMIC_ACQUIRE);
+
+    size_t out_samples = (size_t)blocks * PRINT_CAPTURE_FRAMES_PER_BLOCK * 2;
+    int16_t *out = (int16_t *)malloc(out_samples * sizeof(int16_t));
+    if (!out) return JS_NULL;
+
+    if (w == 0) {
+        memset(out, 0, out_samples * sizeof(int16_t));
+    } else if (w < (uint64_t)blocks) {
+        size_t available = (size_t)w * PRINT_CAPTURE_FRAMES_PER_BLOCK * 2;
+        size_t prepad = out_samples - available;
+        memset(out, 0, prepad * sizeof(int16_t));
+        for (uint64_t b = 0; b < w; b++) {
+            size_t slot = (size_t)(b % PRINT_CAPTURE_RING_BLOCKS);
+            int16_t *src = &shadow_print_capture->rings[track][slot * PRINT_CAPTURE_FRAMES_PER_BLOCK * 2];
+            int16_t *dst = &out[prepad + (size_t)b * PRINT_CAPTURE_FRAMES_PER_BLOCK * 2];
+            memcpy(dst, src, PRINT_CAPTURE_FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
+        }
+    } else {
+        uint64_t start_block = w - (uint64_t)blocks;
+        for (int i = 0; i < blocks; i++) {
+            uint64_t b = start_block + (uint64_t)i;
+            size_t slot = (size_t)(b % PRINT_CAPTURE_RING_BLOCKS);
+            int16_t *src = &shadow_print_capture->rings[track][slot * PRINT_CAPTURE_FRAMES_PER_BLOCK * 2];
+            memcpy(&out[(size_t)i * PRINT_CAPTURE_FRAMES_PER_BLOCK * 2], src,
+                   PRINT_CAPTURE_FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
+        }
+    }
+
+    JSValue ab = JS_NewArrayBufferCopy(ctx, (const uint8_t *)out, out_samples * sizeof(int16_t));
+    free(out);
+    if (JS_IsException(ab)) return JS_NULL;
+
+    /* Wrap as Int16Array(ArrayBuffer) so JS receives a typed array directly.
+     * Must pass 3 args (buffer, offset, length): the typed-array constructor
+     * reads argv[1] and argv[2] unconditionally when argv[0] is an ArrayBuffer,
+     * so passing argc=1 would dereference uninitialized stack. */
+    JSValue args[3] = { ab, JS_UNDEFINED, JS_UNDEFINED };
+    JSValue typed = JS_NewTypedArray(ctx, 3, args, JS_TYPED_ARRAY_INT16);
+    JS_FreeValue(ctx, ab);
+    return typed;
+}
+
+/* host_print_capture_write_index() -> Number
+ * Current monotonic block-write counter (audio blocks written by the shim).
+ * Returns 0 if SHM is missing or stale. JS Number safely represents up to
+ * 2^53; at 344 blocks/sec that is roughly 830,000 years.
+ */
+static JSValue js_host_print_capture_write_index(JSContext *ctx, JSValueConst this_val,
+                                                 int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_print_capture) return JS_NewInt64(ctx, 0);
+    if (shadow_print_capture->magic != PRINT_CAPTURE_MAGIC) return JS_NewInt64(ctx, 0);
+    uint64_t w = __atomic_load_n(&shadow_print_capture->write_index, __ATOMIC_ACQUIRE);
+    return JS_NewInt64(ctx, (int64_t)w);
+}
+
 /* Minimal RFC-4648 base64 encoder used by host_read_file_base64 below.
  * Standalone so we don't pull in mbedTLS/OpenSSL just for this one spot. */
 static char *shadow_b64_encode(const unsigned char *in, size_t len, size_t *out_len) {
@@ -3302,6 +3398,9 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "host_sampler_resume", JS_NewCFunction(ctx, js_host_sampler_resume, "host_sampler_resume", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_sampler_is_paused", JS_NewCFunction(ctx, js_host_sampler_is_paused, "host_sampler_is_paused", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_wake_all_slots", JS_NewCFunction(ctx, js_host_wake_all_slots, "host_wake_all_slots", 0));
+
+    JS_SetPropertyStr(ctx, global_obj, "host_print_capture_read", JS_NewCFunction(ctx, js_host_print_capture_read, "host_print_capture_read", 2));
+    JS_SetPropertyStr(ctx, global_obj, "host_print_capture_write_index", JS_NewCFunction(ctx, js_host_print_capture_write_index, "host_print_capture_write_index", 0));
 
     JS_SetPropertyStr(ctx, global_obj, "exit", JS_NewCFunction(ctx, js_exit, "exit", 0));
 
