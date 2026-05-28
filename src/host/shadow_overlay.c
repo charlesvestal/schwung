@@ -30,16 +30,22 @@ char shift_knob_overlay_value[32] = "";
 
 /* MIDI channel indicator state.
  *
- * `midi_indicator_last_channel` holds the 1-based MIDI channel (1-16) of the
- * most recent note-on observed by the host's chain dispatch path, or 0 if
- * nothing has been seen yet. `midi_indicator_active_notes` is incremented on
- * each velocity>0 note-on and decremented on note-off (or velocity=0 note-on);
- * the label only renders while the counter is > 0 so the indicator tracks
- * "currently holding a note" rather than flashing once per event. The user
- * toggle lives in shadow_control->midi_indicator_enabled (read in the draw
- * fn) so the SPI callback never touches the filesystem. */
-int midi_indicator_last_channel = 0;
-int midi_indicator_active_notes = 0;
+ * Reports the external (cable 2) MIDI channels: `midi_indicator_in_channel` is
+ * the 1-based channel of the most recent cable-2 MIDI_IN note-on (what the
+ * controller is sending), and `midi_indicator_out_channel` is the channel of
+ * the most recent cable-2 MIDI_OUT note-on (what Schwung emits back to the
+ * external device, after any MIDI FX / channel remap). Both are 0 until seen.
+ * `midi_indicator_active_notes` counts held cable-2 IN notes (incremented on
+ * velocity>0 note-on, decremented on note-off / velocity=0 note-on); the label
+ * only renders while the counter is > 0 so it tracks "currently holding a note"
+ * rather than flashing once per event. All three are updated from a dedicated
+ * cable-2 MIDI_IN/OUT scan in the shim (shim_pre_transfer). The user toggle
+ * lives in shadow_control->midi_indicator_enabled (read in the draw fn) so the
+ * SPI callback never touches the filesystem. */
+int midi_indicator_in_channel = 0;
+int midi_indicator_out_channel = 0;
+int midi_indicator_active_notes = 0;      /* held cable-2 IN notes */
+int midi_indicator_out_active_notes = 0;  /* held cable-2 OUT notes (forwarded external) */
 
 /* ============================================================================
  * Init
@@ -270,14 +276,23 @@ void overlay_draw_midi_indicator(uint8_t *buf)
 {
     shadow_control_t *ctrl = host.shadow_control ? *host.shadow_control : NULL;
     if (!ctrl || !ctrl->midi_indicator_enabled) return;
-    if (midi_indicator_active_notes <= 0) return;
-    if (midi_indicator_last_channel < 1 || midi_indicator_last_channel > 16) return;
+    int in_ch = midi_indicator_in_channel;
+    int out_ch = midi_indicator_out_channel;
 
-    /* Render "ccN" (1-16) in the bottom-right corner while at least one note
-     * is being held. shadow_chain_dispatch_midi_to_slots maintains the
-     * active-note counter so the label tracks key-down state directly. */
-    char text[6];
-    snprintf(text, sizeof(text), "cc%d", midi_indicator_last_channel);
+    /* Gated on inbound (cable-2 IN) held notes: this monitors your external-gear
+     * routing while you play it. Shows "i<IN>" (the channel your controller is
+     * sending) and, when Schwung forwards that note back out on cable 2,
+     * "i<IN> o<OUT>" (the channel it's sent out on, post MIDI-FX/remap). Clips
+     * playing out on their own can't be shown — that MIDI doesn't reach the SPI
+     * MIDI_OUT mailbox the shim reads. Labelled i/o (not "ch"/"cc"). */
+    if (midi_indicator_active_notes <= 0) return;
+    if (in_ch < 1 || in_ch > 16) return;
+    char text[12];
+    if (midi_indicator_out_active_notes > 0 && out_ch >= 1 && out_ch <= 16) {
+        snprintf(text, sizeof(text), "i%d o%d", in_ch, out_ch);
+    } else {
+        snprintf(text, sizeof(text), "i%d", in_ch);
+    }
 
     int char_count = (int)strlen(text);
     int text_w = char_count * 6;        /* 5px glyph + 1px gap */

@@ -311,23 +311,12 @@ void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *mi
     uint8_t note = pkt[2];
     int dispatched = 0;
 
-    /* Maintain the MIDI channel indicator's active-note count.
-     * Velocity>0 note-on increments and updates the displayed channel;
-     * note-off (or velocity=0 note-on, which most controllers send in place
-     * of an explicit 0x80) decrements but never goes negative. CC 123 (All
-     * Notes Off) and CC 120 (All Sound Off) zero the counter — without that
-     * reset the label can stick when a controller sends those CCs without
-     * matching individual note-offs. */
-    if (type == 0x90 && pkt[3] > 0) {
-        midi_indicator_last_channel = (int)midi_ch + 1;
-        midi_indicator_active_notes++;
-    } else if (type == 0x80 || (type == 0x90 && pkt[3] == 0)) {
-        if (midi_indicator_active_notes > 0) {
-            midi_indicator_active_notes--;
-        }
-    } else if (type == 0xB0 && (pkt[2] == 120 || pkt[2] == 123)) {
-        midi_indicator_active_notes = 0;
-    }
+    /* NOTE: the MIDI channel indicator is no longer driven from here. This
+     * dispatch path fires for every source (cable-2 inbound, MIDI_OUT echo,
+     * overtake DSP, UI-drain) so the channel it saw reflected post-routing /
+     * echo, not what the external controller actually sent. The indicator is
+     * now updated from a dedicated cable-2 MIDI_IN scan in the shim
+     * (shim_pre_transfer) so it reports the incoming external channel. */
 
     for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
         /* Skip direct-dispatch slots when processing MIDI_OUT.
