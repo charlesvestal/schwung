@@ -383,12 +383,15 @@ typedef struct shadow_overlay_state_t {
 #define PRINT_CAPTURE_NUM_TRACKS 4
 #define PRINT_CAPTURE_RING_BLOCKS 64   /* ~186 ms at 44.1 kHz; ample for JS read cadence */
 #define PRINT_CAPTURE_RING_SAMPLES (PRINT_CAPTURE_FRAMES_PER_BLOCK * PRINT_CAPTURE_RING_BLOCKS * 2)
+#define PRINT_CAPTURE_MAGIC   0x53504341u  /* 'SPCA' for Schwung Print CAPture */
+#define PRINT_CAPTURE_VERSION 1
 
 typedef struct {
-    /* Lock-free monotonic write_index; reader compares against last_read_index. */
-    volatile uint64_t write_index;       /* block count, monotonically increasing */
+    uint32_t magic;                      /* PRINT_CAPTURE_MAGIC ('SPCA') */
+    uint32_t version;                    /* layout version; bump on incompatible changes */
+    uint64_t write_index;                /* count of complete blocks written; reader consumes [last_read, write_index). Touched only via __atomic_* builtins (both sides). */
     uint32_t sample_rate;                /* 44100 */
-    uint32_t reserved[6];
+    uint32_t reserved[5];
     int16_t  rings[PRINT_CAPTURE_NUM_TRACKS][PRINT_CAPTURE_RING_SAMPLES];
 } shadow_print_capture_t;
 
@@ -399,9 +402,10 @@ typedef char shadow_param_size_check[(sizeof(shadow_param_t) <= SHADOW_PARAM_BUF
 typedef char shadow_screenreader_size_check[(sizeof(shadow_screenreader_t) <= SHADOW_SCREENREADER_BUFFER_SIZE) ? 1 : -1];
 typedef char shadow_overlay_size_check[(sizeof(shadow_overlay_state_t) == SHADOW_OVERLAY_BUFFER_SIZE) ? 1 : -1];
 typedef char schwung_ext_midi_remap_size_check[(sizeof(schwung_ext_midi_remap_t) == 64) ? 1 : -1];
-/* Expected: 8 (write_index) + 4 (sample_rate) + 24 (reserved[6]) + 131072 (rings) = 131108 bytes.
- * Trailing alignment may bump to 131112 (8-byte alignment of next uint64_t). */
-typedef char shadow_print_capture_size_check[(sizeof(shadow_print_capture_t) >= 131108 &&
-                                               sizeof(shadow_print_capture_t) <= 131120) ? 1 : -1];
+/* Expected: 4 (magic) + 4 (version) + 8 (write_index) + 4 (sample_rate) + 20 (reserved[5])
+ *           + 131072 (rings) = 131112 bytes. Trailing alignment may bump up to 131120 (8-byte
+ *           alignment of next uint64_t / cache lines). */
+typedef char shadow_print_capture_size_check[(sizeof(shadow_print_capture_t) >= 131112 &&
+                                               sizeof(shadow_print_capture_t) <= 131124) ? 1 : -1];
 
 #endif /* SHADOW_CONSTANTS_H */

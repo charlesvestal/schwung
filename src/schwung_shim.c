@@ -3198,8 +3198,10 @@ static void init_shadow_shm(void)
             printf("Shadow: Failed to mmap print-capture shm\n");
         } else {
             memset(shadow_print_capture_shm, 0, sizeof(shadow_print_capture_t));
+            shadow_print_capture_shm->magic = PRINT_CAPTURE_MAGIC;
+            shadow_print_capture_shm->version = PRINT_CAPTURE_VERSION;
             shadow_print_capture_shm->sample_rate = 44100;
-            shadow_print_capture_shm->write_index = 0;
+            __atomic_store_n(&shadow_print_capture_shm->write_index, 0, __ATOMIC_RELEASE);
             printf("Shadow: print-capture SHM ready, size=%zu\n",
                    (size_t)sizeof(shadow_print_capture_t));
         }
