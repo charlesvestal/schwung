@@ -133,6 +133,7 @@ static web_param_set_ring_t *web_param_set_shm = NULL;       /* Web UI → shim 
 static web_param_notify_ring_t *web_param_notify_shm = NULL;  /* Shim → web UI param change ring */
 static shadow_screenreader_t *shadow_screenreader_shm = NULL;  /* Forward declaration for D-Bus handler */
 static shadow_overlay_state_t *shadow_overlay_shm = NULL;     /* Overlay state for JS rendering */
+static shadow_print_capture_t *shadow_print_capture_shm = NULL; /* Print Stems per-track capture ring (Task 1.1) */
 
 /* Recording dot: use wall clock for consistent flash rate regardless of call frequency */
 static inline int rec_dot_visible(void) {
@@ -2655,6 +2656,7 @@ static int shm_ext_midi_remap_fd = -1;
 static int shm_screenreader_fd = -1;
 static int shm_pub_audio_fd = -1;
 static int shm_overlay_fd = -1;
+static int shm_print_capture_fd = -1;
 
 /* Shadow initialization state */
 static int shadow_shm_initialized = 0;
@@ -3180,6 +3182,29 @@ static void init_shadow_shm(void)
         }
     } else {
         printf("Shadow: Failed to create overlay shm\n");
+    }
+
+    /* Create/open Print Stems per-track capture ring (Task 1.1).
+     * 4 stereo int16 ring buffers (pre-MFX), written by SPI callback,
+     * read by Print Stems tool. Lock-free single-producer/single-consumer. */
+    shm_print_capture_fd = shm_open(SHM_PRINT_CAPTURE, O_CREAT | O_RDWR, 0666);
+    if (shm_print_capture_fd >= 0) {
+        ftruncate(shm_print_capture_fd, sizeof(shadow_print_capture_t));
+        shadow_print_capture_shm = (shadow_print_capture_t *)mmap(NULL, sizeof(shadow_print_capture_t),
+                                                                   PROT_READ | PROT_WRITE,
+                                                                   MAP_SHARED, shm_print_capture_fd, 0);
+        if (shadow_print_capture_shm == MAP_FAILED) {
+            shadow_print_capture_shm = NULL;
+            printf("Shadow: Failed to mmap print-capture shm\n");
+        } else {
+            memset(shadow_print_capture_shm, 0, sizeof(shadow_print_capture_t));
+            shadow_print_capture_shm->sample_rate = 44100;
+            shadow_print_capture_shm->write_index = 0;
+            printf("Shadow: print-capture SHM ready, size=%zu\n",
+                   (size_t)sizeof(shadow_print_capture_t));
+        }
+    } else {
+        printf("Shadow: Failed to create print-capture shm\n");
     }
 
     /* TTS engine uses lazy initialization - will init on first speak */

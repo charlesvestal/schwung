@@ -34,6 +34,7 @@
 #define SHM_DISPLAY_LIVE    "/schwung-display-live"    /* Live display for remote viewer */
 #define SHM_WEB_PARAM_SET   "/schwung-web-param-set"   /* Web UI → shim param set ring */
 #define SHM_WEB_PARAM_NOTIFY "/schwung-web-param-notify" /* Shim → web UI param change ring */
+#define SHM_PRINT_CAPTURE   "/schwung-print-capture"   /* Per-track pre-MFX audio ring (Print Stems) */
 
 /* ============================================================================
  * Audio Constants
@@ -371,6 +372,26 @@ typedef struct shadow_overlay_state_t {
     volatile uint8_t  pad_led_colors[32];  /* velocity/color for each pad */
 } shadow_overlay_state_t;
 
+/* ============================================================================
+ * Print Stems Per-Track Capture (Task 1.1)
+ * ============================================================================ */
+
+/* /schwung-print-capture — 4 per-track pre-MFX stereo ring buffers.
+ * Written by shim per audio block (128 frames); read by Print Stems tool.
+ * Single producer (SPI callback) / single consumer (Print Stems JS thread). */
+#define PRINT_CAPTURE_FRAMES_PER_BLOCK 128
+#define PRINT_CAPTURE_NUM_TRACKS 4
+#define PRINT_CAPTURE_RING_BLOCKS 64   /* ~186 ms at 44.1 kHz; ample for JS read cadence */
+#define PRINT_CAPTURE_RING_SAMPLES (PRINT_CAPTURE_FRAMES_PER_BLOCK * PRINT_CAPTURE_RING_BLOCKS * 2)
+
+typedef struct {
+    /* Lock-free monotonic write_index; reader compares against last_read_index. */
+    volatile uint64_t write_index;       /* block count, monotonically increasing */
+    uint32_t sample_rate;                /* 44100 */
+    uint32_t reserved[6];
+    int16_t  rings[PRINT_CAPTURE_NUM_TRACKS][PRINT_CAPTURE_RING_SAMPLES];
+} shadow_print_capture_t;
+
 /* Compile-time size checks */
 typedef char shadow_control_size_check[(sizeof(shadow_control_t) == CONTROL_BUFFER_SIZE) ? 1 : -1];
 typedef char shadow_ui_state_size_check[(sizeof(shadow_ui_state_t) <= SHADOW_UI_BUFFER_SIZE) ? 1 : -1];
@@ -378,5 +399,9 @@ typedef char shadow_param_size_check[(sizeof(shadow_param_t) <= SHADOW_PARAM_BUF
 typedef char shadow_screenreader_size_check[(sizeof(shadow_screenreader_t) <= SHADOW_SCREENREADER_BUFFER_SIZE) ? 1 : -1];
 typedef char shadow_overlay_size_check[(sizeof(shadow_overlay_state_t) == SHADOW_OVERLAY_BUFFER_SIZE) ? 1 : -1];
 typedef char schwung_ext_midi_remap_size_check[(sizeof(schwung_ext_midi_remap_t) == 64) ? 1 : -1];
+/* Expected: 8 (write_index) + 4 (sample_rate) + 24 (reserved[6]) + 131072 (rings) = 131108 bytes.
+ * Trailing alignment may bump to 131112 (8-byte alignment of next uint64_t). */
+typedef char shadow_print_capture_size_check[(sizeof(shadow_print_capture_t) >= 131108 &&
+                                               sizeof(shadow_print_capture_t) <= 131120) ? 1 : -1];
 
 #endif /* SHADOW_CONSTANTS_H */
