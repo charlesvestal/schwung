@@ -4,7 +4,7 @@
 
 **Goal:** Bounce every populated clip in the active Move set to its own per-track stereo WAV, packaged as a sibling Move audio-clip set, so Schwung-driven arrangements can move into Move audio sets or Live without DAW glue.
 
-**Architecture:** Parallel per-track capture from pre-MFX buses (`shadow_slot_deferred[t]` for Schwung slots; per-track Link Audio for Move-native tracks). One pass per column with adaptive inter-pass tail-clear. Output is a sibling `<setname> Stems` set whose audio clips reference flat WAV files in `UserLibrary/Recordings/`.
+**Architecture:** Parallel per-track capture from pre-MFX buses (`shadow_slot_fx_deferred[t]` for Schwung slots — post-slot-FX, gated by valid flag, per Task 0.1; per-track Link Audio for Move-native tracks). One pass per column with adaptive inter-pass tail-clear. Output is a sibling `<setname> Stems` set whose audio clips reference flat WAV files in `UserLibrary/Recordings/`.
 
 **Tech Stack:** C (shim, host, SHM), JavaScript (.js for UI module, .mjs for shared utils), QuickJS host functions, Move's `Song.abl` JSON schema (1.8.3). All testing is manual on hardware except Phase 2 (host-side parser/generator unit-tested with Python).
 
@@ -220,12 +220,12 @@ git commit -m "feat(shim): add /schwung-print-capture SHM for per-track audio"
 
 ### Task 1.2: Write per-track audio into the ring (Schwung slots only)
 
-Start with the easier half (Schwung slots are already pre-MFX in `shadow_slot_deferred[t]`); Move-native tracks come in Task 1.3.
+**Per Task 0.1's finding:** the source buffer is `shadow_slot_fx_deferred[s]` (post–slot-FX, pre-MFX), gated by `shadow_slot_fx_deferred_valid[s]`. The raw `shadow_slot_deferred[s]` is pre-FX (synth output only). Under `rebuild_from_la` mode the deferred-FX buffer is zeroed and slot-FX runs inside the LA rebuild branch (`schwung_shim.c:~2140`); for v1, document that LA routing currently produces silent stems and revisit in v2. Subagent should add a `LOG_DEBUG` warning when LA rebuild is active and capture is consumed, so the symptom is visible during testing.
 
 **Files:**
-- Modify: `src/schwung_shim.c` — in the SPI audio callback, after slot DSP runs and before MFX, write each slot's buffer into the ring.
+- Modify: `src/schwung_shim.c` — in the SPI audio callback, after `shadow_slot_fx_deferred[s]` is populated (around line ~1708) but before MFX runs, write each track's post–slot-FX buffer into the ring.
 
-**Step 1:** Find the SPI audio callback section that processes shadow slot output (search for `shadow_slot_deferred`). Right after slot output is finalized and before MFX runs, add:
+**Step 1:** Find the section that populates `shadow_slot_fx_deferred[s]` and the `shadow_slot_fx_deferred_valid[s]` flag. Place the ring write **after** that block (so we capture the post-FX data) and **before** the LA-rebuild branch and MFX. Code:
 
 ```c
 if (g_print_capture) {
@@ -233,8 +233,8 @@ if (g_print_capture) {
     uint64_t slot = idx % PRINT_CAPTURE_RING_BLOCKS;
     for (int t = 0; t < PRINT_CAPTURE_NUM_TRACKS; t++) {
         int16_t *dst = &g_print_capture->rings[t][slot * PRINT_CAPTURE_FRAMES_PER_BLOCK * 2];
-        if (shadow_slot_deferred[t]) {
-            memcpy(dst, shadow_slot_deferred[t], PRINT_CAPTURE_FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
+        if (shadow_slot_fx_deferred_valid[t] && shadow_slot_fx_deferred[t]) {
+            memcpy(dst, shadow_slot_fx_deferred[t], PRINT_CAPTURE_FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
         } else {
             memset(dst, 0, PRINT_CAPTURE_FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
         }
