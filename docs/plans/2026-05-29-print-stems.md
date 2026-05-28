@@ -98,14 +98,26 @@ python3 -c "import json; d=json.load(open('/tmp/set26_song.abl')); print(json.du
 
 **Step 2:** Record exact JSON shape of an empty audio slot.
 
-**Outcome to fill in:** _[exact JSON, e.g. `{"hasStop": false}` or `{}` or array hole]_
+**Outcome (filled 2026-05-29):** Empty slot shape is `{"hasStop": true, "clip": null}` — explicit null for `clip`, `hasStop` always true. Same for audio and midi tracks; not an array hole, never missing.
 
 **Step 3:** Also dump exact default mixer values (`pan`, `volume`, `sends`, etc.) for both audio tracks.
 ```bash
 python3 -c "import json; d=json.load(open('/tmp/set26_song.abl')); print(json.dumps(d['tracks'][0]['mixer'], indent=2))"
 ```
 
-**Outcome to fill in:** _[default mixer block JSON]_
+**Outcome (filled 2026-05-29):**
+```json
+{
+  "pan": 0.0,
+  "solo-cue": false,
+  "speakerOn": true,
+  "volume": 0.0,
+  "sends": []
+}
+```
+Notes: `volume: 0.0` is 0 dB (Move's mixer uses dB). `solo-cue` varies per-track in Set 26 (track 0 had `true`); default to `false` for new tracks. `pan` 0 = center. `sends: []` because no return tracks defined.
+
+Additional structural fields to copy from source `Song.abl` when generating output: `rootNote`, `scale`, `melodicLayout`, `timeSignature`, `stepEditorResolution`, `globalGrooveAmount`, `returnTracks`, `masterTrack` (includes its own devices like Compressor — keep as-is), `scenes` (array of scene objects, keep as-is), `grooves`, `metadata.usedFeatures` (extend with `"Audio Clip Properties"` if not present).
 
 **Step 4:** Commit plan.
 
