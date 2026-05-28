@@ -172,6 +172,16 @@ int main(int argc, char **argv) {
                             "/data/UserData/schwung/bin/schwung-heal", 04755) == 0) {
                 unlink("/data/UserData/schwung/bin/schwung-heal.new");
                 fprintf(stderr, "schwung-heal: self-updated from staged binary\n");
+                /* Re-exec the freshly-installed binary. Verified on-device:
+                 * continuing to execute after rename()-ing a new file over our
+                 * own running executable is unreliable here — the process exits
+                 * before reaching the mirror/reboot below, with no error. A
+                 * clean re-exec runs from the new inode; .new is now gone so the
+                 * new process skips this block and proceeds to mirror + reboot
+                 * normally. execv only returns on failure. */
+                fflush(NULL);
+                execv("/data/UserData/schwung/bin/schwung-heal", argv);
+                fprintf(stderr, "schwung-heal: re-exec failed: %s\n", strerror(errno));
             } else {
                 rc = 2;
             }
