@@ -998,8 +998,13 @@ func (ru *RemoteUI) pollMasterFx(ctx context.Context, cache *slotCache) {
 		compName := "master_fx:" + fxSlot
 		moduleKey := "master_fx:" + fxSlot + ":module"
 
-		modID, ok, _ := ru.shm.TryGetParam(0, moduleKey)
-		if !ok {
+		modID, ok, err := ru.shm.TryGetParam(0, moduleKey)
+		if !ok || err != nil {
+			// Mutex busy or a transient shm read error (e.g. shadow_param
+			// timeout under load). TryGetParam returns ("", true, err) in the
+			// error case — without this guard an empty modID is mistaken for a
+			// module unload and we broadcast "no effects loaded", then restore
+			// it the next tick (visible flicker). Mirrors pollSlot. Skip tick.
 			continue
 		}
 
