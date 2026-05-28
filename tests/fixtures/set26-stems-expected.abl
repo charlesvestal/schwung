@@ -1,0 +1,574 @@
+{
+  "$schema": "http://tech.ableton.com/schema/song/1.8.3/song.json",
+  "stepEditorResolution": "1/16",
+  "tempo": 112.0,
+  "globalGrooveAmount": 0.0,
+  "timeSignature": {
+    "upper": 4,
+    "lower": 4
+  },
+  "rootNote": 4,
+  "scale": "Dorian",
+  "melodicLayout": "inKey",
+  "tracks": [
+    {
+      "kind": "audio",
+      "name": "",
+      "color": 1,
+      "isSelected": false,
+      "clipSlots": [
+        {
+          "hasStop": true,
+          "clip": {
+            "name": "",
+            "color": 1,
+            "isEnabled": true,
+            "timeSignature": {
+              "upper": 4,
+              "lower": 4
+            },
+            "region": {
+              "start": 0.0,
+              "end": 16.0,
+              "loop": {
+                "start": 0.0,
+                "end": 16.0,
+                "isEnabled": true
+              }
+            },
+            "stepEditorScrollPosition": 0.0,
+            "sampleUri": "ableton:/user-library/Recordings/Set%2026%20Stem%20T1%20A.wav",
+            "warping": {
+              "markers": [],
+              "tempoAfterLastMarker": 112.0
+            },
+            "gain": 0.0,
+            "transpose": 0,
+            "detune": 0.0,
+            "envelopes": []
+          }
+        },
+        {
+          "hasStop": true,
+          "clip": null
+        },
+        {
+          "hasStop": true,
+          "clip": null
+        },
+        {
+          "hasStop": true,
+          "clip": null
+        },
+        {
+          "hasStop": true,
+          "clip": null
+        },
+        {
+          "hasStop": true,
+          "clip": null
+        },
+        {
+          "hasStop": true,
+          "clip": null
+        },
+        {
+          "hasStop": true,
+          "clip": null
+        }
+      ],
+      "devices": [],
+      "mixer": {
+        "pan": 0.0,
+        "solo-cue": false,
+        "speakerOn": true,
+        "volume": 0.0,
+        "sends": []
+      }
+    },
+    {
+      "kind": "audio",
+      "name": "",
+      "color": 10,
+      "isSelected": false,
+      "clipSlots": [
+        {
+          "hasStop": true,
+          "clip": {
+            "name": "",
+            "color": 10,
+            "isEnabled": true,
+            "timeSignature": {
+              "upper": 4,
+              "lower": 4
+            },
+            "region": {
+              "start": 0.0,
+              "end": 8.0,
+              "loop": {
+                "start": 0.0,
+                "end": 8.0,
+                "isEnabled": true
+              }
+            },
+            "stepEditorScrollPosition": 0.0,
+            "sampleUri": "ableton:/user-library/Recordings/Set%2026%20Stem%20T2%20A.wav",
+            "warping": {
+              "markers": [],
+              "tempoAfterLastMarker": 112.0
+            },
+            "gain": 0.0,
+            "transpose": 0,
+            "detune": 0.0,
+            "envelopes": []
+          }
+        },
+        {
+          "hasStop": true,
+          "clip": {
+            "name": "",
+            "color": 10,
+            "isEnabled": true,
+            "timeSignature": {
+              "upper": 4,
+              "lower": 4
+            },
+            "region": {
+              "start": 0.0,
+              "end": 2.0,
+              "loop": {
+                "start": 0.0,
+                "end": 2.0,
+                "isEnabled": true
+              }
+            },
+            "stepEditorScrollPosition": 0.0,
+            "sampleUri": "ableton:/user-library/Recordings/Set%2026%20Stem%20T2%20B.wav",
+            "warping": {
+              "markers": [],
+              "tempoAfterLastMarker": 112.0
+            },
+            "gain": 0.0,
+            "transpose": 0,
+            "detune": 0.0,
+            "envelopes": []
+          }
+        },
+        {
+          "hasStop": true,
+          "clip": {
+            "name": "",
+            "color": 10,
+            "isEnabled": true,
+            "timeSignature": {
+              "upper": 4,
+              "lower": 4
+            },
+            "region": {
+              "start": 0.0,
+              "end": 4.0,
+              "loop": {
+                "start": 0.0,
+                "end": 4.0,
+                "isEnabled": true
+              }
+            },
+            "stepEditorScrollPosition": 0.0,
+            "sampleUri": "ableton:/user-library/Recordings/Set%2026%20Stem%20T2%20C.wav",
+            "warping": {
+              "markers": [],
+              "tempoAfterLastMarker": 112.0
+            },
+            "gain": 0.0,
+            "transpose": 0,
+            "detune": 0.0,
+            "envelopes": []
+          }
+        },
+        {
+          "hasStop": true,
+          "clip": null
+        },
+        {
+          "hasStop": true,
+          "clip": null
+        },
+        {
+          "hasStop": true,
+          "clip": null
+        },
+        {
+          "hasStop": true,
+          "clip": null
+        },
+        {
+          "hasStop": true,
+          "clip": null
+        }
+      ],
+      "devices": [],
+      "mixer": {
+        "pan": 0.0,
+        "solo-cue": false,
+        "speakerOn": true,
+        "volume": 0.0,
+        "sends": []
+      }
+    },
+    {
+      "kind": "audio",
+      "name": "",
+      "color": 14,
+      "isSelected": false,
+      "clipSlots": [
+        {
+          "hasStop": true,
+          "clip": null
+        },
+        {
+          "hasStop": true,
+          "clip": null
+        },
+        {
+          "hasStop": true,
+          "clip": null
+        },
+        {
+          "hasStop": true,
+          "clip": null
+        },
+        {
+          "hasStop": true,
+          "clip": null
+        },
+        {
+          "hasStop": true,
+          "clip": null
+        },
+        {
+          "hasStop": true,
+          "clip": null
+        },
+        {
+          "hasStop": true,
+          "clip": null
+        }
+      ],
+      "devices": [],
+      "mixer": {
+        "pan": 0.0,
+        "solo-cue": false,
+        "speakerOn": true,
+        "volume": 0.0,
+        "sends": []
+      }
+    },
+    {
+      "kind": "audio",
+      "name": "",
+      "color": 18,
+      "isSelected": false,
+      "clipSlots": [
+        {
+          "hasStop": true,
+          "clip": null
+        },
+        {
+          "hasStop": true,
+          "clip": null
+        },
+        {
+          "hasStop": true,
+          "clip": null
+        },
+        {
+          "hasStop": true,
+          "clip": null
+        },
+        {
+          "hasStop": true,
+          "clip": null
+        },
+        {
+          "hasStop": true,
+          "clip": null
+        },
+        {
+          "hasStop": true,
+          "clip": null
+        },
+        {
+          "hasStop": true,
+          "clip": null
+        }
+      ],
+      "devices": [],
+      "mixer": {
+        "pan": 0.0,
+        "solo-cue": false,
+        "speakerOn": true,
+        "volume": 0.0,
+        "sends": []
+      }
+    }
+  ],
+  "returnTracks": [],
+  "masterTrack": {
+    "color": 23,
+    "isSelected": false,
+    "devices": [
+      {
+        "presetUri": "ableton:/packs/abl-core-library/Audio%20Effects/Dynamics/Punch%20Glue.json",
+        "kind": "audioEffectRack",
+        "name": "Punch Glue",
+        "lockId": 1001,
+        "lockSeal": -100211998,
+        "parameters": {
+          "Enabled": true,
+          "Macro0": 63.35280227661133,
+          "Macro1": 63.5,
+          "Macro2": 63.35280227661133,
+          "Macro3": {
+            "value": 32.8900260925293,
+            "customName": "Comp Hi Pass"
+          },
+          "Macro4": {
+            "value": 29.73539161682129,
+            "customName": "Release"
+          },
+          "Macro5": {
+            "value": 101.88977014790208,
+            "presetValue": 44.9728889465332,
+            "customName": "Threshold"
+          },
+          "Macro6": {
+            "value": 0.0,
+            "presetValue": 10.583333969116211
+          },
+          "Macro7": {
+            "value": 127.0,
+            "customName": "Comp Dry/Wet"
+          }
+        },
+        "chains": [
+          {
+            "name": "",
+            "color": 0,
+            "devices": [
+              {
+                "presetUri": null,
+                "kind": "channelEq",
+                "name": "",
+                "parameters": {
+                  "Enabled": true,
+                  "Gain": 1.0,
+                  "HighShelfGain": {
+                    "value": 0.9999999403953552,
+                    "macroMapping": {
+                      "macroIndex": 2,
+                      "rangeMin": 0.18000000715255737,
+                      "rangeMax": 5.599999904632568
+                    }
+                  },
+                  "HighpassOn": false,
+                  "LowShelfGain": {
+                    "value": 0.9999999403953552,
+                    "macroMapping": {
+                      "macroIndex": 0,
+                      "rangeMin": 0.18000000715255737,
+                      "rangeMax": 5.599999904632568
+                    }
+                  },
+                  "MidFrequency": 579.9998779296875,
+                  "MidGain": {
+                    "value": 1.0,
+                    "macroMapping": {
+                      "macroIndex": 1,
+                      "rangeMin": 0.25,
+                      "rangeMax": 4.0
+                    }
+                  }
+                },
+                "deviceData": {}
+              },
+              {
+                "presetUri": null,
+                "kind": "compressor",
+                "name": "",
+                "parameters": {
+                  "Attack": 1.0,
+                  "AutoReleaseControlOnOff": false,
+                  "DryWet": {
+                    "value": 1.0,
+                    "macroMapping": {
+                      "macroIndex": 7,
+                      "rangeMin": 0.0,
+                      "rangeMax": 1.0
+                    }
+                  },
+                  "Enabled": {
+                    "value": true,
+                    "macroMapping": {
+                      "macroIndex": 7,
+                      "rangeMin": 1.0,
+                      "rangeMax": 127.0
+                    }
+                  },
+                  "ExpansionRatio": 1.149999976158142,
+                  "Gain": {
+                    "value": 0.0,
+                    "macroMapping": {
+                      "macroIndex": 6,
+                      "rangeMin": 0.0,
+                      "rangeMax": 36.0
+                    }
+                  },
+                  "GainCompensation": false,
+                  "Knee": 0.10000000149011612,
+                  "LogEnvelope": true,
+                  "Model": "RMS",
+                  "Ratio": 2.0,
+                  "Release": {
+                    "value": 30.0,
+                    "macroMapping": {
+                      "macroIndex": 4,
+                      "rangeMin": 1.0,
+                      "rangeMax": 1000.0
+                    }
+                  },
+                  "SideChainEq_Freq": {
+                    "value": 80.0,
+                    "macroMapping": {
+                      "macroIndex": 3,
+                      "rangeMin": 30.0,
+                      "rangeMax": 15000.0
+                    }
+                  },
+                  "SideChainEq_Gain": 0.0,
+                  "SideChainEq_Mode": "High pass",
+                  "SideChainEq_On": true,
+                  "SideChainEq_Q": 0.4099999964237213,
+                  "Threshold": {
+                    "value": 1.0,
+                    "macroMapping": {
+                      "macroIndex": 5,
+                      "rangeMin": 0.003162277629598975,
+                      "rangeMax": 1.0
+                    }
+                  }
+                },
+                "deviceData": {}
+              }
+            ],
+            "mixer": {
+              "pan": 0.0,
+              "solo-cue": false,
+              "speakerOn": true,
+              "volume": 0.0,
+              "sends": []
+            }
+          }
+        ]
+      },
+      {
+        "presetUri": "ableton:/packs/abl-core-library/Audio%20Effects/Saturator/Analog%20Clip.json",
+        "kind": "saturator",
+        "name": "Analog Clip",
+        "parameters": {
+          "BaseDrive": 0.0,
+          "BassShaperThreshold": -50.0,
+          "ColorDepth": 0.0,
+          "ColorFrequency": 1000.0,
+          "ColorOn": true,
+          "ColorWidth": 0.30000001192092896,
+          "DryWet": {
+            "value": 0.0,
+            "presetValue": 1.0
+          },
+          "Enabled": true,
+          "Oversampling": false,
+          "PostClip": "off",
+          "PostDrive": -7.0,
+          "PreDcFilter": false,
+          "PreDrive": 9.0,
+          "Type": "Analog Clip",
+          "WsCurve": 0.05000000074505806,
+          "WsDamp": 0.0,
+          "WsDepth": 0.0,
+          "WsDrive": 1.0,
+          "WsLin": 0.5,
+          "WsPeriod": 0.0
+        },
+        "deviceData": {}
+      },
+      {
+        "presetUri": null,
+        "kind": "limiter",
+        "name": "",
+        "parameters": {
+          "AutoRelease": false,
+          "Ceiling": -0.30000001192092896,
+          "Enabled": true,
+          "Gain": 0.0,
+          "LegacySmoothing": true,
+          "LinkAmount": 1.0,
+          "LinkAmountMidSide": 0.0,
+          "Lookahead": "1.5 ms",
+          "Maximize": false,
+          "MaximizeOutput": 0.0,
+          "MaximizeThreshold": 0.0,
+          "Mode": "Standard",
+          "Release": 100.0,
+          "Routing": "L/R"
+        },
+        "deviceData": {}
+      }
+    ],
+    "mixer": {
+      "pan": 0.0,
+      "volume": 0.0
+    }
+  },
+  "scenes": [
+    {
+      "name": "",
+      "color": null
+    },
+    {
+      "name": "",
+      "color": null
+    },
+    {
+      "name": "",
+      "color": null
+    },
+    {
+      "name": "",
+      "color": null
+    },
+    {
+      "name": "",
+      "color": null
+    },
+    {
+      "name": "",
+      "color": null
+    },
+    {
+      "name": "",
+      "color": null
+    },
+    {
+      "name": "",
+      "color": null
+    }
+  ],
+  "grooves": [],
+  "metadata": {
+    "usedFeatures": [
+      "Audio Clip Properties",
+      "Compressor Device",
+      "Compressor Side Chain EQ"
+    ]
+  }
+}
