@@ -4836,6 +4836,52 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     /* Advance the external-dispatch ring's age counter once per frame. */
     shadow_external_dispatch_tick();
 
+    /* MIDI channel indicator: scan external (cable 2) MIDI_IN and MIDI_OUT for
+     * note events and record the channels for the on-screen "i<IN> o<OUT>"
+     * overlay. IN = what the controller sends; OUT = what Schwung emits back to
+     * the external device (post MIDI-FX/remap). Done here (raw cable-2 buffers)
+     * rather than in the chain dispatch path so the indicator reflects the
+     * actual external channels, not a post-routing/echo channel. Held-note
+     * counter is driven by the IN side so the label shows only while a key is
+     * down. Runs every frame; cable-2 events appear once (same buffers the
+     * cable-2 readers below consume), so the counter tracks key-down state. */
+    if (global_mmap_addr) {
+        extern int midi_indicator_in_channel;
+        extern int midi_indicator_out_channel;
+        extern int midi_indicator_active_notes;
+        extern int midi_indicator_out_active_notes;
+        const uint8_t *mi = global_mmap_addr + MIDI_IN_OFFSET;
+        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+            if (((mi[j] >> 4) & 0x0F) != 2) continue;  /* cable 2 only */
+            uint8_t st = mi[j + 1], ty = st & 0xF0, d1b = mi[j + 2], d2b = mi[j + 3];
+            if (ty == 0x90 && d2b > 0) {
+                midi_indicator_in_channel = (int)(st & 0x0F) + 1;
+                midi_indicator_active_notes++;
+            } else if (ty == 0x80 || (ty == 0x90 && d2b == 0)) {
+                if (midi_indicator_active_notes > 0) midi_indicator_active_notes--;
+            } else if (ty == 0xB0 && (d1b == 120 || d1b == 123)) {
+                midi_indicator_active_notes = 0;
+            }
+        }
+        /* OUT side: cable-2 MIDI_OUT note-ons — i.e. notes Schwung forwards back
+         * out to the external device for what you're playing in. (Clip/track
+         * MIDI-out doesn't reach this SPI mailbox in shadow mode, so the OUT
+         * side only lights for forwarded external input, not clips.) */
+        const uint8_t *mo = global_mmap_addr + MIDI_OUT_OFFSET;
+        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+            if (((mo[j] >> 4) & 0x0F) != 2) continue;  /* cable 2 only */
+            uint8_t st = mo[j + 1], ty = st & 0xF0, d1b = mo[j + 2], d2b = mo[j + 3];
+            if (ty == 0x90 && d2b > 0) {
+                midi_indicator_out_channel = (int)(st & 0x0F) + 1;
+                midi_indicator_out_active_notes++;
+            } else if (ty == 0x80 || (ty == 0x90 && d2b == 0)) {
+                if (midi_indicator_out_active_notes > 0) midi_indicator_out_active_notes--;
+            } else if (ty == 0xB0 && (d1b == 120 || d1b == 123)) {
+                midi_indicator_out_active_notes = 0;
+            }
+        }
+    }
+
     /* Direct MIDI dispatch for MPE passthrough slots (receive=All, forward=THRU).
      * Reads MIDI_IN cable 2 and dispatches all message types directly to these
      * slots, bypassing Move's MIDI_OUT channel remapping. */
