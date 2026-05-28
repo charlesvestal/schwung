@@ -21,10 +21,12 @@ def parse_clip_grid(song):
     Each cell:
         {
             "exists": bool,
-            "beats": float,           # 0 if not exists
+            "beats": float,           # 0.0 if not exists
             "loop_enabled": bool,
             "color": int or None,
-            "kind": str,              # source track kind ("audio" / "midi")
+            "kind": str,              # "audio" or "midi" from the source track,
+                                      # or "" if the source has fewer than 4 tracks
+                                      # and this row has no corresponding source track.
         }
     """
     tracks = song.get("tracks") or []
@@ -42,7 +44,7 @@ def parse_clip_grid(song):
             if not clip:
                 row.append({
                     "exists": False,
-                    "beats": 0,
+                    "beats": 0.0,
                     "loop_enabled": False,
                     "color": None,
                     "kind": kind,
