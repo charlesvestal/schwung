@@ -935,6 +935,28 @@
       "default_branch": "main",
       "asset_name": "chordism-module.tar.gz",
       "min_host_version": "0.9.0"
+    },
+    {
+      "id": "juno_control",
+      "name": "Alpha Juno 2 Ctrl",
+      "description": "SysEx patch editor and controller for Roland Alpha Juno 1/2 and MKS-50",
+      "author": "madeinspace",
+      "component_type": "overtake",
+      "github_repo": "madeinspace/move-juno-controller",
+      "default_branch": "main",
+      "asset_name": "juno_control-module.tar.gz",
+      "min_host_version": "0.3.6"
+    },
+    {
+      "id": "helm",
+      "name": "Helm",
+      "description": "Polyphonic synthesizer with effects and powerful modulation system",
+      "author": "Matt Tytel (port: andree182)",
+      "component_type": "sound_generator",
+      "github_repo": "andree182/schwung-helm",
+      "default_branch": "master",
+      "asset_name": "helm-module.tar.gz",
+      "min_host_version": "0.8.8"
     }
   ]
 }
