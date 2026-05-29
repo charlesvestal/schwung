@@ -46,12 +46,16 @@ extern char shift_knob_overlay_patch[64];
 extern char shift_knob_overlay_param[64];
 extern char shift_knob_overlay_value[32];
 
-/* MIDI channel indicator: stores the most recent channel (1-16, 0 = none yet)
- * that received a note-on. Drawn in the bottom-right corner as "ccN" when
- * the user has enabled the indicator in settings AND the active-note
- * counter below is positive, so the label tracks "is a key being held". */
-extern int midi_indicator_last_channel;
-extern int midi_indicator_active_notes;
+/* MIDI channel indicator: external (cable 2) channels, 1-16 (0 = none yet).
+ * _in_ = most recent cable-2 MIDI_IN note-on channel (controller → Schwung);
+ * _out_ = most recent cable-2 MIDI_OUT note-on channel (Schwung → external,
+ * post MIDI-FX/remap). Drawn bottom-right as "i<IN> o<OUT>" when the user has
+ * enabled the indicator AND the active-note counter is positive, so the label
+ * tracks "is a key being held". Updated from a cable-2 scan in the shim. */
+extern int midi_indicator_in_channel;
+extern int midi_indicator_out_channel;
+extern int midi_indicator_active_notes;      /* held cable-2 IN notes */
+extern int midi_indicator_out_active_notes;  /* held cable-2 OUT notes (forwarded external) */
 
 /* Font data */
 extern const uint8_t overlay_font_5x7[96][7];
