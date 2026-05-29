@@ -26,6 +26,15 @@
  *
  * Install: copy to /data/UserData/schwung/bin/, chown root, chmod 4755.
  * Build: see scripts/build.sh.
+ *
+ * Self-update: an on-device upgrade (schwung-manager runs as ableton) can't
+ * overwrite this binary in place without stripping its setuid bit — after
+ * which it could no longer reboot or mirror the shim. So the upgrade flow
+ * stages the new heal at the hardcoded path /data/UserData/schwung/bin/
+ * schwung-heal.new and lets the *current* (still-privileged) heal install it
+ * here as root-owned 04755 before doing its other work. Hardcoded path only,
+ * so the audit story holds: ableton already controls /data and we already
+ * mirror /data's shim to /usr/lib setuid-root.
  */
 
 #include <errno.h>
@@ -131,6 +140,10 @@ int main(int argc, char **argv) {
     /* Setuid bit on the binary should give us euid=0; some kernels also
      * keep ruid=ableton. Force ruid=0 too so child processes (rename,
      * unlink, etc.) can't surprise us with permission checks. */
+    /* setgid(0) first (while the setuid bit still gives us euid=0) so files we
+     * create are group-root too — matches install.sh's root:root and avoids a
+     * root:users drift on self-update. Best-effort; ignore failure. */
+    if (setgid(0) < 0) { /* non-fatal */ }
     if (setuid(0) < 0 && geteuid() != 0) {
         fprintf(stderr, "schwung-heal: not root (euid=%d) — setuid bit missing?\n",
                 geteuid());
@@ -147,6 +160,33 @@ int main(int argc, char **argv) {
     }
 
     int rc = 0;
+
+    /* Self-update: install the staged new heal (if present) as root-owned
+     * 04755 before anything else. We run as the old, privileged binary here;
+     * copy_atomic renames over our own running image, which Linux permits
+     * (the running process keeps the old inode). See the file header. */
+    {
+        struct stat nst;
+        if (stat("/data/UserData/schwung/bin/schwung-heal.new", &nst) == 0) {
+            if (copy_atomic("/data/UserData/schwung/bin/schwung-heal.new",
+                            "/data/UserData/schwung/bin/schwung-heal", 04755) == 0) {
+                unlink("/data/UserData/schwung/bin/schwung-heal.new");
+                fprintf(stderr, "schwung-heal: self-updated from staged binary\n");
+                /* Re-exec the freshly-installed binary. Verified on-device:
+                 * continuing to execute after rename()-ing a new file over our
+                 * own running executable is unreliable here — the process exits
+                 * before reaching the mirror/reboot below, with no error. A
+                 * clean re-exec runs from the new inode; .new is now gone so the
+                 * new process skips this block and proceeds to mirror + reboot
+                 * normally. execv only returns on failure. */
+                fflush(NULL);
+                execv("/data/UserData/schwung/bin/schwung-heal", argv);
+                fprintf(stderr, "schwung-heal: re-exec failed: %s\n", strerror(errno));
+            } else {
+                rc = 2;
+            }
+        }
+    }
 
     /* Shim — perms 04755 (-rwsr-xr-x). The setuid bit on the .so is
      * required for glibc 2.35+ AT_SECURE on devices where MoveOriginal
@@ -177,6 +217,17 @@ int main(int argc, char **argv) {
     if (do_reboot && rc == 0) {
         sync();
         fprintf(stderr, "schwung-heal: rebooting\n");
+        /* Reboot via the sysvinit `reboot` COMMAND (orderly shutdown through
+         * init) — this is what install.sh uses and it is reliable on the Move.
+         * The raw reboot(RB_AUTOBOOT) syscall (== reboot -f, immediate/forced)
+         * was flaky here: ~1/3 of the time it silently failed to reboot.
+         * Absolute path first (caller's PATH may not include /sbin), then a
+         * PATH search, then fall back to the syscall only if both execs fail. */
+        fflush(NULL);
+        execl("/sbin/reboot", "reboot", (char *)NULL);
+        execlp("reboot", "reboot", (char *)NULL);
+        fprintf(stderr, "schwung-heal: exec reboot failed (%s); using syscall\n",
+                strerror(errno));
         if (reboot(RB_AUTOBOOT) < 0) {
             fprintf(stderr, "schwung-heal: reboot: %s\n", strerror(errno));
             return 3;
