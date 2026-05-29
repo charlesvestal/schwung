@@ -6392,10 +6392,15 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                              * Skip if Shift+Vol is held (Shift+Vol+Track opens shadow;
                              * releasing Track shouldn't immediately dismiss it).
                              * Skip if vol was touched during the press (volume tweak gesture
-                             * shouldn't side-effect into dismissing shadow UI). */
+                             * shouldn't side-effect into dismissing shadow UI).
+                             * Skip if Mute is held — Mute+Track (slot mute) and
+                             * Shift+Mute+Track (solo) are modifier combos; releasing
+                             * Track must not dismiss the shadow UI, or the trailing
+                             * Mute release leaks to Move firmware and latches Mute. */
                             if (track_longpress_pending[lp_slot] && !track_longpress_fired[lp_slot] &&
                                 shadow_display_mode && shadow_control &&
                                 !track_vol_touched_during_press[lp_slot] &&
+                                !shadow_mute_held &&
                                 !(shadow_shift_held && shadow_volume_knob_touched)) {
                                 shadow_display_mode = 0;
                                 shadow_control->display_mode = 0;
