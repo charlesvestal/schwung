@@ -1,0 +1,1818 @@
+{
+  "/Users/josh/schwung/test/test_flite.c": {
+    "mtime": 1775587624.1378884,
+    "hash": "9cb3244f14abe6cc1be47769ceb1c0fa"
+  },
+  "/Users/josh/schwung/tests/host/test_arp_clock_status.c": {
+    "mtime": 1775587624.139046,
+    "hash": "f909fa89e5c728f9513e7ab1637cc1e6"
+  },
+  "/Users/josh/schwung/tests/shadow/midi_inject_test.c": {
+    "mtime": 1775587624.1437478,
+    "hash": "512cf0375c790448f8362b642efaa8f2"
+  },
+  "/Users/josh/schwung/tests/shadow/test_parked_overtake_shim_isolation.mjs": {
+    "mtime": 1778366410.8582695,
+    "hash": "1a2d3c90fe10c7e6241b5e5a72d03e67"
+  },
+  "/Users/josh/schwung/tests/shadow/test_format_meta_option_value.mjs": {
+    "mtime": 1778366410.8567138,
+    "hash": "29c14ad5300888847aab0ed193dd7240"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/libregexp.c": {
+    "mtime": 1775587624.026713,
+    "hash": "7172556013ebf3aa4d22c46417fe1084"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/repl.js": {
+    "mtime": 1775587624.0614035,
+    "hash": "d8144a3cf61eca2cc570c32d210481f6"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/quickjs.c": {
+    "mtime": 1775587624.0584395,
+    "hash": "7f67e787c3cda11fbb2e9f8ca68db628"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/dtoa.c": {
+    "mtime": 1775587624.0241346,
+    "hash": "6d4eedb5093261ab63a64800bc2b3395"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/run-test262.c": {
+    "mtime": 1775587624.062543,
+    "hash": "87c706c61f1f6b9e226d47763253dca4"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/libunicode-table.h": {
+    "mtime": 1775587624.0294662,
+    "hash": "68b79105b11206c6f6ba325961eb89a3"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/qjs.c": {
+    "mtime": 1775587624.0309622,
+    "hash": "67aae6eecae6f02d2553c55761d7b943"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/libunicode.c": {
+    "mtime": 1775587624.0304024,
+    "hash": "3d9efdba68dff2837ba5eb413a6cd6bf"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/cutils.c": {
+    "mtime": 1775587624.019809,
+    "hash": "7a0d95b0470506dcb9fe146f65fa54d3"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/quickjs-libc.c": {
+    "mtime": 1775587624.0331006,
+    "hash": "e189a45d61a30e4783c2e8376530c641"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/qjsc.c": {
+    "mtime": 1775587624.0313475,
+    "hash": "df4d9e4f7170ff6016a23759a5509bed"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/libregexp-opcode.h": {
+    "mtime": 1775587624.0256772,
+    "hash": "004f87002965e72fd9008c7160344ce4"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/list.h": {
+    "mtime": 1775587624.0307004,
+    "hash": "41aec723914675ad113a43504c6a616a"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/quickjs-opcode.h": {
+    "mtime": 1775587624.0335183,
+    "hash": "1e9b82f5dc058ea17ba7196e5ec3805b"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/libregexp.h": {
+    "mtime": 1775587624.0268865,
+    "hash": "f7a437c550f87f68541480464ff4e1e6"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/dtoa.h": {
+    "mtime": 1775587624.0242953,
+    "hash": "3d7beb1ed36ed20a36bd51aeec1121a3"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/quickjs-atom.h": {
+    "mtime": 1775587624.0315096,
+    "hash": "604f86317c620c05634d0ee3c0c1584a"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/quickjs.h": {
+    "mtime": 1775587624.0600963,
+    "hash": "90feafc26026c18ddf7c0a44ac5262ef"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/unicode_gen_def.h": {
+    "mtime": 1775587624.068274,
+    "hash": "c48adf8d79dad05899a5780e1d6b1389"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/libunicode.h": {
+    "mtime": 1775587624.030554,
+    "hash": "d1dcc578dc1a9d8baa19787c3b5e6077"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/quickjs-libc.h": {
+    "mtime": 1775587624.0332608,
+    "hash": "e73bde8c9008cf205d514791657a3319"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/cutils.h": {
+    "mtime": 1775587624.0199668,
+    "hash": "e9c40623ec81932474ed3a8d2e20f6fe"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/unicode_gen.c": {
+    "mtime": 1775587624.0681007,
+    "hash": "cc89abd0c0a726cb7d10487f9a121d43"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/tests/fixture_cyclic_import.js": {
+    "mtime": 1775587624.0643182,
+    "hash": "4caf9262a195dd25d6f9c1c8beb99041"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/tests/test_worker_module.js": {
+    "mtime": 1775587624.0674531,
+    "hash": "4805748cd14c70dd4e8a42fa9263eafe"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/tests/microbench.js": {
+    "mtime": 1775587624.0648665,
+    "hash": "94fde4a61e8b56d54ba53cec47ee4ca5"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/tests/assert.js": {
+    "mtime": 1775587624.0640008,
+    "hash": "2cf3b4f4b882c77aa8245cf1a12822b7"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/tests/test_cyclic_import.js": {
+    "mtime": 1775587624.0665178,
+    "hash": "ad375f275236cc4d0e0c77246af50f2a"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/tests/test_bjson.js": {
+    "mtime": 1775587624.065327,
+    "hash": "bd598bf43e20c4fac41d3b0c30c4c399"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/tests/test_std.js": {
+    "mtime": 1775587624.0671384,
+    "hash": "2f45fa49d874fd22cb12eabc5b80042e"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/tests/test_closure.js": {
+    "mtime": 1775587624.0663671,
+    "hash": "98e7d0b72b7759f4edb56d6e41bc4070"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/tests/test_bigint.js": {
+    "mtime": 1775587624.0651767,
+    "hash": "679a6ae9c1c9634dbbb12c21f0652113"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/tests/test_language.js": {
+    "mtime": 1775587624.066671,
+    "hash": "ea5d01eb7d3a863c5d4a3f5685d46f90"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/tests/test_builtin.js": {
+    "mtime": 1775587624.066173,
+    "hash": "dfee72a6890b18fbfa3f458be5ecd5c7"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/tests/test_worker.js": {
+    "mtime": 1775587624.0672812,
+    "hash": "f507e2a1b9f3312fd68d6d46205725ac"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/tests/test_loop.js": {
+    "mtime": 1775587624.0669563,
+    "hash": "61cbdfd21ed5187234b9dbdef7045f94"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/tests/bjson.c": {
+    "mtime": 1775587624.064165,
+    "hash": "0cd061f3508473de39b6f298b931959b"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/examples/test_point.js": {
+    "mtime": 1775587624.0255284,
+    "hash": "a9f987f0030fff98900558f431487e79"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/examples/hello.js": {
+    "mtime": 1775587624.0248067,
+    "hash": "6838f8424ce5ba81a0296593bb3bf857"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/examples/test_fib.js": {
+    "mtime": 1775587624.0253818,
+    "hash": "9151979f52633e847c8250ef81a60ec9"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/examples/fib_module.js": {
+    "mtime": 1775587624.0246782,
+    "hash": "12cb8d47befe04f06914f15368d82e30"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/examples/point.c": {
+    "mtime": 1775587624.025251,
+    "hash": "3303a506dd6b8c69056da585cdff6af7"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/examples/fib.c": {
+    "mtime": 1775587624.0245423,
+    "hash": "57e6f1579a9f6bb57215fcc25184cf71"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/examples/pi_bigint.js": {
+    "mtime": 1775587624.0251172,
+    "hash": "ace4b4674440e13c01ef83d98485ef09"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/examples/hello_module.js": {
+    "mtime": 1775587624.024937,
+    "hash": "86bd97b312d93df97e926a562677744f"
+  },
+  "/Users/josh/schwung/libs/libsamplerate/samplerate.h": {
+    "mtime": 1777304756.8905654,
+    "hash": "1526755be1690322d18be9e211be213f"
+  },
+  "/Users/josh/schwung/examples/shadow_poc.c": {
+    "mtime": 1775587623.6520114,
+    "hash": "79f85c59f215f5f0a8215486c6ef2ccb"
+  },
+  "/Users/josh/schwung/scripts/analyze_wavs.py": {
+    "mtime": 1775587624.0731847,
+    "hash": "49a8026a512c1c4a5931e06ac9b0b6f1"
+  },
+  "/Users/josh/schwung/scripts/migrate-module-params.py": {
+    "mtime": 1775587624.0752275,
+    "hash": "8d77e54a9c1755629375682fa649af82"
+  },
+  "/Users/josh/schwung/scripts/generate_font.py": {
+    "mtime": 1777304757.0513287,
+    "hash": "b7d85ad8688c06db4640592f23ef6375"
+  },
+  "/Users/josh/schwung/schwung-manager/shmwebring.go": {
+    "mtime": 1777304757.0421312,
+    "hash": "fa286333d7a8c197fe28fcdce4123c82"
+  },
+  "/Users/josh/schwung/schwung-manager/audio_capture.go": {
+    "mtime": 1777478328.383037,
+    "hash": "6bda80aae2a27ef5c5400372b42a6815"
+  },
+  "/Users/josh/schwung/schwung-manager/shmparams.go": {
+    "mtime": 1777304757.0419567,
+    "hash": "72c0ee8d4bd970ecedf136b6532cad12"
+  },
+  "/Users/josh/schwung/schwung-manager/repair_status.go": {
+    "mtime": 1778366410.841903,
+    "hash": "8b4ad600ad8950de5bb05ca5c5dceb89"
+  },
+  "/Users/josh/schwung/schwung-manager/display_overlay.go": {
+    "mtime": 1778366410.8412879,
+    "hash": "064d937ec46375f7afda566bdb7b013f"
+  },
+  "/Users/josh/schwung/schwung-manager/module_config.go": {
+    "mtime": 1777304756.8956487,
+    "hash": "c92279d6d885eb946fb48378835f5b26"
+  },
+  "/Users/josh/schwung/schwung-manager/templates_test.go": {
+    "mtime": 1777304757.0502486,
+    "hash": "53d955e91989e988d351a5026b88a0cd"
+  },
+  "/Users/josh/schwung/schwung-manager/shmconfig.go": {
+    "mtime": 1777304757.0415716,
+    "hash": "796f0929a5965cb5bfef51593b62dbb8"
+  },
+  "/Users/josh/schwung/schwung-manager/remote_ui.go": {
+    "mtime": 1780098073.4553974,
+    "hash": "99d9110e7af17a6de8113c883bc17bcf"
+  },
+  "/Users/josh/schwung/schwung-manager/self_heal.go": {
+    "mtime": 1778366410.8420162,
+    "hash": "bb2d64d5b58e2fe07caf99ca387d68d9"
+  },
+  "/Users/josh/schwung/schwung-manager/main.go": {
+    "mtime": 1780098125.844997,
+    "hash": "a567d73a14c41adff28317da313f2640"
+  },
+  "/Users/josh/schwung/schwung-manager/middleware/security.go": {
+    "mtime": 1778759503.011677,
+    "hash": "de6bffd35d367810630258688566c207"
+  },
+  "/Users/josh/schwung/schwung-manager/static/schwung-remote-api.js": {
+    "mtime": 1777304757.046061,
+    "hash": "ece3d975141cad1ce1681754f8fe8273"
+  },
+  "/Users/josh/schwung/schwung-manager/static/remote-ui.js": {
+    "mtime": 1780098073.5534256,
+    "hash": "dfdaefcb42df9bb2ec7574d40fc0817c"
+  },
+  "/Users/josh/schwung/schwung-manager/static/htmx.min.js": {
+    "mtime": 1775587624.0710232,
+    "hash": "2e713ba95db2e33981bb607ae5183305"
+  },
+  "/Users/josh/schwung/src/schwung_shim.c": {
+    "mtime": 1780098125.8495865,
+    "hash": "4c05b048b307a772cdcaeecbc5d3059d"
+  },
+  "/Users/josh/schwung/src/schwung_host.c": {
+    "mtime": 1777930352.9179797,
+    "hash": "0da84fbf6810ecb4d9076767548d93ee"
+  },
+  "/Users/josh/schwung/src/schwung-heal.c": {
+    "mtime": 1780098125.8475683,
+    "hash": "826ccf1cc924353927cea8bae4be3f8c"
+  },
+  "/Users/josh/schwung/src/tools/jack_midi_connect.c": {
+    "mtime": 1775587624.1373231,
+    "hash": "c24914a285866fad9e5d2452a89782dd"
+  },
+  "/Users/josh/schwung/src/tools/display_ctl.c": {
+    "mtime": 1775587624.1371856,
+    "hash": "1c99e1c42da04bdddfe6ab247c0a1207"
+  },
+  "/Users/josh/schwung/src/host/shadow_constants.h": {
+    "mtime": 1780098125.8459034,
+    "hash": "879b515cfc51f0067f9aaffb167fcd56"
+  },
+  "/Users/josh/schwung/src/host/unified_log.h": {
+    "mtime": 1775587624.0876107,
+    "hash": "464bb53b175b712c0c9f40531e81bb20"
+  },
+  "/Users/josh/schwung/src/host/analytics.c": {
+    "mtime": 1777304757.053395,
+    "hash": "3d126640cd7de050d00b7e62d656075d"
+  },
+  "/Users/josh/schwung/src/host/link_audio.h": {
+    "mtime": 1778759503.0126722,
+    "hash": "3c452d1bdb24c0955c8220b45c58a34d"
+  },
+  "/Users/josh/schwung/src/host/param_helper.h": {
+    "mtime": 1775587624.079572,
+    "hash": "f9c0681b577a7c8ec827e782b4b98342"
+  },
+  "/Users/josh/schwung/src/host/tts_engine_flite.c": {
+    "mtime": 1775587624.0871947,
+    "hash": "aee5e3653de025b184811ee2ea314455"
+  },
+  "/Users/josh/schwung/src/host/shadow_overlay.h": {
+    "mtime": 1780098073.5617886,
+    "hash": "4ee708bc10f4e33574d12d5149f69181"
+  },
+  "/Users/josh/schwung/src/host/shadow_dbus.c": {
+    "mtime": 1775587624.0819137,
+    "hash": "c3092d7eb1f4ada2375e198a5201a9a1"
+  },
+  "/Users/josh/schwung/src/host/shadow_link_audio.h": {
+    "mtime": 1779103085.1595287,
+    "hash": "1350c97a81ad6cbcecd3d202fe599711"
+  },
+  "/Users/josh/schwung/src/host/shadow_chain_mgmt.h": {
+    "mtime": 1780098073.5558946,
+    "hash": "86ce16afe12b8aeb44d9d03078c2c79c"
+  },
+  "/Users/josh/schwung/src/host/menu_settings.mjs": {
+    "mtime": 1777304757.0567393,
+    "hash": "957762e048e1e62de96bc1558b72c03f"
+  },
+  "/Users/josh/schwung/src/host/shadow_led_queue.h": {
+    "mtime": 1779446950.7164795,
+    "hash": "2424f0e499862a74530a5785c58533b0"
+  },
+  "/Users/josh/schwung/src/host/module_manager.h": {
+    "mtime": 1775587624.0792632,
+    "hash": "7dc8fc5ece1dd583922c3485437ec6c2"
+  },
+  "/Users/josh/schwung/src/host/settings.h": {
+    "mtime": 1775587624.0804555,
+    "hash": "90cf293fbdb08c88f6ff5d78eca1ccf1"
+  },
+  "/Users/josh/schwung/src/host/link_subscriber.cpp": {
+    "mtime": 1777476521.7091656,
+    "hash": "df4eedc7b29fd51cd3169ed02de0ca20"
+  },
+  "/Users/josh/schwung/src/host/pfx_track_shm.h": {
+    "mtime": 1775587624.079988,
+    "hash": "ffd4b469f784b3921fd2deb384a15f85"
+  },
+  "/Users/josh/schwung/src/host/audio_fx_api_v2.h": {
+    "mtime": 1775587624.0767465,
+    "hash": "bee3bb760735ae9af405d4ae22bf8ad9"
+  },
+  "/Users/josh/schwung/src/host/shadow_chain_types.h": {
+    "mtime": 1777684773.5523887,
+    "hash": "64f2db654e0996cae1a9601a06f1dcd6"
+  },
+  "/Users/josh/schwung/src/host/plugin_api_v1.h": {
+    "mtime": 1777684773.5511463,
+    "hash": "627060e8f07df11767b1af4cfd8ca335"
+  },
+  "/Users/josh/schwung/src/host/arc4random_compat.c": {
+    "mtime": 1775587624.0763812,
+    "hash": "a9d3248ca8fb6bd8782ceb6e611882fa"
+  },
+  "/Users/josh/schwung/src/host/js_display.h": {
+    "mtime": 1777304757.0546134,
+    "hash": "c65267ba27ff894257bc00b2a81806d0"
+  },
+  "/Users/josh/schwung/src/host/lfo_common.h": {
+    "mtime": 1775587624.0778494,
+    "hash": "4cfc2a795957d5765093468510665c64"
+  },
+  "/Users/josh/schwung/src/host/shadow_fd_trace.h": {
+    "mtime": 1775587624.0824661,
+    "hash": "625a12f824f14417e67d6065b99cf695"
+  },
+  "/Users/josh/schwung/src/host/shadow_process.c": {
+    "mtime": 1777304757.061378,
+    "hash": "450d3a65b2ba37b633d4d8d4378035b6"
+  },
+  "/Users/josh/schwung/src/host/shadow_set_pages.h": {
+    "mtime": 1775587624.0861988,
+    "hash": "2e4528fa6093a48795960720ccf957ab"
+  },
+  "/Users/josh/schwung/src/host/audio_fx_api_v1.h": {
+    "mtime": 1775587624.076585,
+    "hash": "f4b647a4bda1614f28f5de1a7e01cfb2"
+  },
+  "/Users/josh/schwung/src/host/shadow_state.h": {
+    "mtime": 1775587624.0864964,
+    "hash": "ba510c255d7e0b3010616d8481c99175"
+  },
+  "/Users/josh/schwung/src/host/shadow_sampler.h": {
+    "mtime": 1777304757.0628264,
+    "hash": "40cbfbe0c417965f8bd59df05e952d53"
+  },
+  "/Users/josh/schwung/src/host/shadow_resample.c": {
+    "mtime": 1779103085.1603882,
+    "hash": "d8412143f1ac02a1fb3bcd0e3c2413c1"
+  },
+  "/Users/josh/schwung/src/host/shadow_pin_scanner.c": {
+    "mtime": 1775587624.0841665,
+    "hash": "02eff181348d909da0ae71756d4cd16e"
+  },
+  "/Users/josh/schwung/src/host/shadow_midi.c": {
+    "mtime": 1780098073.561046,
+    "hash": "c8d366e04d0c2ce076a112d387074364"
+  },
+  "/Users/josh/schwung/src/host/shadow_overlay.c": {
+    "mtime": 1780098073.5614662,
+    "hash": "8f143936e3d9adb7fcfd8ce18619726a"
+  },
+  "/Users/josh/schwung/src/host/shadow_dbus.h": {
+    "mtime": 1775587624.0820832,
+    "hash": "e1fdfe4bb43ba8de15e6b43188bb2dc5"
+  },
+  "/Users/josh/schwung/src/host/analytics.h": {
+    "mtime": 1777304757.0538032,
+    "hash": "0d5a5298c05c961100ffbce0aedc27a1"
+  },
+  "/Users/josh/schwung/src/host/menu_main.mjs": {
+    "mtime": 1775587624.0783665,
+    "hash": "0487a6a51980a9e5ea651e6dec32b5f8"
+  },
+  "/Users/josh/schwung/src/host/unified_log.c": {
+    "mtime": 1775587624.0874767,
+    "hash": "1527ded763ae53b3e202b67af5d42a97"
+  },
+  "/Users/josh/schwung/src/host/midi_fx_api_v1.h": {
+    "mtime": 1775587624.078859,
+    "hash": "c83f5c4b8bd16153fa19fc97643755b8"
+  },
+  "/Users/josh/schwung/src/host/module_manager.c": {
+    "mtime": 1777304757.057119,
+    "hash": "3a166ee47058eb20116834064df5633d"
+  },
+  "/Users/josh/schwung/src/host/shadow_led_queue.c": {
+    "mtime": 1780098125.846813,
+    "hash": "09731cf27bb79dfec75915fe44838b58"
+  },
+  "/Users/josh/schwung/src/host/settings.c": {
+    "mtime": 1775587624.0803041,
+    "hash": "df0ba3cdb1ed5d96f3a3e64dacfe34d2"
+  },
+  "/Users/josh/schwung/src/host/norns_display_shm.h": {
+    "mtime": 1775587624.079417,
+    "hash": "fd5f6138f2ff5553783de7bc0e7fb496"
+  },
+  "/Users/josh/schwung/src/host/tts_engine_dispatch.c": {
+    "mtime": 1775587624.0867693,
+    "hash": "bd27b5f22f68a516acf3822b7e40725c"
+  },
+  "/Users/josh/schwung/src/host/shadow_chain_mgmt.c": {
+    "mtime": 1780098073.555464,
+    "hash": "d8adc63aa3552b367b3b68f64ac1884b"
+  },
+  "/Users/josh/schwung/src/host/shadow_link_audio.c": {
+    "mtime": 1779103085.1591163,
+    "hash": "ea1f89ad832419145a9ce0f54e54f5a4"
+  },
+  "/Users/josh/schwung/src/host/display_server.c": {
+    "mtime": 1775587624.0769842,
+    "hash": "d45171571f9519eb19db9afcb4a6a062"
+  },
+  "/Users/josh/schwung/src/host/tts_engine_espeak.c": {
+    "mtime": 1775587624.0869994,
+    "hash": "7265557c84cda3d6c44a34ae49026c69"
+  },
+  "/Users/josh/schwung/src/host/menu_ui.js": {
+    "mtime": 1775587624.0787013,
+    "hash": "c9deb56486db2d2a9b7179a668660405"
+  },
+  "/Users/josh/schwung/src/host/tts_engine_stub.c": {
+    "mtime": 1775587624.0873337,
+    "hash": "c72e19807c6cc749fb7910e12bee5ae1"
+  },
+  "/Users/josh/schwung/src/host/js_display.c": {
+    "mtime": 1777304757.054132,
+    "hash": "0f0337788c1487f250d84f4012568542"
+  },
+  "/Users/josh/schwung/src/host/pcaudio_stub.c": {
+    "mtime": 1775587624.0798345,
+    "hash": "d69707b4b855a26b9fd935515b55b37f"
+  },
+  "/Users/josh/schwung/src/host/shadow_midi.h": {
+    "mtime": 1778759503.0134754,
+    "hash": "48b3589a8fb0646891ad3646b2ff16c8"
+  },
+  "/Users/josh/schwung/src/host/shadow_pin_scanner.h": {
+    "mtime": 1775587624.084307,
+    "hash": "9353353a073540361b1ae1321dc2f3ed"
+  },
+  "/Users/josh/schwung/src/host/shadow_resample.h": {
+    "mtime": 1779103085.1607163,
+    "hash": "ca5f951f58609e83fc6f1b2e75a168d9"
+  },
+  "/Users/josh/schwung/src/host/tts_engine.h": {
+    "mtime": 1775587624.0866296,
+    "hash": "3db60b1659a5c35fa3ecd654747889a6"
+  },
+  "/Users/josh/schwung/src/host/shadow_state.c": {
+    "mtime": 1777304757.0631967,
+    "hash": "6a290d379c2ea03e0387638335939153"
+  },
+  "/Users/josh/schwung/src/host/shadow_sampler.c": {
+    "mtime": 1777304757.0624404,
+    "hash": "4a8fb7d427fc6daa61663801708bce05"
+  },
+  "/Users/josh/schwung/src/host/web_shim.c": {
+    "mtime": 1775587624.0880294,
+    "hash": "ffaf6747c89ec2a07f1276eb09ae78eb"
+  },
+  "/Users/josh/schwung/src/host/shadow_set_pages.c": {
+    "mtime": 1777684773.5536027,
+    "hash": "a3b52ce9cef9e81f61a25e31b1e7ef2f"
+  },
+  "/Users/josh/schwung/src/host/shadow_process.h": {
+    "mtime": 1775587624.0846703,
+    "hash": "9ba1e28a02d92962afd0e00ef463e4c9"
+  },
+  "/Users/josh/schwung/src/host/shadow_fd_trace.c": {
+    "mtime": 1775587624.0823195,
+    "hash": "c01adf9729135119fb0163c36bd663a6"
+  },
+  "/Users/josh/schwung/src/host/unified_log_cli.c": {
+    "mtime": 1775587624.0877597,
+    "hash": "e4fc44f96b1a25e864a77d30ee3ad556"
+  },
+  "/Users/josh/schwung/src/shadow/shadow_ui_patches.mjs": {
+    "mtime": 1778366410.8548515,
+    "hash": "bfcb387314ef5d86f2a26a874006ba1b"
+  },
+  "/Users/josh/schwung/src/shadow/shadow_ui_master_fx.mjs": {
+    "mtime": 1779103085.1661568,
+    "hash": "10cd14b9ff6c097e8046e6cd391815ac"
+  },
+  "/Users/josh/schwung/src/shadow/shadow_ui_settings.mjs": {
+    "mtime": 1775587624.132555,
+    "hash": "941699fe119f450afdac5b899cfa6502"
+  },
+  "/Users/josh/schwung/src/shadow/shadow_ui_tools.mjs": {
+    "mtime": 1777476521.716358,
+    "hash": "3cf7fc894ef5bc5a0eaed80baed8b80c"
+  },
+  "/Users/josh/schwung/src/shadow/shadow_ui_slots.mjs": {
+    "mtime": 1777304757.0771334,
+    "hash": "7549fdca9969d5f5db100925f074edb1"
+  },
+  "/Users/josh/schwung/src/shadow/shadow_ui_store.mjs": {
+    "mtime": 1778366410.8551934,
+    "hash": "c05fbe395ccdfe287632f0e1daba2838"
+  },
+  "/Users/josh/schwung/src/shadow/shadow_ui.c": {
+    "mtime": 1780098125.8508396,
+    "hash": "95a5e69603d14c57842909bc77d60733"
+  },
+  "/Users/josh/schwung/src/shadow/shadow_ui_ctx.mjs": {
+    "mtime": 1775587624.131971,
+    "hash": "e3c74220770118cf3a27597d28ca50a0"
+  },
+  "/Users/josh/schwung/src/shadow/shadow_ui.js": {
+    "mtime": 1780098125.8546464,
+    "hash": "d0c3830dd3aa772ca977d6128c226ca2"
+  },
+  "/Users/josh/schwung/src/shared/feedback_gate.mjs": {
+    "mtime": 1777684773.562965,
+    "hash": "c98cdbf7baab1d3557b51f623770d601"
+  },
+  "/Users/josh/schwung/src/shared/constants.mjs": {
+    "mtime": 1775587624.1335738,
+    "hash": "ef793348fc000b54a1e768fa1f763c6b"
+  },
+  "/Users/josh/schwung/src/shared/sound_generator_ui.mjs": {
+    "mtime": 1775587624.1359794,
+    "hash": "f2b0d41d2a1474d566f08050fd739808"
+  },
+  "/Users/josh/schwung/src/shared/parse_move_manual.mjs": {
+    "mtime": 1775587624.135162,
+    "hash": "844902251be30ecaa24d93e88f68b32a"
+  },
+  "/Users/josh/schwung/src/shared/menu_stack.mjs": {
+    "mtime": 1775587624.1348817,
+    "hash": "7afd5aa42fbb617843f8c4ecbf63966d"
+  },
+  "/Users/josh/schwung/src/shared/menu_nav.mjs": {
+    "mtime": 1777304757.0790787,
+    "hash": "bd37368624de836e31e6dbd174429ed2"
+  },
+  "/Users/josh/schwung/src/shared/text_entry.mjs": {
+    "mtime": 1775587624.1364393,
+    "hash": "51254064ed70be39aa7454a3cc2b2e3d"
+  },
+  "/Users/josh/schwung/src/shared/filepath_browser.mjs": {
+    "mtime": 1775587624.1337156,
+    "hash": "b3871aa71b9f7ff77115ca0cdec60ab7"
+  },
+  "/Users/josh/schwung/src/shared/text_scroll.mjs": {
+    "mtime": 1775587624.136578,
+    "hash": "353bb884abac17541e971ffd804a5705"
+  },
+  "/Users/josh/schwung/src/shared/logger.mjs": {
+    "mtime": 1775587624.1341434,
+    "hash": "5965670e63e241e572736a4dc83d81d1"
+  },
+  "/Users/josh/schwung/src/shared/chain_param_utils.mjs": {
+    "mtime": 1775587624.1332533,
+    "hash": "8f6b1a0d13c628fd89f7b95e82f65b0f"
+  },
+  "/Users/josh/schwung/src/shared/menu_items.mjs": {
+    "mtime": 1777304757.0781832,
+    "hash": "c232af0cab12118c084fe24ffd2b99e9"
+  },
+  "/Users/josh/schwung/src/shared/move_display.mjs": {
+    "mtime": 1775587624.1350152,
+    "hash": "563db91c470fa54302cb67448d747903"
+  },
+  "/Users/josh/schwung/src/shared/menu_render.mjs": {
+    "mtime": 1775587624.134747,
+    "hash": "3bc57f0a36bf3a4765b6809bb423d616"
+  },
+  "/Users/josh/schwung/src/shared/screen_reader.mjs": {
+    "mtime": 1775587624.135452,
+    "hash": "76a0841f3f700bc2d56d94f8d4e621fb"
+  },
+  "/Users/josh/schwung/src/shared/chain_ui_views.mjs": {
+    "mtime": 1775587624.1333957,
+    "hash": "32ec927c10c8fb9c9504f241dc098467"
+  },
+  "/Users/josh/schwung/src/shared/knob_engine.mjs": {
+    "mtime": 1778366410.855442,
+    "hash": "09b2f077f0025490d8ef3653ddf7db56"
+  },
+  "/Users/josh/schwung/src/shared/param_format.mjs": {
+    "mtime": 1778366410.85566,
+    "hash": "41aae53a77b5c664f7174007744b6c51"
+  },
+  "/Users/josh/schwung/src/shared/input_filter.mjs": {
+    "mtime": 1775587624.134008,
+    "hash": "6a5ef4d40b54be6efd26affdb17c4b29"
+  },
+  "/Users/josh/schwung/src/shared/menu_layout.mjs": {
+    "mtime": 1777684773.563389,
+    "hash": "37b4599d4414fcfae0390c6ff0460014"
+  },
+  "/Users/josh/schwung/src/shared/sampler_overlay.mjs": {
+    "mtime": 1775587624.1353102,
+    "hash": "92365b6fc809479abdede7c1914cc332"
+  },
+  "/Users/josh/schwung/src/shared/store_utils.mjs": {
+    "mtime": 1779454757.5644958,
+    "hash": "915bef4ded793e885d24dfb8820477a2"
+  },
+  "/Users/josh/schwung/src/shared/scrollable_text.mjs": {
+    "mtime": 1775587624.1355994,
+    "hash": "3a35e58eb2a247dac6575688a732d5ad"
+  },
+  "/Users/josh/schwung/src/lib/schwung_spi_lib.h": {
+    "mtime": 1775587624.1111727,
+    "hash": "3a4338bd68db840848a40a69cbc3d569"
+  },
+  "/Users/josh/schwung/src/lib/schwung_jack_bridge.c": {
+    "mtime": 1775587624.1106167,
+    "hash": "b8ca540f62521c1e1c34b9bdd7d64dc6"
+  },
+  "/Users/josh/schwung/src/lib/stb_image.h": {
+    "mtime": 1775587624.1126535,
+    "hash": "f373fac238e1eded66386b61ad168d3d"
+  },
+  "/Users/josh/schwung/src/lib/stb_truetype.h": {
+    "mtime": 1775587624.1141436,
+    "hash": "ce249f3568483dc93a2ea05acc06ac5f"
+  },
+  "/Users/josh/schwung/src/lib/schwung_spi_lib.c": {
+    "mtime": 1775587624.1110356,
+    "hash": "4d1f12e1e1e4cd2c3c3c148e91304e13"
+  },
+  "/Users/josh/schwung/src/lib/schwung_jack_bridge.h": {
+    "mtime": 1775587624.1107528,
+    "hash": "b9435eb137d16c127c76adf2083837d9"
+  },
+  "/Users/josh/schwung/src/lib/schwung_jack_shm.h": {
+    "mtime": 1775587624.110891,
+    "hash": "267c6cb51c8b0f24a24a66130c158c95"
+  },
+  "/Users/josh/schwung/src/lib/jack2/posix/JackSocket.h": {
+    "mtime": 1775587624.1091557,
+    "hash": "7f67e0c522515f4dcde37bba2085089c"
+  },
+  "/Users/josh/schwung/src/lib/jack2/posix/JackSocketNotifyChannel.h": {
+    "mtime": 1775587624.1094368,
+    "hash": "e18a3d1b7f9037d23f3b0c024abac349"
+  },
+  "/Users/josh/schwung/src/lib/jack2/posix/JackPosixProcessSync.h": {
+    "mtime": 1775587624.1086357,
+    "hash": "4f939ba139c9dc49e24867e4db8218bf"
+  },
+  "/Users/josh/schwung/src/lib/jack2/posix/JackSocketClientChannel.h": {
+    "mtime": 1775587624.1092875,
+    "hash": "f509d63f34d5757cc1293eb229b65a0c"
+  },
+  "/Users/josh/schwung/src/lib/jack2/posix/JackSystemDeps_os.h": {
+    "mtime": 1775587624.109829,
+    "hash": "62fcc338d2372bae4e063b4046ca5c23"
+  },
+  "/Users/josh/schwung/src/lib/jack2/posix/JackNetUnixSocket.h": {
+    "mtime": 1775587624.1083884,
+    "hash": "7b448ec00c7857c6b1d5598e95684112"
+  },
+  "/Users/josh/schwung/src/lib/jack2/posix/JackSocketServerNotifyChannel.h": {
+    "mtime": 1775587624.1097083,
+    "hash": "f9e5bbbb2bf8ac6bd430d330f8ac32eb"
+  },
+  "/Users/josh/schwung/src/lib/jack2/posix/JackCompilerDeps_os.h": {
+    "mtime": 1775587624.1081216,
+    "hash": "dd9f5018ad5baeeb0595d203e33b8bce"
+  },
+  "/Users/josh/schwung/src/lib/jack2/posix/JackPosixSemaphore.h": {
+    "mtime": 1775587624.1087637,
+    "hash": "3cf05b37ea45a78fead40972c29c41da"
+  },
+  "/Users/josh/schwung/src/lib/jack2/posix/JackTypes_os.h": {
+    "mtime": 1775587624.109991,
+    "hash": "b242b08279ef2c1e6051233f294cadd3"
+  },
+  "/Users/josh/schwung/src/lib/jack2/posix/JackPosixThread.h": {
+    "mtime": 1775587624.108889,
+    "hash": "5a54f5f70190b9e34f6bda632d0a2ce6"
+  },
+  "/Users/josh/schwung/src/lib/jack2/posix/JackSocketServerChannel.h": {
+    "mtime": 1775587624.1095736,
+    "hash": "4d180627274ec3a9f11ba99a6b7f1d0f"
+  },
+  "/Users/josh/schwung/src/lib/jack2/posix/JackShmMem_os.h": {
+    "mtime": 1775587624.1090214,
+    "hash": "3b83d1de517e1a046cb0bbd442ac6bd9"
+  },
+  "/Users/josh/schwung/src/lib/jack2/posix/JackFifo.h": {
+    "mtime": 1775587624.1082618,
+    "hash": "b99bb24fbb75c8340ccb3e83cf8c1bc5"
+  },
+  "/Users/josh/schwung/src/lib/jack2/posix/JackPosixMutex.h": {
+    "mtime": 1775587624.1085103,
+    "hash": "28127f8ce6c0d8ddcefda69761c93ff1"
+  },
+  "/Users/josh/schwung/src/lib/jack2/shadow/JackShadowDriver.cpp": {
+    "mtime": 1775587624.1102836,
+    "hash": "785c00fefc22475a0c815d169452f86f"
+  },
+  "/Users/josh/schwung/src/lib/jack2/shadow/JackShadowDriver.h": {
+    "mtime": 1775587624.1104302,
+    "hash": "62e561a82f8a4f0f30c223783c4c19b8"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackAtomicState.h": {
+    "mtime": 1775587624.0892255,
+    "hash": "78d2f30df3640aea2ae49740e3d545dd"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackServerLaunch.h": {
+    "mtime": 1775587624.1008248,
+    "hash": "ba7efe3442f23c464053a7b376249b35"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackConstants.h": {
+    "mtime": 1775587624.0907156,
+    "hash": "80492b466acbbb2837525e029916234a"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackCompilerDeps.h": {
+    "mtime": 1775587624.0903928,
+    "hash": "10bd7a15b38b4609738d366df5a70e82"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackMidiBufferWriteQueue.h": {
+    "mtime": 1775587624.095599,
+    "hash": "0e6660a10056a96cd7622ae278c0e0bd"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackNetTool.h": {
+    "mtime": 1775587624.098328,
+    "hash": "174e69b815bf5ffeddc66e081ce7fc3b"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackChannel.h": {
+    "mtime": 1775587624.0898118,
+    "hash": "d17ac2b5cdb7220e114e3c264b16d15d"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackAtomicArrayState.h": {
+    "mtime": 1775587624.0890589,
+    "hash": "582905dab2314e2c3d6288f90fa09641"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackMidiReceiveQueue.h": {
+    "mtime": 1775587624.0965412,
+    "hash": "aecce9c95b409b4e29b3784f31fde59d"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackPortType.h": {
+    "mtime": 1775587624.0989532,
+    "hash": "166d6bb713c1132d250fea637ea643c7"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackMidiPort.h": {
+    "mtime": 1775587624.0959036,
+    "hash": "91b201c586c7f2b3dc16c98f2b2e9056"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackMidiAsyncWaitQueue.h": {
+    "mtime": 1775587624.0953062,
+    "hash": "11ded25ae771a192c9f2bbc92fd12fce"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackMidiReadQueue.h": {
+    "mtime": 1775587624.096394,
+    "hash": "71d3652eb231862c79bdde0c62b90c0f"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackFrameTimer.h": {
+    "mtime": 1775587624.0928218,
+    "hash": "0ad4e3034f9f62c191207340b22b5215"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackMidiWriteQueue.h": {
+    "mtime": 1775587624.0970092,
+    "hash": "56ac23a8628906181bfea214d96b5af1"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackServer.h": {
+    "mtime": 1775587624.100503,
+    "hash": "0b4c9ee450980c0a2df20a34595a7976"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackAC3Encoder.h": {
+    "mtime": 1775587624.0885074,
+    "hash": "4179f28f01c52e7c693d95295a816dd5"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackExternalClient.h": {
+    "mtime": 1775587624.0925376,
+    "hash": "98eaaeb1821eca378026c027bb98d7cf"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackResampler.h": {
+    "mtime": 1775587624.0998275,
+    "hash": "497680a4d8e8a42711883a15b76f66ff"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackServerGlobals.h": {
+    "mtime": 1775587624.1006665,
+    "hash": "a5ce0e1397304194b4d4bfb29e93fe7a"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackAtomic.h": {
+    "mtime": 1775587624.088916,
+    "hash": "eda3d5bf2170607e96fe2a816d64b382"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackNetInterface.h": {
+    "mtime": 1775587624.097629,
+    "hash": "547410d0cbde675e2af5f4bc74d6d0cb"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackTimedDriver.h": {
+    "mtime": 1775587624.1020885,
+    "hash": "ea8f010a7bd0f643831c2ce3d9e0f532"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackMetadata.h": {
+    "mtime": 1775587624.09502,
+    "hash": "8efd2ef8ae49dc62605d36c6790a4557"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackNetDriver.h": {
+    "mtime": 1775587624.0974705,
+    "hash": "254ab4e10a36df1a9ac23ae169c5adda"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackEngineControl.h": {
+    "mtime": 1775587624.091942,
+    "hash": "179b3d54b7c122182451a73592fa0995"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackShmMem.h": {
+    "mtime": 1775587624.101147,
+    "hash": "3042e36a54d0c7787141a97de7a2f79f"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackPlatformPlug.h": {
+    "mtime": 1775587624.0986395,
+    "hash": "8682f4607e2a413b52f37bf9e0f2c6d2"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackLibSampleRateResampler.h": {
+    "mtime": 1775587624.0944304,
+    "hash": "bcae073869d02394830b4468695b7780"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackLibGlobals.h": {
+    "mtime": 1775587624.0942814,
+    "hash": "a9e4deb907fe29ba9d43de3b18b558bf"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackMidiRawInputWriteQueue.h": {
+    "mtime": 1775587624.0960486,
+    "hash": "3905b65da7c3569d1b5665f1f0758921"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackMidiAsyncQueue.h": {
+    "mtime": 1775587624.095178,
+    "hash": "85fd4d6e08e8ab016ce295bbd812ef2e"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackMidiDriver.h": {
+    "mtime": 1775587624.0957592,
+    "hash": "5d54b805401e8b9c499ae3d471859123"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/netjack.h": {
+    "mtime": 1775587624.1064396,
+    "hash": "047f03a486ce9edc9edd084e0d1b0556"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackException.h": {
+    "mtime": 1775587624.0923994,
+    "hash": "2cf5f44a9e532bbb2a31cbb7e214fb38"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackThread.h": {
+    "mtime": 1775587624.1016083,
+    "hash": "91325d2517cbee8bd628073bc48537f7"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackInternalClient.h": {
+    "mtime": 1775587624.093726,
+    "hash": "71cf111b4b15141ec704771767da6b6c"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackLoopbackDriver.h": {
+    "mtime": 1775587624.0947077,
+    "hash": "93b5c7844cce80ea5523a3798090f119"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackGraphManager.h": {
+    "mtime": 1775587624.0935931,
+    "hash": "4be4a9eaf79b81fbe1076b4d725ea0ec"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/netjack_packet.h": {
+    "mtime": 1775587624.1065812,
+    "hash": "57ce293a7663ddaf9cd3f54ece01adf2"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackMidiRawOutputWriteQueue.h": {
+    "mtime": 1775587624.0962207,
+    "hash": "ed453c3cc78a4253a1a75ea61415966c"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackError.h": {
+    "mtime": 1775587624.0922544,
+    "hash": "479280758eec558eca0e2a66fcaec3a9"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackDriverInfo.h": {
+    "mtime": 1775587624.0912943,
+    "hash": "7558805f1d5ede866b3632f68aeb657a"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackTypes.h": {
+    "mtime": 1775587624.102612,
+    "hash": "7bff454511956510372ecf6b4742f289"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackMessageBuffer.h": {
+    "mtime": 1775587624.0948439,
+    "hash": "c054829753e8c12b7e002a077b16e306"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackGlobals.h": {
+    "mtime": 1775587624.0934727,
+    "hash": "8e6c56794cf4de2d33b9b767cfff5985"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/memops.h": {
+    "mtime": 1775587624.1063025,
+    "hash": "47969cc8a10e79d5ca3bc6bad1e1bba2"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackLockedEngine.h": {
+    "mtime": 1775587624.0945733,
+    "hash": "e2e2251058fa189676ef332c505f2fb9"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackConnectionManager.h": {
+    "mtime": 1775587624.0905478,
+    "hash": "551471179bf1e11e26463d35e3386fae"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackDriverLoader.h": {
+    "mtime": 1775587624.0914774,
+    "hash": "a6659265418b727f09ecd3cefbb0aedb"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackMidiUtil.h": {
+    "mtime": 1775587624.0968492,
+    "hash": "5a14c57d4940a7b4f2baaa579c150541"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackClientInterface.h": {
+    "mtime": 1775587624.09026,
+    "hash": "69c609b13aa2c319c64953447a4cf871"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackAudioAdapter.h": {
+    "mtime": 1775587624.0893626,
+    "hash": "8e525354ea5918f9ef05f3ac68a175f3"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackThreadedDriver.h": {
+    "mtime": 1775587624.1017747,
+    "hash": "68a04493c4dc4771fc6e75f075990a29"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackRestartThreadedDriver.h": {
+    "mtime": 1775587624.0999937,
+    "hash": "9c27e16e5cd06be5951f1d661b0ca67c"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackFreewheelDriver.h": {
+    "mtime": 1775587624.0929801,
+    "hash": "d7cf9fe44cc5329dc096bfcd7631c782"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackProfiler.h": {
+    "mtime": 1775587624.0991046,
+    "hash": "2251922a939594421e94a4918cd0dcf5"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackNetOneDriver.h": {
+    "mtime": 1775587624.0979354,
+    "hash": "55b4852009671dd5fbb06088b4c52358"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackMutex.h": {
+    "mtime": 1775587624.097169,
+    "hash": "66ba629fb7b8ff022ac8b2f149c26a7e"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackSynchro.h": {
+    "mtime": 1775587624.1012843,
+    "hash": "fddc1af56065068050d41006ae033e62"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackEngineProfiling.h": {
+    "mtime": 1775587624.092105,
+    "hash": "f144d44ba784b297c16a4723049a9e44"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/timestamps.h": {
+    "mtime": 1775587624.1070251,
+    "hash": "bdf54b222d01893c61729539250a05fe"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackSession.h": {
+    "mtime": 1775587624.1009943,
+    "hash": "3913184adf1f8d785ca24d7ea6d6f48c"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackDebugClient.h": {
+    "mtime": 1775587624.0909915,
+    "hash": "3ddcc0790459d348a7f0dc683a177b6a"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/shm.h": {
+    "mtime": 1775587624.1068864,
+    "hash": "0e807e430024247461c13a095ae3a218"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackNotification.h": {
+    "mtime": 1775587624.098487,
+    "hash": "bed3faa768e6c08a4c860c1315068af4"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackAudioDriver.h": {
+    "mtime": 1775587624.089635,
+    "hash": "5f942e3b93ccbb42382b144cff563e6d"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackProxyDriver.h": {
+    "mtime": 1775587624.0992591,
+    "hash": "50c5642b15525d32987c27d95a41ceb4"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/driver_interface.h": {
+    "mtime": 1775587624.1030388,
+    "hash": "a73acb9fba5d640e8ce24abd094a4304"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackRequest.h": {
+    "mtime": 1775587624.0995374,
+    "hash": "4b42171745603e128e5d5ba136713e3c"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackDummyDriver.h": {
+    "mtime": 1775587624.0916407,
+    "hash": "e0c1fd8b516848714340794af25791cd"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackDriver.h": {
+    "mtime": 1775587624.0911407,
+    "hash": "769029942351d251d8ef80cebf509250"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackRequestDecoder.h": {
+    "mtime": 1775587624.099681,
+    "hash": "78a684104f9aa07e8577ed28434addcd"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/varargs.h": {
+    "mtime": 1775587624.107157,
+    "hash": "66a2d34914ff530b8123871cd2232371"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackNetSocket.h": {
+    "mtime": 1775587624.0980983,
+    "hash": "8eb14209c5012dec0882a1d380f4a327"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackArgParser.h": {
+    "mtime": 1775587624.0887752,
+    "hash": "10290dbe1c779afcde8539750dc7b4af"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackSystemDeps.h": {
+    "mtime": 1775587624.1014433,
+    "hash": "f9b8f39e5b77cafd34e2e08813f74931"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackPort.h": {
+    "mtime": 1775587624.0988014,
+    "hash": "b840a8046c66536331ff7f4cf0a1691a"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackAudioAdapterInterface.h": {
+    "mtime": 1775587624.0894992,
+    "hash": "e8b7e566dd4409ddcd5bd6abd21254fb"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackEngine.h": {
+    "mtime": 1775587624.091794,
+    "hash": "0d2f3e45a268b9cde6489ea12dc2b6ff"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackControlAPI.h": {
+    "mtime": 1775587624.0908628,
+    "hash": "64d78dd20c1f3ea6633f1ee278febb60"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackWaitCallbackDriver.h": {
+    "mtime": 1775587624.1027603,
+    "hash": "5b71c84ef4f44ec56d37ff39d0e06e0e"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackMidiBufferReadQueue.h": {
+    "mtime": 1775587624.0954657,
+    "hash": "8db06aab10ff541594f737e0c449ff84"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackClient.h": {
+    "mtime": 1775587624.089981,
+    "hash": "0433c865962d3284d9f3e56391ec8fba"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/promiscuous.h": {
+    "mtime": 1775587624.106747,
+    "hash": "40c88454da9501385ee1b6ea9d172098"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackClientControl.h": {
+    "mtime": 1775587624.0901234,
+    "hash": "be1bafcfa2f2265e6bf526dac6a0bd90"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackWaitThreadedDriver.h": {
+    "mtime": 1775587624.1028993,
+    "hash": "e936330221d4debf4f4d4b5a120a7fbe"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackFilters.h": {
+    "mtime": 1775587624.092683,
+    "hash": "ca8fcdfc71f2a1233cdb288124a7a1aa"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackTime.h": {
+    "mtime": 1775587624.1019318,
+    "hash": "3a9851e8954449bf3e11361c8f42c788"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackLibClient.h": {
+    "mtime": 1775587624.0941436,
+    "hash": "063b6237b23f22fe53918ea3dc620bfa"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackMidiSendQueue.h": {
+    "mtime": 1775587624.0966926,
+    "hash": "81d7f1272b830aa59483aff916517b58"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackInternalSessionLoader.h": {
+    "mtime": 1775587624.0940053,
+    "hash": "03bf8b54d2b24bd09775f25a2804506e"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackInternalClientChannel.h": {
+    "mtime": 1775587624.093852,
+    "hash": "08ce96a25ff0fb3e77da6e44bb6d5449"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackActivationCount.h": {
+    "mtime": 1775587624.0886426,
+    "hash": "9377be39998e1c752f46a4e609a6d963"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackTools.h": {
+    "mtime": 1775587624.1022651,
+    "hash": "3134fecdef3eb65dc1fef1f9b58856b9"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackNetAdapter.h": {
+    "mtime": 1775587624.0973191,
+    "hash": "2e1391fbf30e5664649437bacad540b6"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackNetManager.h": {
+    "mtime": 1775587624.097781,
+    "hash": "6de84c5828bb4c94945efc7bb0ae39ef"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackGenericClientChannel.h": {
+    "mtime": 1775587624.093331,
+    "hash": "4ec32848be70371af8d0a92fecf95bcd"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/JackTransportEngine.h": {
+    "mtime": 1775587624.1024086,
+    "hash": "f5cbb55a8e9cb3ee972da7b2833b065a"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/jack/control.h": {
+    "mtime": 1775587624.103324,
+    "hash": "bb6072ca0131e55e9088527363cb2af7"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/jack/net.h": {
+    "mtime": 1775587624.1045156,
+    "hash": "990879a4e01a96351f0c4bffa2f4f08b"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/jack/uuid.h": {
+    "mtime": 1775587624.1058812,
+    "hash": "5f6e0986ec145ac41bf678f1fe144a2f"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/jack/types.h": {
+    "mtime": 1775587624.1057284,
+    "hash": "b3e081b6a01199d5533b99e4a24ac633"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/jack/midiport.h": {
+    "mtime": 1775587624.1043692,
+    "hash": "13e503703fba1741a5fbdfbca98cd3db"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/jack/weakjack.h": {
+    "mtime": 1775587624.1060216,
+    "hash": "b5277c495922348b22fde94a31a4aa9b"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/jack/metadata.h": {
+    "mtime": 1775587624.1041994,
+    "hash": "c5f5d3150290372fcb09cd12b8278586"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/jack/session.h": {
+    "mtime": 1775587624.1047838,
+    "hash": "96a7fdafa110442ca7968e793aa58684"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/jack/thread.h": {
+    "mtime": 1775587624.105389,
+    "hash": "3029888ac554c36abe6b482d159a17d7"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/jack/weakmacros.h": {
+    "mtime": 1775587624.106159,
+    "hash": "cb7932289e02f21b67f2770038744817"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/jack/statistics.h": {
+    "mtime": 1775587624.104928,
+    "hash": "63225efcd6f6b9194e8c5022dc7ec97e"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/jack/jslist.h": {
+    "mtime": 1775587624.10405,
+    "hash": "f93ec6f8c42d7a36bbdf08e298b76d5a"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/jack/systemdeps.h": {
+    "mtime": 1775587624.1052234,
+    "hash": "94a18b42ef3508b209ffa0651c2089f5"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/jack/transport.h": {
+    "mtime": 1775587624.1055439,
+    "hash": "eabc654beb84fb117b07abfaa629040e"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/jack/intclient.h": {
+    "mtime": 1775587624.10348,
+    "hash": "986d93b6c81a47013a1965f161c1f72d"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/jack/jack.h": {
+    "mtime": 1775587624.103875,
+    "hash": "748d02a2c541d40e73859673b2a96ec2"
+  },
+  "/Users/josh/schwung/src/lib/jack2/common/jack/ringbuffer.h": {
+    "mtime": 1775587624.1046605,
+    "hash": "155f7af71c50943a0961761f8d6aa7f7"
+  },
+  "/Users/josh/schwung/src/lib/jack2/linux/driver.h": {
+    "mtime": 1775587624.107785,
+    "hash": "711d9370456626a00b4d5a8b72851f01"
+  },
+  "/Users/josh/schwung/src/lib/jack2/linux/JackPlatformPlug_os.h": {
+    "mtime": 1775587624.1076388,
+    "hash": "a138830ae59baf824577a39c8e34d068"
+  },
+  "/Users/josh/schwung/src/lib/jack2/linux/JackAtomic_os.h": {
+    "mtime": 1775587624.1073658,
+    "hash": "369343793f2d0856e9a23a7e2a1c5bc9"
+  },
+  "/Users/josh/schwung/src/lib/jack2/linux/JackLinuxFutex.h": {
+    "mtime": 1775587624.1075044,
+    "hash": "71bcca7e6a8fdb99ba932f884bd08455"
+  },
+  "/Users/josh/schwung/src/lib/jack2/linux/uptime.h": {
+    "mtime": 1775587624.1079297,
+    "hash": "957264c65a1aa4c5433d4b1478729ba2"
+  },
+  "/Users/josh/schwung/src/modules/tools/seq-test/ui.js": {
+    "mtime": 1777304757.0680346,
+    "hash": "0493a4d52c7b8d760b1b073217e4099f"
+  },
+  "/Users/josh/schwung/src/modules/tools/seq-test/dsp/seq-test.c": {
+    "mtime": 1777304757.0677714,
+    "hash": "0b7b312abd1087bfb0f7e342f6e88145"
+  },
+  "/Users/josh/schwung/src/modules/tools/wav-player/wav_player.c": {
+    "mtime": 1775587624.1253705,
+    "hash": "d452cc34f68141d281086a7de2acbdea"
+  },
+  "/Users/josh/schwung/src/modules/tools/splash-test/ui.js": {
+    "mtime": 1775587624.125023,
+    "hash": "18ed0be07aae16623ec612971f20cf73"
+  },
+  "/Users/josh/schwung/src/modules/tools/ui-test/ui.js": {
+    "mtime": 1777304757.0693064,
+    "hash": "d5b45990af8e682196621ca29cac1aa3"
+  },
+  "/Users/josh/schwung/src/modules/tools/song-mode/ui.js": {
+    "mtime": 1777304757.0688114,
+    "hash": "4bee401d0dbe67fdb5f627be211dec18"
+  },
+  "/Users/josh/schwung/src/modules/tools/file-browser/ui.js": {
+    "mtime": 1775587624.1238616,
+    "hash": "8aa2869d2aea3aa1121e6bc96dc89e07"
+  },
+  "/Users/josh/schwung/src/modules/tools/config-test/ui.js": {
+    "mtime": 1777304757.0674744,
+    "hash": "b89a417dc74de5337cc56ccda0ceb9fc"
+  },
+  "/Users/josh/schwung/src/modules/audio_fx/freeverb/freeverb.c": {
+    "mtime": 1775587624.1145442,
+    "hash": "db295e197297cff47247d56bad340201"
+  },
+  "/Users/josh/schwung/src/modules/audio_fx/freeverb/ui_chain.js": {
+    "mtime": 1775587624.1148422,
+    "hash": "cd90aeb96d0756351317182b44e67d16"
+  },
+  "/Users/josh/schwung/src/modules/text-test/ui.js": {
+    "mtime": 1775587624.123171,
+    "hash": "90c6b2e23ffd17bf75969ef001d27c9b"
+  },
+  "/Users/josh/schwung/src/modules/chain/ui.js": {
+    "mtime": 1775587624.118409,
+    "hash": "b98971d2438f3bb881091d0d336e6908"
+  },
+  "/Users/josh/schwung/src/modules/chain/midi_fx/fifths.mjs": {
+    "mtime": 1775587624.1173844,
+    "hash": "7bb84909595581544b8fb87c48d105a6"
+  },
+  "/Users/josh/schwung/src/modules/chain/midi_fx/octave_up.mjs": {
+    "mtime": 1775587624.1176472,
+    "hash": "aae489e7758be543edacb6785486f4d6"
+  },
+  "/Users/josh/schwung/src/modules/chain/midi_fx/index.mjs": {
+    "mtime": 1775587624.117515,
+    "hash": "483ad48df306f1c4cf05af3cad8468ec"
+  },
+  "/Users/josh/schwung/src/modules/chain/dsp/chain_host.c": {
+    "mtime": 1780098073.5640357,
+    "hash": "2c421e4c1ac2d1578c33189592e2c963"
+  },
+  "/Users/josh/schwung/src/modules/controller/ui.js": {
+    "mtime": 1775587624.118905,
+    "hash": "e9bafa5c9946879af51b978ee34c403a"
+  },
+  "/Users/josh/schwung/src/modules/sound_generators/linein/linein.c": {
+    "mtime": 1775587624.1221635,
+    "hash": "c823350be930ce58ac546151748aa2b7"
+  },
+  "/Users/josh/schwung/src/modules/midi_fx/arp/dsp/arp.c": {
+    "mtime": 1777304757.0660343,
+    "hash": "c122da0f92033c77e71747077eb25632"
+  },
+  "/Users/josh/schwung/src/modules/midi_fx/chord/dsp/chord.c": {
+    "mtime": 1775587624.1198745,
+    "hash": "6b09aeb8899372e6f479885b9922fa1d"
+  },
+  "/Users/josh/schwung/src/modules/midi_fx/velocity_scale/dsp/velocity_scale.c": {
+    "mtime": 1775587624.1203582,
+    "hash": "a81852be215508f223346191d3cca20e"
+  },
+  "/Users/josh/schwung/src/modules/overtake/rnbo-runner/ui.js": {
+    "mtime": 1775587624.1216836,
+    "hash": "db5dda7860c3c4b4ab0ba6281b6ed408"
+  },
+  "/Users/josh/schwung/src/modules/overtake/rnbo-runner/osc_send.py": {
+    "mtime": 1775587624.121376,
+    "hash": "7fb1d96b2fcca94734732065c8c61fb4"
+  },
+  "/Users/josh/schwung/src/modules/store/ui.js": {
+    "mtime": 1778366410.8484404,
+    "hash": "16245d6bda3480e20def1f31e78c505a"
+  },
+  "/Users/josh/schwung/SCREEN_READER_TEST.md": {
+    "mtime": 1775587623.6347075,
+    "hash": "177f25c043f85fa7c66111d96e39c9bd"
+  },
+  "/Users/josh/schwung/TESTING_SCREEN_READER.md": {
+    "mtime": 1775587623.6348972,
+    "hash": "ed369b932b64be0467cb1ad37b7080dc"
+  },
+  "/Users/josh/schwung/README.md": {
+    "mtime": 1778366410.8129952,
+    "hash": "0f5bf98c9a8079b15cdb4033194759a9"
+  },
+  "/Users/josh/schwung/THIRD_PARTY_LICENSES.md": {
+    "mtime": 1775587623.6355088,
+    "hash": "5150fae79aecb4646073e065a5773e35"
+  },
+  "/Users/josh/schwung/AGENTS.md": {
+    "mtime": 1775587623.6324167,
+    "hash": "6264040bff26627d256f74941d042623"
+  },
+  "/Users/josh/schwung/BUILDING.md": {
+    "mtime": 1775587623.6327748,
+    "hash": "3d436361eea205ab40d0b1217de105f2"
+  },
+  "/Users/josh/schwung/CLAUDE.md": {
+    "mtime": 1779103085.1510046,
+    "hash": "cbb88e411396cc9da179836f37b192a2"
+  },
+  "/Users/josh/schwung/tests/shadow/README.md": {
+    "mtime": 1775587624.1435862,
+    "hash": "99b4401b9dfb11fd3a688b15b5ec0785"
+  },
+  "/Users/josh/schwung/docs/ARCHITECTURE.md": {
+    "mtime": 1777476521.6247795,
+    "hash": "58079bf66f70c635a69074f14e014eb4"
+  },
+  "/Users/josh/schwung/docs/LINK_AUDIO_WIRE_FORMAT.md": {
+    "mtime": 1777476521.6266103,
+    "hash": "ccb5a2c4758f70621002ace65321311f"
+  },
+  "/Users/josh/schwung/docs/API.md": {
+    "mtime": 1780098125.8420954,
+    "hash": "2f9504a0c8272eefc253fa8bb7beb4cd"
+  },
+  "/Users/josh/schwung/docs/SPI_PROTOCOL.md": {
+    "mtime": 1777304756.8724754,
+    "hash": "f167a77eb9058fc9fccd5f3af6371557"
+  },
+  "/Users/josh/schwung/docs/tts-config.md": {
+    "mtime": 1777476521.6330168,
+    "hash": "02a6730bddb9ce58f9c91eccfdfd94a5"
+  },
+  "/Users/josh/schwung/docs/ADDRESSING_MOVE_SYNTHS.md": {
+    "mtime": 1777304756.8690186,
+    "hash": "acc118ba1e801ab057996dbd9bac9013"
+  },
+  "/Users/josh/schwung/docs/link-audio-crackle-followup.md": {
+    "mtime": 1777304756.872624,
+    "hash": "87761f34696f1912c064f0f9b432ff4e"
+  },
+  "/Users/josh/schwung/docs/MODULES.md": {
+    "mtime": 1780098125.8431818,
+    "hash": "fb1b47dd212c323b417c30c7914cbc26"
+  },
+  "/Users/josh/schwung/docs/move-auth-api.md": {
+    "mtime": 1775587623.64398,
+    "hash": "ffa0a1a68f2b8b2e18506bbb4fff3b2e"
+  },
+  "/Users/josh/schwung/docs/release-notes-next.md": {
+    "mtime": 1777476521.6317513,
+    "hash": "2c76174222b665bad4cc308262aa5508"
+  },
+  "/Users/josh/schwung/docs/COLLECTING-DIAGNOSTICS.md": {
+    "mtime": 1777478328.3815262,
+    "hash": "8641eb4379fd18ee5d247defdf652294"
+  },
+  "/Users/josh/schwung/docs/LOGGING.md": {
+    "mtime": 1777304756.8700817,
+    "hash": "88d48dd51b721f6aaed53c289c82a28d"
+  },
+  "/Users/josh/schwung/docs/GAIN_STAGING_ANALYSIS.md": {
+    "mtime": 1777304756.8697476,
+    "hash": "91b8adb8884856e9d26a0b0614b17c64"
+  },
+  "/Users/josh/schwung/docs/tts-architecture.md": {
+    "mtime": 1777476521.6324315,
+    "hash": "193ae09b2a08a6a3b49a051fd32290e3"
+  },
+  "/Users/josh/schwung/docs/code-review-round-2.md": {
+    "mtime": 1775587623.6438303,
+    "hash": "73276c93bb7c92550793904a1a8a3a36"
+  },
+  "/Users/josh/schwung/docs/MIDI_INJECTION.md": {
+    "mtime": 1777684773.4383569,
+    "hash": "bcac023aa65ea70315fe89a025d78327"
+  },
+  "/Users/josh/schwung/docs/FORKING.md": {
+    "mtime": 1777476521.6259065,
+    "hash": "e58f1bd9bd680d6ed87ba2563bd3a3b4"
+  },
+  "/Users/josh/schwung/docs/REALTIME_SAFETY.md": {
+    "mtime": 1777304756.872298,
+    "hash": "353b8e764b25d353f0fa9ae9663c68fd"
+  },
+  "/Users/josh/schwung/docs/plans/2026-04-08-asset-validation.md": {
+    "mtime": 1777304756.873132,
+    "hash": "2641ee1ea96e23432ac1a06c7edddc2a"
+  },
+  "/Users/josh/schwung/docs/plans/asrc-revisit-prompt.md": {
+    "mtime": 1777304756.8782213,
+    "hash": "d1f5a71790cec5ddead0f671ebf77a4c"
+  },
+  "/Users/josh/schwung/docs/plans/2026-04-30-feedback-protection-design.md": {
+    "mtime": 1777684773.4401078,
+    "hash": "aeab2c264a4124b5ab13ca2f8a9cbb5a"
+  },
+  "/Users/josh/schwung/docs/plans/2026-02-05-screen-reader-support-design.md": {
+    "mtime": 1775587623.6446981,
+    "hash": "81aa8c8709ef9785c650e4c7051dc27f"
+  },
+  "/Users/josh/schwung/docs/plans/2026-04-08-remote-ui-design.md": {
+    "mtime": 1777304756.873319,
+    "hash": "d9f1846dde8c471ffaaa705976555eac"
+  },
+  "/Users/josh/schwung/docs/plans/2026-02-05-screen-reader-testing-progress.md": {
+    "mtime": 1775587623.6448426,
+    "hash": "ece585389c7ced60a7f4e960cd7a4ce7"
+  },
+  "/Users/josh/schwung/docs/plans/2026-04-08-usb-c-host-mode.md": {
+    "mtime": 1777304756.873825,
+    "hash": "b7a267f5f41bd3cbb59d0c01d79ae35f"
+  },
+  "/Users/josh/schwung/docs/plans/2026-04-17-link-audio-official-api-migration.md": {
+    "mtime": 1777304756.8757925,
+    "hash": "2afa30e45c8a2fd78f0432dff28c76dd"
+  },
+  "/Users/josh/schwung/docs/plans/2026-05-15-midi-player-module-design.md": {
+    "mtime": 1779103085.152804,
+    "hash": "5598ec940c09dbc93a38e03f8413f186"
+  },
+  "/Users/josh/schwung/docs/plans/2026-04-28-gooderer-implementation.md": {
+    "mtime": 1778366410.8146229,
+    "hash": "855b2892e1b76cb5a9e6125800af80d3"
+  },
+  "/Users/josh/schwung/docs/plans/2026-04-02-schwung-manager-fixes.md": {
+    "mtime": 1775587623.6507242,
+    "hash": "6dc7366b89e64fcf9709052093f5f481"
+  },
+  "/Users/josh/schwung/docs/plans/2026-04-27-midiverb-implementation.md": {
+    "mtime": 1777476521.6308165,
+    "hash": "3c84a099b88e6a084f9af43a63cbd9b0"
+  },
+  "/Users/josh/schwung/docs/plans/2026-02-14-linein-input-type-modes.md": {
+    "mtime": 1775587623.6464317,
+    "hash": "a4d3db0964b60de5c2cc3d1bb3fe10d0"
+  },
+  "/Users/josh/schwung/docs/plans/2026-04-28-gooderer-design.md": {
+    "mtime": 1778366410.8142047,
+    "hash": "b8d6a8c844c29d766e4b4650a793d942"
+  },
+  "/Users/josh/schwung/docs/plans/2026-02-18-help-viewer-design.md": {
+    "mtime": 1775587623.6465793,
+    "hash": "9c09e23f9de29651d799c1f09a3303fd"
+  },
+  "/Users/josh/schwung/docs/plans/2026-03-30-jack-double-buffer.md": {
+    "mtime": 1775587623.6502073,
+    "hash": "081b905af4736e36b1dc3c0192d5358c"
+  },
+  "/Users/josh/schwung/docs/plans/2026-04-24-per-module-config.md": {
+    "mtime": 1777304756.8779495,
+    "hash": "1b0931d662069e6c949d43b8d1a3c82a"
+  },
+  "/Users/josh/schwung/docs/plans/2026-03-28-integrate-jack-and-rnbo-runner.md": {
+    "mtime": 1775587623.648273,
+    "hash": "d90434ccc526b531950875529e9d7706"
+  },
+  "/Users/josh/schwung/docs/plans/2026-05-16-wav-position-zoom-pan-design.md": {
+    "mtime": 1779103085.15377,
+    "hash": "9daeb9df7013e9ae3f8878e1800ef8b8"
+  },
+  "/Users/josh/schwung/docs/plans/2026-04-08-remote-ui-plan.md": {
+    "mtime": 1777304756.8735175,
+    "hash": "43c066f0ce8cf4bdb8ce1da6e331010e"
+  },
+  "/Users/josh/schwung/docs/plans/2026-03-28-catalog-site-design.md": {
+    "mtime": 1775587623.6480808,
+    "hash": "8f050bd2a0ac7b573647ed0d74c3b328"
+  },
+  "/Users/josh/schwung/docs/plans/2026-04-10-fix-on-device-upgrade-entrypoint.md": {
+    "mtime": 1777304756.8745825,
+    "hash": "6058d94ea17b92a7606285cb8a2d4d44"
+  },
+  "/Users/josh/schwung/docs/plans/2026-04-20-303-design.md": {
+    "mtime": 1777304756.8764021,
+    "hash": "e886e1d8a5a2cd358f94b3d251d976a4"
+  },
+  "/Users/josh/schwung/docs/plans/2026-03-13-move-anything-2.0-architecture.md": {
+    "mtime": 1775587623.6476038,
+    "hash": "b22e4caf7d5ffaa7f67aaafd01747695"
+  },
+  "/Users/josh/schwung/docs/plans/2026-02-04-parameter-consolidation.md": {
+    "mtime": 1775587623.6445403,
+    "hash": "c78482041b8cb7322c70a4ef1e03720b"
+  },
+  "/Users/josh/schwung/docs/plans/2026-03-28-per-module-exit-hooks.md": {
+    "mtime": 1775587623.6484132,
+    "hash": "d436457bc6530deea7592c7106792532"
+  },
+  "/Users/josh/schwung/docs/plans/2026-03-21-rename-to-schwung.md": {
+    "mtime": 1775587623.6477716,
+    "hash": "4eca16f0b81c7a6dc65d1663f53cba44"
+  },
+  "/Users/josh/schwung/docs/plans/2026-04-10-long-press-shadow-shortcuts-plan.md": {
+    "mtime": 1777476521.6290746,
+    "hash": "413244ee272b69d72f7226cc664ee652"
+  },
+  "/Users/josh/schwung/docs/plans/2026-04-27-midiverb-design.md": {
+    "mtime": 1777476521.6304982,
+    "hash": "f7a1cc217c45857c6cd72d504905c46f"
+  },
+  "/Users/josh/schwung/docs/plans/2026-04-03-microcosm-audio-fx.md": {
+    "mtime": 1775587623.651033,
+    "hash": "e0d5ae07a65b6e60726b12de5fbda147"
+  },
+  "/Users/josh/schwung/docs/plans/2026-04-07-ui-test-module.md": {
+    "mtime": 1777304756.8729699,
+    "hash": "aeaf1ad41a1b357b359fec8cde21b1db"
+  },
+  "/Users/josh/schwung/docs/plans/2026-05-16-module-bypass-shortcut-design.md": {
+    "mtime": 1779103085.1529458,
+    "hash": "c507f873da19d7d66efb6194874d4f15"
+  },
+  "/Users/josh/schwung/docs/plans/2026-02-12-link-audio-interception-design.md": {
+    "mtime": 1775587623.646234,
+    "hash": "74264ac0b7b992a608f5dc6abe604a88"
+  },
+  "/Users/josh/schwung/docs/plans/2026-05-17-schwung-breath-implementation.md": {
+    "mtime": 1779454757.5449815,
+    "hash": "7d2e84336e4addf6a68ca9fbbd2aa9aa"
+  },
+  "/Users/josh/schwung/docs/plans/2026-03-23-scan-packs-design.md": {
+    "mtime": 1775587623.6479204,
+    "hash": "1160de56fc72cfef8d226baa7d3a3100"
+  },
+  "/Users/josh/schwung/docs/plans/2026-04-02-schwung-local-reverse-proxy.md": {
+    "mtime": 1775587623.650556,
+    "hash": "abdfeea55655d494b987b28ddcd54b86"
+  },
+  "/Users/josh/schwung/docs/plans/2026-04-20-tb3po-design.md": {
+    "mtime": 1777304756.877273,
+    "hash": "f41507b45a522b22d3eef676d8c07926"
+  },
+  "/Users/josh/schwung/docs/plans/2026-02-10-desktop-installer-design.md": {
+    "mtime": 1775587623.6453211,
+    "hash": "130b35609a54970d02b33ed095271b96"
+  },
+  "/Users/josh/schwung/docs/plans/2026-04-20-per-module-mute-design.md": {
+    "mtime": 1777304756.8768134,
+    "hash": "868c6ac597cc98022633d2ae4dabe895"
+  },
+  "/Users/josh/schwung/docs/plans/2026-04-28-cable2-channel-remap.md": {
+    "mtime": 1777684773.4398203,
+    "hash": "4ef0ed99968c6bd64375941ffaa4bbb3"
+  },
+  "/Users/josh/schwung/docs/plans/2026-03-30-defer-fx-to-post-ioctl.md": {
+    "mtime": 1775587623.6500475,
+    "hash": "9af085a3dcaabcbf7e8dbc5772b10f64"
+  },
+  "/Users/josh/schwung/docs/plans/2026-02-10-desktop-installer.md": {
+    "mtime": 1775587623.646056,
+    "hash": "e6404251b8267692bc933c6e31bba681"
+  },
+  "/Users/josh/schwung/docs/plans/2026-05-16-mrsample-design.md": {
+    "mtime": 1779103085.1534958,
+    "hash": "6ccc30ce34c930a1f5992f39ebab4a95"
+  },
+  "/Users/josh/schwung/docs/plans/2026-04-22-release-notes-links-design.md": {
+    "mtime": 1777304756.8775697,
+    "hash": "bb985b9841797005264e2ce6d4a748b4"
+  },
+  "/Users/josh/schwung/docs/plans/2026-04-16-mfx-me-only-bus.md": {
+    "mtime": 1777304756.8752582,
+    "hash": "2ba9f33a56fd6dac58acc4ce61c4c4ad"
+  },
+  "/Users/josh/schwung/docs/plans/2026-04-10-long-press-shadow-shortcuts.md": {
+    "mtime": 1777476521.6296945,
+    "hash": "34a8a7871f88e068cd26080489ac3f3e"
+  },
+  "/Users/josh/schwung/docs/plans/2026-05-03-unified-knob-and-units.md": {
+    "mtime": 1778366410.8149698,
+    "hash": "ffdec5191bc2e553e1bbab478e0a8e05"
+  },
+  "/Users/josh/schwung/docs/plans/2026-04-27-midiverb-v0.2-rom-mode.md": {
+    "mtime": 1777476521.6312473,
+    "hash": "67be33e8e9a3e9fce93f037e814884ee"
+  },
+  "/Users/josh/schwung/docs/plans/2026-04-16-posthog-analytics.md": {
+    "mtime": 1777304756.8756106,
+    "hash": "7c2cac476617f6ddf4bd66e1ef39d457"
+  },
+  "/Users/josh/schwung/docs/plans/2026-05-16-module-bypass-shortcut.md": {
+    "mtime": 1779103085.1532195,
+    "hash": "329d2ecbcba4cbf30c10aad3406d3172"
+  },
+  "/Users/josh/schwung/docs/plans/2026-03-28-seamless-set-switching-plan.md": {
+    "mtime": 1775587623.6488576,
+    "hash": "6bda059e54acab488ba7fb0ac5432702"
+  },
+  "/Users/josh/schwung/docs/plans/2026-03-31-standalone-tool-modules.md": {
+    "mtime": 1775587623.6503963,
+    "hash": "9eed1a4b0c8547912370e0d53a1aefe0"
+  },
+  "/Users/josh/schwung/docs/plans/2026-03-11-slot-lfo-design.md": {
+    "mtime": 1775587623.6469827,
+    "hash": "26b2abd01c984808b1dc35a8d2ffc1f1"
+  },
+  "/Users/josh/schwung/docs/plans/2026-04-30-feedback-protection-implementation.md": {
+    "mtime": 1777684773.4404821,
+    "hash": "72d8b46ba4de52d21db26c2f76650132"
+  },
+  "/Users/josh/schwung/docs/plans/2026-03-28-seamless-set-switching.md": {
+    "mtime": 1775587623.6490061,
+    "hash": "185b74f02228c5870c41ed8bcf70cf72"
+  },
+  "/Users/josh/schwung/docs/plans/2026-04-19-menu-style-v2-design.md": {
+    "mtime": 1777476521.6301148,
+    "hash": "4dd5b8f1baa3c464eca96f47d56b794e"
+  },
+  "/Users/josh/schwung/docs/plans/2026-04-09-web-download-wave-edit.md": {
+    "mtime": 1777304756.8740954,
+    "hash": "18ae77dbc87a732f6f00a65ecd09cb6d"
+  },
+  "/Users/josh/schwung/docs/plans/2026-02-04-parameter-consolidation-design.md": {
+    "mtime": 1775587623.644218,
+    "hash": "ddb5a783c746bad836141290454afbd0"
+  },
+  "/Users/josh/schwung/docs/plans/2026-02-18-help-viewer-plan.md": {
+    "mtime": 1775587623.6468248,
+    "hash": "debe472615533eb87536a9f5c8fd3dbc"
+  },
+  "/Users/josh/schwung/docs/plans/2026-05-17-schwung-breath-design.md": {
+    "mtime": 1779454757.5443509,
+    "hash": "365957e57bc6ae80ef8fd0cb5ab792d4"
+  },
+  "/Users/josh/schwung/docs/plans/2026-03-12-master-fx-lfo.md": {
+    "mtime": 1775587623.6471355,
+    "hash": "30ef22bf09918b2f686fc298529cba91"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/test262o_errors.txt": {
+    "mtime": 1775587624.063712,
+    "hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/readme.txt": {
+    "mtime": 1775587624.0602534,
+    "hash": "50f265df3400d5b1dc79da8f5ee58503"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/test262_errors.txt": {
+    "mtime": 1775587624.063274,
+    "hash": "327fd9e299f3f4edd47eb4532d1e2d30"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/doc/quickjs.html": {
+    "mtime": 1775587624.0206273,
+    "hash": "46de669586ac8b12b5385f16add5a06c"
+  },
+  "/Users/josh/schwung/libs/curl/README.md": {
+    "mtime": 1775587623.6524813,
+    "hash": "4a0f4e8aad4979c2dcfd954552bc5324"
+  },
+  "/Users/josh/schwung/templates/release-workflow.yml": {
+    "mtime": 1775587624.137688,
+    "hash": "ae9ec15d279a1ecc526b0ecc3355a112"
+  },
+  "/Users/josh/schwung/recon/dbus-system-conf.txt": {
+    "mtime": 1777476521.633779,
+    "hash": "dded2ba87e99dbb774026be51ca5cc7b"
+  },
+  "/Users/josh/schwung/schwung-manager/templates/install.html": {
+    "mtime": 1775587624.0721421,
+    "hash": "a894502c76f23c045f2b84023fd4fc9a"
+  },
+  "/Users/josh/schwung/schwung-manager/templates/module_detail.html": {
+    "mtime": 1777476521.7066503,
+    "hash": "8e0d412f809ac2afae019f4614f9088a"
+  },
+  "/Users/josh/schwung/schwung-manager/templates/system.html": {
+    "mtime": 1777478328.4723568,
+    "hash": "73bec28819c465a79cc5c12b31bd5e84"
+  },
+  "/Users/josh/schwung/schwung-manager/templates/help.html": {
+    "mtime": 1779454757.5498044,
+    "hash": "0b6554f44666537406dd7ff49c74b0a0"
+  },
+  "/Users/josh/schwung/schwung-manager/templates/modules.html": {
+    "mtime": 1778366410.8432343,
+    "hash": "3a1a37683240ec2719b44e5f392709f5"
+  },
+  "/Users/josh/schwung/schwung-manager/templates/base.html": {
+    "mtime": 1778366410.842862,
+    "hash": "b7cc8ee336f1a78eb9bcfc168bf3e98c"
+  },
+  "/Users/josh/schwung/schwung-manager/templates/files.html": {
+    "mtime": 1777476521.7063556,
+    "hash": "965bcf604b5fb2d9014bbaaca408124c"
+  },
+  "/Users/josh/schwung/schwung-manager/templates/remote_ui.html": {
+    "mtime": 1777304757.0493512,
+    "hash": "a4c044f09f3e1e78426069e2def43887"
+  },
+  "/Users/josh/schwung/schwung-manager/templates/config.html": {
+    "mtime": 1777304757.047133,
+    "hash": "12de85ed42a289c353fec86ea9dfe94c"
+  },
+  "/Users/josh/schwung/schwung-manager/templates/repair.html": {
+    "mtime": 1778366410.8436372,
+    "hash": "cc1e19425ea8af228641d9bff9db92c9"
+  },
+  "/Users/josh/schwung/schwung-manager/templates/download.html": {
+    "mtime": 1777304757.0473018,
+    "hash": "c23c61ec519303afdc0e96c6afacc7d6"
+  },
+  "/Users/josh/schwung/schwung-manager/templates/partials/flash.html": {
+    "mtime": 1777304757.0491526,
+    "hash": "8addb5722b56a5a107f11cbfefefebba"
+  },
+  "/Users/josh/schwung/schwung-manager/templates/partials/repair_banner.html": {
+    "mtime": 1778366410.8434007,
+    "hash": "5a1857980c481042b4fae12b8cbbefc4"
+  },
+  "/Users/josh/schwung/src/host/version.txt": {
+    "mtime": 1780098073.562331,
+    "hash": "a1bf0af76fb953bbaf045f86ebcf84c6"
+  },
+  "/Users/josh/schwung/src/modules/tools/config-test/default_system_prompt.txt": {
+    "mtime": 1777304757.0665011,
+    "hash": "2f659fe59442d15f1aad54a0f278674f"
+  },
+  "/Users/josh/schwung/src/modules/chain/README.md": {
+    "mtime": 1775587624.1150503,
+    "hash": "8ea298571c7f4164bbb1e4f848394b3d"
+  },
+  "/Users/josh/schwung/src/modules/controller/README.md": {
+    "mtime": 1775587624.1186242,
+    "hash": "074413c7ebb07e8b33ec0bda148a0d0d"
+  },
+  "/Users/josh/schwung/libs/quickjs/quickjs-2025-04-26/doc/quickjs.pdf": {
+    "mtime": 1775587624.0229068,
+    "hash": "f5c7bb72667d47a9bf0008b65310af0b"
+  },
+  "/Users/josh/schwung/assets/logo-splash.png": {
+    "mtime": 1775587623.6359713,
+    "hash": "0d8057f401053a4c4b5f6f85bee62e16"
+  },
+  "/Users/josh/schwung/assets/schwung-print.png": {
+    "mtime": 1775587623.6363928,
+    "hash": "a3e9e5c62639064d295005a1f5c59c3b"
+  },
+  "/Users/josh/schwung/assets/logo-circle.png": {
+    "mtime": 1775587623.6358068,
+    "hash": "91fa4f38e87a8c184b6252320ec82808"
+  },
+  "/Users/josh/schwung/assets/logo-text.png": {
+    "mtime": 1775587623.6361184,
+    "hash": "58acdcfed1e45b913dcce214344bbda3"
+  },
+  "/Users/josh/schwung/schwung-manager/static/favicon.svg": {
+    "mtime": 1775587624.0707061,
+    "hash": "699d5726dd3019c820168a0c89fe8ef8"
+  }
+}
