@@ -4167,9 +4167,6 @@ function refreshSlots() {
     if (selectedSlot >= slots.length) {
         selectedSlot = Math.max(0, slots.length - 1);
     }
-    if (typeof host_log === "function") {
-        host_log("DEBUG refreshSlots: hostSlots=" + JSON.stringify(hostSlots) + " configSlots=" + JSON.stringify(configSlots) + " slots=" + JSON.stringify(slots));
-    }
     if (changed) {
         needsRedraw = true;
     }
