@@ -109,7 +109,7 @@ export function drawChainSettings() {
         const labelColor = isSelected ? 0 : 1;
         print(LIST_LABEL_X, y, setting.label, labelColor);
 
-        if (setting.type !== "action") {
+        if (setting.type !== "action" || setting.key === "edit_aux") {
             const value = getChainSettingValue(selectedSlot, setting);
             if (value) {
                 const valueX = SCREEN_WIDTH - value.length * 5 - 4;

@@ -230,9 +230,12 @@ void shadow_save_state(void)
     fprintf(f, "  \"slot_split_enabled\": [%d, %d, %d, %d],\n",
             host_chain_slots[0].split_enabled, host_chain_slots[1].split_enabled,
             host_chain_slots[2].split_enabled, host_chain_slots[3].split_enabled);
-    fprintf(f, "  \"slot_split_octave\": [%d, %d, %d, %d]\n",
+    fprintf(f, "  \"slot_split_octave\": [%d, %d, %d, %d],\n",
             host_chain_slots[0].split_octave, host_chain_slots[1].split_octave,
             host_chain_slots[2].split_octave, host_chain_slots[3].split_octave);
+    fprintf(f, "  \"slot_split_target_chan\": [%d, %d, %d, %d]\n",
+            host_chain_slots[0].split_target_chan + 1, host_chain_slots[1].split_target_chan + 1,
+            host_chain_slots[2].split_target_chan + 1, host_chain_slots[3].split_target_chan + 1);
     fprintf(f, "}\n");
     fclose(f);
     chown_to_ableton(SHADOW_CONFIG_PATH);
@@ -446,6 +449,23 @@ void shadow_load_state(void)
                     if (spo[i] < 0) spo[i] = 0;
                     if (spo[i] > 10) spo[i] = 10;
                     host_chain_slots[i].split_octave = spo[i];
+                }
+            }
+        }
+    }
+
+    /* Parse slot_split_target_chan array */
+    const char *spt_key = "\"slot_split_target_chan\":";
+    char *spt_pos = strstr(json, spt_key);
+    if (spt_pos) {
+        spt_pos = strchr(spt_pos, '[');
+        if (spt_pos) {
+            int spt[4] = {5, 6, 7, 8}; // default channels (1-based)
+            if (sscanf(spt_pos, "[%d, %d, %d, %d]", &spt[0], &spt[1], &spt[2], &spt[3]) == 4) {
+                for (int i = 0; i < 4; i++) {
+                    if (spt[i] < 1) spt[i] = 1;
+                    if (spt[i] > 16) spt[i] = 16;
+                    host_chain_slots[i].split_target_chan = spt[i] - 1;
                 }
             }
         }

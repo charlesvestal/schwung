@@ -6431,7 +6431,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                          * also dismiss shadow UI (leaks the Mute release to Move firmware and
                          * leaves Mute "latched" on the hardware). */
                         if (shadow_display_mode && shadow_shift_held && !shadow_volume_knob_touched &&
-                            !shadow_mute_held && shadow_control) {
+                            !shadow_mute_held && !shadow_undo_held && shadow_control) {
                             shadow_display_mode = 0;
                             shadow_control->display_mode = 0;
                             shadow_log("Shift+Track: dismissing shadow UI");

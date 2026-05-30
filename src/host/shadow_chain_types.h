@@ -42,6 +42,7 @@ typedef struct shadow_chain_slot_t {
     int transpose;          /* semitone offset applied to incoming note-on/off/poly-AT, range -12..+12 */
     int split_enabled;      /* 1 = keyboard splitting enabled (slots 0-3 only) */
     int split_octave;       /* split boundary octave: 0-10 */
+    int split_target_chan;  /* split target MIDI channel: 0-15 */
     char patch_name[64];
     shadow_capture_rules_t capture;  /* MIDI controls this slot captures when focused */
     slot_fade_t fade;                /* fade envelope for seamless transitions */
