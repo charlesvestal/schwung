@@ -804,8 +804,7 @@ static volatile int shadow_pads_held = 0;
 static volatile int shadow_jog_touched = 0;
 /* Is shift button currently held? (CC 49) - global for cross-function access */
 static volatile int shadow_shift_held = 0;
-/* Is menu button currently held? (CC 50) - global for cross-function access */
-static volatile int shadow_menu_held = 0;
+
 /* Is undo button currently held? (CC 56) - global for cross-function access */
 static volatile int shadow_undo_held = 0;
 /* Track if Shift+Undo+Track shortcut has fired to suppress native Undo/Redo on release */
@@ -4295,17 +4294,7 @@ void midi_monitor()
                     log_hotkey_state("shift_off");
                 }
             }
-            else if (midi_1 == 50) /* CC 50 (Menu) */
-            {
-                if (midi_2 == 0x7f)
-                {
-                    shadow_menu_held = 1;
-                }
-                else
-                {
-                    shadow_menu_held = 0;
-                }
-            }
+
             else if (midi_1 == CC_UNDO) /* CC 56 (Undo) */
             {
                 if (midi_2 == 0x7f)
@@ -6442,7 +6431,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                          * also dismiss shadow UI (leaks the Mute release to Move firmware and
                          * leaves Mute "latched" on the hardware). */
                         if (shadow_display_mode && shadow_shift_held && !shadow_volume_knob_touched &&
-                            !shadow_mute_held && !shadow_undo_held && !shadow_menu_held && shadow_control) {
+                            !shadow_mute_held && !shadow_undo_held && shadow_control) {
                             shadow_display_mode = 0;
                             shadow_control->display_mode = 0;
                             shadow_log("Shift+Track: dismissing shadow UI");
