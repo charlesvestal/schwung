@@ -56,7 +56,9 @@ import {
     hideOverlay,
     tickOverlay,
     drawOverlay,
-    menuLayoutDefaults
+    menuLayoutDefaults,
+    LIST_BOTTOM_CLEARANCE,
+    VALUE_RIGHT_CLEARANCE
 } from '/data/UserData/schwung/shared/menu_layout.mjs';
 
 import {
