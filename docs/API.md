@@ -325,6 +325,7 @@ console.log(msg)              // Routed to the unified logger when enabled
 | 63  | Right arrow       |                                |
 | 71-78 | Knobs 1-8       | Relative encoder (1-63 CW, 65-127 CCW) |
 | 79  | Master volume     | Relative encoder (1-63 CW, 65-127 CCW) |
+| 102-109 | Knobs 1-8 (absolute) | Absolute value (0-127 scaled to assigned param range); targets the same user-assigned knob mappings as CC 71-78 |
 | 85  | Play              |                                |
 | 86  | Record            |                                |
 | 88  | Mute              |                                |
