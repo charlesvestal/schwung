@@ -197,52 +197,56 @@ void shadow_save_state(void)
         fprintf(f, "  \"link_audio_routing\": %s,\n", link_audio_routing_saved ? "true" : "false");
     }
     /* Volume is always the real user-set level; mute/solo are separate flags */
-    fprintf(f, "  \"slot_volumes\": [%.3f, %.3f, %.3f, %.3f],\n",
-            host_chain_slots[0].volume,
-            host_chain_slots[1].volume,
-            host_chain_slots[2].volume,
-            host_chain_slots[3].volume);
-    fprintf(f, "  \"slot_channels\": [%d, %d, %d, %d],\n",
-            host_chain_slots[0].channel,
-            host_chain_slots[1].channel,
-            host_chain_slots[2].channel,
-            host_chain_slots[3].channel);
-    fprintf(f, "  \"slot_forward_channels\": [%d, %d, %d, %d],\n",
-            host_chain_slots[0].forward_channel,
-            host_chain_slots[1].forward_channel,
-            host_chain_slots[2].forward_channel,
-            host_chain_slots[3].forward_channel);
-    fprintf(f, "  \"slot_transpose\": [%d, %d, %d, %d],\n",
-            host_chain_slots[0].transpose,
-            host_chain_slots[1].transpose,
-            host_chain_slots[2].transpose,
-            host_chain_slots[3].transpose);
-    fprintf(f, "  \"slot_muted\": [%d, %d, %d, %d],\n",
-            host_chain_slots[0].muted,
-            host_chain_slots[1].muted,
-            host_chain_slots[2].muted,
-            host_chain_slots[3].muted);
-    fprintf(f, "  \"slot_soloed\": [%d, %d, %d, %d]\n",
-            host_chain_slots[0].soloed,
-            host_chain_slots[1].soloed,
-            host_chain_slots[2].soloed,
-            host_chain_slots[3].soloed);
+    fprintf(f, "  \"slot_volumes\": [%.3f, %.3f, %.3f, %.3f, %.3f, %.3f, %.3f, %.3f],\n",
+            host_chain_slots[0].volume, host_chain_slots[1].volume,
+            host_chain_slots[2].volume, host_chain_slots[3].volume,
+            host_chain_slots[4].volume, host_chain_slots[5].volume,
+            host_chain_slots[6].volume, host_chain_slots[7].volume);
+    fprintf(f, "  \"slot_channels\": [%d, %d, %d, %d, %d, %d, %d, %d],\n",
+            host_chain_slots[0].channel, host_chain_slots[1].channel,
+            host_chain_slots[2].channel, host_chain_slots[3].channel,
+            host_chain_slots[4].channel, host_chain_slots[5].channel,
+            host_chain_slots[6].channel, host_chain_slots[7].channel);
+    fprintf(f, "  \"slot_forward_channels\": [%d, %d, %d, %d, %d, %d, %d, %d],\n",
+            host_chain_slots[0].forward_channel, host_chain_slots[1].forward_channel,
+            host_chain_slots[2].forward_channel, host_chain_slots[3].forward_channel,
+            host_chain_slots[4].forward_channel, host_chain_slots[5].forward_channel,
+            host_chain_slots[6].forward_channel, host_chain_slots[7].forward_channel);
+    fprintf(f, "  \"slot_transpose\": [%d, %d, %d, %d, %d, %d, %d, %d],\n",
+            host_chain_slots[0].transpose, host_chain_slots[1].transpose,
+            host_chain_slots[2].transpose, host_chain_slots[3].transpose,
+            host_chain_slots[4].transpose, host_chain_slots[5].transpose,
+            host_chain_slots[6].transpose, host_chain_slots[7].transpose);
+    fprintf(f, "  \"slot_muted\": [%d, %d, %d, %d, %d, %d, %d, %d],\n",
+            host_chain_slots[0].muted, host_chain_slots[1].muted,
+            host_chain_slots[2].muted, host_chain_slots[3].muted,
+            host_chain_slots[4].muted, host_chain_slots[5].muted,
+            host_chain_slots[6].muted, host_chain_slots[7].muted);
+    fprintf(f, "  \"slot_soloed\": [%d, %d, %d, %d, %d, %d, %d, %d],\n",
+            host_chain_slots[0].soloed, host_chain_slots[1].soloed,
+            host_chain_slots[2].soloed, host_chain_slots[3].soloed,
+            host_chain_slots[4].soloed, host_chain_slots[5].soloed,
+            host_chain_slots[6].soloed, host_chain_slots[7].soloed);
+    fprintf(f, "  \"slot_split_enabled\": [%d, %d, %d, %d],\n",
+            host_chain_slots[0].split_enabled, host_chain_slots[1].split_enabled,
+            host_chain_slots[2].split_enabled, host_chain_slots[3].split_enabled);
+    fprintf(f, "  \"slot_split_octave\": [%d, %d, %d, %d]\n",
+            host_chain_slots[0].split_octave, host_chain_slots[1].split_octave,
+            host_chain_slots[2].split_octave, host_chain_slots[3].split_octave);
     fprintf(f, "}\n");
     fclose(f);
     chown_to_ableton(SHADOW_CONFIG_PATH);
 
-    char msg[320];
-    snprintf(msg, sizeof(msg), "Saved slots: ch=[%d,%d,%d,%d] fwd=[%d,%d,%d,%d] vol=[%.2f,%.2f,%.2f,%.2f] muted=[%d,%d,%d,%d] soloed=[%d,%d,%d,%d]",
+    char msg[512];
+    snprintf(msg, sizeof(msg), "Saved 8 slots: ch=[%d,%d,%d,%d,%d,%d,%d,%d] vol=[%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f]",
              host_chain_slots[0].channel, host_chain_slots[1].channel,
              host_chain_slots[2].channel, host_chain_slots[3].channel,
-             host_chain_slots[0].forward_channel, host_chain_slots[1].forward_channel,
-             host_chain_slots[2].forward_channel, host_chain_slots[3].forward_channel,
+             host_chain_slots[4].channel, host_chain_slots[5].channel,
+             host_chain_slots[6].channel, host_chain_slots[7].channel,
              host_chain_slots[0].volume, host_chain_slots[1].volume,
              host_chain_slots[2].volume, host_chain_slots[3].volume,
-             host_chain_slots[0].muted, host_chain_slots[1].muted,
-             host_chain_slots[2].muted, host_chain_slots[3].muted,
-             host_chain_slots[0].soloed, host_chain_slots[1].soloed,
-             host_chain_slots[2].soloed, host_chain_slots[3].soloed);
+             host_chain_slots[4].volume, host_chain_slots[5].volume,
+             host_chain_slots[6].volume, host_chain_slots[7].volume);
     if (host_log) host_log(msg);
 }
 
@@ -282,22 +286,22 @@ void shadow_load_state(void)
     if (pos) {
         pos = strchr(pos, '[');
         if (pos) {
-            float v0, v1, v2, v3;
-            if (sscanf(pos, "[%f, %f, %f, %f]", &v0, &v1, &v2, &v3) == 4) {
-                if (v0 < 0.0f) v0 = 0.0f; if (v0 > 4.0f) v0 = 4.0f;
-                if (v1 < 0.0f) v1 = 0.0f; if (v1 > 4.0f) v1 = 4.0f;
-                if (v2 < 0.0f) v2 = 0.0f; if (v2 > 4.0f) v2 = 4.0f;
-                if (v3 < 0.0f) v3 = 0.0f; if (v3 > 4.0f) v3 = 4.0f;
-                host_chain_slots[0].volume = v0;
-                host_chain_slots[1].volume = v1;
-                host_chain_slots[2].volume = v2;
-                host_chain_slots[3].volume = v3;
-
-                char msg[128];
-                snprintf(msg, sizeof(msg), "Loaded slot volumes: [%.2f, %.2f, %.2f, %.2f]",
-                         v0, v1, v2, v3);
-                if (host_log) host_log(msg);
+            float v[8] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+            int parsed = sscanf(pos, "[%f, %f, %f, %f, %f, %f, %f, %f]", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7]);
+            if (parsed == 4) {
+                // Fallback for 4 slots
+                sscanf(pos, "[%f, %f, %f, %f]", &v[0], &v[1], &v[2], &v[3]);
             }
+            int lim = (parsed >= 8) ? 8 : 4;
+            for (int i = 0; i < lim; i++) {
+                if (v[i] < 0.0f) v[i] = 0.0f;
+                if (v[i] > 4.0f) v[i] = 4.0f;
+                host_chain_slots[i].volume = v[i];
+            }
+            char msg[256];
+            snprintf(msg, sizeof(msg), "Loaded slot volumes (%d slots): [%.2f, %.2f, %.2f, %.2f ...]",
+                     lim, v[0], v[1], v[2], v[3]);
+            if (host_log) host_log(msg);
         }
     }
 
@@ -307,18 +311,19 @@ void shadow_load_state(void)
     if (ch_pos) {
         ch_pos = strchr(ch_pos, '[');
         if (ch_pos) {
-            int c0, c1, c2, c3;
-            if (sscanf(ch_pos, "[%d, %d, %d, %d]", &c0, &c1, &c2, &c3) == 4) {
-                host_chain_slots[0].channel = c0;
-                host_chain_slots[1].channel = c1;
-                host_chain_slots[2].channel = c2;
-                host_chain_slots[3].channel = c3;
-
-                char msg[128];
-                snprintf(msg, sizeof(msg), "Loaded slot channels: [%d, %d, %d, %d]",
-                         c0, c1, c2, c3);
-                if (host_log) host_log(msg);
+            int c[8] = {0, 1, 2, 3, SHADOW_CHANNEL_SPLIT, SHADOW_CHANNEL_SPLIT, SHADOW_CHANNEL_SPLIT, SHADOW_CHANNEL_SPLIT};
+            int parsed = sscanf(ch_pos, "[%d, %d, %d, %d, %d, %d, %d, %d]", &c[0], &c[1], &c[2], &c[3], &c[4], &c[5], &c[6], &c[7]);
+            if (parsed == 4) {
+                sscanf(ch_pos, "[%d, %d, %d, %d]", &c[0], &c[1], &c[2], &c[3]);
             }
+            int lim = (parsed >= 8) ? 8 : 4;
+            for (int i = 0; i < lim; i++) {
+                host_chain_slots[i].channel = c[i];
+            }
+            char msg[256];
+            snprintf(msg, sizeof(msg), "Loaded slot channels (%d slots): [%d, %d, %d, %d ...]",
+                     lim, c[0], c[1], c[2], c[3]);
+            if (host_log) host_log(msg);
         }
     }
 
@@ -328,18 +333,19 @@ void shadow_load_state(void)
     if (fwd_pos) {
         fwd_pos = strchr(fwd_pos, '[');
         if (fwd_pos) {
-            int f0, f1, f2, f3;
-            if (sscanf(fwd_pos, "[%d, %d, %d, %d]", &f0, &f1, &f2, &f3) == 4) {
-                host_chain_slots[0].forward_channel = f0;
-                host_chain_slots[1].forward_channel = f1;
-                host_chain_slots[2].forward_channel = f2;
-                host_chain_slots[3].forward_channel = f3;
-
-                char msg[128];
-                snprintf(msg, sizeof(msg), "Loaded slot fwd channels: [%d, %d, %d, %d]",
-                         f0, f1, f2, f3);
-                if (host_log) host_log(msg);
+            int f[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
+            int parsed = sscanf(fwd_pos, "[%d, %d, %d, %d, %d, %d, %d, %d]", &f[0], &f[1], &f[2], &f[3], &f[4], &f[5], &f[6], &f[7]);
+            if (parsed == 4) {
+                sscanf(fwd_pos, "[%d, %d, %d, %d]", &f[0], &f[1], &f[2], &f[3]);
             }
+            int lim = (parsed >= 8) ? 8 : 4;
+            for (int i = 0; i < lim; i++) {
+                host_chain_slots[i].forward_channel = f[i];
+            }
+            char msg[256];
+            snprintf(msg, sizeof(msg), "Loaded slot fwd channels (%d slots): [%d, %d, %d, %d ...]",
+                     lim, f[0], f[1], f[2], f[3]);
+            if (host_log) host_log(msg);
         }
     }
 
@@ -349,23 +355,21 @@ void shadow_load_state(void)
     if (tr_pos) {
         tr_pos = strchr(tr_pos, '[');
         if (tr_pos) {
-            int t0, t1, t2, t3;
-            if (sscanf(tr_pos, "[%d, %d, %d, %d]", &t0, &t1, &t2, &t3) == 4) {
-                int *vals[4] = {&t0, &t1, &t2, &t3};
-                for (int i = 0; i < 4; i++) {
-                    if (*vals[i] < -12) *vals[i] = -12;
-                    if (*vals[i] > 12) *vals[i] = 12;
-                }
-                host_chain_slots[0].transpose = t0;
-                host_chain_slots[1].transpose = t1;
-                host_chain_slots[2].transpose = t2;
-                host_chain_slots[3].transpose = t3;
-
-                char msg[128];
-                snprintf(msg, sizeof(msg), "Loaded slot transpose: [%d, %d, %d, %d]",
-                         t0, t1, t2, t3);
-                if (host_log) host_log(msg);
+            int t[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+            int parsed = sscanf(tr_pos, "[%d, %d, %d, %d, %d, %d, %d, %d]", &t[0], &t[1], &t[2], &t[3], &t[4], &t[5], &t[6], &t[7]);
+            if (parsed == 4) {
+                sscanf(tr_pos, "[%d, %d, %d, %d]", &t[0], &t[1], &t[2], &t[3]);
             }
+            int lim = (parsed >= 8) ? 8 : 4;
+            for (int i = 0; i < lim; i++) {
+                if (t[i] < -12) t[i] = -12;
+                if (t[i] > 12) t[i] = 12;
+                host_chain_slots[i].transpose = t[i];
+            }
+            char msg[256];
+            snprintf(msg, sizeof(msg), "Loaded slot transpose (%d slots): [%d, %d, %d, %d ...]",
+                     lim, t[0], t[1], t[2], t[3]);
+            if (host_log) host_log(msg);
         }
     }
 
@@ -375,17 +379,19 @@ void shadow_load_state(void)
     if (muted_pos) {
         muted_pos = strchr(muted_pos, '[');
         if (muted_pos) {
-            int m0, m1, m2, m3;
-            if (sscanf(muted_pos, "[%d, %d, %d, %d]", &m0, &m1, &m2, &m3) == 4) {
-                host_chain_slots[0].muted = m0;
-                host_chain_slots[1].muted = m1;
-                host_chain_slots[2].muted = m2;
-                host_chain_slots[3].muted = m3;
-                char msg[128];
-                snprintf(msg, sizeof(msg), "Loaded slot muted: [%d, %d, %d, %d]",
-                         m0, m1, m2, m3);
-                if (host_log) host_log(msg);
+            int m[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+            int parsed = sscanf(muted_pos, "[%d, %d, %d, %d, %d, %d, %d, %d]", &m[0], &m[1], &m[2], &m[3], &m[4], &m[5], &m[6], &m[7]);
+            if (parsed == 4) {
+                sscanf(muted_pos, "[%d, %d, %d, %d]", &m[0], &m[1], &m[2], &m[3]);
             }
+            int lim = (parsed >= 8) ? 8 : 4;
+            for (int i = 0; i < lim; i++) {
+                host_chain_slots[i].muted = m[i];
+            }
+            char msg[256];
+            snprintf(msg, sizeof(msg), "Loaded slot muted (%d slots): [%d, %d, %d, %d ...]",
+                     lim, m[0], m[1], m[2], m[3]);
+            if (host_log) host_log(msg);
         }
     }
 
@@ -396,17 +402,51 @@ void shadow_load_state(void)
     if (soloed_pos) {
         soloed_pos = strchr(soloed_pos, '[');
         if (soloed_pos) {
-            int s0, s1, s2, s3;
-            if (sscanf(soloed_pos, "[%d, %d, %d, %d]", &s0, &s1, &s2, &s3) == 4) {
-                int sol[4] = {s0, s1, s2, s3};
+            int s[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+            int parsed = sscanf(soloed_pos, "[%d, %d, %d, %d, %d, %d, %d, %d]", &s[0], &s[1], &s[2], &s[3], &s[4], &s[5], &s[6], &s[7]);
+            if (parsed == 4) {
+                sscanf(soloed_pos, "[%d, %d, %d, %d]", &s[0], &s[1], &s[2], &s[3]);
+            }
+            int lim = (parsed >= 8) ? 8 : 4;
+            for (int i = 0; i < lim; i++) {
+                host_chain_slots[i].soloed = s[i];
+                if (s[i]) (*host_solo_count)++;
+            }
+            char msg[256];
+            snprintf(msg, sizeof(msg), "Loaded slot soloed (%d slots): [%d, %d, %d, %d ...]",
+                     lim, s[0], s[1], s[2], s[3]);
+            if (host_log) host_log(msg);
+        }
+    }
+
+    /* Parse slot_split_enabled array */
+    const char *sp_key = "\"slot_split_enabled\":";
+    char *sp_pos = strstr(json, sp_key);
+    if (sp_pos) {
+        sp_pos = strchr(sp_pos, '[');
+        if (sp_pos) {
+            int sp[4] = {0, 0, 0, 0};
+            if (sscanf(sp_pos, "[%d, %d, %d, %d]", &sp[0], &sp[1], &sp[2], &sp[3]) == 4) {
                 for (int i = 0; i < 4; i++) {
-                    host_chain_slots[i].soloed = sol[i];
-                    if (sol[i]) (*host_solo_count)++;
+                    host_chain_slots[i].split_enabled = sp[i];
                 }
-                char msg[128];
-                snprintf(msg, sizeof(msg), "Loaded slot soloed: [%d, %d, %d, %d]",
-                         s0, s1, s2, s3);
-                if (host_log) host_log(msg);
+            }
+        }
+    }
+
+    /* Parse slot_split_octave array */
+    const char *spo_key = "\"slot_split_octave\":";
+    char *spo_pos = strstr(json, spo_key);
+    if (spo_pos) {
+        spo_pos = strchr(spo_pos, '[');
+        if (spo_pos) {
+            int spo[4] = {4, 4, 4, 4};
+            if (sscanf(spo_pos, "[%d, %d, %d, %d]", &spo[0], &spo[1], &spo[2], &spo[3]) == 4) {
+                for (int i = 0; i < 4; i++) {
+                    if (spo[i] < 0) spo[i] = 0;
+                    if (spo[i] > 10) spo[i] = 10;
+                    host_chain_slots[i].split_octave = spo[i];
+                }
             }
         }
     }

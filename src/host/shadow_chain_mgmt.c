@@ -31,6 +31,10 @@ const char *shadow_chain_default_patches[SHADOW_CHAIN_INSTANCES] = {
     "",  /* No default patch - user must select */
     "",
     "",
+    "",
+    "",
+    "",
+    "",
     ""
 };
 
@@ -413,12 +417,18 @@ void shadow_chain_defaults(void) {
         shadow_chain_slots[i].instance = NULL;
         shadow_chain_slots[i].active = 0;
         shadow_chain_slots[i].patch_index = -1;
-        shadow_chain_slots[i].channel = shadow_chain_parse_channel(1 + i);
+        if (i < 4) {
+            shadow_chain_slots[i].channel = shadow_chain_parse_channel(1 + i);
+        } else {
+            shadow_chain_slots[i].channel = SHADOW_CHANNEL_SPLIT;
+        }
         shadow_chain_slots[i].volume = 1.0f;
         shadow_chain_slots[i].muted = 0;
         shadow_chain_slots[i].soloed = 0;
         shadow_chain_slots[i].forward_channel = -1;
         shadow_chain_slots[i].transpose = 0;
+        shadow_chain_slots[i].split_enabled = 0;
+        shadow_chain_slots[i].split_octave = 4; // Default to octave 4 (note 48)
         capture_clear(&shadow_chain_slots[i].capture);
         shadow_chain_slots[i].fade.gain = 0.0f;
         shadow_chain_slots[i].fade.target = 0.0f;
@@ -1599,7 +1609,10 @@ int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
     }
     if (strcmp(key, "slot:receive_channel") == 0) {
         int ch = atoi(value);
-        if (ch == 0) {
+        if (ch == SHADOW_CHANNEL_SPLIT) {
+            shadow_chain_slots[slot].channel = SHADOW_CHANNEL_SPLIT;
+            shadow_ui_state_update_slot(slot);
+        } else if (ch == 0) {
             shadow_chain_slots[slot].channel = -1;
             shadow_ui_state_update_slot(slot);
         } else if (ch >= 1 && ch <= 16) {
@@ -1610,9 +1623,23 @@ int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
     }
     if (strcmp(key, "slot:transpose") == 0) {
         int t = atoi(value);
-        if (t < -12) t = -12;
-        if (t > 12) t = 12;
+        if (t < -120) t = -120;
+        if (t > 120) t = 120;
         shadow_chain_slots[slot].transpose = t;
+        shadow_ui_state_update_slot(slot);
+        return 1;
+    }
+    if (strcmp(key, "slot:split_enabled") == 0) {
+        int val = atoi(value);
+        shadow_chain_slots[slot].split_enabled = (val > 0) ? 1 : 0;
+        shadow_ui_state_update_slot(slot);
+        return 1;
+    }
+    if (strcmp(key, "slot:split_octave") == 0) {
+        int val = atoi(value);
+        if (val < 0) val = 0;
+        if (val > 10) val = 10;
+        shadow_chain_slots[slot].split_octave = val;
         shadow_ui_state_update_slot(slot);
         return 1;
     }
@@ -1634,10 +1661,19 @@ int shadow_handle_slot_param_get(int slot, const char *key, char *buf, int buf_l
     }
     if (strcmp(key, "slot:receive_channel") == 0) {
         int ch = shadow_chain_slots[slot].channel;
+        if (ch == SHADOW_CHANNEL_SPLIT) {
+            return snprintf(buf, buf_len, "%d", SHADOW_CHANNEL_SPLIT);
+        }
         return snprintf(buf, buf_len, "%d", (ch < 0) ? 0 : ch + 1);
     }
     if (strcmp(key, "slot:transpose") == 0) {
         return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].transpose);
+    }
+    if (strcmp(key, "slot:split_enabled") == 0) {
+        return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].split_enabled);
+    }
+    if (strcmp(key, "slot:split_octave") == 0) {
+        return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].split_octave);
     }
     if (strcmp(key, "active_set") == 0) {
         /* Return "uuid\nname" for UI thread to write active_set.txt */

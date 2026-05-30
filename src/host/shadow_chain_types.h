@@ -28,6 +28,7 @@ typedef struct slot_fade_t {
 /* forward_channel sentinel values */
 #define SHADOW_FORWARD_THRU (-2)  /* passthrough: preserve original MIDI channel */
 #define SHADOW_FORWARD_AUTO (-1)  /* auto: remap to slot's receive channel */
+#define SHADOW_CHANNEL_SPLIT (-3) /* split: only triggered via parent slot's splitter */
 
 typedef struct shadow_chain_slot_t {
     void *instance;
@@ -39,6 +40,8 @@ typedef struct shadow_chain_slot_t {
     int soloed;             /* 1 = soloed (Shift+Mute+Track or Move solo-cue sync) */
     int forward_channel;    /* -2 = passthrough, -1 = auto, 0-15 = forward MIDI to this channel */
     int transpose;          /* semitone offset applied to incoming note-on/off/poly-AT, range -12..+12 */
+    int split_enabled;      /* 1 = keyboard splitting enabled (slots 0-3 only) */
+    int split_octave;       /* split boundary octave: 0-10 */
     char patch_name[64];
     shadow_capture_rules_t capture;  /* MIDI controls this slot captures when focused */
     slot_fade_t fade;                /* fade envelope for seamless transitions */
