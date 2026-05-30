@@ -52,7 +52,7 @@
 #define HW_MIDI_OUT_SIZE    80
 #define DISPLAY_BUFFER_SIZE 1024  /* 128x64 @ 1bpp = 1024 bytes */
 #define CONTROL_BUFFER_SIZE 72  /* bumped for sampler_source_request + sampler_silent (PR #61); leaves headroom in reserved[] */
-#define SHADOW_UI_BUFFER_SIZE     512
+#define SHADOW_UI_BUFFER_SIZE     1024
 #define SHADOW_PARAM_BUFFER_SIZE  65664  /* Large buffer for complex ui_hierarchy */
 #define SHADOW_MIDI_OUT_BUFFER_SIZE 512  /* MIDI out buffer from shadow UI (128 packets) */
 #define SHADOW_MIDI_DSP_BUFFER_SIZE 512  /* MIDI to DSP buffer from shadow UI (128 packets) */
@@ -70,8 +70,8 @@
  * Slot Configuration
  * ============================================================================ */
 
-#define SHADOW_CHAIN_INSTANCES 4
-#define SHADOW_UI_SLOTS 4
+#define SHADOW_CHAIN_INSTANCES 8
+#define SHADOW_UI_SLOTS 8
 #define SHADOW_UI_NAME_LEN 64
 #define SHADOW_PARAM_KEY_LEN 64
 #define SHADOW_PARAM_VALUE_LEN 65536  /* 64KB for large ui_hierarchy and state */

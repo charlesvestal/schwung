@@ -800,6 +800,12 @@ static volatile int shadow_pads_held = 0;
 static volatile int shadow_jog_touched = 0;
 /* Is shift button currently held? (CC 49) - global for cross-function access */
 static volatile int shadow_shift_held = 0;
+/* Is menu button currently held? (CC 50) - global for cross-function access */
+static volatile int shadow_menu_held = 0;
+/* Is undo button currently held? (CC 56) - global for cross-function access */
+static volatile int shadow_undo_held = 0;
+/* Track if Shift+Undo+Track shortcut has fired to suppress native Undo/Redo on release */
+static volatile int shadow_undo_shortcut_fired = 0;
 /* Suppress plain volume-touch hide until touch is fully released after
  * Shift+Vol shortcut launches, avoiding a brief native volume flash. */
 static volatile int shadow_block_plain_volume_hide_until_release = 0;
@@ -4285,6 +4291,28 @@ void midi_monitor()
                     log_hotkey_state("shift_off");
                 }
             }
+            else if (midi_1 == 50) /* CC 50 (Menu) */
+            {
+                if (midi_2 == 0x7f)
+                {
+                    shadow_menu_held = 1;
+                }
+                else
+                {
+                    shadow_menu_held = 0;
+                }
+            }
+            else if (midi_1 == CC_UNDO) /* CC 56 (Undo) */
+            {
+                if (midi_2 == 0x7f)
+                {
+                    shadow_undo_held = 1;
+                }
+                else
+                {
+                    shadow_undo_held = 0;
+                }
+            }
 
         }
 
@@ -6086,6 +6114,20 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 sh_midi[j + 2] = 0;
                 sh_midi[j + 3] = 0;
             }
+
+            /* Block Undo CC when the Shift+Undo+Track shortcut has fired */
+            if (d1 == CC_UNDO && shadow_undo_shortcut_fired) {
+                if (d2 == 0) {
+                    shadow_undo_shortcut_fired = 0;
+                }
+                char block_msg[128];
+                snprintf(block_msg, sizeof(block_msg), "Blocking Undo CC (POST-IOCTL d2=%d)", d2);
+                shadow_log(block_msg);
+                sh_midi[j] = 0;
+                sh_midi[j + 1] = 0;
+                sh_midi[j + 2] = 0;
+                sh_midi[j + 3] = 0;
+            }
         }
     }
     skip_shift_menu:
@@ -6358,6 +6400,25 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                                 launch_shadow_ui();
                             }
                             /* If already in shadow mode, flag will be picked up by tick() */
+                            /* Block Track CC from reaching Move */
+                            uint8_t *sh = shadow + MIDI_IN_OFFSET;
+                            sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
+                            src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        }
+
+                        /* Shift + Undo + Track = jump to target slot (5-8, indices 4-7) edit screen (if shadow UI enabled) */
+                        if (shadow_shift_held && shadow_undo_held && shadow_control && shadow_ui_enabled) {
+                            int target_slot = new_slot + 4;
+                            shadow_control->ui_slot = target_slot;
+                            shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_SLOT;
+                            if (!shadow_display_mode) {
+                                /* From Move mode: launch shadow UI */
+                                shadow_display_mode = 1;
+                                shadow_control->display_mode = 1;
+                                launch_shadow_ui();
+                            }
+                            /* Arm Undo suppression so that native Undo/Redo is not triggered on button release */
+                            shadow_undo_shortcut_fired = 1;
                             /* Block Track CC from reaching Move */
                             uint8_t *sh = shadow + MIDI_IN_OFFSET;
                             sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;

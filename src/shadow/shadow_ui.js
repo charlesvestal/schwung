@@ -197,7 +197,7 @@ import {
 /* Track buttons - derive from imported constants */
 const TRACK_CC_START = MoveRow4;  // CC 40
 const TRACK_CC_END = MoveRow1;    // CC 43
-const SHADOW_UI_SLOTS = 4;
+const SHADOW_UI_SLOTS = 8;
 
 /* UI flags from shim (must match SHADOW_UI_FLAG_* in shim) */
 const SHADOW_UI_FLAG_JUMP_TO_SLOT = 0x01;
@@ -1565,9 +1565,10 @@ const CHAIN_SETTINGS_ITEMS = [
     { key: "slot:soloed", label: "Soloed", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 0, max: 16, step: 1 },
     { key: "slot:forward_channel", label: "Fwd Ch", type: "int", min: -2, max: 15, step: 1 },  // -2 = passthrough, -1 = auto, 0-15 = ch 1-16
-    { key: "slot:transpose", label: "Transpose", type: "int", min: -12, max: 12, step: 1 },
+    { key: "slot:transpose", label: "Transpose", type: "int", min: -120, max: 120, step: 1 },
     { key: "midi_fx_pre_mode", label: "MIDI FX", type: "int", min: 0, max: 1, step: 1 },  // 0 = Post (slot synth only), 1 = Pre (also inject to Move native)
     { key: "mpe_mode", label: "MPE Mode", type: "int", min: 0, max: 1, step: 1 },
+    { key: "slot:split_octave", label: "Split by octave", type: "int", min: -1, max: 10, step: 1 },
     { key: "lfo1", label: "LFO 1", type: "action" },
     { key: "lfo2", label: "LFO 2", type: "action" },
     { key: "save", label: "[Save]", type: "action" },  // Save slot preset (overwrite for existing)
@@ -3902,7 +3903,12 @@ function saveChainConfigToDir(dir) {
             const fwd = parseInt(getSlotParam(i, "slot:forward_channel") || "-1");
             const muted = parseInt(getSlotParam(i, "slot:muted") || "0");
             const soloed = parseInt(getSlotParam(i, "slot:soloed") || "0");
-            cfgSlots.push({ name: slots[i] ? slots[i].name : "", channel: ch, volume: vol, forward_channel: fwd, muted: muted, soloed: soloed });
+            const item = { name: slots[i] ? slots[i].name : "", channel: ch, volume: vol, forward_channel: fwd, muted: muted, soloed: soloed };
+            if (i < 4) {
+                item.split_enabled = parseInt(getSlotParam(i, "slot:split_enabled") || "0");
+                item.split_octave = parseInt(getSlotParam(i, "slot:split_octave") || "4");
+            }
+            cfgSlots.push(item);
         }
         host_write_file(path, JSON.stringify({ slots: cfgSlots }, null, 2) + "\n");
     } catch (e) {
@@ -4075,14 +4081,18 @@ function loadChainConfigFromDir(dir) {
             const s = data.slots[i];
             if (typeof s.volume === "number") setSlotParamWithTimeout(i, "slot:volume", String(s.volume), 500);
             /* Always write receive_channel: use saved value if present, else
-             * default to slot index + 1. Chain configs written before
+             * default to slot index + 1 (or SHADOW_CHANNEL_SPLIT for slots 5-8). Chain configs written before
              * 072d3fd3 (or saved by older host code) can lack the field —
              * silently skipping leaves shim.channel stale from the prior set. */
-            const recvCh = (typeof s.channel === "number") ? s.channel : (i + 1);
+            const recvCh = (typeof s.channel === "number") ? s.channel : (i < 4 ? (i + 1) : -3);
             setSlotParamWithTimeout(i, "slot:receive_channel", String(recvCh), 500);
             if (typeof s.forward_channel === "number") setSlotParamWithTimeout(i, "slot:forward_channel", String(s.forward_channel), 500);
             if (typeof s.muted === "number") setSlotParamWithTimeout(i, "slot:muted", String(s.muted), 500);
             if (typeof s.soloed === "number") setSlotParamWithTimeout(i, "slot:soloed", String(s.soloed), 500);
+            if (i < 4) {
+                if (typeof s.split_enabled === "number") setSlotParamWithTimeout(i, "slot:split_enabled", String(s.split_enabled), 500);
+                if (typeof s.split_octave === "number") setSlotParamWithTimeout(i, "slot:split_octave", String(s.split_octave), 500);
+            }
         }
         debugLog("SET_CHANGED: loaded chain config from " + path);
     } catch (e) {
@@ -4163,14 +4173,20 @@ function isExistingPreset(slotIndex) {
 
 /* Get dynamic settings items (excludes Delete for new presets) */
 function getChainSettingsItems(slotIndex) {
-    if (isExistingPreset(slotIndex)) {
-        /* Existing preset: show all items (Save, Save As, Delete) */
-        return CHAIN_SETTINGS_ITEMS;
+    let items = CHAIN_SETTINGS_ITEMS;
+    if (!isExistingPreset(slotIndex)) {
+        /* New preset: hide Save As and Delete (only Save makes sense) */
+        items = items.filter(function(item) {
+            return item.key !== "save_as" && item.key !== "delete";
+        });
     }
-    /* New preset: hide Save As and Delete (only Save makes sense) */
-    return CHAIN_SETTINGS_ITEMS.filter(function(item) {
-        return item.key !== "save_as" && item.key !== "delete";
-    });
+    if (slotIndex >= 4) {
+        /* Hide split settings for slots 5-8 */
+        items = items.filter(function(item) {
+            return item.key !== "slot:split_octave";
+        });
+    }
+    return items;
 }
 
 /* findPatchByName -> shadow_ui_patches.mjs (imported) */
@@ -7386,12 +7402,34 @@ function getChainSettingValue(slot, setting) {
     if (setting.key === "midi_fx_pre_mode") {
         return parseInt(val) ? "Schw+Move" : "Schw";
     }
+    if (setting.key === "slot:split_octave") {
+        const enabled = parseInt(getSlotParam(slot, "slot:split_enabled"));
+        if (!enabled) return "Off";
+        const oct = parseInt(val);
+        return isNaN(oct) ? "C4" : `C${oct}`;
+    }
     return String(val);
 }
 
 /* Adjust a chain setting value */
 function adjustChainSetting(slot, setting, delta) {
     if (setting.type === "action") return;
+
+    /* Custom Split Octave handler: values -1 (Off) to 10 (C10) */
+    if (setting.key === "slot:split_octave") {
+        const enabled = parseInt(getSlotParam(slot, "slot:split_enabled"));
+        const currentOct = parseInt(getSlotParam(slot, "slot:split_octave"));
+        let val = enabled ? currentOct : -1;
+        val += delta;
+        val = Math.max(-1, Math.min(10, val));
+        if (val === -1) {
+            setSlotParam(slot, "slot:split_enabled", "0");
+        } else {
+            setSlotParam(slot, "slot:split_enabled", "1");
+            setSlotParam(slot, "slot:split_octave", String(val));
+        }
+        return;
+    }
 
     /* MPE Mode toggle: sets recv/fwd/synth MPE in one action */
     if (setting.key === "mpe_mode") {

@@ -31,9 +31,10 @@ export const SLOT_SETTINGS = [
     { key: "slot:soloed", label: "Soloed", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 0, max: 16, step: 1 },
     { key: "slot:forward_channel", label: "Fwd Ch", type: "int", min: -2, max: 15, step: 1 },
-    { key: "slot:transpose", label: "Transpose", type: "int", min: -12, max: 12, step: 1 },
+    { key: "slot:transpose", label: "Transpose", type: "int", min: -120, max: 120, step: 1 },
     { key: "midi_fx_pre_mode", label: "MIDI FX", type: "int", min: 0, max: 1, step: 1 },
     { key: "mpe_mode", label: "MPE Mode", type: "int", min: 0, max: 1, step: 1 },
+    { key: "slot:split_octave", label: "Split by octave", type: "int", min: -1, max: 10, step: 1 },
 ];
 
 /* ---- Module-local state ------------------------------------------------- */
@@ -91,6 +92,12 @@ export function getSlotSettingValue(slot, setting) {
     if (setting.key === "midi_fx_pre_mode") {
         return parseInt(val) ? "Schw+Move" : "Schw";
     }
+    if (setting.key === "slot:split_octave") {
+        const enabled = parseInt(getSlotParam(slot, "slot:split_enabled"));
+        if (!enabled) return "Off";
+        const oct = parseInt(val);
+        return isNaN(oct) ? "C4" : `C${oct}`;
+    }
     return val;
 }
 
@@ -101,6 +108,22 @@ function adjustSlotSetting(slot, setting, delta) {
     if (setting.type === "action") return;
 
     const { getSlotParam, setSlotParam } = ctx;
+
+    /* Custom Split Octave handler: values -1 (Off) to 10 (C10) */
+    if (setting.key === "slot:split_octave") {
+        const enabled = parseInt(getSlotParam(slot, "slot:split_enabled"));
+        const currentOct = parseInt(getSlotParam(slot, "slot:split_octave"));
+        let val = enabled ? currentOct : -1;
+        val += delta;
+        val = Math.max(-1, Math.min(10, val));
+        if (val === -1) {
+            setSlotParam(slot, "slot:split_enabled", "0");
+        } else {
+            setSlotParam(slot, "slot:split_enabled", "1");
+            setSlotParam(slot, "slot:split_octave", String(val));
+        }
+        return;
+    }
 
     /* MPE Mode toggle: sets recv/fwd/synth MPE in one action */
     if (setting.key === "mpe_mode") {
@@ -210,6 +233,13 @@ export function drawSlotSettings() {
     clear_screen();
     drawHeader(`Slot ${selectedSlot + 1}`);
 
+    const settingsLength = (selectedSlot >= 4) ? (SLOT_SETTINGS.length - 1) : SLOT_SETTINGS.length;
+
+    // Safety check: ensure selectedSetting is within bounds for this slot's settings length
+    if (selectedSetting >= settingsLength) {
+        selectedSetting = settingsLength - 1;
+    }
+
     const listY = LIST_TOP_Y;
     const lineHeight = LIST_LINE_HEIGHT;
     const maxVisible = Math.max(1, Math.floor((FOOTER_RULE_Y - LIST_TOP_Y) / lineHeight));
@@ -218,7 +248,7 @@ export function drawSlotSettings() {
     if (selectedSetting > maxSelectedRow) {
         startIdx = selectedSetting - maxSelectedRow;
     }
-    const endIdx = Math.min(startIdx + maxVisible, SLOT_SETTINGS.length);
+    const endIdx = Math.min(startIdx + maxVisible, settingsLength);
 
     for (let i = startIdx; i < endIdx; i++) {
         const y = listY + (i - startIdx) * lineHeight;
@@ -262,13 +292,14 @@ export function handleSlotsJog(delta) {
 
 export function handleSlotSettingsJog(delta) {
     const { selectedSlot } = ctx;
+    const settingsLength = (selectedSlot >= 4) ? (SLOT_SETTINGS.length - 1) : SLOT_SETTINGS.length;
     if (editingSettingValue) {
         const setting = SLOT_SETTINGS[selectedSetting];
         adjustSlotSetting(selectedSlot, setting, delta);
         const newVal = getSlotSettingValue(selectedSlot, setting);
         announceParameter(setting.label, newVal);
     } else {
-        selectedSetting = Math.max(0, Math.min(SLOT_SETTINGS.length - 1, selectedSetting + delta));
+        selectedSetting = Math.max(0, Math.min(settingsLength - 1, selectedSetting + delta));
         const setting = SLOT_SETTINGS[selectedSetting];
         const val = getSlotSettingValue(selectedSlot, setting);
         announceMenuItem(setting.label, val);

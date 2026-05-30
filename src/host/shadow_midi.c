@@ -328,8 +328,54 @@ void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *mi
             continue;
 
         /* Check channel match: slot receives this channel, or slot is set to All (-1) */
-        if (host_chain_slots[i].channel != (int)midi_ch && host_chain_slots[i].channel != -1)
+        int channel_matched = (host_chain_slots[i].channel == (int)midi_ch || host_chain_slots[i].channel == -1);
+        
+        // If split is enabled for this slot's parent, the split slot matches because its parent matches!
+        if (!channel_matched && i >= 4 && host_chain_slots[i - 4].split_enabled) {
+            int parent_ch = host_chain_slots[i - 4].channel;
+            if (parent_ch == (int)midi_ch || parent_ch == -1) {
+                channel_matched = 1;
+            }
+        }
+        
+        if (!channel_matched)
             continue;
+
+        // Apply keyboard splitting if enabled on the parent slot
+        int parent_slot = (i < 4) ? i : (i - 4);
+        int split_slot = parent_slot + 4;
+        if (host_chain_slots[parent_slot].split_enabled) {
+            int split_point = host_chain_slots[parent_slot].split_octave * 12;
+            
+            if (type == 0x90 && pkt[3] > 0) { // Note On
+                if (note < split_point) {
+                    // Below boundary: Route ONLY to parent slot (skip if current slot is split)
+                    if (i == split_slot) continue;
+                } else {
+                    // At or above boundary: Route ONLY to split slot (skip if current slot is parent)
+                    if (i == parent_slot) continue;
+                }
+            } else if (type == 0x80 || (type == 0x90 && pkt[3] == 0) || type == 0xA0) { // Note Off / Poly AT
+                // Route to whichever slot actually has the note marked active
+                uint8_t held_parent = slot_active_note[parent_slot][midi_ch][note];
+                uint8_t held_split = slot_active_note[split_slot][midi_ch][note];
+                
+                if (held_split != 0xFF) {
+                    // Active on split slot, skip parent slot
+                    if (i == parent_slot) continue;
+                } else if (held_parent != 0xFF) {
+                    // Active on parent slot, skip split slot
+                    if (i == split_slot) continue;
+                } else {
+                    // Fallback if untracked (use split boundary)
+                    if (note < split_point) {
+                        if (i == split_slot) continue;
+                    } else {
+                        if (i == parent_slot) continue;
+                    }
+                }
+            }
+        }
 
         /* Lazy activation check — any loaded component (synth, audio FX,
          * or MIDI FX) is enough to activate. MIDI-FX-only slots in Pre

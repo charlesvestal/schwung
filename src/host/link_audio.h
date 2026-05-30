@@ -27,9 +27,9 @@
 #define LINK_AUDIO_PACKET_SIZE  574
 #define LINK_AUDIO_FRAMES_PER_PACKET 125
 
-/* Channel limits: 5 Move (tracks 1-4 + Main) + 4 shadow slots */
+/* Channel limits: 5 Move (tracks 1-4 + Main) + 8 shadow slots */
 #define LINK_AUDIO_MOVE_CHANNELS    5
-#define LINK_AUDIO_SHADOW_CHANNELS  4
+#define LINK_AUDIO_SHADOW_CHANNELS  8
 #define LINK_AUDIO_MAX_CHANNELS     (LINK_AUDIO_MOVE_CHANNELS + LINK_AUDIO_SHADOW_CHANNELS)
 
 /* Lock-free SPSC ring buffer per channel.
