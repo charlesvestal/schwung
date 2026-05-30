@@ -10910,10 +10910,12 @@ function drawHierarchyEditor() {
             drawMenuList({
                 items,
                 selectedIndex: hierEditorSelectedIdx,
-                listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+                listArea: { topY: LIST_TOP_Y, bottomY: LIST_BOTTOM_CLEARANCE },
                 getLabel: (item) => item.label,
                 getValue: (item) => item.value,
                 valueAlignRight: true,
+                valueX: 72,  // Lower floor for non-selected rows to maximize label width before truncation
+                getValueX: (val, floor) => Math.max(floor, SCREEN_WIDTH - text_width(val) - VALUE_RIGHT_CLEARANCE),
                 editMode: hierEditorEditMode,
                 scrollSelectedValue: true,
                 prioritizeSelectedValue: true,
