@@ -518,7 +518,7 @@ if needs_rebuild build/modules/midi_fx/velocity_scale/dsp.so \
     "${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
         src/modules/midi_fx/velocity_scale/dsp/velocity_scale.c \
         -o build/modules/midi_fx/velocity_scale/dsp.so \
-        -Isrc
+        -Isrc -lm
 else
     echo "Skipping velocity scale MIDI FX (up to date)"
 fi
