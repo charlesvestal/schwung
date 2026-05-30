@@ -115,6 +115,8 @@ typedef enum {
 #define MAX_KNOB_MAPPINGS 8
 #define KNOB_CC_START 71
 #define KNOB_CC_END 78
+#define KNOB_ABS_CC_START 102
+#define KNOB_ABS_CC_END 109
 #define KNOB_STEP_FLOAT 0.0015f /* Base step for floats (~600 clicks for 0-1 at min speed) */
 #define KNOB_STEP_INT 1        /* Base step for int params */
 
@@ -2707,6 +2709,54 @@ static chain_param_info_t *find_param_info(chain_param_info_t *params, int count
         }
     }
     return NULL;
+}
+
+/* Look up param metadata from a knob mapping's target string (synth/fx1-3/midi_fx1-2). */
+static chain_param_info_t *knob_find_param(chain_instance_t *inst, const char *target, const char *param) {
+    if (strcmp(target, "synth") == 0)
+        return find_param_info(inst->synth_params, inst->synth_param_count, param);
+    if (strcmp(target, "fx1") == 0 && inst->fx_count > 0)
+        return find_param_info(inst->fx_params[0], inst->fx_param_counts[0], param);
+    if (strcmp(target, "fx2") == 0 && inst->fx_count > 1)
+        return find_param_info(inst->fx_params[1], inst->fx_param_counts[1], param);
+    if (strcmp(target, "fx3") == 0 && inst->fx_count > 2)
+        return find_param_info(inst->fx_params[2], inst->fx_param_counts[2], param);
+    if (strcmp(target, "midi_fx1") == 0 && inst->midi_fx_count > 0)
+        return find_param_info(inst->midi_fx_params[0], inst->midi_fx_param_counts[0], param);
+    if (strcmp(target, "midi_fx2") == 0 && inst->midi_fx_count > 1)
+        return find_param_info(inst->midi_fx_params[1], inst->midi_fx_param_counts[1], param);
+    return NULL;
+}
+
+/* Forward a formatted value string to the plugin identified by target. */
+static void knob_forward_value(chain_instance_t *inst, const char *target, const char *param, const char *val_str) {
+    if (strcmp(target, "synth") == 0) {
+        if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->set_param)
+            inst->synth_plugin_v2->set_param(inst->synth_instance, param, val_str);
+        else if (inst->synth_plugin && inst->synth_plugin->set_param)
+            inst->synth_plugin->set_param(param, val_str);
+    } else if (strcmp(target, "fx1") == 0 && inst->fx_count > 0) {
+        if (inst->fx_is_v2[0] && inst->fx_plugins_v2[0] && inst->fx_instances[0])
+            inst->fx_plugins_v2[0]->set_param(inst->fx_instances[0], param, val_str);
+        else if (inst->fx_plugins[0] && inst->fx_plugins[0]->set_param)
+            inst->fx_plugins[0]->set_param(param, val_str);
+    } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1) {
+        if (inst->fx_is_v2[1] && inst->fx_plugins_v2[1] && inst->fx_instances[1])
+            inst->fx_plugins_v2[1]->set_param(inst->fx_instances[1], param, val_str);
+        else if (inst->fx_plugins[1] && inst->fx_plugins[1]->set_param)
+            inst->fx_plugins[1]->set_param(param, val_str);
+    } else if (strcmp(target, "fx3") == 0 && inst->fx_count > 2) {
+        if (inst->fx_is_v2[2] && inst->fx_plugins_v2[2] && inst->fx_instances[2])
+            inst->fx_plugins_v2[2]->set_param(inst->fx_instances[2], param, val_str);
+        else if (inst->fx_plugins[2] && inst->fx_plugins[2]->set_param)
+            inst->fx_plugins[2]->set_param(param, val_str);
+    } else if (strcmp(target, "midi_fx1") == 0 && inst->midi_fx_count > 0) {
+        if (inst->midi_fx_plugins[0] && inst->midi_fx_instances[0] && inst->midi_fx_plugins[0]->set_param)
+            inst->midi_fx_plugins[0]->set_param(inst->midi_fx_instances[0], param, val_str);
+    } else if (strcmp(target, "midi_fx2") == 0 && inst->midi_fx_count > 1) {
+        if (inst->midi_fx_plugins[1] && inst->midi_fx_instances[1] && inst->midi_fx_plugins[1]->set_param)
+            inst->midi_fx_plugins[1]->set_param(inst->midi_fx_instances[1], param, val_str);
+    }
 }
 
 /* Parse a patch file and populate patch_info */
@@ -7052,26 +7102,10 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
         if (cc >= KNOB_CC_START && cc <= KNOB_CC_END) {
             for (int i = 0; i < inst->knob_mapping_count; i++) {
                 if (inst->knob_mappings[i].cc == cc) {
-                    /* Look up parameter metadata dynamically */
                     const char *target = inst->knob_mappings[i].target;
                     const char *param = inst->knob_mappings[i].param;
-                    chain_param_info_t *pinfo = NULL;
-
-                    if (strcmp(target, "synth") == 0) {
-                        pinfo = find_param_info(inst->synth_params, inst->synth_param_count, param);
-                    } else if (strcmp(target, "fx1") == 0 && inst->fx_count > 0) {
-                        pinfo = find_param_info(inst->fx_params[0], inst->fx_param_counts[0], param);
-                    } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1) {
-                        pinfo = find_param_info(inst->fx_params[1], inst->fx_param_counts[1], param);
-                    } else if (strcmp(target, "fx3") == 0 && inst->fx_count > 2) {
-                        pinfo = find_param_info(inst->fx_params[2], inst->fx_param_counts[2], param);
-                    } else if (strcmp(target, "midi_fx1") == 0 && inst->midi_fx_count > 0) {
-                        pinfo = find_param_info(inst->midi_fx_params[0], inst->midi_fx_param_counts[0], param);
-                    } else if (strcmp(target, "midi_fx2") == 0 && inst->midi_fx_count > 1) {
-                        pinfo = find_param_info(inst->midi_fx_params[1], inst->midi_fx_param_counts[1], param);
-                    }
-
-                    if (!pinfo) continue;  /* Skip if param not found */
+                    chain_param_info_t *pinfo = knob_find_param(inst, target, param);
+                    if (!pinfo) continue;
 
                     /* Calculate acceleration based on time between events */
                     uint64_t now = get_time_ms();
@@ -7125,34 +7159,40 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
                         snprintf(val_str, sizeof(val_str), "%.3f", new_val);
                     }
 
-                    if (strcmp(target, "synth") == 0) {
-                        if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->set_param) {
-                            inst->synth_plugin_v2->set_param(inst->synth_instance, param, val_str);
-                        } else if (inst->synth_plugin && inst->synth_plugin->set_param) {
-                            inst->synth_plugin->set_param(param, val_str);
-                        }
-                    } else if (strcmp(target, "fx1") == 0 && inst->fx_count > 0) {
-                        if (inst->fx_is_v2[0] && inst->fx_plugins_v2[0] && inst->fx_instances[0]) {
-                            inst->fx_plugins_v2[0]->set_param(inst->fx_instances[0], param, val_str);
-                        } else if (inst->fx_plugins[0] && inst->fx_plugins[0]->set_param) {
-                            inst->fx_plugins[0]->set_param(param, val_str);
-                        }
-                    } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1) {
-                        if (inst->fx_is_v2[1] && inst->fx_plugins_v2[1] && inst->fx_instances[1]) {
-                            inst->fx_plugins_v2[1]->set_param(inst->fx_instances[1], param, val_str);
-                        } else if (inst->fx_plugins[1] && inst->fx_plugins[1]->set_param) {
-                            inst->fx_plugins[1]->set_param(param, val_str);
-                        }
-                    } else if (strcmp(target, "fx3") == 0 && inst->fx_count > 2) {
-                        if (inst->fx_is_v2[2] && inst->fx_plugins_v2[2] && inst->fx_instances[2]) {
-                            inst->fx_plugins_v2[2]->set_param(inst->fx_instances[2], param, val_str);
-                        } else if (inst->fx_plugins[2] && inst->fx_plugins[2]->set_param) {
-                            inst->fx_plugins[2]->set_param(param, val_str);
-                        }
-                    }
+                    knob_forward_value(inst, target, param, val_str);
                     return;
                 }
             }
+        }
+        /* Absolute knob automation: CC 102-109 → knob 1-8 (0-127 scaled to param range).
+         * Same knob mappings as CC 71-78, but interprets the value as an absolute
+         * position rather than a relative encoder delta. Consumed here; not forwarded
+         * to synth/FX. */
+        if (cc >= KNOB_ABS_CC_START && cc <= KNOB_ABS_CC_END) {
+            int target_cc = KNOB_CC_START + (cc - KNOB_ABS_CC_START);
+            for (int i = 0; i < inst->knob_mapping_count; i++) {
+                if (inst->knob_mappings[i].cc == target_cc) {
+                    const char *target = inst->knob_mappings[i].target;
+                    const char *param = inst->knob_mappings[i].param;
+                    chain_param_info_t *pinfo = knob_find_param(inst, target, param);
+                    if (!pinfo) return;
+
+                    float abs_val = pinfo->min_val + ((float)msg[2] / 127.0f) * (pinfo->max_val - pinfo->min_val);
+                    int is_int = (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM);
+                    if (is_int) abs_val = (float)((int)(abs_val + 0.5f));
+                    if (abs_val < pinfo->min_val) abs_val = pinfo->min_val;
+                    if (abs_val > pinfo->max_val) abs_val = pinfo->max_val;
+                    inst->knob_mappings[i].current_value = abs_val;
+
+                    char val_str[16];
+                    if (is_int) snprintf(val_str, sizeof(val_str), "%d", (int)abs_val);
+                    else        snprintf(val_str, sizeof(val_str), "%.3f", abs_val);
+
+                    knob_forward_value(inst, target, param, val_str);
+                    return;
+                }
+            }
+            return;  /* CC 102-109 consumed even if unmapped — don't forward to synth */
         }
     }
 
@@ -7704,23 +7744,8 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                         /* Look up parameter metadata */
                         const char *target = inst->knob_mappings[i].target;
                         const char *param = inst->knob_mappings[i].param;
-                        chain_param_info_t *pinfo = NULL;
-
-                        if (strcmp(target, "synth") == 0) {
-                            pinfo = find_param_info(inst->synth_params, inst->synth_param_count, param);
-                        } else if (strcmp(target, "fx1") == 0 && inst->fx_count > 0) {
-                            pinfo = find_param_info(inst->fx_params[0], inst->fx_param_counts[0], param);
-                        } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1) {
-                            pinfo = find_param_info(inst->fx_params[1], inst->fx_param_counts[1], param);
-                        } else if (strcmp(target, "fx3") == 0 && inst->fx_count > 2) {
-                            pinfo = find_param_info(inst->fx_params[2], inst->fx_param_counts[2], param);
-                        } else if (strcmp(target, "midi_fx1") == 0 && inst->midi_fx_count > 0) {
-                            pinfo = find_param_info(inst->midi_fx_params[0], inst->midi_fx_param_counts[0], param);
-                        } else if (strcmp(target, "midi_fx2") == 0 && inst->midi_fx_count > 1) {
-                            pinfo = find_param_info(inst->midi_fx_params[1], inst->midi_fx_param_counts[1], param);
-                        }
-
-                        if (!pinfo) continue;  /* Skip if param not found */
+                        chain_param_info_t *pinfo = knob_find_param(inst, target, param);
+                        if (!pinfo) continue;
 
                         /* Calculate acceleration based on time between events */
                         uint64_t now = get_time_ms();
@@ -7765,25 +7790,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                             snprintf(val_str, sizeof(val_str), "%.3f", new_val);
                         }
 
-                        if (strcmp(target, "synth") == 0) {
-                            if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->set_param) {
-                                inst->synth_plugin_v2->set_param(inst->synth_instance, param, val_str);
-                            } else if (inst->synth_plugin && inst->synth_plugin->set_param) {
-                                inst->synth_plugin->set_param(param, val_str);
-                            }
-                        } else if (strcmp(target, "fx1") == 0 && inst->fx_count > 0) {
-                            if (inst->fx_is_v2[0] && inst->fx_plugins_v2[0] && inst->fx_instances[0]) {
-                                inst->fx_plugins_v2[0]->set_param(inst->fx_instances[0], param, val_str);
-                            } else if (inst->fx_plugins[0] && inst->fx_plugins[0]->set_param) {
-                                inst->fx_plugins[0]->set_param(param, val_str);
-                            }
-                        } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1) {
-                            if (inst->fx_is_v2[1] && inst->fx_plugins_v2[1] && inst->fx_instances[1]) {
-                                inst->fx_plugins_v2[1]->set_param(inst->fx_instances[1], param, val_str);
-                            } else if (inst->fx_plugins[1] && inst->fx_plugins[1]->set_param) {
-                                inst->fx_plugins[1]->set_param(param, val_str);
-                            }
-                        }
+                        knob_forward_value(inst, target, param, val_str);
                         inst->dirty = 1;
                         break;
                     }
