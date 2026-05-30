@@ -3862,9 +3862,13 @@ function loadSlotsFromConfig() {
     /* Load saved slots, preserving both channel and name */
     const slotsFromConfig = data.patches.map((entry, idx) => {
         const channel = (typeof entry.channel === "number") ? entry.channel : (DEFAULT_SLOTS[idx]?.channel ?? 1 + idx);
+        let name = (typeof entry.name === "string") ? entry.name : "";
+        if (name === "Unknown Patch" || name === "Unknown") {
+            name = "";
+        }
         return {
             channel: channel,
-            name: (typeof entry.name === "string") ? entry.name : ((DEFAULT_SLOTS[idx] && DEFAULT_SLOTS[idx].name) || `Slot ${idx + 1}`)
+            name: name || ((DEFAULT_SLOTS[idx] && DEFAULT_SLOTS[idx].name) || `Slot ${idx + 1}`)
         };
     });
     return slotsFromConfig;
@@ -4162,6 +4166,9 @@ function refreshSlots() {
     slots = newSlots;
     if (selectedSlot >= slots.length) {
         selectedSlot = Math.max(0, slots.length - 1);
+    }
+    if (typeof host_log === "function") {
+        host_log("DEBUG refreshSlots: hostSlots=" + JSON.stringify(hostSlots) + " configSlots=" + JSON.stringify(configSlots) + " slots=" + JSON.stringify(slots));
     }
     if (changed) {
         needsRedraw = true;
@@ -13350,10 +13357,22 @@ function drawChainEdit() {
     const INDICATOR_H = Math.floor((INDICATOR_END_Y - INDICATOR_START_Y - 3 * INDICATOR_GAP) / 4);
     for (let s = 0; s < 4; s++) {
         const iy = INDICATOR_START_Y + s * (INDICATOR_H + INDICATOR_GAP);
-        if (s === selectedSlot) {
-            fill_rect(INDICATOR_X, iy, INDICATOR_W, INDICATOR_H, 1);
-        } else {
+        const isSplit = getSlotParam(s, "slot:split_enabled") === "1";
+        if (isSplit) {
             draw_rect(INDICATOR_X, iy, INDICATOR_W, INDICATOR_H, 1);
+            if (selectedSlot === s) {
+                /* Fill left part of the box (columns 1, 2, 4 -> index 0, 1, 3) */
+                fill_rect(INDICATOR_X + 1, iy, 1, INDICATOR_H, 1);
+            } else if (selectedSlot === s + 4) {
+                /* Fill right part of the box (columns 1, 3, 4 -> index 0, 2, 3) */
+                fill_rect(INDICATOR_X + 2, iy, 1, INDICATOR_H, 1);
+            }
+        } else {
+            if (selectedSlot === s) {
+                fill_rect(INDICATOR_X, iy, INDICATOR_W, INDICATOR_H, 1);
+            } else {
+                draw_rect(INDICATOR_X, iy, INDICATOR_W, INDICATOR_H, 1);
+            }
         }
     }
 
