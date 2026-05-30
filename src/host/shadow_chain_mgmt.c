@@ -489,6 +489,10 @@ void shadow_chain_load_config(void) {
                     if (len < sizeof(shadow_chain_slots[i].patch_name)) {
                         memcpy(shadow_chain_slots[i].patch_name, q1, len);
                         shadow_chain_slots[i].patch_name[len] = '\0';
+                        if (strcmp(shadow_chain_slots[i].patch_name, "Unknown Patch") == 0 ||
+                            strcmp(shadow_chain_slots[i].patch_name, "Unknown") == 0) {
+                            shadow_chain_slots[i].patch_name[0] = '\0';
+                        }
                     }
                 }
             }
@@ -1457,8 +1461,12 @@ void shadow_inprocess_handle_ui_request(void) {
         len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance, key, buf, sizeof(buf));
         if (len > 0) {
             buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
-            strncpy(shadow_chain_slots[slot].patch_name, buf, sizeof(shadow_chain_slots[slot].patch_name) - 1);
-            shadow_chain_slots[slot].patch_name[sizeof(shadow_chain_slots[slot].patch_name) - 1] = '\0';
+            if (strcmp(buf, "Unknown Patch") == 0 || strcmp(buf, "Unknown") == 0) {
+                shadow_chain_slots[slot].patch_name[0] = '\0';
+            } else {
+                strncpy(shadow_chain_slots[slot].patch_name, buf, sizeof(shadow_chain_slots[slot].patch_name) - 1);
+                shadow_chain_slots[slot].patch_name[sizeof(shadow_chain_slots[slot].patch_name) - 1] = '\0';
+            }
         }
     }
 
