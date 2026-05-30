@@ -35,6 +35,8 @@ export const SLOT_SETTINGS = [
     { key: "midi_fx_pre_mode", label: "MIDI FX", type: "int", min: 0, max: 1, step: 1 },
     { key: "mpe_mode", label: "MPE Mode", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:split_octave", label: "Split by octave", type: "int", min: -1, max: 10, step: 1 },
+    { key: "slot:split_target_chan", label: "Split Ch", type: "int", min: 1, max: 16, step: 1 },
+    { key: "edit_aux", label: "Edit aux slot", type: "action" },
 ];
 
 /* ---- Module-local state ------------------------------------------------- */
@@ -97,6 +99,13 @@ export function getSlotSettingValue(slot, setting) {
         if (!enabled) return "Off";
         const oct = parseInt(val);
         return isNaN(oct) ? "C4" : `C${oct}`;
+    }
+    if (setting.key === "slot:split_target_chan") {
+        const ch = parseInt(val);
+        return isNaN(ch) ? "Ch 5" : `Ch ${ch}`;
+    }
+    if (setting.key === "edit_aux") {
+        return `Slot ${slot + 5}`;
     }
     return val;
 }
@@ -233,7 +242,7 @@ export function drawSlotSettings() {
     clear_screen();
     drawHeader(`Slot ${selectedSlot + 1}`);
 
-    const settingsLength = (selectedSlot >= 4) ? (SLOT_SETTINGS.length - 1) : SLOT_SETTINGS.length;
+    const settingsLength = (selectedSlot >= 4) ? (SLOT_SETTINGS.length - 3) : SLOT_SETTINGS.length;
 
     // Safety check: ensure selectedSetting is within bounds for this slot's settings length
     if (selectedSetting >= settingsLength) {
@@ -292,7 +301,7 @@ export function handleSlotsJog(delta) {
 
 export function handleSlotSettingsJog(delta) {
     const { selectedSlot } = ctx;
-    const settingsLength = (selectedSlot >= 4) ? (SLOT_SETTINGS.length - 1) : SLOT_SETTINGS.length;
+    const settingsLength = (selectedSlot >= 4) ? (SLOT_SETTINGS.length - 3) : SLOT_SETTINGS.length;
     if (editingSettingValue) {
         const setting = SLOT_SETTINGS[selectedSetting];
         adjustSlotSetting(selectedSlot, setting, delta);
@@ -325,6 +334,8 @@ export function handleSlotSettingsSelect() {
             enterPatchBrowser(selectedSlot);
         } else if (setting.key === "chain") {
             enterChainEdit(selectedSlot);
+        } else if (setting.key === "edit_aux") {
+            enterSlotSettings(selectedSlot + 4);
         }
     } else {
         editingSettingValue = !editingSettingValue;

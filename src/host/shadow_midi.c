@@ -236,10 +236,12 @@ uint8_t shadow_chain_remap_channel(int slot, uint8_t status)
  * changing transpose during a sustained note leaves stuck notes because the
  * note-off arrives with a different transposed value than the note-on used. */
 static uint8_t slot_active_note[SHADOW_CHAIN_INSTANCES][16][128];
+static uint8_t split_note_dest_chan[SHADOW_CHAIN_INSTANCES][16][128];
 
 static void shadow_chain_transpose_reset(void)
 {
     memset(slot_active_note, 0xFF, sizeof(slot_active_note));
+    memset(split_note_dest_chan, 0xFF, sizeof(split_note_dest_chan));
 }
 
 /* Apply per-slot semitone transpose to a 3-byte MIDI message in place.
@@ -329,58 +331,11 @@ void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *mi
 
         /* Check channel match: slot receives this channel, or slot is set to All (-1) */
         int channel_matched = (host_chain_slots[i].channel == (int)midi_ch || host_chain_slots[i].channel == -1);
-        
-        // If split is enabled for this slot's parent, the split slot matches because its parent matches!
-        if (!channel_matched && i >= 4 && host_chain_slots[i - 4].split_enabled) {
-            int parent_ch = host_chain_slots[i - 4].channel;
-            if (parent_ch == (int)midi_ch || parent_ch == -1) {
-                channel_matched = 1;
-            }
-        }
-        
         if (!channel_matched)
             continue;
 
-        // Apply keyboard splitting if enabled on the parent slot
-        int parent_slot = (i < 4) ? i : (i - 4);
-        int split_slot = parent_slot + 4;
-        if (host_chain_slots[parent_slot].split_enabled) {
-            int split_point = host_chain_slots[parent_slot].split_octave * 12;
-            
-            if (type == 0x90 && pkt[3] > 0) { // Note On
-                if (note < split_point) {
-                    // Below boundary: Route ONLY to parent slot (skip if current slot is split)
-                    if (i == split_slot) continue;
-                } else {
-                    // At or above boundary: Route ONLY to split slot (skip if current slot is parent)
-                    if (i == parent_slot) continue;
-                }
-            } else if (type == 0x80 || (type == 0x90 && pkt[3] == 0) || type == 0xA0) { // Note Off / Poly AT
-                // Route to whichever slot actually has the note marked active
-                uint8_t held_parent = slot_active_note[parent_slot][midi_ch][note];
-                uint8_t held_split = slot_active_note[split_slot][midi_ch][note];
-                
-                if (held_split != 0xFF) {
-                    // Active on split slot, skip parent slot
-                    if (i == parent_slot) continue;
-                } else if (held_parent != 0xFF) {
-                    // Active on parent slot, skip split slot
-                    if (i == split_slot) continue;
-                } else {
-                    // Fallback if untracked (use split boundary)
-                    if (note < split_point) {
-                        if (i == split_slot) continue;
-                    } else {
-                        if (i == parent_slot) continue;
-                    }
-                }
-            }
-        }
-
         /* Lazy activation check — any loaded component (synth, audio FX,
-         * or MIDI FX) is enough to activate. MIDI-FX-only slots in Pre
-         * mode have no synth or audio FX but still need to dispatch
-         * incoming MIDI to drive the FX and inject to Move. */
+         * or MIDI FX) is enough to activate. */
         if (!host_chain_slots[i].active) {
             if (pv2 && pv2->get_param &&
                 host_chain_slots[i].instance) {
@@ -414,12 +369,103 @@ void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *mi
             host_slot_fx_silence_frames[i] = 0;
         }
 
-        /* Send MIDI to this slot */
-        if (pv2 && pv2->on_midi) {
-            uint8_t msg[3] = { shadow_chain_remap_channel(i, pkt[1]), pkt[2], pkt[3] };
-            if (shadow_chain_apply_transpose(i, msg)) {
-                pv2->on_midi(host_chain_slots[i].instance, msg, 3,
-                             MOVE_MIDI_SOURCE_EXTERNAL);
+        /* Apply split routing if enabled on this slot */
+        if (host_chain_slots[i].split_enabled) {
+            int target_chan = host_chain_slots[i].split_target_chan;
+            if (target_chan < 0 || target_chan > 15) {
+                target_chan = (i < 4) ? (i + 4) : i;
+            }
+
+            int split_point = host_chain_slots[i].split_octave * 12;
+            int dest_ch = -1;
+
+            if (type == 0x90 && pkt[3] > 0) { // Note On
+                if (note < split_point) {
+                    dest_ch = (int)midi_ch;
+                } else {
+                    dest_ch = target_chan;
+                }
+                split_note_dest_chan[i][midi_ch][note] = (uint8_t)dest_ch;
+            } else if (type == 0x80 || (type == 0x90 && pkt[3] == 0) || type == 0xA0) { // Note Off / Poly AT
+                uint8_t held_dest = split_note_dest_chan[i][midi_ch][note];
+                if (held_dest != 0xFF) {
+                    dest_ch = (int)held_dest;
+                } else {
+                    // Fallback
+                    if (note < split_point) {
+                        dest_ch = (int)midi_ch;
+                    } else {
+                        dest_ch = target_chan;
+                    }
+                }
+                if (type == 0x80 || (type == 0x90 && pkt[3] == 0)) {
+                    split_note_dest_chan[i][midi_ch][note] = 0xFF;
+                }
+            }
+
+            if (dest_ch != -1) {
+                /* Route single note to matching slots for dest_ch */
+                for (int ds = 0; ds < SHADOW_CHAIN_INSTANCES; ds++) {
+                    if (host_chain_slots[ds].channel == dest_ch || host_chain_slots[ds].channel == -1) {
+                        if (!host_chain_slots[ds].active || !host_chain_slots[ds].instance)
+                            continue;
+
+                        if (host_slot_idle[ds] || host_slot_fx_idle[ds]) {
+                            host_slot_idle[ds] = 0;
+                            host_slot_silence_frames[ds] = 0;
+                            host_slot_fx_idle[ds] = 0;
+                            host_slot_fx_silence_frames[ds] = 0;
+                        }
+
+                        if (pv2 && pv2->on_midi) {
+                            uint8_t status_for_ds = (pkt[1] & 0xF0) | (uint8_t)dest_ch;
+                            uint8_t msg[3] = { shadow_chain_remap_channel(ds, status_for_ds), pkt[2], pkt[3] };
+                            if (shadow_chain_apply_transpose(ds, msg)) {
+                                pv2->on_midi(host_chain_slots[ds].instance, msg, 3,
+                                             MOVE_MIDI_SOURCE_EXTERNAL);
+                            }
+                        }
+                    }
+                }
+            } else {
+                /* CC, Pitch Bend, Aftertouch, etc.: duplicate to both channels */
+                int channels[2] = { (int)midi_ch, target_chan };
+                int ch_count = ((int)midi_ch == target_chan) ? 1 : 2;
+
+                for (int c = 0; c < ch_count; c++) {
+                    int cc = channels[c];
+                    for (int ds = 0; ds < SHADOW_CHAIN_INSTANCES; ds++) {
+                        if (host_chain_slots[ds].channel == cc || host_chain_slots[ds].channel == -1) {
+                            if (!host_chain_slots[ds].active || !host_chain_slots[ds].instance)
+                                continue;
+
+                            if (host_slot_idle[ds] || host_slot_fx_idle[ds]) {
+                                host_slot_idle[ds] = 0;
+                                host_slot_silence_frames[ds] = 0;
+                                host_slot_fx_idle[ds] = 0;
+                                host_slot_fx_silence_frames[ds] = 0;
+                            }
+
+                            if (pv2 && pv2->on_midi) {
+                                uint8_t status_for_ds = (pkt[1] & 0xF0) | (uint8_t)cc;
+                                uint8_t msg[3] = { shadow_chain_remap_channel(ds, status_for_ds), pkt[2], pkt[3] };
+                                if (shadow_chain_apply_transpose(ds, msg)) {
+                                    pv2->on_midi(host_chain_slots[ds].instance, msg, 3,
+                                                 MOVE_MIDI_SOURCE_EXTERNAL);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            /* Standard single-slot dispatch */
+            if (pv2 && pv2->on_midi) {
+                uint8_t msg[3] = { shadow_chain_remap_channel(i, pkt[1]), pkt[2], pkt[3] };
+                if (shadow_chain_apply_transpose(i, msg)) {
+                    pv2->on_midi(host_chain_slots[i].instance, msg, 3,
+                                 MOVE_MIDI_SOURCE_EXTERNAL);
+                }
             }
         }
         dispatched++;

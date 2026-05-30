@@ -1569,6 +1569,8 @@ const CHAIN_SETTINGS_ITEMS = [
     { key: "midi_fx_pre_mode", label: "MIDI FX", type: "int", min: 0, max: 1, step: 1 },  // 0 = Post (slot synth only), 1 = Pre (also inject to Move native)
     { key: "mpe_mode", label: "MPE Mode", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:split_octave", label: "Split by octave", type: "int", min: -1, max: 10, step: 1 },
+    { key: "slot:split_target_chan", label: "Split Ch", type: "int", min: 1, max: 16, step: 1 },
+    { key: "edit_aux", label: "Edit aux slot", type: "action" },
     { key: "lfo1", label: "LFO 1", type: "action" },
     { key: "lfo2", label: "LFO 2", type: "action" },
     { key: "save", label: "[Save]", type: "action" },  // Save slot preset (overwrite for existing)
@@ -3907,6 +3909,7 @@ function saveChainConfigToDir(dir) {
             if (i < 4) {
                 item.split_enabled = parseInt(getSlotParam(i, "slot:split_enabled") || "0");
                 item.split_octave = parseInt(getSlotParam(i, "slot:split_octave") || "4");
+                item.split_target_chan = parseInt(getSlotParam(i, "slot:split_target_chan") || String(i + 5));
             }
             cfgSlots.push(item);
         }
@@ -4084,7 +4087,7 @@ function loadChainConfigFromDir(dir) {
              * default to slot index + 1 (or SHADOW_CHANNEL_SPLIT for slots 5-8). Chain configs written before
              * 072d3fd3 (or saved by older host code) can lack the field —
              * silently skipping leaves shim.channel stale from the prior set. */
-            const recvCh = (typeof s.channel === "number") ? s.channel : (i < 4 ? (i + 1) : -3);
+            const recvCh = (typeof s.channel === "number") ? s.channel : (i + 1);
             setSlotParamWithTimeout(i, "slot:receive_channel", String(recvCh), 500);
             if (typeof s.forward_channel === "number") setSlotParamWithTimeout(i, "slot:forward_channel", String(s.forward_channel), 500);
             if (typeof s.muted === "number") setSlotParamWithTimeout(i, "slot:muted", String(s.muted), 500);
@@ -4092,6 +4095,8 @@ function loadChainConfigFromDir(dir) {
             if (i < 4) {
                 if (typeof s.split_enabled === "number") setSlotParamWithTimeout(i, "slot:split_enabled", String(s.split_enabled), 500);
                 if (typeof s.split_octave === "number") setSlotParamWithTimeout(i, "slot:split_octave", String(s.split_octave), 500);
+                const splitTgt = (typeof s.split_target_chan === "number") ? s.split_target_chan : (i + 5);
+                setSlotParamWithTimeout(i, "slot:split_target_chan", String(splitTgt), 500);
             }
         }
         debugLog("SET_CHANGED: loaded chain config from " + path);
@@ -4181,9 +4186,9 @@ function getChainSettingsItems(slotIndex) {
         });
     }
     if (slotIndex >= 4) {
-        /* Hide split settings for slots 5-8 */
+        /* Hide split settings, split target channel, and edit aux for slots 5-8 */
         items = items.filter(function(item) {
-            return item.key !== "slot:split_octave";
+            return item.key !== "slot:split_octave" && item.key !== "slot:split_target_chan" && item.key !== "edit_aux";
         });
     }
     return items;
@@ -7407,6 +7412,13 @@ function getChainSettingValue(slot, setting) {
         if (!enabled) return "Off";
         const oct = parseInt(val);
         return isNaN(oct) ? "C4" : `C${oct}`;
+    }
+    if (setting.key === "slot:split_target_chan") {
+        const ch = parseInt(val);
+        return isNaN(ch) ? "Ch 5" : `Ch ${ch}`;
+    }
+    if (setting.key === "edit_aux") {
+        return `Slot ${slot + 5}`;
     }
     return String(val);
 }
@@ -12124,6 +12136,8 @@ function handleSelect() {
                         overwriteFromKeyboard = true;  /* Will use keyboard if Edit is selected */
                         announceSavePreview(pendingSaveName, namePreviewIndex);
                         needsRedraw = true;
+                    } else if (setting.key === "edit_aux") {
+                        enterChainSettings(selectedSlot + 4);
                     } else if (setting.key === "lfo1" || setting.key === "lfo2") {
                         const lfoIdx = (setting.key === "lfo1") ? 0 : 1;
                         lfoCtx = makeSlotLfoCtx(selectedSlot, lfoIdx);

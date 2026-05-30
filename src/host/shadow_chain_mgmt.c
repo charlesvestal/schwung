@@ -417,11 +417,7 @@ void shadow_chain_defaults(void) {
         shadow_chain_slots[i].instance = NULL;
         shadow_chain_slots[i].active = 0;
         shadow_chain_slots[i].patch_index = -1;
-        if (i < 4) {
-            shadow_chain_slots[i].channel = shadow_chain_parse_channel(1 + i);
-        } else {
-            shadow_chain_slots[i].channel = SHADOW_CHANNEL_SPLIT;
-        }
+        shadow_chain_slots[i].channel = shadow_chain_parse_channel(1 + i);
         shadow_chain_slots[i].volume = 1.0f;
         shadow_chain_slots[i].muted = 0;
         shadow_chain_slots[i].soloed = 0;
@@ -429,6 +425,7 @@ void shadow_chain_defaults(void) {
         shadow_chain_slots[i].transpose = 0;
         shadow_chain_slots[i].split_enabled = 0;
         shadow_chain_slots[i].split_octave = 4; // Default to octave 4 (note 48)
+        shadow_chain_slots[i].split_target_chan = (i < 4) ? (i + 4) : i;
         capture_clear(&shadow_chain_slots[i].capture);
         shadow_chain_slots[i].fade.gain = 0.0f;
         shadow_chain_slots[i].fade.target = 0.0f;
@@ -1643,6 +1640,14 @@ int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
         shadow_ui_state_update_slot(slot);
         return 1;
     }
+    if (strcmp(key, "slot:split_target_chan") == 0) {
+        int val = atoi(value);
+        if (val < 1) val = 1;
+        if (val > 16) val = 16;
+        shadow_chain_slots[slot].split_target_chan = val - 1;
+        shadow_ui_state_update_slot(slot);
+        return 1;
+    }
     return 0;
 }
 
@@ -1674,6 +1679,9 @@ int shadow_handle_slot_param_get(int slot, const char *key, char *buf, int buf_l
     }
     if (strcmp(key, "slot:split_octave") == 0) {
         return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].split_octave);
+    }
+    if (strcmp(key, "slot:split_target_chan") == 0) {
+        return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].split_target_chan + 1);
     }
     if (strcmp(key, "active_set") == 0) {
         /* Return "uuid\nname" for UI thread to write active_set.txt */
