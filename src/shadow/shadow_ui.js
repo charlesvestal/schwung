@@ -3077,6 +3077,7 @@ let overtakeExitPending = false;
 
 /* Exit overtake mode back to Move */
 function exitOvertakeMode() {
+    corunTeardown();
     /* Flush set state on the way out — defensive, since chain state is not
      * edited during overtake, but keeps the invariant "all transitions
      * persist state" honest. */
@@ -3140,6 +3141,7 @@ function exitOvertakeMode() {
 
 /* Suspend overtake mode — leave background processes running */
 function suspendOvertakeMode() {
+    corunTeardown();
     if (overtakeSuspendKeepsJs && overtakeModuleCallbacks && overtakeModuleId) {
         debugLog("suspendOvertakeMode: suspend_keeps_js — parking " + overtakeModuleId + " in background");
 
@@ -3307,6 +3309,7 @@ function resumeOvertakeModule(moduleId) {
 
 /* Direct exit for interactive tools - skip LED clearing ceremony */
 function exitToolOvertake() {
+    corunTeardown();
     debugLog("exitToolOvertake: direct tool exit, nonOvertake=" + toolNonOvertake);
 
     /* Let the module clean up before teardown. */
@@ -3391,6 +3394,7 @@ function exitToolOvertake() {
 
 /* Hide an interactive tool - exit overtake but keep DSP loaded */
 function hideToolOvertake() {
+    corunTeardown();
     debugLog("hideToolOvertake: hiding tool, keeping DSP");
 
     /* Deactivate LED queue */
@@ -14775,6 +14779,13 @@ globalThis.shadow_save_state_now = function() {
     debugLog("shadow_save_state_now: flushed set state before exit");
     return true;
 };
+
+function corunTeardown() {
+    if (typeof shadow_corun_end === "function") shadow_corun_end();
+    coRunChainEditSlot = -1;
+    coRunView = -1;
+    coRunKeepMask = 0;
+}
 
 /* Co-run helpers — see coRunChainEditSlot / coRunView declarations near top.
  *
