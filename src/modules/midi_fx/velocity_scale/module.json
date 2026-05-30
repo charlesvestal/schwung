@@ -2,7 +2,7 @@
   "id": "velocity_scale",
   "name": "Velocity Scale",
   "abbrev": "VS",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "builtin": true,
   "capabilities": {
     "chainable": true,
@@ -29,9 +29,25 @@
               "max": 127,
               "default": 127,
               "step": 1
+            },
+            {
+              "key": "curve",
+              "name": "Curve",
+              "type": "int",
+              "min": -100,
+              "max": 100,
+              "default": 0,
+              "step": 1
+            },
+            {
+              "key": "curve_preset",
+              "name": "Curve Preset",
+              "type": "enum",
+              "options": ["Linear", "Soft", "Softer", "Hard", "Harder"],
+              "default": 0
             }
           ],
-          "knobs": ["min", "max"]
+          "knobs": ["min", "max", "curve"]
         }
       }
     }

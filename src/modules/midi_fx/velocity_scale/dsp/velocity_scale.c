@@ -1,14 +1,16 @@
 /*
  * Velocity Scale MIDI FX
  *
- * Scales incoming note velocities to fit within a configurable min/max range.
- * Input velocity 1-127 is linearly mapped to the min-max range.
+ * Shapes incoming note velocities in two additive stages:
+ *   1. MPC Curve  - a tunable power curve (off by default, Curve=0 = linear).
+ *   2. Min/Max    - linear scale of the curve output into a configurable range.
  * Velocity 0 (note-off) is always passed through unchanged.
  */
 
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 #include "host/midi_fx_api_v1.h"
 #include "host/plugin_api_v1.h"
 
@@ -30,9 +32,47 @@ static int json_get_int(const char *json, const char *key, int *out) {
 typedef struct {
     int vel_min;  /* 1-127 */
     int vel_max;  /* 1-127 */
+    int curve;    /* -100..+100, 0 = linear (no-op) */
 } velocity_scale_instance_t;
 
 static const host_api_v1_t *g_host = NULL;
+
+/* Named Curve presets (just convenience setters for the continuous Curve). */
+typedef struct { const char *name; int value; } curve_preset_t;
+static const curve_preset_t CURVE_PRESETS[] = {
+    { "Linear",  0 },
+    { "Soft",   40 },
+    { "Softer", 70 },
+    { "Hard",  -40 },
+    { "Harder",-70 },
+};
+#define NUM_CURVE_PRESETS ((int)(sizeof(CURVE_PRESETS) / sizeof(CURVE_PRESETS[0])))
+
+/*
+ * MPC Curve velocity shaping
+ * --------------------------
+ * Applies a tunable power curve to note-on velocity. Approximates the feel of
+ * an Akai MPC pad/velocity curve; the MPC's exact internal transfer function is
+ * unpublished, so this is a continuous, monotonic power curve.
+ *
+ * Sign convention (Curve in -100..+100, 0 = linear / no change):
+ *   Positive Curve = more sensitive / easier to play loud (boosts soft hits).
+ *   Negative Curve = harder; requires harder hits to reach high velocity.
+ *
+ * For a note-on velocity v (1..127):
+ *   n      = (v - 1) / 126.0                 // v=1 -> 0, v=127 -> 1
+ *   gamma  = pow(2.0, -Curve / 100.0 * 2.0)  // 0 -> 1, +100 -> 0.25, -100 -> 4.0
+ *   shaped = pow(n, gamma)
+ *   out    = 1 + shaped * 126.0
+ * Endpoints are exact for any Curve: v=1 -> 1 and v=127 -> 127.
+ */
+static double curve_stage(double v, int curve) {
+    if (curve == 0) return v;  /* linear: exact no-op */
+    double n = (v - 1.0) / 126.0;
+    double gamma = pow(2.0, -curve / 100.0 * 2.0);
+    double shaped = pow(n, gamma);
+    return 1.0 + shaped * 126.0;
+}
 
 static void* velocity_scale_create_instance(const char *module_dir, const char *config_json) {
     (void)module_dir;
@@ -43,6 +83,7 @@ static void* velocity_scale_create_instance(const char *module_dir, const char *
 
     inst->vel_min = 1;
     inst->vel_max = 127;
+    inst->curve = 0;
     return inst;
 }
 
@@ -68,8 +109,13 @@ static int velocity_scale_process_midi(void *instance,
         /* Ensure min <= max for the mapping */
         if (lo > hi) { int tmp = lo; lo = hi; hi = tmp; }
 
-        /* Linear map: input 1-127 -> lo-hi */
-        int scaled = lo + ((vel - 1) * (hi - lo) + 63) / 126;
+        /* Stage order: MPC curve first, then linear min/max scale, then round.
+         * curve_stage and the scale are computed in floating point and rounded
+         * exactly once (round-half-up) so Curve=0 with the default 1..127 range
+         * is a true no-op (out == vel). */
+        double curved = curve_stage((double)vel, inst->curve);
+        double mapped = (double)lo + (curved - 1.0) * (double)(hi - lo) / 126.0;
+        int scaled = (int)floor(mapped + 0.5);  /* round-half-up */
         if (scaled < 1) scaled = 1;
         if (scaled > 127) scaled = 127;
 
@@ -117,6 +163,21 @@ static void velocity_scale_set_param(void *instance, const char *key, const char
         if (v > 127) v = 127;
         inst->vel_max = v;
     }
+    else if (strcmp(key, "curve") == 0) {
+        int v = atoi(val);
+        if (v < -100) v = -100;
+        if (v > 100) v = 100;
+        inst->curve = v;
+    }
+    else if (strcmp(key, "curve_preset") == 0) {
+        /* Named preset just sets the continuous Curve value. */
+        for (int i = 0; i < NUM_CURVE_PRESETS; i++) {
+            if (strcmp(val, CURVE_PRESETS[i].name) == 0) {
+                inst->curve = CURVE_PRESETS[i].value;
+                break;
+            }
+        }
+    }
     else if (strcmp(key, "state") == 0) {
         int v;
         if (json_get_int(val, "min", &v)) {
@@ -128,6 +189,11 @@ static void velocity_scale_set_param(void *instance, const char *key, const char
             if (v < 1) v = 1;
             if (v > 127) v = 127;
             inst->vel_max = v;
+        }
+        if (json_get_int(val, "curve", &v)) {
+            if (v < -100) v = -100;
+            if (v > 100) v = 100;
+            inst->curve = v;
         }
     }
 }
@@ -142,14 +208,30 @@ static int velocity_scale_get_param(void *instance, const char *key, char *buf, 
     else if (strcmp(key, "max") == 0) {
         return snprintf(buf, buf_len, "%d", inst->vel_max);
     }
+    else if (strcmp(key, "curve") == 0) {
+        return snprintf(buf, buf_len, "%d", inst->curve);
+    }
+    else if (strcmp(key, "curve_preset") == 0) {
+        /* Reflect the named preset matching the current Curve, else Linear. */
+        const char *name = CURVE_PRESETS[0].name;
+        for (int i = 0; i < NUM_CURVE_PRESETS; i++) {
+            if (CURVE_PRESETS[i].value == inst->curve) {
+                name = CURVE_PRESETS[i].name;
+                break;
+            }
+        }
+        return snprintf(buf, buf_len, "%s", name);
+    }
     else if (strcmp(key, "state") == 0) {
-        return snprintf(buf, buf_len, "{\"min\":%d,\"max\":%d}",
-                        inst->vel_min, inst->vel_max);
+        return snprintf(buf, buf_len, "{\"min\":%d,\"max\":%d,\"curve\":%d}",
+                        inst->vel_min, inst->vel_max, inst->curve);
     }
     else if (strcmp(key, "chain_params") == 0) {
         const char *params = "["
             "{\"key\":\"min\",\"name\":\"Min Velocity\",\"type\":\"int\",\"min\":1,\"max\":127,\"step\":1},"
-            "{\"key\":\"max\",\"name\":\"Max Velocity\",\"type\":\"int\",\"min\":1,\"max\":127,\"step\":1}"
+            "{\"key\":\"max\",\"name\":\"Max Velocity\",\"type\":\"int\",\"min\":1,\"max\":127,\"step\":1},"
+            "{\"key\":\"curve\",\"name\":\"Curve\",\"type\":\"int\",\"min\":-100,\"max\":100,\"step\":1,\"default\":0},"
+            "{\"key\":\"curve_preset\",\"name\":\"Curve Preset\",\"type\":\"enum\",\"options\":[\"Linear\",\"Soft\",\"Softer\",\"Hard\",\"Harder\"]}"
         "]";
         return snprintf(buf, buf_len, "%s", params);
     }
