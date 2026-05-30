@@ -32,6 +32,8 @@ export const LIST_BOTTOM_WITH_FOOTER = FOOTER_RULE_Y - 1;
 export const DEFAULT_CHAR_WIDTH = 6;
 export const DEFAULT_LABEL_GAP = 6;
 export const DEFAULT_VALUE_PADDING_RIGHT = 2;
+export const VALUE_RIGHT_CLEARANCE = 10;  /* Clearance from scroll-arrow column (LIST_INDICATOR_X = 120) */
+export const LIST_BOTTOM_CLEARANCE = FOOTER_RULE_Y - 2;  /* 2px clearance below footer rule for down-arrow */
 
 /* Screen reader state - track last announced item to avoid redundant announcements */
 let lastAnnouncedIndex = -1;
