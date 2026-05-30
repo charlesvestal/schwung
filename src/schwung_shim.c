@@ -4300,12 +4300,10 @@ void midi_monitor()
                 if (midi_2 == 0x7f)
                 {
                     shadow_menu_held = 1;
-                    shadow_log("DEBUG: Menu button PRESSED");
                 }
                 else
                 {
                     shadow_menu_held = 0;
-                    shadow_log("DEBUG: Menu button RELEASED");
                 }
             }
             else if (midi_1 == CC_UNDO) /* CC 56 (Undo) */
@@ -4313,12 +4311,10 @@ void midi_monitor()
                 if (midi_2 == 0x7f)
                 {
                     shadow_undo_held = 1;
-                    shadow_log("DEBUG: Undo button PRESSED");
                 }
                 else
                 {
                     shadow_undo_held = 0;
-                    shadow_log("DEBUG: Undo button RELEASED");
                 }
             }
 
@@ -6365,12 +6361,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     !(d1 == CC_CAPTURE && shadow_shift_held)) {
                     continue;
                 }
-                /* DEBUG: log CCs while shift held */
-                if (shadow_shift_held && d2 > 0) {
-                    char dbg[64];
-                    snprintf(dbg, sizeof(dbg), "Shift+CC: cc=%d val=%d", d1, d2);
-                    shadow_log(dbg);
-                }
+
                 /* Track buttons are CCs 40-43 */
                 if (d1 >= 40 && d1 <= 43) {
                     int pressed = (d2 > 0);
@@ -6382,11 +6373,6 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                      * Track buttons are reversed: CC43=Track1, CC42=Track2, CC41=Track3, CC40=Track4 */
                     if (pressed) {
                         int new_slot = 43 - d1;  /* Reverse: CC43→0, CC42→1, CC41→2, CC40→3 */
-                        char dbg_track[128];
-                        snprintf(dbg_track, sizeof(dbg_track),
-                                 "DEBUG: Track %d pressed, shift=%d, undo=%d, menu=%d, UI=%d",
-                                 new_slot + 1, shadow_shift_held, shadow_undo_held, shadow_menu_held, shadow_display_mode);
-                        shadow_log(dbg_track);
  
                         track_press_start_selected_slot[new_slot] = shadow_selected_slot;
                         track_press_start_ui_open[new_slot] = shadow_display_mode;
