@@ -229,7 +229,11 @@ const DEFAULT_SLOTS = [
     { channel: 1, name: "" },
     { channel: 2, name: "" },
     { channel: 3, name: "" },
-    { channel: 4, name: "" }
+    { channel: 4, name: "" },
+    { channel: 5, name: "" },
+    { channel: 6, name: "" },
+    { channel: 7, name: "" },
+    { channel: 8, name: "" }
 ];
 
 /* View constants */
@@ -1570,7 +1574,7 @@ const CHAIN_SETTINGS_ITEMS = [
     { key: "mpe_mode", label: "MPE Mode", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:split_octave", label: "Split by octave", type: "int", min: -1, max: 10, step: 1 },
     { key: "slot:split_target_chan", label: "Split Ch", type: "int", min: 1, max: 16, step: 1 },
-    { key: "edit_aux", label: "Edit aux slot", type: "action" },
+    { key: "edit_aux", label: "Edit Split Slot", type: "action" },
     { key: "lfo1", label: "LFO 1", type: "action" },
     { key: "lfo2", label: "LFO 2", type: "action" },
     { key: "save", label: "[Save]", type: "action" },  // Save slot preset (overwrite for existing)
@@ -3860,7 +3864,7 @@ function loadSlotsFromConfig() {
         const channel = (typeof entry.channel === "number") ? entry.channel : (DEFAULT_SLOTS[idx]?.channel ?? 1 + idx);
         return {
             channel: channel,
-            name: (typeof entry.name === "string") ? entry.name : (DEFAULT_SLOTS[idx]?.name ?? "Unknown")
+            name: (typeof entry.name === "string") ? entry.name : ((DEFAULT_SLOTS[idx] && DEFAULT_SLOTS[idx].name) || `Slot ${idx + 1}`)
         };
     });
     return slotsFromConfig;
@@ -4140,7 +4144,7 @@ function refreshSlots() {
         newSlots = hostSlots.map((slot, idx) => ({
             channel: (typeof slot.channel === "number") ? slot.channel : (DEFAULT_SLOTS[idx] ? DEFAULT_SLOTS[idx].channel : 1 + idx),
             /* Prefer config name (set by save), fall back to shim name, then default */
-            name: (configSlots[idx] && configSlots[idx].name) || slot.name || (DEFAULT_SLOTS[idx] ? DEFAULT_SLOTS[idx].name : "Unknown Patch")
+            name: (configSlots[idx] && configSlots[idx].name) || slot.name || (DEFAULT_SLOTS[idx] && DEFAULT_SLOTS[idx].name) || `Slot ${idx + 1}`
         }));
     } else {
         newSlots = configSlots;

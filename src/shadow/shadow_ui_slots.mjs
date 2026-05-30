@@ -36,7 +36,7 @@ export const SLOT_SETTINGS = [
     { key: "mpe_mode", label: "MPE Mode", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:split_octave", label: "Split by octave", type: "int", min: -1, max: 10, step: 1 },
     { key: "slot:split_target_chan", label: "Split Ch", type: "int", min: 1, max: 16, step: 1 },
-    { key: "edit_aux", label: "Edit aux slot", type: "action" },
+    { key: "edit_aux", label: "Edit Split Slot", type: "action" },
 ];
 
 /* ---- Module-local state ------------------------------------------------- */
@@ -210,7 +210,7 @@ export function drawSlots() {
             const flags = (muted ? "M" : "") + (soloed ? "S" : "");
             const prefix = (i === trackSelectedSlot ? "*" : " ") + (slotDirtyCache[i] ? "*" : "");
             return {
-                label: prefix + (s.name || "Unknown Patch"),
+                label: prefix + (s.name || ("Slot " + (i + 1))),
                 value: flags || (s.channel === 0 ? "All" : `Ch${s.channel}`),
                 isSlot: true
             };

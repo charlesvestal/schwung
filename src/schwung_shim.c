@@ -760,6 +760,10 @@ static void shadow_update_held_track(uint8_t cc, int pressed)
 static struct timespec track_press_time[4];
 static uint8_t track_longpress_pending[4];
 static uint8_t track_longpress_fired[4];
+/* Selected slot index at the start of a Track button press, used to distinguish
+ * if a long-press redirect to the split slot should happen. */
+static int track_press_start_selected_slot[4] = { -1, -1, -1, -1 };
+static int track_press_start_ui_open[4] = { 0, 0, 0, 0 };
 /* Set if the volume knob is touched at any point while a Track button is held.
  * Once set, that track's long-press is suppressed for the remainder of the press,
  * so adjusting a track's volume never opens the shadow UI. Cleared on press/release. */
@@ -4296,10 +4300,12 @@ void midi_monitor()
                 if (midi_2 == 0x7f)
                 {
                     shadow_menu_held = 1;
+                    shadow_log("DEBUG: Menu button PRESSED");
                 }
                 else
                 {
                     shadow_menu_held = 0;
+                    shadow_log("DEBUG: Menu button RELEASED");
                 }
             }
             else if (midi_1 == CC_UNDO) /* CC 56 (Undo) */
@@ -4307,10 +4313,12 @@ void midi_monitor()
                 if (midi_2 == 0x7f)
                 {
                     shadow_undo_held = 1;
+                    shadow_log("DEBUG: Undo button PRESSED");
                 }
                 else
                 {
                     shadow_undo_held = 0;
+                    shadow_log("DEBUG: Undo button RELEASED");
                 }
             }
 
@@ -5550,14 +5558,20 @@ pre_done:
                 long_press_elapsed(&track_press_time[i])) {
                 track_longpress_fired[i] = 1;
                 track_longpress_pending[i] = 0;
-                shadow_control->ui_slot = (uint8_t)i;
+                int target_slot = i;
+                if (track_press_start_ui_open[i] && track_press_start_selected_slot[i] == i) {
+                    target_slot = i + 4;
+                    shadow_log("Track long-press (redirect): opening split slot settings");
+                } else {
+                    shadow_log("Track long-press: opening slot settings");
+                }
+                shadow_control->ui_slot = (uint8_t)target_slot;
                 shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_SLOT;
                 if (!shadow_display_mode) {
                     shadow_display_mode = 1;
                     shadow_control->display_mode = 1;
                     launch_shadow_ui();
                 }
-                shadow_log("Track long-press: opening slot settings");
             }
         }
         /* Menu button */
@@ -6360,13 +6374,23 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 /* Track buttons are CCs 40-43 */
                 if (d1 >= 40 && d1 <= 43) {
                     int pressed = (d2 > 0);
+                    int shortcut_triggered = 0;
                     shadow_update_held_track(d1, pressed);
                     if (pressed && shadow_control) shadow_control->move_ui_mode = 2; /* NOTE */
-
+ 
                     /* Update selected slot when track is pressed (for Shift+Knob routing)
                      * Track buttons are reversed: CC43=Track1, CC42=Track2, CC41=Track3, CC40=Track4 */
                     if (pressed) {
                         int new_slot = 43 - d1;  /* Reverse: CC43→0, CC42→1, CC41→2, CC40→3 */
+                        char dbg_track[128];
+                        snprintf(dbg_track, sizeof(dbg_track),
+                                 "DEBUG: Track %d pressed, shift=%d, undo=%d, menu=%d, UI=%d",
+                                 new_slot + 1, shadow_shift_held, shadow_undo_held, shadow_menu_held, shadow_display_mode);
+                        shadow_log(dbg_track);
+ 
+                        track_press_start_selected_slot[new_slot] = shadow_selected_slot;
+                        track_press_start_ui_open[new_slot] = shadow_display_mode;
+ 
                         if (new_slot != shadow_selected_slot) {
                             shadow_selected_slot = new_slot;
                             /* Sync to shared memory for shadow UI and Shift+Knob routing */
@@ -6378,7 +6402,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                             snprintf(msg, sizeof(msg), "Selected slot: %d (Track %d)", new_slot, new_slot + 1);
                             shadow_log(msg);
                         }
-
+ 
                         /* Shift + Mute + Track = toggle solo; Mute + Track = toggle mute */
                         if (shadow_mute_held) {
                             if (shadow_shift_held) {
@@ -6387,7 +6411,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                                 shadow_apply_mute(new_slot, !shadow_chain_slots[new_slot].muted);
                             }
                         }
-
+ 
                         /* Shift + Volume + Track = jump to that slot's edit screen (if shadow UI enabled) */
                         if (SHIFT_VOL_ACTIVE() && shadow_shift_held && shadow_volume_knob_touched && shadow_control && shadow_ui_enabled) {
                             shadow_block_plain_volume_hide_until_release = 1;
@@ -6399,13 +6423,13 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                                 shadow_control->display_mode = 1;
                                 launch_shadow_ui();
                             }
-                            /* If already in shadow mode, flag will be picked up by tick() */
+                            shortcut_triggered = 1;
                             /* Block Track CC from reaching Move */
                             uint8_t *sh = shadow + MIDI_IN_OFFSET;
                             sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
                             src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
                         }
-
+ 
                         /* Shift + Undo + Track = jump to target slot (5-8, indices 4-7) edit screen (if shadow UI enabled) */
                         if (shadow_shift_held && shadow_undo_held && shadow_control && shadow_ui_enabled) {
                             int target_slot = new_slot + 4;
@@ -6419,33 +6443,40 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                             }
                             /* Arm Undo suppression so that native Undo/Redo is not triggered on button release */
                             shadow_undo_shortcut_fired = 1;
+                            shortcut_triggered = 1;
                             /* Block Track CC from reaching Move */
                             uint8_t *sh = shadow + MIDI_IN_OFFSET;
                             sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
                             src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
                         }
-
+ 
                         /* Shift + Track (without Volume / Mute) while shadow UI is displayed = dismiss shadow UI
                          * and let the Track CC pass through to Move for native track settings.
                          * Excluded: Shift+Mute+Track is the solo combo handled above — must not
                          * also dismiss shadow UI (leaks the Mute release to Move firmware and
                          * leaves Mute "latched" on the hardware). */
                         if (shadow_display_mode && shadow_shift_held && !shadow_volume_knob_touched &&
-                            !shadow_mute_held && !shadow_undo_held && shadow_control) {
+                            !shadow_mute_held && !shadow_undo_held && !shadow_menu_held && shadow_control) {
                             shadow_display_mode = 0;
                             shadow_control->display_mode = 0;
                             shadow_log("Shift+Track: dismissing shadow UI");
                         }
                     }
-
+ 
                     /* Long-press detection for Track buttons */
                     if (LONG_PRESS_ACTIVE() && shadow_ui_enabled) {
                         int lp_slot = 43 - d1;
                         if (pressed) {
-                            /* Start long-press timer */
-                            clock_gettime(CLOCK_MONOTONIC, &track_press_time[lp_slot]);
-                            track_longpress_pending[lp_slot] = 1;
-                            track_longpress_fired[lp_slot] = 0;
+                            if (shortcut_triggered) {
+                                /* Bypass long-press trigger for this press */
+                                track_longpress_pending[lp_slot] = 0;
+                                track_longpress_fired[lp_slot] = 1;
+                            } else {
+                                /* Start long-press timer */
+                                clock_gettime(CLOCK_MONOTONIC, &track_press_time[lp_slot]);
+                                track_longpress_pending[lp_slot] = 1;
+                                track_longpress_fired[lp_slot] = 0;
+                            }
                             track_vol_touched_during_press[lp_slot] =
                                 shadow_volume_knob_touched ? 1 : 0;
                         } else {
