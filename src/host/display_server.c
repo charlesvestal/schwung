@@ -27,9 +27,19 @@
 #include "unified_log.h"
 
 #define DEFAULT_PORT       7681
+// On Linux, /dev/shm/X is the filesystem view of POSIX SHM /X — open(2) on
+// the path works. macOS has no /dev/shm; we must use shm_open(2) directly
+// with the POSIX name (leading slash).
+#ifdef __APPLE__
+#define SHM_PATH           "/schwung-display-live"
+#define NORNS_SHM_PATH     "/schwung-norns-display-live"
+#define DISPLAY_SHM_OPEN(name, flags) shm_open((name), (flags), 0)
+#else
 #define SHM_PATH           "/dev/shm/schwung-display-live"
-#define DISPLAY_SIZE       1024
 #define NORNS_SHM_PATH     "/dev/shm/schwung-norns-display-live"
+#define DISPLAY_SHM_OPEN(name, flags) open((name), (flags))
+#endif
+#define DISPLAY_SIZE       1024
 #define MAX_CLIENTS        8
 #define POLL_INTERVAL_MS   33    /* ~30 Hz */
 #define SHM_RETRY_MS       2000
@@ -376,7 +386,7 @@ int main(int argc, char *argv[]) {
             long long now = now_ms();
             if (now - last_shm_attempt >= SHM_RETRY_MS) {
                 last_shm_attempt = now;
-                shm_fd = open(SHM_PATH, O_RDONLY);
+                shm_fd = DISPLAY_SHM_OPEN(SHM_PATH, O_RDONLY);
                 if (shm_fd >= 0) {
                     shm_ptr = mmap(NULL, DISPLAY_SIZE, PROT_READ, MAP_SHARED, shm_fd, 0);
                     if (shm_ptr == MAP_FAILED) {
@@ -393,7 +403,7 @@ int main(int argc, char *argv[]) {
             long long now = now_ms();
             if (now - last_norns_shm_attempt >= SHM_RETRY_MS) {
                 last_norns_shm_attempt = now;
-                norns_shm_fd = open(NORNS_SHM_PATH, O_RDONLY);
+                norns_shm_fd = DISPLAY_SHM_OPEN(NORNS_SHM_PATH, O_RDONLY);
                 if (norns_shm_fd >= 0) {
                     norns_shm_ptr = mmap(NULL, sizeof(norns_display_shm_t),
                                          PROT_READ, MAP_SHARED, norns_shm_fd, 0);
