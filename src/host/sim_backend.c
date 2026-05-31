@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -130,4 +131,60 @@ uint8_t *schwung_sim_get_hw_buffer(void) {
 
 int schwung_sim_get_tick_fd(void) {
     return g_sim.tick_pipe[1];
+}
+
+// ============================================================================
+// Display SHM
+// ============================================================================
+//
+// On device the LD_PRELOAD shim writes /schwung-display-live. In sim mode,
+// schwung-host calls schwung_sim_push_display() from push_screen() with the
+// fully-packed 1024-byte framebuffer; we mmap the SHM lazily and memcpy it in.
+// display-server then streams it via SSE to any connected browser.
+
+#define SCHWUNG_DISPLAY_SHM_NAME "/schwung-display-live"
+#define SCHWUNG_DISPLAY_BYTES    1024
+
+static struct {
+    uint8_t *map;
+    int init_failed;   // sticky: once we've logged, don't keep retrying
+} g_disp = { NULL, 0 };
+
+static int display_shm_init(void) {
+    if (g_disp.map) return 0;
+    if (g_disp.init_failed) return -1;
+
+    int fd = shm_open(SCHWUNG_DISPLAY_SHM_NAME, O_CREAT | O_RDWR, 0666);
+    if (fd < 0) {
+        fprintf(stderr, "sim_display: shm_open(%s) failed: %s\n",
+                SCHWUNG_DISPLAY_SHM_NAME, strerror(errno));
+        g_disp.init_failed = 1;
+        return -1;
+    }
+    if (ftruncate(fd, SCHWUNG_DISPLAY_BYTES) != 0) {
+        fprintf(stderr, "sim_display: ftruncate failed: %s\n", strerror(errno));
+        close(fd);
+        g_disp.init_failed = 1;
+        return -1;
+    }
+    void *m = mmap(NULL, SCHWUNG_DISPLAY_BYTES, PROT_READ | PROT_WRITE,
+                   MAP_SHARED, fd, 0);
+    close(fd);  // mmap'd region keeps the SHM alive
+    if (m == MAP_FAILED) {
+        fprintf(stderr, "sim_display: mmap failed: %s\n", strerror(errno));
+        g_disp.init_failed = 1;
+        return -1;
+    }
+    g_disp.map = (uint8_t *)m;
+    memset(g_disp.map, 0, SCHWUNG_DISPLAY_BYTES);
+    fprintf(stderr, "sim_display: %s mapped (%d bytes)\n",
+            SCHWUNG_DISPLAY_SHM_NAME, SCHWUNG_DISPLAY_BYTES);
+    return 0;
+}
+
+int schwung_sim_push_display(const uint8_t *frame_1024) {
+    if (!frame_1024) return -1;
+    if (display_shm_init() != 0) return -1;
+    memcpy(g_disp.map, frame_1024, SCHWUNG_DISPLAY_BYTES);
+    return 0;
 }

@@ -2609,6 +2609,12 @@ void push_screen(int sync) {
         i++;
       }
     }
+#ifdef __APPLE__
+    // Sim mode: push the freshly-packed framebuffer into the display SHM so
+    // display-server (running in another process) can stream it via SSE.
+    // On device, the LD_PRELOAD shim handles this from the SPI chunks below.
+    schwung_sim_push_display((const uint8_t *)packed_buffer);
+#endif
   }
 
   {

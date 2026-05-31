@@ -55,6 +55,23 @@ uint8_t *schwung_sim_get_hw_buffer(void);
 // Returns -1 before schwung_sim_open() or if pipe init failed.
 int schwung_sim_get_tick_fd(void);
 
+// ============================================================================
+// Display SHM (macOS sim only)
+// ============================================================================
+//
+// On device, the LD_PRELOAD shim assembles display chunks from the SPI mailbox
+// and writes them to a POSIX SHM at /schwung-display-live (1024 bytes,
+// 128×64 1-bit framebuffer). display-server reads that SHM and streams via SSE.
+//
+// In sim mode there is no shim, so schwung-host writes the SHM directly.
+// Call from push_screen() right after packing the framebuffer.
+
+// Lazily open + mmap /schwung-display-live (creates if absent). Copies the
+// 1024-byte framebuffer into the SHM. Logged once on first failure;
+// subsequent calls are silent no-ops if SHM init failed.
+// Returns 0 on success, -1 on shm_open/mmap failure.
+int schwung_sim_push_display(const uint8_t *frame_1024);
+
 #ifdef __cplusplus
 }
 #endif
