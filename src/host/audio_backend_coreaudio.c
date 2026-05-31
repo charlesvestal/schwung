@@ -77,8 +77,13 @@ static OSStatus render_cb(void                       *inRefCon,
     // Drain any browser-injected MIDI into the mailbox MIDI_IN region. Must
     // happen BEFORE pulsing the tick pipe so the host sees fresh events on
     // this frame, not the next one. Cheap mutex lock — bounded operations.
-    if (g.mailbox) {
-        schwung_sim_drain_midi_in_to_mailbox(g.mailbox);
+    //
+    // IMPORTANT: write to the HW buffer (RX side) — not the shadow buffer.
+    // schwung_sim_ioctl_wait() copies hw[IN_BASE..] → shadow[IN_BASE..] AFTER
+    // the barrier release, so writes to shadow's RX region get clobbered.
+    uint8_t *hw = schwung_sim_get_hw_buffer();
+    if (hw) {
+        schwung_sim_drain_midi_in_to_mailbox(hw);
     }
 
     // Pulse the sim tick pipe — releases the host's blocked schwung_sim_ioctl_wait.
