@@ -30,6 +30,9 @@ void schwung_host_on_ws_frame_(void *ctx, const uint8_t *data, size_t len,
                                int is_binary) {
     (void)ctx; (void)is_binary;
     if (len == 0 || len > 3) return;
+    fprintf(stderr, "ws→host: %02x", data[0]);
+    for (size_t i = 1; i < len; i++) fprintf(stderr, " %02x", data[i]);
+    fprintf(stderr, "\n");
     schwung_sim_push_midi_in(data, len);
 }
 #endif
