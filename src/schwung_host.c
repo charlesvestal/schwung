@@ -17,6 +17,10 @@
 #endif
 
 #include "host/spi_io.h"
+#ifdef __APPLE__
+#include "host/audio_backend.h"
+#include "host/sim_backend.h"
+#endif
 
 #include "quickjs.h"
 #include "quickjs-libc.h"
@@ -2691,6 +2695,17 @@ int main(int argc, char *argv[])
     printf("Clearing mmapped memory\n");
     memset(mapped_memory, 0, 4096);
     reset_pending_leds();
+
+#ifdef __APPLE__
+    // Start CoreAudio NOW (before any spi_wait_send_message call). On macOS
+    // the audio callback pulses the sim tick pipe at ~344 Hz — every subsequent
+    // spi_wait_send_message blocks waiting for that pulse. Without this,
+    // clearPads/clearSequencerButtons below would deadlock forever.
+    if (schwung_audio_start(mapped_memory, schwung_sim_get_tick_fd()) != 0) {
+        fprintf(stderr, "host: failed to start CoreAudio backend; aborting\n");
+        return 1;
+    }
+#endif
 
     /* Initialize module manager */
     printf("Initializing module manager\n");
