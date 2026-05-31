@@ -4827,10 +4827,20 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     shadow_drain_web_param_set();  /* Web UI fire-and-forget param sets */
     TIME_SECTION_END(spi_param_req_sum, spi_param_req_max);
 
-    /* Forward CC/pitch bend/aftertouch from external MIDI to MIDI_OUT
-     * so DSP routing can pick them up (Move only echoes notes, not these) */
+    /* Forward CC/pitch bend/aftertouch from external MIDI to MIDI_OUT so DSP
+     * routing can pick them up (Move only echoes notes, not these). Gated on
+     * an overtake DSP being loaded — that's the only consumer that needs CCs
+     * via the MIDI_OUT path. Chain slots already receive external CCs from
+     * MIDI_IN via shadow_dispatch_cable2_channeled_slots / _direct_external_midi
+     * (channel-filtered), and the MIDI_OUT cable-2 reader skips chain dispatch
+     * for is_external_echo packets when no overtake is loaded. Without this
+     * gate the forward leaks every external CC straight back out cable-2 USB,
+     * creating self-loops on synths that send+receive on the same channel
+     * (e.g. Bastl Alchemist's mode CC). */
     TIME_SECTION_START();
-    shadow_forward_external_cc_to_out();
+    if (overtake_dsp_gen_inst || overtake_dsp_fx_inst) {
+        shadow_forward_external_cc_to_out();
+    }
     TIME_SECTION_END(spi_fwd_ext_cc_sum, spi_fwd_ext_cc_max);
 
     /* Advance the external-dispatch ring's age counter once per frame. */
