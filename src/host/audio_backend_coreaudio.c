@@ -47,22 +47,39 @@ static OSStatus render_cb(void                       *inRefCon,
 {
     (void)inRefCon; (void)ioActionFlags; (void)inTimeStamp; (void)inBusNumber;
 
-    // Phase 3a: zero the output (silence). Phase 3b will copy mailbox[256..]
-    // here after the host tick.
-    if (ioData) {
+    // Read AUDIO OUT region (offset 256) from the mailbox: 128 frames × stereo
+    // int16, interleaved. This is whatever the host wrote in its LAST tick.
+    // No sync barrier yet — we accept one-frame latency. Phase 3d adds a
+    // host-done semaphore for same-callback latency.
+    if (ioData && ioData->mNumberBuffers >= 2 && g.mailbox) {
+        const int16_t *src = (const int16_t *)(g.mailbox + SCHWUNG_OFF_OUT_AUDIO);
+        float *L = (float *)ioData->mBuffers[0].mData;
+        float *R = (float *)ioData->mBuffers[1].mData;
+        UInt32 frames = inNumberFrames < SCHWUNG_AUDIO_FRAMES
+                        ? inNumberFrames : SCHWUNG_AUDIO_FRAMES;
+        for (UInt32 i = 0; i < frames; i++) {
+            L[i] = src[2 * i + 0] * (1.0f / 32768.0f);
+            R[i] = src[2 * i + 1] * (1.0f / 32768.0f);
+        }
+        // Zero any tail beyond what we have (in case CoreAudio asks for more
+        // than 128 frames — shouldn't on a typical setup per preflight).
+        for (UInt32 i = frames; i < inNumberFrames; i++) {
+            L[i] = 0.0f;
+            R[i] = 0.0f;
+        }
+    } else if (ioData) {
         for (UInt32 i = 0; i < ioData->mNumberBuffers; i++) {
             memset(ioData->mBuffers[i].mData, 0, ioData->mBuffers[i].mDataByteSize);
         }
     }
 
     // Pulse the sim tick pipe — releases the host's blocked schwung_sim_ioctl_wait.
-    // The host runs exactly one frame in response.
+    // The host runs exactly one frame in response, writing fresh audio into the
+    // mailbox for the NEXT callback to pick up.
     if (g.tick_fd >= 0) {
         char b = 1;
         ssize_t n;
         do { n = write(g.tick_fd, &b, 1); } while (n < 0 && errno == EINTR);
-        // If the pipe is full or broken, drop this tick. The host either picks
-        // up the next one or we lose a frame's worth of jitter — fine for now.
     }
 
     // Diagnostic: log every ~5 seconds so we know the clock is running.
