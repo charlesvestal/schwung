@@ -21,6 +21,7 @@
 #include "host/audio_backend.h"
 #include "host/sim_backend.h"
 #include "host/ws_server.h"
+#include "host/test_synth.h"
 
 // Inbound WebSocket frame from the schwung-sim browser UI. The Cycling74-style
 // emulator ships raw 3-byte MIDI messages (status + 2 data bytes) as binary
@@ -2940,6 +2941,20 @@ int main(int argc, char *argv[])
         if (mm_is_module_loaded(&g_module_manager)) {
             mm_render_block(&g_module_manager);
         }
+#ifdef __APPLE__
+        else {
+            /* Sim-only: when no DSP module is loaded, zero AUDIO_OUT each tick
+             * so an idle host plays silence (the audio callback otherwise keeps
+             * reading whatever was in mailbox[256..] from the previous render).
+             * Then mix the test synth on top so pad clicks produce audible
+             * notes during sim dev. */
+            int16_t *out_lr = (int16_t *)(mapped_memory + 256);
+            memset(out_lr, 0, 128 * 2 * sizeof(int16_t));
+            if (schwung_test_synth_active()) {
+                schwung_test_synth_render(out_lr, 128);
+            }
+        }
+#endif
 
         /* Generate MIDI clock if enabled */
         if (g_settings.clock_mode == CLOCK_MODE_INTERNAL && g_settings.tempo_bpm > 0) {
@@ -3043,6 +3058,20 @@ int main(int argc, char *argv[])
                 if (!consumed && !is_internal_control) {
                   mm_on_midi(&g_module_manager, &byte[1], 3, MOVE_MIDI_SOURCE_INTERNAL);
                 }
+#ifdef __APPLE__
+                /* Sim-only: feed the test synth so we get audible feedback
+                 * without needing to build any DSP modules cross-platform.
+                 * Only acts on pad notes (68-99) — same gate as the DSP path. */
+                fprintf(stderr, "midi-cable0: status=%02x note=%d is_internal=%d consumed=%d mod_loaded=%d\n",
+                        byte[1], byte[2], is_internal_control, consumed,
+                        mm_is_module_loaded(&g_module_manager));
+                if (!is_internal_control && !mm_is_module_loaded(&g_module_manager)) {
+                    uint8_t s = byte[1] & 0xF0;
+                    if (s == 0x90 || s == 0x80) {
+                        schwung_test_synth_on_midi(&byte[1]);
+                    }
+                }
+#endif
             }
 
         }
