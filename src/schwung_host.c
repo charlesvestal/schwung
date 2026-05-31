@@ -12,7 +12,11 @@
 #include <sys/ioctl.h>
 #include <stdint.h>
 #include <dlfcn.h>
+#ifndef __APPLE__
 #include <sched.h>
+#endif
+
+#include "host/spi_io.h"
 
 #include "quickjs.h"
 #include "quickjs-libc.h"
@@ -727,7 +731,7 @@ int queueMidiSend(int cable, unsigned char *buffer, int length)
 
     if (outgoing_midi_counter >= 80)
     {
-        int ioctl_result = ioctl(global_fd, _IOC(_IOC_NONE, 0, 0xa, 0), 0x300);
+        int ioctl_result = spi_wait_send_message(global_fd);
         outgoing_midi_counter = 0;
     }
     return length;
@@ -822,7 +826,7 @@ void clearPads(unsigned char *mapped_memory, int fd)
 
         if (i > 9)
         {
-            int ioctl_result = ioctl(fd, _IOC(_IOC_NONE, 0, 0xa, 0), 0x300);
+            int ioctl_result = spi_wait_send_message(fd);
             // memset(((struct SPI_Memory *)mapped_memory)->outgoing_midi, 0, 256);
             i = 0;
         }
@@ -830,7 +834,7 @@ void clearPads(unsigned char *mapped_memory, int fd)
         i++;
     }
 
-    int ioctl_result = ioctl(fd, _IOC(_IOC_NONE, 0, 0xa, 0), 0x300);
+    int ioctl_result = spi_wait_send_message(fd);
 }
 
 void clearSequencerButtons(unsigned char *mapped_memory, int fd)
@@ -849,7 +853,7 @@ void clearSequencerButtons(unsigned char *mapped_memory, int fd)
 
         if (i > 9)
         {
-            int ioctl_result = ioctl(fd, _IOC(_IOC_NONE, 0, 0xa, 0), 0x300);
+            int ioctl_result = spi_wait_send_message(fd);
             // memset(((struct SPI_Memory *)mapped_memory)->outgoing_midi, 0, 256);
             i = 0;
         }
@@ -859,7 +863,7 @@ void clearSequencerButtons(unsigned char *mapped_memory, int fd)
         i++;
     }
 
-    int ioctl_result = ioctl(fd, _IOC(_IOC_NONE, 0, 0xa, 0), 0x300);
+    int ioctl_result = spi_wait_send_message(fd);
 }
 
 void kickM8(unsigned char *mapped_memory, int fd)
@@ -875,7 +879,7 @@ void kickM8(unsigned char *mapped_memory, int fd)
         (unsigned char)(out_cable << 4 | 0x6), 0x00, 0xF7, 0x0};
 
     memcpy(((struct SPI_Memory *)mapped_memory)->outgoing_midi, LPPInitSysex, 23);
-    int ioctl_result = ioctl(fd, _IOC(_IOC_NONE, 0, 0xa, 0), 0x300);
+    int ioctl_result = spi_wait_send_message(fd);
 }
 
 #ifndef FALSE
@@ -1647,9 +1651,11 @@ static JSValue js_host_launch_standalone(JSContext *ctx, JSValueConst this_val,
 
     pid_t pid = fork();
     if (pid == 0) {
-        /* Child: drop RT scheduling before exec */
+        /* Child: drop RT scheduling before exec (Linux only — macOS sim has none) */
+#ifndef __APPLE__
         struct sched_param sp = { .sched_priority = 0 };
         sched_setscheduler(0, SCHED_OTHER, &sp);
+#endif
         execl("/bin/sh", "sh", "/data/UserData/schwung/launch-standalone.sh", path, (char *)NULL);
         _exit(127);
     }
@@ -1867,7 +1873,7 @@ static JSValue js_host_flush_display(JSContext *ctx, JSValueConst this_val,
         push_screen(sync);
         /* Trigger hardware to read the slice */
         if (global_fd >= 0) {
-            ioctl(global_fd, _IOC(_IOC_NONE, 0, 0xa, 0), 0x300);
+            spi_wait_send_message(global_fd);
         }
         /* Delay to let hardware process each slice */
         struct timespec ts = { 0, 3000000 };  /* 3ms per slice */
@@ -2653,31 +2659,26 @@ int main(int argc, char *argv[])
 
     eval_file(ctx, script_name, -1);
 
-    const char *device_path = "/dev/ablspi0.0";
     struct timespec sleep_time;
     sleep_time.tv_sec = 0;
     sleep_time.tv_nsec = 1 * 1000000;
 
     int fd;
-
     size_t length = 4096;
-    int prot = PROT_READ | PROT_WRITE;
-    int flags = MAP_SHARED;
-    off_t offset = 0;
 
-    // Open the device file.
-    printf("Opening file\n");
-    fd = open(device_path, O_RDWR);
+    // Open the device (real /dev/ablspi0.0 on Linux, sim backend on macOS).
+    printf("Opening SPI device\n");
+    fd = spi_open_device();
     if (fd == -1)
     {
-        perror("open");
+        perror("spi_open_device");
         return 1;
     }
 
     global_fd = fd;
 
     printf("mmaping\n");
-    mapped_memory = (unsigned char *)mmap(NULL, length, prot, flags, fd, offset);
+    mapped_memory = (unsigned char *)spi_mmap_device(fd, length);
 
     if (mapped_memory == MAP_FAILED)
     {
@@ -2822,7 +2823,7 @@ int main(int argc, char *argv[])
     };
 
     int ioctl_result = 0;
-    ioctl_result = ioctl(fd, _IOC(_IOC_NONE, 0, 0xb, 0), 0x1312d00);
+    ioctl_result = spi_set_speed(fd, 0x1312d00);
 
     clearPads(mapped_memory, fd);
     clearSequencerButtons(mapped_memory, fd);
@@ -2916,7 +2917,7 @@ int main(int argc, char *argv[])
 
         flush_pending_leds();
 
-        ioctl_result = ioctl(fd, _IOC(_IOC_NONE, 0, 0xa, 0), 0x300);
+        ioctl_result = spi_wait_send_message(fd);
         outgoing_midi_counter = 0;
 
         int startByte = 2048;

@@ -12,7 +12,9 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <time.h>
+#ifndef __APPLE__
 #include <sched.h>
+#endif
 #include "analytics.h"
 
 #define POSTHOG_API_KEY "phc_xkBkpTgLbY9JrNEMCThDLwjnasG9EKGznY3B8myFNQj5"
@@ -147,8 +149,10 @@ void analytics_track(const char *event, const char *properties_json) {
     if (pid == 0) {
         /* Child process */
         /* Reset scheduling to SCHED_OTHER (we may inherit FIFO from parent) */
+#ifndef __APPLE__
         struct sched_param sp = { .sched_priority = 0 };
         sched_setscheduler(0, SCHED_OTHER, &sp);
+#endif
 
         /* Detach from parent */
         setsid();
