@@ -702,6 +702,17 @@
       "min_host_version": "0.3.0"
     },
     {
+      "id": "filter",
+      "name": "Filter",
+      "description": "Multi-mode filter: SVF (LP/HP/BP/notch/peak/allpass) + Schwoog (warm 4-pole ladder), envelope follower, tempo-synced LFO, drive, dry/wet",
+      "author": "charlesvestal",
+      "component_type": "audio_fx",
+      "github_repo": "charlesvestal/schwung-filter",
+      "default_branch": "main",
+      "asset_name": "filter-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
       "id": "wurl",
       "name": "Wurl",
       "description": "Physically-modeled Wurlitzer 200A electric piano (OpenWurli port)",
