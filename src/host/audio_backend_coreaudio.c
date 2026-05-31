@@ -21,6 +21,7 @@
 #include <unistd.h>
 
 #include "schwung_spi_lib.h"  // SCHWUNG_PAGE_SIZE, OFF_* constants
+#include "sim_backend.h"      // schwung_sim_drain_midi_in_to_mailbox
 
 // ============================================================================
 // State
@@ -71,6 +72,13 @@ static OSStatus render_cb(void                       *inRefCon,
         for (UInt32 i = 0; i < ioData->mNumberBuffers; i++) {
             memset(ioData->mBuffers[i].mData, 0, ioData->mBuffers[i].mDataByteSize);
         }
+    }
+
+    // Drain any browser-injected MIDI into the mailbox MIDI_IN region. Must
+    // happen BEFORE pulsing the tick pipe so the host sees fresh events on
+    // this frame, not the next one. Cheap mutex lock — bounded operations.
+    if (g.mailbox) {
+        schwung_sim_drain_midi_in_to_mailbox(g.mailbox);
     }
 
     // Pulse the sim tick pipe — releases the host's blocked schwung_sim_ioctl_wait.

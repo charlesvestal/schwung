@@ -72,6 +72,26 @@ int schwung_sim_get_tick_fd(void);
 // Returns 0 on success, -1 on shm_open/mmap failure.
 int schwung_sim_push_display(const uint8_t *frame_1024);
 
+// ============================================================================
+// MIDI IN queue (browser → host)
+// ============================================================================
+//
+// The browser ships 3-byte MIDI messages over WebSocket; the WS thread pushes
+// them here. The audio render callback drains the queue once per tick and
+// writes the events into the mailbox MIDI_IN region (offset 2048) as 8-byte
+// AblSpiMidiEvent slots with monotonically increasing timestamps. Cable is
+// always 0 (internal Move hardware controls — same path real pads use on
+// device).
+
+// Push one MIDI message. `bytes` should be 1-3 bytes (status + up to 2 data).
+// Returns 0 on success, -1 if the queue is full (drops the message).
+int schwung_sim_push_midi_in(const uint8_t *bytes, size_t len);
+
+// Drain the queue into the mailbox MIDI_IN region at offset 2048. Writes up to
+// max 30 events per call (31st slot is reserved for the XMOS heartbeat).
+// Returns the number of events written. Safe to call from the audio thread.
+int schwung_sim_drain_midi_in_to_mailbox(uint8_t *mailbox);
+
 #ifdef __cplusplus
 }
 #endif

@@ -44,6 +44,7 @@ SOURCES=(
     "src/schwung_host.c"
     "src/host/sim_backend.c"
     "src/host/audio_backend_coreaudio.c"
+    "src/host/ws_server.c"
     "src/host/module_manager.c"
     "src/host/settings.c"
     "src/host/analytics.c"

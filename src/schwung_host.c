@@ -20,6 +20,18 @@
 #ifdef __APPLE__
 #include "host/audio_backend.h"
 #include "host/sim_backend.h"
+#include "host/ws_server.h"
+
+// Inbound WebSocket frame from the schwung-sim browser UI. The Cycling74-style
+// emulator ships raw 3-byte MIDI messages (status + 2 data bytes) as binary
+// frames. Drop them straight into the sim's MIDI_IN queue; the audio callback
+// drains the queue into mailbox[2048..] before each tick.
+void schwung_host_on_ws_frame_(void *ctx, const uint8_t *data, size_t len,
+                               int is_binary) {
+    (void)ctx; (void)is_binary;
+    if (len == 0 || len > 3) return;
+    schwung_sim_push_midi_in(data, len);
+}
 #endif
 
 #include "quickjs.h"
@@ -2710,6 +2722,17 @@ int main(int argc, char *argv[])
     if (schwung_audio_start(mapped_memory, schwung_sim_get_tick_fd()) != 0) {
         fprintf(stderr, "host: failed to start CoreAudio backend; aborting\n");
         return 1;
+    }
+    // WebSocket server for browser input. Pad/encoder/button frames from the
+    // schwung-sim UI flow through here into the MIDI queue, then get drained
+    // into the mailbox by the audio callback above before each tick.
+    extern void schwung_host_on_ws_frame_(void *ctx, const uint8_t *data,
+                                          size_t len, int is_binary);
+    static ws_server_t *g_ws_server = NULL;
+    g_ws_server = ws_server_start(7682, schwung_host_on_ws_frame_, NULL);
+    if (!g_ws_server) {
+        fprintf(stderr, "host: failed to start WebSocket server on :7682 "
+                        "(port in use?); continuing without browser input\n");
     }
 #endif
 

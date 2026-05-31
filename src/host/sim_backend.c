@@ -192,3 +192,101 @@ int schwung_sim_push_display(const uint8_t *frame_1024) {
     memcpy(g_disp.map, frame_1024, SCHWUNG_DISPLAY_BYTES);
     return 0;
 }
+
+// ============================================================================
+// MIDI IN queue
+// ============================================================================
+//
+// Single-producer (WS thread) / single-consumer (audio thread) ring buffer of
+// 3-byte MIDI messages. Mutex-protected — at 344 Hz tick rate with a small
+// queue this is cheap enough for the audio thread.
+
+#include <pthread.h>
+
+#define SCHWUNG_MIDI_QUEUE_SIZE 256  // pow-of-2
+
+typedef struct {
+    uint8_t bytes[3];
+    uint8_t len;     // 1..3
+} midi_entry_t;
+
+static struct {
+    pthread_mutex_t lock;
+    midi_entry_t    ring[SCHWUNG_MIDI_QUEUE_SIZE];
+    int             head;       // next slot to write
+    int             tail;       // next slot to read
+    int             dropped;    // diagnostic — bumped each time queue is full
+    uint32_t        timestamp;  // monotonic, written into AblSpiMidiEvent
+    int             init_done;
+} g_midi = {0};
+
+static void midi_init(void) {
+    if (g_midi.init_done) return;
+    pthread_mutex_init(&g_midi.lock, NULL);
+    g_midi.init_done = 1;
+}
+
+static int derive_cin(uint8_t status) {
+    // CIN nibble per USB-MIDI 1.0: matches the high nibble of the status byte
+    // for channel voice messages (0x8..0xE).
+    return (status >> 4) & 0x0F;
+}
+
+int schwung_sim_push_midi_in(const uint8_t *bytes, size_t len) {
+    if (!bytes || len == 0 || len > 3) return -1;
+    midi_init();
+
+    pthread_mutex_lock(&g_midi.lock);
+    int next = (g_midi.head + 1) & (SCHWUNG_MIDI_QUEUE_SIZE - 1);
+    if (next == g_midi.tail) {
+        g_midi.dropped++;
+        pthread_mutex_unlock(&g_midi.lock);
+        return -1;
+    }
+    midi_entry_t *e = &g_midi.ring[g_midi.head];
+    for (size_t i = 0; i < len; i++) e->bytes[i] = bytes[i];
+    for (size_t i = len; i < 3; i++) e->bytes[i] = 0;
+    e->len = (uint8_t)len;
+    g_midi.head = next;
+    pthread_mutex_unlock(&g_midi.lock);
+    return 0;
+}
+
+int schwung_sim_drain_midi_in_to_mailbox(uint8_t *mailbox) {
+    if (!mailbox) return 0;
+    midi_init();
+
+    // Reserve slot 31 for XMOS heartbeat — only 30 usable slots.
+    int wrote = 0;
+    uint8_t *midi_in = mailbox + SCHWUNG_OFF_IN_MIDI;
+
+    pthread_mutex_lock(&g_midi.lock);
+    while (g_midi.tail != g_midi.head && wrote < 30) {
+        midi_entry_t *e = &g_midi.ring[g_midi.tail];
+        g_midi.tail = (g_midi.tail + 1) & (SCHWUNG_MIDI_QUEUE_SIZE - 1);
+
+        uint8_t cin = (uint8_t)derive_cin(e->bytes[0]);
+        // (cable << 4) | cin — cable 0 = internal Move controls
+        uint8_t cbyte = (uint8_t)(0x00 | (cin & 0x0F));
+
+        uint8_t *slot = midi_in + (size_t)wrote * 8;
+        slot[0] = cbyte;
+        slot[1] = e->bytes[0];
+        slot[2] = e->bytes[1];
+        slot[3] = e->bytes[2];
+        uint32_t ts = ++g_midi.timestamp;
+        slot[4] = (uint8_t)(ts);
+        slot[5] = (uint8_t)(ts >> 8);
+        slot[6] = (uint8_t)(ts >> 16);
+        slot[7] = (uint8_t)(ts >> 24);
+        wrote++;
+    }
+    pthread_mutex_unlock(&g_midi.lock);
+
+    // Zero any remaining usable slots (positions wrote..30) so the host's
+    // empty-event detector (low byte == 0) terminates cleanly.
+    for (int i = wrote; i < 30; i++) {
+        memset(midi_in + (size_t)i * 8, 0, 8);
+    }
+    return wrote;
+}
