@@ -1802,7 +1802,8 @@ All fields are optional and combine as a union.
 | `pads` | notes | 68-99 | 32 performance pads |
 | `steps` | notes | 16-31 | 16 step sequencer buttons |
 | `tracks` | CCs | 40-43 | 4 track buttons |
-| `knobs` | CCs | 71-78 | 8 encoders |
+| `knobs` | CCs | 71-78 | 8 encoders (relative) |
+| `knobs_abs` | CCs | 102-109 | 8 knobs (absolute 0-127, scaled to assigned param range) |
 | `jog` | CC | 14 | Main encoder |
 
 **Module-level capture (for Master FX):**
