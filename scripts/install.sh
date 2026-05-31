@@ -130,7 +130,7 @@ ssh_test_ableton() {
   if [ "${password_mode:-false}" = true ]; then
     sshpass -f "$ableton_pw_file" ssh $ssh_port_opt -o ConnectTimeout=5 -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -n "$username@$hostname" true 2>&1
   else
-    ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -n "${username:-ableton}@${hostname:-move.local}" true 2>&1
+    ssh $ssh_identity_opt -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -n "${username:-ableton}@${hostname:-move.local}" true 2>&1
   fi
 }
 
@@ -138,16 +138,59 @@ ssh_test_root() {
   if [ "${password_mode:-false}" = true ]; then
     sshpass -f "$root_pw_file" ssh $ssh_port_opt -o ConnectTimeout=5 -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -n "$root_user@$hostname" true 2>&1
   else
-    ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -n "root@${hostname:-move.local}" true 2>&1
+    ssh $ssh_identity_opt -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -n "root@${hostname:-move.local}" true 2>&1
   fi
 }
 
 ssh_get_configured_key() {
-  # Check if SSH config specifies an IdentityFile for move.local
-  if [ -f "$HOME/.ssh/config" ]; then
-    # Extract IdentityFile from move.local config block
-    awk 'BEGIN{found=0} /^Host move\.local/{found=1; next} found && /^Host /{found=0} found && /IdentityFile/{gsub(/.*IdentityFile[ \t]+/,""); gsub(/[ \t]*$/,""); print; exit}' "$HOME/.ssh/config" | sed "s|~|$HOME|g"
+  # Return the IdentityFile configured for the target host. Checks the block for
+  # the actual target first (e.g. a bare IP passed via --host), then falls back
+  # to the move.local block. Matching the target is what makes custom-host and
+  # IP-based installs work; the old code only ever looked at "Host move.local".
+  [ -f "$HOME/.ssh/config" ] || return 0
+  _target="${1:-${hostname:-move.local}}"
+  for _h in "$_target" "move.local"; do
+    _key=$(awk -v want="$_h" '
+      BEGIN{found=0}
+      /^[ \t]*[Hh]ost[ \t]/{
+        found=0
+        line=$0; sub(/^[ \t]*[Hh]ost[ \t]+/,"",line)
+        n=split(line, pats, /[ \t]+/)
+        for(i=1;i<=n;i++) if(pats[i]==want){found=1}
+        next
+      }
+      found && /^[ \t]*[Ii]dentity[Ff]ile[ \t]/{
+        sub(/^[ \t]*[Ii]dentity[Ff]ile[ \t]+/,""); gsub(/[ \t]*$/,"")
+        print; exit
+      }' "$HOME/.ssh/config" | sed "s|~|$HOME|g")
+    if [ -n "$_key" ]; then
+      echo "$_key"
+      return 0
+    fi
+  done
+}
+
+# Resolve an explicit identity file (-i) so SSH does not rely solely on
+# ~/.ssh/config inference, which silently fails for bare-IP hosts that have no
+# matching "Host <ip>" block. Returns an "-i <path>" fragment, or empty.
+resolve_ssh_identity() {
+  _k=$(ssh_get_configured_key)
+  if [ -z "$_k" ]; then
+    for _cand in "$HOME/.ssh/move_key" "$HOME/.ssh/id_ed25519" "$HOME/.ssh/id_rsa" "$HOME/.ssh/id_ecdsa"; do
+      if [ -f "$_cand" ]; then _k="$_cand"; break; fi
+    done
   fi
+  # Only emit -i when the path has NO whitespace. These command strings are
+  # expanded unquoted (e.g. `$ssh_ableton "$cmd"`), so a space in the key path
+  # (Git Bash $HOME can be "/c/Users/First Last") would split the argument and
+  # corrupt the ssh command. In that case we emit nothing and let ssh use its
+  # own ~/.ssh/config handling, which IS space-safe — matching prior behavior.
+  case "$_k" in
+    '')           ;;  # no key found
+    *[[:space:]]*|*[*?[]*) ;; # whitespace OR glob chars unsafe to inline; rely on ssh config
+    *) [ -f "$_k" ] && printf -- '-i %s' "$_k" ;;
+  esac
+  return 0
 }
 
 ssh_find_public_key() {
@@ -215,11 +258,11 @@ ssh_copy_to_clipboard() {
 }
 
 ssh_remove_known_host() {
-  echo "Removing old entry for move.local..."
-  ssh-keygen -R move.local 2>/dev/null || true
+  echo "Removing old entry for ${hostname:-move.local}..."
+  ssh-keygen -R "${hostname:-move.local}" 2>/dev/null || true
   # Also remove by IP if we can resolve it (getent not available on Windows)
   if command -v getent >/dev/null 2>&1; then
-    move_ip=$(getent hosts move.local 2>/dev/null | awk '{print $1}')
+    move_ip=$(getent hosts "${hostname:-move.local}" 2>/dev/null | awk '{print $1}')
     if [ -n "$move_ip" ]; then
       ssh-keygen -R "$move_ip" 2>/dev/null || true
     fi
@@ -228,7 +271,7 @@ ssh_remove_known_host() {
 
 ssh_fix_permissions() {
   echo "Updating /data/authorized_keys permissions..."
-  ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -n root@move.local "chmod 644 /data/authorized_keys"
+  ssh $ssh_identity_opt -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -n "root@${hostname:-move.local}" "chmod 644 /data/authorized_keys"
 }
 
 ssh_wizard() {
@@ -369,6 +412,7 @@ ssh_port_opt=""
 scp_port_opt=""
 ableton_pw_file=""
 root_pw_file=""
+ssh_identity_opt=""
 
 # Optional overrides for custom Move images. Supports --host=IP / --host IP,
 # --user, --password, --root-user, --root-password, --port (= or space form).
@@ -414,15 +458,22 @@ if [ -n "${_ableton_pw:-}" ] || [ -n "${_root_pw:-}" ]; then
   trap 'rm -f "$ableton_pw_file" "$root_pw_file"' EXIT
 fi
 
-if [ "$password_mode" = true ]; then
-  ssh_ableton="sshpass -f $ableton_pw_file ssh $ssh_port_opt -o PreferredAuthentications=password -o PubkeyAuthentication=no -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -n $username@$hostname"
-  scp_ableton="sshpass -f $ableton_pw_file scp $scp_port_opt -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new"
-  ssh_root="sshpass -f $root_pw_file ssh $ssh_port_opt -o PreferredAuthentications=password -o PubkeyAuthentication=no -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -n $root_user@$hostname"
-else
-  ssh_ableton="ssh $ssh_port_opt -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -n $username@$hostname"
-  scp_ableton="scp $scp_port_opt -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new"
-  ssh_root="ssh $ssh_port_opt -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -n $root_user@$hostname"
-fi
+# (Re)build the ssh/scp command strings. Called once now and again after the
+# SSH wizard, since the wizard may generate the key that resolve_ssh_identity
+# needs to find.
+build_ssh_commands() {
+  if [ "$password_mode" = true ]; then
+    ssh_ableton="sshpass -f $ableton_pw_file ssh $ssh_port_opt -o PreferredAuthentications=password -o PubkeyAuthentication=no -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -n $username@$hostname"
+    scp_ableton="sshpass -f $ableton_pw_file scp $scp_port_opt -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new"
+    ssh_root="sshpass -f $root_pw_file ssh $ssh_port_opt -o PreferredAuthentications=password -o PubkeyAuthentication=no -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -n $root_user@$hostname"
+  else
+    ssh_identity_opt=$(resolve_ssh_identity)
+    ssh_ableton="ssh $ssh_port_opt $ssh_identity_opt -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -n $username@$hostname"
+    scp_ableton="scp $scp_port_opt $ssh_identity_opt -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new"
+    ssh_root="ssh $ssh_port_opt $ssh_identity_opt -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -n $root_user@$hostname"
+  fi
+}
+build_ssh_commands
 
 wait_for_move_shim_mapping() {
   local attempts="${1:-30}"
@@ -693,6 +744,26 @@ if [ -n "$ssh_result" ]; then
 
   if [ "$run_wizard" = "y" ] || [ "$run_wizard" = "Y" ]; then
     ssh_wizard
+    # The wizard may have just generated a key. Prefer it directly: if we fell
+    # through to resolve_ssh_identity's candidate list, a stale ~/.ssh/move_key
+    # from a previous attempt would shadow the wizard's freshly-generated key
+    # and cause "Permission denied (publickey)" right after the wizard.
+    _pinned=""
+    if [ -n "${pubkey:-}" ] && [ -f "${pubkey%.pub}" ]; then
+      _wk="${pubkey%.pub}"
+      case "$_wk" in
+        *[[:space:]]*|*[*?[]*) ;;  # whitespace or glob chars unsafe to inline
+        *) _pinned="-i $_wk" ;;
+      esac
+    fi
+    if [ -n "$_pinned" ]; then
+      ssh_identity_opt="$_pinned"
+      ssh_ableton="ssh $ssh_port_opt $ssh_identity_opt -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -n $username@$hostname"
+      scp_ableton="scp $scp_port_opt $ssh_identity_opt -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new"
+      ssh_root="ssh $ssh_port_opt $ssh_identity_opt -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -n $root_user@$hostname"
+    else
+      build_ssh_commands
+    fi
     if ! ssh_ensure_connection; then
       fail "Could not establish SSH connection to Move"
     fi
