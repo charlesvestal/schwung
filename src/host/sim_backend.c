@@ -161,7 +161,11 @@ static int display_shm_init(void) {
         g_disp.init_failed = 1;
         return -1;
     }
-    if (ftruncate(fd, SCHWUNG_DISPLAY_BYTES) != 0) {
+    // macOS quirk: ftruncate on a POSIX SHM works only at initial creation.
+    // Subsequent calls fail with EINVAL even when reducing to the same size.
+    // Try ftruncate, but tolerate EINVAL as long as mmap succeeds below at
+    // the expected size (which we verify via fstat).
+    if (ftruncate(fd, SCHWUNG_DISPLAY_BYTES) != 0 && errno != EINVAL) {
         fprintf(stderr, "sim_display: ftruncate failed: %s\n", strerror(errno));
         close(fd);
         g_disp.init_failed = 1;

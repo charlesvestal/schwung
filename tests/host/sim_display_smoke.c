@@ -20,11 +20,16 @@ int main(void) {
     // each byte is 8 vertical pixels (LSB top) for a column, rows packed in groups.
     // For a smoke test we don't care about exact orientation — just write a
     // recognizable pattern.
+    // 8×8 block checkerboard. The framebuffer is packed as 8 row-groups of 128
+    // columns, each byte holding 8 vertical pixels for one column (LSB = top).
+    // For a visible 8×8 block checker, set all 8 vertical bits of a byte
+    // (0xFF) when (group XOR (column/8)) is odd, otherwise 0.
     uint8_t frame[1024];
-    for (int i = 0; i < 1024; i++) {
-        // Checkerboard at byte granularity: alternating 0xAA / 0x55 by row.
-        int row = i / 128;
-        frame[i] = (row & 1) ? 0xAA : 0x55;
+    for (int g = 0; g < 8; g++) {
+        for (int x = 0; x < 128; x++) {
+            int checker = ((g + (x / 8)) & 1);
+            frame[g * 128 + x] = checker ? 0xFF : 0x00;
+        }
     }
 
     if (schwung_sim_push_display(frame) != 0) {
