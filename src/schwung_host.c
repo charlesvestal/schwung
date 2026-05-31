@@ -2747,9 +2747,12 @@ int main(int argc, char *argv[])
             mm_midi_send_external_wrapper);
     g_module_manager_initialized = 1;
 
-    /* Scan for modules */
-    printf("Scanning for modules in %s\n", DEFAULT_MODULES_DIR);
-    int module_count = mm_scan_modules(&g_module_manager, DEFAULT_MODULES_DIR);
+    /* Scan for modules. Sim/dev override: SCHWUNG_MODULES_DIR points at a
+     * Mac-friendly path so we don't need /data/UserData to exist. */
+    const char *modules_dir = getenv("SCHWUNG_MODULES_DIR");
+    if (!modules_dir || !*modules_dir) modules_dir = DEFAULT_MODULES_DIR;
+    printf("Scanning for modules in %s\n", modules_dir);
+    int module_count = mm_scan_modules(&g_module_manager, modules_dir);
     printf("Found %d modules\n", module_count);
 
     /* Load host settings */
