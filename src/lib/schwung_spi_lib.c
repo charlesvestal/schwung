@@ -303,6 +303,12 @@ int openat(int dirfd, const char *path, int flags, ...) {
         if (fd >= 0) {
             g_spi.spi_fd = fd;
             schwung_spi_log("schwung: SPI sim device opened (openat)");
+            // Sim B's first-boot need: without an external audio bridge
+            // pulsing the tick fd, Move's audio thread would block forever
+            // on the first WAIT_SEND_SIZE. Start the in-process heartbeat
+            // thread so frames advance at the real SPI rate.
+            if (schwung_sim_start_heartbeat() == 0)
+                schwung_spi_log("schwung: SPI sim heartbeat started");
         }
         return fd;
     }

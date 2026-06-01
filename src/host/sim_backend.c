@@ -65,6 +65,15 @@ int schwung_sim_open(void) {
             fcntl(g_sim.tick_pipe[1], F_SETFD, FD_CLOEXEC);
         }
     }
+
+    // Auto-start the heartbeat for Sim B. The schwung-host (Sim A) drives the
+    // tick from its CoreAudio render callback so it doesn't need this — but
+    // calling start_heartbeat() in that path is harmless: if a real driver
+    // also calls write(tick_fd, ...) we just get a slightly faster frame rate
+    // until the audio thread catches up. Sim A users who care can comment out
+    // this call or expose an env var; for now the auto-start is the simplest
+    // "just works" behavior for the shim path that needs it.
+    schwung_sim_start_heartbeat();
     return fd;
 }
 
@@ -90,6 +99,50 @@ int schwung_sim_wait_for_tick(void) {
         errno = (n == 0) ? EPIPE : EIO;
         return -1;
     }
+    return 0;
+}
+
+#include <pthread.h>
+
+static pthread_t g_heartbeat_thread;
+static int g_heartbeat_started = 0;
+
+// SPI frame rate: 128 samples per block @ 44.1 kHz = 2.9025 ms per tick.
+// Use clock_nanosleep with TIMER_ABSTIME for non-drifting cadence.
+static void *heartbeat_main(void *arg) {
+    (void)arg;
+    const int64_t period_ns = 2902500;  // 128 / 44100 * 1e9
+    struct timespec next;
+    clock_gettime(CLOCK_MONOTONIC, &next);
+    while (1) {
+        next.tv_nsec += period_ns;
+        while (next.tv_nsec >= 1000000000) {
+            next.tv_nsec -= 1000000000;
+            next.tv_sec += 1;
+        }
+        if (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL) != 0)
+            continue;
+        char b = 1;
+        if (write(g_sim.tick_pipe[1], &b, 1) != 1) {
+            // Pipe closed or full beyond recovery — exit thread.
+            return NULL;
+        }
+    }
+    return NULL;
+}
+
+int schwung_sim_start_heartbeat(void) {
+    if (g_heartbeat_started) return 0;
+    if (g_sim.tick_pipe[1] < 0) { errno = EBADF; return -1; }
+    // Make the pipe non-blocking on the write side so the heartbeat never
+    // stalls the audio thread if the reader is slow. A few dropped pulses
+    // just mean a few skipped frames — Move's loop catches up next tick.
+    int flags = fcntl(g_sim.tick_pipe[1], F_GETFL, 0);
+    if (flags != -1) fcntl(g_sim.tick_pipe[1], F_SETFL, flags | O_NONBLOCK);
+    if (pthread_create(&g_heartbeat_thread, NULL, heartbeat_main, NULL) != 0)
+        return -1;
+    pthread_detach(g_heartbeat_thread);
+    g_heartbeat_started = 1;
     return 0;
 }
 
