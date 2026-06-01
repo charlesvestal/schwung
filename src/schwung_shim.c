@@ -39,6 +39,7 @@
 #include "host/plugin_api_v1.h"
 #include "host/audio_fx_api_v2.h"
 #include "host/shadow_constants.h"
+#include "host/shadow_midi_inject_writer.h"
 #include "host/shadow_chain_types.h"
 #include "host/unified_log.h"
 #include "host/tts_engine.h"
@@ -5571,42 +5572,18 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
     {
         static int prev_overtake_mode = 0;
         if (prev_overtake_mode != 0 && overtake_mode == 0 && shadow_midi_inject_shm) {
-            int wr = shadow_midi_inject_shm->write_idx;
-            /* Shift off: CC 49 value 0 */
-            if (wr + 4 <= SHADOW_MIDI_INJECT_BUFFER_SIZE) {
-                shadow_midi_inject_shm->buffer[wr]     = 0x0B; /* CIN=CC, cable=0 */
-                shadow_midi_inject_shm->buffer[wr + 1] = 0xB0; /* CC status, ch 0 */
-                shadow_midi_inject_shm->buffer[wr + 2] = CC_SHIFT;
-                shadow_midi_inject_shm->buffer[wr + 3] = 0;    /* value 0 = off */
-                wr += 4;
-            }
-            /* Volume touch off: Note-off note 8 */
-            if (wr + 4 <= SHADOW_MIDI_INJECT_BUFFER_SIZE) {
-                shadow_midi_inject_shm->buffer[wr]     = 0x08; /* CIN=NoteOff, cable=0 */
-                shadow_midi_inject_shm->buffer[wr + 1] = 0x80; /* Note-off status, ch 0 */
-                shadow_midi_inject_shm->buffer[wr + 2] = 8;    /* Volume touch note */
-                shadow_midi_inject_shm->buffer[wr + 3] = 0;    /* velocity 0 */
-                wr += 4;
-            }
-            /* Back off: CC 51 value 0 */
-            if (wr + 4 <= SHADOW_MIDI_INJECT_BUFFER_SIZE) {
-                shadow_midi_inject_shm->buffer[wr]     = 0x0B; /* CIN=CC, cable=0 */
-                shadow_midi_inject_shm->buffer[wr + 1] = 0xB0; /* CC status, ch 0 */
-                shadow_midi_inject_shm->buffer[wr + 2] = CC_BACK;
-                shadow_midi_inject_shm->buffer[wr + 3] = 0;    /* value 0 = off */
-                wr += 4;
-            }
-            /* Jog click off: CC 3 value 0 */
-            if (wr + 4 <= SHADOW_MIDI_INJECT_BUFFER_SIZE) {
-                shadow_midi_inject_shm->buffer[wr]     = 0x0B; /* CIN=CC, cable=0 */
-                shadow_midi_inject_shm->buffer[wr + 1] = 0xB0; /* CC status, ch 0 */
-                shadow_midi_inject_shm->buffer[wr + 2] = CC_JOG_CLICK;
-                shadow_midi_inject_shm->buffer[wr + 3] = 0;    /* value 0 = off */
-                wr += 4;
-            }
-            shadow_midi_inject_shm->write_idx = wr;
-            __sync_synchronize();
-            shadow_midi_inject_shm->ready++;
+            /* Synthesize releases for any controls that may have been
+             * down at overtake start so Move firmware doesn't think
+             * buttons are still held. Each push is independent under
+             * the MPSC helper — no cursor coordination required here. */
+            const uint8_t shift_off[4]    = {0x0B, 0xB0, CC_SHIFT,     0};
+            const uint8_t vol_touch_off[4]= {0x08, 0x80, 8,            0};
+            const uint8_t back_off[4]     = {0x0B, 0xB0, CC_BACK,      0};
+            const uint8_t jog_click_off[4]= {0x0B, 0xB0, CC_JOG_CLICK, 0};
+            shadow_midi_inject_push(shadow_midi_inject_shm, shift_off);
+            shadow_midi_inject_push(shadow_midi_inject_shm, vol_touch_off);
+            shadow_midi_inject_push(shadow_midi_inject_shm, back_off);
+            shadow_midi_inject_push(shadow_midi_inject_shm, jog_click_off);
             shadow_log("Overtake exit: injected shift-off, volume-touch-off, back-off, jog-click-off");
         }
         /* Forced reset of cable-2 channel remap on overtake exit. The active
@@ -5626,16 +5603,8 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
          * never reaches Move otherwise. */
         if (prev_overtake_mode == 0 && overtake_mode != 0 && shadow_midi_inject_shm &&
             shadow_shift_held) {
-            int wr = shadow_midi_inject_shm->write_idx;
-            if (wr + 4 <= SHADOW_MIDI_INJECT_BUFFER_SIZE) {
-                shadow_midi_inject_shm->buffer[wr]     = 0x0B;
-                shadow_midi_inject_shm->buffer[wr + 1] = 0xB0;
-                shadow_midi_inject_shm->buffer[wr + 2] = CC_SHIFT;
-                shadow_midi_inject_shm->buffer[wr + 3] = 0;
-                wr += 4;
-                shadow_midi_inject_shm->write_idx = wr;
-                __sync_synchronize();
-                shadow_midi_inject_shm->ready++;
+            const uint8_t shift_off[4] = {0x0B, 0xB0, CC_SHIFT, 0};
+            if (shadow_midi_inject_push(shadow_midi_inject_shm, shift_off) == 0) {
                 shadow_log("Overtake entry with shift held: injected shift-off");
             }
         }
