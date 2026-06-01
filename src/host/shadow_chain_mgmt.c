@@ -1721,7 +1721,13 @@ int shadow_param_publish_response(uint32_t req_id) {
     }
 
     param->response_id = req_id;
-    param->response_ready = 1;
+    /* Release-store: ensure prior writes to value / error / result_len /
+     * response_id are globally visible BEFORE the reader observes
+     * response_ready = 1. Plain volatile store is not enough — on
+     * weakly-ordered ARMv8 the per-CPU store buffer is free to commit
+     * the flag write ahead of the field writes, and the reader's poll
+     * would then see response_ready = 1 with stale fields. */
+    __atomic_store_n(&param->response_ready, 1, __ATOMIC_RELEASE);
     param->request_type = 0;
     return 1;
 }
