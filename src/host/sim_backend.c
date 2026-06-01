@@ -79,26 +79,27 @@ uint8_t *schwung_sim_mmap(void) {
     return g_sim.shadow;
 }
 
-int schwung_sim_ioctl_wait(void) {
-    if (!g_sim.ready) { errno = EINVAL; return -1; }
+int schwung_sim_wait_for_tick(void) {
     if (g_sim.tick_pipe[0] < 0) { errno = EBADF; return -1; }
-
-    // Shadow → hw (TX region: MIDI OUT + display + audio OUT)
-    memcpy(g_sim.hw, g_sim.shadow, SCHWUNG_OFF_IN_BASE);
-
-    // Barrier: wait for the sim daemon to populate hw[IN_BASE..] and pulse
-    // the pipe.
     char b;
     ssize_t n;
     do {
         n = read(g_sim.tick_pipe[0], &b, 1);
     } while (n < 0 && errno == EINTR);
     if (n != 1) {
-        // EOF (n == 0) means the daemon exited; surface as EPIPE so callers
-        // can distinguish from generic I/O failure.
         errno = (n == 0) ? EPIPE : EIO;
         return -1;
     }
+    return 0;
+}
+
+int schwung_sim_ioctl_wait(void) {
+    if (!g_sim.ready) { errno = EINVAL; return -1; }
+
+    // Shadow → hw (TX region: MIDI OUT + display + audio OUT)
+    memcpy(g_sim.hw, g_sim.shadow, SCHWUNG_OFF_IN_BASE);
+
+    if (schwung_sim_wait_for_tick() != 0) return -1;
 
     // hw → shadow (RX region: MIDI IN + display status + audio IN)
     memcpy(g_sim.shadow + SCHWUNG_OFF_IN_BASE,

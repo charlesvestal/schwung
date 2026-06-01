@@ -213,13 +213,13 @@ done
 if [ "$SCREEN_READER_ENABLED" = "1" ]; then
     echo "Screen reader build: enabled (dual engine: eSpeak-NG + Flite)"
     SHIM_TTS_SRC="src/host/tts_engine_dispatch.c src/host/tts_engine_espeak.c src/host/tts_engine_flite.c"
-    SHIM_DEFINES="-DENABLE_SCREEN_READER=1"
+    SHIM_DEFINES="-DENABLE_SCREEN_READER=1 -DSCHWUNG_LIB_WITH_SIM"
     SHIM_INCLUDES="-Isrc -I/usr/include -I/usr/include/dbus-1.0 -I/usr/lib/aarch64-linux-gnu/dbus-1.0/include -I/usr/include/flite"
     SHIM_LIBS="-L/usr/lib/aarch64-linux-gnu -ldl -lrt -lpthread -ldbus-1 -lsystemd -lm -lespeak-ng -lflite -lflite_cmu_us_kal -lflite_usenglish -lflite_cmulex"
 else
     echo "Screen reader build: disabled"
     SHIM_TTS_SRC="src/host/tts_engine_stub.c"
-    SHIM_DEFINES="-DENABLE_SCREEN_READER=0"
+    SHIM_DEFINES="-DENABLE_SCREEN_READER=0 -DSCHWUNG_LIB_WITH_SIM"
     SHIM_INCLUDES="-Isrc -I/usr/include"
     SHIM_LIBS="-ldl -lrt -lpthread -lm"
 fi
@@ -249,6 +249,7 @@ fi
 if needs_rebuild build/schwung-shim.so \
     src/schwung_shim.c \
     src/lib/schwung_spi_lib.c src/lib/schwung_spi_lib.h \
+    src/host/sim_backend.c src/host/sim_backend.h \
     src/lib/schwung_jack_bridge.c src/lib/schwung_jack_bridge.h src/lib/schwung_jack_shm.h \
     src/host/shadow_sampler.c src/host/shadow_set_pages.c src/host/shadow_dbus.c \
     src/host/shadow_chain_mgmt.c src/host/shadow_link_audio.c src/host/shadow_process.c \
@@ -268,6 +269,7 @@ if needs_rebuild build/schwung-shim.so \
         -o build/schwung-shim.so \
         src/schwung_shim.c \
         src/lib/schwung_spi_lib.c \
+        src/host/sim_backend.c \
         src/lib/schwung_jack_bridge.c \
         src/host/shadow_sampler.c \
         src/host/shadow_set_pages.c \

@@ -37,6 +37,13 @@ uint8_t *schwung_sim_mmap(void);
 // on success, -1 with errno on failure.
 int schwung_sim_ioctl_wait(void);
 
+// Block until the sim daemon pulses the tick pipe. Used by LD_PRELOAD
+// callers (Sim B's shim) that need to fire pre/post transfer callbacks
+// around the barrier themselves — the lib does the shadow↔hw memcpys, this
+// fn only does the wait. Returns 0 on success, -1 with errno on failure
+// (EBADF before open, EPIPE if the daemon has closed the write end).
+int schwung_sim_wait_for_tick(void);
+
 // Tear down: close the fd, free hw. shadow buffer remains (static). Safe to
 // call multiple times. Mostly useful for tests.
 void schwung_sim_close(void);
