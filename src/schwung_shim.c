@@ -4486,6 +4486,18 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     (void)ctx;
     (void)size;
 
+    /* Sim B debug: light-touch frame counter so we can verify the SPI loop
+     * keeps re-entering. Prints once per second of wallclock (every 344
+     * frames at the SPI rate). Remove once display reassembly verified. */
+    {
+        static uint32_t dbg_count = 0;
+        if ((dbg_count++ % 344) == 0) {
+            fprintf(stderr,
+                "shim_pre: frame=%u disp_status=%02x slice_data[0..3]=%02x %02x %02x %02x\n",
+                dbg_count, shadow[80], shadow[84], shadow[85], shadow[86], shadow[87]);
+        }
+    }
+
     /* Flush-to-zero denormals on the SPI thread so IIR filters (speaker EQ,
      * subsonic HP, etc.) don't grind through gradual-underflow range during
      * long silent tails. FPCR is per-thread — set once on first callback.
