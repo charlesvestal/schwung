@@ -15,11 +15,19 @@
 #include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
+
+// Sim Backend integration (opt-in; the shim's build defines this so the
+// LD_PRELOAD lib gets sim-mode handling for Sim B. Standalone consumers
+// of the lib leave it undefined and get the device-only path as today.)
+#ifdef SCHWUNG_LIB_WITH_SIM
+#include "../host/sim_backend.h"
+#endif
 
 #define SCHWUNG_LOG_PATH "/data/UserData/schwung/schwung.log"
 
@@ -30,6 +38,7 @@
 struct SchwungSpi {
     int spi_fd;
     uint8_t shadow[SCHWUNG_PAGE_SIZE] __attribute__((aligned(64)));
+    uint8_t *shadow_ptr;   // → &shadow[0] on device, sim's shadow in sim mode
     uint8_t *hw;
     schwung_spi_pre_fn pre_fn;
     schwung_spi_post_fn post_fn;
@@ -38,6 +47,21 @@ struct SchwungSpi {
 };
 
 static SchwungSpi g_spi = { .spi_fd = -1 };
+
+#ifdef SCHWUNG_LIB_WITH_SIM
+// SCHWUNG_SPI_BACKEND=sim → route open/mmap/ioctl(WAIT_SEND_SIZE) through
+// sim_backend instead of /dev/ablspi0.0. Read once, cached for the process.
+static int sim_mode_cache = -1;
+static int sim_mode_active(void) {
+    if (sim_mode_cache < 0) {
+        const char *e = getenv("SCHWUNG_SPI_BACKEND");
+        sim_mode_cache = (e && strcmp(e, "sim") == 0) ? 1 : 0;
+    }
+    return sim_mode_cache;
+}
+#else
+static inline int sim_mode_active(void) { return 0; }
+#endif
 
 // Real libc functions
 static int (*real_open)(const char *path, int flags, ...) = NULL;
@@ -125,7 +149,7 @@ void schwung_spi_set_callbacks(SchwungSpi *spi,
 }
 
 uint8_t *schwung_spi_get_shadow(SchwungSpi *spi) {
-    return spi->ready ? spi->shadow : NULL;
+    return spi->ready ? spi->shadow_ptr : NULL;
 }
 
 uint8_t *schwung_spi_get_hw(SchwungSpi *spi) {
@@ -164,6 +188,17 @@ int open(const char *path, int flags, ...) {
         va_end(ap);
     }
 
+#ifdef SCHWUNG_LIB_WITH_SIM
+    if (sim_mode_active() && path && strcmp(path, SCHWUNG_SPI_DEVICE) == 0) {
+        int fd = schwung_sim_open();
+        if (fd >= 0) {
+            g_spi.spi_fd = fd;
+            schwung_spi_log("schwung: SPI sim device opened");
+        }
+        return fd;
+    }
+#endif
+
     int fd = real_open(path, flags, mode);
 
     if (fd >= 0 && path && strcmp(path, SCHWUNG_SPI_DEVICE) == 0) {
@@ -188,6 +223,17 @@ int open64(const char *path, int flags, ...) {
         va_end(ap);
     }
 
+#ifdef SCHWUNG_LIB_WITH_SIM
+    if (sim_mode_active() && path && strcmp(path, SCHWUNG_SPI_DEVICE) == 0) {
+        int fd = schwung_sim_open();
+        if (fd >= 0) {
+            g_spi.spi_fd = fd;
+            schwung_spi_log("schwung: SPI sim device opened (open64)");
+        }
+        return fd;
+    }
+#endif
+
     int fd = real_open64(path, flags, mode);
 
     if (fd >= 0 && path && strcmp(path, SCHWUNG_SPI_DEVICE) == 0) {
@@ -201,14 +247,26 @@ int open64(const char *path, int flags, ...) {
 void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset) {
     ensure_real_funcs();
 
+#ifdef SCHWUNG_LIB_WITH_SIM
+    if (sim_mode_active() && fd == g_spi.spi_fd && fd >= 0) {
+        uint8_t *shadow = schwung_sim_mmap();
+        if (!shadow) return MAP_FAILED;
+        g_spi.hw         = schwung_sim_get_hw_buffer();
+        g_spi.shadow_ptr = shadow;
+        g_spi.ready      = 1;
+        schwung_spi_log("schwung: SPI sim buffer mapped (shadow active)");
+        return shadow;
+    }
+#endif
+
     void *ret = real_mmap(addr, length, prot, flags, fd, offset);
 
     if (fd == g_spi.spi_fd && fd >= 0 && ret != MAP_FAILED) {
-        g_spi.hw = (uint8_t *)ret;
-        g_spi.ready = 1;
+        g_spi.hw         = (uint8_t *)ret;
+        g_spi.shadow_ptr = g_spi.shadow;
+        g_spi.ready      = 1;
         memset(g_spi.shadow, 0, SCHWUNG_PAGE_SIZE);
         schwung_spi_log("schwung: SPI buffer mapped (shadow active)");
-        // Return shadow buffer to Move — it reads/writes this instead of hardware
         return g_spi.shadow;
     }
 
@@ -223,16 +281,39 @@ int ioctl(int fd, unsigned long request, ...) {
     unsigned long arg = va_arg(ap, unsigned long);
     va_end(ap);
 
+#ifdef SCHWUNG_LIB_WITH_SIM
+    if (sim_mode_active() && fd == g_spi.spi_fd && fd >= 0 && g_spi.ready
+        && request == (unsigned long)SCHWUNG_IOCTL_WAIT_SEND_SIZE) {
+        // Sim mode: drive the same pre/barrier/post sequence as the device
+        // path, but use sim_backend's tick pipe instead of a real SPI transfer.
+        // pre_fn/post_fn get the sim shadow pointer — same contract as device.
+        if (g_spi.pre_fn)
+            g_spi.pre_fn(g_spi.ctx, g_spi.shadow_ptr, SCHWUNG_PAGE_SIZE);
+        memcpy(g_spi.hw, g_spi.shadow_ptr, SCHWUNG_OFF_IN_BASE);
+        if (schwung_sim_wait_for_tick() != 0) return -1;
+        memcpy(g_spi.shadow_ptr + SCHWUNG_OFF_IN_BASE,
+               g_spi.hw + SCHWUNG_OFF_IN_BASE,
+               SCHWUNG_PAGE_SIZE - SCHWUNG_OFF_IN_BASE);
+        if (g_spi.post_fn)
+            g_spi.post_fn(g_spi.ctx, g_spi.shadow_ptr, g_spi.hw, SCHWUNG_PAGE_SIZE);
+        return 0;
+    }
+    // Other ioctls in sim mode fall through to real_ioctl on the tempfile fd.
+    // That fails predictably (ENOTTY/EINVAL) — caller sees "unsupported" not
+    // a fabricated success. Add per-ioctl stubs here (GET_STATE, GET_SPEED, …)
+    // only when first-boot debugging shows MoveOriginal actually requires them.
+#endif
+
     if (fd == g_spi.spi_fd && fd >= 0
         && request == (unsigned long)SCHWUNG_IOCTL_WAIT_SEND_SIZE
         && g_spi.ready) {
 
         // Pre-transfer: let domain logic write to shadow buffer
         if (g_spi.pre_fn)
-            g_spi.pre_fn(g_spi.ctx, g_spi.shadow, SCHWUNG_PAGE_SIZE);
+            g_spi.pre_fn(g_spi.ctx, g_spi.shadow_ptr, SCHWUNG_PAGE_SIZE);
 
         // Copy shadow → hardware (output region only: MIDI + display + audio)
-        memcpy(g_spi.hw, g_spi.shadow, SCHWUNG_OFF_IN_BASE);
+        memcpy(g_spi.hw, g_spi.shadow_ptr, SCHWUNG_OFF_IN_BASE);
     }
 
     // Blocking SPI transfer with EINTR retry
@@ -248,13 +329,13 @@ int ioctl(int fd, unsigned long request, ...) {
         && g_spi.ready) {
 
         // Copy hardware → shadow (input region: MIDI + display status + audio)
-        memcpy(g_spi.shadow + SCHWUNG_OFF_IN_BASE,
+        memcpy(g_spi.shadow_ptr + SCHWUNG_OFF_IN_BASE,
                g_spi.hw + SCHWUNG_OFF_IN_BASE,
                SCHWUNG_PAGE_SIZE - SCHWUNG_OFF_IN_BASE);
 
         // Post-transfer: let domain logic read MIDI, filter, etc.
         if (g_spi.post_fn)
-            g_spi.post_fn(g_spi.ctx, g_spi.shadow, g_spi.hw, SCHWUNG_PAGE_SIZE);
+            g_spi.post_fn(g_spi.ctx, g_spi.shadow_ptr, g_spi.hw, SCHWUNG_PAGE_SIZE);
     }
 
     return ret;
