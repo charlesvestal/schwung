@@ -24,6 +24,7 @@
 #include <sys/mman.h>
 
 #include "host/shadow_constants.h"
+#include "host/shadow_midi_inject_writer.h"
 
 static shadow_midi_inject_t *inject_shm = NULL;
 
@@ -47,27 +48,21 @@ static int open_inject_shm(void)
     return 0;
 }
 
-/* Write a single USB-MIDI packet: [CIN|cable, status, d1, d2] */
+/* Write a single USB-MIDI packet: [CIN|cable, status, d1, d2].
+ * Goes through the shared MPSC helper which handles cursor reservation,
+ * commit ordering, and the ready bump. */
 static void write_packet(uint8_t cin, uint8_t status, uint8_t d1, uint8_t d2)
 {
-    int idx = inject_shm->write_idx;
-    if (idx + 4 > SHADOW_MIDI_INJECT_BUFFER_SIZE) {
-        fprintf(stderr, "Buffer full\n");
-        return;
-    }
-    inject_shm->buffer[idx]     = cin;       /* CIN nibble, cable 0 */
-    inject_shm->buffer[idx + 1] = status;
-    inject_shm->buffer[idx + 2] = d1;
-    inject_shm->buffer[idx + 3] = d2;
-    inject_shm->write_idx = idx + 4;
+    const uint8_t pkt[4] = {cin, status, d1, d2};
+    int rc = shadow_midi_inject_push(inject_shm, pkt);
+    if (rc == -1) fprintf(stderr, "Buffer full\n");
+    else if (rc == -2) fprintf(stderr, "Prior producer stranded\n");
 }
 
-/* Signal the shim that data is ready */
-static void flush(void)
-{
-    __sync_synchronize();
-    inject_shm->ready++;
-}
+/* No-op: the helper already bumps `ready` per-packet. Kept so existing
+ * call sites that expect a flush() compile cleanly without behavior
+ * change. */
+static void flush(void) {}
 
 /* Send note-on, wait, send note-off */
 static void cmd_pad(int note, int velocity)
