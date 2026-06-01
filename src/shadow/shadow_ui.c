@@ -29,6 +29,7 @@
 #include "host/shadow_constants.h"
 #include "host/shadow_shm_util.h"
 #include "host/js_host_common.h"
+#include "host/shadow_midi_inject_writer.h"
 #include "../host/unified_log.h"
 #include "../host/analytics.h"
 
@@ -942,7 +943,11 @@ static JSValue js_move_midi_inject_to_move(JSContext *ctx, JSValueConst this_val
     JS_ToInt32(ctx, &len, len_val);
     JS_FreeValue(ctx, len_val);
 
-    /* Process 4 bytes at a time (USB-MIDI packet format) */
+    /* Process 4 bytes at a time (USB-MIDI packet format).
+     * Each packet goes through the MPSC helper, which CAS-reserves a
+     * slot, commits in FIFO order, and bumps `ready` per packet. The
+     * helper handles the cross-process race with the test daemon and
+     * the shim's own writers — see shadow_midi_inject_writer.h. */
     for (int i = 0; i < len; i += 4) {
         uint8_t packet[4] = {0, 0, 0, 0};
 
@@ -958,17 +963,12 @@ static JSValue js_move_midi_inject_to_move(JSContext *ctx, JSValueConst this_val
          * route (cable 0 = pad simulation, cable 2 = external MIDI in
          * to the track synth). See function docblock. */
 
-        /* Find space in buffer and write */
-        int write_offset = shadow_midi_inject->write_idx;
-        if (write_offset + 4 <= SHADOW_MIDI_INJECT_BUFFER_SIZE) {
-            memcpy(&shadow_midi_inject->buffer[write_offset], packet, 4);
-            shadow_midi_inject->write_idx = write_offset + 4;
+        if (shadow_midi_inject_push(shadow_midi_inject, packet) != 0) {
+            /* Buffer full or stranded — drop this packet and stop the
+             * batch (subsequent packets would just back up). */
+            break;
         }
     }
-
-    /* Signal shim that data is ready */
-    __sync_synchronize();
-    shadow_midi_inject->ready++;
 
     return JS_TRUE;
 }

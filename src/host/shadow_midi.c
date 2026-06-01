@@ -5,6 +5,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "shadow_midi.h"
+#include "shadow_midi_inject_writer.h"
 #include "shadow_chain_mgmt.h"
 #include "shadow_led_queue.h"
 #include "shadow_overlay.h"  /* MIDI channel indicator globals */
@@ -573,8 +574,21 @@ void shadow_drain_midi_inject(void)
 
     last_ready = inject_shm->ready;
 
-    /* Snapshot buffer first, then reset write_idx */
-    int snapshot_len = inject_shm->write_idx;
+    /* Snapshot up to commit_idx (NOT alloc_idx) — anything between
+     * commit_idx and alloc_idx is reserved-but-unwritten by an
+     * in-flight producer. Reading from there would pull garbage; the
+     * producer will commit on its own thread and we'll catch the data
+     * on the next drain pass.
+     *
+     * Acquire load pairs with each producer's release store on
+     * commit_idx so we're guaranteed to see their buffer writes.
+     *
+     * Caveat: if alloc_idx > commit_idx (reservations in flight) at
+     * the time we reset both cursors below, those producers' data
+     * will be wiped by the memset and they'll hit spin-timeout (-2)
+     * in shadow_midi_inject_push(). That's a documented, very rare
+     * loss window — tracked in flagist0/schwung#2. */
+    int snapshot_len = __atomic_load_n(&inject_shm->commit_idx, __ATOMIC_ACQUIRE);
     uint8_t local_buf[SHADOW_MIDI_INJECT_BUFFER_SIZE];
     int copy_len = snapshot_len < (int)SHADOW_MIDI_INJECT_BUFFER_SIZE
                  ? snapshot_len : (int)SHADOW_MIDI_INJECT_BUFFER_SIZE;
@@ -582,7 +596,11 @@ void shadow_drain_midi_inject(void)
         memcpy(local_buf, inject_shm->buffer, copy_len);
     }
     __sync_synchronize();
-    inject_shm->write_idx = 0;
+    /* Reset both cursors to 0 — the alloc_idx reset frees space for new
+     * reservations; the commit_idx reset re-arms the FIFO order so the
+     * next batch of producers can commit from slot 0 in order. */
+    inject_shm->alloc_idx  = 0;
+    inject_shm->commit_idx = 0;
     memset(inject_shm->buffer, 0, SHADOW_MIDI_INJECT_BUFFER_SIZE);
 
     if (copy_len <= 0) return;
@@ -622,19 +640,26 @@ void shadow_drain_midi_inject(void)
     }
 
     /* Carry over any undrained packets so they fire in subsequent frames.
-     * Without this, bursts that exceed the 8-per-frame cap (or pile up
+     * Without this, bursts that exceed the 16-per-frame cap (or pile up
      * during DEFER_FRAMES while cable-0 is active) lose events when the
-     * snapshot resets write_idx above — which strands note-offs and leaves
+     * snapshot resets cursors above — which strands note-offs and leaves
      * voices hanging on Move's track. Safe to rewrite inject_shm->buffer
-     * here because shadow_chain_midi_inject runs on the same SPI thread. */
+     * here because shadow_chain_midi_inject runs on the same SPI thread.
+     *
+     * Cursor invariant: carryover data is already committed by its
+     * original producer, so we set both alloc_idx and commit_idx to
+     * `remaining` — drain on the next frame reads commit_idx and sees
+     * the carried packets as ready-to-go. */
     int remaining = copy_len - consumed_bytes;
     if (remaining > 0) {
-        /* write_idx is uint8_t (0..255) and the inject guard checks wr+4 <= 256,
-         * so write_idx must never exceed 252 (63 packets). Cap carryover at
-         * 252 so a new inject from chain_host can still land. */
+        /* alloc_idx/commit_idx are uint8_t (0..255) and the producer
+         * guard checks wr+4 < 256, so they must never exceed 252
+         * (63 packets). Cap carryover at 252 so a new inject from
+         * chain_host can still land. */
         if (remaining > 252) remaining = 252;
         memcpy(inject_shm->buffer, &local_buf[consumed_bytes], remaining);
-        inject_shm->write_idx = (uint8_t)remaining;
+        __atomic_store_n(&inject_shm->alloc_idx,  (uint8_t)remaining, __ATOMIC_RELAXED);
+        __atomic_store_n(&inject_shm->commit_idx, (uint8_t)remaining, __ATOMIC_RELEASE);
         inject_shm->ready++;  /* re-arm so next frame drains without waiting
                                * for a new inject to bump ready */
     }
@@ -670,24 +695,18 @@ int shadow_chain_midi_inject(const uint8_t *msg, int len)
     shadow_midi_inject_t *shm = *host_shadow_midi_inject_shm;
     if (!shm) return 0;
 
-    int wr = shm->write_idx;
-    if (wr + 4 > (int)SHADOW_MIDI_INJECT_BUFFER_SIZE) {
-        if (host_log) {
-            char dbg[96];
-            uint8_t type = msg[1] & 0xF0;
-            snprintf(dbg, sizeof(dbg),
-                     "MIDI inject FULL: wr=%d dropped status=0x%02x n=%d v=%d",
-                     wr, msg[1], msg[2], msg[3]);
-            host_log(dbg);
-        }
-        return 0;
-    }
+    int rc = shadow_midi_inject_push(shm, msg);
+    if (rc == 0) return 4;
 
-    memcpy(&shm->buffer[wr], msg, 4);
-    shm->write_idx = (uint8_t)(wr + 4);
-    __sync_synchronize();
-    shm->ready++;
-    return 4;
+    if (host_log) {
+        char dbg[96];
+        const char *why = (rc == -1) ? "FULL" : "STRANDED";
+        snprintf(dbg, sizeof(dbg),
+                 "MIDI inject %s: dropped status=0x%02x n=%d v=%d",
+                 why, msg[1], msg[2], msg[3]);
+        host_log(dbg);
+    }
+    return 0;
 }
 
 /* Drain MIDI-to-DSP buffer from shadow UI and dispatch to chain slots. */

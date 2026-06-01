@@ -372,15 +372,49 @@ typedef struct shadow_midi_dsp_t {
 } shadow_midi_dsp_t;
 
 /*
- * MIDI Inject buffer structure.
- * Used by Shadow UI (or external tools) to inject USB-MIDI packets into
- * Move's MIDI_IN buffer, making Move process them as real hardware events.
+ * MIDI Inject ring — multi-producer, single-consumer SHM channel.
+ * Lets multiple processes inject USB-MIDI packets into Move's MIDI_IN
+ * buffer so Move firmware processes them as real hardware events.
  * Packets are 4-byte USB-MIDI format (CIN/cable, status, data1, data2).
+ *
+ * Producers (multiple, may run concurrently across processes):
+ *   - JS host: shadow_ui.c:js_move_midi_inject_to_move (schwung_host)
+ *   - Shim:    schwung_shim.c overtake-entry "shift off"
+ *   - Shim:    schwung_shim.c overtake-exit 4× CC release
+ *   - Shim:    shadow_midi.c:shadow_chain_midi_inject (cable-2 forwarder)
+ *
+ * Consumer (single, in shim's SPI thread, ~344 Hz):
+ *   - shadow_midi.c:shadow_drain_midi_inject
+ *
+ * Cursor protocol (MPSC ring, lock-free):
+ *   alloc_idx  — allocation cursor. Producers atomically reserve a 4-byte
+ *                slot here via CAS. Drain DOES NOT read this — it only
+ *                reflects how much space has been claimed, not what's
+ *                been written.
+ *   commit_idx — commit cursor. A producer advances this *after* its slot
+ *                is fully written, in FIFO order (briefly waiting via the
+ *                helper's bounded spin if a prior producer hasn't
+ *                committed yet). Drain reads up to commit_idx — anything
+ *                past that may be reserved-but-unwritten.
+ *
+ * Invariant: bytes [0, commit_idx) are fully written and safe to read.
+ *
+ * All producers MUST go through the shadow_midi_inject_push() helper in
+ * src/host/shadow_midi_inject_writer.h — do not write to the cursors or
+ * buffer directly. The helper encodes the CAS-reserve / ordered-commit
+ * dance once; ad-hoc writers race the drain (CIN=0/cable=0 ends up as
+ * "misc function" and Move firmware aborts — see shadow_midi.c:553).
+ *
+ * Note: alloc_idx kept its old name `write_idx` would confuse direct-write
+ * callers we just removed; commit_idx fits in one of the two reserved
+ * bytes from the prior layout, so on-disk SHM size and offsets are
+ * unchanged — old binaries that mmap this segment continue to work.
  */
 typedef struct shadow_midi_inject_t {
-    volatile uint8_t write_idx;      /* Writer increments after writing */
-    volatile uint8_t ready;          /* Toggle to signal new data */
-    volatile uint8_t reserved[2];
+    volatile uint8_t alloc_idx;      /* Allocation cursor (CAS-reserved by producers) */
+    volatile uint8_t ready;          /* Toggle, bumped after each successful commit */
+    volatile uint8_t commit_idx;     /* Commit cursor (drain reads up to here) */
+    volatile uint8_t reserved;       /* one byte left for future use */
     uint8_t buffer[SHADOW_MIDI_INJECT_BUFFER_SIZE];  /* USB-MIDI packets (4 bytes each) */
 } shadow_midi_inject_t;
 
