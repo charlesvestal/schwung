@@ -27,6 +27,26 @@
 // of the lib leave it undefined and get the device-only path as today.)
 #ifdef SCHWUNG_LIB_WITH_SIM
 #include "../host/sim_backend.h"
+
+// ABI mirror from the canonical ablspi kernel driver (clean-room reference at
+// https://github.com/djhardrich/move-spi-armbian/blob/main/kernel/ablspi.c).
+// ablspi_state layout is what ABLSPI_GET_STATE writes via copy_to_user;
+// constants are the documented SPI defaults and validation bounds.
+#define ABLSPI_DEFAULT_FRAME 768u
+#define ABLSPI_DEFAULT_HZ    20000000u
+#define ABLSPI_MIN_HZ        100000u
+#define ABLSPI_MAX_HZ        125000000u
+#define ABLSPI_HALF          2048u
+
+struct ablspi_state {
+    uint32_t in_transfer;
+    uint32_t gpio_setup;
+    uint32_t irq_count;
+    uint32_t failed_send_count;
+    uint32_t message_size;
+    uint32_t speed_hz;
+    uint64_t last_tx_ns;
+};
 #endif
 
 #define SCHWUNG_LOG_PATH "/data/UserData/schwung/schwung.log"
@@ -49,8 +69,8 @@ struct SchwungSpi {
 static SchwungSpi g_spi = { .spi_fd = -1 };
 
 #ifdef SCHWUNG_LIB_WITH_SIM
-// SCHWUNG_SPI_BACKEND=sim → route open/mmap/ioctl(WAIT_SEND_SIZE) through
-// sim_backend instead of /dev/ablspi0.0. Read once, cached for the process.
+// SCHWUNG_SPI_BACKEND=sim → route open/mmap/ioctl through sim_backend instead
+// of /dev/ablspi0.0. Read once, cached for the process.
 static int sim_mode_cache = -1;
 static int sim_mode_active(void) {
     if (sim_mode_cache < 0) {
@@ -59,6 +79,19 @@ static int sim_mode_active(void) {
     }
     return sim_mode_cache;
 }
+
+// In-process mirror of the kernel driver's per-device state. SET_SPEED and
+// SET_MSG_SIZE write here; GET_SPEED, GET_MSG_SIZE, GET_STATE read from here.
+// irq_count/last_tx_ns bump on each WAIT_SEND_SIZE barrier.
+static struct {
+    uint32_t speed_hz;
+    uint32_t message_size;
+    uint32_t irq_count;
+    uint64_t last_tx_ns;
+} sim_state = {
+    .speed_hz = ABLSPI_DEFAULT_HZ,
+    .message_size = ABLSPI_DEFAULT_FRAME,
+};
 #else
 static inline int sim_mode_active(void) { return 0; }
 #endif
@@ -244,6 +277,47 @@ int open64(const char *path, int flags, ...) {
     return fd;
 }
 
+// glibc's open()/open64() compile to syscall(SYS_openat) under the hood, but
+// C++ code (RtMidi, RtAudio, Move's SPI connection) frequently calls openat()
+// directly — without an openat hook those reach the kernel and bypass us
+// entirely. Sim B's first-boot debug surfaced this: Move logged
+// "Exception caught in SPI Connection: Can't open device" because openat
+// hit the kernel and got -1 on a non-existent /dev/ablspi0.0.
+static int (*real_openat)(int, const char *, int, ...) = NULL;
+
+int openat(int dirfd, const char *path, int flags, ...) {
+    if (!real_openat)
+        real_openat = dlsym(RTLD_NEXT, "openat");
+
+    mode_t mode = 0;
+    if (flags & O_CREAT) {
+        va_list ap;
+        va_start(ap, flags);
+        mode = (mode_t)va_arg(ap, int);
+        va_end(ap);
+    }
+
+#ifdef SCHWUNG_LIB_WITH_SIM
+    if (sim_mode_active() && path && strcmp(path, SCHWUNG_SPI_DEVICE) == 0) {
+        int fd = schwung_sim_open();
+        if (fd >= 0) {
+            g_spi.spi_fd = fd;
+            schwung_spi_log("schwung: SPI sim device opened (openat)");
+        }
+        return fd;
+    }
+#endif
+
+    int fd = real_openat(dirfd, path, flags, mode);
+
+    if (fd >= 0 && path && strcmp(path, SCHWUNG_SPI_DEVICE) == 0) {
+        g_spi.spi_fd = fd;
+        schwung_spi_log("schwung: SPI device opened (openat)");
+    }
+
+    return fd;
+}
+
 void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset) {
     ensure_real_funcs();
 
@@ -282,26 +356,91 @@ int ioctl(int fd, unsigned long request, ...) {
     va_end(ap);
 
 #ifdef SCHWUNG_LIB_WITH_SIM
-    if (sim_mode_active() && fd == g_spi.spi_fd && fd >= 0 && g_spi.ready
-        && request == (unsigned long)SCHWUNG_IOCTL_WAIT_SEND_SIZE) {
-        // Sim mode: drive the same pre/barrier/post sequence as the device
-        // path, but use sim_backend's tick pipe instead of a real SPI transfer.
-        // pre_fn/post_fn get the sim shadow pointer — same contract as device.
-        if (g_spi.pre_fn)
-            g_spi.pre_fn(g_spi.ctx, g_spi.shadow_ptr, SCHWUNG_PAGE_SIZE);
-        memcpy(g_spi.hw, g_spi.shadow_ptr, SCHWUNG_OFF_IN_BASE);
-        if (schwung_sim_wait_for_tick() != 0) return -1;
-        memcpy(g_spi.shadow_ptr + SCHWUNG_OFF_IN_BASE,
-               g_spi.hw + SCHWUNG_OFF_IN_BASE,
-               SCHWUNG_PAGE_SIZE - SCHWUNG_OFF_IN_BASE);
-        if (g_spi.post_fn)
-            g_spi.post_fn(g_spi.ctx, g_spi.shadow_ptr, g_spi.hw, SCHWUNG_PAGE_SIZE);
-        return 0;
+    if (sim_mode_active() && fd == g_spi.spi_fd && fd >= 0 && g_spi.ready) {
+        // Each branch mirrors the corresponding handler in the ablspi kernel
+        // driver. Semantics taken from kernel/ablspi.c (clean-room ABI
+        // reference) — return codes, arg shapes, and state effects match the
+        // real driver so Move can't tell the difference at the syscall layer.
+        switch (request) {
+        case SCHWUNG_IOCTL_WAIT_SEND_SIZE: {
+            // Frame barrier with embedded SET_MSG_SIZE: arg is the new size.
+            // Real driver validates, sets, then does wait+send+wait.
+            uint32_t sz = (uint32_t)arg;
+            if (sz == 0 || sz > ABLSPI_HALF) { errno = EINVAL; return -1; }
+            sim_state.message_size = sz;
+            if (g_spi.pre_fn)
+                g_spi.pre_fn(g_spi.ctx, g_spi.shadow_ptr, SCHWUNG_PAGE_SIZE);
+            memcpy(g_spi.hw, g_spi.shadow_ptr, SCHWUNG_OFF_IN_BASE);
+            if (schwung_sim_wait_for_tick() != 0) return -1;
+            memcpy(g_spi.shadow_ptr + SCHWUNG_OFF_IN_BASE,
+                   g_spi.hw + SCHWUNG_OFF_IN_BASE,
+                   SCHWUNG_PAGE_SIZE - SCHWUNG_OFF_IN_BASE);
+            if (g_spi.post_fn)
+                g_spi.post_fn(g_spi.ctx, g_spi.shadow_ptr, g_spi.hw, SCHWUNG_PAGE_SIZE);
+            sim_state.irq_count++;
+            {   // record last_tx_ns from CLOCK_MONOTONIC for GET_STATE
+                struct timespec ts;
+                clock_gettime(CLOCK_MONOTONIC, &ts);
+                sim_state.last_tx_ns = (uint64_t)ts.tv_sec * 1000000000ull
+                                     + (uint64_t)ts.tv_nsec;
+            }
+            return 0;
+        }
+        case SCHWUNG_IOCTL_SET_SPEED: {
+            uint32_t hz = (uint32_t)arg;
+            if (hz < ABLSPI_MIN_HZ || hz > ABLSPI_MAX_HZ) {
+                errno = EINVAL; return -1;
+            }
+            sim_state.speed_hz = hz;
+            return 0;
+        }
+        case SCHWUNG_IOCTL_GET_SPEED: {
+            uint32_t *u = (uint32_t *)arg;
+            if (!u) { errno = EFAULT; return -1; }
+            *u = sim_state.speed_hz;
+            return 0;
+        }
+        case SCHWUNG_IOCTL_SET_MSG_SIZE: {
+            uint32_t sz = (uint32_t)arg;
+            if (sz == 0 || sz > ABLSPI_HALF) { errno = EINVAL; return -1; }
+            sim_state.message_size = sz;
+            return 0;
+        }
+        case SCHWUNG_IOCTL_GET_MSG_SIZE: {
+            uint32_t *u = (uint32_t *)arg;
+            if (!u) { errno = EFAULT; return -1; }
+            *u = sim_state.message_size;
+            return 0;
+        }
+        case SCHWUNG_IOCTL_GET_STATE: {
+            struct ablspi_state *st = (struct ablspi_state *)arg;
+            if (!st) { errno = EFAULT; return -1; }
+            st->in_transfer       = 0;
+            st->gpio_setup        = 1;
+            st->irq_count         = sim_state.irq_count;
+            st->failed_send_count = 0;
+            st->message_size      = sim_state.message_size;
+            st->speed_hz          = sim_state.speed_hz;
+            st->last_tx_ns        = sim_state.last_tx_ns;
+            return 0;
+        }
+        case SCHWUNG_IOCTL_CAN_SEND:
+            return 1;  // sim is never mid-transfer
+        case SCHWUNG_IOCTL_FILL_TX:
+        case SCHWUNG_IOCTL_FILL_RX:
+        case SCHWUNG_IOCTL_READ_BUF:
+        case SCHWUNG_IOCTL_SEND:
+        case SCHWUNG_IOCTL_SEND_WAIT:
+        case SCHWUNG_IOCTL_WAIT_SEND:
+            // These move data between user buffer and TX/RX halves. Move uses
+            // mmap so it writes the buffer directly — these ioctls aren't on
+            // the mmap'd frame path. Stub success.
+            return 0;
+        default:
+            errno = ENOTTY;
+            return -1;
+        }
     }
-    // Other ioctls in sim mode fall through to real_ioctl on the tempfile fd.
-    // That fails predictably (ENOTTY/EINVAL) — caller sees "unsupported" not
-    // a fabricated success. Add per-ioctl stubs here (GET_STATE, GET_SPEED, …)
-    // only when first-boot debugging shows MoveOriginal actually requires them.
 #endif
 
     if (fd == g_spi.spi_fd && fd >= 0
