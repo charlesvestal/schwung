@@ -123,7 +123,14 @@ static void *heartbeat_main(void *arg) {
     const int64_t period_ns = 2902500;  // 128 / 44100 * 1e9
     struct timespec next;
     clock_gettime(CLOCK_MONOTONIC, &next);
-    uint32_t chunk_idx = 0;  // pre-incremented below → starts at 1
+    // Hold each chunk index for several SPI cycles. Real XMOS clocks the
+    // display at ~30 Hz; Move's UI thread can't render a frame in a single
+    // 2.9 ms SPI tick. With HOLD_TICKS=12, a full 6-chunk frame takes
+    // 72 ticks = ~209 ms = ~4.8 Hz. Slow but gives the UI thread plenty
+    // of room to fill each chunk; bump down once the SHM populates cleanly.
+    const int HOLD_TICKS = 12;
+    uint32_t chunk_idx = 1;
+    int hold = 0;
     while (1) {
         next.tv_nsec += period_ns;
         while (next.tv_nsec >= 1000000000) {
@@ -133,8 +140,11 @@ static void *heartbeat_main(void *arg) {
         if (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL) != 0)
             continue;
         if (g_sim.hw) {
-            chunk_idx = (chunk_idx % 6) + 1;  // 1, 2, 3, 4, 5, 6, 1, ...
             *(uint32_t *)(g_sim.hw + 2296) = chunk_idx;
+            if (++hold >= HOLD_TICKS) {
+                hold = 0;
+                chunk_idx = (chunk_idx % 6) + 1;
+            }
         }
         char b = 1;
         if (write(g_sim.tick_pipe[1], &b, 1) != 1) {
