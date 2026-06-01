@@ -110,18 +110,20 @@ static int g_heartbeat_started = 0;
 // SPI frame rate: 128 samples per block @ 44.1 kHz = 2.9025 ms per tick.
 // Use clock_nanosleep with TIMER_ABSTIME for non-drifting cadence.
 //
-// Each tick also writes an XMOS heartbeat to the RX region (offset 2296 =
-// IN_BASE+248 = display input status slot). On real hardware the XMOS chip
-// asserts a GPIO IRQ each frame; the kernel driver waits on that completion.
-// Move's audio thread checks the heartbeat as a liveness signal — without
-// an advancing counter there it concludes the XMOS is dead and stops
-// calling SPI. This was called out as an open follow-up in Sim A's design.
+// Liveness signal: the tick fd pulse itself substitutes for the GPIO IRQ
+// the real kernel driver waits on — that alone keeps Move's audio thread
+// looping. Offset 2296 (display input status) is NOT a liveness counter:
+// shim/shadow code (schwung_shim.c:5611, schwung_jack_bridge.c:143) and
+// Move's UI thread both read it as the *current chunk index* (valid range
+// 1..6) that XMOS is signaling it wants next. Cycle 1→2→…→6→1 so Move's
+// UI thread keeps producing chunks each frame; without an in-range value
+// here Move logs "Invalid display chunk requested" and skips render.
 static void *heartbeat_main(void *arg) {
     (void)arg;
     const int64_t period_ns = 2902500;  // 128 / 44100 * 1e9
     struct timespec next;
     clock_gettime(CLOCK_MONOTONIC, &next);
-    uint32_t xmos_counter = 0;
+    uint32_t chunk_idx = 0;  // pre-incremented below → starts at 1
     while (1) {
         next.tv_nsec += period_ns;
         while (next.tv_nsec >= 1000000000) {
@@ -130,16 +132,12 @@ static void *heartbeat_main(void *arg) {
         }
         if (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL) != 0)
             continue;
-        // XMOS heartbeat at offset 2296 (display input status). Increment
-        // in hw before the tick so the post-barrier memcpy delivers it
-        // into Move's shadow on the next ioctl.
         if (g_sim.hw) {
-            uint32_t *xmos_hb = (uint32_t *)(g_sim.hw + 2296);
-            *xmos_hb = ++xmos_counter;
+            chunk_idx = (chunk_idx % 6) + 1;  // 1, 2, 3, 4, 5, 6, 1, ...
+            *(uint32_t *)(g_sim.hw + 2296) = chunk_idx;
         }
         char b = 1;
         if (write(g_sim.tick_pipe[1], &b, 1) != 1) {
-            // Pipe closed or full beyond recovery — exit thread.
             return NULL;
         }
     }
