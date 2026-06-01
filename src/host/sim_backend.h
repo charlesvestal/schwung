@@ -44,6 +44,13 @@ int schwung_sim_ioctl_wait(void);
 // (EBADF before open, EPIPE if the daemon has closed the write end).
 int schwung_sim_wait_for_tick(void);
 
+// Start a heartbeat thread that pulses the tick fd at the SPI frame rate
+// (~344 Hz, matching 128 samples @ 44.1 kHz). Used by Sim B so Move's audio
+// thread advances even with no external audio bridge driving the mailbox.
+// Idempotent — second call is a no-op. Returns 0 on success, -1 if the
+// pipe isn't ready or pthread_create fails.
+int schwung_sim_start_heartbeat(void);
+
 // Tear down: close the fd, free hw. shadow buffer remains (static). Safe to
 // call multiple times. Mostly useful for tests.
 void schwung_sim_close(void);
