@@ -2378,6 +2378,7 @@ void shadow_inprocess_handle_param_request(void) {
                 strcmp(param_key, "link_audio_routing") == 0 ||
                 strcmp(param_key, "link_audio_publish") == 0 ||
                 strcmp(param_key, "latency_comp_enabled") == 0 ||
+                strcmp(param_key, "speaker_eq_mode") == 0 ||
                 strcmp(param_key, "system_link_enabled") == 0 ||
                 strncmp(param_key, "jack:", 5) == 0 ||
                 strcmp(param_key, "suspend_overtake") == 0) {

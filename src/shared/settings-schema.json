@@ -15,6 +15,8 @@
       { "key": "link_audio_routing", "label": "Move->Schwung", "type": "bool" },
       { "key": "link_audio_publish", "label": "Schwung->Link", "type": "bool" },
       { "key": "latency_comp_enabled", "label": "Latency Comp", "type": "bool" },
+      { "key": "speaker_eq_mode", "label": "Move Spkr EQ", "type": "enum",
+        "options": ["Auto", "Off", "On"], "values": ["auto", "off", "on"] },
       { "key": "resample_bridge", "label": "Sample Source", "type": "enum",
         "options": ["Native", "Schwung Mix"], "values": [0, 2] },
       { "key": "skipback_shortcut", "label": "Skipback", "type": "enum",
