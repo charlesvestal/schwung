@@ -858,6 +858,8 @@ const GLOBAL_SETTINGS_SECTIONS = [
             { key: "link_audio_routing", label: "Move->Schwung", type: "bool" },
             { key: "link_audio_publish", label: "Schwung->Link", type: "bool" },
             { key: "latency_comp_enabled", label: "Latency Comp", type: "bool" },
+            { key: "speaker_eq_mode", label: "Move Spkr EQ", type: "enum",
+              options: ["Auto", "Off", "On"], values: ["auto", "off", "on"] },
             { key: "resample_bridge", label: "Sample Src", type: "enum",
               options: ["Native", "Schwung Mix"], values: [0, 2] },
             { key: "skipback_shortcut", label: "Skipback", type: "enum",
@@ -10987,6 +10989,10 @@ function getMasterFxSettingValue(setting) {
         const mode = parseResampleBridgeMode(modeRaw);
         return RESAMPLE_BRIDGE_LABEL_BY_MODE[mode] || "Off";
     }
+    if (setting.key === "speaker_eq_mode") {
+        const v = shadow_get_param(0, "master_fx:speaker_eq_mode");
+        return v === "off" ? "Off" : (v === "on" ? "On" : "Auto");
+    }
     if (setting.key === "overlay_knobs") {
         const mode = typeof overlay_knobs_get_mode === "function" ? overlay_knobs_get_mode() : 0;
         return ["+Shift", "+Jog Touch", "Off", "Native"][mode] || "+Shift";
@@ -11123,6 +11129,27 @@ function adjustMasterFxSetting(setting, delta) {
             warningLines = wrapText("Replaces Mic and Line-in with ME + Move Audio", 18);
             warningActive = true;
         }
+        return;
+    }
+    if (setting.key === "speaker_eq_mode") {
+        const values = (Array.isArray(setting.values) && setting.values.length > 0)
+            ? setting.values : ["auto", "off", "on"];
+        const current = shadow_get_param(0, "master_fx:speaker_eq_mode") || "auto";
+        let idx = values.indexOf(current);
+        if (idx < 0) idx = 0;
+        const next = values[(idx + (delta > 0 ? 1 : values.length - 1)) % values.length];
+        shadow_set_param(0, "master_fx:speaker_eq_mode", next); /* live */
+        /* Persist to features.json so the shim reads it at next boot — this is
+         * what makes "Off" a guarantee through the boot window. */
+        try {
+            const fp = "/data/UserData/schwung/config/features.json";
+            const raw = (typeof host_read_file === "function") ? host_read_file(fp) : null;
+            const obj = raw ? JSON.parse(raw) : {};
+            obj.speaker_eq_mode = next;
+            if (typeof host_write_file === "function") {
+                host_write_file(fp, JSON.stringify(obj, null, 2));
+            }
+        } catch (e) { /* non-fatal: live param already applied */ }
         return;
     }
 
