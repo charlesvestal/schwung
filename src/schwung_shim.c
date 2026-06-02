@@ -194,6 +194,48 @@ static biquad_t crossover_hp_coefs;  /* unused — reserved */
 static biquad_t crossover_hp_state[SPEAKER_EQ_NUM_CHANNELS];
 static int speaker_eq_initialized = 0;
 
+/* Jack-state robustness for the speaker EQ (2026-06-02).
+ * The EQ must NEVER color headphone/line-out output. shadow_speaker_active by
+ * itself is untrustworthy at boot and at song/set load: XMOS can broadcast a
+ * transient or uncorrected CC 115 val=0 ("speaker") while headphones are
+ * actually plugged, latching the EQ onto the headphone DAC path (the
+ * hollow/distorted bug) until a physical replug sends a corrective val=127.
+ *
+ * Fix: bias hard toward EQ-OFF (per user: "less bass on speakers" is far
+ * better than "hollow audio on headphones"). Only trust a speaker reading
+ * (CC 115 val=0) if we have already seen a jack-inserted reading (val=127)
+ * earlier this session — i.e. a genuine headphones→speaker transition while
+ * running. A bare boot/song-load val=0 (no prior val=127) is NOT trusted, so
+ * the EQ stays off. This needs no timers and has no timing hole: it does not
+ * matter WHEN the stray val=0 arrives.
+ *
+ * Trade-off: a device that only ever uses the built-in speaker (never inserts
+ * a jack) runs without the enhancer EQ until a jack is plugged+unplugged once.
+ * Deliberately accepted; users can force via the "speaker_eq_mode" setting. */
+/* Speaker-EQ mode, from config/features.json "speaker_eq_mode":
+ *   0 = auto (default) — jack-detected, stable-debounced (below)
+ *   1 = off            — EQ never applies (bulletproof for headphone/line-in)
+ *   2 = on             — EQ always applies (under rebuild_from_la)
+ * "off" guarantees no hollow regardless of what XMOS reports. */
+static int speaker_eq_mode = 0;
+/* Auto-mode stability: engage the EQ only when the jack has read speaker
+ * (CC 115 val=0) continuously for SPK_EQ_STABLE_SEC. A val=127 (jack inserted)
+ * flips us out of speaker instantly. This rejects transients and contact
+ * bounce (e.g. the 127→0→127 we observed on replug) and a transient boot
+ * val=0 that's quickly corrected, while still restoring the EQ for a genuine
+ * built-in-speaker session. A truly stuck wrong val=0 would still engage after
+ * the window — that case is what mode "off" is for. */
+#define SPK_EQ_STABLE_SEC 3.0
+static struct timespec spk_eq_speaker_since;  /* when speaker state last became true */
+static int spk_eq_speaker_stable(void) {
+    if (!(shadow_speaker_active && shadow_speaker_active_known)) return 0;
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    double el = (double)(now.tv_sec - spk_eq_speaker_since.tv_sec)
+              + (double)(now.tv_nsec - spk_eq_speaker_since.tv_nsec) / 1e9;
+    return el >= SPK_EQ_STABLE_SEC;
+}
+
 static inline float waveshaper_poly(float x)
 {
     /* y = c1*x + c2*x^2 + c3*x^3 + c4*x^4 + c5*x^5 using Horner's method. */
@@ -1012,6 +1054,19 @@ static void load_feature_config(void)
                 if (parsed > SKIPBACK_MAX_SECONDS) parsed = SKIPBACK_MAX_SECONDS;
                 skipback_seconds_setting = parsed;
             }
+        }
+    }
+
+    /* Parse speaker_eq_mode ("auto" | "off" | "on"; default "auto"). */
+    const char *spk_eq_key = strstr(config_buf, "\"speaker_eq_mode\"");
+    if (spk_eq_key) {
+        const char *colon = strchr(spk_eq_key, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ' || *colon == '\t' || *colon == '"') colon++;
+            if (strncmp(colon, "off", 3) == 0)      speaker_eq_mode = 1;
+            else if (strncmp(colon, "on", 2) == 0)  speaker_eq_mode = 2;
+            else                                    speaker_eq_mode = 0; /* auto */
         }
     }
 
@@ -2464,9 +2519,14 @@ skip_la_rebuild:
      * applied — phasey/hollow audio that only resolves on jack replug.
      * XMOS broadcasts CC 115 within ~180ms of shim init at every boot, so the
      * gate clears almost immediately on a real session. */
-    if (rebuild_from_la && shadow_speaker_active && shadow_speaker_active_known
-        && speaker_eq_initialized) {
-        speaker_eq_process(mailbox_audio, FRAMES_PER_BLOCK);
+    {
+        int eq_on;
+        if (speaker_eq_mode == 1)      eq_on = 0;                      /* OFF  */
+        else if (speaker_eq_mode == 2) eq_on = 1;                      /* ON   */
+        else                           eq_on = spk_eq_speaker_stable(); /* AUTO */
+        if (rebuild_from_la && speaker_eq_initialized && eq_on) {
+            speaker_eq_process(mailbox_audio, FRAMES_PER_BLOCK);
+        }
     }
 
     /* Poll sampler commands from shadow UI (via shared memory) */
@@ -3804,6 +3864,34 @@ static int shim_handle_param_special(uint8_t req_type, uint32_t req_id) {
             }
             return 1;
         }
+        /* master_fx:speaker_eq_mode — "auto" | "off" | "on". Applies live so
+         * the Global Settings menu / web manager toggle takes effect without a
+         * reboot. Persisted to features.json by the UI for boot-time load. */
+        if (strcmp(fx_key, "speaker_eq_mode") == 0) {
+            if (req_type == 1) {
+                const char *v = shadow_param->value;
+                int m = 0; /* auto */
+                if (strncmp(v, "off", 3) == 0)      m = 1;
+                else if (strncmp(v, "on", 2) == 0)  m = 2;
+                else                                m = 0;
+                speaker_eq_mode = m;
+                {
+                    static const char *names[] = {"auto", "off", "on"};
+                    char msg[64];
+                    snprintf(msg, sizeof(msg), "Speaker EQ mode: %s", names[m]);
+                    shadow_log(msg);
+                }
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
+            } else if (req_type == 2) {
+                static const char *names[] = {"auto", "off", "on"};
+                int m = (speaker_eq_mode >= 0 && speaker_eq_mode <= 2) ? speaker_eq_mode : 0;
+                shadow_param->result_len = snprintf(shadow_param->value,
+                    SHADOW_PARAM_VALUE_LEN, "%s", names[m]);
+                shadow_param->error = 0;
+            }
+            return 1;
+        }
         /* master_fx:latency_comp_enabled — user toggle. Applies
          * immediately; the brief ~9 ms transition artifact (audio hole on
          * OFF→ON, duplicate on ON→OFF) is accepted as a known cost of
@@ -3971,6 +4059,9 @@ static void shim_init_subsystems(void)
         shadow_control->shadow_ui_trigger = shadow_ui_trigger_setting;
         shadow_control->midi_indicator_enabled = midi_indicator_enabled_setting ? 1 : 0;
         shadow_control->speaker_active = 1; /* assume speaker at boot; CC 115 will correct */
+        /* Speaker-EQ auto stability clock starts now; EQ stays off until a
+         * speaker reading has been stable for SPK_EQ_STABLE_SEC. */
+        clock_gettime(CLOCK_MONOTONIC, &spk_eq_speaker_since);
         shadow_control->line_in_connected = 0; /* assume internal mic at boot; CC 114 will correct */
     }
 
@@ -6244,11 +6335,18 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
 
             if (d1 == CC_LINE_OUT_DETECT) {
                 int new_speaker = (d2 == 0) ? 1 : 0;
+                int prev_known_speaker = shadow_speaker_active && shadow_speaker_active_known;
                 shadow_speaker_active_known = 1;
                 if (new_speaker != shadow_speaker_active) {
                     shadow_speaker_active = new_speaker;
                     if (shadow_control) shadow_control->speaker_active = (uint8_t)new_speaker;
                     memset(speaker_eq_state, 0, sizeof(speaker_eq_state));
+                }
+                /* Auto-mode stability: restart the speaker stability clock when
+                 * we newly enter the speaker state, so only a stable speaker
+                 * reading engages the EQ (transients/bounce do not). */
+                if (new_speaker && !prev_known_speaker) {
+                    clock_gettime(CLOCK_MONOTONIC, &spk_eq_speaker_since);
                 }
             } else if (d1 == CC_MIC_IN_DETECT) {
                 int new_line_in = (d2 == 0) ? 0 : 1;  /* d2=0 → no cable (internal mic); d2=127 → cable plugged */
@@ -6285,16 +6383,17 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                  * speaker vs headphone logic is inverted. */
                 if (d1 == CC_LINE_OUT_DETECT) {
                     int new_speaker = (d2 == 0) ? 1 : 0;  /* val=0 → speaker active; val=127 → jack inserted */
+                    int prev_known_speaker = shadow_speaker_active && shadow_speaker_active_known;
                     if (new_speaker != shadow_speaker_active) {
                         shadow_speaker_active = new_speaker;
                         if (shadow_control) shadow_control->speaker_active = (uint8_t)new_speaker;
                         /* Reset filter state on output switch to avoid thump */
                         memset(speaker_eq_state, 0, sizeof(speaker_eq_state));
-                        char msg[64];
-                        snprintf(msg, sizeof(msg),
-                                 "CC 115 line-out detect: val=%d → speaker_active=%d",
-                                 d2, new_speaker);
-                        shadow_log(msg);
+                    }
+                    /* Auto-mode stability: restart the speaker stability clock on
+                     * a new entry into the speaker state. */
+                    if (new_speaker && !prev_known_speaker) {
+                        clock_gettime(CLOCK_MONOTONIC, &spk_eq_speaker_since);
                     }
                 }
 
