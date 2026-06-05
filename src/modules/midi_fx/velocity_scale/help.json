@@ -1,0 +1,79 @@
+{
+  "title": "Velocity Scale",
+  "children": [
+    {
+      "title": "Overview",
+      "lines": [
+        "Maps incoming note",
+        "velocities into a",
+        "target range, with",
+        "an optional MPC-",
+        "style curve.",
+        "",
+        "A chain MIDI FX:",
+        "shapes how hard you",
+        "hit pads to reach a",
+        "given velocity."
+      ]
+    },
+    {
+      "title": "Controls",
+      "lines": [
+        "Knob 1: Min",
+        " lowest output vel",
+        "Knob 2: Max",
+        " highest output vel",
+        "Knob 3: Curve",
+        " bend soft<->hard",
+        "",
+        "Min/Max set the",
+        "output range,",
+        "1 to 127.",
+        "",
+        "Curve Preset picks a",
+        "named curve:",
+        " Linear, Soft,",
+        " Softer, Hard,",
+        " Harder."
+      ]
+    },
+    {
+      "title": "MPC Curve",
+      "lines": [
+        "Curve (-100..+100)",
+        "adds an MPC-style",
+        "power curve on top",
+        "of the Min/Max",
+        "scaling.",
+        "",
+        "Positive: soft hits",
+        "get louder - easier",
+        "to play loud.",
+        "",
+        "Negative: needs",
+        "harder hits to get",
+        "loud.",
+        "",
+        "Curve 0 = off (pure",
+        "linear). Endpoints",
+        "(1 and 127) always",
+        "stay exact."
+      ]
+    },
+    {
+      "title": "MIDI",
+      "lines": [
+        "Processes Note On",
+        "velocity only.",
+        "",
+        "Note Off (vel 0) is",
+        "never changed.",
+        "",
+        "Order: curve, then",
+        "linear scale, then",
+        "round + clamp to",
+        "1-127."
+      ]
+    }
+  ]
+}
