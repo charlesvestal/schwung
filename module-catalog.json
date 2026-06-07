@@ -957,6 +957,17 @@
       "default_branch": "master",
       "asset_name": "helm-module.tar.gz",
       "min_host_version": "0.8.8"
+    },
+    {
+      "id": "fork",
+      "name": "Fork",
+      "description": "MIDI channel splitter and router module",
+      "author": "andree182",
+      "component_type": "midi_fx",
+      "github_repo": "andree182/schwung-fork",
+      "default_branch": "master",
+      "asset_name": "fork-module.tar.gz",
+      "min_host_version": "0.8.8"
     }
   ]
 }
