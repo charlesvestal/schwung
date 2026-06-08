@@ -43,7 +43,7 @@ static inline uint32_t os_tid(void) { return (uint32_t)(uintptr_t)pthread_self()
 
 #define TRACE_TOUCH_FILE   "/data/UserData/schwung/otlp_trace_on"
 #define TRACE_DIR          "/data/UserData/schwung/traces"
-#define TRACE_FILE_FMT     TRACE_DIR "/schwung-%s.otlp.jsonl"
+/* output file: <TRACE_DIR>/<service>-YYYYMMDD-HHMMSS.otlp.jsonl (see open_outfile) */
 #define TRACE_ROTATE_BYTES (8 * 1024 * 1024)
 #define TRACE_MAX_FILES    16              /* keep at most this many trace files */
 #define TRACE_EXPORT_SLEEP_US 50000        /* 50 ms drain cadence */
@@ -120,6 +120,23 @@ uint32_t schwung_trace_intern(const char *name) {
      * never sees the id published with a stale/NULL pointer (ARM64 reorders). */
     atomic_store_explicit(&g_names[idx], name, memory_order_release);
     return idx + 1;                                /* ids are 1-based */
+}
+
+/* Copy-interning for non-static names (e.g. from JS). Dedups by string so a
+ * repeated JS span name reuses its id. Not RT-safe (strdup). */
+uint32_t schwung_trace_intern_copy(const char *name) {
+    if (!name || !*name) return 1;
+    uint32_t nc = atomic_load_explicit(&g_name_count, memory_order_acquire);
+    if (nc > TRACE_MAX_NAMES) nc = TRACE_MAX_NAMES;
+    for (uint32_t i = 0; i < nc; i++) {
+        const char *p = atomic_load_explicit(&g_names[i], memory_order_acquire);
+        if (p && strcmp(p, name) == 0) return i + 1;   /* already interned */
+    }
+    uint32_t idx = atomic_fetch_add_explicit(&g_name_count, 1, memory_order_relaxed);
+    if (idx >= TRACE_MAX_NAMES) return 1;
+    char *dup = strdup(name);                          /* process-lifetime; intentional */
+    atomic_store_explicit(&g_names[idx], dup ? dup : "?", memory_order_release);
+    return idx + 1;
 }
 
 /* ---- Ring push (hot path; SPSC, this thread only) ------------------- */
@@ -217,17 +234,21 @@ static FILE  *g_out = NULL;
 static long   g_out_bytes = 0;
 
 /* Keep at most TRACE_MAX_FILES trace files: unlink the oldest before opening a
- * new one. Filenames are schwung-YYYYMMDD-HHMMSS.otlp.jsonl, so lexicographic
+ * new one. Filenames are <service>-YYYYMMDD-HHMMSS.otlp.jsonl, so lexicographic
  * order == chronological order. Bounds disk use even if the touch-file is left
  * on for days (/data is ~49 GB but not infinite). */
 static void prune_old_files(void) {
     DIR *d = opendir(TRACE_DIR);
     if (!d) return;
-    char names[64][48];
+    /* Only our own service's files — each exporter (shim, shadow_ui) prunes its
+     * own, so two exporters in the same dir never race on each other's unlinks. */
+    char prefix[80];
+    int plen = snprintf(prefix, sizeof(prefix), "%s-", g_service);
+    char names[64][64];
     int count = 0;
     struct dirent *de;
     while ((de = readdir(d)) != NULL && count < 64) {
-        if (strncmp(de->d_name, "schwung-", 8) == 0 &&
+        if (strncmp(de->d_name, prefix, (size_t)plen) == 0 &&
             strstr(de->d_name, ".otlp.jsonl") != NULL) {
             snprintf(names[count], sizeof(names[count]), "%s", de->d_name);
             count++;
@@ -236,7 +257,7 @@ static void prune_old_files(void) {
     closedir(d);
     /* insertion sort ascending (oldest first) */
     for (int i = 1; i < count; i++) {
-        char key[48];
+        char key[64];
         snprintf(key, sizeof(key), "%s", names[i]);
         int j = i - 1;
         while (j >= 0 && strcmp(names[j], key) > 0) {
@@ -257,11 +278,11 @@ static void open_outfile(void) {
     if (mkdir(TRACE_DIR, 0755) != 0 && errno != EEXIST)
         unified_log("trace", LOG_LEVEL_ERROR, "mkdir %s failed: errno %d", TRACE_DIR, errno);
     prune_old_files();
-    char path[256], stamp[32];
+    char path[320], stamp[32];
     time_t now = time(NULL);
     struct tm tmv; localtime_r(&now, &tmv);
     strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &tmv);
-    snprintf(path, sizeof(path), TRACE_FILE_FMT, stamp);
+    snprintf(path, sizeof(path), "%s/%s-%s.otlp.jsonl", TRACE_DIR, g_service, stamp);
     g_out = fopen(path, "w");
     if (!g_out)
         unified_log("trace", LOG_LEVEL_ERROR, "fopen %s failed: errno %d", path, errno);

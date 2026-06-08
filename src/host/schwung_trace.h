@@ -61,8 +61,14 @@ void schwung_trace_shutdown(void);
 extern _Atomic int schwung_trace_on;
 
 /* Intern a span-name string literal → stable id (>= 1). Called once per
- * call site via the macros; not on the hot path after the first hit. */
+ * call site via the macros; not on the hot path after the first hit.
+ * The literal pointer is stored as-is (static lifetime assumed). */
 uint32_t schwung_trace_intern(const char *name);
+
+/* Like intern, but COPIES the name (strdup, deduped) — for non-static names
+ * such as strings coming from JS. Not RT-safe (allocates); call only from
+ * non-RT threads (e.g. the shadow_ui main loop / JS bindings). */
+uint32_t schwung_trace_intern_copy(const char *name);
 
 /* Hot-path primitives. begin returns {0} immediately when off. */
 trace_handle_t schwung_trace_begin(uint32_t name_id);
