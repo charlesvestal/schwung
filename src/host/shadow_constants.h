@@ -344,6 +344,10 @@ typedef struct shadow_param_t {
     volatile uint32_t request_id;    /* Monotonic request ID assigned by shadow UI */
     volatile uint32_t response_id;   /* Request ID this response corresponds to */
     volatile int32_t result_len;     /* Length of result, -1 on error */
+    /* OTLP trace context (Phase 2b): shadow_ui stamps the open param.get span so
+     * the shim can emit param.serve as its child. 0 = untraced. */
+    volatile uint64_t trace_id;
+    volatile uint64_t parent_span_id;
     char key[SHADOW_PARAM_KEY_LEN];
     char value[SHADOW_PARAM_VALUE_LEN];
 } shadow_param_t;

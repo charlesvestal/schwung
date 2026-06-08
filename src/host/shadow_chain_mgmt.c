@@ -19,6 +19,7 @@
 #include "shadow_state.h"
 #include "shadow_midi.h"
 #include "unified_log.h"
+#include "schwung_trace.h"   /* Phase 2b: emit param.serve as a child of the JS param.get span */
 
 /* ============================================================================
  * Globals
@@ -2256,6 +2257,16 @@ void shadow_master_fx_lfo_tick(int frames) {
     }
 }
 
+/* param.serve span context: emitted on every return path of the handler below
+ * via __attribute__((cleanup)), parented to the JS param.get span propagated
+ * through the param SHM. No-op when tracing is off (ps.on == 0). */
+typedef struct { uint32_t nid; int on; uint64_t t0, trace_id, parent_id; } pserve_span_t;
+static void pserve_emit(pserve_span_t *ps) {
+    if (ps->on)
+        schwung_trace_span_explicit(ps->nid, ps->t0, schwung_trace_now_ns(),
+                                    ps->trace_id, ps->parent_id);
+}
+
 void shadow_inprocess_handle_param_request(void) {
     shadow_param_t *shadow_param = host.shadow_param_ptr ? *host.shadow_param_ptr : NULL;
     if (!shadow_param) return;
@@ -2263,6 +2274,19 @@ void shadow_inprocess_handle_param_request(void) {
     uint8_t req_type = shadow_param->request_type;
     if (req_type == 0) return;
     uint32_t req_id = shadow_param->request_id;
+
+    /* Span the actual servicing of this request (all return paths below),
+     * correlated to the JS param.get span via the SHM-propagated context. */
+    pserve_span_t _ps __attribute__((cleanup(pserve_emit))) = {0, 0, 0, 0, 0};
+    if (atomic_load_explicit(&schwung_trace_on, memory_order_relaxed)) {
+        static uint32_t s_pserve_nid = 0;       /* SPI thread only → no init race */
+        if (!s_pserve_nid) s_pserve_nid = schwung_trace_intern("param.serve");
+        _ps.nid       = s_pserve_nid;
+        _ps.trace_id  = shadow_param->trace_id;
+        _ps.parent_id = shadow_param->parent_span_id;
+        _ps.t0        = schwung_trace_now_ns();
+        _ps.on        = 1;
+    }
 
     /* Handle shim-specific params (jack:*, suspend_overtake, passthrough) */
     if (host.handle_param_special) {

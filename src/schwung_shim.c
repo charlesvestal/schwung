@@ -4598,10 +4598,10 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     TIME_SECTION_END(spi_ui_req_sum, spi_ui_req_max);
 
     TIME_SECTION_START();
-    { TRACE_SCOPE("param.serve");
-      shadow_inprocess_handle_param_request();
-      shadow_drain_web_param_set();  /* Web UI fire-and-forget param sets */
-    }
+    /* param.serve span is emitted inside the handler, parented to the JS
+     * param.get span via the SHM-propagated trace context (Phase 2b). */
+    shadow_inprocess_handle_param_request();
+    shadow_drain_web_param_set();  /* Web UI fire-and-forget param sets */
     TIME_SECTION_END(spi_param_req_sum, spi_param_req_max);
 
     /* Forward CC/pitch bend/aftertouch from external MIDI to MIDI_OUT so DSP

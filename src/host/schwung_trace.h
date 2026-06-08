@@ -74,6 +74,15 @@ uint32_t schwung_trace_intern_copy(const char *name);
 trace_handle_t schwung_trace_begin(uint32_t name_id);
 void           schwung_trace_end(trace_handle_t *h);
 
+/* Monotonic clock in ns (CLOCK_MONOTONIC_RAW) — same timebase as span stamps. */
+uint64_t schwung_trace_now_ns(void);
+
+/* Read the currently-open span's context (top of this thread's stack) for
+ * cross-process propagation. Writes 0/0 when no span is open. The (trace_id,
+ * span_id) pair is what a remote process passes to schwung_trace_span_explicit
+ * as (trace_id, parent_id) to make its span a child of this one. */
+void schwung_trace_current(uint64_t *trace_id, uint64_t *span_id);
+
 /* ---- Phase 2: cross-process / JS bridge (declared, not yet wired) --- *
  * A JS (QuickJS) binding will push a pre-timed span into the shared ring
  * so shadow_ui / ion spans correlate with the shim's. */
