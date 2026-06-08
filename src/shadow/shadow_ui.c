@@ -32,6 +32,7 @@
 #include "host/shadow_midi_inject_writer.h"
 #include "../host/unified_log.h"
 #include "../host/analytics.h"
+#include "host/schwung_trace.h"   /* Phase 2: JS-side OTLP spans (js.tick, param.get) */
 
 #define SAMPLER_CMD_PATH "/data/UserData/schwung/sampler_cmd_path.txt"
 
@@ -725,6 +726,12 @@ static JSValue js_shadow_get_param(JSContext *ctx, JSValueConst this_val, int ar
 
     const char *key = JS_ToCString(ctx, argv[1]);
     if (!key) return JS_NULL;
+
+    /* Span the synchronous round-trip (busy-wait to the shim, serviced once per
+     * SPI frame). Correlates on the timeline with the shim's param.serve span —
+     * this is the "where does the tick time go" measurement. Closes on every
+     * return below via cleanup. */
+    TRACE_SCOPE("param.get");
 
     if (!shadow_param_wait_idle(SHADOW_PARAM_DEFAULT_TIMEOUT_MS)) {
         JS_FreeCString(ctx, key);
@@ -2109,6 +2116,34 @@ static JSValue js_exit(JSContext *ctx, JSValueConst this_val, int argc, JSValueC
     return JS_UNDEFINED;
 }
 
+/* === OTLP tracing bindings (Phase 2) ===
+ * host_trace_begin(name) -> handle (a span_id number; 0 when tracing is off)
+ * host_trace_end(handle)  -> closes the span opened by host_trace_begin.
+ * Single-threaded shadow_ui → the per-thread span stack nests correctly, so
+ * spans opened inside the C js.tick scope become its children. A forgotten
+ * end() can't corrupt the stack (schwung_trace_end unwinds to the matching id).
+ * Off by default; enabled by the same touch-file as the shim's spans. */
+static JSValue js_host_trace_begin(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !atomic_load_explicit(&schwung_trace_on, memory_order_relaxed))
+        return JS_NewInt64(ctx, 0);
+    const char *name = JS_ToCString(ctx, argv[0]);
+    if (!name) return JS_NewInt64(ctx, 0);
+    trace_handle_t h = schwung_trace_begin(schwung_trace_intern_copy(name));
+    JS_FreeCString(ctx, name);
+    return JS_NewInt64(ctx, (int64_t)h.span_id);
+}
+
+static JSValue js_host_trace_end(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1) return JS_UNDEFINED;
+    int64_t sid = 0;
+    if (JS_ToInt64(ctx, &sid, argv[0]) || sid == 0) return JS_UNDEFINED;
+    trace_handle_t h = { (uint64_t)sid };
+    schwung_trace_end(&h);
+    return JS_UNDEFINED;
+}
+
 static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JSRuntime *rt = JS_NewRuntime();
     if (!rt) exit(2);
@@ -2179,6 +2214,10 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_param", JS_NewCFunction(ctx, js_shadow_set_param, "shadow_set_param", 3));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_param_timeout", JS_NewCFunction(ctx, js_shadow_set_param_timeout, "shadow_set_param_timeout", 4));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_param", JS_NewCFunction(ctx, js_shadow_get_param, "shadow_get_param", 2));
+
+    /* OTLP tracing (Phase 2) */
+    JS_SetPropertyStr(ctx, global_obj, "host_trace_begin", JS_NewCFunction(ctx, js_host_trace_begin, "host_trace_begin", 1));
+    JS_SetPropertyStr(ctx, global_obj, "host_trace_end", JS_NewCFunction(ctx, js_host_trace_end, "host_trace_end", 1));
 
     /* Register MIDI output functions for overtake modules */
     JS_SetPropertyStr(ctx, global_obj, "move_midi_external_send", JS_NewCFunction(ctx, js_move_midi_external_send, "move_midi_external_send", 1));
@@ -2336,6 +2375,12 @@ int main(int argc, char *argv[]) {
     shadow_ui_log_line("shadow_ui: shared memory open");
     shadow_ui_write_pid();
 
+    /* OTLP tracing (Phase 2): own process-local ring + exporter, off unless the
+     * touch-file is present. Distinct service name → its own traces file; the
+     * shim's spans share the system-wide CLOCK_MONOTONIC_RAW timebase, so both
+     * align sub-ms on one Tempo timeline. */
+    schwung_trace_init("schwung-shadow-ui");
+
     /* Initialize analytics */
     {
         char version[32] = "unknown";
@@ -2416,10 +2461,13 @@ int main(int argc, char *argv[]) {
         }
 
         if (jsTickIsDefined) {
+            TRACE_SCOPE("js.tick");   /* root span; param.get etc. nest under it */
             callGlobalFunction(ctx, &JSTick, 0);
         }
 
         refresh_counter++;
+        /* Poll the trace touch-file off the hot loop (~once/sec at 60 Hz). */
+        if ((refresh_counter & 0x3F) == 0) schwung_trace_poll_enable();
         if ((js_display_screen_dirty || (refresh_counter % 30 == 0)) && shadow_display_shm) {
             js_display_pack(packed_buffer);
             memcpy(shadow_display_shm, packed_buffer, DISPLAY_BUFFER_SIZE);
