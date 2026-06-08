@@ -85,6 +85,14 @@ static _Atomic uint32_t g_name_count = 0;
 static _Atomic uint64_t g_span_seq  = 0;
 static _Atomic uint64_t g_trace_seq = 0;
 
+/* Per-PROCESS random base for span/trace ids. Span and trace ids must be unique
+ * across processes (shim + shadow_ui) so a correlated trace doesn't get two
+ * spans with the same id, and two unrelated traces don't share a trace_id and
+ * get merged. The id is base + counter; with a 64-bit random base per process,
+ * cross-process collision is negligible. Seeded in init from pid + clocks. */
+static uint64_t g_span_base  = 0;
+static uint64_t g_trace_base = 0;
+
 static char        g_service[64] = "schwung";
 static int         g_inited = 0;        /* set in constructor before any RT thread */
 static pthread_t   g_exporter;
@@ -110,6 +118,32 @@ static inline uint64_t real_ns(void) {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+uint64_t schwung_trace_now_ns(void) { return mono_ns(); }
+
+static uint64_t splitmix64(uint64_t x) {
+    x += 0x9E3779B97F4A7C15ull;
+    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull;
+    x = (x ^ (x >> 27)) * 0x94D049BB133111EBull;
+    return x ^ (x >> 31);
+}
+
+/* Salted, globally-unique span/trace ids (see g_span_base). Never 0. */
+static inline uint64_t next_span_id(void) {
+    return g_span_base + atomic_fetch_add_explicit(&g_span_seq, 1, memory_order_relaxed) + 1;
+}
+static inline uint64_t next_trace_id(void) {
+    return g_trace_base + atomic_fetch_add_explicit(&g_trace_seq, 1, memory_order_relaxed) + 1;
+}
+
+void schwung_trace_current(uint64_t *trace_id, uint64_t *span_id) {
+    if (t_depth > 0) {
+        if (trace_id) *trace_id = t_stack[t_depth - 1].trace_id;
+        if (span_id)  *span_id  = t_stack[t_depth - 1].span_id;
+    } else {
+        if (trace_id) *trace_id = 0;
+        if (span_id)  *span_id  = 0;
+    }
 }
 
 /* ---- Name interning: store the literal pointer, lock-free ----------- */
@@ -163,9 +197,9 @@ trace_handle_t schwung_trace_begin(uint32_t name_id) {
         return (trace_handle_t){0};
     if (t_depth >= TRACE_MAX_DEPTH || t_depth < 0)
         return (trace_handle_t){0};                /* nesting overflow → skip */
-    uint64_t sid = atomic_fetch_add_explicit(&g_span_seq, 1, memory_order_relaxed) + 1;
+    uint64_t sid = next_span_id();
     if (t_depth == 0)
-        t_traceid = atomic_fetch_add_explicit(&g_trace_seq, 1, memory_order_relaxed) + 1;
+        t_traceid = next_trace_id();
     trace_rec_t *r = &t_stack[t_depth];
     r->name_id   = name_id;
     r->span_id   = sid;
@@ -209,9 +243,8 @@ void schwung_trace_span_explicit(uint32_t name_id,
     trace_rec_t rec = {
         .name_id = name_id, .tid = t_tid,
         .t0_ns = t0_ns, .t1_ns = t1_ns,
-        .trace_id = trace_id ? trace_id
-                  : (atomic_fetch_add_explicit(&g_trace_seq, 1, memory_order_relaxed) + 1),
-        .span_id  = atomic_fetch_add_explicit(&g_span_seq, 1, memory_order_relaxed) + 1,
+        .trace_id  = trace_id ? trace_id : next_trace_id(),
+        .span_id   = next_span_id(),
         .parent_id = parent_id,
     };
     ring_push(&rec);
@@ -385,6 +418,11 @@ void schwung_trace_init(const char *service_name) {
     }
     g_mono0_ns = mono_ns();
     g_real0_ns = real_ns();
+    /* Per-process id bases (see g_span_base). Mix pid + both clocks so the shim
+     * and shadow_ui — started at different times — get distinct id spaces. */
+    uint64_t seed = g_real0_ns ^ (g_mono0_ns << 1) ^ ((uint64_t)getpid() << 32);
+    g_span_base  = splitmix64(seed) | 1ull;                 /* non-zero */
+    g_trace_base = splitmix64(seed ^ 0xD1B54A32D192ED03ull) | 1ull;
     g_inited = 1;
     /* Flush + join the exporter on normal process exit. No-op when tracing
      * was never enabled (exporter not running). Best-effort: skipped on

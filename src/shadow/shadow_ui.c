@@ -748,6 +748,13 @@ static JSValue js_shadow_get_param(JSContext *ctx, JSValueConst this_val, int ar
 
     JS_FreeCString(ctx, key);
 
+    /* Propagate the open param.get span as trace context so the shim emits its
+     * param.serve as our child (0/0 when tracing is off). */
+    uint64_t _tr = 0, _sp = 0;
+    schwung_trace_current(&_tr, &_sp);
+    shadow_param->trace_id = _tr;
+    shadow_param->parent_span_id = _sp;
+
     /* Set up request */
     shadow_param->slot = (uint8_t)slot;
     shadow_param->response_ready = 0;
@@ -2117,29 +2124,42 @@ static JSValue js_exit(JSContext *ctx, JSValueConst this_val, int argc, JSValueC
 }
 
 /* === OTLP tracing bindings (Phase 2) ===
- * host_trace_begin(name) -> handle (a span_id number; 0 when tracing is off)
+ * host_trace_begin(name) -> handle (small int; 0 when tracing is off / no slot)
  * host_trace_end(handle)  -> closes the span opened by host_trace_begin.
  * Single-threaded shadow_ui → the per-thread span stack nests correctly, so
  * spans opened inside the C js.tick scope become its children. A forgotten
  * end() can't corrupt the stack (schwung_trace_end unwinds to the matching id).
- * Off by default; enabled by the same touch-file as the shim's spans. */
+ * span_ids are 64-bit (process-salted) and don't fit a JS double, so handles
+ * are small indices into a table that holds the real span_id. Off by default. */
+#define JS_TRACE_MAX_OPEN 16
+static uint64_t js_trace_open[JS_TRACE_MAX_OPEN];   /* full span_id per slot; 0 = free */
+
 static JSValue js_host_trace_begin(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
     if (argc < 1 || !atomic_load_explicit(&schwung_trace_on, memory_order_relaxed))
-        return JS_NewInt64(ctx, 0);
+        return JS_NewInt32(ctx, 0);
     const char *name = JS_ToCString(ctx, argv[0]);
-    if (!name) return JS_NewInt64(ctx, 0);
+    if (!name) return JS_NewInt32(ctx, 0);
     trace_handle_t h = schwung_trace_begin(schwung_trace_intern_copy(name));
     JS_FreeCString(ctx, name);
-    return JS_NewInt64(ctx, (int64_t)h.span_id);
+    if (h.span_id == 0) return JS_NewInt32(ctx, 0);
+    for (int i = 0; i < JS_TRACE_MAX_OPEN; i++) {
+        if (js_trace_open[i] == 0) { js_trace_open[i] = h.span_id; return JS_NewInt32(ctx, i + 1); }
+    }
+    /* table full: span is open on the stack but unaddressable; an enclosing
+     * end() will unwind it. Return 0 so JS doesn't try to close it. */
+    return JS_NewInt32(ctx, 0);
 }
 
 static JSValue js_host_trace_end(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
     if (argc < 1) return JS_UNDEFINED;
-    int64_t sid = 0;
-    if (JS_ToInt64(ctx, &sid, argv[0]) || sid == 0) return JS_UNDEFINED;
-    trace_handle_t h = { (uint64_t)sid };
+    int32_t idx = 0;
+    if (JS_ToInt32(ctx, &idx, argv[0]) || idx <= 0 || idx > JS_TRACE_MAX_OPEN) return JS_UNDEFINED;
+    uint64_t sid = js_trace_open[idx - 1];
+    if (sid == 0) return JS_UNDEFINED;
+    js_trace_open[idx - 1] = 0;
+    trace_handle_t h = { sid };
     schwung_trace_end(&h);
     return JS_UNDEFINED;
 }
