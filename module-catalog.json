@@ -91,6 +91,17 @@
       "min_host_version": "0.3.0"
     },
     {
+      "id": "ottx",
+      "name": "OTTx",
+      "description": "3-band multiband upward+downward compressor (vitOTTx port)",
+      "author": "Matt Tytel (Vital DSP) · Yegor Suslin (vitOTT) · port: legsmechanical",
+      "component_type": "audio_fx",
+      "github_repo": "legsmechanical/schwung-ottx",
+      "default_branch": "main",
+      "asset_name": "ottx-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
       "id": "midiverb",
       "name": "Midiverb",
       "description": "Alesis Midiverb / Midifex / Midiverb II emulator (lo-fi 23.4 kHz reverb)",
