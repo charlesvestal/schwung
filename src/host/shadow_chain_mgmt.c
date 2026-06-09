@@ -2271,7 +2271,9 @@ void shadow_inprocess_handle_param_request(void) {
     shadow_param_t *shadow_param = host.shadow_param_ptr ? *host.shadow_param_ptr : NULL;
     if (!shadow_param) return;
 
-    uint8_t req_type = shadow_param->request_type;
+    /* Acquire-load pairs with shadow_ui's release-store of request_type, so
+     * the trace context (and key/value) it wrote first are visible here. */
+    uint8_t req_type = __atomic_load_n(&shadow_param->request_type, __ATOMIC_ACQUIRE);
     if (req_type == 0) return;
     uint32_t req_id = shadow_param->request_id;
 
@@ -2282,8 +2284,11 @@ void shadow_inprocess_handle_param_request(void) {
         static uint32_t s_pserve_nid = 0;       /* SPI thread only → no init race */
         if (!s_pserve_nid) s_pserve_nid = schwung_trace_intern("param.serve");
         _ps.nid       = s_pserve_nid;
-        _ps.trace_id  = shadow_param->trace_id;
-        _ps.parent_id = shadow_param->parent_span_id;
+        /* Only GET requests carry trace context — get_param stamps it. A SET
+         * leaves the SHM trace fields stale (from a prior GET), so ignore them
+         * and let param.serve be its own root rather than a phantom child. */
+        _ps.trace_id  = (req_type == 2) ? shadow_param->trace_id : 0;
+        _ps.parent_id = (req_type == 2) ? shadow_param->parent_span_id : 0;
         _ps.t0        = schwung_trace_now_ns();
         _ps.on        = 1;
     }

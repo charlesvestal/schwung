@@ -641,7 +641,9 @@ static int shadow_set_param_common(int slot, const char *key, const char *value,
     shadow_param->error = 0;
     shadow_param->response_id = 0;
     shadow_param->request_id = req_id;
-    shadow_param->request_type = 1;  /* SET */
+    /* Release-store the commit flag so the shim's acquire-load sees all the
+     * request fields written above (incl. trace context) before it acts. */
+    __atomic_store_n(&shadow_param->request_type, (uint8_t)1, __ATOMIC_RELEASE);  /* SET */
 
     /* In overtake module mode, keep this fire-and-forget so rapid encoder
      * streams do not block UI rendering. */
@@ -761,7 +763,9 @@ static JSValue js_shadow_get_param(JSContext *ctx, JSValueConst this_val, int ar
     shadow_param->error = 0;
     shadow_param->response_id = 0;
     shadow_param->request_id = req_id;
-    shadow_param->request_type = 2;  /* GET */
+    /* Release-store the commit flag so the shim's acquire-load sees trace_id /
+     * parent_span_id / key (written above) before it services this GET. */
+    __atomic_store_n(&shadow_param->request_type, (uint8_t)2, __ATOMIC_RELEASE);  /* GET */
 
     if (shadow_param_wait_response(req_id, SHADOW_PARAM_DEFAULT_TIMEOUT_MS) <= 0) {
         return JS_NULL;
@@ -2147,7 +2151,16 @@ static JSValue js_host_trace_begin(JSContext *ctx, JSValueConst this_val, int ar
         if (js_trace_open[i] == 0) { js_trace_open[i] = h.span_id; return JS_NewInt32(ctx, i + 1); }
     }
     /* table full: span is open on the stack but unaddressable; an enclosing
-     * end() will unwind it. Return 0 so JS doesn't try to close it. */
+     * end() will unwind (drop) it. Return 0 so JS doesn't try to close it.
+     * Warn once so the silent drop is diagnosable. */
+    static int warned_full = 0;
+    if (!warned_full) {
+        warned_full = 1;
+        unified_log("trace", LOG_LEVEL_WARN,
+                    "js_trace_open full (%d open) — JS span dropped; "
+                    "raise JS_TRACE_MAX_OPEN or check for missing host_trace_end",
+                    JS_TRACE_MAX_OPEN);
+    }
     return JS_NewInt32(ctx, 0);
 }
 
@@ -2503,6 +2516,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    schwung_trace_shutdown();   /* flush + stop the trace exporter (drain last spans) */
     js_std_free_handlers(rt);
     JS_FreeContext(ctx);
     JS_FreeRuntime(rt);

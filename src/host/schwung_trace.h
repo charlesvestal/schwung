@@ -65,9 +65,11 @@ extern _Atomic int schwung_trace_on;
  * The literal pointer is stored as-is (static lifetime assumed). */
 uint32_t schwung_trace_intern(const char *name);
 
-/* Like intern, but COPIES the name (strdup, deduped) — for non-static names
- * such as strings coming from JS. Not RT-safe (allocates); call only from
- * non-RT threads (e.g. the shadow_ui main loop / JS bindings). */
+/* Like intern, but COPIES the name (strndup, capped at 255, deduped) — for
+ * non-static names such as strings coming from JS. Not RT-safe (allocates).
+ * NOT thread-safe: the dedup scan + slot claim has a TOCTOU window, so call
+ * only from a SINGLE non-RT thread (today: the shadow_ui main loop / JS
+ * bindings). Concurrent callers can double-intern a name. */
 uint32_t schwung_trace_intern_copy(const char *name);
 
 /* Hot-path primitives. begin returns {0} immediately when off. */
@@ -83,9 +85,12 @@ uint64_t schwung_trace_now_ns(void);
  * as (trace_id, parent_id) to make its span a child of this one. */
 void schwung_trace_current(uint64_t *trace_id, uint64_t *span_id);
 
-/* ---- Phase 2: cross-process / JS bridge (declared, not yet wired) --- *
- * A JS (QuickJS) binding will push a pre-timed span into the shared ring
- * so shadow_ui / ion spans correlate with the shim's. */
+/* ---- Phase 2: cross-process correlation (WIRED) -------------------- *
+ * Emit a pre-timed span directly (no thread-stack push). Used by the shim's
+ * param.serve emission (shadow_chain_mgmt.c) parented to a trace context
+ * propagated from shadow_ui, and available to JS via host_trace_*. Pass
+ * trace_id/parent_id=0 to mint a fresh root. See docs/tracing.md and the
+ * host_trace_begin/end bindings in shadow_ui.c. */
 void schwung_trace_span_explicit(uint32_t name_id,
                                  uint64_t t0_ns, uint64_t t1_ns,
                                  uint64_t trace_id, uint64_t parent_id);
