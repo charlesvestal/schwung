@@ -168,7 +168,8 @@ uint32_t schwung_trace_intern_copy(const char *name) {
     }
     uint32_t idx = atomic_fetch_add_explicit(&g_name_count, 1, memory_order_relaxed);
     if (idx >= TRACE_MAX_NAMES) return 1;
-    char *dup = strdup(name);                          /* process-lifetime; intentional */
+    char *dup = strndup(name, 255);                    /* cap: a rogue JS name can't OOM;
+                                                        * process-lifetime, intentional */
     atomic_store_explicit(&g_names[idx], dup ? dup : "?", memory_order_release);
     return idx + 1;
 }
@@ -198,6 +199,9 @@ trace_handle_t schwung_trace_begin(uint32_t name_id) {
     if (t_depth >= TRACE_MAX_DEPTH || t_depth < 0)
         return (trace_handle_t){0};                /* nesting overflow → skip */
     uint64_t sid = next_span_id();
+    if (sid == 0)                                  /* salted base wrapped id to 0 →
+                                                    * would alias the off sentinel */
+        return (trace_handle_t){0};
     if (t_depth == 0)
         t_traceid = next_trace_id();
     trace_rec_t *r = &t_stack[t_depth];
@@ -322,21 +326,43 @@ static void open_outfile(void) {
     g_out_bytes = 0;
 }
 
+/* Minimal JSON string escaper → out (capacity cap, always NUL-terminated).
+ * Span names come from JS modules via host_trace_begin, so an unescaped name
+ * containing '"', '\\' or a control char would otherwise corrupt or forge
+ * the OTLP/JSONL output. Truncates safely if the escaped form won't fit. */
+static const char *json_escape(const char *in, char *out, int cap) {
+    int o = 0;
+    for (const unsigned char *p = (const unsigned char *)in; *p && o < cap - 7; p++) {
+        unsigned char c = *p;
+        if (c == '"' || c == '\\')  { out[o++] = '\\'; out[o++] = (char)c; }
+        else if (c == '\n')         { out[o++] = '\\'; out[o++] = 'n'; }
+        else if (c == '\r')         { out[o++] = '\\'; out[o++] = 'r'; }
+        else if (c == '\t')         { out[o++] = '\\'; out[o++] = 't'; }
+        else if (c < 0x20)          { o += snprintf(out + o, cap - o, "\\u%04x", c); }
+        else                        { out[o++] = (char)c; }
+    }
+    out[o] = '\0';
+    return out;
+}
+
 /* Build + write one ExportTraceServiceRequest (JSONL) for `spans`. */
 static void write_batch(const trace_rec_t *spans, int n) {
     if (!g_out || n <= 0) return;
     char sid[17] = {0}, pid[17] = {0};
+    char svc_esc[160];
     fprintf(g_out,
         "{\"resourceSpans\":[{\"resource\":{\"attributes\":["
         "{\"key\":\"service.name\",\"value\":{\"stringValue\":\"%s\"}}]},"
         "\"scopeSpans\":[{\"scope\":{\"name\":\"shim\"},\"spans\":[",
-        g_service);
+        json_escape(g_service, svc_esc, sizeof(svc_esc)));
     for (int i = 0; i < n; i++) {
         const trace_rec_t *s = &spans[i];
         uint32_t nc = atomic_load_explicit(&g_name_count, memory_order_acquire);
         const char *nm_p = (s->name_id >= 1 && s->name_id <= nc)
             ? atomic_load_explicit(&g_names[s->name_id - 1], memory_order_acquire) : NULL;
         const char *nm = nm_p ? nm_p : "?";
+        char nm_esc[1600];                  /* 255-char name × ~6 worst-case escape */
+        nm = json_escape(nm, nm_esc, sizeof(nm_esc));
         /* 128-bit OTLP traceId: high 64 bits zero, low 64 = our trace_id. */
         char traceid32[33];
         memset(traceid32, '0', 16);
