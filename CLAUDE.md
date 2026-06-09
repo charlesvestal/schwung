@@ -40,6 +40,8 @@ ssh ableton@move.local "tail -f /data/UserData/schwung/debug.log"
 
 JS: `console.log()` (auto-routed) or import `shared/logger.mjs`. C: `LOG_DEBUG("source", "msg")` from `host/unified_log.h`. See `docs/LOGGING.md`.
 
+**OTLP span tracing** (perf profiling, off by default): `touch /data/UserData/schwung/otlp_trace_on` makes the shim emit realtime-safe spans (`spi.pre`/`spi.post` roots + `param.serve`, `shadow.mix_audio`, `midi.process` children) as OTLP/JSONL to `/data/UserData/schwung/traces/` for replay into Tempo/Jaeger. `rm` the file to stop. Zero hot-path cost when off. See `docs/tracing.md`.
+
 ## Device Constraints
 
 **Never write to `/tmp` on the Move device.** Root FS (`/`) is ~463MB and usually 100% full; `/tmp` lives there. **Always** use `/data/UserData/` (~49GB free) for logs, recordings, temp files, everything. The unified logger already writes to `/data/UserData/schwung/debug.log`.
