@@ -156,8 +156,142 @@ typedef struct shadow_control_t {
     volatile uint16_t skipback_seconds; /* Skipback rolling buffer length: 30/60/120/180/240/300 */
     volatile uint8_t resume_last_tool;  /* 1=JUMP_TO_TOOLS should resume the most-recently-suspended tool instead of opening the menu */
     volatile uint8_t midi_indicator_enabled; /* 1=draw "ccN" MIDI channel indicator while a note is held */
-    volatile uint8_t reserved[5];
+    /* Co-run state: one struct, accessed via helpers below. `target` selects
+     * which peer co-runs (chain editor or Move firmware), `id` is its identity
+     * (chain slot 0-3 or tool track 0-7; -1 unused when target=NONE), and
+     * `keep_mask` is the tool's CORUN_GRP_* input manifest (0 = default split).
+     * Never read these directly outside the helpers — `target` may be 0 (NONE)
+     * with stale `id` / `keep_mask` from a prior session. */
+    volatile struct {
+        int8_t target;       /* corun_target_t */
+        int8_t id;
+        uint16_t keep_mask;
+    } corun;
+    volatile uint8_t shadow_display_owner; /* display_owner_t: who currently owns the OLED. Independent of shadow_display_mode (which only says "shadow session active"). */
+    volatile uint8_t reserved[1];
 } shadow_control_t;
+
+/* Co-run control-surface groups. A co-running overtake tool declares which
+ * groups it KEEPS (corun_keep_mask); every other group's input cedes to the
+ * co-run UI (Schwung's chain editor, or Move firmware). One canonical
+ * event->group map (corun_group_for_event) is shared by every routing site so
+ * the let-through and suppress-from-tool decisions can never drift apart. */
+#define CORUN_GRP_OLED          (1u << 0)
+#define CORUN_GRP_PADS          (1u << 1)
+#define CORUN_GRP_STEPS         (1u << 2)
+#define CORUN_GRP_TRANSPORT     (1u << 3)
+#define CORUN_GRP_JOG           (1u << 4)  /* jog turn (CC 14) + jog click (CC 3) */
+#define CORUN_GRP_TRACK_BUTTONS (1u << 5)  /* CC 40-43 */
+#define CORUN_GRP_KNOBS         (1u << 6)  /* CC 71-78 */
+#define CORUN_GRP_MASTER        (1u << 7)  /* CC 79 */
+#define CORUN_GRP_SHIFT         (1u << 8)  /* CC 49 */
+#define CORUN_GRP_BACK          (1u << 9)  /* CC 51 */
+#define CORUN_GRP_MENU          (1u << 10) /* CC 50 — framework exit gesture */
+#define CORUN_GRP_TOUCH         (1u << 11) /* capacitive-touch notes 0-9 */
+
+/* Default keep-set: the canonical sequencer-style co-run split — tool keeps
+ * pads, step buttons, transport, and Menu; cedes the nav surface + screen
+ * to the peer. Used whenever corun_keep_mask == 0. */
+#define CORUN_KEEP_DEFAULT (CORUN_GRP_PADS | CORUN_GRP_STEPS | CORUN_GRP_TRANSPORT | CORUN_GRP_MENU)
+
+/* Opt-out flag for tools that prefer their own exit gesture. When this bit is
+ * set in keep_mask, the framework does NOT auto-exit on Back press — Back
+ * routes per normal keep_mask rules (cedes to peer for sub-view nav unless
+ * the tool also keeps CORUN_GRP_BACK). Default (bit unset) reserves Back as
+ * the framework exit gesture regardless of keep_mask. Lives in the high half
+ * of keep_mask; doesn't collide with any CORUN_GRP_* bit. */
+#define CORUN_KEEP_BACK (1u << 15)
+
+/* Map a raw cable-0 MIDI event to its control-surface group, or 0 if it isn't a
+ * routable surface control (those always stay with the tool). type is the
+ * status nibble (0xB0 CC, 0x90/0x80 note); d1 the data byte. Steps/transport
+ * are intentionally unclassified for now (always kept) — they have no settled
+ * CC map and no co-run consumer cedes them. */
+static inline uint16_t corun_group_for_event(uint8_t type, uint8_t d1) {
+    if (type == 0xB0) {
+        switch (d1) {
+            case 3:  case 14: return CORUN_GRP_JOG;
+            case 40: case 41: case 42: case 43: return CORUN_GRP_TRACK_BUTTONS;
+            case 49: return CORUN_GRP_SHIFT;
+            case 50: return CORUN_GRP_MENU;
+            case 51: return CORUN_GRP_BACK;
+            case 79: return CORUN_GRP_MASTER;
+            default: if (d1 >= 71 && d1 <= 78) return CORUN_GRP_KNOBS;
+                     return 0;
+        }
+    }
+    if (type == 0x90 || type == 0x80) {
+        if (d1 <= 9) return CORUN_GRP_TOUCH;
+        if (d1 >= 68 && d1 <= 99) return CORUN_GRP_PADS;
+    }
+    return 0;
+}
+
+/* Effective keep-mask: callers that set only the target gate leave keep_mask 0,
+ * which means "use the default split". */
+static inline uint16_t corun_keep_mask_eff(uint16_t keep_mask) {
+    return keep_mask ? keep_mask : CORUN_KEEP_DEFAULT;
+}
+
+/* Co-run target. Stored in shadow_control->corun.target as int8_t. */
+typedef enum {
+    CORUN_TARGET_NONE        = 0,
+    CORUN_TARGET_CHAIN_EDIT  = 1, /* Schwung chain editor co-runs (id = chain slot 0-3) */
+    CORUN_TARGET_MOVE_NATIVE = 2, /* Move firmware co-runs (id = tool track 0-7) */
+} corun_target_t;
+
+/* OLED ownership during a co-run / shadow session. Stored as uint8_t. */
+typedef enum {
+    DISPLAY_OWNER_TOOL          = 0, /* the active tool (default, including non-shadow Move mode) */
+    DISPLAY_OWNER_SCHWUNG_UI    = 1, /* the schwung shadow UI (overtake menu, chain editor, …) */
+    DISPLAY_OWNER_MOVE_FIRMWARE = 2, /* Move firmware (during move_native co-run) */
+} display_owner_t;
+
+/* Result of corun_event_owner: which side a given control-surface event belongs
+ * to right now. Each call site switches on this once instead of mirroring the
+ * `grp && !(keep_mask & grp)` check. */
+typedef enum {
+    CORUN_OWNER_TOOL = 0, /* event goes to the active tool */
+    CORUN_OWNER_PEER,     /* event goes to the co-run UI (chain editor or Move firmware) */
+    CORUN_OWNER_BOTH,     /* event reaches both (currently unused; reserved for future shared gestures) */
+    CORUN_OWNER_NONE,     /* event is consumed by the framework, reaches neither (e.g. Back exit gesture during co-run) */
+} corun_owner_t;
+
+/* Accessors — never touch the corun struct directly. */
+static inline int corun_active(const volatile shadow_control_t *ctrl) {
+    return ctrl && ctrl->corun.target != CORUN_TARGET_NONE;
+}
+static inline corun_target_t corun_target(const volatile shadow_control_t *ctrl) {
+    return ctrl ? (corun_target_t)ctrl->corun.target : CORUN_TARGET_NONE;
+}
+static inline int corun_id(const volatile shadow_control_t *ctrl) {
+    return ctrl ? (int)(int8_t)ctrl->corun.id : -1;
+}
+static inline uint16_t corun_keep_mask(const volatile shadow_control_t *ctrl) {
+    return ctrl ? ctrl->corun.keep_mask : 0;
+}
+
+/* Single source of truth for "who owns this event right now?". Both the sh_midi
+ * let-through filter and the forward-to-shadow_ui suppress filter call this and
+ * switch on the result. Adding a new corun target = extend this function; no
+ * mirror checks anywhere else can drift. */
+static inline corun_owner_t corun_event_owner(const volatile shadow_control_t *ctrl, uint8_t type, uint8_t d1) {
+    if (!corun_active(ctrl)) return CORUN_OWNER_TOOL;
+    uint16_t grp = corun_group_for_event(type, d1);
+    /* Back: framework-reserved as the exit gesture by default — the shim's
+     * own handler ends the session on press, neither side sees the event.
+     * Tools that prefer their own exit gesture set CORUN_KEEP_BACK in
+     * keep_mask; Back then routes per normal keep_mask rules (cedes to peer
+     * for sub-view nav unless CORUN_GRP_BACK is also kept), and the framework
+     * stays out of its way. (Menu remains tool-owned by default via
+     * keep_mask.) */
+    if (grp == CORUN_GRP_BACK && !(ctrl->corun.keep_mask & CORUN_KEEP_BACK)) {
+        return CORUN_OWNER_NONE;
+    }
+    if (!grp) return CORUN_OWNER_TOOL; /* unclassified events always stay with tool */
+    uint16_t keep = corun_keep_mask_eff(ctrl->corun.keep_mask);
+    return (keep & grp) ? CORUN_OWNER_TOOL : CORUN_OWNER_PEER;
+}
 
 /*
  * UI state structure for slot information.

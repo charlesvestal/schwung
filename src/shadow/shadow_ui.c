@@ -347,6 +347,76 @@ static JSValue js_shadow_overtake_send_external_async_active(JSContext *ctx, JSV
     return JS_NewInt32(ctx, 1);
 }
 
+/* shadow_corun_begin(target, id, keep_mask) -> void
+ * Generalized co-run entry for any overtake tool. The framework yields the
+ * surfaces the tool cedes (via keep_mask) to the named peer UI, and reserves
+ * Back as the exit gesture for the duration of the session.
+ *   target   : CORUN_TARGET_CHAIN_EDIT  (id = chain slot 0-3)
+ *              CORUN_TARGET_MOVE_NATIVE (id = tool track 0-7)
+ *   id       : the target's identity (chain slot or tool track).
+ *   keep_mask: bitfield of CORUN_GRP_* the tool KEEPS; the rest cede to the
+ *              peer. Omit or 0 = CORUN_KEEP_DEFAULT (default split).
+ * Atomicity: keep_mask is written before target so the shim never sees an
+ * active target paired with a stale mask. */
+static JSValue js_shadow_corun_begin(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 2) return JS_UNDEFINED;
+    int target = -1, id = -1, keep = 0;
+    if (JS_ToInt32(ctx, &target, argv[0])) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &id, argv[1])) return JS_UNDEFINED;
+    if (argc >= 3 && JS_ToInt32(ctx, &keep, argv[2])) return JS_UNDEFINED;
+    if (keep < 0 || keep > 0xFFFF) return JS_UNDEFINED;
+    if (target == CORUN_TARGET_CHAIN_EDIT) {
+        if (id < 0 || id >= SHADOW_UI_SLOTS) return JS_UNDEFINED;
+        shadow_control->corun.keep_mask = (uint16_t)keep;
+        shadow_control->corun.id = (int8_t)id;
+        shadow_control->ui_slot = (uint8_t)id;
+        shadow_control->corun.target = CORUN_TARGET_CHAIN_EDIT;
+        /* chain-edit renders via shadow_ui; OLED owner stays SCHWUNG_UI. */
+        shadow_control->shadow_display_owner = DISPLAY_OWNER_SCHWUNG_UI;
+    } else if (target == CORUN_TARGET_MOVE_NATIVE) {
+        if (id < 0 || id > 7) return JS_UNDEFINED;
+        shadow_control->corun.keep_mask = (uint16_t)keep;
+        shadow_control->corun.id = (int8_t)id;
+        shadow_control->corun.target = CORUN_TARGET_MOVE_NATIVE;
+        /* move_native cedes the OLED to Move firmware. shadow_display_mode
+         * stays armed so MIDI filters remain active. */
+        shadow_control->shadow_display_owner = DISPLAY_OWNER_MOVE_FIRMWARE;
+    } else {
+        return JS_UNDEFINED;
+    }
+    return JS_UNDEFINED;
+}
+
+/* shadow_corun_end() -> void
+ * Exit co-run; restore full overtake ownership to the tool. The shim's Back
+ * handler also calls this when the user presses Back during a session.
+ * Target is cleared before keep_mask so the shim sees co-run off first. */
+static JSValue js_shadow_corun_end(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_UNDEFINED;
+    shadow_control->corun.target = CORUN_TARGET_NONE;
+    shadow_control->corun.id = -1;
+    shadow_control->corun.keep_mask = 0;
+    /* Returning to the tool's shadow session — shadow_ui resumes rendering. */
+    shadow_control->shadow_display_owner = DISPLAY_OWNER_SCHWUNG_UI;
+    return JS_UNDEFINED;
+}
+
+/* shadow_corun_state() -> { target, id, keep_mask } | null
+ * Returns null when no co-run is active, else the current state. Tools poll
+ * this each frame to detect framework-driven exit (Back press) and to
+ * reconcile their own mirror. */
+static JSValue js_shadow_corun_state(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control || !corun_active(shadow_control)) return JS_NULL;
+    JSValue obj = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, obj, "target", JS_NewInt32(ctx, (int)corun_target(shadow_control)));
+    JS_SetPropertyStr(ctx, obj, "id", JS_NewInt32(ctx, corun_id(shadow_control)));
+    JS_SetPropertyStr(ctx, obj, "keep_mask", JS_NewInt32(ctx, (int)corun_keep_mask(shadow_control)));
+    return obj;
+}
+
 /* shadow_get_selected_slot() -> int
  * Returns the track-selected slot (0-3) for playback/knobs.
  */
@@ -3174,6 +3244,28 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_clear_ui_flags", JS_NewCFunction(ctx, js_shadow_clear_ui_flags, "shadow_clear_ui_flags", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_inbound_pad_midi_active", JS_NewCFunction(ctx, js_shadow_inbound_pad_midi_active, "shadow_inbound_pad_midi_active", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_overtake_send_external_async_active", JS_NewCFunction(ctx, js_shadow_overtake_send_external_async_active, "shadow_overtake_send_external_async_active", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_corun_begin", JS_NewCFunction(ctx, js_shadow_corun_begin, "shadow_corun_begin", 3));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_corun_end", JS_NewCFunction(ctx, js_shadow_corun_end, "shadow_corun_end", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_corun_state", JS_NewCFunction(ctx, js_shadow_corun_state, "shadow_corun_state", 0));
+    /* Co-run target enum (matches corun_target_t in shadow_constants.h). */
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_TARGET_NONE",        JS_NewInt32(ctx, CORUN_TARGET_NONE));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_TARGET_CHAIN_EDIT",  JS_NewInt32(ctx, CORUN_TARGET_CHAIN_EDIT));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_TARGET_MOVE_NATIVE", JS_NewInt32(ctx, CORUN_TARGET_MOVE_NATIVE));
+    /* Control-surface group bitfield (matches CORUN_GRP_* in shadow_constants.h). */
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_OLED",          JS_NewInt32(ctx, CORUN_GRP_OLED));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_PADS",          JS_NewInt32(ctx, CORUN_GRP_PADS));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_STEPS",         JS_NewInt32(ctx, CORUN_GRP_STEPS));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_TRANSPORT",     JS_NewInt32(ctx, CORUN_GRP_TRANSPORT));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_JOG",           JS_NewInt32(ctx, CORUN_GRP_JOG));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_TRACK_BUTTONS", JS_NewInt32(ctx, CORUN_GRP_TRACK_BUTTONS));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_KNOBS",         JS_NewInt32(ctx, CORUN_GRP_KNOBS));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_MASTER",        JS_NewInt32(ctx, CORUN_GRP_MASTER));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_SHIFT",         JS_NewInt32(ctx, CORUN_GRP_SHIFT));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_BACK",          JS_NewInt32(ctx, CORUN_GRP_BACK));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_MENU",          JS_NewInt32(ctx, CORUN_GRP_MENU));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_TOUCH",         JS_NewInt32(ctx, CORUN_GRP_TOUCH));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_KEEP_DEFAULT",      JS_NewInt32(ctx, CORUN_KEEP_DEFAULT));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_KEEP_BACK",         JS_NewInt32(ctx, CORUN_KEEP_BACK));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_open_tool_cmd",
         JS_NewCFunction(ctx, js_shadow_get_open_tool_cmd, "shadow_get_open_tool_cmd", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_selected_slot", JS_NewCFunction(ctx, js_shadow_get_selected_slot, "shadow_get_selected_slot", 0));

@@ -1345,7 +1345,7 @@ static int overtake_midi_send_internal(const uint8_t *msg, int len) {
 /* === Phase 2: Audio-thread-safe ROUTE_EXTERNAL MIDI send =================
  *
  * overtake_midi_send_external() is called from an overtake DSP's audio
- * thread (e.g. dAVEBOx's pfx_emit). The pre-Phase-2 body did its own
+ * thread. The pre-Phase-2 body did its own
  * synchronous real_ioctl(SPI), which works only by accident — it ships
  * a partial 768-byte mailbox (including stale audio at offset 256-767)
  * out of step with the audio thread's own per-block ioctl.
@@ -3044,6 +3044,10 @@ static void init_shadow_shm(void)
             shadow_control->suspend_overtake = 0;
             shadow_control->selected_slot    = 0;
             shadow_control->skip_led_clear   = 0;
+            shadow_control->corun.target = CORUN_TARGET_NONE;  /* co-run inactive at boot */
+            shadow_control->corun.id = -1;
+            shadow_control->corun.keep_mask = 0;  /* 0 = default split when a target is set without a manifest */
+            shadow_control->shadow_display_owner = DISPLAY_OWNER_SCHWUNG_UI; /* splash boots into shadow UI */
             /* Initialize TTS defaults */
             shadow_control->tts_enabled = 0;    /* Screen Reader off by default */
             shadow_control->tts_volume = 70;    /* 70% volume */
@@ -3515,6 +3519,16 @@ static void shadow_swap_display(void)
     }
     /* Let Move's PIN screen show through during challenge so PIN scanner can read it */
     if (shadow_control->pin_challenge_active == 1) {
+        display_phase = 0;
+        return;
+    }
+    /* Display-owner split (see shadow_display_owner_t in shadow_constants.h):
+     * shadow_display_mode says "the shadow session is active" (filters/MIDI
+     * routing are armed). shadow_display_owner says "who is actually rendering
+     * the OLED right now". During move_native co-run the session is active but
+     * the OLED belongs to Move firmware — yield without tearing down the
+     * session. */
+    if (shadow_control->shadow_display_owner == DISPLAY_OWNER_MOVE_FIRMWARE) {
         display_phase = 0;
         return;
     }
@@ -5125,11 +5139,14 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
      * overtake_mode — otherwise audio scales to whatever volume was active
      * when overtake engaged. */
     int pin_challenge = shadow_control && shadow_control->pin_challenge_active == 1;
+    int corun_owns_native_oled = shadow_control &&
+        shadow_control->shadow_display_owner == DISPLAY_OWNER_MOVE_FIRMWARE;
     int native_display_visible = (!shadow_display_mode) ||
                                  (shadow_display_mode &&
                                   shadow_volume_knob_touched &&
                                   !shadow_shift_held &&
                                   shadow_control) ||
+                                 corun_owns_native_oled ||
                                  pin_challenge;
 
     if (global_mmap_addr && native_display_visible) {
@@ -6024,6 +6041,23 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
     }
 
     if (shadow_display_mode && shadow_control) {
+        /* Move-native co-run knob coalescing: Move firmware spends ~900µs per
+         * CC 71-78 it receives (synth-param write + OLED redraw). Multiple
+         * detents in one audio frame stack their cost and overrun the SPI
+         * frame budget, which manifests as sequencer stutter while the user
+         * spins a knob. Sum incoming detents per knob within this frame and
+         * emit ONE consolidated CC at the end of the filter loop instead of
+         * letting every detent through individually. Per-frame collapse is
+         * the framework's contract; tools generating unusually heavy
+         * concurrent MIDI traffic (simultaneous pad fire + step LEDs +
+         * automation lanes during transport, etc.) may still see residual
+         * stutter on very fast knob spins and should document that as a
+         * tool-side characteristic. See docs/CORUN.md. */
+        int16_t corun_knob_delta[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+        int corun_knob_coalesce =
+            (corun_target(shadow_control) == CORUN_TARGET_MOVE_NATIVE) &&
+            !(corun_keep_mask_eff(shadow_control->corun.keep_mask) & CORUN_GRP_KNOBS);
+
         /* Filter MIDI_IN: zero out jog/back/knobs */
         for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
             uint8_t cin = hw_midi[j] & 0x0F;
@@ -6031,6 +6065,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             uint8_t status = hw_midi[j + 1];
             uint8_t type = status & 0xF0;
             uint8_t d1 = hw_midi[j + 2];
+            uint8_t d2 = hw_midi[j + 3];
 
             int filter = 0;
 
@@ -6059,6 +6094,27 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                      * LED writes back aren't blocked. */
                     if (cin == 0x0B && type == 0xB0 && d1 < 128 && overtake_passthrough_ccs[d1]) {
                         filter = 0;
+                    }
+                    /* Move-native co-run: let Move firmware see whichever
+                     * control-surface events the tool cedes via its keep_mask.
+                     * corun_event_owner (shadow_constants.h) is the single
+                     * source of truth — same predicate runs at the forward-to-
+                     * shadow_ui suppress site below, so the two routes can
+                     * never drift. */
+                    if (corun_target(shadow_control) == CORUN_TARGET_MOVE_NATIVE &&
+                        corun_event_owner(shadow_control, type, d1) == CORUN_OWNER_PEER) {
+                        filter = 0;
+                        /* CC 71-78 detents: accumulate and emit once per frame
+                         * (see corun_knob_delta declaration above). Suppress
+                         * the individual event by re-asserting filter=1; the
+                         * post-loop pass will inject one consolidated CC. */
+                        if (corun_knob_coalesce && type == 0xB0 && d1 >= 71 && d1 <= 78) {
+                            int16_t delta = 0;
+                            if (d2 >= 1 && d2 <= 63) delta = d2;
+                            else if (d2 >= 65 && d2 <= 127) delta = (int16_t)d2 - 128;
+                            corun_knob_delta[d1 - 71] += delta;
+                            filter = 1;
+                        }
                     }
                 } else if (overtake_mode == 1) {
                     filter = 1;
@@ -6128,6 +6184,29 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 sh_midi[j + 1] = hw_midi[j + 1];
                 sh_midi[j + 2] = hw_midi[j + 2];
                 sh_midi[j + 3] = hw_midi[j + 3];
+            }
+        }
+
+        /* Move-native knob coalesce: emit one consolidated CC per knob whose
+         * detents we suppressed above. Find empty (zeroed) slots in sh_midi
+         * and inject. Clamp deltas into the one-byte signed encoding (±63);
+         * any leftover spills to the next frame's accumulator naturally on
+         * the next inbound detent. */
+        for (int k = 0; k < 8; k++) {
+            if (corun_knob_delta[k] == 0) continue;
+            int16_t delta = corun_knob_delta[k];
+            if (delta > 63) delta = 63;
+            else if (delta < -63) delta = -63;
+            uint8_t d2 = (delta >= 0) ? (uint8_t)delta : (uint8_t)(delta + 128);
+            for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+                if (sh_midi[j] == 0 && sh_midi[j + 1] == 0 &&
+                    sh_midi[j + 2] == 0 && sh_midi[j + 3] == 0) {
+                    sh_midi[j]     = 0x0B;     /* cable 0, CIN 0x0B = CC */
+                    sh_midi[j + 1] = 0xB0;     /* status: CC, channel 0 */
+                    sh_midi[j + 2] = (uint8_t)(71 + k);
+                    sh_midi[j + 3] = d2;
+                    break;
+                }
             }
         }
     } else {
@@ -7056,8 +7135,8 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             /* Deliver internal cable-0 note events (d1 >= 10, excludes
              * knob-touch reserved range 0–9) to the loaded overtake DSP
              * via its audio-thread on_midi hook.  Enables overtake tools
-             * like dAVEBOx to handle pad input on the audio thread
-             * instead of through the JS round-trip below. */
+             * to handle pad input on the audio thread instead of through
+             * the JS round-trip below. */
             if (overtake_mode == 2 && cable == 0x00 &&
                 (type == 0x90 || type == 0x80) && d1 >= 10) {
                 if (overtake_dsp_gen && overtake_dsp_gen_inst && overtake_dsp_gen->on_midi) {
@@ -7079,6 +7158,36 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                                       (d1 == 14 || d1 == 3 || d1 == 51 ||  /* jog, click, back */
                                        (d1 >= 40 && d1 <= 43)));           /* track buttons */
                     if (!is_ui_event) continue;  /* Skip non-UI events in menu mode */
+                }
+
+                /* Co-run forward-suppress: when the peer is a SEPARATE process
+                 * (Move firmware in move_native), we gate the publish here so
+                 * the tool doesn't see events that already went to Move via
+                 * the pre-ioctl filter. For chain-edit the peer IS shadow_ui
+                 * (same process as the tool dispatch), so shadow_ui.js handles
+                 * routing internally via coRunCedes() — we MUST let publish
+                 * through, otherwise the chain editor never receives jog,
+                 * track buttons, etc. Back-as-framework-exit also lives here:
+                 * when corun_event_owner returns NONE (Back without
+                 * CORUN_KEEP_BACK opt-out), end the session and suppress. */
+                if (overtake_mode == 2 && cable == 0x00 && corun_active(shadow_control)) {
+                    corun_owner_t owner = corun_event_owner(shadow_control, type, d1);
+                    if (owner == CORUN_OWNER_NONE && type == 0xB0 && d1 == CC_BACK && d2 > 0) {
+                        shadow_control->corun.target = CORUN_TARGET_NONE;
+                        shadow_control->corun.id = -1;
+                        shadow_control->corun.keep_mask = 0;
+                        shadow_control->shadow_display_owner = DISPLAY_OWNER_SCHWUNG_UI;
+                        shadow_log("Back: exiting co-run");
+                        continue;
+                    }
+                    /* Move-native only: cede-to-peer events go to Move via the
+                     * pre-ioctl filter, so suppress the duplicate to shadow_ui
+                     * here. For chain-edit the peer is shadow_ui itself — let
+                     * publish through and rely on its coRunCedes() gating. */
+                    if (corun_target(shadow_control) == CORUN_TARGET_MOVE_NATIVE &&
+                        (owner == CORUN_OWNER_PEER || owner == CORUN_OWNER_NONE)) {
+                        continue;
+                    }
                 }
 
                 /* BLOCK channels: hardware_mmap_addr is NOT modified (writing

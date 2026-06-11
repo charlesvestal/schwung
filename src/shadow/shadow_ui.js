@@ -220,6 +220,45 @@ const NUM_KNOBS = 8;
 let overtakeKnobDelta = [0, 0, 0, 0, 0, 0, 0, 0];  // Accumulated delta per knob (CC 71-78)
 let overtakeJogDelta = 0;                             // Accumulated delta for jog wheel (CC 14)
 
+/* Co-run mode: chain editor runs alongside an active tool module. Tool keeps
+ * pads/steps/knobs/transport; jog + jog-click + track buttons + OLED route to
+ * the chain editor. coRunView tracks the chain editor's own navigation state
+ * so deeper views (patch browser, component edit, etc.) work without touching
+ * the outer `view`, which stays at VIEWS.OVERTAKE_MODULE so the tool ticks. */
+let coRunChainEditSlot = -1;
+let coRunView = -1;  // initialized to VIEWS.CHAIN_EDIT on first co-run entry
+
+/* Co-run control-surface groups — JS mirror of the canonical map in
+ * shadow_constants.h (corun_group_for_event). The tool declares which groups it
+ * KEEPS via shadow_corun_begin; the chain-edit intercept below routes a control
+ * to the editor only when its group CEDES (not kept). The shim owns the same
+ * decision for move_native; this mirror is just for the in-process chain editor. */
+const CORUN_GRP_OLED = 1 << 0, CORUN_GRP_PADS = 1 << 1, CORUN_GRP_STEPS = 1 << 2,
+      CORUN_GRP_TRANSPORT = 1 << 3, CORUN_GRP_JOG = 1 << 4, CORUN_GRP_TRACK_BUTTONS = 1 << 5,
+      CORUN_GRP_KNOBS = 1 << 6, CORUN_GRP_MASTER = 1 << 7, CORUN_GRP_SHIFT = 1 << 8,
+      CORUN_GRP_BACK = 1 << 9, CORUN_GRP_MENU = 1 << 10, CORUN_GRP_TOUCH = 1 << 11;
+const CORUN_KEEP_DEFAULT = CORUN_GRP_PADS | CORUN_GRP_STEPS | CORUN_GRP_TRANSPORT | CORUN_GRP_MENU;
+let coRunKeepMask = 0;  // polled from shadow_control; 0 = default split
+/* True when the tool CEDES this group to the co-run UI (so the editor handles it). */
+function coRunCedes(grp) {
+    const m = coRunKeepMask ? coRunKeepMask : CORUN_KEEP_DEFAULT;
+    return grp !== 0 && (m & grp) === 0;
+}
+
+/* Param-shim originals. When a chain module's UI is "loaded" (or when
+ * enterHierarchyEditor / setupModuleParamShims fires), the shadow_ui
+ * shims host_module_get_param / host_module_set_param so chain-editor
+ * queries route to the slot's DSP. That's correct for native chain
+ * editing — but during co-run, the active tool module ALSO calls those
+ * globals expecting to talk to ITS OWN DSP. Without a swap, the tool
+ * silently misroutes every IPC at the chain slot, which manifests as
+ * pads not emitting MIDI, transport not working, and audio glitches.
+ * setupModuleParamShims now caches the originals and we restore them
+ * around every tool callback (tick + onMidiMessageInternal). */
+let originalHostGetParam = null;
+let originalHostSetParam = null;
+let paramShimsInstalled = false;
+
 const CONFIG_PATH = "/data/UserData/schwung/shadow_chain_config.json";
 const PATCH_DIR = "/data/UserData/schwung/patches";
 const SLOT_STATE_DIR_DEFAULT = "/data/UserData/schwung/slot_state";
@@ -2463,6 +2502,13 @@ function getComponentParamPrefix(componentKey) {
 /* Set up shims for host_module_get_param and host_module_set_param
  * These route to the correct slot and component in shadow mode */
 function setupModuleParamShims(slot, componentKey) {
+    /* Cache the real host APIs on first install so co-run can swap them
+     * back around active-tool callbacks. */
+    if (!paramShimsInstalled) {
+        originalHostGetParam = globalThis.host_module_get_param;
+        originalHostSetParam = globalThis.host_module_set_param;
+        paramShimsInstalled = true;
+    }
     const prefix = getComponentParamPrefix(componentKey);
 
     globalThis.host_module_get_param = function(key) {
@@ -2500,16 +2546,54 @@ function setupModuleParamShims(slot, componentKey) {
 
 /* Clear the param shims */
 function clearModuleParamShims() {
-    delete globalThis.host_module_get_param;
-    delete globalThis.host_module_set_param;
+    /* Restore the real host APIs we cached on first shim install. */
+    if (paramShimsInstalled) {
+        if (originalHostGetParam) globalThis.host_module_get_param = originalHostGetParam;
+        else delete globalThis.host_module_get_param;
+        if (originalHostSetParam) globalThis.host_module_set_param = originalHostSetParam;
+        else delete globalThis.host_module_set_param;
+        paramShimsInstalled = false;
+    } else {
+        delete globalThis.host_module_get_param;
+        delete globalThis.host_module_set_param;
+    }
     delete globalThis.host_module_set_param_blocking;
     delete globalThis.host_exit_module;
     delete globalThis.host_swap_module;
     delete globalThis.host_open_file_in_tool;
 }
 
+/* Run a tool callback (tick / onMidiMessageInternal) with the real host
+ * APIs restored. While chain-editor shims are installed, every direct
+ * reference to globalThis.host_module_get_param / _set_param goes to
+ * the chain slot DSP — wrong for the active tool. This swap-and-restore
+ * keeps the tool talking to its own DSP. */
+function runToolCallback(fn) {
+    if (!paramShimsInstalled) {
+        return fn();
+    }
+    const shimGet = globalThis.host_module_get_param;
+    const shimSet = globalThis.host_module_set_param;
+    if (originalHostGetParam) globalThis.host_module_get_param = originalHostGetParam;
+    if (originalHostSetParam) globalThis.host_module_set_param = originalHostSetParam;
+    try {
+        return fn();
+    } finally {
+        globalThis.host_module_get_param = shimGet;
+        globalThis.host_module_set_param = shimSet;
+    }
+}
+
 /* Load a module's UI for editing */
 function loadModuleUi(slot, componentKey, moduleId) {
+    /* CO-RUN refuse: loading a chain module's UI overwrites globalThis.tick
+     * (and onMidiMessageInternal), which silences the active tool. The caller
+     * (enterComponentEditFallback) falls back to the simple preset browser
+     * when this returns false — that path doesn't touch globals. */
+    if (coRunChainEditSlot >= 0) {
+        moduleUiLoadError = true;
+        return false;
+    }
     const uiPath = getModuleUiPath(moduleId);
     if (!uiPath) {
         moduleUiLoadError = true;
@@ -2997,6 +3081,7 @@ let overtakeExitPending = false;
 
 /* Exit overtake mode back to Move */
 function exitOvertakeMode() {
+    corunTeardown();
     /* Flush set state on the way out — defensive, since chain state is not
      * edited during overtake, but keeps the invariant "all transitions
      * persist state" honest. */
@@ -3060,6 +3145,7 @@ function exitOvertakeMode() {
 
 /* Suspend overtake mode — leave background processes running */
 function suspendOvertakeMode() {
+    corunTeardown();
     if (overtakeSuspendKeepsJs && overtakeModuleCallbacks && overtakeModuleId) {
         debugLog("suspendOvertakeMode: suspend_keeps_js — parking " + overtakeModuleId + " in background");
 
@@ -3227,6 +3313,7 @@ function resumeOvertakeModule(moduleId) {
 
 /* Direct exit for interactive tools - skip LED clearing ceremony */
 function exitToolOvertake() {
+    corunTeardown();
     debugLog("exitToolOvertake: direct tool exit, nonOvertake=" + toolNonOvertake);
 
     /* Let the module clean up before teardown. */
@@ -3311,6 +3398,7 @@ function exitToolOvertake() {
 
 /* Hide an interactive tool - exit overtake but keep DSP loaded */
 function hideToolOvertake() {
+    corunTeardown();
     debugLog("hideToolOvertake: hiding tool, keeping DSP");
 
     /* Deactivate LED queue */
@@ -14723,6 +14811,76 @@ globalThis.shadow_save_state_now = function() {
     return true;
 };
 
+function corunTeardown() {
+    if (typeof shadow_corun_end === "function") shadow_corun_end();
+    coRunChainEditSlot = -1;
+    coRunView = -1;
+    coRunKeepMask = 0;
+}
+
+/* Co-run helpers — see coRunChainEditSlot / coRunView declarations near top.
+ *
+ * runCoRunChainEdit(fn): temporarily set the outer `view` to coRunView so any
+ * code that dispatches on view (handleJog/handleSelect/draws) lands in the
+ * chain-editor branch. Captures view-change side-effects back into coRunView
+ * so navigation into deeper views (patch browser, component edit, etc.)
+ * sticks across frames. Always restores the outer view to its prior value so
+ * the main tick's view-switch still routes to VIEWS.OVERTAKE_MODULE. */
+function runCoRunChainEdit(fn) {
+    const _saved = view;
+    view = coRunView;
+    try { fn(); } finally {
+        coRunView = view;
+        view = _saved;
+    }
+}
+
+/* dispatchCoRunDraw(): mirror of the chain-edit subtree of the main draw
+ * switch (~line 14874). Called from co-run with view already set to coRunView
+ * by runCoRunChainEdit. The chain editor's navigation lands on many views
+ * (PATCHES, COMPONENT_PARAMS, COMPONENT_SELECT, etc.), each with its own
+ * draw function. drawSlots() only renders the top-level slot LIST — we must
+ * dispatch every reachable view explicitly. */
+function dispatchCoRunDraw() {
+    switch (view) {
+        case VIEWS.CHAIN_EDIT:           drawChainEdit(); break;
+        case VIEWS.PATCHES:              drawPatches(); break;
+        case VIEWS.PATCH_DETAIL:         drawPatchDetail(); break;
+        case VIEWS.COMPONENT_PARAMS:     drawComponentParams(); break;
+        case VIEWS.COMPONENT_SELECT:     drawComponentSelect(); break;
+        case VIEWS.CHAIN_SETTINGS:       drawChainSettings(); break;
+        case VIEWS.SLOT_SETTINGS:        drawSlotSettings(); break;
+        case VIEWS.COMPONENT_EDIT:
+            /* In co-run, never invoke loadedModuleUi.tick(): the chain module's
+             * own UI module takes over shadow_ui's drawing/MIDI/IPC and starves
+             * the active tool. drawComponentEdit() is the simple preset-browser
+             * fallback that lets the user pick patches without the deep
+             * module-specific editor — still useful, and keeps the tool alive. */
+            drawComponentEdit();
+            break;
+        case VIEWS.HIERARCHY_EDITOR:     drawHierarchyEditor(); break;
+        case VIEWS.KNOB_EDITOR:          drawKnobEditor(); break;
+        case VIEWS.KNOB_PARAM_PICKER:    drawKnobParamPicker(); break;
+        case VIEWS.DYNAMIC_PARAM_PICKER: drawDynamicParamPicker(); break;
+        case VIEWS.LFO_EDIT:             drawLfoEdit(); break;
+        case VIEWS.LFO_TARGET_COMPONENT: drawLfoTargetComponent(); break;
+        case VIEWS.LFO_TARGET_PARAM:     drawLfoTargetParam(); break;
+        case VIEWS.STORE_PICKER_CATEGORIES: drawStorePickerCategories(); break;
+        case VIEWS.STORE_PICKER_LIST:    drawStorePickerList(); break;
+        case VIEWS.STORE_PICKER_DETAIL:  drawStorePickerDetail(); break;
+        case VIEWS.STORE_PICKER_LOADING: drawStorePickerLoading(); break;
+        case VIEWS.STORE_PICKER_RESULT:  drawStorePickerResult(); break;
+        case VIEWS.STORE_PICKER_POST_INSTALL:
+            drawMessageOverlay('Install Complete', storePostInstallLines);
+            break;
+        case VIEWS.FILEPATH_BROWSER:     drawFilepathBrowser(); break;
+        default:
+            /* Unknown view in co-run — render slot list as a recoverable
+             * fallback so user can navigate back. */
+            drawSlots();
+    }
+}
+
 globalThis.tick = function() {
     /* Background tick for JS-suspended overtake modules.
      * Each parked module's tick() keeps firing so it can emit MIDI or advance
@@ -15360,8 +15518,15 @@ globalThis.tick = function() {
     /* Throttled knob overlay refresh - once per frame instead of per CC */
     refreshPendingKnobOverlay();
 
-    /* Throttled hierarchy knob adjustment - once per frame */
-    processPendingHierKnob();
+    /* Throttled hierarchy knob adjustment - once per frame. During co-run the
+     * outer view is OVERTAKE_MODULE; wrap so getKnobContext (cache keyed on
+     * view) resolves against the chain editor's view and the accumulated knob
+     * delta isn't silently dropped under the wrong context. */
+    if (coRunChainEditSlot >= 0) {
+        runCoRunChainEdit(processPendingHierKnob);
+    } else {
+        processPendingHierKnob();
+    }
 
     if (view === VIEWS.CANVAS) {
         tickCanvasPreview();
@@ -15448,6 +15613,35 @@ globalThis.tick = function() {
 
     /* Flush deferred wav player file_path after DSP load */
     wavPlayerTick();
+
+    /* CO-RUN: reconcile chain-edit slot from SHM each frame. The tool calls
+     * shadow_corun_begin(CORUN_TARGET_CHAIN_EDIT, slot, keep_mask) to enter;
+     * the framework calls shadow_corun_end() on Back press, after which
+     * shadow_corun_state() returns null and we tear down the editor. */
+    if (typeof shadow_corun_state === "function") {
+        const _st = shadow_corun_state();
+        const _slot = (_st && _st.target === CORUN_TARGET_CHAIN_EDIT) ? _st.id : -1;
+        coRunKeepMask = (_st && typeof _st.keep_mask === "number") ? (_st.keep_mask | 0) : 0;
+        if (_slot !== coRunChainEditSlot) {
+            coRunChainEditSlot = _slot;
+            if (_slot >= 0) {
+                /* Entering co-run: prime the chain editor's state for slot N.
+                 * Mirrors enterChainEdit() but does NOT touch the outer view
+                 * (must stay VIEWS.OVERTAKE_MODULE so the tool keeps ticking). */
+                selectedSlot = _slot;
+                if (typeof updateFocusedSlot === "function") updateFocusedSlot(_slot);
+                selectedChainComponent = lastChainComponent[_slot] || 0;
+                if (typeof loadChainConfigFromSlot === "function") loadChainConfigFromSlot(_slot);
+                coRunView = VIEWS.CHAIN_EDIT;
+                needsRedraw = true;
+            } else {
+                /* Framework ended co-run (Back press) — drop back to the tool
+                 * view; the chain editor stops drawing on next tick. */
+                coRunView = VIEWS.OVERTAKE_MODULE;
+                needsRedraw = true;
+            }
+        }
+    }
 
     switch (view) {
         case VIEWS.SLOTS:
@@ -15628,7 +15822,9 @@ globalThis.tick = function() {
                                 const d = overtakeKnobDelta[k];
                                 const ccVal = d > 0 ? Math.min(d, 63) : Math.max(128 + d, 65);
                                 try {
-                                    overtakeModuleCallbacks.onMidiMessageInternal([0xB0, KNOB_CC_START + k, ccVal]);
+                                    runToolCallback(function() {
+                                        overtakeModuleCallbacks.onMidiMessageInternal([0xB0, KNOB_CC_START + k, ccVal]);
+                                    });
                                 } catch (e) {
                                     debugLog("OVERTAKE flush knob exception: " + e);
                                     exitOvertakeMode();
@@ -15641,7 +15837,9 @@ globalThis.tick = function() {
                             const d = overtakeJogDelta;
                             const ccVal = d > 0 ? Math.min(d, 63) : Math.max(128 + d, 65);
                             try {
-                                overtakeModuleCallbacks.onMidiMessageInternal([0xB0, MoveMainKnob, ccVal]);
+                                runToolCallback(function() {
+                                    overtakeModuleCallbacks.onMidiMessageInternal([0xB0, MoveMainKnob, ccVal]);
+                                });
                             } catch (e) {
                                 debugLog("OVERTAKE flush jog exception: " + e);
                                 exitOvertakeMode();
@@ -15654,10 +15852,11 @@ globalThis.tick = function() {
                         overtakeJogDelta = 0;
                     }
 
-                    /* Call the overtake module's tick() function */
+                    /* Call the overtake module's tick() function with the
+                     * tool's real host APIs (see runToolCallback). */
                     if (overtakeModuleCallbacks && overtakeModuleCallbacks.tick) {
                         try {
-                            overtakeModuleCallbacks.tick();
+                            runToolCallback(function() { overtakeModuleCallbacks.tick(); });
                         } catch (e) {
                             debugLog("OVERTAKE tick() exception: " + e);
                             /* Exit overtake on tick error */
@@ -15665,6 +15864,15 @@ globalThis.tick = function() {
                         }
                     }
                     flushLedQueue();  /* Drain queued LED updates to SHM after module tick */
+
+                    /* CO-RUN: render chain editor over the tool's frame. By
+                     * contract, a tool that enables co-run agrees not to draw
+                     * to OLED while coRunChainEditSlot >= 0 — but even if it
+                     * does, drawSlots() (and chain-edit subtree draws) start
+                     * with clear_screen() so the editor's pixels win. */
+                    if (coRunChainEditSlot >= 0) {
+                        runCoRunChainEdit(dispatchCoRunDraw);
+                    }
                 }
             } catch (e) {
                 debugLog("OVERTAKE_MODULE case EXCEPTION: " + e);
@@ -15866,8 +16074,9 @@ globalThis.onMidiMessageInternal = function(data) {
 
         /* Back button handling for suspend_keeps_js modules — Wave Editor convention.
          * Back alone: suspend (module parks in background, ticks continue).
-         * Shift+Back: full exit (unload module). */
-        if ((status & 0xF0) === 0xB0 && d1 === MoveBack && d2 > 0 && overtakeSuspendKeepsJs) {
+         * Shift+Back: full exit (unload module).
+         * Skip while co-run is active: the chain editor claims Back. */
+        if ((status & 0xF0) === 0xB0 && d1 === MoveBack && d2 > 0 && overtakeSuspendKeepsJs && coRunChainEditSlot < 0) {
             if (hostShiftHeld) {
                 debugLog("HOST: Shift+Back → full exit (suspend_keeps_js module)");
                 if (toolOvertakeActive) exitToolOvertake();
@@ -15877,6 +16086,104 @@ globalThis.onMidiMessageInternal = function(data) {
                 suspendOvertakeMode();
             }
             return;
+        }
+
+        /* CO-RUN: intercept chain-editor navigation CCs (jog turn, jog click,
+         * track buttons) BEFORE encoder accumulation or tool dispatch. Tool
+         * keeps everything else (pads, step buttons, knobs, transport, Shift).
+         * Back is conditionally intercepted: when the editor is in a sub-view
+         * (PATCHES, COMPONENT_*, KNOB_*, etc.) Back navigates up within the
+         * editor; at CHAIN_EDIT (the top level) Back is silent so the tool's
+         * own exit gesture (e.g. Menu) takes over. */
+        if (coRunChainEditSlot >= 0 && (status & 0xF0) === 0xB0) {
+            if (d1 === MoveMainKnob && coRunCedes(CORUN_GRP_JOG)) {
+                const delta = decodeDelta(d2);
+                if (delta !== 0) runCoRunChainEdit(function() { handleJog(delta); });
+                needsRedraw = true;
+                return;
+            }
+            if (d1 === MoveMainButton && d2 > 0 && coRunCedes(CORUN_GRP_JOG)) {
+                /* Mirror the non-overtake Shift+Click handler (line ~15259):
+                 * Shift+Click in CHAIN_EDIT → handleShiftSelect (enter
+                 * component edit). Plain Click → handleSelect. */
+                runCoRunChainEdit(function() {
+                    if (hostShiftHeld && view === VIEWS.CHAIN_EDIT && selectedChainComponent >= 0) {
+                        handleShiftSelect();
+                    } else if (hostShiftHeld && view === VIEWS.MASTER_FX && selectedMasterFxComponent >= 0 && selectedMasterFxComponent < 4) {
+                        enterMasterFxModuleSelect(selectedMasterFxComponent);
+                    } else {
+                        handleSelect();
+                    }
+                });
+                needsRedraw = true;
+                return;
+            }
+            /* Back during co-run: framework-reserved as exit gesture by
+             * default. When the tool sets CORUN_KEEP_BACK in keep_mask (opts
+             * out of the framework auto-exit so its peer UI can use Back for
+             * sub-view nav), the chain editor handles Back itself —
+             * deeper views call handleBack() to pop one level; at CHAIN_EDIT
+             * (the top of the editor's view stack) we end co-run, giving
+             * the chain-edit target the "Back exits at top, navigates within"
+             * UX even though the tool opted out. Other targets (move_native)
+             * still rely on the tool's own exit gesture; only chain-edit gets
+             * the auto-exit-at-top because only shadow_ui can see its own
+             * view depth. */
+            if (d1 === MoveBack && d2 > 0 && coRunCedes(CORUN_GRP_BACK)) {
+                if (coRunView !== VIEWS.CHAIN_EDIT) {
+                    runCoRunChainEdit(function() { handleBack(); });
+                    needsRedraw = true;
+                } else {
+                    if (typeof shadow_corun_end === "function") shadow_corun_end();
+                    coRunChainEditSlot = -1;
+                    coRunView = VIEWS.OVERTAKE_MODULE;
+                    needsRedraw = true;
+                }
+                return;
+            }
+            /* Shift (CC 49): give it ONLY to the chain editor. hostShiftHeld
+             * was already updated earlier (line ~15091) before this branch, so
+             * the editor's isShiftHeld()-based code paths see the right state.
+             * Eating it here prevents the tool from reacting (e.g. its own
+             * Shift+button shortcuts while you're navigating the editor). */
+            if (d1 === 49 && coRunCedes(CORUN_GRP_SHIFT)) {
+                needsRedraw = true;
+                return;
+            }
+            /* Track buttons: CC 43=Track 1 (slot 0), CC 40=Track 4 (slot 3) */
+            if (d1 >= 40 && d1 <= 43 && d2 > 0 && coRunCedes(CORUN_GRP_TRACK_BUTTONS)) {
+                const _slot = 43 - d1;
+                if (_slot >= 0 && _slot < SHADOW_UI_SLOTS && _slot !== coRunChainEditSlot) {
+                    coRunChainEditSlot = _slot;
+                    selectedSlot = _slot;
+                    if (typeof updateFocusedSlot === "function") updateFocusedSlot(_slot);
+                    selectedChainComponent = lastChainComponent[_slot] || 0;
+                    if (typeof loadChainConfigFromSlot === "function") loadChainConfigFromSlot(_slot);
+                    coRunView = VIEWS.CHAIN_EDIT;
+                    if (typeof shadow_corun_begin === "function") shadow_corun_begin(CORUN_TARGET_CHAIN_EDIT, _slot, 0);
+                    needsRedraw = true;
+                }
+                return;
+            }
+            /* Knob CCs (71-78): drive the focused chain component's params,
+             * mirroring the non-overtake editor path (adjustKnobAndShow, with the
+             * handleKnobTurn slot-global fallback). Wrapped in runCoRunChainEdit
+             * so getKnobContext resolves against the editor's view rather than
+             * OVERTAKE_MODULE (the context cache is keyed on view). Returns
+             * before the tool knob-accumulation below, so the tool no longer
+             * receives knob turns while co-run is active. Knob TOUCH notes still
+             * forward to the tool — intentional turn-only split. */
+            if (d1 >= KNOB_CC_START && d1 <= KNOB_CC_END && coRunCedes(CORUN_GRP_KNOBS)) {
+                const _kIdx = d1 - KNOB_CC_START;
+                const _kDelta = decodeDelta(d2);
+                if (_kDelta !== 0) {
+                    runCoRunChainEdit(function() {
+                        if (!adjustKnobAndShow(_kIdx, _kDelta)) handleKnobTurn(_kIdx, _kDelta);
+                    });
+                    needsRedraw = true;
+                }
+                return;
+            }
         }
 
         /* Accumulate encoder/jog CCs instead of forwarding immediately.
@@ -15895,10 +16202,58 @@ globalThis.onMidiMessageInternal = function(data) {
             }
         }
 
-        /* Route non-encoder MIDI to the overtake module immediately */
+        /* CO-RUN: knob capacitive touch (NoteOn for MoveKnob1Touch..8Touch;
+         * d2>0 = touch, d2==0 = release). Route to the chain editor for
+         * value-peek on touch and overlay dismiss on release, mirroring the
+         * non-overtake touch handlers, wrapped so getKnobContext resolves under
+         * the editor's view. Does NOT return — falls through to the tool forward
+         * below so the tool still receives both touch edges (it already gets these
+         * notes pre-change; keeping that avoids a stranded knobTouched on exit).
+         * Release drains BOTH the hierarchy (pendingHierKnob) and slot-global
+         * (pendingKnob) paths, which is what actually clears the value popup. */
+        if (coRunChainEditSlot >= 0 && (status & 0xF0) === MidiNoteOn &&
+                d1 >= MoveKnob1Touch && d1 <= MoveKnob8Touch && coRunCedes(CORUN_GRP_TOUCH)) {
+            const _tk = d1 - MoveKnob1Touch;
+            if (d2 > 0) {
+                runCoRunChainEdit(function() {
+                    const mmRole = getMultiMarkerKnobRole(_tk);
+                    if (mmRole) {
+                        if (mmRole.type === "marker") {
+                            selectActiveWavMarker(mmRole.member);
+                            const val = getSlotParam(hierEditorSlot, mmRole.member.fullKey);
+                            showOverlay(mmRole.member.meta.name || mmRole.member.key,
+                                        formatParamForOverlay(parseFloat(val), mmRole.member.meta));
+                        } else if (mmRole.type === "zoom") {
+                            const anchor = mmRole.anchor;
+                            const cur = getWavZoomLevel(hierEditorSlot, anchor.meta, anchor.fullKey);
+                            const factor = Math.pow(2, cur);
+                            const label = cur > 0.01 ? `${factor.toFixed(factor < 10 ? 1 : 0)}x` : "1x (off)";
+                            showOverlay("Zoom", label);
+                        }
+                    } else if (!showKnobOverlay(_tk)) {
+                        handleKnobTurn(_tk, 0);
+                    }
+                });
+            } else {
+                runCoRunChainEdit(function() {
+                    if (pendingHierKnobIndex === _tk) {
+                        processPendingHierKnob();
+                        pendingHierKnobIndex = -1;
+                        pendingHierKnobDelta = 0;
+                    }
+                    if (pendingKnobIndex === _tk && pendingKnobDelta !== 0) {
+                        refreshPendingKnobOverlay();
+                    }
+                });
+            }
+            needsRedraw = true;
+        }
+
+        /* Route non-encoder MIDI to the overtake module immediately, with
+         * the tool's real host APIs swapped in. */
         if (overtakeModuleCallbacks.onMidiMessageInternal) {
             try {
-                overtakeModuleCallbacks.onMidiMessageInternal(data);
+                runToolCallback(function() { overtakeModuleCallbacks.onMidiMessageInternal(data); });
                 needsRedraw = true;
             } catch (e) {
                 debugLog("OVERTAKE onMidiMessageInternal exception: " + e);
