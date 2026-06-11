@@ -21,12 +21,22 @@ import {
     announce, announceMenuItem
 } from '/data/UserData/schwung/shared/screen_reader.mjs';
 
+/* Throttle the FX editor's per-draw blocking GETs (slot bypass + LFO targets).
+ * These only change on user action, but the editor redraws periodically — so we
+ * cache and refresh every FX_STATE_POLL_EVERY draws (and immediately on a bus
+ * switch) instead of querying the param channel on every redraw. */
+const FX_STATE_POLL_EVERY = 8;
+let _fxStateDrawCount = 0;
+let _fxStateCacheBus = "";
+let _fxBypassCache = {};
+let _fxLfoTargetsCache = {};
+
 /* ---- Enter -------------------------------------------------------------- */
 
 export function enterMasterFxSettings() {
     const { scanForAudioFxModules, loadMasterFxChainConfig,
             getMasterFxSlotModule, MASTER_FX_CHAIN_COMPONENTS,
-            setView, VIEWS } = ctx;
+            activeFxBus, setView, VIEWS } = ctx;
 
     ctx.MASTER_FX_OPTIONS = scanForAudioFxModules();
     loadMasterFxChainConfig();
@@ -37,15 +47,16 @@ export function enterMasterFxSettings() {
 
     const comp = MASTER_FX_CHAIN_COMPONENTS[0];
     const moduleName = getMasterFxSlotModule(0) || "Empty";
-    announce(`Master FX, ${comp.label} ${moduleName}`);
+    announce(`${activeFxBus.title}, ${comp.label} ${moduleName}`);
 }
 
 /* ---- Display name (used in slot list) ----------------------------------- */
 
 export function getMasterFxDisplayName() {
-    const { masterFxConfig } = ctx;
+    const { masterFxConfig, activeFxBus } = ctx;
+    const slotCount = activeFxBus ? activeFxBus.slotCount : 4;
     const parts = [];
-    for (let i = 1; i <= 4; i++) {
+    for (let i = 1; i <= slotCount; i++) {
         const key = `fx${i}`;
         if (masterFxConfig[key]?.module) {
             parts.push(masterFxConfig[key].module);
@@ -62,7 +73,7 @@ export function drawMasterFx() {
             inMasterPresetPicker, inMasterFxSettingsMenu,
             selectingMasterFxModule, selectedMasterFxComponent,
             masterFxConfig, MASTER_FX_CHAIN_COMPONENTS, MASTER_FX_OPTIONS,
-            currentMasterPresetName, getMasterFxParam,
+            currentMasterPresetName, getMasterFxParam, activeFxBus,
             getModuleAbbrev, isTextEntryActive, drawTextEntry,
             drawHelpDetail, drawHelpList } = ctx;
 
@@ -112,7 +123,7 @@ export function drawMasterFx() {
         return;
     }
 
-    drawHeader("Master FX");
+    drawHeader(activeFxBus.title);
 
     const BOX_W = 22;
     const BOX_H = 16;
@@ -152,38 +163,56 @@ export function drawMasterFx() {
     /* Draw bypass 'B' marker above box, left side. Same style as the chain
      * editor: 3-wide × 4-tall glyph at iy=BOX_Y-6. Sits left of where the LFO
      * indicator is centered, so they coexist without overlap. */
+    /* Refresh the cached bypass + LFO-target state every Nth draw (or on bus
+     * switch) rather than on every periodic redraw — see FX_STATE_POLL_EVERY. */
     if (typeof shadow_get_param === "function") {
-        for (let i = 0; i < MASTER_FX_CHAIN_COMPONENTS.length; i++) {
-            const comp = MASTER_FX_CHAIN_COMPONENTS[i];
-            if (comp.key === "settings") continue;
-            const bypassed = parseInt(
-                shadow_get_param(0, `master_fx:${comp.key}:bypassed`) || "0", 10
-            ) === 1;
-            if (!bypassed) continue;
-            const x = START_X + i * (BOX_W + GAP);
-            const bx = x + 1;
-            const by = BOX_Y - 6;
-            /* "B" glyph: ##. / #.# / ##. / ### */
-            set_pixel(bx,     by,     1); set_pixel(bx + 1, by,     1);
-            set_pixel(bx,     by + 1, 1); set_pixel(bx + 2, by + 1, 1);
-            set_pixel(bx,     by + 2, 1); set_pixel(bx + 1, by + 2, 1);
-            set_pixel(bx,     by + 3, 1); set_pixel(bx + 1, by + 3, 1); set_pixel(bx + 2, by + 3, 1);
-        }
-    }
-
-    /* Draw LFO indicators above targeted FX boxes */
-    if (typeof shadow_get_param === "function") {
-        const mfxLfoTargets = {};
-        for (let li = 1; li <= 2; li++) {
-            const enabled = shadow_get_param(0, "master_fx:lfo" + li + ":enabled");
-            if (enabled === "1") {
-                const t = shadow_get_param(0, "master_fx:lfo" + li + ":target") || "";
-                if (t) {
-                    if (!mfxLfoTargets[t]) mfxLfoTargets[t] = {};
-                    mfxLfoTargets[t]["lfo" + li] = true;
+        _fxStateDrawCount++;
+        if (_fxStateCacheBus !== activeFxBus.id ||
+            (_fxStateDrawCount % FX_STATE_POLL_EVERY) === 0) {
+            _fxStateCacheBus = activeFxBus.id;
+            _fxBypassCache = {};
+            _fxLfoTargetsCache = {};
+            for (let i = 0; i < MASTER_FX_CHAIN_COMPONENTS.length; i++) {
+                const comp = MASTER_FX_CHAIN_COMPONENTS[i];
+                if (comp.key === "settings") continue;
+                _fxBypassCache[comp.key] = parseInt(
+                    shadow_get_param(0, activeFxBus.paramPrefix + comp.key + ":bypassed") || "0", 10
+                ) === 1;
+            }
+            if (activeFxBus.hasLfo) {
+                for (let li = 1; li <= 2; li++) {
+                    const enabled = shadow_get_param(0, "master_fx:lfo" + li + ":enabled");
+                    if (enabled === "1") {
+                        const t = shadow_get_param(0, "master_fx:lfo" + li + ":target") || "";
+                        if (t) {
+                            if (!_fxLfoTargetsCache[t]) _fxLfoTargetsCache[t] = {};
+                            _fxLfoTargetsCache[t]["lfo" + li] = true;
+                        }
+                    }
                 }
             }
         }
+    }
+
+    /* Draw bypass 'B' markers from cache. */
+    for (let i = 0; i < MASTER_FX_CHAIN_COMPONENTS.length; i++) {
+        const comp = MASTER_FX_CHAIN_COMPONENTS[i];
+        if (comp.key === "settings") continue;
+        if (!_fxBypassCache[comp.key]) continue;
+        const x = START_X + i * (BOX_W + GAP);
+        const bx = x + 1;
+        const by = BOX_Y - 6;
+        /* "B" glyph: ##. / #.# / ##. / ### */
+        set_pixel(bx,     by,     1); set_pixel(bx + 1, by,     1);
+        set_pixel(bx,     by + 1, 1); set_pixel(bx + 2, by + 1, 1);
+        set_pixel(bx,     by + 2, 1); set_pixel(bx + 1, by + 2, 1);
+        set_pixel(bx,     by + 3, 1); set_pixel(bx + 1, by + 3, 1); set_pixel(bx + 2, by + 3, 1);
+    }
+
+    /* Draw LFO indicators above targeted FX boxes (master bus only — sends
+     * have no LFOs). Reads the cached targets refreshed above. */
+    if (activeFxBus.hasLfo) {
+        const mfxLfoTargets = _fxLfoTargetsCache;
         /* 4px-high tiny indicators: ~1, ~2, or ~1+2 */
         /* Tilde: 4w x 2h squiggle (rows 1-2 of 4, padded top/bottom) */
         const TILDE_4PX = [0x0, 0x5, 0xA, 0x0];  /* .... / .#.# / #.#. / .... */
@@ -280,9 +309,9 @@ export function drawMasterFx() {
 
 function drawMasterFxSettingsMenu() {
     const { currentMasterPresetName, selectedMasterFxSetting,
-            getMasterFxSettingsItems, getMasterFxSettingValue } = ctx;
+            getMasterFxSettingsItems, getMasterFxSettingValue, activeFxBus } = ctx;
 
-    const title = currentMasterPresetName || "Master FX";
+    const title = currentMasterPresetName || activeFxBus.title;
     drawHeader(truncateText(title, 18));
 
     const items = getMasterFxSettingsItems();
@@ -330,9 +359,9 @@ function drawMasterFxModuleSelect() {
 
 function drawMasterPresetPicker() {
     const { masterPresets, selectedMasterPresetIndex,
-            currentMasterPresetName } = ctx;
+            currentMasterPresetName, activeFxBus } = ctx;
 
-    drawHeader("Master Presets");
+    drawHeader(activeFxBus.presetPickerTitle);
 
     const items = [{ name: "[New]", index: -1 }];
     for (let i = 0; i < masterPresets.length; i++) {

@@ -35,6 +35,8 @@ typedef struct shadow_chain_slot_t {
     int patch_index;
     int active;
     float volume;           /* 0.0 to 1.0, user-set level (never modified by mute/solo) */
+    float send_a;           /* 0.0 to 1.0, post-fader send level to Send A bus */
+    float send_b;           /* 0.0 to 1.0, post-fader send level to Send B bus */
     int muted;              /* 1 = muted (Mute+Track or Move speakerOn sync) */
     int soloed;             /* 1 = soloed (Shift+Mute+Track or Move solo-cue sync) */
     int forward_channel;    /* -2 = passthrough, -1 = auto, 0-15 = forward MIDI to this channel */
