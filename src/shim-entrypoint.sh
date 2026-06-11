@@ -28,6 +28,22 @@ if [ ! -d "$SCHWUNG_DIR" ] && [ -d "$OLD_DIR" ] && [ ! -L "$OLD_DIR" ]; then
     fi
 fi
 
+# === Factory-reset / missing-payload safety net ===
+# A factory reset (or any wipe of /data) removes the entire Schwung payload,
+# but our root-partition hooks survive: this script IS /opt/move/Move, the
+# stock binary is at /opt/move/MoveOriginal, and on glibc 2.35+ images
+# /usr/lib/schwung-shim.so is a real copy (not a symlink). If we went ahead
+# and exec'd MoveOriginal with LD_PRELOAD=schwung-shim.so, the shim would load
+# and immediately fail — it needs /data for SHM, config, modules, and the
+# link-subscriber — crashing MoveOriginal on every boot. That is exactly the
+# "Move doesn't boot after a factory reset" failure. So if the payload on
+# /data is gone, launch stock Move with no shim. The device always boots; a
+# later reinstall restores Schwung. Needs no root, so it works under the
+# `start-stop-daemon -c ableton` launch context.
+if [ ! -f "$SCHWUNG_DIR/schwung-shim.so" ] && [ -x /opt/move/MoveOriginal ]; then
+    exec /opt/move/MoveOriginal
+fi
+
 # === Fix /usr/lib/ shim symlink if stale ===
 # After migration, ensure the shim symlink points to the right file
 if [ -f "$SCHWUNG_DIR/schwung-shim.so" ]; then
