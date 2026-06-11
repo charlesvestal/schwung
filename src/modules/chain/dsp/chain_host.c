@@ -5578,6 +5578,65 @@ static int v2_scan_patches(chain_instance_t *inst) {
     return inst->patch_count;
 }
 
+/* Atomically write a buffer to path via temp file + rename, checking every
+ * step so disk-full/short writes fail loudly instead of leaving a corrupt
+ * file in place. Returns 0 on success, -1 on failure (callers log). */
+static int chain_write_file_atomic(const char *path, const char *data, size_t len) {
+    char tmppath[MAX_PATH_LEN + 8];
+    snprintf(tmppath, sizeof(tmppath), "%s.tmp", path);
+    FILE *f = fopen(tmppath, "w");
+    if (!f) return -1;
+    size_t written = fwrite(data, 1, len, f);
+    int close_err = fclose(f);
+    if (written != len || close_err != 0) {
+        remove(tmppath);
+        return -1;
+    }
+    if (rename(tmppath, path) != 0) {
+        remove(tmppath);
+        return -1;
+    }
+    return 0;
+}
+
+/* Write a patch file as {name, version, chain}. Heap-sized — chain JSON can
+ * exceed 8 KB (fat synth state up to SHADOW_PARAM_VALUE_LEN), so a fixed
+ * buffer would silently truncate the saved patch. */
+static int v2_write_patch_file(chain_instance_t *inst, const char *filepath,
+                               const char *name, const char *json_data) {
+    char msg[256];
+    size_t cap = strlen(json_data) + strlen(name) + 128;
+    char *final_json = malloc(cap);
+    if (!final_json) {
+        snprintf(msg, sizeof(msg), "[v2] Patch save failed: out of memory (%zu bytes)", cap);
+        v2_chain_log(inst, msg);
+        return -1;
+    }
+    int n = snprintf(final_json, cap,
+        "{\n"
+        "    \"name\": \"%s\",\n"
+        "    \"version\": 1,\n"
+        "    \"chain\": %s\n"
+        "}\n",
+        name, json_data);
+    if (n < 0 || (size_t)n >= cap) {
+        free(final_json);
+        snprintf(msg, sizeof(msg), "[v2] Patch save failed: JSON larger than buffer (%d/%zu)", n, cap);
+        v2_chain_log(inst, msg);
+        return -1;
+    }
+
+    int rc = chain_write_file_atomic(filepath, final_json, (size_t)n);
+    free(final_json);
+    if (rc != 0) {
+        snprintf(msg, sizeof(msg), "[v2] Patch write failed: %s", filepath);
+        v2_chain_log(inst, msg);
+        return -1;
+    }
+    chown_to_ableton(filepath);
+    return 0;
+}
+
 /* V2 save patch - uses instance data instead of globals */
 static int v2_save_patch(chain_instance_t *inst, const char *json_data) {
     char msg[256];
@@ -5674,27 +5733,9 @@ static int v2_save_patch(chain_instance_t *inst, const char *json_data) {
         escaped_name[di] = '\0';
     }
 
-    /* Build final JSON with generated name */
-    char final_json[8192];
-    snprintf(final_json, sizeof(final_json),
-        "{\n"
-        "    \"name\": \"%s\",\n"
-        "    \"version\": 1,\n"
-        "    \"chain\": %s\n"
-        "}\n",
-        escaped_name, json_data);
-
-    /* Write file */
-    FILE *f = fopen(filepath, "w");
-    if (!f) {
-        snprintf(msg, sizeof(msg), "[v2] Failed to create patch file: %s", filepath);
-        v2_chain_log(inst, msg);
+    if (v2_write_patch_file(inst, filepath, escaped_name, json_data) != 0) {
         return -1;
     }
-
-    fwrite(final_json, 1, strlen(final_json), f);
-    fclose(f);
-    chown_to_ableton(filepath);
 
     snprintf(msg, sizeof(msg), "[v2] Saved patch: %s", filepath);
     v2_chain_log(inst, msg);
@@ -5721,27 +5762,9 @@ static int v2_update_patch(chain_instance_t *inst, int index, const char *json_d
         name[sizeof(name) - 1] = '\0';
     }
 
-    /* Build final JSON with name */
-    char final_json[8192];
-    snprintf(final_json, sizeof(final_json),
-        "{\n"
-        "    \"name\": \"%s\",\n"
-        "    \"version\": 1,\n"
-        "    \"chain\": %s\n"
-        "}\n",
-        name, json_data);
-
-    /* Write file */
-    FILE *f = fopen(filepath, "w");
-    if (!f) {
-        snprintf(msg, sizeof(msg), "[v2] Failed to update patch file: %s", filepath);
-        v2_chain_log(inst, msg);
+    if (v2_write_patch_file(inst, filepath, name, json_data) != 0) {
         return -1;
     }
-
-    fwrite(final_json, 1, strlen(final_json), f);
-    fclose(f);
-    chown_to_ableton(filepath);
 
     snprintf(msg, sizeof(msg), "[v2] Updated patch: %s", filepath);
     v2_chain_log(inst, msg);
@@ -5853,19 +5876,59 @@ static void scan_master_presets(void) {
 }
 
 /* Helper to extract JSON object section as string */
-static int extract_fx_section(const char *json, const char *key, char *out, int out_len) {
+/* Extract one FX section as a malloc'd string ("null" if absent). Heap-sized
+ * because FX state blobs can exceed any reasonable fixed buffer; truncating
+ * mid-JSON would corrupt the saved preset. Returns NULL on OOM. */
+static char *extract_fx_section_dup(const char *json, const char *key) {
     const char *start = NULL;
     const char *end = NULL;
     if (json_get_section_bounds(json, key, &start, &end) != 0) {
-        strncpy(out, "null", out_len - 1);
-        out[out_len - 1] = '\0';
-        return -1;
+        return strdup("null");
     }
-    int len = (int)(end - start + 1);
-    if (len >= out_len) len = out_len - 1;
+    size_t len = (size_t)(end - start + 1);
+    char *out = malloc(len + 1);
+    if (!out) return NULL;
     memcpy(out, start, len);
     out[len] = '\0';
-    return 0;
+    return out;
+}
+
+/* Build the wrapped master-preset JSON on the heap. Returns NULL on OOM or
+ * format overflow (callers log and fail the save). */
+static char *build_master_preset_json(const char *name, const char *json_str) {
+    char *fx1 = extract_fx_section_dup(json_str, "fx1");
+    char *fx2 = extract_fx_section_dup(json_str, "fx2");
+    char *fx3 = extract_fx_section_dup(json_str, "fx3");
+    char *fx4 = extract_fx_section_dup(json_str, "fx4");
+    char *out = NULL;
+    if (fx1 && fx2 && fx3 && fx4) {
+        size_t cap = strlen(fx1) + strlen(fx2) + strlen(fx3) + strlen(fx4)
+                   + strlen(name) + 160;
+        out = malloc(cap);
+        if (out) {
+            int n = snprintf(out, cap,
+                "{\n"
+                "    \"name\": \"%s\",\n"
+                "    \"version\": 1,\n"
+                "    \"master_fx\": {\n"
+                "        \"fx1\": %s,\n"
+                "        \"fx2\": %s,\n"
+                "        \"fx3\": %s,\n"
+                "        \"fx4\": %s\n"
+                "    }\n"
+                "}\n",
+                name, fx1, fx2, fx3, fx4);
+            if (n < 0 || (size_t)n >= cap) {
+                free(out);
+                out = NULL;
+            }
+        }
+    }
+    free(fx1);
+    free(fx2);
+    free(fx3);
+    free(fx4);
+    return out;
 }
 
 static int save_master_preset(const char *json_str) {
@@ -5896,39 +5959,21 @@ static int save_master_preset(const char *json_str) {
     char path[MAX_PATH_LEN];
     snprintf(path, sizeof(path), "%s/%s.json", PRESETS_MASTER_DIR, filename);
 
-    /* Extract each FX section */
-    char fx1[512], fx2[512], fx3[512], fx4[512];
-    extract_fx_section(json_str, "fx1", fx1, sizeof(fx1));
-    extract_fx_section(json_str, "fx2", fx2, sizeof(fx2));
-    extract_fx_section(json_str, "fx3", fx3, sizeof(fx3));
-    extract_fx_section(json_str, "fx4", fx4, sizeof(fx4));
+    /* Build wrapped JSON (heap-sized; FX state can exceed fixed buffers) */
+    char *final_json = build_master_preset_json(name, json_str);
+    if (!final_json) {
+        chain_log("Failed to build master preset JSON (out of memory)");
+        return -1;
+    }
 
-    /* Build wrapped JSON */
-    char final_json[8192];
-    snprintf(final_json, sizeof(final_json),
-        "{\n"
-        "    \"name\": \"%s\",\n"
-        "    \"version\": 1,\n"
-        "    \"master_fx\": {\n"
-        "        \"fx1\": %s,\n"
-        "        \"fx2\": %s,\n"
-        "        \"fx3\": %s,\n"
-        "        \"fx4\": %s\n"
-        "    }\n"
-        "}\n",
-        name, fx1, fx2, fx3, fx4);
-
-    /* Write file */
-    FILE *f = fopen(path, "w");
-    if (!f) {
+    int rc = chain_write_file_atomic(path, final_json, strlen(final_json));
+    free(final_json);
+    if (rc != 0) {
         char msg[256];
         snprintf(msg, sizeof(msg), "Failed to save master preset: %s", path);
         chain_log(msg);
         return -1;
     }
-
-    fputs(final_json, f);
-    fclose(f);
     {
         char msg[256];
         snprintf(msg, sizeof(msg), "Saved master preset: %s", name);
@@ -5953,36 +5998,23 @@ static int update_master_preset(int index, const char *json_str) {
         strncpy(name, master_preset_names[index], sizeof(name) - 1);
     }
 
-    /* Extract each FX section */
-    char fx1[512], fx2[512], fx3[512], fx4[512];
-    extract_fx_section(json_str, "fx1", fx1, sizeof(fx1));
-    extract_fx_section(json_str, "fx2", fx2, sizeof(fx2));
-    extract_fx_section(json_str, "fx3", fx3, sizeof(fx3));
-    extract_fx_section(json_str, "fx4", fx4, sizeof(fx4));
-
-    /* Build wrapped JSON */
-    char final_json[8192];
-    snprintf(final_json, sizeof(final_json),
-        "{\n"
-        "    \"name\": \"%s\",\n"
-        "    \"version\": 1,\n"
-        "    \"master_fx\": {\n"
-        "        \"fx1\": %s,\n"
-        "        \"fx2\": %s,\n"
-        "        \"fx3\": %s,\n"
-        "        \"fx4\": %s\n"
-        "    }\n"
-        "}\n",
-        name, fx1, fx2, fx3, fx4);
-
-    /* Write to existing path */
-    FILE *f = fopen(master_preset_paths[index], "w");
-    if (!f) {
+    /* Build wrapped JSON (heap-sized; FX state can exceed fixed buffers) */
+    char *final_json = build_master_preset_json(name, json_str);
+    if (!final_json) {
+        chain_log("Failed to build master preset JSON (out of memory)");
         return -1;
     }
 
-    fputs(final_json, f);
-    fclose(f);
+    int rc = chain_write_file_atomic(master_preset_paths[index], final_json,
+                                     strlen(final_json));
+    free(final_json);
+    if (rc != 0) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Failed to update master preset: %s",
+                 master_preset_paths[index]);
+        chain_log(msg);
+        return -1;
+    }
 
     {
         char msg[256];
