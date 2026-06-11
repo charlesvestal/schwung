@@ -25,6 +25,7 @@
 #include <math.h>
 #include <linux/spi/spidev.h>
 #include <pthread.h>
+#include <sched.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <netinet/in.h>
@@ -44,6 +45,7 @@
 #include "host/link_audio.h"
 #include "host/shadow_sampler.h"
 #include "host/shadow_set_pages.h"
+#include "host/shim_worker.h"
 #include "host/shadow_dbus.h"
 #include "host/shadow_chain_mgmt.h"
 #include "host/shadow_link_audio.h"
@@ -881,6 +883,11 @@ static int shim_run_command(const char *const argv[]) {
     pid_t pid = fork();
     if (pid < 0) return -1;
     if (pid == 0) {
+        /* Drop inherited SCHED_FIFO — children of MoveOriginal's audio
+         * threads otherwise run at RT priority, competing with the SPI
+         * driver (same fix as shadow_process.c's launchers). */
+        struct sched_param sp = { .sched_priority = 0 };
+        sched_setscheduler(0, SCHED_OTHER, &sp);
         dup2(STDOUT_FILENO, STDERR_FILENO);
         execvp(argv[0], (char *const *)argv);
         _exit(127);
@@ -2145,14 +2152,13 @@ static void shadow_inprocess_mix_from_buffer(void) {
                     static FILE *align_synth_f = NULL;
                     static int align_dump_frames = 0;
                     if (align_dump_frames == 0 &&
-                        access("/data/UserData/schwung/align_dump_trigger",
-                               F_OK) == 0) {
+                        shim_debug_flag_consume(SHIM_FLAG_ALIGN_DUMP)) {
+                        /* Worker already unlinked the trigger file. */
                         align_move_f = fopen(
                             "/data/UserData/schwung/slot0_move_track.pcm", "wb");
                         align_synth_f = fopen(
                             "/data/UserData/schwung/slot0_synth_src.pcm", "wb");
                         align_dump_frames = 1000;  /* ~2.9 s */
-                        unlink("/data/UserData/schwung/align_dump_trigger");
                     }
                     if (align_dump_frames > 0) {
                         if (align_move_f && have_move_track) {
@@ -2194,10 +2200,9 @@ static void shadow_inprocess_mix_from_buffer(void) {
                             fwrite(fx_buf, sizeof(int16_t),
                                    FRAMES_PER_BLOCK * 2, mpre_f[s]);
                     }
-                    /* Arm check only on slot==0 to avoid redundant stats. */
+                    /* Arm check only on slot==0 to avoid redundant work. */
                     if (s == 0 && main_dump_frames == 0 &&
-                        access("/data/UserData/schwung/main_fx_dump_trigger",
-                               F_OK) == 0) {
+                        shim_debug_flag_consume(SHIM_FLAG_MAIN_FX_DUMP)) {
                         for (int t = 0; t < SHADOW_CHAIN_INSTANCES; t++) {
                             char p[96];
                             snprintf(p, sizeof(p),
@@ -2208,7 +2213,6 @@ static void shadow_inprocess_mix_from_buffer(void) {
                             mpost_f[t] = fopen(p, "wb");
                         }
                         main_dump_frames = 100;
-                        unlink("/data/UserData/schwung/main_fx_dump_trigger");
                         /* Record this frame too */
                         if (mpre_f[s])
                             fwrite(fx_buf, sizeof(int16_t),
@@ -4632,12 +4636,14 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
         }
     }
 
-    /* SPI buffer snapshot: dump full buffer to file when trigger exists */
+    /* SPI buffer snapshot: dump full buffer to file when trigger exists.
+     * Flag presence is published by the shim worker (1 Hz) — no syscalls
+     * here. The dump writes themselves stay on this thread by design —
+     * arming a debug tap is accepted to glitch audio. */
     {
         static int snap_cooldown = 0;
         if (snap_cooldown > 0) snap_cooldown--;
-        if (snap_cooldown == 0 &&
-            access("/data/UserData/schwung/spi_snap_trigger", F_OK) == 0) {
+        if (snap_cooldown == 0 && (shim_debug_flags & SHIM_FLAG_SPI_SNAP)) {
             /* Write both output (0-2047) and input (2048-4095) regions */
             static int snap_seq = 0;
             char path[128];
@@ -4663,23 +4669,15 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
         }
     }
 
-    /* SPI SysEx injection: send audio source change command to XMOS when trigger exists.
-     * File content is the raw value byte (e.g. "0" or "1"). */
+    /* SPI SysEx injection: send audio source change command to XMOS.
+     * The worker reads + unlinks the trigger file and publishes the value;
+     * here we only consume it — no file I/O on the SPI thread. */
     {
         static int inject_cooldown = 0;
         if (inject_cooldown > 0) inject_cooldown--;
-        if (inject_cooldown == 0 &&
-            access("/data/UserData/schwung/spi_sysex_inject", F_OK) == 0) {
-            /* Read the value from the file */
-            int val_byte = 0;
-            int ffd = open("/data/UserData/schwung/spi_sysex_inject", O_RDONLY);
-            if (ffd >= 0) {
-                char vbuf[8] = {0};
-                read(ffd, vbuf, sizeof(vbuf) - 1);
-                close(ffd);
-                val_byte = atoi(vbuf);
-            }
-            unlink("/data/UserData/schwung/spi_sysex_inject");
+        if (inject_cooldown == 0 && shim_pending_sysex_inject >= 0) {
+            int val_byte = shim_pending_sysex_inject;
+            shim_pending_sysex_inject = -1;
 
             /* Write SysEx as USB-MIDI packets into shadow output MIDI region.
              * F0 00 21 1D 01 01 37 12 <val> 00 00 00 00 00 00 F7
@@ -4715,7 +4713,7 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     {
         static int xmos_log_checked = 0;
         if (xmos_log_checked++ % 44 == 0) {  /* check every ~1s */
-            int want = (access("/data/UserData/schwung/log_xmos_sysex_on", F_OK) == 0);
+            int want = (shim_debug_flags & SHIM_FLAG_XMOS_LOG) != 0;
             if (want && xmos_log_fd < 0) {
                 xmos_log_fd = open("/data/UserData/schwung/xmos_sysex.txt",
                                    O_WRONLY | O_CREAT | O_APPEND, 0644);
@@ -4797,7 +4795,7 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
         static int midi_log_fd = -1;
         static int midi_log_checked = 0;
         if (midi_log_checked++ % 4400 == 0) {  /* check every ~10s */
-            int want = (access("/data/UserData/schwung/spi_midi_log_on", F_OK) == 0);
+            int want = (shim_debug_flags & SHIM_FLAG_SPI_MIDI_LOG) != 0;
             if (want && midi_log_fd < 0) {
                 midi_log_fd = open("/data/UserData/schwung/spi_midi_log.txt",
                                    O_WRONLY | O_CREAT | O_APPEND, 0644);
@@ -4878,13 +4876,15 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     /* === HEARTBEAT (every ~5700 frames / ~100s) === */
     /* Heartbeat logging moved to background timer thread to avoid I/O in SPI path */
 
-    /* === SET DETECTION (poll every ~1.5s) === */
+    /* === SET DETECTION ===
+     * The filesystem scan (Settings.json + per-Set getxattr) runs on the
+     * shim worker thread; here we only consume its published snapshot. */
     {
         static uint32_t set_poll_counter = 0;
         set_poll_counter++;
         if (set_poll_counter >= 500) {  /* ~1.5s at 44100/128 */
             set_poll_counter = 0;
-            shadow_poll_current_set();
+            shadow_set_pages_consume();
         }
     }
 
@@ -6025,40 +6025,14 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                  * doesn't overwrite pre-suspend LED state */
                 led_queue_freeze_jack_sysex_cache();
             } else {
-                /* Read exiting module ID and run per-module hook if it exists,
-                 * otherwise fall back to the global hook for backward compat. */
-                {
-                    char module_id[64] = {0};
-                    FILE *f = fopen("/data/UserData/schwung/hooks/.exiting-module-id", "r");
-                    if (f) {
-                        if (fgets(module_id, sizeof(module_id), f)) {
-                            char *nl = strchr(module_id, '\n');
-                            if (nl) *nl = '\0';
-                        }
-                        fclose(f);
-                        unlink("/data/UserData/schwung/hooks/.exiting-module-id");
-                    }
-
-                    char hook_path[256];
-                    int have_per_module = 0;
-                    if (module_id[0]) {
-                        snprintf(hook_path, sizeof(hook_path),
-                                 "/data/UserData/schwung/hooks/overtake-exit-%s.sh", module_id);
-                        have_per_module = (access(hook_path, X_OK) == 0);
-                    }
-
-                    if (have_per_module) {
-                        char cmd[512];
-                        snprintf(cmd, sizeof(cmd), "%s &", hook_path);
-                        system(cmd);
-                    } else if (!module_id[0]) {
-                        /* No module ID file — old-style exit, run global hook for backward compat */
-                        system("sh -c 'test -x /data/UserData/schwung/hooks/overtake-exit.sh && "
-                               "/data/UserData/schwung/hooks/overtake-exit.sh' &");
-                    }
-                    /* If module ID was set but no per-module hook exists, skip cleanup —
-                     * don't run the global hook which may belong to another module */
-                }
+                /* Defer hook resolution + execution to the shim worker:
+                 * reading .exiting-module-id and fork/exec'ing the hook are
+                 * file I/O + process spawning, never allowed on the SPI
+                 * thread (the old shell-out also inherited FIFO 90). The
+                 * worker picks this up within ~200 ms — hooks were
+                 * backgrounded with '&' anyway, so the latency is
+                 * unobservable. */
+                shim_worker_post(SHIM_EVT_OVERTAKE_EXIT_HOOK);
                 /* Clear JACK LED cache on clean exit */
                 led_queue_clear_jack_cache();
             }
@@ -7434,8 +7408,8 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         if (slot_post_f[s]) { fclose(slot_post_f[s]); slot_post_f[s] = NULL; }
                     }
                 }
-            } else if (access("/data/UserData/schwung/slot_fx_dump_trigger",
-                              F_OK) == 0) {
+            } else if (shim_debug_flag_consume(SHIM_FLAG_SLOT_FX_DUMP)) {
+                /* Worker already unlinked the trigger file. */
                 for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
                     char p[96];
                     snprintf(p, sizeof(p),
@@ -7446,7 +7420,6 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     slot_post_f[s] = fopen(p, "wb");
                 }
                 slot_dump_frames = 100;  /* ~290ms */
-                unlink("/data/UserData/schwung/slot_fx_dump_trigger");
             }
         }
 
@@ -7482,10 +7455,10 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
         shadow_control->restart_move = 0;
         shadow_control->should_exit = 1;  /* Tell shadow_ui to exit */
         shadow_log("Restart requested by shadow UI — restarting Move");
-        /* Use restart script for clean restart (kill as root, start fresh).
-         * Fork+exec won't work because MoveOriginal has file capabilities
-         * that trigger AT_SECURE, blocking LD_PRELOAD from a non-root process. */
-        system("/data/UserData/schwung/restart-move.sh");
+        /* Defer to the worker: a blocking shell-out here stalls the SPI
+         * thread while the script tears Move down. The worker runs it
+         * within ~200 ms (and carries the AT_SECURE/root rationale). */
+        shim_worker_post(SHIM_EVT_RESTART_MOVE);
     }
 
 post_timing:
@@ -7944,6 +7917,10 @@ static void shim_spi_init(void)
         pthread_create(&tid, NULL, spi_timing_logger_thread, NULL);
         pthread_detach(tid);
     }
+
+    /* Start the shim worker (debug-flag polling, deferred hooks, set scan) —
+     * everything the SPI callbacks must not do themselves. */
+    shim_worker_start();
 
     /* Start LED capture logger thread (gated by flag file) */
     {
