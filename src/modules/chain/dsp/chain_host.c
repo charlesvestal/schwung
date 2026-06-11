@@ -865,17 +865,30 @@ static int chain_get_clock_status(void) {
     uint64_t now_ms = get_time_ms();
     chain_refresh_clock_output_enabled(now_ms);
 
-    if (!g_clock_output_enabled) {
-        return MOVE_CLOCK_STATUS_UNAVAILABLE;
-    }
+    /* Move's internal sequencer clock now reaches us on cable 0 regardless of
+     * the MIDI Clock Out setting (the shim broadcasts cable-0 realtime to all
+     * slots). Derive transport state from actual clock activity, not from the
+     * Clock Out preference — otherwise, with Clock Out off, we'd always report
+     * UNAVAILABLE and clock-driven plugins (e.g. breakbeat treats UNAVAILABLE
+     * as "keep running") would never see transport STOP. */
+    int have_clock = (g_clock_last_tick_ms > 0) &&
+                     ((now_ms - g_clock_last_tick_ms) <= CLOCK_TICK_STALE_MS);
 
-    if (g_clock_transport_running &&
-        g_clock_last_tick_ms > 0 &&
-        (now_ms - g_clock_last_tick_ms) <= CLOCK_TICK_STALE_MS) {
+    if (g_clock_transport_running && have_clock) {
         return MOVE_CLOCK_STATUS_RUNNING;
     }
 
-    return MOVE_CLOCK_STATUS_STOPPED;
+    /* Ticks aren't arriving. If we've ever seen the transport (a prior tick) or
+     * Clock Out is explicitly enabled, this is a real STOP. Stop is reported
+     * instantly when Move emits 0xFC on cable 0, otherwise within
+     * CLOCK_TICK_STALE_MS via tick staleness. Only when no clock has EVER
+     * arrived AND Clock Out is off do we genuinely not know — report
+     * UNAVAILABLE so the plugin free-runs (legacy behaviour). */
+    if (g_clock_last_tick_ms > 0 || g_clock_output_enabled) {
+        return MOVE_CLOCK_STATUS_STOPPED;
+    }
+
+    return MOVE_CLOCK_STATUS_UNAVAILABLE;
 }
 
 static void chain_update_clock_runtime(const uint8_t *msg, int len) {

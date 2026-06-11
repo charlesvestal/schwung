@@ -1228,9 +1228,15 @@ static void shadow_inprocess_process_midi(void) {
                 overtake_dsp_gen->on_midi(overtake_dsp_gen_inst, msg, 1, MOVE_MIDI_SOURCE_EXTERNAL);
             }
 
-            /* Only broadcast cable 2 (external USB) clock to shadow slots.
-             * Cable 0 = internal, cable 1 = TRS - both are Move's own output */
-            if (cable != 2) {
+            /* Broadcast Move's internal transport clock (cable 0) to all
+             * shadow slots. Cable 0 is always populated when the sequencer
+             * runs, independent of the user's MIDI Clock Out setting — so
+             * chain synths sync off the internal clock with no plugin changes
+             * and without requiring Clock Out. Mirrors the sampler_on_clock
+             * and overtake-DSP cable-0 taps above. (Previously cable 2, which
+             * is only present when Clock Out is enabled — the source of the
+             * "plugins need MIDI Out for sync" friction.) */
+            if (cable != 0) {
                 continue;
             }
             /* Broadcast to all active slots */
