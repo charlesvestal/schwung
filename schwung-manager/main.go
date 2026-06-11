@@ -2069,12 +2069,13 @@ var settingsToShadowConfig = map[string]string{
 
 // settingsToFeatures maps schema keys to features.json keys.
 var settingsToFeatures = map[string]string{
-	"display_mirror":     "display_mirror_enabled",
-	"set_pages_enabled":  "set_pages_enabled",
-	"link_audio_routing": "link_audio_enabled",
-	"skipback_shortcut":  "skipback_require_volume",
-	"skipback_seconds":   "skipback_seconds",
-	"speaker_eq_mode":    "speaker_eq_mode",
+	"display_mirror":         "display_mirror_enabled",
+	"set_pages_enabled":      "set_pages_enabled",
+	"link_audio_routing":     "link_audio_enabled",
+	"skipback_shortcut":      "skipback_require_volume",
+	"skipback_seconds":       "skipback_seconds",
+	"speaker_eq_mode":        "speaker_eq_mode",
+	"midi_indicator_enabled": "midi_indicator_enabled",
 }
 
 func (app *App) handleConfig(w http.ResponseWriter, r *http.Request) {
