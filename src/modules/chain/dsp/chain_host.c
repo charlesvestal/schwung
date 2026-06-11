@@ -6083,8 +6083,16 @@ static int load_master_preset_json(int index, char *buf, int buf_len) {
 
 /* Debug logging helper for parsing */
 static void parse_debug_log(const char *msg) {
-    struct stat st;
-    if (stat(CHAIN_DEBUG_FLAG_PATH, &st) != 0) return;
+    /* Cached flag check: this runs on every v2_set_param (every knob tick,
+     * on the SPI thread) — a stat() per call is RT-path file I/O. Re-check
+     * the flag every 64th call instead. */
+    static int cached = -1;
+    static unsigned counter = 0;
+    if (cached < 0 || (counter++ % 64 == 0)) {
+        struct stat st;
+        cached = (stat(CHAIN_DEBUG_FLAG_PATH, &st) == 0);
+    }
+    if (!cached) return;
     FILE *dbg = fopen(CHAIN_DEBUG_LOG_PATH, "a");
     if (dbg) {
         fprintf(dbg, "%s\n", msg);

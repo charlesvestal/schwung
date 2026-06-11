@@ -402,8 +402,53 @@ void shadow_handle_set_loaded(const char *set_name, const char *uuid) {
     }
 }
 
+/* ============================================================================
+ * Current-set snapshot (worker → SPI thread)
+ *
+ * shadow_poll_current_set() runs on the shim worker thread (it walks the
+ * filesystem: Settings.json + per-Set getxattr — never allowed on the SPI
+ * thread). Its result is published through this seqlock so the SPI path
+ * keeps calling shadow_handle_set_loaded() on its own thread, preserving
+ * the existing ui_flags / sampler_current_set_* threading semantics.
+ * ============================================================================ */
+
+static struct {
+    volatile uint32_t seq;   /* odd while the worker is writing */
+    char name[128];
+    char uuid[64];
+} set_snapshot;
+
+static void shadow_set_pages_publish(const char *name, const char *uuid)
+{
+    set_snapshot.seq++;            /* odd: write in progress */
+    __sync_synchronize();
+    snprintf(set_snapshot.name, sizeof(set_snapshot.name), "%s", name ? name : "");
+    snprintf(set_snapshot.uuid, sizeof(set_snapshot.uuid), "%s", uuid ? uuid : "");
+    __sync_synchronize();
+    set_snapshot.seq++;            /* even: stable */
+}
+
+/* Called from the SPI path. Cheap: two volatile reads + memcpy; the
+ * dedupe inside shadow_handle_set_loaded makes repeat delivery a no-op. */
+void shadow_set_pages_consume(void)
+{
+    char name[128];
+    char uuid[64];
+    uint32_t seq1 = set_snapshot.seq;
+    if (seq1 & 1u) return;                  /* write in progress */
+    if (!set_snapshot.name[0]) return;      /* nothing published yet */
+    memcpy(name, (const void *)set_snapshot.name, sizeof(name));
+    memcpy(uuid, (const void *)set_snapshot.uuid, sizeof(uuid));
+    __sync_synchronize();
+    if (set_snapshot.seq != seq1) return;   /* torn read — next frame */
+    name[sizeof(name) - 1] = '\0';
+    uuid[sizeof(uuid) - 1] = '\0';
+    shadow_handle_set_loaded(name, uuid);
+}
+
 /* Poll Settings.json for currentSongIndex changes, then match via xattr.
- * Called periodically from ioctl tick (~every 5 seconds). */
+ * Runs on the shim worker thread (~every 1.4 s); publishes results via the
+ * snapshot above instead of calling shadow_handle_set_loaded directly. */
 void shadow_poll_current_set(void)
 {
     static const char settings_path[] = "/data/UserData/settings/Settings.json";
@@ -469,7 +514,7 @@ void shadow_poll_current_set(void)
         while ((sub = readdir(uuid_dir)) != NULL) {
             if (sub->d_name[0] == '.') continue;
             /* This subdirectory name is the set name */
-            shadow_handle_set_loaded(sub->d_name, entry->d_name);
+            shadow_set_pages_publish(sub->d_name, entry->d_name);
             handled = 1;
             break;
         }
@@ -499,7 +544,7 @@ void shadow_poll_current_set(void)
     snprintf(pending_name, sizeof(pending_name), "New Set %d", song_index + 1);
     snprintf(pending_uuid, sizeof(pending_uuid), "__pending-%d-%u",
              song_index, (unsigned)sampler_pending_set_seq);
-    shadow_handle_set_loaded(pending_name, pending_uuid);
+    shadow_set_pages_publish(pending_name, pending_uuid);
 }
 
 /* ============================================================================
