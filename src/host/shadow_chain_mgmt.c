@@ -60,6 +60,15 @@ int shadow_inprocess_ready = 0;
 /* Master FX slots */
 master_fx_slot_t shadow_master_fx_slots[MASTER_FX_SLOTS];
 
+/* Send FX slots */
+master_fx_slot_t shadow_send_fx_slots[SEND_BUS_COUNT][SEND_FX_SLOTS];
+
+/* Per-bus send return level (default unity) */
+float shadow_send_return_level[SEND_BUS_COUNT] = { 1.0f, 1.0f };
+
+/* Send A -> Send B routing level (0 = off). Parallel: A still returns to master. */
+float shadow_send_a_to_b_level = 0.0f;
+
 /* Master FX LFOs */
 lfo_state_t shadow_master_fx_lfos[MASTER_FX_LFO_COUNT];
 static float mfx_lfo_base_value[MASTER_FX_LFO_COUNT];
@@ -415,6 +424,8 @@ void shadow_chain_defaults(void) {
         shadow_chain_slots[i].patch_index = -1;
         shadow_chain_slots[i].channel = shadow_chain_parse_channel(1 + i);
         shadow_chain_slots[i].volume = 1.0f;
+        shadow_chain_slots[i].send_a = 0.0f;
+        shadow_chain_slots[i].send_b = 0.0f;
         shadow_chain_slots[i].muted = 0;
         shadow_chain_slots[i].soloed = 0;
         shadow_chain_slots[i].forward_channel = -1;
@@ -668,6 +679,148 @@ void shadow_master_fx_unload_all(void) {
     for (int i = 0; i < MASTER_FX_SLOTS; i++) {
         shadow_master_fx_slot_unload(i);
     }
+}
+
+/* ============================================================================
+ * Send FX Load / Unload
+ * ============================================================================ */
+
+void shadow_send_fx_slot_unload(int bus, int slot) {
+    if (bus < 0 || bus >= SEND_BUS_COUNT) return;
+    if (slot < 0 || slot >= SEND_FX_SLOTS) return;
+    master_fx_slot_t *s = &shadow_send_fx_slots[bus][slot];
+
+    if (s->instance && s->api && s->api->destroy_instance) {
+        s->api->destroy_instance(s->instance);
+    }
+    s->instance = NULL;
+    s->api = NULL;
+    s->on_midi = NULL;
+    if (s->handle) {
+        dlclose(s->handle);
+        s->handle = NULL;
+    }
+    s->module_path[0] = '\0';
+    s->module_id[0] = '\0';
+    s->bypassed = 0;
+    capture_clear(&s->capture);
+}
+
+void shadow_send_fx_unload_all(void) {
+    for (int b = 0; b < SEND_BUS_COUNT; b++) {
+        for (int i = 0; i < SEND_FX_SLOTS; i++) {
+            shadow_send_fx_slot_unload(b, i);
+        }
+    }
+}
+
+int shadow_send_fx_slot_load(int bus, int slot, const char *dsp_path) {
+    if (bus < 0 || bus >= SEND_BUS_COUNT) return -1;
+    if (slot < 0 || slot >= SEND_FX_SLOTS) return -1;
+    master_fx_slot_t *s = &shadow_send_fx_slots[bus][slot];
+
+    if (!dsp_path || !dsp_path[0]) {
+        shadow_send_fx_slot_unload(bus, slot);
+        return 0;
+    }
+
+    if (strcmp(s->module_path, dsp_path) == 0 && s->instance) {
+        return 0;
+    }
+
+    shadow_send_fx_slot_unload(bus, slot);
+
+    s->handle = dlopen(dsp_path, RTLD_NOW | RTLD_LOCAL);
+    if (!s->handle) {
+        fprintf(stderr, "Send FX[%d][%d]: failed to load %s: %s\n", bus, slot, dsp_path, dlerror());
+        return -1;
+    }
+
+    audio_fx_init_v2_fn init_fn = (audio_fx_init_v2_fn)dlsym(s->handle, AUDIO_FX_INIT_V2_SYMBOL);
+    if (!init_fn) {
+        fprintf(stderr, "Send FX[%d][%d]: %s not found in %s\n", bus, slot, AUDIO_FX_INIT_V2_SYMBOL, dsp_path);
+        dlclose(s->handle);
+        s->handle = NULL;
+        return -1;
+    }
+
+    s->api = init_fn(&shadow_host_api);
+    if (!s->api || !s->api->create_instance) {
+        fprintf(stderr, "Send FX[%d][%d]: init failed for %s\n", bus, slot, dsp_path);
+        dlclose(s->handle);
+        s->handle = NULL;
+        s->api = NULL;
+        return -1;
+    }
+
+    char module_dir[256];
+    strncpy(module_dir, dsp_path, sizeof(module_dir) - 1);
+    module_dir[sizeof(module_dir) - 1] = '\0';
+    char *last_slash = strrchr(module_dir, '/');
+    if (last_slash) *last_slash = '\0';
+
+    s->instance = s->api->create_instance(module_dir, NULL);
+    if (!s->instance) {
+        fprintf(stderr, "Send FX[%d][%d]: create_instance failed for %s\n", bus, slot, dsp_path);
+        dlclose(s->handle);
+        s->handle = NULL;
+        s->api = NULL;
+        return -1;
+    }
+
+    strncpy(s->module_path, dsp_path, sizeof(s->module_path) - 1);
+    s->module_path[sizeof(s->module_path) - 1] = '\0';
+
+    const char *id_start = strrchr(module_dir, '/');
+    if (id_start) {
+        strncpy(s->module_id, id_start + 1, sizeof(s->module_id) - 1);
+    } else {
+        strncpy(s->module_id, module_dir, sizeof(s->module_id) - 1);
+    }
+    s->module_id[sizeof(s->module_id) - 1] = '\0';
+
+    s->chain_params_cached = 0;
+    s->chain_params_cache[0] = '\0';
+
+    char module_json_path[512];
+    snprintf(module_json_path, sizeof(module_json_path), "%s/module.json", module_dir);
+    FILE *f = fopen(module_json_path, "r");
+    if (f) {
+        fseek(f, 0, SEEK_END);
+        long size = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        if (size > 0 && size < 65536) {
+            char *json = malloc(size + 1);
+            if (json) {
+                size_t nread = fread(json, 1, size, f);
+                json[nread] = '\0';
+                const char *chain_params = strstr(json, "\"chain_params\"");
+                if (chain_params) {
+                    const char *arr_start = strchr(chain_params, '[');
+                    if (arr_start) {
+                        int depth = 1;
+                        const char *arr_end = arr_start + 1;
+                        while (*arr_end && depth > 0) {
+                            if (*arr_end == '[') depth++;
+                            else if (*arr_end == ']') depth--;
+                            arr_end++;
+                        }
+                        int len = (int)(arr_end - arr_start);
+                        if (len > 0 && len < (int)sizeof(s->chain_params_cache) - 1) {
+                            memcpy(s->chain_params_cache, arr_start, len);
+                            s->chain_params_cache[len] = '\0';
+                            s->chain_params_cached = 1;
+                        }
+                    }
+                }
+                free(json);
+            }
+        }
+        fclose(f);
+    }
+
+    fprintf(stderr, "Send FX[%d][%d]: loaded %s\n", bus, slot, s->module_id);
+    return 0;
 }
 
 int shadow_master_fx_slot_load(int slot, const char *dsp_path) {
@@ -1341,6 +1494,9 @@ int shadow_inprocess_load_chain(void) {
     }
 
     shadow_inprocess_ready = 1;
+
+
+
     if (host.startup_modwheel_countdown) {
         *host.startup_modwheel_countdown = host.startup_modwheel_reset_frames;
     }
@@ -1570,6 +1726,20 @@ int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
         shadow_ui_state_update_slot(slot);
         return 1;
     }
+    if (strcmp(key, "slot:send_a") == 0) {
+        float lvl = atof(value);
+        if (lvl < 0.0f) lvl = 0.0f;
+        if (lvl > 1.0f) lvl = 1.0f;
+        shadow_chain_slots[slot].send_a = lvl;
+        return 1;
+    }
+    if (strcmp(key, "slot:send_b") == 0) {
+        float lvl = atof(value);
+        if (lvl < 0.0f) lvl = 0.0f;
+        if (lvl > 1.0f) lvl = 1.0f;
+        shadow_chain_slots[slot].send_b = lvl;
+        return 1;
+    }
     if (strcmp(key, "slot:muted") == 0) {
         shadow_apply_mute(slot, atoi(value));
         return 1;
@@ -1622,6 +1792,12 @@ int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
 int shadow_handle_slot_param_get(int slot, const char *key, char *buf, int buf_len) {
     if (strcmp(key, "slot:volume") == 0) {
         return snprintf(buf, buf_len, "%.2f", shadow_chain_slots[slot].volume);
+    }
+    if (strcmp(key, "slot:send_a") == 0) {
+        return snprintf(buf, buf_len, "%.2f", shadow_chain_slots[slot].send_a);
+    }
+    if (strcmp(key, "slot:send_b") == 0) {
+        return snprintf(buf, buf_len, "%.2f", shadow_chain_slots[slot].send_b);
     }
     if (strcmp(key, "slot:muted") == 0) {
         return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].muted);
@@ -1687,6 +1863,50 @@ void shadow_direct_set_param(uint8_t slot, const char *key, const char *value) {
         }
         /* Unrecognized master_fx:* keys (lfo*, specials): don't misroute to the
          * chain-slot plugin below — leave for the shadow_param path. */
+        return;
+    }
+
+    /* Handle send FX params: send_fx:a:fx1:param or send_fx:b:fx2:module */
+    if (strncmp(key, "send_fx:", 8) == 0) {
+        const char *rest = key + 8;
+        int bus = -1;
+        if (rest[0] == 'a' && rest[1] == ':') { bus = 0; rest += 2; }
+        else if (rest[0] == 'b' && rest[1] == ':') { bus = 1; rest += 2; }
+        if (bus < 0) return;
+
+        /* Bus-level params (no fxN prefix) */
+        if (strcmp(rest, "return_level") == 0) {
+            float lv = (value && value[0]) ? atof(value) : 1.0f;
+            if (lv < 0.0f) lv = 0.0f;
+            shadow_send_return_level[bus] = lv;
+            if (host.on_param_changed) host.on_param_changed(slot, key, value);
+            return;
+        }
+        if (strcmp(rest, "to_b") == 0) {
+            float lv = (value && value[0]) ? atof(value) : 0.0f;
+            if (lv < 0.0f) lv = 0.0f;
+            if (lv > 1.0f) lv = 1.0f;
+            if (bus == 0) shadow_send_a_to_b_level = lv;
+            if (host.on_param_changed) host.on_param_changed(slot, key, value);
+            return;
+        }
+
+        int sfx_slot = -1;
+        if      (strncmp(rest, "fx1:", 4) == 0) { sfx_slot = 0; rest += 4; }
+        else if (strncmp(rest, "fx2:", 4) == 0) { sfx_slot = 1; rest += 4; }
+        else if (strncmp(rest, "fx3:", 4) == 0) { sfx_slot = 2; rest += 4; }
+        else if (strncmp(rest, "fx4:", 4) == 0) { sfx_slot = 3; rest += 4; }
+        if (sfx_slot < 0) return;
+
+        master_fx_slot_t *sfx = &shadow_send_fx_slots[bus][sfx_slot];
+        if (strcmp(rest, "module") == 0) {
+            shadow_send_fx_slot_load(bus, sfx_slot, value);
+        } else if (strcmp(rest, "bypassed") == 0) {
+            sfx->bypassed = (value[0] && atoi(value)) ? 1 : 0;
+        } else if (sfx->api && sfx->instance && sfx->api->set_param) {
+            sfx->api->set_param(sfx->instance, rest, value);
+        }
+        if (host.on_param_changed) host.on_param_changed(slot, key, value);
         return;
     }
 
@@ -2618,6 +2838,212 @@ void shadow_inprocess_handle_param_request(void) {
         } else {
             shadow_param->error = 6;
             shadow_param->result_len = -1;
+        }
+        shadow_param_publish_response(req_id);
+        return;
+    }
+
+    /* Handle send FX params: send_fx:a:fx1:param or send_fx:b:fx2:module */
+    if (strncmp(shadow_param->key, "send_fx:", 8) == 0) {
+        const char *rest = shadow_param->key + 8;
+        int bus = -1;
+        if (rest[0] == 'a' && rest[1] == ':') { bus = 0; rest += 2; }
+        else if (rest[0] == 'b' && rest[1] == ':') { bus = 1; rest += 2; }
+        if (bus < 0) {
+            shadow_param->error = 1;
+            shadow_param->result_len = -1;
+            shadow_param_publish_response(req_id);
+            return;
+        }
+
+        /* Bus-level params (no fxN prefix) */
+        if (strcmp(rest, "return_level") == 0) {
+            if (req_type == 1) {  /* SET */
+                float lv = (shadow_param->value[0]) ? atof(shadow_param->value) : 1.0f;
+                if (lv < 0.0f) lv = 0.0f;
+                shadow_send_return_level[bus] = lv;
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
+            } else if (req_type == 2) {  /* GET */
+                snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%.3f",
+                         shadow_send_return_level[bus]);
+                shadow_param->error = 0;
+                shadow_param->result_len = strlen(shadow_param->value);
+            }
+            shadow_param_publish_response(req_id);
+            return;
+        }
+        if (strcmp(rest, "to_b") == 0) {
+            if (req_type == 1) {  /* SET */
+                float lv = (shadow_param->value[0]) ? atof(shadow_param->value) : 0.0f;
+                if (lv < 0.0f) lv = 0.0f;
+                if (lv > 1.0f) lv = 1.0f;
+                if (bus == 0) shadow_send_a_to_b_level = lv;
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
+            } else if (req_type == 2) {  /* GET */
+                snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%.3f",
+                         shadow_send_a_to_b_level);
+                shadow_param->error = 0;
+                shadow_param->result_len = strlen(shadow_param->value);
+            }
+            shadow_param_publish_response(req_id);
+            return;
+        }
+
+        int sfx_slot = -1;
+        if      (strncmp(rest, "fx1:", 4) == 0) { sfx_slot = 0; rest += 4; }
+        else if (strncmp(rest, "fx2:", 4) == 0) { sfx_slot = 1; rest += 4; }
+        else if (strncmp(rest, "fx3:", 4) == 0) { sfx_slot = 2; rest += 4; }
+        else if (strncmp(rest, "fx4:", 4) == 0) { sfx_slot = 3; rest += 4; }
+        if (sfx_slot < 0) {
+            shadow_param->error = 1;
+            shadow_param->result_len = -1;
+            shadow_param_publish_response(req_id);
+            return;
+        }
+
+        master_fx_slot_t *sfx = &shadow_send_fx_slots[bus][sfx_slot];
+
+        if (req_type == 1) {  /* SET */
+            if (strcmp(rest, "module") == 0) {
+                int result = shadow_send_fx_slot_load(bus, sfx_slot, shadow_param->value);
+                shadow_param->error = (result == 0) ? 0 : 7;
+                shadow_param->result_len = 0;
+            } else if (strcmp(rest, "bypassed") == 0) {
+                sfx->bypassed = (shadow_param->value[0] && atoi(shadow_param->value)) ? 1 : 0;
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
+            } else if (sfx->api && sfx->instance && sfx->api->set_param) {
+                sfx->api->set_param(sfx->instance, rest, shadow_param->value);
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
+            } else {
+                shadow_param->error = 9;
+                shadow_param->result_len = -1;
+            }
+        } else if (req_type == 2) {  /* GET */
+            if (strcmp(rest, "module") == 0) {
+                strncpy(shadow_param->value, sfx->module_path, SHADOW_PARAM_VALUE_LEN - 1);
+                shadow_param->value[SHADOW_PARAM_VALUE_LEN - 1] = '\0';
+                shadow_param->error = 0;
+                shadow_param->result_len = strlen(shadow_param->value);
+            } else if (strcmp(rest, "name") == 0) {
+                strncpy(shadow_param->value, sfx->module_id, SHADOW_PARAM_VALUE_LEN - 1);
+                shadow_param->value[SHADOW_PARAM_VALUE_LEN - 1] = '\0';
+                shadow_param->error = 0;
+                shadow_param->result_len = strlen(shadow_param->value);
+            } else if (strcmp(rest, "bypassed") == 0) {
+                snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%d", sfx->bypassed ? 1 : 0);
+                shadow_param->error = 0;
+                shadow_param->result_len = strlen(shadow_param->value);
+            } else if (strcmp(rest, "chain_params") == 0) {
+                if (sfx->api && sfx->instance && sfx->api->get_param) {
+                    int len = sfx->api->get_param(sfx->instance, "chain_params",
+                                                   shadow_param->value, SHADOW_PARAM_VALUE_LEN);
+                    if (len > 2) {
+                        shadow_param->error = 0;
+                        shadow_param->result_len = len;
+                        shadow_param_publish_response(req_id);
+                        return;
+                    }
+                }
+                if (sfx->chain_params_cached && sfx->chain_params_cache[0]) {
+                    int len = strlen(sfx->chain_params_cache);
+                    if (len < SHADOW_PARAM_VALUE_LEN - 1) {
+                        memcpy(shadow_param->value, sfx->chain_params_cache, len + 1);
+                        shadow_param->error = 0;
+                        shadow_param->result_len = len;
+                        shadow_param_publish_response(req_id);
+                        return;
+                    }
+                }
+                shadow_param->value[0] = '['; shadow_param->value[1] = ']'; shadow_param->value[2] = '\0';
+                shadow_param->error = 0;
+                shadow_param->result_len = 2;
+            } else if (strcmp(rest, "ui_hierarchy") == 0) {
+                if (sfx->api && sfx->instance && sfx->api->get_param) {
+                    int len = sfx->api->get_param(sfx->instance, "ui_hierarchy",
+                                                   shadow_param->value, SHADOW_PARAM_VALUE_LEN);
+                    if (len > 2) {
+                        shadow_param->error = 0;
+                        shadow_param->result_len = len;
+                        shadow_param_publish_response(req_id);
+                        return;
+                    }
+                }
+                /* Fall back to reading ui_hierarchy from module.json (mirrors the
+                 * master_fx handler). Modules like dissolver don't expose
+                 * ui_hierarchy via live get_param but declare it in module.json;
+                 * without this fallback the send param editor can't open them. */
+                {
+                    char module_dir[256];
+                    strncpy(module_dir, sfx->module_path, sizeof(module_dir) - 1);
+                    module_dir[sizeof(module_dir) - 1] = '\0';
+                    char *last_slash = strrchr(module_dir, '/');
+                    if (last_slash) *last_slash = '\0';
+
+                    char json_path[512];
+                    snprintf(json_path, sizeof(json_path), "%s/module.json", module_dir);
+
+                    FILE *f = fopen(json_path, "r");
+                    if (f) {
+                        fseek(f, 0, SEEK_END);
+                        long size = ftell(f);
+                        fseek(f, 0, SEEK_SET);
+                        if (size > 0 && size < 65536) {
+                            char *json = malloc(size + 1);
+                            if (json) {
+                                size_t nread = fread(json, 1, size, f);
+                                json[nread] = '\0';
+
+                                const char *ui_hier = strstr(json, "\"ui_hierarchy\"");
+                                if (ui_hier) {
+                                    const char *obj_start = strchr(ui_hier + 14, '{');
+                                    if (obj_start) {
+                                        int depth = 1;
+                                        const char *obj_end = obj_start + 1;
+                                        while (*obj_end && depth > 0) {
+                                            if (*obj_end == '{') depth++;
+                                            else if (*obj_end == '}') depth--;
+                                            obj_end++;
+                                        }
+                                        int hlen = (int)(obj_end - obj_start);
+                                        if (hlen > 0 && hlen < SHADOW_PARAM_VALUE_LEN - 1) {
+                                            memcpy(shadow_param->value, obj_start, hlen);
+                                            shadow_param->value[hlen] = '\0';
+                                            shadow_param->error = 0;
+                                            shadow_param->result_len = hlen;
+                                            free(json);
+                                            fclose(f);
+                                            shadow_param_publish_response(req_id);
+                                            return;
+                                        }
+                                    }
+                                }
+                                free(json);
+                            }
+                        }
+                        fclose(f);
+                    }
+                }
+                shadow_param->value[0] = '\0';
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
+            } else if (sfx->api && sfx->instance && sfx->api->get_param) {
+                int len = sfx->api->get_param(sfx->instance, rest,
+                                               shadow_param->value, SHADOW_PARAM_VALUE_LEN);
+                if (len >= 0) {
+                    shadow_param->error = 0;
+                    shadow_param->result_len = len;
+                } else {
+                    shadow_param->error = 10;
+                    shadow_param->result_len = -1;
+                }
+            } else {
+                shadow_param->error = 11;
+                shadow_param->result_len = -1;
+            }
         }
         shadow_param_publish_response(req_id);
         return;

@@ -1905,6 +1905,19 @@ static void shadow_latency_delay_apply(int slot, const int16_t *in,
     shadow_latency_delay_wp[slot] = wp + FRAMES_PER_BLOCK * 2;
 }
 
+static inline void accumulate_sends(int slot, const int16_t *fx_buf,
+                                    int32_t send_accum[][FRAMES_PER_BLOCK * 2]) {
+    float vol = shadow_effective_volume(slot) * shadow_chain_slots[slot].fade.gain;
+    float levels[SEND_BUS_COUNT] = { shadow_chain_slots[slot].send_a,
+                                     shadow_chain_slots[slot].send_b };
+    for (int b = 0; b < SEND_BUS_COUNT; b++) {
+        if (levels[b] < 0.001f) continue;
+        float g = levels[b] * vol;
+        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++)
+            send_accum[b][i] += (int32_t)lroundf((float)fx_buf[i] * g);
+    }
+}
+
 static void shadow_inprocess_mix_from_buffer(void) {
     if (!shadow_inprocess_ready || !global_mmap_addr) return;
     if (!shadow_deferred_dsp_valid) return;  /* No buffer to mix yet */
@@ -1923,8 +1936,9 @@ static void shadow_inprocess_mix_from_buffer(void) {
     int any_la_rebuild = (link_audio.enabled && link_audio_routing_enabled &&
                          shadow_chain_process_fx && shim_move_channel_count() >= 4);
     int any_capture = (sampler_source == SAMPLER_SOURCE_RESAMPLE);
+    int any_send_fx = (shadow_send_fx_bus_active(0) || shadow_send_fx_bus_active(1));
 
-    if (!any_slot && !any_mfx && !any_overtake_dsp && !any_la_rebuild && !any_capture) {
+    if (!any_slot && !any_mfx && !any_overtake_dsp && !any_la_rebuild && !any_capture && !any_send_fx) {
         int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
         memcpy(native_bridge_move_component, mailbox_audio, AUDIO_BUFFER_SIZE);
         memset(native_bridge_me_component, 0, AUDIO_BUFFER_SIZE);
@@ -1950,6 +1964,10 @@ static void shadow_inprocess_mix_from_buffer(void) {
      * me_full without reading it; Task 4 will consume it. */
     int32_t me_unity[FRAMES_PER_BLOCK * 2];
     memset(me_unity, 0, sizeof(me_unity));
+
+    /* Send bus accumulators — post-fader taps summed across all slots */
+    int32_t send_accum[SEND_BUS_COUNT][FRAMES_PER_BLOCK * 2];
+    memset(send_accum, 0, sizeof(send_accum));
 
     /* Zero-and-rebuild approach: if Link Audio provides per-track data,
      * zero the mailbox and rebuild from Link Audio, applying FX per-slot.
@@ -2266,6 +2284,7 @@ static void shadow_inprocess_mix_from_buffer(void) {
                     me_unity[i] += (int32_t)lroundf((float)fx_buf[i] * vol);
                     if (i & 1) shadow_fade_advance(s);
                 }
+                accumulate_sends(s, fx_buf, send_accum);
             } else if (have_move_track) {
                 /* Inactive slot: pass Link Audio through at unity level.
                  * Master volume is applied after capture at the end. */
@@ -2323,6 +2342,7 @@ skip_la_rebuild:
                     me_unity[i] += contrib;
                     if (i & 1) shadow_fade_advance(s);
                 }
+                accumulate_sends(s, fx_buf, send_accum);
             } else if (shadow_slot_deferred_valid[s]) {
                 /* Fallback: FX not deferred — run inline (legacy path) */
                 if (shadow_slot_fx_idle[s] && shadow_slot_idle[s]) continue;
@@ -2368,6 +2388,54 @@ skip_la_rebuild:
                     me_unity[i] += contrib;
                     if (i & 1) shadow_fade_advance(s);
                 }
+                accumulate_sends(s, fx_buf, send_accum);
+            }
+        }
+    }
+
+    /* Process send FX buses and sum returns into ME bus (before Master FX) */
+    for (int b = 0; b < SEND_BUS_COUNT; b++) {
+        if (!shadow_send_fx_bus_active(b)) continue;
+
+        int16_t send_buf[FRAMES_PER_BLOCK * 2];
+        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+            int32_t v = send_accum[b][i];
+            if (v > 32767) v = 32767;
+            if (v < -32768) v = -32768;
+            send_buf[i] = (int16_t)v;
+        }
+
+        for (int fx = 0; fx < SEND_FX_SLOTS; fx++) {
+            master_fx_slot_t *sf = &shadow_send_fx_slots[b][fx];
+            if (!(sf->instance && sf->api && sf->api->process_block)) continue;
+            if (sf->bypassed) continue;
+            sf->api->process_block(sf->instance, send_buf, FRAMES_PER_BLOCK);
+        }
+
+        /* Per-bus return level scales the FX-processed return into the mix. */
+        float rl = shadow_send_return_level[b];
+        for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+            int32_t sv = (int32_t)lroundf((float)send_buf[i] * rl);
+            me_full[i] += sv;
+            me_unity[i] += sv;
+        }
+        if (rebuild_from_la) {
+            for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                int32_t sv = (int32_t)lroundf((float)send_buf[i] * rl);
+                int32_t mixed = (int32_t)mailbox_audio[i] + sv;
+                if (mixed > 32767) mixed = 32767;
+                if (mixed < -32768) mixed = -32768;
+                mailbox_audio[i] = (int16_t)mixed;
+            }
+        }
+
+        /* Send A -> Send B (post-fader): tap A's return-scaled output into B's
+         * accumulator, so A->B follows A's return level (like Ableton return-track
+         * sends). Bus order (A=0 then B=1) is feedback-safe: B is built/processed
+         * after this and A is already done, so B can never reach back into A. */
+        if (b == 0 && shadow_send_a_to_b_level > 0.0f) {
+            for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                send_accum[1][i] += (int32_t)lroundf((float)send_buf[i] * rl * shadow_send_a_to_b_level);
             }
         }
     }
