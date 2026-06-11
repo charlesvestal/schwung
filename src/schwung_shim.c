@@ -912,9 +912,26 @@ static void load_feature_config(void)
         return;
     }
 
-    /* Read file */
-    char config_buf[512];
-    size_t len = fread(config_buf, 1, sizeof(config_buf) - 1, f);
+    /* Read the whole file — a fixed small buffer silently truncated configs
+     * with many keys, reverting anything past the cut to its default.
+     * Init-time only, so malloc is fine here. */
+    fseek(f, 0, SEEK_END);
+    long fsize = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (fsize <= 0 || fsize > 65536) {
+        fclose(f);
+        shadow_ui_enabled = true;
+        shadow_log("Features: features.json empty or implausibly large, using defaults");
+        return;
+    }
+    char *config_buf = malloc((size_t)fsize + 1);
+    if (!config_buf) {
+        fclose(f);
+        shadow_ui_enabled = true;
+        shadow_log("Features: out of memory reading features.json, using defaults");
+        return;
+    }
+    size_t len = fread(config_buf, 1, (size_t)fsize, f);
     fclose(f);
     config_buf[len] = '\0';
 
@@ -1083,6 +1100,7 @@ static void load_feature_config(void)
              skipback_seconds_setting,
              trigger_name);
     shadow_log(log_msg);
+    free(config_buf);
 }
 
 static int shadow_read_global_volume_from_settings(float *linear_out, float *db_out)
@@ -5761,6 +5779,7 @@ static void shim_remap_cable2_channels(uint8_t *shadow) {
     if (!ext_midi_remap_feature_enabled) return;  /* Feature flag kill switch */
     if (!ext_midi_remap_shm || !ext_midi_remap_shm->enabled) return;
     if (!hardware_mmap_addr) return;
+    if (any_thru_slot_active()) return;           /* MPE passthrough wins */
 
     /* MIDI_IN events are 8 bytes (4 USB-MIDI + 4 timestamp); stride at 8.
      * 4-byte stride would hit timestamp bytes, corrupt the contiguous event
@@ -5806,6 +5825,7 @@ static void shim_remap_cable2_channels(uint8_t *shadow) {
 static void shim_block_cable2_in_sh_midi(uint8_t *sh_midi) {
     if (!ext_midi_remap_feature_enabled) return;
     if (!ext_midi_remap_shm || !ext_midi_remap_shm->enabled) return;
+    if (any_thru_slot_active()) return;           /* MPE passthrough wins */
     /* MIDI_IN events are 8 bytes (4 USB-MIDI + 4 timestamp). Must stride by 8
      * so we only inspect the USB-MIDI header bytes and never accidentally
      * interpret or corrupt timestamp bytes. */

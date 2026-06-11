@@ -6,7 +6,8 @@
       { "key": "overlay_knobs", "label": "Overlay Knobs", "type": "enum",
         "options": ["+Shift", "+Jog Touch", "Off", "Native"], "values": [0, 1, 2, 3] },
       { "key": "pad_typing", "label": "Pad Typing", "type": "bool" },
-      { "key": "text_preview", "label": "Text Preview", "type": "bool" }
+      { "key": "text_preview", "label": "Text Preview", "type": "bool" },
+      { "key": "midi_indicator_enabled", "label": "MIDI Channel Indicator", "type": "bool" }
     ]
   },
   {

@@ -2234,6 +2234,82 @@ static JSValue js_tts_get_enabled(JSContext *ctx, JSValueConst this_val,
     return JS_NewBool(ctx, shadow_control->tts_enabled != 0);
 }
 
+/* Read-modify-write one key in features.json. Reads the whole file — the
+ * old per-setter fixed 512-byte buffers truncated a grown config, so any
+ * settings toggle destroyed every key past the cut on rewrite. value_json
+ * is raw JSON ("true", "30", "\"both\""). Creates a minimal config if the
+ * file is missing or empty. */
+static void features_json_set(const char *key, const char *value_json) {
+    const char *config_path = "/data/UserData/schwung/config/features.json";
+    char *buf = NULL;
+    size_t len = 0;
+    FILE *f = fopen(config_path, "r");
+    if (f) {
+        fseek(f, 0, SEEK_END);
+        long sz = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        if (sz > 0 && sz <= 65536) {
+            buf = malloc((size_t)sz + 1);
+            if (buf) {
+                len = fread(buf, 1, (size_t)sz, f);
+                buf[len] = '\0';
+            }
+        }
+        fclose(f);
+    }
+
+    if (!buf || len == 0) {
+        free(buf);
+        f = fopen(config_path, "w");
+        if (f) {
+            fprintf(f, "{\n  \"%s\": %s\n}\n", key, value_json);
+            fclose(f);
+        }
+        return;
+    }
+
+    size_t out_cap = len + strlen(key) + strlen(value_json) + 16;
+    char *out = malloc(out_cap);
+    if (!out) {
+        free(buf);
+        return;
+    }
+
+    char quoted_key[128];
+    snprintf(quoted_key, sizeof(quoted_key), "\"%s\"", key);
+    char *kpos = strstr(buf, quoted_key);
+    int built = 0;
+    if (kpos) {
+        char *colon = strchr(kpos, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ') colon++;
+            char *val_end = colon;
+            while (*val_end && *val_end != ',' && *val_end != '\n' && *val_end != '}') val_end++;
+            snprintf(out, out_cap, "%.*s%s%s",
+                     (int)(colon - buf), buf, value_json, val_end);
+            built = 1;
+        }
+    }
+    if (!built) {
+        char *brace = strrchr(buf, '}');
+        if (brace) {
+            snprintf(out, out_cap, "%.*s,\n  \"%s\": %s\n}",
+                     (int)(brace - buf), buf, key, value_json);
+            built = 1;
+        }
+    }
+    if (built) {
+        f = fopen(config_path, "w");
+        if (f) {
+            fputs(out, f);
+            fclose(f);
+        }
+    }
+    free(out);
+    free(buf);
+}
+
 /* display_mirror_set(enabled) - Write to shared memory + persist to features.json */
 static JSValue js_display_mirror_set(JSContext *ctx, JSValueConst this_val,
                                       int argc, JSValueConst *argv) {
@@ -2244,50 +2320,7 @@ static JSValue js_display_mirror_set(JSContext *ctx, JSValueConst this_val,
     JS_ToInt32(ctx, &enabled, argv[0]);
     shadow_control->display_mirror = enabled ? 1 : 0;
 
-    /* Persist to features.json */
-    const char *config_path = "/data/UserData/schwung/config/features.json";
-    char buf[512];
-    size_t len = 0;
-    FILE *f = fopen(config_path, "r");
-    if (f) {
-        len = fread(buf, 1, sizeof(buf) - 1, f);
-        fclose(f);
-    }
-    buf[len] = '\0';
-
-    /* Check if key already exists */
-    char *key = strstr(buf, "\"display_mirror_enabled\"");
-    if (key) {
-        /* Replace the value */
-        char *colon = strchr(key, ':');
-        if (colon) {
-            colon++;
-            while (*colon == ' ') colon++;
-            char *val_end = colon;
-            while (*val_end && *val_end != ',' && *val_end != '\n' && *val_end != '}') val_end++;
-            /* Build new file content */
-            char newbuf[512];
-            int prefix_len = (int)(colon - buf);
-            int suffix_start = (int)(val_end - buf);
-            snprintf(newbuf, sizeof(newbuf), "%.*s%s%s",
-                     prefix_len, buf,
-                     enabled ? "true" : "false",
-                     buf + suffix_start);
-            f = fopen(config_path, "w");
-            if (f) { fputs(newbuf, f); fclose(f); }
-        }
-    } else if (len > 0) {
-        /* Append before closing brace */
-        char *brace = strrchr(buf, '}');
-        if (brace) {
-            char newbuf[512];
-            int prefix_len = (int)(brace - buf);
-            snprintf(newbuf, sizeof(newbuf), "%.*s,\n  \"display_mirror_enabled\": %s\n}",
-                     prefix_len, buf, enabled ? "true" : "false");
-            f = fopen(config_path, "w");
-            if (f) { fputs(newbuf, f); fclose(f); }
-        }
-    }
+    features_json_set("display_mirror_enabled", enabled ? "true" : "false");
 
     return JS_UNDEFINED;
 }
@@ -2322,46 +2355,7 @@ static JSValue js_set_pages_set(JSContext *ctx, JSValueConst this_val,
     JS_ToInt32(ctx, &enabled, argv[0]);
     shadow_control->set_pages_enabled = enabled ? 1 : 0;
 
-    /* Persist to features.json */
-    const char *config_path = "/data/UserData/schwung/config/features.json";
-    char buf[512];
-    size_t len = 0;
-    FILE *f = fopen(config_path, "r");
-    if (f) {
-        len = fread(buf, 1, sizeof(buf) - 1, f);
-        fclose(f);
-    }
-    buf[len] = '\0';
-
-    char *key = strstr(buf, "\"set_pages_enabled\"");
-    if (key) {
-        char *colon = strchr(key, ':');
-        if (colon) {
-            colon++;
-            while (*colon == ' ') colon++;
-            char *val_end = colon;
-            while (*val_end && *val_end != ',' && *val_end != '\n' && *val_end != '}') val_end++;
-            char newbuf[512];
-            int prefix_len = (int)(colon - buf);
-            int suffix_start = (int)(val_end - buf);
-            snprintf(newbuf, sizeof(newbuf), "%.*s%s%s",
-                     prefix_len, buf,
-                     enabled ? "true" : "false",
-                     buf + suffix_start);
-            f = fopen(config_path, "w");
-            if (f) { fputs(newbuf, f); fclose(f); }
-        }
-    } else if (len > 0) {
-        char *brace = strrchr(buf, '}');
-        if (brace) {
-            char newbuf[512];
-            int prefix_len = (int)(brace - buf);
-            snprintf(newbuf, sizeof(newbuf), "%.*s,\n  \"set_pages_enabled\": %s\n}",
-                     prefix_len, buf, enabled ? "true" : "false");
-            f = fopen(config_path, "w");
-            if (f) { fputs(newbuf, f); fclose(f); }
-        }
-    }
+    features_json_set("set_pages_enabled", enabled ? "true" : "false");
 
     return JS_UNDEFINED;
 }
@@ -2399,45 +2393,7 @@ static JSValue js_midi_indicator_set(JSContext *ctx, JSValueConst this_val,
     shadow_control->midi_indicator_enabled = enabled ? 1 : 0;
 
     /* Persist to features.json (off the SPI callback path - safe). */
-    const char *config_path = "/data/UserData/schwung/config/features.json";
-    char buf[512];
-    size_t len = 0;
-    FILE *f = fopen(config_path, "r");
-    if (f) {
-        len = fread(buf, 1, sizeof(buf) - 1, f);
-        fclose(f);
-    }
-    buf[len] = '\0';
-
-    char *key = strstr(buf, "\"midi_indicator_enabled\"");
-    if (key) {
-        char *colon = strchr(key, ':');
-        if (colon) {
-            colon++;
-            while (*colon == ' ') colon++;
-            char *val_end = colon;
-            while (*val_end && *val_end != ',' && *val_end != '\n' && *val_end != '}') val_end++;
-            char newbuf[512];
-            int prefix_len = (int)(colon - buf);
-            int suffix_start = (int)(val_end - buf);
-            snprintf(newbuf, sizeof(newbuf), "%.*s%s%s",
-                     prefix_len, buf,
-                     enabled ? "true" : "false",
-                     buf + suffix_start);
-            f = fopen(config_path, "w");
-            if (f) { fputs(newbuf, f); fclose(f); }
-        }
-    } else if (len > 0) {
-        char *brace = strrchr(buf, '}');
-        if (brace) {
-            char newbuf[512];
-            int prefix_len = (int)(brace - buf);
-            snprintf(newbuf, sizeof(newbuf), "%.*s,\n  \"midi_indicator_enabled\": %s\n}",
-                     prefix_len, buf, enabled ? "true" : "false");
-            f = fopen(config_path, "w");
-            if (f) { fputs(newbuf, f); fclose(f); }
-        }
-    }
+    features_json_set("midi_indicator_enabled", enabled ? "true" : "false");
 
     return JS_UNDEFINED;
 }
@@ -2471,48 +2427,12 @@ static JSValue js_shadow_ui_trigger_set(JSContext *ctx, JSValueConst this_val,
     mode = clamp_shadow_ui_trigger(mode);
     shadow_control->shadow_ui_trigger = (uint8_t)mode;
 
-    /* Persist to features.json */
-    const char *config_path = "/data/UserData/schwung/config/features.json";
-    char buf[512];
-    size_t len = 0;
-    FILE *f = fopen(config_path, "r");
-    if (f) {
-        len = fread(buf, 1, sizeof(buf) - 1, f);
-        fclose(f);
-    }
-    buf[len] = '\0';
-
-    const char *new_val = SHADOW_UI_TRIGGER_NAMES[mode];
-    char *key = strstr(buf, "\"shadow_ui_trigger\"");
-    if (key) {
-        char *colon = strchr(key, ':');
-        if (colon) {
-            colon++;
-            while (*colon == ' ') colon++;
-            char *val_end = colon;
-            while (*val_end && *val_end != ',' && *val_end != '\n' && *val_end != '}') val_end++;
-            char newbuf[512];
-            int prefix_len = (int)(colon - buf);
-            int suffix_start = (int)(val_end - buf);
-            snprintf(newbuf, sizeof(newbuf), "%.*s\"%s\"%s",
-                     prefix_len, buf, new_val, buf + suffix_start);
-            f = fopen(config_path, "w");
-            if (f) { fputs(newbuf, f); fclose(f); }
-        }
-    } else if (len > 0) {
-        /* Append a new entry before the closing brace. Any legacy "long_press_shadow"
-         * key lingers harmlessly — load_feature_config prefers shadow_ui_trigger,
-         * and install.sh rewrites features.json on next install. */
-        char *brace = strrchr(buf, '}');
-        if (brace) {
-            char newbuf[512];
-            int prefix_len = (int)(brace - buf);
-            snprintf(newbuf, sizeof(newbuf), "%.*s,\n  \"shadow_ui_trigger\": \"%s\"\n}",
-                     prefix_len, buf, new_val);
-            f = fopen(config_path, "w");
-            if (f) { fputs(newbuf, f); fclose(f); }
-        }
-    }
+    /* Persist to features.json. Any legacy "long_press_shadow" key lingers
+     * harmlessly — load_feature_config prefers shadow_ui_trigger, and
+     * install.sh rewrites features.json on next install. */
+    char quoted_val[32];
+    snprintf(quoted_val, sizeof(quoted_val), "\"%s\"", SHADOW_UI_TRIGGER_NAMES[mode]);
+    features_json_set("shadow_ui_trigger", quoted_val);
 
     return JS_UNDEFINED;
 }
@@ -2547,46 +2467,7 @@ static JSValue js_skipback_shortcut_set(JSContext *ctx, JSValueConst this_val,
     JS_ToInt32(ctx, &require_volume, argv[0]);
     shadow_control->skipback_require_volume = require_volume ? 1 : 0;
 
-    /* Persist to features.json */
-    const char *config_path = "/data/UserData/schwung/config/features.json";
-    char buf[512];
-    size_t len = 0;
-    FILE *f = fopen(config_path, "r");
-    if (f) {
-        len = fread(buf, 1, sizeof(buf) - 1, f);
-        fclose(f);
-    }
-    buf[len] = '\0';
-
-    char *key = strstr(buf, "\"skipback_require_volume\"");
-    if (key) {
-        char *colon = strchr(key, ':');
-        if (colon) {
-            colon++;
-            while (*colon == ' ') colon++;
-            char *val_end = colon;
-            while (*val_end && *val_end != ',' && *val_end != '\n' && *val_end != '}') val_end++;
-            char newbuf[512];
-            int prefix_len = (int)(colon - buf);
-            int suffix_start = (int)(val_end - buf);
-            snprintf(newbuf, sizeof(newbuf), "%.*s%s%s",
-                     prefix_len, buf,
-                     require_volume ? "true" : "false",
-                     buf + suffix_start);
-            f = fopen(config_path, "w");
-            if (f) { fputs(newbuf, f); fclose(f); }
-        }
-    } else if (len > 0) {
-        char *brace = strrchr(buf, '}');
-        if (brace) {
-            char newbuf[512];
-            int prefix_len = (int)(brace - buf);
-            snprintf(newbuf, sizeof(newbuf), "%.*s,\n  \"skipback_require_volume\": %s\n}",
-                     prefix_len, buf, require_volume ? "true" : "false");
-            f = fopen(config_path, "w");
-            if (f) { fputs(newbuf, f); fclose(f); }
-        }
-    }
+    features_json_set("skipback_require_volume", require_volume ? "true" : "false");
 
     return JS_UNDEFINED;
 }
@@ -2614,47 +2495,9 @@ static JSValue js_skipback_seconds_set(JSContext *ctx, JSValueConst this_val,
 
     shadow_control->skipback_seconds = (uint16_t)seconds;
 
-    /* Persist to features.json. */
-    const char *config_path = "/data/UserData/schwung/config/features.json";
-    char buf[1024];
-    size_t len = 0;
-    FILE *f = fopen(config_path, "r");
-    if (f) {
-        len = fread(buf, 1, sizeof(buf) - 1, f);
-        fclose(f);
-    }
-    buf[len] = '\0';
-
     char value_str[16];
     snprintf(value_str, sizeof(value_str), "%d", seconds);
-
-    char *key = strstr(buf, "\"skipback_seconds\"");
-    if (key) {
-        char *colon = strchr(key, ':');
-        if (colon) {
-            colon++;
-            while (*colon == ' ') colon++;
-            char *val_end = colon;
-            while (*val_end && *val_end != ',' && *val_end != '\n' && *val_end != '}') val_end++;
-            char newbuf[1024];
-            int prefix_len = (int)(colon - buf);
-            int suffix_start = (int)(val_end - buf);
-            snprintf(newbuf, sizeof(newbuf), "%.*s%s%s",
-                     prefix_len, buf, value_str, buf + suffix_start);
-            f = fopen(config_path, "w");
-            if (f) { fputs(newbuf, f); fclose(f); }
-        }
-    } else if (len > 0) {
-        char *brace = strrchr(buf, '}');
-        if (brace) {
-            char newbuf[1024];
-            int prefix_len = (int)(brace - buf);
-            snprintf(newbuf, sizeof(newbuf), "%.*s,\n  \"skipback_seconds\": %s\n}",
-                     prefix_len, buf, value_str);
-            f = fopen(config_path, "w");
-            if (f) { fputs(newbuf, f); fclose(f); }
-        }
-    }
+    features_json_set("skipback_seconds", value_str);
 
     return JS_UNDEFINED;
 }
