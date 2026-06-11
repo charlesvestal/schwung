@@ -19,6 +19,8 @@
  * ============================================================================ */
 
 #define MASTER_FX_SLOTS 4
+#define SEND_BUS_COUNT 2
+#define SEND_FX_SLOTS  4
 #define SHADOW_CHAIN_MODULE_DIR "/data/UserData/schwung/modules/chain"
 #define SHADOW_CHAIN_DSP_PATH "/data/UserData/schwung/modules/chain/dsp.so"
 
@@ -111,6 +113,14 @@ extern int shadow_inprocess_ready;
 /* Master FX slots */
 extern master_fx_slot_t shadow_master_fx_slots[MASTER_FX_SLOTS];
 
+/* Send FX slots — 2 buses (A, B) × 3 FX slots each */
+extern master_fx_slot_t shadow_send_fx_slots[SEND_BUS_COUNT][SEND_FX_SLOTS];
+
+/* Per-bus send return level (0..1+, default 1.0) applied to the bus's
+ * FX-processed return before it is summed into the mix. */
+extern float shadow_send_return_level[SEND_BUS_COUNT];
+extern float shadow_send_a_to_b_level;
+
 /* Master FX LFOs */
 #define MASTER_FX_LFO_COUNT 2
 extern lfo_state_t shadow_master_fx_lfos[MASTER_FX_LFO_COUNT];
@@ -166,6 +176,18 @@ static inline int shadow_master_fx_chain_active(void) {
     return 0;
 }
 
+/* Check if any send FX slot is active on a bus */
+static inline int shadow_send_fx_bus_active(int bus) {
+    if (bus < 0 || bus >= SEND_BUS_COUNT) return 0;
+    for (int fx = 0; fx < SEND_FX_SLOTS; fx++) {
+        master_fx_slot_t *s = &shadow_send_fx_slots[bus][fx];
+        if (s->instance && s->api && s->api->process_block) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* ============================================================================
  * Public functions
  * ============================================================================ */
@@ -213,6 +235,11 @@ int shadow_master_fx_slot_load_with_config(int slot, const char *dsp_path,
 int shadow_master_fx_load(const char *dsp_path);
 void shadow_master_fx_unload(void);
 void shadow_master_fx_forward_midi(const uint8_t *msg, int len, int source);
+
+/* --- Send FX --- */
+void shadow_send_fx_slot_unload(int bus, int slot);
+void shadow_send_fx_unload_all(void);
+int shadow_send_fx_slot_load(int bus, int slot, const char *dsp_path);
 
 /* --- Capture loading --- */
 void shadow_slot_load_capture(int slot, int patch_index);
