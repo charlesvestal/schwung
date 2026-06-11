@@ -22,3 +22,6 @@ build/cache/
 *.asd
 move_audio_recv
 libs/memfault-firmware-sdk/
+
+# Code-graph tooling output (graphify) — never commit
+graphify-out/

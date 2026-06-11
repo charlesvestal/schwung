@@ -370,6 +370,32 @@ void shadow_clear_move_leds_if_overtake(void) {
      * If skip_led_clear is set, let Move's LEDs pass through (e.g. song-mode
      * wants Move's pad colors to update as clips play). */
     if (!cur_overtake) return;
+
+    /* Move-native co-run: the tool sets skip_led_clear=1 so Move's CC + sysex
+     * LED writes pass through (knob rings, master, track buttons, etc.). But
+     * Move also re-asserts the surfaces the tool keeps (per keep_mask), which
+     * would clobber the tool's own LED rendering. Strip Move's CC / note-on /
+     * note-off LED writes for any surface group the tool keeps; events the
+     * tool cedes pass through so Move's LEDs reach hardware. Sysex writes
+     * (status 0xF0-0xF7) and unclassified events aren't currently
+     * group-mapped and pass through unchanged — sysex carries knob-ring +
+     * master colors (palette idx 71-79) and the framework leaves those alone.
+     * Runs BEFORE the skip_led_clear early-return so it takes priority. */
+    if (corun_target(ctrl) == CORUN_TARGET_MOVE_NATIVE) {
+        uint16_t keep = corun_keep_mask_eff(ctrl->corun.keep_mask);
+        for (int i = 0; i < HW_MIDI_OUT_SIZE; i += 4) {
+            uint8_t cable = (midi_out[i] >> 4) & 0x0F;
+            if (cable != 0) continue;
+            uint8_t type = midi_out[i+1] & 0xF0;
+            uint8_t d1 = midi_out[i+2];
+            uint16_t grp = corun_group_for_event(type, d1);
+            if (grp && (keep & grp)) {
+                midi_out[i] = 0; midi_out[i+1] = 0; midi_out[i+2] = 0; midi_out[i+3] = 0;
+            }
+        }
+        return;
+    }
+
     if (ctrl && ctrl->skip_led_clear) return;
 
     /* Per-module passthrough list: CCs the module yielded to Move
