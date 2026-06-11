@@ -110,9 +110,15 @@ int shadow_inprocess_log_enabled(void) {
 }
 
 int shadow_midi_out_log_enabled(void) {
-    static int enabled = 0;
+    static int enabled = -1;
+    static int check_counter = 0;
     static int announced = 0;
-    enabled = (access("/data/UserData/schwung/shadow_midi_out_log_on", F_OK) == 0);
+    /* Counter-gated like shadow_inprocess_log_enabled above — this is
+     * called per SPI frame, and an access() syscall per call is exactly
+     * the RT-path file I/O the project rules ban. */
+    if (enabled < 0 || (check_counter++ % 200 == 0)) {
+        enabled = (access("/data/UserData/schwung/shadow_midi_out_log_on", F_OK) == 0);
+    }
     if (!enabled && shadow_midi_out_log) {
         fclose(shadow_midi_out_log);
         shadow_midi_out_log = NULL;

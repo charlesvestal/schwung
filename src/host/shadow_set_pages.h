@@ -92,6 +92,11 @@ void shadow_handle_set_loaded(const char *set_name, const char *uuid);
 /* Poll Settings.json for set changes */
 void shadow_poll_current_set(void);
 
+/* Consume the worker-published current-set snapshot on the SPI thread
+ * (cheap; calls shadow_handle_set_loaded, which dedupes). The filesystem
+ * scan itself (shadow_poll_current_set) runs on the shim worker. */
+void shadow_set_pages_consume(void);
+
 
 /* Read current page from disk (returns 0 if not found) */
 int set_page_read_persisted(void);
