@@ -2725,6 +2725,15 @@ function checkAndShowMasterFxError(fxSlot) {
     return false;
 }
 
+/* Show the warning overlay with a title and wrapped message */
+function showWarning(title, message) {
+    warningTitle = title;
+    warningLines = wrapText(message, 18);
+    warningActive = true;
+    announce(`${title}: ${message}`);
+    needsRedraw = true;
+}
+
 /* Dismiss asset warning overlay */
 function dismissWarning() {
     warningActive = false;
@@ -4541,12 +4550,16 @@ function autosaveAllSlots() {
                  * tripping this branch. */
             }
             /* Empty slot - write empty marker to clear autosave */
-            host_write_file(
+            if (host_write_file(
                 activeSlotStateDir + "/slot_" + i + ".json",
                 "{}\n"
-            );
-            slotDirtyCache[i] = false;
-            slotUserCleared[i] = false;
+            )) {
+                slotDirtyCache[i] = false;
+                slotUserCleared[i] = false;
+            } else {
+                debugLog("autosave: failed to write empty marker for slot " + i +
+                         " — will retry next autosave");
+            }
             continue;
         }
 
@@ -4566,11 +4579,15 @@ function autosaveAllSlots() {
             chain: JSON.parse(patchJson)
         };
 
-        host_write_file(
+        if (host_write_file(
             activeSlotStateDir + "/slot_" + i + ".json",
             JSON.stringify(wrapper, null, 2) + "\n"
-        );
-        lastSavedSlotSignature[i] = currentSig;
+        )) {
+            lastSavedSlotSignature[i] = currentSig;
+        } else {
+            debugLog("autosave: failed to write slot_" + i + ".json — " +
+                     "keeping stale signature so the next autosave retries");
+        }
     }
 }
 
@@ -4578,7 +4595,8 @@ function autosaveAllSlots() {
 function doSavePreset(slotIndex, name) {
     const json = buildSlotPatchJson(slotIndex, name);
     if (!json) {
-        /* TODO: show error message */
+        debugLog("doSavePreset: buildSlotPatchJson returned null for slot " + slotIndex);
+        showWarning("Save Failed", "Could not read chain state. Try again.");
         return;
     }
 
@@ -4853,6 +4871,11 @@ function buildMasterPresetJson(name) {
 /* Actually save the master preset */
 function doSaveMasterPreset(name) {
     const json = buildMasterPresetJson(name);
+    if (!json) {
+        debugLog("doSaveMasterPreset: buildMasterPresetJson returned null");
+        showWarning("Save Failed", "Could not read FX state. Try again.");
+        return;
+    }
 
     if (masterOverwriteTargetIndex >= 0) {
         /* Overwriting existing preset */
@@ -14881,6 +14904,7 @@ function dispatchCoRunDraw() {
     }
 }
 
+let lastDrawError = null;  /* one-shot log guard for the tick draw catch */
 globalThis.tick = function() {
     /* Background tick for JS-suspended overtake modules.
      * Each parked module's tick() keeps firing so it can emit MIDI or advance
@@ -15643,6 +15667,12 @@ globalThis.tick = function() {
         }
     }
 
+    /* Guarded: a throw in any draw function would otherwise repeat every
+     * frame — frozen screen with no recovery, since the C loop keeps
+     * calling tick() regardless. (The OVERTAKE_MODULE case has its own
+     * handling; this guard covers every other view and the overlays.) */
+    try {
+
     switch (view) {
         case VIEWS.SLOTS:
             drawSlots();
@@ -15901,6 +15931,27 @@ globalThis.tick = function() {
 
         /* Draw overlay on top of main view (uses shared overlay system) */
         drawOverlay();
+    }
+
+    } catch (e) {
+        /* tick draw EXCEPTION — log once per distinct error, show a brief
+         * error screen this frame, and fall back to the slots view so the
+         * next frame draws something known-good. */
+        if (lastDrawError !== String(e)) {
+            lastDrawError = String(e);
+            debugLog("tick draw EXCEPTION in view " + view + ": " + e +
+                     (e && e.stack ? "\n" + e.stack : ""));
+        }
+        try {
+            clear_screen();
+            print(10, 22, "UI error, recovering", 1);
+            print(10, 34, String(e).substring(0, 21), 1);
+        } catch (e2) { /* display unavailable — nothing more to do */ }
+        if (view !== VIEWS.SLOTS) {
+            view = VIEWS.SLOTS;
+            announce("UI error, returning to slots");
+        }
+        needsRedraw = true;
     }
 };
 
