@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-file="src/modules/chain/dsp/chain_host.c"
+file="src/modules/chain/dsp"
 
-if ! rg -q 'static int parse_chain_params_array_json\(' "$file"; then
+if ! rg -q '(static )?int parse_chain_params_array_json\(' "$file"; then
   echo "FAIL: missing runtime chain_params array parser" >&2
   exit 1
 fi
-if ! rg -q 'static int chain_mod_refresh_target_param_cache\(' "$file"; then
+if ! rg -q '(static )?int chain_mod_refresh_target_param_cache\(' "$file"; then
   echo "FAIL: missing runtime target param cache refresh helper" >&2
   exit 1
 fi
