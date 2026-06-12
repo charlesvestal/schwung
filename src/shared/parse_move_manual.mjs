@@ -295,6 +295,8 @@ export function processDownloadedHtml() {
 /**
  * Clear the cached manual to force re-fetch.
  */
+/* @deprecated No known consumers (verified across all module repos,
+ * 2026-06 dead-code sweep). Removal candidate at the next major bump. */
 export function clearManualCache() {
     try {
         if (typeof host_write_file === 'function') {

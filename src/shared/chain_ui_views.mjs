@@ -102,6 +102,8 @@ export function adjustValue(type, currentValue, delta, min, max, step) {
  * @param {number} maxVisible - Maximum visible items
  * @returns {{startIdx: number, endIdx: number}} Visible range
  */
+/* @deprecated No known consumers (verified across all module repos,
+ * 2026-06 dead-code sweep). Removal candidate at the next major bump. */
 export function calculateVisibleRange(itemCount, selectedIndex, maxVisible) {
     let startIdx = 0;
     const maxSelectedRow = maxVisible - 2;
@@ -122,6 +124,8 @@ export function calculateVisibleRange(itemCount, selectedIndex, maxVisible) {
  * @param {object} ctx - Rendering context with print, fill_rect functions
  * @returns {Function} Renderer function
  */
+/* @deprecated No known consumers (verified across all module repos,
+ * 2026-06 dead-code sweep). Removal candidate at the next major bump. */
 export function createSelectListRenderer(ctx) {
     return function drawSelectList(items, selectedIndex, getLabel, getValue, options = {}) {
         const {

@@ -12,7 +12,12 @@ cd "$REPO_ROOT"
 cd ./build
 
 # Build list of items to package
-ITEMS="./schwung ./schwung-shim.so ./move-anything ./move-anything-shim.so ./shim-entrypoint.sh ./restart-move.sh ./launch-standalone.sh ./start.sh ./stop.sh ./host ./shared ./modules ./shadow ./patches ./presets ./unified-log ./scripts"
+# start.sh/stop.sh (standalone-host launchers) no longer ship — the
+# standalone runtime never runs on device (shadow mode only).
+ITEMS="./schwung ./schwung-shim.so ./move-anything ./move-anything-shim.so ./shim-entrypoint.sh ./restart-move.sh ./launch-standalone.sh ./host ./shared ./modules ./shadow ./patches ./presets ./unified-log ./scripts"
+
+# Dev/test artifacts must not ride along in wholesale-packaged dirs.
+rm -f ./shadow/shadow_poc ./bin/midi_inject_test
 
 # Add bin directory if it exists (contains curl for store module)
 if [ -d "./bin" ]; then
@@ -47,11 +52,6 @@ fi
 # Add schwung-manager if it was built
 if [ -f "./schwung-manager" ]; then
     ITEMS="$ITEMS ./schwung-manager"
-fi
-
-# Add web shim if it was built (PIN challenge TTS readout for MoveWebService)
-if [ -f "./schwung-web-shim.so" ]; then
-    ITEMS="$ITEMS ./schwung-web-shim.so"
 fi
 
 if tar --version 2>/dev/null | grep -q GNU; then
