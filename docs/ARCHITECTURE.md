@@ -90,7 +90,7 @@ The shim owns these subsystems:
   back into Move's MIDI_IN.
 - **Long-press / Shift+Vol shortcuts** — gated by the
   `shadow_ui_trigger` setting (Long Press / Shift+Vol / Both); see
-  `MANUAL.md` and the dispatch in `schwung_shim.c`.
+  the catalog-site manual (`../schwung-catalog-site/manual.html`) and the dispatch in `schwung_shim.c`.
 - **Slot DSP and Master FX** — `chain_host` is dlopen'd in-process;
   per-slot synth/FX state lives here.
 - **Master volume + ME bus mix** — ME-only-bus refactor (2026-04):
@@ -248,7 +248,7 @@ Authoritative names and structures live in
 ## Shadow Mode access
 
 User-level details (shortcuts, Master FX, tools, recording, etc.)
-live in `MANUAL.md`. The trigger gestures themselves are gated by the
+live in the catalog-site manual. The trigger gestures themselves are gated by the
 `shadow_ui_trigger` setting (Long Press / Shift+Vol / Both) and by the
 volume-tweak suppression rule in the shim (touching the volume knob
 during a track hold suppresses that track's long-press for the rest of

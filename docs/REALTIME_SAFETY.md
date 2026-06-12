@@ -97,3 +97,22 @@ Frame budget: 2900µs (128 frames @ 44.1kHz).
 ## RNBO-internal XRuns (not our problem)
 
 JACK reports XRuns from RNBO DSP clients (`fm-synth`, `Limiter-Stereo`, `move-volume`). These are RNBO's own graph exceeding the 128-frame budget. `rnbooscquery` burns ~45% CPU (RNBO's HTTP/WebSocket parameter server). We don't control this — it's internal to RNBO.
+
+## The shim worker (2026-06)
+
+Work the SPI callbacks must not do lives on the shim worker thread
+(`src/host/shim_worker.c`, SCHED_OTHER, cores 0-2): debug-flag file polling
+(published as a bitmask the RT path reads), trigger-file consumption,
+deferred events posted from RT via an SPSC ring (overtake exit hooks, Move
+restart, sampler prepare/finalize/cancel, skipback save/resize, preview
+load), and the current-set filesystem scan (results delivered through a
+seqlock snapshot consumed on the SPI thread). When adding RT-path work that
+needs file I/O or process spawning: post an event, add a hook.
+
+## Accepted tradeoff: patch/module load runs on the SPI thread
+
+`set_param("load_patch")` and Master-FX slot loads reach dlopen/fopen/calloc
+from the SPI thread by design — the audible hiccup on load is accepted.
+A glitch-free alternative (loader thread + atomic instance swap, masked by
+the existing fade machinery) is sketched in the 2026-06-11 cleanup review.
+Don't re-investigate "why does loading glitch" — this is it.
