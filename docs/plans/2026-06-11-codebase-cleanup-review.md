@@ -384,3 +384,11 @@ and the SHM segments came back but the shim's SPI pre-transfer path never ran
 (the spi_midi_log tap could not arm for 3+ minutes). A full `reboot` recovered.
 Worth investigating alongside the RT/stability work: the in-place restart may
 leave the SPI hook unengaged in the restarted MoveOriginal process.
+
+## Field note 2 (2026-06-12, after RT pass 2)
+Sampler/skipback writes are now fully off the audio thread (SCHED_OTHER
+writers, cores 0-2), but a small audible blip remains at save time on
+hardware. Likely kernel-level: large eMMC writes trigger writeback that can
+stall the SPI ioctl itself — not fixable by scheduling. Candidate
+mitigations for a dedicated pass: chunked writes with pacing, fdatasync
+throttling, ionice/bfq, O_DIRECT for the skipback writer.
