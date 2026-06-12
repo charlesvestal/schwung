@@ -4265,10 +4265,14 @@ function loadChainConfigFromDir(dir) {
             if (typeof s.forward_channel === "number") setSlotParamWithTimeout(i, "slot:forward_channel", String(s.forward_channel), 500);
             if (typeof s.muted === "number") setSlotParamWithTimeout(i, "slot:muted", String(s.muted), 500);
             if (typeof s.soloed === "number") setSlotParamWithTimeout(i, "slot:soloed", String(s.soloed), 500);
-            /* Per-slot send levels (missing in configs written before sends existed
-             * → leave the shim default of 0, i.e. no send). */
-            if (typeof s.send_a === "number") setSlotParamWithTimeout(i, "slot:send_a", String(s.send_a), 500);
-            if (typeof s.send_b === "number") setSlotParamWithTimeout(i, "slot:send_b", String(s.send_b), 500);
+            /* Per-slot send levels: ALWAYS write — saved value if present, else
+             * default 0 (no send). The shim's slot sends are global and NOT reset
+             * per set, so skipping a missing field (configs written before sends
+             * existed) leaves them stale from the prior set, like receive_channel. */
+            const sa = (typeof s.send_a === "number") ? s.send_a : 0;
+            setSlotParamWithTimeout(i, "slot:send_a", String(sa), 500);
+            const sb = (typeof s.send_b === "number") ? s.send_b : 0;
+            setSlotParamWithTimeout(i, "slot:send_b", String(sb), 500);
         }
         debugLog("SET_CHANGED: loaded chain config from " + path);
     } catch (e) {
@@ -6797,22 +6801,24 @@ function restoreSendFxFromFiles() {
                 if (data.bypassed) shadow_set_param(0, key + ":bypassed", "1");
             }
         }
-        /* Restore per-set send return levels (missing → leave shim default) +
-         * Send A->B routing level. send_a_to_b is ALWAYS pushed (default 0) so a set
-         * without it resets to off instead of inheriting the previous set's value. */
+        /* Restore per-set send return levels + Send A->B routing level. ALL are
+         * ALWAYS pushed (return level default 1.0 unity, Send A->B default 0) so a
+         * set with no meta file — or one predating these fields — resets to the
+         * defaults instead of inheriting the previous set's values. The shim params
+         * are global and not reset per set. */
         try {
-            let atobVal = 0;  /* per-set default: 0% (off) */
+            let rlA = 1.0, rlB = 1.0, atobVal = 0;
             const raw = host_read_file(activeSlotStateDir + "/send_fx_meta.json");
             if (raw) {
                 const meta = JSON.parse(raw);
                 if (meta && meta.return_level) {
-                    if (typeof meta.return_level.a === "number")
-                        shadow_set_param(0, "send_fx:a:return_level", meta.return_level.a.toFixed(3));
-                    if (typeof meta.return_level.b === "number")
-                        shadow_set_param(0, "send_fx:b:return_level", meta.return_level.b.toFixed(3));
+                    if (typeof meta.return_level.a === "number") rlA = meta.return_level.a;
+                    if (typeof meta.return_level.b === "number") rlB = meta.return_level.b;
                 }
                 if (meta && typeof meta.send_a_to_b === "number") atobVal = meta.send_a_to_b;
             }
+            shadow_set_param(0, "send_fx:a:return_level", rlA.toFixed(3));
+            shadow_set_param(0, "send_fx:b:return_level", rlB.toFixed(3));
             shadow_set_param(0, "send_fx:a:to_b", atobVal.toFixed(3));
         } catch (e) {}
     } catch (e) {
