@@ -161,11 +161,9 @@ static int skipback_seconds_setting = SKIPBACK_DEFAULT_SECONDS; /* Skipback roll
 /* Shadow UI trigger mode: 0=long-press only, 1=Shift+Vol only, 2=both. Default=both. */
 static uint8_t shadow_ui_trigger_setting = 2;
 
-/* Worker that performs the skipback buffer resize off the audio path. */
-static void *skipback_resize_thread(void *arg) {
-    (void)arg;
+/* Skipback resize hook — runs on the shim worker (off the audio path). */
+static void shim_hook_skipback_resize(void) {
     skipback_resize(skipback_seconds_setting);
-    return NULL;
 }
 static int shadow_speaker_active = 1;      /* 1=built-in speaker, 0=headphones/line-out (from CC 115) */
 static int shadow_speaker_active_known = 0; /* 1 once any CC 115 jack-detect has been observed */
@@ -591,6 +589,28 @@ static void preview_play(const char *path) {
     preview_pos = 0;
     preview_playing = 1;
     LOG_DEBUG("preview", "loaded %u frames, %d ch, fmt=%u/%u-bit", preview_total_frames, nch, audio_fmt, bps);
+}
+
+/* Worker hook: load + start the preview off the RT thread. preview_play
+ * munmaps any previous file, so stop rendering first and give the RT path
+ * one settle interval — preview_render checks preview_playing at block
+ * start and a block lasts ~2.9 ms, so 10 ms guarantees no render is still
+ * touching the old mapping when it goes away. */
+static void shim_hook_preview_play(void) {
+    preview_playing = 0;
+    __sync_synchronize();
+    usleep(10 * 1000);
+
+    char path_buf[256] = "";
+    FILE *pf = fopen(PREVIEW_CMD_PATH, "r");
+    if (pf) {
+        if (fgets(path_buf, sizeof(path_buf), pf)) {
+            char *nl = strchr(path_buf, '\n');
+            if (nl) *nl = '\0';
+        }
+        fclose(pf);
+    }
+    if (path_buf[0]) preview_play(path_buf);
 }
 
 static void preview_render(int16_t *buf, int frames) {
@@ -2600,40 +2620,21 @@ skip_la_rebuild:
             if (desired > 0 && desired != skipback_get_seconds()
                 && skipback_seconds_setting != desired) {
                 skipback_seconds_setting = desired;
-                pthread_t rt;
-                /* Pass desired via the static; resize itself reads
-                 * skipback_seconds_setting via its arg. */
-                if (pthread_create(&rt, NULL, skipback_resize_thread, NULL) == 0) {
-                    pthread_detach(rt);
-                }
+                /* Resize runs on the shim worker — no pthread_create here. */
+                shim_worker_post(SHIM_EVT_SKIPBACK_RESIZE);
             }
         }
 
         uint8_t cmd = shadow_control->sampler_cmd;
         if (cmd == 1) {
-            /* Start recording — path in file */
+            /* Start recording — capture arms now; the shim worker reads the
+             * path file and opens the WAV (no file I/O on this thread). */
             shadow_control->sampler_cmd = 0;
-            char path_buf[256] = "";
-            FILE *pf = fopen("/data/UserData/schwung/sampler_cmd_path.txt", "r");
-            if (pf) {
-                if (fgets(path_buf, sizeof(path_buf), pf)) {
-                    char *nl = strchr(path_buf, '\n');
-                    if (nl) *nl = '\0';
-                }
-                fclose(pf);
-            }
-            if (path_buf[0]) {
-                unified_log("shim", LOG_LEVEL_INFO,
-                           "sampler start: path=%s source=%d (0=Resample,1=MoveInput)",
-                           path_buf, (int)sampler_source);
-                sampler_start_recording_to(path_buf);
-            }
+            sampler_request_start_custom(NULL);
         } else if (cmd == 2) {
             /* Stop recording */
             shadow_control->sampler_cmd = 0;
-            if (sampler_state == SAMPLER_RECORDING || sampler_state == SAMPLER_PAUSED) {
-                sampler_stop_recording();
-            }
+            sampler_request_stop();
         } else if (cmd == 3) {
             /* Pause recording */
             shadow_control->sampler_cmd = 0;
@@ -2648,20 +2649,12 @@ skip_la_rebuild:
             }
         }
 
-        /* Preview player commands */
+        /* Preview player commands. Play (open/fstat/mmap) runs on the shim
+         * worker; stop is just flag clears, safe here. */
         uint8_t pcmd = shadow_control->preview_cmd;
         if (pcmd == 1) {
             shadow_control->preview_cmd = 0;
-            char path_buf[256] = "";
-            FILE *pf = fopen(PREVIEW_CMD_PATH, "r");
-            if (pf) {
-                if (fgets(path_buf, sizeof(path_buf), pf)) {
-                    char *nl = strchr(path_buf, '\n');
-                    if (nl) *nl = '\0';
-                }
-                fclose(pf);
-            }
-            if (path_buf[0]) preview_play(path_buf);
+            shim_worker_post(SHIM_EVT_PREVIEW_PLAY);
         } else if (pcmd == 2) {
             shadow_control->preview_cmd = 0;
             preview_stop();
@@ -4849,7 +4842,7 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
         spi_baseline_mode = (env && env[0] == '1') ? 1 : 0;
 #if SHADOW_TIMING_LOG
         if (spi_baseline_mode) {
-            FILE *f = fopen("/tmp/ioctl_timing.log", "a");
+            FILE *f = fopen("/data/UserData/schwung/ioctl_timing.log", "a");
             if (f) { fprintf(f, "=== BASELINE MODE: All processing disabled ===\n"); fclose(f); }
         }
 #endif
@@ -4897,7 +4890,7 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
 #if SHADOW_TIMING_LOG
             static int skip_log_count = 0;
             if (skip_log_count++ < 10 || skip_log_count % 100 == 0) {
-                FILE *f = fopen("/tmp/ioctl_timing.log", "a");
+                FILE *f = fopen("/data/UserData/schwung/ioctl_timing.log", "a");
                 if (f) {
                     fprintf(f, "SKIP_DSP: spi_consecutive_overruns=%d, last_frame=%llu us\n",
                             spi_consecutive_overruns, (unsigned long long)spi_last_frame_total_us);
@@ -5134,7 +5127,7 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     if (mix_time_count >= 1000) {
 #if SHADOW_TIMING_LOG
         uint64_t avg = mix_time_sum / mix_time_count;
-        FILE *f = fopen("/tmp/dsp_timing.log", "a");
+        FILE *f = fopen("/data/UserData/schwung/dsp_timing.log", "a");
         if (f) {
             fprintf(f, "Pre-ioctl mix (from buffer): avg=%llu us, max=%llu us\n",
                     (unsigned long long)avg, (unsigned long long)mix_time_max);
@@ -6716,21 +6709,21 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                             send_screenreader_announcement("Sampler cancelled");
                         } else if (sampler_state == SAMPLER_RECORDING) {
                             shadow_log("Sampler: force stop via Shift+Sample");
-                            sampler_stop_recording();
+                            sampler_request_stop();
                         } else if (sampler_state == SAMPLER_PREROLL) {
                             shadow_log("Sampler: preroll cancelled via Shift+Sample");
-                            sampler_stop_recording();
+                            sampler_request_stop();
                         }
                         src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
                     } else if (sampler_state == SAMPLER_RECORDING) {
                         /* Bare Sample while recording: stop */
                         shadow_log("Sampler: stopped via Sample button");
-                        sampler_stop_recording();
+                        sampler_request_stop();
                         src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
                     } else if (sampler_state == SAMPLER_PREROLL) {
                         /* Bare Sample while preroll: cancel back to armed */
                         shadow_log("Sampler: preroll cancelled via Sample button");
-                        sampler_stop_recording();
+                        sampler_request_stop();
                         src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
                     }
                 }
@@ -6889,10 +6882,10 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     sampler_state == SAMPLER_ARMED) {
                     if (sampler_preroll_enabled && sampler_duration_options[sampler_duration_index] > 0) {
                         shadow_log("Sampler: triggered preroll by pad note-on");
-                        sampler_start_preroll();
+                        sampler_request_start(1);
                     } else {
                         shadow_log("Sampler: triggered by pad note-on");
-                        sampler_start_recording();
+                        sampler_request_start(0);
                     }
                     /* Do NOT block the note - it must play so it gets recorded */
                 }
@@ -6910,10 +6903,10 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     if (vel > 0) {
                         if (sampler_preroll_enabled && sampler_duration_options[sampler_duration_index] > 0) {
                             shadow_log("Sampler: triggered preroll by external MIDI (cable 2)");
-                            sampler_start_preroll();
+                            sampler_request_start(1);
                         } else {
                             shadow_log("Sampler: triggered by external MIDI (cable 2)");
-                            sampler_start_recording();
+                            sampler_request_start(0);
                         }
                         /* Do NOT block - let note pass through for playback/recording */
                         break;
@@ -7434,7 +7427,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
         if (render_time_count >= 1000) {
 #if SHADOW_TIMING_LOG
             uint64_t avg = render_time_sum / render_time_count;
-            FILE *f = fopen("/tmp/dsp_timing.log", "a");
+            FILE *f = fopen("/data/UserData/schwung/dsp_timing.log", "a");
             if (f) {
                 fprintf(f, "Post-ioctl DSP render: avg=%llu us, max=%llu us\n",
                         (unsigned long long)avg, (unsigned long long)render_time_max);
@@ -7918,8 +7911,20 @@ static void shim_spi_init(void)
         pthread_detach(tid);
     }
 
-    /* Start the shim worker (debug-flag polling, deferred hooks, set scan) —
-     * everything the SPI callbacks must not do themselves. */
+    /* Start the shim worker (debug-flag polling, deferred hooks, set scan,
+     * sampler/preview file I/O) — everything the SPI callbacks must not do
+     * themselves. */
+    {
+        shim_worker_hooks_t hooks = {
+            .sampler_prepare        = sampler_worker_prepare,
+            .sampler_finalize       = sampler_worker_finalize,
+            .sampler_cancel_preroll = sampler_worker_cancel_preroll,
+            .skipback_save          = skipback_worker_spawn_save,
+            .skipback_resize        = shim_hook_skipback_resize,
+            .preview_play_pending   = shim_hook_preview_play,
+        };
+        shim_worker_set_hooks(&hooks);
+    }
     shim_worker_start();
 
     /* Start LED capture logger thread (gated by flag file) */

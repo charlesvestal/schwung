@@ -24,7 +24,12 @@ typedef enum {
     SAMPLER_ARMED,
     SAMPLER_RECORDING,
     SAMPLER_PREROLL,
-    SAMPLER_PAUSED
+    SAMPLER_PAUSED,
+    SAMPLER_FINALIZING  /* stop requested; shim worker is draining/closing
+                           the file. Mirrors as RECORDING via
+                           sampler_get_state() so JS modules can keep
+                           polling host_sampler_is_recording() until the
+                           WAV is complete on disk. */
 } sampler_state_t;
 
 typedef enum {
@@ -165,9 +170,21 @@ float sampler_get_bpm(tempo_source_t *source);
 void sampler_announce_menu_item(void);
 
 /* Start/stop recording */
-void sampler_start_recording(void);
-void sampler_start_recording_to(const char *output_path);
-void sampler_stop_recording(void);
+/* Recording start/stop is split for realtime safety:
+ *  - the RT halves below arm state and post an event to the shim worker
+ *    (safe from the SPI callbacks; the triggering frame's audio lands in
+ *    the pre-allocated ring immediately)
+ *  - the sampler_worker_* halves run on the shim worker and do all file
+ *    I/O: mkdir/fopen/header/writer-thread on start; join/trim/close on
+ *    stop. Events execute in posted order, so start→stop races resolve
+ *    serially. */
+int  sampler_request_start(int with_preroll);            /* RT: Shift+Sample paths */
+int  sampler_request_start_custom(const char *path_or_null); /* RT: cmd path file when NULL */
+void sampler_request_stop(void);                          /* RT: any state */
+void sampler_worker_prepare(void);                        /* worker */
+void sampler_worker_finalize(void);                       /* worker */
+void sampler_worker_cancel_preroll(void);                 /* worker */
+void skipback_worker_spawn_save(void);                    /* worker */
 void sampler_pause_recording(void);
 void sampler_resume_recording(void);
 
@@ -175,7 +192,6 @@ void sampler_resume_recording(void);
 int sampler_get_state(void);
 
 /* Pre-roll: countdown before recording */
-void sampler_start_preroll(void);
 void sampler_tick_preroll(void);
 
 /* Capture one audio block during recording */
