@@ -222,11 +222,16 @@ void shadow_save_state(void)
             host_chain_slots[1].muted,
             host_chain_slots[2].muted,
             host_chain_slots[3].muted);
-    fprintf(f, "  \"slot_soloed\": [%d, %d, %d, %d]\n",
+    fprintf(f, "  \"slot_soloed\": [%d, %d, %d, %d],\n",
             host_chain_slots[0].soloed,
             host_chain_slots[1].soloed,
             host_chain_slots[2].soloed,
             host_chain_slots[3].soloed);
+    fprintf(f, "  \"slot_move_to_slot\": [%d, %d, %d, %d]\n",
+            host_chain_slots[0].move_to_slot,
+            host_chain_slots[1].move_to_slot,
+            host_chain_slots[2].move_to_slot,
+            host_chain_slots[3].move_to_slot);
     fprintf(f, "}\n");
     fclose(f);
     chown_to_ableton(SHADOW_CONFIG_PATH);
@@ -407,6 +412,21 @@ void shadow_load_state(void)
                 snprintf(msg, sizeof(msg), "Loaded slot soloed: [%d, %d, %d, %d]",
                          s0, s1, s2, s3);
                 if (host_log) host_log(msg);
+            }
+        }
+    }
+
+    /* Parse slot_move_to_slot array (missing key → leaves default 1) */
+    const char *mts_key = "\"slot_move_to_slot\":";
+    char *mts_pos = strstr(json, mts_key);
+    if (mts_pos) {
+        mts_pos = strchr(mts_pos, '[');
+        if (mts_pos) {
+            int m0, m1, m2, m3;
+            if (sscanf(mts_pos, "[%d, %d, %d, %d]", &m0, &m1, &m2, &m3) == 4) {
+                int mts[4] = {m0, m1, m2, m3};
+                for (int i = 0; i < 4; i++)
+                    host_chain_slots[i].move_to_slot = mts[i] ? 1 : 0;
             }
         }
     }
