@@ -1093,6 +1093,11 @@ scp_with_retry "$local_file" "$username@$hostname:./$remote_filename" || fail "F
 # that BusyBox tar on Move does not restore correctly.
 ssh_ableton_with_retry "tar -tzf ./$remote_filename | grep -qx 'schwung/schwung-shim.so'" || \
     fail "Invalid tar payload: missing schwung/schwung-shim.so entry"
+# BusyBox tar extracts GNU-sparse entries to literal GNUSparseFile.0/<name>
+# paths, silently leaving the real file stale. The device-side listing shows
+# the raw (mangled) names, so this catches what host-side bsdtar hides.
+ssh_ableton_with_retry "! tar -tzf ./$remote_filename | grep -q 'GNUSparseFile'" || \
+    fail "Invalid tar payload: contains GNU sparse entries BusyBox cannot extract (repackage with sparse-safe tar)"
 # Use verbose tar only in non-quiet mode (screen reader friendly)
 if [ "$quiet_mode" = true ]; then
     ssh_ableton_with_retry "tar -xzof ./$remote_filename" || fail "Failed to extract tarball"
