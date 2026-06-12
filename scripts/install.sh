@@ -1073,21 +1073,16 @@ fi
 # (e.g., import from '/data/UserData/move-anything/shared/constants.mjs')
 ssh_root_with_retry "if [ ! -L /data/UserData/move-anything ] && [ ! -d /data/UserData/move-anything ]; then ln -s /data/UserData/schwung /data/UserData/move-anything; fi" || true
 
-# Rebuild schwung-manager before upload so static files are always current
-if [ "$use_local" = true ] && command -v go &>/dev/null && [ -d "$REPO_ROOT/schwung-manager" ]; then
+# Rebuild schwung-manager before upload so static files are always current,
+# then re-run package.sh — the single packaging authority — instead of
+# injecting into the existing tarball (the old gunzip/append/gzip dance was
+# the third copy of that logic; see the 2026-06-11 cleanup review C-8).
+if [ "$use_local" = true ] && command -v go &>/dev/null && [ -d "$REPO_ROOT/schwung-manager" ] && [ -d "$REPO_ROOT/build" ]; then
     echo "Rebuilding schwung-manager..."
-    (cd "$REPO_ROOT/schwung-manager" && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o "$REPO_ROOT/build/schwung-manager" -ldflags="-s -w" .) || echo "Warning: schwung-manager build failed, using existing binary in tarball"
-    if [ -f "$REPO_ROOT/build/schwung-manager" ]; then
-        tar_file="${local_file%.gz}"
-        gunzip -k "$local_file" -f
-        (cd "$REPO_ROOT/build" && \
-            if tar --version 2>/dev/null | grep -q GNU; then
-                tar --format=posix -rf "$tar_file" --transform 's,^\.,schwung,' ./schwung-manager
-            else
-                tar -rf "$tar_file" -s ',^\.,schwung,' ./schwung-manager
-            fi)
-        gzip -f "$tar_file"
-        echo "Updated tarball with fresh schwung-manager"
+    if (cd "$REPO_ROOT/schwung-manager" && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o "$REPO_ROOT/build/schwung-manager" -ldflags="-s -w" .); then
+        "$REPO_ROOT/scripts/package.sh" && echo "Repackaged tarball with fresh schwung-manager"
+    else
+        echo "Warning: schwung-manager build failed, using existing binary in tarball"
     fi
 fi
 
