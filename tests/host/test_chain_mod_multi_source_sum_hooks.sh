@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-file="src/modules/chain/dsp/chain_host.c"
+file="src/modules/chain/dsp"
 
 if ! rg -q 'typedef struct mod_source_contribution' "$file"; then
   echo "FAIL: missing per-source modulation contribution struct" >&2

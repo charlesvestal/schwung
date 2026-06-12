@@ -241,7 +241,7 @@ the echo has nowhere to loop back to. You can ignore echoes entirely.
 If your tool *does* listen to MIDI input (say, a sequencer that
 watches for external-MIDI triggers), filter echoes yourself by
 tracking which notes you've recently emitted. The chain's
-`pre_mode_is_echo` in `src/modules/chain/dsp/chain_host.c` shows the
+`pre_mode_is_echo` in `src/modules/chain/dsp/chain_midi.c` shows the
 pattern (refcount bumped on inject, checked on incoming).
 
 ### NULL-safety

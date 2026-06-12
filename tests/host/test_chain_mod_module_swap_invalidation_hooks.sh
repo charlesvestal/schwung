@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-file="src/modules/chain/dsp/chain_host.c"
+file="src/modules/chain/dsp"
 
-if ! rg -q 'static void chain_mod_clear_target_entries\(' "$file"; then
+if ! rg -q '(static )?void chain_mod_clear_target_entries\(' "$file"; then
   echo "FAIL: missing helper to clear modulation entries for a specific target" >&2
   exit 1
 fi

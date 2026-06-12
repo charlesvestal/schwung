@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-file="src/modules/chain/dsp/chain_host.c"
+file="src/modules/chain/dsp"
 
-if ! rg -q 'static int chain_param_key_matches\(' "$file"; then
+if ! rg -q '(static )?int chain_param_key_matches\(' "$file"; then
   echo "FAIL: missing chain_param_key_matches helper for modulation key matching" >&2
   exit 1
 fi

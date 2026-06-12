@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-file="src/modules/chain/dsp/chain_host.c"
+file="src/modules/chain/dsp"
 
-if ! rg -q 'static int json_get_float\(' "$file"; then
+if ! rg -q '(static )?int json_get_float\(' "$file"; then
   echo "FAIL: missing JSON float parser helper" >&2
   exit 1
 fi
