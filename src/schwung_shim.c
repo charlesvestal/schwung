@@ -1289,7 +1289,7 @@ static void shadow_inprocess_process_midi(void) {
              * frame and the echo frame.  The ring closes that race. */
             int is_external_echo = 0;
             const uint8_t *in_buf = global_mmap_addr + MIDI_IN_OFFSET;
-            for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+            for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
                 if ((in_buf[j] >> 4) == 2 &&          /* cable 2 */
                     in_buf[j + 1] == p1 &&             /* same status+channel */
                     in_buf[j + 2] == p2 &&             /* same data1 */
@@ -4241,7 +4241,7 @@ void midi_monitor()
         return;
     }
 
-    for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4)
+    for (int i = 0; i < MIDI_BUFFER_SIZE; i += 8)
     {
         if (memcmp(&src[i], &hotkey_prev[i], 4) == 0) {
             continue;
@@ -4677,7 +4677,7 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
             unsigned char *hw_buf = schwung_spi_get_hw(g_spi_handle);
             if (hw_buf) {
                 const uint8_t *midi_in = hw_buf + 2048;
-                for (int i = 0; i < 248; i += 4) {
+                for (int i = 0; i < 248; i += 8) {
                     if (midi_in[i] || midi_in[i+1] || midi_in[i+2] || midi_in[i+3]) {
                         int cable = (midi_in[i] >> 4) & 0xF;
                         char line[128];
@@ -4845,7 +4845,7 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
         extern int midi_indicator_active_notes;
         extern int midi_indicator_out_active_notes;
         const uint8_t *mi = global_mmap_addr + MIDI_IN_OFFSET;
-        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
             if (((mi[j] >> 4) & 0x0F) != 2) continue;  /* cable 2 only */
             uint8_t st = mi[j + 1], ty = st & 0xF0, d1b = mi[j + 2], d2b = mi[j + 3];
             if (ty == 0x90 && d2b > 0) {
@@ -4862,7 +4862,9 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
          * MIDI-out doesn't reach this SPI mailbox in shadow mode, so the OUT
          * side only lights for forwarded external input, not clips.) */
         const uint8_t *mo = global_mmap_addr + MIDI_OUT_OFFSET;
-        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+        /* MIDI_OUT region is 20 x 4-byte packets (80 bytes) — scanning to
+         * MIDI_BUFFER_SIZE would read display bytes as MIDI. */
+        for (int j = 0; j < 80; j += 4) {
             if (((mo[j] >> 4) & 0x0F) != 2) continue;  /* cable 2 only */
             uint8_t st = mo[j + 1], ty = st & 0xF0, d1b = mo[j + 2], d2b = mo[j + 3];
             if (ty == 0x90 && d2b > 0) {
@@ -5644,7 +5646,9 @@ static void shim_remap_cable2_channels(uint8_t *shadow) {
 
     for (int j = 0; j < MIDI_IN_MAX_BYTES; j += 8) {
         uint8_t header = hw_buf[j];
-        if (header == 0) break;               /* end-of-events */
+        if (header == 0) continue;            /* empty slot — later slots can
+                                                 still hold events (the filter
+                                                 zeroes slots mid-run) */
         uint8_t cable = (header >> 4) & 0x0F;
         if (cable != 2) continue;             /* only cable-2 (external USB) */
         uint8_t status = hw_buf[j + 1];
@@ -5685,7 +5689,7 @@ static void shim_block_cable2_in_sh_midi(uint8_t *sh_midi) {
      * interpret or corrupt timestamp bytes. */
     const int MIDI_IN_MAX_BYTES = 8 * 31;
     for (int j = 0; j < MIDI_IN_MAX_BYTES; j += 8) {
-        if (sh_midi[j] == 0) break;                    /* end of events */
+        if (sh_midi[j] == 0) continue;                 /* empty slot — keep scanning */
         uint8_t cable = (sh_midi[j] >> 4) & 0x0F;
         if (cable != 2) continue;
         uint8_t status = sh_midi[j + 1];
@@ -5913,7 +5917,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             !(corun_keep_mask_eff(shadow_control->corun.keep_mask) & CORUN_GRP_KNOBS);
 
         /* Filter MIDI_IN: zero out jog/back/knobs */
-        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
             uint8_t cin = hw_midi[j] & 0x0F;
             uint8_t cable = (hw_midi[j] >> 4) & 0x0F;
             uint8_t status = hw_midi[j + 1];
@@ -6027,18 +6031,24 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             }
 
             if (filter) {
-                /* Zero the event in shadow buffer */
+                /* Zero the packet dword in the shadow buffer (slot becomes
+                 * empty; later slots stay valid — readers skip, not break) */
                 sh_midi[j] = 0;
                 sh_midi[j + 1] = 0;
                 sh_midi[j + 2] = 0;
                 sh_midi[j + 3] = 0;
             } else {
-                /* Copy event as-is */
+                /* Copy packet as-is */
                 sh_midi[j] = hw_midi[j];
                 sh_midi[j + 1] = hw_midi[j + 1];
                 sh_midi[j + 2] = hw_midi[j + 2];
                 sh_midi[j + 3] = hw_midi[j + 3];
             }
+            /* Carry the 4-byte timestamp dword either way */
+            sh_midi[j + 4] = hw_midi[j + 4];
+            sh_midi[j + 5] = hw_midi[j + 5];
+            sh_midi[j + 6] = hw_midi[j + 6];
+            sh_midi[j + 7] = hw_midi[j + 7];
         }
 
         /* Move-native knob coalesce: emit one consolidated CC per knob whose
@@ -6052,13 +6062,18 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             if (delta > 63) delta = 63;
             else if (delta < -63) delta = -63;
             uint8_t d2 = (delta >= 0) ? (uint8_t)delta : (uint8_t)(delta + 128);
-            for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+            for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
                 if (sh_midi[j] == 0 && sh_midi[j + 1] == 0 &&
                     sh_midi[j + 2] == 0 && sh_midi[j + 3] == 0) {
                     sh_midi[j]     = 0x0B;     /* cable 0, CIN 0x0B = CC */
                     sh_midi[j + 1] = 0xB0;     /* status: CC, channel 0 */
                     sh_midi[j + 2] = (uint8_t)(71 + k);
                     sh_midi[j + 3] = d2;
+                    /* Synthetic event: zero the timestamp dword */
+                    sh_midi[j + 4] = 0;
+                    sh_midi[j + 5] = 0;
+                    sh_midi[j + 6] = 0;
+                    sh_midi[j + 7] = 0;
                     break;
                 }
             }
@@ -6078,7 +6093,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
      * This works regardless of shadow_display_mode.
      * Skip entirely in overtake mode - overtake module owns all input. */
     if (overtake_mode) goto skip_shift_menu;
-    for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+    for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
         uint8_t cin = hw_midi[j] & 0x0F;
         uint8_t cable = (hw_midi[j] >> 4) & 0x0F;
         if (cable != 0x00) continue;  /* Only internal cable */
@@ -6159,7 +6174,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
      * Always block Shift+Record so the first press doesn't leak through.
      * Block jog while sampler is armed or recording. */
     {
-        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
             uint8_t cin = sh_midi[j] & 0x0F;
             uint8_t cable = (sh_midi[j] >> 4) & 0x0F;
             if (cable != 0x00) continue;
@@ -6299,7 +6314,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
     if (hardware_mmap_addr && shadow_inprocess_ready) {
         uint8_t *src = hardware_mmap_addr + MIDI_IN_OFFSET;
         int overtake_active = shadow_control ? shadow_control->overtake_mode : 0;
-        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
             uint8_t cin = src[j] & 0x0F;
             uint8_t cable = (src[j] >> 4) & 0x0F;
             if (cable != 0x00) continue;  /* Only internal cable */
@@ -6755,7 +6770,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
 
         /* External MIDI trigger (cable 2): any note-on triggers recording when armed */
         if (sampler_state == SAMPLER_ARMED) {
-            for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+            for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
                 uint8_t cable = (src[j] >> 4) & 0x0F;
                 uint8_t cin = src[j] & 0x0F;
                 if (cable != 0x02) continue;
@@ -6790,7 +6805,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
     if (!shadow_display_mode && overlay_active && shadow_ui_enabled &&
         shadow_inprocess_ready && global_mmap_addr) {
         uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
-        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
             uint8_t cin = src[j] & 0x0F;
             uint8_t cable = (src[j] >> 4) & 0x0F;
             if (cable != 0x00) continue;  /* Only internal cable */
@@ -6880,7 +6895,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
     if (!shadow_display_mode && overlay_knobs_mode == OVERLAY_KNOBS_NATIVE &&
         shadow_ui_enabled && shadow_inprocess_ready && global_mmap_addr) {
         uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
-        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
             uint8_t cin = src[j] & 0x0F;
             uint8_t cable = (src[j] >> 4) & 0x0F;
             if (cable != 0x00) continue;  /* Only internal cable */
@@ -6967,7 +6982,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
         uint8_t *src = hardware_mmap_addr + MIDI_IN_OFFSET;  /* Scan unfiltered hardware buffer */
         int overtake_mode = shadow_control->overtake_mode;
 
-        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
             uint8_t cin = src[j] & 0x0F;
             uint8_t cable = (src[j] >> 4) & 0x0F;
             /* In overtake mode, allow sysex (CIN 0x04-0x07) and normal messages (0x08-0x0E) */

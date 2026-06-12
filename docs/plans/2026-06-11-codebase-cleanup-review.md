@@ -392,3 +392,13 @@ hardware. Likely kernel-level: large eMMC writes trigger writeback that can
 stall the SPI ioctl itself — not fixable by scheduling. Candidate
 mitigations for a dedicated pass: chunked writes with pacing, fdatasync
 throttling, ionice/bfq, O_DIRECT for the skipback writer.
+
+## Field note 3 (2026-06-12, during B3 stride unification)
+shadow_drain_midi_inject documents that Move's firmware MIDI reader stops at
+the first zero slot. The post-ioctl filter zeroes individual slots mid-run
+(position-preserving), so any event Move should see that lands AFTER a
+filtered event in the same frame is silently dropped — relevant to co-run
+Move-native (knob detents filtered while pads pass). Pre-existing, not
+changed by the stride unification. Candidate fix: compact surviving events
+toward slot 0 when filtering — but the RTP-MIDI work recorded "never
+compact MIDI_IN" (SIGABRT) so this needs careful on-hardware study first.
