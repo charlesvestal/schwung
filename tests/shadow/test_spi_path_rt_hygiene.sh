@@ -83,7 +83,7 @@ if ! grep -Eq 'check_counter|% *200|% *100' <<<"$mol"; then
 fi
 
 # 7. chain_host parse_debug_log must not stat() on every v2_set_param.
-pdl=$(awk '/^static void parse_debug_log\(/,/^}/' src/modules/chain/dsp/chain_host.c)
+pdl=$(awk '/^(static )?void parse_debug_log\(/,/^}/' src/modules/chain/dsp/chain_host.c)
 if ! grep -Eq 'counter|cached' <<<"$pdl"; then
   echo "FAIL: chain_host parse_debug_log stats the flag file on every set_param" >&2
   exit 1

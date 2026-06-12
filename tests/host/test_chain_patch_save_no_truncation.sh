@@ -3,14 +3,13 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-file="src/modules/chain/dsp/chain_host.c"
+file="src/modules/chain/dsp/chain_patch.c"
 
 # Patch saves must not squeeze chain JSON through a fixed 8 KB stack buffer:
 # fat synth state (Surge ~8-16 KB; SHM transport allows 64 KB) silently
 # truncated into an unparseable patch file while logging "Saved patch".
-# Scope: the live v2 + master-preset region (from chain_write_file_atomic to
-# EOF). The unreachable v1 path above it still has fixed buffers; it is
-# slated for deletion (see docs/plans/2026-06-11-codebase-cleanup-review.md).
+# Scope: chain_patch.c (the persistence unit split out of chain_host.c in
+# cleanup step 10; the unreachable v1 path was deleted in step 4).
 
 live_region=$(awk '/^static int chain_write_file_atomic/,0' "$file")
 if [ -z "$live_region" ]; then
@@ -51,7 +50,7 @@ if ! grep -q 'chain_write_file_atomic(' <<<"$writer"; then
 fi
 
 for fn in save_master_preset update_master_preset; do
-  body=$(awk "/^static int ${fn}\(/,/^}/" "$file")
+  body=$(awk "/^(static )?int ${fn}\(/,/^}/" "$file")
   if ! grep -q 'build_master_preset_json(' <<<"$body"; then
     echo "FAIL: ${fn} does not build heap-sized JSON" >&2
     exit 1
@@ -63,7 +62,7 @@ for fn in save_master_preset update_master_preset; do
 done
 
 for fn in v2_save_patch v2_update_patch; do
-  body=$(awk "/^static int ${fn}\(/,/^}/" "$file")
+  body=$(awk "/^(static )?int ${fn}\(/,/^}/" "$file")
   if ! grep -q 'v2_write_patch_file(' <<<"$body"; then
     echo "FAIL: ${fn} does not route through v2_write_patch_file" >&2
     exit 1

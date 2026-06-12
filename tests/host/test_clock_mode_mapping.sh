@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-file="src/modules/chain/dsp/chain_host.c"
+file="src/modules/chain/dsp"
 
 if ! command -v rg >/dev/null 2>&1; then
   echo "rg is required to run this test" >&2

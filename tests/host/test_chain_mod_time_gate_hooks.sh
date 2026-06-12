@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-file="src/modules/chain/dsp/chain_host.c"
+file="src/modules/chain/dsp"
 
 if ! rg -q '#define MOD_INT_ENUM_MIN_INTERVAL_MS 50' "$file"; then
   echo "FAIL: missing global int/enum modulation min-interval constant" >&2
