@@ -20,6 +20,11 @@ chmod u+s "$BASE/schwung-shim.so"
 # Remove web shim symlink (no longer used as of 0.9.2)
 rm -f /usr/lib/schwung-web-shim.so
 
+# Remove the retired on-device store module (schwung-manager at
+# move.local:7700 is the single install/update path; new tarballs no
+# longer ship it, but updates extract over the old tree)
+rm -rf "$BASE/modules/store"
+
 # TTS library symlinks
 if [ -d "$BASE/lib" ]; then
     cd "$BASE/lib"
