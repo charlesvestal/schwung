@@ -42,30 +42,17 @@ if [ -z "$CROSS_PREFIX" ] && [ ! -f "/.dockerenv" ]; then
         fi
     fi
 
-    # Run build inside container
-    echo "Running build..."
-    docker run --rm \
-        -v "$REPO_ROOT:/build" \
-        -u "$(id -u):$(id -g)" \
-        -e DISABLE_SCREEN_READER="$DISABLE_SCREEN_READER" \
-        -e REQUIRE_SCREEN_READER="$REQUIRE_SCREEN_READER" \
-        "$IMAGE_NAME"
-
-    # Build schwung-manager (Go, ARM64 cross-compile).
-    # Prefer local `go` when available (fast). Fall back to a Docker
-    # `golang:1.26-bookworm` container so the build still produces a fresh
-    # binary on hosts without Go installed. If neither is available, warn
-    # loudly — silently skipping leaves a stale binary in the tarball and
-    # any new schwung-manager endpoints will appear broken on-device.
+    # Build schwung-manager (Go, ARM64 cross-compile) BEFORE the Docker
+    # build: package.sh runs inside the container and picks the binary up
+    # from build/ via its existing conditional — no tarball injection.
+    # Prefer local `go` (fast); fall back to a golang container.
     if [ -d "$REPO_ROOT/schwung-manager" ]; then
-        echo ""
         echo "=== Building schwung-manager (Go) ==="
-        sm_built=0
+        mkdir -p "$REPO_ROOT/build"
         if command -v go &>/dev/null; then
             cd "$REPO_ROOT/schwung-manager"
             GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o "$REPO_ROOT/build/schwung-manager" -ldflags="-s -w" .
             cd "$REPO_ROOT"
-            sm_built=1
         elif command -v docker &>/dev/null; then
             echo "Local 'go' not found — building via golang:1.26-bookworm container"
             docker run --rm \
@@ -77,30 +64,22 @@ if [ -z "$CROSS_PREFIX" ] && [ ! -f "/.dockerenv" ]; then
                 -e GOCACHE=/tmp/.gocache -e GOMODCACHE=/tmp/.gomodcache \
                 golang:1.26-bookworm \
                 go build -buildvcs=false -o /out/schwung-manager -ldflags="-s -w" .
-            sm_built=1
         else
             echo "ERROR: neither 'go' nor 'docker' available — cannot build schwung-manager."
             echo "       The web manager will be missing from the tarball."
         fi
-
-        if [ "$sm_built" = "1" ]; then
+        [ -f "$REPO_ROOT/build/schwung-manager" ] && \
             echo "Built: schwung-manager ($(wc -c < "$REPO_ROOT/build/schwung-manager" | tr -d ' ') bytes)"
-            # Inject into existing tarball (append the file with the schwung/ prefix)
-            if [ -f "$REPO_ROOT/schwung.tar.gz" ]; then
-                cd build
-                # gunzip, append, re-gzip (tar -r doesn't work on .gz)
-                gunzip -k "$REPO_ROOT/schwung.tar.gz" -f
-                if tar --version 2>/dev/null | grep -q GNU; then
-                    tar --format=posix -rf "$REPO_ROOT/schwung.tar" --transform 's,^\.,schwung,' ./schwung-manager
-                else
-                    tar -rf "$REPO_ROOT/schwung.tar" -s ',^\.,schwung,' ./schwung-manager
-                fi
-                gzip -f "$REPO_ROOT/schwung.tar"
-                cd "$REPO_ROOT"
-                echo "Injected schwung-manager into tarball"
-            fi
-        fi
     fi
+
+    # Run build inside container
+    echo "Running build..."
+    docker run --rm \
+        -v "$REPO_ROOT:/build" \
+        -u "$(id -u):$(id -g)" \
+        -e DISABLE_SCREEN_READER="$DISABLE_SCREEN_READER" \
+        -e REQUIRE_SCREEN_READER="$REQUIRE_SCREEN_READER" \
+        "$IMAGE_NAME"
 
     echo ""
     echo "=== Done ==="
@@ -225,8 +204,9 @@ fi
 # Build host with module manager and settings
 if needs_rebuild build/schwung \
     src/schwung_host.c src/host/module_manager.c src/host/settings.c src/host/unified_log.c \
-    src/host/analytics.c \
-    src/host/module_manager.h src/host/settings.h src/host/plugin_api_v1.h src/host/unified_log.h; then
+    src/host/analytics.c src/host/js_host_common.c \
+    src/host/module_manager.h src/host/settings.h src/host/plugin_api_v1.h src/host/unified_log.h \
+    src/host/js_host_common.h; then
     echo "Building host..."
     "${CROSS_PREFIX}gcc" -g -O3 \
         src/schwung_host.c \
@@ -234,6 +214,7 @@ if needs_rebuild build/schwung \
         src/host/settings.c \
         src/host/unified_log.c \
         src/host/analytics.c \
+        src/host/js_host_common.c \
         -o build/schwung \
         -Isrc -Isrc/lib \
         -Ilibs/quickjs/quickjs-2025-04-26 \
@@ -253,6 +234,7 @@ if needs_rebuild build/schwung-shim.so \
     src/host/shadow_resample.c src/host/shadow_overlay.c src/host/shadow_pin_scanner.c \
     src/host/shadow_led_queue.c src/host/shadow_state.c \
     src/host/shadow_midi.c src/host/unified_log.c src/host/shim_worker.c \
+    src/host/shadow_shm_util.c \
     $SHIM_TTS_SRC \
     src/host/shadow_constants.h src/host/shadow_midi.h src/host/shadow_sampler.h \
     src/host/shim_worker.h \
@@ -261,7 +243,7 @@ if needs_rebuild build/schwung-shim.so \
     src/host/shadow_resample.h src/host/shadow_overlay.h src/host/shadow_pin_scanner.h \
     src/host/shadow_led_queue.h src/host/shadow_state.h \
     src/host/plugin_api_v1.h src/host/unified_log.h src/host/tts_engine.h \
-    src/host/link_audio.h; then
+    src/host/link_audio.h src/host/shadow_shm_util.h; then
     echo "Building shim..."
     "${CROSS_PREFIX}gcc" -g3 -shared -fPIC \
         -o build/schwung-shim.so \
@@ -282,6 +264,7 @@ if needs_rebuild build/schwung-shim.so \
         src/host/shadow_midi.c \
         src/host/unified_log.c \
         src/host/shim_worker.c \
+        src/host/shadow_shm_util.c \
         $SHIM_TTS_SRC \
         $SHIM_DEFINES \
         $SHIM_INCLUDES \
@@ -320,14 +303,17 @@ fi
 # Build Shadow UI host (uses shared display bindings from js_display.c)
 if needs_rebuild build/shadow/shadow_ui \
     src/shadow/shadow_ui.c src/host/js_display.c src/host/unified_log.c \
-    src/host/analytics.c \
-    src/host/js_display.h src/host/shadow_constants.h src/host/unified_log.h; then
+    src/host/analytics.c src/host/js_host_common.c src/host/shadow_shm_util.c \
+    src/host/js_display.h src/host/shadow_constants.h src/host/unified_log.h \
+    src/host/js_host_common.h src/host/shadow_shm_util.h; then
     echo "Building Shadow UI..."
     "${CROSS_PREFIX}gcc" -g -O3 \
         src/shadow/shadow_ui.c \
         src/host/js_display.c \
         src/host/unified_log.c \
         src/host/analytics.c \
+        src/host/js_host_common.c \
+        src/host/shadow_shm_util.c \
         -o build/shadow/shadow_ui \
         -Isrc -Isrc/lib \
         -Ilibs/quickjs/quickjs-2025-04-26 \

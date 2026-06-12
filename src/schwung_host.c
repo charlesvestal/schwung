@@ -24,6 +24,7 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "lib/stb_truetype.h"
 
+#include "host/js_host_common.h"
 #include "host/module_manager.h"
 #include "host/settings.h"
 #include "host/shadow_constants.h"
@@ -66,11 +67,8 @@ int g_silence_blocks = 0;
 /* Default modules directory */
 #define DEFAULT_MODULES_DIR "/data/UserData/schwung/modules"
 
-/* Base directory for path validation */
-#define BASE_DIR "/data/UserData/schwung"
-
-/* Bundled curl binary path */
-#define CURL_PATH "/data/UserData/schwung/bin/curl"
+/* Path validation (validate_path) and the bundled-curl bindings live in
+ * host/js_host_common.c. */
 
 typedef struct FontChar {
   unsigned char* data;
@@ -878,85 +876,8 @@ void kickM8(unsigned char *mapped_memory, int fd)
     int ioctl_result = ioctl(fd, _IOC(_IOC_NONE, 0, 0xa, 0), 0x300);
 }
 
-#ifndef FALSE
-enum
-{
-    FALSE = 0,
-    TRUE = 1,
-};
-#endif
-
-/* also used to initialize the worker context */
-static JSContext *JS_NewCustomContext(JSRuntime *rt)
-{
-    JSContext *ctx;
-    ctx = JS_NewContext(rt);
-    if (!ctx)
-        return NULL;
-    /* system modules */
-    js_init_module_std(ctx, "std");
-    js_init_module_os(ctx, "os");
-    return ctx;
-}
-
-static int eval_buf(JSContext *ctx, const void *buf, int buf_len,
-                    const char *filename, int eval_flags)
-{
-    JSValue val;
-    int ret;
-
-    if ((eval_flags & JS_EVAL_TYPE_MASK) == JS_EVAL_TYPE_MODULE)
-    {
-        /* for the modules, we compile then run to be able to set
-           import.meta */
-        val = JS_Eval(ctx, buf, buf_len, filename,
-                      eval_flags | JS_EVAL_FLAG_COMPILE_ONLY);
-        if (!JS_IsException(val))
-        {
-            js_module_set_import_meta(ctx, val, TRUE, TRUE);
-            val = JS_EvalFunction(ctx, val);
-        }
-        val = js_std_await(ctx, val);
-    }
-    else
-    {
-        val = JS_Eval(ctx, buf, buf_len, filename, eval_flags);
-    }
-    if (JS_IsException(val))
-    {
-        js_std_dump_error(ctx);
-        ret = -1;
-    }
-    else
-    {
-        ret = 0;
-    }
-    JS_FreeValue(ctx, val);
-    return ret;
-}
-
-static int eval_file(JSContext *ctx, const char *filename, int module)
-{
-    uint8_t *buf;
-    int ret, eval_flags = JS_EVAL_FLAG_STRICT; // Always eval in strict mode.
-    size_t buf_len;
-
-    printf("Loading control surface script: %s\n", filename);
-    buf = js_load_file(ctx, &buf_len, filename);
-    if (!buf)
-    {
-        perror(filename);
-        exit(1);
-    }
-
-    if (module)
-        eval_flags |= JS_EVAL_TYPE_MODULE;
-    else
-        eval_flags |= JS_EVAL_TYPE_GLOBAL;
-    ret = eval_buf(ctx, buf, buf_len, filename, eval_flags);
-    js_free(ctx, buf);
-    return ret;
-}
+/* QuickJS scaffolding (JS_NewCustomContext, eval_buf, eval_file,
+ * getGlobalFunction, callGlobalFunction) lives in host/js_host_common.c. */
 
 static JSValue js_set_pixel(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
   if(argc < 2 || argc > 3) {
@@ -1925,373 +1846,10 @@ static JSValue js_host_announce_screenreader(JSContext *ctx, JSValueConst this_v
     return JS_UNDEFINED;
 }
 
-/* Helper: validate path is within BASE_DIR to prevent directory traversal */
-/* Execute a command safely using fork/execvp instead of system() */
-static int run_command(const char *const argv[]) {
-    pid_t pid = fork();
-    if (pid < 0) {
-        perror("fork");
-        return -1;
-    }
-    if (pid == 0) {
-        /* Child: redirect stderr to stdout, exec the command */
-        dup2(STDOUT_FILENO, STDERR_FILENO);
-        execvp(argv[0], (char *const *)argv);
-        _exit(127); /* exec failed */
-    }
-    /* Parent: wait for child */
-    int status;
-    if (waitpid(pid, &status, 0) < 0) {
-        perror("waitpid");
-        return -1;
-    }
-    if (WIFEXITED(status)) {
-        return WEXITSTATUS(status);
-    }
-    return -1;
-}
-
-static int validate_path(const char *path) {
-    if (!path || strlen(path) < strlen(BASE_DIR)) return 0;
-    if (strncmp(path, BASE_DIR, strlen(BASE_DIR)) != 0) return 0;
-    if (strstr(path, "..") != NULL) return 0;
-
-    // Resolve symlinks and re-check the resolved path
-    char resolved[PATH_MAX];
-    if (realpath(path, resolved) != NULL) {
-        if (strncmp(resolved, BASE_DIR, strlen(BASE_DIR)) != 0) return 0;
-    }
-    // If realpath fails (e.g. file doesn't exist yet), the basic checks above suffice
-    return 1;
-}
-
-/* host_file_exists(path) -> bool */
-static JSValue js_host_file_exists(JSContext *ctx, JSValueConst this_val,
-                                   int argc, JSValueConst *argv) {
-    if (argc < 1) {
-        return JS_FALSE;
-    }
-
-    const char *path = JS_ToCString(ctx, argv[0]);
-    if (!path) {
-        return JS_FALSE;
-    }
-
-    if (!validate_path(path)) {
-        JS_FreeCString(ctx, path);
-        return JS_FALSE;
-    }
-
-    struct stat st;
-    int exists = (stat(path, &st) == 0);
-
-    JS_FreeCString(ctx, path);
-    return exists ? JS_TRUE : JS_FALSE;
-}
-
-/* host_http_download(url, dest_path) -> bool */
-static JSValue js_host_http_download(JSContext *ctx, JSValueConst this_val,
-                                     int argc, JSValueConst *argv) {
-    if (argc < 2) {
-        return JS_FALSE;
-    }
-
-    const char *url = JS_ToCString(ctx, argv[0]);
-    const char *dest_path = JS_ToCString(ctx, argv[1]);
-
-    if (!url || !dest_path) {
-        if (url) JS_FreeCString(ctx, url);
-        if (dest_path) JS_FreeCString(ctx, dest_path);
-        return JS_FALSE;
-    }
-
-    /* Validate URL scheme - only allow https:// and http:// */
-    if (strncmp(url, "https://", 8) != 0 && strncmp(url, "http://", 7) != 0) {
-        fprintf(stderr, "host_http_download: invalid URL scheme: %s\n", url);
-        JS_FreeCString(ctx, url);
-        JS_FreeCString(ctx, dest_path);
-        return JS_FALSE;
-    }
-
-    /* Validate destination path */
-    if (!validate_path(dest_path)) {
-        fprintf(stderr, "host_http_download: invalid dest path: %s\n", dest_path);
-        JS_FreeCString(ctx, url);
-        JS_FreeCString(ctx, dest_path);
-        return JS_FALSE;
-    }
-
-    const char *argv_cmd[] = {
-        CURL_PATH, "-fsSLk", "--connect-timeout", "10", "--max-time", "120",
-        "-o", dest_path, url, NULL
-    };
-    int result = run_command(argv_cmd);
-
-    JS_FreeCString(ctx, url);
-    JS_FreeCString(ctx, dest_path);
-
-    return (result == 0) ? JS_TRUE : JS_FALSE;
-}
-
-/* host_extract_tar(tar_path, dest_dir) -> bool */
-static JSValue js_host_extract_tar(JSContext *ctx, JSValueConst this_val,
-                                   int argc, JSValueConst *argv) {
-    if (argc < 2) {
-        return JS_FALSE;
-    }
-
-    const char *tar_path = JS_ToCString(ctx, argv[0]);
-    const char *dest_dir = JS_ToCString(ctx, argv[1]);
-
-    if (!tar_path || !dest_dir) {
-        if (tar_path) JS_FreeCString(ctx, tar_path);
-        if (dest_dir) JS_FreeCString(ctx, dest_dir);
-        return JS_FALSE;
-    }
-
-    /* Validate paths */
-    if (!validate_path(tar_path) || !validate_path(dest_dir)) {
-        fprintf(stderr, "host_extract_tar: invalid path(s)\n");
-        JS_FreeCString(ctx, tar_path);
-        JS_FreeCString(ctx, dest_dir);
-        return JS_FALSE;
-    }
-
-    const char *argv_cmd[] = {
-        "tar", "-xzof", tar_path, "-C", dest_dir, NULL
-    };
-    int result = run_command(argv_cmd);
-
-    /* Fix ownership so files are updatable by non-root processes */
-    if (result == 0) {
-        const char *chown_cmd[] = {
-            "chown", "-R", "ableton:users", dest_dir, NULL
-        };
-        run_command(chown_cmd);
-    }
-
-    JS_FreeCString(ctx, tar_path);
-    JS_FreeCString(ctx, dest_dir);
-
-    return (result == 0) ? JS_TRUE : JS_FALSE;
-}
-
-/* host_extract_tar_strip(tar_path, dest_dir, strip_components) -> bool */
-static JSValue js_host_extract_tar_strip(JSContext *ctx, JSValueConst this_val,
-                                         int argc, JSValueConst *argv) {
-    if (argc < 3) {
-        return JS_FALSE;
-    }
-
-    const char *tar_path = JS_ToCString(ctx, argv[0]);
-    const char *dest_dir = JS_ToCString(ctx, argv[1]);
-    int strip = 0;
-    JS_ToInt32(ctx, &strip, argv[2]);
-
-    if (!tar_path || !dest_dir) {
-        if (tar_path) JS_FreeCString(ctx, tar_path);
-        if (dest_dir) JS_FreeCString(ctx, dest_dir);
-        return JS_FALSE;
-    }
-
-    /* Validate paths */
-    if (!validate_path(tar_path) || !validate_path(dest_dir)) {
-        fprintf(stderr, "host_extract_tar_strip: invalid path(s)\n");
-        JS_FreeCString(ctx, tar_path);
-        JS_FreeCString(ctx, dest_dir);
-        return JS_FALSE;
-    }
-
-    /* Validate strip components (0-5 reasonable range) */
-    if (strip < 0 || strip > 5) {
-        fprintf(stderr, "host_extract_tar_strip: invalid strip value: %d\n", strip);
-        JS_FreeCString(ctx, tar_path);
-        JS_FreeCString(ctx, dest_dir);
-        return JS_FALSE;
-    }
-
-    char strip_arg[32];
-    snprintf(strip_arg, sizeof(strip_arg), "--strip-components=%d", strip);
-
-    const char *argv_cmd[] = {
-        "tar", "-xzof", tar_path, "-C", dest_dir, strip_arg, NULL
-    };
-    int result = run_command(argv_cmd);
-
-    /* Fix ownership so files are updatable by non-root processes */
-    if (result == 0) {
-        const char *chown_cmd[] = {
-            "chown", "-R", "ableton:users", dest_dir, NULL
-        };
-        run_command(chown_cmd);
-    }
-
-    JS_FreeCString(ctx, tar_path);
-    JS_FreeCString(ctx, dest_dir);
-
-    return (result == 0) ? JS_TRUE : JS_FALSE;
-}
-
-/* host_ensure_dir(path) -> bool - creates directory if it doesn't exist */
-static JSValue js_host_ensure_dir(JSContext *ctx, JSValueConst this_val,
-                                  int argc, JSValueConst *argv) {
-    if (argc < 1) {
-        return JS_FALSE;
-    }
-
-    const char *path = JS_ToCString(ctx, argv[0]);
-    if (!path) {
-        return JS_FALSE;
-    }
-
-    /* Validate path */
-    if (!validate_path(path)) {
-        fprintf(stderr, "host_ensure_dir: invalid path: %s\n", path);
-        JS_FreeCString(ctx, path);
-        return JS_FALSE;
-    }
-
-    const char *argv_cmd[] = { "mkdir", "-p", path, NULL };
-    int result = run_command(argv_cmd);
-
-    JS_FreeCString(ctx, path);
-
-    return (result == 0) ? JS_TRUE : JS_FALSE;
-}
-
-/* host_remove_dir(path) -> bool */
-static JSValue js_host_remove_dir(JSContext *ctx, JSValueConst this_val,
-                                  int argc, JSValueConst *argv) {
-    if (argc < 1) {
-        return JS_FALSE;
-    }
-
-    const char *path = JS_ToCString(ctx, argv[0]);
-    if (!path) {
-        return JS_FALSE;
-    }
-
-    /* Validate path - must be within modules directory for safety */
-    if (!validate_path(path)) {
-        fprintf(stderr, "host_remove_dir: invalid path: %s\n", path);
-        JS_FreeCString(ctx, path);
-        return JS_FALSE;
-    }
-
-    /* Additional safety: must be within modules directory */
-    if (strncmp(path, DEFAULT_MODULES_DIR, strlen(DEFAULT_MODULES_DIR)) != 0) {
-        fprintf(stderr, "host_remove_dir: path must be within modules dir: %s\n", path);
-        JS_FreeCString(ctx, path);
-        return JS_FALSE;
-    }
-
-    const char *argv_cmd[] = { "rm", "-rf", path, NULL };
-    int result = run_command(argv_cmd);
-
-    JS_FreeCString(ctx, path);
-
-    return (result == 0) ? JS_TRUE : JS_FALSE;
-}
-
-/* host_read_file(path) -> string or null */
-static JSValue js_host_read_file(JSContext *ctx, JSValueConst this_val,
-                                 int argc, JSValueConst *argv) {
-    if (argc < 1) {
-        return JS_NULL;
-    }
-
-    const char *path = JS_ToCString(ctx, argv[0]);
-    if (!path) {
-        return JS_NULL;
-    }
-
-    /* Validate path */
-    if (!validate_path(path)) {
-        fprintf(stderr, "host_read_file: invalid path: %s\n", path);
-        JS_FreeCString(ctx, path);
-        return JS_NULL;
-    }
-
-    FILE *f = fopen(path, "rb");
-    if (!f) {
-        JS_FreeCString(ctx, path);
-        return JS_NULL;
-    }
-
-    /* Get file size */
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-
-    /* Limit to 4MB for safety (Song.abl can exceed 1MB) */
-    if (size > 4 * 1024 * 1024) {
-        fprintf(stderr, "host_read_file: file too large: %s\n", path);
-        fclose(f);
-        JS_FreeCString(ctx, path);
-        return JS_NULL;
-    }
-
-    char *buf = malloc(size + 1);
-    if (!buf) {
-        fclose(f);
-        JS_FreeCString(ctx, path);
-        return JS_NULL;
-    }
-
-    size_t read = fread(buf, 1, size, f);
-    buf[read] = '\0';
-    fclose(f);
-
-    JSValue result = JS_NewString(ctx, buf);
-    free(buf);
-    JS_FreeCString(ctx, path);
-
-    return result;
-}
-
-/* host_write_file(path, content) -> bool */
-static JSValue js_host_write_file(JSContext *ctx, JSValueConst this_val,
-                                  int argc, JSValueConst *argv) {
-    if (argc < 2) {
-        return JS_FALSE;
-    }
-
-    const char *path = JS_ToCString(ctx, argv[0]);
-    if (!path) {
-        return JS_FALSE;
-    }
-
-    const char *content = JS_ToCString(ctx, argv[1]);
-    if (!content) {
-        JS_FreeCString(ctx, path);
-        return JS_FALSE;
-    }
-
-    /* Validate path */
-    if (!validate_path(path)) {
-        fprintf(stderr, "host_write_file: invalid path: %s\n", path);
-        JS_FreeCString(ctx, path);
-        JS_FreeCString(ctx, content);
-        return JS_FALSE;
-    }
-
-    FILE *f = fopen(path, "w");
-    if (!f) {
-        fprintf(stderr, "host_write_file: cannot open file: %s\n", path);
-        JS_FreeCString(ctx, path);
-        JS_FreeCString(ctx, content);
-        return JS_FALSE;
-    }
-
-    size_t len = strlen(content);
-    size_t written = fwrite(content, 1, len, f);
-    fclose(f);
-
-    JS_FreeCString(ctx, path);
-    JS_FreeCString(ctx, content);
-
-    return (written == len) ? JS_TRUE : JS_FALSE;
-}
+/* run_command / validate_path and the shared file/store/http bindings
+ * (host_file_exists, host_read_file, host_write_file, host_http_download,
+ * host_extract_tar(_strip), host_ensure_dir, host_remove_dir, ...) live in
+ * host/js_host_common.c and are registered via js_host_register_common(). */
 
 void init_javascript(JSRuntime **prt, JSContext **pctx)
 {
@@ -2435,30 +1993,11 @@ void init_javascript(JSRuntime **prt, JSContext **pctx)
     JSValue host_announce_screenreader_func = JS_NewCFunction(ctx, js_host_announce_screenreader, "host_announce_screenreader", 1);
     JS_SetPropertyStr(ctx, global_obj, "host_announce_screenreader", host_announce_screenreader_func);
 
-    /* Store module functions */
-    JSValue host_file_exists_func = JS_NewCFunction(ctx, js_host_file_exists, "host_file_exists", 1);
-    JS_SetPropertyStr(ctx, global_obj, "host_file_exists", host_file_exists_func);
-
-    JSValue host_http_download_func = JS_NewCFunction(ctx, js_host_http_download, "host_http_download", 2);
-    JS_SetPropertyStr(ctx, global_obj, "host_http_download", host_http_download_func);
-
-    JSValue host_extract_tar_func = JS_NewCFunction(ctx, js_host_extract_tar, "host_extract_tar", 2);
-    JS_SetPropertyStr(ctx, global_obj, "host_extract_tar", host_extract_tar_func);
-
-    JSValue host_extract_tar_strip_func = JS_NewCFunction(ctx, js_host_extract_tar_strip, "host_extract_tar_strip", 3);
-    JS_SetPropertyStr(ctx, global_obj, "host_extract_tar_strip", host_extract_tar_strip_func);
-
-    JSValue host_ensure_dir_func = JS_NewCFunction(ctx, js_host_ensure_dir, "host_ensure_dir", 1);
-    JS_SetPropertyStr(ctx, global_obj, "host_ensure_dir", host_ensure_dir_func);
-
-    JSValue host_remove_dir_func = JS_NewCFunction(ctx, js_host_remove_dir, "host_remove_dir", 1);
-    JS_SetPropertyStr(ctx, global_obj, "host_remove_dir", host_remove_dir_func);
-
-    JSValue host_read_file_func = JS_NewCFunction(ctx, js_host_read_file, "host_read_file", 1);
-    JS_SetPropertyStr(ctx, global_obj, "host_read_file", host_read_file_func);
-
-    JSValue host_write_file_func = JS_NewCFunction(ctx, js_host_write_file, "host_write_file", 2);
-    JS_SetPropertyStr(ctx, global_obj, "host_write_file", host_write_file_func);
+    /* Store module functions — shared bindings (host_file_exists,
+     * host_read_file, host_write_file, host_http_download,
+     * host_extract_tar(_strip), host_ensure_dir, host_remove_dir, ...)
+     * come from js_host_common.c. */
+    js_host_register_common(ctx);
 
     /* Create 'display' object so modules can use display.clear(), display.drawText(), etc. */
     JSValue display_obj = JS_NewObject(ctx);
@@ -2486,82 +2025,6 @@ void init_javascript(JSRuntime **prt, JSContext **pctx)
 
     *prt = rt;
     *pctx = ctx;
-}
-
-int getGlobalFunction(JSContext **pctx, const char *func_name, JSValue *retFunc)
-{
-
-    JSContext *ctx = *pctx;
-
-    // 4. Get the global object
-    JSValue global_obj = JS_GetGlobalObject(ctx);
-
-    // --- Find and Call the 'greet' function ---
-
-    JSValue func = JS_GetPropertyStr(ctx, global_obj, func_name);
-
-    // 5. Check if it's a function
-    if (!JS_IsFunction(ctx, func))
-    {
-        fprintf(stderr, "Error: '%s' is not a function or not found.\n", func_name);
-        JS_FreeValue(ctx, func); // Free the non-function value
-        JS_FreeValue(ctx, global_obj);
-        return 0;
-    }
-
-    *retFunc = func;
-
-    JS_FreeValue(ctx, global_obj);
-    return 1;
-}
-
-int callGlobalFunction(JSContext **pctx, JSValue *pfunc, unsigned char *data)
-{
-    JSContext *ctx = *pctx;
-
-    JSValue ret;
-    int is_exception;
-
-    if (data != 0)
-    {
-        JSValue newArray;
-
-        // args[0] = JS_NewString(ctx, "foo");
-        newArray = JS_NewArray(ctx);
-
-        JSValue num;
-        if (!JS_IsException(newArray))
-        { // Check creation success
-
-            for (int i = 0; i < 3; i++)
-            {
-                num = JS_NewInt32(ctx, data[i]);
-                JS_SetPropertyUint32(ctx, newArray, i, num);
-            }
-        }
-
-        JSValue args[1];
-        args[0] = newArray;
-
-        ret = JS_Call(ctx, *pfunc, JS_UNDEFINED, 1, args);
-        JS_FreeValue(ctx, newArray);
-    }
-    else
-    {
-        ret = JS_Call(ctx, *pfunc, JS_UNDEFINED, 0, 0);
-    }
-
-    is_exception = JS_IsException(ret);
-
-    if (is_exception)
-    {
-        printf("JS function failed\n");
-        js_std_dump_error(ctx);
-    }
-
-    JS_FreeValue(ctx, ret);
-
-    return is_exception;
 }
 
 void deinit_javascript(JSRuntime **prt, JSContext **pctx)
@@ -2710,7 +2173,7 @@ int main(int argc, char *argv[])
     /* Initialize analytics */
     {
         char version[32] = "unknown";
-        FILE *vf = fopen(BASE_DIR "/host/version.txt", "r");
+        FILE *vf = fopen("/data/UserData/schwung/host/version.txt", "r");
         if (vf) {
             if (fgets(version, sizeof(version), vf)) {
                 char *nl = strchr(version, '\n');
@@ -2828,19 +2291,19 @@ int main(int argc, char *argv[])
     clearSequencerButtons(mapped_memory, fd);
 
     JSValue JSonMidiMessageExternal;
-    getGlobalFunction(&ctx, "onMidiMessageExternal", &JSonMidiMessageExternal);
+    getGlobalFunction(ctx, "onMidiMessageExternal", &JSonMidiMessageExternal);
 
     JSValue JSonMidiMessageInternal;
-    getGlobalFunction(&ctx, "onMidiMessageInternal", &JSonMidiMessageInternal);
+    getGlobalFunction(ctx, "onMidiMessageInternal", &JSonMidiMessageInternal);
 
     JSValue JSinit;
-    getGlobalFunction(&ctx, "init", &JSinit);
+    getGlobalFunction(ctx, "init", &JSinit);
 
     JSValue JSTick;
-    int jsTickIsDefined = getGlobalFunction(&ctx, "tick", &JSTick);
+    int jsTickIsDefined = getGlobalFunction(ctx, "tick", &JSTick);
 
     printf("JS:calling init\n");
-    if(callGlobalFunction(&ctx, &JSinit, 0)) {
+    if(callGlobalFunction(ctx, &JSinit, 0)) {
       printf("JS:init failed\n");
     }
 
@@ -2856,8 +2319,8 @@ int main(int argc, char *argv[])
             if (g_menu_script_path[0]) {
                 eval_file(ctx, g_menu_script_path, -1);
                 JSValue JSinitMenu;
-                getGlobalFunction(&ctx, "init", &JSinitMenu);
-                if (callGlobalFunction(&ctx, &JSinitMenu, 0)) {
+                getGlobalFunction(ctx, "init", &JSinitMenu);
+                if (callGlobalFunction(ctx, &JSinitMenu, 0)) {
                     printf("JS:init failed\n");
                 }
                 JS_FreeValue(ctx, JSinitMenu);
@@ -2875,15 +2338,15 @@ int main(int argc, char *argv[])
             JS_FreeValue(ctx, JSTick);
             JS_FreeValue(ctx, JSonMidiMessageInternal);
             JS_FreeValue(ctx, JSonMidiMessageExternal);
-            jsTickIsDefined = getGlobalFunction(&ctx, "tick", &JSTick);
-            getGlobalFunction(&ctx, "onMidiMessageInternal", &JSonMidiMessageInternal);
-            getGlobalFunction(&ctx, "onMidiMessageExternal", &JSonMidiMessageExternal);
+            jsTickIsDefined = getGlobalFunction(ctx, "tick", &JSTick);
+            getGlobalFunction(ctx, "onMidiMessageInternal", &JSonMidiMessageInternal);
+            getGlobalFunction(ctx, "onMidiMessageExternal", &JSonMidiMessageExternal);
             printf("JS function references refreshed\n");
         }
 
         if (jsTickIsDefined)
         {
-            if(callGlobalFunction(&ctx, &JSTick, 0)) {
+            if(callGlobalFunction(ctx, &JSTick, 0)) {
               printf("JS:tick failed\n");
             }
         }
@@ -2958,7 +2421,7 @@ int main(int argc, char *argv[])
             {
                 /* External MIDI: no transforms - route to both JS and DSP */
                 /* Route to JS handler */
-                if (callGlobalFunction(&ctx, &JSonMidiMessageExternal, &byte[1])) {
+                if (callGlobalFunction(ctx, &JSonMidiMessageExternal, &byte[1])) {
                     printf("JS:onMidiMessageExternal failed\n");
                 }
                 /* Route to DSP plugin */
@@ -2988,7 +2451,7 @@ int main(int argc, char *argv[])
                 }
 
                 /* Route to JS handler (unless consumed by host) - UI receives capacitive touch */
-                if (!consumed && callGlobalFunction(&ctx, &JSonMidiMessageInternal, &byte[1])) {
+                if (!consumed && callGlobalFunction(ctx, &JSonMidiMessageInternal, &byte[1])) {
                   printf("JS:onMidiMessageInternal failed\n");
                 }
                 /* Route to DSP plugin (unless consumed OR internal control note) */
