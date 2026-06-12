@@ -39,6 +39,9 @@ typedef struct shadow_chain_slot_t {
     int soloed;             /* 1 = soloed (Shift+Mute+Track or Move solo-cue sync) */
     int forward_channel;    /* -2 = passthrough, -1 = auto, 0-15 = forward MIDI to this channel */
     int transpose;          /* semitone offset applied to incoming note-on/off/poly-AT, range -12..+12 */
+    int move_to_slot;       /* Move>Slot: 1 = sum same-channel Move track into this synth slot
+                             * (default, shares the slot's FX); 0 = peel Move track off to its
+                             * dedicated Move FX slot */
     char patch_name[64];
     shadow_capture_rules_t capture;  /* MIDI controls this slot captures when focused */
     slot_fade_t fade;                /* fade envelope for seamless transitions */

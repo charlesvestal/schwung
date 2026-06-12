@@ -1915,8 +1915,15 @@ static int json_get_section_bounds(const char *json, const char *section_key,
     const char *pos = strstr(json, search);
     if (!pos) return -1;
 
-    const char *start = strchr(pos, '{');
-    if (!start) return -1;
+    /* Only treat this key as a section if its VALUE is an object. Skipping
+     * straight to the next '{' would, for a null-valued key (e.g. an empty FX
+     * slot: "fx2":null), grab a LATER slot's object — corrupting saved presets
+     * with gaps (filled/empty/filled). Anchor on the key's colon + value. */
+    const char *colon = strchr(pos + strlen(search), ':');
+    if (!colon) return -1;
+    const char *start = colon + 1;
+    while (*start == ' ' || *start == '\t' || *start == '\n' || *start == '\r') start++;
+    if (*start != '{') return -1;   /* value is null / not an object */
 
     int depth = 0;
     const char *end = NULL;
@@ -6049,6 +6056,200 @@ static int load_master_preset_json(int index, char *buf, int buf_len) {
 
 /* ========== End Master Preset Functions ========== */
 
+/* ========== Move FX Preset Functions ========== */
+/* Single SHARED Move FX preset store: all 4 Move FX buses draw from one
+ * list/dir (presets are interchangeable between buses). Wraps the bus's 2 FX
+ * slots under a "move_fx" root. JS editor is descriptor-driven (presetJsonRoot
+ * "move_fx"). Mirrors the master preset store. */
+
+#define PRESETS_MOVE_DIR "/data/UserData/schwung/presets_move"
+#define MAX_MOVE_PRESETS 64
+
+static char move_preset_names[MAX_MOVE_PRESETS][MAX_NAME_LEN];
+static char move_preset_paths[MAX_MOVE_PRESETS][MAX_PATH_LEN];
+static int move_preset_count = 0;
+
+static void ensure_presets_move_dir(void) {
+    struct stat st = {0};
+    if (stat(PRESETS_MOVE_DIR, &st) == -1) {
+        mkdir(PRESETS_MOVE_DIR, 0755);
+    }
+}
+
+static void scan_move_presets(void) {
+    move_preset_count = 0;
+    memset(move_preset_names, 0, sizeof(move_preset_names));
+    memset(move_preset_paths, 0, sizeof(move_preset_paths));
+    ensure_presets_move_dir();
+
+    DIR *dir = opendir(PRESETS_MOVE_DIR);
+    if (!dir) return;
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL && move_preset_count < MAX_MOVE_PRESETS) {
+        if (entry->d_type != DT_REG) continue;
+
+        const char *name = entry->d_name;
+        size_t len = strlen(name);
+        if (len < 6 || strcmp(name + len - 5, ".json") != 0) continue;
+
+        size_t name_len = len - 5;
+        if (name_len >= MAX_NAME_LEN) name_len = MAX_NAME_LEN - 1;
+
+        char path[MAX_PATH_LEN];
+        snprintf(path, sizeof(path), "%s/%s", PRESETS_MOVE_DIR, name);
+
+        int idx = move_preset_count;
+        FILE *f = fopen(path, "r");
+        if (f) {
+            char json_buf[2048];
+            size_t read_len = fread(json_buf, 1, sizeof(json_buf) - 1, f);
+            json_buf[read_len] = '\0';
+            fclose(f);
+
+            char parsed_name[MAX_NAME_LEN] = {0};
+            if (json_get_string(json_buf, "name", parsed_name, sizeof(parsed_name)) == 0) {
+                strncpy(move_preset_names[idx], parsed_name, MAX_NAME_LEN - 1);
+                move_preset_names[idx][MAX_NAME_LEN - 1] = '\0';
+            } else {
+                memcpy(move_preset_names[idx], name, name_len);
+                move_preset_names[idx][name_len] = '\0';
+            }
+        } else {
+            memcpy(move_preset_names[idx], name, name_len);
+            move_preset_names[idx][name_len] = '\0';
+        }
+
+        strncpy(move_preset_paths[idx], path, MAX_PATH_LEN - 1);
+        move_preset_paths[idx][MAX_PATH_LEN - 1] = '\0';
+        move_preset_count++;
+    }
+    closedir(dir);
+}
+
+/* Build the wrapped preset JSON for the bus's 2 Move FX slots. Buffers sized to
+ * match the master path so large modules round-trip under the 64KB GET limit. */
+static void build_move_preset_json(char *out, int out_len,
+                                   const char *name, const char *json_str) {
+    char fx1[8192], fx2[8192];
+    extract_fx_section(json_str, "fx1", fx1, sizeof(fx1));
+    extract_fx_section(json_str, "fx2", fx2, sizeof(fx2));
+    snprintf(out, out_len,
+        "{\n"
+        "    \"name\": \"%s\",\n"
+        "    \"version\": 1,\n"
+        "    \"move_fx\": {\n"
+        "        \"fx1\": %s,\n"
+        "        \"fx2\": %s\n"
+        "    }\n"
+        "}\n",
+        name, fx1, fx2);
+}
+
+static int save_move_preset(const char *json_str) {
+    ensure_presets_move_dir();
+
+    char name[MAX_NAME_LEN] = "Move FX";
+    json_get_string(json_str, "custom_name", name, sizeof(name));
+
+    char filename[MAX_NAME_LEN];
+    sanitize_filename(filename, sizeof(filename), name);
+
+    char path[MAX_PATH_LEN];
+    snprintf(path, sizeof(path), "%s/%s.json", PRESETS_MOVE_DIR, filename);
+
+    char final_json[40960];
+    build_move_preset_json(final_json, sizeof(final_json), name, json_str);
+
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Failed to save Move FX preset: %s", path);
+        chain_log(msg);
+        return -1;
+    }
+    fputs(final_json, f);
+    fclose(f);
+    {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Saved Move FX preset: %s", name);
+        chain_log(msg);
+    }
+    scan_move_presets();
+    return 0;
+}
+
+static int update_move_preset(int index, const char *json_str) {
+    if (index < 0 || index >= move_preset_count) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Invalid Move FX preset index: %d", index);
+        chain_log(msg);
+        return -1;
+    }
+
+    char name[MAX_NAME_LEN];
+    if (json_get_string(json_str, "custom_name", name, sizeof(name)) != 0) {
+        strncpy(name, move_preset_names[index], sizeof(name) - 1);
+        name[sizeof(name) - 1] = '\0';
+    }
+
+    char final_json[40960];
+    build_move_preset_json(final_json, sizeof(final_json), name, json_str);
+
+    FILE *f = fopen(move_preset_paths[index], "w");
+    if (!f) return -1;
+    fputs(final_json, f);
+    fclose(f);
+    {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Updated Move FX preset: %s", name);
+        chain_log(msg);
+    }
+    scan_move_presets();
+    return 0;
+}
+
+static int delete_move_preset(int index) {
+    if (index < 0 || index >= move_preset_count) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Invalid Move FX preset index: %d", index);
+        chain_log(msg);
+        return -1;
+    }
+    if (remove(move_preset_paths[index]) != 0) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Failed to delete Move FX preset: %s", move_preset_paths[index]);
+        chain_log(msg);
+        return -1;
+    }
+    {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Deleted Move FX preset: %s", move_preset_names[index]);
+        chain_log(msg);
+    }
+    scan_move_presets();
+    return 0;
+}
+
+static int load_move_preset_json(int index, char *buf, int buf_len) {
+    if (index < 0 || index >= move_preset_count) { buf[0] = '\0'; return 0; }
+
+    FILE *f = fopen(move_preset_paths[index], "r");
+    if (!f) { buf[0] = '\0'; return 0; }
+
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (len <= 0) { fclose(f); buf[0] = '\0'; return 0; }
+    if (len >= buf_len) len = buf_len - 1;
+    size_t nr = fread(buf, 1, len, f);
+    buf[nr] = '\0';
+    fclose(f);
+    return (int)nr;
+}
+
+/* ========== End Move FX Preset Functions ========== */
+
 /* Debug logging helper for parsing */
 static void parse_debug_log(const char *msg) {
     struct stat st;
@@ -7422,6 +7623,22 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             update_master_preset(index, colon + 1);
         }
     }
+    /* Move FX preset commands (shared store across all 4 Move FX buses) */
+    else if (strcmp(key, "save_move_preset") == 0) {
+        save_move_preset(val);
+    }
+    else if (strcmp(key, "delete_move_preset") == 0) {
+        int index = atoi(val);
+        delete_move_preset(index);
+    }
+    else if (strcmp(key, "update_move_preset") == 0) {
+        /* Format: "index:json_data" */
+        const char *colon = strchr(val, ':');
+        if (colon) {
+            int index = atoi(val);
+            update_move_preset(index, colon + 1);
+        }
+    }
     else if (strncmp(key, "synth:", 6) == 0) {
         const char *subkey = key + 6;
         /* Intercept module change to swap synth dynamically */
@@ -8162,6 +8379,22 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     if (strncmp(key, "master_preset_json_", 19) == 0) {
         int idx = atoi(key + 19);
         return load_master_preset_json(idx, buf, buf_len);
+    }
+    /* Move FX preset queries (shared store across all 4 Move FX buses) */
+    if (strcmp(key, "move_preset_count") == 0) {
+        scan_move_presets();
+        return snprintf(buf, buf_len, "%d", move_preset_count);
+    }
+    if (strncmp(key, "move_preset_name_", 17) == 0) {
+        int idx = atoi(key + 17);
+        if (idx >= 0 && idx < move_preset_count) {
+            return snprintf(buf, buf_len, "%s", move_preset_names[idx]);
+        }
+        return -1;
+    }
+    if (strncmp(key, "move_preset_json_", 17) == 0) {
+        int idx = atoi(key + 17);
+        return load_move_preset_json(idx, buf, buf_len);
     }
     if (strcmp(key, "fx_count") == 0) {
         return snprintf(buf, buf_len, "%d", inst->fx_count);
