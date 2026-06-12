@@ -1,4 +1,4 @@
-.DS_Store
+**/.DS_Store
 
 # Build artifacts
 /build/
@@ -7,8 +7,8 @@
 /libs/quickjs/quickjs-2025-04-26/.obj/
 /libs/quickjs/quickjs-2025-04-26/libquickjs.a
 /.worktrees
-docs/.DS_Store
 *.tar.gz
+*.tar
 
 # Test patches (kept locally, not committed)
 /src/modules/chain/test_patches/
