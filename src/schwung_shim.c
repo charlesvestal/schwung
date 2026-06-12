@@ -56,6 +56,7 @@
 #include "host/shadow_led_queue.h"
 #include "host/shadow_state.h"
 #include "host/shadow_midi.h"
+#include "host/shadow_shm_util.h"
 
 /* Debug flags - set to 1 to enable various debug logging */
 #define SHADOW_TIMING_LOG 0      /* ioctl/DSP timing logs to /tmp */
@@ -366,7 +367,6 @@ static link_audio_pub_shm_t *shadow_pub_audio_shm = NULL;
 /* Read-only consumer of Move audio written by link-subscriber sidecar.
  * Sidecar may not have started yet — retry from non-RT context if missing. */
 static link_audio_in_shm_t *shadow_in_audio_shm = NULL;
-static int shadow_in_audio_shm_fd = -1;
 static int try_attach_in_audio_shm(void);
 static void *link_in_attach_retry_thread(void *arg);
 
@@ -2675,22 +2675,9 @@ static inline void shadow_ui_midi_publish(uint8_t head, uint8_t status,
 
 /* LED queue constants and state — moved to shadow_led_queue.c */
 
-/* Shadow shared memory file descriptors */
-static int shm_audio_fd = -1;
-static int shm_movein_fd = -1;
-static int shm_midi_fd = -1;
-static int shm_ui_midi_fd = -1;
-static int shm_display_fd = -1;
-static int shm_control_fd = -1;
-static int shm_ui_fd = -1;
-static int shm_param_fd = -1;
-static int shm_midi_out_fd = -1;
-static int shm_midi_dsp_fd = -1;
-static int shm_midi_inject_fd = -1;
-static int shm_ext_midi_remap_fd = -1;
-static int shm_screenreader_fd = -1;
-static int shm_pub_audio_fd = -1;
-static int shm_overlay_fd = -1;
+/* Shadow shared memory segments are created via shadow_shm_map()
+ * (src/host/shadow_shm_util.c); fds are closed after mmap — no caller
+ * uses them post-init. */
 
 /* Shadow initialization state */
 static int shadow_shm_initialized = 0;
@@ -2870,381 +2857,153 @@ static void init_shadow_shm(void)
 
     /* Create/open audio shared memory - triple buffered */
     size_t triple_audio_size = AUDIO_BUFFER_SIZE * NUM_AUDIO_BUFFERS;
-    shm_audio_fd = shm_open(SHM_SHADOW_AUDIO, O_CREAT | O_RDWR, 0666);
-    if (shm_audio_fd >= 0) {
-        ftruncate(shm_audio_fd, triple_audio_size);
-        shadow_audio_shm = (int16_t *)mmap(NULL, triple_audio_size,
-                                            PROT_READ | PROT_WRITE,
-                                            MAP_SHARED, shm_audio_fd, 0);
-        if (shadow_audio_shm == MAP_FAILED) {
-            shadow_audio_shm = NULL;
-            printf("Shadow: Failed to mmap audio shm\n");
-        } else {
-            memset(shadow_audio_shm, 0, triple_audio_size);
-        }
-    } else {
-        printf("Shadow: Failed to create audio shm\n");
-    }
+    shadow_audio_shm = (int16_t *)shadow_shm_map(SHM_SHADOW_AUDIO,
+                                                 triple_audio_size, 1, 1);
 
     /* Create/open Move audio input shared memory (for shadow to read Move's audio) */
-    shm_movein_fd = shm_open(SHM_SHADOW_MOVEIN, O_CREAT | O_RDWR, 0666);
-    if (shm_movein_fd >= 0) {
-        ftruncate(shm_movein_fd, AUDIO_BUFFER_SIZE);
-        shadow_movein_shm = (int16_t *)mmap(NULL, AUDIO_BUFFER_SIZE,
-                                             PROT_READ | PROT_WRITE,
-                                             MAP_SHARED, shm_movein_fd, 0);
-        if (shadow_movein_shm == MAP_FAILED) {
-            shadow_movein_shm = NULL;
-            printf("Shadow: Failed to mmap movein shm\n");
-        } else {
-            memset(shadow_movein_shm, 0, AUDIO_BUFFER_SIZE);
-        }
-    } else {
-        printf("Shadow: Failed to create movein shm\n");
-    }
+    shadow_movein_shm = (int16_t *)shadow_shm_map(SHM_SHADOW_MOVEIN,
+                                                  AUDIO_BUFFER_SIZE, 1, 1);
 
     /* Create/open MIDI shared memory */
-    shm_midi_fd = shm_open(SHM_SHADOW_MIDI, O_CREAT | O_RDWR, 0666);
-    if (shm_midi_fd >= 0) {
-        ftruncate(shm_midi_fd, MIDI_BUFFER_SIZE);
-        shadow_midi_shm = (uint8_t *)mmap(NULL, MIDI_BUFFER_SIZE,
-                                           PROT_READ | PROT_WRITE,
-                                           MAP_SHARED, shm_midi_fd, 0);
-        if (shadow_midi_shm == MAP_FAILED) {
-            shadow_midi_shm = NULL;
-            printf("Shadow: Failed to mmap MIDI shm\n");
-        } else {
-            memset(shadow_midi_shm, 0, MIDI_BUFFER_SIZE);
-        }
-    } else {
-        printf("Shadow: Failed to create MIDI shm\n");
-    }
+    shadow_midi_shm = (uint8_t *)shadow_shm_map(SHM_SHADOW_MIDI,
+                                                MIDI_BUFFER_SIZE, 1, 1);
 
     /* Create/open UI MIDI shared memory */
-    shm_ui_midi_fd = shm_open(SHM_SHADOW_UI_MIDI, O_CREAT | O_RDWR, 0666);
-    if (shm_ui_midi_fd >= 0) {
-        ftruncate(shm_ui_midi_fd, MIDI_BUFFER_SIZE);
-        shadow_ui_midi_shm = (uint8_t *)mmap(NULL, MIDI_BUFFER_SIZE,
-                                             PROT_READ | PROT_WRITE,
-                                             MAP_SHARED, shm_ui_midi_fd, 0);
-        if (shadow_ui_midi_shm == MAP_FAILED) {
-            shadow_ui_midi_shm = NULL;
-            printf("Shadow: Failed to mmap UI MIDI shm\n");
-        } else {
-            memset(shadow_ui_midi_shm, 0, MIDI_BUFFER_SIZE);
-        }
-    } else {
-        printf("Shadow: Failed to create UI MIDI shm\n");
-    }
+    shadow_ui_midi_shm = (uint8_t *)shadow_shm_map(SHM_SHADOW_UI_MIDI,
+                                                   MIDI_BUFFER_SIZE, 1, 1);
 
     /* Create/open display shared memory */
-    shm_display_fd = shm_open(SHM_SHADOW_DISPLAY, O_CREAT | O_RDWR, 0666);
-    if (shm_display_fd >= 0) {
-        ftruncate(shm_display_fd, DISPLAY_BUFFER_SIZE);
-        shadow_display_shm = (uint8_t *)mmap(NULL, DISPLAY_BUFFER_SIZE,
-                                              PROT_READ | PROT_WRITE,
-                                              MAP_SHARED, shm_display_fd, 0);
-        if (shadow_display_shm == MAP_FAILED) {
-            shadow_display_shm = NULL;
-            printf("Shadow: Failed to mmap display shm\n");
-        } else {
-            memset(shadow_display_shm, 0, DISPLAY_BUFFER_SIZE);
-        }
-    } else {
-        printf("Shadow: Failed to create display shm\n");
-    }
+    shadow_display_shm = (uint8_t *)shadow_shm_map(SHM_SHADOW_DISPLAY,
+                                                   DISPLAY_BUFFER_SIZE, 1, 1);
 
     /* Create/open live display shared memory (for remote display server) */
-    int shm_display_live_fd = shm_open(SHM_DISPLAY_LIVE, O_CREAT | O_RDWR, 0666);
-    if (shm_display_live_fd >= 0) {
-        ftruncate(shm_display_live_fd, DISPLAY_BUFFER_SIZE);
-        display_live_shm = (uint8_t *)mmap(NULL, DISPLAY_BUFFER_SIZE,
-                                            PROT_READ | PROT_WRITE,
-                                            MAP_SHARED, shm_display_live_fd, 0);
-        if (display_live_shm == MAP_FAILED) {
-            display_live_shm = NULL;
-            printf("Shadow: Failed to mmap live display shm\n");
-        } else {
-            memset(display_live_shm, 0, DISPLAY_BUFFER_SIZE);
-        }
-    } else {
-        printf("Shadow: Failed to create live display shm\n");
-    }
+    display_live_shm = (uint8_t *)shadow_shm_map(SHM_DISPLAY_LIVE,
+                                                 DISPLAY_BUFFER_SIZE, 1, 1);
 
     /* Create/open control shared memory - DON'T zero it, shadow_poc owns the state */
-    shm_control_fd = shm_open(SHM_SHADOW_CONTROL, O_CREAT | O_RDWR, 0666);
-    if (shm_control_fd >= 0) {
-        ftruncate(shm_control_fd, CONTROL_BUFFER_SIZE);
-        shadow_control = (shadow_control_t *)mmap(NULL, CONTROL_BUFFER_SIZE,
-                                                   PROT_READ | PROT_WRITE,
-                                                   MAP_SHARED, shm_control_fd, 0);
-        if (shadow_control == MAP_FAILED) {
-            shadow_control = NULL;
-            printf("Shadow: Failed to mmap control shm\n");
-        }
-        if (shadow_control) {
-            /* Enable shadow display on boot for splash screen.
-             * Shadow UI will set display_mode=0 when splash is done. */
-            shadow_display_mode = 1;
-            shadow_control->display_mode = 1;
-            shadow_control->shadow_ready = 1;
-            shadow_control->should_exit = 0;
-            shadow_control->midi_ready = 0;
-            shadow_control->write_idx = 0;
-            shadow_control->read_idx = 0;
-            shadow_control->ui_slot = 0;
-            shadow_control->ui_flags = 0;
-            shadow_control->ui_patch_index = 0;
-            shadow_control->ui_request_id = 0;
-            /* Reset overtake state on every shim init.
-             *
-             * The control SHM is backed by /dev/shm/schwung-control on a
-             * tmpfs that survives across process restarts. restart-move.sh
-             * kills MoveOriginal + shadow_ui + the shim but leaves the
-             * SHM file intact, so without an explicit reset here the new
-             * shim inherits whatever overtake state the prior session
-             * left behind. Concrete symptom (reproduced on hardware
-             * 2026-05-15): a `make deploy` from inside an overtake module
-             * leaves overtake_mode=2 in the SHM; the new MoveOriginal
-             * boots, sees overtake_mode=2, treats the surface as owned
-             * by an overtake module that no longer exists, and stops
-             * emitting LED commands to MIDI_OUT. The whole hardware
-             * surface stays dark until the user provokes some code path
-             * (e.g. a track-button press) that re-evaluates overtake
-             * state and finally clears it.
-             *
-             * Suspend_overtake follows the same logic — it gates several
-             * overtake passthrough decisions and a stale "1" lets the
-             * shim drop input that no parked module will ever pick up. */
-            shadow_control->overtake_mode    = 0;
-            shadow_control->suspend_overtake = 0;
-            shadow_control->selected_slot    = 0;
-            shadow_control->skip_led_clear   = 0;
-            shadow_control->corun.target = CORUN_TARGET_NONE;  /* co-run inactive at boot */
-            shadow_control->corun.id = -1;
-            shadow_control->corun.keep_mask = 0;  /* 0 = default split when a target is set without a manifest */
-            shadow_control->shadow_display_owner = DISPLAY_OWNER_SCHWUNG_UI; /* splash boots into shadow UI */
-            /* Initialize TTS defaults */
-            shadow_control->tts_enabled = 0;    /* Screen Reader off by default */
-            shadow_control->tts_volume = 70;    /* 70% volume */
-            shadow_control->tts_pitch = 110;    /* 110 Hz */
-            shadow_control->tts_speed = 1.5f;   /* 1.5x speed */
-            shadow_control->tts_engine = 0;     /* 0=espeak-ng (speak engine) */
-            shadow_control->overlay_knobs_mode = OVERLAY_KNOBS_NATIVE; /* Native by default */
-            shadow_control->tts_debounce_ms = 50; /* default debounce ms */
-            /* Clear display overlay state — stale values from previous session
-             * cause ghost overlays (e.g. "1/8" page toast) on soft reboot */
-            shadow_control->display_overlay = 0;
-            shadow_control->overlay_rect_x = 0;
-            shadow_control->overlay_rect_y = 0;
-            shadow_control->overlay_rect_w = 0;
-            shadow_control->overlay_rect_h = 0;
-        }
-    } else {
-        printf("Shadow: Failed to create control shm\n");
+    shadow_control = (shadow_control_t *)shadow_shm_map(SHM_SHADOW_CONTROL,
+                                                        CONTROL_BUFFER_SIZE, 1, 0);
+    if (shadow_control) {
+        /* Enable shadow display on boot for splash screen.
+         * Shadow UI will set display_mode=0 when splash is done. */
+        shadow_display_mode = 1;
+        shadow_control->display_mode = 1;
+        shadow_control->shadow_ready = 1;
+        shadow_control->should_exit = 0;
+        shadow_control->midi_ready = 0;
+        shadow_control->write_idx = 0;
+        shadow_control->read_idx = 0;
+        shadow_control->ui_slot = 0;
+        shadow_control->ui_flags = 0;
+        shadow_control->ui_patch_index = 0;
+        shadow_control->ui_request_id = 0;
+        /* Reset overtake state on every shim init.
+         *
+         * The control SHM is backed by /dev/shm/schwung-control on a
+         * tmpfs that survives across process restarts. restart-move.sh
+         * kills MoveOriginal + shadow_ui + the shim but leaves the
+         * SHM file intact, so without an explicit reset here the new
+         * shim inherits whatever overtake state the prior session
+         * left behind. Concrete symptom (reproduced on hardware
+         * 2026-05-15): a `make deploy` from inside an overtake module
+         * leaves overtake_mode=2 in the SHM; the new MoveOriginal
+         * boots, sees overtake_mode=2, treats the surface as owned
+         * by an overtake module that no longer exists, and stops
+         * emitting LED commands to MIDI_OUT. The whole hardware
+         * surface stays dark until the user provokes some code path
+         * (e.g. a track-button press) that re-evaluates overtake
+         * state and finally clears it.
+         *
+         * Suspend_overtake follows the same logic — it gates several
+         * overtake passthrough decisions and a stale "1" lets the
+         * shim drop input that no parked module will ever pick up. */
+        shadow_control->overtake_mode    = 0;
+        shadow_control->suspend_overtake = 0;
+        shadow_control->selected_slot    = 0;
+        shadow_control->skip_led_clear   = 0;
+        shadow_control->corun.target = CORUN_TARGET_NONE;  /* co-run inactive at boot */
+        shadow_control->corun.id = -1;
+        shadow_control->corun.keep_mask = 0;  /* 0 = default split when a target is set without a manifest */
+        shadow_control->shadow_display_owner = DISPLAY_OWNER_SCHWUNG_UI; /* splash boots into shadow UI */
+        /* Initialize TTS defaults */
+        shadow_control->tts_enabled = 0;    /* Screen Reader off by default */
+        shadow_control->tts_volume = 70;    /* 70% volume */
+        shadow_control->tts_pitch = 110;    /* 110 Hz */
+        shadow_control->tts_speed = 1.5f;   /* 1.5x speed */
+        shadow_control->tts_engine = 0;     /* 0=espeak-ng (speak engine) */
+        shadow_control->overlay_knobs_mode = OVERLAY_KNOBS_NATIVE; /* Native by default */
+        shadow_control->tts_debounce_ms = 50; /* default debounce ms */
+        /* Clear display overlay state — stale values from previous session
+         * cause ghost overlays (e.g. "1/8" page toast) on soft reboot */
+        shadow_control->display_overlay = 0;
+        shadow_control->overlay_rect_x = 0;
+        shadow_control->overlay_rect_y = 0;
+        shadow_control->overlay_rect_w = 0;
+        shadow_control->overlay_rect_h = 0;
     }
 
     /* Create/open UI shared memory (slot labels/state) */
-    shm_ui_fd = shm_open(SHM_SHADOW_UI, O_CREAT | O_RDWR, 0666);
-    if (shm_ui_fd >= 0) {
-        ftruncate(shm_ui_fd, SHADOW_UI_BUFFER_SIZE);
-        shadow_ui_state = (shadow_ui_state_t *)mmap(NULL, SHADOW_UI_BUFFER_SIZE,
-                                                    PROT_READ | PROT_WRITE,
-                                                    MAP_SHARED, shm_ui_fd, 0);
-        if (shadow_ui_state == MAP_FAILED) {
-            shadow_ui_state = NULL;
-            printf("Shadow: Failed to mmap UI shm\n");
-        } else {
-            memset(shadow_ui_state, 0, SHADOW_UI_BUFFER_SIZE);
-            shadow_ui_state->version = 1;
-            shadow_ui_state->slot_count = SHADOW_UI_SLOTS;
-        }
-    } else {
-        printf("Shadow: Failed to create UI shm\n");
+    shadow_ui_state = (shadow_ui_state_t *)shadow_shm_map(SHM_SHADOW_UI,
+                                                          SHADOW_UI_BUFFER_SIZE, 1, 1);
+    if (shadow_ui_state) {
+        shadow_ui_state->version = 1;
+        shadow_ui_state->slot_count = SHADOW_UI_SLOTS;
     }
 
     /* Create/open param shared memory (for set_param/get_param requests) */
-    shm_param_fd = shm_open(SHM_SHADOW_PARAM, O_CREAT | O_RDWR, 0666);
-    if (shm_param_fd >= 0) {
-        ftruncate(shm_param_fd, SHADOW_PARAM_BUFFER_SIZE);
-        shadow_param = (shadow_param_t *)mmap(NULL, SHADOW_PARAM_BUFFER_SIZE,
-                                              PROT_READ | PROT_WRITE,
-                                              MAP_SHARED, shm_param_fd, 0);
-        if (shadow_param == MAP_FAILED) {
-            shadow_param = NULL;
-            printf("Shadow: Failed to mmap param shm\n");
-        } else {
-            memset(shadow_param, 0, SHADOW_PARAM_BUFFER_SIZE);
-        }
-    } else {
-        printf("Shadow: Failed to create param shm\n");
-    }
+    shadow_param = (shadow_param_t *)shadow_shm_map(SHM_SHADOW_PARAM,
+                                                    SHADOW_PARAM_BUFFER_SIZE, 1, 1);
 
     /* Create/open web param set ring (web UI → shim, fire-and-forget) */
-    {
-        int fd = shm_open(SHM_WEB_PARAM_SET, O_CREAT | O_RDWR, 0666);
-        if (fd >= 0) {
-            ftruncate(fd, sizeof(web_param_set_ring_t));
-            web_param_set_shm = (web_param_set_ring_t *)mmap(NULL, sizeof(web_param_set_ring_t),
-                                                             PROT_READ | PROT_WRITE,
-                                                             MAP_SHARED, fd, 0);
-            if (web_param_set_shm == MAP_FAILED) {
-                web_param_set_shm = NULL;
-                printf("Shadow: Failed to mmap web param set ring\n");
-            } else {
-                memset(web_param_set_shm, 0, sizeof(web_param_set_ring_t));
-            }
-            close(fd);
-        }
-    }
+    web_param_set_shm = (web_param_set_ring_t *)shadow_shm_map(SHM_WEB_PARAM_SET,
+                                                               sizeof(web_param_set_ring_t), 1, 1);
 
     /* Create/open web param notify ring (shim → web UI, push changes) */
-    {
-        int fd = shm_open(SHM_WEB_PARAM_NOTIFY, O_CREAT | O_RDWR, 0666);
-        if (fd >= 0) {
-            ftruncate(fd, sizeof(web_param_notify_ring_t));
-            web_param_notify_shm = (web_param_notify_ring_t *)mmap(NULL, sizeof(web_param_notify_ring_t),
-                                                                   PROT_READ | PROT_WRITE,
-                                                                   MAP_SHARED, fd, 0);
-            if (web_param_notify_shm == MAP_FAILED) {
-                web_param_notify_shm = NULL;
-                printf("Shadow: Failed to mmap web param notify ring\n");
-            } else {
-                memset(web_param_notify_shm, 0, sizeof(web_param_notify_ring_t));
-            }
-            close(fd);
-        }
-    }
+    web_param_notify_shm = (web_param_notify_ring_t *)shadow_shm_map(SHM_WEB_PARAM_NOTIFY,
+                                                                     sizeof(web_param_notify_ring_t), 1, 1);
 
     /* Create/open MIDI out shared memory (for shadow UI to send MIDI) */
-    shm_midi_out_fd = shm_open(SHM_SHADOW_MIDI_OUT, O_CREAT | O_RDWR, 0666);
-    if (shm_midi_out_fd >= 0) {
-        ftruncate(shm_midi_out_fd, sizeof(shadow_midi_out_t));
-        shadow_midi_out_shm = (shadow_midi_out_t *)mmap(NULL, sizeof(shadow_midi_out_t),
-                                                         PROT_READ | PROT_WRITE,
-                                                         MAP_SHARED, shm_midi_out_fd, 0);
-        if (shadow_midi_out_shm == MAP_FAILED) {
-            shadow_midi_out_shm = NULL;
-            printf("Shadow: Failed to mmap midi_out shm\n");
-        } else {
-            memset(shadow_midi_out_shm, 0, sizeof(shadow_midi_out_t));
-        }
-    } else {
-        printf("Shadow: Failed to create midi_out shm\n");
-    }
+    shadow_midi_out_shm = (shadow_midi_out_t *)shadow_shm_map(SHM_SHADOW_MIDI_OUT,
+                                                              sizeof(shadow_midi_out_t), 1, 1);
 
     /* Create/open MIDI-to-DSP shared memory (for shadow UI to route MIDI to chain slots) */
-    shm_midi_dsp_fd = shm_open(SHM_SHADOW_MIDI_DSP, O_CREAT | O_RDWR, 0666);
-    if (shm_midi_dsp_fd >= 0) {
-        ftruncate(shm_midi_dsp_fd, sizeof(shadow_midi_dsp_t));
-        shadow_midi_dsp_shm = (shadow_midi_dsp_t *)mmap(NULL, sizeof(shadow_midi_dsp_t),
-                                                         PROT_READ | PROT_WRITE,
-                                                         MAP_SHARED, shm_midi_dsp_fd, 0);
-        if (shadow_midi_dsp_shm == MAP_FAILED) {
-            shadow_midi_dsp_shm = NULL;
-            printf("Shadow: Failed to mmap midi_dsp shm\n");
-        } else {
-            memset(shadow_midi_dsp_shm, 0, sizeof(shadow_midi_dsp_t));
-        }
-    } else {
-        printf("Shadow: Failed to create midi_dsp shm\n");
-    }
+    shadow_midi_dsp_shm = (shadow_midi_dsp_t *)shadow_shm_map(SHM_SHADOW_MIDI_DSP,
+                                                              sizeof(shadow_midi_dsp_t), 1, 1);
 
     /* Create/open MIDI inject shared memory (for injecting events into Move's MIDI_IN) */
-    shm_midi_inject_fd = shm_open(SHM_SHADOW_MIDI_INJECT, O_CREAT | O_RDWR, 0666);
-    if (shm_midi_inject_fd >= 0) {
-        ftruncate(shm_midi_inject_fd, sizeof(shadow_midi_inject_t));
-        shadow_midi_inject_shm = (shadow_midi_inject_t *)mmap(NULL, sizeof(shadow_midi_inject_t),
-                                                         PROT_READ | PROT_WRITE,
-                                                         MAP_SHARED, shm_midi_inject_fd, 0);
-        if (shadow_midi_inject_shm == MAP_FAILED) {
-            shadow_midi_inject_shm = NULL;
-            printf("Shadow: Failed to mmap midi_inject shm\n");
-        } else {
-            memset(shadow_midi_inject_shm, 0, sizeof(shadow_midi_inject_t));
-        }
-    } else {
-        printf("Shadow: Failed to create midi_inject shm\n");
-    }
+    shadow_midi_inject_shm = (shadow_midi_inject_t *)shadow_shm_map(SHM_SHADOW_MIDI_INJECT,
+                                                                    sizeof(shadow_midi_inject_t), 1, 1);
 
     /* Create/open cable-2 channel remap shared memory (active overtake module writes,
      * shim reads on every SPI frame to rewrite cable-2 MIDI_IN channel byte). */
-    shm_ext_midi_remap_fd = shm_open(SHM_SHADOW_EXT_MIDI_REMAP, O_CREAT | O_RDWR, 0666);
-    if (shm_ext_midi_remap_fd >= 0) {
-        ftruncate(shm_ext_midi_remap_fd, sizeof(schwung_ext_midi_remap_t));
-        ext_midi_remap_shm = (schwung_ext_midi_remap_t *)mmap(NULL, sizeof(schwung_ext_midi_remap_t),
-                                                              PROT_READ | PROT_WRITE,
-                                                              MAP_SHARED, shm_ext_midi_remap_fd, 0);
-        if (ext_midi_remap_shm == MAP_FAILED) {
-            ext_midi_remap_shm = NULL;
-            printf("Shadow: Failed to mmap ext_midi_remap shm\n");
-        } else {
-            memset(ext_midi_remap_shm, 0, sizeof(schwung_ext_midi_remap_t));
-            ext_midi_remap_shm->version = EXT_MIDI_REMAP_VERSION;
-            ext_midi_remap_shm->enabled = 0;
-            memset((void *)ext_midi_remap_shm->remap, EXT_MIDI_REMAP_PASSTHROUGH, 16);
-        }
-    } else {
-        printf("Shadow: Failed to create ext_midi_remap shm\n");
+    ext_midi_remap_shm = (schwung_ext_midi_remap_t *)shadow_shm_map(SHM_SHADOW_EXT_MIDI_REMAP,
+                                                                    sizeof(schwung_ext_midi_remap_t), 1, 1);
+    if (ext_midi_remap_shm) {
+        ext_midi_remap_shm->version = EXT_MIDI_REMAP_VERSION;
+        ext_midi_remap_shm->enabled = 0;
+        memset((void *)ext_midi_remap_shm->remap, EXT_MIDI_REMAP_PASSTHROUGH, 16);
     }
 
     /* Create/open screen reader shared memory (for accessibility: TTS and D-Bus announcements) */
-    shm_screenreader_fd = shm_open(SHM_SHADOW_SCREENREADER, O_CREAT | O_RDWR, 0666);
-    if (shm_screenreader_fd >= 0) {
-        ftruncate(shm_screenreader_fd, sizeof(shadow_screenreader_t));
-        shadow_screenreader_shm = (shadow_screenreader_t *)mmap(NULL, sizeof(shadow_screenreader_t),
-                                                                 PROT_READ | PROT_WRITE,
-                                                                 MAP_SHARED, shm_screenreader_fd, 0);
-        if (shadow_screenreader_shm == MAP_FAILED) {
-            shadow_screenreader_shm = NULL;
-            printf("Shadow: Failed to mmap screenreader shm\n");
-        } else {
-            memset(shadow_screenreader_shm, 0, sizeof(shadow_screenreader_t));
-        }
-    } else {
-        printf("Shadow: Failed to create screenreader shm\n");
-    }
+    shadow_screenreader_shm = (shadow_screenreader_t *)shadow_shm_map(SHM_SHADOW_SCREENREADER,
+                                                                      sizeof(shadow_screenreader_t), 1, 1);
 
     /* Create/open overlay state shared memory (sampler/skipback state for JS rendering) */
-    shm_overlay_fd = shm_open(SHM_SHADOW_OVERLAY, O_CREAT | O_RDWR, 0666);
-    if (shm_overlay_fd >= 0) {
-        ftruncate(shm_overlay_fd, SHADOW_OVERLAY_BUFFER_SIZE);
-        shadow_overlay_shm = (shadow_overlay_state_t *)mmap(NULL, SHADOW_OVERLAY_BUFFER_SIZE,
-                                                             PROT_READ | PROT_WRITE,
-                                                             MAP_SHARED, shm_overlay_fd, 0);
-        if (shadow_overlay_shm == MAP_FAILED) {
-            shadow_overlay_shm = NULL;
-            printf("Shadow: Failed to mmap overlay shm\n");
-        } else {
-            memset(shadow_overlay_shm, 0, SHADOW_OVERLAY_BUFFER_SIZE);
-        }
-    } else {
-        printf("Shadow: Failed to create overlay shm\n");
-    }
+    shadow_overlay_shm = (shadow_overlay_state_t *)shadow_shm_map(SHM_SHADOW_OVERLAY,
+                                                                  SHADOW_OVERLAY_BUFFER_SIZE, 1, 1);
 
     /* TTS engine uses lazy initialization - will init on first speak */
     tts_set_volume(70);  /* Set volume early (safe, doesn't require TTS init) */
     printf("Shadow: TTS engine configured (will init on first use)\n");
 
     /* Create/open Link Audio publisher shared memory */
-    shm_pub_audio_fd = shm_open(SHM_LINK_AUDIO_PUB, O_CREAT | O_RDWR, 0666);
-    if (shm_pub_audio_fd >= 0) {
-        ftruncate(shm_pub_audio_fd, sizeof(link_audio_pub_shm_t));
-        shadow_pub_audio_shm = (link_audio_pub_shm_t *)mmap(NULL,
-            sizeof(link_audio_pub_shm_t),
-            PROT_READ | PROT_WRITE, MAP_SHARED, shm_pub_audio_fd, 0);
-        if (shadow_pub_audio_shm == MAP_FAILED) {
-            shadow_pub_audio_shm = NULL;
-            printf("Shadow: Failed to mmap pub audio shm\n");
-        } else {
-            memset(shadow_pub_audio_shm, 0, sizeof(link_audio_pub_shm_t));
-            shadow_pub_audio_shm->magic = LINK_AUDIO_PUB_SHM_MAGIC;
-            shadow_pub_audio_shm->version = LINK_AUDIO_PUB_SHM_VERSION;
-            printf("Shadow: Link Audio publisher shm initialized (%zu bytes)\n",
-                   sizeof(link_audio_pub_shm_t));
-        }
-    } else {
-        printf("Shadow: Failed to create pub audio shm\n");
+    shadow_pub_audio_shm = (link_audio_pub_shm_t *)shadow_shm_map(SHM_LINK_AUDIO_PUB,
+                                                                  sizeof(link_audio_pub_shm_t), 1, 1);
+    if (shadow_pub_audio_shm) {
+        shadow_pub_audio_shm->magic = LINK_AUDIO_PUB_SHM_MAGIC;
+        shadow_pub_audio_shm->version = LINK_AUDIO_PUB_SHM_VERSION;
+        printf("Shadow: Link Audio publisher shm initialized (%zu bytes)\n",
+               sizeof(link_audio_pub_shm_t));
     }
 
     /* Try to attach read-only to the sidecar's Move-audio ring. Sidecar may
@@ -7455,12 +7214,11 @@ post_timing:
 static int try_attach_in_audio_shm(void)
 {
     if (shadow_in_audio_shm) return 1;
-    int fd = shm_open(SHM_LINK_AUDIO_IN, O_RDWR, 0);
-    if (fd < 0) return 0;  /* sidecar not up yet, try later */
-    link_audio_in_shm_t *shm = (link_audio_in_shm_t *)mmap(NULL,
-        sizeof(link_audio_in_shm_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    close(fd);
-    if (shm == MAP_FAILED) return 0;
+    /* create=0: sidecar owns the segment; missing segment (sidecar not up
+     * yet) returns NULL quietly so the retry loop can try again later. */
+    link_audio_in_shm_t *shm = (link_audio_in_shm_t *)shadow_shm_map(
+        SHM_LINK_AUDIO_IN, sizeof(link_audio_in_shm_t), 0, 0);
+    if (!shm) return 0;
     if (shm->magic != LINK_AUDIO_IN_SHM_MAGIC) {
         munmap(shm, sizeof(link_audio_in_shm_t));
         return 0;
