@@ -692,6 +692,8 @@ ln -sf schwung ./build/move-anything
 #   - tools/{ui,seq,config,splash}-test: dev scaffolding
 #   - text-test, standalone-example: dev scaffolding
 #   - controller: superseded by catalog "control" module (chaolue)
+#   - store: on-device store retired — schwung-manager (move.local:7700) is
+#     the single install/update path; shadow keeps detection + pointers only
 echo "Copying module files..."
 find ./src/modules -type f \( -name "*.js" -o -name "*.mjs" -o -name "*.json" -o -name "*.sh" -o -name "*.py" -o -name "*.txt" \) \
     -not -path "*/splash-test/*" \
@@ -700,7 +702,8 @@ find ./src/modules -type f \( -name "*.js" -o -name "*.mjs" -o -name "*.json" -o
     -not -path "*/ui-test/*" \
     -not -path "*/seq-test/*" \
     -not -path "*/config-test/*" \
-    -not -path "*/controller/*" | while IFS= read -r src; do
+    -not -path "*/controller/*" \
+    -not -path "*/store/*" | while IFS= read -r src; do
     dest="./build/${src#./src/}"
     mkdir -p "$(dirname "$dest")"
     cp -u "$src" "$dest"
@@ -715,6 +718,7 @@ rm -rf \
     ./build/modules/tools/seq-test \
     ./build/modules/tools/config-test \
     ./build/modules/tools/splash-test \
+    ./build/modules/store \
     2>/dev/null || true
 
 # Make shell scripts in modules executable
@@ -728,13 +732,14 @@ cp -u ./src/patches/*.json ./build/patches/ 2>/dev/null || true
 mkdir -p ./build/presets/track_presets
 cp -u ./src/presets/track_presets/*.json ./build/presets/track_presets/ 2>/dev/null || true
 
-# Copy curl binary for store module (if present)
+# Copy curl binary (host_http_download backend: catalog detection,
+# move-manual refresh)
 if [ -f "./libs/curl/curl" ]; then
     mkdir -p ./build/bin/
     cp -u ./libs/curl/curl ./build/bin/
     echo "Bundled curl binary"
 else
-    echo "Warning: libs/curl/curl not found - store module will not work without it"
+    echo "Warning: libs/curl/curl not found - downloads will not work without it"
 fi
 
 # Copy filebrowser binary (if present)

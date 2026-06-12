@@ -70,11 +70,10 @@ import {
 } from '/data/UserData/schwung/shared/scrollable_text.mjs';
 
 import {
-    fetchCatalog, getModulesForCategory, getModuleStatus,
-    installModule as sharedInstallModule,
+    fetchCatalog, getModuleStatus,
     removeModule as sharedRemoveModule,
     scanInstalledModules, getHostVersion, isNewerVersion,
-    fetchReleaseJsonQuick, fetchReleaseNotes,
+    fetchReleaseJsonQuick,
     CATEGORIES
 } from '/data/UserData/schwung/shared/store_utils.mjs';
 
@@ -182,11 +181,7 @@ import {
     drawToolSetPicker as _drawToolSetPicker
 } from './shadow_ui_tools.mjs';
 import {
-    drawStorePickerCategories as _drawStorePickerCategories,
-    drawStorePickerList as _drawStorePickerList,
-    drawStorePickerLoading as _drawStorePickerLoading,
-    drawStorePickerResult as _drawStorePickerResult,
-    drawStorePickerDetail as _drawStorePickerDetail
+    drawStorePickerResult as _drawStorePickerResult
 } from './shadow_ui_store.mjs';
 import {
     drawChainSettings as _drawChainSettings,
@@ -288,17 +283,9 @@ const VIEWS = {
     KNOB_EDITOR: "knobedit",  // Edit knob assignments for a slot
     KNOB_PARAM_PICKER: "knobpick", // Pick parameter for a knob assignment
     DYNAMIC_PARAM_PICKER: "dynamicpick", // Dedicated picker UI for module_picker/parameter_picker
-    STORE_PICKER_CATEGORIES: "storepickercats", // Store: browse categories
-    STORE_PICKER_LIST: "storepickerlist",     // Store: browse modules for category
-    STORE_PICKER_DETAIL: "storepickerdetail", // Store: module info and actions
-    STORE_PICKER_LOADING: "storepickerloading", // Store: fetching catalog or installing
     STORE_PICKER_RESULT: "storepickerresult",  // Store: success/error message
-    STORE_PICKER_POST_INSTALL: "storepickerpostinstall",  // Store: post-install message
     OVERTAKE_MENU: "overtakemenu",   // Overtake module selection menu
     OVERTAKE_MODULE: "overtakemodule", // Running an overtake module
-    UPDATE_PROMPT: "updateprompt",    // Startup update prompt (updates available)
-    UPDATE_DETAIL: "updatedetail",    // Detail view for a single update
-    UPDATE_RESTART: "updaterestart",   // Restart prompt after core update
     GLOBAL_SETTINGS: "globalsettings",  // Global settings menu (display, audio, etc.)
     TOOLS: "tools",                     // Tools menu (Stem Separation, Timestretch)
     TOOL_FILE_BROWSER: "toolfilebrowser",   // Browse directories/files for tool input
@@ -519,10 +506,6 @@ let pendingUpdates = [];              // Updates found on startup
 let shimBootstrapNeeded = false;
 let shimBootstrapPromptShown = false;
 let pendingUpdateIndex = 0;           // Selected update in prompt
-let updateRestartFromVersion = '';    // For restart prompt display
-let updateRestartToVersion = '';
-let updateDetailScrollState = null;   // Scrollable text state for update detail view
-let updateDetailModule = null;        // Module being viewed in update detail
 
 /* Host-side tracking for Shift+Vol+Jog escape (redundant with shim, but ensures escape always works) */
 let hostVolumeKnobTouched = false;
@@ -1110,30 +1093,13 @@ let storeInstalledModules = {};        // {moduleId: version} map
 let storeHostVersion = '1.0.0';        // Current host version
 let storePickerCategory = null;        // Category ID being browsed (sound_generator, audio_fx, midi_fx)
 let storePickerModules = [];           // Modules available for download in current category
-let storePickerSelectedIndex = 0;      // Selection in list
 let storePickerCurrentModule = null;   // Module being viewed in detail
 let storePickerActionIndex = 0;        // Selected action in detail view (0=Install/Update, 1=Remove)
 let storePickerMessage = '';           // Result/error message
 let storePickerResultTitle = '';       // Result screen header (empty = 'Module Store')
-let storePickerLoadingTitle = '';      // Loading screen title
-let storePickerLoadingMessage = '';    // Loading screen message
-let storeFetchPending = false;         // True while catalog fetch in progress
-let storeDetailScrollState = null;     // Scroll state for module detail
-let storePostInstallLines = [];        // Post-install message lines
 let storePickerFromOvertake = false;   // True if entered from overtake menu
 let storePickerFromMasterFx = false;  // True if entered from master FX module select
 let storePickerFromSettings = false;  // True if entered from MFX settings (full store)
-let storeCategoryIndex = 0;           // Selected index in category browser
-let storeCategoryItems = [];          // Built category list with counts
-
-/* Check if host update is available and create pseudo-module if so.
- * On-device host updates are disabled — they extract as ableton and
- * silently fail post-update.sh's privileged writes, leaving users
- * with stale /usr/lib/schwung-shim.so. Direct users to the web manager
- * (move.local:7700) which runs as root and can complete the install. */
-function getHostUpdateModule() {
-    return null;
-}
 
 /* Run detection + show a result screen listing what's outdated, with the
  * web-manager pointer. No install actions — those only happen via the
@@ -1158,12 +1124,12 @@ function showUpdatesAvailableScreen() {
         }
     }
 
-    /* Reset so the dead UPDATE_PROMPT view isn't shown if the user lands
+    /* Reset detection state so a second visit starts clean.
      * here a second time without clearing state. */
     pendingUpdates = [];
     pendingUpdateIndex = 0;
     /* Route the result-screen click back to GLOBAL_SETTINGS (not the
-     * empty STORE_PICKER_CATEGORIES "no modules available" fallback). */
+     * old store browser fallback). */
     storePickerFromSettings = false;
     storeReturnView = VIEWS.GLOBAL_SETTINGS;
 
@@ -1236,15 +1202,6 @@ function buildNoUpdatesMessage() {
     return 'No updates available';
 }
 
-/* On-device host updates are disabled. Surface a clear instruction to
- * users so they know where to update from instead. */
-function performCoreUpdate(_mod) {
-    return {
-        success: false,
-        error: 'Update Schwung at\nhttp://move.local:7700'
-    };
-}
-
 /* Check for core and module updates (manual, called from Settings → Check Updates) */
 function checkForUpdatesInBackground() {
     debugLog("checkForUpdatesInBackground: starting");
@@ -1310,91 +1267,13 @@ function checkForUpdatesInBackground() {
 
     debugLog("checkForUpdatesInBackground: found " + updates.length + " updates");
     if (updates.length > 0) {
+        /* Detection only — the caller summarizes; installs happen in the
+         * web manager (the single install/update path). */
         pendingUpdates = updates;
         pendingUpdateIndex = 0;
-        view = VIEWS.UPDATE_PROMPT;
         needsRedraw = true;
-        debugLog("checkForUpdatesInBackground: set view to UPDATE_PROMPT");
-        announce(updates.length + " updates available, " + updates[0].name);
     } else {
         needsRedraw = true;
-    }
-}
-
-/* Process all pending updates (Update All action) */
-function processAllUpdates() {
-    let coreUpdated = false;
-    let coreFrom = '';
-    let coreTo = '';
-    let moduleCount = 0;
-    const total = pendingUpdates.length;
-
-    let pointerSeen = false;
-    for (let i = 0; i < pendingUpdates.length; i++) {
-        const upd = pendingUpdates[i];
-
-        /* Host pointer is informational only — skip during Update All. */
-        if (upd._hostPointer) {
-            pointerSeen = true;
-            continue;
-        }
-
-        /* Show progress overlay */
-        const progressLabel = (i + 1) + '/' + total + ': ' + (upd.name || upd.id || 'update');
-        drawStatusOverlay('Updating', progressLabel);
-        host_flush_display();
-
-        if (upd._isHostUpdate) {
-            const result = performCoreUpdate(upd);
-            if (result.success) {
-                coreUpdated = true;
-                coreFrom = upd.from;
-                coreTo = upd.to;
-                /* Refresh host version so module min_host_version checks pass */
-                storeHostVersion = coreTo;
-            } else {
-                /* Show error and stop */
-                storePickerResultTitle = 'Updates';
-                storePickerMessage = result.error || 'Core update failed';
-                view = VIEWS.STORE_PICKER_RESULT;
-                needsRedraw = true;
-                return;
-            }
-        } else {
-            const result = sharedInstallModule(upd, storeHostVersion);
-            if (result.success) {
-                moduleCount++;
-            }
-        }
-    }
-
-    pendingUpdates = [];
-
-    if (coreUpdated) {
-        updateRestartFromVersion = coreFrom;
-        updateRestartToVersion = coreTo;
-        view = VIEWS.UPDATE_RESTART;
-        needsRedraw = true;
-        announce("Core updated to " + coreTo + ". Click to restart now, Back to restart later");
-    } else if (moduleCount > 0) {
-        storeInstalledModules = scanInstalledModules();
-        storePickerResultTitle = 'Updates';
-        let msg = 'Updated ' + moduleCount + ' module' + (moduleCount > 1 ? 's' : '');
-        if (pointerSeen) {
-            msg += '\nUpdate Schwung at\nhttp://move.local:7700';
-        }
-        storePickerMessage = msg;
-        view = VIEWS.STORE_PICKER_RESULT;
-        needsRedraw = true;
-        announce(storePickerMessage);
-    } else if (pointerSeen) {
-        /* Only the host pointer was in the queue — treat as no-op + show
-         * the web-manager pointer message. */
-        storePickerResultTitle = 'Updates';
-        storePickerMessage = 'Update Schwung at\nhttp://move.local:7700';
-        view = VIEWS.STORE_PICKER_RESULT;
-        needsRedraw = true;
-        announce(storePickerMessage);
     }
 }
 
@@ -6287,7 +6166,7 @@ function componentKeyToCategoryId(componentKey) {
  * Preserves the entry-context flags (storePickerFromOvertake /
  * storePickerFromMasterFx / storePickerCategory) so the result-screen
  * jog-click can return to wherever the user came from instead of dumping
- * them on Global Settings or the empty STORE_PICKER_LIST. */
+ * them on Global Settings. */
 function enterStorePicker(componentKey) {
     const categoryId = componentKeyToCategoryId(componentKey);
     if (!categoryId) return;
@@ -6305,321 +6184,11 @@ function enterStorePicker(componentKey) {
     announce(storePickerMessage);
 }
 
-/* Fetch catalog synchronously (blocking) */
-function fetchStoreCatalogSync() {
-    if (storeFetchPending) return;
-    storeFetchPending = true;
-
-    const spinChars = ['-', '\\', '|', '/'];
-    let spinIdx = 0;
-    const onProgress = (title, message, current, total) => {
-        storePickerLoadingTitle = title;
-        if (current && total) {
-            storePickerLoadingMessage = message + ' (' + current + '/' + total + ') ' + spinChars[spinIdx % 4];
-        } else {
-            storePickerLoadingMessage = message + ' ' + spinChars[spinIdx % 4];
-        }
-        spinIdx++;
-        /* Update display during long fetch operations */
-        drawStorePickerLoading();
-        host_flush_display();
-    };
-
-    storeHostVersion = getHostVersion();
-    storeInstalledModules = scanInstalledModules();
-
-    const result = fetchCatalog(onProgress);
-    storeFetchPending = false;
-
-    if (result.success) {
-        storeCatalog = result.catalog;
-        storeHostVersion = getHostVersion();
-
-        if (storePickerFromSettings) {
-            /* Settings entry — caller will navigate to categories */
-        } else {
-            /* Single-category entry — go directly to module list */
-            storePickerModules = getModulesForCategory(storeCatalog, storePickerCategory);
-            /* Prepend core update if available */
-            const hostUpdate = getHostUpdateModule();
-            if (hostUpdate) {
-                storePickerModules = [hostUpdate, ...storePickerModules];
-            }
-            setView(VIEWS.STORE_PICKER_LIST);
-            /* Announce menu title + initial selection with status */
-            if (storePickerModules.length > 0) {
-                const module = storePickerModules[0];
-                const statusLabel = getStoreModuleStatusLabel(module);
-                announce(`Module Store, ${module.name}` + (statusLabel ? `, ${statusLabel}` : ""));
-            } else {
-                announce("Module Store, No modules available");
-            }
-        }
-    } else {
-        storePickerMessage = result.error || 'Failed to load catalog';
-        setView(VIEWS.STORE_PICKER_RESULT);
-        announce(storePickerMessage);
-    }
-    needsRedraw = true;
-}
-
-/* Build the category item list (with counts, host update, update-all) */
-function buildStoreCategoryItems() {
-    storeCategoryItems = [];
-    storeHostVersion = getHostVersion();
-    storeInstalledModules = scanInstalledModules();
-
-    /* Core update at top if available — disabled on-device, but if catalog
-     * has a newer host we still surface a non-actionable info row pointing
-     * users at the web manager. Otherwise they have no signal that they're
-     * out of date. */
-    if (storeCatalog && storeCatalog.host && storeCatalog.host.latest_version &&
-        isNewerVersion(storeCatalog.host.latest_version, storeHostVersion)) {
-        storeCategoryItems.push({
-            id: '__host_update_info__',
-            label: 'Schwung ' + storeCatalog.host.latest_version + ' available',
-            value: 'move.local:7700',
-            _info: true
-        });
-    }
-
-    /* Module categories with counts */
-    for (const cat of CATEGORIES) {
-        const mods = getModulesForCategory(storeCatalog, cat.id);
-        if (mods.length > 0) {
-            storeCategoryItems.push({
-                id: cat.id,
-                label: cat.name,
-                value: '(' + mods.length + ')'
-            });
-        }
-    }
-
-    /* "Update All" if any modules have updates */
-    const updatable = getModulesWithUpdates();
-    if (updatable.length > 0) {
-        storeCategoryItems.push({
-            id: '__update_all__',
-            label: 'Update All',
-            value: '(' + updatable.length + ')'
-        });
-    }
-}
-
-/* Get list of installed modules that have updates available */
-function getModulesWithUpdates() {
-    if (!storeCatalog || !storeCatalog.modules) return [];
-    return storeCatalog.modules.filter(mod => {
-        const status = getModuleStatus(mod, storeInstalledModules);
-        return status.installed && status.hasUpdate;
-    });
-}
-
-/* Handle jog wheel in store category browser */
-function handleStoreCategoryJog(delta) {
-    storeCategoryIndex += delta;
-    if (storeCategoryIndex < 0) storeCategoryIndex = 0;
-    if (storeCategoryIndex >= storeCategoryItems.length) {
-        storeCategoryIndex = storeCategoryItems.length - 1;
-    }
-    if (storeCategoryIndex < 0) storeCategoryIndex = 0;
-    if (storeCategoryItems.length > 0) {
-        announceMenuItem("Store", storeCategoryItems[storeCategoryIndex].label);
-    }
-    needsRedraw = true;
-}
-
-/* Handle selection in store category browser */
-function handleStoreCategorySelect() {
-    if (storeCategoryItems.length === 0) return;
-
-    const item = storeCategoryItems[storeCategoryIndex];
-
-    if (item.id === '__host_update__') {
-        /* Go directly to host update detail */
-        storePickerCurrentModule = item._hostUpdate;
-        storePickerActionIndex = 0;
-        setView(VIEWS.STORE_PICKER_DETAIL);
-        announce("Core Update, " + storeHostVersion + " to " + item._hostUpdate.latest_version);
-        needsRedraw = true;
-        return;
-    }
-
-    if (item.id === '__host_update_info__') {
-        /* Info-only entry: tell the user to update from the web manager.
-         * On-device host updates can't write the privileged paths required
-         * to actually swap the live shim. */
-        storePickerResultTitle = 'Update Schwung';
-        storePickerMessage = 'Update Schwung at\nhttp://move.local:7700';
-        setView(VIEWS.STORE_PICKER_RESULT);
-        announce(storePickerMessage);
-        needsRedraw = true;
-        return;
-    }
-
-    if (item.id === '__update_all__') {
-        /* Process all pending updates */
-        const updatable = getModulesWithUpdates();
-        const hostUpdate = getHostUpdateModule();
-        pendingUpdates = [];
-        if (hostUpdate) {
-            pendingUpdates.push(hostUpdate);
-        }
-        for (const mod of updatable) {
-            pendingUpdates.push(mod);
-        }
-        pendingUpdateIndex = 0;
-        setView(VIEWS.UPDATE_PROMPT);
-        announce("Update All, " + pendingUpdates.length + " updates available");
-        needsRedraw = true;
-        return;
-    }
-
-    /* Regular category — enter module list */
-    storePickerCategory = item.id;
-    storePickerSelectedIndex = 0;
-    storePickerModules = getModulesForCategory(storeCatalog, item.id);
-
-    /* Prepend core update if browsing and it's available */
-    /* (only at category level, not here — host update has its own top-level entry) */
-
-    setView(VIEWS.STORE_PICKER_LIST);
-    if (storePickerModules.length > 0) {
-        const mod = storePickerModules[0];
-        const statusLabel = getStoreModuleStatusLabel(mod);
-        announce(item.label + ", " + mod.name + (statusLabel ? ", " + statusLabel : ""));
-    } else {
-        announce(item.label + ", No modules available");
-    }
-    needsRedraw = true;
-}
-
-/* Get accessible status label for a store module */
-function getStoreModuleStatusLabel(mod) {
-    if (mod._isHostUpdate) return "Update available";
-    const status = getModuleStatus(mod, storeInstalledModules);
-    if (!status.installed) return "";
-    return status.hasUpdate ? "Update available" : "Installed";
-}
-
-/* Handle jog wheel in store picker list */
-function handleStorePickerListJog(delta) {
-    storePickerSelectedIndex += delta;
-    if (storePickerSelectedIndex < 0) storePickerSelectedIndex = 0;
-    if (storePickerSelectedIndex >= storePickerModules.length) {
-        storePickerSelectedIndex = storePickerModules.length - 1;
-    }
-    if (storePickerSelectedIndex < 0) storePickerSelectedIndex = 0;
-    if (storePickerModules.length > 0) {
-        const mod = storePickerModules[storePickerSelectedIndex];
-        const statusLabel = getStoreModuleStatusLabel(mod);
-        announceMenuItem("Store", (mod.name || mod.id || "Module") + (statusLabel ? ", " + statusLabel : ""));
-    }
-    needsRedraw = true;
-}
-
-/* Handle jog wheel in store picker detail */
-function handleStorePickerDetailJog(delta) {
-    if (storeDetailScrollState) {
-        handleScrollableTextJog(storeDetailScrollState, delta);
-        needsRedraw = true;
-    }
-}
-
-/* Handle selection in store picker list */
-function handleStorePickerListSelect() {
-    if (storePickerModules.length === 0) return;
-
-    storePickerCurrentModule = storePickerModules[storePickerSelectedIndex];
-    storePickerActionIndex = 0;
-    setView(VIEWS.STORE_PICKER_DETAIL);
-    needsRedraw = true;
-
-    /* Announce module details: name, version, status, description */
-    const mod = storePickerCurrentModule;
-    let detailAnnounce = mod.name;
-    if (mod._isHostUpdate) {
-        detailAnnounce += `, version ${storeHostVersion} to ${mod.latest_version}`;
-        detailAnnounce += ". Update Schwung core framework. Restart required after update.";
-    } else {
-        const detailStatus = getModuleStatus(mod, storeInstalledModules);
-        if (detailStatus.installed && detailStatus.hasUpdate) {
-            detailAnnounce += `, version ${detailStatus.installedVersion} to ${mod.latest_version}`;
-        } else if (mod.latest_version) {
-            detailAnnounce += `, version ${mod.latest_version}`;
-        }
-        if (mod.description) detailAnnounce += ". " + mod.description;
-        if (mod.author) detailAnnounce += ". By " + mod.author;
-    }
-    announce(detailAnnounce);
-}
-
-/* Handle selection in store picker detail */
-function handleStorePickerDetailSelect() {
-    /* Can't click until action is selected */
-    if (!storeDetailScrollState || !isActionSelected(storeDetailScrollState)) {
-        return;
-    }
-
-    const mod = storePickerCurrentModule;
-    if (!mod) {
-        return;
-    }
-
-    setView(VIEWS.STORE_PICKER_LOADING);
-    storePickerLoadingTitle = 'Installing';
-    storePickerLoadingMessage = mod.name;
-    announce("Installing " + mod.name);
-
-    /* Show loading screen before blocking operation */
-    drawStorePickerLoading();
-    host_flush_display();
-
-    let result;
-    if (mod._isHostUpdate) {
-        /* Staged core update with verification and backup */
-        result = performCoreUpdate(mod);
-    } else {
-        const installProgress = (phase, name) => {
-            storePickerLoadingTitle = phase;
-            storePickerLoadingMessage = name;
-            drawStorePickerLoading();
-            host_flush_display();
-        };
-        result = sharedInstallModule(mod, storeHostVersion, installProgress);
-    }
-
-    if (result.success) {
-        storeInstalledModules = scanInstalledModules();
-        if (mod._isHostUpdate) {
-            /* Core update succeeded - show restart prompt */
-            updateRestartFromVersion = storeHostVersion;
-            updateRestartToVersion = mod.latest_version;
-            view = VIEWS.UPDATE_RESTART;
-        } else if (mod.post_install) {
-            /* Check for post_install message */
-            storePostInstallLines = wrapText(mod.post_install, 18);
-            setView(VIEWS.STORE_PICKER_POST_INSTALL);
-            announce("Install complete. " + mod.post_install);
-        } else {
-            storePickerMessage = `Installed ${mod.name}`;
-            setView(VIEWS.STORE_PICKER_RESULT);
-            announce(storePickerMessage);
-        }
-    } else {
-        storePickerMessage = result.error || 'Install failed';
-        setView(VIEWS.STORE_PICKER_RESULT);
-        announce(storePickerMessage);
-    }
-
-    needsRedraw = true;
-}
-
 /* Handle selection in store picker result */
 function handleStorePickerResultSelect() {
     /* Honor the entry-context flags so dismissing the pointer screen
      * sends the user back to wherever they came from. These mirror
-     * handleStorePickerBack's STORE_PICKER_LIST dispatch — the only
+     * handleStorePickerBack — the only
      * reason the back-button and click-dismiss diverged historically
      * is that the result screen used to terminate install flows that
      * could only sensibly return to the module list. With the install
@@ -6660,136 +6229,15 @@ function handleStorePickerResultSelect() {
         storePickerModules = [];
         return;
     }
-    /* Last-resort fallback (legacy callers). */
-    setView(VIEWS.STORE_PICKER_LIST);
+    /* Last-resort fallback (legacy callers): back to the slots view. */
+    setView(VIEWS.SLOTS);
     needsRedraw = true;
 }
 
-/* Handle back in store picker */
+/* Handle back in store picker result — the only store view left. Back
+ * and click-dismiss route identically to the entry context. */
 function handleStorePickerBack() {
-    switch (view) {
-        case VIEWS.STORE_PICKER_CATEGORIES:
-            /* Return to calling view */
-            storePickerFromSettings = false;
-            storeCatalog = null;
-            storeCategoryItems = [];
-            if (storeReturnView === VIEWS.GLOBAL_SETTINGS) {
-                storeReturnView = null;
-                enterGlobalSettings();
-            } else {
-                setView(VIEWS.MASTER_FX);
-                announce("Settings");
-            }
-            break;
-        case VIEWS.STORE_PICKER_LIST:
-            if (storePickerFromSettings) {
-                /* Came from category browser - go back to categories */
-                buildStoreCategoryItems();
-                setView(VIEWS.STORE_PICKER_CATEGORIES);
-                if (storeCategoryItems.length > 0) {
-                    announce("Module Store, " + storeCategoryItems[storeCategoryIndex].label);
-                }
-                storePickerCategory = null;
-                storePickerModules = [];
-            } else if (storePickerFromOvertake) {
-                /* Came from overtake menu - rescan and go back there */
-                overtakeModules = scanForOvertakeModules();
-                setView(VIEWS.OVERTAKE_MENU);
-                storePickerFromOvertake = false;
-                storeCatalog = null;
-                storePickerCategory = null;
-                storePickerModules = [];
-            } else if (storePickerFromMasterFx) {
-                /* Came from master FX module select - rescan and go back */
-                MASTER_FX_OPTIONS = scanForAudioFxModules();
-                enterMasterFxModuleSelect(selectedMasterFxComponent);
-                setView(VIEWS.MASTER_FX);
-                storePickerFromMasterFx = false;
-                storeCatalog = null;
-                storePickerCategory = null;
-                storePickerModules = [];
-            } else {
-                /* Came from component select - rescan modules and go back */
-                availableModules = scanModulesForType(CHAIN_COMPONENTS[selectedChainComponent].key);
-                setView(VIEWS.COMPONENT_SELECT);
-                storeCatalog = null;
-                storePickerCategory = null;
-                storePickerModules = [];
-            }
-            break;
-        case VIEWS.STORE_PICKER_DETAIL:
-            if (storePickerFromSettings && storePickerCurrentModule && storePickerCurrentModule._isHostUpdate) {
-                /* Host update detail entered from categories - go back to categories */
-                buildStoreCategoryItems();
-                setView(VIEWS.STORE_PICKER_CATEGORIES);
-                storePickerCurrentModule = null;
-                storeDetailScrollState = null;
-                if (storeCategoryItems.length > 0) {
-                    announce("Module Store, " + storeCategoryItems[storeCategoryIndex].label);
-                }
-            } else {
-                /* Return to list */
-                setView(VIEWS.STORE_PICKER_LIST);
-                storePickerCurrentModule = null;
-                storeDetailScrollState = null;
-            }
-            break;
-        case VIEWS.STORE_PICKER_RESULT:
-            if (storePickerFromSettings && !storePickerCategory) {
-                /* Result from category-level action (e.g. host update) - go to categories */
-                buildStoreCategoryItems();
-                setView(VIEWS.STORE_PICKER_CATEGORIES);
-                storePickerCurrentModule = null;
-                if (storeCategoryItems.length > 0) {
-                    announce("Module Store, " + storeCategoryItems[storeCategoryIndex].label);
-                }
-            } else if (!storePickerFromSettings && storeReturnView === VIEWS.GLOBAL_SETTINGS) {
-                /* Result from update-all via Global Settings → Update Prompt */
-                storeReturnView = null;
-                storePickerCurrentModule = null;
-                enterGlobalSettings();
-            } else {
-                /* Return to list */
-                setView(VIEWS.STORE_PICKER_LIST);
-                storePickerCurrentModule = null;
-            }
-            break;
-        case VIEWS.STORE_PICKER_POST_INSTALL:
-            /* Dismiss post-install, go to result */
-            storePickerMessage = `Installed ${storePickerCurrentModule.name}`;
-            setView(VIEWS.STORE_PICKER_RESULT);
-            announce(storePickerMessage);
-            break;
-        case VIEWS.STORE_PICKER_LOADING:
-            /* Allow cancel during loading - return to where we came from */
-            if (storePickerFromSettings) {
-                storePickerFromSettings = false;
-                storeCatalog = null;
-                storeCategoryItems = [];
-                if (storeReturnView === VIEWS.GLOBAL_SETTINGS) {
-                    storeReturnView = null;
-                    enterGlobalSettings();
-                } else {
-                    setView(VIEWS.MASTER_FX);
-                }
-            } else if (storePickerFromOvertake) {
-                overtakeModules = scanForOvertakeModules();
-                setView(VIEWS.OVERTAKE_MENU);
-                storePickerFromOvertake = false;
-            } else if (storePickerFromMasterFx) {
-                MASTER_FX_OPTIONS = scanForAudioFxModules();
-                enterMasterFxModuleSelect(selectedMasterFxComponent);
-                setView(VIEWS.MASTER_FX);
-                storePickerFromMasterFx = false;
-            } else {
-                availableModules = scanModulesForType(CHAIN_COMPONENTS[selectedChainComponent].key);
-                setView(VIEWS.COMPONENT_SELECT);
-            }
-            storePickerCategory = null;
-            storePickerModules = [];
-            storeFetchPending = false;
-            break;
-    }
+    handleStorePickerResultSelect();
     needsRedraw = true;
 }
 
@@ -11056,15 +10504,6 @@ function handleJog(delta) {
                 announceMenuItem("Module", mod.name || mod.id || "Unknown");
             }
             break;
-        case VIEWS.STORE_PICKER_CATEGORIES:
-            handleStoreCategoryJog(delta);
-            break;
-        case VIEWS.STORE_PICKER_LIST:
-            handleStorePickerListJog(delta);
-            break;
-        case VIEWS.STORE_PICKER_DETAIL:
-            handleStorePickerDetailJog(delta);
-            break;
         case VIEWS.CHAIN_SETTINGS:
             if (showingNamePreview) {
                 namePreviewIndex = namePreviewIndex === 0 ? 1 : 0;
@@ -11195,24 +10634,6 @@ function handleJog(delta) {
                     announceMenuItem("Target", targetItem.label || targetItem.id || "");
                 }
             }
-            break;
-        case VIEWS.UPDATE_PROMPT:
-            /* +1 for the "Update All" item at the end */
-            pendingUpdateIndex = Math.max(0, Math.min(pendingUpdates.length, pendingUpdateIndex + delta));
-            if (pendingUpdateIndex === pendingUpdates.length) {
-                announce("Update All");
-            } else {
-                const upd = pendingUpdates[pendingUpdateIndex];
-                announce(upd.name + ", " + upd.from + " to " + upd.to);
-            }
-            break;
-        case VIEWS.UPDATE_DETAIL:
-            if (updateDetailScrollState) {
-                handleScrollableTextJog(updateDetailScrollState, delta);
-            }
-            break;
-        case VIEWS.UPDATE_RESTART:
-            /* No jog navigation needed */
             break;
         case VIEWS.OVERTAKE_MENU:
             selectedOvertakeModule += delta;
@@ -11577,24 +10998,8 @@ function handleSelect() {
             }
             applyComponentSelection();
             break;
-        case VIEWS.STORE_PICKER_CATEGORIES:
-            handleStoreCategorySelect();
-            break;
-        case VIEWS.STORE_PICKER_LIST:
-            handleStorePickerListSelect();
-            break;
-        case VIEWS.STORE_PICKER_DETAIL:
-            handleStorePickerDetailSelect();
-            break;
         case VIEWS.STORE_PICKER_RESULT:
             handleStorePickerResultSelect();
-            break;
-        case VIEWS.STORE_PICKER_POST_INSTALL:
-            /* Dismiss post-install, go to result */
-            storePickerMessage = `Installed ${storePickerCurrentModule.name}`;
-            setView(VIEWS.STORE_PICKER_RESULT);
-            announce(storePickerMessage);
-            needsRedraw = true;
             break;
         case VIEWS.CHAIN_SETTINGS:
             {
@@ -12051,99 +11456,6 @@ function handleSelect() {
         case VIEWS.DYNAMIC_PARAM_PICKER:
             handleDynamicParamPickerSelect();
             break;
-        case VIEWS.UPDATE_PROMPT:
-            if (pendingUpdateIndex === pendingUpdates.length) {
-                /* "Update All" - install directly */
-                announce("Installing all updates");
-                processAllUpdates();
-            } else if (pendingUpdateIndex >= 0 && pendingUpdateIndex < pendingUpdates.length &&
-                       pendingUpdates[pendingUpdateIndex]._hostPointer) {
-                /* Host pointer: not actionable on-device; show web manager
-                 * instruction screen instead of the install detail view. */
-                storePickerResultTitle = 'Update Schwung';
-                storePickerMessage = 'Update Schwung at\nhttp://move.local:7700';
-                view = VIEWS.STORE_PICKER_RESULT;
-                needsRedraw = true;
-                announce(storePickerMessage);
-            } else if (pendingUpdateIndex >= 0 && pendingUpdateIndex < pendingUpdates.length) {
-                const upd = pendingUpdates[pendingUpdateIndex];
-                updateDetailModule = upd;
-
-                announce("Loading details for " + upd.name);
-                const repo = upd._isHostUpdate ? 'charlesvestal/schwung' : upd.github_repo;
-                const notes = repo ? fetchReleaseNotes(repo) : null;
-
-                const lines = [];
-                lines.push(upd.name);
-                lines.push(upd.from + ' -> ' + upd.to);
-                lines.push('');
-                if (notes) {
-                    lines.push(...buildReleaseNoteLines(notes));
-                } else {
-                    lines.push('No release notes');
-                    lines.push('available.');
-                }
-
-                updateDetailScrollState = createScrollableText({
-                    lines: lines,
-                    actionLabel: 'Install',
-                    visibleLines: 3
-                });
-
-                view = VIEWS.UPDATE_DETAIL;
-                needsRedraw = true;
-                announce(upd.name + ", " + upd.from + " to " + upd.to + ". Click to install");
-            }
-            break;
-        case VIEWS.UPDATE_DETAIL:
-            if (updateDetailScrollState && isActionSelected(updateDetailScrollState)) {
-                const upd = updateDetailModule;
-                announce("Installing " + upd.name);
-                if (upd._isHostUpdate) {
-                    const result = performCoreUpdate(upd);
-                    if (result.success) {
-                        pendingUpdates.splice(pendingUpdateIndex, 1);
-                        if (pendingUpdateIndex >= pendingUpdates.length) {
-                            pendingUpdateIndex = Math.max(0, pendingUpdates.length - 1);
-                        }
-                        updateRestartFromVersion = upd.from;
-                        updateRestartToVersion = upd.to;
-                        view = VIEWS.UPDATE_RESTART;
-                        announce("Core updated to " + upd.to + ". Click to restart now, Back to restart later");
-                    } else {
-                        storePickerResultTitle = 'Updates';
-                        storePickerMessage = result.error || 'Core update failed';
-                        view = VIEWS.STORE_PICKER_RESULT;
-                        announce(storePickerMessage);
-                    }
-                } else {
-                    const result = sharedInstallModule(upd, storeHostVersion);
-                    pendingUpdates.splice(pendingUpdateIndex, 1);
-                    if (pendingUpdateIndex >= pendingUpdates.length) {
-                        pendingUpdateIndex = Math.max(0, pendingUpdates.length - 1);
-                    }
-                    storeInstalledModules = scanInstalledModules();
-                    storePickerResultTitle = 'Updates';
-                    if (result.success) {
-                        storePickerMessage = 'Updated ' + upd.name;
-                    } else {
-                        storePickerMessage = result.error || 'Update failed';
-                    }
-                    view = VIEWS.STORE_PICKER_RESULT;
-                    announce(storePickerMessage);
-                }
-                needsRedraw = true;
-            }
-            break;
-        case VIEWS.UPDATE_RESTART:
-            /* Show restarting screen, then restart */
-            clear_screen();
-            drawStatusOverlay('Restarting', 'Please wait...');
-            host_flush_display();
-            if (typeof shadow_control_restart === "function") {
-                shadow_control_restart();
-            }
-            break;
         case VIEWS.OVERTAKE_MENU:
             /* Select and load the overtake module */
             if (overtakeModules.length > 0 && selectedOvertakeModule < overtakeModules.length) {
@@ -12446,11 +11758,7 @@ function handleBack() {
             announce("Chain Editor");
             needsRedraw = true;
             break;
-        case VIEWS.STORE_PICKER_CATEGORIES:
-        case VIEWS.STORE_PICKER_LIST:
-        case VIEWS.STORE_PICKER_DETAIL:
         case VIEWS.STORE_PICKER_RESULT:
-        case VIEWS.STORE_PICKER_POST_INSTALL:
             handleStorePickerBack();
             break;
         case VIEWS.CHAIN_SETTINGS:
@@ -12629,47 +11937,6 @@ function handleBack() {
             } else {
                 closeDynamicParamPicker("Hierarchy Editor");
             }
-            break;
-        case VIEWS.UPDATE_PROMPT:
-            /* Skip updates - dismiss and return */
-            pendingUpdates = [];
-            if (storePickerFromSettings && storeCatalog) {
-                /* Came from Module Store categories */
-                buildStoreCategoryItems();
-                view = VIEWS.STORE_PICKER_CATEGORIES;
-            } else if (storeReturnView === VIEWS.GLOBAL_SETTINGS) {
-                storeReturnView = null;
-                enterGlobalSettings();
-            } else {
-                /* Startup auto-update or unknown origin — exit shadow mode */
-                if (typeof shadow_request_exit === "function") {
-                    shadow_request_exit();
-                }
-            }
-            needsRedraw = true;
-            break;
-        case VIEWS.UPDATE_DETAIL:
-            updateDetailScrollState = null;
-            updateDetailModule = null;
-            view = VIEWS.UPDATE_PROMPT;
-            needsRedraw = true;
-            if (pendingUpdates.length > 0) {
-                const upd = pendingUpdates[pendingUpdateIndex];
-                announce("Updates, " + upd.name);
-            }
-            break;
-        case VIEWS.UPDATE_RESTART:
-            /* Restart later - return to calling view */
-            if (storeReturnView === VIEWS.GLOBAL_SETTINGS) {
-                storeReturnView = null;
-                enterGlobalSettings();
-            } else {
-                /* Exit shadow mode */
-                if (typeof shadow_request_exit === "function") {
-                    shadow_request_exit();
-                }
-            }
-            needsRedraw = true;
             break;
         case VIEWS.OVERTAKE_MENU:
             /* Exit overtake menu and return to Move */
@@ -13100,98 +12367,9 @@ function drawComponentSelect() {
 
 /* ===== Store Picker Drawing Functions ===== */
 
-/* drawStorePickerCategories() -> shadow_ui_store.mjs */
 
-/* drawStorePickerList() -> shadow_ui_store.mjs */
 
-/* drawStorePickerLoading(), drawStorePickerResult() -> shadow_ui_store.mjs */
-
-/* Draw store picker module detail */
-/* Build scrollable lines from release notes text */
-function buildReleaseNoteLines(notesText) {
-    const lines = [];
-    const noteLines = notesText.split('\n');
-    for (const line of noteLines) {
-        if (line.trim() === '') {
-            lines.push('');
-        } else {
-            /* Strip markdown: headers, bold, italic */
-            const cleaned = line.trim()
-                .replace(/^#+\s*/, '')
-                .replace(/\*\*/g, '')
-                .replace(/\*/g, '');
-            const wrapped = wrapText(cleaned, 20);
-            lines.push(...wrapped);
-        }
-    }
-    return lines;
-}
-
-/* drawStorePickerDetail() -> shadow_ui_store.mjs */
-
-/* Draw update detail view (release notes + install action) */
-function drawUpdateDetail() {
-    clear_screen();
-    const title = updateDetailModule ? updateDetailModule.name : 'Update';
-    drawHeader(title);
-
-    if (updateDetailScrollState) {
-        drawScrollableText({
-            state: updateDetailScrollState,
-            topY: 16,
-            bottomY: 40,
-            actionY: 52
-        });
-    }
-
-    /* 1px border */
-    fill_rect(0, 0, 128, 1, 1);
-    fill_rect(0, 63, 128, 1, 1);
-    fill_rect(0, 0, 1, 64, 1);
-    fill_rect(127, 0, 1, 64, 1);
-}
-
-/* Draw update prompt view (shown on startup when updates are available) */
-function drawUpdatePrompt() {
-    clear_screen();
-    drawHeader('Updates Available');
-
-    const items = pendingUpdates.map(upd => ({
-        label: upd.name,
-        subLabel: upd.from + ' -> ' + upd.to
-    }));
-    /* Add "Update All" as the last item */
-    items.push({ label: '[Update All]', subLabel: '' });
-
-    drawMenuList({
-        items: items,
-        selectedIndex: pendingUpdateIndex,
-        getLabel: (item) => item.label,
-        getSubLabel: (item) => item.subLabel,
-        subLabelOffset: 7,
-        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y }
-    });
-
-    drawFooter('Back: cancel');
-
-    /* 1px border around entire screen to distinguish from normal UI */
-    fill_rect(0, 0, 128, 1, 1);
-    fill_rect(0, 63, 128, 1, 1);
-    fill_rect(0, 0, 1, 64, 1);
-    fill_rect(127, 0, 1, 64, 1);
-}
-
-/* Draw restart prompt after core update */
-function drawUpdateRestart() {
-    clear_screen();
-    drawHeader('Core Updated!');
-
-    const versionStr = updateRestartFromVersion + ' -> ' + updateRestartToVersion;
-    print(2, 20, versionStr, 1);
-    print(2, 36, 'Click: Restart now', 1);
-
-    drawFooter("Back: Later");
-}
+/* drawStorePickerResult() -> shadow_ui_store.mjs */
 
 /* Draw analytics opt-out prompt (shown on first run) */
 function drawAnalyticsPrompt() {
@@ -13644,20 +12822,11 @@ function drawHelpDetail() {
     _ctx.debugLog = debugLog;
 
     /* Store state */
-    Object.defineProperty(_ctx, 'storeCategoryItems', {
-        get() { return storeCategoryItems; }, enumerable: true
-    });
-    Object.defineProperty(_ctx, 'storeCategoryIndex', {
-        get() { return storeCategoryIndex; }, enumerable: true
-    });
     Object.defineProperty(_ctx, 'storePickerCategory', {
         get() { return storePickerCategory; }, enumerable: true
     });
     Object.defineProperty(_ctx, 'storePickerModules', {
         get() { return storePickerModules; }, enumerable: true
-    });
-    Object.defineProperty(_ctx, 'storePickerSelectedIndex', {
-        get() { return storePickerSelectedIndex; }, enumerable: true
     });
     Object.defineProperty(_ctx, 'storePickerCurrentModule', {
         get() { return storePickerCurrentModule; }, enumerable: true
@@ -13668,15 +12837,6 @@ function drawHelpDetail() {
     Object.defineProperty(_ctx, 'storeHostVersion', {
         get() { return storeHostVersion; }, enumerable: true
     });
-    Object.defineProperty(_ctx, 'storeDetailScrollState', {
-        get() { return storeDetailScrollState; }, set(v) { storeDetailScrollState = v; }, enumerable: true
-    });
-    Object.defineProperty(_ctx, 'storePickerLoadingTitle', {
-        get() { return storePickerLoadingTitle; }, enumerable: true
-    });
-    Object.defineProperty(_ctx, 'storePickerLoadingMessage', {
-        get() { return storePickerLoadingMessage; }, enumerable: true
-    });
     Object.defineProperty(_ctx, 'storePickerResultTitle', {
         get() { return storePickerResultTitle; }, enumerable: true
     });
@@ -13686,7 +12846,6 @@ function drawHelpDetail() {
     _ctx.getModuleStatus = (...args) => getModuleStatus(...args);
     _ctx.CATEGORIES = CATEGORIES;
     _ctx.drawStatusOverlay = (...args) => drawStatusOverlay(...args);
-    _ctx.fetchReleaseNotes = (...args) => fetchReleaseNotes(...args);
     _ctx.createScrollableText = (...args) => createScrollableText(...args);
     _ctx.drawScrollableText = (...args) => drawScrollableText(...args);
     _ctx.wrapText = (...args) => wrapText(...args);
@@ -13820,11 +12979,7 @@ function drawToolProcessing() { _drawToolProcessing(); }
 function drawToolResult() { _drawToolResult(); }
 function drawToolStemReview() { _drawToolStemReview(); }
 function drawToolSetPicker() { _drawToolSetPicker(); }
-function drawStorePickerCategories() { _drawStorePickerCategories(); }
-function drawStorePickerList() { _drawStorePickerList(); }
-function drawStorePickerLoading() { _drawStorePickerLoading(); }
 function drawStorePickerResult() { _drawStorePickerResult(); }
-function drawStorePickerDetail() { _drawStorePickerDetail(); }
 function drawChainSettings() { _drawChainSettings(); }
 function drawGlobalSettings() { _drawGlobalSettings(); }
 
@@ -14373,14 +13528,7 @@ function dispatchCoRunDraw() {
         case VIEWS.LFO_EDIT:             drawLfoEdit(); break;
         case VIEWS.LFO_TARGET_COMPONENT: drawLfoTargetComponent(); break;
         case VIEWS.LFO_TARGET_PARAM:     drawLfoTargetParam(); break;
-        case VIEWS.STORE_PICKER_CATEGORIES: drawStorePickerCategories(); break;
-        case VIEWS.STORE_PICKER_LIST:    drawStorePickerList(); break;
-        case VIEWS.STORE_PICKER_DETAIL:  drawStorePickerDetail(); break;
-        case VIEWS.STORE_PICKER_LOADING: drawStorePickerLoading(); break;
         case VIEWS.STORE_PICKER_RESULT:  drawStorePickerResult(); break;
-        case VIEWS.STORE_PICKER_POST_INSTALL:
-            drawMessageOverlay('Install Complete', storePostInstallLines);
-            break;
         case VIEWS.FILEPATH_BROWSER:     drawFilepathBrowser(); break;
         default:
             /* Unknown view in co-run — render slot list as a recoverable
@@ -14530,18 +13678,6 @@ globalThis.tick = function() {
         const flags = shadow_get_ui_flags();
         globalThis._debugFlags = flags;  /* Debug: store for display */
 
-        /* If showing update prompt/restart, allow navigation flags to override */
-        if (view === VIEWS.UPDATE_PROMPT || view === VIEWS.UPDATE_RESTART) {
-            /* Let jump flags through so shortcuts still work */
-            const navFlags = flags & (SHADOW_UI_FLAG_JUMP_TO_SLOT | SHADOW_UI_FLAG_JUMP_TO_MASTER_FX |
-                              SHADOW_UI_FLAG_JUMP_TO_OVERTAKE | SHADOW_UI_FLAG_JUMP_TO_SETTINGS |
-                              SHADOW_UI_FLAG_JUMP_TO_SCREENREADER | SHADOW_UI_FLAG_JUMP_TO_TOOLS);
-            const otherFlags = flags & ~navFlags;
-            if (otherFlags && typeof shadow_clear_ui_flags === "function") {
-                shadow_clear_ui_flags(otherFlags);
-            }
-            /* Fall through to process nav flags */
-        }
         {
             /* Settings/Screenreader flags take priority (clear conflicting SLOT flag) */
             if (flags & SHADOW_UI_FLAG_JUMP_TO_TOOLS) {
@@ -15213,32 +14349,8 @@ globalThis.tick = function() {
         case VIEWS.DYNAMIC_PARAM_PICKER:
             drawDynamicParamPicker();
             break;
-        case VIEWS.STORE_PICKER_CATEGORIES:
-            drawStorePickerCategories();
-            break;
-        case VIEWS.STORE_PICKER_LIST:
-            drawStorePickerList();
-            break;
-        case VIEWS.STORE_PICKER_DETAIL:
-            drawStorePickerDetail();
-            break;
-        case VIEWS.STORE_PICKER_LOADING:
-            drawStorePickerLoading();
-            break;
         case VIEWS.STORE_PICKER_RESULT:
             drawStorePickerResult();
-            break;
-        case VIEWS.STORE_PICKER_POST_INSTALL:
-            drawMessageOverlay('Install Complete', storePostInstallLines);
-            break;
-        case VIEWS.UPDATE_PROMPT:
-            drawUpdatePrompt();
-            break;
-        case VIEWS.UPDATE_DETAIL:
-            drawUpdateDetail();
-            break;
-        case VIEWS.UPDATE_RESTART:
-            drawUpdateRestart();
             break;
         case VIEWS.OVERTAKE_MENU:
             drawOvertakeMenu();
