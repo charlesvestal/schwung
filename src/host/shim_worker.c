@@ -118,6 +118,12 @@ static void run_overtake_exit_hook(void) {
      * don't run the global hook which may belong to another module */
 }
 
+static shim_worker_hooks_t worker_hooks;
+
+void shim_worker_set_hooks(const shim_worker_hooks_t *hooks) {
+    if (hooks) worker_hooks = *hooks;
+}
+
 static void drain_events(void) {
     while (evt_tail != evt_head) {
         uint8_t evt = evt_ring[evt_tail & (EVT_RING_SIZE - 1)];
@@ -132,6 +138,24 @@ static void drain_events(void) {
              * work because MoveOriginal has file capabilities that trigger
              * AT_SECURE, blocking LD_PRELOAD from a non-root process. */
             system("/data/UserData/schwung/restart-move.sh");
+            break;
+        case SHIM_EVT_SAMPLER_PREP:
+            if (worker_hooks.sampler_prepare) worker_hooks.sampler_prepare();
+            break;
+        case SHIM_EVT_SAMPLER_FINALIZE:
+            if (worker_hooks.sampler_finalize) worker_hooks.sampler_finalize();
+            break;
+        case SHIM_EVT_SAMPLER_CANCEL:
+            if (worker_hooks.sampler_cancel_preroll) worker_hooks.sampler_cancel_preroll();
+            break;
+        case SHIM_EVT_SKIPBACK_SAVE:
+            if (worker_hooks.skipback_save) worker_hooks.skipback_save();
+            break;
+        case SHIM_EVT_SKIPBACK_RESIZE:
+            if (worker_hooks.skipback_resize) worker_hooks.skipback_resize();
+            break;
+        case SHIM_EVT_PREVIEW_PLAY:
+            if (worker_hooks.preview_play_pending) worker_hooks.preview_play_pending();
             break;
         default:
             break;

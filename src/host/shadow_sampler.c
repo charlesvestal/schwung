@@ -9,6 +9,8 @@
 
 #define _GNU_SOURCE
 #include "shadow_sampler.h"
+#include "shim_worker.h"
+#include <semaphore.h>
 
 #include <stdlib.h>
 #include <string.h>
@@ -99,14 +101,27 @@ static uint32_t sampler_preroll_frames_captured = 0;
 static FILE *sampler_wav_file = NULL;
 uint32_t sampler_samples_written = 0;
 static char sampler_current_recording[256] = "";
-static int16_t *sampler_ring_buffer = NULL;
+static int16_t *sampler_ring_buffer = NULL;  /* allocated once in sampler_init */
 static size_t sampler_ring_write_pos = 0;
 static size_t sampler_ring_read_pos = 0;
 static pthread_t sampler_writer_thread;
-static pthread_mutex_t sampler_ring_mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t sampler_ring_cond = PTHREAD_COND_INITIALIZER;
+/* Capture (RT) signals the writer with sem_post — async-signal-safe and
+ * never blocks, unlike the old mutex+cond pair the SCHED_OTHER writer
+ * could hold while preempted (priority inversion at FIFO 90). */
+static sem_t sampler_ring_sem;
 static volatile int sampler_writer_running = 0;
 static volatile int sampler_writer_should_exit = 0;
+
+/* RT/worker start-stop handshake. io_busy covers the window between a
+ * stop/cancel request and the worker finishing file I/O; RT start
+ * requests are refused while set (a start would reset ring positions the
+ * writer is still draining). pending_* tell sampler_worker_prepare what
+ * the RT half armed. */
+static volatile int sampler_io_busy = 0;
+static volatile int sampler_pending_preroll = 0;
+static volatile int sampler_pending_custom = 0;  /* 1 = path in pending buf, 2 = read cmd file */
+static char sampler_pending_path[256] = "";
+#define SAMPLER_CMD_PATH_FILE "/data/UserData/schwung/sampler_cmd_path.txt"
 
 /* Skipback state */
 static int16_t *skipback_buffer = NULL;
@@ -136,6 +151,15 @@ static int skipback_clamp_seconds(int seconds) {
 void sampler_init(const sampler_host_t *host, float *sampler_set_tempo_ptr) {
     s_host = *host;
     s_set_tempo_ptr = sampler_set_tempo_ptr;
+    /* Allocate the capture ring once (≈350 KB) so recording start never
+     * mallocs on the SPI thread — the RT half only resets positions. */
+    if (!sampler_ring_buffer) {
+        sampler_ring_buffer = malloc(SAMPLER_RING_BUFFER_SIZE);
+        if (!sampler_ring_buffer) {
+            s_host.log("Sampler: ring buffer allocation failed — recording disabled");
+        }
+    }
+    sem_init(&sampler_ring_sem, 0, 0);
 }
 
 /* Chown a path to ableton:users so Move's UI can see the files.
@@ -200,12 +224,14 @@ static void *sampler_writer_thread_func(void *arg) {
     size_t write_chunk = SAMPLER_SAMPLE_RATE * SAMPLER_NUM_CHANNELS / 4;  /* ~250ms */
 
     while (1) {
-        pthread_mutex_lock(&sampler_ring_mutex);
-        while (sampler_ring_available_read() < write_chunk && !sampler_writer_should_exit) {
-            pthread_cond_wait(&sampler_ring_cond, &sampler_ring_mutex);
-        }
+        sem_wait(&sampler_ring_sem);
         int should_exit = sampler_writer_should_exit;
-        pthread_mutex_unlock(&sampler_ring_mutex);
+        /* Batch disk writes: skip back to sleep until ~250ms of audio has
+         * accumulated (capture posts once per 2.9ms block). On exit drain
+         * whatever remains. */
+        if (!should_exit && sampler_ring_available_read() < write_chunk) {
+            continue;
+        }
 
         size_t available = sampler_ring_available_read();
         while (available > 0 && sampler_wav_file) {
@@ -359,103 +385,230 @@ void sampler_announce_menu_item(void) {
     s_host.announce(sr_buf);
 }
 
-void sampler_start_preroll(void) {
-    sampler_preroll_clock_count = 0;
-    sampler_preroll_fallback_blocks = 0;
+/* ============================================================================
+ * Recording start/stop — RT/worker split (RT-1/RT-2 in
+ * docs/plans/2026-06-11-codebase-cleanup-review.md)
+ *
+ * The RT halves run on the SPI thread: flip state, reset counters/ring
+ * positions, post an event. Capture into the pre-allocated ring begins on
+ * the very next block, so the triggering note's own audio is recorded.
+ * The worker halves do every file operation (mkdir/fopen/header/writer
+ * thread on start; join/trim/close on stop). Worker events execute in
+ * posted order, so a start→stop race inside one worker tick resolves
+ * serially: prepare runs, then finalize/cancel cleans up.
+ * ============================================================================ */
+
+/* Shared RT-side arm: reset the capture machinery. Caller sets state. */
+static int sampler_arm_common(void) {
+    if (sampler_writer_running || sampler_io_busy) return -1;
+    if (!sampler_ring_buffer) return -1;
+    __atomic_store_n(&sampler_ring_write_pos, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&sampler_ring_read_pos, 0, __ATOMIC_RELEASE);
+    sampler_writer_should_exit = 0;
+    sampler_samples_written = 0;
     sampler_preroll_frames_captured = 0;
+    sampler_clock_count = 0;
+    sampler_bars_completed = 0;
+    sampler_clock_received = 0;
+    sampler_fallback_blocks = 0;
+    sampler_fade_in_remaining = SAMPLER_FADE_SAMPLES;
+    sampler_recording_max_peak = 0;
+    sampler_recording_blocks_captured = 0;
+    return 0;
+}
 
+int sampler_request_start(int with_preroll) {
+    if (sampler_arm_common() != 0) return -1;
     int bars = sampler_duration_options[sampler_duration_index];
-    sampler_preroll_target_pulses = bars * 4 * 24;
+    sampler_pending_custom = 0;
+    sampler_pending_preroll = with_preroll ? 1 : 0;
+    if (with_preroll) {
+        sampler_preroll_clock_count = 0;
+        sampler_preroll_fallback_blocks = 0;
+        sampler_preroll_target_pulses = bars * 4 * 24;
+        /* Fallback timer needs BPM, which may read Settings/Set files —
+         * sampler_worker_prepare sets it (0 disables until then; the gap
+         * is ≤200ms against a seconds-scale timer). */
+        sampler_preroll_fallback_target = 0;
+        sampler_state = SAMPLER_PREROLL;
+        sampler_fullscreen_active = 1;
+        sampler_overlay_active = 1;
+        s_host.log("Sampler: preroll armed");
+    } else {
+        sampler_target_pulses = (bars > 0) ? bars * 4 * 24 : 0;
+        sampler_fallback_target = 0;  /* set by sampler_worker_prepare */
+        sampler_state = SAMPLER_RECORDING;
+        sampler_overlay_active = 1;
+        sampler_overlay_timeout = 0;
+    }
+    s_host.overlay_sync();
+    shim_worker_post(SHIM_EVT_SAMPLER_PREP);
+    return 0;
+}
 
+int sampler_request_start_custom(const char *path_or_null) {
+    if (sampler_arm_common() != 0) return -1;
+    sampler_pending_preroll = 0;
+    if (path_or_null && path_or_null[0]) {
+        snprintf(sampler_pending_path, sizeof(sampler_pending_path), "%s", path_or_null);
+        sampler_pending_custom = 1;
+    } else {
+        sampler_pending_path[0] = '\0';
+        sampler_pending_custom = 2;  /* worker reads SAMPLER_CMD_PATH_FILE */
+    }
+    /* Unlimited duration; external JS drives the stop. Overlay untouched —
+     * this path is driven by modules, not the sampler UI. */
+    sampler_target_pulses = 0;
+    sampler_fallback_target = 0;
+    sampler_state = SAMPLER_RECORDING;
+    shim_worker_post(SHIM_EVT_SAMPLER_PREP);
+    return 0;
+}
+
+void sampler_request_stop(void) {
+    if (sampler_state == SAMPLER_PREROLL) {
+        s_host.log("Sampler: preroll cancelled");
+        sampler_state = SAMPLER_ARMED;
+        sampler_io_busy = 1;
+        s_host.overlay_sync();
+        shim_worker_post(SHIM_EVT_SAMPLER_CANCEL);
+        return;
+    }
+    if (sampler_state != SAMPLER_RECORDING && sampler_state != SAMPLER_PAUSED) return;
+    /* Capture stops at this exact frame (the capture predicate excludes
+     * FINALIZING); the worker drains the ring into the file and closes it.
+     * sampler_get_state() keeps reporting RECORDING until then so JS can
+     * poll host_sampler_is_recording() for file completion. */
+    sampler_state = SAMPLER_FINALIZING;
+    sampler_io_busy = 1;
+    shim_worker_post(SHIM_EVT_SAMPLER_FINALIZE);
+}
+
+/* ---- worker halves (shim worker thread — file I/O lives here) ---------- */
+
+static void sampler_worker_abort_start(const char *why) {
+    s_host.log(why);
+    s_host.announce("Recording failed");
+    if (sampler_wav_file) {
+        fclose(sampler_wav_file);
+        sampler_wav_file = NULL;
+    }
+    sampler_state = SAMPLER_IDLE;
+    sampler_fullscreen_active = 0;
+    s_host.overlay_sync();
+}
+
+/* Build the auto-named output path (date dir + bpm filename) and mkdir. */
+static int sampler_worker_build_auto_path(void) {
+    time_t now = time(NULL);
+    struct tm tm_buf;
+    struct tm *tm_info = localtime_r(&now, &tm_buf);
+    if (!tm_info) return -1;
+    char date_subdir[32];
+    if (strftime(date_subdir, sizeof(date_subdir), "%Y-%m-%d", tm_info) == 0) return -1;
+    char recording_dir[256];
+    snprintf(recording_dir, sizeof(recording_dir), "%s/%s", SAMPLER_RECORDINGS_DIR, date_subdir);
+    struct stat st;
+    if (stat(recording_dir, &st) != 0) {
+        const char *mkdir_argv[] = { "mkdir", "-p", recording_dir, NULL };
+        s_host.run_command(mkdir_argv);
+        chown_to_ableton_recursive(recording_dir);
+    }
     tempo_source_t src;
-    float bpm = sampler_get_bpm(&src);
-    float seconds = bars * 4.0f * 60.0f / bpm;
-    sampler_preroll_fallback_target = (int)(seconds * 44100.0f / 128.0f);
+    float bpm_for_name = sampler_get_bpm(&src);
+    int bpm_int = (int)(bpm_for_name + 0.5f);
+    snprintf(sampler_current_recording, sizeof(sampler_current_recording), "%s/sample_%04d%02d%02d_%02d%02d%02d_%dbpm.wav",
+             recording_dir,
+             tm_info->tm_year + 1900, tm_info->tm_mon + 1, tm_info->tm_mday,
+             tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec, bpm_int);
+    return 0;
+}
 
-    /* Start recording machinery now so we capture audio during preroll.
-     * When preroll completes we trim the preroll frames from the WAV. */
-    if (!sampler_writer_running) {
-        /* Generate date-based save directory and filename */
-        time_t now = time(NULL);
-        struct tm tm_buf;
-        struct tm *tm_info = localtime_r(&now, &tm_buf);
-        if (!tm_info) {
-            s_host.log("Sampler: preroll failed - no local time");
-            s_host.announce("Recording failed");
-            sampler_state = SAMPLER_IDLE;
-            s_host.overlay_sync();
-            return;
-        }
-        char date_subdir[32];
-        strftime(date_subdir, sizeof(date_subdir), "%Y-%m-%d", tm_info);
-        char recording_dir[256];
-        snprintf(recording_dir, sizeof(recording_dir), "%s/%s", SAMPLER_RECORDINGS_DIR, date_subdir);
-        {
-            struct stat st;
-            if (stat(recording_dir, &st) != 0) {
-                const char *mkdir_argv[] = { "mkdir", "-p", recording_dir, NULL };
-                s_host.run_command(mkdir_argv);
-                chown_to_ableton_recursive(recording_dir);
+void sampler_worker_prepare(void) {
+    int custom = sampler_pending_custom;
+    int preroll = sampler_pending_preroll;
+    sampler_pending_custom = 0;
+
+    if (custom) {
+        char path_buf[256] = "";
+        if (custom == 1) {
+            snprintf(path_buf, sizeof(path_buf), "%s", sampler_pending_path);
+        } else {
+            FILE *pf = fopen(SAMPLER_CMD_PATH_FILE, "r");
+            if (pf) {
+                if (fgets(path_buf, sizeof(path_buf), pf)) {
+                    char *nl = strchr(path_buf, '\n');
+                    if (nl) *nl = '\0';
+                }
+                fclose(pf);
             }
         }
-
-        float bpm_for_name = sampler_get_bpm(&src);
-        int bpm_int = (int)(bpm_for_name + 0.5f);
+        if (!path_buf[0]) {
+            sampler_worker_abort_start("Sampler: start failed - no output path");
+            return;
+        }
+        /* Create the parent directory */
+        char dir_buf[256];
+        snprintf(dir_buf, sizeof(dir_buf), "%s", path_buf);
+        char *last_slash = strrchr(dir_buf, '/');
+        if (last_slash) {
+            *last_slash = '\0';
+            struct stat st;
+            if (stat(dir_buf, &st) != 0) {
+                const char *mkdir_argv[] = { "mkdir", "-p", dir_buf, NULL };
+                s_host.run_command(mkdir_argv);
+                chown_to_ableton_recursive(dir_buf);
+            }
+        }
         snprintf(sampler_current_recording, sizeof(sampler_current_recording),
-                 "%s/sample_%04d%02d%02d_%02d%02d%02d_%dbpm.wav",
-                 recording_dir,
-                 tm_info->tm_year + 1900, tm_info->tm_mon + 1, tm_info->tm_mday,
-                 tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec, bpm_int);
-
-        sampler_ring_buffer = malloc(SAMPLER_RING_BUFFER_SIZE);
-        if (!sampler_ring_buffer) {
-            s_host.log("Sampler: preroll failed - ring buffer alloc");
-            s_host.announce("Recording failed");
-            sampler_state = SAMPLER_IDLE;
-            s_host.overlay_sync();
+                 "%s", path_buf);
+    } else {
+        if (sampler_worker_build_auto_path() != 0) {
+            sampler_worker_abort_start("Sampler: start failed - path build");
             return;
         }
-
-        sampler_wav_file = fopen(sampler_current_recording, "wb");
-        if (!sampler_wav_file) {
-            s_host.log("Sampler: preroll failed - file open");
-            s_host.announce("Recording failed");
-            free(sampler_ring_buffer);
-            sampler_ring_buffer = NULL;
-            sampler_state = SAMPLER_IDLE;
-            s_host.overlay_sync();
-            return;
+        /* Compute fallback timers now that BPM file reads are safe. This
+         * call also warms sampler_get_bpm's settings cache, so later RT
+         * callers (preroll completion) never touch the filesystem. */
+        int bars = sampler_duration_options[sampler_duration_index];
+        if (bars > 0) {
+            tempo_source_t src;
+            float bpm = sampler_get_bpm(&src);
+            float seconds = bars * 4.0f * 60.0f / bpm;
+            int target = (int)(seconds * 44100.0f / 128.0f);
+            if (preroll) sampler_preroll_fallback_target = target;
+            else         sampler_fallback_target = target;
         }
-
-        sampler_samples_written = 0;
-        __atomic_store_n(&sampler_ring_write_pos, 0, __ATOMIC_RELEASE);
-        __atomic_store_n(&sampler_ring_read_pos, 0, __ATOMIC_RELEASE);
-        sampler_writer_should_exit = 0;
-        sampler_fade_in_remaining = SAMPLER_FADE_SAMPLES;
-
-        sampler_write_wav_header(sampler_wav_file, 0);
-
-        if (pthread_create(&sampler_writer_thread, NULL, sampler_writer_thread_func, NULL) != 0) {
-            s_host.log("Sampler: preroll failed - writer thread");
-            s_host.announce("Recording failed");
-            fclose(sampler_wav_file);
-            sampler_wav_file = NULL;
-            free(sampler_ring_buffer);
-            sampler_ring_buffer = NULL;
-            sampler_state = SAMPLER_IDLE;
-            s_host.overlay_sync();
-            return;
-        }
-        sampler_writer_running = 1;
     }
 
-    sampler_state = SAMPLER_PREROLL;
-    sampler_fullscreen_active = 1;
-    sampler_overlay_active = 1;
-    s_host.overlay_sync();
+    sampler_wav_file = fopen(sampler_current_recording, "wb");
+    if (!sampler_wav_file) {
+        char msg[300];
+        snprintf(msg, sizeof(msg), "Sampler: failed to open WAV file: %s",
+                 sampler_current_recording);
+        sampler_worker_abort_start(msg);
+        return;
+    }
+    sampler_write_wav_header(sampler_wav_file, 0);
 
-    char msg[128];
-    snprintf(msg, sizeof(msg), "Sampler: preroll started (%d bars, %.1f BPM)", bars, bpm);
+    if (pthread_create(&sampler_writer_thread, NULL, sampler_writer_thread_func, NULL) != 0) {
+        fclose(sampler_wav_file);
+        sampler_wav_file = NULL;
+        sampler_worker_abort_start("Sampler: failed to create writer thread");
+        return;
+    }
+    sampler_writer_running = 1;
+
+    char msg[320];
+    if (custom)
+        snprintf(msg, sizeof(msg), "Sampler: recording to custom path -> %s",
+                 sampler_current_recording);
+    else if (preroll)
+        snprintf(msg, sizeof(msg), "Sampler: preroll recording -> %s",
+                 sampler_current_recording);
+    else
+        snprintf(msg, sizeof(msg), "Sampler: recording started -> %s",
+                 sampler_current_recording);
     s_host.log(msg);
 }
 
@@ -491,213 +644,15 @@ void sampler_tick_preroll(void) {
     }
 }
 
-void sampler_start_recording_to(const char *output_path) {
-    if (sampler_writer_running) return;
-    if (!output_path || !output_path[0]) {
-        s_host.log("Sampler: empty output path");
-        return;
-    }
-
-    /* Honor whatever source the caller selected via host_sampler_set_source.
-     * Older callers that want the Schwung mix should request source 0 first. */
-
-    /* Create parent directory */
-    char dir_buf[256];
-    snprintf(dir_buf, sizeof(dir_buf), "%s", output_path);
-    char *last_slash = strrchr(dir_buf, '/');
-    if (last_slash) {
-        *last_slash = '\0';
-        struct stat st;
-        if (stat(dir_buf, &st) != 0) {
-            const char *mkdir_argv[] = { "mkdir", "-p", dir_buf, NULL };
-            s_host.run_command(mkdir_argv);
-            chown_to_ableton_recursive(dir_buf);
-        }
-    }
-
-    /* Copy path */
-    snprintf(sampler_current_recording, sizeof(sampler_current_recording), "%s", output_path);
-
-    /* Allocate ring buffer */
-    sampler_ring_buffer = malloc(SAMPLER_RING_BUFFER_SIZE);
-    if (!sampler_ring_buffer) {
-        s_host.log("Sampler: failed to allocate ring buffer");
-        return;
-    }
-
-    /* Open file */
-    sampler_wav_file = fopen(sampler_current_recording, "wb");
-    if (!sampler_wav_file) {
-        char msg[256];
-        snprintf(msg, sizeof(msg), "Sampler: failed to open WAV file: %s", sampler_current_recording);
-        s_host.log(msg);
-        free(sampler_ring_buffer);
-        sampler_ring_buffer = NULL;
-        return;
-    }
-
-    /* Initialize state — unlimited duration */
-    sampler_samples_written = 0;
-    sampler_preroll_frames_captured = 0;
-    __atomic_store_n(&sampler_ring_write_pos, 0, __ATOMIC_RELEASE);
-    __atomic_store_n(&sampler_ring_read_pos, 0, __ATOMIC_RELEASE);
-    sampler_writer_should_exit = 0;
-    sampler_clock_count = 0;
-    sampler_bars_completed = 0;
-    sampler_clock_received = 0;
-    sampler_fallback_blocks = 0;
-    sampler_target_pulses = 0;
-    sampler_fallback_target = 0;
-
-    /* Write placeholder header */
-    sampler_write_wav_header(sampler_wav_file, 0);
-
-    /* Start writer thread */
-    if (pthread_create(&sampler_writer_thread, NULL, sampler_writer_thread_func, NULL) != 0) {
-        s_host.log("Sampler: failed to create writer thread");
-        fclose(sampler_wav_file);
-        sampler_wav_file = NULL;
-        free(sampler_ring_buffer);
-        sampler_ring_buffer = NULL;
-        return;
-    }
-
-    sampler_writer_running = 1;
-    sampler_state = SAMPLER_RECORDING;
-    sampler_fade_in_remaining = SAMPLER_FADE_SAMPLES;
-    sampler_recording_max_peak = 0;
-    sampler_recording_blocks_captured = 0;
-    /* Don't touch overlay — this is driven by external JS, not the sampler UI */
-
-    char msg[256];
-    snprintf(msg, sizeof(msg), "Sampler: recording to custom path -> %s", sampler_current_recording);
-    s_host.log(msg);
-}
-
 int sampler_get_state(void) {
+    /* FINALIZING mirrors as RECORDING: the JS contract is "recording until
+     * the file is complete on disk" (modules stop, poll, then read). */
+    if (sampler_state == SAMPLER_FINALIZING) return (int)SAMPLER_RECORDING;
     return (int)sampler_state;
 }
 
-void sampler_start_recording(void) {
-    if (sampler_writer_running) return;
-
-    /* Generate date-based save directory and filename */
-    time_t now = time(NULL);
-    struct tm tm_buf;
-    struct tm *tm_info = localtime_r(&now, &tm_buf);
-    if (!tm_info) {
-        s_host.log("Sampler: failed to get local time");
-        s_host.announce("Recording failed");
-        return;
-    }
-    char date_subdir[32];
-    if (strftime(date_subdir, sizeof(date_subdir), "%Y-%m-%d", tm_info) == 0) {
-        s_host.log("Sampler: failed to format date subdirectory");
-        s_host.announce("Recording failed");
-        return;
-    }
-    char recording_dir[256];
-    snprintf(recording_dir, sizeof(recording_dir), "%s/%s", SAMPLER_RECORDINGS_DIR, date_subdir);
-
-    {
-        struct stat st;
-        if (stat(recording_dir, &st) != 0) {
-            const char *mkdir_argv[] = { "mkdir", "-p", recording_dir, NULL };
-            s_host.run_command(mkdir_argv);
-            chown_to_ableton_recursive(recording_dir);
-        }
-    }
-
-    /* Get BPM for filename */
-    tempo_source_t bpm_src;
-    float bpm_for_name = sampler_get_bpm(&bpm_src);
-    int bpm_int = (int)(bpm_for_name + 0.5f);
-
-    snprintf(sampler_current_recording, sizeof(sampler_current_recording), "%s/sample_%04d%02d%02d_%02d%02d%02d_%dbpm.wav",
-             recording_dir,
-             tm_info->tm_year + 1900, tm_info->tm_mon + 1, tm_info->tm_mday,
-             tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec,
-             bpm_int);
-
-    /* Allocate ring buffer */
-    sampler_ring_buffer = malloc(SAMPLER_RING_BUFFER_SIZE);
-    if (!sampler_ring_buffer) {
-        s_host.log("Sampler: failed to allocate ring buffer");
-        s_host.announce("Recording failed");
-        return;
-    }
-
-    /* Open file */
-    sampler_wav_file = fopen(sampler_current_recording, "wb");
-    if (!sampler_wav_file) {
-        s_host.log("Sampler: failed to open WAV file");
-        s_host.announce("Recording failed");
-        free(sampler_ring_buffer);
-        sampler_ring_buffer = NULL;
-        return;
-    }
-
-    /* Initialize state */
-    sampler_samples_written = 0;
-    sampler_preroll_frames_captured = 0;
-    __atomic_store_n(&sampler_ring_write_pos, 0, __ATOMIC_RELEASE);
-    __atomic_store_n(&sampler_ring_read_pos, 0, __ATOMIC_RELEASE);
-    sampler_writer_should_exit = 0;
-    sampler_clock_count = 0;
-    sampler_bars_completed = 0;
-    sampler_clock_received = 0;
-    sampler_fallback_blocks = 0;
-
-    /* Calculate target: bars * 4 beats * 24 PPQN (0 = unlimited) */
-    int bars = sampler_duration_options[sampler_duration_index];
-    if (bars > 0) {
-        sampler_target_pulses = bars * 4 * 24;
-        tempo_source_t src;
-        float bpm = sampler_get_bpm(&src);
-        float seconds = bars * 4.0f * 60.0f / bpm;
-        sampler_fallback_target = (int)(seconds * 44100.0f / 128.0f);
-        {
-            char msg[128];
-            const char *src_names[] = {"default", "settings", "set", "last clock", "clock"};
-            snprintf(msg, sizeof(msg), "Sampler: using %.1f BPM (%s) for fallback timing",
-                     bpm, src_names[src]);
-            s_host.log(msg);
-        }
-    } else {
-        sampler_target_pulses = 0;
-        sampler_fallback_target = 0;
-    }
-
-    /* Write placeholder header */
-    sampler_write_wav_header(sampler_wav_file, 0);
-
-    /* Start writer thread */
-    if (pthread_create(&sampler_writer_thread, NULL, sampler_writer_thread_func, NULL) != 0) {
-        s_host.log("Sampler: failed to create writer thread");
-        s_host.announce("Recording failed");
-        fclose(sampler_wav_file);
-        sampler_wav_file = NULL;
-        free(sampler_ring_buffer);
-        sampler_ring_buffer = NULL;
-        return;
-    }
-
-    sampler_writer_running = 1;
-    sampler_state = SAMPLER_RECORDING;
-    sampler_fade_in_remaining = SAMPLER_FADE_SAMPLES;
-    sampler_overlay_active = 1;
-    sampler_overlay_timeout = 0;
-    s_host.overlay_sync();
-
-    char msg[256];
-    if (bars > 0)
-        snprintf(msg, sizeof(msg), "Sampler: recording started (%d bars) -> %s",
-                 bars, sampler_current_recording);
-    else
-        snprintf(msg, sizeof(msg), "Sampler: recording started (until stopped) -> %s",
-                 sampler_current_recording);
-    s_host.log(msg);
-}
+/* sampler_start_recording / sampler_start_recording_to / sampler_start_preroll
+ * were replaced by the sampler_request_* + sampler_worker_prepare split above. */
 
 void sampler_pause_recording(void) {
     if (sampler_state != SAMPLER_RECORDING) return;
@@ -717,36 +672,40 @@ void sampler_resume_recording(void) {
     s_host.overlay_sync();
 }
 
-void sampler_stop_recording(void) {
-    /* If in preroll, cancel and clean up recording machinery */
-    if (sampler_state == SAMPLER_PREROLL) {
-        s_host.log("Sampler: preroll cancelled");
-        if (sampler_writer_running) {
-            pthread_mutex_lock(&sampler_ring_mutex);
-            sampler_writer_should_exit = 1;
-            pthread_cond_signal(&sampler_ring_cond);
-            pthread_mutex_unlock(&sampler_ring_mutex);
-            pthread_join(sampler_writer_thread, NULL);
-            sampler_writer_running = 0;
-        }
-        if (sampler_wav_file) {
-            fclose(sampler_wav_file);
-            sampler_wav_file = NULL;
-        }
-        if (sampler_current_recording[0]) {
-            unlink(sampler_current_recording);
-            sampler_current_recording[0] = '\0';
-        }
-        if (sampler_ring_buffer) {
-            free(sampler_ring_buffer);
-            sampler_ring_buffer = NULL;
-        }
-        sampler_state = SAMPLER_ARMED;
+/* Worker half of preroll cancel: tear down whatever sampler_worker_prepare
+ * created (events are ordered, so prepare has already run if it was queued)
+ * and delete the partial file. State was already set to ARMED by the RT
+ * half. The ring buffer is persistent — never freed. */
+void sampler_worker_cancel_preroll(void) {
+    if (sampler_writer_running) {
+        sampler_writer_should_exit = 1;
+        sem_post(&sampler_ring_sem);
+        pthread_join(sampler_writer_thread, NULL);
+        sampler_writer_running = 0;
+    }
+    if (sampler_wav_file) {
+        fclose(sampler_wav_file);
+        sampler_wav_file = NULL;
+    }
+    if (sampler_current_recording[0]) {
+        unlink(sampler_current_recording);
+        sampler_current_recording[0] = '\0';
+    }
+    sampler_io_busy = 0;
+    s_host.overlay_sync();
+}
+
+/* Worker half of stop: join the writer (it drains the ring first), trim
+ * preroll frames, finalize the header, close. This used to run on the SPI
+ * thread — a guaranteed multi-hundred-ms audio stall on long recordings. */
+void sampler_worker_finalize(void) {
+    if (!sampler_writer_running) {
+        /* Prepare failed (or never ran) — nothing to finalize. */
+        if (sampler_state == SAMPLER_FINALIZING) sampler_state = SAMPLER_IDLE;
+        sampler_io_busy = 0;
         s_host.overlay_sync();
         return;
     }
-
-    if (!sampler_writer_running) return;
 
     {
         char msg[160];
@@ -758,11 +717,9 @@ void sampler_stop_recording(void) {
         s_host.log(msg);
     }
 
-    /* Signal writer thread to exit */
-    pthread_mutex_lock(&sampler_ring_mutex);
+    /* Signal writer thread to exit; it drains the ring before exiting. */
     sampler_writer_should_exit = 1;
-    pthread_cond_signal(&sampler_ring_cond);
-    pthread_mutex_unlock(&sampler_ring_mutex);
+    sem_post(&sampler_ring_sem);
 
     pthread_join(sampler_writer_thread, NULL);
     sampler_writer_running = 0;
@@ -826,11 +783,7 @@ void sampler_stop_recording(void) {
         chown_to_ableton(sampler_current_recording);
     }
 
-    /* Free ring buffer */
-    if (sampler_ring_buffer) {
-        free(sampler_ring_buffer);
-        sampler_ring_buffer = NULL;
-    }
+    /* Ring buffer is persistent (allocated once in sampler_init). */
 
     char msg[256];
     snprintf(msg, sizeof(msg), "Sampler: saved %s (%u samples, %.1f sec)",
@@ -840,6 +793,7 @@ void sampler_stop_recording(void) {
 
     sampler_current_recording[0] = '\0';
     sampler_state = SAMPLER_IDLE;
+    sampler_io_busy = 0;
 
     s_host.announce("Sample saved");
 
@@ -877,9 +831,9 @@ static void sampler_capture_audio_common(const int16_t *audio) {
         sampler_recording_blocks_captured++;
         __atomic_store_n(&sampler_ring_write_pos, write_pos, __ATOMIC_RELEASE);
 
-        pthread_mutex_lock(&sampler_ring_mutex);
-        pthread_cond_signal(&sampler_ring_cond);
-        pthread_mutex_unlock(&sampler_ring_mutex);
+        /* sem_post never blocks — no lock shared with the SCHED_OTHER
+         * writer thread on this FIFO-90 path. */
+        sem_post(&sampler_ring_sem);
 
         /* Track frames captured during preroll for later trimming */
         if (sampler_state == SAMPLER_PREROLL) {
@@ -900,7 +854,7 @@ static void sampler_capture_audio_common(const int16_t *audio) {
         }
         if (sampler_fallback_blocks >= sampler_fallback_target) {
             s_host.log("Sampler: fallback timeout reached (no MIDI clock)");
-            sampler_stop_recording();
+            sampler_request_stop();
         }
     }
 }
@@ -1008,7 +962,7 @@ void sampler_on_clock(uint8_t status) {
 
             if (sampler_target_pulses > 0 && sampler_clock_count >= sampler_target_pulses) {
                 s_host.log("Sampler: target duration reached via MIDI clock");
-                sampler_stop_recording();
+                sampler_request_stop();
             }
         }
     } else if (status == 0xFA) {
@@ -1019,9 +973,9 @@ void sampler_on_clock(uint8_t status) {
         if (sampler_state == SAMPLER_ARMED) {
             s_host.log("Sampler: triggered by MIDI Start");
             if (sampler_preroll_enabled && sampler_duration_options[sampler_duration_index] > 0) {
-                sampler_start_preroll();
+                sampler_request_start(1);
             } else {
-                sampler_start_recording();
+                sampler_request_start(0);
             }
         }
     }
@@ -1035,34 +989,13 @@ void sampler_on_clock(uint8_t status) {
                 s_host.log("Sampler: MIDI Stop ignored (external_stop_only)");
             } else {
                 s_host.log("Sampler: stopped by MIDI Stop");
-                sampler_stop_recording();
+                sampler_request_stop();
             }
         } else if (sampler_state == SAMPLER_PREROLL) {
+            /* sampler_request_stop handles preroll cancel: state→ARMED here,
+             * file teardown on the shim worker. */
             s_host.log("Sampler: preroll cancelled by MIDI Stop");
-            /* Clean up recording machinery that was started during preroll */
-            if (sampler_writer_running) {
-                pthread_mutex_lock(&sampler_ring_mutex);
-                sampler_writer_should_exit = 1;
-                pthread_cond_signal(&sampler_ring_cond);
-                pthread_mutex_unlock(&sampler_ring_mutex);
-                pthread_join(sampler_writer_thread, NULL);
-                sampler_writer_running = 0;
-            }
-            if (sampler_wav_file) {
-                fclose(sampler_wav_file);
-                sampler_wav_file = NULL;
-            }
-            /* Remove the partial file */
-            if (sampler_current_recording[0]) {
-                unlink(sampler_current_recording);
-                sampler_current_recording[0] = '\0';
-            }
-            if (sampler_ring_buffer) {
-                free(sampler_ring_buffer);
-                sampler_ring_buffer = NULL;
-            }
-            sampler_state = SAMPLER_ARMED;
-            s_host.overlay_sync();
+            sampler_request_stop();
         }
     }
 }
@@ -1349,6 +1282,18 @@ void skipback_trigger_save(void) {
 
     s_host.announce("Saving skipback");
 
+    /* Thread creation is deferred to the shim worker — this runs on the
+     * RT gesture path. skipback_saving is already set, so capture pauses
+     * immediately and the snapshot is consistent when the writer starts. */
+    shim_worker_post(SHIM_EVT_SKIPBACK_SAVE);
+    char msg[64];
+    snprintf(msg, sizeof(msg), "Skipback: saving last %d seconds...", skipback_seconds_actual);
+    s_host.log(msg);
+}
+
+/* Worker half: spawn the detached skipback writer (the save itself takes
+ * seconds and must not block the worker's event loop). */
+void skipback_worker_spawn_save(void) {
     pthread_t t;
     if (pthread_create(&t, NULL, skipback_writer_func, NULL) != 0) {
         s_host.log("Skipback: failed to create writer thread");
@@ -1357,9 +1302,6 @@ void skipback_trigger_save(void) {
         return;
     }
     pthread_detach(t);
-    char msg[64];
-    snprintf(msg, sizeof(msg), "Skipback: saving last %d seconds...", skipback_seconds_actual);
-    s_host.log(msg);
 }
 
 /* ============================================================================
