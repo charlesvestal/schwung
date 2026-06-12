@@ -79,10 +79,8 @@ if [ -z "$CROSS_PREFIX" ] && [ ! -f "/.dockerenv" ]; then
                 go build -buildvcs=false -o /out/schwung-manager -ldflags="-s -w" .
             sm_built=1
         else
-            echo "WARNING: neither 'go' nor 'docker' available — skipping schwung-manager rebuild."
-            echo "         The tarball will contain whatever stale binary is committed at"
-            echo "         schwung-manager/schwung-manager-arm64. Any new schwung-manager"
-            echo "         endpoints (e.g. per-module config UI) will not work on-device."
+            echo "ERROR: neither 'go' nor 'docker' available — cannot build schwung-manager."
+            echo "       The web manager will be missing from the tarball."
         fi
 
         if [ "$sm_built" = "1" ]; then
@@ -676,8 +674,6 @@ fi
 cp ./src/shim-entrypoint.sh ./build/
 cp ./src/restart-move.sh ./build/ 2>/dev/null || true
 cp ./src/launch-standalone.sh ./build/ 2>/dev/null || true
-cp ./src/start.sh ./build/ 2>/dev/null || true
-cp ./src/stop.sh ./build/ 2>/dev/null || true
 
 # Copy post-update script (run by Module Store after host updates)
 mkdir -p ./build/scripts
