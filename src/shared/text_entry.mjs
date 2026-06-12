@@ -315,6 +315,8 @@ export function isTextEntryActive() {
  * Get the current buffer contents
  * @returns {string}
  */
+/* @deprecated No known consumers (verified across all module repos,
+ * 2026-06 dead-code sweep). Removal candidate at the next major bump. */
 export function getTextEntryBuffer() {
     return state.buffer;
 }
