@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-file="src/modules/chain/dsp/chain_host.c"
+file="src/modules/chain/dsp"
 
 if ! rg -q '#define MOD_INT_ENUM_MIN_INTERVAL_MS 50' "$file"; then
   echo "FAIL: missing global int/enum modulation min-interval constant" >&2
   exit 1
 fi
-if ! rg -q 'static void chain_mod_apply_effective_value\(chain_instance_t \*inst, mod_target_state_t \*entry, int force_write\)' "$file"; then
+if ! rg -q '(static )?void chain_mod_apply_effective_value\(chain_instance_t \*inst, mod_target_state_t \*entry, int force_write\)' "$file"; then
   echo "FAIL: chain_mod_apply_effective_value force-write signature missing" >&2
   exit 1
 fi

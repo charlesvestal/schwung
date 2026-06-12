@@ -118,7 +118,7 @@ CIN: 0x09 = note-on, 0x08 = note-off, 0x0B = CC
 
 ## Key Files
 
-- `src/modules/chain/dsp/chain_host.c` — MFX buffer write, tick redirect, inject_note_off
+- `src/modules/chain/dsp/chain_midi.c` — MFX buffer write, tick redirect, inject_note_off
 - `src/schwung_shim.c` — echo refcount, pending buffer, drain, MIDI_OUT dispatch filtering
 - `src/host/shadow_chain_mgmt.c/.h` — dlsym for chain exports
 - `src/host/shadow_midi.c` — General MIDI injection drain

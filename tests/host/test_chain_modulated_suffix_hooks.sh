@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-file="src/modules/chain/dsp/chain_host.c"
+file="src/modules/chain/dsp"
 
-if ! rg -q 'static int chain_mod_get_modulated_for_subkey' "$file"; then
+if ! rg -q '(static )?int chain_mod_get_modulated_for_subkey' "$file"; then
   echo "FAIL: modulation status helper is missing" >&2
   exit 1
 fi

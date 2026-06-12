@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-file="src/modules/chain/dsp/chain_host.c"
+file="src/modules/chain/dsp"
 
 if ! rg -q 'float range_span = entry->max_val - entry->min_val;' "$file"; then
   echo "FAIL: missing modulation range span computation" >&2
