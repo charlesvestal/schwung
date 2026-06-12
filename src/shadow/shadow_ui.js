@@ -4259,9 +4259,13 @@ function loadChainConfigFromDir(dir) {
             if (typeof s.forward_channel === "number") setSlotParamWithTimeout(i, "slot:forward_channel", String(s.forward_channel), 500);
             if (typeof s.muted === "number") setSlotParamWithTimeout(i, "slot:muted", String(s.muted), 500);
             if (typeof s.soloed === "number") setSlotParamWithTimeout(i, "slot:soloed", String(s.soloed), 500);
-            /* Move>Slot routing (missing in older configs → leave shim default 1,
-             * i.e. Move track rides the synth slot). */
-            if (typeof s.move_to_slot === "number") setSlotParamWithTimeout(i, "slot:move_to_slot", String(s.move_to_slot), 500);
+            /* Move>Slot routing (Move>SchwFX): ALWAYS write — saved value if
+             * present, else default 1 (Move track rides the synth slot, the
+             * preexisting behavior). The shim's move_to_slot is global and NOT
+             * reset per set, so skipping a missing field leaves it stale from the
+             * prior set (e.g. a peeled 0), exactly like receive_channel above. */
+            const mts = (typeof s.move_to_slot === "number") ? s.move_to_slot : 1;
+            setSlotParamWithTimeout(i, "slot:move_to_slot", String(mts), 500);
         }
         debugLog("SET_CHANGED: loaded chain config from " + path);
     } catch (e) {
