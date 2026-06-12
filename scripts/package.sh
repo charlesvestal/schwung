@@ -61,7 +61,13 @@ if tar --version 2>/dev/null | grep -q GNU; then
         --transform 's,^\.,schwung,' \
         $ITEMS
 else
-    tar -czf ../schwung.tar.gz \
+    # bsdtar: force ustar format. bsdtar's default pax writer auto-detects
+    # holes (SEEK_HOLE) and emits GNU-sparse entries that BusyBox tar on
+    # Move extracts to literal GNUSparseFile.0/<name> paths, silently
+    # leaving the real file stale on device (bit us 2026-06-12: a dsp.so
+    # with a Docker-virtiofs hole). ustar cannot encode sparse, so files
+    # are stored dense.
+    tar --format ustar -czf ../schwung.tar.gz \
         -s ',^\.,schwung,' \
         $ITEMS
 fi
