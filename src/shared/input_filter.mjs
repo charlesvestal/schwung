@@ -45,10 +45,14 @@ export function shouldFilterMessage(data) {
 
 /* ============ Pad Utilities ============ */
 
+/* @deprecated No known consumers (verified across all module repos,
+ * 2026-06 dead-code sweep). Removal candidate at the next major bump. */
 export function isPadNote(noteNumber) {
     return MovePads.includes(noteNumber);
 }
 
+/* @deprecated No known consumers (verified across all module repos,
+ * 2026-06 dead-code sweep). Removal candidate at the next major bump. */
 export function getPadIndex(noteNumber) {
     return MovePads.indexOf(noteNumber);
 }
@@ -147,6 +151,8 @@ export function decodeAcceleratedDelta(value, encoderId = 0) {
  * Reset acceleration tracking for an encoder
  * @param {number} encoderId - Encoder identifier
  */
+/* @deprecated No known consumers (verified across all module repos,
+ * 2026-06 dead-code sweep). Removal candidate at the next major bump. */
 export function resetEncoderAccel(encoderId) {
     encoderLastTime.delete(encoderId);
 }
@@ -154,6 +160,8 @@ export function resetEncoderAccel(encoderId) {
 /**
  * Reset all encoder acceleration tracking
  */
+/* @deprecated No known consumers (verified across all module repos,
+ * 2026-06 dead-code sweep). Removal candidate at the next major bump. */
 export function resetAllEncoderAccel() {
     encoderLastTime.clear();
 }

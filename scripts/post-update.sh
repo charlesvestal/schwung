@@ -61,8 +61,6 @@ fi
 # --- Executables ---
 
 chmod +x "$BASE/schwung" 2>/dev/null
-chmod +x "$BASE/start.sh" 2>/dev/null
-chmod +x "$BASE/stop.sh" 2>/dev/null
 chmod +x "$BASE/bin/display_ctl" 2>/dev/null
 chmod +x "$BASE/bin/jack_midi_connect" 2>/dev/null
 
