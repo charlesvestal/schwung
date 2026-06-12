@@ -31,12 +31,18 @@ static void flite_clear_buffer(void);
 static void flite_load_state(void);
 static void flite_save_state(void);
 
-/* Ring buffer for synthesized audio */
+/* Linear per-utterance audio buffer, lock-free between the SCHED_OTHER
+ * synthesis thread (writer) and the FIFO-90 mix path (reader). The old
+ * ring_mutex was held through the entire utterance fill (~ms) while the
+ * RT reader blocked on it — an unbounded priority inversion. Publish
+ * protocol: writer drops ring_ready, fills with a local index, then
+ * publishes read=0/write=N/ready=1 with barriers. Reader never touches
+ * the buffer while ring_ready is 0. */
 #define RING_BUFFER_SIZE (44100 * 24)  /* 12 seconds at 44.1kHz stereo (24 = 12sec * 2ch) */
 static int16_t ring_buffer[RING_BUFFER_SIZE];
-static int ring_write_pos = 0;
-static int ring_read_pos = 0;
-static pthread_mutex_t ring_mutex = PTHREAD_MUTEX_INITIALIZER;
+static volatile int ring_write_pos = 0;  /* total valid samples this utterance */
+static volatile int ring_read_pos = 0;   /* reader cursor (reader-owned after publish) */
+static volatile int ring_ready = 0;      /* 0 while the synth thread (re)fills */
 
 static bool initialized = false;
 static volatile bool tts_enabled = false;  /* Screen Reader on/off toggle - default OFF */
@@ -96,10 +102,12 @@ static void* flite_synthesis_thread(void *arg) {
             continue;
         }
 
-        pthread_mutex_lock(&ring_mutex);
-        ring_write_pos = 0;
-        ring_read_pos = 0;
+        /* Take the buffer away from the reader, fill with a local index,
+         * then publish — the reader never sees a partial utterance. */
+        ring_ready = 0;
+        __sync_synchronize();
 
+        int w = 0;
         int16_t *flite_data = wav->samples;
 
         for (int i = 0; i < flite_samples - 1; i++) {
@@ -108,12 +116,12 @@ static void* flite_synthesis_thread(void *arg) {
 
             int repeats = (int)(upsample_ratio + 0.5f);
             for (int r = 0; r < repeats; r++) {
-                if (ring_write_pos + 1 >= RING_BUFFER_SIZE) goto done;
+                if (w + 1 >= RING_BUFFER_SIZE) goto done;
                 float alpha = (float)r / (float)repeats;
                 int16_t sample = (int16_t)(sample_curr * (1.0f - alpha) + sample_next * alpha);
 
-                ring_buffer[ring_write_pos++] = sample;  /* Left */
-                ring_buffer[ring_write_pos++] = sample;  /* Right */
+                ring_buffer[w++] = sample;  /* Left */
+                ring_buffer[w++] = sample;  /* Right */
             }
         }
 
@@ -121,18 +129,21 @@ static void* flite_synthesis_thread(void *arg) {
             int16_t last_sample = flite_data[flite_samples - 1];
             int repeats = (int)(upsample_ratio + 0.5f);
             for (int r = 0; r < repeats; r++) {
-                if (ring_write_pos + 1 >= RING_BUFFER_SIZE) break;
-                ring_buffer[ring_write_pos++] = last_sample;
-                ring_buffer[ring_write_pos++] = last_sample;
+                if (w + 1 >= RING_BUFFER_SIZE) break;
+                ring_buffer[w++] = last_sample;
+                ring_buffer[w++] = last_sample;
             }
         }
 
 done:
-        pthread_mutex_unlock(&ring_mutex);
+        ring_read_pos = 0;
+        ring_write_pos = w;
+        __sync_synchronize();
+        ring_ready = 1;
         delete_wave(wav);
 
         unified_log("tts_engine", LOG_LEVEL_DEBUG,
-                   "Synthesized %d samples for: '%s'", ring_write_pos, text);
+                   "Synthesized %d samples for: '%s'", w, text);
     }
 
     return NULL;
@@ -156,7 +167,7 @@ static void flite_load_state(void) {
     fclose(f);
 }
 
-static void flite_save_state(void) {
+static void flite_save_state_value(int on) {
     const char *state_path = "/data/UserData/schwung/config/screen_reader_state.txt";
     FILE *f = fopen(state_path, "w");
     if (!f) {
@@ -164,9 +175,13 @@ static void flite_save_state(void) {
         return;
     }
 
-    fprintf(f, "%d\n", tts_enabled ? 1 : 0);
+    fprintf(f, "%d\n", on ? 1 : 0);
     fclose(f);
-    unified_log("tts_engine", LOG_LEVEL_INFO, "Screen reader state saved: %s", tts_enabled ? "ON" : "OFF");
+    unified_log("tts_engine", LOG_LEVEL_INFO, "Screen reader state saved: %s", on ? "ON" : "OFF");
+}
+
+static void flite_save_state(void) {
+    flite_save_state_value(tts_enabled ? 1 : 0);
 }
 
 static void flite_save_config(void) {
@@ -305,11 +320,11 @@ void flite_tts_cleanup(void) {
 
     initialized = false;
 
-    pthread_mutex_lock(&ring_mutex);
+    ring_ready = 0;
+    __sync_synchronize();
     ring_write_pos = 0;
     ring_read_pos = 0;
     memset(ring_buffer, 0, sizeof(ring_buffer));
-    pthread_mutex_unlock(&ring_mutex);
 }
 
 bool flite_tts_speak(const char *text) {
@@ -333,9 +348,7 @@ bool flite_tts_speak(const char *text) {
 }
 
 bool flite_tts_is_speaking(void) {
-    pthread_mutex_lock(&ring_mutex);
-    bool has_audio = (ring_read_pos != ring_write_pos);
-    pthread_mutex_unlock(&ring_mutex);
+    bool has_audio = ring_ready && (ring_read_pos != ring_write_pos);
     return has_audio || tts_disabling;
 }
 
@@ -344,22 +357,25 @@ int flite_tts_get_audio(int16_t *out_buffer, int max_frames) {
 
     if (!tts_enabled && !tts_disabling) return 0;
 
-    pthread_mutex_lock(&ring_mutex);
+    /* Lock-free: runs on the FIFO-90 mix path. While the synth thread is
+     * (re)filling, ring_ready is 0 and we read nothing. */
+    int have_audio = ring_ready && (ring_read_pos != ring_write_pos);
 
-    if (tts_disabling && ring_read_pos != ring_write_pos) {
+    if (tts_disabling && have_audio) {
         tts_disabling_had_audio = true;
     }
 
-    if (tts_disabling && tts_disabling_had_audio && ring_read_pos == ring_write_pos) {
-        pthread_mutex_unlock(&ring_mutex);
+    if (tts_disabling && tts_disabling_had_audio && !have_audio) {
+        /* Flag flips only — the OFF state was already persisted by
+         * flite_tts_set_enabled (non-RT) when the disable started. */
         tts_enabled = false;
         tts_disabling = false;
         tts_disabling_had_audio = false;
-        flite_save_state();
         flite_clear_buffer();
-        unified_log("tts_engine", LOG_LEVEL_INFO, "Screen reader disable complete");
         return 0;
     }
+
+    if (!have_audio) return 0;
 
     int frames_available = (ring_write_pos - ring_read_pos) / 2;
     int frames_to_read = (frames_available < max_frames) ? frames_available : max_frames;
@@ -367,16 +383,17 @@ int flite_tts_get_audio(int16_t *out_buffer, int max_frames) {
 
     float volume_scale = tts_volume / 100.0f;
 
+    int rp = ring_read_pos;
     for (int i = 0; i < samples_to_read; i++) {
-        int32_t sample = ring_buffer[ring_read_pos];
+        int32_t sample = ring_buffer[rp];
         sample = (int32_t)(sample * volume_scale);
         if (sample > 32767) sample = 32767;
         if (sample < -32768) sample = -32768;
         out_buffer[i] = (int16_t)sample;
-        ring_read_pos++;
+        rp++;
     }
+    ring_read_pos = rp;
 
-    pthread_mutex_unlock(&ring_mutex);
     return frames_to_read;
 }
 
@@ -424,10 +441,9 @@ void flite_tts_set_pitch(float pitch_hz) {
 }
 
 static void flite_clear_buffer(void) {
-    pthread_mutex_lock(&ring_mutex);
-    ring_read_pos = 0;
-    ring_write_pos = 0;
-    pthread_mutex_unlock(&ring_mutex);
+    /* Skip any unread audio. Safe lock-free: the reader only consumes
+     * while ring_ready is set, and equal positions read as "empty". */
+    ring_read_pos = ring_write_pos;
 }
 
 void flite_tts_set_enabled(bool enabled) {
@@ -443,6 +459,9 @@ void flite_tts_set_enabled(bool enabled) {
 
     if (!enabled && tts_enabled && !tts_disabling) {
         unified_log("tts_engine", LOG_LEVEL_INFO, "Screen reader disabling (waiting for final announcement)");
+        /* Persist OFF now (non-RT context). The RT get_audio path only
+         * flips flags when the final announcement finishes draining. */
+        flite_save_state_value(0);
         tts_disabling_had_audio = false;
         tts_disabling = true;
         bool was_disabling = tts_disabling;

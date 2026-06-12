@@ -185,7 +185,7 @@ static void espeak_load_state(void) {
     fclose(f);
 }
 
-static void espeak_save_state(void) {
+static void espeak_save_state_value(int on) {
     const char *state_path = "/data/UserData/schwung/config/screen_reader_state.txt";
     FILE *f = fopen(state_path, "w");
     if (!f) {
@@ -193,9 +193,13 @@ static void espeak_save_state(void) {
         return;
     }
 
-    fprintf(f, "%d\n", tts_enabled ? 1 : 0);
+    fprintf(f, "%d\n", on ? 1 : 0);
     fclose(f);
-    unified_log("tts_engine", LOG_LEVEL_INFO, "Screen reader state saved: %s", tts_enabled ? "ON" : "OFF");
+    unified_log("tts_engine", LOG_LEVEL_INFO, "Screen reader state saved: %s", on ? "ON" : "OFF");
+}
+
+static void espeak_save_state(void) {
+    espeak_save_state_value(tts_enabled ? 1 : 0);
 }
 
 static void espeak_save_config(void) {
@@ -404,12 +408,13 @@ int espeak_tts_get_audio(int16_t *out_buffer, int max_frames) {
     }
 
     if (tts_disabling && tts_disabling_had_audio && avail == 0) {
+        /* Flag flips + pointer resets only — this runs on the RT mix path.
+         * The OFF state was already persisted by espeak_tts_set_enabled
+         * (non-RT) when the disable started. */
         tts_enabled = false;
         tts_disabling = false;
         tts_disabling_had_audio = false;
-        espeak_save_state();
         espeak_clear_buffer();
-        unified_log("tts_engine", LOG_LEVEL_INFO, "Screen reader disable complete");
         return 0;
     }
 
@@ -492,6 +497,9 @@ void espeak_tts_set_enabled(bool enabled) {
 
     if (!enabled && tts_enabled && !tts_disabling) {
         unified_log("tts_engine", LOG_LEVEL_INFO, "Screen reader disabling (waiting for final announcement)");
+        /* Persist OFF now (non-RT context). The RT get_audio path only
+         * flips flags when the final announcement finishes draining. */
+        espeak_save_state_value(0);
         tts_disabling_had_audio = false;
         tts_disabling = true;
         bool was_disabling = tts_disabling;

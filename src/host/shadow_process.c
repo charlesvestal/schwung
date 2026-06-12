@@ -292,15 +292,8 @@ void launch_link_subscriber(void) {
     const char *sub_path = "/data/UserData/schwung/link-subscriber";
     if (access(sub_path, X_OK) != 0) return;
 
-    /* Write current tempo to file so subscriber uses it instead of 120 */
-    if (host.get_bpm) {
-        float bpm = host.get_bpm(NULL);
-        FILE *fp = fopen("/tmp/link-tempo", "w");
-        if (fp) {
-            fprintf(fp, "%.1f\n", bpm);
-            fclose(fp);
-        }
-    }
+    /* (A /tmp/link-tempo write used to live here — nothing reads it; the
+     * subscriber persists tempo itself via /data/UserData/schwung/last-tempo.) */
 
     int pid = fork();
     if (pid < 0) return;

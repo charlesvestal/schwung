@@ -44,8 +44,28 @@ extern volatile int shim_pending_sysex_inject;
 /* Deferred events (RT-safe to post; worker executes within ~200 ms). */
 #define SHIM_EVT_OVERTAKE_EXIT_HOOK 1
 #define SHIM_EVT_RESTART_MOVE       2
+#define SHIM_EVT_SAMPLER_PREP       3  /* mkdir/fopen/header/writer for an armed recording */
+#define SHIM_EVT_SAMPLER_FINALIZE   4  /* join writer, trim preroll, close + header */
+#define SHIM_EVT_SAMPLER_CANCEL     5  /* preroll cancel: join writer, unlink file */
+#define SHIM_EVT_SKIPBACK_SAVE      6  /* spawn the detached skipback writer */
+#define SHIM_EVT_SKIPBACK_RESIZE    7  /* realloc the skipback ring */
+#define SHIM_EVT_PREVIEW_PLAY       8  /* read preview cmd path, open + mmap */
 
 void shim_worker_post(uint8_t evt);
+
+/* Hook table for events whose implementations live in schwung_shim.c /
+ * shadow_sampler.c (worker can't see their statics). Registered once at
+ * shim_spi_init; unset hooks make their events no-ops. */
+typedef struct {
+    void (*sampler_prepare)(void);
+    void (*sampler_finalize)(void);
+    void (*sampler_cancel_preroll)(void);
+    void (*skipback_save)(void);
+    void (*skipback_resize)(void);
+    void (*preview_play_pending)(void);
+} shim_worker_hooks_t;
+
+void shim_worker_set_hooks(const shim_worker_hooks_t *hooks);
 
 /* Spawn the worker thread (SCHED_OTHER, cores 0-2). Idempotent. */
 void shim_worker_start(void);
