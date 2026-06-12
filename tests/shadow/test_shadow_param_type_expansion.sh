@@ -64,10 +64,8 @@ if ! rg -F -q "function getWavPositionPreviewData(fullKey, meta) {" "$shadow_fil
   exit 1
 fi
 
-if ! rg -F -q "function drawWavPositionPreview() {" "$shadow_file"; then
-  echo "FAIL: wav_position preview renderer is missing" >&2
-  exit 1
-fi
+# (drawWavPositionPreview was an uncalled renderer twin of the editor —
+# removed in the 2026-06 dead-code sweep; the live editor is asserted below.)
 
 if ! rg -F -q "function drawWavPositionEditor(selectedKey, selectedMeta) {" "$shadow_file"; then
   echo "FAIL: wav_position edit-mode waveform renderer is missing" >&2

@@ -54,7 +54,6 @@
 #include "host/shadow_overlay.h"
 #include "host/shadow_pin_scanner.h"
 #include "host/shadow_led_queue.h"
-#include "host/shadow_fd_trace.h"
 #include "host/shadow_state.h"
 #include "host/shadow_midi.h"
 
@@ -257,39 +256,6 @@ static void biquad_hp(biquad_t *f, float fs, float fc, float q)
     f->a1 = a1 / a0; f->a2 = a2 / a0;
 }
 
-static void biquad_peak(biquad_t *f, float fs, float fc, float q, float gain_db)
-{
-    float A = powf(10.0f, gain_db / 40.0f);
-    float w0 = 2.0f * (float)M_PI * fc / fs;
-    float cw = cosf(w0), sw = sinf(w0);
-    float alpha = sw / (2.0f * q);
-    float b0 = 1.0f + alpha * A;
-    float b1 = -2.0f * cw;
-    float b2 = 1.0f - alpha * A;
-    float a0 = 1.0f + alpha / A;
-    float a1 = -2.0f * cw;
-    float a2 = 1.0f - alpha / A;
-    f->b0 = b0 / a0; f->b1 = b1 / a0; f->b2 = b2 / a0;
-    f->a1 = a1 / a0; f->a2 = a2 / a0;
-}
-
-static void biquad_hs(biquad_t *f, float fs, float fc, float s, float gain_db)
-{
-    float A = powf(10.0f, gain_db / 40.0f);
-    float w0 = 2.0f * (float)M_PI * fc / fs;
-    float cw = cosf(w0), sw = sinf(w0);
-    float alpha = sw * 0.5f * sqrtf((A + 1.0f/A) * (1.0f/s - 1.0f) + 2.0f);
-    float two_sqrtA_alpha = 2.0f * sqrtf(A) * alpha;
-    float b0 = A * ((A + 1.0f) + (A - 1.0f) * cw + two_sqrtA_alpha);
-    float b1 = -2.0f * A * ((A - 1.0f) + (A + 1.0f) * cw);
-    float b2 = A * ((A + 1.0f) + (A - 1.0f) * cw - two_sqrtA_alpha);
-    float a0 = (A + 1.0f) - (A - 1.0f) * cw + two_sqrtA_alpha;
-    float a1 = 2.0f * ((A - 1.0f) - (A + 1.0f) * cw);
-    float a2 = (A + 1.0f) - (A - 1.0f) * cw - two_sqrtA_alpha;
-    f->b0 = b0 / a0; f->b1 = b1 / a0; f->b2 = b2 / a0;
-    f->a1 = a1 / a0; f->a2 = a2 / a0;
-}
-
 static inline void biquad_assign(biquad_t *f, float b0, float b1, float b2, float a1, float a2)
 {
     f->b0 = b0; f->b1 = b1; f->b2 = b2; f->a1 = a1; f->a2 = a2;
@@ -427,15 +393,6 @@ static inline int shim_move_channel_count(void)
 
 static void load_feature_config(void);
 
-static uint32_t shadow_checksum(const uint8_t *buf, size_t len)
-{
-    uint32_t sum = 0;
-    for (size_t i = 0; i < len; i++) {
-        sum = (sum * 33u) ^ buf[i];
-    }
-    return sum;
-}
-
 
 /* ============================================================================
  * IN-PROCESS SHADOW CHAIN (MULTI-PATCH)
@@ -444,8 +401,6 @@ static uint32_t shadow_checksum(const uint8_t *buf, size_t len)
  * This avoids IPC timing drift and provides a stable audio mix proof-of-concept.
  * ============================================================================ */
 
-#define SHADOW_INPROCESS_POC 1
-#define SHADOW_DISABLE_POST_IOCTL_MIDI 0  /* Set to 1 to disable post-ioctl MIDI forwarding for debugging */
 /* Path constants now in shadow_set_pages.h:
  * SHADOW_CHAIN_CONFIG_PATH, SLOT_STATE_DIR, SET_STATE_DIR, ACTIVE_SET_PATH */
 /* SHADOW_CHAIN_INSTANCES from shadow_constants.h */
@@ -3446,13 +3401,6 @@ static void shadow_mix_audio(void)
     /* Get pointer to the buffer we should read */
     int16_t *src_buffer = shadow_audio_shm + (read_idx * FRAMES_PER_BLOCK * 2);
 
-    /* 0 = mix shadow with Move, 1 = replace Move audio entirely */
-    #define SHADOW_AUDIO_REPLACE 0
-
-    #if SHADOW_AUDIO_REPLACE
-    /* Replace Move's audio entirely with shadow audio */
-    memcpy(mailbox_audio, src_buffer, AUDIO_BUFFER_SIZE);
-    #else
     /* Mix shadow audio with Move's audio */
     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
         int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)src_buffer[i];
@@ -3461,7 +3409,6 @@ static void shadow_mix_audio(void)
         if (mixed < -32768) mixed = -32768;
         mailbox_audio[i] = (int16_t)mixed;
     }
-    #endif
 
     /* NOTE: TTS mixing moved to shadow_mix_tts() which runs AFTER
      * shadow_inprocess_mix_from_buffer(). That function zeros the mailbox
@@ -3987,9 +3934,10 @@ static int shim_handle_param_special(uint8_t req_type, uint32_t req_id) {
     return 0;  /* Not handled */
 }
 
-/* real_close and real_read retained for fd_trace hooks (not SPI-related) */
-static int (*real_close)(int fd) = NULL;
-static ssize_t (*real_read)(int fd, void *buf, size_t count) = NULL;
+/* (The close()/read() libc interposers and shadow_fd_trace are gone: the
+ * open()-side track_fd() caller was removed long ago, so the tracker never
+ * had entries — every read/close in the whole Move process was paying a
+ * no-op scan. See docs/plans/2026-06-11-codebase-cleanup-review.md.) */
 
 /* ============================================================================
  * SUBSYSTEM INITIALIZATION
@@ -4204,7 +4152,6 @@ static void shim_init_subsystems(void)
     /* Phase 2: ROUTE_EXTERNAL packets are drained on the audio thread
      * inside shim_pre_transfer via overtake_ext_drain_into_shadow().
      * No worker thread — see the comment block on overtake_midi_send_external. */
-#if SHADOW_INPROCESS_POC
     shadow_inprocess_load_chain();
     /* Initialize D-Bus subsystem with callbacks to shim functions */
     {
@@ -4245,58 +4192,22 @@ static void shim_init_subsystems(void)
                    shadow_control->tts_enabled ? "ON" : "OFF",
                    shadow_control->tts_speed, (float)shadow_control->tts_pitch, shadow_control->tts_volume);
     }
-#endif
-}
-
-int close(int fd)
-{
-    if (!real_close) {
-        real_close = dlsym(RTLD_NEXT, "close");
-    }
-    const char *path = tracked_path_for_fd(fd);
-    if (path && path_matches_midi(path) && trace_midi_fd_enabled())
-        fd_trace_log_midi("CLOSE", fd, path);
-    if (path && path_matches_spi(path) && trace_spi_io_enabled())
-        fd_trace_log_spi("CLOSE", fd, path);
-    untrack_fd(fd);
-    return real_close ? real_close(fd) : -1;
 }
 
 /* write() hook removed - conflicts with system headers
  * Using send() hook instead for D-Bus interception */
 
-ssize_t read(int fd, void *buf, size_t count)
-{
-    if (!real_read) {
-        real_read = dlsym(RTLD_NEXT, "read");
-    }
-    ssize_t ret = real_read ? real_read(fd, buf, count) : -1;
-    const char *path = tracked_path_for_fd(fd);
-    if (path && buf && ret > 0) {
-        log_fd_bytes("READ ", fd, path, (const unsigned char *)buf, (size_t)ret);
-    }
-    return ret;
-}
-
 
 int shiftHeld = 0;
 int volumeTouched = 0;
-int wheelTouched = 0;
 
 
-/* Debug logging disabled for performance - set to 1 to enable */
-#define SHADOW_HOTKEY_DEBUG 0
-#if SHADOW_HOTKEY_DEBUG
-static FILE *hotkey_state_log = NULL;
-#endif
 static uint64_t shift_on_ms = 0;
 static uint64_t vol_on_ms = 0;
 static uint8_t hotkey_prev[MIDI_BUFFER_SIZE];
 static int hotkey_prev_valid = 0;
 static int shift_armed = 1;   /* Start armed so first press works */
 static int volume_armed = 1;  /* Start armed so first press works */
-
-static void log_hotkey_state(const char *tag);
 
 static uint64_t now_mono_ms(void)
 {
@@ -4305,36 +4216,12 @@ static uint64_t now_mono_ms(void)
     return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)(ts.tv_nsec / 1000000ULL);
 }
 
-static int within_window(uint64_t now, uint64_t ts, uint64_t window_ms)
-{
-    return ts > 0 && now >= ts && (now - ts) <= window_ms;
-}
-
 #define SHADOW_HOTKEY_WINDOW_MS 1500
 #define SHADOW_HOTKEY_GRACE_MS 2000
 static uint64_t shadow_hotkey_enable_ms = 0;
 static int shadow_inject_knob_release = 0;  /* Set when toggling shadow mode to inject note-offs */
 
 /* Shift+Vol+Knob1 toggle removed - use Track buttons or Shift+Jog instead */
-
-static void log_hotkey_state(const char *tag)
-{
-#if SHADOW_HOTKEY_DEBUG
-    if (!hotkey_state_log)
-    {
-        hotkey_state_log = fopen("/data/UserData/schwung/hotkey_state.log", "a");
-    }
-    if (hotkey_state_log)
-    {
-        time_t now = time(NULL);
-        fprintf(hotkey_state_log, "%ld %s shift=%d vol=%d\n",
-                (long)now, tag, shiftHeld, volumeTouched);
-        fflush(hotkey_state_log);
-    }
-#else
-    (void)tag;
-#endif
-}
 
 void midi_monitor()
 {
@@ -4385,30 +4272,20 @@ void midi_monitor()
             {
                 if (midi_2 == 0x7f)
                 {
-#if SHADOW_HOTKEY_DEBUG
-                    printf("Shift on\n");
-#endif
-
                     if (!shiftHeld && shift_armed) {
                         shiftHeld = 1;
                         shadow_shift_held = 1;  /* Sync global for cross-function access */
                         if (shadow_control) shadow_control->shift_held = 1;
                         shift_on_ms = now_mono_ms();
-                        log_hotkey_state("shift_on");
-                                            }
+                    }
                 }
                 else
                 {
-#if SHADOW_HOTKEY_DEBUG
-                    printf("Shift off\n");
-#endif
-
                     shiftHeld = 0;
                     shadow_shift_held = 0;  /* Sync global for cross-function access */
                     if (shadow_control) shadow_control->shift_held = 0;
                     shift_armed = 1;
                     shift_on_ms = 0;
-                    log_hotkey_state("shift_off");
                 }
             }
 
@@ -4422,7 +4299,6 @@ void midi_monitor()
                     volumeTouched = 1;
                     shadow_volume_knob_touched = 1;  /* Sync global for cross-function access */
                     vol_on_ms = now_mono_ms();
-                    log_hotkey_state("vol_on");
                 }
             }
             else
@@ -4431,19 +4307,6 @@ void midi_monitor()
                 shadow_volume_knob_touched = 0;  /* Sync global for cross-function access */
                 volume_armed = 1;
                 vol_on_ms = 0;
-                log_hotkey_state("vol_off");
-            }
-        }
-
-        if ((midi_0 & 0xF0) == 0x90 && midi_1 == 0x09)
-        {
-            if (midi_2 == 0x7f)
-            {
-                wheelTouched = 1;
-            }
-            else
-            {
-                wheelTouched = 0;
             }
         }
 
@@ -4938,7 +4801,6 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     shadow_mix_audio();
     TIME_SECTION_END(spi_mix_audio_sum, spi_mix_audio_max);
 
-#if SHADOW_INPROCESS_POC
     TIME_SECTION_START();
     shadow_inprocess_handle_ui_request();
     shadow_process_fade_completions();
@@ -5138,7 +5000,6 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
         mix_time_count = 0;
         mix_time_max = 0;
     }
-#endif
 
     /* === SLICE-BASED DISPLAY CAPTURE FOR VOLUME === */
     TIME_SECTION_START();  /* Start timing display section */
@@ -7094,17 +6955,14 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
         }
     }
 
-    /* Clear overlay when Shift is released */
-    if (!shiftHeld && shift_knob_overlay_active) {
-        /* Don't immediately clear - let timeout handle it for smooth experience */
-    }
+    /* Shift release while the knob overlay shows: deliberately not cleared
+     * here — the overlay timeout handles it for a smooth fade-out. */
 
     /* === POST-IOCTL: FORWARD MIDI TO SHADOW UI AND HANDLE CAPTURE RULES ===
      * Shadow mailbox sync already filtered MIDI_IN for Move.
      * Here we scan the UNFILTERED hardware buffer to:
      * 1. Forward relevant events to shadow_ui_midi_shm
      * 2. Handle capture rules (route captured events to DSP) */
-#if !SHADOW_DISABLE_POST_IOCTL_MIDI
     if (shadow_display_mode && shadow_control && hardware_mmap_addr) {
         uint8_t *src = hardware_mmap_addr + MIDI_IN_OFFSET;  /* Scan unfiltered hardware buffer */
         int overtake_mode = shadow_control->overtake_mode;
@@ -7318,13 +7176,11 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
         /* Flush pending input LED queue (for cable 2 external MIDI in overtake mode) */
         shadow_flush_pending_input_leds();
     }
-#endif /* !SHADOW_DISABLE_POST_IOCTL_MIDI */
 
     /* === POST-IOCTL: INJECT KNOB RELEASE EVENTS ===
      * When toggling shadow mode, inject note-off events for knob touches
      * so Move doesn't think knobs are still being held.
      * This MUST happen AFTER filtering to avoid being zeroed out. */
-#if !SHADOW_DISABLE_POST_IOCTL_MIDI
     if (shadow_inject_knob_release && global_mmap_addr) {
         shadow_inject_knob_release = 0;
         uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
@@ -7342,12 +7198,10 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             }
         }
     }
-#endif /* !SHADOW_DISABLE_POST_IOCTL_MIDI */
 
     /* End post-ioctl MIDI scan diagnostic (added 2026-05-15) */
     TIME_SECTION_END(spi_post_midi_scan_sum, spi_post_midi_scan_max);
 
-#if SHADOW_INPROCESS_POC
     /* === POST-IOCTL: SECOND MIDI-TO-DSP DRAIN ===
      * Catch any MIDI that the shadow UI JS process wrote between the
      * pre-ioctl drain and now.  This roughly doubles the time window
@@ -7440,7 +7294,6 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
         }
     }
     TIME_SECTION_END(spi_post_render_sum, spi_post_render_max);
-#endif
 
     /* === POST-IOCTL: CHECK FOR RESTART REQUEST === */
     /* Shadow UI can request a Move restart (e.g. after core update) */

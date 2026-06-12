@@ -93,8 +93,7 @@ import {
 import {
     announce,
     announceMenuItem,
-    announceParameter,
-    announceView
+    announceParameter
 } from '/data/UserData/schwung/shared/screen_reader.mjs';
 
 import {
@@ -470,45 +469,6 @@ let overlayState = null;
 /* FX display_name cache for change-based announcements (e.g. key detection) */
 let fxDisplayNameCache = {};  /* key: "slot:component" -> last display_name string */
 
-/* View names for screen reader announcements */
-const VIEW_NAMES = {
-    [VIEWS.SLOTS]: "Slots Menu",
-    [VIEWS.SLOT_SETTINGS]: "Slot Settings",
-    [VIEWS.CHAIN_EDIT]: "Chain Edit",
-    [VIEWS.CHAIN_SETTINGS]: "Chain Settings",
-    [VIEWS.PATCHES]: "Patch Browser",
-    [VIEWS.PATCH_DETAIL]: "Patch Detail",
-    [VIEWS.COMPONENT_PARAMS]: "Component Parameters",
-    [VIEWS.COMPONENT_SELECT]: "Module Browser",
-    [VIEWS.COMPONENT_EDIT]: "Preset Picker",
-    [VIEWS.MASTER_FX]: "Master FX",
-    [VIEWS.HIERARCHY_EDITOR]: "Hierarchy Editor",
-    [VIEWS.CANVAS]: "Canvas",
-    [VIEWS.FILEPATH_BROWSER]: "File Browser",
-    [VIEWS.KNOB_EDITOR]: "Knob Editor",
-    [VIEWS.KNOB_PARAM_PICKER]: "Parameter Picker",
-    [VIEWS.DYNAMIC_PARAM_PICKER]: "Parameter Picker",
-    [VIEWS.STORE_PICKER_CATEGORIES]: "Module Store",
-    [VIEWS.STORE_PICKER_LIST]: "Module Store",
-    [VIEWS.STORE_PICKER_DETAIL]: "Module Details",
-    [VIEWS.STORE_PICKER_LOADING]: "Loading",
-    [VIEWS.STORE_PICKER_RESULT]: "Operation Complete",
-    [VIEWS.STORE_PICKER_POST_INSTALL]: "Installation Complete",
-    [VIEWS.OVERTAKE_MENU]: "Overtake Menu",
-    [VIEWS.OVERTAKE_MODULE]: "Overtake Module",
-    [VIEWS.GLOBAL_SETTINGS]: "Settings",
-    [VIEWS.TOOL_FILE_BROWSER]: "File Browser",
-    [VIEWS.TOOL_CONFIRM]: "Confirm",
-    [VIEWS.TOOL_PROCESSING]: "Processing",
-    [VIEWS.TOOL_RESULT]: "Result",
-    [VIEWS.TOOL_ENGINE_SELECT]: "Engine Selection",
-    [VIEWS.TOOL_STEM_REVIEW]: "Stem Review",
-    [VIEWS.TOOL_SET_PICKER]: "Choose Set",
-    [VIEWS.LFO_EDIT]: "LFO Editor",
-    [VIEWS.LFO_TARGET_COMPONENT]: "LFO Target",
-    [VIEWS.LFO_TARGET_PARAM]: "LFO Parameter"
-};
-
 /* Helper to change view and announce it */
 function setView(newView, customLabel) {
     if (view === newView) return;  /* No change */
@@ -711,49 +671,15 @@ let knobValueCache = new Array(8).fill(null);  // null = not cached, number = ca
 let knobValueCacheKey = new Array(8).fill("");  // fullKey that was cached (auto-invalidates on key change)
 
 /* Knob acceleration settings */
-const KNOB_ACCEL_MIN_MULT = 1;     // Multiplier for slow turns
-const KNOB_ACCEL_MAX_MULT = 4;     // Multiplier for fast turns (floats)
-const KNOB_ACCEL_MAX_MULT_INT = 2; // Multiplier for fast turns (ints)
-const KNOB_ACCEL_ENUM_MULT = 1;    // Enums: always step by 1 (no acceleration)
-const KNOB_ACCEL_SLOW_MS = 250;    // Slower than this = min multiplier
-const KNOB_ACCEL_FAST_MS = 50;     // Faster than this = max multiplier
 const KNOB_BASE_STEP_FLOAT = 0.002; // Base step for floats (acceleration multiplies this)
 const KNOB_BASE_STEP_INT = 1;       // Base step for ints
 const TRIGGER_ENUM_TURN_THRESHOLD = 1;  // Positive detents required before firing trigger action
 const TRIGGER_ENUM_WINDOW_MS = 700;     // Pause longer than this to start a new trigger gesture
 
 /* Time tracking for knob acceleration */
-let knobLastTimeMs = [0, 0, 0, 0, 0, 0, 0, 0];  // Last event time per knob
 let triggerEnumAccum = [0, 0, 0, 0, 0, 0, 0, 0];
 let triggerEnumLastMs = [0, 0, 0, 0, 0, 0, 0, 0];
 let triggerEnumLatched = [false, false, false, false, false, false, false, false];
-
-/* Calculate knob acceleration multiplier based on time between events */
-function calcKnobAccel(knobIndex, isInt) {
-    if (knobIndex < 0 || knobIndex >= 8) return 1;
-
-    const now = Date.now();
-    const last = knobLastTimeMs[knobIndex];
-    knobLastTimeMs[knobIndex] = now;
-
-    if (last === 0) return KNOB_ACCEL_MIN_MULT;  // First event
-
-    const elapsed = now - last;
-    let accel;
-
-    if (elapsed >= KNOB_ACCEL_SLOW_MS) {
-        accel = KNOB_ACCEL_MIN_MULT;
-    } else if (elapsed <= KNOB_ACCEL_FAST_MS) {
-        accel = isInt ? KNOB_ACCEL_MAX_MULT_INT : KNOB_ACCEL_MAX_MULT;
-    } else {
-        // Linear interpolation between min and max
-        const ratio = (KNOB_ACCEL_SLOW_MS - elapsed) / (KNOB_ACCEL_SLOW_MS - KNOB_ACCEL_FAST_MS);
-        const maxMult = isInt ? KNOB_ACCEL_MAX_MULT_INT : KNOB_ACCEL_MAX_MULT;
-        accel = Math.round(KNOB_ACCEL_MIN_MULT + ratio * (maxMult - KNOB_ACCEL_MIN_MULT));
-    }
-
-    return accel;
-}
 
 function isTriggerEnumMeta(meta) {
     return !!(meta &&
@@ -842,7 +768,6 @@ let dynamicPickerSelectedTarget = "";
 let lastSlotModuleSignatures = [];  // Track per-slot module changes for knob cache refresh
 
 /* Master FX state */
-let selectedMasterFx = 0;    // Index into MASTER_FX_OPTIONS
 let currentMasterFxId = "";  // Currently loaded master FX module ID
 let currentMasterFxPath = ""; // Full path to currently loaded DSP
 
@@ -1154,7 +1079,6 @@ function getMasterFxSettingsItems() {
 
 let selectedMasterFxSetting = 0;
 let editingMasterFxSetting = false;
-let editMasterFxValue = "";
 let inMasterFxSettingsMenu = false;  /* True when in settings submenu */
 
 /* Help viewer state - stack-based for arbitrary depth */
@@ -1319,130 +1243,6 @@ function performCoreUpdate(_mod) {
         success: false,
         error: 'Update Schwung at\nhttp://move.local:7700'
     };
-}
-
-/* Legacy implementation kept for reference / future re-enable path —
- * disabled because the privileged setup post-extract (see post-update.sh
- * /usr/lib/ + /opt/move/ writes) cannot run as ableton on-device. The
- * only reliable on-device upgrade path requires root, which the JS layer
- * doesn't have. */
-function performCoreUpdate_disabled(mod) {
-    const BASE = '/data/UserData/schwung';
-    const TMP = BASE + '/tmp';
-    const STAGING = BASE + '/update-staging';
-    const BACKUP = BASE + '/update-backup';
-    const tarPath = TMP + '/schwung.tar.gz';
-
-    /* Required files that must exist after extraction */
-    const REQUIRED_FILES = [
-        'schwung',
-        'schwung-shim.so',
-        'host/version.txt',
-        'shadow/shadow_ui.js'
-    ];
-
-    /* Helper to show status on display */
-    function setStatus(msg) {
-        clear_screen();
-        drawStatusOverlay('Core Update', msg);
-        host_flush_display();
-    }
-
-    /* --- Phase 1: Download --- */
-    setStatus('Downloading...');
-
-    host_ensure_dir(TMP);
-    const downloadOk = host_http_download(mod.download_url, tarPath);
-    if (!downloadOk) {
-        host_system_cmd('rm -f "' + tarPath + '"');
-        return { success: false, error: 'Download failed' };
-    }
-
-    /* --- Phase 2: Verify tarball --- */
-    setStatus('Verifying...');
-
-    const listOk = host_system_cmd('tar -tzf "' + tarPath + '" > /dev/null 2>&1');
-    if (listOk !== 0) {
-        host_system_cmd('rm -f "' + tarPath + '"');
-        return { success: false, error: 'Bad archive' };
-    }
-
-    /* --- Phase 3: Extract to staging --- */
-    setStatus('Extracting...');
-
-    host_remove_dir(STAGING);
-    host_ensure_dir(STAGING);
-
-    const extractOk = host_extract_tar_strip(tarPath, STAGING, 1);
-    if (!extractOk) {
-        host_remove_dir(STAGING);
-        host_system_cmd('rm -f "' + tarPath + '"');
-        return { success: false, error: 'Extract failed' };
-    }
-
-    /* --- Phase 4: Verify staging --- */
-    let allPresent = true;
-    for (const f of REQUIRED_FILES) {
-        if (!host_file_exists(STAGING + '/' + f)) {
-            allPresent = false;
-            break;
-        }
-    }
-    if (!allPresent) {
-        host_remove_dir(STAGING);
-        host_system_cmd('rm -f "' + tarPath + '"');
-        return { success: false, error: 'Incomplete update' };
-    }
-
-    /* --- Phase 5: Backup current files --- */
-    setStatus('Backing up...');
-
-    host_remove_dir(BACKUP);
-    host_ensure_dir(BACKUP);
-    host_system_cmd('cp "' + BASE + '/schwung" "' + BACKUP + '/"');
-    host_system_cmd('cp "' + BASE + '/schwung-shim.so" "' + BACKUP + '/"');
-    host_system_cmd('cp -r "' + BASE + '/shadow" "' + BACKUP + '/"');
-    host_system_cmd('cp -r "' + BASE + '/host" "' + BACKUP + '/"');
-
-    /* Write restore script */
-    const restoreScript = '#!/bin/sh\n'
-        + 'cd "' + BASE + '"\n'
-        + 'cp "' + BACKUP + '/schwung" .\n'
-        + 'cp "' + BACKUP + '/schwung-shim.so" .\n'
-        + 'chmod u+s schwung-shim.so\n'
-        + 'cp -r "' + BACKUP + '/shadow" .\n'
-        + 'cp -r "' + BACKUP + '/host" .\n'
-        + 'echo "Restored. Restart Move to apply."\n';
-    host_write_file(BASE + '/restore-update.sh', restoreScript);
-    host_system_cmd('chmod +x "' + BASE + '/restore-update.sh"');
-
-    /* --- Phase 6: Apply staged files --- */
-    setStatus('Installing...');
-
-    const applyOk = host_system_cmd('cp -r "' + STAGING + '/"* "' + BASE + '/"');
-    if (applyOk !== 0) {
-        /* Attempt restore from backup */
-        host_system_cmd('sh "' + BASE + '/restore-update.sh"');
-        host_remove_dir(STAGING);
-        return { success: false, error: 'Install failed (restored)' };
-    }
-
-    /* Restore setuid bit on shim — required for LD_PRELOAD under AT_SECURE
-     * (MoveOriginal has file capabilities that trigger secure-exec mode;
-     *  without u+s the linker refuses to load the shim via symlink) */
-    host_system_cmd('chmod u+s "' + BASE + '/schwung-shim.so"');
-
-    /* --- Phase 6b: Post-update setup (symlinks, permissions, RNBO integration) --- */
-    setStatus('Configuring...');
-    if (host_file_exists(BASE + '/scripts/post-update.sh')) {
-        host_system_cmd('sh "' + BASE + '/scripts/post-update.sh"');
-    }
-
-    /* --- Phase 7: Cleanup --- */
-    host_remove_dir(STAGING);
-    host_system_cmd('rm -f "' + tarPath + '"');
-
-    return { success: true };
 }
 
 /* Check for core and module updates (manual, called from Settings → Check Updates) */
@@ -1799,17 +1599,6 @@ function getWavViewGroupMembers(viewGroup) {
     return out;
 }
 
-/* Returns the active view group members if the user is currently editing
- * a wav_position with view_group set; otherwise []. */
-function getActiveWavViewGroup() {
-    if (!hierEditorEditMode) return [];
-    const sel = getSelectedHierarchyEditableKey();
-    if (!sel) return [];
-    const meta = getParamMetadata(sel);
-    if (!meta || meta.ui_type !== "wav_position" || !meta.view_group) return [];
-    return getWavViewGroupMembers(meta.view_group);
-}
-
 /* True when the user is currently inside a wav_position fullscreen editor. */
 function isInWavPositionEditor() {
     if (view !== VIEWS.HIERARCHY_EDITOR) return false;
@@ -1871,16 +1660,6 @@ function selectActiveWavMarker(member) {
 
 /* Knob state per fullKey for acceleration continuity across consecutive jog turns. */
 const hierKnobStates = new Map();
-function getHierKnobState(fullKey, currentValue) {
-    let st = hierKnobStates.get(fullKey);
-    if (!st) {
-        st = knobInit(currentValue);
-        hierKnobStates.set(fullKey, st);
-    } else {
-        st.value = currentValue;
-    }
-    return st;
-}
 function clearHierKnobStates() { hierKnobStates.clear(); }
 
 /* Knob state per fullKey for the PHYSICAL knobs 1-8 (separate from jog edit mode). */
@@ -1895,8 +1674,6 @@ function getPhysKnobState(fullKey, currentValue) {
     }
     return st;
 }
-function clearPhysKnobStates() { physKnobStates.clear(); }
-
 /* Master FX flag - when true, exit returns to MASTER_FX view instead of CHAIN_EDIT */
 let hierEditorIsMasterFx = false;
 let hierEditorMasterFxSlot = -1;      // Which Master FX slot (0-3) we're editing
@@ -2875,16 +2652,6 @@ function setSlotParamWithRetry(slot, key, value, timeoutMs, retryTimeoutMs, logL
     return ok;
 }
 
-function clearSlotForEmptySetState(slot) {
-    const keys = ["synth:module", "midi_fx1:module", "fx1:module", "fx2:module"];
-    let allOk = true;
-    for (const key of keys) {
-        const ok = setSlotParamWithRetry(slot, key, "", 1500, 3000, "SET_CHANGED: clear");
-        if (!ok) allOk = false;
-    }
-    return allOk;
-}
-
 /* Scan modules directory for audio_fx modules */
 function scanForAudioFxModules() {
     const MODULES_DIR = "/data/UserData/schwung/modules";
@@ -3757,96 +3524,6 @@ function drawOvertakeMenu() {
     drawFooter({left: "Back: Exit", right: "Jog: Select"});
 }
 
-/* Handle input in overtake menu */
-function handleOvertakeMenuInput(cc, value) {
-    if (cc === MoveMainKnob) {
-        /* Jog wheel */
-        const delta = decodeDelta(value);
-        selectedOvertakeModule += delta;
-        if (selectedOvertakeModule < 0) selectedOvertakeModule = 0;
-        if (selectedOvertakeModule >= overtakeModules.length) {
-            selectedOvertakeModule = Math.max(0, overtakeModules.length - 1);
-        }
-        needsRedraw = true;
-        return true;
-    }
-
-    if (cc === MoveMainButton && value > 0) {
-        /* Jog click - select module */
-        if (overtakeModules.length > 0 && selectedOvertakeModule < overtakeModules.length) {
-            const selected = overtakeModules[selectedOvertakeModule];
-            if (selected.id === "__back_to_move__") {
-                exitOvertakeMode();
-            } else if (selected.id === "__get_more__") {
-                /* Open store picker - stay in menu mode so we receive input */
-                enterStorePicker('overtake');
-            } else {
-                loadOvertakeModule(selected);
-            }
-        }
-        return true;
-    }
-
-    if (cc === MoveBack && value > 0) {
-        /* Back button - exit to Move */
-        exitOvertakeMode();
-        return true;
-    }
-
-    return false;
-}
-
-/* Master FX param helpers - use slot 0 with master_fx: prefix */
-function getMasterFxModule() {
-    if (typeof shadow_get_param !== "function") return "";
-    try {
-        return shadow_get_param(0, "master_fx:module") || "";
-    } catch (e) {
-        return "";
-    }
-}
-
-function setMasterFxModule(moduleId) {
-    if (typeof shadow_set_param !== "function") return false;
-    try {
-        return shadow_set_param(0, "master_fx:module", moduleId || "");
-    } catch (e) {
-        return false;
-    }
-}
-
-function loadPatchByIndex(slot, index) {
-    /* Clear warning tracking for this slot so new warnings can show */
-    warningShownForSlots.delete(slot);
-    warningShownForMidiFxSlots.delete(slot);
-    return setSlotParam(slot, "load_patch", index);
-}
-
-function getPatchCount(slot) {
-    const val = getSlotParam(slot, "patch_count");
-    return val ? parseInt(val) || 0 : 0;
-}
-
-function getPatchName(slot, index) {
-    return getSlotParam(slot, `patch_name_${index}`);
-}
-
-function getSynthPreset(slot) {
-    return getSlotParam(slot, "synth:preset");
-}
-
-function setSynthPreset(slot, preset) {
-    return setSlotParam(slot, "synth:preset", preset);
-}
-
-function getFxParam(slot, fxNum, param) {
-    return getSlotParam(slot, `fx${fxNum}:${param}`);
-}
-
-function setFxParam(slot, fxNum, param, value) {
-    return setSlotParam(slot, `fx${fxNum}:${param}`, value);
-}
-
 /* Fetch chain_params metadata from a component */
 function getComponentChainParams(slot, componentKey) {
     /* Chain params are typically in module.json, but we query via get_param */
@@ -4189,25 +3866,6 @@ function loadChainConfigFromDir(dir) {
     }
 }
 
-function saveConfigMasterFx() {
-    /* Save just the master FX setting to config, preserving all other fields */
-    const existing = safeLoadJson(CONFIG_PATH) || {};
-    if (!Array.isArray(existing.patches)) {
-        existing.patches = slots.map((slot, idx) => ({
-            name: slot.name,
-            channel: slot.channel,
-            forward_channel: parseInt(getSlotParam(idx, "slot:forward_channel") || "-1")
-        }));
-    }
-    existing.master_fx = currentMasterFxId || "";
-    existing.master_fx_path = currentMasterFxPath || "";
-    try {
-        host_write_file(CONFIG_PATH, JSON.stringify(existing, null, 2) + "\n");
-    } catch (e) {
-        /* ignore */
-    }
-}
-
 function refreshSlots() {
     let hostSlots = null;
     try {
@@ -4294,23 +3952,6 @@ function generateSlotPresetName(slotIndex) {
     }
 
     return parts.length > 0 ? parts.join(" + ") : "Untitled";
-}
-
-/* Generate a unique preset name by appending _02, _03, etc. if needed */
-function generateUniquePresetName(baseName) {
-    if (findPatchByName(baseName) < 0) {
-        return baseName;  /* Base name is unique */
-    }
-    /* Try suffixes _02 through _99 */
-    for (let i = 2; i <= 99; i++) {
-        const suffix = i < 10 ? `_0${i}` : `_${i}`;
-        const name = `${baseName}${suffix}`;
-        if (findPatchByName(name) < 0) {
-            return name;
-        }
-    }
-    /* Fallback: use timestamp */
-    return `${baseName}_${Date.now() % 10000}`;
 }
 
 /* Query a slot:component state via shadow_get_param, retrying briefly if
@@ -6367,121 +6008,6 @@ let _configSyncTickCounter = 0;
 const CONFIG_SYNC_INTERVAL = 88; /* ~2 seconds at 44 ticks/sec */
 let _upgradeOverlayText = null; /* Web-initiated upgrade status for OLED display */
 
-function syncSettingsFromConfigFile() {
-    try {
-        const configPath = "/data/UserData/schwung/shadow_config.json";
-        const content = host_read_file(configPath);
-        if (!content) return;
-        const c = JSON.parse(content);
-
-        /* Display mirror */
-        if (c.display_mirror !== undefined && typeof display_mirror_set_shm === "function") {
-            const cur = typeof display_mirror_get === "function" ? !!display_mirror_get() : false;
-            if (!!c.display_mirror !== cur) display_mirror_set_shm(c.display_mirror ? 1 : 0);
-        }
-        /* Overlay knobs mode */
-        if (typeof c.overlay_knobs_mode === "number" && typeof overlay_knobs_set_mode === "function") {
-            overlay_knobs_set_mode(c.overlay_knobs_mode);
-        }
-        /* Pad typing */
-        if (c.pad_typing !== undefined && c.pad_typing !== padSelectGlobal) {
-            setPadSelectGlobal(c.pad_typing);
-        }
-        /* Text preview */
-        if (c.text_preview !== undefined && c.text_preview !== textPreviewGlobal) {
-            setTextPreviewGlobal(c.text_preview);
-        }
-        /* Link audio routing (Move->Schwung) */
-        if (c.link_audio_routing !== undefined && typeof shadow_set_param === "function") {
-            const val = !!c.link_audio_routing;
-            if (val !== cachedLinkAudioRouting) {
-                shadow_set_param(0, "master_fx:link_audio_routing", val ? "1" : "0");
-                cachedLinkAudioRouting = val;
-            }
-        }
-        /* Link audio publish (Schwung->Link) */
-        if (c.link_audio_publish !== undefined && typeof shadow_set_param === "function") {
-            const val = !!c.link_audio_publish;
-            if (val !== cachedLinkAudioPublish) {
-                shadow_set_param(0, "master_fx:link_audio_publish", val ? "1" : "0");
-                cachedLinkAudioPublish = val;
-            }
-        }
-        /* Latency comp */
-        if (c.latency_comp_enabled !== undefined && typeof shadow_set_param === "function") {
-            const val = !!c.latency_comp_enabled;
-            if (val !== cachedLatencyCompEnabled) {
-                shadow_set_param(0, "master_fx:latency_comp_enabled", val ? "1" : "0");
-                cachedLatencyCompEnabled = val;
-            }
-        }
-        /* Resample bridge (Sample Source) */
-        if (c.resample_bridge_mode !== undefined && typeof shadow_set_param === "function") {
-            const mode = parseResampleBridgeMode(c.resample_bridge_mode);
-            if (mode !== cachedResampleBridgeMode) {
-                shadow_set_param(0, "master_fx:resample_bridge", String(mode));
-                cachedResampleBridgeMode = mode;
-            }
-        }
-        /* Browser preview */
-        if (c.browser_preview !== undefined && c.browser_preview !== previewEnabled) {
-            previewEnabled = c.browser_preview;
-        }
-        /* Screen reader enabled */
-        if (c.screen_reader_enabled !== undefined && typeof tts_set_enabled === "function") {
-            const cur = typeof tts_get_enabled === "function" ? !!tts_get_enabled() : false;
-            if (!!c.screen_reader_enabled !== cur) tts_set_enabled(c.screen_reader_enabled ? 1 : 0);
-        }
-        /* Screen reader engine */
-        if (c.screen_reader_engine !== undefined && typeof tts_set_engine === "function") {
-            const cur = typeof tts_get_engine === "function" ? tts_get_engine() : "espeak";
-            if (c.screen_reader_engine !== cur) tts_set_engine(c.screen_reader_engine);
-        }
-        /* Screen reader speed */
-        if (typeof c.screen_reader_speed === "number" && typeof tts_set_speed === "function") {
-            tts_set_speed(c.screen_reader_speed);
-        }
-        /* Screen reader pitch */
-        if (typeof c.screen_reader_pitch === "number" && typeof tts_set_pitch === "function") {
-            tts_set_pitch(c.screen_reader_pitch);
-        }
-        /* Screen reader volume */
-        if (typeof c.screen_reader_volume === "number" && typeof tts_set_volume === "function") {
-            tts_set_volume(Math.round(c.screen_reader_volume));
-        }
-        /* TTS debounce */
-        if (typeof c.tts_debounce_ms === "number" && typeof tts_set_debounce === "function") {
-            tts_set_debounce(c.tts_debounce_ms);
-        }
-        /* Set pages */
-        if (c.set_pages_enabled !== undefined && typeof set_pages_set_shm === "function") {
-            const cur = typeof set_pages_get === "function" ? !!set_pages_get() : true;
-            if (!!c.set_pages_enabled !== cur) set_pages_set_shm(c.set_pages_enabled ? 1 : 0);
-        }
-        /* Shadow UI trigger (Long Press / Shift+Vol / Both) */
-        if (c.shadow_ui_trigger !== undefined && typeof shadow_ui_trigger_set_shm === "function") {
-            const map = { long_press: 0, shift_vol: 1, both: 2 };
-            let val = (typeof c.shadow_ui_trigger === "number")
-                ? c.shadow_ui_trigger
-                : map[c.shadow_ui_trigger];
-            if (typeof val === "number" && val >= 0 && val <= 2) {
-                const cur = typeof shadow_ui_trigger_get === "function" ? shadow_ui_trigger_get() : 2;
-                if (val !== cur) shadow_ui_trigger_set_shm(val);
-            }
-        }
-        /* Auto update check */
-        if (c.auto_update_check !== undefined) {
-            autoUpdateCheckEnabled = c.auto_update_check;
-        }
-        /* Filebrowser — only update JS variable, skip flag file I/O from tick */
-        if (c.filebrowser_enabled !== undefined && c.filebrowser_enabled !== filebrowserEnabled) {
-            filebrowserEnabled = c.filebrowser_enabled;
-        }
-    } catch (e) {
-        /* Ignore errors — file may be mid-write */
-    }
-}
-
 /* Sync JS-only variables from shadow_config.json. Called from tick() every ~2s.
  * IMPORTANT: No C function calls here — only pure JS variable updates.
  * Shared-memory settings are handled by the Go web server via mmap. */
@@ -6833,39 +6359,6 @@ function fetchStoreCatalogSync() {
         storePickerMessage = result.error || 'Failed to load catalog';
         setView(VIEWS.STORE_PICKER_RESULT);
         announce(storePickerMessage);
-    }
-    needsRedraw = true;
-}
-
-/* Enter the full module store from MFX settings (category browser) */
-function enterStoreFromSettings() {
-    storePickerFromSettings = true;
-    storePickerFromOvertake = false;
-    storePickerFromMasterFx = false;
-    storeCategoryIndex = 0;
-    storePickerCurrentModule = null;
-
-    /* Fetch catalog if needed */
-    if (!storeCatalog) {
-        setView(VIEWS.STORE_PICKER_LOADING);
-        storePickerLoadingTitle = 'Module Store';
-        storePickerLoadingMessage = 'Loading catalog...';
-        announce("Loading catalog");
-        needsRedraw = true;
-
-        fetchStoreCatalogSync();
-
-        if (!storeCatalog) {
-            /* fetchStoreCatalogSync already set error view */
-            return;
-        }
-    }
-
-    /* Build category list and enter categories view */
-    buildStoreCategoryItems();
-    setView(VIEWS.STORE_PICKER_CATEGORIES);
-    if (storeCategoryItems.length > 0) {
-        announce("Module Store, " + storeCategoryItems[0].label);
     }
     needsRedraw = true;
 }
@@ -10368,14 +9861,6 @@ function drawWavPositionEditor(selectedKey, selectedMeta) {
         left: truncateText(valueText, 20),
         right: truncateText(sourceText, 12)
     });
-}
-
-function drawWavPositionPreview() {
-    const key = getSelectedHierarchyEditableKey();
-    if (!key) return;
-    const meta = getParamMetadata(key);
-    if (!meta || meta.ui_type !== "wav_position") return;
-    drawWavPositionEditor(key, meta);
 }
 
 function resetCanvasState() {
@@ -15955,8 +15440,6 @@ globalThis.tick = function() {
     }
 };
 
-let debugMidiCounter = 0;
-let lastCC = { cc: 0, val: 0 };
 globalThis.onMidiMessageInternal = function(data) {
     const status = data[0];
     const d1 = data[1];
@@ -16066,12 +15549,6 @@ globalThis.onMidiMessageInternal = function(data) {
             dismissWarning();
             return;  /* Consumed - don't process further */
         }
-    }
-
-    /* Debug: track last CC for display (only for CC messages) */
-    if ((status & 0xF0) === 0xB0) {
-        lastCC = { cc: d1, val: d2 };
-        needsRedraw = true;
     }
 
     /* When a module UI is loaded, route MIDI to it (except Back button) */

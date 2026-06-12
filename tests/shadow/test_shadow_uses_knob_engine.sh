@@ -60,9 +60,7 @@ if ! rg -F -q 'physKnobStates' "$shadow_file"; then
   exit 1
 fi
 
-if ! rg -F -q 'clearPhysKnobStates' "$shadow_file"; then
-  echo "FAIL: clearPhysKnobStates helper missing" >&2
-  exit 1
-fi
+# (clearPhysKnobStates was an uncalled helper — removed in the 2026-06
+# dead-code sweep; the live physKnobStates map is asserted above.)
 
 echo "PASS"
