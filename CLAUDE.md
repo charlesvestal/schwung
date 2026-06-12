@@ -4,7 +4,7 @@ Instructions for Claude Code when working with this repository.
 
 Schwung is a framework for custom JavaScript and native DSP modules on Ableton Move hardware (pads, encoders, buttons, 128x64 1-bit display, audio I/O, MIDI via USB-A).
 
-Keep this file, `MANUAL.md`, `docs/API.md`, and `docs/MODULES.md` in sync with code changes (see Release Checklist).
+Keep this file, `docs/API.md`, `docs/MODULES.md`, and the user manual in `../schwung-catalog-site/manual.html` in sync with code changes (see Release Checklist).
 
 ## Code Style
 
@@ -28,7 +28,10 @@ Cross-compile via `${CROSS_PREFIX}gcc` for Move's ARM. See `BUILDING.md`.
 
 ## Testing
 
-No automated suite — testing is manual on hardware. Enable the unified logger:
+Static/regression suite: `for t in tests/{host,shadow,store,build}/*.sh; do bash "$t"; done`
+(~95 shell tests: source-invariant pins, compiled C units, node-run .mjs units —
+not wired into CI; ~20 stale failures pin since-moved code, see the cleanup
+review doc). On-hardware behavior is verified manually. Enable the unified logger:
 
 ```bash
 ssh ableton@move.local "touch /data/UserData/schwung/debug_log_on"
@@ -59,7 +62,8 @@ Modules (src/modules/<id>/):
 
 Key sources: `src/schwung_host.c` (host runtime), `src/schwung_shim.c` (LD_PRELOAD shim), `src/host/module_manager.c`, `src/host/menu_ui.js`, `src/host/plugin_api_v1.h`.
 
-Built-in modules: `chain`, `store`, `file-browser`, `song-mode`, `wav-player`.
+Built-in modules: `chain`, `file-browser`, `song-mode`, `wav-player`.
+Source-only (not shipped): `store` (on-device store retired — see Module Install/Update below).
 Source-only (not in release tarball): `controller` (superseded by catalog `control`), `tools/{ui,seq,config,splash}-test`, `text-test`.
 
 ### JS Module Lifecycle
@@ -123,7 +127,7 @@ CC 79 is the host volume knob by default. Modules can claim it via `capabilities
 
 ### Shared JS Utilities (`src/shared/`)
 
-`constants.mjs` (MIDI/LED), `input_filter.mjs` (touch filtering, delta decoding, LED helpers), `move_display.mjs`, `menu_layout/render/nav/items/stack.mjs`, `screen_reader.mjs`, `store_utils.mjs`, `filepath_browser.mjs`, `text_entry.mjs`, `sampler_overlay.mjs`, `feedback_gate.mjs`.
+`constants.mjs` (MIDI/LED), `input_filter.mjs` (touch filtering, delta decoding, LED helpers), `menu_layout/render/nav/items/stack.mjs`, `screen_reader.mjs`, `store_utils.mjs`, `filepath_browser.mjs`, `text_entry.mjs`, `sampler_overlay.mjs`, `feedback_gate.mjs`.
 
 ## Move Hardware MIDI
 
@@ -163,7 +167,7 @@ SPI callback runs SCHED_FIFO 90 on core 3. Budget ~900µs/frame after the ~2ms t
   host/menu_ui.js
   shared/
   modules/
-    chain/, store/                  # Built-in
+    chain/                          # Built-in
     sound_generators/<id>/          # External (by component_type)
     audio_fx/<id>/, midi_fx/<id>/, tools/<id>/
 ```
@@ -257,9 +261,12 @@ Types: `float` (min/max/step), `int` (min/max), `enum` (options). Optional: `def
 
 Chain host (`modules/chain/dsp/chain_host.c`) dlopens sub-plugins, forwards MIDI to sound generator, routes audio through FX. Patches in `/data/UserData/schwung/patches/*.json`. Built-in MIDI FX: chord, arp (up/down/up_down/random). Built-in audio FX: freeverb. MIDI sources can provide `ui_chain.js` for fullscreen chain UI.
 
-### Recording
+### Recording / capture
 
-Record button CC 118 toggles. LEDs: off (no patch), white (loaded), red (recording). Output: `/data/UserData/schwung/recordings/rec_YYYYMMDD_HHMMSS.wav` (44.1k/16/stereo). Background thread + 2 s ring buffer prevents dropouts. Requires loaded patch.
+Audio capture is shim-side: the Quantized Sampler (Shift+Sample) and Skipback
+(Shift+Capture) — see Shadow Mode below. (The old chain-host CC 118 recording
+was deleted in the 2026-06 cleanup; it was only reachable through the
+unreachable v1 plugin path.)
 
 ## Shadow Mode
 
@@ -367,9 +374,16 @@ Reference: `src/modules/controller/ui.js`.
 
 **External device handshakes** (e.g. M8 Launchpad Pro): be proactive — send your init in `init()` immediately; device may have sent its request during the ~500 ms delay. Optionally retry in `tick()` until any valid response confirms connection.
 
-## Module Store
+## Module Install / Update
 
-`store` module downloads + installs externals from GitHub releases. Catalog: `https://raw.githubusercontent.com/charlesvestal/schwung/main/module-catalog.json`.
+**schwung-manager (web UI at `http://move.local:7700`) is the single
+install/update path** for the host and all modules. On-device, the shadow UI
+keeps exactly two store surfaces: update *detection* (Settings → Updates →
+Check Updates shows what's outdated and points at the web manager) and
+pointer screens ([Get more...] / [Module Store]). The old on-device store
+module is retired (source kept for the standalone/sim host; not shipped).
+
+Catalog: `https://raw.githubusercontent.com/charlesvestal/schwung/main/module-catalog.json`.
 
 ### Catalog Format (v2)
 
@@ -422,19 +436,18 @@ scripts/{build.sh, install.sh, Dockerfile}
 
 `build.sh` must cross-compile DSP for ARM64 (Docker), package to `dist/<id>/`, and produce `dist/<id>-module.tar.gz`.
 
-Release: bump `src/module.json` version → commit → `git tag v0.2.0 && git push --tags`. Module Store sees it within minutes. See `BUILDING.md`.
+Release: bump `src/module.json` version → commit → `git tag v0.2.0 && git push --tags`. schwung-manager sees it within minutes. See `BUILDING.md`.
 
 ## Documentation Index
 
 - `docs/API.md` — JS API reference (display, MIDI, host fns, LED colors)
 - `docs/MODULES.md` — Module development guide (module.json, capabilities, tool_config, DSP API, Signal Chain integration, Remote UI `web_ui.html` + `schwungRemote` postMessage)
 - `docs/LOGGING.md` — Unified logging
-- `docs/DISPLAY.md` — Generic Display protocol (SHM, WebSocket, touch back-channel)
 - `docs/SPI_PROTOCOL.md` — Full SPI reference
 - `docs/REALTIME_SAFETY.md` — RT rules and JACK glitch root causes
 - `docs/MIDI_INJECTION.md` — Cable-2 injection / echo filter history
 - `docs/ADDRESSING_MOVE_SYNTHS.md` — Sending MIDI to Move tracks/slot synths from tools, overtake modules, chain MIDI FX. Ref: `src/modules/tools/seq-test/`.
-- `MANUAL.md` — User-facing manual
+- `../schwung-catalog-site/manual.html` — User-facing manual (canonical, lives in the catalog-site repo)
 - `BUILDING.md` — Build system, cross-compilation
 
 ## Release Checklist
@@ -442,7 +455,7 @@ Release: bump `src/module.json` version → commit → `git tag v0.2.0 && git pu
 1. **Build**: `./scripts/build.sh` succeeds
 2. **Deploy + test**: `./scripts/install.sh local --skip-modules --skip-confirmation`, verify on hardware
 3. **Version**: bump `src/host/version.txt` and `module-catalog.json` (host `latest_version` + download URL)
-4. **Docs**: update `CLAUDE.md`, `MANUAL.md`, `docs/API.md`, `docs/MODULES.md` for new features / changed behavior
+4. **Docs**: update `CLAUDE.md`, `docs/API.md`, `docs/MODULES.md`, `src/shared/help_content.json`, and `../schwung-catalog-site/manual.html` for new features / changed behavior
 5. **Help files**: update `help.json` in modified tool modules
 6. **Module catalog**: bump `min_host_version` for modules depending on new host features
 7. **Commit + tag**: `git tag v0.X.0 && git push --tags`
@@ -450,4 +463,4 @@ Release: bump `src/module.json` version → commit → `git tag v0.2.0 && git pu
 
 ## Dependencies
 
-QuickJS (`libs/quickjs/`), stb_image.h (`src/lib/`), curl (`libs/curl/`, for Module Store).
+QuickJS (`libs/quickjs/`), stb_image.h (`src/lib/`), curl (`libs/curl/`, download backend for catalog detection + manual refresh).

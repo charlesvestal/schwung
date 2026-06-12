@@ -110,6 +110,32 @@
           ]
         },
         {
+          "title": "Bypass, Mute, Solo",
+          "lines": [
+            "While shadow UI is",
+            "shown:",
+            "",
+            "Mute+Jog Click on a",
+            "focused module:",
+            "toggle bypass. Audio",
+            "passes through, the",
+            "module keeps running",
+            "so tails ring out.",
+            "A 'B' glyph shows",
+            "above the module.",
+            "",
+            "Mute+Track 1-4:",
+            "mute that slot.",
+            "Shift+Mute+Track:",
+            "solo that slot.",
+            "",
+            "Bypass persists via",
+            "slot autosave;",
+            "loading a patch",
+            "clears it."
+          ]
+        },
+        {
           "title": "LFOs",
           "lines": [
             "Each slot has 2 LFOs",
@@ -212,7 +238,17 @@
             "Master FX bypassed.",
             "",
             "Brief play delay",
-            "from Link quantum."
+            "from Link quantum.",
+            "",
+            "Latency Comp",
+            "(Settings > Audio,",
+            "default Off): aligns",
+            "Move's track audio",
+            "with Schwung synths",
+            "when routing is on.",
+            "Toggling while",
+            "playing causes a",
+            "brief (~9ms) blip."
           ]
         },
         {
