@@ -239,6 +239,27 @@ function coRunCedes(grp) {
     return grp !== 0 && (m & grp) === 0;
 }
 
+/* True while shadow_ui is drawing a co-run screen over a still-running tool —
+ * either the chain editor (coRunChainEditSlot >= 0) or an addressed-view overlay
+ * (corunOverlayId != null, declared below). In BOTH, the outer `view` stays
+ * OVERTAKE_MODULE and coRunView holds the drawn screen, so the dispatcher keeps
+ * delegating pads/steps/transport + LEDs to the tool. */
+function coRunUiActive() { return coRunChainEditSlot >= 0 || corunOverlayId != null; }
+
+/* Should shadow_ui's co-run intercept handle this control group? ONE uniform rule
+ * for every UI element, with no per-element special-casing:
+ *  - chain-edit: handle it when the tool CEDES it (peer is shadow_ui, same
+ *    process, so ceded events arrive here).
+ *  - addressed-view overlay: handle it when the tool KEEPS it — the tool keeps
+ *    exactly the UI elements it wants the overlay to drive (kept events reach this
+ *    process; ceded ones go to Move firmware). So "keeps" is the overlay's
+ *    analogue of chain-edit's "cedes".
+ * A tool thus enables, e.g., overlay knob editing simply by keeping
+ * CORUN_GRP_KNOBS — no view-specific code in the dispatcher. */
+function coRunWants(grp) {
+    return corunOverlayId != null ? !coRunCedes(grp) : coRunCedes(grp);
+}
+
 /* Param-shim originals. When a chain module's UI is "loaded" (or when
  * enterHierarchyEditor / setupModuleParamShims fires), the shadow_ui
  * shims host_module_get_param / host_module_set_param so chain-editor
@@ -300,6 +321,65 @@ const VIEWS = {
     LFO_TARGET_COMPONENT: "lfotargetcomp",    // LFO target picker step 1: component
     LFO_TARGET_PARAM: "lfotargetparam"        // LFO target picker step 2: parameter
 };
+
+/* ==== CO-RUN VIEW ADDRESSING ====
+ * A curated registry of addressable Schwung screens a co-running tool may open as
+ * a temporary OVERLAY over its co-run target, then return from — generalizing
+ * co-run beyond the two hardcoded targets. Tool + shadow_ui share one QuickJS
+ * globalThis, so the three verbs are plain globals the tool calls directly:
+ *   shadow_corun_entries()              -> array of openable screen ids (discovery)
+ *   shadow_corun_open(id, keep_mask, a) -> true if opened (false on unknown id)
+ *   shadow_corun_close()                -> dismiss, return to the underlay
+ * The only C addition is shadow_corun_overlay(active, keep_mask), which flips the
+ * OLED owner + keep_mask WITHOUT touching corun.target (so the consumer tool's
+ * state machine is undisturbed). Entries are curated and added deliberately —
+ * NEVER auto-derived from VIEWS (most VIEWS are context-dependent sub-views). */
+const CORUN_ENTRIES = {
+    slots:           { enter: function() { view = VIEWS.SLOTS; } },
+    chain_editor:    { enter: function(a) { enterChainEdit((a && a.slot) | 0); } },
+    master_fx:       { enter: function() { enterMasterFxSettings(); } },
+    global_settings: { enter: function() { enterGlobalSettings(); } },
+};
+
+let corunOverlayId = null;        /* active overlay entry id, or null */
+let corunOverlayPrevMask = 0;     /* keep_mask to restore on close */
+let corunOverlayRootView = -1;    /* the entry's top-level view; Back here closes */
+
+globalThis.shadow_corun_entries = function() {
+    return Object.keys(CORUN_ENTRIES);
+};
+
+globalThis.shadow_corun_open = function(id, keep_mask, args) {
+    const entry = CORUN_ENTRIES[id];
+    if (!entry) return false;
+    const st = (typeof shadow_corun_state === 'function') ? shadow_corun_state() : null;
+    corunOverlayPrevMask = st ? (st.keep_mask | 0) : 0;
+    corunOverlayId = id;
+    /* Flip OLED to shadow_ui + apply the overlay's keep_mask; corun.target stays
+     * put so the consumer tool's state machine is undisturbed. */
+    if (typeof shadow_corun_overlay === 'function') shadow_corun_overlay(1, keep_mask | 0);
+    /* Mirror chain-edit co-run: keep the outer view at OVERTAKE_MODULE (so the
+     * dispatcher keeps delegating pads/steps/transport + LEDs to the tool) and let
+     * the entry's view change land in coRunView, which the co-run draw path
+     * renders. runCoRunChainEdit captures view -> coRunView around the enter. */
+    coRunView = VIEWS.OVERTAKE_MODULE;
+    runCoRunChainEdit(function() { entry.enter(args); });
+    corunOverlayRootView = coRunView;
+    needsRedraw = true;
+    return true;
+};
+
+globalThis.shadow_corun_close = function() {
+    if (corunOverlayId == null) return;
+    corunOverlayId = null;
+    corunOverlayRootView = -1;
+    coRunView = VIEWS.OVERTAKE_MODULE;
+    /* Restore the underlay's OLED owner + keep_mask. view never left
+     * OVERTAKE_MODULE, so the tool stayed addressable throughout the overlay. */
+    if (typeof shadow_corun_overlay === 'function') shadow_corun_overlay(0, corunOverlayPrevMask | 0);
+    needsRedraw = true;
+};
+/* ==== END CO-RUN VIEW ADDRESSING ==== */
 
 /* Special action key for swap module option */
 const SWAP_MODULE_ACTION = "__swap_module__";
@@ -2246,7 +2326,7 @@ function loadModuleUi(slot, componentKey, moduleId) {
      * (and onMidiMessageInternal), which silences the active tool. The caller
      * (enterComponentEditFallback) falls back to the simple preset browser
      * when this returns false — that path doesn't touch globals. */
-    if (coRunChainEditSlot >= 0) {
+    if (coRunUiActive()) {
         moduleUiLoadError = true;
         return false;
     }
@@ -13506,6 +13586,11 @@ function runCoRunChainEdit(fn) {
  * dispatch every reachable view explicitly. */
 function dispatchCoRunDraw() {
     switch (view) {
+        /* Addressable-view overlay roots (CORUN_ENTRIES) — the co-run draw path
+         * must render these too, not just the chain-editor subtree. */
+        case VIEWS.SLOTS:                drawSlots(); break;
+        case VIEWS.MASTER_FX:            drawMasterFx(); break;
+        case VIEWS.GLOBAL_SETTINGS:      drawGlobalSettings(); break;
         case VIEWS.CHAIN_EDIT:           drawChainEdit(); break;
         case VIEWS.PATCHES:              drawPatches(); break;
         case VIEWS.PATCH_DETAIL:         drawPatchDetail(); break;
@@ -14167,7 +14252,7 @@ globalThis.tick = function() {
      * outer view is OVERTAKE_MODULE; wrap so getKnobContext (cache keyed on
      * view) resolves against the chain editor's view and the accumulated knob
      * delta isn't silently dropped under the wrong context. */
-    if (coRunChainEditSlot >= 0) {
+    if (coRunUiActive()) {
         runCoRunChainEdit(processPendingHierKnob);
     } else {
         processPendingHierKnob();
@@ -14265,6 +14350,17 @@ globalThis.tick = function() {
      * shadow_corun_state() returns null and we tear down the editor. */
     if (typeof shadow_corun_state === "function") {
         const _st = shadow_corun_state();
+        /* Overlay teardown: if the tool ended co-run (its own exit gesture / Menu /
+         * set change) while an addressed-view overlay was open, the framework
+         * already restored the display owner + keep_mask via shadow_corun_end();
+         * clear the JS overlay state here so coRunUiActive() goes false and shadow_ui
+         * hands the screen back to the tool instead of stranding the overlay. */
+        if (corunOverlayId != null && !_st) {
+            corunOverlayId = null;
+            corunOverlayRootView = -1;
+            coRunView = VIEWS.OVERTAKE_MODULE;
+            needsRedraw = true;
+        }
         const _slot = (_st && _st.target === CORUN_TARGET_CHAIN_EDIT) ? _st.id : -1;
         coRunKeepMask = (_st && typeof _st.keep_mask === "number") ? (_st.keep_mask | 0) : 0;
         if (_slot !== coRunChainEditSlot) {
@@ -14497,7 +14593,7 @@ globalThis.tick = function() {
                      * to OLED while coRunChainEditSlot >= 0 — but even if it
                      * does, drawSlots() (and chain-edit subtree draws) start
                      * with clear_screen() so the editor's pixels win. */
-                    if (coRunChainEditSlot >= 0) {
+                    if (coRunUiActive()) {
                         runCoRunChainEdit(dispatchCoRunDraw);
                     }
                 }
@@ -14716,7 +14812,7 @@ globalThis.onMidiMessageInternal = function(data) {
          * Back alone: suspend (module parks in background, ticks continue).
          * Shift+Back: full exit (unload module).
          * Skip while co-run is active: the chain editor claims Back. */
-        if ((status & 0xF0) === 0xB0 && d1 === MoveBack && d2 > 0 && overtakeSuspendKeepsJs && coRunChainEditSlot < 0) {
+        if ((status & 0xF0) === 0xB0 && d1 === MoveBack && d2 > 0 && overtakeSuspendKeepsJs && !coRunUiActive()) {
             if (hostShiftHeld) {
                 debugLog("HOST: Shift+Back → full exit (suspend_keeps_js module)");
                 if (toolOvertakeActive) exitToolOvertake();
@@ -14735,14 +14831,14 @@ globalThis.onMidiMessageInternal = function(data) {
          * (PATCHES, COMPONENT_*, KNOB_*, etc.) Back navigates up within the
          * editor; at CHAIN_EDIT (the top level) Back is silent so the tool's
          * own exit gesture (e.g. Menu) takes over. */
-        if (coRunChainEditSlot >= 0 && (status & 0xF0) === 0xB0) {
-            if (d1 === MoveMainKnob && coRunCedes(CORUN_GRP_JOG)) {
+        if (coRunUiActive() && (status & 0xF0) === 0xB0) {
+            if (d1 === MoveMainKnob && coRunWants(CORUN_GRP_JOG)) {
                 const delta = decodeDelta(d2);
                 if (delta !== 0) runCoRunChainEdit(function() { handleJog(delta); });
                 needsRedraw = true;
                 return;
             }
-            if (d1 === MoveMainButton && d2 > 0 && coRunCedes(CORUN_GRP_JOG)) {
+            if (d1 === MoveMainButton && d2 > 0 && coRunWants(CORUN_GRP_JOG)) {
                 /* Mirror the non-overtake Shift+Click handler (line ~15259):
                  * Shift+Click in CHAIN_EDIT → handleShiftSelect (enter
                  * component edit). Plain Click → handleSelect. */
@@ -14769,16 +14865,24 @@ globalThis.onMidiMessageInternal = function(data) {
              * still rely on the tool's own exit gesture; only chain-edit gets
              * the auto-exit-at-top because only shadow_ui can see its own
              * view depth. */
-            if (d1 === MoveBack && d2 > 0 && coRunCedes(CORUN_GRP_BACK)) {
-                if (coRunView !== VIEWS.CHAIN_EDIT) {
+            if (d1 === MoveBack && d2 > 0 && coRunWants(CORUN_GRP_BACK)) {
+                if (corunOverlayId != null) {
+                    /* Addressed-view overlay: pop within the view; at the overlay's
+                     * root (corunOverlayRootView) close it to return to the underlay
+                     * — never end co-run (Menu / the tool's own gesture does that). */
+                    if (coRunView === corunOverlayRootView) {
+                        shadow_corun_close();
+                    } else {
+                        runCoRunChainEdit(function() { handleBack(); });
+                    }
+                } else if (coRunView !== VIEWS.CHAIN_EDIT) {
                     runCoRunChainEdit(function() { handleBack(); });
-                    needsRedraw = true;
                 } else {
                     if (typeof shadow_corun_end === "function") shadow_corun_end();
                     coRunChainEditSlot = -1;
                     coRunView = VIEWS.OVERTAKE_MODULE;
-                    needsRedraw = true;
                 }
+                needsRedraw = true;
                 return;
             }
             /* Shift (CC 49): give it ONLY to the chain editor. hostShiftHeld
@@ -14786,12 +14890,15 @@ globalThis.onMidiMessageInternal = function(data) {
              * the editor's isShiftHeld()-based code paths see the right state.
              * Eating it here prevents the tool from reacting (e.g. its own
              * Shift+button shortcuts while you're navigating the editor). */
-            if (d1 === 49 && coRunCedes(CORUN_GRP_SHIFT)) {
+            if (d1 === 49 && coRunWants(CORUN_GRP_SHIFT)) {
                 needsRedraw = true;
                 return;
             }
-            /* Track buttons: CC 43=Track 1 (slot 0), CC 40=Track 4 (slot 3) */
-            if (d1 >= 40 && d1 <= 43 && d2 > 0 && coRunCedes(CORUN_GRP_TRACK_BUTTONS)) {
+            /* Track buttons: CC 43=Track 1 (slot 0), CC 40=Track 4 (slot 3).
+             * Chain-edit only — an overlay has no chain slot; swallow so a stray
+             * track press can't flip it into chain-edit co-run. */
+            if (d1 >= 40 && d1 <= 43 && d2 > 0 && coRunWants(CORUN_GRP_TRACK_BUTTONS)) {
+                if (corunOverlayId != null) { needsRedraw = true; return; }
                 const _slot = 43 - d1;
                 if (_slot >= 0 && _slot < SHADOW_UI_SLOTS && _slot !== coRunChainEditSlot) {
                     coRunChainEditSlot = _slot;
@@ -14813,7 +14920,7 @@ globalThis.onMidiMessageInternal = function(data) {
              * before the tool knob-accumulation below, so the tool no longer
              * receives knob turns while co-run is active. Knob TOUCH notes still
              * forward to the tool — intentional turn-only split. */
-            if (d1 >= KNOB_CC_START && d1 <= KNOB_CC_END && coRunCedes(CORUN_GRP_KNOBS)) {
+            if (d1 >= KNOB_CC_START && d1 <= KNOB_CC_END && coRunWants(CORUN_GRP_KNOBS)) {
                 const _kIdx = d1 - KNOB_CC_START;
                 const _kDelta = decodeDelta(d2);
                 if (_kDelta !== 0) {
@@ -14851,8 +14958,8 @@ globalThis.onMidiMessageInternal = function(data) {
          * notes pre-change; keeping that avoids a stranded knobTouched on exit).
          * Release drains BOTH the hierarchy (pendingHierKnob) and slot-global
          * (pendingKnob) paths, which is what actually clears the value popup. */
-        if (coRunChainEditSlot >= 0 && (status & 0xF0) === MidiNoteOn &&
-                d1 >= MoveKnob1Touch && d1 <= MoveKnob8Touch && coRunCedes(CORUN_GRP_TOUCH)) {
+        if (coRunUiActive() && (status & 0xF0) === MidiNoteOn &&
+                d1 >= MoveKnob1Touch && d1 <= MoveKnob8Touch && coRunWants(CORUN_GRP_TOUCH)) {
             const _tk = d1 - MoveKnob1Touch;
             if (d2 > 0) {
                 runCoRunChainEdit(function() {

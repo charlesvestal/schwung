@@ -275,6 +275,31 @@ static JSValue js_shadow_corun_end(JSContext *ctx, JSValueConst this_val, int ar
     return JS_UNDEFINED;
 }
 
+/* shadow_corun_overlay(active, keep_mask) -> void
+ * Present (active=1) or dismiss (active=0) a registered shadow_ui view as a
+ * temporary overlay over the active co-run target. Sets keep_mask and flips OLED
+ * ownership WITHOUT touching corun.target, so the consumer tool's corun_state()
+ * view and its state machine stay put (no teardown). On dismiss the OLED returns
+ * to the underlay: Move firmware for a move_native underlay, shadow_ui otherwise. */
+static JSValue js_shadow_corun_overlay(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 2) return JS_UNDEFINED;
+    int active = 0, keep = 0;
+    if (JS_ToInt32(ctx, &active, argv[0])) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &keep, argv[1])) return JS_UNDEFINED;
+    if (keep < 0 || keep > 0xFFFF) return JS_UNDEFINED;
+    shadow_control->corun.keep_mask = (uint16_t)keep;
+    if (active) {
+        shadow_control->shadow_display_owner = DISPLAY_OWNER_SCHWUNG_UI;
+    } else {
+        shadow_control->shadow_display_owner =
+            (shadow_control->corun.target == CORUN_TARGET_MOVE_NATIVE)
+                ? DISPLAY_OWNER_MOVE_FIRMWARE
+                : DISPLAY_OWNER_SCHWUNG_UI;
+    }
+    return JS_UNDEFINED;
+}
+
 /* shadow_corun_state() -> { target, id, keep_mask } | null
  * Returns null when no co-run is active, else the current state. Tools poll
  * this each frame to detect framework-driven exit (Back press) and to
@@ -2065,6 +2090,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_corun_begin", JS_NewCFunction(ctx, js_shadow_corun_begin, "shadow_corun_begin", 3));
     JS_SetPropertyStr(ctx, global_obj, "shadow_corun_end", JS_NewCFunction(ctx, js_shadow_corun_end, "shadow_corun_end", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_corun_state", JS_NewCFunction(ctx, js_shadow_corun_state, "shadow_corun_state", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_corun_overlay", JS_NewCFunction(ctx, js_shadow_corun_overlay, "shadow_corun_overlay", 2));
     /* Co-run target enum (matches corun_target_t in shadow_constants.h). */
     JS_SetPropertyStr(ctx, global_obj, "CORUN_TARGET_NONE",        JS_NewInt32(ctx, CORUN_TARGET_NONE));
     JS_SetPropertyStr(ctx, global_obj, "CORUN_TARGET_CHAIN_EDIT",  JS_NewInt32(ctx, CORUN_TARGET_CHAIN_EDIT));
