@@ -3247,6 +3247,17 @@ func (app *App) handleModuleWebUIAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Module web UIs are intentionally embedded in the Remote UI page's
+	// same-origin iframe (see remote_ui.go / static/remote-ui.js). The global
+	// SecurityHeaders middleware sets X-Frame-Options: DENY, which would block
+	// that embed and leave a blank/error iframe. Relax it to SAMEORIGIN for
+	// these assets only — cross-origin framing (clickjacking) is still denied.
+	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+
+	// Module UIs change when a module is updated/reinstalled, and a stale cached
+	// response would also pin stale security headers in the browser. Never cache.
+	w.Header().Set("Cache-Control", "no-store")
+
 	http.ServeFile(w, r, fullPath)
 }
 
