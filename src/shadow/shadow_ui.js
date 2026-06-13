@@ -3400,7 +3400,7 @@ function drawOvertakeMenu() {
         });
     }
 
-    drawFooter({left: "Back: Exit", right: "Jog: Select"});
+    drawFooter({left: "Back: exit", right: "Jog: select"});
 }
 
 /* Fetch chain_params metadata from a component */
@@ -9689,7 +9689,7 @@ function drawFilepathBrowser() {
 
     if (!state) {
         print(4, LIST_TOP_Y, "Browser unavailable", 1);
-        drawFooter({ left: "Push: return", right: "Jog: scroll" });
+        drawFooter({ left: "Click: return", right: "Jog: scroll" });
         return;
     }
 
@@ -9712,7 +9712,7 @@ function drawFilepathBrowser() {
     const selected = state.items && state.items.length > 0
         ? state.items[state.selectedIndex]
         : null;
-    const actionText = selected && selected.kind === "file" ? "Push: select" : "Push: open";
+    const actionText = selected && selected.kind === "file" ? "Click: select" : "Click: open";
     drawFooter({ left: actionText, right: "Jog: scroll" });
 }
 
@@ -9876,7 +9876,7 @@ function drawHierarchyEditor() {
         }
 
         /* Footer hints - always push to edit (for swap/params) */
-        drawFooter({left: "Push: edit", right: "Jog: browse"});
+        drawFooter({left: "Click: edit", right: "Jog: browse"});
     } else {
         const selectedKey = getSelectedHierarchyEditableKey();
         const selectedMeta = selectedKey ? getParamMetadata(selectedKey) : null;
@@ -9972,11 +9972,11 @@ function drawHierarchyEditor() {
         }
 
         /* Footer hints */
-        let hint = hierEditorEditMode ? {left: "Push: done", right: "Jog: adjust"} : {left: "Push: edit", right: "Jog: scroll"};
+        let hint = hierEditorEditMode ? {left: "Click: done", right: "Jog: adjust"} : {left: "Click: edit", right: "Jog: scroll"};
         if (!hierEditorEditMode && selectedMeta && selectedMeta.type === "string") {
-            hint = { left: "Push: keyboard", right: "Jog: scroll" };
+            hint = { left: "Click: keyboard", right: "Jog: scroll" };
         } else if (!hierEditorEditMode && selectedMeta && selectedMeta.type === "canvas") {
-            hint = { left: "Push: open", right: "Jog: scroll" };
+            hint = { left: "Click: open", right: "Jog: scroll" };
         }
         drawFooter(hint);
     }
