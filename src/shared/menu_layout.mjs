@@ -35,6 +35,24 @@ export const DEFAULT_VALUE_PADDING_RIGHT = 2;
 export const VALUE_RIGHT_CLEARANCE = 10;  /* Clearance from scroll-arrow column (LIST_INDICATOR_X = 120) */
 export const LIST_BOTTOM_CLEARANCE = FOOTER_RULE_Y - 2;  /* 2px clearance below footer rule for down-arrow */
 
+/* Canonical footer-hint verb prefixes (cleanup step 9, U-2). The Move's jog
+ * wheel click is "Click" (not "Push"); action words are lowercase. Build
+ * hints with footerHint() so they don't drift back into verb soup:
+ *   drawMenuFooter({ left: footerHint("click", "edit"), right: footerHint("jog", "scroll") })
+ * Existing string-literal hints are equally valid as long as they follow the
+ * same canon — pinned by tests/shadow/test_footer_verb_consistency.sh. */
+export const FOOTER_VERBS = Object.freeze({
+    click: "Click",   // jog-wheel click
+    jog:   "Jog",     // jog-wheel turn
+    back:  "Back",    // Back button
+    hold:  "Hold",    // long-press
+});
+
+export function footerHint(verb, action) {
+    const prefix = FOOTER_VERBS[verb] || verb;
+    return action ? `${prefix}: ${action}` : `${prefix}: `;
+}
+
 /* Screen reader state - track last announced item to avoid redundant announcements */
 let lastAnnouncedIndex = -1;
 let lastAnnouncedLabel = "";
