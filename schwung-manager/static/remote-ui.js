@@ -1912,6 +1912,12 @@
             slotContentEl.appendChild(section);
         }
 
+        // Slot settings (volume, sends, channels, LFO, …) are module-independent
+        // and must still render with a custom synth UI — the non-custom path
+        // appends them at the bottom, so do the same here.
+        var settingsSection = renderSlotSettings(s);
+        if (settingsSection) slotContentEl.appendChild(settingsSection);
+
         customUIIframe = iframe;
         customUISubscribed = false;
     }
