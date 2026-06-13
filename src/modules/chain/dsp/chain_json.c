@@ -83,8 +83,16 @@ int json_get_section_bounds(const char *json, const char *section_key,
     const char *pos = strstr(json, search);
     if (!pos) return -1;
 
-    const char *start = strchr(pos, '{');
-    if (!start) return -1;
+    /* Only treat this key as a section if its VALUE is an object. Skipping
+     * straight to the next '{' would, for a null-valued key (e.g. an empty FX
+     * slot: "fx2":null), grab a LATER slot's object — corrupting saved presets
+     * with gaps (filled/empty/filled). Anchor on the key's colon + value.
+     * (Carried from PR #115/#117; also fixes a latent Master-preset bug.) */
+    const char *colon = strchr(pos + strlen(search), ':');
+    if (!colon) return -1;
+    const char *start = colon + 1;
+    while (*start == ' ' || *start == '\t' || *start == '\n' || *start == '\r') start++;
+    if (*start != '{') return -1;   /* value is null / not an object */
 
     int depth = 0;
     const char *end = NULL;

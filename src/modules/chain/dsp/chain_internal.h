@@ -371,6 +371,18 @@ CHAIN_INTERNAL extern char master_preset_names[MAX_MASTER_PRESETS][MAX_NAME_LEN]
 CHAIN_INTERNAL extern char master_preset_paths[MAX_MASTER_PRESETS][MAX_PATH_LEN];
 CHAIN_INTERNAL extern int master_preset_count;
 
+/* Move FX preset registry — owned by chain_patch.c, read by v2_get_param
+ * (PR #117). Single shared store across all 4 Move FX buses. */
+#define MAX_MOVE_PRESETS 64
+CHAIN_INTERNAL extern char move_preset_names[MAX_MOVE_PRESETS][MAX_NAME_LEN];
+CHAIN_INTERNAL extern char move_preset_paths[MAX_MOVE_PRESETS][MAX_PATH_LEN];
+CHAIN_INTERNAL extern int move_preset_count;
+CHAIN_INTERNAL void scan_move_presets(void);
+CHAIN_INTERNAL int save_move_preset(const char *json_str);
+CHAIN_INTERNAL int update_move_preset(int index, const char *json_str);
+CHAIN_INTERNAL int delete_move_preset(int index);
+CHAIN_INTERNAL int load_move_preset_json(int index, char *buf, int buf_len);
+
 /* ---- cross-TU internals (grouped by defining file) ---- */
 
 /* chain_host.c */
