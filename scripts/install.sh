@@ -458,19 +458,27 @@ if [ -n "${_ableton_pw:-}" ] || [ -n "${_root_pw:-}" ]; then
   trap 'rm -f "$ableton_pw_file" "$root_pw_file"' EXIT
 fi
 
+# Keepalive options for the working ssh/scp commands. ConnectTimeout only covers
+# the TCP handshake; once a session establishes and the path silently stalls
+# (e.g. a stale USB-ethernet route lingering after the Move was plugged into the
+# computer), ssh waits forever with no further bytes. The GUI installer then kills
+# the whole script after its 5-minute timeout ("exit code null"). ServerAlive*
+# makes a stalled session die in ~15s so the retry wrappers can recover instead.
+ssh_keepalive_opts="-o ServerAliveInterval=5 -o ServerAliveCountMax=3"
+
 # (Re)build the ssh/scp command strings. Called once now and again after the
 # SSH wizard, since the wizard may generate the key that resolve_ssh_identity
 # needs to find.
 build_ssh_commands() {
   if [ "$password_mode" = true ]; then
-    ssh_ableton="sshpass -f $ableton_pw_file ssh $ssh_port_opt -o PreferredAuthentications=password -o PubkeyAuthentication=no -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -n $username@$hostname"
-    scp_ableton="sshpass -f $ableton_pw_file scp $scp_port_opt -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new"
-    ssh_root="sshpass -f $root_pw_file ssh $ssh_port_opt -o PreferredAuthentications=password -o PubkeyAuthentication=no -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -n $root_user@$hostname"
+    ssh_ableton="sshpass -f $ableton_pw_file ssh $ssh_port_opt -o PreferredAuthentications=password -o PubkeyAuthentication=no -o LogLevel=QUIET -o ConnectTimeout=5 $ssh_keepalive_opts -o StrictHostKeyChecking=accept-new -n $username@$hostname"
+    scp_ableton="sshpass -f $ableton_pw_file scp $scp_port_opt -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=5 $ssh_keepalive_opts -o StrictHostKeyChecking=accept-new"
+    ssh_root="sshpass -f $root_pw_file ssh $ssh_port_opt -o PreferredAuthentications=password -o PubkeyAuthentication=no -o LogLevel=QUIET -o ConnectTimeout=5 $ssh_keepalive_opts -o StrictHostKeyChecking=accept-new -n $root_user@$hostname"
   else
     ssh_identity_opt=$(resolve_ssh_identity)
-    ssh_ableton="ssh $ssh_port_opt $ssh_identity_opt -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -n $username@$hostname"
-    scp_ableton="scp $scp_port_opt $ssh_identity_opt -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new"
-    ssh_root="ssh $ssh_port_opt $ssh_identity_opt -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -n $root_user@$hostname"
+    ssh_ableton="ssh $ssh_port_opt $ssh_identity_opt -o LogLevel=QUIET -o ConnectTimeout=5 $ssh_keepalive_opts -o StrictHostKeyChecking=accept-new -n $username@$hostname"
+    scp_ableton="scp $scp_port_opt $ssh_identity_opt -o ConnectTimeout=5 $ssh_keepalive_opts -o StrictHostKeyChecking=accept-new"
+    ssh_root="ssh $ssh_port_opt $ssh_identity_opt -o LogLevel=QUIET -o ConnectTimeout=5 $ssh_keepalive_opts -o StrictHostKeyChecking=accept-new -n $root_user@$hostname"
   fi
 }
 build_ssh_commands
@@ -758,9 +766,9 @@ if [ -n "$ssh_result" ]; then
     fi
     if [ -n "$_pinned" ]; then
       ssh_identity_opt="$_pinned"
-      ssh_ableton="ssh $ssh_port_opt $ssh_identity_opt -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -n $username@$hostname"
-      scp_ableton="scp $scp_port_opt $ssh_identity_opt -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new"
-      ssh_root="ssh $ssh_port_opt $ssh_identity_opt -o LogLevel=QUIET -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -n $root_user@$hostname"
+      ssh_ableton="ssh $ssh_port_opt $ssh_identity_opt -o LogLevel=QUIET -o ConnectTimeout=5 $ssh_keepalive_opts -o StrictHostKeyChecking=accept-new -n $username@$hostname"
+      scp_ableton="scp $scp_port_opt $ssh_identity_opt -o ConnectTimeout=5 $ssh_keepalive_opts -o StrictHostKeyChecking=accept-new"
+      ssh_root="ssh $ssh_port_opt $ssh_identity_opt -o LogLevel=QUIET -o ConnectTimeout=5 $ssh_keepalive_opts -o StrictHostKeyChecking=accept-new -n $root_user@$hostname"
     else
       build_ssh_commands
     fi
