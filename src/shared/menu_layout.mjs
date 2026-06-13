@@ -84,6 +84,35 @@ export function drawMenuFooter(text, y = FOOTER_TEXT_Y) {
     }
 }
 
+/* Shared two-option confirmation modal (cleanup step 9, U-4): header +
+ * optional quoted name + a vertical two-row selector + footer. Replaces the
+ * four hand-rendered copies in the slot-preset (settings) and master-preset
+ * (master_fx) overwrite/delete flows so the Yes/No widget is identical
+ * everywhere. selectedIndex picks the highlighted row; labels default to
+ * No/Yes (index 0 = No, the safe default the callers seed). */
+export function drawConfirmModal({
+    title,
+    name,
+    selectedIndex,
+    labels = ["No", "Yes"],
+    footer = "Back: cancel"
+}) {
+    drawMenuHeader(title);
+    if (name !== undefined && name !== null && name !== "") {
+        print(LIST_LABEL_X, LIST_TOP_Y, '"' + truncateText(String(name), 20) + '"', 1);
+    }
+    const listY = LIST_TOP_Y + 16;
+    for (let i = 0; i < labels.length; i++) {
+        const rowY = listY + i * LIST_LINE_HEIGHT;
+        const isSelected = i === selectedIndex;
+        if (isSelected) {
+            fill_rect(0, rowY - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
+        }
+        print(LIST_LABEL_X, rowY, labels[i], isSelected ? 0 : 1);
+    }
+    drawMenuFooter(footer);
+}
+
 export function drawArrowUp(x, y) {
     set_pixel(x + 2, y, 1);
     set_pixel(x + 1, y + 1, 1);
