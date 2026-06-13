@@ -782,6 +782,10 @@ func (ru *RemoteUI) notifyLoop(ctx context.Context) {
 		// subscribers receive them without needing a slot 0 subscription.
 		slotChanges := make(map[uint8]map[string]string)
 		masterFxChanges := make(map[string]string)
+		// Components whose preset (list_param) changed: the notify ring carries the
+		// numeric preset index but NOT the preset name string, so we must re-push the
+		// preset-browser params (name/count) for these afterwards.
+		presetDirty := make(map[uint8]map[string]bool)
 		for _, c := range changes {
 			if c.Slot == 0 && strings.HasPrefix(c.Key, "master_fx:") {
 				masterFxChanges[c.Key] = c.Value
@@ -793,6 +797,13 @@ func (ru *RemoteUI) notifyLoop(ctx context.Context) {
 				slotChanges[c.Slot] = m
 			}
 			m[c.Key] = c.Value
+			if i := strings.LastIndex(c.Key, ":"); i >= 0 && c.Key[i+1:] == "preset" {
+				comp := c.Key[:i]
+				if presetDirty[c.Slot] == nil {
+					presetDirty[c.Slot] = make(map[string]bool)
+				}
+				presetDirty[c.Slot][comp] = true
+			}
 		}
 
 		// Broadcast to subscribed clients.
@@ -811,6 +822,21 @@ func (ru *RemoteUI) notifyLoop(ctx context.Context) {
 				c.mu.Unlock()
 				if subscribed {
 					ru.writeJSON(ctx, c, update)
+				}
+			}
+		}
+
+		// Re-push preset-browser params (name/count) for any component whose
+		// preset changed — the notify ring only carries the numeric index.
+		for slot, comps := range presetDirty {
+			for comp := range comps {
+				for _, c := range clients {
+					c.mu.Lock()
+					subscribed := c.subs[slot]
+					c.mu.Unlock()
+					if subscribed {
+						ru.sendHierarchyParams(ctx, c, slot, comp)
+					}
 				}
 			}
 		}
