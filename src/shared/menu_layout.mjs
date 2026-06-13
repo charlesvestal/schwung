@@ -126,7 +126,10 @@ export function drawMenuList({
     editMode = false,
     scrollSelectedValue = false,
     prioritizeSelectedValue = false,
-    selectedMinLabelChars = 6
+    selectedMinLabelChars = 6,
+    announce = true  /* set false when the caller emits its own richer
+                        screen-reader announcements (e.g. file-browser) to
+                        avoid double-announcing each selection move */
 }) {
     const totalItems = items.length;
     const itemHeight = getSubLabel ? (lineHeight + subLabelOffset) : lineHeight;
@@ -153,7 +156,7 @@ export function drawMenuList({
     labelScroller.tick();  /* Auto-tick during draw */
 
     /* Announce selected item to screen reader if changed */
-    if (selectedIndex >= 0 && selectedIndex < totalItems && items[selectedIndex]?.type !== 'divider') {
+    if (announce && selectedIndex >= 0 && selectedIndex < totalItems && items[selectedIndex]?.type !== 'divider') {
         const selectedItem = items[selectedIndex];
         const selectedLabel = getLabel(selectedItem, selectedIndex);
         const selectedValue = getValue ? getValue(selectedItem, selectedIndex) : "";

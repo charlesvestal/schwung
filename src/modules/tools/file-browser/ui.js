@@ -47,6 +47,10 @@ import {
     announce
 } from '/data/UserData/schwung/shared/screen_reader.mjs';
 
+import {
+    drawMenuList
+} from '/data/UserData/schwung/shared/menu_layout.mjs';
+
 /* ============ Constants ============ */
 
 var VIEW_ROOT_PICKER = 1;
@@ -537,34 +541,23 @@ function drawFooter(text) {
 }
 
 function drawList(items, selectedIdx, topY) {
-    var scrollOffset = 0;
-    if (selectedIdx >= MAX_VISIBLE) {
-        scrollOffset = selectedIdx - MAX_VISIBLE + 1;
-    }
-
-    for (var i = 0; i < MAX_VISIBLE; i++) {
-        var idx = scrollOffset + i;
-        if (idx >= items.length) break;
-        var y = topY + i * 9;
-        var label = items[idx];
-        if (typeof label === "object") label = label.label || "";
-        label = truncLabel(label);
-        if (idx === selectedIdx) {
-            fill_rect(0, y - 1, SCREEN_W, 9, 1);
-            print(4, y, label, 0);  /* inverted */
-        } else {
-            print(4, y, label, 1);
+    /* Shared list renderer: long-filename marquee + scroll-arrow indicators
+     * that match the rest of the UI. announce:false because file-browser
+     * emits its own richer, contextual announcements (see the announce()
+     * call sites in handleMidi) — letting drawMenuList announce too would
+     * double-speak every selection move. keepOffLastRow:false preserves the
+     * hand-rolled behavior where the selection could sit on the last row. */
+    drawMenuList({
+        items: items,
+        selectedIndex: selectedIdx,
+        topY: topY,
+        maxVisible: MAX_VISIBLE,
+        keepOffLastRow: false,
+        announce: false,
+        getLabel: function(item) {
+            return (typeof item === "object" && item) ? (item.label || "") : item;
         }
-    }
-
-    /* Scroll indicator */
-    if (items.length > MAX_VISIBLE) {
-        var trackH = MAX_VISIBLE * 9;
-        var barH = Math.max(4, Math.floor((MAX_VISIBLE / items.length) * trackH));
-        var maxScroll = items.length - MAX_VISIBLE;
-        var barY = topY + (maxScroll > 0 ? Math.floor((scrollOffset / maxScroll) * (trackH - barH)) : 0);
-        fill_rect(SCREEN_W - 2, barY, 2, barH, 1);
-    }
+    });
 }
 
 /* Draw item count indicator in header area */
