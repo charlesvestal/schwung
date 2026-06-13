@@ -15,7 +15,8 @@ import {
 import {
     drawMenuHeader as drawHeader,
     drawMenuFooter as drawFooter,
-    drawMenuList
+    drawMenuList,
+    drawConfirmModal
 } from '/data/UserData/schwung/shared/menu_layout.mjs';
 import {
     announce, announceMenuItem
@@ -375,42 +376,10 @@ function drawMasterNamePreview() {
 
 function drawMasterConfirmOverwrite() {
     const { masterPendingSaveName, masterConfirmIndex } = ctx;
-
-    drawHeader("Overwrite?");
-
-    const name = truncateText(masterPendingSaveName, 20);
-    print(LIST_LABEL_X, LIST_TOP_Y, '"' + name + '"', 1);
-
-    const listY = LIST_TOP_Y + 16;
-    for (let i = 0; i < 2; i++) {
-        const y = listY + i * LIST_LINE_HEIGHT;
-        const isSelected = i === masterConfirmIndex;
-        if (isSelected) {
-            fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
-        }
-        print(LIST_LABEL_X, y, i === 0 ? "No" : "Yes", isSelected ? 0 : 1);
-    }
-
-    drawFooter("Back: cancel");
+    drawConfirmModal({ title: "Overwrite?", name: masterPendingSaveName, selectedIndex: masterConfirmIndex });
 }
 
 function drawMasterConfirmDelete() {
     const { currentMasterPresetName, masterConfirmIndex } = ctx;
-
-    drawHeader("Delete?");
-
-    const name = truncateText(currentMasterPresetName, 20);
-    print(LIST_LABEL_X, LIST_TOP_Y, '"' + name + '"', 1);
-
-    const listY = LIST_TOP_Y + 16;
-    for (let i = 0; i < 2; i++) {
-        const y = listY + i * LIST_LINE_HEIGHT;
-        const isSelected = i === masterConfirmIndex;
-        if (isSelected) {
-            fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
-        }
-        print(LIST_LABEL_X, y, i === 0 ? "No" : "Yes", isSelected ? 0 : 1);
-    }
-
-    drawFooter("Back: cancel");
+    drawConfirmModal({ title: "Delete?", name: currentMasterPresetName, selectedIndex: masterConfirmIndex });
 }
