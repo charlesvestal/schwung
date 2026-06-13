@@ -2564,6 +2564,24 @@ function getSlotParam(slot, key) {
     }
 }
 
+/* Blocking set_param for DISCRETE multi-field commits (e.g. LFO target+param,
+ * MPE recv/fwd/enable). In co-run (overtake mode) shadow_set_param is
+ * fire-and-forget and shares ONE shadow_param SHM slot, so two back-to-back
+ * writes race — the 2nd clobbers the 1st before the host drains it, losing the
+ * earlier write (e.g. LFO target reverts to "none"). The blocking variant
+ * (shadow_set_param_timeout, force_blocking) waits for each write to be consumed,
+ * serializing the pair. Knob streams keep the non-blocking path. */
+const SHADOW_SET_BLOCKING_TIMEOUT_MS = 200;
+function shadowSetParamBlocking(slot, key, value) {
+    if (typeof shadow_set_param_timeout === "function") {
+        return shadow_set_param_timeout(slot, key, String(value), SHADOW_SET_BLOCKING_TIMEOUT_MS);
+    }
+    if (typeof shadow_set_param === "function") {
+        return shadow_set_param(slot, key, String(value));
+    }
+    return false;
+}
+
 function setSlotParam(slot, key, value) {
     if (typeof shadow_set_param !== "function") return false;
     try {
@@ -6555,14 +6573,14 @@ function adjustChainSetting(slot, setting, delta) {
                 recv: getSlotParam(slot, "slot:receive_channel"),
                 fwd: getSlotParam(slot, "slot:forward_channel"),
             };
-            setSlotParam(slot, "slot:receive_channel", "0");    /* All */
-            setSlotParam(slot, "slot:forward_channel", "-2");   /* THRU */
-            setSlotParam(slot, "synth:mpe_enabled", "1");
+            shadowSetParamBlocking(slot, "slot:receive_channel", "0");    /* All */
+            shadowSetParamBlocking(slot, "slot:forward_channel", "-2");   /* THRU */
+            shadowSetParamBlocking(slot, "synth:mpe_enabled", "1");
         } else if (delta < 0 && mpeOn) {
             const prev = chainMpePreState[slot];
-            setSlotParam(slot, "slot:receive_channel", prev?.recv || String(slot + 1));
-            setSlotParam(slot, "slot:forward_channel", prev?.fwd || "-1");
-            setSlotParam(slot, "synth:mpe_enabled", "0");
+            shadowSetParamBlocking(slot, "slot:receive_channel", prev?.recv || String(slot + 1));
+            shadowSetParamBlocking(slot, "slot:forward_channel", prev?.fwd || "-1");
+            shadowSetParamBlocking(slot, "synth:mpe_enabled", "0");
             chainMpePreState[slot] = null;
         }
         return;
@@ -11730,8 +11748,8 @@ function handleSelect() {
             if (lfoTargetComponents.length > 0 && lfoCtx) {
                 const comp = lfoTargetComponents[selectedLfoTargetComp];
                 if (comp.key === "__clear__") {
-                    lfoCtx.setParam("target", "");
-                    lfoCtx.setParam("target_param", "");
+                    lfoCtx.setParamBlocking("target", "");
+                    lfoCtx.setParamBlocking("target_param", "");
                     setView(VIEWS.LFO_EDIT);
                     announce("Target cleared");
                     needsRedraw = true;
@@ -11745,8 +11763,8 @@ function handleSelect() {
             if (lfoTargetParams.length > 0 && lfoCtx) {
                 const comp = lfoTargetComponents[selectedLfoTargetComp];
                 const param = lfoTargetParams[selectedLfoTargetParam];
-                lfoCtx.setParam("target", comp.key);
-                lfoCtx.setParam("target_param", param.key);
+                lfoCtx.setParamBlocking("target", comp.key);
+                lfoCtx.setParamBlocking("target_param", param.key);
                 setView(VIEWS.LFO_EDIT);
                 announce("Target set: " + comp.label + " " + param.label);
                 needsRedraw = true;
@@ -13138,6 +13156,7 @@ function makeSlotLfoCtx(slot, lfoIdx) {
         lfoIdx: lfoIdx,
         getParam: function(key) { return getSlotParam(slot, prefix + key); },
         setParam: function(key, val) { setSlotParam(slot, prefix + key, val); },
+        setParamBlocking: function(key, val) { return shadowSetParamBlocking(slot, prefix + key, val); },
         getTargetComponents: function() {
             const comps = [];
             const synthModule = getSlotParam(slot, "synth_module");
@@ -13213,6 +13232,7 @@ function makeMfxLfoCtx(lfoIdx) {
         lfoIdx: lfoIdx,
         getParam: function(key) { return shadow_get_param(0, prefix + key); },
         setParam: function(key, val) { shadow_set_param(0, prefix + key, val); },
+        setParamBlocking: function(key, val) { return shadowSetParamBlocking(0, prefix + key, val); },
         getTargetComponents: function() {
             const comps = [];
             for (let i = 0; i < 4; i++) {
