@@ -88,6 +88,62 @@ Schwung should gate the user-facing entry on the API's presence:
 const corunAvailable = typeof shadow_corun_begin === "function";
 ```
 
+## View addressing — overlays over a co-run target
+
+The two co-run targets above hand the surface to a *fixed* destination for the
+session's whole life. **View addressing** is a layer on top: while a co-run is
+active, a tool can open any **registered** Schwung screen as a temporary
+**overlay** over its current target, and return — without changing `corun.target`,
+so the tool never tears down.
+
+```js
+shadow_corun_entries()            // -> array of openable screen ids (discovery)
+shadow_corun_open(id, keep_mask, args)  // -> true if opened, false on unknown id
+shadow_corun_close()              // -> dismiss; return to the underlay
+```
+
+These three are plain globals defined by shadow_ui (tool and shadow_ui share one
+QuickJS `globalThis`). They are backed by a curated registry, `CORUN_ENTRIES`,
+mapping a stable id to an existing screen's enter-function — `slots`,
+`chain_editor`, `master_fx`, `global_settings`. The registry is curated and added
+to deliberately; it is **never** auto-derived from the `VIEWS` enum (most views
+are context-dependent sub-views that need preloaded state). A tool discovers what
+this build offers via `shadow_corun_entries()` and gates per-id, so it degrades
+gracefully across builds that register different screens.
+
+The only C addition is one SHM helper, **`shadow_corun_overlay(active, keep_mask)`**,
+which flips `shadow_display_owner` and applies the keep_mask **without touching
+`corun.target`** (JS can't write those `shadow_control` fields directly).
+
+### Overlay model
+
+An overlay **reuses the chain-edit co-run dispatch** rather than running a parallel
+router. While one is open:
+
+- The outer `view` stays `OVERTAKE_MODULE`; the addressed screen lives in
+  `coRunView` (the entry's view change is captured by `runCoRunChainEdit`).
+  Keeping `view` at `OVERTAKE_MODULE` is what keeps the tool addressable: the
+  unified dispatch (gated `view === OVERTAKE_MODULE`) keeps delegating
+  pads/steps/transport to the tool, so the tool's own gestures (its exit, its
+  LEDs) keep working — for free, exactly as in chain-edit co-run.
+- `coRunUiActive() = coRunChainEditSlot >= 0 || corunOverlayId != null` gates the
+  draw / knob / Back-guard / intercept. `coRunWants(grp)` is one uniform rule for
+  every UI-element guard: chain-edit handles the groups the tool **cedes**; an
+  overlay handles the groups the tool **keeps** (kept events reach this process;
+  ceded ones go to Move). So a tool enables, e.g., overlay knob editing simply by
+  keeping `CORUN_GRP_KNOBS` — no view-specific code in the dispatcher.
+- `corun.target` is **untouched** → `shadow_corun_state()` still reports the
+  original target, and the tool does not run its teardown.
+- **Back** pops within the addressed view; at the overlay's root it calls
+  `shadow_corun_close()` (return to the underlay). **Menu** (and the tool's own
+  exit gesture) still ends co-run; the per-frame `shadow_corun_state()` reconcile
+  clears the overlay state when co-run ends, handing the screen back to the tool
+  rather than stranding the view.
+
+Additive and backward-compatible: with no overlay open (`corunOverlayId == null`)
+`coRunWants` collapses to `coRunCedes` and the dispatch behaves exactly as the
+framework does without view addressing.
+
 ## Move-firmware coupling
 
 `CORUN_TARGET_MOVE_NATIVE` runs as a pure shim-level split: Move firmware
