@@ -371,6 +371,18 @@ CHAIN_INTERNAL extern char master_preset_names[MAX_MASTER_PRESETS][MAX_NAME_LEN]
 CHAIN_INTERNAL extern char master_preset_paths[MAX_MASTER_PRESETS][MAX_PATH_LEN];
 CHAIN_INTERNAL extern int master_preset_count;
 
+/* Send FX preset registry (shared across both send buses) — owned by chain_patch.c. */
+#define MAX_SEND_PRESETS 64
+CHAIN_INTERNAL extern char send_preset_names[MAX_SEND_PRESETS][MAX_NAME_LEN];
+CHAIN_INTERNAL extern char send_preset_paths[MAX_SEND_PRESETS][MAX_PATH_LEN];
+CHAIN_INTERNAL extern int send_preset_count;
+
+/* Move FX preset registry (shared across all 4 Move FX buses) — owned by chain_patch.c. */
+#define MAX_MOVE_PRESETS 64
+CHAIN_INTERNAL extern char move_preset_names[MAX_MOVE_PRESETS][MAX_NAME_LEN];
+CHAIN_INTERNAL extern char move_preset_paths[MAX_MOVE_PRESETS][MAX_PATH_LEN];
+CHAIN_INTERNAL extern int move_preset_count;
+
 /* ---- cross-TU internals (grouped by defining file) ---- */
 
 /* chain_host.c */
@@ -432,6 +444,16 @@ CHAIN_INTERNAL int load_master_preset_json(int index, char *buf, int buf_len);
 CHAIN_INTERNAL int save_master_preset(const char *json_str);
 CHAIN_INTERNAL void scan_master_presets(void);
 CHAIN_INTERNAL int update_master_preset(int index, const char *json_str);
+CHAIN_INTERNAL int delete_send_preset(int index);
+CHAIN_INTERNAL int load_send_preset_json(int index, char *buf, int buf_len);
+CHAIN_INTERNAL int save_send_preset(const char *json_str);
+CHAIN_INTERNAL void scan_send_presets(void);
+CHAIN_INTERNAL int update_send_preset(int index, const char *json_str);
+CHAIN_INTERNAL int delete_move_preset(int index);
+CHAIN_INTERNAL int load_move_preset_json(int index, char *buf, int buf_len);
+CHAIN_INTERNAL int save_move_preset(const char *json_str);
+CHAIN_INTERNAL void scan_move_presets(void);
+CHAIN_INTERNAL int update_move_preset(int index, const char *json_str);
 CHAIN_INTERNAL int v2_delete_patch(chain_instance_t *inst, int index);
 CHAIN_INTERNAL int v2_load_from_patch_info(chain_instance_t *inst, patch_info_t *patch);
 CHAIN_INTERNAL int v2_load_patch(chain_instance_t *inst, int patch_idx);

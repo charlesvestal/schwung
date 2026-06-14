@@ -19,6 +19,10 @@
  * ============================================================================ */
 
 #define MASTER_FX_SLOTS 4
+#define SEND_BUS_COUNT 2
+#define SEND_FX_SLOTS  4
+#define MOVE_FX_SLOTS  4   /* one Move FX mini-bus per Move track / channel */
+#define MOVE_FX_BLOCKS 2   /* up to 2 insert FX per Move FX slot */
 #define SHADOW_CHAIN_MODULE_DIR "/data/UserData/schwung/modules/chain"
 #define SHADOW_CHAIN_DSP_PATH "/data/UserData/schwung/modules/chain/dsp.so"
 
@@ -111,6 +115,27 @@ extern int shadow_inprocess_ready;
 /* Master FX slots */
 extern master_fx_slot_t shadow_master_fx_slots[MASTER_FX_SLOTS];
 
+/* Send FX slots — 2 buses (A, B) × 3 FX slots each */
+extern master_fx_slot_t shadow_send_fx_slots[SEND_BUS_COUNT][SEND_FX_SLOTS];
+
+/* Per-bus send return level (0..1+, default 1.0) applied to the bus's
+ * FX-processed return before it is summed into the mix. */
+extern float shadow_send_return_level[SEND_BUS_COUNT];
+extern float shadow_send_a_to_b_level;
+
+/* Move FX slots — one mini FX bus per Move track (channel), each with up to
+ * MOVE_FX_BLOCKS insert FX in series. Fed by the channel's Move track when the
+ * synth slot's move_to_slot == 0. Output mixes to the master at the strip's
+ * volume; Send A/B tap the same global send buses as the synth slots. */
+extern master_fx_slot_t shadow_move_fx_slots[MOVE_FX_SLOTS][MOVE_FX_BLOCKS];
+
+typedef struct {
+    float volume;   /* 0..4, default 1.0 (unity) */
+    float send_a;   /* 0..1 post-volume send to bus A */
+    float send_b;   /* 0..1 post-volume send to bus B */
+} move_fx_strip_t;
+extern move_fx_strip_t shadow_move_fx_strip[MOVE_FX_SLOTS];
+
 /* Master FX LFOs */
 #define MASTER_FX_LFO_COUNT 2
 extern lfo_state_t shadow_master_fx_lfos[MASTER_FX_LFO_COUNT];
@@ -166,6 +191,31 @@ static inline int shadow_master_fx_chain_active(void) {
     return 0;
 }
 
+/* Check if any send FX slot is active on a bus */
+static inline int shadow_send_fx_bus_active(int bus) {
+    if (bus < 0 || bus >= SEND_BUS_COUNT) return 0;
+    for (int fx = 0; fx < SEND_FX_SLOTS; fx++) {
+        master_fx_slot_t *s = &shadow_send_fx_slots[bus][fx];
+        if (s->instance && s->api && s->api->process_block) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Check if any FX block on a Move FX slot has a loaded instance. When false the
+ * Move track still routes through the slot (volume + sends) but skips FX. */
+static inline int shadow_move_fx_has_fx(int slot) {
+    if (slot < 0 || slot >= MOVE_FX_SLOTS) return 0;
+    for (int b = 0; b < MOVE_FX_BLOCKS; b++) {
+        master_fx_slot_t *s = &shadow_move_fx_slots[slot][b];
+        if (s->instance && s->api && s->api->process_block) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* ============================================================================
  * Public functions
  * ============================================================================ */
@@ -213,6 +263,16 @@ int shadow_master_fx_slot_load_with_config(int slot, const char *dsp_path,
 int shadow_master_fx_load(const char *dsp_path);
 void shadow_master_fx_unload(void);
 void shadow_master_fx_forward_midi(const uint8_t *msg, int len, int source);
+
+/* --- Send FX --- */
+void shadow_send_fx_slot_unload(int bus, int slot);
+void shadow_send_fx_unload_all(void);
+int shadow_send_fx_slot_load(int bus, int slot, const char *dsp_path);
+
+/* --- Move FX --- */
+void shadow_move_fx_slot_unload(int slot, int block);
+void shadow_move_fx_unload_all(void);
+int shadow_move_fx_slot_load(int slot, int block, const char *dsp_path);
 
 /* --- Capture loading --- */
 void shadow_slot_load_capture(int slot, int patch_index);
