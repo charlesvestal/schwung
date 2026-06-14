@@ -462,8 +462,8 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
         }
         free(temp_buf);
 
-        if (cp_len >= 32768 - 1 || ui_len >= SHADOW_PARAM_VALUE_LEN - 1) {
-            snprintf(msg, sizeof(msg), "Synth %s UI or param JSON too large (chain_params: %d, ui_hierarchy: %d). Max cp:32767 ui:%d.", 
+        if (cp_len >= SHADOW_PARAM_VALUE_LEN - 1 || ui_len >= SHADOW_PARAM_VALUE_LEN - 1) {
+            snprintf(msg, sizeof(msg), "Synth %s UI or param JSON too large (chain_params: %d, ui_hierarchy: %d). Max %d.", 
                      module_name, cp_len, ui_len, SHADOW_PARAM_VALUE_LEN - 1);
             v2_chain_log(inst, msg);
             snprintf(inst->synth_load_error, sizeof(inst->synth_load_error), "UI buffer overflow");
