@@ -2786,6 +2786,29 @@ function invokeModuleOnUnload(callbacks, moduleId) {
     }
 }
 
+/* Invoke a module's optional onResume() callback once per suspend→resume.
+ *
+ * Module-facing contract: onResume() runs each time the user returns to
+ * an already-loaded overtake module that was suspended (another module or
+ * MoveOriginal had been brought to the front). It is NOT a second init()
+ * — init() ran once at load and is not repeated — it is the signal to
+ * re-establish whatever state does not survive being backgrounded. Notably
+ * the hardware LEDs are cleared while suspended, so a module that paints
+ * LEDs should force a full repaint here. Optional: a module that needs
+ * nothing on resume simply omits it.
+ *
+ * Wrapped in try/catch so a buggy module can't break the resume path. */
+function invokeModuleOnResume(callbacks, moduleId) {
+    if (callbacks && typeof callbacks.onResume === "function") {
+        try {
+            debugLog("invokeModuleOnResume: " + moduleId);
+            callbacks.onResume();
+        } catch (e) {
+            debugLog("invokeModuleOnResume(" + moduleId + ") threw: " + e);
+        }
+    }
+}
+
 /* Enter the overtake module selection menu */
 function enterOvertakeMenu() {
     /* Flush set state before entering overtake — periodic autosave is gated
@@ -3059,6 +3082,11 @@ function resumeOvertakeModule(moduleId) {
 
     setView(VIEWS.OVERTAKE_MODULE);
     needsRedraw = true;
+    /* Fire the module's onResume() hook (init() is NOT re-run on resume).
+     * Called after the full callback / LED-queue / shim restore above so
+     * the module sees its own globals in place. See invokeModuleOnResume
+     * for the module-facing contract. */
+    invokeModuleOnResume(overtakeModuleCallbacks, overtakeModuleId);
     /* Flush restored LEDs to SHM so they render this frame. */
     flushLedQueue();
     return true;
@@ -3397,7 +3425,11 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
             init: (globalThis.init !== savedInit) ? globalThis.init : null,
             tick: (globalThis.tick !== savedTick) ? globalThis.tick : null,
             onMidiMessageInternal: (globalThis.onMidiMessageInternal !== savedMidi) ? globalThis.onMidiMessageInternal : null,
-            onUnload: (typeof globalThis.onUnload === "function") ? globalThis.onUnload : null
+            onUnload: (typeof globalThis.onUnload === "function") ? globalThis.onUnload : null,
+            /* onResume(): optional. Called once each time the module is
+             * resumed from suspend (init() is NOT re-run). See
+             * invokeModuleOnResume for the module-facing contract. */
+            onResume: (typeof globalThis.onResume === "function") ? globalThis.onResume : null
         };
 
         /* Restore shadow UI's globals */
@@ -3405,6 +3437,7 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
         globalThis.tick = savedTick;
         globalThis.onMidiMessageInternal = savedMidi;
         if (typeof globalThis.onUnload === "function") delete globalThis.onUnload;
+        if (typeof globalThis.onResume === "function") delete globalThis.onResume;
 
         debugLog("loadOvertakeModule: callbacks captured - init:" + !!overtakeModuleCallbacks.init +
                  " tick:" + !!overtakeModuleCallbacks.tick +
