@@ -7246,6 +7246,11 @@ function enterComponentEdit(slotIndex, componentKey) {
     selectedSlot = slotIndex;
     editingComponentKey = componentKey;
 
+    /* Check for synth load errors first to show a warning overlay */
+    if (componentKey === "synth" && checkAndShowSynthError(slotIndex)) {
+        return;
+    }
+
     /* Try hierarchy editor first (for plugins with ui_hierarchy) */
     const hierarchy = getComponentHierarchy(slotIndex, componentKey);
     debugLog(`enterComponentEdit: hierarchy=${hierarchy ? 'found' : 'null'}`);
@@ -12570,6 +12575,21 @@ function drawComponentEdit() {
     drawHeader(headerText);
 
     const centerY = 32;
+
+    /* Check for load error */
+    const synthError = getSlotParam(selectedSlot, "synth_error");
+    if (editingComponentKey === "synth" && synthError && synthError.length > 0) {
+        const titleText = "ERROR LOADING";
+        const titleX = Math.floor((SCREEN_WIDTH - titleText.length * 5) / 2);
+        print(titleX, centerY - 10, titleText, 1);
+
+        const errorText = truncateText(synthError, 24);
+        const errorX = Math.floor((SCREEN_WIDTH - errorText.length * 5) / 2);
+        print(errorX, centerY + 2, errorText, 1);
+
+        drawFooter({left: "Back: done"});
+        return;
+    }
 
     /* Re-fetch preset count if zero (module may still be loading) */
     if (editComponentPresetCount === 0) {

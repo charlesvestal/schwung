@@ -35,6 +35,7 @@
 #include "host/midi_fx_api_v1.h"
 #include "host/lfo_common.h"
 #include "../../../host/unified_log.h"
+#include "../../../host/shadow_constants.h"
 
 /* Limits */
 #define MAX_PATCHES 32      /* Max patches to list in browser */
@@ -354,6 +355,9 @@ typedef struct chain_instance {
      * module.json; shim must never park the slot as fx_idle so stateful FX
      * (loopers, modulated delays) keep advancing internal time during silence. */
     int fx_requires_continuous[MAX_AUDIO_FX];
+    
+    /* Synth load error message */
+    char synth_load_error[256];
 } chain_instance_t;
 
 #define CHAIN_INTERNAL __attribute__((visibility("hidden")))
