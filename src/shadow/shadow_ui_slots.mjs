@@ -27,6 +27,8 @@ export const SLOT_SETTINGS = [
     { key: "patch", label: "Patch", type: "action" },
     { key: "chain", label: "Edit Chain", type: "action" },
     { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 4, step: 0.05 },
+    { key: "slot:send_a", label: "Send A", type: "float", min: 0, max: 1, step: 0.05 },
+    { key: "slot:send_b", label: "Send B", type: "float", min: 0, max: 1, step: 0.05 },
     { key: "slot:muted", label: "Muted", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:soloed", label: "Soloed", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 0, max: 16, step: 1 },
@@ -40,6 +42,33 @@ export const SLOT_SETTINGS = [
 
 let selectedSetting = 0;
 let editingSettingValue = false;
+
+function getSendFxDisplayName(bus) {
+    const { getSlotParam } = ctx;
+    const busKey = bus === 0 ? "a" : "b";
+    const parts = [];
+    for (let i = 1; i <= 3; i++) {
+        const name = getSlotParam(0, `send_fx:${busKey}:fx${i}:name`);
+        if (name) parts.push(name);
+    }
+    return parts.length > 0 ? parts.join("+") : "None";
+}
+
+/* One Move FX mini-bus per Move track (channel). Show loaded block names.
+ * Probes up to 4 blocks so it works regardless of MOVE_FX_BLOCKS. */
+function getMoveFxDisplayName(slot) {
+    const { getSlotParam } = ctx;
+    const parts = [];
+    for (let i = 1; i <= 4; i++) {
+        const name = getSlotParam(0, `move_fx:${slot + 1}:fx${i}:name`);
+        if (name) parts.push(name);
+    }
+    return parts.length > 0 ? parts.join("+") : "None";
+}
+
+/* Number of Move FX slots (one per Move track). Matches MOVE_FX_SLOTS in C and
+ * MOVE_FX_SLOTS_JS in shadow_ui.js; fixed at 4 (Move has 4 tracks). */
+const MOVE_FX_SLOT_ROWS = 4;
 
 /* ---- Helpers ------------------------------------------------------------ */
 
@@ -63,6 +92,11 @@ export function getSlotSettingValue(slot, setting) {
     if (val === null) return "-";
 
     if (setting.key === "slot:volume") {
+        const num = parseFloat(val);
+        const pct = isNaN(num) ? 0 : Math.round(num * 100);
+        return `${pct}%`;
+    }
+    if (setting.key === "slot:send_a" || setting.key === "slot:send_b") {
         const num = parseFloat(val);
         const pct = isNaN(num) ? 0 : Math.round(num * 100);
         return `${pct}%`;
@@ -183,7 +217,12 @@ export function drawSlots() {
                 isSlot: true
             };
         }),
-        { label: " Master FX", value: getMasterFxDisplayName(), isSlot: false }
+        { label: " Master FX", value: getMasterFxDisplayName(), isSlot: false },
+        { label: " Send FX A", value: getSendFxDisplayName(0), isSlot: false },
+        { label: " Send FX B", value: getSendFxDisplayName(1), isSlot: false },
+        ...Array.from({ length: MOVE_FX_SLOT_ROWS }, (_, i) => ({
+            label: " Move " + (i + 1) + " FX", value: getMoveFxDisplayName(i), isSlot: false
+        }))
     ];
 
     drawMenuList({
@@ -256,7 +295,7 @@ export function drawSlotSettings() {
 
 export function handleSlotsJog(delta) {
     const { slots, updateFocusedSlot } = ctx;
-    ctx.selectedSlot = Math.max(0, Math.min(slots.length, ctx.selectedSlot + delta));
+    ctx.selectedSlot = Math.max(0, Math.min(slots.length + 2 + MOVE_FX_SLOT_ROWS, ctx.selectedSlot + delta));
     updateFocusedSlot(ctx.selectedSlot);
 }
 
@@ -278,11 +317,18 @@ export function handleSlotSettingsJog(delta) {
 /* ---- Select ------------------------------------------------------------- */
 
 export function handleSlotsSelect() {
-    const { selectedSlot, slots, enterChainEdit, enterMasterFxSettings } = ctx;
+    const { selectedSlot, slots, enterChainEdit, enterFxBusEditor } = ctx;
     if (selectedSlot < slots.length) {
         enterChainEdit(selectedSlot);
-    } else {
-        enterMasterFxSettings();
+    } else if (selectedSlot === slots.length) {
+        enterFxBusEditor("master");
+    } else if (selectedSlot === slots.length + 1) {
+        enterFxBusEditor("sendA");
+    } else if (selectedSlot === slots.length + 2) {
+        enterFxBusEditor("sendB");
+    } else if (selectedSlot >= slots.length + 3 &&
+               selectedSlot < slots.length + 3 + MOVE_FX_SLOT_ROWS) {
+        enterFxBusEditor("moveFx" + (selectedSlot - (slots.length + 2)));
     }
 }
 

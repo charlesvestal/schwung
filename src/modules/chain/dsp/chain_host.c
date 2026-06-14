@@ -744,6 +744,28 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             update_master_preset(index, colon + 1);
         }
     }
+    /* Send FX preset commands (shared list across both send buses A/B) */
+    else if (strcmp(key, "save_send_preset") == 0) {
+        save_send_preset(val);
+    }
+    else if (strcmp(key, "delete_send_preset") == 0) {
+        delete_send_preset(atoi(val));
+    }
+    else if (strcmp(key, "update_send_preset") == 0) {
+        const char *colon = strchr(val, ':');
+        if (colon) update_send_preset(atoi(val), colon + 1);
+    }
+    /* Move FX preset commands (shared store across all 4 Move FX buses) */
+    else if (strcmp(key, "save_move_preset") == 0) {
+        save_move_preset(val);
+    }
+    else if (strcmp(key, "delete_move_preset") == 0) {
+        delete_move_preset(atoi(val));
+    }
+    else if (strcmp(key, "update_move_preset") == 0) {
+        const char *colon = strchr(val, ':');
+        if (colon) update_move_preset(atoi(val), colon + 1);
+    }
     else if (strncmp(key, "synth:", 6) == 0) {
         const char *subkey = key + 6;
         /* Intercept module change to swap synth dynamically */
@@ -1256,6 +1278,34 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     if (strncmp(key, "master_preset_json_", 19) == 0) {
         int idx = atoi(key + 19);
         return load_master_preset_json(idx, buf, buf_len);
+    }
+    /* Send FX preset queries (shared list across both send buses A/B) */
+    if (strcmp(key, "send_preset_count") == 0) {
+        scan_send_presets();
+        return snprintf(buf, buf_len, "%d", send_preset_count);
+    }
+    if (strncmp(key, "send_preset_name_", 17) == 0) {
+        int idx = atoi(key + 17);
+        if (idx >= 0 && idx < send_preset_count)
+            return snprintf(buf, buf_len, "%s", send_preset_names[idx]);
+        return -1;
+    }
+    if (strncmp(key, "send_preset_json_", 17) == 0) {
+        return load_send_preset_json(atoi(key + 17), buf, buf_len);
+    }
+    /* Move FX preset queries (shared store across all 4 Move FX buses) */
+    if (strcmp(key, "move_preset_count") == 0) {
+        scan_move_presets();
+        return snprintf(buf, buf_len, "%d", move_preset_count);
+    }
+    if (strncmp(key, "move_preset_name_", 17) == 0) {
+        int idx = atoi(key + 17);
+        if (idx >= 0 && idx < move_preset_count)
+            return snprintf(buf, buf_len, "%s", move_preset_names[idx]);
+        return -1;
+    }
+    if (strncmp(key, "move_preset_json_", 17) == 0) {
+        return load_move_preset_json(atoi(key + 17), buf, buf_len);
     }
     if (strcmp(key, "fx_count") == 0) {
         return snprintf(buf, buf_len, "%d", inst->fx_count);
