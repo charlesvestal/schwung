@@ -116,6 +116,10 @@ void v2_synth_panic(chain_instance_t *inst) {
 static int v2_synth_get_error(chain_instance_t *inst, char *buf, int buf_len) {
     if (!inst) return 0;
 
+    if (inst->synth_load_error[0] != '\0') {
+        return snprintf(buf, buf_len, "%s", inst->synth_load_error);
+    }
+
     if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->get_error) {
         return inst->synth_plugin_v2->get_error(inst->synth_instance, buf, buf_len);
     }
@@ -125,6 +129,7 @@ static int v2_synth_get_error(chain_instance_t *inst, char *buf, int buf_len) {
 /* V2 unload synth */
 void v2_unload_synth(chain_instance_t *inst) {
     if (!inst) return;
+    inst->synth_load_error[0] = '\0';
     chain_mod_clear_target_entries(inst, "synth", 0);
 
     if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->destroy_instance) {
@@ -409,6 +414,7 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
     char dsp_path[MAX_PATH_LEN];
     snprintf(dsp_path, sizeof(dsp_path), "%s/dsp.so", synth_path);
 
+    inst->synth_load_error[0] = '\0';
     snprintf(msg, sizeof(msg), "Loading synth: %s", dsp_path);
     v2_chain_log(inst, msg);
 
@@ -443,6 +449,37 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
         v2_chain_log(inst, msg);
         dlclose(handle);
         return -1;
+    }
+
+    /* Check UI and parameters JSON buffer size limits */
+    char *temp_buf = (char*)malloc(262144);
+    if (temp_buf) {
+        int cp_len = 0;
+        int ui_len = 0;
+        if (api->get_param) {
+            cp_len = api->get_param(synth_inst, "chain_params", temp_buf, 262144);
+            ui_len = api->get_param(synth_inst, "ui_hierarchy", temp_buf, 262144);
+        }
+        free(temp_buf);
+
+        if (cp_len >= 32768 - 1 || ui_len >= SHADOW_PARAM_VALUE_LEN - 1) {
+            snprintf(msg, sizeof(msg), "Synth %s UI or param JSON too large (chain_params: %d, ui_hierarchy: %d). Max cp:32767 ui:%d.", 
+                     module_name, cp_len, ui_len, SHADOW_PARAM_VALUE_LEN - 1);
+            v2_chain_log(inst, msg);
+            snprintf(inst->synth_load_error, sizeof(inst->synth_load_error), "UI buffer overflow");
+            
+            api->destroy_instance(synth_inst);
+            
+            /* Proceed as success with NULL synth_instance so UI loads and displays error */
+            inst->synth_handle = handle;
+            inst->synth_plugin_v2 = api;
+            inst->synth_instance = NULL;
+            strncpy(inst->current_synth_module, module_name, MAX_NAME_LEN - 1);
+            
+            parse_chain_params(synth_path, inst->synth_params, &inst->synth_param_count);
+            inst->mod_param_refresh_ms_synth = 0;
+            return 0;
+        }
     }
 
     inst->synth_handle = handle;

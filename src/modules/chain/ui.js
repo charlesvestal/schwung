@@ -2221,23 +2221,30 @@ function drawUI() {
 
     /* Synth module info with bank name */
     const synthDisplay = getComponentName("synth", synthModule) || "SF2";
-    const bankName = host_module_get_param("bank_name");
-    if (bankName) {
-        print(2, 20, `${synthDisplay}  ${bankName}`, 1);
+    const synthError = host_module_get_param("synth_error") || host_module_get_param("load_error");
+    if (synthError) {
+        print(2, 20, `${synthDisplay}: Error`, 1);
+        print(2, 32, synthError.substring(0, 21), 1);
+        print(2, 44, "Check debug.log", 1);
     } else {
-        print(2, 20, synthDisplay, 1);
-    }
+        const bankName = host_module_get_param("bank_name");
+        if (bankName) {
+            print(2, 20, `${synthDisplay}  ${bankName}`, 1);
+        } else {
+            print(2, 20, synthDisplay, 1);
+        }
 
-    /* Preset from synth with number */
-    const pn = host_module_get_param("preset_name");
-    const pib = host_module_get_param("patch_in_bank");
-    if (pn) {
-        presetName = pn.substring(0, 16);
-    }
-    if (pib) {
-        print(2, 32, `#${pib} ${presetName}`, 1);
-    } else {
-        print(2, 32, presetName, 1);
+        /* Preset from synth with number */
+        const pn = host_module_get_param("preset_name");
+        const pib = host_module_get_param("patch_in_bank");
+        if (pn) {
+            presetName = pn.substring(0, 16);
+        }
+        if (pib) {
+            print(2, 32, `#${pib} ${presetName}`, 1);
+        } else {
+            print(2, 32, presetName, 1);
+        }
     }
 
     /* Octave and polyphony */
