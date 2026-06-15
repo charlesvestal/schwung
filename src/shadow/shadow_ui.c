@@ -429,6 +429,19 @@ static JSValue js_shadow_set_skip_led_clear(JSContext *ctx, JSValueConst this_va
     return JS_UNDEFINED;
 }
 
+/* shadow_set_overtake_suppress_sysex(flag) -> void
+ * Opt a full-overtake tool into stripping Move's cable-0 sysex (RGB pad/clip/
+ * grid LEDs) so Move's running-sequencer repaints don't fight the tool's LEDs.
+ * Set on tool init; cleared automatically on overtake exit (and below). */
+static JSValue js_shadow_set_overtake_suppress_sysex(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 1) return JS_UNDEFINED;
+    int32_t flag = 0;
+    JS_ToInt32(ctx, &flag, argv[0]);
+    shadow_control->overtake_suppress_sysex = flag ? 1 : 0;
+    return JS_UNDEFINED;
+}
+
 /* host_mute_move_audio(flag) -> void
  * Mute/unmute Move's audio output. Used for silent clip switching. */
 static JSValue js_host_mute_move_audio(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -2119,6 +2132,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_move_ui_mode", JS_NewCFunction(ctx, js_shadow_get_move_ui_mode, "shadow_get_move_ui_mode", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_overtake_mode", JS_NewCFunction(ctx, js_shadow_set_overtake_mode, "shadow_set_overtake_mode", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_skip_led_clear", JS_NewCFunction(ctx, js_shadow_set_skip_led_clear, "shadow_set_skip_led_clear", 1));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_set_overtake_suppress_sysex", JS_NewCFunction(ctx, js_shadow_set_overtake_suppress_sysex, "shadow_set_overtake_suppress_sysex", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_suspend_overtake", JS_NewCFunction(ctx, js_shadow_set_suspend_overtake, "shadow_set_suspend_overtake", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_suspend_overtake", JS_NewCFunction(ctx, js_shadow_get_suspend_overtake, "shadow_get_suspend_overtake", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_consume_resume_last_tool", JS_NewCFunction(ctx, js_shadow_consume_resume_last_tool, "shadow_consume_resume_last_tool", 0));

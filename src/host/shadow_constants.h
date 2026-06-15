@@ -168,7 +168,13 @@ typedef struct shadow_control_t {
         uint16_t keep_mask;
     } corun;
     volatile uint8_t shadow_display_owner; /* display_owner_t: who currently owns the OLED. Independent of shadow_display_mode (which only says "shadow session active"). */
-    volatile uint8_t reserved[1];
+    /* 1=also strip Move's cable-0 sysex (RGB pad/clip/grid LEDs) during FULL
+     * overtake, so a tool that forces Move's sequencer to keep running (e.g.
+     * dAVEBOx Clock Follow) gets true full LED control instead of fighting
+     * Move's repaints. Opt-in per tool (shadow_set_overtake_suppress_sysex);
+     * default 0 leaves the existing sysex passthrough unchanged. Consumes the
+     * former reserved[1] byte so shadow_control_t size is unchanged. */
+    volatile uint8_t overtake_suppress_sysex;
 } shadow_control_t;
 
 /* Co-run control-surface groups. A co-running overtake tool declares which
@@ -222,6 +228,7 @@ static inline uint16_t corun_group_for_event(uint8_t type, uint8_t d1) {
     }
     if (type == 0x90 || type == 0x80) {
         if (d1 <= 9) return CORUN_GRP_TOUCH;
+        if (d1 >= 16 && d1 <= 31) return CORUN_GRP_STEPS; /* step-button row */
         if (d1 >= 68 && d1 <= 99) return CORUN_GRP_PADS;
     }
     return 0;
