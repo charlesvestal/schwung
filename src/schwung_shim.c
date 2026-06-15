@@ -2921,6 +2921,7 @@ static void init_shadow_shm(void)
         shadow_control->suspend_overtake = 0;
         shadow_control->selected_slot    = 0;
         shadow_control->skip_led_clear   = 0;
+        shadow_control->overtake_suppress_sysex = 0;
         shadow_control->corun.target = CORUN_TARGET_NONE;  /* co-run inactive at boot */
         shadow_control->corun.id = -1;
         shadow_control->corun.keep_mask = 0;  /* 0 = default split when a target is set without a manifest */
