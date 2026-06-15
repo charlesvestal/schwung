@@ -51,7 +51,7 @@
  * MIDI_OUT must be bounded by this to avoid corrupting the display. */
 #define HW_MIDI_OUT_SIZE    80
 #define DISPLAY_BUFFER_SIZE 1024  /* 128x64 @ 1bpp = 1024 bytes */
-#define CONTROL_BUFFER_SIZE 72  /* bumped for sampler_source_request + sampler_silent (PR #61); leaves headroom in reserved[] */
+#define CONTROL_BUFFER_SIZE 76  /* +corun.led_keep_mask; 74 bytes content padded to 76 (struct has 4-byte-aligned uint32_t/float members) */
 #define SHADOW_UI_BUFFER_SIZE     512
 #define SHADOW_PARAM_BUFFER_SIZE  65664  /* Large buffer for complex ui_hierarchy */
 #define SHADOW_MIDI_OUT_BUFFER_SIZE 512  /* MIDI out buffer from shadow UI (128 packets) */
@@ -165,7 +165,10 @@ typedef struct shadow_control_t {
     volatile struct {
         int8_t target;       /* corun_target_t */
         int8_t id;
-        uint16_t keep_mask;
+        uint16_t keep_mask;      /* CORUN_GRP_* the tool owns for INPUT (cedes the rest to the peer) */
+        uint16_t led_keep_mask;  /* CORUN_GRP_* the tool owns for LEDs; 0 = follow keep_mask. Lets a tool
+                                  * paint a surface while still ceding its presses (e.g. dAVEBOx draws the
+                                  * track-button clip indicator but lets Move/Schwung handle the press). */
     } corun;
     volatile uint8_t shadow_display_owner; /* display_owner_t: who currently owns the OLED. Independent of shadow_display_mode (which only says "shadow session active"). */
     /* 1=also strip Move's cable-0 sysex (RGB pad/clip/grid LEDs) during FULL
@@ -238,6 +241,15 @@ static inline uint16_t corun_group_for_event(uint8_t type, uint8_t d1) {
  * which means "use the default split". */
 static inline uint16_t corun_keep_mask_eff(uint16_t keep_mask) {
     return keep_mask ? keep_mask : CORUN_KEEP_DEFAULT;
+}
+
+/* Effective LED keep-mask: which groups the tool owns for LED stripping. A tool
+ * that wants to paint a surface but cede its input sets led_keep_mask
+ * separately; when unset (0) LED ownership follows the input keep_mask, so the
+ * common case (own both) needs no extra call. */
+static inline uint16_t corun_led_keep_mask_eff(const volatile shadow_control_t *ctrl) {
+    uint16_t led = ctrl ? ctrl->corun.led_keep_mask : 0;
+    return led ? led : corun_keep_mask_eff(ctrl ? ctrl->corun.keep_mask : 0);
 }
 
 /* Co-run target. Stored in shadow_control->corun.target as int8_t. */
