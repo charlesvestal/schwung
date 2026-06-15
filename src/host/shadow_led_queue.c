@@ -402,8 +402,10 @@ void shadow_clear_move_leds_if_overtake(void) {
      * (capabilities.button_passthrough) keep their firmware LEDs. */
     const uint8_t *passthrough = host.passthrough_ccs;
 
+    int suppress_sysex = (ctrl && ctrl->overtake_suppress_sysex);
     for (int i = 0; i < HW_MIDI_OUT_SIZE; i += 4) {
         uint8_t cable = (midi_out[i] >> 4) & 0x0F;
+        uint8_t cin  = midi_out[i] & 0x0F;
         uint8_t type = midi_out[i+1] & 0xF0;
         if (cable != 0) continue;
         if (type == 0x90) {
@@ -415,6 +417,20 @@ void shadow_clear_move_leds_if_overtake(void) {
         } else if (type == 0xB0) {
             uint8_t d1 = midi_out[i+2];
             if (passthrough && d1 < 128 && passthrough[d1]) continue;
+            midi_out[i] = 0;
+            midi_out[i+1] = 0;
+            midi_out[i+2] = 0;
+            midi_out[i+3] = 0;
+        } else if (suppress_sysex && cin >= 0x04 && cin <= 0x07) {
+            /* Move's RGB pad/clip/grid LEDs ride cable-0 sysex (the Ableton
+             * F0 00 21 1D ... LED command). The note/CC strips above don't
+             * touch sysex, so by default Move's RGB repaints pass through —
+             * fine when its sequencer is stopped, but they fight the tool's
+             * LEDs once a tool (dAVEBOx Clock Follow) keeps Move running.
+             * Opt-in: strip every cable-0 sysex packet (start/continue/end,
+             * CIN 0x04-0x07) so the tool owns RGB too. Safe because such a
+             * tool paints its own pads via note-palette / CC, injected into
+             * the mailbox AFTER this strip. */
             midi_out[i] = 0;
             midi_out[i+1] = 0;
             midi_out[i+2] = 0;
