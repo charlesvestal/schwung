@@ -2925,6 +2925,7 @@ static void init_shadow_shm(void)
         shadow_control->corun.target = CORUN_TARGET_NONE;  /* co-run inactive at boot */
         shadow_control->corun.id = -1;
         shadow_control->corun.keep_mask = 0;  /* 0 = default split when a target is set without a manifest */
+        shadow_control->corun.led_keep_mask = 0; /* 0 = LED ownership follows keep_mask */
         shadow_control->shadow_display_owner = DISPLAY_OWNER_SCHWUNG_UI; /* splash boots into shadow UI */
         /* Initialize TTS defaults */
         shadow_control->tts_enabled = 0;    /* Screen Reader off by default */
@@ -6802,6 +6803,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         shadow_control->corun.target = CORUN_TARGET_NONE;
                         shadow_control->corun.id = -1;
                         shadow_control->corun.keep_mask = 0;
+                        shadow_control->corun.led_keep_mask = 0;
                         shadow_control->shadow_display_owner = DISPLAY_OWNER_SCHWUNG_UI;
                         shadow_log("Back: exiting co-run");
                         continue;
