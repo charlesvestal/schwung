@@ -86,6 +86,7 @@
     // DOM references.
     var statusEl = document.getElementById("remote-ui-status");
     var slotTitleEl = document.getElementById("slot-title");
+    var slotHeaderControlsEl = document.getElementById("slot-header-controls");
     var slotContentEl = document.getElementById("slot-content");
     var debugEl = document.getElementById("slot-debug");
     var tabButtons = document.querySelectorAll(".remote-ui-tab");
@@ -1428,6 +1429,7 @@
     function renderSlot() {
         slotContentEl.innerHTML = "";
         debugEl.innerHTML = "";
+        if (slotHeaderControlsEl) slotHeaderControlsEl.innerHTML = "";
 
         // Clear custom UI iframe state on re-render.
         customUIIframe = null;
@@ -1458,11 +1460,12 @@
             return;
         }
 
-        // When the synth ships a custom web UI, show a toggle (in both modes)
-        // so the user can switch between it and the auto-generated param UI.
+        // When the synth ships a custom web UI, put the Interface toggle and
+        // the pop-out button inline next to the slot label (compact, both modes).
         var hasCustomUI = !!(s.customUI && s.customUI.url && hasAnyModule);
-        if (hasCustomUI) {
-            slotContentEl.appendChild(renderUiModeToggle(s));
+        if (hasCustomUI && slotHeaderControlsEl) {
+            slotHeaderControlsEl.appendChild(renderUiModeToggle(s));
+            slotHeaderControlsEl.appendChild(makePopOutButton(s.customUI.url, activeSlot));
         }
 
         // Render the custom web UI unless the user opted out for this slot.
@@ -1905,7 +1908,7 @@
 
         var label = document.createElement("span");
         label.className = "ui-mode-label";
-        label.textContent = "UI";
+        label.textContent = "Interface";
         bar.appendChild(label);
 
         var group = document.createElement("div");
@@ -1929,20 +1932,11 @@
         return bar;
     }
 
-    function renderCustomUI(s) {
-        var url = s.customUI.url;
-        var slot = activeSlot;
-
-        // Create iframe container.
-        var container = document.createElement("div");
-        container.className = "custom-ui-container";
-
-        // Toolbar with a "pop out" button — opens the module UI as its own
-        // top-level window, free of the iframe's sandbox/sizing. The standalone
-        // page talks to /ws/remote-ui directly (see schwung-remote-api.js), so
-        // it keeps working even if this manager tab is closed.
-        var toolbar = document.createElement("div");
-        toolbar.className = "custom-ui-toolbar";
+    // "Pop out" button — opens the module UI as its own top-level window, free
+    // of the iframe's sandbox/sizing. The standalone page talks to
+    // /ws/remote-ui directly (see schwung-remote-api.js), so it keeps working
+    // even if this manager tab is closed.
+    function makePopOutButton(url, slot) {
         var popBtn = document.createElement("button");
         popBtn.type = "button";
         popBtn.className = "custom-ui-popout-btn";
@@ -1953,8 +1947,15 @@
             var popUrl = url + sep + "schwungStandalone=1&slot=" + slot;
             window.open(popUrl, "schwungPopout_" + slot);
         };
-        toolbar.appendChild(popBtn);
-        container.appendChild(toolbar);
+        return popBtn;
+    }
+
+    function renderCustomUI(s) {
+        var url = s.customUI.url;
+
+        // Create iframe container.
+        var container = document.createElement("div");
+        container.className = "custom-ui-container";
 
         var iframe = document.createElement("iframe");
         iframe.className = "custom-ui-iframe";

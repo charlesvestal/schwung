@@ -152,13 +152,28 @@
 
 /* ---- Slot Header ---- */
 .slot-header {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-sm) var(--space-md);
     margin-bottom: var(--space-lg);
 }
 
 .slot-header h2 {
     font-size: 1.25rem;
     font-weight: 600;
-    margin-bottom: var(--space-xs);
+    margin: 0;
+}
+
+/* Inline controls (Interface toggle + pop-out) beside the slot label. */
+.slot-header-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-sm);
+}
+
+.slot-header-controls:empty {
+    display: none;
 }
 
 /* ---- Breadcrumb ---- */
@@ -501,17 +516,16 @@
 }
 
 /* ---- Custom Module Web UI (iframe) ---- */
-/* ---- Custom / Default UI toggle ---- */
+/* ---- Custom / Default Interface toggle (compact, in slot header) ---- */
 .ui-mode-toggle {
-    display: flex;
+    display: inline-flex;
     align-items: center;
-    gap: var(--space-sm);
-    margin-bottom: var(--space-md);
+    gap: var(--space-xs);
 }
 
 .ui-mode-label {
     color: var(--text-muted);
-    font-size: 0.85rem;
+    font-size: 0.7rem;
     text-transform: uppercase;
     letter-spacing: 0.05em;
 }
@@ -524,14 +538,14 @@
 }
 
 .ui-mode-btn {
-    padding: var(--space-xs) var(--space-md);
+    padding: 2px var(--space-sm);
     background: transparent;
     color: var(--text-muted);
     border: none;
     cursor: pointer;
     font-family: var(--font-stack);
-    font-size: 0.9rem;
-    min-height: var(--min-touch);
+    font-size: 0.78rem;
+    line-height: 1.6;
     transition: color 0.15s, background 0.15s;
 }
 
@@ -560,23 +574,17 @@
     background: var(--bg-card);
 }
 
-.custom-ui-toolbar {
-    display: flex;
-    justify-content: flex-end;
-    padding: var(--space-xs) var(--space-sm);
-    border-bottom: 1px solid var(--border);
-    background: var(--bg-card-hover);
-}
-
+/* Compact pop-out button — sits inline in the slot header. */
 .custom-ui-popout-btn {
     background: transparent;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     color: var(--text);
-    padding: var(--space-xs) var(--space-sm);
+    padding: 2px var(--space-sm);
     cursor: pointer;
     font-family: var(--font-stack);
-    font-size: 0.85rem;
+    font-size: 0.78rem;
+    line-height: 1.6;
     transition: background 0.15s, border-color 0.15s;
 }
 
