@@ -1931,10 +1931,30 @@
 
     function renderCustomUI(s) {
         var url = s.customUI.url;
+        var slot = activeSlot;
 
         // Create iframe container.
         var container = document.createElement("div");
         container.className = "custom-ui-container";
+
+        // Toolbar with a "pop out" button — opens the module UI as its own
+        // top-level window, free of the iframe's sandbox/sizing. The standalone
+        // page talks to /ws/remote-ui directly (see schwung-remote-api.js), so
+        // it keeps working even if this manager tab is closed.
+        var toolbar = document.createElement("div");
+        toolbar.className = "custom-ui-toolbar";
+        var popBtn = document.createElement("button");
+        popBtn.type = "button";
+        popBtn.className = "custom-ui-popout-btn";
+        popBtn.textContent = "Pop out ↗";
+        popBtn.title = "Open this UI in its own window";
+        popBtn.onclick = function () {
+            var sep = url.indexOf("?") === -1 ? "?" : "&";
+            var popUrl = url + sep + "schwungStandalone=1&slot=" + slot;
+            window.open(popUrl, "schwungPopout_" + slot);
+        };
+        toolbar.appendChild(popBtn);
+        container.appendChild(toolbar);
 
         var iframe = document.createElement("iframe");
         iframe.className = "custom-ui-iframe";

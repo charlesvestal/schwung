@@ -560,6 +560,36 @@
     background: var(--bg-card);
 }
 
+.custom-ui-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    padding: var(--space-xs) var(--space-sm);
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-card-hover);
+}
+
+.custom-ui-popout-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    padding: var(--space-xs) var(--space-sm);
+    cursor: pointer;
+    font-family: var(--font-stack);
+    font-size: 0.85rem;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.custom-ui-popout-btn:hover {
+    background: var(--border);
+    border-color: var(--text-muted);
+}
+
+.custom-ui-popout-btn:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-offset);
+}
+
 .custom-ui-iframe {
     display: block;
     width: 100%;
