@@ -303,15 +303,18 @@ func (ru *RemoteUI) handleSubscribe(ctx context.Context, c *ruClient, msg wsMess
 	// Send slot info (which components are loaded).
 	ru.sendSlotInfo(ctx, c, slot)
 
-	// If the synth has a custom web UI, tell the browser FIRST — before the
-	// (potentially multi-second) sendSlotSettings retry block — so the iframe
-	// can start loading while we fetch the rest. The iframe seeds its values
-	// from the parent's cache once it subscribes, so it doesn't need settings
-	// or params to have arrived yet.
+	// Give the synth priority: send its custom_ui (if any) AND its hierarchy +
+	// chain_params BEFORE the (potentially multi-second) sendSlotSettings retry
+	// block. A data-driven custom UI (e.g. jv880 builds its controls from
+	// chain_params) then has its metadata on the first request and renders
+	// immediately instead of polling for it; embedded-layout UIs just start
+	// loading sooner. The iframe seeds values from the parent cache on subscribe.
 	if synthID, err := ru.shm.GetParam(slot, "synth_module"); err == nil && synthID != "" {
 		if url := ru.findModuleWebUI(synthID); url != "" {
 			ru.sendCustomUI(ctx, c, slot, "synth", url)
 		}
+		ru.sendHierarchy(ctx, c, slot, "synth")
+		ru.sendChainParams(ctx, c, slot, "synth")
 	}
 
 	// Send slot-level settings + mapped knobs FIRST so the top of the UI
@@ -319,15 +322,18 @@ func (ru *RemoteUI) handleSubscribe(ctx context.Context, c *ruClient, msg wsMess
 	// many seconds of sendInitialParamValues for param-heavy modules.
 	ru.sendSlotSettings(ctx, c, slot)
 
-	// Send hierarchy and chain_params for all loaded components.
+	// Send hierarchy and chain_params for the remaining components, plus initial
+	// param values for every component (synth metadata already sent above).
 	for _, comp := range componentPrefixes {
 		moduleKey := comp + "_module"
 		modID, err := ru.shm.GetParam(slot, moduleKey)
 		if err != nil || modID == "" {
 			continue
 		}
-		ru.sendHierarchy(ctx, c, slot, comp)
-		ru.sendChainParams(ctx, c, slot, comp)
+		if comp != "synth" {
+			ru.sendHierarchy(ctx, c, slot, comp)
+			ru.sendChainParams(ctx, c, slot, comp)
+		}
 		// Fetch initial param values (one-time on subscribe).
 		ru.sendInitialParamValues(ctx, c, slot, comp)
 	}
@@ -774,6 +780,7 @@ func (ru *RemoteUI) notifyLoop(ctx context.Context) {
 	const presetResendThrottle = 120 * time.Millisecond
 	lastResend := make(map[uint8]time.Time)
 	pendingResend := make(map[uint8]map[string]bool) // slot -> comp -> needs full re-send
+	lastPreset := make(map[uint8]map[string]string)  // slot -> comp -> last preset value seen
 	// Master FX lives at slot 0 but is delivered to a separate subscription
 	// (masterFxSub), so it gets its own pending set + throttle keyed by comp
 	// ("master_fx:fxN") rather than sharing the chain-slot maps above.
@@ -829,10 +836,22 @@ func (ru *RemoteUI) notifyLoop(ctx context.Context) {
 				}
 				m[c.Key] = c.Value
 				if i := strings.LastIndex(c.Key, ":"); i >= 0 && c.Key[i+1:] == "preset" {
-					if pendingResend[c.Slot] == nil {
-						pendingResend[c.Slot] = make(map[string]bool)
+					// Only re-push full state when the preset VALUE actually
+					// changed. Some modules (e.g. jv880) re-assert preset on the
+					// notify ring without a real change; without this guard each
+					// such notification triggers a full N-param re-fetch, which
+					// floods the channel and makes sync feel inconsistent.
+					comp := c.Key[:i]
+					if lastPreset[c.Slot] == nil {
+						lastPreset[c.Slot] = make(map[string]string)
 					}
-					pendingResend[c.Slot][c.Key[:i]] = true
+					if prev, seen := lastPreset[c.Slot][comp]; !seen || prev != c.Value {
+						lastPreset[c.Slot][comp] = c.Value
+						if pendingResend[c.Slot] == nil {
+							pendingResend[c.Slot] = make(map[string]bool)
+						}
+						pendingResend[c.Slot][comp] = true
+					}
 				}
 			}
 
