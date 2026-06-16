@@ -208,9 +208,8 @@ func (ru *RemoteUI) refreshLoop(ctx context.Context) {
 				if err != nil || modID == "" {
 					continue
 				}
-				for _, c := range ru.subscribedClients(slot) {
-					ru.sendInitialParamValues(ctx, c, slot, comp)
-				}
+				// Read shm once and fan out to all subscribers of this slot.
+				ru.broadcastInitialParamValues(ctx, slot, comp, ru.subscribedClients(slot))
 			}
 		}
 	}
@@ -438,18 +437,19 @@ func (ru *RemoteUI) sendInitialParamValues(ctx context.Context, c *ruClient, slo
 	ru.logger.Info("initial params: done", "slot", slot, "comp", comp, "fetched", fetched)
 }
 
-// sendAllParamsAtOnce asks the plugin for the "state" key (a JSON object of
-// every param value used for save/restore). If the plugin supports it, sends
-// everything in one param_update. Returns true on success. Modules with many
-// params (e.g. Surge ~280) go from ~10s to one shm round-trip.
-func (ru *RemoteUI) sendAllParamsAtOnce(ctx context.Context, c *ruClient, slot uint8, comp string) bool {
+// fetchAllParams reads the plugin's "state" key (a JSON object of every param
+// value used for save/restore) and flattens it into a param_update payload.
+// Returns (nil, false) if the module doesn't support "state". This is the
+// expensive shm read, factored out so a single read can fan out to multiple
+// subscribers (see broadcastInitialParamValues).
+func (ru *RemoteUI) fetchAllParams(slot uint8, comp string) (map[string]string, bool) {
 	raw, err := ru.shm.GetParam(slot, comp+":state")
 	if err != nil || raw == "" || raw[0] != '{' {
-		return false
+		return nil, false
 	}
 	var values map[string]any
 	if json.Unmarshal([]byte(raw), &values) != nil {
-		return false
+		return nil, false
 	}
 	params := make(map[string]string, len(values))
 	for k, v := range values {
@@ -469,6 +469,17 @@ func (ru *RemoteUI) sendAllParamsAtOnce(ctx context.Context, c *ruClient, slot u
 		}
 	}
 	if len(params) == 0 {
+		return nil, false
+	}
+	return params, true
+}
+
+// sendAllParamsAtOnce sends a component's full param set to one client in a
+// single param_update. Returns true on success. Modules with many params
+// (e.g. Surge ~280) go from ~10s of fetches to one shm round-trip.
+func (ru *RemoteUI) sendAllParamsAtOnce(ctx context.Context, c *ruClient, slot uint8, comp string) bool {
+	params, ok := ru.fetchAllParams(slot, comp)
+	if !ok {
 		return false
 	}
 	ru.writeJSON(ctx, c, wsParamUpdate{Type: "param_update", Slot: slot, Params: params})
@@ -476,12 +487,41 @@ func (ru *RemoteUI) sendAllParamsAtOnce(ctx context.Context, c *ruClient, slot u
 	return true
 }
 
-// sendHierarchyParams extracts preset-browser params (count_param, list_param,
-// name_param) from the ui_hierarchy and fetches their values.
-func (ru *RemoteUI) sendHierarchyParams(ctx context.Context, c *ruClient, slot uint8, comp string) {
+// broadcastInitialParamValues sends a component's full param set to every
+// subscriber of a slot, reading shared memory ONCE and fanning the result out —
+// instead of re-reading per client. Avoids redundant heavy shm reads (e.g. the
+// jv880 365-param "state" blob) when multiple clients view the same slot, such
+// as a popped-out window alongside the main tab. Falls back to the per-client
+// streaming path for modules that don't support the "state" fast path.
+func (ru *RemoteUI) broadcastInitialParamValues(ctx context.Context, slot uint8, comp string, clients []*ruClient) {
+	if len(clients) == 0 {
+		return
+	}
+	hierParams := ru.fetchHierarchyParams(slot, comp)
+	allParams, ok := ru.fetchAllParams(slot, comp)
+	if !ok {
+		// No "state" fast path — fall back to per-client streaming (unchanged).
+		for _, c := range clients {
+			ru.sendInitialParamValues(ctx, c, slot, comp)
+		}
+		return
+	}
+	for _, c := range clients {
+		if len(hierParams) > 0 {
+			ru.writeJSON(ctx, c, wsParamUpdate{Type: "param_update", Slot: slot, Params: hierParams})
+		}
+		ru.writeJSON(ctx, c, wsParamUpdate{Type: "param_update", Slot: slot, Params: allParams})
+	}
+	ru.logger.Info("initial params: sent via 'state' (coalesced)", "slot", slot, "comp", comp, "count", len(allParams), "clients", len(clients))
+}
+
+// fetchHierarchyParams reads the preset-browser params (count_param, list_param,
+// name_param) referenced by the ui_hierarchy and returns their values. Factored
+// out of sendHierarchyParams so the read can fan out to multiple subscribers.
+func (ru *RemoteUI) fetchHierarchyParams(slot uint8, comp string) map[string]string {
 	raw, err := ru.shm.GetParam(slot, comp+":ui_hierarchy")
 	if err != nil || raw == "" {
-		return
+		return nil
 	}
 
 	// Parse just enough to extract level params
@@ -493,7 +533,7 @@ func (ru *RemoteUI) sendHierarchyParams(ctx context.Context, c *ruClient, slot u
 		} `json:"levels"`
 	}
 	if json.Unmarshal([]byte(raw), &hier) != nil {
-		return
+		return nil
 	}
 
 	params := make(map[string]string)
@@ -510,6 +550,13 @@ func (ru *RemoteUI) sendHierarchyParams(ctx context.Context, c *ruClient, slot u
 			}
 		}
 	}
+	return params
+}
+
+// sendHierarchyParams extracts preset-browser params (count_param, list_param,
+// name_param) from the ui_hierarchy and sends their values to one client.
+func (ru *RemoteUI) sendHierarchyParams(ctx context.Context, c *ruClient, slot uint8, comp string) {
+	params := ru.fetchHierarchyParams(slot, comp)
 	if len(params) > 0 {
 		ru.writeJSON(ctx, c, wsParamUpdate{Type: "param_update", Slot: slot, Params: params})
 	}
@@ -897,18 +944,21 @@ func (ru *RemoteUI) notifyLoop(ctx context.Context) {
 					continue
 				}
 				lastResend[slot] = now
+				delete(pendingResend, slot)
+				// Coalesce the re-fetch: snapshot subscribers + comps, then read
+				// shm once per comp and fan out to all of them (cdbc123d), while
+				// keeping upstream's goroutine offload so the 5ms drain loop never
+				// blocks on a param-heavy module's sendInitialParamValues.
+				subs := ru.subscribedClients(slot)
 				compList := make([]string, 0, len(comps))
 				for comp := range comps {
 					compList = append(compList, comp)
 				}
-				delete(pendingResend, slot)
-				go func(slot uint8, comps []string) {
+				go func(slot uint8, comps []string, subs []*ruClient) {
 					for _, comp := range comps {
-						for _, c := range ru.subscribedClients(slot) {
-							ru.sendInitialParamValues(ctx, c, slot, comp)
-						}
+						ru.broadcastInitialParamValues(ctx, slot, comp, subs)
 					}
-				}(slot, compList)
+				}(slot, compList, subs)
 			}
 		}
 
