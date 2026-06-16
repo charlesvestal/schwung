@@ -303,6 +303,17 @@ func (ru *RemoteUI) handleSubscribe(ctx context.Context, c *ruClient, msg wsMess
 	// Send slot info (which components are loaded).
 	ru.sendSlotInfo(ctx, c, slot)
 
+	// If the synth has a custom web UI, tell the browser FIRST — before the
+	// (potentially multi-second) sendSlotSettings retry block — so the iframe
+	// can start loading while we fetch the rest. The iframe seeds its values
+	// from the parent's cache once it subscribes, so it doesn't need settings
+	// or params to have arrived yet.
+	if synthID, err := ru.shm.GetParam(slot, "synth_module"); err == nil && synthID != "" {
+		if url := ru.findModuleWebUI(synthID); url != "" {
+			ru.sendCustomUI(ctx, c, slot, "synth", url)
+		}
+	}
+
 	// Send slot-level settings + mapped knobs FIRST so the top of the UI
 	// populates immediately — otherwise they'd be blocked behind potentially
 	// many seconds of sendInitialParamValues for param-heavy modules.
@@ -314,12 +325,6 @@ func (ru *RemoteUI) handleSubscribe(ctx context.Context, c *ruClient, msg wsMess
 		modID, err := ru.shm.GetParam(slot, moduleKey)
 		if err != nil || modID == "" {
 			continue
-		}
-		// Check for custom web UI (synth component only).
-		if comp == "synth" {
-			if url := ru.findModuleWebUI(modID); url != "" {
-				ru.sendCustomUI(ctx, c, slot, comp, url)
-			}
 		}
 		ru.sendHierarchy(ctx, c, slot, comp)
 		ru.sendChainParams(ctx, c, slot, comp)

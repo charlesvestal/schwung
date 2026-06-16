@@ -1940,6 +1940,12 @@
                 break;
             case "subscribe":
                 customUISubscribed = true;
+                // Bulk-seed: push every param value the parent has already
+                // cached (from the host's initial fetch) in one message, so the
+                // iframe paints real values immediately instead of pulling them
+                // back one-by-one via getParam. Late-arriving values still flow
+                // through the normal param_update path below.
+                seedCustomUI();
                 break;
             case "getHierarchy":
                 handleIframeGetHierarchy(msg);
@@ -2004,6 +2010,28 @@
         if (customUIIframe && customUIIframe.contentWindow) {
             customUIIframe.contentWindow.postMessage(msg, "*");
         }
+    }
+
+    // Push all params the parent has already cached for the active slot to the
+    // custom UI iframe in a single paramUpdate. Called when the iframe first
+    // subscribes so it can seed its controls without a round-trip per param.
+    function seedCustomUI() {
+        if (!customUIIframe) return;
+        if (typeof activeSlot !== "number") return;
+        var comps = slots[activeSlot].components;
+        var params = {};
+        var any = false;
+        for (var k = 0; k < COMPONENT_KEYS.length; k++) {
+            var cp = comps[COMPONENT_KEYS[k]];
+            if (!cp || !cp.params) continue;
+            for (var key in cp.params) {
+                if (Object.prototype.hasOwnProperty.call(cp.params, key)) {
+                    params[key] = cp.params[key];
+                    any = true;
+                }
+            }
+        }
+        if (any) postToIframe({ type: "paramUpdate", params: params });
     }
 
     function renderMasterFx() {
