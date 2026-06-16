@@ -760,6 +760,21 @@ func (ru *RemoteUI) notifyLoop(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
 
+	// When a component's preset (list_param) changes, the notify ring only
+	// carries the numeric index — not the new preset's param VALUES or its name
+	// string. So we re-push that component's full state (+ preset-browser
+	// params). Throttled per slot (leading edge fires immediately; trailing
+	// change still lands after the throttle) so quick preset scrolling doesn't
+	// flood the shared param channel and stall sync.
+	const presetResendThrottle = 120 * time.Millisecond
+	lastResend := make(map[uint8]time.Time)
+	pendingResend := make(map[uint8]map[string]bool) // slot -> comp -> needs full re-send
+	// Master FX lives at slot 0 but is delivered to a separate subscription
+	// (masterFxSub), so it gets its own pending set + throttle keyed by comp
+	// ("master_fx:fxN") rather than sharing the chain-slot maps above.
+	var lastResendMasterFx time.Time
+	pendingMasterFxResend := make(map[string]bool) // comp -> needs full re-send
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -773,29 +788,11 @@ func (ru *RemoteUI) notifyLoop(ctx context.Context) {
 		}
 
 		changes := ring.Drain()
-		if len(changes) == 0 {
+		if len(changes) == 0 && len(pendingResend) == 0 && len(pendingMasterFxResend) == 0 {
 			continue
 		}
 
-		// Group changes by slot, splitting master FX keys (slot 0,
-		// "master_fx:" prefix) into their own bucket so master-FX-only
-		// subscribers receive them without needing a slot 0 subscription.
-		slotChanges := make(map[uint8]map[string]string)
-		masterFxChanges := make(map[string]string)
-		for _, c := range changes {
-			if c.Slot == 0 && strings.HasPrefix(c.Key, "master_fx:") {
-				masterFxChanges[c.Key] = c.Value
-				continue
-			}
-			m, ok := slotChanges[c.Slot]
-			if !ok {
-				m = make(map[string]string)
-				slotChanges[c.Slot] = m
-			}
-			m[c.Key] = c.Value
-		}
-
-		// Broadcast to subscribed clients.
+		// Snapshot subscribers once per active tick.
 		ru.mu.Lock()
 		clients := make([]*ruClient, 0, len(ru.clients))
 		for c := range ru.clients {
@@ -803,27 +800,112 @@ func (ru *RemoteUI) notifyLoop(ctx context.Context) {
 		}
 		ru.mu.Unlock()
 
-		for slot, params := range slotChanges {
-			update := wsParamUpdate{Type: "param_update", Slot: slot, Params: params}
-			for _, c := range clients {
-				c.mu.Lock()
-				subscribed := c.subs[slot]
-				c.mu.Unlock()
-				if subscribed {
-					ru.writeJSON(ctx, c, update)
+		if len(changes) > 0 {
+			// Group changes by slot, splitting master FX keys (slot 0,
+			// "master_fx:" prefix) into their own bucket so master-FX-only
+			// subscribers receive them without needing a slot 0 subscription.
+			slotChanges := make(map[uint8]map[string]string)
+			masterFxChanges := make(map[string]string)
+			for _, c := range changes {
+				if c.Slot == 0 && strings.HasPrefix(c.Key, "master_fx:") {
+					masterFxChanges[c.Key] = c.Value
+					// A device-initiated master-FX preset load reshuffles every
+					// param internally; the notify ring carries only the index,
+					// so mark the comp ("master_fx:fxN") for a full re-send.
+					if i := strings.LastIndex(c.Key, ":"); i >= 0 && c.Key[i+1:] == "preset" {
+						pendingMasterFxResend[c.Key[:i]] = true
+					}
+					continue
+				}
+				m, ok := slotChanges[c.Slot]
+				if !ok {
+					m = make(map[string]string)
+					slotChanges[c.Slot] = m
+				}
+				m[c.Key] = c.Value
+				if i := strings.LastIndex(c.Key, ":"); i >= 0 && c.Key[i+1:] == "preset" {
+					if pendingResend[c.Slot] == nil {
+						pendingResend[c.Slot] = make(map[string]bool)
+					}
+					pendingResend[c.Slot][c.Key[:i]] = true
+				}
+			}
+
+			for slot, params := range slotChanges {
+				update := wsParamUpdate{Type: "param_update", Slot: slot, Params: params}
+				for _, c := range clients {
+					c.mu.Lock()
+					subscribed := c.subs[slot]
+					c.mu.Unlock()
+					if subscribed {
+						ru.writeJSON(ctx, c, update)
+					}
+				}
+			}
+
+			if len(masterFxChanges) > 0 {
+				update := wsParamUpdate{Type: "param_update", Slot: 0, Params: masterFxChanges}
+				for _, c := range clients {
+					c.mu.Lock()
+					subscribed := c.masterFxSub
+					c.mu.Unlock()
+					if subscribed {
+						ru.writeJSON(ctx, c, update)
+					}
 				}
 			}
 		}
 
-		if len(masterFxChanges) > 0 {
-			update := wsParamUpdate{Type: "param_update", Slot: 0, Params: masterFxChanges}
-			for _, c := range clients {
-				c.mu.Lock()
-				subscribed := c.masterFxSub
-				c.mu.Unlock()
-				if subscribed {
-					ru.writeJSON(ctx, c, update)
+		// Flush throttled full-state re-sends for components whose preset
+		// changed. sendInitialParamValues pushes name/count + every value, so
+		// the browser's knobs/sliders catch up to the new preset.
+		//
+		// The send is offloaded to a goroutine: for a param-heavy module
+		// without the :state fast path, sendInitialParamValues sleeps ~20ms
+		// per 8 params (hundreds of ms total). Running it inline would block
+		// this 5ms drain loop, overflowing the 64-entry shim ring and dropping
+		// live knob updates. The throttle keys off dispatch time (lastResend
+		// set before launch), so rapid preset scrolling still coalesces.
+		if len(pendingResend) > 0 {
+			now := time.Now()
+			for slot, comps := range pendingResend {
+				if now.Sub(lastResend[slot]) < presetResendThrottle {
+					continue
 				}
+				lastResend[slot] = now
+				compList := make([]string, 0, len(comps))
+				for comp := range comps {
+					compList = append(compList, comp)
+				}
+				delete(pendingResend, slot)
+				go func(slot uint8, comps []string) {
+					for _, comp := range comps {
+						for _, c := range ru.subscribedClients(slot) {
+							ru.sendInitialParamValues(ctx, c, slot, comp)
+						}
+					}
+				}(slot, compList)
+			}
+		}
+
+		// Same treatment for master-FX preset changes, delivered to the
+		// separate master-FX subscription and throttled independently.
+		if len(pendingMasterFxResend) > 0 {
+			now := time.Now()
+			if now.Sub(lastResendMasterFx) >= presetResendThrottle {
+				lastResendMasterFx = now
+				compList := make([]string, 0, len(pendingMasterFxResend))
+				for comp := range pendingMasterFxResend {
+					compList = append(compList, comp)
+				}
+				pendingMasterFxResend = make(map[string]bool)
+				go func(comps []string) {
+					for _, comp := range comps {
+						for _, c := range ru.masterFxSubscribedClients() {
+							ru.sendInitialParamValues(ctx, c, 0, comp)
+						}
+					}
+				}(compList)
 			}
 		}
 	}
