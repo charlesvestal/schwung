@@ -5388,11 +5388,18 @@ function startInteractiveTool(toolModule, filePath) {
             overtakeModuleCallbacks = {
                 init: (globalThis.init !== savedInit) ? globalThis.init : null,
                 tick: (globalThis.tick !== savedTick) ? globalThis.tick : null,
-                onMidiMessageInternal: (globalThis.onMidiMessageInternal !== savedMidi) ? globalThis.onMidiMessageInternal : null
+                onMidiMessageInternal: (globalThis.onMidiMessageInternal !== savedMidi) ? globalThis.onMidiMessageInternal : null,
+                onUnload: (typeof globalThis.onUnload === "function") ? globalThis.onUnload : null,
+                /* onResume(): optional. Called once each time the module is
+                 * resumed from suspend (init() is NOT re-run). See
+                 * invokeModuleOnResume for the module-facing contract. */
+                onResume: (typeof globalThis.onResume === "function") ? globalThis.onResume : null
             };
             globalThis.init = savedInit;
             globalThis.tick = savedTick;
             globalThis.onMidiMessageInternal = savedMidi;
+            if (typeof globalThis.onUnload === "function") delete globalThis.onUnload;
+            if (typeof globalThis.onResume === "function") delete globalThis.onResume;
             debugLog("startInteractiveTool reconnect: callbacks captured - init:" + !!overtakeModuleCallbacks.init +
                      " tick:" + !!overtakeModuleCallbacks.tick +
                      " midi:" + !!overtakeModuleCallbacks.onMidiMessageInternal);

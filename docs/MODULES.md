@@ -1873,6 +1873,13 @@ When an overtake module is loaded:
 
 The progressive LED clearing prevents MIDI buffer overflow (the buffer holds ~64 packets).
 
+#### Optional lifecycle hooks
+
+Beyond `init()`, `tick()`, and `onMidiMessageInternal()`/`onMidiMessageExternal()`, overtake modules may define two optional hooks:
+
+- `globalThis.onUnload()` — called once when the module is being torn down. Use it to release resources or persist state.
+- `globalThis.onResume()` — called once each time a suspended `suspend_keeps_js` overtake module is brought back to the foreground. It is **not** called on first load (`init()` handles that). While the module was backgrounded its hardware LEDs were cleared, so the typical use is to invalidate any on-change LED delta-cache and force a full repaint on the next `tick()`. Both hooks are opt-in: modules that do not define them are unaffected.
+
 ### Host-Level Escape
 
 The host provides a built-in escape mechanism that always works, regardless of module implementation:
