@@ -51,7 +51,7 @@
  * MIDI_OUT must be bounded by this to avoid corrupting the display. */
 #define HW_MIDI_OUT_SIZE    80
 #define DISPLAY_BUFFER_SIZE 1024  /* 128x64 @ 1bpp = 1024 bytes */
-#define CONTROL_BUFFER_SIZE 72  /* bumped for sampler_source_request + sampler_silent (PR #61); leaves headroom in reserved[] */
+#define CONTROL_BUFFER_SIZE 76  /* +corun.led_keep_mask; 74 bytes content padded to 76 (struct has 4-byte-aligned uint32_t/float members) */
 #define SHADOW_UI_BUFFER_SIZE     512
 #define SHADOW_PARAM_BUFFER_SIZE  65664  /* Large buffer for complex ui_hierarchy */
 #define SHADOW_MIDI_OUT_BUFFER_SIZE 512  /* MIDI out buffer from shadow UI (128 packets) */
@@ -165,10 +165,21 @@ typedef struct shadow_control_t {
     volatile struct {
         int8_t target;       /* corun_target_t */
         int8_t id;
-        uint16_t keep_mask;
+        uint16_t keep_mask;      /* CORUN_GRP_* the tool owns for INPUT (cedes the rest to the peer) */
+        uint16_t led_keep_mask;  /* CORUN_GRP_* the tool owns for LEDs; 0 = follow keep_mask. Lets a tool
+                                  * paint a surface while still ceding its presses (e.g. dAVEBOx draws the
+                                  * track-button clip indicator but lets Move/Schwung handle the press). */
     } corun;
     volatile uint8_t shadow_display_owner; /* display_owner_t: who currently owns the OLED. Independent of shadow_display_mode (which only says "shadow session active"). */
-    volatile uint8_t reserved[1];
+    /* 1=also strip Move's cable-0 sysex (RGB pad/clip/grid LEDs) during FULL
+     * overtake, so a tool that forces Move's sequencer to keep running (e.g.
+     * dAVEBOx Clock Follow) gets true full LED control instead of fighting
+     * Move's repaints. Opt-in per tool (shadow_set_overtake_suppress_sysex);
+     * default 0 leaves the existing sysex passthrough unchanged. This byte
+     * reuses the former reserved[1] slot, but the struct still grew 72->76
+     * because of corun.led_keep_mask above; CONTROL_BUFFER_SIZE was bumped to
+     * match (shim creates the SHM and shadow_ui maps it via the same macro). */
+    volatile uint8_t overtake_suppress_sysex;
 } shadow_control_t;
 
 /* Co-run control-surface groups. A co-running overtake tool declares which
@@ -204,8 +215,11 @@ typedef struct shadow_control_t {
 
 /* Map a raw cable-0 MIDI event to its control-surface group, or 0 if it isn't a
  * routable surface control (those always stay with the tool). type is the
- * status nibble (0xB0 CC, 0x90/0x80 note); d1 the data byte. Steps/transport
- * are intentionally unclassified for now (always kept) — they have no settled
+ * status nibble (0xB0 CC, 0x90/0x80 note); d1 the data byte. Steps (notes
+ * 16-31) are now a first-class surface (CORUN_GRP_STEPS): backward-safe for the
+ * default split and any STEPS-keeping tool, but an explicit keep_mask that
+ * OMITS STEPS now cedes step input + LEDs (previously steps were unclassified,
+ * always kept). Transport stays unclassified (always kept) — they have no settled
  * CC map and no co-run consumer cedes them. */
 static inline uint16_t corun_group_for_event(uint8_t type, uint8_t d1) {
     if (type == 0xB0) {
@@ -222,6 +236,7 @@ static inline uint16_t corun_group_for_event(uint8_t type, uint8_t d1) {
     }
     if (type == 0x90 || type == 0x80) {
         if (d1 <= 9) return CORUN_GRP_TOUCH;
+        if (d1 >= 16 && d1 <= 31) return CORUN_GRP_STEPS; /* step-button row */
         if (d1 >= 68 && d1 <= 99) return CORUN_GRP_PADS;
     }
     return 0;
@@ -231,6 +246,15 @@ static inline uint16_t corun_group_for_event(uint8_t type, uint8_t d1) {
  * which means "use the default split". */
 static inline uint16_t corun_keep_mask_eff(uint16_t keep_mask) {
     return keep_mask ? keep_mask : CORUN_KEEP_DEFAULT;
+}
+
+/* Effective LED keep-mask: which groups the tool owns for LED stripping. A tool
+ * that wants to paint a surface but cede its input sets led_keep_mask
+ * separately; when unset (0) LED ownership follows the input keep_mask, so the
+ * common case (own both) needs no extra call. */
+static inline uint16_t corun_led_keep_mask_eff(const volatile shadow_control_t *ctrl) {
+    uint16_t led = ctrl ? ctrl->corun.led_keep_mask : 0;
+    return led ? led : corun_keep_mask_eff(ctrl ? ctrl->corun.keep_mask : 0);
 }
 
 /* Co-run target. Stored in shadow_control->corun.target as int8_t. */
