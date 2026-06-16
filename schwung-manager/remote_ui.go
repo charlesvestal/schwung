@@ -596,9 +596,8 @@ func (ru *RemoteUI) handleSetParam(ctx context.Context, c *ruClient, msg wsMessa
 		if paramKey == "preset" || paramKey == "preset_index" || strings.HasSuffix(paramKey, "_index") {
 			go func() {
 				time.Sleep(50 * time.Millisecond) // Let the plugin process the change
-				for _, sub := range ru.subscribedClients(slot) {
-					ru.sendInitialParamValues(ctx, sub, slot, comp)
-				}
+				// Read shm once and fan out to all subscribers of this slot.
+				ru.broadcastInitialParamValues(ctx, slot, comp, ru.subscribedClients(slot))
 			}()
 		}
 	}
