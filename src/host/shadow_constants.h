@@ -175,8 +175,10 @@ typedef struct shadow_control_t {
      * overtake, so a tool that forces Move's sequencer to keep running (e.g.
      * dAVEBOx Clock Follow) gets true full LED control instead of fighting
      * Move's repaints. Opt-in per tool (shadow_set_overtake_suppress_sysex);
-     * default 0 leaves the existing sysex passthrough unchanged. Consumes the
-     * former reserved[1] byte so shadow_control_t size is unchanged. */
+     * default 0 leaves the existing sysex passthrough unchanged. This byte
+     * reuses the former reserved[1] slot, but the struct still grew 72->76
+     * because of corun.led_keep_mask above; CONTROL_BUFFER_SIZE was bumped to
+     * match (shim creates the SHM and shadow_ui maps it via the same macro). */
     volatile uint8_t overtake_suppress_sysex;
 } shadow_control_t;
 
@@ -213,8 +215,11 @@ typedef struct shadow_control_t {
 
 /* Map a raw cable-0 MIDI event to its control-surface group, or 0 if it isn't a
  * routable surface control (those always stay with the tool). type is the
- * status nibble (0xB0 CC, 0x90/0x80 note); d1 the data byte. Steps/transport
- * are intentionally unclassified for now (always kept) — they have no settled
+ * status nibble (0xB0 CC, 0x90/0x80 note); d1 the data byte. Steps (notes
+ * 16-31) are now a first-class surface (CORUN_GRP_STEPS): backward-safe for the
+ * default split and any STEPS-keeping tool, but an explicit keep_mask that
+ * OMITS STEPS now cedes step input + LEDs (previously steps were unclassified,
+ * always kept). Transport stays unclassified (always kept) — they have no settled
  * CC map and no co-run consumer cedes them. */
 static inline uint16_t corun_group_for_event(uint8_t type, uint8_t d1) {
     if (type == 0xB0) {

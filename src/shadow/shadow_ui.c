@@ -395,6 +395,13 @@ static JSValue js_shadow_set_overtake_mode(JSContext *ctx, JSValueConst this_val
         if (shadow_ui_midi_shm) {
             memset(shadow_ui_midi_shm, 0, MIDI_BUFFER_SIZE);
         }
+    } else {
+        /* Clear the full-overtake sysex-suppression opt-in here, the one point
+         * every exit path (exit/hide/complete/suspend) funnels through, so the
+         * next overtake tool can't inherit a stale suppress flag. Mirrors the
+         * shim's init-time reset. (led_keep_mask is already reset on the
+         * co-run begin/end + Back-exit paths.) */
+        shadow_control->overtake_suppress_sysex = 0;
     }
     /* NOTE: Shift-off and volume-touch-off injection on overtake exit is
      * handled by the shim's ioctl handler (transition detection), not here.
