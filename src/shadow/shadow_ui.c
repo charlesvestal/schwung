@@ -594,7 +594,14 @@ static int shadow_param_wait_idle(int timeout_ms) {
 static int shadow_param_wait_response(uint32_t req_id, int timeout_ms) {
     int timeout = shadow_param_timeout_to_polls(timeout_ms);
     while (timeout > 0) {
-        if (shadow_param->response_ready && shadow_param->response_id == req_id) {
+        /* Acquire-load pairs with the writer's release-store of response_ready
+         * (shadow_param_publish_response + the shim sites). It guarantees the
+         * response fields (response_id, error, value) written before the flag
+         * are visible once we observe response_ready == 1. A plain volatile
+         * load is NOT an acquire on weakly-ordered ARMv8, so without this the
+         * reader could match the flag yet read stale fields. */
+        if (__atomic_load_n(&shadow_param->response_ready, __ATOMIC_ACQUIRE)
+            && shadow_param->response_id == req_id) {
             return shadow_param->error ? -1 : 1;
         }
         usleep(SHADOW_PARAM_POLL_US);
