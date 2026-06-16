@@ -88,7 +88,20 @@ globalThis.init = function() {
 globalThis.tick = function() {
     // Update display, handle animations
 }
+
+// Called once when an overtake module is being torn down (optional)
+globalThis.onUnload = function() {
+    // Release resources, persist state, etc.
+}
+
+// Called once each time a suspended `suspend_keeps_js` overtake module is
+// brought back to the foreground (optional)
+globalThis.onResume = function() {
+    // Invalidate LED delta-cache, force a full repaint, etc.
+}
 ```
+
+`onResume()` fires once each time a suspended `suspend_keeps_js` overtake module is brought back to the foreground — it is **not** called on first load (`init()` handles that). While the module is backgrounded its hardware LEDs were cleared, so the typical use is to invalidate any on-change LED delta-cache and force a full repaint on the next `tick()`. It is optional and opt-in: modules that do not define it are unaffected.
 
 ## Menu Layout Helpers
 
