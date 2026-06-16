@@ -77,6 +77,8 @@
     // Custom module web UI state.
     var customUIIframe = null; // Reference to active custom UI iframe element
     var customUISubscribed = false; // Whether the iframe has subscribed to param updates
+    var customUILoadingEl = null; // Loading overlay shown until the module UI is ready
+    var customUILoadingTimer = null; // Fallback timer to clear the overlay
 
     // Knob drag state.
     var dragging = null; // { component, key, startY, startValue, min, max, step, type, slot }
@@ -1434,6 +1436,8 @@
         // Clear custom UI iframe state on re-render.
         customUIIframe = null;
         customUISubscribed = false;
+        customUILoadingEl = null;
+        if (customUILoadingTimer) { clearTimeout(customUILoadingTimer); customUILoadingTimer = null; }
 
         if (activeSlot === "master") {
             renderMasterFx();
@@ -1962,8 +1966,19 @@
         iframe.src = url;
         iframe.sandbox = "allow-scripts allow-same-origin";
         iframe.setAttribute("title", "Custom Module UI");
-
         container.appendChild(iframe);
+
+        // Loading overlay shown over the iframe until the module UI is ready.
+        // Cleared when the iframe subscribes (module JS ran), or on iframe
+        // onload, or after a timeout — whichever comes first.
+        var overlay = document.createElement("div");
+        overlay.className = "custom-ui-loading";
+        overlay.innerHTML = '<span class="loading-spinner"></span> Loading module…';
+        container.appendChild(overlay);
+        customUILoadingEl = overlay;
+        iframe.addEventListener("load", hideCustomUILoading);
+        customUILoadingTimer = setTimeout(hideCustomUILoading, 10000);
+
         slotContentEl.appendChild(container);
 
         // Also render FX sections below the iframe if any are loaded.
@@ -2004,6 +2019,8 @@
                 break;
             case "subscribe":
                 customUISubscribed = true;
+                // Module JS has run — clear the loading overlay.
+                hideCustomUILoading();
                 // Bulk-seed: push every param value the parent has already
                 // cached (from the host's initial fetch) in one message, so the
                 // iframe paints real values immediately instead of pulling them
@@ -2074,6 +2091,15 @@
         if (customUIIframe && customUIIframe.contentWindow) {
             customUIIframe.contentWindow.postMessage(msg, "*");
         }
+    }
+
+    // Remove the custom-UI loading overlay (idempotent).
+    function hideCustomUILoading() {
+        if (customUILoadingTimer) { clearTimeout(customUILoadingTimer); customUILoadingTimer = null; }
+        if (customUILoadingEl && customUILoadingEl.parentNode) {
+            customUILoadingEl.parentNode.removeChild(customUILoadingEl);
+        }
+        customUILoadingEl = null;
     }
 
     // Push all params the parent has already cached for the active slot to the

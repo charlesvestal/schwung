@@ -566,12 +566,27 @@
 }
 
 .custom-ui-container {
+    position: relative;
     width: 100%;
     margin-bottom: var(--space-md);
     border: 1px solid var(--border);
     border-radius: var(--radius);
     overflow: hidden;
     background: var(--bg-card);
+}
+
+/* Loading overlay shown over the iframe until the module UI is ready. */
+.custom-ui-loading {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-sm);
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    background: var(--bg-card);
+    z-index: 1;
 }
 
 /* Compact pop-out button — sits inline in the slot header. */
