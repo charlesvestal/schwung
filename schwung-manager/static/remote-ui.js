@@ -36,7 +36,10 @@
             // Track which component sections are collapsed (true = collapsed).
             collapsed: { synth: false, fx1: true, fx2: true, midi_fx1: true },
             // Custom web UI URL for synth component (null = use auto-generated UI).
-            customUI: null
+            customUI: null,
+            // When true, ignore customUI and show the auto-generated parameter
+            // UI even though a module web_ui.html is available. Session-only.
+            useDefaultUI: false
         };
     }
 
@@ -1455,8 +1458,15 @@
             return;
         }
 
-        // Check for custom web UI on synth component.
-        if (s.customUI && s.customUI.url && hasAnyModule) {
+        // When the synth ships a custom web UI, show a toggle (in both modes)
+        // so the user can switch between it and the auto-generated param UI.
+        var hasCustomUI = !!(s.customUI && s.customUI.url && hasAnyModule);
+        if (hasCustomUI) {
+            slotContentEl.appendChild(renderUiModeToggle(s));
+        }
+
+        // Render the custom web UI unless the user opted out for this slot.
+        if (hasCustomUI && !s.useDefaultUI) {
             renderCustomUI(s);
             return;
         }
@@ -1885,6 +1895,39 @@
     // ------------------------------------------------------------------
     // Custom Module Web UI (iframe)
     // ------------------------------------------------------------------
+
+    // Segmented Custom/Default switch shown when the synth has a web_ui.html.
+    // Lets the user fall back to the auto-generated parameter UI for this slot
+    // (session-only — resets on refresh, like the collapse state).
+    function renderUiModeToggle(s) {
+        var bar = document.createElement("div");
+        bar.className = "ui-mode-toggle";
+
+        var label = document.createElement("span");
+        label.className = "ui-mode-label";
+        label.textContent = "UI";
+        bar.appendChild(label);
+
+        var group = document.createElement("div");
+        group.className = "ui-mode-group";
+
+        [["Custom", false], ["Default", true]].forEach(function (opt) {
+            var btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "ui-mode-btn" + (s.useDefaultUI === opt[1] ? " active" : "");
+            btn.textContent = opt[0];
+            btn.setAttribute("aria-pressed", s.useDefaultUI === opt[1] ? "true" : "false");
+            btn.onclick = function () {
+                if (s.useDefaultUI === opt[1]) return;
+                s.useDefaultUI = opt[1];
+                renderSlot();
+            };
+            group.appendChild(btn);
+        });
+
+        bar.appendChild(group);
+        return bar;
+    }
 
     function renderCustomUI(s) {
         var url = s.customUI.url;

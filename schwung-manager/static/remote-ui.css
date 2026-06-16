@@ -501,6 +501,56 @@
 }
 
 /* ---- Custom Module Web UI (iframe) ---- */
+/* ---- Custom / Default UI toggle ---- */
+.ui-mode-toggle {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    margin-bottom: var(--space-md);
+}
+
+.ui-mode-label {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.ui-mode-group {
+    display: inline-flex;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+}
+
+.ui-mode-btn {
+    padding: var(--space-xs) var(--space-md);
+    background: transparent;
+    color: var(--text-muted);
+    border: none;
+    cursor: pointer;
+    font-family: var(--font-stack);
+    font-size: 0.9rem;
+    min-height: var(--min-touch);
+    transition: color 0.15s, background 0.15s;
+}
+
+.ui-mode-btn:hover {
+    color: var(--text);
+    background: var(--bg-card-hover);
+}
+
+.ui-mode-btn:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: calc(var(--focus-offset) * -1);
+}
+
+.ui-mode-btn.active {
+    color: var(--accent);
+    background: var(--bg-card);
+    font-weight: 600;
+}
+
 .custom-ui-container {
     width: 100%;
     margin-bottom: var(--space-md);
