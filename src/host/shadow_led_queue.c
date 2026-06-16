@@ -382,7 +382,10 @@ void shadow_clear_move_leds_if_overtake(void) {
      * master colors (palette idx 71-79) and the framework leaves those alone.
      * Runs BEFORE the skip_led_clear early-return so it takes priority. */
     if (corun_target(ctrl) == CORUN_TARGET_MOVE_NATIVE) {
-        uint16_t keep = corun_keep_mask_eff(ctrl->corun.keep_mask);
+        /* LED ownership uses led_keep_mask (falls back to keep_mask): a tool can
+         * own a surface's LEDs while still ceding its input — input routing in
+         * corun_event_owner still uses keep_mask. */
+        uint16_t keep = corun_led_keep_mask_eff(ctrl);
         for (int i = 0; i < HW_MIDI_OUT_SIZE; i += 4) {
             uint8_t cable = (midi_out[i] >> 4) & 0x0F;
             if (cable != 0) continue;
@@ -391,6 +394,31 @@ void shadow_clear_move_leds_if_overtake(void) {
             uint16_t grp = corun_group_for_event(type, d1);
             if (grp && (keep & grp)) {
                 midi_out[i] = 0; midi_out[i+1] = 0; midi_out[i+2] = 0; midi_out[i+3] = 0;
+            }
+        }
+        /* RGB-sysex LEDs: Move lights pads / track buttons / knob rings via the
+         * Ableton LED sysex (F0 00 21 1D 01 01 3B <subcmd> <idx> <6 rgb bytes> F7,
+         * one LED per command, 6 USB-MIDI packets). The idx equals the control's
+         * CC (buttons/knobs) or note (pads), so the SAME group map classifies it.
+         * Strip the whole command for groups the tool owns for LEDs — so a tool
+         * that owns e.g. the track-button LEDs (CC 40-43) beats Move's playback
+         * repaints, while groups it cedes (knob rings) still show Move's colors.
+         * The note/CC loop above doesn't touch sysex, hence this second pass.
+         * The marker packet is "04 3B <subcmd> <idx>" (3rd of the 6); the command
+         * spans [i-8 .. i+12], starting at the "04 F0 ..." packet. */
+        for (int i = 8; i + 12 < HW_MIDI_OUT_SIZE; i += 4) {
+            if ((midi_out[i] & 0x0F) != 0x04) continue;        /* sysex start/continue */
+            if (((midi_out[i] >> 4) & 0x0F) != 0) continue;    /* cable 0 */
+            if (midi_out[i+1] != 0x3B) continue;               /* RGB LED command marker */
+            uint8_t idx = midi_out[i+3];
+            uint16_t grp = corun_group_for_event(0xB0, idx);   /* idx as a CC (buttons/knobs) */
+            if (!grp) grp = corun_group_for_event(0x90, idx);  /* idx as a note (pads/steps) */
+            if (!(grp && (keep & grp))) continue;
+            int start = i - 8;
+            /* Confirm this is a real 6-packet command before zeroing the span. */
+            if ((midi_out[start] & 0x0F) != 0x04 || midi_out[start+1] != 0xF0) continue;
+            for (int z = start; z <= i + 12 && z < HW_MIDI_OUT_SIZE; z += 4) {
+                midi_out[z] = 0; midi_out[z+1] = 0; midi_out[z+2] = 0; midi_out[z+3] = 0;
             }
         }
         return;
@@ -402,8 +430,10 @@ void shadow_clear_move_leds_if_overtake(void) {
      * (capabilities.button_passthrough) keep their firmware LEDs. */
     const uint8_t *passthrough = host.passthrough_ccs;
 
+    int suppress_sysex = (ctrl && ctrl->overtake_suppress_sysex);
     for (int i = 0; i < HW_MIDI_OUT_SIZE; i += 4) {
         uint8_t cable = (midi_out[i] >> 4) & 0x0F;
+        uint8_t cin  = midi_out[i] & 0x0F;
         uint8_t type = midi_out[i+1] & 0xF0;
         if (cable != 0) continue;
         if (type == 0x90) {
@@ -415,6 +445,20 @@ void shadow_clear_move_leds_if_overtake(void) {
         } else if (type == 0xB0) {
             uint8_t d1 = midi_out[i+2];
             if (passthrough && d1 < 128 && passthrough[d1]) continue;
+            midi_out[i] = 0;
+            midi_out[i+1] = 0;
+            midi_out[i+2] = 0;
+            midi_out[i+3] = 0;
+        } else if (suppress_sysex && cin >= 0x04 && cin <= 0x07) {
+            /* Move's RGB pad/clip/grid LEDs ride cable-0 sysex (the Ableton
+             * F0 00 21 1D ... LED command). The note/CC strips above don't
+             * touch sysex, so by default Move's RGB repaints pass through —
+             * fine when its sequencer is stopped, but they fight the tool's
+             * LEDs once a tool (dAVEBOx Clock Follow) keeps Move running.
+             * Opt-in: strip every cable-0 sysex packet (start/continue/end,
+             * CIN 0x04-0x07) so the tool owns RGB too. Safe because such a
+             * tool paints its own pads via note-palette / CC, injected into
+             * the mailbox AFTER this strip. */
             midi_out[i] = 0;
             midi_out[i+1] = 0;
             midi_out[i+2] = 0;
