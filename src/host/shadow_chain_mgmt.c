@@ -2041,6 +2041,7 @@ void shadow_direct_set_param(uint8_t slot, const char *key, const char *value) {
         if (strcmp(rest, "return_level") == 0) {
             float lv = (value && value[0]) ? atof(value) : 1.0f;
             if (lv < 0.0f) lv = 0.0f;
+            if (lv > 4.0f) lv = 4.0f;   /* bound a stray persisted/web value (+12 dB max, parity with volume) */
             shadow_send_return_level[bus] = lv;
             if (host.on_param_changed) host.on_param_changed(slot, key, value);
             return;
@@ -3171,6 +3172,7 @@ void shadow_inprocess_handle_param_request(void) {
             if (req_type == 1) {  /* SET */
                 float lv = (shadow_param->value[0]) ? atof(shadow_param->value) : 1.0f;
                 if (lv < 0.0f) lv = 0.0f;
+                if (lv > 4.0f) lv = 4.0f;   /* bound a stray persisted/web value (parity with volume) */
                 shadow_send_return_level[bus] = lv;
                 shadow_param->error = 0;
                 shadow_param->result_len = 0;

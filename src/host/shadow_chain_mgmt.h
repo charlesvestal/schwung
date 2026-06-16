@@ -115,7 +115,7 @@ extern int shadow_inprocess_ready;
 /* Master FX slots */
 extern master_fx_slot_t shadow_master_fx_slots[MASTER_FX_SLOTS];
 
-/* Send FX slots — 2 buses (A, B) × 3 FX slots each */
+/* Send FX slots — 2 buses (A, B) × SEND_FX_SLOTS (4) FX slots each */
 extern master_fx_slot_t shadow_send_fx_slots[SEND_BUS_COUNT][SEND_FX_SLOTS];
 
 /* Per-bus send return level (0..1+, default 1.0) applied to the bus's

@@ -374,7 +374,9 @@ void shadow_load_state(void)
             float r0, r1;
             if (sscanf(srl_pos, "[%f, %f]", &r0, &r1) == 2) {
                 if (r0 < 0.0f) r0 = 0.0f;
+                if (r0 > 4.0f) r0 = 4.0f;
                 if (r1 < 0.0f) r1 = 0.0f;
+                if (r1 > 4.0f) r1 = 4.0f;
                 shadow_send_return_level[0] = r0;
                 shadow_send_return_level[1] = r1;
             }

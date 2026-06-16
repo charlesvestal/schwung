@@ -47,7 +47,9 @@ function getSendFxDisplayName(bus) {
     const { getSlotParam } = ctx;
     const busKey = bus === 0 ? "a" : "b";
     const parts = [];
-    for (let i = 1; i <= 3; i++) {
+    /* Each send bus has 4 FX slots (SEND_FX_SLOTS / SEND_FX_SLOTS_JS); the
+     * old <= 3 bound dropped the 4th slot's name from this summary. */
+    for (let i = 1; i <= 4; i++) {
         const name = getSlotParam(0, `send_fx:${busKey}:fx${i}:name`);
         if (name) parts.push(name);
     }
@@ -317,7 +319,7 @@ export function handleSlotSettingsJog(delta) {
 /* ---- Select ------------------------------------------------------------- */
 
 export function handleSlotsSelect() {
-    const { selectedSlot, slots, enterChainEdit, enterFxBusEditor } = ctx;
+    const { selectedSlot, slots, enterChainEdit, enterFxBusEditor, openMoveFxBus } = ctx;
     if (selectedSlot < slots.length) {
         enterChainEdit(selectedSlot);
     } else if (selectedSlot === slots.length) {
@@ -328,7 +330,9 @@ export function handleSlotsSelect() {
         enterFxBusEditor("sendB");
     } else if (selectedSlot >= slots.length + 3 &&
                selectedSlot < slots.length + 3 + MOVE_FX_SLOT_ROWS) {
-        enterFxBusEditor("moveFx" + (selectedSlot - (slots.length + 2)));
+        /* Route through the route-to-chain confirm (same as the FX bus picker)
+         * so a still-routed Move track can't open to silence without a prompt. */
+        openMoveFxBus(selectedSlot - (slots.length + 3));   /* 0-based track */
     }
 }
 

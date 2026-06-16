@@ -44,8 +44,9 @@ send/return.
    picker. Because the store is shared, a preset saved on any bus is loadable
    on any other.
 
-> **Note:** per-track **Send A/B** routing for Move FX buses is a planned
-> follow-up; it depends on the Send FX buses, which land separately.
+Each Move FX bus also taps the global **Send A/B** buses: set its **Send A** /
+**Send B** levels in the bus editor's **settings** menu to feed the shared send
+returns post-insert.
 
 ---
 

@@ -11769,14 +11769,7 @@ function handleSelect() {
                 enterFxBusEditor(fxBusPickerIndex === 1 ? "sendA" : "sendB");
             } else {
                 /* 3..(2+MOVE_FX_SLOTS_JS) → Move FX 1..N */
-                const ms = fxBusPickerIndex - 3;   /* 0-based Move slot/track */
-                if (moveFxRouted[ms]) {
-                    pendingMoveFxRouteConfirm = ms;   /* routed → confirm before peel */
-                    moveFxRouteConfirmSel = 0;
-                    needsRedraw = true;
-                } else {
-                    enterFxBusEditor("moveFx" + (ms + 1));   /* peeled → open directly */
-                }
+                openMoveFxBus(fxBusPickerIndex - 3);   /* 0-based Move slot/track */
             }
             break;
         case VIEWS.PATCHES:
@@ -13579,7 +13572,7 @@ function drawHelpDetail() {
         get() { return masterConfirmIndex; }, enumerable: true
     });
 
-    /* Components follow the active bus (master: 4 slots, sends: 3). */
+    /* Components follow the active bus (master: 4 slots, sends: 4). */
     Object.defineProperty(_ctx, 'MASTER_FX_CHAIN_COMPONENTS', {
         get() { return activeFxBus.components; }, enumerable: true
     });
@@ -13764,6 +13757,7 @@ function drawHelpDetail() {
     _ctx.enterPatchBrowser = (...args) => _enterPatchBrowser(...args);
     _ctx.enterMasterFxSettings = (...args) => enterMasterFxSettings(...args);
     _ctx.enterFxBusEditor = (...args) => enterFxBusEditor(...args);
+    _ctx.openMoveFxBus = (ms) => openMoveFxBus(ms);
     _ctx.enterFxBusPicker = () => enterFxBusPicker();
     _ctx.enterSendFxHierarchyEditor = (...args) => enterSendFxHierarchyEditor(...args);
     _ctx.enterSlotSettings = (...args) => _enterSlotSettings(...args);
@@ -13795,6 +13789,25 @@ function enterFxBusEditor(busId) {
     currentMasterPresetName = fxBusPresetName[activeFxBus.id] || "";
     masterOverwriteTargetIndex = -1;
     enterMasterFxSettings();
+}
+
+/* Open a Move-FX bus by 0-based track index. If the track is still routed to
+ * its chain slot, raise the route-to-chain confirm; otherwise open the editor
+ * directly. The confirm modal renders/handles only in the FX bus picker view,
+ * so a caller arriving from elsewhere (the slots list) is moved into the picker
+ * first. Shared by the picker's select handler and the slots-list Move-FX rows
+ * so neither path can open a still-routed bus to silence without a prompt. */
+function openMoveFxBus(ms) {
+    refreshMoveFxRouted();
+    if (moveFxRouted[ms]) {
+        if (view !== VIEWS.FX_BUS_PICKER) enterFxBusPicker();  /* picker hosts the modal */
+        fxBusPickerIndex = ms + 3;          /* position picker on this Move slot */
+        pendingMoveFxRouteConfirm = ms;     /* routed → confirm before peel */
+        moveFxRouteConfirmSel = 0;
+        needsRedraw = true;
+    } else {
+        enterFxBusEditor("moveFx" + (ms + 1));   /* peeled → open directly */
+    }
 }
 
 let fxBusPickerIndex = 0;
@@ -14927,7 +14940,7 @@ globalThis.tick = function() {
 
             /* 7. Reload master FX modules from per-set state files.
              * This restore is always about the MASTER bus. Two things must be
-             * reset first, because a Send FX editor (3 slots) may have been the
+             * reset first, because a Send FX editor (4 slots) may have been the
              * last-active bus when the set changed:
              *   - activeFxBus: setMasterFxSlotModule() is activeFxBus-relative, so
              *     a stale send bus would misdirect the master chain's modules to
@@ -15834,9 +15847,13 @@ globalThis.onMidiMessageInternal = function(data) {
                 needsRedraw = true;
                 return;
             }
-            /* Menu (CC 50): chain-edit opens the FX bus picker; an overlay
-             * closes (returns to the synth). */
-            if (d1 === 50 && d2 > 0) {
+            /* Menu (CC 50): framework exit gesture, KEPT by the tool by default
+             * (CORUN_KEEP_DEFAULT). Gate on the uniform coRunWants rule exactly
+             * like Back/Shift/Track above — otherwise we'd unconditionally steal
+             * the co-running tool's own Menu exit gesture. When the tool cedes
+             * Menu (chain-edit) / keeps it (overlay), shadow_ui handles it:
+             * chain-edit opens the FX bus picker; an overlay closes. */
+            if (d1 === 50 && d2 > 0 && coRunWants(CORUN_GRP_MENU)) {
                 if (corunOverlayId != null) {
                     shadow_corun_close();
                 } else {
