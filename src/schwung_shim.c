@@ -2141,8 +2141,13 @@ static void shadow_inprocess_mix_from_buffer(void) {
                     for (int b = 0; b < MOVE_FX_BLOCKS; b++) {
                         master_fx_slot_t *mf = &shadow_move_fx_slots[s][b];
                         if (!(mf->instance && mf->api && mf->api->process_block)) continue;
-                        if (mf->bypassed) continue;
+                        /* Process even when bypassed (then restore dry) so the
+                         * effect's tail rings out and unbypass is glitch-free —
+                         * matching the Master FX bypass behavior below. */
+                        int16_t mf_dry[FRAMES_PER_BLOCK * 2];
+                        if (mf->bypassed) memcpy(mf_dry, mbuf, sizeof(mf_dry));
                         mf->api->process_block(mf->instance, mbuf, FRAMES_PER_BLOCK);
+                        if (mf->bypassed) memcpy(mbuf, mf_dry, sizeof(mf_dry));
                     }
                     msrc = mbuf;
                 }
@@ -2463,8 +2468,12 @@ skip_la_rebuild:
         for (int fx = 0; fx < SEND_FX_SLOTS; fx++) {
             master_fx_slot_t *sf = &shadow_send_fx_slots[b][fx];
             if (!(sf->instance && sf->api && sf->api->process_block)) continue;
-            if (sf->bypassed) continue;
+            /* Process even when bypassed (then restore dry) so the effect's tail
+             * rings out and unbypass is glitch-free — matching Master FX. */
+            int16_t sf_dry[FRAMES_PER_BLOCK * 2];
+            if (sf->bypassed) memcpy(sf_dry, send_buf, sizeof(sf_dry));
             sf->api->process_block(sf->instance, send_buf, FRAMES_PER_BLOCK);
+            if (sf->bypassed) memcpy(send_buf, sf_dry, sizeof(sf_dry));
         }
 
         /* Per-bus return level scales the FX-processed return into the mix. */
