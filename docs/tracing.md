@@ -65,14 +65,17 @@ JS modules (overtake/chain, e.g. ion) add their own spans under `js.tick` — se
 
 `TRACE_SCOPE("name")` (or manual `TRACE_BEGIN`/`TRACE_END`) opens a span. When
 tracing is off it is a single atomic-load + branch; when on it stamps
-`CLOCK_MONOTONIC_RAW` and pushes a fixed 48-byte record into a lock-free ring.
+`CLOCK_MONOTONIC` and pushes a fixed 48-byte record into a lock-free ring.
 The emission path is realtime-safe — usable from the SPI callback (SCHED_FIFO
 90, core 3, ~900 µs budget):
 
 - no allocation (ring, name table, and per-thread span stack are preallocated/fixed);
 - no locks (atomics only);
-- no syscalls except the vDSO clock read;
-- O(1) per begin/end; drop-on-full, never blocks.
+- no syscalls in steady state except the vDSO clock read; the one exception
+  is a single `gettid()` per thread on its first traced span (cached
+  thereafter), and only while tracing is enabled;
+- O(1) per begin; end is O(1) for the normal LIFO case (one comparison),
+  O(depth) only when unwinding a mismatched/forgotten end; drop-on-full, never blocks.
 
 **Ring** — one SPSC ring per producer thread (`g_rings[]`, claimed lazily on
 first push and cached in a thread-local). The producer owns `w` (release on
@@ -88,8 +91,11 @@ stores only the id. Static C literals are stored by pointer
 **Parent linkage** — a per-thread span stack. A `begin` at depth 0 mints a new
 `trace_id` (a root); nested `begin`s inherit the trace and parent to the stack
 top. So `spi.pre` is the root of one trace per frame and its phases are
-children — a clean per-frame flamegraph. `end` unwinds to the matching
-`span_id`, so a forgotten `end()` (e.g. from JS) cannot corrupt the stack.
+children — a clean per-frame flamegraph. `end` matches the handle's
+`span_id` against the stack top (the normal LIFO case) and, if they differ,
+unwinds down to the matching span — so a forgotten or out-of-order `end()`
+(e.g. from the JS bridge) re-parents subsequent spans correctly instead of
+corrupting the stack. Spans left open by such a mismatch are dropped.
 
 ### Export (off the hot path)
 
@@ -115,9 +121,11 @@ rings/exporters/files — yet their spans stitch into **one** trace
    (`trace_id` / `parent_span_id`, released before `request_type`); the shim
    emits `param.serve` as that span's child via `schwung_trace_span_explicit`.
 
-The per-process UnixNano stamps line up to <1 ms because `CLOCK_MONOTONIC_RAW`
+The per-process UnixNano stamps line up to <1 ms because `CLOCK_MONOTONIC`
 is system-wide and each process samples the same MONOTONIC↔REALTIME offset at
-init. Tempo/Jaeger merge the two files by `trace_id`.
+init. (`CLOCK_MONOTONIC` rather than `_RAW`: it shares REALTIME's NTP slew, so
+the fixed offset doesn't drift the exported UnixNano over a long session.)
+Tempo/Jaeger merge the two files by `trace_id`.
 
 ## Adding spans
 
@@ -168,6 +176,8 @@ only the file exporter is wired today (replay from file, or `curl` it yourself).
 
 - 256-entry name table per process (shared by C + JS spans).
 - 8 producer rings per process; 32 levels of span nesting per thread.
+  More than 8 producer threads → the extras' spans drop, logged once by the
+  exporter (`thread-ring table exhausted`).
 - 16 JS spans open simultaneously per tick (`host_trace_begin` returns 0 past
   that, logged once).
 - Trace files: 8 MB rotation, newest 16 per service retained.

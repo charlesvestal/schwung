@@ -23,9 +23,11 @@
  * -DSCHWUNG_TRACE_DISABLED to compile every macro to absolute zero.
  *
  * REALTIME SAFETY (emission): no alloc, no locks, no I/O. Begin/end only
- * read CLOCK_MONOTONIC_RAW and append a fixed record to a preallocated
- * lock-free ring; full ring drops (never blocks). Export (serialize +
- * file/HTTP) runs on a separate SCHED_OTHER thread, never core 3.
+ * read CLOCK_MONOTONIC (vDSO, no syscall) and append a fixed record to a
+ * preallocated lock-free ring; full ring drops (never blocks). The sole
+ * syscall is one cached gettid() per thread on its first traced span (only
+ * when tracing is enabled); steady state is syscall-free. Export (serialize
+ * + file/HTTP) runs on a separate SCHED_OTHER thread, never core 3.
  */
 #ifndef SCHWUNG_TRACE_H
 #define SCHWUNG_TRACE_H
