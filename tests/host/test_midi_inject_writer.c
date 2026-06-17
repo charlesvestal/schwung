@@ -1,10 +1,14 @@
 /*
- * Host-side unit tests for shadow_midi_inject_writer.h.
+ * Host-side unit tests for shadow_midi_inject_writer.h (bounded MPSC ring).
  *
- * Runs on the dev machine (Mac/Linux), not on Move. Validates the MPSC
- * helper standalone — no SHM, no shim, no QuickJS — by stack-allocating
- * a shadow_midi_inject_t and pounding it with single-threaded and
- * multi-threaded producers.
+ * Runs on the dev machine (Mac/Linux), not on Move. Validates the ring
+ * standalone — no SHM, no shim, no QuickJS — by stack-allocating a
+ * shadow_midi_inject_t and exercising producers AND a concurrent consumer.
+ *
+ * The concurrent-consumer tests are the point: the bug class this ring
+ * fixes (Move SIGABRT from a torn / cable=0/CIN=0 packet) only manifests
+ * when producers push WHILE the consumer drains and frees slots. A
+ * producer-vs-producer-only test cannot reproduce it.
  *
  * Build + run:
  *   cc tests/host/test_midi_inject_writer.c -Isrc/host -lpthread \
@@ -16,209 +20,230 @@
 
 #include <assert.h>
 #include <pthread.h>
+#include <sched.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "shadow_midi_inject_writer.h"
 
+/* ------------------------------------------------------------------ *
+ * Packet encoding: byte 0 is a fixed non-zero CIN (0x09 = note-on).
+ * The remaining 3 bytes carry a 24-bit unique id so the consumer can
+ * verify exactly-once delivery. byte 0 == 0 is the SIGABRT smoking gun
+ * (cable=0/CIN=0 → Move reads "misc function" → abort), so every
+ * consumed packet MUST have byte 0 == 0x09.
+ * ------------------------------------------------------------------ */
+static inline void encode_pkt(uint8_t pkt[4], uint32_t id) {
+    pkt[0] = 0x09;
+    pkt[1] = (uint8_t)(id >> 16);
+    pkt[2] = (uint8_t)(id >> 8);
+    pkt[3] = (uint8_t)(id);
+}
+static inline uint32_t decode_id(const uint8_t pkt[4]) {
+    return ((uint32_t)pkt[1] << 16) | ((uint32_t)pkt[2] << 8) | pkt[3];
+}
+
+/* ------------------------------------------------------------------ */
+/* Single-threaded correctness                                         */
 /* ------------------------------------------------------------------ */
 
-static void test_single_push(void) {
-    shadow_midi_inject_t shm = {0};
-    uint8_t pkt[4] = {0x09, 0x90, 60, 100};
+static void test_single_push_peek_pop(void) {
+    shadow_midi_inject_t shm;
+    shadow_midi_inject_init(&shm);
 
-    int rc = shadow_midi_inject_push(&shm, pkt);
-    assert(rc == 0);
+    uint8_t pkt[4], out[4];
+    encode_pkt(pkt, 0xABCDE);
 
-    assert(shm.alloc_idx == 4);
-    assert(shm.commit_idx == 4);
-    assert(shm.ready == 1);
-    assert(memcmp(shm.buffer, pkt, 4) == 0);
+    assert(shadow_midi_inject_peek(&shm, out) == 0);  /* empty */
+    assert(shadow_midi_inject_push(&shm, pkt) == 0);
+    assert(shadow_midi_inject_peek(&shm, out) == 1);
+    assert(memcmp(out, pkt, 4) == 0);
+    /* peek does not consume — peeking again yields the same packet */
+    assert(shadow_midi_inject_peek(&shm, out) == 1);
+    assert(memcmp(out, pkt, 4) == 0);
+    shadow_midi_inject_pop(&shm);
+    assert(shadow_midi_inject_peek(&shm, out) == 0);  /* empty again */
 
-    printf("  test_single_push                     PASS\n");
+    printf("  test_single_push_peek_pop            PASS\n");
 }
 
-static void test_sequential_pushes_advance_cursors(void) {
-    shadow_midi_inject_t shm = {0};
+static void test_sequential_fifo(void) {
+    shadow_midi_inject_t shm;
+    shadow_midi_inject_init(&shm);
 
-    for (int i = 0; i < 10; i++) {
-        uint8_t pkt[4] = {0x09, 0x90, (uint8_t)(60 + i), 100};
+    for (uint32_t i = 0; i < 10; i++) {
+        uint8_t pkt[4]; encode_pkt(pkt, 1000 + i);
         assert(shadow_midi_inject_push(&shm, pkt) == 0);
-        assert(shm.alloc_idx == (i + 1) * 4);
-        assert(shm.commit_idx == (i + 1) * 4);
-        assert(shm.ready == (uint8_t)(i + 1));
-        /* Note byte == 60+i is at offset (i*4 + 2) */
-        assert(shm.buffer[i * 4 + 2] == (uint8_t)(60 + i));
     }
+    for (uint32_t i = 0; i < 10; i++) {
+        uint8_t out[4];
+        assert(shadow_midi_inject_peek(&shm, out) == 1);
+        assert(out[0] == 0x09);
+        assert(decode_id(out) == 1000 + i);  /* FIFO order */
+        shadow_midi_inject_pop(&shm);
+    }
+    assert(shadow_midi_inject_peek(&shm, (uint8_t[4]){0}) == 0);
 
-    printf("  test_sequential_pushes_advance       PASS\n");
+    printf("  test_sequential_fifo                 PASS\n");
 }
 
-static void test_buffer_full_rejection(void) {
-    shadow_midi_inject_t shm = {0};
-    uint8_t pkt[4] = {0x09, 0x90, 60, 100};
+static void test_full_capacity_and_recovery(void) {
+    shadow_midi_inject_t shm;
+    shadow_midi_inject_init(&shm);
 
-    /* Buffer holds 256 bytes / 4 per packet = 64 slots, but the bounds
-     * check uses `>= 256` so the last legal slot start is 252. That
-     * gives 63 successful pushes, then -1. */
-    int n_ok = 0;
-    int rc;
+    /* A bounded MPSC ring holds exactly SLOTS items when empty — not
+     * SLOTS-1. (The prior byte-ring's `>= SIZE` bound lost one slot.) */
+    uint8_t pkt[4]; encode_pkt(pkt, 1);
+    int n_ok = 0, rc;
     while ((rc = shadow_midi_inject_push(&shm, pkt)) == 0) n_ok++;
     assert(rc == -1);
-    assert(n_ok == 63);
-    assert(shm.alloc_idx == 252);
-    assert(shm.commit_idx == 252);
+    assert(n_ok == SHADOW_MIDI_INJECT_SLOTS);  /* full capacity, no off-by-one */
 
-    printf("  test_buffer_full_rejection           PASS\n");
+    /* Drain a few, then pushes succeed again (slots recycle). */
+    uint8_t out[4];
+    for (int i = 0; i < 3; i++) { assert(shadow_midi_inject_peek(&shm, out) == 1); shadow_midi_inject_pop(&shm); }
+    for (int i = 0; i < 3; i++) assert(shadow_midi_inject_push(&shm, pkt) == 0);
+    assert(shadow_midi_inject_push(&shm, pkt) == -1);  /* full again */
+
+    printf("  test_full_capacity_and_recovery      PASS\n");
 }
 
 /* ------------------------------------------------------------------ */
-/* Concurrent producers                                                */
+/* Concurrent producers + concurrent consumer (the real hazard)        */
 /* ------------------------------------------------------------------ */
 
-#define N_THREADS 8
-#define WRITES_PER_THREAD 7  /* 8 * 7 = 56 packets, fits in 63-slot buffer */
+#define N_THREADS         8
+#define WRITES_PER_THREAD 4000           /* 8 * 4000 = 32000 packets total */
+#define TOTAL_PACKETS     (N_THREADS * WRITES_PER_THREAD)
+#define PUSH_RETRY_CAP    200000000      /* sanity bound; never hit if healthy */
 
 typedef struct {
     shadow_midi_inject_t *shm;
-    uint8_t marker;       /* unique per thread, written into pkt[2] */
-    int stranded_count;   /* how many pushes returned -2 */
+    uint32_t base_id;    /* this thread owns ids [base_id, base_id + WRITES_PER_THREAD) */
+    long     retries;    /* how many -1 (full) we spun through */
 } writer_arg_t;
 
 static void *writer_thread(void *arg_) {
     writer_arg_t *arg = arg_;
-    uint8_t pkt[4] = {0x09, 0x90, arg->marker, 100};
-    for (int i = 0; i < WRITES_PER_THREAD; i++) {
-        int rc = shadow_midi_inject_push(arg->shm, pkt);
-        if (rc == 0) continue;
-        if (rc == -2) {
-            arg->stranded_count++;
-            continue;
+    for (uint32_t i = 0; i < WRITES_PER_THREAD; i++) {
+        uint8_t pkt[4]; encode_pkt(pkt, arg->base_id + i);
+        long attempts = 0;
+        while (shadow_midi_inject_push(arg->shm, pkt) != 0) {
+            /* Ring momentarily full — the consumer will free a slot. Retry.
+             * -1 is the ONLY failure code; it must clear, never wedge. */
+            if (++attempts > PUSH_RETRY_CAP) {
+                fprintf(stderr, "writer base=%u stuck at i=%u (ring never drained)\n",
+                        arg->base_id, i);
+                exit(1);
+            }
+            sched_yield();
         }
-        fprintf(stderr, "writer %u: unexpected rc=%d on iter %d\n",
-                arg->marker, rc, i);
-        exit(1);
+        arg->retries += attempts;
     }
     return NULL;
 }
 
-static void test_concurrent_no_collision(void) {
-    shadow_midi_inject_t shm = {0};
-    pthread_t threads[N_THREADS];
-    writer_arg_t args[N_THREADS];
+typedef struct {
+    shadow_midi_inject_t *shm;
+    uint8_t *seen;        /* seen[id]++ — consumer-only, so plain array is fine */
+    long     consumed;
+    int      done;        /* set by main once producers have joined */
+    int      torn;        /* count of torn/garbage packets (must stay 0) */
+} reader_arg_t;
 
-    for (int i = 0; i < N_THREADS; i++) {
-        args[i] = (writer_arg_t){
-            .shm = &shm,
-            .marker = (uint8_t)(0x10 + i),
-            .stranded_count = 0,
-        };
-        int err = pthread_create(&threads[i], NULL, writer_thread, &args[i]);
-        assert(err == 0);
-    }
-    for (int i = 0; i < N_THREADS; i++) {
-        pthread_join(threads[i], NULL);
-    }
-
-    /* Total successful pushes = N_THREADS * WRITES_PER_THREAD - stranded */
-    int total_stranded = 0;
-    for (int i = 0; i < N_THREADS; i++) total_stranded += args[i].stranded_count;
-    int total_committed = N_THREADS * WRITES_PER_THREAD - total_stranded;
-
-    /* Cursors must equal 4 * total_committed (each push advances by 4
-     * on success) plus 4 * total_stranded on alloc_idx (reservations
-     * succeeded but never committed). */
-    int total_reserved = N_THREADS * WRITES_PER_THREAD;
-    assert(shm.alloc_idx == total_reserved * 4);
-    /* commit_idx may stop short if any thread stranded — but only if
-     * the strand happened MID-sequence. With our spin limit and the
-     * realistic test load, stranding should be near-zero. */
-    if (total_stranded == 0) {
-        assert(shm.commit_idx == total_committed * 4);
-        assert(shm.ready == (uint8_t)total_committed);
-    } else {
-        printf("    (note: %d packets stranded — unusual under test load)\n",
-               total_stranded);
-    }
-
-    /* Every committed slot must contain a real marker byte (0x10..0x17),
-     * never zero. This is the smoking-gun assertion for the bug we're
-     * fixing: with the old racy writer, two threads could clobber the
-     * same slot and one packet would be silently lost — observable here
-     * as a slot containing 0x00 in pkt[2] or pkt[0]. */
-    for (int i = 0; i < total_committed; i++) {
-        uint8_t cin    = shm.buffer[i * 4 + 0];
-        uint8_t status = shm.buffer[i * 4 + 1];
-        uint8_t note   = shm.buffer[i * 4 + 2];
-        uint8_t vel    = shm.buffer[i * 4 + 3];
-        assert(cin == 0x09);
-        assert(status == 0x90);
-        assert(note >= 0x10 && note <= (0x10 + N_THREADS - 1));
-        assert(vel == 100);
-    }
-
-    /* And every thread's writes are accounted for in some order. Count
-     * how many slots carry each marker; should equal WRITES_PER_THREAD
-     * minus that thread's stranded_count. */
-    int per_thread_seen[N_THREADS] = {0};
-    for (int i = 0; i < total_committed; i++) {
-        uint8_t marker = shm.buffer[i * 4 + 2];
-        per_thread_seen[marker - 0x10]++;
-    }
-    for (int t = 0; t < N_THREADS; t++) {
-        int expected = WRITES_PER_THREAD - args[t].stranded_count;
-        if (per_thread_seen[t] != expected) {
-            fprintf(stderr,
-                    "thread %d: expected %d packets, saw %d\n",
-                    t, expected, per_thread_seen[t]);
-            assert(0);
+static void *reader_thread(void *arg_) {
+    reader_arg_t *arg = arg_;
+    for (;;) {
+        uint8_t out[4];
+        if (shadow_midi_inject_peek(arg->shm, out)) {
+            /* Smoking gun: a torn / partially-written packet would show
+             * byte 0 == 0 (the cable=0/CIN=0 that aborts Move firmware),
+             * or an id outside the produced range. */
+            if (out[0] != 0x09) { arg->torn++; }
+            uint32_t id = decode_id(out);
+            if (id >= TOTAL_PACKETS) { arg->torn++; }
+            else { arg->seen[id]++; }
+            shadow_midi_inject_pop(arg->shm);
+            arg->consumed++;
+        } else if (__atomic_load_n(&arg->done, __ATOMIC_ACQUIRE) &&
+                   !shadow_midi_inject_peek(arg->shm, out)) {
+            /* Producers finished and the ring is drained → we're done. */
+            break;
+        } else {
+            sched_yield();
         }
     }
-
-    printf("  test_concurrent_no_collision         PASS\n");
+    return NULL;
 }
 
-/* ------------------------------------------------------------------ */
-/* Stress: repeated runs to catch low-probability races                */
-/* ------------------------------------------------------------------ */
+static void run_concurrent_case(int print) {
+    shadow_midi_inject_t shm;
+    shadow_midi_inject_init(&shm);
 
-static void test_stress_concurrent(void) {
-    /* Re-run the concurrent case 50× to flush out timing-sensitive bugs
-     * that only fire on rare interleavings. Total ~50 * 56 = 2800
-     * packets, all should commit cleanly with no clobbering. */
-    for (int run = 0; run < 50; run++) {
-        shadow_midi_inject_t shm = {0};
-        pthread_t threads[N_THREADS];
-        writer_arg_t args[N_THREADS];
-        for (int i = 0; i < N_THREADS; i++) {
-            args[i] = (writer_arg_t){.shm = &shm,
-                                     .marker = (uint8_t)(0x10 + i)};
-            pthread_create(&threads[i], NULL, writer_thread, &args[i]);
-        }
-        for (int i = 0; i < N_THREADS; i++) pthread_join(threads[i], NULL);
+    uint8_t *seen = calloc(TOTAL_PACKETS, 1);
+    assert(seen);
 
-        int total = 0;
-        for (int t = 0; t < N_THREADS; t++)
-            total += WRITES_PER_THREAD - args[t].stranded_count;
+    pthread_t producers[N_THREADS], consumer;
+    writer_arg_t wargs[N_THREADS];
+    reader_arg_t rarg = { .shm = &shm, .seen = seen, .consumed = 0, .done = 0, .torn = 0 };
 
-        for (int i = 0; i < total; i++) {
-            assert(shm.buffer[i * 4 + 0] == 0x09);
-            uint8_t marker = shm.buffer[i * 4 + 2];
-            assert(marker >= 0x10 && marker < 0x10 + N_THREADS);
-        }
+    /* Start the consumer first so it's already draining as producers ramp. */
+    assert(pthread_create(&consumer, NULL, reader_thread, &rarg) == 0);
+    for (int i = 0; i < N_THREADS; i++) {
+        wargs[i] = (writer_arg_t){ .shm = &shm,
+                                   .base_id = (uint32_t)i * WRITES_PER_THREAD,
+                                   .retries = 0 };
+        assert(pthread_create(&producers[i], NULL, writer_thread, &wargs[i]) == 0);
     }
-    printf("  test_stress_concurrent (x50)         PASS\n");
+    for (int i = 0; i < N_THREADS; i++) pthread_join(producers[i], NULL);
+    __atomic_store_n(&rarg.done, 1, __ATOMIC_RELEASE);
+    pthread_join(consumer, NULL);
+
+    /* No torn / garbage packets ever reached the consumer. */
+    assert(rarg.torn == 0);
+    /* Exactly-once delivery: every produced id consumed exactly once. */
+    assert(rarg.consumed == TOTAL_PACKETS);
+    long missing = 0, dup = 0;
+    for (long id = 0; id < TOTAL_PACKETS; id++) {
+        if (seen[id] == 0) missing++;
+        else if (seen[id] > 1) dup++;
+    }
+    if (missing || dup) {
+        fprintf(stderr, "delivery error: missing=%ld duplicated=%ld\n", missing, dup);
+        assert(0);
+    }
+
+    long total_retries = 0;
+    for (int i = 0; i < N_THREADS; i++) total_retries += wargs[i].retries;
+    if (print) {
+        printf("  test_concurrent_producers_consumer   PASS  (%d pkts, %ld full-retries)\n",
+               TOTAL_PACKETS, total_retries);
+    }
+    free(seen);
+}
+
+static void test_concurrent_producers_consumer(void) {
+    run_concurrent_case(1);
+}
+
+/* Repeat the concurrent case to shake out rare interleavings. */
+static void test_stress_concurrent(void) {
+    for (int run = 0; run < 20; run++) {
+        run_concurrent_case(0);
+    }
+    printf("  test_stress_concurrent (x20)         PASS\n");
 }
 
 /* ------------------------------------------------------------------ */
 
 int main(void) {
-    printf("shadow_midi_inject_writer tests:\n");
-    test_single_push();
-    test_sequential_pushes_advance_cursors();
-    test_buffer_full_rejection();
-    test_concurrent_no_collision();
+    printf("shadow_midi_inject_writer tests (Vyukov MPSC):\n");
+    test_single_push_peek_pop();
+    test_sequential_fifo();
+    test_full_capacity_and_recovery();
+    test_concurrent_producers_consumer();
     test_stress_concurrent();
     printf("ALL PASS\n");
     return 0;
