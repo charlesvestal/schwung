@@ -164,6 +164,14 @@ import {
     handlePatchesBack, handlePatchDetailBack, handleComponentParamsBack
 } from './shadow_ui_patches.mjs';
 import {
+    drawPresets as _drawPresets,
+    drawPresetDetail as _drawPresetDetail,
+    enterPresetBrowser as _enterPresetBrowser,
+    handlePresetsJog, handlePresetDetailJog,
+    handlePresetsSelect, handlePresetDetailSelect,
+    handlePresetsBack, handlePresetDetailBack
+} from './shadow_ui_presets.mjs';
+import {
     drawMasterFx as _drawMasterFx,
     getMasterFxDisplayName as _getMasterFxDisplayName,
     enterMasterFxSettings as _enterMasterFxSettings
@@ -295,6 +303,8 @@ const VIEWS = {
     PATCHES: "patches",       // Patch list for selected slot
     PATCH_DETAIL: "detail",   // Show synth/fx info for selected patch
     COMPONENT_PARAMS: "params", // Edit component params (Phase 3)
+    PRESETS: "modpresets",      // Module preset list (synth-only) for selected slot
+    PRESET_DETAIL: "modpresetdetail", // Load/Delete a selected module preset
     COMPONENT_SELECT: "compselect", // Select module for a component
     COMPONENT_EDIT: "compedit",  // Edit component (presets, params) via Shift+Click
     MASTER_FX: "masterfx",    // Master FX selection
@@ -6411,14 +6421,37 @@ function enterComponentSelect(slotIndex, componentIndex) {
 
     /* Scan for available modules of this type */
     availableModules = scanModulesForType(comp.key);
+
+    /* Surface this component's User Presets manager (see shadow_ui_presets.mjs)
+     * as the first row of the picker — for any loaded chain component (synth,
+     * audio FX, MIDI FX). Shift+Click is already the "manage this module slot"
+     * gesture, so it sits naturally above the swap list. Only shown when a
+     * module is loaded, since a preset snapshots its <component>:state. */
+    let presetsRowAtTop = false;
+    {
+        const loaded = chainConfigs[slotIndex] && chainConfigs[slotIndex][comp.key];
+        const loadedId = loaded && loaded.module;
+        if (loadedId) {
+            availableModules = [
+                { id: "__user_presets__", name: "[" + getModuleAbbrev(loadedId) + " User Presets]" },
+                ...availableModules
+            ];
+            presetsRowAtTop = true;
+        }
+    }
+
     selectedModuleIndex = 0;
 
-    /* Try to find current module in list */
-    const cfg = chainConfigs[slotIndex];
-    const current = cfg && cfg[comp.key];
-    if (current && current.module) {
-        const idx = availableModules.findIndex(m => m.id === current.module);
-        if (idx >= 0) selectedModuleIndex = idx;
+    /* Default the cursor to the current module — UNLESS the User Presets row is
+     * present, in which case start at the top on that row (entering here is
+     * usually to reach presets, not to swap modules). */
+    if (!presetsRowAtTop) {
+        const cfg = chainConfigs[slotIndex];
+        const current = cfg && cfg[comp.key];
+        if (current && current.module) {
+            const idx = availableModules.findIndex(m => m.id === current.module);
+            if (idx >= 0) selectedModuleIndex = idx;
+        }
     }
 
     setView(VIEWS.COMPONENT_SELECT);
@@ -6436,6 +6469,14 @@ function applyComponentSelection() {
 
     if (!comp || comp.key === "settings") {
         setView(VIEWS.CHAIN_EDIT);
+        return;
+    }
+
+    /* Check if user selected this component's User Presets manager */
+    if (selected && selected.id === "__user_presets__") {
+        const loaded = chainConfigs[selectedSlot] && chainConfigs[selectedSlot][comp.key];
+        enterPresetBrowser(selectedSlot, comp.key, loaded && loaded.module,
+                           getComponentParamPrefix(comp.key));
         return;
     }
 
@@ -10664,6 +10705,12 @@ function handleJog(delta) {
         case VIEWS.COMPONENT_PARAMS:
             handleComponentParamsJog(delta);
             break;
+        case VIEWS.PRESETS:
+            handlePresetsJog(delta);
+            break;
+        case VIEWS.PRESET_DETAIL:
+            handlePresetDetailJog(delta);
+            break;
         case VIEWS.CHAIN_EDIT:
             /* Navigate horizontally through chain components (-1 = chain/patch selection) */
             selectedChainComponent = Math.max(-1, Math.min(CHAIN_COMPONENTS.length - 1, selectedChainComponent + delta));
@@ -11133,6 +11180,12 @@ function handleSelect() {
             break;
         case VIEWS.COMPONENT_PARAMS:
             handleComponentParamsSelect();
+            break;
+        case VIEWS.PRESETS:
+            handlePresetsSelect();
+            break;
+        case VIEWS.PRESET_DETAIL:
+            handlePresetDetailSelect();
             break;
         case VIEWS.CHAIN_EDIT:
             if (selectedChainComponent === -1) {
@@ -11872,6 +11925,12 @@ function handleBack() {
             break;
         case VIEWS.COMPONENT_PARAMS:
             handleComponentParamsBack();
+            break;
+        case VIEWS.PRESETS:
+            handlePresetsBack();
+            break;
+        case VIEWS.PRESET_DETAIL:
+            handlePresetDetailBack();
             break;
         case VIEWS.MASTER_FX:
             if (masterShowingNamePreview) {
@@ -12937,6 +12996,7 @@ function drawHelpDetail() {
     _ctx.fetchKnobMappings = (...args) => fetchKnobMappings(...args);
     _ctx.invalidateKnobContextCache = (...args) => invalidateKnobContextCache(...args);
     _ctx.loadChainConfigFromSlot = (...args) => loadChainConfigFromSlot(...args);
+    _ctx.getSlotStateWithRetry = (...args) => getSlotStateWithRetry(...args);
 
     /* Master FX functions */
     _ctx.scanForAudioFxModules = (...args) => scanForAudioFxModules(...args);
@@ -13112,6 +13172,9 @@ function enterSlotSettings(slotIndex) { _enterSlotSettings(slotIndex); }
 function drawPatches() { _drawPatches(); }
 function drawPatchDetail() { _drawPatchDetail(); }
 function drawComponentParams() { _drawComponentParams(); }
+function drawPresets() { _drawPresets(); }
+function drawPresetDetail() { _drawPresetDetail(); }
+function enterPresetBrowser(...args) { _enterPresetBrowser(...args); }
 function enterPatchBrowser(slotIndex) { _enterPatchBrowser(slotIndex); }
 function enterPatchDetail(slotIndex, patchIndex) { _enterPatchDetail(slotIndex, patchIndex); }
 function enterComponentParams(slot, component) { _enterComponentParams(slot, component); }
@@ -13714,6 +13777,8 @@ function dispatchCoRunDraw() {
         case VIEWS.PATCHES:              drawPatches(); break;
         case VIEWS.PATCH_DETAIL:         drawPatchDetail(); break;
         case VIEWS.COMPONENT_PARAMS:     drawComponentParams(); break;
+        case VIEWS.PRESETS:              drawPresets(); break;
+        case VIEWS.PRESET_DETAIL:        drawPresetDetail(); break;
         case VIEWS.COMPONENT_SELECT:     drawComponentSelect(); break;
         case VIEWS.CHAIN_SETTINGS:       drawChainSettings(); break;
         case VIEWS.SLOT_SETTINGS:        drawSlotSettings(); break;
@@ -14524,6 +14589,12 @@ globalThis.tick = function() {
             break;
         case VIEWS.COMPONENT_PARAMS:
             drawComponentParams();
+            break;
+        case VIEWS.PRESETS:
+            drawPresets();
+            break;
+        case VIEWS.PRESET_DETAIL:
+            drawPresetDetail();
             break;
         case VIEWS.MASTER_FX:
             drawMasterFx();
