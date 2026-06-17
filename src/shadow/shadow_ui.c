@@ -964,7 +964,7 @@ static JSValue js_move_midi_inject_to_move(JSContext *ctx, JSValueConst this_val
          * to the track synth). See function docblock. */
 
         if (shadow_midi_inject_push(shadow_midi_inject, packet) != 0) {
-            /* Buffer full or stranded — drop this packet and stop the
+            /* Ring full (drain starved) — drop this packet and stop the
              * batch (subsequent packets would just back up). */
             break;
         }
