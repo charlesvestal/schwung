@@ -238,6 +238,9 @@ static JSValue js_shadow_corun_begin(JSContext *ctx, JSValueConst this_val, int 
     if (JS_ToInt32(ctx, &id, argv[1])) return JS_UNDEFINED;
     if (argc >= 3 && JS_ToInt32(ctx, &keep, argv[2])) return JS_UNDEFINED;
     if (keep < 0 || keep > 0xFFFF) return JS_UNDEFINED;
+    /* Reset LED-keep to "follow keep_mask"; a tool opts into the lights/input
+     * split by calling shadow_corun_set_led_keep_mask() after begin. */
+    shadow_control->corun.led_keep_mask = 0;
     if (target == CORUN_TARGET_CHAIN_EDIT) {
         if (id < 0 || id >= SHADOW_UI_SLOTS) return JS_UNDEFINED;
         shadow_control->corun.keep_mask = (uint16_t)keep;
@@ -270,8 +273,24 @@ static JSValue js_shadow_corun_end(JSContext *ctx, JSValueConst this_val, int ar
     shadow_control->corun.target = CORUN_TARGET_NONE;
     shadow_control->corun.id = -1;
     shadow_control->corun.keep_mask = 0;
+    shadow_control->corun.led_keep_mask = 0;
     /* Returning to the tool's shadow session — shadow_ui resumes rendering. */
     shadow_control->shadow_display_owner = DISPLAY_OWNER_SCHWUNG_UI;
+    return JS_UNDEFINED;
+}
+
+/* shadow_corun_set_led_keep_mask(mask) -> void
+ * Co-run lights/input split: declare which CORUN_GRP_* groups the tool owns for
+ * LED stripping, independent of the input keep_mask. Call after shadow_corun_begin.
+ * 0 = follow keep_mask (the default). Lets a tool paint a surface (e.g. the
+ * track-button clip indicator) while still ceding its presses to the peer. */
+static JSValue js_shadow_corun_set_led_keep_mask(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 1) return JS_UNDEFINED;
+    int32_t mask = 0;
+    JS_ToInt32(ctx, &mask, argv[0]);
+    if (mask < 0 || mask > 0xFFFF) return JS_UNDEFINED;
+    shadow_control->corun.led_keep_mask = (uint16_t)mask;
     return JS_UNDEFINED;
 }
 
@@ -376,6 +395,13 @@ static JSValue js_shadow_set_overtake_mode(JSContext *ctx, JSValueConst this_val
         if (shadow_ui_midi_shm) {
             memset(shadow_ui_midi_shm, 0, MIDI_BUFFER_SIZE);
         }
+    } else {
+        /* Clear the full-overtake sysex-suppression opt-in here, the one point
+         * every exit path (exit/hide/complete/suspend) funnels through, so the
+         * next overtake tool can't inherit a stale suppress flag. Mirrors the
+         * shim's init-time reset. (led_keep_mask is already reset on the
+         * co-run begin/end + Back-exit paths.) */
+        shadow_control->overtake_suppress_sysex = 0;
     }
     /* NOTE: Shift-off and volume-touch-off injection on overtake exit is
      * handled by the shim's ioctl handler (transition detection), not here.
@@ -426,6 +452,19 @@ static JSValue js_shadow_set_skip_led_clear(JSContext *ctx, JSValueConst this_va
     int32_t flag = 0;
     JS_ToInt32(ctx, &flag, argv[0]);
     shadow_control->skip_led_clear = flag ? 1 : 0;
+    return JS_UNDEFINED;
+}
+
+/* shadow_set_overtake_suppress_sysex(flag) -> void
+ * Opt a full-overtake tool into stripping Move's cable-0 sysex (RGB pad/clip/
+ * grid LEDs) so Move's running-sequencer repaints don't fight the tool's LEDs.
+ * Set on tool init; cleared automatically on overtake exit (and below). */
+static JSValue js_shadow_set_overtake_suppress_sysex(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 1) return JS_UNDEFINED;
+    int32_t flag = 0;
+    JS_ToInt32(ctx, &flag, argv[0]);
+    shadow_control->overtake_suppress_sysex = flag ? 1 : 0;
     return JS_UNDEFINED;
 }
 
@@ -2089,6 +2128,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_overtake_send_external_async_active", JS_NewCFunction(ctx, js_shadow_overtake_send_external_async_active, "shadow_overtake_send_external_async_active", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_corun_begin", JS_NewCFunction(ctx, js_shadow_corun_begin, "shadow_corun_begin", 3));
     JS_SetPropertyStr(ctx, global_obj, "shadow_corun_end", JS_NewCFunction(ctx, js_shadow_corun_end, "shadow_corun_end", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_corun_set_led_keep_mask", JS_NewCFunction(ctx, js_shadow_corun_set_led_keep_mask, "shadow_corun_set_led_keep_mask", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_corun_state", JS_NewCFunction(ctx, js_shadow_corun_state, "shadow_corun_state", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_corun_overlay", JS_NewCFunction(ctx, js_shadow_corun_overlay, "shadow_corun_overlay", 2));
     /* Co-run target enum (matches corun_target_t in shadow_constants.h). */
@@ -2119,6 +2159,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_move_ui_mode", JS_NewCFunction(ctx, js_shadow_get_move_ui_mode, "shadow_get_move_ui_mode", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_overtake_mode", JS_NewCFunction(ctx, js_shadow_set_overtake_mode, "shadow_set_overtake_mode", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_skip_led_clear", JS_NewCFunction(ctx, js_shadow_set_skip_led_clear, "shadow_set_skip_led_clear", 1));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_set_overtake_suppress_sysex", JS_NewCFunction(ctx, js_shadow_set_overtake_suppress_sysex, "shadow_set_overtake_suppress_sysex", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_suspend_overtake", JS_NewCFunction(ctx, js_shadow_set_suspend_overtake, "shadow_set_suspend_overtake", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_suspend_overtake", JS_NewCFunction(ctx, js_shadow_get_suspend_overtake, "shadow_get_suspend_overtake", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_consume_resume_last_tool", JS_NewCFunction(ctx, js_shadow_consume_resume_last_tool, "shadow_consume_resume_last_tool", 0));

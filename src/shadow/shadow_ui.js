@@ -2961,6 +2961,10 @@ function suspendOvertakeMode() {
         if (typeof shadow_set_skip_led_clear === "function") {
             shadow_set_skip_led_clear(0);
         }
+        /* Clear the opt-in sysex suppression so it never leaks to the next tool. */
+        if (typeof shadow_set_overtake_suppress_sysex === "function") {
+            shadow_set_overtake_suppress_sysex(0);
+        }
 
         /* Dismiss shadow UI entirely so Move's native UI returns. */
         setView(VIEWS.SLOTS);
