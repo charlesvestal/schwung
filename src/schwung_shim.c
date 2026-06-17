@@ -3686,8 +3686,11 @@ static int shim_handle_param_special(uint8_t req_type, uint32_t req_id) {
             shadow_param->error = 0;
             shadow_param->result_len = 0;
         }
-        shadow_param->response_ready = 1;
         shadow_param->response_id = shadow_param->request_id;
+        /* Release-store the flag AFTER the fields (incl. response_id), pairing
+         * with the reader's acquire-load. Matches shadow_param_publish_response;
+         * a plain store lets ARMv8 commit the flag ahead of the fields. */
+        __atomic_store_n(&shadow_param->response_ready, 1, __ATOMIC_RELEASE);
         return 1;
     }
 
@@ -3697,8 +3700,11 @@ static int shim_handle_param_special(uint8_t req_type, uint32_t req_id) {
             shadow_param->error = 0;
             shadow_param->result_len = 0;
         }
-        shadow_param->response_ready = 1;
         shadow_param->response_id = shadow_param->request_id;
+        /* Release-store the flag AFTER the fields (incl. response_id), pairing
+         * with the reader's acquire-load. Matches shadow_param_publish_response;
+         * a plain store lets ARMv8 commit the flag ahead of the fields. */
+        __atomic_store_n(&shadow_param->response_ready, 1, __ATOMIC_RELEASE);
         return 1;
     }
 
@@ -3718,8 +3724,11 @@ static int shim_handle_param_special(uint8_t req_type, uint32_t req_id) {
             shadow_param->error = 0;
             shadow_param->result_len = 0;
         }
-        shadow_param->response_ready = 1;
         shadow_param->response_id = shadow_param->request_id;
+        /* Release-store the flag AFTER the fields (incl. response_id), pairing
+         * with the reader's acquire-load. Matches shadow_param_publish_response;
+         * a plain store lets ARMv8 commit the flag ahead of the fields. */
+        __atomic_store_n(&shadow_param->response_ready, 1, __ATOMIC_RELEASE);
         return 1;
     }
 
