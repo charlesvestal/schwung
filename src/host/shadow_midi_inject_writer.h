@@ -1,38 +1,35 @@
 /*
- * shadow_midi_inject_writer.h — single source of truth for writing into
- * the /schwung-midi-inject SHM ring.
+ * shadow_midi_inject_writer.h — single source of truth for the
+ * /schwung-midi-inject SHM ring (producers + the single consumer).
  *
- * The inject ring is multi-producer / single-consumer. Producers can
- * be in different processes (shim, schwung_host) and may call
- * concurrently. Without coordination they race on the cursor or
- * leave reserved-but-unwritten slots that the drain reads as garbage —
- * the latter manifests as Move firmware SIGABRT (see shadow_midi.c:553).
+ * The ring is multi-producer / single-consumer. Producers can live in
+ * different processes (shim, schwung_host) and call concurrently; the
+ * one consumer is the shim's SPI-thread drain. Without coordination they
+ * race on slot contents and the drain reads garbage — a cable=0/CIN=0
+ * packet reaching Move's MIDI_IN reads as "misc function" and Move
+ * firmware aborts (SIGABRT).
  *
- * This helper encodes the lock-free MPSC pattern once:
- *   1. CAS-reserve a 4-byte slot at `alloc_idx`
- *   2. memcpy our 4 bytes into the reserved slot
- *   3. Spin (bounded) until prior producers have advanced `commit_idx`
- *      to our slot start (FIFO commit order)
- *   4. Atomically advance `commit_idx` past our slot, then bump `ready`
+ * This is Dmitry Vyukov's bounded MPSC queue: an array of slots, each
+ * with a sequence number `seq` and a 4-byte packet. Properties that
+ * matter here (see the long note in shadow_constants.h):
+ *   - the consumer never resets cursors or memsets the buffer, so it
+ *     cannot race a cross-process producer mid-write;
+ *   - producers never wait on each other's commit (no FIFO-commit spin),
+ *     so a producer preempted between claim and publish cannot stall the
+ *     SPI-thread producer on the realtime path;
+ *   - every cursor/seq access is atomic — no volatile-vs-atomic race.
  *
- * The drain reads `commit_idx` (not `alloc_idx`), so steps 1–3 are
- * invisible to it; only step 4 publishes our packet.
+ * Memory ordering (the standard Vyukov pairing):
+ *   - enqueue_pos / read_pos advance RELAXED (they only arbitrate slot
+ *     ownership; the data handoff rides on seq).
+ *   - producer publishes with a RELEASE store on slot.seq; consumer's
+ *     ACQUIRE load of slot.seq pairs with it, making the packet write
+ *     visible before the consumer reads it.
+ *   - consumer frees a slot with a RELEASE store on slot.seq; the next
+ *     lap's producer ACQUIRE-loads it before reusing the slot.
  *
- * Memory ordering:
- *   - alloc_idx CAS: RELAXED — we only need atomic agreement on which
- *     slot belongs to whom, no data dependency.
- *   - commit_idx load (in spin): ACQUIRE — pairs with prior producer's
- *     RELEASE store to commit_idx, ensuring their buffer write is
- *     visible to us if we ever needed to read it (we don't, but the
- *     pairing keeps semantics tight).
- *   - commit_idx store: RELEASE — pairs with the drain's ACQUIRE load,
- *     publishing our buffer write to the drain.
- *   - ready fetch_add: RELEASE — pairs with drain's read of `ready`
- *     to detect "something new arrived".
- *
- * Header-only on purpose: the helper is small, hot enough that we want
- * inlining at every callsite, and self-contained (depends only on
- * shadow_constants.h and stdatomic-style GCC builtins).
+ * Header-only: small, hot, self-contained (depends only on
+ * shadow_constants.h and GCC __atomic builtins).
  */
 
 #ifndef SHADOW_MIDI_INJECT_WRITER_H
@@ -44,71 +41,100 @@
 
 #include "shadow_constants.h"
 
-/* Bound on the FIFO-commit spin. In realistic conditions this never
- * triggers — concurrent-writer rate across all four producers is well
- * under 100/sec, drain runs every ~3ms, so the chance of finding a
- * prior producer mid-write is ~10^-4 per push. When it does fire, a
- * tight loop of atomic loads is nanoseconds per iteration; 100k caps
- * worst-case at ~1ms of CPU, after which we give up and return -2
- * rather than hang the caller. */
-#define SHADOW_MIDI_INJECT_SPIN_LIMIT 100000
+/* shadow_midi_inject_init — one-time initialization by the SHM creator
+ * (the shim), BEFORE any producer maps the segment. Zero-fill is not a
+ * valid initial state: each slot's seq must equal its index. Safe to call
+ * on a freshly created (or re-created) segment when no producer is live. */
+static inline void
+shadow_midi_inject_init(shadow_midi_inject_t *shm)
+{
+    __atomic_store_n(&shm->enqueue_pos, 0u, __ATOMIC_RELAXED);
+    __atomic_store_n(&shm->read_pos, 0u, __ATOMIC_RELAXED);
+    for (uint32_t i = 0; i < SHADOW_MIDI_INJECT_SLOTS; i++) {
+        shm->slots[i].pkt[0] = shm->slots[i].pkt[1] =
+            shm->slots[i].pkt[2] = shm->slots[i].pkt[3] = 0;
+        __atomic_store_n(&shm->slots[i].seq, i, __ATOMIC_RELAXED);
+    }
+}
 
-/* shadow_midi_inject_push — push one 4-byte USB-MIDI packet into the ring.
+/* shadow_midi_inject_push — enqueue one 4-byte USB-MIDI packet.
  *
  * Safe to call concurrently from any thread/process that has the SHM
- * mapped read-write. Wait-free in the no-contention case; bounded spin
- * (~1 ms cap) in the rare case a prior producer is mid-write.
+ * mapped read-write. Wait-free except for a bounded CAS-retry under
+ * producer contention (retries at most once per concurrent producer —
+ * never waits on another producer to publish).
  *
  * Returns:
- *    0 — committed; drain will see this packet on its next pass.
- *   -1 — buffer full (drain hasn't run / can't keep up). Caller may retry
- *        after a frame.
- *   -2 — gave up waiting for a prior stranded producer's commit. Our
- *        4 bytes are physically in the buffer but were never published
- *        via commit_idx; they will be wiped on the next drain reset.
- *        Callers that care should log a one-shot warning and skip the
- *        packet (or retry).
+ *    0 — enqueued; the drain will deliver it on a subsequent pass.
+ *   -1 — ring full (consumer hasn't freed this slot's previous lap yet).
+ *        Caller may retry after a frame.
  */
 static inline int
 shadow_midi_inject_push(shadow_midi_inject_t *shm, const uint8_t pkt[4])
 {
-    /* 1. CAS-reserve a slot. Loop body retries only if another producer
-     *    advanced alloc_idx between our load and our compare-exchange —
-     *    not a busy-wait, just a value refresh. */
-    uint8_t my_slot;
-    do {
-        my_slot = __atomic_load_n(&shm->alloc_idx, __ATOMIC_RELAXED);
-        if ((unsigned)my_slot + 4u >= SHADOW_MIDI_INJECT_BUFFER_SIZE) {
-            return -1;  /* buffer full */
-        }
-    } while (!__atomic_compare_exchange_n(
-        &shm->alloc_idx, &my_slot, (uint8_t)(my_slot + 4),
-        false /* strong */,
-        __ATOMIC_RELAXED, __ATOMIC_RELAXED));
-
-    /* 2. We now own [my_slot, my_slot + 4). No other producer will
-     *    touch these bytes; safe to memcpy without further locks. */
-    memcpy(&shm->buffer[my_slot], pkt, 4);
-
-    /* 3. Wait for prior producers to commit so commits land in FIFO
-     *    order. The acquire load pairs with each prior producer's
-     *    release store on commit_idx. Bounded by SPIN_LIMIT — see
-     *    macro comment for rationale. */
-    int spin_iters = 0;
-    while (__atomic_load_n(&shm->commit_idx, __ATOMIC_ACQUIRE) != my_slot) {
-        if (++spin_iters > SHADOW_MIDI_INJECT_SPIN_LIMIT) {
-            return -2;  /* prior producer stranded */
+    shadow_midi_inject_slot_t *slot;
+    uint32_t pos = __atomic_load_n(&shm->enqueue_pos, __ATOMIC_RELAXED);
+    for (;;) {
+        slot = &shm->slots[pos & SHADOW_MIDI_INJECT_MASK];
+        uint32_t seq = __atomic_load_n(&slot->seq, __ATOMIC_ACQUIRE);
+        int32_t diff = (int32_t)(seq - pos);
+        if (diff == 0) {
+            /* Slot is free for this lap. Try to claim `pos`. Weak CAS:
+             * on failure `pos` is refreshed to the current enqueue_pos. */
+            if (__atomic_compare_exchange_n(&shm->enqueue_pos, &pos, pos + 1,
+                                            true /* weak */,
+                                            __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+                break;  /* we own `slot` at `pos` */
+            }
+            /* CAS failed → pos reloaded; recompute slot and retry. */
+        } else if (diff < 0) {
+            /* Slot still holds an unconsumed packet from a prior lap. The
+             * ring is full at this position → drop, let the caller retry. */
+            return -1;
+        } else {
+            /* diff > 0: another producer already claimed this pos. Refresh
+             * and retry against the current head. */
+            pos = __atomic_load_n(&shm->enqueue_pos, __ATOMIC_RELAXED);
         }
     }
 
-    /* 4. Publish. The release store on commit_idx makes our memcpy
-     *    visible to the drain's acquire load. The ready bump signals
-     *    "something new arrived" so drain doesn't need to poll
-     *    commit_idx every frame when nothing is happening. */
-    __atomic_store_n(&shm->commit_idx, (uint8_t)(my_slot + 4),
-                     __ATOMIC_RELEASE);
-    __atomic_fetch_add(&shm->ready, 1, __ATOMIC_RELEASE);
+    memcpy(slot->pkt, pkt, 4);
+    /* Publish: RELEASE makes the packet write visible to the consumer's
+     * ACQUIRE load of seq. */
+    __atomic_store_n(&slot->seq, pos + 1, __ATOMIC_RELEASE);
     return 0;
+}
+
+/* shadow_midi_inject_peek — copy the next ready packet into out[4] WITHOUT
+ * consuming it. Single-consumer only (the drain). Returns 1 if a packet was
+ * copied, 0 if none is ready yet (empty, or the head slot's producer is
+ * still mid-write). The packet stays stable until _pop(), so the consumer
+ * may decline to consume it this pass (it will reappear next pass). */
+static inline int
+shadow_midi_inject_peek(shadow_midi_inject_t *shm, uint8_t out[4])
+{
+    uint32_t pos = __atomic_load_n(&shm->read_pos, __ATOMIC_RELAXED);
+    shadow_midi_inject_slot_t *slot = &shm->slots[pos & SHADOW_MIDI_INJECT_MASK];
+    uint32_t seq = __atomic_load_n(&slot->seq, __ATOMIC_ACQUIRE);
+    if ((int32_t)(seq - (pos + 1)) != 0) {
+        return 0;  /* not published yet → nothing ready at the head */
+    }
+    memcpy(out, slot->pkt, 4);
+    return 1;
+}
+
+/* shadow_midi_inject_pop — consume the packet previously observed by _peek,
+ * freeing its slot for a future lap. Single-consumer only. Call exactly once
+ * per successful _peek that you decide to consume. */
+static inline void
+shadow_midi_inject_pop(shadow_midi_inject_t *shm)
+{
+    uint32_t pos = __atomic_load_n(&shm->read_pos, __ATOMIC_RELAXED);
+    shadow_midi_inject_slot_t *slot = &shm->slots[pos & SHADOW_MIDI_INJECT_MASK];
+    /* Free the slot for the producer that will claim pos + SLOTS. RELEASE
+     * pairs with that producer's ACQUIRE load of seq. */
+    __atomic_store_n(&slot->seq, pos + SHADOW_MIDI_INJECT_SLOTS, __ATOMIC_RELEASE);
+    __atomic_store_n(&shm->read_pos, pos + 1, __ATOMIC_RELAXED);
 }
 
 #endif /* SHADOW_MIDI_INJECT_WRITER_H */

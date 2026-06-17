@@ -2976,6 +2976,12 @@ static void init_shadow_shm(void)
     /* Create/open MIDI inject shared memory (for injecting events into Move's MIDI_IN) */
     shadow_midi_inject_shm = (shadow_midi_inject_t *)shadow_shm_map(SHM_SHADOW_MIDI_INJECT,
                                                                     sizeof(shadow_midi_inject_t), 1, 1);
+    /* The Vyukov ring needs seq[i] = i — zero-fill is not a valid initial
+     * state. The shim creates this segment before any producer (schwung_host)
+     * maps it, so initializing here once at startup is race-free. */
+    if (shadow_midi_inject_shm) {
+        shadow_midi_inject_init(shadow_midi_inject_shm);
+    }
 
     /* Create/open cable-2 channel remap shared memory (active overtake module writes,
      * shim reads on every SPI frame to rewrite cable-2 MIDI_IN channel byte). */
@@ -5580,11 +5586,23 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             const uint8_t vol_touch_off[4]= {0x08, 0x80, 8,            0};
             const uint8_t back_off[4]     = {0x0B, 0xB0, CC_BACK,      0};
             const uint8_t jog_click_off[4]= {0x0B, 0xB0, CC_JOG_CLICK, 0};
-            shadow_midi_inject_push(shadow_midi_inject_shm, shift_off);
-            shadow_midi_inject_push(shadow_midi_inject_shm, vol_touch_off);
-            shadow_midi_inject_push(shadow_midi_inject_shm, back_off);
-            shadow_midi_inject_push(shadow_midi_inject_shm, jog_click_off);
-            shadow_log("Overtake exit: injected shift-off, volume-touch-off, back-off, jog-click-off");
+            /* These are the highest-consequence injects: a dropped release
+             * leaves Move believing a control is still held. push() only
+             * fails (-1) if the ring is full (drain starved) — never expected
+             * for four one-shot packets, but check each and name any casualty
+             * rather than dropping it silently. */
+            int rc_shift = shadow_midi_inject_push(shadow_midi_inject_shm, shift_off);
+            int rc_vol   = shadow_midi_inject_push(shadow_midi_inject_shm, vol_touch_off);
+            int rc_back  = shadow_midi_inject_push(shadow_midi_inject_shm, back_off);
+            int rc_jog   = shadow_midi_inject_push(shadow_midi_inject_shm, jog_click_off);
+            if (rc_shift == 0 && rc_vol == 0 && rc_back == 0 && rc_jog == 0) {
+                shadow_log("Overtake exit: injected shift-off, volume-touch-off, back-off, jog-click-off");
+            } else {
+                if (rc_shift) shadow_log("Overtake exit: DROPPED shift-off inject (ring full) — Move may think Shift is held");
+                if (rc_vol)   shadow_log("Overtake exit: DROPPED volume-touch-off inject (ring full)");
+                if (rc_back)  shadow_log("Overtake exit: DROPPED back-off inject (ring full) — Move may think Back is held");
+                if (rc_jog)   shadow_log("Overtake exit: DROPPED jog-click-off inject (ring full) — Move may think Jog Click is held");
+            }
         }
         /* Forced reset of cable-2 channel remap on overtake exit. The active
          * module owns the table during overtake; on exit, clear it so a
