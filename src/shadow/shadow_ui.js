@@ -6423,29 +6423,38 @@ function enterComponentSelect(slotIndex, componentIndex) {
     availableModules = scanModulesForType(comp.key);
 
     /* Surface this component's User Presets manager (see shadow_ui_presets.mjs)
-     * as the first row of the picker — for any loaded chain component (synth,
-     * audio FX, MIDI FX). Shift+Click is already the "manage this module slot"
-     * gesture, so it sits naturally above the swap list. Only shown when a
+     * as an indented row tucked directly beneath the loaded module — for any
+     * loaded chain component (synth, audio FX, MIDI FX). It rides alongside the
+     * module it belongs to (rather than at the top of the swap list) so the
+     * picker reads "<loaded module> / its presets" in place. Only shown when a
      * module is loaded, since a preset snapshots its <component>:state. */
-    let presetsRowAtTop = false;
+    let presetsRowIndex = -1;
     {
         const loaded = chainConfigs[slotIndex] && chainConfigs[slotIndex][comp.key];
         const loadedId = loaded && loaded.module;
         if (loadedId) {
-            availableModules = [
-                { id: "__user_presets__", name: "[" + getModuleAbbrev(loadedId) + " User Presets]" },
-                ...availableModules
-            ];
-            presetsRowAtTop = true;
+            const presetsRow = {
+                id: "__user_presets__",
+                /* No module abbrev needed — the indented row sits directly
+                 * under the module it belongs to, so context is implicit. */
+                name: "  [User Presets]"
+            };
+            /* Slot it right under the loaded module's entry; if that module
+             * isn't in the scan list (e.g. uninstalled), fall back to the top. */
+            const loadedIdx = availableModules.findIndex(m => m.id === loadedId);
+            presetsRowIndex = loadedIdx >= 0 ? loadedIdx + 1 : 0;
+            availableModules.splice(presetsRowIndex, 0, presetsRow);
         }
     }
 
     selectedModuleIndex = 0;
 
-    /* Default the cursor to the current module — UNLESS the User Presets row is
-     * present, in which case start at the top on that row (entering here is
-     * usually to reach presets, not to swap modules). */
-    if (!presetsRowAtTop) {
+    if (presetsRowIndex >= 0) {
+        /* A module is loaded — default the cursor to its presets row (entering
+         * here is usually to reach presets, not to swap modules). */
+        selectedModuleIndex = presetsRowIndex;
+    } else {
+        /* Nothing loaded — default the cursor to the current module if any. */
         const cfg = chainConfigs[slotIndex];
         const current = cfg && cfg[comp.key];
         if (current && current.module) {
