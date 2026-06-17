@@ -24,8 +24,9 @@
  *   raw opaque string (mirrors how buildSlotPatchJson stores synth state).
  *
  * Entry point: Shift+Click any loaded chain component (synth / FX / MIDI FX) ->
- * module picker -> "[<module-abbrev> User Presets]" (first row; injected in
- * enterComponentSelect as the __user_presets__ synthetic entry, routed from
+ * module picker -> "[User Presets]" (indented row tucked just
+ * beneath the loaded module; injected in enterComponentSelect as the
+ * __user_presets__ synthetic entry and cursor-defaulted there, routed from
  * applyComponentSelection with the component key + DSP prefix + module id).
  *
  * State accessors come from the shared `ctx` (populated by shadow_ui.js); see
