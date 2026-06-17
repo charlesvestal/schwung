@@ -91,14 +91,19 @@ static pthread_t   g_exporter;
 static _Atomic int g_exporter_running = 0;
 static _Atomic int g_exporter_stop = 0;
 
-/* MONOTONIC_RAW ↔ REALTIME offset, sampled at init (ns). */
+/* MONOTONIC ↔ REALTIME offset, sampled at init (ns). */
 static uint64_t g_mono0_ns = 0;
 static uint64_t g_real0_ns = 0;
 
-/* ---- Clock ---------------------------------------------------------- */
+/* ---- Clock ---------------------------------------------------------- *
+ * CLOCK_MONOTONIC (not _RAW): same vDSO read, no syscall, but it shares
+ * REALTIME's NTP slewing so the fixed MONOTONIC↔REALTIME offset sampled at
+ * init stays accurate over long sessions (RAW is unslewed and would drift
+ * the exported UnixNano). It also matches the clock the rest of the shim
+ * uses for its [spi_timing] boundaries. */
 static inline uint64_t mono_ns(void) {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+    clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 static inline uint64_t real_ns(void) {
@@ -157,10 +162,25 @@ trace_handle_t schwung_trace_begin(uint32_t name_id) {
 void schwung_trace_end(trace_handle_t *h) {
     if (!h || h->span_id == 0) return;             /* was off at begin */
     if (t_depth <= 0) return;
-    trace_rec_t *r = &t_stack[--t_depth];
+    /* Normal LIFO fast path: the span being ended is the stack top — one
+     * comparison, no scan. */
+    int idx = t_depth - 1;
+    if (__builtin_expect(t_stack[idx].span_id != h->span_id, 0)) {
+        /* Out-of-order / forgotten end (e.g. a mis-paired JS-bridge span):
+         * find the matching span deeper in the stack and unwind to it, so
+         * subsequent spans re-parent correctly instead of inheriting a stale
+         * top. Inner spans left open by the mismatch are dropped (they were
+         * never properly ended). Bounded by TRACE_MAX_DEPTH; no syscall/alloc.
+         * Unknown handle (already ended / never pushed) → no-op. */
+        idx--;
+        while (idx >= 0 && t_stack[idx].span_id != h->span_id) idx--;
+        if (idx < 0) return;
+    }
+    trace_rec_t *r = &t_stack[idx];
     r->t1_ns = mono_ns();
     if (t_tid == 0) t_tid = os_tid();
     r->tid   = t_tid;
+    t_depth  = idx;                                /* unwind to / pop the match */
     ring_push(r);
 }
 
@@ -186,7 +206,9 @@ static void hex16(uint64_t v, char *out) {           /* 16 hex chars */
     for (int i = 15; i >= 0; i--) { out[i] = H[v & 0xF]; v >>= 4; }
 }
 static uint64_t to_unix_ns(uint64_t mono) {
-    /* real0 + (mono - mono0); guard mono < mono0 (shouldn't happen). */
+    /* real0 + (mono - mono0); guard mono < mono0 (shouldn't happen).
+     * mono0/real0 are sampled together at init; CLOCK_MONOTONIC tracks
+     * REALTIME's slew so this fixed offset doesn't drift. */
     return (mono >= g_mono0_ns) ? g_real0_ns + (mono - g_mono0_ns)
                                 : g_real0_ns;
 }
@@ -294,11 +316,21 @@ static void write_batch(const trace_rec_t *spans, int n) {
 static void *exporter_main(void *arg) {
     (void)arg;
     open_outfile();
+    int overflow_logged = 0;
     /* small staging buffer drained from the rings each pass */
     static trace_rec_t batch[1024];
     while (!atomic_load_explicit(&g_exporter_stop, memory_order_relaxed)) {
         int n = 0;
         int rc = atomic_load_explicit(&g_ring_count, memory_order_relaxed);
+        /* More producer threads than rings → the extras drop silently on the
+         * RT path (can't log there). Surface it once from here (non-RT). */
+        if (rc > TRACE_MAX_THREADS && !overflow_logged) {
+            unified_log("trace", LOG_LEVEL_WARN,
+                "thread-ring table exhausted (%d producers > %d rings); "
+                "spans from extra threads dropped — raise TRACE_MAX_THREADS",
+                rc, TRACE_MAX_THREADS);
+            overflow_logged = 1;
+        }
         if (rc > TRACE_MAX_THREADS) rc = TRACE_MAX_THREADS;
         for (int i = 0; i < rc; i++) {
             trace_ring_t *ring = &g_rings[i];
@@ -333,6 +365,10 @@ void schwung_trace_init(const char *service_name) {
     g_mono0_ns = mono_ns();
     g_real0_ns = real_ns();
     g_inited = 1;
+    /* Flush + join the exporter on normal process exit. No-op when tracing
+     * was never enabled (exporter not running). Best-effort: skipped on
+     * SIGKILL, but then /data is reclaimed by the OS anyway. */
+    atexit(schwung_trace_shutdown);
     schwung_trace_poll_enable();
 }
 
