@@ -182,15 +182,36 @@ tools won't hit.
 
 ### LED ownership
 
-For symmetry with input routing, Move's LED writes are gated by `keep_mask`
-during `CORUN_TARGET_MOVE_NATIVE`: Move's outbound CC / note-on / note-off
-LED messages for any surface group the tool **keeps** (per `keep_mask`) are
-stripped before reaching hardware, so the tool's own LED rendering on those
-surfaces stays uncontested. Surfaces the tool **cedes** pass through —
-Move's LEDs reach the buttons / pads / knob rings directly. Sysex LED writes
-aren't classified by group and pass through unchanged; the framework leaves
-sysex (and the palette entries it carries for knob-ring + master colors,
-idx 71-79) alone.
+For symmetry with input routing, Move's LED writes are gated per surface group
+during `CORUN_TARGET_MOVE_NATIVE`: Move's outbound CC / note-on / note-off LED
+messages for any group the tool **owns for LEDs** are stripped before reaching
+hardware, so the tool's own rendering on those surfaces stays uncontested.
+Surfaces the tool does not own pass through — Move's LEDs reach the buttons /
+pads / knob rings directly.
+
+**Lights vs input split.** LED ownership follows `corun.led_keep_mask` when set,
+falling back to `keep_mask` when it is `0`. This lets a tool **paint** a surface
+while still **ceding its presses** — e.g. dAVEBOx draws the track-button clip
+indicator (owns TRACK LEDs) but lets Move/Schwung handle the press (cedes TRACK
+input). Input routing always uses `keep_mask`; only LEDs consult
+`led_keep_mask`. (Because `0` means "follow keep_mask", a tool cannot currently
+own input while ceding *all* LEDs — no consumer needs that yet.)
+
+**Steps** (notes 16–31) are now a first-class surface (`CORUN_GRP_STEPS`), so
+their input and LEDs route like any other group. This is backward-safe for the
+default split and any STEPS-keeping tool, but a tool that passes an explicit
+`keep_mask` **omitting** STEPS now cedes step input + LEDs (previously steps were
+unclassified and always kept).
+
+**RGB sysex.** Move lights its RGB pads / clips / grid via Ableton LED sysex
+(`F0 00 21 1D 01 01 3B <sub> <idx> <rgb> F7`), where `<idx>` equals the control's
+CC/note — so the *same* group map classifies it. The framework strips the whole
+command for groups the tool owns for LEDs (color-independent: keyed on index),
+and leaves sysex for ceded groups (e.g. knob-ring + master colors, idx 71–79)
+untouched. Full-overtake tools that keep Move's sequencer running can opt into
+stripping **all** cable-0 sysex via `shadow_set_overtake_suppress_sysex(1)` to
+take true full LED control; it defaults off and the framework clears it on
+overtake exit.
 
 ## Single source of truth
 
