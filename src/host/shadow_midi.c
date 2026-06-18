@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 #include "shadow_midi.h"
 #include "shadow_chain_mgmt.h"
 #include "shadow_led_queue.h"
@@ -531,6 +532,15 @@ void shadow_drain_midi_inject(void)
 {
     shadow_midi_inject_t *inject_shm = *host_shadow_midi_inject_shm;
     static uint8_t last_ready = 0;
+    /* Narrow transport-arming guard: defers ONLY the overtake-exit cleanup
+     * inject while Move is arming a transport. Notes (incl. davebox ROUTE_MOVE)
+     * and MovePlay flow normally. See the guard block below. */
+    static uint64_t move_arming_ms = 0;   /* set when MovePlay (CC85) injected; 0 = not arming */
+    static uint64_t last_clock_ms  = 0;   /* last 0xF8 clock seen in MIDI_IN (sticky) */
+    static int      arming_defer_logged = 0;
+    const uint64_t  INJECT_ARMING_GUARD_MS = 8000;  /* backstop if Move never starts */
+    const uint64_t  CLOCK_STALE_MS = 750;           /* clock-running staleness (mirrors chain) */
+    const uint8_t   CC_MOVE_PLAY = 85;
     /* MIDI_IN events are 8 bytes each (4 USB-MIDI + 4 timestamp). Scanning
      * at 4-byte stride would land mid-event and corrupt Move's parse (Move
      * terminates the scan at the first zero slot, so any gap loses all
@@ -557,9 +567,19 @@ void shadow_drain_midi_inject(void)
     const int DEFER_FRAMES = 2;
     static int defer_counter = 0;
     uint8_t *midi_in_scan = host_shadow_mailbox + MIDI_IN_OFFSET;
+    struct timespec _ts; clock_gettime(CLOCK_MONOTONIC, &_ts);
+    uint64_t now_ms = (uint64_t)_ts.tv_sec * 1000 + (uint64_t)(_ts.tv_nsec / 1000000);
     int hw_cable_active = 0;
-    for (int j = 0; j < MIDI_IN_MAX_BYTES; j += MIDI_IN_EVT_STRIDE)
-        if (midi_in_scan[j] != 0) { hw_cable_active = 1; break; }
+    for (int j = 0; j < MIDI_IN_MAX_BYTES; j += MIDI_IN_EVT_STRIDE) {
+        if (midi_in_scan[j] != 0) hw_cable_active = 1;
+        /* Sticky clock detection: a 0xF8 in any slot = Move's transport is
+         * running. Used to clear the arming window reliably (an instantaneous
+         * "is the buffer occupied" check rarely catches the brief clock tick,
+         * so it never cleared and drove the prior 8s-backstop stalls). */
+        if (midi_in_scan[j + 1] == 0xF8) last_clock_ms = now_ms;
+    }
+    int clock_running = (now_ms - last_clock_ms) < CLOCK_STALE_MS;
+    if (clock_running) { move_arming_ms = 0; arming_defer_logged = 0; }
     if (hw_cable_active) {
         defer_counter = 0;
         return;
@@ -570,6 +590,46 @@ void shadow_drain_midi_inject(void)
     }
 
     if (inject_shm->ready == last_ready) return;
+
+    /* === Narrow transport-arming guard ==================================
+     * Injecting into Move's MIDI_IN while Move is mid-transport-arming (a
+     * MovePlay/CC85 was injected and Move is waiting on a Link-quantized
+     * launch — no clock yet) makes Move's firmware abort (SIGABRT). Confirmed
+     * device crash; the only inject batch observed to trigger it is the
+     * overtake-exit button-release cleanup (Shift/Back/jog-click/vol-touch
+     * off), fired when an overtake tool is suspended. So defer ONLY that
+     * cleanup batch during arming — notes (incl. davebox ROUTE_MOVE) and
+     * MovePlay itself flow normally (deferring those regressed drum playback).
+     * Arming starts on a MovePlay inject; it clears as soon as clock starts
+     * (sticky last_clock_ms above), with the timeout only a backstop for a
+     * launch the user cancels. */
+    {
+        int pend = inject_shm->write_idx;
+        if (pend < 0) pend = 0;
+        if (pend > (int)SHADOW_MIDI_INJECT_BUFFER_SIZE) pend = (int)SHADOW_MIDI_INJECT_BUFFER_SIZE;
+        int has_move_play = 0, is_exit_cleanup = 0;
+        for (int i = 0; i + 3 < pend; i += 4) {
+            uint8_t st = inject_shm->buffer[i + 1];
+            uint8_t d1 = inject_shm->buffer[i + 2];
+            uint8_t d2 = inject_shm->buffer[i + 3];
+            if ((st & 0xF0) == 0xB0 && d1 == CC_MOVE_PLAY) has_move_play = 1;
+            /* Overtake-exit cleanup signature: control-CC releases (Shift 49,
+             * Back 51, jog-click 3, value 0) or the volume-touch note-off (8).
+             * davebox never injects these in normal play, so it's specific. */
+            if ((st & 0xF0) == 0xB0 && (d1 == 49 || d1 == 51 || d1 == 3) && d2 == 0) is_exit_cleanup = 1;
+            if ((st & 0xF0) == 0x80 && d1 == 8) is_exit_cleanup = 1;
+        }
+        if (has_move_play) { move_arming_ms = now_ms; arming_defer_logged = 0; }
+        int arming = (move_arming_ms != 0) && !clock_running &&
+                     (now_ms - move_arming_ms < INJECT_ARMING_GUARD_MS);
+        if (is_exit_cleanup && !has_move_play && arming) {
+            if (!arming_defer_logged) {
+                arming_defer_logged = 1;
+                shadow_log("MIDI inject: deferred overtake-exit cleanup — Move transport arming");
+            }
+            return;  /* hold the cleanup batch; retry once Move is safe */
+        }
+    }
 
     last_ready = inject_shm->ready;
 
