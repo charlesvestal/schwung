@@ -169,7 +169,8 @@ import {
     enterPresetBrowser as _enterPresetBrowser,
     handlePresetsJog, handlePresetDetailJog,
     handlePresetsSelect, handlePresetDetailSelect,
-    handlePresetsBack, handlePresetDetailBack
+    handlePresetsBack, handlePresetDetailBack,
+    tickPresetPreview
 } from './shadow_ui_presets.mjs';
 import {
     drawMasterFx as _drawMasterFx,
@@ -13875,6 +13876,12 @@ globalThis.tick = function() {
             }
         }
     }
+
+    /* Live preset audition: debounced apply of the highlighted module preset
+     * while scrolling the list (see shadow_ui_presets.mjs). Called every frame —
+     * it self-gates on its own pending state (only set while in the browser), so
+     * no view guard is needed (and the view guard was unreliable here). */
+    tickPresetPreview();
 
     /* Splash screen on boot */
     if (splashActive) {

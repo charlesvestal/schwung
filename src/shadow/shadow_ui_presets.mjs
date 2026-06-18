@@ -15,6 +15,11 @@
  *     so the browser is filtered to the slot's current module *for free* — we
  *     only ever list that one folder.
  *   - Recall is the verified slot-load path: set_param("<prefix>:state", blob).
+ *   - Live audition: scrolling the list applies the highlighted preset (after a
+ *     short debounce, driven by tickPresetPreview from the host's global tick)
+ *     so you hear it before committing. The slot's original :state is captured
+ *     on entry; Back reverts to it, while the detail screen's Load commits.
+ *     If the original can't be captured, preview is disabled (load-on-Load only).
  *   - Save never overwrites: a name collision auto-appends a number
  *     ("Fat Brass" -> "Fat Brass 2"). Delete removes the single file.
  *
@@ -75,6 +80,22 @@ let selectedPreset = 0;       /* index into the *displayed* list (0 = save row) 
 let selectedDetailItem = DETAIL_LOAD;
 let confirmingDelete = false;
 let confirmIndex = 0;         /* 0 = No, 1 = Yes */
+
+/* ---- Live preview (audition on scroll) ---------------------------------
+ * Scrolling the list applies the highlighted preset live so you hear it
+ * before committing; backing out reverts to the slot's original sound. The
+ * apply is debounced through the global tick so fast scrolling doesn't reload
+ * state on every detent. Disabled when we can't capture a revertible original
+ * (then load only happens on an explicit Load). */
+const PREVIEW_NONE = -1;          /* sentinel: nothing queued */
+const PREVIEW_DELAY_TICKS = 7;    /* ~160ms at ~44Hz before a preview applies */
+
+let originalState = null;         /* slot's <prefix>:state captured on entry */
+let previewEnabled = false;       /* true once originalState is captured */
+let previewActive = false;        /* a non-original preset is currently applied */
+let pendingPreviewIndex = PREVIEW_NONE; /* displayed-row index queued to apply */
+let previewDelay = 0;             /* ticks left before applying pendingPreviewIndex */
+let lastPreviewedIndex = -1;      /* last displayed-row index actually applied */
 
 /* ---- Helpers ------------------------------------------------------------ */
 
@@ -254,9 +275,11 @@ function showSaveError() {
 
 /* ---- Load --------------------------------------------------------------- */
 
-function applyPreset(slot, entry) {
-    const { setSlotParam } = ctx;
-    if (!entry) return false;
+/* Read a preset file and return its state as a string blob (or null on any
+ * error). Only announces on error when `loud` — the silent path is used by the
+ * scroll-audition preview, which must not chatter. */
+function readPresetStateString(entry, loud) {
+    if (!entry) return null;
     let raw = null;
     try {
         if (typeof host_read_file === "function") {
@@ -266,29 +289,96 @@ function applyPreset(slot, entry) {
         raw = null;
     }
     if (!raw) {
-        announce("Could not read preset");
-        return false;
+        if (loud) announce("Could not read preset");
+        return null;
     }
     let obj;
     try {
         obj = JSON.parse(raw);
     } catch (e) {
-        announce("Preset file is corrupt");
-        return false;
+        if (loud) announce("Preset file is corrupt");
+        return null;
     }
     /* Guard against a stray cross-module file (shouldn't happen — folders are
      * module-scoped — but the state blob is module-specific so be safe). */
     if (obj.module && presetModule && obj.module !== presetModule) {
-        announce("Preset is for a different module");
-        return false;
+        if (loud) announce("Preset is for a different module");
+        return null;
     }
     const state = obj.state;
-    const str = (typeof state === "string") ? state : JSON.stringify(state);
+    return (typeof state === "string") ? state : JSON.stringify(state);
+}
 
-    /* Recall == the slot-load restore path. Setting <prefix>:state marks the
-     * slot dirty; the next autosave (~10s) persists it into the slot. */
-    setSlotParam(slot, presetPrefix + ":state", str);
+/* Apply a raw <prefix>:state blob to the slot. Recall == the slot-load restore
+ * path. Setting <prefix>:state marks the slot dirty; the next autosave (~10s)
+ * persists it into the slot. */
+function applyStateBlob(slot, str) {
+    if (str == null) return false;
+    ctx.setSlotParam(slot, presetPrefix + ":state", str);
     return true;
+}
+
+/* Explicit Load (commit): read + apply, with error announcements. */
+function applyPreset(slot, entry) {
+    const str = readPresetStateString(entry, true);
+    return applyStateBlob(slot, str);
+}
+
+/* ---- Live preview ------------------------------------------------------- */
+
+/* Apply whatever the given displayed-row index represents, silently. Row 0
+ * (the save row) means "restore the original live sound". */
+function applyPreviewForRow(rowIndex) {
+    const slot = ctx.selectedSlot;
+    if (rowIndex <= 0) {
+        if (originalState != null) applyStateBlob(slot, originalState);
+        previewActive = false;
+        return;
+    }
+    const str = readPresetStateString(presets[rowIndex - 1], false);
+    if (str != null) {
+        applyStateBlob(slot, str);
+        previewActive = true;
+    }
+}
+
+/* Queue a debounced preview of the highlighted row (no-op if disabled). */
+function queuePreview(rowIndex) {
+    if (!previewEnabled) return;
+    pendingPreviewIndex = rowIndex;
+    previewDelay = PREVIEW_DELAY_TICKS;
+}
+
+/* Apply the highlighted row immediately, cancelling any pending debounce —
+ * used when leaving the list (into detail / save) so what you hear matches
+ * what you'll act on. */
+function flushPreview(rowIndex) {
+    pendingPreviewIndex = PREVIEW_NONE;
+    if (!previewEnabled) return;
+    if (lastPreviewedIndex === rowIndex) return;
+    lastPreviewedIndex = rowIndex;
+    applyPreviewForRow(rowIndex);
+}
+
+/* Re-apply the captured original (cancel an active preview). */
+function revertToOriginal() {
+    pendingPreviewIndex = PREVIEW_NONE;
+    if (previewEnabled && previewActive && originalState != null) {
+        applyStateBlob(ctx.selectedSlot, originalState);
+    }
+    previewActive = false;
+    lastPreviewedIndex = -1;
+}
+
+/* Driven unconditionally from the host's global tick; self-gates on pending. */
+export function tickPresetPreview() {
+    if (!previewEnabled || pendingPreviewIndex === PREVIEW_NONE) return;
+    if (previewDelay > 0) { previewDelay--; return; }
+    const row = pendingPreviewIndex;
+    pendingPreviewIndex = PREVIEW_NONE;
+    if (row === lastPreviewedIndex) return;
+    lastPreviewedIndex = row;
+    applyPreviewForRow(row);
 }
 
 /* ---- Delete ------------------------------------------------------------- */
@@ -319,6 +409,24 @@ export function enterPresetBrowser(slotIndex, componentKey, moduleId, prefix) {
     loadPresetList();
     selectedPreset = 0;
     confirmingDelete = false;
+
+    /* Capture the slot's current state so scroll-audition can revert on cancel.
+     * If we can't read it, disable preview (no safe undo) and fall back to the
+     * old behaviour: load only on an explicit Load. */
+    originalState = null;
+    previewEnabled = false;
+    previewActive = false;
+    pendingPreviewIndex = PREVIEW_NONE;
+    previewDelay = 0;
+    lastPreviewedIndex = -1;       /* selectedPreset 0 already == original */
+    if (presetModule) {
+        const cur = ctx.getSlotStateWithRetry(slotIndex, presetPrefix + ":state");
+        if (cur) {
+            originalState = cur;
+            previewEnabled = true;
+        }
+    }
+
     setView(VIEWS.PRESETS);
     ctx.needsRedraw = true;
 
@@ -332,6 +440,8 @@ export function enterPresetBrowser(slotIndex, componentKey, moduleId, prefix) {
 function enterPresetDetail(presetIndex) {
     const { setView, VIEWS } = ctx;
     selectedPreset = presetIndex;
+    /* Land the preview now so the audition matches what Load will apply. */
+    flushPreview(presetIndex);
     selectedDetailItem = DETAIL_LOAD;
     confirmingDelete = false;
     setView(VIEWS.PRESET_DETAIL);
@@ -396,6 +506,7 @@ export function drawPresetDetail() {
 export function handlePresetsJog(delta) {
     const rows = displayedRows();
     selectedPreset = Math.max(0, Math.min(rows.length - 1, selectedPreset + delta));
+    queuePreview(selectedPreset);
     announceMenuItem("Preset", rows[selectedPreset]);
 }
 
@@ -414,6 +525,9 @@ export function handlePresetDetailJog(delta) {
 export function handlePresetsSelect() {
     if (!presetModule) return;
     if (selectedPreset === 0) {
+        /* Save snapshots the live state — make sure a lingering preview has
+         * reverted to the original first. */
+        flushPreview(0);
         startSaveFlow();
         return;
     }
@@ -429,6 +543,9 @@ export function handlePresetDetailSelect() {
             doDeletePreset(entry);
             confirmingDelete = false;
             selectedPreset = 0;
+            /* The deleted preset was the one being auditioned — restore the
+             * original live sound now that we're back on the save row. */
+            revertToOriginal();
             setView(VIEWS.PRESETS);
             announce("Preset deleted");
         } else {
@@ -446,8 +563,11 @@ export function handlePresetDetailSelect() {
         return;
     }
 
-    /* Load: apply and return to the chain editor. */
+    /* Load (commit): apply and return to the chain editor. Clear preview state
+     * so the kept preset isn't reverted on the way out. */
     if (applyPreset(ctx.selectedSlot, entry)) {
+        previewActive = false;
+        pendingPreviewIndex = PREVIEW_NONE;
         announce(`Loaded ${entry ? entry.name : "preset"}`);
         setView(VIEWS.CHAIN_EDIT);
     }
@@ -459,7 +579,9 @@ export function handlePresetDetailSelect() {
 export function handlePresetsBack() {
     const { setView, VIEWS } = ctx;
     /* Entered from the module picker (Shift+Click on the synth block); Back
-     * exits the whole flow to the chain editor. */
+     * cancels the whole flow — revert any active audition to the original
+     * sound — and exits to the chain editor. */
+    revertToOriginal();
     setView(VIEWS.CHAIN_EDIT);
     announce("Chain Editor");
     ctx.needsRedraw = true;
