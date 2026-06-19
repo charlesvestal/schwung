@@ -201,11 +201,15 @@ typedef struct shadow_control_t {
 #define CORUN_GRP_BACK          (1u << 9)  /* CC 51 */
 #define CORUN_GRP_MENU          (1u << 10) /* CC 50 — framework exit gesture */
 #define CORUN_GRP_TOUCH         (1u << 11) /* capacitive-touch notes 0-9 */
+#define CORUN_GRP_MUTE          (1u << 12) /* CC 88 — the Mute button */
 
 /* Default keep-set: the canonical sequencer-style co-run split — tool keeps
- * pads, step buttons, transport, and Menu; cedes the nav surface + screen
- * to the peer. Used whenever corun_keep_mask == 0. */
-#define CORUN_KEEP_DEFAULT (CORUN_GRP_PADS | CORUN_GRP_STEPS | CORUN_GRP_TRANSPORT | CORUN_GRP_MENU)
+ * pads, step buttons, transport, Menu, and Mute; cedes the nav surface + screen
+ * to the peer. Used whenever corun_keep_mask == 0. Mute is kept by default so
+ * tools that don't set an explicit keep_mask behave exactly as before this group
+ * existed (Mute stayed with the tool); a tool that wants Move/Schwung to own Mute
+ * during co-run omits CORUN_GRP_MUTE from its explicit keep_mask. */
+#define CORUN_KEEP_DEFAULT (CORUN_GRP_PADS | CORUN_GRP_STEPS | CORUN_GRP_TRANSPORT | CORUN_GRP_MENU | CORUN_GRP_MUTE)
 
 /* Opt-out flag for tools that prefer their own exit gesture. When this bit is
  * set in keep_mask, the framework does NOT auto-exit on Back press — Back
@@ -232,6 +236,7 @@ static inline uint16_t corun_group_for_event(uint8_t type, uint8_t d1) {
             case 50: return CORUN_GRP_MENU;
             case 51: return CORUN_GRP_BACK;
             case 79: return CORUN_GRP_MASTER;
+            case 88: return CORUN_GRP_MUTE;  /* Mute button */
             default: if (d1 >= 71 && d1 <= 78) return CORUN_GRP_KNOBS;
                      return 0;
         }
