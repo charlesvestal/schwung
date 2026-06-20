@@ -5,6 +5,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "shadow_midi.h"
+#include "shadow_midi_inject_writer.h"
 #include "shadow_chain_mgmt.h"
 #include "shadow_led_queue.h"
 #include "shadow_overlay.h"  /* MIDI channel indicator globals */
@@ -530,7 +531,6 @@ void shadow_inject_ui_midi_out(void)
 void shadow_drain_midi_inject(void)
 {
     shadow_midi_inject_t *inject_shm = *host_shadow_midi_inject_shm;
-    static uint8_t last_ready = 0;
     /* MIDI_IN events are 8 bytes each (4 USB-MIDI + 4 timestamp). Scanning
      * at 4-byte stride would land mid-event and corrupt Move's parse (Move
      * terminates the scan at the first zero slot, so any gap loses all
@@ -569,83 +569,49 @@ void shadow_drain_midi_inject(void)
         return;
     }
 
-    if (inject_shm->ready == last_ready) return;
-
-    last_ready = inject_shm->ready;
-
-    /* Snapshot buffer first, then reset write_idx */
-    int snapshot_len = inject_shm->write_idx;
-    uint8_t local_buf[SHADOW_MIDI_INJECT_BUFFER_SIZE];
-    int copy_len = snapshot_len < (int)SHADOW_MIDI_INJECT_BUFFER_SIZE
-                 ? snapshot_len : (int)SHADOW_MIDI_INJECT_BUFFER_SIZE;
-    if (copy_len > 0) {
-        memcpy(local_buf, inject_shm->buffer, copy_len);
-    }
-    __sync_synchronize();
-    inject_shm->write_idx = 0;
-    memset(inject_shm->buffer, 0, SHADOW_MIDI_INJECT_BUFFER_SIZE);
-
-    if (copy_len <= 0) return;
-
-    /* Inject into shadow_mailbox at MIDI_IN_OFFSET */
+    /* Peek the next published packet, place it in an empty MIDI_IN slot,
+     * and only then pop it. Packets we can't place this pass (MIDI_IN full,
+     * or hardware events appeared mid-drain) stay in the ring untouched and
+     * are retried next frame — no snapshot, no reset, no carryover writeback.
+     * The consumer touches only its own read_pos and the per-slot seq it
+     * frees; it never resets producer state or memsets the buffer. */
     uint8_t *midi_in = host_shadow_mailbox + MIDI_IN_OFFSET;
-
     int hw_offset = 0;
     int injected = 0;
-    int consumed_bytes = 0;
-    for (int i = 0; i < copy_len && injected < 16; i += 4) {
-        /* Find empty 8-byte slot (byte 0 == 0 means no cable/CIN, unused) */
+    uint8_t pkt[4];
+    while (injected < 16 && shadow_midi_inject_peek(inject_shm, pkt)) {
+        /* Find an empty 8-byte slot (byte 0 == 0 means no cable/CIN, unused) */
         int saw_existing = 0;
         while (hw_offset < MIDI_IN_MAX_BYTES) {
             if (midi_in[hw_offset] == 0) break;
             saw_existing = 1;
             hw_offset += MIDI_IN_EVT_STRIDE;
         }
-        if (hw_offset >= MIDI_IN_MAX_BYTES) break;  /* Buffer full */
-        /* If we skipped over pre-existing events to find an empty slot, bail
-         * and carry remaining packets to the next frame.  The defer guard has
-         * a narrow race window: events can appear in MIDI_IN between the guard
-         * check and the write.  Injecting alongside hardware events (at a
-         * non-zero offset) races Move's firmware MIDI read path and causes
-         * SIGABRT — empirically the crash always fires at a non-zero offset. */
+        if (hw_offset >= MIDI_IN_MAX_BYTES) break;  /* MIDI_IN full — retry next frame */
+        /* If we'd have to write past pre-existing events, bail and leave the
+         * packet in the ring for next frame. The defer guard has a narrow
+         * race window: events can appear in MIDI_IN between the guard check
+         * and the write. Injecting alongside hardware events (at a non-zero
+         * offset) races Move's firmware MIDI read path and causes SIGABRT —
+         * empirically the crash always fires at a non-zero offset. */
         if (saw_existing) break;
 
-        /* Write 4-byte USB-MIDI packet + zero the 4-byte timestamp.
-         * Cable nibble in local_buf[i] is preserved — callers choose cable:
+        /* Write the 4-byte USB-MIDI packet + zero its 4-byte timestamp.
+         * Cable nibble in pkt[0] is preserved — callers choose cable:
          * 0 for internal hardware (pads/buttons, Move-prefix protocol),
          * 2 for external USB (general MIDI, routed to tracks by channel). */
-        memcpy(&midi_in[hw_offset], &local_buf[i], 4);
+        memcpy(&midi_in[hw_offset], pkt, 4);
         memset(&midi_in[hw_offset + 4], 0, 4);
         hw_offset += MIDI_IN_EVT_STRIDE;
+        shadow_midi_inject_pop(inject_shm);   /* consume only after a successful inject */
         injected++;
-        consumed_bytes = i + 4;
-    }
-
-    /* Carry over any undrained packets so they fire in subsequent frames.
-     * Without this, bursts that exceed the 8-per-frame cap (or pile up
-     * during DEFER_FRAMES while cable-0 is active) lose events when the
-     * snapshot resets write_idx above — which strands note-offs and leaves
-     * voices hanging on Move's track. Safe to rewrite inject_shm->buffer
-     * here because shadow_chain_midi_inject runs on the same SPI thread. */
-    int remaining = copy_len - consumed_bytes;
-    if (remaining > 0) {
-        /* write_idx is uint8_t (0..255) and the inject guard checks wr+4 <= 256,
-         * so write_idx must never exceed 252 (63 packets). Cap carryover at
-         * 252 so a new inject from chain_host can still land. */
-        if (remaining > 252) remaining = 252;
-        memcpy(inject_shm->buffer, &local_buf[consumed_bytes], remaining);
-        inject_shm->write_idx = (uint8_t)remaining;
-        inject_shm->ready++;  /* re-arm so next frame drains without waiting
-                               * for a new inject to bump ready */
     }
 
     if (host_log && injected > 0) {
         char dbg[128];
         snprintf(dbg, sizeof(dbg),
-                 "MIDI inject: drained %d/%d pkts at offset %d%s",
-                 injected, copy_len / 4,
-                 hw_offset - injected * MIDI_IN_EVT_STRIDE,
-                 remaining > 0 ? " [carryover]" : "");
+                 "MIDI inject: drained %d pkts at offset %d",
+                 injected, hw_offset - injected * MIDI_IN_EVT_STRIDE);
         host_log(dbg);
     }
 }
@@ -670,24 +636,17 @@ int shadow_chain_midi_inject(const uint8_t *msg, int len)
     shadow_midi_inject_t *shm = *host_shadow_midi_inject_shm;
     if (!shm) return 0;
 
-    int wr = shm->write_idx;
-    if (wr + 4 > (int)SHADOW_MIDI_INJECT_BUFFER_SIZE) {
-        if (host_log) {
-            char dbg[96];
-            uint8_t type = msg[1] & 0xF0;
-            snprintf(dbg, sizeof(dbg),
-                     "MIDI inject FULL: wr=%d dropped status=0x%02x n=%d v=%d",
-                     wr, msg[1], msg[2], msg[3]);
-            host_log(dbg);
-        }
-        return 0;
-    }
+    if (shadow_midi_inject_push(shm, msg) == 0) return 4;
 
-    memcpy(&shm->buffer[wr], msg, 4);
-    shm->write_idx = (uint8_t)(wr + 4);
-    __sync_synchronize();
-    shm->ready++;
-    return 4;
+    /* Only failure is -1 (ring full / drain starved). */
+    if (host_log) {
+        char dbg[96];
+        snprintf(dbg, sizeof(dbg),
+                 "MIDI inject FULL: dropped status=0x%02x n=%d v=%d",
+                 msg[1], msg[2], msg[3]);
+        host_log(dbg);
+    }
+    return 0;
 }
 
 /* Drain MIDI-to-DSP buffer from shadow UI and dispatch to chain slots. */

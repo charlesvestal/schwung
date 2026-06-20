@@ -56,7 +56,8 @@
 #define SHADOW_PARAM_BUFFER_SIZE  65664  /* Large buffer for complex ui_hierarchy */
 #define SHADOW_MIDI_OUT_BUFFER_SIZE 512  /* MIDI out buffer from shadow UI (128 packets) */
 #define SHADOW_MIDI_DSP_BUFFER_SIZE 512  /* MIDI to DSP buffer from shadow UI (128 packets) */
-#define SHADOW_MIDI_INJECT_BUFFER_SIZE 256    /* MIDI inject buffer (64 packets) */
+/* MIDI inject ring capacity is SHADOW_MIDI_INJECT_SLOTS (defined with the
+ * struct below) — the old flat byte-buffer size is gone. */
 #define SHADOW_SCREENREADER_BUFFER_SIZE 8448  /* Screen reader message buffer */
 #define SHADOW_OVERLAY_BUFFER_SIZE 256        /* Overlay state buffer */
 
@@ -372,16 +373,70 @@ typedef struct shadow_midi_dsp_t {
 } shadow_midi_dsp_t;
 
 /*
- * MIDI Inject buffer structure.
- * Used by Shadow UI (or external tools) to inject USB-MIDI packets into
- * Move's MIDI_IN buffer, making Move process them as real hardware events.
+ * MIDI Inject ring — multi-producer, single-consumer SHM channel.
+ * Lets multiple processes inject USB-MIDI packets into Move's MIDI_IN
+ * buffer so Move firmware processes them as real hardware events.
  * Packets are 4-byte USB-MIDI format (CIN/cable, status, data1, data2).
+ *
+ * Producers (multiple, may run concurrently across processes):
+ *   - JS host: shadow_ui.c:js_move_midi_inject_to_move (schwung_host)
+ *   - Shim:    schwung_shim.c overtake-entry "shift off"
+ *   - Shim:    schwung_shim.c overtake-exit 4× CC release
+ *   - Shim:    shadow_midi.c:shadow_chain_midi_inject (cable-2 forwarder)
+ *
+ * Consumer (single, in shim's SPI thread, ~344 Hz):
+ *   - shadow_midi.c:shadow_drain_midi_inject
+ *
+ * Design — bounded MPSC queue (Dmitry Vyukov's per-slot-sequence scheme):
+ * an array of fixed slots, each carrying a `seq` number and one 4-byte
+ * packet. Indices are monotonic and masked into the slot array; nothing
+ * is ever reset or memset.
+ *
+ *   enqueue_pos — producers claim a slot by fetch/CAS-advancing this
+ *                 monotonic counter; the slot is slots[pos & MASK].
+ *   read_pos    — the single consumer's cursor; it advances only past
+ *                 packets it has actually consumed.
+ *   slot.seq    — publication state. Initialized to its index i. A
+ *                 producer that claimed `pos` publishes by storing
+ *                 seq = pos+1 (RELEASE); the consumer detects "ready"
+ *                 when seq == read_pos+1 (ACQUIRE) and frees the slot for
+ *                 a future lap by storing seq = pos + SLOTS (RELEASE).
+ *
+ * Why this and not a byte ring with alloc/commit cursors + a reset:
+ *   - The consumer never resets cursors or memsets the buffer, so it
+ *     cannot race a cross-process producer mid-write (the old reset path
+ *     could satisfy a producer's commit-wait with reset-to-0 and let it
+ *     write into wiped space → cable=0/CIN=0 packet → Move SIGABRT).
+ *   - Producers never wait for each other to commit (no FIFO-commit spin),
+ *     so a producer preempted between claim and publish cannot stall the
+ *     SPI-thread producer on the realtime path. A preempted producer only
+ *     delays the consumer past its one slot, and self-heals on resume.
+ *   - All cursor/seq access is atomic — no volatile-store-vs-atomic-CAS
+ *     data race.
+ *
+ * All producers MUST go through shadow_midi_inject_push() and the consumer
+ * through shadow_midi_inject_peek()/_pop() in shadow_midi_inject_writer.h —
+ * do not touch slots or cursors directly. Ad-hoc writers race the consumer
+ * (a torn / zero packet reaches MIDI_IN, where cable=0/CIN=0 reads as "misc
+ * function" and Move firmware aborts — see shadow_midi.c).
+ *
+ * The SHM must be initialized once by its creator (the shim) via
+ * shadow_midi_inject_init() before any producer maps it — zero-fill alone
+ * is NOT a valid initial state (it needs seq[i] = i). Layout/size changed
+ * vs the prior byte-ring, so shim + schwung_host must be built together.
  */
+#define SHADOW_MIDI_INJECT_SLOTS 64   /* power of two; ring capacity in packets */
+#define SHADOW_MIDI_INJECT_MASK  (SHADOW_MIDI_INJECT_SLOTS - 1)
+
+typedef struct shadow_midi_inject_slot_t {
+    uint32_t seq;        /* publication sequence (accessed via __atomic_*) */
+    uint8_t  pkt[4];     /* one 4-byte USB-MIDI packet (cable/CIN, status, d1, d2) */
+} shadow_midi_inject_slot_t;   /* 8 bytes, naturally aligned */
+
 typedef struct shadow_midi_inject_t {
-    volatile uint8_t write_idx;      /* Writer increments after writing */
-    volatile uint8_t ready;          /* Toggle to signal new data */
-    volatile uint8_t reserved[2];
-    uint8_t buffer[SHADOW_MIDI_INJECT_BUFFER_SIZE];  /* USB-MIDI packets (4 bytes each) */
+    uint32_t enqueue_pos;   /* producer claim cursor (monotonic, __atomic_*) */
+    uint32_t read_pos;      /* single-consumer cursor (monotonic, __atomic_*) */
+    shadow_midi_inject_slot_t slots[SHADOW_MIDI_INJECT_SLOTS];
 } shadow_midi_inject_t;
 
 /*

@@ -236,7 +236,7 @@ if needs_rebuild build/schwung-shim.so \
     src/host/shadow_midi.c src/host/unified_log.c src/host/shim_worker.c \
     src/host/shadow_shm_util.c \
     $SHIM_TTS_SRC \
-    src/host/shadow_constants.h src/host/shadow_midi.h src/host/shadow_sampler.h \
+    src/host/shadow_constants.h src/host/shadow_midi_inject_writer.h src/host/shadow_midi.h src/host/shadow_sampler.h \
     src/host/shim_worker.h \
     src/host/shadow_set_pages.h src/host/shadow_dbus.h src/host/shadow_chain_mgmt.h \
     src/host/shadow_chain_types.h src/host/shadow_link_audio.h src/host/shadow_process.h \
