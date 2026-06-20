@@ -1016,7 +1016,7 @@
     {
       "id": "war_bells",
       "name": "War Bells",
-      "description": "Granular / glitch / delay / looper multi-FX: 11 effects x 4 variations, 4-mode reverb with shimmer + tone, resonant filter, 60s looper",
+      "description": "Granular/glitch/delay/looper multi-FX: 11 effects x 4 variations, shimmer reverb + tone, generative Motion/Evolve, Hold sampler, resonant filter, 60s looper",
       "author": "seajay",
       "component_type": "audio_fx",
       "github_repo": "seajaysec/war-bells",
