@@ -210,7 +210,7 @@
       "github_repo": "charlesvestal/schwung-surge",
       "default_branch": "main",
       "asset_name": "surge-module.tar.gz",
-      "min_host_version": "0.3.0"
+      "min_host_version": "0.10.0"
     },
     {
       "id": "moog",
