@@ -474,7 +474,7 @@ void chain_mod_clear_source(void *ctx, const char *source_id) {
 int chain_mod_refresh_target_param_cache(chain_instance_t *inst, const char *target) {
     if (!inst || !target) return -1;
 
-    char buf[32768];
+    char buf[SHADOW_PARAM_VALUE_LEN];
     int result = -1;
     chain_param_info_t parsed[MAX_CHAIN_PARAMS];
     int parsed_count = -1;
