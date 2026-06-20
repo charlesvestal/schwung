@@ -944,10 +944,11 @@ static JSValue js_move_midi_inject_to_move(JSContext *ctx, JSValueConst this_val
     JS_FreeValue(ctx, len_val);
 
     /* Process 4 bytes at a time (USB-MIDI packet format).
-     * Each packet goes through the MPSC helper, which CAS-reserves a
-     * slot, commits in FIFO order, and bumps `ready` per packet. The
-     * helper handles the cross-process race with the test daemon and
-     * the shim's own writers — see shadow_midi_inject_writer.h. */
+     * Each packet goes through the MPSC helper (shadow_midi_inject_push),
+     * which CAS-reserves a slot and publishes it with a release-store on
+     * the slot's seq. The helper handles the cross-process race with the
+     * other producers (the shim's own writers, the test daemon) — see
+     * shadow_midi_inject_writer.h. */
     for (int i = 0; i < len; i += 4) {
         uint8_t packet[4] = {0, 0, 0, 0};
 
