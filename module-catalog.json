@@ -1001,6 +1001,17 @@
       "default_branch": "master",
       "asset_name": "fork-module.tar.gz",
       "min_host_version": "0.8.8"
+    },
+    {
+      "id": "aphex",
+      "name": "Aphex",
+      "description": "Korg MS-10/MS-20 hybrid mono synth: KORG-35/OTA filter cascade, source-side patchbay, ESP line-in processor, analog drift, 41 presets",
+      "author": "Filliformes",
+      "component_type": "sound_generator",
+      "github_repo": "filliformes/aphex-move",
+      "default_branch": "master",
+      "asset_name": "aphex-module.tar.gz",
+      "min_host_version": "0.3.0"
     }
   ]
 }
