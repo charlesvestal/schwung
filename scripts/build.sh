@@ -240,7 +240,7 @@ if needs_rebuild build/schwung-shim.so \
     src/host/shadow_resample.c src/host/shadow_overlay.c src/host/shadow_pin_scanner.c \
     src/host/shadow_led_queue.c src/host/shadow_state.c \
     src/host/shadow_midi.c src/host/unified_log.c src/host/shim_worker.c \
-    src/host/shadow_shm_util.c src/host/schwung_trace.c \
+    src/host/shadow_shm_util.c src/host/schwung_trace.c src/host/shadow_test_stream.c src/host/shadow_test_stream.h \
     $SHIM_TTS_SRC \
     src/host/shadow_constants.h src/host/shadow_midi_inject_writer.h src/host/shadow_midi.h src/host/shadow_sampler.h \
     src/host/shim_worker.h \
@@ -273,6 +273,7 @@ if needs_rebuild build/schwung-shim.so \
         src/host/shim_worker.c \
         src/host/shadow_shm_util.c \
         src/host/schwung_trace.c \
+        src/host/shadow_test_stream.c \
         $SHIM_TTS_SRC \
         $SHIM_DEFINES \
         $SHIM_INCLUDES \
@@ -378,6 +379,29 @@ if needs_rebuild build/bin/midi_inject_test \
         -lrt || echo "Warning: midi_inject_test build failed"
 else
     echo "Skipping MIDI inject test (up to date)"
+fi
+
+# Build schwung-testd (E2E test-bus daemon, dev/CI only).
+# Opt-in: not started by shim-entrypoint; the user runs it manually for testing.
+# Talks to the live shim via existing SHM contracts (control / midi-inject /
+# param / overlay / test-stream), exposes a TCP loopback line protocol consumed
+# by the pytest-schwung plugin. See flagist0/schwung#2.
+if needs_rebuild build/bin/schwung-testd \
+    src/host/test_daemon/schwung_testd.c \
+    src/host/test_daemon/commands.c src/host/test_daemon/commands.h \
+    src/host/test_daemon/protocol.c src/host/test_daemon/protocol.h \
+    src/host/shadow_constants.h \
+    src/host/shadow_midi_inject_writer.h; then
+    echo "Building schwung-testd..."
+    "${CROSS_PREFIX}gcc" -g -O2 \
+        src/host/test_daemon/schwung_testd.c \
+        src/host/test_daemon/commands.c \
+        src/host/test_daemon/protocol.c \
+        -o build/bin/schwung-testd \
+        -Isrc/host -Isrc/host/test_daemon \
+        -lrt || echo "Warning: schwung-testd build failed"
+else
+    echo "Skipping schwung-testd (up to date)"
 fi
 
 

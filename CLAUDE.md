@@ -40,6 +40,8 @@ ssh ableton@move.local "tail -f /data/UserData/schwung/debug.log"
 
 JS: `console.log()` (auto-routed) or import `shared/logger.mjs`. C: `LOG_DEBUG("source", "msg")` from `host/unified_log.h`. See `docs/LOGGING.md`.
 
+**On-device E2E tests** (opt-in, not in CI): `tools/pytest-schwung/` is a pip-installable pytest plugin that drives a real Move end-to-end through `schwung-testd`, an opt-in test-bus daemon (TCP loopback, started manually over SSH; built into the tarball but not auto-started). Tests inject MIDI, wait for SPI frames, snapshot pad LEDs, capture MIDI_OUT, and reset to a known-empty set (`pristine_set`). Run `pytest tests/e2e` against attached hardware. Full protocol, fixtures, and hardware pitfalls in `tools/pytest-schwung/README.md`.
+
 **OTLP span tracing** (perf profiling, off by default): `touch /data/UserData/schwung/otlp_trace_on` makes the shim emit realtime-safe spans (`spi.pre`/`spi.post` roots + `param.serve`, `shadow.mix_audio`, `midi.process` children) as OTLP/JSONL to `/data/UserData/schwung/traces/` for replay into Tempo/Jaeger. `rm` the file to stop. Zero hot-path cost when off. See `docs/tracing.md`.
 
 ## Device Constraints
