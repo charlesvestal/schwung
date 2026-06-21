@@ -1,0 +1,38 @@
+{
+    "id": "move-mcp",
+    "label": "Move MCP",
+    "sections": [
+        {
+            "id": "server",
+            "label": "Server",
+            "items": [
+                { "key": "enabled", "label": "Enable Bridge", "type": "bool", "default": false },
+                { "key": "bind_mode", "label": "Bind Mode", "type": "enum",
+                  "options": ["Localhost", "LAN / move.local"], "values": ["localhost", "lan"], "default": "lan" },
+                { "key": "require_token", "label": "Require Token", "type": "bool", "default": true },
+                { "key": "access_token", "label": "Access Token", "type": "password",
+                  "help": "Required for write/control endpoints when token auth is enabled." }
+            ]
+        },
+        {
+            "id": "permissions",
+            "label": "Permissions",
+            "items": [
+                { "key": "allow_read", "label": "Allow Read", "type": "bool", "default": true },
+                { "key": "allow_write", "label": "Allow Write", "type": "bool", "default": false },
+                { "key": "allow_delete", "label": "Allow Delete", "type": "bool", "default": false },
+                { "key": "allow_actions", "label": "Allow Actions", "type": "bool", "default": false }
+            ]
+        },
+        {
+            "id": "limits",
+            "label": "Limits",
+            "items": [
+                { "key": "max_upload_mb", "label": "Max Upload MB", "type": "int", "min": 1, "max": 512, "default": 64 },
+                { "key": "pack_root", "label": "Pack Root", "type": "string",
+                  "default": "/data/UserData/schwung/move-mpc/packs" },
+                { "key": "log_requests", "label": "Log Requests", "type": "bool", "default": true }
+            ]
+        }
+    ]
+}

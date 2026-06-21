@@ -25,3 +25,4 @@ libs/memfault-firmware-sdk/
 
 # Code-graph tooling output (graphify) — never commit
 graphify-out/
+.vscode/

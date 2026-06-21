@@ -291,7 +291,8 @@ if needs_rebuild build/unified-log \
         src/host/unified_log_cli.c \
         src/host/unified_log.c \
         -o build/unified-log \
-        -Isrc -Isrc/host
+        -Isrc -Isrc/host \
+        -lpthread
 else
     echo "Skipping unified log CLI (up to date)"
 fi
@@ -579,13 +580,13 @@ fi
 
 # Copy shared utilities (only if source is newer)
 for f in ./src/shared/*.mjs; do
-    cp -u "$f" ./build/shared/
+    cp "$f" ./build/shared/
 done
-cp -u ./src/shared/*.json ./build/shared/ 2>/dev/null || true
+cp ./src/shared/*.json ./build/shared/ 2>/dev/null || true
 
 # Bundle Move Manual (fetched on host before Docker, or from prior build)
 if [ -f ".cache/move_manual.json" ]; then
-    cp -u .cache/move_manual.json ./build/shared/move_manual_bundled.json
+    cp .cache/move_manual.json ./build/shared/move_manual_bundled.json
     echo "Bundled Move Manual"
 else
     echo "Warning: .cache/move_manual.json not found - no bundled manual"
@@ -594,13 +595,13 @@ fi
 # Bundle Schwung's own user manual so the Assistant tool can include it
 # in the LLM system prompt (and other tools could reference it too).
 if [ -f "MANUAL.md" ]; then
-    cp -u MANUAL.md ./build/shared/MANUAL.md
+    cp MANUAL.md ./build/shared/MANUAL.md
     echo "Bundled Schwung MANUAL.md"
 fi
 
 # Copy host files (only if source is newer)
-cp -u ./src/host/menu_ui.js ./build/host/
-cp -u ./src/host/*.mjs ./build/host/ 2>/dev/null || true
+cp ./src/host/menu_ui.js ./build/host/
+cp ./src/host/*.mjs ./build/host/ 2>/dev/null || true
 # Derive version: prefer src/host/version.txt (set by CI), fall back to git tag
 SRC_VERSION=$(cat ./src/host/version.txt 2>/dev/null | tr -d '[:space:]')
 GIT_VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
@@ -624,7 +625,7 @@ if needs_rebuild build/display-server \
         src/host/unified_log.c \
         -o build/display-server \
         -Isrc -Isrc/host \
-        -lrt
+        -lrt -lpthread
 else
     echo "Skipping display server (up to date)"
 fi
@@ -695,7 +696,7 @@ cp ./src/shadow/*.mjs ./build/shadow/ 2>/dev/null || true
 
 # Copy image assets to host directory
 if [ -d "./assets" ]; then
-    cp -u ./assets/*.png ./build/host/ 2>/dev/null || true
+    cp ./assets/*.png ./build/host/ 2>/dev/null || true
 fi
 
 # Copy scripts and assets
@@ -734,7 +735,7 @@ find ./src/modules -type f \( -name "*.js" -o -name "*.mjs" -o -name "*.json" -o
     -not -path "*/store/*" | while IFS= read -r src; do
     dest="./build/${src#./src/}"
     mkdir -p "$(dirname "$dest")"
-    cp -u "$src" "$dest"
+    cp "$src" "$dest"
 done
 
 # Scrub any stale build artifacts from prior incremental builds so excluded
@@ -754,17 +755,17 @@ find ./build/modules -type f -name "*.sh" -exec chmod +x {} \;
 
 # Copy patches directory (only if source is newer)
 mkdir -p ./build/patches
-cp -u ./src/patches/*.json ./build/patches/ 2>/dev/null || true
+cp ./src/patches/*.json ./build/patches/ 2>/dev/null || true
 
 # Copy track presets (only if source is newer)
 mkdir -p ./build/presets/track_presets
-cp -u ./src/presets/track_presets/*.json ./build/presets/track_presets/ 2>/dev/null || true
+cp ./src/presets/track_presets/*.json ./build/presets/track_presets/ 2>/dev/null || true
 
 # Copy curl binary (host_http_download backend: catalog detection,
 # move-manual refresh)
 if [ -f "./libs/curl/curl" ]; then
     mkdir -p ./build/bin/
-    cp -u ./libs/curl/curl ./build/bin/
+    cp ./libs/curl/curl ./build/bin/
     echo "Bundled curl binary"
 else
     echo "Warning: libs/curl/curl not found - downloads will not work without it"
@@ -773,8 +774,8 @@ fi
 # Copy filebrowser binary (if present)
 if [ -f "./libs/filebrowser/filebrowser" ]; then
     mkdir -p ./build/bin/
-    cp -u ./libs/filebrowser/filebrowser ./build/bin/
-    cp -u ./libs/filebrowser/LICENSE ./build/licenses/FILEBROWSER_LICENSE.txt 2>/dev/null || true
+    cp ./libs/filebrowser/filebrowser ./build/bin/
+    cp ./libs/filebrowser/LICENSE ./build/licenses/FILEBROWSER_LICENSE.txt 2>/dev/null || true
     echo "Bundled filebrowser binary"
 fi
 
