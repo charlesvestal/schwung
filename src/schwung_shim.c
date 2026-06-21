@@ -40,6 +40,7 @@
 #include "host/audio_fx_api_v2.h"
 #include "host/shadow_constants.h"
 #include "host/shadow_midi_inject_writer.h"
+#include "host/shadow_test_stream.h"
 #include "host/shadow_chain_types.h"
 #include "host/unified_log.h"
 #include "host/schwung_trace.h"
@@ -3009,6 +3010,11 @@ static void init_shadow_shm(void)
     shadow_overlay_shm = (shadow_overlay_state_t *)shadow_shm_map(SHM_SHADOW_OVERLAY,
                                                                   SHADOW_OVERLAY_BUFFER_SIZE, 1, 1);
 
+    /* Test-bus stream SHMs (E2E test infra, flagist0/schwung#2). Owned by
+     * src/host/shadow_test_stream.c so future channels (MIDI_IN, log tail)
+     * land there, not here. Cheap when no test client is subscribed. */
+    shadow_test_stream_init();
+
     /* TTS engine uses lazy initialization - will init on first speak */
     tts_set_volume(70);  /* Set volume early (safe, doesn't require TTS init) */
     printf("Shadow: TTS engine configured (will init on first use)\n");
@@ -5524,6 +5530,11 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
      * consistent). Must run before any post-transfer logic that reads
      * MIDI_IN. */
     shim_remap_cable2_channels(shadow);
+
+    /* E2E test-bus: publish observed MIDI_OUT events to the test stream SHM
+     * if a test client is subscribed. No-op when disabled (one atomic load +
+     * branch). Implementation in shadow_test_stream.c. */
+    shadow_test_stream_publish_midi_out(hw, shadow_control ? shadow_control->shim_counter : 0);
 
     /* XMOS SysEx logger — POST-transfer view of hw[MIDI_OUT] BEFORE the
      * hw→shadow memcpy below. Lets us see what XMOS left in the slots
