@@ -36,6 +36,7 @@ typedef struct {
     volatile int *held_track;
     volatile int *selected_slot;
     volatile int *solo_count;
+    volatile int *pads_held;   /* count of drum pads (notes 68-99) currently held */
     shadow_screenreader_t **screenreader_shm;
 } dbus_host_t;
 

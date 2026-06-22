@@ -3951,6 +3951,7 @@ static void shim_init_subsystems(void)
             .held_track = (volatile int *)&shadow_held_track,
             .selected_slot = (volatile int *)&shadow_selected_slot,
             .solo_count = (volatile int *)&shadow_solo_count,
+            .pads_held = (volatile int *)&shadow_pads_held,
             .screenreader_shm = &shadow_screenreader_shm,
         };
         dbus_init(&dbus_host);
@@ -6873,19 +6874,13 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     shadow_ui_midi_publish(0x0B, status, d1, d2);
                 }
 
-                /* While shadow UI is shown, block plain Mute (CC 88) from
-                 * reaching Move firmware so a stray Mute press doesn't toggle
-                 * Move's selected track. Shim has already updated
-                 * shadow_mute_held above, so Mute+Track (shadow slot mute) and
-                 * Shift+Mute+Track (solo) and Mute+JogClick (module bypass)
-                 * all still work — those combos consume the modifier locally
-                 * without needing Move firmware to see the Mute CC. */
-                if (d1 == 88 && shadow_display_mode) {
-                    uint8_t *sh = shadow + MIDI_IN_OFFSET;
-                    sh[j] = 0; sh[j + 1] = 0; sh[j + 2] = 0; sh[j + 3] = 0;
-                    src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
-                    continue;
-                }
+                /* Mute (CC 88) is passed through to Move firmware unconditionally,
+                 * even while the shadow UI is shown, so Move-native Mute+Pad
+                 * (per-drum mute) works. shadow_mute_held is already updated from
+                 * the hardware buffer above, so the shadow combos (Mute+Track slot
+                 * mute, Shift+Mute+Track solo, Mute+JogClick bypass) still work.
+                 * Trade-off: a plain Mute tap also toggles Move's selected-track
+                 * mute, and Mute+Track double-mutes (slot + Move track). */
 
                 /* Check capture rules for CCs (beyond the hardcoded blocks) */
                 /* Skip knobs - they're handled by shadow UI, not routed to DSP */

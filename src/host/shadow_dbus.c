@@ -300,8 +300,14 @@ static void shadow_dbus_handle_text(const char *text)
     /* Auto-correct mute state from D-Bus screen reader text.
      * Move announces "<Instrument> muted" / "<Instrument> unmuted" on any
      * mute state change. Apply to the selected slot so we stay in sync even
-     * when Move mutes/unmutes independently of our Mute+Track shortcut. */
-    {
+     * when Move mutes/unmutes independently of our Mute+Track shortcut.
+     *
+     * Skip while a drum pad is held: Mute+Pad mutes an individual pad/drum and
+     * Move announces "<Sample> muted" for it too. That announcement is
+     * indistinguishable by text from a track mute, so without this guard a pad
+     * mute would silence the whole shadow slot. A real track mute (plain Mute
+     * tap or Mute+Track) happens with no pad held, so it still syncs. */
+    if (!(host.pads_held && *host.pads_held > 0)) {
         int text_len = strlen(text);
         int ends_with_unmuted = (text_len >= 8 && strcmp(text + text_len - 7, "unmuted") == 0
                                  && text[text_len - 8] == ' ');
@@ -315,8 +321,9 @@ static void shadow_dbus_handle_text(const char *text)
     }
 
     /* Auto-correct solo state from D-Bus screen reader text.
-     * Move announces "<Instrument> soloed" / "<Instrument> unsoloed". */
-    {
+     * Move announces "<Instrument> soloed" / "<Instrument> unsoloed".
+     * Skipped while a pad is held, for the same reason as the mute block above. */
+    if (!(host.pads_held && *host.pads_held > 0)) {
         int text_len = strlen(text);
         int ends_with_unsoloed = (text_len >= 9 && strcmp(text + text_len - 8, "unsoloed") == 0
                                   && text[text_len - 9] == ' ');
