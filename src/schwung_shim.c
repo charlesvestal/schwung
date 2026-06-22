@@ -212,14 +212,9 @@ static int speaker_eq_initialized = 0;
  * matter WHEN the stray val=0 arrives.
  *
  * Trade-off: a device that only ever uses the built-in speaker (never inserts
- * a jack) runs without the enhancer EQ until a jack is plugged+unplugged once.
- * Deliberately accepted; users can force via the "speaker_eq_mode" setting. */
-/* Speaker-EQ mode, from config/features.json "speaker_eq_mode":
- *   0 = auto (default) — jack-detected, stable-debounced (below)
- *   1 = off            — EQ never applies (bulletproof for headphone/line-in)
- *   2 = on             — EQ always applies (under rebuild_from_la)
- * "off" guarantees no hollow regardless of what XMOS reports. */
-static int speaker_eq_mode = 0;
+ * a jack) runs without the enhancer EQ until a jack is plugged+unplugged once
+ * — no longer a practical concern now that the boot jack re-assert restores
+ * the true state automatically. The EQ is always jack-auto (no user toggle). */
 /* Auto-mode stability: engage the EQ only when the jack has read speaker
  * (CC 115 val=0) continuously for SPK_EQ_STABLE_SEC. A val=127 (jack inserted)
  * flips us out of speaker instantly. This rejects transients and contact
@@ -1055,19 +1050,6 @@ static void load_feature_config(void)
                 if (parsed > SKIPBACK_MAX_SECONDS) parsed = SKIPBACK_MAX_SECONDS;
                 skipback_seconds_setting = parsed;
             }
-        }
-    }
-
-    /* Parse speaker_eq_mode ("auto" | "off" | "on"; default "auto"). */
-    const char *spk_eq_key = strstr(config_buf, "\"speaker_eq_mode\"");
-    if (spk_eq_key) {
-        const char *colon = strchr(spk_eq_key, ':');
-        if (colon) {
-            colon++;
-            while (*colon == ' ' || *colon == '\t' || *colon == '"') colon++;
-            if (strncmp(colon, "off", 3) == 0)      speaker_eq_mode = 1;
-            else if (strncmp(colon, "on", 2) == 0)  speaker_eq_mode = 2;
-            else                                    speaker_eq_mode = 0; /* auto */
         }
     }
 
@@ -2525,10 +2507,7 @@ skip_la_rebuild:
      * XMOS broadcasts CC 115 within ~180ms of shim init at every boot, so the
      * gate clears almost immediately on a real session. */
     {
-        int eq_on;
-        if (speaker_eq_mode == 1)      eq_on = 0;                      /* OFF  */
-        else if (speaker_eq_mode == 2) eq_on = 1;                      /* ON   */
-        else                           eq_on = spk_eq_speaker_stable(); /* AUTO */
+        int eq_on = spk_eq_speaker_stable();  /* always jack-auto (no toggle) */
         if (rebuild_from_la && speaker_eq_initialized && eq_on) {
             speaker_eq_process(mailbox_audio, FRAMES_PER_BLOCK);
         }
@@ -3627,34 +3606,6 @@ static int shim_handle_param_special(uint8_t req_type, uint32_t req_id) {
             } else if (req_type == 2) {
                 shadow_param->result_len = snprintf(shadow_param->value,
                     SHADOW_PARAM_VALUE_LEN, "%d", link_audio_publish_enabled);
-                shadow_param->error = 0;
-            }
-            return 1;
-        }
-        /* master_fx:speaker_eq_mode — "auto" | "off" | "on". Applies live so
-         * the Global Settings menu / web manager toggle takes effect without a
-         * reboot. Persisted to features.json by the UI for boot-time load. */
-        if (strcmp(fx_key, "speaker_eq_mode") == 0) {
-            if (req_type == 1) {
-                const char *v = shadow_param->value;
-                int m = 0; /* auto */
-                if (strncmp(v, "off", 3) == 0)      m = 1;
-                else if (strncmp(v, "on", 2) == 0)  m = 2;
-                else                                m = 0;
-                speaker_eq_mode = m;
-                {
-                    static const char *names[] = {"auto", "off", "on"};
-                    char msg[64];
-                    snprintf(msg, sizeof(msg), "Speaker EQ mode: %s", names[m]);
-                    shadow_log(msg);
-                }
-                shadow_param->error = 0;
-                shadow_param->result_len = 0;
-            } else if (req_type == 2) {
-                static const char *names[] = {"auto", "off", "on"};
-                int m = (speaker_eq_mode >= 0 && speaker_eq_mode <= 2) ? speaker_eq_mode : 0;
-                shadow_param->result_len = snprintf(shadow_param->value,
-                    SHADOW_PARAM_VALUE_LEN, "%s", names[m]);
                 shadow_param->error = 0;
             }
             return 1;

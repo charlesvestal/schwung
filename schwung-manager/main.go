@@ -2074,7 +2074,6 @@ var settingsToFeatures = map[string]string{
 	"link_audio_routing":     "link_audio_enabled",
 	"skipback_shortcut":      "skipback_require_volume",
 	"skipback_seconds":       "skipback_seconds",
-	"speaker_eq_mode":        "speaker_eq_mode",
 	"midi_indicator_enabled": "midi_indicator_enabled",
 }
 
@@ -2118,13 +2117,6 @@ func (app *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 		} else if schemaKey == "link_audio_routing" {
 			// link_audio_enabled -> link_audio_routing (bool)
 			values[schemaKey] = jsonBool(ft, featKey, false)
-		} else if schemaKey == "speaker_eq_mode" {
-			// string enum "auto"|"off"|"on" — pass through (default "auto")
-			if v, ok := ft[featKey].(string); ok && v != "" {
-				values[schemaKey] = v
-			} else {
-				values[schemaKey] = "auto"
-			}
 		} else {
 			values[schemaKey] = jsonBool(ft, featKey, false)
 		}
@@ -2254,13 +2246,6 @@ func (app *App) handleConfigSetSetting(w http.ResponseWriter, r *http.Request) {
 				val = 300
 			}
 			ft[featKey] = val
-		case "speaker_eq_mode":
-			// string enum "auto"|"off"|"on"
-			if value == "off" || value == "on" {
-				ft[featKey] = value
-			} else {
-				ft[featKey] = "auto"
-			}
 		default:
 			ft[featKey] = value == "true"
 		}
@@ -2342,21 +2327,6 @@ func (app *App) handleConfigSetSetting(w http.ResponseWriter, r *http.Request) {
 // instant effect. This bypasses the JS tick() path entirely, avoiding the
 // SIGABRT that occurred when syncSettingsFromConfigFile() was called from tick().
 func (app *App) applyShmSetting(key, value string) {
-	// speaker_eq_mode applies live via the param SHM (master_fx handler),
-	// independent of the ShmConfig segment.
-	if key == "speaker_eq_mode" {
-		// app.shmParams may be nil if the manager started before the shim
-		// created /schwung-param (the startup open failed); lazy-reconnect.
-		if app.shmParams == nil {
-			app.shmParams = OpenShmParams()
-		}
-		if app.shmParams != nil {
-			if err := app.shmParams.SetParam(0, "master_fx:speaker_eq_mode", value); err != nil {
-				app.logger.Warn("speaker_eq_mode live-apply failed", "err", err)
-			}
-		}
-		return
-	}
 	if app.shm == nil {
 		return
 	}
