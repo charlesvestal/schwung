@@ -1012,6 +1012,17 @@
       "default_branch": "master",
       "asset_name": "aphex-module.tar.gz",
       "min_host_version": "0.3.0"
+    },
+    {
+      "id": "war_bells",
+      "name": "War Bells",
+      "description": "Granular/glitch/delay/looper multi-FX: 11 effects x 4 variations, shimmer reverb + tone, generative Motion/Evolve, Hold sampler, resonant filter, 60s looper",
+      "author": "seajay",
+      "component_type": "audio_fx",
+      "github_repo": "seajaysec/war-bells",
+      "default_branch": "main",
+      "asset_name": "war_bells-module.tar.gz",
+      "min_host_version": "0.3.0"
     }
   ]
 }
