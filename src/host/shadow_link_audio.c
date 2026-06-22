@@ -49,7 +49,11 @@ static void la_avail_stats_reset(void) {
  * a 5 ms-off plateau takes ~5 s. Burst mode (drop/dup 8 frames per period
  * instead of 1) kicks in when error exceeds NUDGE_BURST_THRESHOLD so the
  * first second after engage gets us most of the way to target. */
-#define NUDGE_DEAD_BAND_SAMPLES 32
+/* ±256 samples (~2.9 ms). Was mistakenly 32 (~0.36 ms), far tighter than
+ * Move's per-track jitter, so the nudge fired almost every period and never
+ * let the ring settle — a major contributor to the latency-comp dropouts.
+ * Restored to the value the comment above always described. */
+#define NUDGE_DEAD_BAND_SAMPLES 256
 #define NUDGE_PERIOD            16
 #define NUDGE_BURST_THRESHOLD   512
 #define NUDGE_BURST_FRAMES      8
