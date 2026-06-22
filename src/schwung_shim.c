@@ -5815,30 +5815,50 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             sh_midi[j + 7] = hw_midi[j + 7];
         }
 
-        /* Move-native knob coalesce: emit one consolidated CC per knob whose
-         * detents we suppressed above. Find empty (zeroed) slots in sh_midi
-         * and inject. Clamp deltas into the one-byte signed encoding (±63);
-         * any leftover spills to the next frame's accumulator naturally on
-         * the next inbound detent. */
-        for (int k = 0; k < 8; k++) {
-            if (corun_knob_delta[k] == 0) continue;
-            int16_t delta = corun_knob_delta[k];
-            if (delta > 63) delta = 63;
-            else if (delta < -63) delta = -63;
-            uint8_t d2 = (delta >= 0) ? (uint8_t)delta : (uint8_t)(delta + 128);
-            for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
-                if (sh_midi[j] == 0 && sh_midi[j + 1] == 0 &&
-                    sh_midi[j + 2] == 0 && sh_midi[j + 3] == 0) {
-                    sh_midi[j]     = 0x0B;     /* cable 0, CIN 0x0B = CC */
-                    sh_midi[j + 1] = 0xB0;     /* status: CC, channel 0 */
-                    sh_midi[j + 2] = (uint8_t)(71 + k);
-                    sh_midi[j + 3] = d2;
-                    /* Synthetic event: zero the timestamp dword */
-                    sh_midi[j + 4] = 0;
-                    sh_midi[j + 5] = 0;
-                    sh_midi[j + 6] = 0;
-                    sh_midi[j + 7] = 0;
-                    break;
+        /* Move-native knob coalesce: emit ONE consolidated CC per knob whose
+         * detents we suppressed above, into an empty sh_midi slot. Clamp deltas
+         * into the one-byte signed encoding (±63); any leftover carries.
+         *
+         * Co-run knob-CC inject starvation: the synthetic CC occupies a MIDI_IN
+         * slot, and shadow_drain_midi_inject defers note delivery to Move tracks
+         * whenever ANY MIDI_IN slot is non-zero (the SIGABRT-avoidance guard in
+         * shadow_midi.c). Emitting every frame during a hard knob spin therefore
+         * keeps MIDI_IN perpetually occupied and STARVES a co-run tool's
+         * sequenced notes to Move-native instruments — the tool audibly drops
+         * out and catches up at a different position (measured ~235 deferred
+         * injects/s during a hard spin under a co-run sequencer). Fix: fold
+         * detents into a PERSISTENT accumulator and emit only 1 frame in KNOB_EMIT_PERIOD,
+         * leaving the intervening frames' MIDI_IN empty so the drain (which needs
+         * ~3 consecutive empty frames: hw-occupancy bail + DEFER_FRAMES=2) gets a
+         * window. Knob→Move update rate drops 344→~86 Hz (imperceptible); deltas
+         * are accumulated/carried so no motion is lost, only lightly time-quantized
+         * during a spin. */
+        static int16_t  s_corun_knob_accum[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+        static uint32_t s_corun_knob_phase = 0;
+        const int KNOB_EMIT_PERIOD = 4;   /* 1 emit + 3 empty frames per cycle */
+        for (int k = 0; k < 8; k++) s_corun_knob_accum[k] += corun_knob_delta[k];
+        if ((++s_corun_knob_phase % (uint32_t)KNOB_EMIT_PERIOD) == 0) {
+            for (int k = 0; k < 8; k++) {
+                if (s_corun_knob_accum[k] == 0) continue;
+                int16_t delta = s_corun_knob_accum[k];
+                if (delta > 63) delta = 63;
+                else if (delta < -63) delta = -63;
+                s_corun_knob_accum[k] -= delta;   /* carry remainder to next emit */
+                uint8_t d2 = (delta >= 0) ? (uint8_t)delta : (uint8_t)(delta + 128);
+                for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
+                    if (sh_midi[j] == 0 && sh_midi[j + 1] == 0 &&
+                        sh_midi[j + 2] == 0 && sh_midi[j + 3] == 0) {
+                        sh_midi[j]     = 0x0B;     /* cable 0, CIN 0x0B = CC */
+                        sh_midi[j + 1] = 0xB0;     /* status: CC, channel 0 */
+                        sh_midi[j + 2] = (uint8_t)(71 + k);
+                        sh_midi[j + 3] = d2;
+                        /* Synthetic event: zero the timestamp dword */
+                        sh_midi[j + 4] = 0;
+                        sh_midi[j + 5] = 0;
+                        sh_midi[j + 6] = 0;
+                        sh_midi[j + 7] = 0;
+                        break;
+                    }
                 }
             }
         }
