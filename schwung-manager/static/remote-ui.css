@@ -152,13 +152,28 @@
 
 /* ---- Slot Header ---- */
 .slot-header {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-sm) var(--space-md);
     margin-bottom: var(--space-lg);
 }
 
 .slot-header h2 {
     font-size: 1.25rem;
     font-weight: 600;
-    margin-bottom: var(--space-xs);
+    margin: 0;
+}
+
+/* Inline controls (Interface toggle + pop-out) beside the slot label. */
+.slot-header-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-sm);
+}
+
+.slot-header-controls:empty {
+    display: none;
 }
 
 /* ---- Breadcrumb ---- */
@@ -501,13 +516,101 @@
 }
 
 /* ---- Custom Module Web UI (iframe) ---- */
+/* ---- Custom / Default Interface toggle (compact, in slot header) ---- */
+.ui-mode-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+}
+
+.ui-mode-label {
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.ui-mode-group {
+    display: inline-flex;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+}
+
+.ui-mode-btn {
+    padding: 2px var(--space-sm);
+    background: transparent;
+    color: var(--text-muted);
+    border: none;
+    cursor: pointer;
+    font-family: var(--font-stack);
+    font-size: 0.78rem;
+    line-height: 1.6;
+    transition: color 0.15s, background 0.15s;
+}
+
+.ui-mode-btn:hover {
+    color: var(--text);
+    background: var(--bg-card-hover);
+}
+
+.ui-mode-btn:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: calc(var(--focus-offset) * -1);
+}
+
+.ui-mode-btn.active {
+    color: var(--accent);
+    background: var(--bg-card);
+    font-weight: 600;
+}
+
 .custom-ui-container {
+    position: relative;
     width: 100%;
     margin-bottom: var(--space-md);
     border: 1px solid var(--border);
     border-radius: var(--radius);
     overflow: hidden;
     background: var(--bg-card);
+}
+
+/* Loading overlay shown over the iframe until the module UI is ready. */
+.custom-ui-loading {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-sm);
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    background: var(--bg-card);
+    z-index: 1;
+}
+
+/* Compact pop-out button — sits inline in the slot header. */
+.custom-ui-popout-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    padding: 2px var(--space-sm);
+    cursor: pointer;
+    font-family: var(--font-stack);
+    font-size: 0.78rem;
+    line-height: 1.6;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.custom-ui-popout-btn:hover {
+    background: var(--border);
+    border-color: var(--text-muted);
+}
+
+.custom-ui-popout-btn:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-offset);
 }
 
 .custom-ui-iframe {

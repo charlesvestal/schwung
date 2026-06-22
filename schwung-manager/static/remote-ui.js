@@ -36,7 +36,10 @@
             // Track which component sections are collapsed (true = collapsed).
             collapsed: { synth: false, fx1: true, fx2: true, midi_fx1: true },
             // Custom web UI URL for synth component (null = use auto-generated UI).
-            customUI: null
+            customUI: null,
+            // When true, ignore customUI and show the auto-generated parameter
+            // UI even though a module web_ui.html is available. Session-only.
+            useDefaultUI: false
         };
     }
 
@@ -74,6 +77,8 @@
     // Custom module web UI state.
     var customUIIframe = null; // Reference to active custom UI iframe element
     var customUISubscribed = false; // Whether the iframe has subscribed to param updates
+    var customUILoadingEl = null; // Loading overlay shown until the module UI is ready
+    var customUILoadingTimer = null; // Fallback timer to clear the overlay
 
     // Knob drag state.
     var dragging = null; // { component, key, startY, startValue, min, max, step, type, slot }
@@ -83,6 +88,7 @@
     // DOM references.
     var statusEl = document.getElementById("remote-ui-status");
     var slotTitleEl = document.getElementById("slot-title");
+    var slotHeaderControlsEl = document.getElementById("slot-header-controls");
     var slotContentEl = document.getElementById("slot-content");
     var debugEl = document.getElementById("slot-debug");
     var tabButtons = document.querySelectorAll(".remote-ui-tab");
@@ -1425,10 +1431,13 @@
     function renderSlot() {
         slotContentEl.innerHTML = "";
         debugEl.innerHTML = "";
+        if (slotHeaderControlsEl) slotHeaderControlsEl.innerHTML = "";
 
         // Clear custom UI iframe state on re-render.
         customUIIframe = null;
         customUISubscribed = false;
+        customUILoadingEl = null;
+        if (customUILoadingTimer) { clearTimeout(customUILoadingTimer); customUILoadingTimer = null; }
 
         if (activeSlot === "master") {
             renderMasterFx();
@@ -1455,8 +1464,16 @@
             return;
         }
 
-        // Check for custom web UI on synth component.
-        if (s.customUI && s.customUI.url && hasAnyModule) {
+        // When the synth ships a custom web UI, put the Interface toggle and
+        // the pop-out button inline next to the slot label (compact, both modes).
+        var hasCustomUI = !!(s.customUI && s.customUI.url && hasAnyModule);
+        if (hasCustomUI && slotHeaderControlsEl) {
+            slotHeaderControlsEl.appendChild(renderUiModeToggle(s));
+            slotHeaderControlsEl.appendChild(makePopOutButton(s.customUI.url, activeSlot));
+        }
+
+        // Render the custom web UI unless the user opted out for this slot.
+        if (hasCustomUI && !s.useDefaultUI) {
             renderCustomUI(s);
             return;
         }
@@ -1886,6 +1903,57 @@
     // Custom Module Web UI (iframe)
     // ------------------------------------------------------------------
 
+    // Segmented Custom/Default switch shown when the synth has a web_ui.html.
+    // Lets the user fall back to the auto-generated parameter UI for this slot
+    // (session-only — resets on refresh, like the collapse state).
+    function renderUiModeToggle(s) {
+        var bar = document.createElement("div");
+        bar.className = "ui-mode-toggle";
+
+        var label = document.createElement("span");
+        label.className = "ui-mode-label";
+        label.textContent = "Interface";
+        bar.appendChild(label);
+
+        var group = document.createElement("div");
+        group.className = "ui-mode-group";
+
+        [["Custom", false], ["Default", true]].forEach(function (opt) {
+            var btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "ui-mode-btn" + (s.useDefaultUI === opt[1] ? " active" : "");
+            btn.textContent = opt[0];
+            btn.setAttribute("aria-pressed", s.useDefaultUI === opt[1] ? "true" : "false");
+            btn.onclick = function () {
+                if (s.useDefaultUI === opt[1]) return;
+                s.useDefaultUI = opt[1];
+                renderSlot();
+            };
+            group.appendChild(btn);
+        });
+
+        bar.appendChild(group);
+        return bar;
+    }
+
+    // "Pop out" button — opens the module UI as its own top-level window, free
+    // of the iframe's sandbox/sizing. The standalone page talks to
+    // /ws/remote-ui directly (see schwung-remote-api.js), so it keeps working
+    // even if this manager tab is closed.
+    function makePopOutButton(url, slot) {
+        var popBtn = document.createElement("button");
+        popBtn.type = "button";
+        popBtn.className = "custom-ui-popout-btn";
+        popBtn.textContent = "Pop out ↗";
+        popBtn.title = "Open this UI in its own window";
+        popBtn.onclick = function () {
+            var sep = url.indexOf("?") === -1 ? "?" : "&";
+            var popUrl = url + sep + "schwungStandalone=1&slot=" + slot;
+            window.open(popUrl, "schwungPopout_" + slot);
+        };
+        return popBtn;
+    }
+
     function renderCustomUI(s) {
         var url = s.customUI.url;
 
@@ -1898,8 +1966,19 @@
         iframe.src = url;
         iframe.sandbox = "allow-scripts allow-same-origin";
         iframe.setAttribute("title", "Custom Module UI");
-
         container.appendChild(iframe);
+
+        // Loading overlay shown over the iframe until the module UI is ready.
+        // Cleared when the iframe subscribes (module JS ran), or on iframe
+        // onload, or after a timeout — whichever comes first.
+        var overlay = document.createElement("div");
+        overlay.className = "custom-ui-loading";
+        overlay.innerHTML = '<span class="loading-spinner"></span> Loading module…';
+        container.appendChild(overlay);
+        customUILoadingEl = overlay;
+        iframe.addEventListener("load", hideCustomUILoading);
+        customUILoadingTimer = setTimeout(hideCustomUILoading, 10000);
+
         slotContentEl.appendChild(container);
 
         // Also render FX sections below the iframe if any are loaded.
@@ -1940,6 +2019,14 @@
                 break;
             case "subscribe":
                 customUISubscribed = true;
+                // Module JS has run — clear the loading overlay.
+                hideCustomUILoading();
+                // Bulk-seed: push every param value the parent has already
+                // cached (from the host's initial fetch) in one message, so the
+                // iframe paints real values immediately instead of pulling them
+                // back one-by-one via getParam. Late-arriving values still flow
+                // through the normal param_update path below.
+                seedCustomUI();
                 break;
             case "getHierarchy":
                 handleIframeGetHierarchy(msg);
@@ -2004,6 +2091,37 @@
         if (customUIIframe && customUIIframe.contentWindow) {
             customUIIframe.contentWindow.postMessage(msg, "*");
         }
+    }
+
+    // Remove the custom-UI loading overlay (idempotent).
+    function hideCustomUILoading() {
+        if (customUILoadingTimer) { clearTimeout(customUILoadingTimer); customUILoadingTimer = null; }
+        if (customUILoadingEl && customUILoadingEl.parentNode) {
+            customUILoadingEl.parentNode.removeChild(customUILoadingEl);
+        }
+        customUILoadingEl = null;
+    }
+
+    // Push all params the parent has already cached for the active slot to the
+    // custom UI iframe in a single paramUpdate. Called when the iframe first
+    // subscribes so it can seed its controls without a round-trip per param.
+    function seedCustomUI() {
+        if (!customUIIframe) return;
+        if (typeof activeSlot !== "number") return;
+        var comps = slots[activeSlot].components;
+        var params = {};
+        var any = false;
+        for (var k = 0; k < COMPONENT_KEYS.length; k++) {
+            var cp = comps[COMPONENT_KEYS[k]];
+            if (!cp || !cp.params) continue;
+            for (var key in cp.params) {
+                if (Object.prototype.hasOwnProperty.call(cp.params, key)) {
+                    params[key] = cp.params[key];
+                    any = true;
+                }
+            }
+        }
+        if (any) postToIframe({ type: "paramUpdate", params: params });
     }
 
     function renderMasterFx() {
