@@ -81,7 +81,9 @@ The emission path is realtime-safe — usable from the SPI callback (SCHED_FIFO
 first push and cached in a thread-local). The producer owns `w` (release on
 publish), the exporter owns `r`; single-producer-per-ring keeps it tear-free
 via `w` release/acquire with no locks. On overrun the oldest spans are dropped
-and counted.
+and counted per ring; the exporter surfaces the cumulative drop count via a
+throttled `unified_log` warning (~5 s cadence, only when it grows) so overruns
+are visible when analyzing a trace.
 
 **Name interning** — span names become an int once per call site; the hot path
 stores only the id. Static C literals are stored by pointer
