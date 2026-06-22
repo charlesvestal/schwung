@@ -42,6 +42,7 @@
 #include "host/shadow_midi_inject_writer.h"
 #include "host/shadow_chain_types.h"
 #include "host/unified_log.h"
+#include "host/schwung_trace.h"
 #include "host/tts_engine.h"
 #include "host/link_audio.h"
 #include "host/shadow_sampler.h"
@@ -4260,6 +4261,11 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     (void)ctx;
     (void)size;
 
+    /* Root span for the pre-ioctl half of the SPI frame. No-op when tracing
+     * is off (default). Closes on function return (incl. the goto pre_done
+     * baseline path — the handle stays in scope). */
+    TRACE_SCOPE("spi.pre");
+
     /* Flush-to-zero denormals on the SPI thread so IIR filters (speaker EQ,
      * subsonic HP, etc.) don't grind through gradual-underflow range during
      * long silent tails. FPCR is per-thread — set once on first callback.
@@ -4583,7 +4589,7 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
 
     /* Mix shadow audio into mailbox BEFORE hardware transaction */
     TIME_SECTION_START();
-    shadow_mix_audio();
+    { TRACE_SCOPE("shadow.mix_audio"); shadow_mix_audio(); }
     TIME_SECTION_END(spi_mix_audio_sum, spi_mix_audio_max);
 
     TIME_SECTION_START();
@@ -4592,8 +4598,10 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     TIME_SECTION_END(spi_ui_req_sum, spi_ui_req_max);
 
     TIME_SECTION_START();
-    shadow_inprocess_handle_param_request();
-    shadow_drain_web_param_set();  /* Web UI fire-and-forget param sets */
+    { TRACE_SCOPE("param.serve");
+      shadow_inprocess_handle_param_request();
+      shadow_drain_web_param_set();  /* Web UI fire-and-forget param sets */
+    }
     TIME_SECTION_END(spi_param_req_sum, spi_param_req_max);
 
     /* Forward CC/pitch bend/aftertouch from external MIDI to MIDI_OUT so DSP
@@ -4682,7 +4690,7 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     }
 
     TIME_SECTION_START();
-    shadow_inprocess_process_midi();
+    { TRACE_SCOPE("midi.process"); shadow_inprocess_process_midi(); }
     TIME_SECTION_END(spi_proc_midi_sum, spi_proc_midi_max);
 
     /* Stash MIDI_OUT cable-2 sequencer notes before SPI ioctl consumes them.
@@ -5503,6 +5511,9 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
 {
     (void)ctx;
     (void)size;
+
+    /* Root span for the post-ioctl half of the SPI frame. */
+    TRACE_SCOPE("spi.post");
 
     /* Timing: reuse statics from pre-transfer (same translation unit) */
     /* spi_post_start is at file scope */
@@ -7355,6 +7366,11 @@ static void *spi_timing_logger_thread(void *arg)
     while (1) {
         usleep(5000000);  /* 5 seconds */
 
+        /* Toggle span tracing live from the touch-file (independent of the
+         * unified-log gate below). Non-RT thread → safe to start the
+         * exporter / flip the atomic here. */
+        schwung_trace_poll_enable();
+
         if (!unified_log_enabled()) continue;
         if (spi_snap.seq == last_seq) continue;  /* No new data */
         last_seq = spi_snap.seq;
@@ -7543,6 +7559,12 @@ static void shim_spi_init(void)
     if (!real_ioctl) {
         real_ioctl = dlsym(RTLD_NEXT, "ioctl");
     }
+
+    /* Initialize OTLP span tracing (OFF unless the touch-file is present;
+     * see docs/tracing.md). Cheap: just samples the
+     * clock offset and polls the gate once. The exporter thread is started
+     * lazily by poll_enable, on its own SCHED_OTHER schedule off core 3. */
+    schwung_trace_init("schwung-shim");
 
     /* Initialize SPI library and register callbacks */
     g_spi_handle = schwung_spi_init();
