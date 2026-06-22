@@ -5689,6 +5689,22 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
         prev_overtake_mode = overtake_mode;
     }
 
+    /* Boot jack-state re-assert: worker arms shim_inject_boot_jack ~5 s after
+     * start (Move firmware is up by then). Inject a CC 115 into Move's MIDI_IN
+     * via the safe MPSC inject ring so Move's speaker enhancer corrects when
+     * headphones were already plugged at boot (XMOS only reports jack on a
+     * physical transition, never at boot). CC injection is the same safe path
+     * as the overtake-exit button releases — unlike XMOS SysEx injection. */
+    if (shim_inject_boot_jack >= 0 && shadow_midi_inject_shm) {
+        uint8_t v = (uint8_t)shim_inject_boot_jack;
+        shim_inject_boot_jack = -1;
+        const uint8_t jack_cc[4] = { 0x0B, 0xB0, CC_LINE_OUT_DETECT, v };
+        if (shadow_midi_inject_push(shadow_midi_inject_shm, jack_cc) == 0)
+            shadow_log("Boot jack re-assert: injected CC 115 to Move");
+        else
+            shadow_log("Boot jack re-assert: inject ring full, dropped CC 115");
+    }
+
     if (shadow_display_mode && shadow_control) {
         /* Move-native co-run knob coalescing: Move firmware spends ~900µs per
          * CC 71-78 it receives (synth-param write + OLED redraw). Multiple
@@ -6094,6 +6110,11 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
 
             if (d1 == CC_LINE_OUT_DETECT) {
                 int new_speaker = (d2 == 0) ? 1 : 0;
+                /* Publish the raw CC 115 value (0=speaker, 127=jack) for the
+                 * worker to persist to /data. At boot the worker re-asserts it
+                 * to Move so its enhancer matches when headphones were already
+                 * plugged (XMOS stays silent on a jack-in boot). */
+                shim_jack_persist = (int)d2;
                 int prev_known_speaker = shadow_speaker_active && shadow_speaker_active_known;
                 shadow_speaker_active_known = 1;
                 if (new_speaker != shadow_speaker_active) {
