@@ -55,13 +55,16 @@ if [ -z "$CROSS_PREFIX" ] && [ ! -f "/.dockerenv" ]; then
             cd "$REPO_ROOT"
         elif command -v docker &>/dev/null; then
             echo "Local 'go' not found — building via golang:1.26-bookworm container"
+            mkdir -p "$REPO_ROOT/.cache/go-cache" "$REPO_ROOT/.cache/go-mod-cache"
             docker run --rm \
                 -v "$REPO_ROOT/schwung-manager:/src" \
                 -v "$REPO_ROOT/build:/out" \
+                -v "$REPO_ROOT/.cache/go-cache:/gocache" \
+                -v "$REPO_ROOT/.cache/go-mod-cache:/go-mod-cache" \
                 -u "$(id -u):$(id -g)" \
                 -w /src \
                 -e GOOS=linux -e GOARCH=arm64 -e CGO_ENABLED=0 \
-                -e GOCACHE=/tmp/.gocache -e GOMODCACHE=/tmp/.gomodcache \
+                -e GOCACHE=/gocache -e GOMODCACHE=/go-mod-cache \
                 golang:1.26-bookworm \
                 go build -buildvcs=false -o /out/schwung-manager -ldflags="-s -w" .
         else
