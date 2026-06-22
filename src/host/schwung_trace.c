@@ -397,6 +397,8 @@ static void *exporter_main(void *arg) {
     (void)arg;
     open_outfile();
     int overflow_logged = 0;
+    uint64_t last_dropped = 0;          /* cumulative dropped spans last surfaced */
+    int      dropped_pass = 0;          /* cadence counter for the dropped-count log */
     /* small staging buffer drained from the rings each pass */
     static trace_rec_t batch[1024];
     while (!atomic_load_explicit(&g_exporter_stop, memory_order_relaxed)) {
@@ -428,6 +430,24 @@ static void *exporter_main(void *arg) {
             atomic_store_explicit(&ring->r, r, memory_order_relaxed);
         }
         if (n > 0) write_batch(batch, n);
+        /* Surface ring overruns. Each ring's `dropped` is bumped on the RT path
+         * (producer lapped the exporter) and in the drain above, but is otherwise
+         * invisible when analyzing a trace. Sum it across rings and log from here
+         * (non-RT) at most once per ~5 s, and only when it grows — so overruns are
+         * diagnosable without spamming. Mirrors the thread-table-exhausted warning. */
+        if (++dropped_pass >= 100) {            /* 100 * 50 ms ≈ 5 s */
+            dropped_pass = 0;
+            uint64_t total = 0;
+            for (int i = 0; i < rc; i++)
+                total += atomic_load_explicit(&g_rings[i].dropped, memory_order_relaxed);
+            if (total != last_dropped) {
+                unified_log("trace", LOG_LEVEL_WARN,
+                    "%llu span(s) dropped (ring overrun, cap %d) — "
+                    "raise TRACE_RING_CAP or lower span rate",
+                    (unsigned long long)total, TRACE_RING_CAP);
+                last_dropped = total;
+            }
+        }
         /* Always sleep — cap exporter I/O to one burst per cadence even when
          * the ring keeps producing (otherwise this spins on cores 0-2). */
         usleep(TRACE_EXPORT_SLEEP_US);
