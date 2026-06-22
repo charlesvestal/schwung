@@ -40,11 +40,18 @@ int link_audio_read_channel_shm(link_audio_in_shm_t *shm, int slot_idx,
                                 int16_t *out_lr, int frames);
 
 /* Latency compensation target — the steady-state ring fill we nudge toward
- * when `latency_comp_active` is set. 800 stereo samples ≈ 9.07 ms at
- * 44.1 kHz, chosen from on-device measurement: organically settled means
- * range 8–14 ms with worst-case bursts to ~18 ms, so 9 ms is below average
- * (saves latency) and well above producer jitter floor (~3 ms). */
-#define LATENCY_COMP_TARGET_SAMPLES 800
+ * when `latency_comp_active` is set. 1400 stereo samples ≈ 15.9 ms at
+ * 44.1 kHz. This sits at the ring's organic resting fill measured under
+ * playback load (settled mean ~14–18 ms, min ~13.5 ms), NOT below it.
+ *
+ * The earlier 800-sample (9 ms) target was beneath Move's actual delivery
+ * floor: the nudge had to drain the ring continuously to hold it there, and
+ * any downward jitter then dipped below one block (256 samples) → ring
+ * underrun → audible dropouts. You cannot align Move's tracks at lower
+ * latency than Move actually delivers them; targeting the organic floor is
+ * the lowest-latency setting that does not starve. Must stay ≤
+ * SHADOW_LATENCY_DELAY_RING_SAMPLES minus one block (2048 − 256 = 1792). */
+#define LATENCY_COMP_TARGET_SAMPLES 1400
 
 /* Reset the nudge counters used by link_audio_read_channel_shm. Called
  * when latency comp engages so the first window of correction starts
