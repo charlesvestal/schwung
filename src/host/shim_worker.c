@@ -17,6 +17,31 @@
 
 volatile uint32_t shim_debug_flags = 0;
 volatile int shim_pending_sysex_inject = -1;
+volatile int shim_inject_boot_jack = -1;
+volatile int shim_jack_persist = -1;
+
+/* Persisted jack state (last CC 115 value). Survives reboot so the worker can
+ * re-assert it to Move at boot — XMOS doesn't report jack-in at boot, so an
+ * already-plugged headphone otherwise leaves Move's enhancer on "speaker"
+ * (hollow audio). */
+#define JACK_STATE_PATH "/data/UserData/schwung/jack_state"
+
+static int jack_state_read(void) {
+    FILE *f = fopen(JACK_STATE_PATH, "r");
+    if (!f) return -1;
+    int v = -1;
+    if (fscanf(f, "%d", &v) != 1) v = -1;
+    fclose(f);
+    if (v != 0 && v != 127) return -1;
+    return v;
+}
+
+static void jack_state_write(int v) {
+    FILE *f = fopen(JACK_STATE_PATH, "w");
+    if (!f) return;
+    fprintf(f, "%d\n", v);
+    fclose(f);
+}
 
 /* SPSC event ring: RT producer (SPI callbacks), worker consumer. */
 #define EVT_RING_SIZE 16  /* power of two */
@@ -180,9 +205,44 @@ static void *worker_main(void *arg) {
     pthread_setaffinity_np(pthread_self(), sizeof(mask), &mask);
 
     unsigned tick = 0;
+    /* Engage debug flags immediately on worker start (before the first 200 ms
+     * sleep) so frame-0 diagnostics (e.g. boot-window XMOS jack capture) don't
+     * miss the early frames waiting for the first poll. */
+    poll_flags();
+
+    /* Jack-state persistence + boot re-assert. XMOS reports jack state only on
+     * a physical plug/unplug and (observed) at boot only when the jack is OUT —
+     * so booting with headphones already plugged leaves Move's enhancer on
+     * "speaker" → hollow headphone audio. Read the last persisted state now and
+     * re-assert it to Move ~5 s in (once its firmware is up). If the real state
+     * differs (cable swapped while off), XMOS's own report corrects it shortly
+     * after — this only closes the boot-with-HP-plugged gap. */
+    int boot_jack = jack_state_read();        /* -1 if never persisted */
+    int last_persisted = boot_jack;
+    int boot_reasserted = 0;
+
     for (;;) {
         usleep(200 * 1000);             /* 200 ms cadence */
         drain_events();                 /* event latency ≤ ~200 ms */
+
+        /* Persist jack state when the RT path reports a new CC 115 value. */
+        int jp = shim_jack_persist;
+        if (jp >= 0 && jp != last_persisted) {
+            last_persisted = jp;
+            jack_state_write(jp);
+        }
+
+        /* Re-assert jack state to Move once, ~5 s after start (Move's firmware
+         * is up by then). Prefer the value XMOS actually reported THIS boot
+         * (captured at ~f6 into shim_jack_persist) — that's the true current
+         * state and handles cables swapped while powered off. Fall back to the
+         * persisted file only if XMOS hasn't reported yet this boot. */
+        if (!boot_reasserted && tick >= 25) {
+            boot_reasserted = 1;
+            int v = (shim_jack_persist >= 0) ? shim_jack_persist : boot_jack;
+            if (v >= 0) shim_inject_boot_jack = v;
+        }
+
         if (tick % 5 == 0) poll_flags();          /* ~1 Hz */
         if (tick % 7 == 0) shadow_poll_current_set(); /* ~1.4 s FS scan */
         tick++;
