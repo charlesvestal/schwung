@@ -213,14 +213,9 @@ static int speaker_eq_initialized = 0;
  * matter WHEN the stray val=0 arrives.
  *
  * Trade-off: a device that only ever uses the built-in speaker (never inserts
- * a jack) runs without the enhancer EQ until a jack is plugged+unplugged once.
- * Deliberately accepted; users can force via the "speaker_eq_mode" setting. */
-/* Speaker-EQ mode, from config/features.json "speaker_eq_mode":
- *   0 = auto (default) — jack-detected, stable-debounced (below)
- *   1 = off            — EQ never applies (bulletproof for headphone/line-in)
- *   2 = on             — EQ always applies (under rebuild_from_la)
- * "off" guarantees no hollow regardless of what XMOS reports. */
-static int speaker_eq_mode = 0;
+ * a jack) runs without the enhancer EQ until a jack is plugged+unplugged once
+ * — no longer a practical concern now that the boot jack re-assert restores
+ * the true state automatically. The EQ is always jack-auto (no user toggle). */
 /* Auto-mode stability: engage the EQ only when the jack has read speaker
  * (CC 115 val=0) continuously for SPK_EQ_STABLE_SEC. A val=127 (jack inserted)
  * flips us out of speaker instantly. This rejects transients and contact
@@ -1056,19 +1051,6 @@ static void load_feature_config(void)
                 if (parsed > SKIPBACK_MAX_SECONDS) parsed = SKIPBACK_MAX_SECONDS;
                 skipback_seconds_setting = parsed;
             }
-        }
-    }
-
-    /* Parse speaker_eq_mode ("auto" | "off" | "on"; default "auto"). */
-    const char *spk_eq_key = strstr(config_buf, "\"speaker_eq_mode\"");
-    if (spk_eq_key) {
-        const char *colon = strchr(spk_eq_key, ':');
-        if (colon) {
-            colon++;
-            while (*colon == ' ' || *colon == '\t' || *colon == '"') colon++;
-            if (strncmp(colon, "off", 3) == 0)      speaker_eq_mode = 1;
-            else if (strncmp(colon, "on", 2) == 0)  speaker_eq_mode = 2;
-            else                                    speaker_eq_mode = 0; /* auto */
         }
     }
 
@@ -2526,10 +2508,7 @@ skip_la_rebuild:
      * XMOS broadcasts CC 115 within ~180ms of shim init at every boot, so the
      * gate clears almost immediately on a real session. */
     {
-        int eq_on;
-        if (speaker_eq_mode == 1)      eq_on = 0;                      /* OFF  */
-        else if (speaker_eq_mode == 2) eq_on = 1;                      /* ON   */
-        else                           eq_on = spk_eq_speaker_stable(); /* AUTO */
+        int eq_on = spk_eq_speaker_stable();  /* always jack-auto (no toggle) */
         if (rebuild_from_la && speaker_eq_initialized && eq_on) {
             speaker_eq_process(mailbox_audio, FRAMES_PER_BLOCK);
         }
@@ -3637,34 +3616,6 @@ static int shim_handle_param_special(uint8_t req_type, uint32_t req_id) {
             }
             return 1;
         }
-        /* master_fx:speaker_eq_mode — "auto" | "off" | "on". Applies live so
-         * the Global Settings menu / web manager toggle takes effect without a
-         * reboot. Persisted to features.json by the UI for boot-time load. */
-        if (strcmp(fx_key, "speaker_eq_mode") == 0) {
-            if (req_type == 1) {
-                const char *v = shadow_param->value;
-                int m = 0; /* auto */
-                if (strncmp(v, "off", 3) == 0)      m = 1;
-                else if (strncmp(v, "on", 2) == 0)  m = 2;
-                else                                m = 0;
-                speaker_eq_mode = m;
-                {
-                    static const char *names[] = {"auto", "off", "on"};
-                    char msg[64];
-                    snprintf(msg, sizeof(msg), "Speaker EQ mode: %s", names[m]);
-                    shadow_log(msg);
-                }
-                shadow_param->error = 0;
-                shadow_param->result_len = 0;
-            } else if (req_type == 2) {
-                static const char *names[] = {"auto", "off", "on"};
-                int m = (speaker_eq_mode >= 0 && speaker_eq_mode <= 2) ? speaker_eq_mode : 0;
-                shadow_param->result_len = snprintf(shadow_param->value,
-                    SHADOW_PARAM_VALUE_LEN, "%s", names[m]);
-                shadow_param->error = 0;
-            }
-            return 1;
-        }
         /* master_fx:latency_comp_enabled — user toggle. Applies
          * immediately; the brief ~9 ms transition artifact (audio hole on
          * OFF→ON, duplicate on ON→OFF) is accepted as a known cost of
@@ -4604,10 +4555,10 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     TIME_SECTION_END(spi_ui_req_sum, spi_ui_req_max);
 
     TIME_SECTION_START();
-    { TRACE_SCOPE("param.serve");
-      shadow_inprocess_handle_param_request();
-      shadow_drain_web_param_set();  /* Web UI fire-and-forget param sets */
-    }
+    /* param.serve span is emitted inside the handler, parented to the JS
+     * param.get span via the SHM-propagated trace context (Phase 2b). */
+    shadow_inprocess_handle_param_request();
+    shadow_drain_web_param_set();  /* Web UI fire-and-forget param sets */
     TIME_SECTION_END(spi_param_req_sum, spi_param_req_max);
 
     /* Forward CC/pitch bend/aftertouch from external MIDI to MIDI_OUT so DSP
@@ -4904,19 +4855,34 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
                     if (normalized > 1.0f) normalized = 1.0f;
 
                     /* Map pixel bar position to amplitude matching Move's volume curve.
-                     * sqrt model: dB = -70 * (1 - sqrt(pos))
-                     * Measured from Move's Settings.json globalVolume:
-                     *   pos 0.25 → -33.2 dB (model: -35.0)
-                     *   pos 0.50 → -19.9 dB (model: -20.5)
-                     *   pos 0.75 → -10.4 dB (model:  -9.4)
-                     *   pos 1.00 →   0.0 dB (model:   0.0) */
+                     * Piecewise-linear in dB through points measured from Move's
+                     * Settings.json globalVolume. The old closed-form sqrt model
+                     * (dB = -70*(1-sqrt(pos))) missed every measured point by 1-2 dB:
+                     *   pos 0.25 → -33.2 dB (sqrt model: -35.0)
+                     *   pos 0.50 → -19.9 dB (sqrt model: -20.5)
+                     *   pos 0.75 → -10.4 dB (sqrt model:  -9.4)
+                     *   pos 1.00 →   0.0 dB (sqrt model:   0.0)
+                     * Under Move>Schwung (rebuild_from_la) Schwung re-applies this
+                     * estimate as master volume, so a 1-2 dB error here is an audible
+                     * level jump on toggle (even on headphones). Interpolating through
+                     * the measured points is exact at the knots and close between. */
                     float amplitude;
                     if (normalized <= 0.0f) {
                         amplitude = 0.0f;
                     } else if (normalized >= 1.0f) {
                         amplitude = 1.0f;
                     } else {
-                        float db = -70.0f * (1.0f - sqrtf(normalized));
+                        static const float knot_pos[] = { 0.0f, 0.25f, 0.50f, 0.75f, 1.0f };
+                        static const float knot_db[]  = { -70.0f, -33.2f, -19.9f, -10.4f, 0.0f };
+                        float db = knot_db[4];
+                        for (int kk = 1; kk < 5; kk++) {
+                            if (normalized <= knot_pos[kk]) {
+                                float span = knot_pos[kk] - knot_pos[kk - 1];
+                                float t = (normalized - knot_pos[kk - 1]) / span;
+                                db = knot_db[kk - 1] + t * (knot_db[kk] - knot_db[kk - 1]);
+                                break;
+                            }
+                        }
                         amplitude = powf(10.0f, db / 20.0f);
                     }
 
@@ -5685,6 +5651,22 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
         prev_overtake_mode = overtake_mode;
     }
 
+    /* Boot jack-state re-assert: worker arms shim_inject_boot_jack ~5 s after
+     * start (Move firmware is up by then). Inject a CC 115 into Move's MIDI_IN
+     * via the safe MPSC inject ring so Move's speaker enhancer corrects when
+     * headphones were already plugged at boot (XMOS only reports jack on a
+     * physical transition, never at boot). CC injection is the same safe path
+     * as the overtake-exit button releases — unlike XMOS SysEx injection. */
+    if (shim_inject_boot_jack >= 0 && shadow_midi_inject_shm) {
+        uint8_t v = (uint8_t)shim_inject_boot_jack;
+        shim_inject_boot_jack = -1;
+        const uint8_t jack_cc[4] = { 0x0B, 0xB0, CC_LINE_OUT_DETECT, v };
+        if (shadow_midi_inject_push(shadow_midi_inject_shm, jack_cc) == 0)
+            shadow_log("Boot jack re-assert: injected CC 115 to Move");
+        else
+            shadow_log("Boot jack re-assert: inject ring full, dropped CC 115");
+    }
+
     if (shadow_display_mode && shadow_control) {
         /* Move-native co-run knob coalescing: Move firmware spends ~900µs per
          * CC 71-78 it receives (synth-param write + OLED redraw). Multiple
@@ -6090,6 +6072,11 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
 
             if (d1 == CC_LINE_OUT_DETECT) {
                 int new_speaker = (d2 == 0) ? 1 : 0;
+                /* Publish the raw CC 115 value (0=speaker, 127=jack) for the
+                 * worker to persist to /data. At boot the worker re-asserts it
+                 * to Move so its enhancer matches when headphones were already
+                 * plugged (XMOS stays silent on a jack-in boot). */
+                shim_jack_persist = (int)d2;
                 int prev_known_speaker = shadow_speaker_active && shadow_speaker_active_known;
                 shadow_speaker_active_known = 1;
                 if (new_speaker != shadow_speaker_active) {

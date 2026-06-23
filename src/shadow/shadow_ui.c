@@ -32,6 +32,7 @@
 #include "host/shadow_midi_inject_writer.h"
 #include "../host/unified_log.h"
 #include "../host/analytics.h"
+#include "host/schwung_trace.h"   /* Phase 2: JS-side OTLP spans (js.tick, param.get) */
 
 #define SAMPLER_CMD_PATH "/data/UserData/schwung/sampler_cmd_path.txt"
 
@@ -640,7 +641,9 @@ static int shadow_set_param_common(int slot, const char *key, const char *value,
     shadow_param->error = 0;
     shadow_param->response_id = 0;
     shadow_param->request_id = req_id;
-    shadow_param->request_type = 1;  /* SET */
+    /* Release-store the commit flag so the shim's acquire-load sees all the
+     * request fields written above (incl. trace context) before it acts. */
+    __atomic_store_n(&shadow_param->request_type, (uint8_t)1, __ATOMIC_RELEASE);  /* SET */
 
     /* In overtake module mode, keep this fire-and-forget so rapid encoder
      * streams do not block UI rendering. */
@@ -726,6 +729,12 @@ static JSValue js_shadow_get_param(JSContext *ctx, JSValueConst this_val, int ar
     const char *key = JS_ToCString(ctx, argv[1]);
     if (!key) return JS_NULL;
 
+    /* Span the synchronous round-trip (busy-wait to the shim, serviced once per
+     * SPI frame). Correlates on the timeline with the shim's param.serve span —
+     * this is the "where does the tick time go" measurement. Closes on every
+     * return below via cleanup. */
+    TRACE_SCOPE("param.get");
+
     if (!shadow_param_wait_idle(SHADOW_PARAM_DEFAULT_TIMEOUT_MS)) {
         JS_FreeCString(ctx, key);
         return JS_NULL;
@@ -741,13 +750,22 @@ static JSValue js_shadow_get_param(JSContext *ctx, JSValueConst this_val, int ar
 
     JS_FreeCString(ctx, key);
 
+    /* Propagate the open param.get span as trace context so the shim emits its
+     * param.serve as our child (0/0 when tracing is off). */
+    uint64_t _tr = 0, _sp = 0;
+    schwung_trace_current(&_tr, &_sp);
+    shadow_param->trace_id = _tr;
+    shadow_param->parent_span_id = _sp;
+
     /* Set up request */
     shadow_param->slot = (uint8_t)slot;
     shadow_param->response_ready = 0;
     shadow_param->error = 0;
     shadow_param->response_id = 0;
     shadow_param->request_id = req_id;
-    shadow_param->request_type = 2;  /* GET */
+    /* Release-store the commit flag so the shim's acquire-load sees trace_id /
+     * parent_span_id / key (written above) before it services this GET. */
+    __atomic_store_n(&shadow_param->request_type, (uint8_t)2, __ATOMIC_RELEASE);  /* GET */
 
     if (shadow_param_wait_response(req_id, SHADOW_PARAM_DEFAULT_TIMEOUT_MS) <= 0) {
         return JS_NULL;
@@ -2109,6 +2127,58 @@ static JSValue js_exit(JSContext *ctx, JSValueConst this_val, int argc, JSValueC
     return JS_UNDEFINED;
 }
 
+/* === OTLP tracing bindings (Phase 2) ===
+ * host_trace_begin(name) -> handle (small int; 0 when tracing is off / no slot)
+ * host_trace_end(handle)  -> closes the span opened by host_trace_begin.
+ * Single-threaded shadow_ui → the per-thread span stack nests correctly, so
+ * spans opened inside the C js.tick scope become its children. A forgotten
+ * end() can't corrupt the stack (schwung_trace_end unwinds to the matching id);
+ * the only cost is the leaked handle-table slot, which is reclaimed at the end
+ * of each js.tick (the table is per-tick — see the main loop). span_ids are
+ * 64-bit (process-salted) and don't fit a JS double, so handles are small
+ * indices into a table that holds the real span_id. Off by default. */
+#define JS_TRACE_MAX_OPEN 16
+static uint64_t js_trace_open[JS_TRACE_MAX_OPEN];   /* full span_id per slot; 0 = free */
+
+static JSValue js_host_trace_begin(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !atomic_load_explicit(&schwung_trace_on, memory_order_relaxed))
+        return JS_NewInt32(ctx, 0);
+    const char *name = JS_ToCString(ctx, argv[0]);
+    if (!name) return JS_NewInt32(ctx, 0);
+    trace_handle_t h = schwung_trace_begin(schwung_trace_intern_copy(name));
+    JS_FreeCString(ctx, name);
+    if (h.span_id == 0) return JS_NewInt32(ctx, 0);
+    for (int i = 0; i < JS_TRACE_MAX_OPEN; i++) {
+        if (js_trace_open[i] == 0) { js_trace_open[i] = h.span_id; return JS_NewInt32(ctx, i + 1); }
+    }
+    /* table full: span is open on the stack but unaddressable; an enclosing
+     * end() will unwind (drop) it. Return 0 so JS doesn't try to close it.
+     * Warn once so the silent drop is diagnosable. */
+    static int warned_full = 0;
+    if (!warned_full) {
+        warned_full = 1;
+        unified_log("trace", LOG_LEVEL_WARN,
+                    "js_trace_open full (%d open) — JS span dropped; "
+                    "raise JS_TRACE_MAX_OPEN or check for missing host_trace_end",
+                    JS_TRACE_MAX_OPEN);
+    }
+    return JS_NewInt32(ctx, 0);
+}
+
+static JSValue js_host_trace_end(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1) return JS_UNDEFINED;
+    int32_t idx = 0;
+    if (JS_ToInt32(ctx, &idx, argv[0]) || idx <= 0 || idx > JS_TRACE_MAX_OPEN) return JS_UNDEFINED;
+    uint64_t sid = js_trace_open[idx - 1];
+    if (sid == 0) return JS_UNDEFINED;
+    js_trace_open[idx - 1] = 0;
+    trace_handle_t h = { sid };
+    schwung_trace_end(&h);
+    return JS_UNDEFINED;
+}
+
 static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JSRuntime *rt = JS_NewRuntime();
     if (!rt) exit(2);
@@ -2179,6 +2249,10 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_param", JS_NewCFunction(ctx, js_shadow_set_param, "shadow_set_param", 3));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_param_timeout", JS_NewCFunction(ctx, js_shadow_set_param_timeout, "shadow_set_param_timeout", 4));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_param", JS_NewCFunction(ctx, js_shadow_get_param, "shadow_get_param", 2));
+
+    /* OTLP tracing (Phase 2) */
+    JS_SetPropertyStr(ctx, global_obj, "host_trace_begin", JS_NewCFunction(ctx, js_host_trace_begin, "host_trace_begin", 1));
+    JS_SetPropertyStr(ctx, global_obj, "host_trace_end", JS_NewCFunction(ctx, js_host_trace_end, "host_trace_end", 1));
 
     /* Register MIDI output functions for overtake modules */
     JS_SetPropertyStr(ctx, global_obj, "move_midi_external_send", JS_NewCFunction(ctx, js_move_midi_external_send, "move_midi_external_send", 1));
@@ -2336,6 +2410,12 @@ int main(int argc, char *argv[]) {
     shadow_ui_log_line("shadow_ui: shared memory open");
     shadow_ui_write_pid();
 
+    /* OTLP tracing (Phase 2): own process-local ring + exporter, off unless the
+     * touch-file is present. Distinct service name → its own traces file; the
+     * shim's spans share the system-wide CLOCK_MONOTONIC_RAW timebase, so both
+     * align sub-ms on one Tempo timeline. */
+    schwung_trace_init("schwung-shadow-ui");
+
     /* Initialize analytics */
     {
         char version[32] = "unknown";
@@ -2416,10 +2496,23 @@ int main(int argc, char *argv[]) {
         }
 
         if (jsTickIsDefined) {
+            TRACE_SCOPE("js.tick");   /* root span; param.get etc. nest under it */
             callGlobalFunction(ctx, &JSTick, 0);
         }
+        /* The js.tick scope above unwound the per-thread span stack back to
+         * depth 0, so any span a JS module opened via host_trace_begin and
+         * forgot to host_trace_end() is already dropped from the stack — but its
+         * handle-table slot would otherwise stay occupied forever. Reclaim the
+         * whole table here (JS spans are per-tick by contract): a stale slot's
+         * span_id is provably dead, and a late host_trace_end() against it is a
+         * safe no-op. Without this, a module that consistently skips
+         * host_trace_end fills all JS_TRACE_MAX_OPEN slots in ~16 ticks, after
+         * which every host_trace_begin (from any module) silently returns 0. */
+        for (int i = 0; i < JS_TRACE_MAX_OPEN; i++) js_trace_open[i] = 0;
 
         refresh_counter++;
+        /* Poll the trace touch-file off the hot loop (~once/sec at 60 Hz). */
+        if ((refresh_counter & 0x3F) == 0) schwung_trace_poll_enable();
         if ((js_display_screen_dirty || (refresh_counter % 30 == 0)) && shadow_display_shm) {
             js_display_pack(packed_buffer);
             memcpy(shadow_display_shm, packed_buffer, DISPLAY_BUFFER_SIZE);
@@ -2435,6 +2528,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    schwung_trace_shutdown();   /* flush + stop the trace exporter (drain last spans) */
     js_std_free_handlers(rt);
     JS_FreeContext(ctx);
     JS_FreeRuntime(rt);

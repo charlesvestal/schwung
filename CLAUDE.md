@@ -42,7 +42,7 @@ JS: `console.log()` (auto-routed) or import `shared/logger.mjs`. C: `LOG_DEBUG("
 
 **On-device E2E tests** (opt-in, not in CI): `tools/pytest-schwung/` is a pip-installable pytest plugin that drives a real Move end-to-end through `schwung-testd`, an opt-in test-bus daemon (TCP loopback, started manually over SSH; built into the tarball but not auto-started). Tests inject MIDI, wait for SPI frames, snapshot pad LEDs, capture MIDI_OUT, and reset to a known-empty set (`pristine_set`). Run `pytest tests/e2e` against attached hardware. Full protocol, fixtures, and hardware pitfalls in `tools/pytest-schwung/README.md`.
 
-**OTLP span tracing** (perf profiling, off by default): `touch /data/UserData/schwung/otlp_trace_on` makes the shim emit realtime-safe spans (`spi.pre`/`spi.post` roots + `param.serve`, `shadow.mix_audio`, `midi.process` children) as OTLP/JSONL to `/data/UserData/schwung/traces/` for replay into Tempo/Jaeger. `rm` the file to stop. Zero hot-path cost when off. See `docs/tracing.md`.
+**OTLP span tracing** (perf profiling, off by default): `touch /data/UserData/schwung/otlp_trace_on` makes **both** the shim and the `shadow_ui` process emit realtime-safe spans as OTLP/JSONL to `/data/UserData/schwung/traces/`, one file per service (`schwung-shim-*` / `schwung-shadow-ui-*`). Shim: `spi.pre`/`spi.post` roots + `shadow.mix_audio`, `midi.process`, `param.serve` children. shadow_ui: `js.tick` + `param.get`. Spans correlate **cross-process by trace_id** — the shim's `param.serve` is emitted as a child of shadow_ui's `param.get` (context propagated through `shadow_param_t`), so Tempo/Jaeger stitch the two files into one trace. JS modules (overtake/chain, incl. ion) can add spans via `host_trace_begin(name) -> handle` / `host_trace_end(handle)` (shadow_ui context only); balance the pair within one `tick()` (handles come from a 16-entry table reset each `js.tick`). `rm` the file to stop. Zero hot-path cost when off. See `docs/tracing.md`.
 
 ## Device Constraints
 
@@ -208,10 +208,10 @@ The old `sendto()`-hook reception path was deleted when the public `abl_link` au
 
 Move's per-track audio round-trips with ~5–14 ms unpredictable drift. Slot synths render locally at ~0 ms → fire ahead of Move audio on the same beat. **Latency Comp** (Global Settings → Audio, default OFF) only runs when `rebuild_from_la = 1`:
 
-1. **Link Audio nudge** (`link_audio_read_channel_shm`): drops/dups one stereo frame every 16 reads outside a ±32-sample dead band around 800 stereo samples (~9.07 ms). Burst mode (8 frames/period) when error > 512. Effective rate change <0.3%.
-2. **Schwung-side delay buffer** (`shadow_latency_delay_apply`): per-slot 2048-sample ring delays `shadow_slot_deferred[s]` by 800 samples before combining with `move_track`. Bypassed when `rebuild_from_la = 0`.
+1. **Link Audio nudge** (`link_audio_read_channel_shm`): drops/dups one stereo frame every 16 reads outside a ±256-sample dead band around `LATENCY_COMP_TARGET_SAMPLES` = 1400 stereo samples (~15.9 ms). Burst mode (8 frames/period) when error > 512. Effective rate change <0.3%. The target sits at Move's *organic* ring-fill floor under load — an earlier 800-sample (~9 ms) target was below what Move actually delivers, so the nudge drained the ring continuously and underran → dropouts (and the dead band was mistakenly 32, not 256, so it nudged almost every cycle).
+2. **Schwung-side delay buffer** (`shadow_latency_delay_apply`): per-slot 2048-sample ring delays `shadow_slot_deferred[s]` by `LATENCY_COMP_TARGET_SAMPLES` (1400) before combining with `move_track`. Bypassed when `rebuild_from_la = 0`. (Target must stay ≤ ring size − one block = 1792.)
 
-Toggle mid-playback → ~9 ms artifact (audio hole on OFF→ON, dup on ON→OFF) as ring resets.
+Toggle mid-playback → ~16 ms artifact (audio hole on OFF→ON, dup on ON→OFF) as ring resets.
 
 Telemetry: `touch /data/UserData/schwung/link_audio_avail_log_on` for 5 s slot avail logs; `touch /data/UserData/schwung/align_dump_trigger` for ~2.9 s of raw s16le PCM dumps in `/data/UserData/schwung/`.
 
@@ -301,7 +301,7 @@ Long-press is suppressed once the volume knob is touched during a track press (s
 - **Mute + Jog Click** on focused chain/MFX module — toggle bypass. Audio passes through; MIDI FX become passthrough; synth render silenced while MIDI flows (state advances, tails ring out, clean unbypass). 4-row 'B' glyph above the module box.
 - **Mute + Track 1–4** — slot mute. **Shift + Mute + Track 1–4** — slot solo.
 
-Plain Mute is blocked from reaching Move firmware while shadow UI is shown. Bypass persists via per-slot autosave (`slot_N.json`, `master_fx_N.json`); patch-library reloads start with bypass=0.
+Mute (CC 88) is passed through to Move firmware (even while shadow UI is shown) so Move-native **Mute + Pad** (per-drum mute) works. `shadow_mute_held` is tracked from the hardware buffer independently, so the shadow combos above still work. Consequences: a plain Mute tap also toggles Move's selected-track mute, and Mute + Track double-mutes (shadow slot + Move track) — these stay in sync, which is intended. **Mute + Pad must NOT mute the shadow slot:** Move announces "<sample> muted" over D-Bus for a pad, and the slot-mute auto-correct (`shadow_dbus.c`) is gated to skip while a drum pad (note 68–99) is held so a pad mute doesn't silence the whole slot. Bypass persists via per-slot autosave (`slot_N.json`, `master_fx_N.json`); patch-library reloads start with bypass=0.
 
 ### Quantized Sampler
 
