@@ -407,6 +407,23 @@ static JSValue js_shadow_corun_state(JSContext *ctx, JSValueConst this_val, int 
     return obj;
 }
 
+/* shadow_corun_event_owner(status, d1) -> CORUN_OWNER_*
+ * Single source of truth for "who owns this control-surface event right now",
+ * exposed for JS dispatch decisions (e.g. a canvas overlay deciding whether to
+ * consume an event or let it fall through to the tool). Wraps the C
+ * corun_event_owner so the keep/cede spec, legacy carve-out, and Back handling
+ * never drift between C and JS. `status` is the MIDI status byte (the low nibble
+ * is ignored — only the type matters). Returns CORUN_OWNER_TOOL when no co-run. */
+static JSValue js_shadow_corun_event_owner(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 2) return JS_NewInt32(ctx, CORUN_OWNER_TOOL);
+    int status = 0, d1 = 0;
+    if (JS_ToInt32(ctx, &status, argv[0])) return JS_NewInt32(ctx, CORUN_OWNER_TOOL);
+    if (JS_ToInt32(ctx, &d1, argv[1])) return JS_NewInt32(ctx, CORUN_OWNER_TOOL);
+    corun_owner_t owner = corun_event_owner(shadow_control, (uint8_t)(status & 0xF0), (uint8_t)d1);
+    return JS_NewInt32(ctx, (int)owner);
+}
+
 /* shadow_get_selected_slot() -> int
  * Returns the track-selected slot (0-3) for playback/knobs.
  */
@@ -2285,6 +2302,12 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_corun_begin_cede", JS_NewCFunction(ctx, js_shadow_corun_begin_cede, "shadow_corun_begin_cede", 4));
     JS_SetPropertyStr(ctx, global_obj, "shadow_corun_set_cede_mask", JS_NewCFunction(ctx, js_shadow_corun_set_cede_mask, "shadow_corun_set_cede_mask", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_corun_set_led_cede_mask", JS_NewCFunction(ctx, js_shadow_corun_set_led_cede_mask, "shadow_corun_set_led_cede_mask", 1));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_corun_event_owner", JS_NewCFunction(ctx, js_shadow_corun_event_owner, "shadow_corun_event_owner", 2));
+    /* Owner enum (matches corun_owner_t) — for JS dispatch decisions. */
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_OWNER_TOOL", JS_NewInt32(ctx, CORUN_OWNER_TOOL));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_OWNER_PEER", JS_NewInt32(ctx, CORUN_OWNER_PEER));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_OWNER_BOTH", JS_NewInt32(ctx, CORUN_OWNER_BOTH));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_OWNER_NONE", JS_NewInt32(ctx, CORUN_OWNER_NONE));
     /* Co-run target enum (matches corun_target_t in shadow_constants.h). */
     JS_SetPropertyStr(ctx, global_obj, "CORUN_TARGET_NONE",        JS_NewInt32(ctx, CORUN_TARGET_NONE));
     JS_SetPropertyStr(ctx, global_obj, "CORUN_TARGET_CHAIN_EDIT",  JS_NewInt32(ctx, CORUN_TARGET_CHAIN_EDIT));
