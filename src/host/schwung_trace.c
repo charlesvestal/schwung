@@ -353,7 +353,9 @@ static void write_batch(const trace_rec_t *spans, int n) {
     fprintf(g_out,
         "{\"resourceSpans\":[{\"resource\":{\"attributes\":["
         "{\"key\":\"service.name\",\"value\":{\"stringValue\":\"%s\"}}]},"
-        "\"scopeSpans\":[{\"scope\":{\"name\":\"shim\"},\"spans\":[",
+        /* InstrumentationScope = the producing library, same for both services
+         * (the service is distinguished by service.name above). */
+        "\"scopeSpans\":[{\"scope\":{\"name\":\"schwung-trace\"},\"spans\":[",
         json_escape(g_service, svc_esc, sizeof(svc_esc)));
     for (int i = 0; i < n; i++) {
         const trace_rec_t *s = &spans[i];

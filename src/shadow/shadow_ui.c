@@ -2132,9 +2132,11 @@ static JSValue js_exit(JSContext *ctx, JSValueConst this_val, int argc, JSValueC
  * host_trace_end(handle)  -> closes the span opened by host_trace_begin.
  * Single-threaded shadow_ui → the per-thread span stack nests correctly, so
  * spans opened inside the C js.tick scope become its children. A forgotten
- * end() can't corrupt the stack (schwung_trace_end unwinds to the matching id).
- * span_ids are 64-bit (process-salted) and don't fit a JS double, so handles
- * are small indices into a table that holds the real span_id. Off by default. */
+ * end() can't corrupt the stack (schwung_trace_end unwinds to the matching id);
+ * the only cost is the leaked handle-table slot, which is reclaimed at the end
+ * of each js.tick (the table is per-tick — see the main loop). span_ids are
+ * 64-bit (process-salted) and don't fit a JS double, so handles are small
+ * indices into a table that holds the real span_id. Off by default. */
 #define JS_TRACE_MAX_OPEN 16
 static uint64_t js_trace_open[JS_TRACE_MAX_OPEN];   /* full span_id per slot; 0 = free */
 
@@ -2497,6 +2499,16 @@ int main(int argc, char *argv[]) {
             TRACE_SCOPE("js.tick");   /* root span; param.get etc. nest under it */
             callGlobalFunction(ctx, &JSTick, 0);
         }
+        /* The js.tick scope above unwound the per-thread span stack back to
+         * depth 0, so any span a JS module opened via host_trace_begin and
+         * forgot to host_trace_end() is already dropped from the stack — but its
+         * handle-table slot would otherwise stay occupied forever. Reclaim the
+         * whole table here (JS spans are per-tick by contract): a stale slot's
+         * span_id is provably dead, and a late host_trace_end() against it is a
+         * safe no-op. Without this, a module that consistently skips
+         * host_trace_end fills all JS_TRACE_MAX_OPEN slots in ~16 ticks, after
+         * which every host_trace_begin (from any module) silently returns 0. */
+        for (int i = 0; i < JS_TRACE_MAX_OPEN; i++) js_trace_open[i] = 0;
 
         refresh_counter++;
         /* Poll the trace touch-file off the hot loop (~once/sec at 60 Hz). */
