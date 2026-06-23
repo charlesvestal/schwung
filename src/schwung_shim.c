@@ -2913,6 +2913,7 @@ static void init_shadow_shm(void)
         shadow_control->overtake_suppress_sysex = 0;
         shadow_control->corun.target = CORUN_TARGET_NONE;  /* co-run inactive at boot */
         shadow_control->corun.id = -1;
+        shadow_control->corun.flags = 0;      /* 0 = legacy keep-list model */
         shadow_control->corun.keep_mask = 0;  /* 0 = default split when a target is set without a manifest */
         shadow_control->corun.led_keep_mask = 0; /* 0 = LED ownership follows keep_mask */
         shadow_control->shadow_display_owner = DISPLAY_OWNER_SCHWUNG_UI; /* splash boots into shadow UI */
@@ -5683,7 +5684,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
         int16_t corun_knob_delta[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
         int corun_knob_coalesce =
             (corun_target(shadow_control) == CORUN_TARGET_MOVE_NATIVE) &&
-            !(corun_keep_mask_eff(shadow_control->corun.keep_mask) & CORUN_GRP_KNOBS);
+            !(corun_keep_mask_eff(shadow_control) & CORUN_GRP_KNOBS);
 
         /* Filter MIDI_IN: zero out jog/back/knobs */
         for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
@@ -6835,6 +6836,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     if (owner == CORUN_OWNER_NONE && type == 0xB0 && d1 == CC_BACK && d2 > 0) {
                         shadow_control->corun.target = CORUN_TARGET_NONE;
                         shadow_control->corun.id = -1;
+                        shadow_control->corun.flags = 0;
                         shadow_control->corun.keep_mask = 0;
                         shadow_control->corun.led_keep_mask = 0;
                         shadow_control->shadow_display_owner = DISPLAY_OWNER_SCHWUNG_UI;
