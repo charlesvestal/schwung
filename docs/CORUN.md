@@ -12,12 +12,47 @@ Two co-run targets ship today:
 | `CORUN_TARGET_CHAIN_EDIT` | Schwung shadow_ui's chain-slot editor   |
 | `CORUN_TARGET_MOVE_NATIVE`| Move firmware's native preset / synth editor |
 
-Both targets share the same default split, encoded as `CORUN_KEEP_DEFAULT =
-PADS | STEPS | TRANSPORT | MENU` — the tool keeps those control-surface
-groups and cedes everything else (OLED, jog, track buttons, knobs 71-78,
-master CC 79, Shift, touch notes 0-9) to the peer. Back is framework-reserved
-as the exit gesture by default; see [Exit gesture](#exit-gesture). Tools can
-override by passing an explicit `keep_mask` to `shadow_corun_begin()`.
+## Ownership model
+
+Every physically distinct Move control is classified into a `CORUN_GRP_*` group,
+so a tool can keep or cede **any** input. There are two ways to declare the split:
+
+- **Cede model (recommended).** The tool **keeps the whole surface by default** and
+  lists only the groups it **cedes** to the peer, via
+  `shadow_corun_begin_cede(target, id, cede_mask)`. Keep-by-default means a control
+  the tool doesn't mention stays with the tool — the friendly default, and the one
+  to use for new tools.
+- **Legacy keep-list model.** `shadow_corun_begin(target, id, keep_mask)` — the tool
+  lists what it **keeps**; everything else classified cedes. `keep_mask == 0` uses
+  `CORUN_KEEP_DEFAULT = PADS | STEPS | TRANSPORT | MENU | MUTE`. Preserved
+  byte-for-byte for existing tools; a tool on this path also keeps the extended
+  buttons (transport/edit/nav) it never named, exactly as before they were classified.
+
+Both produce identical routing — the cede mask is just stored internally as its
+keep complement, so one representation drives every routing/LED site. Back is
+framework-reserved as the exit gesture by default; see [Exit gesture](#exit-gesture).
+
+### Control-surface groups
+
+| Group | Control | Group | Control |
+| ----- | ------- | ----- | ------- |
+| `CORUN_GRP_OLED`  | the screen        | `CORUN_GRP_MUTE`    | Mute (CC 88) |
+| `CORUN_GRP_PADS`  | 32 pads           | `CORUN_GRP_PLAY`    | Play (CC 85) |
+| `CORUN_GRP_STEPS` | 16 step buttons   | `CORUN_GRP_REC`     | Rec (CC 86) |
+| `CORUN_GRP_JOG`   | jog turn + click  | `CORUN_GRP_SAMPLE`  | Record/Sample (CC 118) |
+| `CORUN_GRP_TRACK_BUTTONS` | rows CC 40-43 | `CORUN_GRP_LOOP`  | Loop (CC 58) |
+| `CORUN_GRP_KNOBS` | knobs CC 71-78    | `CORUN_GRP_COPY`    | Copy (CC 60) |
+| `CORUN_GRP_MASTER`| master CC 79      | `CORUN_GRP_DELETE`  | Delete (CC 119) |
+| `CORUN_GRP_SHIFT` | Shift (CC 49)     | `CORUN_GRP_UNDO`    | Undo (CC 56) |
+| `CORUN_GRP_BACK`  | Back (CC 51)      | `CORUN_GRP_CAPTURE` | Capture (CC 52) |
+| `CORUN_GRP_MENU`  | Menu (CC 50)      | `CORUN_GRP_NAV_UP/DOWN/LEFT/RIGHT` | arrows CC 55/54/62/63 |
+| `CORUN_GRP_TOUCH` | capacitive touch notes 0-9 | | |
+
+Convenience composites: `CORUN_GRP_TRANSPORT` (= Play|Rec|Sample|Loop),
+`CORUN_GRP_NAV` (the 4 arrows), `CORUN_GRP_EDIT` (Copy|Delete|Undo|Capture).
+The mic/speaker plug-detect CCs (114/115) are sensor state, not routable buttons,
+so they stay unclassified and always with the tool. The power button is not a
+routable MIDI event and is out of scope.
 
 ## Exit gesture
 
@@ -29,19 +64,22 @@ UI; Shift+Vol+Menu opens Master FX. While a co-run is active, Menu is
 forwarded to the tool by default via `CORUN_KEEP_DEFAULT` so the tool can use
 it as its own affordance.)
 
-### Opting out — `CORUN_KEEP_BACK`
+### Opting out of framework Back
 
 Tools that need Back free for in-session peer navigation (sub-view pop in
-the chain editor, native back-navigation inside Move firmware) set
-`CORUN_KEEP_BACK` in `keep_mask`:
+the chain editor, native back-navigation inside Move firmware) signal it — and
+Back then routes per the normal keep/cede rules (cedes to peer unless the tool
+also keeps `CORUN_GRP_BACK`):
 
-```js
-shadow_corun_begin(CORUN_TARGET_CHAIN_EDIT, slot,
-                   CORUN_KEEP_DEFAULT | CORUN_KEEP_BACK);
-```
-
-When this bit is set, the framework leaves Back alone: Back routes per the
-normal `keep_mask` rules (cedes to peer unless `CORUN_GRP_BACK` is also kept).
+- **Cede model:** pass `CORUN_F_OWN_BACK` as the `flags` argument:
+  ```js
+  shadow_corun_begin_cede(CORUN_TARGET_CHAIN_EDIT, slot, cedeMask, CORUN_F_OWN_BACK);
+  ```
+- **Legacy model:** set `CORUN_KEEP_BACK` in `keep_mask`:
+  ```js
+  shadow_corun_begin(CORUN_TARGET_CHAIN_EDIT, slot,
+                     CORUN_KEEP_DEFAULT | CORUN_KEEP_BACK);
+  ```
 For `CORUN_TARGET_CHAIN_EDIT`, shadow_ui's own Back handler still ends the
 session when the chain editor is at its top-level view (`CHAIN_EDIT`) — it
 owns the view stack and can tell, so it provides Charles's "Back exits at
@@ -59,25 +97,33 @@ collide with any `CORUN_GRP_*` bit.
 Exposed on the global object in shadow_ui's JS runtime:
 
 ```js
-shadow_corun_begin(target, id, keep_mask)
+// --- Cede model (recommended) ---
+shadow_corun_begin_cede(target, id, cede_mask, flags)
   // target: CORUN_TARGET_CHAIN_EDIT | CORUN_TARGET_MOVE_NATIVE
   // id:     chain slot 0-3 (CHAIN_EDIT) or tool track 0-7 (MOVE_NATIVE)
-  // keep_mask: bitfield of CORUN_GRP_* the tool KEEPS; 0 = default split
+  // cede_mask: bitfield of CORUN_GRP_* the tool CEDES; keeps everything else
+  // flags (optional): CORUN_F_OWN_BACK to handle Back itself
+shadow_corun_set_cede_mask(cede_mask)        // update the cede-list mid-session
+shadow_corun_set_led_cede_mask(led_cede_mask)// cede these groups' LEDs; paint the rest
 
+// --- Legacy keep-list model ---
+shadow_corun_begin(target, id, keep_mask)    // keep_mask: groups the tool KEEPS; 0 = default
+shadow_corun_set_led_keep_mask(led_keep_mask)// groups the tool owns for LEDs; 0 = follow keep
+
+// --- Shared ---
 shadow_corun_end()
   // Tear down co-run. Called by the framework on Back, or by the tool to
   // exit programmatically (e.g. on track-mode change).
-
 shadow_corun_state()
-  // Returns { target, id, keep_mask } or null when no co-run is active.
-  // Tools poll this each frame to detect framework-driven exit and to
-  // reconcile their own mirror state.
+  // Returns { target, id, keep_mask, flags } or null when no co-run is active.
+  // keep_mask is the effective KEEP set in both models (cede is stored as its
+  // complement). Tools poll this each frame to detect framework-driven exit.
 ```
 
-Enum constants are registered as JS globals: `CORUN_TARGET_NONE`,
-`CORUN_TARGET_CHAIN_EDIT`, `CORUN_TARGET_MOVE_NATIVE`, plus
-`CORUN_GRP_OLED` ... `CORUN_GRP_TOUCH`, `CORUN_KEEP_DEFAULT`, and
-`CORUN_KEEP_BACK` (matching `shadow_constants.h`).
+Enum constants are registered as JS globals: `CORUN_TARGET_*`, every
+`CORUN_GRP_*` group + the `NAV`/`EDIT`/`TRANSPORT` composites, `CORUN_KEEP_DEFAULT`,
+`CORUN_KEEP_BACK`, and `CORUN_F_OWN_BACK` (matching `shadow_constants.h`) — so
+modules reference them directly instead of hand-copying bit values.
 
 ### Capability gate
 
@@ -189,13 +235,15 @@ hardware, so the tool's own rendering on those surfaces stays uncontested.
 Surfaces the tool does not own pass through — Move's LEDs reach the buttons /
 pads / knob rings directly.
 
-**Lights vs input split.** LED ownership follows `corun.led_keep_mask` when set,
-falling back to `keep_mask` when it is `0`. This lets a tool **paint** a surface
-while still **ceding its presses** — e.g. dAVEBOx draws the track-button clip
-indicator (owns TRACK LEDs) but lets Move/Schwung handle the press (cedes TRACK
-input). Input routing always uses `keep_mask`; only LEDs consult
-`led_keep_mask`. (Because `0` means "follow keep_mask", a tool cannot currently
-own input while ceding *all* LEDs — no consumer needs that yet.)
+**Lights vs input split.** LED ownership is its own mask, letting a tool **paint** a
+surface while still **ceding its presses** — e.g. dAVEBOx draws the track-button
+clip indicator (owns TRACK LEDs) but lets Move/Schwung handle the press (cedes
+TRACK input). Cede-model tools set it with `shadow_corun_set_led_cede_mask`
+(cede these LEDs, paint the rest); legacy tools use `shadow_corun_set_led_keep_mask`
+(own these LEDs, `0` = follow input). The cede setter also sets
+`CORUN_F_LED_DISTINCT`, which makes the LED mask authoritative even at `0` — so a
+cede tool *can* cede all LEDs while keeping input (the legacy "0 follows input"
+sentinel no longer blocks that). Input routing never consults the LED mask.
 
 **Steps** (notes 16–31) are now a first-class surface (`CORUN_GRP_STEPS`), so
 their input and LEDs route like any other group. This is backward-safe for the
@@ -221,3 +269,10 @@ event belongs to right now. Both the sh_midi let-through filter (forward to
 Move) and the forward-to-shadow_ui suppress filter (forward to tool) call this
 helper and switch on the result, so the two routes cannot drift apart. Adding
 a new target = extend this function; no mirror checks elsewhere.
+
+It is model-aware via `corun.flags & CORUN_F_CEDE_MODEL`: cede-model sessions
+govern the full surface uniformly, while legacy sessions take a frozen path with
+a carve-out that keeps the extended buttons (transport/edit/nav) with the tool —
+so a pre-cede module behaves byte-identically. The cede mask is stored as its
+keep complement (`corun_cede_to_keep`), so the predicate's core test
+(`keep & grp`) and every LED/JS site share one representation.
