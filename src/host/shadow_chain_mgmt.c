@@ -19,6 +19,7 @@
 #include "shadow_state.h"
 #include "shadow_midi.h"
 #include "unified_log.h"
+#include "schwung_trace.h"   /* Phase 2b: emit param.serve as a child of the JS param.get span */
 
 /* ============================================================================
  * Globals
@@ -1734,6 +1735,12 @@ int shadow_param_publish_response(uint32_t req_id) {
      * the flag write ahead of the field writes, and the reader's poll
      * would then see response_ready = 1 with stale fields. */
     __atomic_store_n(&param->response_ready, 1, __ATOMIC_RELEASE);
+    /* Plain store is intentional here: the response side's cross-process
+     * visibility rides the response_ready release above. The acquire/release
+     * discipline on request_type (see the __ATOMIC_ACQUIRE load in the SPI
+     * thread) exists only to publish the trace_id / parent_span_id the
+     * requester writes before raising request_type — which the response path
+     * doesn't touch. Don't "fix" this to a plain read on the request side. */
     param->request_type = 0;
     return 1;
 }
@@ -2256,13 +2263,41 @@ void shadow_master_fx_lfo_tick(int frames) {
     }
 }
 
+/* param.serve span context: emitted on every return path of the handler below
+ * via __attribute__((cleanup)), parented to the JS param.get span propagated
+ * through the param SHM. No-op when tracing is off (ps.on == 0). */
+typedef struct { uint32_t nid; int on; uint64_t t0, trace_id, parent_id; } pserve_span_t;
+static void pserve_emit(pserve_span_t *ps) {
+    if (ps->on)
+        schwung_trace_span_explicit(ps->nid, ps->t0, schwung_trace_now_ns(),
+                                    ps->trace_id, ps->parent_id);
+}
+
 void shadow_inprocess_handle_param_request(void) {
     shadow_param_t *shadow_param = host.shadow_param_ptr ? *host.shadow_param_ptr : NULL;
     if (!shadow_param) return;
 
-    uint8_t req_type = shadow_param->request_type;
+    /* Acquire-load pairs with shadow_ui's release-store of request_type, so
+     * the trace context (and key/value) it wrote first are visible here. */
+    uint8_t req_type = __atomic_load_n(&shadow_param->request_type, __ATOMIC_ACQUIRE);
     if (req_type == 0) return;
     uint32_t req_id = shadow_param->request_id;
+
+    /* Span the actual servicing of this request (all return paths below),
+     * correlated to the JS param.get span via the SHM-propagated context. */
+    pserve_span_t _ps __attribute__((cleanup(pserve_emit))) = {0, 0, 0, 0, 0};
+    if (atomic_load_explicit(&schwung_trace_on, memory_order_relaxed)) {
+        static uint32_t s_pserve_nid = 0;       /* SPI thread only → no init race */
+        if (!s_pserve_nid) s_pserve_nid = schwung_trace_intern("param.serve");
+        _ps.nid       = s_pserve_nid;
+        /* Only GET requests carry trace context — get_param stamps it. A SET
+         * leaves the SHM trace fields stale (from a prior GET), so ignore them
+         * and let param.serve be its own root rather than a phantom child. */
+        _ps.trace_id  = (req_type == 2) ? shadow_param->trace_id : 0;
+        _ps.parent_id = (req_type == 2) ? shadow_param->parent_span_id : 0;
+        _ps.t0        = schwung_trace_now_ns();
+        _ps.on        = 1;
+    }
 
     /* Handle shim-specific params (jack:*, suspend_overtake, passthrough) */
     if (host.handle_param_special) {
@@ -2390,7 +2425,6 @@ void shadow_inprocess_handle_param_request(void) {
                 strcmp(param_key, "link_audio_routing") == 0 ||
                 strcmp(param_key, "link_audio_publish") == 0 ||
                 strcmp(param_key, "latency_comp_enabled") == 0 ||
-                strcmp(param_key, "speaker_eq_mode") == 0 ||
                 strcmp(param_key, "system_link_enabled") == 0 ||
                 strncmp(param_key, "jack:", 5) == 0 ||
                 strcmp(param_key, "suspend_overtake") == 0) {

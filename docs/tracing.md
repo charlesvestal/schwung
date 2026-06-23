@@ -6,9 +6,12 @@ time go" perf questions — a slow JS tick, an over-long SPI frame — with
 parent/child spans and cross-process correlation, instead of ad-hoc
 `Date.now()` / `clock_gettime` instrumentation.
 
-**Off by default, zero hot-path cost when off**, and enabled live on a shipped
-device via a touch-file (no rebuild, no restart). Source:
-`src/host/schwung_trace.{c,h}`.
+**Off by default, effectively zero hot-path cost when off**, and enabled live
+on a shipped device via a touch-file (no rebuild, no restart). The only
+ungated per-frame cost is a single atomic-acquire load of `request_type` on
+the SPI thread (one `ldar` on ARM64, no syscall/alloc/lock) that the
+cross-process trace-id propagation depends on; span emission itself is fully
+gated behind the trace flag. Source: `src/host/schwung_trace.{c,h}`.
 
 > **Scope — part 1 of 2.** This PR adds the **shim** tracing core (the ring,
 > exporter, OTLP/JSON writer, macros, and the shim's own spans). The
@@ -81,7 +84,9 @@ The emission path is realtime-safe — usable from the SPI callback (SCHED_FIFO
 first push and cached in a thread-local). The producer owns `w` (release on
 publish), the exporter owns `r`; single-producer-per-ring keeps it tear-free
 via `w` release/acquire with no locks. On overrun the oldest spans are dropped
-and counted.
+and counted per ring; the exporter surfaces the cumulative drop count via a
+throttled `unified_log` warning (~5 s cadence, only when it grows) so overruns
+are visible when analyzing a trace.
 
 **Name interning** — span names become an int once per call site; the hot path
 stores only the id. Static C literals are stored by pointer
@@ -144,7 +149,7 @@ void f(void) {
 `TRACE_BEGIN("name")` / `TRACE_END(h)` cover spans that don't match a lexical
 block. Build with `-DSCHWUNG_TRACE_DISABLED` to compile every macro to zero.
 
-**JavaScript** (in a `shadow_ui` module — overtake/chain) — **⏳ Part 2** (not in this PR):
+**JavaScript** (in a `shadow_ui` module — overtake/chain):
 
 ```js
 const h = host_trace_begin("ion.computeFrame");  // 0 when tracing is off
@@ -155,6 +160,13 @@ host_trace_end(h);
 JS spans nest under the C `js.tick` root for that tick. Use a fixed set of
 names — each distinct name takes a table slot (256 per process).
 
+**Balance `begin`/`end` within the same tick.** A handle is a slot in a 16-entry
+per-tick table; the table is reset at the end of every `js.tick`, so a span you
+open must be closed in the same tick (a late `host_trace_end` from a later tick
+is a harmless no-op). Forgetting `end()` doesn't corrupt the span stack and
+can't leak across ticks, but within a tick you can have at most 16 open at once
+(`host_trace_begin` returns 0 past that, logged once).
+
 ## OTLP/JSON output
 
 One `ExportTraceServiceRequest` per drained batch, newline-delimited:
@@ -162,7 +174,7 @@ One `ExportTraceServiceRequest` per drained batch, newline-delimited:
 ```json
 {"resourceSpans":[{"resource":{"attributes":[
   {"key":"service.name","value":{"stringValue":"schwung-shim"}}]},
-  "scopeSpans":[{"scope":{"name":"shim"},"spans":[
+  "scopeSpans":[{"scope":{"name":"schwung-trace"},"spans":[
     {"traceId":"<32hex>","spanId":"<16hex>","parentSpanId":"<16hex>",
      "name":"spi.pre","kind":1,
      "startTimeUnixNano":"...","endTimeUnixNano":"..."}]}]}]}
@@ -179,5 +191,6 @@ only the file exporter is wired today (replay from file, or `curl` it yourself).
   More than 8 producer threads → the extras' spans drop, logged once by the
   exporter (`thread-ring table exhausted`).
 - 16 JS spans open simultaneously per tick (`host_trace_begin` returns 0 past
-  that, logged once).
+  that, logged once). The handle table is reclaimed at the end of each `js.tick`,
+  so a module that forgets `host_trace_end` can't leak slots across ticks.
 - Trace files: 8 MB rotation, newest 16 per service retained.

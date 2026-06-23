@@ -41,6 +41,17 @@ static inline int shim_debug_flag_consume(uint32_t bit) {
  * -1 when none. RT consumer swaps it back to -1. */
 extern volatile int shim_pending_sysex_inject;
 
+/* Boot jack-state re-assert: worker sets this to a CC 115 value (0=speaker,
+ * 127=jack) ~5 s after start; RT consumer injects it into Move's MIDI_IN and
+ * swaps it back to -1. Works around XMOS not reporting jack state at boot, so
+ * Move's enhancer stays on "speaker" with headphones already plugged. */
+extern volatile int shim_inject_boot_jack;
+
+/* Last raw CC 115 value seen by the RT path (0=speaker, 127=jack), -1 until
+ * any jack event. Worker persists it to /data on change and re-asserts it at
+ * boot via shim_inject_boot_jack. */
+extern volatile int shim_jack_persist;
+
 /* Deferred events (RT-safe to post; worker executes within ~200 ms). */
 #define SHIM_EVT_OVERTAKE_EXIT_HOOK 1
 #define SHIM_EVT_RESTART_MOVE       2
