@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pytest-schwung"
+version = "0.1.0"
+description = "On-device E2E test client and pytest fixtures for Schwung (Ableton Move firmware framework)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Schwung contributors" }]
+dependencies = [
+    "pytest>=7.0",
+]
+
+[project.entry-points.pytest11]
+schwung = "schwung_bus.pytest_plugin"
+
+[project.urls]
+Homepage = "https://github.com/charlesvestal/schwung"
+Issues = "https://github.com/charlesvestal/schwung/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]

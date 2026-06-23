@@ -31,6 +31,7 @@
 #define SHM_SHADOW_EXT_MIDI_REMAP "/schwung-ext-midi-remap" /* Cable-2 channel remap table */
 #define SHM_SHADOW_SCREENREADER "/schwung-screenreader" /* Screen reader announcements */
 #define SHM_SHADOW_OVERLAY  "/schwung-overlay"  /* Overlay state (sampler/skipback) */
+#define SHM_TEST_STREAM_MIDI_OUT "/schwung-test-stream-midi-out" /* Shim → schwung-testd MIDI_OUT events (E2E test bus, dev-only) */
 #define SHM_DISPLAY_LIVE    "/schwung-display-live"    /* Live display for remote viewer */
 #define SHM_WEB_PARAM_SET   "/schwung-web-param-set"   /* Web UI → shim param set ring */
 #define SHM_WEB_PARAM_NOTIFY "/schwung-web-param-notify" /* Shim → web UI param change ring */
@@ -588,7 +589,45 @@ typedef struct shadow_overlay_state_t {
     volatile uint8_t  pad_led_colors[32];  /* velocity/color for each pad */
 } shadow_overlay_state_t;
 
+/* ============================================================================
+ * Test-stream rings (Phase 2 of E2E test infra, flagist0/schwung#2)
+ * ============================================================================
+ *
+ * SPSC channel: shim writes, schwung-testd reads. Used to expose
+ * shim-internal events (currently: every MIDI_OUT packet observed in
+ * Move's mailbox each SPI frame) to a subscribed test runner so it can
+ * assert on the sequence of events emitted between two test actions.
+ *
+ * Capture is gated by `enabled` — daemon sets it on first SUBSCRIBE,
+ * clears it on UNSUBSCRIBE. When disabled the shim's per-frame check is
+ * one atomic load + a branch (~1 ns), so the cost is negligible when
+ * tests aren't running.
+ *
+ * Ring uses a monotonic uint32 sequence cursor: writer keeps incrementing
+ * `write_seq` and storing into `buffer[write_seq % CAPACITY]`. Reader tracks
+ * its own `last_read`; if the writer ran more than CAPACITY events past the
+ * reader, the oldest were overwritten — reader fast-forwards and increments
+ * dropped. Single producer (shim SPI post-transfer) + single consumer
+ * (schwung-testd); ACQUIRE/RELEASE on write_seq carries the buffer writes.
+ */
+
+#define TEST_STREAM_CAPACITY 1024  /* events per channel (8 KB / channel) */
+
+typedef struct test_stream_event {
+    uint32_t frame;     /* shim_counter at capture time */
+    uint8_t  pkt[4];    /* USB-MIDI packet: cable+CIN, status, d1, d2 */
+} test_stream_event_t;  /* 8 bytes — keep tight */
+
+typedef struct test_stream_shm {
+    volatile uint32_t enabled;     /* 0 = no capture, 1 = capturing */
+    volatile uint32_t write_seq;   /* monotonic event count (mod CAPACITY = slot) */
+    volatile uint32_t dropped;     /* total events dropped since enabled (informational) */
+    volatile uint32_t reserved;
+    test_stream_event_t buffer[TEST_STREAM_CAPACITY];
+} test_stream_shm_t;
+
 /* Compile-time size checks */
+typedef char test_stream_size_check[(sizeof(test_stream_shm_t) == 16 + TEST_STREAM_CAPACITY * 8) ? 1 : -1];
 typedef char shadow_control_size_check[(sizeof(shadow_control_t) == CONTROL_BUFFER_SIZE) ? 1 : -1];
 typedef char shadow_ui_state_size_check[(sizeof(shadow_ui_state_t) <= SHADOW_UI_BUFFER_SIZE) ? 1 : -1];
 typedef char shadow_param_size_check[(sizeof(shadow_param_t) <= SHADOW_PARAM_BUFFER_SIZE) ? 1 : -1];
