@@ -36,6 +36,7 @@ import json
 import shlex
 import socket
 import uuid
+import warnings
 from typing import NamedTuple
 
 import pytest
@@ -437,6 +438,26 @@ def _template_staged(device_files):
     try:
         yield template
     finally:
+        # If currentSongIndex drifted mid-session (Move autosave, or the
+        # user navigating sets on the device), our restore still reverts
+        # the xattrs to their setup-time values — so the *set list* stays
+        # byte-identical — but Settings.json now points elsewhere, so the
+        # pre-session active selection can't be guaranteed. Surface that
+        # instead of silently restoring a now-stale index. This probe must
+        # never break teardown, hence its own guard.
+        try:
+            now_index = str(json.loads(
+                device_files.read_text(SETTINGS_ON_DEVICE))["currentSongIndex"])
+            if now_index != current_index:
+                warnings.warn(
+                    f"currentSongIndex drifted during session "
+                    f"({current_index} -> {now_index}); pristine_set reverts "
+                    f"xattrs to setup-time state, but the device's active set "
+                    f"selection may differ from its pre-session value.",
+                    stacklevel=2,
+                )
+        except Exception:
+            pass
         # --- Restore. ---
         try:
             if holder_dir:

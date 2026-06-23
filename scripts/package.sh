@@ -17,6 +17,10 @@ cd ./build
 ITEMS="./schwung ./schwung-shim.so ./move-anything ./move-anything-shim.so ./shim-entrypoint.sh ./restart-move.sh ./launch-standalone.sh ./host ./shared ./modules ./shadow ./patches ./presets ./unified-log ./scripts"
 
 # Dev/test artifacts must not ride along in wholesale-packaged dirs.
+# Note: schwung-testd (the E2E test-bus daemon) is deliberately KEPT — it
+# ships in ./bin but is opt-in (never auto-started, see shim-entrypoint.sh).
+# midi_inject_test is a throwaway dev probe and is scrubbed; don't add
+# schwung-testd to this rm line.
 rm -f ./shadow/shadow_poc ./bin/midi_inject_test
 
 # Add bin directory if it exists (contains curl for store module)
