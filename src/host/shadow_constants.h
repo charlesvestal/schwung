@@ -52,7 +52,7 @@
  * MIDI_OUT must be bounded by this to avoid corrupting the display. */
 #define HW_MIDI_OUT_SIZE    80
 #define DISPLAY_BUFFER_SIZE 1024  /* 128x64 @ 1bpp = 1024 bytes */
-#define CONTROL_BUFFER_SIZE 76  /* +corun.led_keep_mask; 74 bytes content padded to 76 (struct has 4-byte-aligned uint32_t/float members) */
+#define CONTROL_BUFFER_SIZE 84  /* corun masks widened to uint32 + flags byte (cede-default model); static-asserted below */
 #define SHADOW_UI_BUFFER_SIZE     512
 #define SHADOW_PARAM_BUFFER_SIZE  65664  /* Large buffer for complex ui_hierarchy */
 #define SHADOW_MIDI_OUT_BUFFER_SIZE 512  /* MIDI out buffer from shadow UI (128 packets) */
@@ -167,10 +167,19 @@ typedef struct shadow_control_t {
     volatile struct {
         int8_t target;       /* corun_target_t */
         int8_t id;
-        uint16_t keep_mask;      /* CORUN_GRP_* the tool owns for INPUT (cedes the rest to the peer) */
-        uint16_t led_keep_mask;  /* CORUN_GRP_* the tool owns for LEDs; 0 = follow keep_mask. Lets a tool
-                                  * paint a surface while still ceding its presses (e.g. dAVEBOx draws the
-                                  * track-button clip indicator but lets Move/Schwung handle the press). */
+        uint8_t flags;       /* CORUN_F_* — model selector + per-session toggles (see below) */
+        uint8_t _pad;
+        /* INPUT ownership. Stored ALWAYS as a keep-mask internally (CORUN_GRP_*
+         * the tool owns; the rest cede to the peer) so every routing site uses
+         * one representation. New cede-model tools express intent as a cede-list
+         * and the host stores the complement via corun_cede_to_keep() — see
+         * CORUN_F_CEDE_MODEL. Legacy tools write keep bits directly. */
+        uint32_t keep_mask;
+        /* LED ownership; 0 = follow keep_mask (the common "own both" case) UNLESS
+         * CORUN_F_LED_DISTINCT is set, in which case this mask is authoritative
+         * even when 0. Lets a tool paint a surface while ceding its presses (e.g.
+         * dAVEBOx draws the track-button clip indicator but cedes the press). */
+        uint32_t led_keep_mask;
     } corun;
     volatile uint8_t shadow_display_owner; /* display_owner_t: who currently owns the OLED. Independent of shadow_display_mode (which only says "shadow session active"). */
     /* 1=also strip Move's cable-0 sysex (RGB pad/clip/grid LEDs) during FULL
@@ -189,45 +198,79 @@ typedef struct shadow_control_t {
  * co-run UI (Schwung's chain editor, or Move firmware). One canonical
  * event->group map (corun_group_for_event) is shared by every routing site so
  * the let-through and suppress-from-tool decisions can never drift apart. */
+/* Single discrete buttons each get their own bit; continuous/multi-key surfaces
+ * (pads, steps, knobs, touch, the track-button row, jog) are one group each
+ * (per-key co-run ownership isn't meaningful). Bit 15 is reserved for the legacy
+ * CORUN_KEEP_BACK flag; new button groups skip it and stay <= 25 so the JS-side
+ * signed `| 0` coercion never sees a negative mask. */
 #define CORUN_GRP_OLED          (1u << 0)
 #define CORUN_GRP_PADS          (1u << 1)
 #define CORUN_GRP_STEPS         (1u << 2)
-#define CORUN_GRP_TRANSPORT     (1u << 3)
+/* Bit 3 retired: TRANSPORT is now the composite of the real transport buttons
+ * (defined below). The old single-bit value is reserved/unused — it was never
+ * returned by corun_group_for_event, so nothing routed on it. */
 #define CORUN_GRP_JOG           (1u << 4)  /* jog turn (CC 14) + jog click (CC 3) */
 #define CORUN_GRP_TRACK_BUTTONS (1u << 5)  /* CC 40-43 */
 #define CORUN_GRP_KNOBS         (1u << 6)  /* CC 71-78 */
 #define CORUN_GRP_MASTER        (1u << 7)  /* CC 79 */
 #define CORUN_GRP_SHIFT         (1u << 8)  /* CC 49 */
 #define CORUN_GRP_BACK          (1u << 9)  /* CC 51 */
-#define CORUN_GRP_MENU          (1u << 10) /* CC 50 — framework exit gesture */
+#define CORUN_GRP_MENU          (1u << 10) /* CC 50 */
 #define CORUN_GRP_TOUCH         (1u << 11) /* capacitive-touch notes 0-9 */
-#define CORUN_GRP_MUTE          (1u << 12) /* CC 88 — the Mute button */
+#define CORUN_GRP_MUTE          (1u << 12) /* CC 88 */
+/* Discrete transport + edit + nav buttons — each independently keep/cede-able. */
+#define CORUN_GRP_PLAY          (1u << 13) /* CC 85 */
+#define CORUN_GRP_REC           (1u << 14) /* CC 86 */
+#define CORUN_GRP_SAMPLE        (1u << 16) /* CC 118 (Record/Sample) */
+#define CORUN_GRP_LOOP          (1u << 17) /* CC 58 */
+#define CORUN_GRP_COPY          (1u << 18) /* CC 60 */
+#define CORUN_GRP_DELETE        (1u << 19) /* CC 119 */
+#define CORUN_GRP_UNDO          (1u << 20) /* CC 56 */
+#define CORUN_GRP_CAPTURE       (1u << 21) /* CC 52 */
+#define CORUN_GRP_NAV_UP        (1u << 22) /* CC 55 */
+#define CORUN_GRP_NAV_DOWN      (1u << 23) /* CC 54 */
+#define CORUN_GRP_NAV_LEFT      (1u << 24) /* CC 62 */
+#define CORUN_GRP_NAV_RIGHT     (1u << 25) /* CC 63 */
 
-/* Default keep-set: the canonical sequencer-style co-run split — tool keeps
- * pads, step buttons, transport, Menu, and Mute; cedes the nav surface + screen
- * to the peer. Used whenever corun_keep_mask == 0. Mute is kept by default so
- * tools that don't set an explicit keep_mask behave exactly as before this group
- * existed (Mute stayed with the tool); a tool that wants Move/Schwung to own Mute
- * during co-run omits CORUN_GRP_MUTE from its explicit keep_mask. */
+/* Convenience composites — keep/cede a cluster in one bit-op (optional). */
+#define CORUN_GRP_TRANSPORT (CORUN_GRP_PLAY | CORUN_GRP_REC | CORUN_GRP_SAMPLE | CORUN_GRP_LOOP)
+#define CORUN_GRP_NAV       (CORUN_GRP_NAV_UP | CORUN_GRP_NAV_DOWN | CORUN_GRP_NAV_LEFT | CORUN_GRP_NAV_RIGHT)
+#define CORUN_GRP_EDIT      (CORUN_GRP_COPY | CORUN_GRP_DELETE | CORUN_GRP_UNDO | CORUN_GRP_CAPTURE)
+
+/* The buttons that were UNCLASSIFIED before the cede model. A legacy keep-list
+ * tool (CORUN_F_CEDE_MODEL clear) never named these, so they stay with the tool
+ * regardless of its keep_mask — the byte-for-byte legacy carve-out. */
+#define CORUN_GRP_EXTENDED_ALL (CORUN_GRP_TRANSPORT | CORUN_GRP_EDIT | CORUN_GRP_NAV)
+
+/* Every routable group bit — the universe over which a cede-mask is complemented
+ * into an internal keep-mask (corun_cede_to_keep). Excludes bit 3 (retired) and
+ * bit 15 (the CORUN_KEEP_BACK legacy flag). */
+#define CORUN_GRP_ALL (CORUN_GRP_OLED | CORUN_GRP_PADS | CORUN_GRP_STEPS | CORUN_GRP_JOG \
+    | CORUN_GRP_TRACK_BUTTONS | CORUN_GRP_KNOBS | CORUN_GRP_MASTER | CORUN_GRP_SHIFT \
+    | CORUN_GRP_BACK | CORUN_GRP_MENU | CORUN_GRP_TOUCH | CORUN_GRP_MUTE | CORUN_GRP_EXTENDED_ALL)
+
+/* corun.flags bits. */
+#define CORUN_F_CEDE_MODEL  (1u << 0) /* keep_mask is a complemented cede-mask; extended buttons participate */
+#define CORUN_F_OWN_BACK    (1u << 1) /* tool handles Back itself (no framework auto-exit); cede model */
+#define CORUN_F_LED_DISTINCT (1u << 2) /* led_keep_mask is authoritative even when 0 (don't follow keep_mask) */
+
+/* Legacy default keep-set: the canonical sequencer-style co-run split — tool
+ * keeps pads, step buttons, transport, Menu, and Mute; cedes the nav surface +
+ * screen. Used whenever a LEGACY tool leaves keep_mask == 0. */
 #define CORUN_KEEP_DEFAULT (CORUN_GRP_PADS | CORUN_GRP_STEPS | CORUN_GRP_TRANSPORT | CORUN_GRP_MENU | CORUN_GRP_MUTE)
 
-/* Opt-out flag for tools that prefer their own exit gesture. When this bit is
- * set in keep_mask, the framework does NOT auto-exit on Back press — Back
- * routes per normal keep_mask rules (cedes to peer for sub-view nav unless
- * the tool also keeps CORUN_GRP_BACK). Default (bit unset) reserves Back as
- * the framework exit gesture regardless of keep_mask. Lives in the high half
- * of keep_mask; doesn't collide with any CORUN_GRP_* bit. */
+/* Legacy opt-out flag (bit 15, lives in a legacy tool's keep_mask): when set the
+ * framework does NOT auto-exit on Back — Back routes per the keep_mask. Cede-model
+ * tools use CORUN_F_OWN_BACK instead. Kept for byte-identical legacy behavior. */
 #define CORUN_KEEP_BACK (1u << 15)
 
 /* Map a raw cable-0 MIDI event to its control-surface group, or 0 if it isn't a
- * routable surface control (those always stay with the tool). type is the
- * status nibble (0xB0 CC, 0x90/0x80 note); d1 the data byte. Steps (notes
- * 16-31) are now a first-class surface (CORUN_GRP_STEPS): backward-safe for the
- * default split and any STEPS-keeping tool, but an explicit keep_mask that
- * OMITS STEPS now cedes step input + LEDs (previously steps were unclassified,
- * always kept). Transport stays unclassified (always kept) — they have no settled
- * CC map and no co-run consumer cedes them. */
-static inline uint16_t corun_group_for_event(uint8_t type, uint8_t d1) {
+ * routable surface control (sensor CCs like the mic/speaker plug-detect 114/115
+ * — those can't be ceded and always stay with the tool). type is the status
+ * nibble (0xB0 CC, 0x90/0x80 note); d1 the data byte. Every routable input is
+ * now classified; whether an extended button actually participates in keep/cede
+ * depends on the model (legacy carve-out, see corun_event_owner). */
+static inline uint32_t corun_group_for_event(uint8_t type, uint8_t d1) {
     if (type == 0xB0) {
         switch (d1) {
             case 3:  case 14: return CORUN_GRP_JOG;
@@ -236,7 +279,19 @@ static inline uint16_t corun_group_for_event(uint8_t type, uint8_t d1) {
             case 50: return CORUN_GRP_MENU;
             case 51: return CORUN_GRP_BACK;
             case 79: return CORUN_GRP_MASTER;
-            case 88: return CORUN_GRP_MUTE;  /* Mute button */
+            case 88: return CORUN_GRP_MUTE;
+            case 85: return CORUN_GRP_PLAY;
+            case 86: return CORUN_GRP_REC;
+            case 118: return CORUN_GRP_SAMPLE;
+            case 58: return CORUN_GRP_LOOP;
+            case 60: return CORUN_GRP_COPY;
+            case 119: return CORUN_GRP_DELETE;
+            case 56: return CORUN_GRP_UNDO;
+            case 52: return CORUN_GRP_CAPTURE;
+            case 55: return CORUN_GRP_NAV_UP;
+            case 54: return CORUN_GRP_NAV_DOWN;
+            case 62: return CORUN_GRP_NAV_LEFT;
+            case 63: return CORUN_GRP_NAV_RIGHT;
             default: if (d1 >= 71 && d1 <= 78) return CORUN_GRP_KNOBS;
                      return 0;
         }
@@ -249,19 +304,32 @@ static inline uint16_t corun_group_for_event(uint8_t type, uint8_t d1) {
     return 0;
 }
 
-/* Effective keep-mask: callers that set only the target gate leave keep_mask 0,
- * which means "use the default split". */
-static inline uint16_t corun_keep_mask_eff(uint16_t keep_mask) {
-    return keep_mask ? keep_mask : CORUN_KEEP_DEFAULT;
+/* Translate a module's cede-list into the internal keep-mask: it keeps the whole
+ * routable surface except what it cedes. Used by the host's cede-model API. */
+static inline uint32_t corun_cede_to_keep(uint32_t cede_mask) {
+    return (~cede_mask) & CORUN_GRP_ALL;
+}
+
+/* Effective input keep-mask. Cede-model tools store a complete complemented mask
+ * (keep_mask==0 legitimately means "keep nothing / cede everything"), so it is
+ * returned verbatim. Legacy tools leave keep_mask==0 to mean "default split". */
+static inline uint32_t corun_keep_mask_eff(const volatile shadow_control_t *ctrl) {
+    if (!ctrl) return CORUN_KEEP_DEFAULT;
+    if (ctrl->corun.flags & CORUN_F_CEDE_MODEL) return ctrl->corun.keep_mask;
+    return ctrl->corun.keep_mask ? ctrl->corun.keep_mask : CORUN_KEEP_DEFAULT;
 }
 
 /* Effective LED keep-mask: which groups the tool owns for LED stripping. A tool
- * that wants to paint a surface but cede its input sets led_keep_mask
- * separately; when unset (0) LED ownership follows the input keep_mask, so the
- * common case (own both) needs no extra call. */
-static inline uint16_t corun_led_keep_mask_eff(const volatile shadow_control_t *ctrl) {
-    uint16_t led = ctrl ? ctrl->corun.led_keep_mask : 0;
-    return led ? led : corun_keep_mask_eff(ctrl ? ctrl->corun.keep_mask : 0);
+ * that paints a surface but cedes its input sets led_keep_mask separately. When
+ * unset (0) and not flagged distinct, LED ownership follows the input mask, so
+ * the common case (own both) needs no extra call. CORUN_F_LED_DISTINCT makes the
+ * led mask authoritative even at 0 (needed by cede-model tools, where 0 is a
+ * meaningful "cede all LEDs" value rather than the follow sentinel). */
+static inline uint32_t corun_led_keep_mask_eff(const volatile shadow_control_t *ctrl) {
+    if (!ctrl) return CORUN_KEEP_DEFAULT;
+    uint32_t led = ctrl->corun.led_keep_mask;
+    if ((ctrl->corun.flags & CORUN_F_LED_DISTINCT) || led) return led;
+    return corun_keep_mask_eff(ctrl);
 }
 
 /* Co-run target. Stored in shadow_control->corun.target as int8_t. */
@@ -298,7 +366,7 @@ static inline corun_target_t corun_target(const volatile shadow_control_t *ctrl)
 static inline int corun_id(const volatile shadow_control_t *ctrl) {
     return ctrl ? (int)(int8_t)ctrl->corun.id : -1;
 }
-static inline uint16_t corun_keep_mask(const volatile shadow_control_t *ctrl) {
+static inline uint32_t corun_keep_mask(const volatile shadow_control_t *ctrl) {
     return ctrl ? ctrl->corun.keep_mask : 0;
 }
 
@@ -308,19 +376,25 @@ static inline uint16_t corun_keep_mask(const volatile shadow_control_t *ctrl) {
  * mirror checks anywhere else can drift. */
 static inline corun_owner_t corun_event_owner(const volatile shadow_control_t *ctrl, uint8_t type, uint8_t d1) {
     if (!corun_active(ctrl)) return CORUN_OWNER_TOOL;
-    uint16_t grp = corun_group_for_event(type, d1);
-    /* Back: framework-reserved as the exit gesture by default — the shim's
-     * own handler ends the session on press, neither side sees the event.
-     * Tools that prefer their own exit gesture set CORUN_KEEP_BACK in
-     * keep_mask; Back then routes per normal keep_mask rules (cedes to peer
-     * for sub-view nav unless CORUN_GRP_BACK is also kept), and the framework
-     * stays out of its way. (Menu remains tool-owned by default via
-     * keep_mask.) */
-    if (grp == CORUN_GRP_BACK && !(ctrl->corun.keep_mask & CORUN_KEEP_BACK)) {
+    uint32_t grp = corun_group_for_event(type, d1);
+    int cede_model = (ctrl->corun.flags & CORUN_F_CEDE_MODEL) != 0;
+    /* Back: framework-reserved as the exit gesture by default — the shim's own
+     * handler ends the session on press, neither side sees the event. A tool that
+     * prefers its own exit gesture signals it (cede model: CORUN_F_OWN_BACK;
+     * legacy: CORUN_KEEP_BACK in keep_mask); Back then routes per the normal
+     * keep/cede rule below (to the peer for sub-view nav unless the tool also
+     * keeps CORUN_GRP_BACK). (Menu remains tool-owned by default.) */
+    int own_back = cede_model ? (ctrl->corun.flags & CORUN_F_OWN_BACK)
+                              : (ctrl->corun.keep_mask & CORUN_KEEP_BACK);
+    if (grp == CORUN_GRP_BACK && !own_back) {
         return CORUN_OWNER_NONE;
     }
-    if (!grp) return CORUN_OWNER_TOOL; /* unclassified events always stay with tool */
-    uint16_t keep = corun_keep_mask_eff(ctrl->corun.keep_mask);
+    if (!grp) return CORUN_OWNER_TOOL; /* unclassified (sensor) events stay with tool */
+    /* Legacy carve-out: a pre-cede tool never named the extended buttons, so they
+     * stay with it regardless of its keep_mask — byte-identical to pre-cede
+     * behavior. Cede-model tools govern the full surface uniformly (no carve-out). */
+    if (!cede_model && (grp & CORUN_GRP_EXTENDED_ALL)) return CORUN_OWNER_TOOL;
+    uint32_t keep = corun_keep_mask_eff(ctrl);
     return (keep & grp) ? CORUN_OWNER_TOOL : CORUN_OWNER_PEER;
 }
 
