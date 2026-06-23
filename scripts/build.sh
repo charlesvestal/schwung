@@ -399,7 +399,7 @@ if needs_rebuild build/bin/schwung-testd \
         src/host/test_daemon/protocol.c \
         -o build/bin/schwung-testd \
         -Isrc/host -Isrc/host/test_daemon \
-        -lrt || echo "Warning: schwung-testd build failed"
+        -lrt || { echo "ERROR: schwung-testd build failed" >&2; exit 1; }
 else
     echo "Skipping schwung-testd (up to date)"
 fi

@@ -60,10 +60,16 @@ class DeviceFiles:
         host: Optional[str] = None,
         control_dir: Optional[Path] = None,
         connect_timeout: float = 10.0,
+        command_timeout: float = 30.0,
     ) -> None:
         self.host = host or os.environ.get("SCHWUNG_DEVICE_SSH", DEFAULT_HOST)
         self.control_dir = control_dir or DEFAULT_CONTROL_DIR
         self.connect_timeout = connect_timeout
+        # Separate budget for the command to actually run, distinct from the
+        # SSH-handshake budget. Reusing connect_timeout meant a slow remote
+        # command (e.g. scanning Sets/*/ xattrs on a device with many sets)
+        # raised a bare subprocess.TimeoutExpired the fixtures don't catch.
+        self.command_timeout = command_timeout
         # Hash the host into 8 hex chars — keeps the full sockaddr_un
         # path well under the 104-char macOS / 108-char Linux limit
         # (OpenSSH appends ~17 chars of suffix). Multiple Move devices
@@ -132,12 +138,18 @@ class DeviceFiles:
         ``.stderr`` on the return value.
         """
         argv = self._ssh_base() + [self.host, command]
-        result = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=self.connect_timeout,
-        )
+        try:
+            result = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                timeout=self.command_timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise DeviceFilesError(
+                f"remote command timed out after {self.command_timeout}s: "
+                f"{command!r}"
+            ) from exc
         if check and result.returncode != 0:
             raise DeviceFilesError(
                 f"remote command failed (exit {result.returncode}): "
@@ -158,12 +170,18 @@ class DeviceFiles:
         if not local.is_file():
             raise DeviceFilesError(f"local file does not exist: {local_path}")
         argv = self._scp_base() + [str(local), f"{self.host}:{remote_path}"]
-        result = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=self.connect_timeout,
-        )
+        try:
+            result = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                timeout=self.command_timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise DeviceFilesError(
+                f"scp {local} → {self.host}:{remote_path} timed out "
+                f"after {self.command_timeout}s"
+            ) from exc
         if result.returncode != 0:
             raise DeviceFilesError(
                 f"scp {local} → {self.host}:{remote_path} failed: "
