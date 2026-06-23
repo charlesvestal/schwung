@@ -9795,7 +9795,10 @@ function invokeCanvasOverlayHook(hookName, payload) {
 }
 
 function dispatchCanvasMidi(data, source) {
-    if (view !== VIEWS.CANVAS) return false;
+    /* Also fire when the canvas is the active co-run overlay (outer view is
+     * OVERTAKE_MODULE then). Runs before the co-run input block, so jog-turn /
+     * encoders / knob-touch reach the canvas onMidi instead of the tool. */
+    if (view !== VIEWS.CANVAS && !(coRunUiActive() && coRunView === VIEWS.CANVAS)) return false;
     const midi = Array.isArray(data) ? data.slice() : Array.from(data || []);
     if (!midi || midi.length === 0) return true;
 
@@ -14839,15 +14842,22 @@ globalThis.onMidiMessageInternal = function(data) {
         }
     }
 
-    if (view === VIEWS.CANVAS && (status & 0xF0) === 0xB0) {
+    /* In co-run the outer view is OVERTAKE_MODULE; the canvas is the active
+     * co-run overlay when coRunView === CANVAS. Steal jog-click/Back to close it
+     * (wrapped so coRunView returns to the hierarchy editor), mirroring the
+     * non-co-run steal below. */
+    var canvasInCorun = coRunUiActive() && coRunView === VIEWS.CANVAS;
+    if ((view === VIEWS.CANVAS || canvasInCorun) && (status & 0xF0) === 0xB0) {
         if (d1 === MoveMainButton && d2 > 0) {
-            closeCanvasPreview(false);
+            if (canvasInCorun) runCoRunChainEdit(function() { closeCanvasPreview(false); });
+            else closeCanvasPreview(false);
             announce("Hierarchy Editor");
             needsRedraw = true;
             return;
         }
         if (d1 === MoveBack && d2 > 0) {
-            closeCanvasPreview(true);
+            if (canvasInCorun) runCoRunChainEdit(function() { closeCanvasPreview(true); });
+            else closeCanvasPreview(true);
             announce("Hierarchy Editor");
             needsRedraw = true;
             return;
