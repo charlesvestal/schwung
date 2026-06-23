@@ -9798,9 +9798,22 @@ function dispatchCanvasMidi(data, source) {
     /* Also fire when the canvas is the active co-run overlay (outer view is
      * OVERTAKE_MODULE then). Runs before the co-run input block, so jog-turn /
      * encoders / knob-touch reach the canvas onMidi instead of the tool. */
-    if (view !== VIEWS.CANVAS && !(coRunUiActive() && coRunView === VIEWS.CANVAS)) return false;
+    const canvasCorun = coRunUiActive() && coRunView === VIEWS.CANVAS;
+    if (view !== VIEWS.CANVAS && !canvasCorun) return false;
     const midi = Array.isArray(data) ? data.slice() : Array.from(data || []);
     if (!midi || midi.length === 0) return true;
+
+    /* In co-run the canvas is an overlay over a STILL-RUNNING tool. Consume only
+     * the events the module's co-run spec routes to the peer (this shadow_ui
+     * side); tool-kept and unclassified events must fall through so the buttons
+     * available before the canvas opened (pads / steps / transport / ...) keep
+     * working. Single source of truth = the host's corun_event_owner, so the
+     * keep/cede spec and the legacy carve-out are honored without duplicating
+     * the logic here. (Jog-click / Back are the close gesture, stolen before
+     * this. A full-screen canvas — not co-run — still owns the whole surface.) */
+    if (canvasCorun && typeof shadow_corun_event_owner === "function") {
+        if (shadow_corun_event_owner(midi[0] | 0, midi[1] | 0) !== CORUN_OWNER_PEER) return false;
+    }
 
     invokeCanvasOverlayHook("onMidi", { source, data: midi });
     return true;
