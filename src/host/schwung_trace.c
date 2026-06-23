@@ -281,6 +281,9 @@ static void prune_old_files(void) {
      * own, so two exporters in the same dir never race on each other's unlinks. */
     char prefix[80];
     int plen = snprintf(prefix, sizeof(prefix), "%s-", g_service);
+    if (plen < 0) { closedir(d); return; }          /* encoding error */
+    if (plen >= (int)sizeof(prefix))                /* truncated: clamp so the */
+        plen = (int)sizeof(prefix) - 1;             /* strncmp below stays in-bounds */
     char names[64][64];
     int count = 0;
     struct dirent *de;

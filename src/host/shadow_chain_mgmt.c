@@ -1735,6 +1735,12 @@ int shadow_param_publish_response(uint32_t req_id) {
      * the flag write ahead of the field writes, and the reader's poll
      * would then see response_ready = 1 with stale fields. */
     __atomic_store_n(&param->response_ready, 1, __ATOMIC_RELEASE);
+    /* Plain store is intentional here: the response side's cross-process
+     * visibility rides the response_ready release above. The acquire/release
+     * discipline on request_type (see the __ATOMIC_ACQUIRE load in the SPI
+     * thread) exists only to publish the trace_id / parent_span_id the
+     * requester writes before raising request_type — which the response path
+     * doesn't touch. Don't "fix" this to a plain read on the request side. */
     param->request_type = 0;
     return 1;
 }

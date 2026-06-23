@@ -6,9 +6,12 @@ time go" perf questions — a slow JS tick, an over-long SPI frame — with
 parent/child spans and cross-process correlation, instead of ad-hoc
 `Date.now()` / `clock_gettime` instrumentation.
 
-**Off by default, zero hot-path cost when off**, and enabled live on a shipped
-device via a touch-file (no rebuild, no restart). Source:
-`src/host/schwung_trace.{c,h}`.
+**Off by default, effectively zero hot-path cost when off**, and enabled live
+on a shipped device via a touch-file (no rebuild, no restart). The only
+ungated per-frame cost is a single atomic-acquire load of `request_type` on
+the SPI thread (one `ldar` on ARM64, no syscall/alloc/lock) that the
+cross-process trace-id propagation depends on; span emission itself is fully
+gated behind the trace flag. Source: `src/host/schwung_trace.{c,h}`.
 
 > **Scope — part 1 of 2.** This PR adds the **shim** tracing core (the ring,
 > exporter, OTLP/JSON writer, macros, and the shim's own spans). The
