@@ -23,7 +23,7 @@ type ShmParams struct {
 }
 
 // Byte offsets into shadow_param_t.
-// Struct layout (ARM64, packed uint8 fields then naturally aligned uint32):
+// Struct layout (ARM64, packed uint8 fields then naturally aligned uint32/64):
 //
 //	uint8_t  request_type   @ 0
 //	uint8_t  slot           @ 1
@@ -32,8 +32,16 @@ type ShmParams struct {
 //	uint32_t request_id     @ 4
 //	uint32_t response_id    @ 8
 //	int32_t  result_len     @ 12
-//	char     key[64]        @ 16
-//	char     value[65536]   @ 80
+//	uint64_t trace_id       @ 16   (OTLP trace context, Phase 2b)
+//	uint64_t parent_span_id @ 24   (OTLP trace context, Phase 2b)
+//	char     key[64]        @ 32
+//	char     value[65536]   @ 96
+//
+// NOTE: the two uint64 trace fields were added to shadow_param_t by the OTLP
+// trace work (5a5aa645) and pushed key/value down by 16 bytes. This Go mirror
+// must track that or every request's key lands at the wrong offset, the shim
+// reads an empty key, and every GET returns empty (remote UI shows "no module"
+// and default slot params).
 const (
 	paramOffRequestType   = 0
 	paramOffSlot          = 1
@@ -42,8 +50,10 @@ const (
 	paramOffRequestID     = 4
 	paramOffResponseID    = 8
 	paramOffResultLen     = 12
-	paramOffKey           = 16
-	paramOffValue         = 80
+	paramOffTraceID       = 16
+	paramOffParentSpanID  = 24
+	paramOffKey           = 32
+	paramOffValue         = 96
 
 	paramKeyLen   = 64
 	paramValueLen = 65536
