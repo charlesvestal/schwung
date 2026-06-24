@@ -412,4 +412,37 @@ void shadow_load_state(void)
     }
 
     free(json);
+
+    /* One-time heal for the removed D-Bus mute/solo auto-correct.
+     * That code could spuriously mute/solo a slot when Move announced a drum
+     * kit/pad name ending in "muted"/"soloed"; the stray state was saved to
+     * shadow_chain_config.json and restored every boot, silencing the slot's
+     * audio across all projects. Clear any persisted mute/solo exactly once
+     * (version-stamped flag) so users already stuck are healed by updating,
+     * while deliberate mute/solo set on later boots is not wiped. */
+    {
+        static const char reset_flag[] =
+            "/data/UserData/schwung/mute_solo_reset_v1_done";
+        if (access(reset_flag, F_OK) != 0) {
+            int had_state = 0;
+            for (int i = 0; i < 4; i++) {
+                if (host_chain_slots[i].muted || host_chain_slots[i].soloed)
+                    had_state = 1;
+                host_chain_slots[i].muted = 0;
+                host_chain_slots[i].soloed = 0;
+            }
+            *host_solo_count = 0;
+            shadow_save_state();  /* persist cleared state so it survives reboot */
+            FILE *flag = fopen(reset_flag, "w");
+            if (flag) {
+                fputs("1\n", flag);
+                fclose(flag);
+                chown_to_ableton(reset_flag);
+            }
+            if (host_log)
+                host_log(had_state
+                    ? "One-time mute/solo reset: cleared persisted slot mute/solo"
+                    : "One-time mute/solo reset: none persisted, flag set");
+        }
+    }
 }
