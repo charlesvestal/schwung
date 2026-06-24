@@ -126,14 +126,40 @@ static int copy_atomic(const char *src, const char *dst, mode_t perms) {
     return 0;
 }
 
-/* True iff src exists and dst is missing or src is strictly newer. */
+/* Byte-compare two files. Returns 1 if they differ (or on any open/read
+ * error — re-copying is idempotent and safe, skipping a real difference is
+ * not), 0 only when both reach EOF together with identical bytes throughout.
+ * Only called for same-size files, so the read cost is bounded. */
+static int contents_differ(const char *a, const char *b) {
+    int fa = open(a, O_RDONLY);
+    if (fa < 0) return 1;
+    int fb = open(b, O_RDONLY);
+    if (fb < 0) { close(fa); return 1; }
+
+    char ba[65536], bb[65536];
+    int differ = 0;
+    for (;;) {
+        ssize_t ra = read(fa, ba, sizeof(ba));
+        ssize_t rb = read(fb, bb, sizeof(bb));
+        if (ra != rb) { differ = 1; break; }      /* length divergence → differ */
+        if (ra <= 0) break;                        /* both EOF together → identical */
+        if (memcmp(ba, bb, (size_t)ra) != 0) { differ = 1; break; }
+    }
+    close(fa);
+    close(fb);
+    return differ;
+}
+
+/* True iff src exists and dst is missing or its CONTENTS differ. Content-based,
+ * not mtime-based: a tar extract can leave the data-partition source with an
+ * OLDER mtime than the live system copy, so an `src newer` check would skip a
+ * genuinely-different same-size build — the silent-stale case this guards. */
 static int needs_copy(const char *src, const char *dst) {
     struct stat sst, dst_;
     if (stat(src, &sst) < 0) return 0;            /* no source → don't touch */
     if (stat(dst, &dst_) < 0) return 1;           /* missing dst → copy */
     if (sst.st_size != dst_.st_size) return 1;    /* size mismatch → copy */
-    if (sst.st_mtime > dst_.st_mtime) return 1;   /* src newer → copy */
-    return 0;
+    return contents_differ(src, dst);             /* same size → verify bytes */
 }
 
 int main(int argc, char **argv) {

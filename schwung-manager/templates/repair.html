@@ -2,12 +2,10 @@
 <h1>Schwung Repair</h1>
 
 {{if .NeedsRepair}}
-<p class="repair-status-bad">Self-heal is not installed on this device.</p>
+<p class="repair-status-bad">Schwung's framework components are out of date and need repair.</p>
 <p>
-    A bootstrap step that requires root privileges hasn't run yet. Without it,
-    every future update to Schwung will silently fail at the privileged-write
-    step, leaving you on whatever shim version is currently in
-    <code>/usr/lib/schwung-shim.so</code>. Pick whichever path is easier:
+    The web manager can't complete this itself &mdash; it needs a one-time action
+    with elevated access. Pick whichever path is easier:
 </p>
 
 <div class="repair-step">
@@ -17,7 +15,7 @@
         <code>{{.Hostname}}</code> with your device's IP if mDNS isn't available.
     </p>
     <div class="repair-copy-row">
-        <pre id="repair-ssh-cmd">ssh root@{{.Hostname}} 'chmod 4755 /data/UserData/schwung/bin/schwung-heal &amp;&amp; /data/UserData/schwung/bin/schwung-heal --reboot'</pre>
+        <pre id="repair-ssh-cmd">ssh root@{{.Hostname}} 'chown root:root /data/UserData/schwung/bin/schwung-heal &amp;&amp; chmod 4755 /data/UserData/schwung/bin/schwung-heal &amp;&amp; /data/UserData/schwung/bin/schwung-heal --reboot'</pre>
         <button type="button" class="btn repair-copy-btn" id="repair-copy-btn">Copy</button>
     </div>
     <p>

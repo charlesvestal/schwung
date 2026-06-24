@@ -4,18 +4,46 @@
 # can also be run manually: ssh ableton@move.local "sh /data/UserData/schwung/scripts/post-update.sh"
 #
 # This script is idempotent — safe to run multiple times.
-# It runs as root (shim is setuid), so it can update /usr/lib and /opt/move.
+#
+# Privilege note: this runs as root ONLY on the retired on-device store path
+# (host_system_cmd inherited the shim's setuid privileges). Under schwung-manager
+# (the web installer, the live path) it runs as the unprivileged `ableton` user,
+# so every direct /usr/lib and /opt/move write below SILENTLY FAILS. The
+# privileged mirror is therefore delegated to schwung-heal (setuid-root) — see
+# the "Privileged mirror" block below. The direct writes are kept only for the
+# legacy root path and as a no-op fallback.
 
 BASE="/data/UserData/schwung"
 
 # --- Shim setup ---
 
-# Copy shim to /usr/lib (glibc 2.35+ rejects symlinked .so under AT_SECURE)
+# Copy shim to /usr/lib (glibc 2.35+ rejects symlinked .so under AT_SECURE).
+# Effective only when run as root (legacy store path); a no-op under the web
+# manager, where the Privileged mirror block below does the real work.
 rm -f /usr/lib/schwung-shim.so
 cp "$BASE/schwung-shim.so" /usr/lib/schwung-shim.so 2>/dev/null || \
     ln -sf "$BASE/schwung-shim.so" /usr/lib/schwung-shim.so
-chmod u+s /usr/lib/schwung-shim.so
-chmod u+s "$BASE/schwung-shim.so"
+chmod u+s /usr/lib/schwung-shim.so 2>/dev/null
+chmod u+s "$BASE/schwung-shim.so" 2>/dev/null
+
+# --- Privileged mirror (web-installer path) ---
+#
+# schwung-manager runs this script as `ableton`, so the /usr/lib writes above
+# do nothing. schwung-heal is setuid-root and is the privileged path that
+# mirrors $BASE/schwung-shim.so -> /usr/lib and shim-entrypoint.sh -> /opt/move/Move.
+# Invoking it here mirrors the shim SYNCHRONOUSLY during the upgrade, so the live
+# shim is current even if the manager's later detached `schwung-heal --reboot`
+# leg fails to fire (its reboot has historically been the flaky part; the mirror
+# from a clean synchronous shell context like this is reliable). Mirror only — the
+# manager (or a manual reboot) owns the reboot that swaps the new shim into the
+# already-running MoveOriginal.
+if [ -u "$BASE/bin/schwung-heal" ]; then
+    "$BASE/bin/schwung-heal" 2>&1 | sed 's/^/post-update: heal: /'
+elif [ -x "$BASE/bin/schwung-heal" ]; then
+    echo "post-update: schwung-heal present but not setuid-root — shim mirror skipped (run install.sh to re-bless)"
+else
+    echo "post-update: schwung-heal missing — shim mirror skipped"
+fi
 
 # Remove web shim symlink (no longer used as of 0.9.2)
 rm -f /usr/lib/schwung-web-shim.so

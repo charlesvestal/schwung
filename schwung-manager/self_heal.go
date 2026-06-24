@@ -20,6 +20,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,8 +38,12 @@ func (app *App) healShimIfStale() {
 	dataShim := filepath.Join(app.basePath, "schwung-shim.so")
 	dataEntry := filepath.Join(app.basePath, "shim-entrypoint.sh")
 
-	shimStale := isStale(dataShim, healLibShim)
-	entryStale := isStale(dataEntry, healSysEntry)
+	// Content-based, not mtime-based: re-heal whenever the live system copy
+	// differs byte-for-byte from the data-partition source. mtime comparison
+	// (the old isStale) could skip a genuinely-different shim of equal size with
+	// a non-newer mtime — exactly the silent-stale case this is meant to catch.
+	shimStale := !filesIdentical(dataShim, healLibShim)
+	entryStale := !filesIdentical(dataEntry, healSysEntry)
 	if !shimStale && !entryStale {
 		return
 	}
@@ -67,17 +72,30 @@ func (app *App) healShimIfStale() {
 	app.logger.Info("self-heal: schwung-heal completed", "output", string(output))
 }
 
-// isStale returns true when src exists and is newer than dst, or when dst
-// is missing entirely. Returns false when src can't be stat'd (don't trigger
-// heals on missing source).
-func isStale(src, dst string) bool {
-	si, err := os.Stat(src)
+// filesIdentical reports whether a and b both exist and have byte-identical
+// contents. A size check short-circuits the common "different build" case
+// before reading. Any stat/read error (missing file, no permission) → false,
+// i.e. "not confirmed identical" — the safe answer for the upgrade gate, which
+// treats false as "mirror not verified, keep the update retryable".
+func filesIdentical(a, b string) bool {
+	ai, err := os.Stat(a)
 	if err != nil {
 		return false
 	}
-	di, err := os.Stat(dst)
+	bi, err := os.Stat(b)
 	if err != nil {
-		return true
+		return false
 	}
-	return si.ModTime().After(di.ModTime())
+	if ai.Size() != bi.Size() {
+		return false
+	}
+	ab, err := os.ReadFile(a)
+	if err != nil {
+		return false
+	}
+	bb, err := os.ReadFile(b)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(ab, bb)
 }

@@ -443,12 +443,13 @@ func discoverInstalledModules(base string) map[string]InstalledModule {
 // ---------------------------------------------------------------------------
 
 var funcMap = template.FuncMap{
-	// needsRepair returns true when the device's entrypoint at
-	// /opt/move/Move is the legacy version that doesn't run schwung-heal
-	// at boot. base.html uses this to render the repair banner on every
-	// page so users who landed in the bootstrap-needed state see what
-	// to do (SSH command + GUI installer fallback). 30s cache.
-	"needsRepair": bootstrapNeeded,
+	// needsRepair returns true when the device needs a one-time root
+	// repair: either the boot entrypoint can't self-heal (bootstrapNeeded)
+	// or the live /usr/lib shim is out of date vs the installed payload
+	// (shimStale — the actual blank-slots / can't-load symptom). base.html
+	// renders the repair banner on every page so affected users see what
+	// to do (SSH command + GUI installer). 30s cache.
+	"needsRepair": repairNeeded,
 	"dict": func(pairs ...any) map[string]any {
 		m := make(map[string]any, len(pairs)/2)
 		for i := 0; i+1 < len(pairs); i += 2 {
@@ -2442,7 +2443,7 @@ func (app *App) handleSystemRepair(w http.ResponseWriter, r *http.Request) {
 		"Title":       "Repair",
 		"Active":      "system",
 		"Hostname":    host,
-		"NeedsRepair": bootstrapNeeded(),
+		"NeedsRepair": repairNeeded(),
 	}
 	app.render(w, r, "repair.html", data)
 }
@@ -2559,8 +2560,18 @@ func (app *App) handleSystemUpgrade(w http.ResponseWriter, r *http.Request) {
 		// shim into /usr/lib, or install its own replacement. We preserve the
 		// live setuid heal and stage the new one separately (below) for it to
 		// install with privilege.
+		// EXCLUDE host/version.txt too: it is BOTH the success marker and the
+		// retry gate (handleSystemCheckUpdate early-returns "Already up to date"
+		// when it equals the catalog's latest). The bulk extract commits it
+		// atomically with the JS/shadow_ui, BEFORE the shim is mirrored — so if
+		// the shim step later fails, the device reports the new version while
+		// running the old shim, and every retry short-circuits without ever
+		// re-attempting the mirror (a permanent, self-concealing failure). We
+		// hold it back and place it only AFTER confirming the live shim matches
+		// (below), so a half-applied update stays retryable.
 		extractCmd := exec.Command("tar", "-xzof", tarPath, "-C", app.basePath,
-			"--strip-components=1", "--exclude=*/bin/schwung-heal")
+			"--strip-components=1", "--exclude=*/bin/schwung-heal",
+			"--exclude=*/host/version.txt")
 		if output, err := extractCmd.CombinedOutput(); err != nil {
 			app.setUpgradeStatus("Extract failed")
 			app.logger.Error("extract failed", "err", err, "output", string(output))
@@ -2602,6 +2613,44 @@ func (app *App) handleSystemUpgrade(w http.ResponseWriter, r *http.Request) {
 		if output, err := postCmd.CombinedOutput(); err != nil {
 			app.setUpgradeStatus("Post-update failed")
 			app.logger.Error("post-update failed", "err", err, "output", string(output))
+		}
+
+		// Mirror the shim NOW, synchronously, via the setuid heal — do not rely
+		// on the later detached `heal --reboot` leg (whose reboot is historically
+		// flaky) NOR on post-update.sh (a genuine tarball's post-update.sh does
+		// not mirror). This is what makes the verify gate below meaningful: it
+		// must run AFTER a real mirror attempt, not before. heal is setuid-root
+		// and idempotent; if it can't escalate (missing/non-setuid/wrong owner)
+		// the mirror fails and the verify catches it. No --reboot here — the
+		// reboot stays with the detached leg / the user.
+		healMirror := filepath.Join(app.basePath, "bin", "schwung-heal")
+		if output, err := exec.Command(healMirror).CombinedOutput(); err != nil {
+			app.logger.Warn("upgrade: synchronous heal mirror returned error (verify will catch a stale shim)",
+				"err", err, "output", string(output))
+		}
+
+		// Gate version.txt on the live shim actually being mirrored: confirm the
+		// /data and /usr/lib shims are byte-identical before stamping the version.
+		// If the mirror did not take, leave version.txt at its OLD value so the
+		// next Check Updates retries instead of falsely reporting success.
+		shimData := filepath.Join(app.basePath, "schwung-shim.so")
+		const shimLib = "/usr/lib/schwung-shim.so"
+		if !filesIdentical(shimData, shimLib) {
+			app.logger.Error("upgrade: live shim not mirrored — leaving version.txt at old value so the update stays retryable",
+				"data", shimData, "lib", shimLib)
+			app.setUpgradeStatus("Update incomplete — shim not activated. Reboot the device, then re-run Check Updates.")
+			os.Remove(tarPath)
+			return
+		}
+
+		// Mirror confirmed — NOW place the new version.txt (held back from the
+		// bulk extract above). This is the last write, so version.txt only ever
+		// advances once the live shim is current.
+		verCmd := exec.Command("tar", "-xzof", tarPath, "-C", app.basePath,
+			"--strip-components=1", "schwung/host/version.txt")
+		if output, err := verCmd.CombinedOutput(); err != nil {
+			app.logger.Warn("upgrade: could not place version.txt after mirror",
+				"err", err, "output", string(output))
 		}
 
 		// Clean up tarball.
