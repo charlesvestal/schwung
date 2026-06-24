@@ -359,7 +359,7 @@ SHM: `/schwung-ext-midi-remap`, 64 bytes, `schwung_ext_midi_remap_t` in `src/hos
 
 ### Co-run Input Ownership
 
-Co-run lets an external controller (e.g. dAVEBOx) drive a chain/overtake module while Move keeps its native controls — a **cede-by-default** model where the tool declares which control groups it *keeps* and cedes the rest. Cedeable surface: pads, encoders, transport (Play/Rec/Sample/Loop), edit (Copy/Delete/Undo/Capture), and the 4 nav arrows, with an optional separate LED-keep mask and a canvas sub-view. JS API: `shadow_corun_begin_cede(target, id, cede_mask, flags)`, `shadow_corun_set_cede_mask`, `shadow_corun_set_led_cede_mask`, `shadow_corun_event_owner`; masks use `CORUN_GRP_*` bits (see `src/host/shadow_constants.h`). Full ownership model, group bits, and the cede↔keep complement in `docs/CORUN.md`.
+Co-run lets an **overtake tool share Move's control surface with a second UI** for one user-driven session — e.g. a sequencer keeps the pads/steps/transport while the Schwung chain editor (`CORUN_TARGET_CHAIN_EDIT`) takes the OLED + jog, or Move's native preset/synth editor (`CORUN_TARGET_MOVE_NATIVE`) takes its knobs. **Cede-by-default**: the tool keeps the whole surface and lists only the groups it *cedes* to the peer. Cedeable surface: pads, encoders, transport (Play/Rec/Sample/Loop), edit (Copy/Delete/Undo/Capture), and the 4 nav arrows, with an optional separate LED-keep mask and a canvas sub-view. JS API: `shadow_corun_begin_cede(target, id, cede_mask, flags)`, `shadow_corun_set_cede_mask`, `shadow_corun_set_led_cede_mask`, `shadow_corun_event_owner`; masks use `CORUN_GRP_*` bits (see `src/host/shadow_constants.h`). Full ownership model, group bits, and the cede↔keep complement in `docs/CORUN.md`.
 
 ### Master FX Chain
 
