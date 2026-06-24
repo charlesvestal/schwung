@@ -612,7 +612,13 @@ void shadow_drain_midi_inject(void)
     int hw_offset = 0;
     int injected = 0;
     uint8_t pkt[4];
-    while (injected < 16 && shadow_midi_inject_peek(inject_shm, pkt)) {
+    /* Drain up to the MIDI_IN mailbox capacity (31 slots) per frame, not a
+     * fixed 16. A dense polyphonic burst (e.g. several ROUTE_MOVE tracks
+     * landing a chord on the same step) exceeds 16 simultaneous events; at
+     * the old cap the remainder dribbled out over later frames, smearing the
+     * chord's attack. 31 is the hardware slot count, so this cannot overflow,
+     * and the empty-slot / saw_existing race guard below is unchanged. */
+    while (injected < MIDI_IN_MAX_EVTS && shadow_midi_inject_peek(inject_shm, pkt)) {
         /* Find an empty 8-byte slot (byte 0 == 0 means no cable/CIN, unused) */
         int saw_existing = 0;
         while (hw_offset < MIDI_IN_MAX_BYTES) {
