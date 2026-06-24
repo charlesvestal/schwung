@@ -336,6 +336,10 @@ Each of the 4 slots has:
 
 **MPE controllers** (LinnStrument, Roli, Sensel): set Receive=All, Forward=THRU, enable MPE in the synth. Otherwise channel remap destroys per-note bend/pressure/slide.
 
+### User Presets
+
+Per-component preset snapshots for any chain module (synth, audio FX, or MIDI FX). Reached from a component's module-swap list in the shadow UI — an indented `[User Presets]` row tucked under the loaded module. A preset captures that component's opaque `<prefix>:state` blob (`synth` / `fx1`..`fx4` / `midi_fx1`) — the same string slot autosave and chain patches use — saved to `/data/UserData/schwung/presets/<module-id>/<name>.json`. Keyed by **module id**, so a preset saved on a module in one slot is offered wherever that module is loaded (cross-slot reuse). Scrolling the list **auditions live** (debounced); Back reverts to the slot's original state, the detail screen's Load commits. Autosave is suppressed while auditioning (`isPresetPreviewActive()`) so an uncommitted preview is never persisted into `slot_N.json`. Impl: `src/shadow/shadow_ui_presets.mjs` (view module). Developer state-contract notes in `docs/MODULES.md`.
+
 ### MIDI Cable Filtering
 
 MIDI_IN (offset 2048): cable 0 = Move hw controls, cable 2 = external USB MIDI.
@@ -352,6 +356,10 @@ JS API: `host_ext_midi_remap_set(in_ch, out_ch)` (0–15; out_ch >= 16 or < 0 = 
 Shim reads the table every SPI frame (post-transfer), rewrites channel byte in-place in both hw mailbox and shadow buffer. System messages (`0xF*`) skipped. **Bypassed globally** if any chain slot is forward=THRU (MPE preservation). **Force-reset** to all-passthrough + disabled on overtake exit. Gated by `ext_midi_remap_enabled` in `features.json` (default `true`).
 
 SHM: `/schwung-ext-midi-remap`, 64 bytes, `schwung_ext_midi_remap_t` in `src/host/shadow_constants.h`. v1.
+
+### Co-run Input Ownership
+
+Co-run lets an external controller (e.g. dAVEBOx) drive a chain/overtake module while Move keeps its native controls — a **cede-by-default** model where the tool declares which control groups it *keeps* and cedes the rest. Cedeable surface: pads, encoders, transport (Play/Rec/Sample/Loop), edit (Copy/Delete/Undo/Capture), and the 4 nav arrows, with an optional separate LED-keep mask and a canvas sub-view. JS API: `shadow_corun_begin_cede(target, id, cede_mask, flags)`, `shadow_corun_set_cede_mask`, `shadow_corun_set_led_cede_mask`, `shadow_corun_event_owner`; masks use `CORUN_GRP_*` bits (see `src/host/shadow_constants.h`). Full ownership model, group bits, and the cede↔keep complement in `docs/CORUN.md`.
 
 ### Master FX Chain
 
@@ -388,6 +396,8 @@ pointer screens ([Get more...] / [Module Store]). The old on-device store
 module is retired (source kept for the standalone/sim host; not shipped).
 
 Catalog: `https://raw.githubusercontent.com/charlesvestal/schwung/main/module-catalog.json`.
+
+The manager also serves a **file browser** (`/files`, under `/data/UserData/`) and per-slot module **Remote UIs** (auto-discovers `web_ui.html` per module, served in a sandboxed iframe). The file browser is keyboard- and screen-reader-accessible: rows are `tabindex=0` with spoken `aria-label`s, **Enter opens** (dir → in, file → download), **Space selects**, with a checkbox column for multi-select. Source: `schwung-manager/templates/files.html`, `remote_ui.go`.
 
 ### Catalog Format (v2)
 
