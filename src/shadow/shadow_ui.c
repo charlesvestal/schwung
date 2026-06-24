@@ -239,7 +239,7 @@ static JSValue js_shadow_corun_begin(JSContext *ctx, JSValueConst this_val, int 
     if (JS_ToInt32(ctx, &target, argv[0])) return JS_UNDEFINED;
     if (JS_ToInt32(ctx, &id, argv[1])) return JS_UNDEFINED;
     if (argc >= 3 && JS_ToInt32(ctx, &keep, argv[2])) return JS_UNDEFINED;
-    if (keep < 0 || keep > 0xFFFF) return JS_UNDEFINED;
+    if (keep < 0 || keep > 0x7FFFFFFF) return JS_UNDEFINED;
     /* Reset LED-keep to "follow keep_mask"; a tool opts into the lights/input
      * split by calling shadow_corun_set_led_keep_mask() after begin. flags=0 =
      * legacy keep-list model (this is the legacy entry point). */
@@ -294,7 +294,7 @@ static JSValue js_shadow_corun_set_led_keep_mask(JSContext *ctx, JSValueConst th
     if (!shadow_control || argc < 1) return JS_UNDEFINED;
     int32_t mask = 0;
     JS_ToInt32(ctx, &mask, argv[0]);
-    if (mask < 0 || mask > 0xFFFF) return JS_UNDEFINED;
+    if (mask < 0 || mask > 0x7FFFFFFF) return JS_UNDEFINED;
     shadow_control->corun.led_keep_mask = (uint32_t)mask;
     return JS_UNDEFINED;
 }
@@ -311,8 +311,8 @@ static JSValue js_shadow_corun_overlay(JSContext *ctx, JSValueConst this_val, in
     int active = 0, keep = 0;
     if (JS_ToInt32(ctx, &active, argv[0])) return JS_UNDEFINED;
     if (JS_ToInt32(ctx, &keep, argv[1])) return JS_UNDEFINED;
-    if (keep < 0 || keep > 0xFFFF) return JS_UNDEFINED;
-    shadow_control->corun.keep_mask = (uint16_t)keep;
+    if (keep < 0 || keep > 0x7FFFFFFF) return JS_UNDEFINED;
+    shadow_control->corun.keep_mask = (uint32_t)keep;
     if (active) {
         shadow_control->shadow_display_owner = DISPLAY_OWNER_SCHWUNG_UI;
     } else {

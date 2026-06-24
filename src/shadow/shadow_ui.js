@@ -14395,7 +14395,15 @@ globalThis.tick = function() {
     }
 
     if (view === VIEWS.CANVAS || (coRunUiActive() && coRunView === VIEWS.CANVAS)) {
-        tickCanvasPreview();
+        /* In co-run the outer view is OVERTAKE_MODULE, so call through
+         * runCoRunChainEdit (sets view=coRunView) — otherwise tickCanvasPreview's
+         * own `view !== VIEWS.CANVAS` guard early-returns and the module's tick
+         * hook (animation/state polling) never fires. Mirrors the draw path. */
+        if (coRunUiActive()) {
+            runCoRunChainEdit(tickCanvasPreview);
+        } else {
+            tickCanvasPreview();
+        }
         canvasTickCounter = (canvasTickCounter || 0) + 1;
         if (canvasTickCounter % 3 === 0) needsRedraw = true;
     }
