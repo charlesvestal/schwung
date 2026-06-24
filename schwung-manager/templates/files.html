@@ -69,6 +69,7 @@
     <table class="file-table" id="file-table" aria-label="File listing for {{.Dir}}">
         <thead>
             <tr>
+                <th scope="col" class="col-select"><input type="checkbox" id="select-all" aria-label="Select all files"></th>
                 <th scope="col" class="col-name">Name</th>
                 <th scope="col" class="col-size">Size</th>
                 <th scope="col" class="col-modified">Modified</th>
@@ -76,24 +77,26 @@
         </thead>
         <tbody id="file-tbody">
             {{if .ParentDir}}
-            <tr class="file-row file-row-parent" data-path="{{.ParentDir}}" data-name=".." data-isdir="true" tabindex="0">
+            <tr class="file-row file-row-parent" data-isdir="true">
+                <td class="col-select"></td>
                 <td>
                     <span class="file-icon" aria-hidden="true">&#8617;</span>
-                    <span class="file-name">..</span>
+                    <a class="file-name-link" href="/files?path={{.ParentDir}}">..</a>
                 </td>
                 <td class="text-muted">—</td>
                 <td class="text-muted">—</td>
             </tr>
             {{end}}
             {{range .Entries}}
-            <tr class="file-row" data-path="{{.Path}}" data-name="{{.Name}}" data-isdir="{{.IsDir}}" tabindex="0">
+            <tr class="file-row" data-path="{{.Path}}" data-name="{{.Name}}" data-isdir="{{.IsDir}}">
+                <td class="col-select"><input type="checkbox" class="file-select" aria-label="Select {{.Name}}"></td>
                 <td>
                     {{if .IsDir}}
                     <span class="file-icon" aria-hidden="true">&#128193;</span>
-                    <span class="file-name">{{.Name}}/</span>
+                    <a class="file-name-link" href="/files?path={{.Path}}">{{.Name}}/</a>
                     {{else}}
                     <span class="file-icon" aria-hidden="true">&#128196;</span>
-                    <span class="file-name">{{.Name}}</span>
+                    <a class="file-name-link" href="/files/download?path={{.Path}}">{{.Name}}</a>
                     {{end}}
                 </td>
                 <td class="text-muted">{{if .IsDir}}—{{else}}{{formatBytes .Size}}{{end}}</td>
@@ -126,19 +129,33 @@
     var csrfToken = (document.cookie.match(/(^| )csrf_token=([^;]+)/) || [])[2] || '';
     var selected = new Set();
     var rows = document.querySelectorAll('.file-row');
+    var checkboxes = document.querySelectorAll('.file-select');
+    var selectAll = document.getElementById('select-all');
     var actionBar = document.getElementById('action-bar');
     var compactBar = document.getElementById('compact-toolbar');
     var countEl = document.getElementById('selection-count');
     var dropZone = document.getElementById('drop-zone');
     var browser = document.getElementById('file-browser');
-    var lastClickedIndex = -1;
+    var lastAnchorRow = null;   // anchor row for shift-range selection
+
+    function rowForCheckbox(cb) { return cb.closest('.file-row'); }
+    function getRowIndex(row) { return Array.prototype.indexOf.call(rows, row); }
+    function isSelectableRow(row) { return row && !row.classList.contains('file-row-parent'); }
 
     // Selection
     function updateSelection() {
         rows.forEach(function(row) {
             row.classList.toggle('selected', selected.has(row));
         });
+        // Keep checkboxes in sync with the selected set (e.g. after Deselect All)
+        checkboxes.forEach(function(cb) {
+            cb.checked = selected.has(rowForCheckbox(cb));
+        });
         var n = selected.size;
+        if (selectAll) {
+            selectAll.checked = n > 0 && n === checkboxes.length;
+            selectAll.indeterminate = n > 0 && n < checkboxes.length;
+        }
         if (n > 0) {
             actionBar.style.display = '';
             compactBar.style.display = 'none';
@@ -155,66 +172,69 @@
         }
     }
 
-    function getRowIndex(row) {
-        return Array.prototype.indexOf.call(rows, row);
+    function syncSelectionFromCheckboxes() {
+        selected.clear();
+        checkboxes.forEach(function(cb) {
+            if (cb.checked) selected.add(rowForCheckbox(cb));
+        });
+        updateSelection();
     }
 
-    rows.forEach(function(row) {
-        var isParent = row.classList.contains('file-row-parent');
-
-        row.addEventListener('click', function(e) {
-            if (isParent) {
-                // Single click on ".." navigates up
-                window.location.href = '/files?path=' + encodeURIComponent(row.getAttribute('data-path'));
-                return;
+    // Navigation lives in the native name links. Selection is driven by the
+    // checkboxes (keyboard/screen-reader) and by clicking the row body (mouse).
+    checkboxes.forEach(function(cb) {
+        cb.addEventListener('click', function(e) {
+            var row = rowForCheckbox(cb);
+            if (e.shiftKey && lastAnchorRow) {
+                // Range select: match the clicked checkbox's new state
+                var a = getRowIndex(lastAnchorRow);
+                var idx = getRowIndex(row);
+                var start = Math.min(a, idx), end = Math.max(a, idx);
+                for (var i = start; i <= end; i++) {
+                    var box = rows[i].querySelector('.file-select');
+                    if (box) box.checked = cb.checked;
+                }
             }
+            lastAnchorRow = row;
+            syncSelectionFromCheckboxes();
+        });
+    });
+
+    // Click the row body (anywhere but the name link or checkbox column) to
+    // select, preserving the classic single / Shift-range / Cmd-toggle mouse feel.
+    rows.forEach(function(row) {
+        if (!isSelectableRow(row)) return;
+        row.addEventListener('click', function(e) {
+            if (e.target.closest('a, input, .col-select')) return;
             var idx = getRowIndex(row);
             if (e.metaKey || e.ctrlKey) {
-                // Toggle this row
                 if (selected.has(row)) selected.delete(row); else selected.add(row);
-            } else if (e.shiftKey && lastClickedIndex >= 0) {
-                // Range select
-                var start = Math.min(lastClickedIndex, idx);
-                var end = Math.max(lastClickedIndex, idx);
-                for (var i = start; i <= end; i++) selected.add(rows[i]);
+            } else if (e.shiftKey && lastAnchorRow) {
+                var a = getRowIndex(lastAnchorRow);
+                var start = Math.min(a, idx), end = Math.max(a, idx);
+                for (var i = start; i <= end; i++) {
+                    if (isSelectableRow(rows[i])) selected.add(rows[i]);
+                }
             } else {
-                // Single select
                 selected.clear();
                 selected.add(row);
             }
-            lastClickedIndex = idx;
+            lastAnchorRow = row;
             updateSelection();
         });
-
-        row.addEventListener('dblclick', function() {
-            var isDir = row.getAttribute('data-isdir') === 'true';
-            var path = row.getAttribute('data-path');
-            if (isDir) {
-                window.location.href = '/files?path=' + encodeURIComponent(path);
-            } else {
-                window.location.href = '/files/download?path=' + encodeURIComponent(path);
-            }
-        });
-
-        row.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter') {
-                row.dispatchEvent(new MouseEvent('dblclick'));
-            }
-        });
     });
+
+    if (selectAll) {
+        selectAll.addEventListener('change', function() {
+            checkboxes.forEach(function(cb) { cb.checked = selectAll.checked; });
+            syncSelectionFromCheckboxes();
+        });
+    }
 
     // Deselect all
     document.getElementById('btn-deselect').addEventListener('click', function() {
         selected.clear();
         updateSelection();
-    });
-
-    // Click outside table deselects
-    document.addEventListener('click', function(e) {
-        if (!e.target.closest('.file-row') && !e.target.closest('.file-action-bar') && !e.target.closest('.file-compact-toolbar')) {
-            selected.clear();
-            updateSelection();
-        }
     });
 
     // Delete (handles multiple selected items)

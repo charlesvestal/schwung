@@ -585,7 +585,7 @@ tbody tr:hover {
 }
 
 .file-row {
-    cursor: default;
+    cursor: pointer;
     user-select: none;
     -webkit-user-select: none;
 }
@@ -611,6 +611,35 @@ tbody tr:hover {
 
 .file-name {
     cursor: default;
+}
+
+.col-select {
+    width: 1%;
+    white-space: nowrap;
+    text-align: center;
+}
+
+.file-select,
+#select-all {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+    accent-color: var(--badge-synth);
+}
+
+.file-name-link {
+    color: inherit;
+    text-decoration: none;
+}
+
+.file-name-link:hover {
+    text-decoration: underline;
+}
+
+.file-name-link:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: 2px;
+    text-decoration: underline;
 }
 
 .file-row-parent {
