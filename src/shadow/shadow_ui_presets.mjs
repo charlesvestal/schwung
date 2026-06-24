@@ -360,6 +360,13 @@ function flushPreview(rowIndex) {
     applyPreviewForRow(rowIndex);
 }
 
+/* True while a non-original preset is being auditioned (applied but not yet
+ * committed via Load). Lets the host skip autosave so an uncommitted audition
+ * is never persisted into slot_N.json. */
+export function isPresetPreviewActive() {
+    return previewActive;
+}
+
 /* Re-apply the captured original (cancel an active preview). */
 function revertToOriginal() {
     pendingPreviewIndex = PREVIEW_NONE;
