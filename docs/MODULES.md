@@ -1753,6 +1753,25 @@ Each shadow slot listens on a configurable MIDI channel (default 1-4):
 
 Each shadow slot can load a different chain patch. Slot settings and synth states persist across restarts.
 
+### Making a module compatible with Module Presets
+
+The shadow UI lets users save/recall **module presets** — per-component snapshots of a
+single chain component's state (one synth's patch, one FX's setting), independent of the
+whole-chain patch. The feature is **generic and needs no per-module code**: it captures and
+restores the same opaque `state` blob the host already uses for per-slot autosave. A module
+is preset-compatible as long as it honors that state contract:
+
+- `get_param("state", buf, len)` returns the module's **full, self-contained** state
+  (everything needed to reproduce the current sound — not a reference/index into a bank).
+- `set_param("<prefix>:state", blob)` restores it. The host drives recall through the
+  verified slot-load restore path; `<prefix>` is the component slot (`synth`, `fx1`..`fxN`,
+  or `midi_fx1`) and is supplied by the host.
+
+Modules that already support per-slot autosave get module presets for free. A module that
+doesn't expose a self-contained `state` (or that returns a referential blob) won't produce a
+usable preset, so make `state` round-trip-complete. (User-facing usage is covered in the
+manual.)
+
 ### Testing Shadow Mode
 
 1. Build and install Schwung: `./scripts/build.sh && ./scripts/install.sh local`
