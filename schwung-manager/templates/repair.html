@@ -11,8 +11,10 @@
 <div class="repair-step">
     <h3>Option 1 &mdash; SSH (one command, fastest)</h3>
     <p>
-        From a Mac/Linux/WSL terminal on the same network. Replace
-        <code>{{.Hostname}}</code> with your device's IP if mDNS isn't available.
+        From a terminal on the same network &mdash; macOS/Linux, Windows
+        <strong>PowerShell</strong>, or WSL. Replace <code>{{.Hostname}}</code>
+        with your device's IP if mDNS isn't available. On Windows, the GUI
+        installer below is the easiest option.
     </p>
     <div class="repair-copy-row">
         <pre id="repair-ssh-cmd">ssh root@{{.Hostname}} 'chown root:root /data/UserData/schwung/bin/schwung-heal &amp;&amp; chmod 4755 /data/UserData/schwung/bin/schwung-heal &amp;&amp; /data/UserData/schwung/bin/schwung-heal --reboot'</pre>
