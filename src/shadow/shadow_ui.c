@@ -239,13 +239,15 @@ static JSValue js_shadow_corun_begin(JSContext *ctx, JSValueConst this_val, int 
     if (JS_ToInt32(ctx, &target, argv[0])) return JS_UNDEFINED;
     if (JS_ToInt32(ctx, &id, argv[1])) return JS_UNDEFINED;
     if (argc >= 3 && JS_ToInt32(ctx, &keep, argv[2])) return JS_UNDEFINED;
-    if (keep < 0 || keep > 0xFFFF) return JS_UNDEFINED;
+    if (keep < 0 || keep > 0x7FFFFFFF) return JS_UNDEFINED;
     /* Reset LED-keep to "follow keep_mask"; a tool opts into the lights/input
-     * split by calling shadow_corun_set_led_keep_mask() after begin. */
+     * split by calling shadow_corun_set_led_keep_mask() after begin. flags=0 =
+     * legacy keep-list model (this is the legacy entry point). */
+    shadow_control->corun.flags = 0;
     shadow_control->corun.led_keep_mask = 0;
     if (target == CORUN_TARGET_CHAIN_EDIT) {
         if (id < 0 || id >= SHADOW_UI_SLOTS) return JS_UNDEFINED;
-        shadow_control->corun.keep_mask = (uint16_t)keep;
+        shadow_control->corun.keep_mask = (uint32_t)keep;
         shadow_control->corun.id = (int8_t)id;
         shadow_control->ui_slot = (uint8_t)id;
         shadow_control->corun.target = CORUN_TARGET_CHAIN_EDIT;
@@ -253,7 +255,7 @@ static JSValue js_shadow_corun_begin(JSContext *ctx, JSValueConst this_val, int 
         shadow_control->shadow_display_owner = DISPLAY_OWNER_SCHWUNG_UI;
     } else if (target == CORUN_TARGET_MOVE_NATIVE) {
         if (id < 0 || id > 7) return JS_UNDEFINED;
-        shadow_control->corun.keep_mask = (uint16_t)keep;
+        shadow_control->corun.keep_mask = (uint32_t)keep;
         shadow_control->corun.id = (int8_t)id;
         shadow_control->corun.target = CORUN_TARGET_MOVE_NATIVE;
         /* move_native cedes the OLED to Move firmware. shadow_display_mode
@@ -274,6 +276,7 @@ static JSValue js_shadow_corun_end(JSContext *ctx, JSValueConst this_val, int ar
     if (!shadow_control) return JS_UNDEFINED;
     shadow_control->corun.target = CORUN_TARGET_NONE;
     shadow_control->corun.id = -1;
+    shadow_control->corun.flags = 0;
     shadow_control->corun.keep_mask = 0;
     shadow_control->corun.led_keep_mask = 0;
     /* Returning to the tool's shadow session — shadow_ui resumes rendering. */
@@ -291,8 +294,8 @@ static JSValue js_shadow_corun_set_led_keep_mask(JSContext *ctx, JSValueConst th
     if (!shadow_control || argc < 1) return JS_UNDEFINED;
     int32_t mask = 0;
     JS_ToInt32(ctx, &mask, argv[0]);
-    if (mask < 0 || mask > 0xFFFF) return JS_UNDEFINED;
-    shadow_control->corun.led_keep_mask = (uint16_t)mask;
+    if (mask < 0 || mask > 0x7FFFFFFF) return JS_UNDEFINED;
+    shadow_control->corun.led_keep_mask = (uint32_t)mask;
     return JS_UNDEFINED;
 }
 
@@ -308,8 +311,8 @@ static JSValue js_shadow_corun_overlay(JSContext *ctx, JSValueConst this_val, in
     int active = 0, keep = 0;
     if (JS_ToInt32(ctx, &active, argv[0])) return JS_UNDEFINED;
     if (JS_ToInt32(ctx, &keep, argv[1])) return JS_UNDEFINED;
-    if (keep < 0 || keep > 0xFFFF) return JS_UNDEFINED;
-    shadow_control->corun.keep_mask = (uint16_t)keep;
+    if (keep < 0 || keep > 0x7FFFFFFF) return JS_UNDEFINED;
+    shadow_control->corun.keep_mask = (uint32_t)keep;
     if (active) {
         shadow_control->shadow_display_owner = DISPLAY_OWNER_SCHWUNG_UI;
     } else {
@@ -321,7 +324,75 @@ static JSValue js_shadow_corun_overlay(JSContext *ctx, JSValueConst this_val, in
     return JS_UNDEFINED;
 }
 
-/* shadow_corun_state() -> { target, id, keep_mask } | null
+/* shadow_corun_begin_cede(target, id, cede_mask, flags) -> void
+ * Cede-model entry point: the tool KEEPS the whole control surface and cedes only
+ * the CORUN_GRP_* groups in cede_mask to the peer (keep-by-default). Optional
+ * flags may set CORUN_F_OWN_BACK (tool handles Back itself instead of the
+ * framework exit gesture). Mirrors shadow_corun_begin's target/id validation and
+ * atomicity (mask + flags before target). Stored internally as the keep-mask
+ * complement so every routing site keeps one representation. */
+static JSValue js_shadow_corun_begin_cede(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 2) return JS_UNDEFINED;
+    int target = -1, id = -1, cede = 0, flags = 0;
+    if (JS_ToInt32(ctx, &target, argv[0])) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &id, argv[1])) return JS_UNDEFINED;
+    if (argc >= 3 && JS_ToInt32(ctx, &cede, argv[2])) return JS_UNDEFINED;
+    if (argc >= 4 && JS_ToInt32(ctx, &flags, argv[3])) return JS_UNDEFINED;
+    if (cede < 0 || cede > 0x7FFFFFFF) return JS_UNDEFINED;
+    uint8_t f = (uint8_t)(CORUN_F_CEDE_MODEL | ((uint32_t)flags & CORUN_F_OWN_BACK));
+    /* LED follows input unless the tool later calls set_led_cede_mask. */
+    shadow_control->corun.led_keep_mask = 0;
+    if (target == CORUN_TARGET_CHAIN_EDIT) {
+        if (id < 0 || id >= SHADOW_UI_SLOTS) return JS_UNDEFINED;
+        shadow_control->corun.flags = f;
+        shadow_control->corun.keep_mask = corun_cede_to_keep((uint32_t)cede);
+        shadow_control->corun.id = (int8_t)id;
+        shadow_control->ui_slot = (uint8_t)id;
+        shadow_control->corun.target = CORUN_TARGET_CHAIN_EDIT;
+        shadow_control->shadow_display_owner = DISPLAY_OWNER_SCHWUNG_UI;
+    } else if (target == CORUN_TARGET_MOVE_NATIVE) {
+        if (id < 0 || id > 7) return JS_UNDEFINED;
+        shadow_control->corun.flags = f;
+        shadow_control->corun.keep_mask = corun_cede_to_keep((uint32_t)cede);
+        shadow_control->corun.id = (int8_t)id;
+        shadow_control->corun.target = CORUN_TARGET_MOVE_NATIVE;
+        shadow_control->shadow_display_owner = DISPLAY_OWNER_MOVE_FIRMWARE;
+    } else {
+        return JS_UNDEFINED;
+    }
+    return JS_UNDEFINED;
+}
+
+/* shadow_corun_set_cede_mask(cede_mask) -> void
+ * Update the cede-list mid-session (e.g. opening an overlay). Ensures cede model. */
+static JSValue js_shadow_corun_set_cede_mask(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 1) return JS_UNDEFINED;
+    int32_t cede = 0;
+    JS_ToInt32(ctx, &cede, argv[0]);
+    if (cede < 0 || cede > 0x7FFFFFFF) return JS_UNDEFINED;
+    shadow_control->corun.flags |= CORUN_F_CEDE_MODEL;
+    shadow_control->corun.keep_mask = corun_cede_to_keep((uint32_t)cede);
+    return JS_UNDEFINED;
+}
+
+/* shadow_corun_set_led_cede_mask(led_cede_mask) -> void
+ * Cede-model LED split: cede these groups' LEDs to the peer, paint the rest. Sets
+ * CORUN_F_LED_DISTINCT so led_keep_mask is authoritative even at 0 (= cede no
+ * LEDs), rather than the legacy "0 follows input" sentinel. */
+static JSValue js_shadow_corun_set_led_cede_mask(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 1) return JS_UNDEFINED;
+    int32_t cede = 0;
+    JS_ToInt32(ctx, &cede, argv[0]);
+    if (cede < 0 || cede > 0x7FFFFFFF) return JS_UNDEFINED;
+    shadow_control->corun.flags |= CORUN_F_LED_DISTINCT;
+    shadow_control->corun.led_keep_mask = corun_cede_to_keep((uint32_t)cede);
+    return JS_UNDEFINED;
+}
+
+/* shadow_corun_state() -> { target, id, keep_mask, flags } | null
  * Returns null when no co-run is active, else the current state. Tools poll
  * this each frame to detect framework-driven exit (Back press) and to
  * reconcile their own mirror. */
@@ -332,7 +403,25 @@ static JSValue js_shadow_corun_state(JSContext *ctx, JSValueConst this_val, int 
     JS_SetPropertyStr(ctx, obj, "target", JS_NewInt32(ctx, (int)corun_target(shadow_control)));
     JS_SetPropertyStr(ctx, obj, "id", JS_NewInt32(ctx, corun_id(shadow_control)));
     JS_SetPropertyStr(ctx, obj, "keep_mask", JS_NewInt32(ctx, (int)corun_keep_mask(shadow_control)));
+    JS_SetPropertyStr(ctx, obj, "flags", JS_NewInt32(ctx, (int)shadow_control->corun.flags));
     return obj;
+}
+
+/* shadow_corun_event_owner(status, d1) -> CORUN_OWNER_*
+ * Single source of truth for "who owns this control-surface event right now",
+ * exposed for JS dispatch decisions (e.g. a canvas overlay deciding whether to
+ * consume an event or let it fall through to the tool). Wraps the C
+ * corun_event_owner so the keep/cede spec, legacy carve-out, and Back handling
+ * never drift between C and JS. `status` is the MIDI status byte (the low nibble
+ * is ignored — only the type matters). Returns CORUN_OWNER_TOOL when no co-run. */
+static JSValue js_shadow_corun_event_owner(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 2) return JS_NewInt32(ctx, CORUN_OWNER_TOOL);
+    int status = 0, d1 = 0;
+    if (JS_ToInt32(ctx, &status, argv[0])) return JS_NewInt32(ctx, CORUN_OWNER_TOOL);
+    if (JS_ToInt32(ctx, &d1, argv[1])) return JS_NewInt32(ctx, CORUN_OWNER_TOOL);
+    corun_owner_t owner = corun_event_owner(shadow_control, (uint8_t)(status & 0xF0), (uint8_t)d1);
+    return JS_NewInt32(ctx, (int)owner);
 }
 
 /* shadow_get_selected_slot() -> int
@@ -2209,6 +2298,16 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_corun_set_led_keep_mask", JS_NewCFunction(ctx, js_shadow_corun_set_led_keep_mask, "shadow_corun_set_led_keep_mask", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_corun_state", JS_NewCFunction(ctx, js_shadow_corun_state, "shadow_corun_state", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_corun_overlay", JS_NewCFunction(ctx, js_shadow_corun_overlay, "shadow_corun_overlay", 2));
+    /* Cede-default model API (keep-by-default; tool lists only what it cedes). */
+    JS_SetPropertyStr(ctx, global_obj, "shadow_corun_begin_cede", JS_NewCFunction(ctx, js_shadow_corun_begin_cede, "shadow_corun_begin_cede", 4));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_corun_set_cede_mask", JS_NewCFunction(ctx, js_shadow_corun_set_cede_mask, "shadow_corun_set_cede_mask", 1));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_corun_set_led_cede_mask", JS_NewCFunction(ctx, js_shadow_corun_set_led_cede_mask, "shadow_corun_set_led_cede_mask", 1));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_corun_event_owner", JS_NewCFunction(ctx, js_shadow_corun_event_owner, "shadow_corun_event_owner", 2));
+    /* Owner enum (matches corun_owner_t) — for JS dispatch decisions. */
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_OWNER_TOOL", JS_NewInt32(ctx, CORUN_OWNER_TOOL));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_OWNER_PEER", JS_NewInt32(ctx, CORUN_OWNER_PEER));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_OWNER_BOTH", JS_NewInt32(ctx, CORUN_OWNER_BOTH));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_OWNER_NONE", JS_NewInt32(ctx, CORUN_OWNER_NONE));
     /* Co-run target enum (matches corun_target_t in shadow_constants.h). */
     JS_SetPropertyStr(ctx, global_obj, "CORUN_TARGET_NONE",        JS_NewInt32(ctx, CORUN_TARGET_NONE));
     JS_SetPropertyStr(ctx, global_obj, "CORUN_TARGET_CHAIN_EDIT",  JS_NewInt32(ctx, CORUN_TARGET_CHAIN_EDIT));
@@ -2226,8 +2325,25 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_BACK",          JS_NewInt32(ctx, CORUN_GRP_BACK));
     JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_MENU",          JS_NewInt32(ctx, CORUN_GRP_MENU));
     JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_TOUCH",         JS_NewInt32(ctx, CORUN_GRP_TOUCH));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_MUTE",          JS_NewInt32(ctx, CORUN_GRP_MUTE));
+    /* Extended buttons — now first-class, published so modules stop hand-copying. */
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_PLAY",          JS_NewInt32(ctx, CORUN_GRP_PLAY));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_REC",           JS_NewInt32(ctx, CORUN_GRP_REC));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_SAMPLE",        JS_NewInt32(ctx, CORUN_GRP_SAMPLE));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_LOOP",          JS_NewInt32(ctx, CORUN_GRP_LOOP));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_COPY",          JS_NewInt32(ctx, CORUN_GRP_COPY));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_DELETE",        JS_NewInt32(ctx, CORUN_GRP_DELETE));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_UNDO",          JS_NewInt32(ctx, CORUN_GRP_UNDO));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_CAPTURE",       JS_NewInt32(ctx, CORUN_GRP_CAPTURE));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_NAV_UP",        JS_NewInt32(ctx, CORUN_GRP_NAV_UP));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_NAV_DOWN",      JS_NewInt32(ctx, CORUN_GRP_NAV_DOWN));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_NAV_LEFT",      JS_NewInt32(ctx, CORUN_GRP_NAV_LEFT));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_NAV_RIGHT",     JS_NewInt32(ctx, CORUN_GRP_NAV_RIGHT));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_NAV",           JS_NewInt32(ctx, CORUN_GRP_NAV));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_GRP_EDIT",          JS_NewInt32(ctx, CORUN_GRP_EDIT));
     JS_SetPropertyStr(ctx, global_obj, "CORUN_KEEP_DEFAULT",      JS_NewInt32(ctx, CORUN_KEEP_DEFAULT));
     JS_SetPropertyStr(ctx, global_obj, "CORUN_KEEP_BACK",         JS_NewInt32(ctx, CORUN_KEEP_BACK));
+    JS_SetPropertyStr(ctx, global_obj, "CORUN_F_OWN_BACK",        JS_NewInt32(ctx, CORUN_F_OWN_BACK));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_open_tool_cmd",
         JS_NewCFunction(ctx, js_shadow_get_open_tool_cmd, "shadow_get_open_tool_cmd", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_selected_slot", JS_NewCFunction(ctx, js_shadow_get_selected_slot, "shadow_get_selected_slot", 0));

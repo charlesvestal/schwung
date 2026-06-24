@@ -9795,9 +9795,25 @@ function invokeCanvasOverlayHook(hookName, payload) {
 }
 
 function dispatchCanvasMidi(data, source) {
-    if (view !== VIEWS.CANVAS) return false;
+    /* Also fire when the canvas is the active co-run overlay (outer view is
+     * OVERTAKE_MODULE then). Runs before the co-run input block, so jog-turn /
+     * encoders / knob-touch reach the canvas onMidi instead of the tool. */
+    const canvasCorun = coRunUiActive() && coRunView === VIEWS.CANVAS;
+    if (view !== VIEWS.CANVAS && !canvasCorun) return false;
     const midi = Array.isArray(data) ? data.slice() : Array.from(data || []);
     if (!midi || midi.length === 0) return true;
+
+    /* In co-run the canvas is an overlay over a STILL-RUNNING tool. Consume only
+     * the events the module's co-run spec routes to the peer (this shadow_ui
+     * side); tool-kept and unclassified events must fall through so the buttons
+     * available before the canvas opened (pads / steps / transport / ...) keep
+     * working. Single source of truth = the host's corun_event_owner, so the
+     * keep/cede spec and the legacy carve-out are honored without duplicating
+     * the logic here. (Jog-click / Back are the close gesture, stolen before
+     * this. A full-screen canvas — not co-run — still owns the whole surface.) */
+    if (canvasCorun && typeof shadow_corun_event_owner === "function") {
+        if (shadow_corun_event_owner(midi[0] | 0, midi[1] | 0) !== CORUN_OWNER_PEER) return false;
+    }
 
     invokeCanvasOverlayHook("onMidi", { source, data: midi });
     return true;
@@ -13726,6 +13742,7 @@ function dispatchCoRunDraw() {
             drawComponentEdit();
             break;
         case VIEWS.HIERARCHY_EDITOR:     drawHierarchyEditor(); break;
+        case VIEWS.CANVAS:               drawCanvasPreview(); break;
         case VIEWS.KNOB_EDITOR:          drawKnobEditor(); break;
         case VIEWS.KNOB_PARAM_PICKER:    drawKnobParamPicker(); break;
         case VIEWS.DYNAMIC_PARAM_PICKER: drawDynamicParamPicker(); break;
@@ -14377,8 +14394,16 @@ globalThis.tick = function() {
         processPendingHierKnob();
     }
 
-    if (view === VIEWS.CANVAS) {
-        tickCanvasPreview();
+    if (view === VIEWS.CANVAS || (coRunUiActive() && coRunView === VIEWS.CANVAS)) {
+        /* In co-run the outer view is OVERTAKE_MODULE, so call through
+         * runCoRunChainEdit (sets view=coRunView) — otherwise tickCanvasPreview's
+         * own `view !== VIEWS.CANVAS` guard early-returns and the module's tick
+         * hook (animation/state polling) never fires. Mirrors the draw path. */
+        if (coRunUiActive()) {
+            runCoRunChainEdit(tickCanvasPreview);
+        } else {
+            tickCanvasPreview();
+        }
         canvasTickCounter = (canvasTickCounter || 0) + 1;
         if (canvasTickCounter % 3 === 0) needsRedraw = true;
     }
@@ -14838,15 +14863,22 @@ globalThis.onMidiMessageInternal = function(data) {
         }
     }
 
-    if (view === VIEWS.CANVAS && (status & 0xF0) === 0xB0) {
+    /* In co-run the outer view is OVERTAKE_MODULE; the canvas is the active
+     * co-run overlay when coRunView === CANVAS. Steal jog-click/Back to close it
+     * (wrapped so coRunView returns to the hierarchy editor), mirroring the
+     * non-co-run steal below. */
+    var canvasInCorun = coRunUiActive() && coRunView === VIEWS.CANVAS;
+    if ((view === VIEWS.CANVAS || canvasInCorun) && (status & 0xF0) === 0xB0) {
         if (d1 === MoveMainButton && d2 > 0) {
-            closeCanvasPreview(false);
+            if (canvasInCorun) runCoRunChainEdit(function() { closeCanvasPreview(false); });
+            else closeCanvasPreview(false);
             announce("Hierarchy Editor");
             needsRedraw = true;
             return;
         }
         if (d1 === MoveBack && d2 > 0) {
-            closeCanvasPreview(true);
+            if (canvasInCorun) runCoRunChainEdit(function() { closeCanvasPreview(true); });
+            else closeCanvasPreview(true);
             announce("Hierarchy Editor");
             needsRedraw = true;
             return;
