@@ -385,13 +385,13 @@ void shadow_clear_move_leds_if_overtake(void) {
         /* LED ownership uses led_keep_mask (falls back to keep_mask): a tool can
          * own a surface's LEDs while still ceding its input — input routing in
          * corun_event_owner still uses keep_mask. */
-        uint16_t keep = corun_led_keep_mask_eff(ctrl);
+        uint32_t keep = corun_led_keep_mask_eff(ctrl);
         for (int i = 0; i < HW_MIDI_OUT_SIZE; i += 4) {
             uint8_t cable = (midi_out[i] >> 4) & 0x0F;
             if (cable != 0) continue;
             uint8_t type = midi_out[i+1] & 0xF0;
             uint8_t d1 = midi_out[i+2];
-            uint16_t grp = corun_group_for_event(type, d1);
+            uint32_t grp = corun_group_for_event(type, d1);
             if (grp && (keep & grp)) {
                 midi_out[i] = 0; midi_out[i+1] = 0; midi_out[i+2] = 0; midi_out[i+3] = 0;
             }
@@ -411,7 +411,7 @@ void shadow_clear_move_leds_if_overtake(void) {
             if (((midi_out[i] >> 4) & 0x0F) != 0) continue;    /* cable 0 */
             if (midi_out[i+1] != 0x3B) continue;               /* RGB LED command marker */
             uint8_t idx = midi_out[i+3];
-            uint16_t grp = corun_group_for_event(0xB0, idx);   /* idx as a CC (buttons/knobs) */
+            uint32_t grp = corun_group_for_event(0xB0, idx);   /* idx as a CC (buttons/knobs) */
             if (!grp) grp = corun_group_for_event(0x90, idx);  /* idx as a note (pads/steps) */
             if (!(grp && (keep & grp))) continue;
             int start = i - 8;
