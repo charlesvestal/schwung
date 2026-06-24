@@ -397,6 +397,21 @@ module is retired (source kept for the standalone/sim host; not shipped).
 
 Catalog: `https://raw.githubusercontent.com/charlesvestal/schwung/main/module-catalog.json`.
 
+**Shim mirror + stuck-shim repair (web update).** The manager runs as `ableton`
+and can't write `/usr/lib`, so a web update mirrors the new shim via the
+setuid-root `schwung-heal` helper (synchronously in `post-update.sh` + the
+manager), then **verifies `/data` shim == `/usr/lib` shim before stamping
+`version.txt`** — a failed mirror leaves the version old so it stays retryable
+instead of self-concealing ("already up to date"). This auto-fixes the shim only
+for devices whose `heal` is **blessed** (root-owned + setuid — i.e. they ran
+`install.sh`/GUI installer since heal landed in v0.9.10). Never-blessed devices
+(old pre-heal installs, web-only) can't be fixed over the web (no root foothold)
+— they need one `install.sh`/GUI installer, after which it self-maintains.
+`repair_status.go` detects the stuck state (`shimStale` md5 mismatch OR
+`healUnblessed` OR non-heal-aware entrypoint) and shows a **repair banner** +
+`/system/repair` page (SSH `chown root + chmod 4755 + heal --reboot`, or the GUI
+installer). See memory `web-update-shim-bootstrap-gap`.
+
 The manager also serves a **file browser** (`/files`, under `/data/UserData/`) and per-slot module **Remote UIs** (auto-discovers `web_ui.html` per module, served in a sandboxed iframe). The file browser is keyboard- and screen-reader-accessible: rows are `tabindex=0` with spoken `aria-label`s, **Enter opens** (dir → in, file → download), **Space selects**, with a checkbox column for multi-select. Source: `schwung-manager/templates/files.html`, `remote_ui.go`.
 
 ### Catalog Format (v2)
