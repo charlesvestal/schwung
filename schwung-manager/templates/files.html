@@ -200,10 +200,32 @@
         });
     });
 
-    // Click the row body (anywhere but the name link or checkbox column) to
-    // select, preserving the classic single / Shift-range / Cmd-toggle mouse feel.
+    // Navigate by following the row's name link (dir → open, file → download).
+    function navigateRow(row) {
+        var link = row.querySelector('a.file-name-link');
+        if (link) window.location.href = link.href;
+    }
+
     rows.forEach(function(row) {
-        if (!isSelectableRow(row)) return;
+        // Double-click anywhere on a row navigates — the classic file-manager
+        // affordance, alongside the name links (which do the same on single
+        // click / Enter for keyboard + screen-reader users).
+        row.addEventListener('dblclick', function(e) {
+            if (e.target.closest('a')) return; // link already handled it
+            navigateRow(row);
+        });
+
+        // The ".." row isn't selectable: a single click anywhere on it goes up.
+        if (!isSelectableRow(row)) {
+            row.addEventListener('click', function(e) {
+                if (e.target.closest('a')) return;
+                navigateRow(row);
+            });
+            return;
+        }
+
+        // Click the row body (not the name link or checkbox column) to select,
+        // preserving the classic single / Shift-range / Cmd-toggle mouse feel.
         row.addEventListener('click', function(e) {
             if (e.target.closest('a, input, .col-select')) return;
             var idx = getRowIndex(row);
