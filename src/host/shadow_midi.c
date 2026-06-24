@@ -541,6 +541,39 @@ void shadow_drain_midi_inject(void)
 
     if (!inject_shm) return;
 
+    /* Hold the inject drain for a few frames after an overtake module exits
+     * (Back-to-suspend or full exit) before draining anything into Move's
+     * MIDI_IN. On the overtake->native transition the shim queues cleanup
+     * packets (shift/back/jog/vol releases) and the DSP audio callback may
+     * queue note packets (e.g. ROUTE_MOVE drum hits) in the same 1-2 frame
+     * window; either landing in MIDI_IN while Move's firmware is mid-transition
+     * aborts (SIGABRT) deep in Move's own stack.
+     *
+     * This is a *timing* race, distinct from the *ring-integrity* race fixed by
+     * the MPSC inject ring (PR #106). #106 guarantees each ring slot is written
+     * atomically (no torn cable=0/CIN=0 slot reaches Move) — but a
+     * perfectly-formed inject that simply *arrives during the transition* still
+     * crashes Move. So this hold is required in addition to #106, not instead of
+     * it. Empirically 2-3 frames are clean and 1 frame is insufficient (crash
+     * recurs). Packets are not lost — they accumulate in inject_shm and drain
+     * once the hold expires. Keyed on the overtake-exit event (not buffer
+     * occupancy), so it also covers the case where MIDI_IN is idle at exit —
+     * which the cable-0 occupancy defer below does not catch. */
+    {
+        static int prev_overtake_for_hold = 0;
+        static int exit_hold_frames = 0;
+        const int OVERTAKE_EXIT_HOLD_FRAMES = 3;  /* 2 also verified clean; 1 not */
+        shadow_control_t *sc = host_shadow_control ? *host_shadow_control : NULL;
+        int cur_overtake = sc ? (int)sc->overtake_mode : 0;
+        if (prev_overtake_for_hold != 0 && cur_overtake == 0)
+            exit_hold_frames = OVERTAKE_EXIT_HOLD_FRAMES;
+        prev_overtake_for_hold = cur_overtake;
+        if (exit_hold_frames > 0) {
+            exit_hold_frames--;
+            return;
+        }
+    }
+
     /* Defer inject when MIDI_IN has ANY hardware events this tick.
      * All cables share Move's firmware MIDI read path — injecting concurrently
      * with hardware events on ANY cable races Move's internal processing and
