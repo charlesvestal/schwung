@@ -61,26 +61,48 @@
 
     var copyBtn = document.getElementById('repair-copy-btn');
     var cmdEl = document.getElementById('repair-ssh-cmd');
-    if (copyBtn && cmdEl && navigator.clipboard) {
+    // execCommand fallback works over plain http, where navigator.clipboard
+    // is unavailable (it requires a secure context). The manager is served
+    // over http://move.local:7700, so we MUST keep this fallback.
+    function fallbackCopy(text) {
+        try {
+            var ta = document.createElement('textarea');
+            ta.value = text;
+            ta.setAttribute('readonly', '');
+            ta.style.position = 'fixed';
+            ta.style.top = '0';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.focus();
+            ta.select();
+            ta.setSelectionRange(0, text.length);
+            var ok = document.execCommand('copy');
+            document.body.removeChild(ta);
+            return ok;
+        } catch (e) {
+            return false;
+        }
+    }
+    function flash(ok) {
+        copyBtn.textContent = ok ? 'Copied!' : 'Copy failed';
+        if (ok) copyBtn.classList.add('btn-copied');
+        setTimeout(function() {
+            copyBtn.textContent = 'Copy';
+            copyBtn.classList.remove('btn-copied');
+        }, 1500);
+    }
+    if (copyBtn && cmdEl) {
         copyBtn.addEventListener('click', function() {
-            navigator.clipboard.writeText(cmdEl.textContent).then(function() {
-                var orig = copyBtn.textContent;
-                copyBtn.textContent = 'Copied!';
-                copyBtn.classList.add('btn-copied');
-                setTimeout(function() {
-                    copyBtn.textContent = orig;
-                    copyBtn.classList.remove('btn-copied');
-                }, 1500);
-            }, function(err) {
-                copyBtn.textContent = 'Copy failed';
-                console.error('Copy failed:', err);
-                setTimeout(function() { copyBtn.textContent = 'Copy'; }, 2000);
-            });
+            var text = cmdEl.textContent;
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(
+                    function() { flash(true); },
+                    function() { flash(fallbackCopy(text)); }
+                );
+            } else {
+                flash(fallbackCopy(text));
+            }
         });
-    } else if (copyBtn) {
-        // navigator.clipboard unavailable (e.g. http origin without secure context).
-        // Hide rather than confuse users with a button that does nothing.
-        copyBtn.style.display = 'none';
     }
 })();
 </script>
