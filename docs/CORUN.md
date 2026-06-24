@@ -118,12 +118,19 @@ shadow_corun_state()
   // Returns { target, id, keep_mask, flags } or null when no co-run is active.
   // keep_mask is the effective KEEP set in both models (cede is stored as its
   // complement). Tools poll this each frame to detect framework-driven exit.
+shadow_corun_event_owner(status, d1)
+  // -> CORUN_OWNER_{TOOL,PEER,NONE,BOTH}. The host's corun_event_owner exposed
+  // for JS dispatch decisions (single source of truth — keep/cede spec + legacy
+  // carve-out honored). e.g. a raw-MIDI overlay (a type:"canvas" editor) consumes
+  // an event only when owner === CORUN_OWNER_PEER, so tool-kept controls fall
+  // through to the still-running tool instead of being swallowed.
 ```
 
 Enum constants are registered as JS globals: `CORUN_TARGET_*`, every
-`CORUN_GRP_*` group + the `NAV`/`EDIT`/`TRANSPORT` composites, `CORUN_KEEP_DEFAULT`,
-`CORUN_KEEP_BACK`, and `CORUN_F_OWN_BACK` (matching `shadow_constants.h`) — so
-modules reference them directly instead of hand-copying bit values.
+`CORUN_GRP_*` group + the `NAV`/`EDIT`/`TRANSPORT` composites, `CORUN_OWNER_*`,
+`CORUN_KEEP_DEFAULT`, `CORUN_KEEP_BACK`, and `CORUN_F_OWN_BACK` (matching
+`shadow_constants.h`) — so modules reference them directly instead of hand-copying
+bit values.
 
 ### Capability gate
 
