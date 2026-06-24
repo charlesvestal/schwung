@@ -77,26 +77,26 @@
         </thead>
         <tbody id="file-tbody">
             {{if .ParentDir}}
-            <tr class="file-row file-row-parent" data-isdir="true">
+            <tr class="file-row file-row-parent" data-isdir="true" tabindex="0" aria-label="Parent directory">
                 <td class="col-select"></td>
                 <td>
                     <span class="file-icon" aria-hidden="true">&#8617;</span>
-                    <a class="file-name-link" href="/files?path={{.ParentDir}}">..</a>
+                    <a class="file-name-link" href="/files?path={{.ParentDir}}" tabindex="-1">..</a>
                 </td>
                 <td class="text-muted">—</td>
                 <td class="text-muted">—</td>
             </tr>
             {{end}}
             {{range .Entries}}
-            <tr class="file-row" data-path="{{.Path}}" data-name="{{.Name}}" data-isdir="{{.IsDir}}">
+            <tr class="file-row" data-path="{{.Path}}" data-name="{{.Name}}" data-isdir="{{.IsDir}}" tabindex="0" aria-label="{{.Name}}, {{if .IsDir}}folder{{else}}file{{end}}">
                 <td class="col-select"><input type="checkbox" class="file-select" aria-label="Select {{.Name}}"></td>
                 <td>
                     {{if .IsDir}}
                     <span class="file-icon" aria-hidden="true">&#128193;</span>
-                    <a class="file-name-link" href="/files?path={{.Path}}">{{.Name}}/</a>
+                    <a class="file-name-link" href="/files?path={{.Path}}" tabindex="-1">{{.Name}}/</a>
                     {{else}}
                     <span class="file-icon" aria-hidden="true">&#128196;</span>
-                    <a class="file-name-link" href="/files/download?path={{.Path}}">{{.Name}}</a>
+                    <a class="file-name-link" href="/files/download?path={{.Path}}" tabindex="-1">{{.Name}}</a>
                     {{end}}
                 </td>
                 <td class="text-muted">{{if .IsDir}}—{{else}}{{formatBytes .Size}}{{end}}</td>
@@ -207,6 +207,8 @@
     }
 
     rows.forEach(function(row) {
+        var selectable = isSelectableRow(row);
+
         // Double-click anywhere on a row navigates — the classic file-manager
         // affordance, alongside the name links (which do the same on single
         // click / Enter for keyboard + screen-reader users).
@@ -215,8 +217,24 @@
             navigateRow(row);
         });
 
+        // Keyboard: rows are tabindex=0 so Tab reaches them in every browser
+        // (Safari's default Tab skips links). Enter opens (dir → in, file →
+        // download, ".." → up); Space toggles selection. This is what restores
+        // "Enter drills into a directory" instead of toggling selection.
+        row.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                navigateRow(row);
+            } else if (selectable && (e.key === ' ' || e.key === 'Spacebar')) {
+                e.preventDefault();
+                if (selected.has(row)) selected.delete(row); else selected.add(row);
+                lastAnchorRow = row;
+                updateSelection();
+            }
+        });
+
         // The ".." row isn't selectable: a single click anywhere on it goes up.
-        if (!isSelectableRow(row)) {
+        if (!selectable) {
             row.addEventListener('click', function(e) {
                 if (e.target.closest('a')) return;
                 navigateRow(row);
