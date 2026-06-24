@@ -170,7 +170,7 @@ import {
     handlePresetsJog, handlePresetDetailJog,
     handlePresetsSelect, handlePresetDetailSelect,
     handlePresetsBack, handlePresetDetailBack,
-    tickPresetPreview
+    tickPresetPreview, isPresetPreviewActive
 } from './shadow_ui_presets.mjs';
 import {
     drawMasterFx as _drawMasterFx,
@@ -4183,6 +4183,13 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
 
 /* Autosave all slot states to slot_state/slot_N.json */
 function autosaveAllSlots() {
+    /* Never persist an uncommitted preset audition. While the user scrolls
+     * User Presets, the live <prefix>:state is the previewed sound, not a
+     * committed choice — saving it would let a slot silently adopt a preview
+     * (e.g. if a periodic autosave or overtake-suspend teardown lands
+     * mid-audition). previewActive clears on Load (commit) or Back (revert),
+     * after which autosave resumes normally. */
+    if (isPresetPreviewActive()) return;
     for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
         /* Sync chainConfigs from DSP before checking - prevents clobbering
          * valid autosave files for slots we haven't navigated to yet */
@@ -13007,6 +13014,7 @@ function drawHelpDetail() {
     _ctx.invalidateKnobContextCache = (...args) => invalidateKnobContextCache(...args);
     _ctx.loadChainConfigFromSlot = (...args) => loadChainConfigFromSlot(...args);
     _ctx.getSlotStateWithRetry = (...args) => getSlotStateWithRetry(...args);
+    _ctx.showWarning = (...args) => showWarning(...args);
 
     /* Master FX functions */
     _ctx.scanForAudioFxModules = (...args) => scanForAudioFxModules(...args);
