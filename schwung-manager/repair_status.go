@@ -16,6 +16,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -60,12 +61,122 @@ func bootstrapNeeded() bool {
 	return repairBootstrap
 }
 
-// invalidateRepairCache forces the next bootstrapNeeded() call to
-// re-read the entrypoint. Called after any operation that may have
-// changed bootstrap state (e.g. user finished the SSH bootstrap and
-// hit "Retry detection" on the repair page).
+// invalidateRepairCache forces the next bootstrapNeeded() / shimStale()
+// call to re-read. Called after any operation that may have changed repair
+// state (e.g. user finished the SSH bootstrap and hit "Retry detection").
 func invalidateRepairCache() {
 	repairMu.Lock()
 	repairLastCheck = time.Time{}
 	repairMu.Unlock()
+	shimMu.Lock()
+	shimLastCheck = time.Time{}
+	shimMu.Unlock()
+	healMu.Lock()
+	healLastCheck = time.Time{}
+	healMu.Unlock()
+}
+
+const (
+	repairShimData = "/data/UserData/schwung/schwung-shim.so"
+	repairShimLib  = "/usr/lib/schwung-shim.so"
+)
+
+var (
+	shimMu          sync.RWMutex
+	shimLastCheck   time.Time
+	shimStaleCached bool
+)
+
+// shimStale reports whether the LIVE shim at /usr/lib is out of date — i.e.
+// not byte-identical to the installed payload shim on /data. That happens
+// when an update extracted a new shim but the privileged mirror to /usr/lib
+// never ran (unblessed/missing heal). This is the *actual* stuck-shim
+// condition the user feels: blank module slots, "can't load", menu stuck on
+// "none" — because shadow_ui (new) talks to an old shim over a mismatched
+// SHM layout. Distinct from bootstrapNeeded (which only inspects the boot
+// entrypoint and misses this). Reads as `ableton` — two file reads, no
+// privilege needed. 30s cache.
+func shimStale() bool {
+	shimMu.RLock()
+	if time.Since(shimLastCheck) < repairCacheTTL {
+		v := shimStaleCached
+		shimMu.RUnlock()
+		return v
+	}
+	shimMu.RUnlock()
+
+	shimMu.Lock()
+	defer shimMu.Unlock()
+	if time.Since(shimLastCheck) < repairCacheTTL {
+		return shimStaleCached
+	}
+	shimLastCheck = time.Now()
+	// No installed payload shim to compare against → nothing to advise.
+	if _, err := os.Stat(repairShimData); err != nil {
+		shimStaleCached = false
+		return false
+	}
+	// Stale when the live /usr/lib copy isn't byte-identical to the payload
+	// (filesIdentical also returns false if /usr/lib is missing → repair).
+	shimStaleCached = !filesIdentical(repairShimData, repairShimLib)
+	return shimStaleCached
+}
+
+const repairHealPath = "/data/UserData/schwung/bin/schwung-heal"
+
+var (
+	healMu          sync.RWMutex
+	healLastCheck   time.Time
+	healUnblessedC  bool
+)
+
+// healUnblessed reports whether the schwung-heal helper is NOT properly
+// privileged — missing, or not setuid, or setuid but owned by a non-root user
+// (e.g. `ableton`, which a failed web update leaves behind via os.Rename of the
+// staged copy). In any of those states, heal cannot escalate when invoked by
+// the ableton-context entrypoint/manager, so the NEXT web update will silently
+// fail to mirror the shim — even if the live shim happens to match right now.
+// This catches the latent case the band-aid SSH fix leaves behind (shim mirrored
+// once via root, but heal still owned by ableton), so the banner persists until
+// the durable repair (chown root + setuid) is done. 30s cache.
+func healUnblessed() bool {
+	healMu.RLock()
+	if time.Since(healLastCheck) < repairCacheTTL {
+		v := healUnblessedC
+		healMu.RUnlock()
+		return v
+	}
+	healMu.RUnlock()
+
+	healMu.Lock()
+	defer healMu.Unlock()
+	if time.Since(healLastCheck) < repairCacheTTL {
+		return healUnblessedC
+	}
+	healLastCheck = time.Now()
+	info, err := os.Stat(repairHealPath)
+	if err != nil {
+		healUnblessedC = true // missing → can't self-heal
+		return true
+	}
+	if info.Mode()&os.ModeSetuid == 0 {
+		healUnblessedC = true // no setuid bit → runs as caller (ableton)
+		return true
+	}
+	// setuid set, but owner must be root for it to grant euid=0.
+	if st, ok := info.Sys().(*syscall.Stat_t); ok && st.Uid != 0 {
+		healUnblessedC = true // setuid-but-nonroot (e.g. ableton) → euid=ableton
+		return true
+	}
+	healUnblessedC = false
+	return false
+}
+
+// repairNeeded is the combined "manual repair required" signal: the boot
+// entrypoint can't self-heal (bootstrapNeeded), OR the live shim is already
+// out of date (shimStale, active symptom), OR heal isn't properly blessed
+// (healUnblessed, latent — next update will fail). All need a one-time root
+// action the ableton-context web manager cannot perform.
+func repairNeeded() bool {
+	return bootstrapNeeded() || shimStale() || healUnblessed()
 }
