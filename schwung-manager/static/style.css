@@ -2125,6 +2125,13 @@ code {
 .repair-copy-row pre {
     flex: 1;
     margin: 0;
+    /* Wrap the long ssh command inside the box instead of overflowing the
+     * window (which pushed the Copy button off-screen). min-width:0 lets the
+     * flex item shrink below its intrinsic single-line width. */
+    min-width: 0;
+    white-space: pre-wrap;
+    word-break: break-all;
+    overflow-wrap: anywhere;
 }
 .repair-copy-btn {
     flex-shrink: 0;
