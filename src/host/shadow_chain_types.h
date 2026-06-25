@@ -37,6 +37,7 @@ typedef struct shadow_chain_slot_t {
     float volume;           /* 0.0 to 1.0, user-set level (never modified by mute/solo) */
     int muted;              /* 1 = muted (Mute+Track or Move speakerOn sync) */
     int soloed;             /* 1 = soloed (Shift+Mute+Track or Move solo-cue sync) */
+    int feedback_hold;      /* 1 = booted muted as a line-input feedback guard; JS clears once jack state is safe */
     int forward_channel;    /* -2 = passthrough, -1 = auto, 0-15 = forward MIDI to this channel */
     int transpose;          /* semitone offset applied to incoming note-on/off/poly-AT, range -12..+12 */
     char patch_name[64];
