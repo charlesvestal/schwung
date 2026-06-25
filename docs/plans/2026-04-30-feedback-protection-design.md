@@ -230,3 +230,61 @@ Hardware-only; no automated tests.
 - Cable unplug while a line-in module is loaded does not re-gate.
 - Sidechain audio FX (vocoder, talkbox) are not gated by the heuristic.
 - Multiple sequential line-in module loads each re-gate — no de-dup.
+
+## Addendum (2026-06-25): cold-boot restore gate
+
+The interactive gate above only runs on *user* selection — `shadow_ui.js`
+component-pick and tool-launch. **Cold-boot restore bypasses it.** A slot whose
+synth consumes line input (e.g. `linein`) is restored by the shim
+(`shadow_inprocess_load_chain`, `shadow_chain_mgmt.c`), which activates the slot
+hot. The shim cannot read jack state at boot (XMOS hasn't broadcast CC 114/115
+yet, and `shadow_speaker_active`/`shadow_line_in_connected` start `known=0`), so
+it cannot evaluate the risk there. Without a gate, a restored `linein` + reverb
+slot drives the internal mic straight to the speakers on boot — the reported
+v0.11.3 feedback bug.
+
+**Mechanism — "mute on boot, auto-clear when safe":**
+
+1. Chain host parses `capabilities.audio_in` (a JSON *boolean* — uses the new
+   `json_get_bool_in_section`, since `json_get_int` would `atoi("true") → 0`) +
+   `component_type` at synth load and exposes `synth:consumes_line_input`
+   (`chain_host.c`, mirrors the `consumesLineInput` JS predicate).
+2. The shim, after `load_file`/`load_patch` in *both* restore paths, queries
+   that param via `shadow_slot_apply_boot_feedback_hold(i)`; a line-input
+   consumer is brought up `muted = 1` + `feedback_hold = 1` (new slot field)
+   rather than hot. `shadow_effective_volume()` returns 0 when muted → silenced.
+3. JS `reconcileFeedbackHolds()` (tick path, throttled ~4×/sec, self-deactivates
+   when nothing is held) reads `slot:feedback_hold` per slot and:
+   - user already un-muted it manually → just clears the flag;
+   - not actually a line-input consumer, or **no** feedback risk (headphones /
+     line-in cable present) → un-mute + clear (silent);
+   - risk present **and** the shadow UI is on screen (`jack:display == "1"`) →
+     raises the existing modal; confirm un-mutes, decline stays muted;
+   - risk present **and** shadow UI hidden → stays muted, revisited next pass.
+     (We must not raise the modal while hidden: `feedbackGateInput` intercepts
+     CC globally, so it would hijack Move's native jog/back at boot.)
+4. Param plumbing: `slot:feedback_hold` get + a pure-flag set in
+   `shadow_handle_slot_param_{get,set}`. The set does *not* touch mute — JS
+   sets `slot:muted` separately, keeping "unmute" (confirmed) and "clear flag,
+   stay muted" (declined) decoupled.
+
+**Related migration fix (root cause of the stale config):** the per-set
+migration (`shadow_batch_migrate_sets`) used to copy the *global* `slot_state`
+into every set, propagating a stale line-in autosave. It now seeds **empty**
+state (`seed_empty_set_state`), so the global default never carries module
+config. Migration-only and gated by `set_state/.migrated`; already-migrated sets
+are not retroactively scrubbed (the boot mute above protects them).
+
+Full investigation + decision record: `docs/plans/2026-06-25-boot-feedback-fix.md`.
+
+### Boot-restore manual test plan
+
+8. Configure a slot with `linein` (+ optional reverb), reboot with **headphones
+   plugged** → slot un-mutes silently, audio passes (no modal, no feedback).
+9. Same slot, reboot on **built-in speakers, nothing plugged** → slot stays
+   muted (no feedback). Open the shadow UI → modal appears; jog click un-mutes,
+   Back leaves it muted.
+10. Case 9, then **plug headphones** without answering the modal / before opening
+    the UI → slot auto-un-mutes on the next reconcile pass.
+11. Reboot with no line-input slot restored → no holds, reconcile self-disables
+    (zero ongoing cost).

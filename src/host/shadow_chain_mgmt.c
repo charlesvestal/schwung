@@ -940,6 +940,31 @@ void shadow_slot_load_capture(int slot, int patch_index) {
  * Boot - Load Chain
  * ============================================================================ */
 
+/* Boot feedback guard: a freshly-restored slot whose synth pulls audio in from
+ * line-in/mic (e.g. Line In) would push the input straight to the speakers on
+ * boot — runaway feedback if speakers are active and no cable is plugged. Jack
+ * state is unknown to the shim at boot, so we can't evaluate the risk here.
+ * Instead, bring any such slot up MUTED with feedback_hold set; the JS shadow_ui
+ * (which has reliable jack state + owns the modal) clears the hold once it
+ * confirms there's no risk or the user acknowledges. */
+static void shadow_slot_apply_boot_feedback_hold(int i) {
+    if (i < 0 || i >= SHADOW_CHAIN_INSTANCES) return;
+    if (!shadow_chain_slots[i].instance || !shadow_plugin_v2 || !shadow_plugin_v2->get_param) return;
+    char buf[8];
+    int len = shadow_plugin_v2->get_param(shadow_chain_slots[i].instance,
+                                          "synth:consumes_line_input", buf, sizeof(buf));
+    if (len <= 0) return;
+    buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
+    if (atoi(buf) == 1) {
+        shadow_chain_slots[i].muted = 1;
+        shadow_chain_slots[i].feedback_hold = 1;
+        char msg[96];
+        snprintf(msg, sizeof(msg),
+                 "Shadow boot: slot %d consumes line-in — muted pending feedback check", i);
+        shadow_log(msg);
+    }
+}
+
 int shadow_inprocess_load_chain(void) {
     if (shadow_inprocess_ready) return 0;
 
@@ -1096,6 +1121,7 @@ int shadow_inprocess_load_chain(void) {
                     }
                 }
                 shadow_apply_patch_channels(i);
+                shadow_slot_apply_boot_feedback_hold(i);
                 {
                     char msg[256];
                     snprintf(msg, sizeof(msg), "Shadow inprocess: slot %d loaded from autosave", i);
@@ -1134,6 +1160,7 @@ int shadow_inprocess_load_chain(void) {
                 }
             }
             shadow_apply_patch_channels(i);
+            shadow_slot_apply_boot_feedback_hold(i);
         } else {
             char msg[128];
             snprintf(msg, sizeof(msg), "Shadow inprocess: patch not found: %s",
@@ -1581,6 +1608,13 @@ int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
         shadow_apply_mute(slot, atoi(value));
         return 1;
     }
+    if (strcmp(key, "slot:feedback_hold") == 0) {
+        /* JS clears the boot feedback guard once jack state is safe. Pure flag
+         * write — the caller separately sets slot:muted to unmute (confirmed) or
+         * leaves it muted (declined). Keeps the two decisions decoupled. */
+        shadow_chain_slots[slot].feedback_hold = atoi(value) ? 1 : 0;
+        return 1;
+    }
     if (strcmp(key, "slot:soloed") == 0) {
         int val = atoi(value);
         if (val && !shadow_chain_slots[slot].soloed) {
@@ -1632,6 +1666,9 @@ int shadow_handle_slot_param_get(int slot, const char *key, char *buf, int buf_l
     }
     if (strcmp(key, "slot:muted") == 0) {
         return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].muted);
+    }
+    if (strcmp(key, "slot:feedback_hold") == 0) {
+        return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].feedback_hold);
     }
     if (strcmp(key, "slot:soloed") == 0) {
         return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].soloed);

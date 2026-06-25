@@ -313,7 +313,11 @@ Loading a chain module / tool that consumes line-in shows "Speaker Feedback Risk
 
 Gate fires when: module's `capabilities.audio_in == true` AND `component_type` is NOT `audio_fx`/`midi_fx` AND `shadow_speaker_active` AND NOT `shadow_line_in_connected`.
 
-Impl: `src/shared/feedback_gate.mjs` (predicate + modal), `src/shadow/shadow_ui.js` (call sites), `src/schwung_shim.c` (XMOS CC 114 line-in, CC 115 line-out). Out of scope: Move firmware's autosample / line-in monitoring; Quantized Sampler "Move Input" toggle (fullscreen menu makes JS modal inert). See `docs/plans/2026-04-30-feedback-protection-design.md`.
+**Boot-time gate (mute on boot, auto-clear when safe).** The interactive gate only runs on *user* selection, so a restored line-input slot would activate hot at cold boot (jack state is unknown to the shim there) and feed back. The shim now brings any restored line-input slot up **muted** with `feedback_hold = 1` (`shadow_slot_apply_boot_feedback_hold` in `shadow_chain_mgmt.c`, both boot-restore paths; chain host exposes `synth:consumes_line_input` from `capabilities.audio_in`). The JS reconcile (`reconcileFeedbackHolds` in `shadow_ui.js`, throttled, self-deactivating) clears the hold once jack state is safe (headphones or line-in cable present) — silently un-muting — or, when there's risk *and* the shadow UI is on screen (`jack:display == "1"`), raises the same modal; confirm un-mutes, decline stays muted. Param plumbing: `slot:feedback_hold` get/set on the slot struct's new `feedback_hold` field.
+
+**Global default always empty.** The one-time per-set migration (`shadow_batch_migrate_sets`, `shadow_set_pages.c`) no longer copies the global `slot_state` into each set — it seeds **empty** `{}` slot/master_fx files + a default chain config (`seed_empty_set_state`, mirroring the JS new-set path). A stale global slot (e.g. an old line-in + reverb autosave) can no longer propagate into every set and reload on boot. (This is migration-only and gated by `set_state/.migrated`; it does **not** scrub sets already migrated — those need Fix B's boot mute or manual cleanup.)
+
+Impl: `src/shared/feedback_gate.mjs` (predicate + modal), `src/shadow/shadow_ui.js` (call sites + boot reconcile), `src/schwung_shim.c` (XMOS CC 114 line-in, CC 115 line-out). Out of scope: Move firmware's autosample / line-in monitoring; Quantized Sampler "Move Input" toggle (fullscreen menu makes JS modal inert). See `docs/plans/2026-04-30-feedback-protection-design.md` and `docs/plans/2026-06-25-boot-feedback-fix.md`.
 
 ### Skipback
 
