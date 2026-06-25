@@ -297,67 +297,18 @@ static void shadow_dbus_handle_text(const char *text)
         }
     }
 
-    /* Auto-correct mute state from D-Bus screen reader text.
-     * Move announces "<Instrument> muted" / "<Instrument> unmuted" on any
-     * mute state change. Apply to the selected slot so we stay in sync even
-     * when Move mutes/unmutes independently of our Mute+Track shortcut.
-     *
-     * Skip while a drum pad is held: Mute+Pad mutes an individual pad/drum and
-     * Move announces "<Sample> muted" for it too. That announcement is
-     * indistinguishable by text from a track mute, so without this guard a pad
-     * mute would silence the whole shadow slot. A real track mute (plain Mute
-     * tap or Mute+Track) happens with no pad held, so it still syncs. */
-    if (!(host.pads_held && *host.pads_held > 0)) {
-        int text_len = strlen(text);
-        int ends_with_unmuted = (text_len >= 8 && strcmp(text + text_len - 7, "unmuted") == 0
-                                 && text[text_len - 8] == ' ');
-        int ends_with_muted = !ends_with_unmuted &&
-                              (text_len >= 6 && strcmp(text + text_len - 5, "muted") == 0
-                               && text[text_len - 6] == ' ');
-
-        if (ends_with_muted || ends_with_unmuted) {
-            host.apply_mute(*host.selected_slot, ends_with_muted);
-        }
-    }
-
-    /* Auto-correct solo state from D-Bus screen reader text.
-     * Move announces "<Instrument> soloed" / "<Instrument> unsoloed".
-     * Skipped while a pad is held, for the same reason as the mute block above. */
-    if (!(host.pads_held && *host.pads_held > 0)) {
-        int text_len = strlen(text);
-        int ends_with_unsoloed = (text_len >= 9 && strcmp(text + text_len - 8, "unsoloed") == 0
-                                  && text[text_len - 9] == ' ');
-        int ends_with_soloed = !ends_with_unsoloed &&
-                               (text_len >= 7 && strcmp(text + text_len - 6, "soloed") == 0
-                                && text[text_len - 7] == ' ');
-
-        if (ends_with_soloed) {
-            /* Solo is exclusive — unsolo all, then solo this slot */
-            int sel = *host.selected_slot;
-            for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
-                host.chain_slots[i].soloed = 0;
-            host.chain_slots[sel].soloed = 1;
-            *host.solo_count = 1;
-            for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
-                host.ui_state_update_slot(i);
-            char msg[64];
-            snprintf(msg, sizeof(msg), "D-Bus solo sync: slot %d soloed", sel);
-            host.log(msg);
-        } else if (ends_with_unsoloed) {
-            int sel = *host.selected_slot;
-            host.chain_slots[sel].soloed = 0;
-            int count = 0;
-            for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
-                if (host.chain_slots[i].soloed) count++;
-            }
-            *host.solo_count = count;
-            for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
-                host.ui_state_update_slot(i);
-            char msg[64];
-            snprintf(msg, sizeof(msg), "D-Bus solo sync: slot %d unsoloed", sel);
-            host.log(msg);
-        }
-    }
+    /* NOTE: The D-Bus screen-reader mute/solo auto-correct was removed (it lived
+     * here). It matched any announcement text ending in " muted"/" unmuted" /
+     * " soloed"/" unsoloed" and applied it to the *selected* shadow slot. But
+     * Move utters drum kit / drum pad names with those suffixes (e.g. "Lay Down
+     * Kit muted", "Tom 808 Low 2 muted"), and Schwung's own TTS loops back
+     * through this same handler. The result was a slot getting spuriously muted
+     * (or solo-stealing the others) and the state persisted via
+     * shadow_save_state() — silencing that slot's audio across every project
+     * until manually un-muted. The pads_held guard was timing-fragile and only
+     * caught a subset. Deliberate slot mute/solo is set directly by the
+     * Mute+Track / Shift+Mute+Track combos in schwung_shim.c, so removing the
+     * text-based sync loses no intended behavior. */
 
     /* After receiving any screen reader message from Move, inject our pending announcements */
     shadow_inject_pending_announcements();
