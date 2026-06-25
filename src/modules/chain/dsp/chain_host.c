@@ -502,6 +502,7 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
 
     /* Parse default_forward_channel from capabilities in module.json */
     inst->synth_default_forward_channel = -1;  /* Default: no forwarding preference */
+    inst->synth_consumes_line_input = 0;       /* Default: not a line-input consumer */
     {
         char json_path[MAX_PATH_LEN];
         snprintf(json_path, sizeof(json_path), "%s/module.json", synth_path);
@@ -523,6 +524,27 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
                             inst->synth_default_forward_channel = fwd_ch - 1;  /* Store as 0-15 */
                             snprintf(msg, sizeof(msg), "Synth default_forward_channel: %d", fwd_ch);
                             v2_chain_log(inst, msg);
+                        }
+                    }
+                    /* Parse capabilities to decide if this synth pulls audio in
+                     * from line-in / internal mic (feedback risk on boot). Mirror
+                     * the JS predicate consumesLineInput(): audio_in === true AND
+                     * component_type ∉ {audio_fx, midi_fx}. audio_in is a JSON
+                     * boolean, so json_get_int would mis-parse it (atoi("true")=0)
+                     * — use json_get_bool_in_section. */
+                    {
+                        int audio_in = 0;
+                        if (json_get_bool_in_section(json, "capabilities", "audio_in", &audio_in) == 0
+                            && audio_in) {
+                            char ctype[32] = "";
+                            if (json_get_string_in_section(json, "capabilities", "component_type",
+                                                           ctype, sizeof(ctype)) != 0) {
+                                json_get_string(json, "component_type", ctype, sizeof(ctype));
+                            }
+                            if (strcmp(ctype, "audio_fx") != 0 && strcmp(ctype, "midi_fx") != 0) {
+                                inst->synth_consumes_line_input = 1;
+                                v2_chain_log(inst, "Synth consumes line input (feedback risk on boot)");
+                            }
                         }
                     }
                     free(json);
@@ -1492,6 +1514,12 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         /* Return synth's default forward channel from module.json capabilities */
         if (strcmp(subkey, "default_forward_channel") == 0) {
             return snprintf(buf, buf_len, "%d", inst->synth_default_forward_channel);
+        }
+
+        /* Whether this synth pulls audio in from line-in/mic (feedback risk on
+         * boot). Parsed from module.json capabilities at synth load. */
+        if (strcmp(subkey, "consumes_line_input") == 0) {
+            return snprintf(buf, buf_len, "%d", inst->synth_consumes_line_input);
         }
 
         /* For chain_params: try plugin first, fall back to parsed module.json data */

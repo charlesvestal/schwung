@@ -52,6 +52,27 @@ int json_get_int(const char *json, const char *key, int *out) {
     return 0;
 }
 
+/* Simple JSON boolean extraction - finds "key": true|false.
+ * Returns 0 if the key is found (value written to *out as 1/0), -1 otherwise.
+ * NOTE: json_get_int cannot be used for booleans — atoi("true") yields 0. */
+int json_get_bool(const char *json, const char *key, int *out) {
+    char search[128];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+
+    const char *pos = strstr(json, search);
+    if (!pos) return -1;
+
+    /* Find the colon after the key */
+    pos = strchr(pos + strlen(search), ':');
+    if (!pos) return -1;
+
+    /* Skip whitespace */
+    while (*pos && (*pos == ':' || *pos == ' ' || *pos == '\t' || *pos == '\n')) pos++;
+
+    *out = (strncmp(pos, "true", 4) == 0) ? 1 : 0;
+    return 0;
+}
+
 /* Simple JSON float extraction - finds "key": number */
 int json_get_float(const char *json, const char *key, float *out) {
     char search[128];
@@ -150,6 +171,26 @@ int json_get_int_in_section(const char *json, const char *section_key,
     section[len] = '\0';
 
     int ret = json_get_int(section, key, out);
+    free(section);
+    return ret;
+}
+
+int json_get_bool_in_section(const char *json, const char *section_key,
+                                    const char *key, int *out) {
+    const char *start = NULL;
+    const char *end = NULL;
+    if (json_get_section_bounds(json, section_key, &start, &end) != 0) {
+        return -1;
+    }
+
+    int len = (int)(end - start + 1);
+    char *section = malloc((size_t)len + 1);
+    if (!section) return -1;
+
+    memcpy(section, start, (size_t)len);
+    section[len] = '\0';
+
+    int ret = json_get_bool(section, key, out);
     free(section);
     return ret;
 }

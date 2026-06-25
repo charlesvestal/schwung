@@ -138,7 +138,43 @@ intentional line-in-on-boot workflows when there's no risk; zero feedback window
 
 ## Status
 
-Investigation only — **no code changed**. Was mid-read of `chain_host.c`
-synth-load (503-533) and the `synth:` get_param handler (1485-1546), plus
-`chain_internal.h` (232-256) and `shadow_chain_types.h` (32-45) for where to add
-fields.
+**Implemented (2026-06-25).** Both fixes landed on this branch:
+
+**Fix A** — `shadow_set_pages.c`: `seed_empty_set_state()` replaces the
+copy-from-`SLOT_STATE_DIR` block in `shadow_batch_migrate_sets()`; migration now
+seeds empty `{}` slot/master_fx files + a default chain config.
+
+**Fix B** —
+- `chain_json.c` / `chain_internal.h`: new `json_get_bool` + `json_get_bool_in_section`
+  (audio_in is a JSON boolean — `json_get_int` would `atoi("true") → 0`).
+- `chain_host.c`: `v2_load_synth` parses `capabilities.audio_in` + `component_type`
+  into `inst->synth_consumes_line_input` (field added to `chain_internal.h`);
+  `synth:consumes_line_input` get_param key added.
+- `shadow_chain_types.h`: `int feedback_hold;` added to the slot struct.
+- `shadow_chain_mgmt.c`: `shadow_slot_apply_boot_feedback_hold()` queries the new
+  param after `load_file`/`load_patch` in **both** boot-restore paths and brings a
+  line-input slot up `muted=1` + `feedback_hold=1`; `slot:feedback_hold` get + a
+  pure-flag set added to the slot param handlers.
+- `shadow_ui.js`: `reconcileFeedbackHolds()` (throttled, self-deactivating) on the
+  tick path clears holds — silent un-mute when safe, modal only while the shadow
+  UI is shown (`jack:display == "1"`), kept muted otherwise. `consumesLineInput`
+  added to the feedback_gate import.
+
+Build: `./scripts/build.sh` green; changes verified present in `schwung-shim.so`
+and `chain/dsp.so`. Static suite unchanged (82 pass / 21 pre-existing stale
+fails, identical with changes stashed). On-hardware boot test pending (see the
+boot-restore manual test plan in `2026-04-30-feedback-protection-design.md`).
+
+### Refinements made during implementation (vs. the plan above)
+
+1. **`json_get_bool_in_section`, not `json_get_int_in_section`** — `audio_in` is a
+   JSON boolean; the int helper would always read 0.
+2. **Both boot-restore paths guarded** — the autosave path *and* the name-based
+   patch path activate slots hot; the helper is called from both.
+3. **Modal gated on `jack:display`** — the plan didn't account for the shadow UI
+   being hidden at boot. `feedbackGateInput` intercepts CC globally, so an
+   auto-raised modal would hijack Move's native jog/back. The reconcile therefore
+   only raises the modal while the shadow UI is on screen; otherwise it
+   silent-un-mutes when safe and keeps the slot muted when risky. Uses
+   `maybeConfirmForModule` alone (it already encapsulates the risk + consumer
+   checks; `feedbackRiskPresent` isn't exported).

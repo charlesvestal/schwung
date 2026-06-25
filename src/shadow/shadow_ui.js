@@ -123,6 +123,7 @@ import {
 
 import {
     maybeConfirmForModule,
+    consumesLineInput,
     feedbackGateActive,
     feedbackGateDraw,
     feedbackGateInput,
@@ -2636,6 +2637,78 @@ function setSlotParamWithRetry(slot, key, value, timeoutMs, retryTimeoutMs, logL
         debugLog(`${logLabel} timeout slot ${slot + 1} key ${key} (final)`);
     }
     return ok;
+}
+
+/* ---- Boot feedback guard reconcile (boot-feedback fix, 2026-06-25) ----
+ * The shim brings any line-input-consuming slot (e.g. Line In) up MUTED on boot
+ * with slot:feedback_hold set, because it can't read jack state there — a hot
+ * restore would push line-in/mic straight to the speakers (runaway feedback).
+ * Here in JS, where jack state is reliable and the modal can be shown, we
+ * release each hold:
+ *   - no risk (headphones or line-in cable present) -> unmute silently
+ *   - user already unmuted it manually              -> just clear the flag
+ *   - risk present AND shadow UI is on screen        -> raise the existing
+ *       feedback modal (confirm unmutes, decline stays muted)
+ *   - risk present AND shadow UI hidden              -> keep muted, revisit next
+ *       pass (raising the modal while hidden would hijack Move's native
+ *       jog/back, since feedbackGateInput intercepts CC globally)
+ * Self-deactivates once no slot reports a hold, so there's zero ongoing cost in
+ * the common case (no line-in slot restored). */
+let feedbackHoldCheckActive = true;
+function bootFeedbackRisk() {
+    if (typeof host_speaker_active !== "function") return false;
+    if (typeof host_line_in_connected !== "function") return false;
+    return host_speaker_active() && !host_line_in_connected();
+}
+function reconcileFeedbackHolds() {
+    if (!feedbackHoldCheckActive) return;
+    if (feedbackGateActive()) return;  /* a modal is up — let it resolve first */
+
+    let anyHeld = false;
+    for (let slot = 0; slot < SHADOW_UI_SLOTS; slot++) {
+        if (getSlotParam(slot, "slot:feedback_hold") !== "1") continue;
+        anyHeld = true;
+
+        /* User already unmuted this slot manually — release the hold. */
+        if (getSlotParam(slot, "slot:muted") === "0") {
+            setSlotParam(slot, "slot:feedback_hold", "0");
+            continue;
+        }
+
+        const moduleId = getSlotParam(slot, "synth_module");
+        let meta = null;
+        try {
+            if (moduleId && typeof host_get_module_metadata === "function") {
+                meta = host_get_module_metadata(moduleId);
+            }
+        } catch (e) { meta = null; }
+
+        /* Safe to bring up: not actually a line-input consumer, or no risk. */
+        if (!consumesLineInput(meta) || !bootFeedbackRisk()) {
+            setSlotParam(slot, "slot:muted", "0");
+            setSlotParam(slot, "slot:feedback_hold", "0");
+            continue;
+        }
+
+        /* Risk present. Only raise the modal while the shadow UI is on screen
+         * (jack:display == "1"); otherwise the feedback gate would steal
+         * jog/back from Move's native UI. Keep the slot muted until then. */
+        if (getSlotParam(0, "jack:display") !== "1") continue;
+
+        maybeConfirmForModule(meta, (ok) => {
+            if (ok) {
+                setSlotParam(slot, "slot:muted", "0");
+                setSlotParam(slot, "slot:feedback_hold", "0");
+            } else {
+                /* Declined: leave muted, but clear the hold so we don't keep
+                 * re-prompting every time the user opens the shadow UI. */
+                setSlotParam(slot, "slot:feedback_hold", "0");
+            }
+        });
+        if (feedbackGateActive()) return;  /* modal shown — handle others later */
+    }
+
+    if (!anyHeld) feedbackHoldCheckActive = false;  /* nothing left to reconcile */
 }
 
 /* Scan modules directory for audio_fx modules */
@@ -6063,6 +6136,9 @@ function saveTextPreviewConfig() {
  * to features.json — we now use _shm variants that only write shared memory. */
 let _configSyncTickCounter = 0;
 const CONFIG_SYNC_INTERVAL = 88; /* ~2 seconds at 44 ticks/sec */
+
+let _feedbackHoldTickCounter = 0;
+const FEEDBACK_HOLD_CHECK_INTERVAL = 10; /* ~4x/sec — reconcile boot feedback holds */
 let _upgradeOverlayText = null; /* Web-initiated upgrade status for OLED display */
 
 /* Sync JS-only variables from shadow_config.json. Called from tick() every ~2s.
@@ -13973,6 +14049,14 @@ globalThis.tick = function() {
         } catch (e) {
             _upgradeOverlayText = null;
         }
+    }
+
+    /* Reconcile boot feedback holds: bring line-input slots that booted muted
+     * back up once jack state is safe (or the user acknowledges the risk).
+     * Throttled + self-deactivating, so it's free once nothing is held. */
+    if (++_feedbackHoldTickCounter >= FEEDBACK_HOLD_CHECK_INTERVAL) {
+        _feedbackHoldTickCounter = 0;
+        try { reconcileFeedbackHolds(); } catch (e) { debugLog("reconcileFeedbackHolds error: " + e); }
     }
 
     /* Draw upgrade overlay if active (takes priority over normal UI) */
