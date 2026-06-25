@@ -235,6 +235,7 @@ typedef struct chain_instance {
     void *synth_instance;
     char current_synth_module[MAX_NAME_LEN];
     int synth_default_forward_channel;  /* -1 = no default, 0-15 = channel */
+    int synth_consumes_line_input;      /* 1 = pulls line-in/mic (feedback risk on boot) */
 
     /* Audio FX state */
     void *fx_handles[MAX_AUDIO_FX];
@@ -391,7 +392,9 @@ CHAIN_INTERNAL void v2_unload_synth(chain_instance_t *inst);
 CHAIN_INTERNAL const char *bounded_strstr(const char *start, const char *end, const char *needle);
 CHAIN_INTERNAL int json_get_float(const char *json, const char *key, float *out);
 CHAIN_INTERNAL int json_get_int(const char *json, const char *key, int *out);
+CHAIN_INTERNAL int json_get_bool(const char *json, const char *key, int *out);
 CHAIN_INTERNAL int json_get_int_in_section(const char *json, const char *section_key, const char *key, int *out);
+CHAIN_INTERNAL int json_get_bool_in_section(const char *json, const char *section_key, const char *key, int *out);
 CHAIN_INTERNAL int json_get_section_bounds(const char *json, const char *section_key, const char **out_start, const char **out_end);
 CHAIN_INTERNAL int json_get_string(const char *json, const char *key, char *out, int out_len);
 CHAIN_INTERNAL int json_get_string_in_section(const char *json, const char *section_key, const char *key, char *out, int out_len);

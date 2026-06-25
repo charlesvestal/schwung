@@ -99,6 +99,47 @@ int shadow_copy_file(const char *src_path, const char *dst_path) {
     return 1;
 }
 
+/* Write a small text file and fix ownership (we run as root). */
+static int write_text_file_as_ableton(const char *path, const char *content) {
+    FILE *f = fopen(path, "w");
+    if (!f) return 0;
+    fputs(content, f);
+    fclose(f);
+    chown_to_ableton(path);
+    return 1;
+}
+
+/* Seed a set directory with EMPTY per-set state. The global default
+ * (SLOT_STATE_DIR) must never carry module config into per-set state — a stale
+ * global slot (e.g. an old line-in + reverb autosave) would otherwise propagate
+ * into every set and reload on boot (boot-feedback fix, 2026-06-25). Mirrors the
+ * JS "new set" seed in shadow_ui.js: empty slot/master_fx files + a default
+ * chain config (receive Ch 1-4, unity volume, auto forward, unmuted). */
+static void seed_empty_set_state(const char *set_dir) {
+    shadow_ensure_dir(set_dir);
+    char path[700];
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
+        snprintf(path, sizeof(path), "%s/slot_%d.json", set_dir, i);
+        write_text_file_as_ableton(path, "{}\n");
+        snprintf(path, sizeof(path), "%s/master_fx_%d.json", set_dir, i);
+        write_text_file_as_ableton(path, "{}\n");
+    }
+    snprintf(path, sizeof(path), "%s/" SHADOW_CHAIN_CONFIG_FILENAME, set_dir);
+    FILE *f = fopen(path, "w");
+    if (f) {
+        fputs("{\n  \"slots\": [\n", f);
+        for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
+            fprintf(f,
+                "    { \"name\": \"\", \"channel\": %d, \"volume\": 1.0, "
+                "\"forward_channel\": -1, \"muted\": 0, \"soloed\": 0 }%s\n",
+                i + 1, (i < SHADOW_CHAIN_INSTANCES - 1) ? "," : "");
+        }
+        fputs("  ]\n}\n", f);
+        fclose(f);
+        chown_to_ableton(path);
+    }
+}
+
 /* ============================================================================
  * Batch migration
  * ============================================================================ */
@@ -134,34 +175,17 @@ void shadow_batch_migrate_sets(void) {
         struct stat tst;
         if (stat(test_path, &tst) == 0) continue;
 
-        shadow_ensure_dir(set_dir);
-
-        /* Copy slot state files from default dir */
-        for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
-            char src[512], dst[512];
-            snprintf(src, sizeof(src), SLOT_STATE_DIR "/slot_%d.json", i);
-            snprintf(dst, sizeof(dst), "%s/slot_%d.json", set_dir, i);
-            shadow_copy_file(src, dst);
-
-            snprintf(src, sizeof(src), SLOT_STATE_DIR "/master_fx_%d.json", i);
-            snprintf(dst, sizeof(dst), "%s/master_fx_%d.json", set_dir, i);
-            shadow_copy_file(src, dst);
-        }
-
-        /* Also copy shadow_chain_config.json if it exists */
-        {
-            char src[512], dst[512];
-            snprintf(src, sizeof(src), "/data/UserData/schwung/" SHADOW_CHAIN_CONFIG_FILENAME);
-            snprintf(dst, sizeof(dst), "%s/" SHADOW_CHAIN_CONFIG_FILENAME, set_dir);
-            shadow_copy_file(src, dst);
-        }
+        /* Seed EMPTY per-set state — never copy the global default's module
+         * config (boot-feedback fix, 2026-06-25). A stale global slot must not
+         * propagate into every set. */
+        seed_empty_set_state(set_dir);
 
         count++;
     }
     closedir(sets_dir);
 
     char m[128];
-    snprintf(m, sizeof(m), "Batch migration: seeded %d sets from default slot_state", count);
+    snprintf(m, sizeof(m), "Batch migration: seeded %d sets with empty per-set state", count);
     host.log(m);
 
 write_marker:

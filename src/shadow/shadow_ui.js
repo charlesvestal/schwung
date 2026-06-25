@@ -123,7 +123,10 @@ import {
 
 import {
     maybeConfirmForModule,
+    confirmLineInput,
+    consumesLineInput,
     feedbackGateActive,
+    feedbackGateCancel,
     feedbackGateDraw,
     feedbackGateInput,
 } from '/data/UserData/schwung/shared/feedback_gate.mjs';
@@ -2636,6 +2639,142 @@ function setSlotParamWithRetry(slot, key, value, timeoutMs, retryTimeoutMs, logL
         debugLog(`${logLabel} timeout slot ${slot + 1} key ${key} (final)`);
     }
     return ok;
+}
+
+/* ---- Continuous feedback guard (boot-feedback fix, 2026-06-25) ----
+ * A line-input slot (e.g. Line In) producing audio while the built-in speakers
+ * are active and no cable is plugged feeds the mic straight back to the speakers.
+ * The shim BYPASSES such a slot at boot (visible "B" glyph + slot:feedback_hold
+ * marker), since it can't read jack state there. Here in JS — where jack state is
+ * reliable — we keep guarding continuously:
+ *   - risk present (speakers on, no line-in cable) -> bypass any Line In slot,
+ *       at boot AND if the user unplugs headphones mid-session; announce + (when
+ *       the shadow UI is on screen) raise the "Speaker Feedback Risk" modal
+ *   - safe (headphones or line-in cable) -> un-bypass the guard's bypass
+ *   - user un-bypasses manually (Mute+JogClick) or chooses "enable anyway" in the
+ *       modal -> treat as an override; don't re-bypass until it's safe again or a
+ *       reboot
+ * feedback_hold marks bypasses the guard owns (vs. a user's own bypass). The
+ * modal's draw/input are gated on shadow_get_display_mode()==1 so the gate can
+ * never steal Move's native jog/back while the shadow UI is hidden. */
+let feedbackOverride = {};       /* slot -> user enabled despite risk (until safe/reboot) */
+let feedbackEpisode = {};        /* slot -> currently guard-bypassing due to risk */
+let feedbackModalPending = {};   /* slot -> show the visual modal next time the UI is up */
+let feedbackGuardModalRaised = false;  /* the active feedback modal is the guard's (auto-dismissable) */
+let lineInConsumerCache = {};    /* moduleId -> bool (consumesLineInput) */
+
+function bootFeedbackRisk() {
+    if (typeof host_speaker_active !== "function") return false;
+    if (typeof host_line_in_connected !== "function") return false;
+    return host_speaker_active() && !host_line_in_connected();
+}
+
+function isLineInConsumerModule(moduleId) {
+    if (!moduleId) return false;
+    if (moduleId in lineInConsumerCache) return lineInConsumerCache[moduleId];
+    let meta = null;
+    try {
+        if (typeof host_get_module_metadata === "function") meta = host_get_module_metadata(moduleId);
+    } catch (e) { meta = null; }
+    const v = consumesLineInput(meta);
+    lineInConsumerCache[moduleId] = v;
+    return v;
+}
+
+function reconcileFeedbackHolds() {
+    const risk = bootFeedbackRisk();
+    for (let slot = 0; slot < SHADOW_UI_SLOTS; slot++) {
+        const moduleId = getSlotParam(slot, "synth_module");
+        if (!isLineInConsumerModule(moduleId)) {
+            /* Not a line-in slot — drop any stale guard state. */
+            feedbackEpisode[slot] = false;
+            feedbackModalPending[slot] = false;
+            feedbackOverride[slot] = false;
+            continue;
+        }
+
+        const bypassed = getSlotParam(slot, "synth:bypassed") === "1";
+        const hold = getSlotParam(slot, "slot:feedback_hold") === "1";
+
+        /* User manually un-bypassed a guard bypass (Mute+JogClick) → override. */
+        if (hold && !bypassed) {
+            setSlotParam(slot, "slot:feedback_hold", "0");
+            feedbackOverride[slot] = true;
+            feedbackEpisode[slot] = false;
+            feedbackModalPending[slot] = false;
+            debugLog(`feedback guard: slot ${slot} user-enabled (override)`);
+            continue;
+        }
+
+        if (risk && !feedbackOverride[slot]) {
+            if (!bypassed) {
+                /* Entering risk (e.g. headphones unplugged) on a live Line In. */
+                setSlotParam(slot, "synth:bypassed", "1");
+                setSlotParam(slot, "slot:feedback_hold", "1");
+                debugLog(`feedback guard: slot ${slot} bypassed (feedback risk)`);
+            }
+            if (!feedbackEpisode[slot]) {
+                feedbackEpisode[slot] = true;
+                feedbackModalPending[slot] = true;
+                announce("Feedback risk. Audio monitoring disabled. Plug in headphones.");
+                debugLog(`feedback guard: slot ${slot} alert raised`);
+            }
+        } else if (!risk) {
+            /* Safe: un-bypass the guard's bypass and reset the episode/override. */
+            feedbackOverride[slot] = false;
+            feedbackEpisode[slot] = false;
+            feedbackModalPending[slot] = false;
+            if (bypassed && hold) {
+                setSlotParam(slot, "synth:bypassed", "0");
+                setSlotParam(slot, "slot:feedback_hold", "0");
+                debugLog(`feedback guard: slot ${slot} un-bypassed (safe)`);
+            }
+            /* If the risk cleared while the modal was up (e.g. headphones plugged
+             * back in), dismiss it — the slot is already enabled. */
+            if (feedbackGuardModalRaised && feedbackGateActive() && feedbackGateCancel()) {
+                feedbackGuardModalRaised = false;
+                announce("Headphones connected. Line In enabled.");
+                debugLog(`feedback guard: modal dismissed (safe)`);
+            }
+        }
+        /* risk && override: the user chose to keep it live — leave it alone. */
+    }
+    pumpFeedbackAlertModal();
+}
+
+/* Raise the "Speaker Feedback Risk" modal for a pending slot, but only while the
+ * shadow UI is actually on screen (display_mode==1) — otherwise the gate's input
+ * handler would intercept Move's native jog/back. The active modal swallows
+ * input, so the user can't dismiss the UI without answering. */
+function pumpFeedbackAlertModal() {
+    if (typeof shadow_get_display_mode !== "function") return;
+    if (shadow_get_display_mode() !== 1) return;
+    if (feedbackGateActive()) return;
+    for (let slot = 0; slot < SHADOW_UI_SLOTS; slot++) {
+        if (!feedbackModalPending[slot]) continue;
+        feedbackModalPending[slot] = false;
+        feedbackGuardModalRaised = true;
+        confirmLineInput("Line In", (ok) => {
+            feedbackGuardModalRaised = false;
+            if (ok) {
+                /* Enable anyway → un-bypass + override (no re-bypass until safe/reboot). */
+                setSlotParam(slot, "synth:bypassed", "0");
+                setSlotParam(slot, "slot:feedback_hold", "0");
+                feedbackOverride[slot] = true;
+                feedbackEpisode[slot] = false;
+                debugLog(`feedback guard: slot ${slot} enabled by user (modal)`);
+            } else {
+                /* Keep bypassed — the "B" glyph remains; Mute+JogClick enables later. */
+                debugLog(`feedback guard: slot ${slot} kept bypassed (modal)`);
+            }
+        }, {
+            title: "Feedback Risk",
+            lines: ["Audio monitoring", "disabled.", "Plug in headphones."],
+            footer: "Back:No  Jog:Override",
+            announceText: "Feedback risk. Audio monitoring disabled. Plug in headphones.",
+        });
+        return;  /* one modal at a time */
+    }
 }
 
 /* Scan modules directory for audio_fx modules */
@@ -6063,6 +6202,9 @@ function saveTextPreviewConfig() {
  * to features.json — we now use _shm variants that only write shared memory. */
 let _configSyncTickCounter = 0;
 const CONFIG_SYNC_INTERVAL = 88; /* ~2 seconds at 44 ticks/sec */
+
+let _feedbackHoldTickCounter = 0;
+const FEEDBACK_HOLD_CHECK_INTERVAL = 10; /* ~4x/sec — run the continuous feedback guard */
 let _upgradeOverlayText = null; /* Web-initiated upgrade status for OLED display */
 
 /* Sync JS-only variables from shadow_config.json. Called from tick() every ~2s.
@@ -13975,6 +14117,14 @@ globalThis.tick = function() {
         }
     }
 
+    /* Continuous feedback guard: bypass Line In slots while speaker-feedback risk
+     * is present (boot or headphones unplugged), un-bypass when safe, and raise
+     * the modal when the shadow UI is on screen. Throttled to a few times/sec. */
+    if (++_feedbackHoldTickCounter >= FEEDBACK_HOLD_CHECK_INTERVAL) {
+        _feedbackHoldTickCounter = 0;
+        try { reconcileFeedbackHolds(); } catch (e) { debugLog("reconcileFeedbackHolds error: " + e); }
+    }
+
     /* Draw upgrade overlay if active (takes priority over normal UI) */
     if (_upgradeOverlayText) {
         clear_screen();
@@ -14857,7 +15007,8 @@ globalThis.tick = function() {
             drawMessageOverlay(warningTitle, warningLines);
         }
 
-        if (feedbackGateActive()) {
+        if (feedbackGateActive() &&
+            (typeof shadow_get_display_mode !== "function" || shadow_get_display_mode() === 1)) {
             feedbackGateDraw();
         }
 
@@ -14950,8 +15101,11 @@ globalThis.onMidiMessageInternal = function(data) {
         debugLog(`MIDI_IN: view=${view} status=${status} d1=${d1} d2=${d2} loaded=${overtakeModuleLoaded} callbacks=${!!overtakeModuleCallbacks}`);
     }
 
-    /* Feedback gate intercepts CC input while modal is showing */
-    if (feedbackGateActive() && (status & 0xF0) === 0xB0) {
+    /* Feedback gate intercepts CC input while modal is showing — but only while
+     * the shadow UI is on screen, so a pending boot/unplug feedback modal can
+     * never steal Move's native jog/back when the shadow UI is hidden. */
+    if (feedbackGateActive() && (status & 0xF0) === 0xB0 &&
+        (typeof shadow_get_display_mode !== "function" || shadow_get_display_mode() === 1)) {
         if (feedbackGateInput(d1, d2)) {
             needsRedraw = true;
             return;

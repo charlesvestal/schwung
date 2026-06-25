@@ -230,3 +230,75 @@ Hardware-only; no automated tests.
 - Cable unplug while a line-in module is loaded does not re-gate.
 - Sidechain audio FX (vocoder, talkbox) are not gated by the heuristic.
 - Multiple sequential line-in module loads each re-gate — no de-dup.
+
+## Addendum (2026-06-25): cold-boot restore gate
+
+The interactive gate above only runs on *user* selection — `shadow_ui.js`
+component-pick and tool-launch. **Cold-boot restore bypasses it.** A slot whose
+synth consumes line input (e.g. `linein`) is restored by the shim
+(`shadow_inprocess_load_chain`, `shadow_chain_mgmt.c`), which activates the slot
+hot. The shim cannot read jack state at boot (XMOS hasn't broadcast CC 114/115
+yet, and `shadow_speaker_active`/`shadow_line_in_connected` start `known=0`), so
+it cannot evaluate the risk there. Without a gate, a restored `linein` + reverb
+slot drives the internal mic straight to the speakers on boot — the reported
+v0.11.3 feedback bug.
+
+**Mechanism — continuous "bypass on risk, auto-clear when safe"** (final design;
+an initial "mute on boot" version was replaced — `muted` is the user's mix
+control and was clobbered by the per-set mute-state load right after boot, which
+would have let a restored Line In feed back. Bypass is the existing, *visible*
+"loaded but not processing" state and survives that load):
+
+1. Chain host parses `capabilities.audio_in` (a JSON *boolean* — uses the new
+   `json_get_bool_in_section`, since `json_get_int` would `atoi("true") → 0`) +
+   `component_type` at synth load and exposes `synth:consumes_line_input`
+   (`chain_host.c`, mirrors the `consumesLineInput` JS predicate). `synth:bypassed`
+   get/set already existed (the "B" glyph / Mute+JogClick).
+2. The shim, after `load_file`/`load_patch` in *both* restore paths, queries
+   that param via `shadow_slot_apply_boot_feedback_hold(i)`; a line-input consumer
+   is set `synth:bypassed = 1` (silences the synth render → no feedback, visible
+   "B" glyph) + `feedback_hold = 1` (the guard's marker). Set *after* `load_file`,
+   so the `Loaded slot muted: […]` load that resets `muted` can't unmute it.
+3. JS `reconcileFeedbackHolds()` (tick path, throttled ~4×/sec, runs continuously)
+   scans every Line In slot:
+   - risk present (`host_speaker_active() && !host_line_in_connected()`) → bypass
+     it (boot *or* mid-session headphone unplug), announce, and set a pending
+     modal;
+   - safe (headphones / line-in cable) → un-bypass the guard's bypass + clear the
+     marker, and dismiss the modal if it was up (`feedbackGateCancel()`);
+   - user un-bypassed manually (Mute+JogClick) or chose **Override** in the modal
+     → session override; the guard won't re-bypass until safe again or reboot.
+4. The modal (`pumpFeedbackAlertModal`) is raised only while the shadow UI is on
+   screen — gated on `shadow_get_display_mode() === 1` (the real "shown" signal;
+   an earlier attempt used `jack:display`, which isn't set for the normal shadow
+   UI). The gate's draw/input (`feedbackGateDraw`/`feedbackGateInput` call sites)
+   are likewise `display_mode`-gated so a pending modal can never hijack Move's
+   native jog/back while hidden. Title/lines/footer/announce are customizable via
+   `confirmLineInput(label, cb, opts)` + `drawConfirmOverlay(title, lines, footer)`:
+   **"Feedback Risk" / "Audio monitoring disabled. Plug in headphones." /
+   `Back:No  Jog:Override`**.
+5. Param plumbing: `slot:feedback_hold` get + a pure-flag set in
+   `shadow_handle_slot_param_{get,set}` (the marker; silencing is via
+   `synth:bypassed`).
+
+**Related migration fix (root cause of the stale config):** the per-set
+migration (`shadow_batch_migrate_sets`) used to copy the *global* `slot_state`
+into every set, propagating a stale line-in autosave. It now seeds **empty**
+state (`seed_empty_set_state`), so the global default never carries module
+config. Migration-only and gated by `set_state/.migrated`; already-migrated sets
+are not retroactively scrubbed (the boot bypass above protects them).
+
+Full investigation + decision record: `docs/plans/2026-06-25-boot-feedback-fix.md`.
+
+### Manual test plan (hardware-verified 2026-06-25)
+
+8. Configure a slot with `linein`, reboot with **headphones plugged** → slot
+   un-bypasses (audio passes, no modal, no feedback). ✓
+9. Same slot, reboot on **built-in speakers, nothing plugged** → slot stays
+   **bypassed** ("B" glyph). Open the shadow UI → "Feedback Risk" modal appears;
+   Jog = Override (enable), Back = keep bypassed. ✓
+10. With the slot enabled on headphones, **unplug** → guard re-bypasses + alerts
+    (continuous, not just boot).
+11. While the modal is up, **plug headphones back in** → modal auto-dismisses, slot
+    re-enables.
+12. Reboot with no line-input slot → no bypass, guard idles.
