@@ -25,6 +25,9 @@ import { announce } from '/data/UserData/schwung/shared/screen_reader.mjs';
 
 let gateActive = false;
 let gateContinuation = null;
+let gateLines = null;   /* optional custom overlay lines (else the default warning) */
+let gateTitle = null;   /* optional custom overlay title (else the default) */
+let gateFooter = null;  /* optional custom overlay footer (else Back:No  Jog:Yes) */
 
 /**
  * Heuristic: true if the module pulls audio in from the line-in / internal mic.
@@ -61,13 +64,31 @@ function feedbackRiskPresent() {
  *   1. Pump feedbackGateDraw() in the tick path while feedbackGateActive() is true.
  *   2. Forward CC input via feedbackGateInput(cc, val).
  */
-export function confirmLineInput(label, cb) {
+export function confirmLineInput(label, cb, opts) {
     if (typeof cb !== 'function') return;
     if (!feedbackRiskPresent()) { cb(true); return; }
     if (gateActive) { cb(false); return; }
     gateActive = true;
     gateContinuation = cb;
-    announce('Speaker feedback risk. Speakers and mic active. Plug in headphones. Jog click for yes, back for no.');
+    gateLines = (opts && Array.isArray(opts.lines)) ? opts.lines : null;
+    gateTitle = (opts && typeof opts.title === 'string') ? opts.title : null;
+    gateFooter = (opts && typeof opts.footer === 'string') ? opts.footer : null;
+    announce((opts && opts.announceText) ||
+        'Speaker feedback risk. Speakers and mic active. Plug in headphones. Jog click for yes, back for no.');
+}
+
+/* Programmatically dismiss the modal WITHOUT invoking the continuation. Used
+ * when the risk clears on its own (e.g. headphones plugged back in while the
+ * modal is up) — the caller has already resolved the underlying state. Returns
+ * true if a modal was actually dismissed. */
+export function feedbackGateCancel() {
+    if (!gateActive) return false;
+    gateActive = false;
+    gateContinuation = null;
+    gateLines = null;
+    gateTitle = null;
+    gateFooter = null;
+    return true;
 }
 
 /**
@@ -91,11 +112,11 @@ export function feedbackGateActive() {
  */
 export function feedbackGateDraw() {
     if (!gateActive) return;
-    drawConfirmOverlay('Speaker Feedback Risk', [
+    drawConfirmOverlay(gateTitle || 'Speaker Feedback Risk', gateLines || [
         'Speakers + Mic',
         'Active!',
         'Plug in headphones.',
-    ]);
+    ], gateFooter);
 }
 
 /**
@@ -123,6 +144,9 @@ function resolveGate(answer) {
     const cb = gateContinuation;
     gateActive = false;
     gateContinuation = null;
+    gateLines = null;
+    gateTitle = null;
+    gateFooter = null;
     announce(answer ? 'Confirmed.' : 'Cancelled.');
     if (cb) cb(answer);
 }

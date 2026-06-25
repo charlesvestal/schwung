@@ -510,7 +510,7 @@ export function drawMessageOverlay(title, messageLines, showOk = true) {
  * @param {string[]} messageLines - Pre-wrapped message lines. Caller should
  *   wrap to ≤ 20 chars per line; lines beyond the first 5 are dropped.
  */
-export function drawConfirmOverlay(title, messageLines) {
+export function drawConfirmOverlay(title, messageLines, footer) {
     /* 8px body line spacing (vs 10 in drawMessageOverlay) lets a 5-line
      * confirm message fit the 64 px display without clipping the title. */
     const lineCount = Math.min(messageLines ? messageLines.length : 0, 5);
@@ -533,9 +533,9 @@ export function drawConfirmOverlay(title, messageLines) {
         }
     }
 
-    const footer = 'Back:No  Jog:Yes';
-    const footerW = footer.length * 6;
-    print(Math.floor((SCREEN_WIDTH - footerW) / 2), boxY + boxHeight - 12, footer, 1);
+    const footerText = footer || 'Back:No  Jog:Yes';
+    const footerW = footerText.length * 6;
+    print(Math.floor((SCREEN_WIDTH - footerW) / 2), boxY + boxHeight - 12, footerText, 1);
 }
 
 /* Note: Label scroller is auto-ticked inside drawMenuList() */

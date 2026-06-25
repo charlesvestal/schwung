@@ -153,28 +153,35 @@ seeds empty `{}` slot/master_fx files + a default chain config.
 - `shadow_chain_types.h`: `int feedback_hold;` added to the slot struct.
 - `shadow_chain_mgmt.c`: `shadow_slot_apply_boot_feedback_hold()` queries the new
   param after `load_file`/`load_patch` in **both** boot-restore paths and brings a
-  line-input slot up `muted=1` + `feedback_hold=1`; `slot:feedback_hold` get + a
-  pure-flag set added to the slot param handlers.
-- `shadow_ui.js`: `reconcileFeedbackHolds()` (throttled, self-deactivating) on the
-  tick path clears holds — silent un-mute when safe, modal only while the shadow
-  UI is shown (`jack:display == "1"`), kept muted otherwise. `consumesLineInput`
-  added to the feedback_gate import.
+  line-input slot up `synth:bypassed=1` + `feedback_hold=1`; `slot:feedback_hold`
+  get + a pure-flag set added to the slot param handlers.
+- `shadow_ui.js`: `reconcileFeedbackHolds()` (throttled, continuous) — the
+  continuous guard; `feedback_gate.mjs` modal made customizable
+  (title/lines/footer/announce) + `feedbackGateCancel()`.
 
-Build: `./scripts/build.sh` green; changes verified present in `schwung-shim.so`
-and `chain/dsp.so`. Static suite unchanged (82 pass / 21 pre-existing stale
-fails, identical with changes stashed). On-hardware boot test pending (see the
-boot-restore manual test plan in `2026-04-30-feedback-protection-design.md`).
-
-### Refinements made during implementation (vs. the plan above)
+**Final design evolved during hardware testing (the sections below capture the
+journey; the authoritative description is the Addendum in
+`2026-04-30-feedback-protection-design.md`):**
 
 1. **`json_get_bool_in_section`, not `json_get_int_in_section`** — `audio_in` is a
    JSON boolean; the int helper would always read 0.
-2. **Both boot-restore paths guarded** — the autosave path *and* the name-based
-   patch path activate slots hot; the helper is called from both.
-3. **Modal gated on `jack:display`** — the plan didn't account for the shadow UI
-   being hidden at boot. `feedbackGateInput` intercepts CC globally, so an
-   auto-raised modal would hijack Move's native jog/back. The reconcile therefore
-   only raises the modal while the shadow UI is on screen; otherwise it
-   silent-un-mutes when safe and keeps the slot muted when risky. Uses
-   `maybeConfirmForModule` alone (it already encapsulates the risk + consumer
-   checks; `feedbackRiskPresent` isn't exported).
+2. **Both boot-restore paths guarded** — autosave + name-based patch.
+3. **Bypass, not mute** (caught on hardware): the boot trace showed
+   `Loaded slot muted: [0,0,0,0]` resetting `muted` *after* the boot mute — which
+   would have unmuted a Line In slot on speakers → feedback. Switched to
+   `synth:bypassed` (set after `load_file`, untouched by that load; also the
+   visible "B" glyph and user-toggleable via Mute+JogClick). An interim
+   `effective_volume` `feedback_hold` gate was reverted once bypass was adopted.
+4. **`shadow_get_display_mode()`, not `jack:display`** — `jack:display` is not set
+   for the normal shadow UI (it never went to "1"), so the modal never fired. The
+   real "shadow UI shown" signal is `shadow_get_display_mode()`. The gate's
+   draw/input are gated on it so a pending modal can't hijack Move's jog/back.
+5. **Continuous, not boot-only** (user request): re-bypass on mid-session
+   headphone unplug too; manual un-bypass / modal Override = session override.
+6. **Modal copy** (user request): "Feedback Risk" / "Audio monitoring disabled.
+   Plug in headphones." / `Back:No  Jog:Override`; auto-dismisses when headphones
+   are plugged back in while it's showing.
+
+Hardware-verified 2026-06-25 (safe path, risk path, bypass + "B" glyph,
+auto-un-bypass on plug-in). Static suite unchanged (82 pass / 21 pre-existing
+stale fails).

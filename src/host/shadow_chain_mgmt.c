@@ -944,9 +944,13 @@ void shadow_slot_load_capture(int slot, int patch_index) {
  * line-in/mic (e.g. Line In) would push the input straight to the speakers on
  * boot — runaway feedback if speakers are active and no cable is plugged. Jack
  * state is unknown to the shim at boot, so we can't evaluate the risk here.
- * Instead, bring any such slot up MUTED with feedback_hold set; the JS shadow_ui
- * (which has reliable jack state + owns the modal) clears the hold once it
- * confirms there's no risk or the user acknowledges. */
+ * Instead we BYPASS the synth (the existing, user-visible "B" glyph state that
+ * Mute+JogClick toggles), which silences its render — and set feedback_hold as a
+ * marker so the JS reconcile knows this bypass is the boot guard's (and may
+ * auto-clear it once jack state is safe). The user keeps a discoverable, manual
+ * way to enable it (un-bypass) regardless. Bypass is applied AFTER load_file, so
+ * it isn't clobbered by the per-set mute-state load (which only touches `muted`).
+ * We deliberately do not use `muted` here — that's the user's mix control. */
 static void shadow_slot_apply_boot_feedback_hold(int i) {
     if (i < 0 || i >= SHADOW_CHAIN_INSTANCES) return;
     if (!shadow_chain_slots[i].instance || !shadow_plugin_v2 || !shadow_plugin_v2->get_param) return;
@@ -956,11 +960,13 @@ static void shadow_slot_apply_boot_feedback_hold(int i) {
     if (len <= 0) return;
     buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
     if (atoi(buf) == 1) {
-        shadow_chain_slots[i].muted = 1;
+        if (shadow_plugin_v2->set_param) {
+            shadow_plugin_v2->set_param(shadow_chain_slots[i].instance, "synth:bypassed", "1");
+        }
         shadow_chain_slots[i].feedback_hold = 1;
         char msg[96];
         snprintf(msg, sizeof(msg),
-                 "Shadow boot: slot %d consumes line-in — muted pending feedback check", i);
+                 "Shadow boot: slot %d consumes line-in — bypassed pending feedback check", i);
         shadow_log(msg);
     }
 }
