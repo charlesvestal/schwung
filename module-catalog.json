@@ -258,6 +258,17 @@
       "min_host_version": "0.3.0"
     },
     {
+      "id": "pushnpull",
+      "name": "PushNPull",
+      "description": "Creative sidechain effects for dummies - a tempo-synced curve shaper that ducks/boosts volume and/or sweeps a multimode filter, locked to the beat",
+      "author": "legsmechanical",
+      "component_type": "audio_fx",
+      "github_repo": "legsmechanical/schwung-pushnpull",
+      "default_branch": "main",
+      "asset_name": "pushnpull-module.tar.gz",
+      "min_host_version": "0.11.0"
+    },
+    {
       "id": "radiogarden",
       "name": "Radio Garden",
       "description": "Browse and stream live radio from 200 cities worldwide via Radio Garden",
