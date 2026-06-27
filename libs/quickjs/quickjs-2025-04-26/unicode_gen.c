@@ -74,6 +74,8 @@ void *mallocz(size_t size)
 {
     void *ptr;
     ptr = malloc(size);
+    if (!ptr)
+        return NULL;
     memset(ptr, 0, size);
     return ptr;
 }
@@ -862,7 +864,7 @@ void parse_script_extensions(const char *filename)
             for(c = c0; c <= c1; c++) {
                 CCInfo *ci = &unicode_db[c];
                 ci->script_ext_len = script_ext_len;
-                ci->script_ext = malloc(sizeof(ci->script_ext[0]) * script_ext_len);
+                ci->script_ext = calloc(script_ext_len, sizeof(ci->script_ext[0]));
                 for(i = 0; i < script_ext_len; i++)
                     ci->script_ext[i] = script_ext[i];
             }
@@ -1411,7 +1413,7 @@ void dump_case_folding_special_cases(CCInfo *tab)
     int i, len, j;
     int *perm;
 
-    perm = malloc(sizeof(perm[0]) * (CHARCODE_MAX + 1));
+    perm = calloc(CHARCODE_MAX + 1, sizeof(perm[0]));
     for(i = 0; i <= CHARCODE_MAX; i++)
         perm[i] = i;
     global_tab = tab;
@@ -2934,7 +2936,7 @@ void build_compose_table(FILE *f, const DecompEntry *tab_de)
     int i, v, tab_ce_len;
     ComposeEntry *ce, *tab_ce;
 
-    tab_ce = malloc(sizeof(*tab_ce) * COMPOSE_LEN_MAX);
+    tab_ce = calloc(COMPOSE_LEN_MAX, sizeof(*tab_ce));
     tab_ce_len = 0;
     for(i = 0; i <= CHARCODE_MAX; i++) {
         CCInfo *ci = &unicode_db[i];
@@ -3110,18 +3112,22 @@ void normalization_test(const char *filename)
 
         //        dump_str("in", in_str, in_len);
 
+        buf = NULL;
         buf_len = unicode_normalize((uint32_t **)&buf, (uint32_t *)in_str, in_len, UNICODE_NFD, NULL, NULL);
         check_str("nfd", pos, in_str, in_len, buf, buf_len, nfd_str, nfd_len);
         free(buf);
 
+        buf = NULL;
         buf_len = unicode_normalize((uint32_t **)&buf, (uint32_t *)in_str, in_len, UNICODE_NFKD, NULL, NULL);
         check_str("nfkd", pos, in_str, in_len, buf, buf_len, nfkd_str, nfkd_len);
         free(buf);
 
+        buf = NULL;
         buf_len = unicode_normalize((uint32_t **)&buf, (uint32_t *)in_str, in_len, UNICODE_NFC, NULL, NULL);
         check_str("nfc", pos, in_str, in_len, buf, buf_len, nfc_str, nfc_len);
         free(buf);
 
+        buf = NULL;
         buf_len = unicode_normalize((uint32_t **)&buf, (uint32_t *)in_str, in_len, UNICODE_NFKC, NULL, NULL);
         check_str("nfkc", pos, in_str, in_len, buf, buf_len, nfkc_str, nfkc_len);
         free(buf);
