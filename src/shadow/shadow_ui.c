@@ -803,6 +803,65 @@ static JSValue js_shadow_set_param_timeout(JSContext *ctx, JSValueConst this_val
     return ok ? JS_TRUE : JS_FALSE;
 }
 
+/* Bulk param request (request_type 3 = BULK_GET, 4 = BULK_SET).
+ * argv: (slot, key, valueBlob). key is the routing marker ("overtake_dsp:");
+ * valueBlob is the length-prefixed payload (see shim_handle_param_bulk):
+ * keys for GET, key/value pairs for SET. Collapses N param round-trips into
+ * one. Returns the response blob string (GET), JS_TRUE (SET), or null on
+ * failure. Uses ToCStringLen / NewStringLen so binary-ish blobs survive. */
+static JSValue shadow_param_bulk_js(JSContext *ctx, int argc, JSValueConst *argv,
+                                    uint8_t req_type) {
+    if (!shadow_param || argc < 3) return JS_NULL;
+    int slot = 0;
+    if (JS_ToInt32(ctx, &slot, argv[0])) return JS_NULL;
+    if (slot < 0 || slot >= SHADOW_UI_SLOTS) return JS_NULL;
+    const char *key = JS_ToCString(ctx, argv[1]);
+    if (!key) return JS_NULL;
+    size_t vlen = 0;
+    const char *value = JS_ToCStringLen(ctx, &vlen, argv[2]);
+    if (!value) { JS_FreeCString(ctx, key); return JS_NULL; }
+    if (vlen >= SHADOW_PARAM_VALUE_LEN) vlen = SHADOW_PARAM_VALUE_LEN - 1;
+
+    if (!shadow_param_wait_idle(SHADOW_PARAM_DEFAULT_TIMEOUT_MS)) {
+        JS_FreeCString(ctx, key); JS_FreeCString(ctx, value); return JS_NULL;
+    }
+    uint32_t req_id = shadow_param_next_request_id();
+    strncpy(shadow_param->key, key, SHADOW_PARAM_KEY_LEN - 1);
+    shadow_param->key[SHADOW_PARAM_KEY_LEN - 1] = '\0';
+    memcpy(shadow_param->value, value, vlen);
+    shadow_param->value[vlen] = '\0';
+    JS_FreeCString(ctx, key);
+    JS_FreeCString(ctx, value);
+
+    shadow_param->slot = (uint8_t)slot;
+    shadow_param->response_ready = 0;
+    shadow_param->error = 0;
+    shadow_param->response_id = 0;
+    shadow_param->request_id = req_id;
+    /* Release-store the commit flag so the shim's acquire-load sees the key /
+     * value payload and request_id written above before it acts on them. */
+    __atomic_store_n(&shadow_param->request_type, req_type, __ATOMIC_RELEASE);
+
+    if (shadow_param_wait_response(req_id, SHADOW_PARAM_DEFAULT_TIMEOUT_MS) <= 0)
+        return JS_NULL;
+    if (req_type == 4) return JS_TRUE;          /* BULK_SET — no payload back */
+    if (shadow_param->error) return JS_NULL;
+    int rlen = shadow_param->result_len;
+    if (rlen < 0) return JS_NULL;
+    if (rlen >= SHADOW_PARAM_VALUE_LEN) rlen = SHADOW_PARAM_VALUE_LEN - 1;
+    return JS_NewStringLen(ctx, shadow_param->value, (size_t)rlen);
+}
+
+static JSValue js_shadow_get_params(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv) {
+    (void)this_val; return shadow_param_bulk_js(ctx, argc, argv, 3);
+}
+
+static JSValue js_shadow_set_params(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv) {
+    (void)this_val; return shadow_param_bulk_js(ctx, argc, argv, 4);
+}
+
 /* shadow_get_param(slot, key) -> string or null
  * Gets a parameter from the chain instance for the given slot.
  * Returns the value as a string, or null on error.
@@ -2365,6 +2424,8 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_param", JS_NewCFunction(ctx, js_shadow_set_param, "shadow_set_param", 3));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_param_timeout", JS_NewCFunction(ctx, js_shadow_set_param_timeout, "shadow_set_param_timeout", 4));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_param", JS_NewCFunction(ctx, js_shadow_get_param, "shadow_get_param", 2));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_get_params", JS_NewCFunction(ctx, js_shadow_get_params, "shadow_get_params", 3));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_set_params", JS_NewCFunction(ctx, js_shadow_set_params, "shadow_set_params", 3));
 
     /* OTLP tracing (Phase 2) */
     JS_SetPropertyStr(ctx, global_obj, "host_trace_begin", JS_NewCFunction(ctx, js_host_trace_begin, "host_trace_begin", 1));
