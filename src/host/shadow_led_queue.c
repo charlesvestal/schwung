@@ -454,7 +454,7 @@ void shadow_clear_move_leds_if_overtake(void) {
              * F0 00 21 1D ... LED command). The note/CC strips above don't
              * touch sysex, so by default Move's RGB repaints pass through —
              * fine when its sequencer is stopped, but they fight the tool's
-             * LEDs once a tool (dAVEBOx Clock Follow) keeps Move running.
+             * LEDs once a tool (e.g. a clock-follow sequencer) keeps Move running.
              * Opt-in: strip every cable-0 sysex packet (start/continue/end,
              * CIN 0x04-0x07) so the tool owns RGB too. Safe because such a
              * tool paints its own pads via note-palette / CC, injected into

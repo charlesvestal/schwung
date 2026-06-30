@@ -178,13 +178,13 @@ typedef struct shadow_control_t {
         /* LED ownership; 0 = follow keep_mask (the common "own both" case) UNLESS
          * CORUN_F_LED_DISTINCT is set, in which case this mask is authoritative
          * even when 0. Lets a tool paint a surface while ceding its presses (e.g.
-         * dAVEBOx draws the track-button clip indicator but cedes the press). */
+         * a tool draws the track-button clip indicator but cedes the press). */
         uint32_t led_keep_mask;
     } corun;
     volatile uint8_t shadow_display_owner; /* display_owner_t: who currently owns the OLED. Independent of shadow_display_mode (which only says "shadow session active"). */
     /* 1=also strip Move's cable-0 sysex (RGB pad/clip/grid LEDs) during FULL
      * overtake, so a tool that forces Move's sequencer to keep running (e.g.
-     * dAVEBOx Clock Follow) gets true full LED control instead of fighting
+     * a clock-follow sequencer) gets true full LED control instead of fighting
      * Move's repaints. Opt-in per tool (shadow_set_overtake_suppress_sysex);
      * default 0 leaves the existing sysex passthrough unchanged. This byte
      * reuses the former reserved[1] slot, but the struct still grew 72->76

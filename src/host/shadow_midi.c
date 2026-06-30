@@ -85,7 +85,7 @@ int shadow_external_dispatch_was_recent(uint8_t status, uint8_t d1, uint8_t d2)
  * shifts down as Move consumes slot 0.  A retriggered note (new XMOS event)
  * has a fresh timestamp, so its key differs and it dispatches normally.
  *
- * Injected packets (chain MIDI FX, davebox ROUTE_MOVE) carry a zero timestamp
+ * Injected packets (chain MIDI FX, an overtake tool routing to Move) carry a zero timestamp
  * — they collide if they share USB-MIDI bytes within the staleness window,
  * but they don't reach this dispatcher in normal operation (Move's firmware
  * routes them out of MIDI_IN cable-2 quickly via the cable-0 inject path). */

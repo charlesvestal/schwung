@@ -243,7 +243,7 @@ Surfaces the tool does not own pass through — Move's LEDs reach the buttons /
 pads / knob rings directly.
 
 **Lights vs input split.** LED ownership is its own mask, letting a tool **paint** a
-surface while still **ceding its presses** — e.g. dAVEBOx draws the track-button
+surface while still **ceding its presses** — e.g. a tool draws the track-button
 clip indicator (owns TRACK LEDs) but lets Move/Schwung handle the press (cedes
 TRACK input). Cede-model tools set it with `shadow_corun_set_led_cede_mask`
 (cede these LEDs, paint the rest); legacy tools use `shadow_corun_set_led_keep_mask`
