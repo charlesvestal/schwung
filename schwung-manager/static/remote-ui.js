@@ -57,11 +57,17 @@
         collapsed: { "master_fx:fx1": false, "master_fx:fx2": true, "master_fx:fx3": true, "master_fx:fx4": true }
     };
 
-    // Read initial slot from URL hash (#slot1, #slot2, #slot3, #slot4, #master-fx)
+    // Active overtake-tool state. A tool is not a chain slot; its
+    // params live under the "overtake_dsp:" prefix and its UI shows in the Tool
+    // tab. id == "" means no tool with a remote UI is loaded.
+    var tool = { id: "", customUI: null, params: {} };
+
+    // Read initial slot from URL hash (#slot1, #slot2, #slot3, #slot4, #master-fx, #tool)
     var initialSlot = 0;
     (function() {
         var h = location.hash.replace("#", "");
         if (h === "master-fx") initialSlot = "master";
+        else if (h === "tool") initialSlot = "tool";
         else if (/^slot[1-4]$/.test(h)) initialSlot = parseInt(h.charAt(4), 10) - 1;
     })();
     var activeSlot = initialSlot;
@@ -158,6 +164,8 @@
     function subscribe(slot) {
         if (slot === "master") {
             send({ type: "subscribe_master_fx" });
+        } else if (slot === "tool") {
+            send({ type: "subscribe_tool" });
         } else {
             send({ type: "subscribe", slot: slot });
         }
@@ -166,6 +174,8 @@
     function unsubscribe(slot) {
         if (slot === "master") {
             send({ type: "unsubscribe_master_fx" });
+        } else if (slot === "tool") {
+            send({ type: "unsubscribe_tool" });
         } else {
             send({ type: "unsubscribe", slot: slot });
         }
@@ -180,14 +190,36 @@
             case "master_fx_info":
                 handleMasterFxInfo(msg);
                 return;
+            case "tool_info":
+                handleToolInfo(msg);
+                return;
             default:
                 break;
         }
 
         var slot = msg.slot;
 
-        // Check if this is a master FX message (slot 0 with master_fx: component prefix).
+        // Tool custom UI (overtake tool): not a chain slot.
         var comp = msg.component || "";
+        if (comp === "tool") {
+            if (msg.type === "custom_ui") handleToolCustomUI(msg);
+            return;
+        }
+
+        // param_update carrying overtake_dsp: keys belongs to the Tool tab.
+        if (msg.type === "param_update" && msg.params) {
+            var hasOvertake = false, hasNonOvertake = false;
+            for (var ok in msg.params) {
+                if (ok.indexOf("overtake_dsp:") === 0) hasOvertake = true;
+                else hasNonOvertake = true;
+            }
+            if (hasOvertake) {
+                handleToolParamUpdate(msg);
+                if (!hasNonOvertake) return;
+            }
+        }
+
+        // Check if this is a master FX message (slot 0 with master_fx: component prefix).
         if (comp.indexOf("master_fx:") === 0) {
             switch (msg.type) {
                 case "hierarchy":
@@ -261,6 +293,37 @@
         var s = slots[slot];
         s.customUI = { component: msg.component || "synth", url: msg.url || "" };
         if (slot === activeSlot) renderSlot();
+    }
+
+    // ------------------------------------------------------------------
+    // Overtake tool (Tool tab)
+    // ------------------------------------------------------------------
+
+    function handleToolInfo(msg) {
+        tool.id = msg.id || "";
+        if (!tool.id) {
+            // Tool unloaded — drop its custom UI + cached params.
+            tool.customUI = null;
+            tool.params = {};
+        }
+        if (activeSlot === "tool") renderSlot();
+    }
+
+    function handleToolCustomUI(msg) {
+        tool.customUI = { url: msg.url || "" };
+        if (activeSlot === "tool") renderSlot();
+    }
+
+    function handleToolParamUpdate(msg) {
+        for (var k in msg.params) {
+            if (Object.prototype.hasOwnProperty.call(msg.params, k)) {
+                tool.params[k] = msg.params[k];
+            }
+        }
+        // Forward live updates to the tool iframe if it's the active view.
+        if (activeSlot === "tool" && customUISubscribed && customUIIframe) {
+            postToIframe({ type: "paramUpdate", params: msg.params });
+        }
     }
 
     /** Preserve the open submenu (navStack) across a hierarchy re-broadcast when
@@ -453,11 +516,12 @@
         activeSlot = n;
         waitingForData = true;
         // Persist tab in URL hash
-        history.replaceState(null, "", "#" + (n === "master" ? "master-fx" : "slot" + (n + 1)));
+        var hash = (n === "master") ? "master-fx" : (n === "tool") ? "tool" : "slot" + (n + 1);
+        history.replaceState(null, "", "#" + hash);
 
         tabButtons.forEach(function (btn) {
             var slotAttr = btn.getAttribute("data-slot");
-            var match = (slotAttr === "master") ? (n === "master") : (parseInt(slotAttr, 10) === n);
+            var match = (slotAttr === "master" || slotAttr === "tool") ? (slotAttr === n) : (parseInt(slotAttr, 10) === n);
             if (match) {
                 btn.classList.add("active");
                 btn.setAttribute("aria-selected", "true");
@@ -476,7 +540,7 @@
     // Set initial tab button active state from URL hash
     tabButtons.forEach(function (btn) {
         var slotAttr = btn.getAttribute("data-slot");
-        var match = (slotAttr === "master") ? (activeSlot === "master") : (parseInt(slotAttr, 10) === activeSlot);
+        var match = (slotAttr === "master" || slotAttr === "tool") ? (slotAttr === activeSlot) : (parseInt(slotAttr, 10) === activeSlot);
         if (match) {
             btn.classList.add("active");
             btn.setAttribute("aria-selected", "true");
@@ -1444,6 +1508,11 @@
             return;
         }
 
+        if (activeSlot === "tool") {
+            renderTool();
+            return;
+        }
+
         var s = slots[activeSlot];
         slotTitleEl.textContent = "Slot " + (activeSlot + 1);
 
@@ -1948,10 +2017,56 @@
         popBtn.title = "Open this UI in its own window";
         popBtn.onclick = function () {
             var sep = url.indexOf("?") === -1 ? "?" : "&";
-            var popUrl = url + sep + "schwungStandalone=1&slot=" + slot;
+            // The Tool tab is not a numbered slot — standalone mode keys off
+            // tool=1 to use the overtake-tool channel (subscribe_tool / set on
+            // slot 0 / refetch_tool) instead of a per-slot subscribe.
+            var qs = (slot === "tool") ? "schwungStandalone=1&tool=1"
+                                       : "schwungStandalone=1&slot=" + slot;
+            var popUrl = url + sep + qs;
             window.open(popUrl, "schwungPopout_" + slot);
         };
         return popBtn;
+    }
+
+    function renderTool() {
+        slotTitleEl.textContent = tool.id || "Tool";
+
+        if (!tool.customUI || !tool.customUI.url) {
+            var note = document.createElement("p");
+            note.className = "text-muted";
+            note.textContent = tool.id
+                ? ("Loading " + tool.id + "…")
+                : "No tool loaded. Open a tool on the Move and it will appear here.";
+            slotContentEl.appendChild(note);
+            return;
+        }
+
+        // Pop-out button (own window), same as slots.
+        if (slotHeaderControlsEl) {
+            slotHeaderControlsEl.appendChild(makePopOutButton(tool.customUI.url, "tool"));
+        }
+
+        var container = document.createElement("div");
+        container.className = "custom-ui-container";
+
+        var iframe = document.createElement("iframe");
+        iframe.className = "custom-ui-iframe";
+        iframe.src = tool.customUI.url;
+        iframe.sandbox = "allow-scripts allow-same-origin";
+        iframe.setAttribute("title", "Tool UI");
+        container.appendChild(iframe);
+
+        var overlay = document.createElement("div");
+        overlay.className = "custom-ui-loading";
+        overlay.innerHTML = '<span class="loading-spinner"></span> Loading module…';
+        container.appendChild(overlay);
+        customUILoadingEl = overlay;
+        iframe.addEventListener("load", hideCustomUILoading);
+        customUILoadingTimer = setTimeout(hideCustomUILoading, 10000);
+
+        slotContentEl.appendChild(container);
+        customUIIframe = iframe;
+        customUISubscribed = false;
     }
 
     function renderCustomUI(s) {
@@ -2034,12 +2149,28 @@
             case "getChainParams":
                 handleIframeGetChainParams(msg);
                 break;
+            case "resubscribe":
+                // Iframe asked for a fresh device read (e.g. tool polling for the
+                // playhead). For the Tool tab, re-fetch params only — NOT a full
+                // subscribe (that would re-send custom_ui and reload the iframe).
+                if (activeSlot === "tool") {
+                    send({ type: "refetch_tool" });
+                } else if (typeof activeSlot === "number") {
+                    send({ type: "subscribe", slot: activeSlot });
+                }
+                break;
         }
     });
 
     function handleIframeGetParam(msg) {
         if (!msg.key || !msg.id) return;
         var slot = activeSlot;
+
+        // Tool view: params come from the overtake tool's cache (overtake_dsp:*).
+        if (slot === "tool") {
+            postToIframe({ type: "paramResult", id: msg.id, value: tool.params[msg.key] || "" });
+            return;
+        }
         if (typeof slot !== "number") return;
 
         // The key is like "synth:cutoff" — send via WebSocket get_param
@@ -2054,6 +2185,13 @@
     function handleIframeSetParam(msg) {
         if (!msg.key) return;
         var slot = activeSlot;
+
+        // Tool view: route on slot 0; the manager dispatches by the
+        // "overtake_dsp:" key prefix, so the slot number is ignored.
+        if (slot === "tool") {
+            send({ type: "set_param", slot: 0, key: msg.key, value: String(msg.value) });
+            return;
+        }
         if (typeof slot !== "number") return;
 
         var parts = splitPrefix(msg.key);
@@ -2107,6 +2245,14 @@
     // subscribes so it can seed its controls without a round-trip per param.
     function seedCustomUI() {
         if (!customUIIframe) return;
+
+        // Tool view: seed from the overtake tool's cached params.
+        if (activeSlot === "tool") {
+            var keys = Object.keys(tool.params);
+            if (keys.length > 0) postToIframe({ type: "paramUpdate", params: tool.params });
+            return;
+        }
+
         if (typeof activeSlot !== "number") return;
         var comps = slots[activeSlot].components;
         var params = {};

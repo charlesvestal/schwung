@@ -47,6 +47,15 @@ type ruClient struct {
 	subs map[uint8]bool
 	// whether this client is subscribed to master FX
 	masterFxSub bool
+	// whether this client is subscribed to the active overtake tool's UI
+	toolSub bool
+	// rev-gated tool polling: skip the heavy "state" snapshot read unless the
+	// tool's cheap "rui_poll" digest (rev:on:tick:bpm) shows a content change.
+	// Touched only from this client's WS read goroutine. toolSynced=false until
+	// the first full fetch.
+	toolSynced   bool
+	toolLastRev  int64
+	toolLastTick int64
 }
 
 // per-slot cached state used by the poll loop.
@@ -104,6 +113,13 @@ type wsParamUpdate struct {
 	Params map[string]string `json:"params"`
 }
 
+// wsToolInfo reports the active overtake tool to the Tool tab.
+// id == "" means no tool with a remote UI is currently loaded.
+type wsToolInfo struct {
+	Type string `json:"type"`
+	ID   string `json:"id"`
+}
+
 type wsCustomUI struct {
 	Type      string `json:"type"`
 	Slot      uint8  `json:"slot"`
@@ -133,9 +149,27 @@ func NewRemoteUI(shm *ShmParams, setRing *ShmWebParamSetRing, basePath string, l
 	}
 }
 
+// overtakeParamPrefix is the param prefix for an active overtake tool's DSP
+// The shim routes "overtake_dsp:<key>" GET/SET on the
+// shadow_param ring straight to the loaded overtake DSP instance via
+// shim_handle_param_special — the same path shadow_ui.js uses on-device.
+const overtakeParamPrefix = "overtake_dsp:"
+
 // setParam writes a param using the fast ring buffer if available,
 // falling back to the old shared memory path.
 func (ru *RemoteUI) setParam(slot uint8, key, value string) error {
+	// Overtake-tool params MUST go through the reliable shadow_param ring
+	// (request_type=1), which the shim routes to the overtake DSP. The fast
+	// web_param_set ring's shadow_direct_set_param has no "overtake_dsp:"
+	// branch, so it would mis-route the key to a chain slot. The slow ring is
+	// fine here: overtake-tool edits are discrete ops, not knob-drag streams,
+	// and it lifts the fast ring's 255-byte value cap (64KB on the slow ring).
+	if strings.HasPrefix(key, overtakeParamPrefix) {
+		if shm := ru.ensureShm(); shm != nil {
+			return shm.SetParam(slot, key, value)
+		}
+		return fmt.Errorf("no shared memory available")
+	}
 	if ring := ru.ensureSetRing(); ring != nil {
 		return ring.SetParam(slot, key, value)
 	}
@@ -143,6 +177,23 @@ func (ru *RemoteUI) setParam(slot uint8, key, value string) error {
 		return shm.SetParamFast(slot, key, value)
 	}
 	return fmt.Errorf("no shared memory available")
+}
+
+// activeOvertakeToolID returns the module id of the overtake tool currently
+// loaded that opts into a remote UI by answering the
+// "overtake_dsp:module_id" probe, or "" if no such tool is active. The shim
+// returns an error for this GET when no overtake DSP is loaded (or the loaded
+// one predates the probe), so this is backward-safe.
+func (ru *RemoteUI) activeOvertakeToolID(slot uint8) string {
+	shm := ru.ensureShm()
+	if shm == nil {
+		return ""
+	}
+	id, err := shm.GetParam(slot, overtakeParamPrefix+"module_id")
+	if err != nil {
+		return ""
+	}
+	return id
 }
 
 // ensureSetRing attempts to open the web param set ring if not yet connected.
@@ -212,6 +263,20 @@ func (ru *RemoteUI) refreshLoop(ctx context.Context) {
 				ru.broadcastInitialParamValues(ctx, slot, comp, ru.subscribedClients(slot))
 			}
 		}
+
+		// Overtake-tool backstop: if any client is viewing the Tool tab and an
+		// overtake tool is active, re-read its "overtake_dsp:state"
+		// and fan out. (The web UI's own re-subscribe poll drives the fast live
+		// sync; this 30s loop just catches drift.)
+		if toolClients := ru.subscribedToolClients(); len(toolClients) > 0 {
+			if toolID, ok, err := shm.TryGetParam(0, overtakeParamPrefix+"module_id"); ok && err == nil && toolID != "" {
+				if params, hit := ru.fetchAllParams(0, "overtake_dsp"); hit {
+					for _, c := range toolClients {
+						ru.writeJSON(ctx, c, wsParamUpdate{Type: "param_update", Slot: 0, Params: params})
+					}
+				}
+			}
+		}
 	}
 }
 
@@ -278,6 +343,12 @@ func (ru *RemoteUI) readLoop(ctx context.Context, c *ruClient) {
 			ru.handleSubscribeMasterFx(ctx, c)
 		case "unsubscribe_master_fx":
 			ru.handleUnsubscribeMasterFx(c)
+		case "subscribe_tool":
+			ru.handleSubscribeTool(ctx, c)
+		case "unsubscribe_tool":
+			ru.handleUnsubscribeTool(c)
+		case "refetch_tool":
+			ru.handleRefetchTool(ctx, c)
 		case "set_master_fx_param":
 			ru.handleSetMasterFxParam(ctx, c, msg)
 		default:
@@ -597,7 +668,16 @@ func (ru *RemoteUI) handleSetParam(ctx context.Context, c *ruClient, msg wsMessa
 			go func() {
 				time.Sleep(50 * time.Millisecond) // Let the plugin process the change
 				// Read shm once and fan out to all subscribers of this slot.
-				ru.broadcastInitialParamValues(ctx, slot, comp, ru.subscribedClients(slot))
+				clients := ru.subscribedClients(slot)
+				// Pure Tool-tab clients set toolSub, not subs[0], so they're not
+				// in subscribedClients(0). An overtake tool's params live under
+				// the "overtake_dsp" component at slot 0, so include tool clients
+				// here — otherwise the immediate preset refetch skips them and
+				// they only catch the change on their next refetch_tool poll.
+				if comp == strings.TrimSuffix(overtakeParamPrefix, ":") {
+					clients = append(clients, ru.subscribedToolClients()...)
+				}
+				ru.broadcastInitialParamValues(ctx, slot, comp, clients)
 			}()
 		}
 	}
@@ -658,6 +738,118 @@ func (ru *RemoteUI) handleUnsubscribeMasterFx(c *ruClient) {
 	c.masterFxSub = false
 	c.mu.Unlock()
 	ru.logger.Info("ws unsubscribe master_fx")
+}
+
+// handleSubscribeTool serves the active overtake tool's remote UI. An overtake
+// tool occupies no chain slot — its DSP is dlopen'd in the shim
+// as overtake_dsp_gen_inst and addressed via the "overtake_dsp:" prefix. We
+// discover it by probing overtake_dsp:module_id, serve its web_ui.html under
+// the "tool" component, and seed values from overtake_dsp:state. A tool_info
+// with id=="" tells the Tool tab that nothing is loaded.
+func (ru *RemoteUI) handleSubscribeTool(ctx context.Context, c *ruClient) {
+	c.mu.Lock()
+	c.toolSub = true
+	c.toolSynced = false // force the next poll to do a full fetch
+	c.mu.Unlock()
+
+	ru.logger.Info("ws subscribe tool")
+
+	if !ru.requireShm(ctx, c) {
+		return
+	}
+
+	toolID := ru.activeOvertakeToolID(0)
+	ru.writeJSON(ctx, c, wsToolInfo{Type: "tool_info", ID: toolID})
+	if toolID == "" {
+		return
+	}
+	if url := ru.findModuleWebUI(toolID); url != "" {
+		ru.sendCustomUI(ctx, c, 0, "tool", url)
+	}
+	// Seed the tool's params from overtake_dsp:state (flat snapshot fields).
+	if params, ok := ru.fetchAllParams(0, "overtake_dsp"); ok {
+		ru.writeJSON(ctx, c, wsParamUpdate{Type: "param_update", Slot: 0, Params: params})
+	}
+	ru.logger.Info("ws subscribe: served overtake tool remote UI", "tool", toolID)
+}
+
+func (ru *RemoteUI) handleUnsubscribeTool(c *ruClient) {
+	c.mu.Lock()
+	c.toolSub = false
+	c.toolSynced = false
+	c.mu.Unlock()
+	ru.logger.Info("ws unsubscribe tool")
+}
+
+// handleRefetchTool picks up device-side changes the web UI polls for (playhead,
+// external edits) that don't notify. Rev-gated: it first reads the tool's CHEAP
+// "rui_poll" digest (rev:on:tick:bpm, no note serialization) and only does the
+// heavy full "state" read (fetchAllParams) when rev changes (a content edit).
+// While playing with no edit it pushes only the moving playhead; when nothing
+// changed it does no work. Params ONLY — never custom_ui/tool_info (which would
+// reload the iframe).
+func (ru *RemoteUI) handleRefetchTool(ctx context.Context, c *ruClient) {
+	// Safety belt: only poll the device for a client actually viewing the Tool tab.
+	if !c.toolSub {
+		return
+	}
+	if !ru.requireShm(ctx, c) {
+		return
+	}
+	digest, ok, err := ru.shm.TryGetParam(0, overtakeParamPrefix+"rui_poll")
+	if !ok {
+		// Shm was busy (another goroutine held s.mu) — skip this poll and let
+		// the next one (~5ms) retry. Falling through to fetchAllParams here
+		// would block on s.mu and run the heavy full-state read, defeating the
+		// rev-gate exactly under the contention it's meant to cheapen.
+		return
+	}
+	if err != nil || digest == "" {
+		// Tool predates the cheap digest key (or a transient error) — fall back
+		// to a full fetch.
+		if params, hit := ru.fetchAllParams(0, "overtake_dsp"); hit {
+			ru.writeJSON(ctx, c, wsParamUpdate{Type: "param_update", Slot: 0, Params: params})
+		}
+		return
+	}
+	rev, on, tick, bpm := parseRuiPoll(digest)
+	if !c.toolSynced || rev != c.toolLastRev {
+		// Content changed (or first sync) → full snapshot.
+		if params, hit := ru.fetchAllParams(0, "overtake_dsp"); hit {
+			ru.writeJSON(ctx, c, wsParamUpdate{Type: "param_update", Slot: 0, Params: params})
+			c.toolSynced = true
+			c.toolLastRev = rev
+			c.toolLastTick = tick
+		}
+		return
+	}
+	// No content change → push only the playhead while playing (cheap).
+	if on && tick != c.toolLastTick {
+		c.toolLastTick = tick
+		ru.writeJSON(ctx, c, wsParamUpdate{Type: "param_update", Slot: 0,
+			Params: map[string]string{
+				overtakeParamPrefix + "rui_play": fmt.Sprintf("%d:%d:%d", boolToInt(on), tick, bpm),
+			}})
+	}
+}
+
+// parseRuiPoll parses the overtake tool's cheap "rev:on:tick:bpm" poll digest.
+func parseRuiPoll(s string) (rev int64, on bool, tick int64, bpm int64) {
+	p := strings.Split(s, ":")
+	if len(p) > 0 {
+		rev, _ = strconv.ParseInt(p[0], 10, 64)
+	}
+	if len(p) > 1 {
+		v, _ := strconv.Atoi(p[1])
+		on = v != 0
+	}
+	if len(p) > 2 {
+		tick, _ = strconv.ParseInt(p[2], 10, 64)
+	}
+	if len(p) > 3 {
+		bpm, _ = strconv.ParseInt(p[3], 10, 64)
+	}
+	return
 }
 
 func (ru *RemoteUI) handleSetMasterFxParam(ctx context.Context, c *ruClient, msg wsMessage) {
@@ -1230,6 +1422,21 @@ func (ru *RemoteUI) subscribedClients(slot uint8) []*ruClient {
 	for c := range ru.clients {
 		c.mu.Lock()
 		sub := c.subs[slot]
+		c.mu.Unlock()
+		if sub {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func (ru *RemoteUI) subscribedToolClients() []*ruClient {
+	ru.mu.Lock()
+	defer ru.mu.Unlock()
+	var out []*ruClient
+	for c := range ru.clients {
+		c.mu.Lock()
+		sub := c.toolSub
 		c.mu.Unlock()
 		if sub {
 			out = append(out, c)
