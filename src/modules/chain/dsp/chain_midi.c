@@ -651,8 +651,18 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
      * cable-0 pad path. Injecting would double-trigger the same note on
      * the track instrument. Chord-style FX emit root+intervals; only the
      * intervals need injecting. */
+    /* Clock/transport-driven generators (e.g. Beat Bank, breakbeat) emit their
+     * notes in response to a 1-byte realtime message — Clock/Start/Continue/Stop
+     * (len < 2) — not a pad. The tick path already injects such generator output
+     * in Pre mode; mirror that here so on-clock chain generators reach Move's
+     * track too. Stop (0xFC) must be included: it flushes note-offs, and
+     * skipping them would strand held notes on Move's track. There is no pad
+     * involved, so the root-match echo skip below stays note-input-only, and
+     * pre_mode_track_inject still guards the cable-2 loopback. */
+    int clock_gen = (len == 1 && (msg[0] == 0xF8u || msg[0] == 0xFAu ||
+                                  msg[0] == 0xFBu || msg[0] == 0xFCu));
     if (inst->midi_fx_pre_mode && inst->host && inst->host->midi_inject_to_move
-        && len >= 2) {
+        && (len >= 2 || clock_gen)) {
         int recv_ch = -2;
         if (inst->host->slot_recv_channel) {
             recv_ch = inst->host->slot_recv_channel(instance);
@@ -660,8 +670,9 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
         for (int i = 0; i < out_count; i++) {
             if (out_lens[i] < 1) continue;
 
-            /* Skip injection for events identical to the input pad event */
-            if (out_lens[i] >= 2 &&
+            /* Skip injection for events identical to the input pad event
+             * (note-driven only — a 1-byte clock has no data1 to match). */
+            if (len >= 2 && out_lens[i] >= 2 &&
                 out_msgs[i][0] == msg[0] && out_msgs[i][1] == msg[1]) {
                 continue;
             }
