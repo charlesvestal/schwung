@@ -41,6 +41,7 @@
 #define MAX_PATCHES 32      /* Max patches to list in browser */
 #define MAX_AUDIO_FX 4      /* Max FX loaded per active chain */
 #define MAX_MIDI_FX 2       /* Max native MIDI FX modules per chain */
+#define CHAIN_PRE_DELAY_MAX 32  /* Pre-mode inject-delay buffer: one clock's output */
 #define MAX_PATH_LEN 256
 #define MAX_NAME_LEN 64
 
@@ -346,6 +347,19 @@ typedef struct chain_instance {
      * maintained in v2_on_midi after the echo filter so only real pad
      * events — not our own injection echoes — affect it. */
     uint8_t pre_pad_held[128];
+
+    /* Pre-mode inject-only record-align. Clock-driven generator output
+     * (Beat Bank etc.) must reach Move's track AFTER the 0xF8 that advances
+     * its step, or Move records it one 16th early. We can't delay the note
+     * stream itself (the slot synth needs it immediately for tight local
+     * timing), so we delay ONLY the inject: this holds one clock's worth of
+     * injected messages and flushes them on the next clock/transport message
+     * (1-clock delay). Stop (0xFC) flushes immediately so note-offs never
+     * strand on Move's track. Only used for 1-byte clock-driven output. */
+    uint8_t pre_delay_msg[CHAIN_PRE_DELAY_MAX][3];
+    int     pre_delay_len[CHAIN_PRE_DELAY_MAX];
+    int     pre_delay_count;
+    int     pre_delay_recv_ch;
 
     /* Per-component bypass flags. 1 = bypassed (skip processing), 0 = active. */
     int synth_bypassed;
