@@ -272,9 +272,12 @@ void v2_unload_all_midi_fx(chain_instance_t *inst) {
 
     /* Stale refcount entries from a now-unloaded MIDI FX would orphan
      * future note-ons. Reset with the FX chain, along with the pad-held
-     * tracker — whichever FX replaces this one starts clean. */
+     * tracker — whichever FX replaces this one starts clean. Drop any
+     * buffered clock-driven inject batch too, so the next clock doesn't
+     * flush the old FX's orphaned note-ons into Move. */
     memset(inst->pre_injected_notes, 0, sizeof(inst->pre_injected_notes));
     memset(inst->pre_pad_held, 0, sizeof(inst->pre_pad_held));
+    inst->pre_delay_count = 0;
 }
 
 /* Process MIDI through all loaded MIDI FX modules */
@@ -453,6 +456,44 @@ static inline void pre_mode_track_inject(chain_instance_t *inst,
     if (note < 128 && inst->pre_injected_notes[note] < 255) {
         inst->pre_injected_notes[note]++;
     }
+}
+
+/* Inject one MIDI FX output message into Move's MIDI_IN (cable 2): rewrite the
+ * channel byte to the slot's recv channel and bump the echo refcount so Move's
+ * loopback is filtered. Shared by the immediate (note-driven) and delayed
+ * (clock-driven) Pre-mode inject paths. */
+static void pre_inject_one(chain_instance_t *inst, const uint8_t *m, int mlen, int recv_ch) {
+    if (!inst || !inst->host || !inst->host->midi_inject_to_move || mlen < 1) return;
+    uint8_t type = m[0] & 0xF0;
+    uint8_t cin;
+    switch (type) {
+        case 0x80: cin = 0x08; break;
+        case 0x90: cin = 0x09; break;
+        case 0xA0: cin = 0x0A; break;
+        case 0xB0: cin = 0x0B; break;
+        case 0xC0: cin = 0x0C; break;
+        case 0xD0: cin = 0x0D; break;
+        case 0xE0: cin = 0x0E; break;
+        default:   return;
+    }
+    uint8_t inject_status = m[0];
+    if (recv_ch >= 0 && recv_ch <= 15) {
+        inject_status = (uint8_t)((inject_status & 0xF0) | (uint8_t)recv_ch);
+    }
+    uint8_t pkt[4] = { (uint8_t)((2 << 4) | cin), inject_status, m[1], m[2] };
+    if (inst->host->midi_inject_to_move(pkt, 4) > 0) {
+        pre_mode_track_inject(inst, m, mlen);
+    }
+}
+
+/* Flush the Pre-mode inject-delay buffer (the previous clock's clock-driven
+ * output) into Move. Called at the start of each clock and on Stop. */
+static void pre_delay_flush(chain_instance_t *inst) {
+    for (int i = 0; i < inst->pre_delay_count; i++) {
+        pre_inject_one(inst, inst->pre_delay_msg[i], inst->pre_delay_len[i],
+                       inst->pre_delay_recv_ch);
+    }
+    inst->pre_delay_count = 0;
 }
 
 /* Send a note to synth with optional transposition (for chords) */
@@ -651,40 +692,62 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
      * cable-0 pad path. Injecting would double-trigger the same note on
      * the track instrument. Chord-style FX emit root+intervals; only the
      * intervals need injecting. */
+    /* Clock/transport-driven generators (e.g. Beat Bank, breakbeat) emit their
+     * notes in response to a 1-byte realtime message — Clock/Start/Continue/Stop
+     * (len < 2) — not a pad. The tick path already injects such generator output
+     * in Pre mode; mirror that here so on-clock chain generators reach Move's
+     * track too. Stop (0xFC) must be included: it flushes note-offs, and
+     * skipping them would strand held notes on Move's track. There is no pad
+     * involved, so the root-match echo skip below stays note-input-only, and
+     * pre_mode_track_inject still guards the cable-2 loopback. */
+    int clock_gen = (len == 1 && (msg[0] == 0xF8u || msg[0] == 0xFAu ||
+                                  msg[0] == 0xFBu || msg[0] == 0xFCu));
     if (inst->midi_fx_pre_mode && inst->host && inst->host->midi_inject_to_move
-        && len >= 2) {
+        && (len >= 2 || clock_gen)) {
         int recv_ch = -2;
         if (inst->host->slot_recv_channel) {
             recv_ch = inst->host->slot_recv_channel(instance);
         }
-        for (int i = 0; i < out_count; i++) {
-            if (out_lens[i] < 1) continue;
-
-            /* Skip injection for events identical to the input pad event */
-            if (out_lens[i] >= 2 &&
-                out_msgs[i][0] == msg[0] && out_msgs[i][1] == msg[1]) {
-                continue;
+        if (clock_gen) {
+            /* Record-align (inject-only): a clock-driven step fires on the same
+             * 0xF8 that advances Move's step, so injecting it immediately makes
+             * Move record it against the PREVIOUS step (one 16th early). Delay
+             * the inject one clock so it lands after the advance — while the
+             * synth send above stayed immediate, keeping local timing tight.
+             *   Start (0xFA): downbeat injects now (Move is at step 0, no
+             *                 advance yet); drop any stale buffer first.
+             *   Clock/Continue (0xF8/0xFB): flush the prior clock, buffer this.
+             *   Stop (0xFC): flush prior AND inject now — note-offs must not
+             *                strand a held note on Move's track. */
+            int is_start = (msg[0] == 0xFAu);
+            int is_stop  = (msg[0] == 0xFCu);
+            if (is_start) inst->pre_delay_count = 0;   /* fresh bar: no stale inject */
+            else          pre_delay_flush(inst);        /* the prior clock's output */
+            int immediate = is_start || is_stop;
+            inst->pre_delay_recv_ch = recv_ch;
+            for (int i = 0; i < out_count; i++) {
+                if (out_lens[i] < 1) continue;
+                if (immediate) {
+                    pre_inject_one(inst, out_msgs[i], out_lens[i], recv_ch);
+                } else if (inst->pre_delay_count < CHAIN_PRE_DELAY_MAX) {
+                    int k = inst->pre_delay_count++;
+                    inst->pre_delay_msg[k][0] = out_msgs[i][0];
+                    inst->pre_delay_msg[k][1] = out_msgs[i][1];
+                    inst->pre_delay_msg[k][2] = out_msgs[i][2];
+                    inst->pre_delay_len[k]    = out_lens[i];
+                }
             }
-
-            uint8_t type = out_msgs[i][0] & 0xF0;
-            uint8_t cin;
-            switch (type) {
-                case 0x80: cin = 0x08; break;
-                case 0x90: cin = 0x09; break;
-                case 0xA0: cin = 0x0A; break;
-                case 0xB0: cin = 0x0B; break;
-                case 0xC0: cin = 0x0C; break;
-                case 0xD0: cin = 0x0D; break;
-                case 0xE0: cin = 0x0E; break;
-                default:   continue;
-            }
-            uint8_t inject_status = out_msgs[i][0];
-            if (recv_ch >= 0 && recv_ch <= 15) {
-                inject_status = (inject_status & 0xF0) | (uint8_t)recv_ch;
-            }
-            uint8_t pkt[4] = { (2 << 4) | cin, inject_status, out_msgs[i][1], out_msgs[i][2] };
-            if (inst->host->midi_inject_to_move(pkt, 4) > 0) {
-                pre_mode_track_inject(inst, out_msgs[i], out_lens[i]);
+        } else {
+            /* Note-driven (pad) Pre-mode inject: immediate. Skip events
+             * identical to the input pad event — Move already triggered them
+             * via the cable-0 pad path (injecting would double-trigger). */
+            for (int i = 0; i < out_count; i++) {
+                if (out_lens[i] < 1) continue;
+                if (out_lens[i] >= 2 &&
+                    out_msgs[i][0] == msg[0] && out_msgs[i][1] == msg[1]) {
+                    continue;
+                }
+                pre_inject_one(inst, out_msgs[i], out_lens[i], recv_ch);
             }
         }
     }
