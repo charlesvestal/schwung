@@ -668,7 +668,16 @@ func (ru *RemoteUI) handleSetParam(ctx context.Context, c *ruClient, msg wsMessa
 			go func() {
 				time.Sleep(50 * time.Millisecond) // Let the plugin process the change
 				// Read shm once and fan out to all subscribers of this slot.
-				ru.broadcastInitialParamValues(ctx, slot, comp, ru.subscribedClients(slot))
+				clients := ru.subscribedClients(slot)
+				// Pure Tool-tab clients set toolSub, not subs[0], so they're not
+				// in subscribedClients(0). An overtake tool's params live under
+				// the "overtake_dsp" component at slot 0, so include tool clients
+				// here — otherwise the immediate preset refetch skips them and
+				// they only catch the change on their next refetch_tool poll.
+				if comp == strings.TrimSuffix(overtakeParamPrefix, ":") {
+					clients = append(clients, ru.subscribedToolClients()...)
+				}
+				ru.broadcastInitialParamValues(ctx, slot, comp, clients)
 			}()
 		}
 	}
@@ -788,8 +797,16 @@ func (ru *RemoteUI) handleRefetchTool(ctx context.Context, c *ruClient) {
 		return
 	}
 	digest, ok, err := ru.shm.TryGetParam(0, overtakeParamPrefix+"rui_poll")
-	if !ok || err != nil || digest == "" {
-		// Tool predates the cheap digest key — fall back to a full fetch.
+	if !ok {
+		// Shm was busy (another goroutine held s.mu) — skip this poll and let
+		// the next one (~5ms) retry. Falling through to fetchAllParams here
+		// would block on s.mu and run the heavy full-state read, defeating the
+		// rev-gate exactly under the contention it's meant to cheapen.
+		return
+	}
+	if err != nil || digest == "" {
+		// Tool predates the cheap digest key (or a transient error) — fall back
+		// to a full fetch.
 		if params, hit := ru.fetchAllParams(0, "overtake_dsp"); hit {
 			ru.writeJSON(ctx, c, wsParamUpdate{Type: "param_update", Slot: 0, Params: params})
 		}
