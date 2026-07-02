@@ -272,9 +272,12 @@ void v2_unload_all_midi_fx(chain_instance_t *inst) {
 
     /* Stale refcount entries from a now-unloaded MIDI FX would orphan
      * future note-ons. Reset with the FX chain, along with the pad-held
-     * tracker — whichever FX replaces this one starts clean. */
+     * tracker — whichever FX replaces this one starts clean. Drop any
+     * buffered clock-driven inject batch too, so the next clock doesn't
+     * flush the old FX's orphaned note-ons into Move. */
     memset(inst->pre_injected_notes, 0, sizeof(inst->pre_injected_notes));
     memset(inst->pre_pad_held, 0, sizeof(inst->pre_pad_held));
+    inst->pre_delay_count = 0;
 }
 
 /* Process MIDI through all loaded MIDI FX modules */
