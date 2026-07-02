@@ -474,6 +474,33 @@ globalThis.chain_ui = {
 };
 ```
 
+#### Handling the Back button (`handleBack`)
+
+`chain_ui` may include an optional `handleBack()` method for internal
+navigation. When the shadow UI is showing your module's `chain_ui` (component
+edit), a **Back** press calls `handleBack()` first:
+
+- Return a **truthy** value to **consume** Back — you handled it yourself (e.g.
+  popped your own sub-view). The host does nothing further.
+- Return **falsy**, or omit `handleBack` entirely, to let the host handle Back
+  (unload your UI and return to the chain editor). This is the default.
+
+```javascript
+globalThis.chain_ui = {
+    init,
+    tick,
+    onMidiMessageInternal,
+    onMidiMessageExternal,
+    handleBack   // optional: return true to consume Back for internal nav
+};
+```
+
+Only consume Back while you actually have somewhere to go back *to*. Back is the
+only host-processed exit from this screen, so a `handleBack` that always returns
+truthy traps the user in your module — the sole remaining way out is to exit
+shadow mode. `handleBack` is only honored for modules using the `chain_ui`
+pattern (not the plain-globals shim).
+
 ### Menu Layout Helpers
 
 For list-based screens (title/list/footer), use the shared menu layout helpers:
