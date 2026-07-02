@@ -113,6 +113,16 @@
                 return requestFromParent({ type: "getChainParams" }).then(function (resp) {
                     return resp.data;
                 });
+            },
+
+            /**
+             * Ask the parent to re-fetch the current view's params from the
+             * device and re-push them. Used by modules whose device-side state
+             * changes without a notify (e.g. overtake tools polling for the
+             * playhead / external edits). Params arrive via onParamChange.
+             */
+            resubscribe: function () {
+                window.parent.postMessage({ type: "resubscribe" }, "*");
             }
         };
         return;
@@ -123,6 +133,10 @@
     // --------------------------------------------------------------------
     var slot = parseInt(query.get("slot"), 10);
     if (isNaN(slot)) slot = 0;
+    // Overtake-tool pop-out: use the tool channel (subscribe_tool / refetch_tool)
+    // and route sets on slot 0 (the manager dispatches by the overtake_dsp: key
+    // prefix), rather than a per-slot subscribe.
+    var isTool = query.get("tool") === "1";
 
     var wsUrl = (window.location.protocol === "https:" ? "wss://" : "ws://") +
         window.location.host + "/ws/remote-ui";
@@ -187,7 +201,11 @@
 
         ws.onopen = function () {
             reconnectDelay = 1000;
-            ws.send(JSON.stringify({ type: "subscribe", slot: slot }));
+            if (isTool) {
+                ws.send(JSON.stringify({ type: "subscribe_tool" }));
+            } else {
+                ws.send(JSON.stringify({ type: "subscribe", slot: slot }));
+            }
         };
 
         ws.onmessage = function (e) {
@@ -221,7 +239,7 @@
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({
                     type: "set_param",
-                    slot: slot,
+                    slot: isTool ? 0 : slot,
                     key: key,
                     value: String(value)
                 }));
@@ -244,6 +262,15 @@
         getChainParams: function () {
             if (chainParamsData !== null) return Promise.resolve(chainParamsData);
             return new Promise(function (resolve) { chainParamsWaiters.push(resolve); });
+        },
+
+        resubscribe: function () {
+            // Re-request a fresh push over our own socket. Tool pop-out uses the
+            // params-only refetch (a full subscribe would re-send custom_ui).
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(isTool ? { type: "refetch_tool" }
+                                              : { type: "subscribe", slot: slot }));
+            }
         }
     };
 })();
