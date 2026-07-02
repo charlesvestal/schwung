@@ -785,6 +785,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
              * suppress the first inject after a later toggle-on). */
             memset(inst->pre_injected_notes, 0, sizeof(inst->pre_injected_notes));
             memset(inst->pre_pad_held, 0, sizeof(inst->pre_pad_held));
+            inst->pre_delay_count = 0;  /* drop any buffered clock-driven inject */
         }
     }
     /* Master preset commands */
