@@ -12084,6 +12084,15 @@ function handleSelect() {
 }
 
 function handleBack() {
+    /* Pre-emption: in component-edit, let a module with a custom chain_ui
+     * handle Back for its own internal navigation. Truthy = consumed;
+     * falsy/absent falls through to the host unload logic below. */
+    if (view === VIEWS.COMPONENT_EDIT && loadedModuleUi &&
+        typeof loadedModuleUi.handleBack === "function" &&
+        loadedModuleUi.handleBack()) {
+        needsRedraw = true;
+        return;
+    }
     hideOverlay();
     switch (view) {
         case VIEWS.SLOTS:
