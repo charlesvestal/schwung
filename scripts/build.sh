@@ -291,7 +291,8 @@ if needs_rebuild build/unified-log \
         src/host/unified_log_cli.c \
         src/host/unified_log.c \
         -o build/unified-log \
-        -Isrc -Isrc/host
+        -Isrc -Isrc/host \
+        -lpthread
 else
     echo "Skipping unified log CLI (up to date)"
 fi
@@ -624,7 +625,7 @@ if needs_rebuild build/display-server \
         src/host/unified_log.c \
         -o build/display-server \
         -Isrc -Isrc/host \
-        -lrt
+        -lrt -lpthread
 else
     echo "Skipping display server (up to date)"
 fi
