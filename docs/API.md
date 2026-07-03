@@ -342,6 +342,8 @@ console.log(msg)              // Routed to the unified logger when enabled
 | 85  | Play              |                                |
 | 86  | Record            |                                |
 | 88  | Mute              |                                |
+| 56  | Undo              |                                |
+| 60  | Copy              |                                |
 | 118 | Sample            | Also acts as Record on some firmwares; LED is RGB |
 | 119 | Delete            |                                |
 
