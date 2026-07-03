@@ -1045,6 +1045,17 @@
       "default_branch": "main",
       "asset_name": "movy-module.tar.gz",
       "min_host_version": "0.9.13"
+    },
+    {
+      "id": "palette",
+      "name": "PALETTE",
+      "description": "4-slot serial multi-effect — 24 reorderable effects, per-slot drift, feedback + tempo sync (Chroma Console reimagined)",
+      "author": "Filliformes",
+      "component_type": "audio_fx",
+      "github_repo": "filliformes/palette-move",
+      "default_branch": "master",
+      "asset_name": "palette-module.tar.gz",
+      "min_host_version": "0.3.0"
     }
   ]
 }
