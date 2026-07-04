@@ -13750,6 +13750,11 @@ globalThis.init = function() {
 
     /* Scan for audio FX modules so display names are available */
     MASTER_FX_OPTIONS = scanForAudioFxModules();
+    /* Also prime moduleAbbrevCache for synth/midi_fx modules so slots restored
+     * from a saved patch show their real abbrev instead of the substring(0,2)
+     * fallback in getModuleAbbrev() before their picker has ever been opened. */
+    scanModulesForType("synth");
+    scanModulesForType("midiFx");
 
     /* Load auto-update preference */
     loadAutoUpdateConfig();
