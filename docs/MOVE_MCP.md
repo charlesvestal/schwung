@@ -129,6 +129,11 @@ Authorization: Bearer <token>
 X-Move-MCP-Token: <token>
 ```
 
+Mutating MCP requests bypass Schwung Manager's browser CSRF check only when
+they include a valid MCP token. Keep `Require Token` on for any write/action
+profile; if token auth is disabled, POST clients must satisfy the normal
+manager CSRF flow.
+
 Smoke-test the bridge from the computer on the same network:
 
 ```sh
@@ -170,7 +175,9 @@ For read-only use, expose only safe tools such as:
 | `move_search_samples` | `GET /api/mcp/samples` |
 
 For write-capable profiles, add tools only after enabling the matching
-permission in Schwung Manager:
+permission in Schwung Manager. Write/action tools should always send
+`Authorization: Bearer <token>` or `X-Move-MCP-Token: <token>` so the manager
+can distinguish them from browser-originated POSTs.
 
 | Tool | Required setting | HTTP call |
 | --- | --- | --- |

@@ -127,10 +127,23 @@ func CSRFProtection(next http.Handler) http.Handler {
 // for request paths that begin with any of the given prefixes. This is needed
 // for WebSocket upgrade endpoints which cannot carry CSRF tokens.
 func CSRFProtectionWithExemptions(next http.Handler, exemptPrefixes []string) http.Handler {
+	return CSRFProtectionWithConditionalExemptions(next, exemptPrefixes, nil)
+}
+
+// CSRFProtectionWithConditionalExemptions works like CSRFProtectionWithExemptions
+// and also skips enforcement when any predicate returns true for the request.
+// Use predicates for API exemptions that have their own non-cookie auth.
+func CSRFProtectionWithConditionalExemptions(next http.Handler, exemptPrefixes []string, exemptPredicates ...func(*http.Request) bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Skip CSRF entirely for exempt paths (e.g. WebSocket endpoints).
 		for _, prefix := range exemptPrefixes {
 			if strings.HasPrefix(r.URL.Path, prefix) {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+		for _, exempt := range exemptPredicates {
+			if exempt != nil && exempt(r) {
 				next.ServeHTTP(w, r)
 				return
 			}

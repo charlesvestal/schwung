@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -22,6 +26,13 @@ const (
 	moveSamplesDir         = "/data/UserData/UserLibrary/Samples"
 	moveSettings           = "/data/UserData/settings/Settings.json"
 	moveMCPSampleIndexPath = "/data/UserData/schwung/move-mcp/sample-index.json"
+
+	moveMCPMaxSmallJSONBody      = 64 << 10
+	moveMCPMaxClipJSONBody       = 1 << 20
+	moveMCPMaxDeviceParamsBody   = 256 << 10
+	moveMCPMaxTrackDevicesBody   = 4 << 20
+	moveMCPDefaultSampleIndexMB  = 64
+	moveMCPDefaultMoveMPCPackDir = "/data/UserData/schwung/move-mpc/packs"
 )
 
 type moveMCPConfig struct {
@@ -341,8 +352,8 @@ func (app *App) readMoveMCPConfig() moveMCPConfig {
 		AllowWrite:   false,
 		AllowDelete:  false,
 		AllowActions: false,
-		MaxUploadMB:  64,
-		PackRoot:     filepath.Join(app.basePath, "move-mcp", "packs"),
+		MaxUploadMB:  moveMCPDefaultSampleIndexMB,
+		PackRoot:     moveMCPDefaultMoveMPCPackDir,
 		LogRequests:  true,
 	}
 
@@ -380,7 +391,7 @@ func (app *App) requireMoveMCP(w http.ResponseWriter, r *http.Request, write boo
 		if token == "" {
 			token = r.URL.Query().Get("token")
 		}
-		if cfg.token == "" || token != cfg.token {
+		if !constantTimeStringEqual(token, cfg.token) {
 			writeJSONError(w, http.StatusUnauthorized, "invalid or missing move-mcp token")
 			return cfg, false
 		}
@@ -407,6 +418,22 @@ func bearerToken(r *http.Request) string {
 		return ""
 	}
 	return strings.TrimSpace(strings.TrimPrefix(auth, prefix))
+}
+
+func (app *App) hasValidMoveMCPToken(r *http.Request) bool {
+	cfg := app.readMoveMCPConfig()
+	token := bearerToken(r)
+	if token == "" {
+		token = r.Header.Get("X-Move-MCP-Token")
+	}
+	return constantTimeStringEqual(token, cfg.token)
+}
+
+func constantTimeStringEqual(a, b string) bool {
+	if a == "" || b == "" || len(a) != len(b) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -497,6 +524,7 @@ func (app *App) handleMoveMCPSelectSet(w http.ResponseWriter, r *http.Request) {
 	if _, ok := app.requireMoveMCPAction(w, r); !ok {
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, moveMCPMaxSmallJSONBody)
 	var req moveMCPSwitchSetRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -538,6 +566,7 @@ func (app *App) handleMoveMCPDuplicateSet(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, moveMCPMaxSmallJSONBody)
 	var req moveMCPDuplicateSetRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -617,6 +646,7 @@ func (app *App) handleMoveMCPWriteSongSettings(w http.ResponseWriter, r *http.Re
 	if _, ok := app.requireMoveMCP(w, r, true); !ok {
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, moveMCPMaxSmallJSONBody)
 	var req moveMCPSongSettingsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -655,6 +685,7 @@ func (app *App) handleMoveMCPWriteClip(w http.ResponseWriter, r *http.Request) {
 	if _, ok := app.requireMoveMCP(w, r, true); !ok {
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, moveMCPMaxClipJSONBody)
 	var req moveMCPWriteClipRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -737,7 +768,7 @@ func (app *App) handleMoveMCPWriteTrackDevices(w http.ResponseWriter, r *http.Re
 	if !ok {
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 4<<20)
+	r.Body = http.MaxBytesReader(w, r.Body, moveMCPMaxTrackDevicesBody)
 	var req moveMCPWriteTrackDevicesRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -786,6 +817,7 @@ func (app *App) handleMoveMCPWriteDeviceParameters(w http.ResponseWriter, r *htt
 	if !ok {
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, moveMCPMaxDeviceParamsBody)
 	var req moveMCPWriteDeviceParametersRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -861,7 +893,7 @@ func (app *App) handleMoveMCPWriteSampleIndex(w http.ResponseWriter, r *http.Req
 	}
 	maxBytes := int64(cfg.MaxUploadMB) << 20
 	if maxBytes <= 0 {
-		maxBytes = 64 << 20
+		maxBytes = moveMCPDefaultSampleIndexMB << 20
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
 	var index moveMCPSampleIndex
@@ -1064,15 +1096,22 @@ func loadCurrentMoveSong() (moveCurrentSet, moveSong, error) {
 }
 
 func readUserXattrString(path, name string) (string, error) {
-	out, err := exec.Command("getfattr", "--only-values", "-n", name, path).Output()
-	if err != nil {
-		return "", err
+	buf := make([]byte, 256)
+	for {
+		n, err := unix.Getxattr(path, name, buf)
+		if err == unix.ERANGE {
+			buf = make([]byte, len(buf)*2)
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(strings.TrimRight(string(buf[:n]), "\x00")), nil
 	}
-	return strings.TrimSpace(strings.TrimRight(string(out), "\x00")), nil
 }
 
 func setUserXattrString(path, name, value string) error {
-	return exec.Command("setfattr", "-n", name, "-v", value, path).Run()
+	return unix.Setxattr(path, name, []byte(value), 0)
 }
 
 func updateMoveCurrentSongIndex(index int) (string, error) {
@@ -1084,8 +1123,8 @@ func updateMoveCurrentSongIndex(index int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	var root map[string]any
-	if err := json.Unmarshal(raw, &root); err != nil {
+	root, err := decodeJSONMapUseNumber(raw)
+	if err != nil {
 		return "", err
 	}
 	root["currentSongIndex"] = index
@@ -1654,8 +1693,8 @@ func writeMoveClipToSongFile(path string, req moveMCPWriteClipRequest, song move
 	if err != nil {
 		return err
 	}
-	var root map[string]any
-	if err := json.Unmarshal(raw, &root); err != nil {
+	root, err := decodeJSONMapUseNumber(raw)
+	if err != nil {
 		return err
 	}
 	tracks, ok := root["tracks"].([]any)
@@ -1762,8 +1801,14 @@ func readMoveSongRoot(path string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	return decodeJSONMapUseNumber(raw)
+}
+
+func decodeJSONMapUseNumber(raw []byte) (map[string]any, error) {
 	var root map[string]any
-	if err := json.Unmarshal(raw, &root); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&root); err != nil {
 		return nil, err
 	}
 	return root, nil
@@ -2272,7 +2317,9 @@ func writeMoveSongAtomic(path string, song any) error {
 	}
 	data = append(data, '\n')
 	var check map[string]any
-	if err := json.Unmarshal(data, &check); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	if err := dec.Decode(&check); err != nil {
 		return err
 	}
 	if err := writeFileAtomic(path, data, 0o644); err != nil {

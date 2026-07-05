@@ -70,7 +70,10 @@ Typical MCP client entry:
 
 The first desktop server profile should expose read-only tools (`status`,
 `capabilities`, `sets`, `current-set`, `samples`). Add write/action tools only
-when the matching Schwung Manager permission is enabled.
+when the matching Schwung Manager permission is enabled, and send
+`Authorization: Bearer <token>` or `X-Move-MCP-Token: <token>` on every
+mutating request. Without a valid MCP token, POST requests must satisfy Schwung
+Manager's normal browser CSRF flow.
 
 ## HTTP API
 
