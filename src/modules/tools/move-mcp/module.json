@@ -2,7 +2,7 @@
     "id": "move-mcp",
     "name": "Move MCP",
     "version": "0.1.0",
-    "description": "Configure the planned WiFi/MCP bridge for controlled read/write access",
+    "description": "Configure the Move MCP bridge for controlled read/write access",
     "author": "Schwung",
     "license": "MIT",
     "ui": "ui.js",
