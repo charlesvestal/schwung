@@ -916,7 +916,7 @@
     {
       "id": "forge",
       "name": "Forge",
-      "description": "8-voice FM/subtractive hybrid drum synthesiser with Kit A↔B morph across 16 pads, 5 voice algorithms, per-voice resonator, dual filter with Comb modes, three concurrent FX buses & 64 factory kits",
+      "description": "8-voice FM/subtractive hybrid drum synthesiser for Ableton Move — Kit A↔B morph across 16 pads, 5 voice algorithms, a self-oscillating ladder filter, dedicated noise oscillator, enveloped FM, per-voice resonator, Ctrl-All performance macros, three concurrent FX buses & 137 factory kits",
       "author": "filliformes",
       "component_type": "sound_generator",
       "github_repo": "filliformes/forge-move",
