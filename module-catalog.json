@@ -916,7 +916,7 @@
     {
       "id": "forge",
       "name": "Forge",
-      "description": "8-voice FM/subtractive hybrid drum synthesiser with Kit A↔B morph across 16 pads, 5 voice algorithms, per-voice resonator, dual filter with Comb modes, three concurrent FX buses & 64 factory kits",
+      "description": "8-voice FM/subtractive hybrid drum synthesiser for Ableton Move — Kit A↔B morph across 16 pads, 5 voice algorithms, a self-oscillating ladder filter, dedicated noise oscillator, enveloped FM, per-voice resonator, Ctrl-All performance macros, three concurrent FX buses & 137 factory kits",
       "author": "filliformes",
       "component_type": "sound_generator",
       "github_repo": "filliformes/forge-move",
@@ -1047,6 +1047,28 @@
       "min_host_version": "0.9.13"
     },
     {
+      "id": "magneto",
+      "name": "Magneto",
+      "description": "Stereo cassette/tape looper + recorder: two 30 s tape sides, overdub, 9 tape models, varspeed/reverse/scrub/scan/stutter, tempo-synced loops, WAV load/export",
+      "author": "Filliformes",
+      "component_type": "audio_fx",
+      "github_repo": "filliformes/magneto-move",
+      "default_branch": "main",
+      "asset_name": "magneto-module.tar.gz",
+      "min_host_version": "0.7.0"
+    },
+    {
+      "id": "fizzik",
+      "name": "Fizzik",
+      "description": "Polyphonic simplex physical-modeling synth: two coupled resonators (string/beam/plate/membrane), tension modulation, 12-voicing analog filter, poly aftertouch, dual LFOs, full FX chain",
+      "author": "Filliformes",
+      "component_type": "sound_generator",
+      "github_repo": "filliformes/fizzik-move",
+      "default_branch": "master",
+      "asset_name": "fizzik-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
       "id": "palette",
       "name": "PALETTE",
       "description": "4-slot serial multi-effect — 24 reorderable effects, per-slot drift, feedback + tempo sync (Chroma Console reimagined)",
@@ -1055,7 +1077,7 @@
       "github_repo": "filliformes/palette-move",
       "default_branch": "master",
       "asset_name": "palette-module.tar.gz",
-      "min_host_version": "0.3.0"
+      "min_host_version": "0.7.11"
     }
   ]
 }
