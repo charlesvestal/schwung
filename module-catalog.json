@@ -1055,7 +1055,7 @@
       "github_repo": "filliformes/magneto-move",
       "default_branch": "main",
       "asset_name": "magneto-module.tar.gz",
-      "min_host_version": "0.3.0"
+      "min_host_version": "0.7.0"
     }
   ]
 }
