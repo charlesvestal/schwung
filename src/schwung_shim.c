@@ -3393,6 +3393,127 @@ void web_param_notify_push(uint8_t slot, const char *key, const char *value) {
     web_param_notify_shm->ready++;
 }
 
+/* ---- Bulk param get/set (request_type 3 / 4) ------------------------- *
+ *
+ * Collapses N overtake_dsp param round-trips into ONE: the cost of a param
+ * request is the wait for this handler's next audio-block cycle (~2.9ms),
+ * NOT the in-process get/set itself (µs). So one request carrying many keys
+ * — serviced in a single cycle — turns ~N×2.9ms into ~2.9ms.
+ *
+ * Wire format in shadow_param->value, self-describing (no struct change,
+ * binary-safe — values may contain '\n'):
+ *     "<count>\n"  then  count × ( "<len>\n" <len bytes> )
+ *   BULK_GET (3): items = keys; response = "<count>\n" + count value-records
+ *                 (same order; empty record on a get miss).
+ *   BULK_SET (4): items = key,value,key,value,… (count is even); applies each.
+ * Capped at SHADOW_BULK_MAX_ITEMS so a malformed request can't monopolise
+ * the audio thread. Runs on the SPI/audio thread — the module's get/set_param
+ * must be audio-safe (read-only / no alloc / no locks). */
+#define SHADOW_BULK_MAX_ITEMS 64
+
+static char s_bulk_req[SHADOW_PARAM_VALUE_LEN];   /* request copy (parsed)   */
+static char s_bulk_val[SHADOW_PARAM_VALUE_LEN];   /* one get value, scratch  */
+
+/* Parse the next length-prefixed record at *pp (within [*pp,end)). On
+ * success returns the record start, sets *out_len, advances *pp past it.
+ * Returns NULL on malformed/exhausted input. */
+static const char *bulk_next(const char **pp, const char *end, int *out_len) {
+    const char *p = *pp;
+    long n = 0; int any = 0;
+    while (p < end && *p >= '0' && *p <= '9') { n = n * 10 + (*p - '0'); p++; any = 1; }
+    if (!any || p >= end || *p != '\n') return NULL;
+    p++;                                  /* skip the '\n' after the length */
+    if (n < 0 || p + n > end) return NULL;
+    *out_len = (int)n;
+    *pp = p + n;
+    return p;
+}
+
+/* Append "<len>\n<bytes>" to out[off..cap); returns new offset, or -1 on
+ * overflow. */
+static int bulk_put(char *out, int off, int cap, const char *bytes, int len) {
+    int hdr = snprintf(out + off, (size_t)(cap - off), "%d\n", len);
+    if (hdr <= 0 || off + hdr + len > cap) return -1;
+    off += hdr;
+    memcpy(out + off, bytes, (size_t)len);
+    return off + len;
+}
+
+/* Service a BULK_GET/BULK_SET against the active overtake DSP. */
+static void shim_handle_param_bulk(uint8_t req_type) {
+    plugin_api_v2_t *api = NULL; void *inst = NULL;
+    if (overtake_dsp_gen && overtake_dsp_gen_inst) {
+        api = overtake_dsp_gen; inst = overtake_dsp_gen_inst;
+    } else if (overtake_dsp_fx && overtake_dsp_fx_inst) {
+        api = overtake_dsp_fx; inst = overtake_dsp_fx_inst;
+    }
+    if (!api) { shadow_param->error = 14; shadow_param->result_len = -1; return; }
+
+    /* BULK_SET never overwrites ->value, so parse it in place. BULK_GET writes
+     * the response back into ->value, so copy the request out first — bounded
+     * to the actual NUL-terminated payload, not the whole 64 KB buffer (this
+     * runs on the audio thread ~44×/sec). The request is ASCII/JSON with no
+     * embedded NUL, so strnlen finds its true length. */
+    const char *p, *end;
+    if (req_type == 4) {
+        p   = shadow_param->value;
+        end = shadow_param->value + SHADOW_PARAM_VALUE_LEN;
+    } else {
+        size_t rlen = strnlen(shadow_param->value, SHADOW_PARAM_VALUE_LEN - 1);
+        memcpy(s_bulk_req, shadow_param->value, rlen);
+        s_bulk_req[rlen] = '\0';
+        p   = s_bulk_req;
+        end = s_bulk_req + rlen;
+    }
+
+    int count = 0; { int any = 0;
+        while (p < end && *p >= '0' && *p <= '9') { count = count*10 + (*p-'0'); p++; any = 1; }
+        if (!any || p >= end || *p != '\n') { shadow_param->error = 22; shadow_param->result_len = -1; return; }
+        p++;
+    }
+    if (count < 0 || count > SHADOW_BULK_MAX_ITEMS) {
+        shadow_param->error = 22; shadow_param->result_len = -1; return;
+    }
+
+    if (req_type == 4) {                  /* BULK_SET: key,value pairs */
+        if (count & 1) { shadow_param->error = 22; shadow_param->result_len = -1; return; }
+        char keybuf[SHADOW_PARAM_KEY_LEN];
+        for (int i = 0; i + 1 < count; i += 2) {
+            int klen = 0, vlen = 0;
+            const char *k = bulk_next(&p, end, &klen);
+            const char *v = k ? bulk_next(&p, end, &vlen) : NULL;
+            if (!v) break;
+            if (klen <= 0 || klen >= (int)sizeof keybuf) continue;
+            memcpy(keybuf, k, (size_t)klen); keybuf[klen] = '\0';
+            /* value is NOT NUL-terminated in s_bulk_req; copy into s_bulk_val. */
+            if (vlen >= SHADOW_PARAM_VALUE_LEN) continue;
+            memcpy(s_bulk_val, v, (size_t)vlen); s_bulk_val[vlen] = '\0';
+            if (api->set_param) api->set_param(inst, keybuf, s_bulk_val);
+        }
+        shadow_param->error = 0; shadow_param->result_len = 0;
+        return;
+    }
+
+    /* BULK_GET: keys → values, written back into ->value. */
+    char *out = shadow_param->value;
+    int   off = snprintf(out, SHADOW_PARAM_VALUE_LEN, "%d\n", count);
+    char  keybuf[SHADOW_PARAM_KEY_LEN];
+    for (int i = 0; i < count; i++) {
+        int klen = 0;
+        const char *k = bulk_next(&p, end, &klen);
+        int vlen = 0;
+        if (k && klen > 0 && klen < (int)sizeof keybuf && api->get_param) {
+            memcpy(keybuf, k, (size_t)klen); keybuf[klen] = '\0';
+            int r = api->get_param(inst, keybuf, s_bulk_val, SHADOW_PARAM_VALUE_LEN);
+            if (r > 0) vlen = (r >= SHADOW_PARAM_VALUE_LEN) ? SHADOW_PARAM_VALUE_LEN - 1 : r;
+        }
+        int noff = bulk_put(out, off, SHADOW_PARAM_VALUE_LEN, s_bulk_val, vlen);
+        if (noff < 0) { shadow_param->error = 22; shadow_param->result_len = -1; return; }
+        off = noff;
+    }
+    shadow_param->error = 0; shadow_param->result_len = off;
+}
+
 /* Callback for chain_mgmt: handle shim-specific param prefixes.
  * Reads/writes shadow_param->key/value/error/result_len directly.
  * Returns 1 if handled, 0 if not. */
@@ -3402,6 +3523,12 @@ static int shim_handle_param_special(uint8_t req_type, uint32_t req_id) {
 
     /* overtake_dsp:<sub_key> */
     if (strncmp(key, "overtake_dsp:", 13) == 0) {
+        /* Bulk get/set carry their payload (key list / pairs) in ->value;
+         * the key field is just the "overtake_dsp:" routing marker. */
+        if (req_type == 3 || req_type == 4) {
+            shim_handle_param_bulk(req_type);
+            return 1;
+        }
         const char *param_key = key + 13;
         if (req_type == 1) {  /* SET */
             if (strcmp(param_key, "load") == 0) {
