@@ -3505,6 +3505,23 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
             }
             return null;
         };
+        /* Bulk get/set: ONE round-trip for many keys (the per-key wait is the
+         * cost, not the in-module get/set). `blob` is the module's
+         * length-prefixed payload; key is just the "overtake_dsp:" routing
+         * marker. Returns the response blob (get) / true (set), null if the
+         * host lacks the binding (module falls back to single calls). */
+        globalThis.host_module_get_params = function(blob) {
+            if (typeof shadow_get_params === "function") {
+                return shadow_get_params(0, "overtake_dsp:", blob);
+            }
+            return null;
+        };
+        globalThis.host_module_set_params = function(blob) {
+            if (typeof shadow_set_params === "function") {
+                return shadow_set_params(0, "overtake_dsp:", blob);
+            }
+            return false;
+        };
         globalThis.host_exit_module = function() {
             debugLog("host_exit_module called by overtake module");
             if (toolOvertakeActive) {
