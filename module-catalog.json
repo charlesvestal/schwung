@@ -1089,6 +1089,17 @@
       "default_branch": "main",
       "asset_name": "smack-module.tar.gz",
       "min_host_version": "0.3.0"
+    },
+    {
+      "id": "smack-in",
+      "name": "Smack In",
+      "description": "Standalone mic/line-in build of Smack: quantized loop capture with seeded per-slice glitch FX in one slot, no linein needed",
+      "author": "timncox",
+      "component_type": "sound_generator",
+      "github_repo": "timncox/schwung-smack-in",
+      "default_branch": "main",
+      "asset_name": "smack-in-module.tar.gz",
+      "min_host_version": "0.3.0"
     }
   ]
 }
