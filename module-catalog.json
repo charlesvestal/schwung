@@ -1078,6 +1078,17 @@
       "default_branch": "master",
       "asset_name": "palette-module.tar.gz",
       "min_host_version": "0.7.11"
+    },
+    {
+      "id": "smack",
+      "name": "Smack",
+      "description": "Quantized live-loop capture with seeded per-slice glitch FX and slice reordering - 18 effects, A/B punch, step-button pattern editing",
+      "author": "timncox",
+      "component_type": "audio_fx",
+      "github_repo": "timncox/schwung-smack",
+      "default_branch": "main",
+      "asset_name": "smack-module.tar.gz",
+      "min_host_version": "0.3.0"
     }
   ]
 }
