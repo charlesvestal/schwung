@@ -110,6 +110,13 @@ typedef struct host_api_v1 {
      * e.g. minijv part 6). NULL if the host doesn't expose slot context. */
     int (*slot_recv_channel)(void *instance);
 
+    /* Beats since transport start of the active clock source (Move's native
+     * sequencer, or an internal module's emitted clock), derived from
+     * 24-PPQN realtime ticks and interpolated per block. Returns < 0 when
+     * no transport is running — callers must fall back (e.g. LFO free-run).
+     * Appended in 2026-07; may be NULL on older hosts, always guard. */
+    double (*get_beat_position)(void);
+
 } host_api_v1_t;
 
 /*
