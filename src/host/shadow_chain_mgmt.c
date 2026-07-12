@@ -992,6 +992,7 @@ int shadow_inprocess_load_chain(void) {
     shadow_host_api.audio_in_offset = MOVE_AUDIO_IN_OFFSET;
     shadow_host_api.log = shadow_log;
     shadow_host_api.get_bpm = host.get_bpm;  /* Tempo query for LFO sync */
+    shadow_host_api.get_beat_position = host.get_beat_position;  /* transport phase for LFO sync */
     shadow_host_api.midi_inject_to_move = shadow_chain_midi_inject;
     shadow_host_api.slot_recv_channel = shadow_chain_slot_recv_channel;
 

@@ -1466,6 +1466,7 @@ static void shadow_overtake_dsp_load(const char *path) {
     overtake_host_api.midi_send_internal = overtake_midi_send_internal;
     overtake_host_api.midi_send_external = overtake_midi_send_external;
     overtake_host_api.get_bpm = shim_get_bpm;
+    overtake_host_api.get_beat_position = shadow_transport_beat_position;
     overtake_host_api.midi_inject_to_move = shadow_chain_midi_inject;
 
     /* Extract module directory from dsp path */
@@ -3878,6 +3879,7 @@ static void shim_init_subsystems(void)
             .startup_modwheel_reset_frames = STARTUP_MODWHEEL_RESET_FRAMES,
             .handle_param_special = shim_handle_param_special,
             .get_bpm = shim_get_bpm,
+            .get_beat_position = shadow_transport_beat_position,
             .on_param_changed = web_param_notify_push,
         };
         chain_mgmt_init(&cm_host);
