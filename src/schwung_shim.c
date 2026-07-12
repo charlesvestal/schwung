@@ -47,6 +47,7 @@
 #include "host/tts_engine.h"
 #include "host/link_audio.h"
 #include "host/shadow_sampler.h"
+#include "host/shadow_transport.h"
 #include "host/shadow_set_pages.h"
 #include "host/shim_worker.h"
 #include "host/shadow_dbus.h"
@@ -1199,6 +1200,7 @@ static void shadow_inprocess_process_midi(void) {
             /* Sampler sees clock from cable 0 only (Move internal) to avoid double-counting */
             if (cable == 0) {
                 sampler_on_clock(status_usb);
+                shadow_transport_on_realtime(TRANSPORT_SRC_MOVE, status_usb);
             }
 
             /* Deliver realtime to overtake DSP from cable 0 (Move's internal
@@ -1324,6 +1326,14 @@ static void shadow_inprocess_process_midi(void) {
 /* MIDI send callback for overtake DSP → chain slots */
 static int overtake_midi_send_internal(const uint8_t *msg, int len) {
     if (!msg || len < 4) return 0;
+    /* System realtime is transport, not note data: feed the transport service
+     * and broadcast on the same 1-byte path as the cable-0 tap. Must NOT go
+     * through dispatch_to_slots, whose channel remap corrupts the status byte. */
+    if (msg[1] >= 0xF8) {
+        shadow_transport_on_realtime(TRANSPORT_SRC_INTERNAL, msg[1]);
+        shadow_chain_broadcast_realtime(msg[1]);
+        return len;
+    }
     /* Build USB-MIDI packet: [CIN, status, d1, d2] */
     uint8_t cin = (msg[1] >> 4) & 0x0F;
     uint8_t pkt[4] = { cin, msg[1], msg[2], msg[3] };
@@ -1581,6 +1591,10 @@ static uint32_t spi_slot_probe_burst_max;
  */
 static void shadow_inprocess_render_to_buffer(void) {
     if (!shadow_inprocess_ready || !global_mmap_addr) return;
+
+    /* Advance the transport clock before slot/master LFOs render below, so
+     * they read a beat position interpolated to this block. */
+    shadow_transport_advance_block(MOVE_FRAMES_PER_BLOCK);
 
     /* Clear the deferred buffer (used for overtake DSP) */
     memset(shadow_deferred_dsp_buffer, 0, sizeof(shadow_deferred_dsp_buffer));
@@ -3868,6 +3882,8 @@ static void shim_init_subsystems(void)
         };
         chain_mgmt_init(&cm_host);
     }
+    /* Move's audio path is fixed 44.1 kHz (see shadow_master_fx_lfo_tick). */
+    shadow_transport_init(44100);
     /* Sampler announce wrapper: defined inline above so this scope can
      * reference it. (Hoisted via the prototype near the top of the file.) */
     /* Initialize sampler subsystem with callbacks to shim functions.

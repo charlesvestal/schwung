@@ -413,6 +413,23 @@ void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *mi
     }
 }
 
+/* Broadcast a 1-byte system-realtime message to every active chain slot.
+ * Realtime must NOT go through shadow_chain_dispatch_midi_to_slots: the
+ * per-slot channel remap rewrites the status low nibble (0xF8 -> 0xF0|ch)
+ * for slots with a forward channel. Mirrors the shim's cable-0 realtime
+ * broadcast, for internally generated transport (e.g. movy's sequencer). */
+void shadow_chain_broadcast_realtime(uint8_t status)
+{
+    const plugin_api_v2_t *pv2 = *host_plugin_v2;
+    if (!pv2 || !pv2->on_midi) return;
+    uint8_t msg[1] = { status };
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
+        if (host_chain_slots[i].active && host_chain_slots[i].instance)
+            pv2->on_midi(host_chain_slots[i].instance, msg, 1,
+                         MOVE_MIDI_SOURCE_EXTERNAL);
+    }
+}
+
 /* ============================================================================
  * External MIDI CC forwarding
  * ============================================================================ */
