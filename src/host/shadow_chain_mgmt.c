@@ -2170,17 +2170,25 @@ void shadow_master_fx_lfo_tick(int frames) {
             continue;
         }
 
-        /* Phase accumulation */
-        float rate_hz;
-        if (lfo->sync) {
-            float bpm = 120.0f;
-            if (host.get_bpm) bpm = host.get_bpm();
-            rate_hz = lfo_sync_rate_hz(bpm, lfo->rate_div);
+        /* Phase: when a transport is running, lock to song position (writing
+         * lfo->phase keeps continuity — on stop, free-run resumes from the
+         * locked phase instead of jumping). Otherwise free-run as before. */
+        double bp = -1.0;
+        if (lfo->sync && host.get_beat_position)
+            bp = host.get_beat_position();
+        if (lfo->sync && bp >= 0.0) {
+            lfo->phase = lfo_synced_phase(bp, lfo->rate_div);
         } else {
-            rate_hz = lfo->rate_hz;
+            float rate_hz;
+            if (lfo->sync) {
+                float bpm = 120.0f;
+                if (host.get_bpm) bpm = host.get_bpm();
+                rate_hz = lfo_sync_rate_hz(bpm, lfo->rate_div);
+            } else {
+                rate_hz = lfo->rate_hz;
+            }
+            lfo->phase = lfo_advance_phase(lfo->phase, rate_hz, frames, sample_rate);
         }
-
-        lfo->phase = lfo_advance_phase(lfo->phase, rate_hz, frames, sample_rate);
 
         /* Compute waveform with phase offset */
         double effective_phase = fmod(lfo->phase + (double)lfo->phase_offset, 1.0);
