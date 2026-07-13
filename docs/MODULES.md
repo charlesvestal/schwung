@@ -1693,8 +1693,23 @@ typedef struct host_api_v1 {
 
     /* Clock status for sync-aware plugins */
     int (*get_clock_status)(void);
+
+    /* Transport beat position for phase-locked sync. Beats elapsed since the
+     * active transport's start, derived from 24-PPQN MIDI clock and
+     * interpolated per audio block, tracking whichever transport is playing —
+     * Move's native sequencer (cable-0 clock) or an internal overtake
+     * sequencer that emits clock (e.g. movy). Returns < 0 when no transport is
+     * running (callers should fall back, e.g. free-run an LFO). Use this
+     * instead of accumulating phase from get_bpm() to stay drift-free and
+     * bar-aligned. May be NULL on older hosts — always guard. Appended 2026-07. */
+    double (*get_beat_position)(void);
 } host_api_v1_t;
 ```
+
+**Tempo while stopped:** `get_bpm()` retains the last-playing transport's tempo
+after it stops (so a synced LFO that switches from phase-lock to free-run keeps
+the same rate). It updates from emitted clock, so changing an internal
+sequencer's tempo while it is *stopped* is not reflected until it plays again.
 
 ## Audio Specifications
 
