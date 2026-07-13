@@ -14041,6 +14041,10 @@ globalThis.tick = function() {
     {
         const parkedIds = Object.keys(suspendedOvertakes);
         if (parkedIds.length > 0) {
+            /* Signal to each parked module's tick() that it is running blind in
+             * the background (draw calls below are no-ops). Modules read
+             * globalThis.overtakeParked to skip display/LED work while parked. */
+            globalThis.overtakeParked = true;
             const _noop = function() {};
             const _saved = {
                 clear_screen: globalThis.clear_screen,
@@ -14082,6 +14086,7 @@ globalThis.tick = function() {
                     }
                 }
             } finally {
+                globalThis.overtakeParked = false;
                 for (const k in _saved) globalThis[k] = _saved[k];
                 if (_savedShimGet === undefined) delete globalThis.host_module_get_param;
                 else globalThis.host_module_get_param = _savedShimGet;
@@ -15266,11 +15271,17 @@ globalThis.onMidiMessageInternal = function(data) {
                 debugLog("HOST: Shift+Back → full exit (suspend_keeps_js module)");
                 if (toolOvertakeActive) exitToolOvertake();
                 else exitOvertakeMode();
-            } else {
+                return;
+            }
+            if (!overtakeSuspendSelfManaged) {
                 debugLog("HOST: Back → suspend (module parks in background)");
                 suspendOvertakeMode();
+                return;
             }
-            return;
+            /* suspend_self_managed: the module owns plain Back for its own
+             * navigation and calls host_suspend_overtake() when it decides to
+             * park. Fall through to its onMidiMessageInternal (Shift+Back above
+             * is still the host's universal full-exit). */
         }
 
         /* CO-RUN: intercept chain-editor navigation CCs (jog turn, jog click,
