@@ -24,4 +24,11 @@ double shadow_transport_beat_position(void);         /* beats; < 0 = no transpor
 float  shadow_transport_bpm(void);                   /* 0 = unknown */
 int    shadow_transport_source(void);                /* active transport_src_t */
 
+/* Last transport that measured a tempo, and that tempo — retained after the
+ * transport stops (until a different source runs or re-init). Lets synced
+ * params (e.g. a free-running LFO) hold the stopped transport's tempo instead
+ * of snapping back to the Set/default tempo. bpm 0 / source NONE = never run. */
+float  shadow_transport_last_bpm(void);
+int    shadow_transport_last_source(void);
+
 #endif /* SHADOW_TRANSPORT_H */

@@ -63,10 +63,17 @@ int main(void) {
     shadow_transport_on_realtime(TRANSPORT_SRC_MOVE, 0xFC);
     if (shadow_transport_source() != TRANSPORT_SRC_INTERNAL) fail("falls back to internal");
 
-    /* --- stop: no transport = negative beat position --- */
+    /* --- last-known tempo survives stop (LFO free-run keeps movy's rate) --- */
+    shadow_transport_init(44100);
+    shadow_transport_on_realtime(TRANSPORT_SRC_INTERNAL, 0xFA);
+    shadow_transport_on_realtime(TRANSPORT_SRC_INTERNAL, 0xF8);
+    run_ticks(TRANSPORT_SRC_INTERNAL, 24);
     shadow_transport_on_realtime(TRANSPORT_SRC_INTERNAL, 0xFC);
+    shadow_transport_advance_block(128);  /* stop takes effect */
     if (shadow_transport_beat_position() >= 0.0) fail("stopped = beat < 0");
-    if (shadow_transport_source() != TRANSPORT_SRC_NONE) fail("stopped = no source");
+    if (shadow_transport_source() != TRANSPORT_SRC_NONE) fail("stopped = no active source");
+    if (shadow_transport_last_source() != TRANSPORT_SRC_INTERNAL) fail("last source = internal after stop");
+    expect_near((double)shadow_transport_last_bpm(), 125.0, 2.5, "last bpm retained after stop");
 
     /* --- staleness: ticks stop arriving -> transport flips off --- */
     shadow_transport_init(44100);

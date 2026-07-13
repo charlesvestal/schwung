@@ -348,6 +348,18 @@ float sampler_get_bpm(tempo_source_t *source) {
         return sampler_measured_bpm;
     }
 
+    /* 1b. Internal transport's last tempo (movy sequencer stopped). Keep synced
+     * params at movy's tempo instead of snapping back to the Set/default tempo,
+     * so a synced LFO free-runs at the rate it was locked to. Ranks below an
+     * actively-running clock (above) but above the Set tempo. */
+    if (shadow_transport_last_source() == TRANSPORT_SRC_INTERNAL) {
+        float lbpm = shadow_transport_last_bpm();
+        if (lbpm >= 20.0f) {
+            if (source) *source = TEMPO_SOURCE_LAST_CLOCK;
+            return lbpm;
+        }
+    }
+
     /* 2. Current Set's tempo */
     float set_tempo = s_set_tempo_ptr ? *s_set_tempo_ptr : 0.0f;
     if (set_tempo >= 20.0f) {
