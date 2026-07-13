@@ -23,6 +23,11 @@ static transport_source_state_t g_src[3];
 static unsigned long long g_now;
 static uint32_t g_sample_rate = 44100;
 static unsigned long long g_stale_samples;
+/* Last actively-measured tempo + its source, retained after stop. */
+static float g_last_bpm;
+static int g_last_bpm_source;
+
+static transport_source_state_t *transport_active(int *which);
 
 void shadow_transport_init(uint32_t sample_rate) {
     for (int i = 0; i < 3; i++) {
@@ -35,6 +40,8 @@ void shadow_transport_init(uint32_t sample_rate) {
     g_now = 0;
     g_sample_rate = sample_rate ? sample_rate : 44100;
     g_stale_samples = (unsigned long long)(TRANSPORT_STALE_SEC * g_sample_rate);
+    g_last_bpm = 0.0f;
+    g_last_bpm_source = TRANSPORT_SRC_NONE;
 }
 
 void shadow_transport_advance_block(int frames) {
@@ -46,6 +53,14 @@ void shadow_transport_advance_block(int frames) {
             g_now - g_src[i].last_tick_at > g_stale_samples) {
             g_src[i].running = 0;
         }
+    }
+    /* Capture the active transport's tempo each block; it survives stop so a
+     * free-running LFO keeps the rate it was locked to. */
+    int which = TRANSPORT_SRC_NONE;
+    transport_source_state_t *a = transport_active(&which);
+    if (a && a->tick_interval > 0.0) {
+        g_last_bpm = (float)((60.0 * g_sample_rate) / (a->tick_interval * TRANSPORT_PPQN));
+        g_last_bpm_source = which;
     }
 }
 
@@ -131,4 +146,12 @@ int shadow_transport_source(void) {
     int which = TRANSPORT_SRC_NONE;
     (void)transport_active(&which);
     return which;
+}
+
+float shadow_transport_last_bpm(void) {
+    return g_last_bpm;
+}
+
+int shadow_transport_last_source(void) {
+    return g_last_bpm_source;
 }
