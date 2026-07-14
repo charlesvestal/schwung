@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include "shadow_midi.h"
 #include "shadow_midi_inject_writer.h"
+#include "midi_net.h"
 #include "shadow_chain_mgmt.h"
 #include "shadow_led_queue.h"
 #include "shadow_overlay.h"  /* MIDI channel indicator globals */
@@ -147,6 +148,7 @@ static void (*host_ui_state_update_slot)(int slot);
 static void (*host_master_fx_forward_midi)(const uint8_t *msg, int len, int source);
 static void (*host_queue_led)(uint8_t cin, uint8_t status, uint8_t d1, uint8_t d2);
 static void (*host_init_led_queue)(void);
+static void (*host_network_midi_to_ui)(const uint8_t pkt[4]);
 
 /* Shared state pointers */
 static shadow_chain_slot_t *host_chain_slots;
@@ -193,6 +195,7 @@ void midi_routing_init(const midi_host_t *host)
     host_shadow_ui_midi_shm = host->shadow_ui_midi_shm;
     host_shadow_midi_dsp_shm = host->shadow_midi_dsp_shm;
     host_shadow_midi_inject_shm = host->shadow_midi_inject_shm;
+    host_network_midi_to_ui = host->network_midi_to_ui;
     host_shadow_mailbox = host->shadow_mailbox;
     host_master_fx_capture = host->master_fx_capture;
     host_slot_idle = host->slot_idle;
@@ -525,6 +528,9 @@ void shadow_inject_ui_midi_out(void)
             continue;  /* Don't copy directly, will be flushed later */
         }
 
+        if (cable == 2)
+            midi_net_publish(&local_buf[i]);
+
         /* All other messages: copy directly to mailbox */
         /* MIDI_OUT region is 80 bytes; display starts at 80. Don't write past. */
         while (hw_offset < HW_MIDI_OUT_SIZE) {
@@ -653,13 +659,22 @@ void shadow_drain_midi_inject(void)
         if (saw_existing) break;
 
         /* Write the 4-byte USB-MIDI packet + zero its 4-byte timestamp.
-         * Cable nibble in pkt[0] is preserved — callers choose cable:
+         * Cable nibble in pkt[0] is normally preserved — callers choose cable:
          * 0 for internal hardware (pads/buttons, Move-prefix protocol),
-         * 2 for external USB (general MIDI, routed to tracks by channel). */
-        memcpy(&midi_in[hw_offset], pkt, 4);
+         * 2 for external USB (general MIDI, routed to tracks by channel).
+         * Network input uses cable 3 only as an internal origin tag; convert
+         * it to cable 2 before committing it to Move's mailbox. */
+        uint8_t delivered[4];
+        memcpy(delivered, pkt, 4);
+        int network_origin = ((delivered[0] >> 4) & 0x0F) == MIDI_NET_INJECT_CABLE;
+        if (network_origin)
+            delivered[0] = (uint8_t)((2u << 4) | (delivered[0] & 0x0F));
+        memcpy(&midi_in[hw_offset], delivered, 4);
         memset(&midi_in[hw_offset + 4], 0, 4);
         hw_offset += MIDI_IN_EVT_STRIDE;
         shadow_midi_inject_pop(inject_shm);   /* consume only after a successful inject */
+        if (network_origin && host_network_midi_to_ui)
+            host_network_midi_to_ui(delivered);
         injected++;
     }
 

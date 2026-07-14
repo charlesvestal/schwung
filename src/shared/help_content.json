@@ -401,6 +401,25 @@
             "move.local:7700",
             "/config."
           ]
+        },
+        {
+          "title": "MIDI over Wi-Fi",
+          "lines": [
+            "Network MIDI for",
+            "Move tracks and",
+            "Schwung modules.",
+            "",
+            "Enable in Settings",
+            "> Services > MIDI",
+            "/ Wi-Fi.",
+            "",
+            "Supports ipMIDI in",
+            "and AppleMIDI in/",
+            "out with Bonjour",
+            "discovery.",
+            "",
+            "Off by default."
+          ]
         }
       ]
     },

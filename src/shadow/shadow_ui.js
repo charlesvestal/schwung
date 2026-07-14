@@ -939,7 +939,8 @@ const GLOBAL_SETTINGS_SECTIONS = [
         items: [
             { key: "filebrowser_enabled", label: "File Browser", type: "bool" },
             { key: "auto_update_check", label: "Auto Update Check", type: "bool" },
-            { key: "analytics_enabled", label: "Analytics", type: "bool" }
+            { key: "analytics_enabled", label: "Analytics", type: "bool" },
+            { key: "midi_net", label: "MIDI / Wi-Fi", type: "bool" }
         ]
     },
     {
@@ -3470,6 +3471,7 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
         const savedInit = globalThis.init;
         const savedTick = globalThis.tick;
         const savedMidi = globalThis.onMidiMessageInternal;
+        const savedMidiExternal = globalThis.onMidiMessageExternal;
 
         overtakeModulePath = moduleInfo.uiPath;
         overtakeModuleId = moduleInfo.id || "";
@@ -3605,6 +3607,7 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
             init: (globalThis.init !== savedInit) ? globalThis.init : null,
             tick: (globalThis.tick !== savedTick) ? globalThis.tick : null,
             onMidiMessageInternal: (globalThis.onMidiMessageInternal !== savedMidi) ? globalThis.onMidiMessageInternal : null,
+            onMidiMessageExternal: (globalThis.onMidiMessageExternal !== savedMidiExternal) ? globalThis.onMidiMessageExternal : null,
             onUnload: (typeof globalThis.onUnload === "function") ? globalThis.onUnload : null,
             /* onResume(): optional. Called once each time the module is
              * resumed from suspend (init() is NOT re-run). See
@@ -3616,12 +3619,14 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
         globalThis.init = savedInit;
         globalThis.tick = savedTick;
         globalThis.onMidiMessageInternal = savedMidi;
+        globalThis.onMidiMessageExternal = savedMidiExternal;
         if (typeof globalThis.onUnload === "function") delete globalThis.onUnload;
         if (typeof globalThis.onResume === "function") delete globalThis.onResume;
 
         debugLog("loadOvertakeModule: callbacks captured - init:" + !!overtakeModuleCallbacks.init +
                  " tick:" + !!overtakeModuleCallbacks.tick +
-                 " midi:" + !!overtakeModuleCallbacks.onMidiMessageInternal);
+                 " midi:" + !!overtakeModuleCallbacks.onMidiMessageInternal +
+                 " ext:" + !!overtakeModuleCallbacks.onMidiMessageExternal);
 
         overtakeModuleLoaded = true;
         overtakeSuspendKeepsJs = !!(moduleInfo.capabilities && moduleInfo.capabilities.suspend_keeps_js);
@@ -5509,6 +5514,7 @@ function startInteractiveTool(toolModule, filePath) {
             const savedInit = globalThis.init;
             const savedTick = globalThis.tick;
             const savedMidi = globalThis.onMidiMessageInternal;
+            const savedMidiExternal = globalThis.onMidiMessageExternal;
 
             /* Reinstall shims before loading the ES module.
              * QuickJS resolves bare global identifiers at compile time,
@@ -5588,6 +5594,7 @@ function startInteractiveTool(toolModule, filePath) {
                 init: (globalThis.init !== savedInit) ? globalThis.init : null,
                 tick: (globalThis.tick !== savedTick) ? globalThis.tick : null,
                 onMidiMessageInternal: (globalThis.onMidiMessageInternal !== savedMidi) ? globalThis.onMidiMessageInternal : null,
+                onMidiMessageExternal: (globalThis.onMidiMessageExternal !== savedMidiExternal) ? globalThis.onMidiMessageExternal : null,
                 onUnload: (typeof globalThis.onUnload === "function") ? globalThis.onUnload : null,
                 /* onResume(): optional. Called once each time the module is
                  * resumed from suspend (init() is NOT re-run). See
@@ -5597,11 +5604,13 @@ function startInteractiveTool(toolModule, filePath) {
             globalThis.init = savedInit;
             globalThis.tick = savedTick;
             globalThis.onMidiMessageInternal = savedMidi;
+            globalThis.onMidiMessageExternal = savedMidiExternal;
             if (typeof globalThis.onUnload === "function") delete globalThis.onUnload;
             if (typeof globalThis.onResume === "function") delete globalThis.onResume;
             debugLog("startInteractiveTool reconnect: callbacks captured - init:" + !!overtakeModuleCallbacks.init +
                      " tick:" + !!overtakeModuleCallbacks.tick +
-                     " midi:" + !!overtakeModuleCallbacks.onMidiMessageInternal);
+                     " midi:" + !!overtakeModuleCallbacks.onMidiMessageInternal +
+                     " ext:" + !!overtakeModuleCallbacks.onMidiMessageExternal);
 
             /* Signal reconnect to the UI via a global flag */
             globalThis.host_tool_reconnect = true;
@@ -10504,6 +10513,9 @@ function getMasterFxSettingValue(setting) {
     if (setting.key === "display_mirror") {
         return (typeof display_mirror_get === "function" && display_mirror_get()) ? "On" : "Off";
     }
+    if (setting.key === "midi_net") {
+        return (typeof midi_net_get === "function" && midi_net_get()) ? "On" : "Off";
+    }
     if (setting.key === "screen_reader_enabled") {
         return (typeof tts_get_enabled === "function" && tts_get_enabled()) ? "On" : "Off";
     }
@@ -10648,6 +10660,12 @@ function adjustMasterFxSetting(setting, delta) {
         /* Toggle boolean */
         const current = typeof display_mirror_get === "function" ? display_mirror_get() : false;
         display_mirror_set(!current ? 1 : 0);
+        return;
+    }
+
+    if (setting.key === "midi_net" && typeof midi_net_set === "function") {
+        const current = typeof midi_net_get === "function" && midi_net_get();
+        midi_net_set(current ? 0 : 1);
         return;
     }
 
@@ -15596,6 +15614,19 @@ globalThis.onMidiMessageInternal = function(data) {
 };
 
 globalThis.onMidiMessageExternal = function(data) {
+    if (view === VIEWS.OVERTAKE_MODULE && overtakeModuleLoaded &&
+        overtakeModuleCallbacks && !overtakeInitPending) {
+        if (overtakeModuleCallbacks.onMidiMessageExternal) {
+            try {
+                overtakeModuleCallbacks.onMidiMessageExternal(data);
+                needsRedraw = true;
+            } catch (e) {
+                debugLog("OVERTAKE onMidiMessageExternal exception: " + e);
+                exitOvertakeMode();
+            }
+        }
+        return;
+    }
     if (dispatchCanvasMidi(data, "external")) {
         needsRedraw = true;
     }

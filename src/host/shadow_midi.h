@@ -87,6 +87,7 @@ typedef struct {
     uint8_t **shadow_ui_midi_shm;
     shadow_midi_dsp_t **shadow_midi_dsp_shm;
     shadow_midi_inject_t **shadow_midi_inject_shm;
+    void (*network_midi_to_ui)(const uint8_t pkt[4]);
     uint8_t *shadow_mailbox;
     /* Capture state */
     shadow_capture_rules_t *master_fx_capture;

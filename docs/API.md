@@ -270,6 +270,7 @@ overlay_knobs_get_mode() / overlay_knobs_set_mode(v)
 skipback_seconds_get() / skipback_seconds_set(v)
 skipback_shortcut_get() / skipback_shortcut_set(v)
 shadow_ui_trigger_get() / shadow_ui_trigger_set(v) / shadow_ui_trigger_set_shm(v)
+midi_net_get() / midi_net_set(v)               // MIDI over Wi-Fi service; persisted
 
 // TTS / screen reader bindings (shadow_ui only)
 tts_get_enabled() / tts_set_enabled(v)

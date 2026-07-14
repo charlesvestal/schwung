@@ -353,6 +353,18 @@ MIDI_OUT (offset 0): cable 0 = Move internal out, cable 2 = external USB out.
 
 Normal shadow: only cable 0 processed. Overtake: all cables forwarded; cable 2 → `onMidiMessageExternal`. If Move tracks listen+output on same channel as external device, MIDI echoes back — use different channels.
 
+### MIDI over Wi-Fi
+
+Optional, off by default under **Global Settings → Services → MIDI / Wi-Fi**.
+The shim network thread supports ipMIDI input (`225.0.0.37:21928`), AppleMIDI
+input/output (`5004/5005`), and `_apple-midi._udp.local` mDNS advertising.
+Inbound messages enter the existing MPSC injection ring with an internal cable-3
+origin tag; `shadow_drain_midi_inject` rewrites that tag to external cable 2
+before Move sees it and mirrors the delivered packet to overtake
+`onMidiMessageExternal`. Realtime outbound paths only enqueue to a bounded
+lock-free ring; the network thread owns every socket call. Lifecycle changes run
+from `shim_worker`, never the SPI callback. See `docs/MIDI_WIFI.md`.
+
 ### Cable-2 Channel Remap (Overtake)
 
 Overtake modules can rewrite cable-2 MIDI_IN channel before Move firmware sees it (solves live-external ↔ Move-native routing without the JS-reinject cascade in `docs/MIDI_INJECTION.md`).
@@ -481,6 +493,7 @@ Release: bump `src/module.json` version → commit → `git tag v0.2.0 && git pu
 - `docs/SPI_PROTOCOL.md` — Full SPI reference
 - `docs/REALTIME_SAFETY.md` — RT rules and JACK glitch root causes
 - `docs/MIDI_INJECTION.md` — Cable-2 injection / echo filter history
+- `docs/MIDI_WIFI.md` — network MIDI behavior, protocols, routing, and RT contract
 - `docs/ADDRESSING_MOVE_SYNTHS.md` — Sending MIDI to Move tracks/slot synths from tools, overtake modules, chain MIDI FX. Ref: `src/modules/tools/seq-test/`.
 - `../schwung-catalog-site/manual.html` — User-facing manual (canonical, lives in the catalog-site repo)
 - `BUILDING.md` — Build system, cross-compilation

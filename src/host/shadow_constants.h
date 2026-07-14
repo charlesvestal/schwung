@@ -52,7 +52,7 @@
  * MIDI_OUT must be bounded by this to avoid corrupting the display. */
 #define HW_MIDI_OUT_SIZE    80
 #define DISPLAY_BUFFER_SIZE 1024  /* 128x64 @ 1bpp = 1024 bytes */
-#define CONTROL_BUFFER_SIZE 84  /* corun masks widened to uint32 + flags byte (cede-default model); static-asserted below */
+#define CONTROL_BUFFER_SIZE 84  /* includes network-MIDI state in existing alignment padding; static-asserted below */
 #define SHADOW_UI_BUFFER_SIZE     512
 #define SHADOW_PARAM_BUFFER_SIZE  65664  /* Large buffer for complex ui_hierarchy */
 #define SHADOW_MIDI_OUT_BUFFER_SIZE 512  /* MIDI out buffer from shadow UI (128 packets) */
@@ -158,6 +158,7 @@ typedef struct shadow_control_t {
     volatile uint16_t skipback_seconds; /* Skipback rolling buffer length: 30/60/120/180/240/300 */
     volatile uint8_t resume_last_tool;  /* 1=JUMP_TO_TOOLS should resume the most-recently-suspended tool instead of opening the menu */
     volatile uint8_t midi_indicator_enabled; /* 1=draw "ccN" MIDI channel indicator while a note is held */
+    volatile uint8_t midi_net_enabled; /* 1=run ipMIDI + AppleMIDI + mDNS service */
     /* Co-run state: one struct, accessed via helpers below. `target` selects
      * which peer co-runs (chain editor or Move firmware), `id` is its identity
      * (chain slot 0-3 or tool track 0-7; -1 unused when target=NONE), and

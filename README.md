@@ -94,6 +94,7 @@ curl -L https://raw.githubusercontent.com/charlesvestal/schwung/main/scripts/uni
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - System and Shadow UI architecture
 - [docs/MODULES.md](docs/MODULES.md) - Module development, Shadow UI integration, overtake modules
 - [docs/API.md](docs/API.md) - JavaScript module API
+- [docs/MIDI_WIFI.md](docs/MIDI_WIFI.md) - MIDI over Wi-Fi behavior and implementation contract
 - [src/modules/chain/README.md](src/modules/chain/README.md) - Signal Chain module notes
 
 ## Available Modules

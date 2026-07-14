@@ -74,6 +74,7 @@ typedef struct {
     void (*skipback_save)(void);
     void (*skipback_resize)(void);
     void (*preview_play_pending)(void);
+    void (*network_midi_reconcile)(void);
 } shim_worker_hooks_t;
 
 void shim_worker_set_hooks(const shim_worker_hooks_t *hooks);

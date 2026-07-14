@@ -1693,6 +1693,26 @@ static JSValue js_midi_indicator_get(JSContext *ctx, JSValueConst this_val,
     return JS_NewBool(ctx, shadow_control->midi_indicator_enabled != 0);
 }
 
+/* midi_net_set/get - publish desired service state through SHM and persist it.
+ * The shim worker reconciles lifecycle off the realtime thread. */
+static JSValue js_midi_net_set(JSContext *ctx, JSValueConst this_val,
+                               int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_UNDEFINED;
+    int enabled = 0;
+    JS_ToInt32(ctx, &enabled, argv[0]);
+    shadow_control->midi_net_enabled = enabled ? 1 : 0;
+    features_json_set("midi_net_enabled", enabled ? "true" : "false");
+    return JS_UNDEFINED;
+}
+
+static JSValue js_midi_net_get(JSContext *ctx, JSValueConst this_val,
+                               int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewBool(ctx, 0);
+    return JS_NewBool(ctx, shadow_control->midi_net_enabled != 0);
+}
+
 /* shadow_ui_trigger value names. Index matches the uint8 stored in shadow_control. */
 static const char *SHADOW_UI_TRIGGER_NAMES[3] = {"long_press", "shift_vol", "both"};
 
@@ -2491,6 +2511,10 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     /* Register MIDI channel indicator functions */
     JS_SetPropertyStr(ctx, global_obj, "midi_indicator_set", JS_NewCFunction(ctx, js_midi_indicator_set, "midi_indicator_set", 1));
     JS_SetPropertyStr(ctx, global_obj, "midi_indicator_get", JS_NewCFunction(ctx, js_midi_indicator_get, "midi_indicator_get", 0));
+
+    /* Register MIDI over Wi-Fi service functions */
+    JS_SetPropertyStr(ctx, global_obj, "midi_net_set", JS_NewCFunction(ctx, js_midi_net_set, "midi_net_set", 1));
+    JS_SetPropertyStr(ctx, global_obj, "midi_net_get", JS_NewCFunction(ctx, js_midi_net_get, "midi_net_get", 0));
 
     /* Register long-press shadow shortcut functions */
     JS_SetPropertyStr(ctx, global_obj, "shadow_ui_trigger_set", JS_NewCFunction(ctx, js_shadow_ui_trigger_set, "shadow_ui_trigger_set", 1));

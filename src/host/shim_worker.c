@@ -224,6 +224,8 @@ static void *worker_main(void *arg) {
     for (;;) {
         usleep(200 * 1000);             /* 200 ms cadence */
         drain_events();                 /* event latency ≤ ~200 ms */
+        if (worker_hooks.network_midi_reconcile)
+            worker_hooks.network_midi_reconcile();
 
         /* Persist jack state when the RT path reports a new CC 115 value. */
         int jp = shim_jack_persist;

@@ -60,6 +60,7 @@
 #include "host/shadow_led_queue.h"
 #include "host/shadow_state.h"
 #include "host/shadow_midi.h"
+#include "host/midi_net.h"
 #include "host/shadow_shm_util.h"
 
 /* Debug flags - set to 1 to enable various debug logging */
@@ -161,6 +162,7 @@ static bool set_pages_enabled = true;      /* Set pages enabled by default */
 static bool ext_midi_remap_feature_enabled = true; /* Cable-2 channel remap on by default */
 static bool skipback_require_volume = false; /* false=Shift+Capture, true=Shift+Vol+Capture */
 static bool midi_indicator_enabled_setting = false; /* Off by default; persisted in features.json */
+static bool midi_net_enabled_setting = false; /* Network MIDI off by default */
 static int skipback_seconds_setting = SKIPBACK_DEFAULT_SECONDS; /* Skipback rolling buffer length */
 /* Shadow UI trigger mode: 0=long-press only, 1=Shift+Vol only, 2=both. Default=both. */
 static uint8_t shadow_ui_trigger_setting = 2;
@@ -391,6 +393,22 @@ static inline int shim_move_channel_count(void)
 /* PFX per-track audio shared memory (shim → PFX DSP plugin) */
 
 static void load_feature_config(void);
+static volatile int midi_net_initialized = 0;
+
+/* Runs only on shim_worker (SCHED_OTHER). The SPI callback merely publishes
+ * the desired byte in shadow_control. */
+static void shim_network_midi_reconcile(void)
+{
+    if (!midi_net_initialized || !shadow_control) return;
+    int want = shadow_control->midi_net_enabled ? 1 : 0;
+    if (want && !midi_net_is_running()) {
+        if (midi_net_start() != 0)
+            unified_log("midi_net", LOG_LEVEL_ERROR,
+                        "failed to start network MIDI service");
+    } else if (!want && midi_net_is_running()) {
+        midi_net_stop();
+    }
+}
 
 
 /* ============================================================================
@@ -1011,6 +1029,18 @@ static void load_feature_config(void)
         }
     }
 
+    /* Parse midi_net_enabled (defaults to false). */
+    const char *midi_net_key = strstr(config_buf, "\"midi_net_enabled\"");
+    if (midi_net_key) {
+        const char *colon = strchr(midi_net_key, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ' || *colon == '\t') colon++;
+            if (strncmp(colon, "true", 4) == 0)
+                midi_net_enabled_setting = true;
+        }
+    }
+
     /* Parse shadow_ui_trigger ("long_press" | "shift_vol" | "both"; default "both").
      * Legacy: if the string key is missing, fall back to bool "long_press_shadow"
      * (true → both, false → shift_vol). */
@@ -1426,6 +1456,8 @@ static void overtake_ext_drain_into_shadow(uint8_t *shadow) {
         midi_out[slot+1] = overtake_ext_ring.pkt[idx][1];
         midi_out[slot+2] = overtake_ext_ring.pkt[idx][2];
         midi_out[slot+3] = overtake_ext_ring.pkt[idx][3];
+        if (((overtake_ext_ring.pkt[idx][0] >> 4) & 0x0F) == 2)
+            midi_net_publish(overtake_ext_ring.pkt[idx]);
         slot += 4;
         tail++;
     }
@@ -2682,6 +2714,14 @@ static inline void shadow_ui_midi_publish(uint8_t head, uint8_t status,
     }
 }
 
+/* Called by the SPI-thread injection drain only after a network packet has
+ * been committed to Move's cable-2 MIDI_IN stream. */
+static void shadow_network_midi_to_ui(const uint8_t pkt[4])
+{
+    if (!pkt) return;
+    shadow_ui_midi_publish(pkt[0], pkt[1], pkt[2], pkt[3]);
+}
+
 /* LED queue constants and state — moved to shadow_led_queue.c */
 
 /* Shadow shared memory segments are created via shadow_shm_map()
@@ -3934,6 +3974,7 @@ static void shim_init_subsystems(void)
         shadow_control->skipback_seconds = (uint16_t)skipback_seconds_setting;
         shadow_control->shadow_ui_trigger = shadow_ui_trigger_setting;
         shadow_control->midi_indicator_enabled = midi_indicator_enabled_setting ? 1 : 0;
+        shadow_control->midi_net_enabled = midi_net_enabled_setting ? 1 : 0;
         shadow_control->speaker_active = 1; /* assume speaker at boot; CC 115 will correct */
         /* Speaker-EQ auto stability clock starts now; EQ stays off until a
          * speaker reading has been stable for SPK_EQ_STABLE_SEC. */
@@ -3945,6 +3986,8 @@ static void shim_init_subsystems(void)
     if (!speaker_eq_initialized) {
         speaker_eq_build(44100.0f);
     }
+    midi_net_init(&shadow_midi_inject_shm, NULL);
+    midi_net_initialized = 1;
     /* Initialize process management subsystem */
     {
         process_host_t proc_host = {
@@ -4026,6 +4069,7 @@ static void shim_init_subsystems(void)
             .shadow_ui_midi_shm = &shadow_ui_midi_shm,
             .shadow_midi_dsp_shm = &shadow_midi_dsp_shm,
             .shadow_midi_inject_shm = &shadow_midi_inject_shm,
+            .network_midi_to_ui = shadow_network_midi_to_ui,
             .shadow_mailbox = shadow_buf,
             .master_fx_capture = &shadow_master_fx_capture,
             .slot_idle = shadow_slot_idle,
@@ -7754,6 +7798,7 @@ static void shim_spi_init(void)
             .skipback_save          = skipback_worker_spawn_save,
             .skipback_resize        = shim_hook_skipback_resize,
             .preview_play_pending   = shim_hook_preview_play,
+            .network_midi_reconcile = shim_network_midi_reconcile,
         };
         shim_worker_set_hooks(&hooks);
     }

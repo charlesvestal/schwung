@@ -415,7 +415,7 @@ globalThis.tick = function() {
     // Update display here
 }
 
-/* Handle MIDI from external USB devices */
+/* Handle MIDI from external USB devices or the optional network MIDI service */
 globalThis.onMidiMessageExternal = function(data) {
     // data = [status, data1, data2]
 }
@@ -2046,9 +2046,11 @@ When clearing or setting LEDs, address both note-based and CC-based LEDs:
 
 In overtake mode:
 - All internal MIDI is passed to the module's `onMidiMessageInternal`
-- External MIDI is passed to `onMidiMessageExternal`
+- External USB MIDI and enabled network MIDI are passed to `onMidiMessageExternal`
 - The host intercepts Shift+Vol+Jog before the module sees it (for escape)
-- Modules can send MIDI out via `move_midi_external_send` and `move_midi_internal_send`
+- Modules can send MIDI out via `move_midi_external_send` and `move_midi_internal_send`.
+  Cable-2 packets from `move_midi_external_send` are also mirrored to connected
+  AppleMIDI peers while **Global Settings > Services > MIDI / Wi-Fi** is on.
 
 ### Example: MIDI Controller
 
