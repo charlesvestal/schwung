@@ -1122,6 +1122,28 @@
       "default_branch": "main",
       "asset_name": "mark-module.tar.gz",
       "min_host_version": "0.12.0"
+    },
+    {
+      "id": "belt",
+      "name": "Belt",
+      "description": "Live vocal processor: autotune pitch correction, diatonic backing-vocal harmonies, doubler, and formant shift - chain and Master FX build",
+      "author": "timncox",
+      "component_type": "audio_fx",
+      "github_repo": "timncox/schwung-belt",
+      "default_branch": "main",
+      "asset_name": "belt-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
+      "id": "belt-in",
+      "name": "Belt In",
+      "description": "Standalone live-input (mic/line/USB-C) build of Belt: sing into the Move and get tuned, harmonized vocals in one slot",
+      "author": "timncox",
+      "component_type": "sound_generator",
+      "github_repo": "timncox/schwung-belt-in",
+      "default_branch": "main",
+      "asset_name": "belt-in-module.tar.gz",
+      "min_host_version": "0.3.0"
     }
   ]
 }
