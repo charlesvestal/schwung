@@ -474,32 +474,38 @@ globalThis.chain_ui = {
 };
 ```
 
-#### Handling the Back button (`handleBack`)
+#### Back-button handling (`handleBack`)
 
-`chain_ui` may include an optional `handleBack()` method for internal
-navigation. When the shadow UI is showing your module's `chain_ui` (component
-edit), a **Back** press calls `handleBack()` first:
+A chain module's `ui_chain.js` may export `handleBack()`. When the shadow UI is in
+COMPONENT_EDIT with your module's chain UI loaded, a Back press calls your
+`handleBack()` first:
 
-- Return a **truthy** value to **consume** Back — you handled it yourself (e.g.
-  popped your own sub-view). The host does nothing further.
-- Return **falsy**, or omit `handleBack` entirely, to let the host handle Back
-  (unload your UI and return to the chain editor). This is the default.
+- return a **truthy** value to **consume** Back (you handled internal navigation
+  — e.g. popped your own sub-view);
+- return **falsy** / omit the method to let the host handle Back (unload the module
+  UI and return to the chain editor).
 
-```javascript
-globalThis.chain_ui = {
-    init,
-    tick,
-    onMidiMessageInternal,
-    onMidiMessageExternal,
-    handleBack   // optional: return true to consume Back for internal nav
-};
-```
+Only consume Back while you actually have somewhere to go back *to*. If `handleBack()`
+always returns truthy the user can never leave your module via Back — it is the only
+host-processed exit in this screen, so the sole remaining way out is to exit shadow mode.
 
-Only consume Back while you actually have somewhere to go back *to*. Back is the
-only host-processed exit from this screen, so a `handleBack` that always returns
-truthy traps the user in your module — the sole remaining way out is to exit
-shadow mode. `handleBack` is only honored for modules using the `chain_ui`
-pattern (not the plain-globals shim).
+#### Copy / Delete / Undo (`ui_chain.js`)
+
+While the shadow UI is on screen, CC 56 (Undo), CC 60 (Copy), and CC 119
+(Delete) are delivered exclusively to the loaded module's `ui_chain.js` via
+`onMidiMessageInternal` — they are blocked from reaching Move firmware for
+the duration, so a press can never double-fire into Move's own undo/copy/
+delete while you're editing a module (e.g. a Delete press won't also delete
+a Move clip in the background).
+
+This makes the three buttons safe to repurpose for module-specific gestures
+— e.g. hold Copy/Delete + tap a pad to target it, tap Undo to revert the
+last such operation. They join the existing forwarded set (jog wheel/click,
+Back, track buttons, knobs, Mute) that a chain module already receives in
+this screen.
+
+Outside shadow display (or outside COMPONENT_EDIT), these CCs behave as
+normal Move hardware buttons and are not intercepted.
 
 ### Menu Layout Helpers
 
