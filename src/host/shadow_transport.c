@@ -1,8 +1,12 @@
 /* Single authority for transport state: which clock source is running, its
  * tempo, and an interpolated beat position. Fed system-realtime bytes from
  * the shim's cable-0 tap (Move native) and from overtake-DSP internal sends.
- * Every function runs on the shim's audio thread: fixed-size state, no
- * locks, no I/O, no allocation. */
+ * The writers (shadow_transport_on_realtime, shadow_transport_advance_block)
+ * run on the shim's audio thread: fixed-size state, no locks, no I/O, no
+ * allocation. The BPM/source readers (shadow_transport_bpm/source/last_*) may
+ * also be called off the audio thread via sampler_get_bpm; like the existing
+ * unlocked sampler BPM reads, a torn double read on 32-bit ARM yields at worst
+ * a transient wrong BPM, never a crash, and no reader mutates state. */
 #include "shadow_transport.h"
 
 #define TRANSPORT_PPQN 24
@@ -76,6 +80,12 @@ void shadow_transport_on_realtime(transport_src_t src, uint8_t status) {
         break;
     case 0xFB:
         s->running = 1;
+        /* Continue resumes mid-bar (tick_count is kept, unlike 0xFA). Refresh
+         * last_tick_at so advance_block's staleness net can't flip us back off
+         * before the first post-Continue 0xF8 — that would re-anchor the next
+         * tick to beat 0 instead of resuming. (Movy emits only FA/F8/FC, so
+         * this hardens the Move-native source, which can send Continue.) */
+        s->last_tick_at = g_now;
         break;
     case 0xFC:
         s->running = 0;
