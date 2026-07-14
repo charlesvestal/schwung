@@ -1082,7 +1082,7 @@
     {
       "id": "smack",
       "name": "Smack",
-      "description": "Quantized live-loop capture with seeded per-slice glitch FX and slice reordering - 22 effects, A/B punch, step-button pattern editing",
+      "description": "Quantized live-loop capture with seeded per-slice glitch FX and slice reordering - 26 effects, A/B punch, step-button editing, Pad Play",
       "author": "timncox",
       "component_type": "audio_fx",
       "github_repo": "timncox/schwung-smack",
@@ -1093,7 +1093,7 @@
     {
       "id": "smack-in",
       "name": "Smack In",
-      "description": "Standalone mic/line-in build of Smack: quantized loop capture with seeded per-slice glitch FX in one slot, no linein needed",
+      "description": "Standalone mic/line/USB-C input build of Smack: quantized loop capture with the same 26-effect seeded slice engine and Pad Play",
       "author": "timncox",
       "component_type": "sound_generator",
       "github_repo": "timncox/schwung-smack-in",
@@ -1110,7 +1110,7 @@
       "github_repo": "timncox/schwung-oversmack",
       "default_branch": "main",
       "asset_name": "oversmack-module.tar.gz",
-      "min_host_version": "0.12.0"
+      "min_host_version": "0.11.4"
     },
     {
       "id": "mark",
@@ -1121,7 +1121,7 @@
       "github_repo": "timncox/schwung-mark",
       "default_branch": "main",
       "asset_name": "mark-module.tar.gz",
-      "min_host_version": "0.12.0"
+      "min_host_version": "0.11.4"
     },
     {
       "id": "belt",
