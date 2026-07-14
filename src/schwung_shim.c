@@ -1325,11 +1325,16 @@ static void shadow_inprocess_process_midi(void) {
 
 /* MIDI send callback for overtake DSP → chain slots */
 static int overtake_midi_send_internal(const uint8_t *msg, int len) {
+    /* Realtime must be padded to >= 4 bytes to clear this guard: the emit path
+     * packs status as [status,0,0,0], so a 1-byte realtime send is dropped. */
     if (!msg || len < 4) return 0;
     /* System realtime is transport, not note data: feed the transport service
      * and broadcast on the same 1-byte path as the cable-0 tap. Must NOT go
-     * through dispatch_to_slots, whose channel remap corrupts the status byte. */
-    if (msg[1] >= 0xF8) {
+     * through dispatch_to_slots, whose channel remap corrupts the status byte.
+     * Match only the four transport bytes — Start/Continue/Stop/Clock — not the
+     * whole 0xF8..0xFF range, which also spans undefined (F9/FD), active
+     * sensing (FE) and reset (FF); those must not fan out to every slot. */
+    if (msg[1] == 0xF8 || msg[1] == 0xFA || msg[1] == 0xFB || msg[1] == 0xFC) {
         shadow_transport_on_realtime(TRANSPORT_SRC_INTERNAL, msg[1]);
         shadow_chain_broadcast_realtime(msg[1]);
         return len;
