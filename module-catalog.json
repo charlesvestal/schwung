@@ -1110,7 +1110,7 @@
       "github_repo": "timncox/schwung-oversmack",
       "default_branch": "main",
       "asset_name": "oversmack-module.tar.gz",
-      "min_host_version": "0.12.0"
+      "min_host_version": "0.11.4"
     },
     {
       "id": "mark",
@@ -1121,7 +1121,7 @@
       "github_repo": "timncox/schwung-mark",
       "default_branch": "main",
       "asset_name": "mark-module.tar.gz",
-      "min_host_version": "0.12.0"
+      "min_host_version": "0.11.4"
     },
     {
       "id": "belt",
