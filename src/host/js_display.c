@@ -27,6 +27,13 @@ unsigned char js_display_screen_buffer[DISPLAY_WIDTH * DISPLAY_HEIGHT];
 /* Dirty flag - set when screen changes */
 int js_display_screen_dirty = 0;
 
+/* Exclusive clip bounds. int64_t avoids overflow for arbitrary JS integers. */
+static int clip_enabled = 0;
+static int64_t clip_x_min = 0;
+static int64_t clip_y_min = 0;
+static int64_t clip_x_max = DISPLAY_WIDTH;
+static int64_t clip_y_max = DISPLAY_HEIGHT;
+
 /* Global font - loaded on first use */
 static Font *g_font = NULL;
 
@@ -44,11 +51,39 @@ void js_display_clear(void) {
     mark_dirty();
 }
 
-void js_display_set_pixel(int x, int y, int value) {
-    if (x >= 0 && x < DISPLAY_WIDTH && y >= 0 && y < DISPLAY_HEIGHT) {
-        js_display_screen_buffer[y * DISPLAY_WIDTH + x] = value ? 1 : 0;
-        mark_dirty();
+void js_display_set_clip(int x, int y, int w, int h) {
+    clip_enabled = 1;
+
+    if (w <= 0 || h <= 0) {
+        clip_x_min = 0;
+        clip_y_min = 0;
+        clip_x_max = 0;
+        clip_y_max = 0;
+        return;
     }
+
+    clip_x_min = x;
+    clip_y_min = y;
+    clip_x_max = (int64_t)x + w;
+    clip_y_max = (int64_t)y + h;
+}
+
+void js_display_clear_clip(void) {
+    clip_enabled = 0;
+    clip_x_min = 0;
+    clip_y_min = 0;
+    clip_x_max = DISPLAY_WIDTH;
+    clip_y_max = DISPLAY_HEIGHT;
+}
+
+void js_display_set_pixel(int x, int y, int value) {
+    if (x < 0 || x >= DISPLAY_WIDTH || y < 0 || y >= DISPLAY_HEIGHT) return;
+    if (clip_enabled &&
+        ((int64_t)x < clip_x_min || (int64_t)x >= clip_x_max ||
+         (int64_t)y < clip_y_min || (int64_t)y >= clip_y_max)) return;
+
+    js_display_screen_buffer[y * DISPLAY_WIDTH + x] = value ? 1 : 0;
+    mark_dirty();
 }
 
 int js_display_get_pixel(int x, int y) {
@@ -136,7 +171,7 @@ int js_display_draw_image(const char *filename, int dx, int dy, int threshold, i
             unsigned char val = image[iy * w + ix];
             int lit = invert ? (val <= threshold) : (val > threshold);
             if (lit) {
-                js_display_screen_buffer[py * DISPLAY_WIDTH + px] = 1;
+                js_display_set_pixel(px, py, 1);
             }
         }
     }
@@ -631,6 +666,24 @@ JSValue js_display_bind_draw_image(JSContext *ctx, JSValueConst this_val, int ar
     return JS_NewBool(ctx, result);
 }
 
+static JSValue js_display_bind_set_clip(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 4) return JS_UNDEFINED;
+    int x, y, w, h;
+    if (JS_ToInt32(ctx, &x, argv[0])) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &y, argv[1])) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &w, argv[2])) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &h, argv[3])) return JS_UNDEFINED;
+    js_display_set_clip(x, y, w, h);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_display_bind_clear_clip(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)ctx; (void)this_val; (void)argc; (void)argv;
+    js_display_clear_clip();
+    return JS_UNDEFINED;
+}
+
 void js_display_register_bindings(JSContext *ctx, JSValue global_obj) {
     JS_SetPropertyStr(ctx, global_obj, "set_pixel",
         JS_NewCFunction(ctx, js_display_bind_set_pixel, "set_pixel", 3));
@@ -654,4 +707,8 @@ void js_display_register_bindings(JSContext *ctx, JSValue global_obj) {
         JS_NewCFunction(ctx, js_display_bind_set_font, "set_font", 1));
     JS_SetPropertyStr(ctx, global_obj, "get_font_height",
         JS_NewCFunction(ctx, js_display_bind_get_font_height, "get_font_height", 0));
+    JS_SetPropertyStr(ctx, global_obj, "set_clip_rect",
+        JS_NewCFunction(ctx, js_display_bind_set_clip, "set_clip_rect", 4));
+    JS_SetPropertyStr(ctx, global_obj, "clear_clip_rect",
+        JS_NewCFunction(ctx, js_display_bind_clear_clip, "clear_clip_rect", 0));
 }

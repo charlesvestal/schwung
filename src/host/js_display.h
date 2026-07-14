@@ -45,6 +45,8 @@ extern int js_display_screen_dirty;
 
 /* Core display functions */
 void js_display_clear(void);
+void js_display_set_clip(int x, int y, int w, int h);
+void js_display_clear_clip(void);
 void js_display_set_pixel(int x, int y, int value);
 int  js_display_get_pixel(int x, int y);
 void js_display_draw_rect(int x, int y, int w, int h, int value);

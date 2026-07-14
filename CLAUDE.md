@@ -122,6 +122,8 @@ Volume / settings: `host_get_volume`, `host_set_volume`, `host_get_setting/set_s
 Jack state (for feedback gate): `host_speaker_active()` (true = speakers, false = headphones), `host_line_in_connected()`.
 
 Display: `host_flush_display`, `host_set_refresh_rate(hz)`, `host_get_refresh_rate`.
+Drawing can be constrained with `set_clip_rect(x, y, w, h)` and restored with
+`clear_clip_rect()`; see `docs/API.md` for clipping semantics.
 
 Filesystem: `host_file_exists`, `host_read_file`, `host_write_file`, `host_http_download`, `host_extract_tar(_strip)`, `host_ensure_dir`, `host_remove_dir`.
 

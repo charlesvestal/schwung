@@ -24,6 +24,9 @@ binary. A passing run prints `ALL PASS`; any assertion failure aborts.
   path, full-buffer rejection, and 8-thread concurrent stress (50
   iterations) to validate that no two writers ever clobber the same
   slot.
+- **`test_display_clip_rect`** — exercises display clipping at rectangle and
+  screen boundaries, empty rectangles, extreme coordinates, shape drawing,
+  and clearing the active clip.
 
 ## When to add a test here
 

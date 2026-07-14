@@ -436,6 +436,12 @@ globalThis.onMidiMessageInternal = function(data) {
 }
 ```
 
+For UI regions that must not draw over adjacent content, call
+`set_clip_rect(x, y, w, h)` before rendering the region and
+`clear_clip_rect()` afterward. The clip applies to shapes, text, images, and
+individual pixels; `clear_screen()` remains a full-display operation. See
+`docs/API.md` for boundary and empty-rectangle behavior.
+
 ### Signal Chain UI Shims
 
 Modules can expose a full-screen UI when used as a Signal Chain MIDI source by

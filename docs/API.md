@@ -27,7 +27,14 @@ set_pixel(x, y, value)            // Set pixel at position (value: 0=black, 1=wh
 draw_rect(x, y, w, h, value)      // Draw rectangle outline
 fill_rect(x, y, w, h, value)      // Draw filled rectangle
 text_width(text)                  // Get width of text string in pixels
+set_clip_rect(x, y, w, h)         // Restrict subsequent drawing to this rectangle
+clear_clip_rect()                 // Restore unrestricted drawing
 ```
+
+The clip rectangle applies to pixel, shape, text, and image drawing. Its right
+and bottom edges are exclusive. A non-positive width or height clips all
+drawing until `clear_clip_rect()` is called. `clear_screen()` always clears the
+entire display and does not change the active clip rectangle.
 
 ### Display Object (Alternative API)
 
