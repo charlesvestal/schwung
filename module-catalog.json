@@ -1082,7 +1082,7 @@
     {
       "id": "smack",
       "name": "Smack",
-      "description": "Quantized live-loop capture with seeded per-slice glitch FX and slice reordering - 26 effects, A/B punch, step-button editing, Pad Play",
+      "description": "Quantized live-loop capture with 26 seeded per-slice glitch effects, slice reordering, A/B punch, step editing, and Pad Play",
       "author": "timncox",
       "component_type": "audio_fx",
       "github_repo": "timncox/schwung-smack",
@@ -1093,7 +1093,7 @@
     {
       "id": "smack-in",
       "name": "Smack In",
-      "description": "Standalone mic/line/USB-C input build of Smack: quantized loop capture with the same 26-effect seeded slice engine and Pad Play",
+      "description": "Standalone mic/line/USB-C build of Smack with the same 26-effect seeded slice engine, Pad Play, and browser step editor",
       "author": "timncox",
       "component_type": "sound_generator",
       "github_repo": "timncox/schwung-smack-in",
@@ -1104,7 +1104,7 @@
     {
       "id": "oversmack",
       "name": "Oversmack",
-      "description": "Full-surface Smack: input loop glitcher (mic/line/USB-C) with the whole pad grid as a step-FX editor - palette pinning, global punch FX with pad pressure, dual-mono lanes, browser editor",
+      "description": "Full-surface Smack input looper: whole-grid step-FX editing, palette pinning, pressure punch effects, dual-mono lanes, and browser editor",
       "author": "timncox",
       "component_type": "overtake",
       "github_repo": "timncox/schwung-oversmack",
@@ -1115,7 +1115,7 @@
     {
       "id": "mark",
       "name": "Mark",
-      "description": "RC-505-style 5-track live loop station: per-track record/play/overdub + insert FX, measure-quantized sync, undo/redo, 16 on-device save sessions, single/section mode, browser mixer",
+      "description": "RC-505-style 5-track live loop station with per-track record/overdub and insert FX, quantized sync, undo/redo, 16 sessions, single mode, and browser mixer",
       "author": "timncox",
       "component_type": "overtake",
       "github_repo": "timncox/schwung-mark",
@@ -1126,7 +1126,7 @@
     {
       "id": "belt",
       "name": "Belt",
-      "description": "Live vocal processor: autotune pitch correction, diatonic backing-vocal harmonies, doubler, and formant shift - chain and Master FX build",
+      "description": "Live vocal processor for Signal Chain and Master FX: autotune, four scale-aware harmonies, HARD punch, tuner strip, doubler, and formant shift",
       "author": "timncox",
       "component_type": "audio_fx",
       "github_repo": "timncox/schwung-belt",
@@ -1137,7 +1137,7 @@
     {
       "id": "belt-in",
       "name": "Belt In",
-      "description": "Standalone live-input (mic/line/USB-C) build of Belt: sing into the Move and get tuned, harmonized vocals in one slot",
+      "description": "Standalone mic/line/USB-C Belt: tuned lead vocal, four scale-aware harmonies, HARD punch, tuner strip, doubler, and formant shift in one slot",
       "author": "timncox",
       "component_type": "sound_generator",
       "github_repo": "timncox/schwung-belt-in",
