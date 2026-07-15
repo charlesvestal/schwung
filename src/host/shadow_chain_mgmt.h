@@ -80,6 +80,10 @@ typedef struct {
     /* Tempo query — returns current BPM via sampler_get_bpm() fallback chain. */
     float (*get_bpm)(void);
 
+    /* Transport beat position for LFO phase-lock (see host_api_v1). < 0 when
+     * no transport is running; may be NULL. */
+    double (*get_beat_position)(void);
+
     /* Web UI notification: called after any param set completes successfully.
      * Pushes the changed value to the web param notify ring for real-time
      * browser updates. May be NULL if web ring is not available. */

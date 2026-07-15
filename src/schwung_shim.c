@@ -47,6 +47,7 @@
 #include "host/tts_engine.h"
 #include "host/link_audio.h"
 #include "host/shadow_sampler.h"
+#include "host/shadow_transport.h"
 #include "host/shadow_set_pages.h"
 #include "host/shim_worker.h"
 #include "host/shadow_dbus.h"
@@ -1199,6 +1200,7 @@ static void shadow_inprocess_process_midi(void) {
             /* Sampler sees clock from cable 0 only (Move internal) to avoid double-counting */
             if (cable == 0) {
                 sampler_on_clock(status_usb);
+                shadow_transport_on_realtime(TRANSPORT_SRC_MOVE, status_usb);
             }
 
             /* Deliver realtime to overtake DSP from cable 0 (Move's internal
@@ -1323,7 +1325,20 @@ static void shadow_inprocess_process_midi(void) {
 
 /* MIDI send callback for overtake DSP → chain slots */
 static int overtake_midi_send_internal(const uint8_t *msg, int len) {
+    /* Realtime must be padded to >= 4 bytes to clear this guard: the emit path
+     * packs status as [status,0,0,0], so a 1-byte realtime send is dropped. */
     if (!msg || len < 4) return 0;
+    /* System realtime is transport, not note data: feed the transport service
+     * and broadcast on the same 1-byte path as the cable-0 tap. Must NOT go
+     * through dispatch_to_slots, whose channel remap corrupts the status byte.
+     * Match only the four transport bytes — Start/Continue/Stop/Clock — not the
+     * whole 0xF8..0xFF range, which also spans undefined (F9/FD), active
+     * sensing (FE) and reset (FF); those must not fan out to every slot. */
+    if (msg[1] == 0xF8 || msg[1] == 0xFA || msg[1] == 0xFB || msg[1] == 0xFC) {
+        shadow_transport_on_realtime(TRANSPORT_SRC_INTERNAL, msg[1]);
+        shadow_chain_broadcast_realtime(msg[1]);
+        return len;
+    }
     /* Build USB-MIDI packet: [CIN, status, d1, d2] */
     uint8_t cin = (msg[1] >> 4) & 0x0F;
     uint8_t pkt[4] = { cin, msg[1], msg[2], msg[3] };
@@ -1456,6 +1471,7 @@ static void shadow_overtake_dsp_load(const char *path) {
     overtake_host_api.midi_send_internal = overtake_midi_send_internal;
     overtake_host_api.midi_send_external = overtake_midi_send_external;
     overtake_host_api.get_bpm = shim_get_bpm;
+    overtake_host_api.get_beat_position = shadow_transport_beat_position;
     overtake_host_api.midi_inject_to_move = shadow_chain_midi_inject;
 
     /* Extract module directory from dsp path */
@@ -1581,6 +1597,10 @@ static uint32_t spi_slot_probe_burst_max;
  */
 static void shadow_inprocess_render_to_buffer(void) {
     if (!shadow_inprocess_ready || !global_mmap_addr) return;
+
+    /* Advance the transport clock before slot/master LFOs render below, so
+     * they read a beat position interpolated to this block. */
+    shadow_transport_advance_block(MOVE_FRAMES_PER_BLOCK);
 
     /* Clear the deferred buffer (used for overtake DSP) */
     memset(shadow_deferred_dsp_buffer, 0, sizeof(shadow_deferred_dsp_buffer));
@@ -3864,10 +3884,13 @@ static void shim_init_subsystems(void)
             .startup_modwheel_reset_frames = STARTUP_MODWHEEL_RESET_FRAMES,
             .handle_param_special = shim_handle_param_special,
             .get_bpm = shim_get_bpm,
+            .get_beat_position = shadow_transport_beat_position,
             .on_param_changed = web_param_notify_push,
         };
         chain_mgmt_init(&cm_host);
     }
+    /* Move's audio path is fixed 44.1 kHz (see shadow_master_fx_lfo_tick). */
+    shadow_transport_init(44100);
     /* Sampler announce wrapper: defined inline above so this scope can
      * reference it. (Hoisted via the prototype near the top of the file.) */
     /* Initialize sampler subsystem with callbacks to shim functions.
