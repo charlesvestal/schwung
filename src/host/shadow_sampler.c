@@ -9,6 +9,7 @@
 
 #define _GNU_SOURCE
 #include "shadow_sampler.h"
+#include "shadow_transport.h"
 #include "shim_worker.h"
 #include <semaphore.h>
 
@@ -330,10 +331,33 @@ static int sampler_read_settings_tempo(void) {
 
 /* Get best available BPM using fallback chain */
 float sampler_get_bpm(tempo_source_t *source) {
+    /* 0. Internal transport (an overtake sequencer driving the clock).
+     * Cable-0 (Move) clock is already covered by the measured-clock check
+     * below, so only the internal source needs delegation. */
+    if (shadow_transport_source() == TRANSPORT_SRC_INTERNAL) {
+        float tbpm = shadow_transport_bpm();
+        if (tbpm >= 20.0f) {
+            if (source) *source = TEMPO_SOURCE_CLOCK;
+            return tbpm;
+        }
+    }
+
     /* 1. Active MIDI clock */
     if (sampler_clock_active && sampler_measured_bpm >= 20.0f) {
         if (source) *source = TEMPO_SOURCE_CLOCK;
         return sampler_measured_bpm;
+    }
+
+    /* 1b. Internal transport's last tempo (movy sequencer stopped). Keep synced
+     * params at movy's tempo instead of snapping back to the Set/default tempo,
+     * so a synced LFO free-runs at the rate it was locked to. Ranks below an
+     * actively-running clock (above) but above the Set tempo. */
+    if (shadow_transport_last_source() == TRANSPORT_SRC_INTERNAL) {
+        float lbpm = shadow_transport_last_bpm();
+        if (lbpm >= 20.0f) {
+            if (source) *source = TEMPO_SOURCE_LAST_CLOCK;
+            return lbpm;
+        }
     }
 
     /* 2. Current Set's tempo */

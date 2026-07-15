@@ -112,6 +112,11 @@ uint8_t shadow_chain_remap_channel(int slot, uint8_t status);
  * (they receive MIDI via the direct MIDI_IN path instead). */
 void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *midi_log_count, int skip_direct);
 
+/* Broadcast a 1-byte system-realtime message (0xF8/0xFA/0xFB/0xFC) to every
+ * active chain slot, bypassing per-slot channel remap (which would corrupt the
+ * status byte). For internally generated transport clock. */
+void shadow_chain_broadcast_realtime(uint8_t status);
+
 /* Dispatch external MIDI from MIDI_IN cable 2 directly to slots configured
  * for passthrough (receive=All, forward=THRU).  Bypasses Move's MIDI_OUT
  * channel remapping so that MPE per-note expression data stays on the

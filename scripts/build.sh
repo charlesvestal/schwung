@@ -235,7 +235,7 @@ if needs_rebuild build/schwung-shim.so \
     src/schwung_shim.c \
     src/lib/schwung_spi_lib.c src/lib/schwung_spi_lib.h \
     src/lib/schwung_jack_bridge.c src/lib/schwung_jack_bridge.h src/lib/schwung_jack_shm.h \
-    src/host/shadow_sampler.c src/host/shadow_set_pages.c src/host/shadow_dbus.c \
+    src/host/shadow_sampler.c src/host/shadow_transport.c src/host/shadow_set_pages.c src/host/shadow_dbus.c \
     src/host/shadow_chain_mgmt.c src/host/shadow_link_audio.c src/host/shadow_process.c \
     src/host/shadow_resample.c src/host/shadow_overlay.c src/host/shadow_pin_scanner.c \
     src/host/shadow_led_queue.c src/host/shadow_state.c \
@@ -243,7 +243,7 @@ if needs_rebuild build/schwung-shim.so \
     src/host/shadow_shm_util.c src/host/schwung_trace.c src/host/shadow_test_stream.c src/host/shadow_test_stream.h \
     $SHIM_TTS_SRC \
     src/host/shadow_constants.h src/host/shadow_midi_inject_writer.h src/host/shadow_midi.h src/host/shadow_sampler.h \
-    src/host/shim_worker.h \
+    src/host/shim_worker.h src/host/shadow_transport.h \
     src/host/shadow_set_pages.h src/host/shadow_dbus.h src/host/shadow_chain_mgmt.h \
     src/host/shadow_chain_types.h src/host/shadow_link_audio.h src/host/shadow_process.h \
     src/host/shadow_resample.h src/host/shadow_overlay.h src/host/shadow_pin_scanner.h \
@@ -258,6 +258,7 @@ if needs_rebuild build/schwung-shim.so \
         src/lib/schwung_spi_lib.c \
         src/lib/schwung_jack_bridge.c \
         src/host/shadow_sampler.c \
+        src/host/shadow_transport.c \
         src/host/shadow_set_pages.c \
         src/host/shadow_dbus.c \
         src/host/shadow_chain_mgmt.c \
