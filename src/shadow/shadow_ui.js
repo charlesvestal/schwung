@@ -570,6 +570,7 @@ let overtakeModuleId = "";         // ID of loaded overtake module (for per-modu
 let previousView = VIEWS.SLOTS;   // View to return to after overtake
 let overtakeModuleCallbacks = null; // {init, tick, onMidiMessageInternal} for loaded module
 let overtakeSuspendKeepsJs = false; // Current module opted in to JS-alive suspend
+let overtakeSuspendSelfManaged = false; // Module owns Back; suspends via host_suspend_overtake()
 let overtakePassthroughCCs = [];    // CCs declared in capabilities.button_passthrough — shim lets these
                                     // reach Move firmware directly, and we skip them during LED clear.
 /* Map of suspended overtake modules keyed by moduleId. Each entry:
@@ -2307,6 +2308,7 @@ function clearModuleParamShims() {
     }
     delete globalThis.host_module_set_param_blocking;
     delete globalThis.host_exit_module;
+    delete globalThis.host_suspend_overtake;
     delete globalThis.host_swap_module;
     delete globalThis.host_open_file_in_tool;
 }
@@ -3046,6 +3048,7 @@ function exitOvertakeMode() {
     overtakeModuleId = "";
     overtakeModuleCallbacks = null;
     overtakeSuspendKeepsJs = false;
+    overtakeSuspendSelfManaged = false;
     overtakePassthroughCCs = [];
     if (typeof shadow_set_param_timeout === "function") {
         shadow_set_param_timeout(0, "passthrough", "", 100);  /* clear list */
@@ -3109,6 +3112,7 @@ function suspendOvertakeMode() {
             ledNotes: ledNotesSnapshot,
             ledCCs: ledCCsSnapshot,
             dspPath: currentSlot0DspPath,
+            selfManaged: overtakeSuspendSelfManaged,
             shimGet: globalThis.host_module_get_param,
             shimSet: globalThis.host_module_set_param,
             shimSetBlocking: globalThis.host_module_set_param_blocking
@@ -3119,6 +3123,7 @@ function suspendOvertakeMode() {
         overtakeModuleLoaded = false;
         overtakeModuleCallbacks = null;
         overtakeSuspendKeepsJs = false;
+        overtakeSuspendSelfManaged = false;
 
         /* Tell shim to skip exit hook (module stays loaded). */
         if (typeof shadow_set_suspend_overtake === "function") {
@@ -3195,6 +3200,7 @@ function resumeOvertakeModule(moduleId) {
     overtakeModuleId = parked.id;
     overtakeModuleLoaded = true;
     overtakeSuspendKeepsJs = true;
+    overtakeSuspendSelfManaged = !!parked.selfManaged;
     overtakeInitPending = false;  /* Already ran */
     overtakeExitPending = false;
 
@@ -3287,6 +3293,7 @@ function exitToolOvertake() {
     delete globalThis.host_module_set_param_blocking;
     delete globalThis.host_module_get_param;
     delete globalThis.host_exit_module;
+    delete globalThis.host_suspend_overtake;
     delete globalThis.host_hide_module;
 
     /* Write exiting module ID so shim runs the correct per-module hook */
@@ -3530,6 +3537,10 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
                 exitOvertakeMode();
             }
         };
+        globalThis.host_suspend_overtake = function() {
+            debugLog("host_suspend_overtake called by overtake module");
+            suspendOvertakeMode();
+        };
         globalThis.host_hide_module = function() {
             debugLog("host_hide_module called by overtake module");
             if (toolOvertakeActive) {
@@ -3614,6 +3625,13 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
 
         overtakeModuleLoaded = true;
         overtakeSuspendKeepsJs = !!(moduleInfo.capabilities && moduleInfo.capabilities.suspend_keeps_js);
+        /* suspend_self_managed: the module uses Back for its own navigation and
+         * calls host_suspend_overtake() when it decides to park. It implies
+         * keeps-JS — the closure must stay alive to keep deciding + ticking. An
+         * older host that predates this capability simply ignores it, so the
+         * module degrades to a plain exit on Back. */
+        overtakeSuspendSelfManaged = !!(moduleInfo.capabilities && moduleInfo.capabilities.suspend_self_managed);
+        if (overtakeSuspendSelfManaged) overtakeSuspendKeepsJs = true;
 
         /* button_passthrough: array of CC numbers for buttons the module yields
          * to Move firmware (press events reach Move, LEDs stay Move-driven).
@@ -3666,6 +3684,7 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
         delete globalThis.host_module_set_param;
         delete globalThis.host_module_get_param;
         delete globalThis.host_exit_module;
+        delete globalThis.host_suspend_overtake;
         if (typeof shadow_set_overtake_mode === "function") {
             shadow_set_overtake_mode(0);
         }
@@ -5520,6 +5539,10 @@ function startInteractiveTool(toolModule, filePath) {
                 } else {
                     exitOvertakeMode();
                 }
+            };
+            globalThis.host_suspend_overtake = function() {
+                debugLog("host_suspend_overtake called by overtake module (reconnect)");
+                suspendOvertakeMode();
             };
             globalThis.host_hide_module = function() {
                 debugLog("host_hide_module called by overtake module (reconnect)");
@@ -14023,6 +14046,10 @@ globalThis.tick = function() {
     {
         const parkedIds = Object.keys(suspendedOvertakes);
         if (parkedIds.length > 0) {
+            /* Signal to each parked module's tick() that it is running blind in
+             * the background (draw calls below are no-ops). Modules read
+             * globalThis.overtakeParked to skip display/LED work while parked. */
+            globalThis.overtakeParked = true;
             const _noop = function() {};
             const _saved = {
                 clear_screen: globalThis.clear_screen,
@@ -14064,6 +14091,7 @@ globalThis.tick = function() {
                     }
                 }
             } finally {
+                globalThis.overtakeParked = false;
                 for (const k in _saved) globalThis[k] = _saved[k];
                 if (_savedShimGet === undefined) delete globalThis.host_module_get_param;
                 else globalThis.host_module_get_param = _savedShimGet;
@@ -15248,11 +15276,17 @@ globalThis.onMidiMessageInternal = function(data) {
                 debugLog("HOST: Shift+Back → full exit (suspend_keeps_js module)");
                 if (toolOvertakeActive) exitToolOvertake();
                 else exitOvertakeMode();
-            } else {
+                return;
+            }
+            if (!overtakeSuspendSelfManaged) {
                 debugLog("HOST: Back → suspend (module parks in background)");
                 suspendOvertakeMode();
+                return;
             }
-            return;
+            /* suspend_self_managed: the module owns plain Back for its own
+             * navigation and calls host_suspend_overtake() when it decides to
+             * park. Fall through to its onMidiMessageInternal (Shift+Back above
+             * is still the host's universal full-exit). */
         }
 
         /* CO-RUN: intercept chain-editor navigation CCs (jog turn, jog click,
