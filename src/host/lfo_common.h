@@ -5,6 +5,14 @@
 #define LFO_COMMON_H
 
 #include <math.h>
+#include <stdint.h>
+
+/* M_PI is hidden by glibc <math.h> under strict -std=c11 (exposed on macOS
+ * unconditionally). This header is compiled standalone by unit tests, so
+ * guarantee M_PI is always defined. */
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 /* ============================================================================
  * LFO Constants
