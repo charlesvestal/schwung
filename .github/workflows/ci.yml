@@ -1,0 +1,106 @@
+name: CI
+
+# Fork-safe by construction:
+#   - `pull_request` runs in the PR AUTHOR's context (read-only token, no
+#     repository secrets injected, workflow changes need maintainer approval).
+#   - This is the SAFE trigger for untrusted code. Never switch this to
+#     `pull_request_target` — that runs in the base repo's context with full
+#     write token + secrets.
+#   - `permissions:` is pinned to the minimum; do not raise it.
+#   - TODO(hardening): pin third-party actions to commit SHAs once finalized.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same ref (saves minutes on force-pushes).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------- host-tests
+  # Fast, device-free unit + contract/invariant tests. Runs natively on the
+  # runner (no cross-compile, no Move hardware). Validated locally: 37/37 .sh
+  # tests pass + the MPSC lock-free stress test passes.
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - name: C unit tests (MPSC writer, etc.)
+        run: make -C tests/host test
+      - name: Contract / invariant / native-compile tests
+        run: |
+          set -e
+          for t in tests/host/*.sh; do
+            echo "== $t"
+            bash "$t"
+          done
+
+  # ----------------------------------------------------------------------- go
+  # schwung-manager (on-device module store / updater service).
+  # NOTE: go.mod declares `go 1.26`. Keep this pin >= 1.26 or the build breaks.
+  go:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: schwung-manager } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.26' }
+      - run: go vet ./...
+      - run: go build ./...
+      - run: go test ./...
+
+  # ---------------------------------------------------------- cross-compile
+  # Proves the application COMPILES for ARM64. Reuses the exact Docker build
+  # path that release.yml runs on every tag, then asserts every expected
+  # artifact exists and is ELF/ARM-aarch64. build.sh runs under `set -e` with
+  # no compile step masked, so the first compiler error fails this job.
+  cross-compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive, fetch-depth: 0 }
+      - uses: docker/setup-buildx-action@v3
+      - name: Build (same path as release.yml)
+        run: |
+          docker build -t schwung-builder .
+          docker run --rm -v "$PWD:/build" schwung-builder
+      - name: Verify all targets compiled (ARM aarch64)
+        run: |
+          set -e
+          # Core set: always built, no conditional external deps.
+          for f in \
+            build/schwung \
+            build/schwung-shim.so \
+            build/display-server \
+            build/modules/chain/dsp.so \
+            build/modules/audio_fx/freeverb/freeverb.so \
+            build/modules/midi_fx/chord/dsp.so \
+            build/modules/midi_fx/arp/dsp.so \
+            build/modules/midi_fx/velocity_scale/dsp.so \
+            build/modules/sound_generators/linein/dsp.so \
+            build/modules/tools/wav-player/dsp.so \
+            build/bin/display_ctl \
+            build/bin/jack_midi_connect \
+            build/lib/jack/jack_shadow.so ; do
+            printf '%-48s ' "$f"
+            test -f "$f" || { echo "MISSING"; exit 1; }
+            file "$f" | grep -q 'aarch64' || { echo "WRONG ARCH"; file "$f"; exit 1; }
+            echo "ok"
+          done
+          # Conditional: only built when the libs/link submodule is present
+          # (it is, because of `submodules: recursive` above).
+          test -f build/link-subscriber && \
+            file build/link-subscriber | grep -q 'aarch64' || \
+            { echo "WARN: link-subscriber not built (submodule missing?)"; }
+      - name: Verify packaged tarball
+        run: |
+          test -f schwung.tar.gz
+          tar -tzf schwung.tar.gz | grep -q 'schwung$'

@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Schwung pre-commit hook — fast, native checks only.
+#
+# Runs locally what the CI 'host-tests' and 'go' jobs run: the device-free
+# unit/contract tests (tests/host/) and schwung-manager's go vet/build/test.
+# Takes a few seconds; no Docker, no ARM64 toolchain required.
+#
+# The CI 'cross-compile' job is intentionally NOT here — it needs Docker +
+# the aarch64 toolchain and takes ~2.5 min. CI runs it authoritatively on
+# the pull request.
+#
+# Enable (once per clone):  ./scripts/install-hooks.sh
+#   (equivalently: git config core.hooksPath scripts/hooks)
+# Bypass one commit:        git commit --no-verify
+# Skip via env:             SCHWUNG_SKIP_HOOKS=1 git commit ...
+
+set -uo pipefail
+
+if [ "${SCHWUNG_SKIP_HOOKS:-0}" = "1" ]; then
+  echo "[pre-commit] SCHWUNG_SKIP_HOOKS=1 — skipping"
+  exit 0
+fi
+
+# Always run from the repo root, regardless of where git invoked us.
+cd "$(git rev-parse --show-toplevel)"
+
+fail=0
+
+# --------------------------------------------------------------- host-tests
+echo "[pre-commit] host-tests (unit + contract) …"
+if command -v rg >/dev/null 2>&1 && command -v cc >/dev/null 2>&1; then
+  if ! out=$(make -C tests/host test 2>&1); then
+    echo "  FAIL: make -C tests/host test"; printf '%s\n' "$out" | sed 's/^/    /'
+    fail=1
+  fi
+  for t in tests/host/*.sh; do
+    if ! out=$(bash "$t" 2>&1); then
+      echo "  FAIL: $t"; printf '%s\n' "$out" | sed 's/^/    /'
+      fail=1
+    fi
+  done
+else
+  echo "[pre-commit] 'cc' or 'rg' missing — skipping host-tests (install ripgrep + a C compiler)" >&2
+fi
+
+# ----------------------------------------------------------------------- go
+echo "[pre-commit] go (schwung-manager) …"
+if command -v go >/dev/null 2>&1; then
+  if ! out=$(cd schwung-manager && go vet ./... && go build ./... && go test ./... 2>&1); then
+    echo "  FAIL: go checks"; printf '%s\n' "$out" | sed 's/^/    /'
+    fail=1
+  fi
+else
+  echo "[pre-commit] 'go' missing — skipping schwung-manager checks" >&2
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo "[pre-commit] FAILED. Fix the above, or bypass with: git commit --no-verify" >&2
+  exit 1
+fi
+
+echo "[pre-commit] OK"
