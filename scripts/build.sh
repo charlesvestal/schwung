@@ -169,6 +169,75 @@ mkdir -p ./build/modules/sound_generators/linein/
 mkdir -p ./build/modules/tools/wav-player/
 mkdir -p ./build/lib/jack
 
+# Build the pinned librtpmidid dependency. It is kept in a separate shared
+# object and loaded only when Network MIDI is enabled, so C++/Avahi failures
+# cannot prevent the main shim from loading.
+if [ ! -f ./libs/rtpmidid/CMakeLists.txt ]; then
+    echo "Error: libs/rtpmidid submodule is missing"
+    echo "Hint: git submodule update --init --recursive"
+    exit 1
+fi
+
+RTPMIDI_BUILD=./build/rtpmidid
+
+# Exercise the pinned library on the Linux build host before producing the
+# target copy. This catches upstream protocol/poller regressions without
+# requiring target emulation for its test executables.
+RTPMIDI_NATIVE_BUILD=./build/rtpmidid-native
+cmake -S ./libs/rtpmidid -B "$RTPMIDI_NATIVE_BUILD" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DLIBS_ONLY=ON \
+    -DENABLE_TESTS=ON \
+    -DENABLE_PCH=OFF \
+    -DCPP_VERSION=17 \
+    -DUSE_FMT=ON \
+    -DLOG_LEVEL=3
+cmake --build "$RTPMIDI_NATIVE_BUILD" --parallel
+ctest --test-dir "$RTPMIDI_NATIVE_BUILD" --output-on-failure
+
+PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig \
+cmake -S ./libs/rtpmidid -B "$RTPMIDI_BUILD" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_SYSTEM_NAME=Linux \
+    -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+    -DCMAKE_C_COMPILER="${CROSS_PREFIX}gcc" \
+    -DCMAKE_CXX_COMPILER="${CROSS_PREFIX}g++" \
+    -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+    -DLIBS_ONLY=ON \
+    -DENABLE_TESTS=OFF \
+    -DENABLE_PCH=OFF \
+    -DCPP_VERSION=17 \
+    -DUSE_FMT=ON \
+    -DLOG_LEVEL=3
+PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig \
+cmake --build "$RTPMIDI_BUILD" --target rtpmidid-shared --parallel
+
+cp -L "$RTPMIDI_BUILD/lib/librtpmidid.so.21.07" ./build/lib/librtpmidid.so.0
+cp -L /usr/lib/aarch64-linux-gnu/libavahi-client.so.3 ./build/lib/libavahi-client.so.3
+cp -L /usr/lib/aarch64-linux-gnu/libfmt.so.9 ./build/lib/libfmt.so.9
+cp ./libs/rtpmidid/LICENSE-lib.txt ./build/licenses/RTPMIDID_LICENSE.txt
+cp /usr/share/doc/libavahi-client3/copyright ./build/licenses/AVAHI_LICENSE.txt
+cp /usr/share/doc/libfmt9/copyright ./build/licenses/FMT_LICENSE.txt
+
+if needs_rebuild build/lib/libschwung-rtpmidi.so \
+    src/host/midi_net_rtpmidi.cpp src/host/midi_net_rtpmidi_api.h \
+    libs/rtpmidid/include/rtpmidid/rtpserver.hpp \
+    "$RTPMIDI_BUILD/lib/librtpmidid.so.21.07"; then
+    echo "Building librtpmidid adapter..."
+    "${CROSS_PREFIX}g++" -std=c++17 -O3 -DNDEBUG -shared -fPIC \
+        -DUSE_LIBFMT \
+        -Isrc/host -I./libs/rtpmidid/include \
+        src/host/midi_net_rtpmidi.cpp \
+        -o build/lib/libschwung-rtpmidi.so \
+        -L"$RTPMIDI_BUILD/lib" \
+        -Wl,-rpath,'$ORIGIN' -Wl,-z,defs -Wl,--no-as-needed \
+        -lrtpmidid -lfmt -lavahi-client -lpthread
+else
+    echo "Skipping librtpmidid adapter (up to date)"
+fi
+
+CROSS_PREFIX="$CROSS_PREFIX" ./tests/host/test_midi_net_rtpmidi.sh
+
 # Generate bitmap font for host display (single source of truth: scripts/generate_font.py)
 if needs_rebuild build/host/font.png scripts/generate_font.py; then
     echo "Generating host bitmap font..."
@@ -241,11 +310,10 @@ if needs_rebuild build/schwung-shim.so \
     src/host/shadow_led_queue.c src/host/shadow_state.c \
     src/host/shadow_midi.c src/host/unified_log.c src/host/shim_worker.c \
     src/host/midi_net.c src/host/midi_net_ipmidi.c \
-    src/host/midi_net_applemidi.c src/host/midi_net_mdns.c \
     src/host/shadow_shm_util.c src/host/schwung_trace.c src/host/shadow_test_stream.c src/host/shadow_test_stream.h \
     $SHIM_TTS_SRC \
     src/host/shadow_constants.h src/host/shadow_midi_inject_writer.h src/host/shadow_midi.h src/host/shadow_sampler.h \
-    src/host/midi_net.h src/host/midi_net_internal.h \
+    src/host/midi_net.h src/host/midi_net_internal.h src/host/midi_net_rtpmidi_api.h \
     src/host/shim_worker.h src/host/shadow_transport.h \
     src/host/shadow_set_pages.h src/host/shadow_dbus.h src/host/shadow_chain_mgmt.h \
     src/host/shadow_chain_types.h src/host/shadow_link_audio.h src/host/shadow_process.h \
@@ -277,8 +345,6 @@ if needs_rebuild build/schwung-shim.so \
         src/host/shim_worker.c \
         src/host/midi_net.c \
         src/host/midi_net_ipmidi.c \
-        src/host/midi_net_applemidi.c \
-        src/host/midi_net_mdns.c \
         src/host/shadow_shm_util.c \
         src/host/schwung_trace.c \
         src/host/shadow_test_stream.c \

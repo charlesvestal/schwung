@@ -13,6 +13,43 @@ static int failures;
 
 static shadow_midi_inject_t inject_ring;
 static shadow_midi_inject_t *inject_ptr = &inject_ring;
+static int fake_adapter_runs;
+static int fake_adapter_outbound;
+static int fake_adapter_config_ok;
+
+static int fake_rtpmidi_run(const schwung_rtpmidi_config_t *config) {
+    if (!config || config->abi_version != SCHWUNG_RTPMIDI_ADAPTER_ABI ||
+        config->control_port != 5004 || config->stop_fd < 0 ||
+        !config->is_running || !config->handle_ipmidi ||
+        !config->pop_outbound || !config->handle_inbound)
+        return -1;
+    __atomic_store_n(&fake_adapter_config_ok, 1, __ATOMIC_RELEASE);
+
+    __atomic_fetch_add(&fake_adapter_runs, 1, __ATOMIC_ACQ_REL);
+    const uint8_t inbound[] = { 0x90, 64, 100 };
+    config->handle_inbound(config->userdata, inbound, sizeof(inbound));
+
+    while (config->is_running(config->userdata)) {
+        uint8_t packet[4];
+        if (config->pop_outbound(config->userdata, packet)) {
+            if ((packet[0] & 0x0F) == CIN_NOTE_ON && packet[1] == 0x90 &&
+                packet[2] == 65 && packet[3] == 110)
+                __atomic_store_n(&fake_adapter_outbound, 1,
+                                 __ATOMIC_RELEASE);
+        } else {
+            sched_yield();
+        }
+    }
+    return 0;
+}
+
+static int wait_for_value(const int *value, int expected) {
+    for (int i = 0; i < 100000; i++) {
+        if (__atomic_load_n(value, __ATOMIC_ACQUIRE) >= expected) return 1;
+        sched_yield();
+    }
+    return 0;
+}
 
 static int pop_injected(uint8_t out[4]) {
     if (!shadow_midi_inject_peek(&inject_ring, out)) return 0;
@@ -22,7 +59,7 @@ static int pop_injected(uint8_t out[4]) {
 
 static void reset_service(void) {
     shadow_midi_inject_init(&inject_ring);
-    midi_net_init(&inject_ptr, NULL);
+    midi_net_init(&inject_ptr);
 }
 
 static void test_raw_stream_state(void) {
@@ -142,78 +179,6 @@ static void test_sysex_batch_concurrent_producer(void) {
     CHECK(!pop_injected(pkt), "concurrent producer test drains the ring");
 }
 
-static void test_rtp_midi_parser(void) {
-    reset_service();
-    midi_net_peer_t peer;
-    memset(&peer, 0, sizeof(peer));
-    const uint8_t packet[] = {
-        0x80, 0x61, 0, 1, 0, 0, 0, 1, 0x11, 0x22, 0x33, 0x44,
-        6, 0x90, 60, 100, 0, 61, 110
-    };
-    midi_net_test_parse_rtp(&peer, packet, sizeof(packet));
-    uint8_t pkt[4];
-    CHECK(pop_injected(pkt) && pkt[1] == 0x90 && pkt[2] == 60 &&
-          pkt[3] == 100, "RTP first command");
-    CHECK(pop_injected(pkt) && pkt[1] == 0x90 && pkt[2] == 61 &&
-          pkt[3] == 110, "RTP delta + running-status command");
-    CHECK(!pop_injected(pkt), "no extra RTP packets");
-
-    const uint8_t truncated[] = {
-        0x80, 0x61, 0, 2, 0, 0, 0, 2, 0x11, 0x22, 0x33, 0x44,
-        15, 0x90
-    };
-    midi_net_test_parse_rtp(&peer, truncated, sizeof(truncated));
-    CHECK(!pop_injected(pkt), "truncated RTP command section is rejected");
-
-    const uint8_t p_running[] = {
-        0x80, 0x61, 0, 3, 0, 0, 0, 3, 0x11, 0x22, 0x33, 0x44,
-        0x12, 62, 120
-    };
-    midi_net_test_parse_rtp(&peer, p_running, sizeof(p_running));
-    CHECK(pop_injected(pkt) && pkt[1] == 0x90 && pkt[2] == 62 &&
-          pkt[3] == 120, "RTP P flag continues prior-packet running status");
-
-    const uint8_t missing_p[] = {
-        0x80, 0x61, 0, 4, 0, 0, 0, 4, 0x11, 0x22, 0x33, 0x44,
-        2, 63, 120
-    };
-    midi_net_test_parse_rtp(&peer, missing_p, sizeof(missing_p));
-    CHECK(!pop_injected(pkt),
-          "RTP data without P flag cannot reuse prior-packet running status");
-}
-
-static void test_rtp_sysex_segments(void) {
-    reset_service();
-    midi_net_peer_t peer;
-    memset(&peer, 0, sizeof(peer));
-    peer.peer_ssrc = 0x11223344;
-    const uint8_t first[] = {
-        0x80, 0x61, 0, 1, 0, 0, 0, 1, 0x11, 0x22, 0x33, 0x44,
-        4, 0xF0, 1, 2, 0xF0
-    };
-    const uint8_t last[] = {
-        0x80, 0x61, 0, 2, 0, 0, 0, 2, 0x11, 0x22, 0x33, 0x44,
-        3, 0xF7, 3, 0xF7
-    };
-    midi_net_test_parse_rtp(&peer, first, sizeof(first));
-    uint8_t pkt[4];
-    CHECK(!pop_injected(pkt), "RTP SysEx first segment is retained");
-    midi_net_test_parse_rtp(&peer, last, sizeof(last));
-    CHECK(pop_injected(pkt) && pkt[0] == 0x34 && pkt[1] == 0xF0 &&
-          pkt[2] == 1 && pkt[3] == 2, "RTP segmented SysEx start");
-    CHECK(pop_injected(pkt) && pkt[0] == 0x36 && pkt[1] == 3 &&
-          pkt[2] == 0xF7, "RTP segmented SysEx end");
-    CHECK(!pop_injected(pkt), "no extra RTP SysEx packets");
-}
-
-static void test_dns_compression_loop(void) {
-    const uint8_t loop[] = { 0xC0, 0x00 };
-    char out[32];
-    CHECK(midi_net_test_decode_dns_name(loop, sizeof(loop), 0,
-                                        out, sizeof(out)) < 0,
-          "mDNS compression pointer loop is rejected");
-}
-
 static void test_outbound_queue(void) {
     reset_service();
     __atomic_store_n(&g_midi_net.running, 1, __ATOMIC_RELEASE);
@@ -224,8 +189,6 @@ static void test_outbound_queue(void) {
     }
     const uint8_t overflow[4] = { 0x29, 0x90, 127, 127 };
     midi_net_publish(overflow);
-    CHECK(g_midi_net.stats.drops_outbound_full == 1,
-          "outbound queue drops newest packet when full");
     for (uint32_t i = 0; i < MIDI_NET_OUTBOUND_SLOTS; i++) {
         CHECK(midi_net_test_outbound_pop(pkt), "outbound packet available");
         CHECK(pkt[2] == (uint8_t)(i & 0x7F), "outbound FIFO ordering");
@@ -244,15 +207,38 @@ static void test_outbound_queue(void) {
 
 static void test_service_lifecycle(void) {
     reset_service();
-    midi_net_set_backends(0);
-    CHECK(midi_net_start() == 0 && midi_net_is_running(),
-          "network service starts without backends");
-    midi_net_stop();
-    CHECK(!midi_net_is_running(), "network service stops and joins");
-    CHECK(midi_net_start() == 0 && midi_net_is_running(),
+    fake_adapter_runs = 0;
+    fake_adapter_outbound = 0;
+    fake_adapter_config_ok = 0;
+    g_midi_net.rtpmidi_run = fake_rtpmidi_run;
+    midi_net_reconcile(1);
+    CHECK(__atomic_load_n(&g_midi_net.running, __ATOMIC_ACQUIRE),
+          "network service starts");
+    CHECK(wait_for_value(&fake_adapter_runs, 1),
+          "fake adapter starts on the network thread");
+    CHECK(__atomic_load_n(&fake_adapter_config_ok, __ATOMIC_ACQUIRE),
+          "fake adapter receives the expected C ABI configuration");
+
+    const uint8_t outbound[] = { 0x29, 0x90, 65, 110 };
+    midi_net_publish(outbound);
+    CHECK(wait_for_value(&fake_adapter_outbound, 1),
+          "fake adapter drains realtime outbound publication");
+    uint8_t packet[4];
+    CHECK(pop_injected(packet) && packet[1] == 0x90 && packet[2] == 64 &&
+          packet[3] == 100,
+          "fake adapter inbound callback uses the injection conversion");
+
+    midi_net_reconcile(0);
+    CHECK(!__atomic_load_n(&g_midi_net.running, __ATOMIC_ACQUIRE),
+          "network service stops and joins");
+    midi_net_reconcile(1);
+    CHECK(__atomic_load_n(&g_midi_net.running, __ATOMIC_ACQUIRE),
           "network service can restart cleanly");
-    midi_net_stop();
-    CHECK(!midi_net_is_running(), "restarted network service stops cleanly");
+    CHECK(wait_for_value(&fake_adapter_runs, 2),
+          "fake adapter is reconstructed after restart");
+    midi_net_reconcile(0);
+    CHECK(!__atomic_load_n(&g_midi_net.running, __ATOMIC_ACQUIRE),
+          "restarted network service stops cleanly");
 }
 
 int main(void) {
@@ -260,9 +246,6 @@ int main(void) {
     test_sysex_across_datagrams();
     test_sysex_batch_is_atomic();
     test_sysex_batch_concurrent_producer();
-    test_rtp_midi_parser();
-    test_rtp_sysex_segments();
-    test_dns_compression_loop();
     test_outbound_queue();
     test_service_lifecycle();
     if (failures) {

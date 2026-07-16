@@ -78,9 +78,16 @@ fi
 base_packages=(
     gcc-aarch64-linux-gnu
     g++-aarch64-linux-gnu
+    g++
     binutils-aarch64-linux-gnu
     make
     file
+    cmake
+    pkg-config
+    libavahi-client-dev
+    libavahi-client-dev:arm64
+    libfmt-dev
+    libfmt-dev:arm64
 )
 
 screen_reader_packages=(

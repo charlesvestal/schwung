@@ -152,9 +152,45 @@ No warranty implied; use at your own risk
 
 ---
 
+## rtpmidid
+
+**Used in:** AppleMIDI/RTP-MIDI sessions and Bonjour service publication
+**Location:** `libs/rtpmidid/` (pinned git submodule; dynamically linked)
+**Upstream commit:** `7f552d2e171465782fa10e6ad35116ff40bc9f66`
+**Website:** https://github.com/davidmoreno/rtpmidid
+**License:** GNU Lesser General Public License v2.1 or later
+
+The complete corresponding source is referenced by the pinned submodule. The
+packaged shared library remains under its upstream LGPL terms.
+
+---
+
+## Avahi client library
+
+**Used in:** mDNS/DNS-SD transport for rtpmidid discovery
+**Location:** Dynamically linked (`libavahi-client.so.3`)
+**Version:** 0.8
+**Website:** https://avahi.org/
+**License:** GNU Lesser General Public License v2.1 or later
+
+---
+
+## fmt
+
+**Used in:** Formatting support for the C++17 rtpmidid build
+**Location:** Dynamically linked (`libfmt.so.9`)
+**Version:** 9.1
+**Website:** https://fmt.dev/
+**License:** MIT License
+
+---
+
 ## License Compatibility
 
-All third-party components use permissive licenses (MIT, BSD-style, Public Domain) that are compatible with Schwung's CC BY-NC-SA 4.0 license.
+Third-party components retain their respective permissive or LGPL licenses.
+The LGPL components are dynamically linked and remain replaceable shared
+libraries; their source, license text, and pinned upstream revision are
+provided with the project.
 
 **Key requirements:**
 - ✅ Attribution provided (this file)
@@ -164,7 +200,8 @@ All third-party components use permissive licenses (MIT, BSD-style, Public Domai
 - ✅ Third-party components remain under their original licenses
 
 **Notes:**
-- Flite, QuickJS, curl, and stb libraries retain their permissive licenses
+- Flite, QuickJS, curl, fmt, and stb libraries retain their permissive licenses
+- rtpmidid and Avahi remain dynamically linked under the LGPL
 - Schwung's original code is CC BY-NC-SA 4.0 (non-commercial)
 - Combined work follows the most restrictive license (CC BY-NC-SA 4.0)
 - All third-party licenses permit this combination

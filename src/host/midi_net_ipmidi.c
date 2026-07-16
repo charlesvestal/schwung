@@ -25,6 +25,8 @@
 #include "midi_net.h"
 #include "midi_net_internal.h"
 
+static uint64_t ipmidi_rx_packets;
+
 /* ============================================================================
  * Multicast group join across all interfaces
  * ============================================================================ */
@@ -114,6 +116,7 @@ int midi_net_ipmidi_open(void) {
     }
 
     g_midi_net.ipmidi_sock = sock;
+    ipmidi_rx_packets = 0;
     memset(g_midi_net.ipmidi_sources, 0, sizeof(g_midi_net.ipmidi_sources));
     return 0;
 }
@@ -176,15 +179,13 @@ void midi_net_ipmidi_handle_rx(int sock) {
         }
         if (n == 0) continue;
 
-        midi_net_stat_inc_u64(&g_midi_net.stats.rx_packets);
+        uint64_t rx = ++ipmidi_rx_packets;
 
         midi_net_ipmidi_source_t *source =
             parser_for_sender(&from, fromlen);
         if (!source) continue;
         source->last_activity_ms = midi_net_now_ms();
         int msgs = midi_net_parse_raw_stream(&source->parser, buf, (int)n);
-        uint64_t rx = __atomic_load_n(&g_midi_net.stats.rx_packets,
-                                      __ATOMIC_RELAXED);
         if (rx <= 5 || (rx % 1024) == 0) {
             char src[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &from.sin_addr, src, sizeof(src));

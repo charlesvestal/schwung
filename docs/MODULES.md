@@ -2050,7 +2050,8 @@ In overtake mode:
 - The host intercepts Shift+Vol+Jog before the module sees it (for escape)
 - Modules can send MIDI out via `move_midi_external_send` and `move_midi_internal_send`.
   Cable-2 packets from `move_midi_external_send` are also mirrored to connected
-  AppleMIDI peers while **Global Settings > Services > MIDI / Wi-Fi** is on.
+  AppleMIDI peers through the optional librtpmidid adapter while **Global
+  Settings > Services > MIDI / Wi-Fi** is on.
 
 ### Example: MIDI Controller
 

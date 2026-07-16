@@ -400,14 +400,7 @@ static volatile int midi_net_initialized = 0;
 static void shim_network_midi_reconcile(void)
 {
     if (!midi_net_initialized || !shadow_control) return;
-    int want = shadow_control->midi_net_enabled ? 1 : 0;
-    if (want && !midi_net_is_running()) {
-        if (midi_net_start() != 0)
-            unified_log("midi_net", LOG_LEVEL_ERROR,
-                        "failed to start network MIDI service");
-    } else if (!want && midi_net_is_running()) {
-        midi_net_stop();
-    }
+    midi_net_reconcile(shadow_control->midi_net_enabled ? 1 : 0);
 }
 
 
@@ -3986,7 +3979,7 @@ static void shim_init_subsystems(void)
     if (!speaker_eq_initialized) {
         speaker_eq_build(44100.0f);
     }
-    midi_net_init(&shadow_midi_inject_shm, NULL);
+    midi_net_init(&shadow_midi_inject_shm);
     midi_net_initialized = 1;
     /* Initialize process management subsystem */
     {

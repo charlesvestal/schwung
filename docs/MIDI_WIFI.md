@@ -18,7 +18,10 @@ The implementation supports:
 `Global Settings > Services > MIDI / Wi-Fi` enables or disables the service.
 The value is stored as `midi_net_enabled` in
 `/data/UserData/schwung/config/features.json` and survives upgrades. Turning the
-setting off closes the UDP sockets and drops all AppleMIDI sessions.
+setting off destroys the RTP-MIDI server and Avahi publication, closes the
+ipMIDI socket, and drops all AppleMIDI sessions. The optional C++ adapter stays
+loaded so a later toggle can restart the service without loading code on a
+realtime thread.
 
 Inbound network MIDI is treated as external cable-2 MIDI. Channel voice,
 system-common, real-time, and SysEx messages up to 192 bytes are converted to
@@ -43,33 +46,45 @@ the USB port. Outbound SysEx is not included in the first implementation.
 - Realtime MIDI output paths publish to a bounded lock-free queue. The network
   thread performs all `sendto()` calls; realtime paths never take a mutex or
   wait for the network.
-- Queue overflow drops the newest packet and increments a diagnostic counter.
-  It must never corrupt an existing packet or block the SPI callback.
+- Queue overflow drops the newest packet. It must never corrupt an existing
+  packet or block the SPI callback.
 - SysEx is reserved as one bounded queue batch; if the complete message will
   not fit, it is dropped rather than injecting a truncated prefix.
 - Starting and stopping the service is reconciled by the shim worker, not by an
   audio or SPI callback.
 
-## AppleMIDI session scope
+## Implementation boundary
 
-The responder accepts up to four simultaneous peers, handles the two-port
-invitation handshake, clock synchronization, receiver feedback (ignored
-because recovery journals are not implemented), session goodbye, idle-session
-expiry, and RTP-MIDI command sections with running status and delta times.
-Recovery journals are ignored; UDP loss is not reconstructed.
+Schwung dynamically loads `libschwung-rtpmidi.so` only when the setting is
+enabled. That small C-ABI adapter owns a pinned `librtpmidid` `rtpserver_t` and
+`mdns_rtpmidi_t`. The library is responsible for AppleMIDI negotiation, peer
+lifecycle, clock sync, RTP framing and parsing, SysEx reassembly, outbound
+delivery, and Avahi publication. Schwung retains only its USB-MIDI conversion,
+injection queue, realtime outbound queue, ipMIDI parser, settings, and UI glue.
 
-RTP packets are accepted only from the event address negotiated for the
-matching SSRC. Datagram and command-section bounds are validated before they
-are parsed; malformed command fragments are dropped and counted.
+The library poller runs on Schwung's existing non-realtime network thread. Its
+epoll set also contains the ipMIDI socket and stop pipe; the outbound queue is
+drained at least every 5 ms. If the adapter or one of its optional shared
+libraries cannot load, the main shim continues and ipMIDI remains available.
+Failure to connect to Avahi affects Bonjour discovery but not direct AppleMIDI
+connections or ipMIDI.
+
+The pinned source is `libs/rtpmidid` at commit
+`7f552d2e171465782fa10e6ad35116ff40bc9f66`. The adapter, rtpmidid, Avahi client,
+and fmt libraries are dynamically linked; their notices are included in the
+package and documented in `THIRD_PARTY_LICENSES.md`.
 
 ## Acceptance criteria
 
-1. A clean cross-build includes the network MIDI sources in the shim.
+1. A clean cross-build produces the optional adapter and bundles its pinned
+   rtpmidid, Avahi client, and fmt shared-library dependencies.
 2. Enabling and disabling the setting starts and stops the service without
    touching the realtime path or requiring a reboot.
-3. Unit tests cover raw MIDI parsing, running status, real-time interleaving,
-   SysEx segmentation, RTP-MIDI parsing, malformed packets, and lock-free queue
-   overflow/order behavior.
+3. Portable unit tests cover raw ipMIDI parsing, running status, real-time
+   interleaving, SysEx injection atomicity, fake-adapter lifecycle, and
+   lock-free queue overflow/order behavior. A Linux integration test covers the
+   real adapter's two-port AppleMIDI handshake, inbound note and SysEx,
+   outbound note, disconnect, and restart.
 4. Existing host/shadow/build tests continue to pass, apart from independently
    documented baseline failures.
 5. The code contains no socket calls, filesystem calls, allocation, blocking

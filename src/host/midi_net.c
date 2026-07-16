@@ -1,6 +1,7 @@
 /* midi_net.c - network MIDI lifecycle, parsing, and lock-free queues. */
 
 #define _GNU_SOURCE
+#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -12,18 +13,11 @@
 #include <unistd.h>
 
 #include "midi_net_internal.h"
+#include "midi_net_rtpmidi_api.h"
 #include "shadow_midi_inject_writer.h"
 #include "unified_log.h"
 
 midi_net_state_t g_midi_net;
-
-void midi_net_stat_inc_u64(uint64_t *field) {
-    __atomic_fetch_add(field, 1u, __ATOMIC_RELAXED);
-}
-
-void midi_net_stat_store_u32(uint32_t *field, uint32_t value) {
-    __atomic_store_n(field, value, __ATOMIC_RELAXED);
-}
 
 void midi_net_log(const char *fmt, ...) {
     char msg[256];
@@ -31,8 +25,7 @@ void midi_net_log(const char *fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(msg, sizeof(msg), fmt, ap);
     va_end(ap);
-    if (g_midi_net.log_fn) g_midi_net.log_fn(msg);
-    else LOG_INFO("midi_net", "%s", msg);
+    LOG_INFO("midi_net", "%s", msg);
 }
 
 void midi_net_logd(const char *fmt, ...) {
@@ -50,12 +43,6 @@ uint64_t midi_net_now_ms(void) {
     return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
 }
 
-uint64_t midi_net_now_100us(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 10000u + (uint64_t)ts.tv_nsec / 100000u;
-}
-
 /* Network input is tagged with cable 3 in the injection ring. The SPI-thread
  * drain converts it to external cable 2 before Move sees it. */
 int midi_net_inject_usb_packet(uint8_t cin, uint8_t status,
@@ -67,11 +54,7 @@ int midi_net_inject_usb_packet(uint8_t cin, uint8_t status,
         (uint8_t)((MIDI_NET_INJECT_CABLE << 4) | (cin & 0x0f)),
         status, d1, d2
     };
-    if (shadow_midi_inject_push(shm, pkt) != 0) {
-        midi_net_stat_inc_u64(&g_midi_net.stats.drops_buffer_full);
-        return 0;
-    }
-    midi_net_stat_inc_u64(&g_midi_net.stats.rx_midi_messages);
+    if (shadow_midi_inject_push(shm, pkt) != 0) return 0;
     return 1;
 }
 
@@ -92,7 +75,6 @@ int midi_net_emit_midi_message(uint8_t status, uint8_t d1, uint8_t d2) {
     int need = data_bytes_for_status(status);
     if (need < 0 || (need >= 1 && (d1 & 0x80)) ||
         (need >= 2 && (d2 & 0x80))) {
-        midi_net_stat_inc_u64(&g_midi_net.stats.drops_parse_err);
         return 0;
     }
 
@@ -167,10 +149,7 @@ int midi_net_emit_sysex(const uint8_t *bytes, int len) {
     if (!bytes || len <= 0 || bytes[0] != 0xf0 || bytes[len - 1] != 0xf7)
         return 0;
     uint32_t packet_count = ((uint32_t)len + 2u) / 3u;
-    if (packet_count > SHADOW_MIDI_INJECT_SLOTS) {
-        midi_net_stat_inc_u64(&g_midi_net.stats.drops_buffer_full);
-        return 0;
-    }
+    if (packet_count > SHADOW_MIDI_INJECT_SLOTS) return 0;
     uint8_t packets[SHADOW_MIDI_INJECT_SLOTS][4];
     uint32_t packet_index = 0;
     for (int i = 0; i < len;) {
@@ -197,12 +176,7 @@ int midi_net_emit_sysex(const uint8_t *bytes, int len) {
     }
     shadow_midi_inject_t **ptr = g_midi_net.inject_shm_ptr;
     shadow_midi_inject_t *shm = ptr ? *ptr : NULL;
-    if (inject_usb_batch(shm, packets, packet_count) != 0) {
-        midi_net_stat_inc_u64(&g_midi_net.stats.drops_buffer_full);
-        return 0;
-    }
-    __atomic_fetch_add(&g_midi_net.stats.rx_midi_messages, packet_count,
-                       __ATOMIC_RELAXED);
+    if (inject_usb_batch(shm, packets, packet_count) != 0) return 0;
     return (int)packet_count;
 }
 
@@ -240,8 +214,6 @@ int midi_net_parse_raw_stream(midi_net_stream_parser_t *p,
                 if (!p->sysex_overflow && p->sysex_len < MIDI_NET_SYSEX_SCRATCH) {
                     p->sysex_buf[p->sysex_len++] = b;
                     emitted += midi_net_emit_sysex(p->sysex_buf, (int)p->sysex_len);
-                } else {
-                    midi_net_stat_inc_u64(&g_midi_net.stats.drops_parse_err);
                 }
                 p->in_sysex = p->sysex_overflow = 0;
                 p->sysex_len = 0;
@@ -255,7 +227,6 @@ int midi_net_parse_raw_stream(midi_net_stream_parser_t *p,
             }
             /* A non-realtime status aborts an unterminated SysEx and is then
              * processed normally. */
-            midi_net_stat_inc_u64(&g_midi_net.stats.drops_parse_err);
             p->in_sysex = p->sysex_overflow = 0;
             p->sysex_len = 0;
         }
@@ -272,7 +243,6 @@ int midi_net_parse_raw_stream(midi_net_stream_parser_t *p,
             int need = data_bytes_for_status(b);
             if (need < 0) {
                 p->running_status = 0;
-                midi_net_stat_inc_u64(&g_midi_net.stats.drops_parse_err);
                 continue;
             }
             p->running_status = b < 0xf0 ? b : 0;
@@ -282,10 +252,7 @@ int midi_net_parse_raw_stream(midi_net_stream_parser_t *p,
         }
 
         if (!p->pending_need) {
-            if (!p->running_status) {
-                midi_net_stat_inc_u64(&g_midi_net.stats.drops_parse_err);
-                continue;
-            }
+            if (!p->running_status) continue;
             parser_begin_pending(p, p->running_status);
         }
         if (p->pending_len < sizeof(p->pending_data))
@@ -352,10 +319,8 @@ void midi_net_publish(const uint8_t pkt4[4]) {
      * packet into the next service instance. */
     uint32_t generation = __atomic_load_n(&g_midi_net.service_generation,
                                            __ATOMIC_ACQUIRE);
-    if (!__atomic_load_n(&g_midi_net.running, __ATOMIC_ACQUIRE) ||
-        !(g_midi_net.backend_flags & MIDI_NET_BACKEND_OUTBOUND)) return;
-    if (outbound_push(pkt4, generation) != 0)
-        midi_net_stat_inc_u64(&g_midi_net.stats.drops_outbound_full);
+    if (!__atomic_load_n(&g_midi_net.running, __ATOMIC_ACQUIRE)) return;
+    (void)outbound_push(pkt4, generation);
 }
 
 static int outbound_pop_current(uint8_t pkt[4]) {
@@ -366,14 +331,6 @@ static int outbound_pop_current(uint8_t pkt[4]) {
         if (packet_generation == current) return 1;
     }
     return 0;
-}
-
-static void drain_outbound(void) {
-    uint8_t pkt[4];
-    while (outbound_pop_current(pkt)) {
-        if (g_midi_net.backend_flags & MIDI_NET_BACKEND_APPLEMIDI)
-            midi_net_applemidi_send_midi(pkt);
-    }
 }
 
 static void configure_network_thread(void) {
@@ -387,40 +344,50 @@ static void configure_network_thread(void) {
 #endif
 }
 
-static void *network_main(void *unused) {
+static int adapter_is_running(void *unused) {
     (void)unused;
-    configure_network_thread();
-    midi_net_log("network MIDI thread starting");
+    return __atomic_load_n(&g_midi_net.running, __ATOMIC_ACQUIRE);
+}
 
-    if (g_midi_net.backend_flags & MIDI_NET_BACKEND_IPMIDI)
-        midi_net_ipmidi_open();
-    if (g_midi_net.backend_flags & MIDI_NET_BACKEND_APPLEMIDI)
-        midi_net_applemidi_open();
-    if (g_midi_net.backend_flags & MIDI_NET_BACKEND_MDNS) {
-        if (midi_net_mdns_open() == 0) midi_net_mdns_announce();
-    }
+static void adapter_handle_ipmidi(void *unused, int fd) {
+    (void)unused;
+    midi_net_ipmidi_handle_rx(fd);
+}
 
-    uint64_t last_tick = midi_net_now_ms();
-    uint64_t last_announce = last_tick;
+static int adapter_pop_outbound(void *unused, uint8_t packet[4]) {
+    (void)unused;
+    return outbound_pop_current(packet);
+}
+
+static void adapter_handle_inbound(void *unused, const uint8_t *bytes,
+                                   size_t len) {
+    (void)unused;
+    midi_net_stream_parser_t parser;
+    memset(&parser, 0, sizeof(parser));
+    midi_net_parse_raw_stream(&parser, bytes, (int)len);
+}
+
+static void adapter_log(void *unused, int is_error, const char *message) {
+    (void)unused;
+    if (is_error) LOG_ERROR("midi_net", "%s", message ? message : "rtpmidi error");
+    else LOG_INFO("midi_net", "%s", message ? message : "rtpmidi");
+}
+
+static void fallback_poll_loop(void) {
     while (__atomic_load_n(&g_midi_net.running, __ATOMIC_ACQUIRE)) {
-        struct pollfd pfds[5];
+        struct pollfd pfds[2];
         int nfds = 0, idx_stop = -1, idx_ip = -1;
-        int idx_ctrl = -1, idx_evt = -1, idx_mdns = -1;
 #define ADD_FD(fd_, idx_) do { if ((fd_) >= 0) { \
             (idx_) = nfds; pfds[nfds].fd = (fd_); \
             pfds[nfds].events = POLLIN; pfds[nfds].revents = 0; nfds++; \
         } } while (0)
         ADD_FD(g_midi_net.self_pipe[0], idx_stop);
         ADD_FD(g_midi_net.ipmidi_sock, idx_ip);
-        ADD_FD(g_midi_net.applemidi_ctrl_sock, idx_ctrl);
-        ADD_FD(g_midi_net.applemidi_evt_sock, idx_evt);
-        ADD_FD(g_midi_net.mdns_sock, idx_mdns);
 #undef ADD_FD
-
-        int rc = poll(pfds, (nfds_t)nfds, 5);
+        int rc = poll(pfds, (nfds_t)nfds, 100);
         if (rc < 0 && errno != EINTR) {
-            midi_net_log("poll failed: %s", strerror(errno));
-            usleep(100000);
+            midi_net_log("fallback poll failed: %s", strerror(errno));
+            break;
         }
         if (idx_stop >= 0 && (pfds[idx_stop].revents & POLLIN)) {
             char buf[16];
@@ -428,57 +395,78 @@ static void *network_main(void *unused) {
         }
         if (idx_ip >= 0 && (pfds[idx_ip].revents & POLLIN))
             midi_net_ipmidi_handle_rx(g_midi_net.ipmidi_sock);
-        if (idx_ctrl >= 0 && (pfds[idx_ctrl].revents & POLLIN))
-            midi_net_applemidi_handle_ctrl(g_midi_net.applemidi_ctrl_sock);
-        if (idx_evt >= 0 && (pfds[idx_evt].revents & POLLIN))
-            midi_net_applemidi_handle_evt(g_midi_net.applemidi_evt_sock);
-        if (idx_mdns >= 0 && (pfds[idx_mdns].revents & POLLIN))
-            midi_net_mdns_handle_rx(g_midi_net.mdns_sock);
+    }
+}
 
-        drain_outbound();
-        uint64_t now = midi_net_now_ms();
-        if (now - last_tick >= 1000) {
-            last_tick = now;
-            midi_net_applemidi_tick();
+static void *network_main(void *unused) {
+    (void)unused;
+    configure_network_thread();
+    midi_net_log("network MIDI thread starting");
+
+    midi_net_ipmidi_open();
+
+    if (g_midi_net.rtpmidi_run) {
+        schwung_rtpmidi_config_t config = {
+            .abi_version = SCHWUNG_RTPMIDI_ADAPTER_ABI,
+            .session_name = MIDI_NET_SESSION_NAME,
+            .control_port = 5004,
+            .stop_fd = g_midi_net.self_pipe[0],
+            .ipmidi_fd = g_midi_net.ipmidi_sock,
+            .userdata = NULL,
+            .is_running = adapter_is_running,
+            .handle_ipmidi = adapter_handle_ipmidi,
+            .pop_outbound = adapter_pop_outbound,
+            .handle_inbound = adapter_handle_inbound,
+            .log = adapter_log,
+        };
+        if (g_midi_net.rtpmidi_run(&config) != 0) {
+            midi_net_log("RTP-MIDI adapter stopped with an error; keeping ipMIDI active");
+            fallback_poll_loop();
         }
-        if (now - last_announce >= 120000) {
-            last_announce = now;
-            midi_net_mdns_announce();
-        }
+    } else {
+        fallback_poll_loop();
     }
 
     midi_net_ipmidi_close();
-    midi_net_applemidi_close();
-    midi_net_mdns_close();
     midi_net_log("network MIDI thread stopped");
     return NULL;
 }
 
-void midi_net_init(shadow_midi_inject_t **inject_shm_ptr,
-                   void (*log_fn)(const char *msg)) {
+void midi_net_init(shadow_midi_inject_t **inject_shm_ptr) {
     memset(&g_midi_net, 0, sizeof(g_midi_net));
-    g_midi_net.backend_flags = MIDI_NET_BACKEND_ALL;
     g_midi_net.inject_shm_ptr = inject_shm_ptr;
-    g_midi_net.log_fn = log_fn;
     g_midi_net.self_pipe[0] = g_midi_net.self_pipe[1] = -1;
     g_midi_net.ipmidi_sock = -1;
-    g_midi_net.applemidi_ctrl_sock = -1;
-    g_midi_net.applemidi_evt_sock = -1;
-    g_midi_net.mdns_sock = -1;
     g_midi_net.service_generation = 1;
     outbound_reset();
-    uint64_t seed = midi_net_now_100us() ^ (uint64_t)(uintptr_t)&g_midi_net;
-    g_midi_net.our_ssrc = (uint32_t)(seed ^ (seed >> 32) ^ 0x53434857u);
-    if (!g_midi_net.our_ssrc) g_midi_net.our_ssrc = 1;
 }
 
-void midi_net_set_backends(uint32_t backend_flags) {
-    if (!midi_net_is_running()) g_midi_net.backend_flags = backend_flags;
+static void load_rtpmidi_adapter(void) {
+#ifndef MIDI_NET_TESTING
+    if (g_midi_net.rtpmidi_dso) return;
+    g_midi_net.rtpmidi_dso = dlopen("libschwung-rtpmidi.so",
+                                    RTLD_NOW | RTLD_LOCAL);
+    if (!g_midi_net.rtpmidi_dso) {
+        midi_net_log("RTP-MIDI adapter unavailable: %s", dlerror());
+        return;
+    }
+    dlerror();
+    *(void **)(&g_midi_net.rtpmidi_run) =
+        dlsym(g_midi_net.rtpmidi_dso, "schwung_rtpmidi_run");
+    const char *error = dlerror();
+    if (error || !g_midi_net.rtpmidi_run) {
+        midi_net_log("RTP-MIDI adapter has no compatible entry point: %s",
+                     error ? error : "missing symbol");
+        dlclose(g_midi_net.rtpmidi_dso);
+        g_midi_net.rtpmidi_dso = NULL;
+        g_midi_net.rtpmidi_run = NULL;
+    }
+#endif
 }
 
-int midi_net_start(void) {
+static int midi_net_start(void) {
     if (__atomic_load_n(&g_midi_net.thread_started, __ATOMIC_ACQUIRE)) return 0;
-    g_midi_net.applemidi_seq = 0;
+    load_rtpmidi_adapter();
     if (pipe(g_midi_net.self_pipe) != 0) return -1;
     for (int i = 0; i < 2; i++) {
         int flags = fcntl(g_midi_net.self_pipe[i], F_GETFL, 0);
@@ -497,7 +485,7 @@ int midi_net_start(void) {
     return 0;
 }
 
-void midi_net_stop(void) {
+static void midi_net_stop(void) {
     if (!__atomic_load_n(&g_midi_net.thread_started, __ATOMIC_ACQUIRE)) return;
     __atomic_store_n(&g_midi_net.running, 0, __ATOMIC_RELEASE);
     __atomic_fetch_add(&g_midi_net.service_generation, 1,
@@ -512,20 +500,17 @@ void midi_net_stop(void) {
     __atomic_store_n(&g_midi_net.thread_started, 0, __ATOMIC_RELEASE);
 }
 
-int midi_net_is_running(void) {
+static int midi_net_is_running(void) {
     return __atomic_load_n(&g_midi_net.running, __ATOMIC_ACQUIRE);
 }
 
-void midi_net_get_stats(midi_net_stats_t *out) {
-    if (!out) return;
-#define LOAD64(name) out->name = __atomic_load_n(&g_midi_net.stats.name, __ATOMIC_RELAXED)
-#define LOAD32(name) out->name = __atomic_load_n(&g_midi_net.stats.name, __ATOMIC_RELAXED)
-    LOAD64(rx_packets); LOAD64(rx_midi_messages); LOAD64(tx_packets);
-    LOAD64(drops_buffer_full); LOAD64(drops_parse_err);
-    LOAD64(drops_outbound_full); LOAD32(applemidi_peers);
-    LOAD32(mdns_queries); LOAD32(mdns_responses);
-#undef LOAD64
-#undef LOAD32
+void midi_net_reconcile(int enabled) {
+    if (enabled) {
+        if (!midi_net_is_running() && midi_net_start() != 0)
+            midi_net_log("failed to start network MIDI service");
+    } else if (midi_net_is_running()) {
+        midi_net_stop();
+    }
 }
 
 #ifdef MIDI_NET_TESTING

@@ -1,3 +1,6 @@
 [submodule "libs/link"]
 	path = libs/link
 	url = https://github.com/Ableton/link.git
+[submodule "libs/rtpmidid"]
+	path = libs/rtpmidid
+	url = https://github.com/davidmoreno/rtpmidid.git

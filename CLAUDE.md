@@ -358,6 +358,9 @@ Normal shadow: only cable 0 processed. Overtake: all cables forwarded; cable 2 �
 Optional, off by default under **Global Settings → Services → MIDI / Wi-Fi**.
 The shim network thread supports ipMIDI input (`225.0.0.37:21928`), AppleMIDI
 input/output (`5004/5005`), and `_apple-midi._udp.local` mDNS advertising.
+AppleMIDI and discovery are provided by the pinned, dynamically loaded
+`librtpmidid` adapter; if that optional dependency cannot load, the shim and
+ipMIDI continue to work.
 Inbound messages enter the existing MPSC injection ring with an internal cable-3
 origin tag; `shadow_drain_midi_inject` rewrites that tag to external cable 2
 before Move sees it and mirrors the delivered packet to overtake

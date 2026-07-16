@@ -9,12 +9,19 @@ RUN dpkg --add-architecture arm64
 RUN apt-get update && apt-get install -y \
     gcc-aarch64-linux-gnu \
     g++-aarch64-linux-gnu \
+    g++ \
     binutils-aarch64-linux-gnu \
     make \
+    cmake \
+    pkg-config \
     file \
     python3 \
     python3-pillow \
     libdbus-1-dev:arm64 \
+    libavahi-client-dev \
+    libavahi-client-dev:arm64 \
+    libfmt-dev \
+    libfmt-dev:arm64 \
     libsystemd-dev:arm64 \
     libespeak-ng1:arm64 \
     libespeak-ng-dev:arm64 \
