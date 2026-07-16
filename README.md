@@ -90,11 +90,20 @@ curl -L https://raw.githubusercontent.com/charlesvestal/schwung/main/scripts/uni
 ## Documentation
 
 - [Schwung Manual](https://schwung.dev/manual.html) - User guide and shortcuts
+- [CONTRIBUTING.md](CONTRIBUTING.md) - Dev workflow, CI, and pull-request checks
 - [BUILDING.md](BUILDING.md) - Build instructions
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - System and Shadow UI architecture
 - [docs/MODULES.md](docs/MODULES.md) - Module development, Shadow UI integration, overtake modules
 - [docs/API.md](docs/API.md) - JavaScript module API
 - [src/modules/chain/README.md](src/modules/chain/README.md) - Signal Chain module notes
+
+## Contributing
+
+PRs welcome. `main` is protected and CI-gated: every change lands via a pull
+request that passes three checks (`host-tests`, `go`, `cross-compile`) — direct
+pushes to `main` are blocked. Branch off `main` (or fork), open a PR, and
+optionally install the fast local checks with `./scripts/install-hooks.sh`. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow.
 
 ## Available Modules
 

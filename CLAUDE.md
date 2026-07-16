@@ -29,9 +29,16 @@ Cross-compile via `${CROSS_PREFIX}gcc` for Move's ARM. See `BUILDING.md`.
 ## Testing
 
 Static/regression suite: `for t in tests/{host,shadow,store,build}/*.sh; do bash "$t"; done`
-(~95 shell tests: source-invariant pins, compiled C units, node-run .mjs units —
-not wired into CI; ~20 stale failures pin since-moved code, see the cleanup
-review doc). On-hardware behavior is verified manually. Enable the unified logger:
+(~95 shell tests: source-invariant pins, compiled C units, node-run .mjs units).
+**CI gates the `tests/host/` subset** — `.github/workflows/ci.yml` runs `host-tests`
+(`make -C tests/host test` + all `tests/host/*.sh`, all green), `go`
+(`schwung-manager`), and `cross-compile` (ARM64 Docker build) on every PR and push
+to `main`. `main` is branch-protected: **all three checks are required and direct
+pushes are blocked** — work on a branch and open a PR (see `CONTRIBUTING.md`;
+install the fast local checks with `./scripts/install-hooks.sh`). The broader
+`tests/{shadow,store,build}` suites are **not** run by CI — ~20 stale failures pin
+since-moved code (see the cleanup review doc). On-hardware behavior is verified
+manually. Enable the unified logger:
 
 ```bash
 ssh ableton@move.local "touch /data/UserData/schwung/debug_log_on"
