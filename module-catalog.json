@@ -1162,7 +1162,7 @@
       "description": "Elektron-style digital machine synth voice with SuperWave, SID, DigiPRO, FM, deep modulation, and arp latch",
       "author": "timncox",
       "component_type": "sound_generator",
-      "github_repo": "timncox/schwung-mono",
+      "github_repo": "timncox/schwung-mono-voice",
       "default_branch": "main",
       "asset_name": "mono-voice-module.tar.gz",
       "min_host_version": "0.3.0"
