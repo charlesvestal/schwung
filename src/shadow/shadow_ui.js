@@ -2662,8 +2662,15 @@ function setSlotParamWithRetry(slot, key, value, timeoutMs, retryTimeoutMs, logL
 let feedbackOverride = {};       /* slot -> user enabled despite risk (until safe/reboot) */
 let feedbackEpisode = {};        /* slot -> currently guard-bypassing due to risk */
 let feedbackModalPending = {};   /* slot -> show the visual modal next time the UI is up */
+let feedbackSafeSince = {};      /* slot -> Date.now() when the safe reading began, 0 while at risk */
 let feedbackGuardModalRaised = false;  /* the active feedback modal is the guard's (auto-dismissable) */
 let lineInConsumerCache = {};    /* moduleId -> bool (consumesLineInput) */
+
+/* Safe must hold this long before the guard undoes a bypass / clears the user's
+ * override, so a brief jack-sense blip (e.g. USB-C audio renegotiating) can't
+ * wipe the override and storm the modal. The protective direction (risk -> bypass)
+ * is never debounced. */
+const FEEDBACK_SAFE_DEBOUNCE_MS = 2000;
 
 function bootFeedbackRisk() {
     if (typeof host_speaker_active !== "function") return false;
@@ -2692,6 +2699,7 @@ function reconcileFeedbackHolds() {
             feedbackEpisode[slot] = false;
             feedbackModalPending[slot] = false;
             feedbackOverride[slot] = false;
+            feedbackSafeSince[slot] = 0;
             continue;
         }
 
@@ -2708,38 +2716,50 @@ function reconcileFeedbackHolds() {
             continue;
         }
 
-        if (risk && !feedbackOverride[slot]) {
-            if (!bypassed) {
-                /* Entering risk (e.g. headphones unplugged) on a live Line In. */
-                setSlotParam(slot, "synth:bypassed", "1");
-                setSlotParam(slot, "slot:feedback_hold", "1");
-                debugLog(`feedback guard: slot ${slot} bypassed (feedback risk)`);
+        if (risk) {
+            /* Any risk reading resets the safe-stability timer, so a brief safe
+             * blip below can't undo the guard. */
+            feedbackSafeSince[slot] = 0;
+            if (!feedbackOverride[slot]) {
+                if (!bypassed) {
+                    /* Entering risk (e.g. headphones unplugged) on a live Line In.
+                     * Bypass immediately — the protective direction is never
+                     * debounced. */
+                    setSlotParam(slot, "synth:bypassed", "1");
+                    setSlotParam(slot, "slot:feedback_hold", "1");
+                    debugLog(`feedback guard: slot ${slot} bypassed (feedback risk)`);
+                }
+                if (!feedbackEpisode[slot]) {
+                    feedbackEpisode[slot] = true;
+                    feedbackModalPending[slot] = true;
+                    announce("Feedback risk. Audio monitoring disabled. Plug in headphones.");
+                    debugLog(`feedback guard: slot ${slot} alert raised`);
+                }
             }
-            if (!feedbackEpisode[slot]) {
-                feedbackEpisode[slot] = true;
-                feedbackModalPending[slot] = true;
-                announce("Feedback risk. Audio monitoring disabled. Plug in headphones.");
-                debugLog(`feedback guard: slot ${slot} alert raised`);
-            }
-        } else if (!risk) {
-            /* Safe: un-bypass the guard's bypass and reset the episode/override. */
-            feedbackOverride[slot] = false;
-            feedbackEpisode[slot] = false;
-            feedbackModalPending[slot] = false;
-            if (bypassed && hold) {
-                setSlotParam(slot, "synth:bypassed", "0");
-                setSlotParam(slot, "slot:feedback_hold", "0");
-                debugLog(`feedback guard: slot ${slot} un-bypassed (safe)`);
-            }
-            /* If the risk cleared while the modal was up (e.g. headphones plugged
-             * back in), dismiss it — the slot is already enabled. */
-            if (feedbackGuardModalRaised && feedbackGateActive() && feedbackGateCancel()) {
-                feedbackGuardModalRaised = false;
-                announce("Headphones connected. Line In enabled.");
-                debugLog(`feedback guard: modal dismissed (safe)`);
+            /* risk && override: the user chose to keep it live — leave it alone. */
+        } else {
+            /* Safe — but require it to hold for FEEDBACK_SAFE_DEBOUNCE_MS before
+             * undoing the guard, so a single jack-sense blip can't wipe the
+             * user's override and re-raise the modal every few seconds. */
+            if (!feedbackSafeSince[slot]) feedbackSafeSince[slot] = Date.now();
+            if (Date.now() - feedbackSafeSince[slot] >= FEEDBACK_SAFE_DEBOUNCE_MS) {
+                feedbackOverride[slot] = false;
+                feedbackEpisode[slot] = false;
+                feedbackModalPending[slot] = false;
+                if (bypassed && hold) {
+                    setSlotParam(slot, "synth:bypassed", "0");
+                    setSlotParam(slot, "slot:feedback_hold", "0");
+                    debugLog(`feedback guard: slot ${slot} un-bypassed (safe)`);
+                }
+                /* If the risk cleared while the modal was up (e.g. headphones
+                 * plugged back in), dismiss it — the slot is already enabled. */
+                if (feedbackGuardModalRaised && feedbackGateActive() && feedbackGateCancel()) {
+                    feedbackGuardModalRaised = false;
+                    announce("Headphones connected. Line In enabled.");
+                    debugLog(`feedback guard: modal dismissed (safe)`);
+                }
             }
         }
-        /* risk && override: the user chose to keep it live — leave it alone. */
     }
     pumpFeedbackAlertModal();
 }
@@ -2777,6 +2797,28 @@ function pumpFeedbackAlertModal() {
         });
         return;  /* one modal at a time */
     }
+}
+
+/* Tear down a raised feedback-guard modal before an overtake surface takes over.
+ * The gate's input handler only runs at display_mode==1, so under an overtake
+ * tool the modal can't be answered — Back leaks through and exits the tool
+ * (issue #158). Cancel the modal but keep the slot bypassed and re-arm it
+ * pending, so pumpFeedbackAlertModal re-raises it once the shadow UI is back on
+ * screen. */
+function deferFeedbackModalForOvertake() {
+    if (!feedbackGuardModalRaised) return;
+    if (!(feedbackGateActive() && feedbackGateCancel())) return;
+    feedbackGuardModalRaised = false;
+    /* Re-arm on every line-in slot still under the guard (bypassed + held), so
+     * the modal returns when the user is back in the shadow UI. */
+    for (let slot = 0; slot < SHADOW_UI_SLOTS; slot++) {
+        if (!isLineInConsumerModule(getSlotParam(slot, "synth_module"))) continue;
+        if (getSlotParam(slot, "synth:bypassed") === "1" &&
+            getSlotParam(slot, "slot:feedback_hold") === "1") {
+            feedbackModalPending[slot] = true;
+        }
+    }
+    debugLog("feedback guard: modal deferred for overtake entry");
 }
 
 /* Scan modules directory for audio_fx modules */
@@ -2961,6 +3003,9 @@ function invokeModuleOnResume(callbacks, moduleId) {
 
 /* Enter the overtake module selection menu */
 function enterOvertakeMenu() {
+    /* A raised feedback-guard modal can't be answered once we leave the shadow
+     * UI — defer it so Back doesn't leak into the menu/tool (issue #158). */
+    deferFeedbackModalForOvertake();
     /* Flush set state before entering overtake — periodic autosave is gated
      * on !isOvertakeActive, so without this a slot change made seconds before
      * Shift+Vol+Jog would be lost on reboot. */
@@ -3420,6 +3465,9 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
         debugLog("loadOvertakeModule: no moduleInfo or uiPath");
         return false;
     }
+    /* A raised feedback-guard modal can't be answered under an overtake tool —
+     * defer it so Back doesn't leak into the tool (issue #158). */
+    deferFeedbackModalForOvertake();
 
     /* Flush set state before entering overtake — covers the Tools-menu path
      * (enterToolsMenu → pick tool) which bypasses enterOvertakeMenu, and the
