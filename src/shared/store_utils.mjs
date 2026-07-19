@@ -108,6 +108,17 @@ export function fetchReleaseJson(github_repo, module_id, branch) {
             };
         }
 
+        /* Multi-module document that no longer lists this module: it was
+         * dropped from the repository's release.json. Report it distinctly
+         * instead of silently freezing the module at its last-known version
+         * (the generic "Invalid release.json format" path below would
+         * misattribute a valid-but-narrowed release.json to corruption). The
+         * caller still falls back to the catalog asset_name latest URL. */
+        if (release.modules && module_id) {
+            console.log(`Module '${module_id}' is no longer published in ${github_repo}'s multi-module release.json (removed from repo); update check falls back to catalog asset`);
+            return null;
+        }
+
         /* Single module format (backwards compatible) */
         if (!release.version || !release.download_url) {
             console.log(`Invalid release.json format for ${github_repo}`);
