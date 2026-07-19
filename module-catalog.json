@@ -1144,6 +1144,28 @@
       "default_branch": "main",
       "asset_name": "belt-in-module.tar.gz",
       "min_host_version": "0.3.0"
+    },
+    {
+      "id": "mono",
+      "name": "Mono",
+      "description": "Six-track Elektron-style machine synth and sequencer with parameter locks, arpeggiators, routing, pattern tools, and browser editor",
+      "author": "timncox",
+      "component_type": "overtake",
+      "github_repo": "timncox/schwung-mono",
+      "default_branch": "main",
+      "asset_name": "mono-module.tar.gz",
+      "min_host_version": "0.11.4"
+    },
+    {
+      "id": "mono-voice",
+      "name": "Mono Voice",
+      "description": "Elektron-style digital machine synth voice with SuperWave, SID, DigiPRO, FM, deep modulation, and arp latch",
+      "author": "timncox",
+      "component_type": "sound_generator",
+      "github_repo": "timncox/schwung-mono-voice",
+      "default_branch": "main",
+      "asset_name": "mono-voice-module.tar.gz",
+      "min_host_version": "0.3.0"
     }
   ]
 }
