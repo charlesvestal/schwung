@@ -5916,15 +5916,6 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         if (d1 == CC_JOG_WHEEL || d1 == CC_JOG_CLICK || d1 == CC_BACK) {
                             filter = 1;
                         }
-                        /* Copy/Delete/Undo: a chainable module's shadow-UI pad
-                         * tools consume these. Block from Move
-                         * firmware so a press doesn't also delete a clip or undo
-                         * a Move edit in the background. Forwarded to the shadow
-                         * UI by the post-ioctl loop. (Mute/CC88 is intentionally
-                         * NOT blocked — Move-native Mute+Pad relies on it.) */
-                        if (d1 == CC_UNDO || d1 == CC_COPY || d1 == CC_DELETE) {
-                            filter = 1;
-                        }
                         /* Filter Menu unless long-press mode dismisses shadow on tap */
                         if (d1 == CC_MENU && !LONG_PRESS_ACTIVE()) {
                             filter = 1;
@@ -7035,14 +7026,10 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                  * - CC 14 (jog wheel), CC 3 (jog click), CC 51 (back)
                  * - CC 40-43 (track buttons)
                  * - CC 71-78 (knobs)
-                 * - CC 88 (mute) — used as a modifier for Mute+JogClick module bypass
-                 * - CC 56/60/119 (undo/copy/delete) — chainable-module pad tools.
-                 *   Blocked from Move firmware in
-                 *   the pre-ioctl filter so a press only drives the shadow UI. */
+                 * - CC 88 (mute) — used as a modifier for Mute+JogClick module bypass */
                 int forward_to_shadow = (d1 == 14 || d1 == 3 || d1 == 51 ||
                                          (d1 >= 40 && d1 <= 43) || (d1 >= 71 && d1 <= 78) ||
-                                         d1 == 88 ||
-                                         d1 == 56 || d1 == 60 || d1 == 119);
+                                         d1 == 88);
 
                 if (forward_to_shadow && shadow_ui_midi_shm) {
                     shadow_ui_midi_publish(0x0B, status, d1, d2);
