@@ -5,6 +5,7 @@
  */
 
 #include "chain_internal.h"
+#include "chain_pre_inject.h"
 
 /* Clock availability state for sync-aware MIDI FX (arp, etc.). */
 static int g_clock_output_enabled = 1;              /* midiClockMode == "output" */
@@ -394,18 +395,16 @@ void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
                     case 0xE0: cin = 0x0E; break;  /* Pitch bend */
                     default:   continue;           /* Skip sysex/realtime */
                 }
-                /* Skip note-ONs on pitches currently held by a pad — Move's
-                 * track already plays them natively, and injecting would
-                 * bump pre_injected_notes so the pad-release note-off gets
-                 * falsely echo-filtered (arp-hang bug). Do NOT apply this
-                 * to note-offs: note-off injections don't touch the echo
-                 * refcount, and suppressing them strands chord voices on
-                 * Move's track when pre_pad_held has accumulated (it can
-                 * leak > 0 when a real pad release gets caught by the echo
-                 * filter and the decrement below never runs). */
-                int is_note_on = (type == 0x90 && out_lens[i] >= 3 && out_msgs[i][2] > 0);
-                if (is_note_on && out_msgs[i][1] < 128 &&
-                    inst->pre_pad_held[out_msgs[i][1]] > 0) {
+                /* Decide whether this FX-output message reaches Move: skip
+                 * note-ONs on held-pad pitches (Move plays them natively) and
+                 * skip note-OFFs for pitches we never injected (an arp
+                 * retriggering a held pad would otherwise silence Move's pad
+                 * note AND echo the off back un-refcounted, draining the arp).
+                 * Pure + unit-tested: chain_pre_inject.h, tests/host/
+                 * test_chain_pre_inject.c. */
+                if (!chain_pre_tick_should_inject(inst->pre_pad_held,
+                                                  inst->pre_injected_notes,
+                                                  out_msgs[i], out_lens[i])) {
                     continue;
                 }
                 uint8_t inject_status = out_msgs[i][0];
