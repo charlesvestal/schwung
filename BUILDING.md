@@ -543,6 +543,27 @@ External modules can specify where they should be installed via `release.json`.
 }
 ```
 
+One repository may publish multiple catalog modules by nesting releases under
+their catalog IDs:
+
+```json
+{
+  "modules": {
+    "module-a": {
+      "version": "0.2.1",
+      "download_url": "https://github.com/user/repo/releases/download/v0.2.1/module-a-module.tar.gz"
+    },
+    "module-b": {
+      "version": "0.2.1",
+      "download_url": "https://github.com/user/repo/releases/download/v0.2.1/module-b-module.tar.gz"
+    }
+  }
+}
+```
+
+The catalog `id` selects the matching nested entry. Keep the original top-level
+shape for repositories that publish only one module.
+
 | Field | Required | Description |
 |-------|----------|-------------|
 | `version` | Yes | Semantic version (without `v` prefix) |
