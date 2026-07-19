@@ -65,24 +65,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Commit release.json
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          git fetch origin main
-          git checkout -f main
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          # Recreate release.json on main branch
-          cat > release.json << EOF
-          {
-            "version": "${VERSION}",
-            "download_url": "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/schwung.tar.gz"
-          }
-          EOF
-          git add release.json
-          if git diff --cached --quiet; then
-            echo "release.json already up to date"
-          else
-            git commit -m "chore: update release.json for ${{ github.ref_name }}"
-            git push origin main
-          fi
+      # NOTE: release.json is intentionally NOT auto-committed here. main is
+      # branch-protected (required status checks), so a github-actions[bot]
+      # `git push origin main` is rejected (GH006) and fails the whole workflow
+      # even though the release + asset above succeeded. Instead, the release PR
+      # that bumps module-catalog.json `host.latest_version` (which is what
+      # schwung-manager actually reads to offer the update) also updates
+      # release.json to the same version. See the release checklist in CLAUDE.md.
