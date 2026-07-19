@@ -1093,8 +1093,21 @@ func getInstallSubdir(componentType string) string {
 
 // ReleaseJSON is the structure of a module's release.json file.
 type ReleaseJSON struct {
-	Version     string `json:"version"`
-	DownloadURL string `json:"download_url"`
+	Version     string                 `json:"version"`
+	DownloadURL string                 `json:"download_url"`
+	Modules     map[string]ReleaseJSON `json:"modules,omitempty"`
+}
+
+// forModule resolves both the original single-module release.json shape and
+// the multi-module shape used when one repository publishes several catalog
+// entries. A multi-module document must contain the requested catalog ID; the
+// caller can then fall back to the catalog asset name when it does not.
+func (r ReleaseJSON) forModule(moduleID string) (ReleaseJSON, bool) {
+	if len(r.Modules) == 0 {
+		return r, true
+	}
+	moduleRelease, ok := r.Modules[moduleID]
+	return moduleRelease, ok
 }
 
 // installModule downloads and extracts a module from its GitHub release.
@@ -1126,8 +1139,13 @@ func (app *App) installModule(mod *CatalogModule) error {
 		if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
 			return fmt.Errorf("decoding release.json: %w", err)
 		}
-		downloadURL = rel.DownloadURL
-		releaseVersion = rel.Version
+		if moduleRelease, ok := rel.forModule(mod.ID); ok {
+			downloadURL = moduleRelease.DownloadURL
+			releaseVersion = moduleRelease.Version
+		} else {
+			app.logger.Warn("module missing from multi-module release.json; using fallback URL",
+				"id", mod.ID)
+		}
 	}
 	if downloadURL == "" {
 		// Fallback: use GitHub releases latest download.

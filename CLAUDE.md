@@ -460,6 +460,17 @@ The manager also serves a **file browser** (`/files`, under `/data/UserData/`) a
  "download_url": "https://github.com/user/move-anything-mymodule/releases/download/v0.2.0/mymodule-module.tar.gz"}
 ```
 
+Repositories that publish multiple catalog modules may key each release by
+catalog ID. Schwung Manager and the shared store utilities select the matching
+entry before downloading:
+
+```json
+{"modules": {
+  "module-a": {"version": "0.2.0", "download_url": "https://.../module-a-module.tar.gz"},
+  "module-b": {"version": "0.2.0", "download_url": "https://.../module-b-module.tar.gz"}
+}}
+```
+
 Optional: `install_path`, `name`, `description`, `requires`, `post_install`, `repo_url`. Release workflow should auto-update this file on each tagged release.
 
 ### Catalog Entry

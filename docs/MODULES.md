@@ -2228,6 +2228,29 @@ Each module repo must have a `release.json` on its main branch. The Module Store
 }
 ```
 
+For a repository that publishes more than one catalog module, use a `modules`
+object keyed by the exact catalog IDs. Each entry has the same fields as a
+single-module release:
+
+```json
+{
+  "modules": {
+    "module-a": {
+      "version": "0.2.0",
+      "download_url": "https://github.com/username/repo/releases/download/v0.2.0/module-a-module.tar.gz"
+    },
+    "module-b": {
+      "version": "0.2.0",
+      "download_url": "https://github.com/username/repo/releases/download/v0.2.0/module-b-module.tar.gz"
+    }
+  }
+}
+```
+
+Schwung Manager and the shared store utilities select the entry matching the
+catalog module ID. If it is missing, the manager falls back to the catalog's
+`asset_name` latest-release URL.
+
 Optional fields: `install_path`, `name`, `description`, `requires`, `post_install`, `repo_url`. Fields like `name`, `description`, and `requires` in `release.json` override their catalog equivalents.
 
 The release workflow should auto-update `release.json` on each tagged release (see the workflow template above for an example).
