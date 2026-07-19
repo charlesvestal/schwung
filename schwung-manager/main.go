@@ -1388,6 +1388,20 @@ func (app *App) handleModuleInstallAll(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/modules?flash="+msg, http.StatusSeeOther)
 }
 
+// firstModuleDir returns the first directory entry among a tar's top-level
+// extracted entries. Archives built on macOS can carry hidden AppleDouble
+// sidecar files (e.g. "._modname") that "tar -tvf" on macOS hides but a
+// non-macOS tar (as used here) extracts literally; those sort before normal
+// names and are plain files, so entries[0] alone isn't reliable.
+func firstModuleDir(entries []os.DirEntry) (os.DirEntry, bool) {
+	for _, e := range entries {
+		if e.IsDir() {
+			return e, true
+		}
+	}
+	return nil, false
+}
+
 func (app *App) handleCustomInstall(w http.ResponseWriter, r *http.Request) {
 	source := r.FormValue("source")
 	switch source {
@@ -1461,7 +1475,12 @@ func (app *App) handleCustomInstall(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/modules?flash=Tarball+is+empty", http.StatusSeeOther)
 			return
 		}
-		moduleDir := filepath.Join(tmpDir, entries[0].Name())
+		modEntry, ok := firstModuleDir(entries)
+		if !ok {
+			http.Redirect(w, r, "/modules?flash=No+module+directory+found+in+tarball", http.StatusSeeOther)
+			return
+		}
+		moduleDir := filepath.Join(tmpDir, modEntry.Name())
 		mjData, err := os.ReadFile(filepath.Join(moduleDir, "module.json"))
 		if err != nil {
 			http.Redirect(w, r, "/modules?flash=No+module.json+found+in+tarball", http.StatusSeeOther)
@@ -1484,7 +1503,7 @@ func (app *App) handleCustomInstall(w http.ResponseWriter, r *http.Request) {
 		// Move to the correct category directory.
 		categoryDir := filepath.Join(app.basePath, "modules", getInstallSubdir(componentType))
 		os.MkdirAll(categoryDir, 0755)
-		destDir := filepath.Join(categoryDir, entries[0].Name())
+		destDir := filepath.Join(categoryDir, modEntry.Name())
 		os.RemoveAll(destDir) // Remove old version if exists.
 		if err := os.Rename(moduleDir, destDir); err != nil {
 			http.Redirect(w, r, "/modules?flash=Move+failed:+"+err.Error(), http.StatusSeeOther)
@@ -1498,7 +1517,7 @@ func (app *App) handleCustomInstall(w http.ResponseWriter, r *http.Request) {
 		}
 
 		app.logger.Info("custom module installed", "id", mj.ID, "path", destDir)
-		http.Redirect(w, r, "/modules?flash=Installed+"+entries[0].Name()+"+from+GitHub", http.StatusSeeOther)
+		http.Redirect(w, r, "/modules?flash=Installed+"+modEntry.Name()+"+from+GitHub", http.StatusSeeOther)
 
 	case "tarball":
 		file, header, err := r.FormFile("file")
@@ -1535,7 +1554,12 @@ func (app *App) handleCustomInstall(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/modules?flash=Tarball+is+empty", http.StatusSeeOther)
 			return
 		}
-		moduleDir := filepath.Join(tmpDir, entries[0].Name())
+		modEntry, ok := firstModuleDir(entries)
+		if !ok {
+			http.Redirect(w, r, "/modules?flash=No+module+directory+found+in+tarball", http.StatusSeeOther)
+			return
+		}
+		moduleDir := filepath.Join(tmpDir, modEntry.Name())
 		mjData, err := os.ReadFile(filepath.Join(moduleDir, "module.json"))
 		if err != nil {
 			http.Redirect(w, r, "/modules?flash=No+module.json+found+in+tarball", http.StatusSeeOther)
@@ -1557,7 +1581,7 @@ func (app *App) handleCustomInstall(w http.ResponseWriter, r *http.Request) {
 
 		categoryDir := filepath.Join(app.basePath, "modules", getInstallSubdir(componentType))
 		os.MkdirAll(categoryDir, 0755)
-		destDir := filepath.Join(categoryDir, entries[0].Name())
+		destDir := filepath.Join(categoryDir, modEntry.Name())
 		os.RemoveAll(destDir)
 		if err := os.Rename(moduleDir, destDir); err != nil {
 			http.Redirect(w, r, "/modules?flash=Move+failed:+"+err.Error(), http.StatusSeeOther)
@@ -1571,7 +1595,7 @@ func (app *App) handleCustomInstall(w http.ResponseWriter, r *http.Request) {
 		}
 
 		app.logger.Info("tarball module installed", "id", mj.ID, "path", destDir)
-		http.Redirect(w, r, "/modules?flash=Installed+"+entries[0].Name()+"+from+tarball", http.StatusSeeOther)
+		http.Redirect(w, r, "/modules?flash=Installed+"+modEntry.Name()+"+from+tarball", http.StatusSeeOther)
 
 	default:
 		http.Redirect(w, r, "/modules?flash=Unknown+install+source", http.StatusSeeOther)
