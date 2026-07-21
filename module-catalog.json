@@ -1173,7 +1173,7 @@
       "description": "Monome Norns sound computer on Move with Lua scripts, SuperCollider engines, Softcut, Maiden, MIDI keys, and virtual Grid controls",
       "author": "DJ Hard Rich",
       "component_type": "tool",
-      "github_repo": "djhardrich/schwung-norns",
+      "github_repo": "timncox/schwung-norns",
       "default_branch": "main",
       "asset_name": "norns-module.tar.gz",
       "min_host_version": "0.11.6",
