@@ -1166,6 +1166,17 @@
       "default_branch": "main",
       "asset_name": "mono-voice-module.tar.gz",
       "min_host_version": "0.3.0"
+    },
+    {
+      "id": "noisemaker",
+      "name": "Noisemaker",
+      "description": "Virtual-analog synth ported from TAL NoiseMaker (Patrick Kunz). 6-voice, dual osc + sub, 12 multimode filters, 2 LFOs, spline mod-envelope, chorus + reverb + delay. 256 factory presets.",
+      "author": "Patrick Kunz / TAL (engine) · port: legsmechanical",
+      "component_type": "sound_generator",
+      "github_repo": "legsmechanical/schwung-noisemaker",
+      "default_branch": "main",
+      "asset_name": "noisemaker-module.tar.gz",
+      "min_host_version": "0.11.0"
     }
   ]
 }
