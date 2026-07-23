@@ -4,6 +4,7 @@
 
 /* Reference: https://github.com/Cycling74/rnbo.move.control (MIT)
  * See also: docs/reference/rnbo-move-control/NOTES.md, schwung_move.h
+
 ================================================================================
 RGB COLOR PALETTE (INDEXED 0–127)
 ================================================================================
@@ -11,107 +12,89 @@ RGB COLOR PALETTE (INDEXED 0–127)
 --- NEUTRALS / GREYS -----------------------------------------------------------
   0 : #000000  Black
 117 : #000000  Black (dup)
-124 : #1A1A1A  Dark Grey
-119 : #1A1A1A  Dark Grey (dup)
 118 : #595959  Light Grey
-121 : #595959  Light Grey (dup)
-123 : #595959  Light Grey (dup)
+119 : #1A1A1A  Dark Grey
 120 : #FFFFFF  White
-122 : #FFFFFF  White (dup)
+121 : #595959  Light Grey (dup)
+122 : #CCCCCC  White (dup)
+123 : #404040  Dark Grey (dup)
+124 : #141414  Dark Grey 2
 
---- REDS / PINKS / MAGENTAS ----------------------------------------------------
-  1 : #FF2424  Bright Red
+--- REDS / ORANGES / YELLOWS ---------------------------------------------------
+  1 : #FF4032  Bright Red              dim  65 #661914  dark  66 #210806
+  2 : #800400  Orange Red              dim  67 #460300  dark  68 #280000
+  3 : #C93C00  Bright Orange           dim  69 #5D1700  dark  70 #200D00
+  4 : #AC1F00  Tan / Muted Orange      dim  71 #470C00  dark  72 #1C0800
+  5 : #8C5018  Light Yellow            dim  73 #3B2B14  dark  74 #1C130A
+  6 : #491804  Ochre                   dim  75 #250E05  dark  76 #0D0602  
+  7 : #FADC3B  Vivid Yellow            dim  77 #645817  dark  78 #201C07
+  8 : #FFC516  Bright Yellow           dim  79 #664E08  dark  80 #211902
+  9 : #B6FF0E  Bright Lime             dim  81 #486605  dark  82 #172101
+
+--- GREENS / TEALS -------------------------------------------------------------
+ 10 : #79FF18  Dull Green              dim  83 #306609  dark  84 #0F2103
+ 11 : #34C216  Neon Green              dim  85 #144D08  dark  86 #061902
+ 12 : #4F8A04  Teal Green              dim  87 #1F3701  dark  88 #0A1100
+ 13 : #62FF55  Muted Teal              dim  89 #276622  dark  90 #0C210B
+ 14 : #297D53  Cyan-Teal               dim  91 #143E29  dark  92 #081910
+ 15 : #269E72  Teal-Cyan               dim  93 #004D36, dark  94 #00180E
+
+--- CYANS / AQUAS / BLUES ------------------------------------------------------
+ 16 : #31ADFF  Azure Blue              dim  95 #134566  dark  96 #061621
+ 17 : #3663FC  Royal Blue              dim  97 #152764  dark  98 #070C20
+ 18 : #1A34FF  Blue-Violet             dim  99 #0A1466  dark 100 #030621
+ 19 : #1C0CE6  Violet                  dim 101 #0B045C  dark 102 #03011D
+
+--- PURPLES / MAGENTAS / PINKS -------------------------------------------------
+ 20 : #153999  Electric Violet         dim 103 #0A1C4C  dark 104 #040B1E
+ 21 : #3937FF  Hot Magenta             dim 105 #161666  dark 106 #070721
+ 22 : #5722FF  Purple                  dim 107 #220D66  dark 108 #0B0421
+ 23 : #972BFF  Neon Pink               dim 109 #3C1166  dark 110 #130521
+ 24 : #852178  Rose                    dim 111 #350D30  dark 112 #11040F
+ 25 : #FF1032  Bright Pink             dim 113 #660614  dark 114 #210206
+ 26 : #FF2BD4  Light Magenta           dim 115 #661154  dark 116 #21051B
+
+--- SATURATION VARIANTS (27–35) ------------------------------------------------
  27 : #A63421  Rust Red
- 65 : #4D0B0B  Deep Red
- 66 : #1A0404  Very Dark Red
- 67 : #4D1204  Brick
- 20 : #8700FF  Electric Violet
- 21 : #E657E3  Hot Magenta
- 23 : #FF0099  Neon Pink
- 24 : #A14C5F  Rose
- 25 : #FF4DC4  Bright Pink
- 26 : #EB8BE1  Light Magenta
-104 : #0D001A  Deep Violet
-105 : #4D1D4C  Muted Violet
-107 : #33004D  Dark Purple
-109 : #4D002E  Deep Magenta
-111 : #4D242D  Dusty Rose
-113 : #4D173B  Mauve
-114 : #1A0814  Deep Wine
-115 : #4D2D49  Dusky Mauve
-116 : #1A0F18  Shadow Mauve
-
---- ORANGES / AMBERS / YELLOWS -------------------------------------------------
-  2 : #F23A0C  Orange Red
-  3 : #FF9900  Bright Orange
-  4 : #A68956  Tan / Muted Orange
-  5 : #EDF95A  Light Yellow
-  6 : #C19D08  Ochre
-  7 : #FFFF00  Vivid Yellow
  28 : #995628  Burnt Orange
  29 : #876700  Mustard
  30 : #90821F  Yellow-Green
- 73 : #4D491F  Dull Yellow
- 74 : #1A180A  Very Dark Yellow
- 75 : #403302  Brown-Yellow
- 76 : #1A1501  Deep Brown-Yellow
- 77 : #4D4D00  Olive
- 78 : #1A1A00  Dark Olive
-
---- GREENS / TEALS -------------------------------------------------------------
-  8 : #56BF13  Bright Green
-  9 : #2C8403  Forest Green
- 10 : #246B24  Dull Green
- 11 : #19FF30  Neon Green
- 12 : #159573  Teal Green
- 13 : #176B50  Muted Teal
- 14 : #00FFFF  Cyan
  31 : #4A8700  Lime
  32 : #007F12  Deep Green
+ 33 : #1853B2  Blue
+ 34 : #624BAD  Lilac
+ 35 : #733A67  Mauve
+
+--- PASTELS / LIGHT TONES (36–64) ----------------------------------------------
+ 36 : #F8BCAF  Pale Salmon
+ 37 : #FF9B76  Light Orange
+ 38 : #FFBF5F  Light Amber
+ 39 : #D9AF71  Sand
+ 40 : #FFF480  Light Yellow 2
+ 41 : #BFBA69  Pale Olive
+ 42 : #BCCC88  Pale Lime
  43 : #AEFF99  Pale Green
  44 : #7CDD9F  Mint Green
  45 : #89B47D  Olive Green
- 79 : #1C4007  Dull Green
- 80 : #0B1A03  Very Dark Green
- 81 : #113301  Dull Olive
- 83 : #113311  Dark Olive Green
- 85 : #0A4D0A  Dark Grass Green
- 87 : #073327  Dark Teal
- 89 : #104D39  Muted Sea Green
- 90 : #030D0A  Deep Teal
-
---- CYANS / AQUAS / BLUES ------------------------------------------------------
- 15 : #0074FC  Azure Blue
- 16 : #274FCC  Royal Blue
- 17 : #00448C  Navy
- 33 : #1853B2  Blue
  46 : #80F3FF  Pale Cyan
  47 : #7ACEFC  Sky Blue
  48 : #68A1D3  Light Blue
  49 : #858FC2  Muted Blue
  50 : #BBAAF2  Lavender Blue
- 93 : #00234D  Deep Blue
- 95 : #0C1940  Dark Blue
- 97 : #00254D  Cool Blue
- 99 : #231A4D  Indigo
-100 : #0C091A  Deep Indigo
-101 : #251E4D  Purple-Blue
-102 : #0C0A1A  Dark Indigo
-125 : #0000FF  Pure Blue
-
---- PURPLES / VIOLETS ---------------------------------------------------------
- 18 : #644AD9  Blue-Violet
- 19 : #4D3FA0  Violet
- 22 : #660099  Purple
- 34 : #624BAD  Lilac
- 35 : #733A67  Mauve
-106 : #1A0A19  Deep Plum
-108 : #11001A  Dark Violet
-110 : #1A000F  Wine Purple
-112 : #1A0C0F  Dark Rose
-115 : #4D2D49  Muted Violet (duplicate family)
- 20–26 : also span violet–pink boundary (see REDS)
-
+ 51 : #CDBBE4  Pale Lavender
+ 52 : #EF8BB0  Pale Pink
+ 53 : #859D8C  Pale Sea Green
+ 54 : #6B756E  Grey Green
+ 55 : #84909B  Grey Blue
+ 56 : #6A7075  Steel Grey
+ 57 : #88859D  Lavender Grey
+ 58 : #6C6A75  Dark Steel
+ 59 : #9D859C  Mauve Grey
+ 60 : #746A74  Warm Grey
+ 61 : #9C9D85  Olive Grey
+ 62 : #74756A  Sage Grey
+ 63 : #9D8484  Rose Grey
+ 64 : #756A6A  Brown Grey
 
 --- PRIMARY COLORS -------------------------------------------------------------
 125 : #0000FF  Blue
@@ -122,102 +105,137 @@ RGB COLOR PALETTE (INDEXED 0–127)
 
 // --- NEUTRALS / GREYS ---
 export const Black = 0;
-export const DarkGrey = 124;
 export const LightGrey = 118;
+export const DarkGrey = 119;
+export const DarkGrey2 = 124;
 export const White = 120;
 
-// --- REDS / PINKS / MAGENTAS ---
+// --- BRIGHT COLOURS 1–26 WITH DIM/DARK PARTNERS ---
 export const BrightRed = 1;
-export const RustRed = 27;
 export const DeepRed = 65;
 export const VeryDarkRed = 66;
-export const Brick = 67 ;
-export const ElectricViolet = 20 ;
-export const HotMagenta = 21;
-export const NeonPink = 23;
-export const Rose = 24;
-export const BrightPink = 25;
-export const LightMagenta = 26;
-export const DeepViolet = 104;
-export const MutedViolet = 105;
-export const DarkPurple = 107;
-export const DeepMagenta = 109;
-export const DustyRose = 111;
-export const Mauve = 113;
-export const DeepWine = 114;
-export const DuskyMauve = 115;
-export const ShadowMauve = 116;
-
-// --- ORANGES / AMBERS / YELLOWS ---
 export const OrangeRed = 2;
-export const Bright = 3;
+export const DeepOrangeRed = 67;
+export const VeryDarkOrangeRed = 68;
+export const BrightOrange = 3;
+export const BurntSienna = 69;
+export const DarkBrown = 70;
 export const Tan = 4;
+export const DarkRust = 71;
+export const DarkOrange = 72;
 export const LightYellow = 5;
+export const DarkYellow = 73;
+export const VeryDarkYellow = 74;
 export const Ochre = 6;
+export const DarkBrown2 = 75;
+export const DeepBrown = 76;
 export const VividYellow = 7;
+export const Olive = 77;
+export const DarkOlive = 78;
+export const BrightYellow = 8;
+export const DarkYellowOlive = 79;
+export const VeryDarkYellowOlive = 80;
+export const BrightLime = 9;
+export const DarkLime = 81;
+export const VeryDarkLime = 82;
+export const DullGreen = 10;
+export const DarkGreen = 83;
+export const VeryDarkGreen = 84;
+export const NeonGreen = 11;
+export const DarkGrass = 85;
+export const VeryDarkGrass = 86;
+export const TealGreen = 12;
+export const DarkTealGreen = 87;
+export const VeryDarkTealGreen = 88;
+export const MutedTeal = 13;
+export const DarkMutedTeal = 89;
+export const VeryDarkMutedTeal = 90;
+export const CyanTeal = 14;
+export const DarkCyanTeal = 91;
+export const VeryDarkCyanTeal = 92;
+export const TealCyan = 15;
+export const DeepTealCyan = 93;
+export const VeryDeepTealCyan = 94;
+export const AzureBlue = 16;
+export const DarkAzure = 95;
+export const VeryDarkAzure = 96;
+export const RoyalBlue = 17;
+export const DarkRoyalBlue = 97;
+export const VeryDarkRoyalBlue = 98;
+export const BlueViolet = 18;
+export const DarkBlueViolet = 99;
+export const VeryDarkBlueViolet = 100;
+export const Violet = 19;
+export const DarkViolet = 101;
+export const VeryDarkViolet = 102;
+export const ElectricViolet = 20;
+export const DeepElectricViolet = 103;
+export const VeryDeepElectricViolet = 104;
+export const HotMagenta = 21;
+export const DarkHotMagenta = 105;
+export const VeryDarkHotMagenta = 106;
+export const Purple = 22;
+export const DarkPurple = 107;
+export const VeryDarkPurple = 108;
+export const NeonPink = 23;
+export const DarkNeonPink = 109;
+export const VeryDarkNeonPink = 110;
+export const Rose = 24;
+export const DarkRose = 111;
+export const VeryDarkRose = 112;
+export const BrightPink = 25;
+export const DarkBrightPink = 113;
+export const VeryDarkBrightPink = 114;
+export const LightMagenta = 26;
+export const DarkLightMagenta = 115;
+export const VeryDarkLightMagenta = 116;
+
+// --- SATURATION VARIANTS (27–35) ---
+export const RustRed = 27;
 export const BurntOrange = 28;
 export const Mustard = 29;
 export const YellowGreen = 30;
-export const DullYellow = 73;
-export const VeryDarkYellow = 74;
-export const BrownYellow = 75;
-export const DeepBrownYellow = 76;
-export const Olive = 77;
-export const DarkOlive = 78;
-
-// --- GREENS / TEALS ---
-export const BrightGreen = 8;
-export const ForestGreen = 9;
-export const DullGreen = 10;
-export const NeonGreen = 11;
-export const TealGreen = 12;
-export const MutedTeal = 13;
-export const Cyan = 14;
 export const Lime = 31;
 export const DeepGreen = 32;
+export const Blue = 33;
+export const Lilac = 34;
+export const Mauve = 35;
+
+// --- PASTELS / LIGHT TONES (36–64) ---
+export const PaleSalmon = 36;
+export const LightOrange = 37;
+export const LightAmber = 38;
+export const Sand = 39;
+export const LightYellow2 = 40;
+export const PaleOlive = 41;
+export const PaleLime = 42;
 export const PaleGreen = 43;
 export const MintGreen = 44;
 export const OliveGreen = 45;
-export const VeryDarkGreen = 80;
-export const DullOlive = 81;
-export const DarkOliveGreen = 83;
-export const DarkGrassGreen = 85;
-export const DarkTeal = 87;
-export const MutedSeaGreen = 89;
-export const DeepTeal = 90;
-
-// --- CYANS / AQUAS / BLUES ---
-export const AzureBlue = 15;
-export const RoyalBlue = 16;
-export const Navy = 17;
 export const PaleCyan = 46;
 export const SkyBlue = 47;
 export const LightBlue = 48;
 export const MutedBlue = 49;
 export const LavenderBlue = 50;
-export const DeepBlue = 93;
-export const DarkBlue = 95;
-export const CoolBlue = 97;
-export const Indigo = 99;
-export const DeepBlueIndigo = 100;
-export const PurpleBlue = 101;
-export const DarkIndigo = 102;
-export const PureBlue = 125;
-
-// --- PURPLES / VIOLETS ---
-export const BlueViolet = 18;
-export const Violet = 19;
-export const Purple = 22;
-export const Lilac = 34;
-export const DeepPlum = 106;
-export const DarkViolet = 108;
-export const WinePurple = 110;
-export const DarkRose = 112;
+export const PaleLavender = 51;
+export const PalePink = 52;
+export const PaleSeaGreen = 53;
+export const GreyGreen = 54;
+export const GreyBlue = 55;
+export const SteelGrey = 56;
+export const LavenderGrey = 57;
+export const DarkSteel = 58;
+export const MauveGrey = 59;
+export const WarmGrey = 60;
+export const OliveGrey = 61;
+export const SageGrey = 62;
+export const RoseGrey = 63;
+export const BrownGrey = 64;
 
 // --- PRIMARY COLORS ---
-export const Blue = 125;
-export const Green = 126;
-export const Red = 127;
+export const PureBlue = 125;
+export const PureGreen = 126;
+export const PureRed = 127;
 
 export const colourNames = {  // for pads, steps and play, rec, and record leds
   0: "Black",
@@ -228,16 +246,16 @@ export const colourNames = {  // for pads, steps and play, rec, and record leds
   5: "Light Yellow",
   6: "Ochre",
   7: "Vivid Yellow",
-  8: "Bright Green",
-  9: "Forest Green",
+  8: "Bright Yellow",
+  9: "Bright Lime",
   10: "Dull Green",
   11: "Neon Green",
   12: "Teal Green",
   13: "Muted Teal",
-  14: "Cyan",
-  15: "Azure Blue",
-  16: "Royal Blue",
-  17: "Navy",
+  14: "Cyan-Teal",
+  15: "Teal-Cyan",
+  16: "Azure Blue",
+  17: "Royal Blue",
   18: "Blue-Violet",
   19: "Violet",
   20: "Electric Violet",
@@ -256,13 +274,13 @@ export const colourNames = {  // for pads, steps and play, rec, and record leds
   33: "Blue",
   34: "Lilac",
   35: "Mauve",
-  36: "",
-  37: "",
-  38: "",
-  39: "",
-  40: "",
-  41: "",
-  42: "",
+  36: "Pale Salmon",
+  37: "Light Orange",
+  38: "Light Amber",
+  39: "Sand",
+  40: "Light Yellow 2",
+  41: "Pale Olive",
+  42: "Pale Lime",
   43: "Pale Green",
   44: "Mint Green",
   45: "Olive Green",
@@ -271,83 +289,83 @@ export const colourNames = {  // for pads, steps and play, rec, and record leds
   48: "Light Blue",
   49: "Muted Blue",
   50: "Lavender Blue",
-  51: "",
-  52: "",
-  53: "",
-  54: "",
-  55: "",
-  56: "",
-  57: "",
-  58: "",
-  59: "",
-  60: "",
-  61: "",
-  62: "",
-  63: "",
-  64: "",
+  51: "Pale Lavender",
+  52: "Pale Pink",
+  53: "Pale Sea Green",
+  54: "Grey Green",
+  55: "Grey Blue",
+  56: "Steel Grey",
+  57: "Lavender Grey",
+  58: "Dark Steel",
+  59: "Mauve Grey",
+  60: "Warm Grey",
+  61: "Olive Grey",
+  62: "Sage Grey",
+  63: "Rose Grey",
+  64: "Brown Grey",
   65: "Deep Red",
   66: "Very Dark Red",
-  67: "Brick",
-  68: "",
-  69: "",
-  70: "",
-  71: "",
-  72: "",
-  73: "Dull Yellow",
+  67: "Deep Orange Red",
+  68: "Very Dark Orange Red",
+  69: "Burnt Sienna",
+  70: "Dark Brown",
+  71: "Dark Rust",
+  72: "Dark Orange",
+  73: "Dark Yellow",
   74: "Very Dark Yellow",
-  75: "Brown-Yellow",
-  76: "Deep Brown-Yellow",
+  75: "Dark Brown 2",
+  76: "Deep Brown",
   77: "Olive",
   78: "Dark Olive",
-  79: "Dull Green",
-  80: "Very Dark Green",
-  81: "Dull Olive",
-  82: "",
-  83: "Dark Olive Green",
-  84: "",
-  85: "Dark Grass Green",
-  86: "",
-  87: "Dark Teal",
-  88: "",
-  89: "Muted Sea Green",
-  90: "Deep Teal",
-  91: "",
-  92: "",
-  93: "Deep Blue",
-  94: "",
-  95: "Dark Blue",
-  96: "",
-  97: "Cool Blue",
-  98: "",
-  99: "Indigo",
-  100: "Deep Indigo",
-  101: "Purple-Blue",
-  102: "Dark Indigo",
-  104: "Deep Violet",
-  105: "Muted Violet",
-  106: "Deep Plum",
+  79: "Dark Yellow-Olive",
+  80: "Very Dark Yellow-Olive",
+  81: "Dark Lime",
+  82: "Very Dark Lime",
+  83: "Dark Green",
+  84: "Very Dark Green",
+  85: "Dark Grass",
+  86: "Very Dark Grass",
+  87: "Dark Teal Green",
+  88: "Very Dark Teal Green",
+  89: "Dark Muted Teal",
+  90: "Very Dark Muted Teal",
+  91: "Dark Cyan-Teal",
+  92: "Very Dark Cyan-Teal",
+  93: "Deep Teal-Cyan",
+  94: "Very Deep Teal-Cyan",
+  95: "Dark Azure",
+  96: "Very Dark Azure",
+  97: "Dark Royal Blue",
+  98: "Very Dark Royal Blue",
+  99: "Dark Blue-Violet",
+  100: "Very Dark Blue-Violet",
+  101: "Dark Violet",
+  102: "Very Dark Violet",
+  103: "Deep Electric Violet",
+  104: "Very Deep Electric Violet",
+  105: "Dark Hot Magenta",
+  106: "Very Dark Hot Magenta",
   107: "Dark Purple",
-  108: "Dark Violet",
-  109: "Deep Magenta",
-  110: "Wine Purple",
-  111: "Dusty Rose",
-  112: "Dark Rose",
-  113: "Mauve",
-  114: "Deep Wine",
-  115: "Dusky Mauve",
-  116: "Shadow Mauve",
+  108: "Very Dark Purple",
+  109: "Dark Neon Pink",
+  110: "Very Dark Neon Pink",
+  111: "Dark Rose",
+  112: "Very Dark Rose",
+  113: "Dark Bright Pink",
+  114: "Very Dark Bright Pink",
+  115: "Dark Light Magenta",
+  116: "Very Dark Light Magenta",
   117: "Black (dup)",
   118: "Light Grey",
-  119: "Dark Grey (dup)",
+  119: "Dark Grey",
   120: "White",
   121: "Light Grey (dup)",
   122: "White (dup)",
-  123: "Light Grey (dup)",
-  124: "Dark Grey",
+  123: "Dark Grey (dup)",
+  124: "Dark Grey 2",
   125: "Blue",
   126: "Green",
   127: "Red",
-  128: ""
 };
 
 export const midiNotes = {
@@ -611,7 +629,11 @@ export const MoveRGBLeds = [
   ...MoveSteps,
   MovePlay,
   MoveRec,
-  MoveRecord
+  MoveRecord,
+  MoveRow1,
+  MoveRow2,
+  MoveRow3,
+  MoveRow4
 ];
 export const MoveWhiteLeds = [
   MoveBack,
