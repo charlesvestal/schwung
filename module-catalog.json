@@ -1210,6 +1210,28 @@
       "default_branch": "main",
       "asset_name": "overwork-module.tar.gz",
       "min_host_version": "0.3.0"
+    },
+    {
+      "id": "beatbank",
+      "name": "Beat Bank",
+      "description": "Library of standard drum patterns from editable .beat files — pick a pattern, it prints one bar into Move.",
+      "author": "Mission Minnow",
+      "component_type": "midi_fx",
+      "github_repo": "mission-minnow/beatbank",
+      "default_branch": "main",
+      "asset_name": "beatbank-module.tar.gz",
+      "min_host_version": "0.11.5"
+    },
+    {
+      "id": "groovebank",
+      "name": "Groove Bank",
+      "description": "Retrigger the chord you hold on a library of standard rhythm templates — genre-first grooves, played by your hands.",
+      "author": "Mission Minnow",
+      "component_type": "midi_fx",
+      "github_repo": "mission-minnow/groovebank",
+      "default_branch": "main",
+      "asset_name": "groovebank-module.tar.gz",
+      "min_host_version": "0.11.5"
     }
   ]
 }
