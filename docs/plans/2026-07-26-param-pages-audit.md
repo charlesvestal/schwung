@@ -341,6 +341,7 @@ is wired into the shadow UI yet; that step needs hardware.
 | `render_page.mjs` | draws a page through an injected draw context |
 | `page_nav.mjs` | stepping, level-skip, jump index, rebuild reanchor |
 | `validate_contract.mjs` | what a module declares vs what can be rendered |
+| `announce_page.mjs` | screen-reader strings for a grid |
 
 Development tooling in `tools/param-pages/`:
 
@@ -471,12 +472,15 @@ editor too. `node tools/param-pages/validate.mjs --level warn` reproduces them.
 
 ## 14. Next steps
 
-- **Device-side dumper** so the fixture is ours to regenerate rather than a
-  trimmed copy of megadake's capture (attributed in the fixture header).
+- **Run the dumper** on a Move (`tools/param-pages/dump_contracts_device.js`,
+  written but UNVERIFIED — read its header first; it is destructive to the probe
+  slot) and install the result with `tools/param-pages/regenerate.mjs`, so the
+  fixture stops being a trimmed copy of megadake's capture.
 - **Native binding**: a `PARAM_PAGES` view in the shadow UI, the Param View
   setting, jog/level-skip/jump-index wiring, and the staggered one-read-per-tick
   value cursor. Needs hardware to verify — in particular that eight live values
   per page do not cost more than the frame budget allows.
-- **Screen reader**: announce page name and position on page change, param on
-  knob touch (that path exists), and a read-the-page gesture. The list stays the
-  default under TTS until this is real.
+- **Screen reader**: the strings exist (`announce_page.mjs`, tested over all 608
+  fleet pages) but nothing calls them yet. Wiring is part of the native binding:
+  page change, knob touch, knob turn, and a read-the-page gesture. Until then the
+  list remains the default surface under TTS.
