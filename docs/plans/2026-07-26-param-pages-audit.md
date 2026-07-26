@@ -431,6 +431,52 @@ draw the grid beneath its own header.
 
 ---
 
+## 11b. UX pass (2026-07-26)
+
+Done by rendering the fleet's *worst* pages rather than its nicest ones. Each
+of these was a real defect visible on screen, not a hypothetical.
+
+**Eight cells reading "Enabl".** euclidrum declares all eight lane switches as
+`name: "Enabled"`; only the key says which lane. Shortening each label in
+isolation cannot see that — 47 of 572 pages had two or more cells reading the
+same. Labels are now resolved per *page*: on collision a discriminator is
+derived from what differs in the keys, giving "Enab1".."Enab8". Where the keys
+do not separate them either (aphex's "EG1 Trig" and "EG1+2 Trig", one key a
+prefix of the other) the whole group is numbered by knob — mixing derived and
+numbered discriminators is how two cells both end up ending in "2". Collisions
+fleet-wide: **47 pages → 0**.
+
+**Sparse pages looked broken.** A three-control page left five cells blank,
+which reads as a failed render rather than "this section has three things".
+Unused knob positions now carry a quiet centred tick.
+
+**Modulated params were invisible** — a regression against the list, which
+appends `~`. A cell cannot spare a character, so it takes a tick in the
+top-right corner. The predicate is injected, since modulation is host state.
+
+**76 pages, navigable only by jogging.** Jog-click with no knob held was doing
+nothing, so it opens a **section picker**: minijv folds to 16 named sections
+with page counts. Jog scrolls, click jumps, Back closes one layer, and reaching
+for a knob dismisses it — an unambiguous "I want the grid" rather than a modal
+to back out of.
+
+**Nothing told you any of that.** The grid uses all 64 px so it has no room for
+a footer, and none of the gestures are guessable. A first-run panel lists them,
+cleared by any input and never shown again that session. The lines come from the
+caller, not the library — gestures belong to whoever owns the input mapping.
+
+**The header showed a model number where a synth shows a patch name.** It now
+shows the loaded preset name, folded into the staggered read rotation as one
+extra stop rather than an extra poll.
+
+Two bugs surfaced while testing the above: only *grid* page names went through
+the uniqueness allocator, so minijv had two sections both called "Presets" —
+and `reanchor()` matches by name after a rebuild, so it could have landed on the
+wrong one. Every page kind is now allocated, and the picker numbers a repeated
+section name since it strips the " - N" suffix.
+
+---
+
 ## 12. Contract quirks found
 
 Each of these is a live issue in the fleet, and most affect the existing list
