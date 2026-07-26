@@ -106,6 +106,7 @@ export function applyInput(controller, intent, { nowMs, reveal } = {}) {
             return null;
 
         case "click": {
+            if (controller.dismissHint && controller.dismissHint()) return null;
             /* Two meanings, disambiguated by whether a knob is under your hand.
              * Holding one: open that param's editor (the only unambiguous target
              * on a grid, where nothing is "selected"). Holding none: the click
@@ -119,6 +120,7 @@ export function applyInput(controller, intent, { nowMs, reveal } = {}) {
         }
 
         case "back":
+            if (controller.dismissHint && controller.dismissHint()) return null;
             /* Back closes the picker first, then leaves the view — one layer at
              * a time, matching the rest of Move. */
             if (controller.pickerOpen) { controller.closePicker(); return null; }

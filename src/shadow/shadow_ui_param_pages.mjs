@@ -81,6 +81,16 @@ export function enterParamPages(slot, component, prefix) {
         });
     }
     controller.load({ slot, component, prefix: prefix || component, visible: ctx.evaluateVisibilityCondition });
+    /* Once per session: the grid's gestures are not guessable, and a preview
+     * nobody can operate produces no useful feedback. Any input clears it. */
+    /* ~19 characters fit at 5x7 across the panel; longer lines silently clip. */
+    controller.showHint([
+        "Jog: page",
+        "Shift+Jog: section",
+        "Click: section list",
+        "Hold knob: name",
+        "Shift: show values",
+    ], "Param Pages");
     shiftHeld = false;
     ctx.setView(ctx.VIEWS.PARAM_PAGES);
 }

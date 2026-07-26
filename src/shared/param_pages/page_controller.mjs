@@ -29,7 +29,7 @@
 
 import { planPages, PAGE_KNOBS } from "./page_plan.mjs";
 import { buildMetaIndex, inferFromValue, isTurnable, KIND_OPAQUE } from "./param_meta.mjs";
-import { renderPage, renderPicker, LAYOUT_DIAL } from "./render_page.mjs";
+import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page.mjs";
 import { step, stepLevel, reanchor, firstGrid, jumpIndex, groupIndex } from "./page_nav.mjs";
 import { knobInit, knobTick, knobConfigFromMeta } from "../knob_engine.mjs";
 import { formatParamForSet } from "../param_format.mjs";
@@ -75,6 +75,11 @@ export function createController(io = {}) {
         pickerOpen: false,
         pickerIndex: 0,
         pickerEntries: [],
+        /* First-run gesture hint. Shown until the user does literally anything,
+         * then gone for the session — a timer would either be too short to read
+         * or long enough to be in the way. */
+        hintLines: null,
+        hintShown: false,
     };
 
     const fullKey = (key) => `${s.prefix}:${key}`;
@@ -195,6 +200,7 @@ export function createController(io = {}) {
 
     /** Jog: pages. With shift: whole levels, skipping continuations. */
     function onJog(delta, { shift = false } = {}) {
+        if (s.hintLines) dismissHint();
         if (s.pickerOpen) {
             const n = s.pickerEntries.length;
             if (!n) return s.pageIndex;
@@ -234,6 +240,7 @@ export function createController(io = {}) {
      * reads for that key until it settles.
      */
     function onKnobTurn(slot, direction, nowMs) {
+        if (s.hintLines) dismissHint();
         const key = keyAt(slot);
         if (!key) return null;
         const meta = s.metaIndex.getOrGuess(key);
@@ -259,6 +266,7 @@ export function createController(io = {}) {
 
     /** Capacitive touch. Down announces the full name and value. */
     function onKnobTouch(slot, down) {
+        if (s.hintLines) dismissHint();
         /* Reaching for a knob is an unambiguous "I want the grid", so it
          * dismisses the picker rather than leaving you in a modal you have to
          * back out of first. */
@@ -296,11 +304,34 @@ export function createController(io = {}) {
 
     /* --------------------------------------------------------- presentation */
 
+    /** Arm the first-run hint. Ignored once it has been shown and dismissed. */
+    function showHint(lines, title) {
+        if (s.hintShown) return false;
+        s.hintLines = { lines, title };
+        return true;
+    }
+
+    function dismissHint() {
+        if (!s.hintLines) return false;
+        s.hintLines = null;
+        s.hintShown = true;
+        return true;
+    }
+
     function setLayout(layout) { s.layout = layout; }
     function setReveal(on) { s.revealValues = !!on; }
     function setDecorations(d) { s.decorations = d || null; }
 
     function render(ctx, { title, rect } = {}) {
+        if (s.hintLines) {
+            renderPage(ctx, {
+                page: page(), metaIndex: s.metaIndex, values: s.values,
+                title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
+                touched: -1, layout: s.layout, rect,
+            });
+            renderHint(ctx, { rect, lines: s.hintLines.lines, title: s.hintLines.title });
+            return;
+        }
         if (s.pickerOpen) {
             renderPicker(ctx, { rect, entries: s.pickerEntries, index: s.pickerIndex, title: "Sections" });
             return;
@@ -326,7 +357,7 @@ export function createController(io = {}) {
     return {
         load, reloadIfChanged, tick,
         onJog, goToPage, onKnobTurn, onKnobTouch, onClick, takePending,
-        openPicker, closePicker, pickerSelect,
+        openPicker, closePicker, pickerSelect, showHint, dismissHint,
         get pickerOpen() { return s.pickerOpen; },
         get pickerEntries() { return s.pickerEntries; },
         get pickerIndex() { return s.pickerIndex; },
