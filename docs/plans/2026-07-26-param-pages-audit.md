@@ -206,7 +206,11 @@ for repeated elements, and `shadow_ui.js` implements it: a selector page, then
 keys rewritten as `${child_prefix}${index}_${key}` (`buildHierarchyParamKey`,
 `normalizeVisibilityConditionKey`).
 
-**Zero modules in the 76-module fleet use it.**
+**Exactly one level in the 76-module fleet uses it**: minijv's `part_selector`
+(`child_prefix: "sram_part_"`, 8 parts). One level out of 423. Note minijv does
+*not* use it for its four tones — those are declared as four separate levels
+with fully concrete keys, which is why its tone subtrees are near-identical
+copies.
 
 Meanwhile six modules — mrdrums, forge, weird-dreams, essaim, krautdrums,
 po32-drum — solve exactly this problem through a Movy-side config
@@ -215,7 +219,7 @@ overrides). That accounts for a large share of the "hidden params" in §1
 (mrdrums 216, weird-dreams 187, forge 106).
 
 This is a **contract gap, not a rendering gap**: the framework has the feature,
-nobody knows about it, so a third party invented a parallel one. Deciding
+it is effectively undiscovered, so a third party invented a parallel one. Deciding
 between promoting `child_prefix` and blessing `padScoping` is a prerequisite for
 the port — it determines whether pad-scoped params are addressable from declared
 metadata alone, or need a per-module config file.
