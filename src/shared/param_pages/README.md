@@ -34,6 +34,7 @@ These are not style preferences. Break any one and the tool case stops working.
 | `render_page.mjs` | draw one page |
 | `page_nav.mjs` | stepping, level-skip, jump index, rebuild reanchor |
 | `validate_contract.mjs` | what a module declares vs what can be rendered |
+| `announce_page.mjs` | screen-reader strings for a grid |
 
 ## Using it
 
@@ -107,7 +108,7 @@ pixels drawn outside the display.
 
 ## Tests
 
-`tests/host/test_param_pages_{plan,meta,render,nav,validate,dump}.sh`, all
+`tests/host/test_param_pages_{plan,meta,render,nav,validate,dump,announce}.sh`, all
 node-run and CI-gated. They assert against a real 76-module fleet capture:
 every declared key reaches a page, no duplicate page names, 1144 render sweeps
 with no undrawable text and nothing clipped, a draw-call budget, and half-block
