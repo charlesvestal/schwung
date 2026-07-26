@@ -145,7 +145,17 @@ Promise.all([
     if (!/Env$/.test(short("Filter Env"))) fail("two-word shortening dropped the distinguishing word: " + short("Filter Env"));
     if (short("Cutoff") !== "Cutof") fail("short single words should truncate, got " + short("Cutoff"));
     if (short("Gain") !== "Gain") fail("a label that already fits must not change");
-    if (short("Low Freq Osc") !== "LFO") fail("three words should initialise, got " + short("Low Freq Osc"));
+    /* Head words reduce toward their initials while the last word is kept as
+     * long as it fits: "Low Freq Osc" -> "LFOsc", not "LFO". */
+    if (short("Low Freq Osc") !== "LFOsc") fail("multi-word shortening changed, got " + short("Low Freq Osc"));
+    /* A numeral is an index, not a word to initialise: "Osc 1 Octave" must not
+     * collapse to "O1O" — surge has 100+ params named this way. */
+    if (short("Osc 1 Octave") !== "O1Oct") fail("a numeric word was abbreviated away, got " + short("Osc 1 Octave"));
+    if (!/1/.test(short("Osc 1 Unison Voices"))) fail("an index must survive shortening");
+    /* Page names hold back the " - N" suffix so you can still tell which page. */
+    const pn = R.fitPageName(ctx, "Oscillator 1 - 2", 86);
+    if (!/ - 2$/.test(pn)) fail("a page number was truncated away: " + pn);
+    if (!/1/.test(pn)) fail("a page name lost its index: " + pn);
   }
 
   /* ---- 4. the renderer touches nothing outside its rect ----------------- */

@@ -186,6 +186,10 @@ function devowel(word, ctx, maxWidth) {
  * place of the value while the knob is held, which is the actual answer to
  * ambiguity. What this does is make the five characters the *best* five.
  *
+ * `joiner` separates the abbreviated head words from the tail: "" in a 32 px
+ * cell, where a space costs a sixth of the budget, and " " in the header, where
+ * there is room and "Osc 1 - 2" reads far better than "Osc1 - 2".
+ *
  * Rules, in order:
  *   - fits already → unchanged
  *   - 3+ words → initials ("Low Freq Osc" → "LFO")
@@ -196,29 +200,31 @@ function devowel(word, ctx, maxWidth) {
  *     devowelling ("Cutoff" → "Cutof", not "Cutff")
  *   - one long word → devowel, then truncate ("Resonance" → "Rsnnc")
  */
-export function shortenLabel(ctx, label, maxWidth) {
+export function shortenLabel(ctx, label, maxWidth, joiner = "") {
     const s = asciiFold(label).trim();
     if (!s) return "";
     if (ctx.textWidth(s) <= maxWidth) return s;
 
     const words = s.split(/[\s_]+/).filter(Boolean);
 
-    if (words.length >= 3) {
-        const initials = words.map((w) => w[0].toUpperCase()).join("");
-        if (ctx.textWidth(initials) <= maxWidth) return initials;
-        return fitText(ctx, initials, maxWidth);
-    }
-
-    if (words.length === 2) {
-        const [head, tail] = words;
-        /* Shrink the head until the pair fits, keeping the tail intact. */
-        for (let n = head.length; n >= 1; n--) {
-            const cand = head.slice(0, n) + tail;
+    if (words.length > 1) {
+        const head = words.slice(0, -1);
+        const tail = words[words.length - 1];
+        /* Numbers survive whole: "Osc 1 Octave" must not collapse to "O1O" —
+         * an index is the whole point of the name. Everything else in the head
+         * reduces towards its initial. */
+        const abbrev = (w, n) => (/^\d+$/.test(w) ? w : w.slice(0, Math.max(1, n)));
+        /* Shrink the head progressively, keeping the last word whole for as
+         * long as possible: "Osc 1 Octave" → "Osc1Octave" → "O1Octave" → and
+         * only then does the tail start giving ground. */
+        for (let n = Math.max(...head.map((w) => w.length)); n >= 1; n--) {
+            const cand = head.map((w) => abbrev(w, n)).join(joiner) + joiner + tail;
             if (ctx.textWidth(cand) <= maxWidth) return cand;
         }
-        const devowelledTail = devowel(tail, ctx, maxWidth);
-        if (ctx.textWidth(devowelledTail) <= maxWidth) return devowelledTail;
-        return fitText(ctx, tail, maxWidth);
+        const stem = head.map((w) => abbrev(w, 1)).join(joiner) + joiner;
+        const room = maxWidth - ctx.textWidth(stem);
+        const shortTail = tail.length <= 7 ? tail : devowel(tail, ctx, room);
+        return fitText(ctx, stem + shortTail, maxWidth);
     }
 
     const word = words[0] || s;
@@ -425,6 +431,34 @@ export function renderPage(ctx, o) {
 }
 
 /**
+ * Fit a page name into the header without losing which page it is.
+ *
+ * Plain truncation turns "Oscillator 1 - 2" into "Oscillator 1 -", dropping the
+ * one part that says where you are among that level's pages. So the trailing
+ * " - N" is held back, the base is shortened to fit what is left, and the
+ * suffix goes back on: "Osc1 - 2".
+ */
+export function fitPageName(ctx, name, maxWidth) {
+    const s = asciiFold(name);
+    if (ctx.textWidth(s) <= maxWidth) return s;
+
+    const m = s.match(/^(.*?)( - \d+)$/);
+    const base = m ? m[1] : s;
+    const suffix = m ? m[2] : "";
+    const room = maxWidth - ctx.textWidth(suffix);
+
+    /* A nested name keeps its prefix — "Tone1/" is what distinguishes it from
+     * three identical siblings — so shorten only the part after the slash. */
+    const slash = base.lastIndexOf("/");
+    if (slash > 0) {
+        const head = base.slice(0, slash + 1);
+        const leaf = shortenLabel(ctx, base.slice(slash + 1), room - ctx.textWidth(head), " ");
+        return fitText(ctx, head + leaf + suffix, maxWidth);
+    }
+    return fitText(ctx, shortenLabel(ctx, base, room, " ") + suffix, maxWidth);
+}
+
+/**
  * The held-knob readout: an inverted strip over the header carrying the param's
  * full name on the left and its value on the right. A locked param is marked so
  * you can tell "this step's value" from "the module's value" at a glance.
@@ -455,7 +489,7 @@ export function drawHeader(ctx, rect, title, pageName, pageIndex, pageCount) {
      * minijv rendered "MINI-JV  EditT/Ton" with the two colliding. */
     let right = "";
     if (pageName) {
-        right = fitText(ctx, pageName, Math.floor(w * 0.66));
+        right = fitPageName(ctx, pageName, Math.floor(w * 0.68));
         ctx.print(x + w - ctx.textWidth(right) - 1, y + HEADER_TEXT_Y, right, 1);
     }
     const leftRoom = w - (right ? ctx.textWidth(right) + 4 : 1);
