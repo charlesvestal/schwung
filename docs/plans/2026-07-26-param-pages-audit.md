@@ -466,19 +466,33 @@ editor too. `node tools/param-pages/validate.mjs --level warn` reproduces them.
 
 ---
 
-## 13. Open decisions
+## 13. Decisions taken in Charles's absence, and what is still open
 
-1. **`child_prefix` vs `padScoping`** (§5) — the remaining blocker for pad-scoped
-   drum modules. Promote the declared contract with a key template, or bless a
-   config file?
-2. **Layout spec name** — `movy_config.json` as-is, or `param_ui.json` with the
-   former as a read alias?
-3. **Overflow page ordering** — declaration order (current) or grouped by type?
-4. **Graphics detectors** (envelope / LFO / filter) — still deferred. They infer
+**Settled 2026-07-26 while Charles was away, rather than left blocking:**
+
+1. **`vbar` deleted.** Two call sites read `meta.render === "vbar"` and zero
+   fleet modules declare `render` at all. It came from Movy's config vocabulary,
+   where the field is hand-authored. When a layout spec lands it deserves a
+   considered widget vocabulary, not one orphan case that survived a port.
+2. **`child_prefix` extended, not `padScoping` blessed.** `child_key_template`
+   with `{index}`/`{key}`, `child_index_base`, `child_index_digits` and
+   `child_key_overrides` — additive, with the legacy form pinned byte-identical
+   because minijv ships it. Demonstrated rather than argued: expressing mrdrums'
+   pad scoping in the extended contract takes it from 209 unreachable params to
+   6, and those six are genuine module-level globals. Documented in
+   `docs/MODULES.md`. Six modules can now drop their config file.
+
+**Still open, and genuinely Charles's:**
+
+3. **Layout spec name** — `movy_config.json` as-is, or `param_ui.json` with the
+   former as a read alias? Needs the conversation with megadake first.
+4. **Overflow page ordering** — declaration order (current) or grouped by type?
+5. **Graphics detectors** (envelope / LFO / filter) — still deferred. They infer
    grouping from key names, which the June design doc rules out. Re-introduce
-   driven by declared hints in the layout spec.
-5. **Should `asciiFold` move into `src/shared/param_format.mjs`** so the list
-   editor gets it too? Probably yes, as a small separate change.
+   driven by declared hints once the layout spec exists.
+6. **Should `asciiFold` move into `src/shared/param_format.mjs`** so the list
+   editor gets it too? Almost certainly yes, as a small separate change — five
+   modules render text as nothing in the list today.
 
 ---
 
@@ -531,14 +545,23 @@ page kind. "Default" means the grid becomes the default *for grid-able levels*.
   written but UNVERIFIED — read its header first; it is destructive to the probe
   slot) and install the result with `tools/param-pages/regenerate.mjs`, so the
   fixture stops being a trimmed copy of megadake's capture.
-- **Native binding.** Now a sliver: the interaction model and the MIDI decoding
-  moved into `page_controller.mjs` / `page_input.mjs`, both pure and driven in
-  tests against a fake device, so what is left in shadow_ui.js is a view
-  constant, the Param View setting, routing MIDI to the handlers, one `tick()`
-  per frame, one `render()`, and dispatching non-grid page kinds to screens that
-  already exist. Reference shape in the library README. What genuinely needs
-  hardware: that the wiring is connected, and that eight live values per page
-  keep up with the frame budget.
+- **Native binding — done, unverified on hardware.**
+  `src/shadow/shadow_ui_param_pages.mjs` plus 89 lines in `shadow_ui.js`
+  (a VIEWS constant, the setting, one draw case, one tick call, one MIDI
+  early-out). The view module is executed in tests by repointing its deployed
+  import paths at the repo and injecting a fake `ctx`; `shadow_ui.js` itself is
+  parse-checked and its wiring pinned. tests/shadow had 19 stale failures before
+  the change and the same 19 after.
+
+  **What still needs a Move**, in order of risk:
+  1. That eight live values per page keep up. The staggered cursor is tested for
+     *shape* — exactly one read per frame — never for timing against real IPC.
+  2. That the whole path actually lights up: enter a slot with Param View =
+     Knobs and see a grid.
+  3. Draw cost per frame in situ. Measured statically at 52 (bar) / 290 (dial)
+     calls per page, budgeted in tests, never timed on the device.
+  4. The screen-reader calls, which are written and tested as strings but have
+     never been spoken.
 - **Screen reader**: the strings exist (`announce_page.mjs`, tested over all 608
   fleet pages) but nothing calls them yet. Wiring is part of the native binding:
   page change, knob touch, knob turn, and a read-the-page gesture. Until then the
