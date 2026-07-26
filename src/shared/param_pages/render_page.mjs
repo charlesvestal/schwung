@@ -448,11 +448,18 @@ function drawTouchStrip(ctx, rect, meta, value, locked) {
  */
 export function drawHeader(ctx, rect, title, pageName, pageIndex, pageCount) {
     const x = rect.x, y = rect.y, w = rect.w;
-    ctx.print(x + 1, y + HEADER_TEXT_Y, fitText(ctx, title, Math.floor(w * 0.62)), 1);
+
+    /* The page name gets first claim on the width. It is what changes as you
+     * navigate and therefore what you are reading; the module name is constant
+     * and you already know it. Splitting the header evenly truncated both —
+     * minijv rendered "MINI-JV  EditT/Ton" with the two colliding. */
+    let right = "";
     if (pageName) {
-        const t = fitText(ctx, pageName, Math.floor(w * 0.42));
-        ctx.print(x + w - ctx.textWidth(t) - 1, y + HEADER_TEXT_Y, t, 1);
+        right = fitText(ctx, pageName, Math.floor(w * 0.66));
+        ctx.print(x + w - ctx.textWidth(right) - 1, y + HEADER_TEXT_Y, right, 1);
     }
+    const leftRoom = w - (right ? ctx.textWidth(right) + 4 : 1);
+    if (leftRoom > 8) ctx.print(x + 1, y + HEADER_TEXT_Y, fitText(ctx, title, leftRoom), 1);
 
     /* One segment per page, current filled. Above ~24 pages the segments stop
      * being individually readable, so fall back to a plain rule with a
