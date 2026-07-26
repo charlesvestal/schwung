@@ -95,6 +95,22 @@ function chunk(arr, size) {
     return out;
 }
 
+/**
+ * Split into the same number of pages a greedy fill would use, but spread
+ * evenly — 9 keys become 5+4 rather than 8+1.
+ *
+ * Only ever applied to OVERFLOW keys. The authored page must stay exactly
+ * `knobs[0..7]`, because the shim maps the physical knobs to that same array
+ * (buildKnobContext in shadow_ui.js); if the grid's first page disagreed, one
+ * knob would do different things in the list and on the grid.
+ */
+function balancedChunk(arr, size) {
+    if (arr.length <= size) return arr.length ? [arr] : [];
+    const pages = Math.ceil(arr.length / size);
+    const per = Math.ceil(arr.length / pages);
+    return chunk(arr, per);
+}
+
 /* ------------------------------------------------------------------ plan */
 
 /**
@@ -145,7 +161,14 @@ export function planPages({ hierarchy, chainParams, mode, visible } = {}) {
             if (target && p.label) navLabel[target] = p.label;
         }
     }
-    const nameOf = (key, lvl) => (lvl && lvl.name) || navLabel[key] || (lvl && lvl.label) || key;
+    /* A level key is an internal identifier ("root", "patch_main", "osc1"); it
+     * is only a last resort for a page title, and never raw — "osc1" reads as
+     * "Osc1", not as a variable name. */
+    const prettify = (key) => String(key)
+        .replace(/[_-]+/g, " ")
+        .replace(/\b[a-z]/g, (c) => c.toUpperCase());
+    const declaredName = (key, lvl) => (lvl && lvl.name) || navLabel[key] || (lvl && lvl.label) || null;
+    const nameOf = (key, lvl) => declaredName(key, lvl) || prettify(key);
 
     /* Mode select (minijv only in the fleet): with `modes` present the level
      * names ARE the mode names, so the active mode picks the walk root. */
@@ -180,7 +203,12 @@ export function planPages({ hierarchy, chainParams, mode, visible } = {}) {
         if (!lvl) return;
         if (lvl.visible_if && !isVisible(lvl.visible_if, lvl)) return;
 
-        const base = nameOf(levelKey, lvl);
+        /* The walk root's grid page is always "Main", even when the level
+         * declares a label. 16 modules would otherwise open on a page called
+         * "Patch" / "Console" / "BOOM"; one consistent name for "where you land"
+         * beats each module's own word for it. */
+        const isRoot = levelKey === rootKey;
+        const base = isRoot ? "Main" : nameOf(levelKey, lvl);
         const title = prefix ? `${prefix}/${base}` : base;
 
         /* Preset browser first — decided 2026-07-26. A level is routinely both
@@ -189,7 +217,10 @@ export function planPages({ hierarchy, chainParams, mode, visible } = {}) {
          * for minijv's 2427 or surge's 675 presets. */
         if (lvl.list_param && lvl.count_param) {
             pages.push({
-                kind: PAGE_PRESET, name: base, level: levelKey,
+                /* "Presets", not the level's name — the preset browser is a
+                 * different thing from the knob page that shares its level. */
+                kind: PAGE_PRESET, name: declaredName(levelKey, lvl) && !isRoot ? nameOf(levelKey, lvl) : "Presets",
+                level: levelKey,
                 listParam: lvl.list_param, countParam: lvl.count_param,
                 nameParam: lvl.name_param || "preset_name",
             });
@@ -231,20 +262,33 @@ export function planPages({ hierarchy, chainParams, mode, visible } = {}) {
         const dupAuthored = authored.length > 0 && renderedKnobSigs.has(sig);
         if (!dupAuthored && authored.length > 0) renderedKnobSigs.add(sig);
 
-        const ordered = (dupAuthored ? [] : authored)
-            .concat(dupAuthored ? extra.filter((k) => !emitted.has(k)) : extra);
+        const authoredKeys = dupAuthored ? [] : authored;
+        const extraKeys = dupAuthored ? extra.filter((k) => !emitted.has(k)) : extra;
 
-        if (ordered.length > 0) {
-            for (const k of ordered) emitted.add(k);
-            const parts = chunk(ordered, KNOBS_PER_PAGE);
+        /* Authored keys keep their exact 8-per-page grouping (see
+         * balancedChunk); the remainder is spread evenly so a level with nine
+         * keys yields 8 + 1 rather than an orphan page holding one control —
+         * and a level with seventeen yields 8 + 5 + 4 rather than 8 + 8 + 1. */
+        const parts = chunk(authoredKeys, KNOBS_PER_PAGE);
+        const spill = authoredKeys.length % KNOBS_PER_PAGE;
+        if (spill > 0 && extraKeys.length > 0) {
+            /* A partly-filled authored page absorbs overflow up to 8. */
+            const room = KNOBS_PER_PAGE - spill;
+            const take = extraKeys.splice(0, room);
+            parts[parts.length - 1] = parts[parts.length - 1].concat(take);
+        }
+        for (const p of balancedChunk(extraKeys, KNOBS_PER_PAGE)) parts.push(p);
+
+        if (parts.length > 0) {
+            for (const p of parts) for (const k of p) emitted.add(k);
             parts.forEach((keys, i) => {
                 pages.push({
                     kind: PAGE_KNOBS,
                     name: i === 0 ? title : `${title} - ${i + 1}`,
                     level: levelKey, keys,
                     /* true when every key on this page came from knobs[] — i.e.
-                     * the author placed it there. Continuation pages built from
-                     * params[] are false. */
+                     * the author placed it there. Pages built from params[] are
+                     * false, including a page that mixes the two. */
                     authored: keys.every((k) => authored.includes(k)),
                 });
             });

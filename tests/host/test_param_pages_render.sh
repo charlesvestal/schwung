@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")/../.."
+
+# Rendering tests for the param-page grid.
+#
+# Two halves:
+#
+#  1. INVARIANTS swept over every grid page of all 76 fleet modules, in both
+#     layouts. These catch the bugs that are invisible in code review and
+#     obvious on hardware — most importantly a character the device font cannot
+#     draw, which renders as *nothing* on the OLED. Five modules ship such
+#     strings today (forge "Copy A>B", sfz's cents unit, euclidrum's "—" enum
+#     option), so the renderer folds them to ASCII.
+#
+#  2. SNAPSHOTS of representative pages, stored as half-block art in
+#     tests/fixtures/snapshots/param_pages.txt so a layout change shows up as a
+#     readable diff rather than a number. Regenerate deliberately with:
+#
+#         UPDATE_SNAPSHOTS=1 bash tests/host/test_param_pages_render.sh
+#
+# The renderer draws through the device's own font atlas, so these are
+# pixel-accurate, not an approximation. See tools/param-pages/harness.mjs.
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "FAIL: node is required for the param-page render tests" >&2
+  exit 1
+fi
+
+UPDATE="${UPDATE_SNAPSHOTS:-}" node -e '
+Promise.all([
+  import("./tools/param-pages/harness.mjs"),
+  import("./tools/param-pages/cases.mjs"),
+  import("./src/shared/param_pages/page_plan.mjs"),
+  import("./src/shared/param_pages/param_meta.mjs"),
+  import("./src/shared/param_pages/render_page.mjs"),
+  import("node:fs"),
+]).then(([H, C, P, M, R, fs]) => {
+  const fail = (msg) => { console.log("FAIL: " + msg); process.exit(1); };
+  const fx = JSON.parse(fs.readFileSync(C.FIXTURE, "utf8"));
+
+  /* ---- 1. fleet sweep: both layouts, every grid page ------------------- */
+  const missing = new Set();
+  let rendered = 0;
+  const blank = [], spill = [], wide = [];
+
+  for (const mod of fx.modules) {
+    const metaIndex = M.buildMetaIndex({ hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params });
+    const { pages } = P.planPages({ hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params });
+    for (let i = 0; i < pages.length; i++) {
+      const page = pages[i];
+      if (page.kind !== P.PAGE_KNOBS) continue;
+      if (page.keys.length > 8) wide.push(mod.id + "#" + i + " (" + page.keys.length + " keys)");
+
+      const values = {};
+      for (const k of page.keys) values[k] = C.fakeValue(k, metaIndex.getOrGuess(k));
+
+      for (const layout of [R.LAYOUT_BAR, R.LAYOUT_DIAL]) {
+        const fb = H.createFramebuffer();
+        R.renderPage(H.drawContext(fb), {
+          page, metaIndex, values,
+          title: "T1 > " + mod.id.toUpperCase(),
+          pageIndex: i, pageCount: pages.length, layout,
+        });
+        rendered++;
+        for (const g of fb.missingGlyphs) missing.add(g);
+        if (fb.countLit() < 50) blank.push(mod.id + "#" + i + "/" + layout);
+        /* Anything the framebuffer had to clip is content the OLED would
+         * silently drop — row 63 is legal, row 64 is a layout bug. */
+        if (fb.clipped() > 0) spill.push(mod.id + "#" + i + "/" + layout + " (" + fb.clipped() + "px)");
+      }
+    }
+  }
+
+  if (rendered < 1000) fail("only " + rendered + " renders — the sweep is not covering the fleet");
+  if (missing.size) {
+    fail("characters the device font cannot draw reached the screen: " +
+         [...missing].map((c) => JSON.stringify(c) + " U+" + c.codePointAt(0).toString(16)).join(", ") +
+         " — add them to ASCII_FOLD in render_page.mjs");
+  }
+  if (blank.length) fail("near-blank pages: " + blank.slice(0, 6).join(", "));
+  if (spill.length) fail("content drawn outside the 128x64 display: " + spill.slice(0, 6).join(", "));
+  if (wide.length) fail("a page carried more than 8 keys: " + wide.slice(0, 6).join(", "));
+
+  /* ---- 2. the fold itself ---------------------------------------------- */
+  {
+    const cases = [["Copy A→B", "Copy A>B"], ["Swap A↔B", "Swap A<>B"], ["¢", "c"], ["—", "-"], ["plain", "plain"]];
+    for (const [input, want] of cases) {
+      const got = R.asciiFold(input);
+      if (got !== want) fail(`asciiFold(${JSON.stringify(input)}) = ${JSON.stringify(got)}, want ${JSON.stringify(want)}`);
+    }
+    /* Unmapped and unprintable becomes a visible "?" rather than nothing. */
+    if (R.asciiFold("☠") !== "?") fail("an unmapped character should fold to \"?\"");
+  }
+
+  /* ---- 3. label shortening keeps the distinguishing part ---------------- */
+  {
+    const fb = H.createFramebuffer();
+    const ctx = H.drawContext(fb);
+    const W = 30;   /* a 32 px cell less its gutters */
+    const short = (s) => R.shortenLabel(ctx, s, W);
+    if (fb.textWidth(short("Filter Env")) > W) fail("\"Filter Env\" did not fit");
+    if (!/Env$/.test(short("Filter Env"))) fail("two-word shortening dropped the distinguishing word: " + short("Filter Env"));
+    if (short("Cutoff") !== "Cutof") fail("short single words should truncate, got " + short("Cutoff"));
+    if (short("Gain") !== "Gain") fail("a label that already fits must not change");
+    if (short("Low Freq Osc") !== "LFO") fail("three words should initialise, got " + short("Low Freq Osc"));
+  }
+
+  /* ---- 4. the renderer touches nothing outside its rect ----------------- */
+  {
+    const mod = fx.modules.find((m) => m.id === "obxd");
+    const metaIndex = M.buildMetaIndex({ hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params });
+    const { pages } = P.planPages({ hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params });
+    const page = pages.find((p) => p.kind === P.PAGE_KNOBS);
+    const fb = H.createFramebuffer();
+    /* Half-height region: a tool drawing the grid under its own header. */
+    R.renderPage(H.drawContext(fb), {
+      page, metaIndex, values: {}, title: "T", pageIndex: 0, pageCount: 1,
+      rect: { x: 0, y: 0, w: 128, h: 32 },
+    });
+    let below = 0;
+    for (let y = 32; y < 64; y++) for (let x = 0; x < 128; x++) below += fb.pixels[y * 128 + x];
+    if (below > 0) fail("renderPage drew " + below + " pixels outside its rect — a tool cannot share the screen with it");
+  }
+
+  /* ---- 5. purity: same inputs, same pixels ------------------------------ */
+  {
+    const one = C.renderCases().text;
+    const two = C.renderCases().text;
+    if (one !== two) fail("rendering is not deterministic");
+  }
+
+  /* ---- 6. snapshots ------------------------------------------------------ */
+  {
+    const { text } = C.renderCases();
+    if (process.env.UPDATE) {
+      fs.writeFileSync(C.SNAPSHOT, text);
+      console.log("UPDATED " + C.SNAPSHOT);
+    } else {
+      if (!fs.existsSync(C.SNAPSHOT)) fail("no snapshot file — run with UPDATE_SNAPSHOTS=1");
+      const want = fs.readFileSync(C.SNAPSHOT, "utf8");
+      if (want !== text) {
+        const a = want.split("\n"), b = text.split("\n");
+        let firstDiff = -1;
+        for (let i = 0; i < Math.max(a.length, b.length); i++) if (a[i] !== b[i]) { firstDiff = i; break; }
+        let header = "";
+        for (let i = firstDiff; i >= 0; i--) if (b[i] && b[i].startsWith("### ")) { header = b[i]; break; }
+        fail("rendering changed at line " + (firstDiff + 1) + (header ? "  [" + header.slice(4) + "]" : "") +
+             "\n  expected: " + JSON.stringify((a[firstDiff] || "").slice(0, 70)) +
+             "\n  actual:   " + JSON.stringify((b[firstDiff] || "").slice(0, 70)) +
+             "\n  If this change is intended: UPDATE_SNAPSHOTS=1 bash tests/host/test_param_pages_render.sh");
+      }
+    }
+  }
+
+  console.log("PASS: param-page rendering — " + rendered + " page renders, no undrawable characters, " +
+              "nothing off-screen, snapshots match");
+});
+'
