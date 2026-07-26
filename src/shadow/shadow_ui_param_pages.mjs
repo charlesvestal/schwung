@@ -144,9 +144,14 @@ export function drawParamPages() {
     const abbrev = ctx.getModuleAbbrev
         ? ctx.getModuleAbbrev(ctx.getSlotParam(currentSlot, `${currentComponent}_module`) || '')
         : currentComponent.toUpperCase();
+    /* A hardware synth puts the PATCH name in its display, not the model
+     * number — and the module's identity is already visible in the chain
+     * editor you came from. Falls back to the abbreviation until the read
+     * cursor has picked the name up, and for modules with no presets. */
+    const name = controller.presetName || abbrev;
     controller.render(
         { fillRect: fill_rect, print, textWidth: text_width },
-        { title: `S${currentSlot + 1} > ${abbrev}` }
+        { title: `S${currentSlot + 1} > ${name}` }
     );
     return true;
 }
