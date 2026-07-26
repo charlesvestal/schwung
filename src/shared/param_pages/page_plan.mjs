@@ -172,13 +172,39 @@ export function planPages({ hierarchy, chainParams, mode, visible } = {}) {
     const declaredName = (key, lvl) => (lvl && lvl.name) || navLabel[key] || (lvl && lvl.label) || null;
     const nameOf = (key, lvl) => declaredName(key, lvl) || prettify(key);
 
+    /**
+     * Allocate a page name, appending " - N" for the smallest free N when the
+     * base is taken. EVERY page kind goes through this, not just grids: minijv
+     * declares a preset browser in both its patch and performance modes, and two
+     * sections both called "Presets" is unusable in the picker — and worse,
+     * reanchor() matches by name after a rebuild and would land on the wrong one.
+     *
+     * It serves two jobs with one mechanism: numbering a level's continuation
+     * pages, and disambiguating genuine collisions —
+     * freak and granny each declare a child level called "main" alongside
+     * root's own "Main" page, with different knobs, so both must appear and
+     * neither may be silently renamed away.
+     *
+     * A page name is the only handle the user has on a 76-page module, and it
+     * is what reanchor() matches on after a rebuild, so uniqueness is not
+     * cosmetic.
+     */
+    const usedNames = new Set();
+    const claimName = (base) => {
+        if (!usedNames.has(base)) { usedNames.add(base); return base; }
+        for (let n = 2; ; n++) {
+            const candidate = `${base} - ${n}`;
+            if (!usedNames.has(candidate)) { usedNames.add(candidate); return candidate; }
+        }
+    };
+
     /* Mode select (minijv only in the fleet): with `modes` present the level
      * names ARE the mode names, so the active mode picks the walk root. */
     let rootKey = "root";
     const modes = Array.isArray(hierarchy.modes) ? hierarchy.modes : null;
     if (modes && modes.length > 0) {
         pages.push({
-            kind: PAGE_MODES, name: "Mode", level: null,
+            kind: PAGE_MODES, name: claimName("Mode"), level: null,
             modes: modes.slice(), modeParam: hierarchy.mode_param || "mode",
         });
         const active = (mode && modes.includes(mode)) ? mode : modes[0];
@@ -199,27 +225,6 @@ export function planPages({ hierarchy, chainParams, mode, visible } = {}) {
     const renderedKnobSigs = new Set();
     const emitted = new Set();   /* every key placed on a grid page so far */
     const visited = new Set();
-
-    /**
-     * Allocate a page name, appending " - N" for the smallest free N when the
-     * base is taken. This serves two jobs with one mechanism: numbering a
-     * level's continuation pages, and disambiguating genuine collisions —
-     * freak and granny each declare a child level called "main" alongside
-     * root's own "Main" page, with different knobs, so both must appear and
-     * neither may be silently renamed away.
-     *
-     * A page name is the only handle the user has on a 76-page module, and it
-     * is what reanchor() matches on after a rebuild, so uniqueness is not
-     * cosmetic.
-     */
-    const usedNames = new Set();
-    const claimName = (base) => {
-        if (!usedNames.has(base)) { usedNames.add(base); return base; }
-        for (let n = 2; ; n++) {
-            const candidate = `${base} - ${n}`;
-            if (!usedNames.has(candidate)) { usedNames.add(candidate); return candidate; }
-        }
-    };
 
     function emitLevel(levelKey, prefix) {
         const lvl = levels[levelKey];
@@ -242,7 +247,8 @@ export function planPages({ hierarchy, chainParams, mode, visible } = {}) {
             pages.push({
                 /* "Presets", not the level's name — the preset browser is a
                  * different thing from the knob page that shares its level. */
-                kind: PAGE_PRESET, name: declaredName(levelKey, lvl) && !isRoot ? nameOf(levelKey, lvl) : "Presets",
+                kind: PAGE_PRESET,
+                name: claimName(declaredName(levelKey, lvl) && !isRoot ? nameOf(levelKey, lvl) : "Presets"),
                 level: levelKey,
                 listParam: lvl.list_param, countParam: lvl.count_param,
                 nameParam: lvl.name_param || "preset_name",
@@ -253,7 +259,7 @@ export function planPages({ hierarchy, chainParams, mode, visible } = {}) {
          * expansions): the page exists statically, its contents do not. */
         if (lvl.items_param) {
             pages.push({
-                kind: PAGE_ITEMS, name: base, level: levelKey,
+                kind: PAGE_ITEMS, name: claimName(base), level: levelKey,
                 itemsParam: lvl.items_param, selectParam: lvl.select_param || null,
             });
         }
@@ -263,7 +269,7 @@ export function planPages({ hierarchy, chainParams, mode, visible } = {}) {
          * keys without re-reading the hierarchy (see child_key.mjs). */
         if (hasChildren(lvl)) {
             pages.push({
-                kind: PAGE_CHILD, name: base, level: levelKey,
+                kind: PAGE_CHILD, name: claimName(base), level: levelKey,
                 childCount: childCount(lvl),
                 childLabel: lvl.child_label || "Item",
                 childLevel: lvl,

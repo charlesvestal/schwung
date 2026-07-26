@@ -35,8 +35,9 @@ Promise.all([
   import("./src/shared/param_pages/page_plan.mjs"),
   import("./src/shared/param_pages/param_meta.mjs"),
   import("./src/shared/param_pages/render_page.mjs"),
+  import("./src/shared/param_pages/page_nav.mjs"),
   import("node:fs"),
-]).then(([H, C, P, M, R, fs]) => {
+]).then(([H, C, P, M, R, N, fs]) => {
   const fail = (msg) => { console.log("FAIL: " + msg); process.exit(1); };
   const fx = JSON.parse(fs.readFileSync(C.FIXTURE, "utf8"));
 
@@ -156,6 +157,108 @@ Promise.all([
     const pn = R.fitPageName(ctx, "Oscillator 1 - 2", 86);
     if (!/ - 2$/.test(pn)) fail("a page number was truncated away: " + pn);
     if (!/1/.test(pn)) fail("a page name lost its index: " + pn);
+  }
+
+  /* ---- 3b. cells are disambiguated against each other ------------------ */
+  {
+    const fb = H.createFramebuffer();
+    const ctx = H.drawContext(fb);
+    /* euclidrum declares all eight lane switches as name:"Enabled" and only the
+     * key says which lane. Eight cells reading "Enabl" is a broken screen, not
+     * an abbreviation. */
+    const mod = fx.modules.find((m) => m.id === "euclidrum");
+    const { pages } = P.planPages({ hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params });
+    const metaIndex = M.buildMetaIndex({ hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params });
+    const page = pages.find((p) => p.kind === P.PAGE_KNOBS);
+    const labels = R.pageCellLabels(ctx, page.keys, metaIndex, 30);
+    if (new Set(labels).size !== labels.length) fail("euclidrum cells still collide: " + labels.join(","));
+    if (!labels.every((l) => /\d$/.test(l))) fail("lane labels should carry their index: " + labels.join(","));
+
+    /* And nowhere in the fleet may two cells on one page read the same. */
+    const bad = [];
+    for (const m2 of fx.modules) {
+      const pp = P.planPages({ hierarchy: m2.ui_hierarchy, chainParams: m2.chain_params }).pages;
+      const ix = M.buildMetaIndex({ hierarchy: m2.ui_hierarchy, chainParams: m2.chain_params });
+      for (const pg of pp) {
+        if (pg.kind !== P.PAGE_KNOBS) continue;
+        const L = R.pageCellLabels(ctx, pg.keys, ix, 30).filter(Boolean);
+        if (L.length !== new Set(L).size) bad.push(m2.id + "/" + pg.name + ": " + L.join(","));
+      }
+    }
+    if (bad.length) fail(bad.length + " pages have duplicate cell labels, e.g. " + bad[0]);
+  }
+
+  /* ---- 3c. an unused knob position is marked, not blank ----------------- */
+  {
+    /* A three-control page leaving five cells empty reads as a failed render
+     * unless the empty positions say something. */
+    const mod = fx.modules.find((m) => m.id === "branchage");
+    const { pages } = P.planPages({ hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params });
+    const metaIndex = M.buildMetaIndex({ hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params });
+    const sparse = pages.find((p) => p.kind === P.PAGE_KNOBS && p.keys.length > 0 && p.keys.length <= 4);
+    if (!sparse) fail("expected a sparse page in branchage");
+
+    const values = {};
+    for (const k of sparse.keys) values[k] = C.fakeValue(k, metaIndex.getOrGuess(k));
+    const withMarks = H.createFramebuffer();
+    R.renderPage(H.drawContext(withMarks), {
+      page: sparse, metaIndex, values, title: "T", pageIndex: 0, pageCount: 1,
+    });
+    const full = H.createFramebuffer();
+    R.renderPage(H.drawContext(full), {
+      page: { ...sparse, keys: sparse.keys.slice(0, sparse.keys.length) },
+      metaIndex, values, title: "T", pageIndex: 0, pageCount: 1,
+    });
+    /* The bottom row holds no params on this page, so any ink there is the
+     * empty-cell marker. */
+    let bottomInk = 0;
+    for (let y = 40; y < 64; y++) for (let x = 0; x < 128; x++) bottomInk += withMarks.pixels[y * 128 + x];
+    if (bottomInk === 0) fail("empty knob positions are completely blank — the page looks broken");
+    if (bottomInk > 400) fail("empty-cell markers are too loud: " + bottomInk + " lit pixels");
+  }
+
+  /* ---- 3d. a modulated param is marked ---------------------------------- */
+  {
+    const mod = fx.modules.find((m) => m.id === "obxd");
+    const { pages } = P.planPages({ hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params });
+    const metaIndex = M.buildMetaIndex({ hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params });
+    const page = pages.find((p) => p.kind === P.PAGE_KNOBS);
+    const values = {};
+    for (const k of page.keys) values[k] = "0.5";
+
+    const plain = H.createFramebuffer();
+    R.renderPage(H.drawContext(plain), { page, metaIndex, values, title: "T", pageIndex: 0, pageCount: 1 });
+    const marked = H.createFramebuffer();
+    R.renderPage(H.drawContext(marked), {
+      page, metaIndex, values, title: "T", pageIndex: 0, pageCount: 1,
+      modulated: (k) => k === page.keys[0],
+    });
+    if (marked.countLit() <= plain.countLit()) {
+      fail("a modulated param is drawn identically to an unmodulated one — the list editor marks these with ~");
+    }
+  }
+
+  /* ---- 3e. the section picker ------------------------------------------- */
+  {
+    const mod = fx.modules.find((m) => m.id === "minijv");
+    const { pages } = P.planPages({ hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params });
+    const groups = N.groupIndex(pages);
+    if (groups.length > 25) fail("minijv should fold to under 25 sections, got " + groups.length);
+    /* "Tone 1" (the level page) and "Tone1/…" (its children) differ only by a
+     * space and must not list as two sections. */
+    const names = groups.map((g) => String(g.name).replace(/\s+/g, "").toLowerCase());
+    if (names.length !== new Set(names).size) fail("sections contain near-duplicate names: " + groups.map((g) => g.name).join(","));
+
+    const fb = H.createFramebuffer();
+    R.renderPicker(H.drawContext(fb), { entries: groups, index: 6, title: "Sections" });
+    if (fb.clipped() > 0) fail("the picker drew outside the display");
+    if (fb.missingGlyphs.size) fail("the picker used characters the font cannot draw");
+    if (fb.countLit() < 100) fail("the picker drew almost nothing");
+
+    /* Selecting the last entry must still render (scroll clamp). */
+    const fb2 = H.createFramebuffer();
+    R.renderPicker(H.drawContext(fb2), { entries: groups, index: groups.length - 1, title: "Sections" });
+    if (fb2.clipped() > 0) fail("the picker clipped at the end of the list");
   }
 
   /* ---- 4. the renderer touches nothing outside its rect ----------------- */

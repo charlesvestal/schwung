@@ -8,6 +8,7 @@
  *   getParam(fullKey)        -> string|null
  *   setParam(fullKey, value) -> void
  *   announce(text)           -> void          (optional)
+ *   isModulated(fullKey)     -> boolean       (optional)
  *   now()                    -> ms            (optional, injectable clock)
  *
  * What is left for the real binding is genuinely thin: route MIDI to the
@@ -28,7 +29,7 @@
 
 import { planPages, PAGE_KNOBS } from "./page_plan.mjs";
 import { buildMetaIndex, inferFromValue, isTurnable, KIND_OPAQUE } from "./param_meta.mjs";
-import { renderPage, LAYOUT_DIAL } from "./render_page.mjs";
+import { renderPage, renderPicker, LAYOUT_DIAL } from "./render_page.mjs";
 import { step, stepLevel, reanchor, firstGrid, jumpIndex, groupIndex } from "./page_nav.mjs";
 import { knobInit, knobTick, knobConfigFromMeta } from "../knob_engine.mjs";
 import { formatParamForSet } from "../param_format.mjs";
@@ -41,6 +42,10 @@ export function createController(io = {}) {
     const getParam = io.getParam || (() => null);
     const setParam = io.setParam || (() => {});
     const announce = io.announce || (() => {});
+    /* Optional: is this param currently driven by a modulation source? The
+     * library cannot answer that — it is host state — so it is injected, and
+     * defaults to "no" for callers that have no modulation. */
+    const isModulated = io.isModulated || (() => false);
     const now = io.now || (() => Date.now());
 
     const s = {
@@ -64,6 +69,12 @@ export function createController(io = {}) {
         knobStates: Object.create(null),
         /* the caller acts on these; the controller never opens a screen itself */
         pending: null,
+        /* Page picker: the answer to 76 pages. Open, jog to scroll, click to
+         * jump. Held here rather than in the host because it is navigation over
+         * the page set, which is what this module is for. */
+        pickerOpen: false,
+        pickerIndex: 0,
+        pickerEntries: [],
     };
 
     const fullKey = (key) => `${s.prefix}:${key}`;
@@ -147,8 +158,54 @@ export function createController(io = {}) {
 
     /* ------------------------------------------------------------- input */
 
+    /**
+     * Open the page picker: one entry per section rather than per page, since a
+     * list of 76 pages is the same chore in a different shape. minijv folds to
+     * under 25 entries this way.
+     */
+    function openPicker() {
+        s.pickerEntries = groupIndex(s.pages);
+        if (!s.pickerEntries.length) return false;
+        /* Start on the section you are already in. */
+        let cur = 0;
+        for (let i = 0; i < s.pickerEntries.length; i++) {
+            if (s.pickerEntries[i].index <= s.pageIndex) cur = i;
+        }
+        s.pickerIndex = cur;
+        s.pickerOpen = true;
+        announce(`Sections, ${s.pickerEntries[cur].name}, ${cur + 1} of ${s.pickerEntries.length}`);
+        return true;
+    }
+
+    function closePicker() {
+        if (!s.pickerOpen) return false;
+        s.pickerOpen = false;
+        announcePageChange();
+        return true;
+    }
+
+    /** Commit the highlighted section and return to the grid. */
+    function pickerSelect() {
+        if (!s.pickerOpen) return false;
+        const entry = s.pickerEntries[s.pickerIndex];
+        s.pickerOpen = false;
+        if (entry) goToPage(entry.index);
+        return true;
+    }
+
     /** Jog: pages. With shift: whole levels, skipping continuations. */
     function onJog(delta, { shift = false } = {}) {
+        if (s.pickerOpen) {
+            const n = s.pickerEntries.length;
+            if (!n) return s.pageIndex;
+            const before = s.pickerIndex;
+            s.pickerIndex = Math.max(0, Math.min(n - 1, s.pickerIndex + (delta > 0 ? 1 : -1)));
+            if (s.pickerIndex !== before) {
+                const e = s.pickerEntries[s.pickerIndex];
+                announce(`${e.name}, ${s.pickerIndex + 1} of ${n}`);
+            }
+            return s.pageIndex;
+        }
         if (!s.pages.length || delta === 0) return s.pageIndex;
         const before = s.pageIndex;
         s.pageIndex = shift ? stepLevel(s.pages, s.pageIndex, delta)
@@ -202,6 +259,10 @@ export function createController(io = {}) {
 
     /** Capacitive touch. Down announces the full name and value. */
     function onKnobTouch(slot, down) {
+        /* Reaching for a knob is an unambiguous "I want the grid", so it
+         * dismisses the picker rather than leaving you in a modal you have to
+         * back out of first. */
+        if (down && s.pickerOpen) closePicker();
         if (!down) {
             if (s.touched === slot) s.touched = -1;
             return;
@@ -240,11 +301,16 @@ export function createController(io = {}) {
     function setDecorations(d) { s.decorations = d || null; }
 
     function render(ctx, { title, rect } = {}) {
+        if (s.pickerOpen) {
+            renderPicker(ctx, { rect, entries: s.pickerEntries, index: s.pickerIndex, title: "Sections" });
+            return;
+        }
         renderPage(ctx, {
             page: page(), metaIndex: s.metaIndex, values: s.values,
             title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
             touched: s.touched, decorations: s.decorations,
             layout: s.layout, revealValues: s.revealValues, rect,
+            modulated: (key) => isModulated(fullKey(key)),
         });
     }
 
@@ -260,6 +326,10 @@ export function createController(io = {}) {
     return {
         load, reloadIfChanged, tick,
         onJog, goToPage, onKnobTurn, onKnobTouch, onClick, takePending,
+        openPicker, closePicker, pickerSelect,
+        get pickerOpen() { return s.pickerOpen; },
+        get pickerEntries() { return s.pickerEntries; },
+        get pickerIndex() { return s.pickerIndex; },
         setLayout, setReveal, setDecorations, render, announceContents,
         get state() { return s; },
         get page() { return page(); },

@@ -13453,6 +13453,7 @@ function drawHelpDetail() {
     /* Knob-grid view (shadow_ui_param_pages.mjs) */
     _ctx.evaluateVisibilityCondition = (...args) => evaluateVisibilityCondition(...args);
     _ctx.openParamEditor = (slot, fullKey, meta) => openParamEditorFromGrid(slot, fullKey, meta);
+    _ctx.isParamModulated = (slot, fullKey) => isHierarchyParamModulated(slot, fullKey);
 
     /* Overtake session state (for tools menu "Resume" indicator) */
     Object.defineProperty(_ctx, 'overtakeModuleLoaded', {

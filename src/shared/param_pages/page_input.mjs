@@ -106,15 +106,22 @@ export function applyInput(controller, intent, { nowMs, reveal } = {}) {
             return null;
 
         case "click": {
-            /* Clicking acts on the knob you are holding — the only unambiguous
-             * target on a grid, where nothing is "selected". */
+            /* Two meanings, disambiguated by whether a knob is under your hand.
+             * Holding one: open that param's editor (the only unambiguous target
+             * on a grid, where nothing is "selected"). Holding none: the click
+             * has no target, so it opens the section picker — which is also the
+             * only spare gesture, and the thing a 76-page module needs. */
+            if (controller.pickerOpen) { controller.pickerSelect(); return null; }
             const held = controller.state.touched;
-            if (held < 0) return null;
+            if (held < 0) { controller.openPicker(); return null; }
             const opened = controller.onClick(held);
             return opened ? controller.takePending() : null;
         }
 
         case "back":
+            /* Back closes the picker first, then leaves the view — one layer at
+             * a time, matching the rest of Move. */
+            if (controller.pickerOpen) { controller.closePicker(); return null; }
             return { action: "exit" };
 
         case "shift":

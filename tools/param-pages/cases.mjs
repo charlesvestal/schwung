@@ -22,7 +22,8 @@ import { fileURLToPath } from "node:url";
 import { createFramebuffer, drawContext } from "./harness.mjs";
 import { planPages, PAGE_KNOBS } from "../../src/shared/param_pages/page_plan.mjs";
 import { buildMetaIndex } from "../../src/shared/param_pages/param_meta.mjs";
-import { renderPage, LAYOUT_BAR, LAYOUT_DIAL } from "../../src/shared/param_pages/render_page.mjs";
+import { renderPage, renderPicker, LAYOUT_BAR, LAYOUT_DIAL } from "../../src/shared/param_pages/render_page.mjs";
+import { groupIndex } from "../../src/shared/param_pages/page_nav.mjs";
 
 const ROOT = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))));
 export const FIXTURE = path.join(ROOT, "tests", "fixtures", "module-contracts.json");
@@ -62,6 +63,10 @@ const CASES = [
         name: "obxd / bar  — drawn into a tool's region: value line drops, nothing escapes the rect",
         id: "obxd", nth: 0, layout: LAYOUT_BAR, rect: { x: 0, y: 14, w: 128, h: 50 },
     },
+    { name: "euclidrum   — eight cells the module names identically, disambiguated by key", id: "euclidrum", nth: 0 },
+    { name: "branchage   — a sparse page: unused knob positions marked, not blank", id: "branchage", nth: 3, layout: LAYOUT_BAR },
+    { name: "obxd / dial — knob 1 modulated (the list editor's \"~\")", id: "obxd", nth: 0, modulated: 0 },
+    { name: "minijv      — the section picker: 76 pages folded to 16 sections", id: "minijv", nth: 0, picker: 6 },
 ];
 
 /** Render every case; returns the full snapshot text. */
@@ -83,6 +88,16 @@ export function renderCases() {
         for (const k of picked.p.keys) values[k] = fakeValue(k, metaIndex.getOrGuess(k));
 
         const fb = createFramebuffer();
+        if (c.picker !== undefined) {
+            renderPicker(drawContext(fb), { entries: groupIndex(pages), index: c.picker, title: "Sections" });
+            if (fb.clipped() > 0) throw new Error(`${c.name}: picker drew ${fb.clipped()} px outside the display`);
+            for (const g of fb.missingGlyphs) missing.add(g);
+            out.push(`### ${c.name}`);
+            out.push(`# ${groupIndex(pages).length} sections from ${pages.length} pages`);
+            out.push(fb.toBlocks());
+            out.push("");
+            continue;
+        }
         renderPage(drawContext(fb), {
             page: picked.p, metaIndex, values,
             title: `T1 > ${String(mod.name || mod.id).toUpperCase()}`,
@@ -92,6 +107,7 @@ export function renderCases() {
             layout: c.layout || LAYOUT_DIAL,
             revealValues: !!c.revealValues,
             rect: c.rect || null,
+            modulated: c.modulated === undefined ? null : ((k) => k === picked.p.keys[c.modulated]),
         });
         if (fb.clipped() > 0) throw new Error(`${c.name}: drew ${fb.clipped()} px outside the display`);
         for (const g of fb.missingGlyphs) missing.add(g);

@@ -107,12 +107,33 @@ export function jumpIndex(pages) {
  */
 export function groupIndex(pages) {
     const groups = [];
+    /* The level's own page is named "Tone 1" while its children are prefixed
+     * "Tone1/…" — the prefix drops the space. Comparing loosely merges the two
+     * instead of listing "Tone 1" and "Tone1" as neighbouring sections, which
+     * reads as a bug. The first-seen spelling is the one shown. */
+    const norm = (s) => String(s).replace(/[\s_-]+/g, "").toLowerCase();
+    /* Page names are unique, but the index strips their " - N" suffix, which can
+     * bring a collision back: minijv declares a preset browser in BOTH its patch
+     * and performance modes. Two sections called "Presets" is unpickable, so a
+     * repeat gets numbered. */
+    const used = new Map();
     for (const entry of jumpIndex(pages)) {
         const slash = entry.name.indexOf("/");
-        const group = slash > 0 ? entry.name.slice(0, slash) : entry.name;
+        /* "Common / Control" yields the group "Common " — trim it. */
+        const group = (slash > 0 ? entry.name.slice(0, slash) : entry.name).trim();
         const last = groups[groups.length - 1];
-        if (last && last.name === group) last.entries.push(entry);
-        else groups.push({ name: group, index: entry.index, entries: [entry] });
+        if (last && norm(last.name) === norm(last.baseName || last.name) && norm(last.baseName || last.name) === norm(group)) {
+            last.entries.push(entry);
+            last.pages += entry.pages;
+            continue;
+        }
+        const seen = (used.get(norm(group)) || 0) + 1;
+        used.set(norm(group), seen);
+        groups.push({
+            name: seen > 1 ? `${group} ${seen}` : group,
+            baseName: group,
+            index: entry.index, entries: [entry], pages: entry.pages,
+        });
     }
     return groups;
 }

@@ -241,6 +241,75 @@ export function shortenLabel(ctx, label, maxWidth, joiner = "") {
     return fitText(ctx, devowel(word, ctx, maxWidth), maxWidth);
 }
 
+/**
+ * Longest common prefix / suffix across a set of strings, used to find what
+ * actually differs between sibling keys.
+ */
+function commonPrefixLen(strs) {
+    if (strs.length < 2) return 0;
+    let n = 0;
+    while (n < strs[0].length && strs.every((s) => s[n] === strs[0][n])) n++;
+    return n;
+}
+function commonSuffixLen(strs, skip) {
+    if (strs.length < 2) return 0;
+    let n = 0;
+    const room = Math.min(...strs.map((s) => s.length - skip));
+    while (n < room && strs.every((s) => s[s.length - 1 - n] === strs[0][strs[0].length - 1 - n])) n++;
+    return n;
+}
+
+/**
+ * Labels for one page's cells, disambiguated against each other.
+ *
+ * Shortening each label in isolation is not enough: 47 of the fleet's 572 grid
+ * pages end up with two cells reading the same, and euclidrum's Main page
+ * produces EIGHT cells all saying "Enabl" — the module declares every lane's
+ * switch as `name: "Enabled"` and only the key (`lane1_enabled` …) says which
+ * is which. Eight identical labels is not an abbreviation, it is a broken
+ * screen.
+ *
+ * So: shorten, find collisions, and for each colliding group derive a
+ * discriminator from what differs in the KEYS — strip the common prefix and
+ * suffix and keep the remainder ("1".."8") — then re-shorten the label to leave
+ * room and append it: "Enab1" … "Enab8". If the keys differ in nothing usable,
+ * fall back to the knob number, which at least maps to the thing under your
+ * finger.
+ */
+export function pageCellLabels(ctx, keys, metaIndex, width) {
+    const metas = keys.map((k) => (k && metaIndex ? metaIndex.getOrGuess(k) : null));
+    const labels = metas.map((m, i) => (m ? shortenLabel(ctx, m.label || keys[i], width) : ""));
+
+    const groups = new Map();
+    labels.forEach((l, i) => {
+        if (!l) return;
+        if (!groups.has(l)) groups.set(l, []);
+        groups.get(l).push(i);
+    });
+
+    for (const [, idxs] of groups) {
+        if (idxs.length < 2) continue;
+        const groupKeys = idxs.map((i) => String(keys[i]));
+        const pre = commonPrefixLen(groupKeys);
+        const suf = commonSuffixLen(groupKeys, pre);
+        let discs = groupKeys.map((k) => k.slice(pre, k.length - suf).replace(/^[_\-]+|[_\-]+$/g, ""));
+        /* If the key remainders do not separate the group either — aphex has
+         * "EG1 Trig" and "EG1+2 Trig", where one key is a prefix of the other —
+         * number the whole group by knob instead. Mixing derived and numbered
+         * discriminators is how you get two cells both ending in "2". */
+        if (discs.some((d) => !d) || new Set(discs).size !== discs.length) {
+            discs = idxs.map((cell) => String(cell + 1));
+        }
+        idxs.forEach((cell, n) => {
+            const disc = fitText(ctx, discs[n], Math.floor(width / 2));
+            const room = width - ctx.textWidth(disc);
+            const stem = shortenLabel(ctx, metas[cell].label || keys[cell], room);
+            labels[cell] = fitText(ctx, stem + disc, width);
+        });
+    }
+    return labels;
+}
+
 /* --------------------------------------------------------------- widgets */
 
 /** Dial: outline plus a pointer, sweeping 270 degrees from lower-left. */
@@ -281,7 +350,7 @@ function fractionOf(meta, raw) {
 /* ----------------------------------------------------------------- cells */
 
 function drawCell(ctx, opts) {
-    const { x: cellX, y, w: cellW, h, meta, raw, geo, touched, decoration, revealValues } = opts;
+    const { x: cellX, y, w: cellW, h, meta, raw, geo, touched, decoration, revealValues, modulated } = opts;
     /* Draw inside a gutter so neighbouring labels never touch. */
     const x = cellX + CELL_PAD;
     const w = cellW - CELL_PAD * 2;
@@ -290,10 +359,16 @@ function drawCell(ctx, opts) {
 
     if (!meta) return;
 
+    /* A modulated param is one an LFO or mod source is moving under you, so the
+     * value you see is not the value you set. The list editor appends "~" to
+     * the name; a cell cannot spare a character, so it gets a tick in the top
+     * right corner instead. */
+    if (modulated) ctx.fillRect(cellX + cellW - 3, y, 2, 2, 1);
+
     const locked = decoration && decoration.locked;
     const value = (decoration && decoration.value !== undefined) ? decoration.value : raw;
 
-    const label = shortenLabel(ctx, meta.label || meta.key, w);
+    const label = opts.label !== undefined ? opts.label : shortenLabel(ctx, meta.label || meta.key, w);
     const display = value === null || value === undefined
         ? "--"
         : fitText(ctx, formatParamValue(value, meta), w);
@@ -370,6 +445,13 @@ function drawCell(ctx, opts) {
     }
 }
 
+/** An unused knob position: a short centred tick, deliberately quiet. */
+function drawEmptyCell(ctx, cellX, y, cellW, h) {
+    const cx = cellX + Math.floor(cellW / 2);
+    const w = 6;
+    ctx.fillRect(cx - Math.floor(w / 2), y + Math.floor(h / 2), w, 1, 1);
+}
+
 /* ------------------------------------------------------------------ page */
 
 /**
@@ -384,6 +466,8 @@ function drawCell(ctx, opts) {
  * @param {number} [o.touched]  physical knob 0-7 currently held, or -1
  * @param {Array}  [o.decorations] per-slot { value, locked } overrides — how a
  *                 sequencer shows the held step's parameter locks
+ * @param {Function} [o.modulated] (key) => boolean; marks params an LFO or
+ *                 modulation source is driving, as the list editor's "~" does
  * @param {string} [o.layout]   LAYOUT_DIAL (default) or LAYOUT_BAR
  * @param {boolean} [o.revealValues] dial layout only: show every value in place
  *                 of its label, for as long as a modifier is held
@@ -414,11 +498,21 @@ export function renderPage(ctx, o) {
     const geo = geometry(rect, layout);
     if (geo.rowH < 6) return;   /* nothing meaningful fits */
     const cellW = Math.floor(rect.w / COLS);
+    /* Labels are resolved for the whole page at once so cells can be
+     * disambiguated against each other — see pageCellLabels. */
+    const cellLabels = pageCellLabels(ctx, page.keys, o.metaIndex, cellW - CELL_PAD * 2);
     for (let slot = 0; slot < COLS * ROWS; slot++) {
-        const key = page.keys[slot];
-        if (!key) continue;
         const row = Math.floor(slot / COLS);
         const col = slot % COLS;
+        const key = page.keys[slot];
+        if (!key) {
+            /* A page with three controls leaves five cells empty, and empty
+             * cells read as a failed render rather than as "this section has
+             * three things". A faint tick under each unused knob says the
+             * screen is fine and that knob simply does nothing here. */
+            drawEmptyCell(ctx, rect.x + col * cellW, geo.gridTop + row * geo.rowH, cellW, geo.rowH);
+            continue;
+        }
         drawCell(ctx, {
             x: rect.x + col * cellW,
             y: geo.gridTop + row * geo.rowH,
@@ -426,6 +520,8 @@ export function renderPage(ctx, o) {
             h: geo.rowH,
             geo,
             meta: o.metaIndex ? o.metaIndex.getOrGuess(key) : null,
+            label: cellLabels[slot],
+            modulated: o.modulated ? !!o.modulated(key) : false,
             raw: o.values ? o.values[key] : null,
             touched: touched === slot,
             revealValues: !!o.revealValues,
@@ -477,6 +573,47 @@ function drawTouchStrip(ctx, rect, meta, value, locked) {
     const rw = ctx.textWidth(right);
     ctx.print(x + w - rw - 1, y, right, 0);
     ctx.print(x + 1, y, fitText(ctx, meta.label || meta.key, w - rw - 4), 0);
+}
+
+/**
+ * The section picker: a scrollable list of the module's sections, drawn over
+ * the grid.
+ *
+ * Rendered here rather than by the host because it is navigation over the page
+ * set, which is this library's job — and because a tool with no shadow_ui
+ * screens needs it too. Sections rather than pages: minijv has 76 pages and
+ * under 25 sections, and a 76-entry list is the same chore in a different
+ * shape.
+ */
+export function renderPicker(ctx, { rect, entries, index, title }) {
+    const r = rect || { x: 0, y: 0, w: SCREEN_WIDTH, h: SCREEN_HEIGHT };
+    const rows = Math.max(1, Math.floor((r.h - HEADER_BLOCK) / (FONT_H + 2)));
+    const total = (entries || []).length;
+    const cur = Math.max(0, Math.min(total - 1, index | 0));
+
+    /* Keep the selection centred so the list does not jump when it can scroll. */
+    let first = cur - Math.floor(rows / 2);
+    if (first > total - rows) first = total - rows;
+    if (first < 0) first = 0;
+
+    ctx.fillRect(r.x, r.y, r.w, HEADER_BLOCK - 3, 1);
+    ctx.print(r.x + 1, r.y + HEADER_TEXT_Y, fitText(ctx, title || "Sections", r.w - 40), 0);
+    const pos = `${cur + 1}/${total}`;
+    ctx.print(r.x + r.w - ctx.textWidth(pos) - 1, r.y + HEADER_TEXT_Y, pos, 0);
+
+    for (let i = 0; i < rows && first + i < total; i++) {
+        const e = entries[first + i];
+        const y = r.y + HEADER_BLOCK + i * (FONT_H + 2);
+        const selected = (first + i) === cur;
+        if (selected) ctx.fillRect(r.x, y - 1, r.w, FONT_H + 2, 1);
+        /* A section spanning several pages says so, so "Filter" and a 6-page
+         * "Oscillator" do not look like the same size of thing. */
+        const count = e.pages > 1 ? `${e.pages}` : "";
+        const cw = count ? ctx.textWidth(count) + 4 : 0;
+        ctx.print(r.x + 2, y, fitText(ctx, e.name, r.w - 6 - cw), selected ? 0 : 1);
+        if (count) ctx.print(r.x + r.w - ctx.textWidth(count) - 2, y, count, selected ? 0 : 1);
+    }
+    return { first, rows };
 }
 
 /**
