@@ -5,7 +5,8 @@
  * about what is being rendered. Each case is chosen because it is the hardest
  * example of something in the fleet, not because it looks nice:
  *
- *   obxd      the ordinary case — 8 declared knobs, both layouts
+ *   obxd      the ordinary case — 8 declared knobs, both layouts, plus the
+ *             held-knob and reveal-values states
  *   arp       enums and a half-empty page
  *   sf2       2 authored knobs, the rest carried by overflow pages
  *   mrdrums   opaque cells (filepath / wav_position) that a knob cannot turn
@@ -41,23 +42,25 @@ export function fakeValue(key, meta) {
 }
 
 const CASES = [
-    { name: "obxd / bar  — the ordinary 8-knob page", id: "obxd", nth: 0 },
-    { name: "obxd / dial — same page, dial layout", id: "obxd", nth: 0, layout: LAYOUT_DIAL },
-    { name: "obxd / bar  — knob 2 held: full name replaces the abbreviation", id: "obxd", nth: 0, touched: 1 },
-    { name: "arp         — enums, and a page with only four params", id: "arp", nth: 0 },
-    { name: "sf2         — 2 authored knobs plus 4 params[]-only keys on one page", id: "sf2", nth: 0 },
-    { name: "hush1       — a pure overflow continuation page", id: "hush1", nth: 1 },
-    { name: "mrdrums     — opaque cells: a knob cannot turn a filepath", id: "mrdrums", nth: 0 },
-    { name: "forge       — labels folded to ASCII (Copy A>B, Swap A<>B)", id: "forge", nth: 3 },
-    { name: "minijv      — a deep page, prefixed apart from its three siblings", id: "minijv", nth: 6 },
+    { name: "obxd / dial — the default: the ordinary 8-knob page", id: "obxd", nth: 0 },
+    { name: "obxd / dial — knob 2 held: name and value in the header strip, cell keeps its label", id: "obxd", nth: 0, touched: 1 },
+    { name: "obxd / dial — reveal held: every label swapped for its value", id: "obxd", nth: 0, revealValues: true },
+    { name: "obxd / bar  — the alternative: every value visible at once", id: "obxd", nth: 0, layout: LAYOUT_BAR },
+    { name: "obxd / bar  — knob 2 held", id: "obxd", nth: 0, layout: LAYOUT_BAR, touched: 1 },
+    { name: "arp         — enums, and a page with only four params", id: "arp", nth: 0, layout: LAYOUT_BAR },
+    { name: "sf2         — 2 authored knobs plus 4 params[]-only keys on one page", layout: LAYOUT_BAR, id: "sf2", nth: 0 },
+    { name: "hush1       — a pure overflow continuation page", layout: LAYOUT_BAR, id: "hush1", nth: 1 },
+    { name: "mrdrums     — opaque cells: a knob cannot turn a filepath", layout: LAYOUT_BAR, id: "mrdrums", nth: 0 },
+    { name: "forge       — labels folded to ASCII (Copy A>B, Swap A<>B)", layout: LAYOUT_BAR, id: "forge", nth: 3 },
+    { name: "minijv      — a deep page, prefixed apart from its three siblings", layout: LAYOUT_BAR, id: "minijv", nth: 6 },
     {
         name: "obxd / bar  — parameter locks: slots 0 and 3 held by a sequencer step",
-        id: "obxd", nth: 0,
+        id: "obxd", nth: 0, layout: LAYOUT_BAR,
         decorations: [{ value: "12", locked: true }, null, null, { value: "99", locked: true }],
     },
     {
         name: "obxd / bar  — drawn into a tool's region: value line drops, nothing escapes the rect",
-        id: "obxd", nth: 0, rect: { x: 0, y: 14, w: 128, h: 50 },
+        id: "obxd", nth: 0, layout: LAYOUT_BAR, rect: { x: 0, y: 14, w: 128, h: 50 },
     },
 ];
 
@@ -86,7 +89,8 @@ export function renderCases() {
             pageIndex: picked.i, pageCount: pages.length,
             touched: c.touched === undefined ? -1 : c.touched,
             decorations: c.decorations || null,
-            layout: c.layout || LAYOUT_BAR,
+            layout: c.layout || LAYOUT_DIAL,
+            revealValues: !!c.revealValues,
             rect: c.rect || null,
         });
         if (fb.clipped() > 0) throw new Error(`${c.name}: drew ${fb.clipped()} px outside the display`);
