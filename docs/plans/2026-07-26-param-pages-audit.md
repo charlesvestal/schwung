@@ -342,6 +342,8 @@ is wired into the shadow UI yet; that step needs hardware.
 | `page_nav.mjs` | stepping, level-skip, jump index, rebuild reanchor |
 | `validate_contract.mjs` | what a module declares vs what can be rendered |
 | `announce_page.mjs` | screen-reader strings for a grid |
+| `page_controller.mjs` | interaction model: state, knob feel, staggered reads, rebuild |
+| `page_input.mjs` | Move MIDI → intents |
 
 Development tooling in `tools/param-pages/`:
 
@@ -529,10 +531,14 @@ page kind. "Default" means the grid becomes the default *for grid-able levels*.
   written but UNVERIFIED — read its header first; it is destructive to the probe
   slot) and install the result with `tools/param-pages/regenerate.mjs`, so the
   fixture stops being a trimmed copy of megadake's capture.
-- **Native binding**: a `PARAM_PAGES` view in the shadow UI, the Param View
-  setting, jog/level-skip/jump-index wiring, and the staggered one-read-per-tick
-  value cursor. Needs hardware to verify — in particular that eight live values
-  per page do not cost more than the frame budget allows.
+- **Native binding.** Now a sliver: the interaction model and the MIDI decoding
+  moved into `page_controller.mjs` / `page_input.mjs`, both pure and driven in
+  tests against a fake device, so what is left in shadow_ui.js is a view
+  constant, the Param View setting, routing MIDI to the handlers, one `tick()`
+  per frame, one `render()`, and dispatching non-grid page kinds to screens that
+  already exist. Reference shape in the library README. What genuinely needs
+  hardware: that the wiring is connected, and that eight live values per page
+  keep up with the frame budget.
 - **Screen reader**: the strings exist (`announce_page.mjs`, tested over all 608
   fleet pages) but nothing calls them yet. Wiring is part of the native binding:
   page change, knob touch, knob turn, and a read-the-page gesture. Until then the
