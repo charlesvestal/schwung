@@ -342,8 +342,15 @@ export function planPages({ hierarchy, chainParams, mode, visible } = {}) {
          * categories, so "Filter" beats "Root/Filter" — and the header is only
          * 128 px wide, shared with the module name. Prefixes start one level
          * down, which is exactly where they earn their keep (minijv would
-         * otherwise show four pages called "Filter"). */
-        const childPrefix = (levelKey === rootKey) ? null
+         * otherwise show four pages called "Filter").
+         *
+         * A level declaring no knobs of its own is a MENU, not a category — it
+         * exists to point at other levels. It contributes no prefix either, so
+         * minijv's tone_selector ("Edit Tones") gives "Tone 1" rather than
+         * "EditT/Tone 1", while tone1 itself still prefixes its children as
+         * "Tone1/Wave". */
+        const isMenuLevel = knobKeys(lvl).length === 0 && !lvl.items_param;
+        const childPrefix = (levelKey === rootKey || isMenuLevel) ? prefix
             : transparent ? prefix
             : levelNameToPrefix(nameOf(levelKey, lvl));
         /* Both edges, always: a level with knobs can still own sub-levels
