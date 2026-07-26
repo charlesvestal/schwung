@@ -35,6 +35,8 @@ These are not style preferences. Break any one and the tool case stops working.
 | `page_nav.mjs` | stepping, level-skip, jump index, rebuild reanchor |
 | `validate_contract.mjs` | what a module declares vs what can be rendered |
 | `announce_page.mjs` | screen-reader strings for a grid |
+| `page_controller.mjs` | the interaction model — state, knob feel, staggered reads, rebuild |
+| `page_input.mjs` | Move MIDI → intents |
 
 ## Using it
 
@@ -88,6 +90,46 @@ because every index shifts.
 IPC round trips. Movy measured bulk refresh blocking ~186 ms per cycle and fixed
 it with one `get_param` per tick plus a suppression window during knob motion;
 the native list already sidesteps this by only reading visible rows.
+
+## Integrating it
+
+Everything with a decision in it lives in the controller, which takes its device
+calls injected. What the host still owns is routing, one tick, one render, and
+the screens the controller deliberately does not open:
+
+```js
+const ctl = createController({
+    getParam: (k) => getSlotParam(slot, k),
+    setParam: (k, v) => setSlotParam(slot, k, v),
+    announce,                                  // shared/screen_reader.mjs
+});
+ctl.load({ slot, component: "synth" });
+
+// once a frame
+ctl.reloadIfChanged();      // cheap; rebuilds only when the contract moved
+ctl.tick();                 // exactly one get_param
+if (needsRedraw) ctl.render(ctx, { title: `S${slot + 1} > ${abbrev}` });
+
+// MIDI
+const intent = decodeInput(data, { shift: shiftHeld });
+const todo = applyInput(ctl, intent, { nowMs: Date.now() });
+if (todo?.action === "exit") returnToPreviousView();
+if (todo?.action === "open") openExistingEditorFor(todo.key, todo.meta);
+
+// page kinds the grid does not draw
+if (ctl.page.kind !== PAGE_KNOBS) dispatchToExistingScreen(ctl.page);
+```
+
+That is the whole binding. It is small on purpose: knob feel, read scheduling,
+rebuild-on-change, announcements and MIDI decoding are all tested headlessly
+against a fake device (`tools/param-pages/fake_device.mjs`), so what is left to
+verify on hardware is that the wiring is connected and that eight live values
+per page keep up.
+
+**The controller never opens a screen.** An opaque param (filepath, canvas,
+`wav_position`, string) returns an intent and the host opens the editor the list
+view already has. Same for leaving the view. That is what keeps the library
+usable from a tool that has no shadow_ui screens at all.
 
 ## Looking at it without a Move
 
