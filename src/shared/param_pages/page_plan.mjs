@@ -198,6 +198,27 @@ export function planPages({ hierarchy, chainParams, mode, visible } = {}) {
     const emitted = new Set();   /* every key placed on a grid page so far */
     const visited = new Set();
 
+    /**
+     * Allocate a page name, appending " - N" for the smallest free N when the
+     * base is taken. This serves two jobs with one mechanism: numbering a
+     * level's continuation pages, and disambiguating genuine collisions —
+     * freak and granny each declare a child level called "main" alongside
+     * root's own "Main" page, with different knobs, so both must appear and
+     * neither may be silently renamed away.
+     *
+     * A page name is the only handle the user has on a 76-page module, and it
+     * is what reanchor() matches on after a rebuild, so uniqueness is not
+     * cosmetic.
+     */
+    const usedNames = new Set();
+    const claimName = (base) => {
+        if (!usedNames.has(base)) { usedNames.add(base); return base; }
+        for (let n = 2; ; n++) {
+            const candidate = `${base} - ${n}`;
+            if (!usedNames.has(candidate)) { usedNames.add(candidate); return candidate; }
+        }
+    };
+
     function emitLevel(levelKey, prefix) {
         const lvl = levels[levelKey];
         if (!lvl) return;
@@ -281,10 +302,10 @@ export function planPages({ hierarchy, chainParams, mode, visible } = {}) {
 
         if (parts.length > 0) {
             for (const p of parts) for (const k of p) emitted.add(k);
-            parts.forEach((keys, i) => {
+            parts.forEach((keys) => {
                 pages.push({
                     kind: PAGE_KNOBS,
-                    name: i === 0 ? title : `${title} - ${i + 1}`,
+                    name: claimName(title),
                     level: levelKey, keys,
                     /* true when every key on this page came from knobs[] — i.e.
                      * the author placed it there. Pages built from params[] are
@@ -317,7 +338,14 @@ export function planPages({ hierarchy, chainParams, mode, visible } = {}) {
 
         emitLevel(levelKey, prefix);
 
-        const childPrefix = transparent ? prefix : levelNameToPrefix(nameOf(levelKey, lvl));
+        /* Root's children carry no prefix: they are the module's top-level
+         * categories, so "Filter" beats "Root/Filter" — and the header is only
+         * 128 px wide, shared with the module name. Prefixes start one level
+         * down, which is exactly where they earn their keep (minijv would
+         * otherwise show four pages called "Filter"). */
+        const childPrefix = (levelKey === rootKey) ? null
+            : transparent ? prefix
+            : levelNameToPrefix(nameOf(levelKey, lvl));
         /* Both edges, always: a level with knobs can still own sub-levels
          * (dexed's Operators, forge's Voice, minijv's tone1). */
         for (const p of ((lvl.params) || [])) {
