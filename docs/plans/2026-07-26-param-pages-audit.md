@@ -1,7 +1,9 @@
 # Param Pages — fleet audit and page model
 
 **Date:** 2026-07-26
-**Status:** audit complete, design proposed, nothing built
+**Status:** audit complete; planner, metadata, renderer, navigation and
+validator built and tested (branch `param-pages`). Not yet wired into the
+shadow UI — that needs hardware.
 **Branch:** `param-pages`
 **Context:** [2026-06-24 shared parameter UI layer design](2026-06-24-shared-parameter-ui-layer-design.md)
 
@@ -327,31 +329,154 @@ known-good capture.
 
 ---
 
-## 10. Open decisions
+## 10. What was built (2026-07-26 → )
 
-1. **`child_prefix` vs `padScoping`** (§5) — blocks pad-scoped drum modules.
-   Promote the declared contract, or bless the config file?
-2. **Layout spec name and ownership** — `movy_config.json` as-is, or
-   `param_ui.json` with the former as a read alias? Forge already ships one.
-3. **Preset placement** — dedicated `preset` page before the level's knob pages
-   (proposed), or a preset knob on the page as Movy does?
-4. **Overflow page ordering** — declaration order, or grouped by type?
-5. **Graphics detectors** (envelope / LFO / filter) — deferred. They infer
-   grouping from key names, which the June design doc rules out. Re-introduce
-   later driven by declared hints in the layout spec rather than guessing.
+All of it pure, node-testable, and living in `src/shared/param_pages/`. Nothing
+is wired into the shadow UI yet; that step needs hardware.
+
+| module | what it does |
+| --- | --- |
+| `page_plan.mjs` | `ui_hierarchy` + `chain_params` → an ordered list of typed pages |
+| `param_meta.mjs` | key → declared metadata, with the list editor's precedence, plus classification |
+| `render_page.mjs` | draws a page through an injected draw context |
+| `page_nav.mjs` | stepping, level-skip, jump index, rebuild reanchor |
+| `validate_contract.mjs` | what a module declares vs what can be rendered |
+
+Development tooling in `tools/param-pages/`:
+
+- **`harness.mjs`** — a headless 128x64 framebuffer implementing the device's
+  `fillRect` / `print` / `textWidth`, rendering text through the *actual device
+  font atlas* (`font5x7.json`, extracted from `build/host/font.png` by
+  `gen_font_table.py`, mirroring `js_display_load_font`'s auto-trim). Previews
+  are pixel-identical to the OLED, which is what made the layout decisions below
+  possible with no Move on the desk. Also tracks two things the device cannot
+  report: characters missing from the font, and pixels drawn off-screen.
+- **`preview.mjs`** — render any fleet module's pages as half-block art or PNG.
+- **`validate.mjs`** — the contract report.
+- **`cases.mjs`** — the pinned snapshot cases.
+
+Tests (all in the CI-gated `tests/host/`): planner golden tests over 76 modules,
+metadata precedence, 1144 render sweeps plus 11 half-block snapshots, navigation,
+and the validator including its false-positive traps.
 
 ---
 
-## 11. Sizing
+## 11. Decisions taken while building
 
-| work | estimate |
-| --- | --- |
-| page planner + walk + overflow + fingerprinting | ~600 lines, new |
-| widget renderer (arc, grid, labels) + font | ~900 lines, ported |
-| page-kind dispatch into existing renderers | ~300 lines, new |
-| native binding (shadow UI view + setting + a11y) | ~400 lines, new |
-| dumper + golden fixtures + tests | ~400 lines, new |
+Recorded because each one was a real fork, and several were settled by looking
+at a render rather than by reasoning.
 
-Roughly 1,600 new / 900 ported. The ported share is smaller than the raw Movy
-line count because §1 means the planner is a rewrite, not a port — Movy's walk
-is the starting point for the *tree traversal* only.
+**No font ships with the library.** The device's `print()` uses a 5x7 atlas and
+fits five characters in a 32 px cell — the same size Movy's bundled 8pt font
+renders at. Carrying a second font buys nothing and costs a maintenance burden.
+
+**Cell layout: label / bar / value, with a dial variant.** A third layout (small
+dial *and* value) was built, looked at, and deleted — it is the bar layout with a
+worse widget in the same space. A 30x4 bar carries more readable resolution than
+a dial small enough to leave room for a number. The dial layout stays as a
+preference for people who want the instrument look and accept values-on-touch.
+
+**The held knob puts its FULL name and value in a strip over the header.** A
+30 px cell cannot render "Resonance"; truncating it in place yields "Reson",
+which is no better than the abbreviation already there. The screen width can,
+and the module name is the one thing you do not need while turning something.
+This is the real answer to five-character labels — the gesture, not a cleverer
+abbreviation.
+
+**Label shortening keeps the distinguishing word.** "Filter Env" → "FlEnv", never
+"Fltr". Short single words truncate ("Cutoff" → "Cutof"), long ones devowel
+("Resonance" → "Rsnnc"), three-word names initialise ("Low Freq Osc" → "LFO").
+
+**Enums show boxed option text, not a bar.** A bar cannot say "up_down".
+
+**Page 1 of a level is exactly `knobs[0..7]`, always.** The shim already maps the
+physical knobs to that array (`buildKnobContext`), so a rebalanced first page
+would make one knob do different things in the list and on the grid. Overflow
+keys are spread evenly across the *following* pages only.
+
+**Orphan continuation pages are accepted, and navigation compensates.** A level
+with nine keys yields 8 + 1 given the invariant above; 52 of 572 grid pages hold
+one or two controls. Eliminating them means breaking the invariant, so instead
+`stepLevel` skips them (minijv: 76 stops → 53) and the jump index ignores them
+(57 entries, 25 groups).
+
+**Root's children carry no prefix.** "Filter", not "Root/Filter" — prefixes start
+one level down, where they stop minijv showing four pages called "Filter".
+
+**Page names are allocated, not formatted.** A `claim()` appends " - N" for the
+smallest free N, which numbers continuations *and* disambiguates real collisions
+with one mechanism: freak and granny each declare a child level called "main"
+alongside root's own "Main" page, with different knobs, so both must appear.
+
+**Presets get their own page, first in the level's set** (decided with Charles,
+2026-07-26). A level is routinely both the Main knob page and the preset browser;
+a knob is the wrong control for minijv's 2427 or surge's 675 presets.
+
+**Rendering degrades to fit its rect.** Asked for less height, the cell drops the
+value line, then the label, rather than overflowing — this is what lets a tool
+draw the grid beneath its own header.
+
+---
+
+## 12. Contract quirks found
+
+Each of these is a live issue in the fleet, and most affect the existing list
+editor too. `node tools/param-pages/validate.mjs --level warn` reproduces them.
+
+1. **Text the display cannot draw.** 15 strings across 5 modules use characters
+   absent from the 5x7 atlas, so they render as *nothing* today: forge's
+   "Copy A→B" and "Swap A↔B", aphex's "MW→MG", signal's "Save → A", sfz's "¢"
+   unit, and euclidrum's "—" enum option, which is invisible entirely. The
+   library now folds these to ASCII (`asciiFold`). **The list editor should
+   adopt the same fold** — this is not a grid-specific bug.
+2. **`toggle` is undocumented.** Used inline by real modules, absent from the
+   type list in `docs/MODULES.md`. Treated as a two-option enum. Either document
+   it or stop shipping it.
+3. **`ui_type` is a second spelling of `type`.** `wav_position` appears as
+   `ui_type` 19 times and as `type` twice. Both must be honoured; the contract
+   should say which is canonical.
+4. **`unreachable-params`, 9 modules.** Declared in `chain_params`, listed in no
+   level, so no UI can reach them. mrdrums accounts for 209 of them — the
+   per-pad concrete keys behind the alias split in §5.
+5. **`empty-range`, 2 modules** (osirus `bank_index`, sfz `knob_preset`): `max <=
+   min`, so a knob cannot move them. Distinct from the *legitimate* runtime-sized
+   case (hush1/sf2 declare `preset` as 0..-1 because `count_param` sizes it) —
+   the contract should have one blessed way to say "sized at runtime".
+6. **`no-hierarchy`, 4 modules** (branchage, belt-in, po32-drum, smack-in):
+   `chain_params` only. They render nothing in Movy; the planner paginates them.
+7. **Out-of-band status keys.** `is_loading`, `load_error`, `preset_name`,
+   `bank_name`, `preset_names` appear in *no* module's `chain_params` but are
+   read by the UI. They are part of the contract in practice and undocumented in
+   principle.
+8. **sfz and clap expose generic knob slots** (`knob_0..7`, `param_6..7`) with no
+   declared metadata, labelled at runtime. The only place the library guesses.
+
+---
+
+## 13. Open decisions
+
+1. **`child_prefix` vs `padScoping`** (§5) — the remaining blocker for pad-scoped
+   drum modules. Promote the declared contract with a key template, or bless a
+   config file?
+2. **Layout spec name** — `movy_config.json` as-is, or `param_ui.json` with the
+   former as a read alias?
+3. **Overflow page ordering** — declaration order (current) or grouped by type?
+4. **Graphics detectors** (envelope / LFO / filter) — still deferred. They infer
+   grouping from key names, which the June design doc rules out. Re-introduce
+   driven by declared hints in the layout spec.
+5. **Should `asciiFold` move into `src/shared/param_format.mjs`** so the list
+   editor gets it too? Probably yes, as a small separate change.
+
+---
+
+## 14. Next steps
+
+- **Device-side dumper** so the fixture is ours to regenerate rather than a
+  trimmed copy of megadake's capture (attributed in the fixture header).
+- **Native binding**: a `PARAM_PAGES` view in the shadow UI, the Param View
+  setting, jog/level-skip/jump-index wiring, and the staggered one-read-per-tick
+  value cursor. Needs hardware to verify — in particular that eight live values
+  per page do not cost more than the frame budget allows.
+- **Screen reader**: announce page name and position on page change, param on
+  knob touch (that path exists), and a read-the-page gesture. The list stays the
+  default under TTS until this is real.
