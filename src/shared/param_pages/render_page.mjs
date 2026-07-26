@@ -35,21 +35,30 @@ export const COLS = 4;
 export const ROWS = 2;
 
 /**
- * Two cell layouts, and the choice is a real one:
+ * Two cell layouts.
  *
- *   LAYOUT_BAR (default)  label / horizontal bar / value — everything legible
- *                         at once. A 30x4 bar carries far more readable
- *                         resolution than a dial small enough to leave room for
- *                         a value line.
- *   LAYOUT_DIAL           big dial / label, value shown in place of the label
- *                         while the knob is held. Prettier and more instrument-
- *                         like; you trade always-visible numbers for it.
+ *   LAYOUT_DIAL (default)  big dial / label. The value is not absent — holding
+ *                          a knob puts its full name and value in the strip
+ *                          over the header — so this keeps informational parity
+ *                          while being quicker to parse: you are usually reading
+ *                          relative position, and a pointer angle reads faster
+ *                          than a fill length. Eight dials are also eight
+ *                          distinct shapes rather than eight similar bars.
+ *   LAYOUT_BAR             label / horizontal bar / value. Every value visible
+ *                          simultaneously, which dials cannot do — worth it on
+ *                          a levels or mixer page, or anywhere precise offsets
+ *                          (tuning in cents, transpose) are compared at a
+ *                          glance.
+ *
+ * `revealValues` closes most of that gap without a settings trip: while a
+ * modifier is held, the dial layout swaps every label for its value. Eight
+ * glances instead of eight touches.
  *
  * A third variant (small dial *and* value) was built and discarded: it is the
  * bar layout with a worse widget in the same space.
  */
-export const LAYOUT_BAR = "bar";
 export const LAYOUT_DIAL = "dial";
+export const LAYOUT_BAR = "bar";
 
 /* Horizontal gutter each side of a cell. 1 px (a 2 px gap between neighbours)
  * is the most that can be spared: a 32 px cell fits exactly five 5x7 characters
@@ -282,7 +291,7 @@ function fractionOf(meta, raw) {
 /* ----------------------------------------------------------------- cells */
 
 function drawCell(ctx, opts) {
-    const { x: cellX, y, w: cellW, h, meta, raw, geo, touched, decoration } = opts;
+    const { x: cellX, y, w: cellW, h, meta, raw, geo, touched, decoration, revealValues } = opts;
     /* Draw inside a gutter so neighbouring labels never touch. */
     const x = cellX + CELL_PAD;
     const w = cellW - CELL_PAD * 2;
@@ -348,10 +357,13 @@ function drawCell(ctx, opts) {
     const frac = fractionOf(meta, value);
     if (dialMode) {
         const r = geo.radius;
-        if (meta.render === "vbar") vbar(ctx, cx - 5, y + 1, 10, h - FONT_H - 3, frac, color);
-        else dial(ctx, cx, y + 1 + r, r, frac, color);
+        dial(ctx, cx, y + 1 + r, r, frac, color);
         labelBg(labelY);
-        centeredText(ctx, cx, labelY, touched ? display : label, touched ? 1 : labelFg);
+        /* The touched cell keeps its NAME: the header strip is already saying
+         * name and value, and swapping the label out would leave the one cell
+         * you are looking at unlabelled. It gets an underline instead. */
+        centeredText(ctx, cx, labelY, revealValues ? display : label, labelFg);
+        if (touched) ctx.fillRect(x, y + h - 1, w, 1, color);
         return;
     }
 
@@ -383,12 +395,14 @@ function drawCell(ctx, opts) {
  * @param {number} [o.touched]  physical knob 0-7 currently held, or -1
  * @param {Array}  [o.decorations] per-slot { value, locked } overrides — how a
  *                 sequencer shows the held step's parameter locks
- * @param {string} [o.layout]   LAYOUT_BAR (default) or LAYOUT_DIAL
+ * @param {string} [o.layout]   LAYOUT_DIAL (default) or LAYOUT_BAR
+ * @param {boolean} [o.revealValues] dial layout only: show every value in place
+ *                 of its label, for as long as a modifier is held
  * @param {object} [o.rect]     sub-region to draw into; defaults to the screen
  */
 export function renderPage(ctx, o) {
     const rect = o.rect || { x: 0, y: 0, w: SCREEN_WIDTH, h: SCREEN_HEIGHT };
-    const layout = o.layout || LAYOUT_BAR;
+    const layout = o.layout || LAYOUT_DIAL;
     const touched = typeof o.touched === "number" ? o.touched : -1;
     const page = o.page;
 
@@ -425,6 +439,7 @@ export function renderPage(ctx, o) {
             meta: o.metaIndex ? o.metaIndex.getOrGuess(key) : null,
             raw: o.values ? o.values[key] : null,
             touched: touched === slot,
+            revealValues: !!o.revealValues,
             decoration: o.decorations ? o.decorations[slot] : null,
         });
     }

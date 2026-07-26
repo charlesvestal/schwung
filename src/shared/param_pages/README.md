@@ -54,7 +54,9 @@ renderPage(ctx, {
     title: "T1 > OB-XD", pageIndex, pageCount: pages.length,
     touched,          // physical knob 0-7 being held, or -1
     decorations,      // per-slot { value, locked } — how a sequencer shows p-locks
-    layout,           // LAYOUT_BAR (default) | LAYOUT_DIAL
+    layout,           // LAYOUT_DIAL (default) | LAYOUT_BAR
+    revealValues,     // dial layout: swap every label for its value while a
+                      //   modifier is held — eight glances, not eight touches
     rect,             // defaults to the whole 128x64 screen
 });
 ```
@@ -62,6 +64,18 @@ renderPage(ctx, {
 Only `PAGE_KNOBS` is drawn here. The other kinds — `preset`, `items`, `modes`,
 `child` — name a screen the shadow UI already has, and the caller dispatches to
 it. That is the design: a new param type gets a page kind, not an exception.
+
+### Which layout
+
+`LAYOUT_DIAL` is the default. The value is not missing from it — holding a knob
+puts the full name and value in a strip over the header — and a pointer angle is
+quicker to read than a fill length when what you want is relative position,
+which is most of the time. Eight dials are also eight distinguishable shapes.
+
+`LAYOUT_BAR` shows every value at once, which dials cannot. Worth it on a levels
+or mixer page, or wherever precise offsets get compared at a glance. Costs about
+a sixth of the draw calls too (median 52 vs 290 per page), though neither is
+close to a problem.
 
 **Rebuild when `fingerprint` changes.** It covers the hierarchy, the param count
 and the mode, which is what moves when a module finishes loading and republishes

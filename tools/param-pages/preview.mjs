@@ -47,7 +47,7 @@ if (flag("list")) {
 
 const id = positional[0];
 if (!id) {
-    console.error("usage: preview.mjs <module-id> [--page N | --all] [--layout value|dial] [--touch N] [--png DIR] [--scale N]");
+    console.error("usage: preview.mjs <module-id> [--page N | --all] [--layout dial|bar] [--reveal] [--touch N] [--png DIR] [--scale N]");
     process.exit(2);
 }
 const mod = fx.modules.find((m) => m.id === id);
@@ -74,8 +74,9 @@ const metaIndex = buildMetaIndex({ hierarchy: mod.ui_hierarchy, chainParams: mod
 const gridPages = pages.map((p, i) => ({ p, i })).filter(({ p }) => p.kind === PAGE_KNOBS);
 
 const LAYOUTS = { dial: LAYOUT_DIAL, bar: LAYOUT_BAR };
-const layout = LAYOUTS[flag("layout", "bar")] || LAYOUT_BAR;
+const layout = LAYOUTS[flag("layout", "dial")] || LAYOUT_DIAL;
 const touched = flag("touch") !== null ? parseInt(flag("touch"), 10) : -1;
+const revealValues = !!flag("reveal");
 const pngDir = flag("png");
 const scale = parseInt(flag("scale", "4"), 10);
 
@@ -97,7 +98,7 @@ for (const { p, i } of chosen) {
 
     renderPage(drawContext(fb), {
         page: p, metaIndex, values, title,
-        pageIndex: i, pageCount: pages.length, touched, layout,
+        pageIndex: i, pageCount: pages.length, touched, layout, revealValues,
     });
 
     console.log(`\n── page ${i}: ${p.kind} "${p.name}"  ${(p.keys || []).length} keys` +
