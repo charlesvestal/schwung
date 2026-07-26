@@ -189,6 +189,32 @@ Promise.all([
     if (fb2.clipped() > 0) fail("bar layout drew outside the display");
   }
 
+  /* ---- 9a. the preset name rides the cursor, not a separate poll -------- */
+  {
+    const dev = D.createFakeDevice({ id: "obxd", initial: { preset_name: "Fat Brass" } });
+    const ctl = C.createController(dev);
+    ctl.load({ slot: 0, component: "synth" });
+    if (ctl.presetName) fail("the preset name should not be known before any read");
+    for (let i = 0; i < 20; i++) ctl.tick();
+    if (ctl.presetName !== "Fat Brass") fail("the preset name was never read: " + ctl.presetName);
+
+    /* Crucially it must not cost an extra read per frame — it is one more stop
+     * in the rotation, not a second poll. */
+    for (let i = 0; i < 12; i++) {
+      dev.resetCounters();
+      ctl.tick();
+      if (dev.reads.length !== 1) fail("a tick issued " + dev.reads.length + " reads once the preset name joined the rotation");
+    }
+
+    /* A module with no preset name leaves it null rather than blanking the
+     * header with an empty string. */
+    const dev2 = D.createFakeDevice({ id: "arp" });
+    const ctl2 = C.createController(dev2);
+    ctl2.load({ slot: 0, component: "synth" });
+    for (let i = 0; i < 20; i++) ctl2.tick();
+    if (ctl2.presetName !== null) fail("a module with no preset should leave presetName null, got " + JSON.stringify(ctl2.presetName));
+  }
+
   /* ---- 9b. the first-run hint shows once and any input clears it ------- */
   {
     const { ctl } = setup("obxd");

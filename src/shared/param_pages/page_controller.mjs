@@ -80,6 +80,10 @@ export function createController(io = {}) {
          * or long enough to be in the way. */
         hintLines: null,
         hintShown: false,
+        /* Out-of-band status the UI wants but no module declares in
+         * chain_params. Folded into the read cursor rather than polled
+         * separately, so it costs one slot in the rotation, not a frame. */
+        presetName: null,
     };
 
     const fullKey = (key) => `${s.prefix}:${key}`;
@@ -140,8 +144,18 @@ export function createController(io = {}) {
         const p = page();
         if (!p || p.kind !== PAGE_KNOBS || p.keys.length === 0) return null;
 
-        const key = p.keys[s.cursor % p.keys.length];
-        s.cursor = (s.cursor + 1) % p.keys.length;
+        /* One extra stop in the rotation reads the preset name, which a
+         * hardware synth would put in its display and which no module declares
+         * as a param. */
+        const stops = p.keys.length + 1;
+        const at = s.cursor % stops;
+        s.cursor = (s.cursor + 1) % stops;
+        if (at === p.keys.length) {
+            const pn = getParam(`${s.prefix}:preset_name`);
+            s.presetName = (pn && pn.length) ? pn : null;
+            return null;
+        }
+        const key = p.keys[at];
         if (!key) return null;
 
         /* Do not clobber a value the user is actively turning. */
@@ -366,6 +380,8 @@ export function createController(io = {}) {
         get page() { return page(); },
         get pages() { return s.pages; },
         get pageIndex() { return s.pageIndex; },
+        /** The loaded preset's name, once the cursor has read it. */
+        get presetName() { return s.presetName; },
         keyAt, metaAt,
         jumpIndex: () => jumpIndex(s.pages),
         groupIndex: () => groupIndex(s.pages),
