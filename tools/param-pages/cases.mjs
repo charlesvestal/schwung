@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 import { createFramebuffer, drawContext } from "./harness.mjs";
 import { planPages, PAGE_KNOBS } from "../../src/shared/param_pages/page_plan.mjs";
 import { buildMetaIndex } from "../../src/shared/param_pages/param_meta.mjs";
-import { renderPage, renderPicker, LAYOUT_BAR, LAYOUT_DIAL } from "../../src/shared/param_pages/render_page.mjs";
+import { renderPage, renderPicker, renderHint, LAYOUT_BAR, LAYOUT_DIAL } from "../../src/shared/param_pages/render_page.mjs";
 import { groupIndex } from "../../src/shared/param_pages/page_nav.mjs";
 
 const ROOT = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))));
@@ -67,6 +67,7 @@ const CASES = [
     { name: "branchage   — a sparse page: unused knob positions marked, not blank", id: "branchage", nth: 3, layout: LAYOUT_BAR },
     { name: "obxd / dial — knob 1 modulated (the list editor's \"~\")", id: "obxd", nth: 0, modulated: 0 },
     { name: "minijv      — the section picker: 76 pages folded to 16 sections", id: "minijv", nth: 0, picker: 6 },
+    { name: "obxd        — the first-run gesture hint, cleared by any input", id: "obxd", nth: 0, hint: true },
 ];
 
 /** Render every case; returns the full snapshot text. */
@@ -88,6 +89,25 @@ export function renderCases() {
         for (const k of picked.p.keys) values[k] = fakeValue(k, metaIndex.getOrGuess(k));
 
         const fb = createFramebuffer();
+        if (c.hint) {
+            renderPage(drawContext(fb), {
+                page: picked.p, metaIndex, values,
+                title: `T1 > ${String(mod.name || mod.id).toUpperCase()}`,
+                pageIndex: picked.i, pageCount: pages.length, touched: -1,
+            });
+            renderHint(drawContext(fb), {
+                lines: ["Jog: page", "Shift+Jog: section", "Click: section list",
+                        "Hold knob: name", "Shift: show values"],
+                title: "Param Pages",
+            });
+            if (fb.clipped() > 0) throw new Error(`${c.name}: hint drew outside the display`);
+            for (const g of fb.missingGlyphs) missing.add(g);
+            out.push(`### ${c.name}`);
+            out.push(`# shown once per session`);
+            out.push(fb.toBlocks());
+            out.push("");
+            continue;
+        }
         if (c.picker !== undefined) {
             renderPicker(drawContext(fb), { entries: groupIndex(pages), index: c.picker, title: "Sections" });
             if (fb.clipped() > 0) throw new Error(`${c.name}: picker drew ${fb.clipped()} px outside the display`);

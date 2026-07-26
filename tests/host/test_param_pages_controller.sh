@@ -189,6 +189,45 @@ Promise.all([
     if (fb2.clipped() > 0) fail("bar layout drew outside the display");
   }
 
+  /* ---- 9b. the first-run hint shows once and any input clears it ------- */
+  {
+    const { ctl } = setup("obxd");
+    if (!ctl.showHint(["a"], "t")) fail("the hint should arm on a fresh controller");
+    if (!ctl.state.hintLines) fail("the hint is not showing");
+    ctl.onJog(1);
+    if (ctl.state.hintLines) fail("any input must clear the hint");
+    /* And never again this session — a hint you cannot get rid of is worse
+     * than no hint. */
+    if (ctl.showHint(["a"], "t")) fail("the hint re-armed after being dismissed");
+    if (ctl.state.hintLines) fail("the hint came back");
+  }
+
+  /* ---- 9c. the section picker ------------------------------------------- */
+  {
+    const { dev, ctl } = setup("minijv");
+    ctl.dismissHint();
+    dev.resetCounters();
+    if (!ctl.openPicker()) fail("minijv should offer a section picker");
+    if (!ctl.pickerOpen) fail("picker did not open");
+    if (ctl.pickerEntries.length < 5) fail("too few sections: " + ctl.pickerEntries.length);
+    if (ctl.pickerEntries.length >= ctl.pages.length) fail("the picker is not shorter than the page list");
+    if (!dev.announcements.length) fail("opening the picker announced nothing");
+
+    /* Jog scrolls the picker without moving the page behind it. */
+    const page0 = ctl.pageIndex;
+    ctl.onJog(3);
+    if (ctl.pageIndex !== page0) fail("jogging the picker moved the page behind it");
+    const target = ctl.pickerEntries[ctl.pickerIndex].index;
+    ctl.pickerSelect();
+    if (ctl.pickerOpen) fail("selecting did not close the picker");
+    if (ctl.pageIndex !== target) fail("selecting did not jump to the section");
+
+    /* Reaching for a knob dismisses it. */
+    ctl.openPicker();
+    ctl.onKnobTouch(0, true);
+    if (ctl.pickerOpen) fail("touching a knob should dismiss the picker");
+  }
+
   /* ---- 10. every fleet module survives a scripted session -------------- */
   {
     const fx = D.fleet();

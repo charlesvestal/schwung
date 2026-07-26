@@ -261,6 +261,22 @@ Promise.all([
     if (fb2.clipped() > 0) fail("the picker clipped at the end of the list");
   }
 
+  /* ---- 3f. the first-run hint ------------------------------------------ */
+  {
+    const fb = H.createFramebuffer();
+    const ctx = H.drawContext(fb);
+    const lines = ["Jog: page", "Shift+Jog: section", "Click: section list",
+                   "Hold knob: name", "Shift: show values"];
+    /* Longer lines clip silently, which would ship a hint nobody can read. */
+    for (const l of lines) {
+      if (ctx.textWidth(l) > 114) fail("hint line does not fit the panel: " + JSON.stringify(l));
+    }
+    R.renderHint(ctx, { lines, title: "Param Pages" });
+    if (fb.clipped() > 0) fail("the hint drew outside the display");
+    if (fb.missingGlyphs.size) fail("the hint used characters the font cannot draw");
+    if (fb.countLit() < 100) fail("the hint drew almost nothing");
+  }
+
   /* ---- 4. the renderer touches nothing outside its rect ----------------- */
   {
     const mod = fx.modules.find((m) => m.id === "obxd");

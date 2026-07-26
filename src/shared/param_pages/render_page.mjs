@@ -576,6 +576,47 @@ function drawTouchStrip(ctx, rect, meta, value, locked) {
 }
 
 /**
+ * A first-run hint panel, drawn over the grid until the user does anything.
+ *
+ * The grid has no room for a permanent footer — it uses all 64 px — and its
+ * gestures are not guessable: jog pages, shift+jog jumps a section, click with
+ * nothing held opens the section list, holding a knob names it, holding shift
+ * reveals every value. A preview nobody can operate produces no useful
+ * feedback, so it says so once and then never again.
+ *
+ * The LINES are supplied by the caller, not baked in: the gestures belong to
+ * whoever owns the input mapping, and a tool driving this grid has its own.
+ */
+export function renderHint(ctx, { rect, lines, title }) {
+    const r = rect || { x: 0, y: 0, w: SCREEN_WIDTH, h: SCREEN_HEIGHT };
+    /* Five lines plus a title is 53 px of the 64 available; the panel is only
+     * up until the first input, so it can afford to be complete. */
+    const rows = (lines || []).slice(0, 5);
+    const h = (rows.length + 1) * (FONT_H + 1) + 5;
+    const y = r.y + Math.floor((r.h - h) / 2);
+    const x = r.x + 4;
+    const w = r.w - 8;
+
+    /* Punch a hole in the grid so the text is readable over whatever is behind. */
+    ctx.fillRect(x, y, w, h, 0);
+    ctx.fillRect(x, y, w, 1, 1);
+    ctx.fillRect(x, y + h - 1, w, 1, 1);
+    ctx.fillRect(x, y, 1, h, 1);
+    ctx.fillRect(x + w - 1, y, 1, h, 1);
+
+    let ty = y + 3;
+    if (title) {
+        ctx.fillRect(x + 1, ty - 1, w - 2, FONT_H + 1, 1);
+        centeredText(ctx, x + Math.floor(w / 2), ty, title, 0);
+        ty += FONT_H + 2;
+    }
+    for (const line of rows) {
+        ctx.print(x + 3, ty, fitText(ctx, line, w - 6), 1);
+        ty += FONT_H + 1;
+    }
+}
+
+/**
  * The section picker: a scrollable list of the module's sections, drawn over
  * the grid.
  *
