@@ -266,16 +266,6 @@ function hbar(ctx, x, y, w, h, frac, color) {
     ctx.fillRect(x + w - 1, y, 1, h, color);
 }
 
-/** Vertical bar: outline with a filled portion, for level-ish params. */
-function vbar(ctx, x, y, w, h, frac, color) {
-    ctx.fillRect(x, y, w, 1, color);
-    ctx.fillRect(x, y + h - 1, w, 1, color);
-    ctx.fillRect(x, y, 1, h, color);
-    ctx.fillRect(x + w - 1, y, 1, h, color);
-    const fill = Math.round((h - 2) * clamp01(frac));
-    if (fill > 0) ctx.fillRect(x + 1, y + h - 1 - fill, w - 2, fill, color);
-}
-
 function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
 
 function fractionOf(meta, raw) {
@@ -368,8 +358,7 @@ function drawCell(ctx, opts) {
     }
 
     if (showLabel) { labelBg(labelY); centeredText(ctx, cx, labelY, label, labelFg); }
-    if (meta.render === "vbar") vbar(ctx, cx - 4, bodyY, 8, Math.max(BAR_H, y + h - bodyY - (showValue ? FONT_H : 0)), frac, color);
-    else hbar(ctx, x, bodyY, w, BAR_H, frac, color);
+    hbar(ctx, x, bodyY, w, BAR_H, frac, color);
     if (showValue) {
         const valueY = bodyY + BAR_H + 2;
         centeredText(ctx, cx, valueY, display, color);

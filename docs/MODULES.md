@@ -987,6 +987,45 @@ For synths with multiple similar elements (tones, operators, parts), use child s
 
 The Shadow UI will show a selector (Tone 1, Tone 2, etc.) and prefix parameter keys with `child_prefix` + index (e.g., `synth:nvram_tone_0_cutofffrequency`).
 
+#### Custom key shapes
+
+`child_prefix` assumes keys look like `<prefix><index>_<key>`, zero-based and
+unpadded. Many modules — drum modules especially — use a different shape, and
+without a way to declare it they end up listing an *alias* (`pad_vol`, meaning
+"the focused pad") and leaving the concrete keys (`p01_vol` … `p16_vol`)
+declared in `chain_params` but listed in no level. Those params are then
+unreachable from any UI: fleet-wide that is the single largest source of
+unreachable parameters.
+
+These optional fields declare the real shape instead:
+
+| Field | Purpose | Default |
+|-------|---------|---------|
+| `child_key_template` | Key pattern, with `{index}` and `{key}` placeholders | `<child_prefix>{index}_{key}` |
+| `child_index_base` | First instance number — pads are usually 1..16 | `0` |
+| `child_index_digits` | Zero-pad the index to this width (`p01_` not `p1_`) | none |
+| `child_key_overrides` | Per-key template overrides, for the odd key that breaks the pattern | none |
+
+```json
+"pad_settings": {
+  "name": "Pad",
+  "child_count": 16,
+  "child_label": "Pad",
+  "child_key_template": "p{index}_{key}",
+  "child_index_base": 1,
+  "child_index_digits": 2,
+  "child_key_overrides": { "fx1": "v{index}_{key}" },
+  "knobs": ["vol", "pan", "tune", "decay"]
+}
+```
+
+That level declares four params and the host multiplies them into 64 real keys
+(`p01_vol` … `p16_decay`), each one addressable, automatable and reachable from
+the UI — with no per-module configuration file anywhere.
+
+`child_prefix` continues to mean exactly what it always did, so existing
+declarations are unaffected.
+
 ### Example: Chord MIDI FX Hierarchy
 
 ```json

@@ -19,6 +19,8 @@
  * (c) 2026 megadake, MIT — https://github.com/DimaDake/schwung-movy
  */
 
+import { hasChildren, childCount } from "./child_key.mjs";
+
 export const KNOBS_PER_PAGE = 8;
 
 /* Page kinds. Only PAGE_KNOBS needs a new renderer; every other kind dispatches
@@ -256,12 +258,15 @@ export function planPages({ hierarchy, chainParams, mode, visible } = {}) {
             });
         }
 
-        /* Repeated elements declared once and multiplied by the host. */
-        if (lvl.child_prefix && lvl.child_count > 0) {
+        /* Repeated elements declared once and multiplied by the host. The
+         * level object travels with the page so the caller can resolve concrete
+         * keys without re-reading the hierarchy (see child_key.mjs). */
+        if (hasChildren(lvl)) {
             pages.push({
                 kind: PAGE_CHILD, name: base, level: levelKey,
-                childPrefix: lvl.child_prefix, childCount: lvl.child_count,
+                childCount: childCount(lvl),
                 childLabel: lvl.child_label || "Item",
+                childLevel: lvl,
             });
         }
 
