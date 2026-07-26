@@ -83,6 +83,47 @@ Promise.all([
   if (spill.length) fail("content drawn outside the 128x64 display: " + spill.slice(0, 6).join(", "));
   if (wide.length) fail("a page carried more than 8 keys: " + wide.slice(0, 6).join(", "));
 
+  /* ---- 1b. draw-call budget --------------------------------------------- */
+  {
+    /* Every pixel crosses a QuickJS->C binding on device, so the number of draw
+     * calls per frame is the cost that matters, not wall time here. Measured
+     * over the fleet: bar median 52 / max 72, dial median 290 / max 472 — the
+     * dial is dearer because a circle outline is emitted pixel by pixel. Both
+     * are affordable when the shadow UI only redraws on change; these ceilings
+     * exist so a future change cannot quietly make it ten times worse. */
+    const BUDGET = { bar: 120, dial: 700 };
+    const worst = { bar: 0, dial: 0 };
+    for (const mod of fx.modules) {
+      const metaIndex = M.buildMetaIndex({ hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params });
+      const { pages } = P.planPages({ hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params });
+      for (let i = 0; i < pages.length; i++) {
+        const page = pages[i];
+        if (page.kind !== P.PAGE_KNOBS) continue;
+        const values = {};
+        for (const k of page.keys) values[k] = C.fakeValue(k, metaIndex.getOrGuess(k));
+        for (const layout of [R.LAYOUT_BAR, R.LAYOUT_DIAL]) {
+          const fb = H.createFramebuffer();
+          let calls = 0;
+          const counting = {
+            fillRect: (...a) => { calls++; return fb.fillRect(...a); },
+            print: (...a) => { calls++; return fb.print(...a); },
+            textWidth: fb.textWidth,
+          };
+          R.renderPage(counting, {
+            page, metaIndex, values, title: "T1 > " + mod.id.toUpperCase(),
+            pageIndex: i, pageCount: pages.length, layout,
+          });
+          if (calls > worst[layout]) worst[layout] = calls;
+          if (calls > BUDGET[layout]) {
+            fail(mod.id + "#" + i + " (" + layout + ") took " + calls +
+                 " draw calls, budget " + BUDGET[layout]);
+          }
+        }
+      }
+    }
+    if (worst.bar < 20 || worst.dial < 50) fail("the draw-call counter is not measuring anything");
+  }
+
   /* ---- 2. the fold itself ---------------------------------------------- */
   {
     const cases = [["Copy A→B", "Copy A>B"], ["Swap A↔B", "Swap A<>B"], ["¢", "c"], ["—", "-"], ["plain", "plain"]];
