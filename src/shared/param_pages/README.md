@@ -35,6 +35,9 @@ These are not style preferences. Break any one and the tool case stops working.
 | `page_nav.mjs` | stepping, level-skip, jump index, rebuild reanchor |
 | `validate_contract.mjs` | what a module declares vs what can be rendered |
 | `announce_page.mjs` | screen-reader strings for a grid |
+| `page_controller.mjs` | interaction model — state, knob feel, staggered reads, rebuild |
+| `page_input.mjs` | Move MIDI → intents |
+| `child_key.mjs` | addressing repeated elements (pads, tones, parts) |
 | `page_controller.mjs` | the interaction model — state, knob feel, staggered reads, rebuild |
 | `page_input.mjs` | Move MIDI → intents |
 
@@ -67,6 +70,21 @@ renderPage(ctx, {
 Only `PAGE_KNOBS` is drawn here. The other kinds — `preset`, `items`, `modes`,
 `child` — name a screen the shadow UI already has, and the caller dispatches to
 it. That is the design: a new param type gets a page kind, not an exception.
+
+### Gestures
+
+| | |
+|---|---|
+| Jog | page |
+| Shift + Jog | jump a whole section, skipping continuation pages |
+| Jog click, nothing held | the section picker (minijv: 76 pages → 16 sections) |
+| Jog click, knob held | open that param's editor, if a knob cannot turn it |
+| Hold a knob | full name and value in a strip over the header |
+| Hold Shift | every label becomes its value |
+| Back | close the picker, then leave the view |
+
+A first-run panel lists these once and is cleared by the first input. Its text
+comes from the caller — the gestures belong to whoever owns the input mapping.
 
 ### Which layout
 
