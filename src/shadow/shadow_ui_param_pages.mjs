@@ -75,6 +75,9 @@ export function enterParamPages(slot, component, prefix) {
             getParam: (key) => ctx.getSlotParam(currentSlot, key),
             setParam: (key, value) => ctx.setSlotParam(currentSlot, key, value),
             announce,
+            /* The list editor marks these with "~"; the grid ticks the cell. */
+            isModulated: (key) => (typeof ctx.isParamModulated === 'function'
+                ? !!ctx.isParamModulated(currentSlot, key) : false),
         });
     }
     controller.load({ slot, component, prefix: prefix || component, visible: ctx.evaluateVisibilityCondition });
@@ -122,8 +125,10 @@ let wasLoading = false;
 /** Draw. Non-grid pages are not ours — the host dispatches those. */
 export function drawParamPages() {
     if (!controller) return false;
+    /* The section picker is drawn over whatever page you were on, including a
+     * non-grid one, so it is checked before the page kind. */
     const page = controller.page;
-    if (!page || page.kind !== PAGE_KNOBS) return false;
+    if (!controller.pickerOpen && (!page || page.kind !== PAGE_KNOBS)) return false;
 
     clear_screen();
     const abbrev = ctx.getModuleAbbrev
@@ -178,11 +183,16 @@ export function setParamPagesLayout(layout) {
     if (controller) controller.setLayout(layout === 'bar' ? LAYOUT_BAR : LAYOUT_DIAL);
 }
 
-/** The jump index, for a page picker. */
+/** The section picker, for anything that wants to drive it from outside. */
 export function paramPagesJumpIndex() {
     return controller ? controller.groupIndex() : [];
 }
 
 export function paramPagesGoTo(index) {
     if (controller) controller.goToPage(index);
+}
+
+/** True while the section picker is over the grid. */
+export function paramPagesPickerOpen() {
+    return !!(controller && controller.pickerOpen);
 }

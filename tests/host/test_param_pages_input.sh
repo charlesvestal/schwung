@@ -141,8 +141,24 @@ Promise.all([
     for (let i = 0; i < 8; i++) ctl.tick();
 
     const feed = (msg) => I.applyInput(ctl, I.decodeInput(msg), { nowMs: 1000 });
-    /* Nothing held: a click has no target and must not guess one. */
-    if (feed(cc(3, 127)) !== null) fail("clicking with no knob held should do nothing");
+
+    /* Nothing held: the click has no param to act on, so it opens the section
+     * picker — the only spare gesture, and what a 76-page module needs. */
+    if (feed(cc(3, 127)) !== null) fail("opening the picker should not ask the host for anything");
+    if (!ctl.pickerOpen) fail("clicking with no knob held should open the section picker");
+    /* Jog scrolls the picker rather than paging behind it. */
+    const pageBefore = ctl.pageIndex;
+    feed(cc(14, 1));
+    if (ctl.pageIndex !== pageBefore) fail("jogging in the picker paged the grid behind it");
+    /* Back closes the picker, and does NOT leave the view. */
+    if (feed(cc(51, 127)) !== null) fail("back should close the picker, not exit the view");
+    if (ctl.pickerOpen) fail("back did not close the picker");
+    /* Reaching for a knob dismisses it too. */
+    feed(cc(3, 127));
+    if (!ctl.pickerOpen) fail("picker should reopen");
+    feed(noteOn(0, 100));
+    if (ctl.pickerOpen) fail("touching a knob should dismiss the picker");
+    feed(noteOff(0));
 
     let opaque = -1;
     for (let i = 0; i < 8; i++) { const m = ctl.metaAt(i); if (m && m.kind === "opaque") { opaque = i; break; } }
