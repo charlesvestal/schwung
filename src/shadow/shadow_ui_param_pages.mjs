@@ -91,6 +91,11 @@ export function paramPagesActive() {
     return controller !== null;
 }
 
+/** Which component the grid is pointed at, for handing back to the list. */
+export function paramPagesComponent() {
+    return currentComponent;
+}
+
 /** The page the grid is on, so the host can decide whether it draws it. */
 export function currentParamPage() {
     return controller ? controller.page : null;
