@@ -371,11 +371,21 @@ at a render rather than by reasoning.
 fits five characters in a 32 px cell — the same size Movy's bundled 8pt font
 renders at. Carrying a second font buys nothing and costs a maintenance burden.
 
-**Cell layout: label / bar / value, with a dial variant.** A third layout (small
+**Cell layout: dial by default, bar as the alternative.** A third layout (small
 dial *and* value) was built, looked at, and deleted — it is the bar layout with a
-worse widget in the same space. A 30x4 bar carries more readable resolution than
-a dial small enough to leave room for a number. The dial layout stays as a
-preference for people who want the instrument look and accept values-on-touch.
+worse widget in the same space.
+
+The default was initially bar, on the grounds that it shows every value at once.
+Charles pushed back (2026-07-26): once a held knob puts its full name and value
+in the header strip, the dial layout has informational parity, and dials are
+quicker to parse — you are usually reading relative position, and a pointer angle
+beats a fill length for that. Eight dials are also eight distinct shapes rather
+than eight similar rectangles. That is right, and the default flipped.
+
+What the dial genuinely loses is *simultaneous* numeric readout: on a levels or
+mixer page, eight glances become eight touches. `revealValues` closes most of
+that — while a modifier is held, every label swaps for its value — and
+`LAYOUT_BAR` remains for anyone who wants it permanently.
 
 **The held knob puts its FULL name and value in a strip over the header.** A
 30 px cell cannot render "Resonance"; truncating it in place yields "Reson",
@@ -470,7 +480,50 @@ editor too. `node tools/param-pages/validate.mjs --level warn` reproduces them.
 
 ---
 
-## 14. Next steps
+## 14. Rollout
+
+Decided 2026-07-26: **ship as a preview, default off, and turn it on for
+everyone in a later release.** The preview exists to de-risk that flip, not to
+decide whether to make it.
+
+- **Setting:** Global Settings → Display → *Param View*: `List` (default) /
+  `Knobs`. Sits next to `overlay_knobs`, which already establishes the shape.
+- **Scope while previewing:** the grid replaces the list only for grid-able
+  levels. Preset browsers, canvas, `wav_position`, text entry and item lists
+  render exactly as they do today — that is the page-kind model, not a fallback.
+- **Comparison gesture:** with the setting on, Shift + jog-click toggles
+  List ↔ Knobs for the session, so people can A/B the same parameters in two
+  seconds. With the setting off, nothing about today's behaviour changes.
+- **Ships unconditionally, not behind the flag:** the ASCII fold (five modules
+  render text as nothing in the *list* today — that is a bug fix, and it must not
+  be gated on an experimental toggle) and the contract validator (a dev tool with
+  no user surface).
+
+### What the flip depends on
+
+Because the end state is "on for everyone", two items stop being polish:
+
+1. **Screen reader.** `announce_page.mjs` exists and is tested, but nothing calls
+   it. When Knobs is the default, TTS users get it by default too, so the flip
+   needs both the announce calls wired *and* an automatic override back to the
+   list while the screen reader is on.
+2. **Hardware perf.** Eight live values per page is eight IPC round trips. The
+   staggered one-read-per-tick cursor has to be shown to keep up on a device
+   before the default moves.
+
+### What the preview is listening for
+
+Whether people prefer it to the list at all; dial versus bar; whether 76-page
+modules navigate acceptably with level-skip and the jump index; whether the
+value cursor lags; and whether the 52 single-control continuation pages irritate
+in practice or only on paper.
+
+Note the list never fully retires — it remains the renderer for every non-grid
+page kind. "Default" means the grid becomes the default *for grid-able levels*.
+
+---
+
+## 15. Next steps
 
 - **Run the dumper** on a Move (`tools/param-pages/dump_contracts_device.js`,
   written but UNVERIFIED — read its header first; it is destructive to the probe
