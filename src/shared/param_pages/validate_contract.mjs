@@ -18,6 +18,7 @@
 
 import { buildMetaIndex, KIND_OPAQUE } from "./param_meta.mjs";
 import { planPages, PAGE_KNOBS, KNOBS_PER_PAGE } from "./page_plan.mjs";
+import { hasChildren, allChildKeys } from "./child_key.mjs";
 
 /* Types the contract documents, plus the ones modules actually ship.
  * `toggle` is used inline by real modules but is absent from docs/MODULES.md —
@@ -188,9 +189,13 @@ export function validateContract({ id, hierarchy, chainParams } = {}) {
             add("warn", "items-without-select",
                 `level "${lname}" has items_param but no select_param; the list cannot commit a choice`);
         }
-        if (lvl.child_prefix && !(lvl.child_count > 0)) {
+        if ((lvl.child_prefix || lvl.child_key_template) && !(lvl.child_count > 0)) {
             add("warn", "child-without-count",
-                `level "${lname}" has child_prefix but no positive child_count`);
+                `level "${lname}" declares repeated elements but no positive child_count`);
+        }
+        if (lvl.child_key_overrides && !lvl.child_key_template && !lvl.child_prefix) {
+            add("warn", "child-overrides-without-template",
+                `level "${lname}" has child_key_overrides but no template to override`);
         }
     }
 
@@ -204,10 +209,13 @@ export function validateContract({ id, hierarchy, chainParams } = {}) {
 
     const unreachable = [...seen].filter((k) => !declaredKeys.has(k));
     if (unreachable.length) {
-        /* Per-instance keys addressed through child_prefix are expected here. */
-        const childPrefixes = Object.values(levels)
-            .filter((l) => l && l.child_prefix).map((l) => l.child_prefix);
-        const real = unreachable.filter((k) => !childPrefixes.some((pre) => k.startsWith(pre)));
+        /* Keys a child level addresses per instance are declared, just not
+         * listed one by one — that is the entire point of the mechanism. */
+        const viaChildren = new Set();
+        for (const lvl of Object.values(levels)) {
+            if (hasChildren(lvl)) for (const k of allChildKeys(lvl)) viaChildren.add(k);
+        }
+        const real = unreachable.filter((k) => !viaChildren.has(k));
         if (real.length) {
             add("warn", "unreachable-params",
                 `${real.length} chain_params are listed in no level, so no UI can reach them: ` +
