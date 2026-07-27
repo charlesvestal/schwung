@@ -92,9 +92,15 @@ Promise.all([
 
   /* ---- 6. unrelated traffic is ignored ---------------------------------- */
   {
-    for (const msg of [[0xb0, 88, 127], [0x90, 68, 100], [0xf8], [0xe0, 0, 64], null, [0xb0]]) {
+    for (const msg of [[0x90, 68, 100], [0xf8], [0xe0, 0, 64], null, [0xb0], [0xb0, 50, 127]]) {
       if (I.decodeInput(msg) !== null) fail("should ignore " + JSON.stringify(msg));
     }
+    /* CC 88 (Mute) is NOT ignored — it is the modifier for reset-to-default,
+     * and Schwung already uses it for destructive actions in this view. */
+    const mute = I.decodeInput(cc(88, 127));
+    if (!mute || mute.type !== "mute" || mute.down !== true) fail("CC 88 should report mute held");
+    const muteUp = I.decodeInput(cc(88, 0));
+    if (!muteUp || muteUp.down !== false) fail("CC 88 release must report mute up, or the modifier latches");
   }
 
   /* ---- 7. end to end: MIDI in, param out -------------------------------- */
@@ -131,6 +137,51 @@ Promise.all([
     /* Back asks the host to leave — the controller does not own the view. */
     const out = feed(cc(51, 127));
     if (!out || out.action !== "exit") fail("back should ask the host to exit");
+  }
+
+  /* ---- 7b. reset uses Mute, and cannot fire during precision editing ---- */
+  {
+    const dev = D.createFakeDevice({ id: "branchage" });
+    const ctl = C.createController(dev);
+    ctl.load({ slot: 0, component: "synth" });
+    ctl.dismissHint();
+    for (let i = 0; i < 24; i++) ctl.tick();
+    const key = ctl.page.keys[0];
+    const meta = ctl.metaAt(0);
+    if (meta.default === undefined) fail("expected branchage knob 1 to declare a default");
+
+    let t = 1000;
+    const feed = (msg, mods) => I.applyInput(ctl, I.decodeInput(msg, mods || {}), { nowMs: (t += 30) });
+
+    /* Fine-adjust away from the default. */
+    for (let i = 0; i < 10; i++) feed(cc(71, 1), { shift: true });
+    const tuned = Number(ctl.state.values[key]);
+    if (tuned === Number(meta.default)) fail("fine adjust did not move the value off its default");
+
+    /* THE HAZARD: during precision editing you are already holding shift with a
+     * knob under your finger, and the jog is live for section stepping. A stray
+     * jog press must not wipe the value you are carefully setting. */
+    feed(noteOn(0, 100), { shift: true });
+    feed(cc(3, 127), { shift: true });
+    if (Number(ctl.state.values[key]) !== tuned) {
+      fail("shift + jog click destroyed a value mid-precision-edit: " + tuned + " -> " + ctl.state.values[key]);
+    }
+    feed(noteOff(0), {});
+
+    /* Mute + touch does reset — a modifier Schwung already uses for
+     * destructive actions in this view, and one you are not holding while
+     * fine-adjusting. */
+    feed(noteOn(0, 100), { mute: true });
+    if (Number(ctl.state.values[key]) !== Number(meta.default)) {
+      fail("mute + touch did not reset to the default: " + ctl.state.values[key]);
+    }
+
+    /* A plain touch still just announces — it must not reset. */
+    feed(noteOff(0), {});
+    for (let i = 0; i < 10; i++) feed(cc(71, 1), {});
+    const moved = Number(ctl.state.values[key]);
+    feed(noteOn(0, 100), {});
+    if (Number(ctl.state.values[key]) !== moved) fail("an unmodified touch reset the value");
   }
 
   /* ---- 8. click acts on the held knob, and only when opaque ------------- */

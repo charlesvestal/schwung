@@ -81,7 +81,8 @@ it. That is the design: a new param type gets a page kind, not an exception.
 | Jog click, knob held | open that param's editor, if a knob cannot turn it |
 | Hold a knob | full name and value in a strip over the header |
 | Hold Shift | precision mode: every label becomes its value, and float encoders go ~10x finer |
-| Shift + click, knob held | reset that param to the default its module declared |
+| | *(reset is on Mute, not Shift — Shift is the key you are already holding while fine-adjusting)* |
+| Mute + touch a knob | reset that param to the default its module declared |
 | Back | close the picker, then leave the view |
 
 Returning to a section lands on the sub-page you were last using there, the way
