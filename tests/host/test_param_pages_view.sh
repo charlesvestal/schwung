@@ -46,6 +46,8 @@ let ttsOn = false;
 globalThis.tts_get_enabled = () => ttsOn;
 let paramView = 1;
 globalThis.param_view_get_mode = () => paramView;
+let shiftHeld = 0;
+globalThis.shadow_get_shift_held = () => shiftHeld;
 const spoken = [];
 
 Promise.all([
@@ -122,6 +124,65 @@ Promise.all([
     V.handleParamPagesMidi([0xb0, 51, 127]);
     if (V.paramPagesActive()) fail("back should leave the view");
     if (views[views.length - 1] !== "chainedit") fail("back should hand the view back to the chain editor");
+  }
+
+  /* ---- 5b. shift comes from shared memory, never from CC 49 ------------- */
+  {
+    /* The shim forwards CC 3, 14, 51, 40-43, 71-78 and 88 to the shadow UI and
+     * NOT CC 49 — it tracks shift itself and publishes it in SHM. A view that
+     * waits for a shift CC silently loses every shift gesture. */
+    const src = fs.readFileSync(REPO + "/src/shadow/shadow_ui_param_pages.mjs", "utf8");
+    if (!/shadow_get_shift_held/.test(src)) {
+      fail("the view must read shift from shadow_get_shift_held — the shim never forwards CC 49");
+    }
+    if (/intent\.type === .shift./.test(src)) {
+      fail("the view is tracking shift from a CC the shim does not deliver");
+    }
+
+    V.enterParamPages(0, "synth", "synth");
+    for (let i = 0; i < 12; i++) V.tickParamPages();
+
+    /* Holding shift must reveal values without any MIDI arriving. */
+    shiftHeld = 1;
+    V.tickParamPages();
+    if (!V.paramPagesRevealing()) fail("holding shift did not reveal values via the SHM path");
+    shiftHeld = 0;
+    V.tickParamPages();
+    if (V.paramPagesRevealing()) fail("releasing shift did not clear reveal");
+
+    /* And a shift-modified gesture must actually reach the input decoder.
+     * Proved with FINE ADJUST rather than shift+jog: from a single-page level,
+     * or from the last page of a multi-page one, a section step and a page step
+     * legitimately land on the same place, so that comparison proves nothing.
+     * Encoder resolution has no such ambiguity. */
+    V.exitParamPages();
+    const devF = D.createFakeDevice({ id: "branchage" });
+    C.ctx.getSlotParam = (slot, key) => devF.getParam(key);
+    C.ctx.setSlotParam = (slot, key, value) => devF.setParam(key, value);
+    V.enterParamPages(0, "synth", "synth");
+    for (let i = 0; i < 24; i++) V.tickParamPages();
+
+    const floatSlot = 0;   /* branchage page 1 knob 1 is a float */
+    const readLast = () => {
+      const w = devF.writes[devF.writes.length - 1];
+      return w ? Number(w[1]) : NaN;
+    };
+    shiftHeld = 0;
+    for (let i = 0; i < 10; i++) V.handleParamPagesMidi([0xb0, 71 + floatSlot, 1]);
+    const afterCoarse = readLast();
+    shiftHeld = 1;
+    for (let i = 0; i < 10; i++) V.handleParamPagesMidi([0xb0, 71 + floatSlot, 1]);
+    const afterFine = readLast();
+    shiftHeld = 0;
+
+    const coarse = afterCoarse - Number(devF.writes[0][1]);
+    const fine = afterFine - afterCoarse;
+    if (!(coarse > 0 && fine > 0)) fail("the knob did not move in both modes: " + coarse + " / " + fine);
+    if (!(coarse / fine > 4)) {
+      fail("shift did not reach the input decoder — fine adjust was only " +
+           (coarse / fine).toFixed(1) + "x finer than coarse");
+    }
+    V.exitParamPages();
   }
 
   /* ---- 6. an opaque param is handed to the existing editor -------------- */
