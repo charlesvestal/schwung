@@ -35,10 +35,10 @@ export const TOUCH_NOTE_LAST = 7;
  * @returns {object|null} an intent, or null when the message is not ours
  *
  * Intents:
- *   { type: "knob",   slot, direction }   turn knob `slot`
+ *   { type: "knob",   slot, direction, fine }  turn knob `slot`
  *   { type: "touch",  slot, down }
  *   { type: "page",   delta, byLevel }
- *   { type: "click" }                     jog click — open / commit
+ *   { type: "click",  shift }             jog click — open / commit / reset
  *   { type: "back" }
  *   { type: "shift",  down }              modifier state changed
  */
@@ -52,7 +52,7 @@ export function decodeInput(data, mods = {}) {
         if (d1 >= KNOB_CC_FIRST && d1 <= KNOB_CC_LAST) {
             const direction = decodeDelta(d2);
             if (direction === 0) return null;
-            return { type: "knob", slot: d1 - KNOB_CC_FIRST, direction };
+            return { type: "knob", slot: d1 - KNOB_CC_FIRST, direction, fine: !!mods.shift };
         }
         if (d1 === JOG_TURN_CC) {
             const delta = decodeDelta(d2);
@@ -63,7 +63,7 @@ export function decodeInput(data, mods = {}) {
             return { type: "page", delta: delta > 0 ? 1 : -1, byLevel: !!mods.shift };
         }
         /* Buttons report press as a non-zero value and release as 0. */
-        if (d1 === JOG_CLICK_CC) return d2 > 0 ? { type: "click" } : null;
+        if (d1 === JOG_CLICK_CC) return d2 > 0 ? { type: "click", shift: !!mods.shift } : null;
         if (d1 === BACK_CC) return d2 > 0 ? { type: "back" } : null;
         if (d1 === SHIFT_CC) return { type: "shift", down: d2 > 0 };
         return null;
@@ -94,7 +94,11 @@ export function applyInput(controller, intent, { nowMs, reveal } = {}) {
 
     switch (intent.type) {
         case "knob":
-            controller.onKnobTurn(intent.slot, intent.direction > 0 ? 1 : -1, nowMs);
+            /* Shift is precision mode: it reveals every value AND makes the
+             * encoders fine. Chasing a number and being able to read it are the
+             * same moment. (Elektron's [FUNC]+encoder.) */
+            controller.onKnobTurn(intent.slot, intent.direction > 0 ? 1 : -1, nowMs,
+                                  { fine: !!intent.fine });
             return null;
 
         case "touch":
@@ -115,6 +119,10 @@ export function applyInput(controller, intent, { nowMs, reveal } = {}) {
             if (controller.pickerOpen) { controller.pickerSelect(); return null; }
             const held = controller.state.touched;
             if (held < 0) { controller.openPicker(); return null; }
+            /* Shift + click on a held knob resets it to the default its module
+             * declared — unambiguous because the target is the knob under your
+             * hand, and destructive enough to want a modifier. */
+            if (intent.shift) { controller.resetToDefault(held); return null; }
             const opened = controller.onClick(held);
             return opened ? controller.takePending() : null;
         }

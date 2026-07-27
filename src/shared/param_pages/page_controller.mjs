@@ -28,7 +28,7 @@
  */
 
 import { planPages, PAGE_KNOBS } from "./page_plan.mjs";
-import { buildMetaIndex, inferFromValue, isTurnable, KIND_OPAQUE } from "./param_meta.mjs";
+import { buildMetaIndex, inferFromValue, isTurnable, KIND_ENUM, KIND_OPAQUE } from "./param_meta.mjs";
 import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page.mjs";
 import { step, stepLevel, reanchor, firstGrid, jumpIndex, groupIndex } from "./page_nav.mjs";
 import { knobInit, knobTick, knobConfigFromMeta } from "../knob_engine.mjs";
@@ -84,6 +84,13 @@ export function createController(io = {}) {
          * chain_params. Folded into the read cursor rather than polled
          * separately, so it costs one slot in the rotation, not a frame. */
         presetName: null,
+        /* Per-section memory of the sub-page you were last on. Elektron's page
+         * buttons work this way — pressing [FLTR] returns you to the FLTR page
+         * you were using, not to FLTR 1 — and it matters most on the modules
+         * where it is most tedious to get back (minijv's tone subtrees are 15
+         * pages each). Applies to SECTION jumps only; a fine jog still steps
+         * linearly, or you could never walk the set in order. */
+        sectionMemory: Object.create(null),
     };
 
     const fullKey = (key) => `${s.prefix}:${key}`;
@@ -212,6 +219,22 @@ export function createController(io = {}) {
         return true;
     }
 
+    /* Remember where you were within the current section. */
+    function rememberSection() {
+        const p = page();
+        if (p && p.level) s.sectionMemory[p.level] = s.pageIndex;
+    }
+
+    /* Landing on a section: return to the sub-page last used there. */
+    function restoreSection(index) {
+        const p = s.pages[index];
+        if (!p || !p.level) return index;
+        const remembered = s.sectionMemory[p.level];
+        if (remembered === undefined) return index;
+        const rp = s.pages[remembered];
+        return (rp && rp.level === p.level) ? remembered : index;
+    }
+
     /** Jog: pages. With shift: whole levels, skipping continuations. */
     function onJog(delta, { shift = false } = {}) {
         if (s.hintLines) dismissHint();
@@ -228,7 +251,8 @@ export function createController(io = {}) {
         }
         if (!s.pages.length || delta === 0) return s.pageIndex;
         const before = s.pageIndex;
-        s.pageIndex = shift ? stepLevel(s.pages, s.pageIndex, delta)
+        rememberSection();
+        s.pageIndex = shift ? restoreSection(stepLevel(s.pages, s.pageIndex, delta))
                             : step(s.pages, s.pageIndex, delta);
         if (s.pageIndex !== before) {
             s.cursor = 0;
@@ -239,9 +263,11 @@ export function createController(io = {}) {
     }
 
     /** Jump straight to a page (from the index or group picker). */
-    function goToPage(index) {
+    function goToPage(index, { remember = true } = {}) {
         if (index === s.pageIndex) return s.pageIndex;
-        s.pageIndex = Math.max(0, Math.min(s.pages.length - 1, index));
+        rememberSection();
+        const target = Math.max(0, Math.min(s.pages.length - 1, index));
+        s.pageIndex = remember ? restoreSection(target) : target;
         s.cursor = 0;
         s.touched = -1;
         announcePageChange();
@@ -253,7 +279,7 @@ export function createController(io = {}) {
      * identically here and in the list editor, writes through, and holds off
      * reads for that key until it settles.
      */
-    function onKnobTurn(slot, direction, nowMs) {
+    function onKnobTurn(slot, direction, nowMs, { fine = false } = {}) {
         if (s.hintLines) dismissHint();
         const key = keyAt(slot);
         if (!key) return null;
@@ -268,7 +294,17 @@ export function createController(io = {}) {
             const current = s.values[key] !== undefined ? Number(s.values[key]) : Number(getParam(fullKey(key)));
             st = s.knobStates[key] = knobInit(isFinite(current) ? current : 0);
         }
-        const value = knobTick(st, knobConfigFromMeta(meta), direction, t);
+        /* Fine adjust: Elektron's [FUNC]+encoder. Holding shift already reveals
+         * every value, so precision mode and "show me the numbers" are the same
+         * gesture — which is what you want when you are chasing a value.
+         *
+         * Only floats have a finer step to give. An int already moves in whole
+         * units and an enum in whole options; there is nothing below that, and
+         * pretending otherwise would just make them feel broken under shift. */
+        const cfg = knobConfigFromMeta(meta);
+        const canRefine = fine && meta.type === "float";
+        const value = knobTick(st, canRefine ? { ...cfg, step: (cfg.step || 0.01) / 10 } : cfg,
+                               direction, t);
         const wire = formatParamForSet(value, meta);
 
         s.values[key] = wire;
@@ -308,6 +344,29 @@ export function createController(io = {}) {
         if (!key || !meta || meta.kind !== KIND_OPAQUE) return null;
         s.pending = { action: "open", key, fullKey: fullKey(key), meta };
         return s.pending;
+    }
+
+    /**
+     * Reset a knob's param to the default its module declared. 744 params across
+     * 39 modules declare one, and there is otherwise no way back to it short of
+     * reloading the preset.
+     *
+     * Returns false when the param declares no default, so the caller can say
+     * so rather than silently doing nothing.
+     */
+    function resetToDefault(slot) {
+        const key = keyAt(slot);
+        const meta = metaAt(slot);
+        if (!key || !meta || meta.default === undefined || meta.default === null) return false;
+        if (!isTurnable(meta)) return false;
+
+        const wire = formatParamForSet(meta.default, meta);
+        s.values[key] = wire;
+        s.settleUntil[key] = s.tickCount + SETTLE_TICKS;
+        delete s.knobStates[key];       /* next turn starts from the new value */
+        setParam(fullKey(key), wire);
+        announce(`${meta.label || key}, default, ${announceTurn(meta, wire)}`);
+        return true;
     }
 
     function takePending() {
@@ -371,7 +430,7 @@ export function createController(io = {}) {
     return {
         load, reloadIfChanged, tick,
         onJog, goToPage, onKnobTurn, onKnobTouch, onClick, takePending,
-        openPicker, closePicker, pickerSelect, showHint, dismissHint,
+        openPicker, closePicker, pickerSelect, showHint, dismissHint, resetToDefault,
         get pickerOpen() { return s.pickerOpen; },
         get pickerEntries() { return s.pickerEntries; },
         get pickerIndex() { return s.pickerIndex; },
@@ -382,6 +441,7 @@ export function createController(io = {}) {
         get pageIndex() { return s.pageIndex; },
         /** The loaded preset's name, once the cursor has read it. */
         get presetName() { return s.presetName; },
+        get metaIndex() { return s.metaIndex; },
         keyAt, metaAt,
         jumpIndex: () => jumpIndex(s.pages),
         groupIndex: () => groupIndex(s.pages),

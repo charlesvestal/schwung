@@ -28,7 +28,9 @@ Promise.all([
   import("./src/shared/param_pages/render_page.mjs"),
   import("./tools/param-pages/fake_device.mjs"),
   import("./tools/param-pages/harness.mjs"),
-]).then(([C, R, D, H]) => {
+  import("./src/shared/param_pages/page_plan.mjs"),
+  import("./src/shared/param_pages/param_meta.mjs"),
+]).then(([C, R, D, H, P, M]) => {
   const fail = (msg) => { console.log("FAIL: " + msg); process.exit(1); };
   const setup = (id, initial) => {
     const dev = D.createFakeDevice({ id, initial });
@@ -252,6 +254,103 @@ Promise.all([
     ctl.openPicker();
     ctl.onKnobTouch(0, true);
     if (ctl.pickerOpen) fail("touching a knob should dismiss the picker");
+  }
+
+  /* ---- 9d. Elektron patterns: fine adjust, reset, section memory -------- */
+  {
+    /* Find a float with a declared default — 744 params across 39 modules
+     * declare one, and it is the only way back short of reloading the preset. */
+    const fx = D.fleet();
+    let found = null;
+    for (const mod of fx.modules) {
+      const pages = P.planPages({ hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params }).pages;
+      const ix = M.buildMetaIndex({ hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params });
+      const pg = pages.find((p) => p.kind === "knobs");
+      if (!pg) continue;
+      const slot = pg.keys.findIndex((k) => {
+        const m = ix.getOrGuess(k);
+        return m.type === "float" && m.default !== undefined;
+      });
+      if (slot >= 0) { found = { id: mod.id, page: pages.indexOf(pg), slot }; break; }
+    }
+    if (!found) fail("no float with a declared default anywhere in the fleet");
+
+    const dev = D.createFakeDevice({ id: found.id });
+    const ctl = C.createController(dev);
+    ctl.load({ slot: 0, component: "synth" });
+    ctl.dismissHint();
+    ctl.goToPage(found.page, { remember: false });
+    for (let i = 0; i < 24; i++) ctl.tick();
+    const key = ctl.page.keys[found.slot];
+    const meta = ctl.metaAt(found.slot);
+
+    /* Shift makes a float encoder roughly ten times finer. */
+    let t = 1000;
+    const a0 = Number(ctl.state.values[key]);
+    for (let i = 0; i < 10; i++) ctl.onKnobTurn(found.slot, 1, (t += 30));
+    const coarse = Number(ctl.state.values[key]) - a0;
+    const a1 = Number(ctl.state.values[key]);
+    for (let i = 0; i < 10; i++) ctl.onKnobTurn(found.slot, 1, (t += 30), { fine: true });
+    const fine = Number(ctl.state.values[key]) - a1;
+    if (!(coarse > 0 && fine > 0)) fail("turning did not move the value in one of the modes");
+    if (!(coarse / fine > 4)) fail("fine adjust is barely finer than coarse: " + (coarse / fine).toFixed(1) + "x");
+
+    /* An int has no step below 1, so fine must not pretend otherwise. */
+    const intSlot = ctl.page.keys.findIndex((k) => ctl.metaIndex.getOrGuess(k).type === "int");
+    if (intSlot >= 0) {
+      const ik = ctl.page.keys[intSlot];
+      const b0 = Number(ctl.state.values[ik]);
+      for (let i = 0; i < 10; i++) ctl.onKnobTurn(intSlot, 1, (t += 30));
+      const icoarse = Number(ctl.state.values[ik]) - b0;
+      const b1 = Number(ctl.state.values[ik]);
+      for (let i = 0; i < 10; i++) ctl.onKnobTurn(intSlot, 1, (t += 30), { fine: true });
+      const ifine = Number(ctl.state.values[ik]) - b1;
+      if (icoarse > 0 && ifine === 0) fail("fine adjust froze an int, which has no finer step to give");
+    }
+
+    /* Reset to the declared default. */
+    ctl.onKnobTurn(found.slot, 1, (t += 30));
+    if (!ctl.resetToDefault(found.slot)) fail("resetToDefault refused a param that declares one");
+    if (Number(ctl.state.values[key]) !== Number(meta.default)) {
+      fail("reset did not land on the default: " + ctl.state.values[key] + " vs " + meta.default);
+    }
+    const wrote = dev.writes[dev.writes.length - 1];
+    if (Number(wrote[1]) !== Number(meta.default)) fail("the default was not written to the device");
+
+    /* A param with no declared default reports so rather than silently doing
+     * nothing, so the caller can say "no default" out loud. */
+    const noDefault = ctl.page.keys.findIndex((k) => ctl.metaIndex.getOrGuess(k).default === undefined);
+    if (noDefault >= 0 && ctl.resetToDefault(noDefault)) fail("resetToDefault claimed success with no default declared");
+  }
+
+  /* ---- 9e. a section remembers the sub-page you were on ----------------- */
+  {
+    const { ctl } = setup("minijv");
+    ctl.dismissHint();
+    const pages = ctl.pages;
+    let start = -1;
+    for (let i = 0; i < pages.length - 1; i++) {
+      if (pages[i].kind === "knobs" && pages[i + 1].kind === "knobs" && pages[i].level === pages[i + 1].level) {
+        start = i; break;
+      }
+    }
+    if (start < 0) fail("minijv should have a level spanning two pages");
+
+    ctl.goToPage(start, { remember: false });
+    ctl.onJog(1);                                   /* into the second page */
+    const deep = ctl.pageIndex;
+    if (deep !== start + 1) fail("a fine jog should step one page");
+    ctl.onJog(1, { shift: true });                  /* leave the section */
+    if (ctl.pageIndex === deep) fail("shift+jog did not leave the section");
+    ctl.onJog(-1, { shift: true });                 /* come back */
+    if (ctl.pageIndex !== deep) {
+      fail("returning to a section forgot the sub-page: landed on " + ctl.pageIndex + ", expected " + deep);
+    }
+    /* But a plain jog must still walk the set in order, or you could never
+     * traverse it. */
+    ctl.goToPage(start, { remember: false });
+    ctl.onJog(1);
+    if (ctl.pageIndex !== start + 1) fail("section memory hijacked a fine jog");
   }
 
   /* ---- 10. every fleet module survives a scripted session -------------- */

@@ -80,8 +80,12 @@ it. That is the design: a new param type gets a page kind, not an exception.
 | Jog click, nothing held | the section picker (minijv: 76 pages → 16 sections) |
 | Jog click, knob held | open that param's editor, if a knob cannot turn it |
 | Hold a knob | full name and value in a strip over the header |
-| Hold Shift | every label becomes its value |
+| Hold Shift | precision mode: every label becomes its value, and float encoders go ~10x finer |
+| Shift + click, knob held | reset that param to the default its module declared |
 | Back | close the picker, then leave the view |
+
+Returning to a section lands on the sub-page you were last using there, the way
+an Elektron page button does — but a plain jog still walks the set in order.
 
 A first-run panel lists these once and is cleared by the first input. Its text
 comes from the caller — the gestures belong to whoever owns the input mapping.
