@@ -534,25 +534,42 @@ Elektron — the user cannot rely on position, so the UI has to carry the names.
   browser already cover this, and duplicating it would be the "grid reimplements
   a screen the list already has" mistake.
 
-### Blocked on hardware
+### What the shadow UI can actually receive
 
-**Step buttons as direct page access, with the step LEDs showing page position.**
-This is the closest Move can get to Elektron's dedicated page buttons: sixteen
-lit buttons that both *show* where you are and *take* you somewhere in one press.
-It is the biggest remaining navigation win and the most Elektron thing left
-undone.
+Settled by reading `schwung_shim.c`, not by guessing. In non-overtake shadow
+mode the shim forwards a deliberately short list:
 
-Two unknowns, neither of which can be settled off-device:
+| | Forwarded to `shadow_ui.js` |
+| --- | --- |
+| CC | 3 (jog click), 14 (jog turn), 51 (Back), 40–43 (track), 71–78 (knobs), 88 (Mute) |
+| Notes | 0–7 (knob touch), 40–43 (track), 68–99 (pads, only while `pad_block`) |
 
-1. Do the step notes (16–31) reach `shadow_ui.js` at all? Nothing in the shadow
-   UI reads them today, so it is unknown whether the shim delivers them or Move
-   firmware consumes them first.
-2. Can the shadow UI drive step LEDs without fighting Move's own use of them?
+Everything else — including **CC 49 (Shift)** and the **step buttons (notes
+16–31)** — never arrives.
 
-Until both are answered, implementing it would be guessing at routing, so the
-section picker stands in. If the answers are yes, the picker becomes the
-fallback for modules with more than sixteen sections rather than the primary
-gesture.
+**This cost a real bug.** The view module tracked Shift from CC 49, which meant
+every shift gesture (section step, reveal, fine adjust, reset to default) would
+have been silently dead on hardware: no error, no log, four features quietly
+doing nothing. Shift is published in shared memory instead and read with
+`shadow_get_shift_held()`, which is why the rest of `shadow_ui.js` polls it.
+Note the asymmetry: an overtake **tool** sharing this library *does* receive
+CC 49, because the overtake path forwards everything — so `page_input.mjs`
+still decodes it and only the host reads it out of band.
+
+### Blocked on a shim change, not on hardware
+
+**Step buttons as direct page access, with the step LEDs showing page position**
+is the closest Move can get to Elektron's dedicated page buttons: sixteen lit
+buttons that both show where you are and take you there in one press. It is the
+biggest remaining navigation win.
+
+The blocker is now precise rather than unknown: **notes 16–31 are not in the
+shim's forward list**, so this needs a C change to `schwung_shim.c` plus an
+answer to whether the shadow UI can drive step LEDs without fighting Move's own
+use of them. That is a different-sized ask than a JS view, and it should not
+ride along with a preview. The section picker stands in; if the shim later
+forwards steps, the picker becomes the fallback for modules with more than
+sixteen sections rather than the primary gesture.
 
 ---
 
