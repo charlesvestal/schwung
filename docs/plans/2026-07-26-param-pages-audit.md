@@ -497,8 +497,20 @@ did not.
 | Page-position indicator | The segmented rule, one segment per page. |
 
 Plus one Elektron does *not* have and the fleet asks for: **reset to the
-declared default** (Shift + click on a held knob). 744 params across 39 modules
-declare a default and there was no way back to it short of reloading a preset.
+declared default** — 744 params across 39 modules declare one and there was no
+way back to it short of reloading a preset.
+
+The gesture for it took two attempts, and the first was dangerous. Shift +
+jog-click on a held knob was wrong because **Shift is precision mode**: while
+fine-adjusting you are already holding Shift with a knob under your finger, and
+the jog is live for section stepping — so a destructive action sat one stray
+press away from the most delicate operation in the UI. It is now **Mute +
+touch**, which is the modifier Schwung already uses for destructive and state
+actions in this very view (Mute+JogClick bypasses a module, Mute+Track mutes a
+slot), is forwarded to the shadow UI, and is not a key you are holding while
+tuning. Double-tapping a knob was considered and rejected for the same family of
+reason: lifting and re-placing a finger mid-adjustment is normal, and a
+double-tap would read it as a reset.
 
 ### Adapted, not copied
 
@@ -556,20 +568,23 @@ Note the asymmetry: an overtake **tool** sharing this library *does* receive
 CC 49, because the overtake path forwards everything — so `page_input.mjs`
 still decodes it and only the host reads it out of band.
 
-### Blocked on a shim change, not on hardware
+### Ruled out: step buttons and pads
 
-**Step buttons as direct page access, with the step LEDs showing page position**
-is the closest Move can get to Elektron's dedicated page buttons: sixteen lit
-buttons that both show where you are and take you there in one press. It is the
-biggest remaining navigation win.
+**Step buttons as direct page access**, with the step LEDs showing position, is
+the closest Move could get to Elektron's dedicated page buttons — and it is not
+available. Two independent reasons:
 
-The blocker is now precise rather than unknown: **notes 16–31 are not in the
-shim's forward list**, so this needs a C change to `schwung_shim.c` plus an
-answer to whether the shadow UI can drive step LEDs without fighting Move's own
-use of them. That is a different-sized ask than a JS view, and it should not
-ride along with a preview. The section picker stands in; if the shim later
-forwards steps, the picker becomes the fallback for modules with more than
-sixteen sections rather than the primary gesture.
+1. The shim does not forward notes 16–31 to the shadow UI, so it would need a C
+   change; and
+2. more decisively, **the steps and pads belong to the rest of the Move UI**.
+   The shadow UI is not an overtake module: Move's own surface is live
+   underneath it, and taking sixteen buttons away from it to page a parameter
+   editor is not a trade worth making.
+
+So the **section picker is the permanent answer**, not a stand-in. That is also
+why section names, section memory and the picker's grouping carry the weight
+they do here: with no dedicated page buttons and no fixed page layout, naming
+and memory are all the user has.
 
 ---
 

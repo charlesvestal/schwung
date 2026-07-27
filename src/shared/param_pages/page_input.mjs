@@ -13,8 +13,9 @@
  *   CC 71-78     knobs 1-8, relative: 1..63 clockwise, 65..127 anticlockwise
  *   CC 14        jog wheel turn, same relative encoding
  *   CC 3         jog click
- *   CC 49        shift
+ *   CC 49        shift  (NOT forwarded in shadow mode — see the host note below)
  *   CC 51        back
+ *   CC 88        mute, used here as the modifier for destructive actions
  *   notes 0-7    knob capacitive touch (velocity > 0 = touched)
  */
 
@@ -26,6 +27,7 @@ export const JOG_TURN_CC = 14;
 export const JOG_CLICK_CC = 3;
 export const SHIFT_CC = 49;
 export const BACK_CC = 51;
+export const MUTE_CC = 88;
 export const TOUCH_NOTE_FIRST = 0;
 export const TOUCH_NOTE_LAST = 7;
 
@@ -36,11 +38,12 @@ export const TOUCH_NOTE_LAST = 7;
  *
  * Intents:
  *   { type: "knob",   slot, direction, fine }  turn knob `slot`
- *   { type: "touch",  slot, down }
+ *   { type: "touch",  slot, down, mute }
  *   { type: "page",   delta, byLevel }
- *   { type: "click",  shift }             jog click — open / commit / reset
+ *   { type: "click" }                     jog click — open / commit
  *   { type: "back" }
  *   { type: "shift",  down }              modifier state changed
+ *   { type: "mute",   down }              modifier state changed
  */
 export function decodeInput(data, mods = {}) {
     if (!data || data.length < 3) return null;
@@ -63,9 +66,10 @@ export function decodeInput(data, mods = {}) {
             return { type: "page", delta: delta > 0 ? 1 : -1, byLevel: !!mods.shift };
         }
         /* Buttons report press as a non-zero value and release as 0. */
-        if (d1 === JOG_CLICK_CC) return d2 > 0 ? { type: "click", shift: !!mods.shift } : null;
+        if (d1 === JOG_CLICK_CC) return d2 > 0 ? { type: "click" } : null;
         if (d1 === BACK_CC) return d2 > 0 ? { type: "back" } : null;
         if (d1 === SHIFT_CC) return { type: "shift", down: d2 > 0 };
+        if (d1 === MUTE_CC) return { type: "mute", down: d2 > 0 };
         return null;
     }
 
@@ -75,7 +79,7 @@ export function decodeInput(data, mods = {}) {
     if (status === 0x90 || status === 0x80) {
         if (d1 >= TOUCH_NOTE_FIRST && d1 <= TOUCH_NOTE_LAST) {
             const down = status === 0x90 && d2 > 0;
-            return { type: "touch", slot: d1 - TOUCH_NOTE_FIRST, down };
+            return { type: "touch", slot: d1 - TOUCH_NOTE_FIRST, down, mute: !!mods.mute };
         }
         return null;
     }
@@ -102,6 +106,22 @@ export function applyInput(controller, intent, { nowMs, reveal } = {}) {
             return null;
 
         case "touch":
+            /* Mute + touch resets that param to its declared default.
+             *
+             * Mute rather than Shift: Shift is precision mode, so during fine
+             * adjustment you are ALREADY holding shift with a knob under your
+             * finger — putting a destructive action one stray press away from
+             * the most delicate operation in the UI. Mute is also the modifier
+             * Schwung already uses for destructive/state actions in this same
+             * view (Mute+JogClick bypasses a module, Mute+Track mutes a slot).
+             *
+             * Touch-down rather than a double-tap: lifting and re-placing a
+             * finger mid-adjustment is a normal thing to do, and a double-tap
+             * would read that as a reset. */
+            if (intent.down && intent.mute) {
+                controller.resetToDefault(intent.slot);
+                return null;
+            }
             controller.onKnobTouch(intent.slot, intent.down);
             return null;
 
@@ -119,10 +139,6 @@ export function applyInput(controller, intent, { nowMs, reveal } = {}) {
             if (controller.pickerOpen) { controller.pickerSelect(); return null; }
             const held = controller.state.touched;
             if (held < 0) { controller.openPicker(); return null; }
-            /* Shift + click on a held knob resets it to the default its module
-             * declared — unambiguous because the target is the knob under your
-             * hand, and destructive enough to want a modifier. */
-            if (intent.shift) { controller.resetToDefault(held); return null; }
             const opened = controller.onClick(held);
             return opened ? controller.takePending() : null;
         }

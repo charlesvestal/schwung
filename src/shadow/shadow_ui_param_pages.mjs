@@ -107,6 +107,7 @@ export function enterParamPages(slot, component, prefix) {
         "Click: section list",
         "Hold knob: name",
         "Shift: fine + values",
+        "Mute+knob: default",
     ], "Param Pages");
     ctx.setView(ctx.VIEWS.PARAM_PAGES);
 }
@@ -184,7 +185,13 @@ export function drawParamPages() {
 export function handleParamPagesMidi(data) {
     if (!controller) return false;
 
-    const intent = decodeInput(data, { shift: shiftIsHeld() });
+    /* Mute (CC 88) IS forwarded, and shadow_ui.js already tracks it for the
+     * Mute+JogClick bypass shortcut — so read its state rather than keeping a
+     * second copy that could disagree. */
+    const intent = decodeInput(data, {
+        shift: shiftIsHeld(),
+        mute: typeof ctx.isMuteHeld === 'function' ? !!ctx.isMuteHeld() : false,
+    });
     if (!intent) return false;
 
     /* reveal:false — this host drives reveal from the polled shift state in

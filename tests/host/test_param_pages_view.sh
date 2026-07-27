@@ -119,7 +119,8 @@ Promise.all([
     for (let i = 0; i < 20; i++) V.handleParamPagesMidi([0xb0, 71, 1]);
     if (dev.writes.length <= before) fail("turning knob 1 wrote nothing");
 
-    if (V.handleParamPagesMidi([0xb0, 88, 127])) fail("an unrelated CC should not be consumed");
+    /* CC 50 (Menu) is not forwarded to the shadow UI and is not ours. */
+    if (V.handleParamPagesMidi([0xb0, 50, 127])) fail("an unrelated CC should not be consumed");
 
     V.handleParamPagesMidi([0xb0, 51, 127]);
     if (V.paramPagesActive()) fail("back should leave the view");
