@@ -36,9 +36,26 @@ import { announce } from '/data/UserData/schwung/shared/screen_reader.mjs';
 /* The live controller, or null when the view is not open. One at a time: the
  * grid always shows a single component, and rebuilding on entry is cheap. */
 let controller = null;
-let shiftHeld = false;
 let currentSlot = 0;
 let currentComponent = 'synth';
+
+/**
+ * Shift state does NOT arrive as MIDI here.
+ *
+ * The shim forwards a deliberately short list to the shadow UI — CC 3, 14, 51,
+ * 40-43, 71-78, 88, plus notes 0-7, 40-43 and (when pad_block is set) 68-99.
+ * CC 49 is not on it: the shim tracks shift itself and publishes it in shared
+ * memory, which is why the rest of shadow_ui.js reads shadow_get_shift_held()
+ * rather than watching for a CC.
+ *
+ * Getting this wrong is silent — every shift gesture (section step, reveal
+ * values, fine adjust, reset to default) simply never fires, with nothing in
+ * the logs. An overtake TOOL sharing this library does receive CC 49, which is
+ * why page_input.mjs still decodes it; only this host reads it out of band.
+ */
+function shiftIsHeld() {
+    return typeof shadow_get_shift_held === 'function' && shadow_get_shift_held() !== 0;
+}
 
 /** Param View setting values. */
 export const PARAM_VIEW_LIST = 0;
@@ -91,13 +108,11 @@ export function enterParamPages(slot, component, prefix) {
         "Hold knob: name",
         "Shift: fine + values",
     ], "Param Pages");
-    shiftHeld = false;
     ctx.setView(ctx.VIEWS.PARAM_PAGES);
 }
 
 export function exitParamPages() {
     controller = null;
-    shiftHeld = false;
 }
 
 export function paramPagesActive() {
@@ -127,6 +142,10 @@ export function tickParamPages() {
     const loading = ctx.getSlotParam(currentSlot, `${currentComponent}:is_loading`) === '1';
     if (!loading && wasLoading) controller.reloadIfChanged({ visible: ctx.evaluateVisibilityCondition });
     wasLoading = loading;
+
+    /* Shift is polled, not evented (see shiftIsHeld), so reveal follows it here
+     * rather than on a CC that never arrives. */
+    controller.setReveal(shiftIsHeld());
 
     controller.tick();
 }
@@ -165,11 +184,12 @@ export function drawParamPages() {
 export function handleParamPagesMidi(data) {
     if (!controller) return false;
 
-    const intent = decodeInput(data, { shift: shiftHeld });
+    const intent = decodeInput(data, { shift: shiftIsHeld() });
     if (!intent) return false;
-    if (intent.type === 'shift') shiftHeld = intent.down;
 
-    const todo = applyInput(controller, intent, { nowMs: Date.now() });
+    /* reveal:false — this host drives reveal from the polled shift state in
+     * tickParamPages, not from an intent it will never see. */
+    const todo = applyInput(controller, intent, { nowMs: Date.now(), reveal: false });
     if (!todo) return true;
 
     if (todo.action === 'exit') {
@@ -205,6 +225,11 @@ export function paramPagesJumpIndex() {
 
 export function paramPagesGoTo(index) {
     if (controller) controller.goToPage(index);
+}
+
+/** True while values are revealed (shift held). */
+export function paramPagesRevealing() {
+    return !!(controller && controller.state.revealValues);
 }
 
 /** True while the section picker is over the grid. */
