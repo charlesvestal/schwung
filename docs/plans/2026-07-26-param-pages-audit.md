@@ -477,6 +477,85 @@ section name since it strips the " - N" suffix.
 
 ---
 
+## 11c. Elektron UX review (2026-07-27)
+
+Movy took Elektron's *layout* — eight knobs, two rows of four, pages you step
+through — and stopped there. The interaction patterns behind that layout are
+where most of the usability actually lives, so this is a pass over them:
+what applies to Move's control surface, what we took, and what we deliberately
+did not.
+
+### Taken
+
+| Elektron | Here |
+| --- | --- |
+| `[FUNC]` + encoder = fine adjust | **Shift is precision mode**: floats go ~10x finer *and* every label becomes its value. On Elektron those are two things; on a 128 px screen they want to be one, because chasing a number and being able to read it are the same moment. Deliberately inert for ints and enums — an int already moves in whole units, and faking a finer step would make it feel broken rather than precise. |
+| A page button returns to the sub-page you last used | **Section memory.** Returning to a section lands where you left it. Worth most where getting back costs most: minijv's tone subtrees are 15 pages each. Section jumps only — a plain jog still walks the set in order. |
+| Large value readout while turning | The **held-knob strip** over the header, carrying the full name and value. |
+| Encoder acceleration | Already ours, via `knob_engine.mjs` — and the grid reuses it precisely so a value moves identically in the list and on the grid. |
+| Parameter locks | The `decorations` contract: per-cell value override plus a `locked` flag, with the sequencer supplying both. |
+| Page-position indicator | The segmented rule, one segment per page. |
+
+Plus one Elektron does *not* have and the fleet asks for: **reset to the
+declared default** (Shift + click on a held knob). 744 params across 39 modules
+declare a default and there was no way back to it short of reloading a preset.
+
+### Adapted, not copied
+
+**Elektron's own displays mostly show name + value text, not dials** — Digitakt
+and Digitone have no dial graphics at all. Their parameters are precise and
+numeric, so the number *is* the readout. We default to dials anyway, because
+that is Movy's aesthetic and because Move's params skew continuous; `LAYOUT_BAR`
+is the Elektron-shaped alternative and is one setting away. Worth knowing the
+divergence is deliberate rather than an oversight.
+
+**Dedicated page buttons** (`[TRIG] [SRC] [FLTR] [AMP] [LFO] [FX]`) are the
+single biggest thing we cannot copy: they are fixed, labelled, and direct, and
+Move has no spare buttons to give. The **section picker** is the substitute —
+one click, a named list, jog and confirm. It is worse than a dedicated button
+and much better than jogging 76 pages.
+
+There is also a structural difference worth naming: **an Elektron machine's
+pages are fixed, so muscle memory transfers**. Ours are generated from whatever
+each module declares, so they differ per module. That is exactly why section
+names, the picker and section memory matter more here than they do on an
+Elektron — the user cannot rely on position, so the UI has to carry the names.
+
+### Rejected
+
+- **Copy/paste of pages and params** (`[FUNC]`+`[REC]`/`[STOP]`) — kit and
+  sequencer territory; Move's Copy/Delete are claimed elsewhere, and a param UI
+  copying a page into another module's page is not well defined.
+- **Randomise** (`[FUNC]`+`[YES]`) — plausible, but destructive with no undo in
+  this view, and no gesture left that is not a worse fit for something else.
+- **Trig conditions, retrig, microtiming, per-track scale** — sequencer, not a
+  parameter UI. These belong to Movy.
+- **Sound browser with tags and categories** — the preset page plus the existing
+  browser already cover this, and duplicating it would be the "grid reimplements
+  a screen the list already has" mistake.
+
+### Blocked on hardware
+
+**Step buttons as direct page access, with the step LEDs showing page position.**
+This is the closest Move can get to Elektron's dedicated page buttons: sixteen
+lit buttons that both *show* where you are and *take* you somewhere in one press.
+It is the biggest remaining navigation win and the most Elektron thing left
+undone.
+
+Two unknowns, neither of which can be settled off-device:
+
+1. Do the step notes (16–31) reach `shadow_ui.js` at all? Nothing in the shadow
+   UI reads them today, so it is unknown whether the shim delivers them or Move
+   firmware consumes them first.
+2. Can the shadow UI drive step LEDs without fighting Move's own use of them?
+
+Until both are answered, implementing it would be guessing at routing, so the
+section picker stands in. If the answers are yes, the picker becomes the
+fallback for modules with more than sixteen sections rather than the primary
+gesture.
+
+---
+
 ## 12. Contract quirks found
 
 Each of these is a live issue in the fleet, and most affect the existing list
