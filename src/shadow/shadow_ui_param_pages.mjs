@@ -89,7 +89,7 @@ export function enterParamPages(slot, component, prefix) {
         "Shift+Jog: section",
         "Click: section list",
         "Hold knob: name",
-        "Shift: show values",
+        "Shift: fine + values",
     ], "Param Pages");
     shiftHeld = false;
     ctx.setView(ctx.VIEWS.PARAM_PAGES);
