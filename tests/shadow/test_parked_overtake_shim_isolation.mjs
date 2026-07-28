@@ -61,10 +61,12 @@ function extractParkedTickBlock() {
 const sandbox = {
     console,
     debugLog: () => {},
+    corunTeardown: () => {},
     activateLedQueue: () => {},
     deactivateLedQueue: () => {},
     flushLedQueue: () => {},
     invokeModuleOnUnload: () => {},
+    invokeModuleOnResume: () => {},
     setView: () => {},
     VIEWS: { SLOTS: 0, OVERTAKE_MODULE: 1 },
     needsRedraw: false,
@@ -78,6 +80,7 @@ const sandbox = {
     overtakeModulePath: "",
     overtakeModuleCallbacks: null,
     overtakeSuspendKeepsJs: false,
+    overtakeSuspendSelfManaged: false,
     overtakePassthroughCCs: [],
     suspendedOvertakes: {},
     lastSuspendedToolId: "",
@@ -85,6 +88,9 @@ const sandbox = {
     ledQueueNotes: {},
     ledQueueCCs: {},
     ledClearIndex: 0,
+    paramShimsInstalled: false,
+    originalHostGetParam: null,
+    originalHostSetParam: null,
     getSlotParam: (slot, key) => `chain[${slot}:${key}]`,
     setSlotParam: () => {},
     getComponentParamPrefix: (k) => k === "midiFx" ? "midi_fx1" : k,
@@ -230,6 +236,32 @@ console.log("Scenario 2: two parked modules stay isolated");
     const b = sandbox._readsB[sandbox._readsB.length - 1];
     check("parked module A reads its own DSP", a === "A-DSP:k", `got ${JSON.stringify(a)}`);
     check("parked module B reads its own DSP", b === "B-DSP:k", `got ${JSON.stringify(b)}`);
+}
+
+// ---- Scenario 3: native LED repaint request survives until C transition ----
+console.log("Scenario 3: suspend hands native LEDs back atomically");
+{
+    sandbox.suspendedOvertakes = {};
+    const handoffCalls = [];
+    sandbox.shadow_set_suspend_overtake = (value) => handoffCalls.push(`suspend:${value}`);
+    sandbox.shadow_set_skip_led_clear = (value) => handoffCalls.push(`skip:${value}`);
+    sandbox.shadow_set_overtake_mode = (value) => handoffCalls.push(`mode:${value}`);
+    sandbox.shadow_request_exit = () => handoffCalls.push('exit');
+
+    installOvertakeShim("mono-DSP");
+    setActive("mono", "/modules/mono/dsp.so", () => {});
+    vm.runInContext(`suspendOvertakeMode();`, sandbox);
+
+    check("native repaint is requested before overtake mode drops",
+          handoffCalls.indexOf('skip:1') >= 0 &&
+          handoffCalls.indexOf('skip:1') < handoffCalls.indexOf('mode:0'),
+          `calls ${JSON.stringify(handoffCalls)}`);
+    check("JS does not clear the repaint request before the audio thread consumes it",
+          !handoffCalls.includes('skip:0'),
+          `calls ${JSON.stringify(handoffCalls)}`);
+    check("shadow UI exits only after the handoff",
+          handoffCalls.indexOf('mode:0') < handoffCalls.indexOf('exit'),
+          `calls ${JSON.stringify(handoffCalls)}`);
 }
 
 // --- exit -------------------------------------------------------------------

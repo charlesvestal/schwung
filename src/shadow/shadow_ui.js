@@ -3105,9 +3105,8 @@ function exitOvertakeMode() {
     for (let k = 0; k < NUM_KNOBS; k++) overtakeKnobDelta[k] = 0;
     overtakeJogDelta = 0;
 
-    /* NOTE: skip_led_clear is cleared in completeOvertakeExit() AFTER
-     * overtake_mode drops to 0, so the C-side transition sees it and
-     * skips its snapshot restore (which may have stale/polluted state). */
+    /* NOTE: skip_led_clear is consumed by the C-side when it observes the
+     * overtake_mode transition. JS must not clear it in the same tick. */
 
     /* Signal exit — C-side LED cache will restore Move's LEDs
      * when overtake_mode transitions back to 0 */
@@ -3175,12 +3174,15 @@ function suspendOvertakeMode() {
             shadow_set_suspend_overtake(1);
         }
 
-        /* Drop overtake mode so shim stops routing events to the (now-parked) module. */
+        /* Ask the audio-side transition to leave Move's fresh native LED output
+         * authoritative. Mono's entry snapshot can be incomplete for dynamic
+         * scale colors and the Shift row, so replaying it here leaves the grid
+         * dark or stale. The C-side consumes skip_led_clear after mode reaches 0. */
         if (typeof shadow_set_overtake_mode === "function") {
+            if (typeof shadow_set_skip_led_clear === "function") {
+                shadow_set_skip_led_clear(1);
+            }
             shadow_set_overtake_mode(0);
-        }
-        if (typeof shadow_set_skip_led_clear === "function") {
-            shadow_set_skip_led_clear(0);
         }
         /* Clear the opt-in sysex suppression so it never leaks to the next tool. */
         if (typeof shadow_set_overtake_suppress_sysex === "function") {
@@ -3358,15 +3360,10 @@ function exitToolOvertake() {
     for (let k = 0; k < NUM_KNOBS; k++) overtakeKnobDelta[k] = 0;
     overtakeJogDelta = 0;
 
-    /* Disable overtake mode first, THEN clear skip_led_clear.
-     * The C-side checks skip_led_clear during the overtake→0 transition
-     * to decide whether to restore its LED snapshot. skip_led_clear must
-     * still be set at that moment so the restore is skipped. */
+    /* Disable overtake mode. The C-side consumes skip_led_clear when it
+     * observes this transition; clearing it here would race the audio thread. */
     if (!toolNonOvertake && typeof shadow_set_overtake_mode === "function") {
         shadow_set_overtake_mode(0);
-    }
-    if (typeof shadow_set_skip_led_clear === "function") {
-        shadow_set_skip_led_clear(0);
     }
 
     /* Return to tools menu — preserve hidden session state if one exists
@@ -3403,9 +3400,6 @@ function hideToolOvertake() {
     if (!toolNonOvertake && typeof shadow_set_overtake_mode === "function") {
         shadow_set_overtake_mode(0);
     }
-    if (typeof shadow_set_skip_led_clear === "function") {
-        shadow_set_skip_led_clear(0);
-    }
 
     /* Mark as hidden, not fully exited */
     toolOvertakeActive = false;
@@ -3433,14 +3427,8 @@ function completeOvertakeExit() {
         shadow_set_overtake_mode(0);
     }
 
-    /* Clear skip_led_clear AFTER overtake_mode drops to 0.
-     * The C-side overtake transition checks skip_led_clear to decide
-     * whether to restore its snapshot. With skip_led_clear still set,
-     * it skips the restore (good — the snapshot may be polluted from
-     * Move's MIDI_OUT during the session). Move reasserts its own LEDs. */
-    if (typeof shadow_set_skip_led_clear === "function") {
-        shadow_set_skip_led_clear(0);
-    }
+    /* The C-side consumes skip_led_clear when it observes the transition.
+     * Do not clear it here: JS and the audio thread run independently. */
 
     /* If exiting an interactive tool, return to tools menu instead of Move */
     if (toolOvertakeActive) {
@@ -3493,10 +3481,12 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
          * and everything else (pads, steps, knobs) passes through to Move normally.
          * If skip_led_clear, tell C-side to preserve LED state on overtake entry. */
         if (!skipOvertake && typeof shadow_set_overtake_mode === "function") {
-            const wantSkipLed = moduleInfo.capabilities && moduleInfo.capabilities.skip_led_clear;
-            if (wantSkipLed && typeof shadow_set_skip_led_clear === "function") {
-                shadow_set_skip_led_clear(1);
-                debugLog("loadOvertakeModule: skip_led_clear set");
+            const wantSkipLed = !!(moduleInfo.capabilities && moduleInfo.capabilities.skip_led_clear);
+            if (typeof shadow_set_skip_led_clear === "function") {
+                /* Set both branches explicitly so an interrupted prior tool
+                 * cannot leak native-LED ownership into this module. */
+                shadow_set_skip_led_clear(wantSkipLed ? 1 : 0);
+                if (wantSkipLed) debugLog("loadOvertakeModule: skip_led_clear set");
             }
             shadow_set_overtake_mode(2);  /* 2 = module mode (all events) */
             debugLog("loadOvertakeModule: overtake_mode=2 (module)");

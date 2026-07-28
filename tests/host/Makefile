@@ -14,7 +14,8 @@ LDFLAGS = -lpthread
 
 BUILD_DIR = ../../build/tests/host
 
-TARGETS = $(BUILD_DIR)/test_midi_inject_writer
+TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
+	$(BUILD_DIR)/test_overtake_native_led_repaint
 
 .PHONY: all test clean
 
@@ -25,6 +26,9 @@ $(BUILD_DIR):
 
 $(BUILD_DIR)/%: %.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/test_overtake_native_led_repaint: test_overtake_native_led_repaint.c ../../src/host/shadow_led_queue.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
 test: $(TARGETS)
 	@for t in $(TARGETS); do \
