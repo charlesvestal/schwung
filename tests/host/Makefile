@@ -28,7 +28,7 @@ $(BUILD_DIR)/%: %.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_overtake_native_led_repaint: test_overtake_native_led_repaint.c ../../src/host/shadow_led_queue.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
+	$(CC) $(CFLAGS) -D_POSIX_C_SOURCE=200809L $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
 test: $(TARGETS)
 	@for t in $(TARGETS); do \
