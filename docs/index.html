@@ -146,7 +146,7 @@ footer a:hover{border-bottom-color:var(--smack)}
   <div class="cards">
     <div class="card">
       <h3>Smack</h3>
-      <div class="meta"><span class="badge">Audio FX</span><span class="ver">v0.13.3</span></div>
+      <div class="meta"><span class="badge">Audio FX</span><span class="ver">v0.15.1</span></div>
       <p>Runs in Signal Chain slots and Master FX — glitch a synth, or the whole Move mix.</p>
       <ul>
         <li>Retroactive capture: loop the last 1 step – 16 bars you just played</li>
@@ -158,7 +158,7 @@ footer a:hover{border-bottom-color:var(--smack)}
     </div>
     <div class="card">
       <h3>Smack In</h3>
-      <div class="meta"><span class="badge">Voice</span><span class="ver">v0.13.3</span></div>
+      <div class="meta"><span class="badge">Voice</span><span class="ver">v0.15.0</span></div>
       <p>Standalone build that reads Move's selected input — mic, line-in, or USB-C — directly in one slot. No routing required.</p>
       <ul>
         <li>Same capture / slice / seed engine as Smack</li>
@@ -194,7 +194,7 @@ footer a:hover{border-bottom-color:var(--smack)}
   <div class="cards">
     <div class="card">
       <h3>Belt</h3>
-      <div class="meta"><span class="badge">Audio FX</span><span class="ver">v0.1.2</span></div>
+      <div class="meta"><span class="badge">Audio FX</span><span class="ver">v0.2.0</span></div>
       <p>Chain + Master FX build — processes whatever is upstream in the signal chain.</p>
       <ul>
         <li>Retune 0 = instant hard-tune robot, higher = transparent correction</li>
@@ -206,7 +206,7 @@ footer a:hover{border-bottom-color:var(--smack)}
     </div>
     <div class="card">
       <h3>Belt In</h3>
-      <div class="meta"><span class="badge">Voice</span><span class="ver">v0.1.2</span></div>
+      <div class="meta"><span class="badge">Voice</span><span class="ver">v0.2.0</span></div>
       <p>The live-vocals build: a standalone slot synth on the hardware input, same chain UI and engine.</p>
       <ul>
         <li>Sing straight into the Move's mic, line-in, or USB-C</li>
@@ -276,6 +276,41 @@ footer a:hover{border-bottom-color:var(--smack)}
         <li>Shift-banks add Drift, Fold, Bits, Noise, envelope curves, filter drive &amp; more</li>
       </ul>
       <div class="install">Custom install: <a href="https://github.com/timncox/schwung-mono-voice">timncox/schwung-mono-voice</a></div>
+    </div>
+
+    <div class="card">
+      <h3>Work</h3>
+      <div class="meta"><span class="badge">Audio FX</span><span class="ver">v0.1.0</span></div>
+      <p>Twenty FX machines inspired by the Elektron Tonverk, in two insert slots with two FX LFOs.</p>
+      <ul>
+        <li>Reverbs, delays, filters, a wavefolder, a frequency shifter, a barber-pole flanger and more</li>
+        <li>Each machine&rsquo;s eight parameters land on Move&rsquo;s eight knobs 1:1</li>
+        <li>Works in a Signal Chain slot and in Master FX</li>
+      </ul>
+      <div class="install">Custom install: <a href="https://github.com/timncox/schwung-work">timncox/schwung-work</a> &middot; <a href="https://timncox.github.io/schwung-work/">manual</a></div>
+    </div>
+
+    <div class="card">
+      <h3>Work In</h3>
+      <div class="meta"><span class="badge">Voice</span><span class="ver">v0.1.0</span></div>
+      <p>The same twenty machines, loaded into a chain slot as the source so Move&rsquo;s own effects come after them.</p>
+      <ul>
+        <li>Reads the live input directly &mdash; mic, line or USB-C</li>
+        <li>Same knob pages as Work, with the feedback guard applied</li>
+      </ul>
+      <div class="install">Custom install: <a href="https://github.com/timncox/schwung-work-in">timncox/schwung-work-in</a></div>
+    </div>
+
+    <div class="card">
+      <h3>Overwork</h3>
+      <div class="meta"><span class="badge">Overtake</span><span class="ver">v0.1.0</span></div>
+      <p>Full-surface Work: the twenty machines on the live input, with an Elektron-style step sequencer driving parameter locks.</p>
+      <ul>
+        <li>Hold a step button and turn a knob to parameter-lock it</li>
+        <li>64 steps, trig conditions, micro-timing and retrig</li>
+        <li>The pads become a twenty-machine palette</li>
+      </ul>
+      <div class="install">Custom install: <a href="https://github.com/timncox/schwung-overwork">timncox/schwung-overwork</a> &middot; <a href="https://timncox.github.io/schwung-work/">manual</a></div>
     </div>
   </div>
 </div></section>
