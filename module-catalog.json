@@ -1085,7 +1085,7 @@
       "description": "Quantized live-loop capture with 26 seeded per-slice glitch effects, slice reordering, A/B punch, step editing, and Pad Play",
       "author": "timncox",
       "component_type": "audio_fx",
-      "github_repo": "timncox/schwung-smack",
+      "github_repo": "timncox/schwung-smack-fx",
       "default_branch": "main",
       "asset_name": "smack-module.tar.gz",
       "min_host_version": "0.3.0"
@@ -1096,7 +1096,7 @@
       "description": "Standalone mic/line/USB-C build of Smack with the same 26-effect seeded slice engine, Pad Play, and browser step editor",
       "author": "timncox",
       "component_type": "sound_generator",
-      "github_repo": "timncox/schwung-smack-in",
+      "github_repo": "timncox/schwung-smack-voice",
       "default_branch": "main",
       "asset_name": "smack-in-module.tar.gz",
       "min_host_version": "0.3.0"
