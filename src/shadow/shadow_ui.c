@@ -534,8 +534,9 @@ static JSValue js_shadow_consume_resume_last_tool(JSContext *ctx, JSValueConst t
 }
 
 /* shadow_set_skip_led_clear(flag) -> void
- * Set skip_led_clear flag so the LED queue preserves pad colors on overtake entry.
- * Must be called BEFORE shadow_set_overtake_mode(2).
+ * Set skip_led_clear so the LED queue preserves native LEDs on overtake entry,
+ * or (when set immediately before mode 0) skips snapshot replay and lets Move
+ * repaint its native surface. The audio-side exit transition consumes the flag.
  */
 static JSValue js_shadow_set_skip_led_clear(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
