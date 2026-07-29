@@ -14610,7 +14610,26 @@ globalThis.tick = function() {
                             unloadModuleUi();
                             startInteractiveTool(tool, cmd.file_path);
                         } else {
-                            debugLog("open_tool_cmd: tool not found: " + cmd.tool_id);
+                            /* Fall back to the OVERTAKE list before giving up.
+                             * The two live in different scans — component_type
+                             * "tool" here, "overtake" there — so an overtake
+                             * module could never be opened this way, and the
+                             * command answered "tool not found" for an id that
+                             * plainly exists on disk. That blocks
+                             * pytest-schwung from launching one, which is the
+                             * difference between an unattended UI test run and
+                             * one that needs a person to press a button first. */
+                            const overtakes = scanForOvertakeModules() || [];
+                            const ot = overtakes.find(o => o.id === cmd.tool_id);
+                            if (ot) {
+                                debugLog("open_tool_cmd: " + cmd.tool_id +
+                                         " is an overtake module, loading it");
+                                unloadModuleUi();
+                                loadOvertakeModule(ot);
+                            } else {
+                                debugLog("open_tool_cmd: not found as tool or " +
+                                         "overtake module: " + cmd.tool_id);
+                            }
                         }
                     }
                 } catch (e) {
