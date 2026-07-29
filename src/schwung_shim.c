@@ -7129,6 +7129,57 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             }
         }
 
+        /* === TEST-BUS INJECT, OVERTAKE PATH ===
+         *
+         * An overtake module is fed from the raw HARDWARE buffer scanned
+         * above, while shadow_drain_midi_inject writes into Move's MAILBOX
+         * MIDI_IN for the firmware to read. Injected packets therefore could
+         * never reach an overtake module: measured on device 2026-07-29,
+         * pressing a palette pad through the test bus moved neither a
+         * parameter nor any of the 32 pad LEDs, and produced no OVERTAKE MIDI
+         * line in the log. Without this, pytest-schwung can read an overtake
+         * module's state but cannot drive its surface — which is most of what
+         * a UI test needs to do.
+         *
+         * So in overtake mode the inject ring is drained HERE instead, onto
+         * exactly the route a hardware press takes: publish to the shadow UI,
+         * and hand note events to the overtake DSP. shadow_drain_midi_inject
+         * returns early while overtake_mode is set, so the ring keeps its
+         * single consumer.
+         *
+         * Realtime: peek/pop are lock-free atomic loads over a preallocated
+         * ring, and the loop is bounded, so this adds no allocation and no
+         * unbounded work to the SPI callback. */
+        if (overtake_mode && shadow_midi_inject_shm) {
+            uint8_t pkt[4];
+            int budget = 16;            /* bounded: never stall the callback */
+            while (budget-- > 0 && shadow_midi_inject_peek(shadow_midi_inject_shm, pkt)) {
+                shadow_midi_inject_pop(shadow_midi_inject_shm);
+
+                const uint8_t hdr    = pkt[0];
+                const uint8_t status = pkt[1];
+                const uint8_t d1     = pkt[2];
+                const uint8_t d2     = pkt[3];
+                const uint8_t type   = status & 0xF0;
+
+                if (shadow_ui_midi_shm)
+                    shadow_ui_midi_publish(hdr, status, d1, d2);
+
+                /* Note events also reach the overtake DSP, matching what the
+                 * hardware path above does — otherwise an injected pad would
+                 * drive the UI but never the engine. */
+                if (type == 0x90 || type == 0x80) {
+                    uint8_t msg[3] = { status, d1, d2 };
+                    if (overtake_dsp_gen && overtake_dsp_gen_inst && overtake_dsp_gen->on_midi)
+                        overtake_dsp_gen->on_midi(overtake_dsp_gen_inst, msg, 3,
+                                                  MOVE_MIDI_SOURCE_INTERNAL);
+                    else if (overtake_dsp_fx && overtake_dsp_fx_inst && overtake_dsp_fx->on_midi)
+                        overtake_dsp_fx->on_midi(overtake_dsp_fx_inst, msg, 3,
+                                                 MOVE_MIDI_SOURCE_INTERNAL);
+                }
+            }
+        }
+
         /* Flush pending input LED queue (for cable 2 external MIDI in overtake mode) */
         shadow_flush_pending_input_leds();
     }
