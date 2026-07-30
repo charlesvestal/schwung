@@ -546,6 +546,13 @@ class SchwungBus:
         "param SET timeout",
         "param GET timeout",
         "DUMP_PARAM_FILE: GET timeout",
+        # The daemon found someone else's key in the slot when its response
+        # came back. shadow_ui is the other producer on that single slot and
+        # both sides claim it with check-then-write, so their writes can
+        # interleave. Retrying is right: the next attempt usually lands in a
+        # gap, and the alternative the daemon used to have was returning the
+        # value sitting beside the wrong key.
+        "raced with shadow_ui",
     )
 
     def _param_request_with_retry(self, line: str) -> str:
