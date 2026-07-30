@@ -53,7 +53,33 @@ int protocol_send_line(int fd, const char *s) {
 
 int protocol_reply(int fd, const char *line) {
     char buf[TESTD_LINE_MAX + 2];
-    snprintf(buf, sizeof(buf), "%s\n", line);
+    int n = snprintf(buf, sizeof(buf), "%s\n", line);
+    if (n < 0) return -1;
+    if ((size_t)n >= sizeof(buf)) n = (int)sizeof(buf) - 1;
+
+    /* A reply is ONE line. Anything embedded in it that looks like a line
+     * ending is not payload, it is a protocol break.
+     *
+     * This is a line protocol and the client reads it a line at a time, so a
+     * value carrying a newline arrives as several replies: the client takes
+     * the first fragment as this command's answer and every fragment after it
+     * as an answer to a LATER command. The socket never recovers. One bad
+     * value therefore does not fail one test, it fails the rest of the run.
+     *
+     * That is exactly what was seen on device. The param slot has two
+     * producers, so a GET could come back holding a module's BULK response —
+     * and the bulk wire format is "<count>\n" then "<len>\n<bytes>" records,
+     * newlines throughout. The client reported `unexpected reply 'seq_pos7'`,
+     * which is not a value at all: it is the tail of someone else's buffer
+     * being read as a fresh reply. Runs failed five to eight tests at a time
+     * from a single collision.
+     *
+     * Neutering the newlines keeps the desync from ever starting. The reply is
+     * still wrong when this fires — the caller's own checks are what catch
+     * that — but it is wrong for one command instead of all of them. */
+    for (int i = 0; i < n - 1; ++i) {
+        if (buf[i] == '\n' || buf[i] == '\r') buf[i] = ' ';
+    }
     return protocol_send_line(fd, buf);
 }
 

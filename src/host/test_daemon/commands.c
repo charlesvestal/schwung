@@ -464,13 +464,67 @@ static int cmd_set_open_tool(int fd, const char *args) {
 /* shadow_param request-id sequence. Single-producer relative to the
  * daemon (one client at a time per Phase 1 contract), so no atomics
  * needed. Starts at 1 — 0 is the "no response yet" sentinel that
- * shadow_param->response_id uses. */
+ * shadow_param->response_id uses.
+ *
+ * HIGH HALF, and that is the whole point. shadow_ui is the other producer on
+ * this slot and its shadow_param_next_request_id() is the same generator:
+ * ++, wrap to 1. Two independent counters over ONE id space, so both sides'
+ * `response_id == req_id` check matches the OTHER side's response as soon as
+ * the counters coincide — which they do constantly, because they both start
+ * at 1 and advance together.
+ *
+ * The daemon then reads a value it never asked for. Observed while running an
+ * overtake module that polls four keys 22 times a second: the test client got
+ * back "seq_pos7" and "eff_src4", which are not values at all — they are the
+ * module's BULK response buffer, key and value concatenated in the bulk wire
+ * format. Roughly half of on-device test runs failed that way, each one
+ * looking like a different module bug.
+ *
+ * Setting the top bit gives the daemon its own namespace. shadow_ui would have
+ * to issue 2^31 requests to reach it — at its observed rate, decades. Neither
+ * side can now match the other, and the failure mode degrades from "accepts
+ * the wrong data" to "times out", which both sides already handle.
+ *
+ * This does NOT close the underlying race: both producers still do
+ * check-then-write on request_type rather than an atomic claim, so their
+ * writes can still interleave. Closing that needs a claim value the shim
+ * agrees to ignore, and the shim clears any non-zero request_type it does not
+ * recognise — a change in the audio-path binary, which is not worth making
+ * for a test tool. What is left after this is a lost request, caught by the
+ * key check in testd_param_check_served(). */
+#define TESTD_PARAM_ID_SPACE 0x80000000u
+
 static uint32_t g_testd_param_seq = 0;
 
 static uint32_t testd_param_next_request_id(void) {
     g_testd_param_seq++;
     if (g_testd_param_seq == 0) g_testd_param_seq = 1;
-    return g_testd_param_seq;
+    return g_testd_param_seq | TESTD_PARAM_ID_SPACE;
+}
+
+/* Did the peer serve OUR key?
+ *
+ * Belt to the id namespace's braces, and it catches a different failure: the
+ * two producers claim the slot with check-then-write, so shadow_ui can write
+ * its key between our wait_idle() and our own key write. If the shim reads the
+ * slot in that window it serves a request that is half ours and half theirs.
+ * The id check cannot see that — the id is whatever was written last.
+ *
+ * The key can. If what the slot holds is not what we asked for, the value
+ * beside it is not ours either. Returns 1 when the response can be trusted. */
+static int testd_param_check_served(const char *key, uint32_t req_id) {
+    /* The key alone is not enough, because a BULK request carries its keys in
+     * `value` and leaves `key` untouched — so the slot can hold our key beside
+     * someone else's bulk payload and the comparison passes. Seen on device as
+     * a GET returning "4 7 seq_pos7 eff_src4 eff14 eff2": the module's bulk
+     * response, whole, under our key.
+     *
+     * request_id catches it. Ours has the top bit set (TESTD_PARAM_ID_SPACE);
+     * the other producer's never does, so anything that is not exactly our id
+     * means our request was overwritten between firing it and reading back. */
+    if (__atomic_load_n(&g_shm.param->request_id, __ATOMIC_ACQUIRE) != req_id)
+        return 0;
+    return strncmp(g_shm.param->key, key, SHADOW_PARAM_KEY_LEN - 1) == 0;
 }
 
 /* Busy-wait until shadow_param->request_type clears (peer drained the
@@ -556,6 +610,12 @@ static int testd_param_do_set(int fd, const char *key, const char *value, size_t
     int rc = testd_param_wait_response(req_id, TESTD_PARAM_TIMEOUT_MS);
     if (rc == 0) return protocol_reply_err(fd, "param SET timeout");
     if (rc < 0) return protocol_reply_err(fd, "param SET error from peer");
+    if (!testd_param_check_served(key, req_id)) {
+        /* Worse here than on a GET: a raced SET reports OK while the value
+         * went nowhere, and the test then measures the parameter it thought
+         * it had just written. */
+        return protocol_reply_err(fd, "param SET raced with shadow_ui (retry)");
+    }
     return protocol_reply(fd, "OK");
 }
 
@@ -625,6 +685,12 @@ static int cmd_get_param(int fd, const char *args) {
     int rc = testd_param_wait_response(req_id, TESTD_PARAM_TIMEOUT_MS);
     if (rc == 0) return protocol_reply_err(fd, "param GET timeout");
     if (rc < 0) return protocol_reply_err(fd, "param GET error from peer");
+    if (!testd_param_check_served(args, req_id)) {
+        /* The slot is holding someone else's request. Say so rather than
+         * returning the value sitting next to it — a wrong value is far worse
+         * than an error, because the caller believes it. */
+        return protocol_reply_err(fd, "param GET raced with shadow_ui (retry)");
+    }
 
     /* Response value must fit on the line. The cap is TESTD_LINE_MAX
      * (4 KiB). The snprintf below writes "OK %s" (3 bytes prefix +
