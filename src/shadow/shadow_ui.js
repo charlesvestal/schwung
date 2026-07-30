@@ -3764,6 +3764,23 @@ function getComponentHierarchy(slot, componentKey) {
     }
 }
 
+/* Does this hierarchy drive the DEVICE's editor, or is it published only for
+ * the browser?
+ *
+ * schwung-manager builds the Remote UI's control list from ui_hierarchy and has
+ * no other source for it — no hierarchy, no controls, just "No parameters
+ * available". On the device the same key means something stronger: publishing
+ * it diverts enterComponentEdit() to the generic hierarchy editor, and the
+ * module's own ui_chain.js never loads.
+ *
+ * So a module that ships a real chain UI had to choose one surface or the
+ * other, and the ones that chose the device (work, smack) have no Remote UI at
+ * all. "remote_only" splits the two meanings: publish for the browser, keep
+ * your own editor here. */
+function hierarchyDrivesDeviceEditor(hierarchy) {
+    return !!hierarchy && hierarchy.remote_only !== true;
+}
+
 /* Fetch chain_params metadata from a Master FX slot */
 function getMasterFxChainParams(fxSlot) {
     if (fxSlot < 0 || fxSlot >= 4) return [];
@@ -7510,10 +7527,12 @@ function enterComponentEdit(slotIndex, componentKey) {
         return;
     }
 
-    /* Try hierarchy editor first (for plugins with ui_hierarchy) */
+    /* Try hierarchy editor first (for plugins with ui_hierarchy). A
+     * remote_only hierarchy is for the browser and does not claim this
+     * screen — fall through to the module's own ui_chain.js. */
     const hierarchy = getComponentHierarchy(slotIndex, componentKey);
     debugLog(`enterComponentEdit: hierarchy=${hierarchy ? 'found' : 'null'}`);
-    if (hierarchy) {
+    if (hierarchyDrivesDeviceEditor(hierarchy)) {
         debugLog(`enterComponentEdit: calling enterHierarchyEditor`);
         enterHierarchyEditor(slotIndex, componentKey);
         return;
@@ -7687,8 +7706,9 @@ function enterMasterFxHierarchyEditor(fxSlot) {
     if (fxSlot < 0 || fxSlot >= 4) return;
 
     const hierarchy = getMasterFxHierarchy(fxSlot);
-    if (!hierarchy) {
-        /* No hierarchy - just return, module selection is available */
+    if (!hierarchyDrivesDeviceEditor(hierarchy)) {
+        /* No hierarchy (or a browser-only one) - just return, module
+         * selection is available */
         return;
     }
 
@@ -8474,7 +8494,7 @@ function buildKnobContextForKnob(knobIndex) {
 
             /* Try ui_hierarchy first for explicit knob mappings */
             const hierarchy = getMasterFxHierarchy(selectedMasterFxComponent);
-            if (hierarchy && hierarchy.levels) {
+            if (hierarchyDrivesDeviceEditor(hierarchy) && hierarchy.levels) {
                 let levelDef = hierarchy.levels.root || hierarchy.levels[Object.keys(hierarchy.levels)[0]];
                 /* If root has no knobs but has children, use first child level for knob mapping */
                 if (levelDef && (!levelDef.knobs || levelDef.knobs.length === 0) && levelDef.children) {
@@ -11348,7 +11368,7 @@ function handleSelect() {
                     if (moduleData && moduleData.module) {
                         /* Module is loaded - try hierarchy editor first */
                         const hierarchy = getMasterFxHierarchy(selectedMasterFxComponent);
-                        if (hierarchy) {
+                        if (hierarchyDrivesDeviceEditor(hierarchy)) {
                             enterMasterFxHierarchyEditor(selectedMasterFxComponent);
                         } else {
                             /* No hierarchy - enter module selection to swap */

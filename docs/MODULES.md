@@ -889,6 +889,36 @@ Modules expose a navigable parameter hierarchy to the Shadow UI via `ui_hierarch
 }
 ```
 
+### `remote_only` — publish for the browser, keep your own device editor
+
+A hierarchy means two different things to the two surfaces that read it.
+
+schwung-manager builds the **Remote UI's** control list from `ui_hierarchy` and
+has no other source for it: `chain_params` supplies metadata for keys the
+hierarchy already lists, so a module without a hierarchy renders "No parameters
+available" in the browser no matter what else it exposes.
+
+On the **device**, publishing it is stronger than a description — it is a
+claim. `enterComponentEdit()` hands the screen to the generic hierarchy editor
+and the module's own `ui_chain.js` never loads.
+
+That forced a module shipping a real chain UI to pick one surface. Set
+`remote_only` on the hierarchy to have it addressed only to the browser:
+
+```json
+{"remote_only": true, "levels": {"root": {"name": "Work", "params": [...]}}}
+```
+
+The device then falls through to `ui_chain.js` exactly as if no hierarchy were
+published, and the Remote UI is unaffected — it ignores the field. Only the
+literal `true` counts; anything else leaves the device editor claimed, so a
+module cannot lose its on-device UI to a stray `"true"`.
+
+Use it when your `ui_chain.js` is better than the generic editor would be —
+typically when labels follow a runtime selection. The generic editor re-reads
+`chain_params` only on preset change or for keys matching `/_rate_mode$/`, so a
+module whose knob labels change with a loaded machine will show stale ones.
+
 ### Level Fields
 
 | Field | Description |
