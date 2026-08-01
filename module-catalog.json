@@ -1177,6 +1177,39 @@
       "default_branch": "main",
       "asset_name": "noisemaker-module.tar.gz",
       "min_host_version": "0.11.0"
+    },
+    {
+      "id": "work",
+      "name": "Work",
+      "description": "Twenty-six Tonverk-inspired machines in two insert slots — twenty-one effects and five sample sources — with three FX LFOs, a modulation envelope and MIDI CC/NRPN",
+      "author": "timncox",
+      "component_type": "audio_fx",
+      "github_repo": "timncox/schwung-work",
+      "default_branch": "main",
+      "asset_name": "work-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
+      "id": "work-in",
+      "name": "Work In",
+      "description": "The same twenty-six machines on the live input — mic, line or USB-C — with feedback protection",
+      "author": "timncox",
+      "component_type": "sound_generator",
+      "github_repo": "timncox/schwung-work-in",
+      "default_branch": "main",
+      "asset_name": "work-in-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
+      "id": "overwork",
+      "name": "Overwork",
+      "description": "Full-surface Work: hold a step and turn a knob to parameter-lock it. Sample browser, 16-pattern bank, song mode, live recording and presets",
+      "author": "timncox",
+      "component_type": "overtake",
+      "github_repo": "timncox/schwung-overwork",
+      "default_branch": "main",
+      "asset_name": "overwork-module.tar.gz",
+      "min_host_version": "0.3.0"
     }
   ]
 }
