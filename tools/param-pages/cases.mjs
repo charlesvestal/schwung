@@ -127,6 +127,9 @@ export function renderCases() {
             layout: c.layout || LAYOUT_DIAL,
             revealValues: !!c.revealValues,
             rect: c.rect || null,
+            /* Real section ids, so the page rule in a snapshot is the one the
+             * device draws rather than an ungrouped approximation. */
+            pageGroups: pages.map((p) => (p.level == null ? p.kind : p.level)),
             modulated: c.modulated === undefined ? null : ((k) => k === picked.p.keys[c.modulated]),
         });
         if (fb.clipped() > 0) throw new Error(`${c.name}: drew ${fb.clipped()} px outside the display`);

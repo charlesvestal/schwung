@@ -466,6 +466,8 @@ function drawEmptyCell(ctx, cellX, y, cellW, h) {
  * @param {number} [o.touched]  physical knob 0-7 currently held, or -1
  * @param {Array}  [o.decorations] per-slot { value, locked } overrides — how a
  *                 sequencer shows the held step's parameter locks
+ * @param {Array} [o.pageGroups] one section id per page, so the page rule can
+ *                 show section structure rather than an undifferentiated row
  * @param {Function} [o.modulated] (key) => boolean; marks params an LFO or
  *                 modulation source is driving, as the list editor's "~" does
  * @param {string} [o.layout]   LAYOUT_DIAL (default) or LAYOUT_BAR
@@ -479,7 +481,7 @@ export function renderPage(ctx, o) {
     const touched = typeof o.touched === "number" ? o.touched : -1;
     const page = o.page;
 
-    drawHeader(ctx, rect, o.title || "", page ? page.name : "", o.pageIndex | 0, Math.max(1, o.pageCount | 0));
+    drawHeader(ctx, rect, o.title || "", page ? page.name : "", o.pageIndex | 0, Math.max(1, o.pageCount | 0), o);
 
     if (!page || !page.keys) return;
 
@@ -662,7 +664,7 @@ export function renderPicker(ctx, { rect, entries, index, title }) {
  * (preset browser, items list) can reuse the same chrome and the page position
  * stays visible everywhere.
  */
-export function drawHeader(ctx, rect, title, pageName, pageIndex, pageCount) {
+export function drawHeader(ctx, rect, title, pageName, pageIndex, pageCount, o) {
     const x = rect.x, y = rect.y, w = rect.w;
 
     /* The page name gets first claim on the width. It is what changes as you
@@ -677,22 +679,70 @@ export function drawHeader(ctx, rect, title, pageName, pageIndex, pageCount) {
     const leftRoom = w - (right ? ctx.textWidth(right) + 4 : 1);
     if (leftRoom > 8) ctx.print(x + 1, y + HEADER_TEXT_Y, fitText(ctx, title, leftRoom), 1);
 
-    /* One segment per page, current filled. Above ~24 pages the segments stop
-     * being individually readable, so fall back to a plain rule with a
-     * proportional marker. */
+    /* One segment per page, the current one taller — and the SEPARATORS carry
+     * the section structure that Shift+jog steps through: pages of one section
+     * sit flush against each other, and a 1 px gap marks where the next section
+     * begins. A wide block is therefore a multi-page section, so the bar reads
+     * as a map of the module rather than an undifferentiated row of ticks.
+     * (Approach taken from Movy, which solved the same problem first.)
+     *
+     * A gap is a separator, never a spacer: 1 px or nothing. Leftover pixels go
+     * into the SEGMENTS, spread so no two differ by more than one — otherwise
+     * the last page ends up several times wider than the rest, which reads as a
+     * bug. Not paying for a separator between pages of the same section is also
+     * what makes 76 pages fit at all: minijv needs 76 + 15 rather than 76 + 75.
+     */
     const ry = y + RULE_Y;
-    if (pageCount > 1 && pageCount <= 24) {
-        const seg = w / pageCount;
-        for (let i = 0; i < pageCount; i++) {
-            const sx = Math.round(x + i * seg);
-            const sw = Math.max(1, Math.round(x + (i + 1) * seg) - sx - 1);
-            ctx.fillRect(sx, ry, sw, i === pageIndex ? 3 : 1, 1);
-        }
-    } else {
-        ctx.fillRect(x, ry, w, 1, 1);
-        if (pageCount > 1) {
-            const mx = Math.round(x + (w - 8) * (pageIndex / (pageCount - 1)));
-            ctx.fillRect(mx, ry, 8, 3, 1);
-        }
+    if (pageCount <= 1) { ctx.fillRect(x, ry, w, 1, 1); return; }
+
+    const groups = (o && o.pageGroups && o.pageGroups.length === pageCount) ? o.pageGroups : null;
+    let boundaries = 0;   /* section changes, i.e. how many separators we owe */
+    for (let i = 1; i < pageCount; i++) {
+        if (!groups || groups[i] !== groups[i - 1]) boundaries++;
     }
+
+    /* Separators are the first thing to go. Section grouping buys back a lot of
+     * width — minijv pays 15 boundaries instead of 75 — but at 76 pages across
+     * 60 levels even that does not fit, and a visible PAGE matters more than a
+     * visible separator. Only when a page cannot have one pixel does the ruler
+     * become a position marker. */
+    let available = w - boundaries;
+    if (Math.floor(available / pageCount) < 1) {
+        boundaries = 0;
+        available = w;
+    }
+    const base = Math.floor(available / pageCount);
+    if (base < 1) {
+        ctx.fillRect(x, ry, w, 1, 1);
+        const mx = Math.round(x + (w - 8) * (pageIndex / (pageCount - 1)));
+        ctx.fillRect(mx, ry, 8, 3, 1);
+        return;
+    }
+    const separated = boundaries > 0;
+    let extra = available - base * pageCount;
+
+    /* Coalesce: pages that sit flush at the same height are one rectangle, not
+     * one each. Same pixels, and it keeps a 76-page module off the draw-call
+     * budget — every pixel crosses a QuickJS->C binding on device. */
+    let cx = x;
+    let runStart = -1, runW = 0, runH = 0;
+    const flush = () => {
+        if (runStart >= 0 && runW > 0) ctx.fillRect(runStart, ry, runW, runH, 1);
+        runStart = -1; runW = 0;
+    };
+    for (let i = 0; i < pageCount; i++) {
+        const gap = separated && i > 0 && (!groups || groups[i] !== groups[i - 1]);
+        if (gap) { flush(); cx += 1; }
+        const segW = base + (extra > 0 ? 1 : 0);
+        if (extra > 0) extra--;
+        const h = i === pageIndex ? 3 : 1;
+        if (runStart >= 0 && h === runH) {
+            runW += segW;
+        } else {
+            flush();
+            runStart = cx; runW = segW; runH = h;
+        }
+        cx += segW;
+    }
+    flush();
 }
