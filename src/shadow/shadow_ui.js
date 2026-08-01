@@ -15009,6 +15009,12 @@ globalThis.tick = function() {
         case VIEWS.HIERARCHY_EDITOR:
             drawHierarchyEditor();
             break;
+        /* The grid draws grids; every other page kind it plans (preset browser,
+         * items list, mode select, child selector) belongs to the list editor,
+         * which drawParamPages declines by returning false. */
+        case VIEWS.PARAM_PAGES:
+            if (!drawParamPages()) drawHierarchyEditor();
+            break;
         case VIEWS.CANVAS:
             drawCanvasPreview();
             break;
