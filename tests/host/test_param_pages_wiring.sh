@@ -44,7 +44,27 @@ const want = (re, what, src) => { if (!(re).test(src || s)) fail(what); };
 /* ---- the view exists and is reachable -------------------------------- */
 want(/PARAM_PAGES:\s*"parampages"/, "VIEWS.PARAM_PAGES is not declared");
 want(/from '\''\.\/shadow_ui_param_pages\.mjs'\''/, "the view module is not imported");
-want(/case VIEWS\.PARAM_PAGES:\s+if \(!drawParamPages\(\)\)/, "the view is never drawn");
+/* The view must be drawn from the MAIN render switch, not only from the co-run
+ * one. shadow_ui.js has five `switch (view)` blocks and two of them contain a
+ * line reading `case VIEWS.HIERARCHY_EDITOR: drawHierarchyEditor(); break;` —
+ * an earlier version of this wiring landed the case in dispatchCoRunDraw() and
+ * this test passed anyway, because it only asked whether the case existed
+ * ANYWHERE. On device that meant the view was entered, the controller ran and
+ * announced pages, and nothing was ever drawn. The main switch lives inside
+ * globalThis.tick, so the case has to appear after that definition. */
+{
+  const drawCases = [...s.matchAll(/case VIEWS\.PARAM_PAGES:/g)].map((m) => m.index);
+  if (!drawCases.length) fail("the view is never drawn");
+  const tickAt = s.indexOf("globalThis.tick = function()");
+  if (tickAt < 0) fail("could not locate globalThis.tick to check the render switch");
+  if (!drawCases.some((i) => i > tickAt)) {
+    fail("PARAM_PAGES is only drawn from the co-run dispatcher — the main render " +
+         "switch inside globalThis.tick has no case, so entering the view draws nothing");
+  }
+  if (!/case VIEWS\.PARAM_PAGES:[\s\S]{0,120}drawParamPages\(\)/.test(s)) {
+    fail("the PARAM_PAGES case does not call drawParamPages");
+  }
+}
 want(/if \(view === VIEWS\.PARAM_PAGES\) tickParamPages\(\)/, "the view is never ticked — reads would never happen");
 want(/view === VIEWS\.PARAM_PAGES && paramPagesActive\(\)[\s\S]{0,200}handleParamPagesMidi\(data\)/,
      "the view never receives MIDI");
