@@ -102,6 +102,9 @@ export function createFakeDevice({ id, prefix = "synth", initial = {} } = {}) {
         setLoading: (on) => { loading = !!on; },
         /** Swap the loaded module, as an async load finishing with a bigger tree. */
         becomeModule: (newId) => { mod = moduleById(newId); seed(); },
+        /** Rewrite the loaded module's chain_params, as a DSP does when it
+         *  finishes loading and republishes real enum options. */
+        patchChainParams: (fn) => { mod = { ...mod, chain_params: fn(JSON.parse(JSON.stringify(mod.chain_params || []))) }; },
         /** Make a key serve a stale value for the next `n` reads. */
         lagParam: (bare, staleValue, n) => { lag[bare] = { remaining: n, value: String(staleValue) }; },
         get moduleId() { return mod.id; },

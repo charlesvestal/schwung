@@ -38,6 +38,14 @@ import { announcePage, announceTouch, announceTurn, announcePageContents } from 
 /** Ticks a key ignores incoming reads after being turned (~200 ms at 44 Hz). */
 export const SETTLE_TICKS = 9;
 
+/** How many times a page will re-read the contract waiting for late metadata. */
+export const META_RETRY_LIMIT = 8;
+/** Ticks between those attempts (~1 s at the shadow UI's 344 Hz tick).
+ *  Paced by wall-clock rather than by page sweeps: an 8-key page wraps every
+ *  9 ticks, which would burn the whole retry budget in under two seconds —
+ *  long before a module that loads a ROM has finished. */
+export const META_RETRY_INTERVAL_TICKS = 344;
+
 export function createController(io = {}) {
     const getParam = io.getParam || (() => null);
     const setParam = io.setParam || (() => {});
@@ -84,6 +92,12 @@ export function createController(io = {}) {
          * chain_params. Folded into the read cursor rather than polled
          * separately, so it costs one slot in the rotation, not a frame. */
         presetName: null,
+        /* Metadata that arrives after the module reports ready. osirus loads a
+         * ROM asynchronously and publishes `rom_index` as ["(loading)"]; baked
+         * once at load time, that enum would read "(loading)" for the rest of
+         * the session. Re-resolution is bounded and latching — see maybeResettle. */
+        metaRetries: 0,
+        metaSettled: false,
         /* Per-section memory of the sub-page you were last on. Elektron's page
          * buttons work this way — pressing [FLTR] returns you to the FLTR page
          * you were using, not to FLTR 1 — and it matters most on the modules
@@ -110,6 +124,7 @@ export function createController(io = {}) {
      * actually changed, and keeps the user's place when it does.
      */
     function load({ slot = 0, component = "synth", prefix, mode, visible } = {}) {
+        s.lastLoadOpts = { mode, visible };
         s.slot = slot;
         s.component = component;
         s.prefix = prefix || component;
@@ -127,6 +142,8 @@ export function createController(io = {}) {
         s.metaIndex = buildMetaIndex({ hierarchy, chainParams });
         s.values = Object.create(null);
         s.cursor = 0;
+        s.metaRetries = 0;
+        s.metaSettled = false;
         s.knobStates = Object.create(null);
         /* A rebuild after a module finishes loading shifts every index, so land
          * by name rather than by position; a first load lands on a grid. */
@@ -138,6 +155,41 @@ export function createController(io = {}) {
     /** Poll for a contract that changed underneath us (async ROM/sample loads). */
     function reloadIfChanged(opts) {
         return load({ slot: s.slot, component: s.component, prefix: s.prefix, ...opts });
+    }
+
+    /**
+     * Is any enum on the current page still showing a placeholder?
+     *
+     * A module that is still loading publishes a stand-in option set — exactly
+     * one entry wrapped in parentheses, "(loading)" — or no options at all.
+     * Those are the two shapes worth waiting for; anything else is a real,
+     * settled declaration.
+     */
+    function metaUnsettled() {
+        const p = page();
+        if (!p || p.kind !== PAGE_KNOBS || !s.metaIndex) return false;
+        for (const key of p.keys) {
+            const meta = s.metaIndex.getOrGuess(key);
+            if (meta.kind !== KIND_ENUM) continue;
+            const o = meta.options;
+            if (!o) return true;
+            if (o.length === 1 && /^\(.*\)$/.test(String(o[0]))) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Bounded, latching re-resolve of late metadata.
+     *
+     * Costs one contract read per interval while something is unsettled and
+     * NOTHING once it settles or the retry budget runs out — a module whose
+     * enum legitimately reads "(none)" must not make us poll forever.
+     */
+    function maybeResettle(reload) {
+        if (s.metaSettled || s.metaRetries >= META_RETRY_LIMIT) return false;
+        if (!metaUnsettled()) { s.metaSettled = true; return false; }
+        s.metaRetries++;
+        return reload();
     }
 
     /* ------------------------------------------------------------ reading */
@@ -157,6 +209,12 @@ export function createController(io = {}) {
         const stops = p.keys.length + 1;
         const at = s.cursor % stops;
         s.cursor = (s.cursor + 1) % stops;
+
+        /* Give late metadata a chance to arrive, on a wall-clock cadence. */
+        if (s.tickCount % META_RETRY_INTERVAL_TICKS === 0) {
+            maybeResettle(() => reloadIfChanged(s.lastLoadOpts));
+        }
+
         if (at === p.keys.length) {
             const pn = getParam(`${s.prefix}:preset_name`);
             s.presetName = (pn && pn.length) ? pn : null;

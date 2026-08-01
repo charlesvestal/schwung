@@ -130,7 +130,12 @@ function balancedChunk(arr, size) {
 export function planPages({ hierarchy, chainParams, mode, visible } = {}) {
     const warnings = [];
     const isVisible = (cond, lvl) => (cond ? (visible ? !!visible(cond, lvl) : true) : true);
-    const fingerprint = fingerprintOf([hierarchy || null, (chainParams || []).length, mode || null]);
+    /* The fingerprint covers chain_params CONTENT, not just its length. A
+     * module that finishes loading and republishes real enum options in place
+     * (osirus swaps rom_index from ["(loading)"] to the Virus models) changes no
+     * count and no level — hashing the length alone would call that unchanged
+     * and leave the placeholder on screen for the rest of the session. */
+    const fingerprint = fingerprintOf([hierarchy || null, chainParams || null, mode || null]);
 
     const levels = (hierarchy && hierarchy.levels && typeof hierarchy.levels === "object")
         ? hierarchy.levels : null;
@@ -224,6 +229,19 @@ export function planPages({ hierarchy, chainParams, mode, visible } = {}) {
      * fleet that no module has two genuinely distinct pages sharing a key list. */
     const renderedKnobSigs = new Set();
     const emitted = new Set();   /* every key placed on a grid page so far */
+
+    /* Keys a level uses to drive its OWN page kind — the preset index, the item
+     * selector, the mode. They are reachable through that page and must not also
+     * appear as a knob: browsing 2427 presets by encoder is the thing the preset
+     * page exists to avoid. */
+    const selectorKeys = new Set();
+    for (const lvl of Object.values(levels)) {
+        if (!lvl || typeof lvl !== "object") continue;
+        for (const f of ["list_param", "count_param", "name_param", "items_param", "select_param"]) {
+            if (lvl[f]) selectorKeys.add(lvl[f]);
+        }
+    }
+    if (hierarchy.mode_param) selectorKeys.add(hierarchy.mode_param);
     const visited = new Set();
 
     function emitLevel(levelKey, prefix) {
@@ -282,7 +300,21 @@ export function planPages({ hierarchy, chainParams, mode, visible } = {}) {
          * relative to the list editor, so the level's remaining editable params
          * follow its authored knobs as continuation pages. */
         const authored = knobKeys(lvl).filter((k) => !isHiddenParam(lvl, k, isVisible));
-        const extra = paramKeys(lvl).filter((k) => !authored.includes(k) && !isHiddenParam(lvl, k, isVisible));
+        /* Overflow keys are filtered where authored knobs are not: a knob the
+         * author placed is intent and is honoured whatever it is called, but a
+         * key we are pulling in from params[] has to earn its cell.
+         *
+         *  - a selector param belongs to its own page kind, not a knob
+         *  - `ui_`-prefixed keys are module UI state (ui_current_pad,
+         *    ui_preset_path), not musical parameters — a naming convention the
+         *    ecosystem already uses, and one Movy formalised independently
+         *  - a key already placed elsewhere is not worth a second cell */
+        const extra = paramKeys(lvl).filter((k) =>
+            !authored.includes(k) &&
+            !isHiddenParam(lvl, k, isVisible) &&
+            !selectorKeys.has(k) &&
+            !/^ui_/.test(k) &&
+            !emitted.has(k));
 
         /* Dedupe applies to the AUTHORED key list only. 16 modules publish a
          * `children` alias level that re-lists root's knobs; suppressing the
@@ -295,7 +327,7 @@ export function planPages({ hierarchy, chainParams, mode, visible } = {}) {
         if (!dupAuthored && authored.length > 0) renderedKnobSigs.add(sig);
 
         const authoredKeys = dupAuthored ? [] : authored;
-        const extraKeys = dupAuthored ? extra.filter((k) => !emitted.has(k)) : extra;
+        const extraKeys = extra;
 
         /* Authored keys keep their exact 8-per-page grouping (see
          * balancedChunk); the remainder is spread evenly so a level with nine
