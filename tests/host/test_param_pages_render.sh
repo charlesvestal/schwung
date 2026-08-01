@@ -261,6 +261,86 @@ Promise.all([
     if (fb2.clipped() > 0) fail("the picker clipped at the end of the list");
   }
 
+  /* ---- 3e2. the page rule is a map, not a row of ticks ------------------ */
+  {
+    /* Measured off the rendered pixels, because this is a geometry problem and
+     * every previous attempt at it was wrong in a way only pixels show. */
+    const readRule = (fb, y) => {
+      const runs = [];
+      let run = null;
+      for (let x = 0; x < 128; x++) {
+        const lit = fb.pixels[y * 128 + x];
+        if (lit && !run) run = { start: x, len: 1 };
+        else if (lit) run.len++;
+        else if (run) { runs.push(run); run = null; }
+      }
+      if (run) runs.push(run);
+      return runs;
+    };
+
+    for (const [id, pageIdx] of [["minijv", 20], ["surge", 10], ["osirus", 5], ["obxd", 3]]) {
+      const mod = fx.modules.find((m) => m.id === id);
+      const { pages } = P.planPages({ hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params });
+      const metaIndex = M.buildMetaIndex({ hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params });
+      const groups = pages.map((p) => (p.level == null ? p.kind : p.level));
+      const page = pages[pageIdx];
+      const fb = H.createFramebuffer();
+      R.renderPage(H.drawContext(fb), {
+        page, metaIndex, values: {}, title: "T", pageIndex: pageIdx,
+        pageCount: pages.length, pageGroups: groups,
+      });
+
+      const runs = readRule(fb, 8);
+      if (!runs.length) fail(id + ": the page rule drew nothing");
+
+      /* It spans the full width — no margin at either end. */
+      if (runs[0].start !== 0) fail(id + ": the page rule starts at x=" + runs[0].start + ", not 0");
+      const last = runs[runs.length - 1];
+      if (last.start + last.len !== 128) fail(id + ": the page rule stops at " + (last.start + last.len) + ", not 128");
+
+      /* Any gap that IS drawn is exactly one pixel — a separator, never a
+       * spacer. (A dense module drops separators entirely and draws one solid
+       * bar; that is the trade, not a bug.) */
+      for (let i = 1; i < runs.length; i++) {
+        const gap = runs[i].start - (runs[i - 1].start + runs[i - 1].len);
+        if (gap !== 1) fail(id + ": found a " + gap + "px gap in the page rule; separators must be 1px");
+      }
+
+      /* Every module gets a real per-page ruler rather than the position-marker
+       * fallback: separators are dropped before pages are, because a visible
+       * page matters more than a visible separator. The marker fallback draws
+       * one 8px block on an otherwise 1px rule, which is what this rejects. */
+      /* The fallback draws a fixed 8px block regardless of page count; a real
+       * ruler draws ONE PAGE, so its marker is about w/pageCount wide. At 17
+       * pages that is legitimately ~8px, so compare against the page width
+       * rather than against a constant. */
+      let tallW = 0;
+      for (let x = 0; x < 128; x++) if (fb.pixels[10 * 128 + x]) tallW++;
+      const perPage = Math.ceil(128 / pages.length);
+      if (tallW > perPage + 1) {
+        fail(id + " (" + pages.length + " pages): position marker is " + tallW +
+             "px but one page is only " + perPage + "px — it fell back to the marker");
+      }
+    }
+
+    /* The current page is drawn taller, or there is no "you are here". */
+    {
+      const mod = fx.modules.find((m) => m.id === "obxd");
+      const { pages } = P.planPages({ hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params });
+      const metaIndex = M.buildMetaIndex({ hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params });
+      const groups = pages.map((p) => (p.level == null ? p.kind : p.level));
+      const fb = H.createFramebuffer();
+      R.renderPage(H.drawContext(fb), {
+        page: pages[3], metaIndex, values: {}, title: "T", pageIndex: 3,
+        pageCount: pages.length, pageGroups: groups,
+      });
+      let tall = 0;
+      for (let x = 0; x < 128; x++) if (fb.pixels[10 * 128 + x]) tall++;
+      if (tall === 0) fail("no page in the rule is drawn taller — there is no position indicator");
+      if (tall > 40) fail("too much of the page rule is drawn tall: " + tall + "px");
+    }
+  }
+
   /* ---- 3f. the first-run hint ------------------------------------------ */
   {
     const fb = H.createFramebuffer();

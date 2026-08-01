@@ -473,12 +473,23 @@ export function createController(io = {}) {
             touched: s.touched, decorations: s.decorations,
             layout: s.layout, revealValues: s.revealValues, rect,
             modulated: (key) => isModulated(fullKey(key)),
+            /* Section ids for the page rule, so it groups the way Shift+jog
+             * navigates. Cached — it only changes when the page set does. */
+            pageGroups: pageGroups(),
         });
     }
 
     /** Read the current page aloud — the gesture that replaces a glance. */
     function announceContents() {
         announce(announcePageContents(page(), s.metaIndex, s.values, s.decorations));
+    }
+
+    let groupCache = null;
+    function pageGroups() {
+        if (groupCache && groupCache.fp === s.fingerprint) return groupCache.groups;
+        const groups = s.pages.map((p) => (p.level === null || p.level === undefined) ? p.kind : p.level);
+        groupCache = { fp: s.fingerprint, groups };
+        return groups;
     }
 
     function announcePageChange() {
