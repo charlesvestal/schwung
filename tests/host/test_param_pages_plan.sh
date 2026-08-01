@@ -44,6 +44,7 @@ import("./src/shared/param_pages/page_plan.mjs").then(async (m) => {
   let totalPages = 0;
   const uncovered = [];
   const dupNames = [];
+  const deliberatelyExcluded = new Set();
   for (const mod of fx.modules) {
     const h = mod.ui_hierarchy;
     const r = planPages({ hierarchy: h, chainParams: mod.chain_params });
@@ -54,8 +55,38 @@ import("./src/shared/param_pages/page_plan.mjs").then(async (m) => {
     if (names.length !== new Set(names).size) dupNames.push(mod.id);
 
     /* Declared = every editable key any level lists, on a knob or not.
-     * child_prefix levels are excluded: their keys are synthesised per
-     * instance at runtime (prefix + index + key), not enumerable here. */
+     *
+     * child_prefix levels are excluded: their keys are synthesised per instance
+     * at runtime (prefix + index + key), not enumerable here.
+     *
+     * Two further exclusions are DELIBERATE, and both are narrow. A key the
+     * author put on knobs[] is always honoured; only keys we pull in from
+     * params[] are filtered:
+     *   - selector params (list/count/name/items/select/mode) drive their own
+     *     page kind, and browsing 2427 presets by encoder is what the preset
+     *     page exists to avoid
+     *   - `ui_`-prefixed keys are module UI state, not musical parameters
+     * Both remain reachable in the list editor, which renders params[] verbatim.
+     * The count is asserted below so the filter cannot quietly widen. */
+    const authoredAnywhere = new Set();
+    for (const lvl of Object.values((h && h.levels) || {})) {
+      if (!lvl || typeof lvl !== "object") continue;
+      for (const k of (lvl.knobs || [])) {
+        const kk = typeof k === "string" ? k : (k && k.key);
+        if (kk) authoredAnywhere.add(kk);
+      }
+    }
+    const selectors = new Set();
+    for (const lvl of Object.values((h && h.levels) || {})) {
+      if (!lvl || typeof lvl !== "object") continue;
+      for (const f of ["list_param", "count_param", "name_param", "items_param", "select_param"]) {
+        if (lvl[f]) selectors.add(lvl[f]);
+      }
+    }
+    if (h && h.mode_param) selectors.add(h.mode_param);
+    const excludedOnPurpose = (k) =>
+      !authoredAnywhere.has(k) && (selectors.has(k) || /^ui_/.test(k));
+
     const declared = new Set();
     for (const lvl of Object.values((h && h.levels) || {})) {
       if (!lvl || typeof lvl !== "object" || lvl.child_prefix) continue;
@@ -66,7 +97,8 @@ import("./src/shared/param_pages/page_plan.mjs").then(async (m) => {
       for (const p of (lvl.params || [])) {
         if (p && p.level) continue;
         const kk = typeof p === "string" ? p : (p && p.key);
-        if (kk) declared.add(kk);
+        if (kk && !excludedOnPurpose(kk)) declared.add(kk);
+        if (kk && excludedOnPurpose(kk)) deliberatelyExcluded.add(mod.id + ":" + kk);
       }
     }
     const reachable = keysOf(r.pages);
@@ -74,6 +106,14 @@ import("./src/shared/param_pages/page_plan.mjs").then(async (m) => {
     if (missing.length) uncovered.push(mod.id + " (" + missing.length + "): " + missing.slice(0, 4).join(","));
   }
   if (uncovered.length) fail("declared keys unreachable from any page:\n  " + uncovered.join("\n  "));
+  /* The deliberate exclusions must stay a handful. If this grows, the filter is
+   * swallowing musical parameters and the 28% regression is back by the side
+   * door. */
+  if (deliberatelyExcluded.size > 25) {
+    fail("the grid is excluding " + deliberatelyExcluded.size + " declared keys, which is too many to be selectors and UI state: " +
+         [...deliberatelyExcluded].slice(0, 8).join(", "));
+  }
+  if (deliberatelyExcluded.size === 0) fail("the exclusion filter matched nothing — it is not wired up");
   if (dupNames.length) fail("duplicate knob-page names within: " + dupNames.join(", "));
   if (totalPages < 500) fail("fleet page count collapsed to " + totalPages + " (expected ~600)");
 

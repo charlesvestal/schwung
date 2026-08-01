@@ -353,6 +353,52 @@ Promise.all([
     if (ctl.pageIndex !== start + 1) fail("section memory hijacked a fine jog");
   }
 
+  /* ---- 9f. metadata that arrives after the module reports ready --------- */
+  {
+    /* osirus loads a ROM asynchronously and publishes rom_index as
+     * ["(loading)"]. Baked once at load time, that enum reads "(loading)" for
+     * the rest of the session — it is in the fleet capture that way. */
+    const dev = D.createFakeDevice({ id: "osirus" });
+    const ctl = C.createController(dev);
+    ctl.load({ slot: 0, component: "synth" });
+    ctl.dismissHint();
+    const romPage = ctl.pages.findIndex((p) => p.kind === "knobs" && p.keys.includes("rom_index"));
+    if (romPage < 0) fail("osirus should expose rom_index on a grid page");
+    ctl.goToPage(romPage, { remember: false });
+
+    const opts = () => ctl.metaIndex.getOrGuess("rom_index").options;
+    if (!(opts() || []).some((o) => /^\(.*\)$/.test(o))) fail("expected osirus rom_index to start as a placeholder");
+
+    for (let i = 0; i < 700; i++) ctl.tick();
+    if (!(opts() || []).some((o) => /^\(.*\)$/.test(o))) fail("the placeholder resolved with nothing to resolve to");
+
+    /* The DSP finishes and republishes real options IN PLACE — no new params,
+     * no new levels, so a fingerprint over chain_params LENGTH would call this
+     * unchanged and leave the placeholder up forever. */
+    dev.patchChainParams((ps) => ps.map((p) =>
+      p.key === "rom_index" ? { ...p, options: ["Virus A", "Virus B", "Virus C"] } : p));
+    for (let i = 0; i < 400; i++) ctl.tick();
+    if ((opts() || []).length !== 3) fail("late enum options were never picked up: " + JSON.stringify(opts()));
+
+    /* Once settled it must cost nothing at all. */
+    dev.resetCounters();
+    for (let i = 0; i < 2000; i++) ctl.tick();
+    const contractReads = dev.reads.filter((k) => /chain_params|ui_hierarchy/.test(k)).length;
+    if (contractReads !== 0) fail("still re-reading the contract " + contractReads + " times after settling");
+
+    /* And a module whose enum legitimately reads "(none)" must not poll for
+     * ever — the budget latches off. */
+    const dev2 = D.createFakeDevice({ id: "osirus" });
+    const ctl2 = C.createController(dev2);
+    ctl2.load({ slot: 0, component: "synth" });
+    ctl2.goToPage(ctl2.pages.findIndex((p) => p.kind === "knobs" && p.keys.includes("rom_index")), { remember: false });
+    for (let i = 0; i < 6000; i++) ctl2.tick();
+    dev2.resetCounters();
+    for (let i = 0; i < 2000; i++) ctl2.tick();
+    const stuckReads = dev2.reads.filter((k) => /chain_params|ui_hierarchy/.test(k)).length;
+    if (stuckReads !== 0) fail("a never-settling module kept polling: " + stuckReads + " reads");
+  }
+
   /* ---- 10. every fleet module survives a scripted session -------------- */
   {
     const fx = D.fleet();
