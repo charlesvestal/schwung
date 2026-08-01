@@ -588,6 +588,47 @@ and memory are all the user has.
 
 ---
 
+## 11d. Pulled in from Movy v0.25.0 (2026-08-01)
+
+megadake shipped v0.25.0 with a **params-list-exposure** branch that found the
+same gap this work found independently — a level's `params[]` entries never
+reaching the UI. Their count: 721 params across 45 modules. Ours: 879 across 57.
+Both landed on the same shape, `keys(level) = knobs ++ extraParams`. Encouraging
+for the shared-library case: two people reading the same contract reached the
+same design.
+
+Their version carried refinements ours did not. Taken, each measured against our
+own fixture first:
+
+| Taken | Effect here |
+| --- | --- |
+| Exclude **selector params** (`list/count/name/items/select/mode`) from grids | 2 modules. They drive their own page kind, and browsing 2427 presets by encoder is what the preset page exists to avoid. |
+| Exclude **`ui_`-prefixed keys** | 3 keys. Module UI state (`ui_current_pad`, `ui_preset_path`), not musical parameters. |
+| **Global dedupe of overflow** | 4 keys across 2 modules that occupied cells on two pages. |
+| **Page rule grouped by section**, full width, 1 px separators | Every module now gets a real per-page ruler; before, everything past 24 pages fell back to a proportional marker. |
+| **Async metadata re-resolution** | osirus publishes `rom_index` as `["(loading)"]` and it is in our fixture that way — baked at load, it would read "(loading)" all session. |
+
+One refinement of our own on top: all three exclusions apply **only to keys
+pulled in from `params[]`**. A key the author put on `knobs[]` is intent and is
+honoured whatever it is called. The coverage test names its exclusions and
+asserts the set stays under 25 fleet-wide, so the filter cannot quietly widen
+and reintroduce the 28% regression by the side door.
+
+Two bugs of ours surfaced while doing it:
+
+- **The fingerprint hashed `chain_params` *length*.** A module republishing real
+  enum options in place — no new params, no new levels — read as unchanged, so
+  the placeholder would never clear. It hashes content now.
+- **The page rule's rounding** left the last page several pixels wider than the
+  rest. Leftover pixels now spread across segments so no two differ by more than
+  one, and coalescing runs of equal-height flush segments keeps a 76-page module
+  inside the draw-call budget (125 → 82).
+
+Their P3 — read-back scaling with page count — we already avoid by construction:
+the cursor cycles only the *current page's* keys, never the whole param set.
+
+---
+
 ## 12. Contract quirks found
 
 Each of these is a live issue in the fleet, and most affect the existing list
