@@ -3261,6 +3261,16 @@ static void shadow_swap_display(void)
     if (!shadow_control || !shadow_control->shadow_ready) {
         return;
     }
+
+    /* shadow_ui watchdog. Runs BEFORE the shadow-mode gate below: shadow_ui is
+     * meant to be up whenever the shim is (it owns param serving and autosave,
+     * not just the OLED), and a dead one is most likely to be noticed while the
+     * shadow UI is *hidden* — which is exactly when the gated version could
+     * never recover it. launch_shadow_ui() is a waitpid() in the steady state. */
+    if ((ui_check_counter++ % 256) == 0) {
+        launch_shadow_ui();
+    }
+
     if (!shadow_display_mode) {
         display_phase = 0;
         display_hidden_for_volume = 0;
@@ -3303,10 +3313,6 @@ static void shadow_swap_display(void)
         display_phase = 0;
         display_hidden_for_volume = 0;
     }
-    if ((ui_check_counter++ % 256) == 0) {
-        launch_shadow_ui();
-    }
-
     /* Composite overlays onto shadow display if active */
     static uint8_t shadow_composited[DISPLAY_BUFFER_SIZE];
     const uint8_t *display_src = shadow_display_shm;
@@ -5441,6 +5447,7 @@ pre_done:
                 if (!shadow_display_mode) {
                     shadow_display_mode = 1;
                     shadow_control->display_mode = 1;
+                    launch_shadow_ui_reset_backoff();
                     launch_shadow_ui();
                 }
                 shadow_log("Track long-press: opening slot settings");
@@ -5456,6 +5463,7 @@ pre_done:
             if (!shadow_display_mode) {
                 shadow_display_mode = 1;
                 shadow_control->display_mode = 1;
+                launch_shadow_ui_reset_backoff();
                 launch_shadow_ui();
             }
             shadow_log("Menu long-press: opening master FX");
@@ -5469,6 +5477,7 @@ pre_done:
             shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_SETTINGS;
             shadow_display_mode = 1;
             shadow_control->display_mode = 1;
+            launch_shadow_ui_reset_backoff();
             launch_shadow_ui();
             shadow_log("Shift+Step2 long-press: opening global settings");
         }
@@ -5482,6 +5491,7 @@ pre_done:
             shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_TOOLS;
             shadow_display_mode = 1;
             shadow_control->display_mode = 1;
+            launch_shadow_ui_reset_backoff();
             launch_shadow_ui();
             shadow_log("Shift+Step13 long-press: resuming last tool");
         }
@@ -6096,6 +6106,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
                     shadow_display_mode = 1;
                     shadow_control->display_mode = 1;
+                    launch_shadow_ui_reset_backoff();
                     launch_shadow_ui();
                 } else {
                     shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_MASTER_FX;
@@ -6104,6 +6115,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_SCREENREADER;
                 shadow_display_mode = 1;
                 shadow_control->display_mode = 1;
+                launch_shadow_ui_reset_backoff();
                 launch_shadow_ui();
             }
         }
@@ -6357,6 +6369,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                                 /* From Move mode: launch shadow UI */
                                 shadow_display_mode = 1;
                                 shadow_control->display_mode = 1;
+                                launch_shadow_ui_reset_backoff();
                                 launch_shadow_ui();
                             }
                             /* If already in shadow mode, flag will be picked up by tick() */
@@ -6458,6 +6471,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                             shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_OVERTAKE;
                             shadow_display_mode = 1;
                             shadow_control->display_mode = 1;
+                            launch_shadow_ui_reset_backoff();
                             launch_shadow_ui();
                         } else {
                             /* Already in shadow mode: toggle - if in overtake, exit to Move */
@@ -6638,6 +6652,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         /* Always ensure display shows shadow UI */
                         shadow_display_mode = 1;
                         shadow_control->display_mode = 1;
+                        launch_shadow_ui_reset_backoff();
                         launch_shadow_ui();  /* No-op if already running */
                         /* Block Step note from reaching Move */
                         uint8_t *sh = shadow + MIDI_IN_OFFSET;
@@ -6654,6 +6669,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         /* Always ensure display shows shadow UI */
                         shadow_display_mode = 1;
                         shadow_control->display_mode = 1;
+                        launch_shadow_ui_reset_backoff();
                         launch_shadow_ui();  /* No-op if already running */
                         /* Block Step note from reaching Move */
                         uint8_t *sh = shadow + MIDI_IN_OFFSET;
@@ -6667,6 +6683,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_TOOLS;
                         shadow_display_mode = 1;
                         shadow_control->display_mode = 1;
+                        launch_shadow_ui_reset_backoff();
                         launch_shadow_ui();
                         clock_gettime(CLOCK_MONOTONIC, &step13_press_time);
                         step13_longpress_pending = 1;
