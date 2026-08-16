@@ -98,6 +98,12 @@ export function createController(io = {}) {
          * the session. Re-resolution is bounded and latching — see maybeResettle. */
         metaRetries: 0,
         metaSettled: false,
+        /* Param keys a visible_if condition reads. A condition is driven by a
+         * VALUE, which moves without the declared contract moving, so the
+         * fingerprint cannot see it — these are watched explicitly instead.
+         * Cheaper and more exact than polling: only these keys can change what
+         * is visible, and we already read every key on the page. */
+        conditionKeys: new Set(),
         /* Per-section memory of the sub-page you were last on. Elektron's page
          * buttons work this way — pressing [FLTR] returns you to the FLTR page
          * you were using, not to FLTR 1 — and it matters most on the modules
@@ -132,6 +138,9 @@ export function createController(io = {}) {
         const hierarchy = parse(getParam(`${s.prefix}:ui_hierarchy`));
         const chainParams = parse(getParam(`${s.prefix}:chain_params`));
         const planned = planPages({ hierarchy, chainParams, mode, visible });
+        /* Retained so a visibility re-plan costs no extra device reads. */
+        s.hierarchy = hierarchy;
+        s.chainParams = chainParams;
 
         if (planned.fingerprint === s.fingerprint) return false;
 
@@ -140,6 +149,7 @@ export function createController(io = {}) {
         s.pages = planned.pages;
         s.fingerprint = planned.fingerprint;
         s.metaIndex = buildMetaIndex({ hierarchy, chainParams });
+        s.conditionKeys = planned.conditionKeys || new Set();
         s.values = Object.create(null);
         s.cursor = 0;
         s.metaRetries = 0;
@@ -236,7 +246,25 @@ export function createController(io = {}) {
             if (patch) Object.assign(meta, patch);
             delete meta.guessed;
         }
+        /* A change to a key that gates visibility re-plans the page set: the
+         * params it hides or reveals are not otherwise reachable. */
+        const changed = s.values[key] !== raw;
         s.values[key] = raw;
+        if (changed && s.conditionKeys.has(key)) {
+            const oldPages = s.pages, oldIndex = s.pageIndex;
+            const planned = planPages({
+                hierarchy: s.hierarchy, chainParams: s.chainParams,
+                mode: s.lastLoadOpts && s.lastLoadOpts.mode,
+                visible: s.lastLoadOpts && s.lastLoadOpts.visible,
+            });
+            if (planned.pages.length !== oldPages.length ||
+                planned.pages.some((p, i) => (p.keys || []).join() !== ((oldPages[i] || {}).keys || []).join())) {
+                s.pages = planned.pages;
+                s.conditionKeys = planned.conditionKeys || new Set();
+                s.pageIndex = reanchor(oldPages, oldIndex, s.pages);
+                s.cursor = 0;
+            }
+        }
         return key;
     }
 
