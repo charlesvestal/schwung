@@ -694,8 +694,17 @@ editor too. `node tools/param-pages/validate.mjs --level warn` reproduces them.
    renderers read the same thing, but the conversation is "neither of us has
    adopters yet, let's agree the shape", not "please rename your format".
 4. **Overflow page ordering** — declaration order (current) or grouped by type?
-5. **Graphics detectors** (envelope / filter / LFO / EQ) — position changed
-   2026-08-16 after Movy v0.27.0 shipped ~1,350 lines of them.
+5. **Graphics** (envelope / filter / LFO / EQ / waveform / fader / switch /
+   sample) — **in scope for core, not deferred.** Position changed 2026-08-16.
+
+   The framing that had them as a liability to be minimised was wrong: bringing
+   this into Schwung is *for* having the good parts in core rather than beside
+   it, and the graphics are the good parts. They are a first-class renderer
+   capability. What varies is only how a graphic is *triggered*.
+
+   The `viz` contract is documented in `docs/MODULES.md`; the migration guide for
+   declaring it across the 46 catalog modules in `charlesvestal/` repos is
+   `docs/plans/2026-08-16-viz-migration-guide.md`.
 
    Earlier reasoning ("they infer from key names, which the June doc rules out")
    was too rigid: it defends the principle at the cost of shipping nothing,
