@@ -129,7 +129,21 @@ function balancedChunk(arr, size) {
  */
 export function planPages({ hierarchy, chainParams, mode, visible } = {}) {
     const warnings = [];
-    const isVisible = (cond, lvl) => (cond ? (visible ? !!visible(cond, lvl) : true) : true);
+    /* Keys any visible_if condition reads. Returned so the caller can re-plan
+     * when one of THEM changes — a condition is driven by a param VALUE, which
+     * moves without the declared contract moving, so the fingerprint cannot see
+     * it. Without this a level's params never appear or disappear in response to
+     * the switch that gates them. */
+    const conditionKeys = new Set();
+    const noteCondition = (cond) => {
+        if (!cond || typeof cond !== "object") return;
+        const k = cond.param || cond.key || cond.param_key;
+        if (k) conditionKeys.add(String(k));
+    };
+    const isVisible = (cond, lvl) => {
+        noteCondition(cond);
+        return cond ? (visible ? !!visible(cond, lvl) : true) : true;
+    };
     /* The fingerprint covers chain_params CONTENT, not just its length. A
      * module that finishes loading and republishes real enum options in place
      * (osirus swaps rom_index from ["(loading)"] to the Virus models) changes no
@@ -145,13 +159,21 @@ export function planPages({ hierarchy, chainParams, mode, visible } = {}) {
      * declared params so they are not a blank screen. */
     if (!levels) {
         const keys = (chainParams || []).map((p) => p && p.key).filter(Boolean);
-        if (keys.length === 0) return { pages: [], fingerprint, warnings: ["no ui_hierarchy and no chain_params"] };
+        if (keys.length === 0) return { pages: [], fingerprint, warnings: ["no ui_hierarchy and no chain_params"], conditionKeys: new Set() };
         warnings.push("no ui_hierarchy — paginated from chain_params");
         const pages = chunk(keys, KNOBS_PER_PAGE).map((ks, i) => ({
             kind: PAGE_KNOBS, name: i === 0 ? "Params" : `Params - ${i + 1}`,
             level: null, keys: ks, authored: false,
         }));
         return { pages, fingerprint, warnings };
+    }
+
+    for (const lvl of Object.values(levels)) {
+        if (!lvl || typeof lvl !== "object") continue;
+        noteCondition(lvl.visible_if);
+        for (const p of (lvl.params || [])) {
+            if (p && typeof p === "object") noteCondition(p.visible_if);
+        }
     }
 
     const pages = [];
@@ -418,7 +440,7 @@ export function planPages({ hierarchy, chainParams, mode, visible } = {}) {
         visit(key, null, false);
     }
 
-    return { pages, fingerprint, warnings };
+    return { pages, fingerprint, warnings, conditionKeys };
 }
 
 /**

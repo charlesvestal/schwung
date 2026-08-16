@@ -399,6 +399,48 @@ Promise.all([
     if (stuckReads !== 0) fail("a never-settling module kept polling: " + stuckReads + " reads");
   }
 
+  /* ---- 9g. a visible_if source change re-plans the page ----------------- */
+  {
+    /* mrsample gates loop_start/end/xfade on loop_mode. A condition is driven
+     * by a VALUE, which moves without the declared contract moving — so the
+     * fingerprint cannot see it, and before this the gated params never
+     * appeared or disappeared at all. */
+    const dev = D.createFakeDevice({ id: "mrsample" });
+    const vis = (cond) => dev.getParam("synth:" + (cond.param || cond.key)) === "1";
+    const ctl = C.createController(dev);
+    ctl.load({ slot: 0, component: "synth", visible: vis });
+    ctl.dismissHint();
+
+    const gated = ctl.pages.findIndex((p) => p.kind === "knobs" && (p.keys || []).includes("loop_mode"));
+    if (gated < 0) fail("mrsample should expose loop_mode on a grid page");
+
+    dev.setParam("synth:loop_mode", "0");
+    ctl.goToPage(gated, { remember: false });
+    for (let i = 0; i < 40; i++) ctl.tick();
+    const off = (ctl.page.keys || []).slice();
+    if (off.includes("loop_start")) fail("loop params should be hidden while loop_mode is off");
+
+    dev.setParam("synth:loop_mode", "1");
+    for (let i = 0; i < 40; i++) ctl.tick();
+    const on = (ctl.page.keys || []).slice();
+    for (const k of ["loop_start", "loop_end", "loop_xfade_ms"]) {
+      if (!on.includes(k)) fail("turning loop_mode on did not reveal " + k + ": " + JSON.stringify(on));
+    }
+
+    /* And back off again — the re-plan is not one-way. */
+    dev.setParam("synth:loop_mode", "0");
+    for (let i = 0; i < 40; i++) ctl.tick();
+    if ((ctl.page.keys || []).includes("loop_start")) fail("turning loop_mode off did not hide the loop params again");
+
+    /* It must not re-plan on every read, only on a CHANGE to a condition key. */
+    const planned = [];
+    const ctl2 = C.createController(dev);
+    ctl2.load({ slot: 0, component: "synth", visible: vis });
+    ctl2.goToPage(gated, { remember: false });
+    for (let i = 0; i < 200; i++) { ctl2.tick(); planned.push(ctl2.pages.length); }
+    if (new Set(planned).size !== 1) fail("the page set churned while nothing changed");
+  }
+
   /* ---- 10. every fleet module survives a scripted session -------------- */
   {
     const fx = D.fleet();
