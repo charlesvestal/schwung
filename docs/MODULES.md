@@ -962,6 +962,62 @@ Supported condition fields:
 
 Visibility is evaluated dynamically; hidden entries are removed from list navigation and knob mappings for that level.
 
+### Parameter visualisations (`viz`)
+
+A knob page can draw a parameter *group* as a picture instead of separate
+controls — an ADSR as an envelope, cutoff+resonance as a filter response, three
+band gains as an EQ curve. Declare the grouping and the UI draws it; leave it out
+and the UI falls back to detecting the group from names and ranges, which works
+but is a guess.
+
+**Declare it.** Detection exists so that modules which say nothing still get
+graphics; it is a fallback, not the contract. A declaration is also the only way
+to correct a detector that guesses wrong.
+
+Add an optional `viz` object to a `chain_params` entry:
+
+```json
+{ "key": "attack",  "name": "Attack",  "type": "float", "viz": { "group": "amp", "role": "attack"  } },
+{ "key": "decay",   "name": "Decay",   "type": "float", "viz": { "group": "amp", "role": "decay"   } },
+{ "key": "sustain", "name": "Sustain", "type": "float", "viz": { "group": "amp", "role": "sustain" } },
+{ "key": "release", "name": "Release", "type": "float", "viz": { "group": "amp", "role": "release" } }
+```
+
+| Field | Meaning |
+|-------|---------|
+| `group` | An id shared by every param in one graphic. Any string; scoped to the module. Omit for single-param graphics. |
+| `role` | This param's part in the group. Required when `group` is set. |
+| `kind` | The graphic type. Optional — derived from the roles present when omitted. |
+| `viz: false` | Never draw a graphic for this param, whatever a detector thinks. |
+
+Kinds and their roles:
+
+| `kind` | Roles | Notes |
+|--------|-------|-------|
+| `envelope` | `attack`, `decay`, `sustain`, `release` | Any 2–4 of them: AD, AR, ASR and ADSR all draw. |
+| `filter` | `cutoff`, `resonance`, optional `mode`, `slope` | `mode` should be an enum naming LP/HP/BP/notch. |
+| `eq` | `low`, `mid`, `high` | Band **gains**, not crossover frequencies. |
+| `lfo` | `shape`, `rate`, `depth`, optional `phase` | `shape` should be an enum of waveform names. |
+| `waveform` | *(single param)* | An enum of waveform names, drawn as silhouettes. |
+| `fader` | *(single param)* | A level/volume, drawn as a fader rather than a dial. |
+| `switch` | *(single param)* | A `toggle` or two-option enum, drawn as an on/off switch. |
+| `sample` | *(single param)* + optional `position` | A `filepath`; a companion `wav_position` param marks playback position on the waveform. |
+
+Two rules worth knowing:
+
+- **Params in a group should be declared adjacently.** The page planner seats a
+  group together on one row so the graphic can span it; a group split across two
+  pages cannot be drawn and falls back to plain controls.
+- **A group is only as good as its roles.** Do not group unrelated params to get
+  a picture — an envelope drawn over four params that are not an envelope is
+  worse than four honest knobs.
+
+Check what a module declares, and what is being guessed on its behalf, with:
+
+```bash
+node tools/param-pages/validate.mjs <module-id>
+```
+
 ### Child Selectors (for repeated elements)
 
 For synths with multiple similar elements (tones, operators, parts), use child selectors:
