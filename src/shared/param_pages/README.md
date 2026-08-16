@@ -32,6 +32,8 @@ These are not style preferences. Break any one and the tool case stops working.
 | `page_plan.mjs` | walk the level graph → an ordered list of typed pages |
 | `param_meta.mjs` | key → declared metadata + classification (number / enum / opaque) |
 | `render_page.mjs` | draw one page |
+| `viz.mjs` | resolve a page's roles into a graphic group (envelope/filter/lfo/eq/waveform/fader/switch/sample) |
+| `viz_draw.mjs` | draw one resolved graphic group |
 | `page_nav.mjs` | stepping, level-skip, jump index, rebuild reanchor |
 | `validate_contract.mjs` | what a module declares vs what can be rendered |
 | `announce_page.mjs` | screen-reader strings for a grid |
@@ -66,6 +68,42 @@ renderPage(ctx, {
     rect,             // defaults to the whole 128x64 screen
 });
 ```
+
+### Graphics (`viz`)
+
+A group of related params (an ADSR, cutoff+resonance) can draw as one picture
+spanning the cells its roles occupy, instead of separate dial/bar cells. This
+is opt-in — `renderPage` only draws what `o.viz` gives it — so resolving a
+group is a separate step the caller does once per page, kept apart from
+drawing on purpose (`docs/plans/2026-07-26-param-pages-audit.md` §13.5):
+
+```js
+import { resolveViz } from "shared/param_pages/viz.mjs";
+
+const { groups, invalid } = resolveViz({ keys: page.keys, metaIndex, overrides });
+renderPage(ctx, { page, metaIndex, values, title, pageIndex, pageCount, viz: groups });
+```
+
+Precedence: a module's own `chain_params` `viz` field always wins; `overrides`
+is an optional `(key) => vizObj | false | null` a host can supply to correct a
+wrong guess in the field; a detector fills in everything else. `invalid` lists
+declared groups whose roles were not adjacent on one row and so could not be
+drawn — surfaced by `validate.mjs` as `viz-declared-not-adjacent`.
+
+Every detector demands a metadata check alongside the name match — a
+crossover frequency or a Q must not read as an EQ gain just because "gain" is
+nearby, and two params on the same page with the same role name (`attack`/
+`decay` on both an amp and a filter envelope) must not merge because their
+KEYS agree on nothing beyond the role word. See `docs/MODULES.md` "Parameter
+visualisations" for the full `viz` contract, and
+`tools/param-pages/validate.mjs` for which groups are declared vs inferred on
+a given module — `viz-inferred` findings are the detector telling you what it
+guessed, so a wrong guess is visible rather than silent.
+
+The fleet's current firing pattern is a checked-in snapshot,
+`tests/fixtures/snapshots/param_pages_viz.txt` — regenerate deliberately with
+`UPDATE_SNAPSHOTS=1 bash tests/host/test_param_pages_viz.sh` after a detector
+change, the same way `param_pages.txt` pins layout changes.
 
 Only `PAGE_KNOBS` is drawn here. The other kinds — `preset`, `items`, `modes`,
 `child` — name a screen the shadow UI already has, and the caller dispatches to
@@ -173,14 +211,21 @@ pixels drawn outside the display.
 
 ## Tests
 
-`tests/host/test_param_pages_{plan,meta,render,nav,validate,dump,announce}.sh`, all
+`tests/host/test_param_pages_{plan,meta,render,nav,validate,dump,announce,viz}.sh`, all
 node-run and CI-gated. They assert against a real 76-module fleet capture:
 every declared key reaches a page, no duplicate page names, 1144 render sweeps
 with no undrawable text and nothing clipped, a draw-call budget, and half-block
 snapshots so a layout change is a readable diff.
 
+`test_param_pages_viz.sh` additionally pins which graphic fires on which fleet
+page (`tests/fixtures/snapshots/param_pages_viz.txt`) and regression-tests the
+false-positive traps a detector heuristic can reintroduce — role vocabulary
+matching across two unrelated subsystems that happen to sit on the same page,
+and a crossover/Q range passing as an EQ gain.
+
 ```bash
 UPDATE_SNAPSHOTS=1 bash tests/host/test_param_pages_render.sh   # after intended layout changes
+UPDATE_SNAPSHOTS=1 bash tests/host/test_param_pages_viz.sh      # after intended detector changes
 ```
 
 ## Attribution
@@ -191,3 +236,11 @@ segmented page-indicator idea. The overflow-page model is not from Movy and is
 the main functional difference: `knobs[]` is an author's chosen eight, not their
 parameter set, and rendering only those would hide 28% of the fleet's declared
 params relative to Schwung's list editor.
+
+`viz.mjs`'s `isGainRange` corroboration check for the EQ detector is the same
+idea as schwung-movy v0.27.0's function of the same name (© 2026 megadake,
+MIT) — a bipolar, roughly symmetric range is what separates a genuine EQ band
+gain from a crossover frequency or a Q that merely has "gain" nearby in its
+name. The rest of `viz.mjs`/`viz_draw.mjs` (the group-resolution precedence,
+the stem-consistency corroboration the other detectors use, and every
+renderer) is new to Schwung, not ported.

@@ -31,6 +31,7 @@ import { createController } from '/data/UserData/schwung/shared/param_pages/page
 import { decodeInput, applyInput } from '/data/UserData/schwung/shared/param_pages/page_input.mjs';
 import { PAGE_KNOBS } from '/data/UserData/schwung/shared/param_pages/page_plan.mjs';
 import { LAYOUT_BAR, LAYOUT_DIAL } from '/data/UserData/schwung/shared/param_pages/render_page.mjs';
+import { LAYOUT_MOVY } from '/data/UserData/schwung/shared/param_pages/render_page_movy.mjs';
 import { announce } from '/data/UserData/schwung/shared/screen_reader.mjs';
 
 /* The live controller, or null when the view is not open. One at a time: the
@@ -98,6 +99,10 @@ export function enterParamPages(slot, component, prefix) {
         });
     }
     controller.load({ slot, component, prefix: prefix || component, visible: ctx.evaluateVisibilityCondition });
+    /* "Knobs" IS schwung-movy's own knob-page layout now, not Schwung's
+     * earlier dial/bar grid — see render_page_movy.mjs. The setting stays a
+     * plain List/Knobs toggle; this is what "Knobs" draws. */
+    controller.setLayout(LAYOUT_MOVY);
     /* Once per session: the grid's gestures are not guessable, and a preview
      * nobody can operate produces no useful feedback. Any input clears it. */
     /* ~19 characters fit at 5x7 across the panel; longer lines silently clip. */
@@ -152,6 +157,44 @@ export function tickParamPages() {
 }
 let wasLoading = false;
 
+/**
+ * A ~30fps ceiling on the Movy-style grid's own full redraw, independent of
+ * shadow_ui.js's global `needsRedraw` gate.
+ *
+ * That gate gives idle frames a throttle (REDRAW_INTERVAL) but drops it the
+ * moment `needsRedraw` is true — which a knob turn sets on nearly every tick.
+ * A fast turn therefore demands the MOST frequent redraws at exactly the
+ * moment each one is also the MOST expensive (a live envelope/filter/lfo/eq
+ * curve recomputing every tick, real per-pixel geometry — see viz_draw.mjs):
+ * the two compound instead of one smoothing the other, which is what read as
+ * "lower fps" specifically on fast turns and not on slow ones. This throttle
+ * is local to the grid rather than a change to the shared gate other views
+ * also depend on — it returns `true` (handled) on a skipped tick without
+ * drawing, so the previous frame's pixels simply persist for a few
+ * milliseconds rather than the view falling back to the list editor.
+ */
+const MOVY_REDRAW_MIN_MS = 32;
+let lastDrawMs = 0;
+
+/**
+ * Draws-per-second, logged once a second while the grid is on screen
+ * (nothing unless `debug_log_on` is set — see docs/LOGGING.md).
+ *
+ * Deliberately a COUNT over a ~1s window rather than a Date.now() duration:
+ * this device's clock is quantized to roughly 11-12ms (proven by 20
+ * back-to-back Date.now() calls with no work between them returning the
+ * identical value), which makes any single render's measured "duration"
+ * meaningless — it is rounding to the next tick, not timing real work. A
+ * count averages that quantization out over enough ticks to mean something,
+ * and it is what actually diagnosed the "fast turns feel like lower fps"
+ * report: it fell from ~17 to 5-9 specifically under a MIDI flood (a fast
+ * physical spin decodes to 250-320 CC messages/second), which traced to
+ * setParam being called once per raw detent — see SETPARAM_THROTTLE_MS in
+ * page_controller.mjs, the actual fix. Kept as a standing diagnostic for the
+ * open on-device question in docs/plans/2026-08-16-next-sessions.md
+ * "Session C" (redraw/IPC timing was never verified on hardware). */
+let _fpsWindowStart = 0, _fpsCount = 0;
+
 /** Draw. Non-grid pages are not ours — the host dispatches those. */
 export function drawParamPages() {
     if (!controller) return false;
@@ -159,6 +202,18 @@ export function drawParamPages() {
      * non-grid one, so it is checked before the page kind. */
     const page = controller.page;
     if (!controller.pickerOpen && (!page || page.kind !== PAGE_KNOBS)) return false;
+
+    const nowMs = Date.now();
+    if (nowMs - lastDrawMs < MOVY_REDRAW_MIN_MS) return true;
+    lastDrawMs = nowMs;
+
+    _fpsCount++;
+    if (!_fpsWindowStart) _fpsWindowStart = nowMs;
+    else if (nowMs - _fpsWindowStart >= 1000) {
+        console.log(`param_pages fps: ${_fpsCount} draws / ${nowMs - _fpsWindowStart}ms`);
+        _fpsWindowStart = nowMs;
+        _fpsCount = 0;
+    }
 
     clear_screen();
     const abbrev = ctx.getModuleAbbrev
@@ -169,12 +224,24 @@ export function drawParamPages() {
      * editor you came from. Falls back to the abbreviation until the read
      * cursor has picked the name up, and for modules with no presets. */
     const name = controller.presetName || abbrev;
+
+    /* draw_line / fill_circle (src/host/js_display.c) do the whole shape in
+     * C — one QuickJS<->native crossing regardless of length, unlike the
+     * per-pixel fillRect a JS-side Bresenham/circle walk needs. viz_draw.mjs
+     * and render_page_movy.mjs use them when present; this is where they're
+     * offered. */
     controller.render(
-        { fillRect: fill_rect, print, textWidth: text_width },
+        { fillRect: fill_rect, print, textWidth: text_width, line: draw_line, fillCircle: fill_circle },
         { title: `S${currentSlot + 1} > ${name}` }
     );
     return true;
 }
+
+/* MIDI events/sec and knob-turns/sec, same standing diagnostic as the fps
+ * counter above and logged the same way (once/sec, only under
+ * debug_log_on). This is what actually found the flood: a fast physical
+ * spin decodes to 250-320 CC messages/second, all as knob turns. */
+let _midiWindowStart = 0, _midiCount = 0, _knobTurnCount = 0;
 
 /**
  * Hardware MIDI. Returns true when the event was consumed.
@@ -185,6 +252,16 @@ export function drawParamPages() {
 export function handleParamPagesMidi(data) {
     if (!controller) return false;
 
+    const nowMsProbe = Date.now();
+    _midiCount++;
+    if (!_midiWindowStart) _midiWindowStart = nowMsProbe;
+    else if (nowMsProbe - _midiWindowStart >= 1000) {
+        console.log(`param_pages midi: ${_midiCount} events (${_knobTurnCount} knob turns) / ${nowMsProbe - _midiWindowStart}ms`);
+        _midiWindowStart = nowMsProbe;
+        _midiCount = 0;
+        _knobTurnCount = 0;
+    }
+
     /* Mute (CC 88) IS forwarded, and shadow_ui.js already tracks it for the
      * Mute+JogClick bypass shortcut — so read its state rather than keeping a
      * second copy that could disagree. */
@@ -193,6 +270,7 @@ export function handleParamPagesMidi(data) {
         mute: typeof ctx.isMuteHeld === 'function' ? !!ctx.isMuteHeld() : false,
     });
     if (!intent) return false;
+    if (intent.type === 'knob') _knobTurnCount++;
 
     /* reveal:false — this host drives reveal from the polled shift state in
      * tickParamPages, not from an intent it will never see. */

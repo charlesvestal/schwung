@@ -28,6 +28,7 @@
 
 import { KIND_ENUM, KIND_OPAQUE } from "./param_meta.mjs";
 import { formatParamValue } from "../param_format.mjs";
+import { drawVizGroup } from "./viz_draw.mjs";
 
 export const SCREEN_WIDTH = 128;
 export const SCREEN_HEIGHT = 64;
@@ -103,7 +104,7 @@ function geometry(rect, layout) {
 
 /* ------------------------------------------------------------ primitives */
 
-function line(ctx, x0, y0, x1, y1, color) {
+export function line(ctx, x0, y0, x1, y1, color) {
     let dx = Math.abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
     let dy = -Math.abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
     let err = dx + dy;
@@ -117,7 +118,7 @@ function line(ctx, x0, y0, x1, y1, color) {
 }
 
 /* Midpoint circle outline. */
-function circle(ctx, cx, cy, r, color) {
+export function circle(ctx, cx, cy, r, color) {
     let x = r, y = 0, err = 1 - r;
     while (x >= y) {
         for (const [px, py] of [[x, y], [y, x], [-y, x], [-x, y], [-x, -y], [-y, -x], [y, -x], [x, -y]]) {
@@ -129,7 +130,7 @@ function circle(ctx, cx, cy, r, color) {
     }
 }
 
-function centeredText(ctx, cx, y, text, color) {
+export function centeredText(ctx, cx, y, text, color) {
     const t = asciiFold(text);
     const w = ctx.textWidth(t);
     ctx.print(Math.round(cx - w / 2), y, t, color);
@@ -172,7 +173,7 @@ const ASCII_FOLD = {
 };
 
 /* Trim to fit a pixel width, dropping characters rather than scaling. */
-function fitText(ctx, text, maxWidth) {
+export function fitText(ctx, text, maxWidth) {
     let s = asciiFold(text);
     if (ctx.textWidth(s) <= maxWidth) return s;
     while (s.length > 1 && ctx.textWidth(s) > maxWidth) s = s.slice(0, -1);
@@ -326,7 +327,7 @@ function dial(ctx, cx, cy, r, frac, color) {
  * At 26x3 px it carries far more readable resolution than a radius-5 dial,
  * which is why it is the widget for the compact layout.
  */
-function hbar(ctx, x, y, w, h, frac, color) {
+export function hbar(ctx, x, y, w, h, frac, color) {
     ctx.fillRect(x, y + h - 1, w, 1, color);            /* baseline */
     const fill = Math.round(w * clamp01(frac));
     if (fill > 0) ctx.fillRect(x, y, fill, h, color);
@@ -335,9 +336,9 @@ function hbar(ctx, x, y, w, h, frac, color) {
     ctx.fillRect(x + w - 1, y, 1, h, color);
 }
 
-function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
+export function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
 
-function fractionOf(meta, raw) {
+export function fractionOf(meta, raw) {
     if (!meta) return 0;
     const num = Number(raw);
     if (!isFinite(num)) return 0;
@@ -474,6 +475,10 @@ function drawEmptyCell(ctx, cellX, y, cellW, h) {
  * @param {boolean} [o.revealValues] dial layout only: show every value in place
  *                 of its label, for as long as a modifier is held
  * @param {object} [o.rect]     sub-region to draw into; defaults to the screen
+ * @param {Array} [o.viz]       resolved graphic groups (viz.mjs resolveViz),
+ *                 caller-computed and passed in — this function only draws
+ *                 what it is given. Omit for the plain knob grid; a group's
+ *                 member slots are replaced by one picture spanning them.
  */
 export function renderPage(ctx, o) {
     const rect = o.rect || { x: 0, y: 0, w: SCREEN_WIDTH, h: SCREEN_HEIGHT };
@@ -503,10 +508,37 @@ export function renderPage(ctx, o) {
     /* Labels are resolved for the whole page at once so cells can be
      * disambiguated against each other — see pageCellLabels. */
     const cellLabels = pageCellLabels(ctx, page.keys, o.metaIndex, cellW - CELL_PAD * 2);
+
+    /* Graphics: `o.viz` is a caller-resolved group list (see viz.mjs
+     * resolveViz), never computed here — resolution and drawing stay
+     * separate, exactly like decorations/modulated are caller state. A slot
+     * inside a group's span is drawn once, from the group's first (anchor)
+     * slot; the rest of the span is skipped rather than drawn twice. */
+    const vizAnchor = new Array(COLS * ROWS).fill(null);
+    const vizCovered = new Array(COLS * ROWS).fill(false);
+    for (const g of (o.viz || [])) {
+        if (!g || typeof g.slotStart !== "number" || !(g.slotSpan > 0)) continue;
+        vizAnchor[g.slotStart] = g;
+        for (let s = g.slotStart; s < g.slotStart + g.slotSpan; s++) vizCovered[s] = true;
+    }
+
     for (let slot = 0; slot < COLS * ROWS; slot++) {
         const row = Math.floor(slot / COLS);
         const col = slot % COLS;
         const key = page.keys[slot];
+
+        if (vizAnchor[slot]) {
+            const g = vizAnchor[slot];
+            drawVizGroup(ctx, {
+                x: rect.x + col * cellW,
+                y: geo.gridTop + row * geo.rowH,
+                w: cellW * Math.min(g.slotSpan, COLS - col),
+                h: geo.rowH,
+            }, g, o.values, o.metaIndex);
+            continue;
+        }
+        if (vizCovered[slot]) continue;   /* drawn by this group's anchor cell */
+
         if (!key) {
             /* A page with three controls leaves five cells empty, and empty
              * cells read as a failed render rather than as "this section has

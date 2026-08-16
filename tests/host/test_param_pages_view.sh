@@ -40,6 +40,11 @@ globalThis.clear_screen = () => { cleared++; };
 globalThis.fill_rect = (...a) => { drawCalls.push(a); };
 globalThis.print = (...a) => { drawCalls.push(a); };
 globalThis.text_width = (t) => String(t == null ? "" : t).length * 6;
+/* draw_line / fill_circle: native shapes the Movy-style renderer prefers
+ * over a JS-side Bresenham/circle walk when the host provides them — see
+ * src/host/js_display.c and viz_draw.mjs / render_page_movy.mjs. */
+globalThis.draw_line = (...a) => { drawCalls.push(a); };
+globalThis.fill_circle = (...a) => { drawCalls.push(a); };
 globalThis.host_send_screenreader = (t) => spoken.push(t);
 globalThis.shadow_get_display_mode = () => 1;
 let ttsOn = false;
@@ -168,11 +173,24 @@ Promise.all([
       const w = devF.writes[devF.writes.length - 1];
       return w ? Number(w[1]) : NaN;
     };
+    /* setParam is throttled per key (SETPARAM_THROTTLE_MS in
+     * page_controller.mjs -- a fast physical spin decodes to 250-320 CC
+     * messages per second on device, and writing every single one was what
+     * dropped the grids own redraw rate under that load) -- a burst sent
+     * with no real time between messages, as this test does, lands inside
+     * one throttle window and only the first write reaches the device
+     * immediately. Releasing the knob (note-off) flushes whatever settled
+     * value is still pending, same as it would on real hardware the instant
+     * release happens -- so that is how this test observes the final
+     * position. */
+    const release = () => V.handleParamPagesMidi([0x90, floatSlot, 0]);
     shiftHeld = 0;
     for (let i = 0; i < 10; i++) V.handleParamPagesMidi([0xb0, 71 + floatSlot, 1]);
+    release();
     const afterCoarse = readLast();
     shiftHeld = 1;
     for (let i = 0; i < 10; i++) V.handleParamPagesMidi([0xb0, 71 + floatSlot, 1]);
+    release();
     const afterFine = readLast();
     shiftHeld = 0;
 

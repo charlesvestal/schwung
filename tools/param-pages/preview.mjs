@@ -10,7 +10,13 @@
  *   node tools/param-pages/preview.mjs minijv --page 5 --layout dial
  *   node tools/param-pages/preview.mjs sf2 --all
  *   node tools/param-pages/preview.mjs obxd --png /tmp/out --scale 4
+ *   node tools/param-pages/preview.mjs braids --layout movy
  *   node tools/param-pages/preview.mjs --list
+ *
+ * --layout movy renders schwung-movy's own knob-grid layout
+ * (render_page_movy.mjs) instead of the dial/bar grid — graphics (envelope,
+ * filter, lfo, eq) resolve the same way the real controller does
+ * (viz.mjs resolveViz), so this is what the "Knobs" setting on device draws.
  *
  * Values are synthesised (mid-range, deterministic per key) since there is no
  * device to read them from — enough to judge layout, not to judge a patch.
@@ -23,6 +29,8 @@ import { createFramebuffer, drawContext } from "./harness.mjs";
 import { planPages, PAGE_KNOBS } from "../../src/shared/param_pages/page_plan.mjs";
 import { buildMetaIndex } from "../../src/shared/param_pages/param_meta.mjs";
 import { renderPage, LAYOUT_DIAL, LAYOUT_BAR } from "../../src/shared/param_pages/render_page.mjs";
+import { renderPageMovy, LAYOUT_MOVY } from "../../src/shared/param_pages/render_page_movy.mjs";
+import { resolveViz } from "../../src/shared/param_pages/viz.mjs";
 
 const ROOT = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))));
 const FIXTURE = path.join(ROOT, "tests", "fixtures", "module-contracts.json");
@@ -47,7 +55,7 @@ if (flag("list")) {
 
 const id = positional[0];
 if (!id) {
-    console.error("usage: preview.mjs <module-id> [--page N | --all] [--layout dial|bar] [--reveal] [--touch N] [--png DIR] [--scale N]");
+    console.error("usage: preview.mjs <module-id> [--page N | --all] [--layout dial|bar|movy] [--reveal] [--touch N] [--png DIR] [--scale N]");
     process.exit(2);
 }
 const mod = fx.modules.find((m) => m.id === id);
@@ -73,7 +81,7 @@ const { pages, warnings } = planPages({ hierarchy: mod.ui_hierarchy, chainParams
 const metaIndex = buildMetaIndex({ hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params });
 const gridPages = pages.map((p, i) => ({ p, i })).filter(({ p }) => p.kind === PAGE_KNOBS);
 
-const LAYOUTS = { dial: LAYOUT_DIAL, bar: LAYOUT_BAR };
+const LAYOUTS = { dial: LAYOUT_DIAL, bar: LAYOUT_BAR, movy: LAYOUT_MOVY };
 const layout = LAYOUTS[flag("layout", "dial")] || LAYOUT_DIAL;
 const touched = flag("touch") !== null ? parseInt(flag("touch"), 10) : -1;
 const revealValues = !!flag("reveal");
@@ -96,10 +104,18 @@ for (const { p, i } of chosen) {
     const values = {};
     for (const k of (p.keys || [])) values[k] = fakeValue(k, metaIndex.getOrGuess(k));
 
-    renderPage(drawContext(fb), {
-        page: p, metaIndex, values, title,
-        pageIndex: i, pageCount: pages.length, touched, layout, revealValues,
-    });
+    if (layout === LAYOUT_MOVY) {
+        const { groups } = resolveViz({ keys: p.keys || [], metaIndex });
+        renderPageMovy(drawContext(fb), {
+            page: p, metaIndex, values, title,
+            pageIndex: i, pageCount: pages.length, touched, viz: groups,
+        });
+    } else {
+        renderPage(drawContext(fb), {
+            page: p, metaIndex, values, title,
+            pageIndex: i, pageCount: pages.length, touched, layout, revealValues,
+        });
+    }
 
     console.log(`\n── page ${i}: ${p.kind} "${p.name}"  ${(p.keys || []).length} keys` +
                 (p.authored === false ? "  (overflow)" : ""));

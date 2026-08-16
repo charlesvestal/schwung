@@ -30,13 +30,51 @@
 import { planPages, PAGE_KNOBS } from "./page_plan.mjs";
 import { buildMetaIndex, inferFromValue, isTurnable, KIND_ENUM, KIND_OPAQUE } from "./param_meta.mjs";
 import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page.mjs";
+import { renderPageMovy, LAYOUT_MOVY } from "./render_page_movy.mjs";
+import { resolveViz } from "./viz.mjs";
+
+export { LAYOUT_MOVY };
 import { step, stepLevel, reanchor, firstGrid, jumpIndex, groupIndex } from "./page_nav.mjs";
 import { knobInit, knobTick, knobConfigFromMeta } from "../knob_engine.mjs";
+import { movyKnobInit, movyKnobTick } from "./movy_knob.mjs";
 import { formatParamForSet } from "../param_format.mjs";
 import { announcePage, announceTouch, announceTurn, announcePageContents } from "./announce_page.mjs";
 
 /** Ticks a key ignores incoming reads after being turned (~200 ms at 44 Hz). */
 export const SETTLE_TICKS = 9;
+
+/**
+ * Minimum gap between announcements for the SAME key while it is being
+ * turned continuously. A fast physical spin decodes to one MIDI CC message
+ * per detent — measured on device at up to ~286/s during a fast Braids turn
+ * — and every one of those was reaching `announce()`, which always writes to
+ * shared memory and bumps a sequence number for the screen-reader consumer
+ * to pick up (`host_send_screenreader`, `src/shadow/shadow_ui.c`) whether or
+ * not TTS is actually speaking. No one can follow 286 announcements a
+ * second, sighted or not, and competing with that many per-detent writes for
+ * the same tick budget as rendering was the real cause behind the frame rate
+ * dropping under a fast turn (17fps idle -> 5fps while flooded) — this
+ * throttle is a genuine UX fix on its own merits, and it happens to be the
+ * perf fix too. */
+export const ANNOUNCE_THROTTLE_MS = 120;
+
+/**
+ * Minimum gap between setParam WRITES for the same key while it is being
+ * turned continuously.
+ *
+ * Measured on device: a fast physical spin decodes to 250-320 MIDI CC
+ * messages/second (one per detent), and — confirmed by bypassing it —
+ * `setParam` per detent is what was dropping the grid's own redraw rate from
+ * ~17fps to 5fps under that load, not rendering (every draw primitive
+ * measures near-zero) and not `announce()` (throttling that alone changed
+ * nothing). 50 writes/sec is already finer than a human ear or a knob's own
+ * declared `step` resolution needs during a fast sweep — the value the
+ * screen shows and the value used for the next detent's math (`s.values`,
+ * `knobStates`) update on EVERY detent regardless; only the outbound
+ * `setParam` IPC call is paced. A write that misses this window is not
+ * dropped — see `pendingWrite` below — it is caught by the next tick or by
+ * release, so the final settled value always reaches the device exactly. */
+export const SETPARAM_THROTTLE_MS = 20;
 
 /** How many times a page will re-read the contract waiting for late metadata. */
 export const META_RETRY_LIMIT = 8;
@@ -55,6 +93,12 @@ export function createController(io = {}) {
      * defaults to "no" for callers that have no modulation. */
     const isModulated = io.isModulated || (() => false);
     const now = io.now || (() => Date.now());
+    /* Graphics default on; a caller can pass `enableViz: false` to keep the
+     * plain grid (a tool that wants every cell individually addressable), and
+     * `vizOverrides` to correct a wrong detector guess without a module
+     * release — see viz.mjs resolveViz. */
+    const vizEnabled = io.enableViz !== false;
+    const vizOverrides = io.vizOverrides || null;
 
     const s = {
         slot: 0,
@@ -75,6 +119,13 @@ export function createController(io = {}) {
         settleUntil: Object.create(null),
         tickCount: 0,
         knobStates: Object.create(null),
+        /* key -> ms of the last announce() for that key — see ANNOUNCE_THROTTLE_MS */
+        lastAnnounceMs: Object.create(null),
+        /* key -> ms of the last setParam() WRITE for that key, and key -> the
+         * latest computed wire value still waiting to be written because it
+         * arrived inside the throttle window — see SETPARAM_THROTTLE_MS. */
+        lastWriteMs: Object.create(null),
+        pendingWrite: Object.create(null),
         /* the caller acts on these; the controller never opens a screen itself */
         pending: null,
         /* Page picker: the answer to 76 pages. Open, jog to scroll, click to
@@ -150,11 +201,16 @@ export function createController(io = {}) {
         s.fingerprint = planned.fingerprint;
         s.metaIndex = buildMetaIndex({ hierarchy, chainParams });
         s.conditionKeys = planned.conditionKeys || new Set();
+        /* A rebuild mid-turn must not silently drop a throttled write that
+         * hasn't reached the device yet. */
+        flushDueWritesUnconditionally();
         s.values = Object.create(null);
         s.cursor = 0;
         s.metaRetries = 0;
         s.metaSettled = false;
         s.knobStates = Object.create(null);
+        s.lastWriteMs = Object.create(null);
+        s.pendingWrite = Object.create(null);
         /* A rebuild after a module finishes loading shifts every index, so land
          * by name rather than by position; a first load lands on a grid. */
         s.pageIndex = oldPages.length ? reanchor(oldPages, oldIndex, s.pages) : firstGrid(s.pages);
@@ -208,8 +264,34 @@ export function createController(io = {}) {
      * One read per tick, cycling the current page. Values arrive over several
      * frames rather than stalling one — the whole point of the cursor.
      */
+    /**
+     * Catches the case a per-detent flush in onKnobTurn cannot: the hand
+     * pauses mid-turn (still touching, so no release event either) with a
+     * value sitting in pendingWrite from the last detent before the pause.
+     * Nothing else would ever write it out. Cheap when there is nothing
+     * pending — the common case — since it is only object-key iteration.
+     */
+    function flushDueWrites() {
+        const t = now();
+        for (const key in s.pendingWrite) {
+            if (t - (s.lastWriteMs[key] || 0) < SETPARAM_THROTTLE_MS) continue;
+            setParam(fullKey(key), s.pendingWrite[key]);
+            s.lastWriteMs[key] = t;
+            delete s.pendingWrite[key];
+        }
+    }
+
+    /** Every pending write, ignoring the throttle window — a rebuild (module
+     * swap, visible_if re-plan) must never silently drop one. */
+    function flushDueWritesUnconditionally() {
+        for (const key in s.pendingWrite) {
+            setParam(fullKey(key), s.pendingWrite[key]);
+        }
+    }
+
     function tick() {
         s.tickCount++;
+        flushDueWrites();
         const p = page();
         if (!p || p.kind !== PAGE_KNOBS || p.keys.length === 0) return null;
 
@@ -375,28 +457,58 @@ export function createController(io = {}) {
         if (!isTurnable(meta)) return null;
 
         const t = nowMs === undefined ? now() : nowMs;
+        /* The Movy layout turns like Movy — see movy_knob.mjs — not like
+         * Schwung's own dial/bar grid (knob_engine.mjs, a different,
+         * time-based acceleration feel that predates this port). Same state
+         * slot, different init/tick pair, picked once per key so a turn
+         * mid-gesture never switches models under your hand. */
+        const useMovy = s.layout === LAYOUT_MOVY;
         let st = s.knobStates[key];
         if (!st) {
             const current = s.values[key] !== undefined ? Number(s.values[key]) : Number(getParam(fullKey(key)));
-            st = s.knobStates[key] = knobInit(isFinite(current) ? current : 0);
+            const start = isFinite(current) ? current : 0;
+            st = s.knobStates[key] = useMovy ? movyKnobInit(start) : knobInit(start);
         }
-        /* Fine adjust: Elektron's [FUNC]+encoder. Holding shift already reveals
-         * every value, so precision mode and "show me the numbers" are the same
-         * gesture — which is what you want when you are chasing a value.
-         *
-         * Only floats have a finer step to give. An int already moves in whole
-         * units and an enum in whole options; there is nothing below that, and
-         * pretending otherwise would just make them feel broken under shift. */
-        const cfg = knobConfigFromMeta(meta);
-        const canRefine = fine && meta.type === "float";
-        const value = knobTick(st, canRefine ? { ...cfg, step: (cfg.step || 0.01) / 10 } : cfg,
-                               direction, t);
+
+        let value;
+        if (useMovy) {
+            value = movyKnobTick(st, meta, direction, t, fine);
+        } else {
+            /* Fine adjust: Elektron's [FUNC]+encoder. Holding shift already
+             * reveals every value, so precision mode and "show me the
+             * numbers" are the same gesture — which is what you want when
+             * you are chasing a value.
+             *
+             * Only floats have a finer step to give. An int already moves in
+             * whole units and an enum in whole options; there is nothing
+             * below that, and pretending otherwise would just make them feel
+             * broken under shift. */
+            const cfg = knobConfigFromMeta(meta);
+            const canRefine = fine && meta.type === "float";
+            value = knobTick(st, canRefine ? { ...cfg, step: (cfg.step || 0.01) / 10 } : cfg, direction, t);
+        }
         const wire = formatParamForSet(value, meta);
 
         s.values[key] = wire;
         s.settleUntil[key] = s.tickCount + SETTLE_TICKS;
-        setParam(fullKey(key), wire);
-        announce(announceTurn(meta, wire));
+        /* Throttled — see SETPARAM_THROTTLE_MS. A miss is never lost: it is
+         * left in pendingWrite for tick() to flush once the window passes,
+         * and onKnobTouch(false) flushes immediately on release. */
+        const lastWrite = s.lastWriteMs[key] || 0;
+        if (t - lastWrite >= SETPARAM_THROTTLE_MS) {
+            s.lastWriteMs[key] = t;
+            delete s.pendingWrite[key];
+            setParam(fullKey(key), wire);
+        } else {
+            s.pendingWrite[key] = wire;
+        }
+        /* Throttled — see ANNOUNCE_THROTTLE_MS. A continuous fast turn still
+         * announces regularly, just not once per raw MIDI detent. */
+        const lastAnnounce = s.lastAnnounceMs[key] || 0;
+        if (t - lastAnnounce >= ANNOUNCE_THROTTLE_MS) {
+            s.lastAnnounceMs[key] = t;
+            announce(announceTurn(meta, wire));
+        }
         return wire;
     }
 
@@ -409,6 +521,17 @@ export function createController(io = {}) {
         if (down && s.pickerOpen) closePicker();
         if (!down) {
             if (s.touched === slot) s.touched = -1;
+            /* Release flushes immediately rather than waiting out
+             * SETPARAM_THROTTLE_MS — the hand has stopped, so there is no
+             * more flooding to protect against, and the settled value should
+             * land on the device the instant you let go, not up to 20ms
+             * later. */
+            const key = keyAt(slot);
+            if (key && s.pendingWrite[key] !== undefined) {
+                setParam(fullKey(key), s.pendingWrite[key]);
+                s.lastWriteMs[key] = now();
+                delete s.pendingWrite[key];
+            }
             return;
         }
         s.touched = slot;
@@ -481,7 +604,35 @@ export function createController(io = {}) {
     function setReveal(on) { s.revealValues = !!on; }
     function setDecorations(d) { s.decorations = d || null; }
 
+    /* Movy layout is a whole separate renderer (its own fixed-geometry header
+     * and knob grid, not a `layout` value render_page.mjs understands — see
+     * render_page_movy.mjs), so it does not take decorations (a sequencer's
+     * per-slot p-locks) or an embedding `rect`: it draws its own header full
+     * width, the way Movy itself always does. Anything using those keeps
+     * LAYOUT_DIAL/LAYOUT_BAR — see setLayout. */
     function render(ctx, { title, rect } = {}) {
+        if (s.layout === LAYOUT_MOVY) {
+            const drawGrid = () => renderPageMovy(ctx, {
+                page: page(), metaIndex: s.metaIndex, values: s.values,
+                title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
+                touched: s.hintLines ? -1 : s.touched,
+                modulated: (key) => isModulated(fullKey(key)),
+                pageGroups: pageGroups(),
+                viz: vizEnabled ? vizGroups() : [],
+            });
+            if (s.hintLines) {
+                drawGrid();
+                renderHint(ctx, { rect, lines: s.hintLines.lines, title: s.hintLines.title });
+                return;
+            }
+            if (s.pickerOpen) {
+                renderPicker(ctx, { rect, entries: s.pickerEntries, index: s.pickerIndex, title: "Sections" });
+                return;
+            }
+            drawGrid();
+            return;
+        }
+
         if (s.hintLines) {
             renderPage(ctx, {
                 page: page(), metaIndex: s.metaIndex, values: s.values,
@@ -504,7 +655,23 @@ export function createController(io = {}) {
             /* Section ids for the page rule, so it groups the way Shift+jog
              * navigates. Cached — it only changes when the page set does. */
             pageGroups: pageGroups(),
+            /* A sequencer's parameter-lock decorations are per SLOT; a
+             * graphic replacing several slots with one picture would hide
+             * which of them is locked, so graphics stand down while
+             * decorations are active. */
+            viz: (vizEnabled && !s.decorations) ? vizGroups() : [],
         });
+    }
+
+    let vizCache = null;
+    function vizGroups() {
+        const p = page();
+        if (!p || p.kind !== PAGE_KNOBS || !s.metaIndex) return [];
+        const cacheKey = `${s.fingerprint}#${s.pageIndex}`;
+        if (vizCache && vizCache.key === cacheKey) return vizCache.groups;
+        const { groups } = resolveViz({ keys: p.keys, metaIndex: s.metaIndex, overrides: vizOverrides });
+        vizCache = { key: cacheKey, groups };
+        return groups;
     }
 
     /** Read the current page aloud — the gesture that replaces a glance. */
