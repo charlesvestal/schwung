@@ -178,7 +178,7 @@ import {
 import {
     paramPagesEnabled, enterParamPages, exitParamPages, paramPagesActive,
     tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage,
-    paramPagesComponent
+    paramPagesComponent, paramPagesSlot
 } from './shadow_ui_param_pages.mjs';
 import {
     drawMasterFx as _drawMasterFx,
@@ -1699,6 +1699,14 @@ function getPhysKnobState(fullKey, currentValue) {
 /* Master FX flag - when true, exit returns to MASTER_FX view instead of CHAIN_EDIT */
 let hierEditorIsMasterFx = false;
 let hierEditorMasterFxSlot = -1;      // Which Master FX slot (0-3) we're editing
+
+/* Set by enterHierarchyEditorFromParamPages(): the list editor is only open
+ * here because the grid handed off a non-grid page (preset browser, items
+ * list, ...) it does not draw itself. Committing a preset in that state
+ * should return to the grid rather than leave the user stranded in the list
+ * UI — see the preset-edit-mode branch below. Cleared once consumed, and by
+ * exitHierarchyEditor()/Back so a manual exit does not also bounce back. */
+let cameFromParamPages = false;
 
 /* Preset browser state (for preset_browser type levels) */
 let hierEditorIsPresetLevel = false;  // true when current level is a preset browser
@@ -7728,6 +7736,45 @@ function enterHierarchyEditor(slotIndex, componentKey) {
     enterHierarchyEditorWith(slotIndex, componentKey, hierarchy);
 }
 
+/*
+ * The grid only draws PAGE_KNOBS (shadow_ui_param_pages.mjs's drawParamPages
+ * returns false on anything else) — a preset browser, a runtime items list, a
+ * mode select or a child selector is meant to hand off to the list editor
+ * that already draws it. That hand-off never actually populated the list
+ * editor's state though: enterParamPages() never touches hierEditorSlot /
+ * hierEditorHierarchy / hierEditorLevel, so falling straight into
+ * drawHierarchyEditor() drew whatever those globals happened to hold —
+ * usually their reset defaults (hierEditorSlot=-1, hierEditorParams=[]),
+ * i.e. "S0: no parameters", not the intended preset browser. This performs
+ * the hand-off for real: entering the legacy editor exactly as if the user
+ * had opened it directly, then jumping to the same *level* the grid was on
+ * (not the hierarchy's root) so a "Presets" page mid-tree opens the preset
+ * browser, not the top of the whole component.
+ *
+ * hierEditorPath is left empty rather than reconstructed, so Back exits the
+ * component instead of stepping up to the level's real parent. Good enough
+ * to make the page work at all; a true breadcrumb would need walking the
+ * hierarchy's own level graph backward from `page.level`, which none of the
+ * existing entry points do either.
+ */
+function enterHierarchyEditorFromParamPages() {
+    const page = currentParamPage();
+    const slotIndex = paramPagesSlot();
+    const componentKey = paramPagesComponent();
+    exitParamPages();
+    suppressParamPagesOnce = true;
+    enterHierarchyEditor(slotIndex, componentKey);
+    cameFromParamPages = true;
+    if (page && page.level && hierEditorHierarchy &&
+        hierEditorHierarchy.levels && hierEditorHierarchy.levels[page.level] &&
+        page.level !== hierEditorLevel) {
+        hierEditorLevel = page.level;
+        hierEditorPath = [];
+        hierEditorChildIndex = -1;
+        loadHierarchyLevel();
+    }
+}
+
 /* Enter the hierarchy editor with an explicit hierarchy object. Lets callers
  * inject a SYNTHESIZED hierarchy (see buildSynthHierarchyFromChainParams) for a
  * component that lacks a real ui_hierarchy — used in co-run, where loadModuleUi
@@ -8050,6 +8097,7 @@ function exitHierarchyEditor() {
     /* Clear pending knob state to prevent stale overlays */
     pendingHierKnobIndex = -1;
     pendingHierKnobDelta = 0;
+    cameFromParamPages = false;
 
     clearModuleParamShims();
     clearWavZoomStates();
@@ -11754,6 +11802,18 @@ function handleSelect() {
                     hierEditorSelectedIdx = 0;
                     loadHierarchyLevel();
                     invalidateKnobContextCache();
+                } else if (cameFromParamPages) {
+                    /* The grid handed this preset browser off because it does
+                     * not draw one itself (see enterHierarchyEditorFromParamPages).
+                     * A committed choice belongs back on the grid, not the
+                     * list's own preset-edit-mode screen (params + swap
+                     * action) — otherwise selecting a preset strands you in
+                     * the list UI with no way back to Knobs. */
+                    const slotIndex = hierEditorSlot;
+                    const componentKey = hierEditorComponent;
+                    cameFromParamPages = false;
+                    exitHierarchyEditor();
+                    enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey));
                 } else {
                     /* No children - enter preset edit mode to show params/swap */
                     hierEditorPresetEditMode = true;
@@ -14149,7 +14209,9 @@ function dispatchCoRunDraw() {
         /* The grid draws grids; every other page kind it plans (preset
          * browser, items list, mode select, child selector) belongs to the
          * list editor, which drawParamPages declines by returning false. */
-        case VIEWS.PARAM_PAGES:          if (!drawParamPages()) drawHierarchyEditor(); break;
+        case VIEWS.PARAM_PAGES:
+            if (!drawParamPages()) { enterHierarchyEditorFromParamPages(); drawHierarchyEditor(); }
+            break;
         case VIEWS.CANVAS:               drawCanvasPreview(); break;
         case VIEWS.KNOB_EDITOR:          drawKnobEditor(); break;
         case VIEWS.KNOB_PARAM_PICKER:    drawKnobParamPicker(); break;
@@ -15013,7 +15075,7 @@ globalThis.tick = function() {
          * items list, mode select, child selector) belongs to the list editor,
          * which drawParamPages declines by returning false. */
         case VIEWS.PARAM_PAGES:
-            if (!drawParamPages()) drawHierarchyEditor();
+            if (!drawParamPages()) { enterHierarchyEditorFromParamPages(); drawHierarchyEditor(); }
             break;
         case VIEWS.CANVAS:
             drawCanvasPreview();

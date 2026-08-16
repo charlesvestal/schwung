@@ -387,20 +387,30 @@ export function createController(io = {}) {
         return true;
     }
 
+    /* Keyed on level+kind, not level alone: a level can carry more than one
+     * page kind sharing one level key (braids' root is both the "Presets"
+     * PAGE_PRESET browser and the "Main" PAGE_KNOBS grid) — a level-only key
+     * let memory of one hijack a jump to the other. Picking "Presets" from
+     * the section list landed back on "Main" because sectionMemory["root"]
+     * held the knobs page and restoreSection only checked level. */
+    function sectionKey(p) { return p ? `${p.level} ${p.kind}` : null; }
+
     /* Remember where you were within the current section. */
     function rememberSection() {
         const p = page();
-        if (p && p.level) s.sectionMemory[p.level] = s.pageIndex;
+        const key = sectionKey(p);
+        if (p && p.level && key) s.sectionMemory[key] = s.pageIndex;
     }
 
     /* Landing on a section: return to the sub-page last used there. */
     function restoreSection(index) {
         const p = s.pages[index];
-        if (!p || !p.level) return index;
-        const remembered = s.sectionMemory[p.level];
+        const key = sectionKey(p);
+        if (!p || !p.level || !key) return index;
+        const remembered = s.sectionMemory[key];
         if (remembered === undefined) return index;
         const rp = s.pages[remembered];
-        return (rp && rp.level === p.level) ? remembered : index;
+        return (rp && sectionKey(rp) === key) ? remembered : index;
     }
 
     /** Jog: pages. With shift: whole levels, skipping continuations. */
