@@ -682,12 +682,48 @@ editor too. `node tools/param-pages/validate.mjs --level warn` reproduces them.
 
 **Still open, and genuinely Charles's:**
 
-3. **Layout spec name** — `movy_config.json` as-is, or `param_ui.json` with the
-   former as a read alias? Needs the conversation with megadake first.
+3. **Layout spec name and shape.** Earlier notes treated this as constrained by
+   adoption — Movy's `loader.ts` comment names Forge as a module that ships its
+   own `movy_config.json`. Checked against the 76-module device dump
+   (2026-08-16): **no module ships one. Zero.** Forge's config is *bundled
+   inside Movy* (`src/modules/forge.json`), as are 13 others. The mechanism has
+   a real load path and no users — the same shape as `child_prefix` (§5).
+
+   So there is no installed base and nothing to migrate. The file should be
+   designed rather than inherited. Still worth agreeing with megadake so both
+   renderers read the same thing, but the conversation is "neither of us has
+   adopters yet, let's agree the shape", not "please rename your format".
 4. **Overflow page ordering** — declaration order (current) or grouped by type?
-5. **Graphics detectors** (envelope / LFO / filter) — still deferred. They infer
-   grouping from key names, which the June design doc rules out. Re-introduce
-   driven by declared hints once the layout spec exists.
+5. **Graphics detectors** (envelope / filter / LFO / EQ) — position changed
+   2026-08-16 after Movy v0.27.0 shipped ~1,350 lines of them.
+
+   Earlier reasoning ("they infer from key names, which the June doc rules out")
+   was too rigid: it defends the principle at the cost of shipping nothing,
+   since **no module declares anything today**, so detectors would be doing 100%
+   of the work on day one. The model instead is Charles's: a module declares its
+   visualisations; detectors are the fallback when it does not. Precedence, with
+   the module always winning over the host:
+
+   > module `chain_params` `viz` → module layout file → host override → detector → plain knob
+
+   The residual risk is honest and not fully removed by that: a new module can
+   still trip a detector wrongly on a user's device, and the override only helps
+   after someone notices. Two things reduce it —
+
+   - **Corroborate with declared metadata, not just vocabulary.** Movy's best
+     idea in v0.27.0 is not a graphic, it is `isGainRange`: an EQ band must have
+     a bipolar, roughly symmetric range before a name like "gain" is believed.
+     That single test rejects the crossovers, Q values and random bounds their
+     word lists let through. Ported detectors should demand the same
+     corroboration; their envelope and filter detectors are looser.
+   - **Order by risk, not by value.** Envelope first (ADSR naming is near
+     universal and a wrong shape is obvious on screen), then filter, then LFO,
+     EQ last — its false positives are the hardest to spot and the ones Movy has
+     already had to patch repeatedly.
+
+   Success measure: if detectors are still doing ~100% of the work in a year,
+   the declaration path failed and this became a maintenance treadmill. The
+   validator reporting what it *inferred* is what makes that visible.
 6. **Should `asciiFold` move into `src/shared/param_format.mjs`** so the list
    editor gets it too? Almost certainly yes, as a small separate change — five
    modules render text as nothing in the list today.
