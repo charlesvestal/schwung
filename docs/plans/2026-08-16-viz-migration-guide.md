@@ -173,3 +173,88 @@ The measure to watch is in `validate.mjs`: how much of a module's graphics come
 from declarations versus inference. If the fleet is still mostly inference in a
 year, the declaration path failed and the detectors became a maintenance
 treadmill instead of a fallback.
+
+---
+
+## Migration tracker (`charlesvestal/` modules only)
+
+46 of 104 catalog modules live in `charlesvestal/` repos; the other 58 (community
++ third-party) are out of scope for this pass — inference covers them. Ordered
+per "Working order" above; update the row (and commit the module repo) each time
+one ships.
+
+### 1. Plain-ADSR synths
+
+| Module | Repo | Status |
+|---|---|---|
+| braids | schwung-braids | **done** (f72c0ec — amp/filter_env groups + filter cutoff/resonance) |
+| obxd | schwung-obxd | not started |
+| hera | schwung-hera | not started |
+| moog | schwung-moog | not started |
+
+### 2. Cutoff + resonance
+
+| Module | Repo | Status |
+|---|---|---|
+| dexed | schwung-dx7 | not started |
+| sf2 | schwung-sf2 | not started |
+| sfz | schwung-sfz | not started |
+| minijv | schwung-jv880 | not started |
+| surge | schwung-surge | not started |
+| osirus | schwung-virus | not started |
+| 303 | schwung-303 | not started |
+| chordism | schwung-chordism | not started |
+| nusaw | schwung-nusaw | not started |
+| hush1 | schwung-hush1 | not started |
+
+### 3. Waveform enums
+
+| Module | Repo | Status |
+|---|---|---|
+| chiptune | schwung-chiptune | not started |
+| webstream | schwung-webstream | not started |
+| radiogarden | schwung-radiogarden | not started |
+
+### 4. Samplers
+
+| Module | Repo | Status |
+|---|---|---|
+| mrsample | schwung-mrsample | not started |
+| rex | schwung-rex | not started |
+| samplerobot | schwung-autosample | not started |
+| waveform-editor | schwung-waveform-editor | not started |
+| stretch | schwung-stretch | not started |
+| stems | schwung-stems | not started |
+| tb3po | schwung-tb3po | not started |
+
+### 5. EQ-ish effects (last — easiest to get wrong)
+
+| Module | Repo | Status |
+|---|---|---|
+| cloudseed | schwung-cloudseed | not started |
+| midiverb | schwung-midiverb | not started |
+| tapescam | schwung-tapescam | not started |
+| psxverb | schwung-psxverb | not started |
+| mverb | schwung-mverb | not started |
+| tapedelay | schwung-space-delay | not started |
+| junologue-chorus | schwung-junologue-chorus | not started |
+| nam | schwung-nam | not started |
+| ducker | schwung-ducker | not started |
+| clap | schwung-airwindows | not started |
+| gate | schwung-gate | not started |
+| keydetect | schwung-keydetect | not started |
+| vocoder | schwung-vocoder | not started |
+| usefulity | schwung-usefulity | not started |
+| chowtape | schwung-chowtape | not started |
+| ambiotica | schwung-ambiotica | not started |
+| filter | schwung-filter | not started |
+| midi-player | schwung-midi-player | not started |
+
+### Not applicable (no meaningful knob-page graphics)
+
+| Module | Repo | Why |
+|---|---|---|
+| airplay | schwung-airplay | streaming receiver, no synthesis params |
+| m8 | schwung-m8 | overtake, own full-screen UI |
+| sidcontrol | schwung-sidcontrol | overtake, own full-screen UI |
+| performance-fx | schwung-performance-fx | overtake, own full-screen UI |
