@@ -110,9 +110,7 @@ The top unresolved risk, and it needs a Move:
 
 ---
 
-## Small, independent, not yet done
-
-Both are correctness rather than polish, and neither needs a fresh session:
+## Small and independent
 
 - **`announceContents()` is bound to no gesture.** "Read the page aloud" is
   written, tested and exported, and nothing calls it. With the screen reader on
@@ -131,10 +129,12 @@ Both are correctness rather than polish, and neither needs a fresh session:
   the *delivery* path and `send_screenreader_announcement` emits on it whether or
   not espeak is speaking, so announcements in the log with the reader off are
   expected. The gate reads the right flag.)
-- **`visible_if` is evaluated only at plan time.** Toggling a condition source
-  never adds or removes the dependent params; `visible()` is called 0 times
-  across 500 ticks. The fix is not polling — the planner knows which keys the
-  conditions depend on, so re-plan only when one of those values changes.
+- ~~`visible_if` is evaluated only at plan time.~~ **Done** (`0dd6ee4b`). The
+  planner returns the keys its conditions read and the controller re-plans when
+  one of those values changes — no polling, no extra device reads. Known limit: a
+  condition source on a page you are not viewing is noticed when you navigate
+  somewhere that reads it. One module and one key in the fleet use `visible_if`
+  at all, and there the source sits on the same page as its dependents.
 
 ---
 
