@@ -84,6 +84,14 @@ export function paramPagesEnabled() {
  * @param {string} component   'synth' | 'fx1' | 'fx2' | 'midiFx' | 'master_fx:fx1' …
  * @param {string} prefix      the DSP param prefix for that component
  */
+/* "Once per session" (see showHint below) has to live here, not in the
+ * controller's own state: exitParamPages() drops `controller` on every exit
+ * (chain edit, switching modules), so `if (!controller)` below builds a
+ * BRAND NEW one on the next entry, and a per-controller "already shown" flag
+ * resets right along with it — the hint was popping up on every single
+ * module open instead of once, which is what it looks like without this. */
+let hintShownThisSession = false;
+
 export function enterParamPages(slot, component, prefix) {
     currentSlot = slot;
     currentComponent = component;
@@ -105,15 +113,18 @@ export function enterParamPages(slot, component, prefix) {
     controller.setLayout(LAYOUT_MOVY);
     /* Once per session: the grid's gestures are not guessable, and a preview
      * nobody can operate produces no useful feedback. Any input clears it. */
-    /* ~19 characters fit at 5x7 across the panel; longer lines silently clip. */
-    controller.showHint([
-        "Jog: page",
-        "Shift+Jog: section",
-        "Click: section list",
-        "Hold knob: name",
-        "Shift: fine + values",
-        "Mute+knob: default",
-    ], "Param Pages");
+    if (!hintShownThisSession) {
+        hintShownThisSession = true;
+        /* ~19 characters fit at 5x7 across the panel; longer lines silently clip. */
+        controller.showHint([
+            "Jog: page",
+            "Shift+Jog: section",
+            "Click: section list",
+            "Hold knob: name",
+            "Shift: fine + values",
+            "Mute+knob: default",
+        ], "Param Pages");
+    }
     ctx.setView(ctx.VIEWS.PARAM_PAGES);
 }
 
