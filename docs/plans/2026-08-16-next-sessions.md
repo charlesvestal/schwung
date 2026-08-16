@@ -114,11 +114,23 @@ The top unresolved risk, and it needs a Move:
 
 Both are correctness rather than polish, and neither needs a fresh session:
 
-- **The accessibility gate is wrong.** `paramPagesEnabled()` forces the list when
-  `tts_get_enabled()` is true, but that is Schwung's *internal* TTS flag. A device
-  driving Move's *external* D-Bus screen reader passes the gate — verified on
-  Charles's Move, where the grid ran while announcements went out over D-Bus. The
-  safeguard does not fire for the setup it most needs to protect.
+- **`announceContents()` is bound to no gesture.** "Read the page aloud" is
+  written, tested and exported, and nothing calls it. With the screen reader on
+  that is the difference between navigating a grid by ear and touching all eight
+  knobs to discover what they are. Every obvious gesture is taken, so choosing
+  one is a design decision rather than a fix.
+- **Open policy question, not a bug: should the screen reader force the list?**
+  `paramPagesEnabled()` currently says yes. The list's reading order *is* its
+  navigation order, which a grid cannot match; but the grid does announce now,
+  and silently reversing a setting the user chose has its own cost.
+
+  (An earlier version of this file claimed the gate was broken because it keyed
+  off an "internal" TTS flag while the device used an "external" D-Bus reader.
+  That was wrong — there is one screen reader, Schwung's espeak engine, and
+  `tts_enabled` is its flag. The D-Bus `com.ableton.move.ScreenReader` signal is
+  the *delivery* path and `send_screenreader_announcement` emits on it whether or
+  not espeak is speaking, so announcements in the log with the reader off are
+  expected. The gate reads the right flag.)
 - **`visible_if` is evaluated only at plan time.** Toggling a condition source
   never adds or removes the dependent params; `visible()` is called 0 times
   across 500 ticks. The fix is not polling — the planner knows which keys the
