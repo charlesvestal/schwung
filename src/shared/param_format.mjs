@@ -27,11 +27,25 @@ export function precisionForStep(step, fallback = 2) {
     return 4;
 }
 
-export function applyDisplayFormat(fmt, num) {
+/**
+ * @param {string} fmt   printf-style ".Nf" or ".N%"
+ * @param {number} num   the raw param value
+ * @param {string} [unit] meta.unit — a leading "%" in `fmt` is a PRINTF sigil
+ *                 (".0f" formats a float, it does not mean "as a percent"),
+ *                 so an "f"-type format carries no scaling of its own. A
+ *                 param whose fraction 0..1 is meant to read as a percentage
+ *                 says so via `unit: "%"`, not via the format string — a
+ *                 ".0f" format on such a param must still scale by 100 or it
+ *                 prints the raw fraction rounded to an integer (0.232 -> "0",
+ *                 0.823 -> "1"), which is indistinguishable from a real value
+ *                 near zero without ever looking wrong until you compare it
+ *                 to the knob.
+ */
+export function applyDisplayFormat(fmt, num, unit) {
     const match = String(fmt).match(/^%?\.(\d{1,2})(f|%)$/);
     if (!match) return null;
     const decimals = parseInt(match[1], 10);
-    if (match[2] === "%") return (num * 100).toFixed(decimals) + "%";
+    if (match[2] === "%" || unit === "%") return (num * 100).toFixed(decimals) + "%";
     return num.toFixed(decimals);
 }
 
@@ -76,7 +90,7 @@ export function formatParamValue(rawValue, meta) {
     if (!isFinite(num)) return String(rawValue);
 
     if (meta.display_format) {
-        const out = applyDisplayFormat(meta.display_format, num);
+        const out = applyDisplayFormat(meta.display_format, num, meta.unit);
         if (out !== null) {
             /* applyDisplayFormat already adds % when format ends in %; otherwise
                append the meta unit (skipping % since the format itself injects it). */

@@ -19,6 +19,7 @@
 import { buildMetaIndex, KIND_OPAQUE } from "./param_meta.mjs";
 import { planPages, PAGE_KNOBS, KNOBS_PER_PAGE } from "./page_plan.mjs";
 import { hasChildren, allChildKeys } from "./child_key.mjs";
+import { resolveViz, VIZ_SOURCE_DECLARED } from "./viz.mjs";
 
 /* Types the contract documents, plus the ones modules actually ship.
  * `toggle` is used inline by real modules but is absent from docs/MODULES.md —
@@ -249,6 +250,41 @@ export function validateContract({ id, hierarchy, chainParams } = {}) {
         add("info", "opaque-on-knobs",
             `${opaqueOnKnobs} knob slot(s) hold a param a knob cannot turn ` +
             "(filepath / wav_position / canvas / string); they open an editor on click");
+    }
+
+    /* ---- graphics: declared vs guessed ------------------------------------
+     *
+     * "Silent wrongness was the real objection to detectors; visible
+     * wrongness is fine" — docs/plans/2026-07-26-param-pages-audit.md §13.5.
+     * So every group the detector fires is reported, not just the ones that
+     * look suspicious: an author who never looks cannot correct a guess they
+     * do not know was made. */
+    const declared = [], inferred = [], invalidDeclared = [];
+    for (const page of pages) {
+        if (page.kind !== PAGE_KNOBS) continue;
+        const { groups, invalid } = resolveViz({ keys: page.keys, metaIndex: index });
+        for (const g of groups) {
+            (g.source === VIZ_SOURCE_DECLARED ? declared : inferred).push(g);
+        }
+        for (const v of invalid) invalidDeclared.push(v);
+    }
+    if (inferred.length) {
+        for (const g of inferred) {
+            add("info", "viz-inferred",
+                `a ${g.kind} graphic was inferred over ${g.keys.join(", ")} — declare a "viz" ` +
+                "field on these params in chain_params to confirm it or correct it");
+        }
+    }
+    if (invalidDeclared.length) {
+        for (const v of invalidDeclared) {
+            add("warn", "viz-declared-not-adjacent",
+                `viz group "${v.group}" (${v.kind}) is declared but its roles are not adjacent ` +
+                "on one page row, so no graphic is drawn — move the params next to each other");
+        }
+    }
+    if (declared.length) {
+        add("info", "viz-declared",
+            `${declared.length} graphic(s) declared via chain_params "viz"`);
     }
 
     return { id, findings };

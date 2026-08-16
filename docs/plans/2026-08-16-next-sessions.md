@@ -9,6 +9,25 @@ Branch: `param-pages` (PR #201, draft). Everything below assumes it is checked o
 
 ## Session A — Graphics in core
 
+**Done.** `src/shared/param_pages/viz.mjs` (resolution: declared `chain_params`
+`viz` → host override → detector → none) + `viz_draw.mjs` (the 8 renderers),
+wired into `render_page.mjs` opt-in via `o.viz` so the existing default
+snapshot/budget test is untouched. Every multi-role detector requires its
+candidates' keys to reduce to the same "stem" once the role word is stripped,
+not just adjacency + name match — caught a real false positive in dev (a
+chorus LFO's shape grouping with an unrelated delay's rate/depth) before it
+shipped. `validate.mjs` reports `viz-inferred` (what a detector guessed) and
+`viz-declared-not-adjacent` (a declaration that could not be drawn) separately
+from `viz-declared`. Fleet snapshot: `tests/host/test_param_pages_viz.sh` +
+checked-in `tests/fixtures/snapshots/param_pages_viz.txt` (433 groups fire
+across the 76-module fleet today — all inferred, since no module declares
+`viz` yet, which is expected until Session B). Draw-call budget holds at the
+existing bar 120 / dial 700 ceiling with graphics on; curves are drawn as a
+capped-resolution staircase (`runCurve` in `viz_draw.mjs`) rather than
+per-pixel, which is what keeps a busy LFO/EQ page inside the bar-layout
+budget. The "module layout file" precedence stage stays an unimplemented,
+documented no-op — still nothing to read, per item 3 below.
+
 **Start cold. Everything needed is written down.**
 
 Read first, in this order:
