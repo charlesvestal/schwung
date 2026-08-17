@@ -1267,6 +1267,18 @@
       "asset_name": "chord-finder-module.tar.gz",
       "min_host_version": "0.11.6",
       "requires": "Ableton Move 1.8 or newer; Move/USB-C audition requires matching Move track MIDI routing"
+    },
+    {
+      "id": "norns",
+      "name": "Norns",
+      "description": "Monome Norns sound computer on Move with Lua scripts, SuperCollider engines, Softcut, Maiden, MIDI keys, and virtual Grid controls",
+      "author": "DJ Hard Rich",
+      "component_type": "tool",
+      "github_repo": "djhardrich/schwung-norns",
+      "default_branch": "main",
+      "asset_name": "norns-module.tar.gz",
+      "min_host_version": "0.11.6",
+      "requires": "Requires RNBO Takeover and a one-time Debian chroot/root bootstrap. After installing, run: ssh root@move.local 'sh /data/UserData/schwung/modules/tools/norns/bootstrap-norns.sh'. See the repository README."
     }
   ]
 }
