@@ -105,6 +105,11 @@ pushes to `main` are blocked. Branch off `main` (or fork), open a PR, and
 optionally install the fast local checks with `./scripts/install-hooks.sh`. See
 [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow.
 
+Before you start, read the
+[contribution provenance](CONTRIBUTING.md#contribution-provenance) policy: please
+disclose which AI coding tools you used, and note that contributions developed
+with Grok aren't accepted.
+
 ## Available Modules
 
 Browse the full module catalog at [schwung.dev/catalog.html](https://schwung.dev/catalog.html). Modules are installable via [Schwung Manager](http://move.local:7700) on the device or the desktop installer. The catalog source lives in [module-catalog.json](module-catalog.json).

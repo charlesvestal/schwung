@@ -2,6 +2,11 @@
 
 Modules are self-contained packages that extend Schwung with new functionality.
 
+> **Contributing back to Schwung?** Read the
+> [contribution provenance](../CONTRIBUTING.md#contribution-provenance) policy
+> first: please disclose which AI coding tools you used, and note that
+> contributions developed with Grok aren't accepted.
+
 ## Module Structure
 
 ```

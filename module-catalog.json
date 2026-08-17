@@ -916,7 +916,7 @@
     {
       "id": "forge",
       "name": "Forge",
-      "description": "8-voice FM/subtractive hybrid drum synthesiser for Ableton Move — Kit A↔B morph across 16 pads, 5 voice algorithms, a self-oscillating ladder filter, dedicated noise oscillator, enveloped FM, per-voice resonator, Ctrl-All performance macros, three concurrent FX buses & 137 factory kits",
+      "description": "8-voice FM/subtractive hybrid drum synthesiser for Ableton Move — Kit A↔B morph across 16 pads, 5 voice algorithms, a self-oscillating ladder filter, dedicated noise oscillator, enveloped FM, per-voice resonator, Ctrl-All performance macros, three concurrent FX buses, 137 factory kits & per-voice CC control (Movy)",
       "author": "filliformes",
       "component_type": "sound_generator",
       "github_repo": "filliformes/forge-move",
@@ -1166,6 +1166,72 @@
       "default_branch": "main",
       "asset_name": "mono-voice-module.tar.gz",
       "min_host_version": "0.3.0"
+    },
+    {
+      "id": "noisemaker",
+      "name": "Noisemaker",
+      "description": "Virtual-analog synth ported from TAL NoiseMaker (Patrick Kunz). 6-voice, dual osc + sub, 12 multimode filters, 2 LFOs, spline mod-envelope, chorus + reverb + delay. 256 factory presets.",
+      "author": "Patrick Kunz / TAL (engine) · port: legsmechanical",
+      "component_type": "sound_generator",
+      "github_repo": "legsmechanical/schwung-noisemaker",
+      "default_branch": "main",
+      "asset_name": "noisemaker-module.tar.gz",
+      "min_host_version": "0.11.0"
+    },
+    {
+      "id": "work",
+      "name": "Work",
+      "description": "Twenty-six Tonverk-inspired machines in two insert slots — twenty-one effects and five sample sources — with three FX LFOs, a modulation envelope and MIDI CC/NRPN",
+      "author": "timncox",
+      "component_type": "audio_fx",
+      "github_repo": "timncox/schwung-work",
+      "default_branch": "main",
+      "asset_name": "work-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
+      "id": "work-in",
+      "name": "Work In",
+      "description": "The same twenty-six machines on the live input — mic, line or USB-C — with feedback protection",
+      "author": "timncox",
+      "component_type": "sound_generator",
+      "github_repo": "timncox/schwung-work-in",
+      "default_branch": "main",
+      "asset_name": "work-in-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
+      "id": "overwork",
+      "name": "Overwork",
+      "description": "Full-surface Work: hold a step and turn a knob to parameter-lock it. Sample browser, 16-pattern bank, song mode, live recording and presets",
+      "author": "timncox",
+      "component_type": "overtake",
+      "github_repo": "timncox/schwung-overwork",
+      "default_branch": "main",
+      "asset_name": "overwork-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
+      "id": "beatbank",
+      "name": "Beat Bank",
+      "description": "Library of standard drum patterns from editable .beat files — pick a pattern, it prints one bar into Move.",
+      "author": "Mission Minnow",
+      "component_type": "midi_fx",
+      "github_repo": "mission-minnow/beatbank",
+      "default_branch": "main",
+      "asset_name": "beatbank-module.tar.gz",
+      "min_host_version": "0.11.5"
+    },
+    {
+      "id": "groovebank",
+      "name": "Groove Bank",
+      "description": "Retrigger the chord you hold on a library of standard rhythm templates — genre-first grooves, played by your hands.",
+      "author": "Mission Minnow",
+      "component_type": "midi_fx",
+      "github_repo": "mission-minnow/groovebank",
+      "default_branch": "main",
+      "asset_name": "groovebank-module.tar.gz",
+      "min_host_version": "0.11.5"
     },
     {
       "id": "norns",
