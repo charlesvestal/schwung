@@ -60,6 +60,7 @@
 #include "host/shadow_pin_scanner.h"
 #include "host/shadow_led_queue.h"
 #include "host/shadow_state.h"
+#include "host/shadow_xmos_audio.h"
 #include "host/shadow_midi.h"
 #include "host/shadow_shm_util.h"
 
@@ -174,6 +175,11 @@ static int shadow_speaker_active = 1;      /* 1=built-in speaker, 0=headphones/l
 static int shadow_speaker_active_known = 0; /* 1 once any CC 115 jack-detect has been observed */
 static int shadow_line_in_connected = 0;       /* 1 = cable plugged, 0 = internal mic active (from CC 114) */
 static int shadow_line_in_connected_known = 0; /* 1 once any CC 114 jack-detect has been observed */
+
+/* Last-observed XMOS audio-IO state (USB-C out source + route payload).
+ * Written only by the SPI callback. */
+static xmos_audio_state_t xmos_audio_observed = XMOS_AUDIO_STATE_INIT;
+
 /* Long-press Track/Menu/Step2 shortcuts — always enabled */
 
 /* ----- RBJ biquad (direct form I transposed) for speaker-EQ compensation -----
@@ -5084,6 +5090,12 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
             }
         }
     }
+
+    /* Observe Move's USB-C audio-out source (Mic / Main Out) so the worker can
+     * persist it. Move's firmware forgets this across reboots; Task 3 replays
+     * it. Pure buffer scan — no I/O, safe on the SPI thread. */
+    if (xmos_audio_scan(shadow + MIDI_OUT_OFFSET, 80, &xmos_audio_observed))
+        shim_usbc_out_persist = xmos_audio_observed.usbc_out;
 
     /* Ensure subsystems are initialized on first call */
     if (!shim_subsystems_initialized) {

@@ -19,6 +19,7 @@ volatile uint32_t shim_debug_flags = 0;
 volatile int shim_pending_sysex_inject = -1;
 volatile int shim_inject_boot_jack = -1;
 volatile int shim_jack_persist = -1;
+volatile int shim_usbc_out_persist = -1;
 
 /* Persisted jack state (last CC 115 value). Survives reboot so the worker can
  * re-assert it to Move at boot — XMOS doesn't report jack-in at boot, so an
@@ -38,6 +39,27 @@ static int jack_state_read(void) {
 
 static void jack_state_write(int v) {
     FILE *f = fopen(JACK_STATE_PATH, "w");
+    if (!f) return;
+    fprintf(f, "%d\n", v);
+    fclose(f);
+}
+
+/* USB-C audio-out source (0 = Mic, 1 = Main Out). Move's firmware forgets this
+ * across reboots; we observe it on the wire and re-assert it after boot. */
+#define USBC_OUT_STATE_PATH "/data/UserData/schwung/usbc_out_state"
+
+static int usbc_out_state_read(void) {
+    FILE *f = fopen(USBC_OUT_STATE_PATH, "r");
+    if (!f) return -1;
+    int v = -1;
+    if (fscanf(f, "%d", &v) != 1) v = -1;
+    fclose(f);
+    if (v != 0 && v != 1) return -1;
+    return v;
+}
+
+static void usbc_out_state_write(int v) {
+    FILE *f = fopen(USBC_OUT_STATE_PATH, "w");
     if (!f) return;
     fprintf(f, "%d\n", v);
     fclose(f);
@@ -227,6 +249,9 @@ static void *worker_main(void *arg) {
     int last_persisted = boot_jack;
     int boot_reasserted = 0;
 
+    int boot_usbc_out = usbc_out_state_read();  /* -1 if never persisted */
+    int last_usbc_out = boot_usbc_out;
+
     for (;;) {
         usleep(200 * 1000);             /* 200 ms cadence */
         drain_events();                 /* event latency ≤ ~200 ms */
@@ -236,6 +261,13 @@ static void *worker_main(void *arg) {
         if (jp >= 0 && jp != last_persisted) {
             last_persisted = jp;
             jack_state_write(jp);
+        }
+
+        /* Persist the USB-C audio-out source when the RT path reports a change. */
+        int up = shim_usbc_out_persist;
+        if (up >= 0 && up != last_usbc_out) {
+            last_usbc_out = up;
+            usbc_out_state_write(up);
         }
 
         /* Re-assert jack state to Move once, ~5 s after start (Move's firmware

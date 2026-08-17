@@ -52,6 +52,11 @@ extern volatile int shim_inject_boot_jack;
  * boot via shim_inject_boot_jack. */
 extern volatile int shim_jack_persist;
 
+/* Last USB-C audio-out source seen by the RT path (0 = Mic, 1 = Main Out),
+ * -1 until observed. Worker persists it on change and re-asserts it at boot —
+ * Move's firmware reverts this to Mic on every reboot. */
+extern volatile int shim_usbc_out_persist;
+
 /* Deferred events (RT-safe to post; worker executes within ~200 ms). */
 #define SHIM_EVT_OVERTAKE_EXIT_HOOK 1
 #define SHIM_EVT_RESTART_MOVE       2
