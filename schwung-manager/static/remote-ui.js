@@ -60,7 +60,9 @@
     // Active overtake-tool state. A tool is not a chain slot; its
     // params live under the "overtake_dsp:" prefix and its UI shows in the Tool
     // tab. id == "" means no tool with a remote UI is loaded.
-    var tool = { id: "", customUI: null, params: {} };
+    // known=false until the first tool_info answer arrives, so the Tool tab can
+    // show "checking…" instead of a premature (and alarming) "No tool loaded".
+    var tool = { id: "", customUI: null, params: {}, known: false };
 
     // Read initial slot from URL hash (#slot1, #slot2, #slot3, #slot4, #master-fx, #tool)
     var initialSlot = 0;
@@ -300,6 +302,7 @@
     // ------------------------------------------------------------------
 
     function handleToolInfo(msg) {
+        tool.known = true;
         tool.id = msg.id || "";
         if (!tool.id) {
             // Tool unloaded — drop its custom UI + cached params.
@@ -2036,7 +2039,9 @@
             note.className = "text-muted";
             note.textContent = tool.id
                 ? ("Loading " + tool.id + "…")
-                : "No tool loaded. Open a tool on the Move and it will appear here.";
+                : (tool.known
+                    ? "No tool loaded. Open a tool on the Move and it will appear here."
+                    : "Connecting to the Move — checking for a loaded tool…");
             slotContentEl.appendChild(note);
             return;
         }

@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"syscall"
+	"unsafe"
 )
 
 // ShmWebParamSetRing provides fire-and-forget param writes via the
@@ -18,10 +20,21 @@ type ShmWebParamSetRing struct {
 }
 
 // Offsets into web_param_set_ring_t.
+//
+// SPSC protocol (2026-07-19 rework — requires the paired shim): write_idx is a
+// MONOTONIC uint8 producer cursor (entry slot = write_idx % 32; 256 % 32 == 0
+// so the wrap is seamless) and reserved[0] (byte 2) is the shim-published
+// consumer cursor. The old protocol had the shim RESET write_idx to 0 after
+// draining, racing the producer's read-modify-write — an edit landing
+// mid-drain was orphaned or a previous batch was re-applied (double-nudge).
+// Now neither side writes the other's cursor. Header updates go through a CAS
+// on the 4-byte header word: it preserves the shim's concurrent byte-2 store
+// and gives release ordering so entry bytes are visible before the cursor.
 const (
-	webRingOffWriteIdx = 0 // uint8
-	webRingOffReady    = 1 // uint8
-	// reserved[2] at 2-3
+	webRingOffWriteIdx = 0 // uint8, monotonic producer cursor
+	webRingOffReady    = 1 // uint8, legacy change signal (still bumped)
+	webRingOffReadIdx  = 2 // uint8, monotonic consumer cursor (shim-published)
+	// reserved byte at 3
 
 	webEntryStart  = 4 // first entry starts at byte 4
 	webEntrySlot   = 0 // uint8 at offset 0 within entry
@@ -69,13 +82,18 @@ func (r *ShmWebParamSetRing) SetParam(slot uint8, key, value string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	idx := int(r.data[webRingOffWriteIdx])
-	if idx >= webMaxEntries {
+	hdr := (*uint32)(unsafe.Pointer(&r.data[0])) // 4-byte header word, offset 0 (aligned)
+	old := atomic.LoadUint32(hdr)
+	head := uint8(old)       // byte 0 (little-endian ARM64) = write_idx
+	tail := uint8(old >> 16) // byte 2 = shim-published read_idx
+	if head-tail >= webMaxEntries {
+		// Consumer hasn't caught up (or an unpaired old shim never publishes
+		// read_idx) — report full; the caller falls back to the mailbox.
 		return fmt.Errorf("web param set ring full")
 	}
 
-	// Write entry
-	entryOff := webEntryStart + idx*webEntrySize
+	// Write entry at the monotonic slot
+	entryOff := webEntryStart + (int(head)%webMaxEntries)*webEntrySize
 	r.data[entryOff+webEntrySlot] = slot
 
 	// Write key (null-terminated)
@@ -92,10 +110,17 @@ func (r *ShmWebParamSetRing) SetParam(slot uint8, key, value string) error {
 	}
 	copy(r.data[valOff:], value)
 
-	// Increment write_idx and toggle ready
-	r.data[webRingOffWriteIdx] = uint8(idx + 1)
-	r.data[webRingOffReady]++
-
+	// Publish: advance write_idx + bump ready via CAS on the header word —
+	// preserves the shim's concurrent read_idx byte and orders the entry
+	// stores before the cursor becomes visible.
+	for {
+		old = atomic.LoadUint32(hdr)
+		ready := uint8(old >> 8)
+		newHdr := (old &^ 0x0000FFFF) | uint32(head+1) | uint32(ready+1)<<8
+		if atomic.CompareAndSwapUint32(hdr, old, newHdr) {
+			break
+		}
+	}
 	return nil
 }
 
