@@ -428,6 +428,8 @@ static uint8_t overtake_passthrough_ccs[128] = {0};
 /* Forward declarations for overtake DSP */
 static void shadow_overtake_dsp_load(const char *path);
 static void shadow_overtake_dsp_unload(void);
+static void overtake_dsp_free_pending(void);
+static void overtake_dsp_load_pending(void);
 
 /* Startup mod wheel reset countdown - resets mod wheel after Move finishes its startup MIDI burst */
 #define STARTUP_MODWHEEL_RESET_FRAMES 20  /* ~0.6 seconds at 128 frames/block */
@@ -1433,23 +1435,98 @@ static void overtake_ext_drain_into_shadow(uint8_t *shadow) {
     overtake_ext_ring.tail = tail;
 }
 
+/* ---- Overtake DSP load/free: deferred off the SPI thread ------------------
+ *
+ * dlopen() plus a module's create_instance() is filesystem + allocation work.
+ * Measured on device it stalled the SPI callback for ~11.5 ms (param stage
+ * 7µs typical → 11513µs during a load), against a ~2.9 ms audio block — an
+ * audible dropout every time an overtake module was opened, and worst of all
+ * for a module sitting in the master path.
+ *
+ * So the SPI thread only ever *requests*: it retires the live pointers
+ * (immediately, so every existing `api && inst` guard stops calling into the
+ * old module with no new gating anywhere), stashes what needs freeing, and
+ * posts to the worker. The worker does the dlopen/create/destroy/dlclose.
+ *
+ * Publication is safe without explicit acquire on the reader side because
+ * every call site requires BOTH the api pointer and the instance pointer to
+ * be non-NULL, and both start NULL. Either visibility order just means the
+ * guard fails for another block or two. */
+
+static volatile int overtake_dsp_loading = 0;      /* 1 while a load is queued/running */
+static char overtake_dsp_pending_path[512];        /* path for the queued load */
+
+/* Retired module awaiting destroy+dlclose on the worker. */
+static void *overtake_free_handle = NULL;
+static plugin_api_v2_t *overtake_free_gen = NULL;
+static void *overtake_free_gen_inst = NULL;
+static audio_fx_api_v2_t *overtake_free_fx = NULL;
+static void *overtake_free_fx_inst = NULL;
+
+/* SPI-thread half of a retire: detach the live module and queue the teardown.
+ * Callers must already be on the SPI thread (param handling). */
+static void overtake_dsp_retire_locked(void) {
+    if (!overtake_dsp_handle) return;
+    /* Only one retirement can be in flight; if the previous free hasn't run
+     * yet, drain it here rather than leaking the handle. This is the rare
+     * load-unload-load-within-200ms case. */
+    if (overtake_free_handle) {
+        shadow_log("Overtake DSP: retire while a free is pending — draining inline");
+        overtake_dsp_free_pending();
+    }
+    overtake_free_handle   = overtake_dsp_handle;
+    overtake_free_gen      = overtake_dsp_gen;
+    overtake_free_gen_inst = overtake_dsp_gen_inst;
+    overtake_free_fx       = overtake_dsp_fx;
+    overtake_free_fx_inst  = overtake_dsp_fx_inst;
+
+    overtake_dsp_handle   = NULL;
+    overtake_dsp_gen      = NULL;
+    overtake_dsp_gen_inst = NULL;
+    overtake_dsp_fx       = NULL;
+    overtake_dsp_fx_inst  = NULL;
+    __sync_synchronize();
+
+    shim_worker_post(SHIM_EVT_OVERTAKE_DSP_FREE);
+}
+
+/* Worker-thread teardown of a retired module. */
+static void overtake_dsp_free_pending(void) {
+    if (!overtake_free_handle) return;
+    if (overtake_free_gen && overtake_free_gen_inst && overtake_free_gen->destroy_instance)
+        overtake_free_gen->destroy_instance(overtake_free_gen_inst);
+    if (overtake_free_fx && overtake_free_fx_inst && overtake_free_fx->destroy_instance)
+        overtake_free_fx->destroy_instance(overtake_free_fx_inst);
+    dlclose(overtake_free_handle);
+    overtake_free_handle   = NULL;
+    overtake_free_gen      = NULL;
+    overtake_free_gen_inst = NULL;
+    overtake_free_fx       = NULL;
+    overtake_free_fx_inst  = NULL;
+    shadow_log("Overtake DSP: retired module freed");
+}
+
+/* SPI-thread entry: request a load, return immediately. */
 static void shadow_overtake_dsp_load(const char *path) {
-    /* Unload previous if any */
-    if (overtake_dsp_handle) {
-        shadow_log("Overtake DSP: unloading previous before loading new");
-        if (overtake_dsp_gen && overtake_dsp_gen_inst && overtake_dsp_gen->destroy_instance)
-            overtake_dsp_gen->destroy_instance(overtake_dsp_gen_inst);
-        if (overtake_dsp_fx && overtake_dsp_fx_inst && overtake_dsp_fx->destroy_instance)
-            overtake_dsp_fx->destroy_instance(overtake_dsp_fx_inst);
-        dlclose(overtake_dsp_handle);
-        overtake_dsp_handle = NULL;
-        overtake_dsp_gen = NULL;
-        overtake_dsp_gen_inst = NULL;
-        overtake_dsp_fx = NULL;
-        overtake_dsp_fx_inst = NULL;
+    overtake_dsp_retire_locked();
+
+    if (!path || !path[0]) {
+        overtake_dsp_loading = 0;
+        return;
     }
 
-    if (!path || !path[0]) return;
+    snprintf(overtake_dsp_pending_path, sizeof(overtake_dsp_pending_path), "%s", path);
+    overtake_dsp_loading = 1;
+    __sync_synchronize();
+    shim_worker_post(SHIM_EVT_OVERTAKE_DSP_LOAD);
+}
+
+/* Worker-thread body: the actual dlopen + create_instance. Has many early
+ * returns; the wrapper below owns clearing overtake_dsp_loading so none of
+ * them can strand the "still loading" state. */
+static void overtake_dsp_load_body(void) {
+    const char *path = overtake_dsp_pending_path;
+    if (!path[0]) return;
 
     overtake_dsp_handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
     if (!overtake_dsp_handle) {
@@ -1548,26 +1625,22 @@ static void shadow_overtake_dsp_load(const char *path) {
     overtake_dsp_handle = NULL;
 }
 
+/* Worker-thread entry for a queued load. Owns the loading flag so every early
+ * return inside the body is covered. */
+static void overtake_dsp_load_pending(void) {
+    overtake_dsp_load_body();
+    __sync_synchronize();
+    overtake_dsp_loading = 0;
+}
+
+/* SPI-thread entry: detach now, free on the worker. destroy_instance() frees
+ * the module's buffers (PFX alone holds a 556k-sample vinyl sample) and
+ * dlclose() unmaps — neither belongs on the audio thread. */
 static void shadow_overtake_dsp_unload(void) {
     if (!overtake_dsp_handle) return;
-
-    if (overtake_dsp_gen && overtake_dsp_gen_inst) {
-        if (overtake_dsp_gen->destroy_instance)
-            overtake_dsp_gen->destroy_instance(overtake_dsp_gen_inst);
-        shadow_log("Overtake DSP: generator unloaded");
-    }
-    if (overtake_dsp_fx && overtake_dsp_fx_inst) {
-        if (overtake_dsp_fx->destroy_instance)
-            overtake_dsp_fx->destroy_instance(overtake_dsp_fx_inst);
-        shadow_log("Overtake DSP: FX unloaded");
-    }
-
-    dlclose(overtake_dsp_handle);
-    overtake_dsp_handle = NULL;
-    overtake_dsp_gen = NULL;
-    overtake_dsp_gen_inst = NULL;
-    overtake_dsp_fx = NULL;
-    overtake_dsp_fx_inst = NULL;
+    overtake_dsp_retire_locked();
+    overtake_dsp_pending_path[0] = '\0';
+    overtake_dsp_loading = 0;
 
     /* Discard any ROUTE_EXTERNAL packets the unloaded DSP left in the ring.
      * Without this, the next overtake load would drain the previous module's
@@ -2425,8 +2498,21 @@ skip_la_rebuild:
     }
     int16_t *fx_target = rebuild_from_la ? mailbox_audio : me_unity_i16;
 
+    /* End-of-chain overtake FX: modules that declare `end_of_chain` want the
+     * FINAL mix — Move's own tracks included — not just the ME bus. Under
+     * rebuild_from_la the mailbox already IS the full mix, so fx_target is
+     * correct and the normal call below does the right thing. Under non-rebuild
+     * the mailbox holds Move-only audio and ME is summed in further down, so we
+     * defer the FX call until after that sum (see below).
+     *
+     * This is what lets a whole-mix effect process Move's audio without Link
+     * Audio routing: Move's mix is already in the mailbox we intercept. Link
+     * Audio only adds per-track separation, which a master effect doesn't use. */
+    int overtake_fx_eoc = (shadow_control && shadow_control->overtake_fx_end_of_chain
+                           && !rebuild_from_la);
+
     /* Overtake DSP FX: process ME bus (non-rebuild) or reconstructed mailbox (rebuild_from_la) */
-    if (overtake_dsp_fx && overtake_dsp_fx_inst && overtake_dsp_fx->process_block) {
+    if (!overtake_fx_eoc && overtake_dsp_fx && overtake_dsp_fx_inst && overtake_dsp_fx->process_block) {
         overtake_dsp_fx->process_block(overtake_dsp_fx_inst, fx_target, FRAMES_PER_BLOCK);
     }
 
@@ -2461,6 +2547,22 @@ skip_la_rebuild:
             if (summed < -32768) summed = -32768;
             mailbox_audio[i] = (int16_t)summed;
         }
+    }
+
+    /* End-of-chain overtake FX runs here: the mailbox now holds Move + ME, so
+     * this is the last point before the DAC that still sees the whole mix.
+     *
+     * Gain-staging caveat: Move's contribution arrived pre-scaled by master
+     * volume and ME was just scaled to match, so this signal tracks the volume
+     * knob. Level-independent effects (repeats, filters, delays, reverbs) are
+     * unaffected; threshold-dependent ones (gate, saturation, bit crush) get
+     * softer as the knob comes down. Running before the sum would avoid that
+     * but would not see Move's audio at all, which is the entire point here.
+     *
+     * This also lands AFTER the capture snapshot taken below is built from
+     * unity_view, so skipback / sampler / native-bridge captures stay dry. */
+    if (overtake_fx_eoc && overtake_dsp_fx && overtake_dsp_fx_inst && overtake_dsp_fx->process_block) {
+        overtake_dsp_fx->process_block(overtake_dsp_fx_inst, mailbox_audio, FRAMES_PER_BLOCK);
     }
 
     /* Build unity_view for capture consumers (skipback, native bridge, sampler).
@@ -2931,6 +3033,7 @@ static void init_shadow_shm(void)
         shadow_control->selected_slot    = 0;
         shadow_control->skip_led_clear   = 0;
         shadow_control->overtake_suppress_sysex = 0;
+        shadow_control->overtake_fx_end_of_chain = 0;
         shadow_control->corun.target = CORUN_TARGET_NONE;  /* co-run inactive at boot */
         shadow_control->corun.id = -1;
         shadow_control->corun.flags = 0;      /* 0 = legacy keep-list model */
@@ -3573,6 +3676,18 @@ static int shim_handle_param_special(uint8_t req_type, uint32_t req_id) {
             }
         } else if (req_type == 2) {  /* GET */
             int len = -1;
+            /* Load readiness. The load itself runs on the worker now, so the
+             * shadow UI must not call a module's init() — which immediately
+             * pushes params — until the instance exists, or those params are
+             * dropped on the floor. "1" also when nothing is loading, so a
+             * module with no dsp.so never waits. */
+            if (strcmp(param_key, "__ready") == 0) {
+                shadow_param->value[0] = overtake_dsp_loading ? '0' : '1';
+                shadow_param->value[1] = '\0';
+                shadow_param->error = 0;
+                shadow_param->result_len = 1;
+                return 1;
+            }
             if (overtake_dsp_gen && overtake_dsp_gen_inst && overtake_dsp_gen->get_param) {
                 len = overtake_dsp_gen->get_param(overtake_dsp_gen_inst, param_key,
                                                    shadow_param->value, SHADOW_PARAM_VALUE_LEN);
@@ -7741,6 +7856,8 @@ static void shim_spi_init(void)
             .skipback_save          = skipback_worker_spawn_save,
             .skipback_resize        = shim_hook_skipback_resize,
             .preview_play_pending   = shim_hook_preview_play,
+            .overtake_dsp_load_pending = overtake_dsp_load_pending,
+            .overtake_dsp_free_pending = overtake_dsp_free_pending,
         };
         shim_worker_set_hooks(&hooks);
     }

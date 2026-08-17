@@ -182,6 +182,12 @@ static void drain_events(void) {
         case SHIM_EVT_PREVIEW_PLAY:
             if (worker_hooks.preview_play_pending) worker_hooks.preview_play_pending();
             break;
+        case SHIM_EVT_OVERTAKE_DSP_LOAD:
+            if (worker_hooks.overtake_dsp_load_pending) worker_hooks.overtake_dsp_load_pending();
+            break;
+        case SHIM_EVT_OVERTAKE_DSP_FREE:
+            if (worker_hooks.overtake_dsp_free_pending) worker_hooks.overtake_dsp_free_pending();
+            break;
         default:
             break;
         }

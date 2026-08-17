@@ -581,6 +581,11 @@ let suspendedOvertakes = {};
 
 /* Most-recently-suspended tool id. Shift+Vol+Step13 double-tap resumes it. */
 let lastSuspendedToolId = "";
+/* Most recent successful tool/overtake launch, for the Tools-shortcut
+ * relaunch gesture. { kind: 'overtake'|'interactive', module, filePath }.
+ * Session-scoped by design — not persisted across reboots, same as
+ * lastSuspendedToolId. */
+let lastLaunchedTool = null;
 let lastToolsShortcutMs = 0;
 const TOOLS_DOUBLE_TAP_MS = 500;
 
@@ -611,6 +616,10 @@ let hostMuteHeld = false;   /* Mute (CC 88) held — used as a modifier for Mute
 let overtakeInitPending = false;
 let overtakeInitTicks = 0;
 const OVERTAKE_INIT_DELAY_TICKS = 30; // ~500ms at 16ms tick
+/* Upper bound on waiting for the worker-side DSP load before running init()
+ * anyway. The worker polls at 200ms, so a load lands within ~2 ticks past the
+ * init delay; this is the give-up point for a DSP that never comes up. */
+const OVERTAKE_DSP_READY_MAX_TICKS = 90; // ~1.5s
 
 /* Progressive LED clearing - buffer only holds ~60 packets, so clear in batches */
 const LEDS_PER_BATCH = 20;
@@ -3446,6 +3455,11 @@ function completeOvertakeExit(skipNavigation) {
         shadow_set_skip_led_clear(0);
     }
 
+    /* Drop end-of-chain FX placement — the next module must not inherit it. */
+    if (typeof shadow_set_overtake_fx_end_of_chain === "function") {
+        shadow_set_overtake_fx_end_of_chain(0);
+    }
+
     /* If exiting an interactive tool, return to tools menu instead of Move */
     if (toolOvertakeActive) {
         toolOvertakeActive = false;
@@ -3512,6 +3526,16 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
         hostShiftHeld = false;
         hostVolumeKnobTouched = false;
         debugLog("loadOvertakeModule: escape state reset");
+
+        /* Audio-FX overtake modules that declare `end_of_chain` process the
+         * final Move+ME mix rather than the ME bus alone, so a whole-mix effect
+         * hears Move's own tracks without Link Audio routing. Cleared on exit
+         * in completeOvertakeExit(). */
+        if (typeof shadow_set_overtake_fx_end_of_chain === "function") {
+            const eoc = !!(moduleInfo.capabilities && moduleInfo.capabilities.end_of_chain);
+            shadow_set_overtake_fx_end_of_chain(eoc ? 1 : 0);
+            if (eoc) debugLog("loadOvertakeModule: end_of_chain FX placement enabled");
+        }
 
         /* A pending exit from a *previous* module must never survive into this
          * load. The exit branch in the OVERTAKE_MODULE tick is checked before
@@ -3734,6 +3758,17 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
             ledClearIndex = 0;  /* Start LED clearing from beginning */
             debugLog("loadOvertakeModule: init deferred, LEDs will clear progressively");
         }
+
+        /* Remember this launch for the Tools-shortcut relaunch gesture. Every
+         * load path (overtake menu, Tools menu, startInteractiveTool) funnels
+         * through here, so this one write covers them all. Interactive tools
+         * overwrite it with a richer descriptor once their file is known. */
+        lastLaunchedTool = {
+            kind: "overtake",
+            module: moduleInfo,
+            skipOvertake: !!skipOvertake,
+            filePath: ""
+        };
 
         return true;
     } catch (e) {
@@ -5716,6 +5751,15 @@ function startInteractiveTool(toolModule, filePath) {
     announce("Loading " + toolModule.name);
     const success = loadOvertakeModule(moduleInfo, skipOvertake);
     if (success) {
+        /* Replace the plain-overtake record loadOvertakeModule just wrote:
+         * relaunching an interactive tool must go back through this function
+         * so toolOvertakeActive / toolNonOvertake / file_path are all set. */
+        lastLaunchedTool = {
+            kind: "interactive",
+            module: toolModule,
+            skipOvertake: skipOvertake,
+            filePath: filePath || ""
+        };
         /* DSP is now loaded — pass the selected file path */
         globalThis.host_tool_file_path = filePath || "";
         if (typeof shadow_set_param === "function") {
@@ -13511,12 +13555,36 @@ function tryResumeSuspendedTool() {
         }
     } catch (e) { /* ignore */ }
     if (!isDoubleTap && !shimHint) return false;
-    if (!lastSuspendedToolId || !suspendedOvertakes[lastSuspendedToolId]) {
-        debugLog("tryResumeSuspendedTool: nothing suspended (lastId=" + lastSuspendedToolId + ")");
-        return false;
+    const gesture = shimHint ? "long-press" : "double-tap";
+
+    /* Resume wins when the last tool is still parked: it keeps the live JS and
+     * DSP state, which a fresh load would throw away. */
+    if (lastSuspendedToolId && suspendedOvertakes[lastSuspendedToolId]) {
+        debugLog("Tools shortcut " + gesture + " → resuming " + lastSuspendedToolId);
+        return resumeOvertakeModule(lastSuspendedToolId);
     }
-    debugLog("Tools shortcut " + (shimHint ? "long-press" : "double-tap") + " → resuming " + lastSuspendedToolId);
-    return resumeOvertakeModule(lastSuspendedToolId);
+
+    /* Nothing parked — relaunch the last tool that was loaded this session.
+     * Interactive tools must go back through startInteractiveTool so their
+     * tool-active flags and file path are re-established.
+     *
+     * Only when nothing is currently loaded: with a module still active the
+     * relaunch would load on top of it without tearing it down (orphaning its
+     * DSP in slot 0). Returning false there falls through to the caller's
+     * exit-then-enterToolsMenu path, which is the pre-existing behaviour. */
+    if (lastLaunchedTool && lastLaunchedTool.module && !overtakeModuleLoaded) {
+        const t = lastLaunchedTool;
+        debugLog("Tools shortcut " + gesture + " → relaunching " + t.kind + " " +
+                 (t.module.id || "(unknown)") + (t.filePath ? " file=" + t.filePath : ""));
+        if (t.kind === "interactive") {
+            startInteractiveTool(t.module, t.filePath);
+            return true;
+        }
+        return loadOvertakeModule(t.module, t.skipOvertake);
+    }
+
+    debugLog("tryResumeSuspendedTool: nothing suspended or previously launched");
+    return false;
 }
 function drawToolsMenu() { _drawToolsMenu(); }
 function drawToolFileBrowser() { _drawToolFileBrowser(); }
@@ -15036,8 +15104,23 @@ globalThis.tick = function() {
                     flushLedQueue();  /* Drain queued LED clears to SHM */
                     debugLog("OVERTAKE init phase: ledsCleared=" + ledsCleared);
 
-                    /* After LEDs cleared and delay passed, call init */
-                    if (ledsCleared && overtakeInitTicks >= OVERTAKE_INIT_DELAY_TICKS) {
+                    /* The DSP load runs on the shim worker (it used to stall
+                     * the audio thread for ~11.5ms — an audible dropout on
+                     * every module open). init() pushes params the moment it
+                     * runs, and those are dropped if the instance does not
+                     * exist yet, so hold init until the shim reports ready.
+                     * Bounded: after OVERTAKE_DSP_READY_MAX_TICKS we proceed
+                     * anyway rather than hang on a module whose DSP failed. */
+                    let dspReady = true;
+                    if (overtakeInitTicks < OVERTAKE_DSP_READY_MAX_TICKS &&
+                        typeof shadow_get_param === "function") {
+                        try {
+                            dspReady = (shadow_get_param(0, "overtake_dsp:__ready") !== "0");
+                        } catch (e) { dspReady = true; }
+                    }
+
+                    /* After LEDs cleared, delay passed and the DSP is up, call init */
+                    if (ledsCleared && dspReady && overtakeInitTicks >= OVERTAKE_INIT_DELAY_TICKS) {
                         overtakeInitPending = false;
                         ledClearIndex = 0;  /* Reset for next time */
                         debugLog("loadOvertakeModule: init delay complete, calling init()");
