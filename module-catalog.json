@@ -1246,6 +1246,18 @@
       "requires": "16 KB program ROM dump (place in module's roms/ folder as rrv10.bin)"
     },
     {
+      "id": "norns",
+      "name": "Norns",
+      "description": "Monome Norns sound computer on Move with Lua scripts, SuperCollider engines, Softcut, Maiden, MIDI keys, and virtual Grid controls",
+      "author": "DJ Hard Rich",
+      "component_type": "tool",
+      "github_repo": "djhardrich/schwung-norns",
+      "default_branch": "main",
+      "asset_name": "norns-module.tar.gz",
+      "min_host_version": "0.11.6",
+      "requires": "Requires RNBO Takeover and a one-time Debian chroot/root bootstrap. After installing, run: ssh root@move.local 'sh /data/UserData/schwung/modules/tools/norns/bootstrap-norns.sh'. See the repository README."
+    },
+    {
       "id": "9w9",
       "name": "9W9",
       "description": "TR-909 style drum machine. Circuit-modelled kick (sub/tube/drift), snare, toms, rim and clap; sampled hats and cymbals. Per-voice and master drive/distortion, RD-9 style pad editor, remote web panel, Movy template.",
