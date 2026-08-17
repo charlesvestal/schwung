@@ -1096,7 +1096,7 @@
       "description": "Standalone mic/line/USB-C build of Smack with the same 26-effect seeded slice engine, Pad Play, and browser step editor",
       "author": "timncox",
       "component_type": "sound_generator",
-      "github_repo": "timncox/schwung-smack-in",
+      "github_repo": "timncox/schwung-smack",
       "default_branch": "main",
       "asset_name": "smack-in-module.tar.gz",
       "min_host_version": "0.3.0"
@@ -1107,7 +1107,7 @@
       "description": "Full-surface Smack input looper: whole-grid step-FX editing, palette pinning, pressure punch effects, dual-mono lanes, and browser editor",
       "author": "timncox",
       "component_type": "overtake",
-      "github_repo": "timncox/schwung-oversmack",
+      "github_repo": "timncox/schwung-smack",
       "default_branch": "main",
       "asset_name": "oversmack-module.tar.gz",
       "min_host_version": "0.11.4"
@@ -1140,7 +1140,7 @@
       "description": "Standalone mic/line/USB-C Belt: tuned lead vocal, four scale-aware harmonies, HARD punch, tuner strip, doubler, and formant shift in one slot",
       "author": "timncox",
       "component_type": "sound_generator",
-      "github_repo": "timncox/schwung-belt-in",
+      "github_repo": "timncox/schwung-belt",
       "default_branch": "main",
       "asset_name": "belt-in-module.tar.gz",
       "min_host_version": "0.3.0"
@@ -1154,7 +1154,7 @@
       "github_repo": "timncox/schwung-mono",
       "default_branch": "main",
       "asset_name": "mono-module.tar.gz",
-      "min_host_version": "0.11.4"
+      "min_host_version": "0.11.6"
     },
     {
       "id": "mono-voice",
@@ -1162,7 +1162,7 @@
       "description": "Elektron-style digital machine synth voice with SuperWave, SID, DigiPRO, FM, deep modulation, and arp latch",
       "author": "timncox",
       "component_type": "sound_generator",
-      "github_repo": "timncox/schwung-mono-voice",
+      "github_repo": "timncox/schwung-mono",
       "default_branch": "main",
       "asset_name": "mono-voice-module.tar.gz",
       "min_host_version": "0.3.0"
@@ -1232,6 +1232,18 @@
       "default_branch": "main",
       "asset_name": "groovebank-module.tar.gz",
       "min_host_version": "0.11.5"
+    },
+    {
+      "id": "rrverb10",
+      "name": "RRVerb-10",
+      "description": "Chip-level emulation of an 80s Micro Rack digital reverb: rooms, halls, plates, multi-tap delay, reverse and gate",
+      "author": "Sergey V. Mikayev (MUNT gate-array emulation) · giulioz (ROM research) · port: legsmechanical",
+      "component_type": "audio_fx",
+      "github_repo": "legsmechanical/schwung-rrverb10",
+      "default_branch": "main",
+      "asset_name": "rrverb10-module.tar.gz",
+      "min_host_version": "0.9.16",
+      "requires": "16 KB program ROM dump (place in module's roms/ folder as rrv10.bin)"
     },
     {
       "id": "chord-finder",
