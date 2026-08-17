@@ -7282,7 +7282,17 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
          * Realtime: peek/pop are lock-free atomic loads over a preallocated
          * ring, and the loop is bounded, so this adds no allocation and no
          * unbounded work to the SPI callback. */
-        if (overtake_mode && shadow_midi_inject_shm) {
+        /* Hold the ring while the module's DSP is still loading. overtake_mode
+         * flips to 2 when the load is *requested*, but the load itself now
+         * runs on the shim worker, so there is a window where the mode says
+         * "module active" and both instance pointers are still NULL. Popping
+         * during that window would discard the packet against the guards
+         * below — and a harness that gates on overtake_mode alone (open the
+         * module, immediately inject) would intermittently lose its first
+         * press. Peeking without popping leaves the packet queued until the
+         * instance exists. Bounded by the load itself, which the worker
+         * completes within its 200ms cadence. */
+        if (overtake_mode && shadow_midi_inject_shm && !overtake_dsp_loading) {
             uint8_t pkt[4];
             int budget = 16;            /* bounded: never stall the callback */
             while (budget-- > 0 && shadow_midi_inject_peek(shadow_midi_inject_shm, pkt)) {
