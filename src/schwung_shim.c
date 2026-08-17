@@ -5093,7 +5093,16 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
 
     /* Observe Move's USB-C audio-out source (Mic / Main Out) so the worker can
      * persist it. Move's firmware forgets this across reboots; Task 3 replays
-     * it. Pure buffer scan — no I/O, safe on the SPI thread. */
+     * it. Pure buffer scan — no I/O, safe on the SPI thread.
+     *
+     * Note for future readers: this scan can also see SysEx the shim itself
+     * just emitted this same frame — any XMOS audio-IO emission earlier in
+     * this pre_transfer (the debug spi_sysex_inject path today, the boot
+     * replay in Task 3) runs before this call, so scan() has no way to tell
+     * "Move said this" from "we said this a moment ago" on the wire. That,
+     * plus Move's own unconditional Mic assert at boot, is why the worker
+     * gates persistence behind a boot settle window instead of trusting every
+     * observed change (see shim_worker.c's tick >= 35 gate). */
     if (xmos_audio_scan(shadow + MIDI_OUT_OFFSET, 80, &xmos_audio_observed))
         shim_usbc_out_persist = xmos_audio_observed.usbc_out;
 
