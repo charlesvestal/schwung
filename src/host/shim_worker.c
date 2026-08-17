@@ -20,6 +20,7 @@ volatile int shim_pending_sysex_inject = -1;
 volatile int shim_inject_boot_jack = -1;
 volatile int shim_jack_persist = -1;
 volatile int shim_usbc_out_persist = -1;
+volatile int shim_usbc_out_replay = -1;
 
 /* Persisted jack state (last CC 115 value). Survives reboot so the worker can
  * re-assert it to Move at boot — XMOS doesn't report jack-in at boot, so an
@@ -291,6 +292,11 @@ static void *worker_main(void *arg) {
             boot_reasserted = 1;
             int v = (shim_jack_persist >= 0) ? shim_jack_persist : boot_jack;
             if (v >= 0) shim_inject_boot_jack = v;
+
+            /* Re-assert the USB-C audio-out source too. Skip entirely when the
+             * stored value is Mic — that's Move's own boot default, so there is
+             * nothing to correct and no reason to put SysEx on the wire. */
+            if (boot_usbc_out == 1) shim_usbc_out_replay = 1;
 
             /* Discard anything observed during the boot window before the
              * persistence gate (tick >= 35) opens — Move's own boot-default
