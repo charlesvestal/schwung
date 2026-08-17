@@ -183,3 +183,58 @@ sniffer, so the two surfaces cannot drift.
 `src/shared/help_content.json`, `../schwung-catalog-site/manual.html`.
 Worth also feeding the `0x14` finding back to the movesniff protocol table,
 which currently lists it as unreversed.
+
+---
+
+## What was actually built (2026-08-18)
+
+Two refinements to the design above, both adopted during implementation.
+
+### 1. Persist a preference, not the raw payloads
+
+The design proposed storing both 23-byte payloads and replaying them verbatim.
+That would also re-assert `37 12` bit0 — the USB-C *input* select owned by
+Move's sampling page, which Move does **not** restore at boot. Replaying it
+would silently change the user's recording input.
+
+Implemented instead: persist a single value (0 = Mic, 1 = Main Out) to
+`/data/UserData/schwung/usbc_out_state`. At replay, take the `37 12` payload
+Move itself emitted this boot and flip only bit1; `37 14` is synthesized since
+it carries nothing else. Bit0 stays authoritative from Move. Verified on
+hardware: Move asserted `37 12 00` at f4, our replay sent `37 12 02`.
+
+### 2. Persistence is gated for ~7 s after boot
+
+Not in the original design, and found only by testing on hardware. Move asserts
+its Mic default at ~0.6 s into every boot, carrying no user intent. Without a
+gate, the observer persisted it and clobbered the stored preference — the
+feature would have appeared to work, then failed silently on the second reboot.
+The shim also observes its *own* replay, since emit runs earlier in the same
+`pre_transfer` than scan.
+
+Both are suppressed by gating persistence on `tick >= 35` (~7 s) and clearing
+the pending value when the replay arms. Accepted trade-off: a change made in
+the first ~7 s of boot is not persisted.
+
+### Emission is stricter than specified
+
+The design said "empty-slot search only". Code review found that insufficient:
+free slots that are not *contiguous* let our SysEx splice into a message already
+in flight, corrupting both — the same hazard `schwung_shim.c` already guards for
+RNBO. `xmos_audio_emit` therefore requires a contiguous run, refuses while any
+cable-0 SysEx is mid-flight, and never partial-writes. On hardware this defers
+emission through Move's boot LED storm — the replay landed at frame 866 rather
+than immediately, which is the retry path working as intended.
+
+### Move's UI cannot be brought into agreement
+
+Task 4 established that Move never persists this setting anywhere: no key in
+`Settings.json` (whose mtime predated the user's change), and the dialog is
+`ListViewDelegate<UsbAudioOutputSourceDelegate, NullTransactionPolicy>`. Its
+screen keeps reading "Mic" after a replay. Confirmed end to end: a connected
+computer receives Main Out while the screen says Mic.
+
+This makes the deferred Global Settings row worth building after all — with
+Move's screen showing a stale value there is otherwise no honest place to read
+the truth. Shape (per the user): a persistence toggle, not a second Mic/Main Out
+control, e.g. `Persist USB-C Out — On (currently: Main Out)`.
