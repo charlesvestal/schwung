@@ -372,6 +372,16 @@ Two behaviours worth knowing:
   is correct; the screen is not. Selecting "Main Out" there is harmless;
   selecting "Mic" (believing it a no-op) actually switches it off.
 
+**Global Settings → Audio → USB-C Persist** (`usbc_out_persist`, default On)
+governs *whether Schwung restores* the value — deliberately **not** a second
+Mic/Main Out picker, which could disagree with Move's. Its value column
+annotates the source last seen on the wire (`On (Main Out)`), which is the only
+honest read given Move's screen goes stale. Params: `master_fx:usbc_out_persist`
+(get/set) and `master_fx:usbc_out_source` (get only; -1 unknown, 0 Mic, 1 Main
+Out). Persisted to `shadow_config.json`, which the **shim parses at init**
+(`native_resample_bridge_load_mode_from_shadow_config`) — so the flag is known
+before the ~5 s replay and the restore needs no runtime propagation.
+
 Impl: `src/host/shadow_xmos_audio.c` (pure codec — no I/O, allocation or locks,
 so it is both SPI-callback-safe and host-testable; unit tests in
 `tests/host/test_xmos_audio.sh`), observed and emitted in `schwung_shim.c`'s

@@ -25,6 +25,9 @@ volatile native_sampler_source_t native_sampler_source = NATIVE_SAMPLER_SOURCE_U
 volatile native_sampler_source_t native_sampler_source_last_known = NATIVE_SAMPLER_SOURCE_UNKNOWN;
 volatile int link_audio_routing_enabled = 0;
 volatile int link_audio_publish_enabled = 0;
+/* Defaults ON: restoring the USB-C out source is the whole point of observing
+ * it, and a device that has never stored a value emits nothing anyway. */
+volatile int usbc_out_persist_enabled = 1;
 volatile int latency_comp_user_enabled = 0;
 volatile int latency_comp_active = 0;
 
@@ -221,6 +224,29 @@ void native_resample_bridge_load_mode_from_shadow_config(void)
                 char msg[64];
                 snprintf(msg, sizeof(msg), "Link Audio publish: %s (from config)",
                          link_audio_publish_enabled ? "ON" : "OFF");
+                host.log(msg);
+            }
+        }
+    }
+
+    /* Load USB-C audio-out persistence setting. Read here, at shim init, so the
+     * flag is known well before the ~5 s boot replay — the restore needs no
+     * runtime propagation from the UI. Absent key keeps the ON default. */
+    char *usbc_key = strstr(json, "\"usbc_out_persist\"");
+    if (usbc_key) {
+        char *colon = strchr(usbc_key, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ' || *colon == '\t') colon++;
+            if (strncmp(colon, "true", 4) == 0 || *colon == '1') {
+                usbc_out_persist_enabled = 1;
+            } else {
+                usbc_out_persist_enabled = 0;
+            }
+            if (host.log) {
+                char msg[64];
+                snprintf(msg, sizeof(msg), "USB-C out persist: %s (from config)",
+                         usbc_out_persist_enabled ? "ON" : "OFF");
                 host.log(msg);
             }
         }

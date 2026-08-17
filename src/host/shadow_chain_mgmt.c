@@ -2478,6 +2478,8 @@ void shadow_inprocess_handle_param_request(void) {
                 strcmp(param_key, "link_audio_publish") == 0 ||
                 strcmp(param_key, "latency_comp_enabled") == 0 ||
                 strcmp(param_key, "system_link_enabled") == 0 ||
+                strcmp(param_key, "usbc_out_persist") == 0 ||
+                strcmp(param_key, "usbc_out_source") == 0 ||
                 strncmp(param_key, "jack:", 5) == 0 ||
                 strcmp(param_key, "suspend_overtake") == 0) {
                 if (host.handle_param_special(req_type, req_id)) {
