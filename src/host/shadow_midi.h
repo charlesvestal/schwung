@@ -152,6 +152,13 @@ void shadow_drain_ui_midi_dsp(void);
 /* Drain MIDI inject buffer into Move's MIDI_IN (post-ioctl). */
 void shadow_drain_midi_inject(void);
 
+/* Queue a 4-byte USB-MIDI packet for Move's firmware only, bypassing the
+ * test-bus inject ring (which is owned by the overtake publisher whenever a
+ * module is up). Single slot; the only producer is the overtake transition.
+ * Delivered by shadow_drain_midi_inject on the next frame where MIDI_IN is
+ * idle, and never routed to an overtake module. */
+void shadow_queue_packet_to_move(const uint8_t pkt[4]);
+
 /* Queue a 4-byte USB-MIDI packet for MIDI_IN injection (Pre-mode MIDI FX).
  * The cable nibble in msg[0] is preserved by the drain. Callers choose:
  *   cable 0 → internal hardware (Move treats as pad/button input)
