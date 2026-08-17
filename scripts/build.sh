@@ -239,6 +239,7 @@ if needs_rebuild build/schwung-shim.so \
     src/host/shadow_chain_mgmt.c src/host/shadow_link_audio.c src/host/shadow_process.c \
     src/host/shadow_resample.c src/host/shadow_overlay.c src/host/shadow_pin_scanner.c \
     src/host/shadow_led_queue.c src/host/shadow_state.c \
+    src/host/shadow_xmos_audio.c src/host/shadow_xmos_audio.h \
     src/host/shadow_midi.c src/host/unified_log.c src/host/shim_worker.c \
     src/host/shadow_shm_util.c src/host/schwung_trace.c src/host/shadow_test_stream.c src/host/shadow_test_stream.h \
     $SHIM_TTS_SRC \
@@ -269,6 +270,7 @@ if needs_rebuild build/schwung-shim.so \
         src/host/shadow_pin_scanner.c \
         src/host/shadow_led_queue.c \
         src/host/shadow_state.c \
+        src/host/shadow_xmos_audio.c \
         src/host/shadow_midi.c \
         src/host/unified_log.c \
         src/host/shim_worker.c \

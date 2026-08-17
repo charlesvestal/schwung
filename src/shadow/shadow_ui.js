@@ -965,7 +965,8 @@ const GLOBAL_SETTINGS_SECTIONS = [
               options: ["Sh+Cap", "Sh+Vol+Cap"], values: [0, 1] },
             { key: "skipback_seconds", label: "Skipback Len", type: "enum",
               options: ["30s", "1m", "2m", "3m", "4m", "5m"], values: [30, 60, 120, 180, 240, 300] },
-            { key: "browser_preview", label: "Browser Preview", type: "bool" }
+            { key: "browser_preview", label: "Browser Preview", type: "bool" },
+            { key: "usbc_out_persist", label: "USB-C Persist", type: "bool" }
         ]
     },
     {
@@ -1521,6 +1522,9 @@ let cachedResampleBridgeMode = 0;
 let cachedLinkAudioRouting = false;
 let cachedLinkAudioPublish = false;
 let cachedLatencyCompEnabled = false;
+/* Default true: restoring Move's USB-C audio-out source is on unless the
+ * user turns it off. Mirrors usbc_out_persist_enabled in the shim. */
+let cachedUsbcOutPersist = true;
 let systemLinkEnabled = null; /* null = not checked yet */
 
 /* Master preset CRUD state (reuse pattern from slot presets) */
@@ -6299,6 +6303,7 @@ function saveMasterFxChainConfig() {
         config.link_audio_routing = cachedLinkAudioRouting;
         config.link_audio_publish = cachedLinkAudioPublish;
         config.latency_comp_enabled = cachedLatencyCompEnabled;
+        config.usbc_out_persist = cachedUsbcOutPersist;
 
         host_write_file(configPath, JSON.stringify(config, null, 2));
     } catch (e) {
@@ -6522,6 +6527,13 @@ function loadMasterFxChainFromConfig() {
         if (config.latency_comp_enabled !== undefined && typeof shadow_set_param === "function") {
             shadow_set_param(0, "master_fx:latency_comp_enabled", config.latency_comp_enabled ? "1" : "0");
             cachedLatencyCompEnabled = !!config.latency_comp_enabled;
+        }
+        if (config.usbc_out_persist !== undefined && typeof shadow_set_param === "function") {
+            /* The shim also reads this key straight from shadow_config.json at
+             * init, so the boot replay is already correctly gated before we get
+             * here. This push only keeps the two in sync for the UI. */
+            shadow_set_param(0, "master_fx:usbc_out_persist", config.usbc_out_persist ? "1" : "0");
+            cachedUsbcOutPersist = !!config.usbc_out_persist;
         }
 
         /* Restore loaded preset name */
@@ -10737,6 +10749,16 @@ function getMasterFxSettingValue(setting) {
         const val = shadow_get_param(0, "master_fx:link_audio_publish");
         return (val === "1") ? "On" : "Off";
     }
+    if (setting.key === "usbc_out_persist") {
+        /* Annotate with the source last seen on the wire. Move's own Settings
+         * screen keeps showing its boot default after Schwung restores the
+         * value, so this row is the only honest read of what's actually
+         * routed. Not a second control — Move's menu still chooses it. */
+        const on = shadow_get_param(0, "master_fx:usbc_out_persist") === "1";
+        const src = shadow_get_param(0, "master_fx:usbc_out_source");
+        const label = (src === "1") ? "Main Out" : (src === "0") ? "Mic" : null;
+        return (on ? "On" : "Off") + (label ? ` (${label})` : "");
+    }
     if (setting.key === "latency_comp_enabled") {
         const val = shadow_get_param(0, "master_fx:latency_comp_enabled");
         return (val === "1") ? "On" : "Off";
@@ -10866,6 +10888,14 @@ function adjustMasterFxSetting(setting, delta) {
         const newVal = (current === "1") ? "0" : "1";
         shadow_set_param(0, "master_fx:latency_comp_enabled", newVal);
         cachedLatencyCompEnabled = (newVal === "1");
+        saveMasterFxChainConfig();
+        return;
+    }
+    if (setting.key === "usbc_out_persist") {
+        const current = shadow_get_param(0, "master_fx:usbc_out_persist");
+        const newVal = (current === "1") ? "0" : "1";
+        shadow_set_param(0, "master_fx:usbc_out_persist", newVal);
+        cachedUsbcOutPersist = (newVal === "1");
         saveMasterFxChainConfig();
         return;
     }

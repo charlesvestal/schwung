@@ -19,6 +19,8 @@ volatile uint32_t shim_debug_flags = 0;
 volatile int shim_pending_sysex_inject = -1;
 volatile int shim_inject_boot_jack = -1;
 volatile int shim_jack_persist = -1;
+volatile int shim_usbc_out_persist = -1;
+volatile int shim_usbc_out_replay = -1;
 
 /* Persisted jack state (last CC 115 value). Survives reboot so the worker can
  * re-assert it to Move at boot — XMOS doesn't report jack-in at boot, so an
@@ -38,6 +40,27 @@ static int jack_state_read(void) {
 
 static void jack_state_write(int v) {
     FILE *f = fopen(JACK_STATE_PATH, "w");
+    if (!f) return;
+    fprintf(f, "%d\n", v);
+    fclose(f);
+}
+
+/* USB-C audio-out source (0 = Mic, 1 = Main Out). Move's firmware forgets this
+ * across reboots; we observe it on the wire and re-assert it after boot. */
+#define USBC_OUT_STATE_PATH "/data/UserData/schwung/usbc_out_state"
+
+static int usbc_out_state_read(void) {
+    FILE *f = fopen(USBC_OUT_STATE_PATH, "r");
+    if (!f) return -1;
+    int v = -1;
+    if (fscanf(f, "%d", &v) != 1) v = -1;
+    fclose(f);
+    if (v != 0 && v != 1) return -1;
+    return v;
+}
+
+static void usbc_out_state_write(int v) {
+    FILE *f = fopen(USBC_OUT_STATE_PATH, "w");
     if (!f) return;
     fprintf(f, "%d\n", v);
     fclose(f);
@@ -227,6 +250,9 @@ static void *worker_main(void *arg) {
     int last_persisted = boot_jack;
     int boot_reasserted = 0;
 
+    int boot_usbc_out = usbc_out_state_read();  /* -1 if never persisted */
+    int last_usbc_out = boot_usbc_out;
+
     for (;;) {
         usleep(200 * 1000);             /* 200 ms cadence */
         drain_events();                 /* event latency ≤ ~200 ms */
@@ -238,6 +264,25 @@ static void *worker_main(void *arg) {
             jack_state_write(jp);
         }
 
+        /* Persist the USB-C audio-out source when the RT path reports a change —
+         * but only once the boot window has fully settled. Two things put
+         * unintended values on the wire early: (1) Move's own firmware asserts
+         * its Mic default at ~0.6 s into every boot, regardless of what the
+         * user last chose; (2) our own boot re-assert (armed below, ~5 s) is
+         * itself observed by the same scan() that feeds this variable, since
+         * the shim's SysEx emit runs earlier in the same pre_transfer than its
+         * scan (see the scan call site in schwung_shim.c). Persisting either
+         * would silently clobber the stored preference on every reboot. Gate
+         * on tick >= 35 (~7 s) — after both Move's assert and our own replay
+         * echo — so only genuine post-boot user changes are written. Known,
+         * accepted trade-off: a setting change made in the first ~7 s of boot
+         * is not persisted. */
+        int up = shim_usbc_out_persist;
+        if (tick >= 35 && up >= 0 && up != last_usbc_out) {
+            last_usbc_out = up;
+            usbc_out_state_write(up);
+        }
+
         /* Re-assert jack state to Move once, ~5 s after start (Move's firmware
          * is up by then). Prefer the value XMOS actually reported THIS boot
          * (captured at ~f6 into shim_jack_persist) — that's the true current
@@ -247,6 +292,17 @@ static void *worker_main(void *arg) {
             boot_reasserted = 1;
             int v = (shim_jack_persist >= 0) ? shim_jack_persist : boot_jack;
             if (v >= 0) shim_inject_boot_jack = v;
+
+            /* Re-assert the USB-C audio-out source too. Skip entirely when the
+             * stored value is Mic — that's Move's own boot default, so there is
+             * nothing to correct and no reason to put SysEx on the wire. */
+            if (boot_usbc_out == 1) shim_usbc_out_replay = 1;
+
+            /* Discard anything observed during the boot window before the
+             * persistence gate (tick >= 35) opens — Move's own boot-default
+             * assert and, shortly, our own replay echo have no user intent
+             * behind them and must not be queued up to write the file. */
+            shim_usbc_out_persist = -1;
         }
 
         if (tick % 5 == 0) poll_flags();          /* ~1 Hz */

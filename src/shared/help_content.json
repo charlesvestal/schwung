@@ -401,6 +401,34 @@
             "move.local:7700",
             "/config."
           ]
+        },
+        {
+          "title": "USB-C Audio Out",
+          "lines": [
+            "Move sends either its",
+            "mic or Main Out to a",
+            "connected computer,",
+            "but forgets which on",
+            "every power off.",
+            "",
+            "Pick it in Move's own",
+            "Settings. Schwung",
+            "restores it a few",
+            "seconds after boot.",
+            "",
+            "Global Settings >",
+            "Audio > USB-C Persist",
+            "shows On/Off and the",
+            "source in use.",
+            "",
+            "Move's screen still",
+            "reads Mic even when",
+            "Main Out is live -",
+            "trust your ears. In",
+            "that menu picking Mic",
+            "really does switch it",
+            "back."
+          ]
         }
       ]
     },
