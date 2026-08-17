@@ -6339,12 +6339,42 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
          * firmware doesn't stay in shift-mode (which slows the volume knob, etc.).
          * Cable-0 input is filtered during overtake, so the eventual physical release
          * never reaches Move otherwise. */
-        if (prev_overtake_mode == 0 && overtake_mode != 0 && shadow_midi_inject_shm &&
-            shadow_shift_held) {
+        if (prev_overtake_mode == 0 && overtake_mode != 0 && shadow_midi_inject_shm) {
+            /* Deliberately NOT gated on shadow_shift_held. That gate made this
+             * never fire in the case it was written for.
+             *
+             * Cable-0 input is filtered while overtake_mode is set, so the shim
+             * never observes a Shift press made *during* overtake — which is
+             * exactly when the resume gesture happens. Sequence for
+             * Shift+long-press-Step13 while a module is open:
+             *
+             *   1. module open (mode 2), cable-0 filtered -> the Shift press is
+             *      never seen here, shadow_shift_held stays 0
+             *   2. the shortcut exits the module, mode -> 0, filtering stops
+             *   3. Shift is still physically down, so Move's firmware sees it
+             *      now and enters shift-mode
+             *   4. the relaunch takes mode -> 2, filtering resumes
+             *   5. the physical release never reaches Move, which stays in
+             *      shift-mode: the volume knob is stuck in fine mode until the
+             *      user presses and releases Shift again outside overtake
+             *
+             * Measured on device: 0 injects across a whole session of resumes,
+             * with the volume knob stuck fine-mode every time.
+             *
+             * Sending Shift-off when Move is not in shift-mode is a no-op, so
+             * firing unconditionally costs one 4-byte packet per overtake entry
+             * and removes the dependency on shim-side Shift tracking being
+             * correct in the one situation where it cannot be. */
             const uint8_t shift_off[4] = {0x0B, 0xB0, CC_SHIFT, 0};
-            if (shadow_midi_inject_push(shadow_midi_inject_shm, shift_off) == 0) {
-                shadow_log("Overtake entry with shift held: injected shift-off");
-            }
+            /* Straight to Move, NOT via the inject ring. The ring is drained by
+             * the overtake publisher while a module is up, so a packet pushed
+             * there at this transition reaches the module and never Move —
+             * observed on device: the inject logged as sent on every resume and
+             * the volume knob stayed in fine mode regardless. */
+            shadow_queue_packet_to_move(shift_off);
+            shadow_log(shadow_shift_held
+                       ? "Overtake entry: queued shift-off to Move (shim saw shift held)"
+                       : "Overtake entry: queued shift-off to Move (shim did not see the press)");
         }
         /* Clear JACK display override on overtake exit (always — Move needs display back) */
         if (prev_overtake_mode != 0 && overtake_mode == 0 && g_jack_shm) {

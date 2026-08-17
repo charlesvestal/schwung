@@ -574,7 +574,8 @@ let overtakeModuleLoaded = false; // True if an overtake module is running
 let overtakeModulePath = "";      // Path to loaded overtake module
 let overtakeModuleId = "";         // ID of loaded overtake module (for per-module exit hooks)
 let previousView = VIEWS.SLOTS;   // View to return to after overtake
-let overtakeModuleCallbacks = null; // {init, tick, onMidiMessageInternal} for loaded module
+let overtakeModuleCallbacks = null;
+let overtakeModuleCaps = null;      // capabilities of the loaded overtake module
 let overtakeSuspendKeepsJs = false; // Current module opted in to JS-alive suspend
 let overtakeSuspendSelfManaged = false; // Module owns Back; suspends via host_suspend_overtake()
 let overtakePassthroughCCs = [];    // CCs declared in capabilities.button_passthrough — shim lets these
@@ -3203,6 +3204,7 @@ function exitOvertakeMode() {
     overtakeModulePath = "";
     overtakeModuleId = "";
     overtakeModuleCallbacks = null;
+    overtakeModuleCaps = null;
     overtakeSuspendKeepsJs = false;
     overtakeSuspendSelfManaged = false;
     overtakePassthroughCCs = [];
@@ -3228,6 +3230,8 @@ function exitOvertakeMode() {
 /* Suspend overtake mode — leave background processes running */
 function suspendOvertakeMode() {
     corunTeardown();
+    /* Capabilities of the module being parked, for the LED-handoff decision. */
+    const parkedCaps = (overtakeModuleCallbacks && overtakeModuleCaps) ? overtakeModuleCaps : null;
     if (overtakeSuspendKeepsJs && overtakeModuleCallbacks && overtakeModuleId) {
         debugLog("suspendOvertakeMode: suspend_keeps_js — parking " + overtakeModuleId + " in background");
 
@@ -3267,6 +3271,7 @@ function suspendOvertakeMode() {
             ledNotes: ledNotesSnapshot,
             ledCCs: ledCCsSnapshot,
             dspPath: currentSlot0DspPath,
+            caps: overtakeModuleCaps,
             selfManaged: overtakeSuspendSelfManaged,
             shimGet: globalThis.host_module_get_param,
             shimSet: globalThis.host_module_set_param,
@@ -3288,9 +3293,20 @@ function suspendOvertakeMode() {
         /* Ask the audio-side transition to leave Move's fresh native LED output
          * authoritative. Mono's entry snapshot can be incomplete for dynamic
          * scale colors and the Shift row, so replaying it here leaves the grid
-         * dark or stale. The C-side consumes skip_led_clear after mode reaches 0. */
+         * dark or stale. The C-side consumes skip_led_clear after mode reaches 0.
+         *
+         * Opt-in per module. This used to fire for EVERY suspend_keeps_js
+         * module, which regressed the ones it was not written for: "let Move
+         * repaint" only clears the module's LEDs if Move actually has a reason
+         * to repaint those surfaces. Performance FX suspends with 32 lit pads
+         * that Move never touches, so its colors just stayed on the hardware.
+         * Without the flag we fall back to the ordinary snapshot restore, which
+         * puts Move's pre-overtake LEDs back and turns unknowns off — correct
+         * for anything that does not own a dynamic native layout. */
+        const wantsNativeRepaint = !!(parkedCaps && parkedCaps.native_led_repaint_on_suspend);
         if (typeof shadow_set_overtake_mode === "function") {
-            if (typeof shadow_set_skip_led_clear === "function") {
+            if (wantsNativeRepaint && typeof shadow_set_skip_led_clear === "function") {
+                debugLog("suspendOvertakeMode: module wants native LED repaint");
                 shadow_set_skip_led_clear(1);
             }
             shadow_set_overtake_mode(0);
@@ -3354,6 +3370,7 @@ function resumeOvertakeModule(moduleId) {
 
     /* Restore active-module state from the parked entry. */
     overtakeModuleCallbacks = parked.callbacks;
+    overtakeModuleCaps = parked.caps || overtakeModuleCaps;
     overtakeModulePath = parked.path;
     overtakeModuleId = parked.id;
     overtakeModuleLoaded = true;
@@ -3628,6 +3645,8 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
          * final Move+ME mix rather than the ME bus alone, so a whole-mix effect
          * hears Move's own tracks without Link Audio routing. Cleared on exit
          * in completeOvertakeExit(). */
+        overtakeModuleCaps = moduleInfo.capabilities || null;
+
         if (typeof shadow_set_overtake_fx_end_of_chain === "function") {
             const eoc = !!(moduleInfo.capabilities && moduleInfo.capabilities.end_of_chain);
             shadow_set_overtake_fx_end_of_chain(eoc ? 1 : 0);
@@ -13781,7 +13800,25 @@ function tryResumeSuspendedTool() {
             startInteractiveTool(t.module, t.filePath);
             return true;
         }
-        return loadOvertakeModule(t.module, t.skipOvertake);
+        /* Re-scan rather than trusting the descriptor captured at the original
+         * load. It is a snapshot of module.json from whenever the module was
+         * first opened this session, so a module updated on disk since — new
+         * capabilities, a Module Store update — would keep relaunching with its
+         * old metadata until a full menu visit refreshed it. Observed with a
+         * newly added suspend_keeps_js: the file on disk had it, every relaunch
+         * ignored it. Fall back to the cached descriptor if the scan cannot
+         * find the id (module uninstalled mid-session). */
+        let mod = t.module;
+        try {
+            const fresh = (scanForOvertakeModules() || []).find(o => o.id === mod.id);
+            if (fresh) {
+                mod = fresh;
+                lastLaunchedTool.module = fresh;
+            }
+        } catch (e) {
+            debugLog("tryResumeSuspendedTool: re-scan failed, using cached descriptor: " + e);
+        }
+        return loadOvertakeModule(mod, t.skipOvertake);
     }
 
     debugLog("tryResumeSuspendedTool: nothing suspended or previously launched");
