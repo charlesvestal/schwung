@@ -3294,6 +3294,30 @@ function resumeOvertakeModule(moduleId) {
 
     setView(VIEWS.OVERTAKE_MODULE);
     needsRedraw = true;
+
+    /* Clear held-modifier state, the way loadOvertakeModule does on a fresh
+     * load. The resume gesture is Shift+Vol+Step13 / Shift+long-press, so
+     * Shift is physically down at this instant and its release lands after
+     * we return — leaving the host latched in shift-mode. */
+    hostShiftHeld = false;
+    hostVolumeKnobTouched = false;
+
+    /* The module's OWN shift flag is stale for the same reason, and worse:
+     * init() is deliberately not re-run on resume, so nothing resets it. It
+     * was parked while the user released Shift from the previous session, so
+     * that release was never delivered. Synthesise one. Sent before
+     * onResume() so a module that tracks its own modifiers can still override
+     * in the hook. */
+    if (overtakeModuleCallbacks && overtakeModuleCallbacks.onMidiMessageInternal) {
+        try {
+            runToolCallback(function() {
+                overtakeModuleCallbacks.onMidiMessageInternal([0xB0, 49, 0]);  /* Shift up */
+            });
+        } catch (e) {
+            debugLog("resumeOvertakeModule: synthetic shift-off threw: " + e);
+        }
+    }
+
     /* Fire the module's onResume() hook (init() is NOT re-run on resume).
      * Called after the full callback / LED-queue / shim restore above so
      * the module sees its own globals in place. See invokeModuleOnResume
