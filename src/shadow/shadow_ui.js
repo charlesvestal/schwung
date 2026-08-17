@@ -176,6 +176,11 @@ import {
     tickPresetPreview, isPresetPreviewActive
 } from './shadow_ui_presets.mjs';
 import {
+    paramPagesEnabled, enterParamPages, exitParamPages, paramPagesActive,
+    tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage,
+    paramPagesComponent, paramPagesSlot
+} from './shadow_ui_param_pages.mjs';
+import {
     drawMasterFx as _drawMasterFx,
     getMasterFxDisplayName as _getMasterFxDisplayName,
     enterMasterFxSettings as _enterMasterFxSettings
@@ -313,6 +318,7 @@ const VIEWS = {
     COMPONENT_EDIT: "compedit",  // Edit component (presets, params) via Shift+Click
     MASTER_FX: "masterfx",    // Master FX selection
     HIERARCHY_EDITOR: "hierarch", // Hierarchy-based parameter editor
+    PARAM_PAGES: "parampages", // Knob-grid parameter view (preview; Param View setting)
     CANVAS: "canvas",         // Full-screen canvas overlay/editor
     FILEPATH_BROWSER: "filepathbrowser", // Generic filepath picker for filepath params
     KNOB_EDITOR: "knobedit",  // Edit knob assignments for a slot
@@ -581,6 +587,11 @@ let suspendedOvertakes = {};
 
 /* Most-recently-suspended tool id. Shift+Vol+Step13 double-tap resumes it. */
 let lastSuspendedToolId = "";
+/* Most recent successful tool/overtake launch, for the Tools-shortcut
+ * relaunch gesture. { kind: 'overtake'|'interactive', module, filePath }.
+ * Session-scoped by design — not persisted across reboots, same as
+ * lastSuspendedToolId. */
+let lastLaunchedTool = null;
 let lastToolsShortcutMs = 0;
 const TOOLS_DOUBLE_TAP_MS = 500;
 
@@ -611,6 +622,10 @@ let hostMuteHeld = false;   /* Mute (CC 88) held — used as a modifier for Mute
 let overtakeInitPending = false;
 let overtakeInitTicks = 0;
 const OVERTAKE_INIT_DELAY_TICKS = 30; // ~500ms at 16ms tick
+/* Upper bound on waiting for the worker-side DSP load before running init()
+ * anyway. The worker polls at 200ms, so a load lands within ~2 ticks past the
+ * init delay; this is the give-up point for a DSP that never comes up. */
+const OVERTAKE_DSP_READY_MAX_TICKS = 90; // ~1.5s
 
 /* Progressive LED clearing - buffer only holds ~60 packets, so clear in batches */
 const LEDS_PER_BATCH = 20;
@@ -879,6 +894,48 @@ const MASTER_FX_SETTINGS_ITEMS_BASE = [
     { key: "delete", label: "[Delete]", type: "action" }
 ];
 
+/* Param View (preview): 0 = the hierarchy list editor, 1 = the knob grid.
+ * Defaults to the list — the grid ships as an opt-in preview before becoming
+ * the default in a later release. Read through a global so the view module can
+ * ask without importing shadow_ui.js. See shadow_ui_param_pages.mjs. */
+let paramViewGlobal = 0;
+const PARAM_VIEW_CONFIG_PATH = "/data/UserData/schwung/param_view.json";
+globalThis.param_view_get_mode = function() { return paramViewGlobal; };
+
+/* A param a knob cannot turn — a filepath, canvas, wav_position or string.
+ * The grid does not reimplement those editors; it steps aside and hands the
+ * component to the list, which already has all of them. Announced, because
+ * otherwise the view changing under you looks like a glitch. */
+function openParamEditorFromGrid(slotIndex, fullKey, meta) {
+    const componentKey = paramPagesComponent();
+    exitParamPages();
+    announce((meta && meta.label ? meta.label : "Parameter") + ", opening in list");
+    /* Without this the list entry below sees Param View = Knobs and bounces
+     * straight back into the grid, forever. The flag is consumed by the next
+     * enterHierarchyEditorWith and nothing else. */
+    suppressParamPagesOnce = true;
+    enterHierarchyEditor(slotIndex, componentKey);
+}
+
+/* One-shot override forcing the LIST editor for the next entry, so the grid can
+ * hand a param it cannot edit to the screen that can. */
+let suppressParamPagesOnce = false;
+
+function saveParamViewConfig() {
+    try {
+        host_write_file(PARAM_VIEW_CONFIG_PATH, JSON.stringify({ param_view: paramViewGlobal }));
+    } catch (e) {}
+}
+
+function loadParamViewConfig() {
+    try {
+        const content = host_read_file(PARAM_VIEW_CONFIG_PATH);
+        if (!content) return;
+        const cfg = JSON.parse(content);
+        if (typeof cfg.param_view === "number") paramViewGlobal = cfg.param_view;
+    } catch (e) {}
+}
+
 /* Global Settings — hierarchical sections for Shift+Vol+Step2 menu.
  * The canonical schema is also in shared/settings-schema.json for the
  * schwung-manager web UI. Keep both in sync when adding settings. */
@@ -891,7 +948,9 @@ const GLOBAL_SETTINGS_SECTIONS = [
               options: ["+Shift", "+Jog Touch", "Off", "Native"], values: [0, 1, 2, 3] },
             { key: "pad_typing", label: "Pad Typing", type: "bool" },
             { key: "text_preview", label: "Text Preview", type: "bool" },
-            { key: "midi_indicator_enabled", label: "MIDI Channel", type: "bool" }
+            { key: "midi_indicator_enabled", label: "MIDI Channel", type: "bool" },
+            { key: "param_view", label: "Param View", type: "enum",
+              options: ["List", "Knobs"], values: [0, 1] }
         ]
     },
     {
@@ -1649,6 +1708,14 @@ function getPhysKnobState(fullKey, currentValue) {
 /* Master FX flag - when true, exit returns to MASTER_FX view instead of CHAIN_EDIT */
 let hierEditorIsMasterFx = false;
 let hierEditorMasterFxSlot = -1;      // Which Master FX slot (0-3) we're editing
+
+/* Set by enterHierarchyEditorFromParamPages(): the list editor is only open
+ * here because the grid handed off a non-grid page (preset browser, items
+ * list, ...) it does not draw itself. Committing a preset in that state
+ * should return to the grid rather than leave the user stranded in the list
+ * UI — see the preset-edit-mode branch below. Cleared once consumed, and by
+ * exitHierarchyEditor()/Back so a manual exit does not also bounce back. */
+let cameFromParamPages = false;
 
 /* Preset browser state (for preset_browser type levels) */
 let hierEditorIsPresetLevel = false;  // true when current level is a preset browser
@@ -3105,9 +3172,8 @@ function exitOvertakeMode() {
     for (let k = 0; k < NUM_KNOBS; k++) overtakeKnobDelta[k] = 0;
     overtakeJogDelta = 0;
 
-    /* NOTE: skip_led_clear is cleared in completeOvertakeExit() AFTER
-     * overtake_mode drops to 0, so the C-side transition sees it and
-     * skips its snapshot restore (which may have stale/polluted state). */
+    /* NOTE: skip_led_clear is consumed by the C-side when it observes the
+     * overtake_mode transition. JS must not clear it in the same tick. */
 
     /* Signal exit — C-side LED cache will restore Move's LEDs
      * when overtake_mode transitions back to 0 */
@@ -3175,12 +3241,15 @@ function suspendOvertakeMode() {
             shadow_set_suspend_overtake(1);
         }
 
-        /* Drop overtake mode so shim stops routing events to the (now-parked) module. */
+        /* Ask the audio-side transition to leave Move's fresh native LED output
+         * authoritative. Mono's entry snapshot can be incomplete for dynamic
+         * scale colors and the Shift row, so replaying it here leaves the grid
+         * dark or stale. The C-side consumes skip_led_clear after mode reaches 0. */
         if (typeof shadow_set_overtake_mode === "function") {
+            if (typeof shadow_set_skip_led_clear === "function") {
+                shadow_set_skip_led_clear(1);
+            }
             shadow_set_overtake_mode(0);
-        }
-        if (typeof shadow_set_skip_led_clear === "function") {
-            shadow_set_skip_led_clear(0);
         }
         /* Clear the opt-in sysex suppression so it never leaks to the next tool. */
         if (typeof shadow_set_overtake_suppress_sysex === "function") {
@@ -3285,6 +3354,30 @@ function resumeOvertakeModule(moduleId) {
 
     setView(VIEWS.OVERTAKE_MODULE);
     needsRedraw = true;
+
+    /* Clear held-modifier state, the way loadOvertakeModule does on a fresh
+     * load. The resume gesture is Shift+Vol+Step13 / Shift+long-press, so
+     * Shift is physically down at this instant and its release lands after
+     * we return — leaving the host latched in shift-mode. */
+    hostShiftHeld = false;
+    hostVolumeKnobTouched = false;
+
+    /* The module's OWN shift flag is stale for the same reason, and worse:
+     * init() is deliberately not re-run on resume, so nothing resets it. It
+     * was parked while the user released Shift from the previous session, so
+     * that release was never delivered. Synthesise one. Sent before
+     * onResume() so a module that tracks its own modifiers can still override
+     * in the hook. */
+    if (overtakeModuleCallbacks && overtakeModuleCallbacks.onMidiMessageInternal) {
+        try {
+            runToolCallback(function() {
+                overtakeModuleCallbacks.onMidiMessageInternal([0xB0, 49, 0]);  /* Shift up */
+            });
+        } catch (e) {
+            debugLog("resumeOvertakeModule: synthetic shift-off threw: " + e);
+        }
+    }
+
     /* Fire the module's onResume() hook (init() is NOT re-run on resume).
      * Called after the full callback / LED-queue / shim restore above so
      * the module sees its own globals in place. See invokeModuleOnResume
@@ -3358,15 +3451,10 @@ function exitToolOvertake() {
     for (let k = 0; k < NUM_KNOBS; k++) overtakeKnobDelta[k] = 0;
     overtakeJogDelta = 0;
 
-    /* Disable overtake mode first, THEN clear skip_led_clear.
-     * The C-side checks skip_led_clear during the overtake→0 transition
-     * to decide whether to restore its LED snapshot. skip_led_clear must
-     * still be set at that moment so the restore is skipped. */
+    /* Disable overtake mode. The C-side consumes skip_led_clear when it
+     * observes this transition; clearing it here would race the audio thread. */
     if (!toolNonOvertake && typeof shadow_set_overtake_mode === "function") {
         shadow_set_overtake_mode(0);
-    }
-    if (typeof shadow_set_skip_led_clear === "function") {
-        shadow_set_skip_led_clear(0);
     }
 
     /* Return to tools menu — preserve hidden session state if one exists
@@ -3403,9 +3491,6 @@ function hideToolOvertake() {
     if (!toolNonOvertake && typeof shadow_set_overtake_mode === "function") {
         shadow_set_overtake_mode(0);
     }
-    if (typeof shadow_set_skip_led_clear === "function") {
-        shadow_set_skip_led_clear(0);
-    }
 
     /* Mark as hidden, not fully exited */
     toolOvertakeActive = false;
@@ -3424,8 +3509,12 @@ function hideToolOvertake() {
     enterToolsMenu();
 }
 
-/* Complete the exit after LEDs are cleared */
-function completeOvertakeExit() {
+/* Complete the exit after LEDs are cleared.
+ * skipNavigation: tear down only, leave the view alone. Used by callers that
+ * are about to navigate somewhere themselves (the Tools shortcut) — without
+ * it the non-tool tail below would fire shadow_request_exit() and bounce the
+ * user all the way out to Move. */
+function completeOvertakeExit(skipNavigation) {
     overtakeExitPending = false;
 
     /* Disable overtake mode to allow MIDI to reach Move again */
@@ -3433,21 +3522,22 @@ function completeOvertakeExit() {
         shadow_set_overtake_mode(0);
     }
 
-    /* Clear skip_led_clear AFTER overtake_mode drops to 0.
-     * The C-side overtake transition checks skip_led_clear to decide
-     * whether to restore its snapshot. With skip_led_clear still set,
-     * it skips the restore (good — the snapshot may be polluted from
-     * Move's MIDI_OUT during the session). Move reasserts its own LEDs. */
-    if (typeof shadow_set_skip_led_clear === "function") {
-        shadow_set_skip_led_clear(0);
+    /* The C-side consumes skip_led_clear when it observes the transition.
+     * Do not clear it here: JS and the audio thread run independently. */
+
+    /* Drop end-of-chain FX placement — the next module must not inherit it. */
+    if (typeof shadow_set_overtake_fx_end_of_chain === "function") {
+        shadow_set_overtake_fx_end_of_chain(0);
     }
 
     /* If exiting an interactive tool, return to tools menu instead of Move */
     if (toolOvertakeActive) {
         toolOvertakeActive = false;
-        enterToolsMenu();
+        if (!skipNavigation) enterToolsMenu();
         return;
     }
+
+    if (skipNavigation) return;
 
     /* Return to slots view */
     setView(VIEWS.SLOTS);
@@ -3493,10 +3583,12 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
          * and everything else (pads, steps, knobs) passes through to Move normally.
          * If skip_led_clear, tell C-side to preserve LED state on overtake entry. */
         if (!skipOvertake && typeof shadow_set_overtake_mode === "function") {
-            const wantSkipLed = moduleInfo.capabilities && moduleInfo.capabilities.skip_led_clear;
-            if (wantSkipLed && typeof shadow_set_skip_led_clear === "function") {
-                shadow_set_skip_led_clear(1);
-                debugLog("loadOvertakeModule: skip_led_clear set");
+            const wantSkipLed = !!(moduleInfo.capabilities && moduleInfo.capabilities.skip_led_clear);
+            if (typeof shadow_set_skip_led_clear === "function") {
+                /* Set both branches explicitly so an interrupted prior tool
+                 * cannot leak native-LED ownership into this module. */
+                shadow_set_skip_led_clear(wantSkipLed ? 1 : 0);
+                if (wantSkipLed) debugLog("loadOvertakeModule: skip_led_clear set");
             }
             shadow_set_overtake_mode(2);  /* 2 = module mode (all events) */
             debugLog("loadOvertakeModule: overtake_mode=2 (module)");
@@ -3506,6 +3598,24 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
         hostShiftHeld = false;
         hostVolumeKnobTouched = false;
         debugLog("loadOvertakeModule: escape state reset");
+
+        /* Audio-FX overtake modules that declare `end_of_chain` process the
+         * final Move+ME mix rather than the ME bus alone, so a whole-mix effect
+         * hears Move's own tracks without Link Audio routing. Cleared on exit
+         * in completeOvertakeExit(). */
+        if (typeof shadow_set_overtake_fx_end_of_chain === "function") {
+            const eoc = !!(moduleInfo.capabilities && moduleInfo.capabilities.end_of_chain);
+            shadow_set_overtake_fx_end_of_chain(eoc ? 1 : 0);
+            if (eoc) debugLog("loadOvertakeModule: end_of_chain FX placement enabled");
+        }
+
+        /* A pending exit from a *previous* module must never survive into this
+         * load. The exit branch in the OVERTAKE_MODULE tick is checked before
+         * the init branch, so a stale flag tears the module down on its first
+         * tick and init() never runs — the module looks like it silently
+         * refuses to load. Every arm-then-leave-the-view path is supposed to
+         * drain the flag itself; this is the backstop. */
+        overtakeExitPending = false;
 
         /* Activate LED queue before loading module - intercepts move_midi_internal_send
          * to prevent SHM buffer flooding from modules that send many LEDs per tick.
@@ -3720,6 +3830,17 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
             ledClearIndex = 0;  /* Start LED clearing from beginning */
             debugLog("loadOvertakeModule: init deferred, LEDs will clear progressively");
         }
+
+        /* Remember this launch for the Tools-shortcut relaunch gesture. Every
+         * load path (overtake menu, Tools menu, startInteractiveTool) funnels
+         * through here, so this one write covers them all. Interactive tools
+         * overwrite it with a richer descriptor once their file is known. */
+        lastLaunchedTool = {
+            kind: "overtake",
+            module: moduleInfo,
+            skipOvertake: !!skipOvertake,
+            filePath: ""
+        };
 
         return true;
     } catch (e) {
@@ -5702,6 +5823,15 @@ function startInteractiveTool(toolModule, filePath) {
     announce("Loading " + toolModule.name);
     const success = loadOvertakeModule(moduleInfo, skipOvertake);
     if (success) {
+        /* Replace the plain-overtake record loadOvertakeModule just wrote:
+         * relaunching an interactive tool must go back through this function
+         * so toolOvertakeActive / toolNonOvertake / file_path are all set. */
+        lastLaunchedTool = {
+            kind: "interactive",
+            module: toolModule,
+            skipOvertake: skipOvertake,
+            filePath: filePath || ""
+        };
         /* DSP is now loaded — pass the selected file path */
         globalThis.host_tool_file_path = filePath || "";
         if (typeof shadow_set_param === "function") {
@@ -7678,6 +7808,45 @@ function enterHierarchyEditor(slotIndex, componentKey) {
     enterHierarchyEditorWith(slotIndex, componentKey, hierarchy);
 }
 
+/*
+ * The grid only draws PAGE_KNOBS (shadow_ui_param_pages.mjs's drawParamPages
+ * returns false on anything else) — a preset browser, a runtime items list, a
+ * mode select or a child selector is meant to hand off to the list editor
+ * that already draws it. That hand-off never actually populated the list
+ * editor's state though: enterParamPages() never touches hierEditorSlot /
+ * hierEditorHierarchy / hierEditorLevel, so falling straight into
+ * drawHierarchyEditor() drew whatever those globals happened to hold —
+ * usually their reset defaults (hierEditorSlot=-1, hierEditorParams=[]),
+ * i.e. "S0: no parameters", not the intended preset browser. This performs
+ * the hand-off for real: entering the legacy editor exactly as if the user
+ * had opened it directly, then jumping to the same *level* the grid was on
+ * (not the hierarchy's root) so a "Presets" page mid-tree opens the preset
+ * browser, not the top of the whole component.
+ *
+ * hierEditorPath is left empty rather than reconstructed, so Back exits the
+ * component instead of stepping up to the level's real parent. Good enough
+ * to make the page work at all; a true breadcrumb would need walking the
+ * hierarchy's own level graph backward from `page.level`, which none of the
+ * existing entry points do either.
+ */
+function enterHierarchyEditorFromParamPages() {
+    const page = currentParamPage();
+    const slotIndex = paramPagesSlot();
+    const componentKey = paramPagesComponent();
+    exitParamPages();
+    suppressParamPagesOnce = true;
+    enterHierarchyEditor(slotIndex, componentKey);
+    cameFromParamPages = true;
+    if (page && page.level && hierEditorHierarchy &&
+        hierEditorHierarchy.levels && hierEditorHierarchy.levels[page.level] &&
+        page.level !== hierEditorLevel) {
+        hierEditorLevel = page.level;
+        hierEditorPath = [];
+        hierEditorChildIndex = -1;
+        loadHierarchyLevel();
+    }
+}
+
 /* Enter the hierarchy editor with an explicit hierarchy object. Lets callers
  * inject a SYNTHESIZED hierarchy (see buildSynthHierarchyFromChainParams) for a
  * component that lacks a real ui_hierarchy — used in co-run, where loadModuleUi
@@ -7700,6 +7869,16 @@ function enterHierarchyEditorWith(slotIndex, componentKey, hierarchy) {
     invalidateKnobContextCache();
     pendingHierKnobIndex = -1;
     pendingHierKnobDelta = 0;
+
+    /* Preview: the knob grid replaces the list for this component when the
+     * user has opted in. It plans from the same declared contract, so nothing
+     * about entry differs — and paramPagesEnabled() forces the list whenever the
+     * screen reader is on, since a grid has nothing selected to read out. */
+    if (paramPagesEnabled() && !suppressParamPagesOnce) {
+        enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey));
+        return;
+    }
+    suppressParamPagesOnce = false;
 
     hierEditorSlot = slotIndex;
     hierEditorComponent = componentKey;
@@ -7990,6 +8169,7 @@ function exitHierarchyEditor() {
     /* Clear pending knob state to prevent stale overlays */
     pendingHierKnobIndex = -1;
     pendingHierKnobDelta = 0;
+    cameFromParamPages = false;
 
     clearModuleParamShims();
     clearWavZoomStates();
@@ -10615,6 +10795,9 @@ function getMasterFxSettingValue(setting) {
     if (setting.key === "text_preview") {
         return textPreviewGlobal ? "On" : "Off";
     }
+    if (setting.key === "param_view") {
+        return paramViewGlobal === 1 ? "Knobs" : "List";
+    }
     if (setting.key === "filebrowser_enabled") {
         return filebrowserEnabled ? "On" : "Off";
     }
@@ -10811,6 +10994,13 @@ function adjustMasterFxSetting(setting, delta) {
     if (setting.key === "text_preview") {
         setTextPreviewGlobal(!textPreviewGlobal);
         saveTextPreviewConfig();
+        return;
+    }
+
+    if (setting.key === "param_view") {
+        paramViewGlobal = paramViewGlobal === 1 ? 0 : 1;
+        saveParamViewConfig();
+        announce(paramViewGlobal === 1 ? "Param View Knobs" : "Param View List");
         return;
     }
 
@@ -11684,6 +11874,18 @@ function handleSelect() {
                     hierEditorSelectedIdx = 0;
                     loadHierarchyLevel();
                     invalidateKnobContextCache();
+                } else if (cameFromParamPages) {
+                    /* The grid handed this preset browser off because it does
+                     * not draw one itself (see enterHierarchyEditorFromParamPages).
+                     * A committed choice belongs back on the grid, not the
+                     * list's own preset-edit-mode screen (params + swap
+                     * action) — otherwise selecting a preset strands you in
+                     * the list UI with no way back to Knobs. */
+                    const slotIndex = hierEditorSlot;
+                    const componentKey = hierEditorComponent;
+                    cameFromParamPages = false;
+                    exitHierarchyEditor();
+                    enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey));
                 } else {
                     /* No children - enter preset edit mode to show params/swap */
                     hierEditorPresetEditMode = true;
@@ -13380,6 +13582,12 @@ function drawHelpDetail() {
     _ctx.drawScrollableText = (...args) => drawScrollableText(...args);
     _ctx.wrapText = (...args) => wrapText(...args);
 
+    /* Knob-grid view (shadow_ui_param_pages.mjs) */
+    _ctx.evaluateVisibilityCondition = (...args) => evaluateVisibilityCondition(...args);
+    _ctx.openParamEditor = (slot, fullKey, meta) => openParamEditorFromGrid(slot, fullKey, meta);
+    _ctx.isParamModulated = (slot, fullKey) => isHierarchyParamModulated(slot, fullKey);
+    _ctx.isMuteHeld = () => hostMuteHeld;
+
     /* Overtake session state (for tools menu "Resume" indicator) */
     Object.defineProperty(_ctx, 'overtakeModuleLoaded', {
         get() { return overtakeModuleLoaded; }, enumerable: true
@@ -13497,12 +13705,36 @@ function tryResumeSuspendedTool() {
         }
     } catch (e) { /* ignore */ }
     if (!isDoubleTap && !shimHint) return false;
-    if (!lastSuspendedToolId || !suspendedOvertakes[lastSuspendedToolId]) {
-        debugLog("tryResumeSuspendedTool: nothing suspended (lastId=" + lastSuspendedToolId + ")");
-        return false;
+    const gesture = shimHint ? "long-press" : "double-tap";
+
+    /* Resume wins when the last tool is still parked: it keeps the live JS and
+     * DSP state, which a fresh load would throw away. */
+    if (lastSuspendedToolId && suspendedOvertakes[lastSuspendedToolId]) {
+        debugLog("Tools shortcut " + gesture + " → resuming " + lastSuspendedToolId);
+        return resumeOvertakeModule(lastSuspendedToolId);
     }
-    debugLog("Tools shortcut " + (shimHint ? "long-press" : "double-tap") + " → resuming " + lastSuspendedToolId);
-    return resumeOvertakeModule(lastSuspendedToolId);
+
+    /* Nothing parked — relaunch the last tool that was loaded this session.
+     * Interactive tools must go back through startInteractiveTool so their
+     * tool-active flags and file path are re-established.
+     *
+     * Only when nothing is currently loaded: with a module still active the
+     * relaunch would load on top of it without tearing it down (orphaning its
+     * DSP in slot 0). Returning false there falls through to the caller's
+     * exit-then-enterToolsMenu path, which is the pre-existing behaviour. */
+    if (lastLaunchedTool && lastLaunchedTool.module && !overtakeModuleLoaded) {
+        const t = lastLaunchedTool;
+        debugLog("Tools shortcut " + gesture + " → relaunching " + t.kind + " " +
+                 (t.module.id || "(unknown)") + (t.filePath ? " file=" + t.filePath : ""));
+        if (t.kind === "interactive") {
+            startInteractiveTool(t.module, t.filePath);
+            return true;
+        }
+        return loadOvertakeModule(t.module, t.skipOvertake);
+    }
+
+    debugLog("tryResumeSuspendedTool: nothing suspended or previously launched");
+    return false;
 }
 function drawToolsMenu() { _drawToolsMenu(); }
 function drawToolFileBrowser() { _drawToolFileBrowser(); }
@@ -13849,6 +14081,7 @@ globalThis.init = function() {
     loadBrowserPreviewConfig();
     loadPadTypingConfig();
     loadTextPreviewConfig();
+    loadParamViewConfig();
     loadFilebrowserConfig();
 
     /* Legacy: migrate old single master_fx config to slot 1 */
@@ -14069,6 +14302,12 @@ function dispatchCoRunDraw() {
             drawComponentEdit();
             break;
         case VIEWS.HIERARCHY_EDITOR:     drawHierarchyEditor(); break;
+        /* The grid draws grids; every other page kind it plans (preset
+         * browser, items list, mode select, child selector) belongs to the
+         * list editor, which drawParamPages declines by returning false. */
+        case VIEWS.PARAM_PAGES:
+            if (!drawParamPages()) { enterHierarchyEditorFromParamPages(); drawHierarchyEditor(); }
+            break;
         case VIEWS.CANVAS:               drawCanvasPreview(); break;
         case VIEWS.KNOB_EDITOR:          drawKnobEditor(); break;
         case VIEWS.KNOB_PARAM_PICKER:    drawKnobParamPicker(); break;
@@ -14156,6 +14395,8 @@ globalThis.tick = function() {
      * it self-gates on its own pending state (only set while in the browser), so
      * no view guard is needed (and the view guard was unreliable here). */
     tickPresetPreview();
+    /* One staggered param read per frame while the grid is up. */
+    if (view === VIEWS.PARAM_PAGES) tickParamPages();
 
     /* Splash screen on boot */
     if (splashActive) {
@@ -14268,6 +14509,19 @@ globalThis.tick = function() {
                             } else {
                                 debugLog("TOOLS flag: exiting active overtake before menu");
                                 exitOvertakeMode();
+                                /* exitOvertakeMode() only *arms* the exit
+                                 * (overtakeExitPending); it completes on the
+                                 * next VIEWS.OVERTAKE_MODULE tick. We are
+                                 * about to leave that view, so that tick never
+                                 * comes and the flag stays set forever:
+                                 * overtake_mode never drops to 0 (so the C-side
+                                 * never replays Move's LED snapshot), and the
+                                 * next load of ANY overtake module hits the
+                                 * exit branch instead of init(). Drain it here.
+                                 * skipNavigation=true: we want the teardown,
+                                 * not its return-to-Move tail — the
+                                 * enterToolsMenu() below owns navigation. */
+                                completeOvertakeExit(true);
                             }
                         }
                         enterToolsMenu();
@@ -14610,7 +14864,26 @@ globalThis.tick = function() {
                             unloadModuleUi();
                             startInteractiveTool(tool, cmd.file_path);
                         } else {
-                            debugLog("open_tool_cmd: tool not found: " + cmd.tool_id);
+                            /* Fall back to the OVERTAKE list before giving up.
+                             * The two live in different scans — component_type
+                             * "tool" here, "overtake" there — so an overtake
+                             * module could never be opened this way, and the
+                             * command answered "tool not found" for an id that
+                             * plainly exists on disk. That blocks
+                             * pytest-schwung from launching one, which is the
+                             * difference between an unattended UI test run and
+                             * one that needs a person to press a button first. */
+                            const overtakes = scanForOvertakeModules() || [];
+                            const ot = overtakes.find(o => o.id === cmd.tool_id);
+                            if (ot) {
+                                debugLog("open_tool_cmd: " + cmd.tool_id +
+                                         " is an overtake module, loading it");
+                                unloadModuleUi();
+                                loadOvertakeModule(ot);
+                            } else {
+                                debugLog("open_tool_cmd: not found as tool or " +
+                                         "overtake module: " + cmd.tool_id);
+                            }
                         }
                     }
                 } catch (e) {
@@ -14926,6 +15199,12 @@ globalThis.tick = function() {
         case VIEWS.HIERARCHY_EDITOR:
             drawHierarchyEditor();
             break;
+        /* The grid draws grids; every other page kind it plans (preset browser,
+         * items list, mode select, child selector) belongs to the list editor,
+         * which drawParamPages declines by returning false. */
+        case VIEWS.PARAM_PAGES:
+            if (!drawParamPages()) { enterHierarchyEditorFromParamPages(); drawHierarchyEditor(); }
+            break;
         case VIEWS.CANVAS:
             drawCanvasPreview();
             break;
@@ -15009,8 +15288,23 @@ globalThis.tick = function() {
                     flushLedQueue();  /* Drain queued LED clears to SHM */
                     debugLog("OVERTAKE init phase: ledsCleared=" + ledsCleared);
 
-                    /* After LEDs cleared and delay passed, call init */
-                    if (ledsCleared && overtakeInitTicks >= OVERTAKE_INIT_DELAY_TICKS) {
+                    /* The DSP load runs on the shim worker (it used to stall
+                     * the audio thread for ~11.5ms — an audible dropout on
+                     * every module open). init() pushes params the moment it
+                     * runs, and those are dropped if the instance does not
+                     * exist yet, so hold init until the shim reports ready.
+                     * Bounded: after OVERTAKE_DSP_READY_MAX_TICKS we proceed
+                     * anyway rather than hang on a module whose DSP failed. */
+                    let dspReady = true;
+                    if (overtakeInitTicks < OVERTAKE_DSP_READY_MAX_TICKS &&
+                        typeof shadow_get_param === "function") {
+                        try {
+                            dspReady = (shadow_get_param(0, "overtake_dsp:__ready") !== "0");
+                        } catch (e) { dspReady = true; }
+                    }
+
+                    /* After LEDs cleared, delay passed and the DSP is up, call init */
+                    if (ledsCleared && dspReady && overtakeInitTicks >= OVERTAKE_INIT_DELAY_TICKS) {
                         overtakeInitPending = false;
                         ledClearIndex = 0;  /* Reset for next time */
                         debugLog("loadOvertakeModule: init delay complete, calling init()");
@@ -15149,6 +15443,13 @@ globalThis.onMidiMessageInternal = function(data) {
     const status = data[0];
     const d1 = data[1];
     const d2 = data[2];
+
+    /* Knob-grid view consumes the controls it owns. One early-out rather than a
+     * case in each of the per-view switches: the grid's input mapping lives in
+     * shared/param_pages/page_input.mjs and is tested there. */
+    if (view === VIEWS.PARAM_PAGES && paramPagesActive()) {
+        if (handleParamPagesMidi(data)) { needsRedraw = true; return; }
+    }
 
     /* Skip splash on any button press */
     if (splashActive && d2 > 0) {

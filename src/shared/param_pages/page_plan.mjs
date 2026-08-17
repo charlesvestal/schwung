@@ -1,0 +1,456 @@
+/**
+ * page_plan.mjs — turn a module's declared UI contract into an ordered list of
+ * knob pages.
+ *
+ * PURE. No param I/O, no drawing, no globals, no module-level state. Inputs are
+ * plain objects; the caller does every read and write. This is what lets the
+ * same planner serve the native shadow UI (which owns input and commits values)
+ * and a tool module like a sequencer (which owns input and commits to its own
+ * step data for parameter locks). See
+ * docs/plans/2026-07-26-param-pages-audit.md.
+ *
+ * The tree walk follows the rules validated against a 76-module fleet capture:
+ * visit both `params` nav edges and `children` (always, not either/or), no
+ * depth cap, dedupe authored pages by exact key list, `children`-reached levels
+ * are prefix-transparent, orphan sweep at the end so every declared knob is
+ * reachable.
+ *
+ * Portions derived from schwung-movy's hierarchy walk
+ * (c) 2026 megadake, MIT — https://github.com/DimaDake/schwung-movy
+ */
+
+import { hasChildren, childCount } from "./child_key.mjs";
+
+export const KNOBS_PER_PAGE = 8;
+
+/* Page kinds. Only PAGE_KNOBS needs a new renderer; every other kind dispatches
+ * to a screen the shadow UI already draws. */
+export const PAGE_KNOBS  = "knobs";   /* grid of up to 8 turnable params */
+export const PAGE_PRESET = "preset";  /* list_param/count_param/name_param browser */
+export const PAGE_ITEMS  = "items";   /* items_param/select_param runtime list */
+export const PAGE_MODES  = "modes";   /* hierarchy-level mode select (minijv) */
+export const PAGE_CHILD  = "child";   /* child_prefix instance selector */
+
+/* Param types that cannot be driven by turning a knob. They keep their grid
+ * position (the module put them there) but open a fullscreen editor on click,
+ * exactly as the list editor does today. Not a page kind — a cell behaviour. */
+export const OPAQUE_TYPES = new Set(["canvas", "wav_position", "string", "filepath", "file"]);
+
+/* ---------------------------------------------------------------- helpers */
+
+function keyOf(entry) {
+    if (typeof entry === "string") return entry;
+    if (entry && typeof entry === "object" && entry.key) return entry.key;
+    return null;
+}
+
+/* A nav entry points at another level and carries no param of its own. */
+function levelOf(entry) {
+    return (entry && typeof entry === "object" && entry.level) ? entry.level : null;
+}
+
+/* `children` is absent as null, missing, or the literal string "None" — dexed
+ * and every minijv level serialise it that way. */
+function childOf(level) {
+    const c = level && level.children;
+    return (c && c !== "None") ? c : null;
+}
+
+function knobKeys(level) {
+    return ((level && level.knobs) || []).map(keyOf).filter((k) => k !== null);
+}
+
+/* Editable (non-nav) keys a level lists in `params`, in declaration order. */
+function paramKeys(level) {
+    return ((level && level.params) || [])
+        .filter((p) => !levelOf(p))
+        .map(keyOf)
+        .filter((k) => k !== null);
+}
+
+/* 6-char parent tag: one word → first 6 chars, multi-word → first 4 of word one
+ * plus the other words' initials ("Operator 1" → "Oper1"). The 128 px header
+ * also carries the module name, so this has to stay short. */
+function levelNameToPrefix(name) {
+    const words = String(name || "").split(/\s+/).filter(Boolean);
+    if (words.length === 0) return "";
+    if (words.length === 1) return words[0].slice(0, 6);
+    return (words[0].slice(0, 4) + words.slice(1).map((w) => w[0].toUpperCase()).join("")).slice(0, 6);
+}
+
+/* FNV-1a over the declared contract. The page set is rebuilt when this changes:
+ * module swap, an is_loading→ready re-fetch that rewrites the tree (Virus,
+ * minijv expansions), or a mode change. */
+function fingerprintOf(parts) {
+    let h = 0x811c9dc5;
+    const s = JSON.stringify(parts);
+    for (let i = 0; i < s.length; i++) {
+        h ^= s.charCodeAt(i);
+        h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+    }
+    return h.toString(16);
+}
+
+function chunk(arr, size) {
+    const out = [];
+    for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+    return out;
+}
+
+/**
+ * Split into the same number of pages a greedy fill would use, but spread
+ * evenly — 9 keys become 5+4 rather than 8+1.
+ *
+ * Only ever applied to OVERFLOW keys. The authored page must stay exactly
+ * `knobs[0..7]`, because the shim maps the physical knobs to that same array
+ * (buildKnobContext in shadow_ui.js); if the grid's first page disagreed, one
+ * knob would do different things in the list and on the grid.
+ */
+function balancedChunk(arr, size) {
+    if (arr.length <= size) return arr.length ? [arr] : [];
+    const pages = Math.ceil(arr.length / size);
+    const per = Math.ceil(arr.length / pages);
+    return chunk(arr, per);
+}
+
+/* ------------------------------------------------------------------ plan */
+
+/**
+ * @param {object}   o
+ * @param {object}   o.hierarchy    parsed ui_hierarchy (may be null)
+ * @param {Array}    o.chainParams  parsed chain_params (may be null/empty)
+ * @param {string}   [o.mode]       active value of hierarchy.mode_param
+ * @param {Function} [o.visible]    (condition, levelDef) => boolean. Lets the
+ *                                  caller wire the shadow UI's visible_if
+ *                                  evaluator without the planner reading params.
+ *                                  Default: everything visible (fail-open, which
+ *                                  is what the native evaluator does too).
+ * @returns {{pages: Array, fingerprint: string, warnings: string[]}}
+ */
+export function planPages({ hierarchy, chainParams, mode, visible } = {}) {
+    const warnings = [];
+    /* Keys any visible_if condition reads. Returned so the caller can re-plan
+     * when one of THEM changes — a condition is driven by a param VALUE, which
+     * moves without the declared contract moving, so the fingerprint cannot see
+     * it. Without this a level's params never appear or disappear in response to
+     * the switch that gates them. */
+    const conditionKeys = new Set();
+    const noteCondition = (cond) => {
+        if (!cond || typeof cond !== "object") return;
+        const k = cond.param || cond.key || cond.param_key;
+        if (k) conditionKeys.add(String(k));
+    };
+    const isVisible = (cond, lvl) => {
+        noteCondition(cond);
+        return cond ? (visible ? !!visible(cond, lvl) : true) : true;
+    };
+    /* The fingerprint covers chain_params CONTENT, not just its length. A
+     * module that finishes loading and republishes real enum options in place
+     * (osirus swaps rom_index from ["(loading)"] to the Virus models) changes no
+     * count and no level — hashing the length alone would call that unchanged
+     * and leave the placeholder on screen for the rest of the session. */
+    const fingerprint = fingerprintOf([hierarchy || null, chainParams || null, mode || null]);
+
+    const levels = (hierarchy && hierarchy.levels && typeof hierarchy.levels === "object")
+        ? hierarchy.levels : null;
+
+    /* No hierarchy at all — 4 modules in the fleet (branchage, belt-in,
+     * po32-drum, smack-in) publish chain_params and nothing else. Paginate the
+     * declared params so they are not a blank screen. */
+    if (!levels) {
+        const keys = (chainParams || []).map((p) => p && p.key).filter(Boolean);
+        if (keys.length === 0) return { pages: [], fingerprint, warnings: ["no ui_hierarchy and no chain_params"], conditionKeys: new Set() };
+        warnings.push("no ui_hierarchy — paginated from chain_params");
+        const pages = chunk(keys, KNOBS_PER_PAGE).map((ks, i) => ({
+            kind: PAGE_KNOBS, name: i === 0 ? "Params" : `Params - ${i + 1}`,
+            level: null, keys: ks, authored: false,
+        }));
+        return { pages, fingerprint, warnings };
+    }
+
+    for (const lvl of Object.values(levels)) {
+        if (!lvl || typeof lvl !== "object") continue;
+        noteCondition(lvl.visible_if);
+        for (const p of (lvl.params || [])) {
+            if (p && typeof p === "object") noteCondition(p.visible_if);
+        }
+    }
+
+    const pages = [];
+
+    /* A level's display name usually lives on the nav entry that points at it,
+     * not on the level itself, so collect labels from every level's nav
+     * entries. Nav label beats the level's own `label`: 24 levels across
+     * dexed/linein/minijv/obxd/sf2/sfz/nam disagree, and the nav label is the
+     * one users already see. */
+    const navLabel = Object.create(null);
+    for (const lvl of Object.values(levels)) {
+        for (const p of ((lvl && lvl.params) || [])) {
+            const target = levelOf(p);
+            if (target && p.label) navLabel[target] = p.label;
+        }
+    }
+    /* A level key is an internal identifier ("root", "patch_main", "osc1"); it
+     * is only a last resort for a page title, and never raw — "osc1" reads as
+     * "Osc1", not as a variable name. */
+    const prettify = (key) => String(key)
+        .replace(/[_-]+/g, " ")
+        .replace(/\b[a-z]/g, (c) => c.toUpperCase());
+    const declaredName = (key, lvl) => (lvl && lvl.name) || navLabel[key] || (lvl && lvl.label) || null;
+    const nameOf = (key, lvl) => declaredName(key, lvl) || prettify(key);
+
+    /**
+     * Allocate a page name, appending " - N" for the smallest free N when the
+     * base is taken. EVERY page kind goes through this, not just grids: minijv
+     * declares a preset browser in both its patch and performance modes, and two
+     * sections both called "Presets" is unusable in the picker — and worse,
+     * reanchor() matches by name after a rebuild and would land on the wrong one.
+     *
+     * It serves two jobs with one mechanism: numbering a level's continuation
+     * pages, and disambiguating genuine collisions —
+     * freak and granny each declare a child level called "main" alongside
+     * root's own "Main" page, with different knobs, so both must appear and
+     * neither may be silently renamed away.
+     *
+     * A page name is the only handle the user has on a 76-page module, and it
+     * is what reanchor() matches on after a rebuild, so uniqueness is not
+     * cosmetic.
+     */
+    const usedNames = new Set();
+    const claimName = (base) => {
+        if (!usedNames.has(base)) { usedNames.add(base); return base; }
+        for (let n = 2; ; n++) {
+            const candidate = `${base} - ${n}`;
+            if (!usedNames.has(candidate)) { usedNames.add(candidate); return candidate; }
+        }
+    };
+
+    /* Mode select (minijv only in the fleet): with `modes` present the level
+     * names ARE the mode names, so the active mode picks the walk root. */
+    let rootKey = "root";
+    const modes = Array.isArray(hierarchy.modes) ? hierarchy.modes : null;
+    if (modes && modes.length > 0) {
+        pages.push({
+            kind: PAGE_MODES, name: claimName("Mode"), level: null,
+            modes: modes.slice(), modeParam: hierarchy.mode_param || "mode",
+        });
+        const active = (mode && modes.includes(mode)) ? mode : modes[0];
+        rootKey = levels[active] ? active : "root";
+        if (!levels[active]) warnings.push(`mode "${active}" has no matching level`);
+    }
+    if (!levels[rootKey]) {
+        const first = Object.keys(levels)[0];
+        if (!first) return { pages, fingerprint, warnings: warnings.concat("no levels") };
+        warnings.push(`no "${rootKey}" level — starting at "${first}"`);
+        rootKey = first;
+    }
+
+    /* Authored pages (a level's own knobs[]) dedupe by exact key list: 16
+     * modules publish a `children` alias level that re-lists root's knobs, which
+     * would otherwise render as a second identical page. Verified across the
+     * fleet that no module has two genuinely distinct pages sharing a key list. */
+    const renderedKnobSigs = new Set();
+    const emitted = new Set();   /* every key placed on a grid page so far */
+
+    /* Keys a level uses to drive its OWN page kind — the preset index, the item
+     * selector, the mode. They are reachable through that page and must not also
+     * appear as a knob: browsing 2427 presets by encoder is the thing the preset
+     * page exists to avoid. */
+    const selectorKeys = new Set();
+    for (const lvl of Object.values(levels)) {
+        if (!lvl || typeof lvl !== "object") continue;
+        for (const f of ["list_param", "count_param", "name_param", "items_param", "select_param"]) {
+            if (lvl[f]) selectorKeys.add(lvl[f]);
+        }
+    }
+    if (hierarchy.mode_param) selectorKeys.add(hierarchy.mode_param);
+    const visited = new Set();
+
+    function emitLevel(levelKey, prefix) {
+        const lvl = levels[levelKey];
+        if (!lvl) return;
+        if (lvl.visible_if && !isVisible(lvl.visible_if, lvl)) return;
+
+        /* The walk root's grid page is always "Main", even when the level
+         * declares a label. 16 modules would otherwise open on a page called
+         * "Patch" / "Console" / "BOOM"; one consistent name for "where you land"
+         * beats each module's own word for it. */
+        const isRoot = levelKey === rootKey;
+        const base = isRoot ? "Main" : nameOf(levelKey, lvl);
+        const title = prefix ? `${prefix}/${base}` : base;
+
+        /* Preset browser first — decided 2026-07-26. A level is routinely both
+         * "the Main knob page" and "the preset browser" (obxd/root has 8 knobs,
+         * 13 nav entries and the preset triple), and a knob is the wrong control
+         * for minijv's 2427 or surge's 675 presets. */
+        if (lvl.list_param && lvl.count_param) {
+            pages.push({
+                /* "Presets", not the level's name — the preset browser is a
+                 * different thing from the knob page that shares its level. */
+                kind: PAGE_PRESET,
+                name: claimName(declaredName(levelKey, lvl) && !isRoot ? nameOf(levelKey, lvl) : "Presets"),
+                level: levelKey,
+                listParam: lvl.list_param, countParam: lvl.count_param,
+                nameParam: lvl.name_param || "preset_name",
+            });
+        }
+
+        /* Runtime-populated selection list (soundfonts, NAM models, JV
+         * expansions): the page exists statically, its contents do not. */
+        if (lvl.items_param) {
+            pages.push({
+                kind: PAGE_ITEMS, name: claimName(base), level: levelKey,
+                itemsParam: lvl.items_param, selectParam: lvl.select_param || null,
+            });
+        }
+
+        /* Repeated elements declared once and multiplied by the host. The
+         * level object travels with the page so the caller can resolve concrete
+         * keys without re-reading the hierarchy (see child_key.mjs). */
+        if (hasChildren(lvl)) {
+            pages.push({
+                kind: PAGE_CHILD, name: claimName(base), level: levelKey,
+                childCount: childCount(lvl),
+                childLabel: lvl.child_label || "Item",
+                childLevel: lvl,
+            });
+        }
+
+        /* Grid pages. knobs[] is the author's chosen eight, NOT their parameter
+         * set: fleet-wide, 879 keys across 57 modules are listed in params[] and
+         * on no knob. Rendering knobs[] alone would hide 28% of declared params
+         * relative to the list editor, so the level's remaining editable params
+         * follow its authored knobs as continuation pages. */
+        const authored = knobKeys(lvl).filter((k) => !isHiddenParam(lvl, k, isVisible));
+        /* Overflow keys are filtered where authored knobs are not: a knob the
+         * author placed is intent and is honoured whatever it is called, but a
+         * key we are pulling in from params[] has to earn its cell.
+         *
+         *  - a selector param belongs to its own page kind, not a knob
+         *  - `ui_`-prefixed keys are module UI state (ui_current_pad,
+         *    ui_preset_path), not musical parameters — a naming convention the
+         *    ecosystem already uses, and one Movy formalised independently
+         *  - a key already placed elsewhere is not worth a second cell */
+        const extra = paramKeys(lvl).filter((k) =>
+            !authored.includes(k) &&
+            !isHiddenParam(lvl, k, isVisible) &&
+            !selectorKeys.has(k) &&
+            !/^ui_/.test(k) &&
+            !emitted.has(k));
+
+        /* Dedupe applies to the AUTHORED key list only. 16 modules publish a
+         * `children` alias level that re-lists root's knobs; suppressing the
+         * whole level would also drop the extra params[] keys those aliases
+         * carry (genera's scale/gen_mode, mrdrums' pad_* aliases — 10 modules,
+         * 50 keys), which would silently reintroduce the §1 regression. So a
+         * duplicate contributes its unseen extras and nothing else. */
+        const sig = authored.join(" ");
+        const dupAuthored = authored.length > 0 && renderedKnobSigs.has(sig);
+        if (!dupAuthored && authored.length > 0) renderedKnobSigs.add(sig);
+
+        const authoredKeys = dupAuthored ? [] : authored;
+        const extraKeys = extra;
+
+        /* Authored keys keep their exact 8-per-page grouping (see
+         * balancedChunk); the remainder is spread evenly so a level with nine
+         * keys yields 8 + 1 rather than an orphan page holding one control —
+         * and a level with seventeen yields 8 + 5 + 4 rather than 8 + 8 + 1. */
+        const parts = chunk(authoredKeys, KNOBS_PER_PAGE);
+        const spill = authoredKeys.length % KNOBS_PER_PAGE;
+        if (spill > 0 && extraKeys.length > 0) {
+            /* A partly-filled authored page absorbs overflow up to 8. */
+            const room = KNOBS_PER_PAGE - spill;
+            const take = extraKeys.splice(0, room);
+            parts[parts.length - 1] = parts[parts.length - 1].concat(take);
+        }
+        for (const p of balancedChunk(extraKeys, KNOBS_PER_PAGE)) parts.push(p);
+
+        if (parts.length > 0) {
+            for (const p of parts) for (const k of p) emitted.add(k);
+            parts.forEach((keys) => {
+                pages.push({
+                    kind: PAGE_KNOBS,
+                    name: claimName(title),
+                    level: levelKey, keys,
+                    /* true when every key on this page came from knobs[] — i.e.
+                     * the author placed it there. Pages built from params[] are
+                     * false, including a page that mixes the two. */
+                    authored: keys.every((k) => authored.includes(k)),
+                });
+            });
+        }
+    }
+
+    /* A param entry can carry its own visible_if. */
+    function isHiddenParam(lvl, key, vis) {
+        for (const p of ((lvl && lvl.params) || [])) {
+            if (keyOf(p) === key && p && p.visible_if) return !vis(p.visible_if, lvl);
+        }
+        return false;
+    }
+
+    /* `transparent` marks a level reached through a `children` edge: it stands
+     * in for its parent's menu rather than being a category, so it neither takes
+     * nor contributes a name prefix. Without this every moog page would read
+     * "main/Oscillator 1". A `params` nav edge DOES contribute one — that is
+     * what keeps minijv's four "Filter" pages apart as Tone 1/Filter etc. */
+    function visit(levelKey, prefix, transparent) {
+        if (visited.has(levelKey)) return;
+        visited.add(levelKey);
+        const lvl = levels[levelKey];
+        if (!lvl) return;
+        if (lvl.visible_if && !isVisible(lvl.visible_if, lvl)) return;
+
+        emitLevel(levelKey, prefix);
+
+        /* Root's children carry no prefix: they are the module's top-level
+         * categories, so "Filter" beats "Root/Filter" — and the header is only
+         * 128 px wide, shared with the module name. Prefixes start one level
+         * down, which is exactly where they earn their keep (minijv would
+         * otherwise show four pages called "Filter").
+         *
+         * A level declaring no knobs of its own is a MENU, not a category — it
+         * exists to point at other levels. It contributes no prefix either, so
+         * minijv's tone_selector ("Edit Tones") gives "Tone 1" rather than
+         * "EditT/Tone 1", while tone1 itself still prefixes its children as
+         * "Tone1/Wave". */
+        const isMenuLevel = knobKeys(lvl).length === 0 && !lvl.items_param;
+        const childPrefix = (levelKey === rootKey || isMenuLevel) ? prefix
+            : transparent ? prefix
+            : levelNameToPrefix(nameOf(levelKey, lvl));
+        /* Both edges, always: a level with knobs can still own sub-levels
+         * (dexed's Operators, forge's Voice, minijv's tone1). */
+        for (const p of ((lvl.params) || [])) {
+            const target = levelOf(p);
+            if (target) visit(target, childPrefix, false);
+        }
+        const kid = childOf(lvl);
+        if (kid) visit(kid, prefix, true);
+    }
+
+    /* Root's own knobs become the first grid page, named for the root level. */
+    visit(rootKey, null, false);
+
+    /* Levels no edge reaches (minijv's performance/perf_main/part_selector)
+     * would otherwise be permanently invisible. */
+    for (const key of Object.keys(levels)) {
+        if (visited.has(key)) continue;
+        const lvl = levels[key];
+        if (knobKeys(lvl).length === 0 && paramKeys(lvl).length === 0 && !lvl.items_param && !lvl.list_param) continue;
+        visit(key, null, false);
+    }
+
+    return { pages, fingerprint, warnings, conditionKeys };
+}
+
+/**
+ * Physical knob (0-7) → key on the given grid page, or null for an empty slot.
+ * Exported so a caller that owns input (the shadow UI, or a sequencer capturing
+ * parameter locks) can route encoder events without the planner touching MIDI.
+ */
+export function pageSlotKeys(page) {
+    const out = new Array(KNOBS_PER_PAGE).fill(null);
+    if (!page || page.kind !== PAGE_KNOBS) return out;
+    for (let i = 0; i < Math.min(page.keys.length, KNOBS_PER_PAGE); i++) out[i] = page.keys[i];
+    return out;
+}
