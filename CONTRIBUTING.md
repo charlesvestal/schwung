@@ -72,3 +72,18 @@ prefixes, `.mjs` shared modules vs `.js` UI, lowercase-hyphenated module IDs,
 `lowercase_underscored` param keys). New modules go through the module-development
 guide in [docs/MODULES.md](docs/MODULES.md) and must ship a `help.json` plus
 screen-reader support (`src/shared/screen_reader.mjs`).
+
+## Contribution provenance
+
+Please note in your PR description which AI coding tools you used, if any. Most
+of Schwung is written with AI assistance, so this isn't a mark against you — the
+disclosure just helps review.
+
+One exception: **I don't accept contributions developed with Grok.** xAI's model
+has a documented record of generating antisemitic and hateful content — most
+prominently in July 2025 — as a recurring result of how its makers have chosen
+to build and tune it. I'd rather this project not route work or legitimacy in
+that direction. That's a line I've drawn for Schwung, not a judgment of what you
+use elsewhere.
+
+Maintainers may decline any contribution at their discretion.
