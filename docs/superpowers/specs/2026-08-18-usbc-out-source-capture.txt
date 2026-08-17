@@ -516,3 +516,27 @@ deferred until MIDI_OUT had a contiguous free run during Move's boot LED traffic
    Confirmed by the user. Move's screen read "Mic" at the same time, which
    makes the cosmetic mismatch in (5) the only remaining gap — the audio path
    itself is correct.
+
+=== SETTINGS ROW VERIFICATION (2026-08-18) ===
+
+Global Settings -> Audio -> USB-C Persist (default On), annotated with the
+source last seen on the wire, e.g. "On (Main Out)".
+
+ON path, stored source = Main Out, after a power cycle:
+  Audible: mic for a few seconds, then Main Out takes over.
+  Wire: replay pair emitted as before.
+
+OFF path, stored source = Main Out, after a power cycle:
+  Audible: stays on mic, no switch.
+  Wire: 0 occurrences of "37 12 02" and 0 of "37 14 01"; 4 occurrences of
+  Move's own "37 14 00". Nothing emitted by Schwung at all.
+  shadow_config.json: "usbc_out_persist": false
+
+Note: usbc_out_state remained 1 while persistence was off — turning the restore
+off does not forget the last observed source, so switching it back on resumes
+Main Out rather than starting blank.
+
+UX note: the restore is audible as a switch a few seconds into boot, because it
+waits for Move's firmware to come up and then for a free window in MIDI_OUT.
+Anyone recording from a cold boot captures a few seconds of mic first.
+Documented in the user manual.
