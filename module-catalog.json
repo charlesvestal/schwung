@@ -1232,6 +1232,18 @@
       "default_branch": "main",
       "asset_name": "groovebank-module.tar.gz",
       "min_host_version": "0.11.5"
+    },
+    {
+      "id": "rrverb10",
+      "name": "RRVerb-10",
+      "description": "Chip-level emulation of an 80s Micro Rack digital reverb: rooms, halls, plates, multi-tap delay, reverse and gate",
+      "author": "Sergey V. Mikayev (MUNT gate-array emulation) · giulioz (ROM research) · port: legsmechanical",
+      "component_type": "audio_fx",
+      "github_repo": "legsmechanical/schwung-rrverb10",
+      "default_branch": "main",
+      "asset_name": "rrverb10-module.tar.gz",
+      "min_host_version": "0.9.16",
+      "requires": "16 KB program ROM dump (place in module's roms/ folder as rrv10.bin)"
     }
   ]
 }
