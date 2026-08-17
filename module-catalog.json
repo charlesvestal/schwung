@@ -1246,6 +1246,18 @@
       "requires": "16 KB program ROM dump (place in module's roms/ folder as rrv10.bin)"
     },
     {
+      "id": "norns",
+      "name": "Norns",
+      "description": "Monome Norns sound computer on Move with Lua scripts, SuperCollider engines, Softcut, Maiden, MIDI keys, and virtual Grid controls",
+      "author": "DJ Hard Rich",
+      "component_type": "tool",
+      "github_repo": "djhardrich/schwung-norns",
+      "default_branch": "main",
+      "asset_name": "norns-module.tar.gz",
+      "min_host_version": "0.11.6",
+      "requires": "Requires RNBO Takeover and a one-time Debian chroot/root bootstrap. After installing, run: ssh root@move.local 'sh /data/UserData/schwung/modules/tools/norns/bootstrap-norns.sh'. See the repository README."
+    },
+    {
       "id": "chord-finder",
       "name": "Chord Finder",
       "description": "Scale-aware chord progression finder with 16 ranked chord choices, root-driven revoicing, a piano-note display, and eight-slot MIDI loop capture.",
