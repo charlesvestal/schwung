@@ -1246,6 +1246,17 @@
       "requires": "16 KB program ROM dump (place in module's roms/ folder as rrv10.bin)"
     },
     {
+      "id": "9w9",
+      "name": "9W9",
+      "description": "TR-909 style drum machine. Circuit-modelled kick (sub/tube/drift), snare, toms, rim and clap; sampled hats and cymbals. Per-voice and master drive/distortion, RD-9 style pad editor, remote web panel, Movy template.",
+      "author": "athousanddetails",
+      "component_type": "sound_generator",
+      "github_repo": "athousanddetails/schwung-9W9",
+      "default_branch": "main",
+      "asset_name": "9w9-module.tar.gz",
+      "min_host_version": "0.11.6"
+    },
+    {
       "id": "chord-finder",
       "name": "Chord Finder",
       "description": "Scale-aware chord progression finder with 16 ranked chord choices, root-driven revoicing, a piano-note display, and eight-slot MIDI loop capture.",
