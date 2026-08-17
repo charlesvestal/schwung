@@ -3057,6 +3057,46 @@ function invokeModuleOnUnload(callbacks, moduleId) {
  * nothing on resume simply omits it.
  *
  * Wrapped in try/catch so a buggy module can't break the resume path. */
+/* Every gesture that starts or resumes an overtake module holds Shift
+ * (Shift+Vol+jog click to launch, Shift+Vol+Step13 / Shift+long-press to
+ * resume). The release lands during the blackout when the module is not yet
+ * receiving MIDI, so it is discarded and both the host and the module stay
+ * latched in shift-mode for the whole session — issue #191.
+ *
+ * It does not present as one bug. In timncox's module it showed up as a knob
+ * editing a base value instead of writing a parameter lock, a pad loading
+ * machine +21, and the slot pad opening the sample browser: three unrelated
+ * hardware reports, one cause.
+ *
+ * loadOvertakeModule already clears hostShiftHeld, but too early — the stale
+ * state arrives afterwards, once MIDI starts flowing. So repair it at the
+ * point the blackout actually ends: clear the host flag and synthesise the
+ * release the module never got.
+ *
+ * Width of the window is the module's own init(): ~300ms for a small module,
+ * measured at ~6s for a moderate one, which is why this reproduces reliably
+ * for some modules and never for others.
+ *
+ * Unconditional by design. A Shift-up delivered to a module that already
+ * thinks Shift is up is a no-op, whereas guessing from the shim's own
+ * shift_held is not safe here — shadow_ui tracks Shift locally precisely
+ * because the shim's tracking does not hold up in overtake mode. The cost of
+ * being wrong is that someone still physically holding Shift through init has
+ * to re-press it; the cost of not doing it is a latched session. */
+function repairSwallowedShiftRelease(reason) {
+    hostShiftHeld = false;
+    hostVolumeKnobTouched = false;
+    if (!overtakeModuleCallbacks || !overtakeModuleCallbacks.onMidiMessageInternal) return;
+    try {
+        runToolCallback(function() {
+            overtakeModuleCallbacks.onMidiMessageInternal([0xB0, 49, 0]);  /* CC 49 = Shift, released */
+        });
+        debugLog("repairSwallowedShiftRelease(" + reason + "): synthesised Shift-up");
+    } catch (e) {
+        debugLog("repairSwallowedShiftRelease(" + reason + ") threw: " + e);
+    }
+}
+
 function invokeModuleOnResume(callbacks, moduleId) {
     if (callbacks && typeof callbacks.onResume === "function") {
         try {
@@ -3355,28 +3395,9 @@ function resumeOvertakeModule(moduleId) {
     setView(VIEWS.OVERTAKE_MODULE);
     needsRedraw = true;
 
-    /* Clear held-modifier state, the way loadOvertakeModule does on a fresh
-     * load. The resume gesture is Shift+Vol+Step13 / Shift+long-press, so
-     * Shift is physically down at this instant and its release lands after
-     * we return — leaving the host latched in shift-mode. */
-    hostShiftHeld = false;
-    hostVolumeKnobTouched = false;
-
-    /* The module's OWN shift flag is stale for the same reason, and worse:
-     * init() is deliberately not re-run on resume, so nothing resets it. It
-     * was parked while the user released Shift from the previous session, so
-     * that release was never delivered. Synthesise one. Sent before
-     * onResume() so a module that tracks its own modifiers can still override
-     * in the hook. */
-    if (overtakeModuleCallbacks && overtakeModuleCallbacks.onMidiMessageInternal) {
-        try {
-            runToolCallback(function() {
-                overtakeModuleCallbacks.onMidiMessageInternal([0xB0, 49, 0]);  /* Shift up */
-            });
-        } catch (e) {
-            debugLog("resumeOvertakeModule: synthetic shift-off threw: " + e);
-        }
-    }
+    /* Sent before onResume() so a module that tracks its own modifiers can
+     * still override in the hook. */
+    repairSwallowedShiftRelease("resume");
 
     /* Fire the module's onResume() hook (init() is NOT re-run on resume).
      * Called after the full callback / LED-queue / shim restore above so
@@ -15312,6 +15333,7 @@ globalThis.tick = function() {
                             try {
                                 overtakeModuleCallbacks.init();
                                 debugLog("loadOvertakeModule: init() returned successfully");
+                                repairSwallowedShiftRelease("launch");
                             } catch (e) {
                                 debugLog("loadOvertakeModule: init() threw exception: " + e);
                                 /* Exit overtake on init error */
