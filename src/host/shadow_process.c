@@ -13,6 +13,7 @@
 #include <pthread.h>
 #include <sys/wait.h>
 #include <sched.h>
+#include <time.h>
 #include "shadow_process.h"
 #include "shadow_resample.h"
 #include "shadow_link_audio.h"
@@ -128,21 +129,76 @@ static void shadow_ui_reap(void) {
     if (shadow_ui_pid <= 0) return;
     int status = 0;
     pid_t res = waitpid(shadow_ui_pid, &status, WNOHANG);
-    if (res == shadow_ui_pid) {
+    /* ECHILD = not our child any more (already reaped elsewhere) — either way
+     * the process is gone and the cached pid must not keep looking "started". */
+    if (res == shadow_ui_pid || (res < 0 && errno == ECHILD)) {
         shadow_ui_pid = -1;
         shadow_ui_started = 0;
     }
 }
 
+/* Relaunch backoff. shadow_ui is respawned from the SPI path, so a child that
+ * dies immediately on startup (bad JS, missing module) would otherwise be
+ * forked ~1.4x/sec forever. After SHADOW_UI_MAX_RAPID_RELAUNCH consecutive
+ * deaths inside SHADOW_UI_RAPID_WINDOW_SEC we stop trying; any launch that
+ * survives the window resets the counter, and an explicit user request
+ * (shortcut press) clears it via launch_shadow_ui_reset_backoff(). */
+#define SHADOW_UI_RAPID_WINDOW_SEC   5
+#define SHADOW_UI_MAX_RAPID_RELAUNCH 5
+static int shadow_ui_rapid_relaunches = 0;
+static time_t shadow_ui_last_launch_sec = 0;
+static int shadow_ui_backoff_active = 0;
+
+void launch_shadow_ui_reset_backoff(void) {
+    shadow_ui_rapid_relaunches = 0;
+    shadow_ui_backoff_active = 0;
+}
+
+int shadow_ui_relaunch_backoff_active(void) {
+    return shadow_ui_backoff_active;
+}
+
 void launch_shadow_ui(void) {
-    if (shadow_ui_started && shadow_ui_pid > 0) return;
+    /* Reap BEFORE the started/pid early-out. A dead shadow_ui leaves
+     * shadow_ui_started == 1 with a still-nonzero pid, so checking first meant
+     * the guard returned before the reap that would have cleared it — the
+     * child stayed a zombie and was never respawned until MoveOriginal
+     * restarted. waitpid(WNOHANG) is a bare syscall with no file I/O, so it is
+     * safe to run on the SPI path every call; shadow_ui_refresh_pid() below
+     * reads /proc and stays behind the early-out, off the steady-state path. */
     shadow_ui_reap();
+    if (shadow_ui_started && shadow_ui_pid > 0) return;
+
+    /* Gave up relaunching: return on the cheap syscall alone. Everything below
+     * touches the filesystem (/proc, the pid file, access()), and this is the
+     * SPI path — the give-up state must not pay that cost on every call. */
+    if (shadow_ui_backoff_active) return;
+
     shadow_ui_refresh_pid();
     if (shadow_ui_started && shadow_ui_pid > 0) return;
+
+    /* Count deaths that happen inside the rapid window; a child that outlives
+     * it is treated as healthy and clears the counter. */
+    struct timespec now_ts;
+    clock_gettime(CLOCK_MONOTONIC, &now_ts);
+    if (shadow_ui_last_launch_sec != 0 &&
+        (now_ts.tv_sec - shadow_ui_last_launch_sec) < SHADOW_UI_RAPID_WINDOW_SEC) {
+        shadow_ui_rapid_relaunches++;
+    } else {
+        shadow_ui_rapid_relaunches = 0;
+    }
+    if (shadow_ui_rapid_relaunches >= SHADOW_UI_MAX_RAPID_RELAUNCH) {
+        /* Deliberately silent: unified_log() is banned here. The state is
+         * exposed via shadow_ui_relaunch_backoff_active() for off-path callers. */
+        shadow_ui_backoff_active = 1;
+        return;
+    }
+
     if (access("/data/UserData/schwung/shadow/shadow_ui", X_OK) != 0) {
         return;
     }
 
+    shadow_ui_last_launch_sec = now_ts.tv_sec;
     int pid = fork();
     if (pid < 0) {
         return;

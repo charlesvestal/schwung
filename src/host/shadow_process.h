@@ -39,6 +39,15 @@ void process_init(const process_host_t *host);
 /* Shadow UI process management */
 void launch_shadow_ui(void);
 
+/* Clear the rapid-relaunch backoff. Call when the user explicitly asks for the
+ * shadow UI (shortcut press), so an earlier crash loop doesn't leave it
+ * permanently unavailable. */
+void launch_shadow_ui_reset_backoff(void);
+
+/* True once launch_shadow_ui() has stopped relaunching a repeatedly-dying
+ * shadow_ui. Read off the SPI path (the launcher itself cannot log). */
+int shadow_ui_relaunch_backoff_active(void);
+
 /* Link subscriber process management */
 void launch_link_subscriber(void);
 void start_link_sub_monitor(void);
