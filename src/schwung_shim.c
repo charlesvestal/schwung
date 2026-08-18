@@ -62,6 +62,7 @@
 #include "host/shadow_state.h"
 #include "host/shadow_xmos_audio.h"
 #include "host/shadow_midi.h"
+#include "host/shadow_midi_filter.h"
 #include "host/shadow_shm_util.h"
 
 /* Debug flags - set to 1 to enable various debug logging */
@@ -2916,13 +2917,20 @@ static uint64_t last_speech_time_ms = 0;  /* Rate limiting for TTS */
 static inline void shadow_ui_midi_publish(uint8_t head, uint8_t status,
                                           uint8_t d1, uint8_t d2) {
     if (head == 0 || !shadow_ui_midi_shm || !shadow_control) return;
-    /* Drop misaligned/garbage VOICE-message slots. head = cable<<4 | CIN; a
-     * channel-voice (CIN 0x08-0x0E) or single-byte system (0x0F) message always
-     * carries a status byte >= 0x80, so a sub-0x80 byte there is a torn/stale
-     * read of the unfiltered hardware MIDI_IN buffer — observed flooding overtake
-     * tools with status=0 events during co-run. SysEx CINs (0x04-0x07)
-     * legitimately carry data bytes < 0x80, so they are NOT subject to this. */
-    if ((head & 0x0F) >= 0x08 && !(status & 0x80)) return;
+    /* Drop misaligned/garbage slots read out of the unfiltered hardware
+     * MIDI_IN buffer. That buffer is never cleared wholesale, so consumed
+     * slots keep their stale bytes and are re-scanned every SPI frame.
+     *
+     * The original guard here covered only voice CINs (>= 0x08, status must
+     * be >= 0x80) and deliberately exempted SysEx CINs 0x04-0x07, whose data
+     * bytes are legitimately < 0x80. But overtake mode widens the scan to
+     * accept exactly that SysEx range (see the post-ioctl forward loop), so a
+     * stale slot whose CIN nibble landed in 0x04-0x07 with a zeroed payload
+     * sailed straight through and was dispatched into JS as status=0 d1=0
+     * d2=0 — ~10/s, flooding overtake tools and the debug log. A real SysEx
+     * packet always carries at least one nonzero byte, so the all-zero case
+     * is now rejected too. See src/host/shadow_midi_filter.c. */
+    if (!shadow_midi_forwardable(head, status, d1, d2)) return;
     for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
         if (__atomic_load_n(&shadow_ui_midi_shm[slot], __ATOMIC_ACQUIRE) == 0) {
             shadow_ui_midi_shm[slot + 1] = status;

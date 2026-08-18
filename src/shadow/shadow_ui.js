@@ -12,6 +12,14 @@ function debugLog(msg) {
     unifiedLog('shadow', msg);
 }
 
+/* Per-event MIDI tracing in overtake mode. Off unless
+ * /data/UserData/schwung/overtake_midi_log_on exists — it emits two lines for
+ * every MIDI event while an overtake tool is up, which under a knob sweep is
+ * hundreds of lines a second. Read once at load; touch the file and restart
+ * shadow_ui to enable. */
+const OVERTAKE_MIDI_LOG = (typeof host_file_exists === "function") &&
+    host_file_exists("/data/UserData/schwung/overtake_midi_log_on");
+
 /* Log at startup */
 debugLog("shadow_ui.js loaded");
 
@@ -15594,7 +15602,8 @@ globalThis.onMidiMessageInternal = function(data) {
     }
 
     /* Debug: log all MIDI when in overtake mode to diagnose escape issues */
-    if (view === VIEWS.OVERTAKE_MODULE || view === VIEWS.OVERTAKE_MENU) {
+    if (OVERTAKE_MIDI_LOG &&
+        (view === VIEWS.OVERTAKE_MODULE || view === VIEWS.OVERTAKE_MENU)) {
         debugLog(`MIDI_IN: view=${view} status=${status} d1=${d1} d2=${d2} loaded=${overtakeModuleLoaded} callbacks=${!!overtakeModuleCallbacks}`);
     }
 
@@ -15688,7 +15697,9 @@ globalThis.onMidiMessageInternal = function(data) {
         }
 
         /* Debug: log key state */
-        debugLog(`OVERTAKE MIDI: status=${status} d1=${d1} d2=${d2} hostShift=${hostShiftHeld} volTouch=${hostVolumeKnobTouched}`);
+        if (OVERTAKE_MIDI_LOG) {
+            debugLog(`OVERTAKE MIDI: status=${status} d1=${d1} d2=${d2} hostShift=${hostShiftHeld} volTouch=${hostVolumeKnobTouched}`);
+        }
 
         /* HOST-LEVEL ESCAPE: Shift+Vol+Jog Click always exits overtake mode
          * This runs BEFORE passing MIDI to the module, ensuring escape always works */
