@@ -61,6 +61,8 @@ extern volatile int shim_jack_persist;
 #define SHIM_EVT_SKIPBACK_SAVE      6  /* spawn the detached skipback writer */
 #define SHIM_EVT_SKIPBACK_RESIZE    7  /* realloc the skipback ring */
 #define SHIM_EVT_PREVIEW_PLAY       8  /* read preview cmd path, open + mmap */
+#define SHIM_EVT_OVERTAKE_DSP_LOAD  9  /* dlopen + create_instance for an overtake module */
+#define SHIM_EVT_OVERTAKE_DSP_FREE  10 /* destroy_instance + dlclose a retired overtake module */
 
 void shim_worker_post(uint8_t evt);
 
@@ -74,6 +76,8 @@ typedef struct {
     void (*skipback_save)(void);
     void (*skipback_resize)(void);
     void (*preview_play_pending)(void);
+    void (*overtake_dsp_load_pending)(void);
+    void (*overtake_dsp_free_pending)(void);
 } shim_worker_hooks_t;
 
 void shim_worker_set_hooks(const shim_worker_hooks_t *hooks);
