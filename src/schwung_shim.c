@@ -4244,6 +4244,42 @@ static int shim_handle_param_special(uint8_t req_type, uint32_t req_id) {
             }
             return 1;
         }
+        /* master_fx:usbc_out_persist — whether to restore Move's USB-C
+         * audio-out source after boot. */
+        if (strcmp(fx_key, "usbc_out_persist") == 0) {
+            if (req_type == 1) {
+                int val = atoi(shadow_param->value);
+                usbc_out_persist_enabled = val ? 1 : 0;
+                {
+                    char msg[64];
+                    snprintf(msg, sizeof(msg), "USB-C out persist: %s",
+                             usbc_out_persist_enabled ? "ON" : "OFF");
+                    shadow_log(msg);
+                }
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
+            } else if (req_type == 2) {
+                shadow_param->result_len = snprintf(shadow_param->value,
+                    SHADOW_PARAM_VALUE_LEN, "%d", usbc_out_persist_enabled);
+                shadow_param->error = 0;
+            }
+            return 1;
+        }
+        /* master_fx:usbc_out_source — read-only view of the last USB-C
+         * audio-out source seen on the wire. -1 unknown, 0 Mic, 1 Main Out.
+         * Move's own Settings screen does not reflect a restored value, so
+         * this is the only honest place to read it. */
+        if (strcmp(fx_key, "usbc_out_source") == 0) {
+            if (req_type == 2) {
+                shadow_param->result_len = snprintf(shadow_param->value,
+                    SHADOW_PARAM_VALUE_LEN, "%d", (int)xmos_audio_observed.usbc_out);
+                shadow_param->error = 0;
+            } else {
+                shadow_param->error = 1;
+                shadow_param->result_len = 0;
+            }
+            return 1;
+        }
         /* master_fx:link_audio_publish */
         if (strcmp(fx_key, "link_audio_publish") == 0) {
             if (req_type == 1) {
@@ -4941,6 +4977,11 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
 
         if (pending_count == 0) {
             int replay = shim_usbc_out_replay;
+            if (replay >= 0 && !usbc_out_persist_enabled) {
+                /* User turned restore off in Global Settings — drop it. */
+                shim_usbc_out_replay = -1;
+                replay = -1;
+            }
             if (replay >= 0) {
                 shim_usbc_out_replay = -1;
                 xmos_audio_build(&xmos_audio_observed, replay, pending[0], pending[1]);

@@ -61,6 +61,13 @@ extern volatile native_sampler_source_t native_sampler_source_last_known;
 extern volatile int link_audio_routing_enabled;
 extern volatile int link_audio_publish_enabled;
 
+/* Whether to re-assert Move's USB-C audio-out source (Mic / Main Out) after
+ * boot. Move's firmware forgets the setting on every power cycle; Schwung
+ * observes and restores it. Default ON — loaded from shadow_config.json at
+ * shim init, which is before the ~5 s replay, so no runtime propagation is
+ * needed for the restore itself. */
+extern volatile int usbc_out_persist_enabled;
+
 /* Latency compensation: aligns Schwung slot output with Move audio that
  * round-trips through Link Audio. User toggle (latency_comp_user_enabled)
  * is read whenever Link Audio routing 0→1 engages, latched into

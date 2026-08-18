@@ -125,6 +125,11 @@
         "key": "browser_preview",
         "label": "Browser Preview",
         "type": "bool"
+      },
+      {
+        "key": "usbc_out_persist",
+        "label": "USB-C Persist",
+        "type": "bool"
       }
     ]
   },
