@@ -1,0 +1,48 @@
+{
+  "planPath": "docs/superpowers/plans/2026-08-18-usbc-out-source-persist.md",
+  "tasks": [
+    {
+      "id": 1,
+      "subject": "Task 1: XMOS audio-IO SysEx codec",
+      "status": "completed",
+      "description": "**Goal:** Three pure functions \u2014 scan MIDI_OUT for the XMOS audio-IO envelope, build the replay pair, emit a message into free slots \u2014 with unit tests.\n\n**Files:**\n- Create: `src/host/shadow_xmos_audio.h`\n- Create: `src/host/shadow_xmos_audio.c`\n- Test: `tests/host/test_xmos_audio.c`, `tests/host/test_xmos_audio.sh`\n\n**Acceptance Criteria:**\n- [ ] Main Out pair sets `usbc_out = 1` and bumps `seq`\n- [ ] Mic pair sets `usbc_out = 0`\n- [ ] Re-scan is idempotent\n- [ ] LED SysEx (`3B`) and truncated envelopes ignored\n- [ ] Interleaved non-SysEx packets still parse\n- [ ] `xmos_audio_build` preserves `37 12` bit0\n- [ ] `xmos_audio_emit` never overwrites an occupied slot, returns 0 when <8 free\n- [ ] Emit \u2192 scan round-trips\n\n**Verify:** `bash tests/host/test_xmos_audio.sh` \u2192 `PASS`, exit 0\n\n**Steps:** Plan doc Task 1, Steps 1-6. Full source in the plan.\n\n```json:metadata\n{\"files\": [\"src/host/shadow_xmos_audio.h\", \"src/host/shadow_xmos_audio.c\", \"tests/host/test_xmos_audio.c\", \"tests/host/test_xmos_audio.sh\"], \"verifyCommand\": \"bash tests/host/test_xmos_audio.sh\", \"acceptanceCriteria\": [\"scan of Main Out pair sets usbc_out=1 and bumps seq\", \"scan of Mic pair sets usbc_out=0\", \"re-scan is idempotent\", \"LED SysEx 3B and truncated envelopes ignored\", \"interleaved non-SysEx packets still parse\", \"build preserves 37 12 bit0\", \"emit never overwrites occupied slots, returns 0 when <8 free\", \"emit then scan round-trips\"], \"modelTier\": \"standard\", \"planPath\": \"docs/superpowers/plans/2026-08-18-usbc-out-source-persist.md\"}\n```"
+    },
+    {
+      "id": 2,
+      "subject": "Task 2: Observe and persist USB-C out source",
+      "status": "completed",
+      "blockedBy": [
+        1
+      ],
+      "description": "**Goal:** The shim notices when the user changes the setting in Move's menu and writes the preference to disk.\n\n**Files:**\n- Modify: `src/host/shim_worker.h`, `src/host/shim_worker.c:27-45` and `:231-253`\n- Modify: `src/schwung_shim.c:40-51`, `:172-175`, and pre-transfer after the XMOS logger block at `:5085`\n- Modify: `scripts/build.sh:238-243` and `:260-277`\n\n**Acceptance Criteria:**\n- [ ] `./scripts/build.sh` compiles with no new warnings\n- [ ] Toggling on hardware writes `/data/UserData/schwung/usbc_out_state`\n- [ ] File reads `1` for Main Out, `0` for Mic\n- [ ] No file I/O added to the SPI callback path\n\n**Verify:** `./scripts/build.sh` succeeds, then `ssh ableton@move.local 'cat /data/UserData/schwung/usbc_out_state'` \u2192 `1`\n\n**Steps:** Plan doc Task 2, Steps 1-7. Deploy only via `./scripts/install.sh local --skip-modules --skip-confirmation`.\n\n```json:metadata\n{\"files\": [\"src/host/shim_worker.h\", \"src/host/shim_worker.c\", \"src/schwung_shim.c\", \"scripts/build.sh\"], \"verifyCommand\": \"./scripts/build.sh\", \"acceptanceCriteria\": [\"build.sh compiles shim with new source, no new warnings\", \"toggling on hardware writes usbc_out_state\", \"file reads 1 for Main Out and 0 for Mic\", \"no file I/O added to the SPI callback path\"], \"modelTier\": \"standard\", \"planPath\": \"docs/superpowers/plans/2026-08-18-usbc-out-source-persist.md\"}\n```"
+    },
+    {
+      "id": 3,
+      "subject": "Task 3: Boot replay + slot-safe injector",
+      "status": "completed",
+      "blockedBy": [
+        2
+      ],
+      "description": "**Goal:** Re-assert the persisted setting ~5 s after boot, and route the `spi_sysex_inject` debug trigger through the same slot-safe emitter.\n\n**Files:**\n- Modify: `src/host/shim_worker.h`, `src/host/shim_worker.c` (`:20`, `:246-251`)\n- Modify: `src/schwung_shim.c:4921-4955`\n\n**Acceptance Criteria:**\n- [ ] Mic-stored device emits nothing at boot\n- [ ] Main Out-stored device emits both messages, one per frame, ~5 s in\n- [ ] Old `out[0..31]` blind write gone; `spi_sysex_inject` uses `xmos_audio_emit`\n- [ ] Emission defers rather than overwriting when MIDI_OUT is busy\n\n**Verify:** `./scripts/build.sh` succeeds; `grep \"USB-C out\" /data/UserData/schwung/debug.log` shows the replay after a reboot\n\n**Steps:** Plan doc Task 3, Steps 1-5. Nothing new on the SPI path \u2014 no fopen, no unified_log, no allocation.\n\n```json:metadata\n{\"files\": [\"src/host/shim_worker.h\", \"src/host/shim_worker.c\", \"src/schwung_shim.c\"], \"verifyCommand\": \"./scripts/build.sh\", \"acceptanceCriteria\": [\"Mic-stored device emits nothing at boot\", \"Main Out-stored device emits both messages one per frame ~5s after start\", \"old blind write removed; spi_sysex_inject uses xmos_audio_emit\", \"emission defers rather than overwriting when MIDI_OUT is busy\"], \"modelTier\": \"standard\", \"planPath\": \"docs/superpowers/plans/2026-08-18-usbc-out-source-persist.md\"}\n```"
+    },
+    {
+      "id": 4,
+      "subject": "Task 4: Hardware verification",
+      "status": "completed",
+      "blockedBy": [
+        3
+      ],
+      "description": "**Goal:** Prove the setting survives a real reboot, and that the replay lands after Move's own boot assert without disturbing anything else.\n\n**Files:** none (verification); append results to `docs/superpowers/specs/2026-08-18-usbc-out-source-capture.txt`\n\n**Acceptance Criteria:**\n- [ ] Main Out survives a cold boot without touching Move's menu\n- [ ] Boot log shows our pair after Move's own assert\n- [ ] Mic-stored device emits no audio-IO SysEx from Schwung at boot\n- [ ] Move's sampling-page input source still toggles\n- [ ] Recorded whether Move's Settings screen reads the replayed value\n\n**Verify:** `ssh ableton@move.local 'cat /data/UserData/schwung/xmos_sysex.txt'` shows Move's assert then Schwung's pair\n\n**Steps:** Plan doc Task 4, Steps 1-7. Power-cycle fully, not `restart-move.sh` (it can wedge the SPI hook). Ask before anything audible.\n\n```json:metadata\n{\"files\": [\"docs/superpowers/specs/2026-08-18-usbc-out-source-capture.txt\"], \"verifyCommand\": \"ssh ableton@move.local 'cat /data/UserData/schwung/xmos_sysex.txt'\", \"acceptanceCriteria\": [\"Main Out survives a cold boot without touching Move's menu\", \"boot log shows Schwung's pair after Move's own assert\", \"Mic-stored device emits no audio-IO SysEx at boot\", \"Move's sampling-page input source still toggles\", \"recorded whether Move's Settings screen reads the replayed value\"], \"modelTier\": \"standard\", \"planPath\": \"docs/superpowers/plans/2026-08-18-usbc-out-source-persist.md\"}\n```"
+    },
+    {
+      "id": 5,
+      "subject": "Task 5: Documentation and PR",
+      "status": "completed",
+      "blockedBy": [
+        4
+      ],
+      "description": "**Goal:** Update the docs the release checklist requires, feed the protocol finding upstream, and open the PR.\n\n**Files:**\n- Modify: `CLAUDE.md`, `../schwung-catalog-site/manual.html`, `docs/superpowers/specs/2026-08-18-usbc-out-source-persist-design.md`\n\n**Acceptance Criteria:**\n- [ ] `CLAUDE.md` documents the behavior and `usbc_out_state`\n- [ ] `manual.html` explains it in user-facing terms\n- [ ] Spec records the bit0-preservation refinement\n- [ ] All three CI checks pass\n\n**Verify:** `gh pr checks` \u2192 `host-tests`, `go`, `cross-compile` all green\n\n**Steps:** Plan doc Task 5, Steps 1-6. `tests/{shadow,store,build}` are not CI-gated and carry ~20 known-stale failures \u2014 not regressions.\n\n```json:metadata\n{\"files\": [\"CLAUDE.md\", \"../schwung-catalog-site/manual.html\", \"docs/superpowers/specs/2026-08-18-usbc-out-source-persist-design.md\"], \"verifyCommand\": \"make -C tests/host test && for t in tests/host/*.sh; do bash \\\"$t\\\" || echo \\\"FAILED: $t\\\"; done\", \"acceptanceCriteria\": [\"CLAUDE.md documents the behavior and usbc_out_state\", \"manual.html explains it in user-facing terms\", \"spec records the bit0-preservation refinement\", \"all three CI checks green on the PR\"], \"modelTier\": \"standard\", \"planPath\": \"docs/superpowers/plans/2026-08-18-usbc-out-source-persist.md\"}\n```"
+    }
+  ],
+  "lastUpdated": "2026-08-18T12:47:52.619709"
+}

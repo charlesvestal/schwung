@@ -1,0 +1,542 @@
+[f1] BOOT first armed frame (xmos_frame counter resets per shim load)
+=== MARK: user about to navigate to USB-C out setting ===
+[f12827] PRE  slot= 0 cable=0 cin=0x4 : 04 f0 00 21
+[f12827] PRE  slot= 4 cable=0 cin=0x4 : 04 1d 01 01
+[f12827] PRE  slot= 8 cable=0 cin=0x4 : 04 37 12 02
+[f12827] PRE  slot=12 cable=0 cin=0x4 : 04 00 00 00
+[f12827] PRE  slot=16 cable=0 cin=0x4 : 04 00 00 00
+[f12827] PRE  slot=20 cable=0 cin=0x4 : 04 00 00 00
+[f12827] PRE  slot=24 cable=0 cin=0x4 : 04 00 00 00
+[f12827] PRE  slot=28 cable=0 cin=0x6 : 06 00 f7 00
+[f12827] PRE  slot=32 cable=0 cin=0x4 : 04 f0 00 21
+[f12827] PRE  slot=36 cable=0 cin=0x4 : 04 1d 01 01
+[f12827] PRE  slot=40 cable=0 cin=0x4 : 04 37 14 01
+[f12827] PRE  slot=44 cable=0 cin=0x4 : 04 00 00 00
+[f12827] PRE  slot=48 cable=0 cin=0x4 : 04 00 00 00
+[f12827] PRE  slot=52 cable=0 cin=0x4 : 04 00 00 00
+[f12827] PRE  slot=56 cable=0 cin=0x4 : 04 00 00 00
+[f12827] PRE  slot=60 cable=0 cin=0x6 : 06 00 f7 00
+[f12827] PRE  end
+[f12827] POSThw slot= 0 cable=0 cin=0x4 : 04 f0 00 21
+[f12827] POSThw slot= 4 cable=0 cin=0x4 : 04 1d 01 01
+[f12827] POSThw slot= 8 cable=0 cin=0x4 : 04 37 12 02
+[f12827] POSThw slot=12 cable=0 cin=0x4 : 04 00 00 00
+[f12827] POSThw slot=16 cable=0 cin=0x4 : 04 00 00 00
+[f12827] POSThw slot=20 cable=0 cin=0x4 : 04 00 00 00
+[f12827] POSThw slot=24 cable=0 cin=0x4 : 04 00 00 00
+[f12827] POSThw slot=28 cable=0 cin=0x6 : 06 00 f7 00
+[f12827] POSThw slot=32 cable=0 cin=0x4 : 04 f0 00 21
+[f12827] POSThw slot=36 cable=0 cin=0x4 : 04 1d 01 01
+[f12827] POSThw slot=40 cable=0 cin=0x4 : 04 37 14 01
+[f12827] POSThw slot=44 cable=0 cin=0x4 : 04 00 00 00
+[f12827] POSThw slot=48 cable=0 cin=0x4 : 04 00 00 00
+[f12827] POSThw slot=52 cable=0 cin=0x4 : 04 00 00 00
+[f12827] POSThw slot=56 cable=0 cin=0x4 : 04 00 00 00
+[f12827] POSThw slot=60 cable=0 cin=0x6 : 06 00 f7 00
+[f12827] POSThw end
+[f14820] PRE  slot= 0 cable=0 cin=0x4 : 04 f0 00 21
+[f14820] PRE  slot= 4 cable=0 cin=0x4 : 04 1d 01 01
+[f14820] PRE  slot= 8 cable=0 cin=0x4 : 04 37 12 00
+[f14820] PRE  slot=12 cable=0 cin=0x4 : 04 00 00 00
+[f14820] PRE  slot=16 cable=0 cin=0x4 : 04 00 00 00
+[f14820] PRE  slot=20 cable=0 cin=0x4 : 04 00 00 00
+[f14820] PRE  slot=24 cable=0 cin=0x4 : 04 00 00 00
+[f14820] PRE  slot=28 cable=0 cin=0x6 : 06 00 f7 00
+[f14820] PRE  slot=32 cable=0 cin=0x4 : 04 f0 00 21
+[f14820] PRE  slot=36 cable=0 cin=0x4 : 04 1d 01 01
+[f14820] PRE  slot=40 cable=0 cin=0x4 : 04 37 14 00
+[f14820] PRE  slot=44 cable=0 cin=0x4 : 04 00 00 00
+[f14820] PRE  slot=48 cable=0 cin=0x4 : 04 00 00 00
+[f14820] PRE  slot=52 cable=0 cin=0x4 : 04 00 00 00
+[f14820] PRE  slot=56 cable=0 cin=0x4 : 04 00 00 00
+[f14820] PRE  slot=60 cable=0 cin=0x6 : 06 00 f7 00
+[f14820] PRE  end
+[f14820] POSThw slot= 0 cable=0 cin=0x4 : 04 f0 00 21
+[f14820] POSThw slot= 4 cable=0 cin=0x4 : 04 1d 01 01
+[f14820] POSThw slot= 8 cable=0 cin=0x4 : 04 37 12 00
+[f14820] POSThw slot=12 cable=0 cin=0x4 : 04 00 00 00
+[f14820] POSThw slot=16 cable=0 cin=0x4 : 04 00 00 00
+[f14820] POSThw slot=20 cable=0 cin=0x4 : 04 00 00 00
+[f14820] POSThw slot=24 cable=0 cin=0x4 : 04 00 00 00
+[f14820] POSThw slot=28 cable=0 cin=0x6 : 06 00 f7 00
+[f14820] POSThw slot=32 cable=0 cin=0x4 : 04 f0 00 21
+[f14820] POSThw slot=36 cable=0 cin=0x4 : 04 1d 01 01
+[f14820] POSThw slot=40 cable=0 cin=0x4 : 04 37 14 00
+[f14820] POSThw slot=44 cable=0 cin=0x4 : 04 00 00 00
+[f14820] POSThw slot=48 cable=0 cin=0x4 : 04 00 00 00
+[f14820] POSThw slot=52 cable=0 cin=0x4 : 04 00 00 00
+[f14820] POSThw slot=56 cable=0 cin=0x4 : 04 00 00 00
+[f14820] POSThw slot=60 cable=0 cin=0x6 : 06 00 f7 00
+[f14820] POSThw end
+[f16977] PRE  slot= 0 cable=0 cin=0x4 : 04 f0 00 21
+[f16977] PRE  slot= 4 cable=0 cin=0x4 : 04 1d 01 01
+[f16977] PRE  slot= 8 cable=0 cin=0x4 : 04 37 12 02
+[f16977] PRE  slot=12 cable=0 cin=0x4 : 04 00 00 00
+[f16977] PRE  slot=16 cable=0 cin=0x4 : 04 00 00 00
+[f16977] PRE  slot=20 cable=0 cin=0x4 : 04 00 00 00
+[f16977] PRE  slot=24 cable=0 cin=0x4 : 04 00 00 00
+[f16977] PRE  slot=28 cable=0 cin=0x6 : 06 00 f7 00
+[f16977] PRE  slot=32 cable=0 cin=0x4 : 04 f0 00 21
+[f16977] PRE  slot=36 cable=0 cin=0x4 : 04 1d 01 01
+[f16977] PRE  slot=40 cable=0 cin=0x4 : 04 37 14 01
+[f16977] PRE  slot=44 cable=0 cin=0x4 : 04 00 00 00
+[f16977] PRE  slot=48 cable=0 cin=0x4 : 04 00 00 00
+[f16977] PRE  slot=52 cable=0 cin=0x4 : 04 00 00 00
+[f16977] PRE  slot=56 cable=0 cin=0x4 : 04 00 00 00
+[f16977] PRE  slot=60 cable=0 cin=0x6 : 06 00 f7 00
+[f16977] PRE  end
+[f16977] POSThw slot= 0 cable=0 cin=0x4 : 04 f0 00 21
+[f16977] POSThw slot= 4 cable=0 cin=0x4 : 04 1d 01 01
+[f16977] POSThw slot= 8 cable=0 cin=0x4 : 04 37 12 02
+[f16977] POSThw slot=12 cable=0 cin=0x4 : 04 00 00 00
+[f16977] POSThw slot=16 cable=0 cin=0x4 : 04 00 00 00
+[f16977] POSThw slot=20 cable=0 cin=0x4 : 04 00 00 00
+[f16977] POSThw slot=24 cable=0 cin=0x4 : 04 00 00 00
+[f16977] POSThw slot=28 cable=0 cin=0x6 : 06 00 f7 00
+[f16977] POSThw slot=32 cable=0 cin=0x4 : 04 f0 00 21
+[f16977] POSThw slot=36 cable=0 cin=0x4 : 04 1d 01 01
+[f16977] POSThw slot=40 cable=0 cin=0x4 : 04 37 14 01
+[f16977] POSThw slot=44 cable=0 cin=0x4 : 04 00 00 00
+[f16977] POSThw slot=48 cable=0 cin=0x4 : 04 00 00 00
+[f16977] POSThw slot=52 cable=0 cin=0x4 : 04 00 00 00
+[f16977] POSThw slot=56 cable=0 cin=0x4 : 04 00 00 00
+[f16977] POSThw slot=60 cable=0 cin=0x6 : 06 00 f7 00
+[f16977] POSThw end
+
+=== BOOT REPLAY CAPTURE (2026-08-18, post power-cycle, stored value = Main Out) ===
+Move asserts its Mic default at f3 (37 14 00) / f4 (37 12 00) / f30 (37 14 00).
+Schwung replays at f866 (37 12 02) then f867 (37 14 01) — one message per frame,
+deferred until MIDI_OUT had a contiguous free run during Move's boot LED traffic.
+37 12 bit0 preserved as 0 from Move's own f4 payload.
+
+[f1] BOOT first armed frame (xmos_frame counter resets per shim load)
+[f7374] PRE  slot= 0 cable=0 cin=0x4 : 04 f0 00 21
+[f7374] PRE  slot= 4 cable=0 cin=0x4 : 04 1d 01 01
+[f7374] PRE  slot= 8 cable=0 cin=0x4 : 04 37 12 02
+[f7374] PRE  slot=12 cable=0 cin=0x4 : 04 00 00 00
+[f7374] PRE  slot=16 cable=0 cin=0x4 : 04 00 00 00
+[f7374] PRE  slot=20 cable=0 cin=0x4 : 04 00 00 00
+[f7374] PRE  slot=24 cable=0 cin=0x4 : 04 00 00 00
+[f7374] PRE  slot=28 cable=0 cin=0x6 : 06 00 f7 00
+[f7374] PRE  slot=32 cable=0 cin=0x4 : 04 f0 00 21
+[f7374] PRE  slot=36 cable=0 cin=0x4 : 04 1d 01 01
+[f7374] PRE  slot=40 cable=0 cin=0x4 : 04 37 14 01
+[f7374] PRE  slot=44 cable=0 cin=0x4 : 04 00 00 00
+[f7374] PRE  slot=48 cable=0 cin=0x4 : 04 00 00 00
+[f7374] PRE  slot=52 cable=0 cin=0x4 : 04 00 00 00
+[f7374] PRE  slot=56 cable=0 cin=0x4 : 04 00 00 00
+[f7374] PRE  slot=60 cable=0 cin=0x6 : 06 00 f7 00
+[f7374] PRE  end
+[f7374] POSThw slot= 0 cable=0 cin=0x4 : 04 f0 00 21
+[f7374] POSThw slot= 4 cable=0 cin=0x4 : 04 1d 01 01
+[f7374] POSThw slot= 8 cable=0 cin=0x4 : 04 37 12 02
+[f7374] POSThw slot=12 cable=0 cin=0x4 : 04 00 00 00
+[f7374] POSThw slot=16 cable=0 cin=0x4 : 04 00 00 00
+[f7374] POSThw slot=20 cable=0 cin=0x4 : 04 00 00 00
+[f7374] POSThw slot=24 cable=0 cin=0x4 : 04 00 00 00
+[f7374] POSThw slot=28 cable=0 cin=0x6 : 06 00 f7 00
+[f7374] POSThw slot=32 cable=0 cin=0x4 : 04 f0 00 21
+[f7374] POSThw slot=36 cable=0 cin=0x4 : 04 1d 01 01
+[f7374] POSThw slot=40 cable=0 cin=0x4 : 04 37 14 01
+[f7374] POSThw slot=44 cable=0 cin=0x4 : 04 00 00 00
+[f7374] POSThw slot=48 cable=0 cin=0x4 : 04 00 00 00
+[f7374] POSThw slot=52 cable=0 cin=0x4 : 04 00 00 00
+[f7374] POSThw slot=56 cable=0 cin=0x4 : 04 00 00 00
+[f7374] POSThw slot=60 cable=0 cin=0x6 : 06 00 f7 00
+[f7374] POSThw end
+[f8403] INsys slot= 8 cable=0 cin=0x4 : 04 f0 00 21
+[f8403] INsys slot=16 cable=0 cin=0x4 : 04 1d 01 01
+[f8403] INsys slot=24 cable=0 cin=0x4 : 04 3a 2a 64
+[f8403] INsys slot=32 cable=0 cin=0x6 : 06 00 f7 00
+[f8403] INsys end
+[f8534] PRE  slot= 0 cable=0 cin=0x4 : 04 f0 00 21
+[f8534] PRE  slot= 4 cable=0 cin=0x4 : 04 1d 01 01
+[f8534] PRE  slot= 8 cable=0 cin=0x7 : 07 39 06 f7
+[f8534] PRE  end
+[f8534] POSThw slot= 0 cable=0 cin=0x4 : 04 f0 00 21
+[f8534] POSThw slot= 4 cable=0 cin=0x4 : 04 1d 01 01
+[f8534] POSThw slot= 8 cable=0 cin=0x7 : 07 39 06 f7
+[f8534] POSThw end
+[f8536] INsys slot= 8 cable=0 cin=0x4 : 04 f0 00 21
+[f8536] INsys slot=16 cable=0 cin=0x4 : 04 1d 01 01
+[f8536] INsys slot=24 cable=0 cin=0x4 : 04 3a 2a 64
+[f8536] INsys slot=32 cable=0 cin=0x6 : 06 01 f7 00
+[f8536] INsys end
+[f1] BOOT first armed frame (xmos_frame counter resets per shim load)
+[f1] INsys slot=32 cable=8 cin=0x5 : 85 00 00 54
+[f1] INsys slot=96 cable=15 cin=0x5 : f5 5b 42 a9
+[f1] INsys slot=152 cable=8 cin=0x4 : 84 7c 00 1b
+[f1] INsys slot=176 cable=7 cin=0x6 : 76 83 00 91
+[f1] INsys slot=232 cable=9 cin=0x6 : 96 00 00 14
+[f1] INsys end
+[f2] PRE  slot= 4 cable=0 cin=0x4 : 04 f0 7e 01
+[f2] PRE  slot= 8 cable=0 cin=0x7 : 07 06 01 f7
+[f2] PRE  slot=12 cable=0 cin=0x4 : 04 f0 00 21
+[f2] PRE  slot=16 cable=0 cin=0x4 : 04 1d 01 01
+[f2] PRE  slot=20 cable=0 cin=0x7 : 07 42 00 f7
+[f2] PRE  slot=24 cable=0 cin=0x4 : 04 f0 00 21
+[f2] PRE  slot=28 cable=0 cin=0x4 : 04 1d 01 01
+[f2] PRE  slot=32 cable=0 cin=0x6 : 06 25 f7 00
+[f2] PRE  slot=36 cable=0 cin=0x4 : 04 f0 00 21
+[f2] PRE  slot=40 cable=0 cin=0x4 : 04 1d 01 01
+[f2] PRE  slot=44 cable=0 cin=0x6 : 06 3a f7 00
+[f2] PRE  slot=48 cable=0 cin=0x4 : 04 f0 00 21
+[f2] PRE  slot=52 cable=0 cin=0x4 : 04 1d 01 01
+[f2] PRE  slot=56 cable=0 cin=0x7 : 07 1e 01 f7
+[f2] PRE  slot=60 cable=0 cin=0x4 : 04 f0 00 21
+[f2] PRE  slot=64 cable=0 cin=0x4 : 04 1d 01 01
+[f2] PRE  slot=68 cable=0 cin=0x6 : 06 47 f7 00
+[f2] PRE  slot=76 cable=0 cin=0x4 : 04 f0 00 21
+[f2] PRE  end
+[f2] POSThw slot= 4 cable=0 cin=0x4 : 04 f0 7e 01
+[f2] POSThw slot= 8 cable=0 cin=0x7 : 07 06 01 f7
+[f2] POSThw slot=12 cable=0 cin=0x4 : 04 f0 00 21
+[f2] POSThw slot=16 cable=0 cin=0x4 : 04 1d 01 01
+[f2] POSThw slot=20 cable=0 cin=0x7 : 07 42 00 f7
+[f2] POSThw slot=24 cable=0 cin=0x4 : 04 f0 00 21
+[f2] POSThw slot=28 cable=0 cin=0x4 : 04 1d 01 01
+[f2] POSThw slot=32 cable=0 cin=0x6 : 06 25 f7 00
+[f2] POSThw slot=36 cable=0 cin=0x4 : 04 f0 00 21
+[f2] POSThw slot=40 cable=0 cin=0x4 : 04 1d 01 01
+[f2] POSThw slot=44 cable=0 cin=0x6 : 06 3a f7 00
+[f2] POSThw slot=48 cable=0 cin=0x4 : 04 f0 00 21
+[f2] POSThw slot=52 cable=0 cin=0x4 : 04 1d 01 01
+[f2] POSThw slot=56 cable=0 cin=0x7 : 07 1e 01 f7
+[f2] POSThw slot=60 cable=0 cin=0x4 : 04 f0 00 21
+[f2] POSThw slot=64 cable=0 cin=0x4 : 04 1d 01 01
+[f2] POSThw slot=68 cable=0 cin=0x6 : 06 47 f7 00
+[f2] POSThw slot=76 cable=0 cin=0x4 : 04 f0 00 21
+[f2] POSThw end
+[f3] PRE  slot= 0 cable=0 cin=0x4 : 04 1d 01 01
+[f3] PRE  slot= 4 cable=0 cin=0x6 : 06 07 f7 00
+[f3] PRE  slot= 8 cable=0 cin=0x4 : 04 f0 00 21
+[f3] PRE  slot=12 cable=0 cin=0x4 : 04 1d 01 01
+[f3] PRE  slot=16 cable=0 cin=0x6 : 06 0d f7 00
+[f3] PRE  slot=20 cable=0 cin=0x4 : 04 f0 00 21
+[f3] PRE  slot=24 cable=0 cin=0x4 : 04 1d 01 01
+[f3] PRE  slot=28 cable=0 cin=0x4 : 04 37 04 00
+[f3] PRE  slot=32 cable=0 cin=0x4 : 04 00 05 00
+[f3] PRE  slot=36 cable=0 cin=0x4 : 04 00 0a 00
+[f3] PRE  slot=40 cable=0 cin=0x4 : 04 00 0b 00
+[f3] PRE  slot=44 cable=0 cin=0x4 : 04 00 00 00
+[f3] PRE  slot=48 cable=0 cin=0x6 : 06 00 f7 00
+[f3] PRE  slot=52 cable=0 cin=0x4 : 04 f0 00 21
+[f3] PRE  slot=56 cable=0 cin=0x4 : 04 1d 01 01
+[f3] PRE  slot=60 cable=0 cin=0x4 : 04 37 14 00
+[f3] PRE  slot=64 cable=0 cin=0x4 : 04 00 00 00
+[f3] PRE  slot=68 cable=0 cin=0x4 : 04 00 00 00
+[f3] PRE  slot=72 cable=0 cin=0x4 : 04 00 00 00
+[f3] PRE  slot=76 cable=0 cin=0x4 : 04 00 00 00
+[f3] PRE  end
+[f3] POSThw slot= 0 cable=0 cin=0x4 : 04 1d 01 01
+[f3] POSThw slot= 4 cable=0 cin=0x6 : 06 07 f7 00
+[f3] POSThw slot= 8 cable=0 cin=0x4 : 04 f0 00 21
+[f3] POSThw slot=12 cable=0 cin=0x4 : 04 1d 01 01
+[f3] POSThw slot=16 cable=0 cin=0x6 : 06 0d f7 00
+[f3] POSThw slot=20 cable=0 cin=0x4 : 04 f0 00 21
+[f3] POSThw slot=24 cable=0 cin=0x4 : 04 1d 01 01
+[f3] POSThw slot=28 cable=0 cin=0x4 : 04 37 04 00
+[f3] POSThw slot=32 cable=0 cin=0x4 : 04 00 05 00
+[f3] POSThw slot=36 cable=0 cin=0x4 : 04 00 0a 00
+[f3] POSThw slot=40 cable=0 cin=0x4 : 04 00 0b 00
+[f3] POSThw slot=44 cable=0 cin=0x4 : 04 00 00 00
+[f3] POSThw slot=48 cable=0 cin=0x6 : 06 00 f7 00
+[f3] POSThw slot=52 cable=0 cin=0x4 : 04 f0 00 21
+[f3] POSThw slot=56 cable=0 cin=0x4 : 04 1d 01 01
+[f3] POSThw slot=60 cable=0 cin=0x4 : 04 37 14 00
+[f3] POSThw slot=64 cable=0 cin=0x4 : 04 00 00 00
+[f3] POSThw slot=68 cable=0 cin=0x4 : 04 00 00 00
+[f3] POSThw slot=72 cable=0 cin=0x4 : 04 00 00 00
+[f3] POSThw slot=76 cable=0 cin=0x4 : 04 00 00 00
+[f3] POSThw end
+[f4] PRE  slot= 0 cable=0 cin=0x6 : 06 00 f7 00
+[f4] PRE  slot= 4 cable=0 cin=0x4 : 04 f0 00 21
+[f4] PRE  slot= 8 cable=0 cin=0x4 : 04 1d 01 01
+[f4] PRE  slot=12 cable=0 cin=0x4 : 04 37 12 00
+[f4] PRE  slot=16 cable=0 cin=0x4 : 04 00 00 00
+[f4] PRE  slot=20 cable=0 cin=0x4 : 04 00 00 00
+[f4] PRE  slot=24 cable=0 cin=0x4 : 04 00 00 00
+[f4] PRE  slot=28 cable=0 cin=0x4 : 04 00 00 00
+[f4] PRE  slot=32 cable=0 cin=0x6 : 06 00 f7 00
+[f4] PRE  slot=36 cable=0 cin=0x4 : 04 f0 00 21
+[f4] PRE  slot=40 cable=0 cin=0x4 : 04 1d 01 01
+[f4] PRE  slot=44 cable=0 cin=0x4 : 04 37 02 28
+[f4] PRE  slot=48 cable=0 cin=0x4 : 04 00 03 28
+[f4] PRE  slot=52 cable=0 cin=0x4 : 04 00 00 00
+[f4] PRE  slot=56 cable=0 cin=0x4 : 04 00 00 00
+[f4] PRE  slot=60 cable=0 cin=0x4 : 04 00 00 00
+[f4] PRE  slot=64 cable=0 cin=0x6 : 06 00 f7 00
+[f4] PRE  end
+[f4] POSThw slot= 0 cable=0 cin=0x6 : 06 00 f7 00
+[f4] POSThw slot= 4 cable=0 cin=0x4 : 04 f0 00 21
+[f4] POSThw slot= 8 cable=0 cin=0x4 : 04 1d 01 01
+[f4] POSThw slot=12 cable=0 cin=0x4 : 04 37 12 00
+[f4] POSThw slot=16 cable=0 cin=0x4 : 04 00 00 00
+[f4] POSThw slot=20 cable=0 cin=0x4 : 04 00 00 00
+[f4] POSThw slot=24 cable=0 cin=0x4 : 04 00 00 00
+[f4] POSThw slot=28 cable=0 cin=0x4 : 04 00 00 00
+[f4] POSThw slot=32 cable=0 cin=0x6 : 06 00 f7 00
+[f4] POSThw slot=36 cable=0 cin=0x4 : 04 f0 00 21
+[f4] POSThw slot=40 cable=0 cin=0x4 : 04 1d 01 01
+[f4] POSThw slot=44 cable=0 cin=0x4 : 04 37 02 28
+[f4] POSThw slot=48 cable=0 cin=0x4 : 04 00 03 28
+[f4] POSThw slot=52 cable=0 cin=0x4 : 04 00 00 00
+[f4] POSThw slot=56 cable=0 cin=0x4 : 04 00 00 00
+[f4] POSThw slot=60 cable=0 cin=0x4 : 04 00 00 00
+[f4] POSThw slot=64 cable=0 cin=0x6 : 06 00 f7 00
+[f4] POSThw end
+[f5] PRE  slot=20 cable=0 cin=0x4 : 04 f0 00 21
+[f5] PRE  slot=24 cable=0 cin=0x4 : 04 1d 01 01
+[f5] PRE  slot=28 cable=0 cin=0x4 : 04 3b 10 28
+[f5] PRE  slot=32 cable=0 cin=0x4 : 04 62 00 7f
+[f5] PRE  slot=36 cable=0 cin=0x4 : 04 01 54 00
+[f5] PRE  slot=40 cable=0 cin=0x5 : 05 f7 00 00
+[f5] PRE  slot=44 cable=0 cin=0x4 : 04 f0 00 21
+[f5] PRE  slot=48 cable=0 cin=0x4 : 04 1d 01 01
+[f5] PRE  slot=52 cable=0 cin=0x4 : 04 3b 10 29
+[f5] PRE  slot=56 cable=0 cin=0x4 : 04 2c 01 1e
+[f5] PRE  slot=60 cable=0 cin=0x4 : 04 00 00 00
+[f5] PRE  slot=64 cable=0 cin=0x5 : 05 f7 00 00
+[f5] PRE  slot=68 cable=0 cin=0x4 : 04 f0 00 21
+[f5] PRE  slot=72 cable=0 cin=0x4 : 04 1d 01 01
+[f5] PRE  slot=76 cable=0 cin=0x4 : 04 3b 10 2a
+[f5] PRE  end
+[f5] INsys slot= 0 cable=0 cin=0x4 : 04 f0 7e 01
+[f5] INsys slot= 8 cable=0 cin=0x4 : 04 06 02 00
+[f5] INsys end
+[f5] POSThw slot=20 cable=0 cin=0x4 : 04 f0 00 21
+[f5] POSThw slot=24 cable=0 cin=0x4 : 04 1d 01 01
+[f5] POSThw slot=28 cable=0 cin=0x4 : 04 3b 10 28
+[f5] POSThw slot=32 cable=0 cin=0x4 : 04 62 00 7f
+[f5] POSThw slot=36 cable=0 cin=0x4 : 04 01 54 00
+[f5] POSThw slot=40 cable=0 cin=0x5 : 05 f7 00 00
+[f5] POSThw slot=44 cable=0 cin=0x4 : 04 f0 00 21
+[f5] POSThw slot=48 cable=0 cin=0x4 : 04 1d 01 01
+[f5] POSThw slot=52 cable=0 cin=0x4 : 04 3b 10 29
+[f5] POSThw slot=56 cable=0 cin=0x4 : 04 2c 01 1e
+[f5] POSThw slot=60 cable=0 cin=0x4 : 04 00 00 00
+[f5] POSThw slot=64 cable=0 cin=0x5 : 05 f7 00 00
+[f5] POSThw slot=68 cable=0 cin=0x4 : 04 f0 00 21
+[f5] POSThw slot=72 cable=0 cin=0x4 : 04 1d 01 01
+[f5] POSThw slot=76 cable=0 cin=0x4 : 04 3b 10 2a
+[f5] POSThw end
+[f6] PRE  slot= 0 cable=0 cin=0x4 : 04 7f 01 2b
+[f6] PRE  slot= 4 cable=0 cin=0x4 : 04 00 54 01
+[f6] PRE  slot= 8 cable=0 cin=0x5 : 05 f7 00 00
+[f6] PRE  slot=12 cable=0 cin=0x4 : 04 f0 00 21
+[f6] PRE  slot=16 cable=0 cin=0x4 : 04 1d 01 01
+[f6] PRE  slot=20 cable=0 cin=0x4 : 04 3b 10 2b
+[f6] PRE  slot=24 cable=0 cin=0x4 : 04 1b 00 0b
+[f6] PRE  slot=28 cable=0 cin=0x4 : 04 00 66 01
+[f6] PRE  slot=32 cable=0 cin=0x5 : 05 f7 00 00
+[f6] PRE  slot=60 cable=0 cin=0x4 : 04 f0 00 21
+[f6] PRE  slot=64 cable=0 cin=0x4 : 04 1d 01 01
+[f6] PRE  slot=68 cable=0 cin=0x4 : 04 3b 10 4f
+[f6] PRE  slot=72 cable=0 cin=0x4 : 04 2a 01 2a
+[f6] PRE  slot=76 cable=0 cin=0x4 : 04 01 2a 01
+[f6] PRE  end
+[f6] INsys slot= 0 cable=0 cin=0x4 : 04 21 1d 58
+[f6] INsys slot= 8 cable=0 cin=0x4 : 04 32 01 00
+[f6] INsys slot=16 cable=0 cin=0x4 : 04 01 00 50
+[f6] INsys slot=24 cable=0 cin=0x4 : 04 00 4e 3d
+[f6] INsys slot=32 cable=0 cin=0x4 : 04 2b 12 00
+[f6] INsys slot=40 cable=0 cin=0x4 : 04 05 01 0d
+[f6] INsys slot=48 cable=0 cin=0x6 : 06 04 f7 00
+[f6] INsys slot=56 cable=0 cin=0x4 : 04 f0 00 21
+[f6] INsys slot=64 cable=0 cin=0x4 : 04 1d 01 01
+[f6] INsys slot=72 cable=0 cin=0x4 : 04 42 00 04
+[f6] INsys slot=80 cable=0 cin=0x4 : 04 01 01 00
+[f6] INsys slot=88 cable=0 cin=0x4 : 04 0d 00 01
+[f6] INsys slot=96 cable=0 cin=0x4 : 04 01 00 06
+[f6] INsys slot=104 cable=0 cin=0x4 : 04 00 01 01
+[f6] INsys slot=112 cable=0 cin=0x4 : 04 00 00 00
+[f6] INsys slot=120 cable=0 cin=0x5 : 05 f7 00 00
+[f6] INsys slot=128 cable=0 cin=0x4 : 04 f0 00 21
+[f6] INsys slot=136 cable=0 cin=0x4 : 04 1d 01 01
+[f6] INsys slot=144 cable=0 cin=0x4 : 04 25 37 42
+[f6] INsys slot=152 cable=0 cin=0x4 : 04 30 36 35
+[f6] INsys slot=160 cable=0 cin=0x4 : 04 43 4c 36
+[f6] INsys slot=168 cable=0 cin=0x5 : 05 f7 00 00
+[f6] INsys slot=176 cable=0 cin=0x4 : 04 f0 00 21
+[f6] INsys slot=184 cable=0 cin=0x4 : 04 1d 01 01
+[f6] INsys slot=192 cable=0 cin=0x4 : 04 3a 22 64
+[f6] INsys slot=200 cable=0 cin=0x6 : 06 00 f7 00
+[f6] INsys slot=208 cable=0 cin=0x4 : 04 f0 00 21
+[f6] INsys slot=216 cable=0 cin=0x4 : 04 1d 01 01
+[f6] INsys slot=224 cable=0 cin=0x7 : 07 47 01 f7
+[f6] INsys slot=232 cable=0 cin=0x4 : 04 f0 00 21
+[f6] INsys slot=240 cable=0 cin=0x4 : 04 1d 01 01
+[f6] INsys end
+[f6] POSThw slot= 0 cable=0 cin=0x4 : 04 7f 01 2b
+[f6] POSThw slot= 4 cable=0 cin=0x4 : 04 00 54 01
+[f6] POSThw slot= 8 cable=0 cin=0x5 : 05 f7 00 00
+[f6] POSThw slot=12 cable=0 cin=0x4 : 04 f0 00 21
+[f6] POSThw slot=16 cable=0 cin=0x4 : 04 1d 01 01
+[f6] POSThw slot=20 cable=0 cin=0x4 : 04 3b 10 2b
+[f6] POSThw slot=24 cable=0 cin=0x4 : 04 1b 00 0b
+[f6] POSThw slot=28 cable=0 cin=0x4 : 04 00 66 01
+[f6] POSThw slot=32 cable=0 cin=0x5 : 05 f7 00 00
+[f6] POSThw slot=60 cable=0 cin=0x4 : 04 f0 00 21
+[f6] POSThw slot=64 cable=0 cin=0x4 : 04 1d 01 01
+[f6] POSThw slot=68 cable=0 cin=0x4 : 04 3b 10 4f
+[f6] POSThw slot=72 cable=0 cin=0x4 : 04 2a 01 2a
+[f6] POSThw slot=76 cable=0 cin=0x4 : 04 01 2a 01
+[f6] POSThw end
+[f7] PRE  slot= 0 cable=0 cin=0x5 : 05 f7 00 00
+[f7] PRE  end
+[f7] INsys slot= 0 cable=0 cin=0x7 : 07 07 08 f7
+[f7] INsys slot= 8 cable=0 cin=0x4 : 04 f0 00 21
+[f7] INsys slot=16 cable=0 cin=0x4 : 04 1d 01 01
+[f7] INsys slot=24 cable=0 cin=0x4 : 04 0d 50 58
+[f7] INsys slot=32 cable=0 cin=0x6 : 06 00 f7 00
+[f7] IN   slot=48 cable=0 CC 114 val=0 (jack-detect)
+[f7] INsys end
+[f7] POSThw slot= 0 cable=0 cin=0x5 : 05 f7 00 00
+[f7] POSThw end
+[f8] IN   slot=32 cable=0 CC 115 val=127 (jack-detect)
+[f30] PRE  slot= 0 cable=0 cin=0x4 : 04 f0 00 21
+[f30] PRE  slot= 4 cable=0 cin=0x4 : 04 1d 01 01
+[f30] PRE  slot= 8 cable=0 cin=0x4 : 04 37 14 00
+[f30] PRE  slot=12 cable=0 cin=0x4 : 04 00 00 00
+[f30] PRE  slot=16 cable=0 cin=0x4 : 04 00 00 00
+[f30] PRE  slot=20 cable=0 cin=0x4 : 04 00 00 00
+[f30] PRE  slot=24 cable=0 cin=0x4 : 04 00 00 00
+[f30] PRE  slot=28 cable=0 cin=0x6 : 06 00 f7 00
+[f30] PRE  end
+[f30] POSThw slot= 0 cable=0 cin=0x4 : 04 f0 00 21
+[f30] POSThw slot= 4 cable=0 cin=0x4 : 04 1d 01 01
+[f30] POSThw slot= 8 cable=0 cin=0x4 : 04 37 14 00
+[f30] POSThw slot=12 cable=0 cin=0x4 : 04 00 00 00
+[f30] POSThw slot=16 cable=0 cin=0x4 : 04 00 00 00
+[f30] POSThw slot=20 cable=0 cin=0x4 : 04 00 00 00
+[f30] POSThw slot=24 cable=0 cin=0x4 : 04 00 00 00
+[f30] POSThw slot=28 cable=0 cin=0x6 : 06 00 f7 00
+[f30] POSThw end
+[f34] PRE  slot= 0 cable=0 cin=0x4 : 04 f0 00 21
+[f34] PRE  slot= 4 cable=0 cin=0x4 : 04 1d 01 01
+[f34] PRE  slot= 8 cable=0 cin=0x4 : 04 3b 10 4f
+[f34] PRE  slot=12 cable=0 cin=0x4 : 04 30 01 30
+[f34] PRE  slot=16 cable=0 cin=0x4 : 04 01 30 01
+[f34] PRE  slot=20 cable=0 cin=0x5 : 05 f7 00 00
+[f34] PRE  end
+[f34] POSThw slot= 0 cable=0 cin=0x4 : 04 f0 00 21
+[f34] POSThw slot= 4 cable=0 cin=0x4 : 04 1d 01 01
+[f34] POSThw slot= 8 cable=0 cin=0x4 : 04 3b 10 4f
+[f34] POSThw slot=12 cable=0 cin=0x4 : 04 30 01 30
+[f34] POSThw slot=16 cable=0 cin=0x4 : 04 01 30 01
+[f34] POSThw slot=20 cable=0 cin=0x5 : 05 f7 00 00
+[f34] POSThw end
+[f172] INsys slot= 0 cable=2 cin=0x4 : 24 f0 7e 7f
+[f172] INsys slot= 8 cable=2 cin=0x4 : 24 0d 70 02
+[f172] INsys slot=16 cable=2 cin=0x4 : 24 0e 6b 6c
+[f172] INsys slot=24 cable=2 cin=0x4 : 24 57 7f 7f
+[f172] INsys slot=32 cable=2 cin=0x4 : 24 7f 7f 11
+[f172] INsys slot=40 cable=2 cin=0x4 : 24 00 00 01
+[f172] INsys slot=48 cable=2 cin=0x4 : 24 00 01 00
+[f172] INsys slot=56 cable=2 cin=0x4 : 24 02 00 00
+[f172] INsys slot=64 cable=2 cin=0x4 : 24 00 1c 00
+[f172] INsys slot=72 cable=2 cin=0x4 : 24 00 01 00
+[f172] INsys slot=80 cable=2 cin=0x6 : 26 03 f7 00
+[f172] INsys end
+[f866] PRE  slot= 0 cable=0 cin=0x4 : 04 f0 00 21
+[f866] PRE  slot= 4 cable=0 cin=0x4 : 04 1d 01 01
+[f866] PRE  slot= 8 cable=0 cin=0x4 : 04 37 12 02
+[f866] PRE  slot=12 cable=0 cin=0x4 : 04 00 00 00
+[f866] PRE  slot=16 cable=0 cin=0x4 : 04 00 00 00
+[f866] PRE  slot=20 cable=0 cin=0x4 : 04 00 00 00
+[f866] PRE  slot=24 cable=0 cin=0x4 : 04 00 00 00
+[f866] PRE  slot=28 cable=0 cin=0x6 : 06 00 f7 00
+[f866] PRE  end
+[f866] POSThw slot= 0 cable=0 cin=0x4 : 04 f0 00 21
+[f866] POSThw slot= 4 cable=0 cin=0x4 : 04 1d 01 01
+[f866] POSThw slot= 8 cable=0 cin=0x4 : 04 37 12 02
+[f866] POSThw slot=12 cable=0 cin=0x4 : 04 00 00 00
+[f866] POSThw slot=16 cable=0 cin=0x4 : 04 00 00 00
+[f866] POSThw slot=20 cable=0 cin=0x4 : 04 00 00 00
+[f866] POSThw slot=24 cable=0 cin=0x4 : 04 00 00 00
+[f866] POSThw slot=28 cable=0 cin=0x6 : 06 00 f7 00
+[f866] POSThw end
+[f867] PRE  slot= 0 cable=0 cin=0x4 : 04 f0 00 21
+[f867] PRE  slot= 4 cable=0 cin=0x4 : 04 1d 01 01
+[f867] PRE  slot= 8 cable=0 cin=0x4 : 04 37 14 01
+[f867] PRE  slot=12 cable=0 cin=0x4 : 04 00 00 00
+[f867] PRE  slot=16 cable=0 cin=0x4 : 04 00 00 00
+[f867] PRE  slot=20 cable=0 cin=0x4 : 04 00 00 00
+[f867] PRE  slot=24 cable=0 cin=0x4 : 04 00 00 00
+[f867] PRE  slot=28 cable=0 cin=0x6 : 06 00 f7 00
+[f867] PRE  end
+[f867] POSThw slot= 0 cable=0 cin=0x4 : 04 f0 00 21
+[f867] POSThw slot= 4 cable=0 cin=0x4 : 04 1d 01 01
+[f867] POSThw slot= 8 cable=0 cin=0x4 : 04 37 14 01
+[f867] POSThw slot=12 cable=0 cin=0x4 : 04 00 00 00
+[f867] POSThw slot=16 cable=0 cin=0x4 : 04 00 00 00
+[f867] POSThw slot=20 cable=0 cin=0x4 : 04 00 00 00
+[f867] POSThw slot=24 cable=0 cin=0x4 : 04 00 00 00
+[f867] POSThw slot=28 cable=0 cin=0x6 : 06 00 f7 00
+[f867] POSThw end
+
+=== TASK 4 FINDINGS (2026-08-18) ===
+
+1. Replay works. After a power cycle with the stored value = Main Out, Schwung
+   emitted 37 12 02 at f866 and 37 14 01 at f867 — consecutive frames, one
+   message per frame, identical in PRE and POSThw (so both reached hardware),
+   and well after Move's own boot asserts at f3/f4/f30.
+
+2. 37 12 bit0 preserved. Move asserted 37 12 00 at f4; our replay sent 37 12 02
+   — bit1 set, bit0 untouched. The preservation logic works as designed.
+
+3. Stored value not clobbered. usbc_out_state still read 1 after the boot.
+
+4. Emission is deferred, not immediate. The replay is armed ~5 s in but landed
+   at frame 866, because the emitter refuses while MIDI_OUT lacks a contiguous
+   free run — which it does during Move's boot LED storm. This is the
+   refuse-and-retry path working rather than corrupting. Expected behaviour.
+
+5. Move's own Settings screen still reads "Mic" after the replay. Move does not
+   adopt the value into its UI state. Evidence that it never persists the
+   setting at all:
+     - /data/UserData/settings/Settings.json has no corresponding key, and its
+       mtime (08:31) predates the user changing the setting that day.
+     - The Move binary instantiates the dialog as
+       ListViewDelegate<UsbAudioOutputSourceDelegate, NullTransactionPolicy>
+       — no persistence transaction, unlike settings that do persist.
+     - Binary strings present: "USB-C Audio Out", "Change USB audio output
+       source", UsbAudioOutputSourceDialog, UsbAudioOutputSourceDelegate.
+   Consequence: Move's screen cannot be made to agree without driving its
+   internal UI state, which is explicitly out of scope. This is what makes a
+   Schwung-side "Persist USB-C Out" row worth building: with Move's screen
+   showing a stale value, there is otherwise no honest place to read the truth.
+
+6. UX trap to document: opening Move's menu shows "Mic" even when the hardware
+   is on Main Out. Selecting "Main Out" there is harmless. Selecting "Mic" —
+   believing it is a no-op — actually switches it off.
+
+7. VERIFIED END TO END: with the stored value = Main Out, after a power cycle
+   and without touching Move's menu, a connected computer receives main out.
+   Confirmed by the user. Move's screen read "Mic" at the same time, which
+   makes the cosmetic mismatch in (5) the only remaining gap — the audio path
+   itself is correct.
+
+=== SETTINGS ROW VERIFICATION (2026-08-18) ===
+
+Global Settings -> Audio -> USB-C Persist (default On), annotated with the
+source last seen on the wire, e.g. "On (Main Out)".
+
+ON path, stored source = Main Out, after a power cycle:
+  Audible: mic for a few seconds, then Main Out takes over.
+  Wire: replay pair emitted as before.
+
+OFF path, stored source = Main Out, after a power cycle:
+  Audible: stays on mic, no switch.
+  Wire: 0 occurrences of "37 12 02" and 0 of "37 14 01"; 4 occurrences of
+  Move's own "37 14 00". Nothing emitted by Schwung at all.
+  shadow_config.json: "usbc_out_persist": false
+
+Note: usbc_out_state remained 1 while persistence was off — turning the restore
+off does not forget the last observed source, so switching it back on resumes
+Main Out rather than starting blank.
+
+UX note: the restore is audible as a switch a few seconds into boot, because it
+waits for Move's firmware to come up and then for a free window in MIDI_OUT.
+Anyone recording from a cold boot captures a few seconds of mic first.
+Documented in the user manual.
