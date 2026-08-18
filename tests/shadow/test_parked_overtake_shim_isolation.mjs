@@ -135,6 +135,7 @@ vm.createContext(sandbox);
 
 // --- inject extracted bodies ------------------------------------------------
 for (const name of ['setupModuleParamShims', 'clearModuleParamShims',
+                    'repairSwallowedShiftRelease',
                     'suspendOvertakeMode', 'resumeOvertakeModule']) {
     vm.runInContext(extractFn(name), sandbox);
 }
@@ -311,6 +312,37 @@ console.log("Scenario 4: suspend hands native LEDs back atomically");
     check("shadow UI exits only after the handoff",
           handoffCalls.indexOf('mode:0') < handoffCalls.indexOf('exit'),
           `calls ${JSON.stringify(handoffCalls)}`);
+}
+
+// ---- Scenario 5: the launch path repairs the swallowed Shift release -------
+// Issue #191. Every gesture that opens an overtake module holds Shift, and the
+// release lands during init()'s blackout when MIDI is not forwarded, so both
+// the host flag and the module stay latched. loadOvertakeModule clears
+// hostShiftHeld too early to help; the repair has to run where the blackout
+// ends. Reproduces only on modules with a slow init() (~6s measured) which is
+// why a fast module cannot demonstrate the bug either way.
+console.log("Scenario 5: launch repairs the swallowed Shift release");
+{
+    vm.runInContext(`globalThis._launchMidi = [];`, sandbox);
+    sandbox.overtakeModuleCallbacks = {
+        init: () => {},
+        tick: () => {},
+        onMidiMessageInternal: vm.runInContext(
+            `globalThis._launchFn = function(m) { _launchMidi.push(m.slice()); }; globalThis._launchFn`, sandbox),
+    };
+
+    // User launched with Shift down; the release was swallowed during init().
+    sandbox.hostShiftHeld = true;
+    sandbox.hostVolumeKnobTouched = true;
+
+    vm.runInContext(`repairSwallowedShiftRelease("launch");`, sandbox);
+
+    check("host shift flag cleared after init()", sandbox.hostShiftHeld === false,
+          `hostShiftHeld=${sandbox.hostShiftHeld}`);
+    const seen = sandbox._launchMidi || [];
+    const up = seen.find(m => m[0] === 0xB0 && m[1] === 49 && m[2] === 0);
+    check("module received the Shift-up it never got from hardware", !!up,
+          `midi seen: ${JSON.stringify(seen)}`);
 }
 
 // --- exit -------------------------------------------------------------------
