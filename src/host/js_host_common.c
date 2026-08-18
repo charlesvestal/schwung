@@ -152,11 +152,28 @@ int run_command(const char *const argv[]) {
 
 /* Fire-and-forget: fork + setsid, parent returns immediately.
  * Child detaches from session and redirects stdio to /dev/null. */
+/* Double-fork so the exec'd command is reparented to init, which reaps it.
+ *
+ * The previous single-fork version left one zombie per call: the caller
+ * (shadow_ui) is long-lived and never wait()s, and setsid() detaches from the
+ * controlling terminal without changing the parent. Observed on hardware as
+ * `curl <defunct>` accumulating at ~1/90s under the catalog-check timer.
+ *
+ * The intermediate child _exit()s immediately after forking, so the waitpid()
+ * here returns essentially at once — it does not wait for the command itself. */
 static void run_command_background(const char *const argv[]) {
     pid_t pid = fork();
-    if (pid != 0) return;          /* parent (or error) */
-    /* child */
+    if (pid < 0) return;           /* fork failed */
+    if (pid > 0) {                 /* parent: reap the intermediate child */
+        int status;
+        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) { }
+        return;
+    }
+    /* intermediate child */
     setsid();
+    pid_t grandchild = fork();
+    if (grandchild != 0) _exit(0); /* orphan the grandchild onto init */
+    /* grandchild: run the command */
     int devnull = open("/dev/null", O_RDWR);
     if (devnull >= 0) {
         dup2(devnull, STDIN_FILENO);
