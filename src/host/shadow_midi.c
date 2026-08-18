@@ -541,6 +541,52 @@ void shadow_inject_ui_midi_out(void)
     }
 }
 
+/* ---- Shim-originated packets bound for Move's firmware --------------------
+ *
+ * Separate from the test-bus inject ring on purpose. Since the ring became
+ * overtake-owned (a packet published while overtake_mode != 0 is drained by
+ * schwung_shim.c onto the module, and shadow_drain_midi_inject returns early),
+ * nothing pushed there during overtake can reach Move's firmware any more.
+ *
+ * The shim needs exactly that, though: on overtake ENTRY it has to tell Move
+ * "Shift is up", or Move's firmware stays in shift-mode for the rest of the
+ * session and the volume knob is stuck in fine mode. That packet is for the
+ * firmware only — the module must never see it — so it does not belong in the
+ * ring at all.
+ *
+ * One slot is enough: the only producer is the overtake transition, and a
+ * second entry cannot happen before the first is delivered. */
+static volatile uint8_t shim_to_move_pkt[4];
+static volatile int     shim_to_move_pending = 0;
+
+void shadow_queue_packet_to_move(const uint8_t pkt[4])
+{
+    shim_to_move_pkt[0] = pkt[0];
+    shim_to_move_pkt[1] = pkt[1];
+    shim_to_move_pkt[2] = pkt[2];
+    shim_to_move_pkt[3] = pkt[3];
+    __sync_synchronize();
+    shim_to_move_pending = 1;
+}
+
+/* Place the pending shim packet into MIDI_IN. Only when MIDI_IN is completely
+ * idle — writing alongside hardware events races Move's firmware MIDI read
+ * path and causes SIGABRT, and unlike the ring drain we have no "leave it and
+ * retry" position to protect, so we take the strictest form of that guard and
+ * simply wait for a quiet frame. */
+static void shadow_deliver_pending_to_move(uint8_t *midi_in, int stride, int max_bytes)
+{
+    if (!shim_to_move_pending || !midi_in) return;
+    for (int j = 0; j < max_bytes; j += stride)
+        if (midi_in[j] != 0) return;            /* busy — try again next frame */
+
+    memcpy(&midi_in[0], (const void *)shim_to_move_pkt, 4);
+    memset(&midi_in[4], 0, 4);                  /* zero the timestamp */
+    shim_to_move_pending = 0;
+
+    if (host_log) host_log("MIDI inject: delivered shim packet to Move MIDI_IN");
+}
+
 /* Drain MIDI inject buffer into Move's MIDI_IN (post-ioctl).
  * Copies USB-MIDI packets from SHM into empty slots in shadow_mailbox+MIDI_IN_OFFSET,
  * making Move process them as if they came from physical hardware.
@@ -555,6 +601,12 @@ void shadow_drain_midi_inject(void)
     const int MIDI_IN_EVT_STRIDE = 8;
     const int MIDI_IN_MAX_EVTS   = 31;              /* SCHWUNG_MIDI_IN_MAX */
     const int MIDI_IN_MAX_BYTES  = MIDI_IN_EVT_STRIDE * MIDI_IN_MAX_EVTS;
+
+    /* Shim-originated packets first, and independent of the ring: they must
+     * still reach Move while an overtake module is up, which is precisely when
+     * the ring below belongs to someone else. */
+    shadow_deliver_pending_to_move(host_shadow_mailbox + MIDI_IN_OFFSET,
+                                   MIDI_IN_EVT_STRIDE, MIDI_IN_MAX_BYTES);
 
     if (!inject_shm) return;
 
