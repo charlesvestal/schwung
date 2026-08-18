@@ -883,21 +883,31 @@ git commit -m "docs(xmos): add boot-replay capture from hardware verification"
 
 ### Deferred (not in this plan): Global Settings row
 
-A Schwung-side "USB-C Out" row was considered and deliberately left out.
+If a Schwung-side row is added later, it must **not** be a second Mic / Main Out
+control. Two controls for one piece of state can disagree, and the user's
+instruction was explicitly "let's not try to do anything fancy with move's
+settings". Move's menu stays the only place the value is chosen.
 
-`GLOBAL_SETTINGS_SECTIONS` in `src/shadow/shadow_ui.js:939` is a declarative
-schema whose row types are `bool`, `enum`, `float`, `int` — all writable and all
-backed by the settings store. There is no read-only row type, and making the row
-writable needs a settings-to-shim propagation path that has not been traced.
-Specifying that work now would mean guessing at it.
+The row is a switch over the *persistence behavior*, with the observed value as
+a read-only annotation:
 
-It is also possibly unnecessary. Task 4 Step 4 records whether Move's own
-Settings screen already reflects the replayed value. If it does, a second
-display of the same fact is redundant — and the user's instruction was
-explicitly "let's not try to do anything fancy with move's settings".
+```
+Persist USB-C Out    On     (currently: Main Out)
+```
 
-Revisit only if Task 4 shows Move's menu reading stale. The open question is how
-a `GLOBAL_SETTINGS_SECTIONS` change reaches the shim at runtime.
+`On` / `Off` governs whether the boot replay fires at all; the parenthetical
+just reports what was last seen on the wire. Nothing about it can contradict
+Move.
+
+Deferred because `GLOBAL_SETTINGS_SECTIONS` in `src/shadow/shadow_ui.js:939` is
+a declarative schema (`bool`, `enum`, `float`, `int`) with no row type that
+carries an annotation, and the Off case needs a settings-to-shim propagation
+path that has not been traced. Task 4 Step 4 also records whether Move's own
+Settings screen already reflects the replayed value, which affects whether the
+annotation earns its place.
+
+Open question if revisited: how a `GLOBAL_SETTINGS_SECTIONS` change reaches the
+shim at runtime.
 
 ---
 
