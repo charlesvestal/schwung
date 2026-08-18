@@ -4924,39 +4924,51 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
         }
     }
 
-    /* SPI SysEx injection: send audio source change command to XMOS.
-     * The worker reads + unlinks the trigger file and publishes the value;
-     * here we only consume it — no file I/O on the SPI thread. */
+    /* XMOS audio-IO SysEx emission — two producers, one slot-safe path.
+     *
+     * 1. Boot replay of the USB-C audio-out source (worker arms it ~5 s in).
+     * 2. The spi_sysex_inject debug trigger (file content = 37 12 value byte).
+     *
+     * Both go through xmos_audio_emit, which only ever writes free MIDI_OUT
+     * slots. The previous implementation blind-wrote out[0..31] regardless of
+     * what Move had queued there; per docs, a stuck injection like that
+     * hard-powered-off the device twice. One message per frame keeps at most 8
+     * of the 20 slots busy, leaving headroom for Move's LED and knob traffic. */
     {
-        static int inject_cooldown = 0;
-        if (inject_cooldown > 0) inject_cooldown--;
-        if (inject_cooldown == 0 && shim_pending_sysex_inject >= 0) {
-            int val_byte = shim_pending_sysex_inject;
-            shim_pending_sysex_inject = -1;
+        static uint8_t pending[2][XMOS_AUDIO_MSG_LEN];
+        static int pending_count = 0;  /* messages still to send */
+        static int pending_next = 0;   /* index of the next one */
 
-            /* Write SysEx as USB-MIDI packets into shadow output MIDI region.
-             * F0 00 21 1D 01 01 37 12 <val> 00 00 00 00 00 00 F7
-             * USB-MIDI: cin=0x04 (SysEx start/continue), cin=0x06 (SysEx end 2 bytes) */
-            uint8_t *out = shadow + MIDI_OUT_OFFSET;
-            /* Packet 1: F0 00 21 */
-            out[0] = 0x04; out[1] = 0xF0; out[2] = 0x00; out[3] = 0x21;
-            /* Packet 2: 1D 01 01 */
-            out[4] = 0x04; out[5] = 0x1D; out[6] = 0x01; out[7] = 0x01;
-            /* Packet 3: 37 12 <val> */
-            out[8] = 0x04; out[9] = 0x37; out[10] = 0x12; out[11] = (uint8_t)val_byte;
-            /* Packet 4: 00 00 00 */
-            out[12] = 0x04; out[13] = 0x00; out[14] = 0x00; out[15] = 0x00;
-            /* Packet 5: 00 00 00 */
-            out[16] = 0x04; out[17] = 0x00; out[18] = 0x00; out[19] = 0x00;
-            /* Packet 6: 00 00 00 */
-            out[20] = 0x04; out[21] = 0x00; out[22] = 0x00; out[23] = 0x00;
-            /* Packet 7: 00 00 00 */
-            out[24] = 0x04; out[25] = 0x00; out[26] = 0x00; out[27] = 0x00;
-            /* Packet 8: 00 F7 (SysEx end) */
-            out[28] = 0x06; out[29] = 0x00; out[30] = 0xF7; out[31] = 0x00;
+        if (pending_count == 0) {
+            int replay = shim_usbc_out_replay;
+            if (replay >= 0) {
+                shim_usbc_out_replay = -1;
+                xmos_audio_build(&xmos_audio_observed, replay, pending[0], pending[1]);
+                pending_count = 2;
+                pending_next = 0;
+                shadow_log(replay ? "USB-C out: boot re-assert Main Out"
+                                  : "USB-C out: boot re-assert Mic");
+            } else if (shim_pending_sysex_inject >= 0) {
+                int val_byte = shim_pending_sysex_inject;
+                shim_pending_sysex_inject = -1;
+                memset(pending[0], 0, XMOS_AUDIO_MSG_LEN);
+                pending[0][0] = 0xF0; pending[0][1] = 0x00; pending[0][2] = 0x21;
+                pending[0][3] = 0x1D; pending[0][4] = 0x01; pending[0][5] = 0x01;
+                pending[0][6] = 0x37;
+                pending[0][7] = XMOS_AUDIO_KEY_ROUTE;
+                pending[0][8] = (uint8_t)val_byte;
+                pending[0][XMOS_AUDIO_MSG_LEN - 1] = 0xF7;
+                pending_count = 1;
+                pending_next = 0;
+                shadow_log("SPI SysEx inject: audio source change queued");
+            }
+        }
 
-            inject_cooldown = 44;
-            shadow_log("SPI SysEx inject: audio source change sent");
+        /* One message per frame; retry next frame if MIDI_OUT is too busy. */
+        if (pending_count > 0 &&
+            xmos_audio_emit(shadow + MIDI_OUT_OFFSET, 80, pending[pending_next])) {
+            pending_next++;
+            pending_count--;
         }
     }
 
