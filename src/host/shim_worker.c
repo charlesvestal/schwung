@@ -263,9 +263,21 @@ static void *worker_main(void *arg) {
             jack_state_write(jp);
         }
 
-        /* Persist the USB-C audio-out source when the RT path reports a change. */
+        /* Persist the USB-C audio-out source when the RT path reports a change —
+         * but only once the boot window has fully settled. Two things put
+         * unintended values on the wire early: (1) Move's own firmware asserts
+         * its Mic default at ~0.6 s into every boot, regardless of what the
+         * user last chose; (2) our own boot re-assert (armed below, ~5 s) is
+         * itself observed by the same scan() that feeds this variable, since
+         * the shim's SysEx emit runs earlier in the same pre_transfer than its
+         * scan (see the scan call site in schwung_shim.c). Persisting either
+         * would silently clobber the stored preference on every reboot. Gate
+         * on tick >= 35 (~7 s) — after both Move's assert and our own replay
+         * echo — so only genuine post-boot user changes are written. Known,
+         * accepted trade-off: a setting change made in the first ~7 s of boot
+         * is not persisted. */
         int up = shim_usbc_out_persist;
-        if (up >= 0 && up != last_usbc_out) {
+        if (tick >= 35 && up >= 0 && up != last_usbc_out) {
             last_usbc_out = up;
             usbc_out_state_write(up);
         }
@@ -279,6 +291,12 @@ static void *worker_main(void *arg) {
             boot_reasserted = 1;
             int v = (shim_jack_persist >= 0) ? shim_jack_persist : boot_jack;
             if (v >= 0) shim_inject_boot_jack = v;
+
+            /* Discard anything observed during the boot window before the
+             * persistence gate (tick >= 35) opens — Move's own boot-default
+             * assert and, shortly, our own replay echo have no user intent
+             * behind them and must not be queued up to write the file. */
+            shim_usbc_out_persist = -1;
         }
 
         if (tick % 5 == 0) poll_flags();          /* ~1 Hz */
