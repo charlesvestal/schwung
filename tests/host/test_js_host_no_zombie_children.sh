@@ -54,4 +54,35 @@ if ! printf '%s\n' "$body" | grep -q '_exit(0)'; then
   exit 1
 fi
 
-echo "PASS: run_command_background double-forks and reaps its intermediate child"
+# analytics_track() has the same shape and is the path that actually leaked on
+# hardware: shadow_ui calls it on UI events (~1/90s when analytics is opted in),
+# whereas run_command_background's only caller is a one-shot manual refresh.
+# Pinning only the latter would let the real leak straight back in.
+analytics="src/host/analytics.c"
+
+if [ ! -f "$analytics" ]; then
+  echo "FAIL: $analytics does not exist" >&2
+  exit 1
+fi
+
+abody="$(awk '/^void analytics_track\(/{f=1} f{print} f&&/^}$/{exit}' "$analytics")"
+
+if [ -z "$abody" ]; then
+  echo "FAIL: could not locate analytics_track() in $analytics" >&2
+  exit 1
+fi
+
+afork_count="$(printf '%s\n' "$abody" | grep -c 'fork()' || true)"
+if [ "$afork_count" -lt 2 ]; then
+  echo "FAIL: analytics_track() must double-fork so curl is reparented to init;" >&2
+  echo "      found $afork_count fork() call(s). A single fork leaks one" >&2
+  echo "      curl zombie per tracked event." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$abody" | grep -q 'waitpid('; then
+  echo "FAIL: analytics_track() must waitpid() its intermediate child." >&2
+  exit 1
+fi
+
+echo "PASS: run_command_background and analytics_track double-fork and reap"

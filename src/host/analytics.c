@@ -13,6 +13,8 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <sched.h>
+#include <errno.h>
+#include <sys/wait.h>
 #include "analytics.h"
 
 #define POSTHOG_API_KEY "phc_xkBkpTgLbY9JrNEMCThDLwjnasG9EKGznY3B8myFNQj5"
@@ -142,10 +144,22 @@ void analytics_track(const char *event, const char *properties_json) {
             POSTHOG_API_KEY, event, g_anonymous_id, g_version);
     }
 
-    /* Fire-and-forget: fork, child execs curl, parent does NOT wait */
+    /* Fire-and-forget via double-fork so the exec'd curl is reparented to
+     * init, which reaps it. A single fork leaked one zombie per event: the
+     * caller (shadow_ui) is long-lived and never wait()s, and setsid() detaches
+     * the controlling terminal without changing the parent. Observed on
+     * hardware as `curl <defunct>` accumulating at ~1/90s under UI events.
+     * The intermediate child _exit()s immediately, so the waitpid() below
+     * returns at once and does not wait on the HTTP request. */
     pid_t pid = fork();
+    if (pid > 0) {
+        int status;
+        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) { }
+    }
     if (pid == 0) {
-        /* Child process */
+        /* Intermediate child: orphan the grandchild onto init. */
+        if (fork() != 0) _exit(0);
+        /* Grandchild */
         /* Reset scheduling to SCHED_OTHER (we may inherit FIFO from parent) */
         struct sched_param sp = { .sched_priority = 0 };
         sched_setscheduler(0, SCHED_OTHER, &sp);
