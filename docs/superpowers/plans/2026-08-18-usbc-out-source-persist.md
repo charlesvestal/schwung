@@ -39,6 +39,16 @@
 
 **Verify:** `bash tests/host/test_xmos_audio.sh` → prints `PASS` and exits 0
 
+> **Superseded by the shipped code.** The listings below are the original
+> plan source (commit `6e5602c3`). A code review then found that `emit()`
+> required 8 free slots without requiring them to be *contiguous*, so it
+> could splice into a cable-0 SysEx already in flight — the same class of
+> hardware corruption as the blind write that powered the device off twice.
+> Also fixed: `scan()` ignored the cable nibble, reassembly could not span
+> an SPI frame boundary, and the tests re-derived the framing instead of
+> asserting the captured bytes. The authoritative source is commit
+> `86efd261`; read it rather than the listings below.
+
 **Steps:**
 
 - [ ] **Step 1: Write the header**
