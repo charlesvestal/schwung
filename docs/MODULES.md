@@ -387,6 +387,54 @@ That means:
   Task 5). Bump `min_host_version` in your catalog entry if your
   module depends on it.
 
+### Remote UI for overtake tools (the Tool tab)
+
+Overtake tools (dsp.so loaded by the shim as `overtake_dsp`, not a chain slot)
+get their own browser view: schwung-manager serves the tool's `web_ui.html`
+under the **Tool tab**, addressed via the `overtake_dsp:<key>` param prefix.
+
+- **Opt in** by answering `get_param("module_id")` with your module id. The
+  manager probes it to discover the active tool, announces arrival/departure
+  to open Tool tabs, and serves `web_ui.html` from your module folder.
+- **Reads**: the manager seeds and refreshes the browser from
+  `get_param("state")` — return a **flat JSON object of delimited string
+  values** (nested arrays/objects are dropped by the param explosion).
+- **Writes**: browser `setParam` calls with values under 256 bytes arrive as
+  ordinary `set_param` dispatched from the shim's **web-set ring drain**
+  (lossless, ~one SPI frame, immune to param-mailbox contention); larger
+  values take the shadow_param mailbox (serialized round-trip, up to 64 KB).
+  **No per-buffer coalescing** on either path (unlike the on-device JS
+  channel). Ordering across the two paths is not guaranteed — keep any
+  op-sequencing within one size class.
+- **Off-audio-thread snapshots (optional)**: answer
+  `get_param("remote_snapshot_rt_safe")` with `"1"` and the host serializes
+  your `"state"` snapshot on a low-priority worker thread into a cached,
+  rev-stamped double buffer; the audio thread then serves browser pulls with
+  a single memcpy instead of running your serializer in the SPI frame budget.
+  **Contract:** every byte of instance memory reachable by your `"state"` /
+  `"rui_poll"` get_param must stay valid for the LIFETIME of the instance —
+  never freed or realloc'd by `render_block` OR `set_param` (frees only in
+  `destroy_instance`; use grow-only / clear-and-keep pools). Torn or
+  one-rev-stale snapshots are acceptable (the manager re-pulls until the
+  snapshot's own rev matches the digest); a use-after-free is not. Include
+  your current rev in the `"state"` JSON so the manager can tell what it
+  received. Note: a BULK_GET (request_type 3) of `"state"` bypasses this
+  cache and runs your serializer on the audio thread — don't put `"state"`
+  in bulk reads if you opt in.
+- **Live sync (optional but recommended)**: expose a monotonic edit counter
+  and a cheap digest, and the host pushes changes to the browser on-change:
+  - `get_param("rui_poll")` → `rev:on:tick:bpm[:devms]` — `rev` bumps on every
+    snapshot-visible edit; `on/tick/bpm` describe transport; `devms` (playing
+    only — the stopped digest must stay byte-stable) is a free-running
+    device-clock ms that lets the browser time-base its playhead independent
+    of delivery latency. The shim probes this in-process every few frames and
+    pushes changes through the notify ring; without it the manager falls back
+    to polling.
+  - Key-naming convention: keys suffixed `_ruisel` / `_cc_focus` and the key
+    `transport` are treated as selection/transport (the manager echoes
+    snapshots to their sender immediately instead of applying the editing
+    quiet-window).
+
 ## Drop-In Modules
 
 Modules are discovered at runtime from `/data/UserData/schwung/modules`.

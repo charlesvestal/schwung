@@ -36,12 +36,46 @@ type RemoteUI struct {
 
 	mu      sync.Mutex
 	clients map[*ruClient]struct{}
+
+	// toolPresent latches whether an overtake tool was active on the previous
+	// tool-tick, so a transition to "no tool" fires exactly one tool_info(gone)
+	// signal to Tool-tab clients. Guarded by mu.
+	toolPresent bool
+	// toolID caches the last successfully probed overtake tool id while
+	// toolPresent — so a subscribe that races mailbox contention can still
+	// seed the client instead of dead-ending it on "no tool".
+	toolID string
+	// toolGoneStreak counts consecutive confirmed-absent ticks; tool-gone is
+	// only signaled once it reaches the debounce threshold (a single absent
+	// answer can be a stomped-mailbox artifact, and a false gone dead-ends
+	// the client's tool UI).
+	toolGoneStreak int
+
+	// toolKick delivers a shim-pushed "rui_poll" digest (notify ring, F4 push
+	// path) to toolTickLoop so it services Tool-tab clients immediately instead
+	// of waiting for the next poll tick. Buffered(1); a pending kick is replaced
+	// by the newer digest.
+	toolKick chan string
+	// lastToolNotify is the UnixNano of the last shim rui_poll push. While
+	// recent, the tool ticker relaxes to a slow backstop — the notify ring is
+	// the primary update source. Guarded by mu.
+	lastToolNotify time.Time
+	// lastToolFull throttles full tool-state reads/fan-outs: rapid edit streams
+	// (FX knob drags) bump the rev per set_param, and servicing every kick with
+	// a 64KB read + full push melts the WiFi link. Guarded by mu.
+	lastToolFull time.Time
 }
 
 // ruClient represents a single WebSocket connection.
 type ruClient struct {
 	conn *websocket.Conn
-	mu   sync.Mutex // serialises writes
+	// mu guards client STATE (subs, tool cursors). It must never be held
+	// across a network write — a wedged client would then stall every loop
+	// that touches this client's state for up to the write timeout.
+	mu sync.Mutex
+	// writeMu serialises conn writes (wsjson.Write allows one writer at a
+	// time). Kept separate from mu so a stalled write blocks only writers.
+	writeMu sync.Mutex
 
 	// slots this client is subscribed to (slot index -> true)
 	subs map[uint8]bool
@@ -56,6 +90,17 @@ type ruClient struct {
 	toolSynced   bool
 	toolLastRev  int64
 	toolLastTick int64
+	toolLastOn   bool      // last pushed play-state; start/stop EDGES must be pushed
+	toolPlayAt   time.Time // last playhead push — rate-limited (edges exempt)
+	// toolLastEditAt: when this client last sent an overtake CONTENT edit —
+	// used to arm the quiet window only for edit STORMS (see handleSetParam).
+	toolLastEditAt time.Time
+	// toolQuietUntil: this client sent an overtake set_param recently, so it is
+	// mid-edit. Skip snapshot pushes to it until the window passes — its UI is
+	// optimistic and REJECTS echoes of its own edits anyway, and during a knob
+	// drag those echoes (a 64KB read + ~150KB WS frame per rev bump) saturate
+	// the WiFi link and stall everything for tens of seconds.
+	toolQuietUntil time.Time
 }
 
 // per-slot cached state used by the poll loop.
@@ -146,6 +191,7 @@ func NewRemoteUI(shm *ShmParams, setRing *ShmWebParamSetRing, basePath string, l
 		basePath: basePath,
 		logger:   logger,
 		clients:  make(map[*ruClient]struct{}),
+		toolKick: make(chan string, 1),
 	}
 }
 
@@ -158,13 +204,22 @@ const overtakeParamPrefix = "overtake_dsp:"
 // setParam writes a param using the fast ring buffer if available,
 // falling back to the old shared memory path.
 func (ru *RemoteUI) setParam(slot uint8, key, value string) error {
-	// Overtake-tool params MUST go through the reliable shadow_param ring
-	// (request_type=1), which the shim routes to the overtake DSP. The fast
-	// web_param_set ring's shadow_direct_set_param has no "overtake_dsp:"
-	// branch, so it would mis-route the key to a chain slot. The slow ring is
-	// fine here: overtake-tool edits are discrete ops, not knob-drag streams,
-	// and it lifts the fast ring's 255-byte value cap (64KB on the slow ring).
+	// Overtake-tool params: prefer the LOSSLESS web_param_set ring — drained by
+	// the shim every SPI frame and dispatched straight to the overtake DSP (the
+	// drain has an "overtake_dsp:" branch; requires the paired shim, deployed
+	// together). Unlike the mailbox, ring entries cannot be stomped by the
+	// device UI's fire-and-forget mailbox producer, which was killing overtake
+	// edits in 500ms response timeouts (dropped beat-stretch/legato/nudge ops).
+	// Oversized values (≥256B) still take the blocking mailbox (64KB cap).
 	if strings.HasPrefix(key, overtakeParamPrefix) {
+		if ring := ru.ensureSetRing(); ring != nil &&
+			len(key) < webKeyLen && len(value) < webValueLen {
+			if err := ring.SetParam(slot, key, value); err == nil {
+				return nil
+			}
+			// Ring full/unwritable — fall through to the blocking mailbox
+			// rather than dropping the edit (the loss class this path fixes).
+		}
 		if shm := ru.ensureShm(); shm != nil {
 			return shm.SetParam(slot, key, value)
 		}
@@ -179,25 +234,42 @@ func (ru *RemoteUI) setParam(slot uint8, key, value string) error {
 	return fmt.Errorf("no shared memory available")
 }
 
+// paramAnswered reports whether err came from an ANSWERED request — the shim
+// published an error response (authoritative, e.g. "no overtake DSP is
+// loaded") — rather than a mailbox-contention timeout (idle/response), where
+// the truth is simply unknown this tick. Conflating the two is what caused
+// both the gone→arrived flap loop and, inverted, unreachable gone detection.
+func paramAnswered(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "param get error")
+}
+
 // activeOvertakeToolID returns the module id of the overtake tool currently
 // loaded that opts into a remote UI by answering the
-// "overtake_dsp:module_id" probe, or "" if no such tool is active. The shim
-// returns an error for this GET when no overtake DSP is loaded (or the loaded
-// one predates the probe), so this is backward-safe.
-func (ru *RemoteUI) activeOvertakeToolID(slot uint8) string {
+// "overtake_dsp:module_id" probe. known=false means the answer could not be
+// determined this tick (no shm / mailbox contention timeout) — callers must
+// NOT treat that as "no tool". A genuine no-tool state is id=="" with
+// known==true (the shim answers the GET with an error response when no
+// overtake DSP is loaded — distinguished from a timeout by the error text,
+// not wall-clock).
+func (ru *RemoteUI) activeOvertakeToolID(slot uint8) (id string, known bool) {
 	shm := ru.ensureShm()
 	if shm == nil {
-		return ""
+		return "", false
 	}
 	id, err := shm.GetParam(slot, overtakeParamPrefix+"module_id")
 	if err != nil {
-		return ""
+		return "", paramAnswered(err)
 	}
-	return id
+	return id, true
 }
 
 // ensureSetRing attempts to open the web param set ring if not yet connected.
+// mu-guarded: the eager connect loop races WS handlers here, and a double
+// OpenShmWebParamSetRing would yield two ring objects whose per-object mutex
+// no longer serializes writes to the one shared-memory ring.
 func (ru *RemoteUI) ensureSetRing() *ShmWebParamSetRing {
+	ru.mu.Lock()
+	defer ru.mu.Unlock()
 	if ru.setRing != nil {
 		return ru.setRing
 	}
@@ -210,8 +282,11 @@ func (ru *RemoteUI) ensureSetRing() *ShmWebParamSetRing {
 }
 
 // ensureShm attempts to open shared memory if not yet connected.
-// Returns the ShmParams (possibly nil if still unavailable).
+// Returns the ShmParams (possibly nil if still unavailable). mu-guarded for
+// the same double-open reason as ensureSetRing.
 func (ru *RemoteUI) ensureShm() *ShmParams {
+	ru.mu.Lock()
+	defer ru.mu.Unlock()
 	if ru.shm != nil {
 		return ru.shm
 	}
@@ -228,6 +303,32 @@ func (ru *RemoteUI) Start(ctx context.Context) {
 	go ru.pollLoop(ctx)
 	go ru.notifyLoop(ctx)
 	go ru.refreshLoop(ctx)
+	go ru.toolTickLoop(ctx)
+	go ru.setRingConnectLoop(ctx)
+}
+
+// setRingConnectLoop connects the web param set ring EAGERLY at startup,
+// retrying until the shim has created the segment. Lazy-on-first-use is not
+// enough on this platform: something unlinks every /dev/shm/schwung-* segment
+// shortly after stack start (early mmaps like the notify/params rings survive
+// via their open mappings, but any LATER open gets ENOENT forever). Without
+// this, the manager start races segment creation, the lazy open never
+// succeeds, and overtake edits silently fall back to the stompable mailbox —
+// re-introducing the 500ms-timeout dropped-edit failure the ring path exists
+// to fix. Retry for ~2 min (covers slow boots), then give up quietly (the
+// mailbox fallback still works, just degraded).
+func (ru *RemoteUI) setRingConnectLoop(ctx context.Context) {
+	for i := 0; i < 240; i++ {
+		if ru.ensureSetRing() != nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	ru.logger.Warn("web param set ring: gave up connecting — overtake edits will use the mailbox (degraded)")
 }
 
 // refreshLoop periodically re-reads all param values for subscribed slots.
@@ -272,7 +373,7 @@ func (ru *RemoteUI) refreshLoop(ctx context.Context) {
 			if toolID, ok, err := shm.TryGetParam(0, overtakeParamPrefix+"module_id"); ok && err == nil && toolID != "" {
 				if params, hit := ru.fetchAllParams(0, "overtake_dsp"); hit {
 					for _, c := range toolClients {
-						ru.writeJSON(ctx, c, wsParamUpdate{Type: "param_update", Slot: 0, Params: params})
+						ru.writeJSONTry(ctx, c, wsParamUpdate{Type: "param_update", Slot: 0, Params: params})
 					}
 				}
 			}
@@ -520,6 +621,15 @@ func (ru *RemoteUI) fetchAllParams(slot uint8, comp string) (map[string]string, 
 	}
 	var values map[string]any
 	if json.Unmarshal([]byte(raw), &values) != nil {
+		// A "state" snapshot that filled the whole param buffer has almost
+		// certainly truncated mid-token → invalid JSON → we drop it here and the
+		// browser silently stops refreshing this component. Surface it so the
+		// failure is diagnosable instead of a mystery "frozen" remote UI; the
+		// module must gate its large snapshot fields below the 64KB cap.
+		if len(raw) >= paramValueLen {
+			ru.logger.Warn("remote UI: snapshot truncated at the param buffer cap → invalid JSON, dropping (component won't refresh)",
+				"comp", comp, "cap", paramValueLen)
+		}
 		return nil, false
 	}
 	params := make(map[string]string, len(values))
@@ -650,6 +760,29 @@ func (ru *RemoteUI) handleSetParam(ctx context.Context, c *ruClient, msg wsMessa
 		ru.sendError(ctx, c, "set_param requires key")
 		return
 	}
+	// Overtake CONTENT edits mark the sender mid-edit: snapshot echoes back to
+	// it are suppressed for a short window (see ruClient.toolQuietUntil) — its
+	// optimistic UI rejects them anyway. Selection/transport/focus keys are
+	// EXEMPT: for those the snapshot IS the requested data (the newly selected
+	// clip's notes, the focused CC lane), not an echo — arming quiet for them
+	// just made the client's own request feel laggy.
+	// STORM-ONLY: a single discrete edit (beat stretch, legato, one note op)
+	// does NOT arm the window — the browser can't optimistically render
+	// destructive ops, so the snapshot echo IS the result and deferring it
+	// just reads as lag. Only a rapid successive stream (knob drag, note
+	// drag) arms it; the optimistic UI covers those.
+	if strings.HasPrefix(msg.Key, overtakeParamPrefix) &&
+		!strings.HasSuffix(msg.Key, "_ruisel") &&
+		!strings.HasSuffix(msg.Key, ":transport") &&
+		!strings.HasSuffix(msg.Key, "_cc_focus") {
+		now := time.Now()
+		c.mu.Lock()
+		if now.Sub(c.toolLastEditAt) < 250*time.Millisecond {
+			c.toolQuietUntil = now.Add(300 * time.Millisecond)
+		}
+		c.toolLastEditAt = now
+		c.mu.Unlock()
+	}
 	if err := ru.setParam(slot, msg.Key, msg.Value); err != nil {
 		ru.logger.Error("set_param failed", "slot", slot, "key", msg.Key, "err", err)
 		ru.sendError(ctx, c, "set_param failed: "+err.Error())
@@ -668,16 +801,7 @@ func (ru *RemoteUI) handleSetParam(ctx context.Context, c *ruClient, msg wsMessa
 			go func() {
 				time.Sleep(50 * time.Millisecond) // Let the plugin process the change
 				// Read shm once and fan out to all subscribers of this slot.
-				clients := ru.subscribedClients(slot)
-				// Pure Tool-tab clients set toolSub, not subs[0], so they're not
-				// in subscribedClients(0). An overtake tool's params live under
-				// the "overtake_dsp" component at slot 0, so include tool clients
-				// here — otherwise the immediate preset refetch skips them and
-				// they only catch the change on their next refetch_tool poll.
-				if comp == strings.TrimSuffix(overtakeParamPrefix, ":") {
-					clients = append(clients, ru.subscribedToolClients()...)
-				}
-				ru.broadcastInitialParamValues(ctx, slot, comp, clients)
+				ru.broadcastInitialParamValues(ctx, slot, comp, ru.subscribedClients(slot))
 			}()
 		}
 	}
@@ -758,7 +882,25 @@ func (ru *RemoteUI) handleSubscribeTool(ctx context.Context, c *ruClient) {
 		return
 	}
 
-	toolID := ru.activeOvertakeToolID(0)
+	toolID, known := ru.activeOvertakeToolID(0)
+	if !known {
+		// Contention at subscribe time — do NOT seed "no tool" (the client
+		// subscribes exactly once; a false empty seed dead-ends the tab).
+		// Fall back to the cached id if a tool is latched present.
+		ru.mu.Lock()
+		if ru.toolPresent {
+			toolID = ru.toolID
+		}
+		ru.mu.Unlock()
+	}
+	if toolID != "" {
+		// Consume the arrival edge BEFORE any network write: this client is
+		// being seeded right here, and it became visible to the ticker's
+		// subscribedToolClients() the moment toolSub was set above — if the
+		// ticker won the edge race mid-seed it would announceToolArrival a
+		// second custom_ui and reload the just-built iframe.
+		ru.markToolPresent()
+	}
 	ru.writeJSON(ctx, c, wsToolInfo{Type: "tool_info", ID: toolID})
 	if toolID == "" {
 		return
@@ -781,60 +923,382 @@ func (ru *RemoteUI) handleUnsubscribeTool(c *ruClient) {
 	ru.logger.Info("ws unsubscribe tool")
 }
 
-// handleRefetchTool picks up device-side changes the web UI polls for (playhead,
-// external edits) that don't notify. Rev-gated: it first reads the tool's CHEAP
-// "rui_poll" digest (rev:on:tick:bpm, no note serialization) and only does the
-// heavy full "state" read (fetchAllParams) when rev changes (a content edit).
-// While playing with no edit it pushes only the moving playhead; when nothing
-// changed it does no work. Params ONLY — never custom_ui/tool_info (which would
-// reload the iframe).
-func (ru *RemoteUI) handleRefetchTool(ctx context.Context, c *ruClient) {
-	// Safety belt: only poll the device for a client actually viewing the Tool tab.
-	if !c.toolSub {
-		return
-	}
-	if !ru.requireShm(ctx, c) {
-		return
-	}
-	digest, ok, err := ru.shm.TryGetParam(0, overtakeParamPrefix+"rui_poll")
-	if !ok {
-		// Shm was busy (another goroutine held s.mu) — skip this poll and let
-		// the next one (~5ms) retry. Falling through to fetchAllParams here
-		// would block on s.mu and run the heavy full-state read, defeating the
-		// rev-gate exactly under the contention it's meant to cheapen.
-		return
-	}
-	if err != nil || digest == "" {
-		// Tool predates the cheap digest key (or a transient error) — fall back
-		// to a full fetch.
-		if params, hit := ru.fetchAllParams(0, "overtake_dsp"); hit {
-			ru.writeJSON(ctx, c, wsParamUpdate{Type: "param_update", Slot: 0, Params: params})
+// handleRefetchTool is retained only so browsers that still send "refetch_tool"
+// on a timer don't get an "unknown message type" error. It is now a NO-OP: the
+// server-side toolTickLoop drives all Tool-tab updates (coalesced across clients
+// + rev-gated). A per-client poll here would double-read the shm channel and
+// race the ticker on the per-client rev cursors. Updates still reach the browser
+// via pushed param_update messages, exactly as before.
+func (ru *RemoteUI) handleRefetchTool(_ context.Context, _ *ruClient) {}
+
+// toolTickLoop drives the overtake-tool remote UI from the SERVER, replacing the
+// per-client browser-driven "refetch_tool" poll. When >=1 client is viewing the
+// Tool tab it reads the tool's cheap "rui_poll" digest once per tick and does the
+// single expensive "state" read only on a rev change — fanned out to every stale
+// tool client at once (coalesced: N tabs = 1 read, not N). Between edits it
+// pushes only the moving playhead. With no tool clients it touches no shm at all.
+//
+// Cadence adapts: ~100ms while a tool is actively playing/editing (tighter than
+// the old browser 150–500ms poll → snappier device→browser sync), backing off
+// when a tool tab is open but idle so steady-state shm traffic stays low.
+func (ru *RemoteUI) toolTickLoop(ctx context.Context) {
+	const noClientsInterval = 500 * time.Millisecond
+	const idleInterval = 400 * time.Millisecond
+	const liveInterval = 100 * time.Millisecond
+	// While the shim is pushing rui_poll digests through the notify ring (F4
+	// push path), kicks are the primary update source and the poll degrades to
+	// a slow backstop that only catches a stalled/overflowed ring.
+	const pushBackstopInterval = 2 * time.Second
+	const notifyFreshWindow = 15 * time.Second
+	const retryInterval = 150 * time.Millisecond
+	interval := noClientsInterval
+	for {
+		var kicked string
+		select {
+		case <-ctx.Done():
+			return
+		case kicked = <-ru.toolKick:
+		case <-time.After(interval):
 		}
-		return
-	}
-	rev, on, tick, bpm := parseRuiPoll(digest)
-	if !c.toolSynced || rev != c.toolLastRev {
-		// Content changed (or first sync) → full snapshot.
-		if params, hit := ru.fetchAllParams(0, "overtake_dsp"); hit {
-			ru.writeJSON(ctx, c, wsParamUpdate{Type: "param_update", Slot: 0, Params: params})
-			c.toolSynced = true
-			c.toolLastRev = rev
-			c.toolLastTick = tick
+		clients := ru.subscribedToolClients()
+		if len(clients) == 0 {
+			interval = noClientsInterval
+			continue
 		}
-		return
-	}
-	// No content change → push only the playhead while playing (cheap).
-	if on && tick != c.toolLastTick {
-		c.toolLastTick = tick
-		ru.writeJSON(ctx, c, wsParamUpdate{Type: "param_update", Slot: 0,
-			Params: map[string]string{
-				overtakeParamPrefix + "rui_play": fmt.Sprintf("%d:%d:%d", boolToInt(on), tick, bpm),
-			}})
+		shm := ru.ensureShm()
+		if shm == nil {
+			interval = idleInterval
+			continue
+		}
+		active, pending := ru.serviceToolClients(ctx, shm, clients, kicked)
+		ru.mu.Lock()
+		notifyFresh := !ru.lastToolNotify.IsZero() && time.Since(ru.lastToolNotify) < notifyFreshWindow
+		ru.mu.Unlock()
+		switch {
+		case pending:
+			// A stale client was deferred (edit-quiet window or full-read
+			// throttle) — retry soon so it syncs right after the window.
+			interval = retryInterval
+		case notifyFresh:
+			interval = pushBackstopInterval
+		case active:
+			interval = liveInterval
+		default:
+			interval = idleInterval
+		}
 	}
 }
 
-// parseRuiPoll parses the overtake tool's cheap "rev:on:tick:bpm" poll digest.
-func parseRuiPoll(s string) (rev int64, on bool, tick int64, bpm int64) {
+// serviceToolClients performs one rev-gated tool poll and fans the result out to
+// all Tool-tab clients. A single shm read per tick; the per-client rev/tick
+// cursors (guarded by c.mu) decide who receives the full snapshot vs. just the
+// playhead. Returns true when the tool is "active" (playing, content changed, or
+// the channel was busy mid-edit) so the caller keeps the tighter cadence.
+func (ru *RemoteUI) serviceToolClients(ctx context.Context, shm *ShmParams, clients []*ruClient, kicked string) (active, pending bool) {
+	var digest string
+	if kicked != "" {
+		// Shim-pushed digest (notify ring) — no shm read needed at all.
+		digest = kicked
+	} else {
+		var ok bool
+		var err error
+		digest, ok, err = shm.TryGetParam(0, overtakeParamPrefix+"rui_poll")
+		if !ok {
+			// Mutex busy (a concurrent SetParam or another read). SKIP this tick
+			// rather than escalate to the heavy "state" read — escalating on
+			// contention defeats the rev-gate exactly when the channel is busiest
+			// (self-amplifying under load). Stay on the fast cadence: busy means a
+			// user is actively editing, so we want to catch up promptly.
+			return true, false
+		}
+		if err != nil {
+			if paramAnswered(err) {
+				// The shim ANSWERED with an error: no overtake DSP is serving
+				// rui_poll — either no tool is loaded (gone path below) or a
+				// legacy tool without the key (module_id disambiguates).
+				// Genuine unloads surface as exactly this, so it must flow
+				// into the no-digest path or tool-gone becomes unreachable.
+				digest = ""
+			} else {
+				// Contention timeout — NOT evidence the tool is gone. Treating
+				// it as absence made the manager flap gone→arrived every few
+				// seconds under device-side param load: each false arrival
+				// reset every client's cursors and re-pushed a full snapshot.
+				// Skip the tick; the next poll/kick retries.
+				return true, false
+			}
+		}
+	}
+	if digest == "" {
+		// No digest: either no active overtake tool, or a tool that predates the
+		// cheap rui_poll key. One module_id read (only on this cold path) tells
+		// them apart, so we can notify the Tool tab when its tool goes away.
+		id, idKnown := ru.activeOvertakeToolID(0)
+		if !idKnown {
+			// Contention — can't tell if the tool is gone. Never signal gone
+			// on uncertainty (flap loop); skip and let the next tick decide.
+			return true, false
+		}
+		if id == "" {
+			// DEBOUNCE: require several consecutive confirmed-absent ticks
+			// before telling clients the tool is gone. A single ambiguous
+			// answer (a stomped mailbox can also produce an answered error)
+			// put clients into a dead "no tool" state mid-session.
+			ru.mu.Lock()
+			ru.toolGoneStreak++
+			confirmed := ru.toolGoneStreak >= 3
+			ru.mu.Unlock()
+			if !confirmed {
+				return true, false
+			}
+			ru.signalToolGone(ctx, clients)
+			return false, false
+		}
+		ru.mu.Lock()
+		ru.toolID = id
+		ru.mu.Unlock()
+		ru.maybeAnnounceArrival(ctx, clients)
+		// Legacy tool without rui_poll → one coalesced full fetch for all.
+		if params, hit := ru.fetchAllParams(0, "overtake_dsp"); hit {
+			for _, c := range clients {
+				ru.writeJSONTry(ctx, c, wsParamUpdate{Type: "param_update", Slot: 0, Params: params})
+			}
+		}
+		return true, false
+	}
+	ru.maybeAnnounceArrival(ctx, clients)
+	rev, on, tick, bpm, devms := parseRuiPoll(digest)
+	// rui_play frame (used by BOTH the snapshot path — play-state edges must
+	// ride along, snapshots don't carry the on flag — and the playhead path).
+	// devms (device-clock ms, playing only) lets the browser time-base
+	// corrections independent of delivery latency.
+	play := fmt.Sprintf("%d:%d:%d", boolToInt(on), tick, bpm)
+	if on && devms > 0 {
+		play = fmt.Sprintf("%d:%d:%d:%d", boolToInt(on), tick, bpm, devms)
+	}
+	playUpdate := wsParamUpdate{Type: "param_update", Slot: 0,
+		Params: map[string]string{overtakeParamPrefix + "rui_play": play}}
+
+	// Which clients need the full snapshot (rev changed, or first sync)?
+	// A client inside its edit-quiet window is deferred, not served: it is
+	// mid-edit, its optimistic UI rejects echoes of its own edits, and echoing
+	// a ~150KB snapshot per knob tick is what melted the WiFi link.
+	tnow := time.Now()
+	needFull := false
+	for _, c := range clients {
+		c.mu.Lock()
+		stale := !c.toolSynced || rev != c.toolLastRev
+		quiet := tnow.Before(c.toolQuietUntil)
+		c.mu.Unlock()
+		if stale && quiet {
+			pending = true
+		}
+		if stale && !quiet {
+			needFull = true
+		}
+	}
+	if needFull {
+		// Global full-read throttle: a rapid edit stream bumps rev per
+		// set_param; without this the kick path does back-to-back 64KB reads
+		// + full pushes. Deferred work is picked up by the retry cadence.
+		ru.mu.Lock()
+		throttled := time.Since(ru.lastToolFull) < 300*time.Millisecond
+		if !throttled {
+			ru.lastToolFull = tnow
+		}
+		ru.mu.Unlock()
+		if throttled {
+			return true, true
+		}
+		params, hit := ru.fetchAllParams(0, "overtake_dsp") // ONE read, fanned out
+		// The shim serves "state" from a worker-maintained cache that may be
+		// one rev behind the digest. The blob carries its own rui_rev — sync
+		// cursors to what we actually RECEIVED, and if it's older than the
+		// digest, keep pending so the retry cadence re-pulls (the shim kicks
+		// its cache refresh on the stale read).
+		blobRev := rev
+		if hit {
+			if s, ok := params[overtakeParamPrefix+"rui_rev"]; ok {
+				if v, perr := strconv.ParseInt(s, 10, 64); perr == nil {
+					blobRev = v
+				}
+			}
+			if blobRev < rev {
+				// Stale cache served — re-pull soon. (blobRev > rev just means
+				// the blob was serialized after the digest read: fresher, fine.)
+				pending = true
+			}
+		} else {
+			pending = true // cold shim cache / busy channel — retry soon
+		}
+		if hit {
+			for _, c := range clients {
+				c.mu.Lock()
+				stale := !c.toolSynced || rev != c.toolLastRev
+				quiet := time.Now().Before(c.toolQuietUntil)
+				c.mu.Unlock()
+				if !stale {
+					continue
+				}
+				if quiet {
+					pending = true // sync right after the quiet window
+					continue
+				}
+				// Non-blocking dispatch: on drop (a write to this client is
+				// still in flight) the cursors stay stale, so the next tick
+				// retries — a wedged client can't stall the whole fan-out.
+				if !ru.writeJSONTry(ctx, c, wsParamUpdate{Type: "param_update", Slot: 0, Params: params}) {
+					pending = true
+					continue
+				}
+				c.mu.Lock()
+				c.toolSynced = true
+				c.toolLastRev = blobRev
+				c.toolLastTick = tick
+				edge := on != c.toolLastOn
+				c.mu.Unlock()
+				// A play-STATE edge must ride along with the snapshot: the
+				// state blob does NOT carry the on flag (rui_play is the
+				// browser's only source of it), and this branch returns before
+				// the playhead section — advancing toolLastOn here without
+				// sending rui_play would swallow the edge FOREVER (a hardware
+				// stop coinciding with a rev bump left the browser playhead
+				// free-running indefinitely). Dispatch it; on drop leave the
+				// cursor so the playhead section retries within retryInterval.
+				if edge {
+					if ru.writeJSONTry(ctx, c, playUpdate) {
+						c.mu.Lock()
+						c.toolLastOn = on
+						c.mu.Unlock()
+					} else {
+						pending = true
+					}
+				}
+			}
+		}
+		return true, pending
+	}
+
+	// No content change → push the playhead. While playing that's the moving
+	// tick; a play-STATE edge must also be pushed even when on=false — without
+	// the stop edge the browser's animated playhead free-runs long after
+	// transport stops (rui_play pushes are its only source of the on flag).
+	// Rate-limit moving-playhead pushes per client (~400ms): the browser
+	// free-runs its own BPM clock and only needs phase corrections, and the
+	// Move's WiFi delivers small frames in bursty clumps — a ~100ms stream
+	// congested the link and starved snapshot pushes behind it. Play-state
+	// EDGES are exempt (always pushed immediately).
+	const playheadMinInterval = 400 * time.Millisecond
+	now := time.Now()
+	for _, c := range clients {
+		c.mu.Lock()
+		edge := on != c.toolLastOn
+		changed := edge || (on && tick != c.toolLastTick &&
+			now.Sub(c.toolPlayAt) >= playheadMinInterval)
+		c.mu.Unlock()
+		if !changed {
+			continue
+		}
+		if !ru.writeJSONTry(ctx, c, playUpdate) {
+			continue // dropped — cursors untouched, next tick retries
+		}
+		c.mu.Lock()
+		c.toolLastOn = on
+		c.toolLastTick = tick
+		c.toolPlayAt = now
+		c.mu.Unlock()
+	}
+	return on, pending
+}
+
+// markToolPresent latches that an overtake tool is currently active, so a later
+// transition to "no tool" fires exactly one tool-gone signal. Returns true when
+// this call is the not-present -> present EDGE (a fresh arrival).
+func (ru *RemoteUI) markToolPresent() bool {
+	ru.mu.Lock()
+	arrived := !ru.toolPresent
+	ru.toolPresent = true
+	ru.mu.Unlock()
+	return arrived
+}
+
+// announceToolArrival is the mirror of signalToolGone: tells subscribed
+// Tool-tab clients that an overtake tool has (re)appeared. Without it a Tool
+// tab opened BEFORE the tool loads (or across an on-device tool swap) sits on
+// "No tool loaded" indefinitely — the browser subscribes exactly once and
+// nothing re-announces. Sends tool_info + custom_ui per client (ordered within
+// a per-client goroutine) and marks every client unsynced so the ticker's
+// normal path fans out a fresh snapshot in the same pass.
+// maybeAnnounceArrival consumes the not-present→present edge and announces the
+// arrival. If the announce cannot complete (module_id unreadable under
+// contention), the edge is UN-latched so the next tick retries — consuming the
+// edge and then silently failing left clients in a dead "no tool" state with
+// snapshots streaming past them (the "browser never updates" failure).
+func (ru *RemoteUI) maybeAnnounceArrival(ctx context.Context, clients []*ruClient) {
+	ru.mu.Lock()
+	ru.toolGoneStreak = 0 // tool observed present — reset the gone debounce
+	ru.mu.Unlock()
+	if !ru.markToolPresent() {
+		return
+	}
+	if !ru.announceToolArrival(ctx, clients) {
+		ru.mu.Lock()
+		ru.toolPresent = false
+		ru.mu.Unlock()
+	}
+}
+
+// announceToolArrival returns false when the announce could not be delivered
+// (tool id unreadable) so the caller can retry the arrival edge.
+func (ru *RemoteUI) announceToolArrival(ctx context.Context, clients []*ruClient) bool {
+	toolID, _ := ru.activeOvertakeToolID(0)
+	if toolID == "" {
+		return false
+	}
+	ru.mu.Lock()
+	ru.toolID = toolID
+	ru.mu.Unlock()
+	url := ru.findModuleWebUI(toolID)
+	for _, c := range clients {
+		c.mu.Lock()
+		c.toolSynced = false
+		c.mu.Unlock()
+		go func(c *ruClient) {
+			ru.writeJSON(ctx, c, wsToolInfo{Type: "tool_info", ID: toolID})
+			if url != "" {
+				ru.sendCustomUI(ctx, c, 0, "tool", url)
+			}
+		}(c)
+	}
+	ru.logger.Info("overtake tool arrived — announced to Tool-tab clients", "tool", toolID)
+	return true
+}
+
+// signalToolGone tells Tool-tab clients (once) that their overtake tool has
+// unloaded, so the browser can clear its iframe instead of polling a dead tool
+// forever. No-op until an active tool has actually been seen.
+func (ru *RemoteUI) signalToolGone(ctx context.Context, clients []*ruClient) {
+	ru.mu.Lock()
+	was := ru.toolPresent
+	ru.toolPresent = false
+	ru.toolID = ""
+	ru.mu.Unlock()
+	if !was {
+		return
+	}
+	for _, c := range clients {
+		// Async (must not be dropped, must not stall the ticker on a wedged
+		// client); per-client writeMu still serialises with in-flight writes.
+		ru.writeJSONAsync(ctx, c, wsToolInfo{Type: "tool_info", ID: ""})
+	}
+	ru.logger.Info("overtake tool unloaded — signaled Tool-tab clients")
+}
+
+// parseRuiPoll parses the overtake tool's cheap "rev:on:tick:bpm[:devms]" poll
+// digest. devms (present only while playing) is the module's free-running
+// device-clock ms for the tick — forwarded so the browser can time-base
+// playhead corrections independent of delivery latency.
+func parseRuiPoll(s string) (rev int64, on bool, tick int64, bpm int64, devms int64) {
 	p := strings.Split(s, ":")
 	if len(p) > 0 {
 		rev, _ = strconv.ParseInt(p[0], 10, 64)
@@ -848,6 +1312,9 @@ func parseRuiPoll(s string) (rev int64, on bool, tick int64, bpm int64) {
 	}
 	if len(p) > 3 {
 		bpm, _ = strconv.ParseInt(p[3], 10, 64)
+	}
+	if len(p) > 4 {
+		devms, _ = strconv.ParseInt(p[4], 10, 64)
 	}
 	return
 }
@@ -989,13 +1456,42 @@ func (ru *RemoteUI) sendError(ctx context.Context, c *ruClient, message string) 
 }
 
 func (ru *RemoteUI) writeJSON(ctx context.Context, c *ruClient, v any) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if err := wsjson.Write(ctx, c.conn, v); err != nil {
 		ru.logger.Debug("ws write failed", "err", err)
 	}
+}
+
+// writeJSONTry dispatches the write in its own goroutine if no write to this
+// client is already in flight, and reports false (dropped) otherwise. Used by
+// the periodic fan-out loops (tool ticker, notify drain, backstop): every
+// update they push is an ABSOLUTE value, so dropping one while the previous
+// write is still stuck is correct — the caller skips its cursor update and the
+// next tick re-pushes. A wedged client can neither stall the calling loop nor
+// accumulate blocked goroutines (at most one in flight per client).
+func (ru *RemoteUI) writeJSONTry(ctx context.Context, c *ruClient, v any) bool {
+	if !c.writeMu.TryLock() {
+		return false
+	}
+	go func() {
+		defer c.writeMu.Unlock()
+		wctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		if err := wsjson.Write(wctx, c.conn, v); err != nil {
+			ru.logger.Debug("ws write failed", "err", err)
+		}
+	}()
+	return true
+}
+
+// writeJSONAsync queues the write in its own goroutine (serialised per client
+// by writeMu). For one-shot messages that must not be dropped (tool_info) but
+// must not stall the calling loop either.
+func (ru *RemoteUI) writeJSONAsync(ctx context.Context, c *ruClient, v any) {
+	go ru.writeJSON(ctx, c, v)
 }
 
 // ---------------------------------------------------------------------------
@@ -1057,6 +1553,29 @@ func (ru *RemoteUI) notifyLoop(ctx context.Context) {
 			slotChanges := make(map[uint8]map[string]string)
 			masterFxChanges := make(map[string]string)
 			for _, c := range changes {
+				if c.Slot == 0 && c.Key == overtakeParamPrefix+"rui_poll" {
+					// F4 push: the shim probes the overtake tool's rui_poll
+					// digest and pushes changes here. Don't forward raw —
+					// kick the tool ticker (sole driver of tool cursors)
+					// with the digest; replace any pending kick with the
+					// newer one.
+					ru.mu.Lock()
+					ru.lastToolNotify = time.Now()
+					ru.mu.Unlock()
+					select {
+					case ru.toolKick <- c.Value:
+					default:
+						select {
+						case <-ru.toolKick:
+						default:
+						}
+						select {
+						case ru.toolKick <- c.Value:
+						default:
+						}
+					}
+					continue
+				}
 				if c.Slot == 0 && strings.HasPrefix(c.Key, "master_fx:") {
 					masterFxChanges[c.Key] = c.Value
 					// A device-initiated master-FX preset load reshuffles every
@@ -1093,6 +1612,12 @@ func (ru *RemoteUI) notifyLoop(ctx context.Context) {
 				}
 			}
 
+			// Non-blocking dispatch (writeJSONTry): these are absolute values
+			// re-pushed on every change, so dropping one for a client whose
+			// previous write is still in flight is safe — and one wedged
+			// client can no longer stall this 5ms drain loop for up to the
+			// write timeout (which overflowed the 64-entry shim ring and
+			// dropped everyone's live knob updates).
 			for slot, params := range slotChanges {
 				update := wsParamUpdate{Type: "param_update", Slot: slot, Params: params}
 				for _, c := range clients {
@@ -1100,7 +1625,7 @@ func (ru *RemoteUI) notifyLoop(ctx context.Context) {
 					subscribed := c.subs[slot]
 					c.mu.Unlock()
 					if subscribed {
-						ru.writeJSON(ctx, c, update)
+						ru.writeJSONTry(ctx, c, update)
 					}
 				}
 			}
@@ -1112,7 +1637,7 @@ func (ru *RemoteUI) notifyLoop(ctx context.Context) {
 					subscribed := c.masterFxSub
 					c.mu.Unlock()
 					if subscribed {
-						ru.writeJSON(ctx, c, update)
+						ru.writeJSONTry(ctx, c, update)
 					}
 				}
 			}
