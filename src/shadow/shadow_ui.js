@@ -3424,8 +3424,12 @@ function hideToolOvertake() {
     enterToolsMenu();
 }
 
-/* Complete the exit after LEDs are cleared */
-function completeOvertakeExit() {
+/* Complete the exit after LEDs are cleared.
+ * skipNavigation: tear down only, leave the view alone. Used by callers that
+ * are about to navigate somewhere themselves (the Tools shortcut) — without
+ * it the non-tool tail below would fire shadow_request_exit() and bounce the
+ * user all the way out to Move. */
+function completeOvertakeExit(skipNavigation) {
     overtakeExitPending = false;
 
     /* Disable overtake mode to allow MIDI to reach Move again */
@@ -3445,9 +3449,11 @@ function completeOvertakeExit() {
     /* If exiting an interactive tool, return to tools menu instead of Move */
     if (toolOvertakeActive) {
         toolOvertakeActive = false;
-        enterToolsMenu();
+        if (!skipNavigation) enterToolsMenu();
         return;
     }
+
+    if (skipNavigation) return;
 
     /* Return to slots view */
     setView(VIEWS.SLOTS);
@@ -3506,6 +3512,14 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
         hostShiftHeld = false;
         hostVolumeKnobTouched = false;
         debugLog("loadOvertakeModule: escape state reset");
+
+        /* A pending exit from a *previous* module must never survive into this
+         * load. The exit branch in the OVERTAKE_MODULE tick is checked before
+         * the init branch, so a stale flag tears the module down on its first
+         * tick and init() never runs — the module looks like it silently
+         * refuses to load. Every arm-then-leave-the-view path is supposed to
+         * drain the flag itself; this is the backstop. */
+        overtakeExitPending = false;
 
         /* Activate LED queue before loading module - intercepts move_midi_internal_send
          * to prevent SHM buffer flooding from modules that send many LEDs per tick.
@@ -14268,6 +14282,19 @@ globalThis.tick = function() {
                             } else {
                                 debugLog("TOOLS flag: exiting active overtake before menu");
                                 exitOvertakeMode();
+                                /* exitOvertakeMode() only *arms* the exit
+                                 * (overtakeExitPending); it completes on the
+                                 * next VIEWS.OVERTAKE_MODULE tick. We are
+                                 * about to leave that view, so that tick never
+                                 * comes and the flag stays set forever:
+                                 * overtake_mode never drops to 0 (so the C-side
+                                 * never replays Move's LED snapshot), and the
+                                 * next load of ANY overtake module hits the
+                                 * exit branch instead of init(). Drain it here.
+                                 * skipNavigation=true: we want the teardown,
+                                 * not its return-to-Move tail — the
+                                 * enterToolsMenu() below owns navigation. */
+                                completeOvertakeExit(true);
                             }
                         }
                         enterToolsMenu();
