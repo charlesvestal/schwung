@@ -534,8 +534,9 @@ static JSValue js_shadow_consume_resume_last_tool(JSContext *ctx, JSValueConst t
 }
 
 /* shadow_set_skip_led_clear(flag) -> void
- * Set skip_led_clear flag so the LED queue preserves pad colors on overtake entry.
- * Must be called BEFORE shadow_set_overtake_mode(2).
+ * Set skip_led_clear so the LED queue preserves native LEDs on overtake entry,
+ * or (when set immediately before mode 0) skips snapshot replay and lets Move
+ * repaint its native surface. The audio-side exit transition consumes the flag.
  */
 static JSValue js_shadow_set_skip_led_clear(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
@@ -543,6 +544,20 @@ static JSValue js_shadow_set_skip_led_clear(JSContext *ctx, JSValueConst this_va
     int32_t flag = 0;
     JS_ToInt32(ctx, &flag, argv[0]);
     shadow_control->skip_led_clear = flag ? 1 : 0;
+    return JS_UNDEFINED;
+}
+
+/* shadow_set_overtake_fx_end_of_chain(flag) -> void
+ * Opt an overtake audio-FX module into processing the FINAL mix (Move's own
+ * tracks + the ME bus) instead of the ME bus alone. Lets a whole-mix effect
+ * hear Move without Link Audio routing. Set from the module's `end_of_chain`
+ * capability on load; cleared on overtake exit. */
+static JSValue js_shadow_set_overtake_fx_end_of_chain(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 1) return JS_UNDEFINED;
+    int32_t flag = 0;
+    JS_ToInt32(ctx, &flag, argv[0]);
+    shadow_control->overtake_fx_end_of_chain = flag ? 1 : 0;
     return JS_UNDEFINED;
 }
 
@@ -2413,6 +2428,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_overtake_mode", JS_NewCFunction(ctx, js_shadow_set_overtake_mode, "shadow_set_overtake_mode", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_skip_led_clear", JS_NewCFunction(ctx, js_shadow_set_skip_led_clear, "shadow_set_skip_led_clear", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_overtake_suppress_sysex", JS_NewCFunction(ctx, js_shadow_set_overtake_suppress_sysex, "shadow_set_overtake_suppress_sysex", 1));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_set_overtake_fx_end_of_chain", JS_NewCFunction(ctx, js_shadow_set_overtake_fx_end_of_chain, "shadow_set_overtake_fx_end_of_chain", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_suspend_overtake", JS_NewCFunction(ctx, js_shadow_set_suspend_overtake, "shadow_set_suspend_overtake", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_suspend_overtake", JS_NewCFunction(ctx, js_shadow_get_suspend_overtake, "shadow_get_suspend_overtake", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_consume_resume_last_tool", JS_NewCFunction(ctx, js_shadow_consume_resume_last_tool, "shadow_consume_resume_last_tool", 0));

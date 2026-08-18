@@ -558,6 +558,23 @@ void shadow_drain_midi_inject(void)
 
     if (!inject_shm) return;
 
+    /* In OVERTAKE mode the queue belongs to the overtake publisher in
+     * schwung_shim.c, not to us.
+     *
+     * The two consumers are mutually exclusive by necessity: this ring is
+     * documented single-consumer, and popping from both would corrupt it. The
+     * split is also what makes injection reach an overtake module at all —
+     * this function writes into Move's MAILBOX MIDI_IN, which Move's firmware
+     * reads, while an overtake module is fed from the raw HARDWARE buffer. An
+     * injected packet written here could therefore never reach the module, and
+     * with the firmware suppressed during overtake it had nowhere useful to go
+     * either. Measured on device 2026-07-29: injected pads moved neither a
+     * parameter nor any of the 32 pad LEDs. */
+    {
+        shadow_control_t *sc = host_shadow_control ? *host_shadow_control : NULL;
+        if (sc && sc->overtake_mode != 0) return;
+    }
+
     /* Hold the inject drain for a few frames after an overtake module exits
      * (Back-to-suspend or full exit) before draining anything into Move's
      * MIDI_IN. On the overtake->native transition the shim queues cleanup

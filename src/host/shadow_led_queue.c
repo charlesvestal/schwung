@@ -116,6 +116,9 @@ static int move_led_clear_pending = 0;
 static int move_led_pass_count = 0;  /* how many clear/restore passes remain */
 static int prev_overtake_mode = 0;
 
+/* Defined alongside the Move sysex cache near the end of this file. */
+static void cancel_move_sysex_restore_and_thaw(void);
+
 /* ============================================================================
  * Hardware LED indices — only target LEDs that physically exist on Move.
  * ============================================================================ */
@@ -268,6 +271,23 @@ static void queue_hw_leds_restore(void) {
     }
 }
 
+/* A suspend-keeps-JS tool can explicitly hand LED ownership back to Move.
+ * In that path, replaying any queued tool LEDs after the mode transition would
+ * immediately overwrite Move's native note-layout repaint. Drop every pending
+ * framework write and thaw the pre-overtake sysex cache instead. */
+static void discard_pending_shadow_leds(void) {
+    shadow_init_led_queue();
+    for (int i = 0; i < 128; i++) {
+        shadow_pending_note_color[i] = -1;
+        shadow_pending_cc_color[i] = -1;
+    }
+    raw_queue_tail = raw_queue_head;
+    move_led_restore_pending = 0;
+    move_led_clear_pending = 0;
+    move_led_pass_count = 0;
+    cancel_move_sysex_restore_and_thaw();
+}
+
 void shadow_clear_move_leds_if_overtake(void) {
     shadow_control_t *ctrl = host.shadow_control ? *host.shadow_control : NULL;
     int cur_overtake = (ctrl && ctrl->overtake_mode >= 2) ? 1 : 0;
@@ -345,13 +365,17 @@ void shadow_clear_move_leds_if_overtake(void) {
         }
     }
 
-    /* On transition out of overtake: restore from snapshot.
+    /* On transition out of overtake: normally restore from snapshot.
      * LEDs we captured get restored; unknowns get turned off.
      * Two passes to catch stragglers.
      * If skip_led_clear was active at entry, LEDs have been passing through
-     * live so Move's current state is already on hardware — no restore needed. */
-    if (prev_overtake_mode && !cur_overtake && snapshot_valid) {
-        if (!snapshot_skip_restore) {
+     * live so Move's current state is already on hardware — no restore needed.
+     * A suspend-keeps-JS tool may also set skip_led_clear immediately before
+     * dropping overtake_mode. That is a one-shot request to let Move repaint
+     * natively instead of replaying an incomplete entry snapshot. */
+    if (prev_overtake_mode && !cur_overtake) {
+        int native_repaint = (ctrl && ctrl->skip_led_clear) ? 1 : 0;
+        if (snapshot_valid && !snapshot_skip_restore && !native_repaint) {
             queue_hw_leds_restore();
             move_led_restore_pending = 1;
             move_led_clear_pending = 0;
@@ -359,8 +383,16 @@ void shadow_clear_move_leds_if_overtake(void) {
             /* Also restore Move-firmware-side sysex RGB commands so track row
              * and other RGB LEDs get their pre-overtake colors back. */
             led_queue_restore_move_sysex_leds();
+        } else if (native_repaint && !snapshot_skip_restore) {
+            /* The entry snapshot can be incomplete for dynamic note layouts
+             * and Shift-row icons. Keep Move's fresh output authoritative. */
+            discard_pending_shadow_leds();
         }
+        /* skip_led_clear doubles as the exit repaint request. Consume it on
+         * the audio-side transition so JS cannot clear it too early. */
+        if (ctrl) ctrl->skip_led_clear = 0;
         snapshot_skip_restore = 0;
+        snapshot_valid = 0;
     }
 
     prev_overtake_mode = cur_overtake;
@@ -1123,6 +1155,14 @@ void led_queue_restore_move_sysex_leds(void) {
 
 void led_queue_freeze_move_sysex_cache(void) {
     move_sysex_cache_frozen = 1;
+}
+
+static void cancel_move_sysex_restore_and_thaw(void) {
+    move_sysex_restore_pending = 0;
+    move_sysex_restore_subcmd = 0;
+    move_sysex_restore_index = 0;
+    move_sysex_restore_pass = 0;
+    move_sysex_cache_frozen = 0;
 }
 
 int led_queue_move_sysex_restore_pending(void) {

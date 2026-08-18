@@ -1165,6 +1165,18 @@ ssh_root_with_retry "test -u /data/UserData/schwung/schwung-shim.so" || fail "Sh
 # Remove web shim symlink (no longer used as of 0.9.2)
 ssh_root_with_retry "rm -f /usr/lib/schwung-web-shim.so" || true
 
+# Keep POSIX shared memory alive across ableton login sessions.
+# MoveOriginal runs as user 'ableton' and creates every /dev/shm/schwung-*
+# segment under that uid. systemd-logind's default RemoveIPC=yes purges a
+# regular user's IPC (including POSIX shm) when their LAST login session ends,
+# so any ssh/scp-as-ableton disconnect (deploy scripts do this constantly)
+# silently unlinks all schwung segments while the stack runs on. Early mmap
+# holders keep working via stale maps, but any LATER open() gets ENOENT
+# forever -- e.g. schwung-manager's lazily-opened remote-UI web-set ring can
+# never connect. A logind drop-in disables the purge; applied on the reboot
+# below.
+ssh_root_with_retry "mkdir -p /etc/systemd/logind.conf.d && printf '[Login]\nRemoveIPC=no\n' > /etc/systemd/logind.conf.d/schwung-removeipc.conf" || true
+
 # Deploy TTS libraries (eSpeak-NG + Flite) from /data to /usr/lib via symlink.
 # Root partition is nearly full, so symlink libraries instead of copying.
 # Use direct predicate checks so expected test failures don't print misleading

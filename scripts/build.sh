@@ -585,6 +585,18 @@ for f in ./src/shared/*.mjs; do
 done
 cp -u ./src/shared/*.json ./build/shared/ 2>/dev/null || true
 
+# ...and any shared PACKAGE (a subdirectory of related modules, e.g.
+# shared/param_pages/). The glob above is flat, so before this a package's
+# modules were silently left out of the build while the code importing them
+# shipped — which is a load failure on device, not a missing feature.
+for d in ./src/shared/*/; do
+    [ -d "$d" ] || continue
+    _pkg="$(basename "$d")"
+    mkdir -p "./build/shared/${_pkg}"
+    cp -u "$d"*.mjs "./build/shared/${_pkg}/" 2>/dev/null || true
+    cp -u "$d"*.json "./build/shared/${_pkg}/" 2>/dev/null || true
+done
+
 # Bundle Move Manual (fetched on host before Docker, or from prior build)
 if [ -f ".cache/move_manual.json" ]; then
     cp -u .cache/move_manual.json ./build/shared/move_manual_bundled.json
