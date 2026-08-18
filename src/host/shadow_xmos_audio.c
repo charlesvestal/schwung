@@ -45,33 +45,32 @@ static int envelope_valid(const uint8_t *buf, int len) {
 }
 
 int xmos_audio_scan(const uint8_t *midi_out, int len, xmos_audio_state_t *st) {
-    /* Slightly oversized so an over-long SysEx overflows past 23 and is
-     * rejected by the length check rather than aliasing onto a valid one. */
-    uint8_t buf[XMOS_AUDIO_MSG_LEN + 8];
-    int blen = 0;
-    int active = 0;
     int changed = 0;
 
     for (int i = 0; i + 4 <= len; i += 4) {
-        int n = cin_payload_len(midi_out[i]);
-        if (n == 0) continue;  /* non-SysEx slot: skip without resetting */
+        uint8_t cable = (midi_out[i] >> 4) & 0x0F;
+        uint8_t cin = midi_out[i] & 0x0F;
+        int n = cin_payload_len(cin);
+        if (n == 0) continue;   /* non-SysEx slot: skip without resetting */
+        if (cable != 0) continue;  /* only Move's own firmware speaks cable 0;
+                                     * skip without disturbing reassembly. */
 
         const uint8_t *p = &midi_out[i + 1];
-        if (p[0] == 0xF0) { blen = 0; active = 1; }  /* data bytes are < 0x80 */
-        if (!active) continue;
+        if (p[0] == 0xF0) { st->rx_len = 0; st->rx_active = 1; }  /* data bytes are < 0x80 */
+        if (!st->rx_active) continue;
 
         for (int k = 0; k < n; k++)
-            if (blen < (int)sizeof buf) buf[blen++] = p[k];
+            if (st->rx_len < (int)sizeof st->rx_buf) st->rx_buf[st->rx_len++] = p[k];
 
-        if (!cin_is_end(midi_out[i])) continue;
-        active = 0;
-        if (!envelope_valid(buf, blen)) continue;
+        if (!cin_is_end(cin)) continue;
+        st->rx_active = 0;
+        if (!envelope_valid(st->rx_buf, st->rx_len)) continue;
 
-        if (buf[7] == XMOS_AUDIO_KEY_ROUTE) {
-            memcpy(st->route, buf, XMOS_AUDIO_MSG_LEN);
+        if (st->rx_buf[7] == XMOS_AUDIO_KEY_ROUTE) {
+            memcpy(st->route, st->rx_buf, XMOS_AUDIO_MSG_LEN);
             st->have_route = 1;
-        } else if (buf[7] == XMOS_AUDIO_KEY_MON) {
-            int8_t out = (buf[8] & 0x01) ? 1 : 0;
+        } else if (st->rx_buf[7] == XMOS_AUDIO_KEY_OUT_SRC) {
+            int8_t out = (st->rx_buf[8] & 0x01) ? 1 : 0;
             if (st->usbc_out != out) {
                 st->usbc_out = out;
                 st->seq++;
@@ -101,25 +100,52 @@ void xmos_audio_build(const xmos_audio_state_t *st, int usbc_out,
 
     memset(out_mon, 0, XMOS_AUDIO_MSG_LEN);
     memcpy(out_mon, XMOS_AUDIO_HDR, sizeof XMOS_AUDIO_HDR);
-    out_mon[7] = XMOS_AUDIO_KEY_MON;
+    out_mon[7] = XMOS_AUDIO_KEY_OUT_SRC;
     out_mon[8] = usbc_out ? 1 : 0;
     out_mon[XMOS_AUDIO_MSG_LEN - 1] = 0xF7;
 }
 
 int xmos_audio_emit(uint8_t *midi_out, int len, const uint8_t *msg) {
-    int free_slots = 0;
-    for (int i = 0; i + 4 <= len; i += 4)
-        if (!midi_out[i] && !midi_out[i+1] && !midi_out[i+2] && !midi_out[i+3])
-            free_slots++;
-    if (free_slots < XMOS_AUDIO_PACKETS) return 0;
+    /* Refuse if a cable-0 SysEx is mid-flight (started but not yet
+     * terminated) anywhere in the buffer — its continuation is presumably
+     * arriving next frame, and splicing our own F0 in among the free slots
+     * would corrupt both messages. A complete, already-terminated cable-0
+     * SysEx sitting in the buffer — including a message we just emitted
+     * ourselves — does not block a subsequent emit. Caller already retries
+     * next frame, so refusing here is always safe. */
+    {
+        int active = 0;
+        for (int i = 0; i + 4 <= len; i += 4) {
+            uint8_t cable = (midi_out[i] >> 4) & 0x0F;
+            uint8_t cin = midi_out[i] & 0x0F;
+            if (cable != 0 || cin < 0x04 || cin > 0x07) continue;
+            if (midi_out[i + 1] == 0xF0) active = 1;
+            if (cin == 0x05 || cin == 0x06 || cin == 0x07) active = 0;
+        }
+        if (active) return 0;
+    }
 
-    int pos = 0, slot = 0;
+    /* Find a contiguous run of XMOS_AUDIO_PACKETS free slots. Free-but-
+     * scattered slots are not enough: a message must land as one unbroken
+     * run so nothing else can interleave into it before Move parses it. */
+    int run_start = -1, run_len = 0;
+    for (int i = 0; i + 4 <= len; i += 4) {
+        int free_slot = !midi_out[i] && !midi_out[i+1] && !midi_out[i+2] && !midi_out[i+3];
+        if (free_slot) {
+            if (run_len == 0) run_start = i;
+            run_len++;
+            if (run_len >= XMOS_AUDIO_PACKETS) break;
+        } else {
+            run_len = 0;
+        }
+    }
+    if (run_len < XMOS_AUDIO_PACKETS) return 0;
+
+    /* Whole message or nothing: the run found above is guaranteed to hold
+     * exactly XMOS_AUDIO_PACKETS packets, so this always completes without
+     * ever leaving a half-written SysEx in MIDI_OUT. */
+    int pos = 0, slot = run_start;
     while (pos < XMOS_AUDIO_MSG_LEN) {
-        while (slot + 4 <= len &&
-               (midi_out[slot] || midi_out[slot+1] || midi_out[slot+2] || midi_out[slot+3]))
-            slot += 4;
-        if (slot + 4 > len) return 0;  /* unreachable after the count above */
-
         int remaining = XMOS_AUDIO_MSG_LEN - pos;
         uint8_t cin;
         int n;
