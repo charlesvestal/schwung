@@ -10,7 +10,7 @@
     {
       "id": 2,
       "subject": "Task 2: Observe and persist USB-C out source",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         1
       ],
@@ -19,7 +19,7 @@
     {
       "id": 3,
       "subject": "Task 3: Boot replay + slot-safe injector",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         2
       ],
@@ -28,7 +28,7 @@
     {
       "id": 4,
       "subject": "Task 4: Hardware verification",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         3
       ],
@@ -37,12 +37,12 @@
     {
       "id": 5,
       "subject": "Task 5: Documentation and PR",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         4
       ],
       "description": "**Goal:** Update the docs the release checklist requires, feed the protocol finding upstream, and open the PR.\n\n**Files:**\n- Modify: `CLAUDE.md`, `../schwung-catalog-site/manual.html`, `docs/superpowers/specs/2026-08-18-usbc-out-source-persist-design.md`\n\n**Acceptance Criteria:**\n- [ ] `CLAUDE.md` documents the behavior and `usbc_out_state`\n- [ ] `manual.html` explains it in user-facing terms\n- [ ] Spec records the bit0-preservation refinement\n- [ ] All three CI checks pass\n\n**Verify:** `gh pr checks` \u2192 `host-tests`, `go`, `cross-compile` all green\n\n**Steps:** Plan doc Task 5, Steps 1-6. `tests/{shadow,store,build}` are not CI-gated and carry ~20 known-stale failures \u2014 not regressions.\n\n```json:metadata\n{\"files\": [\"CLAUDE.md\", \"../schwung-catalog-site/manual.html\", \"docs/superpowers/specs/2026-08-18-usbc-out-source-persist-design.md\"], \"verifyCommand\": \"make -C tests/host test && for t in tests/host/*.sh; do bash \\\"$t\\\" || echo \\\"FAILED: $t\\\"; done\", \"acceptanceCriteria\": [\"CLAUDE.md documents the behavior and usbc_out_state\", \"manual.html explains it in user-facing terms\", \"spec records the bit0-preservation refinement\", \"all three CI checks green on the PR\"], \"modelTier\": \"standard\", \"planPath\": \"docs/superpowers/plans/2026-08-18-usbc-out-source-persist.md\"}\n```"
     }
   ],
-  "lastUpdated": "2026-08-18T11:54:55.858992"
+  "lastUpdated": "2026-08-18T12:47:52.619709"
 }
