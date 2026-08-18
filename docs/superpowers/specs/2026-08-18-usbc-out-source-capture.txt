@@ -511,6 +511,8 @@ deferred until MIDI_OUT had a contiguous free run during Move's boot LED traffic
    is on Main Out. Selecting "Main Out" there is harmless. Selecting "Mic" —
    believing it is a no-op — actually switches it off.
 
-OPEN / NOT VERIFIED: that a connected computer actually receives main out
-rather than the mic. Everything above proves the bytes reached the XMOS, not
-that the audio followed.
+7. VERIFIED END TO END: with the stored value = Main Out, after a power cycle
+   and without touching Move's menu, a connected computer receives main out.
+   Confirmed by the user. Move's screen read "Mic" at the same time, which
+   makes the cosmetic mismatch in (5) the only remaining gap — the audio path
+   itself is correct.
