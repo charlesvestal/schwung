@@ -505,10 +505,17 @@ class SchwungBus:
 
         Returns as soon as the daemon has written the file and set
         the flag. The actual module load completes asynchronously
-        (~500 ms-2 s depending on module size). Caller should poll
-        ``state().overtake_mode == 2`` to wait for the load — use
-        the ``ion_loaded`` / module-loaded fixtures rather than
-        calling this directly when you can.
+        (~500 ms-2 s depending on module size), so this must be
+        followed by :meth:`wait_for_overtake_dsp` before the module
+        is driven.
+
+        Do NOT gate on ``state().overtake_mode == 2`` alone. The DSP
+        load now runs on the shim worker, so the mode flips when the
+        load is *requested* and the instance appears up to ~200ms
+        later; input sent in that window is dropped by the shim's
+        instance guards. :meth:`wait_for_overtake_dsp` waits on the
+        mode and the ``overtake_dsp:__ready`` param together, which
+        is the combination that actually means "playable".
 
         ``module_id`` must match ``[a-zA-Z0-9_-]+``, max 64 chars
         — daemon enforces this and rejects anything else.
@@ -732,6 +739,94 @@ class SchwungBus:
         raise SchwungBusError(
             f"wait_for_shim_ready: shim never recovered after freeze at "
             f"counter={frozen_at_value} within {timeout}s"
+        )
+
+    def wait_for_overtake_dsp(
+        self,
+        timeout: float = 10.0,
+        poll_interval: float = 0.1,
+    ) -> None:
+        """Wait until a module opened by :meth:`set_open_tool` can accept input.
+
+        Two gates, in this order:
+
+        1. ``state().overtake_mode == BusState.OVERTAKE_MODULE`` — the
+           host has accepted the load request.
+        2. ``overtake_dsp:__ready`` reads something other than ``"0"``
+           — the DSP instance actually exists.
+
+        Both are required, and the order matters.
+
+        The mode alone is not enough. The DSP load runs on the shim
+        worker rather than the SPI thread (``dlopen()`` +
+        ``create_instance()`` was stalling the audio callback ~11.5ms
+        on every module open), so **overtake_mode == 2 no longer
+        implies a live instance** — the mode flips when the load is
+        *requested*, and the instance appears up to ~200ms later. A
+        test that presses a pad on the mode alone intermittently loses
+        its first press, because the shim drops MIDI against its
+        ``overtake_dsp_gen && overtake_dsp_gen_inst`` guards.
+
+        ``__ready`` alone is not enough either. The shim answers
+        ``"1"`` whenever nothing is loading, which includes the window
+        *before* the load starts: ``loadOvertakeModule`` sets the
+        overtake mode several statements before it requests the DSP
+        load, so a bare ``__ready`` poll can pass against the previous
+        module's state. Gating on the mode first closes that window —
+        the two statements sit in one synchronous shadow_ui tick, well
+        under the ~23ms an SHM param round-trip costs.
+
+        Modules with no ``dsp`` in their manifest never request a load,
+        so ``__ready`` reads ``"1"`` throughout and this returns as
+        soon as the mode flips.
+
+        Hosts predating the ``__ready`` param raise on the GET; that is
+        treated as ready, mirroring shadow_ui's own ``catch`` fallback,
+        so this helper stays safe against older device firmware.
+
+        Raises :class:`SchwungBusError` if either gate misses
+        ``timeout``.
+        """
+        deadline = time.monotonic() + timeout
+
+        # Gate 1: the host has accepted the load request.
+        mode: Optional[int] = None
+        reached_module = False
+        while time.monotonic() < deadline:
+            try:
+                st = self.state()
+                mode = st.overtake_mode
+                if mode == BusState.OVERTAKE_MODULE:
+                    reached_module = True
+                    break
+            except SchwungBusError:
+                # shadow_ui can be briefly unresponsive mid-load.
+                pass
+            time.sleep(poll_interval)
+        if not reached_module:
+            raise SchwungBusError(
+                f"wait_for_overtake_dsp: overtake_mode never reached "
+                f"{BusState.OVERTAKE_MODULE} within {timeout}s "
+                f"(last mode={mode}) — did set_open_tool() name a real "
+                f"module id?"
+            )
+
+        # Gate 2: the DSP instance exists.
+        ready: Optional[str] = None
+        while time.monotonic() < deadline:
+            try:
+                ready = self.get_param("__ready")
+            except SchwungBusError:
+                # Unknown param => host predates __ready. Nothing to
+                # wait for; the load was synchronous on those builds.
+                return
+            if ready != "0":
+                return
+            time.sleep(poll_interval)
+        raise SchwungBusError(
+            f"wait_for_overtake_dsp: DSP still loading after {timeout}s "
+            f"(overtake_dsp:__ready={ready!r}) — the module's dsp.so may "
+            f"have failed to load; check the shim log"
         )
 
     # ----- button helpers ---------------------------------------------------
