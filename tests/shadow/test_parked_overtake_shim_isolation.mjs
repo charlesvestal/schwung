@@ -61,6 +61,22 @@ function extractParkedTickBlock() {
 const sandbox = {
     console,
     debugLog: () => {},
+    /* corunTeardown() was added to suspendOvertakeMode() without a matching
+     * stub here, which left this whole file failing with a ReferenceError. */
+    corunTeardown: () => {},
+    /* Held-modifier state cleared on resume. */
+    hostShiftHeld: false,
+    hostVolumeKnobTouched: false,
+    runToolCallback: (fn) => fn(),
+    overtakeSuspendSelfManaged: false,
+    toolHiddenFile: "",
+    toolHiddenModulePath: "",
+    toolOvertakeActive: false,
+    paramShimsInstalled: false,
+    currentSlot0DspPath2: "",
+    loadOvertakeDsp: () => {},
+    invokeModuleOnResume: (cb) => { if (cb && typeof cb.onResume === "function") cb.onResume(); },
+    flushLedQueue: () => {},
     activateLedQueue: () => {},
     deactivateLedQueue: () => {},
     flushLedQueue: () => {},
@@ -230,6 +246,41 @@ console.log("Scenario 2: two parked modules stay isolated");
     const b = sandbox._readsB[sandbox._readsB.length - 1];
     check("parked module A reads its own DSP", a === "A-DSP:k", `got ${JSON.stringify(a)}`);
     check("parked module B reads its own DSP", b === "B-DSP:k", `got ${JSON.stringify(b)}`);
+}
+
+// ---- Scenario 3: resume clears held-modifier state ----------------------
+// The resume gesture is Shift+Vol+Step13 / Shift+long-press, so Shift is
+// physically down when resumeOvertakeModule runs and its release lands after
+// we return. init() is NOT re-run on resume, so nothing else clears either the
+// host's flag or the module's own — Shift stays latched for the whole session.
+console.log("Scenario 3: resume clears stuck Shift");
+{
+    sandbox.suspendedOvertakes = {};
+    vm.runInContext(`globalThis._midiSeen = [];
+                     globalThis._tickC = function(){};`, sandbox);
+
+    installOvertakeShim("C-DSP");
+    setActive("modC", "/modules/modC/dsp.so", vm.runInContext(`globalThis._tickC`, sandbox));
+    sandbox.overtakeModuleCallbacks.onMidiMessageInternal = vm.runInContext(
+        `globalThis._midiC = function(m) { _midiSeen.push(m.slice()); }; globalThis._midiC`, sandbox);
+
+    vm.runInContext(`suspendOvertakeMode();`, sandbox);
+
+    // User is holding Shift as the resume fires.
+    sandbox.hostShiftHeld = true;
+    sandbox.hostVolumeKnobTouched = true;
+
+    vm.runInContext(`resumeOvertakeModule("modC");`, sandbox);
+
+    check("host shift flag cleared on resume", sandbox.hostShiftHeld === false,
+          `hostShiftHeld=${sandbox.hostShiftHeld}`);
+    check("host volume-touch flag cleared on resume", sandbox.hostVolumeKnobTouched === false,
+          `hostVolumeKnobTouched=${sandbox.hostVolumeKnobTouched}`);
+
+    const seen = sandbox._midiSeen || [];
+    const shiftOff = seen.find(m => m[0] === 0xB0 && m[1] === 49 && m[2] === 0);
+    check("module received a synthetic Shift-up", !!shiftOff,
+          `midi seen: ${JSON.stringify(seen)}`);
 }
 
 // --- exit -------------------------------------------------------------------
