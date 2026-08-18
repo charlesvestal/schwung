@@ -176,6 +176,11 @@ import {
     tickPresetPreview, isPresetPreviewActive
 } from './shadow_ui_presets.mjs';
 import {
+    paramPagesEnabled, enterParamPages, exitParamPages, paramPagesActive,
+    tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage,
+    paramPagesComponent, paramPagesSlot
+} from './shadow_ui_param_pages.mjs';
+import {
     drawMasterFx as _drawMasterFx,
     getMasterFxDisplayName as _getMasterFxDisplayName,
     enterMasterFxSettings as _enterMasterFxSettings
@@ -313,6 +318,7 @@ const VIEWS = {
     COMPONENT_EDIT: "compedit",  // Edit component (presets, params) via Shift+Click
     MASTER_FX: "masterfx",    // Master FX selection
     HIERARCHY_EDITOR: "hierarch", // Hierarchy-based parameter editor
+    PARAM_PAGES: "parampages", // Knob-grid parameter view (preview; Param View setting)
     CANVAS: "canvas",         // Full-screen canvas overlay/editor
     FILEPATH_BROWSER: "filepathbrowser", // Generic filepath picker for filepath params
     KNOB_EDITOR: "knobedit",  // Edit knob assignments for a slot
@@ -888,6 +894,48 @@ const MASTER_FX_SETTINGS_ITEMS_BASE = [
     { key: "delete", label: "[Delete]", type: "action" }
 ];
 
+/* Param View (preview): 0 = the hierarchy list editor, 1 = the knob grid.
+ * Defaults to the list — the grid ships as an opt-in preview before becoming
+ * the default in a later release. Read through a global so the view module can
+ * ask without importing shadow_ui.js. See shadow_ui_param_pages.mjs. */
+let paramViewGlobal = 0;
+const PARAM_VIEW_CONFIG_PATH = "/data/UserData/schwung/param_view.json";
+globalThis.param_view_get_mode = function() { return paramViewGlobal; };
+
+/* A param a knob cannot turn — a filepath, canvas, wav_position or string.
+ * The grid does not reimplement those editors; it steps aside and hands the
+ * component to the list, which already has all of them. Announced, because
+ * otherwise the view changing under you looks like a glitch. */
+function openParamEditorFromGrid(slotIndex, fullKey, meta) {
+    const componentKey = paramPagesComponent();
+    exitParamPages();
+    announce((meta && meta.label ? meta.label : "Parameter") + ", opening in list");
+    /* Without this the list entry below sees Param View = Knobs and bounces
+     * straight back into the grid, forever. The flag is consumed by the next
+     * enterHierarchyEditorWith and nothing else. */
+    suppressParamPagesOnce = true;
+    enterHierarchyEditor(slotIndex, componentKey);
+}
+
+/* One-shot override forcing the LIST editor for the next entry, so the grid can
+ * hand a param it cannot edit to the screen that can. */
+let suppressParamPagesOnce = false;
+
+function saveParamViewConfig() {
+    try {
+        host_write_file(PARAM_VIEW_CONFIG_PATH, JSON.stringify({ param_view: paramViewGlobal }));
+    } catch (e) {}
+}
+
+function loadParamViewConfig() {
+    try {
+        const content = host_read_file(PARAM_VIEW_CONFIG_PATH);
+        if (!content) return;
+        const cfg = JSON.parse(content);
+        if (typeof cfg.param_view === "number") paramViewGlobal = cfg.param_view;
+    } catch (e) {}
+}
+
 /* Global Settings — hierarchical sections for Shift+Vol+Step2 menu.
  * The canonical schema is also in shared/settings-schema.json for the
  * schwung-manager web UI. Keep both in sync when adding settings. */
@@ -900,7 +948,9 @@ const GLOBAL_SETTINGS_SECTIONS = [
               options: ["+Shift", "+Jog Touch", "Off", "Native"], values: [0, 1, 2, 3] },
             { key: "pad_typing", label: "Pad Typing", type: "bool" },
             { key: "text_preview", label: "Text Preview", type: "bool" },
-            { key: "midi_indicator_enabled", label: "MIDI Channel", type: "bool" }
+            { key: "midi_indicator_enabled", label: "MIDI Channel", type: "bool" },
+            { key: "param_view", label: "Param View", type: "enum",
+              options: ["List", "Knobs"], values: [0, 1] }
         ]
     },
     {
@@ -1658,6 +1708,14 @@ function getPhysKnobState(fullKey, currentValue) {
 /* Master FX flag - when true, exit returns to MASTER_FX view instead of CHAIN_EDIT */
 let hierEditorIsMasterFx = false;
 let hierEditorMasterFxSlot = -1;      // Which Master FX slot (0-3) we're editing
+
+/* Set by enterHierarchyEditorFromParamPages(): the list editor is only open
+ * here because the grid handed off a non-grid page (preset browser, items
+ * list, ...) it does not draw itself. Committing a preset in that state
+ * should return to the grid rather than leave the user stranded in the list
+ * UI — see the preset-edit-mode branch below. Cleared once consumed, and by
+ * exitHierarchyEditor()/Back so a manual exit does not also bounce back. */
+let cameFromParamPages = false;
 
 /* Preset browser state (for preset_browser type levels) */
 let hierEditorIsPresetLevel = false;  // true when current level is a preset browser
@@ -7760,6 +7818,45 @@ function enterHierarchyEditor(slotIndex, componentKey) {
     enterHierarchyEditorWith(slotIndex, componentKey, hierarchy);
 }
 
+/*
+ * The grid only draws PAGE_KNOBS (shadow_ui_param_pages.mjs's drawParamPages
+ * returns false on anything else) — a preset browser, a runtime items list, a
+ * mode select or a child selector is meant to hand off to the list editor
+ * that already draws it. That hand-off never actually populated the list
+ * editor's state though: enterParamPages() never touches hierEditorSlot /
+ * hierEditorHierarchy / hierEditorLevel, so falling straight into
+ * drawHierarchyEditor() drew whatever those globals happened to hold —
+ * usually their reset defaults (hierEditorSlot=-1, hierEditorParams=[]),
+ * i.e. "S0: no parameters", not the intended preset browser. This performs
+ * the hand-off for real: entering the legacy editor exactly as if the user
+ * had opened it directly, then jumping to the same *level* the grid was on
+ * (not the hierarchy's root) so a "Presets" page mid-tree opens the preset
+ * browser, not the top of the whole component.
+ *
+ * hierEditorPath is left empty rather than reconstructed, so Back exits the
+ * component instead of stepping up to the level's real parent. Good enough
+ * to make the page work at all; a true breadcrumb would need walking the
+ * hierarchy's own level graph backward from `page.level`, which none of the
+ * existing entry points do either.
+ */
+function enterHierarchyEditorFromParamPages() {
+    const page = currentParamPage();
+    const slotIndex = paramPagesSlot();
+    const componentKey = paramPagesComponent();
+    exitParamPages();
+    suppressParamPagesOnce = true;
+    enterHierarchyEditor(slotIndex, componentKey);
+    cameFromParamPages = true;
+    if (page && page.level && hierEditorHierarchy &&
+        hierEditorHierarchy.levels && hierEditorHierarchy.levels[page.level] &&
+        page.level !== hierEditorLevel) {
+        hierEditorLevel = page.level;
+        hierEditorPath = [];
+        hierEditorChildIndex = -1;
+        loadHierarchyLevel();
+    }
+}
+
 /* Enter the hierarchy editor with an explicit hierarchy object. Lets callers
  * inject a SYNTHESIZED hierarchy (see buildSynthHierarchyFromChainParams) for a
  * component that lacks a real ui_hierarchy — used in co-run, where loadModuleUi
@@ -7782,6 +7879,16 @@ function enterHierarchyEditorWith(slotIndex, componentKey, hierarchy) {
     invalidateKnobContextCache();
     pendingHierKnobIndex = -1;
     pendingHierKnobDelta = 0;
+
+    /* Preview: the knob grid replaces the list for this component when the
+     * user has opted in. It plans from the same declared contract, so nothing
+     * about entry differs — and paramPagesEnabled() forces the list whenever the
+     * screen reader is on, since a grid has nothing selected to read out. */
+    if (paramPagesEnabled() && !suppressParamPagesOnce) {
+        enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey));
+        return;
+    }
+    suppressParamPagesOnce = false;
 
     hierEditorSlot = slotIndex;
     hierEditorComponent = componentKey;
@@ -8072,6 +8179,7 @@ function exitHierarchyEditor() {
     /* Clear pending knob state to prevent stale overlays */
     pendingHierKnobIndex = -1;
     pendingHierKnobDelta = 0;
+    cameFromParamPages = false;
 
     clearModuleParamShims();
     clearWavZoomStates();
@@ -10697,6 +10805,9 @@ function getMasterFxSettingValue(setting) {
     if (setting.key === "text_preview") {
         return textPreviewGlobal ? "On" : "Off";
     }
+    if (setting.key === "param_view") {
+        return paramViewGlobal === 1 ? "Knobs" : "List";
+    }
     if (setting.key === "filebrowser_enabled") {
         return filebrowserEnabled ? "On" : "Off";
     }
@@ -10893,6 +11004,13 @@ function adjustMasterFxSetting(setting, delta) {
     if (setting.key === "text_preview") {
         setTextPreviewGlobal(!textPreviewGlobal);
         saveTextPreviewConfig();
+        return;
+    }
+
+    if (setting.key === "param_view") {
+        paramViewGlobal = paramViewGlobal === 1 ? 0 : 1;
+        saveParamViewConfig();
+        announce(paramViewGlobal === 1 ? "Param View Knobs" : "Param View List");
         return;
     }
 
@@ -11766,6 +11884,18 @@ function handleSelect() {
                     hierEditorSelectedIdx = 0;
                     loadHierarchyLevel();
                     invalidateKnobContextCache();
+                } else if (cameFromParamPages) {
+                    /* The grid handed this preset browser off because it does
+                     * not draw one itself (see enterHierarchyEditorFromParamPages).
+                     * A committed choice belongs back on the grid, not the
+                     * list's own preset-edit-mode screen (params + swap
+                     * action) — otherwise selecting a preset strands you in
+                     * the list UI with no way back to Knobs. */
+                    const slotIndex = hierEditorSlot;
+                    const componentKey = hierEditorComponent;
+                    cameFromParamPages = false;
+                    exitHierarchyEditor();
+                    enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey));
                 } else {
                     /* No children - enter preset edit mode to show params/swap */
                     hierEditorPresetEditMode = true;
@@ -13462,6 +13592,12 @@ function drawHelpDetail() {
     _ctx.drawScrollableText = (...args) => drawScrollableText(...args);
     _ctx.wrapText = (...args) => wrapText(...args);
 
+    /* Knob-grid view (shadow_ui_param_pages.mjs) */
+    _ctx.evaluateVisibilityCondition = (...args) => evaluateVisibilityCondition(...args);
+    _ctx.openParamEditor = (slot, fullKey, meta) => openParamEditorFromGrid(slot, fullKey, meta);
+    _ctx.isParamModulated = (slot, fullKey) => isHierarchyParamModulated(slot, fullKey);
+    _ctx.isMuteHeld = () => hostMuteHeld;
+
     /* Overtake session state (for tools menu "Resume" indicator) */
     Object.defineProperty(_ctx, 'overtakeModuleLoaded', {
         get() { return overtakeModuleLoaded; }, enumerable: true
@@ -13955,6 +14091,7 @@ globalThis.init = function() {
     loadBrowserPreviewConfig();
     loadPadTypingConfig();
     loadTextPreviewConfig();
+    loadParamViewConfig();
     loadFilebrowserConfig();
 
     /* Legacy: migrate old single master_fx config to slot 1 */
@@ -14175,6 +14312,12 @@ function dispatchCoRunDraw() {
             drawComponentEdit();
             break;
         case VIEWS.HIERARCHY_EDITOR:     drawHierarchyEditor(); break;
+        /* The grid draws grids; every other page kind it plans (preset
+         * browser, items list, mode select, child selector) belongs to the
+         * list editor, which drawParamPages declines by returning false. */
+        case VIEWS.PARAM_PAGES:
+            if (!drawParamPages()) { enterHierarchyEditorFromParamPages(); drawHierarchyEditor(); }
+            break;
         case VIEWS.CANVAS:               drawCanvasPreview(); break;
         case VIEWS.KNOB_EDITOR:          drawKnobEditor(); break;
         case VIEWS.KNOB_PARAM_PICKER:    drawKnobParamPicker(); break;
@@ -14262,6 +14405,8 @@ globalThis.tick = function() {
      * it self-gates on its own pending state (only set while in the browser), so
      * no view guard is needed (and the view guard was unreliable here). */
     tickPresetPreview();
+    /* One staggered param read per frame while the grid is up. */
+    if (view === VIEWS.PARAM_PAGES) tickParamPages();
 
     /* Splash screen on boot */
     if (splashActive) {
@@ -15064,6 +15209,12 @@ globalThis.tick = function() {
         case VIEWS.HIERARCHY_EDITOR:
             drawHierarchyEditor();
             break;
+        /* The grid draws grids; every other page kind it plans (preset browser,
+         * items list, mode select, child selector) belongs to the list editor,
+         * which drawParamPages declines by returning false. */
+        case VIEWS.PARAM_PAGES:
+            if (!drawParamPages()) { enterHierarchyEditorFromParamPages(); drawHierarchyEditor(); }
+            break;
         case VIEWS.CANVAS:
             drawCanvasPreview();
             break;
@@ -15302,6 +15453,13 @@ globalThis.onMidiMessageInternal = function(data) {
     const status = data[0];
     const d1 = data[1];
     const d2 = data[2];
+
+    /* Knob-grid view consumes the controls it owns. One early-out rather than a
+     * case in each of the per-view switches: the grid's input mapping lives in
+     * shared/param_pages/page_input.mjs and is tested there. */
+    if (view === VIEWS.PARAM_PAGES && paramPagesActive()) {
+        if (handleParamPagesMidi(data)) { needsRedraw = true; return; }
+    }
 
     /* Skip splash on any button press */
     if (splashActive && d2 > 0) {

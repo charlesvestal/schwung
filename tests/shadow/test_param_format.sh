@@ -61,6 +61,12 @@ import("./src/shared/param_format.mjs").then((m) => {
   if (formatParamValue(440, { type:"float", unit:"Hz", display_format:"%.2f" }) !== "440.00 Hz") { console.log("FAIL display_format+Hz"); process.exit(1); }
   // display_format ending in % suppresses unit (% is already in the format)
   if (formatParamValue(0.5, { type:"float", unit:"%", display_format:"%.1%" }) !== "50.0%") { console.log("FAIL display_format %"); process.exit(1); }
+  // display_format "%.0f" (printf sigil, not a percent format) on a % UNIT
+  // must still scale by 100 — a 0..1 fraction with unit:"%" and this format
+  // (braids ships 43 params this way) previously printed the raw fraction
+  // rounded to an integer with no "%" at all: 0.232 -> "0", 0.823 -> "1".
+  if (formatParamValue(0.232, { type:"float", unit:"%", display_format:"%.0f", min:0, max:1 }) !== "23%") { console.log("FAIL display_format f + % unit (low)"); process.exit(1); }
+  if (formatParamValue(0.823, { type:"float", unit:"%", display_format:"%.0f", min:0, max:1 }) !== "82%") { console.log("FAIL display_format f + % unit (high)"); process.exit(1); }
   // Unparseable display_format falls back to unit logic
   if (formatParamValue(0.5, { type:"float", unit:"dB", step:0.1, display_format:"garbage" }) !== "0.5 dB") { console.log("FAIL display_format garbage falls back"); process.exit(1); }
   // Hz auto-kHz at >=1000
