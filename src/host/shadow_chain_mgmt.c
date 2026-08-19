@@ -594,6 +594,13 @@ void shadow_ui_state_update_slot(int slot) {
             shadow_chain_slots[slot].patch_name,
             SHADOW_UI_NAME_LEN - 1);
     ui_state->slot_names[slot][SHADOW_UI_NAME_LEN - 1] = '\0';
+    /* v2. Every path that changes these already lands here — shadow_apply_mute
+     * calls us, shadow_toggle_solo loops us over all slots (solo is exclusive,
+     * so one press moves four), and the init/load paths go through
+     * shadow_ui_state_refresh. Publishing here rather than at each mutation is
+     * what keeps that true for the next one. */
+    ui_state->slot_muted[slot] = shadow_chain_slots[slot].muted ? 1 : 0;
+    ui_state->slot_soloed[slot] = shadow_chain_slots[slot].soloed ? 1 : 0;
 }
 
 void shadow_ui_state_refresh(void) {

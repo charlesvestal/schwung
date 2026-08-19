@@ -3220,7 +3220,7 @@ static void init_shadow_shm(void)
     shadow_ui_state = (shadow_ui_state_t *)shadow_shm_map(SHM_SHADOW_UI,
                                                           SHADOW_UI_BUFFER_SIZE, 1, 1);
     if (shadow_ui_state) {
-        shadow_ui_state->version = 1;
+        shadow_ui_state->version = SHADOW_UI_STATE_VERSION;
         shadow_ui_state->slot_count = SHADOW_UI_SLOTS;
     }
 
@@ -4612,6 +4612,11 @@ static void shim_init_subsystems(void)
     shadow_dbus_start();  /* Start D-Bus monitoring for volume sync */
     shadow_read_initial_volume();  /* Read initial master volume from settings */
     shadow_load_state();  /* Load saved slot volumes */
+    /* Publish what it restored. The chain-restore paths call this too, but
+     * only once they actually load a slot — an empty set never would, and the
+     * UI's mute/solo flags now come from here rather than a param round trip,
+     * so they would read 0 until something else happened to touch a slot. */
+    shadow_ui_state_refresh();
 
     /* Mute/solo state is now fully managed by shadow_load_state() above.
      * Previously we synced from Song.abl here, but Move's native track

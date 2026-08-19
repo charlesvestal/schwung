@@ -171,10 +171,31 @@ export function drawSlots() {
         trackSelectedSlot = shadow_get_selected_slot();
     }
 
+    /* Mute/solo for every slot in ONE shared-memory read (~490ns), instead of
+     * two get_param calls per slot inside the map below — which was eight
+     * synchronous round trips at ~2.9ms each, about a whole 22.7ms frame, to
+     * decide whether to draw an "M" or an "S". Measured on device, those were
+     * 81% of every parameter read the UI made.
+     *
+     * It has to happen here in the DRAW rather than in refreshSlots(), which
+     * only runs every 120 ticks (~2.7s) — a mute glyph lagging the button
+     * press by that long is worse than the cost it saves.
+     *
+     * null means a v1 shim that does not mirror these (possible mid-upgrade,
+     * since shim and shadow_ui are separate files); fall back to the round
+     * trip rather than silently draw every slot as unmuted. */
+    let slotFlags = null;
+    if (typeof shadow_get_slot_flags === "function") {
+        try { slotFlags = shadow_get_slot_flags(); } catch (e) { slotFlags = null; }
+    }
+
     const items = [
         ...slots.map((s, i) => {
-            const muted = getSlotParam(i, "slot:muted") === "1";
-            const soloed = getSlotParam(i, "slot:soloed") === "1";
+            const f = slotFlags ? slotFlags[i] : null;
+            const muted = (typeof f === "number")
+                ? (f & 1) !== 0 : getSlotParam(i, "slot:muted") === "1";
+            const soloed = (typeof f === "number")
+                ? (f & 2) !== 0 : getSlotParam(i, "slot:soloed") === "1";
             const flags = (muted ? "M" : "") + (soloed ? "S" : "");
             const prefix = (i === trackSelectedSlot ? "*" : " ") + (slotDirtyCache[i] ? "*" : "");
             return {
