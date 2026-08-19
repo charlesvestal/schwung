@@ -178,6 +178,14 @@ export function tickParamPages() {
         wasLoading = loading;
     }
 
+    /* The grid paces its own redraws (MOVY_REDRAW_MIN_MS), so it does not want
+     * the global every-other-tick gate on top: measured, that held it to 0.34
+     * draws per tick — ~20fps against a 42/s tick — because a knob turn does
+     * not set `needsRedraw`. Asking every tick hands the pacing decision to
+     * the grid, where the measurement lives. */
+    _tickCount++;
+    if (typeof ctx.requestRedraw === 'function') ctx.requestRedraw();
+
     /* Shift is polled, not evented (see shiftIsHeld), so reveal follows it here
      * rather than on a CC that never arrives. */
     controller.setReveal(shiftIsHeld());
@@ -244,6 +252,8 @@ let lastDrawMs = 0;
  * open on-device question in docs/plans/2026-08-16-next-sessions.md
  * "Session C" (redraw/IPC timing was never verified on hardware). */
 let _fpsWindowStart = 0, _fpsCount = 0;
+/* Counted in tickParamPages, reported with the draw count above. */
+let _tickCount = 0;
 
 /** Draw. Non-grid pages are not ours — the host dispatches those. */
 /*
@@ -275,9 +285,15 @@ export function drawParamPages() {
     _fpsCount++;
     if (!_fpsWindowStart) _fpsWindowStart = nowMs;
     else if (nowMs - _fpsWindowStart >= 1000) {
-        console.log(`param_pages fps: ${_fpsCount} draws / ${nowMs - _fpsWindowStart}ms`);
+        /* Ticks alongside draws, because "dropping frames" has two completely
+         * different causes and this one line separates them: draws << ticks
+         * means something is gating the redraw, draws ~= ticks but both low
+         * means the tick itself is too slow (almost always IPC — a read is
+         * ~2.8ms against a 1.68ms whole-page render). */
+        console.log(`param_pages fps: ${_fpsCount} draws / ${_tickCount} ticks / ${nowMs - _fpsWindowStart}ms`);
         _fpsWindowStart = nowMs;
         _fpsCount = 0;
+        _tickCount = 0;
     }
 
     clear_screen();

@@ -419,7 +419,7 @@ const POINTER_OUTER = 0.85;
  * the knob, close enough in that it does not overwrite the ring and break the
  * circle's silhouette.
  */
-const MOD_DOT_R = KNOB_R - 1;
+const MOD_DOT_R = KNOB_R - 2;
 
 /**
  * The modulation dot: where a modulated param actually IS right now, riding
@@ -462,12 +462,21 @@ function drawModDot(ctx, kx, ky, normVal) {
      * rather than 0, and the block rounded a whole pixel LEFT of the knob
      * centre. That is the mark visibly not sitting on its track.
      *
-     * An odd-sized mark centres exactly on a pixel at every angle. On a 17px
-     * knob with a 1px ring, one pixel is also the size that matches the
-     * drawing it sits in — the 2x2 was heavy enough to merge with the ring at
-     * the arc ends and read as a blob rather than a marker.
+     * An odd-sized mark centres exactly on a pixel at every angle, so the
+     * shape is a PLUS: the centre pixel plus its four orthogonal neighbours.
+     *
+     * One pixel centred correctly was still too faint to track against a 1px
+     * ring and a pointer. A full 3x3 is the other obvious odd size and it is
+     * too heavy — nine pixels on a knob whose radius is eight reads as a
+     * blob, which is what the 2x2 already failed at. The plus is five pixels,
+     * three across, and its diagonal gaps keep it visually distinct from the
+     * solid ring it travels next to rather than merging into it.
      */
     ctx.fillRect(x, y, 1, 1, 1);
+    ctx.fillRect(x - 1, y, 1, 1, 1);
+    ctx.fillRect(x + 1, y, 1, 1, 1);
+    ctx.fillRect(x, y - 1, 1, 1, 1);
+    ctx.fillRect(x, y + 1, 1, 1, 1);
 }
 
 function drawArcKnob(ctx, kx, ky, normVal) {

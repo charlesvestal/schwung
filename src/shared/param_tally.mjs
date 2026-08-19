@@ -67,6 +67,41 @@ function callerOf() {
     return "?";
 }
 
+/*
+ * Any single call this slow gets named, with its key and value.
+ *
+ * A normal round trip is ~2.8ms (one SPI frame). The spin capture showed
+ * param.set maxing at 134.88ms and param.get at 148ms, with param.set.idle
+ * stuck the same 134.87ms behind it — the single-slot protocol means one slow
+ * operation stalls everything after it. Spans carry a name, not a key, so
+ * they cannot say WHICH param does that; this can.
+ *
+ * 24ms is comfortably above both the 2.8ms normal case and this device's
+ * ~11-12ms Date.now() quantisation, so a hit is real and not rounding.
+ */
+const SLOW_CALL_MS = 24;
+const slowCalls = [];
+
+/*
+ * Per-key value RANGE over the window.
+ *
+ * Counting reads says how often the UI asks; it does not say whether the
+ * answer is changing. For "is this LFO actually advancing" that is the only
+ * question that matters, and it cannot be answered from the shim side because
+ * lfo_tick runs in the SPI callback where logging is forbidden. min !== max
+ * over a second means the value moved.
+ */
+const ranges = new Map();
+
+function noteValue(key, v) {
+    if (v === null || v === undefined) return;
+    const n = parseFloat(v);
+    if (!isFinite(n)) return;
+    const r = ranges.get(key);
+    if (!r) ranges.set(key, { lo: n, hi: n });
+    else { if (n < r.lo) r.lo = n; if (n > r.hi) r.hi = n; }
+}
+
 function note(map, key, sampleStack) {
     map.set(key, (map.get(key) || 0) + 1);
     if (sampleStack) {
@@ -94,14 +129,25 @@ export function installParamTally(log) {
     globalThis.shadow_get_param = function (slot, key) {
         sampleCount++;
         note(gets, String(key), sampleCount % STACK_SAMPLE === 0);
-        return realGet(slot, key);
+        const t0 = Date.now();
+        const r = realGet(slot, key);
+        const dt = Date.now() - t0;
+        if (dt >= SLOW_CALL_MS) slowCalls.push("R " + dt + "ms " + key);
+        noteValue(String(key), r);
+        return r;
     };
     if (typeof shadow_set_param === "function") {
         const realSet = globalThis.shadow_set_param;
         globalThis.shadow_set_param = function (slot, key, value) {
             sampleCount++;
             note(sets, String(key), sampleCount % STACK_SAMPLE === 0);
-            return realSet(slot, key, value);
+            const t0 = Date.now();
+            const r = realSet(slot, key, value);
+            const dt = Date.now() - t0;
+            if (dt >= SLOW_CALL_MS) {
+                slowCalls.push("W " + dt + "ms " + key + " = " + String(value).slice(0, 24));
+            }
+            return r;
         };
     }
 
@@ -145,6 +191,23 @@ export function paramTallyTick() {
     };
     dump("R", gets);
     dump("W", sets);
+    /* Which values actually MOVED this window — the LFO question. */
+    const moving = [...ranges.entries()].filter(([, r]) => r.hi > r.lo);
+    if (moving.length) {
+        moving.sort((a, b) => (b[1].hi - b[1].lo) - (a[1].hi - a[1].lo));
+        for (const [key, r] of moving.slice(0, 6)) {
+            say("param_tally:     MOVING " + key + "  " + r.lo.toFixed(4) + " .. " + r.hi.toFixed(4));
+        }
+    } else {
+        say("param_tally:     (no read value changed this window)");
+    }
+    ranges.clear();
+    /* The stalls, named. One of these blocks everything behind it. */
+    if (slowCalls.length) {
+        for (const s of slowCalls.slice(0, 8)) say("param_tally:     SLOW " + s);
+        if (slowCalls.length > 8) say("param_tally:     SLOW (+" + (slowCalls.length - 8) + " more)");
+        slowCalls.length = 0;
+    }
 
     gets.clear(); sets.clear(); callers.clear();
     tickCount = 0; windowStart = now;
