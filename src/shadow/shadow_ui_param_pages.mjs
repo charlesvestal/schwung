@@ -109,6 +109,10 @@ export function enterParamPages(slot, component, prefix) {
     /* Entering the view is the only way the module behind it can have changed,
      * so this is where the cached abbreviation is dropped. */
     _abbrevCache = null;
+    /* New module behind the view — it may well implement is_loading even if
+     * the last one didn't, so start asking at full rate again. */
+    _loadingInterval = LOADING_POLL_TICKS;
+    _loadingPoll = 0;
     controller.load({ slot, component, prefix: prefix || component, visible: ctx.evaluateVisibilityCondition });
     /* "Knobs" IS schwung-movy's own knob-page layout now, not Schwung's
      * earlier dial/bar grid — see render_page_movy.mjs. The setting stays a
@@ -171,11 +175,29 @@ export function tickParamPages() {
      * a module finishes loading. Checking it ~8x less often delays the re-plan
      * by at most LOADING_POLL_TICKS, which is invisible next to the module
      * load it is waiting on. */
-    _loadingPoll = (_loadingPoll + 1) % LOADING_POLL_TICKS;
-    if (_loadingPoll === 0) {
-        const loading = ctx.getSlotParam(currentSlot, `${currentComponent}:is_loading`) === '1';
-        if (!loading && wasLoading) controller.reloadIfChanged({ visible: ctx.evaluateVisibilityCondition });
-        wasLoading = loading;
+    if (++_loadingPoll >= _loadingInterval) {
+        _loadingPoll = 0;
+        const raw = ctx.getSlotParam(currentSlot, `${currentComponent}:is_loading`);
+        if (raw === null || raw === undefined) {
+            /* The module does not implement is_loading — most don't; it exists
+             * for the ones with an async ROM or sample load. Measured on
+             * device, this errored 5-7 times a SECOND, and an errored read
+             * still costs the full ~2.8ms round trip: the error is free, the
+             * round trip is not.
+             *
+             * Backed off rather than switched off, because this poll is
+             * correctness-relevant — it is what re-plans the page tree when a
+             * module finishes loading. A module that is genuinely mid-load can
+             * error first and answer later, so giving up entirely could strand
+             * the page on a stale tree. Backing off keeps the edge, just
+             * later. Reset on entry to the view and on any successful read. */
+            if (_loadingInterval < LOADING_POLL_MAX_TICKS) _loadingInterval *= 2;
+        } else {
+            _loadingInterval = LOADING_POLL_TICKS;
+            const loading = raw === '1';
+            if (!loading && wasLoading) controller.reloadIfChanged({ visible: ctx.evaluateVisibilityCondition });
+            wasLoading = loading;
+        }
     }
 
     /* The grid paces its own redraws (MOVY_REDRAW_MIN_MS), so it does not want
@@ -196,7 +218,12 @@ let wasLoading = false;
 /* is_loading is an edge that fires once per module load; polling it every tick
  * cost a full IPC round trip per frame. See tickParamPages. */
 const LOADING_POLL_TICKS = 8;
+/* Ceiling for the backoff when the module does not implement the key at all
+ * (~2.7s at 60Hz) — rare enough to be free, frequent enough that a late-
+ * appearing answer is still noticed. */
+const LOADING_POLL_MAX_TICKS = 160;
 let _loadingPoll = 0;
+let _loadingInterval = LOADING_POLL_TICKS;
 /* Module id per (slot, component), read once instead of on every draw — it
  * changes only on a module swap, which goes through openParamPages. */
 let _abbrevCache = null;
