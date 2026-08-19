@@ -409,6 +409,32 @@ const ARC_SWEEP_DEG = 260;
 const POINTER_INNER = 0.0;
 const POINTER_OUTER = 0.85;
 
+/**
+ * The modulation dot: where a modulated param actually IS right now, riding
+ * the arc, while the pointer keeps showing the base you dialled in.
+ *
+ * Two values on one knob is the point. With the pointer chasing an LFO you
+ * lose sight of what you set — and turning the knob edits the base, not what
+ * you were watching. This is how the hardware this grid is modelled on does
+ * it, and it is also the cheap way round: the base only moves when you turn
+ * the knob, so only the dot needs live data.
+ *
+ * A filled 2x2 square, not a circle. At r=7 a rasterised disc of any useful
+ * size either disappears into the 1px arc or swamps it, and a square is one
+ * fill_rect (487ns) against a circle's scan. Drawn ON the arc radius so it
+ * reads as travelling along the track rather than floating.
+ */
+function drawModDot(ctx, kx, ky, normVal) {
+    const cx = kx + KNOB_R, cy = ky + KNOB_R, r = KNOB_R;
+    const rad = (KNOB_START_DEG + normVal * KNOB_SWEEP_DEG) * Math.PI / 180;
+    const x = Math.round(cx + r * Math.sin(rad));
+    const y = Math.round(cy - r * Math.cos(rad));
+    /* Centre the 2x2 on the arc point: the extra pixel goes down-right, the
+     * same bias centreX uses, so a dot never appears to lead or lag the
+     * pointer at the same value. */
+    ctx.fillRect(x, y, 2, 2, 1);
+}
+
 function drawArcKnob(ctx, kx, ky, normVal) {
     const cx = kx + KNOB_R, cy = ky + KNOB_R, r = KNOB_R;
     if (typeof ctx.drawArc === "function") {
@@ -493,7 +519,7 @@ function drawOpaqueBox(ctx, kx, ky, value) {
         ky + 1 + Math.floor((h - 2 - FONT_H) / 2), fitDev(ctx, shown, KW - 4), 1);
 }
 
-function drawKnobWidget(ctx, col, rowY, meta, raw) {
+function drawKnobWidget(ctx, col, rowY, meta, raw, modRaw) {
     const kx = col * CELL_W + Math.floor((CELL_W - KW) / 2), ky = rowY;
     if (meta.kind === KIND_OPAQUE) { drawOpaqueBox(ctx, kx, ky, raw); return; }
     if (meta.kind === KIND_ENUM) {
@@ -508,6 +534,16 @@ function drawKnobWidget(ctx, col, rowY, meta, raw) {
     const num = Number(raw);
     const normVal = (max > min && isFinite(num)) ? Math.max(0, Math.min(1, (num - min) / (max - min))) : 0;
     drawArcKnob(ctx, kx, ky, normVal);
+    /* Only when modulation is actually driving this param somewhere OTHER
+     * than the base — a dot sitting under the pointer says nothing and just
+     * thickens it. */
+    if (modRaw !== null && modRaw !== undefined) {
+        const mnum = Number(modRaw);
+        if (isFinite(mnum) && max > min) {
+            const modNorm = Math.max(0, Math.min(1, (mnum - min) / (max - min)));
+            if (Math.abs(modNorm - normVal) > 0.02) drawModDot(ctx, kx, ky, modNorm);
+        }
+    }
 }
 
 /* schwung-movy renderer/label.ts drawWaveMark (the modulation tilde), ported. */
@@ -550,7 +586,7 @@ function drawLabelCell(ctx, col, lblY, label, displayValue, touched, modulated) 
 /* --------------------------------------------------------------- one row */
 
 function drawKnobRow(ctx, o, row, rowY, lblY) {
-    const { page, metaIndex, values, touched, modulated, viz } = o;
+    const { page, metaIndex, values, touched, modulated, viz, modValues } = o;
     const slotBase = row * 4;
 
     const covered = new Array(4).fill(false);
@@ -572,7 +608,12 @@ function drawKnobRow(ctx, o, row, rowY, lblY) {
         const raw = values ? values[key] : null;
         const isTouched = touched === slot;
 
-        if (!covered[col]) drawKnobWidget(ctx, col, rowY, meta, raw);
+        if (!covered[col]) {
+            /* modValues holds the live modulated value for keys a source is
+             * driving; `values` stays the base the user dialled in. */
+            drawKnobWidget(ctx, col, rowY, meta, raw,
+                           modValues ? modValues[key] : undefined);
+        }
 
         /* Budget in CHARACTERS, not pixels: Elektron's labels are 3-4 glyphs
          * whether or not more would technically fit, which is what keeps a row

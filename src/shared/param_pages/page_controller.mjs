@@ -76,6 +76,30 @@ export const ANNOUNCE_THROTTLE_MS = 120;
  * release, so the final settled value always reaches the device exactly. */
 export const SETPARAM_THROTTLE_MS = 20;
 
+/**
+ * How many modulated params get a live re-read per tick.
+ *
+ * The staggered cursor exists because eight values is eight IPC round trips,
+ * and it works because a human turns one knob at a time. A modulation source
+ * breaks that: those values move on their own, continuously, and on the shared
+ * cursor each one refreshes only every `stops` ticks — about 5Hz, which
+ * against a 1/8-note LFO is undersampled enough that the dot wanders instead
+ * of sweeping.
+ *
+ * Modulated keys therefore get their own lane. Typically one or two params on
+ * a page are modulated, so they land at 42Hz and 21Hz respectively — smooth.
+ * The cap is what keeps a pathological page honest: at ~2.8ms a read, three is
+ * ~8.4ms against a 23.8ms frame, and beyond that a fully-modulated page would
+ * spend the whole budget on IPC. Past the cap it degrades to round-robin
+ * rather than dropping frames.
+ *
+ * The real fix for the many-modulated case is publishing effective values in
+ * shared memory the way slot mute/solo now is — the shim already computes
+ * them every block. This is the version that needs no new SHM contract, and
+ * it is worth measuring whether it is enough before building that.
+ */
+export const MOD_FAST_READS_PER_TICK = 3;
+
 /** How many times a page will re-read the contract waiting for late metadata. */
 export const META_RETRY_LIMIT = 8;
 /** Ticks between those attempts (~1 s at the shadow UI's 344 Hz tick).
@@ -118,6 +142,12 @@ export function createController(io = {}) {
         /* key -> last-read modulation flag, refreshed on the read cursor
          * rather than per cell per draw. See tick(). */
         modCache: Object.create(null),
+        /* key -> live modulated ("effective") value, for the dot on the arc.
+         * Only modulated keys are in here, and they get their own fast lane in
+         * tick() because they are the only values that move on their own. */
+        modValues: Object.create(null),
+        /* Rotates over the modulated keys, so the fast lane stays bounded. */
+        modCursor: 0,
         /* key -> tick at which reads may resume */
         settleUntil: Object.create(null),
         tickCount: 0,
@@ -298,6 +328,8 @@ export function createController(io = {}) {
         const p = page();
         if (!p || p.kind !== PAGE_KNOBS || p.keys.length === 0) return null;
 
+        refreshModulatedValues(p);
+
         /* One extra stop in the rotation reads the preset name, which a
          * hardware synth would put in its display and which no module declares
          * as a param. */
@@ -335,7 +367,18 @@ export function createController(io = {}) {
          * current within `stops` ticks — under 0.2s, for a tick mark. */
         s.modCache[key] = !!isModulated(fullKey(key));
 
-        const raw = getParam(fullKey(key));
+        /* For a modulated key the plain key returns the EFFECTIVE value — what
+         * the source is currently driving it to — and that belongs to the dot.
+         * The pointer wants the base, so ask for it directly. Same one read on
+         * the cursor either way; the extra cost of showing both values is the
+         * fast lane above, not this.
+         *
+         * `:base` is served by chain_mod_get_base_for_subkey and only exists
+         * while a target is active, so fall back rather than blank the knob if
+         * the flag and the target ever disagree. */
+        let raw = null;
+        if (s.modCache[key]) raw = getParam(fullKey(key) + ":base");
+        if (raw === null || raw === undefined) raw = getParam(fullKey(key));
         if (raw === null || raw === undefined) return null;
 
         /* First successful read repairs a guessed range, once. */
@@ -627,6 +670,43 @@ export function createController(io = {}) {
         return true;
     }
 
+    /**
+     * Re-read the live value of up to MOD_FAST_READS_PER_TICK modulated keys.
+     *
+     * `values` stays the BASE — what the user dialled in and what a turn edits
+     * — and these are the effective values a source is currently driving the
+     * param to, drawn as a dot on the arc. Keeping them apart is the whole
+     * point: with the pointer chasing an LFO you cannot see what you set.
+     *
+     * Skips a key that is being turned, for the same reason the value cursor
+     * does (`settleUntil`): a read issued before the turn lands after it.
+     */
+    function refreshModulatedValues(p) {
+        const modKeys = [];
+        for (const k of p.keys) {
+            if (k && s.modCache[k]) modKeys.push(k);
+        }
+        if (!modKeys.length) {
+            /* Nothing modulated: drop stale dots rather than leave them frozen
+             * on the arc after a routing is removed. */
+            if (s.modCursor !== 0) s.modCursor = 0;
+            for (const k in s.modValues) delete s.modValues[k];
+            return;
+        }
+        const n = Math.min(MOD_FAST_READS_PER_TICK, modKeys.length);
+        for (let i = 0; i < n; i++) {
+            const key = modKeys[(s.modCursor + i) % modKeys.length];
+            if ((s.settleUntil[key] || 0) > s.tickCount) continue;
+            const v = getParam(fullKey(key));
+            if (v !== null && v !== undefined) s.modValues[key] = v;
+        }
+        s.modCursor = (s.modCursor + n) % modKeys.length;
+        /* A key that stopped being modulated keeps no dot. */
+        for (const k in s.modValues) {
+            if (!s.modCache[k]) delete s.modValues[k];
+        }
+    }
+
     function setLayout(layout) { s.layout = layout; }
     function setReveal(on) { s.revealValues = !!on; }
     function setDecorations(d) { s.decorations = d || null; }
@@ -644,6 +724,7 @@ export function createController(io = {}) {
                 title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
                 touched: s.hintLines ? -1 : s.touched,
                 modulated: (key) => !!s.modCache[key],
+                modValues: s.modValues,
                 pageGroups: pageGroups(),
                 viz: vizEnabled ? vizGroups() : [],
             });
