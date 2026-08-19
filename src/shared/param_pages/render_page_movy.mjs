@@ -408,6 +408,10 @@ const ARC_START_DEG = 230;
 const ARC_SWEEP_DEG = 260;
 const POINTER_INNER = 0.0;
 const POINTER_OUTER = 0.85;
+/* Modulation dot centre radius: the ring (KNOB_R) less the dot half-width (1)
+ * and one pixel of clearance, so a 2x2 mark never touches the ring at any
+ * angle. See drawModDot. */
+const MOD_DOT_R = KNOB_R - 2;
 
 /**
  * The modulation dot: where a modulated param actually IS right now, riding
@@ -425,14 +429,24 @@ const POINTER_OUTER = 0.85;
  * reads as travelling along the track rather than floating.
  */
 function drawModDot(ctx, kx, ky, normVal) {
-    const cx = kx + KNOB_R, cy = ky + KNOB_R, r = KNOB_R;
+    const cx = kx + KNOB_R, cy = ky + KNOB_R;
+    /*
+     * INSIDE the ring, not on it. Centred on the arc radius the 2x2 straddles
+     * the 1px ring — half its pixels land outside the circle, so as the dot
+     * travels it reads as lumps growing out of the rim rather than as a marker
+     * moving round a track, and at the shoulders it merges with the ring
+     * entirely. Sitting it wholly inside keeps the circle's silhouette intact
+     * and the dot separately legible.
+     *
+     * MOD_DOT_R is the ring radius less the dot's own half-width and a pixel
+     * of clearance, which is what stops it touching the ring at any angle.
+     */
     const rad = (KNOB_START_DEG + normVal * KNOB_SWEEP_DEG) * Math.PI / 180;
-    const x = Math.round(cx + r * Math.sin(rad));
-    const y = Math.round(cy - r * Math.cos(rad));
-    /* Centre the 2x2 on the arc point: the extra pixel goes down-right, the
-     * same bias centreX uses, so a dot never appears to lead or lag the
-     * pointer at the same value. */
-    ctx.fillRect(x, y, 2, 2, 1);
+    const x = cx + MOD_DOT_R * Math.sin(rad);
+    const y = cy - MOD_DOT_R * Math.cos(rad);
+    /* Round the CENTRE, then place the 2x2 around it, so the mark stays
+     * concentric with the angle instead of biasing down-right. */
+    ctx.fillRect(Math.round(x) - 1, Math.round(y) - 1, 2, 2, 1);
 }
 
 function drawArcKnob(ctx, kx, ky, normVal) {

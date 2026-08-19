@@ -1876,6 +1876,18 @@ static void shadow_inprocess_render_to_buffer(void) {
                 if ((shadow_slot_silence_frames[s] + s * 43) % 172 != 0) {
                     /* Not a probe frame — skip synth render.
                      * Buffer is zeros; FX below still runs for tail decay. */
+                    /* Modulation still has to advance. lfo_tick() lives inside
+                     * render_block, so skipping the render used to freeze the
+                     * slot's LFOs: they moved only on the 1-in-172 probe frame,
+                     * i.e. ~172x too slow and in visible steps. That is why an
+                     * LFO appeared to animate only while a note was sounding,
+                     * and why one resumed from a stale phase at note-on. This
+                     * runs the modulation without the audio render — the part
+                     * that was actually expensive. */
+                    if (shadow_plugin_v2->set_param) {
+                        shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
+                                                    "mod:tick", "128");
+                    }
                     shadow_slot_deferred_valid[s] = 1;
                     goto slot_run_deferred_fx;
                 }

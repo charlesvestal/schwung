@@ -32,6 +32,105 @@ def pixels(d):
             if v: s.add((x + d["xo"], i - d["yo"]))
     return s
 
+
+# Glyphs that do not fit the CAP window, hand-drawn to fit it.
+#
+# The trim below clips every glyph to the window measured on H, and a Tamzen
+# 6x12 has plenty of ink outside that: an audit of the 60-character set found
+# FOURTEEN glyphs losing pixels, not just the Q this script originally knew
+# about. Most matter — measured across the 76-module fleet, "_" appears 9805
+# times (and, sitting entirely BELOW the window, was rendering as nothing at
+# all), "%" 660, "/" 458, "&" 93, "#" 56, "()" 35.
+#
+# Two repairs, because there are two failure modes:
+#
+#   * A glyph SHORTER than the window that merely sits outside it is moved in
+#     (handled automatically below) — "_", "'", "," and friends.
+#   * A glyph TALLER than the window cannot be moved, only redrawn. Those are
+#     here, as 5-wide bitmaps at the window height, drawn to read at this size
+#     rather than to reproduce Tamzen exactly. Widening the window is not an
+#     option: 7 rows is the equilibrium the whole grid is cut around, and the
+#     enum square sets that, not the label.
+#
+# Rows are top-to-bottom strings, "#" is ink. Anything not listed keeps its
+# Tamzen shape.
+OVERRIDES = {
+    "%": ["##..#",
+          "##.#.",
+          "...#.",
+          "..#..",
+          ".#...",
+          ".#.##",
+          "#..##"],
+    "/": ["....#",
+          "....#",
+          "...#.",
+          "..#..",
+          ".#...",
+          "#....",
+          "#...."],
+    "\\": ["#....",
+           "#....",
+           ".#...",
+           "..#..",
+           "...#.",
+           "....#",
+           "....#"],
+    "(": ["..##.",
+          ".#...",
+          ".#...",
+          ".#...",
+          ".#...",
+          ".#...",
+          "..##."],
+    ")": [".##..",
+          "...#.",
+          "...#.",
+          "...#.",
+          "...#.",
+          "...#.",
+          ".##.."],
+    "#": [".#.#.",
+          ".#.#.",
+          "#####",
+          ".#.#.",
+          "#####",
+          ".#.#.",
+          ".#.#."],
+    "&": [".##..",
+          "#..#.",
+          "#.#..",
+          ".#...",
+          "#.#.#",
+          "#..#.",
+          ".##.#"],
+    "!": ["..#..",
+          "..#..",
+          "..#..",
+          "..#..",
+          "..#..",
+          ".....",
+          "..#.."],
+    "?": [".###.",
+          "#...#",
+          "....#",
+          "...#.",
+          "..#..",
+          ".....",
+          "..#.."],
+}
+
+
+def override_pixels(rows, top):
+    """Hand-drawn rows -> the same pixel set the BDF path produces."""
+    out = set()
+    for dy, row in enumerate(rows):
+        for dx, ch in enumerate(row):
+            if ch == "#":
+                out.add((dx, top + dy))
+    return out
+
+
 def main(path, tag):
     g = parse(path)
     have = {c: pixels(g[ord(c)]) for c in CHARS if ord(c) in g}
@@ -55,6 +154,30 @@ def main(path, tag):
             q.add((midx, top + h - 3))
             q.add((midx + 1, top + h - 2))
             have["Q"] = q
+    # A glyph that FITS the window but sits outside it is moved in rather than
+    # clipped. "_" is the whole reason: it lives on row 10 with the window at
+    # 2..8, so every one of its pixels was being discarded and it rendered as
+    # blank space 9805 times across the fleet.
+    for c in list(have):
+        ink = have[c]
+        if not ink:
+            continue
+        lo = min(y for (_, y) in ink)
+        hi = max(y for (_, y) in ink)
+        if lo >= top and hi <= bot:
+            continue
+        if hi - lo <= bot - top:
+            shift = 0
+            if lo < top:
+                shift = top - lo
+            elif hi > bot:
+                shift = bot - hi
+            have[c] = {(x, y + shift) for (x, y) in ink}
+
+    for c, rows in OVERRIDES.items():
+        if c in have:
+            have[c] = override_pixels(rows, top)
+
     for c in list(have):
         have[c] = {(x, y) for (x, y) in have[c] if top <= y <= bot}
     height = bot - top + 1

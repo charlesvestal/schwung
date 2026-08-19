@@ -665,9 +665,35 @@ void parse_debug_log(const char *msg) {
     }
 }
 
+static void lfo_tick(chain_instance_t *inst, int frames);
+
 static void v2_set_param(void *instance, const char *key, const char *val) {
     chain_instance_t *inst = (chain_instance_t *)instance;
     if (!inst) return;
+
+    /*
+     * "mod:tick" — advance modulation WITHOUT rendering audio.
+     *
+     * lfo_tick() normally runs inside render_block, and the shim skips
+     * render_block entirely on a silent slot (one probe frame in 172, see
+     * schwung_shim.c). A skipped frame advanced the LFO by nothing at all, so
+     * an idle slot ran its LFOs ~172x too slow and in visible steps — which is
+     * why modulation only animated while a note was sounding, and why an LFO
+     * resumed from a stale phase at note-on.
+     *
+     * Routed through set_param rather than a new plugin_api_v2_t entry on
+     * purpose: that struct is shared with third-party sub-plugins compiled
+     * against the current header, and appending to it would have the host read
+     * past the end of theirs. A string key costs one strcmp.
+     *
+     * FIRST statement in the function, before the debug log and every other
+     * route, because this is called from the SPI callback on every silent
+     * frame: no allocation, no logging, no file I/O on this path.
+     */
+    if (key && key[0] == 'm' && strcmp(key, "mod:tick") == 0) {
+        lfo_tick(inst, val ? atoi(val) : 128);
+        return;
+    }
 
     {
         char dbg[256];
