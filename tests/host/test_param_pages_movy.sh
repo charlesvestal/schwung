@@ -43,10 +43,11 @@ Promise.all([
   import("./src/shared/param_pages/viz_draw.mjs"),
   import("./src/shared/param_pages/font5x3.mjs"),
   import("./src/shared/param_pages/font4x5.mjs"),
+  import("./src/shared/param_pages/font_tamzen6x12.mjs"),
   import("./src/shared/param_pages/render_page.mjs"),
   import("./src/shared/param_format.mjs"),
   import("node:fs"),
-]).then(([H, C, P, M, RM, V, VD, F5, F4, RP, PF, fs]) => {
+]).then(([H, C, P, M, RM, V, VD, F5, F4, TZ, RP, PF, fs]) => {
   const fail = (msg) => { console.log("FAIL: " + msg); process.exit(1); };
   const fx = JSON.parse(fs.readFileSync(C.FIXTURE, "utf8"));
 
@@ -117,14 +118,19 @@ Promise.all([
           for (const s of [String(meta.label || meta.key),
                            String(PF.formatParamValue(C.fakeValue(k, meta), meta))]) {
             scanned++;
-            for (const ch of F4.missingGlyphs4x5(RP.asciiFold(s).toUpperCase())) {
-              if (!gaps.has(ch)) gaps.set(ch, "4x5: " + s);
+            /* Labels, values and the header are Tamzen now; the enum square is
+             * still font4x5. Both are checked — a glyph either lacks renders
+             * as NOTHING on the OLED, and neither is the device font, so
+             * fb.missingGlyphs cannot see it. */
+            for (const ch of TZ.missingGlyphs(RP.asciiFold(s).toUpperCase())) {
+              if (!gaps.has(ch)) gaps.set(ch, "tamzen: " + s);
             }
           }
           for (const o of (Array.isArray(meta.options) ? meta.options : [])) {
             scanned++;
             const t = RP.asciiFold(String(o)).toUpperCase();
-            for (const ch of F4.missingGlyphs4x5(t)) if (!gaps.has(ch)) gaps.set(ch, "4x5: " + o);
+            for (const ch of TZ.missingGlyphs(t)) if (!gaps.has(ch)) gaps.set(ch, "tamzen: " + o);
+            for (const ch of F4.missingGlyphs4x5(t)) if (!gaps.has(ch)) gaps.set(ch, "4x5(enum): " + o);
 
           }
         }

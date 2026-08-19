@@ -31,6 +31,7 @@ import { formatParamValue } from "../param_format.mjs";
 import { asciiFold, fitText, shortenLabel, line } from "./render_page.mjs";
 import { drawVizGroup } from "./viz_draw.mjs";
 import { enumSquareLines } from "./font5x3.mjs";
+import { fontPrint as tzPrint, fontWidth as tzWidth, HEIGHT as TZ_H } from "./font_tamzen6x12.mjs";
 import { fontWidth4x5, fontPrint4x5, FONT4_HEIGHT, FONT4_MEASURE } from "./font4x5.mjs";
 
 /**
@@ -61,8 +62,9 @@ const LABEL_CHARS = 4;
 
 /** Uppercase, ascii-folded — the Elektron register. font4x5 has no lowercase. */
 function caps(s) { return asciiFold(String(s == null ? "" : s)).toUpperCase(); }
-/** fitText/shortenLabel measure through ctx.textWidth; hand them font4x5. */
-function fitDev(ctx, s, maxWidth) { return caps(fitText(ctx, caps(s), maxWidth)); }
+/** fitText/shortenLabel measure through ctx.textWidth; hand them Tamzen. */
+const TZ_MEASURE = { textWidth: tzWidth };
+function fitDev(ctx, s, maxWidth) { return caps(fitText(TZ_MEASURE, caps(s), maxWidth)); }
 
 /**
  * The synth vocabulary, abbreviated the way hardware does it.
@@ -237,12 +239,24 @@ function centreX(x0, span, w) {
     return x0 + Math.floor((span - w) / 2);
 }
 
-/** Device 5x7: glyphs occupy rows y..y+6. */
-const FONT_H = 7;
+/**
+ * Tamzen 6x12, trimmed to its cap window — 7 rows, 6px advance, which is
+ * metrically IDENTICAL to the device 5x7 it replaces. Same band height, same
+ * label widths, so nothing in the layout moves; only the letterforms change.
+ *
+ * The device font is noopkat/oled-font-5x7, the stock font every SSD1306
+ * project uses, and it looks it: a flat-topped A, a K/X that blur together, a
+ * Q whose tail wanders outside the glyph. Tamzen (a cleaned-up Tamsyn) was
+ * already vendored in fonts/tamzen/ and unused. Its A has a pointed apex, its
+ * W a real double-V, and scripts/bdf_to_font.py redraws Q with the tail
+ * closed inside the bowl — necessary here because the touched label draws its
+ * band inverted, so a descender would be black on black and vanish.
+ */
+const FONT_H = TZ_H;
 
 function centeredText(ctx, x0, span, y, text, color) {
     const t = caps(text);
-    ctx.print(centreX(x0, span, ctx.textWidth(t)), y, t, color);
+    tzPrint(ctx, centreX(x0, span, tzWidth(t)), y, t, color);
 }
 
 /**
@@ -267,10 +281,10 @@ export function drawHeader(ctx, left, right, inverted = false) {
     if (inverted) ctx.fillRect(0, 0, W, HEADER_H, 1);
     const color = inverted ? 0 : 1;
     const l = fitDev(ctx, left, right ? Math.floor(W * 0.55) : W - 4);
-    ctx.print(2, 0, l, color);
+    tzPrint(ctx, 2, 0, l, color);
     if (right) {
         const r = fitDev(ctx, right, Math.floor(W * 0.6));
-        ctx.print(W - ctx.textWidth(r) - 2, 0, r, color);
+        tzPrint(ctx, W - tzWidth(r) - 2, 0, r, color);
     }
 }
 
@@ -499,7 +513,7 @@ function drawWaveMark(ctx, x, y, on) {
 function drawLabelCell(ctx, col, lblY, label, displayValue, touched, modulated) {
     const cellX = col * CELL_W;
     const text = touched ? displayValue : label;
-    const tw = ctx.textWidth(text);
+    const tw = tzWidth(text);
     /* Same rule as every other centred run — `floor(CELL_W/2) - floor(tw/2)`
      * biases the other way on odd widths, which made a label and the box above
      * it disagree by a pixel. */
@@ -508,9 +522,9 @@ function drawLabelCell(ctx, col, lblY, label, displayValue, touched, modulated) 
     const ty = lblY + Math.floor((LBL_H - FONT_H) / 2);
     if (touched) {
         ctx.fillRect(cellX, lblY, CELL_W, LBL_H, 1);
-        ctx.print(tx, ty, text, 0);
+        tzPrint(ctx, tx, ty, text, 0);
     } else {
-        ctx.print(tx, ty, text, 1);
+        tzPrint(ctx, tx, ty, text, 1);
     }
     if (modulated) {
         const wx = Math.max(cellX, tx - 6);
@@ -549,8 +563,8 @@ function drawKnobRow(ctx, o, row, rowY, lblY) {
          * whether or not more would technically fit, which is what keeps a row
          * of them scannable. `M` is the widest glyph, so measuring that many
          * of it gives a width no LABEL_CHARS-long label can exceed. */
-        const labelWidth = Math.min(CELL_W - 2, ctx.textWidth("M".repeat(LABEL_CHARS)));
-        const label = caps(shortenLabel(ctx, preAbbreviate(meta.label || meta.key), labelWidth));
+        const labelWidth = Math.min(CELL_W - 2, tzWidth("M".repeat(LABEL_CHARS)));
+        const label = caps(shortenLabel(TZ_MEASURE, preAbbreviate(meta.label || meta.key), labelWidth));
         const display = (raw === null || raw === undefined)
             ? "--" : fitDev(ctx, formatParamValue(raw, meta), CELL_W - 2);
         drawLabelCell(ctx, col, lblY, label, display, isTouched, modulated ? !!modulated(key) : false);
@@ -590,7 +604,7 @@ export function renderPageMovy(ctx, o) {
     if (!page || !page.keys) return;
     const hasParams = page.keys.some(Boolean);
     if (!hasParams) {
-        ctx.print(2, ROW0_Y + 4, caps("No params"), 1);
+        tzPrint(ctx, 2, ROW0_Y + 4, caps("No params"), 1);
         return;
     }
 
