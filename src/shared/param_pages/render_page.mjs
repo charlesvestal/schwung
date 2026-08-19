@@ -754,8 +754,9 @@ export function drawHeader(ctx, rect, title, pageName, pageIndex, pageCount, o) 
     let extra = available - base * pageCount;
 
     /* Coalesce: pages that sit flush at the same height are one rectangle, not
-     * one each. Same pixels, and it keeps a 76-page module off the draw-call
-     * budget — every pixel crosses a QuickJS->C binding on device. */
+     * one each. Same pixels, fewer calls. (Measured, a binding crossing is
+     * ~490ns, not the 90-100us this library long assumed — see
+     * src/shared/draw_bench.mjs — so this is tidiness, not a rescue.) */
     let cx = x;
     let runStart = -1, runW = 0, runH = 0;
     const flush = () => {

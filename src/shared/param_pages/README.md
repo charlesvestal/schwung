@@ -139,7 +139,10 @@ which is most of the time. Eight dials are also eight distinguishable shapes.
 `LAYOUT_BAR` shows every value at once, which dials cannot. Worth it on a levels
 or mixer page, or wherever precise offsets get compared at a glance. Costs about
 a sixth of the draw calls too (median 52 vs 290 per page), though neither is
-close to a problem.
+close to a problem — measured on device, a whole page render is 1.62 ms, about
+7% of a 44 Hz frame, and a binding crossing is ~490 ns. See
+[`src/shared/draw_bench.mjs`](../draw_bench.mjs); do not optimise draw calls
+without re-running it.
 
 **Rebuild when `fingerprint` changes.** It covers the hierarchy, the param count
 and the mode, which is what moves when a module finishes loading and republishes

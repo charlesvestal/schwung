@@ -45,6 +45,7 @@ import {
 } from '/data/UserData/schwung/shared/chain_ui_views.mjs';
 
 import { decodeDelta } from '/data/UserData/schwung/shared/input_filter.mjs';
+import { runDrawBench } from '/data/UserData/schwung/shared/draw_bench.mjs';
 import { knobInit, knobTick, knobConfigFromMeta } from '/data/UserData/schwung/shared/knob_engine.mjs';
 import {
     formatParamValue as ufFormatParamValue,
@@ -14158,6 +14159,15 @@ function drawLfoTargetParam() {
 
 globalThis.init = function() {
     debugLog("Shadow UI init");
+
+    /* Opt-in one-shot draw benchmark. The param-pages draw design is built
+     * around an assumed ~90-100us per QuickJS->C binding call, which nothing
+     * in the tree re-measures; this settles it. Costs nothing when the flag
+     * file is absent. See src/shared/draw_bench.mjs. */
+    if (typeof host_file_exists === "function" &&
+        host_file_exists("/data/UserData/schwung/draw_bench_on")) {
+        try { runDrawBench(); } catch (e) { debugLog("draw_bench failed: " + e); }
+    }
     refreshSlots();
     loadPatchList();
     initChainConfigs();
