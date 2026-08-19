@@ -246,6 +246,37 @@ void fill_circle(int cx, int cy, int r, int value) {
   }
 }
 
+/* One-pixel circle OUTLINE: pixels whose distance from the centre rounds to r.
+ * Neither two fill_circle calls nor a midpoint walk can stand in for this —
+ * both strand pixels at the compass points. See js_display.c's
+ * js_display_draw_circle for the full reasoning. */
+void draw_arc(int cx, int cy, int r, int start_deg, int sweep_deg, int value) {
+  if(r < 0) return;
+  if(r == 0) { set_pixel(cx, cy, value); return; }
+  if(sweep_deg >= 360) sweep_deg = 360;
+  if(sweep_deg <= 0) return;
+  const int lo = (2 * r - 1) * (2 * r - 1);
+  const int hi = (2 * r + 1) * (2 * r + 1);
+  for(int dy = -r; dy <= r; dy++) {
+    for(int dx = -r; dx <= r; dx++) {
+      const int d4 = 4 * (dx * dx + dy * dy);
+      if(d4 < lo || d4 >= hi) continue;
+      if(sweep_deg < 360) {
+        double a = atan2((double)dx, (double)-dy) * 180.0 / M_PI;
+        if(a < 0) a += 360.0;
+        double delta = a - (double)(start_deg % 360);
+        if(delta < 0) delta += 360.0;
+        if(delta > (double)sweep_deg) continue;
+      }
+      set_pixel(cx + dx, cy + dy, value);
+    }
+  }
+}
+
+void draw_circle(int cx, int cy, int r, int value) {
+  draw_arc(cx, cy, r, 0, 360, value);
+}
+
 int draw_image(const char *filename, int dx, int dy, int threshold, int invert) {
   int w, h, comp;
   unsigned char *image = stbi_load(filename, &w, &h, &comp, 1);
@@ -991,6 +1022,41 @@ static JSValue js_fill_circle(JSContext *ctx, JSValueConst this_val, int argc, J
     color = 1;
   }
   fill_circle(cx, cy, r, color);
+  return JS_UNDEFINED;
+}
+
+static JSValue js_draw_circle(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+  if(argc < 3 || argc > 4) {
+    JS_ThrowTypeError(ctx, "draw_circle() expects 3 or 4 arguments, got %d", argc);
+    return JS_EXCEPTION;
+  }
+  int cx, cy, r, color;
+  if(JS_ToInt32(ctx, &cx, argv[0])) return JS_EXCEPTION;
+  if(JS_ToInt32(ctx, &cy, argv[1])) return JS_EXCEPTION;
+  if(JS_ToInt32(ctx, &r, argv[2])) return JS_EXCEPTION;
+  if(argc == 4) {
+    if(JS_ToInt32(ctx, &color, argv[3])) return JS_EXCEPTION;
+  } else {
+    color = 1;
+  }
+  draw_circle(cx, cy, r, color);
+  return JS_UNDEFINED;
+}
+
+static JSValue js_draw_arc(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+  if(argc < 5 || argc > 6) {
+    JS_ThrowTypeError(ctx, "draw_arc() expects 5 or 6 arguments, got %d", argc);
+    return JS_EXCEPTION;
+  }
+  int cx, cy, r, start, sweep, color;
+  if(JS_ToInt32(ctx, &cx, argv[0])) return JS_EXCEPTION;
+  if(JS_ToInt32(ctx, &cy, argv[1])) return JS_EXCEPTION;
+  if(JS_ToInt32(ctx, &r, argv[2])) return JS_EXCEPTION;
+  if(JS_ToInt32(ctx, &start, argv[3])) return JS_EXCEPTION;
+  if(JS_ToInt32(ctx, &sweep, argv[4])) return JS_EXCEPTION;
+  if(argc == 6) { if(JS_ToInt32(ctx, &color, argv[5])) return JS_EXCEPTION; }
+  else color = 1;
+  draw_arc(cx, cy, r, start, sweep, color);
   return JS_UNDEFINED;
 }
 
@@ -1896,6 +1962,12 @@ void init_javascript(JSRuntime **prt, JSContext **pctx)
     JSValue fill_circle_func = JS_NewCFunction(ctx, js_fill_circle, "fill_circle", 1);
     JS_SetPropertyStr(ctx, global_obj, "fill_circle", fill_circle_func);
 
+    JSValue draw_circle_func = JS_NewCFunction(ctx, js_draw_circle, "draw_circle", 4);
+    JS_SetPropertyStr(ctx, global_obj, "draw_circle", draw_circle_func);
+
+    JSValue draw_arc_func = JS_NewCFunction(ctx, js_draw_arc, "draw_arc", 6);
+    JS_SetPropertyStr(ctx, global_obj, "draw_arc", draw_arc_func);
+
     JSValue draw_image_func = JS_NewCFunction(ctx, js_draw_image, "draw_image", 3);
     JS_SetPropertyStr(ctx, global_obj, "draw_image", draw_image_func);
 
@@ -2009,6 +2081,10 @@ void init_javascript(JSRuntime **prt, JSContext **pctx)
         JS_NewCFunction(ctx, js_fill_rect, "fillRect", 5));
     JS_SetPropertyStr(ctx, display_obj, "fillCircle",
         JS_NewCFunction(ctx, js_fill_circle, "fillCircle", 4));
+    JS_SetPropertyStr(ctx, display_obj, "drawCircle",
+        JS_NewCFunction(ctx, js_draw_circle, "drawCircle", 4));
+    JS_SetPropertyStr(ctx, display_obj, "drawArc",
+        JS_NewCFunction(ctx, js_draw_arc, "drawArc", 6));
     JS_SetPropertyStr(ctx, display_obj, "drawImage",
         JS_NewCFunction(ctx, js_draw_image, "drawImage", 5));
     JS_SetPropertyStr(ctx, display_obj, "drawRect",

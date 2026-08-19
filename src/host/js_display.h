@@ -51,6 +51,8 @@ void js_display_draw_rect(int x, int y, int w, int h, int value);
 void js_display_fill_rect(int x, int y, int w, int h, int value);
 void js_display_draw_line(int x0, int y0, int x1, int y1, int value);
 void js_display_fill_circle(int cx, int cy, int r, int value);
+void js_display_draw_circle(int cx, int cy, int r, int value);
+void js_display_draw_arc(int cx, int cy, int r, int start_deg, int sweep_deg, int value);
 int  js_display_draw_image(const char *filename, int dx, int dy, int threshold, int invert);
 void js_display_print(int x, int y, const char *string, int color);
 int  js_display_text_width(const char *string);
@@ -71,6 +73,8 @@ JSValue js_display_bind_set_pixel(JSContext *ctx, JSValueConst this_val, int arg
 JSValue js_display_bind_draw_rect(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
 JSValue js_display_bind_fill_rect(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
 JSValue js_display_bind_draw_line(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
+JSValue js_display_bind_draw_arc(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
+JSValue js_display_bind_draw_circle(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
 JSValue js_display_bind_clear_screen(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
 JSValue js_display_bind_print(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
 JSValue js_display_bind_text_width(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
