@@ -194,22 +194,36 @@ let _loadingPoll = 0;
 let _abbrevCache = null;
 
 /**
- * A ~30fps ceiling on the Movy-style grid's own full redraw, independent of
- * shadow_ui.js's global `needsRedraw` gate.
+ * Minimum gap between full redraws of the grid. ZERO — the throttle is off.
  *
- * That gate gives idle frames a throttle (REDRAW_INTERVAL) but drops it the
- * moment `needsRedraw` is true — which a knob turn sets on nearly every tick.
- * A fast turn therefore demands the MOST frequent redraws at exactly the
- * moment each one is also the MOST expensive (a live envelope/filter/lfo/eq
- * curve recomputing every tick, real per-pixel geometry — see viz_draw.mjs):
- * the two compound instead of one smoothing the other, which is what read as
- * "lower fps" specifically on fast turns and not on slow ones. This throttle
- * is local to the grid rather than a change to the shared gate other views
- * also depend on — it returns `true` (handled) on a skipped tick without
- * drawing, so the previous frame's pixels simply persist for a few
- * milliseconds rather than the view falling back to the list editor.
+ * It used to be 32ms, on the reasoning that a fast turn demands the most
+ * frequent redraws at exactly the moment each one is most expensive ("a live
+ * curve recomputing every tick, real per-pixel geometry"). Every part of that
+ * has since been measured and none of it holds:
+ *
+ *   a whole page render          1.62ms   (src/shared/draw_bench.mjs)
+ *   js.tick p50                  311us    (OTLP, after the read fixes)
+ *   host tick rate               42.3/s
+ *   grid draw rate WITH the 32ms throttle    ~18fps
+ *
+ * Drawing every single tick costs 42 x 1.62ms = 68ms per second, under 7% of
+ * one core. The throttle was not protecting anything; it was the binding
+ * constraint on the whole view. Worse than 32ms in practice: this device's
+ * clock is quantised to ~11-12ms, so the comparison rounds up to a 33-44ms
+ * gate, and tick phase jitter drops it to ~18fps — the screen updating 18
+ * times a second while the hardware offers 42. That is the "laggy knobs"
+ * report, and no amount of IPC reduction moves it.
+ *
+ * The original "fast turns feel worse" symptom was real, but its cause was
+ * setParam being called once per raw detent — fixed by SETPARAM_THROTTLE_MS
+ * in page_controller.mjs, as the note there says. This was belt-and-braces on
+ * top of a fix that had already landed.
+ *
+ * Kept as a named constant rather than deleted so the gate stays one edit
+ * away if a future page really is too expensive to draw per tick — but raise
+ * it only with a measurement, not a hypothesis.
  */
-const MOVY_REDRAW_MIN_MS = 32;
+const MOVY_REDRAW_MIN_MS = 0;
 let lastDrawMs = 0;
 
 /**
@@ -232,6 +246,21 @@ let lastDrawMs = 0;
 let _fpsWindowStart = 0, _fpsCount = 0;
 
 /** Draw. Non-grid pages are not ours — the host dispatches those. */
+/*
+ * Span helper for the two things inside a grid tick that the trace could not
+ * see: the draw itself, and MIDI handling. `js.tick` and `param.get/set` were
+ * instrumented, so IPC was attributable and everything else was one
+ * undifferentiated lump — which is exactly where the remaining cost turned
+ * out to live once the IPC was cut. No-ops unless otlp_trace_on is present
+ * (host_trace_begin returns 0 and end ignores it). Pairs must balance inside
+ * one tick; the finally does that even if the body throws.
+ */
+function traced(name, fn) {
+    const h = (typeof host_trace_begin === 'function') ? host_trace_begin(name) : 0;
+    try { return fn(); }
+    finally { if (h && typeof host_trace_end === 'function') host_trace_end(h); }
+}
+
 export function drawParamPages() {
     if (!controller) return false;
     /* The section picker is drawn over whatever page you were on, including a
@@ -276,7 +305,7 @@ export function drawParamPages() {
      * the knob ring wants; `fill_circle` is a solid disk. They are not
      * interchangeable — subtracting one disk from another does not give a
      * ring (see render_page_movy.mjs drawArcKnob). */
-    controller.render(
+    traced("js.grid.draw", () => controller.render(
         {
             fillRect: fill_rect, print, textWidth: text_width, line: draw_line,
             fillCircle: fill_circle,
@@ -284,7 +313,7 @@ export function drawParamPages() {
             drawArc: typeof draw_arc === "function" ? draw_arc : undefined,
         },
         { title: `S${currentSlot + 1} > ${name}` }
-    );
+    ));
     return true;
 }
 
@@ -325,7 +354,8 @@ export function handleParamPagesMidi(data) {
 
     /* reveal:false — this host drives reveal from the polled shift state in
      * tickParamPages, not from an intent it will never see. */
-    const todo = applyInput(controller, intent, { nowMs: Date.now(), reveal: false });
+    const todo = traced("js.grid.input",
+        () => applyInput(controller, intent, { nowMs: Date.now(), reveal: false }));
     if (!todo) return true;
 
     if (todo.action === 'exit') {
