@@ -724,13 +724,85 @@ static uint32_t shadow_param_next_request_id(void) {
     return shadow_param_request_seq;
 }
 
-static int shadow_param_wait_idle(int timeout_ms) {
+/*
+ * Claim the parameter channel ATOMICALLY.
+ *
+ * `/schwung-param` is a single-slot protocol with TWO processes on it —
+ * this one and schwung-manager — and the old sequence was:
+ *
+ *     while (request_type != 0) wait;     // observe idle
+ *     ...write key, slot, request_id...
+ *     request_type = GET;                 // then claim it
+ *
+ * which is a textbook time-of-check/time-of-use race. Both processes can
+ * observe idle in the same window, both write, and the loser then spins for
+ * a response_id that will never appear until its timeout expires.
+ *
+ * Measured on device (knob grid, 25s, 4262 reads): the latency distribution
+ * is perfectly bimodal — 4237 reads at 0-10ms, **nothing at all between 10ms
+ * and 99ms**, then 25 reads piled against the 100ms-per-stage timeout
+ * ceiling. That empty band is the proof they are timeouts, not slow reads.
+ * One failed read per second, each blocking the UI thread 100-200ms AND
+ * returning null to its caller. Pausing schwung-manager for 30s took the
+ * grid from 38-50 to 57-59 ticks/sec and the spikes vanished.
+ *
+ * A compare-exchange makes observe-and-claim one indivisible step, so only
+ * one process can ever hold the channel. CLAIMED is a distinct value rather
+ * than a real request type: the shim must see the channel as busy but must
+ * NOT try to serve it, because the key and request_id are not written yet.
+ * The window it is held is a handful of stores, versus the ~2.9ms SPI frame
+ * the old window stayed open for.
+ *
+ * Deliberately still uses the existing field and no new layout, so the SHM
+ * segment is byte-identical and there is no version-skew hazard across the
+ * three binaries that map it.
+ */
+static int shadow_param_claim(int timeout_ms) {
     int timeout = shadow_param_timeout_to_polls(timeout_ms);
-    while (shadow_param->request_type != 0 && timeout > 0) {
+    while (timeout > 0) {
+        uint8_t expected = 0;
+        if (__atomic_compare_exchange_n((uint8_t *)&shadow_param->request_type,
+                                        &expected, (uint8_t)SHADOW_PARAM_CLAIMED,
+                                        0 /* strong */,
+                                        __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+            return 1;
+        }
         usleep(SHADOW_PARAM_POLL_US);
         timeout--;
     }
-    return shadow_param->request_type == 0;
+    return 0;
+}
+
+/*
+ * Report a param call that gave up, with WHICH STAGE gave up and on what key.
+ *
+ * A span carries a name, not a key, and the tail we are chasing is ~0.5% of
+ * reads — rare enough that only naming the actual key and stage will identify
+ * it. Aggregated and emitted at most once a second, because a diagnostic that
+ * writes per event is how a previous round of ~150ms stalls got mistaken for
+ * scheduling contention.
+ */
+static void shadow_param_note_slow(const char *stage, const char *key) {
+    static unsigned n_claim, n_resp, n_err;
+    static char last_key[SHADOW_PARAM_KEY_LEN];
+    static time_t last_report;
+
+    if (stage[0] == 'c') n_claim++;
+    else if (stage[0] == 'r') n_resp++;
+    else n_err++;
+    if (key) { strncpy(last_key, key, sizeof(last_key) - 1);
+               last_key[sizeof(last_key) - 1] = '\0'; }
+
+    time_t now = time(NULL);
+    if (now == last_report) return;
+    last_report = now;
+    if (!(n_claim | n_resp | n_err)) return;
+    char line[256];
+    snprintf(line, sizeof(line),
+             "param_giveup: claim=%u response=%u error=%u  last_key=%s",
+             n_claim, n_resp, n_err, last_key);
+    shadow_ui_log_line(line);
+    n_claim = n_resp = n_err = 0;
 }
 
 static int shadow_param_wait_response(uint32_t req_id, int timeout_ms) {
@@ -770,7 +842,7 @@ static int shadow_set_param_common(int slot, const char *key, const char *value,
          * request) from waiting for the shim to service ours (frame
          * quantisation). They call for different fixes. */
         int idle;
-        { TRACE_SCOPE("param.set.idle"); idle = shadow_param_wait_idle(timeout_ms); }
+        { TRACE_SCOPE("param.set.idle"); idle = shadow_param_claim(timeout_ms); }
         if (!idle) {
             return 0;
         }
@@ -893,7 +965,7 @@ static JSValue shadow_param_bulk_js(JSContext *ctx, int argc, JSValueConst *argv
     if (!value) { JS_FreeCString(ctx, key); return JS_NULL; }
     if (vlen >= SHADOW_PARAM_VALUE_LEN) vlen = SHADOW_PARAM_VALUE_LEN - 1;
 
-    if (!shadow_param_wait_idle(SHADOW_PARAM_DEFAULT_TIMEOUT_MS)) {
+    if (!shadow_param_claim(SHADOW_PARAM_DEFAULT_TIMEOUT_MS)) {
         JS_FreeCString(ctx, key); JS_FreeCString(ctx, value); return JS_NULL;
     }
     uint32_t req_id = shadow_param_next_request_id();
@@ -954,7 +1026,17 @@ static JSValue js_shadow_get_param(JSContext *ctx, JSValueConst this_val, int ar
      * return below via cleanup. */
     TRACE_SCOPE("param.get");
 
-    if (!shadow_param_wait_idle(SHADOW_PARAM_DEFAULT_TIMEOUT_MS)) {
+    /* Claim and response are spanned SEPARATELY because the two failure modes
+     * are completely different problems and the aggregate cannot tell them
+     * apart: time in `claim` means somebody else is holding the channel, time
+     * in `response` means our request was accepted and never answered. The
+     * ~0.5%-of-reads timeout tail survived two fixes aimed at the first, which
+     * is exactly the sort of thing an undifferentiated span hides. */
+    int claimed;
+    { TRACE_SCOPE("param.get.claim");
+      claimed = shadow_param_claim(SHADOW_PARAM_DEFAULT_TIMEOUT_MS); }
+    if (!claimed) {
+        shadow_param_note_slow("claim", key);
         JS_FreeCString(ctx, key);
         return JS_NULL;
     }
@@ -986,11 +1068,31 @@ static JSValue js_shadow_get_param(JSContext *ctx, JSValueConst this_val, int ar
      * parent_span_id / key (written above) before it services this GET. */
     __atomic_store_n(&shadow_param->request_type, (uint8_t)2, __ATOMIC_RELEASE);  /* GET */
 
-    if (shadow_param_wait_response(req_id, SHADOW_PARAM_DEFAULT_TIMEOUT_MS) <= 0) {
+    int got;
+    { TRACE_SCOPE("param.get.response");
+      got = shadow_param_wait_response(req_id, SHADOW_PARAM_DEFAULT_TIMEOUT_MS); }
+    if (got <= 0) {
+        shadow_param_note_slow(got == 0 ? "response-timeout" : "error", key);
         return JS_NULL;
     }
 
-    return JS_NewString(ctx, shadow_param->value);
+    /*
+     * Copy the value, then CHECK IT IS STILL OURS.
+     *
+     * The servicer releases the channel (request_type = 0) at the same moment
+     * it publishes the response, so from that instant the other process may
+     * claim it and overwrite `value` while we are still copying it out. The
+     * window is small — we wake within one 200us poll — but it is a silent
+     * wrong-value window, not an error, so it is worth one comparison to
+     * close. If the id moved underneath us the copy is untrustworthy: report
+     * nothing rather than something wrong.
+     */
+    JSValue out = JS_NewString(ctx, shadow_param->value);
+    if (shadow_param->response_id != req_id) {
+        JS_FreeValue(ctx, out);
+        return JS_NULL;
+    }
+    return out;
 }
 
 /* === MIDI output functions for overtake modules === */
