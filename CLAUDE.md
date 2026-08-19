@@ -51,6 +51,29 @@ JS: `console.log()` (auto-routed) or import `shared/logger.mjs`. C: `LOG_DEBUG("
 
 **OTLP span tracing** (perf profiling, off by default): `touch /data/UserData/schwung/otlp_trace_on` makes **both** the shim and the `shadow_ui` process emit realtime-safe spans as OTLP/JSONL to `/data/UserData/schwung/traces/`, one file per service (`schwung-shim-*` / `schwung-shadow-ui-*`). Shim: `spi.pre`/`spi.post` roots + `shadow.mix_audio`, `midi.process`, `param.serve` children. shadow_ui: `js.tick` + `param.get`. Spans correlate **cross-process by trace_id** — the shim's `param.serve` is emitted as a child of shadow_ui's `param.get` (context propagated through `shadow_param_t`), so Tempo/Jaeger stitch the two files into one trace. JS modules (overtake/chain, incl. ion) can add spans via `host_trace_begin(name) -> handle` / `host_trace_end(handle)` (shadow_ui context only); balance the pair within one `tick()` (handles come from a 16-entry table reset each `js.tick`). `rm` the file to stop. Zero hot-path cost when off. See `docs/tracing.md`.
 
+**Two more UI perf diagnostics** (both off by default):
+
+- `touch /data/UserData/schwung/param_tally_on` — wraps `shadow_get_param` /
+  `shadow_set_param` and reports once a second: reads and writes per tick, the
+  keys by frequency with a sampled caller, any single call over 24 ms, and each
+  key's value RANGE (`MOVING synth:timbre 0.115 .. 1.000`) so you can tell
+  whether a value is actually moving — which is how the idle-LFO fix was
+  confirmed. Needs a `shadow_ui` restart to install (it wraps at init). Writes
+  `param_tally.txt` once per window. See `src/shared/param_tally.mjs`.
+- `param_pages fps: 55 draws / 55 ticks / 1004ms` in `debug.log` while the knob
+  grid is up. Draws vs ticks separates the two causes of "dropped frames":
+  draws << ticks means something gates the redraw; draws == ticks and both low
+  means the tick is slow or its pacing is wrong.
+
+**When the UI feels slow, check the tick rate FIRST.** The shadow UI loop is
+paced to an absolute deadline (60 Hz); it previously slept a fixed 16 ms
+*after* the work, making the real rate `1/(work + 16ms)` — so every parameter
+read added anywhere lowered the frame rate of the whole view, and reducing
+work moved the ceiling instead of steadying it. A parameter round-trip is
+~2.8 ms (one SPI frame; the shim itself takes ~10 µs) while a whole page
+render is 1.68 ms, so **an IPC read costs more than redrawing the entire
+screen**. Spend reads like frames.
+
 ## Device Constraints
 
 **Never write to `/tmp` on the Move device.** Root FS (`/`) is ~463MB and usually 100% full; `/tmp` lives there. **Always** use `/data/UserData/` (~49GB free) for logs, recordings, temp files, everything. The unified logger already writes to `/data/UserData/schwung/debug.log`.

@@ -411,7 +411,27 @@ typedef struct shadow_ui_state_t {
     uint16_t slot_volumes[SHADOW_UI_SLOTS];      /* 0-400 percentage */
     int8_t slot_forward_ch[SHADOW_UI_SLOTS];     /* -2=passthrough, -1=auto, 0-15=channel */
     char slot_names[SHADOW_UI_SLOTS][SHADOW_UI_NAME_LEN];
+    /* --- version 2 --- Appended, so every offset above is unchanged and a
+     * mismatched pair reads zeros here rather than garbage. Consumers must
+     * still gate on `version >= 2`: zero means "not muted", which is a
+     * plausible-looking wrong answer against a stale shim (a known failure
+     * mode — see the web-update shim mirroring in schwung-manager).
+     *
+     * These exist because reading them over the param SHM cost more than
+     * everything else the UI does put together: measured on device, the slot
+     * list's per-draw `slot:muted`/`slot:soloed` reads were 81% of ALL
+     * parameter reads, at ~2.9ms per synchronous round trip, to decide
+     * whether to draw an "M" or an "S". Mirrored here they cost nothing.
+     * Every mutation path already funnels through
+     * shadow_ui_state_update_slot(), which publishes them. */
+    uint8_t slot_muted[SHADOW_UI_SLOTS];         /* 0/1 */
+    uint8_t slot_soloed[SHADOW_UI_SLOTS];        /* 0/1 */
 } shadow_ui_state_t;
+
+/* Bump when a field is APPENDED to shadow_ui_state_t; consumers gate on it.
+ * Never reorder or resize an existing field — the two processes are deployed
+ * as separate files and can be out of step across an upgrade. */
+#define SHADOW_UI_STATE_VERSION 2
 
 /*
  * Parameter request structure for get/set operations.

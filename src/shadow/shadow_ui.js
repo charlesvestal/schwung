@@ -46,6 +46,7 @@ import {
 
 import { decodeDelta } from '/data/UserData/schwung/shared/input_filter.mjs';
 import { runDrawBench } from '/data/UserData/schwung/shared/draw_bench.mjs';
+import { installParamTally, paramTallyTick, paramTallyArmed } from '/data/UserData/schwung/shared/param_tally.mjs';
 import { knobInit, knobTick, knobConfigFromMeta } from '/data/UserData/schwung/shared/knob_engine.mjs';
 import {
     formatParamValue as ufFormatParamValue,
@@ -13656,6 +13657,17 @@ function drawHelpDetail() {
     });
     _ctx.getModuleStatus = (...args) => getModuleStatus(...args);
     _ctx.CATEGORIES = CATEGORIES;
+    /* Let a view opt out of REDRAW_INTERVAL for the frames it cares about.
+     *
+     * The global gate draws every other tick unless `needsRedraw` is set, and
+     * a knob turn on the param grid does not set it — measured, the grid drew
+     * 0.34 times per tick, which is the ~20fps behind the "laggy knobs"
+     * report. Rather than change REDRAW_INTERVAL (every other view depends on
+     * it), a view that paces itself can just ask. The grid does; see
+     * MOVY_REDRAW_MIN_MS in shadow_ui_param_pages.mjs, which is its own
+     * ceiling and is what should be raised if drawing ever gets expensive
+     * again — a page render measures 1.68ms. */
+    _ctx.requestRedraw = () => { needsRedraw = true; };
     _ctx.drawStatusOverlay = (...args) => drawStatusOverlay(...args);
     _ctx.createScrollableText = (...args) => createScrollableText(...args);
     _ctx.drawScrollableText = (...args) => drawScrollableText(...args);
@@ -14168,6 +14180,13 @@ globalThis.init = function() {
         host_file_exists("/data/UserData/schwung/draw_bench_on")) {
         try { runDrawBench(); } catch (e) { debugLog("draw_bench failed: " + e); }
     }
+
+    /* Opt-in param read/write tally. Tracing showed param IPC is ~98% of tick
+     * time and that ~6.7 of the ~7.7 reads per tick come from this file rather
+     * than the param-pages controller — but a span carries a name, not a key
+     * or a caller, so it cannot say which reads or from where. This can. Costs
+     * one host_file_exists when the flag is absent. See src/shared/param_tally.mjs. */
+    try { installParamTally(debugLog); } catch (e) { debugLog("param_tally failed: " + e); }
     refreshSlots();
     loadPatchList();
     initChainConfigs();
@@ -14501,6 +14520,8 @@ globalThis.tick = function() {
      * it self-gates on its own pending state (only set while in the browser), so
      * no view guard is needed (and the view guard was unreliable here). */
     tickPresetPreview();
+    /* Per-second param read/write report; one boolean test when disarmed. */
+    if (paramTallyArmed()) paramTallyTick();
     /* One staggered param read per frame while the grid is up. */
     if (view === VIEWS.PARAM_PAGES) tickParamPages();
 

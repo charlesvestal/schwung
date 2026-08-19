@@ -138,6 +138,36 @@ static JSValue js_shadow_get_slots(JSContext *ctx, JSValueConst this_val, int ar
     return arr;
 }
 
+/*
+ * shadow_get_slot_flags() -> [int, ...] | null   (bit0 = muted, bit1 = soloed)
+ *
+ * Built for the DRAW path, which is why it is separate from
+ * shadow_get_slots(): no strings, no per-slot objects, one array of small
+ * ints. The slot list needs mute/solo fresh on every frame — refreshSlots()
+ * only runs every 120 ticks (~2.7s), and a mute glyph lagging a button press
+ * by that long is not acceptable — but it used to get them with two get_param
+ * calls per slot per draw. Eight synchronous round trips at ~2.9 ms each, and
+ * measured on device they were 81% of every parameter read the UI made. This
+ * is a shared-memory read: one binding crossing, ~490 ns, no IPC at all.
+ *
+ * Returns null against a v1 shim (fields absent → they would read 0, which is
+ * indistinguishable from "nothing is muted"), so the caller can fall back.
+ */
+static JSValue js_shadow_get_slot_flags(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_ui_state) return JS_NULL;
+    if (shadow_ui_state->version < 2) return JS_NULL;
+    int count = shadow_ui_state->slot_count;
+    if (count <= 0 || count > SHADOW_UI_SLOTS) count = SHADOW_UI_SLOTS;
+    JSValue arr = JS_NewArray(ctx);
+    for (int i = 0; i < count; i++) {
+        int flags = (shadow_ui_state->slot_muted[i] ? 1 : 0)
+                  | (shadow_ui_state->slot_soloed[i] ? 2 : 0);
+        JS_SetPropertyUint32(ctx, arr, i, JS_NewInt32(ctx, flags));
+    }
+    return arr;
+}
+
 static JSValue js_shadow_request_patch(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
     if (!shadow_control || argc < 2) return JS_FALSE;
@@ -2387,6 +2417,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
 
     /* Register shadow-specific bindings */
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_slots", JS_NewCFunction(ctx, js_shadow_get_slots, "shadow_get_slots", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_get_slot_flags", JS_NewCFunction(ctx, js_shadow_get_slot_flags, "shadow_get_slot_flags", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_request_patch", JS_NewCFunction(ctx, js_shadow_request_patch, "shadow_request_patch", 2));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_focused_slot", JS_NewCFunction(ctx, js_shadow_set_focused_slot, "shadow_set_focused_slot", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_ui_flags", JS_NewCFunction(ctx, js_shadow_get_ui_flags, "shadow_get_ui_flags", 0));
@@ -2693,6 +2724,9 @@ int main(int argc, char *argv[]) {
     shadow_ui_log_line("shadow_ui: init called");
 
     int refresh_counter = 0;
+        /* Deadline for the next tick — see the pacing note at the end of the loop. */
+    struct timespec next_tick = { 0, 0 };
+
     while (!global_exit_flag) {
         if (shadow_control && shadow_control->should_exit) {
             if (jsSaveStateIsDefined) {
@@ -2738,12 +2772,44 @@ int main(int argc, char *argv[]) {
             js_display_screen_dirty = 0;
         }
 
-        /* Overtake modules need a faster tick rate for responsive display/LED
-         * updates.  Normal shadow UI (slot management) is fine at ~60 Hz. */
-        if (shadow_control && shadow_control->overtake_mode >= 2) {
-            usleep(2000);   /* ~500 Hz effective (minus tick work) */
+        /*
+         * Sleep to an absolute DEADLINE, not for a fixed duration.
+         *
+         * This used to be usleep(16000) with a comment claiming ~60 Hz. It was
+         * never 60 Hz: sleeping a fixed amount AFTER the work makes the rate
+         * 1 / (work + 16ms), so it moves with whatever the tick happens to do.
+         * Measured on device, the model fits exactly — 7.3ms of work gave
+         * 42.3 ticks/sec (predicted 42.9), and 12.3ms gave 36 (predicted 35.3).
+         *
+         * That single line is the whole of the "dropped frames / jagged"
+         * report. The UI draws once per tick and draws == ticks in every
+         * window, so an irregular tick IS an irregular frame rate, and every
+         * extra parameter read — each ~2.8ms — permanently lowered the ceiling
+         * for the entire view. Uneven motion reads far worse than slow motion.
+         *
+         * With a deadline the period is what it says it is, and work only
+         * matters if it exceeds the period. Overrun resets the phase to now
+         * rather than firing a catch-up burst of back-to-back ticks, which on
+         * a UI loop would show up as a visible stutter-then-sprint.
+         */
+        const long period_ns = (shadow_control && shadow_control->overtake_mode >= 2)
+                             ? 2000000L      /* 500 Hz for overtake modules */
+                             : 16666667L;    /* 60 Hz for the normal shadow UI */
+        struct timespec now_ts;
+        clock_gettime(CLOCK_MONOTONIC, &now_ts);
+        if (next_tick.tv_sec == 0) next_tick = now_ts;   /* first pass */
+        next_tick.tv_nsec += period_ns;
+        while (next_tick.tv_nsec >= 1000000000L) {
+            next_tick.tv_nsec -= 1000000000L;
+            next_tick.tv_sec++;
+        }
+        /* Behind the deadline (a tick overran, or the process was descheduled)
+         * — give up the missed slots instead of sprinting to catch up. */
+        if (next_tick.tv_sec < now_ts.tv_sec ||
+            (next_tick.tv_sec == now_ts.tv_sec && next_tick.tv_nsec < now_ts.tv_nsec)) {
+            next_tick = now_ts;
         } else {
-            usleep(16000);  /* ~60 Hz for normal shadow UI */
+            clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next_tick, NULL);
         }
     }
 

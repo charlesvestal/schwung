@@ -209,6 +209,7 @@ void launch_shadow_ui(void) {
          * etc.) run at FIFO 70, competing with the SPI driver. */
         struct sched_param sp = { .sched_priority = 0 };
         sched_setscheduler(0, SCHED_OTHER, &sp);
+
         setsid();
         int fdlimit = (int)sysconf(_SC_OPEN_MAX);
         for (int i = STDERR_FILENO + 1; i < fdlimit; i++) {

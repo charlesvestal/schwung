@@ -76,6 +76,35 @@ export const ANNOUNCE_THROTTLE_MS = 120;
  * release, so the final settled value always reaches the device exactly. */
 export const SETPARAM_THROTTLE_MS = 20;
 
+/**
+ * How many modulated params get a live re-read per tick.
+ *
+ * The staggered cursor exists because eight values is eight IPC round trips,
+ * and it works because a human turns one knob at a time. A modulation source
+ * breaks that: those values move on their own, continuously, and on the shared
+ * cursor each one refreshes only every `stops` ticks — about 5Hz, which
+ * against a 1/8-note LFO is undersampled enough that the dot wanders instead
+ * of sweeping.
+ *
+ * Modulated keys therefore get their own lane, ONE per tick, rotating.
+ *
+ * One, not three. Three was the first guess and it cost more than it bought:
+ * at ~2.8ms a read that is 8.4ms of blocking on top of the cursor read, every
+ * tick, and measured on device it dragged the whole UI from 42 ticks/sec down
+ * to ~28 — visible as dropped frames everywhere, to make a dot smoother that
+ * was already smooth. The common case is a single modulated param on the
+ * page, and that gets the full tick rate either way; three modulated params
+ * now refresh at ~14Hz each instead of 42Hz, which still reads as motion.
+ *
+ * Cheaper per tick than the old per-draw `:modulated` polling it replaced, so
+ * the fast lane is not a net cost.
+ *
+ * The real fix for the many-modulated case is publishing effective values in
+ * shared memory the way slot mute/solo now is — the shim already computes
+ * them every block, and it would cost nothing per frame instead of 2.8ms.
+ */
+export const MOD_FAST_READS_PER_TICK = 1;
+
 /** How many times a page will re-read the contract waiting for late metadata. */
 export const META_RETRY_LIMIT = 8;
 /** Ticks between those attempts (~1 s at the shadow UI's 344 Hz tick).
@@ -115,6 +144,15 @@ export function createController(io = {}) {
         decorations: null,
         /* staggered read cursor */
         cursor: 0,
+        /* key -> last-read modulation flag, refreshed on the read cursor
+         * rather than per cell per draw. See tick(). */
+        modCache: Object.create(null),
+        /* key -> live modulated ("effective") value, for the dot on the arc.
+         * Only modulated keys are in here, and they get their own fast lane in
+         * tick() because they are the only values that move on their own. */
+        modValues: Object.create(null),
+        /* Rotates over the modulated keys, so the fast lane stays bounded. */
+        modCursor: 0,
         /* key -> tick at which reads may resume */
         settleUntil: Object.create(null),
         tickCount: 0,
@@ -295,6 +333,8 @@ export function createController(io = {}) {
         const p = page();
         if (!p || p.kind !== PAGE_KNOBS || p.keys.length === 0) return null;
 
+        refreshModulatedValues(p);
+
         /* One extra stop in the rotation reads the preset name, which a
          * hardware synth would put in its display and which no module declares
          * as a param. */
@@ -318,7 +358,32 @@ export function createController(io = {}) {
         /* Do not clobber a value the user is actively turning. */
         if ((s.settleUntil[key] || 0) > s.tickCount) return null;
 
-        const raw = getParam(fullKey(key));
+        /* Refresh this key's modulation flag on the SAME rotation as its value.
+         *
+         * The renderer asks `modulated(key)` for every cell of every draw, and
+         * each of those was a synchronous round trip: measured on device, the
+         * `<key>:modulated` reads were 3.5 of the grid's 7.1 reads per tick —
+         * half of them — for an indicator that only changes when the user
+         * edits a modulation routing. (Worse on a full page: eight knobs is
+         * eight round trips per draw, and the no-`:modulated` fallback path
+         * costs up to three reads each.)
+         *
+         * On the cursor it costs one read per tick and the whole page is
+         * current within `stops` ticks — under 0.2s, for a tick mark. */
+        s.modCache[key] = !!isModulated(fullKey(key));
+
+        /* For a modulated key the plain key returns the EFFECTIVE value — what
+         * the source is currently driving it to — and that belongs to the dot.
+         * The pointer wants the base, so ask for it directly. Same one read on
+         * the cursor either way; the extra cost of showing both values is the
+         * fast lane above, not this.
+         *
+         * `:base` is served by chain_mod_get_base_for_subkey and only exists
+         * while a target is active, so fall back rather than blank the knob if
+         * the flag and the target ever disagree. */
+        let raw = null;
+        if (s.modCache[key]) raw = getParam(fullKey(key) + ":base");
+        if (raw === null || raw === undefined) raw = getParam(fullKey(key));
         if (raw === null || raw === undefined) return null;
 
         /* First successful read repairs a guessed range, once. */
@@ -610,6 +675,49 @@ export function createController(io = {}) {
         return true;
     }
 
+    /**
+     * Re-read the live value of up to MOD_FAST_READS_PER_TICK modulated keys.
+     *
+     * `values` stays the BASE — what the user dialled in and what a turn edits
+     * — and these are the effective values a source is currently driving the
+     * param to, drawn as a dot on the arc. Keeping them apart is the whole
+     * point: with the pointer chasing an LFO you cannot see what you set.
+     *
+     * Skips a key that is being turned, for the same reason the value cursor
+     * does (`settleUntil`): a read issued before the turn lands after it.
+     */
+    function refreshModulatedValues(p) {
+        const modKeys = [];
+        for (const k of p.keys) {
+            if (k && s.modCache[k]) modKeys.push(k);
+        }
+        if (!modKeys.length) {
+            /* Nothing modulated: drop stale dots rather than leave them frozen
+             * on the arc after a routing is removed. */
+            if (s.modCursor !== 0) s.modCursor = 0;
+            for (const k in s.modValues) delete s.modValues[k];
+            return;
+        }
+        const n = Math.min(MOD_FAST_READS_PER_TICK, modKeys.length);
+        for (let i = 0; i < n; i++) {
+            const key = modKeys[(s.modCursor + i) % modKeys.length];
+            /* Deliberately NOT gated on settleUntil, unlike the value cursor.
+             * That gate exists because a stale read of the BASE lands after a
+             * turn and drags the knob backwards — a write-back race. There is
+             * no such race here: the UI never writes the effective value, it
+             * only displays it. Gating it meant the dot froze for the whole
+             * time you were turning the knob, which is exactly when you most
+             * want to see where modulation is putting the param. */
+            const v = getParam(fullKey(key));
+            if (v !== null && v !== undefined) s.modValues[key] = v;
+        }
+        s.modCursor = (s.modCursor + n) % modKeys.length;
+        /* A key that stopped being modulated keeps no dot. */
+        for (const k in s.modValues) {
+            if (!s.modCache[k]) delete s.modValues[k];
+        }
+    }
+
     function setLayout(layout) { s.layout = layout; }
     function setReveal(on) { s.revealValues = !!on; }
     function setDecorations(d) { s.decorations = d || null; }
@@ -626,7 +734,8 @@ export function createController(io = {}) {
                 page: page(), metaIndex: s.metaIndex, values: s.values,
                 title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
                 touched: s.hintLines ? -1 : s.touched,
-                modulated: (key) => isModulated(fullKey(key)),
+                modulated: (key) => !!s.modCache[key],
+                modValues: s.modValues,
                 pageGroups: pageGroups(),
                 viz: vizEnabled ? vizGroups() : [],
             });
@@ -661,7 +770,7 @@ export function createController(io = {}) {
             title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
             touched: s.touched, decorations: s.decorations,
             layout: s.layout, revealValues: s.revealValues, rect,
-            modulated: (key) => isModulated(fullKey(key)),
+            modulated: (key) => !!s.modCache[key],
             /* Section ids for the page rule, so it groups the way Shift+jog
              * navigates. Cached — it only changes when the page set does. */
             pageGroups: pageGroups(),
@@ -715,6 +824,10 @@ export function createController(io = {}) {
         get pageIndex() { return s.pageIndex; },
         /** The loaded preset's name, once the cursor has read it. */
         get presetName() { return s.presetName; },
+        /** This key's modulation flag as of the last time the cursor reached
+         *  it. Read-only view of the cache the renderer uses — the injected
+         *  isModulated is deliberately NOT called during a draw. */
+        isModulatedCached: (key) => !!s.modCache[key],
         get metaIndex() { return s.metaIndex; },
         keyAt, metaAt,
         jumpIndex: () => jumpIndex(s.pages),

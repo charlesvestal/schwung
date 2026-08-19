@@ -408,6 +408,78 @@ const ARC_START_DEG = 230;
 const ARC_SWEEP_DEG = 260;
 const POINTER_INNER = 0.0;
 const POINTER_OUTER = 0.85;
+/*
+ * Modulation dot centre radius.
+ *
+ * The dot should HUG the inside of the ring, which is a tighter constraint
+ * than "somewhere inside it". The ring sits at KNOB_R and the pointer tip at
+ * KNOB_R * POINTER_OUTER (6.8 at r=8), so there is barely a pixel of clear
+ * track between them. The mark is a 3-wide plus (half-width 1), so centred
+ * here it spans r-2 .. r: far enough out to read as riding the arc rather
+ * than floating in the middle of the knob, and one pixel clear of the ring at
+ * every angle so it never overwrites it and breaks the circle's silhouette.
+ */
+const MOD_DOT_R = KNOB_R - 2;
+
+/**
+ * The modulation dot: where a modulated param actually IS right now, riding
+ * the arc, while the pointer keeps showing the base you dialled in.
+ *
+ * Two values on one knob is the point. With the pointer chasing an LFO you
+ * lose sight of what you set — and turning the knob edits the base, not what
+ * you were watching. This is how the hardware this grid is modelled on does
+ * it, and it is also the cheap way round: the base only moves when you turn
+ * the knob, so only the dot needs live data.
+ *
+ * A five-pixel PLUS, not a circle and not a square block. At r=7 a rasterised
+ * disc of any useful size either disappears into the 1px arc or swamps it,
+ * and the plus is five fill_rects (487ns each) against a circle's scan. Drawn
+ * just inside the arc radius so it reads as travelling along the track rather
+ * than floating. The size and shape are argued in the body — both follow from
+ * the fact that an even-sized mark cannot centre on a pixel.
+ */
+function drawModDot(ctx, kx, ky, normVal) {
+    const cx = kx + KNOB_R, cy = ky + KNOB_R;
+    /*
+     * INSIDE the ring, not on it. Centred on the arc radius the 2x2 straddles
+     * the 1px ring — half its pixels land outside the circle, so as the dot
+     * travels it reads as lumps growing out of the rim rather than as a marker
+     * moving round a track, and at the shoulders it merges with the ring
+     * entirely. Sitting it wholly inside keeps the circle's silhouette intact
+     * and the dot separately legible.
+     *
+     * MOD_DOT_R is the ring radius less the dot's own half-width and a pixel
+     * of clearance, which is what stops it touching the ring at any angle.
+     */
+    const rad = (KNOB_START_DEG + normVal * KNOB_SWEEP_DEG) * Math.PI / 180;
+    const x = Math.round(cx + MOD_DOT_R * Math.sin(rad));
+    const y = Math.round(cy - MOD_DOT_R * Math.cos(rad));
+    /*
+     * ONE pixel, not a 2x2 — because an even-sized mark cannot be centred.
+     *
+     * A 2x2 spanning (a,b)..(a+1,b+1) has its centroid at (a+0.5, b+0.5), so
+     * whichever way it is rounded it lands half a pixel off the angle it is
+     * meant to be showing, and at the cardinal angles floating point decides
+     * the tie: at 50% the true centre is exactly cx, sin() returns -2.4e-16
+     * rather than 0, and the block rounded a whole pixel LEFT of the knob
+     * centre. That is the mark visibly not sitting on its track.
+     *
+     * An odd-sized mark centres exactly on a pixel at every angle, so the
+     * shape is a PLUS: the centre pixel plus its four orthogonal neighbours.
+     *
+     * One pixel centred correctly was still too faint to track against a 1px
+     * ring and a pointer. A full 3x3 is the other obvious odd size and it is
+     * too heavy — nine pixels on a knob whose radius is eight reads as a
+     * blob, which is what the 2x2 already failed at. The plus is five pixels,
+     * three across, and its diagonal gaps keep it visually distinct from the
+     * solid ring it travels next to rather than merging into it.
+     */
+    ctx.fillRect(x, y, 1, 1, 1);
+    ctx.fillRect(x - 1, y, 1, 1, 1);
+    ctx.fillRect(x + 1, y, 1, 1, 1);
+    ctx.fillRect(x, y - 1, 1, 1, 1);
+    ctx.fillRect(x, y + 1, 1, 1, 1);
+}
 
 function drawArcKnob(ctx, kx, ky, normVal) {
     const cx = kx + KNOB_R, cy = ky + KNOB_R, r = KNOB_R;
@@ -493,12 +565,15 @@ function drawOpaqueBox(ctx, kx, ky, value) {
         ky + 1 + Math.floor((h - 2 - FONT_H) / 2), fitDev(ctx, shown, KW - 4), 1);
 }
 
-function drawKnobWidget(ctx, col, rowY, meta, raw) {
+function drawKnobWidget(ctx, col, rowY, meta, raw, modRaw, liveRaw) {
     const kx = col * CELL_W + Math.floor((CELL_W - KW) / 2), ky = rowY;
-    if (meta.kind === KIND_OPAQUE) { drawOpaqueBox(ctx, kx, ky, raw); return; }
+    /* Anything that cannot show two values at once shows the live one, so it
+     * animates under modulation instead of freezing on the base. */
+    const shown = (liveRaw === null || liveRaw === undefined) ? raw : liveRaw;
+    if (meta.kind === KIND_OPAQUE) { drawOpaqueBox(ctx, kx, ky, shown); return; }
     if (meta.kind === KIND_ENUM) {
-        const idx = Math.round(Number(raw));
-        const text = (Array.isArray(meta.options) && meta.options[idx] !== undefined) ? String(meta.options[idx]) : String(raw ?? "");
+        const idx = Math.round(Number(shown));
+        const text = (Array.isArray(meta.options) && meta.options[idx] !== undefined) ? String(meta.options[idx]) : String(shown ?? "");
         /* Its own centring — it is ENUM_W wide, not KW. */
         drawEnumSquare(ctx, col * CELL_W + Math.floor((CELL_W - ENUM_W) / 2), ky, text);
         return;
@@ -508,6 +583,16 @@ function drawKnobWidget(ctx, col, rowY, meta, raw) {
     const num = Number(raw);
     const normVal = (max > min && isFinite(num)) ? Math.max(0, Math.min(1, (num - min) / (max - min))) : 0;
     drawArcKnob(ctx, kx, ky, normVal);
+    /* Only when modulation is actually driving this param somewhere OTHER
+     * than the base — a dot sitting under the pointer says nothing and just
+     * thickens it. */
+    if (modRaw !== null && modRaw !== undefined) {
+        const mnum = Number(modRaw);
+        if (isFinite(mnum) && max > min) {
+            const modNorm = Math.max(0, Math.min(1, (mnum - min) / (max - min)));
+            if (Math.abs(modNorm - normVal) > 0.02) drawModDot(ctx, kx, ky, modNorm);
+        }
+    }
 }
 
 /* schwung-movy renderer/label.ts drawWaveMark (the modulation tilde), ported. */
@@ -550,7 +635,32 @@ function drawLabelCell(ctx, col, lblY, label, displayValue, touched, modulated) 
 /* --------------------------------------------------------------- one row */
 
 function drawKnobRow(ctx, o, row, rowY, lblY) {
-    const { page, metaIndex, values, touched, modulated, viz } = o;
+    const { page, metaIndex, values, touched, modulated, viz, modValues } = o;
+    /*
+     * What each widget animates.
+     *
+     * A knob can legibly show TWO values — pointer on the base, dot on the arc
+     * — so it does. Nothing else can: a filter curve cannot be drawn twice
+     * without becoming unreadable, and an enum square has one line of text.
+     * Those widgets therefore show the LIVE value and no baseline, which is
+     * also what makes them animate under modulation.
+     *
+     * This matters because `values` now holds the BASE for a modulated key
+     * (the pointer needs it). Handing that straight to viz/enum would freeze
+     * a modulated filter curve at the value you dialled in, which is a
+     * regression against showing the effective value.
+     *
+     * Only cloned when something is ACTUALLY modulated. `modValues` is always
+     * an object, so a truthiness test cloned `values` twice per frame (once
+     * per row) on every page whether or not a source was running — and
+     * `values` is not page-sized, it accumulates every key the read cursor has
+     * ever reached, which on a 76-page module is hundreds. Allocating and
+     * copying that at 55fps is pure garbage for the overwhelmingly common case
+     * of nothing modulated at all. `hasMod` makes the empty case free.
+     */
+    let hasMod = false;
+    if (modValues) { for (const _k in modValues) { hasMod = true; break; } }
+    const liveValues = hasMod ? Object.assign({}, values, modValues) : values;
     const slotBase = row * 4;
 
     const covered = new Array(4).fill(false);
@@ -561,7 +671,7 @@ function drawKnobRow(ctx, o, row, rowY, lblY) {
         for (let s = localStart; s < localStart + g.slotSpan && s < 4; s++) covered[s] = true;
         drawVizGroup(ctx, {
             x: localStart * CELL_W, y: rowY, w: g.slotSpan * CELL_W, h: LBL0_Y - ROW0_Y,
-        }, g, values, metaIndex);
+        }, g, liveValues, metaIndex);
     }
 
     for (let col = 0; col < 4; col++) {
@@ -572,7 +682,15 @@ function drawKnobRow(ctx, o, row, rowY, lblY) {
         const raw = values ? values[key] : null;
         const isTouched = touched === slot;
 
-        if (!covered[col]) drawKnobWidget(ctx, col, rowY, meta, raw);
+        if (!covered[col]) {
+            /* modValues holds the live modulated value for keys a source is
+             * driving; `values` stays the base the user dialled in. */
+            /* Knob: base + dot. Enum/opaque: the live value, no baseline —
+             * drawKnobWidget picks per kind. */
+            drawKnobWidget(ctx, col, rowY, meta, raw,
+                           modValues ? modValues[key] : undefined,
+                           liveValues ? liveValues[key] : undefined);
+        }
 
         /* Budget in CHARACTERS, not pixels: Elektron's labels are 3-4 glyphs
          * whether or not more would technically fit, which is what keeps a row
