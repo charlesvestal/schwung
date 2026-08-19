@@ -414,10 +414,10 @@ const POINTER_OUTER = 0.85;
  * The dot should HUG the inside of the ring, which is a tighter constraint
  * than "somewhere inside it". The ring sits at KNOB_R and the pointer tip at
  * KNOB_R * POINTER_OUTER (6.8 at r=8), so there is barely a pixel of clear
- * track between them. A 2x2 centred here spans roughly r-1 .. r+0.7: far
- * enough out to read as riding the arc rather than floating in the middle of
- * the knob, close enough in that it does not overwrite the ring and break the
- * circle's silhouette.
+ * track between them. The mark is a 3-wide plus (half-width 1), so centred
+ * here it spans r-2 .. r: far enough out to read as riding the arc rather
+ * than floating in the middle of the knob, and one pixel clear of the ring at
+ * every angle so it never overwrites it and breaks the circle's silhouette.
  */
 const MOD_DOT_R = KNOB_R - 2;
 
@@ -431,10 +431,12 @@ const MOD_DOT_R = KNOB_R - 2;
  * it, and it is also the cheap way round: the base only moves when you turn
  * the knob, so only the dot needs live data.
  *
- * A filled 2x2 square, not a circle. At r=7 a rasterised disc of any useful
- * size either disappears into the 1px arc or swamps it, and a square is one
- * fill_rect (487ns) against a circle's scan. Drawn ON the arc radius so it
- * reads as travelling along the track rather than floating.
+ * A five-pixel PLUS, not a circle and not a square block. At r=7 a rasterised
+ * disc of any useful size either disappears into the 1px arc or swamps it,
+ * and the plus is five fill_rects (487ns each) against a circle's scan. Drawn
+ * just inside the arc radius so it reads as travelling along the track rather
+ * than floating. The size and shape are argued in the body — both follow from
+ * the fact that an even-sized mark cannot centre on a pixel.
  */
 function drawModDot(ctx, kx, ky, normVal) {
     const cx = kx + KNOB_R, cy = ky + KNOB_R;
@@ -647,8 +649,18 @@ function drawKnobRow(ctx, o, row, rowY, lblY) {
      * (the pointer needs it). Handing that straight to viz/enum would freeze
      * a modulated filter curve at the value you dialled in, which is a
      * regression against showing the effective value.
+     *
+     * Only cloned when something is ACTUALLY modulated. `modValues` is always
+     * an object, so a truthiness test cloned `values` twice per frame (once
+     * per row) on every page whether or not a source was running — and
+     * `values` is not page-sized, it accumulates every key the read cursor has
+     * ever reached, which on a 76-page module is hundreds. Allocating and
+     * copying that at 55fps is pure garbage for the overwhelmingly common case
+     * of nothing modulated at all. `hasMod` makes the empty case free.
      */
-    const liveValues = modValues ? Object.assign({}, values, modValues) : values;
+    let hasMod = false;
+    if (modValues) { for (const _k in modValues) { hasMod = true; break; } }
+    const liveValues = hasMod ? Object.assign({}, values, modValues) : values;
     const slotBase = row * 4;
 
     const covered = new Array(4).fill(false);
@@ -677,7 +689,7 @@ function drawKnobRow(ctx, o, row, rowY, lblY) {
              * drawKnobWidget picks per kind. */
             drawKnobWidget(ctx, col, rowY, meta, raw,
                            modValues ? modValues[key] : undefined,
-                           liveValues[key]);
+                           liveValues ? liveValues[key] : undefined);
         }
 
         /* Budget in CHARACTERS, not pixels: Elektron's labels are 3-4 glyphs

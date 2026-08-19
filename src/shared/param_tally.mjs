@@ -39,8 +39,14 @@ let tickCount = 0, sampleCount = 0, windowStart = 0, reportIndex = 0;
 let logFn = null;
 const lines = [];
 
+/* The file keeps the last KEEP_LINES; so does memory. Unbounded, this grew by
+ * ~20 strings a second for as long as the flag was present, which is its own
+ * slow leak in a process being measured for stalls. */
+const KEEP_LINES = 400;
+
 function say(s) {
     lines.push(s);
+    if (lines.length > KEEP_LINES * 2) lines.splice(0, lines.length - KEEP_LINES);
     if (logFn) logFn(s); else console.log(s);
 }
 
@@ -58,7 +64,7 @@ function flush() {
     if (typeof host_write_file !== "function") return;
     /* Keep only the recent window on disk: this runs for as long as the flag
      * is present and the interesting part is the end, not the boot. */
-    const keep = lines.length > 400 ? lines.slice(lines.length - 400) : lines;
+    const keep = lines.length > KEEP_LINES ? lines.slice(lines.length - KEEP_LINES) : lines;
     try { host_write_file(TALLY_OUT, keep.join("\n") + "\n"); } catch (e) { /* ignore */ }
 }
 
@@ -215,13 +221,17 @@ export function paramTallyTick() {
     }
     ranges.clear();
 
-    flush();   /* one file write per window — see flush() */
-    /* The stalls, named. One of these blocks everything behind it. */
+    /* The stalls, named. One of these blocks everything behind it.
+     * BEFORE the flush, not after: these are the most interesting lines the
+     * tally produces and writing the file first left them out of their own
+     * window, to surface a second later attached to the next one. */
     if (slowCalls.length) {
         for (const s of slowCalls.slice(0, 8)) say("param_tally:     SLOW " + s);
         if (slowCalls.length > 8) say("param_tally:     SLOW (+" + (slowCalls.length - 8) + " more)");
         slowCalls.length = 0;
     }
+
+    flush();   /* one file write per window — see flush() */
 
     gets.clear(); sets.clear(); callers.clear();
     tickCount = 0; windowStart = now;
