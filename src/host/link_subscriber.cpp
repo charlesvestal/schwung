@@ -87,6 +87,15 @@ static std::atomic<uint32_t> g_cb_run[LINK_AUDIO_IN_SLOT_COUNT];
 static std::atomic<uint32_t> g_cb_max_run[LINK_AUDIO_IN_SLOT_COUNT];
 static std::atomic<uint32_t> g_cb_count[LINK_AUDIO_IN_SLOT_COUNT];
 
+/* Latch for individual large gaps, so the interval BETWEEN stalls is
+ * measurable — the 5 s summary only reports a maximum and cannot show
+ * periodicity. Rare (~1 per 5 s), so a single-entry latch per slot with a
+ * sequence counter is enough; the main loop drains and logs it with a wall
+ * clock, keeping all logging off the callback thread. */
+#define LINK_CB_GAP_REPORT_US 50000  /* report gaps over 50 ms */
+static std::atomic<uint32_t> g_cb_gap_seq[LINK_AUDIO_IN_SLOT_COUNT];
+static std::atomic<uint32_t> g_cb_gap_us[LINK_AUDIO_IN_SLOT_COUNT];
+
 static inline void link_cb_note_delivery(int slot)
 {
     struct timespec ts;
@@ -105,6 +114,11 @@ static inline void link_cb_note_delivery(int slot)
     uint32_t prev_max = g_cb_max_gap_us[slot].load(std::memory_order_relaxed);
     if (gap_us > prev_max) {
         g_cb_max_gap_us[slot].store(gap_us, std::memory_order_relaxed);
+    }
+
+    if (gap_us >= LINK_CB_GAP_REPORT_US) {
+        g_cb_gap_us[slot].store(gap_us, std::memory_order_relaxed);
+        g_cb_gap_seq[slot].fetch_add(1, std::memory_order_release);
     }
 
     if (gap_us < LINK_CB_BURST_GAP_US) {
@@ -637,6 +651,23 @@ int main()
                 }
 
                 slots[i].last_read_pos = rp;
+            }
+        }
+
+        /* Drain individual large-gap events promptly (main loop runs every
+         * 10 ms) so the log carries a wall-clock timestamp per stall. The
+         * interval between these lines is the number that matters: 5 s apart
+         * implicates the channel-request renewal, irregular does not. */
+        {
+            static uint32_t last_seq[LINK_AUDIO_IN_SLOT_COUNT];
+            for (int i = 0; i < LINK_AUDIO_IN_SLOT_COUNT; i++) {
+                uint32_t seq = g_cb_gap_seq[i].load(std::memory_order_acquire);
+                if (seq != last_seq[i]) {
+                    last_seq[i] = seq;
+                    LOG_INFO(LINK_SUB_LOG_SOURCE, "cbgap slot=%d %.1f ms",
+                             i, g_cb_gap_us[i].load(std::memory_order_relaxed)
+                                / 1000.0);
+                }
             }
         }
 
