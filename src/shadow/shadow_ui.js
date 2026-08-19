@@ -608,6 +608,45 @@ function pollFxDisplayName(slot, key, cacheKey) {
     return name;
 }
 
+/*
+ * Cache for the chain-edit info line (module display name + preset).
+ *
+ * drawChainEdit() read `<prefix>:name`, `<prefix>:preset_name` and
+ * `<prefix>:preset` on EVERY FRAME — three IPC round-trips per frame in a
+ * draw function, ~8.4ms of a 16.67ms budget. Measured on hardware
+ * 2026-08-19: ~50 errored reads/sec on `fx2:name` alone, because an FX that
+ * does not implement the key still costs the full round trip to say so. That
+ * load is served inside the SPI callback, where `param` was spiking to 700us.
+ *
+ * None of these values can change without a module swap or a preset load, so
+ * a frame is the wrong cadence. Re-read when the module id changes (caught
+ * immediately) or when the entry is older than the refresh interval (catches
+ * a preset loaded underneath us). ~165 reads/sec becomes ~6.
+ */
+const SLOT_PARAM_CACHE_TTL_MS = 500;
+let slotParamCache = {};   /* "slot:key" -> {module, value, ts} */
+
+/*
+ * Cached slot-param read for DRAW paths only. Returns the same value a bare
+ * getSlotParam would, including null.
+ *
+ * Pass the loaded module id so a swap invalidates immediately; the TTL is
+ * what catches a value changing underneath us (a preset loaded, a bank
+ * switched). Do NOT use this where the value must be exact right now — use
+ * getSlotParam directly on entry/commit paths.
+ */
+function getSlotParamCached(slot, key, moduleId) {
+    const ck = `${slot}:${key}`;
+    const hit = slotParamCache[ck];
+    const now = Date.now();
+    if (hit && hit.module === moduleId && (now - hit.ts) < SLOT_PARAM_CACHE_TTL_MS) {
+        return hit.value;
+    }
+    const value = getSlotParam(slot, key);
+    slotParamCache[ck] = { module: moduleId, value, ts: now };
+    return value;
+}
+
 /* Helper to change view and announce it */
 function setView(newView, customLabel) {
     if (view === newView) return;  /* No change */
@@ -10715,15 +10754,16 @@ function drawHierarchyEditor() {
     const abbrev = moduleData ? getModuleAbbrev(moduleData.module) : hierEditorComponent.toUpperCase();
 
     /* Get bank or preset name for header depending on view */
+    const hierMid = moduleData ? moduleData.module : hierEditorComponent;
     let headerName;
     if (hierEditorIsPresetLevel && !hierEditorPresetEditMode) {
         /* Preset browser: show bank/soundfont name */
-        headerName = getSlotParam(hierEditorSlot, `${prefix}:bank_name`) ||
-                     getSlotParam(hierEditorSlot, `${prefix}:name`) || "";
+        headerName = getSlotParamCached(hierEditorSlot, `${prefix}:bank_name`, hierMid) ||
+                     getSlotParamCached(hierEditorSlot, `${prefix}:name`, hierMid) || "";
     } else {
         /* Edit mode: show preset name */
-        headerName = getSlotParam(hierEditorSlot, `${prefix}:preset_name`) ||
-                     getSlotParam(hierEditorSlot, `${prefix}:name`) || "";
+        headerName = getSlotParamCached(hierEditorSlot, `${prefix}:preset_name`, hierMid) ||
+                     getSlotParamCached(hierEditorSlot, `${prefix}:name`, hierMid) || "";
     }
 
     /* Check for mode indicator - show * for performance mode */
@@ -13306,14 +13346,16 @@ function drawChainEdit() {
         if (moduleData) {
             /* Get display name from DSP if available */
             const prefix = selectedComp.key === "midiFx" ? "midi_fx1" : selectedComp.key;
-            let displayName = getSlotParam(selectedSlot, `${prefix}:name`) || moduleData.module;
+            /* Cached: these were three IPC round-trips per frame. */
+            const mid = moduleData.module;
+            let displayName = getSlotParamCached(selectedSlot, `${prefix}:name`, mid) || mid;
             /* Friendly name for RNBO pack entries */
             if (displayName === moduleData.module) {
                 if (displayName.startsWith("rnbo-synth-")) displayName = displayName.substring(11) + " (RNBO)";
                 else if (displayName.startsWith("rnbo-fx-")) displayName = displayName.substring(8) + " (RNBO)";
             }
-            const preset = getSlotParam(selectedSlot, `${prefix}:preset_name`) ||
-                          getSlotParam(selectedSlot, `${prefix}:preset`) || "";
+            const preset = getSlotParamCached(selectedSlot, `${prefix}:preset_name`, mid) ||
+                           getSlotParamCached(selectedSlot, `${prefix}:preset`, mid) || "";
             infoLine = preset ? `${displayName} (${truncateText(preset, 8)})` : displayName;
         } else {
             infoLine = "(empty)";
@@ -13388,11 +13430,12 @@ function drawComponentEdit() {
 
     /* Get display name from DSP if available */
     const prefix = editingComponentKey === "midiFx" ? "midi_fx1" : editingComponentKey;
-    const displayName = getSlotParam(selectedSlot, `${prefix}:name`) || moduleName;
+    const cmpMid = moduleData ? moduleData.module : moduleName;
+    const displayName = getSlotParamCached(selectedSlot, `${prefix}:name`, cmpMid) || moduleName;
 
     /* Build header: S#: Module: Bank (preset selection shows bank/soundfont) */
     const abbrev = moduleData ? getModuleAbbrev(moduleData.module) : moduleName;
-    const bankName = getSlotParam(selectedSlot, `${prefix}:bank_name`) || displayName;
+    const bankName = getSlotParamCached(selectedSlot, `${prefix}:bank_name`, cmpMid) || displayName;
     const headerText = truncateText(`S${selectedSlot + 1}: ${abbrev}: ${bankName}`, 24);
     drawHeader(headerText);
 
