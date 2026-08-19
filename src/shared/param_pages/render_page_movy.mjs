@@ -408,10 +408,18 @@ const ARC_START_DEG = 230;
 const ARC_SWEEP_DEG = 260;
 const POINTER_INNER = 0.0;
 const POINTER_OUTER = 0.85;
-/* Modulation dot centre radius: the ring (KNOB_R) less the dot half-width (1)
- * and one pixel of clearance, so a 2x2 mark never touches the ring at any
- * angle. See drawModDot. */
-const MOD_DOT_R = KNOB_R - 2;
+/*
+ * Modulation dot centre radius.
+ *
+ * The dot should HUG the inside of the ring, which is a tighter constraint
+ * than "somewhere inside it". The ring sits at KNOB_R and the pointer tip at
+ * KNOB_R * POINTER_OUTER (6.8 at r=8), so there is barely a pixel of clear
+ * track between them. A 2x2 centred here spans roughly r-1 .. r+0.7: far
+ * enough out to read as riding the arc rather than floating in the middle of
+ * the knob, close enough in that it does not overwrite the ring and break the
+ * circle's silhouette.
+ */
+const MOD_DOT_R = KNOB_R - 1;
 
 /**
  * The modulation dot: where a modulated param actually IS right now, riding
@@ -442,11 +450,24 @@ function drawModDot(ctx, kx, ky, normVal) {
      * of clearance, which is what stops it touching the ring at any angle.
      */
     const rad = (KNOB_START_DEG + normVal * KNOB_SWEEP_DEG) * Math.PI / 180;
-    const x = cx + MOD_DOT_R * Math.sin(rad);
-    const y = cy - MOD_DOT_R * Math.cos(rad);
-    /* Round the CENTRE, then place the 2x2 around it, so the mark stays
-     * concentric with the angle instead of biasing down-right. */
-    ctx.fillRect(Math.round(x) - 1, Math.round(y) - 1, 2, 2, 1);
+    const x = Math.round(cx + MOD_DOT_R * Math.sin(rad));
+    const y = Math.round(cy - MOD_DOT_R * Math.cos(rad));
+    /*
+     * ONE pixel, not a 2x2 — because an even-sized mark cannot be centred.
+     *
+     * A 2x2 spanning (a,b)..(a+1,b+1) has its centroid at (a+0.5, b+0.5), so
+     * whichever way it is rounded it lands half a pixel off the angle it is
+     * meant to be showing, and at the cardinal angles floating point decides
+     * the tie: at 50% the true centre is exactly cx, sin() returns -2.4e-16
+     * rather than 0, and the block rounded a whole pixel LEFT of the knob
+     * centre. That is the mark visibly not sitting on its track.
+     *
+     * An odd-sized mark centres exactly on a pixel at every angle. On a 17px
+     * knob with a 1px ring, one pixel is also the size that matches the
+     * drawing it sits in — the 2x2 was heavy enough to merge with the ring at
+     * the arc ends and read as a blob rather than a marker.
+     */
+    ctx.fillRect(x, y, 1, 1, 1);
 }
 
 function drawArcKnob(ctx, kx, ky, normVal) {

@@ -86,19 +86,24 @@ export const SETPARAM_THROTTLE_MS = 20;
  * against a 1/8-note LFO is undersampled enough that the dot wanders instead
  * of sweeping.
  *
- * Modulated keys therefore get their own lane. Typically one or two params on
- * a page are modulated, so they land at 42Hz and 21Hz respectively — smooth.
- * The cap is what keeps a pathological page honest: at ~2.8ms a read, three is
- * ~8.4ms against a 23.8ms frame, and beyond that a fully-modulated page would
- * spend the whole budget on IPC. Past the cap it degrades to round-robin
- * rather than dropping frames.
+ * Modulated keys therefore get their own lane, ONE per tick, rotating.
+ *
+ * One, not three. Three was the first guess and it cost more than it bought:
+ * at ~2.8ms a read that is 8.4ms of blocking on top of the cursor read, every
+ * tick, and measured on device it dragged the whole UI from 42 ticks/sec down
+ * to ~28 — visible as dropped frames everywhere, to make a dot smoother that
+ * was already smooth. The common case is a single modulated param on the
+ * page, and that gets the full tick rate either way; three modulated params
+ * now refresh at ~14Hz each instead of 42Hz, which still reads as motion.
+ *
+ * Cheaper per tick than the old per-draw `:modulated` polling it replaced, so
+ * the fast lane is not a net cost.
  *
  * The real fix for the many-modulated case is publishing effective values in
  * shared memory the way slot mute/solo now is — the shim already computes
- * them every block. This is the version that needs no new SHM contract, and
- * it is worth measuring whether it is enough before building that.
+ * them every block, and it would cost nothing per frame instead of 2.8ms.
  */
-export const MOD_FAST_READS_PER_TICK = 3;
+export const MOD_FAST_READS_PER_TICK = 1;
 
 /** How many times a page will re-read the contract waiting for late metadata. */
 export const META_RETRY_LIMIT = 8;
