@@ -805,8 +805,36 @@ static void shadow_param_note_slow(const char *stage, const char *key) {
     n_claim = n_resp = n_err = 0;
 }
 
+/*
+ * How long to sleep BEFORE polling at all.
+ *
+ * The shim services this channel from the SPI callback, once per frame, and a
+ * frame is ~2.9ms. So the answer is never ready in the first couple of hundred
+ * microseconds — yet the loop below used to wake ~14 times discovering that,
+ * every single read.
+ *
+ * Each of those wakeups is a syscall and, more to the point, a chance for the
+ * scheduler to give the CPU to something else and not come back promptly. That
+ * is the mechanism behind the tail this was chasing: measured on device, ~0.5%
+ * of reads took 142-163ms instead of 2.8ms, and they SUCCEEDED — no timeout was
+ * recorded — so nothing was lost or contended, the process simply was not
+ * running to observe a response that had been sitting there. Sleeping once for
+ * most of a frame cuts the wakeups per read from ~14 to ~2, and with them the
+ * exposure.
+ *
+ * Deliberately shorter than a frame: overshooting would add latency to every
+ * read to fix a rare one. 2.2ms still lands inside the same frame the old
+ * loop's 11th poll would have.
+ */
+#define SHADOW_PARAM_FIRST_SLEEP_US 2200
+
 static int shadow_param_wait_response(uint32_t req_id, int timeout_ms) {
     int timeout = shadow_param_timeout_to_polls(timeout_ms);
+    /* Not ready yet by construction — see above. Skip the pointless polls. */
+    if (__atomic_load_n(&shadow_param->response_ready, __ATOMIC_ACQUIRE) == 0) {
+        usleep(SHADOW_PARAM_FIRST_SLEEP_US);
+        timeout -= SHADOW_PARAM_FIRST_SLEEP_US / SHADOW_PARAM_POLL_US;
+    }
     while (timeout > 0) {
         /* Acquire-load pairs with the writer's release-store of response_ready
          * (shadow_param_publish_response + the shim sites). It guarantees the
