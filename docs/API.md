@@ -289,10 +289,28 @@ fill_circle(x, y, r, value)   // solid disk
 draw_circle(x, y, r, value)   // 1px outline (midpoint) — NOT fill_circle minus a
                               // smaller fill_circle; that leaves a detached pixel
                               // at each of the four cardinals, not a ring
+draw_arc(cx, cy, r, start_deg, sweep_deg, value)
+                              // partial ring, same rasteriser as draw_circle.
+                              // Angles in DEGREES, 0 = UP (12 o'clock),
+                              // increasing CLOCKWISE: 90 = right, 180 = down,
+                              // 270 = left. `sweep_deg` is a span, not an end
+                              // angle — a full ring is sweep 360, and sweep <= 0
+                              // draws nothing. `value` optional, defaults to 1.
+                              // A knob ring from the 7-o'clock rest position is
+                              // draw_arc(cx, cy, r, 225, 270).
 draw_line(x1, y1, x2, y2, value)
 draw_image(x, y, image)
 get_int16(buf, off) / set_int16(buf, off, v)
+
+// Fonts
+set_font(path)                // load a .bdf-derived font; returns bool.
+                              // Affects print()/text_width() until changed.
+get_font_height()             // -> px height of the current font
 ```
+
+`draw_circle` and `draw_arc` are native primitives — do not emulate them in JS.
+A QuickJS→C binding is ~490 ns, so the C rasteriser wins comfortably, and the
+midpoint algorithm produces a closed ring that a difference-of-fills does not.
 
 `host_module_send_midi` accepts a 3-byte array `[status, data1, data2]` and an optional `source` (`"internal"`, `"external"`, or `"host"`).
 `host_load_ui_module` returns a boolean and loads the file as an ES module without invoking `globalThis.init`.
