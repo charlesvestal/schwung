@@ -278,6 +278,22 @@ function drawStepCurve(ctx, x0, xEnd, yAt, color = 1) {
  * actually exists. Same reason BOX_H and LBL_H are odd.
  */
 export const VIZ_ROWS = 13;
+
+/*
+ * The narrowest cell a graphic can be drawn into.
+ *
+ * Every other body scales horizontally against `rect.w`, but `drawSwitch` is a
+ * tabulated sprite ported pixel-for-pixel from Movy — 26 columns wide, fixed,
+ * because it is a circle and a circle rasterised at one size cannot be
+ * stretched to another and stay round. Below 26 it does not narrow, it hangs
+ * out of the cell on both sides.
+ *
+ * The full screen gives a 32px cell, so this only binds on a caller that
+ * passes a narrower `rect` — see render_page.mjs, which stands the graphics
+ * down rather than let one overhang.
+ */
+export const VIZ_MIN_W = 26;
+
 function band(rect) {
     const topY = rect.y + 1;
     const botY = topY + VIZ_ROWS - 1;

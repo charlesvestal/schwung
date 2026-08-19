@@ -84,6 +84,14 @@ const { groups, invalid } = resolveViz({ keys: page.keys, metaIndex, overrides }
 renderPage(ctx, { page, metaIndex, values, title, pageIndex, pageCount, viz: groups });
 ```
 
+Graphics have a minimum cell, and a caller passing a small `rect` gets none.
+Unlike a dial or a bar, a graphic does not scale down — its body is a fixed
+13-row band and the switch a fixed 26-column sprite — so below `VIZ_ROWS + 1`
+rows or `VIZ_MIN_W` columns per cell `renderPage` stands the graphics down and
+the slots fall through to ordinary cells, which do degrade. The full screen is
+26x32 per cell and never trips this; a tool drawing under its own header can.
+Pinned by `test_param_pages_render.sh` §4b over the whole fleet.
+
 Precedence: a module's own `chain_params` `viz` field always wins; `overrides`
 is an optional `(key) => vizObj | false | null` a host can supply to correct a
 wrong guess in the field; a detector fills in everything else. `invalid` lists
