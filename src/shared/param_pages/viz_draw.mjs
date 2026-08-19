@@ -44,29 +44,35 @@ function dottedH(ctx, x0, x1, y) {
 }
 
 /**
- * Measured on device: a bare fillRect/print binding costs roughly 90-100us —
- * not the few microseconds a 1-bit blit would suggest, because every one
- * crosses a QuickJS->C boundary (see render_page.mjs's own note on this). A
- * page with a graphic drawn one pixel at a time (Movy's own technique, which
- * its target hardware apparently affords) measured 27-45ms+ here, which is
- * exactly the "lower fps on fast knob turns" this was built to fix — Movy's
- * math changing every tick, redrawn every tick, at a cost per call this
- * device does not have to spare.
+ * MEASURED ON DEVICE (src/shared/draw_bench.mjs, run 2026-08-19):
  *
- * schwung already has a NATIVE `draw_line(x0,y0,x1,y1,color)` binding
- * (src/host/js_display.c) — the whole Bresenham walk happens in C, so it
- * costs the SAME ~90-100us as a single fillRect regardless of the line's
- * length. That changes the right fix entirely: instead of degrading a curve
- * to fewer SAMPLE POINTS (tried, reverted — visible staircasing) or
- * coalescing pixel runs in JS (helps flat regions only, not a steep ramp,
- * which still costs one call per pixel), a curve is drawn as a small,
- * FIXED number of real connecting line segments between sample points —
- * true diagonals, not axis-aligned treads and risers, so it still looks
- * like a curve rather than stairs — each segment costing one call
- * regardless of its length or slope. `ctx.line` is optional: callers that
- * don't provide a native one (headless tests, a tool with no such binding)
- * fall back to a coalesced-run JS Bresenham that draws the identical
- * pixels at a real (if lesser) cost saving.
+ *     text_width (a crossing with no pixel work)   489ns
+ *     fill_rect 1x1                                487ns
+ *     fill_rect 32x8 (256 pixels)                 1.47us  -> 5.8ns/pixel
+ *     draw_line 40px                               764ns
+ *     print "MMMM"                                1.28us
+ *     draw_arc r=7                                5.75us
+ *     a whole renderPageMovy page                 1.62ms  -> 7% of a 44Hz frame
+ *
+ * A QuickJS->C crossing costs about 490ns, or ~250ns once the benchmark's own
+ * closure call (235ns) is subtracted. It is roughly twice a JS function call
+ * and cheaper than three interpreted loop iterations.
+ *
+ * This file used to claim 90-100us per binding, and every "spend fewer draw
+ * calls" decision in this library descends from that figure. It is wrong by
+ * about 200x. A worst-case 475-call page costs 0.11ms of crossing overhead,
+ * not 45ms. Do not reintroduce a draw-call budget without re-running the
+ * benchmark first.
+ *
+ * The corollary matters more than the correction: a JS typed-array write is
+ * 243ns, while C fills a pixel in 5.8ns, so moving rasterisation into JS —
+ * building the framebuffer there and blitting it in one call — would be ~42x
+ * SLOWER per pixel. Native primitives are the right design; the boundary was
+ * never the problem.
+ *
+ * `ctx.line` is still preferred over a JS Bresenham where a caller offers
+ * one, because the whole walk happens in C for one call rather than one call
+ * per pixel run. That reasoning survives; only the magnitude changed.
  */
 
 function jsLine(ctx, x0, y0, x1, y1, color) {
@@ -196,12 +202,6 @@ function drawColumnCurve(ctx, x0, xEnd, yAt, color = 1, skipY = null, samples = 
     flush();
 }
 
-/** Draw-call ceiling for drawStepCurve before it gives up and approximates.
- *  Chosen so the most expensive shape in the vocabulary (band-limited noise at
- *  the top of its rate range) cannot cost more than about four times what the
- *  polyline does. */
-const STEP_CURVE_MAX_CALLS = 110;
-
 /**
  * Draw a column-defined curve at FULL horizontal resolution — one y per pixel
  * column — coalescing equal-y neighbours into a single horizontal run and
@@ -218,14 +218,13 @@ const STEP_CURVE_MAX_CALLS = 110;
  * a square LFO's edge became a diagonal across one whole sample step, even
  * though drawWaveCell rendered the same square crisply two functions away.
  *
- * Cost is data-dependent rather than fixed, and mostly BETTER: a square is 3-7
- * calls (vs a flat 27), sample-and-hold 7-15, a saw 27-55. Only the smooth
- * shapes cost more — a sine or triangle 53-105, noise up to 147 — so the run
- * list is built first, as pure math, and if it would exceed the budget the
- * whole thing falls back to the polyline. A curve too dense to draw honestly
- * is exactly the case where the approximation is least noticeable.
+ * Cost is data-dependent rather than fixed, and mostly BETTER than the
+ * polyline it replaced: a square is 3-7 calls (vs a flat 27), sample-and-hold
+ * 7-15, a saw 27-55. Only the smooth shapes cost more — a sine 47-95, noise
+ * up to 147 — and at ~490ns per call that worst case is 72us, which is 0.3%
+ * of a frame. Draw the wave honestly; the calls are not the expensive part.
  */
-function drawStepCurve(ctx, x0, xEnd, yAt, color = 1, samples = 28) {
+function drawStepCurve(ctx, x0, xEnd, yAt, color = 1) {
     const w = xEnd - x0;
     if (w <= 0) return;
 
@@ -240,11 +239,11 @@ function drawStepCurve(ctx, x0, xEnd, yAt, color = 1, samples = 28) {
     }
     runs.push([runStart, xEnd - runStart, runY, null]);
 
-    /* Two calls per transition (the run, then its riser) plus the final run. */
-    if (runs.length * 2 > STEP_CURVE_MAX_CALLS) {
-        drawColumnCurve(ctx, x0, xEnd, yAt, color, null, samples);
-        return;
-    }
+    /* No draw-call ceiling here. There used to be one, on the belief that a
+     * binding cost 90-100us; measured, it is ~490ns, so the most expensive
+     * shape in the vocabulary (noise at full rate, ~147 calls) costs about
+     * 72us — 0.3% of a frame. Falling back to a coarse polyline to save that
+     * traded a visibly wrong waveform for nothing. See draw_bench.mjs. */
 
     for (const [rx, rw, ry, nextY] of runs) {
         if (rw > 0) ctx.fillRect(rx, ry, rw, 1, color);
