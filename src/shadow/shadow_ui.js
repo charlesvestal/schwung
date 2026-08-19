@@ -13657,6 +13657,17 @@ function drawHelpDetail() {
     });
     _ctx.getModuleStatus = (...args) => getModuleStatus(...args);
     _ctx.CATEGORIES = CATEGORIES;
+    /* Let a view opt out of REDRAW_INTERVAL for the frames it cares about.
+     *
+     * The global gate draws every other tick unless `needsRedraw` is set, and
+     * a knob turn on the param grid does not set it — measured, the grid drew
+     * 0.34 times per tick, which is the ~20fps behind the "laggy knobs"
+     * report. Rather than change REDRAW_INTERVAL (every other view depends on
+     * it), a view that paces itself can just ask. The grid does; see
+     * MOVY_REDRAW_MIN_MS in shadow_ui_param_pages.mjs, which is its own
+     * ceiling and is what should be raised if drawing ever gets expensive
+     * again — a page render measures 1.68ms. */
+    _ctx.requestRedraw = () => { needsRedraw = true; };
     _ctx.drawStatusOverlay = (...args) => drawStatusOverlay(...args);
     _ctx.createScrollableText = (...args) => createScrollableText(...args);
     _ctx.drawScrollableText = (...args) => drawScrollableText(...args);
