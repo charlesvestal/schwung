@@ -58,9 +58,50 @@ collector or import directly into Tempo/Jaeger.
 - `js.tick` — root around the JS `tick()` call.
 - `param.get` — child around the synchronous `shadow_get_param` round-trip (the
   JS side busy-waits for the shim to service it once per SPI frame).
+- `param.set` — the same for `shadow_set_param`. Only fire-and-forget under
+  overtake (`overtake_mode >= 2`); everywhere else it is a blocking round-trip
+  like the read, despite what some JS comments say.
+- `param.set.idle` — child of `param.set` covering only the wait for the single
+  SHM request slot to free. Split out so contention (someone else's request in
+  flight) is distinguishable from frame quantisation (waiting for the shim to
+  service ours); they call for different fixes.
 
 JS modules (overtake/chain, e.g. ion) add their own spans under `js.tick` — see
 [Adding spans](#adding-spans).
+
+### What this measured (2026-08-19, on device)
+
+The first thing these spans were pointed at, recorded here because it is the
+kind of number that otherwise ends up in a comment and rots:
+
+| span | count | p50 | share |
+| --- | --- | --- | --- |
+| `js.tick` | 767 | 19.95 ms | — |
+| `param.get` (JS side) | 5939 | 2.55 ms | 91% of tick time |
+| `param.set` (JS side) | 787 | 1.06 ms | 7% of tick time |
+| `param.set.idle` | 787 | 426 ns | ~0 |
+| `param.serve` (shim side) | — | 9.8 µs | 0.3% of a round-trip |
+
+**A parameter round-trip costs ~2.9 ms, of which the shim spends ~10 µs.** The
+other 99.7% is the shadow UI process in `usleep(200)` waiting for the next SPI
+frame. `param.get`'s distribution is not a spread but a spike: 97% of samples
+fall in a 2.0–4.0 ms band centred on the 2.9 ms frame period. It is
+quantisation, not work.
+
+Two consequences worth keeping in mind before optimising anything here:
+
+- **Reads dominate writes ~12:1.** Knob writes are already throttled to ~1 per
+  tick (`SETPARAM_THROTTLE_MS`) and `param.set.idle` shows no contention at
+  all, so the write path is real but minor. Spinning a knob barely moves the
+  frame rate — 21.5 fps during a spin against ~21 fps idle.
+- **The shim is not the constraint.** It served 0.44 requests per SPI frame at
+  9.8 µs each, against a 172 µs `spi.pre`. Throughput is bounded by
+  one-request-at-a-time round-trip latency, not by capacity — which is why the
+  useful direction is batching or pipelining the protocol, not making the
+  handler faster.
+
+`tools/tracing/span_stats.mjs` produces the tables above from a pulled capture
+without standing up a collector.
 
 ## How it works
 
