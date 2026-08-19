@@ -453,6 +453,18 @@ let view = VIEWS.SLOTS;
 let needsRedraw = true;
 let refreshCounter = 0;
 let autosaveCounter = 0;
+/* Which step of the spread-out autosave pass is next: 0..SHADOW_UI_SLOTS-1 is
+ * that slot, SHADOW_UI_SLOTS is the master FX chain, null means idle. One step
+ * per tick — see the drain block in globalThis.tick. */
+let autosaveJob = null;
+/* Exact bytes last written to each slot_N.json, so an unchanged slot skips the
+ * eMMC write entirely (measured ~120ms per write — the single most expensive
+ * thing the UI thread did). Cleared whenever the file set changes underneath
+ * us, so the next pass rewrites unconditionally. */
+let lastWrittenSlotJson = [null, null, null, null];
+function invalidateAutosaveWriteCache() {
+    lastWrittenSlotJson = [null, null, null, null];
+}
 let autosaveSuppressUntil = 0;  /* suppress autosave after set change */
 let slotDirtyCache = [false, false, false, false];
 /* Module signature ("synth|midiFx|fx1|fx2") from the last successful autosave.
@@ -2625,7 +2637,22 @@ function getSlotModuleSignature(slotIndex) {
 /* Refresh module signature for a slot and invalidate knob cache on changes */
 function refreshSlotModuleSignature(slotIndex) {
     if (slotIndex < 0 || slotIndex >= SHADOW_UI_SLOTS) return false;
-    const signature = getSlotModuleSignature(slotIndex);
+    return applySlotModuleSignature(slotIndex, getSlotModuleSignature(slotIndex));
+}
+
+/*
+ * The half of refreshSlotModuleSignature that costs nothing, split out so a
+ * caller that already has the signature does not pay for it twice.
+ *
+ * getSlotModuleSignature is FOUR synchronous IPC round trips (~2.8ms each,
+ * ~11ms), and autosave was calling it twice per slot per pass — once through
+ * refreshSlotModuleSignature at the top of the loop and again below as
+ * `currentSig` — i.e. 32 round trips across four slots to compute 16 values,
+ * half of them a second time. That is ~90ms of the ~200ms autosave stall, for
+ * strings that only change when the user swaps a module.
+ */
+function applySlotModuleSignature(slotIndex, signature) {
+    if (slotIndex < 0 || slotIndex >= SHADOW_UI_SLOTS) return false;
     if (signature !== lastSlotModuleSignatures[slotIndex]) {
         lastSlotModuleSignatures[slotIndex] = signature;
         loadChainConfigFromSlot(slotIndex);
@@ -4435,10 +4462,27 @@ function generateSlotPresetName(slotIndex) {
  * round-trip race and return "" — silently dropping the save and losing
  * recent edits (diagnosed 2026-05-12). 3 retries adds up to ~400ms worst
  * case which is well under typical set-change duration. */
-function getSlotStateWithRetry(slotIndex, key) {
+/*
+ * `retries` defaults to the historical 3. Periodic autosave passes 1.
+ *
+ * Every attempt is a synchronous IPC round trip (~2.8ms), and the loop fires
+ * on any FALSY result — which includes a component whose state is genuinely
+ * empty, so such a component paid four round trips (~11ms) on every autosave,
+ * forever, to be told the same thing four times. Across a populated slot set
+ * that is a large share of the ~200ms autosave stall.
+ *
+ * Retrying at all is still right for an explicit save: the retries exist
+ * because a state query can come back empty transiently while a module is
+ * still loading, and an explicit save has no second chance. Periodic autosave
+ * does: the bail-if-empty guard in buildSlotPatchJson preserves the existing
+ * slot_N.json, and the next pass is five seconds away. So it takes one extra
+ * attempt, not three.
+ */
+function getSlotStateWithRetry(slotIndex, key, retries) {
+    const limit = (typeof retries === "number") ? retries : 3;
     let state = getSlotParam(slotIndex, key);
     if (state) return state;
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    for (let attempt = 1; attempt <= limit; attempt++) {
         state = getSlotParam(slotIndex, key);
         if (state) {
             debugLog("getSlotStateWithRetry: slot " + slotIndex + " " +
@@ -4465,6 +4509,10 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
      * is inapplicable anyway — save with whatever we have (possibly empty)
      * so the module selection survives a reboot. */
     const bailIfEmpty = forAutosave && !moduleChanged;
+    /* Periodic autosave gets one extra attempt, not three — see
+     * getSlotStateWithRetry. It has the bail-if-empty guard and another pass
+     * in five seconds; an explicit save has neither. */
+    const stateRetries = forAutosave ? 1 : 3;
 
     const patch = {
         custom_name: name,
@@ -4476,7 +4524,7 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
     if (cfg.synth && cfg.synth.module) {
         /* Try to get full state from synth plugin */
         let synthConfig = cfg.synth.params || {};
-        const stateJson = getSlotStateWithRetry(slotIndex, "synth:state");
+        const stateJson = getSlotStateWithRetry(slotIndex, "synth:state", stateRetries);
         if (stateJson) {
             try {
                 const state = JSON.parse(stateJson);
@@ -4503,7 +4551,7 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
     if (cfg.midiFx && cfg.midiFx.module) {
         /* Try to get full state from midi_fx plugin */
         let midiFxConfig = cfg.midiFx.params || {};
-        const midiFxStateJson = getSlotStateWithRetry(slotIndex, "midi_fx1:state");
+        const midiFxStateJson = getSlotStateWithRetry(slotIndex, "midi_fx1:state", stateRetries);
         if (midiFxStateJson) {
             try {
                 const state = JSON.parse(midiFxStateJson);
@@ -4528,7 +4576,7 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
     if (cfg.fx1 && cfg.fx1.module) {
         /* Try to get full state from fx1 plugin */
         let fx1Config = cfg.fx1.params || {};
-        const fx1StateJson = getSlotStateWithRetry(slotIndex, "fx1:state");
+        const fx1StateJson = getSlotStateWithRetry(slotIndex, "fx1:state", stateRetries);
         if (fx1StateJson) {
             try {
                 const state = JSON.parse(fx1StateJson);
@@ -4552,7 +4600,7 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
     if (cfg.fx2 && cfg.fx2.module) {
         /* Try to get full state from fx2 plugin */
         let fx2Config = cfg.fx2.params || {};
-        const fx2StateJson = getSlotStateWithRetry(slotIndex, "fx2:state");
+        const fx2StateJson = getSlotStateWithRetry(slotIndex, "fx2:state", stateRetries);
         if (fx2StateJson) {
             try {
                 const state = JSON.parse(fx2StateJson);
@@ -4614,7 +4662,13 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
 }
 
 /* Autosave all slot states to slot_state/slot_N.json */
-function autosaveAllSlots() {
+/*
+ * Autosave ONE slot. Split out of autosaveAllSlots so the periodic pass can
+ * spend a slot per tick instead of landing ~70 IPC reads (~200ms) on a
+ * single frame every five seconds. Body is unchanged apart from the
+ * loop's `continue`s becoming `return`s.
+ */
+function autosaveOneSlot(i) {
     /* Never persist an uncommitted preset audition. While the user scrolls
      * User Presets, the live <prefix>:state is the previewed sound, not a
      * committed choice — saving it would let a slot silently adopt a preview
@@ -4622,96 +4676,134 @@ function autosaveAllSlots() {
      * mid-audition). previewActive clears on Load (commit) or Back (revert),
      * after which autosave resumes normally. */
     if (isPresetPreviewActive()) return;
-    for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
-        /* Sync chainConfigs from DSP before checking - prevents clobbering
-         * valid autosave files for slots we haven't navigated to yet */
-        refreshSlotModuleSignature(i);
-        const cfg = chainConfigs[i];
-        const hasSynth = cfg && cfg.synth && cfg.synth.module;
-        const hasFx1 = cfg && cfg.fx1 && cfg.fx1.module;
-        const hasFx2 = cfg && cfg.fx2 && cfg.fx2.module;
-        const hasMidiFx = cfg && cfg.midiFx && cfg.midiFx.module;
-        if (!hasSynth && !hasFx1 && !hasFx2 && !hasMidiFx) {
-            /* Cross-check before clobbering: if the slot has a preset name
-             * but the shim is reporting "no modules" AND the user did not
-             * explicitly clear the slot via the picker, it's a transient
-             * shim-side glitch (e.g. boot-time patch load failure
-             * diagnosed 2026-04-18). Preserve the existing slot_N.json so
-             * the next boot has a chance to reload it.
-             *
-             * slotUserCleared[i] = true means the user picked None for
-             * every component in the slot, so the empty state is real and
-             * must be persisted (otherwise removals never save — diagnosed
-             * 2026-04-29). */
-            const slotName = (slots[i] && slots[i].name) || "";
-            if (!slotUserCleared[i] && slotName !== "") {
-                /* Only guard when there's actually content on disk to protect.
-                 * If slot_N.json is missing/empty, the chain-config name has
-                 * drifted from the saved state — writing the empty marker is
-                 * safe and stops the every-autosave log spam. */
-                const existing = host_read_file(
-                    activeSlotStateDir + "/slot_" + i + ".json");
-                let hasSavedChain = false;
-                if (existing) {
-                    try {
-                        const parsed = JSON.parse(existing);
-                        hasSavedChain = !!(parsed && parsed.chain &&
-                            ((parsed.chain.synth && parsed.chain.synth.module) ||
-                             (parsed.chain.audio_fx && parsed.chain.audio_fx.length) ||
-                             (parsed.chain.midi_fx && parsed.chain.midi_fx.length)));
-                    } catch (e) { /* malformed → treat as no content */ }
-                }
-                if (hasSavedChain) {
-                    debugLog("autosave: slot " + i + " shim reports empty but " +
-                             "preset name=\"" + slotName + "\" and slot_" + i +
-                             ".json has chain — preserving (likely shim glitch)");
-                    slotDirtyCache[i] = false;
-                    continue;
-                }
-                /* No saved chain on disk — chain-config name is stale. Fall
-                 * through to write the empty marker so future autosaves stop
-                 * tripping this branch. */
+    /* Sync chainConfigs from DSP before checking - prevents clobbering
+     * valid autosave files for slots we haven't navigated to yet.
+     * Read ONCE and reused as `currentSig` below — it used to be read
+     * again a few lines down, at four IPC round trips a time. */
+    const currentSig = getSlotModuleSignature(i);
+    applySlotModuleSignature(i, currentSig);
+    const cfg = chainConfigs[i];
+    const hasSynth = cfg && cfg.synth && cfg.synth.module;
+    const hasFx1 = cfg && cfg.fx1 && cfg.fx1.module;
+    const hasFx2 = cfg && cfg.fx2 && cfg.fx2.module;
+    const hasMidiFx = cfg && cfg.midiFx && cfg.midiFx.module;
+    if (!hasSynth && !hasFx1 && !hasFx2 && !hasMidiFx) {
+        /* Cross-check before clobbering: if the slot has a preset name
+         * but the shim is reporting "no modules" AND the user did not
+         * explicitly clear the slot via the picker, it's a transient
+         * shim-side glitch (e.g. boot-time patch load failure
+         * diagnosed 2026-04-18). Preserve the existing slot_N.json so
+         * the next boot has a chance to reload it.
+         *
+         * slotUserCleared[i] = true means the user picked None for
+         * every component in the slot, so the empty state is real and
+         * must be persisted (otherwise removals never save — diagnosed
+         * 2026-04-29). */
+        const slotName = (slots[i] && slots[i].name) || "";
+        if (!slotUserCleared[i] && slotName !== "") {
+            /* Only guard when there's actually content on disk to protect.
+             * If slot_N.json is missing/empty, the chain-config name has
+             * drifted from the saved state — writing the empty marker is
+             * safe and stops the every-autosave log spam. */
+            const existing = host_read_file(
+                activeSlotStateDir + "/slot_" + i + ".json");
+            let hasSavedChain = false;
+            if (existing) {
+                try {
+                    const parsed = JSON.parse(existing);
+                    hasSavedChain = !!(parsed && parsed.chain &&
+                        ((parsed.chain.synth && parsed.chain.synth.module) ||
+                         (parsed.chain.audio_fx && parsed.chain.audio_fx.length) ||
+                         (parsed.chain.midi_fx && parsed.chain.midi_fx.length)));
+                } catch (e) { /* malformed → treat as no content */ }
             }
-            /* Empty slot - write empty marker to clear autosave */
-            if (host_write_file(
-                activeSlotStateDir + "/slot_" + i + ".json",
-                "{}\n"
-            )) {
+            if (hasSavedChain) {
+                debugLog("autosave: slot " + i + " shim reports empty but " +
+                         "preset name=\"" + slotName + "\" and slot_" + i +
+                         ".json has chain — preserving (likely shim glitch)");
                 slotDirtyCache[i] = false;
-                slotUserCleared[i] = false;
-            } else {
-                debugLog("autosave: failed to write empty marker for slot " + i +
-                         " — will retry next autosave");
+                return;
             }
-            continue;
+            /* No saved chain on disk — chain-config name is stale. Fall
+             * through to write the empty marker so future autosaves stop
+             * tripping this branch. */
         }
-
-        const dirty = getSlotParam(i, "dirty");
-        slotDirtyCache[i] = (dirty === "1");
-
-        const currentSig = getSlotModuleSignature(i);
-        const moduleChanged = currentSig !== lastSavedSlotSignature[i];
-        const patchJson = buildSlotPatchJson(i, slots[i].name || "Untitled", true, moduleChanged);
-        if (!patchJson) continue;
-
-        /* Wrap with name, version, modified flag */
-        const wrapper = {
-            name: slots[i].name || "Untitled",
-            version: 1,
-            modified: slotDirtyCache[i],
-            chain: JSON.parse(patchJson)
-        };
-
+        /* Empty slot - write empty marker to clear autosave.
+         * Same skip-if-unchanged as the populated path below: an empty slot
+         * was rewriting "{}" to eMMC every five seconds forever. */
+        if (lastWrittenSlotJson[i] === "{}\n") {
+            slotDirtyCache[i] = false;
+            slotUserCleared[i] = false;
+            return;
+        }
         if (host_write_file(
             activeSlotStateDir + "/slot_" + i + ".json",
-            JSON.stringify(wrapper, null, 2) + "\n"
+            "{}\n"
         )) {
-            lastSavedSlotSignature[i] = currentSig;
+            slotDirtyCache[i] = false;
+            slotUserCleared[i] = false;
+            lastWrittenSlotJson[i] = "{}\n";
         } else {
-            debugLog("autosave: failed to write slot_" + i + ".json — " +
-                     "keeping stale signature so the next autosave retries");
+            lastWrittenSlotJson[i] = null;
+            debugLog("autosave: failed to write empty marker for slot " + i +
+                     " — will retry next autosave");
         }
+        return;
     }
+
+    const dirty = getSlotParam(i, "dirty");
+    slotDirtyCache[i] = (dirty === "1");
+
+    const moduleChanged = currentSig !== lastSavedSlotSignature[i];
+    const patchJson = buildSlotPatchJson(i, slots[i].name || "Untitled", true, moduleChanged);
+    if (!patchJson) return;
+
+    /* Wrap with name, version, modified flag */
+    const wrapper = {
+        name: slots[i].name || "Untitled",
+        version: 1,
+        modified: slotDirtyCache[i],
+        chain: JSON.parse(patchJson)
+    };
+
+    const slotPath = activeSlotStateDir + "/slot_" + i + ".json";
+    const payload = JSON.stringify(wrapper, null, 2) + "\n";
+
+    /*
+     * Skip the write when the bytes are identical to what we last wrote.
+     *
+     * Measured on device: an autosave tick spent 187ms of which only 66ms was
+     * IPC — the other ~120ms was this host_write_file. eMMC on this device is
+     * slow enough that writing a few KB of JSON is comfortably the most
+     * expensive thing the UI thread does all second, and on an idle set it was
+     * rewriting byte-for-byte identical files every five seconds forever.
+     *
+     * Comparing against the last payload we wrote (not against the file — that
+     * would be a read, and reads are what we are trying to avoid) makes the
+     * idle case free. `lastWrittenSlotJson` is per-process, so the first pass
+     * after a restart still writes, which is what we want: it re-establishes
+     * the file even if something else changed it underneath us.
+     */
+    if (lastWrittenSlotJson[i] === payload) {
+        lastSavedSlotSignature[i] = currentSig;
+        return;
+    }
+
+    if (host_write_file(slotPath, payload)) {
+        lastSavedSlotSignature[i] = currentSig;
+        lastWrittenSlotJson[i] = payload;
+    } else {
+        lastWrittenSlotJson[i] = null;   /* force a retry next pass */
+        debugLog("autosave: failed to write slot_" + i + ".json — " +
+                 "keeping stale signature so the next autosave retries");
+    }
+}
+
+/* Every slot, right now. Used by the explicit save paths (shutdown, set
+ * switch, overtake suspend) where the whole set must land before we
+ * proceed. The periodic timer uses autosaveOneSlot per tick instead. */
+function autosaveAllSlots() {
+    for (let i = 0; i < SHADOW_UI_SLOTS; i++) autosaveOneSlot(i);
 }
 
 /* Actually save the preset */
@@ -14277,6 +14369,7 @@ globalThis.init = function() {
                 const setDir = "/data/UserData/schwung/set_state/" + uuid;
                 if (host_file_exists(setDir + "/slot_0.json") || host_file_exists(setDir + "/shadow_chain_config.json")) {
                     activeSlotStateDir = setDir;
+                    invalidateAutosaveWriteCache();
                     debugLog("Init: using per-set state dir " + setDir);
                 }
             }
@@ -14875,6 +14968,10 @@ globalThis.tick = function() {
             /* 5. Switch directory and load chain config (volumes/channels/mute/solo) */
             const oldDir = activeSlotStateDir;
             activeSlotStateDir = newDir;
+            /* Different directory — what we last wrote says nothing about
+             * what is in THIS set's files, so never skip a write on its
+             * behalf. */
+            invalidateAutosaveWriteCache();
             debugLog("SET_CHANGED: " + oldDir + " -> " + newDir);
             loadChainConfigFromDir(newDir);
 
@@ -15102,8 +15199,39 @@ globalThis.tick = function() {
         autosaveCounter++;
         if (!isOvertakeActive && autosaveCounter >= AUTOSAVE_INTERVAL) {
             autosaveCounter = 0;
-            autosaveAllSlots();
-            saveMasterFxChainConfig();
+            autosaveJob = 0;   /* arm; drained one step per tick below */
+        }
+    }
+
+    /*
+     * Autosave, ONE SLOT PER TICK.
+     *
+     * It used to do all four slots and the master FX chain in a single tick.
+     * Measured on device that was ~70 sequential IPC reads landing on one
+     * frame — ~200ms, i.e. about eleven dropped frames, every five seconds.
+     * It is the visible hitch while nothing is being touched, and the read
+     * histogram showed it plainly: 758 ticks doing 3 reads, and a handful
+     * doing 68-72.
+     *
+     * Nothing about autosave is latency-sensitive — it is background
+     * persistence on a five-second timer — so it has no business being
+     * atomic with respect to the frame. Spread over five ticks (~83ms) it
+     * finishes just as promptly in wall-clock terms while no single frame
+     * carries more than a slot's worth of reads.
+     *
+     * Deliberately NOT restructured below slot granularity: buildSlotPatchJson
+     * has a history of silently dropping saves, and a resumable version of it
+     * would risk persisting a half-read slot. A slot is the unit that is
+     * already all-or-nothing.
+     */
+    if (autosaveJob !== null) {
+        if (isOvertakeActive) {
+            autosaveJob = null;          /* overtake owns the surface; abandon */
+        } else {
+            if (autosaveJob < SHADOW_UI_SLOTS) autosaveOneSlot(autosaveJob);
+            else saveMasterFxChainConfig();
+            autosaveJob++;
+            if (autosaveJob > SHADOW_UI_SLOTS) autosaveJob = null;
         }
     }
     /* Refresh dirty cache frequently for responsive UI */
