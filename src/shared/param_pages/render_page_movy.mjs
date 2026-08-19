@@ -156,8 +156,8 @@ export const W = 128;
  * with the header inverted the solid band merged into the bar into one thick
  * smudge.
  */
-export const HEADER_H = 8;
-export const BAR_Y = HEADER_H + 1;   /* the row between is the separator */
+export const HEADER_H = 7;
+export const BAR_Y = HEADER_H;       /* no separator row — the band has its own */
 /* One row of gutter here, not two — the bank bar is itself a separator, so
  * this is the cheapest row on the screen to give back to the header. */
 export const ROW0_Y = 12;
@@ -275,16 +275,31 @@ function centeredText(ctx, x0, span, y, text, color) {
  * label being abbreviated at all.
  */
 export function drawHeader(ctx, left, right, inverted = false) {
-    /* A 5-tall glyph at y=1 occupies rows 1-5, inside a 7-row band (0-6) with
-     * a pixel of margin above and below — Elektron's header has exactly that
-     * 2px padding around its text. */
+    /* font4x5, not the label face: the header is secondary text (the slot
+     * title, the page name, and the touched parameter's full name and value),
+     * so it can afford to be smaller than the thing you read at a glance. A
+     * 5-row glyph at y=1 sits in a 7-row band with one clear row above and
+     * one below — which is what the touched HIGHLIGHT needs to be legible,
+     * and what it did not have while a 7-row font filled an 8-row band edge
+     * to edge.
+     *
+     * Tamzen's own 5-row face was the obvious candidate and is the wrong one:
+     * its advance equals its ink width, so adjacent glyphs touch, and the
+     * header string overflowed 124px of usable width at 129. font4x5 is
+     * proportional with a real gap and the same string measures 106.
+     *
+     * Two rows come back from this — one from the shorter band, one from the
+     * separator row below it, which is no longer needed: the band already
+     * carries a clear row under its glyphs, so nothing butts against the bank
+     * bar. Both go to the gutter above the first widget row. */
     if (inverted) ctx.fillRect(0, 0, W, HEADER_H, 1);
     const color = inverted ? 0 : 1;
-    const l = fitDev(ctx, left, right ? Math.floor(W * 0.55) : W - 4);
-    tzPrint(ctx, 2, 0, l, color);
+    const fit5 = (t, maxW) => caps(fitText(FONT4_MEASURE, caps(t), maxW));
+    const l = fit5(left, right ? Math.floor(W * 0.55) : W - 4);
+    fontPrint4x5(ctx, 2, 1, l, color);
     if (right) {
-        const r = fitDev(ctx, right, Math.floor(W * 0.6));
-        tzPrint(ctx, W - tzWidth(r) - 2, 0, r, color);
+        const r = fit5(right, Math.floor(W * 0.6));
+        fontPrint4x5(ctx, W - fontWidth4x5(r) - 2, 1, r, color);
     }
 }
 
