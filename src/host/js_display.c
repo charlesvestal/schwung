@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 /* STB implementations - must undefine after include to prevent double-inclusion
  * when js_display.h includes the same headers for type declarations */
@@ -117,6 +118,87 @@ void js_display_fill_circle(int cx, int cy, int r, int value) {
                 js_display_set_pixel(cx + dx, cy + dy, value);
             }
         }
+    }
+}
+
+/* A one-pixel circle OUTLINE: for every ROW the single nearest pixel, and for
+ * every COLUMN the single nearest pixel, unioned.
+ *
+ * Both passes are needed. Rows alone put one pixel per row, which is right
+ * down the sides but degenerates at the top and bottom, where the curve is
+ * flat and one row covers many columns — you get a lone pixel at twelve
+ * o'clock instead of the flat cap the tangent calls for. Columns alone have
+ * the same failure at three and nine o'clock. The union gives a flat cap at
+ * all four compass points and a single pixel everywhere else.
+ *
+ * Three other constructions are wrong, and it took all three to find this:
+ *
+ *   - Punching an (r-1) disk out of an r disk is not a ring at all. At each
+ *     cardinal the two disks reach the same column extent
+ *     (floor(sqrt(r*r-1)) == r-1), so the pixel just inside the extreme one
+ *     is erased and the extreme one is stranded over a gap: 12 isolated
+ *     pixels at r=7.
+ *   - The midpoint/Bresenham circle strands 4, exactly at N/S/E/W: it plots
+ *     (0,r) and then steps to (1,r-1), although the true circle at dx=1 is
+ *     at 6.93 — far nearer r than r-1. Each compass point ends up a lone
+ *     pixel sitting one row proud of the run behind it: a spike.
+ *   - Lighting every pixel whose DISTANCE rounds to r fixes both, and is
+ *     right at r=7, but it is not one pixel thick. The band it selects is a
+ *     unit-wide annulus, whose horizontal extent near 45 degrees is 1/cos45
+ *     = 1.41 px — so at r=8 each shoulder gets TWO consecutive 2-pixel runs,
+ *     which stack into a small diagonal blob. That is the "little triangles
+ *     in the corners", and it gets worse as r grows.
+ *
+ * This is also cheaper: 4r+4 candidates per pass instead of scanning the
+ * whole (2r+1)^2 box, so ~4x fewer atan2 calls at r=8. Still one QuickJS->C
+ * crossing. */
+void js_display_draw_circle(int cx, int cy, int r, int value) {
+    js_display_draw_arc(cx, cy, r, 0, 360, value);
+}
+
+/*
+ * A partial ring: the same one-pixel outline, restricted to a `sweep_deg`
+ * arc beginning at `start_deg`. Angles are measured the way a knob is read —
+ * 0 at twelve o'clock, increasing CLOCKWISE — so a control whose pointer
+ * travels 210..510 draws its track with the identical numbers and the open
+ * gap lands at the bottom, marking the ends of travel.
+ *
+ * That gap is not decoration. A closed ring says the control wraps; an
+ * Elektron-style knob does not, and the missing arc is what tells you where
+ * minimum and maximum are.
+ */
+/* One candidate pixel of an arc, gated on the sweep. Angles are measured the
+ * way a knob is read: 0 at twelve o'clock, increasing clockwise. */
+static void plot_arc_pixel(int cx, int cy, int dx, int dy, int start_deg, int sweep_deg, int value) {
+    if (sweep_deg < 360) {
+        double a = atan2((double)dx, (double)-dy) * 180.0 / M_PI;
+        if (a < 0) a += 360.0;
+        double delta = a - (double)start_deg;
+        if (delta < 0) delta += 360.0;
+        if (delta > (double)sweep_deg) return;
+    }
+    js_display_set_pixel(cx + dx, cy + dy, value);
+}
+
+void js_display_draw_arc(int cx, int cy, int r, int start_deg, int sweep_deg, int value) {
+    if (r < 0) return;
+    if (r == 0) { js_display_set_pixel(cx, cy, value); return; }
+    if (sweep_deg >= 360) sweep_deg = 360;
+    if (sweep_deg <= 0) return;
+
+    const int start = ((start_deg % 360) + 360) % 360;
+    /* One pixel per row, and one per column, unioned. See the note above for
+     * why both passes are needed. Each candidate is emitted at most twice;
+     * set_pixel is idempotent so the overlap costs nothing. */
+    for (int dy = -r; dy <= r; dy++) {
+        const int dx = (int)(sqrt((double)(r * r - dy * dy)) + 0.5);
+        plot_arc_pixel(cx, cy, dx, dy, start, sweep_deg, value);
+        if (dx != 0) plot_arc_pixel(cx, cy, -dx, dy, start, sweep_deg, value);
+    }
+    for (int dx = -r; dx <= r; dx++) {
+        const int dy = (int)(sqrt((double)(r * r - dx * dx)) + 0.5);
+        plot_arc_pixel(cx, cy, dx, dy, start, sweep_deg, value);
+        if (dy != 0) plot_arc_pixel(cx, cy, dx, -dy, start, sweep_deg, value);
     }
 }
 
@@ -600,6 +682,36 @@ JSValue js_display_bind_fill_circle(JSContext *ctx, JSValueConst this_val, int a
     return JS_UNDEFINED;
 }
 
+JSValue js_display_bind_draw_arc(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 5) return JS_UNDEFINED;
+    int cx, cy, r, start, sweep, value = 1;
+    if (JS_ToInt32(ctx, &cx, argv[0])) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &cy, argv[1])) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &r, argv[2])) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &start, argv[3])) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &sweep, argv[4])) return JS_UNDEFINED;
+    if (argc >= 6) {
+        if (JS_ToInt32(ctx, &value, argv[5])) return JS_UNDEFINED;
+    }
+    js_display_draw_arc(cx, cy, r, start, sweep, value);
+    return JS_UNDEFINED;
+}
+
+JSValue js_display_bind_draw_circle(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 3) return JS_UNDEFINED;
+    int cx, cy, r, value = 1;
+    if (JS_ToInt32(ctx, &cx, argv[0])) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &cy, argv[1])) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &r, argv[2])) return JS_UNDEFINED;
+    if (argc >= 4) {
+        if (JS_ToInt32(ctx, &value, argv[3])) return JS_UNDEFINED;
+    }
+    js_display_draw_circle(cx, cy, r, value);
+    return JS_UNDEFINED;
+}
+
 JSValue js_display_bind_set_font(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
     if (argc < 1) return JS_NewBool(ctx, 0);
@@ -648,6 +760,10 @@ void js_display_register_bindings(JSContext *ctx, JSValue global_obj) {
         JS_NewCFunction(ctx, js_display_bind_text_width, "text_width", 1));
     JS_SetPropertyStr(ctx, global_obj, "fill_circle",
         JS_NewCFunction(ctx, js_display_bind_fill_circle, "fill_circle", 4));
+    JS_SetPropertyStr(ctx, global_obj, "draw_circle",
+        JS_NewCFunction(ctx, js_display_bind_draw_circle, "draw_circle", 4));
+    JS_SetPropertyStr(ctx, global_obj, "draw_arc",
+        JS_NewCFunction(ctx, js_display_bind_draw_arc, "draw_arc", 6));
     JS_SetPropertyStr(ctx, global_obj, "draw_image",
         JS_NewCFunction(ctx, js_display_bind_draw_image, "draw_image", 5));
     JS_SetPropertyStr(ctx, global_obj, "set_font",

@@ -84,6 +84,14 @@ const { groups, invalid } = resolveViz({ keys: page.keys, metaIndex, overrides }
 renderPage(ctx, { page, metaIndex, values, title, pageIndex, pageCount, viz: groups });
 ```
 
+Graphics have a minimum cell, and a caller passing a small `rect` gets none.
+Unlike a dial or a bar, a graphic does not scale down — its body is a fixed
+13-row band and the switch a fixed 26-column sprite — so below `VIZ_ROWS + 1`
+rows or `VIZ_MIN_W` columns per cell `renderPage` stands the graphics down and
+the slots fall through to ordinary cells, which do degrade. The full screen is
+26x32 per cell and never trips this; a tool drawing under its own header can.
+Pinned by `test_param_pages_render.sh` §4b over the whole fleet.
+
 Precedence: a module's own `chain_params` `viz` field always wins; `overrides`
 is an optional `(key) => vizObj | false | null` a host can supply to correct a
 wrong guess in the field; a detector fills in everything else. `invalid` lists
@@ -139,7 +147,10 @@ which is most of the time. Eight dials are also eight distinguishable shapes.
 `LAYOUT_BAR` shows every value at once, which dials cannot. Worth it on a levels
 or mixer page, or wherever precise offsets get compared at a glance. Costs about
 a sixth of the draw calls too (median 52 vs 290 per page), though neither is
-close to a problem.
+close to a problem — measured on device, a whole page render is 1.62 ms, about
+7% of a 44 Hz frame, and a binding crossing is ~490 ns. See
+[`src/shared/draw_bench.mjs`](../draw_bench.mjs); do not optimise draw calls
+without re-running it.
 
 **Rebuild when `fingerprint` changes.** It covers the hierarchy, the param count
 and the mode, which is what moves when a module finishes loading and republishes

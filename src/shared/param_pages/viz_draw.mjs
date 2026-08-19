@@ -44,29 +44,35 @@ function dottedH(ctx, x0, x1, y) {
 }
 
 /**
- * Measured on device: a bare fillRect/print binding costs roughly 90-100us —
- * not the few microseconds a 1-bit blit would suggest, because every one
- * crosses a QuickJS->C boundary (see render_page.mjs's own note on this). A
- * page with a graphic drawn one pixel at a time (Movy's own technique, which
- * its target hardware apparently affords) measured 27-45ms+ here, which is
- * exactly the "lower fps on fast knob turns" this was built to fix — Movy's
- * math changing every tick, redrawn every tick, at a cost per call this
- * device does not have to spare.
+ * MEASURED ON DEVICE (src/shared/draw_bench.mjs, run 2026-08-19):
  *
- * schwung already has a NATIVE `draw_line(x0,y0,x1,y1,color)` binding
- * (src/host/js_display.c) — the whole Bresenham walk happens in C, so it
- * costs the SAME ~90-100us as a single fillRect regardless of the line's
- * length. That changes the right fix entirely: instead of degrading a curve
- * to fewer SAMPLE POINTS (tried, reverted — visible staircasing) or
- * coalescing pixel runs in JS (helps flat regions only, not a steep ramp,
- * which still costs one call per pixel), a curve is drawn as a small,
- * FIXED number of real connecting line segments between sample points —
- * true diagonals, not axis-aligned treads and risers, so it still looks
- * like a curve rather than stairs — each segment costing one call
- * regardless of its length or slope. `ctx.line` is optional: callers that
- * don't provide a native one (headless tests, a tool with no such binding)
- * fall back to a coalesced-run JS Bresenham that draws the identical
- * pixels at a real (if lesser) cost saving.
+ *     text_width (a crossing with no pixel work)   489ns
+ *     fill_rect 1x1                                487ns
+ *     fill_rect 32x8 (256 pixels)                 1.47us  -> 5.8ns/pixel
+ *     draw_line 40px                               764ns
+ *     print "MMMM"                                1.28us
+ *     draw_arc r=7                                5.75us
+ *     a whole renderPageMovy page                 1.62ms  -> 7% of a 44Hz frame
+ *
+ * A QuickJS->C crossing costs about 490ns, or ~250ns once the benchmark's own
+ * closure call (235ns) is subtracted. It is roughly twice a JS function call
+ * and cheaper than three interpreted loop iterations.
+ *
+ * This file used to claim 90-100us per binding, and every "spend fewer draw
+ * calls" decision in this library descends from that figure. It is wrong by
+ * about 200x. A worst-case 475-call page costs 0.11ms of crossing overhead,
+ * not 45ms. Do not reintroduce a draw-call budget without re-running the
+ * benchmark first.
+ *
+ * The corollary matters more than the correction: a JS typed-array write is
+ * 243ns, while C fills a pixel in 5.8ns, so moving rasterisation into JS —
+ * building the framebuffer there and blitting it in one call — would be ~42x
+ * SLOWER per pixel. Native primitives are the right design; the boundary was
+ * never the problem.
+ *
+ * `ctx.line` is still preferred over a JS Bresenham where a caller offers
+ * one, because the whole walk happens in C for one call rather than one call
+ * per pixel run. That reasoning survives; only the magnitude changed.
  */
 
 function jsLine(ctx, x0, y0, x1, y1, color) {
@@ -122,25 +128,176 @@ function drawPolyline(ctx, points, color = 1) {
 }
 
 /**
+ * Refine where the curve crosses into the skip region. `inX` is a sample that
+ * draws, `outX` an adjacent one that skips; returns the x closest to `inX`
+ * that ALREADY skips, so the polyline can be terminated exactly on the
+ * boundary. Pure math — no draw calls, so the cost is a handful of `yAt`
+ * evaluations per crossing and nothing on the wire.
+ */
+function skipBoundaryX(yAt, skipY, inX, outX) {
+    let lo = inX, hi = outX;
+    for (let k = 0; k < 6; k++) {
+        const mid = (lo + hi) / 2;
+        if (skipY(yAt(Math.round(mid)))) hi = mid; else lo = mid;
+    }
+    return hi;
+}
+
+/**
  * Sample a column-defined curve (filter/eq/lfo/waveform all compute one y
  * per x column) at a fixed, small number of points across [x0, xEnd) and
  * connect them with real line segments — smooth, not stepped, and its cost
  * is O(sample count), not O(width). `skipY` breaks the polyline rather than
  * drawing through a region that should read as absent (filter's floor).
+ *
+ * A run does not simply END at its last non-skipped SAMPLE: it is extended to
+ * the refined crossing point, which lies inside the skip region and therefore
+ * sits exactly on the boundary (for the filter, the bottom axis).
+ *
+ * That distinction is the whole bug behind "the cutoff curve doesn't go all
+ * the way down, it flashes on and off as you turn". The filter's roll-off
+ * occupies about 11% of the span (`dropW`), so only ~3 of the 28 uniform
+ * samples ever land inside it. Truncating at the last of those left the tail
+ * hanging in mid-air at whatever height that sample happened to have — and as
+ * cutoff moves, that sample climbs the roll-off (tail shrinks) until the next
+ * sample column crosses in and the tail snaps long again. Measured over one
+ * detent at a time (0.005 of range) the endpoint sawtoothed between y=6 and
+ * y=13 in a 13px-tall box: the bottom half of the curve visibly appearing and
+ * disappearing. Ending on the true crossing makes the tail land on the axis at
+ * every value and move smoothly, and costs no extra draw calls.
  */
 function drawColumnCurve(ctx, x0, xEnd, yAt, color = 1, skipY = null, samples = 28) {
     const w = xEnd - x0;
     if (w <= 0) return;
+    /* EVEN integer spacing. `x0 + (w-1)*(i/(n-1))` looks even and is not: at
+     * w=127, n=28 the evaluated columns land 5,4,5,5,4,5,5,4... apart, so
+     * every other segment covers 25% more of the curve than its neighbour and
+     * the reconstructed slope alternates. On a steep stretch that is directly
+     * visible as lumpiness. A fixed stride costs the same number of calls. */
     const n = Math.max(2, Math.min(samples, Math.round(w)));
+    const stride = Math.max(1, Math.round(w / (n - 1)));
     let run = [];
+    /* x of the most recent skipped sample, so a run that STARTS mid-span
+     * (a highpass rising off the floor) begins on the boundary too. */
+    let lastSkipX = null;
     const flush = () => { if (run.length >= 2) drawPolyline(ctx, run, color); run = []; };
     for (let i = 0; i < n; i++) {
-        const x = x0 + (w - 1) * (i / (n - 1));
-        const y = yAt(Math.round(x));
-        if (skipY && skipY(y)) { flush(); continue; }
+        const x = Math.min(x0 + w - 1, x0 + i * stride);
+        const y = yAt(x);
+        if (skipY && skipY(y)) {
+            if (run.length) {
+                const bx = skipBoundaryX(yAt, skipY, run[run.length - 1][0], x);
+                run.push([bx, yAt(Math.round(bx))]);
+            }
+            flush();
+            lastSkipX = x;
+            continue;
+        }
+        if (!run.length && lastSkipX !== null && skipY) {
+            const bx = skipBoundaryX(yAt, skipY, x, lastSkipX);
+            run.push([bx, yAt(Math.round(bx))]);
+        }
         run.push([x, y]);
     }
     flush();
+}
+
+/**
+ * Draw a column-defined curve at FULL horizontal resolution — one y per pixel
+ * column — coalescing equal-y neighbours into a single horizontal run and
+ * emitting a vertical riser at each step. This is what `drawWaveCell` already
+ * does for the single-knob silhouette, generalised.
+ *
+ * Why a periodic wave needs this and `drawColumnCurve` will not do:
+ * approximating one with ~28 straight segments reads as a POLYGON, not a
+ * wave. Sampling a sine every ~5 columns puts each vertex at a different
+ * fraction of the curvature, so the run lengths down one flank come out
+ * `5,3,2,4,5` where a real sine tapers monotonically — the shape visibly
+ * wobbles, and the wobble MOVES as rate or phase changes because the sample
+ * grid slides against the waveform. It also slants what should be vertical:
+ * a square LFO's edge became a diagonal across one whole sample step, even
+ * though drawWaveCell rendered the same square crisply two functions away.
+ *
+ * Cost is data-dependent rather than fixed, and mostly BETTER than the
+ * polyline it replaced: a square is 3-7 calls (vs a flat 27), sample-and-hold
+ * 7-15, a saw 27-55. Only the smooth shapes cost more — a sine 47-95, noise
+ * up to 147 — and at ~490ns per call that worst case is 72us, which is 0.3%
+ * of a frame. Draw the wave honestly; the calls are not the expensive part.
+ */
+function drawStepCurve(ctx, x0, xEnd, yAt, color = 1) {
+    const w = xEnd - x0;
+    if (w <= 0) return;
+
+    /* Build first, draw second — so the budget check costs no draw calls. */
+    const runs = [];
+    let runStart = x0, runY = yAt(x0);
+    for (let x = x0 + 1; x < xEnd; x++) {
+        const y = yAt(x);
+        if (y === runY) continue;
+        runs.push([runStart, x - runStart, runY, y]);
+        runStart = x; runY = y;
+    }
+    runs.push([runStart, xEnd - runStart, runY, null]);
+
+    /* No draw-call ceiling here. There used to be one, on the belief that a
+     * binding cost 90-100us; measured, it is ~490ns, so the most expensive
+     * shape in the vocabulary (noise at full rate, ~147 calls) costs about
+     * 72us — 0.3% of a frame. Falling back to a coarse polyline to save that
+     * traded a visibly wrong waveform for nothing. See draw_bench.mjs. */
+
+    for (const [rx, rw, ry, nextY] of runs) {
+        if (rw > 0) ctx.fillRect(rx, ry, rw, 1, color);
+        if (nextY !== null) {
+            /* The riser carries only the rows BETWEEN this run and the next.
+             * Spanning ry..nextY inclusive re-drew ry in the riser column,
+             * which the run had already covered, so every row came out one
+             * column too long and the staircase read as a chunky zigzag
+             * rather than a line. The run and the riser stay 8-connected at
+             * the corner. */
+            if (nextY < ry) ctx.fillRect(rx + rw, nextY, 1, ry - nextY, color);
+            else ctx.fillRect(rx + rw, ry + 1, 1, nextY - ry, color);
+        }
+    }
+}
+
+/*
+ * The band every graphic body draws into: 13 rows starting one below the rect
+ * top. THIRTEEN, an odd count, on purpose.
+ *
+ * A bipolar graphic — LFO, EQ, sample — is drawn as `mid - sample * amp`, so
+ * it needs its zero line to be a real ROW. The band used to be 14 rows
+ * (topY=rect.y+1, botY=topY+13), which has no centre: `round((1+14)/2)` is 8
+ * while the true middle is 7.5, so the whole wave sat half a row low and
+ * `amp` was the fractional 6.5. At full depth that put the peak at
+ * `round(1.5)=2` — one row short of the top — and the trough at
+ * `round(14.5)=15`, one row BELOW the bottom of the box, which is the stray
+ * jag that appeared under a triangle's troughs.
+ *
+ * 13 rows gives an integer centre (topY+6) and an integer amplitude (6), so
+ * full depth lands exactly on topY and botY and the axis is a row that
+ * actually exists. Same reason BOX_H and LBL_H are odd.
+ */
+export const VIZ_ROWS = 13;
+
+/*
+ * The narrowest cell a graphic can be drawn into.
+ *
+ * Every other body scales horizontally against `rect.w`, but `drawSwitch` is a
+ * tabulated sprite ported pixel-for-pixel from Movy — 26 columns wide, fixed,
+ * because it is a circle and a circle rasterised at one size cannot be
+ * stretched to another and stay round. Below 26 it does not narrow, it hangs
+ * out of the cell on both sides.
+ *
+ * The full screen gives a 32px cell, so this only binds on a caller that
+ * passes a narrower `rect` — see render_page.mjs, which stands the graphics
+ * down rather than let one overhang.
+ */
+export const VIZ_MIN_W = 26;
+
+function band(rect) {
+    const topY = rect.y + 1;
+    const botY = topY + VIZ_ROWS - 1;
+    return { topY, botY, midY: topY + ((VIZ_ROWS - 1) >> 1), amp: (VIZ_ROWS - 1) / 2 };
 }
 
 function frac(metaIndex, key, values) {
@@ -173,7 +330,7 @@ export function drawEnvelope(ctx, rect, roles, values, metaIndex) {
     if (present.length < 2) return;
 
     const x0 = rect.x, x1 = rect.x + rect.w;
-    const topY = rect.y + 1, bodyBottom = rect.y + 14;   // Movy: rowY+1 .. rowY+14
+    const { topY, botY: bodyBottom } = band(rect);
 
     if (present.length === 4) {
         drawFullAdsr(ctx, x0, x1, topY, bodyBottom, roles, values, metaIndex);
@@ -296,7 +453,7 @@ function filterModeOf(text) {
 
 export function drawFilter(ctx, rect, roles, values, metaIndex) {
     const x0 = rect.x, xEnd = rect.x + rect.w;
-    const topY = rect.y + 1, botY = topY + 13;
+    const { topY, botY } = band(rect);
     const h = botY - topY;
     const spanW = xEnd - x0;
 
@@ -360,21 +517,85 @@ function lfoShapeIdOf(text) {
 }
 
 /**
+ * Phase positions where a shape's slope changes, for the shapes that are
+ * piecewise LINEAR. Between two of these the wave is a straight line, so it
+ * can be drawn as one real Bresenham segment instead of sampled per column.
+ *
+ * Only the RAMPS are listed. A sine is curved and has no linear stretch. The
+ * stepped shapes (square, sample-and-hold, noise) are already drawn minimally
+ * by drawStepCurve, whose run coalescing collapses a square to 3-7 calls on
+ * its own — there is nothing left to win there.
+ *
+ * What this buys on a ramp is large: a full-width triangle costs 5 native
+ * line calls instead of ~77 coalesced runs, and a saw 3 instead of ~55. The
+ * pixels are also very slightly better — an exact segment distributes its
+ * treads more evenly than independently rounding each column does, which
+ * removes a few of the doubled treads. It does NOT stop a shallow line
+ * looking like a staircase: a triangle ramp is 12 rows over 43 columns, so
+ * 3-and-4 pixel treads are what that slope IS on a 1-bit display, at any
+ * sample rate. See the aspect-ratio note in drawLfo.
+ */
+const LFO_LINEAR_BREAKPOINTS = {
+    1: [0, 0.25, 0.75],   /* triangle */
+    2: [0],               /* saw / ramp up  — jumps at the cycle boundary */
+    6: [0],               /* ramp down      — likewise */
+};
+
+/**
+ * Draw a piecewise-linear wave as exact segments between its breakpoints.
+ * A breakpoint where the value jumps (a saw's flyback) emits TWO vertices at
+ * the same x, so the connecting segment is the vertical edge itself.
+ */
+function drawLinearWave(ctx, x0, xEnd, shape, cycles, phase, yOf, color = 1) {
+    const span = xEnd - x0;
+    if (span <= 0 || cycles <= 0) return;
+    const EPS = 1e-6;
+    const bps = LFO_LINEAR_BREAKPOINTS[shape];
+
+    const ts = [phase];
+    for (let c = Math.floor(phase); c <= Math.ceil(phase + cycles); c++) {
+        for (const b of bps) {
+            const t = c + b;
+            if (t > phase + EPS && t < phase + cycles - EPS) ts.push(t);
+        }
+    }
+    ts.push(phase + cycles);
+    ts.sort((a, b) => a - b);
+
+    const xOf = (t) => x0 + Math.round(((t - phase) / cycles) * span);
+    const pts = [];
+    for (let i = 0; i < ts.length; i++) {
+        const t = ts[i], x = xOf(t);
+        const before = yOf(lfoShapeSample(shape, t - EPS));
+        const after = yOf(lfoShapeSample(shape, t + EPS));
+        if (i > 0) pts.push([x, before]);
+        if (i === 0 || after !== before) pts.push([x, after]);
+    }
+    drawPolyline(ctx, pts, color);
+}
+
+/**
  * schwung-movy renderer/lfo-wave.ts drawLfoWave, ported. Rate -> cycle
  * density, depth -> amplitude, mirroring Movy's `cycles`/`ampScale` fields.
+ *
+ * On stairstepping: this band is 128x13, about 10:1, so a wave in it has
+ * shallow slopes by construction — a triangle ramp covers 12 rows in 43
+ * columns. No drawing technique changes that on a 1-bit display; the lever is
+ * geometry (a 2-slot wave is 1.8 px/row and reads as a diagonal, a 4-slot one
+ * is 3.6 and reads as a staircase). Elektron's own waveform glyphs look clean
+ * because they are nearly square, not because they are drawn differently.
  */
 export function drawLfo(ctx, rect, roles, values, metaIndex) {
     const x0 = rect.x, xEnd = rect.x + rect.w;
-    const topY = rect.y + 1, botY = topY + 13;
+    const { topY, botY, midY: baseY, amp: fullAmp } = band(rect);
     const spanW = xEnd - x0;
-    const baseY = Math.round((topY + botY) / 2);   // always bipolar here — no unipolar/mode role in our contract
 
     const shape = lfoShapeIdOf(optionText(metaIndex, roles.shape, values));
     const rateFrac = frac(metaIndex, roles.rate, values);
     const depthFrac = frac(metaIndex, roles.depth, values);
     const phase = roles.phase ? frac(metaIndex, roles.phase, values) : 0;
     const cycles = 1 + rateFrac;                    // 1..2, matching Movy's default range
-    const amp = Math.max(0.15, depthFrac) * (botY - topY) / 2;
+    const amp = Math.max(0.15, depthFrac) * fullAmp;
 
     dottedH(ctx, x0, xEnd - 1, baseY);
 
@@ -384,7 +605,15 @@ export function drawLfo(ctx, rect, roles, values, metaIndex) {
         return Math.round(baseY - lfoShapeSample(shape, t) * amp);
     };
 
-    drawColumnCurve(ctx, x0, xEnd - 1, yAt, 1);
+    /* A ramp is straight between its breakpoints, so draw it as real segments;
+     * everything else goes per column, because a coarse uniform polyline turns
+     * a wave into a different shape. See drawStepCurve. */
+    if (LFO_LINEAR_BREAKPOINTS[shape]) {
+        const yOf = (sample) => Math.round(baseY - sample * amp);
+        drawLinearWave(ctx, x0, xEnd - 1, shape, cycles, phase, yOf, 1);
+    } else {
+        drawStepCurve(ctx, x0, xEnd - 1, yAt, 1);
+    }
 }
 
 /**
@@ -392,23 +621,34 @@ export function drawLfo(ctx, rect, roles, values, metaIndex) {
  * silhouette. One column per pixel plus a vertical connector to the previous
  * column — a plain Bresenham diagonal reads as slanted steps once the box is
  * this short, so square/pulse edges need the straight riser this gives them.
+ *
+ * It used to close the cycle afterwards by drawing a connector from the last
+ * sample back to the first, at BOTH ends of the box. For a shape that ends
+ * where it began (sine, triangle) that was a stub; for one that does not, it
+ * was a full-height bar down each side — a saw came out as a ramp inside a
+ * box frame, and a square as a rectangle outline. Neither edge is real: the
+ * window shows one cycle, and any discontinuity INSIDE it is already drawn by
+ * the riser in the loop. A saw simply ramps and stops, which is what a saw
+ * looks like.
  */
 function drawWaveCell(ctx, x, y, w, h, shape, cycles) {
     const mid = y + (h - 1) / 2, amp = (h - 1) / 2;
     const yAt = (px) => Math.round(mid - lfoShapeSample(shape, ((px - x) / w) * cycles) * amp);
     const vline = (px, a, b) => ctx.fillRect(px, Math.min(a, b), 1, Math.abs(a - b) + 1, 1);
 
-    const firstY = yAt(x);
-    let py = firstY;
+    let py = yAt(x);
     vline(x, py, py);
     for (let px = x + 1; px < x + w; px++) {
         const ny = yAt(px);
-        vline(px, py, ny);
+        /* Draw only the rows this column NEWLY occupies. Spanning py..ny
+         * inclusive re-draws py, which the previous column already covered, so
+         * every step came out two columns wide and a shallow ramp read as a
+         * chunky zigzag instead of a line. Excluding py leaves a true 1px
+         * staircase, and a steep step still gets its full riser. */
+        if (ny === py) vline(px, ny, ny);
+        else if (ny < py) vline(px, ny, py - 1);
+        else vline(px, py + 1, ny);
         py = ny;
-    }
-    if (py !== firstY) {
-        vline(x, py, firstY);
-        vline(x + w - 1, py, firstY);
     }
 }
 
@@ -423,7 +663,7 @@ export function drawWaveform(ctx, rect, key, values, metaIndex) {
     const shape = lfoShapeIdOf(name);
     const pad = 2;
     const x = rect.x + pad, w = rect.w - pad * 2;
-    const y = rect.y + 1, h = 14;   // Movy: ky+1, KW-2
+    const y = rect.y + 1, h = VIZ_ROWS;
     if (w > 0) drawWaveCell(ctx, x, y, w, h, shape, 1);
 }
 
@@ -443,9 +683,7 @@ export function drawEq(ctx, rect, roles, values, metaIndex) {
     if (bands.length === 0) return;
 
     const x0 = rect.x, xEnd = rect.x + rect.w;
-    const topY = rect.y + 1, botY = topY + 13;
-    const midY = Math.round((topY + botY) / 2);
-    const amp = (botY - topY) / 2;
+    const { topY, botY, midY, amp } = band(rect);
     const spanW = xEnd - x0;
 
     dottedH(ctx, x0, xEnd - 1, midY);
@@ -473,7 +711,7 @@ export function drawEq(ctx, rect, roles, values, metaIndex) {
 export function drawFader(ctx, rect, key, values, metaIndex) {
     const meta = metaIndex.getOrGuess(key);
     const normVal = fractionOf(meta, values ? values[key] : undefined);
-    const top = rect.y + 1, bot = top + 13, h = bot - top;
+    const { topY: top, botY: bot } = band(rect); const h = bot - top;
     const cx = rect.x + rect.w / 2;
 
     for (let y = top; y <= bot; y += 2) {
@@ -524,9 +762,7 @@ export function drawSwitch(ctx, rect, key, values) {
  */
 export function drawSample(ctx, rect, roles, values, metaIndex) {
     const x0 = rect.x, w = rect.w;
-    const topY = rect.y + 1, botY = topY + 13;
-    const midY = Math.round((topY + botY) / 2);
-    const amp = Math.min(midY - topY, botY - midY);
+    const { topY, botY, midY, amp } = band(rect);
 
     const halfAt = (i) => {
         const t = i / Math.max(1, w);
