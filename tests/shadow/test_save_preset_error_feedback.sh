@@ -26,9 +26,16 @@ fi
 
 # Autosave must not record a slot as saved when the write failed, or the
 # retry is suppressed until the next module change.
-auto_body=$(awk '/^function autosaveAllSlots\(/,/^}/' "$file")
+# The per-slot write lives in autosaveOneSlot; autosaveAllSlots is now just a
+# loop over it, because the periodic pass spends one slot per tick rather than
+# landing every slot's IPC reads on a single frame.
+auto_body=$(awk '/^function autosaveOneSlot\(/,/^}/' "$file")
+if [ -z "$auto_body" ]; then
+  echo "FAIL: autosaveOneSlot not found (did the autosave split get renamed?)" >&2
+  exit 1
+fi
 if ! grep -Eq 'if \(host_write_file\(|= host_write_file\(' <<<"$auto_body"; then
-  echo "FAIL: autosaveAllSlots ignores host_write_file result" >&2
+  echo "FAIL: autosaveOneSlot ignores host_write_file result" >&2
   exit 1
 fi
 
