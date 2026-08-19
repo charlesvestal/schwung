@@ -46,6 +46,7 @@ import {
 
 import { decodeDelta } from '/data/UserData/schwung/shared/input_filter.mjs';
 import { runDrawBench } from '/data/UserData/schwung/shared/draw_bench.mjs';
+import { installParamTally, paramTallyTick, paramTallyArmed } from '/data/UserData/schwung/shared/param_tally.mjs';
 import { knobInit, knobTick, knobConfigFromMeta } from '/data/UserData/schwung/shared/knob_engine.mjs';
 import {
     formatParamValue as ufFormatParamValue,
@@ -14168,6 +14169,13 @@ globalThis.init = function() {
         host_file_exists("/data/UserData/schwung/draw_bench_on")) {
         try { runDrawBench(); } catch (e) { debugLog("draw_bench failed: " + e); }
     }
+
+    /* Opt-in param read/write tally. Tracing showed param IPC is ~98% of tick
+     * time and that ~6.7 of the ~7.7 reads per tick come from this file rather
+     * than the param-pages controller — but a span carries a name, not a key
+     * or a caller, so it cannot say which reads or from where. This can. Costs
+     * one host_file_exists when the flag is absent. See src/shared/param_tally.mjs. */
+    try { installParamTally(debugLog); } catch (e) { debugLog("param_tally failed: " + e); }
     refreshSlots();
     loadPatchList();
     initChainConfigs();
@@ -14501,6 +14509,8 @@ globalThis.tick = function() {
      * it self-gates on its own pending state (only set while in the browser), so
      * no view guard is needed (and the view guard was unreliable here). */
     tickPresetPreview();
+    /* Per-second param read/write report; one boolean test when disarmed. */
+    if (paramTallyArmed()) paramTallyTick();
     /* One staggered param read per frame while the grid is up. */
     if (view === VIEWS.PARAM_PAGES) tickParamPages();
 
