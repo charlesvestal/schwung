@@ -28,7 +28,7 @@
 
 import { KIND_ENUM, KIND_OPAQUE } from "./param_meta.mjs";
 import { formatParamValue } from "../param_format.mjs";
-import { drawVizGroup } from "./viz_draw.mjs";
+import { drawVizGroup, VIZ_ROWS, VIZ_MIN_W } from "./viz_draw.mjs";
 
 export const SCREEN_WIDTH = 128;
 export const SCREEN_HEIGHT = 64;
@@ -513,10 +513,34 @@ export function renderPage(ctx, o) {
      * resolveViz), never computed here — resolution and drawing stay
      * separate, exactly like decorations/modulated are caller state. A slot
      * inside a group's span is drawn once, from the group's first (anchor)
-     * slot; the rest of the span is skipped rather than drawn twice. */
+     * slot; the rest of the span is skipped rather than drawn twice.
+     *
+     * A graphic is the one cell that does NOT degrade with the rect. Its body
+     * is a fixed VIZ_ROWS band measured from `rect.y + 1` (the band's parity
+     * is what lets a bipolar wave have a real zero row — see viz_draw.mjs),
+     * and the switch is a fixed VIZ_MIN_W sprite. Neither shrinks; both spill.
+     * Measured over the fleet: 99 of 276 graphic-bearing pages drew up to 100
+     * pixels below a 32px-high rect, 200 of them below a 24px one, and a
+     * 96px-wide rect put the switch up to 12 pixels outside on 79 pages.
+     * That breaks the promise the geometry above makes, and it breaks it for
+     * the tool case specifically, since the shadow UI always has the screen.
+     *
+     * Rather than scale the graphics — which would move every full-screen
+     * pixel this library has snapshots of, to serve a caller that would get
+     * an illegible 6px envelope anyway — a cell too small for a graphic
+     * simply does not get one. Those slots fall through to ordinary cells,
+     * which DO degrade. A tool asking for less than a graphic needs gets
+     * eight honest dials instead of one clipped picture.
+     *
+     * Page-wide rather than per-group on purpose: which graphic happens to
+     * have a fixed size is an implementation detail of the vocabulary, and a
+     * row that drew an envelope but replaced the switch beside it with a dial
+     * would read as a bug rather than as a decision.
+     */
+    const vizFits = geo.rowH >= VIZ_ROWS + 1 && cellW >= VIZ_MIN_W;
     const vizAnchor = new Array(COLS * ROWS).fill(null);
     const vizCovered = new Array(COLS * ROWS).fill(false);
-    for (const g of (o.viz || [])) {
+    for (const g of (vizFits ? (o.viz || []) : [])) {
         if (!g || typeof g.slotStart !== "number" || !(g.slotSpan > 0)) continue;
         vizAnchor[g.slotStart] = g;
         for (let s = g.slotStart; s < g.slotStart + g.slotSpan; s++) vizCovered[s] = true;
