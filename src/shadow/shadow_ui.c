@@ -2646,6 +2646,130 @@ static int process_shadow_midi(JSContext *ctx, JSValue *onInternal, JSValue *onE
     return handled;
 }
 
+/* =========================================================================
+ * Loop profiler — where a shadow_ui iteration actually spends its time.
+ *
+ * The trace spans `js.tick` and its param children, which is most of the
+ * iteration but NOT all of it. Three things run every loop and carry no
+ * instrument at all:
+ *
+ *   - process_shadow_midi(), which dispatches into JS handlers that call
+ *     setParam — and which runs hardest exactly when a knob is being turned,
+ *     i.e. during the frames the lag is reported on;
+ *   - js_display_pack() + the 1KB memcpy, which the comment says runs every
+ *     30 ticks but actually runs EVERY tick whenever the screen is dirty,
+ *     which on the knob grid is every tick since it now redraws every tick;
+ *   - schwung_trace_poll_enable(), a filesystem check on eMMC.
+ *
+ * A span cannot see them (they are outside the js.tick scope) and the JS-side
+ * fps counter cannot either (it counts draws, not the loop). So the residual
+ * "54-56 not 60, with dips to 45" was being hunted with an instrument that is
+ * blind to a third of the loop.
+ *
+ * This measures the whole iteration, phase by phase, and reports ONCE PER
+ * SECOND — one log line, deliberately, because a diagnostic that writes files
+ * per event is how ~150ms stalls got chased as scheduling contention (see the
+ * param_tally note). Cost when disarmed is five clock_gettime calls per
+ * iteration, ~125ns against a 16.67ms period.
+ *
+ * Arm with:  touch /data/UserData/schwung/loop_stats_on
+ * ========================================================================= */
+#define LOOP_STATS_FLAG "/data/UserData/schwung/loop_stats_on"
+
+typedef struct {
+    uint64_t midi_ns, tick_ns, pack_ns, other_ns, total_ns;
+} loop_phase_t;
+
+static struct {
+    int armed;
+    int iters;
+    int overruns;               /* iterations whose work exceeded the period */
+    uint64_t period_ns;
+    loop_phase_t sum;
+    loop_phase_t max;           /* per-phase maxima, independently */
+    loop_phase_t worst;         /* full breakdown of the single worst iteration */
+    uint64_t late_max_ns;       /* worst wake-up lateness vs the deadline */
+    uint64_t late_sum_ns;
+    uint64_t window_start_ns;
+} loop_stats;
+
+static uint64_t now_ns(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (uint64_t)t.tv_sec * 1000000000ULL + (uint64_t)t.tv_nsec;
+}
+
+static void loop_stats_poll_enable(void) {
+    loop_stats.armed = (access(LOOP_STATS_FLAG, F_OK) == 0);
+}
+
+static void loop_stats_record(const loop_phase_t *p, uint64_t late_ns, uint64_t period_ns) {
+    loop_stats.iters++;
+    loop_stats.period_ns = period_ns;
+    loop_stats.sum.midi_ns  += p->midi_ns;
+    loop_stats.sum.tick_ns  += p->tick_ns;
+    loop_stats.sum.pack_ns  += p->pack_ns;
+    loop_stats.sum.other_ns += p->other_ns;
+    loop_stats.sum.total_ns += p->total_ns;
+    if (p->midi_ns  > loop_stats.max.midi_ns)  loop_stats.max.midi_ns  = p->midi_ns;
+    if (p->tick_ns  > loop_stats.max.tick_ns)  loop_stats.max.tick_ns  = p->tick_ns;
+    if (p->pack_ns  > loop_stats.max.pack_ns)  loop_stats.max.pack_ns  = p->pack_ns;
+    if (p->other_ns > loop_stats.max.other_ns) loop_stats.max.other_ns = p->other_ns;
+    if (p->total_ns > loop_stats.max.total_ns) { loop_stats.max.total_ns = p->total_ns;
+                                                 loop_stats.worst = *p; }
+    if (p->total_ns > period_ns) loop_stats.overruns++;
+    loop_stats.late_sum_ns += late_ns;
+    if (late_ns > loop_stats.late_max_ns) loop_stats.late_max_ns = late_ns;
+}
+
+/* One line per second, or nothing. Returns after resetting the window. */
+static void loop_stats_report(uint64_t now) {
+    if (!loop_stats.window_start_ns) { loop_stats.window_start_ns = now; return; }
+    uint64_t dt = now - loop_stats.window_start_ns;
+    if (dt < 1000000000ULL) return;
+
+    int n = loop_stats.iters ? loop_stats.iters : 1;
+    if (loop_stats.armed) {
+        char line[512];
+        /*
+         * avg is where the time goes; max says whether the dips are one long
+         * stall or a cluster of medium ones — which is the open question. If
+         * `worst` is dominated by a phase, that phase is the answer; if
+         * `late` is large while `total` is small, the process was descheduled
+         * and nothing in this loop is at fault.
+         */
+        snprintf(line, sizeof(line),
+                 "loop_stats: %d iters %d overrun (>%.1fms) | avg us midi=%llu tick=%llu pack=%llu other=%llu total=%llu"
+                 " | max us midi=%llu tick=%llu pack=%llu other=%llu"
+                 " | worst iter us total=%llu (midi=%llu tick=%llu pack=%llu other=%llu)"
+                 " | late us avg=%llu max=%llu",
+                 loop_stats.iters, loop_stats.overruns, loop_stats.period_ns / 1e6,
+                 (unsigned long long)(loop_stats.sum.midi_ns  / n / 1000),
+                 (unsigned long long)(loop_stats.sum.tick_ns  / n / 1000),
+                 (unsigned long long)(loop_stats.sum.pack_ns  / n / 1000),
+                 (unsigned long long)(loop_stats.sum.other_ns / n / 1000),
+                 (unsigned long long)(loop_stats.sum.total_ns / n / 1000),
+                 (unsigned long long)(loop_stats.max.midi_ns  / 1000),
+                 (unsigned long long)(loop_stats.max.tick_ns  / 1000),
+                 (unsigned long long)(loop_stats.max.pack_ns  / 1000),
+                 (unsigned long long)(loop_stats.max.other_ns / 1000),
+                 (unsigned long long)(loop_stats.max.total_ns / 1000),
+                 (unsigned long long)(loop_stats.worst.midi_ns  / 1000),
+                 (unsigned long long)(loop_stats.worst.tick_ns  / 1000),
+                 (unsigned long long)(loop_stats.worst.pack_ns  / 1000),
+                 (unsigned long long)(loop_stats.worst.other_ns / 1000),
+                 (unsigned long long)(loop_stats.late_sum_ns / n / 1000),
+                 (unsigned long long)(loop_stats.late_max_ns / 1000));
+        shadow_ui_log_line(line);
+    }
+    memset(&loop_stats.sum,   0, sizeof(loop_stats.sum));
+    memset(&loop_stats.max,   0, sizeof(loop_stats.max));
+    memset(&loop_stats.worst, 0, sizeof(loop_stats.worst));
+    loop_stats.iters = loop_stats.overruns = 0;
+    loop_stats.late_max_ns = loop_stats.late_sum_ns = 0;
+    loop_stats.window_start_ns = now;
+}
+
 int main(int argc, char *argv[]) {
     const char *script = "/data/UserData/schwung/shadow/shadow_ui.js";
     if (argc > 1) {
@@ -2728,6 +2852,19 @@ int main(int argc, char *argv[]) {
     struct timespec next_tick = { 0, 0 };
 
     while (!global_exit_flag) {
+        /* Loop profiler; see loop_stats above. `t_wake` is when this iteration
+         * actually started, which against the deadline it was sleeping to
+         * gives wake-up lateness — the one number that separates "our work
+         * overran" from "the scheduler did not run us". */
+        loop_phase_t ph = {0};
+        uint64_t t_wake = now_ns(), t_a = t_wake, t_b;
+        uint64_t late_ns = 0;
+        if (next_tick.tv_sec) {
+            uint64_t deadline = (uint64_t)next_tick.tv_sec * 1000000000ULL
+                              + (uint64_t)next_tick.tv_nsec;
+            if (t_wake > deadline) late_ns = t_wake - deadline;
+        }
+
         if (shadow_control && shadow_control->should_exit) {
             if (jsSaveStateIsDefined) {
                 callGlobalFunction(ctx, &JSSaveState, 0);
@@ -2747,11 +2884,13 @@ int main(int argc, char *argv[]) {
              * clear (manifested as dropped pad note-offs under burst). */
             process_shadow_midi(ctx, &JSonMidiMessageInternal, &JSonMidiMessageExternal);
         }
+        t_b = now_ns(); ph.midi_ns = t_b - t_a; t_a = t_b;
 
         if (jsTickIsDefined) {
             TRACE_SCOPE("js.tick");   /* root span; param.get etc. nest under it */
             callGlobalFunction(ctx, &JSTick, 0);
         }
+        t_b = now_ns(); ph.tick_ns = t_b - t_a; t_a = t_b;
         /* The js.tick scope above unwound the per-thread span stack back to
          * depth 0, so any span a JS module opened via host_trace_begin and
          * forgot to host_trace_end() is already dropped from the stack — but its
@@ -2765,12 +2904,23 @@ int main(int argc, char *argv[]) {
 
         refresh_counter++;
         /* Poll the trace touch-file off the hot loop (~once/sec at 60 Hz). */
-        if ((refresh_counter & 0x3F) == 0) schwung_trace_poll_enable();
+        if ((refresh_counter & 0x3F) == 0) { schwung_trace_poll_enable(); loop_stats_poll_enable(); }
+        /* `other` is the two touch-file polls, on their own, because they are
+         * the only eMMC access on this loop and a blocking one would look
+         * exactly like the unexplained periodic dips. Once every 64
+         * iterations, so its MAX is the number to read, not its average. */
+        t_b = now_ns(); ph.other_ns = t_b - t_a; t_a = t_b;
         if ((js_display_screen_dirty || (refresh_counter % 30 == 0)) && shadow_display_shm) {
             js_display_pack(packed_buffer);
             memcpy(shadow_display_shm, packed_buffer, DISPLAY_BUFFER_SIZE);
             js_display_screen_dirty = 0;
         }
+        t_b = now_ns();
+        ph.pack_ns = t_b - t_a;
+        ph.total_ns = t_b - t_wake;
+        loop_stats_record(&ph, late_ns, (uint64_t)((shadow_control && shadow_control->overtake_mode >= 2)
+                                                   ? 2000000L : 16666667L));
+        loop_stats_report(t_b);
 
         /*
          * Sleep to an absolute DEADLINE, not for a fixed duration.
