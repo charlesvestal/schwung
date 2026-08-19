@@ -13,7 +13,6 @@
 #include <pthread.h>
 #include <sys/wait.h>
 #include <sched.h>
-#include <sys/resource.h>
 #include <time.h>
 #include "shadow_process.h"
 #include "shadow_resample.h"
@@ -210,29 +209,6 @@ void launch_shadow_ui(void) {
          * etc.) run at FIFO 70, competing with the SPI driver. */
         struct sched_param sp = { .sched_priority = 0 };
         sched_setscheduler(0, SCHED_OTHER, &sp);
-
-        /*
-         * ...but nice 0 leaves it losing to Move's own firmware, badly.
-         *
-         * Measured on device: MoveOriginal runs at ~170% CPU across the three
-         * cores not reserved for SPI, and shadow_ui was being descheduled for
-         * 146-183ms at a stretch, several times a second. Every one of those
-         * freezes lands on whatever the UI was doing — a param read, a draw —
-         * and at 42 ticks/sec a 150ms stall costs six frames. It was the whole
-         * of the remaining "dropped frames / jagged" report once the UI's own
-         * self-inflicted causes were fixed: draws exactly equalled ticks, and
-         * ticks had fallen from 42/sec to 18-31.
-         *
-         * -5 is deliberately modest, and nice CANNOT touch anything realtime:
-         * the SPI callback at SCHED_FIFO 90 and MoveOriginal's own FIFO 70
-         * audio threads are in a different scheduling class entirely and are
-         * unaffected by this. What it changes is the fight against Move's
-         * NORMAL-priority threads, which is the fight we were losing.
-         *
-         * Best-effort: EPERM if the process lacks the privilege, in which case
-         * we are exactly where we were.
-         */
-        setpriority(PRIO_PROCESS, 0, -5);
 
         setsid();
         int fdlimit = (int)sysconf(_SC_OPEN_MAX);

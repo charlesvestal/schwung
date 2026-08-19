@@ -42,12 +42,24 @@ const lines = [];
 function say(s) {
     lines.push(s);
     if (logFn) logFn(s); else console.log(s);
-    if (typeof host_write_file === "function") {
-        /* Keep only the recent window on disk: this runs for as long as the
-         * flag is present and the interesting part is the end, not the boot. */
-        const keep = lines.length > 400 ? lines.slice(lines.length - 400) : lines;
-        try { host_write_file(TALLY_OUT, keep.join("\n") + "\n"); } catch (e) { /* ignore */ }
-    }
+}
+
+/**
+ * Write the report file. ONCE PER WINDOW, not once per line.
+ *
+ * This used to rewrite the whole file from say(), i.e. 15-20 times a second,
+ * up to ~25KB each time. On this device that is enough eMMC traffic to block
+ * the process for ~150ms at a stretch, and it did: the "scheduling stalls" I
+ * spent an afternoon chasing were substantially this function. A diagnostic
+ * that perturbs the thing it measures is worse than no diagnostic, because it
+ * produces confident wrong answers.
+ */
+function flush() {
+    if (typeof host_write_file !== "function") return;
+    /* Keep only the recent window on disk: this runs for as long as the flag
+     * is present and the interesting part is the end, not the boot. */
+    const keep = lines.length > 400 ? lines.slice(lines.length - 400) : lines;
+    try { host_write_file(TALLY_OUT, keep.join("\n") + "\n"); } catch (e) { /* ignore */ }
 }
 
 /** Best-effort "who called" — the first frame outside this module. */
@@ -202,6 +214,8 @@ export function paramTallyTick() {
         say("param_tally:     (no read value changed this window)");
     }
     ranges.clear();
+
+    flush();   /* one file write per window — see flush() */
     /* The stalls, named. One of these blocks everything behind it. */
     if (slowCalls.length) {
         for (const s of slowCalls.slice(0, 8)) say("param_tally:     SLOW " + s);
