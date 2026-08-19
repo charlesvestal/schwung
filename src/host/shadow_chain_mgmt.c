@@ -2340,6 +2340,12 @@ void shadow_inprocess_handle_param_request(void) {
      * the trace context (and key/value) it wrote first are visible here. */
     uint8_t req_type = __atomic_load_n(&shadow_param->request_type, __ATOMIC_ACQUIRE);
     if (req_type == 0) return;
+    /* A client has claimed the channel but has not finished filling in the
+     * request. The key, slot and request_id are still whatever the PREVIOUS
+     * request left there, so serving this would answer a garbage request —
+     * and publish_response would then clear request_type, releasing a claim
+     * its owner still believes it holds. Come back next frame. */
+    if (req_type == SHADOW_PARAM_CLAIMED) return;
     uint32_t req_id = shadow_param->request_id;
 
     /* Span the actual servicing of this request (all return paths below),

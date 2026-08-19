@@ -437,8 +437,34 @@ typedef struct shadow_ui_state_t {
  * Parameter request structure for get/set operations.
  * Must fit within SHADOW_PARAM_BUFFER_SIZE bytes.
  */
+/*
+ * request_type value used to CLAIM the channel before the request is filled
+ * in. The channel is a single slot shared by TWO processes (shadow_ui and
+ * schwung-manager), so "spin until it reads 0, then write it" is a
+ * time-of-check/time-of-use race — both can see 0 and both write, and the
+ * loser waits out its whole timeout for a response_id that never comes.
+ * Clients claim with a compare-exchange 0 -> CLAIMED instead.
+ *
+ * The servicer MUST treat CLAIMED as "busy, not mine": the key, slot and
+ * request_id are not written yet, so serving it would answer a garbage
+ * request and — worse — clear request_type, releasing a claim its owner
+ * still believes it holds.
+ */
+#define SHADOW_PARAM_CLAIMED 0xFF
+
+/*
+ * Request-ID ranges are DISJOINT per client, and must stay that way.
+ * waitResponse matches on `response_id == my_request_id`, so if two clients
+ * can mint the same id, one can match the OTHER's response and read its
+ * value — silent wrong data rather than an error.
+ *   shadow_ui        : 1 .. 0xFFFEFFFF
+ *   schwung-manager  : 0xFFFF0000 ..   (also what publish_response uses to
+ *                      recognise web-originated SETs and skip re-notifying)
+ */
+#define SHADOW_PARAM_WEB_REQ_ID_BASE 0xFFFF0000u
+
 typedef struct shadow_param_t {
-    volatile uint8_t request_type;   /* 0=none, 1=set, 2=get */
+    volatile uint8_t request_type;   /* 0=none, 1=set, 2=get, 0xFF=claimed */
     volatile uint8_t slot;           /* Which chain slot (0-3) */
     volatile uint8_t response_ready; /* Set by shim when response is ready */
     volatile uint8_t error;          /* Non-zero on error */
