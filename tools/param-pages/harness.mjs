@@ -172,13 +172,93 @@ export function createFramebuffer(w = SCREEN_WIDTH, h = SCREEN_HEIGHT) {
     };
 }
 
-/** The object shape the renderer expects as its draw context. */
-export function drawContext(fb) {
-    return {
+/**
+ * The object shape the renderer expects as its draw context.
+ *
+ * `line` / `fillCircle` / `drawCircle` are ports of the device's own
+ * bindings (src/host/js_display.c js_display_draw_line / _fill_circle /
+ * _draw_circle), pixel for pixel, because the renderers take a DIFFERENT
+ * path when a caller supplies them — and the real caller
+ * (src/shadow/shadow_ui_param_pages.mjs) always does. Leaving them out was
+ * not neutral: it meant previews and snapshots only ever exercised the JS
+ * fallbacks, and a knob-ring bug that existed solely on the native path
+ * shipped without the harness being able to show it.
+ *
+ * Pass `{ native: false }` to get the bare context (fallback paths only),
+ * which is what the old behaviour was.
+ */
+export function drawContext(fb, { native = true } = {}) {
+    const ctx = {
         fillRect: fb.fillRect,
         print: fb.print,
         textWidth: fb.textWidth,
     };
+    if (!native) return ctx;
+
+    /* js_display_draw_line */
+    ctx.line = (x0, y0, x1, y1, value = 1) => {
+        let dx = x1 - x0, dy = y1 - y0;
+        const sx = dx > 0 ? 1 : -1, sy = dy > 0 ? 1 : -1;
+        dx = Math.abs(dx); dy = Math.abs(dy);
+        if (dx === 0) {
+            for (let y = Math.min(y0, y1); y <= Math.max(y0, y1); y++) fb.setPixel(x0, y, value);
+            return;
+        }
+        if (dy === 0) {
+            for (let x = Math.min(x0, x1); x <= Math.max(x0, x1); x++) fb.setPixel(x, y0, value);
+            return;
+        }
+        let err = dx - dy;
+        for (;;) {
+            fb.setPixel(x0, y0, value);
+            if (x0 === x1 && y0 === y1) break;
+            const e2 = 2 * err;
+            if (e2 > -dy) { err -= dy; x0 += sx; }
+            if (e2 < dx) { err += dx; y0 += sy; }
+        }
+    };
+
+    /* js_display_fill_circle — a solid disk */
+    ctx.fillCircle = (cx, cy, r, value = 1) => {
+        for (let dy = -r; dy <= r; dy++) {
+            for (let dx = -r; dx <= r; dx++) {
+                if (dx * dx + dy * dy <= r * r) fb.setPixel(cx + dx, cy + dy, value);
+            }
+        }
+    };
+
+    /* js_display_draw_arc — a one-pixel outline over a `sweep` arc from
+     * `start` (0 at twelve o'clock, clockwise): pixels whose distance from the
+     * centre rounds to r. Neither the difference of two fillCircles nor a
+     * midpoint walk; both strand pixels at the compass points. */
+    ctx.drawArc = (cx, cy, r, start, sweep, value = 1) => {
+        if (r < 0) return;
+        if (r === 0) { fb.setPixel(cx, cy, value); return; }
+        if (sweep <= 0) return;
+        /* One pixel per ROW and one per COLUMN, unioned — see
+         * js_display_draw_arc. A distance-rounded annulus is 1.41px wide at
+         * 45 degrees, which stacks into a visible blob at each shoulder. */
+        const inSweep = (dx, dy) => {
+            if (sweep >= 360) return true;
+            let a = Math.atan2(dx, -dy) * 180 / Math.PI;
+            if (a < 0) a += 360;
+            let d = a - ((start % 360) + 360) % 360;
+            if (d < 0) d += 360;
+            return d <= sweep;
+        };
+        const plot = (dx, dy) => { if (inSweep(dx, dy)) fb.setPixel(cx + dx, cy + dy, value); };
+        for (let dy = -r; dy <= r; dy++) {
+            const dx = Math.round(Math.sqrt(r * r - dy * dy));
+            plot(dx, dy); if (dx !== 0) plot(-dx, dy);
+        }
+        for (let dx = -r; dx <= r; dx++) {
+            const dy = Math.round(Math.sqrt(r * r - dx * dx));
+            plot(dx, dy); if (dy !== 0) plot(dx, -dy);
+        }
+    };
+    ctx.drawCircle = (cx, cy, r, value = 1) => ctx.drawArc(cx, cy, r, 0, 360, value);
+
+    return ctx;
 }
 
 let CRC_TABLE = null;

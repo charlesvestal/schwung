@@ -36,8 +36,9 @@ Promise.all([
   import("./src/shared/param_pages/param_meta.mjs"),
   import("./src/shared/param_pages/render_page.mjs"),
   import("./src/shared/param_pages/page_nav.mjs"),
+  import("./src/shared/param_pages/viz.mjs"),
   import("node:fs"),
-]).then(([H, C, P, M, R, N, fs]) => {
+]).then(([H, C, P, M, R, N, V, fs]) => {
   const fail = (msg) => { console.log("FAIL: " + msg); process.exit(1); };
   const fx = JSON.parse(fs.readFileSync(C.FIXTURE, "utf8"));
 
@@ -372,6 +373,64 @@ Promise.all([
     let below = 0;
     for (let y = 32; y < 64; y++) for (let x = 0; x < 128; x++) below += fb.pixels[y * 128 + x];
     if (below > 0) fail("renderPage drew " + below + " pixels outside its rect — a tool cannot share the screen with it");
+  }
+
+  /* ---- 4b. ...including with GRAPHICS, which do not scale ---------------
+   *
+   * The case above passes no `viz`, and that is the case that used to pass
+   * while the real one did not. A graphic body is a fixed VIZ_ROWS band and
+   * the switch a fixed VIZ_MIN_W sprite, so in a small rect they overhung
+   * rather than shrank: 99 of 276 graphic-bearing fleet pages spilled up to
+   * 100 pixels below a 32px-high rect, and a 96px-wide rect put the switch
+   * outside on 79 of them. render_page.mjs now stands the graphics down when
+   * the cell cannot hold one and lets the slots fall through to ordinary
+   * cells, which do degrade.
+   *
+   * Swept over the whole fleet rather than one module, because which graphic
+   * a page resolves to is exactly what a single fixture would miss.
+   */
+  {
+    const rects = [
+      { x: 0, y: 0, w: 128, h: 48 }, { x: 0, y: 0, w: 128, h: 40 },
+      { x: 0, y: 0, w: 128, h: 32 }, { x: 0, y: 0, w: 128, h: 24 },
+      { x: 0, y: 16, w: 128, h: 32 }, { x: 0, y: 0, w: 96, h: 40 },
+      { x: 16, y: 8, w: 96, h: 40 },
+    ];
+    let swept = 0, worst = null;
+    for (const mod of fx.modules) {
+      const metaIndex = M.buildMetaIndex({ hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params });
+      let pages;
+      try { pages = P.planPages({ hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params }).pages; }
+      catch (e) { continue; }
+      for (const page of pages) {
+        if (page.kind !== P.PAGE_KNOBS) continue;
+        const { groups } = V.resolveViz({ keys: page.keys, metaIndex });
+        if (!groups || !groups.length) continue;
+        swept++;
+        for (const layout of [R.LAYOUT_DIAL, R.LAYOUT_BAR]) {
+          for (const rect of rects) {
+            const fb = H.createFramebuffer();
+            R.renderPage(H.drawContext(fb), {
+              page, metaIndex, values: {}, title: "T", pageIndex: 0, pageCount: 1,
+              layout, viz: groups, rect,
+            });
+            let out = 0;
+            for (let y = 0; y < 64; y++) for (let x = 0; x < 128; x++) {
+              if (!fb.pixels[y * 128 + x]) continue;
+              if (y < rect.y || y >= rect.y + rect.h || x < rect.x || x >= rect.x + rect.w) out++;
+            }
+            if (out > 0 && (!worst || out > worst.out)) {
+              worst = { out, id: mod.id + "/" + page.name, layout, rect: JSON.stringify(rect) };
+            }
+          }
+        }
+      }
+    }
+    if (!swept) fail("no graphic-bearing pages in the fixture — this test is not testing anything");
+    if (worst) {
+      fail("renderPage drew " + worst.out + " pixels outside rect " + worst.rect
+        + " on " + worst.id + " (" + worst.layout + ") — a graphic overhangs a small cell");
+    }
   }
 
   /* ---- 5. purity: same inputs, same pixels ------------------------------ */
