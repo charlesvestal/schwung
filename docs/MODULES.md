@@ -1058,18 +1058,51 @@ Kinds and their roles:
 
 Two rules worth knowing:
 
-- **Params in a group should be declared adjacently.** The page planner seats a
-  group together on one row so the graphic can span it; a group split across two
-  pages cannot be drawn and falls back to plain controls.
+- **A group's params must land contiguously on one row.** This is a hard gate,
+  not a style preference: a page is two rows of four, and a graphic can span
+  neither the gap between them nor a hole in the middle of a run. A group whose
+  roles straddle the row boundary — or sit on different pages — is not drawn at
+  all, and its members fall back to plain controls. Since knob order comes from
+  `ui_hierarchy`, declaring a group can force you to reorder that level's knobs
+  so the roles sit together. `validate.mjs` reports the failure as
+  `viz-declared-not-adjacent`.
 - **A group is only as good as its roles.** Do not group unrelated params to get
   a picture — an envelope drawn over four params that are not an envelope is
   worse than four honest knobs.
+
+#### What happens when you declare nothing
+
+Resolution order is: the module's own `chain_params` `viz` → a host override →
+the detectors → nothing. A module always outranks the host, and both outrank a
+detector.
+
+The detectors run in risk order — envelope, filter, LFO, waveform, fader,
+switch, EQ, sample — and each key the earlier ones claim is off the table for
+the rest. None of them fire on a name alone; every one corroborates against
+declared metadata. An envelope needs 2–4 numeric roles that share a key stem
+(`f_attack`/`f_decay` group; `amp_attack`/`filter_decay` do not), a filter needs
+both cutoff and resonance, a fader rejects a bipolar range as a pan or trim
+rather than a level, and an EQ band gain must be bipolar and roughly symmetric.
+All of them still require the contiguous-row run above.
+
+A param no detector claims gets an ordinary knob dial — the same cell it would
+have had before graphics existed. That is the default, and for most params it is
+the right one: leaving something undeclared is a real choice, not a gap to fill.
+Prefer it over inventing a group, and use `viz: false` when a detector keeps
+claiming something it should not.
+
+One page-wide exception: a graphic needs a row at least 14 px tall and a cell at
+least 26 px wide. A page that cannot give it that drops to plain dials
+*entirely*, rather than clipping pictures or mixing them with dials.
 
 Check what a module declares, and what is being guessed on its behalf, with:
 
 ```bash
 node tools/param-pages/validate.mjs <module-id>
 ```
+
+`viz-inferred` findings are the detector reporting a guess it made — each one is
+a group you could confirm or correct by declaring it.
 
 ### Child Selectors (for repeated elements)
 
