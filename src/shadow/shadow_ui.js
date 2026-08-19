@@ -577,6 +577,36 @@ let overlayState = null;
 
 /* FX display_name cache for change-based announcements (e.g. key detection) */
 let fxDisplayNameCache = {};  /* key: "slot:component" -> last display_name string */
+/*
+ * Per-component backoff for the display_name poll.
+ *
+ * Almost no FX implements display_name — it exists for the handful that report
+ * something live, like key detection. Every other loaded FX was asked once a
+ * second forever and errored, and an errored read still costs the full ~2.8ms
+ * round trip. The error is free; the round trip is not.
+ *
+ * Backed off rather than switched off: a module could in principle start
+ * answering later. Reset wherever fxDisplayNameCache is reset (module swap),
+ * since that is exactly when support can change.
+ */
+let fxDisplayNameSkip = {};   /* key -> polls still to skip */
+let fxDisplayNameBackoff = {};/* key -> current skip length */
+const FX_NAME_BACKOFF_MAX = 32;   /* ~32s at one poll/sec */
+
+/* Returns the name, or null when the poll was skipped or unsupported. */
+function pollFxDisplayName(slot, key, cacheKey) {
+    if (fxDisplayNameSkip[cacheKey] > 0) { fxDisplayNameSkip[cacheKey]--; return null; }
+    const name = getSlotParam(slot, key);
+    if (name === null || name === undefined) {
+        const next = Math.min((fxDisplayNameBackoff[cacheKey] || 1) * 2, FX_NAME_BACKOFF_MAX);
+        fxDisplayNameBackoff[cacheKey] = next;
+        fxDisplayNameSkip[cacheKey] = next;
+        return null;
+    }
+    fxDisplayNameBackoff[cacheKey] = 0;
+    fxDisplayNameSkip[cacheKey] = 0;
+    return name;
+}
 
 /* Helper to change view and announce it */
 function setView(newView, customLabel) {
@@ -2618,8 +2648,15 @@ function loadChainConfigFromSlot(slotIndex) {
     /* Clear display_name cache when FX modules change (prevents stale announcement on swap) */
     const newFx1 = cfg.fx1 ? cfg.fx1.module : null;
     const newFx2 = cfg.fx2 ? cfg.fx2.module : null;
-    if (newFx1 !== oldFx1) delete fxDisplayNameCache[`${slotIndex}:fx1`];
-    if (newFx2 !== oldFx2) delete fxDisplayNameCache[`${slotIndex}:fx2`];
+    /* Also drop the poll backoff: a different module may well implement
+     * display_name even though the last one didn't. */
+    const forgetFxName = (ck) => {
+        delete fxDisplayNameCache[ck];
+        delete fxDisplayNameSkip[ck];
+        delete fxDisplayNameBackoff[ck];
+    };
+    if (newFx1 !== oldFx1) forgetFxName(`${slotIndex}:fx1`);
+    if (newFx2 !== oldFx2) forgetFxName(`${slotIndex}:fx2`);
 
     chainConfigs[slotIndex] = cfg;
     return cfg;
@@ -4949,6 +4986,11 @@ function clearMasterFx() {
     for (let i = 0; i < 4; i++) {
         setMasterFxSlotModule(i, "");
         masterFxConfig[`fx${i + 1}`].module = "";
+        /* Different module — it may implement display_name even if the
+         * last one didn't, so poll it at full rate again. */
+        delete fxDisplayNameCache[`master:fx${i + 1}`];
+        delete fxDisplayNameSkip[`master:fx${i + 1}`];
+        delete fxDisplayNameBackoff[`master:fx${i + 1}`];
     }
     saveMasterFxChainConfig();
     currentMasterPresetName = "";
@@ -4974,6 +5016,11 @@ function loadMasterPreset(index, presetName) {
                 if (opt) {
                     setMasterFxSlotModule(i, opt.dspPath || "");
                     masterFxConfig[key].module = opt.id;
+                    /* Different module — it may implement display_name even if the
+                     * last one didn't, so poll it at full rate again. */
+                    delete fxDisplayNameCache[`master:${key}`];
+                    delete fxDisplayNameSkip[`master:${key}`];
+                    delete fxDisplayNameBackoff[`master:${key}`];
 
                     /* Restore plugin_id first (CLAP sub-plugin selection) */
                     if (fxConfig.params && typeof shadow_set_param === "function") {
@@ -4991,10 +5038,20 @@ function loadMasterPreset(index, presetName) {
                     /* Module not found - clear slot */
                     setMasterFxSlotModule(i, "");
                     masterFxConfig[key].module = "";
+                    /* Different module — it may implement display_name even if the
+                     * last one didn't, so poll it at full rate again. */
+                    delete fxDisplayNameCache[`master:${key}`];
+                    delete fxDisplayNameSkip[`master:${key}`];
+                    delete fxDisplayNameBackoff[`master:${key}`];
                 }
             } else {
                 setMasterFxSlotModule(i, "");
                 masterFxConfig[key].module = "";
+                /* Different module — it may implement display_name even if the
+                 * last one didn't, so poll it at full rate again. */
+                delete fxDisplayNameCache[`master:${key}`];
+                delete fxDisplayNameSkip[`master:${key}`];
+                delete fxDisplayNameBackoff[`master:${key}`];
             }
         }
 
@@ -6221,6 +6278,11 @@ function loadMasterFxChainConfig() {
         const key = `fx${i}`;
         const moduleId = getMasterFxSlotModule(i - 1);
         masterFxConfig[key].module = moduleId || "";
+        /* Different module — it may implement display_name even if the
+         * last one didn't, so poll it at full rate again. */
+        delete fxDisplayNameCache[`master:${key}`];
+        delete fxDisplayNameSkip[`master:${key}`];
+        delete fxDisplayNameBackoff[`master:${key}`];
     }
 }
 
@@ -6706,6 +6768,11 @@ function loadMasterFxChainFromConfig() {
                     const stateFile = JSON.parse(raw);
                     if (stateFile.module_id) {
                         masterFxConfig[key].module = stateFile.module_id;
+                        /* Different module — it may implement display_name even if the
+                         * last one didn't, so poll it at full rate again. */
+                        delete fxDisplayNameCache[`master:${key}`];
+                        delete fxDisplayNameSkip[`master:${key}`];
+                        delete fxDisplayNameBackoff[`master:${key}`];
                         debugLog(`MFX sync ${key}: module=${stateFile.module_id} (loaded by shim)`);
                     }
                     /* Restore bypass via setSlotParam — the shim doesn't carry
@@ -15044,6 +15111,11 @@ globalThis.tick = function() {
                 setMasterFxSlotModule(mfxi, mfxDspPath);
                 const key = `fx${mfxi + 1}`;
                 masterFxConfig[key].module = mfxModuleId;
+                /* Different module — it may implement display_name even if the
+                 * last one didn't, so poll it at full rate again. */
+                delete fxDisplayNameCache[`master:${key}`];
+                delete fxDisplayNameSkip[`master:${key}`];
+                delete fxDisplayNameBackoff[`master:${key}`];
 
                 /* Restore plugin state/params if available */
                 if (mfxData) {
@@ -15257,7 +15329,7 @@ globalThis.tick = function() {
             for (const comp of fxComponents) {
                 if (!cfg[comp] || !cfg[comp].module) continue;
                 const cacheKey = `${i}:${comp}`;
-                const name = getSlotParam(i, `${comp}:display_name`);
+                const name = pollFxDisplayName(i, `${comp}:display_name`, cacheKey);
                 if (name && name !== fxDisplayNameCache[cacheKey]) {
                     const prev = fxDisplayNameCache[cacheKey];
                     fxDisplayNameCache[cacheKey] = name;
@@ -15273,7 +15345,7 @@ globalThis.tick = function() {
         for (const key of masterFxKeys) {
             if (!masterFxConfig[key] || !masterFxConfig[key].module) continue;
             const cacheKey = `master:${key}`;
-            const name = getSlotParam(0, `master_fx:${key}:display_name`);
+            const name = pollFxDisplayName(0, `master_fx:${key}:display_name`, cacheKey);
             if (name && name !== fxDisplayNameCache[cacheKey]) {
                 const prev = fxDisplayNameCache[cacheKey];
                 fxDisplayNameCache[cacheKey] = name;
