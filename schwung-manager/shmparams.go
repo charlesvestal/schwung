@@ -21,6 +21,10 @@ type ShmParams struct {
 	data      []byte
 	mu        sync.Mutex
 	nextReqID atomic.Uint32
+	// Set when we commit a request whose response we will never read
+	// (SetParamFast). Nobody will consume that response, so the next claim may
+	// bin it immediately rather than wait out paramStealAfter. Guarded by mu.
+	orphan bool
 }
 
 // Byte offsets into shadow_param_t.
@@ -83,6 +87,14 @@ const (
 	// both processes were minting 1, 2, 3, ... and the invariant was never
 	// actually held.
 	paramWebReqIDBase = 0xFFFF0000
+
+	// response_ready is byte 2 of the 32-bit word at offset 0.
+	paramRespReadyMask = uint32(0x00FF0000)
+
+	// Discard an unread response older than this; only reachable if a
+	// client died between being answered and consuming its answer.
+	// Comfortably longer than any request deadline.
+	paramStealAfter = 250 * time.Millisecond
 )
 
 const shmParamPath = "/dev/shm/schwung-param"
@@ -136,14 +148,35 @@ func (s *ShmParams) claim() error { return s.claimFor(paramIdleTimeout) }
 func (s *ShmParams) claimFor(timeout time.Duration) error {
 	word := (*uint32)(unsafe.Pointer(&s.data[0]))
 	deadline := time.Now().Add(timeout)
+	stealAt := time.Now().Add(paramStealAfter)
 	for {
 		w := atomic.LoadUint32(word)
-		if w&0xFF == 0 {
-			if atomic.CompareAndSwapUint32(word, w, (w&^uint32(0xFF))|paramClaimed) {
+		// Free means idle AND no unread response. The protocol had no
+		// acknowledgement step: the shim sets response_ready=1 and clears
+		// request_type in the same publish, and this claim used to look only
+		// at request_type and then zero response_ready — destroying an answer
+		// the shadow UI was still waiting for, which then blocked for its full
+		// 100ms deadline and returned null. Measured at ~1/sec on device, and
+		// it is the UI's remaining stall. Byte 2 of this word is
+		// response_ready; the owner clears it once it has copied its value out.
+		if w&0xFF == 0 && (w&paramRespReadyMask == 0 || s.orphan) {
+			if atomic.CompareAndSwapUint32(word, w,
+				(w&^(uint32(0xFF)|paramRespReadyMask))|paramClaimed) {
+				s.orphan = false
 				return nil
 			}
 			// Lost the word to a concurrent field write; re-read and retry
 			// without burning the deadline.
+			continue
+		}
+		// Idle but holding an unread response: if it has sat there far longer
+		// than any request deadline its owner is gone, so take it rather than
+		// wedge every param access on the device forever.
+		if w&0xFF == 0 && time.Now().After(stealAt) {
+			if atomic.CompareAndSwapUint32(word, w,
+				(w&^(uint32(0xFF)|paramRespReadyMask))|paramClaimed) {
+				return nil
+			}
 			continue
 		}
 		if time.Now().After(deadline) {
@@ -172,6 +205,20 @@ func (s *ShmParams) commit(reqType byte) {
 // release drops the claim without leaving a servable request behind.
 // Must be called with s.mu held, holding a claim.
 func (s *ShmParams) release() { s.commit(0) }
+
+// consume releases the RESPONSE half of the channel, after this process has
+// copied its value out. Until it is called no one may claim — which is the
+// point: it is what stops the next requester destroying an answer somebody is
+// still waiting for. Must be called on give-up paths too.
+func (s *ShmParams) consume() {
+	word := (*uint32)(unsafe.Pointer(&s.data[0]))
+	for {
+		w := atomic.LoadUint32(word)
+		if atomic.CompareAndSwapUint32(word, w, w&^paramRespReadyMask) {
+			return
+		}
+	}
+}
 
 // releaseIfMine drops the claim ONLY if this process still owns it.
 //
@@ -234,17 +281,20 @@ func (s *ShmParams) TryGetParam(slot uint8, key string) (string, bool, error) {
 
 	if err := s.waitResponse(reqID); err != nil {
 		s.releaseIfMine(2, reqID)
+		s.consume()
 		return "", true, err
 	}
 
 	if s.data[paramOffError] != 0 {
 		s.releaseIfMine(2, reqID)
+		s.consume()
 		return "", true, fmt.Errorf("param get error (slot=%d key=%q)", slot, key)
 	}
 
 	resultLen := int32(binary.LittleEndian.Uint32(s.data[paramOffResultLen:]))
 	if resultLen < 0 {
 		s.releaseIfMine(2, reqID)
+		s.consume()
 		return "", true, fmt.Errorf("param get failed (result_len=%d)", resultLen)
 	}
 	if int(resultLen) > paramValueLen {
@@ -253,6 +303,7 @@ func (s *ShmParams) TryGetParam(slot uint8, key string) (string, bool, error) {
 
 	value := string(s.data[paramOffValue : paramOffValue+int(resultLen)])
 	s.releaseIfMine(2, reqID)
+	s.consume()
 	return value, true, nil
 }
 
@@ -292,7 +343,9 @@ func (s *ShmParams) SetParamFast(slot uint8, key, value string) error {
 	s.data[paramOffValue+len(value)] = 0
 
 	// Fire and forget — shim processes on next audio block (~3ms).
+	// We will never read the answer, so let the next claim bin it.
 	s.commit(1)
+	s.orphan = true
 	return nil
 }
 
@@ -327,12 +380,14 @@ func (s *ShmParams) GetParam(slot uint8, key string) (string, error) {
 	// Wait for response.
 	if err := s.waitResponse(reqID); err != nil {
 		s.releaseIfMine(2, reqID)
+		s.consume()
 		return "", err
 	}
 
 	// Check error flag.
 	if s.data[paramOffError] != 0 {
 		s.releaseIfMine(2, reqID)
+		s.consume()
 		return "", fmt.Errorf("param get error (slot=%d key=%q)", slot, key)
 	}
 
@@ -340,6 +395,7 @@ func (s *ShmParams) GetParam(slot uint8, key string) (string, error) {
 	resultLen := int32(binary.LittleEndian.Uint32(s.data[paramOffResultLen:]))
 	if resultLen < 0 {
 		s.releaseIfMine(2, reqID)
+		s.consume()
 		return "", fmt.Errorf("param get failed (result_len=%d)", resultLen)
 	}
 	if int(resultLen) > paramValueLen {
@@ -349,6 +405,8 @@ func (s *ShmParams) GetParam(slot uint8, key string) (string, error) {
 	value := string(s.data[paramOffValue : paramOffValue+int(resultLen)])
 
 	s.releaseIfMine(2, reqID)
+
+	s.consume()
 	return value, nil
 }
 
@@ -390,15 +448,19 @@ func (s *ShmParams) SetParam(slot uint8, key, value string) error {
 	// Wait for response.
 	if err := s.waitResponse(reqID); err != nil {
 		s.releaseIfMine(1, reqID)
+		s.consume()
 		return err
 	}
 
 	if s.data[paramOffError] != 0 {
 		s.releaseIfMine(1, reqID)
+		s.consume()
 		return fmt.Errorf("param set error (slot=%d key=%q)", slot, key)
 	}
 
 	s.releaseIfMine(1, reqID)
+
+	s.consume()
 	return nil
 }
 

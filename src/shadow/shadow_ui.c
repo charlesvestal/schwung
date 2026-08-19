@@ -725,52 +725,108 @@ static uint32_t shadow_param_next_request_id(void) {
 }
 
 /*
- * Claim the parameter channel ATOMICALLY.
+ * Claim the parameter channel, requiring BOTH that it is idle and that there
+ * is no unread response sitting in it.
  *
- * `/schwung-param` is a single-slot protocol with TWO processes on it —
- * this one and schwung-manager — and the old sequence was:
+ * The protocol had no acknowledgement step, so a published response had no
+ * owner. `shadow_param_publish_response` sets response_ready = 1 and clears
+ * request_type in the same breath, and the next claimer used to CAS on
+ * request_type alone and then zero response_ready as part of filling in its
+ * own request. A response could therefore be destroyed before the client that
+ * asked for it ever looked at it — after which nothing would ever re-publish
+ * it, and that client blocked until its 100ms deadline and returned null.
  *
- *     while (request_type != 0) wait;     // observe idle
- *     ...write key, slot, request_id...
- *     request_type = GET;                 // then claim it
+ * That is the whole of the residual UI stall, and it is why the two earlier
+ * fixes here did not touch it: the atomic claim settled who owns the REQUEST
+ * slot, and releaseIfMine stopped an in-flight request being cleared, but
+ * neither gave a RESPONSE a lifetime.
  *
- * which is a textbook time-of-check/time-of-use race. Both processes can
- * observe idle in the same window, both write, and the loser then spins for
- * a response_id that will never appear until its timeout expires.
+ * Measured signature, consistently: claim=0ms (no contention at all),
+ * response timed out, and at give-up request_type=0, response_ready=1 with a
+ * response_id belonging to the other process. It also explains why pausing
+ * schwung-manager made it disappear, and why the failure was always a full
+ * timeout rather than a slow read — the answer was destroyed, not delayed.
  *
- * Measured on device (knob grid, 25s, 4262 reads): the latency distribution
- * is perfectly bimodal — 4237 reads at 0-10ms, **nothing at all between 10ms
- * and 99ms**, then 25 reads piled against the 100ms-per-stage timeout
- * ceiling. That empty band is the proof they are timeouts, not slow reads.
- * One failed read per second, each blocking the UI thread 100-200ms AND
- * returning null to its caller. Pausing schwung-manager for 30s took the
- * grid from 38-50 to 57-59 ticks/sec and the spikes vanished.
+ * So the channel is now free only when request_type == 0 AND
+ * response_ready == 0, and the owner clears response_ready once it has copied
+ * its value out (shadow_param_consume). Both bytes live in the same 32-bit
+ * word, so one compare-exchange tests and takes them together.
  *
- * A compare-exchange makes observe-and-claim one indivisible step, so only
- * one process can ever hold the channel. CLAIMED is a distinct value rather
- * than a real request type: the shim must see the channel as busy but must
- * NOT try to serve it, because the key and request_id are not written yet.
- * The window it is held is a handful of stores, versus the ~2.9ms SPI frame
- * the old window stayed open for.
- *
- * Deliberately still uses the existing field and no new layout, so the SHM
- * segment is byte-identical and there is no version-skew hazard across the
- * three binaries that map it.
+ * Layout of that word (little-endian): byte0 request_type, byte1 slot,
+ * byte2 response_ready, byte3 error. Carrying bytes 1-3 through unchanged
+ * means a concurrent field write just makes the CAS retry.
  */
+static inline volatile uint32_t *shadow_param_head_word(void) {
+    return (volatile uint32_t *)&shadow_param->request_type;
+}
+
+#define SHADOW_PARAM_RT_MASK 0x000000FFu
+#define SHADOW_PARAM_RR_MASK 0x00FF0000u
+
+/*
+ * If a response goes unread this long, take the channel anyway.
+ *
+ * Only reachable if a client died between being answered and consuming its
+ * answer. Without it that would wedge every parameter read on the device
+ * permanently, which is a far worse failure than the stale response this
+ * discards. Comfortably longer than the 100ms request deadline, so it can
+ * never fire against a client that is merely slow.
+ */
+#define SHADOW_PARAM_STEAL_AFTER_US 250000L
+
+/*
+ * Set when we deliberately walk away from a request without reading its
+ * answer (the overtake fire-and-forget SET). Nobody will ever consume that
+ * response, so the next claim may discard it immediately instead of waiting
+ * out the steal timer — which at encoder-stream rates would otherwise stall
+ * every write behind a dead response.
+ */
+static int shadow_param_orphan_pending = 0;
+
 static int shadow_param_claim(int timeout_ms) {
-    int timeout = shadow_param_timeout_to_polls(timeout_ms);
-    while (timeout > 0) {
-        uint8_t expected = 0;
-        if (__atomic_compare_exchange_n((uint8_t *)&shadow_param->request_type,
-                                        &expected, (uint8_t)SHADOW_PARAM_CLAIMED,
-                                        0 /* strong */,
-                                        __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
-            return 1;
+    long waited_us = 0;
+    const long limit_us =
+        (long)(timeout_ms > 0 ? timeout_ms : SHADOW_PARAM_DEFAULT_TIMEOUT_MS) * 1000L;
+    long blocked_us = 0;
+
+    while (waited_us < limit_us) {
+        uint32_t w = __atomic_load_n(shadow_param_head_word(), __ATOMIC_ACQUIRE);
+        int idle   = (w & SHADOW_PARAM_RT_MASK) == 0;
+        int unread = (w & SHADOW_PARAM_RR_MASK) != 0;
+
+        if (idle && (!unread || shadow_param_orphan_pending
+                     || blocked_us >= SHADOW_PARAM_STEAL_AFTER_US)) {
+            /* Take it, and clear any stale response in the same step so the
+             * next waiter cannot mistake it for its own. */
+            uint32_t nw = (w & ~(SHADOW_PARAM_RT_MASK | SHADOW_PARAM_RR_MASK))
+                        | (uint32_t)SHADOW_PARAM_CLAIMED;
+            if (__atomic_compare_exchange_n(shadow_param_head_word(), &w, nw,
+                                            0 /* strong */,
+                                            __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+                shadow_param_orphan_pending = 0;
+                return 1;
+            }
+            continue;   /* word moved under us — re-read, do not burn the deadline */
         }
-        usleep(SHADOW_PARAM_POLL_US);
-        timeout--;
+
+        long step = (waited_us < 1000) ? SHADOW_PARAM_POLL_US : 1000;
+        usleep((useconds_t)step);
+        waited_us += step;
+        if (idle && unread) blocked_us += step; else blocked_us = 0;
     }
     return 0;
+}
+
+/*
+ * Release the response half of the channel.
+ *
+ * MUST be called once the value has been copied out, and equally on give-up —
+ * until it is, no one may claim, which is exactly the point: it is what stops
+ * the next requester destroying an answer somebody is still waiting for.
+ */
+static void shadow_param_consume(void) {
+    __atomic_and_fetch(shadow_param_head_word(), ~SHADOW_PARAM_RR_MASK,
+                       __ATOMIC_RELEASE);
 }
 
 /*
@@ -782,60 +838,80 @@ static int shadow_param_claim(int timeout_ms) {
  * writes per event is how a previous round of ~150ms stalls got mistaken for
  * scheduling contention.
  */
+static unsigned param_slow_n, param_slow_max_ms;
+static char param_slow_key[SHADOW_PARAM_KEY_LEN];
+static char param_slow_why[24];
+
+/*
+ * A read that took absurdly long but SUCCEEDED is the case that has resisted
+ * three fixes, and neither a span nor a give-up counter can name it: spans
+ * carry no key, and a success logs no give-up. So record the key, the
+ * duration, and which side of the exchange was slow, for the worst one in
+ * each one-second window.
+ */
+static void shadow_param_note_duration(const char *key, unsigned ms,
+                                       const char *why) {
+    if (ms < 90) return;
+    param_slow_n++;
+    if (ms > param_slow_max_ms) {
+        param_slow_max_ms = ms;
+        if (key) { strncpy(param_slow_key, key, sizeof(param_slow_key) - 1);
+                   param_slow_key[sizeof(param_slow_key) - 1] = '\0'; }
+        strncpy(param_slow_why, why, sizeof(param_slow_why) - 1);
+        param_slow_why[sizeof(param_slow_why) - 1] = '\0';
+    }
+}
+
 static void shadow_param_note_slow(const char *stage, const char *key) {
     static unsigned n_claim, n_resp, n_err;
     static char last_key[SHADOW_PARAM_KEY_LEN];
     static time_t last_report;
 
-    if (stage[0] == 'c') n_claim++;
-    else if (stage[0] == 'r') n_resp++;
-    else n_err++;
-    if (key) { strncpy(last_key, key, sizeof(last_key) - 1);
-               last_key[sizeof(last_key) - 1] = '\0'; }
+    if (stage) {
+        if (stage[0] == 'c') n_claim++;
+        else if (stage[0] == 'r') n_resp++;
+        else n_err++;
+        if (key) { strncpy(last_key, key, sizeof(last_key) - 1);
+                   last_key[sizeof(last_key) - 1] = '\0'; }
+    }
 
     time_t now = time(NULL);
     if (now == last_report) return;
     last_report = now;
-    if (!(n_claim | n_resp | n_err)) return;
-    char line[256];
+    if (!(n_claim | n_resp | n_err | param_slow_n)) return;
+    char line[320];
     snprintf(line, sizeof(line),
-             "param_giveup: claim=%u response=%u error=%u  last_key=%s",
-             n_claim, n_resp, n_err, last_key);
+             "param_giveup: claim=%u response=%u error=%u last_key=%s"
+             " | slow>=90ms: n=%u worst=%ums key=%s where=%s",
+             n_claim, n_resp, n_err, last_key,
+             param_slow_n, param_slow_max_ms,
+             param_slow_key[0] ? param_slow_key : "-",
+             param_slow_why[0] ? param_slow_why : "-");
     shadow_ui_log_line(line);
     n_claim = n_resp = n_err = 0;
+    param_slow_n = param_slow_max_ms = 0;
+    param_slow_key[0] = param_slow_why[0] = '\0';
 }
 
-/*
- * How long to sleep BEFORE polling at all.
- *
- * The shim services this channel from the SPI callback, once per frame, and a
- * frame is ~2.9ms. So the answer is never ready in the first couple of hundred
- * microseconds — yet the loop below used to wake ~14 times discovering that,
- * every single read.
- *
- * Each of those wakeups is a syscall and, more to the point, a chance for the
- * scheduler to give the CPU to something else and not come back promptly. That
- * is the mechanism behind the tail this was chasing: measured on device, ~0.5%
- * of reads took 142-163ms instead of 2.8ms, and they SUCCEEDED — no timeout was
- * recorded — so nothing was lost or contended, the process simply was not
- * running to observe a response that had been sitting there. Sleeping once for
- * most of a frame cuts the wakeups per read from ~14 to ~2, and with them the
- * exposure.
- *
- * Deliberately shorter than a frame: overshooting would add latency to every
- * read to fix a rare one. 2.2ms still lands inside the same frame the old
- * loop's 11th poll would have.
- */
-#define SHADOW_PARAM_FIRST_SLEEP_US 2200
-
 static int shadow_param_wait_response(uint32_t req_id, int timeout_ms) {
-    int timeout = shadow_param_timeout_to_polls(timeout_ms);
-    /* Not ready yet by construction — see above. Skip the pointless polls. */
-    if (__atomic_load_n(&shadow_param->response_ready, __ATOMIC_ACQUIRE) == 0) {
-        usleep(SHADOW_PARAM_FIRST_SLEEP_US);
-        timeout -= SHADOW_PARAM_FIRST_SLEEP_US / SHADOW_PARAM_POLL_US;
-    }
-    while (timeout > 0) {
+    /*
+     * Backoff, NOT a fixed pre-sleep.
+     *
+     * A flat 2.2ms sleep before polling was tried and it made things worse:
+     * measured, 14% of reads complete in under 2ms (the request lands just
+     * before the shim's service point and is answered almost immediately), and
+     * a floor under every read penalises all of them to fix the rare one.
+     *
+     * So: poll fine-grained at first to keep that fast path intact, then
+     * lengthen the sleep. A read that has already waited a millisecond is
+     * waiting on the next SPI frame (~2.9ms) and there is nothing to be gained
+     * from asking 14 more times — each ask is a syscall and a chance to be
+     * descheduled and not come back promptly, which is what stretched a 2.8ms
+     * read into 150ms.
+     */
+    long waited_us = 0;
+    const long limit_us = (timeout_ms > 0 ? timeout_ms : SHADOW_PARAM_DEFAULT_TIMEOUT_MS) * 1000L;
+    while (waited_us < limit_us) {
         /* Acquire-load pairs with the writer's release-store of response_ready
          * (shadow_param_publish_response + the shim sites). It guarantees the
          * response fields (response_id, error, value) written before the flag
@@ -846,8 +922,12 @@ static int shadow_param_wait_response(uint32_t req_id, int timeout_ms) {
             && shadow_param->response_id == req_id) {
             return shadow_param->error ? -1 : 1;
         }
-        usleep(SHADOW_PARAM_POLL_US);
-        timeout--;
+        /* 200us while the fast path is still plausible (first ~1ms), then
+         * 1ms — by then we are simply waiting for the next SPI frame. Turns
+         * a ~14-wakeup read into ~4 without slowing the quick ones. */
+        long step = (waited_us < 1000) ? SHADOW_PARAM_POLL_US : 1000;
+        usleep((useconds_t)step);
+        waited_us += step;
     }
     return 0;
 }
@@ -864,13 +944,20 @@ static int shadow_set_param_common(int slot, const char *key, const char *value,
      * read path was instrumented and the write path was not. */
     TRACE_SCOPE("param.set");
 
-    if (!overtake_fire_and_forget) {
-        /* Split out so the trace distinguishes the two ways this blocks:
+    {
+        /* Claim on BOTH paths. Fire-and-forget used to write key, value, slot
+         * and request_id with no claim at all, which could land on top of a
+         * request another process had in flight — the very race the claim
+         * exists to prevent. It just claims briefly and drops the write if the
+         * channel is busy, which is what "fire and forget" already means.
+         *
+         * Split out so the trace distinguishes the two ways this blocks:
          * waiting for the single SHM slot to free (contention with another
          * request) from waiting for the shim to service ours (frame
          * quantisation). They call for different fixes. */
         int idle;
-        { TRACE_SCOPE("param.set.idle"); idle = shadow_param_claim(timeout_ms); }
+        { TRACE_SCOPE("param.set.idle");
+          idle = shadow_param_claim(overtake_fire_and_forget ? 5 : timeout_ms); }
         if (!idle) {
             return 0;
         }
@@ -908,10 +995,14 @@ static int shadow_set_param_common(int slot, const char *key, const char *value,
     /* In overtake module mode, keep this fire-and-forget so rapid encoder
      * streams do not block UI rendering. */
     if (overtake_fire_and_forget) {
+        /* We will never read the answer; let the next claim bin it. */
+        shadow_param_orphan_pending = 1;
         return 1;
     }
 
-    return shadow_param_wait_response(req_id, timeout_ms) > 0;
+    int ok = shadow_param_wait_response(req_id, timeout_ms) > 0;
+    shadow_param_consume();
+    return ok;
 }
 
 /* shadow_set_param(slot, key, value) -> bool
@@ -1013,14 +1104,18 @@ static JSValue shadow_param_bulk_js(JSContext *ctx, int argc, JSValueConst *argv
      * value payload and request_id written above before it acts on them. */
     __atomic_store_n(&shadow_param->request_type, req_type, __ATOMIC_RELEASE);
 
-    if (shadow_param_wait_response(req_id, SHADOW_PARAM_DEFAULT_TIMEOUT_MS) <= 0)
+    if (shadow_param_wait_response(req_id, SHADOW_PARAM_DEFAULT_TIMEOUT_MS) <= 0) {
+        shadow_param_consume();
         return JS_NULL;
-    if (req_type == 4) return JS_TRUE;          /* BULK_SET — no payload back */
-    if (shadow_param->error) return JS_NULL;
+    }
+    if (req_type == 4) { shadow_param_consume(); return JS_TRUE; }  /* BULK_SET */
+    if (shadow_param->error) { shadow_param_consume(); return JS_NULL; }
     int rlen = shadow_param->result_len;
-    if (rlen < 0) return JS_NULL;
+    if (rlen < 0) { shadow_param_consume(); return JS_NULL; }
     if (rlen >= SHADOW_PARAM_VALUE_LEN) rlen = SHADOW_PARAM_VALUE_LEN - 1;
-    return JS_NewStringLen(ctx, shadow_param->value, (size_t)rlen);
+    JSValue bout = JS_NewStringLen(ctx, shadow_param->value, (size_t)rlen);
+    shadow_param_consume();
+    return bout;
 }
 
 static JSValue js_shadow_get_params(JSContext *ctx, JSValueConst this_val,
@@ -1060,9 +1155,12 @@ static JSValue js_shadow_get_param(JSContext *ctx, JSValueConst this_val, int ar
      * in `response` means our request was accepted and never answered. The
      * ~0.5%-of-reads timeout tail survived two fixes aimed at the first, which
      * is exactly the sort of thing an undifferentiated span hides. */
+    struct timespec _t0, _t1, _t2;
+    clock_gettime(CLOCK_MONOTONIC, &_t0);
     int claimed;
     { TRACE_SCOPE("param.get.claim");
       claimed = shadow_param_claim(SHADOW_PARAM_DEFAULT_TIMEOUT_MS); }
+    clock_gettime(CLOCK_MONOTONIC, &_t1);
     if (!claimed) {
         shadow_param_note_slow("claim", key);
         JS_FreeCString(ctx, key);
@@ -1077,6 +1175,11 @@ static JSValue js_shadow_get_param(JSContext *ctx, JSValueConst this_val, int ar
     /* Clear entire value buffer to prevent any stale data */
     memset(shadow_param->value, 0, SHADOW_PARAM_VALUE_LEN);
 
+    /* Keep the key for the slow-read report below; the JS string is freed here
+     * because the shim already has its own copy in SHM. */
+    char key_copy[SHADOW_PARAM_KEY_LEN];
+    strncpy(key_copy, key, sizeof(key_copy) - 1);
+    key_copy[sizeof(key_copy) - 1] = '\0';
     JS_FreeCString(ctx, key);
 
     /* Propagate the open param.get span as trace context so the shim emits its
@@ -1099,7 +1202,28 @@ static JSValue js_shadow_get_param(JSContext *ctx, JSValueConst this_val, int ar
     int got;
     { TRACE_SCOPE("param.get.response");
       got = shadow_param_wait_response(req_id, SHADOW_PARAM_DEFAULT_TIMEOUT_MS); }
+    clock_gettime(CLOCK_MONOTONIC, &_t2);
+    {
+        unsigned claim_ms = (unsigned)((_t1.tv_sec - _t0.tv_sec) * 1000
+                          + (_t1.tv_nsec - _t0.tv_nsec) / 1000000);
+        unsigned resp_ms  = (unsigned)((_t2.tv_sec - _t1.tv_sec) * 1000
+                          + (_t2.tv_nsec - _t1.tv_nsec) / 1000000);
+        char why[48];   /* "FAIL r=150 rt=0 rr=1 other" is 26 — 24 truncated it */
+        /* On failure, snapshot the channel: rt!=0 means the shim never picked
+         * our request up; rt==0 with rr==1 and a foreign rid means it answered
+         * somebody else over the top of us. */
+        snprintf(why, sizeof(why), "%s r=%u rt=%u rr=%u %s",
+                 got > 0 ? "OK" : "FAIL", resp_ms,
+                 (unsigned)shadow_param->request_type,
+                 (unsigned)shadow_param->response_ready,
+                 (shadow_param->response_id == req_id) ? "mine" : "other");
+        shadow_param_note_duration(key_copy, claim_ms + resp_ms, why);
+    }
     if (got <= 0) {
+        /* Nothing usable, but release the response half anyway: an answer that
+         * landed just after we stopped waiting must not be left for the next
+         * requester to mistake for its own. */
+        shadow_param_consume();
         shadow_param_note_slow(got == 0 ? "response-timeout" : "error", key);
         return JS_NULL;
     }
@@ -1107,16 +1231,14 @@ static JSValue js_shadow_get_param(JSContext *ctx, JSValueConst this_val, int ar
     /*
      * Copy the value, then CHECK IT IS STILL OURS.
      *
-     * The servicer releases the channel (request_type = 0) at the same moment
-     * it publishes the response, so from that instant the other process may
-     * claim it and overwrite `value` while we are still copying it out. The
-     * window is small — we wake within one 200us poll — but it is a silent
-     * wrong-value window, not an error, so it is worth one comparison to
-     * close. If the id moved underneath us the copy is untrustworthy: report
-     * nothing rather than something wrong.
+     * With claim() now refusing a channel that still holds an unread response,
+     * nobody can take it from under us here — this check is belt and braces
+     * for a stale or stolen response, and it is cheap.
      */
     JSValue out = JS_NewString(ctx, shadow_param->value);
-    if (shadow_param->response_id != req_id) {
+    int still_ours = (shadow_param->response_id == req_id);
+    shadow_param_consume();   /* release the response half for the next claimer */
+    if (!still_ours) {
         JS_FreeValue(ctx, out);
         return JS_NULL;
     }
