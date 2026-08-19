@@ -783,19 +783,61 @@ static inline volatile uint32_t *shadow_param_head_word(void) {
  */
 static int shadow_param_orphan_pending = 0;
 
+/*
+ * When we first saw the channel idle-but-unread, or 0 if it is not in that
+ * state. Monotonic microseconds.
+ *
+ * This has to live ACROSS calls. It used to be a per-call local, which made
+ * the steal above unreachable: the deadline that bounds this loop is 100 ms
+ * and the steal threshold is 250 ms, so the counter was reset to 0 on entry
+ * and the loop always exited long before it could get there. An orphaned
+ * response therefore wedged the channel until something happened to set
+ * shadow_param_orphan_pending — and nothing outside overtake mode's
+ * fire-and-forget SET ever does. "Longer than the request deadline" is the
+ * right design; it just has to be measured against the channel's history
+ * rather than one caller's attempt.
+ */
+static uint64_t shadow_param_blocked_since_us = 0;
+
+/* State of the channel head word the last time a claim gave up (see the
+ * give-up reporter below). */
+static uint8_t  param_claim_fail_rt = 0;
+static uint8_t  param_claim_fail_rr = 0;
+static uint32_t param_claim_fail_blocked_ms = 0;
+
+static uint64_t shadow_param_now_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)(ts.tv_nsec / 1000);
+}
+
 static int shadow_param_claim(int timeout_ms) {
     long waited_us = 0;
     const long limit_us =
         (long)(timeout_ms > 0 ? timeout_ms : SHADOW_PARAM_DEFAULT_TIMEOUT_MS) * 1000L;
-    long blocked_us = 0;
 
     while (waited_us < limit_us) {
         uint32_t w = __atomic_load_n(shadow_param_head_word(), __ATOMIC_ACQUIRE);
         int idle   = (w & SHADOW_PARAM_RT_MASK) == 0;
         int unread = (w & SHADOW_PARAM_RR_MASK) != 0;
 
+        /* Track how long the channel has been sitting on an answer nobody is
+         * collecting. Any other state means somebody is legitimately mid-flight,
+         * so the clock restarts. */
+        uint64_t blocked_us = 0;
+        if (idle && unread) {
+            uint64_t now = shadow_param_now_us();
+            if (shadow_param_blocked_since_us == 0) {
+                shadow_param_blocked_since_us = now;
+            } else {
+                blocked_us = now - shadow_param_blocked_since_us;
+            }
+        } else {
+            shadow_param_blocked_since_us = 0;
+        }
+
         if (idle && (!unread || shadow_param_orphan_pending
-                     || blocked_us >= SHADOW_PARAM_STEAL_AFTER_US)) {
+                     || blocked_us >= (uint64_t)SHADOW_PARAM_STEAL_AFTER_US)) {
             /* Take it, and clear any stale response in the same step so the
              * next waiter cannot mistake it for its own. */
             uint32_t nw = (w & ~(SHADOW_PARAM_RT_MASK | SHADOW_PARAM_RR_MASK))
@@ -804,6 +846,7 @@ static int shadow_param_claim(int timeout_ms) {
                                             0 /* strong */,
                                             __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
                 shadow_param_orphan_pending = 0;
+                shadow_param_blocked_since_us = 0;
                 return 1;
             }
             continue;   /* word moved under us — re-read, do not burn the deadline */
@@ -812,7 +855,23 @@ static int shadow_param_claim(int timeout_ms) {
         long step = (waited_us < 1000) ? SHADOW_PARAM_POLL_US : 1000;
         usleep((useconds_t)step);
         waited_us += step;
-        if (idle && unread) blocked_us += step; else blocked_us = 0;
+    }
+
+    /* Record WHICH wedge beat us, so the give-up line can say so. The two look
+     * identical in the counters but have opposite causes: request_type != 0 is
+     * somebody else's request still in flight (or a requester that died holding
+     * the channel), while request_type == 0 with response_ready == 1 is an
+     * answer nobody collected. Without this the claim-stage give-up prints
+     * "where=-" and the two are indistinguishable after the fact. */
+    {
+        uint32_t w = __atomic_load_n(shadow_param_head_word(), __ATOMIC_ACQUIRE);
+        param_claim_fail_rt = (uint8_t)(w & SHADOW_PARAM_RT_MASK);
+        param_claim_fail_rr = (uint8_t)((w & SHADOW_PARAM_RR_MASK) >> 16);
+        param_claim_fail_blocked_ms =
+            (shadow_param_blocked_since_us == 0)
+                ? 0u
+                : (uint32_t)((shadow_param_now_us()
+                              - shadow_param_blocked_since_us) / 1000ull);
     }
     return 0;
 }
@@ -879,11 +938,14 @@ static void shadow_param_note_slow(const char *stage, const char *key) {
     if (now == last_report) return;
     last_report = now;
     if (!(n_claim | n_resp | n_err | param_slow_n)) return;
-    char line[320];
+    char line[400];
     snprintf(line, sizeof(line),
              "param_giveup: claim=%u response=%u error=%u last_key=%s"
+             " | claimwedge: rt=%u rr=%u blocked=%ums"
              " | slow>=90ms: n=%u worst=%ums key=%s where=%s",
              n_claim, n_resp, n_err, last_key,
+             param_claim_fail_rt, param_claim_fail_rr,
+             param_claim_fail_blocked_ms,
              param_slow_n, param_slow_max_ms,
              param_slow_key[0] ? param_slow_key : "-",
              param_slow_why[0] ? param_slow_why : "-");
@@ -891,6 +953,10 @@ static void shadow_param_note_slow(const char *stage, const char *key) {
     n_claim = n_resp = n_err = 0;
     param_slow_n = param_slow_max_ms = 0;
     param_slow_key[0] = param_slow_why[0] = '\0';
+    /* Clear too, so a window with no claim failures reports 0/0 rather than
+     * the previous window's wedge. */
+    param_claim_fail_rt = param_claim_fail_rr = 0;
+    param_claim_fail_blocked_ms = 0;
 }
 
 static int shadow_param_wait_response(uint32_t req_id, int timeout_ms) {
