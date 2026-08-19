@@ -14577,18 +14577,28 @@ globalThis.tick = function() {
      * that have no shared memory representation. No C calls here. */
     if (++_configSyncTickCounter >= CONFIG_SYNC_INTERVAL) {
         _configSyncTickCounter = 0;
-        syncJsOnlySettings();
-
-        /* Check for web-initiated upgrade status and show OLED overlay */
+        /* Spanned: this is TWO eMMC file reads plus a JSON parse landing on a
+         * single tick, roughly every 1.5s — the right shape and cadence for
+         * the periodic dips, and the same class of mistake as the diagnostic
+         * that once caused the stalls it was reporting. Attribute it before
+         * assuming it. */
+        const _h = (typeof host_trace_begin === 'function') ? host_trace_begin("js.config_sync") : 0;
         try {
-            const status = host_read_file("/data/UserData/schwung/upgrade_status");
-            if (status && status.trim()) {
-                _upgradeOverlayText = status.trim();
-            } else if (_upgradeOverlayText) {
+            syncJsOnlySettings();
+
+            /* Check for web-initiated upgrade status and show OLED overlay */
+            try {
+                const status = host_read_file("/data/UserData/schwung/upgrade_status");
+                if (status && status.trim()) {
+                    _upgradeOverlayText = status.trim();
+                } else if (_upgradeOverlayText) {
+                    _upgradeOverlayText = null;
+                }
+            } catch (e) {
                 _upgradeOverlayText = null;
             }
-        } catch (e) {
-            _upgradeOverlayText = null;
+        } finally {
+            if (_h && typeof host_trace_end === 'function') host_trace_end(_h);
         }
     }
 
@@ -14597,7 +14607,16 @@ globalThis.tick = function() {
      * the modal when the shadow UI is on screen. Throttled to a few times/sec. */
     if (++_feedbackHoldTickCounter >= FEEDBACK_HOLD_CHECK_INTERVAL) {
         _feedbackHoldTickCounter = 0;
+        /* Spanned: reads `synth_module` for all FOUR slots unconditionally,
+         * which is four synchronous IPC round trips at ~2.8ms — ~11ms on ONE
+         * tick, six times a second, on top of the grid's own ~7ms. That is
+         * over the 16.67ms period, and six overruns a second is exactly the
+         * unexplained 60 -> 54-56. It also accounts for the 0.4 reads/tick of
+         * `synth_module` the last session logged and attributed elsewhere.
+         * Predicted, not yet measured — this span is the test. */
+        const _h = (typeof host_trace_begin === 'function') ? host_trace_begin("js.feedback_guard") : 0;
         try { reconcileFeedbackHolds(); } catch (e) { debugLog("reconcileFeedbackHolds error: " + e); }
+        finally { if (_h && typeof host_trace_end === 'function') host_trace_end(_h); }
     }
 
     /* Draw upgrade overlay if active (takes priority over normal UI) */
