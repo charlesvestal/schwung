@@ -285,7 +285,10 @@ unified_log_enabled() // -> bool
 move_midi_inject_to_move([type, status, d1, d2])
 
 // Drawing helpers (in addition to clear_screen/print/set_pixel/draw_rect/fill_rect/text_width)
-fill_circle(x, y, r, value)
+fill_circle(x, y, r, value)   // solid disk
+draw_circle(x, y, r, value)   // 1px outline (midpoint) — NOT fill_circle minus a
+                              // smaller fill_circle; that leaves a detached pixel
+                              // at each of the four cardinals, not a ring
 draw_line(x1, y1, x2, y2, value)
 draw_image(x, y, image)
 get_int16(buf, off) / set_int16(buf, off, v)
