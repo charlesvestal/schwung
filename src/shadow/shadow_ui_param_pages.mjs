@@ -106,6 +106,9 @@ export function enterParamPages(slot, component, prefix) {
                 ? !!ctx.isParamModulated(currentSlot, key) : false),
         });
     }
+    /* Entering the view is the only way the module behind it can have changed,
+     * so this is where the cached abbreviation is dropped. */
+    _abbrevCache = null;
     controller.load({ slot, component, prefix: prefix || component, visible: ctx.evaluateVisibilityCondition });
     /* "Knobs" IS schwung-movy's own knob-page layout now, not Schwung's
      * earlier dial/bar grid — see render_page_movy.mjs. The setting stays a
@@ -160,10 +163,20 @@ export function tickParamPages() {
     if (!controller) return;
 
     /* Only re-plan on the loading->ready edge; re-planning every frame would
-     * reset values and the cursor continuously. */
-    const loading = ctx.getSlotParam(currentSlot, `${currentComponent}:is_loading`) === '1';
-    if (!loading && wasLoading) controller.reloadIfChanged({ visible: ctx.evaluateVisibilityCondition });
-    wasLoading = loading;
+     * reset values and the cursor continuously.
+     *
+     * Polled on a divider, not every tick. Every one of these is a synchronous
+     * round trip (~2.8ms, serviced once per SPI frame) and on device this was
+     * 1.0 of the grid's 7.1 reads per tick — for an edge that fires once, when
+     * a module finishes loading. Checking it ~8x less often delays the re-plan
+     * by at most LOADING_POLL_TICKS, which is invisible next to the module
+     * load it is waiting on. */
+    _loadingPoll = (_loadingPoll + 1) % LOADING_POLL_TICKS;
+    if (_loadingPoll === 0) {
+        const loading = ctx.getSlotParam(currentSlot, `${currentComponent}:is_loading`) === '1';
+        if (!loading && wasLoading) controller.reloadIfChanged({ visible: ctx.evaluateVisibilityCondition });
+        wasLoading = loading;
+    }
 
     /* Shift is polled, not evented (see shiftIsHeld), so reveal follows it here
      * rather than on a CC that never arrives. */
@@ -172,6 +185,13 @@ export function tickParamPages() {
     controller.tick();
 }
 let wasLoading = false;
+/* is_loading is an edge that fires once per module load; polling it every tick
+ * cost a full IPC round trip per frame. See tickParamPages. */
+const LOADING_POLL_TICKS = 8;
+let _loadingPoll = 0;
+/* Module id per (slot, component), read once instead of on every draw — it
+ * changes only on a module swap, which goes through openParamPages. */
+let _abbrevCache = null;
 
 /**
  * A ~30fps ceiling on the Movy-style grid's own full redraw, independent of
@@ -232,9 +252,16 @@ export function drawParamPages() {
     }
 
     clear_screen();
-    const abbrev = ctx.getModuleAbbrev
-        ? ctx.getModuleAbbrev(ctx.getSlotParam(currentSlot, `${currentComponent}_module`) || '')
-        : currentComponent.toUpperCase();
+    /* Cached: this was a synchronous round trip on EVERY draw (1.4 of the
+     * grid's 7.1 reads per tick, measured on device) to render a two-letter
+     * abbreviation that cannot change without going back through
+     * openParamPages, which clears the cache. */
+    if (_abbrevCache === null) {
+        _abbrevCache = ctx.getModuleAbbrev
+            ? ctx.getModuleAbbrev(ctx.getSlotParam(currentSlot, `${currentComponent}_module`) || '')
+            : currentComponent.toUpperCase();
+    }
+    const abbrev = _abbrevCache;
     /* A hardware synth puts the PATCH name in its display, not the model
      * number — and the module's identity is already visible in the chain
      * editor you came from. Falls back to the abbreviation until the read

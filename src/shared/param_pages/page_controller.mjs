@@ -115,6 +115,9 @@ export function createController(io = {}) {
         decorations: null,
         /* staggered read cursor */
         cursor: 0,
+        /* key -> last-read modulation flag, refreshed on the read cursor
+         * rather than per cell per draw. See tick(). */
+        modCache: Object.create(null),
         /* key -> tick at which reads may resume */
         settleUntil: Object.create(null),
         tickCount: 0,
@@ -317,6 +320,20 @@ export function createController(io = {}) {
 
         /* Do not clobber a value the user is actively turning. */
         if ((s.settleUntil[key] || 0) > s.tickCount) return null;
+
+        /* Refresh this key's modulation flag on the SAME rotation as its value.
+         *
+         * The renderer asks `modulated(key)` for every cell of every draw, and
+         * each of those was a synchronous round trip: measured on device, the
+         * `<key>:modulated` reads were 3.5 of the grid's 7.1 reads per tick —
+         * half of them — for an indicator that only changes when the user
+         * edits a modulation routing. (Worse on a full page: eight knobs is
+         * eight round trips per draw, and the no-`:modulated` fallback path
+         * costs up to three reads each.)
+         *
+         * On the cursor it costs one read per tick and the whole page is
+         * current within `stops` ticks — under 0.2s, for a tick mark. */
+        s.modCache[key] = !!isModulated(fullKey(key));
 
         const raw = getParam(fullKey(key));
         if (raw === null || raw === undefined) return null;
@@ -626,7 +643,7 @@ export function createController(io = {}) {
                 page: page(), metaIndex: s.metaIndex, values: s.values,
                 title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
                 touched: s.hintLines ? -1 : s.touched,
-                modulated: (key) => isModulated(fullKey(key)),
+                modulated: (key) => !!s.modCache[key],
                 pageGroups: pageGroups(),
                 viz: vizEnabled ? vizGroups() : [],
             });
@@ -661,7 +678,7 @@ export function createController(io = {}) {
             title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
             touched: s.touched, decorations: s.decorations,
             layout: s.layout, revealValues: s.revealValues, rect,
-            modulated: (key) => isModulated(fullKey(key)),
+            modulated: (key) => !!s.modCache[key],
             /* Section ids for the page rule, so it groups the way Shift+jog
              * navigates. Cached — it only changes when the page set does. */
             pageGroups: pageGroups(),
@@ -715,6 +732,10 @@ export function createController(io = {}) {
         get pageIndex() { return s.pageIndex; },
         /** The loaded preset's name, once the cursor has read it. */
         get presetName() { return s.presetName; },
+        /** This key's modulation flag as of the last time the cursor reached
+         *  it. Read-only view of the cache the renderer uses — the injected
+         *  isModulated is deliberately NOT called during a draw. */
+        isModulatedCached: (key) => !!s.modCache[key],
         get metaIndex() { return s.metaIndex; },
         keyAt, metaAt,
         jumpIndex: () => jumpIndex(s.pages),
