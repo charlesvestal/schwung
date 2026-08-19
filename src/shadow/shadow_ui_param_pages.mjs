@@ -241,13 +241,21 @@ export function drawParamPages() {
      * cursor has picked the name up, and for modules with no presets. */
     const name = controller.presetName || abbrev;
 
-    /* draw_line / fill_circle (src/host/js_display.c) do the whole shape in
-     * C — one QuickJS<->native crossing regardless of length, unlike the
-     * per-pixel fillRect a JS-side Bresenham/circle walk needs. viz_draw.mjs
-     * and render_page_movy.mjs use them when present; this is where they're
-     * offered. */
+    /* draw_line / draw_circle / fill_circle (src/host/js_display.c) do the
+     * whole shape in C — one QuickJS<->native crossing regardless of length,
+     * unlike the per-pixel fillRect a JS-side Bresenham/circle walk needs.
+     * viz_draw.mjs and render_page_movy.mjs use them when present; this is
+     * where they're offered. `draw_circle` is a one-pixel OUTLINE and is what
+     * the knob ring wants; `fill_circle` is a solid disk. They are not
+     * interchangeable — subtracting one disk from another does not give a
+     * ring (see render_page_movy.mjs drawArcKnob). */
     controller.render(
-        { fillRect: fill_rect, print, textWidth: text_width, line: draw_line, fillCircle: fill_circle },
+        {
+            fillRect: fill_rect, print, textWidth: text_width, line: draw_line,
+            fillCircle: fill_circle,
+            drawCircle: typeof draw_circle === "function" ? draw_circle : undefined,
+            drawArc: typeof draw_arc === "function" ? draw_arc : undefined,
+        },
         { title: `S${currentSlot + 1} > ${name}` }
     );
     return true;

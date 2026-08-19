@@ -15,7 +15,8 @@
  * re-derived, so the glyph shapes are exactly what Movy ships.
  */
 
-const CHARS5 = ' !"\'()+,-./:0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ%<>=?*';
+/* The last three are NOT from Movy — see G5_EXTRA below. */
+const CHARS5 = ' !"\'()+,-./:0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ%<>=?*#&_\\^';
 
 const G5 = [
   [4,0,0,0],// ' '
@@ -72,6 +73,24 @@ const G5 = [
   [4,0,3,5,0,7,0,7,0],// '='
   [4,0,3,5,7,4,6,0,2],// '?'
   [4,0,3,5,2,7,2,5,0],// '*'
+
+  /* --- not from Movy ------------------------------------------------------
+   * Movy's set covers its own module fleet. Drawing Schwung's whole fleet
+   * (3422 labels + values across 76 modules) through this font needs exactly
+   * five more characters, and every one of them carries meaning that folding
+   * would destroy: '#' is a note name (C#, D#), '&' is an LFO shape (S&H),
+   * '_' survives in file stems and raw enum options (LEAP_OUTWARD), and '\'
+   * and '^' are shape GLYPHS in their own right — several modules name their
+   * LFO waveforms "/\-_" and "SINE^". Dropping any of them would silently
+   * render "C" for "C#" or an empty box for a waveform name. Same 3x5 cell,
+   * bit0 = leftmost, so they measure and blit identically to the ported
+   * glyphs. tests/host/test_param_pages_movy.sh sweeps every label, value and
+   * enum option in the fleet and fails if a sixth is ever needed. */
+  [4,0,3,5,5,7,5,7,5],// '#'
+  [4,0,3,5,2,5,2,5,6],// '&'
+  [4,0,3,5,0,0,0,0,7],// '_'
+  [4,0,3,5,1,1,2,4,4],// '\\'  (the mirror of '/')
+  [4,0,3,5,2,5,0,0,0],// '^'
 ];
 
 const FALLBACK_ADV = 4;
@@ -83,6 +102,36 @@ function glyphFor(ch) {
 }
 
 export const FONT5_HEIGHT = 5;
+
+/** Per-character advance, so callers can size a cell without measuring. */
+export const FONT5_ADVANCE = FALLBACK_ADV;
+
+/**
+ * Characters in `str` this font cannot draw. A missing glyph advances but
+ * renders as NOTHING, exactly like the device font's own missing glyphs — so
+ * this is the same class of silent bug `harness.missingGlyphs` catches for
+ * 5x7 text, and needs the same guard now that labels no longer go through
+ * ctx.print(). Feed it uppercased, ascii-folded text: this font has no
+ * lowercase by design.
+ */
+export function missingGlyphs5x3(str) {
+    const out = new Set();
+    for (const ch of String(str == null ? "" : str)) if (glyphFor(ch) === null) out.add(ch);
+    return out;
+}
+
+/**
+ * A measuring stand-in for `render_page.mjs`'s fitText/shortenLabel, which
+ * measure through `ctx.textWidth`. Passing this instead of the real draw
+ * context runs all of that label-shortening logic against the condensed font
+ * — no second implementation to keep in step.
+ */
+export const FONT5_MEASURE = { textWidth: fontWidth5x3 };
+
+/** Fold to what this font can actually draw: ASCII, uppercase. */
+export function upper5x3(str) {
+    return String(str == null ? "" : str).toUpperCase();
+}
 
 export function fontWidth5x3(str) {
     let w = 0;
