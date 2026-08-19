@@ -2342,11 +2342,15 @@ void shadow_inprocess_handle_param_request(void) {
         static uint32_t s_pserve_nid = 0;       /* SPI thread only → no init race */
         if (!s_pserve_nid) s_pserve_nid = schwung_trace_intern("param.serve");
         _ps.nid       = s_pserve_nid;
-        /* Only GET requests carry trace context — get_param stamps it. A SET
-         * leaves the SHM trace fields stale (from a prior GET), so ignore them
-         * and let param.serve be its own root rather than a phantom child. */
-        _ps.trace_id  = (req_type == 2) ? shadow_param->trace_id : 0;
-        _ps.parent_id = (req_type == 2) ? shadow_param->parent_span_id : 0;
+        /* Both GET and SET now stamp trace context before the release-store
+         * (shadow_set_param_common / js_shadow_get_param), and the test daemon
+         * zeroes it, so every producer leaves these fields meaning what they
+         * say. A 0/0 pair still mints a fresh root, which is what an untraced
+         * or unstamped producer gets. (Before the SET path stamped, these held
+         * a prior GET's context and had to be ignored on a SET to avoid a
+         * phantom parent.) */
+        _ps.trace_id  = shadow_param->trace_id;
+        _ps.parent_id = shadow_param->parent_span_id;
         _ps.t0        = schwung_trace_now_ns();
         _ps.on        = 1;
     }
