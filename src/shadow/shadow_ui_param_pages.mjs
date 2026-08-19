@@ -106,6 +106,9 @@ export function enterParamPages(slot, component, prefix) {
                 ? !!ctx.isParamModulated(currentSlot, key) : false),
         });
     }
+    /* Entering the view is the only way the module behind it can have changed,
+     * so this is where the cached abbreviation is dropped. */
+    _abbrevCache = null;
     controller.load({ slot, component, prefix: prefix || component, visible: ctx.evaluateVisibilityCondition });
     /* "Knobs" IS schwung-movy's own knob-page layout now, not Schwung's
      * earlier dial/bar grid — see render_page_movy.mjs. The setting stays a
@@ -160,10 +163,28 @@ export function tickParamPages() {
     if (!controller) return;
 
     /* Only re-plan on the loading->ready edge; re-planning every frame would
-     * reset values and the cursor continuously. */
-    const loading = ctx.getSlotParam(currentSlot, `${currentComponent}:is_loading`) === '1';
-    if (!loading && wasLoading) controller.reloadIfChanged({ visible: ctx.evaluateVisibilityCondition });
-    wasLoading = loading;
+     * reset values and the cursor continuously.
+     *
+     * Polled on a divider, not every tick. Every one of these is a synchronous
+     * round trip (~2.8ms, serviced once per SPI frame) and on device this was
+     * 1.0 of the grid's 7.1 reads per tick — for an edge that fires once, when
+     * a module finishes loading. Checking it ~8x less often delays the re-plan
+     * by at most LOADING_POLL_TICKS, which is invisible next to the module
+     * load it is waiting on. */
+    _loadingPoll = (_loadingPoll + 1) % LOADING_POLL_TICKS;
+    if (_loadingPoll === 0) {
+        const loading = ctx.getSlotParam(currentSlot, `${currentComponent}:is_loading`) === '1';
+        if (!loading && wasLoading) controller.reloadIfChanged({ visible: ctx.evaluateVisibilityCondition });
+        wasLoading = loading;
+    }
+
+    /* The grid paces its own redraws (MOVY_REDRAW_MIN_MS), so it does not want
+     * the global every-other-tick gate on top: measured, that held it to 0.34
+     * draws per tick — ~20fps against a 42/s tick — because a knob turn does
+     * not set `needsRedraw`. Asking every tick hands the pacing decision to
+     * the grid, where the measurement lives. */
+    _tickCount++;
+    if (typeof ctx.requestRedraw === 'function') ctx.requestRedraw();
 
     /* Shift is polled, not evented (see shiftIsHeld), so reveal follows it here
      * rather than on a CC that never arrives. */
@@ -172,24 +193,51 @@ export function tickParamPages() {
     controller.tick();
 }
 let wasLoading = false;
+/* is_loading is an edge that fires once per module load; polling it every tick
+ * cost a full IPC round trip per frame. See tickParamPages. */
+const LOADING_POLL_TICKS = 8;
+let _loadingPoll = 0;
+/* Module id per (slot, component), read once instead of on every draw — it
+ * changes only on a module swap, which goes through openParamPages. */
+let _abbrevCache = null;
 
 /**
- * A ~30fps ceiling on the Movy-style grid's own full redraw, independent of
- * shadow_ui.js's global `needsRedraw` gate.
+ * Minimum gap between full redraws of the grid. ZERO — the throttle is off.
  *
- * That gate gives idle frames a throttle (REDRAW_INTERVAL) but drops it the
- * moment `needsRedraw` is true — which a knob turn sets on nearly every tick.
- * A fast turn therefore demands the MOST frequent redraws at exactly the
- * moment each one is also the MOST expensive (a live envelope/filter/lfo/eq
- * curve recomputing every tick, real per-pixel geometry — see viz_draw.mjs):
- * the two compound instead of one smoothing the other, which is what read as
- * "lower fps" specifically on fast turns and not on slow ones. This throttle
- * is local to the grid rather than a change to the shared gate other views
- * also depend on — it returns `true` (handled) on a skipped tick without
- * drawing, so the previous frame's pixels simply persist for a few
- * milliseconds rather than the view falling back to the list editor.
+ * It used to be 32ms, on the reasoning that a fast turn demands the most
+ * frequent redraws at exactly the moment each one is most expensive ("a live
+ * curve recomputing every tick, real per-pixel geometry"). Every part of that
+ * has since been measured and none of it holds:
+ *
+ *   a whole page render          1.62ms   (src/shared/draw_bench.mjs)
+ *   js.tick p50                  311us    (OTLP, after the read fixes)
+ *   host tick rate               42.3/s
+ *   grid draw rate WITH the 32ms throttle    ~18fps
+ *
+ * Drawing every single tick costs 42 x 1.62ms = 68ms per second, under 7% of
+ * one core. The throttle was not protecting anything; it was the binding
+ * constraint on the whole view. Worse than 32ms in practice: this device's
+ * clock is quantised to ~11-12ms, so the comparison rounds up to a 33-44ms
+ * gate, and tick phase jitter drops it to ~18fps — the screen updating 18
+ * times a second while the hardware offers 42. That is the "laggy knobs"
+ * report, and no amount of IPC reduction moves it.
+ *
+ * The original "fast turns feel worse" symptom was real, but its cause was
+ * setParam being called once per raw detent — fixed by SETPARAM_THROTTLE_MS
+ * in page_controller.mjs, as the note there says. This was belt-and-braces on
+ * top of a fix that had already landed.
+ *
+ * Stays zero. The tick itself is now paced to an absolute deadline
+ * (shadow_ui.c), so it arrives at a steady 60 Hz regardless of how much work
+ * a tick does — which is what the irregular frame rate actually was. Gating
+ * the draw on top of a steady tick would only throw frames away.
+ *
+ * Raise it only with a measurement, not a hypothesis. That is how it came to
+ * be 32 in the first place, guarding against a draw cost (1.68ms/page) that
+ * was never the problem, and it then became the binding constraint on the
+ * whole view.
  */
-const MOVY_REDRAW_MIN_MS = 32;
+const MOVY_REDRAW_MIN_MS = 0;
 let lastDrawMs = 0;
 
 /**
@@ -210,8 +258,25 @@ let lastDrawMs = 0;
  * open on-device question in docs/plans/2026-08-16-next-sessions.md
  * "Session C" (redraw/IPC timing was never verified on hardware). */
 let _fpsWindowStart = 0, _fpsCount = 0;
+/* Counted in tickParamPages, reported with the draw count above. */
+let _tickCount = 0;
 
 /** Draw. Non-grid pages are not ours — the host dispatches those. */
+/*
+ * Span helper for the two things inside a grid tick that the trace could not
+ * see: the draw itself, and MIDI handling. `js.tick` and `param.get/set` were
+ * instrumented, so IPC was attributable and everything else was one
+ * undifferentiated lump — which is exactly where the remaining cost turned
+ * out to live once the IPC was cut. No-ops unless otlp_trace_on is present
+ * (host_trace_begin returns 0 and end ignores it). Pairs must balance inside
+ * one tick; the finally does that even if the body throws.
+ */
+function traced(name, fn) {
+    const h = (typeof host_trace_begin === 'function') ? host_trace_begin(name) : 0;
+    try { return fn(); }
+    finally { if (h && typeof host_trace_end === 'function') host_trace_end(h); }
+}
+
 export function drawParamPages() {
     if (!controller) return false;
     /* The section picker is drawn over whatever page you were on, including a
@@ -226,15 +291,28 @@ export function drawParamPages() {
     _fpsCount++;
     if (!_fpsWindowStart) _fpsWindowStart = nowMs;
     else if (nowMs - _fpsWindowStart >= 1000) {
-        console.log(`param_pages fps: ${_fpsCount} draws / ${nowMs - _fpsWindowStart}ms`);
+        /* Ticks alongside draws, because "dropping frames" has two completely
+         * different causes and this one line separates them: draws << ticks
+         * means something is gating the redraw, draws ~= ticks but both low
+         * means the tick itself is too slow (almost always IPC — a read is
+         * ~2.8ms against a 1.68ms whole-page render). */
+        console.log(`param_pages fps: ${_fpsCount} draws / ${_tickCount} ticks / ${nowMs - _fpsWindowStart}ms`);
         _fpsWindowStart = nowMs;
         _fpsCount = 0;
+        _tickCount = 0;
     }
 
     clear_screen();
-    const abbrev = ctx.getModuleAbbrev
-        ? ctx.getModuleAbbrev(ctx.getSlotParam(currentSlot, `${currentComponent}_module`) || '')
-        : currentComponent.toUpperCase();
+    /* Cached: this was a synchronous round trip on EVERY draw (1.4 of the
+     * grid's 7.1 reads per tick, measured on device) to render a two-letter
+     * abbreviation that cannot change without going back through
+     * openParamPages, which clears the cache. */
+    if (_abbrevCache === null) {
+        _abbrevCache = ctx.getModuleAbbrev
+            ? ctx.getModuleAbbrev(ctx.getSlotParam(currentSlot, `${currentComponent}_module`) || '')
+            : currentComponent.toUpperCase();
+    }
+    const abbrev = _abbrevCache;
     /* A hardware synth puts the PATCH name in its display, not the model
      * number — and the module's identity is already visible in the chain
      * editor you came from. Falls back to the abbreviation until the read
@@ -249,7 +327,7 @@ export function drawParamPages() {
      * the knob ring wants; `fill_circle` is a solid disk. They are not
      * interchangeable — subtracting one disk from another does not give a
      * ring (see render_page_movy.mjs drawArcKnob). */
-    controller.render(
+    traced("js.grid.draw", () => controller.render(
         {
             fillRect: fill_rect, print, textWidth: text_width, line: draw_line,
             fillCircle: fill_circle,
@@ -257,7 +335,7 @@ export function drawParamPages() {
             drawArc: typeof draw_arc === "function" ? draw_arc : undefined,
         },
         { title: `S${currentSlot + 1} > ${name}` }
-    );
+    ));
     return true;
 }
 
@@ -298,7 +376,8 @@ export function handleParamPagesMidi(data) {
 
     /* reveal:false — this host drives reveal from the polled shift state in
      * tickParamPages, not from an intent it will never see. */
-    const todo = applyInput(controller, intent, { nowMs: Date.now(), reveal: false });
+    const todo = traced("js.grid.input",
+        () => applyInput(controller, intent, { nowMs: Date.now(), reveal: false }));
     if (!todo) return true;
 
     if (todo.action === 'exit') {

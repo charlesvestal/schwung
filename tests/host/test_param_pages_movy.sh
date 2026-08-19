@@ -567,6 +567,53 @@ Promise.all([
     }
   }
 
+  /* ---- the modulation dot ---------------------------------------------
+   *
+   * A modulated knob shows TWO values: the pointer stays on the base you
+   * dialled in, and a dot rides the arc at whatever a source is currently
+   * driving it to. Without both you cannot see what you set, because turning
+   * the knob edits the base and the pointer would be chasing the LFO.
+   *
+   * Cheap to draw and expensive to feed — 487ns for the fill_rect against
+   * ~2.8ms to learn the value — so the cost lives in the controller fast
+   * lane, not here.
+   */
+  {
+    const KEYS = ["cutoff", "res", "timbre", "color", "attack", "decay", "tune", "gain"];
+    const META = {};
+    for (const k of KEYS) META[k] = { key: k, label: k, type: "float", kind: "number", min: 0, max: 1, step: 0.01 };
+    const base = {
+      page: { kind: P.PAGE_KNOBS, name: "MOD", level: "root", keys: KEYS },
+      metaIndex: { getOrGuess: (k) => META[k] },
+      values: Object.fromEntries(KEYS.map((k) => [k, "0.5"])),
+      title: "S1 > MOD", pageIndex: 0, pageCount: 1, touched: -1, viz: [],
+    };
+    const draw = (extra) => {
+      const fb = H.createFramebuffer();
+      RM.renderPageMovy(H.drawContext(fb), Object.assign({}, base, extra));
+      return fb;
+    };
+
+    const plain = draw({});
+    const dotted = draw({ modValues: { cutoff: "0.9" } });
+    const added = dotted.countLit() - plain.countLit();
+    if (added <= 0) fail("the modulation dot drew nothing");
+    if (added > 8) fail("the modulation dot drew " + added + " pixels — it should be a 2x2 mark, not a blob");
+
+    /* Coincident with the pointer it says nothing and just thickens it. */
+    if (draw({ modValues: { cutoff: "0.5" } }).countLit() !== plain.countLit()) {
+      fail("a modulation dot equal to the base value must be suppressed");
+    }
+
+    /* Both rails, every knob — the arc is what it rides, so an off-by-one in
+     * the angle maths puts it off the display. */
+    for (const v of ["0", "1"]) {
+      const fb = draw({ modValues: Object.fromEntries(KEYS.map((k) => [k, v])) });
+      if (fb.clipped() > 0) fail("modulation dots drew outside the display at value " + v);
+    }
+    console.log("PASS: Movy modulation dot — rides the arc, suppressed at base, never clipped");
+  }
+
   console.log("PASS: Movy layout — " + rendered + " page renders through the native draw context, " +
               "nothing off-screen, knob ring is a true circle, filter roll-off reaches the axis at every detent");
 });

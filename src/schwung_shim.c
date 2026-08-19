@@ -1876,6 +1876,18 @@ static void shadow_inprocess_render_to_buffer(void) {
                 if ((shadow_slot_silence_frames[s] + s * 43) % 172 != 0) {
                     /* Not a probe frame — skip synth render.
                      * Buffer is zeros; FX below still runs for tail decay. */
+                    /* Modulation still has to advance. lfo_tick() lives inside
+                     * render_block, so skipping the render used to freeze the
+                     * slot's LFOs: they moved only on the 1-in-172 probe frame,
+                     * i.e. ~172x too slow and in visible steps. That is why an
+                     * LFO appeared to animate only while a note was sounding,
+                     * and why one resumed from a stale phase at note-on. This
+                     * runs the modulation without the audio render — the part
+                     * that was actually expensive. */
+                    if (shadow_plugin_v2->set_param) {
+                        shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
+                                                    "mod:tick", "128");
+                    }
                     shadow_slot_deferred_valid[s] = 1;
                     goto slot_run_deferred_fx;
                 }
@@ -3220,7 +3232,7 @@ static void init_shadow_shm(void)
     shadow_ui_state = (shadow_ui_state_t *)shadow_shm_map(SHM_SHADOW_UI,
                                                           SHADOW_UI_BUFFER_SIZE, 1, 1);
     if (shadow_ui_state) {
-        shadow_ui_state->version = 1;
+        shadow_ui_state->version = SHADOW_UI_STATE_VERSION;
         shadow_ui_state->slot_count = SHADOW_UI_SLOTS;
     }
 
@@ -3609,17 +3621,34 @@ static void shadow_swap_display(void)
     /* Write display using slice protocol - one slice per ioctl */
     /* No rate limiting because we must overwrite Move every ioctl */
 
+    /*
+     * One panel frame is SIX slices across six consecutive ioctls, so the
+     * source must be held still for all of them.
+     *
+     * Read live, each slice sampled whatever the shadow UI had drawn at that
+     * instant — so any frame containing motion was stitched together from two
+     * or more different renders. Not dropped frames: tearing. It is invisible
+     * on static text, which is why it survived, and it is exactly what a
+     * moving modulation dot or a swept filter curve exposes as "jagged".
+     *
+     * Latched at phase 0 instead. 1 KB memcpy once per seven frames, on a path
+     * that already memcpys the same buffer every frame.
+     */
+    static uint8_t display_frame[DISPLAY_BUFFER_SIZE];
+
     if (display_phase == 0) {
-        /* Phase 0: Zero out slice area - signals start of new frame */
+        /* Phase 0: Zero out slice area - signals start of new frame. Latch the
+         * frame that phases 1-6 will send. */
+        memcpy(display_frame, display_src, DISPLAY_BUFFER_SIZE);
         global_mmap_addr[80] = 0;
         memset(global_mmap_addr + 84, 0, 172);
     } else {
-        /* Phases 1-6: Write slices 0-5 */
+        /* Phases 1-6: Write slices 0-5 from the latched frame */
         int slice = display_phase - 1;
         int slice_offset = slice * 172;
         int slice_bytes = (slice == 5) ? 164 : 172;
         global_mmap_addr[80] = slice + 1;
-        memcpy(global_mmap_addr + 84, display_src + slice_offset, slice_bytes);
+        memcpy(global_mmap_addr + 84, display_frame + slice_offset, slice_bytes);
     }
 
     display_phase = (display_phase + 1) % 7;  /* Cycle 0,1,2,3,4,5,6,0,... */
@@ -4612,6 +4641,11 @@ static void shim_init_subsystems(void)
     shadow_dbus_start();  /* Start D-Bus monitoring for volume sync */
     shadow_read_initial_volume();  /* Read initial master volume from settings */
     shadow_load_state();  /* Load saved slot volumes */
+    /* Publish what it restored. The chain-restore paths call this too, but
+     * only once they actually load a slot — an empty set never would, and the
+     * UI's mute/solo flags now come from here rather than a param round trip,
+     * so they would read 0 until something else happened to touch a slot. */
+    shadow_ui_state_refresh();
 
     /* Mute/solo state is now fully managed by shadow_load_state() above.
      * Previously we synced from Song.abl here, but Move's native track

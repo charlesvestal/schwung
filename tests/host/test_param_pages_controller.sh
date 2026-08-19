@@ -477,5 +477,65 @@ Promise.all([
                 "opaque params open rather than turn, rebuild keeps your place, " +
                 sessions + " scripted module sessions clean");
   }
+
+  /* ---- modulation flags ride the read cursor, not the draw ------------- *
+   *
+   * The renderer asks modulated(key) for every cell of every draw. When that
+   * went straight through to the injected isModulated it was a synchronous
+   * round trip PER CELL PER DRAW — measured on device at 3.5 of the grid
+   * 7.1 reads per tick, half of them, for an indicator that changes only when
+   * a modulation routing is edited. The flag is cached and refreshed on the
+   * same cursor the values use.
+   *
+   * Nothing covered `modulated` at all before this, so the suite stayed green
+   * through the change that introduced the cost AND the one that removed it.
+   */
+  {
+    const dev = D.createFakeDevice({ id: "obxd" });
+    let modCalls = 0;
+    const modulatedKeys = new Set();
+    const ctl = C.createController({
+      ...dev,
+      isModulated: (fullKey) => { modCalls++; return modulatedKeys.has(fullKey); },
+    });
+    ctl.load({ slot: 0, component: "synth" });
+
+    /* Drawing must not consult the device at all. */
+    const fb0 = H.createFramebuffer();
+    modCalls = 0;
+    for (let i = 0; i < 5; i++) ctl.render(H.drawContext(fb0), { title: "T" });
+    if (modCalls !== 0) {
+      fail("render asked isModulated " + modCalls + " times — it must read the cache, "
+         + "not the device, or every cell costs an IPC round trip");
+    }
+
+    /* Ticking may consult it at most once — same budget as a value read. */
+    modCalls = 0;
+    const TICKS = 12;
+    for (let i = 0; i < TICKS; i++) ctl.tick();
+    if (modCalls > TICKS) {
+      fail("tick asked isModulated " + modCalls + " times over " + TICKS
+         + " ticks — the cursor must refresh at most one key per tick");
+    }
+    if (modCalls === 0) fail("modulation flags are never refreshed at all");
+
+    /* And the flag must actually reach the renderer once the cursor passes. */
+    const page = ctl.page;
+    const key = page && page.keys ? page.keys.find(Boolean) : null;
+    if (!key) fail("no key on the page to test modulation with");
+    modulatedKeys.add("synth:" + key);
+    let seen = false;
+    for (let i = 0; i < 40 && !seen; i++) {
+      ctl.tick();
+      ctl.render({
+        fillRect: () => {}, print: () => {}, textWidth: () => 0,
+        /* The grid asks through the render options, so observe it there. */
+      }, { title: "T" });
+      seen = ctl.isModulatedCached ? ctl.isModulatedCached(key) : false;
+    }
+    if (!seen) fail("a newly modulated key never showed as modulated after 40 ticks");
+    console.log("PASS: controller modulation — cached off the read cursor, "
+              + "never consulted during a draw, still refreshes");
+  }
 });
 '
