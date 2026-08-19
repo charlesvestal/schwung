@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unsafe"
 )
 
 // ShmParams provides access to the shadow_param_t shared memory segment for
@@ -66,6 +67,22 @@ const (
 	paramIdleTimeout     = 200 * time.Millisecond
 	paramResponseTimeout = 500 * time.Millisecond
 	paramPollInterval    = 500 * time.Microsecond
+
+	// SHADOW_PARAM_CLAIMED from shadow_constants.h. Written by a
+	// compare-and-swap to take the channel; see claim().
+	paramClaimed = 0xFF
+
+	// SHADOW_PARAM_WEB_REQ_ID_BASE from shadow_constants.h.
+	//
+	// Request IDs MUST NOT overlap with shadow_ui's, which counts up from 1.
+	// waitResponse matches on response_id == reqID, so overlapping ranges let
+	// this process match the shadow UI's response and read ITS value —
+	// silently wrong data rather than an error. The shim already documents
+	// this split ("web-originated requests use req_id >= 0xFFFF0000") and
+	// keys its skip-re-notify check on it, but nextReqID started at 0, so
+	// both processes were minting 1, 2, 3, ... and the invariant was never
+	// actually held.
+	paramWebReqIDBase = 0xFFFF0000
 )
 
 const shmParamPath = "/dev/shm/schwung-param"
@@ -85,7 +102,105 @@ func OpenShmParams() *ShmParams {
 		return nil
 	}
 
-	return &ShmParams{data: data}
+	s := &ShmParams{data: data}
+	// Start above the shadow UI's range so the two processes can never mint
+	// the same request id. See paramWebReqIDBase.
+	s.nextReqID.Store(paramWebReqIDBase)
+	return s
+}
+
+// claim takes the param channel with an atomic compare-and-swap.
+//
+// The channel is a single slot shared with the shadow_ui process, and the old
+// sequence — spin until request_type reads 0, then write it — is a
+// time-of-check/time-of-use race: both processes can observe idle in the same
+// window, both write, and the loser spins for a response_id that never
+// arrives until its timeout expires. Measured on device, that cost the shadow
+// UI one failed read per second, each blocking it for 100-200ms and returning
+// null to its caller.
+//
+// Claiming with a CAS makes observe-and-take indivisible. paramClaimed is a
+// value the servicer knows to skip, because the key and request id are not
+// written yet.
+//
+// Go has no byte-wide CAS, and request_type shares its 32-bit word with
+// slot / response_ready / error — which the servicer writes — so a plain
+// 32-bit CAS would silently stomp them. Instead CAS the whole word,
+// requiring byte 0 to be zero and carrying the other three bytes through
+// unchanged. If any of them moved under us the CAS simply fails and we
+// retry, which is exactly the behaviour we want.
+//
+// Must be called with s.mu held.
+func (s *ShmParams) claim() error { return s.claimFor(paramIdleTimeout) }
+
+func (s *ShmParams) claimFor(timeout time.Duration) error {
+	word := (*uint32)(unsafe.Pointer(&s.data[0]))
+	deadline := time.Now().Add(timeout)
+	for {
+		w := atomic.LoadUint32(word)
+		if w&0xFF == 0 {
+			if atomic.CompareAndSwapUint32(word, w, (w&^uint32(0xFF))|paramClaimed) {
+				return nil
+			}
+			// Lost the word to a concurrent field write; re-read and retry
+			// without burning the deadline.
+			continue
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("param channel busy (timeout waiting for idle)")
+		}
+		time.Sleep(paramPollInterval)
+	}
+}
+
+// commit publishes the request type, releasing the claim taken by claim().
+//
+// An ATOMIC store, not a plain byte write: it is the barrier that guarantees
+// the key, slot and request_id written above are visible to the shim before
+// it observes a servable request_type. The shim's side of this pair is an
+// __ATOMIC_ACQUIRE load. A plain store carries no such ordering on ARM64, and
+// the shim would be free to read a stale key for a fresh request.
+//
+// Bytes 1-3 of the word are ours while the claim is held, so carrying them
+// through is safe. Must be called with s.mu held, holding a claim.
+func (s *ShmParams) commit(reqType byte) {
+	word := (*uint32)(unsafe.Pointer(&s.data[0]))
+	w := atomic.LoadUint32(word)
+	atomic.StoreUint32(word, (w&^uint32(0xFF))|uint32(reqType))
+}
+
+// release drops the claim without leaving a servable request behind.
+// Must be called with s.mu held, holding a claim.
+func (s *ShmParams) release() { s.commit(0) }
+
+// releaseIfMine drops the claim ONLY if this process still owns it.
+//
+// The servicer clears request_type at the same moment it publishes the
+// response, so by the time we return from waitResponse the channel is
+// already free — and may already have been claimed and filled in by the
+// shadow UI. An unconditional clear here therefore wipes somebody else's
+// in-flight request: the shim never sees it, and that process waits out its
+// entire timeout for a response that will now never be generated. That was
+// the second half of the param-channel bug, and the half that survived
+// making the claim atomic.
+//
+// Checked against BOTH the request type and our own request id, because a
+// concurrent request of the same type would otherwise look like ours.
+// Must be called with s.mu held.
+func (s *ShmParams) releaseIfMine(reqType byte, reqID uint32) {
+	word := (*uint32)(unsafe.Pointer(&s.data[0]))
+	for {
+		w := atomic.LoadUint32(word)
+		if byte(w&0xFF) != reqType {
+			return // servicer already released it, or someone else owns it
+		}
+		if binary.LittleEndian.Uint32(s.data[paramOffRequestID:]) != reqID {
+			return // still our type, but no longer our request
+		}
+		if atomic.CompareAndSwapUint32(word, w, w&^uint32(0xFF)) {
+			return
+		}
+	}
 }
 
 // TryGetParam is like GetParam but returns immediately if the mutex is held
@@ -101,7 +216,7 @@ func (s *ShmParams) TryGetParam(slot uint8, key string) (string, bool, error) {
 		return "", true, fmt.Errorf("key too long (%d >= %d)", len(key), paramKeyLen)
 	}
 
-	if err := s.waitIdle(); err != nil {
+	if err := s.claim(); err != nil {
 		return "", true, err
 	}
 
@@ -115,21 +230,21 @@ func (s *ShmParams) TryGetParam(slot uint8, key string) (string, bool, error) {
 	copy(s.data[paramOffKey:paramOffKey+paramKeyLen], make([]byte, paramKeyLen))
 	copy(s.data[paramOffKey:], key)
 
-	s.data[paramOffRequestType] = 2
+	s.commit(2)
 
 	if err := s.waitResponse(reqID); err != nil {
-		s.data[paramOffRequestType] = 0
+		s.releaseIfMine(2, reqID)
 		return "", true, err
 	}
 
 	if s.data[paramOffError] != 0 {
-		s.data[paramOffRequestType] = 0
+		s.releaseIfMine(2, reqID)
 		return "", true, fmt.Errorf("param get error (slot=%d key=%q)", slot, key)
 	}
 
 	resultLen := int32(binary.LittleEndian.Uint32(s.data[paramOffResultLen:]))
 	if resultLen < 0 {
-		s.data[paramOffRequestType] = 0
+		s.releaseIfMine(2, reqID)
 		return "", true, fmt.Errorf("param get failed (result_len=%d)", resultLen)
 	}
 	if int(resultLen) > paramValueLen {
@@ -137,7 +252,7 @@ func (s *ShmParams) TryGetParam(slot uint8, key string) (string, bool, error) {
 	}
 
 	value := string(s.data[paramOffValue : paramOffValue+int(resultLen)])
-	s.data[paramOffRequestType] = 0
+	s.releaseIfMine(2, reqID)
 	return value, true, nil
 }
 
@@ -155,13 +270,12 @@ func (s *ShmParams) SetParamFast(slot uint8, key, value string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Short idle wait — if shadow_ui.js is mid-request, bail quickly.
-	deadline := time.Now().Add(10 * time.Millisecond)
-	for s.data[paramOffRequestType] != 0 {
-		if time.Now().After(deadline) {
-			return fmt.Errorf("param channel busy")
-		}
-		time.Sleep(paramPollInterval)
+	// Short claim — if shadow_ui is mid-request, bail quickly rather than
+	// hold up the web request. Same atomic claim as everywhere else: the old
+	// inline "spin until it reads 0, then write it" here was a third copy of
+	// the same time-of-check/time-of-use race.
+	if err := s.claimFor(10 * time.Millisecond); err != nil {
+		return fmt.Errorf("param channel busy")
 	}
 
 	reqID := s.nextReqID.Add(1)
@@ -178,7 +292,7 @@ func (s *ShmParams) SetParamFast(slot uint8, key, value string) error {
 	s.data[paramOffValue+len(value)] = 0
 
 	// Fire and forget — shim processes on next audio block (~3ms).
-	s.data[paramOffRequestType] = 1
+	s.commit(1)
 	return nil
 }
 
@@ -191,7 +305,7 @@ func (s *ShmParams) GetParam(slot uint8, key string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := s.waitIdle(); err != nil {
+	if err := s.claim(); err != nil {
 		return "", err
 	}
 
@@ -208,24 +322,24 @@ func (s *ShmParams) GetParam(slot uint8, key string) (string, error) {
 	copy(s.data[paramOffKey:], key)
 
 	// Signal: get request.
-	s.data[paramOffRequestType] = 2
+	s.commit(2)
 
 	// Wait for response.
 	if err := s.waitResponse(reqID); err != nil {
-		s.data[paramOffRequestType] = 0 // clean up
+		s.releaseIfMine(2, reqID)
 		return "", err
 	}
 
 	// Check error flag.
 	if s.data[paramOffError] != 0 {
-		s.data[paramOffRequestType] = 0
+		s.releaseIfMine(2, reqID)
 		return "", fmt.Errorf("param get error (slot=%d key=%q)", slot, key)
 	}
 
 	// Read result.
 	resultLen := int32(binary.LittleEndian.Uint32(s.data[paramOffResultLen:]))
 	if resultLen < 0 {
-		s.data[paramOffRequestType] = 0
+		s.releaseIfMine(2, reqID)
 		return "", fmt.Errorf("param get failed (result_len=%d)", resultLen)
 	}
 	if int(resultLen) > paramValueLen {
@@ -234,7 +348,7 @@ func (s *ShmParams) GetParam(slot uint8, key string) (string, error) {
 
 	value := string(s.data[paramOffValue : paramOffValue+int(resultLen)])
 
-	s.data[paramOffRequestType] = 0
+	s.releaseIfMine(2, reqID)
 	return value, nil
 }
 
@@ -250,7 +364,7 @@ func (s *ShmParams) SetParam(slot uint8, key, value string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := s.waitIdle(); err != nil {
+	if err := s.claim(); err != nil {
 		return err
 	}
 
@@ -271,33 +385,20 @@ func (s *ShmParams) SetParam(slot uint8, key, value string) error {
 	s.data[paramOffValue+len(value)] = 0
 
 	// Signal: set request.
-	s.data[paramOffRequestType] = 1
+	s.commit(1)
 
 	// Wait for response.
 	if err := s.waitResponse(reqID); err != nil {
-		s.data[paramOffRequestType] = 0 // clean up
+		s.releaseIfMine(1, reqID)
 		return err
 	}
 
 	if s.data[paramOffError] != 0 {
-		s.data[paramOffRequestType] = 0
+		s.releaseIfMine(1, reqID)
 		return fmt.Errorf("param set error (slot=%d key=%q)", slot, key)
 	}
 
-	s.data[paramOffRequestType] = 0
-	return nil
-}
-
-// waitIdle spins until request_type == 0, indicating the channel is free.
-// Must be called with s.mu held.
-func (s *ShmParams) waitIdle() error {
-	deadline := time.Now().Add(paramIdleTimeout)
-	for s.data[paramOffRequestType] != 0 {
-		if time.Now().After(deadline) {
-			return fmt.Errorf("param channel busy (timeout waiting for idle)")
-		}
-		time.Sleep(paramPollInterval)
-	}
+	s.releaseIfMine(1, reqID)
 	return nil
 }
 
