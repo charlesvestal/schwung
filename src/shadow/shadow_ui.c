@@ -725,8 +725,23 @@ static int shadow_param_wait_response(uint32_t req_id, int timeout_ms) {
 static int shadow_set_param_common(int slot, const char *key, const char *value, int timeout_ms, int force_blocking) {
     const int overtake_fire_and_forget = !force_blocking && (shadow_control && shadow_control->overtake_mode >= 2);
 
+    /* Span the write the same way param.get spans the read. This path is only
+     * fire-and-forget under overtake (mode >= 2); everywhere else — including
+     * the param-pages knob grid, which is a shadow UI view and not an overtake
+     * module — it is a synchronous round-trip to the shim, serviced once per
+     * SPI frame. That makes a knob stream a sequence of frame-quantised waits
+     * rather than the cheap writes the JS comments describe, and until now the
+     * read path was instrumented and the write path was not. */
+    TRACE_SCOPE("param.set");
+
     if (!overtake_fire_and_forget) {
-        if (!shadow_param_wait_idle(timeout_ms)) {
+        /* Split out so the trace distinguishes the two ways this blocks:
+         * waiting for the single SHM slot to free (contention with another
+         * request) from waiting for the shim to service ours (frame
+         * quantisation). They call for different fixes. */
+        int idle;
+        { TRACE_SCOPE("param.set.idle"); idle = shadow_param_wait_idle(timeout_ms); }
+        if (!idle) {
             return 0;
         }
     }
@@ -738,6 +753,17 @@ static int shadow_set_param_common(int slot, const char *key, const char *value,
     shadow_param->key[SHADOW_PARAM_KEY_LEN - 1] = '\0';
     strncpy(shadow_param->value, value, SHADOW_PARAM_VALUE_LEN - 1);
     shadow_param->value[SHADOW_PARAM_VALUE_LEN - 1] = '\0';
+
+    /* Propagate the open param.set span so the shim emits its param.serve as
+     * our child, exactly as get_param does (0/0 when tracing is off). Until
+     * this was added the SET path left these fields holding a PRIOR GET's
+     * context, which is why shadow_chain_mgmt.c deliberately ignored them on a
+     * SET and let param.serve float as its own root — a served SET could not
+     * be tied back to the JS call that asked for it. */
+    uint64_t _tr = 0, _sp = 0;
+    schwung_trace_current(&_tr, &_sp);
+    shadow_param->trace_id = _tr;
+    shadow_param->parent_span_id = _sp;
 
     /* Set up request */
     shadow_param->slot = (uint8_t)slot;
