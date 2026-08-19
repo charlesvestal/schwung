@@ -696,7 +696,13 @@ export function createController(io = {}) {
         const n = Math.min(MOD_FAST_READS_PER_TICK, modKeys.length);
         for (let i = 0; i < n; i++) {
             const key = modKeys[(s.modCursor + i) % modKeys.length];
-            if ((s.settleUntil[key] || 0) > s.tickCount) continue;
+            /* Deliberately NOT gated on settleUntil, unlike the value cursor.
+             * That gate exists because a stale read of the BASE lands after a
+             * turn and drags the knob backwards — a write-back race. There is
+             * no such race here: the UI never writes the effective value, it
+             * only displays it. Gating it meant the dot froze for the whole
+             * time you were turning the knob, which is exactly when you most
+             * want to see where modulation is putting the param. */
             const v = getParam(fullKey(key));
             if (v !== null && v !== undefined) s.modValues[key] = v;
         }

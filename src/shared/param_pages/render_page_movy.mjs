@@ -519,12 +519,15 @@ function drawOpaqueBox(ctx, kx, ky, value) {
         ky + 1 + Math.floor((h - 2 - FONT_H) / 2), fitDev(ctx, shown, KW - 4), 1);
 }
 
-function drawKnobWidget(ctx, col, rowY, meta, raw, modRaw) {
+function drawKnobWidget(ctx, col, rowY, meta, raw, modRaw, liveRaw) {
     const kx = col * CELL_W + Math.floor((CELL_W - KW) / 2), ky = rowY;
-    if (meta.kind === KIND_OPAQUE) { drawOpaqueBox(ctx, kx, ky, raw); return; }
+    /* Anything that cannot show two values at once shows the live one, so it
+     * animates under modulation instead of freezing on the base. */
+    const shown = (liveRaw === null || liveRaw === undefined) ? raw : liveRaw;
+    if (meta.kind === KIND_OPAQUE) { drawOpaqueBox(ctx, kx, ky, shown); return; }
     if (meta.kind === KIND_ENUM) {
-        const idx = Math.round(Number(raw));
-        const text = (Array.isArray(meta.options) && meta.options[idx] !== undefined) ? String(meta.options[idx]) : String(raw ?? "");
+        const idx = Math.round(Number(shown));
+        const text = (Array.isArray(meta.options) && meta.options[idx] !== undefined) ? String(meta.options[idx]) : String(shown ?? "");
         /* Its own centring — it is ENUM_W wide, not KW. */
         drawEnumSquare(ctx, col * CELL_W + Math.floor((CELL_W - ENUM_W) / 2), ky, text);
         return;
@@ -587,6 +590,21 @@ function drawLabelCell(ctx, col, lblY, label, displayValue, touched, modulated) 
 
 function drawKnobRow(ctx, o, row, rowY, lblY) {
     const { page, metaIndex, values, touched, modulated, viz, modValues } = o;
+    /*
+     * What each widget animates.
+     *
+     * A knob can legibly show TWO values — pointer on the base, dot on the arc
+     * — so it does. Nothing else can: a filter curve cannot be drawn twice
+     * without becoming unreadable, and an enum square has one line of text.
+     * Those widgets therefore show the LIVE value and no baseline, which is
+     * also what makes them animate under modulation.
+     *
+     * This matters because `values` now holds the BASE for a modulated key
+     * (the pointer needs it). Handing that straight to viz/enum would freeze
+     * a modulated filter curve at the value you dialled in, which is a
+     * regression against showing the effective value.
+     */
+    const liveValues = modValues ? Object.assign({}, values, modValues) : values;
     const slotBase = row * 4;
 
     const covered = new Array(4).fill(false);
@@ -597,7 +615,7 @@ function drawKnobRow(ctx, o, row, rowY, lblY) {
         for (let s = localStart; s < localStart + g.slotSpan && s < 4; s++) covered[s] = true;
         drawVizGroup(ctx, {
             x: localStart * CELL_W, y: rowY, w: g.slotSpan * CELL_W, h: LBL0_Y - ROW0_Y,
-        }, g, values, metaIndex);
+        }, g, liveValues, metaIndex);
     }
 
     for (let col = 0; col < 4; col++) {
@@ -611,8 +629,11 @@ function drawKnobRow(ctx, o, row, rowY, lblY) {
         if (!covered[col]) {
             /* modValues holds the live modulated value for keys a source is
              * driving; `values` stays the base the user dialled in. */
+            /* Knob: base + dot. Enum/opaque: the live value, no baseline —
+             * drawKnobWidget picks per kind. */
             drawKnobWidget(ctx, col, rowY, meta, raw,
-                           modValues ? modValues[key] : undefined);
+                           modValues ? modValues[key] : undefined,
+                           liveValues[key]);
         }
 
         /* Budget in CHARACTERS, not pixels: Elektron's labels are 3-4 glyphs
