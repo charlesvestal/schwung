@@ -153,7 +153,7 @@ Promise.all([
 
     /* Knob 0 sits at column 0 of row 0: kx = (CELL_W-KW)/2, ky = ROW0_Y. */
     const kx = Math.floor((RM.CELL_W - RM.KW) / 2), ky = RM.ROW0_Y;
-    const cx = kx + 7, cy = ky + 7, r = 7;
+    const r = RM.KNOB_R, cx = kx + r, cy = ky + r;
     let art = "";
     for (let dy = -r; dy <= r; dy++) {
       for (let dx = -r; dx <= r; dx++) {
@@ -163,8 +163,13 @@ Promise.all([
       }
       art += "\n";
     }
-    /* The distance-rounding ring, opened over the 260-degree
+    /* The row-union-column ring, opened over the 260-degree
      * sweep the pointer itself uses. Two things are being pinned:
+     *   - ONE pixel thick everywhere except the flat caps. Selecting every
+     *     pixel whose distance rounds to r instead gives a unit-wide annulus,
+     *     which is 1.41px across at 45 degrees — at r=8 that put two
+     *     consecutive 2-pixel runs at each shoulder, stacking into a small
+     *     diagonal blob ("little triangles in the corners").
      *   - flat caps at the compass points, because that is where the tangent
      *     is flat. A midpoint walk puts a single pixel there instead, one row
      *     proud of the run behind it, which reads as a spike.
@@ -173,28 +178,30 @@ Promise.all([
      *     closed ring would draw track the pointer can never reach and imply
      *     the control wraps around. */
     const want = [
-      ".....#####.....",
-      "...##.....##...",
-      "..#.........#..",
-      ".#...........#.",
-      ".#...........#.",
-      "#.............#",
-      "#.............#",
-      "#.............#",
-      "#.............#",
-      "#.............#",
-      ".#...........#.",
-      ".#...........#.",
-      "...............",
-      "...............",
-      "...............",
+      "......##.##......",
+      "....##.....##....",
+      "...#.........#...",
+      "..#...........#..",
+      ".#.............#.",
+      ".#.............#.",
+      "#...............#",
+      "#...............#",
+      "#...............#",
+      "#...............#",
+      "#...............#",
+      ".#.............#.",
+      ".#.............#.",
+      "..#...........#..",
+      ".................",
+      ".................",
+      ".................",
     ].join("\n") + "\n";
     /* The pointer at 0.5 points straight up, so blank the centre column out of
      * the expectation the same way it is blanked out of the art. */
     const wantNoPointer = want.split("\n").map((row, i) =>
-      i <= 7 ? row.slice(0, 7) + "." + row.slice(8) : row).join("\n");
+      i <= r ? row.slice(0, r) + "." + row.slice(r + 1) : row).join("\n");
     if (art !== wantNoPointer) {
-      fail("the knob ring is not the distance-rounded circle\n" +
+      fail("the knob ring is not the row-union-column circle\n" +
            "got:\n" + art + "want:\n" + wantNoPointer);
     }
 

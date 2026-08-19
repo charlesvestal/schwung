@@ -235,20 +235,25 @@ export function drawContext(fb, { native = true } = {}) {
         if (r < 0) return;
         if (r === 0) { fb.setPixel(cx, cy, value); return; }
         if (sweep <= 0) return;
-        const lo = (2 * r - 1) * (2 * r - 1), hi = (2 * r + 1) * (2 * r + 1);
+        /* One pixel per ROW and one per COLUMN, unioned — see
+         * js_display_draw_arc. A distance-rounded annulus is 1.41px wide at
+         * 45 degrees, which stacks into a visible blob at each shoulder. */
+        const inSweep = (dx, dy) => {
+            if (sweep >= 360) return true;
+            let a = Math.atan2(dx, -dy) * 180 / Math.PI;
+            if (a < 0) a += 360;
+            let d = a - ((start % 360) + 360) % 360;
+            if (d < 0) d += 360;
+            return d <= sweep;
+        };
+        const plot = (dx, dy) => { if (inSweep(dx, dy)) fb.setPixel(cx + dx, cy + dy, value); };
         for (let dy = -r; dy <= r; dy++) {
-            for (let dx = -r; dx <= r; dx++) {
-                const d4 = 4 * (dx * dx + dy * dy);
-                if (d4 < lo || d4 >= hi) continue;
-                if (sweep < 360) {
-                    let a = Math.atan2(dx, -dy) * 180 / Math.PI;
-                    if (a < 0) a += 360;
-                    let delta = a - (start % 360);
-                    if (delta < 0) delta += 360;
-                    if (delta > sweep) continue;
-                }
-                fb.setPixel(cx + dx, cy + dy, value);
-            }
+            const dx = Math.round(Math.sqrt(r * r - dy * dy));
+            plot(dx, dy); if (dx !== 0) plot(-dx, dy);
+        }
+        for (let dx = -r; dx <= r; dx++) {
+            const dy = Math.round(Math.sqrt(r * r - dx * dx));
+            plot(dx, dy); if (dy !== 0) plot(dx, -dy);
         }
     };
     ctx.drawCircle = (cx, cy, r, value = 1) => ctx.drawArc(cx, cy, r, 0, 360, value);

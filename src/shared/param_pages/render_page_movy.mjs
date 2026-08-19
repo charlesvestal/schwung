@@ -34,32 +34,35 @@ import { enumSquareLines } from "./font5x3.mjs";
 import { fontWidth4x5, fontPrint4x5, FONT4_HEIGHT, FONT4_MEASURE } from "./font4x5.mjs";
 
 /**
- * Text is set in font4x5 — a proportional, 5-row font measured off Elektron's
- * own UI — in caps, with labels abbreviated to a mnemonic.
+ * Text is set in the DEVICE 5x7 font, in caps, with labels abbreviated to a
+ * mnemonic. font4x5 is kept for the enum square alone.
  *
- * Both earlier attempts were wrong in opposite directions. The device's 5x7 is
- * two rows taller, which forced an 8-row label band and left literally ZERO
- * gutter between a label and the knob row beneath it (LBL0_Y + 8 === ROW1_Y),
- * which is why the grid read as cramped. font5x3 fixed the height but at 3px
- * wide N/K, A/M and W/U collapse into each other — real pages drew MAIN as
- * "MAIK" and SAW as "SAU". Four pixels is enough to tell them apart, and the
- * two rows saved buy the gutters back. See font4x5.mjs.
+ * On hardware the 5-row font read as too small — legibility mattered more
+ * than knob size, and the Move panel is physically smaller than the Elektron
+ * one this grid was measured against, so matching its pixel geometry does not
+ * reproduce its apparent size. The device font is 40% taller (7 rows vs 5).
  *
- * ONE font, everywhere — including the enum square, which is the one place
- * Movy needed a narrower one. Three glyphs at a 5px advance measure 14px
- * (the last carries no trailing gap), which is exactly the square's 14px
- * interior, and two 5-row lines plus a gap is 11 of its 14 rows. So font5x3
- * is no longer drawn at all here; only its enumSquareLines splitter, which is
- * text logic rather than a font, is still used. That matters: while the
- * square used 3-wide glyphs it rendered LOW PASS as "LOU PAS" and HIGH
- * QUALITY as "HIG QUN", on exactly the enums where the word is the content.
+ * It costs almost nothing horizontally, because the labels are already
+ * mnemonics: at a 6px monospaced advance a 4-character label is 24px in a
+ * 30px cell, against 23px for the same label in font4x5, whose M is 6 wide
+ * too. Vertically it costs 2 rows per label band (LBL_H 7 -> 9), paid for by
+ * the bottom pad and one row off each widget row.
+ *
+ * The enum SQUARE stays on font4x5: two stacked 7-row lines need 15 rows and
+ * the box interior is 13, so the small font is the only thing that fits there
+ * — which is exactly what Movy used it for.
+ *
+ * The rejected option is font5x3, Movy's own condensed font: at 3px wide N/K,
+ * A/M and W/U collapse into each other, and real pages drew MAIN as "MAIK"
+ * and SAW as "SAU". font4x5 fixed that and is still what the enum square
+ * uses; it is only the LABELS that wanted more height.
  */
 const LABEL_CHARS = 4;
 
 /** Uppercase, ascii-folded — the Elektron register. font4x5 has no lowercase. */
 function caps(s) { return asciiFold(String(s == null ? "" : s)).toUpperCase(); }
 /** fitText/shortenLabel measure through ctx.textWidth; hand them font4x5. */
-function fit4(s, maxWidth) { return caps(fitText(FONT4_MEASURE, caps(s), maxWidth)); }
+function fitDev(ctx, s, maxWidth) { return caps(fitText(ctx, caps(s), maxWidth)); }
 
 /**
  * The synth vocabulary, abbreviated the way hardware does it.
@@ -140,12 +143,25 @@ export const LAYOUT_MOVY = "movy";
  * The 16 is held for the graphics, which still draw a full 15-row body.
  */
 export const W = 128;
-export const HEADER_H = 7;
-export const BAR_Y = 7;
-export const ROW0_Y = 11;
+/*
+ * The header BAND. Glyphs are printed at y=0 rather than y=1: the OLED has a
+ * physical bezel, so the top row of the screen is already visually inset and
+ * spending a pixel row on margin there buys nothing. That leaves the band one
+ * row taller than the 7-row font, with the spare row BELOW the text.
+ *
+ * BAR_Y is then one further row down, so row HEADER_H is always dark. Without
+ * it the bank bar butted straight against the bottom row of every glyph, and
+ * with the header inverted the solid band merged into the bar into one thick
+ * smudge.
+ */
+export const HEADER_H = 8;
+export const BAR_Y = HEADER_H + 1;   /* the row between is the separator */
+/* One row of gutter here, not two — the bank bar is itself a separator, so
+ * this is the cheapest row on the screen to give back to the header. */
+export const ROW0_Y = 12;
 export const LBL0_Y = 28;
-export const ROW1_Y = 37;
-export const LBL1_Y = 54;
+export const ROW1_Y = 39;
+export const LBL1_Y = 55;
 export const CELL_W = 32;
 /*
  * ODD, for the same reason BOX_H is: 5 glyph rows centred in the band leave a
@@ -159,8 +175,8 @@ export const CELL_W = 32;
  * a viz body occupies rect.y+1..rect.y+14 and a box is BOX_H (15), so 15 is
  * all either ever needed.
  */
-export const LBL_H = 7;
-export const KW = 16;
+export const LBL_H = 9;
+export const KW = 17;
 /*
  * The enum square is WIDER than a knob box, because it is the one widget whose
  * content is text and text has a minimum size.
@@ -193,7 +209,7 @@ export const ENUM_TEXT_W = ENUM_W - 4;
  * row to spare, which h=17 would not.
  */
 export const BOX_H = 15;
-export const TOAST_Y = 61;
+export const TOAST_Y = 55;
 
 /* ------------------------------------------------------------- primitives */
 
@@ -221,9 +237,12 @@ function centreX(x0, span, w) {
     return x0 + Math.floor((span - w) / 2);
 }
 
+/** Device 5x7: glyphs occupy rows y..y+6. */
+const FONT_H = 7;
+
 function centeredText(ctx, x0, span, y, text, color) {
     const t = caps(text);
-    fontPrint4x5(ctx, centreX(x0, span, fontWidth4x5(t)), y, t, color);
+    ctx.print(centreX(x0, span, ctx.textWidth(t)), y, t, color);
 }
 
 /**
@@ -247,11 +266,11 @@ export function drawHeader(ctx, left, right, inverted = false) {
      * 2px padding around its text. */
     if (inverted) ctx.fillRect(0, 0, W, HEADER_H, 1);
     const color = inverted ? 0 : 1;
-    const l = fit4(left, right ? Math.floor(W * 0.55) : W - 4);
-    fontPrint4x5(ctx, 2, 1, l, color);
+    const l = fitDev(ctx, left, right ? Math.floor(W * 0.55) : W - 4);
+    ctx.print(2, 0, l, color);
     if (right) {
-        const r = fit4(right, Math.floor(W * 0.6));
-        fontPrint4x5(ctx, W - fontWidth4x5(r) - 2, 1, r, color);
+        const r = fitDev(ctx, right, Math.floor(W * 0.6));
+        ctx.print(W - ctx.textWidth(r) - 2, 0, r, color);
     }
 }
 
@@ -353,6 +372,7 @@ export function drawBankBar(ctx, pageIndex, pageCount, groups) {
  * a rounding artefact: at either extreme the pointer aims just past the end
  * of the track, into the gap.
  */
+export const KNOB_R = 8;
 const KNOB_START_DEG = 225;
 const KNOB_SWEEP_DEG = 270;
 const ARC_START_DEG = 230;
@@ -361,24 +381,29 @@ const POINTER_INNER = 0.0;
 const POINTER_OUTER = 0.85;
 
 function drawArcKnob(ctx, kx, ky, normVal) {
-    const cx = kx + 7, cy = ky + 7, r = 7;
+    const cx = kx + KNOB_R, cy = ky + KNOB_R, r = KNOB_R;
     if (typeof ctx.drawArc === "function") {
         ctx.drawArc(cx, cy, r, ARC_START_DEG, ARC_SWEEP_DEG, 1);
     } else {
-        const lo = (2 * r - 1) * (2 * r - 1), hi = (2 * r + 1) * (2 * r + 1);
+        /* One pixel per ROW and one per COLUMN, unioned — see
+         * js_display_draw_arc. A distance-rounded annulus is 1.41px wide at
+         * 45 degrees, which stacks into a visible blob at each shoulder. */
+        const inSweep = (dx, dy) => {
+            if (ARC_SWEEP_DEG >= 360) return true;
+            let a = Math.atan2(dx, -dy) * 180 / Math.PI;
+            if (a < 0) a += 360;
+            let d = a - ((ARC_START_DEG % 360) + 360) % 360;
+            if (d < 0) d += 360;
+            return d <= ARC_SWEEP_DEG;
+        };
+        const plot = (dx, dy) => { if (inSweep(dx, dy)) ctx.fillRect(cx + dx, cy + dy, 1, 1, 1); };
         for (let dy = -r; dy <= r; dy++) {
-            for (let dx = -r; dx <= r; dx++) {
-                const d4 = 4 * (dx * dx + dy * dy);
-                if (d4 < lo || d4 >= hi) continue;
-                /* atan2(dx, -dy): 0 at twelve o'clock, growing clockwise —
-                 * the same convention the pointer angle uses below. */
-                let a = Math.atan2(dx, -dy) * 180 / Math.PI;
-                if (a < 0) a += 360;
-                let delta = a - (ARC_START_DEG % 360);
-                if (delta < 0) delta += 360;
-                if (delta > ARC_SWEEP_DEG) continue;
-                ctx.fillRect(cx + dx, cy + dy, 1, 1, 1);
-            }
+            const dx = Math.round(Math.sqrt(r * r - dy * dy));
+            plot(dx, dy); if (dx !== 0) plot(-dx, dy);
+        }
+        for (let dx = -r; dx <= r; dx++) {
+            const dy = Math.round(Math.sqrt(r * r - dx * dx));
+            plot(dx, dy); if (dy !== 0) plot(dx, -dy);
         }
     }
     const rad = (KNOB_START_DEG + normVal * KNOB_SWEEP_DEG) * Math.PI / 180;
@@ -436,7 +461,7 @@ function drawOpaqueBox(ctx, kx, ky, value) {
     /* Centre inside the text area (frame + 1px margin on each side) both ways,
      * the same spans the enum square uses. */
     centeredText(ctx, kx + 2, KW - 4,
-        ky + 1 + Math.floor((h - 2 - FONT4_HEIGHT) / 2), fit4(shown, KW - 4), 1);
+        ky + 1 + Math.floor((h - 2 - FONT_H) / 2), fitDev(ctx, shown, KW - 4), 1);
 }
 
 function drawKnobWidget(ctx, col, rowY, meta, raw) {
@@ -474,18 +499,18 @@ function drawWaveMark(ctx, x, y, on) {
 function drawLabelCell(ctx, col, lblY, label, displayValue, touched, modulated) {
     const cellX = col * CELL_W;
     const text = touched ? displayValue : label;
-    const tw = fontWidth4x5(text);
+    const tw = ctx.textWidth(text);
     /* Same rule as every other centred run — `floor(CELL_W/2) - floor(tw/2)`
      * biases the other way on odd widths, which made a label and the box above
      * it disagree by a pixel. */
     const tx = centreX(cellX, CELL_W, tw);
     /* One clear row above and below the glyphs inside the band — see LBL_H. */
-    const ty = lblY + Math.floor((LBL_H - FONT4_HEIGHT) / 2);
+    const ty = lblY + Math.floor((LBL_H - FONT_H) / 2);
     if (touched) {
         ctx.fillRect(cellX, lblY, CELL_W, LBL_H, 1);
-        fontPrint4x5(ctx, tx, ty, text, 0);
+        ctx.print(tx, ty, text, 0);
     } else {
-        fontPrint4x5(ctx, tx, ty, text, 1);
+        ctx.print(tx, ty, text, 1);
     }
     if (modulated) {
         const wx = Math.max(cellX, tx - 6);
@@ -524,10 +549,10 @@ function drawKnobRow(ctx, o, row, rowY, lblY) {
          * whether or not more would technically fit, which is what keeps a row
          * of them scannable. `M` is the widest glyph, so measuring that many
          * of it gives a width no LABEL_CHARS-long label can exceed. */
-        const labelWidth = Math.min(CELL_W - 2, fontWidth4x5("M".repeat(LABEL_CHARS)));
-        const label = caps(shortenLabel(FONT4_MEASURE, preAbbreviate(meta.label || meta.key), labelWidth));
+        const labelWidth = Math.min(CELL_W - 2, ctx.textWidth("M".repeat(LABEL_CHARS)));
+        const label = caps(shortenLabel(ctx, preAbbreviate(meta.label || meta.key), labelWidth));
         const display = (raw === null || raw === undefined)
-            ? "--" : fit4(formatParamValue(raw, meta), CELL_W - 2);
+            ? "--" : fitDev(ctx, formatParamValue(raw, meta), CELL_W - 2);
         drawLabelCell(ctx, col, lblY, label, display, isTouched, modulated ? !!modulated(key) : false);
     }
 }
@@ -565,7 +590,7 @@ export function renderPageMovy(ctx, o) {
     if (!page || !page.keys) return;
     const hasParams = page.keys.some(Boolean);
     if (!hasParams) {
-        fontPrint4x5(ctx, 2, ROW0_Y + 4, caps("No params"), 1);
+        ctx.print(2, ROW0_Y + 4, caps("No params"), 1);
         return;
     }
 

@@ -250,26 +250,33 @@ void fill_circle(int cx, int cy, int r, int value) {
  * Neither two fill_circle calls nor a midpoint walk can stand in for this —
  * both strand pixels at the compass points. See js_display.c's
  * js_display_draw_circle for the full reasoning. */
+static void plot_arc_px(int cx, int cy, int dx, int dy, int start_deg, int sweep_deg, int value) {
+  if(sweep_deg < 360) {
+    double a = atan2((double)dx, (double)-dy) * 180.0 / M_PI;
+    if(a < 0) a += 360.0;
+    double delta = a - (double)start_deg;
+    if(delta < 0) delta += 360.0;
+    if(delta > (double)sweep_deg) return;
+  }
+  set_pixel(cx + dx, cy + dy, value);
+}
+
+/* One pixel per row and per column, unioned — see js_display_draw_arc. */
 void draw_arc(int cx, int cy, int r, int start_deg, int sweep_deg, int value) {
   if(r < 0) return;
   if(r == 0) { set_pixel(cx, cy, value); return; }
   if(sweep_deg >= 360) sweep_deg = 360;
   if(sweep_deg <= 0) return;
-  const int lo = (2 * r - 1) * (2 * r - 1);
-  const int hi = (2 * r + 1) * (2 * r + 1);
+  const int start = ((start_deg % 360) + 360) % 360;
   for(int dy = -r; dy <= r; dy++) {
-    for(int dx = -r; dx <= r; dx++) {
-      const int d4 = 4 * (dx * dx + dy * dy);
-      if(d4 < lo || d4 >= hi) continue;
-      if(sweep_deg < 360) {
-        double a = atan2((double)dx, (double)-dy) * 180.0 / M_PI;
-        if(a < 0) a += 360.0;
-        double delta = a - (double)(start_deg % 360);
-        if(delta < 0) delta += 360.0;
-        if(delta > (double)sweep_deg) continue;
-      }
-      set_pixel(cx + dx, cy + dy, value);
-    }
+    const int dx = (int)(sqrt((double)(r * r - dy * dy)) + 0.5);
+    plot_arc_px(cx, cy, dx, dy, start, sweep_deg, value);
+    if(dx != 0) plot_arc_px(cx, cy, -dx, dy, start, sweep_deg, value);
+  }
+  for(int dx = -r; dx <= r; dx++) {
+    const int dy = (int)(sqrt((double)(r * r - dx * dx)) + 0.5);
+    plot_arc_px(cx, cy, dx, dy, start, sweep_deg, value);
+    if(dy != 0) plot_arc_px(cx, cy, dx, -dy, start, sweep_deg, value);
   }
 }
 
