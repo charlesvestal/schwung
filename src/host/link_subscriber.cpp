@@ -60,6 +60,64 @@ static std::atomic<bool> g_channels_changed{false};
 static std::atomic<uint64_t> g_buffers_received{0};
 static std::atomic<uint64_t> g_buffers_published{0};
 
+/* ============================================================================
+ * Source-callback delivery timing (2026-08-19 dropout investigation)
+ * ============================================================================
+ * The shim reads /schwung-link-in every SPI frame — measured n=1722 reads per
+ * 5 s window, i.e. not one frame skipped — yet `avail` still jumps to ~17,900
+ * samples (~200 ms, 4.4x the whole 4096-sample ring) between two consecutive
+ * reads 2.9 ms apart. Meanwhile the kernel UDP receive queue stays at zero
+ * across 600 samples and reports no drops. Both of those together say the
+ * audio is not arriving late off the wire and is not sitting unread in the
+ * socket — it is handed to us in a burst.
+ *
+ * The SDK dispatches source buffers from MainProcessor's 1 ms process timer
+ * on the single Link io thread, with internal queues between the socket and
+ * that dispatch, so a stalled timer would produce exactly this shape. Measure
+ * it at our own boundary rather than inferring: per slot, the longest gap
+ * between successive callbacks and the longest run delivered back-to-back.
+ *
+ * Realtime-safe: a vDSO clock read plus relaxed atomics. No allocation, no
+ * locks, no logging on the callback thread.
+ */
+#define LINK_CB_BURST_GAP_US 500  /* gaps under this count as one burst */
+static std::atomic<uint64_t> g_cb_last_ns[LINK_AUDIO_IN_SLOT_COUNT];
+static std::atomic<uint32_t> g_cb_max_gap_us[LINK_AUDIO_IN_SLOT_COUNT];
+static std::atomic<uint32_t> g_cb_run[LINK_AUDIO_IN_SLOT_COUNT];
+static std::atomic<uint32_t> g_cb_max_run[LINK_AUDIO_IN_SLOT_COUNT];
+static std::atomic<uint32_t> g_cb_count[LINK_AUDIO_IN_SLOT_COUNT];
+
+static inline void link_cb_note_delivery(int slot)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    const uint64_t now =
+        (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+
+    g_cb_count[slot].fetch_add(1, std::memory_order_relaxed);
+
+    const uint64_t prev =
+        g_cb_last_ns[slot].exchange(now, std::memory_order_relaxed);
+    if (prev == 0) return;  /* first callback: no gap to report yet */
+
+    const uint32_t gap_us = (uint32_t)((now - prev) / 1000ull);
+
+    uint32_t prev_max = g_cb_max_gap_us[slot].load(std::memory_order_relaxed);
+    if (gap_us > prev_max) {
+        g_cb_max_gap_us[slot].store(gap_us, std::memory_order_relaxed);
+    }
+
+    if (gap_us < LINK_CB_BURST_GAP_US) {
+        const uint32_t run =
+            g_cb_run[slot].fetch_add(1, std::memory_order_relaxed) + 1;
+        if (run > g_cb_max_run[slot].load(std::memory_order_relaxed)) {
+            g_cb_max_run[slot].store(run, std::memory_order_relaxed);
+        }
+    } else {
+        g_cb_run[slot].store(1, std::memory_order_relaxed);
+    }
+}
+
 static void signal_handler(int sig)
 {
     /* Use write() — async-signal-safe, unlike printf() */
@@ -402,6 +460,7 @@ int main()
                         sources.emplace_back(link, pc.id,
                             [slot_idx_cap, in_shm_cap](ableton::LinkAudioSource::BufferHandle h) {
                                 g_buffers_received.fetch_add(1, std::memory_order_relaxed);
+                                link_cb_note_delivery(slot_idx_cap);
 
                                 const size_t num_frames   = h.info.numFrames;
                                 const size_t num_channels = h.info.numChannels;
@@ -578,6 +637,24 @@ int main()
                 }
 
                 slots[i].last_read_pos = rp;
+            }
+        }
+
+        /* Source-callback delivery timing, every 5 s to line up with the
+         * shim's link_audio window so the two logs can be read side by side.
+         * Expected steady state is gap≈2830us / run=1 (one 125-frame packet
+         * per 2.83 ms). A gap of ~200 ms followed by run≈70 is the burst the
+         * shim's catch-up is discarding. Only logged when a slot has actually
+         * delivered something this window. */
+        if (tick % 500 == 0) {
+            for (int i = 0; i < LINK_AUDIO_IN_SLOT_COUNT; i++) {
+                uint32_t n = g_cb_count[i].exchange(0, std::memory_order_relaxed);
+                if (n == 0) continue;
+                uint32_t max_gap = g_cb_max_gap_us[i].exchange(0, std::memory_order_relaxed);
+                uint32_t max_run = g_cb_max_run[i].exchange(0, std::memory_order_relaxed);
+                LOG_INFO(LINK_SUB_LOG_SOURCE,
+                         "cb slot=%d n=%u max_gap=%u us (%.1f ms) max_burst_run=%u",
+                         i, n, max_gap, (double)max_gap / 1000.0, max_run);
             }
         }
 
