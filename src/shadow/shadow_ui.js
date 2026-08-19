@@ -2772,9 +2772,43 @@ function isLineInConsumerModule(moduleId) {
     return v;
 }
 
+/* Rotates the no-risk scan over the slots; see reconcileFeedbackHolds. */
+let _feedbackScanCursor = 0;
+
 function reconcileFeedbackHolds() {
     const risk = bootFeedbackRisk();
-    for (let slot = 0; slot < SHADOW_UI_SLOTS; slot++) {
+
+    /*
+     * Which slots to examine THIS pass.
+     *
+     * Every slot needs `synth_module`, and that is a synchronous IPC round
+     * trip at ~2.8ms. Four of them landed on one tick, six times a second:
+     * ~11ms of blocking on top of the ~7ms the knob grid already spends, over
+     * the 16.67ms period, six times a second. Measured on device via the
+     * js.feedback_guard span — mean 10.84ms, and 34% of ALL js.tick time —
+     * which is the whole of the unexplained "60 should be 60, is 54-56".
+     * Nothing else here costs anything: bootFeedbackRisk() is two plain SHM
+     * reads and isLineInConsumerModule() is memoised by module id.
+     *
+     * So when there is no risk, scan ONE slot per pass and rotate: same total
+     * coverage, a quarter of the reads, and no tick ever takes more than one
+     * of them. Each slot is still visited about every 670ms, which is well
+     * inside the FEEDBACK_SAFE_DEBOUNCE_MS the safe path waits out anyway.
+     *
+     * Under risk, scan ALL of them, every pass. The protective direction is
+     * never rate-limited — that is the same rule the bypass path itself
+     * follows, and risk is a rare, transient state (someone unplugged the
+     * headphones), so its cost does not sit on the steady-state frame rate.
+     */
+    const scan = [];
+    if (risk) {
+        for (let i = 0; i < SHADOW_UI_SLOTS; i++) scan.push(i);
+    } else {
+        scan.push(_feedbackScanCursor % SHADOW_UI_SLOTS);
+        _feedbackScanCursor = (_feedbackScanCursor + 1) % SHADOW_UI_SLOTS;
+    }
+
+    for (const slot of scan) {
         const moduleId = getSlotParam(slot, "synth_module");
         if (!isLineInConsumerModule(moduleId)) {
             /* Not a line-in slot — drop any stale guard state. */
