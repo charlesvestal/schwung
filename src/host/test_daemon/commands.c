@@ -549,6 +549,12 @@ static int testd_param_do_set(int fd, const char *key, const char *value, size_t
     g_shm.param->error = 0;
     g_shm.param->response_id = 0;
     g_shm.param->request_id = req_id;
+    /* No span is open here, and the shim reads these fields on every request
+     * now that SET stamps them too — so clear them rather than leave whatever
+     * the last shadow_ui request wrote, which would parent the shim's
+     * param.serve to an unrelated span. 0/0 means "mint a fresh root". */
+    g_shm.param->trace_id = 0;
+    g_shm.param->parent_span_id = 0;
     /* Release-fence: ensure key/value/slot writes are visible before
      * the peer sees request_type != 0. */
     __atomic_store_n(&g_shm.param->request_type, 1, __ATOMIC_RELEASE);
@@ -620,6 +626,10 @@ static int cmd_get_param(int fd, const char *args) {
     g_shm.param->error = 0;
     g_shm.param->response_id = 0;
     g_shm.param->request_id = req_id;
+    /* See the SET path above — 0/0 so the shim roots its param.serve rather
+     * than parenting it to whatever shadow_ui last wrote here. */
+    g_shm.param->trace_id = 0;
+    g_shm.param->parent_span_id = 0;
     __atomic_store_n(&g_shm.param->request_type, 2, __ATOMIC_RELEASE);
 
     int rc = testd_param_wait_response(req_id, TESTD_PARAM_TIMEOUT_MS);
@@ -738,6 +748,8 @@ static int cmd_dump_param_file(int fd, const char *args) {
     g_shm.param->error = 0;
     g_shm.param->response_id = 0;
     g_shm.param->request_id = req_id;
+    g_shm.param->trace_id = 0;
+    g_shm.param->parent_span_id = 0;
     __atomic_store_n(&g_shm.param->request_type, 2, __ATOMIC_RELEASE);
 
     int rc = testd_param_wait_response(req_id, TESTD_PARAM_TIMEOUT_MS);
