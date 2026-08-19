@@ -3621,17 +3621,34 @@ static void shadow_swap_display(void)
     /* Write display using slice protocol - one slice per ioctl */
     /* No rate limiting because we must overwrite Move every ioctl */
 
+    /*
+     * One panel frame is SIX slices across six consecutive ioctls, so the
+     * source must be held still for all of them.
+     *
+     * Read live, each slice sampled whatever the shadow UI had drawn at that
+     * instant — so any frame containing motion was stitched together from two
+     * or more different renders. Not dropped frames: tearing. It is invisible
+     * on static text, which is why it survived, and it is exactly what a
+     * moving modulation dot or a swept filter curve exposes as "jagged".
+     *
+     * Latched at phase 0 instead. 1 KB memcpy once per seven frames, on a path
+     * that already memcpys the same buffer every frame.
+     */
+    static uint8_t display_frame[DISPLAY_BUFFER_SIZE];
+
     if (display_phase == 0) {
-        /* Phase 0: Zero out slice area - signals start of new frame */
+        /* Phase 0: Zero out slice area - signals start of new frame. Latch the
+         * frame that phases 1-6 will send. */
+        memcpy(display_frame, display_src, DISPLAY_BUFFER_SIZE);
         global_mmap_addr[80] = 0;
         memset(global_mmap_addr + 84, 0, 172);
     } else {
-        /* Phases 1-6: Write slices 0-5 */
+        /* Phases 1-6: Write slices 0-5 from the latched frame */
         int slice = display_phase - 1;
         int slice_offset = slice * 172;
         int slice_bytes = (slice == 5) ? 164 : 172;
         global_mmap_addr[80] = slice + 1;
-        memcpy(global_mmap_addr + 84, display_src + slice_offset, slice_bytes);
+        memcpy(global_mmap_addr + 84, display_frame + slice_offset, slice_bytes);
     }
 
     display_phase = (display_phase + 1) % 7;  /* Cycle 0,1,2,3,4,5,6,0,... */
