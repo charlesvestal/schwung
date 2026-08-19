@@ -227,9 +227,15 @@ let _abbrevCache = null;
  * in page_controller.mjs, as the note there says. This was belt-and-braces on
  * top of a fix that had already landed.
  *
- * Kept as a named constant rather than deleted so the gate stays one edit
- * away if a future page really is too expensive to draw per tick — but raise
- * it only with a measurement, not a hypothesis.
+ * Stays zero. The tick itself is now paced to an absolute deadline
+ * (shadow_ui.c), so it arrives at a steady 60 Hz regardless of how much work
+ * a tick does — which is what the irregular frame rate actually was. Gating
+ * the draw on top of a steady tick would only throw frames away.
+ *
+ * Raise it only with a measurement, not a hypothesis. That is how it came to
+ * be 32 in the first place, guarding against a draw cost (1.68ms/page) that
+ * was never the problem, and it then became the binding constraint on the
+ * whole view.
  */
 const MOVY_REDRAW_MIN_MS = 0;
 let lastDrawMs = 0;
