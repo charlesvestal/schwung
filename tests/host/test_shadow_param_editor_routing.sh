@@ -292,6 +292,47 @@ function gotoSlotFor(name) {
   }
 }
 
+/* ---- 6. footer: jog is slot 1, click is slot 2, and OPEN when divable ---- */
+{
+  openGrid();
+  const flat = (h) => (h || []).map((p) => p.join(" ")).join(" / ");
+
+  const plain = V.paramPagesFooterHints() || [];
+  if (!plain.length || plain[0][0] !== "JOG") {
+    fail("plain footer must lead with JOG, got " + JSON.stringify(flat(plain)));
+  }
+  if (plain.length < 2 || plain[1][0] !== "CLK") {
+    fail("plain footer must put CLK second, got " + JSON.stringify(flat(plain)));
+  }
+
+  const slot = gotoSlotFor("position");
+  if (slot < 0) {
+    fail("position never reached the grid for the footer check");
+  } else {
+    feed(noteOn(slot));
+    const held = V.paramPagesFooterHints() || [];
+    if (!held.length || held[0][0] !== "JOG" || held[1][0] !== "CLK") {
+      fail("held-knob footer must still be JOG then CLK — the slots are " +
+           "positional so the eye stops re-reading them — got " + JSON.stringify(flat(held)));
+    }
+    if (held[1][1] !== "OPEN") {
+      fail("holding a divable knob must say CLK OPEN, got " + JSON.stringify(flat(held)) +
+           " — position is divable but classifies as a NUMBER, so a check on " +
+           "kind === opaque misses it and the footer says MENU while the button " +
+           "opens the editor");
+    }
+    feed(noteOff(slot));
+  }
+
+  /* Every state must fit the 128px band: drawFooter drops the tail rather than
+   * squeezing, and a silently dropped hint is how CLK GO went missing. */
+  const RM = await import(TREE + "/shared/param_pages/render_page_movy.mjs");
+  const width = (h) => (h || []).reduce((a, [k, v]) => a + RM.hintPairWidth(k, v), 1);
+  for (const h of [plain, V.paramPagesFooterHints()]) {
+    if (width(h) > 128) fail("footer overflows: " + flat(h) + " = " + width(h) + "px");
+  }
+}
+
 if (failures) process.exit(1);
 console.log("PASS: editor routing — a wav_position opens the waveform, a filepath opens " +
             "the browser, a plain number stays put, and Back returns to the grid from each");

@@ -330,48 +330,97 @@ function traced(name, fn) {
  * Kept here, not in the library: these are Schwung's gestures. A sequencer
  * embedding the same grid has its own and passes its own.
  */
+/*
+ * Does Shift+Jog actually differ from Jog on THIS module?
+ *
+ * stepLevel skips pages belonging to the level you are already on, so it only
+ * differs where a level spans more than one page. granny has six pages and six
+ * distinct levels, so Shift+Jog walks exactly the same sequence as Jog — and a
+ * footer saying JOG SECT there is advertising a distinction the module does not
+ * have. minijv, at 76 pages over ~20 levels, is where it earns its place.
+ *
+ * Memoised on the pages array itself, which is replaced whenever the controller
+ * rebuilds, so a module swap recomputes without any explicit invalidation.
+ */
+let _sectionsPages = null;
+let _sectionsDiffer = false;
+function sectionsAreDistinct() {
+    const pages = controller ? controller.pages : null;
+    if (!pages || !pages.length) return false;
+    if (pages === _sectionsPages) return _sectionsDiffer;
+    _sectionsPages = pages;
+    const seen = new Set();
+    _sectionsDiffer = false;
+    for (const p of pages) {
+        const lv = p && p.level;
+        if (lv == null) continue;
+        if (seen.has(lv)) { _sectionsDiffer = true; break; }
+        seen.add(lv);
+    }
+    return _sectionsDiffer;
+}
+
+/*
+ * Build the footer in a FIXED ORDER: jog first, click second, anything else
+ * after. Positional, not descriptive — the eye learns that slot 1 is the wheel
+ * and slot 2 is the button and stops re-reading them. When a state has no jog
+ * or no click meaning, the slot is simply absent; nothing else slides into it.
+ *
+ * Enforced here rather than at each call site, because "remember to put jog
+ * first" is exactly the kind of rule that holds for three states and breaks on
+ * the fourth — which is what happened: the held-knob footer led with CLK and
+ * the others led with JOG, so the two pills swapped places under your finger.
+ */
+function orderedHints({ jog, click, extra }) {
+    const out = [];
+    if (jog) out.push(["JOG", jog]);
+    if (click) out.push(["CLK", click]);
+    for (const e of (extra || [])) if (e) out.push(e);
+    return out;
+}
+
 function footerHints() {
     if (!controller) return null;
-    /* "EXIT", not "CLOSE": all three pairs are 129px with CLOSE — one pixel
+
+    /* "EXIT", not "CLOSE": with CLOSE the three pairs are 129px — one pixel
      * over — and the pair dropped was CLK GO, i.e. how you commit. */
-    if (controller.pickerOpen) return [["JOG", "SECT"], ["CLK", "GO"], ["BACK", "EXIT"]];
+    if (controller.pickerOpen) {
+        return orderedHints({ jog: "SECT", click: "GO", extra: [["BACK", "EXIT"]] });
+    }
+
+    const shift = shiftIsHeld();
+    const fine = shift ? [["KNB", "FINE"]] : null;
+
     /*
-     * Shift gets its own footer rather than a "SHFT SECT" pill.
+     * A knob under the hand changes what the CLICK means and nothing else, so
+     * only that slot changes. Holding a knob whose param opens an editor, the
+     * click opens it; holding any other knob, the click still opens the section
+     * menu, so the footer must keep saying MENU.
      *
-     * The pill grammar is [KEY] ACTION — press the key, get the action. That
-     * breaks for a compound gesture: Shift alone does not jump a section,
-     * Shift+Jog does, so "SHFT SECT" reads as a promise the key does not keep.
-     * Spelling it "SH+JOG SECT" fixes the sense and busts the width.
-     *
-     * So the footer says what the controls do RIGHT NOW, which is the rule the
-     * held-knob case already follows: while Shift is down the jog DOES step
-     * sections and the encoders ARE fine, so that is simply what it says.
-     * Nothing compound to parse, and it doubles as the discovery mechanism —
-     * hold Shift and the footer tells you what you just changed.
+     * Keyed on meta.divable, NOT kind === "opaque". Those came apart when a
+     * ranged wav_position became a turnable number that still opens a waveform
+     * editor, and this line was missed — so holding granny's Position (divable,
+     * kind "number") advertised CLK MENU while the click opened the editor. The
+     * footer promised one thing and the button did another.
      */
-    if (shiftIsHeld()) return [["JOG", "SECT"], ["KNOB", "FINE"]];
     const held = controller.state ? controller.state.touched : -1;
     if (held >= 0) {
         const meta = controller.metaAt ? controller.metaAt(held) : null;
-        /* A knob cannot turn an opaque param, so the click is the whole point
-         * of holding it — say OPEN, not SCRUB. */
-        /* Mute+touch DOES reset the param to its default, and the wiring is
-         * intact — but CC 88 is forwarded to Move unconditionally
-         * (schwung_shim.c, "passed through to Move firmware unconditionally",
-         * so Move-native Mute+Pad keeps working), which means holding Mute to
-         * reset a knob ALSO toggles the selected Move track mute. Advertising a
-         * gesture that silences a track as a side effect is worse than leaving
-         * it undocumented, so it is not offered here until it has a modifier
-         * that does not leak. The feature itself is untouched. */
-        if (meta && meta.kind === 'opaque') return [["CLK", "OPEN"], ["BACK", "EXIT"]];
-        return [["JOG", "PAGE"], ["CLK", "MENU"]];
+        if (meta && meta.divable) {
+            return orderedHints({ jog: "PAGE", click: "OPEN", extra: fine });
+        }
     }
-    /* "PG", not "PAGE": all three pairs together are 134px at "PAGE" and the
-     * section jump — the one gesture that makes a 76-page module navigable —
-     * was the pair being dropped. Shortening the ACTION brings it to 124px and
-     * keeps every KEY name intact, which is the right trade: the key is what
-     * you press, the action is only the gloss. */
-    return [["JOG", "PAGE"], ["CLK", "MENU"]];
+
+    /*
+     * Shift changes what the JOG does — but only on a module where it actually
+     * does something different. stepLevel skips pages of the level you are
+     * already on, so on granny (six pages, six distinct levels) Shift+Jog walks
+     * exactly the same sequence as Jog. Claiming SECT there advertises a
+     * distinction the module has not got; 18 of the 72 fleet modules are like
+     * that. minijv, 76 pages over ~20 levels, is where it earns its place.
+     */
+    const jog = (shift && sectionsAreDistinct()) ? "SECT" : "PAGE";
+    return orderedHints({ jog, click: "MENU", extra: fine });
 }
 
 export function drawParamPages() {
@@ -515,6 +564,18 @@ export function paramPagesGoTo(index) {
 /** True while values are revealed (shift held). */
 export function paramPagesRevealing() {
     return !!(controller && controller.state.revealValues);
+}
+
+/**
+ * The footer hints for the CURRENT state, in draw order.
+ *
+ * Exported so the ordering rule (jog slot 1, click slot 2) and the per-state
+ * wording can be asserted. They cannot be read back off the framebuffer: the
+ * footer is set in font4x5, which draws glyphs as fillRect pixels, so a
+ * recording print() sees nothing at all.
+ */
+export function paramPagesFooterHints() {
+    return footerHints();
 }
 
 /** True while the section picker is over the grid. */
