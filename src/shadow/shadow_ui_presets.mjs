@@ -545,7 +545,24 @@ export function handlePresetDetailJog(delta) {
 /* ---- Select ------------------------------------------------------------- */
 
 export function handlePresetsSelect() {
-    if (!presetModule) return;
+    /*
+     * A bare `return` here is a dead button: the row is drawn, the click does
+     * nothing, and NOTHING is announced -- the "No module in this slot" line
+     * lives in startSaveFlow, which this returns before reaching. Reported from
+     * hardware as "when I choose save, simply nothing happens".
+     *
+     * The state is also contradictory and worth saying so: this screen is only
+     * reachable through a [User Presets] row that is drawn ONLY when the same
+     * lookup found a module, so arriving here without one means the config
+     * changed underneath us between building the picker and this click.
+     */
+    if (!presetModule) {
+        announce("No module in this slot");
+        if (typeof host_log === "function") {
+            host_log("presets: save refused, presetModule empty for prefix " + presetPrefix);
+        }
+        return;
+    }
     if (selectedPreset === 0) {
         /* Save snapshots the live state — make sure a lingering preview has
          * reverted to the original first. */

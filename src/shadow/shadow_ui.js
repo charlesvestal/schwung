@@ -8266,6 +8266,44 @@ function runChainSettingAction(slot, key) {
  * its own; this only supplies the four host functions it needs. Built fresh per
  * entry so it always closes over the slot actually being edited.
  */
+/*
+ * A slot action chosen from the KNOB GRID, with a hand-off for the ones that
+ * open a modal.
+ *
+ * Save / Save As / Delete do not act immediately: they set showingNamePreview
+ * or confirmingOverwrite / confirmingDelete and wait for a confirmation. Both
+ * the DRAWING of those (drawChainSettings, in shadow_ui_settings.mjs) and the
+ * jog/click that answer them live under `case VIEWS.CHAIN_SETTINGS` -- the LIST
+ * view. Slot settings now open as the grid, so from there the flag flipped and
+ * nothing rendered it and nothing could answer it.
+ *
+ * On device that read as: pressing Save did nothing whatsoever, and jogging
+ * afterwards announced no "Edit"/"OK" -- because that handler was never
+ * reached. The action HAD run. It ran into a view with no way to show or
+ * finish it.
+ *
+ * So hand off to the list, exactly as an opaque param does (see
+ * enterHierarchyEditorFromParamPages). Teaching the grid to draw and drive
+ * three confirm flows would be a second implementation of screens that already
+ * work.
+ *
+ * The hand-off asks WHETHER A MODAL IS NOW OPEN rather than listing which keys
+ * are modal ones. A fifth action that opens a confirm would otherwise be
+ * silently broken in precisely the same way, and that is the failure mode worth
+ * designing out rather than re-fixing.
+ */
+function runSlotActionFromGrid(slot, key) {
+    runChainSettingAction(slot, key);
+    if (!(showingNamePreview || confirmingOverwrite || confirmingDelete)) return false;
+    exitParamPages();
+    /* The list must STAY the list while the modal is up -- re-entering the grid
+     * would drop the confirmation on the floor again. */
+    suppressSlotGridOnce = true;
+    setView(VIEWS.CHAIN_SETTINGS);
+    needsRedraw = true;
+    return true;
+}
+
 function slotGridIoFor(slotIndex) {
     const io = createSlotGridIo({
         readSlotParam: (key) => getSlotParam(slotIndex, key),
@@ -14987,7 +15025,30 @@ function drawHelpDetail() {
      * reachable only by pressing a specific row on a specific screen, and a
      * ReferenceError inside one branch is swallowed by the tick try/catch into
      * "UI error, recovering" — invisible unless something runs it. */
-    _ctx.runSlotAction = (slot, key) => runChainSettingAction(slot, key);
+    /*
+     * Slot actions from the knob grid, with a hand-off for the ones that open a
+     * modal.
+     *
+     * Save / Save As / Delete do not act immediately: they set
+     * showingNamePreview or confirmingOverwrite/confirmingDelete and wait for a
+     * confirmation. Both the DRAWING of those (drawChainSettings, via
+     * shadow_ui_settings.mjs) and the jog/click that drive them live under
+     * `case VIEWS.CHAIN_SETTINGS` -- the LIST view. Slot settings now open as
+     * the grid, so from there the flag flipped and NOTHING rendered it and
+     * nothing could answer it. On device: pressing Save did nothing at all, and
+     * the jog gave no "Edit"/"OK", because that handler was never reached.
+     *
+     * So hand off to the list, the same way an opaque param does
+     * (enterHierarchyEditorFromParamPages above). Teaching the grid to draw and
+     * drive three confirm flows would be a second implementation of screens
+     * that already work.
+     *
+     * Detected by ASKING WHETHER A MODAL IS NOW OPEN rather than by listing
+     * which keys are modal ones: a fifth action that opens a confirm would
+     * otherwise be silently broken in exactly the same way, and that is the
+     * failure mode worth designing out.
+     */
+    _ctx.runSlotAction = (slot, key) => runSlotActionFromGrid(slot, key);
     /* The slot-settings entry point, exposed so the grid routing can be driven
      * from a test rather than by pressing Shift+Vol+Track on hardware. */
     _ctx.enterChainSettings = (slot) => enterChainSettings(slot);
