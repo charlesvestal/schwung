@@ -32,7 +32,7 @@ import {
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4,
     MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
     MoveKnob1Touch, MoveKnob8Touch,  // Capacitive touch notes (0-7)
-    MidiNoteOn
+    MidiNoteOn, MidiNoteOff
 } from '/data/UserData/schwung/shared/constants.mjs';
 
 import {
@@ -824,8 +824,17 @@ function getSlotParamCached(slot, key, moduleId) {
 function setView(newView, customLabel) {
     if (view === newView) return;  /* No change */
     /* The card belongs to the chain editor and to one knob gesture; it must
-     * not survive a screen change. */
+     * not survive a screen change.
+     *
+     * The touch set goes with it, because a screen change can EAT the release:
+     * handleParamPagesMidi claims knob-touch notes and returns before the
+     * handlers below ever see them, so holding a knob here and letting go
+     * inside the knob grid leaves this entry stuck true — and a stuck-true
+     * entry stamps the next card as held-with-no-deadline, which nothing then
+     * clears. Cheapest correct answer: no view change can begin with a finger
+     * already down on a knob it knows about. */
     knobCardClose();
+    knobTouched.fill(false);
     view = newView;
     needsRedraw = true;
 
@@ -1118,28 +1127,47 @@ let cachedKnobContextsChildIndex = -1; // Child index when cache was built
  */
 const KNOB_CARD_DECAY_MS = 700;
 const knobTouched = new Array(NUM_KNOBS).fill(false);
-let knobCardKnob = -1;       /* physical knob the card follows, or -1 */
-let knobCardExpiry = 0;      /* ms deadline; 0 means held, so no deadline */
-let knobCardKeys = null;     /* param key per physical knob, or null */
-let knobCardMeta = null;     /* metaIndex for the focused component */
-let knobCardValues = null;   /* raw values, keyed by param key */
+let knobCardKnob = -1;          /* physical knob the card follows, or -1 */
+let knobCardExpiry = 0;         /* ms deadline; 0 means held, so no deadline */
+let knobCardSlot = -1;          /* slot the row below was resolved against */
+let knobCardCompKey = null;     /* component key ditto — see showKnobFeedback */
+let knobCardKeys = null;        /* param key per physical knob, or null */
+let knobCardMeta = null;        /* metaIndex for the focused component */
+let knobCardRowValues = null;   /* raw values, keyed by param key */
 let knobCardViz = null;
-let knobCardModKey = null;   /* the ONE key known to be modulated (see below) */
-let knobCardName = "";
-let knobCardValue = "";
+let knobCardModKey = null;      /* the ONE key known to be modulated (see below) */
+let knobCardName = null;        /* header name, null when the card is not up */
+let knobCardHeaderValue = null; /* header value, ditto */
+let knobCardAnnouncedKnob = -1; /* which knob the last announcement was about */
 
 function knobCardClose() {
     if (knobCardKnob < 0) return;
     knobCardKnob = -1;
     knobCardExpiry = 0;
+    knobCardSlot = -1;
+    knobCardCompKey = null;
     knobCardKeys = null;
     knobCardMeta = null;
-    knobCardValues = null;
+    knobCardRowValues = null;
     knobCardViz = null;
     knobCardModKey = null;
+    /* Cleared so the NEXT raise announces. The `changed` test in
+     * showKnobFeedback is a content comparison, and content that survived a
+     * close matched itself: touch a knob, release, touch it again without
+     * moving it and the screen reader said nothing — which is precisely the
+     * gesture a screen-reader user makes to re-check a value. showOverlay does
+     * not have this bug because its comparison is `overlayActive && ...`, so a
+     * newly raised overlay always announces; this is that `overlayActive`. */
+    knobCardName = null;
+    knobCardHeaderValue = null;
+    knobCardAnnouncedKnob = -1;
     needsRedraw = true;
 }
 
+/* Deliberately mutating for a predicate, and the only place in this feature
+ * where the draw path writes state: the frame that finds the card expired is
+ * the frame that must draw without it, and expiry moves one way, so doing it
+ * here rather than in tick() removes a second place to forget. */
 function knobCardActive() {
     if (knobCardKnob < 0) return false;
     if (knobCardExpiry && Date.now() > knobCardExpiry) { knobCardClose(); return false; }
@@ -1166,12 +1194,12 @@ function knobCardDrawState() {
     if (!knobCardActive()) return null;
     return {
         name: knobCardName,
-        value: knobCardValue,
+        value: knobCardHeaderValue,
         row: knobCardKnob >> 2,
         touched: knobCardKnob,
         page: knobCardKeys ? { kind: "knobs", keys: knobCardKeys } : null,
         metaIndex: knobCardMeta,
-        values: knobCardValues,
+        values: knobCardRowValues,
         viz: knobCardViz,
         modulated: knobCardModKey ? ((k) => k === knobCardModKey) : null,
     };
@@ -1181,25 +1209,39 @@ function knobCardDrawState() {
  * Everything the card needs, resolved ONCE on touch-down.
  *
  * The reads happen here, on an input event, and never on the draw path: an IPC
- * round trip is ~2.8ms against a 1.68ms whole-page render, so four of them is a
- * quarter of a frame budget. Four is also the whole bill — one per key in the
- * touched knob ROW. The turned knob is updated by local arithmetic afterwards
- * (showKnobFeedback), so the card costs nothing per frame while it is up.
+ * round trip is ~2.8ms against a 1.68ms whole-page render, so a read costs more
+ * than redrawing the whole screen. The turned knob is updated by local
+ * arithmetic afterwards (showKnobFeedback), so the card costs nothing per frame
+ * while it is up.
  *
- * The neighbours therefore do not animate under modulation. That is the trade:
- * animating them means four reads EVERY frame to move a pointer nobody is
- * looking at.
+ * SIX reads, not four, and the difference is the two below: `ui_hierarchy` and
+ * `chain_params` are each an IPC round trip in their own right, on top of one
+ * per key in the touched knob ROW. That is ~17ms — a whole frame, spent on an
+ * input event. tests/host/test_knob_card_open_budget.sh pins the number,
+ * because this comment used to say four and nothing contradicted it.
+ *
+ * It could be four: buildKnobContextForKnob fetched both of these for this same
+ * component moments earlier and dropped them. Carrying them would mean a second
+ * cache of module metadata with its own staleness window, next to the one whose
+ * staleness is the bug documented in showKnobFeedback — not worth 5.6ms on a
+ * gesture, off the draw path.
+ *
+ * The neighbours do not animate under modulation. That is the trade: animating
+ * them means four reads EVERY frame to move a pointer nobody is looking at.
  */
 function knobCardOpen(knobIndex) {
     knobCardKnob = knobIndex;
+    knobCardSlot = selectedSlot;
+    knobCardCompKey = null;
     knobCardKeys = null;
     knobCardMeta = null;
-    knobCardValues = null;
+    knobCardRowValues = null;
     knobCardViz = null;
     knobCardModKey = null;
 
     const comps = slotChainComponents(selectedSlot);
     const comp = selectedChainComponent >= 0 ? comps[selectedChainComponent] : null;
+    knobCardCompKey = comp ? comp.key : null;
     if (!comp || !isChainModuleKey(comp.key)) return;  /* short card */
 
     const hierarchy = getComponentHierarchy(selectedSlot, comp.key);
@@ -1231,7 +1273,7 @@ function knobCardOpen(knobIndex) {
          * parameter that was never answered. null is the renderer's "--". */
         values[k] = (raw === null || raw === undefined || raw === "") ? null : raw;
     }
-    knobCardValues = values;
+    knobCardRowValues = values;
 }
 
 /*
@@ -1247,26 +1289,85 @@ function showKnobFeedback(knobIndex, name, value, raw) {
      * dismisses it on input. Only one of the two is ever allowed up. */
     hideOverlay();
 
-    if (knobCardKnob !== knobIndex) knobCardOpen(knobIndex);
+    /*
+     * The card is resolved against a SLOT and a COMPONENT, and both of them
+     * move without a view change — the jog steps selectedChainComponent, Track
+     * 1-4 sets selectedSlot, and a chain shape edit clamps the selection. Only
+     * setView closes the card, so reopening on the knob index alone gives a
+     * WRONG READING, not a stale-looking one: turn knob 1, jog once inside the
+     * 700ms decay window, turn knob 1 again, and the row still carries the
+     * previous module's keys, labels and meta while the line below writes the
+     * NEW component's value in under the OLD key. The number is current; the
+     * name beside it belongs to a parameter you are not touching.
+     *
+     * slotChainComponents reads chainConfigs, not the DSP, so this costs
+     * nothing.
+     */
+    const idComps = slotChainComponents(selectedSlot);
+    const idCompKey = (selectedChainComponent >= 0 && idComps[selectedChainComponent])
+        ? idComps[selectedChainComponent].key : null;
+    if (knobCardKnob !== knobIndex || knobCardSlot !== selectedSlot ||
+        knobCardCompKey !== idCompKey) {
+        /*
+         * A malformed ui_hierarchy can throw in here — buildMetaIndex iterates
+         * `lvl.params`, so a module serving `"params": 5` is a TypeError, and
+         * buildKnobContextForKnob never touched that field so this is a new
+         * exception surface on the touch path. Uncaught it would abort the rest
+         * of the MIDI handler AND strand the card: knobCardKnob is set at the
+         * top of knobCardOpen but the expiry is stamped below, so it would sit
+         * there as "held, no deadline" with no note-off coming to clear it.
+         */
+        try {
+            knobCardOpen(knobIndex);
+        } catch (e) {
+            debugLog(`knobCardOpen failed for knob ${knobIndex}: ${e}`);
+            /* Drop the half-built row, then re-establish the identity: what is
+             * left is the short header-only card, which still tells the truth
+             * (the name and value below do not come from the row). */
+            knobCardClose();
+            knobCardKnob = knobIndex;
+            knobCardSlot = selectedSlot;
+            knobCardCompKey = idCompKey;
+        }
+    }
     /* Held keeps it up with no deadline; a turn with no touch gets a decay. */
     knobCardExpiry = knobTouched[knobIndex] ? 0 : Date.now() + KNOB_CARD_DECAY_MS;
 
     /* The turned knob, updated by local arithmetic — the only thing that moves
      * while the card is up, and the reason it costs no IPC per frame. Empty
      * normalises to null for the same reason it does in knobCardOpen. */
-    if (knobCardValues && knobCardKeys && knobCardKeys[knobIndex] && raw !== undefined) {
-        knobCardValues[knobCardKeys[knobIndex]] = (raw === null || raw === "") ? null : raw;
+    if (knobCardRowValues && knobCardKeys && knobCardKeys[knobIndex] && raw !== undefined) {
+        knobCardRowValues[knobCardKeys[knobIndex]] = (raw === null || raw === "") ? null : raw;
     }
-    /* Only the TOUCHED key's modulation is known, because that read is one
-     * showKnobOverlay already pays for. Marking the neighbours would cost up
-     * to three more reads each. */
-    knobCardModKey = (name && name.endsWith("~") && knobCardKeys)
-        ? knobCardKeys[knobIndex] : null;
+    /*
+     * Only the TOUCHED key's modulation is known, because that read is one
+     * showKnobOverlay already pays for. Marking the neighbours would cost up to
+     * three more reads each.
+     *
+     * STICKY for as long as the card follows this knob, and never cleared here:
+     * the tilde only ever arrives from the touch path, because the turn path
+     * (processPendingHierKnob) deliberately avoids showKnobOverlay to dodge
+     * isHierarchyParamModulated's 1-3 reads and so passes a title with no
+     * tilde. Recomputing per call therefore made the mark vanish the instant
+     * you moved the knob. knobCardOpen clears it, which is the only moment a
+     * different parameter can appear under this knob — and modulation routing
+     * cannot change while a finger is on it.
+     */
+    if (name && name.endsWith("~") && knobCardKeys) {
+        knobCardModKey = knobCardKeys[knobIndex];
+    }
 
-    const changed = (knobCardName !== name || knobCardValue !== value);
+    /* The knob index is part of the comparison because a title alone is not
+     * unique: the noModule branch gives every knob the same ctx.title, so two
+     * knobs in a row would announce once between them. */
+    const changed = (knobCardAnnouncedKnob !== knobIndex ||
+                     knobCardName !== name || knobCardHeaderValue !== value);
     knobCardName = name;
-    knobCardValue = value;
-    if (changed) announceParameter(name, value);
+    knobCardHeaderValue = value;
+    if (changed) {
+        knobCardAnnouncedKnob = knobIndex;
+        announceParameter(name, value);
+    }
     needsRedraw = true;
 }
 
@@ -17686,14 +17787,17 @@ globalThis.onMidiMessageInternal = function(data) {
          * notes pre-change; keeping that avoids a stranded knobTouched on exit).
          * Release drains BOTH the hierarchy (pendingHierKnob) and slot-global
          * (pendingKnob) paths, which is what actually clears the value popup. */
-        if (coRunUiActive() && (status & 0xF0) === MidiNoteOn &&
+        if (coRunUiActive() &&
+                ((status & 0xF0) === MidiNoteOn || (status & 0xF0) === MidiNoteOff) &&
                 d1 >= MoveKnob1Touch && d1 <= MoveKnob8Touch && coRunWants(CORUN_GRP_TOUCH)) {
             const _tk = d1 - MoveKnob1Touch;
-            /* Same touch bookkeeping as the non-overtake handler below: inside
+            /* Same touch bookkeeping as the non-overtake handler below, both
+             * spellings of release included for the same reason: inside
              * runCoRunChainEdit the view IS the chain editor, so these edges
              * raise and drop the knob card and it must not be left held. */
-            knobTouched[_tk] = (d2 > 0);
-            if (d2 > 0) {
+            const _down = ((status & 0xF0) === MidiNoteOn && d2 > 0);
+            knobTouched[_tk] = _down;
+            if (_down) {
                 runCoRunChainEdit(function() {
                     const mmRole = getMultiMarkerKnobRole(_tk);
                     if (mmRole) {
@@ -17850,8 +17954,18 @@ globalThis.onMidiMessageInternal = function(data) {
     }
 
     /* Handle Note Off for knob release - clear pending knob state
-     * This ensures accumulated deltas are processed before next touch */
-    if ((status & 0xF0) === MidiNoteOn && d2 === 0) {
+     * This ensures accumulated deltas are processed before next touch.
+     *
+     * BOTH spellings of release. shared/param_pages/page_input.mjs has carried
+     * the reason since the knob grid shipped: "Move sends note-on with velocity
+     * 0 for release as well as note-off, so both spellings must clear the touch
+     * or a knob can be left stuck as held." This branch used to match only the
+     * velocity-0 note-on, which was harmless while it merely drained deltas —
+     * knobTouched made it load-bearing, because a knob stuck as held stamps the
+     * card with no decay deadline and a turn-raised card has no note-off
+     * coming to clear it. */
+    if (((status & 0xF0) === MidiNoteOn && d2 === 0) ||
+        (status & 0xF0) === MidiNoteOff) {
         if (d1 >= MoveKnob1Touch && d1 <= MoveKnob8Touch) {
             const knobIndex = d1 - MoveKnob1Touch;
             knobTouched[knobIndex] = false;
@@ -17868,7 +17982,7 @@ globalThis.onMidiMessageInternal = function(data) {
             /* Let go and the diagram is back.
              *
              * LAST, after the pending flush, because that flush shows feedback
-             * too: closing first only had the card reopen itself — with four
+             * too: closing first only had the card reopen itself — with six
              * fresh IPC reads — on the way out of the gesture. Unconditional on
              * the knob matching, for the same reason: the flush has already
              * stamped a decay deadline on it (the finger is gone by then), so a
