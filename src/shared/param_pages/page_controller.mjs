@@ -165,6 +165,24 @@ export const MOD_FAST_READS_PER_TICK = 1;
  */
 export const TURN_CLAIM_MS = 1200;
 
+/**
+ * Two taps on the same knob inside this window reset it to its declared
+ * default. 744 params across 39 modules declare one, and there is otherwise no
+ * way back to it short of reloading the preset.
+ *
+ * Double-tap rather than a modifier because the modifier was never advertisable:
+ * the reset lives on Mute+touch, and CC 88 is forwarded to Move unconditionally,
+ * so holding Mute to reach it also mutes the selected track. A gesture you have
+ * to warn people about is not a gesture.
+ *
+ * The obvious objection to a double-tap — lifting and re-placing a finger
+ * mid-adjustment is a normal thing to do, and would read as a reset — is what
+ * `turnedSinceTap` answers: a tap that had a TURN after it is an adjustment,
+ * not the first half of a double-tap, whatever its timing. So the gesture is
+ * "tap, tap" and never "tap, turn, tap".
+ */
+export const DOUBLE_TAP_MS = 350;
+
 /** How many times a page will re-read the contract waiting for late metadata. */
 export const META_RETRY_LIMIT = 8;
 /** Ticks between those attempts (~1 s at the shadow UI's 344 Hz tick).
@@ -288,6 +306,10 @@ export function createController(io = {}) {
         /* ms at which a TURN claimed the header with nothing held, or 0.
          * Only such a claim expires — see TURN_CLAIM_MS. */
         turnClaimMs: 0,
+        /* slot -> ms of the last touch-down, and whether that knob has been
+         * TURNED since. Together they are the double-tap — see DOUBLE_TAP_MS. */
+        lastTapMs: Object.create(null),
+        turnedSinceTap: Object.create(null),
         /* Name of the menu page currently ENTERED, or null. */
         menuEntered: null,
     };
@@ -485,8 +507,23 @@ export function createController(io = {}) {
          * the flag and the target ever disagree. */
         let raw = null;
         if (s.modCache[key]) raw = getParam(fullKey(key) + ":base");
-        if (raw === null || raw === undefined) raw = getParam(fullKey(key));
-        if (raw === null || raw === undefined) return null;
+        /*
+         * "" counts as a MISS, not as a value.
+         *
+         * A key nobody serves does not answer null — the shim replies with an
+         * error and a zeroed buffer, and the JS binding hands back "". So an
+         * empty `:base` sailed through this fallback as a legitimate reading,
+         * the plain key was never asked, and the cell showed Number("") = 0.
+         *
+         * On the slot-settings grid that was the visible bug: turn Volume, let
+         * go, and ~200ms later — when the settle window expires and the cursor
+         * reads again — it dropped to 0%. Volume was never 0; the value the UI
+         * held was an empty string. Both halves of the fallback take the same
+         * view, so a module that answers "" for a real key is also not
+         * mistaken for one that answered zero.
+         */
+        if (raw === null || raw === undefined || raw === "") raw = getParam(fullKey(key));
+        if (raw === null || raw === undefined || raw === "") return null;
 
         /* First successful read repairs a guessed range, once. */
         const meta = s.metaIndex.getOrGuess(key);
@@ -715,6 +752,10 @@ export function createController(io = {}) {
             s.touched = slot;
             s.turnClaimMs = 0;
         }
+
+        /* This knob is being adjusted, so the tap that started it is not the
+         * first half of a double-tap. */
+        s.turnedSinceTap[slot] = true;
         /* The Movy layout turns like Movy — see movy_knob.mjs — not like
          * Schwung's own dial/bar grid (knob_engine.mjs, a different,
          * time-based acceleration feel that predates this port). Same state
@@ -851,9 +892,23 @@ export function createController(io = {}) {
             }
             return;
         }
+        const tapAt = now();
+        const doubled = (tapAt - (s.lastTapMs[slot] || 0)) < DOUBLE_TAP_MS
+                        && !s.turnedSinceTap[slot];
+        s.lastTapMs[slot] = tapAt;
+        s.turnedSinceTap[slot] = false;
+
         if (s.touchOrder.indexOf(slot) < 0) s.touchOrder.push(slot);
         s.touched = slot;
         s.turnClaimMs = 0;
+
+        /* A double-tap resets, and says so instead of the usual touch readout —
+         * resetToDefault announces the new value itself. It also consumes the
+         * tap: a third tap starts a fresh pair rather than resetting again. */
+        if (doubled) {
+            s.lastTapMs[slot] = 0;
+            if (resetToDefault(slot)) return;
+        }
         const key = keyAt(slot);
         const meta = metaAt(slot);
         const dec = s.decorations ? s.decorations[slot] : null;

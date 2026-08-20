@@ -56,18 +56,34 @@ export const SLOT_GRID_PARAMS = [
      * what the list has always shown. */
     { key: "volume", name: "Volume", type: "float", min: 0, max: 4, step: 0.05, default: 1,
       display_format: ".0%" },
-    { key: "muted", name: "Mute", type: "enum", options: ["Off", "On"], short_options: ["OFF", "ON"] },
-    { key: "soloed", name: "Solo", type: "enum", options: ["Off", "On"], short_options: ["OFF", "ON"] },
-    { key: "transpose", name: "Trsp", type: "int", min: -12, max: 12, step: 1 },
+    { key: "muted", name: "Mute", type: "enum", options: ["Off", "On"], short_options: ["OFF", "ON"],
+      default: 0 },
+    { key: "soloed", name: "Solo", type: "enum", options: ["Off", "On"], short_options: ["OFF", "ON"],
+      default: 0 },
+    { key: "transpose", name: "Trsp", type: "int", min: -12, max: 12, step: 1, default: 0 },
+    /*
+     * Recv is the one setting here with NO honest default.
+     *
+     * Every other value has an obvious neutral — off, unity, no transposition,
+     * Auto — but a slot's receive channel defaults to the slot's OWN number,
+     * which this contract cannot know: it is synthesised once, not per slot.
+     * "All" would be a guess, and a wrong guess here silently re-routes
+     * everything the slot is listening to. Declaring nothing means a
+     * double-tap does nothing, which is the right answer to a question with no
+     * answer.
+     */
     { key: "receive_channel", name: "Recv", type: "enum",
       options: ["All"].concat(CHANNELS.map((c) => "Ch " + c)),
       short_options: ["ALL"].concat(CHANNELS) },
+    /* Index 1 is Auto — stored -1, see FWD_OFFSET — which is the documented
+     * default for a slot that has not been told otherwise. */
     { key: "forward_channel", name: "Fwd", type: "enum",
       options: ["Thru", "Auto"].concat(CHANNELS.map((c) => "Ch " + c)),
-      short_options: ["THR", "AUT"].concat(CHANNELS) },
+      short_options: ["THR", "AUT"].concat(CHANNELS), default: 1 },
     { key: "midi_fx_pre_mode", name: "MFX Pre", type: "enum",
-      options: ["Off", "On"], short_options: ["OFF", "ON"] },
-    { key: "mpe_mode", name: "MPE", type: "enum", options: ["Off", "On"], short_options: ["OFF", "ON"] },
+      options: ["Off", "On"], short_options: ["OFF", "ON"], default: 0 },
+    { key: "mpe_mode", name: "MPE", type: "enum", options: ["Off", "On"], short_options: ["OFF", "ON"],
+      default: 0 },
 ];
 
 /*
@@ -310,6 +326,31 @@ export function createSlotGridIo(io) {
             }
             const real = realKeyFor(k);
             return real ? io.readSlotParam(real) : "";
+        },
+
+        /*
+         * Is this param being driven by a modulation source?
+         *
+         * Answered HERE rather than by the host's generic oracle, for two
+         * reasons. It was wrong: that oracle falls back to comparing a live
+         * value against `<key>:base`, and no slot-level key serves `:base` —
+         * an unserved key answers "" rather than null, so every real `slot:*`
+         * setting compared unequal and wore the modulation tilde. Volume,
+         * Mute, Solo, Transpose, Recv and Fwd, all at once.
+         *
+         * And it was expensive: that fallback is up to THREE IPC round trips,
+         * spent once per tick on a view whose whole design is one read per
+         * tick — about 8ms of the frame, to answer a question whose answer is
+         * fixed. A slot-level setting is not a modulation target; only the
+         * LFO params are, since an LFO can drive the other one.
+         */
+        isModulated(fullKey) {
+            const k = bare(fullKey);
+            if (!/^lfo[12]:/.test(k)) return false;
+            if (!io.isModulated) return false;
+            /* The REAL key: the grid addresses these as "slot:lfo1:depth" and
+             * the device knows them as "lfo1:depth". */
+            return !!io.isModulated(realKeyFor(k));
         },
 
         /*

@@ -463,6 +463,34 @@ function makeSlot(over) {
     fail("without a resolver the target must fall through rather than throw");
 }
 
+/* ---- 9. defaults, so double-tap-to-reset has something to reset to ------
+ *
+ * Every value with an unambiguous neutral declares it. Recv deliberately does
+ * NOT: a slot receives on its own number, which a contract synthesised once
+ * cannot know, and "All" would silently re-route everything the slot hears.
+ */
+{
+  const cp = SG.allSlotGridParams();
+  const by = (k) => cp.find((p) => p.key === k);
+  const want = { volume: 1, muted: 0, soloed: 0, transpose: 0,
+                 forward_channel: 1, midi_fx_pre_mode: 0, mpe_mode: 0 };
+  for (const k in want) {
+    const p = by(k);
+    if (!p) fail("no such param: " + k);
+    else if (p.default !== want[k])
+      fail(k + " should default to " + want[k] + ", got " + JSON.stringify(p.default));
+  }
+  if (by("receive_channel").default !== undefined)
+    fail("Recv must NOT declare a default — a slot receives on its own channel, " +
+         "which this contract cannot know");
+
+  /* Fwd is stored offset, so its default is an INDEX like every other enum
+   * here: index 1 is Auto, which is stored as -1. Getting this wrong resets
+   * the slot to THRU, which is a different routing entirely. */
+  if (SG.FWD_OFFSET + -1 !== by("forward_channel").default)
+    fail("the Fwd default index and the stored AUTO value disagree");
+}
+
 if (failures) process.exit(1);
 console.log("PASS: slot grid contract — Main + LFO 1 + LFO 2 + Actions in that order, " +
             "Save As/Delete gated on a preset, all three storage conventions, " +

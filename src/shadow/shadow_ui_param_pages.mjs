@@ -130,9 +130,14 @@ export function enterParamPages(slot, component, prefix, restorePageName, io) {
             getParam: io ? io.getParam : (key) => ctx.getSlotParam(currentSlot, key),
             setParam: io ? io.setParam : (key, value) => ctx.setSlotParam(currentSlot, key, value),
             announce,
-            /* The list editor marks these with "~"; the grid ticks the cell. */
-            isModulated: (key) => (typeof ctx.isParamModulated === 'function'
-                ? !!ctx.isParamModulated(currentSlot, key) : false),
+            /* The list editor marks these with "~"; the grid ticks the cell.
+             * A synthesised contract may answer for itself — slot settings
+             * does, because the generic oracle both got it wrong for `slot:*`
+             * keys and cost three IPC round trips per tick to do so. */
+            isModulated: (io && io.isModulated)
+                ? io.isModulated
+                : (key) => (typeof ctx.isParamModulated === 'function'
+                    ? !!ctx.isParamModulated(currentSlot, key) : false),
         });
     }
     /* Entering the view is the only way the module behind it can have changed,
