@@ -1097,11 +1097,24 @@ function findLevelListingParam(bare) {
 
 function openParamEditorFromGrid(slotIndex, fullKey, meta) {
     const componentKey = paramPagesComponent();
-    /* Slot settings is a synthesised contract, not a component: there is no
+    /*
+     * Slot settings is a synthesised contract, not a component: there is no
      * "slot:ui_hierarchy" to fetch, so enterHierarchyEditor would fall through
-     * to the no-presets fallback. Nothing on the slot page is divable today, so
-     * this is a guard rather than a feature — a wrong screen is worse than none. */
-    if (componentKey === "slot") return;
+     * to the no-presets fallback. The one divable thing on its pages is an LFO
+     * Target, which has its own two-step picker — so open that and refuse
+     * everything else rather than land somewhere wrong.
+     */
+    if (componentKey === "slot") {
+        const m = /^slot:lfo([12]):target$/.exec(String(fullKey || ""));
+        if (m) {
+            /* enterLfoTargetPicker reads lfoCtx, so point it at this LFO first —
+             * the same context the list editor builds. */
+            lfoCtx = makeSlotLfoCtx(slotIndex, Number(m[1]) - 1);
+            enterLfoTargetPicker();
+            needsRedraw = true;
+        }
+        return;
+    }
     /* Read the grid page BEFORE exiting — the level it was on is where the
      * param lives, and exitParamPages tears the controller down. */
     const page = currentParamPage();
