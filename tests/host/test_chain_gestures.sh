@@ -289,9 +289,13 @@ const call = (maker, deps, names) => maker(...names.map((n) => deps[n]));
 /* ---- the picker: None removes and compacts, a module swaps in place ---- */
 
 const makeChoice = lift("applyPickerChoiceToChain",
-  ["chainComponentId", "parseChainId", "chainRemoveAt", "setChainComponentModule"]);
+  ["chainComponentId", "parseChainId", "chainRemoveAt", "setChainComponentModule",
+   "getChainComponentModule"]);
 if (makeChoice) {
-  const choose = makeChoice(chainComponentId, parseId, removeAt, setChainComponentModule);
+  const getChainComponentModule = lift("getChainComponentModule",
+    ["parseChainId", "chainComponentId"])(parseId, chainComponentId);
+  const choose = makeChoice(chainComponentId, parseId, removeAt, setChainComponentModule,
+                            getChainComponentModule);
 
   const swapped = choose({ midiFx: [], synth: null, fx: mods(["a", "b", "c"]) }, "fx1", "delay");
   if (order(swapped.cfg.fx) !== "delay,b,c")

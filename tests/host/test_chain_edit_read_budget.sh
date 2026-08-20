@@ -115,21 +115,31 @@ function world() {
     w.chainConfigs, chainComponentId, parseChainId, chainMoveBy, writeChainOrder, noop, noop);
 
   const applyPickerChoiceToChain = lift("applyPickerChoiceToChain",
-    ["chainComponentId", "parseChainId", "chainRemoveAt", "setChainComponentModule"])(
-    chainComponentId, parseChainId, chainRemoveAt, setChainComponentModule);
+    ["chainComponentId", "parseChainId", "chainRemoveAt", "setChainComponentModule",
+     "getChainComponentModule"])(
+    chainComponentId, parseChainId, chainRemoveAt, setChainComponentModule,
+    getChainComponentModule);
 
   const getSlotModuleSignature = lift("getSlotModuleSignature", ["getSlotParam", "CHAIN_CAP"])(getSlotParam, CHAIN_CAP);
 
   w.lastChainComponent = [];
   w.slotUserCleared = [];
+  /* A picker swap drops any LFO routing aimed at the position it replaces --
+     see test_chain_lfo_routing_swap.sh. Lifted rather than stubbed so the
+     reads and writes it makes are counted in this file budget too. */
+  const pickerReplacedModule = lift("pickerReplacedModule", [])();
+  const clearLfoRoutingForComponent = lift("clearLfoRoutingForComponent",
+    ["getSlotParam", "setSlotParam"])(getSlotParam, setSlotParam);
   const applyComponentSelectionConfirmed = lift("applyComponentSelectionConfirmed",
     ["writeChainOrder", "host_log", "setSlotParam", "print", "host_track_event",
      "loadChainConfigFromSlot", "lastSlotModuleSignatures", "getSlotModuleSignature",
      "invalidateKnobContextCache", "selectedSlot", "slotChainComponents",
-     "selectedChainComponent", "lastChainComponent", "setView", "VIEWS", "needsRedraw"])(
+     "selectedChainComponent", "lastChainComponent", "setView", "VIEWS", "needsRedraw",
+     "pickerReplacedModule", "clearLfoRoutingForComponent", "getComponentParamPrefix"])(
     writeChainOrder, undefined, setSlotParam, noop, undefined,
     loadChainConfigFromSlot, [], getSlotModuleSignature,
-    noop, 0, slotChainComponents, 0, w.lastChainComponent, noop, VIEWS, false);
+    noop, 0, slotChainComponents, 0, w.lastChainComponent, noop, VIEWS, false,
+    pickerReplacedModule, clearLfoRoutingForComponent, getComponentParamPrefix);
 
   /* availableModules / selectedModuleIndex are what the picker was showing when
      the user clicked; they are set per test. */
