@@ -779,6 +779,20 @@ Two consequences worth carrying:
 
 Task 7 checks RSS on hardware with a full chain.
 
+## Working on this branch concurrently
+
+Several agents commit here at once. Two rules, both learned the hard way:
+
+- **Never `git commit --amend`, `git rebase`, or rewrite history.** An amend on this
+  branch raced another agent and silently retargeted whatever was HEAD at that
+  moment, folding an unrelated docs commit into a code commit and destroying its
+  message. Nothing was lost only because the content happened to be additive and
+  someone checked. Commit forward; a slightly untidy history is cheaper than a
+  destroyed one.
+- **Commit only your own paths.** `git add <explicit paths>`, never `git add -A`,
+  and never `git commit -a`. Another agent's half-written file is one careless
+  `add -A` away from being committed by you.
+
 ## Notes for the implementer
 
 - **`grep` in this environment is a shell function that silently returns nothing** on some files — use `command grep`. A lone NUL byte also makes a file "binary" to grep; `file` will tell you.
