@@ -73,6 +73,14 @@ diagram does not need to announce itself.
   synth, because the two sides are different kinds of thing and crossing would
   be a type change rather than a reorder. Moving stops at the ends; it does not
   wrap.
+- **The footer follows the modifier.** At rest it reads
+  `JOG SEL / CLK OPEN / BACK EXIT`; with Shift held, `JOG MOVE`. This is
+  already how the knob grid behaves (`JOG PAGE` becomes `JOG SECT`, and
+  `KNB FINE` appears), so holding Shift is self-documenting rather than
+  something you have to be told. It is also the better answer to the
+  discoverability problem that a modifier gesture normally has — better than
+  the picker entries, which stay as a second way in but are no longer carrying
+  that job alone.
 - **`+`** opens the picker and inserts at the position the `+` itself occupies
   — the OUTERMOST end of that section. Adding an audio FX appends it after the
   last one, which is both what the visual position promises and the common
