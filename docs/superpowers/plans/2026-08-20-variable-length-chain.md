@@ -755,6 +755,22 @@ git commit -m "feat(shadow): persist chain order; pin that two-FX slots still lo
 - [ ] On hardware: an existing saved patch with two FX loads unchanged
 - [ ] On hardware: RSS with a full 8-FX chain is sane — see the memory note below
 
+**Slot-activation checks (Task 10) — these cannot be tested off-device.**
+Both shim files are TUs with a dependency web that resists native compilation, so
+these four are the ONLY verification that a chain built in the higher slots makes
+any sound at all:
+
+1. Load a module into **fx5 only** — nothing in fx1-4, no synth. The slot must be
+   audible. Before Task 10 it was silent.
+2. Load a module into **midi_fx4 only**. The slot must activate and dispatch MIDI.
+3. **Reload the set** with each of the above (this exercises the `load_file` path,
+   a different activation site) and confirm the slot comes back active, not silent.
+4. **The teardown regression, and the one most worth exercising:** with a module in
+   fx5, clear the slot (patch -> None). It must go silent AND STAY silent — it must
+   not re-activate on the next MIDI event. Two teardown paths used to clear only
+   synth/fx1/fx2, which was harmless while nothing looked past fx2 and became a
+   live regression the moment activation started seeing the whole list.
+
 **Verify:** `./scripts/build.sh && ./scripts/install.sh local --skip-modules --skip-confirmation`, then drive the device
 
 **Steps:**
