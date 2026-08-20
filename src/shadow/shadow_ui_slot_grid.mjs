@@ -287,6 +287,10 @@ export function realKeyFor(gridKey) {
  * @param {()=>boolean}            io.isMpeMode
  * @param {(on:boolean)=>void}     io.setMpeMode
  * @param {()=>boolean}            io.hasPreset
+ * @param {(lfoIndex:number)=>object} [io.describeTarget]  resolve LFO N's
+ *   routing to {short, header, long} — see shared/lfo_target_label.mjs. The
+ *   host owns it because it costs IPC and therefore wants caching; omitted,
+ *   the target simply reads as its stored key, which is what it did before.
  */
 export function createSlotGridIo(io) {
     const bare = (fullKey) => String(fullKey || "").replace(/^[^:]*:/, "");
@@ -306,6 +310,22 @@ export function createSlotGridIo(io) {
             }
             const real = realKeyFor(k);
             return real ? io.readSlotParam(real) : "";
+        },
+
+        /*
+         * An LFO's target is the one value here that is a KEY, not a number or
+         * a word from a declared list: it reads "fx1" and means "Room Size on
+         * the Freeverb in FX 1". The cell has 30px and the header has 76, so
+         * they get different halves of that rather than the same string cut
+         * twice — the same split short_options makes for enums.
+         */
+        formatValue(fullKey, raw, surface) {
+            const k = bare(fullKey);
+            const m = /^lfo([12]):target$/.exec(k);
+            if (!m || !io.describeTarget) return null;
+            const d = io.describeTarget(parseInt(m[1], 10) - 1);
+            if (!d) return null;
+            return surface === "header" ? d.header : d.short;
         },
 
         setParam(fullKey, value) {

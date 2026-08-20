@@ -641,6 +641,68 @@ Promise.all([
     console.log("PASS: Movy modulation dot — rides the arc, suppressed at base, never clipped");
   }
 
+  /* ---- displayFor: a value the HOST resolves, per surface ---------------
+   *
+   * An LFO target is stored as "fx1" and means "Room Size on the Freeverb in
+   * FX 1". Only the host can know that, so the renderer takes an optional
+   * formatter — and it has to reach BOTH the header (76px, which is the point
+   * of resolving at all) and the cell (30px, which gets the short form). The
+   * wiring is the risk: an override honoured in one place and not the other
+   * looks fine on screen and is wrong in exactly the case it exists for.
+   *
+   * Compared as PIXELS against the same page drawn without a formatter, so
+   * this cannot pass by the string being computed and then dropped.
+   */
+  {
+    const key = "target";
+    const meta = { key: key, label: "Targ", type: "string", kind: "opaque" };
+    const metaIndex = { getOrGuess: () => meta };
+    const page = { kind: "knobs", name: "LFO 1", level: "lfo1",
+                   keys: [key, null, null, null, null, null, null, null] };
+    const render = (opts) => {
+      const fb = H.createFramebuffer();
+      RM.renderPageMovy(H.drawContext(fb), Object.assign({
+        page: page, metaIndex: metaIndex, values: { target: "fx1" },
+        title: "S1", pageIndex: 0, pageCount: 3, touched: -1,
+        modulated: () => false, modValues: {}, pageGroups: [], viz: [],
+      }, opts));
+      return fb;
+    };
+    const band = (fb, y0, y1) => {
+      let n = 0;
+      for (let y = y0; y < y1; y++) for (let x = 0; x < 128; x++) if (fb.pixels[y * fb.width + x]) n++;
+      return n;
+    };
+
+    const fmt = (k, raw, surface) =>
+      (k === key ? (surface === "header" ? "FX 1: Room Size" : "Room Size") : null);
+
+    /* The CELL, untouched: the opaque box shows the value, and the label band
+     * shows the value while held. Both must change. */
+    const plainCell = render({});
+    const fmtCell = render({ displayFor: fmt });
+    if (band(plainCell, RM.ROW0_Y, RM.LBL0_Y + RM.LBL_H) === band(fmtCell, RM.ROW0_Y, RM.LBL0_Y + RM.LBL_H)) {
+      fail("displayFor never reached the cell — it still drew the stored key");
+    }
+
+    /* The HEADER, while the knob is held. */
+    const plainHdr = render({ touched: 0, touchedSlots: [0] });
+    const fmtHdr = render({ touched: 0, touchedSlots: [0], displayFor: fmt });
+    if (band(plainHdr, 0, RM.HEADER_H) === band(fmtHdr, 0, RM.HEADER_H)) {
+      fail("displayFor never reached the held-knob header — the surface with the room for it");
+    }
+
+    /* Returning null must leave the ordinary path EXACTLY as it was: this is
+     * an opt-in for one key, not a new display path for every param. */
+    const nulled = render({ displayFor: () => null });
+    if (nulled.countLit() !== plainCell.countLit()) {
+      fail("a displayFor returning null changed the drawing — the fallback is not identical");
+    }
+    if (fmtCell.clipped() > 0 || fmtHdr.clipped() > 0) {
+      fail("a host-resolved value drew outside the display");
+    }
+  }
+
   console.log("PASS: Movy layout — " + rendered + " page renders through the native draw context, " +
               "nothing off-screen, knob ring is a true circle, filter roll-off reaches the axis at every detent");
 });

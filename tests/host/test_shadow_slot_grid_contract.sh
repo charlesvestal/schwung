@@ -28,13 +28,22 @@ function makeSlot(over) {
     "slot:transpose": "0", "slot:receive_channel": "1",
     "slot:forward_channel": "-1", "midi_fx_pre_mode": "0",
   }, over || {});
-  const state = { store, mpe: false, mpeCalls: [], preset: false };
+  const state = { store, mpe: false, mpeCalls: [], preset: false,
+                  describeCalls: [], targets: {} };
   const io = SG.createSlotGridIo({
     readSlotParam: (k) => (k in store ? store[k] : ""),
     writeSlotParam: (k, v) => { store[k] = String(v); },
     isMpeMode: () => state.mpe,
     setMpeMode: (on) => { state.mpeCalls.push(on); state.mpe = !!on; },
     hasPreset: () => state.preset,
+    /* The resolver the host owns, stubbed: the real one costs a dozen reads
+     * lives in shadow_ui.js, which is why the grid only ever receives its
+     * ANSWER. Counted, because the grid asks once per drawn surface and a
+     * formatter that resolved per call would be a frame-rate bug. */
+    describeTarget: (i) => {
+      state.describeCalls.push(i);
+      return state.targets[i] || null;
+    },
   });
   return { state, store, io };
 }
@@ -408,8 +417,55 @@ function makeSlot(over) {
   if (io.getParam("slot:not_a_real_param") !== "9") fail("an unknown slot key should round-trip");
 }
 
+/* ---- 8. an LFO target reads as a NAME, differently per surface ----------
+ *
+ * The one value in this contract that is a KEY rather than a number or a word
+ * from a declared list. It read "fx1" everywhere — and in a 30px cell, "FX".
+ * The cell gets the param, the header gets the component too, and everything
+ * else in the contract is left to the ordinary display path.
+ */
+{
+  const { io, state } = makeSlot();
+  state.targets[0] = { short: "Room Size", header: "FX 1: Room Size",
+                       long: "Freeverb: Room Size", empty: false };
+
+  if (io.formatValue("slot:lfo1:target", "fx1", "cell") !== "Room Size")
+    fail("the cell should get the param name alone, got " +
+         JSON.stringify(io.formatValue("slot:lfo1:target", "fx1", "cell")));
+  if (io.formatValue("slot:lfo1:target", "fx1", "header") !== "FX 1: Room Size")
+    fail("the header has the room for the component and should use it, got " +
+         JSON.stringify(io.formatValue("slot:lfo1:target", "fx1", "header")));
+  if (state.describeCalls.join() !== "0,0")
+    fail("lfo1:target must resolve LFO index 0, got " + state.describeCalls.join());
+
+  /* Returning null, not a string, is what lets every other param fall through
+   * to displayValue — a formatter that answered for everything would have to
+   * reimplement the whole display path. */
+  for (const k of ["slot:volume", "slot:muted", "slot:transpose", "slot:mpe_mode"]) {
+    if (io.formatValue(k, "1", "cell") !== null)
+      fail(k + " must fall through to the ordinary display path");
+  }
+
+  /* Both LFOs, and only the two of them. */
+  state.targets[1] = { short: "Cutoff", header: "Synth: Cutoff", long: "Braids: Cutoff", empty: false };
+  if (io.formatValue("slot:lfo2:target", "synth", "cell") !== "Cutoff")
+    fail("the target of LFO 2 is not resolved");
+  if (io.formatValue("slot:lfo3:target", "synth", "cell") !== null)
+    fail("there is no LFO 3 — that key must fall through, not resolve");
+
+  /* No resolver injected (a host that has not wired it): the grid must still
+   * work, showing the stored key exactly as it always did. */
+  const bare = SG.createSlotGridIo({
+    readSlotParam: () => "", writeSlotParam: () => {},
+    isMpeMode: () => false, setMpeMode: () => {}, hasPreset: () => false,
+  });
+  if (bare.formatValue("slot:lfo1:target", "fx1", "cell") !== null)
+    fail("without a resolver the target must fall through rather than throw");
+}
+
 if (failures) process.exit(1);
 console.log("PASS: slot grid contract — Main + LFO 1 + LFO 2 + Actions in that order, " +
             "Save As/Delete gated on a preset, all three storage conventions, " +
-            "the Fwd Ch offset pinned at both ends, MPE derived and edge-triggered");
+            "the Fwd Ch offset pinned at both ends, MPE derived and edge-triggered, " +
+            "LFO targets resolved per surface");
 '

@@ -110,6 +110,21 @@ if (/PAGE_PRESET|PAGE_ITEMS|PAGE_MODES/.test(v.replace(/PAGE_KNOBS/g, ""))) {
   }
 }
 
+/* ---- an LFO target is never printed as its stored keys ------------------
+ *
+ * The routing is two internal keys and every surface used to print them raw:
+ * "fx1:room_size" in the list row and the title, "FX" in a 30px grid cell.
+ * The resolver exists now (shared/lfo_target_label.mjs) and the grid is wired
+ * to it through describeTarget; the list must not drift back.
+ */
+want(/from '\''\/data\/UserData\/schwung\/shared\/lfo_target_label\.mjs'\''/,
+     "the LFO target resolver is not imported");
+want(/describeTarget:/, "the slot grid is not given a target resolver");
+if (/target \+ ":" \+ param/.test(s)) {
+  fail("a surface still prints the LFO target as its stored keys (target + \":\" + param)");
+}
+
 console.log("PASS: shadow wiring — parses, view dispatched/ticked/fed, setting defaults to List, " +
-            "hand-off cannot loop, screen reader keeps the list, device keys use the prefix");
+            "hand-off cannot loop, screen reader keeps the list, device keys use the prefix, " +
+            "LFO targets resolve to names");
 '

@@ -181,6 +181,26 @@ export function createController(io = {}) {
      * library cannot answer that — it is host state — so it is injected, and
      * defaults to "no" for callers that have no modulation. */
     const isModulated = io.isModulated || (() => false);
+    /*
+     * Optional: how the HOST wants a value read on a given surface.
+     *
+     *   formatValue(fullKey, raw, surface) -> string | null
+     *   surface: "cell" (a 30px label band) | "header" (the held-knob strip,
+     *            also what the screen reader speaks)
+     *
+     * For values whose reading cannot be declared statically, the way an enum's
+     * can with options/short_options. An LFO's target is stored as "fx1" and
+     * reads "FX 1: Room Size" — only the host knows what is loaded in fx1, and
+     * resolving it costs IPC, so both the lookup and its caching stay on the
+     * host side of the injection. Returning null falls back to the ordinary
+     * displayValue path, so a formatter can answer for one key and ignore the
+     * rest.
+     *
+     * Given the FULL key, like getParam and setParam — the renderer works in
+     * bare page keys and an io that had to handle both spellings would be an
+     * invitation to handle one of them wrong.
+     */
+    const formatValue = io.formatValue || null;
     const now = io.now || (() => Date.now());
     /* Graphics default on; a caller can pass `enableViz: false` to keep the
      * plain grid (a tool that wants every cell individually addressable), and
@@ -837,7 +857,14 @@ export function createController(io = {}) {
         const key = keyAt(slot);
         const meta = metaAt(slot);
         const dec = s.decorations ? s.decorations[slot] : null;
-        announce(announceTouch(meta, key ? s.values[key] : null, slot, dec));
+        /* Whatever the header is about to show is what gets spoken — a routing
+         * read out as "fx1" is no more use by ear than it is by eye. */
+        let spoken = key ? s.values[key] : null;
+        if (formatValue && key) {
+            const resolved = formatValue(fullKey(key), spoken, "header");
+            if (resolved !== null && resolved !== undefined) spoken = resolved;
+        }
+        announce(announceTouch(meta, spoken, slot, dec));
     }
 
     /**
@@ -985,6 +1012,9 @@ export function createController(io = {}) {
                 page: page(), metaIndex: s.metaIndex, values: s.values,
                 title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
                 touched: s.hintLines ? -1 : s.touched,
+                displayFor: formatValue
+                    ? (key, raw, surface) => formatValue(fullKey(key), raw, surface)
+                    : null,
                 /* Every knob under a finger inverts its label, not just the one
                  * the header is following. */
                 touchedSlots: s.hintLines ? [] : s.touchOrder,
