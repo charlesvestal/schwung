@@ -249,6 +249,8 @@ export function createController(io = {}) {
         /* Cursor per MENU page, keyed by page name for the same reason
          * sectionMemory is: a rebuild moves every index. */
         menuCursor: Object.create(null),
+        /* Every knob currently held, oldest first. See onKnobTouch. */
+        touchOrder: [],
         /* Name of the menu page currently ENTERED, or null. */
         menuEntered: null,
     };
@@ -661,6 +663,12 @@ export function createController(io = {}) {
          * rather than writing nonsense into it. */
         if (!isTurnable(meta)) return null;
 
+        /* Turning claims the header: "last touched or MOVED" is the one you are
+         * working on, and a knob can be turned without the capacitive touch
+         * ever registering. It does not join touchOrder — nothing is being
+         * held — so it stops leading the header as soon as a held knob does. */
+        if (!s.touchOrder.length || s.touchOrder.indexOf(slot) >= 0) s.touched = slot;
+
         const t = nowMs === undefined ? now() : nowMs;
         /* The Movy layout turns like Movy — see movy_knob.mjs — not like
          * Schwung's own dial/bar grid (knob_engine.mjs, a different,
@@ -717,7 +725,18 @@ export function createController(io = {}) {
         return wire;
     }
 
-    /** Capacitive touch. Down announces the full name and value. */
+    /*
+     * Capacitive touch. Down announces the full name and value.
+     *
+     * TOUCH IS A SET, not a slot. Hands have more than one finger: hold one
+     * knob, touch a second, release the second, and the first is still held —
+     * but a single `touched` index had already been overwritten and then
+     * cleared, so the knob under your finger stopped being highlighted.
+     *
+     * `touchOrder` keeps every knob currently down, in the order they were
+     * touched. Every one of them highlights; the header follows the LAST one
+     * touched or turned, which is the one you are actually working on.
+     */
     function onKnobTouch(slot, down) {
         if (s.hintLines) dismissHint();
         /* Reaching for a knob is an unambiguous "I want the grid", so it
@@ -725,7 +744,10 @@ export function createController(io = {}) {
          * back out of first. */
         if (down && s.pickerOpen) closePicker();
         if (!down) {
-            if (s.touched === slot) s.touched = -1;
+            const at = s.touchOrder.indexOf(slot);
+            if (at >= 0) s.touchOrder.splice(at, 1);
+            /* The header falls back to whatever is still held, not to nothing. */
+            s.touched = s.touchOrder.length ? s.touchOrder[s.touchOrder.length - 1] : -1;
             /* Release flushes immediately rather than waiting out
              * SETPARAM_THROTTLE_MS — the hand has stopped, so there is no
              * more flooding to protect against, and the settled value should
@@ -739,6 +761,7 @@ export function createController(io = {}) {
             }
             return;
         }
+        if (s.touchOrder.indexOf(slot) < 0) s.touchOrder.push(slot);
         s.touched = slot;
         const key = keyAt(slot);
         const meta = metaAt(slot);
@@ -890,6 +913,9 @@ export function createController(io = {}) {
                 page: page(), metaIndex: s.metaIndex, values: s.values,
                 title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
                 touched: s.hintLines ? -1 : s.touched,
+                /* Every knob under a finger inverts its label, not just the one
+                 * the header is following. */
+                touchedSlots: s.hintLines ? [] : s.touchOrder,
                 modulated: (key) => !!s.modCache[key],
                 modValues: s.modValues,
                 pageGroups: pageGroups(),
