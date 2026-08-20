@@ -15001,15 +15001,42 @@ function makeSlotLfoCtx(slot, lfoIdx) {
                 }
                 comps.push({ key: "synth", label: "Synth: " + name });
             }
-            for (let i = 1; i <= 2; i++) {
+            /*
+             * Both sections are as long as the chain SAYS it is.
+             *
+             * They used to stop at two, which was the old fixed shape; the DSP
+             * has held eight of each for a while, so an eight-FX chain offered
+             * modulation of the first two positions and silently pretended the
+             * rest were not there.
+             *
+             * The bound is the PUBLISHED COUNT, never the cap. This function
+             * runs inside a draw on a describeLfoTargetFor cache miss, and a
+             * reorder forces one (resetLfoTargetLabels), so every position
+             * walked costs two IPC round trips at ~2.8ms — walking to the cap
+             * would turn the frame after every reorder into ~16 reads, ~45ms,
+             * for positions that mostly hold nothing. One read for the count
+             * buys the right length, and a two-FX chain costs what it always
+             * did.
+             *
+             * The count is a HIGH-WATER MARK (chain_host.c keeps
+             * `fx_count = slot + 1` and only trims a trailing NULL), so an
+             * interior position inside it can still be empty — hence the
+             * per-position guard stays.
+             */
+            const count = (key, cap) => {
+                const n = parseInt(getSlotParam(slot, key), 10);
+                return (isNaN(n) || n < 0) ? 0 : Math.min(n, cap);
+            };
+            const fxCount = count("fx_count", CHAIN_CAP.fx);
+            for (let i = 1; i <= fxCount; i++) {
                 const fxModule = getSlotParam(slot, "fx" + i + "_module");
                 if (fxModule) {
                     const name = getSlotParam(slot, "fx" + i + ":name") || fxModule;
                     comps.push({ key: "fx" + i, label: "FX " + i + ": " + name });
                 }
             }
-            const midiFxCount = parseInt(getSlotParam(slot, "midi_fx_count") || "0");
-            for (let i = 1; i <= midiFxCount && i <= 2; i++) {
+            const midiFxCount = count("midi_fx_count", CHAIN_CAP.midiFx);
+            for (let i = 1; i <= midiFxCount; i++) {
                 const mfxModule = getSlotParam(slot, "midi_fx" + i + "_module");
                 if (mfxModule) {
                     const name = getSlotParam(slot, "midi_fx" + i + ":name") || mfxModule;
@@ -15068,6 +15095,11 @@ function makeMfxLfoCtx(lfoIdx) {
         setParamBlocking: function(key, val) { return shadowSetParamBlocking(0, prefix + key, val); },
         getTargetComponents: function() {
             const comps = [];
+            /* Four, not a published count: Master FX is a FIXED array of
+             * MASTER_FX_SLOTS (shadow_chain_mgmt.h), not a variable-length
+             * list, and it publishes no count to ask. This walks the whole
+             * thing already, so it has none of the slot version's blind spot
+             * — do not "fix" it to match. */
             for (let i = 0; i < 4; i++) {
                 const name = shadow_get_param(0, "master_fx:fx" + (i + 1) + ":name") || "";
                 if (name) {
