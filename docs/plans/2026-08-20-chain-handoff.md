@@ -158,10 +158,12 @@ while it corrupted FX 1.
   and dropping `shadow_ui_master_fx.mjs`'s own `TOTAL_W` row. The two screens
   also stop looking like different products, which is the direction the movy
   chrome work already took everything else.
-- **Memory: accept the +512 KB for now.** It is BSS, so runtime RAM rather than
-  image size on a root FS that is already full, and it is cheap next to
-  truncating param metadata or introducing owned-buffer permutation bugs before
-  they are needed. **It comes back at Step 4 for a different reason:** with the
+- **Memory: accept the +512 KB. It is not a consideration.** Measured on the
+  device: 1849 MB total, 1232 MB available. Half a megabyte is 0.04% of
+  headroom. It is BSS, so runtime RAM rather than image size on a root FS that
+  *is* full — the two are easy to conflate here and only the second one is ever
+  tight. Do not spend effort shrinking or indirecting it for size.
+  **It comes back at Step 4 for a different reason entirely:** with the
   cache embedded, permuting a position means moving 128 KB structs, and the
   permutation runs on the SPI callback. Indirecting it there is a performance
   fix that happens to also fix the size — and it is what would make
