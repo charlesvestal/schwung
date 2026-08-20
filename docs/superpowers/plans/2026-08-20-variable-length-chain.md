@@ -711,6 +711,7 @@ git commit -m "feat(shadow): persist chain order; pin that two-FX slots still lo
 - [ ] On hardware: a chain of 4+ audio FX renders, scrolls, and the synth stays identifiable
 - [ ] On hardware: Shift+jog reorders and the footer reads `JOG MOVE` while held
 - [ ] On hardware: an existing saved patch with two FX loads unchanged
+- [ ] On hardware: RSS with a full 8-FX chain is sane — see the memory note below
 
 **Verify:** `./scripts/build.sh && ./scripts/install.sh local --skip-modules --skip-confirmation`, then drive the device
 
@@ -727,6 +728,30 @@ git commit -m "feat(shadow): move-left/right in the module picker"
 ```
 
 ---
+
+## Memory cost of the caps — measured, not blocking
+
+Raising the caps grows `chain_instance_t` from **10.3 MB to 24.8 MB** per instance
+(measured by compiling the header both ways and printing `sizeof`), so ~99 MB of
+instance across four slots. It is dominated by fixed 2-D arrays the caps multiply:
+`fx_params[MAX_AUDIO_FX][MAX_CHAIN_PARAMS]` at ~1.1 MB per FX slot, and
+`fx_ui_hierarchy[N][65536]`.
+
+This is not expected to bite, and the reason has been verified rather than assumed:
+the instance is obtained by a single `calloc(1, sizeof(chain_instance_t))`
+(`chain_host.c:85`) and NOTHING memsets the whole struct — every `memset` in the
+module targets a small sub-field. At that size glibc serves the allocation by
+`mmap`, so untouched pages are never faulted in and RSS grows with FX actually
+LOADED (~1.1 MB each), not with the cap.
+
+Two consequences worth carrying:
+- If anyone ever adds a whole-struct `memset`/`memcpy`, this becomes ~99 MB resident
+  immediately. That is now a load-bearing property of an innocuous-looking line.
+- If the caps need to go higher, the lever is `MAX_CHAIN_PARAMS` /
+  `MAX_ENUM_OPTIONS`, or heap-allocating the per-slot param tables on load — not
+  the caps themselves.
+
+Task 7 checks RSS on hardware with a full chain.
 
 ## Notes for the implementer
 
