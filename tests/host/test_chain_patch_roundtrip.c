@@ -423,6 +423,117 @@ static void test_midi_fx_state_forms(chain_instance_t *inst, patch_info_t *patch
           "a state was sent to the MIDI FX that had none [%s]", fake_midi_fx[2].log);
 }
 
+/*
+ * ---- 2d. A knob mapped to fx4+ survives the reload, and a dead one stays dead
+ *
+ * "Knob on a high slot" has failed silently three separate times -- the
+ * metadata ladder stopped at fx3, the live-value read at fx2, the patch layer
+ * at fx4 -- and every time the mapping still routed values, so the only symptom
+ * was a knob that stepped by the wrong amount or restored the wrong value.
+ * test_full_capacity above covers the LAST position, which is the cap boundary;
+ * this covers an INTERIOR high position, which is the one an off-by-one bound
+ * lets through.
+ *
+ * It also pins the two shapes the permutation redesign newly puts in a save
+ * file. Deleting the module a knob was mapped to now clears that mapping's
+ * target and param IN PLACE (chain_reorder.c) rather than removing the row, so
+ * a `{"target": "", "param": ""}` row reaches the JSON -- and it is written
+ * mid-array, because the row keeps its position in the table. That row must be
+ * DROPPED on reload without shifting the rows after it onto the wrong CCs.
+ *
+ * And a hand-edited or stale patch can name a position past the chain it ships
+ * with; that must resolve to nothing rather than to slot 0, which would be a
+ * knob silently driving the first module in the chain.
+ */
+static void test_knob_high_slots(chain_instance_t *inst, patch_info_t *patch) {
+    if (MAX_AUDIO_FX < 7 || MAX_MIDI_FX < 6) return;   /* nothing to say below the caps */
+
+    char json[4096];
+    size_t n = 0;
+    n += (size_t)snprintf(json + n, sizeof(json) - n,
+        "{\n  \"name\": \"knobs\",\n  \"audio_fx\": [");
+    for (int i = 0; i < 6; i++)
+        n += (size_t)snprintf(json + n, sizeof(json) - n, "%s{\"type\": \"afx%d\"}",
+                              i ? ", " : "", i + 1);
+    n += (size_t)snprintf(json + n, sizeof(json) - n, "],\n  \"midi_fx\": [");
+    for (int i = 0; i < 6; i++)
+        n += (size_t)snprintf(json + n, sizeof(json) - n, "%s{\"type\": \"mfx%d\"}",
+                              i ? ", " : "", i + 1);
+    n += (size_t)snprintf(json + n, sizeof(json) - n,
+        "],\n  \"knob_mappings\": ["
+        "{\"cc\": 71, \"target\": \"fx6\", \"param\": \"gain\", \"value\": 0.9}, "
+        "{\"cc\": 74, \"target\": \"\", \"param\": \"\", \"value\": 0.9}, "
+        "{\"cc\": 72, \"target\": \"midi_fx6\", \"param\": \"gain\", \"value\": 0.9}, "
+        "{\"cc\": 73, \"target\": \"fx7\", \"param\": \"gain\", \"value\": 0.9}]\n}\n");
+    if (n >= sizeof(json)) { fprintf(stderr, "FAIL: knob test JSON truncated\n"); exit(1); }
+
+    write_patch(json);
+    reset_state(inst);
+    memset(patch, 0, sizeof(*patch));
+
+    CHECK(v2_parse_patch_file(inst, patch_path, patch) == 0, "knob patch parse failed");
+    /* Three, not four: the cleared row is dropped rather than restored as a
+     * mapping with no destination. */
+    CHECK(patch->knob_mapping_count == 3,
+          "parsed %d knob mappings, want 3 (the cleared row must be dropped)",
+          patch->knob_mapping_count);
+    if (patch->knob_mapping_count != 3) return;
+
+    /* The target string is what every later lookup keys on, so it has to come
+     * back byte for byte -- and dropping the middle row must not slide the rows
+     * after it onto the CCs of the rows before it. */
+    static const char *want_target[3] = { "fx6", "midi_fx6", "fx7" };
+    static const int want_cc[3] = { 71, 72, 73 };
+    for (int i = 0; i < 3; i++) {
+        CHECK(patch->knob_mappings[i].cc == want_cc[i],
+              "knob %d parsed CC %d, want %d", i, patch->knob_mappings[i].cc, want_cc[i]);
+        CHECK(strcmp(patch->knob_mappings[i].target, want_target[i]) == 0,
+              "knob %d parsed target \"%s\", want \"%s\"",
+              i, patch->knob_mappings[i].target, want_target[i]);
+    }
+
+    CHECK(v2_load_from_patch_info(inst, patch) == 0, "knob patch load failed");
+    CHECK(inst->fx_count == 6, "loaded %d audio FX, want 6", inst->fx_count);
+    CHECK(inst->knob_mapping_count == 3, "loaded %d knob mappings", inst->knob_mapping_count);
+
+    /* The two live ones re-read from THEIR plugin (0.25), not the saved 0.9 and
+     * not the 0.5 no-metadata default. 0.9 would mean the lookup fell through;
+     * 0.5 would mean it resolved nothing at all. */
+    CHECK(inst->knob_mappings[0].current_value > 0.24f &&
+          inst->knob_mappings[0].current_value < 0.26f,
+          "the knob on fx6 did not re-read from its plugin (value=%.3f)",
+          (double)inst->knob_mappings[0].current_value);
+    CHECK(inst->knob_mappings[1].current_value > 0.24f &&
+          inst->knob_mappings[1].current_value < 0.26f,
+          "the knob on midi_fx6 did not re-read from its plugin (value=%.3f)",
+          (double)inst->knob_mappings[1].current_value);
+    CHECK(strcmp(inst->knob_mappings[0].target, "fx6") == 0,
+          "the loaded knob target became \"%s\"", inst->knob_mappings[0].target);
+    CHECK(strcmp(inst->knob_mappings[1].target, "midi_fx6") == 0,
+          "the loaded knob target became \"%s\"", inst->knob_mappings[1].target);
+
+    /* Past the chain: must resolve to nothing. A read of 0.25 here means the
+     * target was coerced onto a real slot -- almost certainly slot 0, which is
+     * a knob driving the first module in the chain. */
+    CHECK(inst->knob_mappings[2].current_value < 0.24f ||
+          inst->knob_mappings[2].current_value > 0.26f,
+          "a knob naming fx7 in a six-long chain read a plugin value (%.3f) -- it "
+          "resolved onto a slot that is not the one it names",
+          (double)inst->knob_mappings[2].current_value);
+    /* ...and the cleared row is not among the loaded ones at all. */
+    for (int i = 0; i < inst->knob_mapping_count; i++)
+        CHECK(inst->knob_mappings[i].cc != 74,
+              "the knob mapping of a DELETED module was restored (CC 74)");
+
+    /* And loading knob mappings writes nothing to any plugin: this pass reads
+     * the current value, it does not push the saved one back out. A write here
+     * would mean a stale saved value overwriting a restored module state. */
+    for (int i = 0; i < 6; i++) {
+        CHECK(strstr(fake_fx[i].log, "gain=") == NULL,
+              "restoring knob mappings wrote into audio FX slot %d [%s]", i, fake_fx[i].log);
+    }
+}
+
 /* ---- 3. Modulation / knob targets reach every slot ---- */
 static void test_target_lookup(chain_instance_t *inst) {
     reset_state(inst);
@@ -602,6 +713,7 @@ int main(int argc, char **argv) {
     test_legacy_two_fx(inst, patch);
     test_hostile_json(inst, patch);
     test_midi_fx_state_forms(inst, patch);
+    test_knob_high_slots(inst, patch);
     test_target_lookup(inst);
     /* Reuses the chain test_target_lookup just populated. */
     test_id_parser_divergence_fixture(inst);
