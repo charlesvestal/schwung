@@ -35,7 +35,7 @@
     {
       "id": 5,
       "subject": "Task 5: Persist chain order; pin no migration",
-      "status": "in_progress",
+      "status": "completed",
       "blockedBy": [
         2,
         3
@@ -45,7 +45,7 @@
     {
       "id": 6,
       "subject": "Task 6: Shift+jog reorders; footer follows modifier",
-      "status": "in_progress",
+      "status": "completed",
       "blockedBy": [
         4,
         5
@@ -87,10 +87,16 @@
     },
     {
       "id": "12",
-      "status": "pending",
+      "status": "completed",
       "subject": "Task 12: Stop reloading the whole slot every frame",
       "description": "drawChainEdit re-reads the slot every frame (~12 reads, ~34ms on a full chain). Cache per slot and invalidate on every chain edit path. Acceptance: reads per frame do not scale with chain length (measure with a counting getSlotParam, as Task 4 did); prove invalidation is complete against the implementer's enumerated edit-path list."
+    },
+    {
+      "id": "13",
+      "status": "completed",
+      "subject": "Task 13: Knob mappings must resolve past fx3",
+      "description": "Sixth cap-raise site. chain_host.c knob metadata ladders stopped at fx3/midi_fx2. Two were open-coded duplicates of knob_find_param (chain_params.c:877), which was ALREADY indexed and count-bounded - deleted the copies rather than writing a third parser. Site 2 was a different defect: a live-value read stopping at fx2, whose failure mode was a patch saving a stale value for knobs on fx3+."
     }
   ],
-  "lastUpdated": "2026-08-20T14:10:31.546620+00:00"
+  "lastUpdated": "2026-08-20T14:51:04.777582+00:00"
 }
