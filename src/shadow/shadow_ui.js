@@ -1373,6 +1373,9 @@ let suppressParamPagesOnce = false;
  * entry it had been set for. Two unrelated hand-offs, two flags.
  */
 let suppressSlotGridOnce = false;
+/* A slot-action modal is up in the LIST because the grid handed it over; go
+ * back to the grid when it finishes. See maybeReturnToSlotGrid. */
+let slotModalFromGrid = false;
 
 function saveParamViewConfig() {
     try {
@@ -8299,8 +8302,34 @@ function runSlotActionFromGrid(slot, key) {
     /* The list must STAY the list while the modal is up -- re-entering the grid
      * would drop the confirmation on the floor again. */
     suppressSlotGridOnce = true;
+    slotModalFromGrid = true;
     setView(VIEWS.CHAIN_SETTINGS);
     needsRedraw = true;
+    return true;
+}
+
+/*
+ * ...and back to the grid once the modal is done with.
+ *
+ * You opened the knob grid, so that is where you should still be afterwards;
+ * being dropped into the list is a view you did not ask for and did not
+ * navigate to.
+ *
+ * This RECONCILES rather than firing at the end of each flow, because the modal
+ * has many ways to finish -- confirm, decline, Back, and for Save a decline
+ * that returns to the name preview instead of exiting. Hooking each one means
+ * being wrong about exactly one of them, which is how the original bug got
+ * here. Instead: while a hand-off is outstanding and no modal is open any more,
+ * go back. Cheap (flags only, no IPC) and correct for exits nobody enumerated.
+ */
+function maybeReturnToSlotGrid() {
+    if (!slotModalFromGrid) return false;
+    if (showingNamePreview || confirmingOverwrite || confirmingDelete) return false;
+    slotModalFromGrid = false;
+    /* Consume the suppression that kept the list up for the modal, or
+     * enterChainSettings would spend it and hand back the list again. */
+    suppressSlotGridOnce = false;
+    enterChainSettings(selectedSlot);
     return true;
 }
 
@@ -16805,6 +16834,11 @@ globalThis.tick = function() {
             }
         }
     }
+
+    /* A slot-action modal that the grid handed to the list has finished — go
+     * back to the grid the user actually opened. Flags only, no IPC. Runs
+     * before the draw so the frame that notices is already the grid's. */
+    if (view === VIEWS.CHAIN_SETTINGS) maybeReturnToSlotGrid();
 
     /* Guarded: a throw in any draw function would otherwise repeat every
      * frame — frozen screen with no recovery, since the C loop keeps
