@@ -127,6 +127,18 @@ if (/target \+ ":" \+ param/.test(s)) {
   fail("a surface still prints the LFO target as its stored keys (target + \":\" + param)");
 }
 
+/* ---- the chain shape is DERIVED, never listed ---------------------------
+ *
+ * CHAIN_COMPONENTS must come from the chain model. The five-entry literal is
+ * what made the chain a fixed shape; a variable-length chain that still
+ * consulted it would silently show only the first two FX, and every position
+ * past them would be unreachable rather than visibly missing.
+ */
+if (/const CHAIN_COMPONENTS = \[\s*\{ key: "midiFx"/.test(s)) {
+  fail("CHAIN_COMPONENTS is still a literal - it must come from chain_model");
+}
+want(/chain_model\.mjs/, "shadow_ui.js does not import the chain model");
+
 console.log("PASS: shadow wiring — parses, view dispatched/ticked/fed, setting defaults to List, " +
             "hand-off cannot loop, screen reader keeps the list, device keys use the prefix, " +
             "LFO targets resolve to names");
