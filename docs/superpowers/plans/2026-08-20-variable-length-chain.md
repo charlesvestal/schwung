@@ -502,6 +502,28 @@ git commit -m "refactor(shadow): derive the chain from the model, not a literal"
 
 ### Task 4: The scrolling diagram
 
+**READ THIS FIRST — two things Task 3 established that change how this is built.**
+
+**Do NOT probe `fx1_module`..`fx8_module` to discover the chain length.**
+`loadChainConfigFromSlot` is called from `drawChainEdit` on EVERY FRAME, and an IPC
+read is ~2.8ms. Eight probes is ~22ms per frame, on the screen this project spent a
+day making steady. The DSP already publishes the answer as a single key: `fx_count`
+(`chain_host.c:1312`) and `midi_fx_count` (`:1287`). One read, not eight. Task 3
+left `CHAIN_FX_POSITIONS` / `CHAIN_MIDI_FX_POSITIONS` as named constants precisely
+so this task replaces them in one place.
+
+**The model compacts; the DSP allows holes. Resolving that is THIS task's job.**
+`fx_count` is a high-water mark, so `fx5:module` on an empty chain yields count 5
+with slots 0-3 NULL, and clearing `fx1` while `fx2` is loaded leaves a hole the
+editor currently draws. The design chose compaction deliberately and named it as a
+behaviour change. Task 3 preserved holes because it was a PURE REFACTOR and must
+not have changed behaviour — so the change lands here. Decide and document:
+- what happens on first edit to an existing patch that already has a hole;
+- whether `chainComponents` may ever hand back a `kind: "module"` position whose
+  `module` is null (today it can, and every consumer null-checks).
+
+
+
 **Goal:** Draw a variable-length chain, synth-centred while it fits, selection-visible past that.
 
 **Files:**
@@ -512,6 +534,8 @@ git commit -m "refactor(shadow): derive the chain from the model, not a literal"
 - [ ] The synth box has a distinct outline
 - [ ] The header right shows the synth name
 - [ ] `+` boxes render at both ends, dotted
+- [ ] The per-frame read count does NOT grow with the cap — verify by counting
+      `getSlotParam` calls per `drawChainEdit`, not by eye
 
 **Verify:** `bash tests/host/test_chain_diagram.sh` → `PASS`
 
