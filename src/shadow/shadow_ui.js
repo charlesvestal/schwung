@@ -1064,6 +1064,34 @@ function openHierarchyParamEditor(selectedKey, meta, forceOpen) {
     }
 }
 
+/* Index of `bare` in the CURRENT level's param list, or -1. */
+function indexOfHierParam(bare) {
+    if (!Array.isArray(hierEditorParams)) return -1;
+    for (let i = 0; i < hierEditorParams.length; i++) {
+        const entry = hierEditorParams[i];
+        const k = (entry && typeof entry === "object") ? (entry.key || "") : String(entry || "");
+        if (k && k === bare) return i;
+    }
+    return -1;
+}
+
+/* The level whose params[] actually lists `bare`, or null. A level's knobs[]
+ * does not count: the list editor selects out of params[], so a knob-only
+ * mention is not somewhere it can put a cursor. */
+function findLevelListingParam(bare) {
+    const levels = hierEditorHierarchy && hierEditorHierarchy.levels;
+    if (!levels) return null;
+    for (const [name, def] of Object.entries(levels)) {
+        if (!def || !Array.isArray(def.params)) continue;
+        for (const entry of def.params) {
+            if (!entry) continue;
+            if (typeof entry === "string") { if (entry === bare) return name; continue; }
+            if (typeof entry === "object" && !entry.level && entry.key === bare) return name;
+        }
+    }
+    return null;
+}
+
 function openParamEditorFromGrid(slotIndex, fullKey, meta) {
     const componentKey = paramPagesComponent();
     /* Read the grid page BEFORE exiting — the level it was on is where the
@@ -1089,12 +1117,25 @@ function openParamEditorFromGrid(slotIndex, fullKey, meta) {
     }
 
     /* Select the param that was clicked and open ITS editor. Without this the
-     * user asked to open one parameter and got the module menu. */
-    let idx = -1;
-    for (let i = 0; i < hierEditorParams.length; i++) {
-        const entry = hierEditorParams[i];
-        const k = (entry && typeof entry === "object") ? (entry.key || "") : String(entry || "");
-        if (k && k === bare) { idx = i; break; }
+     * user asked to open one parameter and got the module menu.
+     *
+     * The grid page level is NOT necessarily where the list editor keeps the
+     * param. granny's root declares knobs:["position",...] but params:
+     * ["level:main","level:scan_menu",...] — navigation entries only — so
+     * `position` is on a root knob and in no root param list at all. It lives
+     * in the `main` level. Searching only the page level found nothing and fell
+     * through to the module menu, which is exactly the bug. So if the page
+     * level does not list it, find the level that does and go there. */
+    let idx = indexOfHierParam(bare);
+    if (idx < 0) {
+        const owner = findLevelListingParam(bare);
+        if (owner && owner !== hierEditorLevel) {
+            hierEditorLevel = owner;
+            hierEditorPath = [];
+            hierEditorChildIndex = -1;
+            loadHierarchyLevel();
+            idx = indexOfHierParam(bare);
+        }
     }
     if (idx < 0) {
         /* The param is not on this level after all — leave the user in the
@@ -8698,6 +8739,14 @@ function closeHierarchyFilepathBrowser() {
     filepathBrowserState = null;
     filepathBrowserParamKey = "";
     resetDynamicParamPickerState();
+    /* Back where the user came from. All three call sites — committing a
+     * selection, Back, and the no-state guard — funnel through here, so the
+     * grid return lives here rather than being repeated (and forgotten) at
+     * each one. Committing a sample used to drop you in the hierarchy list. */
+    if (paramEditorOpenedFromGrid) {
+        returnToParamPagesFromEditor();
+        return;
+    }
     setView(VIEWS.HIERARCHY_EDITOR);
 }
 
@@ -14007,6 +14056,18 @@ function drawHelpDetail() {
     /* Knob-grid view (shadow_ui_param_pages.mjs) */
     _ctx.evaluateVisibilityCondition = (...args) => evaluateVisibilityCondition(...args);
     _ctx.openParamEditor = (slot, fullKey, meta) => openParamEditorFromGrid(slot, fullKey, meta);
+    /* Which specialised editor is up, if any. Exposed so the editor-routing
+     * pathways can be tested headlessly: "clicking a wav_position shows the
+     * WAVEFORM, clicking a filepath shows the BROWSER, and Back from either
+     * returns to the grid" is four states, and none of them was observable
+     * from outside this file — which is why all three routing bugs shipped. */
+    _ctx.activeParamEditor = () => {
+        if (view === VIEWS.FILEPATH_BROWSER) return "filepath";
+        if (view === VIEWS.CANVAS) return "canvas";
+        if (view !== VIEWS.HIERARCHY_EDITOR) return null;
+        if (!hierEditorEditMode) return null;
+        return isInWavPositionEditor() ? "wav_position" : "value";
+    };
     _ctx.isParamModulated = (slot, fullKey) => isHierarchyParamModulated(slot, fullKey);
     _ctx.isMuteHeld = () => hostMuteHeld;
 
