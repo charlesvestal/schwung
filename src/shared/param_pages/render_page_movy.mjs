@@ -835,20 +835,6 @@ function drawKnobRow(ctx, o, row, rowY, lblY) {
          * mark is the only thing that says so. */
         if (meta.divable) drawDivableMark(ctx, col, rowY);
 
-        /*
-         * Reset flash: the widget area goes solid for a moment.
-         *
-         * A reset is the one edit the hand did not perform — the value simply
-         * changes — so it has to say so. Drawn OVER whatever the widget was,
-         * because it has to read the same over an arc knob, an enum square, a
-         * box and a viz graphic that covers the cell; there is no read-back on
-         * this display, so it is a fill rather than an invert. The LABEL band
-         * below is deliberately left alone: it is showing the value you just
-         * reset TO, which is the thing you want to read.
-         */
-        if (slot === o.flashSlot) {
-            ctx.fillRect(cellX + 1, rowY, CELL_W - 2, BOX_H, 1);
-        }
 
         const labelWidth = Math.min(CELL_W - 2, fontWidth4x5("M".repeat(LABEL_CHARS)));
         const label = caps(shortenLabel(LBL_MEASURE, preAbbreviate(meta.label || meta.key), labelWidth));
@@ -931,7 +917,6 @@ export function drawFooter(ctx, hints) {
  * @param {Function} [o.modulated] (key) => boolean
  * @param {Array}  [o.viz]       resolved graphic groups (viz.mjs resolveViz)
  * @param {Array}  [o.footer]    [key, action] hint pairs, most important first
- * @param {number} [o.flashSlot] slot whose widget area is flashing a reset, or -1
  */
 export function renderPageMovy(ctx, o) {
     const page = o.page;

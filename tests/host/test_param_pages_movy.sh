@@ -641,64 +641,6 @@ Promise.all([
     console.log("PASS: Movy modulation dot — rides the arc, suppressed at base, never clipped");
   }
 
-  /* ---- the reset flash reaches the screen ------------------------------
-   *
-   * A reset is the one edit the hand did not perform — the value simply
-   * changes — so it has to be visible, not only announced. Drawn over the
-   * widget area, because it must read the same over an arc knob, an enum
-   * square and a viz graphic; there is no read-back on this display, so it is
-   * a fill rather than an invert.
-   */
-  {
-    const f = (k) => ({ key: k, label: k, type: "float", kind: "number", min: 0, max: 1, step: 0.01 });
-    const KEYS8 = ["a","b","c","d","e","f","g","h"];
-    const metaIndex = { getOrGuess: (k) => f(k) };
-    const page = { kind: "knobs", name: "P", level: "root", keys: KEYS8.slice() };
-    const values = {}; for (const k of KEYS8) values[k] = "0.5";
-    const draw = (flashSlot) => {
-      const fb = H.createFramebuffer();
-      RM.renderPageMovy(H.drawContext(fb), {
-        page, metaIndex, values, title: "T", pageIndex: 0, pageCount: 1,
-        touched: -1, modulated: () => false, modValues: {}, pageGroups: [],
-        viz: [], flashSlot,
-      });
-      return fb;
-    };
-    const cell = (fb, slot) => {
-      const col = slot % 4, row = Math.floor(slot / 4);
-      const y0 = row === 0 ? RM.ROW0_Y : RM.ROW1_Y;
-      let n = 0;
-      for (let y = y0; y < y0 + RM.BOX_H; y++)
-        for (let x = col * RM.CELL_W; x < (col + 1) * RM.CELL_W; x++)
-          if (fb.pixels[y * fb.width + x]) n++;
-      return n;
-    };
-
-    const plain = draw(-1);
-    for (const slot of [0, 3, 4, 7]) {
-      const flashed = draw(slot);
-      if (cell(flashed, slot) <= cell(plain, slot))
-        fail("a flash on slot " + slot + " did not light its cell");
-      /* and ONLY its cell */
-      for (const other of [0, 1, 2, 3, 4, 5, 6, 7]) {
-        if (other === slot) continue;
-        if (cell(flashed, other) !== cell(plain, other))
-          fail("flashing slot " + slot + " also changed slot " + other);
-      }
-      if (flashed.clipped() > 0) fail("the flash drew outside the display");
-    }
-    /* The LABEL band is deliberately untouched — it is showing the value you
-     * just reset TO, which is the thing worth reading. */
-    const flashed0 = draw(0);
-    let lblPlain = 0, lblFlash = 0;
-    for (let y = RM.LBL0_Y; y < RM.LBL0_Y + RM.LBL_H; y++)
-      for (let x = 0; x < RM.CELL_W; x++) {
-        if (plain.pixels[y * plain.width + x]) lblPlain++;
-        if (flashed0.pixels[y * flashed0.width + x]) lblFlash++;
-      }
-    if (lblPlain !== lblFlash) fail("the flash covered the label band");
-  }
-
   /* ---- displayFor: a value the HOST resolves, per surface ---------------
    *
    * An LFO target is stored as "fx1" and means "Room Size on the Freeverb in

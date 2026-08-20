@@ -176,8 +176,13 @@ export const TURN_CLAIM_MS = 1200;
  * 786-1023ms — a spread of 240ms that made the gesture look random — while the
  * air gap underneath it was 384-588ms.
  *
- * 700 covers that spread with room, and still rejects the 1321ms gap in the
- * same capture where the user paused between taps.
+ * 900, from a second capture at 700: of fifteen deliberate attempts, twelve
+ * fired and the only real miss was an air gap of 753ms — over the line by 53.
+ * Widening is safe because it is not the window that rejects an ADJUSTMENT:
+ * lifting a finger briefly mid-turn produces air gaps of 50-316ms, far INSIDE
+ * any plausible window, and those are caught by the turn count instead. So the
+ * window only has to separate "two taps" from "a pause", and a pause in the
+ * same captures ran 1004-1321ms.
  *
  * Two taps on the same knob inside this window reset it to its declared
  * default. 744 params across 39 modules declare one, and there is otherwise no
@@ -194,7 +199,7 @@ export const TURN_CLAIM_MS = 1200;
  * not the first half of a double-tap, whatever its timing. So the gesture is
  * "tap, tap" and never "tap, turn, tap".
  */
-export const DOUBLE_TAP_MS = 700;
+export const DOUBLE_TAP_MS = 900;
 
 /**
  * The longest contact that still counts as a TAP rather than a hold.
@@ -212,17 +217,7 @@ export const DOUBLE_TAP_MS = 700;
  */
 export const TAP_MAX_DWELL_MS = 650;
 
-/**
- * How long a reset cell flashes.
- *
- * A reset is the one edit the user did not make by hand — the value simply
- * changes — so unlike a turn it needs to say that something happened. The
- * screen reader already announces it; this is the same statement for eyes.
- *
- * Long enough to catch out of the corner of an eye, short enough not to hide
- * the value you just reset to.
- */
-export const RESET_FLASH_MS = 220;
+
 
 /**
  * Detents that turn a tap into an ADJUSTMENT rather than half a double-tap.
@@ -358,8 +353,9 @@ export function createController(io = {}) {
         /* The last touch-down and why it did or did not count as a double-tap.
          * Diagnostic only — see onKnobTouch. */
         lastTap: null,
-        /* { slot, untilMs } — the cell currently flashing a reset. */
-        flash: null,
+        /* slot -> a reset happened during the contact currently in progress.
+         * Makes the readout survive the lift — see onKnobTouch. */
+        resetOnTouch: Object.create(null),
         /* ms at which a TURN claimed the header with nothing held, or 0.
          * Only such a claim expires — see TURN_CLAIM_MS. */
         turnClaimMs: 0,
@@ -521,10 +517,6 @@ export function createController(io = {}) {
         s.tickCount++;
         flushDueWrites();
         expireTurnClaim();
-        /* Expired HERE and not only at render time: whether a flash is still
-         * running is controller state, and must not depend on which renderer
-         * the caller happens to be using. */
-        if (s.flash && now() >= s.flash.untilMs) s.flash = null;
         const p = page();
         if (!p || p.kind !== PAGE_KNOBS || p.keys.length === 0) return null;
 
@@ -962,10 +954,31 @@ export function createController(io = {}) {
             s.lastUpMs[slot] = upAt;
             const at = s.touchOrder.indexOf(slot);
             if (at >= 0) s.touchOrder.splice(at, 1);
-            /* The header falls back to whatever is still held, not to nothing. */
-            s.touched = s.touchOrder.length ? s.touchOrder[s.touchOrder.length - 1] : -1;
-            /* A real hold outranks and cancels any pending turn-claim. */
-            s.turnClaimMs = 0;
+            if (s.touchOrder.length) {
+                /* The header falls back to a knob still held, not to nothing. */
+                s.touched = s.touchOrder[s.touchOrder.length - 1];
+                /* A real hold outranks and cancels any pending turn-claim. */
+                s.turnClaimMs = 0;
+            } else if (s.resetOnTouch[slot]) {
+                /*
+                 * A reset changed this value under your finger — so the value
+                 * stays on screen after you lift.
+                 *
+                 * Everything else on this page you did with your hand and
+                 * watched happen. A reset is the one edit where the number
+                 * simply becomes something else, and dismissing the readout on
+                 * release meant the one value worth showing was the one you
+                 * never saw. Held by the same turn-claim that a knob turned
+                 * without a registered touch uses, so it dismisses itself the
+                 * same way and after the same delay.
+                 */
+                s.touched = slot;
+                s.turnClaimMs = upAt;
+            } else {
+                s.touched = -1;
+                s.turnClaimMs = 0;
+            }
+            s.resetOnTouch[slot] = false;
             /* Release flushes immediately rather than waiting out
              * SETPARAM_THROTTLE_MS — the hand has stopped, so there is no
              * more flooding to protect against, and the settled value should
@@ -981,6 +994,8 @@ export function createController(io = {}) {
             return;
         }
         const tapAt = now();
+        /* A fresh contact: whatever the last one did is over. */
+        s.resetOnTouch[slot] = false;
         /* From the previous RELEASE: the air gap, which is the part of the
          * gesture the hand actually performs. */
         const gapMs = tapAt - (s.lastUpMs[slot] || 0);
@@ -1101,7 +1116,8 @@ export function createController(io = {}) {
         s.values[key] = wire;
         s.settleUntil[key] = s.tickCount + SETTLE_TICKS;
         delete s.knobStates[key];       /* next turn starts from the new value */
-        s.flash = { slot, untilMs: now() + RESET_FLASH_MS };
+        /* Keep the value on screen past the lift — see onKnobTouch. */
+        s.resetOnTouch[slot] = true;
         setParam(fullKey(key), wire);
         replanIfCondition(key);
         announce(`${meta.label || key}, ${declared ? "default" : "as loaded"}, ${announceTurn(meta, wire)}`);
@@ -1196,7 +1212,6 @@ export function createController(io = {}) {
                 page: page(), metaIndex: s.metaIndex, values: s.values,
                 title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
                 touched: s.hintLines ? -1 : s.touched,
-                flashSlot: flashSlot(),
                 displayFor: formatValue
                     ? (key, raw, surface) => formatValue(fullKey(key), raw, surface)
                     : null,
@@ -1306,14 +1321,6 @@ export function createController(io = {}) {
              * decorations are active. */
             viz: (vizEnabled && !s.decorations) ? vizGroups() : [],
         });
-    }
-
-    /* The cell flashing a reset right now, or -1. Expires by wall clock: the
-     * grid redraws continuously, so nothing has to schedule the end of it. */
-    function flashSlot() {
-        if (!s.flash) return -1;
-        if (now() >= s.flash.untilMs) { s.flash = null; return -1; }
-        return s.flash.slot;
     }
 
     let vizCache = null;

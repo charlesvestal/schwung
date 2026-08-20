@@ -714,7 +714,10 @@ Promise.all([
        * spread of an actual hand. */
       for (const [dwell, airGap] of [[422, 520], [435, 588], [436, 438],
                                      [400, 417], [402, 572], [402, 384],
-                                     [454, 450]]) {
+                                     [454, 450],
+                                     /* The one real miss from the second
+                                      * capture, at a 700ms window. */
+                                     [407, 753]]) {
         moveAway();
         tap(dwell);
         clock += airGap;
@@ -750,20 +753,37 @@ Promise.all([
              "reading the value, not double-tapping it");
       ctl.onKnobTouch(slot, false);
 
-      /* And the reset FLASHES: it is the one edit the hand did not perform. */
+      /* ---- the reset VALUE stays on screen after you lift ---------------
+       *
+       * Everything else on this page you do with your hand and watch happen. A
+       * reset is the one edit where the number simply becomes something else,
+       * and the readout used to dismiss on release — so the one value worth
+       * showing was the one you never saw. */
       moveAway();
       tap(400);
       clock += 400;
       ctl.onKnobTouch(slot, true);
       if (Number(ctl.state.values[key]) !== dflt) fail("setup: the reset did not fire");
-      if (ctl.state.flash === null || ctl.state.flash.slot !== slot)
-        fail("a reset did not raise a flash on its own cell");
-      clock += C.RESET_FLASH_MS + 1;
-      /* Expiry is by wall clock and belongs to the controller, not to whichever
-       * renderer the caller uses — so a plain tick has to clear it. */
-      ctl.tick();
-      if (ctl.state.flash !== null) fail("the flash never expired");
       ctl.onKnobTouch(slot, false);
+      if (ctl.state.touched !== slot)
+        fail("the readout dismissed the moment the finger lifted — the reset value " +
+             "is the one thing on this page you did not watch happen");
+      if (ctl.state.touchOrder.length !== 0)
+        fail("nothing is held any more; the readout is a claim, not a touch");
+
+      /* And it dismisses itself, like any other unheld claim. */
+      clock += C.TURN_CLAIM_MS + 1;
+      ctl.tick();
+      if (ctl.state.touched !== -1) fail("the held readout never dismissed");
+
+      /* An ordinary release still clears immediately — the hold is for a reset
+       * only, or every knob you touched would stay lit. */
+      moveAway();
+      ctl.onKnobTouch(slot, true);
+      clock += 200;
+      ctl.onKnobTouch(slot, false);
+      if (ctl.state.touched !== -1)
+        fail("an ordinary release should clear the readout at once, got " + ctl.state.touched);
     }
 
     /* ---- a param with NO declared default resets to what it loaded with --
