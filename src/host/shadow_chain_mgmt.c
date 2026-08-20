@@ -13,6 +13,7 @@
 #include <strings.h>  /* strcasecmp */
 
 #include "shadow_chain_mgmt.h"
+#include "shadow_fx_key.h"    /* shadow_key_is_fx_module — header-only so tests/host can run it */
 #include "shadow_set_pages.h"
 #include "shadow_sampler.h"
 #include "shadow_dbus.h"
@@ -2373,30 +2374,6 @@ int shadow_slot_has_loaded_component(const plugin_api_v2_t *pv2, void *instance)
         if (atoi(buf) > 0) return 1;    /* a non-zero list length */
     }
     return 0;
-}
-
-/*
- * Is `key` an FX module-slot write — "fx<N>:module" or "midi_fx<N>:module"?
- *
- * Deliberately unbounded in N.  Bounding it here would mean naming MAX_AUDIO_FX
- * / MAX_MIDI_FX in src/host/, which is the duplicated-cap bug this whole change
- * exists to remove.  It does not need bounding: the only caller confirms with
- * shadow_slot_has_loaded_component(), whose counts come from the DSP, and the
- * DSP rejects an out-of-range index outright — so "fx99:module" matches the
- * shape here, loads nothing there, and leaves the slot correctly inactive.
- *
- * "synth:module" is not matched; it has its own activation branch, which also
- * adopts the module's default forward channel.
- */
-static int shadow_key_is_fx_module(const char *key)
-{
-    const char *p = key;
-    if (strncmp(p, "midi_fx", 7) == 0) p += 7;
-    else if (strncmp(p, "fx", 2) == 0) p += 2;
-    else return 0;
-    if (*p < '1' || *p > '9') return 0;   /* at least one digit, no leading 0 */
-    while (*p >= '0' && *p <= '9') p++;
-    return strcmp(p, ":module") == 0;
 }
 
 /*

@@ -12,14 +12,6 @@
 
 static void shadow_chain_transpose_reset(void);
 
-/* Implemented in shadow_chain_mgmt.c — the shared "does this slot hold any
- * loaded component?" probe, used by all three activation sites.  Declared here
- * rather than in shadow_chain_mgmt.h only to keep this change inside the two
- * files it touches while other work is in flight on the branch; it belongs in
- * the header next to the other shadow_chain_* declarations. */
-extern int shadow_slot_has_loaded_component(const plugin_api_v2_t *pv2,
-                                            void *instance);
-
 /* ============================================================================
  * External cable-2 dispatch ring
  * ============================================================================ */
