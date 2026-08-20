@@ -94,13 +94,16 @@ export function paramPagesEnabled() {
  * @param {string} component   'synth' | 'fx1' | 'fx2' | 'midiFx' | 'master_fx:fx1' …
  * @param {string} prefix      the DSP param prefix for that component
  */
-/* "Once per session" (see showHint below) has to live here, not in the
- * controller's own state: exitParamPages() drops `controller` on every exit
- * (chain edit, switching modules), so `if (!controller)` below builds a
- * BRAND NEW one on the next entry, and a per-controller "already shown" flag
- * resets right along with it — the hint was popping up on every single
- * module open instead of once, which is what it looks like without this. */
-let hintShownThisSession = false;
+/* No first-use overlay. The grid used to open behind a panel listing its
+ * gestures, because they are not guessable and a preview nobody can operate
+ * produces no useful feedback. The hint FOOTER carries that now — it names the
+ * jog, the click and one contextual gesture on every page, permanently, in
+ * eight rows bought from the label bands — so the panel taught something the
+ * screen already says and cost a modal on entry to do it.
+ *
+ * The library's showHint/renderHint stay: they are caller-supplied, and a tool
+ * embedding the grid with its own gestures may still want one. This host does
+ * not. */
 
 /**
  * @param {string} [restorePageName]  land on the page with this name instead of
@@ -159,20 +162,6 @@ export function enterParamPages(slot, component, prefix, restorePageName, io) {
                 break;
             }
         }
-    }
-    /* Once per session: the grid's gestures are not guessable, and a preview
-     * nobody can operate produces no useful feedback. Any input clears it. */
-    if (!hintShownThisSession) {
-        hintShownThisSession = true;
-        /* ~19 characters fit at 5x7 across the panel; longer lines silently clip. */
-        controller.showHint([
-            "Jog: page",
-            "Shift+Jog: section",
-            "Click: section list",
-            "Hold knob: name",
-            "Shift: fine + values",
-            "Mute+knob: default",
-        ], "Param Pages");
     }
     ctx.setView(ctx.VIEWS.PARAM_PAGES);
 }
