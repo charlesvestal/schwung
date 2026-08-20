@@ -851,6 +851,23 @@ Several agents commit here at once. Two rules, both learned the hard way:
   and never `git commit -a`. Another agent's half-written file is one careless
   `add -A` away from being committed by you.
 
+## The model API — the plan's own names are STALE
+
+Task 1 renamed two exports after a review, and the snippets earlier in this
+document were not updated. The module exports:
+
+    appendTo(cfg, section, module)   NOT insertAt
+    replaceAt(cfg, id, module)       NOT swapAt
+
+Also, for Tasks 5 and 6:
+- `scrollWindow` has no -1 case. The editor's patch position is -1; clamp before
+  calling.
+- `indexOfId` is NOT usable directly from the editor. The key spaces differ in
+  exactly one place (`midiFx` in the editor vs `midi_fx1` in the model), which is
+  why `slotChainComponentIndex` exists. Translate, or use that.
+- `chainComponents` allocates the whole list per call. Cheap against a 2.8ms IPC
+  read, but do not call it twice in one condition.
+
 ## Notes for the implementer
 
 - **`grep` in this environment is a shell function that silently returns nothing** on some files — use `command grep`. A lone NUL byte also makes a file "binary" to grep; `file` will tell you.

@@ -99,6 +99,16 @@ SWAPPING and REMOVING are different operations and must not be confused:
   there is no hole. This is a behaviour change: today clearing fx1 leaves fx2
   where it was, with an empty fx1 in front of it.
 
+**Compaction happens on EDIT, never on LOAD.** This distinction was missing from
+the first draft of this document and is load-bearing. Position *i* of the editor
+list IS `fx(i+1)` in the DSP — that identity is what makes every param address,
+LFO target, bypass key and preset prefix land on the right module. So a patch
+that already contains a hole must LOAD with the hole intact, drawing an empty
+box; compacting it on read would put `fx2` in position 0, label it "FX 1", and
+then read and write `fx1:*` — editing an empty slot while the audio ran through
+fx2. The renumber happens in the DSP and the UI together, in one gesture, or not
+at all.
+
 The distinction matters because both are reached from the same picker, one
 entry apart. A swap that silently reordered the chain would be the worst kind
 of surprise — you went in to change a reverb and came out with a different
