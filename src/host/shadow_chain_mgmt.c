@@ -14,6 +14,7 @@
 
 #include "shadow_chain_mgmt.h"
 #include "shadow_fx_key.h"    /* shadow_key_is_fx_module — header-only so tests/host can run it */
+#include "master_fx_key.h"    /* master_fx_route_* — header-only so tests/host can run it */
 #include "shadow_set_pages.h"
 #include "shadow_sampler.h"
 #include "shadow_dbus.h"
@@ -1726,10 +1727,11 @@ void shadow_direct_set_param(uint8_t slot, const char *key, const char *value) {
         const char *fx_key = key + 10;
         int mfx_slot = -1;
         const char *param_key = fx_key;
-        if      (strncmp(fx_key, "fx1:", 4) == 0) { mfx_slot = 0; param_key = fx_key + 4; }
-        else if (strncmp(fx_key, "fx2:", 4) == 0) { mfx_slot = 1; param_key = fx_key + 4; }
-        else if (strncmp(fx_key, "fx3:", 4) == 0) { mfx_slot = 2; param_key = fx_key + 4; }
-        else if (strncmp(fx_key, "fx4:", 4) == 0) { mfx_slot = 3; param_key = fx_key + 4; }
+        /* Cap-derived: master_fx_key.h is told how many slots exist rather
+         * than a ladder restating it as "fx1:".."fx4:". A key past the range
+         * leaves mfx_slot at -1 and is dropped below — which used to be the
+         * SILENT failure a cap raise produced here, since nothing logs it. */
+        master_fx_route_param_key(fx_key, MASTER_FX_SLOTS, &mfx_slot, &param_key);
 
         if (mfx_slot >= 0) {
             master_fx_slot_t *mfx = &shadow_master_fx_slots[mfx_slot];
@@ -2114,7 +2116,10 @@ static void mfx_lfo_update_base_from_set_param(int slot_idx,
         return;
     }
 
-    char target_key[8];
+    /* Sized by MASTER_FX_TARGET_KEY_LEN, not by hand: this is strcmp'd
+     * against lfo_state_t.target, so a truncated format compares unequal and
+     * the LFO's base value silently stops tracking the knob. */
+    char target_key[MASTER_FX_TARGET_KEY_LEN];
     snprintf(target_key, sizeof(target_key), "fx%d", slot_idx + 1);
     for (int i = 0; i < MASTER_FX_LFO_COUNT; i++) {
         lfo_state_t *lfo = &shadow_master_fx_lfos[i];
@@ -2150,14 +2155,18 @@ void shadow_master_fx_lfo_tick(int frames) {
         lfo_state_t *lfo = &shadow_master_fx_lfos[i];
         if (!lfo->enabled || lfo->target[0] == '\0' || lfo->param[0] == '\0') continue;
 
-        /* Parse target: "fx1"-"fx4" for FX slots, "lfo1"/"lfo2" for other LFO */
-        int target_slot = -1;
+        /* Parse target: "fx<N>" for FX slots, "lfo1"/"lfo2" for the other LFO.
+         *
+         * The FX arm was a CHARACTER range, target[2] in '1'..'4' — invisible
+         * to a grep for the cap or for "<= 4", and capped at nine slots
+         * forever since it only ever read one digit. A target past the range
+         * left target_slot at -1, fell into the `else { continue; }` below,
+         * and the LFO silently stopped modulating. Cap-derived now. */
+        int target_slot = master_fx_route_target(lfo->target, MASTER_FX_SLOTS);
         int target_lfo = -1;
-        if (lfo->target[0] == 'f' && lfo->target[1] == 'x' &&
-            lfo->target[2] >= '1' && lfo->target[2] <= '4') {
-            target_slot = lfo->target[2] - '1';
-        } else if (lfo->target[0] == 'l' && lfo->target[1] == 'f' && lfo->target[2] == 'o' &&
-                   lfo->target[3] >= '1' && lfo->target[3] <= '2') {
+        if (target_slot < 0 &&
+            lfo->target[0] == 'l' && lfo->target[1] == 'f' && lfo->target[2] == 'o' &&
+            lfo->target[3] >= '1' && lfo->target[3] <= '2') {
             target_lfo = lfo->target[3] - '1';
             if (target_lfo == i) continue;  /* Skip self-targeting */
         }
@@ -2609,12 +2618,20 @@ void shadow_inprocess_handle_param_request(void) {
         int has_slot_prefix = 0;
         const char *param_key = fx_key;
 
-        /* Parse slot prefix */
-        if (strncmp(fx_key, "fx1:", 4) == 0) { mfx_slot = 0; param_key = fx_key + 4; has_slot_prefix = 1; }
-        else if (strncmp(fx_key, "fx2:", 4) == 0) { mfx_slot = 1; param_key = fx_key + 4; has_slot_prefix = 1; }
-        else if (strncmp(fx_key, "fx3:", 4) == 0) { mfx_slot = 2; param_key = fx_key + 4; has_slot_prefix = 1; }
-        else if (strncmp(fx_key, "fx4:", 4) == 0) { mfx_slot = 3; param_key = fx_key + 4; has_slot_prefix = 1; }
-        else { mfx_slot = 0; param_key = fx_key; }
+        /* Parse slot prefix. Cap-derived via master_fx_key.h — read the
+         * else-branch before touching this.
+         *
+         * Unlike the web set-ring path above, an unmatched key here is NOT
+         * dropped: it falls through to slot 0 with the whole key as its param
+         * name, because the un-prefixed master_fx:* keys (lfo*, specials,
+         * resample_bridge) legitimately land there. That makes an out-of-range
+         * "fx5:cutoff" a MISROUTE rather than a no-op — it would be written
+         * into whatever module is running in slot 0, under a garbage key. That
+         * is why the range must come from MASTER_FX_SLOTS and not from a
+         * hand-written ladder that a cap raise leaves behind. */
+        has_slot_prefix = master_fx_route_param_key(fx_key, MASTER_FX_SLOTS,
+                                                    &mfx_slot, &param_key);
+        if (!has_slot_prefix) { mfx_slot = 0; param_key = fx_key; }
 
         /* Delegate shim-specific params (resample_bridge, link_audio_*, jack:*, suspend_overtake) */
         if (!has_slot_prefix && host.handle_param_special) {
@@ -2682,7 +2699,9 @@ void shadow_inprocess_handle_param_request(void) {
         } else if (req_type == 2) {  /* GET */
             if (has_slot_prefix) {
                 char bare_param[64];
-                char target_key[8];
+                /* MASTER_FX_TARGET_KEY_LEN — see the note at
+                 * mfx_lfo_update_base_from_set_param. */
+                char target_key[MASTER_FX_TARGET_KEY_LEN];
                 snprintf(target_key, sizeof(target_key), "fx%d", mfx_slot + 1);
 
                 if (mfx_param_strip_suffix(param_key, ":modulated", bare_param, sizeof(bare_param))) {
