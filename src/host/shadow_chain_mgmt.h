@@ -195,6 +195,15 @@ void capture_apply_group(shadow_capture_rules_t *rules, const char *group);
 void capture_parse_json(shadow_capture_rules_t *rules, const char *json);
 
 /* --- Chain management --- */
+
+/* Does this chain instance hold ANY loaded component — synth, audio FX, or
+ * MIDI FX, in any position? This is the shim's definition of an "active" slot,
+ * and every activation site shares it. Costs three in-process get_param calls
+ * regardless of the FX caps: it asks the DSP for its list LENGTHS rather than
+ * probing each position, so MAX_AUDIO_FX / MAX_MIDI_FX are never restated on
+ * this side. Callers run inside the SPI callback — keep it that cheap. */
+int shadow_slot_has_loaded_component(const plugin_api_v2_t *pv2, void *instance);
+
 int shadow_chain_parse_channel(int ch);
 void shadow_chain_defaults(void);
 void shadow_chain_load_config(void);
