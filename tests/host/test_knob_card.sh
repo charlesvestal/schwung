@@ -32,7 +32,7 @@ Promise.all([
   import("./src/shared/param_pages/viz.mjs"),
   import("node:fs"),
   import("node:crypto"),
-]).then(([H, C, P, M, RM, V, fs, crypto]) => {
+]).then(async ([H, C, P, M, RM, V, fs, crypto]) => {
   const fail = (msg) => { console.log("FAIL: " + msg); process.exit(1); };
   const fx = JSON.parse(fs.readFileSync(C.FIXTURE, "utf8"));
   const BASELINE_PATH = "tests/fixtures/movy-geom-baseline.txt";
@@ -225,6 +225,100 @@ Promise.all([
     mustThrow({ x0: 6 }, "missing cellW");
     mustThrow({ x: 6, cellW: 30 }, "misspelled x0");
     console.log("PASS: a partial geometry is rejected, not silently drawn");
+  }
+
+  /* ---- 4. the card rect ---- */
+  const KC = await import("./src/shared/param_pages/knob_card.mjs");
+  {
+    const full = KC.knobCardRect(true), short = KC.knobCardRect(false);
+    const eq = (a, b, what) => { if (a !== b) fail(what + ": expected " + b + ", got " + a); };
+    eq(full.x, 3, "full.x"); eq(full.y, 12, "full.y"); eq(full.w, 122, "full.w"); eq(full.h, 38, "full.h");
+    eq(short.x, 3, "short.x"); eq(short.y, 24, "short.y"); eq(short.w, 122, "short.w"); eq(short.h, 15, "short.h");
+    if (full.y + full.h > RM.RULE_Y) fail("full card overlaps the footer rule");
+    if (full.y < RM.HEADER_H + 1) fail("full card overlaps the screen header");
+    console.log("PASS: card rect");
+  }
+
+  /* ---- 5. INVARIANT: a black gap separates the border from the band ----
+   *
+   * The border is white and so is the inverted header band. Where they touch,
+   * the border stops existing: a short card without the gap reads as one fat
+   * stripe across sliced-off diagram boxes, with no left, right or top. This
+   * is invisible in code review, so it is asserted on the pixels.
+   *
+   * The arithmetic, worked on paper with CARD_X=3, CARD_W=122, BORDER_W=2: the
+   * card spans x 3..124, border columns are 3,4 and 123,124, the gap columns
+   * are 5 and 122, and content runs 6..121 (116 wide). checkGap below computes
+   * this generically from the rect it is handed (gx0 = r.x + BORDER_W, etc.)
+   * rather than hardcoding those numbers, so it holds for both card heights. */
+  {
+    const params = [
+      { key: "a", name: "Alpha", type: "float", min: 0, max: 1, step: 0.01 },
+      { key: "b", name: "Beta",  type: "float", min: 0, max: 1, step: 0.01 },
+      { key: "c", name: "Gamma", type: "float", min: 0, max: 1, step: 0.01 },
+      { key: "d", name: "Delta", type: "enum",  options: ["Hall", "Room", "Plate"] },
+      { key: "e", name: "Eps",   type: "int",   min: 0, max: 127 },
+      { key: "f", name: "File",  type: "filepath" },
+    ];
+    const mi = M.buildMetaIndex({ hierarchy: null, chainParams: params });
+    const keys = ["a", "b", "c", "d", "e", "f", null, null];
+    const values = { a: 0.2, b: 0.4, c: 0.6, d: 2, e: 64, f: "/x/y/kick.wav" };
+
+    const draw = (o) => {
+      const fb = H.createFramebuffer();
+      KC.drawKnobCard(H.drawContext(fb), o);
+      return fb;
+    };
+    const px = (fb, x, y) => fb.pixels[y * fb.width + x];
+
+    const checkGap = (fb, r, what) => {
+      const gx0 = r.x + KC.BORDER_W, gx1 = r.x + r.w - 1 - KC.BORDER_W;
+      const gy0 = r.y + KC.BORDER_W, gy1 = r.y + r.h - 1 - KC.BORDER_W;
+      for (let y = gy0; y <= gy1; y++) {
+        if (px(fb, gx0, y)) fail(what + ": left gap column lit at y=" + y);
+        if (px(fb, gx1, y)) fail(what + ": right gap column lit at y=" + y);
+      }
+      for (let x = gx0; x <= gx1; x++) {
+        if (px(fb, x, gy0)) fail(what + ": top gap row lit at x=" + x);
+        if (px(fb, x, gy1)) fail(what + ": bottom gap row lit at x=" + x);
+      }
+      /* and the border itself must actually BE there */
+      for (let i = 0; i < KC.BORDER_W; i++) {
+        if (!px(fb, r.x + i, r.y + Math.floor(r.h / 2))) fail(what + ": left border missing");
+        if (!px(fb, r.x + r.w - 1 - i, r.y + Math.floor(r.h / 2))) fail(what + ": right border missing");
+      }
+    };
+
+    /* every knob touched in turn -- cols 0 and 3 fill their label band to the
+     * cell edge, which is the case that eats a border without the gap */
+    for (let k = 0; k < 6; k++) {
+      const fb = draw({ name: "ALPHA", value: "0.62", row: k >> 2, touched: k,
+                        page: { kind: "knobs", keys }, metaIndex: mi, values });
+      checkGap(fb, KC.knobCardRect(true), "full card, knob " + k);
+      if (fb.clipped() !== 0) fail("card drew outside the display, knob " + k);
+      if (fb.missingGlyphs.size) fail("card used a glyph the atlas lacks, knob " + k);
+    }
+    const sfb = draw({ name: "S1: CUTOFF", value: "72" });
+    checkGap(sfb, KC.knobCardRect(false), "short card");
+    if (sfb.clipped() !== 0) fail("short card drew outside the display");
+    console.log("PASS: frame invariant, gap holds against every cell");
+  }
+
+  /* ---- 6. the NAME loses a collision, never the value ---- */
+  {
+    const fb = H.createFramebuffer();
+    const ctx = H.drawContext(fb);
+    KC.drawKnobCard(ctx, { name: "A Ludicrously Long Parameter Name", value: "12345" });
+    const r = KC.knobCardRect(false);
+    const vw = ctx.textWidth("12345");
+    /* The band is white and the glyphs are knocked out of it, so the value
+     * being present means UNLIT pixels in the columns it should occupy. */
+    let knocked = 0;
+    for (let x = r.x + r.w - 3 - vw; x < r.x + r.w - 3; x++)
+      for (let y = r.y + 3; y < r.y + 3 + 9; y++) if (!fb.pixels[y * fb.width + x]) knocked++;
+    if (knocked === 0) fail("value was squeezed out of the header band by a long name");
+    if (fb.clipped() !== 0) fail("long name drew outside the display");
+    console.log("PASS: long name truncates, value survives");
   }
 
   console.log("OK");
