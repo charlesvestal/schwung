@@ -765,6 +765,17 @@ any sound at all:
 2. Load a module into **midi_fx4 only**. The slot must activate and dispatch MIDI.
 3. **Reload the set** with each of the above (this exercises the `load_file` path,
    a different activation site) and confirm the slot comes back active, not silent.
+4b. **Clear a single FX with `None`** on an otherwise-empty slot. The slot must
+    NOT become active. The old code activated on the write alone, and "none" is a
+    non-empty value, so it used to activate a slot on an explicit CLEAR. This fix
+    fell out of the redesign rather than being aimed at, so it has never been
+    exercised deliberately.
+5. **Clear a full 8-FX chain and LISTEN.** Up to 17 `dlclose` + `destroy_instance`
+    pairs run in one SPI frame against a ~900us budget. If that clicks or drops
+    out, the fix is to defer the teardown to the worker thread and have the
+    callback only mark the slot inactive — NOT to go back to clearing two
+    positions, which is what made a cleared slot resurrect itself.
+
 4. **The teardown regression, and the one most worth exercising:** with a module in
    fx5, clear the slot (patch -> None). It must go silent AND STAY silent — it must
    not re-activate on the next MIDI event. Two teardown paths used to clear only
