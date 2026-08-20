@@ -6,6 +6,7 @@
 
 #include "chain_internal.h"
 #include "chain_pre_inject.h"
+#include "chain_midi_chain.h"
 
 /* Clock availability state for sync-aware MIDI FX (arp, etc.). */
 static int g_clock_output_enabled = 1;              /* midiClockMode == "output" */
@@ -397,11 +398,17 @@ static int v2_process_midi_fx(chain_instance_t *inst,
 
         /* Process each message from previous stage */
         for (int m = 0; m < current_count && next_count < MIDI_FX_MAX_OUT_MSGS; m++) {
+            int room = MIDI_FX_MAX_OUT_MSGS - next_count;
             int out_count = api->process_midi(fx_inst,
                                               current[m], current_lens[m],
                                               &next[next_count], &next_lens[next_count],
-                                              MIDI_FX_MAX_OUT_MSGS - next_count);
-            next_count += out_count;
+                                              room);
+            /* Believe the buffer, not the plugin: an over-reported count would
+             * push next_count past the end of `next`/`current` and corrupt the
+             * stack inside the audio callback. Same clamp, and same reasoning,
+             * as chain_midi_run_from -- found by the test for that one. */
+            if (out_count > room) out_count = room;
+            if (out_count > 0) next_count += out_count;
         }
 
         /* Copy to current for next iteration */
@@ -427,6 +434,53 @@ static int v2_process_midi_fx(chain_instance_t *inst,
 }
 
 /* Call tick on all MIDI FX modules and send generated messages to synth */
+/*
+ * Run a message set through the MIDI FX chain STARTING AT `from`.
+ *
+ * This exists for GENERATED notes. An arpeggiator does not emit from
+ * process_midi -- it holds the incoming note and produces on its own clock via
+ * tick() -- and that output used to go straight to the synth, skipping every FX
+ * after it. So two arps did not chain: both ran off the same input in parallel
+ * and both fed the synth, which is not what a left-to-right chain promises.
+ * Reported on hardware: "i'd expect arp 1 to output notes that are fed into
+ * arp 2".
+ *
+ * Starting at `from` (the caller passes stage + 1) is what makes this safe: a
+ * stage can never feed itself or anything upstream, so there is no cycle to
+ * guard against and no need for a depth counter.
+ *
+ * Transforms in place and returns the new count. One `next` buffer is reused
+ * across stages rather than nested, so the stack cost is flat in chain length
+ * -- this runs in the audio callback.
+ */
+static int v2_stage_active(void *ctx, int stage) {
+    chain_instance_t *inst = (chain_instance_t *)ctx;
+    if (!inst) return 0;
+    if (stage < MAX_MIDI_FX && inst->midi_fx_bypassed[stage]) return 0;
+    midi_fx_api_v1_t *api = inst->midi_fx_plugins[stage];
+    /* Holes are legal on this side -- an inactive stage is SKIPPED, never a
+     * reason to stop walking the list. */
+    return api && inst->midi_fx_instances[stage] && api->process_midi;
+}
+
+static int v2_stage_process(void *ctx, int stage, const uint8_t *in, int in_len,
+                            uint8_t (*out)[3], int *out_lens, int max) {
+    chain_instance_t *inst = (chain_instance_t *)ctx;
+    return inst->midi_fx_plugins[stage]->process_midi(
+        inst->midi_fx_instances[stage], in, in_len, out, out_lens, max);
+}
+
+static int v2_run_midi_fx_from(chain_instance_t *inst, int from,
+                               uint8_t msgs[][3], int lens[], int count) {
+    if (!inst) return count;
+    uint8_t scratch[MIDI_FX_MAX_OUT_MSGS][3];
+    int scratch_lens[MIDI_FX_MAX_OUT_MSGS];
+    return chain_midi_run_from(from, inst->midi_fx_count,
+                               v2_stage_active, v2_stage_process, inst,
+                               msgs, lens, count,
+                               scratch, scratch_lens, MIDI_FX_MAX_OUT_MSGS);
+}
+
 void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
     if (!inst) return;
 
@@ -440,6 +494,12 @@ void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
         int out_lens[MIDI_FX_MAX_OUT_MSGS];
         int count = api->tick(fx_inst, frames, SAMPLE_RATE,
                               out_msgs, out_lens, MIDI_FX_MAX_OUT_MSGS);
+
+        /* Generated notes travel the REST of the chain, like any other note.
+         * Without this an arp's output skipped every FX after it, so two arps
+         * ran in parallel off the same input instead of feeding each other.
+         * Downstream only (fx + 1), so a stage can never feed itself. */
+        count = v2_run_midi_fx_from(inst, fx + 1, out_msgs, out_lens, count);
 
         /* Send generated messages to synth */
         for (int i = 0; i < count; i++) {
