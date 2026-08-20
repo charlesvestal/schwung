@@ -3164,9 +3164,29 @@ function chainSectionId(section, i) {
  *    v2_load_audio_fx_slot unloads and reloads unconditionally, so rewriting
  *    the module id a position already holds destroys that module's state.
  *
+ * 3. CARRY THE STATE. A position that changes is reloaded from scratch —
+ *    v2_unload_audio_fx_slot, then a fresh dlopen and create_instance — so a
+ *    reorder that moved only module ids would hand every moved module a
+ *    factory instance. Move a tuned reverb one place left and you get a
+ *    default reverb. v2_load_midi_fx_slot mirrors the audio loader down to the
+ *    dlopen, so the MIDI section needs exactly the same treatment.
+ *
+ *    Two rules govern the carry, and the second is the one that corrupts
+ *    rather than merely disappoints:
+ *
+ *    - READ BEFORE WRITE. The first module write destroys the instance the
+ *      state is being read from, so a read afterwards returns the fresh
+ *      default and silently "succeeds".
+ *    - Carry only between positions holding the SAME module id. A state blob
+ *      is opaque and module-specific; pushing a reverb's into a delay is not a
+ *      lost tweak but a corrupted module. So a position whose new occupant is
+ *      not found anywhere in the old order — a picker swap, an appended
+ *      module — gets no state at all.
+ *
  * The range comes from the published count rather than from probing the cap:
  * fx_count answers in one IPC read what fx1..fx8 would cost eight of, at
- * ~2.8ms each, on a gesture the user is spinning.
+ * ~2.8ms each, on a gesture the user is spinning. The state reads are bounded
+ * the same way, to the positions actually receiving a moved module.
  */
 function writeChainOrder(slotIndex, section) {
     if (!section) {
@@ -3185,12 +3205,52 @@ function writeChainOrder(slotIndex, section) {
      * positions need no read to know they are already empty — only the ones
      * the DSP still counts do. */
     const end = Math.min(cap, Math.max(loaded, list.length));
+
+    const want = [], have = [];
     for (let i = 0; i < end; i++) {
-        const id = chainSectionId(section, i);
-        const want = (list[i] && list[i].module) ? String(list[i].module).toLowerCase() : "";
-        const have = i < loaded
-            ? String(getSlotParam(slotIndex, `${id}_module`) || "").toLowerCase() : "";
-        if (want !== have) setSlotParam(slotIndex, `${id}:module`, want);
+        want.push((list[i] && list[i].module) ? String(list[i].module).toLowerCase() : "");
+        have.push(i < loaded
+            ? String(getSlotParam(slotIndex, `${chainSectionId(section, i)}_module`) || "").toLowerCase()
+            : "");
+    }
+
+    /*
+     * Where each moved module is moving FROM, matched by module id.
+     *
+     * Positions that are not moving claim themselves first, so a module that
+     * stays put can never have its state stolen by a same-named neighbour —
+     * which is the whole reason a chain holding two of the same reverb still
+     * comes out right. What is left over is matched in order.
+     */
+    const claimed = new Array(end).fill(false);
+    for (let i = 0; i < end; i++) if (want[i] === have[i]) claimed[i] = true;
+    const carry = [];
+    for (let i = 0; i < end; i++) {
+        if (!want[i] || want[i] === have[i]) continue;
+        const from = have.findIndex((m, k) => !claimed[k] && m === want[i]);
+        /* Nothing in the old order holds this module: it is new here (a picker
+         * swap, an append), so it starts clean rather than inheriting a blob
+         * that belongs to a different module. */
+        if (from < 0) continue;
+        claimed[from] = true;
+        carry.push({ to: i, from, state: "" });
+    }
+
+    /* BEFORE the first module write — see rule 3. */
+    for (const c of carry) {
+        c.state = getSlotParam(slotIndex, `${chainSectionId(section, c.from)}:state`) || "";
+    }
+
+    for (let i = 0; i < end; i++) {
+        if (want[i] !== have[i]) {
+            setSlotParam(slotIndex, `${chainSectionId(section, i)}:module`, want[i]);
+        }
+    }
+    /* After, because the instance the state is going into does not exist until
+     * its module write has landed. A module that serves no `state` answers ""
+     * and is left alone. */
+    for (const c of carry) {
+        if (c.state) setSlotParam(slotIndex, `${chainSectionId(section, c.to)}:state`, c.state);
     }
 }
 
