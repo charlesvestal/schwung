@@ -204,6 +204,28 @@ if (ctl.menuEntry().label !== beforeName) {
   ctl.exitMenu();
 }
 
+/* ---- 9. every list surface shows the SAME five rows -------------------- */
+{
+  const RM = await import(R + "/src/shared/param_pages/render_page_movy.mjs");
+  const entries = Array.from({ length: 9 }, (_, i) => ({ name: "E" + i, index: i, pages: 1 }));
+  /* The menu list and the section picker share one rect, so both show five
+   * rows — the same as the list editor. The inert menu used to shrink its rect
+   * to make room for the brackets and showed four, which also made the rows
+   * jump as you entered. The brackets go OUTSIDE the list instead. */
+  const rect = { x: 8, y: 10, w: 112, h: RM.RULE_Y - 10 };
+  const got = renderPicker(H.drawContext(H.createFramebuffer()),
+                           { rect, entries, index: 0, header: false });
+  if (got.rows !== 5) {
+    fail("list surfaces must show 5 rows, got " + got.rows +
+         " — menu, section picker and the list editor all use this rect");
+  }
+  /* The frame must not land on a row fill: fills run y-1 .. y+7 per row. */
+  const firstFill = rect.y - 1;
+  const lastFill = rect.y + (got.rows - 1) * 9 + 7;
+  if (firstFill <= 8) fail("the top bracket arm at y=8 collides with the first row fill at y=" + firstFill);
+  if (lastFill >= 54) fail("the bottom bracket arm at y=54 collides with the last row fill at y=" + lastFill);
+}
+
 if (failures) process.exit(1);
 console.log("PASS: PAGE_MENU — planned last, INERT until entered so the jog always pages, " +
             "click enters then activates, Shift+Click always reaches the sections, " +

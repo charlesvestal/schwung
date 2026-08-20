@@ -637,15 +637,18 @@ const BRACKET_LEN = 4;
  * two scales: around a CELL it says "this parameter opens something", and
  * around a whole menu page body it says the same thing about the page. One
  * grammar, one drawing, so the two can never drift apart.
+ *
+ * `len` is the arm length. A 32px cell wants the default 4; a 124px page frame
+ * wants more, or the corners read as specks rather than as a frame.
  */
-export function drawBrackets(ctx, x, y, w, h) {
-    for (let i = 0; i < BRACKET_LEN; i++) {
+export function drawBrackets(ctx, x, y, w, h, len = BRACKET_LEN) {
+    for (let i = 0; i < len; i++) {
         ctx.fillRect(x + i, y, 1, 1, 1);
         ctx.fillRect(x + w - 1 - i, y, 1, 1, 1);
         ctx.fillRect(x + i, y + h - 1, 1, 1, 1);
         ctx.fillRect(x + w - 1 - i, y + h - 1, 1, 1, 1);
     }
-    for (let i = 0; i < BRACKET_LEN - 1; i++) {
+    for (let i = 0; i < len - 1; i++) {
         ctx.fillRect(x, y + i, 1, 1, 1);
         ctx.fillRect(x + w - 1, y + i, 1, 1, 1);
         ctx.fillRect(x, y + h - 1 - i, 1, 1, 1);
