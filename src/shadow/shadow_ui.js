@@ -3147,7 +3147,16 @@ function chainSectionId(section, i) {
  * `inst->fx_count = slot + 1` on load, trimmed only while the TRAILING handle
  * is NULL), so a contiguous run plus a cleared tail is the whole contract.
  *
- * Two rules, both load-bearing:
+ * `prevList` is the section AS IT WAS, and its entries must be the same module
+ * OBJECTS the new list holds — which is what the chain model's clones give you
+ * for free. Everything below that follows a module rather than a position is
+ * driven by that identity, never by the module id, for a reason worth stating
+ * plainly: a chain can hold two of the same module. Compare ids and a reorder
+ * of `[reverb, reverb]` looks like no change at all — zero writes, each
+ * instance keeps the settings of the position it used to be in, and the editor
+ * announces a move that never happened.
+ *
+ * Four rules, all load-bearing:
  *
  * 1. Walk the WHOLE occupied range, never stopping at the first blank.
  *    Stopping early looks right — the run is contiguous, so why keep going? —
@@ -3160,43 +3169,45 @@ function chainSectionId(section, i) {
  *    destroyed up to seven neighbours and made a whole-chain rewrite depend on
  *    write ORDER.
  *
- * 2. Write only what CHANGED. A redundant write is not a no-op:
- *    v2_load_audio_fx_slot unloads and reloads unconditionally, so rewriting
- *    the module id a position already holds destroys that module's state.
+ * 2. Write a module id only where the ID CHANGED. A redundant write is not a
+ *    no-op: v2_load_audio_fx_slot unloads and reloads unconditionally, so
+ *    rewriting the id a position already holds tears down a working instance
+ *    for nothing. This is why reordering two of the same module issues no
+ *    module writes at all — neither needs reloading, they are the same plugin.
  *
- * 3. CARRY THE STATE. A position that changes is reloaded from scratch —
- *    v2_unload_audio_fx_slot, then a fresh dlopen and create_instance — so a
- *    reorder that moved only module ids would hand every moved module a
- *    factory instance. Move a tuned reverb one place left and you get a
- *    default reverb. v2_load_midi_fx_slot mirrors the audio loader down to the
- *    dlopen, so the MIDI section needs exactly the same treatment.
- *
- *    Two rules govern the carry, and the second is the one that corrupts
- *    rather than merely disappoints:
+ * 3. CARRY THE STATE, which is a DIFFERENT question from rule 2 and must be
+ *    answered separately. A position that is reloaded starts factory-fresh, so
+ *    what moved has to bring its settings; but a position that was NOT reloaded
+ *    and yet now holds a module that came from somewhere else needs its state
+ *    written just the same. Answer only rule 2 and the same-module reorder
+ *    silently does nothing.
  *
  *    - READ BEFORE WRITE. The first module write destroys the instance the
- *      state is being read from, so a read afterwards returns the fresh
- *      default and silently "succeeds".
- *    - Carry only between positions holding the SAME module id. A state blob
- *      is opaque and module-specific; pushing a reverb's into a delay is not a
- *      lost tweak but a corrupted module. So a position whose new occupant is
- *      not found anywhere in the old order — a picker swap, an appended
- *      module — gets no state at all.
+ *      state is being read from, so a read afterwards returns the fresh default
+ *      and silently "succeeds".
+ *    - A position whose occupant did not come from anywhere in the old order —
+ *      a picker swap, an appended module — gets NO state. Identity guarantees
+ *      that: a blob is opaque and module-specific, and pushing a reverb's into
+ *      a delay is not a lost tweak but a corrupted module.
+ *
+ * 4. CARRY THE MODULATION. An LFO routes by position key ("fx2",
+ *    getTargetComponents below), which was safe only while positions never
+ *    moved. Left alone, a reorder re-points every LFO at whatever module slid
+ *    into the slot it was aimed at, and the chain sounds different afterwards
+ *    in a way the user did not ask for and cannot see. A target whose module
+ *    left the chain entirely is CLEARED rather than re-aimed.
  *
  * The range comes from the published count rather than from probing the cap:
  * fx_count answers in one IPC read what fx1..fx8 would cost eight of, at
  * ~2.8ms each, on a gesture the user is spinning. The state reads are bounded
- * the same way, to the positions actually receiving a moved module.
+ * the same way, to the positions that actually received a moved module, and the
+ * two LFO reads happen only when something in this section actually moved.
  */
-function writeChainOrder(slotIndex, section) {
-    if (!section) {
-        writeChainOrder(slotIndex, "midiFx");
-        writeChainOrder(slotIndex, "fx");
-        return;
-    }
+function writeChainOrder(slotIndex, section, prevList) {
     const cfg = chainConfigs[slotIndex];
     if (!cfg || !cfg[section]) return;
     const list = cfg[section];
+    const prev = prevList || [];
     const cap = CHAIN_CAP[section];
     const n = parseInt(getSlotParam(slotIndex,
         section === "midiFx" ? "midi_fx_count" : "fx_count"), 10);
@@ -3214,31 +3225,40 @@ function writeChainOrder(slotIndex, section) {
             : "");
     }
 
-    /*
-     * Where each moved module is moving FROM, matched by module id.
-     *
-     * Positions that are not moving claim themselves first, so a module that
-     * stays put can never have its state stolen by a same-named neighbour —
-     * which is the whole reason a chain holding two of the same reverb still
-     * comes out right. What is left over is matched in order.
-     */
-    const claimed = new Array(end).fill(false);
-    for (let i = 0; i < end; i++) if (want[i] === have[i]) claimed[i] = true;
+    /* Which old position each module came from — BY IDENTITY. `indexOf` is
+     * unambiguous here because every entry is a distinct object, including two
+     * entries naming the same module. */
     const carry = [];
     for (let i = 0; i < end; i++) {
-        if (!want[i] || want[i] === have[i]) continue;
-        const from = have.findIndex((m, k) => !claimed[k] && m === want[i]);
-        /* Nothing in the old order holds this module: it is new here (a picker
-         * swap, an append), so it starts clean rather than inheriting a blob
-         * that belongs to a different module. */
-        if (from < 0) continue;
-        claimed[from] = true;
+        if (!list[i]) continue;
+        const from = prev.indexOf(list[i]);
+        if (from < 0 || from === i) continue;
         carry.push({ to: i, from, state: "" });
     }
+    const somethingMoved = carry.length > 0 ||
+        prev.some((m) => m && list.indexOf(m) < 0);
 
-    /* BEFORE the first module write — see rule 3. */
+    /* Everything this needs to know is read BEFORE the first write — see
+     * rule 3. The LFO targets are not destroyed by a module write, but they are
+     * read here anyway so the whole function has one ordering rule rather than
+     * one per thing it carries. */
     for (const c of carry) {
         c.state = getSlotParam(slotIndex, `${chainSectionId(section, c.from)}:state`) || "";
+    }
+    const lfoWrites = [];
+    if (somethingMoved) {
+        for (let li = 1; li <= 2; li++) {
+            const key = `lfo${li}:target`;
+            const at = parseChainId(getSlotParam(slotIndex, key) || "");
+            /* Targets naming the synth, an LFO, or the other section are not
+             * this section's business. */
+            if (!at || at.section !== section) continue;
+            const was = prev[at.index];
+            if (!was) continue;
+            const now = list.indexOf(was);
+            if (now === at.index) continue;
+            lfoWrites.push({ key, val: now >= 0 ? chainSectionId(section, now) : "" });
+        }
     }
 
     for (let i = 0; i < end; i++) {
@@ -3246,12 +3266,13 @@ function writeChainOrder(slotIndex, section) {
             setSlotParam(slotIndex, `${chainSectionId(section, i)}:module`, want[i]);
         }
     }
-    /* After, because the instance the state is going into does not exist until
+    /* After, because the instance a state is going into does not exist until
      * its module write has landed. A module that serves no `state` answers ""
      * and is left alone. */
     for (const c of carry) {
         if (c.state) setSlotParam(slotIndex, `${chainSectionId(section, c.to)}:state`, c.state);
     }
+    for (const w of lfoWrites) setSlotParam(slotIndex, w.key, w.val);
 }
 
 /*
@@ -3285,7 +3306,15 @@ function moveChainComponent(slotIndex, componentKey, delta) {
     const after = next[at.section];
     if (after.length === before.length && after.every((m, i) => m === before[i])) return false;
     chainConfigs[slotIndex] = next;
-    writeChainOrder(slotIndex, at.section);
+    /* `before` is not just the old order, it is the old OBJECTS — which is how
+     * writeChainOrder tells two instances of the same module apart. */
+    writeChainOrder(slotIndex, at.section, before);
+    /* An LFO label names a module by the position it was routed to, and both
+     * just changed. The knob context self-heals within ~30 ticks via
+     * applySlotModuleSignature; this cache does not, so a stale label would sit
+     * there naming a module that has moved on. */
+    resetLfoTargetLabels();
+    invalidateKnobContextCache();
     return true;
 }
 
@@ -3333,12 +3362,18 @@ function applyPickerChoiceToChain(cfg, componentKey, moduleId) {
     const id = chainComponentId(componentKey);
     const at = parseChainId(id);
     if (!moduleId) {
-        if (at) return { cfg: chainRemoveAt(cfg, id), reorderSection: at.section };
+        if (at) {
+            /* Captured BEFORE the removal, and by object rather than by name:
+             * writeChainOrder needs the old entries themselves to work out
+             * which module ended up where. */
+            const prevList = (cfg[at.section] || []).slice();
+            return { cfg: chainRemoveAt(cfg, id), reorderSection: at.section, prevList };
+        }
         setChainComponentModule(cfg, componentKey, null);
-        return { cfg, reorderSection: null };
+        return { cfg, reorderSection: null, prevList: null };
     }
     setChainComponentModule(cfg, componentKey, { module: moduleId, params: {} });
-    return { cfg, reorderSection: null };
+    return { cfg, reorderSection: null, prevList: null };
 }
 
 /*
@@ -7882,25 +7917,24 @@ function applyComponentSelection() {
                 needsRedraw = true;
                 return;
             }
-            applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp,
-                                             choice.reorderSection);
+            applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, choice);
         });
         return;
     }
 
     /* Clearing a slot (empty moduleId) — no feedback risk, run directly. */
-    applyComponentSelectionConfirmed(selectedSlot, paramKey, moduleId, comp,
-                                     choice.reorderSection);
+    applyComponentSelectionConfirmed(selectedSlot, paramKey, moduleId, comp, choice);
 }
 
-function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, reorderSection) {
+function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, choice) {
+    const reorderSection = choice && choice.reorderSection;
     /* A removal compacted the list, so every position from the removed one
      * onwards now holds a different module — one write cannot say that.
-     * writeChainOrder rewrites the section and clears the whole tail; the
-     * single write below is for everything else, where exactly one position
-     * changed. */
+     * writeChainOrder rewrites the section, clears the whole tail, and carries
+     * each surviving module its state and its modulation routing; the single
+     * write below is for everything else, where exactly one position changed. */
     if (reorderSection) {
-        writeChainOrder(slotIndex, reorderSection);
+        writeChainOrder(slotIndex, reorderSection, choice.prevList);
     } else if (paramKey) {
         if (typeof host_log === "function") host_log(`applyComponentSelection: slot=${slotIndex} param=${paramKey} module=${moduleId}`);
         const success = setSlotParam(slotIndex, paramKey, moduleId);
