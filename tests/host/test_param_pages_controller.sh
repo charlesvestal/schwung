@@ -481,6 +481,43 @@ Promise.all([
       sessions++;
     }
     if (sessions < 70) fail("only " + sessions + " modules exercised");
+
+    /* ---- touch is a SET: two fingers, and a turn claims the header -------- */
+    {
+      const { ctl } = setup("obxd");
+      const held = () => ctl.state.touchOrder.slice();
+      const header = () => ctl.state.touched;
+
+      ctl.onKnobTouch(0, true);
+      ctl.onKnobTouch(2, true);
+      if (held().join(",") !== "0,2") fail("both held knobs should be tracked, got " + held());
+      if (header() !== 2) fail("the header should follow the knob touched LAST, got " + header());
+
+      /*
+       * The bug this exists for: releasing the SECOND knob cleared a single
+       * `touched` index, so the first — still under a finger — stopped being
+       * highlighted and the header went blank.
+       */
+      ctl.onKnobTouch(2, false);
+      if (held().join(",") !== "0") fail("releasing one knob must leave the other held, got " + held());
+      if (header() !== 0) fail("the header must fall back to a knob still held, got " + header());
+
+      ctl.onKnobTouch(0, false);
+      if (held().length !== 0) fail("no knob should be held after both releases");
+      if (header() !== -1) fail("the header should clear once nothing is held");
+
+      /* "Last touched or MOVED": a turn claims the header even with no touch,
+       * because a knob can be turned without the capacitive pad registering. */
+      ctl.onKnobTurn(3, 1, 5000);
+      if (header() !== 3) fail("turning a knob should claim the header, got " + header());
+
+      /* But a turn must not out-rank a knob actually under a finger. */
+      ctl.onKnobTouch(1, true);
+      ctl.onKnobTurn(3, 1, 5100);
+      if (header() !== 1) fail("while a knob is held the header must stay on it, got " + header());
+      ctl.onKnobTouch(1, false);
+    }
+
     console.log("PASS: controller — one read per tick, writes survive stale reads, " +
                 "opaque params open rather than turn, rebuild keeps your place, " +
                 sessions + " scripted module sessions clean");

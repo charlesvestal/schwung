@@ -747,6 +747,16 @@ function drawLabelCell(ctx, col, lblY, label, displayValue, touched, modulated) 
 function drawKnobRow(ctx, o, row, rowY, lblY) {
     const { page, metaIndex, values, touched, modulated, viz, modValues } = o;
     /*
+     * EVERY held knob inverts, not just the one the header follows. A single
+     * index could not express two fingers: touching a second knob overwrote it
+     * and releasing that one cleared it, so a knob still under a finger stopped
+     * being highlighted. Falls back to the single `touched` when a caller does
+     * not supply the set.
+     */
+    const held = Array.isArray(o.touchedSlots) && o.touchedSlots.length
+        ? o.touchedSlots
+        : (typeof touched === "number" && touched >= 0 ? [touched] : []);
+    /*
      * What each widget animates.
      *
      * A knob can legibly show TWO values — pointer on the base, dot on the arc
@@ -790,7 +800,7 @@ function drawKnobRow(ctx, o, row, rowY, lblY) {
         if (!key) continue;
         const meta = metaIndex.getOrGuess(key);
         const raw = values ? values[key] : null;
-        const isTouched = touched === slot;
+        const isTouched = held.indexOf(slot) >= 0;
 
         if (!covered[col]) {
             /* modValues holds the live modulated value for keys a source is
