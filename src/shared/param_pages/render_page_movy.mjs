@@ -632,8 +632,13 @@ function drawOpaqueBox(ctx, kx, ky, value) {
  * the brackets merge into the label below.
  */
 const BRACKET_LEN = 4;
-function drawDivableMark(ctx, col, rowY) {
-    const x = col * CELL_W + 1, y = rowY, w = CELL_W - 2, h = BOX_H;
+/**
+ * Corner brackets around an arbitrary rect. Exported because the mark works at
+ * two scales: around a CELL it says "this parameter opens something", and
+ * around a whole menu page body it says the same thing about the page. One
+ * grammar, one drawing, so the two can never drift apart.
+ */
+export function drawBrackets(ctx, x, y, w, h) {
     for (let i = 0; i < BRACKET_LEN; i++) {
         ctx.fillRect(x + i, y, 1, 1, 1);
         ctx.fillRect(x + w - 1 - i, y, 1, 1, 1);
@@ -646,6 +651,10 @@ function drawDivableMark(ctx, col, rowY) {
         ctx.fillRect(x, y + h - 1 - i, 1, 1, 1);
         ctx.fillRect(x + w - 1, y + h - 1 - i, 1, 1, 1);
     }
+}
+
+function drawDivableMark(ctx, col, rowY) {
+    drawBrackets(ctx, col * CELL_W + 1, rowY, CELL_W - 2, BOX_H);
 }
 
 function drawKnobWidget(ctx, col, rowY, meta, raw, modRaw, liveRaw) {

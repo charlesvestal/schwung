@@ -392,6 +392,18 @@ function footerHints() {
     const fine = shift ? [["KNB", "FINE"]] : null;
 
     /*
+     * A menu page is a door at page scale: inert until entered, so the jog
+     * still pages and the click is what goes in. Once inside, the jog drives
+     * the list and Back comes out — the same ladder a picker has.
+     */
+    const mp = controller.page;
+    if (mp && mp.kind === "menu") {
+        return controller.menuEntered && controller.menuEntered()
+            ? orderedHints({ jog: "SEL", click: "OPEN", extra: [["BACK", "OUT"]] })
+            : orderedHints({ jog: "PAGE", click: "ENTER", extra: fine });
+    }
+
+    /*
      * A knob under the hand changes what the CLICK means and nothing else, so
      * only that slot changes. Holding a knob whose param opens an editor, the
      * click opens it; holding any other knob, the click still opens the section

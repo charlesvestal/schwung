@@ -715,7 +715,11 @@ export function renderPicker(ctx, { rect, entries, index, title, header = true }
     const top = header ? PICKER_LIST_TOP : 0;
     const rows = Math.max(1, Math.floor((r.h - top) / (FONT_H + 2)));
     const total = (entries || []).length;
-    const cur = Math.max(0, Math.min(total - 1, index | 0));
+    /* index < 0 = nothing selected. An INERT menu page previews its entries
+     * without claiming one is current, so no row inverts and the window starts
+     * at the top. */
+    const none = (index | 0) < 0;
+    const cur = none ? 0 : Math.max(0, Math.min(total - 1, index | 0));
 
     /* Keep the selection centred so the list does not jump when it can scroll. */
     let first = cur - Math.floor(rows / 2);
@@ -732,7 +736,7 @@ export function renderPicker(ctx, { rect, entries, index, title, header = true }
     for (let i = 0; i < rows && first + i < total; i++) {
         const e = entries[first + i];
         const y = r.y + top + i * (FONT_H + 2);
-        const selected = (first + i) === cur;
+        const selected = !none && (first + i) === cur;
         if (selected) ctx.fillRect(r.x, y - 1, r.w, FONT_H + 2, 1);
         /* A section spanning several pages says so, so "Filter" and a 6-page
          * "Oscillator" do not look like the same size of thing. */
