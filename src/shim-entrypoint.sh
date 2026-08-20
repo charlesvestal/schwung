@@ -92,8 +92,32 @@ SCHWUNG_MGR="$SCHWUNG_DIR/schwung-manager"
 SCHWUNG_MGR_LOG="$SCHWUNG_DIR/schwung-manager.log"
 SCHWUNG_MGR_PID="$SCHWUNG_DIR/schwung-manager.pid"
 if [ -x "$SCHWUNG_MGR" ]; then
-    # Skip if already running
-    if [ -f "$SCHWUNG_MGR_PID" ] && kill -0 "$(cat "$SCHWUNG_MGR_PID")" 2>/dev/null; then
+    # Skip if already running.
+    #
+    # `kill -0` alone is NOT enough: it asks whether SOMETHING holds that pid,
+    # not whether the manager does. The pid file survives a reboot, and Linux
+    # hands the number out again — observed 2026-08-20, where the stale pid 928
+    # came back as `display-server`, so this test passed, the manager was never
+    # started, and port 7700 was simply dead until someone noticed. It fails
+    # silently and only after a reboot, which is the worst combination.
+    #
+    # So confirm the pid is actually the manager by reading its cmdline.
+    SCHWUNG_MGR_RUNNING=0
+    if [ -f "$SCHWUNG_MGR_PID" ]; then
+        mgr_pid="$(cat "$SCHWUNG_MGR_PID" 2>/dev/null)"
+        # A non-numeric or empty pid file must not turn into a bare `/proc//cmdline`.
+        case "$mgr_pid" in
+            ''|*[!0-9]*) mgr_pid="" ;;
+        esac
+        # SCHWUNG_PROC_DIR is /proc on the device; the host test overrides it,
+        # since the dev machines have no /proc to build a fixture in.
+        if [ -n "$mgr_pid" ] && kill -0 "$mgr_pid" 2>/dev/null &&
+           tr '\0' ' ' < "${SCHWUNG_PROC_DIR:-/proc}/$mgr_pid/cmdline" 2>/dev/null |
+               grep -q "schwung-manager"; then
+            SCHWUNG_MGR_RUNNING=1
+        fi
+    fi
+    if [ "$SCHWUNG_MGR_RUNNING" = "1" ]; then
         : # already running
     else
         # Rotate log if over 100KB
