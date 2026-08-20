@@ -45,7 +45,15 @@ function makeSlot(over) {
   state.preset = true;
   const hier = JSON.parse(io.getParam("slot:ui_hierarchy"));
   const cp = JSON.parse(io.getParam("slot:chain_params"));
-  const { pages } = planPages({ hierarchy: hier, chainParams: cp });
+  /*
+   * A visibility function, as the host supplies (slotGridIoFor sets io.visible).
+   * Without one every visible_if reads true, both LFO rates show, and each LFO
+   * spills to 8 + 1. That is a real failure mode — forget to wire visibility and
+   * the page set grows orphans — so it is asserted separately in 4c rather than
+   * hidden by planning without it here.
+   */
+  const visFree = (cond) => !cond || String(cond.equals) === "0";
+  const { pages } = planPages({ hierarchy: hier, chainParams: cp, visible: visFree });
 
   const grids = pages.filter((p) => p.kind === "knobs");
   const menus = pages.filter((p) => p.kind === "menu");
@@ -193,6 +201,66 @@ function makeSlot(over) {
   for (const p of SG.lfoParams(1)) {
     if (SG.realKeyFor(p.key) !== p.key) {
       fail("realKeyFor(" + p.key + ") should pass through, got " + SG.realKeyFor(p.key));
+    }
+  }
+}
+
+/* ---- 4c. one rate cell, swapped by Sync -------------------------------- */
+{
+  /*
+   * Free-run and synced rates are the same control in different units, so only
+   * one is shown. That is what pays for Phase: ten LFO params do not fit eight
+   * cells, nine-with-one-hidden does.
+   *
+   * The condition key carries its own "lfoN:" prefix so it resolves against the
+   * LFO rather than the component — normalizeVisibilityConditionKey passes any
+   * key containing ":" through untouched.
+   */
+  const seen = (sync) => {
+    /*
+     * Key-AWARE, like the real evaluator: it looks the condition param up and
+     * compares. A fake that only reads cond.equals cannot tell "lfo1:sync" from
+     * "sync", so dropping the prefix — which on the device reads the wrong
+     * param and hides BOTH rate cells — would sail through.
+     */
+    const condStore = { "lfo1:sync": sync, "lfo2:sync": sync };
+    const vis = (cond) => {
+      if (!cond) return true;
+      const raw = condStore[cond.param];
+      if (raw === undefined) return false;      /* unknown key: not visible */
+      return String(raw) === String(cond.equals);
+    };
+    const { pages, conditionKeys } = planPages({
+      hierarchy: SG.slotGridHierarchy(true),
+      chainParams: SG.allSlotGridParams(),
+      visible: vis,
+    });
+    const lfo = pages.filter((p) => p.level === "lfo1");
+    return { keys: (lfo[0] || {}).keys || [], count: lfo.length, conditionKeys };
+  };
+
+  const free = seen("0"), sync = seen("1");
+  if (free.count !== 1 || sync.count !== 1) {
+    fail("an LFO must be exactly ONE page in both sync states, got " +
+         free.count + " / " + sync.count);
+  }
+  if (free.keys.length !== 8 || sync.keys.length !== 8) {
+    fail("an LFO page must show 8 cells, got " + free.keys.length + " / " + sync.keys.length);
+  }
+  if (!free.keys.includes("lfo1:rate_hz") || free.keys.includes("lfo1:rate_div")) {
+    fail("free-running should show rate_hz and NOT rate_div: " + JSON.stringify(free.keys));
+  }
+  if (!sync.keys.includes("lfo1:rate_div") || sync.keys.includes("lfo1:rate_hz")) {
+    fail("synced should show rate_div and NOT rate_hz: " + JSON.stringify(sync.keys));
+  }
+  for (const k of ["lfo1:phase_offset"]) {
+    if (!free.keys.includes(k)) fail(k + " should be on the page — the rate swap paid for it");
+  }
+  /* The controller re-plans only for keys it is told to watch. */
+  for (const want of ["lfo1:sync", "lfo2:sync"]) {
+    if (!free.conditionKeys.has(want)) {
+      fail("planPages must report " + want + " as a watched condition key, or the " +
+           "cell never swaps when Sync is turned: " + [...free.conditionKeys].join(","));
     }
   }
 }

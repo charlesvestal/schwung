@@ -132,7 +132,14 @@ export function enterParamPages(slot, component, prefix, restorePageName, io) {
      * the last one didn't, so start asking at full rate again. */
     _loadingInterval = LOADING_POLL_TICKS;
     _loadingPoll = 0;
-    controller.load({ slot, component, prefix: prefix || component, visible: ctx.evaluateVisibilityCondition });
+    /* `visible` resolves visible_if conditions. The default binds to the LIST
+     * editor slot/component, which is stale while the grid is up — fine for a
+     * component (the grid and the list agree on which one), wrong for a
+     * synthesised contract, so an io may carry its own. */
+    controller.load({
+        slot, component, prefix: prefix || component,
+        visible: (io && io.visible) ? io.visible : ctx.evaluateVisibilityCondition,
+    });
     /* "Knobs" IS schwung-movy's own knob-page layout now, not Schwung's
      * earlier dial/bar grid — see render_page_movy.mjs. The setting stays a
      * plain List/Knobs toggle; this is what "Knobs" draws. */
