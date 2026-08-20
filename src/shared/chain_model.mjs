@@ -95,9 +95,8 @@ export function indexOfId(cfg, id) {
 const capOf = (section) => (section === "midiFx" ? MAX_MIDI_FX : MAX_FX);
 const isSection = (section) => section === "midiFx" || section === "fx";
 
-/** Append at the OUTERMOST end of a section. There is deliberately no
- *  insert-at-a-position: inserting in the middle is append-then-move, one
- *  operation rather than two gestures. `section` is "midiFx" or "fx". */
+/** Append at the OUTERMOST end of a section. `section` is "midiFx" or "fx".
+ *  The general form is insertAt; this is the end of it that has a name. */
 export function appendTo(cfg, section, module) {
     const next = clone(cfg);
     /* An unknown section is inert, like every other bad input here. It used to
@@ -106,6 +105,38 @@ export function appendTo(cfg, section, module) {
     if (!isSection(section)) return next;
     if (next[section].length >= capOf(section)) return next;
     next[section] = next[section].concat([module]);
+    return next;
+}
+
+/**
+ * Put a module AT a position, pushing everything from there rightwards.
+ *
+ * This exists because the two `+` boxes are drawn at OPPOSITE ENDS of the
+ * chain: the MIDI one is the leftmost box on screen, ahead of every MIDI FX,
+ * and the audio one sits after the last FX. Each has to add where it is drawn
+ * or the module lands at the far end from the button that was pressed — which
+ * is what the MIDI side did while it shared appendTo. So the MIDI `+` inserts
+ * at 0 and the audio `+` appends, and the asymmetry is the point rather than
+ * an inconsistency.
+ *
+ * Inserting anywhere but the end RENUMBERS: midi_fx1 becomes midi_fx2. That is
+ * a fact about the whole chain, not about this list, and the caller owes the
+ * DSP a whole-section rewrite for it (writeChainOrder in shadow_ui.js) — the
+ * ids here are derived from the index, so nothing in the model notices.
+ *
+ * `index` is clamped rather than rejected: a negative one is the head and a
+ * too-large one is the tail, which is what both ends of a `+` box mean anyway.
+ * Note that splice() would read a negative index from the END, which is how
+ * parseId's zero-guard was earned; the clamp forecloses the same class here.
+ */
+export function insertAt(cfg, section, index, module) {
+    const next = clone(cfg);
+    if (!isSection(section)) return next;
+    if (next[section].length >= capOf(section)) return next;
+    const list = next[section].slice();
+    const at = Math.min(Math.max(Number(index) || 0, 0), list.length);
+    list.splice(at, 0, module);
+    next[section] = list;
     return next;
 }
 

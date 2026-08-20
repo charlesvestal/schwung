@@ -172,6 +172,35 @@ if (midiOrder(midiAppended) !== "arp,chord,velo")
 if (fxOrder(midiAppended) !== "freeverb,cloudseed")
   fail("a midiFx append touched the audio FX, got " + fxOrder(midiAppended));
 
+/* INSERT puts a module AT a position and pushes the rest rightwards. The MIDI
+   `+` box is drawn at the HEAD of the chain, so it inserts at 0; sharing
+   appendTo put its module at the far end of the section from the button that
+   was pressed. */
+const headed = M.insertAt(cfg, "midiFx", 0, { module: "velo" });
+if (midiOrder(headed) !== "velo,arp,chord")
+  fail("insertAt 0 did not go to the head, got " + midiOrder(headed));
+if (fxOrder(headed) !== "freeverb,cloudseed")
+  fail("a midiFx insert touched the audio FX, got " + fxOrder(headed));
+if (midiOrder(cfg) !== "arp,chord")
+  fail("insertAt mutated the config it was given, now " + midiOrder(cfg));
+const middled = M.insertAt(cfg, "fx", 1, { module: "chorus" });
+if (fxOrder(middled) !== "freeverb,chorus,cloudseed")
+  fail("insertAt 1 did not land between, got " + fxOrder(middled));
+if (fxOrder(M.insertAt(cfg, "fx", 2, { module: "chorus" })) !== "freeverb,cloudseed,chorus")
+  fail("insertAt at the length should append");
+/* Clamped, not rejected -- and NEGATIVE matters: splice() counts a negative
+   index from the END, so an unclamped -1 would insert before the LAST entry. */
+if (midiOrder(M.insertAt(cfg, "midiFx", -1, { module: "velo" })) !== "velo,arp,chord")
+  fail("insertAt with a negative index did not clamp to the head, got " +
+       midiOrder(M.insertAt(cfg, "midiFx", -1, { module: "velo" })));
+if (fxOrder(M.insertAt(cfg, "fx", 99, { module: "chorus" })) !== "freeverb,cloudseed,chorus")
+  fail("insertAt past the end did not clamp to the tail");
+/* The cap binds the head as much as the tail. */
+if (M.insertAt(midiFull, "midiFx", 0, { module: "one-too-many" }).midiFx.length !== M.MAX_MIDI_FX)
+  fail("insertAt ignored the midiFx cap");
+if (M.insertAt(full, "fx", 0, { module: "one-too-many" }).fx.length !== M.MAX_FX)
+  fail("insertAt ignored the fx cap");
+
 /* An unknown section is inert like every other bad input. It must not THROW:
    an exception on the shadow UI tick surfaces to the user as "UI error,
    recovering" rather than as nothing happening. */
@@ -181,6 +210,12 @@ for (const bogus of ["midifx", "FX", "audio", "", null, undefined]) {
   try { next = M.appendTo(cfg, bogus, { module: "velo" }); }
   catch (e) { thrown = String(e); }
   const where = "appendTo section " + JSON.stringify(bogus);
+  let iThrown = null, iNext = null;
+  try { iNext = M.insertAt(cfg, bogus, 0, { module: "velo" }); }
+  catch (e) { iThrown = String(e); }
+  if (iThrown) fail("insertAt section " + JSON.stringify(bogus) + " threw: " + iThrown);
+  else if (iNext && (fxOrder(iNext) !== "freeverb,cloudseed" || midiOrder(iNext) !== "arp,chord"))
+    fail("insertAt section " + JSON.stringify(bogus) + " changed the chain");
   if (thrown) { fail(where + " threw instead of no-opping: " + thrown); continue; }
   if (fxOrder(next) !== "freeverb,cloudseed") fail(where + " changed the audio FX to " + fxOrder(next));
   if (midiOrder(next) !== "arp,chord") fail(where + " changed the MIDI FX to " + midiOrder(next));
@@ -207,6 +242,8 @@ if (M.indexOfId(afterRemove, "settings") !== M.indexOfId(cfg, "settings") - 1)
 const synthOps = [
   ["appendTo fx", M.appendTo(cfg, "fx", { module: "chorus" })],
   ["appendTo midiFx", M.appendTo(cfg, "midiFx", { module: "velo" })],
+  ["insertAt midiFx 0", M.insertAt(cfg, "midiFx", 0, { module: "velo" })],
+  ["insertAt fx 0", M.insertAt(cfg, "fx", 0, { module: "chorus" })],
   ["replaceAt fx1", M.replaceAt(cfg, "fx1", { module: "delay" })],
   ["replaceAt midi_fx1", M.replaceAt(cfg, "midi_fx1", { module: "velo" })],
   ["removeAt fx1", M.removeAt(cfg, "fx1")],

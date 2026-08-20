@@ -135,19 +135,21 @@ const chain = (fx, synth) => ({
 {
   const c = applyPickerChoiceToChain(chain(["psxverb"]), "fx1", "spacedelay");
   if (c.replaced !== "psxverb") fail("a swap did not report what it replaced: " + c.replaced);
-  if (c.reorderSection) fail("a swap asked for a section rewrite");
+  if (c.shape) fail("a swap asked for a shape change");
 }
 
-/* 8. A REMOVAL reports null rather than a module id: it hands back a section
-      to rewrite, and writeChainOrder decides the routing there -- it can tell
-      a removal from a move, which one position in isolation cannot. Reporting
-      a module id here would clear the routing of a module that MOVED. */
+/* 8. A REMOVAL reports null rather than a module id: it asks the DSP for a
+      `remove`, and the DSP decides the routing there -- it re-aims the string
+      keys across the permutation and can tell a module that LEFT from one that
+      only moved down, which one position in isolation cannot. Reporting a
+      module id here would clear the routing of a module that MOVED. */
 {
   const c = applyPickerChoiceToChain(chain(["psxverb", "delay"]), "fx1", "");
   if (c.replaced !== null)
     fail("a removal reported a replaced module (" + c.replaced +
          "), which would clear the routing of a module that only moved");
-  if (c.reorderSection !== "fx") fail("a removal did not ask for a section rewrite");
+  if (!c.shape || c.shape.kind !== "remove" || c.shape.section !== "fx")
+    fail("a removal did not ask the DSP to remove the position");
 }
 
 /* 9. Clearing the SYNTH is a replacement, not a removal -- there is nothing to
@@ -155,7 +157,7 @@ const chain = (fx, synth) => ({
 {
   const c = applyPickerChoiceToChain(chain([], "sf2"), "synth", "");
   if (c.replaced !== "sf2") fail("clearing the synth did not report it: " + c.replaced);
-  if (c.reorderSection) fail("clearing the synth asked for a section rewrite");
+  if (c.shape) fail("clearing the synth asked for a shape change");
 }
 
 /* 10. An EMPTY position filled for the first time reports "" -- distinct from
@@ -175,7 +177,7 @@ if (!pickerReplacedModule) process.exit(1);
 /* 11. Each of the four answers, because each is a different decision. */
 {
   const cases = [
-    [null, "delay", false, "a removal must defer to writeChainOrder, which alone can tell " +
+    [null, "delay", false, "a removal must defer to the DSP, which alone can tell " +
                            "a module that LEFT from one that only moved down"],
     [undefined, "delay", false, "an unreported replacement must not clear a routing"],
     ["psxverb", "spacedelay", true, "a real swap must clear the routing"],
@@ -218,5 +220,5 @@ if (failures) process.exit(1);
 console.log("PASS: an LFO routing does not outlive the module it named — a picker swap " +
             "clears target AND target_param for that position, before the module write, " +
             "for both LFOs and for synth/fx/midi_fx alike; a removal defers to " +
-            "writeChainOrder so a module that only MOVED keeps its routing");
+            "the DSP permutation so a module that only MOVED keeps its routing");
 '
