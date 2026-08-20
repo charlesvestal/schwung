@@ -157,6 +157,17 @@ Promise.all([
       page, metaIndex, values: { cutoff: "0.5" }, title: "T", pageIndex: 0, pageCount: 1, viz: [],
     });
 
+    /* The ring sample window is 2r+1 = 17 rows, but the widget band is BOX_H
+     * (15) — so once the footer tightened the rhythm (LBL0_Y 28 -> 25) the last
+     * rows of the window land on the LABEL band, and the label glyphs showed
+     * up in the art. The knob itself still stops well short of it (its bottom
+     * three rows are the deliberate track gap, asserted below), so clear the
+     * label band before reading back: this assertion is about the ring outline,
+     * and the label band has its own tests. */
+    for (let y = RM.LBL0_Y; y < RM.LBL0_Y + RM.LBL_H; y++) {
+      for (let x = 0; x < fb.width; x++) fb.pixels[y * fb.width + x] = 0;
+    }
+
     /* Knob 0 sits at column 0 of row 0: kx = (CELL_W-KW)/2, ky = ROW0_Y. */
     const kx = Math.floor((RM.CELL_W - RM.KW) / 2), ky = RM.ROW0_Y;
     const r = RM.KNOB_R, cx = kx + r, cy = ky + r;
@@ -316,7 +327,19 @@ Promise.all([
     /* Centring on a midpoint (kx + KW/2) rather than on the SPAN put the
      * extra pixel on whichever side rounding happened to fall: "KIC" sat 3px
      * from the left frame and 2px from the right. The rule now is that an odd
-     * leftover always goes right, so every widget disagrees the same way. */
+     * leftover always goes right, so every widget disagrees the same way.
+     *
+     * This assertion used to scan the whole box and take the extreme lit pixel
+     * on each side. That measured the FRAME, not the text: the frame is
+     * symmetric by construction, so it reported left=1 right=1 for every input
+     * and could never fail. The opaque box has no frame now (the divable
+     * brackets are its frame), which is what exposed it.
+     *
+     * So measure the INK against the text span it was centred into. The
+     * tolerance is 2px rather than 1 because glyph side bearings are not
+     * symmetric — a trailing "." inks the left of its 6px advance, so the
+     * ink box is narrower than the advance box on that side, and no
+     * placement rule can make the two agree. */
     const meta = { key: "p", label: "Sample", kind: "opaque", type: "string" };
     const page = { kind: P.PAGE_KNOBS, name: "O", level: "root", keys: ["p"] };
     const paths = ["/s/kick_01.wav", "/x/hall.wav", "/a/b.wav", "/q/ir.wav", "/z/mmm.wav"];
@@ -327,24 +350,28 @@ Promise.all([
         title: "T", pageIndex: 0, pageCount: 1, viz: [],
       });
       const bx = Math.floor((RM.CELL_W - RM.KW) / 2), by = RM.ROW0_Y;
-      let left = 99, right = 99;
-      for (let y = by + 1; y < by + RM.KW - 1; y++) {
-        for (let x = bx + 1; x < bx + RM.KW - 1; x++) {
-          if (fb.pixels[y * fb.width + x]) { left = Math.min(left, x - bx); break; }
-        }
-        for (let x = bx + RM.KW - 2; x > bx; x--) {
-          if (fb.pixels[y * fb.width + x]) { right = Math.min(right, (bx + RM.KW - 1) - x); break; }
+      /* The span drawOpaqueBox centres into: frame inset of 2 on each side. */
+      const spanX = bx + 2, spanW = RM.KW - 4;
+      /* Rows strictly inside the widget band, so the bracket runs on the first
+       * and last row of the band are never counted as text. */
+      let inkL = 99, inkR = -1;
+      for (let y = by + 1; y < by + RM.BOX_H - 1; y++) {
+        for (let x = spanX; x < spanX + spanW; x++) {
+          if (fb.pixels[y * fb.width + x]) {
+            if (x < inkL) inkL = x;
+            if (x > inkR) inkR = x;
+          }
         }
       }
-      if (left === 99) continue;                       /* nothing drawn */
-      if (Math.abs(left - right) > 1) {
-        fail("opaque box for " + JSON.stringify(v) + " is off centre: " + left +
-             "px from the left frame, " + right + "px from the right");
+      if (inkR < 0) continue;                          /* nothing drawn */
+      if (inkL < spanX || inkR > spanX + spanW - 1) {
+        fail("opaque box text for " + JSON.stringify(v) + " escapes its span: ink " +
+             inkL + ".." + inkR + " against span " + spanX + ".." + (spanX + spanW - 1));
       }
-      if (left > right) {
-        fail("opaque box for " + JSON.stringify(v) + " leans RIGHT (" + left + "/" + right +
-             "); an odd leftover pixel must always go to the right, so every widget " +
-             "rounds the same way");
+      const inkMid = (inkL + inkR) / 2, spanMid = spanX + (spanW - 1) / 2;
+      if (Math.abs(inkMid - spanMid) > 2) {
+        fail("opaque box text for " + JSON.stringify(v) + " is off centre: ink centre " +
+             inkMid + " against span centre " + spanMid);
       }
     }
   }

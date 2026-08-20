@@ -35,19 +35,21 @@ import { fontPrint as tzPrint, fontWidth as tzWidth, HEIGHT as TZ_H } from "./fo
 import { fontWidth4x5, fontPrint4x5, FONT4_HEIGHT, FONT4_MEASURE } from "./font4x5.mjs";
 
 /**
- * Text is set in the DEVICE 5x7 font, in caps, with labels abbreviated to a
- * mnemonic. font4x5 is kept for the enum square alone.
+ * Text is set in caps with labels abbreviated to a mnemonic. The HEADER and the
+ * opaque box use the device-height Tamzen; the LABEL CELLS and the enum square
+ * use font4x5.
  *
  * On hardware the 5-row font read as too small — legibility mattered more
  * than knob size, and the Move panel is physically smaller than the Elektron
  * one this grid was measured against, so matching its pixel geometry does not
  * reproduce its apparent size. The device font is 40% taller (7 rows vs 5).
  *
- * It costs almost nothing horizontally, because the labels are already
- * mnemonics: at a 6px monospaced advance a 4-character label is 24px in a
- * 30px cell, against 23px for the same label in font4x5, whose M is 6 wide
- * too. Vertically it costs 2 rows per label band (LBL_H 7 -> 9), paid for by
- * the bottom pad and one row off each widget row.
+ * That was the state until 2026-08-20, when the hint FOOTER needed eight rows
+ * and the label bands were the only non-widget source of them. Labels went back
+ * to font4x5 (LBL_H 9 -> 7). It costs almost nothing horizontally, because the
+ * labels are already mnemonics: at a 6px monospaced advance a 4-character label
+ * is 24px in a 30px cell, against 23px in font4x5, whose M is 6 wide too. The
+ * header keeps Tamzen, so the module and page name are still full height.
  *
  * The enum SQUARE stays on font4x5: two stacked 7-row lines need 15 rows and
  * the box interior is 13, so the small font is the only thing that fits there
@@ -126,23 +128,32 @@ export const LAYOUT_MOVY = "movy";
  *
  * Elektron's screen, recovered from a 4x capture, puts a 1-3px gutter between
  * every band. With font4x5 the label band drops from 8 rows to 6, which pays
- * for a 2px gutter on both sides of every label:
+ * for a 2px gutter on both sides of every label.
  *
- *      0..6    header      (7)   text at y=1, 5 tall
- *      7..8    bank bar    (2)
- *      9..10   gutter      (2)
- *     11..26   knob row 0  (16)  16 because viz bodies need rect.y+1..+14
- *     27..28   gutter      (2)
- *     29..34   label row 0 (6)
- *     35..36   gutter      (2)
- *     37..52   knob row 1  (16)
- *     53..54   gutter      (2)
- *     55..60   label row 1 (6)
- *     61..63   bottom pad  (3)
+ * THE FOOTER (2026-08-20) is bought from that rhythm rather than from the
+ * widgets. Before it, the screen was exactly full — LBL1_Y(55) + LBL_H(9) ===
+ * 64 — so a hint bar had to come from somewhere, and the two candidates were
+ * the widget rows and the label bands. Shrinking the widget rows is the one
+ * change that cannot be made: a viz body occupies rect.y+1..+14 and a box is
+ * BOX_H(15), so anything under 15 stands the graphics down (see the minimum-cell
+ * rule in render_page.mjs). The label bands can pay instead, by going back to
+ * font4x5 — 5 glyph rows, so LBL_H 9 -> 7 with a clear row each side — and the
+ * gutters give up the rest:
  *
- * The knob itself is only ~12 rows tall now that the arc is open at the
- * bottom, so a knob row carries more air below it than a graphic row does.
- * The 16 is held for the graphics, which still draw a full 15-row body.
+ *      0..6    header      (7)   text at y=0, 7 tall
+ *      7       bank bar    (1)
+ *      8..9    gutter      (2)   was 4
+ *     10..24   knob row 0  (15)  UNCHANGED height — graphics still fit
+ *     25..31   label row 0 (7)   was 9 (tamzen); font4x5 + 1 clear row each side
+ *     32       gutter      (1)   was 2
+ *     33..47   knob row 1  (15)  UNCHANGED height
+ *     48..54   label row 1 (7)   was 9
+ *     55       rule        (1)
+ *     56..63   FOOTER      (8)
+ *
+ * Eight rows found, none of them taken from a widget. The knob itself is only
+ * ~12 rows tall now that the arc is open at the bottom, so a knob row carries
+ * more air below it than a graphic row does; the 15 is held for the graphics.
  */
 export const W = 128;
 /*
@@ -160,11 +171,15 @@ export const HEADER_H = 7;
 export const BAR_Y = HEADER_H;       /* no separator row — the band has its own */
 /* One row of gutter here, not two — the bank bar is itself a separator, so
  * this is the cheapest row on the screen to give back to the header. */
-export const ROW0_Y = 12;
-export const LBL0_Y = 28;
-export const ROW1_Y = 39;
-export const LBL1_Y = 55;
+export const ROW0_Y = 10;
+export const LBL0_Y = 25;
+export const ROW1_Y = 33;
+export const LBL1_Y = 48;
 export const CELL_W = 32;
+/* The hint footer, and the rule that separates it from the last label band. */
+export const RULE_Y = 55;
+export const FOOTER_Y = 56;
+export const FOOTER_H = 8;
 /*
  * ODD, for the same reason BOX_H is: 5 glyph rows centred in the band leave a
  * remainder that only splits evenly when the band is odd. At 6 the touched
@@ -176,8 +191,13 @@ export const CELL_W = 32;
  * The two rows this costs come back from the widget rows, which drop 16 -> 15:
  * a viz body occupies rect.y+1..rect.y+14 and a box is BOX_H (15), so 15 is
  * all either ever needed.
+ *
+ * 2026-08-20: back to 7 with font4x5 labels, to buy the footer. The band is
+ * the only place on the screen with rows to give that is not a widget — see
+ * the vertical rhythm note above. The HEADER and the opaque box keep the
+ * device-height Tamzen; it is only the label cells that shrink.
  */
-export const LBL_H = 9;
+export const LBL_H = 7;
 export const KW = 17;
 /*
  * The enum square is WIDER than a knob box, because it is the one widget whose
@@ -253,6 +273,10 @@ function centreX(x0, span, w) {
  * band inverted, so a descender would be black on black and vanish.
  */
 const FONT_H = TZ_H;
+/* Labels alone are set in font4x5 (see LBL_H) — the header, the opaque box and
+ * the empty-page string all stay on the device-height Tamzen. */
+const LBL_FONT_H = FONT4_HEIGHT;
+const LBL_MEASURE = FONT4_MEASURE;
 
 function centeredText(ctx, x0, span, y, text, color) {
     const t = caps(text);
@@ -547,22 +571,56 @@ function drawEnumSquare(ctx, kx, ky, text) {
     if (line2.length > 0) fontPrint4x5(ctx, tx(fontWidth4x5(line2)), startY + 6, line2, 1);
 }
 
-/** A knob that cannot be turned (filepath/canvas/wav_position/string): same
- * framed box as an enum square, showing the value's tail. Not part of Movy's
- * vocabulary (its modules do not carry this param type in the fleet this was
- * built against) but needed so an opaque param on a Movy-style page is a door
- * to its existing editor rather than a blank cell. */
+/** A knob that cannot be turned (filepath/canvas/wav_position/string), showing
+ * the value's tail. Not part of Movy's vocabulary (its modules do not carry
+ * this param type in the fleet this was built against) but needed so an opaque
+ * param on a Movy-style page is a door to its existing editor.
+ *
+ * It draws NO frame: the divable brackets (drawDivableMark) are its frame. It
+ * used to draw the same solid box as an enum square, which meant a door and a
+ * turnable enum were pixel-identical — you found out which was which by
+ * turning one and having nothing happen. */
 function drawOpaqueBox(ctx, kx, ky, value) {
     const h = BOX_H;
-    ctx.fillRect(kx, ky, KW, 1, 1);
-    ctx.fillRect(kx, ky + h - 1, KW, 1, 1);
-    ctx.fillRect(kx, ky, 1, h, 1);
-    ctx.fillRect(kx + KW - 1, ky, 1, h, 1);
     const shown = String(value == null ? "" : value).split("/").pop() || "--";
-    /* Centre inside the text area (frame + 1px margin on each side) both ways,
-     * the same spans the enum square uses. */
     centeredText(ctx, kx + 2, KW - 4,
         ky + 1 + Math.floor((h - 2 - FONT_H) / 2), fitDev(ctx, shown, KW - 4), 1);
+}
+
+/*
+ * "You can go into this."
+ *
+ * Corner brackets around the CELL, drawn after the widget, so the mark is
+ * independent of what the widget is: it reads the same over a box, over an arc
+ * knob, and over a viz graphic that spans and covers the cell. That is what
+ * makes it a grammar rather than a decoration on one widget type — the
+ * alternatives tried (dashed frame, dog-ear, chevron) all attach to a frame,
+ * and a divable param drawn as a waveform hasn't got one.
+ *
+ * Rejected: a "..." mark on the label. It collides with truncation, and does so
+ * worst exactly here, where the value shown IS truncated ("kick_01.wav" -> "KI")
+ * so "SMP.." reads as a cut-off label. Rejected: a box-with-arrow icon; at the
+ * ~8px of clear corner a 32px cell has, it does not resolve into a box and an
+ * arrow, it resolves into a smudge.
+ *
+ * MUST stay inside rowY..rowY+BOX_H-1. One row of overflow lands on LBL0_Y and
+ * the brackets merge into the label below.
+ */
+const BRACKET_LEN = 4;
+function drawDivableMark(ctx, col, rowY) {
+    const x = col * CELL_W + 1, y = rowY, w = CELL_W - 2, h = BOX_H;
+    for (let i = 0; i < BRACKET_LEN; i++) {
+        ctx.fillRect(x + i, y, 1, 1, 1);
+        ctx.fillRect(x + w - 1 - i, y, 1, 1, 1);
+        ctx.fillRect(x + i, y + h - 1, 1, 1, 1);
+        ctx.fillRect(x + w - 1 - i, y + h - 1, 1, 1, 1);
+    }
+    for (let i = 0; i < BRACKET_LEN - 1; i++) {
+        ctx.fillRect(x, y + i, 1, 1, 1);
+        ctx.fillRect(x + w - 1, y + i, 1, 1, 1);
+        ctx.fillRect(x, y + h - 1 - i, 1, 1, 1);
+        ctx.fillRect(x + w - 1, y + h - 1 - i, 1, 1, 1);
+    }
 }
 
 function drawKnobWidget(ctx, col, rowY, meta, raw, modRaw, liveRaw) {
@@ -613,18 +671,18 @@ function drawWaveMark(ctx, x, y, on) {
 function drawLabelCell(ctx, col, lblY, label, displayValue, touched, modulated) {
     const cellX = col * CELL_W;
     const text = touched ? displayValue : label;
-    const tw = tzWidth(text);
+    const tw = fontWidth4x5(text);
     /* Same rule as every other centred run — `floor(CELL_W/2) - floor(tw/2)`
      * biases the other way on odd widths, which made a label and the box above
      * it disagree by a pixel. */
     const tx = centreX(cellX, CELL_W, tw);
     /* One clear row above and below the glyphs inside the band — see LBL_H. */
-    const ty = lblY + Math.floor((LBL_H - FONT_H) / 2);
+    const ty = lblY + Math.floor((LBL_H - LBL_FONT_H) / 2);
     if (touched) {
         ctx.fillRect(cellX, lblY, CELL_W, LBL_H, 1);
-        tzPrint(ctx, tx, ty, text, 0);
+        fontPrint4x5(ctx, tx, ty, text, 0);
     } else {
-        tzPrint(ctx, tx, ty, text, 1);
+        fontPrint4x5(ctx, tx, ty, text, 1);
     }
     if (modulated) {
         const wx = Math.max(cellX, tx - 6);
@@ -696,12 +754,73 @@ function drawKnobRow(ctx, o, row, rowY, lblY) {
          * whether or not more would technically fit, which is what keeps a row
          * of them scannable. `M` is the widest glyph, so measuring that many
          * of it gives a width no LABEL_CHARS-long label can exceed. */
-        const labelWidth = Math.min(CELL_W - 2, tzWidth("M".repeat(LABEL_CHARS)));
-        const label = caps(shortenLabel(TZ_MEASURE, preAbbreviate(meta.label || meta.key), labelWidth));
+        /* AFTER the widget and OUTSIDE the `covered` test: a viz group that
+         * spans the cell (mrsample's SMP waveform) is still divable, and the
+         * mark is the only thing that says so. */
+        if (meta.kind === KIND_OPAQUE) drawDivableMark(ctx, col, rowY);
+
+        const labelWidth = Math.min(CELL_W - 2, fontWidth4x5("M".repeat(LABEL_CHARS)));
+        const label = caps(shortenLabel(LBL_MEASURE, preAbbreviate(meta.label || meta.key), labelWidth));
         const display = (raw === null || raw === undefined)
             ? "--" : fitDev(ctx, formatParamValue(raw, meta), CELL_W - 2);
         drawLabelCell(ctx, col, lblY, label, display, isTouched, modulated ? !!modulated(key) : false);
     }
+}
+
+/*
+ * The hint footer.
+ *
+ * Hints come from the CALLER, never from here: which gesture does what is the
+ * input mapping's business, and this library does not own input (same rule that
+ * puts the first-run hint panel's text in the caller's hands). A tool embedding
+ * the grid has its own gestures and must be able to say so.
+ *
+ * FIT-AWARE, in priority order. Measured across the real vocabulary, a pair
+ * costs 24-38px, so THREE pairs only fit when every word is <= 4 characters:
+ *
+ *     JOG PAGE / SHFT SECT / CLK MENU     134px   does NOT fit
+ *     JOG SCRUB / CLK OPEN / MUTE DFLT    139px   does NOT fit
+ *     JOG SEL / CLK LOAD / BACK EXIT      126px   fits
+ *     any two pairs                       84-98px always fits
+ *
+ * So the caller passes hints most-important-first and the tail is dropped, not
+ * squeezed: a half-drawn pill running off the right edge is worse than an
+ * absent one. Put BACK first if BACK is the one that matters.
+ */
+export const HINT_PAD = 2;
+export const HINT_GAP = 4;
+
+/** Width one [KEY] ACTION pair occupies, so a caller can budget before drawing. */
+export function hintPairWidth(key, action) {
+    return fontWidth4x5(caps(key)) + HINT_PAD + HINT_GAP
+         + fontWidth4x5(caps(action)) + HINT_GAP;
+}
+
+/**
+ * @param {Array<[string,string]>} hints  [key, action] pairs, most important first
+ * @returns {number} how many pairs were drawn
+ */
+export function drawFooter(ctx, hints) {
+    ctx.fillRect(0, RULE_Y, W, 1, 1);
+    if (!hints || !hints.length) return 0;
+    const ty = FOOTER_Y + Math.floor((FOOTER_H - FONT4_HEIGHT) / 2);
+    let x = 1, drawn = 0;
+    for (const h of hints) {
+        if (!h) continue;
+        const key = caps(h[0]), action = caps(h[1]);
+        if (x + hintPairWidth(key, action) > W) break;
+        const kw = fontWidth4x5(key);
+        /* The KEY is inverted into a pill and the ACTION is plain, so the pair
+         * reads as one thing. Without it a row of hints is an unparseable run:
+         * "JOG PAGE CLK MENU BACK EXIT". */
+        ctx.fillRect(x, ty - 1, kw + HINT_PAD * 2, FONT4_HEIGHT + 2, 1);
+        fontPrint4x5(ctx, x + HINT_PAD, ty, key, 0);
+        x += kw + HINT_PAD + HINT_GAP;
+        fontPrint4x5(ctx, x, ty, action, 1);
+        x += fontWidth4x5(action) + HINT_GAP;
+        drawn++;
+    }
+    return drawn;
 }
 
 /* ------------------------------------------------------------------ page */
@@ -719,6 +838,7 @@ function drawKnobRow(ctx, o, row, rowY, lblY) {
  * @param {Array}  [o.pageGroups] one bank id per page, for the bank bar
  * @param {Function} [o.modulated] (key) => boolean
  * @param {Array}  [o.viz]       resolved graphic groups (viz.mjs resolveViz)
+ * @param {Array}  [o.footer]    [key, action] hint pairs, most important first
  */
 export function renderPageMovy(ctx, o) {
     const page = o.page;
@@ -738,9 +858,11 @@ export function renderPageMovy(ctx, o) {
     const hasParams = page.keys.some(Boolean);
     if (!hasParams) {
         tzPrint(ctx, 2, ROW0_Y + 4, caps("No params"), 1);
+        if (o.footer) drawFooter(ctx, o.footer);
         return;
     }
 
     drawKnobRow(ctx, o, 0, ROW0_Y, LBL0_Y);
     drawKnobRow(ctx, o, 1, ROW1_Y, LBL1_Y);
+    if (o.footer) drawFooter(ctx, o.footer);
 }

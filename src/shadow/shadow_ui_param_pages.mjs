@@ -304,6 +304,35 @@ function traced(name, fn) {
     finally { if (h && typeof host_trace_end === 'function') host_trace_end(h); }
 }
 
+/*
+ * What the footer says, per context.
+ *
+ * Ordered MOST IMPORTANT FIRST, because drawFooter drops the tail rather than
+ * squeezing it: three pairs only fit when every word is <= 4 characters, and
+ * two always fit. So Back leads wherever losing it would strand you.
+ *
+ * Kept here, not in the library: these are Schwung's gestures. A sequencer
+ * embedding the same grid has its own and passes its own.
+ */
+function footerHints() {
+    if (!controller) return null;
+    if (controller.pickerOpen) return [["BACK", "CLOSE"], ["JOG", "SECT"], ["CLK", "GO"]];
+    const held = controller.state ? controller.state.touched : -1;
+    if (held >= 0) {
+        const meta = controller.metaAt ? controller.metaAt(held) : null;
+        /* A knob cannot turn an opaque param, so the click is the whole point
+         * of holding it — say OPEN, not SCRUB. */
+        if (meta && meta.kind === 'opaque') return [["CLK", "OPEN"], ["MUTE", "DFLT"]];
+        return [["MUTE", "DFLT"], ["SHFT", "FINE"]];
+    }
+    /* "PG", not "PAGE": all three pairs together are 134px at "PAGE" and the
+     * section jump — the one gesture that makes a 76-page module navigable —
+     * was the pair being dropped. Shortening the ACTION brings it to 124px and
+     * keeps every KEY name intact, which is the right trade: the key is what
+     * you press, the action is only the gloss. */
+    return [["JOG", "PG"], ["SHFT", "SECT"], ["CLK", "MENU"]];
+}
+
 export function drawParamPages() {
     if (!controller) return false;
     /* The section picker is drawn over whatever page you were on, including a
@@ -361,7 +390,7 @@ export function drawParamPages() {
             drawCircle: typeof draw_circle === "function" ? draw_circle : undefined,
             drawArc: typeof draw_arc === "function" ? draw_arc : undefined,
         },
-        { title: `S${currentSlot + 1} > ${name}` }
+        { title: `S${currentSlot + 1} > ${name}`, footer: footerHints() }
     ));
     return true;
 }
