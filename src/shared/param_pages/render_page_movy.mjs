@@ -906,6 +906,32 @@ export function isBackHint(h) {
     return !!h && /^back$/i.test(String(h[0]).trim());
 }
 
+/*
+ * The footer canon, for the NEW footer only.
+ *
+ * menu_layout.mjs has FOOTER_VERBS for the old text footer, pinned by
+ * tests/shadow/test_footer_verb_consistency.sh — that canon exists because the
+ * old footer drifted into verb soup ("Push:" vs "Click:", "Exit" vs "exit").
+ * The new footer never got the same treatment, so this is it.
+ *
+ * KEYS name the physical control, so they are fixed by the hardware, not by
+ * taste. ACTIONS are free except after BACK.
+ *
+ * BACK's action word says WHERE BACK GOES, and the two are not synonyms:
+ *
+ *   EXIT  leaves this view entirely   (module picker, preset browser list)
+ *   OUT   rises one level, staying in the view
+ *         (an entered menu page, a confirm modal)
+ *
+ * Keeping both is deliberate. Collapsing them would tell the user "back" does
+ * one thing when it does two, and the difference is the one thing they cannot
+ * see before pressing it.
+ */
+export const FOOTER_CANON = Object.freeze({
+    keys: Object.freeze(["JOG", "CLK", "BACK", "SHFT", "MUTE", "KNB"]),
+    backActions: Object.freeze(["EXIT", "OUT"]),
+});
+
 export function drawFooter(ctx, hints) {
     ctx.fillRect(0, RULE_Y, W, 1, 1);
     if (!hints || !hints.length) return 0;
