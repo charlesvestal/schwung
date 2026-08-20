@@ -59,6 +59,24 @@ const pixelFn = (ctx) =>
 const measure = (ctx, text) =>
     (typeof ctx.textWidth === "function" ? ctx.textWidth(text) : String(text).length * 5);
 
+/**
+ * The widest prefix of `text` that fits in `room` pixels.
+ *
+ * Truncates rather than scaling or scrolling: a box is 22px and holds two or
+ * three characters, so there is no room for an ellipsis and nothing to animate.
+ * The full name is on the label line under the diagram either way.
+ *
+ * Always returns at least one character. A label clipped to "9" is wrong but
+ * legible and inside its box; an empty box says the position is empty, which is
+ * a different and worse lie.
+ */
+export function fitAbbrev(ctx, text, room) {
+    let s = String(text === null || text === undefined ? "" : text);
+    if (!s) return "";
+    while (s.length > 1 && measure(ctx, s) > room) s = s.slice(0, -1);
+    return s;
+}
+
 /** A 1px outline. `dash` > 0 draws every `dash`-th pixel only. */
 function outline(ctx, x, y, w, h, color, dash) {
     if (!dash) {
@@ -159,18 +177,38 @@ export function drawChainDiagram(ctx, components, selectedIndex, opts = {}) {
             outline(ctx, x, y, BOX_W, BOX_H, 1, 0);
         }
 
-        /* The synth wears a second ring, drawn in whichever colour the box is
+        /*
+         * The synth wears a second ring, drawn in whichever colour the box is
          * NOT. It is the landmark the scroll leans on — once the chain is
          * longer than the screen it is the only orientation left — so it has
-         * to stay distinguishable while selected too. */
-        if (comp.kind === "synth") outline(ctx, x + 2, y + 2, BOX_W - 4, BOX_H - 4, selected ? 0 : 1, 0);
+         * to stay distinguishable while selected too.
+         *
+         * Inset 1 horizontally and 2 vertically, not 2 all round. An even inset
+         * left 16px inside the ring, and a three-character abbrev ("9W9") is
+         * ~17px, so the label collided with its own landmark. The ring reads
+         * just as clearly as a wider-than-tall band, and gives back the 2px
+         * that made the difference.
+         */
+        if (comp.kind === "synth") outline(ctx, x + 1, y + 2, BOX_W - 2, BOX_H - 4, selected ? 0 : 1, 0);
 
-        const abbrev = String(abbrevOf(comp) || "--");
+        /*
+         * Fit the label to the room INSIDE whatever was just drawn.
+         *
+         * Module abbrevs come from module.json (getModuleAbbrev), so their
+         * length is a third party's choice, not ours. Centring without fitting
+         * gave a negative x for anything wider than the box — a four-character
+         * abbrev started outside its own box and ran over the neighbour. And
+         * the synth's inner ring is not accounted for by the box width at all.
+         */
+        const room = BOX_W - (comp.kind === "synth" ? 4 : 2);
+        const abbrev = fitAbbrev(ctx, String(abbrevOf(comp) || "--"), room);
         /* Selection inverts the label whatever the box is: the `+` box fills
          * its interior rather than the whole rect, but the label sits in that
          * interior, so a white "+" on it would simply vanish. */
         const textColor = selected ? 0 : 1;
-        ctx.print(x + Math.floor((BOX_W - measure(ctx, abbrev)) / 2), y + 5, abbrev, textColor);
+        const inset = Math.floor((BOX_W - room) / 2);
+        ctx.print(x + inset + Math.max(0, Math.floor((room - measure(ctx, abbrev)) / 2)),
+                  y + 5, abbrev, textColor);
 
         drawMarks(ctx, px, x, y, marksOf(comp));
     }
