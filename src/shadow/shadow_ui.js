@@ -3117,6 +3117,68 @@ function loadChainConfigFromSlot(slotIndex) {
     return cfg;
 }
 
+/* The DSP-side id of position `i` in a section, which is also its param
+ * prefix. One definition, so the read path and the write path below cannot
+ * disagree about what "position 3" is called. */
+function chainSectionId(section, i) {
+    return section === "midiFx" ? `midi_fx${i + 1}` : `fx${i + 1}`;
+}
+
+/*
+ * Push a section's ORDER to the DSP.
+ *
+ * There is no "reorder" verb to add: the DSP holds a numbered position per
+ * module and keeps fx_count as a high-water mark (chain_host.c —
+ * `inst->fx_count = slot + 1` on load, trimmed only while the TRAILING handle
+ * is NULL), so a contiguous run plus a cleared tail is the whole contract.
+ *
+ * Two rules, both load-bearing:
+ *
+ * 1. Walk the WHOLE occupied range, never stopping at the first blank.
+ *    Stopping early looks right — the run is contiguous, so why keep going? —
+ *    and it silently leaks every position past the new end. Shrink a five-FX
+ *    chain to three and you clear fx4, break, and leave fx5 loaded and audible
+ *    with nothing on screen representing it. The DSP will not save you:
+ *    clearing an INTERIOR position leaves the high-water mark where it was.
+ *    Both sections have this contract now — the MIDI side used to hide it
+ *    behind an unload-all on slot 1, which was removed because at a cap of 8 it
+ *    destroyed up to seven neighbours and made a whole-chain rewrite depend on
+ *    write ORDER.
+ *
+ * 2. Write only what CHANGED. A redundant write is not a no-op:
+ *    v2_load_audio_fx_slot unloads and reloads unconditionally, so rewriting
+ *    the module id a position already holds destroys that module's state.
+ *
+ * The range comes from the published count rather than from probing the cap:
+ * fx_count answers in one IPC read what fx1..fx8 would cost eight of, at
+ * ~2.8ms each, on a gesture the user is spinning.
+ */
+function writeChainOrder(slotIndex, section) {
+    if (!section) {
+        writeChainOrder(slotIndex, "midiFx");
+        writeChainOrder(slotIndex, "fx");
+        return;
+    }
+    const cfg = chainConfigs[slotIndex];
+    if (!cfg || !cfg[section]) return;
+    const list = cfg[section];
+    const cap = CHAIN_CAP[section];
+    const n = parseInt(getSlotParam(slotIndex,
+        section === "midiFx" ? "midi_fx_count" : "fx_count"), 10);
+    const loaded = (isNaN(n) || n < 0) ? 0 : Math.min(n, cap);
+    /* Past `loaded` the high-water mark guarantees nothing is there, so those
+     * positions need no read to know they are already empty — only the ones
+     * the DSP still counts do. */
+    const end = Math.min(cap, Math.max(loaded, list.length));
+    for (let i = 0; i < end; i++) {
+        const id = chainSectionId(section, i);
+        const want = (list[i] && list[i].module) ? String(list[i].module).toLowerCase() : "";
+        const have = i < loaded
+            ? String(getSlotParam(slotIndex, `${id}_module`) || "").toLowerCase() : "";
+        if (want !== have) setSlotParam(slotIndex, `${id}:module`, want);
+    }
+}
+
 /*
  * A signature of a slot's loaded module ids, read from the DSP.
  *
