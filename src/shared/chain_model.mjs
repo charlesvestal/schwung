@@ -20,6 +20,13 @@ export function emptyChain() {
     return { midiFx: [], synth: null, fx: [] };
 }
 
+/**
+ * SHALLOW on purpose. The lists are copied, but the module objects inside them
+ * are SHARED with the input config -- `next.fx[0] === cfg.fx[0]`. Replace a
+ * module (replaceAt) rather than mutating one: writing to `module.params` on a
+ * returned config writes through to the config it came from, and to every
+ * other config derived from the same original.
+ */
 const clone = (c) => ({
     midiFx: c.midiFx.slice(), synth: c.synth, fx: c.fx.slice(),
 });
@@ -44,41 +51,75 @@ export function parseId(id) {
 }
 
 const idFor = (section, i) => (section === "midiFx" ? `midi_fx${i + 1}` : `fx${i + 1}`);
+const labelFor = (section, i) => (section === "midiFx" ? `MIDI FX ${i + 1}` : `FX ${i + 1}`);
 
 /**
  * The chain as positions, in signal order.
  *
  * Patch and Settings keep the extreme ends — outside the `+` boxes — so the
  * gesture that reaches them is the one it has always been.
+ *
+ * EVERY position carries a label, modules included, so a renderer never has to
+ * ask which kind it is holding before it can draw a name, and the number in
+ * "FX 2" is derived here once rather than at each call site.
  */
 export function chainComponents(cfg) {
     const out = [{ id: "patch", kind: "patch", label: "Patch" }];
     out.push({ id: "add_midi", kind: "add", section: "midiFx", label: "+" });
     cfg.midiFx.forEach((m, i) => out.push({
-        id: idFor("midiFx", i), kind: "module", section: "midiFx", index: i, module: m,
+        id: idFor("midiFx", i), kind: "module", section: "midiFx", index: i,
+        label: labelFor("midiFx", i), module: m,
     }));
     out.push({ id: "synth", kind: "synth", label: "Synth", module: cfg.synth });
     cfg.fx.forEach((m, i) => out.push({
-        id: idFor("fx", i), kind: "module", section: "fx", index: i, module: m,
+        id: idFor("fx", i), kind: "module", section: "fx", index: i,
+        label: labelFor("fx", i), module: m,
     }));
     out.push({ id: "add_fx", kind: "add", section: "fx", label: "+" });
     out.push({ id: "settings", kind: "settings", label: "Settings" });
     return out;
 }
 
-const capOf = (section) => (section === "midiFx" ? MAX_MIDI_FX : MAX_FX);
+/**
+ * Where a position sits in chainComponents, or -1.
+ *
+ * The UI selection is an index into that list and EVERY mutation shifts it:
+ * removeAt("fx1") shortens the chain, so a selection that pointed at Settings
+ * now points at the `+` box. Callers re-anchor by id through here rather than
+ * carrying an index across an edit.
+ */
+export function indexOfId(cfg, id) {
+    return chainComponents(cfg).findIndex((p) => p.id === id);
+}
 
-/** Append at the OUTERMOST end of a section. Insert-in-the-middle is
- *  add-then-move; one operation, not two gestures. */
-export function insertAt(cfg, section, module) {
+const capOf = (section) => (section === "midiFx" ? MAX_MIDI_FX : MAX_FX);
+const isSection = (section) => section === "midiFx" || section === "fx";
+
+/** Append at the OUTERMOST end of a section. There is deliberately no
+ *  insert-at-a-position: inserting in the middle is append-then-move, one
+ *  operation rather than two gestures. `section` is "midiFx" or "fx". */
+export function appendTo(cfg, section, module) {
     const next = clone(cfg);
+    /* An unknown section is inert, like every other bad input here. It used to
+       throw, which on the shadow UI tick reaches the user as "UI error,
+       recovering" rather than as nothing happening. */
+    if (!isSection(section)) return next;
     if (next[section].length >= capOf(section)) return next;
     next[section] = next[section].concat([module]);
     return next;
 }
 
-/** Replace the occupant. Nothing moves — see the swap/remove distinction. */
-export function swapAt(cfg, id, module) {
+/**
+ * Replace the occupant of a position. NOTHING MOVES: replacing fx1 while fx2
+ * exists leaves fx2 exactly where it was, and the list keeps its length.
+ *
+ * The user-facing word for this is "swap", but in list vocabulary a swap
+ * exchanges two positions — which is what moveBy does internally — so the
+ * identifier says what it does instead. This and removeAt sit one entry apart
+ * in the same picker, and getting them the wrong way round would resequence a
+ * patch the user only meant to retouch.
+ */
+export function replaceAt(cfg, id, module) {
     const at = parseId(id);
     const next = clone(cfg);
     if (!at || at.index >= next[at.section].length) return next;
@@ -88,7 +129,13 @@ export function swapAt(cfg, id, module) {
     return next;
 }
 
-/** Take it out and CLOSE THE GAP. */
+/**
+ * Take a module out and CLOSE THE GAP.
+ *
+ * This is a behaviour change from the fixed-shape chain, where clearing fx1
+ * left an empty fx1 sitting in front of fx2. Now fx2 becomes fx1 and the chain
+ * gets shorter, so a removal renumbers everything downstream of it.
+ */
 export function removeAt(cfg, id) {
     const at = parseId(id);
     const next = clone(cfg);
@@ -124,7 +171,13 @@ export function moveBy(cfg, id, delta) {
  */
 export function scrollWindow(total, selected, capacity) {
     if (total <= capacity) return { first: 0, count: total };
-    let first = selected - Math.floor(capacity / 2);
+    /* A selection carried across an edit that shortened the chain can point
+       past the end. Clamping it to a real position states that contract where
+       `selected` arrives; the two clamps below already force the same result,
+       so this changes no output — it is here so the invariant does not have to
+       be re-derived from them. */
+    const sel = Math.min(Math.max(selected, 0), total - 1);
+    let first = sel - Math.floor(capacity / 2);
     if (first + capacity > total) first = total - capacity;
     if (first < 0) first = 0;
     return { first, count: capacity };

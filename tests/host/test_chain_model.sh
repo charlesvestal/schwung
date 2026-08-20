@@ -4,10 +4,11 @@ cd "$(dirname "$0")/../.."
 
 # The ordered chain and its operations, headless.
 #
-# The distinction this file exists to pin: SWAP replaces an occupant and moves
-# nothing; REMOVE takes one out and closes the gap. Both are reached from the
-# same picker one entry apart, and a swap that silently reordered the chain
-# would change the signal path of a patch the user only meant to retouch.
+# The distinction this file exists to pin: replaceAt swaps the occupant of a
+# position and moves nothing; removeAt takes one out and closes the gap. Both
+# are reached from the same picker one entry apart, and a swap that silently
+# reordered the chain would change the signal path of a patch the user only
+# meant to retouch.
 #
 # Fixtures carry TWO entries per section on purpose. With one, a move no-ops on
 # the length bound before it ever reaches the section logic, so "a MIDI FX must
@@ -23,10 +24,21 @@ const ids = (c) => M.chainComponents(c).map((p) => p.id).join(" ");
 const fxOrder = (c) => c.fx.map((f) => f.module).join();
 const midiOrder = (c) => c.midiFx.map((f) => f.module).join();
 
+/* Every operation returns a NEW config and leaves its input alone. Asserted
+   explicitly rather than left to emerge from a later failure: cfg is reused
+   throughout, so today an in-place mutation happens to cascade, but that is an
+   accident of ordering and reordering this file would lose the guarantee. */
+const guards = [];
+const guard = (name, c) => {
+  guards.push([name, c, { fx: fxOrder(c), midi: midiOrder(c), synth: c.synth, ids: ids(c) }]);
+  return c;
+};
+
 const cfg = M.emptyChain();
 cfg.synth = { module: "sf2" };
 cfg.fx = [{ module: "freeverb" }, { module: "cloudseed" }];
 cfg.midiFx = [{ module: "arp" }, { module: "chord" }];
+guard("cfg", cfg);
 
 if (ids(cfg) !== "patch add_midi midi_fx1 midi_fx2 synth fx1 fx2 add_fx settings")
   fail("unexpected order: " + ids(cfg));
@@ -39,70 +51,81 @@ const emptyParts = M.chainComponents(M.emptyChain());
 if (emptyParts.find((p) => p.id === "synth").module !== null)
   fail("the empty synth position should carry a null module");
 
-/* SWAP keeps position */
-const swapped = M.swapAt(cfg, "fx1", { module: "delay" });
-if (swapped.fx[0].module !== "delay") fail("swap did not replace fx1");
-if (swapped.fx[1].module !== "cloudseed") fail("swap moved fx2");
-if (swapped.fx.length !== 2) fail("swap changed the length");
-const swappedMidi = M.swapAt(cfg, "midi_fx1", { module: "velo" });
-if (midiOrder(swappedMidi) !== "velo,chord") fail("swap on midiFx failed, got " + midiOrder(swappedMidi));
-if (fxOrder(swappedMidi) !== "freeverb,cloudseed") fail("a midiFx swap touched the audio FX");
+/* EVERY position carries a label, including the modules. A renderer reading
+   p.label must not get undefined on exactly the positions the user cares
+   about, and the number must come from here rather than be re-derived from
+   the index at each call site. */
+const parts = M.chainComponents(cfg);
+const labelOf = (id) => (parts.find((p) => p.id === id) || {}).label;
+for (const [id, want] of [["fx1", "FX 1"], ["fx2", "FX 2"],
+                          ["midi_fx1", "MIDI FX 1"], ["midi_fx2", "MIDI FX 2"]]) {
+  if (labelOf(id) !== want) fail("label for " + id + " should be " + want + ", got " + labelOf(id));
+}
+for (const p of parts) {
+  if (typeof p.label !== "string" || p.label === "")
+    fail("position " + p.id + " has no label, got " + JSON.stringify(p.label));
+}
+
+/* REPLACE keeps position */
+const replaced = M.replaceAt(cfg, "fx1", { module: "delay" });
+if (replaced.fx[0].module !== "delay") fail("replace did not replace fx1, got " + replaced.fx[0].module);
+if (replaced.fx[1].module !== "cloudseed") fail("replace moved fx2, got " + fxOrder(replaced));
+if (replaced.fx.length !== 2) fail("replace changed the length to " + replaced.fx.length);
+const replacedMidi = M.replaceAt(cfg, "midi_fx1", { module: "velo" });
+if (midiOrder(replacedMidi) !== "velo,chord") fail("replace on midiFx failed, got " + midiOrder(replacedMidi));
+if (fxOrder(replacedMidi) !== "freeverb,cloudseed")
+  fail("a midiFx replace touched the audio FX, got " + fxOrder(replacedMidi));
 
 /* REMOVE compacts */
 const removed = M.removeAt(cfg, "fx1");
-if (removed.fx.length !== 1) fail("remove did not shorten the list");
+if (removed.fx.length !== 1) fail("remove did not shorten the list, length is " + removed.fx.length);
 if (removed.fx[0].module !== "cloudseed") fail("remove did not compact: " + removed.fx[0].module);
 const removedMidi = M.removeAt(cfg, "midi_fx1");
 if (midiOrder(removedMidi) !== "chord") fail("remove on midiFx failed, got " + midiOrder(removedMidi));
-if (fxOrder(removedMidi) !== "freeverb,cloudseed") fail("a midiFx remove touched the audio FX");
+if (fxOrder(removedMidi) !== "freeverb,cloudseed")
+  fail("a midiFx remove touched the audio FX, got " + fxOrder(removedMidi));
 
-/* Ids are ONE-BASED. A zero index would splice from the END of the list, so a
-   malformed id arriving from a param key or from persisted state would delete
-   the last FX rather than nothing. */
-if (M.parseId("fx0") !== null) fail("fx0 must not parse");
-if (M.parseId("midi_fx0") !== null) fail("midi_fx0 must not parse");
-const zeroRemove = M.removeAt(cfg, "fx0");
-if (fxOrder(zeroRemove) !== "freeverb,cloudseed")
-  fail("removeAt fx0 must do nothing, got " + fxOrder(zeroRemove));
-const zeroMove = M.moveBy(cfg, "fx0", 1);
-if (fxOrder(zeroMove) !== "freeverb,cloudseed")
-  fail("moveBy fx0 must do nothing, got " + fxOrder(zeroMove));
-const zeroSwap = M.swapAt(cfg, "fx0", { module: "delay" });
-if (fxOrder(zeroSwap) !== "freeverb,cloudseed" || zeroSwap.fx.length !== 2)
-  fail("swapAt fx0 must do nothing, got " + fxOrder(zeroSwap));
+/* BAD IDS are inert, across every operation and both bounds.
+   Ids are ONE-BASED, so fx0 parses to index -1, which splice() counts from the
+   END: unguarded, removeAt("fx0") deletes the user LAST effect. fx9 is the
+   mirror -- both arrive by the same route, a param key or a persisted state
+   naming a slot that no longer exists, so defending one bound defends half the
+   problem. Tabled because seven hand-written stanzas had already drifted: two
+   of them checked only their own section, so a bad id leaking into the OTHER
+   section would have passed. */
+if (M.parseId("fx0") !== null) fail("fx0 must not parse, got " + JSON.stringify(M.parseId("fx0")));
+if (M.parseId("midi_fx0") !== null) fail("midi_fx0 must not parse, got " + JSON.stringify(M.parseId("midi_fx0")));
 
-/* fx9 is the mirror of fx0. Both arrive by the same route -- a param key or a
-   persisted state naming a slot that no longer exists -- so defending only the
-   lower bound defends half the problem. */
-const overRemove = M.removeAt(cfg, "fx9");
-if (fxOrder(overRemove) !== "freeverb,cloudseed" || overRemove.fx.length !== 2)
-  fail("removeAt fx9 must do nothing, got " + fxOrder(overRemove) + " len " + overRemove.fx.length);
-const overSwap = M.swapAt(cfg, "fx9", { module: "delay" });
-if (fxOrder(overSwap) !== "freeverb,cloudseed" || overSwap.fx.length !== 2)
-  fail("swapAt fx9 must do nothing, got " + fxOrder(overSwap) + " len " + overSwap.fx.length);
-const overMove = M.moveBy(cfg, "fx9", -1);
-if (fxOrder(overMove) !== "freeverb,cloudseed" || overMove.fx.length !== 2)
-  fail("moveBy fx9 must do nothing, got " + fxOrder(overMove) + " len " + overMove.fx.length);
-/* A delta that lands the destination back INSIDE the list, so the upper bound
-   is the only thing standing between a stale id and an undefined slot spliced
-   into the middle of the chain. */
-const overMoveIn = M.moveBy(cfg, "fx9", -7);
-if (fxOrder(overMoveIn) !== "freeverb,cloudseed" || overMoveIn.fx.length !== 2)
-  fail("moveBy fx9 into range must do nothing, got " + fxOrder(overMoveIn) + " len " + overMoveIn.fx.length);
-const overMidiRemove = M.removeAt(cfg, "midi_fx9");
-if (midiOrder(overMidiRemove) !== "arp,chord" || overMidiRemove.midiFx.length !== 2)
-  fail("removeAt midi_fx9 must do nothing, got " + midiOrder(overMidiRemove));
-const overMidiSwap = M.swapAt(cfg, "midi_fx9", { module: "velo" });
-if (midiOrder(overMidiSwap) !== "arp,chord" || overMidiSwap.midiFx.length !== 2)
-  fail("swapAt midi_fx9 must do nothing, got " + midiOrder(overMidiSwap) + " len " + overMidiSwap.midiFx.length);
+const badIds = ["fx0", "midi_fx0", "fx3", "fx9", "midi_fx9", "fx99", "synth", "bogus", ""];
+const badOps = [
+  ["replaceAt", (c, id) => M.replaceAt(c, id, { module: "delay" })],
+  ["removeAt", (c, id) => M.removeAt(c, id)],
+  ["moveBy +1", (c, id) => M.moveBy(c, id, 1)],
+  ["moveBy -1", (c, id) => M.moveBy(c, id, -1)],
+  /* -7 lands the DESTINATION back inside the list, which is where a stale id
+     would splice an undefined slot into the middle of the chain rather than
+     harmlessly off the end. */
+  ["moveBy -7", (c, id) => M.moveBy(c, id, -7)],
+];
+for (const id of badIds) {
+  for (const [what, op] of badOps) {
+    const next = op(cfg, id);
+    const where = what + " " + JSON.stringify(id);
+    if (fxOrder(next) !== "freeverb,cloudseed") fail(where + " changed the audio FX to " + fxOrder(next));
+    if (next.fx.length !== 2) fail(where + " changed the audio FX length to " + next.fx.length);
+    if (midiOrder(next) !== "arp,chord") fail(where + " changed the MIDI FX to " + midiOrder(next));
+    if (next.midiFx.length !== 2) fail(where + " changed the MIDI FX length to " + next.midiFx.length);
+    if (!next.synth || next.synth.module !== "sf2") fail(where + " ate the synth");
+  }
+}
 
 /* MOVE is bounded to its own section and does not wrap */
 const moved = M.moveBy(cfg, "fx1", 1);
-if (fxOrder(moved) !== "cloudseed,freeverb") fail("move right failed");
-if (midiOrder(moved) !== "arp,chord") fail("an audio FX move touched the MIDI FX");
+if (fxOrder(moved) !== "cloudseed,freeverb") fail("move right failed, got " + fxOrder(moved));
+if (midiOrder(moved) !== "arp,chord") fail("an audio FX move touched the MIDI FX, got " + midiOrder(moved));
 const stuck = M.moveBy(cfg, "fx1", -1);
 if (fxOrder(stuck) !== "freeverb,cloudseed")
-  fail("moving the first FX left should do nothing, not wrap");
+  fail("moving the first FX left should do nothing, not wrap, got " + fxOrder(stuck));
 
 /* A MIDI FX moves INSIDE the MIDI section: it reorders that list and leaves
    the audio list alone. Asserting only lengths here would pass even if the
@@ -121,6 +144,7 @@ if (fxOrder(midiStuck) !== "freeverb,cloudseed")
    back where it started, so the bounds check can be deleted unnoticed. */
 const three = M.emptyChain();
 three.fx = [{ module: "a" }, { module: "b" }, { module: "c" }];
+guard("three", three);
 const noWrapHead = M.moveBy(three, "fx1", -1);
 if (fxOrder(noWrapHead) !== "a,b,c")
   fail("moving the first of three FX left must leave the order alone, got " + fxOrder(noWrapHead));
@@ -132,43 +156,70 @@ if (fxOrder(midOrder) !== "b,a,c") fail("moving fx2 left failed, got " + fxOrder
 
 /* CAPS, both sections */
 let full = M.emptyChain();
-for (let i = 0; i < M.MAX_FX + 3; i++) full = M.insertAt(full, "fx", { module: "m" + i });
+for (let i = 0; i < M.MAX_FX + 3; i++) full = M.appendTo(full, "fx", { module: "m" + i });
 if (full.fx.length !== M.MAX_FX) fail("fx cap not enforced, got " + full.fx.length);
 let midiFull = M.emptyChain();
-for (let i = 0; i < M.MAX_MIDI_FX + 3; i++) midiFull = M.insertAt(midiFull, "midiFx", { module: "m" + i });
+for (let i = 0; i < M.MAX_MIDI_FX + 3; i++) midiFull = M.appendTo(midiFull, "midiFx", { module: "m" + i });
 if (midiFull.midiFx.length !== M.MAX_MIDI_FX) fail("midiFx cap not enforced, got " + midiFull.midiFx.length);
 
-/* INSERT appends at the outermost end, in the section it was asked for */
-const appended = M.insertAt(cfg, "fx", { module: "chorus" });
-if (fxOrder(appended) !== "freeverb,cloudseed,chorus") fail("insert did not append, got " + fxOrder(appended));
-if (midiOrder(appended) !== "arp,chord") fail("an fx insert touched the MIDI FX");
-const midiAppended = M.insertAt(cfg, "midiFx", { module: "velo" });
+/* APPEND goes to the outermost end, in the section it was asked for */
+const appended = M.appendTo(cfg, "fx", { module: "chorus" });
+if (fxOrder(appended) !== "freeverb,cloudseed,chorus") fail("appendTo did not append, got " + fxOrder(appended));
+if (midiOrder(appended) !== "arp,chord") fail("an fx append touched the MIDI FX, got " + midiOrder(appended));
+const midiAppended = M.appendTo(cfg, "midiFx", { module: "velo" });
 if (midiOrder(midiAppended) !== "arp,chord,velo")
-  fail("midiFx insert did not append, got " + midiOrder(midiAppended));
-if (fxOrder(midiAppended) !== "freeverb,cloudseed") fail("a midiFx insert touched the audio FX");
+  fail("midiFx append did not append, got " + midiOrder(midiAppended));
+if (fxOrder(midiAppended) !== "freeverb,cloudseed")
+  fail("a midiFx append touched the audio FX, got " + fxOrder(midiAppended));
+
+/* An unknown section is inert like every other bad input. It must not THROW:
+   an exception on the shadow UI tick surfaces to the user as "UI error,
+   recovering" rather than as nothing happening. */
+for (const bogus of ["midifx", "FX", "audio", "", null, undefined]) {
+  let thrown = null;
+  let next = null;
+  try { next = M.appendTo(cfg, bogus, { module: "velo" }); }
+  catch (e) { thrown = String(e); }
+  const where = "appendTo section " + JSON.stringify(bogus);
+  if (thrown) { fail(where + " threw instead of no-opping: " + thrown); continue; }
+  if (fxOrder(next) !== "freeverb,cloudseed") fail(where + " changed the audio FX to " + fxOrder(next));
+  if (midiOrder(next) !== "arp,chord") fail(where + " changed the MIDI FX to " + midiOrder(next));
+}
+
+/* indexOfId: the selection the UI holds is an index into chainComponents, and
+   every mutation shifts it -- removing fx1 shortens the list, so a selection
+   pointing at settings would point at add_fx. The lookup belongs here, not
+   hand-rolled as findIndex at each call site. */
+for (const [id, want] of [["patch", 0], ["add_midi", 1], ["midi_fx1", 2], ["midi_fx2", 3],
+                          ["synth", 4], ["fx1", 5], ["fx2", 6], ["add_fx", 7], ["settings", 8]]) {
+  if (M.indexOfId(cfg, id) !== want)
+    fail("indexOfId " + id + " should be " + want + ", got " + M.indexOfId(cfg, id));
+}
+if (M.indexOfId(cfg, "nope") !== -1) fail("indexOfId of an unknown id should be -1, got " + M.indexOfId(cfg, "nope"));
+const afterRemove = M.removeAt(cfg, "fx1");
+if (M.indexOfId(afterRemove, "settings") !== M.indexOfId(cfg, "settings") - 1)
+  fail("removing an FX should shift settings back one, got " + M.indexOfId(afterRemove, "settings"));
 
 /* NOTHING here edits the synth. It is the one irreplaceable thing in a chain,
    and no operation in this module targets it, so it is pinned after EVERY
    mutating operation on BOTH sections rather than trusted. Checking only that
    emptyChain produces a null synth would pass a clone that dropped it. */
 const synthOps = [
-  ["insertAt fx", M.insertAt(cfg, "fx", { module: "chorus" })],
-  ["insertAt midiFx", M.insertAt(cfg, "midiFx", { module: "velo" })],
-  ["swapAt fx1", M.swapAt(cfg, "fx1", { module: "delay" })],
-  ["swapAt midi_fx1", M.swapAt(cfg, "midi_fx1", { module: "velo" })],
+  ["appendTo fx", M.appendTo(cfg, "fx", { module: "chorus" })],
+  ["appendTo midiFx", M.appendTo(cfg, "midiFx", { module: "velo" })],
+  ["replaceAt fx1", M.replaceAt(cfg, "fx1", { module: "delay" })],
+  ["replaceAt midi_fx1", M.replaceAt(cfg, "midi_fx1", { module: "velo" })],
   ["removeAt fx1", M.removeAt(cfg, "fx1")],
   ["removeAt midi_fx1", M.removeAt(cfg, "midi_fx1")],
   ["moveBy fx1", M.moveBy(cfg, "fx1", 1)],
   ["moveBy midi_fx1", M.moveBy(cfg, "midi_fx1", 1)],
-  ["removeAt fx9", M.removeAt(cfg, "fx9")],
-  ["removeAt fx0", M.removeAt(cfg, "fx0")],
 ];
 for (const [what, next] of synthOps) {
   if (!next.synth) fail(what + " ate the synth");
-  else if (next.synth !== cfg.synth) fail(what + " replaced the synth");
+  else if (next.synth !== cfg.synth) fail(what + " replaced the synth with " + JSON.stringify(next.synth));
   else if (next.synth.module !== "sf2") fail(what + " changed the synth to " + next.synth.module);
   if (M.chainComponents(next).filter((p) => p.id === "synth").length !== 1)
-    fail(what + " left the chain without exactly one synth position");
+    fail(what + " left the chain without exactly one synth position: " + ids(next));
 }
 
 /* Scroll window. count matters as much as first: a window reporting the
@@ -176,25 +227,37 @@ for (const [what, next] of synthOps) {
 const many = M.emptyChain();
 many.synth = { module: "sf2" };
 many.fx = Array.from({ length: 6 }, (_, i) => ({ module: "f" + i }));
+guard("many", many);
 const all = M.chainComponents(many);
 if (all.length !== 11) fail("fixture drifted, expected 11 positions, got " + all.length);
 
-const fits = M.scrollWindow(all.length, all.findIndex((p) => p.id === "synth"), 20);
-if (fits.first !== 0) fail("nothing should scroll when everything fits");
+const fits = M.scrollWindow(all.length, M.indexOfId(many, "synth"), 20);
+if (fits.first !== 0) fail("nothing should scroll when everything fits, got first " + fits.first);
 if (fits.count !== all.length) fail("a chain that fits must show all of it, got count " + fits.count);
 
-const cases = [[0, 0], [5, 3], [all.length - 1, 6]];
+/* Out-of-range selections clamp rather than produce a window that does not
+   contain the selection, which is what the docstring promises. */
+const cases = [[0, 0], [5, 3], [all.length - 1, 6], [all.length + 4, 6], [-3, 0]];
 for (const [selected, expectFirst] of cases) {
   const w = M.scrollWindow(all.length, selected, 5);
+  const clamped = Math.min(Math.max(selected, 0), all.length - 1);
   if (w.first !== expectFirst)
     fail("scroll first for selected " + selected + " should be " + expectFirst + ", got " + w.first);
   if (w.count !== 5) fail("scroll count should be the capacity when scrolling, got " + w.count);
-  if (w.first < 0) fail("the window must not start before the list");
-  if (w.first + w.count > all.length) fail("the window must not run past the end of the list");
-  if (selected < w.first || selected >= w.first + w.count)
+  if (w.first < 0) fail("the window must not start before the list, got " + w.first);
+  if (w.first + w.count > all.length)
+    fail("the window must not run past the end, got " + w.first + " + " + w.count);
+  if (clamped < w.first || clamped >= w.first + w.count)
     fail("the selection must be inside the window, selected " + selected + " first " + w.first);
 }
 
+for (const [name, c, s] of guards) {
+  if (fxOrder(c) !== s.fx) fail(name + " was mutated in place: audio FX are " + fxOrder(c) + ", were " + s.fx);
+  if (midiOrder(c) !== s.midi) fail(name + " was mutated in place: MIDI FX are " + midiOrder(c) + ", were " + s.midi);
+  if (c.synth !== s.synth) fail(name + " had its synth replaced in place");
+  if (ids(c) !== s.ids) fail(name + " changed shape in place: " + ids(c) + ", was " + s.ids);
+}
+
 if (failures) process.exit(1);
-console.log("PASS: chain model — order, swap-in-place, remove-compacts, bounded move, one-based ids, caps, scroll window");
+console.log("PASS: chain model — order, labels, swap-in-place, remove-compacts, bounded move, bad ids, caps, index lookup, scroll window, immutability");
 '
