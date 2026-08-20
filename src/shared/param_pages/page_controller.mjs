@@ -151,6 +151,20 @@ export const SETPARAM_THROTTLE_MS = 20;
  */
 export const MOD_FAST_READS_PER_TICK = 1;
 
+/**
+ * How long the header keeps following a knob that was TURNED but is not held.
+ *
+ * A claim made by touch is given up by the note-off. A claim made by a turn
+ * alone has no such event — nothing is under a finger — so it has to time out
+ * or the cell it claimed stays inverted for the rest of the session. That was
+ * the "Shape cell stays highlighted after its value changes" report: an enum
+ * you nudge, on a knob whose capacitive pad did not register the nudge.
+ *
+ * Long enough to read the name and value you just changed, short enough that
+ * it reads as a readout rather than as a stuck cell.
+ */
+export const TURN_CLAIM_MS = 1200;
+
 /** How many times a page will re-read the contract waiting for late metadata. */
 export const META_RETRY_LIMIT = 8;
 /** Ticks between those attempts (~1 s at the shadow UI's 344 Hz tick).
@@ -251,6 +265,9 @@ export function createController(io = {}) {
         menuCursor: Object.create(null),
         /* Every knob currently held, oldest first. See onKnobTouch. */
         touchOrder: [],
+        /* ms at which a TURN claimed the header with nothing held, or 0.
+         * Only such a claim expires — see TURN_CLAIM_MS. */
+        turnClaimMs: 0,
         /* Name of the menu page currently ENTERED, or null. */
         menuEntered: null,
     };
@@ -382,9 +399,19 @@ export function createController(io = {}) {
         }
     }
 
+    /* Give up a header claim made by a turn once the hand has moved on. Held
+     * knobs are exempt: their claim ends with the note-off. */
+    function expireTurnClaim() {
+        if (!s.turnClaimMs || s.touchOrder.length) return;
+        if (now() - s.turnClaimMs < TURN_CLAIM_MS) return;
+        s.turnClaimMs = 0;
+        s.touched = -1;
+    }
+
     function tick() {
         s.tickCount++;
         flushDueWrites();
+        expireTurnClaim();
         const p = page();
         if (!p || p.kind !== PAGE_KNOBS || p.keys.length === 0) return null;
 
@@ -615,6 +642,7 @@ export function createController(io = {}) {
         if (s.pageIndex !== before) {
             s.cursor = 0;
             s.touched = -1;
+            s.turnClaimMs = 0;
             announcePageChange();
         }
         return s.pageIndex;
@@ -633,6 +661,7 @@ export function createController(io = {}) {
         s.pageIndex = remember ? restoreSection(target) : target;
         s.cursor = 0;
         s.touched = -1;
+        s.turnClaimMs = 0;
         announcePageChange();
         return s.pageIndex;
     }
@@ -651,13 +680,21 @@ export function createController(io = {}) {
          * rather than writing nonsense into it. */
         if (!isTurnable(meta)) return null;
 
+        const t = nowMs === undefined ? now() : nowMs;
+
         /* Turning claims the header: "last touched or MOVED" is the one you are
          * working on, and a knob can be turned without the capacitive touch
          * ever registering. It does not join touchOrder — nothing is being
-         * held — so it stops leading the header as soon as a held knob does. */
-        if (!s.touchOrder.length || s.touchOrder.indexOf(slot) >= 0) s.touched = slot;
-
-        const t = nowMs === undefined ? now() : nowMs;
+         * held — so it stops leading the header as soon as a held knob does,
+         * and if nothing is held it expires on its own (TURN_CLAIM_MS): there
+         * is no release event coming for a knob no finger registered on. */
+        if (!s.touchOrder.length) {
+            s.touched = slot;
+            s.turnClaimMs = t;
+        } else if (s.touchOrder.indexOf(slot) >= 0) {
+            s.touched = slot;
+            s.turnClaimMs = 0;
+        }
         /* The Movy layout turns like Movy — see movy_knob.mjs — not like
          * Schwung's own dial/bar grid (knob_engine.mjs, a different,
          * time-based acceleration feel that predates this port). Same state
@@ -752,6 +789,7 @@ export function createController(io = {}) {
     function clearTouch() {
         s.touchOrder.length = 0;
         s.touched = -1;
+        s.turnClaimMs = 0;
     }
 
     /*
@@ -777,6 +815,8 @@ export function createController(io = {}) {
             if (at >= 0) s.touchOrder.splice(at, 1);
             /* The header falls back to whatever is still held, not to nothing. */
             s.touched = s.touchOrder.length ? s.touchOrder[s.touchOrder.length - 1] : -1;
+            /* A real hold outranks and cancels any pending turn-claim. */
+            s.turnClaimMs = 0;
             /* Release flushes immediately rather than waiting out
              * SETPARAM_THROTTLE_MS — the hand has stopped, so there is no
              * more flooding to protect against, and the settled value should
@@ -793,6 +833,7 @@ export function createController(io = {}) {
         }
         if (s.touchOrder.indexOf(slot) < 0) s.touchOrder.push(slot);
         s.touched = slot;
+        s.turnClaimMs = 0;
         const key = keyAt(slot);
         const meta = metaAt(slot);
         const dec = s.decorations ? s.decorations[slot] : null;

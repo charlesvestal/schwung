@@ -518,6 +518,38 @@ Promise.all([
       ctl.onKnobTouch(1, false);
     }
 
+    /* ---- an UNHELD turn-claim has to expire ------------------------------
+     *
+     * A claim made by touch is released by the note-off. A claim made by a
+     * TURN alone has no such event — nothing is under a finger — so without an
+     * expiry the cell it claimed stayed inverted for the rest of the session.
+     * Reported on the LFO page as "the Shape cell stays highlighted after its
+     * value changes": Shape is an enum you nudge, and the capacitive pad does
+     * not always register a nudge.
+     */
+    {
+      let clock = 1000;
+      const dev = D.createFakeDevice({ id: "obxd" });
+      const ctl = C.createController({ ...dev, now: () => clock });
+      ctl.load({ slot: 0, component: "synth" });
+
+      ctl.onKnobTurn(3, 1, clock);
+      if (ctl.state.touched !== 3) fail("a turn should claim the header");
+      clock += C.TURN_CLAIM_MS + 1;
+      ctl.tick();
+      if (ctl.state.touched !== -1)
+        fail("an unheld turn-claim never expired — the cell stays highlighted forever");
+
+      /* A HELD knob must never expire: the finger is still on it. */
+      ctl.onKnobTouch(2, true);
+      ctl.onKnobTurn(2, 1, clock);
+      clock += C.TURN_CLAIM_MS * 10;
+      ctl.tick();
+      if (ctl.state.touched !== 2) fail("a held knob must not time out of the header");
+      ctl.onKnobTouch(2, false);
+      if (ctl.state.touched !== -1) fail("releasing the held knob should clear the header");
+    }
+
     console.log("PASS: controller — one read per tick, writes survive stale reads, " +
                 "opaque params open rather than turn, rebuild keeps your place, " +
                 sessions + " scripted module sessions clean");
