@@ -24,6 +24,34 @@ static int valid_module_name(const char *name) {
     return 1;
 }
 
+/*
+ * "fx3:cutoff" -> 2, and *subkey points at "cutoff". Returns -1 when the key
+ * is not an fx key or the index is out of range.
+ *
+ * Replaces two copy-paste branches that differed only by 0 vs 1 over
+ * machinery that was already index-generic. Enumerating eight of them would
+ * be eight times the same bug surface.
+ */
+static int chain_fx_index_from_key(const char *key, const char *prefix,
+                                   int max, const char **subkey) {
+    size_t plen = strlen(prefix);
+    if (strncmp(key, prefix, plen) != 0) return -1;
+    const char *p = key + plen;
+    if (*p < '1' || *p > '9') return -1;
+    int n = 0;
+    while (*p >= '0' && *p <= '9') n = n * 10 + (*p++ - '0');
+    if (*p != ':') return -1;
+    if (n < 1 || n > max) return -1;
+    if (subkey) *subkey = p + 1;
+    return n - 1;
+}
+
+/* "fx" + 3 -> "fx3": the component id chain_mod_* and the patch layer use. */
+static void chain_fx_component_id(char *buf, size_t buf_len,
+                                  const char *prefix, int index) {
+    snprintf(buf, buf_len, "%s%d", prefix, index + 1);
+}
+
 void chain_log(const char *msg) {
     /* Use unified log */
     unified_log("chain", LOG_LEVEL_DEBUG, "%s", msg);
@@ -156,7 +184,7 @@ void v2_unload_all_audio_fx(chain_instance_t *inst) {
 
     for (int i = 0; i < inst->fx_count; i++) {
         char target_name[16];
-        snprintf(target_name, sizeof(target_name), "fx%d", i + 1);
+        chain_fx_component_id(target_name, sizeof(target_name), "fx", i);
         chain_mod_clear_target_entries(inst, target_name, 0);
 
         if (inst->fx_is_v2[i]) {
@@ -187,7 +215,7 @@ void v2_unload_all_audio_fx(chain_instance_t *inst) {
 static void v2_unload_audio_fx_slot(chain_instance_t *inst, int slot) {
     if (!inst || slot < 0 || slot >= MAX_AUDIO_FX) return;
     char target_name[16];
-    snprintf(target_name, sizeof(target_name), "fx%d", slot + 1);
+    chain_fx_component_id(target_name, sizeof(target_name), "fx", slot);
     chain_mod_clear_target_entries(inst, target_name, 0);
 
     if (inst->fx_is_v2[slot]) {
@@ -707,25 +735,18 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         inst->synth_bypassed = (val && atoi(val)) ? 1 : 0;
         return;
     }
-    if (strcmp(key, "midi_fx1:bypassed") == 0) {
-        inst->midi_fx_bypassed[0] = (val && atoi(val)) ? 1 : 0;
-        return;
-    }
-    if (strcmp(key, "fx1:bypassed") == 0) {
-        inst->fx_bypassed[0] = (val && atoi(val)) ? 1 : 0;
-        return;
-    }
-    if (strcmp(key, "fx2:bypassed") == 0) {
-        inst->fx_bypassed[1] = (val && atoi(val)) ? 1 : 0;
-        return;
-    }
-    if (strcmp(key, "fx3:bypassed") == 0) {
-        inst->fx_bypassed[2] = (val && atoi(val)) ? 1 : 0;
-        return;
-    }
-    if (strcmp(key, "fx4:bypassed") == 0) {
-        inst->fx_bypassed[3] = (val && atoi(val)) ? 1 : 0;
-        return;
+    {
+        const char *bsub = NULL;
+        int bidx = chain_fx_index_from_key(key, "midi_fx", MAX_MIDI_FX, &bsub);
+        if (bidx >= 0 && strcmp(bsub, "bypassed") == 0) {
+            inst->midi_fx_bypassed[bidx] = (val && atoi(val)) ? 1 : 0;
+            return;
+        }
+        bidx = chain_fx_index_from_key(key, "fx", MAX_AUDIO_FX, &bsub);
+        if (bidx >= 0 && strcmp(bsub, "bypassed") == 0) {
+            inst->fx_bypassed[bidx] = (val && atoi(val)) ? 1 : 0;
+            return;
+        }
     }
 
     if (strcmp(key, "load_patch") == 0 || strcmp(key, "patch") == 0) {
@@ -870,17 +891,20 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             inst->dirty = 1;
         }
     }
-    else if (strncmp(key, "fx1:", 4) == 0) {
-        const char *subkey = key + 4;
-        /* Intercept module change to swap FX1 dynamically */
+    else if (chain_fx_index_from_key(key, "fx", MAX_AUDIO_FX, NULL) >= 0) {
+        const char *subkey = NULL;
+        int fxi = chain_fx_index_from_key(key, "fx", MAX_AUDIO_FX, &subkey);
+        char fx_id[16];
+        chain_fx_component_id(fx_id, sizeof(fx_id), "fx", fxi);
+        /* Intercept module change to swap this FX dynamically */
         if (strcmp(subkey, "module") == 0) {
-            v2_load_audio_fx_slot(inst, 0, val);
-            smoother_reset(&inst->fx_smoothers[0]);  /* Reset smoother on module change */
+            v2_load_audio_fx_slot(inst, fxi, val);
+            smoother_reset(&inst->fx_smoothers[fxi]);  /* Reset smoother on module change */
             inst->dirty = 1;
-        } else if (inst->fx_count > 0) {
-            if (chain_mod_is_target_active(inst, "fx1", subkey)) {
-                chain_mod_update_base_from_set_param(inst, "fx1", subkey, val);
-                mod_target_state_t *entry = chain_mod_find_target_entry(inst, "fx1", subkey);
+        } else if (inst->fx_count > fxi) {
+            if (chain_mod_is_target_active(inst, fx_id, subkey)) {
+                chain_mod_update_base_from_set_param(inst, fx_id, subkey, val);
+                mod_target_state_t *entry = chain_mod_find_target_entry(inst, fx_id, subkey);
                 if (entry) {
                     chain_mod_apply_effective_value(inst, entry, 0);
                     inst->dirty = 1;
@@ -890,102 +914,48 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
 
             float fval;
             if (is_smoothable_float(val, &fval)) {
-                chain_param_info_t *pinfo = find_param_info(inst->fx_params[0], inst->fx_param_counts[0], subkey);
+                chain_param_info_t *pinfo = find_param_info(inst->fx_params[fxi], inst->fx_param_counts[fxi], subkey);
                 if (!pinfo || pinfo->type == KNOB_TYPE_FLOAT) {
-                    smoother_set_target(&inst->fx_smoothers[0], subkey, fval);
+                    smoother_set_target(&inst->fx_smoothers[fxi], subkey, fval);
                 }
             }
-            if (inst->fx_is_v2[0] && inst->fx_plugins_v2[0] && inst->fx_instances[0]) {
-                inst->fx_plugins_v2[0]->set_param(inst->fx_instances[0], subkey, val);
+            if (inst->fx_is_v2[fxi] && inst->fx_plugins_v2[fxi] && inst->fx_instances[fxi]) {
+                inst->fx_plugins_v2[fxi]->set_param(inst->fx_instances[fxi], subkey, val);
             }
             if (strcmp(subkey, "plugin_id") == 0) {
-                inst->fx_param_counts[0] = 0;
-                inst->mod_param_refresh_ms_fx[0] = 0;
+                inst->fx_param_counts[fxi] = 0;
+                inst->mod_param_refresh_ms_fx[fxi] = 0;
             }
             inst->dirty = 1;
         }
     }
-    else if (strncmp(key, "fx2:", 4) == 0) {
-        const char *subkey = key + 4;
-        /* Intercept module change to swap FX2 dynamically */
+    else if (chain_fx_index_from_key(key, "midi_fx", MAX_MIDI_FX, NULL) >= 0) {
+        const char *subkey = NULL;
+        int mfi = chain_fx_index_from_key(key, "midi_fx", MAX_MIDI_FX, &subkey);
+        char mfx_id[16];
+        chain_fx_component_id(mfx_id, sizeof(mfx_id), "midi_fx", mfi);
+        /* Intercept module change to swap this MIDI FX dynamically */
         if (strcmp(subkey, "module") == 0) {
-            v2_load_audio_fx_slot(inst, 1, val);
-            smoother_reset(&inst->fx_smoothers[1]);  /* Reset smoother on module change */
-            inst->dirty = 1;
-        } else if (inst->fx_count > 1) {
-            if (chain_mod_is_target_active(inst, "fx2", subkey)) {
-                chain_mod_update_base_from_set_param(inst, "fx2", subkey, val);
-                mod_target_state_t *entry = chain_mod_find_target_entry(inst, "fx2", subkey);
-                if (entry) {
-                    chain_mod_apply_effective_value(inst, entry, 0);
-                    inst->dirty = 1;
-                    return;
-                }
-            }
-
-            float fval;
-            if (is_smoothable_float(val, &fval)) {
-                chain_param_info_t *pinfo = find_param_info(inst->fx_params[1], inst->fx_param_counts[1], subkey);
-                if (!pinfo || pinfo->type == KNOB_TYPE_FLOAT) {
-                    smoother_set_target(&inst->fx_smoothers[1], subkey, fval);
-                }
-            }
-            if (inst->fx_is_v2[1] && inst->fx_plugins_v2[1] && inst->fx_instances[1]) {
-                inst->fx_plugins_v2[1]->set_param(inst->fx_instances[1], subkey, val);
-            }
-            if (strcmp(subkey, "plugin_id") == 0) {
-                inst->fx_param_counts[1] = 0;
-                inst->mod_param_refresh_ms_fx[1] = 0;
-            }
-            inst->dirty = 1;
-        }
-    }
-    else if (strncmp(key, "midi_fx1:", 9) == 0) {
-        const char *subkey = key + 9;
-        /* Intercept module change to swap MIDI FX1 dynamically */
-        if (strcmp(subkey, "module") == 0) {
-            /* Unload existing MIDI FX if any */
-            if (inst->midi_fx_count > 0) {
+            /* Slot 1 owns the whole list: setting it clears what is there.
+             * Later slots append, as midi_fx2: always has. */
+            if (mfi == 0 && inst->midi_fx_count > 0) {
                 v2_unload_all_midi_fx(inst);
             }
             if (val && val[0] != '\0' && strcmp(val, "none") != 0) {
                 v2_load_midi_fx(inst, val);
             }
             inst->dirty = 1;
-        } else if (inst->midi_fx_count > 0 && inst->midi_fx_plugins[0] && inst->midi_fx_instances[0]) {
-            if (chain_mod_is_target_active(inst, "midi_fx1", subkey)) {
-                chain_mod_update_base_from_set_param(inst, "midi_fx1", subkey, val);
-                mod_target_state_t *entry = chain_mod_find_target_entry(inst, "midi_fx1", subkey);
+        } else if (inst->midi_fx_count > mfi && inst->midi_fx_plugins[mfi] && inst->midi_fx_instances[mfi]) {
+            if (chain_mod_is_target_active(inst, mfx_id, subkey)) {
+                chain_mod_update_base_from_set_param(inst, mfx_id, subkey, val);
+                mod_target_state_t *entry = chain_mod_find_target_entry(inst, mfx_id, subkey);
                 if (entry) {
                     chain_mod_apply_effective_value(inst, entry, 0);
                     inst->dirty = 1;
                     return;
                 }
             }
-            inst->midi_fx_plugins[0]->set_param(inst->midi_fx_instances[0], subkey, val);
-            inst->dirty = 1;
-        }
-    }
-    else if (strncmp(key, "midi_fx2:", 9) == 0) {
-        const char *subkey = key + 9;
-        /* Intercept module change to swap MIDI FX2 dynamically */
-        if (strcmp(subkey, "module") == 0) {
-            /* For slot 2, we'd need to unload just slot 2 - simplified for now */
-            if (val && val[0] != '\0' && strcmp(val, "none") != 0) {
-                v2_load_midi_fx(inst, val);
-            }
-            inst->dirty = 1;
-        } else if (inst->midi_fx_count > 1 && inst->midi_fx_plugins[1] && inst->midi_fx_instances[1]) {
-            if (chain_mod_is_target_active(inst, "midi_fx2", subkey)) {
-                chain_mod_update_base_from_set_param(inst, "midi_fx2", subkey, val);
-                mod_target_state_t *entry = chain_mod_find_target_entry(inst, "midi_fx2", subkey);
-                if (entry) {
-                    chain_mod_apply_effective_value(inst, entry, 0);
-                    inst->dirty = 1;
-                    return;
-                }
-            }
-            inst->midi_fx_plugins[1]->set_param(inst->midi_fx_instances[1], subkey, val);
+            inst->midi_fx_plugins[mfi]->set_param(inst->midi_fx_instances[mfi], subkey, val);
             inst->dirty = 1;
         }
     }
@@ -1246,20 +1216,16 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     if (strcmp(key, "synth:bypassed") == 0) {
         return snprintf(buf, buf_len, "%d", inst->synth_bypassed ? 1 : 0);
     }
-    if (strcmp(key, "midi_fx1:bypassed") == 0) {
-        return snprintf(buf, buf_len, "%d", inst->midi_fx_bypassed[0] ? 1 : 0);
-    }
-    if (strcmp(key, "fx1:bypassed") == 0) {
-        return snprintf(buf, buf_len, "%d", inst->fx_bypassed[0] ? 1 : 0);
-    }
-    if (strcmp(key, "fx2:bypassed") == 0) {
-        return snprintf(buf, buf_len, "%d", inst->fx_bypassed[1] ? 1 : 0);
-    }
-    if (strcmp(key, "fx3:bypassed") == 0) {
-        return snprintf(buf, buf_len, "%d", inst->fx_bypassed[2] ? 1 : 0);
-    }
-    if (strcmp(key, "fx4:bypassed") == 0) {
-        return snprintf(buf, buf_len, "%d", inst->fx_bypassed[3] ? 1 : 0);
+    {
+        const char *bsub = NULL;
+        int bidx = chain_fx_index_from_key(key, "midi_fx", MAX_MIDI_FX, &bsub);
+        if (bidx >= 0 && strcmp(bsub, "bypassed") == 0) {
+            return snprintf(buf, buf_len, "%d", inst->midi_fx_bypassed[bidx] ? 1 : 0);
+        }
+        bidx = chain_fx_index_from_key(key, "fx", MAX_AUDIO_FX, &bsub);
+        if (bidx >= 0 && strcmp(bsub, "bypassed") == 0) {
+            return snprintf(buf, buf_len, "%d", inst->fx_bypassed[bidx] ? 1 : 0);
+        }
     }
 
     if (strcmp(key, "dirty") == 0) {
@@ -1611,20 +1577,23 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         return -1;
     }
 
-    /* Route fx1: prefixed params to FX1 (strip prefix) */
-    if (strncmp(key, "fx1:", 4) == 0) {
-        const char *subkey = key + 4;
-        int base_result = chain_mod_get_base_for_subkey(inst, "fx1", subkey, buf, buf_len);
+    /* Route fx<N>: prefixed params to that audio FX slot (strip prefix) */
+    if (chain_fx_index_from_key(key, "fx", MAX_AUDIO_FX, NULL) >= 0) {
+        const char *subkey = NULL;
+        int fxi = chain_fx_index_from_key(key, "fx", MAX_AUDIO_FX, &subkey);
+        char fx_id[16];
+        chain_fx_component_id(fx_id, sizeof(fx_id), "fx", fxi);
+        int base_result = chain_mod_get_base_for_subkey(inst, fx_id, subkey, buf, buf_len);
         if (base_result >= 0) return base_result;
-        int mod_result = chain_mod_get_modulated_for_subkey(inst, "fx1", subkey, buf, buf_len);
+        int mod_result = chain_mod_get_modulated_for_subkey(inst, fx_id, subkey, buf, buf_len);
         if (mod_result >= 0) return mod_result;
 
         /* For ui_hierarchy: return cached JSON from module.json, fall through to plugin if empty */
-        if (strcmp(subkey, "ui_hierarchy") == 0 && inst->fx_count > 0) {
-            if (inst->fx_ui_hierarchy[0][0]) {
-                int len = strlen(inst->fx_ui_hierarchy[0]);
+        if (strcmp(subkey, "ui_hierarchy") == 0 && inst->fx_count > fxi) {
+            if (inst->fx_ui_hierarchy[fxi][0]) {
+                int len = strlen(inst->fx_ui_hierarchy[fxi]);
                 if (len < buf_len) {
-                    strcpy(buf, inst->fx_ui_hierarchy[0]);
+                    strcpy(buf, inst->fx_ui_hierarchy[fxi]);
                     return len;
                 }
             }
@@ -1632,18 +1601,18 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         }
 
         /* For chain_params: try plugin first, fall back to parsed module.json data */
-        if (strcmp(subkey, "chain_params") == 0 && inst->fx_count > 0) {
+        if (strcmp(subkey, "chain_params") == 0 && inst->fx_count > fxi) {
             /* Try plugin's own chain_params handler first */
-            if (inst->fx_is_v2[0] && inst->fx_plugins_v2[0] && inst->fx_instances[0] && inst->fx_plugins_v2[0]->get_param) {
-                int result = inst->fx_plugins_v2[0]->get_param(inst->fx_instances[0], subkey, buf, buf_len);
+            if (inst->fx_is_v2[fxi] && inst->fx_plugins_v2[fxi] && inst->fx_instances[fxi] && inst->fx_plugins_v2[fxi]->get_param) {
+                int result = inst->fx_plugins_v2[fxi]->get_param(inst->fx_instances[fxi], subkey, buf, buf_len);
                 if (result > 0) return result;
             }
             /* Fall back to parsed module.json data */
-            if (inst->fx_param_counts[0] > 0) {
+            if (inst->fx_param_counts[fxi] > 0) {
                 int offset = 0;
                 offset += snprintf(buf + offset, buf_len - offset, "[");
-                for (int i = 0; i < inst->fx_param_counts[0] && offset < buf_len - 100; i++) {
-                    chain_param_info_t *p = &inst->fx_params[0][i];
+                for (int i = 0; i < inst->fx_param_counts[fxi] && offset < buf_len - 100; i++) {
+                    chain_param_info_t *p = &inst->fx_params[fxi][i];
                     if (i > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
                     const char *type_str = (p->type == KNOB_TYPE_INT) ? "int" :
                                           (p->type == KNOB_TYPE_ENUM) ? "enum" : "float";
@@ -1676,117 +1645,47 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             return -1;
         }
 
-        if (inst->fx_count > 0) {
-            if (inst->fx_is_v2[0] && inst->fx_plugins_v2[0] && inst->fx_instances[0] && inst->fx_plugins_v2[0]->get_param) {
-                return inst->fx_plugins_v2[0]->get_param(inst->fx_instances[0], subkey, buf, buf_len);
+        if (inst->fx_count > fxi) {
+            if (inst->fx_is_v2[fxi] && inst->fx_plugins_v2[fxi] && inst->fx_instances[fxi] && inst->fx_plugins_v2[fxi]->get_param) {
+                return inst->fx_plugins_v2[fxi]->get_param(inst->fx_instances[fxi], subkey, buf, buf_len);
             }
         }
         return -1;
     }
 
-    /* Route fx2: prefixed params to FX2 (strip prefix) */
-    if (strncmp(key, "fx2:", 4) == 0) {
-        const char *subkey = key + 4;
-        int base_result = chain_mod_get_base_for_subkey(inst, "fx2", subkey, buf, buf_len);
+    /* Route midi_fx<N>: prefixed params to that MIDI FX slot (strip prefix) */
+    if (chain_fx_index_from_key(key, "midi_fx", MAX_MIDI_FX, NULL) >= 0) {
+        const char *subkey = NULL;
+        int mfi = chain_fx_index_from_key(key, "midi_fx", MAX_MIDI_FX, &subkey);
+        char mfx_id[16];
+        chain_fx_component_id(mfx_id, sizeof(mfx_id), "midi_fx", mfi);
+        int base_result = chain_mod_get_base_for_subkey(inst, mfx_id, subkey, buf, buf_len);
         if (base_result >= 0) return base_result;
-        int mod_result = chain_mod_get_modulated_for_subkey(inst, "fx2", subkey, buf, buf_len);
-        if (mod_result >= 0) return mod_result;
-
-        /* For ui_hierarchy: return cached JSON from module.json, fall through to plugin if empty */
-        if (strcmp(subkey, "ui_hierarchy") == 0 && inst->fx_count > 1) {
-            if (inst->fx_ui_hierarchy[1][0]) {
-                int len = strlen(inst->fx_ui_hierarchy[1]);
-                if (len < buf_len) {
-                    strcpy(buf, inst->fx_ui_hierarchy[1]);
-                    return len;
-                }
-            }
-            /* Cache empty - fall through to plugin get_param below */
-        }
-
-        /* For chain_params: try plugin first, fall back to parsed module.json data */
-        if (strcmp(subkey, "chain_params") == 0 && inst->fx_count > 1) {
-            /* Try plugin's own chain_params handler first */
-            if (inst->fx_is_v2[1] && inst->fx_plugins_v2[1] && inst->fx_instances[1] && inst->fx_plugins_v2[1]->get_param) {
-                int result = inst->fx_plugins_v2[1]->get_param(inst->fx_instances[1], subkey, buf, buf_len);
-                if (result > 0) return result;
-            }
-            /* Fall back to parsed module.json data */
-            if (inst->fx_param_counts[1] > 0) {
-                int offset = 0;
-                offset += snprintf(buf + offset, buf_len - offset, "[");
-                for (int i = 0; i < inst->fx_param_counts[1] && offset < buf_len - 100; i++) {
-                    chain_param_info_t *p = &inst->fx_params[1][i];
-                    if (i > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
-                    const char *type_str = (p->type == KNOB_TYPE_INT) ? "int" :
-                                          (p->type == KNOB_TYPE_ENUM) ? "enum" : "float";
-                    offset += snprintf(buf + offset, buf_len - offset,
-                        "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"%s\",\"min\":%g,\"max\":%g",
-                        p->key, p->name[0] ? p->name : p->key,
-                        type_str,
-                        p->min_val, p->max_val);
-                    /* Add options array for enum types */
-                    if (p->type == KNOB_TYPE_ENUM && p->option_count > 0) {
-                        offset += snprintf(buf + offset, buf_len - offset, ",\"options\":[");
-                        for (int j = 0; j < p->option_count && j < MAX_ENUM_OPTIONS; j++) {
-                            if (j > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
-                            offset += snprintf(buf + offset, buf_len - offset, "\"%s\"", p->options[j]);
-                        }
-                        offset += snprintf(buf + offset, buf_len - offset, "]");
-                    }
-                    /* Add unit and display_format if present */
-                    if (p->unit[0]) {
-                        offset += snprintf(buf + offset, buf_len - offset, ",\"unit\":\"%s\"", p->unit);
-                    }
-                    if (p->display_format[0]) {
-                        offset += snprintf(buf + offset, buf_len - offset, ",\"display_format\":\"%s\"", p->display_format);
-                    }
-                    offset += snprintf(buf + offset, buf_len - offset, "}");
-                }
-                offset += snprintf(buf + offset, buf_len - offset, "]");
-                return offset;
-            }
-            return -1;
-        }
-
-        if (inst->fx_count > 1) {
-            if (inst->fx_is_v2[1] && inst->fx_plugins_v2[1] && inst->fx_instances[1] && inst->fx_plugins_v2[1]->get_param) {
-                return inst->fx_plugins_v2[1]->get_param(inst->fx_instances[1], subkey, buf, buf_len);
-            }
-        }
-        return -1;
-    }
-
-    /* Route midi_fx1: prefixed params to MIDI FX1 (strip prefix) */
-    if (strncmp(key, "midi_fx1:", 9) == 0) {
-        const char *subkey = key + 9;
-        int base_result = chain_mod_get_base_for_subkey(inst, "midi_fx1", subkey, buf, buf_len);
-        if (base_result >= 0) return base_result;
-        int mod_result = chain_mod_get_modulated_for_subkey(inst, "midi_fx1", subkey, buf, buf_len);
+        int mod_result = chain_mod_get_modulated_for_subkey(inst, mfx_id, subkey, buf, buf_len);
         if (mod_result >= 0) return mod_result;
         /* For ui_hierarchy: return cached JSON from module.json, fall through to plugin if empty */
-        if (strcmp(subkey, "ui_hierarchy") == 0 && inst->midi_fx_count > 0) {
-            if (inst->midi_fx_ui_hierarchy[0][0]) {
-                int len = strlen(inst->midi_fx_ui_hierarchy[0]);
+        if (strcmp(subkey, "ui_hierarchy") == 0 && inst->midi_fx_count > mfi) {
+            if (inst->midi_fx_ui_hierarchy[mfi][0]) {
+                int len = strlen(inst->midi_fx_ui_hierarchy[mfi]);
                 if (len < buf_len) {
-                    strcpy(buf, inst->midi_fx_ui_hierarchy[0]);
+                    strcpy(buf, inst->midi_fx_ui_hierarchy[mfi]);
                     return len;
                 }
             }
             /* Cache empty - fall through to plugin get_param below */
         }
         /* For chain_params: try plugin first, fall back to parsed module.json data */
-        if (strcmp(subkey, "chain_params") == 0 && inst->midi_fx_count > 0) {
+        if (strcmp(subkey, "chain_params") == 0 && inst->midi_fx_count > mfi) {
             /* Try plugin's own chain_params handler first */
-            if (inst->midi_fx_plugins[0] && inst->midi_fx_instances[0] && inst->midi_fx_plugins[0]->get_param) {
-                int result = inst->midi_fx_plugins[0]->get_param(inst->midi_fx_instances[0], subkey, buf, buf_len);
+            if (inst->midi_fx_plugins[mfi] && inst->midi_fx_instances[mfi] && inst->midi_fx_plugins[mfi]->get_param) {
+                int result = inst->midi_fx_plugins[mfi]->get_param(inst->midi_fx_instances[mfi], subkey, buf, buf_len);
                 if (result > 0) return result;
             }
             /* Fall back to parsed module.json data */
-            if (inst->midi_fx_param_counts[0] > 0) {
+            if (inst->midi_fx_param_counts[mfi] > 0) {
                 int written = snprintf(buf, buf_len, "[");
-                for (int i = 0; i < inst->midi_fx_param_counts[0] && written < buf_len - 10; i++) {
-                    chain_param_info_t *p = &inst->midi_fx_params[0][i];
+                for (int i = 0; i < inst->midi_fx_param_counts[mfi] && written < buf_len - 10; i++) {
+                    chain_param_info_t *p = &inst->midi_fx_params[mfi][i];
                     if (i > 0) written += snprintf(buf + written, buf_len - written, ",");
                     const char *type_str = (p->type == KNOB_TYPE_INT) ? "int" :
                                           (p->type == KNOB_TYPE_ENUM) ? "enum" : "float";
@@ -1819,76 +1718,8 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             }
             return -1;  /* No chain_params available */
         }
-        if (inst->midi_fx_count > 0 && inst->midi_fx_plugins[0] && inst->midi_fx_instances[0] && inst->midi_fx_plugins[0]->get_param) {
-            return inst->midi_fx_plugins[0]->get_param(inst->midi_fx_instances[0], subkey, buf, buf_len);
-        }
-        return -1;
-    }
-
-    /* Route midi_fx2: prefixed params to MIDI FX2 (strip prefix) */
-    if (strncmp(key, "midi_fx2:", 9) == 0) {
-        const char *subkey = key + 9;
-        int base_result = chain_mod_get_base_for_subkey(inst, "midi_fx2", subkey, buf, buf_len);
-        if (base_result >= 0) return base_result;
-        int mod_result = chain_mod_get_modulated_for_subkey(inst, "midi_fx2", subkey, buf, buf_len);
-        if (mod_result >= 0) return mod_result;
-        /* For ui_hierarchy: return cached JSON from module.json, fall through to plugin if empty */
-        if (strcmp(subkey, "ui_hierarchy") == 0 && inst->midi_fx_count > 1) {
-            if (inst->midi_fx_ui_hierarchy[1][0]) {
-                int len = strlen(inst->midi_fx_ui_hierarchy[1]);
-                if (len < buf_len) {
-                    strcpy(buf, inst->midi_fx_ui_hierarchy[1]);
-                    return len;
-                }
-            }
-            /* Cache empty - fall through to plugin get_param below */
-        }
-        /* For chain_params: try plugin first, fall back to parsed module.json data */
-        if (strcmp(subkey, "chain_params") == 0 && inst->midi_fx_count > 1) {
-            /* Try plugin's own chain_params handler first */
-            if (inst->midi_fx_plugins[1] && inst->midi_fx_instances[1] && inst->midi_fx_plugins[1]->get_param) {
-                int result = inst->midi_fx_plugins[1]->get_param(inst->midi_fx_instances[1], subkey, buf, buf_len);
-                if (result > 0) return result;
-            }
-            /* Fall back to parsed module.json data */
-            if (inst->midi_fx_param_counts[1] > 0) {
-                int written = snprintf(buf, buf_len, "[");
-                for (int i = 0; i < inst->midi_fx_param_counts[1] && written < buf_len - 10; i++) {
-                    chain_param_info_t *p = &inst->midi_fx_params[1][i];
-                    if (i > 0) written += snprintf(buf + written, buf_len - written, ",");
-                    const char *type_str = (p->type == KNOB_TYPE_INT) ? "int" :
-                                          (p->type == KNOB_TYPE_ENUM) ? "enum" : "float";
-                    written += snprintf(buf + written, buf_len - written,
-                        "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"%s\"",
-                        p->key, p->name, type_str);
-                    if (p->type == KNOB_TYPE_FLOAT || p->type == KNOB_TYPE_INT) {
-                        written += snprintf(buf + written, buf_len - written,
-                            ",\"min\":%.2f,\"max\":%.2f,\"default\":%.2f",
-                            p->min_val, p->max_val, p->default_val);
-                    } else if (p->type == KNOB_TYPE_ENUM && p->option_count > 0) {
-                        written += snprintf(buf + written, buf_len - written, ",\"options\":[");
-                        for (int j = 0; j < p->option_count; j++) {
-                            if (j > 0) written += snprintf(buf + written, buf_len - written, ",");
-                            written += snprintf(buf + written, buf_len - written, "\"%s\"", p->options[j]);
-                        }
-                        written += snprintf(buf + written, buf_len - written, "]");
-                    }
-                    /* Add unit and display_format if present */
-                    if (p->unit[0]) {
-                        written += snprintf(buf + written, buf_len - written, ",\"unit\":\"%s\"", p->unit);
-                    }
-                    if (p->display_format[0]) {
-                        written += snprintf(buf + written, buf_len - written, ",\"display_format\":\"%s\"", p->display_format);
-                    }
-                    written += snprintf(buf + written, buf_len - written, "}");
-                }
-                written += snprintf(buf + written, buf_len - written, "]");
-                return written;
-            }
-            return -1;
-        }
-        if (inst->midi_fx_count > 1 && inst->midi_fx_plugins[1] && inst->midi_fx_instances[1] && inst->midi_fx_plugins[1]->get_param) {
-            return inst->midi_fx_plugins[1]->get_param(inst->midi_fx_instances[1], subkey, buf, buf_len);
+        if (inst->midi_fx_count > mfi && inst->midi_fx_plugins[mfi] && inst->midi_fx_instances[mfi] && inst->midi_fx_plugins[mfi]->get_param) {
+            return inst->midi_fx_plugins[mfi]->get_param(inst->midi_fx_instances[mfi], subkey, buf, buf_len);
         }
         return -1;
     }
