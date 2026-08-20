@@ -599,11 +599,11 @@ export function handleParamPagesMidi(data) {
      */
     if (intent.type === 'touch' && isLoggingEnabled()) {
         const st = controller.state;
-        const prev = st.lastTapMs ? (st.lastTapMs[intent.slot] || 0) : 0;
+        const prev = st.lastUpMs ? (st.lastUpMs[intent.slot] || 0) : 0;
         const gap = prev ? (Date.now() - prev) : -1;
         log('param_pages', `touch slot=${intent.slot} ${intent.down ? 'DOWN' : 'up  '}`
             + ` t=${Date.now()}`
-            + ` sinceLastDown=${gap < 0 ? 'n/a' : gap + 'ms'}`
+            + ` sinceLastUp=${gap < 0 ? 'n/a' : gap + 'ms'}`
             + ` turnsSinceTap=${st.turnedSinceTap ? (st.turnedSinceTap[intent.slot] || 0) : 0}`
             + ` held=[${st.touchOrder.join(',')}]`);
     }

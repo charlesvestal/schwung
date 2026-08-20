@@ -660,16 +660,19 @@ Promise.all([
 
     /* ---- the gesture must fire on a REAL hand, measured on hardware ------
      *
-     * Captured from the device (2026-08-20, slot settings, knob 0), three
-     * consecutive attempts the user considered identical double-taps:
+     * Captured from the device (2026-08-20, slot settings, knob 0). One user
+     * tapping at what felt like a constant rate, as (dwell, AIR GAP) in ms —
+     * air gap being lift-to-re-touch:
      *
-     *   dwell 367ms, next down 820ms after the previous down   -> missed
-     *   dwell 283ms, next down 890ms                           -> missed
-     *   dwell 288ms, next down 334ms                           -> fired
+     *   (422, 520) (435, 588) (436, 438) (400, 417) (402, 572) (402, 384)
      *
-     * The pad reports a finger for ~300ms on a quick tap, so a window measured
-     * down-to-down spends most of itself on sensor decay. All three of these
-     * are the same gesture and all three must fire.
+     * Every one of those is the same gesture and every one must fire. The
+     * press-to-press distances underneath them were 786-1023ms, a spread of
+     * 240ms, because they also contain the dwell — and the dwell is capacitive
+     * decay, not intent. Measuring THAT is what made the gesture feel random.
+     *
+     * The same capture also holds two things that must NOT fire: a 1321ms air
+     * gap where the user paused, and a 816ms contact, which is a hold.
      */
     {
       let clock = 100000;
@@ -694,44 +697,72 @@ Promise.all([
       const key = ctl.keyAt(slot);
       const dflt = Number(ctl.metaAt(slot).default);
 
-      /* One tap: down, dwell, up. Returns nothing; the assertions look at the
-       * value, which is what the user sees. */
       const tap = (dwell) => {
         ctl.onKnobTouch(slot, true);
         clock += dwell;
         ctl.onKnobTouch(slot, false);
       };
-
-      for (const [dwell, downToDown] of [[367, 820], [283, 890], [288, 334]]) {
-        /* Move it away first so each attempt has something to undo. */
+      const moveAway = () => {
         for (let i = 0; i < 25; i++) ctl.onKnobTurn(slot, 1, (clock += 20));
         if (Number(ctl.state.values[key]) === dflt) fail("setup: value did not move");
         clock += DOUBLE_TAP_GAP_CLEAR;
+      };
 
+      /* The 454 is the longest contact the capture recorded on a TAP, and the
+       * first dwell threshold tried (450) sat just underneath it — rejecting a
+       * real tap. It is here so the threshold can never drift back inside the
+       * spread of an actual hand. */
+      for (const [dwell, airGap] of [[422, 520], [435, 588], [436, 438],
+                                     [400, 417], [402, 572], [402, 384],
+                                     [454, 450]]) {
+        moveAway();
         tap(dwell);
-        /* The second down lands `downToDown` after the FIRST down. */
-        clock += Math.max(1, downToDown - dwell);
+        clock += airGap;
         ctl.onKnobTouch(slot, true);
         const fired = Number(ctl.state.values[key]) === dflt;
         ctl.onKnobTouch(slot, false);
         if (!fired) {
           fail("a real double-tap measured on hardware did not fire: dwell " + dwell +
-               "ms, down-to-down " + downToDown + "ms — the window must not be spent " +
-               "on capacitive dwell");
+               "ms, air gap " + airGap + "ms — the window must be measured on the " +
+               "gap the hand controls, not on press-to-press");
         }
       }
 
-      /* A HOLD is not half a double-tap. Rest a finger on the knob, lift, then
-       * touch again — that is reading the value, not resetting it. */
-      for (let i = 0; i < 25; i++) ctl.onKnobTurn(slot, 1, (clock += 20));
-      clock += DOUBLE_TAP_GAP_CLEAR;
+      /* Paused between taps: not one gesture. */
+      moveAway();
       writes.length = 0;
-      tap(C.TAP_MAX_DWELL_MS + 200);        /* a rest, not a tap */
-      clock += 100;
+      tap(454);
+      clock += 1321;
       ctl.onKnobTouch(slot, true);
       if (writes.some(([, v]) => Number(v) === dflt))
-        fail("a long contact followed by a touch reset the param — that is reading " +
-             "the value, not double-tapping it");
+        fail("a 1321ms pause between taps counted as a double-tap");
+      ctl.onKnobTouch(slot, false);
+
+      /* A HOLD is not half a double-tap: resting a finger to read the value
+       * and then touching again must not reset it. */
+      moveAway();
+      writes.length = 0;
+      tap(816);
+      clock += 423;
+      ctl.onKnobTouch(slot, true);
+      if (writes.some(([, v]) => Number(v) === dflt))
+        fail("a 816ms contact followed by a touch reset the param — that is " +
+             "reading the value, not double-tapping it");
+      ctl.onKnobTouch(slot, false);
+
+      /* And the reset FLASHES: it is the one edit the hand did not perform. */
+      moveAway();
+      tap(400);
+      clock += 400;
+      ctl.onKnobTouch(slot, true);
+      if (Number(ctl.state.values[key]) !== dflt) fail("setup: the reset did not fire");
+      if (ctl.state.flash === null || ctl.state.flash.slot !== slot)
+        fail("a reset did not raise a flash on its own cell");
+      clock += C.RESET_FLASH_MS + 1;
+      /* Expiry is by wall clock and belongs to the controller, not to whichever
+       * renderer the caller uses — so a plain tick has to clear it. */
+      ctl.tick();
+      if (ctl.state.flash !== null) fail("the flash never expired");
       ctl.onKnobTouch(slot, false);
     }
 
