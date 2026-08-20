@@ -39,8 +39,8 @@
 
 /* Limits */
 #define MAX_PATCHES 32      /* Max patches to list in browser */
-#define MAX_AUDIO_FX 4      /* Max FX loaded per active chain */
-#define MAX_MIDI_FX 2       /* Max native MIDI FX modules per chain */
+#define MAX_AUDIO_FX 8      /* Max FX loaded per active chain */
+#define MAX_MIDI_FX 8       /* Max native MIDI FX modules per chain */
 #define CHAIN_PRE_DELAY_MAX 32  /* Pre-mode inject-delay buffer: one clock's output */
 #define MAX_PATH_LEN 256
 #define MAX_NAME_LEN 64
