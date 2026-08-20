@@ -426,12 +426,14 @@ function loadSlot(w, opts) {
     fail("per-frame reads still grow with chain length: " + shortSteady +
          " on a 2-FX chain, " + fullSteady + " on a full one");
 
-  /* The knob card must be FREE to draw.
-     Every value it shows was read once on touch-down (knobCardOpen), so a frame
-     with the card up must cost exactly what a frame without it costs. A read
-     here would be the worst possible place for one: the card is up precisely
-     while a finger is moving an encoder, which is when the screen most needs to
-     keep up.
+  /* The knob card CALL SITE must be free.
+     drawKnobCard is a stub here, so what this pins is drawChainEdit: that the
+     card block runs, and that raising it adds no read of its own -- everything
+     it draws was read once on touch-down (knobCardOpen). The RENDERER is a
+     separate claim with a separate test, tests/host/test_chain_knob_card_reads.sh,
+     which drives the real knob_card.mjs. A read here would be the worst
+     possible place for one: the card is up precisely while a finger is moving
+     an encoder, which is when the screen most needs to keep up.
      The cardDraws counter is not decoration -- without it this assertion passes
      just as happily when the card block never runs at all, which is the
      failure this whole dependency plumbing exists to prevent. */
@@ -450,8 +452,8 @@ function loadSlot(w, opts) {
            "this test is not exercising the card at all, so its budget is unmeasured");
     if (withCard !== withoutCard)
       fail("a frame with the knob card up costs " + withCard + " reads against " +
-           withoutCard + " without it -- the card must draw from what knobCardOpen " +
-           "already read, never from the draw path");
+           withoutCard + " without it -- the call site must hand the card what " +
+           "knobCardOpen already read, never read on the draw path");
   }
   /* And the first frame still pays: the cache is not a stale-forever cache, it
      is a per-edit one. */
