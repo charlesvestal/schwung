@@ -3245,7 +3245,26 @@ function chainSectionId(section, i) {
  *    moved. Left alone, a reorder re-points every LFO at whatever module slid
  *    into the slot it was aimed at, and the chain sounds different afterwards
  *    in a way the user did not ask for and cannot see. A target whose module
- *    left the chain entirely is CLEARED rather than re-aimed.
+ *    left the chain entirely is CLEARED rather than re-aimed — target AND
+ *    target_param, so no half-routing is left naming a param of a module that
+ *    is no longer anywhere in the chain.
+ *
+ * 5. CARRY THE MODULATION BASE, which is a FOURTH thing and lives nowhere the
+ *    first three look. A modulated param's base does not go into the module's
+ *    opaque `:state` blob: it lives in the chain host's modulation table
+ *    (`mod_target_state_t.base_value`, keyed by the POSITION id "fx2"), and
+ *    unloading a position calls chain_mod_clear_target_entries, which takes
+ *    the base with it. So a reverb whose volume was set to 50% and then
+ *    modulated came back at 100% after a reorder — the LFO followed it
+ *    correctly and drove the wrong base.
+ *
+ *    - Read it as `<oldId>:<param>:base`, NEVER as `<oldId>:<param>`. While a
+ *      target is active the plain key answers the EFFECTIVE value — where the
+ *      LFO happens to have pushed it this instant — and carrying that would
+ *      write a random point of the LFO sweep in as the new base.
+ *    - Identity again: the base is read from the position the module CAME
+ *      from and written to the position it went to, so it can only ever land
+ *      on the same module. A picker swap inherits nothing.
  *
  * The range comes from the published count rather than from probing the cap:
  * fx_count answers in one IPC read what fx1..fx8 would cost eight of, at
@@ -3296,6 +3315,7 @@ function writeChainOrder(slotIndex, section, prevList) {
         c.state = getSlotParam(slotIndex, `${chainSectionId(section, c.from)}:state`) || "";
     }
     const lfoWrites = [];
+    const baseWrites = [];
     if (somethingMoved) {
         for (let li = 1; li <= 2; li++) {
             const key = `lfo${li}:target`;
@@ -3307,7 +3327,22 @@ function writeChainOrder(slotIndex, section, prevList) {
             if (!was) continue;
             const now = list.indexOf(was);
             if (now === at.index) continue;
-            lfoWrites.push({ key, val: now >= 0 ? chainSectionId(section, now) : "" });
+            lfoWrites.push({ key, val: now >= 0 ? chainSectionId(section, now) : "",
+                             paramKey: `lfo${li}:target_param` });
+            /* A routing being CLEARED has nothing to carry — the module left
+             * the chain and there is no position for its base to land on. */
+            if (now < 0) continue;
+            const pname = getSlotParam(slotIndex, `lfo${li}:target_param`) || "";
+            if (!pname) continue;
+            /* `:base` — see rule 5. Two reads, and only for an LFO that is
+             * actually aimed at a module that actually moved. */
+            const base = getSlotParam(slotIndex,
+                `${chainSectionId(section, at.index)}:${pname}:base`);
+            /* "" is a failed read, not a base of zero: an unserved key answers
+             * with a zeroed buffer, and writing that in would be the same 100%
+             * -> 0% corruption in the other direction. */
+            if (base === null || base === undefined || base === "") continue;
+            baseWrites.push({ key: `${chainSectionId(section, now)}:${pname}`, val: base });
         }
     }
 
@@ -3316,13 +3351,37 @@ function writeChainOrder(slotIndex, section, prevList) {
             setSlotParam(slotIndex, `${chainSectionId(section, i)}:module`, want[i]);
         }
     }
-    /* After, because the instance a state is going into does not exist until
-     * its module write has landed. A module that serves no `state` answers ""
-     * and is left alone. */
+    /*
+     * The routing moves BEFORE the states, and between the module writes and
+     * them for a reason worth stating.
+     *
+     * Setting `lfoN:target` makes the DSP drop the old modulation source, and
+     * dropping it RESTORES that source's base onto the position it was aimed
+     * at (chain_mod_clear_source, restore_base=1). Do that after the state
+     * writes and the restore lands on top of freshly carried state — visible
+     * whenever two of the SAME module swap places, which issues no module
+     * writes at all and so leaves both live instances (and their live mod
+     * entries) in place. Ahead of the state writes, the restore is either a
+     * no-op (the position was reloaded, so its entries are already gone) or it
+     * writes the value that position already had, and the state write lands
+     * afterwards regardless.
+     */
+    for (const w of lfoWrites) {
+        setSlotParam(slotIndex, w.key, w.val);
+        /* A cleared routing clears BOTH keys. Left alone, `target_param` keeps
+         * naming a param of the module that just left, and any later write of
+         * `target` alone silently revives that half of the routing. */
+        if (!w.val) setSlotParam(slotIndex, w.paramKey, "");
+    }
+    /* After the module writes, because the instance a state is going into does
+     * not exist until its module write has landed. A module that serves no
+     * `state` answers "" and is left alone. */
     for (const c of carry) {
         if (c.state) setSlotParam(slotIndex, `${chainSectionId(section, c.to)}:state`, c.state);
     }
-    for (const w of lfoWrites) setSlotParam(slotIndex, w.key, w.val);
+    /* Last: the state blob was captured while the param was being modulated,
+     * so it carries the effective value and would overwrite the base. */
+    for (const b of baseWrites) setSlotParam(slotIndex, b.key, b.val);
 
     /* The slot the editor is drawing from has just been renumbered underneath
      * it. Here rather than in the two callers so a third one cannot forget —
@@ -3331,6 +3390,63 @@ function writeChainOrder(slotIndex, section, prevList) {
      * writes above change what the slot DOES without changing which modules it
      * holds. Nothing keyed on the module signature would notice those. */
     invalidateChainConfig(slotIndex);
+}
+
+/*
+ * Drop every LFO routing aimed at one component position.
+ *
+ * A position keeps its NAME across a module change — "fx1" is "fx1" whatever
+ * is loaded there — so nothing about swapping the module invalidates a routing
+ * that names it. The DSP does clear the position's modulation ENTRIES when it
+ * unloads (chain_mod_clear_target_entries, chain_host.c), but the LFO itself
+ * still holds `target:"fx1", target_param:"room_size"` and keeps emitting. Two
+ * consequences, both seen on hardware:
+ *
+ *   - the LFO editor shows the routing as live, naming a param of a module
+ *     that is no longer in the chain; and
+ *   - if the NEW module happens to declare a param of the same name — `mix`,
+ *     `gain`, `feedback` are not rare — the LFO silently starts modulating it.
+ *     That is the dangerous half: audible, and attributable to nothing the
+ *     user did.
+ *
+ * So a module leaving a position takes the routings aimed at that position
+ * with it. Both keys: `target` alone would leave `target_param` naming the
+ * dead module's param, ready to be revived by the next `target` write.
+ *
+ * Bounded by LFO_COUNT (2) reads, on a user gesture. Only the routings that
+ * actually name this component are written.
+ */
+/*
+ * Did a picker choice REPLACE what was at a position, as opposed to leaving it
+ * or removing it?
+ *
+ * `replaced` is what applyPickerChoiceToChain saw there before. Three answers,
+ * and each of them is a decision:
+ *
+ *   null       a REMOVAL. It hands back a whole section to rewrite, and
+ *              writeChainOrder owns the routing there because it alone can
+ *              tell a module that left from a module that only moved down.
+ *   same id    a reload, not a replacement. The routing still names the module
+ *              the user routed, so it stays.
+ *   anything   a replacement, INCLUDING filling a position that was empty: a
+ *   else       routing left over from that position previous occupant would
+ *              otherwise land on the module arriving now.
+ *
+ * Case-insensitive because module ids reach here from both the picker and the
+ * DSP, and the DSP answers lowercase.
+ */
+function pickerReplacedModule(replaced, moduleId) {
+    if (replaced === null || replaced === undefined) return false;
+    return String(replaced).toLowerCase() !== String(moduleId || "").toLowerCase();
+}
+
+function clearLfoRoutingForComponent(slotIndex, componentId) {
+    if (!componentId) return;
+    for (let li = 1; li <= 2; li++) {
+        if ((getSlotParam(slotIndex, `lfo${li}:target`) || "") !== componentId) continue;
+        setSlotParam(slotIndex, `lfo${li}:target`, "");
+        setSlotParam(slotIndex, `lfo${li}:target_param`, "");
+    }
 }
 
 /*
@@ -3415,23 +3531,33 @@ function chainMoveEntries(cfg, componentKey) {
  * module downstream of it. That cannot be expressed as a single write, so it
  * hands back the section to rewrite. `None` on the synth is a clear, not a
  * removal: the synth has no neighbours to renumber.
+ *
+ * `replaced` is the module id that was there BEFORE, for the two branches that
+ * write a single position. The caller needs it to decide whether any LFO aimed
+ * at that position is still meaningful — see clearLfoRoutingForComponent. The
+ * removal branch does not report one: writeChainOrder owns the routing for a
+ * whole-section rewrite and can tell a removal from a move, which one position
+ * in isolation cannot.
  */
 function applyPickerChoiceToChain(cfg, componentKey, moduleId) {
     const id = chainComponentId(componentKey);
     const at = parseChainId(id);
+    const before = getChainComponentModule(cfg, componentKey);
+    const replaced = (before && before.module) ? String(before.module) : "";
     if (!moduleId) {
         if (at) {
             /* Captured BEFORE the removal, and by object rather than by name:
              * writeChainOrder needs the old entries themselves to work out
              * which module ended up where. */
             const prevList = (cfg[at.section] || []).slice();
-            return { cfg: chainRemoveAt(cfg, id), reorderSection: at.section, prevList };
+            return { cfg: chainRemoveAt(cfg, id), reorderSection: at.section, prevList,
+                     replaced: null };
         }
         setChainComponentModule(cfg, componentKey, null);
-        return { cfg, reorderSection: null, prevList: null };
+        return { cfg, reorderSection: null, prevList: null, replaced };
     }
     setChainComponentModule(cfg, componentKey, { module: moduleId, params: {} });
-    return { cfg, reorderSection: null, prevList: null };
+    return { cfg, reorderSection: null, prevList: null, replaced };
 }
 
 /*
@@ -8000,6 +8126,18 @@ function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, c
         writeChainOrder(slotIndex, reorderSection, choice.prevList);
     } else if (paramKey) {
         if (typeof host_log === "function") host_log(`applyComponentSelection: slot=${slotIndex} param=${paramKey} module=${moduleId}`);
+        /*
+         * BEFORE the module write, because the write reloads the position and
+         * takes its modulation entries with it — after it, there is nothing
+         * left to say the routing was ever valid, and the LFO keeps its aim.
+         * Only when the module actually CHANGES: re-picking the same module is
+         * a reload, not a replacement, and the routing still names the module
+         * the user routed. See clearLfoRoutingForComponent for what a stale
+         * routing does to the module that lands here next.
+         */
+        if (pickerReplacedModule(choice ? choice.replaced : null, moduleId)) {
+            clearLfoRoutingForComponent(slotIndex, getComponentParamPrefix(comp.key));
+        }
         const success = setSlotParam(slotIndex, paramKey, moduleId);
         if (typeof host_log === "function") host_log(`applyComponentSelection: setSlotParam returned ${success}`);
         if (!success) {
