@@ -65,8 +65,18 @@ diagram does not need to announce itself.
 - **Shift+jog** moves the selected module along the chain. A click cannot
   express direction; Shift+jog can, and Shift-changes-what-the-jog-means is
   already the grammar in the section picker, the page stepper, the preset
-  browser and the items list.
-- **`+`** opens the picker with an insert at that end.
+  browser and the items list. `handleJog(delta)` currently takes no shift
+  argument and never consults `isShiftHeld()`, so it needs threading; nothing
+  else on this screen claims the gesture.
+
+  Moving is bounded to the module's OWN section: a MIDI FX cannot cross the
+  synth, because the two sides are different kinds of thing and crossing would
+  be a type change rather than a reorder. Moving stops at the ends; it does not
+  wrap.
+- **`+`** opens the picker and inserts at the position the `+` itself occupies
+  — the OUTERMOST end of that section. Adding an audio FX appends it after the
+  last one, which is both what the visual position promises and the common
+  case. Insert-in-the-middle is reordering: add, then Shift+jog it into place.
 - The picker gains `Move Left` / `Move Right` so the gesture is not the only
   way in. **Remove already exists** as the `None` entry the picker leads with
   (`shadow_ui.js:7098`).
