@@ -314,9 +314,23 @@ fx:move   = "1>3"   midi_fx:move   = "3>1"  rotate the span between two position
 and re-aims the three tables that name a position by string — modulation targets,
 the two LFOs, the knob mappings. Instances keep running, so **nothing is
 carried**: state, modulation base and routing are still the originals.
-`tests/host/test_chain_permute.sh` pins the field enumeration against
-`chain_instance_t`; a new `[MAX_AUDIO_FX]`/`[MAX_MIDI_FX]` member that is not
-permuted fails the suite.
+
+**Two kinds of per-position array, and the difference is a crash.** A VALUE
+array is vacated by zeroing its bytes (`PERM_FIELD`). An OWNED-BUFFER array
+holds a pointer to a block allocated once per position by
+`chain_alloc_position_storage` and **never null** — `fx_params`,
+`midi_fx_params`, and the two `ui_hierarchy` caches (`PERM_OWNED`). Those are
+**rotated**: the vacated position gets the buffer displaced off the end of the
+shift and its *contents* are cleared. Zeroing the pointer instead left a NULL
+that `v2_load_midi_fx_slot` parsed a param table through — SIGSEGV on the SPI
+callback, loading a MIDI FX in front of an existing one — and leaked the
+allocation the shift overwrote.
+
+`tests/host/test_chain_permute.sh` pins both: a new
+`[MAX_AUDIO_FX]`/`[MAX_MIDI_FX]` member not in a collector fails, and the
+owned/value split is derived from `chain_alloc_position_storage` rather than
+trusted. `tests/host/test_chain_midi_fx_slot.sh` drives the crashing sequence
+against a real `chain_instance_t` with the real loader.
 
 Insert only opens the hole — the caller follows with the ordinary
 `<id>:module` write. Both chain walks skip a hole per position, so the frame in
