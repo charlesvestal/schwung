@@ -6312,6 +6312,34 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
     /* Root span for the post-ioctl half of the SPI frame. */
     TRACE_SCOPE("spi.post");
 
+    /*
+     * Knob-touch ground truth, UNCONDITIONALLY.
+     *
+     * This deliberately sits before every mode gate below. An earlier version
+     * lived inside the `shadow_display_mode` branch, which meant it could only
+     * ever answer "what does the sensor send while our UI is on screen" — and
+     * the obvious control experiment, "what does it send in native Move mode,
+     * where the knobs feel responsive", was the one thing it could not
+     * measure. A probe that can only observe the suspect is not a probe.
+     *
+     * Reads the unfiltered hardware mailbox, so it is upstream of the
+     * Move-facing filter, the shadow forward, the ring and every gate.
+     */
+    if (shim_touch_trace_on && hw) {
+        const uint8_t *tsrc = (const uint8_t *)hw + MIDI_IN_OFFSET;
+        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
+            uint8_t thead = tsrc[j];
+            if (thead == 0) continue;
+            uint8_t tstatus = tsrc[j + 1];
+            uint8_t ttype = tstatus & 0xF0;
+            uint8_t td1 = tsrc[j + 2];
+            if ((ttype != 0x90 && ttype != 0x80) || td1 > 9) continue;
+            uint32_t tstamp = (uint32_t)tsrc[j + 4] | ((uint32_t)tsrc[j + 5] << 8)
+                            | ((uint32_t)tsrc[j + 6] << 16) | ((uint32_t)tsrc[j + 7] << 24);
+            touch_trace_record((thead >> 4) & 0x0F, tstatus, td1, tsrc[j + 3], tstamp);
+        }
+    }
+
     /* Timing: reuse statics from pre-transfer (same translation unit) */
     /* spi_post_start is at file scope */
 
@@ -7653,14 +7681,6 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             uint8_t type = status & 0xF0;
             uint8_t d1 = src[j + 2];
             uint8_t d2 = src[j + 3];
-
-            /* Ground truth for knob touch, taken before anything downstream
-             * can drop, reorder or delay it — see touch_trace_record. */
-            if ((type == 0x90 || type == 0x80) && d1 <= 9) {
-                uint32_t hw = (uint32_t)src[j + 4] | ((uint32_t)src[j + 5] << 8)
-                            | ((uint32_t)src[j + 6] << 16) | ((uint32_t)src[j + 7] << 24);
-                touch_trace_record(cable, status, d1, d2, hw);
-            }
 
             /* Deliver internal cable-0 note events (d1 >= 10, excludes
              * knob-touch reserved range 0–9) to the loaded overtake DSP
