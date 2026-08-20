@@ -30,6 +30,7 @@
  * receive_channel (0=All) and forward_channel (0=ch 1 internal). */
 #define PATCH_CHANNEL_UNSET INT_MIN
 
+#include "chain_key_index.h"
 #include "host/plugin_api_v1.h"
 #include "host/audio_fx_api_v2.h"
 #include "host/midi_fx_api_v1.h"
