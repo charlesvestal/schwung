@@ -135,8 +135,14 @@ export function lfoParams(lfoIndex) {
         { key: `lfo${lfoIndex}:target`, name: "Targ", type: "string" },
         { key: `lfo${lfoIndex}:enabled`, name: "On", type: "enum",
           options: ["Off", "On"], short_options: ["OFF", "ON"] },
+        /*
+         * span:false — it lends the graphic its baseline without joining the
+         * four cells the wave is drawn across. Counting it in the span would
+         * straddle the row boundary and the graphic would not draw at all.
+         */
         { key: `lfo${lfoIndex}:polarity`, name: "Mode", type: "enum",
-          options: ["Unipolar", "Bipolar"], short_options: ["UNI", "BI"] },
+          options: ["Unipolar", "Bipolar"], short_options: ["UNI", "BI"],
+          viz: { group: g, role: "polarity", span: false } },
         { key: `lfo${lfoIndex}:sync`, name: "Sync", type: "enum",
           options: ["Free", "Sync"], short_options: ["FRE", "SYN"] },
 
