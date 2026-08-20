@@ -388,6 +388,21 @@ function gotoSlotFor(name) {
       for (const want of ["Knob Mapping", "LFO 1", "Save"]) {
         if (!labels.includes(want)) fail("actions menu missing " + want + ": " + JSON.stringify(labels));
       }
+      /*
+       * The host draws the grid by calling drawParamPages() and, if it returns
+       * false, running enterHierarchyEditorFromParamPages() instead. A menu
+       * page that refuses to draw therefore EJECTS to the hierarchy editor for
+       * component "slot", which has no ui_hierarchy — so jogging to the actions
+       * page landed on "No presets". The draw must claim this page.
+       */
+      if (V.drawParamPages() !== true) {
+        fail("drawParamPages refused the MENU page — the host fallback then " +
+             "enters the hierarchy editor for the slot, which lands on No presets");
+      }
+      if (ctx.view !== ctx.VIEWS.PARAM_PAGES) {
+        fail("drawing the menu page left the grid, view=" + ctx.view);
+      }
+
       /* Enter, land on Knob Mapping, activate. The whole point of the wiring is
        * that this runs the SAME action the list runs, so the proof is the view
        * it lands on — not that nothing threw. */
