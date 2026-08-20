@@ -14,17 +14,19 @@
  * lookups of its own — resolving a component costs several IPC round trips at
  * ~2.8ms each, so WHEN to do that is the caller's decision, not this module's.
  *
- * Three forms rather than one, because the space differs by an order of
- * magnitude and truncating one string three ways loses the wrong end of it:
+ * Two forms, because the space differs by an order of magnitude and cutting
+ * one string both ways loses the wrong end of it:
  *
  *   short   "Room Size"              a 30px grid cell — the param is what you
  *                                    are looking at; which module is implied
  *                                    by the cell you clicked to get here
- *   header  "FX 1: Room Size"        the held-knob header, ~76px — slot rather
- *                                    than module name, because the slot is
- *                                    shorter and is what you navigate by
- *   long    "Freeverb: Room Size"    a full list row — the module by name, the
- *                                    way the picker offered it
+ *   long    "Airwindows: Room Size"  anywhere with room — the held-knob header
+ *                                    and a full list row
+ *
+ * The long form names the MODULE, not the slot. "FX 1: Regen" was the first
+ * cut and it spends the scarce half of the line on the half you already know:
+ * you are looking at that slot, you navigated to it. Which module is loaded
+ * there is the thing you cannot see from where you are standing.
  */
 
 /** Shown by every form when the LFO is not routed anywhere. */
@@ -63,15 +65,15 @@ function splitComponentLabel(label) {
  * @param {string}  o.targetParam   stored param key, e.g. "room_size"
  * @param {Array}   [o.components]  [{key,label}] from getTargetComponents()
  * @param {Array}   [o.params]      [{key,label}] from getTargetParams(target)
- * @returns {{short: string, header: string, long: string, empty: boolean}}
+ * @returns {{short: string, long: string, empty: boolean}}
  */
 export function describeLfoTarget({ target, targetParam, components, params } = {}) {
     const t = String(target || "");
     const p = String(targetParam || "");
-    if (!t || !p) return { short: NO_TARGET, header: NO_TARGET, long: NO_TARGET, empty: true };
+    if (!t || !p) return { short: NO_TARGET, long: NO_TARGET, empty: true };
 
     const comp = (components || []).find((c) => c && c.key === t);
-    const [slotLabel, moduleName] = comp
+    const [, moduleName] = comp
         ? splitComponentLabel(comp.label)
         /* Routed at something no longer on offer — a module swapped out from
          * under the routing. Say which key it was rather than "None": the
@@ -84,7 +86,6 @@ export function describeLfoTarget({ target, targetParam, components, params } = 
 
     return {
         short: paramLabel,
-        header: `${slotLabel}: ${paramLabel}`,
         long: `${moduleName}: ${paramLabel}`,
         empty: false,
     };
