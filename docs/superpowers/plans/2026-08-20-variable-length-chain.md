@@ -748,12 +748,36 @@ git commit -m "feat(shadow): persist chain order; pin that two-FX slots still lo
 **Files:**
 - Modify: `src/shadow/shadow_ui.js` — `scanModulesForType` result and the COMPONENT_SELECT click case
 
+**The code half is DONE** — the picker entries landed with the gesture work in
+`8f9ffcce` (`shadow_ui.js:3311`, bounds-guarded so index 0 offers no `Move
+Left`, and the handler at `:7821` routes both through the same reorder the
+Shift+jog gesture uses). What remains is verification on a device.
+
 **Acceptance Criteria:**
-- [ ] The picker lists `Move Left` and `Move Right` for an occupied module position, and neither for `+`, patch or settings
+- [x] The picker lists `Move Left` and `Move Right` for an occupied module position, and neither for `+`, patch or settings
 - [ ] On hardware: a chain of 4+ audio FX renders, scrolls, and the synth stays identifiable
 - [ ] On hardware: Shift+jog reorders and the footer reads `JOG MOVE` while held
 - [ ] On hardware: an existing saved patch with two FX loads unchanged
 - [ ] On hardware: RSS with a full 8-FX chain is sane — see the memory note below
+
+**State-carry checks — the defect that nearly shipped.** Reordering used to
+reset the moved module to its defaults, because writing `fxN:module` unloads and
+re-`dlopen`s unconditionally. Every test passed, because every test asserted on
+module ORDER, which was correct throughout. The carry is now keyed on module id.
+Both of these need ears, not assertions:
+
+6. **Move a TUNED FX and listen.** Load a reverb, dial it somewhere obviously
+   non-default (long tail, full mix), move it one position left. It must sound
+   the same afterwards. A default reverb here means the carry is not reaching the
+   destination instance.
+7. **Swap a tuned FX for a different module.** With that same tuned reverb
+   selected, pick a *delay* from the picker. The delay must come up at ITS OWN
+   defaults — if it inherits anything, an opaque blob is being pushed into a
+   module that did not write it, which is worse than the bug being fixed.
+8. **Two of the same module.** Load the same reverb into two positions, tune only
+   ONE of them, and move the other. The tuned one must keep its sound. This is
+   the case the id-keyed carry has a dedicated "stationary claims first" pass
+   for, and it is the one most likely to be subtly wrong.
 
 **Slot-activation checks (Task 10) — these cannot be tested off-device.**
 Both shim files are TUs with a dependency web that resists native compilation, so
@@ -786,7 +810,8 @@ any sound at all:
 
 **Steps:**
 
-- [ ] **Step 1: Add the entries** to the picker list for module positions only.
+- [x] **Step 1: Add the entries** to the picker list for module positions only.
+      Done in `8f9ffcce`.
 - [ ] **Step 2: Build and deploy.**
 - [ ] **Step 3: Drive the device** and capture what you saw for each criterion above.
 - [ ] **Step 4: Commit**
