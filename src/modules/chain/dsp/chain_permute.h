@@ -33,10 +33,38 @@
 
 #include "chain_key_index.h"
 
-/* One per-position array: `base` is element 0, `elem` the stride. */
+/*
+ * One per-position array: `base` is element 0, `elem` the stride.
+ *
+ * `pointee` is what separates the two KINDS of per-position array, and getting
+ * it wrong is a null dereference on the audio thread rather than a wrong value:
+ *
+ *   0        a VALUE array — the position owns its bytes. Vacating one means
+ *            zeroing them.
+ *   non-zero an OWNED-BUFFER array — the position holds a pointer to a block
+ *            allocated once per position by chain_alloc_position_storage and
+ *            never null (the param metadata and the cached ui_hierarchy). The
+ *            value here is that block's size.
+ *
+ * An owned-buffer array must be ROTATED, never zeroed. Zeroing the pointer for
+ * a vacated position breaks the never-null invariant every reader depends on —
+ * `inst->fx_ui_hierarchy[i][0]` is read without a check in a dozen places, and
+ * v2_load_midi_fx_slot parses a module's param table straight into
+ * `inst->midi_fx_params[slot]`. It also LEAKS: the shift overwrites the pointer
+ * that was already at the destination, and nothing else holds it. Both were
+ * live for one commit and the second one reached hardware as a SIGSEGV at
+ * si_addr=0 in the SPI callback, loading a MIDI FX in front of an existing one.
+ *
+ * So the vacated position receives the buffer displaced off the end of the
+ * shift, and it is the buffer's CONTENTS that are cleared rather than the
+ * pointer. Nothing is allocated, nothing is freed, nothing becomes null, and
+ * the multiset of pointers is identical before and after — which is exactly
+ * what the tests assert.
+ */
 typedef struct {
     void *base;
     size_t elem;
+    size_t pointee;
 } chain_perm_array_t;
 
 /* Largest per-position element this will shift. The biggest today is
@@ -58,6 +86,29 @@ static inline int chain_perm_arrays_ok(const chain_perm_array_t *a, int n) {
     if (!a || n <= 0) return 0;
     for (int i = 0; i < n; i++) {
         if (!a[i].base || a[i].elem == 0 || a[i].elem > CHAIN_PERM_MAX_ELEM) return 0;
+        /* A descriptor claiming to hold owned buffers whose stride is not a
+         * pointer is a mis-declaration, and it would have this reinterpret
+         * arbitrary bytes as an address. */
+        if (a[i].pointee && a[i].elem != sizeof(void *)) return 0;
+    }
+    return 1;
+}
+
+/*
+ * Is every owned buffer this operation will touch actually there?
+ *
+ * The rotation can only preserve the never-null invariant if it holds going in
+ * — there is no buffer to invent for a position that arrives null. Checking at
+ * the door means a fixture (or a future caller) that skipped
+ * chain_alloc_position_storage gets a REFUSED edit rather than a segfault two
+ * calls later inside a module loader. `upto` is inclusive: an insert needs the
+ * spare one past the live range, the other two do not.
+ */
+static inline int chain_perm_owned_ok(const chain_perm_array_t *a, int n, int upto) {
+    for (int i = 0; i < n; i++) {
+        if (!a[i].pointee) continue;
+        void **p = (void **)a[i].base;
+        for (int k = 0; k <= upto; k++) if (!p[k]) return 0;
     }
     return 1;
 }
@@ -83,7 +134,23 @@ static inline int chain_perm_insert(chain_perm_array_t *a, int n,
     if (count < 0 || cap <= 0 || cap > CHAIN_PERM_MAX_POS) return -1;
     if (count >= cap) return -1;               /* full */
     if (at < 0 || at > count) return -1;       /* `== count` is an append */
+    /* Inclusive of `count`: that is the spare buffer the rotation reuses, and
+     * `count < cap` above guarantees it exists. */
+    if (!chain_perm_owned_ok(a, n, count)) return -1;
     for (int i = 0; i < n; i++) {
+        if (a[i].pointee) {
+            /* ROTATE. The first free position's buffer comes back to `at` with
+             * its contents cleared, so no allocation is lost and no position
+             * is left null. */
+            void **p = (void **)a[i].base;
+            void *spare = p[count];
+            if (count > at) {
+                memmove(&p[at + 1], &p[at], (size_t)(count - at) * sizeof(void *));
+            }
+            p[at] = spare;
+            memset(spare, 0, a[i].pointee);
+            continue;
+        }
         if (count > at) {
             memmove(chain_perm_at(&a[i], at + 1), chain_perm_at(&a[i], at),
                     (size_t)(count - at) * a[i].elem);
@@ -109,7 +176,21 @@ static inline int chain_perm_remove(chain_perm_array_t *a, int n,
     if (!chain_perm_arrays_ok(a, n) || !map) return -1;
     if (count <= 0 || count > CHAIN_PERM_MAX_POS) return -1;
     if (at < 0 || at >= count) return -1;
+    if (!chain_perm_owned_ok(a, n, count - 1)) return -1;
     for (int i = 0; i < n; i++) {
+        if (a[i].pointee) {
+            /* ROTATE the other way: the departing position's buffer goes to the
+             * tail the shift vacates, contents cleared. Zeroing that tail
+             * instead would strand the buffer and leave a null behind. */
+            void **p = (void **)a[i].base;
+            void *dead = p[at];
+            if (count - at - 1 > 0) {
+                memmove(&p[at], &p[at + 1], (size_t)(count - at - 1) * sizeof(void *));
+            }
+            p[count - 1] = dead;
+            memset(dead, 0, a[i].pointee);
+            continue;
+        }
         if (count - at - 1 > 0) {
             memmove(chain_perm_at(&a[i], at), chain_perm_at(&a[i], at + 1),
                     (size_t)(count - at - 1) * a[i].elem);
@@ -134,6 +215,12 @@ static inline int chain_perm_move(chain_perm_array_t *a, int n,
     if (!chain_perm_arrays_ok(a, n) || !map) return -1;
     if (count <= 0 || count > CHAIN_PERM_MAX_POS) return -1;
     if (from < 0 || from >= count || to < 0 || to >= count || from == to) return -1;
+    if (!chain_perm_owned_ok(a, n, count - 1)) return -1;
+    /* No `pointee` branch, and that is not an omission. A move is already a
+     * pure rotation of the same bytes: nothing is vacated, so nothing is
+     * cleared, and for an owned-buffer array that means each module keeps the
+     * buffer it came with. Clearing anything here would wipe the metadata of a
+     * module that only changed index. */
     unsigned char scratch[CHAIN_PERM_MAX_ELEM];
     for (int i = 0; i < n; i++) {
         memcpy(scratch, chain_perm_at(&a[i], from), a[i].elem);

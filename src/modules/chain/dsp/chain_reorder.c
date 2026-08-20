@@ -39,7 +39,21 @@
  * the saved library, not the live chain, and they are written from the live
  * arrays at save time.
  */
-#define PERM_FIELD(arr) { (void *)(arr), sizeof((arr)[0]) }
+/*
+ * PERM_FIELD is a VALUE array: the position owns its bytes, and vacating one
+ * zeroes them.
+ *
+ * PERM_OWNED is a pointer to a block allocated once per position by
+ * chain_alloc_position_storage and NEVER NULL. Those must be rotated, not
+ * zeroed — see chain_permute.h. The classification is load-bearing rather than
+ * cosmetic (registering an owned array as a value one is a null dereference
+ * inside the next module load, which is how it reached hardware), so
+ * tests/host/test_chain_permute.sh cross-checks it against
+ * chain_alloc_position_storage rather than trusting what is written here.
+ */
+#define PERM_FIELD(arr) { (void *)(arr), sizeof((arr)[0]), 0 }
+#define PERM_OWNED(arr, bytes) { (void *)(arr), sizeof((arr)[0]), (bytes) }
+#define PERM_PARAMS_BYTES (MAX_CHAIN_PARAMS * sizeof(chain_param_info_t))
 
 static int chain_perm_collect_fx(chain_instance_t *inst, chain_perm_array_t *out) {
     int n = 0;
@@ -49,9 +63,9 @@ static int chain_perm_collect_fx(chain_instance_t *inst, chain_perm_array_t *out
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->fx_is_v2);
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->current_fx_modules);
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->fx_on_midi);
-    out[n++] = (chain_perm_array_t)PERM_FIELD(inst->fx_params);
+    out[n++] = (chain_perm_array_t)PERM_OWNED(inst->fx_params, PERM_PARAMS_BYTES);
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->fx_param_counts);
-    out[n++] = (chain_perm_array_t)PERM_FIELD(inst->fx_ui_hierarchy);
+    out[n++] = (chain_perm_array_t)PERM_OWNED(inst->fx_ui_hierarchy, CHAIN_UI_HIERARCHY_LEN);
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->mod_param_refresh_ms_fx);
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->fx_smoothers);
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->fx_bypassed);
@@ -65,9 +79,9 @@ static int chain_perm_collect_midi_fx(chain_instance_t *inst, chain_perm_array_t
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->midi_fx_plugins);
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->midi_fx_instances);
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->current_midi_fx_modules);
-    out[n++] = (chain_perm_array_t)PERM_FIELD(inst->midi_fx_params);
+    out[n++] = (chain_perm_array_t)PERM_OWNED(inst->midi_fx_params, PERM_PARAMS_BYTES);
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->midi_fx_param_counts);
-    out[n++] = (chain_perm_array_t)PERM_FIELD(inst->midi_fx_ui_hierarchy);
+    out[n++] = (chain_perm_array_t)PERM_OWNED(inst->midi_fx_ui_hierarchy, CHAIN_UI_HIERARCHY_LEN);
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->mod_param_refresh_ms_midi_fx);
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->midi_fx_pre_capable);
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->midi_fx_bypassed);

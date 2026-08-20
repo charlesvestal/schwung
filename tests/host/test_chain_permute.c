@@ -13,6 +13,7 @@
  * visible rather than plausible.
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "chain_permute.h"
@@ -22,25 +23,97 @@ static void fail(const char *m) { printf("FAIL: %s\n", m); failures++; }
 
 #define CAP 8
 
-/* Three arrays of different strides, standing in for the pointer / int /
- * fixed-string families a real chain position is made of. */
+/*
+ * Arrays of different strides, standing in for the families a real chain
+ * position is made of -- and CRUCIALLY including an OWNED-BUFFER one.
+ *
+ * The fixture used to be value arrays only. That is precisely why 28 mutations
+ * all passed while a null dereference was live on hardware: nothing here had
+ * the shape of `chain_param_info_t *fx_params[]`, so no test could observe that
+ * vacating a position zeroed its buffer POINTER instead of its contents.
+ */
+#define OWNED_BYTES 16
 typedef struct {
-    void *ptr[CAP];          /* like fx_instances   */
+    void *ptr[CAP];          /* like fx_instances -- a value, legitimately null */
     int   flag[CAP];         /* like fx_bypassed    */
     char  name[CAP][8];      /* like current_fx_modules */
+    char *owned[CAP];        /* like fx_params -- allocated once, never null */
 } world_t;
 
-static int collect(world_t *w, chain_perm_array_t *a) {
-    a[0].base = w->ptr;  a[0].elem = sizeof(w->ptr[0]);
-    a[1].base = w->flag; a[1].elem = sizeof(w->flag[0]);
-    a[2].base = w->name; a[2].elem = sizeof(w->name[0]);
+/* Value arrays ONLY. Some cases need a descriptor with no owned buffers in it:
+   the owned-buffer pre-check reads one entry PAST the live range (the spare an
+   insert rotates in), so at a full section it is looking at a position that
+   does not exist -- and a refusal that happens to come from there would mask
+   whether the cap is being enforced at all. Isolate the cap with these. */
+static int collect_values(world_t *w, chain_perm_array_t *a) {
+    a[0].base = w->ptr;   a[0].elem = sizeof(w->ptr[0]);   a[0].pointee = 0;
+    a[1].base = w->flag;  a[1].elem = sizeof(w->flag[0]);  a[1].pointee = 0;
+    a[2].base = w->name;  a[2].elem = sizeof(w->name[0]);  a[2].pointee = 0;
     return 3;
+}
+
+static int collect(world_t *w, chain_perm_array_t *a) {
+    a[0].base = w->ptr;   a[0].elem = sizeof(w->ptr[0]);   a[0].pointee = 0;
+    a[1].base = w->flag;  a[1].elem = sizeof(w->flag[0]);  a[1].pointee = 0;
+    a[2].base = w->name;  a[2].elem = sizeof(w->name[0]);  a[2].pointee = 0;
+    a[3].base = w->owned; a[3].elem = sizeof(w->owned[0]); a[3].pointee = OWNED_BYTES;
+    return 4;
+}
+
+/*
+ * THE INVARIANT THE CRASH BROKE, in one assertion.
+ *
+ * Every owned buffer is still there and still distinct: no index is null (the
+ * segfault) and the multiset of pointers is unchanged (the leak -- a shift that
+ * overwrites the pointer already at the destination loses that allocation, and
+ * nothing else holds it). It deliberately does not care WHICH index each buffer
+ * ended up at: a permutation is free to move them, it is not free to invent or
+ * drop one.
+ */
+static void snapshot_owned(world_t *w, void **out) {
+    for (int i = 0; i < CAP; i++) out[i] = w->owned[i];
+}
+
+static void check_owned_conserved(world_t *w, void **before, const char *what) {
+    char msg[192];
+    for (int i = 0; i < CAP; i++) {
+        if (!w->owned[i]) {
+            snprintf(msg, sizeof msg,
+                     "%s: owned buffer at position %d is NULL -- the next module "
+                     "load writes its param table straight through it", what, i);
+            fail(msg);
+            return;
+        }
+    }
+    for (int i = 0; i < CAP; i++) {
+        int seen = 0;
+        for (int k = 0; k < CAP; k++) if ((void *)w->owned[k] == before[i]) seen++;
+        if (seen != 1) {
+            snprintf(msg, sizeof msg,
+                     "%s: buffer %d appears %d times afterwards -- a permutation "
+                     "must not allocate or LEAK one", what, i, seen);
+            fail(msg);
+            return;
+        }
+    }
 }
 
 /* Positions 0..n-1 hold "a","b","c"... with matching ptr and flag, so every
  * array can be checked to have moved the SAME way. */
 static void seed(world_t *w, int n) {
+    /* The owned buffers persist across seeds, like chain_alloc_position_storage
+       allocating them once per instance: a test that reallocated them each time
+       could not tell a rotation from a fresh allocation. */
+    static char *pool[CAP];
+    static int pooled;
+    if (!pooled) { for (int i = 0; i < CAP; i++) pool[i] = calloc(1, OWNED_BYTES); pooled = 1; }
     memset(w, 0, sizeof(*w));
+    for (int i = 0; i < CAP; i++) {
+        w->owned[i] = pool[i];
+        /* Distinguishable CONTENTS, so a buffer that travelled with its module
+           can be told from one that merely stayed at the same index. */
+        snprintf(pool[i], OWNED_BYTES, "buf%d", i);
+    }
     for (int i = 0; i < n; i++) {
         w->ptr[i] = (void *)(long)(0x100 + i);
         w->flag[i] = 10 + i;
@@ -120,10 +193,16 @@ int main(void) {
     if (chain_perm_insert(a, collect(&w, a), 3, CAP, -1, map) != -1)
         fail("insert at a negative position was accepted");
     seed(&w, CAP);
-    if (chain_perm_insert(a, collect(&w, a), CAP, CAP, 0, map) != -1)
+    if (chain_perm_insert(a, collect_values(&w, a), CAP, CAP, 0, map) != -1)
         fail("insert into a FULL section was accepted, which would shift past the array");
     if (strcmp(shape(&w, CAP, buf), "a,b,c,d,e,f,g,h") != 0)
         fail("a refused insert still modified the section");
+    /* ...and with the owned arrays in play too, which is the real descriptor. */
+    seed(&w, CAP);
+    if (chain_perm_insert(a, collect(&w, a), CAP, CAP, 0, map) != -1)
+        fail("insert into a FULL section with owned buffers was accepted");
+    if (strcmp(shape(&w, CAP, buf), "a,b,c,d,e,f,g,h") != 0)
+        fail("a refused full-section insert still modified the section");
 
     /* ---- REMOVE ---------------------------------------------------------- */
 
@@ -195,11 +274,112 @@ int main(void) {
            part of an element would corrupt a live plugin pointer. */
     {
         static char huge[CAP][CHAIN_PERM_MAX_ELEM + 1];
-        chain_perm_array_t big = { huge, sizeof(huge[0]) };
+        chain_perm_array_t big = { huge, sizeof(huge[0]), 0 };
         if (chain_perm_move(&big, 1, 3, 0, 1, map) != -1)
             fail("an oversized per-position element was permuted through a smaller scratch");
         if (chain_perm_insert(&big, 1, 3, CAP, 0, map) != -1)
             fail("insert accepted an oversized element");
+    }
+
+    /* ---- OWNED BUFFERS ARE ROTATED, NEVER ZEROED ------------------------- */
+
+    /*
+     * THE HARDWARE CRASH. Loading a MIDI FX in front of an existing one is an
+     * insert at position 0, and the vacated position had its param-table
+     * POINTER zeroed rather than its contents. v2_load_midi_fx_slot then parsed
+     * the new module's params straight through that null: SIGSEGV, si_addr=0,
+     * on the SCHED_FIFO SPI callback. The same memmove also overwrote the
+     * pointer already at the destination, leaking that allocation.
+     */
+    {
+        void *before[CAP];
+        seed(&w, 3);
+        snapshot_owned(&w, before);
+        if (chain_perm_insert(a, collect(&w, a), 3, CAP, 0, map) != 4)
+            fail("insert with an owned array was refused");
+        check_owned_conserved(&w, before, "insert at the head");
+
+        /* The new position gets a buffer whose CONTENTS are cleared -- which is
+           what "empty" has to mean when the emptiness is a heap block. */
+        if (w.owned[0][0] != '\0')
+            fail("the inserted position buffer contents were not cleared -- it is "
+                 "holding the metadata of whichever module used to be there");
+        /* ...and the module that was pushed along KEEPS its buffer contents. */
+        if (strcmp(w.owned[1], "buf0") != 0)
+            fail("the module pushed to position 1 lost its metadata");
+    }
+
+    /* And in the middle, and at the end, and for a remove and a move -- the
+       same one assertion, because it does not care where anything went. */
+    {
+        void *before[CAP];
+        seed(&w, 3); snapshot_owned(&w, before);
+        chain_perm_insert(a, collect(&w, a), 3, CAP, 1, map);
+        check_owned_conserved(&w, before, "insert in the middle");
+
+        seed(&w, 3); snapshot_owned(&w, before);
+        chain_perm_insert(a, collect(&w, a), 3, CAP, 3, map);
+        check_owned_conserved(&w, before, "insert at the end");
+
+        seed(&w, 3); snapshot_owned(&w, before);
+        chain_perm_remove(a, collect(&w, a), 3, 0, map);
+        check_owned_conserved(&w, before, "remove");
+        if (w.owned[2][0] != '\0')
+            fail("the tail a removal vacated kept the departed module metadata");
+
+        seed(&w, 4); snapshot_owned(&w, before);
+        chain_perm_move(a, collect(&w, a), 4, 0, 2, map);
+        check_owned_conserved(&w, before, "move");
+        /* A move vacates NOTHING, so nothing may be cleared: EVERY module keeps
+           the metadata it came with, not just the one that was dragged. */
+        {
+            const char *want[4] = { "buf1", "buf2", "buf0", "buf3" };
+            for (int i = 0; i < 4; i++) {
+                if (strcmp(w.owned[i], want[i]) != 0) {
+                    char msg[160];
+                    snprintf(msg, sizeof msg,
+                             "a move left position %d holding \"%s\" instead of \"%s\" "
+                             "-- a move must rotate metadata, never clear it",
+                             i, w.owned[i], want[i]);
+                    fail(msg);
+                }
+            }
+        }
+    }
+
+    /* A descriptor that claims owned buffers but has a null one is REFUSED
+       rather than followed -- there is no buffer to invent, and a fixture that
+       skipped the allocation must not get a segfault two calls later. */
+    {
+        seed(&w, 3);
+        w.owned[1] = NULL;
+        if (chain_perm_insert(a, collect(&w, a), 3, CAP, 0, map) != -1)
+            fail("insert accepted an owned array with a NULL buffer in it");
+        if (chain_perm_remove(a, collect(&w, a), 3, 0, map) != -1)
+            fail("remove accepted an owned array with a NULL buffer in it");
+        if (chain_perm_move(a, collect(&w, a), 3, 0, 1, map) != -1)
+            fail("move accepted an owned array with a NULL buffer in it");
+        seed(&w, 3);  /* restore the pool entry for later cases */
+    }
+
+    /* A mis-declared descriptor -- owned buffers whose stride is not a pointer
+       -- is refused, because the rotation would reinterpret arbitrary bytes as
+       an address and then memset through it.
+
+       Every entry is non-zero on purpose: with holes in it the null pre-check
+       would refuse this for the WRONG reason and the stride guard would never
+       be exercised at all. */
+    {
+        seed(&w, 3);
+        for (int i = 0; i < CAP; i++) w.flag[i] = 0x2A;
+        chain_perm_array_t bad = { w.flag, sizeof(w.flag[0]), OWNED_BYTES };
+        if (chain_perm_insert(&bad, 1, 3, CAP, 0, map) != -1)
+            fail("a value array declared as owned-buffer was accepted -- the rotation "
+                 "would treat its bytes as an address");
+        if (chain_perm_remove(&bad, 1, 3, 0, map) != -1)
+            fail("remove accepted a value array declared as owned-buffer");
+        if (chain_perm_move(&bad, 1, 3, 0, 1, map) != -1)
+            fail("move accepted a value array declared as owned-buffer");
     }
 
     /* ---- RETARGETING THE STRING KEYS ------------------------------------- */
