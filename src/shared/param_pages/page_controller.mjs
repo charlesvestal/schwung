@@ -802,6 +802,11 @@ export function createController(io = {}) {
             s.cursor = 0;
             s.touched = -1;
             s.turnClaimMs = 0;
+            /* Leaving a page leaves the door it was. Without this, entering a
+             * browser, Shift+jogging away and jogging BACK put you inside it
+             * again without a click — the page had never been marked as left,
+             * only navigated off. */
+            s.menuEntered = null;
             announcePageChange();
         }
         return s.pageIndex;
@@ -810,7 +815,9 @@ export function createController(io = {}) {
     /** Jump straight to a page (from the index or group picker). */
     function goToPage(index, { remember = true } = {}) {
         /* Paging away cannot leave a menu entered — returning later would
-         * silently hand the jog back to the list. */
+         * silently hand the jog back to the list. (Page names are unique, so
+         * this and "any index change" are the same rule; onJog carries the
+         * equivalent clear.) */
         if (s.menuEntered && s.pages[index] && s.pages[index].name !== s.menuEntered) {
             s.menuEntered = null;
         }
@@ -1023,10 +1030,25 @@ export function createController(io = {}) {
          * the host owns whatever Save or Knob Mapping means, same rule that
          * keeps it out of the editors. */
         const mp = page();
-        /* A preset page is a door with nothing to activate: entering it IS the
-         * action, and the jog does the rest. */
+        /*
+         * A preset page: the first click goes IN, the second says done.
+         *
+         * Done means the first grid page, not "nothing". You came here to
+         * choose a sound and the browser loads as you scroll, so by the time
+         * you click there is nothing left to commit — what you want next is
+         * the knobs for the preset you just landed on. Leaving you in the
+         * browser makes the click do nothing and the page feel like somewhere
+         * you are stuck, with only Back to get out and Back only ever going
+         * backwards.
+         *
+         * Back still steps out in place, for when you were only looking.
+         */
         if (mp && mp.kind === PAGE_PRESET) {
             if (!menuEntered()) { enterMenu(); return null; }
+            s.menuEntered = null;
+            const grid = firstGrid(s.pages);
+            if (grid >= 0 && grid !== s.pageIndex) goToPage(grid, { remember: false });
+            else announcePageChange();
             return null;
         }
         if (mp && mp.kind === PAGE_MENU) {

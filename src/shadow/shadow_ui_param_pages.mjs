@@ -445,8 +445,10 @@ function footerHints() {
      * Saying which of the two you are in is the entire safety of the thing.
      */
     if (mp && mp.kind === PAGE_PRESET) {
+        /* Three pairs fit only when every word is <= 4 characters, and these
+         * are: JOG PRST / CLK EDIT / BACK OUT is 126px. */
         return controller.menuEntered && controller.menuEntered()
-            ? orderedHints({ jog: "PRST", click: null, extra: [["BACK", "OUT"]] })
+            ? orderedHints({ jog: "PRST", click: "EDIT", extra: [["BACK", "OUT"]] })
             : orderedHints({ jog: "PAGE", click: "ENTER", extra: fine });
     }
 
