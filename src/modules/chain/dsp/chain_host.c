@@ -1007,8 +1007,19 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                 if (lfo->rate_hz < 0.1f && !lfo->sync) {
                     lfo->rate_hz = 1.0f;
                 }
+                /*
+                 * Full depth, not half. An LFO you have just switched on should
+                 * DO something — at 50% the effect was there but easy to miss,
+                 * and the row-wide waveform now drawn on the LFO page reads as
+                 * a half-height wave for no reason the user chose.
+                 *
+                 * The guard is what makes this safe: it fires only when depth is
+                 * exactly 0 AND no target has been picked yet, i.e. a genuinely
+                 * fresh LFO. Anything already configured, or restored from a
+                 * saved slot, sets depth explicitly and is untouched.
+                 */
                 if (lfo->depth == 0.0f && !lfo->target[0] && !lfo->param[0]) {
-                    lfo->depth = 0.5f;
+                    lfo->depth = 1.0f;
                 }
                 lfo->active = (lfo->target[0] && lfo->param[0]);
             }
