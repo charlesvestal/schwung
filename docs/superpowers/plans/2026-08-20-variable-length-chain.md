@@ -662,6 +662,10 @@ git commit -m "feat(shadow): shift+jog reorders the chain, footer follows the mo
 - [ ] `writeChainOrder` writes `fx1..fxN` module ids in order and clears `fx(N+1)` to close the tail
 - [ ] A saved slot with exactly `fx1` and `fx2` loads with both in the same order and the same modules
 - [ ] No write occurs for a swap that did not change order
+- [ ] SHRINKING a chain clears every trailing slot, not just the first — going
+      from 5 FX to 3 must leave fx4 AND fx5 empty
+- [ ] The same holds for MIDI FX, which no longer has the unload-all that used to
+      cover this by accident
 
 **Verify:** `bash tests/host/test_chain_order_persist.sh` → `PASS`
 
@@ -678,11 +682,25 @@ git commit -m "feat(shadow): shift+jog reorders the chain, footer follows the mo
  */
 function writeChainOrder(slotIndex) {
     const cfg = chainConfigs[slotIndex];
+    /*
+     * Walk the WHOLE range, never stopping at the first blank.
+     *
+     * Stopping early looks right — the run is contiguous, so why keep going? —
+     * and it silently leaks every slot past the new end. Shrink a five-FX chain
+     * to three and you clear fx4, break, and leave fx5 loaded and audible with
+     * nothing on screen representing it.
+     *
+     * The DSP will not save you here: clearing an INTERIOR slot leaves the
+     * fx_count high-water mark where it was, and only clearing the trailing one
+     * shrinks it. Both FX sections now have this contract — the MIDI side used
+     * to hide it behind an unload-all on slot 1, which was removed because at a
+     * cap of 8 it destroyed up to seven neighbours and made a whole-chain
+     * rewrite depend on write ORDER.
+     */
     for (let i = 0; i < chainModel.MAX_FX; i++) {
         const want = cfg.fx[i] ? cfg.fx[i].module : "";
         const have = getSlotParam(slotIndex, `fx${i + 1}_module`) || "";
         if (want !== have) setSlotParam(slotIndex, `fx${i + 1}:module`, want);
-        if (!want) break;    /* the run is contiguous; the first blank ends it */
     }
 }
 ```
