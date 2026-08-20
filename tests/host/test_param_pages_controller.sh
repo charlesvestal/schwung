@@ -803,6 +803,138 @@ Promise.all([
       fail("the browser should wrap backwards, got " + index);
   }
 
+  /* ---- an ITEMS page is a door with a real list ------------------------
+   *
+   * Soundfonts, NAM models, JV expansions. Unlike a preset level this one
+   * publishes an actual list, so it can be five rows in the page chrome — and
+   * scrolling it writes NOTHING, which is the difference that matters: only
+   * the click chooses.
+   */
+  {
+    const items = [{ index: 0, label: "GM Basic" }, { index: 1, label: "Piano XL" },
+                   { index: 2, label: "Orchestra" }];
+    let selected = 2;
+    const writes = [];
+    const reads = [];
+    const HIER = { modes: null, levels: {
+      root: { label: "S", knobs: ["cutoff"], params: [{ level: "sf", label: "Soundfont" }] },
+      sf: { label: "Soundfont", items_param: "soundfont_list", select_param: "soundfont_index" },
+    } };
+    const CP = [{ key: "cutoff", name: "Cutoff", type: "float", min: 0, max: 1, step: 0.01 }];
+    const ctl = C.createController({
+      getParam: (k) => {
+        reads.push(k);
+        const b = String(k).replace(/^[^:]+:/, "");
+        if (b === "ui_hierarchy") return JSON.stringify(HIER);
+        if (b === "chain_params") return JSON.stringify(CP);
+        if (b === "soundfont_list") return JSON.stringify(items);
+        if (b === "soundfont_index") return String(selected);
+        return "0.5";
+      },
+      setParam: (k, v) => {
+        writes.push([k, v]);
+        if (String(k).endsWith(":soundfont_index")) selected = parseInt(v, 10);
+      },
+      announce: () => {},
+    });
+    ctl.load({ slot: 0, component: "synth" });
+
+    const itemsAt = ctl.pages.findIndex((p) => p.kind === "items");
+    if (itemsAt < 0) fail("a level with items_param should plan an items page");
+    ctl.goToPage(itemsAt, { remember: false });
+
+    /* Reads are staggered, like everything else on this screen. */
+    for (let i = 0; i < 2; i++) {
+      reads.length = 0;
+      ctl.tick();
+      if (reads.length > 1) fail("an items tick issued " + reads.length + " reads, must be at most 1");
+    }
+    for (let i = 0; i < 6; i++) ctl.tick();
+    if (ctl.state.items[ctl.page.name].list.length !== items.length)
+      fail("the item list was never read");
+
+    /* ---- INERT: the jog pages ------------------------------------------ */
+    writes.length = 0;
+    const before = ctl.pageIndex;
+    /* Backwards: the items page is the LAST page here and step() clamps, so
+     * jogging forward off it would have nowhere to go and prove nothing. */
+    ctl.onJog(-1);
+    if (ctl.pageIndex === before) fail("the jog did not page off an un-entered items page");
+    if (writes.length) fail("paging past an items page wrote something");
+    ctl.goToPage(itemsAt, { remember: false });
+    for (let i = 0; i < 6; i++) ctl.tick();
+
+    /* ---- ENTERED: the jog moves the highlight, and writes NOTHING ------- */
+    ctl.onClick(-1);
+    if (!ctl.menuEntered()) fail("clicking an items page should enter it");
+    writes.length = 0;
+    const cur0 = ctl.state.items[ctl.page.name].cursor;
+    ctl.onJog(1);
+    if (ctl.state.items[ctl.page.name].cursor === cur0)
+      fail("the jog did not move the highlight inside the list");
+    if (writes.length)
+      fail("scrolling an items list wrote to the device: " + JSON.stringify(writes));
+
+    /* ---- the click chooses, and leaves ---------------------------------- */
+    const pick = ctl.state.items[ctl.page.name].cursor;
+    ctl.onClick(-1);
+    if (!writes.some(([k, v]) => k === "synth:soundfont_index" && v === String(items[pick].index)))
+      fail("the click did not select the highlighted item: " + JSON.stringify(writes));
+    if (ctl.menuEntered()) fail("choosing should leave the list");
+    if (ctl.page.kind !== "knobs") fail("choosing should land on a grid page, got " + ctl.page.kind);
+
+    /* ---- navigate_to decides where choosing LANDS ----------------------
+     *
+     * A level that declares it is saying "having chosen, you want to be here"
+     * — minijv sends you to the tone it just loaded. Without one the first grid
+     * page is the fallback, which the case above covers. */
+    {
+      const H2 = { modes: null, levels: {
+        /* `tone` must be reachable from params to be PLANNED at all — the
+         * planner walks the params tree, it does not follow navigate_to. A
+         * module whose navigate_to names an unplanned level just falls back to
+         * the first grid page, which is the sane thing to do. */
+        root: { label: "S", knobs: ["cutoff"],
+                params: [{ level: "sf", label: "SF" }, { level: "tone", label: "Tone" }] },
+        sf: { label: "SF", items_param: "sf_list", select_param: "sf_index",
+              navigate_to: "tone" },
+        /* A DISTINCT key: a level whose knobs duplicate an existing page is
+         * deduped by the planner and never becomes a page at all. */
+        tone: { label: "Tone", knobs: ["res"], params: [{ key: "res" }] },
+      } };
+      const CP2 = CP.concat([{ key: "res", name: "Res", type: "float", min: 0, max: 1, step: 0.01 }]);
+      const ctl2 = C.createController({
+        getParam: (k) => {
+          const b = String(k).replace(/^[^:]+:/, "");
+          if (b === "ui_hierarchy") return JSON.stringify(H2);
+          if (b === "chain_params") return JSON.stringify(CP2);
+          if (b === "sf_list") return JSON.stringify(items);
+          if (b === "sf_index") return "0";
+          return "0.5";
+        },
+        setParam: () => {}, announce: () => {},
+      });
+      ctl2.load({ slot: 0, component: "synth" });
+      const at2 = ctl2.pages.findIndex((p) => p.kind === "items");
+      const tonePage = ctl2.pages.findIndex((p) => p.level === "tone" && p.kind === "knobs");
+      if (at2 < 0 || tonePage < 0) fail("fixture should plan an items page and a tone page");
+      ctl2.goToPage(at2, { remember: false });
+      for (let i = 0; i < 6; i++) ctl2.tick();
+      ctl2.onClick(-1);
+      ctl2.onClick(-1);
+      if (ctl2.pageIndex !== tonePage)
+        fail("navigate_to should land on the level it names, got page " + ctl2.pageIndex);
+    }
+
+    /* ---- shift still escapes from inside -------------------------------- */
+    ctl.goToPage(itemsAt, { remember: false });
+    for (let i = 0; i < 6; i++) ctl.tick();
+    ctl.onClick(-1);
+    const inside = ctl.pageIndex;
+    ctl.onJog(-1, { shift: true });
+    if (ctl.pageIndex === inside) fail("shift+jog must page out of an entered items list");
+  }
+
   /* ---- modulation flags ride the read cursor, not the draw ------------- *
    *
    * The renderer asks modulated(key) for every cell of every draw. When that

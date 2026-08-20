@@ -240,20 +240,20 @@ Promise.all([
     C.ctx.getSlotParam = (slot, key) => dev3.getParam(key);
     C.ctx.setSlotParam = (slot, key, value) => dev3.setParam(key, value);
     V.enterParamPages(0, "synth", "synth");
-    /* Entering lands on the first GRID page, so minijv mode-select, child and
-     * items pages sit behind it — jogging back reaches them, and those belong
-     * to the list editor rather than to the grid.
+    /* Entering lands on the first GRID page, so minijv mode-select and child
+     * pages sit behind it — jogging back reaches them, and those belong to the
+     * list editor rather than to the grid.
      *
-     * PRESET and MENU pages are NOT in that set: the grid draws both, in its
-     * own chrome, as doors you click into. A preset page especially had to stop
-     * handing off — the list editor it landed in wires the jog to the preset
-     * browser, so jogging past one loaded every preset it crossed. */
+     * PRESET, MENU and ITEMS are NOT in that set: the grid draws all three, in
+     * its own chrome, as doors you click into. A preset page especially had to
+     * stop handing off — the list editor it landed in wires the jog to the
+     * preset browser, so jogging past one loaded every preset it crossed. */
     if (V.currentParamPage().kind !== "knobs") fail("entering should land on a grid page");
     let sawNonGrid = false;
     for (let i = 0; i < 8; i++) {
       V.handleParamPagesMidi([0xb0, 14, 127]);   /* jog anticlockwise */
       const page = V.currentParamPage();
-      const ownKinds = ["knobs", "menu", "preset"];
+      const ownKinds = ["knobs", "menu", "preset", "items"];
       if (page && ownKinds.indexOf(page.kind) < 0) {
         sawNonGrid = true;
         if (V.drawParamPages()) fail("the grid drew a " + page.kind + " page it does not own");

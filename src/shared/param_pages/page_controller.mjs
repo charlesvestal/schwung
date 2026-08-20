@@ -27,7 +27,7 @@
  *   being turned and for a short settling window afterwards.
  */
 
-import { planPages, PAGE_KNOBS, PAGE_MENU, PAGE_PRESET } from "./page_plan.mjs";
+import { planPages, PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS } from "./page_plan.mjs";
 import { buildMetaIndex, inferFromValue, isTurnable, KIND_ENUM, KIND_OPAQUE } from "./param_meta.mjs";
 import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page.mjs";
 import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
@@ -303,6 +303,14 @@ export function createController(io = {}) {
          * same reason sectionMemory and menuCursor are.
          */
         preset: Object.create(null),
+        /*
+         * The runtime item lists — soundfonts, NAM models, JV expansions.
+         *
+         * Unlike a preset level this one publishes a real LIST, so the page can
+         * show five at a time, and scrolling costs nothing: only the click
+         * writes. Keyed by page name, like every other per-page memory here.
+         */
+        items: Object.create(null),
     };
 
     const fullKey = (key) => `${s.prefix}:${key}`;
@@ -447,6 +455,7 @@ export function createController(io = {}) {
         expireTurnClaim();
         const p = page();
         if (p && p.kind === PAGE_PRESET) { tickPreset(p); return null; }
+        if (p && p.kind === PAGE_ITEMS) { tickItems(p); return null; }
         if (!p || p.kind !== PAGE_KNOBS || p.keys.length === 0) return null;
 
         refreshModulatedValues(p);
@@ -541,6 +550,84 @@ export function createController(io = {}) {
      */
     /* ------------------------------------------------------------- menu */
 
+
+    /* ------------------------------------------------------------ items */
+
+    function itemsState(p) {
+        const pg = p || page();
+        if (!pg || pg.kind !== PAGE_ITEMS) return null;
+        let st = s.items[pg.name];
+        if (!st) st = s.items[pg.name] = { list: [], cursor: 0, current: -1, read: 0 };
+        return st;
+    }
+
+    /**
+     * Two reads, alternating: the list itself and the current selection.
+     *
+     * The list is re-read rather than fetched once because it is runtime data —
+     * a soundfont appears when the user copies one onto the device — but on the
+     * same one-per-tick budget as everything else on this screen.
+     */
+    function tickItems(p) {
+        const st = itemsState(p);
+        if (!st) return;
+        const at = st.read % 2;
+        st.read++;
+        if (at === 0) {
+            const parsed = parse(getParam(fullKey(p.itemsParam)));
+            if (Array.isArray(parsed)) {
+                st.list = parsed.map((it, i) => ({
+                    index: (it && it.index !== undefined) ? it.index : i,
+                    label: String((it && (it.label || it.name)) || `Item ${i + 1}`),
+                }));
+                if (st.cursor >= st.list.length) st.cursor = Math.max(0, st.list.length - 1);
+            }
+        } else if (p.selectParam) {
+            const n = parseInt(getParam(fullKey(p.selectParam)), 10);
+            if (isFinite(n)) st.current = n;
+        }
+    }
+
+    /** Move the highlight. No device write — choosing is the click. */
+    function stepItems(delta) {
+        const st = itemsState();
+        if (!st || !st.list.length) return false;
+        const before = st.cursor;
+        st.cursor = Math.max(0, Math.min(st.list.length - 1, st.cursor + delta));
+        if (st.cursor === before) return false;
+        const it = st.list[st.cursor];
+        announce(`${it.label}, ${st.cursor + 1} of ${st.list.length}`);
+        return true;
+    }
+
+    /**
+     * Commit the highlighted item and leave.
+     *
+     * Where to leave TO is the declaration's business: a level with navigate_to
+     * is saying "having chosen, you want to be here". Without one, the first
+     * grid page, same as the preset browser.
+     */
+    function commitItem() {
+        const p = page();
+        const st = itemsState(p);
+        if (!st || !st.list.length) return false;
+        const it = st.list[st.cursor];
+        if (p.selectParam) setParam(fullKey(p.selectParam), String(it.index));
+        st.current = it.index;
+        /* The chosen item can republish the whole contract — a different
+         * soundfont has different presets — so let it be re-read. */
+        s.metaSettled = false;
+        s.metaRetries = 0;
+        s.menuEntered = null;
+        let target = -1;
+        if (p.navigateTo) {
+            target = s.pages.findIndex((q) => q.level === p.navigateTo && q.kind === PAGE_KNOBS);
+        }
+        if (target < 0) target = firstGrid(s.pages);
+        announce(it.label);
+        if (target >= 0 && target !== s.pageIndex) goToPage(target, { remember: false });
+        return true;
+    }
 
     /* ---------------------------------------------------------- presets */
 
@@ -674,7 +761,8 @@ export function createController(io = {}) {
      * you have said otherwise by clicking in.
      */
     function isDoor(p) {
-        return !!(p && (p.kind === PAGE_MENU || p.kind === PAGE_PRESET));
+        return !!(p && (p.kind === PAGE_MENU || p.kind === PAGE_PRESET
+                        || p.kind === PAGE_ITEMS));
     }
     function menuEntered() {
         const p = page();
@@ -685,9 +773,20 @@ export function createController(io = {}) {
         const p = page();
         if (!isDoor(p)) return false;
         if (p.kind === PAGE_MENU && !(p.entries || []).length) return false;
+        if (p.kind === PAGE_ITEMS) {
+            const st = itemsState(p);
+            if (!st || !st.list.length) return false;   /* nothing to choose from */
+        }
         s.menuEntered = p.name;
         if (p.kind === PAGE_PRESET) {
             announce(`${p.name}, ${presetSpoken()}`);
+            return true;
+        }
+        if (p.kind === PAGE_ITEMS) {
+            const st = itemsState(p);
+            const it = st && st.list[st.cursor];
+            announce(it ? `${p.name}, ${it.label}, ${st.cursor + 1} of ${st.list.length}`
+                        : `${p.name}, empty`);
             return true;
         }
         const e = menuEntry();
@@ -776,6 +875,12 @@ export function createController(io = {}) {
          * the entries are what you are navigating. Shift still pages out, so
          * the menu is never a trap. */
         const mp = page();
+        /* Entered items page: the jog moves the highlight. Nothing is written
+         * until you click, so scrolling a soundfont list is free. */
+        if (mp && mp.kind === PAGE_ITEMS && menuEntered() && !shift) {
+            stepItems(delta > 0 ? 1 : -1);
+            return s.pageIndex;
+        }
         /* Entered preset page: the jog is the browser. Shift still pages out,
          * so the page set is never unreachable — same escape a menu has. */
         if (mp && mp.kind === PAGE_PRESET && menuEntered() && !shift) {
@@ -1046,6 +1151,11 @@ export function createController(io = {}) {
          *
          * Back still steps out in place, for when you were only looking.
          */
+        if (mp && mp.kind === PAGE_ITEMS) {
+            if (!menuEntered()) { enterMenu(); return null; }
+            commitItem();
+            return null;
+        }
         if (mp && mp.kind === PAGE_PRESET) {
             if (!menuEntered()) { enterMenu(); return null; }
             s.menuEntered = null;
@@ -1199,6 +1309,37 @@ export function createController(io = {}) {
                 return;
             }
             const mp = page();
+            if (mp && mp.kind === PAGE_ITEMS) {
+                /* A real list, so it draws like a menu page: same chrome, same
+                 * five rows, same rect. Inert it highlights nothing — the page
+                 * is something you can go INTO, not something you are in. */
+                drawHeaderMovy(ctx, title || "", mp.name, false);
+                drawBankBar(ctx, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
+                const ibottom = footer ? RULE_Y : 64;
+                const ist = itemsState(mp) || { list: [], cursor: 0, current: -1 };
+                const entered = menuEntered();
+                renderPicker(ctx, {
+                    rect: { x: MENU_LIST_X, y: MENU_LIST_Y,
+                            w: MENU_LIST_W, h: ibottom - MENU_LIST_Y },
+                    entries: ist.list.length
+                        ? ist.list.map((it) => ({
+                            name: it.label,
+                            /* The one in force marks itself where a menu page
+                             * puts a value, same as the module picker. */
+                            value: it.index === ist.current ? "*" : "",
+                          }))
+                        : [{ name: "(none)", value: "" }],
+                    index: entered ? ist.cursor : -1,
+                    header: false,
+                });
+                if (!entered) {
+                    drawBrackets(ctx, MENU_FRAME_X, MENU_FRAME_Y, MENU_FRAME_W,
+                                 ibottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
+                                 MENU_BRACKET_LEN);
+                }
+                if (footer) drawFooter(ctx, footer);
+                return;
+            }
             if (mp && mp.kind === PAGE_PRESET) {
                 /* Same chrome as a grid page — module name, page name, bank
                  * bar and footer all stay put, so the preset browser reads as
