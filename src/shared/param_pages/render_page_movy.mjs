@@ -209,8 +209,19 @@ export const CELL_W = 32;
  * Nothing else changes: the widgets, the fonts, the label budget and the
  * touched-cell inversion are all the same code, so a card cell and a grid cell
  * cannot drift apart.
+ *
+ * Frozen because it is the shared default every caller who omits `geom`
+ * receives the SAME object for — a caller that mutated it (rather than
+ * passing its own) would move every other page's cells too.
  */
 export const GRID_GEOM = Object.freeze({ x0: 0, cellW: CELL_W });
+/*
+ * `cellW` has a floor: `Math.floor((cellW - ENUM_W) / 2)` goes negative below
+ * ENUM_W (20) and the same for KW (17) in the knob widget, spilling a widget
+ * into its neighbour with no clip count and no error to say so. Nothing here
+ * enforces it -- the card's 29px cell clears it with room to spare -- but a
+ * future geometry needs to stay at or above ENUM_W.
+ */
 const cellLeft = (g, col) => g.x0 + col * g.cellW;
 /* The hint footer, and the rule that separates it from the last label band. */
 export const RULE_Y = 55;
@@ -770,8 +781,40 @@ function drawLabelCell(ctx, g, col, lblY, label, displayValue, showValue, invert
 
 /* --------------------------------------------------------------- one row */
 
-export function drawKnobStrip(ctx, o, row, rowY, lblY, geom) {
-    const g = geom || GRID_GEOM;
+/*
+ * A partial geometry is a caller bug, not a shorthand. `{cellW: 29}` leaves
+ * `x0` undefined, every `cellLeft` result NaN, and the knob pointer reaches
+ * render_page.mjs's `line()` -- a `for (;;)` loop whose exit condition is
+ * `x0 === x1 && y0 === y1` -- which NaN never satisfies, so it spins the UI
+ * tick forever. Confirmed: the call did not return in 8 seconds. Fail loudly
+ * at the boundary instead of drawing a plausibly-wrong screen or hanging.
+ *
+ * Deliberately NOT `{ ...GRID_GEOM, ...geom }`: that would make a typo like
+ * `{x: 6, cellW: 30}` silently fall back to x0=0 and draw a screen that looks
+ * plausible and is wrong, instead of throwing.
+ */
+function resolveGeom(geom) {
+    if (geom === undefined || geom === null) return GRID_GEOM;
+    if (!Number.isFinite(geom.x0) || !Number.isFinite(geom.cellW))
+        throw new TypeError("drawKnobRow: geom needs both x0 and cellW");
+    return geom;
+}
+
+/**
+ * One row of the knob grid: four cells, each a widget above a label band.
+ *
+ * A public entry point for knob_card.mjs, which does not exist yet, so its
+ * non-obvious constraints are recorded here rather than left to be
+ * rediscovered by that caller:
+ *
+ *   - always exactly 4 columns (`slotBase = row * 4`) -- there is no
+ *     narrower strip;
+ *   - `rowY` and `lblY` are ABSOLUTE screen rows, not offsets from `geom`;
+ *   - `geom` is all-or-nothing -- see `resolveGeom` above. Omit it entirely
+ *     for the grid's own {x0: 0, cellW: CELL_W}, or pass both fields.
+ */
+export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
+    const g = resolveGeom(geom);
     const { page, metaIndex, values, touched, modulated, viz, modValues } = o;
     /*
      * EVERY held knob inverts, not just the one the header follows. A single
@@ -811,15 +854,18 @@ export function drawKnobStrip(ctx, o, row, rowY, lblY, geom) {
     const slotBase = row * 4;
 
     const covered = new Array(4).fill(false);
-    for (const grp of (viz || [])) {
-        if (!grp || typeof grp.slotStart !== "number") continue;
-        if (Math.floor(grp.slotStart / 4) !== row) continue;
-        const localStart = grp.slotStart - slotBase;
-        for (let s = localStart; s < localStart + grp.slotSpan && s < 4; s++) covered[s] = true;
+    for (const group of (viz || [])) {
+        if (!group || typeof group.slotStart !== "number") continue;
+        if (Math.floor(group.slotStart / 4) !== row) continue;
+        const localStart = group.slotStart - slotBase;
+        for (let s = localStart; s < localStart + group.slotSpan && s < 4; s++) covered[s] = true;
+        /* The widget band's height is the gap between the row and its label,
+         * not a constant -- LBL0_Y - ROW0_Y is only correct for the grid's
+         * own two rows because both of the grid's gaps happen to be 15px. */
         drawVizGroup(ctx, {
             x: cellLeft(g, localStart), y: rowY,
-            w: grp.slotSpan * g.cellW, h: LBL0_Y - ROW0_Y,
-        }, grp, liveValues, metaIndex);
+            w: group.slotSpan * g.cellW, h: lblY - rowY,
+        }, group, liveValues, metaIndex);
     }
 
     for (let col = 0; col < 4; col++) {
@@ -1065,7 +1111,7 @@ export function renderPageMovy(ctx, o) {
         return;
     }
 
-    drawKnobStrip(ctx, o, 0, ROW0_Y, LBL0_Y);
-    drawKnobStrip(ctx, o, 1, ROW1_Y, LBL1_Y);
+    drawKnobRow(ctx, o, 0, ROW0_Y, LBL0_Y);
+    drawKnobRow(ctx, o, 1, ROW1_Y, LBL1_Y);
     if (o.footer) drawFooter(ctx, o.footer);
 }
