@@ -351,6 +351,52 @@ The two `+` boxes add **where they are drawn** — the MIDI one at the head of t
 chain (index 0), the audio one appended. Backing out of a `+` picker, or picking
 `None` in one, writes nothing at all.
 
+### Chain editor knob feedback is a CARD
+
+Touching a knob in the chain editor raises a bordered card
+(`src/shared/param_pages/knob_card.mjs`) showing the four cells of that knob's
+row, drawn with the knob grid's own widgets via `drawKnobRow` at a 29px cell
+instead of the grid's 32. Touch raises it, release drops it; a turn with no
+touch raises it too and decays after ~700ms, so a cap sensor that misses cannot
+strand the feature. With no component selected the slot's global mappings serve
+a name and a value but no type metadata, so that case gets a header-only card.
+
+The card consumes no input. A jog-click while a knob is held falls through to
+the chain editor and opens the focused component, and `setView` closes the card
+on the way — dismiss-and-descend, not a modal inside a modal.
+
+**The 1px black gap between the border and the header band is load-bearing.**
+Both are white, so where they touch the border stops existing and the card reads
+as a stripe across the diagram. **The divable brackets are load-bearing too** —
+nothing dives from the card, so dropping `drawDivableMark` looks like an obvious
+simplification, but `drawOpaqueBox` has no frame of its own and the brackets ARE
+its frame. Both are asserted on the pixel buffer in
+`tests/host/test_knob_card.sh`, with the outermost cell touched, because neither
+is visible in code review.
+
+**Every value is read on touch-down, never on the draw path** (`knobCardOpen` in
+`shadow_ui.js`) — a read is ~2.8ms against a 1.68ms whole-page render. Two tests
+pin it: `test_chain_knob_card_reads.sh` for the renderer, and
+`test_chain_edit_read_budget.sh` for `drawChainEdit` itself. The latter LIFTS
+`drawChainEdit` with `new Function` and a fixed dependency list, so the card
+reaches it through a single `knobCardDrawState()` accessor — nine free
+identifiers there is nine chances for a `typeof` guard to make the block
+unreachable and leave the budget measured with the card switched off, which is
+what happened the first time. Consequence of the read budget: a modulated
+NEIGHBOUR does not animate while a knob is held; only the touched knob carries a
+modulation mark, because that read is one `showKnobOverlay` already pays for.
+
+`render_page_movy.mjs`'s cell geometry is a parameter (`GRID_GEOM`,
+`drawKnobRow`'s optional `geom`), so the card and the grid share one row
+renderer. `geom` is **all-or-nothing** — a partial `{cellW}` makes every cell
+origin `NaN`, which reaches `line()`'s `for(;;)` and never satisfies its
+equality break: a frozen `shadow_ui` tick. The default path is pinned
+byte-identical against `tests/fixtures/movy-geom-baseline.txt`
+(`UPDATE_GEOM_BASELINE=1` to refresh).
+
+Preview it without deploying: `node tools/param-pages/preview_knob_card.mjs
+<module-id> --knob N [--short] [--png DIR --scale 4]`.
+
 ### Recording / capture
 
 Audio capture is shim-side: the Quantized Sampler (Shift+Sample) and Skipback
