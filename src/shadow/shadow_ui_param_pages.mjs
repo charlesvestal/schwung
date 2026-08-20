@@ -37,6 +37,10 @@ import { announce } from '/data/UserData/schwung/shared/screen_reader.mjs';
 /* The live controller, or null when the view is not open. One at a time: the
  * grid always shows a single component, and rebuilding on entry is cheap. */
 let controller = null;
+/* Which param accessors the live controller closes over, so switching between
+ * a module and a synthesised contract (slot settings) rebuilds it instead of
+ * silently keeping the old ones. */
+let controllerIo = null;
 let currentSlot = 0;
 let currentComponent = 'synth';
 
@@ -98,15 +102,23 @@ let hintShownThisSession = false;
  *   page 5 when they clicked a sample, and page 1 is not where they were.
  *   Matched by NAME, not index — controller.load rebuilds the page set and
  *   every index can shift (same reason page_nav reanchors by name).
+ * @param {object} [io]  {getParam,setParam} to use instead of the slot/component
+ *   default. Slot settings needs it: a slot publishes no ui_hierarchy and its
+ *   params do not share one prefix, so the contract and the mapping are handed
+ *   in (see shadow_ui_slot_grid.mjs) rather than read off a component.
  */
-export function enterParamPages(slot, component, prefix, restorePageName) {
+export function enterParamPages(slot, component, prefix, restorePageName, io) {
     currentSlot = slot;
     currentComponent = component;
 
-    if (!controller) {
+    /* Rebuild when the accessors change, not just when there is no controller:
+     * it CLOSES OVER them, so one built for a module would keep reading the
+     * module after a switch to slot settings. */
+    if (!controller || controllerIo !== (io || null)) {
+        controllerIo = io || null;
         controller = createController({
-            getParam: (key) => ctx.getSlotParam(currentSlot, key),
-            setParam: (key, value) => ctx.setSlotParam(currentSlot, key, value),
+            getParam: io ? io.getParam : (key) => ctx.getSlotParam(currentSlot, key),
+            setParam: io ? io.setParam : (key, value) => ctx.setSlotParam(currentSlot, key, value),
             announce,
             /* The list editor marks these with "~"; the grid ticks the cell. */
             isModulated: (key) => (typeof ctx.isParamModulated === 'function'
@@ -153,6 +165,7 @@ export function enterParamPages(slot, component, prefix, restorePageName) {
 
 export function exitParamPages() {
     controller = null;
+    controllerIo = null;
 }
 
 export function paramPagesActive() {
@@ -541,6 +554,16 @@ export function handleParamPagesMidi(data) {
     if (todo.action === 'exit') {
         exitParamPages();
         ctx.setView(ctx.VIEWS.CHAIN_EDIT);
+        return true;
+    }
+    if (todo.action === 'menu') {
+        /* A menu entry was activated. The controller never performs an action —
+         * the host owns what Save or Knob Mapping means — so this only forwards
+         * which one was chosen, and the host runs the same code the list runs. */
+        const entry = todo.entry || {};
+        if (entry.action && typeof ctx.runSlotAction === 'function') {
+            ctx.runSlotAction(currentSlot, entry.action);
+        }
         return true;
     }
     if (todo.action === 'open') {
