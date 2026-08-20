@@ -102,6 +102,9 @@ typedef struct {
 /* Chain parameter info from module.json */
 #define MAX_CHAIN_PARAMS 256
 #define MAX_ENUM_OPTIONS 128
+/* Cached ui_hierarchy JSON, per position. Named because the buffers it sizes
+ * are now reached through a pointer, where sizeof() would answer 8. */
+#define CHAIN_UI_HIERARCHY_LEN 65536
 typedef struct {
     char key[32];           /* Parameter key (e.g., "preset", "decay") */
     char name[64];          /* Display name */
@@ -253,9 +256,24 @@ typedef struct chain_instance {
     /* Module parameter info */
     chain_param_info_t synth_params[MAX_CHAIN_PARAMS];
     int synth_param_count;
-    chain_param_info_t fx_params[MAX_AUDIO_FX][MAX_CHAIN_PARAMS];
+    /*
+     * POINTERS, not inline arrays, and the reason is the reorder.
+     *
+     * These two are by far the largest per-position things a chain holds — one
+     * `chain_param_info_t` is ~4 KB (it carries 128 enum option strings), so a
+     * position's metadata is ~1.1 MB and its cached ui_hierarchy another 64 KB.
+     * Moving a module from position N to N+1 has to move its metadata with it,
+     * and inline that is a multi-megabyte memmove inside the SPI audio callback
+     * (~900 µs budget). Through a pointer it is 8 bytes.
+     *
+     * Allocated EAGERLY for every position at create_instance and freed at
+     * destroy, so they are never NULL and the ~19 MB an instance costs is
+     * exactly what it cost when these were inline — nothing about lifetime or
+     * footprint changed, only that the elements can now be permuted.
+     */
+    chain_param_info_t *fx_params[MAX_AUDIO_FX];
     int fx_param_counts[MAX_AUDIO_FX];
-    char fx_ui_hierarchy[MAX_AUDIO_FX][65536];  /* Cached ui_hierarchy JSON */
+    char *fx_ui_hierarchy[MAX_AUDIO_FX];  /* CHAIN_UI_HIERARCHY_LEN each */
 
     /* Patch state */
     patch_info_t patches[MAX_PATCHES];
@@ -268,9 +286,10 @@ typedef struct chain_instance {
     void *midi_fx_instances[MAX_MIDI_FX];
     int midi_fx_count;
     char current_midi_fx_modules[MAX_MIDI_FX][MAX_NAME_LEN];
-    chain_param_info_t midi_fx_params[MAX_MIDI_FX][MAX_CHAIN_PARAMS];
+    /* Pointers for the same reason as fx_params / fx_ui_hierarchy above. */
+    chain_param_info_t *midi_fx_params[MAX_MIDI_FX];
     int midi_fx_param_counts[MAX_MIDI_FX];
-    char midi_fx_ui_hierarchy[MAX_MIDI_FX][65536];  /* Cached ui_hierarchy JSON */
+    char *midi_fx_ui_hierarchy[MAX_MIDI_FX];  /* CHAIN_UI_HIERARCHY_LEN each */
 
     /* Knob mapping state */
     knob_mapping_t knob_mappings[MAX_KNOB_MAPPINGS];
@@ -401,6 +420,7 @@ CHAIN_INTERNAL int v2_load_audio_fx(chain_instance_t *inst, const char *fx_name)
 CHAIN_INTERNAL int v2_load_synth(chain_instance_t *inst, const char *module_name);
 CHAIN_INTERNAL void v2_synth_panic(chain_instance_t *inst);
 CHAIN_INTERNAL void v2_unload_all_audio_fx(chain_instance_t *inst);
+CHAIN_INTERNAL void chain_free_position_storage(chain_instance_t *inst);
 CHAIN_INTERNAL void v2_unload_synth(chain_instance_t *inst);
 
 /* chain_json.c */

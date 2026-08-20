@@ -246,7 +246,7 @@ int v2_load_midi_fx_slot(chain_instance_t *inst, int slot, const char *fx_name) 
         return -1;
     }
 
-    parse_ui_hierarchy_cache(fx_dir, inst->midi_fx_ui_hierarchy[slot], sizeof(inst->midi_fx_ui_hierarchy[slot]));
+    parse_ui_hierarchy_cache(fx_dir, inst->midi_fx_ui_hierarchy[slot], CHAIN_UI_HIERARCHY_LEN);
 
     /* Read optional "pre_capable" hint from module.json capabilities.
      * This informs the Shadow UI default on first placement; does not gate

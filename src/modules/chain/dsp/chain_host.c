@@ -57,6 +57,39 @@ static void* v2_create_instance(const char *module_dir, const char *config_json)
     chain_instance_t *inst = calloc(1, sizeof(chain_instance_t));
     if (!inst) return NULL;
 
+    /*
+     * Per-position metadata storage, allocated once for every position.
+     *
+     * EAGER on purpose. These used to be inline arrays, so every position's
+     * buffer existed from the moment the instance did and no call site ever
+     * checked for one — `inst->fx_ui_hierarchy[i][0]` is read in a dozen
+     * places. Allocating lazily on load would make each of those a null
+     * dereference in the audio callback for an unloaded position. Eager keeps
+     * the old invariant exactly; only the indirection is new (see
+     * chain_internal.h for why it is there).
+     */
+    for (int i = 0; i < MAX_AUDIO_FX; i++) {
+        inst->fx_params[i] = calloc(MAX_CHAIN_PARAMS, sizeof(chain_param_info_t));
+        inst->fx_ui_hierarchy[i] = calloc(1, CHAIN_UI_HIERARCHY_LEN);
+    }
+    for (int i = 0; i < MAX_MIDI_FX; i++) {
+        inst->midi_fx_params[i] = calloc(MAX_CHAIN_PARAMS, sizeof(chain_param_info_t));
+        inst->midi_fx_ui_hierarchy[i] = calloc(1, CHAIN_UI_HIERARCHY_LEN);
+    }
+    /* All or nothing: a half-allocated instance would be a null dereference in
+     * the audio callback later, which is a far worse failure than refusing to
+     * create the slot here. */
+    for (int i = 0; i < MAX_AUDIO_FX; i++) {
+        if (!inst->fx_params[i] || !inst->fx_ui_hierarchy[i]) {
+            chain_free_position_storage(inst); free(inst); return NULL;
+        }
+    }
+    for (int i = 0; i < MAX_MIDI_FX; i++) {
+        if (!inst->midi_fx_params[i] || !inst->midi_fx_ui_hierarchy[i]) {
+            chain_free_position_storage(inst); free(inst); return NULL;
+        }
+    }
+
     strncpy(inst->module_dir, module_dir, MAX_PATH_LEN - 1);
 
     /* Channel fields default to "absent" — getters return empty length until
@@ -94,9 +127,25 @@ static void v2_destroy_instance(void *instance) {
     /* Unload all plugins */
     v2_synth_panic(inst);
     v2_unload_all_audio_fx(inst);
+    v2_unload_all_midi_fx(inst);
     v2_unload_synth(inst);
 
+    chain_free_position_storage(inst);
     free(inst);
+}
+
+/* Release the per-position metadata blocks v2_create_instance allocated.
+ * Idempotent, so the partial-allocation bail can use it too. */
+void chain_free_position_storage(chain_instance_t *inst) {
+    if (!inst) return;
+    for (int i = 0; i < MAX_AUDIO_FX; i++) {
+        free(inst->fx_params[i]);        inst->fx_params[i] = NULL;
+        free(inst->fx_ui_hierarchy[i]);  inst->fx_ui_hierarchy[i] = NULL;
+    }
+    for (int i = 0; i < MAX_MIDI_FX; i++) {
+        free(inst->midi_fx_params[i]);       inst->midi_fx_params[i] = NULL;
+        free(inst->midi_fx_ui_hierarchy[i]); inst->midi_fx_ui_hierarchy[i] = NULL;
+    }
 }
 
 /* V2 synth panic - send all notes off */
@@ -305,7 +354,7 @@ static int v2_load_audio_fx_slot(chain_instance_t *inst, int slot, const char *f
         inst->fx_ui_hierarchy[slot][0] = '\0';
         return -1;
     }
-    parse_ui_hierarchy_cache(fx_dir, inst->fx_ui_hierarchy[slot], sizeof(inst->fx_ui_hierarchy[slot]));
+    parse_ui_hierarchy_cache(fx_dir, inst->fx_ui_hierarchy[slot], CHAIN_UI_HIERARCHY_LEN);
     inst->mod_param_refresh_ms_fx[slot] = 0;
 
     /* Read capabilities.requires_continuous_processing from module.json — stateful
@@ -635,7 +684,7 @@ int v2_load_audio_fx(chain_instance_t *inst, const char *fx_name) {
         inst->fx_ui_hierarchy[slot][0] = '\0';
         return -1;
     }
-    parse_ui_hierarchy_cache(fx_dir, inst->fx_ui_hierarchy[slot], sizeof(inst->fx_ui_hierarchy[slot]));
+    parse_ui_hierarchy_cache(fx_dir, inst->fx_ui_hierarchy[slot], CHAIN_UI_HIERARCHY_LEN);
     inst->mod_param_refresh_ms_fx[slot] = 0;
 
     inst->fx_count++;
