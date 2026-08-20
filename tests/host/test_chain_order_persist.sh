@@ -84,8 +84,12 @@ const makeId = lift("chainSectionId", []);
 if (!makeId) process.exit(1);
 const chainSectionId = makeId();
 
+/* invalidateChainConfig: writeChainOrder also drops the editor cached view of
+   the slot, because it renumbers positions and rewrites state and LFO routing.
+   Stubbed here -- what it does is pinned in test_chain_edit_read_budget.sh. */
 const makeWrite = lift("writeChainOrder",
-  ["chainConfigs", "CHAIN_CAP", "getSlotParam", "setSlotParam", "chainSectionId", "parseChainId"]);
+  ["chainConfigs", "CHAIN_CAP", "getSlotParam", "setSlotParam", "chainSectionId",
+   "parseChainId", "invalidateChainConfig"]);
 if (!makeWrite) process.exit(1);
 
 /*
@@ -100,7 +104,7 @@ const run = (prev, now, state, section) => {
   const cfg = { midiFx: [], synth: null, fx: [] };
   cfg[sec] = now;
   const d = device(state);
-  makeWrite([cfg], CHAIN_CAP, d.get, d.set, chainSectionId, parseChainId)(0, sec, prev);
+  makeWrite([cfg], CHAIN_CAP, d.get, d.set, chainSectionId, parseChainId, () => {})(0, sec, prev);
   return d;
 };
 const mods = (names) => names.map((n) => (n ? { module: n, params: {} } : null));
@@ -306,14 +310,14 @@ const pick = (list, order) => order.map((i) => list[i]);
 {
   const makeLoad = lift("loadChainConfigFromSlot",
     ["chainConfigs", "createEmptyChainConfig", "getSlotParam", "CHAIN_CAP",
-     "fxDisplayNameCache", "fxDisplayNameSkip", "fxDisplayNameBackoff"]);
+     "fxDisplayNameCache", "fxDisplayNameSkip", "fxDisplayNameBackoff", "chainConfigFresh"]);
   if (makeLoad) {
     const state = Object.assign({ synth_module: "sf2" },
                                 dspSection("fx", ["freeverb", "cloudseed"]));
     const d = device(state);
     const cfgs = [{ midiFx: [], synth: null, fx: [] }];
     const load = makeLoad(cfgs, () => ({ midiFx: [], synth: null, fx: [] }),
-                          d.get, CHAIN_CAP, {}, {}, {});
+                          d.get, CHAIN_CAP, {}, {}, {}, []);
     const cfg = load(0);
     const got = cfg.fx.map((f) => (f ? f.module : "-")).join(",");
     if (got !== "freeverb,cloudseed")
@@ -321,7 +325,7 @@ const pick = (list, order) => order.map((i) => list[i]);
     if (!cfg.synth || cfg.synth.module !== "sf2") fail("the synth did not survive the load");
 
     const d2 = device(state);
-    makeWrite(cfgs, CHAIN_CAP, d2.get, d2.set, chainSectionId, parseChainId)(
+    makeWrite(cfgs, CHAIN_CAP, d2.get, d2.set, chainSectionId, parseChainId, () => {})(
       0, "fx", cfg.fx.slice());
     if (d2.writes.length !== 0)
       fail("loading a two-FX slot and writing it straight back changed it: [" + d2.writes.join(" ") + "]");
