@@ -24,34 +24,6 @@ static int valid_module_name(const char *name) {
     return 1;
 }
 
-/*
- * "fx3:cutoff" -> 2, and *subkey points at "cutoff". Returns -1 when the key
- * is not an fx key or the index is out of range.
- *
- * Replaces two copy-paste branches that differed only by 0 vs 1 over
- * machinery that was already index-generic. Enumerating eight of them would
- * be eight times the same bug surface.
- */
-static int chain_fx_index_from_key(const char *key, const char *prefix,
-                                   int max, const char **subkey) {
-    size_t plen = strlen(prefix);
-    if (strncmp(key, prefix, plen) != 0) return -1;
-    const char *p = key + plen;
-    if (*p < '1' || *p > '9') return -1;
-    int n = 0;
-    while (*p >= '0' && *p <= '9') n = n * 10 + (*p++ - '0');
-    if (*p != ':') return -1;
-    if (n < 1 || n > max) return -1;
-    if (subkey) *subkey = p + 1;
-    return n - 1;
-}
-
-/* "fx" + 3 -> "fx3": the component id chain_mod_* and the patch layer use. */
-static void chain_fx_component_id(char *buf, size_t buf_len,
-                                  const char *prefix, int index) {
-    snprintf(buf, buf_len, "%s%d", prefix, index + 1);
-}
-
 void chain_log(const char *msg) {
     /* Use unified log */
     unified_log("chain", LOG_LEVEL_DEBUG, "%s", msg);
@@ -735,6 +707,15 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         inst->synth_bypassed = (val && atoi(val)) ? 1 : 0;
         return;
     }
+    /*
+     * BEHAVIOUR CHANGE at midi_fx2. The enumerated version handled only
+     * "midi_fx1:bypassed"; "midi_fx2:bypassed" fell through to the generic
+     * midi_fx2: route, which handed "bypassed" to the plugin as if it were one
+     * of its own params and never set the flag — so MIDI FX 2 could not
+     * actually be bypassed, even though chain_midi.c already reads
+     * midi_fx_bypassed[] for every slot. Indexing it fixes that, and the
+     * fixed-4 fxN:bypassed cases had the same shape of hole above fx4.
+     */
     {
         const char *bsub = NULL;
         int bidx = chain_fx_index_from_key(key, "midi_fx", MAX_MIDI_FX, &bsub);
@@ -1216,6 +1197,8 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     if (strcmp(key, "synth:bypassed") == 0) {
         return snprintf(buf, buf_len, "%d", inst->synth_bypassed ? 1 : 0);
     }
+    /* Indexed for the same reason as the set_param side above: reading
+     * "midi_fx2:bypassed" used to reach the plugin instead of our flag. */
     {
         const char *bsub = NULL;
         int bidx = chain_fx_index_from_key(key, "midi_fx", MAX_MIDI_FX, &bsub);

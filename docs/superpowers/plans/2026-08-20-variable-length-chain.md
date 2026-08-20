@@ -729,11 +729,37 @@ git commit -m "feat(shadow): move-left/right in the module picker"
 
 ---
 
+### Task 8: Modulation targets and patch persistence for fx5-8
+
+**Goal:** Make FX 5-8 modulatable and persistable.
+
+**Found late.** Raising the caps in `chain_host.c` leaves `fx5:`..`fx8:` ROUTABLE
+but neither modulatable nor persistable, because two other files still enumerate
+the FX by hand. Without this task a five-FX chain does not survive a patch save,
+which would make the whole feature look broken in the least obvious way.
+
+**Files:**
+- Modify: `src/modules/chain/dsp/chain_params.c` (~873-903) — modulation targets, enumerated `fx1`..`fx3`
+- Modify: `src/modules/chain/dsp/chain_patch.c` (~436-454, ~1474-1483) — patch save/load, enumerated `fx1`..`fx4` and `midi_fx1`/`midi_fx2`
+- Test: `tests/host/test_chain_patch_roundtrip.sh` (new)
+
+**Acceptance Criteria:**
+- [ ] A chain with 8 audio FX and 8 MIDI FX saves and reloads with every module in the same position
+- [ ] An LFO can target a param on `fx5`..`fx8`
+- [ ] An existing patch with only `fx1`/`fx2` round-trips byte-identically
+- [ ] The enumerations are replaced by LOOPS over the cap macros, not extended by hand to 8 — hand-extending is how they got out of step with `chain_host.c` in the first place
+
+**Verify:** `bash tests/host/test_chain_patch_roundtrip.sh && ./scripts/build.sh`
+
+---
+
 ## Memory cost of the caps — measured, not blocking
 
-Raising the caps grows `chain_instance_t` from **10.3 MB to 24.8 MB** per instance
-(measured by compiling the header both ways and printing `sizeof`), so ~99 MB of
-instance across four slots. It is dominated by fixed 2-D arrays the caps multiply:
+Raising the caps adds roughly **11-15 MB per chain instance**, so ~45-60 MB across
+four slots. Two agents measured it independently and got +11.1 MB and +14.5 MB;
+the difference is in how the MIDI FX growth (2->8) is attributed, and neither
+number changes the conclusion. Both compiled the header and printed `sizeof`
+rather than estimating. It is dominated by fixed 2-D arrays the caps multiply:
 `fx_params[MAX_AUDIO_FX][MAX_CHAIN_PARAMS]` at ~1.1 MB per FX slot, and
 `fx_ui_hierarchy[N][65536]`.
 

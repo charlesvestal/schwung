@@ -1,0 +1,55 @@
+/*
+ * Indexed component keys: "fx3:cutoff", "midi_fx2:rate".
+ *
+ * Header-only and dependency-free on purpose, so tests/host can compile and
+ * RUN it natively (tests/host/test_chain_key_index.c) instead of only grepping
+ * for it. The routing in chain_host.c is one branch per prefix now, so this
+ * parser is the single point where an off-by-one would silently send a
+ * parameter to the wrong FX slot.
+ */
+#ifndef CHAIN_KEY_INDEX_H
+#define CHAIN_KEY_INDEX_H
+
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+
+/*
+ * "fx3:cutoff" -> 2, and *subkey points at "cutoff". Returns -1 when the key
+ * is not an fx key or the index is out of range.
+ *
+ * Replaces two copy-paste branches that differed only by 0 vs 1 over
+ * machinery that was already index-generic. Enumerating eight of them would
+ * be eight times the same bug surface.
+ *
+ * Leading zeros are rejected ("fx01:" is not a key we emit), and the digit
+ * loop bails the moment it passes `max` — these keys arrive from patch and
+ * preset JSON under /data/UserData, which a user can hand-edit, so an
+ * unbounded accumulate would be signed overflow (UB) on input we do not
+ * control.
+ */
+static inline int chain_fx_index_from_key(const char *key, const char *prefix,
+                                          int max, const char **subkey) {
+    if (!key || !prefix || max < 1) return -1;
+    size_t plen = strlen(prefix);
+    if (strncmp(key, prefix, plen) != 0) return -1;
+    const char *p = key + plen;
+    if (*p < '1' || *p > '9') return -1;
+    int n = 0;
+    while (*p >= '0' && *p <= '9') {
+        n = n * 10 + (*p - '0');
+        if (n > max) return -1;  /* out of range, and keeps n from overflowing */
+        p++;
+    }
+    if (*p != ':') return -1;
+    if (subkey) *subkey = p + 1;
+    return n - 1;
+}
+
+/* "fx" + 3 -> "fx3": the component id chain_mod_* and the patch layer use. */
+static inline void chain_fx_component_id(char *buf, size_t buf_len,
+                                         const char *prefix, int index) {
+    snprintf(buf, buf_len, "%s%d", prefix, index + 1);
+}
+
+#endif /* CHAIN_KEY_INDEX_H */
