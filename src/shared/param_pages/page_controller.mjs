@@ -55,15 +55,31 @@ import { step, stepLevel, reanchor, firstGrid, jumpIndex, groupIndex } from "./p
  */
 const MENU_LIST_X = 8, MENU_LIST_Y = 10, MENU_LIST_W = 112;
 /*
- * The frame is inset 4px from each edge so it reads as a frame rather than as
- * the screen border. Its side arms sit at x=4 and x=123, clear of the list text
- * (starts x=10) and of right-aligned values (end x=118); its top and bottom
- * arms sit on rows 8 and 54, which are the only rows the five list fills
- * (9..53) leave free. That one row is the entire vertical margin available —
- * a wider gap costs a list row, and matching the five rows everywhere else
- * matters more than the air.
+ * The frame lives in the list margin, one pixel clear of the dividers.
+ *
+ * Horizontally: side arms at x=4 and x=123, inside the screen edge and outside
+ * the text (starts x=10) and the right-aligned values (end x=118).
+ *
+ * Vertically there looked to be no room — five rows at a 9px stride is 45 of
+ * the 47 rows between the bank bar and the footer rule. But renderPicker only
+ * FILLS a row when it is selected, and an inert menu has nothing selected, so
+ * the only occupied rows are the glyphs themselves:
+ *
+ *   row  7          bank bar (its CURRENT-page segment is 2px, so that one
+ *                   segment also occupies row 8; the rest of the bar does not)
+ *   row  8          clear except under that segment
+ *   row  9          top arms          <- 1px off the bar
+ *   rows 10..52     glyph rows (10..16, 19..25, 28..34, 37..43, 46..52)
+ *   row  53         bottom arms       <- 1px off the rule
+ *   row  54         clear
+ *   row  55         footer rule
+ *
+ * The side arms run 9..15 and 47..53, which pass through the gaps between
+ * glyph rows and never touch a glyph. Nothing is given up: still five rows.
  */
-const MENU_FRAME_X = 4, MENU_FRAME_Y = 8, MENU_FRAME_W = 120;
+const MENU_FRAME_X = 4, MENU_FRAME_Y = 9, MENU_FRAME_W = 120;
+/* One clear row above the frame and one below, hence the 1 on each side. */
+const MENU_FRAME_BOTTOM_INSET = 1;
 const MENU_BRACKET_LEN = 7;
 import { knobInit, knobTick, knobConfigFromMeta } from "../knob_engine.mjs";
 import { movyKnobInit, movyKnobTick } from "./movy_knob.mjs";
@@ -938,8 +954,9 @@ export function createController(io = {}) {
                     header: false,
                 });
                 if (!entered) {
-                    drawBrackets(ctx, MENU_FRAME_X, MENU_FRAME_Y,
-                                 MENU_FRAME_W, bottom - MENU_FRAME_Y, MENU_BRACKET_LEN);
+                    drawBrackets(ctx, MENU_FRAME_X, MENU_FRAME_Y, MENU_FRAME_W,
+                                 bottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
+                                 MENU_BRACKET_LEN);
                 }
                 if (footer) drawFooter(ctx, footer);
                 return;
