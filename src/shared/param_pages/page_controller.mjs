@@ -582,7 +582,7 @@ export function createController(io = {}) {
      * let memory of one hijack a jump to the other. Picking "Presets" from
      * the section list landed back on "Main" because sectionMemory["root"]
      * held the knobs page and restoreSection only checked level. */
-    function sectionKey(p) { return p ? `${p.level} ${p.kind}` : null; }
+    function sectionKey(p) { return p ? `${p.level}\u0000${p.kind}` : null; }
 
     /* Remember where you were within the current section. */
     function rememberSection() {
