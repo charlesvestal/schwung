@@ -31,7 +31,7 @@ import { planPages, PAGE_KNOBS, PAGE_MENU } from "./page_plan.mjs";
 import { buildMetaIndex, inferFromValue, isTurnable, KIND_ENUM, KIND_OPAQUE } from "./param_meta.mjs";
 import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page.mjs";
 import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
-         RULE_Y, LAYOUT_MOVY } from "./render_page_movy.mjs";
+         drawBrackets, RULE_Y, LAYOUT_MOVY } from "./render_page_movy.mjs";
 import { resolveViz } from "./viz.mjs";
 
 export { LAYOUT_MOVY };
@@ -204,6 +204,8 @@ export function createController(io = {}) {
         /* Cursor per MENU page, keyed by page name for the same reason
          * sectionMemory is: a rebuild moves every index. */
         menuCursor: Object.create(null),
+        /* Name of the menu page currently ENTERED, or null. */
+        menuEntered: null,
     };
 
     const fullKey = (key) => `${s.prefix}:${key}`;
@@ -447,6 +449,40 @@ export function createController(io = {}) {
         return (p.entries || [])[menuIndex(p)] || null;
     }
 
+    /*
+     * A menu page is INERT until you enter it.
+     *
+     * The first cut had the jog drive the list whenever a menu was on screen,
+     * which quietly gave the jog two meanings depending on which page you were
+     * on — an invisible mode — and then needed Shift as an escape from the trap
+     * that created. This way the jog means ONE thing everywhere: it pages.
+     *
+     * A menu is simply a door at page scale. It wears the same brackets a
+     * divable cell wears, it is entered with the same click, and it is left
+     * with Back — the identical grammar one level up. Inert, it is also a
+     * preview: you can read the actions while paging past without engaging.
+     */
+    function menuEntered() {
+        const p = page();
+        return !!(p && p.kind === PAGE_MENU && s.menuEntered === p.name);
+    }
+    /** Enter the menu on this page. False when there is nothing to enter. */
+    function enterMenu() {
+        const p = page();
+        if (!p || p.kind !== PAGE_MENU || !(p.entries || []).length) return false;
+        s.menuEntered = p.name;
+        const e = menuEntry();
+        if (e) announce(`${p.name}, ${e.label}${e.value ? ", " + e.value : ""}`);
+        return true;
+    }
+    /** Leave the menu without activating anything. */
+    function exitMenu() {
+        if (!menuEntered()) return false;
+        s.menuEntered = null;
+        announcePageChange();
+        return true;
+    }
+
     function openPicker() {
         s.pickerEntries = groupIndex(s.pages);
         if (!s.pickerEntries.length) return false;
@@ -521,7 +557,7 @@ export function createController(io = {}) {
          * the entries are what you are navigating. Shift still pages out, so
          * the menu is never a trap. */
         const mp = page();
-        if (mp && mp.kind === PAGE_MENU && !shift) {
+        if (mp && mp.kind === PAGE_MENU && menuEntered() && !shift) {
             const n = (mp.entries || []).length;
             if (n > 0) {
                 const before = menuIndex(mp);
@@ -550,6 +586,11 @@ export function createController(io = {}) {
 
     /** Jump straight to a page (from the index or group picker). */
     function goToPage(index, { remember = true } = {}) {
+        /* Paging away cannot leave a menu entered — returning later would
+         * silently hand the jog back to the list. */
+        if (s.menuEntered && s.pages[index] && s.pages[index].name !== s.menuEntered) {
+            s.menuEntered = null;
+        }
         if (index === s.pageIndex) return s.pageIndex;
         rememberSection();
         const target = Math.max(0, Math.min(s.pages.length - 1, index));
@@ -676,6 +717,10 @@ export function createController(io = {}) {
          * keeps it out of the editors. */
         const mp = page();
         if (mp && mp.kind === PAGE_MENU) {
+            /* First click enters the menu; the next activates the entry under
+             * the cursor. The same two-step a divable cell has (hold, then
+             * click) and the picker has (open, then choose). */
+            if (!menuEntered()) { enterMenu(); return null; }
             const e = menuEntry();
             if (!e) return null;
             s.pending = { action: "menu", entry: e, level: mp.level };
@@ -829,12 +874,19 @@ export function createController(io = {}) {
                 drawHeaderMovy(ctx, title || "", mp.name, false);
                 drawBankBar(ctx, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
                 const bottom = footer ? RULE_Y : 64;
+                const entered = menuEntered();
+                const listRect = { x: 0, y: 9, w: 128, h: bottom - 9 };
                 renderPicker(ctx, {
-                    rect: { x: 0, y: 9, w: 128, h: bottom - 9 },
+                    rect: entered ? listRect
+                                  : { x: 4, y: listRect.y + 2, w: 120, h: listRect.h - 4 },
                     entries: (mp.entries || []).map((e) => ({ name: e.label, value: e.value })),
-                    index: menuIndex(mp),
+                    /* Inert: nothing is highlighted, because nothing is selected
+                     * yet — the page is something you can go INTO, not something
+                     * you are already in. */
+                    index: entered ? menuIndex(mp) : -1,
                     header: false,
                 });
+                if (!entered) drawBrackets(ctx, listRect.x, listRect.y, listRect.w, listRect.h);
                 if (footer) drawFooter(ctx, footer);
                 return;
             }
@@ -905,6 +957,7 @@ export function createController(io = {}) {
         onJog, goToPage, onKnobTurn, onKnobTouch, onClick, takePending,
         openPicker, closePicker, pickerSelect, showHint, dismissHint, resetToDefault,
         menuEntry, menuIndex: () => menuIndex(page()),
+        menuEntered, enterMenu, exitMenu,
         get pickerOpen() { return s.pickerOpen; },
         get pickerEntries() { return s.pickerEntries; },
         get pickerIndex() { return s.pickerIndex; },

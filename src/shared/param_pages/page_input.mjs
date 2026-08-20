@@ -40,7 +40,7 @@ export const TOUCH_NOTE_LAST = 7;
  *   { type: "knob",   slot, direction, fine }  turn knob `slot`
  *   { type: "touch",  slot, down, mute }
  *   { type: "page",   delta, byLevel }
- *   { type: "click" }                     jog click — open / commit
+ *   { type: "click",  shift }             jog click — open / commit
  *   { type: "back" }
  *   { type: "shift",  down }              modifier state changed
  *   { type: "mute",   down }              modifier state changed
@@ -66,7 +66,7 @@ export function decodeInput(data, mods = {}) {
             return { type: "page", delta: delta > 0 ? 1 : -1, byLevel: !!mods.shift };
         }
         /* Buttons report press as a non-zero value and release as 0. */
-        if (d1 === JOG_CLICK_CC) return d2 > 0 ? { type: "click" } : null;
+        if (d1 === JOG_CLICK_CC) return d2 > 0 ? { type: "click", shift: !!mods.shift } : null;
         if (d1 === BACK_CC) return d2 > 0 ? { type: "back" } : null;
         if (d1 === SHIFT_CC) return { type: "shift", down: d2 > 0 };
         if (d1 === MUTE_CC) return { type: "mute", down: d2 > 0 };
@@ -131,12 +131,34 @@ export function applyInput(controller, intent, { nowMs, reveal } = {}) {
 
         case "click": {
             if (controller.dismissHint && controller.dismissHint()) return null;
+            /*
+             * Shift+Click is the section picker, EVERYWHERE.
+             *
+             * Plain click is contextual — it opens a held param, and on a menu
+             * page it enters the menu — which means the page set is not always
+             * reachable from it. Shift already means "sections" on the jog, so
+             * it means the same at rest, and there is one gesture that always
+             * gets you to the pages no matter what is on screen.
+             */
+            if (intent.shift && !controller.pickerOpen) {
+                if (controller.openPicker) controller.openPicker();
+                return null;
+            }
             /* Two meanings, disambiguated by whether a knob is under your hand.
              * Holding one: open that param's editor (the only unambiguous target
              * on a grid, where nothing is "selected"). Holding none: the click
              * has no target, so it opens the section picker — which is also the
              * only spare gesture, and the thing a 76-page module needs. */
             if (controller.pickerOpen) { controller.pickerSelect(); return null; }
+            /* A menu page owns the plain click: first press enters it, second
+             * activates the highlighted entry. Nothing is "held" on a menu page,
+             * so this must come before the no-knob-held branch below or the
+             * section picker would swallow it. */
+            const mpage = controller.page;
+            if (mpage && mpage.kind === "menu") {
+                const opened = controller.onClick(-1);
+                return opened ? controller.takePending() : null;
+            }
             const held = controller.state.touched;
             if (held < 0) { controller.openPicker(); return null; }
             const opened = controller.onClick(held);
@@ -145,9 +167,12 @@ export function applyInput(controller, intent, { nowMs, reveal } = {}) {
 
         case "back":
             if (controller.dismissHint && controller.dismissHint()) return null;
-            /* Back closes the picker first, then leaves the view — one layer at
-             * a time, matching the rest of Move. */
+            /* Back closes the picker first, then steps out of an entered menu,
+             * then leaves the view — one layer at a time, matching the rest of
+             * Move. A menu you have entered is a layer exactly like the picker
+             * is: you went into it, so Back comes out of it. */
             if (controller.pickerOpen) { controller.closePicker(); return null; }
+            if (controller.exitMenu && controller.exitMenu()) return null;
             return { action: "exit" };
 
         case "shift":

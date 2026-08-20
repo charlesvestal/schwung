@@ -51,7 +51,7 @@ if (menuPages[0].entries.length !== MENU.length) {
   fail("menu entries were dropped: " + JSON.stringify(menuPages[0].entries.map((e) => e.label)));
 }
 
-/* ---- 2. the jog drives the LIST, and shift still escapes --------------- */
+/* ---- 2. a menu is INERT until entered ---------------------------------- */
 const store = {
   "slot:ui_hierarchy": JSON.stringify(HIER),
   "slot:chain_params": JSON.stringify(CP),
@@ -64,23 +64,44 @@ for (let i = 0; i < 10; i++) ctl.tick();
 
 const menuAt = pages.findIndex((p) => p.kind === PAGE_MENU);
 ctl.goToPage(menuAt);
-if (!ctl.menuEntry() || ctl.menuEntry().label !== "Knob Mapping") {
-  fail("menu should start on its first entry, got " + JSON.stringify(ctl.menuEntry()));
-}
-ctl.onJog(1);
-if (ctl.menuEntry().label !== "LFO 1") fail("jog did not move the menu cursor");
-if (ctl.pageIndex !== menuAt) fail("jog on a menu page changed the PAGE; it must drive the list");
+if (ctl.menuEntered()) fail("a menu page must start INERT, not entered");
 
-/* At the end it clamps rather than falling into the next page — otherwise the
- * last entry is the one you cannot select. Shift is the way out. */
+/*
+ * Inert, the jog still PAGES. This is the whole point: the jog means one thing
+ * everywhere. The first cut let the jog drive the list whenever a menu was on
+ * screen, which gave the wheel two meanings depending on the page — an
+ * invisible mode — and then needed Shift as an escape from the resulting trap.
+ */
+ctl.onJog(-1);
+if (ctl.pageIndex === menuAt) fail("jogging an INERT menu must page away, not move a cursor");
+
+/* Click enters. It does not activate anything yet. */
+ctl.goToPage(menuAt);
+const enterIntent = ctl.onClick(-1);
+if (enterIntent) fail("the first click ENTERS a menu; it must not activate an entry: " + JSON.stringify(enterIntent));
+if (!ctl.menuEntered()) fail("the first click did not enter the menu");
+
+/* Entered, the jog drives the list and clamps at the ends. */
+ctl.onJog(1);
+if (ctl.menuEntry().label !== "LFO 1") fail("jog did not move the cursor once entered");
+if (ctl.pageIndex !== menuAt) fail("jog inside an entered menu changed the PAGE");
 for (let i = 0; i < 10; i++) ctl.onJog(1);
-if (ctl.pageIndex !== menuAt) fail("jogging off the end of a menu left the page");
 if (ctl.menuEntry().label !== "Delete") fail("menu cursor did not clamp to the last entry");
-ctl.onJog(-1, { shift: true });
-if (ctl.pageIndex === menuAt) fail("Shift+Jog must page OUT of a menu, or the menu is a trap");
+if (ctl.pageIndex !== menuAt) fail("jogging off the end of an entered menu left the page");
+
+/* Paging away must not leave it entered, or coming back silently hands the
+ * jog to the list again. */
+ctl.exitMenu();
+ctl.goToPage(menuAt);
+ctl.onClick(-1);
+ctl.goToPage(0);
+if (ctl.menuEntered()) fail("paging away from a menu left it entered");
+ctl.goToPage(menuAt);
+if (ctl.menuEntered()) fail("returning to a menu must find it inert again");
 
 /* ---- 3. click hands the entry to the host, never acts ------------------ */
 ctl.goToPage(menuAt);
+ctl.onClick(-1);          /* enter first — an inert menu does not activate */
 /* The cursor is remembered per menu, so the highlighted entry here is wherever
  * the jogging above left it — assert the intent matches THAT, not a fixed
  * entry, or the test is really asserting that memory does not work. */
@@ -98,6 +119,7 @@ const beforeName = ctl.menuEntry().label;
 ctl.load({ slot: 0, component: "slot", prefix: "slot" });
 ctl.setLayout(LAYOUT_MOVY);
 ctl.goToPage(pages.findIndex((p) => p.kind === PAGE_MENU));
+ctl.onClick(-1);
 if (ctl.menuEntry().label !== beforeName) {
   fail("menu cursor is keyed by page NAME so it survives a rebuild; got " +
        ctl.menuEntry().label + " expected " + beforeName);
@@ -116,15 +138,74 @@ if (ctl.menuEntry().label !== beforeName) {
   }
 }
 
-/* ---- 6. a menu page renders without clipping --------------------------- */
+/* ---- 6. both states render, and differ ---------------------------------- */
 {
-  const fb = H.createFramebuffer();
+  const shot = (entered) => {
+    ctl.goToPage(menuAt);
+    if (entered) ctl.onClick(-1);
+    const fb = H.createFramebuffer();
+    ctl.render(H.drawContext(fb), { title: "S1 > SLOT", footer: [["JOG", "PAGE"], ["CLK", "ENTER"]] });
+    if (fb.clipped()) fail("menu page drew " + fb.clipped() + " px off-screen");
+    return fb.toBlocks();
+  };
+  /* Leave any menu entered by an earlier case FIRST. goToPage to the SAME page
+   * deliberately does not exit — re-selecting the page you are on should not
+   * throw you out — so without this both shots render entered and the
+   * comparison passes for the wrong reason. */
   ctl.goToPage(menuAt);
-  ctl.render(H.drawContext(fb), { title: "S1 > SLOT", footer: [["JOG", "SEL"], ["CLK", "OPEN"], ["BACK", "EXIT"]] });
-  if (fb.clipped()) fail("menu page drew " + fb.clipped() + " px off-screen");
+  ctl.exitMenu();
+  const inert = shot(false);
+  ctl.exitMenu();
+  const entered = shot(true);
+  if (inert === entered) {
+    fail("inert and entered menus render identically — the brackets and the " +
+         "selection highlight are what say which one you are looking at");
+  }
+}
+
+/* ---- 7. Back steps OUT of an entered menu before leaving the view ------- */
+{
+  const { applyInput } = await import(R + "/src/shared/param_pages/page_input.mjs");
+  ctl.goToPage(menuAt);
+  ctl.onClick(-1);
+  if (!ctl.menuEntered()) fail("could not enter the menu for the Back test");
+  const first = applyInput(ctl, { type: "back" }, { nowMs: 1 });
+  if (first) fail("Back inside a menu must step OUT, not leave the view: " + JSON.stringify(first));
+  if (ctl.menuEntered()) fail("Back did not leave the menu");
+  const second = applyInput(ctl, { type: "back" }, { nowMs: 2 });
+  if (!second || second.action !== "exit") {
+    fail("a second Back must leave the view, got " + JSON.stringify(second));
+  }
+}
+
+/* ---- 8. Shift+Click reaches the section picker from ANY page ----------- */
+{
+  const { applyInput } = await import(R + "/src/shared/param_pages/page_input.mjs");
+  /* Plain click on a menu page is spoken for — it enters the menu — so without
+   * a universal gesture the page set is simply unreachable from there. Shift
+   * already means "sections" on the jog; it means the same at rest. */
+  ctl.goToPage(menuAt);
+  ctl.exitMenu();
+  applyInput(ctl, { type: "click", shift: true }, { nowMs: 1 });
+  if (!ctl.pickerOpen) fail("Shift+Click on a menu page must open the section picker");
+  ctl.closePicker();
+
+  ctl.goToPage(0);
+  applyInput(ctl, { type: "click", shift: true }, { nowMs: 2 });
+  if (!ctl.pickerOpen) fail("Shift+Click on a grid page must open the section picker");
+  ctl.closePicker();
+
+  /* And plain click still enters a menu rather than opening the picker. */
+  ctl.goToPage(menuAt);
+  ctl.exitMenu();
+  applyInput(ctl, { type: "click", shift: false }, { nowMs: 3 });
+  if (ctl.pickerOpen) fail("plain click on a menu page opened the picker instead of entering");
+  if (!ctl.menuEntered()) fail("plain click on a menu page did not enter it");
+  ctl.exitMenu();
 }
 
 if (failures) process.exit(1);
-console.log("PASS: PAGE_MENU — planned last, the jog drives the list, shift escapes, " +
-            "click hands the entry to the host, the cursor survives a rebuild");
+console.log("PASS: PAGE_MENU — planned last, INERT until entered so the jog always pages, " +
+            "click enters then activates, Shift+Click always reaches the sections, " +
+            "Back steps out, cursor survives a rebuild");
 '
