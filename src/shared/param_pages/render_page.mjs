@@ -707,9 +707,13 @@ export function renderHint(ctx, { rect, lines, title }) {
  * under 25 sections, and a 76-entry list is the same chore in a different
  * shape.
  */
-export function renderPicker(ctx, { rect, entries, index, title }) {
+export function renderPicker(ctx, { rect, entries, index, title, header = true }) {
     const r = rect || { x: 0, y: 0, w: SCREEN_WIDTH, h: SCREEN_HEIGHT };
-    const rows = Math.max(1, Math.floor((r.h - PICKER_LIST_TOP) / (FONT_H + 2)));
+    /* header:false is the MENU PAGE case — the page chrome (drawHeader + the
+     * bank bar) has already drawn a header, and drawing a second one under it
+     * is two headers for one screen. Body-only also buys a row back. */
+    const top = header ? PICKER_LIST_TOP : 0;
+    const rows = Math.max(1, Math.floor((r.h - top) / (FONT_H + 2)));
     const total = (entries || []).length;
     const cur = Math.max(0, Math.min(total - 1, index | 0));
 
@@ -718,19 +722,26 @@ export function renderPicker(ctx, { rect, entries, index, title }) {
     if (first > total - rows) first = total - rows;
     if (first < 0) first = 0;
 
-    ctx.fillRect(r.x, r.y, r.w, PICKER_HEADER_H, 1);
-    ctx.print(r.x + 1, r.y + HEADER_TEXT_Y, fitText(ctx, title || "Sections", r.w - 40), 0);
-    const pos = `${cur + 1}/${total}`;
-    ctx.print(r.x + r.w - ctx.textWidth(pos) - 1, r.y + HEADER_TEXT_Y, pos, 0);
+    if (header) {
+        ctx.fillRect(r.x, r.y, r.w, PICKER_HEADER_H, 1);
+        ctx.print(r.x + 1, r.y + HEADER_TEXT_Y, fitText(ctx, title || "Sections", r.w - 40), 0);
+        const pos = `${cur + 1}/${total}`;
+        ctx.print(r.x + r.w - ctx.textWidth(pos) - 1, r.y + HEADER_TEXT_Y, pos, 0);
+    }
 
     for (let i = 0; i < rows && first + i < total; i++) {
         const e = entries[first + i];
-        const y = r.y + PICKER_LIST_TOP + i * (FONT_H + 2);
+        const y = r.y + top + i * (FONT_H + 2);
         const selected = (first + i) === cur;
         if (selected) ctx.fillRect(r.x, y - 1, r.w, FONT_H + 2, 1);
         /* A section spanning several pages says so, so "Filter" and a 6-page
          * "Oscillator" do not look like the same size of thing. */
-        const count = e.pages > 1 ? `${e.pages}` : "";
+        /* A menu entry may carry a `value` instead of a page count — same
+         * column, same right alignment, so a settings menu reads like the list
+         * it replaces. */
+        const count = e.value !== undefined && e.value !== null && e.value !== ""
+            ? String(e.value)
+            : (e.pages > 1 ? `${e.pages}` : "");
         const cw = count ? ctx.textWidth(count) + 4 : 0;
         ctx.print(r.x + 2, y, fitText(ctx, e.name, r.w - 6 - cw), selected ? 0 : 1);
         if (count) ctx.print(r.x + r.w - ctx.textWidth(count) - 2, y, count, selected ? 0 : 1);

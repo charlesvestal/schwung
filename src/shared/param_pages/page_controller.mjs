@@ -27,10 +27,11 @@
  *   being turned and for a short settling window afterwards.
  */
 
-import { planPages, PAGE_KNOBS } from "./page_plan.mjs";
+import { planPages, PAGE_KNOBS, PAGE_MENU } from "./page_plan.mjs";
 import { buildMetaIndex, inferFromValue, isTurnable, KIND_ENUM, KIND_OPAQUE } from "./param_meta.mjs";
 import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page.mjs";
-import { renderPageMovy, drawFooter, RULE_Y, LAYOUT_MOVY } from "./render_page_movy.mjs";
+import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
+         RULE_Y, LAYOUT_MOVY } from "./render_page_movy.mjs";
 import { resolveViz } from "./viz.mjs";
 
 export { LAYOUT_MOVY };
@@ -200,6 +201,9 @@ export function createController(io = {}) {
          * pages each). Applies to SECTION jumps only; a fine jog still steps
          * linearly, or you could never walk the set in order. */
         sectionMemory: Object.create(null),
+        /* Cursor per MENU page, keyed by page name for the same reason
+         * sectionMemory is: a rebuild moves every index. */
+        menuCursor: Object.create(null),
     };
 
     const fullKey = (key) => `${s.prefix}:${key}`;
@@ -422,6 +426,27 @@ export function createController(io = {}) {
      * list of 76 pages is the same chore in a different shape. minijv folds to
      * under 25 entries this way.
      */
+    /* ------------------------------------------------------------- menu */
+
+    /* Cursor per MENU page, by page NAME — page indices move on rebuild. */
+    function menuIndex(p) {
+        if (!p || p.kind !== PAGE_MENU) return 0;
+        const n = (p.entries || []).length;
+        const cur = s.menuCursor[p.name] || 0;
+        return Math.max(0, Math.min(n - 1, cur));
+    }
+    function setMenuIndex(p, i) {
+        if (!p || p.kind !== PAGE_MENU) return;
+        const n = (p.entries || []).length;
+        s.menuCursor[p.name] = Math.max(0, Math.min(n - 1, i));
+    }
+    /** The highlighted entry on a menu page, or null. */
+    function menuEntry() {
+        const p = page();
+        if (!p || p.kind !== PAGE_MENU) return null;
+        return (p.entries || [])[menuIndex(p)] || null;
+    }
+
     function openPicker() {
         s.pickerEntries = groupIndex(s.pages);
         if (!s.pickerEntries.length) return false;
@@ -492,6 +517,24 @@ export function createController(io = {}) {
             }
             return s.pageIndex;
         }
+        /* On a menu page the jog belongs to the LIST, not to the page set —
+         * the entries are what you are navigating. Shift still pages out, so
+         * the menu is never a trap. */
+        const mp = page();
+        if (mp && mp.kind === PAGE_MENU && !shift) {
+            const n = (mp.entries || []).length;
+            if (n > 0) {
+                const before = menuIndex(mp);
+                setMenuIndex(mp, before + (delta > 0 ? 1 : -1));
+                const now = menuIndex(mp);
+                if (now !== before) {
+                    const e = mp.entries[now];
+                    announce(`${e.label}${e.value ? ", " + e.value : ""}, ${now + 1} of ${n}`);
+                }
+                return s.pageIndex;
+            }
+        }
+
         if (!s.pages.length || delta === 0) return s.pageIndex;
         const before = s.pageIndex;
         rememberSection();
@@ -627,6 +670,17 @@ export function createController(io = {}) {
      * knob keeps driving it.
      */
     function onClick(slot) {
+        /* A menu page has no knobs, so the click has exactly one meaning:
+         * activate the highlighted entry. The controller does not perform it —
+         * the host owns whatever Save or Knob Mapping means, same rule that
+         * keeps it out of the editors. */
+        const mp = page();
+        if (mp && mp.kind === PAGE_MENU) {
+            const e = menuEntry();
+            if (!e) return null;
+            s.pending = { action: "menu", entry: e, level: mp.level };
+            return s.pending;
+        }
         const key = keyAt(slot);
         const meta = metaAt(slot);
         if (!key || !meta || !meta.divable) return null;
@@ -766,6 +820,24 @@ export function createController(io = {}) {
                 if (footer) drawFooter(ctx, footer);
                 return;
             }
+            const mp = page();
+            if (mp && mp.kind === PAGE_MENU) {
+                /* Same chrome as a grid page — the module name, the page name
+                 * and the bank bar all stay put, so a menu reads as one of this
+                 * module's pages rather than as somewhere else. header:false
+                 * because that header is already drawn. */
+                drawHeaderMovy(ctx, title || "", mp.name, false);
+                drawBankBar(ctx, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
+                const bottom = footer ? RULE_Y : 64;
+                renderPicker(ctx, {
+                    rect: { x: 0, y: 9, w: 128, h: bottom - 9 },
+                    entries: (mp.entries || []).map((e) => ({ name: e.label, value: e.value })),
+                    index: menuIndex(mp),
+                    header: false,
+                });
+                if (footer) drawFooter(ctx, footer);
+                return;
+            }
             drawGrid();
             return;
         }
@@ -832,6 +904,7 @@ export function createController(io = {}) {
         load, reloadIfChanged, tick,
         onJog, goToPage, onKnobTurn, onKnobTouch, onClick, takePending,
         openPicker, closePicker, pickerSelect, showHint, dismissHint, resetToDefault,
+        menuEntry, menuIndex: () => menuIndex(page()),
         get pickerOpen() { return s.pickerOpen; },
         get pickerEntries() { return s.pickerEntries; },
         get pickerIndex() { return s.pickerIndex; },

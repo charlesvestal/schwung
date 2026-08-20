@@ -30,6 +30,26 @@ export const PAGE_PRESET = "preset";  /* list_param/count_param/name_param brows
 export const PAGE_ITEMS  = "items";   /* items_param/select_param runtime list */
 export const PAGE_MODES  = "modes";   /* hierarchy-level mode select (minijv) */
 export const PAGE_CHILD  = "child";   /* child_prefix instance selector */
+/*
+ * A list of entries that are NOT parameters — an action with a name and a
+ * consequence and nothing to show, or a plain jump to another level.
+ *
+ * The other four non-grid kinds are all param-driven (a preset browser needs
+ * list_param/count_param, an items list needs items_param), so none of them can
+ * express "Save / Save As / Delete / Knob Mapping". Rendering those as knob
+ * cells spends the whole 15-row widget band on six words, because there is no
+ * value to draw. A level declares one with:
+ *
+ *   menu: [ { label: "Save", action: "save" },
+ *           { label: "LFO 1", level: "lfo1" },
+ *           { label: "Mode", action: "mode", value: "Poly" } ]
+ *
+ * `value` is optional and right-aligned, so a settings menu reads like the list
+ * it replaces. This kind is drawn by the LIBRARY (renderPicker with
+ * header:false) rather than handed to a host screen — it is just a list, and a
+ * tool embedding the grid should get menus without owning a screen.
+ */
+export const PAGE_MENU   = "menu";
 
 /* Param types that cannot be driven by turning a knob. They keep their grid
  * position (the module put them there) but open a fullscreen editor on click,
@@ -377,6 +397,24 @@ export function planPages({ hierarchy, chainParams, mode, visible } = {}) {
                      * false, including a page that mixes the two. */
                     authored: keys.every((k) => authored.includes(k)),
                 });
+            });
+        }
+
+        /* Menu LAST, after this level's grids. A preset browser goes first
+         * because it is how you choose what the knobs are editing; a menu is
+         * the opposite — Save/Delete are what you do when you have finished, so
+         * landing on them is not where anyone wants to start. */
+        if (Array.isArray(lvl.menu) && lvl.menu.length) {
+            pages.push({
+                kind: PAGE_MENU,
+                name: claimName(lvl.menu_label || `${base} Menu`),
+                level: levelKey,
+                entries: lvl.menu.map((m) => ({
+                    label: String((m && m.label) || ""),
+                    action: (m && m.action) || null,
+                    target: (m && m.level) || null,
+                    value: (m && m.value) !== undefined ? m.value : null,
+                })).filter((m) => m.label),
             });
         }
     }
