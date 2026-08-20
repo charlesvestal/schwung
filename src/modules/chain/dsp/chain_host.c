@@ -919,14 +919,14 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         const char *subkey = NULL;
         int mfi = chain_fx_index_from_key(key, "midi_fx", MAX_MIDI_FX, &subkey);
         if (strcmp(subkey, "module") == 0) {
-            /* Slot 1 owns the whole list: setting it clears what is there.
-             * Later slots append, as midi_fx2: always has. */
-            if (mfi == 0 && inst->midi_fx_count > 0) {
-                v2_unload_all_midi_fx(inst);
-            }
-            if (val && val[0] != '\0' && strcmp(val, "none") != 0) {
-                v2_load_midi_fx(inst, val);
-            }
+            /* The index is the SLOT, exactly as it is for "fxN:module" above.
+             * This used to parse mfi and then discard it: the loader appended
+             * at midi_fx_count, so on an empty chain "midi_fx4:module" and
+             * "midi_fx1:module" were the same operation, and slot 1
+             * additionally unloaded every other MIDI FX first. See
+             * v2_load_midi_fx_slot in chain_midi.c for why slot 1 is no longer
+             * special and what a caller shortening the chain must now do. */
+            v2_load_midi_fx_slot(inst, mfi, val);
             inst->dirty = 1;
         } else if (inst->midi_fx_count > mfi && inst->midi_fx_plugins[mfi] && inst->midi_fx_instances[mfi]) {
             /* Dropped if the slot holds nothing — see the audio FX branch. */
