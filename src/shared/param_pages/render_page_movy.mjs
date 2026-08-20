@@ -722,9 +722,16 @@ function drawWaveMark(ctx, x, y, on) {
  * per-lane-automation concept the grid does not have) so only the touched
  * inversion and the modulation mark are ported.
  */
-function drawLabelCell(ctx, col, lblY, label, displayValue, touched, modulated) {
+/*
+ * `showValue` and `inverted` are separate on purpose. They agree for an
+ * ordinary touch — the held cell shows its value in an inverted strip — but a
+ * RESET PULSE drives them apart: it keeps showing the value while flipping the
+ * inversion on and off, so the number stays readable and the cell still blinks.
+ * A pulse that hid the value would be announcing a change you cannot see.
+ */
+function drawLabelCell(ctx, col, lblY, label, displayValue, showValue, inverted, modulated) {
     const cellX = col * CELL_W;
-    const text = touched ? displayValue : label;
+    const text = showValue ? displayValue : label;
     const tw = fontWidth4x5(text);
     /* Same rule as every other centred run — `floor(CELL_W/2) - floor(tw/2)`
      * biases the other way on odd widths, which made a label and the box above
@@ -732,7 +739,7 @@ function drawLabelCell(ctx, col, lblY, label, displayValue, touched, modulated) 
     const tx = centreX(cellX, CELL_W, tw);
     /* One clear row above and below the glyphs inside the band — see LBL_H. */
     const ty = lblY + Math.floor((LBL_H - LBL_FONT_H) / 2);
-    if (touched) {
+    if (inverted) {
         ctx.fillRect(cellX, lblY, CELL_W, LBL_H, 1);
         fontPrint4x5(ctx, tx, ty, text, 0);
     } else {
@@ -740,7 +747,7 @@ function drawLabelCell(ctx, col, lblY, label, displayValue, touched, modulated) 
     }
     if (modulated) {
         const wx = Math.max(cellX, tx - 6);
-        drawWaveMark(ctx, wx, lblY + 1, touched ? 0 : 1);
+        drawWaveMark(ctx, wx, lblY + 1, inverted ? 0 : 1);
     }
 }
 
@@ -841,7 +848,16 @@ function drawKnobRow(ctx, o, row, rowY, lblY) {
         const display = fitDev(ctx,
             (cellText === null || cellText === undefined) ? displayValue(raw, meta) : String(cellText),
             CELL_W - 2);
-        drawLabelCell(ctx, col, lblY, label, display, isTouched, modulated ? !!modulated(key) : false);
+        /*
+         * The reset pulse blinks the highlight this cell already has, rather
+         * than drawing something new over it: the value stays legible for the
+         * whole pulse, which is the point of showing it at all.
+         */
+        const pulsing = slot === o.pulseSlot;
+        drawLabelCell(ctx, col, lblY, label, display,
+                      isTouched || pulsing,          /* show the VALUE throughout */
+                      pulsing ? !isTouched : isTouched,
+                      modulated ? !!modulated(key) : false);
     }
 }
 
@@ -917,6 +933,8 @@ export function drawFooter(ctx, hints) {
  * @param {Function} [o.modulated] (key) => boolean
  * @param {Array}  [o.viz]       resolved graphic groups (viz.mjs resolveViz)
  * @param {Array}  [o.footer]    [key, action] hint pairs, most important first
+ * @param {number} [o.pulseSlot] slot whose highlight is inverted this frame
+ *                 (the reset pulse), or -1
  */
 export function renderPageMovy(ctx, o) {
     const page = o.page;

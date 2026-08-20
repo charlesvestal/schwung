@@ -641,6 +641,73 @@ Promise.all([
     console.log("PASS: Movy modulation dot — rides the arc, suppressed at base, never clipped");
   }
 
+  /* ---- the reset pulse blinks the highlight, and keeps the value ---------
+   *
+   * A reset is the one edit the hand did not perform, so it announces itself —
+   * but the thing worth announcing IS the value, so the pulse inverts the
+   * highlight the cell already has rather than drawing a block over it. Both
+   * halves matter: it must actually blink, and the number must stay legible
+   * through the blink.
+   */
+  {
+    const meta = { key: "v", label: "Vol", type: "float", kind: "number",
+                   min: 0, max: 2, step: 0.05 };
+    const metaIndex = { getOrGuess: () => meta };
+    const page = { kind: "knobs", name: "P", level: "root",
+                   keys: ["v", null, null, null, null, null, null, null] };
+    const draw = (touched, pulseSlot) => {
+      const fb = H.createFramebuffer();
+      RM.renderPageMovy(H.drawContext(fb), {
+        page, metaIndex, values: { v: "1.00" }, title: "T",
+        pageIndex: 0, pageCount: 1,
+        touched: touched ? 0 : -1, touchedSlots: touched ? [0] : [],
+        modulated: () => false, modValues: {}, pageGroups: [], viz: [],
+        pulseSlot,
+      });
+      return fb;
+    };
+    const band = (fb) => {
+      let n = 0;
+      for (let y = RM.LBL0_Y; y < RM.LBL0_Y + RM.LBL_H; y++)
+        for (let x = 0; x < RM.CELL_W; x++) if (fb.pixels[y * fb.width + x]) n++;
+      return n;
+    };
+
+    const heldPlain  = band(draw(true,  -1));   /* held, pulse off  -> inverted */
+    const heldPulse  = band(draw(true,   0));   /* held, pulse on   -> flipped  */
+    const freePlain  = band(draw(false, -1));   /* not held         -> label    */
+    const freePulse  = band(draw(false,  0));   /* the readout, flipped         */
+
+    if (heldPlain === heldPulse)
+      fail("the pulse did not change the held cell — it has to blink");
+    /* Inverted means the band is FILLED, so it lights far more pixels than the
+     * same band drawn as text on black. That is the direction of the flip. */
+    if (!(heldPlain > heldPulse))
+      fail("a held cell should be filled and the pulse should clear it, got " +
+           heldPlain + " -> " + heldPulse);
+    if (freePlain === freePulse)
+      fail("the pulse must also be visible on a cell held only by the readout");
+
+    /*
+     * The VALUE, not the label, throughout the pulse — including on a cell
+     * held only by the readout, which is the case that matters, since that is
+     * what you are looking at after the finger lifts.
+     *
+     * Compared against the OTHER drawing that is also "filled band showing the
+     * value" (a held cell with no pulse). They must be identical. Comparing it
+     * against the untouched drawing instead proves nothing: that differs in
+     * the fill as well as the text, so it stays different even when the pulse
+     * wrongly falls back to the label.
+     */
+    if (freePulse !== heldPlain)
+      fail("the pulse on a readout cell is not drawing the same thing a held cell " +
+           "draws — it has fallen back to the label, and the value is the thing " +
+           "it exists to show");
+    for (const fb of [draw(true, 0), draw(false, 0)]) {
+      if (fb.clipped() > 0) fail("the pulse drew outside the display");
+    }
+  }
+
   /* ---- displayFor: a value the HOST resolves, per surface ---------------
    *
    * An LFO target is stored as "fx1" and means "Room Size on the Freeverb in

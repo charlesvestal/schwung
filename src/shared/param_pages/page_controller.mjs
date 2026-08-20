@@ -217,6 +217,22 @@ export const DOUBLE_TAP_MS = 900;
  */
 export const TAP_MAX_DWELL_MS = 650;
 
+/**
+ * The reset pulse: the value's highlight blinks, twice, and stops.
+ *
+ * A reset is the one edit the hand did not perform, so it has to announce
+ * itself visually — but a white block was the wrong way to do it, because the
+ * thing worth showing is the VALUE and a block hides it. Inverting the
+ * highlight it already has keeps the number on screen the whole time and still
+ * reads as a beat: dink dink, reset.
+ *
+ * Two blinks, not a fade and not a long one — this is punctuation, not a
+ * status. The grid redraws continuously, so nothing has to schedule it: the
+ * phase is a function of the clock and it stops on its own.
+ */
+export const RESET_PULSE_MS = 360;
+export const RESET_PULSE_BLINK_MS = 90;
+
 
 
 /**
@@ -356,6 +372,8 @@ export function createController(io = {}) {
         /* slot -> a reset happened during the contact currently in progress.
          * Makes the readout survive the lift — see onKnobTouch. */
         resetOnTouch: Object.create(null),
+        /* { slot, startMs } while a reset pulse is running — see pulseSlot. */
+        pulse: null,
         /* ms at which a TURN claimed the header with nothing held, or 0.
          * Only such a claim expires — see TURN_CLAIM_MS. */
         turnClaimMs: 0,
@@ -517,6 +535,9 @@ export function createController(io = {}) {
         s.tickCount++;
         flushDueWrites();
         expireTurnClaim();
+        /* Controller state, so it expires on a tick and not only when someone
+         * happens to render. */
+        if (s.pulse && now() - s.pulse.startMs >= RESET_PULSE_MS) s.pulse = null;
         const p = page();
         if (!p || p.kind !== PAGE_KNOBS || p.keys.length === 0) return null;
 
@@ -1118,6 +1139,7 @@ export function createController(io = {}) {
         delete s.knobStates[key];       /* next turn starts from the new value */
         /* Keep the value on screen past the lift — see onKnobTouch. */
         s.resetOnTouch[slot] = true;
+        s.pulse = { slot, startMs: now() };
         setParam(fullKey(key), wire);
         replanIfCondition(key);
         announce(`${meta.label || key}, ${declared ? "default" : "as loaded"}, ${announceTurn(meta, wire)}`);
@@ -1212,6 +1234,7 @@ export function createController(io = {}) {
                 page: page(), metaIndex: s.metaIndex, values: s.values,
                 title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
                 touched: s.hintLines ? -1 : s.touched,
+                pulseSlot: s.hintLines ? -1 : pulseSlot(),
                 displayFor: formatValue
                     ? (key, raw, surface) => formatValue(fullKey(key), raw, surface)
                     : null,
@@ -1321,6 +1344,21 @@ export function createController(io = {}) {
              * decorations are active. */
             viz: (vizEnabled && !s.decorations) ? vizGroups() : [],
         });
+    }
+
+    /**
+     * The cell whose highlight is inverted THIS FRAME, or -1.
+     *
+     * Alternates on RESET_PULSE_BLINK_MS and stops after RESET_PULSE_MS. A
+     * function of the clock rather than a scheduled animation, because the
+     * grid is already redrawing and an animation with its own timer would be a
+     * second source of truth about when the pulse ends.
+     */
+    function pulseSlot() {
+        if (!s.pulse) return -1;
+        const elapsed = now() - s.pulse.startMs;
+        if (elapsed >= RESET_PULSE_MS) { s.pulse = null; return -1; }
+        return (Math.floor(elapsed / RESET_PULSE_BLINK_MS) % 2 === 0) ? s.pulse.slot : -1;
     }
 
     let vizCache = null;
