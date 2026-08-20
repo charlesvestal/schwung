@@ -293,7 +293,49 @@ Types: `float` (min/max/step), `int` (min/max), `enum` (options). Optional: `def
 
 ### Chain Architecture
 
-Chain host (`modules/chain/dsp/chain_host.c` — lifecycle/set+get_param/render; helpers split into `chain_{json,params,mod,midi,patch}.c`, shared decls in `chain_internal.h`) dlopens sub-plugins, forwards MIDI to sound generator, routes audio through FX. Patches in `/data/UserData/schwung/patches/*.json`. Built-in MIDI FX: chord, arp (up/down/up_down/random). Built-in audio FX: freeverb. MIDI sources can provide `ui_chain.js` for fullscreen chain UI.
+Chain host (`modules/chain/dsp/chain_host.c` — lifecycle/set+get_param/render; helpers split into `chain_{json,params,mod,midi,patch,reorder}.c`, shared decls in `chain_internal.h`) dlopens sub-plugins, forwards MIDI to sound generator, routes audio through FX. Patches in `/data/UserData/schwung/patches/*.json`. Built-in MIDI FX: chord, arp (up/down/up_down/random). Built-in audio FX: freeverb. MIDI sources can provide `ui_chain.js` for fullscreen chain UI.
+
+### Chain shape edits are a PERMUTATION, never a reload
+
+Adding, removing or reordering a position used to be expressed as a run of
+`<id>:module` writes, and each of those unloads the position and dlopen()s a
+fresh instance — so inserting at the head rebuilt every module behind it and
+removing a mid-chain FX rebuilt everything downstream. A running arp lost its
+phase; a reverb lost its tail. Three set_param verbs replace that, **1-based to
+match the ids**:
+
+```
+fx:insert = "1"     midi_fx:insert = "1"    open an empty position, shift the rest along
+fx:remove = "3"     midi_fx:remove = "2"    unload that position and close the gap
+fx:move   = "1>3"   midi_fx:move   = "3>1"  rotate the span between two positions
+```
+
+`chain_reorder.c` shifts every per-position array together (`chain_permute.h`)
+and re-aims the three tables that name a position by string — modulation targets,
+the two LFOs, the knob mappings. Instances keep running, so **nothing is
+carried**: state, modulation base and routing are still the originals.
+`tests/host/test_chain_permute.sh` pins the field enumeration against
+`chain_instance_t`; a new `[MAX_AUDIO_FX]`/`[MAX_MIDI_FX]` member that is not
+permuted fails the suite.
+
+Insert only opens the hole — the caller follows with the ordinary
+`<id>:module` write. Both chain walks skip a hole per position, so the frame in
+between renders correctly.
+
+**Thread safety is free**: parameter requests are serviced from
+`shim_pre_transfer` on the SPI audio thread, after `shadow_mix_audio`, and
+nothing else touches a chain instance — a permutation cannot interleave with a
+render. (That same property is what lets module loading `dlopen()` from this
+thread, which *is* a pre-existing realtime violation.)
+
+In the shadow UI, `writeChainShape` emits these verbs. It replaced
+`writeChainOrder`, whose state / modulation-base / LFO-remap carries are all
+deleted. `clearLfoRoutingForComponent` stays: a picker **swap** genuinely does
+destroy and create a module.
+
+The two `+` boxes add **where they are drawn** — the MIDI one at the head of the
+chain (index 0), the audio one appended. Backing out of a `+` picker, or picking
+`None` in one, writes nothing at all.
 
 ### Recording / capture
 
