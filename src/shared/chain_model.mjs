@@ -24,11 +24,23 @@ const clone = (c) => ({
     midiFx: c.midiFx.slice(), synth: c.synth, fx: c.fx.slice(),
 });
 
-/** "fx3" -> { section: "fx", index: 2 }, or null. */
+/**
+ * "fx3" -> { section: "fx", index: 2 }, or null.
+ *
+ * Ids are ONE-BASED, and the lower bound is load-bearing rather than
+ * defensive: a zero index becomes -1, which splice() counts from the END of
+ * the list, so removeAt("fx0") would delete the user's LAST effect instead of
+ * doing nothing. Ids are model-generated today, but they also arrive parsed
+ * back out of param keys and persisted state, so a malformed one is not
+ * hypothetical. Reject it here, once, rather than at each of the three call
+ * sites that splice.
+ */
 export function parseId(id) {
     const m = /^(midi_fx|fx)(\d+)$/.exec(String(id || ""));
     if (!m) return null;
-    return { section: m[1] === "midi_fx" ? "midiFx" : "fx", index: parseInt(m[2], 10) - 1 };
+    const n = parseInt(m[2], 10);
+    if (n < 1) return null;
+    return { section: m[1] === "midi_fx" ? "midiFx" : "fx", index: n - 1 };
 }
 
 const idFor = (section, i) => (section === "midiFx" ? `midi_fx${i + 1}` : `fx${i + 1}`);
