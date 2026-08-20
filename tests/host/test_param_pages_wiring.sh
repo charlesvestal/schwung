@@ -129,21 +129,24 @@ if (/target \+ ":" \+ param/.test(s)) {
 
 /* ---- the chain shape is DERIVED, never listed ---------------------------
  *
- * CHAIN_COMPONENTS must come from the chain model. The five-entry literal is
- * what made the chain a fixed shape; a variable-length chain that still
- * consulted it would silently show only the first two FX, and every position
- * past them would be unreachable rather than visibly missing.
+ * The editor list must come from the chain model, and it must come from THE
+ * SLOT: a shared constant computed once at load is the fixed shape wearing a
+ * derivation, and it would silently show the chain of one slot in the editor
+ * of another.
  *
- * The negative check below is the weak half — it only knows the exact text
+ * The negative checks below are the weak half — they only know the exact text
  * that was deleted, so a literal in single quotes or built by a hand-rolled
- * loop walks straight past it. The load-bearing half is the re-derivation in
+ * loop walks straight past them. The load-bearing half is the re-derivation in
  * the second node block, which runs the real function against the real model.
  */
 if (/const CHAIN_COMPONENTS = \[\s*\{ key: "midiFx"/.test(s)) {
   fail("CHAIN_COMPONENTS is still a literal - it must come from chain_model");
 }
-want(/CHAIN_COMPONENTS = chainEditorComponents\(/,
-     "CHAIN_COMPONENTS is not built by chainEditorComponents - only a derived list grows with the chain");
+if (/const CHAIN_COMPONENTS = chainEditorComponents\(/.test(s)) {
+  fail("the editor list is computed once for every slot - it must be per-slot now");
+}
+want(/function slotChainComponents\(slotIndex\) \{\s*\n\s*return chainEditorComponents\(chainConfigs\[slotIndex\]/,
+     "slotChainComponents does not derive from the config of that slot");
 /* Importing the module is not enough: pulling in emptyChain alone would
  * satisfy a bare path match while the list went back to being hand-written. */
 want(/\{[^}]*chainComponents[^}]*\}\s*\n?\s*from [^\n]*chain_model\.mjs/,
@@ -163,8 +166,7 @@ console.log("PASS: shadow wiring — parses, view dispatched/ticked/fed, setting
 #
 # What it protects is the screen: the label under the boxes, the picker header
 # ("S1 > FX 2") and every announcement read the label and the ORDER off this
-# list, and neither is visible in a diff of the derivation itself. The five
-# entries below are byte-identical to the literal this replaced.
+# list, and neither is visible in a diff of the derivation itself.
 #
 # When the chain genuinely grows, this test fails and the expectation is
 # updated deliberately — a chain that changes shape without anyone editing a
@@ -181,34 +183,34 @@ const end = s.indexOf("\n}\n", at);
 if (end < 0) fail("could not find the end of chainEditorComponents");
 const src = s.slice(at, end + 2);
 
-const counts = /const CHAIN_MIDI_FX_POSITIONS = (\d+);[\s\S]{0,400}?const CHAIN_FX_POSITIONS = (\d+);/.exec(s);
-if (!counts) fail("the chain position counts are not plain constants any more");
-const midiFxCount = Number(counts[1]);
-const fxCount = Number(counts[2]);
+/* The function closes over exactly one name, so it is its parameter here —
+ * no other part of shadow_ui.js is needed to run it. */
+const derive = new Function("chainComponents",
+                            src + "\nreturn chainEditorComponents;")(chainComponents);
+const mod = (id) => ({ module: id, params: {} });
+const got = derive({ midiFx: [mod("arp")], synth: mod("sf2"), fx: [mod("freeverb"), mod("cloudseed")] })
+    .map((c) => ({ key: c.key, label: c.label, kind: c.kind, position: c.position }));
 
-/* The function closes over exactly these two names, so they are its
- * parameters here — no other part of shadow_ui.js is needed to run it. */
-const derive = new Function("chainComponents", "CHAIN_MIDI_FX_POSITIONS",
-                            src + "\nreturn chainEditorComponents;")(chainComponents, midiFxCount);
-const got = derive({
-  midiFx: new Array(midiFxCount).fill(null),
-  synth: null,
-  fx: new Array(fxCount).fill(null),
-});
-
-const want = [
-  { key: "midiFx", label: "MIDI FX", position: 0 },
-  { key: "synth", label: "Synth", position: 1 },
-  { key: "fx1", label: "FX 1", position: 2 },
-  { key: "fx2", label: "FX 2", position: 3 },
-  { key: "settings", label: "Settings", position: 4 },
+/*
+ * Seven positions, not five: the two `+` boxes are part of the editor list
+ * now, because with no fixed empty positions left to click they are the only
+ * way to lengthen a chain. Patch is still absent — it is the selection at -1.
+ */
+const want_ = [
+  { key: "add_midi", label: "Add MIDI FX", kind: "add",      position: 0 },
+  { key: "midiFx",   label: "MIDI FX",     kind: "module",   position: 1 },
+  { key: "synth",    label: "Synth",       kind: "synth",    position: 2 },
+  { key: "fx1",      label: "FX 1",        kind: "module",   position: 3 },
+  { key: "fx2",      label: "FX 2",        kind: "module",   position: 4 },
+  { key: "add_fx",   label: "Add FX",      kind: "add",      position: 5 },
+  { key: "settings", label: "Settings",    kind: "settings", position: 6 },
 ];
-if (JSON.stringify(got) !== JSON.stringify(want)) {
+if (JSON.stringify(got) !== JSON.stringify(want_)) {
   fail("the derived chain editor list changed - every label, order and index the\n" +
        "      user sees comes from it.\n" +
        "      got:  " + JSON.stringify(got) + "\n" +
-       "      want: " + JSON.stringify(want));
+       "      want: " + JSON.stringify(want_));
 }
-console.log("PASS: chain editor list — derived from chain_model, " + want.length +
+console.log("PASS: chain editor list — derived from chain_model, " + want_.length +
             " positions, labels and order unchanged");
 '

@@ -53,8 +53,10 @@ import { renderPicker as renderMovyPicker } from '/data/UserData/schwung/shared/
 import { MENU_LIST_X as MOVY_LIST_X, MENU_LIST_Y as MOVY_LIST_Y, MENU_LIST_W as MOVY_LIST_W }
     from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
 import { describeLfoTarget } from '/data/UserData/schwung/shared/lfo_target_label.mjs';
-import { emptyChain, parseId as parseChainId, chainComponents }
+import { emptyChain, parseId as parseChainId, chainComponents, MAX_FX, MAX_MIDI_FX }
     from '/data/UserData/schwung/shared/chain_model.mjs';
+import { drawChainDiagram, DEFAULT_Y as DIAGRAM_Y, BOX_H as DIAGRAM_BOX_H }
+    from '/data/UserData/schwung/shared/chain_diagram.mjs';
 import { runDrawBench } from '/data/UserData/schwung/shared/draw_bench.mjs';
 import { installParamTally, paramTallyTick, paramTallyArmed } from '/data/UserData/schwung/shared/param_tally.mjs';
 import { knobInit, knobTick, knobConfigFromMeta } from '/data/UserData/schwung/shared/knob_engine.mjs';
@@ -425,60 +427,76 @@ globalThis.shadow_corun_close = function() {
 /* Special action key for swap module option */
 const SWAP_MODULE_ACTION = "__swap_module__";
 
-/*
- * How many positions of each kind the chain currently has.
- *
- * The DSP still exposes exactly one MIDI FX and two audio FX, and
- * loadChainConfigFromSlot runs on EVERY FRAME of the chain editor at ~2.8ms
- * per IPC round trip — so the scan reads these positions and not one more.
- * Both must stay <= the model's MAX_MIDI_FX / MAX_FX.
- */
-const CHAIN_MIDI_FX_POSITIONS = 1;
-const CHAIN_FX_POSITIONS = 2;
+/* Upper bound on a section's length. The DSP reports how many positions it
+ * actually holds; this only stops a garbled reply from turning into a long
+ * run of IPC reads. */
+const CHAIN_CAP = { midiFx: MAX_MIDI_FX, fx: MAX_FX };
 
 /*
  * The editor's positions, in signal order, DERIVED from the chain model.
  *
- * The model bookends its list with Patch, the two `+` boxes and Settings. The
- * editor reaches Patch at selection index -1 and has always ended with its own
- * Settings box, so those bookends are dropped here and Settings re-added — what
- * is taken from the model is the ORDER and the NUMBERING, which is the part
- * that has to grow when the chain does.
+ * The model bookends its list with Patch, the two `+` boxes and Settings. Only
+ * Patch is dropped: the editor reaches it at selection index -1, where it has
+ * always been. The `+` boxes ARE part of the editor's list, because they are
+ * how a chain of variable length grows — with no fixed empty positions left to
+ * click, they are the only way in.
+ *
+ * `key` is what the rest of the file addresses a position by, and it is
+ * unchanged for everything that existed before: "synth", "midiFx" for the first
+ * MIDI FX, "fx1"/"fx2"…, "settings". A second MIDI FX takes its model id
+ * ("midi_fx2") rather than colliding on "midiFx".
  */
 function chainEditorComponents(cfg) {
     const out = [];
     for (const pos of chainComponents(cfg)) {
-        if (pos.kind !== "module" && pos.kind !== "synth") continue;
-        /* `key` is unchanged from the hand-written list: the single MIDI FX is
-         * "midiFx", everything else is its model id. A second MIDI FX would
-         * collide on that key, so it takes its id instead. */
+        if (pos.kind === "patch") continue;
         const key = pos.kind === "synth" ? "synth"
+            : pos.kind === "add" ? pos.id
+            : pos.kind === "settings" ? "settings"
             : (pos.section === "midiFx" && pos.index === 0) ? "midiFx" : pos.id;
-        /* One MIDI FX position, so the label is "MIDI FX", not the model's
-         * "MIDI FX 1" — the number earns its place when a second can exist. */
-        const label = (pos.section === "midiFx" && CHAIN_MIDI_FX_POSITIONS === 1)
-            ? "MIDI FX" : pos.label;
-        out.push({ key, label, position: out.length });
+        /* The `+` boxes draw as "+" but they are ANNOUNCED and labelled in
+         * words — "+" read aloud is nothing at all. */
+        const label = pos.kind === "add"
+            ? (pos.section === "midiFx" ? "Add MIDI FX" : "Add FX")
+            : (pos.section === "midiFx" && cfg.midiFx.length === 1) ? "MIDI FX"
+            : pos.label;
+        out.push({ ...pos, key, label, position: out.length });
     }
-    out.push({ key: "settings", label: "Settings", position: out.length });
     return out;
 }
 
-/* Chain component types for horizontal editor */
-const CHAIN_COMPONENTS = chainEditorComponents({
-    midiFx: new Array(CHAIN_MIDI_FX_POSITIONS).fill(null),
-    synth: null,
-    fx: new Array(CHAIN_FX_POSITIONS).fill(null)
-});
-
 /*
- * The positions of ONE slot's chain. Same list for every slot while the shape
- * is fixed — the boxes are drawn per position, not per loaded module, so an
- * empty slot still shows all five. It takes the slot index now so the call
- * sites are already right when the shape stops being the same for every slot.
+ * The positions of ONE slot's chain — now genuinely per-slot, because the
+ * length is whatever that slot's DSP instance holds.
  */
 function slotChainComponents(slotIndex) {
-    return CHAIN_COMPONENTS;
+    return chainEditorComponents(chainConfigs[slotIndex] || createEmptyChainConfig());
+}
+
+/* Where the selection lands when the editor is entered with no history: the
+ * synth, which is the one position every chain has and the landmark the
+ * diagram's scroll is anchored on. Position 0 is a `+` box, which is a poor
+ * thing to be pointed at on arrival. */
+function defaultChainComponent(slotIndex) {
+    const at = slotChainComponentIndex(slotIndex, "synth");
+    return at >= 0 ? at : 0;
+}
+
+/*
+ * Load the slot and put the selection somewhere that EXISTS.
+ *
+ * The remembered index is no longer safe on its own: the list is as long as
+ * the chain, so a slot whose FX were removed elsewhere comes back shorter than
+ * the index left pointing into it, and every caller downstream reads
+ * `comps[selectedChainComponent].key` without checking. -1 is kept as-is; it
+ * is the patch selection, not an out-of-range index.
+ */
+function restoreChainComponent(slotIndex) {
+    loadChainConfigFromSlot(slotIndex);
+    const len = slotChainComponents(slotIndex).length;
+    const want = lastChainComponent[slotIndex];
+    selectedChainComponent = (typeof want === "number" && want >= -1 && want < len)
+        ? want : defaultChainComponent(slotIndex);
 }
 
 /*
@@ -3038,8 +3056,35 @@ function loadChainConfigFromSlot(slotIndex) {
         return moduleId && moduleId !== ""
             ? { module: moduleId.toLowerCase(), params: {} } : null;
     };
-    /* Trailing empties are dropped so the list says what is actually loaded; a
-     * hole in FRONT of a loaded module is kept, because the DSP has one. */
+    /*
+     * How long the section is, ASKED rather than probed.
+     *
+     * The DSP publishes fx_count / midi_fx_count (chain_host.c), so finding out
+     * that a chain has no FX costs ONE read. Probing fx1..fx8 to discover the
+     * same thing would cost eight — and this function runs from drawChainEdit
+     * on every frame at ~2.8ms per IPC round trip, which is more per frame than
+     * rendering the entire page. An unserved key answers "", and Number("") is
+     * 0, so the parse is explicit about its fallback.
+     */
+    const readCount = (key, cap) => {
+        const raw = getSlotParam(slotIndex, key);
+        const n = parseInt(raw, 10);
+        return (isNaN(n) || n < 0) ? 0 : Math.min(n, cap);
+    };
+
+    /*
+     * Trailing empties are dropped so the list says what is actually loaded; a
+     * hole in FRONT of a loaded module is KEPT.
+     *
+     * That is deliberate and it is the one place the chain model does not get
+     * the last word. Position i of this list IS `fx(i+1)` in the DSP — that is
+     * what makes `getComponentParamPrefix` correct — so compacting a hole away
+     * on READ would leave the editor addressing fx1's params while the audio
+     * ran through fx2. The model compacts on the user's own edit
+     * (removeAt + writeChainOrder), which renumbers the DSP at the same time.
+     * A legacy patch with a hole therefore draws its hole, once, and closes it
+     * the first time the user changes the order.
+     */
     const readSection = (idAt, count) => {
         const list = [];
         for (let i = 0; i < count; i++) list.push(readPosition(idAt(i)));
@@ -3050,8 +3095,9 @@ function loadChainConfigFromSlot(slotIndex) {
     const oldFx = cfg.fx;
 
     cfg.synth = readPosition("synth");
-    cfg.midiFx = readSection((i) => `midi_fx${i + 1}`, CHAIN_MIDI_FX_POSITIONS);
-    cfg.fx = readSection((i) => `fx${i + 1}`, CHAIN_FX_POSITIONS);
+    cfg.midiFx = readSection((i) => `midi_fx${i + 1}`,
+                             readCount("midi_fx_count", CHAIN_CAP.midiFx));
+    cfg.fx = readSection((i) => `fx${i + 1}`, readCount("fx_count", CHAIN_CAP.fx));
 
     /* Clear display_name cache when FX modules change (prevents stale
      * announcement on swap). Also drop the poll backoff: a different module may
@@ -3071,12 +3117,31 @@ function loadChainConfigFromSlot(slotIndex) {
     return cfg;
 }
 
-/* Build a signature of module IDs for a slot to detect changes */
+/*
+ * A signature of a slot's loaded module ids, read from the DSP.
+ *
+ * It has to come from the DSP, not from the cached config: this is precisely
+ * the thing that NOTICES the DSP changing underneath the UI (a patch restore,
+ * the shim's own slot load), and a signature derived from the cache could
+ * never differ from itself.
+ *
+ * Length comes from the published counts, so a slot holding nothing is three
+ * reads rather than a walk of the cap.
+ */
 function getSlotModuleSignature(slotIndex) {
     const read = (id) => getSlotParam(slotIndex, `${id}_module`) || "";
+    const count = (key, cap) => {
+        const n = parseInt(getSlotParam(slotIndex, key), 10);
+        return (isNaN(n) || n < 0) ? 0 : Math.min(n, cap);
+    };
     const parts = [read("synth")];
-    for (let i = 0; i < CHAIN_MIDI_FX_POSITIONS; i++) parts.push(read(`midi_fx${i + 1}`));
-    for (let i = 0; i < CHAIN_FX_POSITIONS; i++) parts.push(read(`fx${i + 1}`));
+    const nMidi = count("midi_fx_count", CHAIN_CAP.midiFx);
+    for (let i = 0; i < nMidi; i++) parts.push(read(`midi_fx${i + 1}`));
+    /* A separator, so [a] + [] and [] + [a] are different signatures rather
+     * than the same "a" with the sections' lengths silently swapped. */
+    parts.push("/");
+    const nFx = count("fx_count", CHAIN_CAP.fx);
+    for (let i = 0; i < nFx; i++) parts.push(read(`fx${i + 1}`));
     return parts.join("|");
 }
 
@@ -4463,10 +4528,10 @@ function drawOvertakeMenu() {
  * (~2.8ms) — which comes back "" from the DSP, not null, i.e. indistinguishable
  * from "this module serves no chain_params".
  *
- * Unreachable today: the editor list only holds fx1/fx2, so no caller can name
- * fx3. The moment CHAIN_FX_POSITIONS is raised past what the DSP serves, every
- * such call becomes one wasted round trip apiece — on a draw path that is a
- * frame's worth of budget. Grow the DSP and the constant together.
+ * Not reachable by accident: the editor's list is built from the positions the
+ * DSP says it holds (fx_count), so a caller can only name fx3 when there IS an
+ * fx3. What is NOT protected is a caller inventing an id — every such call is
+ * one wasted round trip, on a draw path that is a frame's worth of budget.
  */
 function chainComponentParamKey(componentKey, suffix) {
     if (!isChainModuleKey(componentKey)) return null;
@@ -7181,14 +7246,19 @@ function loadMasterFxChainFromConfig() {
 function enterChainEdit(slotIndex) {
     selectedSlot = slotIndex;
     updateFocusedSlot(slotIndex);
-    selectedChainComponent = lastChainComponent[slotIndex] || 0;
-    /* Load current chain config from DSP */
-    loadChainConfigFromSlot(slotIndex);
+    /* Loads the config, then anchors the selection to something that exists. */
+    restoreChainComponent(slotIndex);
     setView(VIEWS.CHAIN_EDIT);
     needsRedraw = true;
 
-    /* Announce menu title + initial selection */
+    /* Announce menu title + initial selection. The remembered selection can be
+     * -1 (the patch), which is not a component — it was always able to be, and
+     * reading `.key` off it threw. */
     const comp = slotChainComponents(selectedSlot)[selectedChainComponent];
+    if (!comp) {
+        announce(`Slot ${slotIndex + 1}, Patch Selection`);
+        return;
+    }
     const moduleData = getChainComponentModule(chainConfigs[selectedSlot], comp.key);
 
     let info = "(empty)";
@@ -7213,7 +7283,10 @@ function scanModulesForType(componentType) {
     if (componentType === "synth") {
         searchDirs = [`${MODULES_DIR}/sound_generators`];
         expectedTypes = ["sound_generator"];
-    } else if (componentType === "midiFx") {
+    } else if (componentType === "midiFx" ||
+               parseChainId(componentType)?.section === "midiFx") {
+        /* "midiFx" is the first position's legacy key; "midi_fx2".. are the
+         * rest, and they take the same directory. */
         searchDirs = [`${MODULES_DIR}/midi_fx`];
         expectedTypes = ["midi_fx"];
     } else if (parseChainId(componentType)?.section === "fx") {
@@ -7420,7 +7493,10 @@ function handleStorePickerBack() {
 /* Enter component module selection view */
 function enterComponentSelect(slotIndex, componentIndex) {
     const comp = slotChainComponents(slotIndex)[componentIndex];
-    if (!comp || comp.key === "settings") return;
+    /* Only a real module position has modules to pick from. Settings never
+     * did; the `+` boxes are resolved to a position by their caller before
+     * they get here, so one arriving unresolved is a bug, not a gesture. */
+    if (!comp || !isChainModuleKey(comp.key)) return;
 
     selectedSlot = slotIndex;
     selectedChainComponent = componentIndex;
@@ -7481,7 +7557,7 @@ function applyComponentSelection() {
     const comp = slotChainComponents(selectedSlot)[selectedChainComponent];
     const selected = availableModules[selectedModuleIndex];
 
-    if (!comp || comp.key === "settings") {
+    if (!comp || !isChainModuleKey(comp.key)) {
         setView(VIEWS.CHAIN_EDIT);
         return;
     }
@@ -8445,7 +8521,7 @@ function applyKnobAssignment(target, param) {
 /* Handle Shift+Click - enter component edit mode */
 function handleShiftSelect() {
     const comp = slotChainComponents(selectedSlot)[selectedChainComponent];
-    if (!comp || comp.key === "settings") return;
+    if (!comp || !isChainModuleKey(comp.key)) return;
 
     /* Shift+click always goes to module chooser (for swapping) */
     enterComponentSelect(selectedSlot, selectedChainComponent);
@@ -9383,7 +9459,9 @@ function buildKnobContextForKnob(knobIndex) {
     /* Chain editor with component selected */
     if (view === VIEWS.CHAIN_EDIT && selectedChainComponent >= 0 && selectedChainComponent < slotChainComponents(selectedSlot).length) {
             const comp = slotChainComponents(selectedSlot)[selectedChainComponent];
-            if (comp && comp.key !== "settings") {
+            /* Only a module position has knobs. Asking for "add_fx_module"
+             * would be a real IPC round trip answering "". */
+            if (comp && isChainModuleKey(comp.key)) {
                 const prefix = getComponentParamPrefix(comp.key);
                 /* MIDI FX serves no `:name`, so its header falls back to the id */
                 const isMidiFx = comp.key === "midiFx";
@@ -11971,9 +12049,15 @@ function handleJog(delta) {
                     announce("Patch Selection");
                 } else {
                     const comp = comps[selectedChainComponent];
-                    const moduleName =
-                        getChainComponentModule(chainConfigs[selectedSlot], comp.key)?.module || "Empty";
-                    announceMenuItem(comp.label, moduleName);
+                    if (comp.kind === "add") {
+                        /* "+, Empty" says nothing. The label already is the
+                         * whole instruction. */
+                        announce(comp.label);
+                    } else {
+                        const moduleName =
+                            getChainComponentModule(chainConfigs[selectedSlot], comp.key)?.module || "Empty";
+                        announceMenuItem(comp.label, moduleName);
+                    }
                 }
             }
             break;
@@ -12449,6 +12533,34 @@ function handleSelect() {
             } else {
                 /* Component selected - check if populated or empty */
                 const comp = slotChainComponents(selectedSlot)[selectedChainComponent];
+
+                /*
+                 * A `+` box: open the picker on a NEW position at that end.
+                 *
+                 * The position is materialised here as a trailing empty entry
+                 * rather than written to the DSP — nothing is loaded yet, and
+                 * the id it will take (`fx${n+1}`) is exactly what the picker
+                 * writes on the way out. Backing out instead leaves it to be
+                 * dropped by the next loadChainConfigFromSlot, which discards
+                 * trailing empties. That is why the pending entry survives:
+                 * COMPONENT_SELECT does not reload the slot.
+                 */
+                if (comp && comp.kind === "add") {
+                    const cfg = chainConfigs[selectedSlot] || createEmptyChainConfig();
+                    if (cfg[comp.section].length >= CHAIN_CAP[comp.section]) {
+                        announce(`${comp.label} full`);
+                        break;
+                    }
+                    cfg[comp.section] = cfg[comp.section].concat([null]);
+                    chainConfigs[selectedSlot] = cfg;
+                    enterComponentSelect(selectedSlot,
+                        slotChainComponentIndex(selectedSlot,
+                            comp.section === "midiFx" && cfg.midiFx.length === 1
+                                ? "midiFx"
+                                : `${comp.section === "midiFx" ? "midi_fx" : "fx"}${cfg[comp.section].length}`));
+                    break;
+                }
+
                 const moduleData = getChainComponentModule(chainConfigs[selectedSlot], comp.key);
 
                 /* Mute+JogClick: toggle bypass on a populated module */
@@ -13600,8 +13712,7 @@ function drawChainEdit() {
      * move: header at the top, hints at the bottom, and the boxes refitted
      * between them.
      */
-    const movy = { fillRect: fill_rect, print, textWidth: text_width };
-    drawMovyHeader(movy, headerText, "CHAIN", false);
+    const movy = { fillRect: fill_rect, print, textWidth: text_width, setPixel: set_pixel };
 
     /* Refresh chain config from DSP each render to ensure display matches actual state.
      * Without this, the cached chainConfigs can be stale if the slot was loaded
@@ -13610,23 +13721,23 @@ function drawChainEdit() {
     const cfg = chainConfigs[selectedSlot] || createEmptyChainConfig();
     const chainSelected = selectedChainComponent === -1;
 
-    /* Calculate box layout - 5 components, offset right to make room for slot indicators */
-    const BOX_W = 22;
-    const BOX_H = 16;
-    const GAP = 2;
-    const TOTAL_W = 5 * BOX_W + 4 * GAP;  // 118px
-    const START_X = 6 + Math.floor((SCREEN_WIDTH - 6 - TOTAL_W) / 2);  // centered right of indicators
     /*
-     * 14, not the old 20: the movy header band is 7 rows against the old
-     * header's ~18, so the diagram comes up with it.
+     * The header's right-hand side names the SYNTH, not the screen.
      *
-     * Not further up, though — the LFO tilde and the bypass "B" draw at
-     * BOX_Y - 6, so 11 would have put them at row 5, inside the header band.
-     * 14 lands them at 8-11, one row clear of it. The whole column:
-     *   0-6 header | 8-11 marks | 14-29 boxes | 33-39 label | 44-50 info
-     *   55 rule | 56-63 footer
+     * Once the chain is longer than the five boxes that fit, the diagram
+     * scrolls and the synth can be off-screen — and it is the one position
+     * every chain has and the only landmark in a row of two-letter
+     * abbreviations. "CHAIN" was already obvious from everything else on the
+     * screen; which synth you are building on is not. Cached, so this is not
+     * an IPC read per frame.
      */
-    const BOX_Y = 14;
+    const synthMod = cfg.synth && cfg.synth.module;
+    const headerRight = synthMod
+        ? (getSlotParamCached(selectedSlot, "synth:name", synthMod) || synthMod)
+        : "CHAIN";
+    drawMovyHeader(movy, headerText, headerRight, false);
+
+    const BOX_Y = DIAGRAM_Y;
 
     /* Draw slot indicators - 4 marks in left margin, spanning from below header to footer */
     const INDICATOR_X = 0;
@@ -13644,12 +13755,18 @@ function drawChainEdit() {
         }
     }
 
-    /* Build map of LFO-targeted component keys → which LFOs (1, 2, or both) */
-    const lfoTargets = {};  /* key → {lfo1: bool, lfo2: bool} */
+    /*
+     * Which components an LFO is pointed at. Four IPC reads, fixed — it does
+     * not grow with the chain, because the question is asked of the two LFOs
+     * rather than of each box.
+     */
+    const lfoTargets = {};  /* key -> {lfo1: bool, lfo2: bool} */
     for (let li = 1; li <= 2; li++) {
         if (getSlotParam(selectedSlot, "lfo" + li + ":enabled") === "1") {
             let t = getSlotParam(selectedSlot, "lfo" + li + ":target") || "";
-            if (t === "midi_fx1" || t === "midi_fx2") t = "midiFx";
+            /* The first MIDI FX is keyed "midiFx" in the editor; every other
+             * position is keyed by its model id, which is what the LFO stores. */
+            if (t === "midi_fx1") t = "midiFx";
             if (t) {
                 if (!lfoTargets[t]) lfoTargets[t] = {};
                 lfoTargets[t]["lfo" + li] = true;
@@ -13657,106 +13774,38 @@ function drawChainEdit() {
         }
     }
 
-    /* Draw each component box */
+    /*
+     * The diagram itself -> shared/chain_diagram.mjs, which is pure and can
+     * therefore be rendered into a framebuffer and inspected (see
+     * tests/host/test_chain_diagram.sh). Everything it needs that costs an IPC
+     * read is fetched HERE, once per box, so the module stays testable and the
+     * read count stays visible in one place.
+     */
     const comps = slotChainComponents(selectedSlot);
-    for (let i = 0; i < comps.length; i++) {
-        const comp = comps[i];
-        const x = START_X + i * (BOX_W + GAP);
-        const isSelected = i === selectedChainComponent;
-
-        /* Get abbreviation for this component */
-        let abbrev = "--";
-        if (comp.key === "settings") {
-            abbrev = "*";
-        } else {
+    drawChainDiagram(movy, comps, selectedChainComponent, {
+        allSelected: chainSelected,
+        abbrev: (comp) => {
+            if (comp.kind === "add") return "+";
+            if (comp.kind === "settings") return "*";
             const moduleData = getChainComponentModule(cfg, comp.key);
-            abbrev = moduleData ? getModuleAbbrev(moduleData.module) : "--";
-        }
-
-        /* Draw box:
-         * - If chain selected (position -1): all boxes filled (inverted)
-         * - If individual component selected: that box filled
-         * - Otherwise: outlined box */
-        const fillBox = chainSelected || isSelected;
-        if (fillBox) {
-            fill_rect(x, BOX_Y, BOX_W, BOX_H, 1);
-        } else {
-            draw_rect(x, BOX_Y, BOX_W, BOX_H, 1);
-        }
-
-        /* Draw abbreviation centered in box (original tuned formula) */
-        const textColor = fillBox ? 0 : 1;
-        const textX = x + Math.floor((BOX_W - abbrev.length * 5) / 2);
-        const textY = BOX_Y + 5;
-        print(textX, textY, abbrev, textColor);
-
-        /* Draw bypass 'B' marker above box, same style as the LFO `~N` indicator
-         * (4px-high glyph). Positioned at left so it doesn't collide with the
-         * centered LFO marker when both are present. */
-        let bypassed = false;
-        const bypassKey = chainComponentParamKey(comp.key, "bypassed");
-        if (bypassKey) {
-            bypassed = parseInt(getSlotParam(selectedSlot, bypassKey) || "0", 10) === 1;
-        }
-        if (bypassed) {
-            const bx = x + 1;
-            const by = BOX_Y - 6;
-            /* "B" glyph: ##. / #.# / ##. / ### */
-            set_pixel(bx,     by,     1); set_pixel(bx + 1, by,     1);
-            set_pixel(bx,     by + 1, 1); set_pixel(bx + 2, by + 1, 1);
-            set_pixel(bx,     by + 2, 1); set_pixel(bx + 1, by + 2, 1);
-            set_pixel(bx,     by + 3, 1); set_pixel(bx + 1, by + 3, 1); set_pixel(bx + 2, by + 3, 1);
-        }
-
-        /* Draw LFO indicator above box: ~1, ~2, or ~1+2 using 4px-high tiny digits */
-        const lfoInfo = lfoTargets[comp.key];
-        if (lfoInfo) {
-            const has1 = lfoInfo.lfo1;
-            const has2 = lfoInfo.lfo2;
-            const iy = BOX_Y - 6;  /* 6px above box top (4px glyph + 2px gap) */
-            let cx = x + Math.floor(BOX_W / 2);
-            if (has1 && has2) cx -= 7; /* center ~1+2 */
-            else cx -= 3;              /* center ~N */
-            /* 4px-high tilde squiggle: .... / .#.# / #.#. / .... */
-            set_pixel(cx + 1, iy + 1, 1); set_pixel(cx + 3, iy + 1, 1);
-            set_pixel(cx, iy + 2, 1); set_pixel(cx + 2, iy + 2, 1);
-            let dx = cx + 5;
-            if (has1 && has2) {
-                /* tiny "1": .#. / ##. / .#. / .#. */
-                set_pixel(dx + 1, iy, 1);
-                set_pixel(dx, iy + 1, 1); set_pixel(dx + 1, iy + 1, 1);
-                set_pixel(dx + 1, iy + 2, 1);
-                set_pixel(dx + 1, iy + 3, 1);
-                dx += 3;
-                /* tiny "+": cross centered vertically */
-                set_pixel(dx, iy + 2, 1);
-                set_pixel(dx + 1, iy + 1, 1); set_pixel(dx + 1, iy + 2, 1); set_pixel(dx + 1, iy + 3, 1);
-                set_pixel(dx + 2, iy + 2, 1);
-                dx += 4;
-                /* tiny "2": ##. / ..# / .#. / ### */
-                set_pixel(dx, iy, 1); set_pixel(dx + 1, iy, 1);
-                set_pixel(dx + 2, iy + 1, 1);
-                set_pixel(dx + 1, iy + 2, 1);
-                set_pixel(dx, iy + 3, 1); set_pixel(dx + 1, iy + 3, 1); set_pixel(dx + 2, iy + 3, 1);
-            } else if (has1) {
-                /* tiny "1": .#. / ##. / .#. / .#. */
-                set_pixel(dx + 1, iy, 1);
-                set_pixel(dx, iy + 1, 1); set_pixel(dx + 1, iy + 1, 1);
-                set_pixel(dx + 1, iy + 2, 1);
-                set_pixel(dx + 1, iy + 3, 1);
-            } else {
-                /* tiny "2": ##. / ..# / .#. / ### */
-                set_pixel(dx, iy, 1); set_pixel(dx + 1, iy, 1);
-                set_pixel(dx + 2, iy + 1, 1);
-                set_pixel(dx + 1, iy + 2, 1);
-                set_pixel(dx, iy + 3, 1); set_pixel(dx + 1, iy + 3, 1); set_pixel(dx + 2, iy + 3, 1);
-            }
-        }
-    }
+            return moduleData ? getModuleAbbrev(moduleData.module) : "--";
+        },
+        marks: (comp) => {
+            const lfo = lfoTargets[comp.key];
+            /* One read per DRAWN module box — five at most, because that is
+             * how many fit — rather than one per position in the chain. */
+            const bypassKey = chainComponentParamKey(comp.key, "bypassed");
+            const bypassed = bypassKey
+                ? parseInt(getSlotParam(selectedSlot, bypassKey) || "0", 10) === 1
+                : false;
+            if (!lfo && !bypassed) return null;
+            return { bypassed, lfo1: lfo && lfo.lfo1, lfo2: lfo && lfo.lfo2 };
+        },
+    });
 
     /* Draw component label below boxes */
     const selectedComp = chainSelected ? null : comps[selectedChainComponent];
-    const labelY = BOX_Y + BOX_H + 3;
+    const labelY = BOX_Y + DIAGRAM_BOX_H + 3;
     const label = chainSelected ? "Chain" : (selectedComp ? selectedComp.label : "");
     const labelX = Math.floor((SCREEN_WIDTH - label.length * 5) / 2);
     print(labelX, labelY, label, 1);
@@ -13767,6 +13816,8 @@ function drawChainEdit() {
     if (chainSelected) {
         /* Show patch name when chain is selected */
         infoLine = slots[selectedSlot]?.name || "(no patch)";
+    } else if (selectedComp && selectedComp.kind === "add") {
+        infoLine = selectedComp.section === "midiFx" ? "New MIDI effect" : "New effect";
     } else if (selectedComp && selectedComp.key !== "settings") {
         const moduleData = getChainComponentModule(cfg, selectedComp.key);
         if (moduleData) {
@@ -16076,8 +16127,7 @@ globalThis.tick = function() {
                  * (must stay VIEWS.OVERTAKE_MODULE so the tool keeps ticking). */
                 selectedSlot = _slot;
                 if (typeof updateFocusedSlot === "function") updateFocusedSlot(_slot);
-                selectedChainComponent = lastChainComponent[_slot] || 0;
-                if (typeof loadChainConfigFromSlot === "function") loadChainConfigFromSlot(_slot);
+                restoreChainComponent(_slot);
                 coRunView = VIEWS.CHAIN_EDIT;
                 needsRedraw = true;
             } else {
@@ -16664,8 +16714,7 @@ globalThis.onMidiMessageInternal = function(data) {
                     coRunChainEditSlot = _slot;
                     selectedSlot = _slot;
                     if (typeof updateFocusedSlot === "function") updateFocusedSlot(_slot);
-                    selectedChainComponent = lastChainComponent[_slot] || 0;
-                    if (typeof loadChainConfigFromSlot === "function") loadChainConfigFromSlot(_slot);
+                    restoreChainComponent(_slot);
                     coRunView = VIEWS.CHAIN_EDIT;
                     if (typeof shadow_corun_begin === "function") shadow_corun_begin(CORUN_TARGET_CHAIN_EDIT, _slot, 0);
                     needsRedraw = true;
