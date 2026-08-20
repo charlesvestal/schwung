@@ -37,9 +37,6 @@ import { announce } from '/data/UserData/schwung/shared/screen_reader.mjs';
 /* The live controller, or null when the view is not open. One at a time: the
  * grid always shows a single component, and rebuilding on entry is cheap. */
 let controller = null;
-/* Which io the live controller was built with, so a switch between a module and
- * slot settings rebuilds it rather than silently keeping the old accessors. */
-let controllerIo = null;
 let currentSlot = 0;
 let currentComponent = 'synth';
 
@@ -102,25 +99,14 @@ let hintShownThisSession = false;
  *   Matched by NAME, not index — controller.load rebuilds the page set and
  *   every index can shift (same reason page_nav reanchors by name).
  */
-/*
- * `io` lets a caller supply its own param access instead of the slot/component
- * default. Slot settings needs it: a slot publishes no ui_hierarchy, and its
- * params do not share one prefix (volume is "slot:volume", midi_fx_pre_mode is
- * bare, mpe_mode is derived and not stored at all), so the contract and the
- * mapping are handed in rather than read.
- *
- * The controller is rebuilt when the io changes — it closes over these, so
- * reusing one built for a module would keep reading the module.
- */
-export function enterParamPages(slot, component, prefix, restorePageName, io) {
+export function enterParamPages(slot, component, prefix, restorePageName) {
     currentSlot = slot;
     currentComponent = component;
 
-    if (!controller || controllerIo !== (io || null)) {
-        controllerIo = io || null;
+    if (!controller) {
         controller = createController({
-            getParam: io ? io.getParam : (key) => ctx.getSlotParam(currentSlot, key),
-            setParam: io ? io.setParam : (key, value) => ctx.setSlotParam(currentSlot, key, value),
+            getParam: (key) => ctx.getSlotParam(currentSlot, key),
+            setParam: (key, value) => ctx.setSlotParam(currentSlot, key, value),
             announce,
             /* The list editor marks these with "~"; the grid ticks the cell. */
             isModulated: (key) => (typeof ctx.isParamModulated === 'function'
@@ -167,7 +153,6 @@ export function enterParamPages(slot, component, prefix, restorePageName, io) {
 
 export function exitParamPages() {
     controller = null;
-    controllerIo = null;
 }
 
 export function paramPagesActive() {
@@ -556,15 +541,6 @@ export function handleParamPagesMidi(data) {
     if (todo.action === 'exit') {
         exitParamPages();
         ctx.setView(ctx.VIEWS.CHAIN_EDIT);
-        return true;
-    }
-    if (todo.action === 'menu') {
-        /* The controller never performs an action — the host owns what Save or
-         * Knob Mapping means. Same rule that keeps it out of the editors. */
-        const entry = todo.entry || {};
-        if (entry.action && typeof ctx.runSlotMenuAction === 'function') {
-            ctx.runSlotMenuAction(currentSlot, entry.action);
-        }
         return true;
     }
     if (todo.action === 'open') {
