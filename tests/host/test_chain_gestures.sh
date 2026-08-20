@@ -74,7 +74,7 @@ const order = (list) => list.map((m) => (m ? m.module : "-")).join(",");
 /* ---- the move ---------------------------------------------------------- */
 
 const makeMove = lift("moveChainComponent",
-  ["chainConfigs", "chainComponentId", "parseChainId", "chainMoveBy", "writeChainOrder",
+  ["chainConfigs", "chainComponentId", "parseChainId", "chainMoveBy", "writeChainShape",
    "resetLfoTargetLabels", "invalidateKnobContextCache"]);
 if (!makeMove) process.exit(1);
 
@@ -83,7 +83,7 @@ function move(cfg, key, delta) {
   const written = [];
   let resets = 0;
   const fn = makeMove(cfgs, chainComponentId, parseId, moveBy,
-                      (slot, section, prevList) => written.push({ section, prevList }),
+                      (slot, shape) => written.push(shape),
                       () => { resets++; }, () => {});
   const moved = fn(0, key, delta);
   return { moved, cfg: cfgs[0], written, resets };
@@ -110,12 +110,12 @@ function move(cfg, key, delta) {
   if (order(r.cfg.fx) !== "b,a,c") fail("moving fx1 right gave " + order(r.cfg.fx));
   if (r.written.length !== 1 || r.written[0].section !== "fx")
     fail("the move did not push the fx section to the DSP");
-  /* The OLD list, by object. writeChainOrder tells two instances of the same
-     module apart by identity, and it can only do that if it is handed the
-     entries themselves rather than their names. */
-  const prev = r.written[0].prevList;
-  if (!prev || prev.length !== 3 || prev[0] !== before[0] || prev[1] !== before[1])
-    fail("the move did not hand writeChainOrder the old list BY OBJECT");
+  /* ONE verb, naming the two positions. The DSP permutes its arrays for it and
+     reloads nothing -- a module that moves keeps running, which is why this is
+     no longer a rewrite of the whole section that carried state after it. */
+  const w = r.written[0];
+  if (w.kind !== "move" || w.index !== 0 || w.to !== 1)
+    fail("the move did not ask the DSP to move position 0 to 1, got " + JSON.stringify(w));
   /* An LFO label names a module by the position it was routed to, and the
      positions just changed. */
   if (r.resets !== 1) fail("a move did not reset the LFO target label cache");
@@ -300,23 +300,24 @@ if (makeChoice) {
   const swapped = choose({ midiFx: [], synth: null, fx: mods(["a", "b", "c"]) }, "fx1", "delay");
   if (order(swapped.cfg.fx) !== "delay,b,c")
     fail("swapping fx1 should replace it and move nothing, got " + order(swapped.cfg.fx));
-  if (swapped.reorderSection)
-    fail("a swap asked for a whole-section rewrite, which would reload every module");
+  if (swapped.shape)
+    fail("a swap asked for a shape change, which would renumber the whole section");
 
   const before = mods(["a", "b", "c"]);
   const removed = choose({ midiFx: [], synth: null, fx: before }, "fx1", "");
   if (order(removed.cfg.fx) !== "b,c")
     fail("None on fx1 should remove and COMPACT, got " + order(removed.cfg.fx));
-  if (removed.reorderSection !== "fx")
-    fail("a removal must rewrite the section, or the DSP keeps the old order");
-  /* Captured before the removal, by object -- the removal renumbers everything
-     downstream, and only the old entries themselves say what went where. */
-  if (!removed.prevList || removed.prevList[1] !== before[1])
-    fail("a removal did not hand back the old list BY OBJECT");
+  /* ONE verb naming the position. The DSP unloads it and permutes the rest
+     down, so b and c are renumbered without being reloaded -- their tails keep
+     ringing, which is the whole point. */
+  if (!removed.shape || removed.shape.kind !== "remove" ||
+      removed.shape.section !== "fx" || removed.shape.index !== 0)
+    fail("a removal must ask the DSP to remove that position, got " +
+         JSON.stringify(removed.shape));
 
   const noSynth = choose({ midiFx: [], synth: { module: "sf2" }, fx: mods(["a"]) }, "synth", "");
   if (noSynth.cfg.synth !== null) fail("None on the synth did not clear it");
-  if (noSynth.reorderSection) fail("clearing the synth asked for an FX rewrite");
+  if (noSynth.shape) fail("clearing the synth asked for an FX shape change");
 }
 
 /* ---- the picker: Move rows, so the gesture is not the only way in ------ */

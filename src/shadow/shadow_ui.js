@@ -54,7 +54,7 @@ import { MENU_LIST_X as MOVY_LIST_X, MENU_LIST_Y as MOVY_LIST_Y, MENU_LIST_W as 
     from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
 import { describeLfoTarget } from '/data/UserData/schwung/shared/lfo_target_label.mjs';
 import { emptyChain, parseId as parseChainId, chainComponents, moveBy as chainMoveBy,
-         removeAt as chainRemoveAt, MAX_FX, MAX_MIDI_FX }
+         removeAt as chainRemoveAt, insertAt as chainInsertAt, MAX_FX, MAX_MIDI_FX }
     from '/data/UserData/schwung/shared/chain_model.mjs';
 import { drawChainDiagram, DEFAULT_Y as DIAGRAM_Y, BOX_H as DIAGRAM_BOX_H }
     from '/data/UserData/schwung/shared/chain_diagram.mjs';
@@ -3079,7 +3079,7 @@ function initChainConfigs() {
  *
  * - The user's own edits mark it stale HERE, at every point that writes the
  *   model or the DSP. That is a short list and it is enumerable
- *   (writeChainOrder, the picker, the `+` box) because there are only four
+ *   (writeChainShape, the picker, the `+` box) because there are only four
  *   places in the file that assign `chainConfigs[i]`.
  * - Everything else — a patch restore, a set load, the shim loading a slot
  *   underneath us — is caught by the periodic refreshSlotModuleSignature
@@ -3087,9 +3087,9 @@ function initChainConfigs() {
  *   the pre-existing self-heal; this does not compete with it, it just stops
  *   asking the same question sixty times a second in between.
  *
- * A signature CANNOT be the invalidator for the first kind: writeChainOrder
- * also carries `<id>:state` and re-aims `lfoN:target`, both of which change
- * what a slot does without changing which modules it holds. Nor can object
+ * A signature CANNOT be the invalidator for the first kind: a pure reorder
+ * changes which module is at which position without changing WHICH modules the
+ * slot holds, so the signature is byte-identical across it. Nor can object
  * identity: a picker swap mutates the config IN PLACE.
  */
 let chainConfigFresh = [];
@@ -3146,7 +3146,7 @@ function loadChainConfigFromSlot(slotIndex) {
      * what makes `getComponentParamPrefix` correct — so compacting a hole away
      * on READ would leave the editor addressing fx1's params while the audio
      * ran through fx2. The model compacts on the user's own edit
-     * (removeAt + writeChainOrder), which renumbers the DSP at the same time.
+     * (removeAt + the `remove` verb), which renumbers the DSP at the same time.
      * A legacy patch with a hole therefore draws its hole, once, and closes it
      * the first time the user changes the order.
      */
@@ -3185,213 +3185,60 @@ function loadChainConfigFromSlot(slotIndex) {
     return cfg;
 }
 
-/* The DSP-side id of position `i` in a section, which is also its param
- * prefix. One definition, so the read path and the write path below cannot
- * disagree about what "position 3" is called. */
-function chainSectionId(section, i) {
-    return section === "midiFx" ? `midi_fx${i + 1}` : `fx${i + 1}`;
+/* The DSP's name for a section, which is the prefix its position ids and its
+ * reorder verbs both carry: "midi_fx" or "fx". */
+function chainSectionPrefix(section) {
+    return section === "midiFx" ? "midi_fx" : "fx";
 }
 
 /*
- * Push a section's ORDER to the DSP.
+ * Change a section's SHAPE in the DSP: one write, and nothing is reloaded.
  *
- * There is no "reorder" verb to add: the DSP holds a numbered position per
- * module and keeps fx_count as a high-water mark (chain_host.c —
- * `inst->fx_count = slot + 1` on load, trimmed only while the TRAILING handle
- * is NULL), so a contiguous run plus a cleared tail is the whole contract.
+ * This replaced writeChainOrder, which pushed a whole section as a run of
+ * `<id>:module` writes. Every one of those unloads the position and dlopen()s a
+ * fresh instance (v2_load_audio_fx_slot / v2_load_midi_fx_slot), so renumbering
+ * a chain destroyed and rebuilt every module the renumber touched. Inserting a
+ * MIDI FX at the head rebuilt every MIDI FX behind it; removing a mid-chain
+ * reverb rebuilt everything downstream. writeChainOrder tried to make that
+ * survivable by carrying each module's opaque `<id>:state`, its modulation base
+ * and its LFO routing across the shift, keyed by object identity — a large
+ * amount of careful machinery for something that should not have been happening
+ * at all. A state blob is not an instance: it cannot carry a running
+ * arpeggiator's phase or the tail ringing in a delay. Reported on hardware as
+ * "we can't change phase of a running module by just adding a new one".
  *
- * `prevList` is the section AS IT WAS, and its entries must be the same module
- * OBJECTS the new list holds — which is what the chain model's clones give you
- * for free. Everything below that follows a module rather than a position is
- * driven by that identity, never by the module id, for a reason worth stating
- * plainly: a chain can hold two of the same module. Compare ids and a reorder
- * of `[reverb, reverb]` looks like no change at all — zero writes, each
- * instance keeps the settings of the position it used to be in, and the editor
- * announces a move that never happened.
+ * The DSP now PERMUTES its per-position arrays instead (chain_permute.h), so
+ * the instances keep running and only their index changes. It also re-aims
+ * everything that names a position by string — modulation targets, both LFOs,
+ * the knob mappings — which is why none of that is carried from here any more:
+ * the modulation entry is never destroyed, so its base never needs restoring.
  *
- * Four rules, all load-bearing:
+ * `op` is `{ kind, section, index, to }` with 0-based indices; the wire is
+ * 1-based to match the ids ("fx2"), so the conversion happens here, once.
  *
- * 1. Walk the WHOLE occupied range, never stopping at the first blank.
- *    Stopping early looks right — the run is contiguous, so why keep going? —
- *    and it silently leaks every position past the new end. Shrink a five-FX
- *    chain to three and you clear fx4, break, and leave fx5 loaded and audible
- *    with nothing on screen representing it. The DSP will not save you:
- *    clearing an INTERIOR position leaves the high-water mark where it was.
- *    Both sections have this contract now — the MIDI side used to hide it
- *    behind an unload-all on slot 1, which was removed because at a cap of 8 it
- *    destroyed up to seven neighbours and made a whole-chain rewrite depend on
- *    write ORDER.
- *
- * 2. Write a module id only where the ID CHANGED. A redundant write is not a
- *    no-op: v2_load_audio_fx_slot unloads and reloads unconditionally, so
- *    rewriting the id a position already holds tears down a working instance
- *    for nothing. This is why reordering two of the same module issues no
- *    module writes at all — neither needs reloading, they are the same plugin.
- *
- * 3. CARRY THE STATE, which is a DIFFERENT question from rule 2 and must be
- *    answered separately. A position that is reloaded starts factory-fresh, so
- *    what moved has to bring its settings; but a position that was NOT reloaded
- *    and yet now holds a module that came from somewhere else needs its state
- *    written just the same. Answer only rule 2 and the same-module reorder
- *    silently does nothing.
- *
- *    - READ BEFORE WRITE. The first module write destroys the instance the
- *      state is being read from, so a read afterwards returns the fresh default
- *      and silently "succeeds".
- *    - A position whose occupant did not come from anywhere in the old order —
- *      a picker swap, an appended module — gets NO state. Identity guarantees
- *      that: a blob is opaque and module-specific, and pushing a reverb's into
- *      a delay is not a lost tweak but a corrupted module.
- *
- * 4. CARRY THE MODULATION. An LFO routes by position key ("fx2",
- *    getTargetComponents below), which was safe only while positions never
- *    moved. Left alone, a reorder re-points every LFO at whatever module slid
- *    into the slot it was aimed at, and the chain sounds different afterwards
- *    in a way the user did not ask for and cannot see. A target whose module
- *    left the chain entirely is CLEARED rather than re-aimed — target AND
- *    target_param, so no half-routing is left naming a param of a module that
- *    is no longer anywhere in the chain.
- *
- * 5. CARRY THE MODULATION BASE, which is a FOURTH thing and lives nowhere the
- *    first three look. A modulated param's base does not go into the module's
- *    opaque `:state` blob: it lives in the chain host's modulation table
- *    (`mod_target_state_t.base_value`, keyed by the POSITION id "fx2"), and
- *    unloading a position calls chain_mod_clear_target_entries, which takes
- *    the base with it. So a reverb whose volume was set to 50% and then
- *    modulated came back at 100% after a reorder — the LFO followed it
- *    correctly and drove the wrong base.
- *
- *    - Read it as `<oldId>:<param>:base`, NEVER as `<oldId>:<param>`. While a
- *      target is active the plain key answers the EFFECTIVE value — where the
- *      LFO happens to have pushed it this instant — and carrying that would
- *      write a random point of the LFO sweep in as the new base.
- *    - Identity again: the base is read from the position the module CAME
- *      from and written to the position it went to, so it can only ever land
- *      on the same module. A picker swap inherits nothing.
- *
- * The range comes from the published count rather than from probing the cap:
- * fx_count answers in one IPC read what fx1..fx8 would cost eight of, at
- * ~2.8ms each, on a gesture the user is spinning. The state reads are bounded
- * the same way, to the positions that actually received a moved module, and the
- * two LFO reads happen only when something in this section actually moved.
+ *   insert   open an empty position at `index`, shifting the rest along. The
+ *            caller follows with the ordinary `<id>:module` write; for the one
+ *            audio frame in between the chain has a hole in it, which both the
+ *            audio and the MIDI walk skip per position.
+ *   remove   unload `index` and close the gap.
+ *   move     `index` -> `to`, rotating the span between.
  */
-function writeChainOrder(slotIndex, section, prevList) {
-    const cfg = chainConfigs[slotIndex];
-    if (!cfg || !cfg[section]) return;
-    const list = cfg[section];
-    const prev = prevList || [];
-    const cap = CHAIN_CAP[section];
-    const n = parseInt(getSlotParam(slotIndex,
-        section === "midiFx" ? "midi_fx_count" : "fx_count"), 10);
-    const loaded = (isNaN(n) || n < 0) ? 0 : Math.min(n, cap);
-    /* Past `loaded` the high-water mark guarantees nothing is there, so those
-     * positions need no read to know they are already empty — only the ones
-     * the DSP still counts do. */
-    const end = Math.min(cap, Math.max(loaded, list.length));
-
-    const want = [], have = [];
-    for (let i = 0; i < end; i++) {
-        want.push((list[i] && list[i].module) ? String(list[i].module).toLowerCase() : "");
-        have.push(i < loaded
-            ? String(getSlotParam(slotIndex, `${chainSectionId(section, i)}_module`) || "").toLowerCase()
-            : "");
+function writeChainShape(slotIndex, op) {
+    if (!op || !op.section) return;
+    const prefix = chainSectionPrefix(op.section);
+    if (op.kind === "insert") {
+        setSlotParam(slotIndex, `${prefix}:insert`, String(op.index + 1));
+    } else if (op.kind === "remove") {
+        setSlotParam(slotIndex, `${prefix}:remove`, String(op.index + 1));
+    } else if (op.kind === "move") {
+        setSlotParam(slotIndex, `${prefix}:move`, `${op.index + 1}>${op.to + 1}`);
+    } else {
+        return;
     }
-
-    /* Which old position each module came from — BY IDENTITY. `indexOf` is
-     * unambiguous here because every entry is a distinct object, including two
-     * entries naming the same module. */
-    const carry = [];
-    for (let i = 0; i < end; i++) {
-        if (!list[i]) continue;
-        const from = prev.indexOf(list[i]);
-        if (from < 0 || from === i) continue;
-        carry.push({ to: i, from, state: "" });
-    }
-    const somethingMoved = carry.length > 0 ||
-        prev.some((m) => m && list.indexOf(m) < 0);
-
-    /* Everything this needs to know is read BEFORE the first write — see
-     * rule 3. The LFO targets are not destroyed by a module write, but they are
-     * read here anyway so the whole function has one ordering rule rather than
-     * one per thing it carries. */
-    for (const c of carry) {
-        c.state = getSlotParam(slotIndex, `${chainSectionId(section, c.from)}:state`) || "";
-    }
-    const lfoWrites = [];
-    const baseWrites = [];
-    if (somethingMoved) {
-        for (let li = 1; li <= 2; li++) {
-            const key = `lfo${li}:target`;
-            const at = parseChainId(getSlotParam(slotIndex, key) || "");
-            /* Targets naming the synth, an LFO, or the other section are not
-             * this section's business. */
-            if (!at || at.section !== section) continue;
-            const was = prev[at.index];
-            if (!was) continue;
-            const now = list.indexOf(was);
-            if (now === at.index) continue;
-            lfoWrites.push({ key, val: now >= 0 ? chainSectionId(section, now) : "",
-                             paramKey: `lfo${li}:target_param` });
-            /* A routing being CLEARED has nothing to carry — the module left
-             * the chain and there is no position for its base to land on. */
-            if (now < 0) continue;
-            const pname = getSlotParam(slotIndex, `lfo${li}:target_param`) || "";
-            if (!pname) continue;
-            /* `:base` — see rule 5. Two reads, and only for an LFO that is
-             * actually aimed at a module that actually moved. */
-            const base = getSlotParam(slotIndex,
-                `${chainSectionId(section, at.index)}:${pname}:base`);
-            /* "" is a failed read, not a base of zero: an unserved key answers
-             * with a zeroed buffer, and writing that in would be the same 100%
-             * -> 0% corruption in the other direction. */
-            if (base === null || base === undefined || base === "") continue;
-            baseWrites.push({ key: `${chainSectionId(section, now)}:${pname}`, val: base });
-        }
-    }
-
-    for (let i = 0; i < end; i++) {
-        if (want[i] !== have[i]) {
-            setSlotParam(slotIndex, `${chainSectionId(section, i)}:module`, want[i]);
-        }
-    }
-    /*
-     * The routing moves BEFORE the states, and between the module writes and
-     * them for a reason worth stating.
-     *
-     * Setting `lfoN:target` makes the DSP drop the old modulation source, and
-     * dropping it RESTORES that source's base onto the position it was aimed
-     * at (chain_mod_clear_source, restore_base=1). Do that after the state
-     * writes and the restore lands on top of freshly carried state — visible
-     * whenever two of the SAME module swap places, which issues no module
-     * writes at all and so leaves both live instances (and their live mod
-     * entries) in place. Ahead of the state writes, the restore is either a
-     * no-op (the position was reloaded, so its entries are already gone) or it
-     * writes the value that position already had, and the state write lands
-     * afterwards regardless.
-     */
-    for (const w of lfoWrites) {
-        setSlotParam(slotIndex, w.key, w.val);
-        /* A cleared routing clears BOTH keys. Left alone, `target_param` keeps
-         * naming a param of the module that just left, and any later write of
-         * `target` alone silently revives that half of the routing. */
-        if (!w.val) setSlotParam(slotIndex, w.paramKey, "");
-    }
-    /* After the module writes, because the instance a state is going into does
-     * not exist until its module write has landed. A module that serves no
-     * `state` answers "" and is left alone. */
-    for (const c of carry) {
-        if (c.state) setSlotParam(slotIndex, `${chainSectionId(section, c.to)}:state`, c.state);
-    }
-    /* Last: the state blob was captured while the param was being modulated,
-     * so it carries the effective value and would overwrite the base. */
-    for (const b of baseWrites) setSlotParam(slotIndex, b.key, b.val);
-
     /* The slot the editor is drawing from has just been renumbered underneath
-     * it. Here rather than in the two callers so a third one cannot forget —
-     * and note this fires even when no `:module` write went out (two of the
-     * same module swapping places), because the `:state` and `lfoN:target`
-     * writes above change what the slot DOES without changing which modules it
-     * holds. Nothing keyed on the module signature would notice those. */
+     * it. Here rather than in each caller so a fourth one cannot forget — and
+     * note this matters even though no `<id>:module` write went out, because
+     * nothing keyed on the module signature would notice a pure reorder. */
     invalidateChainConfig(slotIndex);
 }
 
@@ -3427,8 +3274,8 @@ function writeChainOrder(slotIndex, section, prevList) {
  * and each of them is a decision:
  *
  *   null       a REMOVAL. It hands back a whole section to rewrite, and
- *              writeChainOrder owns the routing there because it alone can
- *              tell a module that left from a module that only moved down.
+ *              the DSP owns the routing there because it alone can tell a
+ *              module that left from a module that only moved down.
  *   same id    a reload, not a replacement. The routing still names the module
  *              the user routed, so it stays.
  *   anything   a replacement, INCLUDING filling a position that was empty: a
@@ -3466,8 +3313,11 @@ function clearLfoRoutingForComponent(slotIndex, componentId) {
  * that an EMPTY position does not move — the pending entry a `+` box
  * materialises is exactly that, and dragging a hole around is not a gesture.
  *
- * Compaction and the DSP write happen in the SAME call, so the editor's list
- * and the chain the audio runs through can never disagree about the order.
+ * The model edit and the DSP write happen in the SAME call, so the editor's
+ * list and the chain the audio runs through can never disagree about the order.
+ * The DSP write is ONE verb and reloads nothing — a module that moves keeps
+ * running, which is the difference between reordering a chain and rebuilding it
+ * (see writeChainShape).
  */
 function moveChainComponent(slotIndex, componentKey, delta) {
     const cfg = chainConfigs[slotIndex];
@@ -3483,9 +3333,8 @@ function moveChainComponent(slotIndex, componentKey, delta) {
     const after = next[at.section];
     if (after.length === before.length && after.every((m, i) => m === before[i])) return false;
     chainConfigs[slotIndex] = next;
-    /* `before` is not just the old order, it is the old OBJECTS — which is how
-     * writeChainOrder tells two instances of the same module apart. */
-    writeChainOrder(slotIndex, at.section, before);
+    writeChainShape(slotIndex, { kind: "move", section: at.section,
+                                index: at.index, to: at.index + delta });
     /* An LFO label names a module by the position it was routed to, and both
      * just changed. The knob context self-heals within ~30 ticks via
      * applySlotModuleSignature; this cache does not, so a stale label would sit
@@ -3520,27 +3369,30 @@ function chainMoveEntries(cfg, componentKey) {
 }
 
 /*
- * What a picker choice does to the chain, IN THE MODEL.
+ * What a picker choice does to the chain, IN THE MODEL, and what the DSP owes
+ * for it.
  *
  * The swap/remove distinction lives here because the two sit one entry apart
  * in the same list: `None` is the first row, every module below it is a swap.
  *
  * A swap REPLACES the occupant and moves nothing — resequencing a patch the
  * user only meant to retouch would change the signal path behind their back —
- * so it needs no section rewrite, only the one `<id>:module` write the caller
+ * so it asks for no shape change, only the one `<id>:module` write the caller
  * already makes.
  *
  * `None` on a list position REMOVES and CLOSES THE GAP, which renumbers every
- * module downstream of it. That cannot be expressed as a single write, so it
- * hands back the section to rewrite. `None` on the synth is a clear, not a
- * removal: the synth has no neighbours to renumber.
+ * module downstream of it. That is a SHAPE change, and it goes to the DSP as
+ * one `remove` verb: the module leaving is unloaded, and everything behind it
+ * is renumbered by permuting the arrays rather than by being rebuilt (see
+ * writeChainShape). `None` on the synth is a clear, not a removal: the synth
+ * has no neighbours to renumber.
  *
  * `replaced` is the module id that was there BEFORE, for the two branches that
  * write a single position. The caller needs it to decide whether any LFO aimed
  * at that position is still meaningful — see clearLfoRoutingForComponent. The
- * removal branch does not report one: writeChainOrder owns the routing for a
- * whole-section rewrite and can tell a removal from a move, which one position
- * in isolation cannot.
+ * removal branch does not report one: the DSP re-aims the routings itself
+ * across a permutation, and it alone can tell a module that LEFT from one that
+ * only moved along, which one position in isolation cannot.
  */
 function applyPickerChoiceToChain(cfg, componentKey, moduleId) {
     const id = chainComponentId(componentKey);
@@ -3549,18 +3401,127 @@ function applyPickerChoiceToChain(cfg, componentKey, moduleId) {
     const replaced = (before && before.module) ? String(before.module) : "";
     if (!moduleId) {
         if (at) {
-            /* Captured BEFORE the removal, and by object rather than by name:
-             * writeChainOrder needs the old entries themselves to work out
-             * which module ended up where. */
-            const prevList = (cfg[at.section] || []).slice();
-            return { cfg: chainRemoveAt(cfg, id), reorderSection: at.section, prevList,
-                     replaced: null };
+            return { cfg: chainRemoveAt(cfg, id), replaced: null,
+                     shape: { kind: "remove", section: at.section, index: at.index } };
         }
         setChainComponentModule(cfg, componentKey, null);
-        return { cfg, reorderSection: null, prevList: null, replaced };
+        return { cfg, shape: null, replaced };
     }
     setChainComponentModule(cfg, componentKey, { module: moduleId, params: {} });
-    return { cfg, reorderSection: null, prevList: null, replaced };
+    return { cfg, shape: null, replaced };
+}
+
+/*
+ * The position a `+` box opened, which exists ONLY IN THE MODEL.
+ *
+ * Clicking `+` materialises an empty entry and opens the picker on it; nothing
+ * is loaded and NOTHING IS WRITTEN until the picker resolves, so until then the
+ * DSP has never heard of it. Two things have to know it is there, and they are
+ * different problems:
+ *
+ *  - THE CONFIRM PATH, because where the entry went decides what the DSP is
+ *    asked for. The audio `+` appends and renumbers nothing, so the single
+ *    `<id>:module` write an ordinary pick makes is right. The MIDI `+` is the
+ *    LEFTMOST box on screen and inserts at the head, which pushes midi_fx1 to
+ *    midi_fx2 and every other MIDI FX along with it — that single write would
+ *    land on midi_fx1 and CLOBBER the module already there, leaving the rest
+ *    stale. See withPendingChainInsert.
+ *
+ *  - EVERY WAY OUT of the picker, because an entry that is not dropped leaves
+ *    the editor drawing a box the user cancelled. See cancelPendingChainInsert.
+ *
+ * `count` is how long the section was BEFORE the entry, which is the whole
+ * question the confirm path asks of it: an entry at the end is an append and
+ * needs nothing, an entry anywhere else renumbers.
+ */
+let pendingChainInsert = null;
+
+/** Remember a `+` box's new position until the picker resolves it. */
+function beginPendingChainInsert(slotIndex, section, index, count) {
+    pendingChainInsert = { slot: slotIndex, section, index, count,
+                           key: chainEditorKeyAt(section, index) };
+}
+
+/*
+ * The pending insert a picker choice belongs to, or null.
+ *
+ * Keyed on the slot AND the position, so a pick made somewhere else can never
+ * adopt it — adopting one would turn an ordinary swap into a renumber of an
+ * edit that never happened.
+ *
+ * The emptiness check is what makes the record SELF-EXPIRING, and it is the
+ * only forgetting mechanism on the confirm path deliberately: once the pick has
+ * landed the position is occupied, so the record cannot be claimed again, and a
+ * second "clear it here too" would be a rule that has to agree with this one
+ * forever. It also covers the case nothing else could — anything that reloaded
+ * the slot underneath the picker (a set load, the shim loading the slot) has
+ * already dropped the hole, and the record left behind would be a lie. It costs
+ * no IPC: the config it reads is the cached one.
+ *
+ * The CANCEL paths still clear explicitly, because backing out leaves the
+ * position empty and there is nothing for this to notice.
+ */
+function pendingChainInsertFor(slotIndex, componentKey) {
+    const p = pendingChainInsert;
+    if (!p || p.slot !== slotIndex || p.key !== componentKey) return null;
+    if (getChainComponentModule(chainConfigs[slotIndex], componentKey)) return null;
+    return p;
+}
+
+/*
+ * Drop a pending position WITHOUT WRITING ANYTHING.
+ *
+ * The model is discarded rather than repaired: loadChainConfigFromSlot reads the
+ * section back from the DSP, which never heard of the entry, so the reload IS
+ * the drop — wherever in the list it sat. That matters now that it can sit at
+ * the HEAD: the old "trailing empties are dropped on read" reasoning only ever
+ * covered the appending `+`, and a leading hole is deliberately KEPT by the
+ * reader (see loadChainConfigFromSlot) because a hole in front of a loaded
+ * module is a real thing a legacy patch can hold.
+ *
+ * The selection goes back to the `+` the user pressed: it is where they were
+ * standing, and it is the one position guaranteed to still exist afterwards.
+ */
+function cancelPendingChainInsert() {
+    const p = pendingChainInsert;
+    pendingChainInsert = null;
+    if (!p) return;
+    loadChainConfigFromSlot(p.slot);
+    if (p.slot !== selectedSlot) return;
+    const at = slotChainComponentIndex(p.slot,
+        p.section === "midiFx" ? "add_midi" : "add_fx");
+    if (at >= 0) {
+        selectedChainComponent = at;
+        lastChainComponent[p.slot] = at;
+    }
+}
+
+/*
+ * Fold a pending `+` insert into what the picker choice asks the DSP for.
+ *
+ * An insert with anything to its RIGHT shifts those positions along, so the DSP
+ * is asked to OPEN A HOLE there first (`<section>:insert`) and the module write
+ * then lands in it. Without that, the single `<id>:module` write would land on
+ * the position the shift was supposed to vacate and overwrite the module
+ * already there.
+ *
+ * The hole is opened by permuting the section's arrays, so the modules being
+ * pushed along are not reloaded — they keep their instance, and with it their
+ * phase, their tails, their live modulation entries and the base values inside
+ * them. That is why nothing is carried from here.
+ *
+ * `replaced` is dropped for the same reason a removal drops it: the DSP re-aims
+ * position routings across the permutation itself, and it alone can tell a
+ * module that left from one that only moved along.
+ *
+ * An APPEND is deliberately left alone. Nothing is to its right, so nothing
+ * shifts, and the module write on its own already grows the section.
+ */
+function withPendingChainInsert(choice, pending) {
+    if (!choice || !pending) return choice;
+    if (pending.index >= pending.count) return choice;
+    return { cfg: choice.cfg, replaced: null,
+             shape: { kind: "insert", section: pending.section, index: pending.index } };
 }
 
 /*
@@ -8019,9 +7980,14 @@ function applyComponentSelection() {
     const selected = availableModules[selectedModuleIndex];
 
     if (!comp || !isChainModuleKey(comp.key)) {
+        cancelPendingChainInsert();
         setView(VIEWS.CHAIN_EDIT);
         return;
     }
+
+    /* Was this picker opened from a `+` box? Read BEFORE the choice is applied,
+     * because applying it fills the very hole this recognises. */
+    const pending = pendingChainInsertFor(selectedSlot, comp.key);
 
     /* Check if user selected this component's User Presets manager */
     if (selected && selected.id === "__user_presets__") {
@@ -8058,9 +8024,28 @@ function applyComponentSelection() {
      * which renumbers everything downstream and so cannot be expressed as the
      * single `<id>:module` write below — applyPickerChoiceToChain says which
      * section, if any, has to be rewritten whole. */
+    const picked = selected && selected.id ? selected.id : "";
+
+    /*
+     * `None` from a `+` box is a CANCEL, not a removal.
+     *
+     * The position it would remove was never written, so there is nothing to
+     * renumber — and running it through the removal path would be actively
+     * wrong: that path sends `<section>:remove` for a position the DSP does not
+     * have, which would unload and compact away a module the user never
+     * touched. The cheapest correct answer is the same one backing out gives:
+     * write nothing.
+     */
+    if (pending && !picked) {
+        cancelPendingChainInsert();
+        setView(VIEWS.CHAIN_EDIT);
+        needsRedraw = true;
+        return;
+    }
+
     const cfg = chainConfigs[selectedSlot] || createEmptyChainConfig();
-    const choice = applyPickerChoiceToChain(cfg, comp.key,
-                                            selected && selected.id ? selected.id : "");
+    const choice = withPendingChainInsert(
+        applyPickerChoiceToChain(cfg, comp.key, picked), pending);
     chainConfigs[selectedSlot] = choice.cfg;
     /* A swap MUTATES `cfg` in place and `None` hands back a different object,
      * so neither identity nor the module signature can be what notices this.
@@ -8080,7 +8065,7 @@ function applyComponentSelection() {
     resetLfoTargetLabels();
 
     /* Apply to DSP - map component key to param key */
-    const moduleId = selected && selected.id ? selected.id : "";
+    const moduleId = picked;
     const paramKey = chainComponentParamKey(comp.key, "module") || "";
 
     /* Feedback gate: if the picked module pulls line-in, warn about speakers.
@@ -8119,14 +8104,25 @@ function applyComponentSelection() {
 }
 
 function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, choice) {
-    const reorderSection = choice && choice.reorderSection;
-    /* A removal compacted the list, so every position from the removed one
-     * onwards now holds a different module — one write cannot say that.
-     * writeChainOrder rewrites the section, clears the whole tail, and carries
-     * each surviving module its state and its modulation routing; the single
-     * write below is for everything else, where exactly one position changed. */
-    if (reorderSection) {
-        writeChainOrder(slotIndex, reorderSection, choice.prevList);
+    /*
+     * A SHAPE change first, if the choice asked for one.
+     *
+     * A removal compacts the list and an insert opens a hole in it, and either
+     * way every position past the edit is renumbered — which one `<id>:module`
+     * write cannot say, and which used to be expressed as a rewrite of the
+     * whole section that reloaded each of those modules in passing. It is now
+     * one verb that permutes the DSP's arrays and reloads nothing
+     * (writeChainShape).
+     *
+     * A removal is COMPLETE here: the verb unloads the position itself, so
+     * there is no module write to follow. An insert only opens the hole, and
+     * the module write below fills it — hence `insert` falling through rather
+     * than returning.
+     */
+    const shape = choice && choice.shape;
+    if (shape) writeChainShape(slotIndex, shape);
+    if (shape && shape.kind === "remove") {
+        /* nothing more to write: the verb did the unload */
     } else if (paramKey) {
         if (typeof host_log === "function") host_log(`applyComponentSelection: slot=${slotIndex} param=${paramKey} module=${moduleId}`);
         /*
@@ -8146,12 +8142,14 @@ function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, c
         if (!success) {
             print(2, 50, "Failed to apply", 1);
         }
+    }
 
-        /* Track component selection for analytics */
-        if (moduleId && typeof host_track_event === "function") {
-            host_track_event('module_loaded', '"module_id":"' + moduleId + '","source":"picker","component":"' + comp.key + '"');
-        }
-
+    /* Track component selection for analytics. Outside the branches, because a
+     * `+` that INSERTS loads a module through the section rewrite and would
+     * otherwise be the one way of adding one that reports nothing. `moduleId`
+     * is empty for a removal, which is what still keeps this to loads. */
+    if (moduleId && typeof host_track_event === "function") {
+        host_track_event('module_loaded', '"module_id":"' + moduleId + '","source":"picker","component":"' + comp.key + '"');
     }
 
     /* Force sync chainConfigs from DSP and reset caches after module change.
@@ -8165,7 +8163,7 @@ function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, c
      * its end — and the CHAIN_EDIT handlers read `comps[selection].key` without
      * checking. One removal can only ever overshoot by one, but the clamp is
      * here rather than in each of them. */
-    if (slotIndex === selectedSlot && reorderSection) {
+    if (slotIndex === selectedSlot && shape) {
         const len = slotChainComponents(slotIndex).length;
         if (selectedChainComponent >= len) selectedChainComponent = len - 1;
         lastChainComponent[slotIndex] = selectedChainComponent;
@@ -13153,15 +13151,23 @@ function handleSelect() {
                 const comp = slotChainComponents(selectedSlot)[selectedChainComponent];
 
                 /*
-                 * A `+` box: open the picker on a NEW position at that end.
+                 * A `+` box: open the picker on a NEW position WHERE THE BOX IS
+                 * DRAWN.
                  *
-                 * The position is materialised here as a trailing empty entry
-                 * rather than written to the DSP — nothing is loaded yet, and
-                 * the id it will take (`fx${n+1}`) is exactly what the picker
-                 * writes on the way out. Backing out instead leaves it to be
-                 * dropped by the next loadChainConfigFromSlot, which discards
-                 * trailing empties. That is why the pending entry survives:
-                 * COMPONENT_SELECT does not reload the slot.
+                 * The two boxes sit at opposite ends of the diagram — the MIDI
+                 * one is the LEFTMOST box, ahead of every MIDI FX, and the audio
+                 * one comes after the last FX — so the audio `+` appends and the
+                 * MIDI `+` inserts at the head. Sharing one append made the MIDI
+                 * side put the new module at the far end of the section from the
+                 * button that was pressed, nearest the synth. The asymmetry is
+                 * the rule, not an exception to it.
+                 *
+                 * The position is materialised in the MODEL only. Nothing is
+                 * written here: a head insert renumbers midi_fx1 to midi_fx2 and
+                 * so on, and it is the picker's confirm that owes the DSP that
+                 * whole-section rewrite (withPendingChainInsert). Backing out
+                 * writes nothing at all, which is why the record of the pending
+                 * position is kept rather than inferred.
                  */
                 if (comp && comp.kind === "add") {
                     const cfg = chainConfigs[selectedSlot] || createEmptyChainConfig();
@@ -13169,20 +13175,20 @@ function handleSelect() {
                         announce(`${comp.label} full`);
                         break;
                     }
-                    cfg[comp.section] = cfg[comp.section].concat([null]);
-                    chainConfigs[selectedSlot] = cfg;
+                    const at = comp.section === "midiFx" ? 0 : cfg[comp.section].length;
+                    beginPendingChainInsert(selectedSlot, comp.section, at,
+                                            cfg[comp.section].length);
+                    chainConfigs[selectedSlot] = chainInsertAt(cfg, comp.section, at, null);
                     /* The pending entry exists only in the model, so the cache
                      * is stale the moment it is added — and stale in BOTH
-                     * directions: backing out of the picker is supposed to
-                     * drop it, and it is a reload that drops it (trailing
-                     * empties are discarded on read). Without this the editor
-                     * would come back still drawing a `+` that was cancelled. */
+                     * directions: backing out of the picker is supposed to drop
+                     * it, and it is a reload that drops it (the DSP never held
+                     * it). Without this the editor would come back still drawing
+                     * a `+` that was cancelled. */
                     invalidateChainConfig(selectedSlot);
                     enterComponentSelect(selectedSlot,
                         slotChainComponentIndex(selectedSlot,
-                            comp.section === "midiFx" && cfg.midiFx.length === 1
-                                ? "midiFx"
-                                : `${comp.section === "midiFx" ? "midi_fx" : "fx"}${cfg[comp.section].length}`));
+                            chainEditorKeyAt(comp.section, at)));
                     break;
                 }
 
@@ -13910,7 +13916,12 @@ function handleBack() {
             }
             break;
         case VIEWS.COMPONENT_SELECT:
-            /* Return to chain edit */
+            /* Return to chain edit. A picker opened from a `+` box leaves with
+             * the position it materialised — and with the RECORD of it, which
+             * matters more: left set, the next ordinary swap at that same key
+             * would be mistaken for the insert and rewritten as a renumber
+             * of an edit that never happened. */
+            cancelPendingChainInsert();
             setView(VIEWS.CHAIN_EDIT);
             announce("Chain Editor");
             needsRedraw = true;
