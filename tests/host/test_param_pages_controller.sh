@@ -104,15 +104,23 @@ Promise.all([
     if (settled < turned) fail("a stale read dragged the value back: " + turned + " -> " + settled);
   }
 
-  /* ---- 5. an opaque param cannot be turned, but can be opened ---------- */
+  /* ---- 5. an OPAQUE param cannot be turned, but can be opened ---------- */
   {
     const { dev, ctl } = setup("mrdrums");
+    /* Find a genuinely OPAQUE param — one a knob cannot drive. It is no longer
+     * on the first page: mrdrums pad_start is a ranged wav_position and now
+     * classifies as a turnable number, so the search walks the page set to the
+     * filepath on "Pad Settings". */
     let slot = -1;
-    for (let i = 0; i < 8; i++) {
-      const m = ctl.metaAt(i);
-      if (m && m.kind === "opaque") { slot = i; break; }
+    for (let p = 0; p < ctl.pages.length && slot < 0; p++) {
+      ctl.goToPage(p);
+      if (!ctl.page || ctl.page.kind !== "knobs") continue;
+      for (let i = 0; i < 8; i++) {
+        const m = ctl.metaAt(i);
+        if (m && m.kind === "opaque") { slot = i; break; }
+      }
     }
-    if (slot < 0) fail("mrdrums page 1 should hold an opaque param");
+    if (slot < 0) fail("mrdrums should hold an opaque param on some page");
     dev.resetCounters();
     ctl.onKnobTurn(slot, 1, 1000);
     if (dev.writes.length) fail("turning an opaque param wrote " + JSON.stringify(dev.writes[0]));

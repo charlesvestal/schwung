@@ -204,7 +204,7 @@ Promise.all([
     V.exitParamPages();
   }
 
-  /* ---- 6. an opaque param is handed to the existing editor -------------- */
+  /* ---- 6. a DIVABLE param is handed to the existing editor -------------- */
   {
     const dev2 = D.createFakeDevice({ id: "mrdrums" });
     C.ctx.getSlotParam = (slot, key) => dev2.getParam(key);
@@ -214,7 +214,9 @@ Promise.all([
 
     const page = V.currentParamPage();
     if (!page) fail("no page for mrdrums");
-    /* Hold the knob whose param a knob cannot turn, then click it. */
+    /* Hold the knob whose param opens an editor, then click it. Note this is
+     * no longer the same as "a knob cannot turn it": mrdrums pad_start is a
+     * ranged wav_position, so it is turnable AND divable. */
     let slot = -1;
     for (let i = 0; i < 8; i++) {
       const before = opened.length;
@@ -223,9 +225,11 @@ Promise.all([
       if (opened.length > before) { slot = i; break; }
       V.handleParamPagesMidi([0x80, i, 0]);
     }
-    if (slot < 0) fail("clicking a held opaque param never reached the existing editor");
+    if (slot < 0) fail("clicking a held divable param never reached the existing editor");
     const [, key, kind] = opened[opened.length - 1];
-    if (kind !== "opaque") fail("handed a non-opaque param to the editor: " + kind);
+    const handed = V.paramPagesController
+      ? V.paramPagesController().metaAt(slot) : null;
+    if (handed && !handed.divable) fail("handed a non-divable param to the editor: " + kind);
     if (!/^synth:/.test(key)) fail("the editor was handed an unprefixed key: " + key);
     V.exitParamPages();
   }

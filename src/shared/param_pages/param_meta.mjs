@@ -163,10 +163,37 @@ function normalize(key, raw) {
         meta.step = step !== null && step > 0 ? step : 0.01;
     }
 
-    meta.kind = OPAQUE_TYPES.has(type) ? KIND_OPAQUE
+    /*
+     * DIVABLE and OPAQUE are different questions, and conflating them was a bug.
+     *
+     *   opaque  = a knob cannot drive this at all      (filepath, canvas, string)
+     *   divable = clicking it opens an editor          (all of the above, AND
+     *                                                   wav_position)
+     *
+     * granny declares
+     *   {"key":"position","type":"wav_position","min":0,"max":1,"step":0.01}
+     * — a number with a full range, which a knob can obviously turn, that ALSO
+     * has a waveform scrubber worth opening. Marking it opaque made the knob
+     * dead and forced a trip through the editor to move a value the encoder was
+     * sitting on. Both wav_position params in the fleet are ranged like this.
+     *
+     * So a ranged wav_position is a NUMBER that happens to be divable. Every
+     * other opaque type stays opaque, and is divable too — there is nothing else
+     * to do with it.
+     */
+    const opaqueType = OPAQUE_TYPES.has(type);
+    const ranged = typeof meta.min === "number" && typeof meta.max === "number"
+                   && meta.max > meta.min;
+    meta.divable = opaqueType;
+    meta.kind = (opaqueType && !(type === "wav_position" && ranged)) ? KIND_OPAQUE
               : type === "enum" ? KIND_ENUM
               : KIND_NUMBER;
     return meta;
+}
+
+/** True when clicking this param should open an editor the grid does not own. */
+export function isDivable(meta) {
+    return !!meta && !!meta.divable;
 }
 
 /** True when a knob can drive this param at all. */
