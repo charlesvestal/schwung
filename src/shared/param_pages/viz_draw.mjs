@@ -497,9 +497,31 @@ export function lfoShapeSample(shape, t) {
             return -1 + (ph - 0.75) * 4;
         case 2: return ph * 2 - 1;
         case 3: return ph < 0.5 ? 1 : -1;
-        case 4: { const steps = [0.3, -0.7, 0.85, -0.35]; return steps[Math.floor(ph * steps.length) % steps.length]; }
+        /*
+         * SAMPLE AND HOLD: a flat step per quarter cycle, at a level that does
+         * not repeat. It used to cycle a fixed four-value table, so every cycle
+         * drew the identical staircase and it read as a periodic pattern rather
+         * than as random. Hashing the ABSOLUTE step index (t, not ph) makes each
+         * step independent while staying perfectly stable frame to frame.
+         */
+        case 4: {
+            const k = Math.floor(t * 4);
+            return ((((k * 2654435761) >>> 0) % 2000) / 1000) - 1;
+        }
         case 6: return 1 - ph * 2;
         case 7: { const k = Math.floor(ph * 37); return ((((k * 2654435761) >>> 0) % 2000) / 1000) - 1; }
+        /*
+         * SWISHY, Schwung's random WALK (src/host/lfo_common.h): each cycle it
+         * interpolates from where it was to a fresh random target. Not noise —
+         * noise is what it drew before, and the two look nothing alike.
+         */
+        case 8: {
+            const c = Math.floor(t);
+            const f = t - c;
+            const at = (i) => ((((i * 2654435761) >>> 0) % 2000) / 1000) - 1;
+            const a0 = at(c), a1 = at(c + 1);
+            return a0 + (a1 - a0) * f;
+        }
         default: return Math.sin(ph * 2 * Math.PI);
     }
 }
@@ -513,6 +535,11 @@ function lfoShapeIdOf(text) {
     if (/^(sh|samplehold|rnd1|s\+h)$/.test(n)) return 4;
     if (/^(rampdown|sawdown)$/.test(n)) return 6;
     if (/^(noise|rand|rnd|random|smoothrandom)$/.test(n)) return 7;
+    /* Schwung's own sixth shape (src/host/lfo_common.h): a random WALK that
+     * interpolates toward a fresh target each cycle. The smooth-random
+     * silhouette is what that looks like; without this it fell through to the
+     * default and drew a sine, which is a different waveform entirely. */
+    if (/^(swishy|swish|drunk|randomwalk)$/.test(n)) return 8;
     return 0;
 }
 
@@ -587,29 +614,78 @@ function drawLinearWave(ctx, x0, xEnd, shape, cycles, phase, yOf, color = 1) {
  */
 export function drawLfo(ctx, rect, roles, values, metaIndex) {
     const x0 = rect.x, xEnd = rect.x + rect.w;
-    const { topY, botY, midY: baseY, amp: fullAmp } = band(rect);
+    const { topY, botY, midY, amp: fullAmp } = band(rect);
     const spanW = xEnd - x0;
 
     const shape = lfoShapeIdOf(optionText(metaIndex, roles.shape, values));
     const rateFrac = frac(metaIndex, roles.rate, values);
-    const depthFrac = frac(metaIndex, roles.depth, values);
     const phase = roles.phase ? frac(metaIndex, roles.phase, values) : 0;
-    const cycles = 1 + rateFrac;                    // 1..2, matching Movy's default range
-    const amp = Math.max(0.15, depthFrac) * fullAmp;
+
+    /*
+     * DEPTH IS SIGNED. `frac` normalises min..max onto 0..1, which for a
+     * bipolar -1..1 depth put ZERO at half amplitude and -100% at nearly flat —
+     * exactly backwards. Amplitude is |depth| and a negative depth INVERTS the
+     * wave, which is what a negative depth does to the modulation.
+     */
+    const depthMeta = roles.depth ? metaIndex.getOrGuess(roles.depth) : null;
+    const depthRaw = (roles.depth && values) ? Number(values[roles.depth]) : NaN;
+    const depthScale = depthMeta
+        ? Math.max(Math.abs(Number(depthMeta.min) || 0), Math.abs(Number(depthMeta.max) || 1)) || 1
+        : 1;
+    const depthSigned = Number.isFinite(depthRaw)
+        ? Math.max(-1, Math.min(1, depthRaw / depthScale))
+        : (frac(metaIndex, roles.depth, values) * 2 - 1);
+    const depthFrac = Math.abs(depthSigned);
+
+    /*
+     * RATE HAS TO LOOK LIKE RATE. It used to draw 1..2 cycles across the whole
+     * width, so a 20 Hz LFO looked almost identical to a 0.1 Hz one — the number
+     * changed and the picture did not. Up to eight cycles now, on a square-root
+     * curve because the musically useful rates all live in the bottom of a
+     * linear 0.1..20 Hz range and would otherwise be indistinguishable.
+     */
+    const cycles = 1 + Math.sqrt(Math.max(0, Math.min(1, rateFrac))) * 7;
+
+    /*
+     * The BASELINE says which way the modulation goes.
+     *
+     * Bipolar swings either side of the value you dialled, so the baseline sits
+     * mid-band and the wave straddles it. Unipolar only ever adds, so the
+     * baseline drops to the bottom and the wave sits ON it. That is the one
+     * thing about an LFO you can read across a room, and it costs a graphic
+     * nothing — the polarity control keeps its own cell on the other row and
+     * lends its value through a span:false role.
+     *
+     * Defaults to bipolar when no polarity role is declared, which is what
+     * every existing caller of this graphic gets.
+     */
+    const unipolar = roles.polarity
+        ? /^uni/i.test(String(optionText(metaIndex, roles.polarity, values) || ""))
+        : false;
+    const depthSign = depthSigned < 0 ? -1 : 1;
+    const baseY = unipolar ? botY : midY;
+    /* Unipolar has the whole band to rise through, bipolar half of it each way. */
+    const amp = Math.max(0.15, depthFrac) * (unipolar ? (botY - topY) : fullAmp);
 
     dottedH(ctx, x0, xEnd - 1, baseY);
 
     const yAt = (px) => {
         const u = (px - x0) / spanW;
         const t = u * cycles + phase;
-        return Math.round(baseY - lfoShapeSample(shape, t) * amp);
+        const sample = lfoShapeSample(shape, t) * depthSign;
+        /* Map [-1,1] into [0,1] for unipolar: it offsets upward only. */
+        const v = unipolar ? (sample + 1) / 2 : sample;
+        return Math.round(baseY - v * amp);
     };
 
     /* A ramp is straight between its breakpoints, so draw it as real segments;
      * everything else goes per column, because a coarse uniform polyline turns
      * a wave into a different shape. See drawStepCurve. */
     if (LFO_LINEAR_BREAKPOINTS[shape]) {
-        const yOf = (sample) => Math.round(baseY - sample * amp);
+        const yOf = (raw) => {
+            const sample = raw * depthSign;
+            return Math.round(baseY - (unipolar ? (sample + 1) / 2 : sample) * amp);
+        };
         drawLinearWave(ctx, x0, xEnd - 1, shape, cycles, phase, yOf, 1);
     } else {
         drawStepCurve(ctx, x0, xEnd - 1, yAt, 1);
