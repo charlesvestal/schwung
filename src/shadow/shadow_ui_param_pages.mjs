@@ -29,7 +29,7 @@
 import { ctx } from './shadow_ui_ctx.mjs';
 import { createController } from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
 import { decodeInput, applyInput } from '/data/UserData/schwung/shared/param_pages/page_input.mjs';
-import { PAGE_KNOBS } from '/data/UserData/schwung/shared/param_pages/page_plan.mjs';
+import { PAGE_KNOBS, PAGE_MENU } from '/data/UserData/schwung/shared/param_pages/page_plan.mjs';
 import { LAYOUT_BAR, LAYOUT_DIAL } from '/data/UserData/schwung/shared/param_pages/render_page.mjs';
 import { LAYOUT_MOVY } from '/data/UserData/schwung/shared/param_pages/render_page_movy.mjs';
 import { announce } from '/data/UserData/schwung/shared/screen_reader.mjs';
@@ -453,7 +453,19 @@ export function drawParamPages() {
     /* The section picker is drawn over whatever page you were on, including a
      * non-grid one, so it is checked before the page kind. */
     const page = controller.page;
-    if (!controller.pickerOpen && (!page || page.kind !== PAGE_KNOBS)) return false;
+    /*
+     * PAGE_MENU is drawn by the controller (renderPicker in the page chrome), so
+     * it must NOT be refused here. Refusing it made the host run its fallback —
+     * enterHierarchyEditorFromParamPages — which enters the hierarchy editor for
+     * the component. For slot settings that component is "slot", which has no
+     * ui_hierarchy, so jogging to the actions page ejected straight to
+     * "No presets".
+     *
+     * The other non-grid kinds (preset, items, modes, child) genuinely belong to
+     * screens this file does not own, and still hand off.
+     */
+    const drawable = page && (page.kind === PAGE_KNOBS || page.kind === PAGE_MENU);
+    if (!controller.pickerOpen && !drawable) return false;
 
     const nowMs = Date.now();
     if (nowMs - lastDrawMs < MOVY_REDRAW_MIN_MS) return true;
