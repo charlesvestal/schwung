@@ -82,43 +82,53 @@ Row 1 is what the modulator *is*; row 2 draws its motion across all four cells
 
 ## Open bugs
 
-### 1. Shape cell stays highlighted after its value changes
-**Reported, not yet diagnosed.** Distinct from the target hand-off (fixed): the
-value *does* change, the highlight persists. Suspect the touch note-off is lost
-somewhere other than a hand-off, or `touchOrder` is not cleared on a re-plan —
-note `replanIfCondition` rebuilds `s.pages` and resets `s.cursor` but leaves
-`touchOrder` holding slot indices that may now mean different params. **Start
-there**: a re-plan should probably clear touch, since slot→param mapping moved.
+*(Worked 2026-08-20 — commits `9cd48a66`..`c779c945`. What is left is below.)*
 
-### 2. An LFO target shows its raw key
-Holding `TARG` shows `fx1` (rendered `FX`), not "Freeverb — Room Size". Opaque
-params display their stored value verbatim, which for a target is an internal
-key. **Systemic**: opaque/string params need a display mapping, the way the list
-builds one from `lfoCtx.getTargetComponents()`. Probably a `display_from` hook in
-the contract, or an io-supplied formatter.
+### ~~1. Shape cell stays highlighted after its value changes~~ — FIXED
+Not `touchOrder` surviving a re-plan. A knob TURN claims the header (that is
+what "a turn claims the header" bought) even when nothing is held, and a
+turn-claim has no note-off coming — so it never expired. Reproduced in the
+controller harness: turn once without touching, highlighted forever. An unheld
+claim now times out (`TURN_CLAIM_MS`); a held one is exempt twice over.
 
-### 3. `midiFx` abbreviation reads the wrong key
-`shadow_ui_param_pages.mjs` builds `` `${currentComponent}_module` ``, which for
-component `midiFx` is `midiFx_module` — the real key is `midi_fx1_module` (that
-is what `getComponentParamPrefix` exists for). So a MIDI FX header falls back to
-`--`. One-line fix, use the prefix.
+### ~~2. An LFO target shows its raw key~~ — FIXED, and it was not only the grid
+The premise in this doc was wrong: the LIST did not build a display mapping
+either. `getLfoDisplayValue` printed `target + ":" + param`, so the row read
+`fx1:room_size` — the grid just truncated the same raw key harder.
 
-### 4. Coarse enums are stiff
-A two-option enum needs ~4 detents, because the knob engine works on accumulated
-motion and the whole range is 1. Correct once it moves, but Sync/Mute/Solo feel
-broken. Worth a minimum-step rule for small ranges.
+`shared/lfo_target_label.mjs` now resolves the pair to three forms (cell,
+header, list row) from the arrays the picker already builds, and both surfaces
+plus the screen reader use it. Reaching the grid added one seam: an io may
+supply `formatValue(fullKey, raw, surface)` — see the "Values only the host can
+read" section of `shared/param_pages/README.md`. **Cache on the host side**:
+resolving one target is ~12 IPC reads, and it is called from a draw.
 
-### 5. Units are not visible while editing
-The held-knob strip shows name + value; `formatParamValue` includes the unit, so
-this may be truncation in the strip rather than a missing unit. **Verify before
-fixing** — the cell shows a `fitDev`-truncated value, the header should not.
+### ~~3. `midiFx` abbreviation reads the wrong key~~ — FIXED
+Also `${currentComponent}:is_loading`, which had the same defect unreported —
+the loading probe never fired for a MIDI FX. The view keeps `currentPrefix`
+now, and the wiring test fails on the interpolation itself.
 
----
+### ~~4. Coarse enums are stiff~~ — not a bug (owner's call, 2026-08-20)
+
+### ~~5. Units are not visible while editing~~ — verified, not a bug
+The header is fine and has the room: `formatParamValue` includes the unit, and
+the budget is 76px against 29-38px for `5.25 HZ` / `12.34 SEC`. The CELL drops
+it, via `fitDev(..., CELL_W - 2)` at 30px — which is the by-design truncation,
+with the header as the readout.
+
+### 6. A literal NUL byte in `page_controller.mjs` — FIXED
+Found while working the above. `sectionKey` joined level and kind with a raw
+`0x00`, which every editor renders as a space — and which made `grep` and `rg`
+classify the whole file as binary and match **nothing**, silently. git was
+unaffected (it samples the first 8000 bytes; the NUL sat at 27030). Worth
+knowing as a class: if a search over a file comes back empty when you know the
+string is there, check `file` on it.
 
 ## Housekeeping agreed
 
-- **Drop the first-use overlay.** The footer now carries the context it existed
-  to teach. `showHint` + `hintShownThisSession` in `shadow_ui_param_pages.mjs`.
+- ~~**Drop the first-use overlay.**~~ DONE. The library's `showHint`/`renderHint`
+  stay — they are caller-supplied, and an embedding tool with its own gestures
+  may still want a panel.
 - **Values populate slowly on page entry.** By design — one `get_param` per tick
   (an IPC read is ~2.8ms, a whole page render is 1.68ms). Worth revisiting: read
   the *visible* page eagerly on entry, then fall back to the cursor.
