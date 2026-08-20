@@ -89,8 +89,20 @@ diagram does not need to announce itself.
   way in. **Remove already exists** as the `None` entry the picker leads with
   (`shadow_ui.js:7098`).
 
-Removing from the MIDDLE compacts the list rather than leaving a hole. This is
-a behaviour change: today clearing fx1 leaves fx2 where it was.
+SWAPPING and REMOVING are different operations and must not be confused:
+
+- **Swap** — choosing a different module for an occupied position REPLACES the
+  occupant and the position does not move. Swapping fx1 from Reverb to Delay
+  while fx2 exists leaves Delay at fx1 and fx2 exactly where it was. This is
+  not a list operation at all; nothing reorders.
+- **Remove** — choosing `None` takes the module OUT, and the list compacts so
+  there is no hole. This is a behaviour change: today clearing fx1 leaves fx2
+  where it was, with an empty fx1 in front of it.
+
+The distinction matters because both are reached from the same picker, one
+entry apart. A swap that silently reordered the chain would be the worst kind
+of surprise — you went in to change a reverb and came out with a different
+signal path.
 
 ## Where the work is
 
