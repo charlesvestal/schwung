@@ -602,16 +602,32 @@ Promise.all([
       for (let i = 0; i < 25; i++) ctl.onKnobTurn(slot, 1, (clock += 20));
       if (isDefault(ctl.state.values[key])) fail("the turn did not move the value off its default");
 
-      /* tap, turn, tap — an ADJUSTMENT, not a double-tap. */
+      /* tap, ADJUST, tap — re-placing a finger mid-adjustment must not reset. */
       writes.length = 0;
       ctl.onKnobTouch(slot, true);
-      ctl.onKnobTurn(slot, 1, (clock += 10));
+      for (let i = 0; i < 6; i++) ctl.onKnobTurn(slot, 1, (clock += 10));
       ctl.onKnobTouch(slot, false);
       clock += 10;
       ctl.onKnobTouch(slot, true);
       ctl.onKnobTouch(slot, false);
       if (writes.some(([, v]) => isDefault(v)))
-        fail("tap, TURN, tap reset the param — re-placing a finger mid-adjustment must not");
+        fail("tap, ADJUST, tap reset the param — re-placing a finger mid-adjustment must not");
+
+      /* But ONE stray detent must not cancel it. These are detented encoders
+       * and tapping a small one nudges it; requiring absolute stillness made
+       * the gesture unreliable in the hand. */
+      writes.length = 0;
+      clock += C.DOUBLE_TAP_MS * 2;
+      ctl.onKnobTouch(slot, true);
+      ctl.onKnobTouch(slot, false);
+      ctl.onKnobTurn(slot, 1, (clock += 10));      /* the clumsy nudge */
+      clock += 40;
+      ctl.onKnobTouch(slot, true);
+      if (!writes.some(([, v]) => isDefault(v)))
+        fail("a single stray detent between two taps cancelled the reset — " +
+             "tapping a detented encoder nudges it, so one detent must be tolerated");
+      ctl.onKnobTouch(slot, false);
+      for (let i = 0; i < 25; i++) ctl.onKnobTurn(slot, 1, (clock += 20));
 
       /* tap, tap — the gesture. */
       const moved = String(ctl.state.values[key]);
@@ -637,6 +653,61 @@ Promise.all([
       ctl.onKnobTouch(slot, true); ctl.onKnobTouch(slot, false);
       if (writes.some(([, v]) => isDefault(v)))
         fail("two taps " + (C.DOUBLE_TAP_MS + 50) + "ms apart must not count as a double-tap");
+    }
+
+    /* ---- a param with NO declared default resets to what it loaded with --
+     *
+     * Only 744 params across the fleet declare a default, so on most module
+     * pages the reset had nothing to aim at and did nothing — which in the
+     * hand is indistinguishable from the gesture being broken. The value the
+     * param had when the page opened is never nothing: a preset put it there,
+     * or the startup state of the module itself did.
+     */
+    {
+      let clock = 50000;
+      const dev = D.createFakeDevice({ id: "obxd" });   /* declares no defaults */
+      const writes = [];
+      const ctl = C.createController({
+        getParam: dev.getParam, announce: dev.announce, now: () => clock,
+        setParam: (k, v) => { writes.push([k, v]); dev.setParam(k, v); },
+      });
+      ctl.load({ slot: 0, component: "synth" });
+      for (let i = 0; i < 16; i++) ctl.tick();
+
+      const slot = 0;
+      const key = ctl.keyAt(slot);
+      const meta = ctl.metaAt(slot);
+      if (meta.default !== undefined && meta.default !== null)
+        fail("this test needs a param with NO declared default; " + key + " has one");
+      const loaded = ctl.state.values[key];
+      if (loaded === undefined) fail("the cursor never read " + key);
+
+      for (let i = 0; i < 30; i++) ctl.onKnobTurn(slot, 1, (clock += 20));
+      if (String(ctl.state.values[key]) === String(loaded))
+        fail("the turn did not move the value away from its loaded one");
+
+      writes.length = 0;
+      clock += C.DOUBLE_TAP_MS * 2;
+      ctl.onKnobTouch(slot, true);
+      ctl.onKnobTouch(slot, false);
+      clock += 60;
+      ctl.onKnobTouch(slot, true);
+      if (String(ctl.state.values[key]) !== String(loaded))
+        fail("a param with no declared default should reset to the value it loaded with (" +
+             loaded + "), got " + ctl.state.values[key]);
+      if (!writes.some(([k, v]) => k === "synth:" + key && String(v) === String(loaded)))
+        fail("the loaded value was never written to the device");
+      const said = dev.announcements[dev.announcements.length - 1];
+      if (!/as loaded/i.test(said))
+        fail("a fallback reset should say so rather than claim a default: " + said);
+      ctl.onKnobTouch(slot, false);
+
+      /* The loaded value is the FIRST one seen and cannot be overwritten by
+       * later reads, or a reset would just return you to wherever you were. */
+      for (let i = 0; i < 30; i++) ctl.onKnobTurn(slot, 1, (clock += 20));
+      for (let i = 0; i < 20; i++) ctl.tick();
+      if (String(ctl.state.loadedValues[key]) !== String(loaded))
+        fail("the loaded value moved after later reads: " + ctl.state.loadedValues[key]);
     }
 
     /* ---- an UNHELD turn-claim has to expire ------------------------------

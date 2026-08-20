@@ -17,6 +17,7 @@ const R = process.cwd();
 let failures = 0;
 const fail = (m) => { console.error("FAIL: " + m); failures++; };
 
+const FS = await import("node:fs");
 const SG = await import(R + "/src/shadow/shadow_ui_slot_grid.mjs");
 const { planPages } = await import(R + "/src/shared/param_pages/page_plan.mjs");
 const { buildMetaIndex } = await import(R + "/src/shared/param_pages/param_meta.mjs");
@@ -480,6 +481,19 @@ function makeSlot(over) {
     else if (p.default !== want[k])
       fail(k + " should default to " + want[k] + ", got " + JSON.stringify(p.default));
   }
+  /* Volume tops out at 200% (+6 dB), and the LIST editor must agree — the same
+   * setting with two ceilings is how one surface silently clamps what the
+   * other just set. Pinned against the source of the list entry itself. */
+  {
+    const vol = by("volume");
+    if (vol.max !== 2) fail("Volume should cap at 2.0 (200%), got " + vol.max);
+    const ui = FS.readFileSync(R + "/src/shadow/shadow_ui.js", "utf8");
+    const m = ui.match(/key: "slot:volume", label: "Volume", type: "float", min: 0, max: ([0-9.]+)/);
+    if (!m) fail("could not find the list editor slot:volume entry to compare against");
+    else if (Number(m[1]) !== vol.max)
+      fail("the list caps Volume at " + m[1] + " and the grid at " + vol.max + " — they must match");
+  }
+
   if (by("receive_channel").default !== undefined)
     fail("Recv must NOT declare a default — a slot receives on its own channel, " +
          "which this contract cannot know");
