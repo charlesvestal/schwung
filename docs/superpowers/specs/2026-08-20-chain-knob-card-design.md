@@ -147,6 +147,20 @@ of a 16 ms budget, to animate a value nobody is looking at.
 
 ## 5. Lifecycle and edges
 
+- **Divable params show, they do not dive.** A `filepath`, `canvas` or `string`
+  is opaque — `isTurnable` is false, so a knob cannot drive it — and the card
+  simply shows its value, which the opaque box renders as the path *tail*. A
+  ranged `wav_position` is **not** opaque (`KIND_NUMBER`); its knob turns
+  normally and it merely also has a deeper editor. Nothing dives from the card:
+  it consumes no input, so a jog-click while a knob is held falls through to the
+  chain editor and opens the focused component, and `setView` closes the card on
+  the way. Dismiss-and-descend, not a modal inside a modal — the door is already
+  one level up.
+- **The divable brackets stay.** Dropping `drawDivableMark` inside the card
+  looks like an obvious simplification, since the card offers no dive. It is a
+  bug: `drawOpaqueBox` draws no frame of its own and the brackets **are** its
+  frame, so suppressing them leaves the value floating in the cell with nothing
+  containing it. Pinned in `tests/host/test_knob_card.sh`.
 - **Raise on touch, drop on release.** No timer in the normal case.
 - **Turn with no touch** (a knob whose cap sensor missed) raises the card anyway
   and decays after a short pause, so a flaky sensor cannot strand the feature.
