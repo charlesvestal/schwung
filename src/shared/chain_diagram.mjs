@@ -166,7 +166,10 @@ export function drawChainDiagram(ctx, components, selectedIndex, opts = {}) {
         if (comp.kind === "synth") outline(ctx, x + 2, y + 2, BOX_W - 4, BOX_H - 4, selected ? 0 : 1, 0);
 
         const abbrev = String(abbrevOf(comp) || "--");
-        const textColor = (selected && comp.kind !== "add") ? 0 : 1;
+        /* Selection inverts the label whatever the box is: the `+` box fills
+         * its interior rather than the whole rect, but the label sits in that
+         * interior, so a white "+" on it would simply vanish. */
+        const textColor = selected ? 0 : 1;
         ctx.print(x + Math.floor((BOX_W - measure(ctx, abbrev)) / 2), y + 5, abbrev, textColor);
 
         drawMarks(ctx, px, x, y, marksOf(comp));
