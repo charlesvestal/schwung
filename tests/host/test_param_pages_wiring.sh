@@ -94,6 +94,22 @@ if (/PAGE_PRESET|PAGE_ITEMS|PAGE_MODES/.test(v.replace(/PAGE_KNOBS/g, ""))) {
   fail("the view module is drawing page kinds it should hand to the list");
 }
 
+/* ---- device keys are built from the PREFIX, never the component key -----
+ *
+ * The component is `midiFx`; its params live under `midi_fx1` (see
+ * getComponentParamPrefix in shadow_ui.js). Interpolating the component into a
+ * device key asks for `midiFx_module` / `midiFx:is_loading`, which nobody
+ * serves — and it fails SILENTLY, as a header reading "--" and an is_loading
+ * probe that never returns true. Both bugs shipped that way.
+ */
+{
+  const bad = v.match(/\$\{currentComponent\}(_module|:)/g);
+  if (bad) {
+    fail("the view builds a device param key from currentComponent (" + bad.join(", ") +
+         ") — for midiFx that key does not exist; use currentPrefix");
+  }
+}
+
 console.log("PASS: shadow wiring — parses, view dispatched/ticked/fed, setting defaults to List, " +
-            "hand-off cannot loop, screen reader keeps the list");
+            "hand-off cannot loop, screen reader keeps the list, device keys use the prefix");
 '

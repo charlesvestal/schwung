@@ -43,6 +43,12 @@ let controller = null;
 let controllerIo = null;
 let currentSlot = 0;
 let currentComponent = 'synth';
+/* The component's DSP param prefix, which is NOT the component key: the MIDI
+ * FX component is `midiFx` and its params live under `midi_fx1` (see
+ * getComponentParamPrefix in shadow_ui.js). Anything asking the device for a
+ * param has to use this — `midiFx_module` and `midiFx:is_loading` are keys no
+ * one serves, so the header abbreviation read "--" and is_loading never fired. */
+let currentPrefix = 'synth';
 
 /**
  * Shift state does NOT arrive as MIDI here.
@@ -110,6 +116,7 @@ let hintShownThisSession = false;
 export function enterParamPages(slot, component, prefix, restorePageName, io) {
     currentSlot = slot;
     currentComponent = component;
+    currentPrefix = prefix || component;
 
     /* Rebuild when the accessors change, not just when there is no controller:
      * it CLOSES OVER them, so one built for a module would keep reading the
@@ -213,7 +220,7 @@ export function tickParamPages() {
      * load it is waiting on. */
     if (++_loadingPoll >= _loadingInterval) {
         _loadingPoll = 0;
-        const raw = ctx.getSlotParam(currentSlot, `${currentComponent}:is_loading`);
+        const raw = ctx.getSlotParam(currentSlot, `${currentPrefix}:is_loading`);
         if (raw === null || raw === undefined) {
             /* The module does not implement is_loading — most don't; it exists
              * for the ones with an async ROM or sample load. Measured on
@@ -503,7 +510,7 @@ export function drawParamPages() {
     if (currentComponent === 'slot') _abbrevCache = 'Settings';
     if (_abbrevCache === null) {
         _abbrevCache = ctx.getModuleAbbrev
-            ? ctx.getModuleAbbrev(ctx.getSlotParam(currentSlot, `${currentComponent}_module`) || '')
+            ? ctx.getModuleAbbrev(ctx.getSlotParam(currentSlot, `${currentPrefix}_module`) || '')
             : currentComponent.toUpperCase();
     }
     const abbrev = _abbrevCache;
