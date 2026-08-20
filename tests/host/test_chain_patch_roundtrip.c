@@ -277,6 +277,97 @@ static void test_legacy_two_fx(chain_instance_t *inst, patch_info_t *patch) {
           "legacy fx2 knob did not re-read from the plugin");
 }
 
+/* ---- 2b. Malformed and awkward JSON must not invent or drop effects ---- */
+static void test_hostile_json(chain_instance_t *inst, patch_info_t *patch) {
+    /* An audio_fx array with no closing bracket. The bound has to fail CLOSED:
+     * with no trustworthy array end the scan must parse nothing, not fall back
+     * to running off into the midi_fx array that follows. */
+    const char *unterminated =
+        "{\n  \"name\": \"broken\",\n"
+        "  \"audio_fx\": [{\"type\": \"reverb\"}, \n"
+        "  \"midi_fx\": [{\"type\": \"chord\"}, {\"type\": \"arp\"}]\n}\n";
+
+    write_patch(unterminated);
+    reset_state(inst);
+    memset(patch, 0, sizeof(*patch));
+    v2_parse_patch_file(inst, patch_path, patch);
+    CHECK(patch->audio_fx_count == 0,
+          "unterminated audio_fx array yielded %d audio FX (want 0): first=%s",
+          patch->audio_fx_count,
+          patch->audio_fx_count ? patch->audio_fx[0].module : "-");
+    /* The well-formed midi_fx array alongside it is still fine. */
+    CHECK(patch->midi_fx_count == 2,
+          "midi_fx alongside a broken audio_fx parsed %d, want 2", patch->midi_fx_count);
+
+    /*
+     * A brace inside an OPAQUE state string. "key=val;" state is a supported
+     * format, so its bytes are arbitrary -- and an unbalanced '{' in there used
+     * to throw off the brace walk that finds each FX object's end, silently
+     * dropping every effect from that point on.
+     */
+    const char *braces =
+        "{\n  \"name\": \"braces\",\n"
+        "  \"audio_fx\": ["
+        "{\"type\": \"opaque\", \"params\": {\"state\": \"gain=1;shape={;\", \"gain\": \"0.1\"}}, "
+        "{\"type\": \"after\", \"params\": {\"gain\": \"0.2\"}}],\n"
+        "  \"midi_fx\": ["
+        "{\"type\": \"mopaque\", \"params\": {\"state\": \"mode=a;b={;\"}}, "
+        "{\"type\": \"mafter\", \"rate\": \"3\"}]\n}\n";
+
+    write_patch(braces);
+    reset_state(inst);
+    memset(patch, 0, sizeof(*patch));
+    CHECK(v2_parse_patch_file(inst, patch_path, patch) == 0, "brace-in-state parse failed");
+    CHECK(patch->audio_fx_count == 2,
+          "brace in an opaque audio state left %d audio FX, want 2", patch->audio_fx_count);
+    if (patch->audio_fx_count == 2) {
+        CHECK(strcmp(patch->audio_fx[0].module, "opaque") == 0,
+              "audio_fx[0]=%s", patch->audio_fx[0].module);
+        CHECK(strcmp(patch->audio_fx[1].module, "after") == 0,
+              "the FX after a braced opaque state was dropped (got %s)",
+              patch->audio_fx[1].module);
+        CHECK(strcmp(patch->audio_fx[0].state, "gain=1;shape={;") == 0,
+              "opaque state came back as [%s]", patch->audio_fx[0].state);
+    }
+    CHECK(patch->midi_fx_count == 2,
+          "brace in an opaque MIDI FX state left %d MIDI FX, want 2", patch->midi_fx_count);
+    if (patch->midi_fx_count == 2) {
+        CHECK(strcmp(patch->midi_fx[1].module, "mafter") == 0,
+              "the MIDI FX after a braced opaque state was dropped (got %s)",
+              patch->midi_fx[1].module);
+        /* FIXTURE, not a requirement: the midi_fx state extractor has only the
+         * object branch -- unlike audio_fx it has no `else if (*sv == '"')`, so
+         * an opaque MIDI FX state string is dropped. Pre-existing and separate
+         * from the span fix; what this case proves is that the brace inside it
+         * no longer takes the NEXT MIDI FX down with it. */
+        CHECK(patch->midi_fx[0].state[0] == '\0',
+              "midi_fx now reads opaque state strings ([%s]) -- update this fixture",
+              patch->midi_fx[0].state);
+    }
+
+    /* A ']' inside a state string must not end the array early either. */
+    const char *bracket_in_state =
+        "{\n  \"name\": \"brackets\",\n"
+        "  \"audio_fx\": ["
+        "{\"type\": \"first\", \"params\": {\"state\": \"seq=[1,2];\"}}, "
+        "{\"type\": \"second\", \"params\": {\"gain\": \"0.5\"}}],\n"
+        "  \"midi_fx\": ["
+        "{\"type\": \"mfirst\", \"params\": {\"state\": \"seq=]];\"}}, "
+        "{\"type\": \"msecond\", \"rate\": \"2\"}]\n}\n";
+
+    write_patch(bracket_in_state);
+    reset_state(inst);
+    memset(patch, 0, sizeof(*patch));
+    CHECK(v2_parse_patch_file(inst, patch_path, patch) == 0, "bracket-in-state parse failed");
+    CHECK(patch->audio_fx_count == 2,
+          "bracket in an audio state left %d audio FX, want 2", patch->audio_fx_count);
+    CHECK(patch->midi_fx_count == 2,
+          "bracket in a MIDI FX state left %d MIDI FX, want 2", patch->midi_fx_count);
+    if (patch->midi_fx_count == 2)
+        CHECK(strcmp(patch->midi_fx[1].module, "msecond") == 0,
+              "midi_fx[1]=%s", patch->midi_fx[1].module);
+}
+
 /* ---- 3. Modulation / knob targets reach every slot ---- */
 static void test_target_lookup(chain_instance_t *inst) {
     reset_state(inst);
@@ -357,6 +448,36 @@ static void test_target_lookup(chain_instance_t *inst) {
     }
 }
 
+/*
+ * ---- 3b. FIXTURE, not a requirement: the two id parsers disagree ----
+ *
+ * knob_find_param goes through chain_fx_index_from_id (strict: exact digits,
+ * no leading zero, nothing trailing). find_param_by_key and
+ * chain_mod_{get,set}_param_string still use a bare atoi, which accepts
+ * "fx01" and "fx1x" and treats a bare "midi_fx" as slot 0. Both are bounded by
+ * MAX_AUDIO_FX / MAX_MIDI_FX, so this is a consistency wart, not a hazard --
+ * deliberately NOT unified here.
+ *
+ * This case exists so that whoever does unify them has the current behaviour
+ * written down and will see this test fail the moment it changes.
+ */
+static void test_id_parser_divergence_fixture(chain_instance_t *inst) {
+    CHECK(find_param_by_key(inst, "midi_fx", "rate") == &inst->midi_fx_params[0][0],
+          "bare \"midi_fx\" no longer defaults to slot 0 in find_param_by_key");
+    CHECK(knob_find_param(inst, "midi_fx", "rate") == NULL,
+          "knob_find_param now accepts a bare \"midi_fx\"");
+
+    CHECK(find_param_by_key(inst, "fx01", "cutoff") == &inst->fx_params[0][0],
+          "find_param_by_key no longer accepts the leading-zero id \"fx01\"");
+    CHECK(knob_find_param(inst, "fx01", "cutoff") == NULL,
+          "knob_find_param now accepts \"fx01\"");
+
+    CHECK(find_param_by_key(inst, "fx1x", "cutoff") == &inst->fx_params[0][0],
+          "find_param_by_key no longer accepts the trailing-junk id \"fx1x\"");
+    CHECK(knob_find_param(inst, "fx1x", "cutoff") == NULL,
+          "knob_find_param now accepts \"fx1x\"");
+}
+
 /* ---- 4. Master preset covers every slot and preserves what was there ---- */
 static void test_master_preset(void) {
     const char *in =
@@ -419,7 +540,10 @@ int main(int argc, char **argv) {
 
     test_full_capacity(inst, patch);
     test_legacy_two_fx(inst, patch);
+    test_hostile_json(inst, patch);
     test_target_lookup(inst);
+    /* Reuses the chain test_target_lookup just populated. */
+    test_id_parser_divergence_fixture(inst);
     test_master_preset();
 
     free(inst);
