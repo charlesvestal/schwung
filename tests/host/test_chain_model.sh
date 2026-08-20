@@ -71,6 +71,31 @@ const zeroSwap = M.swapAt(cfg, "fx0", { module: "delay" });
 if (fxOrder(zeroSwap) !== "freeverb,cloudseed" || zeroSwap.fx.length !== 2)
   fail("swapAt fx0 must do nothing, got " + fxOrder(zeroSwap));
 
+/* fx9 is the mirror of fx0. Both arrive by the same route -- a param key or a
+   persisted state naming a slot that no longer exists -- so defending only the
+   lower bound defends half the problem. */
+const overRemove = M.removeAt(cfg, "fx9");
+if (fxOrder(overRemove) !== "freeverb,cloudseed" || overRemove.fx.length !== 2)
+  fail("removeAt fx9 must do nothing, got " + fxOrder(overRemove) + " len " + overRemove.fx.length);
+const overSwap = M.swapAt(cfg, "fx9", { module: "delay" });
+if (fxOrder(overSwap) !== "freeverb,cloudseed" || overSwap.fx.length !== 2)
+  fail("swapAt fx9 must do nothing, got " + fxOrder(overSwap) + " len " + overSwap.fx.length);
+const overMove = M.moveBy(cfg, "fx9", -1);
+if (fxOrder(overMove) !== "freeverb,cloudseed" || overMove.fx.length !== 2)
+  fail("moveBy fx9 must do nothing, got " + fxOrder(overMove) + " len " + overMove.fx.length);
+/* A delta that lands the destination back INSIDE the list, so the upper bound
+   is the only thing standing between a stale id and an undefined slot spliced
+   into the middle of the chain. */
+const overMoveIn = M.moveBy(cfg, "fx9", -7);
+if (fxOrder(overMoveIn) !== "freeverb,cloudseed" || overMoveIn.fx.length !== 2)
+  fail("moveBy fx9 into range must do nothing, got " + fxOrder(overMoveIn) + " len " + overMoveIn.fx.length);
+const overMidiRemove = M.removeAt(cfg, "midi_fx9");
+if (midiOrder(overMidiRemove) !== "arp,chord" || overMidiRemove.midiFx.length !== 2)
+  fail("removeAt midi_fx9 must do nothing, got " + midiOrder(overMidiRemove));
+const overMidiSwap = M.swapAt(cfg, "midi_fx9", { module: "velo" });
+if (midiOrder(overMidiSwap) !== "arp,chord" || overMidiSwap.midiFx.length !== 2)
+  fail("swapAt midi_fx9 must do nothing, got " + midiOrder(overMidiSwap) + " len " + overMidiSwap.midiFx.length);
+
 /* MOVE is bounded to its own section and does not wrap */
 const moved = M.moveBy(cfg, "fx1", 1);
 if (fxOrder(moved) !== "cloudseed,freeverb") fail("move right failed");
@@ -121,6 +146,30 @@ const midiAppended = M.insertAt(cfg, "midiFx", { module: "velo" });
 if (midiOrder(midiAppended) !== "arp,chord,velo")
   fail("midiFx insert did not append, got " + midiOrder(midiAppended));
 if (fxOrder(midiAppended) !== "freeverb,cloudseed") fail("a midiFx insert touched the audio FX");
+
+/* NOTHING here edits the synth. It is the one irreplaceable thing in a chain,
+   and no operation in this module targets it, so it is pinned after EVERY
+   mutating operation on BOTH sections rather than trusted. Checking only that
+   emptyChain produces a null synth would pass a clone that dropped it. */
+const synthOps = [
+  ["insertAt fx", M.insertAt(cfg, "fx", { module: "chorus" })],
+  ["insertAt midiFx", M.insertAt(cfg, "midiFx", { module: "velo" })],
+  ["swapAt fx1", M.swapAt(cfg, "fx1", { module: "delay" })],
+  ["swapAt midi_fx1", M.swapAt(cfg, "midi_fx1", { module: "velo" })],
+  ["removeAt fx1", M.removeAt(cfg, "fx1")],
+  ["removeAt midi_fx1", M.removeAt(cfg, "midi_fx1")],
+  ["moveBy fx1", M.moveBy(cfg, "fx1", 1)],
+  ["moveBy midi_fx1", M.moveBy(cfg, "midi_fx1", 1)],
+  ["removeAt fx9", M.removeAt(cfg, "fx9")],
+  ["removeAt fx0", M.removeAt(cfg, "fx0")],
+];
+for (const [what, next] of synthOps) {
+  if (!next.synth) fail(what + " ate the synth");
+  else if (next.synth !== cfg.synth) fail(what + " replaced the synth");
+  else if (next.synth.module !== "sf2") fail(what + " changed the synth to " + next.synth.module);
+  if (M.chainComponents(next).filter((p) => p.id === "synth").length !== 1)
+    fail(what + " left the chain without exactly one synth position");
+}
 
 /* Scroll window. count matters as much as first: a window reporting the
    capacity while everything fits would silently truncate a short chain. */
