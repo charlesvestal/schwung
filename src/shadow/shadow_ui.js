@@ -190,6 +190,7 @@ import {
     tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage,
     paramPagesComponent, paramPagesSlot
 } from './shadow_ui_param_pages.mjs';
+import { createSlotGridIo } from './shadow_ui_slot_grid.mjs';
 import {
     drawMasterFx as _drawMasterFx,
     getMasterFxDisplayName as _getMasterFxDisplayName,
@@ -1096,6 +1097,11 @@ function findLevelListingParam(bare) {
 
 function openParamEditorFromGrid(slotIndex, fullKey, meta) {
     const componentKey = paramPagesComponent();
+    /* Slot settings is a synthesised contract, not a component: there is no
+     * "slot:ui_hierarchy" to fetch, so enterHierarchyEditor would fall through
+     * to the no-presets fallback. Nothing on the slot page is divable today, so
+     * this is a guard rather than a feature — a wrong screen is worse than none. */
+    if (componentKey === "slot") return;
     /* Read the grid page BEFORE exiting — the level it was on is where the
      * param lives, and exitParamPages tears the controller down. */
     const page = currentParamPage();
@@ -1155,9 +1161,18 @@ function openParamEditorFromGrid(slotIndex, fullKey, meta) {
     needsRedraw = true;
 }
 
-/* One-shot override forcing the LIST editor for the next entry, so the grid can
- * hand a param it cannot edit to the screen that can. */
+/* One-shot override forcing the LIST editor for the next COMPONENT entry, so
+ * the grid can hand a param it cannot edit to the screen that can. */
 let suppressParamPagesOnce = false;
+/*
+ * The same idea for SLOT settings, deliberately a SEPARATE flag.
+ *
+ * Sharing one meant a pending suppress set by a component hand-off leaked into
+ * the next slot-settings entry — which then showed the list for no reason the
+ * user could see — and that consuming it there stole it from the component
+ * entry it had been set for. Two unrelated hand-offs, two flags.
+ */
+let suppressSlotGridOnce = false;
 
 function saveParamViewConfig() {
     try {
@@ -7500,11 +7515,41 @@ function runChainSettingAction(slot, key) {
     }
 }
 
+/*
+ * The param accessors the slot grid drives this slot through.
+ *
+ * All the mapping lives in shadow_ui_slot_grid.mjs, which is pure and tested on
+ * its own; this only supplies the four host functions it needs. Built fresh per
+ * entry so it always closes over the slot actually being edited.
+ */
+function slotGridIoFor(slotIndex) {
+    return createSlotGridIo({
+        readSlotParam: (key) => getSlotParam(slotIndex, key),
+        writeSlotParam: (key, value) => setSlotParam(slotIndex, key, value),
+        isMpeMode: () => isSlotMpeMode(slotIndex),
+        /* The compound handler: recv + fwd + the synth flag, with the pre-MPE
+         * channels stashed for the way back. adjustChainSetting takes a DELTA,
+         * and only acts when the state actually differs. */
+        setMpeMode: (on) => adjustChainSetting(slotIndex, { key: "mpe_mode" }, on ? 1 : -1),
+        hasPreset: () => isExistingPreset(slotIndex),
+    });
+}
+
 /* Enter chain settings view */
 function enterChainSettings(slotIndex) {
     selectedSlot = slotIndex;
     selectedChainSetting = 0;
     editingChainSettingValue = false;
+
+    /* Knob grid instead of the list, when the user has opted in. Same gate the
+     * component editor uses, so the screen reader still gets the list — a grid
+     * has nothing selected to read out. */
+    if (paramPagesEnabled() && !suppressSlotGridOnce) {
+        enterParamPages(slotIndex, "slot", "slot", null, slotGridIoFor(slotIndex));
+        return;
+    }
+    suppressSlotGridOnce = false;
+
     setView(VIEWS.CHAIN_SETTINGS);
     needsRedraw = true;
 
@@ -14099,6 +14144,9 @@ function drawHelpDetail() {
      * ReferenceError inside one branch is swallowed by the tick try/catch into
      * "UI error, recovering" — invisible unless something runs it. */
     _ctx.runSlotAction = (slot, key) => runChainSettingAction(slot, key);
+    /* The slot-settings entry point, exposed so the grid routing can be driven
+     * from a test rather than by pressing Shift+Vol+Track on hardware. */
+    _ctx.enterChainSettings = (slot) => enterChainSettings(slot);
     /* Which specialised editor is up, if any. Exposed so the editor-routing
      * pathways can be tested headlessly: "clicking a wav_position shows the
      * WAVEFORM, clicking a filepath shows the BROWSER, and Back from either

@@ -153,6 +153,16 @@ const ui  = await import(TREE + "/shadow/ui.mjs");
 const { ctx } = await import(TREE + "/shadow/shadow_ui_ctx.mjs");
 const V   = await import(TREE + "/shadow/shadow_ui_param_pages.mjs");
 
+/*
+ * Param View = Knobs. shadow_ui.js sets this from persisted config in init(),
+ * which the harness never calls, and paramPagesEnabled() reads the global at
+ * call time — so overriding it here is exactly what the setting would do.
+ * Without it every entry point falls back to the LIST and the grid routing
+ * under test never runs at all.
+ */
+globalThis.param_view_get_mode = () => 1;
+globalThis.tts_get_enabled = () => false;
+
 ctx.getSlotParam = (slot, key) => getParam(key);
 ctx.setSlotParam = (slot, key, v) => setParam(key, v);
 
@@ -331,6 +341,106 @@ function gotoSlotFor(name) {
   for (const h of [plain, V.paramPagesFooterHints()]) {
     if (width(h) > 128) fail("footer overflows: " + flat(h) + " = " + width(h) + "px");
   }
+}
+
+/* ---- 9. SLOT SETTINGS opens as a grid and its menu runs the real actions -- */
+{
+  const slotStore = {
+    "slot:volume": "1.00", "slot:muted": "0", "slot:soloed": "0",
+    "slot:transpose": "0", "slot:receive_channel": "1",
+    "slot:forward_channel": "-1", "midi_fx_pre_mode": "0",
+  };
+  const prevGet = globalThis.shadow_get_param, prevSet = globalThis.shadow_set_param;
+  globalThis.shadow_get_param = (slot, key) => (key in slotStore ? slotStore[key] : getParam(key));
+  globalThis.shadow_set_param = (slot, key, v) => { slotStore[key] = String(v); return true; };
+
+  V.exitParamPages();
+  ctx.enterChainSettings(0);
+  for (let i = 0; i < 12; i++) V.tickParamPages();
+
+  if (ctx.view !== ctx.VIEWS.PARAM_PAGES) {
+    fail("slot settings did not open as the knob grid, view=" + ctx.view);
+  } else {
+    const p0 = V.currentParamPage();
+    if (!p0 || p0.kind !== "knobs") fail("slot settings page 1 should be a knob grid, got " + (p0 && p0.kind));
+    for (const want of ["volume", "muted", "soloed", "transpose",
+                        "receive_channel", "forward_channel", "midi_fx_pre_mode", "mpe_mode"]) {
+      if (!((p0 && p0.keys) || []).includes(want)) {
+        fail("slot grid page 1 is missing " + want + ": " + JSON.stringify(p0 && p0.keys));
+      }
+    }
+
+    /* The io must be reaching the real store, not a component. */
+    if (V.paramPagesComponent() !== "slot") fail("the grid is not pointed at the slot");
+
+    /* Walk to the actions menu and activate an entry through the REAL input
+     * path — the menu is inert until entered, so this is two clicks. */
+    let guard = 0, page = V.currentParamPage();
+    while (page && page.kind !== "menu" && guard++ < 20) {
+      feed([0xb0, 14, 1]);
+      for (let i = 0; i < 4; i++) V.tickParamPages();
+      page = V.currentParamPage();
+    }
+    if (!page || page.kind !== "menu") {
+      fail("slot settings has no actions menu page");
+    } else {
+      const labels = (page.entries || []).map((e) => e.label);
+      for (const want of ["Knob Mapping", "LFO 1", "Save"]) {
+        if (!labels.includes(want)) fail("actions menu missing " + want + ": " + JSON.stringify(labels));
+      }
+      /* Enter, land on Knob Mapping, activate. The whole point of the wiring is
+       * that this runs the SAME action the list runs, so the proof is the view
+       * it lands on — not that nothing threw. */
+      feed(click());
+      feed(click());
+      if (ctx.view !== ctx.VIEWS.KNOB_EDITOR) {
+        fail("activating Knob Mapping from the grid menu did not open the knob editor, view=" +
+             ctx.view + " — the menu intent is not reaching runChainSettingAction");
+      }
+    }
+  }
+  /* ---- 9b. entering slot settings DIRECTLY from a module grid ----------- */
+  /*
+   * The sequence that actually broke on hardware. Two pieces of state survive
+   * an entry and both were wrong:
+   *
+   *   - the controller CLOSES OVER its accessors, so one built for a module
+   *     keeps reading the module unless the io change forces a rebuild;
+   *   - suppressParamPagesOnce is set by a component hand-off, and sharing it
+   *     with slot settings made the next slot entry silently show the LIST.
+   *
+   * So: open a module grid, hand a param off to an editor (which sets the
+   * flag), then go straight to slot settings WITHOUT exiting first.
+   */
+  {
+    V.exitParamPages();
+    V.enterParamPages(0, "synth", "synth");
+    for (let i = 0; i < 12; i++) V.tickParamPages();
+    const sp = gotoSlotFor("sample_path");
+    if (sp >= 0) {
+      feed(noteOn(sp));
+      feed(click());            /* opens the filepath browser, sets the flag */
+      feed(back());             /* back to the grid */
+      feed(noteOff(sp));
+    }
+
+    ctx.enterChainSettings(0);
+    for (let i = 0; i < 12; i++) V.tickParamPages();
+
+    if (ctx.view !== ctx.VIEWS.PARAM_PAGES) {
+      fail("after a module param hand-off, slot settings fell back to the LIST (view=" +
+           ctx.view + ") — the component one-shot flag is leaking into the slot path");
+    }
+    const pg = V.currentParamPage();
+    const keys = (pg && pg.keys) || [];
+    if (!keys.includes("volume")) {
+      fail("slot settings showed the MODULE pages (" + JSON.stringify(keys) +
+           ") — the controller closes over its accessors and was not rebuilt when the io changed");
+    }
+  }
+
+  globalThis.shadow_get_param = prevGet;
+  globalThis.shadow_set_param = prevSet;
 }
 
 if (failures) process.exit(1);
