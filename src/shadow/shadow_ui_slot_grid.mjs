@@ -97,21 +97,36 @@ export function lfoParams(lfoIndex) {
         { key: `lfo${lfoIndex}:shape`, name: "Shape", type: "enum", options: LFO_SHAPES_SHORT },
         { key: `lfo${lfoIndex}:polarity`, name: "Mode", type: "enum", options: ["UNI", "BI"] },
         { key: `lfo${lfoIndex}:sync`, name: "Sync", type: "enum", options: ["FRE", "SYN"] },
-        { key: `lfo${lfoIndex}:rate_hz`, name: "Rate", type: "float", min: 0.1, max: 20, step: 0.1, unit: "Hz" },
-        { key: `lfo${lfoIndex}:rate_div`, name: "Div", type: "enum", options: LFO_DIVISIONS_SHORT },
+        /*
+         * ONE rate cell, not two. Free-run and synced rates are the same
+         * control wearing different units, and showing both spends a cell on
+         * whichever one the DSP is currently ignoring.
+         *
+         * The condition key carries its own "lfoN:" prefix deliberately:
+         * normalizeVisibilityConditionKey passes any key containing ":"
+         * straight through, so it resolves against the LFO instead of being
+         * prefixed with the component. page_controller watches conditionKeys
+         * and re-plans when one changes, so the cell swaps as you turn Sync.
+         */
+        { key: `lfo${lfoIndex}:rate_hz`, name: "Rate", type: "float", min: 0.1, max: 20, step: 0.1, unit: "Hz",
+          visible_if: { param: `lfo${lfoIndex}:sync`, equals: "0" } },
+        { key: `lfo${lfoIndex}:rate_div`, name: "Rate", type: "enum", options: LFO_DIVISIONS_SHORT,
+          visible_if: { param: `lfo${lfoIndex}:sync`, equals: "1" } },
         { key: `lfo${lfoIndex}:depth`, name: "Depth", type: "float", min: -1, max: 1, step: 0.01 },
+        /* The cell the rate swap paid for. */
+        { key: `lfo${lfoIndex}:phase_offset`, name: "Phase", type: "float", min: 0, max: 1, step: 0.0417 },
     ];
 }
 
 /**
- * Exactly eight, so an LFO is exactly ONE page.
+ * Nine declared, one of them always hidden — so EIGHT show and an LFO is
+ * exactly one page.
  *
- * Nine would chunk to 8 + 1 — an orphan page holding a single control, and an
- * extra jog step between LFO 1 and LFO 2 for the privilege. The one dropped is
- * phase_offset: with target, enabled, shape, polarity, sync, both rates and
- * depth all present, phase is the least reached for, and it stays editable in
- * the list view. Both RATES are kept because a synced LFO cannot be set at all
- * without rate_div, which would make the Sync switch a dead end.
+ * The two rates never appear together (visible_if on sync), and that is what
+ * pays for Phase. Retrigger is the one still missing: ten params do not fit
+ * eight cells however they are arranged, and of the two, phase offset is the
+ * one a per-slot LFO reaches for more often. Retrigger stays editable in the
+ * list view.
  */
 export function lfoKnobKeys(lfoIndex) {
     return lfoParams(lfoIndex).map((p) => p.key);
@@ -159,7 +174,12 @@ export function slotGridHierarchy(hasPreset) {
         levels["lfo" + n] = {
             label: "LFO " + n,
             knobs: lfoKnobKeys(n),
-            params: lfoParams(n).map((p) => ({ key: p.key })),
+            /* visible_if travels on the LEVEL param entry, which is what
+             * isHiddenParam reads — a condition declared only in chain_params
+             * is never consulted when planning which keys get a knob. */
+            params: lfoParams(n).map((p) => (
+                p.visible_if ? { key: p.key, visible_if: p.visible_if } : { key: p.key }
+            )),
         };
     }
     levels.actions = { label: "Actions", knobs: [], params: [], menu: menu, menu_label: "Actions" };

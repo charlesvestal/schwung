@@ -7536,7 +7536,7 @@ function runChainSettingAction(slot, key) {
  * entry so it always closes over the slot actually being edited.
  */
 function slotGridIoFor(slotIndex) {
-    return createSlotGridIo({
+    const io = createSlotGridIo({
         readSlotParam: (key) => getSlotParam(slotIndex, key),
         writeSlotParam: (key, value) => setSlotParam(slotIndex, key, value),
         isMpeMode: () => isSlotMpeMode(slotIndex),
@@ -7546,6 +7546,18 @@ function slotGridIoFor(slotIndex) {
         setMpeMode: (on) => adjustChainSetting(slotIndex, { key: "mpe_mode" }, on ? 1 : -1),
         hasPreset: () => isExistingPreset(slotIndex),
     });
+    /*
+     * Visibility, bound to THIS slot. The default evaluator reads
+     * hierEditorSlot/hierEditorComponent, which belong to the list editor and
+     * are stale while the grid is up — it would resolve every condition against
+     * the wrong slot, and a condition that reads empty compares false, so BOTH
+     * rate cells would vanish rather than one. The condition keys carry their
+     * own "lfoN:" prefix, so the component prefix is unused (see
+     * normalizeVisibilityConditionKey: a key containing ":" passes through).
+     */
+    io.visible = (condition, levelDef) =>
+        evaluateVisibilityConditionForContext(slotIndex, "slot", condition, levelDef, -1);
+    return io;
 }
 
 /* Enter chain settings view */
