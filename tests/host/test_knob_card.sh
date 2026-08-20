@@ -236,7 +236,100 @@ Promise.all([
     eq(short.x, 3, "short.x"); eq(short.y, 24, "short.y"); eq(short.w, 122, "short.w"); eq(short.h, 15, "short.h");
     if (full.y + full.h > RM.RULE_Y) fail("full card overlaps the footer rule");
     if (full.y < RM.HEADER_H + 1) fail("full card overlaps the screen header");
+    eq(KC.knobCardContentW(), 116, "knobCardContentW");
     console.log("PASS: card rect");
+  }
+
+  /* ---- 4b. the cell is 29px, measured, not inferred ----
+   *
+   * The gap and clip checks below are ASYMMETRIC and that is easy to miss: a
+   * cell too WIDE laps into the gap column or runs off the screen and is
+   * caught, but a cell one or two pixels too NARROW is invisible to every
+   * other assertion in this file. Driving the card through cellW of 27 and 28
+   * left the whole suite green.
+   *
+   * So measure it, the same way the row test above does: a touched cell fills
+   * its label band with a solid run of exactly cellW pixels at row lblY and
+   * prints its glyphs one row lower, so that row is an unbroken run whose
+   * START is the cell origin and whose LENGTH is the cell width. Column 0 is
+   * touched and it is the only populated key, so it is the only lit run. */
+  {
+    const mi = M.buildMetaIndex({ hierarchy: null, chainParams: [
+      { key: "a", name: "Alpha", type: "float", min: 0, max: 1, step: 0.01 },
+    ] });
+    const fb = H.createFramebuffer();
+    KC.drawKnobCard(H.drawContext(fb), {
+      name: "ALPHA", value: "0.20", row: 0, touched: 0,
+      page: { kind: "knobs", keys: ["a", null, null, null, null, null, null, null] },
+      metaIndex: mi, values: { a: 0.2 },
+    });
+    const r = KC.knobCardRect(true);
+    /* content top + header band + the gap row = the widget row; its label band
+     * sits LBL0_Y - ROW0_Y further down */
+    const lblRow = r.y + KC.BORDER_W + KC.GAP_W + KC.HEADER_BAND_H + KC.GAP_W
+                 + (RM.LBL0_Y - RM.ROW0_Y);
+    /* Scan the CONTENT span only. The cards own border columns are lit on
+     * every interior row, so a full-width scan finds the border and calls
+     * everything between it one ragged run. */
+    const contentX = r.x + KC.BORDER_W + KC.GAP_W;
+    let lo = -1, hi = -1;
+    for (let x = contentX; x < contentX + KC.knobCardContentW(); x++) {
+      if (fb.pixels[lblRow * fb.width + x]) { if (lo < 0) lo = x; hi = x; }
+    }
+    if (lo < 0) fail("the touched cell drew no inverted label band at row " + lblRow);
+    for (let x = lo; x <= hi; x++) {
+      if (!fb.pixels[lblRow * fb.width + x]) fail("the inverted band has a hole in it");
+    }
+    if (lo !== contentX)
+      fail("cell 0 starts at x=" + lo + ", expected the content origin " + contentX);
+    if (hi - lo + 1 !== 29)
+      fail("cell 0 is " + (hi - lo + 1) + "px wide, expected 29 -- four cells " +
+           "must fill the 116px content exactly");
+    console.log("PASS: cell width measured at 29px");
+  }
+
+  /* ---- 4c. an opaque param keeps its divable brackets ----
+   *
+   * Nothing DIVES from the card -- it is transient feedback while a finger is
+   * on a knob, and the door to a params own editor is one level up, on the
+   * chain editors jog click. The obvious simplification is therefore to drop
+   * drawDivableMark inside the card, since the brackets look like an
+   * affordance the card does not offer.
+   *
+   * That would be a bug, and render_page_movy.mjs says why at drawOpaqueBox:
+   * the opaque box draws NO FRAME OF ITS OWN -- the divable brackets ARE its
+   * frame. Suppress them and a filepath value floats in the cell with no
+   * container.
+   *
+   * Pinned here because the reasoning that leads to removing them is sound
+   * right up until the last step. */
+  {
+    const mi = M.buildMetaIndex({ hierarchy: null, chainParams: [
+      { key: "f", name: "File", type: "filepath" },
+    ] });
+    if (!mi.getOrGuess("f").divable) fail("a filepath should be divable");
+    const fb = H.createFramebuffer();
+    KC.drawKnobCard(H.drawContext(fb), {
+      name: "FILE", value: "kick.wav", row: 0, touched: 0,
+      page: { kind: "knobs", keys: ["f", null, null, null, null, null, null, null] },
+      metaIndex: mi, values: { f: "/x/y/kick.wav" },
+    });
+    const r = KC.knobCardRect(true);
+    const contentX = r.x + KC.BORDER_W + KC.GAP_W;
+    const rowY = r.y + KC.BORDER_W + KC.GAP_W + KC.HEADER_BAND_H + KC.GAP_W;
+    /* drawDivableMark insets by one and spans BOX_H, so these four are the
+     * bracket corners -- the only frame this widget has */
+    const bx = contentX + 1, by = rowY, bw = 29 - 2, bh = RM.BOX_H;
+    const at = (x, y) => fb.pixels[y * fb.width + x];
+    for (const [x, y, which] of [[bx, by, "top left"], [bx + bw - 1, by, "top right"],
+                                 [bx, by + bh - 1, "bottom left"],
+                                 [bx + bw - 1, by + bh - 1, "bottom right"]]) {
+      if (!at(x, y))
+        fail("the " + which + " divable bracket is missing -- an opaque box has " +
+             "no frame of its own, so the brackets are the only thing containing it");
+    }
+    if (fb.clipped() !== 0) fail("opaque cell drew outside the display");
+    console.log("PASS: opaque param keeps the brackets that frame it");
   }
 
   /* ---- 5. INVARIANT: a black gap separates the border from the band ----
