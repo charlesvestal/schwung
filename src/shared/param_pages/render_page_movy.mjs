@@ -600,9 +600,11 @@ function drawEnumSquare(ctx, kx, ky, text) {
  * used to draw the same solid box as an enum square, which meant a door and a
  * turnable enum were pixel-identical — you found out which was which by
  * turning one and having nothing happen. */
-function drawOpaqueBox(ctx, kx, ky, value) {
+function drawOpaqueBox(ctx, kx, ky, value, override) {
     const h = BOX_H;
-    const shown = displayValue(value === undefined ? null : value, { kind: KIND_OPAQUE });
+    const shown = (override === null || override === undefined)
+        ? displayValue(value === undefined ? null : value, { kind: KIND_OPAQUE })
+        : String(override);
     centeredText(ctx, kx + 2, KW - 4,
         ky + 1 + Math.floor((h - 2 - FONT_H) / 2), fitDev(ctx, shown, KW - 4), 1);
 }
@@ -660,12 +662,12 @@ function drawDivableMark(ctx, col, rowY) {
     drawBrackets(ctx, col * CELL_W + 1, rowY, CELL_W - 2, BOX_H);
 }
 
-function drawKnobWidget(ctx, col, rowY, meta, raw, modRaw, liveRaw) {
+function drawKnobWidget(ctx, col, rowY, meta, raw, modRaw, liveRaw, cellText) {
     const kx = col * CELL_W + Math.floor((CELL_W - KW) / 2), ky = rowY;
     /* Anything that cannot show two values at once shows the live one, so it
      * animates under modulation instead of freezing on the base. */
     const shown = (liveRaw === null || liveRaw === undefined) ? raw : liveRaw;
-    if (meta.kind === KIND_OPAQUE) { drawOpaqueBox(ctx, kx, ky, shown); return; }
+    if (meta.kind === KIND_OPAQUE) { drawOpaqueBox(ctx, kx, ky, shown, cellText); return; }
     if (meta.kind === KIND_ENUM) {
         const idx = Math.round(Number(shown));
         /*
@@ -802,6 +804,16 @@ function drawKnobRow(ctx, o, row, rowY, lblY) {
         const raw = values ? values[key] : null;
         const isTouched = held.indexOf(slot) >= 0;
 
+        /*
+         * A value the HOST resolves, per surface. `displayFor` is the same
+         * separate-short-and-long-labels idea short_options solves for enums,
+         * for a value whose reading cannot be declared statically: an LFO's
+         * target is stored as "fx1" and reads "FX 1: Room Size", and only the
+         * host knows what is loaded in fx1. Optional everywhere; the ordinary
+         * displayValue path is untouched when no formatter is supplied.
+         */
+        const cellText = o.displayFor ? o.displayFor(key, raw, "cell") : null;
+
         if (!covered[col]) {
             /* modValues holds the live modulated value for keys a source is
              * driving; `values` stays the base the user dialled in. */
@@ -809,7 +821,8 @@ function drawKnobRow(ctx, o, row, rowY, lblY) {
              * drawKnobWidget picks per kind. */
             drawKnobWidget(ctx, col, rowY, meta, raw,
                            modValues ? modValues[key] : undefined,
-                           liveValues ? liveValues[key] : undefined);
+                           liveValues ? liveValues[key] : undefined,
+                           cellText);
         }
 
         /* Budget in CHARACTERS, not pixels: Elektron's labels are 3-4 glyphs
@@ -823,7 +836,9 @@ function drawKnobRow(ctx, o, row, rowY, lblY) {
 
         const labelWidth = Math.min(CELL_W - 2, fontWidth4x5("M".repeat(LABEL_CHARS)));
         const label = caps(shortenLabel(LBL_MEASURE, preAbbreviate(meta.label || meta.key), labelWidth));
-        const display = fitDev(ctx, displayValue(raw, meta), CELL_W - 2);
+        const display = fitDev(ctx,
+            (cellText === null || cellText === undefined) ? displayValue(raw, meta) : String(cellText),
+            CELL_W - 2);
         drawLabelCell(ctx, col, lblY, label, display, isTouched, modulated ? !!modulated(key) : false);
     }
 }
@@ -906,9 +921,14 @@ export function renderPageMovy(ctx, o) {
     const touched = typeof o.touched === "number" ? o.touched : -1;
 
     if (touched >= 0 && page && page.keys && page.keys[touched] && o.metaIndex) {
-        const m = o.metaIndex.getOrGuess(page.keys[touched]);
-        const v = o.values ? o.values[page.keys[touched]] : null;
-        drawHeader(ctx, m.label || m.key, displayValue(v, m), true);
+        const hk = page.keys[touched];
+        const m = o.metaIndex.getOrGuess(hk);
+        const v = o.values ? o.values[hk] : null;
+        /* "header", not "cell": this is the surface with room, and the whole
+         * reason a host-resolved value has two forms at all. */
+        const hv = o.displayFor ? o.displayFor(hk, v, "header") : null;
+        drawHeader(ctx, m.label || m.key,
+                   (hv === null || hv === undefined) ? displayValue(v, m) : String(hv), true);
     } else {
         drawHeader(ctx, o.title || "", page ? page.name : null, false);
     }

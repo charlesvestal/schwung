@@ -45,6 +45,7 @@ import {
 } from '/data/UserData/schwung/shared/chain_ui_views.mjs';
 
 import { decodeDelta } from '/data/UserData/schwung/shared/input_filter.mjs';
+import { describeLfoTarget } from '/data/UserData/schwung/shared/lfo_target_label.mjs';
 import { runDrawBench } from '/data/UserData/schwung/shared/draw_bench.mjs';
 import { installParamTally, paramTallyTick, paramTallyArmed } from '/data/UserData/schwung/shared/param_tally.mjs';
 import { knobInit, knobTick, knobConfigFromMeta } from '/data/UserData/schwung/shared/knob_engine.mjs';
@@ -5437,10 +5438,9 @@ function handleMasterFxSettingsAction(key) {
         setView(VIEWS.LFO_EDIT);
         const enabled = lfoCtx.getParam("enabled");
         if (enabled === "1") {
-            const target = lfoCtx.getParam("target") || "";
-            const param = lfoCtx.getParam("target_param") || "";
-            if (target && param) {
-                announce(lfoCtx.title + ", " + target + ":" + param);
+            const targetDesc = describeCurrentLfoTarget();
+            if (targetDesc && !targetDesc.empty) {
+                announce(lfoCtx.title + ", " + targetDesc.long);
             } else {
                 announce(lfoCtx.title + ", no target");
             }
@@ -7390,6 +7390,12 @@ function applyComponentSelection() {
     slotUserCleared[selectedSlot] =
         !cfg.synth && !cfg.fx1 && !cfg.fx2 && !cfg.midiFx;
 
+    /* A component changed, so any LFO label naming that component by module
+     * is now wrong. The label cache keys on the stored ROUTING, which a swap
+     * does not touch — "Freeverb: Room Size" would survive the Freeverb
+     * leaving. Cheap to drop: it re-resolves on the next draw that needs it. */
+    resetLfoTargetLabels();
+
     /* Apply to DSP - map component key to param key */
     const moduleId = selected && selected.id ? selected.id : "";
     let paramKey = "";
@@ -7534,10 +7540,9 @@ function runChainSettingAction(slot, key) {
         setView(VIEWS.LFO_EDIT);
         const enabled = lfoCtx.getParam("enabled");
         if (enabled === "1") {
-            const target = lfoCtx.getParam("target") || "";
-            const param = lfoCtx.getParam("target_param") || "";
-            if (target && param) {
-                announce(lfoCtx.title + ", " + target + ":" + param);
+            const targetDesc = describeCurrentLfoTarget();
+            if (targetDesc && !targetDesc.empty) {
+                announce(lfoCtx.title + ", " + targetDesc.long);
             } else {
                 announce(lfoCtx.title + ", no target");
             }
@@ -7576,6 +7581,12 @@ function slotGridIoFor(slotIndex) {
          * and only acts when the state actually differs. */
         setMpeMode: (on) => adjustChainSetting(slotIndex, { key: "mpe_mode" }, on ? 1 : -1),
         hasPreset: () => isExistingPreset(slotIndex),
+        /* An LFO's target reads as a name, not as "fx1" — see
+         * shared/lfo_target_label.mjs. Resolved through the same ctx the LFO
+         * editor uses, so the grid and the list can never describe the same
+         * routing differently, and cached per scope because a miss is a dozen
+         * IPC round trips inside a draw. */
+        describeTarget: (lfoIndex) => describeLfoTargetFor(makeSlotLfoCtx(slotIndex, lfoIndex)),
     });
     /*
      * Visibility, bound to THIS slot. The default evaluator reads
@@ -14409,6 +14420,9 @@ function makeSlotLfoCtx(slot, lfoIdx) {
     const prefix = "lfo" + (lfoIdx + 1) + ":";
     return {
         lfoIdx: lfoIdx,
+        /* Identifies the ROUTING SPACE for the label cache — `title` does not:
+         * slot 2's "LFO 1" and slot 3's "LFO 1" are different components. */
+        scopeId: "slot" + slot + ":lfo" + lfoIdx,
         getParam: function(key) { return getSlotParam(slot, prefix + key); },
         setParam: function(key, val) { setSlotParam(slot, prefix + key, val); },
         setParamBlocking: function(key, val) { return shadowSetParamBlocking(slot, prefix + key, val); },
@@ -14485,6 +14499,7 @@ function makeMfxLfoCtx(lfoIdx) {
     const prefix = "master_fx:lfo" + (lfoIdx + 1) + ":";
     return {
         lfoIdx: lfoIdx,
+        scopeId: "mfx:lfo" + lfoIdx,
         getParam: function(key) { return shadow_get_param(0, prefix + key); },
         setParam: function(key, val) { shadow_set_param(0, prefix + key, val); },
         setParamBlocking: function(key, val) { return shadowSetParamBlocking(0, prefix + key, val); },
@@ -14531,6 +14546,53 @@ function makeMfxLfoCtx(lfoIdx) {
 }
 
 /* --- Generic LFO Editor Functions (driven by lfoCtx) --- */
+
+/*
+ * What the current LFO's target is CALLED — see shared/lfo_target_label.mjs.
+ *
+ * CACHED on the stored pair, because resolving it is not cheap: building the
+ * component list reads synth_module, each fx module, the midi fx count and a
+ * name per component, and the param list parses that component's whole
+ * chain_params — a dozen-odd IPC round trips at ~2.8ms each. Called from a
+ * DRAW, that is the entire frame budget several times over.
+ *
+ * The pair only changes when the user commits a new routing, so a cache keyed
+ * on it resolves once and then costs a string compare. `lfoCtx.title` is in
+ * the key too: a slot LFO and a Master FX LFO can hold the identical pair and
+ * mean different components.
+ */
+/* Per SCOPE, not one entry: the knob grid asks for a slot's LFO while the
+ * editor's own lfoCtx may be a Master FX LFO, and a single slot would thrash
+ * between them — every miss is the dozen round trips above, inside a draw. */
+const _lfoTargetLabelCache = Object.create(null);
+function describeLfoTargetFor(ctx) {
+    if (!ctx) return null;
+    const scope = ctx.scopeId || ctx.title || "lfo";
+    const target = ctx.getParam("target") || "";
+    const param = ctx.getParam("target_param") || "";
+    const cacheKey = target + "|" + param;
+    const hit = _lfoTargetLabelCache[scope];
+    if (hit && hit.key === cacheKey) return hit.value;
+    const value = describeLfoTarget({
+        target: target,
+        targetParam: param,
+        components: ctx.getTargetComponents ? ctx.getTargetComponents() : [],
+        params: (ctx.getTargetParams && target) ? ctx.getTargetParams(target) : [],
+    });
+    _lfoTargetLabelCache[scope] = { key: cacheKey, value: value };
+    return value;
+}
+
+/** Drop every cached label. Called when a component module changes: the cache
+ *  keys on the routing, and a swap changes the NAME without changing it. */
+function resetLfoTargetLabels() {
+    for (const k in _lfoTargetLabelCache) delete _lfoTargetLabelCache[k];
+}
+
+/** The LFO the editor is currently pointed at. */
+function describeCurrentLfoTarget() {
+    return lfoCtx ? describeLfoTargetFor(lfoCtx) : null;
+}
 
 function getLfoItems() {
     if (!lfoCtx) return [];
@@ -14580,10 +14642,10 @@ function getLfoDisplayValue(item) {
     if (item.key === "phase_offset") return Math.round(parseFloat(raw) * 360) + "\u00b0";
     if (item.key === "retrigger") return raw === "1" ? "On" : "Off";
     if (item.key === "target") {
-        const target = lfoCtx.getParam("target") || "";
-        const param = lfoCtx.getParam("target_param") || "";
-        if (target && param) return target + ":" + param;
-        return "None";
+        /* The module by name, as the picker offered it — not the stored keys.
+         * This row read "fx1:room_size" for as long as it has existed. */
+        const d = describeCurrentLfoTarget();
+        return d ? d.long : "None";
     }
     return raw;
 }
@@ -14610,12 +14672,14 @@ function drawLfoEdit() {
     if (!lfoCtx) return;
     clear_screen();
     const enabled = lfoCtx.getParam("enabled") === "1";
-    const target = lfoCtx.getParam("target") || "";
-    const param = lfoCtx.getParam("target_param") || "";
+    const targetDesc = describeCurrentLfoTarget();
 
     let title = lfoCtx.title;
-    if (enabled && target && param) {
-        title += ": " + target + ":" + param;
+    /* The PARAM alone here, not the module: 22 characters is the whole title
+     * and "LFO 1" plus a module name plus a param name does not come close.
+     * Which module it is, is one row down. */
+    if (enabled && targetDesc && !targetDesc.empty) {
+        title += ": " + targetDesc.short;
     } else if (!enabled) {
         title += ": Off";
     }
