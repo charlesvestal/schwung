@@ -311,6 +311,58 @@ function makeSlot(over) {
   }
 }
 
+/* ---- 4e. shape+rate+depth+phase draw as ONE row-wide graphic ------------ */
+{
+  /*
+   * The four that describe the MOTION share a declared viz group, so the whole
+   * second row draws the actual waveform at its actual depth and phase instead
+   * of four separate cells.
+   *
+   * Declared, not detected: the detector requires rate and depth to share a
+   * stem, and "rate_hz" against "depth" does not match, so it never fired. The
+   * group is also a hard ADJACENCY gate — the roles must land contiguously on
+   * one row — which is why row 1 is what the modulator IS and row 2 is what its
+   * motion looks like. Reordering those four breaks the picture silently.
+   */
+  const { resolveViz } = await import(R + "/src/shared/param_pages/viz.mjs");
+  for (const sync of ["0", "1"]) {
+    const condStore = { "lfo1:sync": sync, "lfo2:sync": sync };
+    const vis = (cond) => {
+      if (!cond) return true;
+      const raw = condStore[cond.param];
+      return raw === undefined ? false : String(raw) === String(cond.equals);
+    };
+    const hier = SG.slotGridHierarchy(true);
+    const cp = SG.allSlotGridParams();
+    const { pages } = planPages({ hierarchy: hier, chainParams: cp, visible: vis });
+    const meta = buildMetaIndex({ hierarchy: hier, chainParams: cp });
+    const page = pages.filter((p) => p.level === "lfo1")[0];
+    const { groups, invalid } = resolveViz({ keys: page.keys, metaIndex: meta });
+    if (invalid && invalid.length) {
+      fail("declared viz did not resolve: " + JSON.stringify(invalid));
+    }
+    const lfo = groups.filter((g) => g.kind === "lfo")[0];
+    if (!lfo) {
+      fail("no lfo graphic for sync=" + sync + " — groups: " +
+           JSON.stringify(groups.map((g) => g.kind)));
+      continue;
+    }
+    if (lfo.slotStart !== 4 || lfo.slotSpan !== 4) {
+      fail("the lfo graphic should span the whole second row (slots 4..7), got " +
+           lfo.slotStart + ".." + (lfo.slotStart + lfo.slotSpan - 1));
+    }
+    for (const role of ["shape", "rate", "depth", "phase"]) {
+      if (!lfo.roles[role]) fail("the lfo graphic is missing its " + role + " role");
+    }
+    /* Whichever rate is visible must be the one the graphic uses. */
+    const wantRate = sync === "1" ? "lfo1:rate_div" : "lfo1:rate_hz";
+    if (lfo.roles.rate !== wantRate) {
+      fail("the graphic should read " + wantRate + " at sync=" + sync +
+           ", got " + lfo.roles.rate);
+    }
+  }
+}
+
 /* ---- 5b. realKeyFor is the single source of the mapping ----------------- */
 {
   /*

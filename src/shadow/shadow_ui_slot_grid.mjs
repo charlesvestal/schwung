@@ -112,19 +112,37 @@ export const LFO_DIVISIONS_SHORT = [
 ];
 
 export function lfoParams(lfoIndex) {
+    const g = `lfo${lfoIndex}`;
     return [
+        /*
+         * ROW 1 — what the modulator IS: where it goes, whether it runs, how it
+         * is scaled, what its clock is.
+         *
+         * ROW 2 — what its motion LOOKS like: shape, rate, depth, phase. Those
+         * four are declared as one `lfo` viz group, so instead of four separate
+         * cells the whole second row draws the actual waveform, at its actual
+         * depth, with its actual phase offset. The group is a hard adjacency
+         * gate — its roles must land contiguously on ONE row — which is exactly
+         * why the ordering below is not arbitrary.
+         *
+         * Declared rather than detected: the detector wants rate and depth to
+         * share a stem, and "rate_hz" against "depth" does not match, so it
+         * never fired. A declared group wins over detection anyway.
+         */
         /* A door: clicking opens the existing two-step target picker. Declared
          * `string` so it is opaque (a knob cannot turn it) and divable, and so
          * the cell shows the current target rather than a blank frame. */
         { key: `lfo${lfoIndex}:target`, name: "Targ", type: "string" },
         { key: `lfo${lfoIndex}:enabled`, name: "On", type: "enum",
           options: ["Off", "On"], short_options: ["OFF", "ON"] },
-        { key: `lfo${lfoIndex}:shape`, name: "Shape", type: "enum",
-          options: LFO_SHAPES, short_options: LFO_SHAPES_SHORT },
         { key: `lfo${lfoIndex}:polarity`, name: "Mode", type: "enum",
           options: ["Unipolar", "Bipolar"], short_options: ["UNI", "BI"] },
         { key: `lfo${lfoIndex}:sync`, name: "Sync", type: "enum",
           options: ["Free", "Sync"], short_options: ["FRE", "SYN"] },
+
+        { key: `lfo${lfoIndex}:shape`, name: "Shape", type: "enum",
+          options: LFO_SHAPES, short_options: LFO_SHAPES_SHORT,
+          viz: { group: g, role: "shape" } },
         /*
          * ONE rate cell, not two. Free-run and synced rates are the same
          * control wearing different units, and showing both spends a cell on
@@ -135,18 +153,24 @@ export function lfoParams(lfoIndex) {
          * straight through, so it resolves against the LFO instead of being
          * prefixed with the component. page_controller watches conditionKeys
          * and re-plans when one changes, so the cell swaps as you turn Sync.
+         *
+         * Both carry role "rate": only ever one of them is on the page, so the
+         * group finds exactly one either way.
          */
         { key: `lfo${lfoIndex}:rate_hz`, name: "Rate", type: "float", min: 0.1, max: 20, step: 0.1, unit: "Hz",
-          visible_if: { param: `lfo${lfoIndex}:sync`, equals: "0" } },
+          visible_if: { param: `lfo${lfoIndex}:sync`, equals: "0" },
+          viz: { group: g, role: "rate" } },
         { key: `lfo${lfoIndex}:rate_div`, name: "Rate", type: "enum",
           options: LFO_DIVISIONS, short_options: LFO_DIVISIONS_SHORT,
-          visible_if: { param: `lfo${lfoIndex}:sync`, equals: "1" } },
+          visible_if: { param: `lfo${lfoIndex}:sync`, equals: "1" },
+          viz: { group: g, role: "rate" } },
         /* Percent, not a raw fraction: "65%" is the value, "0.65" is the storage.
          * Bipolar is kept — a negative depth INVERTS the modulation, which is a
          * real feature, so the range reads -100%..+100% rather than 0..100%. */
-        { key: `lfo${lfoIndex}:depth`, name: "Depth", type: "float", min: -1, max: 1, step: 0.01, unit: "%" },
-        /* The cell the rate swap paid for. */
-        { key: `lfo${lfoIndex}:phase_offset`, name: "Phase", type: "float", min: 0, max: 1, step: 0.0417, unit: "%" },
+        { key: `lfo${lfoIndex}:depth`, name: "Depth", type: "float", min: -1, max: 1, step: 0.01, unit: "%",
+          viz: { group: g, role: "depth" } },
+        { key: `lfo${lfoIndex}:phase_offset`, name: "Phase", type: "float", min: 0, max: 1, step: 0.0417, unit: "%",
+          viz: { group: g, role: "phase" } },
     ];
 }
 
