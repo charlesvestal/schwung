@@ -18,7 +18,7 @@ bin="build/tests/test_chain_key_index"
 mkdir -p "$(dirname "$bin")"
 
 cc -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
-  -Isrc -Isrc/modules/chain/dsp \
+  -Isrc/modules/chain/dsp \
   -DTEST_MAX_FX="$cap_fx" -DTEST_MAX_MIDI_FX="$cap_midi" \
   tests/host/test_chain_key_index.c \
   -o "$bin"

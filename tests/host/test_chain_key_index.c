@@ -58,9 +58,21 @@ int main(void) {
     expect_idx("fx1:cutoff", "fx", TEST_MAX_FX, 0);
     expect_idx("fx2:cutoff", "fx", TEST_MAX_FX, 1);
 
-    /* The new range, and its edge. */
-    expect_idx("fx8:cutoff", "fx", TEST_MAX_FX, 7);
-    expect_idx("fx9:cutoff", "fx", TEST_MAX_FX, -1);
+    /* The top of the range and the first key past it, both BUILT from the cap
+     * so a future cap bump does not turn this into "got 8, want -1" -- which
+     * reads as a parser bug and is really just a stale test. */
+    {
+        char key[32];
+        snprintf(key, sizeof(key), "fx%d:cutoff", TEST_MAX_FX);
+        expect_idx(key, "fx", TEST_MAX_FX, TEST_MAX_FX - 1);
+        snprintf(key, sizeof(key), "fx%d:cutoff", TEST_MAX_FX + 1);
+        expect_idx(key, "fx", TEST_MAX_FX, -1);
+
+        snprintf(key, sizeof(key), "midi_fx%d:rate", TEST_MAX_MIDI_FX);
+        expect_idx(key, "midi_fx", TEST_MAX_MIDI_FX, TEST_MAX_MIDI_FX - 1);
+        snprintf(key, sizeof(key), "midi_fx%d:rate", TEST_MAX_MIDI_FX + 1);
+        expect_idx(key, "midi_fx", TEST_MAX_MIDI_FX, -1);
+    }
 
     /* There is no slot zero, and we never emit a padded index — accepting
      * "fx01:" would make two spellings of one slot. */
@@ -96,7 +108,11 @@ int main(void) {
     /* On success the caller forwards *subkey to the sub-plugin verbatim, so
      * it has to point past the colon — not at it, and not at the digit. */
     expect_subkey("fx1:cutoff", "fx", TEST_MAX_FX, 0, "cutoff");
-    expect_subkey("fx8:module", "fx", TEST_MAX_FX, 7, "module");
+    {
+        char key[32];
+        snprintf(key, sizeof(key), "fx%d:module", TEST_MAX_FX);
+        expect_subkey(key, "fx", TEST_MAX_FX, TEST_MAX_FX - 1, "module");
+    }
     expect_subkey("midi_fx2:bypassed", "midi_fx", TEST_MAX_MIDI_FX, 1, "bypassed");
     expect_subkey("fx3:", "fx", TEST_MAX_FX, 2, "");  /* empty, but well-formed */
 
@@ -108,9 +124,11 @@ int main(void) {
             fprintf(stderr, "FAIL component id: got %s, want fx1\n", buf);
             failures++;
         }
-        chain_fx_component_id(buf, sizeof(buf), "midi_fx", 7);
-        if (strcmp(buf, "midi_fx8") != 0) {
-            fprintf(stderr, "FAIL component id: got %s, want midi_fx8\n", buf);
+        char want[16];
+        snprintf(want, sizeof(want), "midi_fx%d", TEST_MAX_MIDI_FX);
+        chain_fx_component_id(buf, sizeof(buf), "midi_fx", TEST_MAX_MIDI_FX - 1);
+        if (strcmp(buf, want) != 0) {
+            fprintf(stderr, "FAIL component id: got %s, want %s\n", buf, want);
             failures++;
         }
         /* Round trip: every id we build must parse back to what built it. */
