@@ -110,7 +110,10 @@ static void expect_slot_empty(chain_instance_t *inst, int slot) {
 /* The instance is ~1 MB of cached ui_hierarchy strings — heap, not stack. */
 static chain_instance_t *fresh_instance(void) {
     chain_instance_t *inst = calloc(1, sizeof(*inst));
-    if (!inst) {
+    /* The per-position metadata blocks are pointers now (so a reorder can move
+       a module without a multi-megabyte memmove in the audio callback), so a
+       calloc'd instance is not usable until they exist. */
+    if (!inst || !chain_alloc_position_storage(inst)) {
         fprintf(stderr, "FAIL: out of memory\n");
         exit(1);
     }
@@ -124,6 +127,7 @@ static chain_instance_t *fresh_instance(void) {
 
 static void release(chain_instance_t *inst) {
     v2_unload_all_midi_fx(inst);
+    chain_free_position_storage(inst);
     free(inst);
 }
 

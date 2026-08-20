@@ -58,37 +58,16 @@ static void* v2_create_instance(const char *module_dir, const char *config_json)
     if (!inst) return NULL;
 
     /*
-     * Per-position metadata storage, allocated once for every position.
+     * Per-position metadata storage, allocated EAGERLY for every position.
      *
-     * EAGER on purpose. These used to be inline arrays, so every position's
-     * buffer existed from the moment the instance did and no call site ever
-     * checked for one — `inst->fx_ui_hierarchy[i][0]` is read in a dozen
-     * places. Allocating lazily on load would make each of those a null
-     * dereference in the audio callback for an unloaded position. Eager keeps
-     * the old invariant exactly; only the indirection is new (see
-     * chain_internal.h for why it is there).
+     * These used to be inline arrays, so every position's buffer existed from
+     * the moment the instance did and no call site ever checked for one —
+     * `inst->fx_ui_hierarchy[i][0]` is read in a dozen places. Allocating
+     * lazily on load would make each of those a null dereference in the audio
+     * callback for an unloaded position. Eager keeps the old invariant exactly;
+     * only the indirection is new (see chain_internal.h for why it is there).
      */
-    for (int i = 0; i < MAX_AUDIO_FX; i++) {
-        inst->fx_params[i] = calloc(MAX_CHAIN_PARAMS, sizeof(chain_param_info_t));
-        inst->fx_ui_hierarchy[i] = calloc(1, CHAIN_UI_HIERARCHY_LEN);
-    }
-    for (int i = 0; i < MAX_MIDI_FX; i++) {
-        inst->midi_fx_params[i] = calloc(MAX_CHAIN_PARAMS, sizeof(chain_param_info_t));
-        inst->midi_fx_ui_hierarchy[i] = calloc(1, CHAIN_UI_HIERARCHY_LEN);
-    }
-    /* All or nothing: a half-allocated instance would be a null dereference in
-     * the audio callback later, which is a far worse failure than refusing to
-     * create the slot here. */
-    for (int i = 0; i < MAX_AUDIO_FX; i++) {
-        if (!inst->fx_params[i] || !inst->fx_ui_hierarchy[i]) {
-            chain_free_position_storage(inst); free(inst); return NULL;
-        }
-    }
-    for (int i = 0; i < MAX_MIDI_FX; i++) {
-        if (!inst->midi_fx_params[i] || !inst->midi_fx_ui_hierarchy[i]) {
-            chain_free_position_storage(inst); free(inst); return NULL;
-        }
-    }
+    if (!chain_alloc_position_storage(inst)) { free(inst); return NULL; }
 
     strncpy(inst->module_dir, module_dir, MAX_PATH_LEN - 1);
 
@@ -132,20 +111,6 @@ static void v2_destroy_instance(void *instance) {
 
     chain_free_position_storage(inst);
     free(inst);
-}
-
-/* Release the per-position metadata blocks v2_create_instance allocated.
- * Idempotent, so the partial-allocation bail can use it too. */
-void chain_free_position_storage(chain_instance_t *inst) {
-    if (!inst) return;
-    for (int i = 0; i < MAX_AUDIO_FX; i++) {
-        free(inst->fx_params[i]);        inst->fx_params[i] = NULL;
-        free(inst->fx_ui_hierarchy[i]);  inst->fx_ui_hierarchy[i] = NULL;
-    }
-    for (int i = 0; i < MAX_MIDI_FX; i++) {
-        free(inst->midi_fx_params[i]);       inst->midi_fx_params[i] = NULL;
-        free(inst->midi_fx_ui_hierarchy[i]); inst->midi_fx_ui_hierarchy[i] = NULL;
-    }
 }
 
 /* V2 synth panic - send all notes off */
@@ -232,8 +197,10 @@ void v2_unload_all_audio_fx(chain_instance_t *inst) {
     inst->fx_count = 0;
 }
 
-/* V2 unload a single audio FX slot */
-static void v2_unload_audio_fx_slot(chain_instance_t *inst, int slot) {
+/* V2 unload a single audio FX slot. Not static: chain_reorder.c removes a
+ * position through it, so the dlclose and the modulation-entry clear stay in
+ * one place rather than being restated there. */
+void v2_unload_audio_fx_slot(chain_instance_t *inst, int slot) {
     if (!inst || slot < 0 || slot >= MAX_AUDIO_FX) return;
     char target_name[16];
     chain_fx_component_id(target_name, sizeof(target_name), "fx", slot);
@@ -748,6 +715,50 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         char dbg[256];
         snprintf(dbg, sizeof(dbg), "[v2_set_param] key='%s' val='%s'", key, val ? val : "null");
         parse_debug_log(dbg);
+    }
+
+    /*
+     * ---- Section reorder verbs -------------------------------------------
+     *
+     * "fx:insert" / "fx:remove" / "fx:move", and the midi_fx spellings.
+     * Positions are 1-BASED, matching the ids everything else speaks ("fx2"),
+     * so a caller never has to convert; "move" takes "A>B".
+     *
+     * These exist so that changing a chain's SHAPE stops meaning "reload it".
+     * The editor used to express an insert, a removal or a reorder as a run of
+     * `<id>:module` writes, and each of those unloads the position and dlopen()s
+     * a fresh instance — so adding a MIDI FX at the head rebuilt every MIDI FX
+     * behind it, and removing a mid-chain reverb rebuilt everything downstream.
+     * A running arp lost its phase; a delay lost its repeats. Here the arrays
+     * are permuted and the instances are left alone (chain_permute.h).
+     *
+     * Ahead of every other route because they are the only keys whose subkey is
+     * a verb rather than a parameter name, and a sub-plugin must never see one.
+     */
+    {
+        int is_midi = -1;
+        const char *verb = NULL;
+        if (strncmp(key, "midi_fx:", 8) == 0)  { is_midi = 1; verb = key + 8; }
+        else if (strncmp(key, "fx:", 3) == 0)  { is_midi = 0; verb = key + 3; }
+        if (is_midi >= 0) {
+            const char *v = val ? val : "";
+            if (strcmp(verb, "insert") == 0) {
+                chain_reorder_insert(inst, is_midi, atoi(v) - 1);
+                return;
+            }
+            if (strcmp(verb, "remove") == 0) {
+                chain_reorder_remove(inst, is_midi, atoi(v) - 1);
+                return;
+            }
+            if (strcmp(verb, "move") == 0) {
+                const char *sep = strchr(v, '>');
+                if (sep) chain_reorder_move(inst, is_midi, atoi(v) - 1, atoi(sep + 1) - 1);
+                return;
+            }
+            /* Anything else under these prefixes falls through on purpose —
+             * "midi_fx:pre_capable" is an existing key that lives further
+             * down, so this must claim the three verbs and nothing more. */
+        }
     }
 
     /* Per-component bypass flags. Handled BEFORE the prefix routes below
