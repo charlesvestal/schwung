@@ -13,12 +13,26 @@
 #include "plugin_api_v1.h"
 #include "audio_fx_api_v2.h"
 #include "lfo_common.h"
+#include "master_fx_key.h"
 
 /* ============================================================================
  * Constants
  * ============================================================================ */
 
+/* Number of Master FX slots. Raising this should be a one-line change: all
+ * "fx<N>:" key routing goes through master_fx_key.h with this passed in as
+ * slot_count, and every loop over the slots is bounded by this name. Pinned by
+ * tests/host/test_master_fx_slot_routing.sh, which reads the value out of this
+ * line and proves the routing covers 1..MASTER_FX_SLOTS and rejects the slot
+ * just past it. */
 #define MASTER_FX_SLOTS 4
+
+/* "fx%d" LFO target keys are formatted into MASTER_FX_TARGET_KEY_LEN buffers
+ * and strcmp'd against lfo_state_t.target. A truncated format would compare
+ * unequal and silently stop modulating, so pin the digit budget here rather
+ * than discover it at slot 10000. */
+_Static_assert(MASTER_FX_SLOTS > 0 && MASTER_FX_SLOTS <= 9999,
+               "MASTER_FX_SLOTS must fit \"fx%d\" in MASTER_FX_TARGET_KEY_LEN");
 #define SHADOW_CHAIN_MODULE_DIR "/data/UserData/schwung/modules/chain"
 #define SHADOW_CHAIN_DSP_PATH "/data/UserData/schwung/modules/chain/dsp.so"
 
