@@ -7587,6 +7587,8 @@ function slotGridIoFor(slotIndex) {
          * routing differently, and cached per scope because a miss is a dozen
          * IPC round trips inside a draw. */
         describeTarget: (lfoIndex) => describeLfoTargetFor(makeSlotLfoCtx(slotIndex, lfoIndex)),
+        /* Only the LFO params reach this — see createSlotGridIo.isModulated. */
+        isModulated: (realKey) => isHierarchyParamModulated(slotIndex, realKey),
     });
     /*
      * Visibility, bound to THIS slot. The default evaluator reads
@@ -9087,7 +9089,20 @@ function isHierarchyParamModulated(slot, fullKey) {
 
     /* Fallback for targets that don't implement :modulated. */
     const baseVal = getSlotParam(slot, `${fullKey}:base`);
-    if (baseVal === null || baseVal === undefined) return false;
+    /*
+     * EMPTY is a failed read, not a base of "".
+     *
+     * A key nobody serves does not come back null: the shim answers with
+     * error=4 and a zeroed value buffer, and js_shadow_get_param does not look
+     * at `error`, so JS receives "". Comparing a real live value against that
+     * empty string then said "modulated" for every param whose live read
+     * happens to succeed — which is every slot-level setting, since `slot:*`
+     * keys are real but `slot:*:base` is not. Volume, Mute, Solo, Transpose,
+     * Recv and Fwd all wore the modulation tilde on the slot-settings grid.
+     *
+     * A base is a parameter value; "" is never one.
+     */
+    if (baseVal === null || baseVal === undefined || baseVal === "") return false;
     const liveVal = getSlotParam(slot, fullKey);
     return liveVal !== null && liveVal !== undefined && liveVal !== baseVal;
 }

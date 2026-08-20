@@ -39,6 +39,17 @@ Promise.all([
     return { dev, ctl };
   };
 
+  /* A one-param contract, for tests that need to control every read. */
+  const hierFixture = {
+    "synth:chain_params": JSON.stringify([
+      { key: "cutoff", name: "Cutoff", type: "float", min: 0, max: 1, step: 0.01 },
+    ]),
+    "synth:ui_hierarchy": JSON.stringify({
+      modes: null,
+      levels: { root: { label: "S", knobs: ["cutoff"], params: [{ key: "cutoff", label: "Cutoff" }] } },
+    }),
+  };
+
   /* ---- 1. loading lands on a usable page and says where you are --------- */
   {
     const { dev, ctl } = setup("obxd");
@@ -516,6 +527,116 @@ Promise.all([
       ctl.onKnobTurn(3, 1, 5100);
       if (header() !== 1) fail("while a knob is held the header must stay on it, got " + header());
       ctl.onKnobTouch(1, false);
+    }
+
+    /* ---- an empty read is a MISS, never a value -------------------------
+     *
+     * A key nobody serves does NOT answer null: the shim replies with an error
+     * and a zeroed buffer, and the JS binding hands back "". Treating that as
+     * a reading is how slot Volume showed 0% — the modulated flag was (also
+     * wrongly) set, so the cursor asked for ":base", got "", accepted it, and
+     * never asked the real key. Number("") is 0.
+     */
+    {
+      const reads = [];
+      const values = { "synth:cutoff": "0.75" };   /* ":base" is deliberately absent */
+      const ctl = C.createController({
+        getParam: (k) => {
+          reads.push(k);
+          if (k === "synth:ui_hierarchy" || k === "synth:chain_params") return hierFixture[k];
+          return k in values ? values[k] : "";      /* the empty answer */
+        },
+        setParam: () => {},
+        isModulated: () => true,                    /* forces the ":base" path */
+      });
+      ctl.load({ slot: 0, component: "synth" });
+      for (let i = 0; i < 24; i++) ctl.tick();
+
+      if (!reads.some((k) => k === "synth:cutoff:base"))
+        fail("the modulated path should have asked for :base at all");
+      if (!reads.some((k) => k === "synth:cutoff"))
+        fail("an empty :base must fall through to the plain key — it did not, " +
+             "so the cell would show Number(\"\") = 0");
+      if (ctl.state.values.cutoff !== "0.75")
+        fail("the value should be the real one, got " + JSON.stringify(ctl.state.values.cutoff));
+      if (ctl.state.values.filter_mode === "")
+        fail("an empty answer was stored as a value");
+    }
+
+    /* ---- double-tap a knob to reset it to its default --------------------
+     *
+     * The reset used to live on Mute+touch, which could never be advertised:
+     * CC 88 is forwarded to Move unconditionally, so holding Mute also mutes
+     * the selected track. This gesture needs no modifier.
+     */
+    {
+      let clock = 10000;
+      const dev = D.createFakeDevice({ id: "sf2" });
+      const writes = [];
+      const ctl = C.createController({
+        getParam: dev.getParam, announce: dev.announce, now: () => clock,
+        setParam: (k, v) => { writes.push([k, v]); dev.setParam(k, v); },
+      });
+      ctl.load({ slot: 0, component: "synth" });
+
+      /* A knob whose param actually declares a numeric default, wherever in
+       * the page set it lives — which module carries one is fixture detail. */
+      let slot = -1;
+      for (let p = 0; p < ctl.pages.length && slot < 0; p++) {
+        ctl.goToPage(p);
+        if (!ctl.page || ctl.page.kind !== "knobs") continue;
+        for (let i = 0; i < 8; i++) {
+          const m = ctl.metaAt(i);
+          if (m && m.type === "float" && m.default !== undefined && m.default !== null) { slot = i; break; }
+        }
+      }
+      if (slot < 0) fail("the fixture should declare a float default on some knob somewhere");
+      for (let i = 0; i < 12; i++) ctl.tick();
+      const key = ctl.keyAt(slot);
+      const dflt = Number(ctl.metaAt(slot).default);
+      /* Numerically: the wire form carries the param step precision ("0.900"),
+       * the declaration does not ("0.9"). */
+      const isDefault = (v) => v !== undefined && v !== null && Number(v) === dflt;
+
+      /* Move it away from the default first, or a reset proves nothing. */
+      for (let i = 0; i < 25; i++) ctl.onKnobTurn(slot, 1, (clock += 20));
+      if (isDefault(ctl.state.values[key])) fail("the turn did not move the value off its default");
+
+      /* tap, turn, tap — an ADJUSTMENT, not a double-tap. */
+      writes.length = 0;
+      ctl.onKnobTouch(slot, true);
+      ctl.onKnobTurn(slot, 1, (clock += 10));
+      ctl.onKnobTouch(slot, false);
+      clock += 10;
+      ctl.onKnobTouch(slot, true);
+      ctl.onKnobTouch(slot, false);
+      if (writes.some(([, v]) => isDefault(v)))
+        fail("tap, TURN, tap reset the param — re-placing a finger mid-adjustment must not");
+
+      /* tap, tap — the gesture. */
+      const moved = String(ctl.state.values[key]);
+      clock += C.DOUBLE_TAP_MS * 2;          /* well clear of the pair above */
+      ctl.onKnobTouch(slot, true);
+      ctl.onKnobTouch(slot, false);
+      clock += 50;
+      ctl.onKnobTouch(slot, true);
+      if (!isDefault(ctl.state.values[key]))
+        fail("a double-tap should reset to the default " + dflt +
+             ", got " + ctl.state.values[key] + " (was " + moved + ")");
+      if (!writes.some(([k, v]) => k === "synth:" + key && isDefault(v)))
+        fail("the default was never written to the device");
+      const said = dev.announcements[dev.announcements.length - 1];
+      if (!/default/i.test(said)) fail("the reset was not announced: " + said);
+      ctl.onKnobTouch(slot, false);
+
+      /* Too slow is just two taps. */
+      for (let i = 0; i < 25; i++) ctl.onKnobTurn(slot, 1, (clock += 20));
+      writes.length = 0;
+      ctl.onKnobTouch(slot, true); ctl.onKnobTouch(slot, false);
+      clock += C.DOUBLE_TAP_MS + 50;
+      ctl.onKnobTouch(slot, true); ctl.onKnobTouch(slot, false);
+      if (writes.some(([, v]) => isDefault(v)))
+        fail("two taps " + (C.DOUBLE_TAP_MS + 50) + "ms apart must not count as a double-tap");
     }
 
     /* ---- an UNHELD turn-claim has to expire ------------------------------
