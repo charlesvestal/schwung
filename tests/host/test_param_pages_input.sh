@@ -235,7 +235,62 @@ Promise.all([
     if (feed(cc(3, 127)) !== null) fail("clicking a turnable knob should not open anything");
   }
 
+  /* ---- a preset page is a door, and never a trap ------------------------
+   *
+   * Plain click goes in. Shift+click must still reach the section list from
+   * INSIDE it, and Back must step out one layer rather than leaving the view —
+   * the same ladder a menu and the picker have. A door you cannot get out of
+   * except by exiting the whole view is how the first cut of the menu page
+   * went wrong.
+   */
+  {
+    const names = ["A", "B", "C"];
+    let index = 0;
+    const HIER = { modes: null, levels: { root: {
+      label: "S", list_param: "preset", count_param: "preset_count",
+      name_param: "preset_name", knobs: ["cutoff"], params: [{ key: "cutoff" }] } } };
+    const CP = [{ key: "cutoff", name: "Cutoff", type: "float", min: 0, max: 1, step: 0.01 }];
+    const ctl = C.createController({
+      getParam: (k) => {
+        const b = String(k).replace(/^[^:]+:/, "");
+        if (b === "ui_hierarchy") return JSON.stringify(HIER);
+        if (b === "chain_params") return JSON.stringify(CP);
+        if (b === "preset_count") return String(names.length);
+        if (b === "preset") return String(index);
+        if (b === "preset_name") return names[index];
+        return "0.5";
+      },
+      setParam: (k, v) => { if (String(k).endsWith(":preset")) index = parseInt(v, 10); },
+      announce: () => {},
+    });
+    ctl.load({ slot: 0, component: "synth" });
+    const at = ctl.pages.findIndex((p) => p.kind === "preset");
+    if (at < 0) fail("no preset page planned");
+    ctl.goToPage(at, { remember: false });
+    for (let i = 0; i < 6; i++) ctl.tick();
+
+    const press = (mods) => I.applyInput(ctl, I.decodeInput(cc(3, 127), mods || {}), { nowMs: 1000 });
+    const back = () => I.applyInput(ctl, I.decodeInput(cc(51, 127)), { nowMs: 1000 });
+
+    press();
+    if (!ctl.menuEntered()) fail("plain click should enter the preset page");
+
+    /* From INSIDE: shift+click still reaches the sections. */
+    press({ shift: true });
+    if (!ctl.pickerOpen) fail("shift+click must open the section list from inside a preset page");
+    back();
+    if (ctl.pickerOpen) fail("Back should close the picker first");
+
+    /* Then Back steps out of the page, and only THEN leaves the view. */
+    if (!ctl.menuEntered()) fail("closing the picker should leave the page still entered");
+    if (back() !== null) fail("Back should step out of the entered page, not leave the view");
+    if (ctl.menuEntered()) fail("Back did not step out");
+    const out = back();
+    if (!out || out.action !== "exit") fail("Back on an inert page should leave the view");
+  }
+
   console.log("PASS: input mapping — CC map pinned, relative encoders decoded, " +
-              "modifiers do not latch, touch clears on both releases, MIDI reaches the device");
+              "modifiers do not latch, touch clears on both releases, preset pages are doors, " +
+              "MIDI reaches the device");
 });
 '

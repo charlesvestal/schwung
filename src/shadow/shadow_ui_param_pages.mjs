@@ -29,7 +29,7 @@
 import { ctx } from './shadow_ui_ctx.mjs';
 import { createController } from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
 import { decodeInput, applyInput } from '/data/UserData/schwung/shared/param_pages/page_input.mjs';
-import { PAGE_KNOBS, PAGE_MENU } from '/data/UserData/schwung/shared/param_pages/page_plan.mjs';
+import { PAGE_KNOBS, PAGE_MENU, PAGE_PRESET } from '/data/UserData/schwung/shared/param_pages/page_plan.mjs';
 import { LAYOUT_BAR, LAYOUT_DIAL } from '/data/UserData/schwung/shared/param_pages/render_page.mjs';
 import { LAYOUT_MOVY } from '/data/UserData/schwung/shared/param_pages/render_page_movy.mjs';
 import { announce } from '/data/UserData/schwung/shared/screen_reader.mjs';
@@ -439,6 +439,18 @@ function footerHints() {
     }
 
     /*
+     * A preset browser is the same door, and the footer is where the promise
+     * lives: OUTSIDE it the jog pages, so scrolling past a synth cannot load
+     * its presets; INSIDE it the jog is the browser and every step auditions.
+     * Saying which of the two you are in is the entire safety of the thing.
+     */
+    if (mp && mp.kind === PAGE_PRESET) {
+        return controller.menuEntered && controller.menuEntered()
+            ? orderedHints({ jog: "PRST", click: null, extra: [["BACK", "OUT"]] })
+            : orderedHints({ jog: "PAGE", click: "ENTER", extra: fine });
+    }
+
+    /*
      * A knob under the hand changes what the CLICK means and nothing else, so
      * only that slot changes. Holding a knob whose param opens an editor, the
      * click opens it; holding any other knob, the click still opens the section
@@ -476,17 +488,23 @@ export function drawParamPages() {
      * non-grid one, so it is checked before the page kind. */
     const page = controller.page;
     /*
-     * PAGE_MENU is drawn by the controller (renderPicker in the page chrome), so
-     * it must NOT be refused here. Refusing it made the host run its fallback —
-     * enterHierarchyEditorFromParamPages — which enters the hierarchy editor for
-     * the component. For slot settings that component is "slot", which has no
-     * ui_hierarchy, so jogging to the actions page ejected straight to
-     * "No presets".
+     * PAGE_MENU and PAGE_PRESET are drawn by the controller in the page chrome,
+     * so they must NOT be refused here. Refusing a kind makes the host run its
+     * fallback — enterHierarchyEditorFromParamPages — which enters the
+     * hierarchy editor for the component. For slot settings that component is
+     * "slot", which has no ui_hierarchy, so jogging to the actions page ejected
+     * straight to "No presets".
      *
-     * The other non-grid kinds (preset, items, modes, child) genuinely belong to
-     * screens this file does not own, and still hand off.
+     * PAGE_PRESET joined them because that eject was worse than ugly: the list
+     * editor it landed in has the jog wired to the preset browser, so jogging
+     * PAST a synth's preset page on the way somewhere else loaded every preset
+     * it crossed. It is a door now — inert until you click into it.
+     *
+     * The remaining kinds (items, modes, child) genuinely belong to screens
+     * this file does not own, and still hand off.
      */
-    const drawable = page && (page.kind === PAGE_KNOBS || page.kind === PAGE_MENU);
+    const drawable = page && (page.kind === PAGE_KNOBS || page.kind === PAGE_MENU
+                              || page.kind === PAGE_PRESET);
     if (!controller.pickerOpen && !drawable) return false;
 
     const nowMs = Date.now();

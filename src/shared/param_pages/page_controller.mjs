@@ -27,11 +27,11 @@
  *   being turned and for a short settling window afterwards.
  */
 
-import { planPages, PAGE_KNOBS, PAGE_MENU } from "./page_plan.mjs";
+import { planPages, PAGE_KNOBS, PAGE_MENU, PAGE_PRESET } from "./page_plan.mjs";
 import { buildMetaIndex, inferFromValue, isTurnable, KIND_ENUM, KIND_OPAQUE } from "./param_meta.mjs";
 import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page.mjs";
 import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
-         drawBrackets, RULE_Y, LAYOUT_MOVY } from "./render_page_movy.mjs";
+         drawBrackets, drawPresetBody, RULE_Y, LAYOUT_MOVY } from "./render_page_movy.mjs";
 import { resolveViz } from "./viz.mjs";
 
 export { LAYOUT_MOVY };
@@ -290,6 +290,16 @@ export function createController(io = {}) {
         turnClaimMs: 0,
         /* Name of the menu page currently ENTERED, or null. */
         menuEntered: null,
+        /*
+         * The preset browser's live state, per page name.
+         *
+         * A preset level publishes a COUNT, a current INDEX and the name of
+         * whichever preset is selected — there is no way to ask for a list of
+         * names, so the page shows the one you are on rather than a window of
+         * five. Keyed by page name because a rebuild moves every index, the
+         * same reason sectionMemory and menuCursor are.
+         */
+        preset: Object.create(null),
     };
 
     const fullKey = (key) => `${s.prefix}:${key}`;
@@ -433,6 +443,7 @@ export function createController(io = {}) {
         flushDueWrites();
         expireTurnClaim();
         const p = page();
+        if (p && p.kind === PAGE_PRESET) { tickPreset(p); return null; }
         if (!p || p.kind !== PAGE_KNOBS || p.keys.length === 0) return null;
 
         refreshModulatedValues(p);
@@ -528,6 +539,95 @@ export function createController(io = {}) {
     /* ------------------------------------------------------------- menu */
 
 
+    /* ---------------------------------------------------------- presets */
+
+    /** Live state for the preset page on screen, created on first sight. */
+    function presetState(p) {
+        const pg = p || page();
+        if (!pg || pg.kind !== PAGE_PRESET) return null;
+        let st = s.preset[pg.name];
+        if (!st) st = s.preset[pg.name] = { count: 0, index: 0, name: null, read: 0 };
+        return st;
+    }
+
+    /** "Fat Bass, 12 of 2427" — what the page says and what it announces. */
+    function presetSpoken() {
+        const st = presetState();
+        if (!st) return "";
+        const name = st.name || `Preset ${st.index + 1}`;
+        return st.count > 0 ? `${name}, ${st.index + 1} of ${st.count}` : name;
+    }
+
+    /**
+     * Move the selection, which LOADS that preset — the browser auditions, the
+     * way the list editor always has.
+     *
+     * Writes the index and re-reads the name, so it costs one write and one
+     * read per detent. That is affordable because it only happens while the
+     * page is entered and the jog is being turned, and it is the whole point
+     * of the gesture; it is not on the idle path.
+     */
+    function stepPreset(delta) {
+        const p = page();
+        const st = presetState(p);
+        if (!st || !p || st.count <= 0) return false;
+        let next = st.index + delta;
+        if (next < 0) next = st.count - 1;
+        if (next >= st.count) next = 0;
+        if (next === st.index) return false;
+        st.index = next;
+        setParam(fullKey(p.listParam), String(next));
+        /* Hold off the read cursor for the same reason a turned knob does: a
+         * read issued before this write lands after it. */
+        s.settleUntil[p.listParam] = s.tickCount + SETTLE_TICKS;
+        const nm = getParam(fullKey(p.nameParam));
+        st.name = (nm && nm.length) ? nm : null;
+        /* The new preset can publish a different parameter set — that is what
+         * a preset IS — so let the contract be re-read rather than leaving the
+         * knob pages describing the preset you just left. */
+        s.metaSettled = false;
+        s.metaRetries = 0;
+        /* Throttled exactly as a turned knob is: a fast spin down a 2427-preset
+         * list is hundreds of announcements a second, which no one can follow
+         * and which competes with the redraw for the same tick. */
+        const nowMs = now();
+        if (nowMs - (s.lastAnnounceMs[p.listParam] || 0) >= ANNOUNCE_THROTTLE_MS) {
+            s.lastAnnounceMs[p.listParam] = nowMs;
+            announce(presetSpoken());
+        }
+        return true;
+    }
+
+    /**
+     * One preset read per tick, cycling count -> index -> name.
+     *
+     * On the same budget as the knob cursor and for the same reason: three
+     * synchronous round trips in one frame is most of the frame. The page
+     * shows "--" until they land, which takes ~3 ticks.
+     */
+    function tickPreset(p) {
+        const st = presetState(p);
+        if (!st) return;
+        const at = st.read % 3;
+        st.read++;
+        if (at === 0) {
+            const c = getParam(fullKey(p.countParam));
+            const n = parseInt(c, 10);
+            if (isFinite(n) && n >= 0) st.count = n;
+        } else if (at === 1) {
+            /* Not while the user is turning: a read issued before the write
+             * lands after it and drags the selection backwards, exactly as it
+             * would for a knob. */
+            if ((s.settleUntil[p.listParam] || 0) > s.tickCount) return;
+            const v = getParam(fullKey(p.listParam));
+            const n = parseInt(v, 10);
+            if (isFinite(n) && n >= 0) st.index = n;
+        } else {
+            const nm = getParam(fullKey(p.nameParam));
+            st.name = (nm && nm.length) ? nm : null;
+        }
+    }
+
     /* Cursor per MENU page, by page NAME — page indices move on rebuild. */
     function menuIndex(p) {
         if (!p || p.kind !== PAGE_MENU) return 0;
@@ -560,15 +660,33 @@ export function createController(io = {}) {
      * with Back — the identical grammar one level up. Inert, it is also a
      * preview: you can read the actions while paging past without engaging.
      */
+    /*
+     * Which page kinds are DOORS: inert on arrival, entered with a click, left
+     * with Back.
+     *
+     * A menu was the first. A preset browser is the second, and wants it more:
+     * paging onto one used to hand the jog straight to the preset list, so
+     * scrolling past a synth's presets on the way somewhere else LOADED every
+     * preset it passed. The jog means one thing everywhere — it pages — until
+     * you have said otherwise by clicking in.
+     */
+    function isDoor(p) {
+        return !!(p && (p.kind === PAGE_MENU || p.kind === PAGE_PRESET));
+    }
     function menuEntered() {
         const p = page();
-        return !!(p && p.kind === PAGE_MENU && s.menuEntered === p.name);
+        return !!(isDoor(p) && s.menuEntered === p.name);
     }
     /** Enter the menu on this page. False when there is nothing to enter. */
     function enterMenu() {
         const p = page();
-        if (!p || p.kind !== PAGE_MENU || !(p.entries || []).length) return false;
+        if (!isDoor(p)) return false;
+        if (p.kind === PAGE_MENU && !(p.entries || []).length) return false;
         s.menuEntered = p.name;
+        if (p.kind === PAGE_PRESET) {
+            announce(`${p.name}, ${presetSpoken()}`);
+            return true;
+        }
         const e = menuEntry();
         if (e) announce(`${p.name}, ${e.label}${e.value ? ", " + e.value : ""}`);
         return true;
@@ -655,6 +773,12 @@ export function createController(io = {}) {
          * the entries are what you are navigating. Shift still pages out, so
          * the menu is never a trap. */
         const mp = page();
+        /* Entered preset page: the jog is the browser. Shift still pages out,
+         * so the page set is never unreachable — same escape a menu has. */
+        if (mp && mp.kind === PAGE_PRESET && menuEntered() && !shift) {
+            stepPreset(delta > 0 ? 1 : -1);
+            return s.pageIndex;
+        }
         if (mp && mp.kind === PAGE_MENU && menuEntered() && !shift) {
             const n = (mp.entries || []).length;
             if (n > 0) {
@@ -899,6 +1023,12 @@ export function createController(io = {}) {
          * the host owns whatever Save or Knob Mapping means, same rule that
          * keeps it out of the editors. */
         const mp = page();
+        /* A preset page is a door with nothing to activate: entering it IS the
+         * action, and the jog does the rest. */
+        if (mp && mp.kind === PAGE_PRESET) {
+            if (!menuEntered()) { enterMenu(); return null; }
+            return null;
+        }
         if (mp && mp.kind === PAGE_MENU) {
             /* First click enters the menu; the next activates the entry under
              * the cursor. The same two-step a divable cell has (hold, then
@@ -1044,6 +1174,32 @@ export function createController(io = {}) {
                 return;
             }
             const mp = page();
+            if (mp && mp.kind === PAGE_PRESET) {
+                /* Same chrome as a grid page — module name, page name, bank
+                 * bar and footer all stay put, so the preset browser reads as
+                 * one of this module's pages rather than as somewhere else.
+                 * That is the whole point: it used to eject into the list
+                 * editor, which looks nothing like this. */
+                drawHeaderMovy(ctx, title || "", mp.name, false);
+                drawBankBar(ctx, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
+                const pbottom = footer ? RULE_Y : 64;
+                const prect = { x: MENU_FRAME_X, y: MENU_FRAME_Y,
+                                w: MENU_FRAME_W, h: pbottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET };
+                const pst = presetState(mp) || {};
+                drawPresetBody(ctx, prect, {
+                    name: pst.name, index: pst.index, count: pst.count,
+                    entered: menuEntered(),
+                });
+                /* Inert: it wears the same brackets a divable cell and an
+                 * un-entered menu wear, because it is the same offer. */
+                if (!menuEntered()) {
+                    drawBrackets(ctx, MENU_FRAME_X, MENU_FRAME_Y, MENU_FRAME_W,
+                                 pbottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
+                                 MENU_BRACKET_LEN);
+                }
+                if (footer) drawFooter(ctx, footer);
+                return;
+            }
             if (mp && mp.kind === PAGE_MENU) {
                 /* Same chrome as a grid page — the module name, the page name
                  * and the bank bar all stay put, so a menu reads as one of this

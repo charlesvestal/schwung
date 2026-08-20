@@ -620,6 +620,143 @@ Promise.all([
                 sessions + " scripted module sessions clean");
   }
 
+  /* ---- a preset page is a DOOR: inert until you click into it ----------
+   *
+   * It used to be refused by the host, which fell back to entering the
+   * hierarchy list editor — and that editor has the jog wired to the preset
+   * browser. So jogging PAST the preset page of a synth on the way elsewhere
+   * loaded every preset it crossed, audibly, each one republishing the
+   * parameter set. Inert-until-entered is what stops that.
+   */
+  {
+    const names = ["Fat Bass", "Glass Pad", "Sync Lead", "Rhodes"];
+    let index = 0;
+    const writes = [];
+    const reads = [];
+    const HIER = {
+      modes: null,
+      levels: {
+        root: {
+          label: "S", list_param: "preset", count_param: "preset_count",
+          name_param: "preset_name",
+          knobs: ["cutoff"], params: [{ key: "cutoff", label: "Cutoff" }],
+        },
+      },
+    };
+    const CP = [{ key: "cutoff", name: "Cutoff", type: "float", min: 0, max: 1, step: 0.01 }];
+    const ctl = C.createController({
+      getParam: (k) => {
+        reads.push(k);
+        const bare = String(k).replace(/^[^:]+:/, "");
+        if (bare === "ui_hierarchy") return JSON.stringify(HIER);
+        if (bare === "chain_params") return JSON.stringify(CP);
+        if (bare === "preset_count") return String(names.length);
+        if (bare === "preset") return String(index);
+        if (bare === "preset_name") return names[index];
+        if (bare === "cutoff") return "0.5";
+        return "";
+      },
+      setParam: (k, v) => {
+        writes.push([k, v]);
+        if (String(k).endsWith(":preset")) index = parseInt(v, 10);
+      },
+      announce: () => {},
+    });
+    ctl.load({ slot: 0, component: "synth" });
+
+    const presetAt = ctl.pages.findIndex((p) => p.kind === "preset");
+    if (presetAt < 0) fail("a level with list_param/count_param should plan a preset page");
+    /* Landing goes to a GRID, never to the browser — firstGrid(). */
+    if (ctl.page.kind === "preset") fail("the view should not open ON the preset page");
+
+    ctl.goToPage(presetAt, { remember: false });
+    if (ctl.page.kind !== "preset") fail("could not reach the preset page");
+
+    /* Reads are staggered like the knob cursor: count, index, name, one per
+     * tick — three round trips in one frame is most of a frame. */
+    for (let i = 0; i < 3; i++) {
+      reads.length = 0;
+      ctl.tick();
+      if (reads.length > 1) fail("a preset tick issued " + reads.length + " reads, must be at most 1");
+    }
+    for (let i = 0; i < 6; i++) ctl.tick();
+
+    /* ---- INERT: the jog pages, and nothing is loaded ------------------- */
+    writes.length = 0;
+    const before = ctl.pageIndex;
+    ctl.onJog(1);
+    if (ctl.pageIndex === before) fail("the jog did not page off an un-entered preset page");
+    if (writes.length) fail("jogging past a preset page LOADED a preset: " + JSON.stringify(writes));
+    ctl.goToPage(presetAt, { remember: false });
+    for (let i = 0; i < 6; i++) ctl.tick();
+
+    /* ---- ENTERED: the click goes in, and now the jog browses ----------- */
+    if (ctl.menuEntered()) fail("a preset page must start inert");
+    ctl.onClick(-1);
+    if (!ctl.menuEntered()) fail("clicking a preset page should enter it");
+
+    writes.length = 0;
+    const pageBefore = ctl.pageIndex;
+    ctl.onJog(1);
+    if (ctl.pageIndex !== pageBefore) fail("an ENTERED preset page must keep the jog, not page away");
+    if (!writes.some(([k, v]) => k === "synth:preset" && v === "1"))
+      fail("jogging inside the browser did not select the next preset: " + JSON.stringify(writes));
+
+    /* ---- SHIFT still pages out, so it is never a trap ------------------ */
+    ctl.onJog(1, { shift: true });
+    if (ctl.pageIndex === pageBefore)
+      fail("shift+jog must page out of an entered preset browser");
+
+    /* ---- and Back comes out one layer at a time ------------------------ */
+    ctl.goToPage(presetAt, { remember: false });
+    ctl.onClick(-1);
+    if (!ctl.menuEntered()) fail("re-entering failed");
+    if (!ctl.exitMenu()) fail("Back should step out of an entered preset page");
+    if (ctl.menuEntered()) fail("Back left it entered");
+    if (ctl.exitMenu()) fail("Back on an inert page must fall through to leaving the view");
+
+    /* ---- it LOOKS like a door, and like a page -------------------------
+     *
+     * Inert it wears the corner brackets a divable cell and an un-entered menu
+     * wear; entered it drops them. That mark is the only thing on screen that
+     * says "you can go into this", so it is asserted in pixels rather than
+     * trusted. Long preset names must not spill off the display either —
+     * "SQ Fat Analog Brass 3" is a real one. */
+    {
+      ctl.setLayout(C.LAYOUT_MOVY);
+      ctl.goToPage(presetAt, { remember: false });
+      for (let i = 0; i < 9; i++) ctl.tick();
+      const draw = () => {
+        const fb = H.createFramebuffer();
+        ctl.render(H.drawContext(fb), { title: "S1 > SF2", footer: [["JOG", "PAGE"]] });
+        return fb;
+      };
+      ctl.exitMenu();
+      const inert = draw();
+      ctl.onClick(-1);
+      const entered = draw();
+      if (inert.countLit() <= entered.countLit())
+        fail("an inert preset page should draw the brackets an entered one drops");
+      if (inert.clipped() > 0 || entered.clipped() > 0)
+        fail("the preset page drew outside the display");
+      ctl.exitMenu();
+      ctl.setLayout(R.LAYOUT_DIAL);
+    }
+
+    /* ---- wrapping, both ends -------------------------------------------
+     * A full cycle returns you where you started, from WHEREVER you started —
+     * asserting an absolute index here just encodes the order of the tests
+     * above it. */
+    ctl.onClick(-1);
+    const startIdx = index;
+    for (let i = 0; i < names.length; i++) ctl.onJog(1);
+    if (index !== startIdx)
+      fail("a full cycle forward should return to " + startIdx + ", got " + index);
+    ctl.onJog(-1);
+    if (index !== (startIdx + names.length - 1) % names.length)
+      fail("the browser should wrap backwards, got " + index);
+  }
+
   /* ---- modulation flags ride the read cursor, not the draw ------------- *
    *
    * The renderer asks modulated(key) for every cell of every draw. When that
