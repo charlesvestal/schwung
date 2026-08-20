@@ -196,6 +196,22 @@ export const LBL0_Y = 25;
 export const ROW1_Y = 33;
 export const LBL1_Y = 48;
 export const CELL_W = 32;
+/**
+ * Where a row's cells sit.
+ *
+ * The grid draws four 32px cells from x=0, which is what every constant here
+ * was written against. The chain editor's knob card (knob_card.mjs) draws the
+ * SAME row inside a bordered box, so it needs a narrower cell at an offset
+ * origin. Rather than a second copy of the row — which is how the two
+ * renderers in this directory came to disagree about a pixel — the origin and
+ * the width became parameters with the grid's own values as the default.
+ *
+ * Nothing else changes: the widgets, the fonts, the label budget and the
+ * touched-cell inversion are all the same code, so a card cell and a grid cell
+ * cannot drift apart.
+ */
+export const GRID_GEOM = Object.freeze({ x0: 0, cellW: CELL_W });
+const cellLeft = (g, col) => g.x0 + col * g.cellW;
 /* The hint footer, and the rule that separates it from the last label band. */
 export const RULE_Y = 55;
 export const FOOTER_Y = 56;
@@ -658,12 +674,12 @@ export function drawBrackets(ctx, x, y, w, h, len = BRACKET_LEN) {
     }
 }
 
-function drawDivableMark(ctx, col, rowY) {
-    drawBrackets(ctx, col * CELL_W + 1, rowY, CELL_W - 2, BOX_H);
+function drawDivableMark(ctx, g, col, rowY) {
+    drawBrackets(ctx, cellLeft(g, col) + 1, rowY, g.cellW - 2, BOX_H);
 }
 
-function drawKnobWidget(ctx, col, rowY, meta, raw, modRaw, liveRaw, cellText) {
-    const kx = col * CELL_W + Math.floor((CELL_W - KW) / 2), ky = rowY;
+function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, cellText) {
+    const kx = cellLeft(g, col) + Math.floor((g.cellW - KW) / 2), ky = rowY;
     /* Anything that cannot show two values at once shows the live one, so it
      * animates under modulation instead of freezing on the base. */
     const shown = (liveRaw === null || liveRaw === undefined) ? raw : liveRaw;
@@ -687,7 +703,7 @@ function drawKnobWidget(ctx, col, rowY, meta, raw, modRaw, liveRaw, cellText) {
             : ((Array.isArray(meta.options) && meta.options[idx] !== undefined)
                 ? String(meta.options[idx]) : String(shown ?? ""));
         /* Its own centring — it is ENUM_W wide, not KW. */
-        drawEnumSquare(ctx, col * CELL_W + Math.floor((CELL_W - ENUM_W) / 2), ky, text);
+        drawEnumSquare(ctx, cellLeft(g, col) + Math.floor((g.cellW - ENUM_W) / 2), ky, text);
         return;
     }
     const min = typeof meta.min === "number" ? meta.min : 0;
@@ -730,18 +746,18 @@ function drawWaveMark(ctx, x, y, on) {
  * two questions — collapsing them is what made the removed gesture hard to
  * express in the first place.
  */
-function drawLabelCell(ctx, col, lblY, label, displayValue, showValue, inverted, modulated) {
-    const cellX = col * CELL_W;
+function drawLabelCell(ctx, g, col, lblY, label, displayValue, showValue, inverted, modulated) {
+    const cellX = cellLeft(g, col);
     const text = showValue ? displayValue : label;
     const tw = fontWidth4x5(text);
     /* Same rule as every other centred run — `floor(CELL_W/2) - floor(tw/2)`
      * biases the other way on odd widths, which made a label and the box above
      * it disagree by a pixel. */
-    const tx = centreX(cellX, CELL_W, tw);
+    const tx = centreX(cellX, g.cellW, tw);
     /* One clear row above and below the glyphs inside the band — see LBL_H. */
     const ty = lblY + Math.floor((LBL_H - LBL_FONT_H) / 2);
     if (inverted) {
-        ctx.fillRect(cellX, lblY, CELL_W, LBL_H, 1);
+        ctx.fillRect(cellX, lblY, g.cellW, LBL_H, 1);
         fontPrint4x5(ctx, tx, ty, text, 0);
     } else {
         fontPrint4x5(ctx, tx, ty, text, 1);
@@ -754,7 +770,8 @@ function drawLabelCell(ctx, col, lblY, label, displayValue, showValue, inverted,
 
 /* --------------------------------------------------------------- one row */
 
-function drawKnobRow(ctx, o, row, rowY, lblY) {
+export function drawKnobStrip(ctx, o, row, rowY, lblY, geom) {
+    const g = geom || GRID_GEOM;
     const { page, metaIndex, values, touched, modulated, viz, modValues } = o;
     /*
      * EVERY held knob inverts, not just the one the header follows. A single
@@ -794,19 +811,20 @@ function drawKnobRow(ctx, o, row, rowY, lblY) {
     const slotBase = row * 4;
 
     const covered = new Array(4).fill(false);
-    for (const g of (viz || [])) {
-        if (!g || typeof g.slotStart !== "number") continue;
-        if (Math.floor(g.slotStart / 4) !== row) continue;
-        const localStart = g.slotStart - slotBase;
-        for (let s = localStart; s < localStart + g.slotSpan && s < 4; s++) covered[s] = true;
+    for (const grp of (viz || [])) {
+        if (!grp || typeof grp.slotStart !== "number") continue;
+        if (Math.floor(grp.slotStart / 4) !== row) continue;
+        const localStart = grp.slotStart - slotBase;
+        for (let s = localStart; s < localStart + grp.slotSpan && s < 4; s++) covered[s] = true;
         drawVizGroup(ctx, {
-            x: localStart * CELL_W, y: rowY, w: g.slotSpan * CELL_W, h: LBL0_Y - ROW0_Y,
-        }, g, liveValues, metaIndex);
+            x: cellLeft(g, localStart), y: rowY,
+            w: grp.slotSpan * g.cellW, h: LBL0_Y - ROW0_Y,
+        }, grp, liveValues, metaIndex);
     }
 
     for (let col = 0; col < 4; col++) {
         const slot = slotBase + col;
-        const cellX = col * CELL_W;
+        const cellX = cellLeft(g, col);
         const key = page.keys[slot];
         if (!key) continue;
         const meta = metaIndex.getOrGuess(key);
@@ -828,7 +846,7 @@ function drawKnobRow(ctx, o, row, rowY, lblY) {
              * driving; `values` stays the base the user dialled in. */
             /* Knob: base + dot. Enum/opaque: the live value, no baseline —
              * drawKnobWidget picks per kind. */
-            drawKnobWidget(ctx, col, rowY, meta, raw,
+            drawKnobWidget(ctx, g, col, rowY, meta, raw,
                            modValues ? modValues[key] : undefined,
                            liveValues ? liveValues[key] : undefined,
                            cellText);
@@ -841,15 +859,15 @@ function drawKnobRow(ctx, o, row, rowY, lblY) {
         /* AFTER the widget and OUTSIDE the `covered` test: a viz group that
          * spans the cell (mrsample's SMP waveform) is still divable, and the
          * mark is the only thing that says so. */
-        if (meta.divable) drawDivableMark(ctx, col, rowY);
+        if (meta.divable) drawDivableMark(ctx, g, col, rowY);
 
 
-        const labelWidth = Math.min(CELL_W - 2, fontWidth4x5("M".repeat(LABEL_CHARS)));
+        const labelWidth = Math.min(g.cellW - 2, fontWidth4x5("M".repeat(LABEL_CHARS)));
         const label = caps(shortenLabel(LBL_MEASURE, preAbbreviate(meta.label || meta.key), labelWidth));
         const display = fitDev(ctx,
             (cellText === null || cellText === undefined) ? displayValue(raw, meta) : String(cellText),
-            CELL_W - 2);
-        drawLabelCell(ctx, col, lblY, label, display, isTouched, isTouched,
+            g.cellW - 2);
+        drawLabelCell(ctx, g, col, lblY, label, display, isTouched, isTouched,
                       modulated ? !!modulated(key) : false);
     }
 }
@@ -1047,7 +1065,7 @@ export function renderPageMovy(ctx, o) {
         return;
     }
 
-    drawKnobRow(ctx, o, 0, ROW0_Y, LBL0_Y);
-    drawKnobRow(ctx, o, 1, ROW1_Y, LBL1_Y);
+    drawKnobStrip(ctx, o, 0, ROW0_Y, LBL0_Y);
+    drawKnobStrip(ctx, o, 1, ROW1_Y, LBL1_Y);
     if (o.footer) drawFooter(ctx, o.footer);
 }
