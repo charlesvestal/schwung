@@ -184,7 +184,7 @@ Promise.all([
     if (Number(ctl.state.values[key]) !== moved) fail("an unmodified touch reset the value");
   }
 
-  /* ---- 8. click acts on the held knob, and only when opaque ------------- */
+  /* ---- 8. click acts on the held knob, and only when DIVABLE ------------ */
   {
     const dev = D.createFakeDevice({ id: "mrdrums" });
     const ctl = C.createController(dev);
@@ -212,15 +212,15 @@ Promise.all([
     feed(noteOff(0));
 
     let opaque = -1;
-    for (let i = 0; i < 8; i++) { const m = ctl.metaAt(i); if (m && m.kind === "opaque") { opaque = i; break; } }
-    if (opaque < 0) fail("expected an opaque param on the mrdrums page");
+    for (let i = 0; i < 8; i++) { const m = ctl.metaAt(i); if (m && m.divable) { opaque = i; break; } }
+    if (opaque < 0) fail("expected a divable param on the mrdrums page");
     feed(noteOn(opaque, 100));
     const opened = feed(cc(3, 127));
-    if (!opened || opened.action !== "open") fail("clicking a held opaque knob should ask the host to open it");
+    if (!opened || opened.action !== "open") fail("clicking a held divable knob should ask the host to open it");
 
     /* A turnable param has nothing to open. */
     let turnable = -1;
-    for (let i = 0; i < 8; i++) { const m = ctl.metaAt(i); if (m && m.kind !== "opaque") { turnable = i; break; } }
+    for (let i = 0; i < 8; i++) { const m = ctl.metaAt(i); if (m && !m.divable) { turnable = i; break; } }
     feed(noteOff(opaque));
     feed(noteOn(turnable, 100));
     if (feed(cc(3, 127)) !== null) fail("clicking a turnable knob should not open anything");

@@ -603,6 +603,11 @@ function drawOpaqueBox(ctx, kx, ky, value) {
  * ~8px of clear corner a 32px cell has, it does not resolve into a box and an
  * arrow, it resolves into a smudge.
  *
+ * Keyed on meta.divable, NOT on kind === OPAQUE. They are different questions:
+ * granny's wav_position is a ranged number a knob turns perfectly well AND has a
+ * waveform editor worth opening, so it draws as a KNOB wearing brackets. Keying
+ * the mark on opaqueness made that knob dead.
+ *
  * MUST stay inside rowY..rowY+BOX_H-1. One row of overflow lands on LBL0_Y and
  * the brackets merge into the label below.
  */
@@ -757,7 +762,7 @@ function drawKnobRow(ctx, o, row, rowY, lblY) {
         /* AFTER the widget and OUTSIDE the `covered` test: a viz group that
          * spans the cell (mrsample's SMP waveform) is still divable, and the
          * mark is the only thing that says so. */
-        if (meta.kind === KIND_OPAQUE) drawDivableMark(ctx, col, rowY);
+        if (meta.divable) drawDivableMark(ctx, col, rowY);
 
         const labelWidth = Math.min(CELL_W - 2, fontWidth4x5("M".repeat(LABEL_CHARS)));
         const label = caps(shortenLabel(LBL_MEASURE, preAbbreviate(meta.label || meta.key), labelWidth));

@@ -998,15 +998,105 @@ globalThis.param_view_get_mode = function() { return paramViewGlobal; };
  * The grid does not reimplement those editors; it steps aside and hands the
  * component to the list, which already has all of them. Announced, because
  * otherwise the view changing under you looks like a glitch. */
+/*
+ * Open the editor for ONE hierarchy param, dispatched on its declared type.
+ *
+ * Extracted from the jog-click handler so the knob grid can open a param
+ * directly. Clicking a bracketed cell used to call enterHierarchyEditor() and
+ * nothing else, which drops you at the component hierarchy with the param
+ * unselected — you asked to open Position and got granny's menu. "Open this"
+ * has to mean this one.
+ *
+ * forceOpen: the grid has nothing to toggle, so it always opens. The jog-click
+ * caller passes false and keeps its open/close toggle.
+ */
+function openHierarchyParamEditor(selectedKey, meta, forceOpen) {
+    if (hierEditorEditMode && !forceOpen) {
+        hierEditorEditMode = false;
+        resetHierarchyEditState();
+        invalidateKnobContextCache();
+        return;
+    }
+    if (!hierEditorEditMode && meta && meta.type === "string") {
+        const fullKey = buildHierarchyParamKey(selectedKey);
+        const currentText = getSlotParam(hierEditorSlot, fullKey) || "";
+        openTextEntry({
+            title: meta.name || selectedKey,
+            initialText: String(currentText),
+            onAnnounce: announce,
+            onConfirm: (nextText) => {
+                setSlotParam(hierEditorSlot, fullKey, String(nextText || ""));
+                refreshHierarchyVisibility();
+                announceParameter(meta.name || selectedKey, String(nextText || ""));
+                needsRedraw = true;
+            },
+            onCancel: () => { needsRedraw = true; }
+        });
+        return;
+    }
+    if (!hierEditorEditMode && meta && meta.type === "canvas") {
+        openCanvasPreview(selectedKey, meta);
+        needsRedraw = true;
+        return;
+    }
+    if (!hierEditorEditMode && meta && meta.type === "filepath") {
+        openHierarchyFilepathBrowser(selectedKey, meta);
+        return;
+    }
+    /* Everything else — including wav_position, whose editor IS edit mode on a
+     * selected wav_position (see isInWavPositionEditor). */
+    if (beginHierarchyParamEdit(selectedKey)) {
+        hierEditorEditMode = true;
+        /* Knob context override depends on edit mode + multi-marker role;
+         * force re-evaluation. */
+        invalidateKnobContextCache();
+    }
+}
+
 function openParamEditorFromGrid(slotIndex, fullKey, meta) {
     const componentKey = paramPagesComponent();
+    /* Read the grid page BEFORE exiting — the level it was on is where the
+     * param lives, and exitParamPages tears the controller down. */
+    const page = currentParamPage();
+    const level = page && page.level;
+    const bare = String(fullKey || "").replace(/^[^:]+:/, "");
+
     exitParamPages();
-    announce((meta && meta.label ? meta.label : "Parameter") + ", opening in list");
     /* Without this the list entry below sees Param View = Knobs and bounces
      * straight back into the grid, forever. The flag is consumed by the next
      * enterHierarchyEditorWith and nothing else. */
     suppressParamPagesOnce = true;
     enterHierarchyEditor(slotIndex, componentKey);
+
+    /* Land on the level the grid was on, not the hierarchy root. */
+    if (level && hierEditorHierarchy && hierEditorHierarchy.levels &&
+        hierEditorHierarchy.levels[level] && level !== hierEditorLevel) {
+        hierEditorLevel = level;
+        hierEditorPath = [];
+        hierEditorChildIndex = -1;
+        loadHierarchyLevel();
+    }
+
+    /* Select the param that was clicked and open ITS editor. Without this the
+     * user asked to open one parameter and got the module menu. */
+    let idx = -1;
+    for (let i = 0; i < hierEditorParams.length; i++) {
+        const entry = hierEditorParams[i];
+        const k = (entry && typeof entry === "object") ? (entry.key || "") : String(entry || "");
+        if (k && k === bare) { idx = i; break; }
+    }
+    if (idx < 0) {
+        /* The param is not on this level after all — leave the user in the
+         * editor rather than nowhere, and say so instead of silently landing
+         * somewhere unexplained. */
+        announce((meta && meta.label ? meta.label : "Parameter") + ", opening in list");
+        return;
+    }
+    hierEditorSelectedIdx = idx;
+    const liveMeta = (typeof getParamMetadata === "function" ? getParamMetadata(bare) : null) || meta;
+    announce((liveMeta && (liveMeta.name || liveMeta.label)) || bare);
+    openHierarchyParamEditor(bare, liveMeta, true);
+    needsRedraw = true;
 }
 
 /* One-shot override forcing the LIST editor for the next entry, so the grid can
@@ -12327,41 +12417,8 @@ function handleSelect() {
                     const meta = getParamMetadata(selectedKey);
                     if (!hierEditorEditMode && meta && meta.picker_type) {
                         openDynamicParamPicker(selectedKey, meta);
-                    } else if (!hierEditorEditMode && meta && meta.type === "string") {
-                        const fullKey = buildHierarchyParamKey(selectedKey);
-                        const currentText = getSlotParam(hierEditorSlot, fullKey) || "";
-                        openTextEntry({
-                            title: meta.name || selectedKey,
-                            initialText: String(currentText),
-                            onAnnounce: announce,
-                            onConfirm: (nextText) => {
-                                setSlotParam(hierEditorSlot, fullKey, String(nextText || ""));
-                                refreshHierarchyVisibility();
-                                announceParameter(meta.name || selectedKey, String(nextText || ""));
-                                needsRedraw = true;
-                            },
-                            onCancel: () => {
-                                needsRedraw = true;
-                            }
-                        });
-                    } else if (!hierEditorEditMode && meta && meta.type === "canvas") {
-                        openCanvasPreview(selectedKey, meta);
-                        needsRedraw = true;
-                    } else if (!hierEditorEditMode && meta && meta.type === "filepath") {
-                        openHierarchyFilepathBrowser(selectedKey, meta);
                     } else {
-                        if (!hierEditorEditMode) {
-                            if (beginHierarchyParamEdit(selectedKey)) {
-                                hierEditorEditMode = true;
-                                /* Knob context override depends on edit mode +
-                                 * multi-marker role; force re-evaluation. */
-                                invalidateKnobContextCache();
-                            }
-                        } else {
-                            hierEditorEditMode = false;
-                            resetHierarchyEditState();
-                            invalidateKnobContextCache();
-                        }
+                        openHierarchyParamEditor(selectedKey, meta, false);
                     }
                 }
             }

@@ -617,15 +617,19 @@ export function createController(io = {}) {
     }
 
     /**
-     * Click on a knob's cell. A turnable param has nothing to open; an opaque
-     * one (filepath, canvas, wav_position, string) asks the caller to open the
-     * editor the list view already has. The controller never opens it itself —
-     * that screen belongs to the host.
+     * Click on a knob's cell. A DIVABLE param (filepath, canvas, string, and a
+     * ranged wav_position) asks the caller to open the editor the list view
+     * already has. The controller never opens it itself — that screen belongs to
+     * the host.
+     *
+     * Gated on meta.divable rather than kind === OPAQUE so a wav_position, which
+     * is a turnable number, still opens its waveform editor on click while the
+     * knob keeps driving it.
      */
     function onClick(slot) {
         const key = keyAt(slot);
         const meta = metaAt(slot);
-        if (!key || !meta || meta.kind !== KIND_OPAQUE) return null;
+        if (!key || !meta || !meta.divable) return null;
         s.pending = { action: "open", key, fullKey: fullKey(key), meta };
         return s.pending;
     }
