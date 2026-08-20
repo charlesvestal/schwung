@@ -322,8 +322,16 @@ function footerHints() {
         const meta = controller.metaAt ? controller.metaAt(held) : null;
         /* A knob cannot turn an opaque param, so the click is the whole point
          * of holding it — say OPEN, not SCRUB. */
-        if (meta && meta.kind === 'opaque') return [["CLK", "OPEN"], ["MUTE", "DFLT"]];
-        return [["MUTE", "DFLT"], ["SHFT", "FINE"]];
+        /* Mute+touch DOES reset the param to its default, and the wiring is
+         * intact — but CC 88 is forwarded to Move unconditionally
+         * (schwung_shim.c, "passed through to Move firmware unconditionally",
+         * so Move-native Mute+Pad keeps working), which means holding Mute to
+         * reset a knob ALSO toggles the selected Move track mute. Advertising a
+         * gesture that silences a track as a side effect is worse than leaving
+         * it undocumented, so it is not offered here until it has a modifier
+         * that does not leak. The feature itself is untouched. */
+        if (meta && meta.kind === 'opaque') return [["CLK", "OPEN"], ["BACK", "EXIT"]];
+        return [["SHFT", "FINE"], ["JOG", "PG"]];
     }
     /* "PG", not "PAGE": all three pairs together are 134px at "PAGE" and the
      * section jump — the one gesture that makes a 76-page module navigable —
