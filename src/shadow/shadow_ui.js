@@ -53,6 +53,8 @@ import { renderPicker as renderMovyPicker } from '/data/UserData/schwung/shared/
 import { MENU_LIST_X as MOVY_LIST_X, MENU_LIST_Y as MOVY_LIST_Y, MENU_LIST_W as MOVY_LIST_W }
     from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
 import { describeLfoTarget } from '/data/UserData/schwung/shared/lfo_target_label.mjs';
+import { emptyChain, parseId as parseChainId, chainComponents }
+    from '/data/UserData/schwung/shared/chain_model.mjs';
 import { runDrawBench } from '/data/UserData/schwung/shared/draw_bench.mjs';
 import { installParamTally, paramTallyTick, paramTallyArmed } from '/data/UserData/schwung/shared/param_tally.mjs';
 import { knobInit, knobTick, knobConfigFromMeta } from '/data/UserData/schwung/shared/knob_engine.mjs';
@@ -423,14 +425,125 @@ globalThis.shadow_corun_close = function() {
 /* Special action key for swap module option */
 const SWAP_MODULE_ACTION = "__swap_module__";
 
+/*
+ * How many positions of each kind the chain currently has.
+ *
+ * The DSP still exposes exactly one MIDI FX and two audio FX, and
+ * loadChainConfigFromSlot runs on EVERY FRAME of the chain editor at ~2.8ms
+ * per IPC round trip — so the scan reads these positions and not one more.
+ * Both must stay <= the model's MAX_MIDI_FX / MAX_FX.
+ */
+const CHAIN_MIDI_FX_POSITIONS = 1;
+const CHAIN_FX_POSITIONS = 2;
+
+/*
+ * The editor's positions, in signal order, DERIVED from the chain model.
+ *
+ * The model bookends its list with Patch, the two `+` boxes and Settings. The
+ * editor reaches Patch at selection index -1 and has always ended with its own
+ * Settings box, so those bookends are dropped here and Settings re-added — what
+ * is taken from the model is the ORDER and the NUMBERING, which is the part
+ * that has to grow when the chain does.
+ */
+function chainEditorComponents(cfg) {
+    const out = [];
+    for (const pos of chainComponents(cfg)) {
+        if (pos.kind !== "module" && pos.kind !== "synth") continue;
+        /* `key` is unchanged from the hand-written list: the single MIDI FX is
+         * "midiFx", everything else is its model id. A second MIDI FX would
+         * collide on that key, so it takes its id instead. */
+        const key = pos.kind === "synth" ? "synth"
+            : (pos.section === "midiFx" && pos.index === 0) ? "midiFx" : pos.id;
+        /* One MIDI FX position, so the label is "MIDI FX", not the model's
+         * "MIDI FX 1" — the number earns its place when a second can exist. */
+        const label = (pos.section === "midiFx" && CHAIN_MIDI_FX_POSITIONS === 1)
+            ? "MIDI FX" : pos.label;
+        out.push({ key, label, position: out.length });
+    }
+    out.push({ key: "settings", label: "Settings", position: out.length });
+    return out;
+}
+
 /* Chain component types for horizontal editor */
-const CHAIN_COMPONENTS = [
-    { key: "midiFx", label: "MIDI FX", position: 0 },
-    { key: "synth", label: "Synth", position: 1 },
-    { key: "fx1", label: "FX 1", position: 2 },
-    { key: "fx2", label: "FX 2", position: 3 },
-    { key: "settings", label: "Settings", position: 4 }
-];
+const CHAIN_COMPONENTS = chainEditorComponents({
+    midiFx: new Array(CHAIN_MIDI_FX_POSITIONS).fill(null),
+    synth: null,
+    fx: new Array(CHAIN_FX_POSITIONS).fill(null)
+});
+
+/*
+ * The positions of ONE slot's chain. Same list for every slot while the shape
+ * is fixed — the boxes are drawn per position, not per loaded module, so an
+ * empty slot still shows all five. It takes the slot index now so the call
+ * sites are already right when the shape stops being the same for every slot.
+ */
+function slotChainComponents(slotIndex) {
+    return CHAIN_COMPONENTS;
+}
+
+/*
+ * The chain-model id of a component key — which is also its DSP param prefix,
+ * by construction, so this and getComponentParamPrefix agree.
+ */
+function chainComponentId(componentKey) {
+    return componentKey === "midiFx" ? "midi_fx1" : componentKey;
+}
+
+/* True for a key that addresses a module position (i.e. not "settings"). */
+function isChainModuleKey(componentKey) {
+    return componentKey === "synth" || parseChainId(chainComponentId(componentKey)) !== null;
+}
+
+/*
+ * The module occupying a component position, or null.
+ *
+ * Replaces the old `cfg[comp.key]`, which stopped meaning anything once the FX
+ * became a list: "fx2" is a position in that list, not a property.
+ */
+function getChainComponentModule(cfg, componentKey) {
+    if (!cfg) return null;
+    if (componentKey === "synth") return cfg.synth || null;
+    const at = parseChainId(chainComponentId(componentKey));
+    if (!at) return null;
+    const list = cfg[at.section];
+    return (list && list[at.index]) || null;
+}
+
+/*
+ * Put a module (or null for empty) at a component position, IN PLACE.
+ *
+ * Deliberately not the model's removeAt: that compacts the list, which would
+ * renumber every module downstream of a box the user only meant to clear. The
+ * DSP still keeps an empty fx1 in front of a loaded fx2, and this mirrors it.
+ */
+function setChainComponentModule(cfg, componentKey, module) {
+    if (!cfg) return;
+    if (componentKey === "synth") { cfg.synth = module; return; }
+    const at = parseChainId(chainComponentId(componentKey));
+    if (!at) return;
+    const list = cfg[at.section];
+    while (list.length <= at.index) list.push(null);
+    list[at.index] = module;
+}
+
+/*
+ * Where a component key sits in a slot's editor list, or -1.
+ *
+ * The model's indexOfId answers the same question about ITS list, which keeps
+ * the Patch and `+` bookends this one drops — so the lookup runs against the
+ * editor's list, and the index it returns is the one selectedChainComponent
+ * speaks.
+ */
+function slotChainComponentIndex(slotIndex, componentKey) {
+    return slotChainComponents(slotIndex).findIndex(c => c.key === componentKey);
+}
+
+/* Is anything loaded anywhere in this chain? */
+function chainHasAnyModule(cfg) {
+    if (!cfg) return false;
+    if (cfg.synth && cfg.synth.module) return true;
+    return cfg.midiFx.some(m => m && m.module) || cfg.fx.some(m => m && m.module);
+}
 
 /* Module abbreviations cache - populated from module.json "abbrev" field */
 const moduleAbbrevCache = {
@@ -439,14 +552,14 @@ const moduleAbbrevCache = {
     "empty": "--"
 };
 
-/* In-memory chain configuration (for future save/load) */
+/* In-memory chain configuration (for future save/load).
+ *
+ * `{ midiFx: [], synth: null, fx: [] }` — a list per section, each entry
+ * `{ module: "cloudseed", params: {} }` or null for an empty position.
+ * Positions are addressed by id ("fx2") through the chain model, never by
+ * property, so an unoccupied trailing position is simply absent. */
 function createEmptyChainConfig() {
-    return {
-        midiFx: null,    // { module: "chord", params: {} } or null
-        synth: null,     // { module: "dexed", params: {} } or null
-        fx1: null,       // { module: "freeverb", params: {} } or null
-        fx2: null        // { module: "cloudseed", params: {} } or null
-    };
+    return emptyChain();
 }
 
 /* Master FX options - populated by scanning modules directory */
@@ -2638,9 +2751,10 @@ function getModuleUiPath(moduleId) {
     return null;
 }
 
-/* Convert component key to DSP param prefix (midiFx -> midi_fx1) */
+/* Convert component key to DSP param prefix (midiFx -> midi_fx1). The prefix
+ * IS the position's id in the chain model — one definition, above. */
 function getComponentParamPrefix(componentKey) {
-    return componentKey === "midiFx" ? "midi_fx1" : componentKey;
+    return chainComponentId(componentKey);
 }
 
 /* Set up shims for host_module_get_param and host_module_set_param
@@ -2664,7 +2778,7 @@ function setupModuleParamShims(slot, componentKey) {
     };
 
     globalThis.host_swap_module = function() {
-        const compIndex = CHAIN_COMPONENTS.findIndex(c => c.key === componentKey);
+        const compIndex = slotChainComponentIndex(slot, componentKey);
         if (compIndex >= 0) {
             unloadModuleUi();
             enterComponentSelect(slot, compIndex);
@@ -2903,31 +3017,41 @@ function loadChainConfigFromSlot(slotIndex) {
 
     /* Read current patch configuration from DSP
      * Note: get_param uses underscores (synth_module), set_param uses colons (synth:module) */
-    const synthModule = getSlotParam(slotIndex, "synth_module");
-    const midiFxModule = getSlotParam(slotIndex, "midi_fx1_module");
-    const fx1Module = getSlotParam(slotIndex, "fx1_module");
-    const fx2Module = getSlotParam(slotIndex, "fx2_module");
+    /* An unserved key answers "" rather than null, which reads the same as an
+     * empty position — both mean "nothing loaded here". */
+    const readPosition = (id) => {
+        const moduleId = getSlotParam(slotIndex, `${id}_module`);
+        return moduleId && moduleId !== ""
+            ? { module: moduleId.toLowerCase(), params: {} } : null;
+    };
+    /* Trailing empties are dropped so the list says what is actually loaded; a
+     * hole in FRONT of a loaded module is kept, because the DSP has one. */
+    const readSection = (idAt, count) => {
+        const list = [];
+        for (let i = 0; i < count; i++) list.push(readPosition(idAt(i)));
+        while (list.length && !list[list.length - 1]) list.pop();
+        return list;
+    };
 
-    const oldFx1 = cfg.fx1 ? cfg.fx1.module : null;
-    const oldFx2 = cfg.fx2 ? cfg.fx2.module : null;
+    const oldFx = cfg.fx;
 
-    cfg.synth = synthModule && synthModule !== "" ? { module: synthModule.toLowerCase(), params: {} } : null;
-    cfg.midiFx = midiFxModule && midiFxModule !== "" ? { module: midiFxModule.toLowerCase(), params: {} } : null;
-    cfg.fx1 = fx1Module && fx1Module !== "" ? { module: fx1Module.toLowerCase(), params: {} } : null;
-    cfg.fx2 = fx2Module && fx2Module !== "" ? { module: fx2Module.toLowerCase(), params: {} } : null;
+    cfg.synth = readPosition("synth");
+    cfg.midiFx = readSection((i) => `midi_fx${i + 1}`, CHAIN_MIDI_FX_POSITIONS);
+    cfg.fx = readSection((i) => `fx${i + 1}`, CHAIN_FX_POSITIONS);
 
-    /* Clear display_name cache when FX modules change (prevents stale announcement on swap) */
-    const newFx1 = cfg.fx1 ? cfg.fx1.module : null;
-    const newFx2 = cfg.fx2 ? cfg.fx2.module : null;
-    /* Also drop the poll backoff: a different module may well implement
-     * display_name even though the last one didn't. */
+    /* Clear display_name cache when FX modules change (prevents stale
+     * announcement on swap). Also drop the poll backoff: a different module may
+     * well implement display_name even though the last one didn't. */
     const forgetFxName = (ck) => {
         delete fxDisplayNameCache[ck];
         delete fxDisplayNameSkip[ck];
         delete fxDisplayNameBackoff[ck];
     };
-    if (newFx1 !== oldFx1) forgetFxName(`${slotIndex}:fx1`);
-    if (newFx2 !== oldFx2) forgetFxName(`${slotIndex}:fx2`);
+    for (let i = 0; i < Math.max(oldFx.length, cfg.fx.length); i++) {
+        const before = oldFx[i] ? oldFx[i].module : null;
+        const after = cfg.fx[i] ? cfg.fx[i].module : null;
+        if (before !== after) forgetFxName(`${slotIndex}:fx${i + 1}`);
+    }
 
     chainConfigs[slotIndex] = cfg;
     return cfg;
@@ -2935,11 +3059,11 @@ function loadChainConfigFromSlot(slotIndex) {
 
 /* Build a signature of module IDs for a slot to detect changes */
 function getSlotModuleSignature(slotIndex) {
-    const synthModule = getSlotParam(slotIndex, "synth_module") || "";
-    const midiFxModule = getSlotParam(slotIndex, "midi_fx1_module") || "";
-    const fx1Module = getSlotParam(slotIndex, "fx1_module") || "";
-    const fx2Module = getSlotParam(slotIndex, "fx2_module") || "";
-    return `${synthModule}|${midiFxModule}|${fx1Module}|${fx2Module}`;
+    const read = (id) => getSlotParam(slotIndex, `${id}_module`) || "";
+    const parts = [read("synth")];
+    for (let i = 0; i < CHAIN_MIDI_FX_POSITIONS; i++) parts.push(read(`midi_fx${i + 1}`));
+    for (let i = 0; i < CHAIN_FX_POSITIONS; i++) parts.push(read(`fx${i + 1}`));
+    return parts.join("|");
 }
 
 /* Refresh module signature for a slot and invalidate knob cache on changes */
@@ -4314,13 +4438,17 @@ function drawOvertakeMenu() {
     drawFooter({left: "Back: exit", right: "Jog: select"});
 }
 
+/* A `<prefix>:<suffix>` device key for a component, or null when the key does
+ * not address a module position (e.g. "settings"). */
+function chainComponentParamKey(componentKey, suffix) {
+    if (!isChainModuleKey(componentKey)) return null;
+    return `${chainComponentId(componentKey)}:${suffix}`;
+}
+
 /* Fetch chain_params metadata from a component */
 function getComponentChainParams(slot, componentKey) {
     /* Chain params are typically in module.json, but we query via get_param */
-    const key = componentKey === "synth" ? "synth:chain_params" :
-                componentKey === "fx1" ? "fx1:chain_params" :
-                componentKey === "fx2" ? "fx2:chain_params" :
-                componentKey === "midiFx" ? "midi_fx1:chain_params" : null;
+    const key = chainComponentParamKey(componentKey, "chain_params");
     if (!key) return [];
 
     const json = getSlotParam(slot, key);
@@ -4355,10 +4483,7 @@ function buildSynthHierarchyFromChainParams(chainParams) {
 
 /* Fetch ui_hierarchy from a component */
 function getComponentHierarchy(slot, componentKey) {
-    const key = componentKey === "synth" ? "synth:ui_hierarchy" :
-                componentKey === "fx1" ? "fx1:ui_hierarchy" :
-                componentKey === "fx2" ? "fx2:ui_hierarchy" :
-                componentKey === "midiFx" ? "midi_fx1:ui_hierarchy" : null;
+    const key = chainComponentParamKey(componentKey, "ui_hierarchy");
     if (!key) {
         debugLog(`getComponentHierarchy: no key for componentKey=${componentKey}`);
         return null;
@@ -4752,13 +4877,9 @@ function generateSlotPresetName(slotIndex) {
         const abbrev = moduleAbbrevCache[cfg.synth.module] || cfg.synth.module.toUpperCase().slice(0, 3);
         parts.push(abbrev);
     }
-    if (cfg.fx1 && cfg.fx1.module) {
-        const abbrev = moduleAbbrevCache[cfg.fx1.module] || cfg.fx1.module.toUpperCase().slice(0, 2);
-        parts.push(abbrev);
-    }
-    if (cfg.fx2 && cfg.fx2.module) {
-        const abbrev = moduleAbbrevCache[cfg.fx2.module] || cfg.fx2.module.toUpperCase().slice(0, 2);
-        parts.push(abbrev);
+    for (const fx of cfg.fx) {
+        if (!fx || !fx.module) continue;
+        parts.push(moduleAbbrevCache[fx.module] || fx.module.toUpperCase().slice(0, 2));
     }
 
     return parts.length > 0 ? parts.join(" + ") : "Untitled";
@@ -4829,104 +4950,69 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
         audio_fx: []
     };
 
-    if (cfg.synth && cfg.synth.module) {
-        /* Try to get full state from synth plugin */
-        let synthConfig = cfg.synth.params || {};
-        const stateJson = getSlotStateWithRetry(slotIndex, "synth:state", stateRetries);
+    /*
+     * One position's saved payload: its opaque state (or the in-memory params
+     * when the module serves none) and its bypass flag. Returns BAIL when the
+     * state query came back empty and bailing is on — the caller then abandons
+     * the whole save rather than clobbering a good file.
+     */
+    const BAIL = {};
+    const componentEntry = (id, moduleData) => {
+        let config = moduleData.params || {};
+        const stateJson = getSlotStateWithRetry(slotIndex, `${id}:state`, stateRetries);
         if (stateJson) {
             try {
-                const state = JSON.parse(stateJson);
-                synthConfig = { state: state };
+                config = { state: JSON.parse(stateJson) };
             } catch (e) {
                 /* State is not JSON (e.g. key=value pairs) — store as opaque string */
-                synthConfig = { state: stateJson };
+                config = { state: stateJson };
             }
         } else if (bailIfEmpty) {
             /* State query timed out AND the module is unchanged — skip autosave
-             * to avoid clobbering a good file (synth would revert to defaults). */
-            debugLog("buildSlotPatchJson: slot " + slotIndex +
-                     " synth:state empty after retries — bailing (preserving existing slot_" +
+             * to avoid clobbering a good file (it would revert to defaults). */
+            debugLog("buildSlotPatchJson: slot " + slotIndex + " " + id +
+                     ":state empty after retries — bailing (preserving existing slot_" +
                      slotIndex + ".json)");
-            return null;
+            return BAIL;
         }
+        return {
+            config,
+            bypassed: parseInt(getSlotParam(slotIndex, `${id}:bypassed`) || "0", 10) === 1 ? 1 : 0
+        };
+    };
+
+    if (cfg.synth && cfg.synth.module) {
+        const entry = componentEntry("synth", cfg.synth);
+        if (entry === BAIL) return null;
         patch.synth = {
             module: cfg.synth.module,
-            config: synthConfig,
-            bypassed: parseInt(getSlotParam(slotIndex, "synth:bypassed") || "0", 10) === 1 ? 1 : 0
+            config: entry.config,
+            bypassed: entry.bypassed
         };
     }
 
-    if (cfg.midiFx && cfg.midiFx.module) {
-        /* Try to get full state from midi_fx plugin */
-        let midiFxConfig = cfg.midiFx.params || {};
-        const midiFxStateJson = getSlotStateWithRetry(slotIndex, "midi_fx1:state", stateRetries);
-        if (midiFxStateJson) {
-            try {
-                const state = JSON.parse(midiFxStateJson);
-                midiFxConfig = { state: state };
-            } catch (e) {
-                /* State is not JSON — store as opaque string */
-                midiFxConfig = { state: midiFxStateJson };
-            }
-        } else if (bailIfEmpty) {
-            debugLog("buildSlotPatchJson: slot " + slotIndex +
-                     " midi_fx1:state empty after retries — bailing (preserving existing slot_" +
-                     slotIndex + ".json)");
-            return null;
-        }
-        patch.midi_fx = [{
-            type: cfg.midiFx.module,
-            params: midiFxConfig,
-            bypassed: parseInt(getSlotParam(slotIndex, "midi_fx1:bypassed") || "0", 10) === 1 ? 1 : 0
-        }];
-    }
-
-    if (cfg.fx1 && cfg.fx1.module) {
-        /* Try to get full state from fx1 plugin */
-        let fx1Config = cfg.fx1.params || {};
-        const fx1StateJson = getSlotStateWithRetry(slotIndex, "fx1:state", stateRetries);
-        if (fx1StateJson) {
-            try {
-                const state = JSON.parse(fx1StateJson);
-                fx1Config = { state: state };
-            } catch (e) {
-                /* State is not JSON (e.g. key=value pairs) — store as opaque string */
-                fx1Config = { state: fx1StateJson };
-            }
-        } else if (bailIfEmpty) {
-            debugLog("buildSlotPatchJson: slot " + slotIndex +
-                     " fx1:state empty after retries — bailing (preserving existing slot_" +
-                     slotIndex + ".json)");
-            return null;
-        }
-        patch.audio_fx.push({
-            type: cfg.fx1.module,
-            params: fx1Config,
-            bypassed: parseInt(getSlotParam(slotIndex, "fx1:bypassed") || "0", 10) === 1 ? 1 : 0
+    for (let i = 0; i < cfg.midiFx.length; i++) {
+        const moduleData = cfg.midiFx[i];
+        if (!moduleData || !moduleData.module) continue;
+        const entry = componentEntry(`midi_fx${i + 1}`, moduleData);
+        if (entry === BAIL) return null;
+        if (!patch.midi_fx) patch.midi_fx = [];
+        patch.midi_fx.push({
+            type: moduleData.module,
+            params: entry.config,
+            bypassed: entry.bypassed
         });
     }
-    if (cfg.fx2 && cfg.fx2.module) {
-        /* Try to get full state from fx2 plugin */
-        let fx2Config = cfg.fx2.params || {};
-        const fx2StateJson = getSlotStateWithRetry(slotIndex, "fx2:state", stateRetries);
-        if (fx2StateJson) {
-            try {
-                const state = JSON.parse(fx2StateJson);
-                fx2Config = { state: state };
-            } catch (e) {
-                /* State is not JSON (e.g. key=value pairs) — store as opaque string */
-                fx2Config = { state: fx2StateJson };
-            }
-        } else if (bailIfEmpty) {
-            debugLog("buildSlotPatchJson: slot " + slotIndex +
-                     " fx2:state empty after retries — bailing (preserving existing slot_" +
-                     slotIndex + ".json)");
-            return null;
-        }
+
+    for (let i = 0; i < cfg.fx.length; i++) {
+        const moduleData = cfg.fx[i];
+        if (!moduleData || !moduleData.module) continue;
+        const entry = componentEntry(`fx${i + 1}`, moduleData);
+        if (entry === BAIL) return null;
         patch.audio_fx.push({
-            type: cfg.fx2.module,
-            params: fx2Config,
-            bypassed: parseInt(getSlotParam(slotIndex, "fx2:bypassed") || "0", 10) === 1 ? 1 : 0
+            type: moduleData.module,
+            params: entry.config,
+            bypassed: entry.bypassed
         });
     }
 
@@ -4991,11 +5077,7 @@ function autosaveOneSlot(i) {
     const currentSig = getSlotModuleSignature(i);
     applySlotModuleSignature(i, currentSig);
     const cfg = chainConfigs[i];
-    const hasSynth = cfg && cfg.synth && cfg.synth.module;
-    const hasFx1 = cfg && cfg.fx1 && cfg.fx1.module;
-    const hasFx2 = cfg && cfg.fx2 && cfg.fx2.module;
-    const hasMidiFx = cfg && cfg.midiFx && cfg.midiFx.module;
-    if (!hasSynth && !hasFx1 && !hasFx2 && !hasMidiFx) {
+    if (!chainHasAnyModule(cfg)) {
         /* Cross-check before clobbering: if the slot has a preset name
          * but the shim is reporting "no modules" AND the user did not
          * explicitly clear the slot via the picker, it's a transient
@@ -7078,13 +7160,12 @@ function enterChainEdit(slotIndex) {
     needsRedraw = true;
 
     /* Announce menu title + initial selection */
-    const comp = CHAIN_COMPONENTS[selectedChainComponent];
-    const cfg = chainConfigs[selectedSlot];
-    const moduleData = cfg && cfg[comp.key];
+    const comp = slotChainComponents(selectedSlot)[selectedChainComponent];
+    const moduleData = getChainComponentModule(chainConfigs[selectedSlot], comp.key);
 
     let info = "(empty)";
     if (moduleData && moduleData.module) {
-        const prefix = comp.key === "midiFx" ? "midi_fx1" : comp.key;
+        const prefix = getComponentParamPrefix(comp.key);
         const displayName = getSlotParam(selectedSlot, `${prefix}:name`) || moduleData.module;
         info = displayName;
     }
@@ -7107,7 +7188,8 @@ function scanModulesForType(componentType) {
     } else if (componentType === "midiFx") {
         searchDirs = [`${MODULES_DIR}/midi_fx`];
         expectedTypes = ["midi_fx"];
-    } else if (componentType === "fx1" || componentType === "fx2") {
+    } else if (parseChainId(componentType)?.section === "fx") {
+        /* Any FX position — "fx1", "fx2", ... — takes the same directory. */
         searchDirs = [`${MODULES_DIR}/audio_fx`];
         expectedTypes = ["audio_fx"];
     }
@@ -7209,12 +7291,14 @@ function scanModulesForType(componentType) {
 function componentKeyToCategoryId(componentKey) {
     switch (componentKey) {
         case 'synth': return 'sound_generator';
-        case 'fx1':
-        case 'fx2':
         case 'master_fx': return 'audio_fx';
         case 'midiFx': return 'midi_fx';
         case 'overtake': return 'overtake';
-        default: return null;
+        default: {
+            /* Any FX position — "fx1", "fx2", ... */
+            const at = parseChainId(componentKey);
+            return at && at.section === "fx" ? 'audio_fx' : null;
+        }
     }
 }
 
@@ -7285,7 +7369,8 @@ function handleStorePickerResultSelect() {
     }
     if (storePickerCategory) {
         /* Came from the chain component picker. */
-        availableModules = scanModulesForType(CHAIN_COMPONENTS[selectedChainComponent].key);
+        availableModules = scanModulesForType(
+            slotChainComponents(selectedSlot)[selectedChainComponent].key);
         setView(VIEWS.COMPONENT_SELECT);
         storeCatalog = null;
         storePickerCategory = null;
@@ -7306,7 +7391,7 @@ function handleStorePickerBack() {
 
 /* Enter component module selection view */
 function enterComponentSelect(slotIndex, componentIndex) {
-    const comp = CHAIN_COMPONENTS[componentIndex];
+    const comp = slotChainComponents(slotIndex)[componentIndex];
     if (!comp || comp.key === "settings") return;
 
     selectedSlot = slotIndex;
@@ -7323,7 +7408,7 @@ function enterComponentSelect(slotIndex, componentIndex) {
      * module is loaded, since a preset snapshots its <component>:state. */
     let presetsRowIndex = -1;
     {
-        const loaded = chainConfigs[slotIndex] && chainConfigs[slotIndex][comp.key];
+        const loaded = getChainComponentModule(chainConfigs[slotIndex], comp.key);
         const loadedId = loaded && loaded.module;
         if (loadedId) {
             const presetsRow = {
@@ -7348,8 +7433,7 @@ function enterComponentSelect(slotIndex, componentIndex) {
         selectedModuleIndex = presetsRowIndex;
     } else {
         /* Nothing loaded — default the cursor to the current module if any. */
-        const cfg = chainConfigs[slotIndex];
-        const current = cfg && cfg[comp.key];
+        const current = getChainComponentModule(chainConfigs[slotIndex], comp.key);
         if (current && current.module) {
             const idx = availableModules.findIndex(m => m.id === current.module);
             if (idx >= 0) selectedModuleIndex = idx;
@@ -7366,7 +7450,7 @@ function enterComponentSelect(slotIndex, componentIndex) {
 
 /* Apply the selected module to the component - updates DSP in realtime */
 function applyComponentSelection() {
-    const comp = CHAIN_COMPONENTS[selectedChainComponent];
+    const comp = slotChainComponents(selectedSlot)[selectedChainComponent];
     const selected = availableModules[selectedModuleIndex];
 
     if (!comp || comp.key === "settings") {
@@ -7376,7 +7460,7 @@ function applyComponentSelection() {
 
     /* Check if user selected this component's User Presets manager */
     if (selected && selected.id === "__user_presets__") {
-        const loaded = chainConfigs[selectedSlot] && chainConfigs[selectedSlot][comp.key];
+        const loaded = getChainComponentModule(chainConfigs[selectedSlot], comp.key);
         enterPresetBrowser(selectedSlot, comp.key, loaded && loaded.module,
                            getComponentParamPrefix(comp.key));
         return;
@@ -7390,18 +7474,14 @@ function applyComponentSelection() {
 
     /* Update in-memory config */
     const cfg = chainConfigs[selectedSlot] || createEmptyChainConfig();
-    if (selected && selected.id) {
-        cfg[comp.key] = { module: selected.id, params: {} };
-    } else {
-        cfg[comp.key] = null;
-    }
+    setChainComponentModule(cfg, comp.key,
+        selected && selected.id ? { module: selected.id, params: {} } : null);
     chainConfigs[selectedSlot] = cfg;
 
     /* Track explicit user-removal so autosave can bypass the boot-glitch
      * guard. Set when the slot is now fully empty; reset on any non-empty
      * pick (the user is rebuilding the slot). */
-    slotUserCleared[selectedSlot] =
-        !cfg.synth && !cfg.fx1 && !cfg.fx2 && !cfg.midiFx;
+    slotUserCleared[selectedSlot] = !chainHasAnyModule(cfg);
 
     /* A component changed, so any LFO label naming that component by module
      * is now wrong. The label cache keys on the stored ROUTING, which a swap
@@ -7411,21 +7491,7 @@ function applyComponentSelection() {
 
     /* Apply to DSP - map component key to param key */
     const moduleId = selected && selected.id ? selected.id : "";
-    let paramKey = "";
-    switch (comp.key) {
-        case "synth":
-            paramKey = "synth:module";
-            break;
-        case "fx1":
-            paramKey = "fx1:module";
-            break;
-        case "fx2":
-            paramKey = "fx2:module";
-            break;
-        case "midiFx":
-            paramKey = "midi_fx1:module";
-            break;
-    }
+    const paramKey = chainComponentParamKey(comp.key, "module") || "";
 
     /* Feedback gate: if the picked module pulls line-in, warn about speakers.
      * Callback-based — schwung's QuickJS doesn't pump pending jobs so
@@ -7766,29 +7832,17 @@ function getKnobTargets(slot) {
     const cfg = chainConfigs[slot];
     if (!cfg) return targets;
 
-    /* MIDI FX */
-    if (cfg.midiFx && cfg.midiFx.module) {
-        const name = getSlotParam(slot, "midi_fx1:name") || cfg.midiFx.module;
-        targets.push({ id: "midi_fx1", name: `MIDI FX: ${name}` });
-    }
-
-    /* Synth */
-    if (cfg.synth && cfg.synth.module) {
-        const name = getSlotParam(slot, "synth:name") || cfg.synth.module;
-        targets.push({ id: "synth", name: `Synth: ${name}` });
-    }
-
-    /* FX 1 */
-    if (cfg.fx1 && cfg.fx1.module) {
-        const name = getSlotParam(slot, "fx1:name") || cfg.fx1.module;
-        targets.push({ id: "fx1", name: `FX1: ${name}` });
-    }
-
-    /* FX 2 */
-    if (cfg.fx2 && cfg.fx2.module) {
-        const name = getSlotParam(slot, "fx2:name") || cfg.fx2.module;
-        targets.push({ id: "fx2", name: `FX2: ${name}` });
-    }
+    /* In signal order, so the list reads the way the chain does. The prefix is
+     * spelled per kind ("FX1", not "FX 1") — these strings are what the knob
+     * editor has always shown. */
+    const push = (id, prefix, moduleData) => {
+        if (!moduleData || !moduleData.module) return;
+        const name = getSlotParam(slot, `${id}:name`) || moduleData.module;
+        targets.push({ id, name: `${prefix}: ${name}` });
+    };
+    cfg.midiFx.forEach((m, i) => push(`midi_fx${i + 1}`, "MIDI FX", m));
+    push("synth", "Synth", cfg.synth);
+    cfg.fx.forEach((m, i) => push(`fx${i + 1}`, `FX${i + 1}`, m));
 
     return targets;
 }
@@ -8362,7 +8416,7 @@ function applyKnobAssignment(target, param) {
 
 /* Handle Shift+Click - enter component edit mode */
 function handleShiftSelect() {
-    const comp = CHAIN_COMPONENTS[selectedChainComponent];
+    const comp = slotChainComponents(selectedSlot)[selectedChainComponent];
     if (!comp || comp.key === "settings") return;
 
     /* Shift+click always goes to module chooser (for swapping) */
@@ -8400,8 +8454,7 @@ function enterComponentEditFallback(slotIndex, componentKey) {
     editingComponentKey = componentKey;
 
     /* Get module ID from chain config */
-    const cfg = chainConfigs[slotIndex];
-    const moduleData = cfg && cfg[componentKey];
+    const moduleData = getChainComponentModule(chainConfigs[slotIndex], componentKey);
     const moduleId = moduleData ? moduleData.module : null;
 
     /* Try to load the module's UI */
@@ -8420,7 +8473,7 @@ function enterComponentEditFallback(slotIndex, componentKey) {
      * hierarchy editor. Gated to the no-preset case so preset-having modules
      * keep the working preset browser; non-co-run paths are untouched. */
     if (coRunChainEditSlot >= 0) {
-        const cPrefix = componentKey === "midiFx" ? "midi_fx1" : componentKey;
+        const cPrefix = getComponentParamPrefix(componentKey);
         const cCountStr = getSlotParam(slotIndex, `${cPrefix}:preset_count`);
         const cPresetCount = cCountStr ? parseInt(cCountStr) : 0;
         if (cPresetCount <= 0) {
@@ -8436,7 +8489,7 @@ function enterComponentEditFallback(slotIndex, componentKey) {
     }
 
     /* Fall back to simple preset browser */
-    const prefix = componentKey === "midiFx" ? "midi_fx1" : componentKey;
+    const prefix = getComponentParamPrefix(componentKey);
 
     /* Fetch preset count and current preset */
     const countStr = getSlotParam(slotIndex, `${prefix}:preset_count`);
@@ -8584,7 +8637,7 @@ function enterHierarchyEditorWith(slotIndex, componentKey, hierarchy) {
     needsRedraw = true;
 
     /* Announce menu title + initial selection */
-    const prefix = componentKey === "midiFx" ? "midi_fx1" : componentKey;
+    const prefix = getComponentParamPrefix(componentKey);
     const moduleName = getSlotParam(slotIndex, `${prefix}:name`) || componentKey;
 
     if (hierEditorIsPresetLevel && hierEditorPresetCount > 0) {
@@ -9300,13 +9353,13 @@ function buildKnobContextForKnob(knobIndex) {
     }
 
     /* Chain editor with component selected */
-    if (view === VIEWS.CHAIN_EDIT && selectedChainComponent >= 0 && selectedChainComponent < CHAIN_COMPONENTS.length) {
-            const comp = CHAIN_COMPONENTS[selectedChainComponent];
+    if (view === VIEWS.CHAIN_EDIT && selectedChainComponent >= 0 && selectedChainComponent < slotChainComponents(selectedSlot).length) {
+            const comp = slotChainComponents(selectedSlot)[selectedChainComponent];
             if (comp && comp.key !== "settings") {
                 const prefix = getComponentParamPrefix(comp.key);
-                /* MIDI FX uses different param key format than synth/fx */
+                /* MIDI FX serves no `:name`, so its header falls back to the id */
                 const isMidiFx = comp.key === "midiFx";
-                const moduleIdKey = isMidiFx ? "midi_fx1_module" : `${prefix}_module`;
+                const moduleIdKey = `${prefix}_module`;
                 const moduleId = getSlotParam(selectedSlot, moduleIdKey) || "";
                 const nameParamKey = isMidiFx ? null : `${prefix}:name`;
                 const pluginName = (nameParamKey ? getSlotParam(selectedSlot, nameParamKey) : null) || moduleId || "";
@@ -11152,7 +11205,7 @@ function drawHierarchyEditor() {
     /* Get plugin info */
     const prefix = getComponentParamPrefix(hierEditorComponent);
     const cfg = chainConfigs[hierEditorSlot] || createEmptyChainConfig();
-    const moduleData = cfg && cfg[hierEditorComponent];
+    const moduleData = getChainComponentModule(cfg, hierEditorComponent);
     const abbrev = moduleData ? getModuleAbbrev(moduleData.module) : hierEditorComponent.toUpperCase();
 
     /* Get bank or preset name for header depending on view */
@@ -11381,7 +11434,7 @@ function changeComponentPreset(delta) {
     if (newPreset >= editComponentPresetCount) newPreset = 0;
 
     /* Apply the preset change */
-    const prefix = editingComponentKey === "midiFx" ? "midi_fx1" : editingComponentKey;
+    const prefix = getComponentParamPrefix(editingComponentKey);
     setSlotParam(selectedSlot, `${prefix}:preset`, String(newPreset));
 
     /* Update local state */
@@ -11881,16 +11934,19 @@ function handleJog(delta) {
             break;
         case VIEWS.CHAIN_EDIT:
             /* Navigate horizontally through chain components (-1 = chain/patch selection) */
-            selectedChainComponent = Math.max(-1, Math.min(CHAIN_COMPONENTS.length - 1, selectedChainComponent + delta));
-            lastChainComponent[selectedSlot] = selectedChainComponent;
-            /* Announce component */
-            if (selectedChainComponent === -1) {
-                announce("Patch Selection");
-            } else {
-                const comp = CHAIN_COMPONENTS[selectedChainComponent];
-                const compKey = comp.key;
-                const moduleName = chainConfigs[selectedSlot]?.[compKey]?.module || "Empty";
-                announceMenuItem(comp.label, moduleName);
+            {
+                const comps = slotChainComponents(selectedSlot);
+                selectedChainComponent = Math.max(-1, Math.min(comps.length - 1, selectedChainComponent + delta));
+                lastChainComponent[selectedSlot] = selectedChainComponent;
+                /* Announce component */
+                if (selectedChainComponent === -1) {
+                    announce("Patch Selection");
+                } else {
+                    const comp = comps[selectedChainComponent];
+                    const moduleName =
+                        getChainComponentModule(chainConfigs[selectedSlot], comp.key)?.module || "Empty";
+                    announceMenuItem(comp.label, moduleName);
+                }
             }
             break;
         case VIEWS.COMPONENT_SELECT:
@@ -12359,19 +12415,17 @@ function handleSelect() {
             if (selectedChainComponent === -1) {
                 /* Chain selected - open patch browser */
                 enterPatchBrowser(selectedSlot);
-            } else if (selectedChainComponent === CHAIN_COMPONENTS.length - 1) {
+            } else if (selectedChainComponent === slotChainComponents(selectedSlot).length - 1) {
                 /* Settings selected - go to chain settings */
                 enterChainSettings(selectedSlot);
             } else {
                 /* Component selected - check if populated or empty */
-                const comp = CHAIN_COMPONENTS[selectedChainComponent];
-                const cfg = chainConfigs[selectedSlot];
-                const moduleData = cfg && cfg[comp.key];
+                const comp = slotChainComponents(selectedSlot)[selectedChainComponent];
+                const moduleData = getChainComponentModule(chainConfigs[selectedSlot], comp.key);
 
                 /* Mute+JogClick: toggle bypass on a populated module */
                 if (hostMuteHeld && moduleData && moduleData.module) {
-                    const dspPrefix = comp.key === "midiFx" ? "midi_fx1" : comp.key;
-                    const key = `${dspPrefix}:bypassed`;
+                    const key = chainComponentParamKey(comp.key, "bypassed");
                     const cur = parseInt(getSlotParam(selectedSlot, key) || "0", 10);
                     const next = cur ? 0 : 1;
                     setSlotParam(selectedSlot, key, String(next));
@@ -12497,7 +12551,7 @@ function handleSelect() {
                 const selectedMode = hierEditorParams[hierEditorSelectedIdx];
                 /* Check for swap module action first */
                 if (selectedMode === SWAP_MODULE_ACTION) {
-                    const compIndex = CHAIN_COMPONENTS.findIndex(c => c.key === hierEditorComponent);
+                    const compIndex = slotChainComponentIndex(hierEditorSlot, hierEditorComponent);
                     const slotToSwap = hierEditorSlot;
                     if (compIndex >= 0) {
                         exitHierarchyEditor();
@@ -12652,7 +12706,7 @@ function handleSelect() {
                         enterMasterFxModuleSelect(fxSlot);
                     } else {
                         /* Regular chain slot: find component index and enter module select */
-                        const compIndex = CHAIN_COMPONENTS.findIndex(c => c.key === hierEditorComponent);
+                        const compIndex = slotChainComponentIndex(hierEditorSlot, hierEditorComponent);
                         const slotToSwap = hierEditorSlot;  /* Save before exit clears it */
                         if (compIndex >= 0) {
                             exitHierarchyEditor();
@@ -13576,8 +13630,9 @@ function drawChainEdit() {
     }
 
     /* Draw each component box */
-    for (let i = 0; i < CHAIN_COMPONENTS.length; i++) {
-        const comp = CHAIN_COMPONENTS[i];
+    const comps = slotChainComponents(selectedSlot);
+    for (let i = 0; i < comps.length; i++) {
+        const comp = comps[i];
         const x = START_X + i * (BOX_W + GAP);
         const isSelected = i === selectedChainComponent;
 
@@ -13586,7 +13641,7 @@ function drawChainEdit() {
         if (comp.key === "settings") {
             abbrev = "*";
         } else {
-            const moduleData = cfg[comp.key];
+            const moduleData = getChainComponentModule(cfg, comp.key);
             abbrev = moduleData ? getModuleAbbrev(moduleData.module) : "--";
         }
 
@@ -13611,9 +13666,9 @@ function drawChainEdit() {
          * (4px-high glyph). Positioned at left so it doesn't collide with the
          * centered LFO marker when both are present. */
         let bypassed = false;
-        if (comp.key !== "settings") {
-            const dspPrefix = comp.key === "midiFx" ? "midi_fx1" : comp.key;
-            bypassed = parseInt(getSlotParam(selectedSlot, `${dspPrefix}:bypassed`) || "0", 10) === 1;
+        const bypassKey = chainComponentParamKey(comp.key, "bypassed");
+        if (bypassKey) {
+            bypassed = parseInt(getSlotParam(selectedSlot, bypassKey) || "0", 10) === 1;
         }
         if (bypassed) {
             const bx = x + 1;
@@ -13672,7 +13727,7 @@ function drawChainEdit() {
     }
 
     /* Draw component label below boxes */
-    const selectedComp = chainSelected ? null : CHAIN_COMPONENTS[selectedChainComponent];
+    const selectedComp = chainSelected ? null : comps[selectedChainComponent];
     const labelY = BOX_Y + BOX_H + 3;
     const label = chainSelected ? "Chain" : (selectedComp ? selectedComp.label : "");
     const labelX = Math.floor((SCREEN_WIDTH - label.length * 5) / 2);
@@ -13685,10 +13740,10 @@ function drawChainEdit() {
         /* Show patch name when chain is selected */
         infoLine = slots[selectedSlot]?.name || "(no patch)";
     } else if (selectedComp && selectedComp.key !== "settings") {
-        const moduleData = cfg[selectedComp.key];
+        const moduleData = getChainComponentModule(cfg, selectedComp.key);
         if (moduleData) {
             /* Get display name from DSP if available */
-            const prefix = selectedComp.key === "midiFx" ? "midi_fx1" : selectedComp.key;
+            const prefix = getComponentParamPrefix(selectedComp.key);
             /* Cached: these were three IPC round-trips per frame. */
             const mid = moduleData.module;
             let displayName = getSlotParamCached(selectedSlot, `${prefix}:name`, mid) || mid;
@@ -13730,7 +13785,7 @@ function drawChainEdit() {
  */
 function drawComponentSelect() {
     clear_screen();
-    const comp = CHAIN_COMPONENTS[selectedChainComponent];
+    const comp = slotChainComponents(selectedSlot)[selectedChainComponent];
     const ctx = { fillRect: fill_rect, print, textWidth: text_width };
 
     drawMovyHeader(ctx, `S${selectedSlot + 1} > ${comp ? comp.label : "Module"}`, "SELECT", false);
@@ -13741,10 +13796,7 @@ function drawComponentSelect() {
         return;
     }
 
-    const cfg = chainConfigs[selectedSlot];
-    const compKey = CHAIN_COMPONENTS[selectedChainComponent]
-        ? CHAIN_COMPONENTS[selectedChainComponent].key : null;
-    const current = cfg && compKey ? cfg[compKey] : null;
+    const current = comp ? getChainComponentModule(chainConfigs[selectedSlot], comp.key) : null;
     const currentId = current ? current.module : null;
 
     renderMovyPicker(ctx, {
@@ -13790,12 +13842,11 @@ function drawComponentEdit() {
     clear_screen();
 
     /* Get component info */
-    const cfg = chainConfigs[selectedSlot];
-    const moduleData = cfg && cfg[editingComponentKey];
+    const moduleData = getChainComponentModule(chainConfigs[selectedSlot], editingComponentKey);
     const moduleName = moduleData ? moduleData.module.toUpperCase() : "Unknown";
 
     /* Get display name from DSP if available */
-    const prefix = editingComponentKey === "midiFx" ? "midi_fx1" : editingComponentKey;
+    const prefix = getComponentParamPrefix(editingComponentKey);
     const cmpMid = moduleData ? moduleData.module : moduleName;
     const displayName = getSlotParamCached(selectedSlot, `${prefix}:name`, cmpMid) || moduleName;
 
@@ -15804,13 +15855,13 @@ globalThis.tick = function() {
     /* Poll FX display_name for change-based announcements (e.g. key detection).
      * Check every ~1 second (30 ticks at 30fps). Only poll slots that have FX loaded. */
     if (!isOvertakeActive && refreshCounter % 30 === 0) {
-        const fxComponents = ["fx1", "fx2"];
         /* Per-slot FX */
         for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
             const cfg = chainConfigs[i];
             if (!cfg) continue;
-            for (const comp of fxComponents) {
-                if (!cfg[comp] || !cfg[comp].module) continue;
+            for (let f = 0; f < cfg.fx.length; f++) {
+                if (!cfg.fx[f] || !cfg.fx[f].module) continue;
+                const comp = `fx${f + 1}`;
                 const cacheKey = `${i}:${comp}`;
                 const name = pollFxDisplayName(i, `${comp}:display_name`, cacheKey);
                 if (name && name !== fxDisplayNameCache[cacheKey]) {
