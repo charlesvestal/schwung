@@ -29,7 +29,7 @@
 import { ctx } from './shadow_ui_ctx.mjs';
 import { createController } from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
 import { decodeInput, applyInput } from '/data/UserData/schwung/shared/param_pages/page_input.mjs';
-import { PAGE_KNOBS, PAGE_MENU, PAGE_PRESET } from '/data/UserData/schwung/shared/param_pages/page_plan.mjs';
+import { PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS } from '/data/UserData/schwung/shared/param_pages/page_plan.mjs';
 import { LAYOUT_BAR, LAYOUT_DIAL } from '/data/UserData/schwung/shared/param_pages/render_page.mjs';
 import { LAYOUT_MOVY } from '/data/UserData/schwung/shared/param_pages/render_page_movy.mjs';
 import { announce } from '/data/UserData/schwung/shared/screen_reader.mjs';
@@ -444,6 +444,15 @@ function footerHints() {
      * its presets; INSIDE it the jog is the browser and every step auditions.
      * Saying which of the two you are in is the entire safety of the thing.
      */
+    /* A runtime item list: scrolling it writes nothing, so unlike the preset
+     * browser there is no auditioning to warn about — CLK LOAD is the whole
+     * story, and it is only true once you are inside. */
+    if (mp && mp.kind === PAGE_ITEMS) {
+        return controller.menuEntered && controller.menuEntered()
+            ? orderedHints({ jog: "SEL", click: "LOAD", extra: [["BACK", "OUT"]] })
+            : orderedHints({ jog: "PAGE", click: "ENTER", extra: fine });
+    }
+
     if (mp && mp.kind === PAGE_PRESET) {
         /* Three pairs fit only when every word is <= 4 characters, and these
          * are: JOG PRST / CLK EDIT / BACK OUT is 126px. */
@@ -502,11 +511,15 @@ export function drawParamPages() {
      * PAST a synth's preset page on the way somewhere else loaded every preset
      * it crossed. It is a door now — inert until you click into it.
      *
-     * The remaining kinds (items, modes, child) genuinely belong to screens
-     * this file does not own, and still hand off.
+     * PAGE_ITEMS joined them too: a soundfont or NAM-model list is a real
+     * list, so unlike a preset level it can be five rows in the page chrome
+     * rather than a separate screen.
+     *
+     * The remaining kinds (modes, child) genuinely belong to screens this file
+     * does not own, and still hand off.
      */
     const drawable = page && (page.kind === PAGE_KNOBS || page.kind === PAGE_MENU
-                              || page.kind === PAGE_PRESET);
+                              || page.kind === PAGE_PRESET || page.kind === PAGE_ITEMS);
     if (!controller.pickerOpen && !drawable) return false;
 
     const nowMs = Date.now();

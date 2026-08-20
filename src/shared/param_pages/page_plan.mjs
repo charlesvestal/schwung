@@ -321,6 +321,10 @@ export function planPages({ hierarchy, chainParams, mode, visible } = {}) {
             pages.push({
                 kind: PAGE_ITEMS, name: claimName(base), level: levelKey,
                 itemsParam: lvl.items_param, selectParam: lvl.select_param || null,
+                /* Where the module wants you AFTER choosing — the list editor
+                 * honours this and so should the grid, or choosing a soundfont
+                 * lands you somewhere the module did not intend. */
+                navigateTo: lvl.navigate_to || null,
             });
         }
 

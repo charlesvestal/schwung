@@ -154,11 +154,13 @@ export function applyInput(controller, intent, { nowMs, reveal } = {}) {
              * "held" on one, so this must come before the no-knob-held branch
              * below or the section picker would swallow it.
              *
-             * Two kinds are doors — a menu and a preset browser. Shift+click
+             * Three kinds are doors — a menu, a preset browser and a runtime
+             * item list. Shift+click
              * above still reaches the section list from inside either, which is
              * what keeps them from being traps. */
             const mpage = controller.page;
-            if (mpage && (mpage.kind === "menu" || mpage.kind === "preset")) {
+            if (mpage && (mpage.kind === "menu" || mpage.kind === "preset"
+                          || mpage.kind === "items")) {
                 const opened = controller.onClick(-1);
                 return opened ? controller.takePending() : null;
             }
