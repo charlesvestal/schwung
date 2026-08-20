@@ -1010,6 +1010,17 @@ globalThis.param_view_get_mode = function() { return paramViewGlobal; };
  * forceOpen: the grid has nothing to toggle, so it always opens. The jog-click
  * caller passes false and keeps its open/close toggle.
  */
+/* Leave the hierarchy editor and put the knob grid back up, on the same slot
+ * and component it handed off. */
+function returnToParamPagesFromEditor() {
+    const slotIndex = hierEditorSlot;
+    const componentKey = hierEditorComponent;
+    paramEditorOpenedFromGrid = false;
+    exitHierarchyEditor();
+    enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey));
+    needsRedraw = true;
+}
+
 function openHierarchyParamEditor(selectedKey, meta, forceOpen) {
     if (hierEditorEditMode && !forceOpen) {
         hierEditorEditMode = false;
@@ -1095,6 +1106,7 @@ function openParamEditorFromGrid(slotIndex, fullKey, meta) {
     hierEditorSelectedIdx = idx;
     const liveMeta = (typeof getParamMetadata === "function" ? getParamMetadata(bare) : null) || meta;
     announce((liveMeta && (liveMeta.name || liveMeta.label)) || bare);
+    paramEditorOpenedFromGrid = true;
     openHierarchyParamEditor(bare, liveMeta, true);
     needsRedraw = true;
 }
@@ -1902,6 +1914,16 @@ let hierEditorMasterFxSlot = -1;      // Which Master FX slot (0-3) we're editin
  * UI — see the preset-edit-mode branch below. Cleared once consumed, and by
  * exitHierarchyEditor()/Back so a manual exit does not also bounce back. */
 let cameFromParamPages = false;
+/*
+ * Set when the knob grid opened ONE param directly (openParamEditorFromGrid).
+ * Back has to undo the thing the user actually did: they were on the grid, they
+ * clicked a bracketed cell, so closing that editor belongs back on the grid.
+ * Without it Back exits edit mode into the hierarchy LIST — a screen they never
+ * opened and, with Param View = Knobs, cannot get out of except by leaving the
+ * component. Distinct from cameFromParamPages, which is about the grid handing
+ * off a whole PAGE (a preset browser) rather than a single param.
+ */
+let paramEditorOpenedFromGrid = false;
 
 /* Preset browser state (for preset_browser type levels) */
 let hierEditorIsPresetLevel = false;  // true when current level is a preset browser
@@ -8554,6 +8576,11 @@ function exitHierarchyEditor() {
     pendingHierKnobIndex = -1;
     pendingHierKnobDelta = 0;
     cameFromParamPages = false;
+    /* Cleared on EVERY exit, not just the return-to-grid one: leaving the
+     * editor any other way (Back at root, a slot swap, the shortcut out) must
+     * not leave the flag armed for a later list-originated session, or the
+     * next Back out of an unrelated param edit would teleport to the grid. */
+    paramEditorOpenedFromGrid = false;
 
     clearModuleParamShims();
     clearWavZoomStates();
@@ -12903,7 +12930,18 @@ function handleBack() {
                 hierEditorEditMode = false;
                 resetHierarchyEditState();
                 needsRedraw = true;
-                announceHierLevel();
+                if (paramEditorOpenedFromGrid) {
+                    /* The grid opened this one param; closing it goes back to
+                     * the grid, not to a list the user never asked for. */
+                    returnToParamPagesFromEditor();
+                } else {
+                    announceHierLevel();
+                }
+            } else if (paramEditorOpenedFromGrid) {
+                /* Not in edit mode, but we still got here from the grid — a
+                 * filepath/canvas/string editor is its own VIEW, so it has
+                 * already returned here by the time Back is pressed again. */
+                returnToParamPagesFromEditor();
             } else if (hierEditorPresetEditMode) {
                 /* Exit preset edit mode - return to preset browser */
                 hierEditorPresetEditMode = false;
