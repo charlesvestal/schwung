@@ -1061,21 +1061,12 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                 }
 
                 if (target[0] && param[0]) {
-                    /* Look up param info from the target's chain_params */
-                    chain_param_info_t *pinfo = NULL;
-                    if (strcmp(target, "synth") == 0) {
-                        pinfo = find_param_info(inst->synth_params, inst->synth_param_count, param);
-                    } else if (strcmp(target, "fx1") == 0 && inst->fx_count > 0) {
-                        pinfo = find_param_info(inst->fx_params[0], inst->fx_param_counts[0], param);
-                    } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1) {
-                        pinfo = find_param_info(inst->fx_params[1], inst->fx_param_counts[1], param);
-                    } else if (strcmp(target, "fx3") == 0 && inst->fx_count > 2) {
-                        pinfo = find_param_info(inst->fx_params[2], inst->fx_param_counts[2], param);
-                    } else if (strcmp(target, "midi_fx1") == 0 && inst->midi_fx_count > 0) {
-                        pinfo = find_param_info(inst->midi_fx_params[0], inst->midi_fx_param_counts[0], param);
-                    } else if (strcmp(target, "midi_fx2") == 0 && inst->midi_fx_count > 1) {
-                        pinfo = find_param_info(inst->midi_fx_params[1], inst->midi_fx_param_counts[1], param);
-                    }
+                    /* Look up param info from the target's chain_params.
+                     * knob_find_param parses the index out of the id, so
+                     * fx4..fx8 / midi_fx3..midi_fx8 resolve too; the ladder
+                     * this replaces stopped at fx3/midi_fx2 and silently left
+                     * pinfo NULL (no step size, no range, no enum options). */
+                    chain_param_info_t *pinfo = knob_find_param(inst, target, param);
 
                     /* Set mapping */
                     if (found >= 0) {
@@ -1393,17 +1384,23 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             /* Try to read actual value from DSP plugin */
             char val_buf[64];
             int got = -1;
+            /* Indexed, not enumerated: this ladder stopped at fx2/midi_fx1, so
+             * a knob on fx3+ saved the STALE tracking value into the patch
+             * instead of the plugin's live one. The per-position plugin/
+             * instance checks stay — fx_count is a high-water mark and an
+             * interior position can be empty. */
             if (strcmp(target, "synth") == 0 && inst->synth_plugin_v2 && inst->synth_instance) {
                 got = inst->synth_plugin_v2->get_param(inst->synth_instance, param, val_buf, sizeof(val_buf));
-            } else if (strcmp(target, "fx1") == 0 && inst->fx_count > 0 &&
-                       inst->fx_is_v2[0] && inst->fx_plugins_v2[0] && inst->fx_instances[0]) {
-                got = inst->fx_plugins_v2[0]->get_param(inst->fx_instances[0], param, val_buf, sizeof(val_buf));
-            } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1 &&
-                       inst->fx_is_v2[1] && inst->fx_plugins_v2[1] && inst->fx_instances[1]) {
-                got = inst->fx_plugins_v2[1]->get_param(inst->fx_instances[1], param, val_buf, sizeof(val_buf));
-            } else if (strcmp(target, "midi_fx1") == 0 && inst->midi_fx_count > 0 &&
-                       inst->midi_fx_plugins[0] && inst->midi_fx_instances[0]) {
-                got = inst->midi_fx_plugins[0]->get_param(inst->midi_fx_instances[0], param, val_buf, sizeof(val_buf));
+            } else {
+                int fxi = chain_fx_index_from_id(target, "fx", MAX_AUDIO_FX);
+                int mfi = chain_fx_index_from_id(target, "midi_fx", MAX_MIDI_FX);
+                if (fxi >= 0 && fxi < inst->fx_count &&
+                    inst->fx_is_v2[fxi] && inst->fx_plugins_v2[fxi] && inst->fx_instances[fxi]) {
+                    got = inst->fx_plugins_v2[fxi]->get_param(inst->fx_instances[fxi], param, val_buf, sizeof(val_buf));
+                } else if (mfi >= 0 && mfi < inst->midi_fx_count &&
+                           inst->midi_fx_plugins[mfi] && inst->midi_fx_instances[mfi]) {
+                    got = inst->midi_fx_plugins[mfi]->get_param(inst->midi_fx_instances[mfi], param, val_buf, sizeof(val_buf));
+                }
             }
             if (got > 0) {
                 chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
@@ -1434,21 +1431,10 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                     /* Look up param info for all queries */
                     const char *target = inst->knob_mappings[i].target;
                     const char *param = inst->knob_mappings[i].param;
-                    chain_param_info_t *pinfo = NULL;
-
-                    if (strcmp(target, "synth") == 0) {
-                        pinfo = find_param_info(inst->synth_params, inst->synth_param_count, param);
-                    } else if (strcmp(target, "fx1") == 0 && inst->fx_count > 0) {
-                        pinfo = find_param_info(inst->fx_params[0], inst->fx_param_counts[0], param);
-                    } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1) {
-                        pinfo = find_param_info(inst->fx_params[1], inst->fx_param_counts[1], param);
-                    } else if (strcmp(target, "fx3") == 0 && inst->fx_count > 2) {
-                        pinfo = find_param_info(inst->fx_params[2], inst->fx_param_counts[2], param);
-                    } else if (strcmp(target, "midi_fx1") == 0 && inst->midi_fx_count > 0) {
-                        pinfo = find_param_info(inst->midi_fx_params[0], inst->midi_fx_param_counts[0], param);
-                    } else if (strcmp(target, "midi_fx2") == 0 && inst->midi_fx_count > 1) {
-                        pinfo = find_param_info(inst->midi_fx_params[1], inst->midi_fx_param_counts[1], param);
-                    }
+                    /* Indexed, not enumerated — see the knob_N_set site. This
+                     * pinfo feeds the min/max/step/options answers below, so
+                     * an unresolved fx4+ target made the whole knob undrivable. */
+                    chain_param_info_t *pinfo = knob_find_param(inst, target, param);
 
                     if (strcmp(query_param, "name") == 0) {
                         /* Construct display name from target and param */
