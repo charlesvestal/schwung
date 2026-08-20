@@ -12,6 +12,14 @@
 
 static void shadow_chain_transpose_reset(void);
 
+/* Implemented in shadow_chain_mgmt.c — the shared "does this slot hold any
+ * loaded component?" probe, used by all three activation sites.  Declared here
+ * rather than in shadow_chain_mgmt.h only to keep this change inside the two
+ * files it touches while other work is in flight on the branch; it belongs in
+ * the header next to the other shadow_chain_* declarations. */
+extern int shadow_slot_has_loaded_component(const plugin_api_v2_t *pv2,
+                                            void *instance);
+
 /* ============================================================================
  * External cable-2 dispatch ring
  * ============================================================================ */
@@ -337,26 +345,16 @@ void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *mi
          * mode have no synth or audio FX but still need to dispatch
          * incoming MIDI to drive the FX and inject to Move. */
         if (!host_chain_slots[i].active) {
-            if (pv2 && pv2->get_param &&
-                host_chain_slots[i].instance) {
-                static const char *probe_keys[] = {
-                    "synth_module", "fx1_module", "fx2_module",
-                    "midi_fx1_module", "midi_fx2_module"
-                };
-                for (size_t k = 0; k < sizeof(probe_keys)/sizeof(probe_keys[0]); k++) {
-                    char buf[64];
-                    int len = pv2->get_param(host_chain_slots[i].instance,
-                                              probe_keys[k], buf, sizeof(buf));
-                    if (len <= 0) continue;
-                    if (len < (int)sizeof(buf)) buf[len] = '\0';
-                    else buf[sizeof(buf) - 1] = '\0';
-                    if (buf[0] != '\0') {
-                        host_chain_slots[i].active = 1;
-                        if (host_ui_state_update_slot)
-                            host_ui_state_update_slot(i);
-                        break;
-                    }
-                }
+            /* This used to probe five hard-coded keys and so could only see
+             * fx1/fx2 and midi_fx1/midi_fx2; a slot whose only module sat in
+             * fx5 never activated and stayed silent.  The shared probe covers
+             * all eight positions of both lists in three reads by asking the
+             * DSP for its list LENGTHS — which is also cheaper than what it
+             * replaces, and matters because this runs in the SPI callback. */
+            if (shadow_slot_has_loaded_component(pv2, host_chain_slots[i].instance)) {
+                host_chain_slots[i].active = 1;
+                if (host_ui_state_update_slot)
+                    host_ui_state_update_slot(i);
             }
             if (!host_chain_slots[i].active) continue;
         }
