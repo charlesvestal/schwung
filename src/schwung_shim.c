@@ -2926,6 +2926,65 @@ static uint64_t last_speech_time_ms = 0;  /* Rate limiting for TTS */
  * a wholesale memset on the consumer side could wipe events written
  * between the producer's slot-empty check and the consumer's clear,
  * dropping note-offs under burst (4-pad simultaneous release, etc.). */
+/* =========================================================================
+ * Touch trace — knob-touch edges as the HARDWARE delivered them.
+ *
+ * Exists because three separate explanations for an unreliable double-tap
+ * were argued from JS-side timestamps, which sit behind a SHM ring and a
+ * 60Hz loop, and all three were wrong. This records the edge in the SPI
+ * callback itself, before the ring, the loop and JS can drop, reorder or
+ * delay it, so "what did the sensor actually send" stops being an opinion.
+ *
+ * RT-safe by construction: one clock_gettime and a store into a fixed array.
+ * No allocation, no lock, no I/O — the worker thread does the writing, at its
+ * own 200ms cadence. Disarmed it costs one branch.
+ *
+ * Arm with:  touch /data/UserData/schwung/touch_trace_on
+ * Read out:  /data/UserData/schwung/touch_trace.txt
+ * ========================================================================= */
+#define TOUCH_TRACE_CAP 512
+typedef struct {
+    uint64_t mono_us;
+    uint32_t hw_stamp;      /* the 4 timestamp bytes the XMOS appends */
+    uint8_t status, d1, d2, cable;
+} touch_trace_ev_t;
+static touch_trace_ev_t touch_trace_buf[TOUCH_TRACE_CAP];
+static volatile uint32_t touch_trace_head = 0;   /* producer: SPI callback */
+static uint32_t touch_trace_tail = 0;            /* consumer: worker thread */
+int shim_touch_trace_on = 0;
+
+static inline void touch_trace_record(uint8_t cable, uint8_t status,
+                                      uint8_t d1, uint8_t d2, uint32_t hw_stamp) {
+    if (!shim_touch_trace_on) return;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint32_t h = touch_trace_head;
+    touch_trace_ev_t *e = &touch_trace_buf[h % TOUCH_TRACE_CAP];
+    e->mono_us = (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
+    e->hw_stamp = hw_stamp;
+    e->status = status; e->d1 = d1; e->d2 = d2; e->cable = cable;
+    __atomic_store_n(&touch_trace_head, h + 1, __ATOMIC_RELEASE);
+}
+
+/* Worker thread only — never the SPI callback. */
+void shim_touch_trace_drain(void) {
+    uint32_t head = __atomic_load_n(&touch_trace_head, __ATOMIC_ACQUIRE);
+    if (head == touch_trace_tail) return;
+    FILE *f = fopen("/data/UserData/schwung/touch_trace.txt", "a");
+    if (!f) { touch_trace_tail = head; return; }
+    while (touch_trace_tail != head) {
+        const touch_trace_ev_t *e = &touch_trace_buf[touch_trace_tail % TOUCH_TRACE_CAP];
+        int down = ((e->status & 0xF0) == 0x90) && e->d2 > 0;
+        fprintf(f, "%llu.%03llu ms  knob=%u %s vel=%-3u status=%02x cable=%u hw=%u\n",
+                (unsigned long long)(e->mono_us / 1000),
+                (unsigned long long)(e->mono_us % 1000),
+                (unsigned)e->d1, down ? "DOWN" : "up  ", (unsigned)e->d2,
+                (unsigned)e->status, (unsigned)e->cable, (unsigned)e->hw_stamp);
+        touch_trace_tail++;
+    }
+    fclose(f);
+}
+
 static inline void shadow_ui_midi_publish(uint8_t head, uint8_t status,
                                           uint8_t d1, uint8_t d2) {
     if (head == 0 || !shadow_ui_midi_shm || !shadow_control) return;
@@ -7594,6 +7653,14 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             uint8_t type = status & 0xF0;
             uint8_t d1 = src[j + 2];
             uint8_t d2 = src[j + 3];
+
+            /* Ground truth for knob touch, taken before anything downstream
+             * can drop, reorder or delay it — see touch_trace_record. */
+            if ((type == 0x90 || type == 0x80) && d1 <= 9) {
+                uint32_t hw = (uint32_t)src[j + 4] | ((uint32_t)src[j + 5] << 8)
+                            | ((uint32_t)src[j + 6] << 16) | ((uint32_t)src[j + 7] << 24);
+                touch_trace_record(cable, status, d1, d2, hw);
+            }
 
             /* Deliver internal cable-0 note events (d1 >= 10, excludes
              * knob-touch reserved range 0–9) to the loaded overtake DSP
