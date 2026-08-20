@@ -538,7 +538,18 @@ function slotChainComponentIndex(slotIndex, componentKey) {
     return slotChainComponents(slotIndex).findIndex(c => c.key === componentKey);
 }
 
-/* Is anything loaded anywhere in this chain? */
+/*
+ * Is anything loaded anywhere in this chain?
+ *
+ * INVARIANT this relies on: a non-null list entry always carries a non-empty
+ * `module`. Both construction sites hold it — loadChainConfigFromSlot stores
+ * null rather than an entry when the DSP reports "", and the picker only builds
+ * an entry from a non-empty selected.id. The callers this replaced tested mere
+ * object presence, so an entry with an empty module id would have counted as
+ * loaded there and does not count as loaded here — which would read as a slot
+ * silently autosaving itself empty. Keep the invariant, or make this test
+ * presence again.
+ */
 function chainHasAnyModule(cfg) {
     if (!cfg) return false;
     if (cfg.synth && cfg.synth.module) return true;
@@ -589,7 +600,8 @@ function invalidateAutosaveWriteCache() {
 }
 let autosaveSuppressUntil = 0;  /* suppress autosave after set change */
 let slotDirtyCache = [false, false, false, false];
-/* Module signature ("synth|midiFx|fx1|fx2") from the last successful autosave.
+/* Module signature ("synth|midi_fx1|fx1|fx2", one field per chain position, in
+ * signal order — see getSlotModuleSignature) from the last successful autosave.
  * Used to relax the "empty state → bail" guard when the user swaps to a module
  * that lacks state get/set — a module change makes the prior file stale anyway. */
 let lastSavedSlotSignature = ["", "", "", ""];
@@ -1642,7 +1654,9 @@ let helpReturnView = null;    /* View to return to from help viewer */
 
 /* Chain editing state */
 let chainConfigs = [];         // In-memory chain configs per slot
-let selectedChainComponent = 0; // -1=chain, 0-4 (midiFx, synth, fx1, fx2, settings)
+// -1 = chain/patch; 0..n = an index into slotChainComponents(), whose length
+// follows the chain rather than being fixed at five.
+let selectedChainComponent = 0;
 let lastChainComponent = [0, 0, 0, 0]; // Remember last selected component per slot
 let selectingModule = false;   // True when in module selection for a component
 let availableModules = [];     // Modules available for selected component type
@@ -1960,7 +1974,7 @@ function isShiftHeld() {
 }
 
 /* Component edit state (for Shift+Click editing) */
-let editingComponentKey = "";    // "synth", "fx1", "fx2", "midiFx"
+let editingComponentKey = "";    // a component key: "synth", "midiFx", or "fxN"
 let editComponentPresetCount = 0;
 let editComponentPreset = 0;
 let editComponentPresetName = "";
@@ -2674,7 +2688,7 @@ function applyLivePreview(state, selected) {
 /* Loaded module UI state */
 let loadedModuleUi = null;       // The chain_ui object from loaded module
 let loadedModuleSlot = -1;       // Which slot the module UI is for
-let loadedModuleComponent = "";  // "synth", "fx1", "fx2"
+let loadedModuleComponent = "";  // a component key: "synth", "midiFx", or "fxN"
 let moduleUiLoadError = false;   // True if load failed
 
 /* Asset warning overlay state */
@@ -4438,8 +4452,22 @@ function drawOvertakeMenu() {
     drawFooter({left: "Back: exit", right: "Jog: select"});
 }
 
-/* A `<prefix>:<suffix>` device key for a component, or null when the key does
- * not address a module position (e.g. "settings"). */
+/*
+ * A `<prefix>:<suffix>` device key for a component, or null when the key does
+ * not address a module position (e.g. "settings").
+ *
+ * WIDER THAN WHAT IT REPLACED, and the difference is a cost rather than a bug.
+ * The ternary ladders here before answered null for anything but synth / fx1 /
+ * fx2 / midiFx, so an unknown component cost NOTHING. This accepts any valid
+ * position id, so `fx3` now produces a real key and a real IPC round trip
+ * (~2.8ms) — which comes back "" from the DSP, not null, i.e. indistinguishable
+ * from "this module serves no chain_params".
+ *
+ * Unreachable today: the editor list only holds fx1/fx2, so no caller can name
+ * fx3. The moment CHAIN_FX_POSITIONS is raised past what the DSP serves, every
+ * such call becomes one wasted round trip apiece — on a draw path that is a
+ * frame's worth of budget. Grow the DSP and the constant together.
+ */
 function chainComponentParamKey(componentKey, suffix) {
     if (!isChainModuleKey(componentKey)) return null;
     return `${chainComponentId(componentKey)}:${suffix}`;
