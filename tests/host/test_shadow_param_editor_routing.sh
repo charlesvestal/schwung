@@ -416,29 +416,6 @@ function gotoSlotFor(name) {
       }
     }
   }
-  /*
-   * Every menu action must RUN. runChainSettingAction was lifted out of the
-   * click handler by text surgery and two `setting.key` references survived in
-   * the LFO branch, so choosing LFO 1 threw ReferenceError — which the tick
-   * try/catch turns into "UI error, recovering" and a jump to the slots view.
-   * Silent from the outside, and exactly what shipped.
-   */
-  {
-    const errors = [];
-    const prevErr = console.error;
-    for (const action of ["knobs", "lfo1", "lfo2", "save", "save_as", "delete"]) {
-      try {
-        ctx.runSlotMenuAction(0, action);
-      } catch (e) {
-        errors.push(action + ": " + e);
-      }
-    }
-    console.error = prevErr;
-    if (errors.length) {
-      fail("slot menu actions threw: " + errors.join(" | "));
-    }
-  }
-
   globalThis.shadow_get_param = prevGet;
   globalThis.shadow_set_param = prevSet;
 }

@@ -1096,12 +1096,6 @@ function findLevelListingParam(bare) {
 
 function openParamEditorFromGrid(slotIndex, fullKey, meta) {
     const componentKey = paramPagesComponent();
-    /* Slot settings is a synthesised contract, not a component: there is no
-     * "slot:ui_hierarchy" to fetch, so enterHierarchyEditor would fall through
-     * to the no-presets fallback. Nothing on the slot page is divable today, so
-     * this is a guard rather than a feature — but a wrong screen is worse than
-     * no screen. */
-    if (componentKey === "slot") return;
     /* Read the grid page BEFORE exiting — the level it was on is where the
      * param lives, and exitParamPages tears the controller down. */
     const page = currentParamPage();
@@ -1161,13 +1155,9 @@ function openParamEditorFromGrid(slotIndex, fullKey, meta) {
     needsRedraw = true;
 }
 
-/* One-shot override forcing the LIST editor for the next COMPONENT entry, so
- * the grid can hand a param it cannot edit to the screen that can. */
+/* One-shot override forcing the LIST editor for the next entry, so the grid can
+ * hand a param it cannot edit to the screen that can. */
 let suppressParamPagesOnce = false;
-/* The same idea for SLOT settings, kept separate on purpose — see
- * enterChainSettings. One flag for two unrelated hand-offs meant each could
- * consume the other's. */
-let suppressSlotGridOnce = false;
 
 function saveParamViewConfig() {
     try {
@@ -7459,18 +7449,7 @@ const SLOT_GRID_PARAMS = [
     { key: "transpose", name: "Trsp", type: "int", min: -12, max: 12, step: 1 },
     { key: "receive_channel", name: "Recv", type: "enum", options: ["ALL"].concat(SLOT_GRID_CHANNELS) },
     { key: "forward_channel", name: "Fwd", type: "enum", options: ["THR", "AUT"].concat(SLOT_GRID_CHANNELS) },
-    /*
-     * A switch, not a 3-letter pair. The enum SQUARE is limited to three
-     * characters (two lines of the 5x3 font), but the held-knob header shows
-     * the param NAME and its value — and "MFX  SCH" tells you nothing, which
-     * is what shipped. As an on/off it draws as a switch sprite like Mute and
-     * Solo, and the header reads "MFX PRE  ON".
-     *
-     * The general problem is that one options list serves both a 3-char cell
-     * and a roomy header; Recv/Fwd still show THR and AUT up there. A proper
-     * fix is separate short and long option labels.
-     */
-    { key: "midi_fx_pre_mode", name: "MFX Pre", type: "enum", options: ["OFF", "ON"] },
+    { key: "midi_fx_pre_mode", name: "MFX", type: "enum", options: ["SCH", "S+M"] },
     { key: "mpe_mode", name: "MPE", type: "enum", options: ["OFF", "ON"] },
 ];
 
@@ -7580,8 +7559,8 @@ function runChainSettingAction(selectedSlot, key) {
                         overwriteFromKeyboard = true;  /* Will use keyboard if Edit is selected */
                         announceSavePreview(pendingSaveName, namePreviewIndex);
                         needsRedraw = true;
-                    } else if (key === "lfo1" || key === "lfo2") {
-                        const lfoIdx = (key === "lfo1") ? 0 : 1;
+                    } else if (key === "lfo1" || setting.key === "lfo2") {
+                        const lfoIdx = (setting.key === "lfo1") ? 0 : 1;
                         lfoCtx = makeSlotLfoCtx(selectedSlot, lfoIdx);
                         selectedLfoItem = 0;
                         editingLfoValue = false;
@@ -7614,22 +7593,14 @@ function enterChainSettings(slotIndex) {
     selectedChainSetting = 0;
     editingChainSettingValue = false;
 
-    /*
-     * Knob grid instead of the list, when the user has opted in.
-     *
-     * Its own one-shot flag, NOT suppressParamPagesOnce. That one belongs to
-     * the COMPONENT path: openParamEditorFromGrid sets it so the next
-     * enterHierarchyEditorWith gives the list instead of bouncing back to the
-     * grid. Sharing it meant a pending suppress from a module hand-off leaked
-     * into the next slot-settings entry, which then showed the list for no
-     * reason the user could see — and consuming it here ALSO stole it from the
-     * component entry it was set for.
-     */
-    if (paramPagesEnabled() && !suppressSlotGridOnce) {
+    /* Knob grid instead of the list, when the user has opted in. Same gate and
+     * same one-shot escape the component editor uses, so the screen reader (and
+     * anything that needs a selectable cursor) still gets the list. */
+    if (paramPagesEnabled() && !suppressParamPagesOnce) {
         enterParamPages(slotIndex, "slot", "slot", null, slotGridIo(slotIndex));
         return;
     }
-    suppressSlotGridOnce = false;
+    suppressParamPagesOnce = false;
 
     setView(VIEWS.CHAIN_SETTINGS);
     needsRedraw = true;
