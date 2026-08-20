@@ -1268,20 +1268,26 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     if (strcmp(key, "synth_error") == 0 || strcmp(key, "load_error") == 0) {
         return v2_synth_get_error(inst, buf, buf_len);
     }
-    if (strcmp(key, "fx1_module") == 0) {
-        return snprintf(buf, buf_len, "%s", inst->current_fx_modules[0]);
-    }
-    if (strcmp(key, "fx2_module") == 0) {
-        return snprintf(buf, buf_len, "%s", inst->current_fx_modules[1]);
+    /*
+     * "fx<N>_module" / "midi_fx<N>_module" — what the editor asks to find out
+     * what occupies a position. INDEXED, not enumerated: only fx1 and fx2 were
+     * ever answered, so a third module loaded, ran and made sound while the
+     * editor could not see it. `fx_count` said 3, `fx3_module` said nothing, an
+     * unserved key reads back as "", and the reader drops a trailing empty.
+     * Found on hardware 2026-08-20.
+     */
+    {
+        int mi = chain_fx_index_from_suffixed(key, "midi_fx", MAX_MIDI_FX, "_module");
+        if (mi >= 0) {
+            return snprintf(buf, buf_len, "%s", inst->current_midi_fx_modules[mi]);
+        }
+        int fi = chain_fx_index_from_suffixed(key, "fx", MAX_AUDIO_FX, "_module");
+        if (fi >= 0) {
+            return snprintf(buf, buf_len, "%s", inst->current_fx_modules[fi]);
+        }
     }
     if (strcmp(key, "midi_fx_count") == 0) {
         return snprintf(buf, buf_len, "%d", inst->midi_fx_count);
-    }
-    if (strcmp(key, "midi_fx1_module") == 0) {
-        return snprintf(buf, buf_len, "%s", inst->current_midi_fx_modules[0]);
-    }
-    if (strcmp(key, "midi_fx2_module") == 0) {
-        return snprintf(buf, buf_len, "%s", inst->current_midi_fx_modules[1]);
     }
     /* Master preset queries */
     if (strcmp(key, "master_preset_count") == 0) {
