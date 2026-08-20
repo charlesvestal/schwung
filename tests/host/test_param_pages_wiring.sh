@@ -133,13 +133,82 @@ if (/target \+ ":" \+ param/.test(s)) {
  * what made the chain a fixed shape; a variable-length chain that still
  * consulted it would silently show only the first two FX, and every position
  * past them would be unreachable rather than visibly missing.
+ *
+ * The negative check below is the weak half — it only knows the exact text
+ * that was deleted, so a literal in single quotes or built by a hand-rolled
+ * loop walks straight past it. The load-bearing half is the re-derivation in
+ * the second node block, which runs the real function against the real model.
  */
 if (/const CHAIN_COMPONENTS = \[\s*\{ key: "midiFx"/.test(s)) {
   fail("CHAIN_COMPONENTS is still a literal - it must come from chain_model");
 }
-want(/chain_model\.mjs/, "shadow_ui.js does not import the chain model");
+want(/CHAIN_COMPONENTS = chainEditorComponents\(/,
+     "CHAIN_COMPONENTS is not built by chainEditorComponents - only a derived list grows with the chain");
+/* Importing the module is not enough: pulling in emptyChain alone would
+ * satisfy a bare path match while the list went back to being hand-written. */
+want(/\{[^}]*chainComponents[^}]*\}\s*\n?\s*from [^\n]*chain_model\.mjs/,
+     "shadow_ui.js does not import chainComponents from the chain model");
 
 console.log("PASS: shadow wiring — parses, view dispatched/ticked/fed, setting defaults to List, " +
             "hand-off cannot loop, screen reader keeps the list, device keys use the prefix, " +
             "LFO targets resolve to names");
+'
+
+# 2. The editor list, re-derived and compared entry by entry.
+#
+# Everything above is a regex over the source; this RUNS the thing. It lifts
+# chainEditorComponents out of shadow_ui.js and calls it with the real
+# chain_model, so a change to the model, to the derivation, or to the position
+# counts all land here rather than on the device.
+#
+# What it protects is the screen: the label under the boxes, the picker header
+# ("S1 > FX 2") and every announcement read the label and the ORDER off this
+# list, and neither is visible in a diff of the derivation itself. The five
+# entries below are byte-identical to the literal this replaced.
+#
+# When the chain genuinely grows, this test fails and the expectation is
+# updated deliberately — a chain that changes shape without anyone editing a
+# test is exactly what should not happen.
+node --input-type=module -e '
+import { readFileSync } from "node:fs";
+import { chainComponents } from "./src/shared/chain_model.mjs";
+const fail = (m) => { console.log("FAIL: " + m); process.exit(1); };
+const s = readFileSync("src/shadow/shadow_ui.js", "utf8");
+
+const at = s.indexOf("function chainEditorComponents(cfg) {");
+if (at < 0) fail("chainEditorComponents is gone - the editor list is no longer derived");
+const end = s.indexOf("\n}\n", at);
+if (end < 0) fail("could not find the end of chainEditorComponents");
+const src = s.slice(at, end + 2);
+
+const counts = /const CHAIN_MIDI_FX_POSITIONS = (\d+);[\s\S]{0,400}?const CHAIN_FX_POSITIONS = (\d+);/.exec(s);
+if (!counts) fail("the chain position counts are not plain constants any more");
+const midiFxCount = Number(counts[1]);
+const fxCount = Number(counts[2]);
+
+/* The function closes over exactly these two names, so they are its
+ * parameters here — no other part of shadow_ui.js is needed to run it. */
+const derive = new Function("chainComponents", "CHAIN_MIDI_FX_POSITIONS",
+                            src + "\nreturn chainEditorComponents;")(chainComponents, midiFxCount);
+const got = derive({
+  midiFx: new Array(midiFxCount).fill(null),
+  synth: null,
+  fx: new Array(fxCount).fill(null),
+});
+
+const want = [
+  { key: "midiFx", label: "MIDI FX", position: 0 },
+  { key: "synth", label: "Synth", position: 1 },
+  { key: "fx1", label: "FX 1", position: 2 },
+  { key: "fx2", label: "FX 2", position: 3 },
+  { key: "settings", label: "Settings", position: 4 },
+];
+if (JSON.stringify(got) !== JSON.stringify(want)) {
+  fail("the derived chain editor list changed - every label, order and index the\n" +
+       "      user sees comes from it.\n" +
+       "      got:  " + JSON.stringify(got) + "\n" +
+       "      want: " + JSON.stringify(want));
+}
+console.log("PASS: chain editor list — derived from chain_model, " + want.length +
+            " positions, labels and order unchanged");
 '
