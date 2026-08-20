@@ -27,8 +27,7 @@
  */
 
 import { ctx } from './shadow_ui_ctx.mjs';
-import { createController, DOUBLE_TAP_MS, TAP_TURN_TOLERANCE, TAP_MAX_DWELL_MS }
-    from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
+import { createController } from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
 import { decodeInput, applyInput } from '/data/UserData/schwung/shared/param_pages/page_input.mjs';
 import { PAGE_KNOBS, PAGE_MENU } from '/data/UserData/schwung/shared/param_pages/page_plan.mjs';
 import { LAYOUT_BAR, LAYOUT_DIAL } from '/data/UserData/schwung/shared/param_pages/render_page.mjs';
@@ -585,26 +584,25 @@ export function handleParamPagesMidi(data) {
     if (intent.type === 'knob') _knobTurnCount++;
 
     /*
-     * Touch trace, for when a gesture built on capacitive touch does not fire.
+     * Touch trace: every touch edge as the view received it, with its arrival
+     * time and the order.
      *
-     * Every touch event with its arrival time, so the ORDER is visible: a
-     * double-tap needs a release between the taps, and Move only sends a
-     * note-on on the untouched->touched edge. If the second tap lands before
-     * the pad has decayed enough to send a note-off, there is no second edge
-     * and no second note-on — the gesture cannot fire, and no amount of
-     * tuning the window changes that. This log is what tells the two apart.
+     * Kept after the reset gesture it was built to debug was dropped, because
+     * it is the JS-side half of a pair: `touch_trace_on` in the shim records
+     * the same edges in the SPI callback, and comparing the two is what proved
+     * this path faithful to within 7ms. Any future "the UI missed my input"
+     * question starts here.
      *
-     * Costs a native "is logging on?" check per touch event when the log is
-     * off, and touch events are a handful a second at most.
+     * Costs a native "is logging on?" check per touch event when off.
      */
     if (intent.type === 'touch' && isLoggingEnabled()) {
         const st = controller.state;
-        const prev = st.lastUpMs ? (st.lastUpMs[intent.slot] || 0) : 0;
+        const prev = st.lastTouchMs || 0;
         const gap = prev ? (Date.now() - prev) : -1;
+        st.lastTouchMs = Date.now();
         log('param_pages', `touch slot=${intent.slot} ${intent.down ? 'DOWN' : 'up  '}`
             + ` t=${Date.now()}`
-            + ` sinceLastUp=${gap < 0 ? 'n/a' : gap + 'ms'}`
-            + ` turnsSinceTap=${st.turnedSinceTap ? (st.turnedSinceTap[intent.slot] || 0) : 0}`
+            + ` sincePrev=${gap < 0 ? 'n/a' : gap + 'ms'}`
             + ` held=[${st.touchOrder.join(',')}]`);
     }
 
@@ -613,16 +611,6 @@ export function handleParamPagesMidi(data) {
     const todo = traced("js.grid.input",
         () => applyInput(controller, intent, { nowMs: Date.now(), reveal: false }));
 
-    /* What the controller decided about that tap, and why. */
-    if (intent.type === 'touch' && intent.down && isLoggingEnabled()) {
-        const t = controller.state.lastTap;
-        if (t) {
-            log('param_pages', `  tap slot=${t.slot} gap=${t.gapMs}ms prevDwell=${t.prevDwell}ms`
-                + ` turns=${t.turns} doubled=${t.doubled} reset=${t.reset}`
-                + ` (window=${DOUBLE_TAP_MS}ms maxDwell=${TAP_MAX_DWELL_MS}ms`
-                + ` tolerance=${TAP_TURN_TOLERANCE})`);
-        }
-    }
     if (!todo) return true;
 
     if (todo.action === 'exit') {

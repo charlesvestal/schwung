@@ -70,9 +70,7 @@ export const SLOT_GRID_PARAMS = [
      * Auto — but a slot's receive channel defaults to the slot's OWN number,
      * which this contract cannot know: it is synthesised once, not per slot.
      * "All" would be a guess, and a wrong guess here silently re-routes
-     * everything the slot is listening to. Declaring nothing means a
-     * double-tap does nothing, which is the right answer to a question with no
-     * answer.
+     * everything the slot is listening to, so it declares nothing.
      */
     { key: "receive_channel", name: "Recv", type: "enum",
       options: ["All"].concat(CHANNELS.map((c) => "Ch " + c)),

@@ -723,11 +723,12 @@ function drawWaveMark(ctx, x, y, on) {
  * inversion and the modulation mark are ported.
  */
 /*
- * `showValue` and `inverted` are separate on purpose. They agree for an
- * ordinary touch — the held cell shows its value in an inverted strip — but a
- * RESET PULSE drives them apart: it keeps showing the value while flipping the
- * inversion on and off, so the number stays readable and the cell still blinks.
- * A pulse that hid the value would be announcing a change you cannot see.
+ * `showValue` and `inverted` are separate arguments although every caller
+ * currently passes the same value for both: a held cell shows its value in an
+ * inverted strip. They came apart for a gesture that has since been removed,
+ * and are kept apart because "which text" and "which polarity" are genuinely
+ * two questions — collapsing them is what made the removed gesture hard to
+ * express in the first place.
  */
 function drawLabelCell(ctx, col, lblY, label, displayValue, showValue, inverted, modulated) {
     const cellX = col * CELL_W;
@@ -848,15 +849,7 @@ function drawKnobRow(ctx, o, row, rowY, lblY) {
         const display = fitDev(ctx,
             (cellText === null || cellText === undefined) ? displayValue(raw, meta) : String(cellText),
             CELL_W - 2);
-        /*
-         * The reset pulse blinks the highlight this cell already has, rather
-         * than drawing something new over it: the value stays legible for the
-         * whole pulse, which is the point of showing it at all.
-         */
-        const pulsing = slot === o.pulseSlot;
-        drawLabelCell(ctx, col, lblY, label, display,
-                      isTouched || pulsing,          /* show the VALUE throughout */
-                      pulsing ? !isTouched : isTouched,
+        drawLabelCell(ctx, col, lblY, label, display, isTouched, isTouched,
                       modulated ? !!modulated(key) : false);
     }
 }
@@ -933,8 +926,6 @@ export function drawFooter(ctx, hints) {
  * @param {Function} [o.modulated] (key) => boolean
  * @param {Array}  [o.viz]       resolved graphic groups (viz.mjs resolveViz)
  * @param {Array}  [o.footer]    [key, action] hint pairs, most important first
- * @param {number} [o.pulseSlot] slot whose highlight is inverted this frame
- *                 (the reset pulse), or -1
  */
 export function renderPageMovy(ctx, o) {
     const page = o.page;
