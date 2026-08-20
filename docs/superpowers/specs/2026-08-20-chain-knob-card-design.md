@@ -19,8 +19,15 @@ diagram. The card carries an inverted header band — parameter name left,
 formatted value right — and beneath it **the four cells of that knob's row**,
 drawn with the real `render_page_movy` widgets. The touched cell inverts and
 shows its value, exactly as it does on the knob grid. An enum gets the enum
-square, a modulated param gets the wave mark and the mod dot, a viz group still
-resolves across its span. Let go and the diagram is back.
+square and a viz group still resolves across its span. Let go and the diagram is
+back.
+
+The per-cell modulation marks are **omitted for the neighbours**, and that is a
+budget decision, not an oversight: `isHierarchyParamModulated` is one to three
+IPC reads per key, so marking all four cells would cost up to twelve reads —
+~34 ms of input latency — for a 4x2 tilde. The **touched** knob keeps its mark,
+because `showKnobOverlay` already pays for that read today to put a `~` on the
+title.
 
 Two heights:
 
@@ -99,10 +106,10 @@ this directory. That is what lets it render headlessly into
 
 The only part that needs the shadow UI:
 
-- **Touch state.** Capacitive knob touch arrives as note-on/note-off on the low
-  notes (`CLAUDE.md` says 0–9, `shadow_ui_param_pages.mjs` says the shim
-  forwards 0–7; confirm which at implementation). Track which knob is held; last
-  touch wins.
+- **Touch state.** Capacitive knob touch arrives as note-on/note-off on notes
+  0–7 (`MoveKnob1Touch`..`MoveKnob8Touch` in `shared/constants.mjs`), and
+  `shadow_ui.js` already handles both edges around line 17590/17636. Track which
+  knob is held; last touch wins.
 - **Row resolution.** `getKnobContext(i)` already resolves each knob's key and
   meta from `cachedKnobContexts`; the card needs the four in the touched knob's
   row.
@@ -164,8 +171,6 @@ from the behaviour:
 
 - **The `CELL_W` threading touches a shared renderer.** Mitigated by the
   inertness test, which is the reason it exists.
-- **Cap-sensor note range** is documented two ways (0–9 vs 0–7). Confirm on
-  hardware before relying on it; the no-touch fallback exists partly for this.
 - **An unserved param key reads back as `""`, not an error** — the handoff notes
   this has already caused two silent bugs. The value cache must distinguish
   "not yet read" from "read as empty".
