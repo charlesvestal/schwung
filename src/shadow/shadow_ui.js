@@ -49,6 +49,12 @@ import { decodeDelta } from '/data/UserData/schwung/shared/input_filter.mjs';
  * drawComponentSelect. Pure drawing helpers; no state travels with them. */
 import { drawHeader as drawMovyHeader, drawFooter as drawMovyFooter, RULE_Y as MOVY_RULE_Y }
     from '/data/UserData/schwung/shared/param_pages/render_page_movy.mjs';
+/* The chain editor's knob feedback card, and the two resolvers it needs to be
+ * handed a row: what each key IS (metaIndex) and which cells a viz group
+ * covers. Both are pure and both are already on the device for the knob grid. */
+import { drawKnobCard } from '/data/UserData/schwung/shared/param_pages/knob_card.mjs';
+import { buildMetaIndex } from '/data/UserData/schwung/shared/param_pages/param_meta.mjs';
+import { resolveViz } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
 import { renderPicker as renderMovyPicker } from '/data/UserData/schwung/shared/param_pages/render_page.mjs';
 import { MENU_LIST_X as MOVY_LIST_X, MENU_LIST_Y as MOVY_LIST_Y, MENU_LIST_W as MOVY_LIST_W }
     from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
@@ -817,6 +823,9 @@ function getSlotParamCached(slot, key, moduleId) {
 /* Helper to change view and announce it */
 function setView(newView, customLabel) {
     if (view === newView) return;  /* No change */
+    /* The card belongs to the chain editor and to one knob gesture; it must
+     * not survive a screen change. */
+    knobCardClose();
     view = newView;
     needsRedraw = true;
 
@@ -1098,6 +1107,137 @@ let cachedKnobContextsSlot = -1; // Slot when cache was built
 let cachedKnobContextsComp = -1; // Component when cache was built
 let cachedKnobContextsLevel = ""; // Hierarchy level when cache was built
 let cachedKnobContextsChildIndex = -1; // Child index when cache was built
+
+/*
+ * The chain editor's knob card (shared/param_pages/knob_card.mjs).
+ *
+ * Raised by TOUCH, not by turn: resting a finger tells you what the knob does
+ * before you move it, and it is the same signal the knob grid already follows.
+ * A turn with no touch raises it too and decays, because a cap sensor that
+ * misses must not be able to strand the feature.
+ */
+const KNOB_CARD_DECAY_MS = 700;
+const knobTouched = new Array(NUM_KNOBS).fill(false);
+let knobCardKnob = -1;       /* physical knob the card follows, or -1 */
+let knobCardExpiry = 0;      /* ms deadline; 0 means held, so no deadline */
+let knobCardKeys = null;     /* param key per physical knob, or null */
+let knobCardMeta = null;     /* metaIndex for the focused component */
+let knobCardValues = null;   /* raw values, keyed by param key */
+let knobCardViz = null;
+let knobCardModKey = null;   /* the ONE key known to be modulated (see below) */
+let knobCardName = "";
+let knobCardValue = "";
+
+function knobCardClose() {
+    if (knobCardKnob < 0) return;
+    knobCardKnob = -1;
+    knobCardExpiry = 0;
+    knobCardKeys = null;
+    knobCardMeta = null;
+    knobCardValues = null;
+    knobCardViz = null;
+    knobCardModKey = null;
+    needsRedraw = true;
+}
+
+function knobCardActive() {
+    if (knobCardKnob < 0) return false;
+    if (knobCardExpiry && Date.now() > knobCardExpiry) { knobCardClose(); return false; }
+    return true;
+}
+
+/*
+ * Everything the card needs, resolved ONCE on touch-down.
+ *
+ * The reads happen here, on an input event, and never on the draw path: an IPC
+ * round trip is ~2.8ms against a 1.68ms whole-page render, so four of them is a
+ * quarter of a frame budget. Four is also the whole bill — one per key in the
+ * touched knob ROW. The turned knob is updated by local arithmetic afterwards
+ * (showKnobFeedback), so the card costs nothing per frame while it is up.
+ *
+ * The neighbours therefore do not animate under modulation. That is the trade:
+ * animating them means four reads EVERY frame to move a pointer nobody is
+ * looking at.
+ */
+function knobCardOpen(knobIndex) {
+    knobCardKnob = knobIndex;
+    knobCardKeys = null;
+    knobCardMeta = null;
+    knobCardValues = null;
+    knobCardViz = null;
+    knobCardModKey = null;
+
+    const comps = slotChainComponents(selectedSlot);
+    const comp = selectedChainComponent >= 0 ? comps[selectedChainComponent] : null;
+    if (!comp || !isChainModuleKey(comp.key)) return;  /* short card */
+
+    const hierarchy = getComponentHierarchy(selectedSlot, comp.key);
+    const chainParams = getComponentChainParams(selectedSlot, comp.key);
+    if (!hierarchy || !chainParams || !chainParams.length) return;
+
+    const keys = new Array(NUM_KNOBS).fill(null);
+    for (let i = 0; i < NUM_KNOBS; i++) {
+        const kc = getKnobContext(i);
+        keys[i] = (kc && kc.key) ? kc.key : null;
+    }
+    if (!keys.some(Boolean)) return;
+
+    knobCardMeta = buildMetaIndex({ hierarchy, chainParams });
+    knobCardKeys = keys;
+    knobCardViz = resolveViz({ keys, metaIndex: knobCardMeta }).groups;
+
+    const prefix = getComponentParamPrefix(comp.key);
+    const base = (knobIndex >> 2) * 4;
+    const values = {};
+    for (let c = 0; c < 4; c++) {
+        const k = keys[base + c];
+        if (!k) continue;
+        const raw = getSlotParam(selectedSlot, `${prefix}:${k}`);
+        /* An unserved key reads back as "", NOT as an error — the shim answers
+         * error=4 with a zeroed buffer and js_shadow_get_param never looks at
+         * error. Left as "" it would reach formatParamValue, where Number("")
+         * is 0 and finite, and the cell would confidently read 0.00 for a
+         * parameter that was never answered. null is the renderer's "--". */
+        values[k] = (raw === null || raw === undefined || raw === "") ? null : raw;
+    }
+    knobCardValues = values;
+}
+
+/*
+ * The chain editor answers a knob with the CARD; every other view keeps the
+ * centred name/value box. Both announce, so the screen reader does not care
+ * which is up.
+ */
+function showKnobFeedback(knobIndex, name, value, raw) {
+    if (view !== VIEWS.CHAIN_EDIT) { showOverlay(name, value); return; }
+
+    /* A centred box left over from the screen we came in through would draw
+     * ON TOP of the card — drawOverlay runs after the view switch and nothing
+     * dismisses it on input. Only one of the two is ever allowed up. */
+    hideOverlay();
+
+    if (knobCardKnob !== knobIndex) knobCardOpen(knobIndex);
+    /* Held keeps it up with no deadline; a turn with no touch gets a decay. */
+    knobCardExpiry = knobTouched[knobIndex] ? 0 : Date.now() + KNOB_CARD_DECAY_MS;
+
+    /* The turned knob, updated by local arithmetic — the only thing that moves
+     * while the card is up, and the reason it costs no IPC per frame. Empty
+     * normalises to null for the same reason it does in knobCardOpen. */
+    if (knobCardValues && knobCardKeys && knobCardKeys[knobIndex] && raw !== undefined) {
+        knobCardValues[knobCardKeys[knobIndex]] = (raw === null || raw === "") ? null : raw;
+    }
+    /* Only the TOUCHED key's modulation is known, because that read is one
+     * showKnobOverlay already pays for. Marking the neighbours would cost up
+     * to three more reads each. */
+    knobCardModKey = (name && name.endsWith("~") && knobCardKeys)
+        ? knobCardKeys[knobIndex] : null;
+
+    const changed = (knobCardName !== name || knobCardValue !== value);
+    knobCardName = name;
+    knobCardValue = value;
+    if (changed) announceParameter(name, value);
+    needsRedraw = true;
+}
 
 /* Knob editor state - for creating/editing knob assignments */
 let knobEditorSlot = 0;          // Which slot we're editing knobs for
@@ -10283,10 +10423,10 @@ function showKnobOverlay(knobIndex, value) {
     if (ctx) {
         if (ctx.noModule) {
             /* Show "No Module Selected" when no module is loaded in slot */
-            showOverlay(ctx.title, "No Module Selected");
+            showKnobFeedback(knobIndex, ctx.title, "No Module Selected");
         } else if (ctx.noMapping) {
             /* Show "not mapped" for unmapped knob */
-            showOverlay(`Knob ${knobIndex + 1}`, "not mapped");
+            showKnobFeedback(knobIndex, `Knob ${knobIndex + 1}`, "not mapped");
         } else if (ctx.fullKey) {
             /* Mapped knob - show value */
             const title = isHierarchyParamModulated(ctx.slot, ctx.fullKey) ? `${ctx.title}~` : ctx.title;
@@ -10323,7 +10463,9 @@ function showKnobOverlay(knobIndex, value) {
                     displayVal = !isNaN(num) ? formatParamForOverlay(num, ctx.meta) : (currentVal || "-");
                 }
             }
-            showOverlay(title, displayVal);
+            /* `value` is the raw the caller turned to, if any — on a pure touch
+             * it is undefined and the card's own touch-down read supplies it. */
+            showKnobFeedback(knobIndex, title, displayVal, value);
         }
         needsRedraw = true;
         return true;
@@ -10345,7 +10487,7 @@ function adjustKnobAndShow(knobIndex, delta) {
         if (ctx.noModule) {
             /* No module loaded - show "No Module Selected" */
             debugLog(`adjustKnobAndShow: noModule, showing overlay`);
-            showOverlay(ctx.title, "No Module Selected");
+            showKnobFeedback(knobIndex, ctx.title, "No Module Selected");
             needsRedraw = true;
             return true;
         }
@@ -10358,7 +10500,7 @@ function adjustKnobAndShow(knobIndex, delta) {
             const overrideAccepts = mmRole && (mmRole.type === "zoom" || mmRole.type === "marker");
             if (!overrideAccepts) {
                 debugLog(`adjustKnobAndShow: noMapping or no fullKey, showing not mapped`);
-                showOverlay(`Knob ${knobIndex + 1}`, "not mapped");
+                showKnobFeedback(knobIndex, `Knob ${knobIndex + 1}`, "not mapped");
                 needsRedraw = true;
                 return true;
             }
@@ -10436,18 +10578,27 @@ function processPendingHierKnob() {
             if (ctx && ctx.fullKey) {
                 const cached = getKnobCachedValue(pendingHierKnobIndex, ctx);
                 if (cached !== null) {
+                    /* The knob index here is pendingHierKnobIndex, NOT a local
+                     * `knobIndex` — this branch runs at tick time for whatever
+                     * knob is still pending, and feeding the wrong one to the
+                     * card shows the wrong parameter. */
                     if (ctx.meta && (ctx.meta.type === "enum" || ctx.meta.type === "bool")) {
                         if (isTriggerEnumMeta(ctx.meta)) {
-                            showOverlay(ctx.title, getTriggerEnumOverlayValue(pendingHierKnobIndex));
+                            showKnobFeedback(pendingHierKnobIndex, ctx.title,
+                                             getTriggerEnumOverlayValue(pendingHierKnobIndex));
                         } else {
-                            showOverlay(ctx.title, formatMetaOptionValue(ctx.meta, cached));
+                            showKnobFeedback(pendingHierKnobIndex, ctx.title,
+                                             formatMetaOptionValue(ctx.meta, cached), cached);
                         }
                     } else if (ctx.meta && ctx.meta.type === "canvas") {
-                        showOverlay(ctx.title, formatCanvasDisplayValue(String(cached), ctx.meta));
+                        showKnobFeedback(pendingHierKnobIndex, ctx.title,
+                                         formatCanvasDisplayValue(String(cached), ctx.meta), cached);
                     } else if (ctx.meta && ctx.meta.type === "string") {
-                        showOverlay(ctx.title, String(cached || ""));
+                        showKnobFeedback(pendingHierKnobIndex, ctx.title,
+                                         String(cached || ""), cached);
                     } else {
-                        showOverlay(ctx.title, formatParamForOverlay(cached, ctx.meta));
+                        showKnobFeedback(pendingHierKnobIndex, ctx.title,
+                                         formatParamForOverlay(cached, ctx.meta), cached);
                     }
                     needsRedraw = true;
                 }
@@ -10502,7 +10653,8 @@ function processPendingHierKnob() {
                 hierEditorEditValue = formatted;
             }
             knobValueCache[knobIndex] = newVal;
-            showOverlay(m.meta.name || m.key, formatParamForOverlay(newVal, m.meta));
+            showKnobFeedback(knobIndex, m.meta.name || m.key,
+                             formatParamForOverlay(newVal, m.meta), newVal);
             needsRedraw = true;
             return;
         }
@@ -10537,9 +10689,9 @@ function processPendingHierKnob() {
             const shouldFire = updateTriggerEnumAccum(knobIndex, delta);
             if (shouldFire) {
                 setSlotParam(ctx.slot, ctx.fullKey, "trigger");
-                showOverlay(ctx.title, "Triggered");
+                showKnobFeedback(knobIndex, ctx.title, "Triggered");
             } else {
-                showOverlay(ctx.title, getTriggerEnumOverlayValue(knobIndex));
+                showKnobFeedback(knobIndex, ctx.title, getTriggerEnumOverlayValue(knobIndex));
             }
             return;
         }
@@ -10564,7 +10716,9 @@ function processPendingHierKnob() {
         if (newIndex === currentIndex) {
             /* No option crossed yet — only update the overlay so the user sees
              * something happening, but DON'T setSlotParam (no value change). */
-            showOverlay(ctx.title, formatMetaOptionValue(ctx.meta, ctx.meta.options[currentIndex]));
+            showKnobFeedback(knobIndex, ctx.title,
+                             formatMetaOptionValue(ctx.meta, ctx.meta.options[currentIndex]),
+                             ctx.meta.options[currentIndex]);
             return;
         }
         const newVal = ctx.meta.options[newIndex];
@@ -10577,17 +10731,18 @@ function processPendingHierKnob() {
             refreshHierarchyChainParams();
         }
         refreshHierarchyVisibility();
-        showOverlay(ctx.title, formatMetaOptionValue(ctx.meta, newVal));
+        showKnobFeedback(knobIndex, ctx.title, formatMetaOptionValue(ctx.meta, newVal), newVal);
         return;
     }
 
     if (ctx.meta && ctx.meta.type === "canvas") {
-        showOverlay(ctx.title, formatCanvasDisplayValue(String(currentVal), ctx.meta));
+        showKnobFeedback(knobIndex, ctx.title,
+                         formatCanvasDisplayValue(String(currentVal), ctx.meta), currentVal);
         return;
     }
 
     if (ctx.meta && ctx.meta.type === "string") {
-        showOverlay(ctx.title, String(currentVal || ""));
+        showKnobFeedback(knobIndex, ctx.title, String(currentVal || ""), currentVal);
         return;
     }
 
@@ -10632,7 +10787,7 @@ function processPendingHierKnob() {
     /* Show overlay directly — avoid showKnobOverlay which calls
      * isHierarchyParamModulated (1-3 blocking IPC reads). */
     const displayVal = formatParamForOverlay(newVal, ctx.meta);
-    showOverlay(ctx.title, displayVal);
+    showKnobFeedback(knobIndex, ctx.title, displayVal, newVal);
     needsRedraw = true;
 }
 
@@ -14310,14 +14465,16 @@ function refreshPendingKnobOverlay() {
         knobMappings[pendingKnobIndex].value = newValue || "-";
     }
 
-    /* Show overlay using shared overlay system */
+    /* Show the feedback (card in the chain editor, centred box elsewhere).
+     * The knob index is pendingKnobIndex, which this function CLEARS below —
+     * read it here, while it is still the knob this refresh is about. */
     const mapping = knobMappings[pendingKnobIndex];
     if (mapping && mapping.name) {
         const displayName = `S${targetSlot + 1}: ${mapping.name}`;
-        showOverlay(displayName, mapping.value);
+        showKnobFeedback(pendingKnobIndex, displayName, mapping.value);
     } else {
         /* No mapping for this knob */
-        showOverlay(`Knob ${pendingKnobIndex + 1}`, "not mapped");
+        showKnobFeedback(pendingKnobIndex, `Knob ${pendingKnobIndex + 1}`, "not mapped");
     }
 
     pendingKnobRefresh = false;
@@ -14348,7 +14505,19 @@ function drawChainEdit() {
      * move: header at the top, hints at the bottom, and the boxes refitted
      * between them.
      */
-    const movy = { fillRect: fill_rect, print, textWidth: text_width, setPixel: set_pixel };
+    /*
+     * The same primitive set shadow_ui_param_pages.mjs hands the knob grid: the
+     * knob card draws real widgets, and the arc knob takes a C path when
+     * draw_arc is there and a slow JS fallback when it is not. Each is probed
+     * because the harness and the older host builds do not have all of them.
+     */
+    const movy = {
+        fillRect: fill_rect, print, textWidth: text_width, setPixel: set_pixel,
+        line: typeof draw_line === "function" ? draw_line : undefined,
+        fillCircle: typeof fill_circle === "function" ? fill_circle : undefined,
+        drawCircle: typeof draw_circle === "function" ? draw_circle : undefined,
+        drawArc: typeof draw_arc === "function" ? draw_arc : undefined,
+    };
 
     /* The chain config, reloaded from the DSP only when something has made it
      * stale — see chainConfigFresh. This was an unconditional reload per frame,
@@ -14499,6 +14668,30 @@ function drawChainEdit() {
     drawMovyFooter(movy, isShiftHeld()
         ? [["JOG", "MOVE"], ["BACK", "EXIT"]]
         : [["JOG", "SEL"], ["CLK", "OPEN"], ["BACK", "EXIT"]]);
+
+    /*
+     * The card last, over everything — it is a modal. Every value it draws was
+     * read on touch-down, so this costs no IPC. See knobCardOpen.
+     *
+     * The typeof guard is not defensiveness about our own function: this
+     * function is LIFTED out of the file by tests/host/test_chain_edit_read_budget.sh
+     * with `new Function` and an explicit dependency list, where any free
+     * identifier is a ReferenceError. The card is not part of what that test
+     * measures, so it stays out of its way.
+     */
+    if (typeof knobCardActive === "function" && knobCardActive()) {
+        drawKnobCard(movy, {
+            name: knobCardName,
+            value: knobCardValue,
+            row: knobCardKnob >> 2,
+            touched: knobCardKnob,
+            page: knobCardKeys ? { kind: "knobs", keys: knobCardKeys } : null,
+            metaIndex: knobCardMeta,
+            values: knobCardValues,
+            viz: knobCardViz,
+            modulated: knobCardModKey ? ((k) => k === knobCardModKey) : null,
+        });
+    }
 }
 
 /* Draw component module selection list */
@@ -17482,6 +17675,10 @@ globalThis.onMidiMessageInternal = function(data) {
         if (coRunUiActive() && (status & 0xF0) === MidiNoteOn &&
                 d1 >= MoveKnob1Touch && d1 <= MoveKnob8Touch && coRunWants(CORUN_GRP_TOUCH)) {
             const _tk = d1 - MoveKnob1Touch;
+            /* Same touch bookkeeping as the non-overtake handler below: inside
+             * runCoRunChainEdit the view IS the chain editor, so these edges
+             * raise and drop the knob card and it must not be left held. */
+            knobTouched[_tk] = (d2 > 0);
             if (d2 > 0) {
                 runCoRunChainEdit(function() {
                     const mmRole = getMultiMarkerKnobRole(_tk);
@@ -17513,6 +17710,9 @@ globalThis.onMidiMessageInternal = function(data) {
                         refreshPendingKnobOverlay();
                     }
                 });
+                /* After the drain, for the reason spelled out on the
+                 * non-overtake release path: the drain shows feedback too. */
+                if (knobCardKnob === _tk) knobCardClose();
             }
             needsRedraw = true;
         }
@@ -17593,6 +17793,10 @@ globalThis.onMidiMessageInternal = function(data) {
     if ((status & 0xF0) === MidiNoteOn && d2 > 0) {
         if (d1 >= MoveKnob1Touch && d1 <= MoveKnob8Touch) {
             const knobIndex = d1 - MoveKnob1Touch;
+            /* Recorded BEFORE any of the branches below, all of which can raise
+             * the knob card: a card raised while the finger is down has no
+             * decay deadline, and that distinction is read from here. */
+            knobTouched[knobIndex] = true;
 
             /* Multi-marker view overrides the level's knob row:
              *   marker knobs (1..N) → switch active marker + show its value
@@ -17636,6 +17840,7 @@ globalThis.onMidiMessageInternal = function(data) {
     if ((status & 0xF0) === MidiNoteOn && d2 === 0) {
         if (d1 >= MoveKnob1Touch && d1 <= MoveKnob8Touch) {
             const knobIndex = d1 - MoveKnob1Touch;
+            knobTouched[knobIndex] = false;
             /* Process hierarchy knob delta */
             if (pendingHierKnobIndex === knobIndex) {
                 processPendingHierKnob();
@@ -17646,6 +17851,17 @@ globalThis.onMidiMessageInternal = function(data) {
             if (pendingKnobIndex === knobIndex && pendingKnobDelta !== 0) {
                 refreshPendingKnobOverlay();
             }
+            /* Let go and the diagram is back.
+             *
+             * LAST, after the pending flush, because that flush shows feedback
+             * too: closing first only had the card reopen itself — with four
+             * fresh IPC reads — on the way out of the gesture. Unconditional on
+             * the knob matching, for the same reason: the flush has already
+             * stamped a decay deadline on it (the finger is gone by then), so a
+             * "only if it is held" test would leave the card up for another
+             * 700ms after release. A card raised by a TURN never sees this
+             * branch — no touch, so no note-off. */
+            if (knobCardKnob === knobIndex) knobCardClose();
             return;
         }
     }
