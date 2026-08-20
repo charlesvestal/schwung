@@ -45,6 +45,13 @@ import {
 } from '/data/UserData/schwung/shared/chain_ui_views.mjs';
 
 import { decodeDelta } from '/data/UserData/schwung/shared/input_filter.mjs';
+/* The knob-grid chrome, so screens reached FROM it look like it — see
+ * drawComponentSelect. Pure drawing helpers; no state travels with them. */
+import { drawHeader as drawMovyHeader, drawFooter as drawMovyFooter, RULE_Y as MOVY_RULE_Y }
+    from '/data/UserData/schwung/shared/param_pages/render_page_movy.mjs';
+import { renderPicker as renderMovyPicker } from '/data/UserData/schwung/shared/param_pages/render_page.mjs';
+import { MENU_LIST_X as MOVY_LIST_X, MENU_LIST_Y as MOVY_LIST_Y, MENU_LIST_W as MOVY_LIST_W }
+    from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
 import { describeLfoTarget } from '/data/UserData/schwung/shared/lfo_target_label.mjs';
 import { runDrawBench } from '/data/UserData/schwung/shared/draw_bench.mjs';
 import { installParamTally, paramTallyTick, paramTallyArmed } from '/data/UserData/schwung/shared/param_tally.mjs';
@@ -13686,30 +13693,49 @@ function drawChainEdit() {
 }
 
 /* Draw component module selection list */
+/*
+ * The module picker, in the knob-grid chrome.
+ *
+ * You reach this from a component and you go straight back to it, so it is
+ * part of that flow and should look like it: same header band and face, same
+ * list rect, same footer. It used to wear the older list chrome — a different
+ * header font, no footer at all — which made choosing a module feel like
+ * leaving the editor rather than a step inside it.
+ *
+ * No bank bar: there is no page set here, and drawing one would claim a
+ * position among pages that do not exist.
+ */
 function drawComponentSelect() {
     clear_screen();
     const comp = CHAIN_COMPONENTS[selectedChainComponent];
-    drawHeader(`Select ${comp ? comp.label : "Module"}`);
+    const ctx = { fillRect: fill_rect, print, textWidth: text_width };
+
+    drawMovyHeader(ctx, `S${selectedSlot + 1} > ${comp ? comp.label : "Module"}`, "SELECT", false);
 
     if (availableModules.length === 0) {
-        print(LIST_LABEL_X, LIST_TOP_Y, "No modules available", 1);
+        print(MOVY_LIST_X, MOVY_LIST_Y + 8, "No modules available", 1);
+        drawMovyFooter(ctx, [["BACK", "EXIT"]]);
         return;
     }
 
-    drawMenuList({
-        items: availableModules,
-        selectedIndex: selectedModuleIndex,
-        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
-        lineHeight: 9,  /* Smaller to fit 4 items */
-        getLabel: (item) => item.name || item.id || "Unknown",
-        getValue: (item) => {
-            const cfg = chainConfigs[selectedSlot];
-            const compKey = CHAIN_COMPONENTS[selectedChainComponent]?.key;
-            const current = cfg && cfg[compKey];
-            const currentId = current ? current.module : null;
-            return currentId === item.id ? "*" : "";
-        }
+    const cfg = chainConfigs[selectedSlot];
+    const compKey = CHAIN_COMPONENTS[selectedChainComponent]
+        ? CHAIN_COMPONENTS[selectedChainComponent].key : null;
+    const current = cfg && compKey ? cfg[compKey] : null;
+    const currentId = current ? current.module : null;
+
+    renderMovyPicker(ctx, {
+        rect: { x: MOVY_LIST_X, y: MOVY_LIST_Y, w: MOVY_LIST_W, h: MOVY_RULE_Y - MOVY_LIST_Y },
+        entries: availableModules.map((item) => ({
+            name: item.name || item.id || "Unknown",
+            /* The one already loaded, marked where a menu page puts its value. */
+            value: (currentId && currentId === item.id) ? "*" : "",
+        })),
+        index: selectedModuleIndex,
+        header: false,
     });
+
+    drawMovyFooter(ctx, [["JOG", "SEL"], ["CLK", "LOAD"], ["BACK", "EXIT"]]);
 }
 
 /* ===== Store Picker Drawing Functions ===== */

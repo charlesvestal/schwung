@@ -53,7 +53,10 @@ import { step, stepLevel, reanchor, firstGrid, jumpIndex, groupIndex } from "./p
  * x=10 and its right-aligned values end at x=118, so nothing collides and
  * nothing touches the screen edge.
  */
-const MENU_LIST_X = 8, MENU_LIST_Y = 10, MENU_LIST_W = 112;
+/* Exported because other screens in the page chrome — the module picker, for
+ * one — must sit in exactly this rect or the two look subtly unlike each
+ * other. One definition, not a matching pair of magic numbers. */
+export const MENU_LIST_X = 8, MENU_LIST_Y = 10, MENU_LIST_W = 112;
 /*
  * The frame lives in the list margin, one pixel clear of the dividers.
  *
