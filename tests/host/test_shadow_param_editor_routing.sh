@@ -373,6 +373,16 @@ function gotoSlotFor(name) {
     /* The io must be reaching the real store, not a component. */
     if (V.paramPagesComponent() !== "slot") fail("the grid is not pointed at the slot");
 
+    /* A slot has no module to abbreviate, so the header read "S1 > ---". */
+    const titles = [];
+    const realPrint = globalThis.print;
+    globalThis.print = (x, y, t) => { if (y < 8) titles.push(String(t)); return 0; };
+    V.drawParamPages();
+    globalThis.print = realPrint;
+    if (titles.some((t) => /---/.test(t))) {
+      fail("the slot grid header shows a missing module abbreviation: " + JSON.stringify(titles));
+    }
+
     /* Walk to the actions menu and activate an entry through the REAL input
      * path — the menu is inert until entered, so this is two clicks. */
     let guard = 0, page = V.currentParamPage();

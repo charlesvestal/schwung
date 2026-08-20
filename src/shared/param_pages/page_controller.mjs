@@ -367,6 +367,7 @@ export function createController(io = {}) {
         for (const key in s.pendingWrite) {
             if (t - (s.lastWriteMs[key] || 0) < SETPARAM_THROTTLE_MS) continue;
             setParam(fullKey(key), s.pendingWrite[key]);
+                replanIfCondition(key);
             s.lastWriteMs[key] = t;
             delete s.pendingWrite[key];
         }
@@ -377,6 +378,7 @@ export function createController(io = {}) {
     function flushDueWritesUnconditionally() {
         for (const key in s.pendingWrite) {
             setParam(fullKey(key), s.pendingWrite[key]);
+                replanIfCondition(key);
         }
     }
 
@@ -450,21 +452,7 @@ export function createController(io = {}) {
          * params it hides or reveals are not otherwise reachable. */
         const changed = s.values[key] !== raw;
         s.values[key] = raw;
-        if (changed && s.conditionKeys.has(key)) {
-            const oldPages = s.pages, oldIndex = s.pageIndex;
-            const planned = planPages({
-                hierarchy: s.hierarchy, chainParams: s.chainParams,
-                mode: s.lastLoadOpts && s.lastLoadOpts.mode,
-                visible: s.lastLoadOpts && s.lastLoadOpts.visible,
-            });
-            if (planned.pages.length !== oldPages.length ||
-                planned.pages.some((p, i) => (p.keys || []).join() !== ((oldPages[i] || {}).keys || []).join())) {
-                s.pages = planned.pages;
-                s.conditionKeys = planned.conditionKeys || new Set();
-                s.pageIndex = reanchor(oldPages, oldIndex, s.pages);
-                s.cursor = 0;
-            }
-        }
+        if (changed) replanIfCondition(key);
         return key;
     }
 
@@ -712,6 +700,7 @@ export function createController(io = {}) {
             s.lastWriteMs[key] = t;
             delete s.pendingWrite[key];
             setParam(fullKey(key), wire);
+        replanIfCondition(key);
         } else {
             s.pendingWrite[key] = wire;
         }
@@ -723,6 +712,46 @@ export function createController(io = {}) {
             announce(announceTurn(meta, wire));
         }
         return wire;
+    }
+
+    /*
+     * A key that gates visibility has changed — re-plan, because the params it
+     * hides or reveals are not otherwise reachable.
+     *
+     * Called from the READ cursor and from every WRITE. Read-only was not
+     * enough: turning the gating knob updates s.values immediately, so when the
+     * cursor next reads that key nothing has "changed" and the re-plan never
+     * fired. Switching an LFO to Sync left the Hz cell on screen — the value had
+     * moved and the page had not.
+     */
+    function replanIfCondition(key) {
+        if (!s.conditionKeys.has(key)) return;
+        const oldPages = s.pages, oldIndex = s.pageIndex;
+        const planned = planPages({
+            hierarchy: s.hierarchy, chainParams: s.chainParams,
+            mode: s.lastLoadOpts && s.lastLoadOpts.mode,
+            visible: s.lastLoadOpts && s.lastLoadOpts.visible,
+        });
+        if (planned.pages.length !== oldPages.length ||
+            planned.pages.some((p, i) => (p.keys || []).join() !== ((oldPages[i] || {}).keys || []).join())) {
+            s.pages = planned.pages;
+            s.conditionKeys = planned.conditionKeys || new Set();
+            s.pageIndex = reanchor(oldPages, oldIndex, s.pages);
+            s.cursor = 0;
+        }
+    }
+
+    /**
+     * Forget every held knob.
+     *
+     * Called when the grid hands off to another screen: the note-off for the
+     * knob you were holding goes to THAT screen, never back to the grid, so
+     * without this the cell stays highlighted for the rest of the session.
+     * Holding Target and clicking it is exactly that sequence.
+     */
+    function clearTouch() {
+        s.touchOrder.length = 0;
+        s.touched = -1;
     }
 
     /*
@@ -756,6 +785,7 @@ export function createController(io = {}) {
             const key = keyAt(slot);
             if (key && s.pendingWrite[key] !== undefined) {
                 setParam(fullKey(key), s.pendingWrite[key]);
+                replanIfCondition(key);
                 s.lastWriteMs[key] = now();
                 delete s.pendingWrite[key];
             }
@@ -821,6 +851,7 @@ export function createController(io = {}) {
         s.settleUntil[key] = s.tickCount + SETTLE_TICKS;
         delete s.knobStates[key];       /* next turn starts from the new value */
         setParam(fullKey(key), wire);
+        replanIfCondition(key);
         announce(`${meta.label || key}, default, ${announceTurn(meta, wire)}`);
         return true;
     }
@@ -1054,7 +1085,7 @@ export function createController(io = {}) {
         onJog, goToPage, onKnobTurn, onKnobTouch, onClick, takePending,
         openPicker, closePicker, pickerSelect, showHint, dismissHint, resetToDefault,
         menuEntry, menuIndex: () => menuIndex(page()),
-        menuEntered, enterMenu, exitMenu,
+        menuEntered, enterMenu, exitMenu, clearTouch,
         get pickerOpen() { return s.pickerOpen; },
         get pickerEntries() { return s.pickerEntries; },
         get pickerIndex() { return s.pickerIndex; },

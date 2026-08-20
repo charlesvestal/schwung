@@ -188,7 +188,7 @@ import {
 import {
     paramPagesEnabled, enterParamPages, exitParamPages, paramPagesActive,
     tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage,
-    paramPagesComponent, paramPagesSlot
+    paramPagesComponent, paramPagesSlot, clearParamPagesTouch
 } from './shadow_ui_param_pages.mjs';
 import { createSlotGridIo } from './shadow_ui_slot_grid.mjs';
 import {
@@ -1127,6 +1127,10 @@ function openParamEditorFromGrid(slotIndex, fullKey, meta) {
             /* Mark the hand-off BEFORE opening, so every exit from the picker
              * knows where it came from. The grid controller stays alive. */
             lfoTargetFromGrid = true;
+            /* The note-off for the knob being held will go to the PICKER, not
+             * back here, so drop the touch now or the cell stays highlighted
+             * forever once we return. */
+            clearParamPagesTouch();
             enterLfoTargetPicker();
             needsRedraw = true;
         }
