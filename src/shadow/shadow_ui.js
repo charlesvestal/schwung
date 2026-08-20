@@ -8945,6 +8945,23 @@ function loadMasterFxChainConfig() {
     }
 }
 
+/* Read one of the shim's own master-slot facts ("name" = module id, "module" =
+ * DSP path).
+ *
+ * Distinct from getMasterFxSlotModule, which collapses a failed read into "".
+ * The saver has to tell "this slot is empty" from "the shim did not answer",
+ * because acting on the second as if it were the first erases a loaded slot.
+ * Returns null when there is no answer. */
+function masterFxShimValue(slotIndex, field) {
+    if (typeof shadow_get_param !== "function") return null;
+    try {
+        const v = shadow_get_param(0, `master_fx:fx${slotIndex + 1}:${field}`);
+        return (v === null || v === undefined) ? null : v;
+    } catch (e) {
+        return null;
+    }
+}
+
 /* Get a parameter from a master FX slot (0..MASTER_FX_SLOTS-1).
  * Index-taking wrapper over the shared chain-target accessor. The "" rather
  * than null is this caller's convention and is preserved here. */
@@ -9144,6 +9161,27 @@ function saveMasterFxChainConfig() {
         for (let i = 1; i <= MASTER_FX_SLOTS; i++) {
             const key = `fx${i}`;
             const slotIdx = i - 1;
+            /* The SHIM decides what is loaded, not this mirror.
+             *
+             * masterFxConfig only learns about a slot when something in this
+             * file puts it there, so anything that loads a master module by
+             * writing `master_fx:fxN:module` to the shim directly — an overtake
+             * tool, most visibly Movy — was invisible here. The mirror still
+             * read empty, the empty-slot branch below wrote "{}" over a slot
+             * the shim genuinely had loaded, and the whole master chain was
+             * gone on the next boot. It drifted the other way too: a slot
+             * cleared through the shim was written back from the stale mirror.
+             *
+             * A null answer means the read failed (timeout), which is NOT the
+             * same as an empty slot — adopting it would erase a good slot on a
+             * busy device, the failure the snapshot guard below exists to
+             * prevent. Only a real answer is adopted. */
+            const shimId = masterFxShimValue(slotIdx, "name");
+            if (shimId !== null && shimId !== (masterFxConfig[key]?.module || "")) {
+                debugLog(`MFX save: ${key} adopting shim state "${shimId}" ` +
+                         `(mirror had "${masterFxConfig[key]?.module || ""}")`);
+                masterFxConfig[key].module = shimId;
+            }
             const moduleId = masterFxConfig[key]?.module || "";
             const stateFilePath = activeSlotStateDir + "/master_fx_" + slotIdx + ".json";
 
@@ -9157,8 +9195,13 @@ function saveMasterFxChainConfig() {
                 continue;
             }
 
+            /* Prefer the path the shim actually dlopen'd. MASTER_FX_OPTIONS is
+             * scanned at startup, so a module installed since then is missing
+             * from it and resolved to "" — a state file that looks saved and
+             * restores nothing, because the boot loader needs the path. Falls
+             * back to the scan when the shim does not answer. */
             const opt = MASTER_FX_OPTIONS.find(o => o.id === moduleId);
-            const dspPath = opt?.dspPath || "";
+            const dspPath = masterFxShimValue(slotIdx, "module") || opt?.dspPath || "";
             const slotConfig = {
                 id: moduleId,
                 path: dspPath
