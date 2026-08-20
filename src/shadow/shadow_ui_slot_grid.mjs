@@ -168,6 +168,7 @@ export function lfoParams(lfoIndex) {
          * Bipolar is kept — a negative depth INVERTS the modulation, which is a
          * real feature, so the range reads -100%..+100% rather than 0..100%. */
         { key: `lfo${lfoIndex}:depth`, name: "Depth", type: "float", min: -1, max: 1, step: 0.01, unit: "%",
+          default: 1,
           viz: { group: g, role: "depth" } },
         { key: `lfo${lfoIndex}:phase_offset`, name: "Phase", type: "float", min: 0, max: 1, step: 0.0417, unit: "%",
           viz: { group: g, role: "phase" } },
