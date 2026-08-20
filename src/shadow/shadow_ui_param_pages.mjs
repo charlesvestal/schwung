@@ -497,6 +497,10 @@ export function drawParamPages() {
      * grid's 7.1 reads per tick, measured on device) to render a two-letter
      * abbreviation that cannot change without going back through
      * openParamPages, which clears the cache. */
+    /* Slot settings is a synthesised contract, not a module — there is no
+     * "slot_module" to abbreviate, so the lookup returned nothing and the
+     * header read "S1 > ---". It has a name of its own. */
+    if (currentComponent === 'slot') _abbrevCache = 'Settings';
     if (_abbrevCache === null) {
         _abbrevCache = ctx.getModuleAbbrev
             ? ctx.getModuleAbbrev(ctx.getSlotParam(currentSlot, `${currentComponent}_module`) || '')
@@ -604,6 +608,18 @@ export function announceParamPageContents() {
 /** Layout preference, for the settings menu. */
 export function setParamPagesLayout(layout) {
     if (controller) controller.setLayout(layout === 'bar' ? LAYOUT_BAR : LAYOUT_DIAL);
+}
+
+/**
+ * Forget any held knob.
+ *
+ * The grid keeps its controller alive across a hand-off (that is how the page
+ * and cell survive coming back), but the note-off for the knob you were holding
+ * goes to whatever screen took over and never reaches the grid — so the cell
+ * stayed highlighted for good. Holding Target and clicking it is exactly that.
+ */
+export function clearParamPagesTouch() {
+    if (controller && typeof controller.clearTouch === 'function') controller.clearTouch();
 }
 
 /** The section picker, for anything that wants to drive it from outside. */
