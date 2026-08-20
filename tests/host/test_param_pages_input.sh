@@ -169,12 +169,12 @@ Promise.all([
     feed(noteOff(0), {});
 
     /*
-     * Mute + touch must NOT reset.
+     * No modifier + touch resets anything.
      *
      * It used to, and the gesture could never be advertised: CC 88 is
      * forwarded to Move unconditionally, so holding Mute to reach it also
-     * mutes the selected track. Reset lives on the double-tap alone now, and
-     * Mute stays a pure modifier here.
+     * mutes the selected track. There is no reset-to-default gesture on this
+     * page at all now, and Mute stays a pure modifier here.
      */
     for (let i = 0; i < 10; i++) feed(cc(71, 1), {});
     const beforeMute = Number(ctl.state.values[key]);

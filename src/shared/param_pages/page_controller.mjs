@@ -165,87 +165,6 @@ export const MOD_FAST_READS_PER_TICK = 1;
  */
 export const TURN_CLAIM_MS = 1200;
 
-/**
- * Lift-to-re-touch time that still makes two taps a DOUBLE tap.
- *
- * Measured from the previous RELEASE, which is also how Android does it
- * (GestureDetector.isConsideredDoubleTap compares secondDown to firstUp, with
- * a 300ms DOUBLE_TAP_TIMEOUT).
- *
- * 350, from the hardware trace rather than from taste. Recording touch edges
- * in the SPI callback itself shows that when a double-tap DOES produce two
- * contacts, the air gap between them is 9-183ms — nothing like the hundreds of
- * milliseconds the JS-side numbers suggested. Those larger figures were the
- * gaps BETWEEN separate attempts, and a window wide enough to admit them
- * chained across gestures: the first tap of one double-tap paired with the
- * last tap of the previous one. Invisible, because the second reset lands on a
- * value already at its default, but wrong.
- *
- * Widening this is almost certainly the wrong instinct. A tap that produces no
- * second contact at all is not a timing problem and no window can catch it.
- *
-  * Two taps on the same knob inside this window reset it to its declared
- * default. 744 params across 39 modules declare one, and there is otherwise no
- * way back to it short of reloading the preset.
- *
- * Double-tap rather than a modifier because the modifier was never advertisable:
- * the reset lives on Mute+touch, and CC 88 is forwarded to Move unconditionally,
- * so holding Mute to reach it also mutes the selected track. A gesture you have
- * to warn people about is not a gesture.
- *
- * The obvious objection to a double-tap — lifting and re-placing a finger
- * mid-adjustment is a normal thing to do, and would read as a reset — is what
- * `turnedSinceTap` answers: a tap that had a TURN after it is an adjustment,
- * not the first half of a double-tap, whatever its timing. So the gesture is
- * "tap, tap" and never "tap, turn, tap".
- */
-export const DOUBLE_TAP_MS = 350;
-
-/**
- * The longest contact that still counts as a TAP rather than a hold.
- *
- * This is what lets the window be generous without the gesture firing by
- * accident: two BRIEF contacts on one knob with no turn between them is a
- * deliberate thing to do, while touching a knob to read its value and touching
- * it again is a rest, and a rest dwells.
- *
- * 650, from the same capture the window comes from. A real tap measured
- * 400-454ms of reported contact — the pad holds a finger long after it has
- * gone — and the first threshold tried, 450, sat inside that spread and was
- * already rejecting good taps. Holds in the same capture ran 763-1126ms, so
- * the two populations separate cleanly either side of ~650.
- */
-export const TAP_MAX_DWELL_MS = 650;
-
-/**
- * The reset pulse: the value's highlight blinks, twice, and stops.
- *
- * A reset is the one edit the hand did not perform, so it has to announce
- * itself visually — but a white block was the wrong way to do it, because the
- * thing worth showing is the VALUE and a block hides it. Inverting the
- * highlight it already has keeps the number on screen the whole time and still
- * reads as a beat: dink dink, reset.
- *
- * Two blinks, not a fade and not a long one — this is punctuation, not a
- * status. The grid redraws continuously, so nothing has to schedule it: the
- * phase is a function of the clock and it stops on its own.
- */
-export const RESET_PULSE_MS = 360;
-export const RESET_PULSE_BLINK_MS = 90;
-
-
-
-/**
- * Detents that turn a tap into an ADJUSTMENT rather than half a double-tap.
- *
- * The guard cannot be "any movement at all": these are physical detented
- * encoders and tapping a small one nudges it, so a single stray detent between
- * two taps was cancelling the gesture. Two is still far below a deliberate
- * turn — you cannot adjust anything by one detent and mean it — and it makes
- * the gesture survive a clumsy tap.
- */
-export const TAP_TURN_TOLERANCE = 2;
-
 /** How many times a page will re-read the contract waiting for late metadata. */
 export const META_RETRY_LIMIT = 8;
 /** Ticks between those attempts (~1 s at the shadow UI's 344 Hz tick).
@@ -366,30 +285,9 @@ export function createController(io = {}) {
         menuCursor: Object.create(null),
         /* Every knob currently held, oldest first. See onKnobTouch. */
         touchOrder: [],
-        /* The last touch-down and why it did or did not count as a double-tap.
-         * Diagnostic only — see onKnobTouch. */
-        lastTap: null,
-        /* slot -> a reset happened during the contact currently in progress.
-         * Makes the readout survive the lift — see onKnobTouch. */
-        resetOnTouch: Object.create(null),
-        /* { slot, startMs } while a reset pulse is running — see pulseSlot. */
-        pulse: null,
         /* ms at which a TURN claimed the header with nothing held, or 0.
          * Only such a claim expires — see TURN_CLAIM_MS. */
         turnClaimMs: 0,
-        /* slot -> ms of the last RELEASE, and whether that knob has been TURNED
-         * since the last press. Together they are the double-tap — see
-         * DOUBLE_TAP_MS. */
-        lastUpMs: Object.create(null),
-        turnedSinceTap: Object.create(null),
-        /* key -> the first value we ever read for it on this page set. What a
-         * param that declares no default resets to — see resetToDefault. */
-        loadedValues: Object.create(null),
-        /* slot -> ms the previous contact lasted, and when it began. A long
-         * contact is a hold and cannot be half a double-tap — see
-         * TAP_MAX_DWELL_MS. */
-        lastDwellMs: Object.create(null),
-        downAtMs: Object.create(null),
         /* Name of the menu page currently ENTERED, or null. */
         menuEntered: null,
     };
@@ -439,7 +337,6 @@ export function createController(io = {}) {
         s.metaRetries = 0;
         s.metaSettled = false;
         s.knobStates = Object.create(null);
-        s.loadedValues = Object.create(null);
         s.lastWriteMs = Object.create(null);
         s.pendingWrite = Object.create(null);
         /* A rebuild after a module finishes loading shifts every index, so land
@@ -535,9 +432,6 @@ export function createController(io = {}) {
         s.tickCount++;
         flushDueWrites();
         expireTurnClaim();
-        /* Controller state, so it expires on a tick and not only when someone
-         * happens to render. */
-        if (s.pulse && now() - s.pulse.startMs >= RESET_PULSE_MS) s.pulse = null;
         const p = page();
         if (!p || p.kind !== PAGE_KNOBS || p.keys.length === 0) return null;
 
@@ -620,11 +514,6 @@ export function createController(io = {}) {
          * params it hides or reveals are not otherwise reachable. */
         const changed = s.values[key] !== raw;
         s.values[key] = raw;
-        /* The value this param HAD when the page opened — whatever put it
-         * there, a preset or the module's own startup state. It is what a
-         * reset falls back to for the great majority of params, which declare
-         * no default at all. First read wins; a turn cannot overwrite it. */
-        if (s.loadedValues[key] === undefined) s.loadedValues[key] = raw;
         if (changed) replanIfCondition(key);
         return key;
     }
@@ -828,13 +717,6 @@ export function createController(io = {}) {
 
         const t = nowMs === undefined ? now() : nowMs;
 
-        /* If the cursor has not reached this key yet, the value about to be
-         * turned is still the one the page opened with — keep it before the
-         * turn destroys the evidence. */
-        if (s.loadedValues[key] === undefined && s.values[key] !== undefined) {
-            s.loadedValues[key] = s.values[key];
-        }
-
         /* Turning claims the header: "last touched or MOVED" is the one you are
          * working on, and a knob can be turned without the capacitive touch
          * ever registering. It does not join touchOrder — nothing is being
@@ -849,9 +731,6 @@ export function createController(io = {}) {
             s.turnClaimMs = 0;
         }
 
-        /* Detents since the last tap. Past the tolerance this knob is being
-         * ADJUSTED, and the tap that started it is not half a double-tap. */
-        s.turnedSinceTap[slot] = (s.turnedSinceTap[slot] || 0) + 1;
         /* The Movy layout turns like Movy — see movy_knob.mjs — not like
          * Schwung's own dial/bar grid (knob_engine.mjs, a different,
          * time-based acceleration feel that predates this port). Same state
@@ -968,38 +847,12 @@ export function createController(io = {}) {
          * back out of first. */
         if (down && s.pickerOpen) closePicker();
         if (!down) {
-            /* How long this contact lasted, for the NEXT tap to judge. */
-            const upAt = now();
-            const downAt = s.downAtMs[slot];
-            if (downAt) s.lastDwellMs[slot] = upAt - downAt;
-            s.lastUpMs[slot] = upAt;
             const at = s.touchOrder.indexOf(slot);
             if (at >= 0) s.touchOrder.splice(at, 1);
-            if (s.touchOrder.length) {
-                /* The header falls back to a knob still held, not to nothing. */
-                s.touched = s.touchOrder[s.touchOrder.length - 1];
-                /* A real hold outranks and cancels any pending turn-claim. */
-                s.turnClaimMs = 0;
-            } else if (s.resetOnTouch[slot]) {
-                /*
-                 * A reset changed this value under your finger — so the value
-                 * stays on screen after you lift.
-                 *
-                 * Everything else on this page you did with your hand and
-                 * watched happen. A reset is the one edit where the number
-                 * simply becomes something else, and dismissing the readout on
-                 * release meant the one value worth showing was the one you
-                 * never saw. Held by the same turn-claim that a knob turned
-                 * without a registered touch uses, so it dismisses itself the
-                 * same way and after the same delay.
-                 */
-                s.touched = slot;
-                s.turnClaimMs = upAt;
-            } else {
-                s.touched = -1;
-                s.turnClaimMs = 0;
-            }
-            s.resetOnTouch[slot] = false;
+            /* The header falls back to whatever is still held, not to nothing. */
+            s.touched = s.touchOrder.length ? s.touchOrder[s.touchOrder.length - 1] : -1;
+            /* A real hold outranks and cancels any pending turn-claim. */
+            s.turnClaimMs = 0;
             /* Release flushes immediately rather than waiting out
              * SETPARAM_THROTTLE_MS — the hand has stopped, so there is no
              * more flooding to protect against, and the settled value should
@@ -1014,41 +867,9 @@ export function createController(io = {}) {
             }
             return;
         }
-        const tapAt = now();
-        /* A fresh contact: whatever the last one did is over. */
-        s.resetOnTouch[slot] = false;
-        /* From the previous RELEASE: the air gap, which is the part of the
-         * gesture the hand actually performs. */
-        const gapMs = tapAt - (s.lastUpMs[slot] || 0);
-        const turns = s.turnedSinceTap[slot] || 0;
-        /* The previous contact has to have been a TAP. Undefined means there
-         * was no previous contact at all, which is not one. */
-        const prevDwell = s.lastDwellMs[slot];
-        const wasTap = prevDwell !== undefined && prevDwell <= TAP_MAX_DWELL_MS;
-        const doubled = gapMs < DOUBLE_TAP_MS && turns < TAP_TURN_TOLERANCE && wasTap;
-        /* Why this tap did or did not count. Recorded rather than logged: this
-         * module has no logger and should not acquire one — the host reads it
-         * off the state and decides whether anyone is listening. */
-        s.lastTap = { slot, gapMs, turns, doubled, reset: false, at: tapAt,
-                      prevDwell: prevDwell === undefined ? -1 : prevDwell };
-        s.downAtMs[slot] = tapAt;
-        s.turnedSinceTap[slot] = 0;
-
         if (s.touchOrder.indexOf(slot) < 0) s.touchOrder.push(slot);
         s.touched = slot;
         s.turnClaimMs = 0;
-
-        /* A double-tap resets, and says so instead of the usual touch readout —
-         * resetToDefault announces the new value itself. It also consumes the
-         * tap: a third tap starts a fresh pair rather than resetting again. */
-        if (doubled) {
-            /* Consume the pair: a third tap starts a fresh one rather than
-             * resetting again. */
-            s.lastUpMs[slot] = 0;
-            const did = resetToDefault(slot);
-            s.lastTap.reset = did;
-            if (did) return;
-        }
         const key = keyAt(slot);
         const meta = metaAt(slot);
         const dec = s.decorations ? s.decorations[slot] : null;
@@ -1093,57 +914,6 @@ export function createController(io = {}) {
         if (!key || !meta || !meta.divable) return null;
         s.pending = { action: "open", key, fullKey: fullKey(key), meta };
         return s.pending;
-    }
-
-    /**
-     * Reset a knob's param to the default its module declared. 744 params across
-     * 39 modules declare one, and there is otherwise no way back to it short of
-     * reloading the preset.
-     *
-     * Returns false when the param declares no default, so the caller can say
-     * so rather than silently doing nothing.
-     */
-    function resetToDefault(slot) {
-        const key = keyAt(slot);
-        const meta = metaAt(slot);
-        if (!key || !meta || !isTurnable(meta)) return false;
-
-        /*
-         * Two things to go back TO, in order of authority.
-         *
-         * A declared default is the module saying what this param ought to be,
-         * and it wins. But only 744 params across the whole fleet declare one,
-         * so on most module pages a reset had nothing to aim at and silently
-         * did nothing — which is indistinguishable, in the hand, from the
-         * gesture not working.
-         *
-         * The fallback is the value the param HAD when the page opened. That
-         * is never nothing: a preset put it there, or the module's own startup
-         * state did. It makes the gesture a general undo for "I turned this
-         * and I want it back", which is what it is reached for anyway.
-         */
-        const declared = (meta.default !== undefined && meta.default !== null);
-        const wire = declared
-            ? formatParamForSet(meta.default, meta)
-            : s.loadedValues[key];
-        if (wire === undefined || wire === null || wire === "") return false;
-        /* Already there — say so rather than announcing a change that is not
-         * one, and skip the write. */
-        if (String(s.values[key]) === String(wire)) {
-            announce(`${meta.label || key}, already ${declared ? "default" : "as loaded"}`);
-            return true;
-        }
-
-        s.values[key] = wire;
-        s.settleUntil[key] = s.tickCount + SETTLE_TICKS;
-        delete s.knobStates[key];       /* next turn starts from the new value */
-        /* Keep the value on screen past the lift — see onKnobTouch. */
-        s.resetOnTouch[slot] = true;
-        s.pulse = { slot, startMs: now() };
-        setParam(fullKey(key), wire);
-        replanIfCondition(key);
-        announce(`${meta.label || key}, ${declared ? "default" : "as loaded"}, ${announceTurn(meta, wire)}`);
-        return true;
     }
 
     function takePending() {
@@ -1234,7 +1004,6 @@ export function createController(io = {}) {
                 page: page(), metaIndex: s.metaIndex, values: s.values,
                 title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
                 touched: s.hintLines ? -1 : s.touched,
-                pulseSlot: s.hintLines ? -1 : pulseSlot(),
                 displayFor: formatValue
                     ? (key, raw, surface) => formatValue(fullKey(key), raw, surface)
                     : null,
@@ -1346,21 +1115,6 @@ export function createController(io = {}) {
         });
     }
 
-    /**
-     * The cell whose highlight is inverted THIS FRAME, or -1.
-     *
-     * Alternates on RESET_PULSE_BLINK_MS and stops after RESET_PULSE_MS. A
-     * function of the clock rather than a scheduled animation, because the
-     * grid is already redrawing and an animation with its own timer would be a
-     * second source of truth about when the pulse ends.
-     */
-    function pulseSlot() {
-        if (!s.pulse) return -1;
-        const elapsed = now() - s.pulse.startMs;
-        if (elapsed >= RESET_PULSE_MS) { s.pulse = null; return -1; }
-        return (Math.floor(elapsed / RESET_PULSE_BLINK_MS) % 2 === 0) ? s.pulse.slot : -1;
-    }
-
     let vizCache = null;
     function vizGroups() {
         const p = page();
@@ -1392,7 +1146,7 @@ export function createController(io = {}) {
     return {
         load, reloadIfChanged, tick,
         onJog, goToPage, onKnobTurn, onKnobTouch, onClick, takePending,
-        openPicker, closePicker, pickerSelect, showHint, dismissHint, resetToDefault,
+        openPicker, closePicker, pickerSelect, showHint, dismissHint,
         menuEntry, menuIndex: () => menuIndex(page()),
         menuEntered, enterMenu, exitMenu, clearTouch,
         get pickerOpen() { return s.pickerOpen; },

@@ -39,9 +39,6 @@ Promise.all([
     return { dev, ctl };
   };
 
-  /* Comfortably past any double-tap window, for tests that need a clean start. */
-  const DOUBLE_TAP_GAP_CLEAR = 5000;
-
   /* A one-param contract, for tests that need to control every read. */
   const hierFixture = {
     "synth:chain_params": JSON.stringify([
@@ -329,20 +326,6 @@ Promise.all([
       const ifine = Number(ctl.state.values[ik]) - b1;
       if (icoarse > 0 && ifine === 0) fail("fine adjust froze an int, which has no finer step to give");
     }
-
-    /* Reset to the declared default. */
-    ctl.onKnobTurn(found.slot, 1, (t += 30));
-    if (!ctl.resetToDefault(found.slot)) fail("resetToDefault refused a param that declares one");
-    if (Number(ctl.state.values[key]) !== Number(meta.default)) {
-      fail("reset did not land on the default: " + ctl.state.values[key] + " vs " + meta.default);
-    }
-    const wrote = dev.writes[dev.writes.length - 1];
-    if (Number(wrote[1]) !== Number(meta.default)) fail("the default was not written to the device");
-
-    /* A param with no declared default reports so rather than silently doing
-     * nothing, so the caller can say "no default" out loud. */
-    const noDefault = ctl.page.keys.findIndex((k) => ctl.metaIndex.getOrGuess(k).default === undefined);
-    if (noDefault >= 0 && ctl.resetToDefault(noDefault)) fail("resetToDefault claimed success with no default declared");
   }
 
   /* ---- 9e. a section remembers the sub-page you were on ----------------- */
@@ -566,324 +549,38 @@ Promise.all([
         fail("an empty answer was stored as a value");
     }
 
-    /* ---- double-tap a knob to reset it to its default --------------------
+    /* ---- an empty read is a MISS, never a value -------------------------
      *
-     * The reset used to live on Mute+touch, which could never be advertised:
-     * CC 88 is forwarded to Move unconditionally, so holding Mute also mutes
-     * the selected track. This gesture needs no modifier.
+     * A key nobody serves does NOT answer null: the shim replies with an error
+     * and a zeroed buffer, and the JS binding hands back "". Treating that as
+     * a reading is how slot Volume showed 0% — the modulated flag was (also
+     * wrongly) set, so the cursor asked for ":base", got "", accepted it, and
+     * never asked the real key. Number("") is 0.
      */
     {
-      let clock = 10000;
-      const dev = D.createFakeDevice({ id: "sf2" });
-      const writes = [];
+      const reads = [];
+      const values = { "synth:cutoff": "0.75" };   /* ":base" is deliberately absent */
       const ctl = C.createController({
-        getParam: dev.getParam, announce: dev.announce, now: () => clock,
-        setParam: (k, v) => { writes.push([k, v]); dev.setParam(k, v); },
+        getParam: (k) => {
+          reads.push(k);
+          if (k === "synth:ui_hierarchy" || k === "synth:chain_params") return hierFixture[k];
+          return k in values ? values[k] : "";      /* the empty answer */
+        },
+        setParam: () => {},
+        isModulated: () => true,                    /* forces the ":base" path */
       });
       ctl.load({ slot: 0, component: "synth" });
+      for (let i = 0; i < 24; i++) ctl.tick();
 
-      /* A knob whose param actually declares a numeric default, wherever in
-       * the page set it lives — which module carries one is fixture detail. */
-      let slot = -1;
-      for (let p = 0; p < ctl.pages.length && slot < 0; p++) {
-        ctl.goToPage(p);
-        if (!ctl.page || ctl.page.kind !== "knobs") continue;
-        for (let i = 0; i < 8; i++) {
-          const m = ctl.metaAt(i);
-          if (m && m.type === "float" && m.default !== undefined && m.default !== null) { slot = i; break; }
-        }
-      }
-      if (slot < 0) fail("the fixture should declare a float default on some knob somewhere");
-      for (let i = 0; i < 12; i++) ctl.tick();
-      const key = ctl.keyAt(slot);
-      const dflt = Number(ctl.metaAt(slot).default);
-      /* Numerically: the wire form carries the param step precision ("0.900"),
-       * the declaration does not ("0.9"). */
-      const isDefault = (v) => v !== undefined && v !== null && Number(v) === dflt;
-
-      /* Move it away from the default first, or a reset proves nothing. */
-      for (let i = 0; i < 25; i++) ctl.onKnobTurn(slot, 1, (clock += 20));
-      if (isDefault(ctl.state.values[key])) fail("the turn did not move the value off its default");
-
-      /* tap, ADJUST, tap — re-placing a finger mid-adjustment must not reset. */
-      writes.length = 0;
-      ctl.onKnobTouch(slot, true);
-      for (let i = 0; i < 6; i++) ctl.onKnobTurn(slot, 1, (clock += 10));
-      ctl.onKnobTouch(slot, false);
-      clock += 10;
-      ctl.onKnobTouch(slot, true);
-      ctl.onKnobTouch(slot, false);
-      if (writes.some(([, v]) => isDefault(v)))
-        fail("tap, ADJUST, tap reset the param — re-placing a finger mid-adjustment must not");
-
-      /* But ONE stray detent must not cancel it. These are detented encoders
-       * and tapping a small one nudges it; requiring absolute stillness made
-       * the gesture unreliable in the hand. */
-      writes.length = 0;
-      clock += C.DOUBLE_TAP_MS * 2;
-      ctl.onKnobTouch(slot, true);
-      ctl.onKnobTouch(slot, false);
-      ctl.onKnobTurn(slot, 1, (clock += 10));      /* the clumsy nudge */
-      clock += 40;
-      ctl.onKnobTouch(slot, true);
-      if (!writes.some(([, v]) => isDefault(v)))
-        fail("a single stray detent between two taps cancelled the reset — " +
-             "tapping a detented encoder nudges it, so one detent must be tolerated");
-      ctl.onKnobTouch(slot, false);
-      for (let i = 0; i < 25; i++) ctl.onKnobTurn(slot, 1, (clock += 20));
-
-      /* tap, tap — the gesture. */
-      const moved = String(ctl.state.values[key]);
-      clock += C.DOUBLE_TAP_MS * 2;          /* well clear of the pair above */
-      ctl.onKnobTouch(slot, true);
-      ctl.onKnobTouch(slot, false);
-      clock += 50;
-      ctl.onKnobTouch(slot, true);
-      if (!isDefault(ctl.state.values[key]))
-        fail("a double-tap should reset to the default " + dflt +
-             ", got " + ctl.state.values[key] + " (was " + moved + ")");
-      if (!writes.some(([k, v]) => k === "synth:" + key && isDefault(v)))
-        fail("the default was never written to the device");
-      const said = dev.announcements[dev.announcements.length - 1];
-      if (!/default/i.test(said)) fail("the reset was not announced: " + said);
-      ctl.onKnobTouch(slot, false);
-
-      /* Too slow is just two taps. */
-      for (let i = 0; i < 25; i++) ctl.onKnobTurn(slot, 1, (clock += 20));
-      writes.length = 0;
-      ctl.onKnobTouch(slot, true); ctl.onKnobTouch(slot, false);
-      clock += C.DOUBLE_TAP_MS + 50;
-      ctl.onKnobTouch(slot, true); ctl.onKnobTouch(slot, false);
-      if (writes.some(([, v]) => isDefault(v)))
-        fail("two taps " + (C.DOUBLE_TAP_MS + 50) + "ms apart must not count as a double-tap");
-    }
-
-    /* ---- the gesture must fire on a REAL hand, measured on hardware ------
-     *
-     * Captured from the device (2026-08-20, slot settings, knob 0). One user
-     * tapping at what felt like a constant rate, as (dwell, AIR GAP) in ms —
-     * air gap being lift-to-re-touch:
-     *
-     *   (422, 520) (435, 588) (436, 438) (400, 417) (402, 572) (402, 384)
-     *
-     * Every one of those is the same gesture and every one must fire. The
-     * press-to-press distances underneath them were 786-1023ms, a spread of
-     * 240ms, because they also contain the dwell — and the dwell is capacitive
-     * decay, not intent. Measuring THAT is what made the gesture feel random.
-     *
-     * The same capture also holds two things that must NOT fire: a 1321ms air
-     * gap where the user paused, and a 816ms contact, which is a hold.
-     */
-    {
-      let clock = 100000;
-      const dev = D.createFakeDevice({ id: "sf2" });
-      const writes = [];
-      const ctl = C.createController({
-        getParam: dev.getParam, announce: dev.announce, now: () => clock,
-        setParam: (k, v) => { writes.push([k, v]); dev.setParam(k, v); },
-      });
-      ctl.load({ slot: 0, component: "synth" });
-      let slot = -1;
-      for (let p = 0; p < ctl.pages.length && slot < 0; p++) {
-        ctl.goToPage(p);
-        if (!ctl.page || ctl.page.kind !== "knobs") continue;
-        for (let i = 0; i < 8; i++) {
-          const m = ctl.metaAt(i);
-          if (m && m.type === "float" && m.default !== undefined && m.default !== null) { slot = i; break; }
-        }
-      }
-      if (slot < 0) fail("need a param with a declared default");
-      for (let i = 0; i < 12; i++) ctl.tick();
-      const key = ctl.keyAt(slot);
-      const dflt = Number(ctl.metaAt(slot).default);
-
-      const tap = (dwell) => {
-        ctl.onKnobTouch(slot, true);
-        clock += dwell;
-        ctl.onKnobTouch(slot, false);
-      };
-      const moveAway = () => {
-        for (let i = 0; i < 25; i++) ctl.onKnobTurn(slot, 1, (clock += 20));
-        if (Number(ctl.state.values[key]) === dflt) fail("setup: value did not move");
-        clock += DOUBLE_TAP_GAP_CLEAR;
-      };
-
-      /*
-       * Air gaps from the SPI-callback trace — the only measurement of this
-       * that is not filtered through a SHM ring and a 60Hz loop. When a
-       * double-tap does produce two contacts, this is what the gap between
-       * them actually is.
-       */
-      for (const [dwell, airGap] of [[265, 9], [285, 67], [286, 70],
-                                     [285, 183], [286, 169], [286, 166],
-                                     [303, 61], [300, 177]]) {
-        moveAway();
-        tap(dwell);
-        clock += airGap;
-        ctl.onKnobTouch(slot, true);
-        const fired = Number(ctl.state.values[key]) === dflt;
-        ctl.onKnobTouch(slot, false);
-        if (!fired) {
-          fail("a real double-tap measured on hardware did not fire: dwell " + dwell +
-               "ms, air gap " + airGap + "ms — the window must be measured on the " +
-               "gap the hand controls, not on press-to-press");
-        }
-      }
-
-      /*
-       * The gap BETWEEN two separate double-taps must not chain them.
-       *
-       * Measured at 769-885ms in the same capture, and a 900ms window admitted
-       * every one of them: the first tap of one gesture paired with the last
-       * tap of the one before. It hid because the second reset lands on a value
-       * already at its default, so nothing visibly happened.
-       */
-      for (const between of [769, 841, 885, 929]) {
-        moveAway();
-        writes.length = 0;
-        tap(286);
-        clock += between;
-        ctl.onKnobTouch(slot, true);
-        if (writes.some(([, v]) => Number(v) === dflt))
-          fail("a " + between + "ms gap between two SEPARATE double-taps chained them " +
-               "into one — real gaps within a pair are 9-183ms");
-        ctl.onKnobTouch(slot, false);
-      }
-
-      /* Paused between taps: not one gesture. */
-      moveAway();
-      writes.length = 0;
-      tap(454);
-      clock += 1321;
-      ctl.onKnobTouch(slot, true);
-      if (writes.some(([, v]) => Number(v) === dflt))
-        fail("a 1321ms pause between taps counted as a double-tap");
-      ctl.onKnobTouch(slot, false);
-
-      /* A HOLD is not half a double-tap: resting a finger to read the value
-       * and then touching again must not reset it. */
-      moveAway();
-      writes.length = 0;
-      tap(816);
-      clock += 423;
-      ctl.onKnobTouch(slot, true);
-      if (writes.some(([, v]) => Number(v) === dflt))
-        fail("a 816ms contact followed by a touch reset the param — that is " +
-             "reading the value, not double-tapping it");
-      ctl.onKnobTouch(slot, false);
-
-      /* ---- the reset VALUE stays on screen after you lift ---------------
-       *
-       * Everything else on this page you do with your hand and watch happen. A
-       * reset is the one edit where the number simply becomes something else,
-       * and the readout used to dismiss on release — so the one value worth
-       * showing was the one you never saw. */
-      moveAway();
-      tap(286);
-      clock += 170;                      /* a measured intra-pair gap */
-      ctl.onKnobTouch(slot, true);
-      if (Number(ctl.state.values[key]) !== dflt) fail("setup: the reset did not fire");
-      ctl.onKnobTouch(slot, false);
-      if (ctl.state.touched !== slot)
-        fail("the readout dismissed the moment the finger lifted — the reset value " +
-             "is the one thing on this page you did not watch happen");
-      if (ctl.state.touchOrder.length !== 0)
-        fail("nothing is held any more; the readout is a claim, not a touch");
-
-      /* The pulse: two blinks, then nothing.
-       *
-       * Observed by RENDERING, not by recomputing the phase here — a test that
-       * recalculates the rule it is checking passes no matter what the code
-       * does, which is exactly what the first version of this did. */
-      {
-        ctl.setLayout(C.LAYOUT_MOVY);
-        const lit = [];
-        for (let e = 0; e <= C.RESET_PULSE_MS + C.RESET_PULSE_BLINK_MS * 2; e += 15) {
-          const fb = H.createFramebuffer();
-          ctl.render(H.drawContext(fb), { title: "T" });
-          lit.push(fb.countLit());
-          clock += 15;
-        }
-        let edges = 0;
-        for (let i = 1; i < lit.length; i++) if (lit[i] !== lit[i - 1]) edges++;
-        if (edges < 3)
-          fail("the reset pulse did not blink — " + edges + " changes across " +
-               lit.length + " frames; a pulse that is always on is a state, not a beat");
-        if (ctl.state.pulse !== null) fail("the reset pulse never stopped");
-        /* And it settles: the last few frames must be identical. */
-        const tail = lit.slice(-4);
-        if (tail.some((v) => v !== tail[0])) fail("the pulse was still blinking at the end");
-        ctl.setLayout(R.LAYOUT_DIAL);
-      }
-
-      /* And it dismisses itself, like any other unheld claim. */
-      clock += C.TURN_CLAIM_MS + 1;
-      ctl.tick();
-      if (ctl.state.touched !== -1) fail("the held readout never dismissed");
-
-      /* An ordinary release still clears immediately — the hold is for a reset
-       * only, or every knob you touched would stay lit. */
-      moveAway();
-      ctl.onKnobTouch(slot, true);
-      clock += 200;
-      ctl.onKnobTouch(slot, false);
-      if (ctl.state.touched !== -1)
-        fail("an ordinary release should clear the readout at once, got " + ctl.state.touched);
-    }
-
-    /* ---- a param with NO declared default resets to what it loaded with --
-     *
-     * Only 744 params across the fleet declare a default, so on most module
-     * pages the reset had nothing to aim at and did nothing — which in the
-     * hand is indistinguishable from the gesture being broken. The value the
-     * param had when the page opened is never nothing: a preset put it there,
-     * or the startup state of the module itself did.
-     */
-    {
-      let clock = 50000;
-      const dev = D.createFakeDevice({ id: "obxd" });   /* declares no defaults */
-      const writes = [];
-      const ctl = C.createController({
-        getParam: dev.getParam, announce: dev.announce, now: () => clock,
-        setParam: (k, v) => { writes.push([k, v]); dev.setParam(k, v); },
-      });
-      ctl.load({ slot: 0, component: "synth" });
-      for (let i = 0; i < 16; i++) ctl.tick();
-
-      const slot = 0;
-      const key = ctl.keyAt(slot);
-      const meta = ctl.metaAt(slot);
-      if (meta.default !== undefined && meta.default !== null)
-        fail("this test needs a param with NO declared default; " + key + " has one");
-      const loaded = ctl.state.values[key];
-      if (loaded === undefined) fail("the cursor never read " + key);
-
-      for (let i = 0; i < 30; i++) ctl.onKnobTurn(slot, 1, (clock += 20));
-      if (String(ctl.state.values[key]) === String(loaded))
-        fail("the turn did not move the value away from its loaded one");
-
-      writes.length = 0;
-      clock += C.DOUBLE_TAP_MS * 2;
-      ctl.onKnobTouch(slot, true);
-      ctl.onKnobTouch(slot, false);
-      clock += 60;
-      ctl.onKnobTouch(slot, true);
-      if (String(ctl.state.values[key]) !== String(loaded))
-        fail("a param with no declared default should reset to the value it loaded with (" +
-             loaded + "), got " + ctl.state.values[key]);
-      if (!writes.some(([k, v]) => k === "synth:" + key && String(v) === String(loaded)))
-        fail("the loaded value was never written to the device");
-      const said = dev.announcements[dev.announcements.length - 1];
-      if (!/as loaded/i.test(said))
-        fail("a fallback reset should say so rather than claim a default: " + said);
-      ctl.onKnobTouch(slot, false);
-
-      /* The loaded value is the FIRST one seen and cannot be overwritten by
-       * later reads, or a reset would just return you to wherever you were. */
-      for (let i = 0; i < 30; i++) ctl.onKnobTurn(slot, 1, (clock += 20));
-      for (let i = 0; i < 20; i++) ctl.tick();
-      if (String(ctl.state.loadedValues[key]) !== String(loaded))
-        fail("the loaded value moved after later reads: " + ctl.state.loadedValues[key]);
+      if (!reads.some((k) => k === "synth:cutoff:base"))
+        fail("the modulated path should have asked for :base at all");
+      if (!reads.some((k) => k === "synth:cutoff"))
+        fail("an empty :base must fall through to the plain key — it did not, " +
+             "so the cell would show Number(\"\") = 0");
+      if (ctl.state.values.cutoff !== "0.75")
+        fail("the value should be the real one, got " + JSON.stringify(ctl.state.values.cutoff));
+      if (ctl.state.values.filter_mode === "")
+        fail("an empty answer was stored as a value");
     }
 
     /* ---- an UNHELD turn-claim has to expire ------------------------------

@@ -465,11 +465,13 @@ function makeSlot(over) {
     fail("without a resolver the target must fall through rather than throw");
 }
 
-/* ---- 9. defaults, so double-tap-to-reset has something to reset to ------
+/* ---- 9. declared defaults -----------------------------------------------
  *
- * Every value with an unambiguous neutral declares it. Recv deliberately does
- * NOT: a slot receives on its own number, which a contract synthesised once
- * cannot know, and "All" would silently re-route everything the slot hears.
+ * Every value with an unambiguous neutral declares one. It is the metadata a
+ * module is supposed to publish, and the grid renders and announces it; Recv
+ * deliberately declares none, because a slot receives on its own number, which
+ * a contract synthesised once cannot know, and "All" would silently re-route
+ * everything the slot hears.
  */
 {
   const cp = SG.allSlotGridParams();
