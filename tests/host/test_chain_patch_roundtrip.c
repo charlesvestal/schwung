@@ -302,8 +302,13 @@ static void test_hostile_json(chain_instance_t *inst, patch_info_t *patch) {
     /*
      * A brace inside an OPAQUE state string. "key=val;" state is a supported
      * format, so its bytes are arbitrary -- and an unbalanced '{' in there used
-     * to throw off the brace walk that finds each FX object's end, silently
-     * dropping every effect from that point on.
+     * to throw off the brace walk that finds each FX object is end.
+     *
+     * Worth being precise about the blast radius, because it explains why this
+     * was never reported as a partial failure: the walk did not stop after the
+     * offending effect, it ran to end-of-string, so the loop broke on the FIRST
+     * object and the array came back EMPTY. Not "one effect went missing" --
+     * the whole chain did.
      */
     const char *braces =
         "{\n  \"name\": \"braces\",\n"
@@ -335,14 +340,8 @@ static void test_hostile_json(chain_instance_t *inst, patch_info_t *patch) {
         CHECK(strcmp(patch->midi_fx[1].module, "mafter") == 0,
               "the MIDI FX after a braced opaque state was dropped (got %s)",
               patch->midi_fx[1].module);
-        /* FIXTURE, not a requirement: the midi_fx state extractor has only the
-         * object branch -- unlike audio_fx it has no `else if (*sv == '"')`, so
-         * an opaque MIDI FX state string is dropped. Pre-existing and separate
-         * from the span fix; what this case proves is that the brace inside it
-         * no longer takes the NEXT MIDI FX down with it. */
-        CHECK(patch->midi_fx[0].state[0] == '\0',
-              "midi_fx now reads opaque state strings ([%s]) -- update this fixture",
-              patch->midi_fx[0].state);
+        CHECK(strcmp(patch->midi_fx[0].state, "mode=a;b={;") == 0,
+              "opaque MIDI FX state came back as [%s]", patch->midi_fx[0].state);
     }
 
     /* A ']' inside a state string must not end the array early either. */
@@ -366,6 +365,53 @@ static void test_hostile_json(chain_instance_t *inst, patch_info_t *patch) {
     if (patch->midi_fx_count == 2)
         CHECK(strcmp(patch->midi_fx[1].module, "msecond") == 0,
               "midi_fx[1]=%s", patch->midi_fx[1].module);
+}
+
+/*
+ * ---- 2c. MIDI FX state round-trips in BOTH forms ----
+ *
+ * The save side writes whatever the module hands back from get_param("state"),
+ * JSON object or opaque string alike, and the load side already forwarded
+ * either to set_param("state", ...). Only the PARSER was one-sided: it had the
+ * object branch and not the string branch, so an opaque MIDI FX state was read
+ * as empty and the module came back at defaults. Silent, every load.
+ */
+static void test_midi_fx_state_forms(chain_instance_t *inst, patch_info_t *patch) {
+    const char *json =
+        "{\n  \"name\": \"mstate\",\n"
+        "  \"midi_fx\": ["
+        "{\"type\": \"opaque-mfx\", \"params\": {\"state\": \"mode=a;b=2;\"}}, "
+        "{\"type\": \"object-mfx\", \"params\": {\"state\": {\"steps\": 4}}}, "
+        "{\"type\": \"empty-mfx\", \"params\": {}}],\n"
+        "  \"audio_fx\": []\n}\n";
+
+    write_patch(json);
+    reset_state(inst);
+    memset(patch, 0, sizeof(*patch));
+
+    CHECK(v2_parse_patch_file(inst, patch_path, patch) == 0, "midi_fx state parse failed");
+    CHECK(patch->midi_fx_count == 3, "parsed %d MIDI FX, want 3", patch->midi_fx_count);
+    if (patch->midi_fx_count != 3) return;
+
+    /* Opaque string: exact bytes, quotes stripped, nothing else. */
+    CHECK(strcmp(patch->midi_fx[0].state, "mode=a;b=2;") == 0,
+          "opaque MIDI FX state came back as [%s], want [mode=a;b=2;]",
+          patch->midi_fx[0].state);
+    /* Object form must be untouched by the new branch. */
+    CHECK(strcmp(patch->midi_fx[1].state, "{\"steps\": 4}") == 0,
+          "object MIDI FX state came back as [%s]", patch->midi_fx[1].state);
+    /* No state key at all stays empty -- an empty string must not be invented. */
+    CHECK(patch->midi_fx[2].state[0] == '\0',
+          "MIDI FX with no state got [%s]", patch->midi_fx[2].state);
+
+    /* And it reaches the plugin: this is the load-side half of the round-trip. */
+    CHECK(v2_load_from_patch_info(inst, patch) == 0, "midi_fx state load failed");
+    CHECK(strstr(fake_midi_fx[0].log, "state=mode=a;b=2;;") != NULL,
+          "opaque state did not reach MIDI FX slot 0 [%s]", fake_midi_fx[0].log);
+    CHECK(strstr(fake_midi_fx[1].log, "state={\"steps\": 4};") != NULL,
+          "object state did not reach MIDI FX slot 1 [%s]", fake_midi_fx[1].log);
+    CHECK(strstr(fake_midi_fx[2].log, "state=") == NULL,
+          "a state was sent to the MIDI FX that had none [%s]", fake_midi_fx[2].log);
 }
 
 /* ---- 3. Modulation / knob targets reach every slot ---- */
@@ -541,6 +587,7 @@ int main(int argc, char **argv) {
     test_full_capacity(inst, patch);
     test_legacy_two_fx(inst, patch);
     test_hostile_json(inst, patch);
+    test_midi_fx_state_forms(inst, patch);
     test_target_lookup(inst);
     /* Reuses the chain test_target_lookup just populated. */
     test_id_parser_divergence_fixture(inst);
