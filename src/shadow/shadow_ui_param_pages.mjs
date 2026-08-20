@@ -27,12 +27,14 @@
  */
 
 import { ctx } from './shadow_ui_ctx.mjs';
-import { createController } from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
+import { createController, DOUBLE_TAP_MS, TAP_TURN_TOLERANCE }
+    from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
 import { decodeInput, applyInput } from '/data/UserData/schwung/shared/param_pages/page_input.mjs';
 import { PAGE_KNOBS, PAGE_MENU } from '/data/UserData/schwung/shared/param_pages/page_plan.mjs';
 import { LAYOUT_BAR, LAYOUT_DIAL } from '/data/UserData/schwung/shared/param_pages/render_page.mjs';
 import { LAYOUT_MOVY } from '/data/UserData/schwung/shared/param_pages/render_page_movy.mjs';
 import { announce } from '/data/UserData/schwung/shared/screen_reader.mjs';
+import { log, isLoggingEnabled } from '/data/UserData/schwung/shared/logger.mjs';
 
 /* The live controller, or null when the view is not open. One at a time: the
  * grid always shows a single component, and rebuilding on entry is cheap. */
@@ -582,10 +584,44 @@ export function handleParamPagesMidi(data) {
     if (!intent) return false;
     if (intent.type === 'knob') _knobTurnCount++;
 
+    /*
+     * Touch trace, for when a gesture built on capacitive touch does not fire.
+     *
+     * Every touch event with its arrival time, so the ORDER is visible: a
+     * double-tap needs a release between the taps, and Move only sends a
+     * note-on on the untouched->touched edge. If the second tap lands before
+     * the pad has decayed enough to send a note-off, there is no second edge
+     * and no second note-on — the gesture cannot fire, and no amount of
+     * tuning the window changes that. This log is what tells the two apart.
+     *
+     * Costs a native "is logging on?" check per touch event when the log is
+     * off, and touch events are a handful a second at most.
+     */
+    if (intent.type === 'touch' && isLoggingEnabled()) {
+        const st = controller.state;
+        const prev = st.lastTapMs ? (st.lastTapMs[intent.slot] || 0) : 0;
+        const gap = prev ? (Date.now() - prev) : -1;
+        log('param_pages', `touch slot=${intent.slot} ${intent.down ? 'DOWN' : 'up  '}`
+            + ` t=${Date.now()}`
+            + ` sinceLastDown=${gap < 0 ? 'n/a' : gap + 'ms'}`
+            + ` turnsSinceTap=${st.turnedSinceTap ? (st.turnedSinceTap[intent.slot] || 0) : 0}`
+            + ` held=[${st.touchOrder.join(',')}]`);
+    }
+
     /* reveal:false — this host drives reveal from the polled shift state in
      * tickParamPages, not from an intent it will never see. */
     const todo = traced("js.grid.input",
         () => applyInput(controller, intent, { nowMs: Date.now(), reveal: false }));
+
+    /* What the controller decided about that tap, and why. */
+    if (intent.type === 'touch' && intent.down && isLoggingEnabled()) {
+        const t = controller.state.lastTap;
+        if (t) {
+            log('param_pages', `  tap slot=${t.slot} gap=${t.gapMs}ms turns=${t.turns}`
+                + ` doubled=${t.doubled} reset=${t.reset}`
+                + ` (window=${DOUBLE_TAP_MS}ms tolerance=${TAP_TURN_TOLERANCE})`);
+        }
+    }
     if (!todo) return true;
 
     if (todo.action === 'exit') {

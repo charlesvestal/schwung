@@ -368,7 +368,7 @@ export function createSlotGridIo(io) {
             if (!m || !io.describeTarget) return null;
             const d = io.describeTarget(parseInt(m[1], 10) - 1);
             if (!d) return null;
-            return surface === "header" ? d.header : d.short;
+            return surface === "header" ? d.long : d.short;
         },
 
         setParam(fullKey, value) {

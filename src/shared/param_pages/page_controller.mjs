@@ -314,6 +314,9 @@ export function createController(io = {}) {
         menuCursor: Object.create(null),
         /* Every knob currently held, oldest first. See onKnobTouch. */
         touchOrder: [],
+        /* The last touch-down and why it did or did not count as a double-tap.
+         * Diagnostic only — see onKnobTouch. */
+        lastTap: null,
         /* ms at which a TURN claimed the header with nothing held, or 0.
          * Only such a claim expires — see TURN_CLAIM_MS. */
         turnClaimMs: 0,
@@ -920,8 +923,13 @@ export function createController(io = {}) {
             return;
         }
         const tapAt = now();
-        const doubled = (tapAt - (s.lastTapMs[slot] || 0)) < DOUBLE_TAP_MS
-                        && (s.turnedSinceTap[slot] || 0) < TAP_TURN_TOLERANCE;
+        const gapMs = tapAt - (s.lastTapMs[slot] || 0);
+        const turns = s.turnedSinceTap[slot] || 0;
+        const doubled = gapMs < DOUBLE_TAP_MS && turns < TAP_TURN_TOLERANCE;
+        /* Why this tap did or did not count. Recorded rather than logged: this
+         * module has no logger and should not acquire one — the host reads it
+         * off the state and decides whether anyone is listening. */
+        s.lastTap = { slot, gapMs, turns, doubled, reset: false, at: tapAt };
         s.lastTapMs[slot] = tapAt;
         s.turnedSinceTap[slot] = 0;
 
@@ -934,7 +942,9 @@ export function createController(io = {}) {
          * tap: a third tap starts a fresh pair rather than resetting again. */
         if (doubled) {
             s.lastTapMs[slot] = 0;
-            if (resetToDefault(slot)) return;
+            const did = resetToDefault(slot);
+            s.lastTap.reset = did;
+            if (did) return;
         }
         const key = keyAt(slot);
         const meta = metaAt(slot);

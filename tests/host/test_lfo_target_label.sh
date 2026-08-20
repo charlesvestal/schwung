@@ -39,9 +39,11 @@ import("./src/shared/lfo_target_label.mjs").then((L) => {
   /* ---- 1. the three forms, each sized for its surface ------------------ */
   {
     const d = L.describeLfoTarget({ target: "fx1", targetParam: "room_size", components, params });
-    eq(d.short,  "Room Size",          "the grid cell gets the param alone");
-    eq(d.header, "FX 1: Room Size",    "the header gets the SLOT, which is shorter");
-    eq(d.long,   "Freeverb: Room Size", "the list row gets the MODULE, as the picker offered it");
+    eq(d.short, "Room Size",           "the grid cell gets the param alone");
+    /* The MODULE, never the slot. Which slot you are looking at is the one
+     * thing already on screen; which module is loaded there is not. */
+    eq(d.long,  "Freeverb: Room Size", "anywhere with room names the module");
+    if ("header" in d) fail("there is no separate header form any more");
     if (d.empty) fail("a routed LFO is not empty");
   }
 
@@ -59,8 +61,7 @@ import("./src/shared/lfo_target_label.mjs").then((L) => {
   /* ---- 3. a component label with no separator is both parts ------------ */
   {
     const d = L.describeLfoTarget({ target: "lfo2", targetParam: "depth", components, params: [] });
-    eq(d.header, "LFO 2: Depth", "a separator-less label is the slot");
-    eq(d.long,   "LFO 2: Depth", "a separator-less label is also the module");
+    eq(d.long, "LFO 2: Depth", "a label with no separator is the module name itself");
   }
 
   /* ---- 4. an undeclared param falls back to the key, made readable -----
@@ -93,7 +94,7 @@ import("./src/shared/lfo_target_label.mjs").then((L) => {
     eq(declared.short, "Size",      "a declared label must override the derived one");
   }
 
-  console.log("PASS: LFO target label — three forms, unrouted, stale routing, "
+  console.log("PASS: LFO target label — two forms, unrouted, stale routing, "
             + "undeclared params fall back to a readable key");
 });
 '

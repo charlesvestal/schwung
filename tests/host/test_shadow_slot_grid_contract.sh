@@ -427,14 +427,15 @@ function makeSlot(over) {
  */
 {
   const { io, state } = makeSlot();
-  state.targets[0] = { short: "Room Size", header: "FX 1: Room Size",
-                       long: "Freeverb: Room Size", empty: false };
+  state.targets[0] = { short: "Room Size", long: "Freeverb: Room Size", empty: false };
 
   if (io.formatValue("slot:lfo1:target", "fx1", "cell") !== "Room Size")
     fail("the cell should get the param name alone, got " +
          JSON.stringify(io.formatValue("slot:lfo1:target", "fx1", "cell")));
-  if (io.formatValue("slot:lfo1:target", "fx1", "header") !== "FX 1: Room Size")
-    fail("the header has the room for the component and should use it, got " +
+  /* The header names the MODULE. "FX 1: Room Size" spends the scarce half of
+   * the line on the half you can already see — you navigated to that slot. */
+  if (io.formatValue("slot:lfo1:target", "fx1", "header") !== "Freeverb: Room Size")
+    fail("the header should name the module, got " +
          JSON.stringify(io.formatValue("slot:lfo1:target", "fx1", "header")));
   if (state.describeCalls.join() !== "0,0")
     fail("lfo1:target must resolve LFO index 0, got " + state.describeCalls.join());
@@ -448,7 +449,7 @@ function makeSlot(over) {
   }
 
   /* Both LFOs, and only the two of them. */
-  state.targets[1] = { short: "Cutoff", header: "Synth: Cutoff", long: "Braids: Cutoff", empty: false };
+  state.targets[1] = { short: "Cutoff", long: "Braids: Cutoff", empty: false };
   if (io.formatValue("slot:lfo2:target", "synth", "cell") !== "Cutoff")
     fail("the target of LFO 2 is not resolved");
   if (io.formatValue("slot:lfo3:target", "synth", "cell") !== null)
