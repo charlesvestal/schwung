@@ -147,9 +147,29 @@ Master-FX-related tests are source-text greps. Every one of them would pass with
 the cap at 8 and every literal 4 left in place — including the misroute above,
 while it corrupted FX 1.
 
+**Step 0 decisions — SETTLED 2026-08-20 by Charles.**
+
+- **Layout: windowed scroll, like the slots.** And it should not be a new
+  implementation. `scrollWindow(total, selected, capacity)` in
+  `chain_model.mjs:203` is fully generic — it takes counts, not chains — and
+  `drawChainDiagram` takes a components array. So Master FX builds
+  `fx1..fx8 + settings` as components and adopts `chain_diagram.mjs` wholesale,
+  inheriting the scroll, the box geometry, the bypass `B` and the LFO markers,
+  and dropping `shadow_ui_master_fx.mjs`'s own `TOTAL_W` row. The two screens
+  also stop looking like different products, which is the direction the movy
+  chrome work already took everything else.
+- **Memory: accept the +512 KB for now.** It is BSS, so runtime RAM rather than
+  image size on a root FS that is already full, and it is cheap next to
+  truncating param metadata or introducing owned-buffer permutation bugs before
+  they are needed. **It comes back at Step 4 for a different reason:** with the
+  cache embedded, permuting a position means moving 128 KB structs, and the
+  permutation runs on the SPI callback. Indirecting it there is a performance
+  fix that happens to also fix the size — and it is what would make
+  `chain_permute.h` usable (`CHAIN_PERM_MAX_ELEM` is 2048). Decide it as part of
+  Step 4, not before.
+
 **Revised order** (the handoff's "best done together" is wrong — bundling makes
 a regression unbisectable):
-- **Step 0**: decide the screen layout, and decide the BSS question.
 - **Step 1**: harden the C string routing **at the current cap of 4**, with a
   cap-derived test. Zero behaviour change.
 - **Step 2**: route the ~21 JS literals through one constant, **still at 4**.
