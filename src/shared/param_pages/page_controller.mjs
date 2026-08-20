@@ -36,6 +36,35 @@ import { resolveViz } from "./viz.mjs";
 
 export { LAYOUT_MOVY };
 import { step, stepLevel, reanchor, firstGrid, jumpIndex, groupIndex } from "./page_nav.mjs";
+
+/*
+ * Menu page geometry.
+ *
+ * The list keeps FIVE rows, the same as every other list on this screen, in
+ * both the inert and the entered state — so entering a menu highlights a row
+ * rather than reflowing the page. The bracket frame is therefore drawn OUTSIDE
+ * the list, not around a shrunken one:
+ *
+ *   row 8        top bracket arms
+ *   rows 9..53   the five list rows (fills are y-1 .. y+7 from y=10,19,28,37,46)
+ *   row 54       bottom bracket arms
+ *
+ * and horizontally the frame sits at x=2..125 while the list text starts at
+ * x=10 and its right-aligned values end at x=118, so nothing collides and
+ * nothing touches the screen edge.
+ */
+const MENU_LIST_X = 8, MENU_LIST_Y = 10, MENU_LIST_W = 112;
+/*
+ * The frame is inset 4px from each edge so it reads as a frame rather than as
+ * the screen border. Its side arms sit at x=4 and x=123, clear of the list text
+ * (starts x=10) and of right-aligned values (end x=118); its top and bottom
+ * arms sit on rows 8 and 54, which are the only rows the five list fills
+ * (9..53) leave free. That one row is the entire vertical margin available —
+ * a wider gap costs a list row, and matching the five rows everywhere else
+ * matters more than the air.
+ */
+const MENU_FRAME_X = 4, MENU_FRAME_Y = 8, MENU_FRAME_W = 120;
+const MENU_BRACKET_LEN = 7;
 import { knobInit, knobTick, knobConfigFromMeta } from "../knob_engine.mjs";
 import { movyKnobInit, movyKnobTick } from "./movy_knob.mjs";
 import { formatParamForSet } from "../param_format.mjs";
@@ -429,6 +458,7 @@ export function createController(io = {}) {
      * under 25 entries this way.
      */
     /* ------------------------------------------------------------- menu */
+
 
     /* Cursor per MENU page, by page NAME — page indices move on rebuild. */
     function menuIndex(p) {
@@ -856,12 +886,24 @@ export function createController(io = {}) {
                 return;
             }
             if (s.pickerOpen) {
-                /* The picker sizes itself to its rect, so it has to be told the
-                 * footer band exists or it draws its last row underneath it. */
-                const pickRect = footer
-                    ? { x: 0, y: 0, w: 128, h: RULE_Y }
-                    : rect;
-                renderPicker(ctx, { rect: pickRect, entries: s.pickerEntries, index: s.pickerIndex, title: "Sections" });
+                /*
+                 * The section picker wears the PAGE chrome, not a chrome of its
+                 * own. It used to draw its own taller header, so the one screen
+                 * that is explicitly about navigating pages was the one screen
+                 * that did not look like a page. Same header band, same bank
+                 * bar, same list rect and same five rows as a menu page — the
+                 * only difference is what the list holds.
+                 */
+                const pbottom = footer ? RULE_Y : 64;
+                drawHeaderMovy(ctx, title || "", "SECTIONS", false);
+                drawBankBar(ctx, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
+                renderPicker(ctx, {
+                    rect: { x: MENU_LIST_X, y: MENU_LIST_Y,
+                            w: MENU_LIST_W, h: pbottom - MENU_LIST_Y },
+                    entries: s.pickerEntries,
+                    index: s.pickerIndex,
+                    header: false,
+                });
                 if (footer) drawFooter(ctx, footer);
                 return;
             }
@@ -875,10 +917,19 @@ export function createController(io = {}) {
                 drawBankBar(ctx, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
                 const bottom = footer ? RULE_Y : 64;
                 const entered = menuEntered();
-                const listRect = { x: 0, y: 9, w: 128, h: bottom - 9 };
+                /*
+                 * ONE list rect for both states. Shrinking it to make room for
+                 * the brackets cost a row (4 vs 5 everywhere else) and made the
+                 * rows jump as you entered. Instead the list is inset far enough
+                 * that the brackets sit OUTSIDE it: the top arm lands on row 8
+                 * and the bottom on row 54, both clear of the row fills
+                 * (9..53), and the side arms clear the text at x+2 and the
+                 * right-aligned values at x+w-2.
+                 */
+                const listRect = { x: MENU_LIST_X, y: MENU_LIST_Y,
+                                   w: MENU_LIST_W, h: bottom - MENU_LIST_Y };
                 renderPicker(ctx, {
-                    rect: entered ? listRect
-                                  : { x: 4, y: listRect.y + 2, w: 120, h: listRect.h - 4 },
+                    rect: listRect,
                     entries: (mp.entries || []).map((e) => ({ name: e.label, value: e.value })),
                     /* Inert: nothing is highlighted, because nothing is selected
                      * yet — the page is something you can go INTO, not something
@@ -886,7 +937,10 @@ export function createController(io = {}) {
                     index: entered ? menuIndex(mp) : -1,
                     header: false,
                 });
-                if (!entered) drawBrackets(ctx, listRect.x, listRect.y, listRect.w, listRect.h);
+                if (!entered) {
+                    drawBrackets(ctx, MENU_FRAME_X, MENU_FRAME_Y,
+                                 MENU_FRAME_W, bottom - MENU_FRAME_Y, MENU_BRACKET_LEN);
+                }
                 if (footer) drawFooter(ctx, footer);
                 return;
             }
