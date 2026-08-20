@@ -13508,9 +13508,18 @@ function drawChainEdit() {
     const dirtyMark = slotDirtyCache[selectedSlot] ? "*" : "";
     const patchName = isExistingPreset(selectedSlot) ? slots[selectedSlot].name : null;
     const headerText = patchName
-        ? truncateText(`${dirtyMark}${patchName}`, 24)
+        ? truncateText(`${dirtyMark}${patchName}`, 20)
         : `${dirtyMark}Slot ${selectedSlot + 1}`;
-    drawHeader(headerText);
+    /*
+     * The knob-grid chrome. This is the screen you pass through to reach every
+     * other one, so it was the last place still announcing itself in a
+     * different font with no footer — you left the editor and the furniture
+     * changed. The body is a diagram rather than a list, so only the bands
+     * move: header at the top, hints at the bottom, and the boxes refitted
+     * between them.
+     */
+    const movy = { fillRect: fill_rect, print, textWidth: text_width };
+    drawMovyHeader(movy, headerText, "CHAIN", false);
 
     /* Refresh chain config from DSP each render to ensure display matches actual state.
      * Without this, the cached chainConfigs can be stale if the slot was loaded
@@ -13525,14 +13534,24 @@ function drawChainEdit() {
     const GAP = 2;
     const TOTAL_W = 5 * BOX_W + 4 * GAP;  // 118px
     const START_X = 6 + Math.floor((SCREEN_WIDTH - 6 - TOTAL_W) / 2);  // centered right of indicators
-    const BOX_Y = 20;  // Below header
+    /*
+     * 14, not the old 20: the movy header band is 7 rows against the old
+     * header's ~18, so the diagram comes up with it.
+     *
+     * Not further up, though — the LFO tilde and the bypass "B" draw at
+     * BOX_Y - 6, so 11 would have put them at row 5, inside the header band.
+     * 14 lands them at 8-11, one row clear of it. The whole column:
+     *   0-6 header | 8-11 marks | 14-29 boxes | 33-39 label | 44-50 info
+     *   55 rule | 56-63 footer
+     */
+    const BOX_Y = 14;
 
     /* Draw slot indicators - 4 marks in left margin, spanning from below header to footer */
     const INDICATOR_X = 0;
     const INDICATOR_W = 4;
     const INDICATOR_GAP = 1;
     const INDICATOR_START_Y = BOX_Y;  // same margin below title rule as boxes
-    const INDICATOR_END_Y = FOOTER_RULE_Y;  // same margin above footer
+    const INDICATOR_END_Y = MOVY_RULE_Y;   // same margin above the footer rule
     const INDICATOR_H = Math.floor((INDICATOR_END_Y - INDICATOR_START_Y - 3 * INDICATOR_GAP) / 4);
     for (let s = 0; s < 4; s++) {
         const iy = INDICATOR_START_Y + s * (INDICATOR_H + INDICATOR_GAP);
@@ -13654,13 +13673,13 @@ function drawChainEdit() {
 
     /* Draw component label below boxes */
     const selectedComp = chainSelected ? null : CHAIN_COMPONENTS[selectedChainComponent];
-    const labelY = BOX_Y + BOX_H + 4;
+    const labelY = BOX_Y + BOX_H + 3;
     const label = chainSelected ? "Chain" : (selectedComp ? selectedComp.label : "");
     const labelX = Math.floor((SCREEN_WIDTH - label.length * 5) / 2);
     print(labelX, labelY, label, 1);
 
     /* Draw current module name/preset below label */
-    const infoY = labelY + 12;
+    const infoY = labelY + 11;
     let infoLine = "";
     if (chainSelected) {
         /* Show patch name when chain is selected */
@@ -13690,6 +13709,10 @@ function drawChainEdit() {
     infoLine = truncateText(infoLine, 24);
     const infoX = Math.floor((SCREEN_WIDTH - infoLine.length * 5) / 2);
     print(infoX, infoY, infoLine, 1);
+
+    /* Back leaves shadow mode entirely from here — the one screen where it
+     * does — so the footer says EXIT rather than OUT. */
+    drawMovyFooter(movy, [["JOG", "SEL"], ["CLK", "OPEN"], ["BACK", "EXIT"]]);
 }
 
 /* Draw component module selection list */
