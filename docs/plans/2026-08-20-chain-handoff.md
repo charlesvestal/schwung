@@ -86,6 +86,81 @@ constant** — the sites that break are the ones that never referenced it.
 Also check `master_fx_N.json` persistence and whether anything assumes four
 files.
 
+---
+
+#### AMENDED 2026-08-20 after reconnaissance — three things above are wrong
+
+**"It still reloads on renumber" is not true, because there is no renumber.**
+Master FX has **no insert, no remove and no move**, at any level: the whole
+gesture set on `VIEWS.MASTER_FX` is jog, click (edit or pick), Shift+click
+(swap), Mute+click (bypass), plus preset actions. "Remove" is expressed as
+picking `None`, which unloads in place and leaves a hole rather than closing the
+gap. So job 2 is **inventing a feature** — a gesture, a `master_fx:move` /
+`master_fx:remove` verb pair, and the permutation — not porting
+`chain_reorder.c`. Scope accordingly.
+
+**The screen does not fit, and this is probably the largest piece of work.**
+`src/shadow/shadow_ui_master_fx.mjs:117` is `TOTAL_W = 5 * BOX_W + 4 * GAP` =
+118px of a 128px display: five 22px boxes that exactly fill the screen. Nine
+boxes is 214px, drawn off-screen with no clipping and no error, taking the
+bypass `B` and the LFO `~` markers with them. Master FX has none of the
+windowed-scroll machinery `chain_diagram.mjs` got. **This is a design decision
+and it blocks the visual half of the raise.**
+
+**The cap raise costs +512 KB of static BSS.** Each `master_fx_slot_t` embeds a
+64 KB `chain_params_cache` (`shadow_chain_mgmt.h:47`) and there is a *second*
+parallel 64 KB file-static cache per slot (`shadow_chain_mgmt.c:74`). That is
+128 KB per slot, so 4 → 8 adds half a megabyte to the shim image on a Move,
+with no warning. Decide deliberately: accept it, shrink the cache, or indirect
+it behind a pointer. **Indirecting changes how the permutation must be written**
+(it becomes a genuine owned buffer), so decide before writing it.
+
+**Two sites the list above omits, both the "never referenced the constant"
+shape:**
+- `shadow_chain_mgmt.c:2163` — `lfo->target[2] >= '1' && lfo->target[2] <= '4'`.
+  A **character** range, so grepping `<= 4` misses it. An LFO aimed at `fx5`
+  silently stops modulating. Also caps the design at 9 slots without saying so.
+- `shadow_ui.js:16524`/`:16539` — the `master_fx_N.json` copy/seed loops are
+  bounded by `SHADOW_UI_SLOTS`, conflating the four instrument slots with the
+  four Master FX slots. After the raise, duplicating a set copies
+  `master_fx_0..3` and never touches `4..7`.
+
+**The two ladders are not equivalent.** `shadow_direct_set_param` (~1729) drops
+an unmatched key. The shadow_param handler (~2613) ends
+`else { mfx_slot = 0; param_key = fx_key; }`, so `fx5:foo` is **routed to slot
+0 with a garbage key** — silent corruption of a different running module, not a
+silent no-op. Highest-severity site in the area.
+
+**`master_fx_slot_t` does NOT have the owned-buffer problem** that segfaulted
+the per-slot permutation: every member is a value or an inline array. But
+`chain_permute.h` still cannot be reused off the shelf —
+`MFX_RUNTIME_CHAIN_PARAMS_MAX` (65536) exceeds `CHAIN_PERM_MAX_ELEM` (2048), so
+`chain_perm_arrays_ok` refuses it. And three per-position arrays are
+**file-static, outside the struct**, so `test_chain_permute.sh`'s
+collector-versus-struct trick is structurally blind to them. Vacating a position
+must go through `shadow_master_fx_slot_unload`, not `memset` — the latter leaks
+a `dlopen` handle and an FX instance per operation, which is quieter than a
+crash and therefore worse.
+
+**There is no behavioural test coverage on Master FX at all.** All nine
+Master-FX-related tests are source-text greps. Every one of them would pass with
+the cap at 8 and every literal 4 left in place — including the misroute above,
+while it corrupted FX 1.
+
+**Revised order** (the handoff's "best done together" is wrong — bundling makes
+a regression unbisectable):
+- **Step 0**: decide the screen layout, and decide the BSS question.
+- **Step 1**: harden the C string routing **at the current cap of 4**, with a
+  cap-derived test. Zero behaviour change.
+- **Step 2**: route the ~21 JS literals through one constant, **still at 4**.
+  Zero behaviour change.
+- **Step 3**: flip 4 → 8. With 1 and 2 done this is the one-liner the handoff
+  imagined.
+- **Step 4**: only then the new gestures, verbs and permutation.
+
+Steps 1 and 2 need no decisions and are in progress. Step 3 is blocked on
+Step 0.
+
 ### 2.3 Four hardware checks not re-confirmed after the permutation
 
 These passed BEFORE the permutation deleted the carry machinery. The mechanism
