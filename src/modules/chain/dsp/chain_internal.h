@@ -444,9 +444,11 @@ CHAIN_INTERNAL void chain_mod_update_base_from_set_param(chain_instance_t *inst,
 /* chain_midi.c */
 CHAIN_INTERNAL int chain_get_clock_status(void);
 CHAIN_INTERNAL int v2_load_midi_fx(chain_instance_t *inst, const char *fx_name);
+CHAIN_INTERNAL int v2_load_midi_fx_slot(chain_instance_t *inst, int slot, const char *fx_name);
 CHAIN_INTERNAL void v2_on_midi(void *instance, const uint8_t *msg, int len, int source);
 CHAIN_INTERNAL void v2_tick_midi_fx(chain_instance_t *inst, int frames);
 CHAIN_INTERNAL void v2_unload_all_midi_fx(chain_instance_t *inst);
+CHAIN_INTERNAL void v2_unload_midi_fx_slot(chain_instance_t *inst, int slot);
 
 /* chain_patch.c */
 CHAIN_INTERNAL int delete_master_preset(int index);
