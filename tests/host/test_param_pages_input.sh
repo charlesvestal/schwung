@@ -95,7 +95,7 @@ Promise.all([
     for (const msg of [[0x90, 68, 100], [0xf8], [0xe0, 0, 64], null, [0xb0], [0xb0, 50, 127]]) {
       if (I.decodeInput(msg) !== null) fail("should ignore " + JSON.stringify(msg));
     }
-    /* CC 88 (Mute) is NOT ignored — it is the modifier for reset-to-default,
+    /* CC 88 (Mute) is NOT ignored — it is a modifier other gestures use,
      * and Schwung already uses it for destructive actions in this view. */
     const mute = I.decodeInput(cc(88, 127));
     if (!mute || mute.type !== "mute" || mute.down !== true) fail("CC 88 should report mute held");
@@ -139,7 +139,7 @@ Promise.all([
     if (!out || out.action !== "exit") fail("back should ask the host to exit");
   }
 
-  /* ---- 7b. reset uses Mute, and cannot fire during precision editing ---- */
+  /* ---- 7b. no modifier resets a value; precision editing is safe -------- */
   {
     const dev = D.createFakeDevice({ id: "branchage" });
     const ctl = C.createController(dev);
@@ -168,15 +168,24 @@ Promise.all([
     }
     feed(noteOff(0), {});
 
-    /* Mute + touch does reset — a modifier Schwung already uses for
-     * destructive actions in this view, and one you are not holding while
-     * fine-adjusting. */
+    /*
+     * Mute + touch must NOT reset.
+     *
+     * It used to, and the gesture could never be advertised: CC 88 is
+     * forwarded to Move unconditionally, so holding Mute to reach it also
+     * mutes the selected track. Reset lives on the double-tap alone now, and
+     * Mute stays a pure modifier here.
+     */
+    for (let i = 0; i < 10; i++) feed(cc(71, 1), {});
+    const beforeMute = Number(ctl.state.values[key]);
+    if (beforeMute === Number(meta.default)) fail("setup: value should be off its default");
     feed(noteOn(0, 100), { mute: true });
-    if (Number(ctl.state.values[key]) !== Number(meta.default)) {
-      fail("mute + touch did not reset to the default: " + ctl.state.values[key]);
+    if (Number(ctl.state.values[key]) !== beforeMute) {
+      fail("mute + touch reset the value — that gesture is gone, because holding " +
+           "Mute also mutes the selected track");
     }
 
-    /* A plain touch still just announces — it must not reset. */
+    /* A plain touch still just announces — it must not reset either. */
     feed(noteOff(0), {});
     for (let i = 0; i < 10; i++) feed(cc(71, 1), {});
     const moved = Number(ctl.state.values[key]);

@@ -708,16 +708,15 @@ Promise.all([
         clock += DOUBLE_TAP_GAP_CLEAR;
       };
 
-      /* The 454 is the longest contact the capture recorded on a TAP, and the
-       * first dwell threshold tried (450) sat just underneath it — rejecting a
-       * real tap. It is here so the threshold can never drift back inside the
-       * spread of an actual hand. */
-      for (const [dwell, airGap] of [[422, 520], [435, 588], [436, 438],
-                                     [400, 417], [402, 572], [402, 384],
-                                     [454, 450],
-                                     /* The one real miss from the second
-                                      * capture, at a 700ms window. */
-                                     [407, 753]]) {
+      /*
+       * Air gaps from the SPI-callback trace — the only measurement of this
+       * that is not filtered through a SHM ring and a 60Hz loop. When a
+       * double-tap does produce two contacts, this is what the gap between
+       * them actually is.
+       */
+      for (const [dwell, airGap] of [[265, 9], [285, 67], [286, 70],
+                                     [285, 183], [286, 169], [286, 166],
+                                     [303, 61], [300, 177]]) {
         moveAway();
         tap(dwell);
         clock += airGap;
@@ -729,6 +728,26 @@ Promise.all([
                "ms, air gap " + airGap + "ms — the window must be measured on the " +
                "gap the hand controls, not on press-to-press");
         }
+      }
+
+      /*
+       * The gap BETWEEN two separate double-taps must not chain them.
+       *
+       * Measured at 769-885ms in the same capture, and a 900ms window admitted
+       * every one of them: the first tap of one gesture paired with the last
+       * tap of the one before. It hid because the second reset lands on a value
+       * already at its default, so nothing visibly happened.
+       */
+      for (const between of [769, 841, 885, 929]) {
+        moveAway();
+        writes.length = 0;
+        tap(286);
+        clock += between;
+        ctl.onKnobTouch(slot, true);
+        if (writes.some(([, v]) => Number(v) === dflt))
+          fail("a " + between + "ms gap between two SEPARATE double-taps chained them " +
+               "into one — real gaps within a pair are 9-183ms");
+        ctl.onKnobTouch(slot, false);
       }
 
       /* Paused between taps: not one gesture. */
@@ -760,8 +779,8 @@ Promise.all([
        * and the readout used to dismiss on release — so the one value worth
        * showing was the one you never saw. */
       moveAway();
-      tap(400);
-      clock += 400;
+      tap(286);
+      clock += 170;                      /* a measured intra-pair gap */
       ctl.onKnobTouch(slot, true);
       if (Number(ctl.state.values[key]) !== dflt) fail("setup: the reset did not fire");
       ctl.onKnobTouch(slot, false);

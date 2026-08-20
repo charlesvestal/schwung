@@ -106,22 +106,21 @@ export function applyInput(controller, intent, { nowMs, reveal } = {}) {
             return null;
 
         case "touch":
-            /* Mute + touch resets that param to its declared default.
+            /*
+             * There is deliberately no Mute+touch reset here.
              *
-             * Mute rather than Shift: Shift is precision mode, so during fine
-             * adjustment you are ALREADY holding shift with a knob under your
-             * finger — putting a destructive action one stray press away from
-             * the most delicate operation in the UI. Mute is also the modifier
-             * Schwung already uses for destructive/state actions in this same
-             * view (Mute+JogClick bypasses a module, Mute+Track mutes a slot).
+             * It existed, and it could never be advertised: CC 88 is forwarded
+             * to Move unconditionally, so holding Mute to reach the gesture
+             * also mutes the selected track. A shortcut whose documentation
+             * has to warn you what else it does is not a shortcut. It also had
+             * a quiet cost — returning early meant the controller never saw
+             * the press, so the matching release left a dwell from an older,
+             * unrelated contact in the state the double-tap is judged against.
              *
-             * Touch-down rather than a double-tap: lifting and re-placing a
-             * finger mid-adjustment is a normal thing to do, and a double-tap
-             * would read that as a reset. */
-            if (intent.down && intent.mute) {
-                controller.resetToDefault(intent.slot);
-                return null;
-            }
+             * Reset lives on the double-tap alone. `intent.mute` is still
+             * decoded because other gestures in this view use Mute as a
+             * modifier.
+             */
             controller.onKnobTouch(intent.slot, intent.down);
             return null;
 

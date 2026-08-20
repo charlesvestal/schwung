@@ -168,23 +168,23 @@ export const TURN_CLAIM_MS = 1200;
 /**
  * Lift-to-re-touch time that still makes two taps a DOUBLE tap.
  *
- * Measured from the previous RELEASE, not the previous press. This is the
- * third interval tried and the first that matches a hand, because it is the
- * only one the user controls: the press-to-press distance also contains the
- * dwell, and the dwell is capacitive decay. Captured on hardware, one user
- * tapping at what felt like a constant rate produced press-to-press of
- * 786-1023ms — a spread of 240ms that made the gesture look random — while the
- * air gap underneath it was 384-588ms.
+ * Measured from the previous RELEASE, which is also how Android does it
+ * (GestureDetector.isConsideredDoubleTap compares secondDown to firstUp, with
+ * a 300ms DOUBLE_TAP_TIMEOUT).
  *
- * 900, from a second capture at 700: of fifteen deliberate attempts, twelve
- * fired and the only real miss was an air gap of 753ms — over the line by 53.
- * Widening is safe because it is not the window that rejects an ADJUSTMENT:
- * lifting a finger briefly mid-turn produces air gaps of 50-316ms, far INSIDE
- * any plausible window, and those are caught by the turn count instead. So the
- * window only has to separate "two taps" from "a pause", and a pause in the
- * same captures ran 1004-1321ms.
+ * 350, from the hardware trace rather than from taste. Recording touch edges
+ * in the SPI callback itself shows that when a double-tap DOES produce two
+ * contacts, the air gap between them is 9-183ms — nothing like the hundreds of
+ * milliseconds the JS-side numbers suggested. Those larger figures were the
+ * gaps BETWEEN separate attempts, and a window wide enough to admit them
+ * chained across gestures: the first tap of one double-tap paired with the
+ * last tap of the previous one. Invisible, because the second reset lands on a
+ * value already at its default, but wrong.
  *
- * Two taps on the same knob inside this window reset it to its declared
+ * Widening this is almost certainly the wrong instinct. A tap that produces no
+ * second contact at all is not a timing problem and no window can catch it.
+ *
+  * Two taps on the same knob inside this window reset it to its declared
  * default. 744 params across 39 modules declare one, and there is otherwise no
  * way back to it short of reloading the preset.
  *
@@ -199,7 +199,7 @@ export const TURN_CLAIM_MS = 1200;
  * not the first half of a double-tap, whatever its timing. So the gesture is
  * "tap, tap" and never "tap, turn, tap".
  */
-export const DOUBLE_TAP_MS = 900;
+export const DOUBLE_TAP_MS = 350;
 
 /**
  * The longest contact that still counts as a TAP rather than a hold.
