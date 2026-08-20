@@ -25,6 +25,9 @@
  * Globals
  * ============================================================================ */
 
+/* Defined further down, next to the slot activation probe it is the inverse of. */
+static void shadow_slot_clear_all_modules(void *instance);
+
 /* Chain slot state */
 shadow_chain_slot_t shadow_chain_slots[SHADOW_CHAIN_INSTANCES];
 volatile int shadow_solo_count = 0;
@@ -1443,11 +1446,7 @@ void shadow_inprocess_handle_ui_request(void) {
             return;
         }
         /* Already silent — immediate teardown */
-        if (shadow_plugin_v2->set_param && shadow_chain_slots[slot].instance) {
-            shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance, "synth:module", "");
-            shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance, "fx1:module", "");
-            shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance, "fx2:module", "");
-        }
+        shadow_slot_clear_all_modules(shadow_chain_slots[slot].instance);
         shadow_chain_slots[slot].active = 0;
         shadow_chain_slots[slot].patch_index = -1;
         capture_clear(&shadow_chain_slots[slot].capture);
@@ -1530,9 +1529,7 @@ void shadow_process_fade_completions(void) {
 
         if (fade->pending_clear) {
             /* Deferred clear: tear down DSP modules */
-            shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance, "synth:module", "");
-            shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance, "fx1:module", "");
-            shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance, "fx2:module", "");
+            shadow_slot_clear_all_modules(shadow_chain_slots[slot].instance);
             shadow_chain_slots[slot].active = 0;
             shadow_chain_slots[slot].patch_index = -1;
             capture_clear(&shadow_chain_slots[slot].capture);
@@ -2322,6 +2319,131 @@ void shadow_master_fx_lfo_tick(int frames) {
     }
 }
 
+/* ============================================================================
+ * Slot activation probe
+ * ============================================================================ */
+
+/*
+ * Does this chain instance hold ANY loaded component — synth, audio FX, or
+ * MIDI FX, in any position?  That is the whole of what "active" means to the
+ * shim: an active slot gets mixed and gets MIDI dispatched to it, an inactive
+ * one is silent.  A MIDI-FX-only slot in Pre mode has neither synth nor audio
+ * FX and still must activate, which is why this is an OR over all three.
+ *
+ * THREE reads, not one per FX position.  The FX caps are 8 and 8, so probing
+ * "fx1_module".."fx8_module" and "midi_fx1_module".."midi_fx8_module" would
+ * cost seventeen get_param calls.  Every caller of this function runs inside
+ * the SPI callback (~900us budget per frame — see docs/REALTIME_SAFETY.md), so
+ * a cap-proportional probe is not acceptable there.  Instead the chain DSP
+ * already publishes `fx_count` and `midi_fx_count` as single keys, which
+ * collapses each list to one read and — just as importantly — means the caps
+ * are never named on this side and so cannot drift out of sync with
+ * chain_internal.h.  This is strictly CHEAPER than the five-key probe it
+ * replaces while covering four times as many positions.
+ *
+ * Why a count is a sound "anything loaded" test even though the lists are
+ * sparse: both counts are HIGH-WATER MARKS, not compacted lengths (see the
+ * contract comment on v2_load_midi_fx_slot in chain_midi.c).  A chain whose
+ * only module sits in fx5 reports fx_count == 6 with positions 0..3 NULL — so
+ * a hole never hides a loaded module.  In the other direction, clearing a
+ * position trims the trailing NULLs off the mark, so the count falls back to 0
+ * exactly when the last module goes away and never reports a phantom.
+ *
+ * These are direct in-process calls into the dlopen'd chain host, not param
+ * SHM round-trips; each is a strcmp walk plus an snprintf, well under a
+ * microsecond.
+ */
+int shadow_slot_has_loaded_component(const plugin_api_v2_t *pv2, void *instance)
+{
+    if (!pv2 || !pv2->get_param || !instance) return 0;
+
+    static const char *probe_keys[] = {
+        "synth_module",   /* name string: non-empty means loaded */
+        "fx_count",       /* integer: > 0 means at least one audio FX */
+        "midi_fx_count"   /* integer: > 0 means at least one MIDI FX */
+    };
+
+    for (size_t k = 0; k < sizeof(probe_keys) / sizeof(probe_keys[0]); k++) {
+        char buf[64];
+        int len = pv2->get_param(instance, probe_keys[k], buf, sizeof(buf));
+        if (len <= 0) continue;
+        buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
+        if (buf[0] == '\0') continue;
+        if (k == 0) return 1;           /* a synth name */
+        if (atoi(buf) > 0) return 1;    /* a non-zero list length */
+    }
+    return 0;
+}
+
+/*
+ * Is `key` an FX module-slot write — "fx<N>:module" or "midi_fx<N>:module"?
+ *
+ * Deliberately unbounded in N.  Bounding it here would mean naming MAX_AUDIO_FX
+ * / MAX_MIDI_FX in src/host/, which is the duplicated-cap bug this whole change
+ * exists to remove.  It does not need bounding: the only caller confirms with
+ * shadow_slot_has_loaded_component(), whose counts come from the DSP, and the
+ * DSP rejects an out-of-range index outright — so "fx99:module" matches the
+ * shape here, loads nothing there, and leaves the slot correctly inactive.
+ *
+ * "synth:module" is not matched; it has its own activation branch, which also
+ * adopts the module's default forward channel.
+ */
+static int shadow_key_is_fx_module(const char *key)
+{
+    const char *p = key;
+    if (strncmp(p, "midi_fx", 7) == 0) p += 7;
+    else if (strncmp(p, "fx", 2) == 0) p += 2;
+    else return 0;
+    if (*p < '1' || *p > '9') return 0;   /* at least one digit, no leading 0 */
+    while (*p >= '0' && *p <= '9') p++;
+    return strcmp(p, ":module") == 0;
+}
+
+/*
+ * Tear down every module in a chain instance — synth, all audio FX, all MIDI
+ * FX — so a cleared slot is genuinely empty.
+ *
+ * The two callers used to write synth:module, fx1:module and fx2:module and
+ * stop, which left fx3..fx8 and every MIDI FX loaded and still processing.
+ * That was survivable only while the activation probe was equally short-
+ * sighted; now that shadow_slot_has_loaded_component() sees the whole list, a
+ * leftover fx5 would re-activate the slot the caller just cleared.
+ *
+ * Reads the list lengths rather than looping to the caps, for the same reason
+ * the probe does: the caps stay in chain_internal.h and are not restated here.
+ * Two get_param calls plus one set_param per LOADED position — a cleared slot
+ * costs three calls, not seventeen.  Walks downward so the high-water marks
+ * trim as they go.
+ */
+static void shadow_slot_clear_all_modules(void *instance)
+{
+    if (!shadow_plugin_v2 || !shadow_plugin_v2->set_param || !instance) return;
+
+    shadow_plugin_v2->set_param(instance, "synth:module", "");
+
+    static const struct { const char *count_key, *fmt; } lists[] = {
+        { "fx_count",      "fx%d:module"      },
+        { "midi_fx_count", "midi_fx%d:module" }
+    };
+    for (size_t l = 0; l < sizeof(lists) / sizeof(lists[0]); l++) {
+        int n = 0;
+        if (shadow_plugin_v2->get_param) {
+            char buf[16];
+            int len = shadow_plugin_v2->get_param(instance, lists[l].count_key,
+                                                  buf, sizeof(buf));
+            if (len > 0) {
+                buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
+                n = atoi(buf);
+            }
+        }
+        for (int i = n; i >= 1; i--) {   /* keys are 1-based */
+            char key[32];
+            snprintf(key, sizeof(key), lists[l].fmt, i);
+            shadow_plugin_v2->set_param(instance, key, "");
+        }
+    }
+}
+
 /* param.serve span context: emitted on every return path of the handler below
  * via __attribute__((cleanup)), parented to the JS param.get span propagated
  * through the param SHM. No-op when tracing is off (ps.on == 0). */
@@ -2822,14 +2944,18 @@ void shadow_inprocess_handle_param_request(void) {
                     }
                 }
             }
+            /* Any FX position, not just the first two: a slot whose only
+             * module lands in fx5 or midi_fx4 must activate too, or it is
+             * never mixed.  The shape test costs no IPC; the confirming probe
+             * is three in-process reads and only runs on a module write to an
+             * inactive slot, which is a user action, not a per-frame one. */
             if (!shadow_chain_slots[slot].active &&
-                (strcmp(key_copy, "fx1:module") == 0 ||
-                 strcmp(key_copy, "fx2:module") == 0 ||
-                 strcmp(key_copy, "midi_fx1:module") == 0 ||
-                 strcmp(key_copy, "midi_fx2:module") == 0) &&
-                value_copy[0] != '\0') {
+                shadow_key_is_fx_module(key_copy) &&
+                value_copy[0] != '\0' &&
+                shadow_slot_has_loaded_component(shadow_plugin_v2,
+                                                 shadow_chain_slots[slot].instance)) {
                 shadow_chain_slots[slot].active = 1;
-    shadow_chain_slots[slot].fade.target = 1.0f;
+                shadow_chain_slots[slot].fade.target = 1.0f;
             }
             if (strcmp(key_copy, "load_file") == 0) {
                 /* JS uses load_file on SET_CHANGED to restore slots from
@@ -2843,52 +2969,17 @@ void shadow_inprocess_handle_param_request(void) {
                  * and synth are correctly loaded in the DSP. Query the
                  * instance and activate eagerly to mirror the other load
                  * paths. */
-                if (shadow_plugin_v2->get_param) {
-                    char buf[64];
-                    int loaded = 0;
-                    int len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
-                        "synth_module", buf, sizeof(buf));
-                    if (len > 0) {
-                        buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
-                        if (buf[0] != '\0') loaded = 1;
-                    }
-                    if (!loaded) {
-                        len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
-                            "fx1_module", buf, sizeof(buf));
-                        if (len > 0) {
-                            buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
-                            if (buf[0] != '\0') loaded = 1;
-                        }
-                    }
-                    if (!loaded) {
-                        len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
-                            "fx2_module", buf, sizeof(buf));
-                        if (len > 0) {
-                            buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
-                            if (buf[0] != '\0') loaded = 1;
-                        }
-                    }
-                    if (!loaded) {
-                        len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
-                            "midi_fx1_module", buf, sizeof(buf));
-                        if (len > 0) {
-                            buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
-                            if (buf[0] != '\0') loaded = 1;
-                        }
-                    }
-                    if (!loaded) {
-                        len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
-                            "midi_fx2_module", buf, sizeof(buf));
-                        if (len > 0) {
-                            buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
-                            if (buf[0] != '\0') loaded = 1;
-                        }
-                    }
-                    if (loaded) {
-                        shadow_chain_slots[slot].active = 1;
-                        shadow_chain_slots[slot].fade.target = 1.0f;
-                        shadow_ui_state_update_slot(slot);
-                    }
+                /* Five unrolled probes used to live here, one per FX position,
+                 * and they saw only fx1/fx2/midi_fx1/midi_fx2 — a set whose
+                 * only module sat in fx5 restored silent.  Extending them
+                 * position-by-position to the caps would put SEVENTEEN reads
+                 * on a handler that runs in the SPI callback.  The shared
+                 * probe covers all eight of each in three. */
+                if (shadow_slot_has_loaded_component(shadow_plugin_v2,
+                                                     shadow_chain_slots[slot].instance)) {
+                    shadow_chain_slots[slot].active = 1;
+                    shadow_chain_slots[slot].fade.target = 1.0f;
+                    shadow_ui_state_update_slot(slot);
                 }
             }
             if (strcmp(key_copy, "load_patch") == 0 ||
@@ -2923,9 +3014,7 @@ void shadow_inprocess_handle_param_request(void) {
 
             if (shadow_midi_out_log_enabled()) {
                 if (strcmp(key_copy, "synth:module") == 0 ||
-                    strcmp(key_copy, "fx1:module") == 0 ||
-                    strcmp(key_copy, "fx2:module") == 0 ||
-                    strcmp(key_copy, "midi_fx1:module") == 0) {
+                    shadow_key_is_fx_module(key_copy)) {
                     shadow_midi_out_logf("param_set: slot=%d key=%s val=%s active=%d",
                         slot, key_copy, value_copy, shadow_chain_slots[slot].active);
                 }
