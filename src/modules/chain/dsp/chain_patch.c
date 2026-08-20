@@ -1088,6 +1088,29 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
                                                 parse_debug_log("[parse] Extracted midi_fx state object");
                                             }
                                         }
+                                    } else if (*sv == '"') {
+                                        /* Opaque state (non-JSON formats like
+                                         * key=val;...), mirroring audio_fx.
+                                         * Without this branch the string was
+                                         * read as nothing and the MIDI FX came
+                                         * back at defaults on every load, even
+                                         * though the save side had written it
+                                         * and the load side would have applied
+                                         * it. */
+                                        const char *str_start = sv + 1;
+                                        const char *str_end = str_start;
+                                        while (str_end < params_end && *str_end != '"') {
+                                            if (*str_end == '\\' && *(str_end + 1)) str_end++;  /* skip escaped chars */
+                                            str_end++;
+                                        }
+                                        if (*str_end == '"') {
+                                            int slen = str_end - str_start;
+                                            if (slen > 0 && slen < MAX_FX_STATE_LEN) {
+                                                strncpy(cfg->state, str_start, slen);
+                                                cfg->state[slen] = '\0';
+                                                parse_debug_log("[parse] Extracted midi_fx state string");
+                                            }
+                                        }
                                     }
                                 }
                             }
