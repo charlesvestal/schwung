@@ -92,7 +92,14 @@ export function paramPagesEnabled() {
  * module open instead of once, which is what it looks like without this. */
 let hintShownThisSession = false;
 
-export function enterParamPages(slot, component, prefix) {
+/**
+ * @param {string} [restorePageName]  land on the page with this name instead of
+ *   the first one. Used when an editor hands control back: the user was on
+ *   page 5 when they clicked a sample, and page 1 is not where they were.
+ *   Matched by NAME, not index — controller.load rebuilds the page set and
+ *   every index can shift (same reason page_nav reanchors by name).
+ */
+export function enterParamPages(slot, component, prefix, restorePageName) {
     currentSlot = slot;
     currentComponent = component;
 
@@ -118,6 +125,15 @@ export function enterParamPages(slot, component, prefix) {
      * earlier dial/bar grid — see render_page_movy.mjs. The setting stays a
      * plain List/Knobs toggle; this is what "Knobs" draws. */
     controller.setLayout(LAYOUT_MOVY);
+    if (restorePageName) {
+        const pages = controller.pages || [];
+        for (let i = 0; i < pages.length; i++) {
+            if (pages[i] && pages[i].name === restorePageName) {
+                controller.goToPage(i);
+                break;
+            }
+        }
+    }
     /* Once per session: the grid's gestures are not guessable, and a preview
      * nobody can operate produces no useful feedback. Any input clears it. */
     if (!hintShownThisSession) {
@@ -316,7 +332,24 @@ function traced(name, fn) {
  */
 function footerHints() {
     if (!controller) return null;
-    if (controller.pickerOpen) return [["BACK", "CLOSE"], ["JOG", "SECT"], ["CLK", "GO"]];
+    /* "EXIT", not "CLOSE": all three pairs are 129px with CLOSE — one pixel
+     * over — and the pair dropped was CLK GO, i.e. how you commit. */
+    if (controller.pickerOpen) return [["JOG", "SECT"], ["CLK", "GO"], ["BACK", "EXIT"]];
+    /*
+     * Shift gets its own footer rather than a "SHFT SECT" pill.
+     *
+     * The pill grammar is [KEY] ACTION — press the key, get the action. That
+     * breaks for a compound gesture: Shift alone does not jump a section,
+     * Shift+Jog does, so "SHFT SECT" reads as a promise the key does not keep.
+     * Spelling it "SH+JOG SECT" fixes the sense and busts the width.
+     *
+     * So the footer says what the controls do RIGHT NOW, which is the rule the
+     * held-knob case already follows: while Shift is down the jog DOES step
+     * sections and the encoders ARE fine, so that is simply what it says.
+     * Nothing compound to parse, and it doubles as the discovery mechanism —
+     * hold Shift and the footer tells you what you just changed.
+     */
+    if (shiftIsHeld()) return [["JOG", "SECT"], ["KNOB", "FINE"]];
     const held = controller.state ? controller.state.touched : -1;
     if (held >= 0) {
         const meta = controller.metaAt ? controller.metaAt(held) : null;
@@ -331,14 +364,14 @@ function footerHints() {
          * it undocumented, so it is not offered here until it has a modifier
          * that does not leak. The feature itself is untouched. */
         if (meta && meta.kind === 'opaque') return [["CLK", "OPEN"], ["BACK", "EXIT"]];
-        return [["SHFT", "FINE"], ["JOG", "PG"]];
+        return [["JOG", "PAGE"], ["CLK", "MENU"]];
     }
     /* "PG", not "PAGE": all three pairs together are 134px at "PAGE" and the
      * section jump — the one gesture that makes a 76-page module navigable —
      * was the pair being dropped. Shortening the ACTION brings it to 124px and
      * keeps every KEY name intact, which is the right trade: the key is what
      * you press, the action is only the gloss. */
-    return [["JOG", "PG"], ["SHFT", "SECT"], ["CLK", "MENU"]];
+    return [["JOG", "PAGE"], ["CLK", "MENU"]];
 }
 
 export function drawParamPages() {
