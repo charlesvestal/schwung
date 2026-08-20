@@ -61,11 +61,67 @@ export const SLOT_GRID_PARAMS = [
     { key: "mpe_mode", name: "MPE", type: "enum", options: ["OFF", "ON"] },
 ];
 
+/*
+ * The two slot LFOs, each its own page.
+ *
+ * They earn a grid rather than a menu: eight of the nine things an LFO has are
+ * turnable, and the widgets say more than a list of words can. The shape cell
+ * draws the actual waveform, Enabled draws as a switch, Depth and Rate as
+ * knobs. Only Target is a door.
+ *
+ * Stored under "lfoN:<key>" — see makeSlotLfoCtx, which uses the same prefix.
+ *
+ * Enum words are <= 3 characters for the enum square, as everywhere else.
+ * rate_div is the one that does not fit that rule: its vocabulary is "16bar",
+ * "1/16T", "1/32T", 5 and 6 characters, which the square breaks across two
+ * lines badly. It is declared as a param but NOT as a knob, so it lands on an
+ * overflow page where the cell is the same size but at least it is not
+ * competing for one of the eight. A proper fix is a wider widget for it, or
+ * short and long option labels.
+ */
+export const LFO_SHAPES_SHORT = ["SIN", "TRI", "SAW", "SQR", "S&H", "SWY"];
+export const LFO_DIVISIONS_SHORT = [
+    "16b", "15b", "14b", "13b", "12b", "11b", "10b", "9b",
+    "8b", "7b", "6b", "5b", "4b", "3b", "2b",
+    "1/1", "1T", "1/2", "2T", "1/4", "4T", "1/8", "8T",
+    "16", "16T", "32", "32T",
+];
+
+export function lfoParams(lfoIndex) {
+    return [
+        /* A door: clicking opens the existing two-step target picker. Declared
+         * `string` so it is opaque (a knob cannot turn it) and divable, and so
+         * the cell shows the current target rather than a blank frame. */
+        { key: `lfo${lfoIndex}:target`, name: "Targ", type: "string" },
+        { key: `lfo${lfoIndex}:enabled`, name: "On", type: "enum", options: ["OFF", "ON"] },
+        { key: `lfo${lfoIndex}:shape`, name: "Shape", type: "enum", options: LFO_SHAPES_SHORT },
+        { key: `lfo${lfoIndex}:polarity`, name: "Mode", type: "enum", options: ["UNI", "BI"] },
+        { key: `lfo${lfoIndex}:sync`, name: "Sync", type: "enum", options: ["FRE", "SYN"] },
+        { key: `lfo${lfoIndex}:rate_hz`, name: "Rate", type: "float", min: 0.1, max: 20, step: 0.1, unit: "Hz" },
+        { key: `lfo${lfoIndex}:rate_div`, name: "Div", type: "enum", options: LFO_DIVISIONS_SHORT },
+        { key: `lfo${lfoIndex}:depth`, name: "Depth", type: "float", min: -1, max: 1, step: 0.01 },
+    ];
+}
+
+/**
+ * Exactly eight, so an LFO is exactly ONE page.
+ *
+ * Nine would chunk to 8 + 1 — an orphan page holding a single control, and an
+ * extra jog step between LFO 1 and LFO 2 for the privilege. The one dropped is
+ * phase_offset: with target, enabled, shape, polarity, sync, both rates and
+ * depth all present, phase is the least reached for, and it stays editable in
+ * the list view. Both RATES are kept because a synced LFO cannot be set at all
+ * without rate_div, which would make the Sync switch a dead end.
+ */
+export function lfoKnobKeys(lfoIndex) {
+    return lfoParams(lfoIndex).map((p) => p.key);
+}
+
 /** Actions, in the order they appear on the menu page. */
 export const SLOT_GRID_ACTIONS = [
     { label: "Knob Mapping", action: "knobs", always: true },
-    { label: "LFO 1", action: "lfo1", always: true },
-    { label: "LFO 2", action: "lfo2", always: true },
+    /* LFO 1 and LFO 2 are PAGES now, not menu entries — eight of their nine
+     * params are turnable and the widgets draw the thing itself. */
     { label: "Save", action: "save", always: true },
     /* Save As and Delete mean nothing until a preset exists — the same filter
      * getChainSettingsItems applies to the list. */
@@ -80,24 +136,49 @@ export function slotGridHierarchy(hasPreset) {
     const menu = SLOT_GRID_ACTIONS
         .filter((a) => a.always || hasPreset)
         .map((a) => ({ label: a.label, action: a.action }));
-    return {
-        modes: null,
-        levels: {
-            root: {
-                label: "Slot",
-                knobs: SLOT_GRID_PARAMS.map((p) => p.key),
-                params: SLOT_GRID_PARAMS.map((p) => ({ key: p.key })),
-                menu: menu,
-                menu_label: "Actions",
-            },
+    /*
+     * Page order is Main, LFO 1, LFO 2, Actions.
+     *
+     * The menu therefore lives on its OWN level rather than on root: a level
+     * emits its menu straight after its own grids, before any level it
+     * navigates to, so a menu on root would land second — between the values
+     * and the LFOs. Actions are what you do when you have finished, so they
+     * belong at the end.
+     */
+    const levels = {
+        root: {
+            label: "Slot",
+            knobs: SLOT_GRID_PARAMS.map((p) => p.key),
+            params: SLOT_GRID_PARAMS.map((p) => ({ key: p.key }))
+                .concat([{ level: "lfo1", label: "LFO 1" },
+                         { level: "lfo2", label: "LFO 2" },
+                         { level: "actions", label: "Actions" }]),
         },
     };
+    for (const n of [1, 2]) {
+        levels["lfo" + n] = {
+            label: "LFO " + n,
+            knobs: lfoKnobKeys(n),
+            params: lfoParams(n).map((p) => ({ key: p.key })),
+        };
+    }
+    levels.actions = { label: "Actions", knobs: [], params: [], menu: menu, menu_label: "Actions" };
+    return { modes: null, levels };
+}
+
+/** Every declared param across the slot page and both LFO pages. */
+export function allSlotGridParams() {
+    return SLOT_GRID_PARAMS.concat(lfoParams(1)).concat(lfoParams(2));
 }
 
 /** Which real param key a grid key reads and writes, or null when derived. */
 export function realKeyFor(gridKey) {
     if (gridKey === "mpe_mode") return null;            /* derived, see below */
     if (gridKey === "midi_fx_pre_mode") return "midi_fx_pre_mode";  /* bare */
+    /* LFO params are declared with their real prefix already ("lfo1:shape"),
+     * the same one makeSlotLfoCtx uses, so they pass straight through. Adding
+     * "slot:" would address a param that does not exist and read empty. */
+    if (/^lfo[12]:/.test(gridKey)) return gridKey;
     return "slot:" + gridKey;
 }
 
@@ -131,7 +212,7 @@ export function createSlotGridIo(io) {
         getParam(fullKey) {
             const k = bare(fullKey);
             if (k === "ui_hierarchy") return JSON.stringify(slotGridHierarchy(!!io.hasPreset()));
-            if (k === "chain_params") return JSON.stringify(SLOT_GRID_PARAMS);
+            if (k === "chain_params") return JSON.stringify(allSlotGridParams());
             if (k === "mpe_mode") return io.isMpeMode() ? "1" : "0";
             if (k === "forward_channel") {
                 const raw = parseInt(io.readSlotParam("slot:forward_channel"), 10);

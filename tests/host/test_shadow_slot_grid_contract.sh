@@ -49,9 +49,28 @@ function makeSlot(over) {
 
   const grids = pages.filter((p) => p.kind === "knobs");
   const menus = pages.filter((p) => p.kind === "menu");
-  if (grids.length !== 1) fail("the eight values must fill exactly ONE page, got " + grids.length);
+  /*
+   * Main, LFO 1, LFO 2, Actions. Each LFO is exactly ONE page: nine params
+   * would chunk to 8 + 1 and put an orphan page holding a single control
+   * between LFO 1 and LFO 2.
+   */
+  if (grids.length !== 3) fail("expected 3 grid pages (Main + two LFOs), got " + grids.length);
   if (menus.length !== 1) fail("expected one actions menu page, got " + menus.length);
-  if (pages[pages.length - 1].kind !== "menu") fail("the menu must come last");
+  if (pages[pages.length - 1].kind !== "menu") {
+    fail("Actions must come LAST — a level emits its menu before any level it " +
+         "navigates to, which is why the menu lives on its own level: " +
+         pages.map((p) => p.name).join(" / "));
+  }
+  const names = pages.map((p) => p.name);
+  const order = ["Main", "LFO 1", "LFO 2", "Actions"];
+  if (names.join("|") !== order.join("|")) {
+    fail("page order should be " + order.join(" / ") + ", got " + names.join(" / "));
+  }
+  for (const g of grids) {
+    if ((g.keys || []).length !== 8) {
+      fail("page " + JSON.stringify(g.name) + " should hold 8 knobs, got " + (g.keys || []).length);
+    }
+  }
 
   const keys = grids[0].keys || [];
   for (const want of ["volume", "muted", "soloed", "transpose",
@@ -74,9 +93,13 @@ function makeSlot(over) {
   const labelsFor = (hasPreset) => {
     state.preset = hasPreset;
     const hier = JSON.parse(io.getParam("slot:ui_hierarchy"));
-    return hier.levels.root.menu.map((m) => m.label);
+    return hier.levels.actions.menu.map((m) => m.label);
   };
   const empty = labelsFor(false), saved = labelsFor(true);
+  /* LFO 1 and LFO 2 are PAGES now, not menu entries. */
+  if (empty.includes("LFO 1") || saved.includes("LFO 1")) {
+    fail("LFO 1 must be a page, not a menu entry: " + JSON.stringify(saved));
+  }
   if (empty.includes("Delete")) fail("Delete must not be offered on a slot with no preset");
   if (empty.includes("Save As")) fail("Save As must not be offered on a slot with no preset");
   if (!empty.includes("Save")) fail("Save must always be offered");
@@ -154,6 +177,26 @@ function makeSlot(over) {
   }
 }
 
+/* ---- 4b. LFO params keep their own prefix ------------------------------- */
+{
+  const { io, store } = makeSlot();
+  store["lfo1:shape"] = "3";
+  store["lfo2:depth"] = "-0.5";
+  if (io.getParam("slot:lfo1:shape") !== "3") {
+    fail("lfo1:shape must read the lfo1: key — adding a slot: prefix addresses " +
+         "a param that does not exist and reads empty");
+  }
+  io.setParam("slot:lfo2:depth", "0.25");
+  if (store["lfo2:depth"] !== "0.25") fail("lfo2:depth wrote the wrong key: " + JSON.stringify(store));
+  if ("slot:lfo2:depth" in store) fail("an LFO param must not be written under slot:");
+  /* Every LFO param on the page must resolve to a real key of its own. */
+  for (const p of SG.lfoParams(1)) {
+    if (SG.realKeyFor(p.key) !== p.key) {
+      fail("realKeyFor(" + p.key + ") should pass through, got " + SG.realKeyFor(p.key));
+    }
+  }
+}
+
 /* ---- 5b. realKeyFor is the single source of the mapping ----------------- */
 {
   /*
@@ -200,7 +243,7 @@ function makeSlot(over) {
 }
 
 if (failures) process.exit(1);
-console.log("PASS: slot grid contract — one value page plus an actions menu, " +
+console.log("PASS: slot grid contract — Main + LFO 1 + LFO 2 + Actions in that order, " +
             "Save As/Delete gated on a preset, all three storage conventions, " +
             "the Fwd Ch offset pinned at both ends, MPE derived and edge-triggered");
 '

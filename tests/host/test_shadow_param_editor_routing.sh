@@ -385,7 +385,10 @@ function gotoSlotFor(name) {
       fail("slot settings has no actions menu page");
     } else {
       const labels = (page.entries || []).map((e) => e.label);
-      for (const want of ["Knob Mapping", "LFO 1", "Save"]) {
+      /* LFO 1 and LFO 2 are PAGES now — eight of their nine params are
+       * turnable and the widgets draw the thing itself. */
+      if (labels.includes("LFO 1")) fail("LFO 1 should be a page, not a menu entry");
+      for (const want of ["Knob Mapping", "Save"]) {
         if (!labels.includes(want)) fail("actions menu missing " + want + ": " + JSON.stringify(labels));
       }
       /*
