@@ -82,8 +82,10 @@ for (const n of ["print","fill_rect","clear_screen","text_width","draw_line",
  * ranged wav_position (turnable AND divable) and `sample_path` is a filepath
  * (divable only), on one level, so both routes are reachable from one page.
  */
+const FILLER = ["a","b","c","d","e","f","g","h"];
 const CHAIN_PARAMS = [
   { key: "gain",        name: "Gain",        type: "float", min: 0, max: 1, step: 0.01 },
+  ...FILLER.map((k) => ({ key: k, name: k.toUpperCase(), type: "float", min: 0, max: 1, step: 0.01 })),
   { key: "position",    name: "Position",    type: "wav_position", mode: "position",
     filepath_param: "sample_path", min: 0, max: 1, step: 0.01 },
   { key: "sample_path", name: "Sample File", type: "filepath",
@@ -101,17 +103,25 @@ const HIERARCHY = {
   levels: {
     root: {
       label: "Granny",
-      knobs: ["gain", "position", "sample_path"],
+      /* NOT position/sample_path: putting them on a root knob lands them on
+       * page 0, and the page-restore assertion below then passes whether or
+       * not the restore happens. They must be reachable only via an OVERFLOW
+       * page of `main`, which is where the real complaint came from. */
+      knobs: ["gain"],
       params: [{ level: "main", label: "Main" }],
     },
+    /* Nine params before the divable pair, so they land on an OVERFLOW page:
+     * returning to page 1 after editing something on page 2 is the bug below. */
     main: {
       label: "Main",
-      knobs: ["gain", "position", "sample_path"],
-      params: [{ key: "gain" }, { key: "position" }, { key: "sample_path" }],
+      knobs: ["gain", ...FILLER],
+      params: [{ key: "gain" }, ...FILLER.map((k) => ({ key: k })),
+               { key: "position" }, { key: "sample_path" }],
     },
   },
 };
 const values = { gain: "0.5", position: "0.25", sample_path: "" };
+for (const k of FILLER) values[k] = "0.5";
 function getParam(key) {
   const bare = String(key).replace(/^[^:]+:/, "");
   if (bare === "ui_hierarchy")  return JSON.stringify(HIERARCHY);
@@ -177,6 +187,10 @@ globalThis.onMidiMessageInternal(Uint8Array.from([0xb0, 49, 0]));
 
 function openGrid() {
   V.enterParamPages(0, "synth", "synth");
+  /* Land on page 0 explicitly. A previous case may have left the controller on
+   * the last page, and the jog does not wrap — gotoSlotFor would then walk
+   * forward forever without finding a key that is behind it. */
+  V.paramPagesGoTo(0);
   for (let i = 0; i < 24; i++) V.tickParamPages();
 }
 
@@ -187,13 +201,25 @@ function slotFor(name) {
   return -1;
 }
 
+/* Jog forward until `name` is on the visible page. Returns its slot, or -1. */
+function gotoSlotFor(name) {
+  for (let hop = 0; hop < 40; hop++) {
+    const s = slotFor(name);
+    if (s >= 0) return s;
+    feed([0xb0, 14, 1]);          /* jog one page forward */
+    for (let i = 0; i < 6; i++) V.tickParamPages();
+  }
+  return -1;
+}
+
 /* ---- 1. a wav_position opens the WAVEFORM, not the module menu ---------- */
 {
   openGrid();
-  const slot = slotFor("position");
+  const slot = gotoSlotFor("position");
   if (slot < 0) {
     fail("position never reached the grid");
   } else {
+    const pageName = (V.currentParamPage() || {}).name;
     feed(noteOn(slot));
     feed(click());
     const editor = ctx.activeParamEditor();
@@ -202,11 +228,19 @@ function slotFor(name) {
            ", expected \"wav_position\" — a generic \"value\" here is the module " +
            "menu with a numeric overlay, which is the bug this pins");
     }
-    /* ---- 2. Back from the waveform returns to the GRID ------------------- */
+    /* ---- 2. Back from the waveform returns to the GRID, ON THE SAME PAGE -- */
+    const fromPage = pageName;
     feed(back());
     if (ctx.view !== ctx.VIEWS.PARAM_PAGES) {
       fail("Back from the waveform editor landed on view " + ctx.view +
            ", expected PARAM_PAGES (" + ctx.VIEWS.PARAM_PAGES + ")");
+    } else {
+      const back2 = V.currentParamPage();
+      if (!back2 || back2.name !== fromPage) {
+        fail("Back from the waveform landed on page " +
+             JSON.stringify(back2 && back2.name) + ", expected " +
+             JSON.stringify(fromPage) + " — the page the user was on");
+      }
     }
   }
 }
@@ -214,21 +248,29 @@ function slotFor(name) {
 /* ---- 3. a filepath opens the FILE BROWSER ------------------------------- */
 {
   openGrid();
-  const slot = slotFor("sample_path");
+  const slot = gotoSlotFor("sample_path");
   if (slot < 0) {
     fail("sample_path never reached the grid");
   } else {
+    const pageName2 = (V.currentParamPage() || {}).name;
     feed(noteOn(slot));
     feed(click());
     if (ctx.activeParamEditor() !== "filepath") {
       fail("clicking a filepath opened " + JSON.stringify(ctx.activeParamEditor()) +
            ", expected the file browser");
     }
-    /* ---- 4. Back from the browser returns to the GRID -------------------- */
+    /* ---- 4. Back from the browser returns to the GRID, ON THE SAME PAGE --- */
     feed(back());
     if (ctx.view !== ctx.VIEWS.PARAM_PAGES) {
       fail("Back from the file browser landed on view " + ctx.view +
            ", expected PARAM_PAGES (" + ctx.VIEWS.PARAM_PAGES + ")");
+    } else {
+      const back4 = V.currentParamPage();
+      if (!back4 || back4.name !== pageName2) {
+        fail("Back from the file browser landed on page " +
+             JSON.stringify(back4 && back4.name) + ", expected " +
+             JSON.stringify(pageName2));
+      }
     }
   }
 }
@@ -236,7 +278,7 @@ function slotFor(name) {
 /* ---- 5. a plain number does NOT hand off at all ------------------------- */
 {
   openGrid();
-  const slot = slotFor("gain");
+  const slot = gotoSlotFor("gain");
   if (slot < 0) {
     fail("gain never reached the grid");
   } else {

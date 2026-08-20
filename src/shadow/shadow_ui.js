@@ -1015,9 +1015,11 @@ globalThis.param_view_get_mode = function() { return paramViewGlobal; };
 function returnToParamPagesFromEditor() {
     const slotIndex = hierEditorSlot;
     const componentKey = hierEditorComponent;
+    const returnPage = paramEditorReturnPage;
     paramEditorOpenedFromGrid = false;
+    paramEditorReturnPage = "";
     exitHierarchyEditor();
-    enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey));
+    enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey), returnPage);
     needsRedraw = true;
 }
 
@@ -1098,6 +1100,7 @@ function openParamEditorFromGrid(slotIndex, fullKey, meta) {
      * param lives, and exitParamPages tears the controller down. */
     const page = currentParamPage();
     const level = page && page.level;
+    paramEditorReturnPage = (page && page.name) || "";
     const bare = String(fullKey || "").replace(/^[^:]+:/, "");
 
     exitParamPages();
@@ -1965,6 +1968,9 @@ let cameFromParamPages = false;
  * off a whole PAGE (a preset browser) rather than a single param.
  */
 let paramEditorOpenedFromGrid = false;
+/* The grid page that was on screen when the hand-off happened, by NAME. Coming
+ * back to page 1 after editing something on page 5 is its own small betrayal. */
+let paramEditorReturnPage = "";
 
 /* Preset browser state (for preset_browser type levels) */
 let hierEditorIsPresetLevel = false;  // true when current level is a preset browser
@@ -8622,6 +8628,7 @@ function exitHierarchyEditor() {
      * not leave the flag armed for a later list-originated session, or the
      * next Back out of an unrelated param edit would teleport to the grid. */
     paramEditorOpenedFromGrid = false;
+    paramEditorReturnPage = "";
 
     clearModuleParamShims();
     clearWavZoomStates();
