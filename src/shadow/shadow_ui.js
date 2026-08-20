@@ -1147,6 +1147,37 @@ function knobCardActive() {
 }
 
 /*
+ * Everything drawKnobCard needs, or null when the card is not up.
+ *
+ * ONE accessor rather than nine module-level reads at the call site, and the
+ * reason is a test rather than tidiness: drawChainEdit is LIFTED out of this
+ * file by tests/host/test_chain_edit_read_budget.sh with `new Function` and an
+ * explicit dependency list, where any free identifier is a ReferenceError.
+ * Nine free identifiers there is nine chances for that test to stop exercising
+ * the card — and it very nearly did, behind a `typeof knobCardActive ===
+ * "function"` guard that made the whole block silently unreachable under the
+ * lift. The test that measures the chain editor's per-frame read cost was
+ * therefore measuring it with the card switched off, which is the one
+ * configuration nobody needed reassurance about.
+ *
+ * Costs no IPC: every value was read on touch-down. See knobCardOpen.
+ */
+function knobCardDrawState() {
+    if (!knobCardActive()) return null;
+    return {
+        name: knobCardName,
+        value: knobCardValue,
+        row: knobCardKnob >> 2,
+        touched: knobCardKnob,
+        page: knobCardKeys ? { kind: "knobs", keys: knobCardKeys } : null,
+        metaIndex: knobCardMeta,
+        values: knobCardValues,
+        viz: knobCardViz,
+        modulated: knobCardModKey ? ((k) => k === knobCardModKey) : null,
+    };
+}
+
+/*
  * Everything the card needs, resolved ONCE on touch-down.
  *
  * The reads happen here, on an input event, and never on the draw path: an IPC
@@ -14672,26 +14703,9 @@ function drawChainEdit() {
     /*
      * The card last, over everything — it is a modal. Every value it draws was
      * read on touch-down, so this costs no IPC. See knobCardOpen.
-     *
-     * The typeof guard is not defensiveness about our own function: this
-     * function is LIFTED out of the file by tests/host/test_chain_edit_read_budget.sh
-     * with `new Function` and an explicit dependency list, where any free
-     * identifier is a ReferenceError. The card is not part of what that test
-     * measures, so it stays out of its way.
      */
-    if (typeof knobCardActive === "function" && knobCardActive()) {
-        drawKnobCard(movy, {
-            name: knobCardName,
-            value: knobCardValue,
-            row: knobCardKnob >> 2,
-            touched: knobCardKnob,
-            page: knobCardKeys ? { kind: "knobs", keys: knobCardKeys } : null,
-            metaIndex: knobCardMeta,
-            values: knobCardValues,
-            viz: knobCardViz,
-            modulated: knobCardModKey ? ((k) => k === knobCardModKey) : null,
-        });
-    }
+    const card = knobCardDrawState();
+    if (card) drawKnobCard(movy, card);
 }
 
 /* Draw component module selection list */

@@ -350,16 +350,31 @@ function world() {
     "getSlotParam", "slotChainComponents", "drawChainDiagram", "getChainComponentModule",
     "getModuleAbbrev", "chainComponentParamKey", "DIAGRAM_BOX_H", "SCREEN_WIDTH",
     "getComponentParamPrefix", "drawMovyFooter", "isShiftHeld", "ensureChainConfigFresh",
+    /* The knob card. These are deps rather than absent identifiers ON PURPOSE:
+       a free identifier under the lift is a ReferenceError, so the obvious way
+       to keep the card out of the way is a typeof guard -- which is exactly
+       what made the card block silently unreachable here, leaving this test
+       measuring the chain editor with the card switched off. The card is the
+       newest thing on this screen and its whole claim is that it costs nothing
+       per frame, so it belongs INSIDE the budget, not outside it. */
+    "knobCardDrawState", "drawKnobCard",
   ];
   const mk = lift("drawChainEdit", drawDeps);
-  const makeDraw = (diagram) => mk(noop, {}, 0, () => false, [{ name: "s" }], truncateText,
+  const makeDraw = (diagram, cardState) => mk(noop, {}, 0, () => false, [{ name: "s" }], truncateText,
     noop, noop, () => 10, noop, w.chainConfigs, createEmptyChainConfig, 0,
     getSlotParam, noop, DIAGRAM_Y, MOVY_RULE_Y, noop, getSlotParam,
     slotChainComponents, diagram, getChainComponentModule, (m) => m,
     chainComponentParamKey, DIAGRAM_BOX_H, SCREEN_WIDTH, getComponentParamPrefix,
-    noop, () => false, ensureChainConfigFresh);
+    noop, () => false, ensureChainConfigFresh,
+    () => (cardState === undefined ? null : cardState),
+    () => { w.cardDraws++; });
+  w.cardDraws = 0;
   w.draw = makeDraw(recording);
   w.drawReal = makeDraw(drawChainDiagram);
+  /* The same lift with the card UP. The state object is opaque here -- what is
+     being measured is whether drawing it costs a read, not what it looks like
+     (tests/host/test_knob_card.sh owns the pixels). */
+  w.drawRealWithCard = makeDraw(drawChainDiagram, { name: "CUTOFF", value: "0.62" });
   /* What the diagram would put in the boxes, module positions only. */
   w.screen = () => { w.draw(); return w.drawn.filter((a) => a !== "+" && a !== "*").join(","); };
   return w;
@@ -410,6 +425,34 @@ function loadSlot(w, opts) {
   if (fullSteady - shortSteady > 5)
     fail("per-frame reads still grow with chain length: " + shortSteady +
          " on a 2-FX chain, " + fullSteady + " on a full one");
+
+  /* The knob card must be FREE to draw.
+     Every value it shows was read once on touch-down (knobCardOpen), so a frame
+     with the card up must cost exactly what a frame without it costs. A read
+     here would be the worst possible place for one: the card is up precisely
+     while a finger is moving an encoder, which is when the screen most needs to
+     keep up.
+     The cardDraws counter is not decoration -- without it this assertion passes
+     just as happily when the card block never runs at all, which is the
+     failure this whole dependency plumbing exists to prevent. */
+  {
+    const w = world();
+    loadSlot(w, { fx: Array.from({ length: 8 }, () => "freeverb"),
+                  midiFx: Array.from({ length: 8 }, () => "arp") });
+    for (let f = 0; f < 5; f++) { w.resetReads(); w.drawReal(); }
+    const withoutCard = w.reads.length;
+    if (w.cardDraws !== 0) fail("the card drew while it was not up");
+    w.cardDraws = 0;
+    for (let f = 0; f < 5; f++) { w.resetReads(); w.drawRealWithCard(); }
+    const withCard = w.reads.length;
+    if (w.cardDraws !== 5)
+      fail("the card block ran " + w.cardDraws + " times across 5 frames, expected 5 -- " +
+           "this test is not exercising the card at all, so its budget is unmeasured");
+    if (withCard !== withoutCard)
+      fail("a frame with the knob card up costs " + withCard + " reads against " +
+           withoutCard + " without it -- the card must draw from what knobCardOpen " +
+           "already read, never from the draw path");
+  }
   /* And the first frame still pays: the cache is not a stale-forever cache, it
      is a per-edit one. */
   if (full[0] <= fullSteady)
