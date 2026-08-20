@@ -219,11 +219,21 @@ if (ctl.menuEntry().label !== beforeName) {
     fail("list surfaces must show 5 rows, got " + got.rows +
          " — menu, section picker and the list editor all use this rect");
   }
-  /* The frame must not land on a row fill: fills run y-1 .. y+7 per row. */
-  const firstFill = rect.y - 1;
-  const lastFill = rect.y + (got.rows - 1) * 9 + 7;
-  if (firstFill <= 8) fail("the top bracket arm at y=8 collides with the first row fill at y=" + firstFill);
-  if (lastFill >= 54) fail("the bottom bracket arm at y=54 collides with the last row fill at y=" + lastFill);
+  /*
+   * The frame lives in the list margin and stays one row clear of both
+   * dividers. An inert menu fills no row (nothing is selected), so the only
+   * occupied rows are the GLYPHS — which is what makes the margin exist.
+   */
+  const FRAME_TOP = 9, FRAME_BOTTOM = 53, BAR_ROW = 7, RULE_ROW = RM.RULE_Y;
+  const glyphRows = [];
+  for (let i = 0; i < got.rows; i++) {
+    const y = rect.y + i * 9;
+    for (let k = 0; k < 7; k++) glyphRows.push(y + k);
+  }
+  if (glyphRows.includes(FRAME_TOP)) fail("the top frame arm at y=" + FRAME_TOP + " lands on a glyph row");
+  if (glyphRows.includes(FRAME_BOTTOM)) fail("the bottom frame arm at y=" + FRAME_BOTTOM + " lands on a glyph row");
+  if (FRAME_TOP - BAR_ROW < 2) fail("the top frame arm must clear the bank bar by a row");
+  if (RULE_ROW - FRAME_BOTTOM < 2) fail("the bottom frame arm must clear the footer rule by a row");
 }
 
 if (failures) process.exit(1);
