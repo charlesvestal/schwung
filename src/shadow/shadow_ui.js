@@ -1013,6 +1013,20 @@ globalThis.param_view_get_mode = function() { return paramViewGlobal; };
  */
 /* Leave the hierarchy editor and put the knob grid back up, on the same slot
  * and component it handed off. */
+/*
+ * Back to the grid from the LFO target picker. Returns true when it handled it.
+ * The controller was never torn down, so the grid comes back on the page and
+ * the cell it left from.
+ */
+function returnToSlotGridFromLfoTarget() {
+    if (!lfoTargetFromGrid) return false;
+    lfoTargetFromGrid = false;
+    if (!paramPagesActive()) return false;
+    setView(VIEWS.PARAM_PAGES);
+    needsRedraw = true;
+    return true;
+}
+
 function returnToParamPagesFromEditor() {
     const slotIndex = hierEditorSlot;
     const componentKey = hierEditorComponent;
@@ -1110,6 +1124,9 @@ function openParamEditorFromGrid(slotIndex, fullKey, meta) {
             /* enterLfoTargetPicker reads lfoCtx, so point it at this LFO first —
              * the same context the list editor builds. */
             lfoCtx = makeSlotLfoCtx(slotIndex, Number(m[1]) - 1);
+            /* Mark the hand-off BEFORE opening, so every exit from the picker
+             * knows where it came from. The grid controller stays alive. */
+            lfoTargetFromGrid = true;
             enterLfoTargetPicker();
             needsRedraw = true;
         }
@@ -1999,6 +2016,16 @@ let paramEditorOpenedFromGrid = false;
 /* The grid page that was on screen when the hand-off happened, by NAME. Coming
  * back to page 1 after editing something on page 5 is its own small betrayal. */
 let paramEditorReturnPage = "";
+/*
+ * True while the LFO target picker was opened from the knob grid.
+ *
+ * The picker returns to VIEWS.LFO_EDIT from three places — Back, clearing the
+ * target, and committing one — because that is where the LIST enters it from.
+ * Entered from a grid cell, all three land on a screen the user never opened.
+ * The grid controller is left alive across the hand-off, so returning is just a
+ * setView and the page position survives untouched.
+ */
+let lfoTargetFromGrid = false;
 
 /* Preset browser state (for preset_browser type levels) */
 let hierEditorIsPresetLevel = false;  // true when current level is a preset browser
@@ -12842,7 +12869,7 @@ function handleSelect() {
                 if (comp.key === "__clear__") {
                     lfoCtx.setParamBlocking("target", "");
                     lfoCtx.setParamBlocking("target_param", "");
-                    setView(VIEWS.LFO_EDIT);
+                    if (!returnToSlotGridFromLfoTarget()) setView(VIEWS.LFO_EDIT);
                     announce("Target cleared");
                     needsRedraw = true;
                 } else {
@@ -12857,7 +12884,7 @@ function handleSelect() {
                 const param = lfoTargetParams[selectedLfoTargetParam];
                 lfoCtx.setParamBlocking("target", comp.key);
                 lfoCtx.setParamBlocking("target_param", param.key);
-                setView(VIEWS.LFO_EDIT);
+                if (!returnToSlotGridFromLfoTarget()) setView(VIEWS.LFO_EDIT);
                 announce("Target set: " + comp.label + " " + param.label);
                 needsRedraw = true;
             }
@@ -13308,6 +13335,9 @@ function handleBack() {
             }
             break;
         case VIEWS.LFO_TARGET_COMPONENT:
+            /* Opened from a grid cell? Go back to the grid, not to the list
+             * editor screen the user never opened. */
+            if (returnToSlotGridFromLfoTarget()) break;
             setView(VIEWS.LFO_EDIT);
             announce(lfoCtx ? lfoCtx.title : "LFO");
             needsRedraw = true;

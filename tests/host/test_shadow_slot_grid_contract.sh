@@ -265,6 +265,52 @@ function makeSlot(over) {
   }
 }
 
+/* ---- 4d. the HEADER shows the full value, the square abbreviates -------- */
+{
+  /*
+   * Raised twice on hardware: the held-knob header read "BI" and "THR", which
+   * tells you nothing the cell had not already shown. The three-character limit
+   * belongs to the enum SQUARE (two lines of the 5x3 font) — so options stay
+   * full and a parallel short_options serves only that widget.
+   */
+  const { formatParamValue } = await import(R + "/src/shared/param_format.mjs");
+  const meta = buildMetaIndex({
+    hierarchy: SG.slotGridHierarchy(true),
+    chainParams: SG.allSlotGridParams(),
+  });
+
+  const cases = [
+    ["lfo1:polarity", "1", "Bipolar", "BI"],
+    ["lfo1:sync", "1", "Sync", "SYN"],
+    ["lfo1:shape", "0", "Sine", "SIN"],
+    ["forward_channel", "0", "Thru", "THR"],
+    ["receive_channel", "0", "All", "ALL"],
+    ["muted", "1", "On", "ON"],
+  ];
+  for (const [key, raw, wantHeader, wantSquare] of cases) {
+    const m = meta.getOrGuess(key);
+    const header = formatParamValue(raw, m);
+    if (header !== wantHeader) {
+      fail("the header for " + key + " should read " + JSON.stringify(wantHeader) +
+           ", got " + JSON.stringify(header) + " — the header exists to show the FULL value");
+    }
+    const short = Array.isArray(m.short_options) ? m.short_options[Number(raw)] : undefined;
+    if (short !== wantSquare) {
+      fail("the enum square for " + key + " should read " + JSON.stringify(wantSquare) +
+           ", got " + JSON.stringify(short));
+    }
+    if (String(wantSquare).length > 3) fail("short_options entries must fit the square: " + wantSquare);
+  }
+
+  /* Values that are fractions must read as percentages, not raw floats. */
+  const pct = [["volume", "1.0", "100%"], ["lfo1:depth", "0.65", "65%"],
+               ["lfo1:depth", "-0.5", "-50%"], ["lfo1:phase_offset", "0.25", "25%"]];
+  for (const [key, raw, want] of pct) {
+    const got = formatParamValue(raw, meta.getOrGuess(key));
+    if (got !== want) fail(key + " at " + raw + " should read " + want + ", got " + got);
+  }
+}
+
 /* ---- 5b. realKeyFor is the single source of the mapping ----------------- */
 {
   /*

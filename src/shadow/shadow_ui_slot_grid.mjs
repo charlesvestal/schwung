@@ -51,14 +51,23 @@ export const FWD_OFFSET = 2;
  * Row 1 is what you touch while playing, row 2 is what you set once.
  */
 export const SLOT_GRID_PARAMS = [
-    { key: "volume", name: "Volume", type: "float", min: 0, max: 4, step: 0.05, default: 1 },
-    { key: "muted", name: "Mute", type: "enum", options: ["OFF", "ON"] },
-    { key: "soloed", name: "Solo", type: "enum", options: ["OFF", "ON"] },
+    /* Volume is a GAIN of 0..4, not a 0..1 fraction, so `unit: "%"` alone leaves it
+     * reading "1.00%". An explicit format scales it: 1.0 gain reads 100%, which is
+     * what the list has always shown. */
+    { key: "volume", name: "Volume", type: "float", min: 0, max: 4, step: 0.05, default: 1,
+      display_format: ".0%" },
+    { key: "muted", name: "Mute", type: "enum", options: ["Off", "On"], short_options: ["OFF", "ON"] },
+    { key: "soloed", name: "Solo", type: "enum", options: ["Off", "On"], short_options: ["OFF", "ON"] },
     { key: "transpose", name: "Trsp", type: "int", min: -12, max: 12, step: 1 },
-    { key: "receive_channel", name: "Recv", type: "enum", options: ["ALL"].concat(CHANNELS) },
-    { key: "forward_channel", name: "Fwd", type: "enum", options: ["THR", "AUT"].concat(CHANNELS) },
-    { key: "midi_fx_pre_mode", name: "MFX Pre", type: "enum", options: ["OFF", "ON"] },
-    { key: "mpe_mode", name: "MPE", type: "enum", options: ["OFF", "ON"] },
+    { key: "receive_channel", name: "Recv", type: "enum",
+      options: ["All"].concat(CHANNELS.map((c) => "Ch " + c)),
+      short_options: ["ALL"].concat(CHANNELS) },
+    { key: "forward_channel", name: "Fwd", type: "enum",
+      options: ["Thru", "Auto"].concat(CHANNELS.map((c) => "Ch " + c)),
+      short_options: ["THR", "AUT"].concat(CHANNELS) },
+    { key: "midi_fx_pre_mode", name: "MFX Pre", type: "enum",
+      options: ["Off", "On"], short_options: ["OFF", "ON"] },
+    { key: "mpe_mode", name: "MPE", type: "enum", options: ["Off", "On"], short_options: ["OFF", "ON"] },
 ];
 
 /*
@@ -79,7 +88,22 @@ export const SLOT_GRID_PARAMS = [
  * competing for one of the eight. A proper fix is a wider widget for it, or
  * short and long option labels.
  */
+/*
+ * Full option words, and a parallel short list for the enum SQUARE.
+ *
+ * The square is three characters a line; the held-knob header has room for the
+ * real word and exists to show it. Declaring only the short form made the
+ * header read "BI" and "THR", which tells you nothing you could not already
+ * see in the cell.
+ */
+export const LFO_SHAPES = ["Sine", "Triangle", "Saw", "Square", "S&H", "Swishy"];
 export const LFO_SHAPES_SHORT = ["SIN", "TRI", "SAW", "SQR", "S&H", "SWY"];
+export const LFO_DIVISIONS = [
+    "16 bar", "15 bar", "14 bar", "13 bar", "12 bar", "11 bar", "10 bar", "9 bar",
+    "8 bar", "7 bar", "6 bar", "5 bar", "4 bar", "3 bar", "2 bar",
+    "1/1", "1/1T", "1/2", "1/2T", "1/4", "1/4T", "1/8", "1/8T",
+    "1/16", "1/16T", "1/32", "1/32T",
+];
 export const LFO_DIVISIONS_SHORT = [
     "16b", "15b", "14b", "13b", "12b", "11b", "10b", "9b",
     "8b", "7b", "6b", "5b", "4b", "3b", "2b",
@@ -93,10 +117,14 @@ export function lfoParams(lfoIndex) {
          * `string` so it is opaque (a knob cannot turn it) and divable, and so
          * the cell shows the current target rather than a blank frame. */
         { key: `lfo${lfoIndex}:target`, name: "Targ", type: "string" },
-        { key: `lfo${lfoIndex}:enabled`, name: "On", type: "enum", options: ["OFF", "ON"] },
-        { key: `lfo${lfoIndex}:shape`, name: "Shape", type: "enum", options: LFO_SHAPES_SHORT },
-        { key: `lfo${lfoIndex}:polarity`, name: "Mode", type: "enum", options: ["UNI", "BI"] },
-        { key: `lfo${lfoIndex}:sync`, name: "Sync", type: "enum", options: ["FRE", "SYN"] },
+        { key: `lfo${lfoIndex}:enabled`, name: "On", type: "enum",
+          options: ["Off", "On"], short_options: ["OFF", "ON"] },
+        { key: `lfo${lfoIndex}:shape`, name: "Shape", type: "enum",
+          options: LFO_SHAPES, short_options: LFO_SHAPES_SHORT },
+        { key: `lfo${lfoIndex}:polarity`, name: "Mode", type: "enum",
+          options: ["Unipolar", "Bipolar"], short_options: ["UNI", "BI"] },
+        { key: `lfo${lfoIndex}:sync`, name: "Sync", type: "enum",
+          options: ["Free", "Sync"], short_options: ["FRE", "SYN"] },
         /*
          * ONE rate cell, not two. Free-run and synced rates are the same
          * control wearing different units, and showing both spends a cell on
@@ -110,11 +138,15 @@ export function lfoParams(lfoIndex) {
          */
         { key: `lfo${lfoIndex}:rate_hz`, name: "Rate", type: "float", min: 0.1, max: 20, step: 0.1, unit: "Hz",
           visible_if: { param: `lfo${lfoIndex}:sync`, equals: "0" } },
-        { key: `lfo${lfoIndex}:rate_div`, name: "Rate", type: "enum", options: LFO_DIVISIONS_SHORT,
+        { key: `lfo${lfoIndex}:rate_div`, name: "Rate", type: "enum",
+          options: LFO_DIVISIONS, short_options: LFO_DIVISIONS_SHORT,
           visible_if: { param: `lfo${lfoIndex}:sync`, equals: "1" } },
-        { key: `lfo${lfoIndex}:depth`, name: "Depth", type: "float", min: -1, max: 1, step: 0.01 },
+        /* Percent, not a raw fraction: "65%" is the value, "0.65" is the storage.
+         * Bipolar is kept — a negative depth INVERTS the modulation, which is a
+         * real feature, so the range reads -100%..+100% rather than 0..100%. */
+        { key: `lfo${lfoIndex}:depth`, name: "Depth", type: "float", min: -1, max: 1, step: 0.01, unit: "%" },
         /* The cell the rate swap paid for. */
-        { key: `lfo${lfoIndex}:phase_offset`, name: "Phase", type: "float", min: 0, max: 1, step: 0.0417 },
+        { key: `lfo${lfoIndex}:phase_offset`, name: "Phase", type: "float", min: 0, max: 1, step: 0.0417, unit: "%" },
     ];
 }
 

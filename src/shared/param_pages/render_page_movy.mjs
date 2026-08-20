@@ -668,7 +668,22 @@ function drawKnobWidget(ctx, col, rowY, meta, raw, modRaw, liveRaw) {
     if (meta.kind === KIND_OPAQUE) { drawOpaqueBox(ctx, kx, ky, shown); return; }
     if (meta.kind === KIND_ENUM) {
         const idx = Math.round(Number(shown));
-        const text = (Array.isArray(meta.options) && meta.options[idx] !== undefined) ? String(meta.options[idx]) : String(shown ?? "");
+        /*
+         * `short_options` is for the SQUARE only.
+         *
+         * The square is two lines of the 5x3 font — three characters a line —
+         * so a declared option of "Bipolar" or "THRU" has to be cut down. The
+         * wrong way to solve that is to declare the short form as the option
+         * itself, which is what happened first: the held-knob HEADER then also
+         * read "BI" and "THR", and the header exists precisely to show the full
+         * value. So options stay full and readable everywhere, and a module may
+         * supply a parallel short_options that only this widget consults.
+         */
+        const shortOpts = Array.isArray(meta.short_options) ? meta.short_options : null;
+        const text = (shortOpts && shortOpts[idx] !== undefined)
+            ? String(shortOpts[idx])
+            : ((Array.isArray(meta.options) && meta.options[idx] !== undefined)
+                ? String(meta.options[idx]) : String(shown ?? ""));
         /* Its own centring — it is ENUM_W wide, not KW. */
         drawEnumSquare(ctx, col * CELL_W + Math.floor((CELL_W - ENUM_W) / 2), ky, text);
         return;
