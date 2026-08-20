@@ -25,7 +25,7 @@
 
 | File | Responsibility |
 |---|---|
-| `src/shared/param_pages/render_page_movy.mjs` (modify) | Cell geometry becomes a parameter; the row is exported as `drawKnobStrip`. |
+| `src/shared/param_pages/render_page_movy.mjs` (modify) | Cell geometry becomes a parameter; the row is exported as `drawKnobRow`. |
 | `src/shared/param_pages/knob_card.mjs` (create) | The card: rect maths, gutter, border, gap, header band, strip. Pure. |
 | `src/shadow/shadow_ui.js` (modify) | Touch state, row resolution, value cache, the draw call, announcement. |
 | `tests/host/test_knob_card.sh` (create) | Card pixel tests + the frame invariant + the geometry-inertness invariant. |
@@ -58,7 +58,7 @@
 - Test: `tests/host/test_knob_card.sh` (created here, extended in Task 2)
 
 **Acceptance Criteria:**
-- [ ] `drawKnobStrip` is exported and takes a geometry `{ x0, cellW }`.
+- [ ] `drawKnobRow` is exported and takes a geometry `{ x0, cellW }`.
 - [ ] `GRID_GEOM` is exported as the default `{ x0: 0, cellW: CELL_W }`.
 - [ ] `renderPageMovy` output is **pixel-identical** to the pre-change output for every fixture module — this is the invariant, asserted against a snapshot captured before the refactor.
 - [ ] A non-default geometry demonstrably moves the cells (a strip at `x0: 6, cellW: 29` puts ink in different columns than the default).
@@ -148,7 +148,7 @@ Promise.all([
   const fx = JSON.parse(fs.readFileSync(C.FIXTURE, "utf8"));
 
   /* ---- 1. the geometry parameter exists and defaults to the grid ---- */
-  if (typeof RM.drawKnobStrip !== "function") fail("drawKnobStrip is not exported");
+  if (typeof RM.drawKnobRow !== "function") fail("drawKnobRow is not exported");
   if (!RM.GRID_GEOM || RM.GRID_GEOM.x0 !== 0 || RM.GRID_GEOM.cellW !== RM.CELL_W)
     fail("GRID_GEOM must be {x0: 0, cellW: CELL_W}");
   console.log("PASS: geometry surface");
@@ -195,7 +195,7 @@ Promise.all([
     const values = { a: 0.2, b: 0.4, c: 0.6, d: 0.8 };
     const draw = (geom) => {
       const fb = H.createFramebuffer();
-      RM.drawKnobStrip(H.drawContext(fb), { page, metaIndex: mi, values, touched: -1 },
+      RM.drawKnobRow(H.drawContext(fb), { page, metaIndex: mi, values, touched: -1 },
                        0, RM.ROW0_Y, RM.LBL0_Y, geom);
       return fb;
     };
@@ -217,7 +217,7 @@ Promise.all([
 - [ ] **Step 3: Run the test, confirm it fails for the right reason**
 
 Run: `bash tests/host/test_knob_card.sh`
-Expected: `FAIL: drawKnobStrip is not exported`
+Expected: `FAIL: drawKnobRow is not exported`
 
 - [ ] **Step 4: Add the geometry surface**
 
@@ -287,12 +287,12 @@ function drawLabelCell(ctx, g, col, lblY, label, displayValue, showValue, invert
 }
 ```
 
-- [ ] **Step 6: Rename the row to `drawKnobStrip` and export it**
+- [ ] **Step 6: Rename the row to `drawKnobRow` and export it**
 
 Change the declaration:
 
 ```javascript
-export function drawKnobStrip(ctx, o, row, rowY, lblY, geom) {
+export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
     const g = geom || GRID_GEOM;
     const { page, metaIndex, values, touched, modulated, viz, modValues } = o;
 ```
@@ -346,8 +346,8 @@ Then in the per-column loop:
 At the bottom of `renderPageMovy`:
 
 ```javascript
-    drawKnobStrip(ctx, o, 0, ROW0_Y, LBL0_Y);
-    drawKnobStrip(ctx, o, 1, ROW1_Y, LBL1_Y);
+    drawKnobRow(ctx, o, 0, ROW0_Y, LBL0_Y);
+    drawKnobRow(ctx, o, 1, ROW1_Y, LBL1_Y);
 ```
 
 - [ ] **Step 8: Run the test**
@@ -379,6 +379,36 @@ not what the card draws.
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01Kqae7GKuzfSXCbNTDzpg56"
 ```
+
+#### Task 1 amendments (from code review of `c4f61538`)
+
+Spec compliance passed — the reviewer regenerated the baseline from the parent
+commit and byte-compared it, so the inertness claim is real and not circular.
+Code quality came back CHANGES REQUESTED with two criticals, both demonstrated
+rather than asserted:
+
+1. **The "non-default geometry moves the cells" assertion survived a mutation**
+   where `cellW` was dropped on the floor and only `x0` honoured. Diffing two
+   framebuffers for inequality cannot separate those two cases. Replaced with a
+   measurement: a touched cell fills its label band with a solid run of exactly
+   `cellW` pixels at row `lblY` and prints its glyphs one row lower, so that
+   row's lit run gives back the origin AND the width.
+2. **`geom || GRID_GEOM` accepts a partial geometry, which hangs the UI tick.**
+   `{cellW: 29}` leaves `x0` undefined, every cell origin `NaN`, and the knob
+   pointer reaches `render_page.mjs`'s `line()` — a `for (;;)` breaking on
+   `x0 === x1 && y0 === y1`, which NaN never satisfies. Validated at the
+   boundary instead; merging over the default was rejected because a typo would
+   then draw a plausible but wrong screen.
+
+Also: the baseline was reshaped from 6.3 MB of base64 framebuffers to a
+per-page hash with a `UPDATE_GEOM_BASELINE=1` refresh, matching this directory's
+existing `UPDATE_SNAPSHOTS=1` convention and its stated reason ("so a layout
+change shows up as a readable diff rather than a number"); baseline coverage is
+now asserted as set equality both ways so a fixture refresh cannot silently
+orphan pages; the viz rect's `h` became `lblY - rowY` rather than the grid
+constant; and the exported name stayed **`drawKnobRow`** rather than becoming
+`drawKnobStrip` — the card draws a row too, just a narrower one, and two words
+for one thing is how a codebase starts lying to you.
 
 ---
 
@@ -515,7 +545,7 @@ Expected: `FAIL:` mentioning `knob_card.mjs` (module not found)
  * labelled cells, arc knobs, enum squares and viz groups. This draws a
  * bordered card over the diagram instead, carrying the parameter name and
  * value in an inverted band and, beneath it, the four cells of that knob's row
- * — the SAME `drawKnobStrip` the knob grid uses, at a narrower cell.
+ * — the SAME `drawKnobRow` the knob grid uses, at a narrower cell.
  *
  * Pure, like everything else in this directory: takes a draw context, draws,
  * and touches no parameter, no device global and no state. That is what lets
@@ -531,7 +561,7 @@ Expected: `FAIL:` mentioning `knob_card.mjs` (module not found)
  * border and any white fill inside it.
  */
 
-import { drawKnobStrip, ROW0_Y, LBL0_Y, LBL_H, RULE_Y, HEADER_H }
+import { drawKnobRow, ROW0_Y, LBL0_Y, LBL_H, RULE_Y, HEADER_H }
     from "./render_page_movy.mjs";
 
 /** Inset from the screen edges. The card is a modal, not a band. */
@@ -616,7 +646,7 @@ export function drawKnobCard(ctx, o) {
     if (!hasStrip) return r;
 
     const rowY = r.y + INSET + HEADER_BAND_H + GAP_W;
-    drawKnobStrip(ctx, o, (o.row | 0), rowY, rowY + LBL_DY,
+    drawKnobRow(ctx, o, (o.row | 0), rowY, rowY + LBL_DY,
                   { x0: cx, cellW: Math.floor(cw / 4) });
     return r;
 }
@@ -634,7 +664,7 @@ git add src/shared/param_pages/knob_card.mjs tests/host/test_knob_card.sh
 git commit -m "chain: a knob card, not a value box
 
 The card carries the parameter name and value in an inverted band and,
-under it, the four cells of that knob row -- the same drawKnobStrip the
+under it, the four cells of that knob row -- the same drawKnobRow the
 knob grid uses, at a 29px cell.
 
 The frame is 2px border, 1px black gap, then the band, and the gap is
@@ -1368,7 +1398,7 @@ PERMUTATION" subsection, add:
 
 Turning or touching a knob in the chain editor raises a bordered card
 (`src/shared/param_pages/knob_card.mjs`) showing the four cells of that knob's
-row, drawn with the knob grid's own widgets via `drawKnobStrip` at a 29px cell.
+row, drawn with the knob grid's own widgets via `drawKnobRow` at a 29px cell.
 Touch raises it, release drops it; a turn with no touch decays after ~700ms.
 With no component selected the global slot mappings have no type metadata, so
 that case gets a header-only card.
@@ -1387,7 +1417,7 @@ held; only the touched knob carries a modulation mark, because that read is one
 `showKnobOverlay` already pays for.
 
 `render_page_movy.mjs`'s cell geometry is a parameter (`GRID_GEOM`,
-`drawKnobStrip`) so the card and the grid share one row renderer. The default
+`drawKnobRow`) so the card and the grid share one row renderer. The default
 path is pinned byte-identical against `tests/fixtures/movy-geom-baseline.json`.
 ```
 

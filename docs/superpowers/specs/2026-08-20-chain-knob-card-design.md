@@ -81,11 +81,19 @@ Row drawing derives every x from a module-level `CELL_W = 32`, at eleven sites
 across `drawKnobWidget`, `drawLabelCell` and `drawKnobRow` (all of the form
 `col * CELL_W`). Thread a geometry `{ x0, cellW }` through those three,
 defaulting to `{ 0, CELL_W }`, and export the row entry point as
-`drawKnobStrip(ctx, o, { x0, cellW, rowY, lblY, row })`.
+`drawKnobRow(ctx, o, row, rowY, lblY, { x0, cellW })`.
 
 `renderPageMovy` keeps calling it with the defaults and **its output must be
 byte-identical afterwards**. That is an invariant with its own test (§6), not a
 hope: this is a screen that was tuned deliberately and recently.
+
+**A partial geometry throws.** `{ cellW: 29 }` with no `x0` makes every cell
+origin `NaN`, and `render_page.mjs`'s `line()` is a `for (;;)` that breaks on
+`x0 === x1 && y0 === y1` — NaN never compares equal, so it spins forever. On
+device that is a frozen `shadow_ui` tick, not a misdrawn cell. `geom` is
+therefore all-or-nothing, validated at the boundary. Merging a partial over the
+default was rejected: a typo like `{ x: 6, cellW: 30 }` would then silently draw
+a plausible but wrong screen.
 
 ### 3.2 `src/shared/param_pages/knob_card.mjs` — new, pure
 
@@ -160,8 +168,17 @@ from the behaviour:
   fill inside it, asserted on the pixel buffer rather than by eye. This is the
   bug the design exists to prevent, and it is invisible in code review.
 - **Inertness (invariant).** `renderPageMovy` with default geometry is unchanged
-  against the existing snapshots. The `CELL_W` parameterisation must be provably
-  inert on the default path.
+  against a per-page hash baseline. The `CELL_W` parameterisation must be
+  provably inert on the default path. The baseline follows this directory's
+  existing convention — a readable diff that names which pages moved, plus a
+  `UPDATE_GEOM_BASELINE=1` refresh, mirroring `UPDATE_SNAPSHOTS=1` — because a
+  fixture refresh here is a reviewed change, not a rubber stamp.
+- **Geometry (invariant).** The cell **width** is honoured, not just the origin.
+  Asserting that a non-default geometry merely *differs* from the grid passes
+  when `cellW` is dropped on the floor, since `x0` alone already moves the
+  pixels. Measure the width: a touched cell fills its label band with a solid
+  run of exactly `cellW` pixels, so that row's lit run gives back both the
+  origin and the width.
 - **Read budget.** Drawing the card costs **zero** `getSlotParam` calls, in the
   style of `tests/host/test_chain_edit_read_budget.sh`.
 - **Hardware.** All eight knobs on a synth, an audio FX, a MIDI FX, and with
