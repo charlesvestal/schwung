@@ -875,14 +875,19 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
     else if (chain_fx_index_from_key(key, "fx", MAX_AUDIO_FX, NULL) >= 0) {
         const char *subkey = NULL;
         int fxi = chain_fx_index_from_key(key, "fx", MAX_AUDIO_FX, &subkey);
-        char fx_id[16];
-        chain_fx_component_id(fx_id, sizeof(fx_id), "fx", fxi);
-        /* Intercept module change to swap this FX dynamically */
         if (strcmp(subkey, "module") == 0) {
             v2_load_audio_fx_slot(inst, fxi, val);
-            smoother_reset(&inst->fx_smoothers[fxi]);  /* Reset smoother on module change */
+            smoother_reset(&inst->fx_smoothers[fxi]);
             inst->dirty = 1;
         } else if (inst->fx_count > fxi) {
+            /* Anything below fx_count only: a param for a slot that holds no
+             * FX is DROPPED, deliberately and silently. There is nothing to
+             * forward it to, and the slot's module is set by "fxN:module"
+             * above -- do not "fix" this into an auto-load. With eight slots
+             * and a reorder UI, a stale key naming a slot that no longer
+             * exists is an ordinary event, not a bug to be recovered from. */
+            char fx_id[16];
+            chain_fx_component_id(fx_id, sizeof(fx_id), "fx", fxi);
             if (chain_mod_is_target_active(inst, fx_id, subkey)) {
                 chain_mod_update_base_from_set_param(inst, fx_id, subkey, val);
                 mod_target_state_t *entry = chain_mod_find_target_entry(inst, fx_id, subkey);
@@ -913,9 +918,6 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
     else if (chain_fx_index_from_key(key, "midi_fx", MAX_MIDI_FX, NULL) >= 0) {
         const char *subkey = NULL;
         int mfi = chain_fx_index_from_key(key, "midi_fx", MAX_MIDI_FX, &subkey);
-        char mfx_id[16];
-        chain_fx_component_id(mfx_id, sizeof(mfx_id), "midi_fx", mfi);
-        /* Intercept module change to swap this MIDI FX dynamically */
         if (strcmp(subkey, "module") == 0) {
             /* Slot 1 owns the whole list: setting it clears what is there.
              * Later slots append, as midi_fx2: always has. */
@@ -927,6 +929,9 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             }
             inst->dirty = 1;
         } else if (inst->midi_fx_count > mfi && inst->midi_fx_plugins[mfi] && inst->midi_fx_instances[mfi]) {
+            /* Dropped if the slot holds nothing — see the audio FX branch. */
+            char mfx_id[16];
+            chain_fx_component_id(mfx_id, sizeof(mfx_id), "midi_fx", mfi);
             if (chain_mod_is_target_active(inst, mfx_id, subkey)) {
                 chain_mod_update_base_from_set_param(inst, mfx_id, subkey, val);
                 mod_target_state_t *entry = chain_mod_find_target_entry(inst, mfx_id, subkey);

@@ -22,6 +22,13 @@
  * machinery that was already index-generic. Enumerating eight of them would
  * be eight times the same bug surface.
  *
+ * `max` is a PARAMETER on purpose. Reading MAX_AUDIO_FX / MAX_MIDI_FX
+ * directly would look like a simplification and would cost two things: this
+ * header would stop being includable on its own (it would depend on
+ * chain_internal.h, and so on include order), and the test could no longer
+ * drive the parser at an arbitrary bound to prove it is cap-agnostic. The
+ * caller names the cap because the caller knows which list it is indexing.
+ *
  * Leading zeros are rejected ("fx01:" is not a key we emit), and the digit
  * loop bails the moment it passes `max` — these keys arrive from patch and
  * preset JSON under /data/UserData, which a user can hand-edit, so an
