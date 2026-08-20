@@ -139,7 +139,16 @@ static void write_patch(const char *json) {
 }
 
 static void reset_state(chain_instance_t *inst) {
+    /* Zeroing the instance drops the per-position metadata POINTERS with
+       everything else (they are pointers now so a reorder can move a module
+       without a multi-megabyte memmove in the audio callback), so free them
+       first and hand the fixture a fresh set -- otherwise every later test in
+       this file dereferences null. */
+    chain_free_position_storage(inst);
     memset(inst, 0, sizeof(*inst));
+    if (!chain_alloc_position_storage(inst)) {
+        fprintf(stderr, "FAIL: out of memory\n"); exit(1);
+    }
     memset(fake_fx, 0, sizeof(fake_fx));
     memset(fake_midi_fx, 0, sizeof(fake_midi_fx));
     memset(&fake_synth, 0, sizeof(fake_synth));
@@ -582,7 +591,12 @@ int main(int argc, char **argv) {
 
     chain_instance_t *inst = calloc(1, sizeof(*inst));
     patch_info_t *patch = calloc(1, sizeof(*patch));
-    if (!inst || !patch) { fprintf(stderr, "FAIL: out of memory\n"); return 1; }
+    /* The per-position metadata blocks are pointers now (so a reorder can move
+       a module without a multi-megabyte memmove in the audio callback), so a
+       calloc'd instance is not usable until they exist. */
+    if (!inst || !patch || !chain_alloc_position_storage(inst)) {
+        fprintf(stderr, "FAIL: out of memory\n"); return 1;
+    }
 
     test_full_capacity(inst, patch);
     test_legacy_two_fx(inst, patch);

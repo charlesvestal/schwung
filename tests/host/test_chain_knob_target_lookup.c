@@ -79,7 +79,10 @@ static void seed(chain_param_info_t *params, int *count, const char *key,
 int main(void) {
     /* The instance is far too large for the stack on some hosts. */
     chain_instance_t *inst = calloc(1, sizeof(*inst));
-    if (!inst) {
+    /* The per-position metadata blocks are pointers now (so a reorder can move
+       a module without a multi-megabyte memmove in the audio callback), so a
+       calloc'd instance is not usable until they exist. */
+    if (!inst || !chain_alloc_position_storage(inst)) {
         printf("FAIL: out of memory\n");
         return 1;
     }
