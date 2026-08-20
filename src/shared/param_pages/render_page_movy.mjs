@@ -68,6 +68,26 @@ function caps(s) { return asciiFold(String(s == null ? "" : s)).toUpperCase(); }
 const TZ_MEASURE = { textWidth: tzWidth };
 function fitDev(ctx, s, maxWidth) { return caps(fitText(TZ_MEASURE, caps(s), maxWidth)); }
 
+/*
+ * What a cell or the held-knob strip should SHOW for a value.
+ *
+ * formatParamValue is a numeric formatter: handed the empty string it returns
+ * "0.00", which is what an unset filepath became in the header strip — holding
+ * granny's Sample File read "0.00", a number, for a param that has no numeric
+ * meaning and cannot be turned. The box beneath it already showed "--", so the
+ * two disagreed about the same param.
+ *
+ * An opaque value is a path or a string: show its tail, which is the part that
+ * identifies it, and "--" when there is nothing set.
+ */
+function displayValue(raw, meta) {
+    if (raw === null || raw === undefined) return "--";
+    if (meta && meta.kind === KIND_OPAQUE) {
+        return String(raw).split("/").pop() || "--";
+    }
+    return formatParamValue(raw, meta);
+}
+
 /**
  * The synth vocabulary, abbreviated the way hardware does it.
  *
@@ -582,7 +602,7 @@ function drawEnumSquare(ctx, kx, ky, text) {
  * turning one and having nothing happen. */
 function drawOpaqueBox(ctx, kx, ky, value) {
     const h = BOX_H;
-    const shown = String(value == null ? "" : value).split("/").pop() || "--";
+    const shown = displayValue(value === undefined ? null : value, { kind: KIND_OPAQUE });
     centeredText(ctx, kx + 2, KW - 4,
         ky + 1 + Math.floor((h - 2 - FONT_H) / 2), fitDev(ctx, shown, KW - 4), 1);
 }
@@ -766,8 +786,7 @@ function drawKnobRow(ctx, o, row, rowY, lblY) {
 
         const labelWidth = Math.min(CELL_W - 2, fontWidth4x5("M".repeat(LABEL_CHARS)));
         const label = caps(shortenLabel(LBL_MEASURE, preAbbreviate(meta.label || meta.key), labelWidth));
-        const display = (raw === null || raw === undefined)
-            ? "--" : fitDev(ctx, formatParamValue(raw, meta), CELL_W - 2);
+        const display = fitDev(ctx, displayValue(raw, meta), CELL_W - 2);
         drawLabelCell(ctx, col, lblY, label, display, isTouched, modulated ? !!modulated(key) : false);
     }
 }
@@ -852,8 +871,7 @@ export function renderPageMovy(ctx, o) {
     if (touched >= 0 && page && page.keys && page.keys[touched] && o.metaIndex) {
         const m = o.metaIndex.getOrGuess(page.keys[touched]);
         const v = o.values ? o.values[page.keys[touched]] : null;
-        const val = (v === null || v === undefined) ? "--" : formatParamValue(v, m);
-        drawHeader(ctx, m.label || m.key, val, true);
+        drawHeader(ctx, m.label || m.key, displayValue(v, m), true);
     } else {
         drawHeader(ctx, o.title || "", page ? page.name : null, false);
     }
