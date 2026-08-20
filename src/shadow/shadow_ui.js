@@ -53,7 +53,8 @@ import { renderPicker as renderMovyPicker } from '/data/UserData/schwung/shared/
 import { MENU_LIST_X as MOVY_LIST_X, MENU_LIST_Y as MOVY_LIST_Y, MENU_LIST_W as MOVY_LIST_W }
     from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
 import { describeLfoTarget } from '/data/UserData/schwung/shared/lfo_target_label.mjs';
-import { emptyChain, parseId as parseChainId, chainComponents, MAX_FX, MAX_MIDI_FX }
+import { emptyChain, parseId as parseChainId, chainComponents, moveBy as chainMoveBy,
+         removeAt as chainRemoveAt, MAX_FX, MAX_MIDI_FX }
     from '/data/UserData/schwung/shared/chain_model.mjs';
 import { drawChainDiagram, DEFAULT_Y as DIAGRAM_Y, BOX_H as DIAGRAM_BOX_H }
     from '/data/UserData/schwung/shared/chain_diagram.mjs';
@@ -505,6 +506,20 @@ function restoreChainComponent(slotIndex) {
  */
 function chainComponentId(componentKey) {
     return componentKey === "midiFx" ? "midi_fx1" : componentKey;
+}
+
+/*
+ * The editor key of position `index` in a section — the inverse of
+ * chainComponentId, carrying the same single exception: the first MIDI FX is
+ * keyed "midiFx" for everything that predates the list.
+ *
+ * A reorder needs this because a module's key CHANGES as it moves. Following
+ * it by remembering the selection index instead would follow the position,
+ * which is the thing the gesture just moved out from under it.
+ */
+function chainEditorKeyAt(section, index) {
+    if (section === "midiFx") return index === 0 ? "midiFx" : `midi_fx${index + 1}`;
+    return `fx${index + 1}`;
 }
 
 /* True for a key that addresses a module position (i.e. not "settings"). */
@@ -3177,6 +3192,93 @@ function writeChainOrder(slotIndex, section) {
             ? String(getSlotParam(slotIndex, `${id}_module`) || "").toLowerCase() : "";
         if (want !== have) setSlotParam(slotIndex, `${id}:module`, want);
     }
+}
+
+/*
+ * Move one module one place along its own section, model and DSP together.
+ *
+ * Returns whether anything moved, so the caller can say "at the end" rather
+ * than announce a move that did not happen.
+ *
+ * The bounds are the MODEL's — chainMoveBy refuses to cross a section boundary
+ * (a MIDI FX passing the synth would be a type change, not a reorder) and
+ * stops at the ends rather than wrapping. Rather than restate those rules here
+ * and risk the two drifting, this asks the model for the result and compares:
+ * a refused move returns the list it was given. The one rule that IS here is
+ * that an EMPTY position does not move — the pending entry a `+` box
+ * materialises is exactly that, and dragging a hole around is not a gesture.
+ *
+ * Compaction and the DSP write happen in the SAME call, so the editor's list
+ * and the chain the audio runs through can never disagree about the order.
+ */
+function moveChainComponent(slotIndex, componentKey, delta) {
+    const cfg = chainConfigs[slotIndex];
+    if (!cfg) return false;
+    const id = chainComponentId(componentKey);
+    const at = parseChainId(id);
+    /* The synth is not a list position; Settings and the `+` boxes are not
+     * modules at all. None of them move. */
+    if (!at) return false;
+    const before = cfg[at.section] || [];
+    if (!before[at.index]) return false;
+    const next = chainMoveBy(cfg, id, delta);
+    const after = next[at.section];
+    if (after.length === before.length && after.every((m, i) => m === before[i])) return false;
+    chainConfigs[slotIndex] = next;
+    writeChainOrder(slotIndex, at.section);
+    return true;
+}
+
+/*
+ * The picker's Move rows for a component position.
+ *
+ * They exist so Shift+jog is not the ONLY way to reorder a chain: a modifier
+ * gesture with no discoverable equivalent is a feature only the person who
+ * wrote it knows about.
+ *
+ * Offered only where they would DO something — an occupied list position with
+ * somewhere to go — so the list never carries a row that answers a click by
+ * doing nothing. That is also why the synth has neither: it is not a list
+ * position, and the sections either side of it are not the same kind of thing.
+ * Neither `+` nor Settings ever reaches a picker at all.
+ */
+function chainMoveEntries(cfg, componentKey) {
+    const at = parseChainId(chainComponentId(componentKey));
+    if (!cfg || !at) return [];
+    const list = cfg[at.section] || [];
+    if (!list[at.index]) return [];
+    const out = [];
+    if (at.index > 0) out.push({ id: "__move_left__", name: "  Move Left" });
+    if (at.index < list.length - 1) out.push({ id: "__move_right__", name: "  Move Right" });
+    return out;
+}
+
+/*
+ * What a picker choice does to the chain, IN THE MODEL.
+ *
+ * The swap/remove distinction lives here because the two sit one entry apart
+ * in the same list: `None` is the first row, every module below it is a swap.
+ *
+ * A swap REPLACES the occupant and moves nothing — resequencing a patch the
+ * user only meant to retouch would change the signal path behind their back —
+ * so it needs no section rewrite, only the one `<id>:module` write the caller
+ * already makes.
+ *
+ * `None` on a list position REMOVES and CLOSES THE GAP, which renumbers every
+ * module downstream of it. That cannot be expressed as a single write, so it
+ * hands back the section to rewrite. `None` on the synth is a clear, not a
+ * removal: the synth has no neighbours to renumber.
+ */
+function applyPickerChoiceToChain(cfg, componentKey, moduleId) {
+    const id = chainComponentId(componentKey);
+    const at = parseChainId(id);
+    if (!moduleId) {
+        if (at) return { cfg: chainRemoveAt(cfg, id), reorderSection: at.section };
+        setChainComponentModule(cfg, componentKey, null);
+        return { cfg, reorderSection: null };
+    }
+    setChainComponentModule(cfg, componentKey, { module: moduleId, params: {} });
+    return { cfg, reorderSection: null };
 }
 
 /*
@@ -7591,6 +7693,21 @@ function enterComponentSelect(slotIndex, componentIndex) {
         }
     }
 
+    /*
+     * Move Left / Move Right, tucked under the loaded module beside its
+     * presets.
+     *
+     * They exist so Shift+jog is not the ONLY way to reorder a chain: a
+     * modifier gesture with no discoverable equivalent is a feature only the
+     * person who wrote it knows about. Offered only where they would do
+     * something — an occupied list position with somewhere to go — so the list
+     * never carries a row that answers a click by doing nothing. That is also
+     * why the synth has neither: it is not a list position, and the sections
+     * either side of it are not the same kind of thing.
+     */
+    availableModules.splice(presetsRowIndex >= 0 ? presetsRowIndex + 1 : 0, 0,
+        ...chainMoveEntries(chainConfigs[slotIndex], comp.key));
+
     selectedModuleIndex = 0;
 
     if (presetsRowIndex >= 0) {
@@ -7638,16 +7755,36 @@ function applyComponentSelection() {
         return;
     }
 
-    /* Update in-memory config */
+    /* Move Left / Move Right — the same reorder the Shift+jog gesture performs,
+     * offered here so the gesture is not the only way in. Both go through
+     * moveChainComponent, so the bounds are the model's in both. */
+    if (selected && (selected.id === "__move_left__" || selected.id === "__move_right__")) {
+        const delta = selected.id === "__move_left__" ? -1 : 1;
+        if (moveChainComponent(selectedSlot, comp.key, delta)) {
+            selectedChainComponent = slotChainComponentIndex(selectedSlot,
+                chainEditorKeyAt(comp.section, comp.index + delta));
+            lastChainComponent[selectedSlot] = selectedChainComponent;
+            const moved = slotChainComponents(selectedSlot)[selectedChainComponent];
+            announce(`${moved ? moved.label : comp.label} moved ${delta < 0 ? "left" : "right"}`);
+        }
+        setView(VIEWS.CHAIN_EDIT);
+        needsRedraw = true;
+        return;
+    }
+
+    /* Update in-memory config. `None` on a list position REMOVES and compacts,
+     * which renumbers everything downstream and so cannot be expressed as the
+     * single `<id>:module` write below — applyPickerChoiceToChain says which
+     * section, if any, has to be rewritten whole. */
     const cfg = chainConfigs[selectedSlot] || createEmptyChainConfig();
-    setChainComponentModule(cfg, comp.key,
-        selected && selected.id ? { module: selected.id, params: {} } : null);
-    chainConfigs[selectedSlot] = cfg;
+    const choice = applyPickerChoiceToChain(cfg, comp.key,
+                                            selected && selected.id ? selected.id : "");
+    chainConfigs[selectedSlot] = choice.cfg;
 
     /* Track explicit user-removal so autosave can bypass the boot-glitch
      * guard. Set when the slot is now fully empty; reset on any non-empty
      * pick (the user is rebuilding the slot). */
-    slotUserCleared[selectedSlot] = !chainHasAnyModule(cfg);
+    slotUserCleared[selectedSlot] = !chainHasAnyModule(choice.cfg);
 
     /* A component changed, so any LFO label naming that component by module
      * is now wrong. The label cache keys on the stored ROUTING, which a swap
@@ -7685,17 +7822,26 @@ function applyComponentSelection() {
                 needsRedraw = true;
                 return;
             }
-            applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp);
+            applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp,
+                                             choice.reorderSection);
         });
         return;
     }
 
     /* Clearing a slot (empty moduleId) — no feedback risk, run directly. */
-    applyComponentSelectionConfirmed(selectedSlot, paramKey, moduleId, comp);
+    applyComponentSelectionConfirmed(selectedSlot, paramKey, moduleId, comp,
+                                     choice.reorderSection);
 }
 
-function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp) {
-    if (paramKey) {
+function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, reorderSection) {
+    /* A removal compacted the list, so every position from the removed one
+     * onwards now holds a different module — one write cannot say that.
+     * writeChainOrder rewrites the section and clears the whole tail; the
+     * single write below is for everything else, where exactly one position
+     * changed. */
+    if (reorderSection) {
+        writeChainOrder(slotIndex, reorderSection);
+    } else if (paramKey) {
         if (typeof host_log === "function") host_log(`applyComponentSelection: slot=${slotIndex} param=${paramKey} module=${moduleId}`);
         const success = setSlotParam(slotIndex, paramKey, moduleId);
         if (typeof host_log === "function") host_log(`applyComponentSelection: setSlotParam returned ${success}`);
@@ -7717,6 +7863,15 @@ function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp) {
     loadChainConfigFromSlot(slotIndex);
     lastSlotModuleSignatures[slotIndex] = getSlotModuleSignature(slotIndex);
     invalidateKnobContextCache();
+    /* A removal shortened the list, so the remembered index can now point past
+     * its end — and the CHAIN_EDIT handlers read `comps[selection].key` without
+     * checking. One removal can only ever overshoot by one, but the clamp is
+     * here rather than in each of them. */
+    if (slotIndex === selectedSlot && reorderSection) {
+        const len = slotChainComponents(slotIndex).length;
+        if (selectedChainComponent >= len) selectedChainComponent = len - 1;
+        lastChainComponent[slotIndex] = selectedChainComponent;
+    }
     setView(VIEWS.CHAIN_EDIT);
     needsRedraw = true;
 }
@@ -12019,7 +12174,41 @@ function updateFocusedSlot(slot) {
     }
 }
 
-function handleJog(delta) {
+/*
+ * Shift+jog in the chain editor: move the selected module, and take the
+ * selection with it.
+ *
+ * Returns whether the gesture was CONSUMED, which is not the same as whether
+ * anything moved — a module already at the end of its section consumes the
+ * jog and says so, rather than quietly turning back into a selection change
+ * halfway through a reorder.
+ */
+function chainReorderJog(delta) {
+    const comp = slotChainComponents(selectedSlot)[selectedChainComponent];
+    if (!comp || comp.kind !== "module") return false;
+    if (!comp.module) { announce(`${comp.label} empty`); return true; }
+    if (!moveChainComponent(selectedSlot, comp.key, delta)) {
+        announce(`${comp.label} ${delta < 0 ? "at the start" : "at the end"}`);
+        return true;
+    }
+    /* Re-anchor by where the module WENT, not by the index it left behind. */
+    selectedChainComponent = slotChainComponentIndex(selectedSlot,
+        chainEditorKeyAt(comp.section, comp.index + delta));
+    lastChainComponent[selectedSlot] = selectedChainComponent;
+    const moved = slotChainComponents(selectedSlot)[selectedChainComponent];
+    announce(`${moved ? moved.label : comp.label} moved ${delta < 0 ? "left" : "right"}`);
+    needsRedraw = true;
+    return true;
+}
+
+/*
+ * `shift` defaults to the live modifier rather than being passed by every
+ * caller: there are two call sites (plain and co-run) and both want the same
+ * answer, so a parameter they both had to remember to fill in would be a
+ * parameter one of them eventually forgot. It is a parameter at all so the
+ * gesture can be driven without a device.
+ */
+function handleJog(delta, shift = isShiftHeld()) {
     hideOverlay();
     switch (view) {
         case VIEWS.SLOTS:
@@ -12103,6 +12292,11 @@ function handleJog(delta) {
         case VIEWS.CHAIN_EDIT:
             /* Navigate horizontally through chain components (-1 = chain/patch selection) */
             {
+                /* Shift turns the jog from "which module" into "where does
+                 * this module go". It is consumed either way once a module is
+                 * selected, so the selection cannot creep sideways underneath a
+                 * reorder the user thinks they are performing. */
+                if (shift && chainReorderJog(delta)) break;
                 const comps = slotChainComponents(selectedSlot);
                 selectedChainComponent = Math.max(-1, Math.min(comps.length - 1, selectedChainComponent + delta));
                 lastChainComponent[selectedSlot] = selectedChainComponent;
@@ -13906,9 +14100,22 @@ function drawChainEdit() {
     const infoX = Math.floor((SCREEN_WIDTH - infoLine.length * 5) / 2);
     print(infoX, infoY, infoLine, 1);
 
-    /* Back leaves shadow mode entirely from here — the one screen where it
-     * does — so the footer says EXIT rather than OUT. */
-    drawMovyFooter(movy, [["JOG", "SEL"], ["CLK", "OPEN"], ["BACK", "EXIT"]]);
+    /*
+     * Back leaves shadow mode entirely from here — the one screen where it
+     * does — so the footer says EXIT rather than OUT.
+     *
+     * It follows the modifier because Shift silently repurposes the jog: a
+     * reorder gesture with a footer still reading SEL is a gesture nobody
+     * finds. Shift drops CLK, which is unchanged, rather than adding a fourth
+     * pair — three pairs only fit while every word is <= 4 characters, and
+     * drawFooter drops what does not fit rather than squeezing it.
+     *
+     * isShiftHeld() is a read of the control SHM, not an IPC round trip, so
+     * this is a per-frame call that costs nothing measurable.
+     */
+    drawMovyFooter(movy, isShiftHeld()
+        ? [["JOG", "MOVE"], ["BACK", "EXIT"]]
+        : [["JOG", "SEL"], ["CLK", "OPEN"], ["BACK", "EXIT"]]);
 }
 
 /* Draw component module selection list */
