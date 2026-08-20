@@ -23,7 +23,7 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 node --input-type=module -e '
-import { drawChainDiagram, fitAbbrev, BOX_W, GAP, DEFAULT_X }
+import { drawChainDiagram, fitAbbrev, BOX_W, BOX_H, GAP, DEFAULT_X, DEFAULT_Y, SYNTH_BAND_H }
   from "./src/shared/chain_diagram.mjs";
 
 let failures = 0;
@@ -32,62 +32,80 @@ const fail = (m) => { console.error("FAIL: " + m); failures++; };
 /* The device font: 5px glyph plus a 1px gap. */
 const W = (s) => String(s).length * 6;
 
-function draw(abbrevs) {
+function draw(abbrevs, sel = 0) {
   const prints = [];
-  const pixels = [];
+  const rects = [];
   const ctx = {
     /* Record the 1px-wide vertical LINES the outline helper emits, so the
      * test recovers where the rings ACTUALLY are rather than where it assumes.
      * Hardcoding the expected inset made this test miss the very regression it
      * exists for: moving the ring moved the collision, and the assertion did
      * not follow it. */
-    fillRect: (x, y, w, h) => { if (w === 1) pixels.push({ x, y0: y, y1: y + h - 1 }); },
+    fillRect: (x, y, w, h) => rects.push({ x, y, w, h }),
     print: (x, y, s) => prints.push({ x, y, s: String(s) }),
     textWidth: W,
   };
-  prints.pixels = pixels;
+  prints.rects = rects;
   const mod = (id) => ({ module: id, params: {} });
   const comps = [
     { key: "synth", kind: "synth",  module: mod("s") },
     { key: "fx1",   kind: "module", module: mod("f") },
   ];
-  drawChainDiagram(ctx, comps, 0, { abbrev: (c) => abbrevs[c.key] || "--" });
+  drawChainDiagram(ctx, comps, sel, { abbrev: (c) => abbrevs[c.key] || "--" });
   return prints;
 }
 
-/* ---- 1. a 3-char label on the SYNTH clears its inner ring -------------- */
-{
-  const p = draw({ synth: "9W9" });
+/* ---- 1. the SYNTH band never touches the label ------------------------ *
+ *
+ * The band replaced an inset RING. The ring cost width on both sides, which is
+ * how a 3-char abbrev ("9W9") ended up colliding with the synth landmark. A
+ * horizontal band costs no width, so the collision cannot return by
+ * arithmetic - but it could return by overlapping vertically, which is what
+ * this checks.
+ */
+for (const selected of [false, true]) {
+  const p = draw({ synth: "9W9" }, selected ? 0 : 1);
   const t = p.find((q) => q.s === "9W9");
+  const where = selected ? "selected" : "unselected";
   if (!t) {
-    fail("the 3-char synth label was truncated or never drawn: " +
+    fail(where + ": the 3-char synth label was truncated or never drawn: " +
          JSON.stringify(p.map((q) => q.s)));
-  } else {
-    /*
-     * Find the rings from what was DRAWN, on the row the label sits on. The
-     * outline helper emits 1px-wide vertical LINES, so a line at column x
-     * spanning rows y0..y1 occupies that column on the label row when the row
-     * falls inside its span. Whatever vertical lines the synth box draws, the
-     * label must not land on them.
-     * Deriving this means the test follows the ring if the inset changes,
-     * which is exactly the regression being guarded.
-     */
-    const cols = p.pixels
-      .filter((q) => t.y >= q.y0 && t.y <= q.y1 &&
-                     q.x >= DEFAULT_X && q.x < DEFAULT_X + BOX_W)
-      .map((q) => q.x)
-      .sort((a, b) => a - b);
-    const span = { lo: t.x, hi: t.x + W(t.s) - 1 };
-    const hit = cols.filter((c) => c >= span.lo && c <= span.hi);
-    if (hit.length) {
-      fail("the synth label (x " + span.lo + ".." + span.hi + ") lands on box/ring " +
-           "pixels at " + JSON.stringify(hit) + " - it collides with its own landmark. " +
-           "Vertical lines on that row: " + JSON.stringify(cols));
-    }
-    if (cols.length < 2) {
-      fail("expected the synth box to draw at least an outer and an inner vertical " +
-           "line on the label row; found " + JSON.stringify(cols) +
-           " - the test can no longer see the ring it is checking against");
+    continue;
+  }
+  /* The label occupies 7 rows of the 5x7 face. */
+  const tTop = t.y, tBot = t.y + 6;
+  const band = p.rects.find((r) => r.h === SYNTH_BAND_H && r.w === BOX_W - 2 &&
+                                   r.x >= DEFAULT_X && r.x < DEFAULT_X + BOX_W);
+  if (!band) {
+    fail(where + ": the synth drew no band - it is the only landmark once the " +
+         "chain scrolls, and it must survive selection too");
+    continue;
+  }
+  if (band.y + band.h - 1 >= tTop && band.y <= tBot) {
+    fail(where + ": the synth band (rows " + band.y + ".." + (band.y + band.h - 1) +
+         ") overlaps the label (rows " + tTop + ".." + tBot + ")");
+  }
+  /* And the band must stay inside its own box. */
+  if (band.x < DEFAULT_X || band.x + band.w > DEFAULT_X + BOX_W ||
+      band.y < DEFAULT_Y || band.y + band.h > DEFAULT_Y + BOX_H) {
+    fail(where + ": the synth band is not inside its box");
+  }
+}
+
+/* ---- 1b. the synth gets the SAME label room as any other box ---------- *
+ *
+ * The whole point of a horizontal mark. If the synth ever costs width again,
+ * the 3-char collision comes back. */
+{
+  const p = draw({ synth: "9W9", fx1: "9W9" });
+  const a = p.filter((q) => q.s === "9W9");
+  if (a.length !== 2) fail("expected the label on both boxes, got " + a.length);
+  else {
+    const offA = a[0].x - DEFAULT_X;
+    const offB = a[1].x - (DEFAULT_X + BOX_W + GAP);
+    if (offA !== offB) {
+      fail("the synth label sits at offset " + offA + " but the FX label at " + offB +
+           " - the synth is being given different room again");
     }
   }
 }
@@ -132,5 +150,5 @@ function draw(abbrevs) {
 }
 
 if (failures) process.exit(1);
-console.log("PASS: chain diagram labels stay inside their boxes, and clear the synth ring");
+console.log("PASS: chain diagram labels stay inside their boxes, and clear the synth band");
 '
