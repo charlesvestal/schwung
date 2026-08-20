@@ -771,6 +771,32 @@ Promise.all([
       if (ctl.state.touchOrder.length !== 0)
         fail("nothing is held any more; the readout is a claim, not a touch");
 
+      /* The pulse: two blinks, then nothing.
+       *
+       * Observed by RENDERING, not by recomputing the phase here — a test that
+       * recalculates the rule it is checking passes no matter what the code
+       * does, which is exactly what the first version of this did. */
+      {
+        ctl.setLayout(C.LAYOUT_MOVY);
+        const lit = [];
+        for (let e = 0; e <= C.RESET_PULSE_MS + C.RESET_PULSE_BLINK_MS * 2; e += 15) {
+          const fb = H.createFramebuffer();
+          ctl.render(H.drawContext(fb), { title: "T" });
+          lit.push(fb.countLit());
+          clock += 15;
+        }
+        let edges = 0;
+        for (let i = 1; i < lit.length; i++) if (lit[i] !== lit[i - 1]) edges++;
+        if (edges < 3)
+          fail("the reset pulse did not blink — " + edges + " changes across " +
+               lit.length + " frames; a pulse that is always on is a state, not a beat");
+        if (ctl.state.pulse !== null) fail("the reset pulse never stopped");
+        /* And it settles: the last few frames must be identical. */
+        const tail = lit.slice(-4);
+        if (tail.some((v) => v !== tail[0])) fail("the pulse was still blinking at the end");
+        ctl.setLayout(R.LAYOUT_DIAL);
+      }
+
       /* And it dismisses itself, like any other unheld claim. */
       clock += C.TURN_CLAIM_MS + 1;
       ctl.tick();
