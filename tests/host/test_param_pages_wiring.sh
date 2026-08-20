@@ -90,7 +90,10 @@ want(/tts_get_enabled[\s\S]{0,80}return false/, "the screen reader does not forc
 if (/openTextEntry|filepathBrowser|drawCanvas/.test(v)) {
   fail("the view module is reimplementing an editor the list already has");
 }
-if (/PAGE_PRESET|PAGE_ITEMS|PAGE_MODES/.test(v.replace(/PAGE_KNOBS/g, ""))) {
+/* The grid owns KNOBS, MENU and PRESET — all three are drawn in its chrome.
+ * ITEMS, MODES and CHILD still belong to the list editor, and the view must
+ * not start quietly drawing them. */
+if (/PAGE_ITEMS|PAGE_MODES|PAGE_CHILD/.test(v)) {
   fail("the view module is drawing page kinds it should hand to the list");
 }
 

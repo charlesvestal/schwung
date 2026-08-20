@@ -149,12 +149,16 @@ export function applyInput(controller, intent, { nowMs, reveal } = {}) {
              * has no target, so it opens the section picker — which is also the
              * only spare gesture, and the thing a 76-page module needs. */
             if (controller.pickerOpen) { controller.pickerSelect(); return null; }
-            /* A menu page owns the plain click: first press enters it, second
-             * activates the highlighted entry. Nothing is "held" on a menu page,
-             * so this must come before the no-knob-held branch below or the
-             * section picker would swallow it. */
+            /* A DOOR page owns the plain click: first press enters it, and on
+             * a menu the second activates the highlighted entry. Nothing is
+             * "held" on one, so this must come before the no-knob-held branch
+             * below or the section picker would swallow it.
+             *
+             * Two kinds are doors — a menu and a preset browser. Shift+click
+             * above still reaches the section list from inside either, which is
+             * what keeps them from being traps. */
             const mpage = controller.page;
-            if (mpage && mpage.kind === "menu") {
+            if (mpage && (mpage.kind === "menu" || mpage.kind === "preset")) {
                 const opened = controller.onClick(-1);
                 return opened ? controller.takePending() : null;
             }

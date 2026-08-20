@@ -927,6 +927,36 @@ export function drawFooter(ctx, hints) {
  * @param {Array}  [o.viz]       resolved graphic groups (viz.mjs resolveViz)
  * @param {Array}  [o.footer]    [key, action] hint pairs, most important first
  */
+/**
+ * The preset browser's body, in the page chrome.
+ *
+ * A preset level publishes a count, an index and the name of whichever preset
+ * is selected — there is no list to show, so this shows the one you are on, as
+ * large as the space allows, with its position underneath. Same header, same
+ * bank bar, same footer as every other page; only the body differs.
+ *
+ * @param {object} o  { name, index, count, entered }
+ */
+export function drawPresetBody(ctx, rect, o) {
+    const name = o && o.name ? String(o.name) : "--";
+    const has = o && typeof o.count === "number" && o.count > 0;
+    const pos = has ? `${(o.index | 0) + 1} of ${o.count}` : "";
+
+    /* The NAME in the big face, centred, truncated to the full width. Preset
+     * names run long ("SQ Fat Analog Brass 3") and there is nothing else on
+     * this page competing for the room. */
+    const nameY = rect.y + Math.floor((rect.h - FONT_H - FONT4_HEIGHT - 3) / 2);
+    const shown = fitText({ textWidth: tzWidth }, caps(name), rect.w - 8);
+    tzPrint(ctx, centreX(rect.x, rect.w, tzWidth(shown)), nameY, shown, 1);
+
+    /* Position underneath in the small face: it is reference, not the thing
+     * you are reading. */
+    if (pos) {
+        const py = nameY + FONT_H + 3;
+        fontPrint4x5(ctx, centreX(rect.x, rect.w, fontWidth4x5(caps(pos))), py, caps(pos), 1);
+    }
+}
+
 export function renderPageMovy(ctx, o) {
     const page = o.page;
     const touched = typeof o.touched === "number" ? o.touched : -1;
