@@ -702,6 +702,52 @@ Promise.all([
     if (!writes.some(([k, v]) => k === "synth:preset" && v === "1"))
       fail("jogging inside the browser did not select the next preset: " + JSON.stringify(writes));
 
+    /* ---- leaving a page leaves the door ---------------------------------
+     *
+     * Enter the browser, page away, come back: you must be OUTSIDE it. The
+     * entered flag is matched by page NAME, so returning to the same page used
+     * to put you straight back inside without a click — the page had never
+     * been marked as left, only navigated off. */
+    ctl.exitMenu();                          /* whatever the last block left */
+    ctl.goToPage(presetAt, { remember: false });
+    ctl.onClick(-1);
+    if (!ctl.menuEntered()) fail("setup: should be entered");
+    /* Leave and return BY JOG — the path that had no clear at all. Going via
+     * goToPage would prove nothing: page names are unique, so its existing
+     * name check already covers every jump. */
+    ctl.onJog(1, { shift: true });
+    if (ctl.pageIndex === presetAt) fail("setup: shift+jog did not leave the page");
+    for (let i = 0; i < ctl.pages.length && ctl.pageIndex !== presetAt; i++) ctl.onJog(-1);
+    if (ctl.pageIndex !== presetAt) fail("setup: could not jog back to the preset page");
+    if (ctl.menuEntered()) fail("jogging back onto a preset page put you inside it without a click");
+
+    /* ---- the second click says DONE, and lands on the knobs ------------
+     *
+     * The browser loads as you scroll, so by the time you click there is
+     * nothing left to commit — what you want next is the knobs for the preset
+     * you just landed on. A click that left you in the browser made the page
+     * feel like somewhere you were stuck, with only Back to get out and Back
+     * only ever going backwards. */
+    {
+      const gridAt = ctl.pages.findIndex((p) => p.kind === "knobs");
+      if (gridAt < 0) fail("the fixture should plan a grid page");
+      ctl.goToPage(presetAt, { remember: false });
+      ctl.onClick(-1);
+      if (!ctl.menuEntered()) fail("first click should enter");
+      ctl.onClick(-1);
+      if (ctl.menuEntered()) fail("the second click should leave the browser");
+      if (ctl.pageIndex !== gridAt)
+        fail("the second click should land on the first grid page, got page " +
+             ctl.pageIndex + " (" + (ctl.page && ctl.page.kind) + ")");
+
+      /* Back is still the other way out: it steps out IN PLACE, for when you
+       * were only looking. */
+      ctl.goToPage(presetAt, { remember: false });
+      ctl.onClick(-1);
+      if (!ctl.exitMenu()) fail("Back should step out of the browser");
+      if (ctl.pageIndex !== presetAt) fail("Back must not move you off the page");
+    }
+
     /* ---- SHIFT still pages out, so it is never a trap ------------------ */
     ctl.onJog(1, { shift: true });
     if (ctl.pageIndex === pageBefore)
