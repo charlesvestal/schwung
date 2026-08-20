@@ -2345,10 +2345,20 @@ void shadow_master_fx_lfo_tick(int frames) {
  * Why a count is a sound "anything loaded" test even though the lists are
  * sparse: both counts are HIGH-WATER MARKS, not compacted lengths (see the
  * contract comment on v2_load_midi_fx_slot in chain_midi.c).  A chain whose
- * only module sits in fx5 reports fx_count == 6 with positions 0..3 NULL — so
- * a hole never hides a loaded module.  In the other direction, clearing a
- * position trims the trailing NULLs off the mark, so the count falls back to 0
- * exactly when the last module goes away and never reports a phantom.
+ * only module sits in fx5 — key index 5, array slot 4 — reports fx_count == 5
+ * with positions 0..3 NULL, so a hole never hides a loaded module.  In the
+ * other direction, clearing a position trims the trailing NULLs off the mark,
+ * so the count falls back to 0 exactly when the last module goes away.
+ *
+ * One known way the mark can outlive its module, recorded rather than fixed:
+ * v2_load_audio_fx_slot unloads the previous occupant BEFORE it can fail, and
+ * its failure paths return -1 without re-trimming — so a slot that held fx1
+ * and is handed a broken module reports fx_count == 1 over a NULL handle, and
+ * this probe answers "loaded" for what is really an empty slot.  The honest
+ * fix is a trim on those DSP failure paths, deliberately not done from here:
+ * it belongs in chain_host.c, and the cost if it is ever hit is an empty slot
+ * being mixed, i.e. silence.  Note the code this replaced activated on the
+ * write alone in the same case, so this is not a regression.
  *
  * These are direct in-process calls into the dlopen'd chain host, not param
  * SHM round-trips; each is a strcmp walk plus an snprintf, well under a
@@ -2388,9 +2398,28 @@ int shadow_slot_has_loaded_component(const plugin_api_v2_t *pv2, void *instance)
  *
  * Reads the list lengths rather than looping to the caps, for the same reason
  * the probe does: the caps stay in chain_internal.h and are not restated here.
- * Two get_param calls plus one set_param per LOADED position — a cleared slot
- * costs three calls, not seventeen.  Walks downward so the high-water marks
- * trim as they go.
+ * Walks downward so the high-water marks trim as they go.
+ *
+ * COST, stated plainly because it is not small and both callers run inside the
+ * SPI callback (~900us per frame — docs/REALTIME_SAFETY.md):
+ *
+ * An already-empty slot costs three calls.  A FULL chain costs up to seventeen
+ * teardowns in a single frame, and the expensive ones are exactly the loaded
+ * positions — each is a destroy_instance plus a dlclose, and dlclose runs the
+ * library's destructors and munmaps it.  That is a materially bigger burst
+ * than the at-most-three this replaced.  This project has a documented history
+ * of audio dropouts traced to work done in this callback, so do not read the
+ * cap-independence above as a claim that the work itself is cheap: it is the
+ * COUNTING that is cheap, not the clearing.
+ *
+ * It is accepted deliberately.  Clearing correctly requires it — the
+ * alternative is the previous behaviour, where fx3..fx8 survived a clear and
+ * re-activated the slot — and it fires only on a deliberate user action
+ * (patch -> None, or a fade-out completing), never per frame.
+ *
+ * If clearing a full chain ever audibly clicks, the fix is to hand the
+ * teardown to the worker thread and let the callback only mark the slot
+ * inactive.  It is NOT to go back to clearing two positions.
  */
 static void shadow_slot_clear_all_modules(void *instance)
 {
