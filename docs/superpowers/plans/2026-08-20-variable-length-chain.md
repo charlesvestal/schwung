@@ -98,9 +98,20 @@ if (removed.fx[0].module !== "cloudseed") fail("remove did not compact: " + remo
 /* MOVE is bounded to its own section and does not wrap */
 const moved = M.moveBy(cfg, "fx1", 1);
 if (moved.fx.map((f) => f.module).join() !== "cloudseed,freeverb") fail("move right failed");
-const stuck = M.moveBy(cfg, "fx1", -1);
-if (stuck.fx.map((f) => f.module).join() !== "freeverb,cloudseed")
-  fail("moving the first FX left should do nothing, not wrap");
+/* THREE elements, not two. At length 2 a wrap is invisible: splice(0,1)
+ * followed by splice(-1,0,m) puts the module back exactly where it started,
+ * so deleting the bounds check still passes. Found by mutation, not by
+ * reading. */
+let abc = M.emptyChain();
+abc.fx = [{ module: "a" }, { module: "b" }, { module: "c" }];
+const order = (c) => c.fx.map((f) => f.module).join();
+if (order(M.moveBy(abc, "fx1", -1)) !== "a,b,c")
+  fail("moving the first of three FX left must leave the order alone, got " + order(M.moveBy(abc, "fx1", -1)));
+if (order(M.moveBy(abc, "fx3", 1)) !== "a,b,c")
+  fail("moving the last of three FX right must leave the order alone");
+/* ...and a positive case, so the two above are not passing vacuously. */
+if (order(M.moveBy(abc, "fx2", -1)) !== "b,a,c")
+  fail("moving the middle FX left should reorder, got " + order(M.moveBy(abc, "fx2", -1)));
 const midiStuck = M.moveBy(cfg, "midi_fx1", 1);
 if (midiStuck.midiFx.length !== 1 || midiStuck.fx.length !== 2)
   fail("a MIDI FX must not cross the synth");
@@ -421,7 +432,7 @@ git commit -m "feat(chain): route fx params by parsed index, caps to 8"
 - [ ] The chain editor looks and behaves exactly as before
 - [ ] Existing tests stay green
 
-**Verify:** `for t in tests/host/*.sh; do bash "$t"; done` → 32 failures, all `rg: command not found` (the known baseline), none new
+**Verify:** `for t in tests/host/*.sh; do bash "$t"; done` → 32 failures, all `rg: command not found`. NOTE: 32 is the `tests/host/` baseline only; tests/{shadow,store,build} carry more stale failures and are not run by CI (see CLAUDE.md). Compare like with like.
 
 **Steps:**
 
@@ -478,7 +489,7 @@ for (let i = 1; i <= chainModel.MAX_FX; i++) {
 - [ ] **Step 6: Run the full suite**
 
 Run: `fails=0; for t in tests/host/*.sh; do bash "$t" >/dev/null 2>&1 || fails=$((fails+1)); done; echo $fails`
-Expected: `32` — the known `rg`-missing baseline, no new failures
+Expected: `32` — the `tests/host/` baseline, all `rg: command not found`, no new failures
 
 - [ ] **Step 7: Commit**
 
@@ -722,4 +733,10 @@ git commit -m "feat(shadow): move-left/right in the module picker"
 - **`grep` in this environment is a shell function that silently returns nothing** on some files — use `command grep`. A lone NUL byte also makes a file "binary" to grep; `file` will tell you.
 - **An unserved param key answers `""`, not `null`.** Any new read of a chain key must treat empty as a miss, or you will get `Number("") === 0` bugs like the Volume-reads-0% one.
 - **Apostrophes break the test harness.** The `node -e '...'` blocks are single-quoted shell strings; an apostrophe in a comment ends the string and yields a confusing syntax error.
-- **Mutation-test every new assertion.** Several tests in this tree passed against deliberately broken code because they re-derived the rule they were checking, or asserted on an empty array.
+- **Mutation-test every new assertion.** Several tests in this tree passed against
+  deliberately broken code because they re-derived the rule they were checking,
+  asserted on an empty array, or — as in this plan's own first draft of the
+  no-wrap test — used a fixture too small for the bug to show. Two elements
+  cannot distinguish "stopped" from "wrapped".
+- **The 32-failure baseline is `tests/host/` ONLY.** Running all four suites gives
+  ~86, most of them pre-existing stale pins. Always compare like with like.
