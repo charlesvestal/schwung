@@ -126,19 +126,32 @@ export function enterParamPages(slot, component, prefix, restorePageName, io) {
      * module after a switch to slot settings. */
     if (!controller || controllerIo !== (io || null)) {
         controllerIo = io || null;
-        controller = createController({
-            getParam: io ? io.getParam : (key) => ctx.getSlotParam(currentSlot, key),
-            setParam: io ? io.setParam : (key, value) => ctx.setSlotParam(currentSlot, key, value),
+        /*
+         * The DEFAULTS, then the caller's io spread over the top.
+         *
+         * Spread, not field-by-field. Picking the fields by hand dropped
+         * `formatValue` on the floor: the slot-settings contract supplied one,
+         * the controller expected one, and this line — the only thing between
+         * them — did not mention it. Both ends were tested; the join was not,
+         * and an LFO target went on reading "FX1" on the device while every
+         * test passed. Spreading makes a new capability arrive by default, so
+         * the failure mode is at worst an ignored key rather than a silently
+         * missing one.
+         *
+         * `announce` is deliberately not overridable this way today; nothing
+         * supplies one, and it would be spread over if something did.
+         */
+        controller = createController(Object.assign({
+            getParam: (key) => ctx.getSlotParam(currentSlot, key),
+            setParam: (key, value) => ctx.setSlotParam(currentSlot, key, value),
             announce,
             /* The list editor marks these with "~"; the grid ticks the cell.
              * A synthesised contract may answer for itself — slot settings
              * does, because the generic oracle both got it wrong for `slot:*`
              * keys and cost three IPC round trips per tick to do so. */
-            isModulated: (io && io.isModulated)
-                ? io.isModulated
-                : (key) => (typeof ctx.isParamModulated === 'function'
-                    ? !!ctx.isParamModulated(currentSlot, key) : false),
-        });
+            isModulated: (key) => (typeof ctx.isParamModulated === 'function'
+                ? !!ctx.isParamModulated(currentSlot, key) : false),
+        }, io || {}));
     }
     /* Entering the view is the only way the module behind it can have changed,
      * so this is where the cached abbreviation is dropped. */

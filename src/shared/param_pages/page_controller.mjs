@@ -181,7 +181,18 @@ export const TURN_CLAIM_MS = 1200;
  * not the first half of a double-tap, whatever its timing. So the gesture is
  * "tap, tap" and never "tap, turn, tap".
  */
-export const DOUBLE_TAP_MS = 350;
+export const DOUBLE_TAP_MS = 500;
+
+/**
+ * Detents that turn a tap into an ADJUSTMENT rather than half a double-tap.
+ *
+ * The guard cannot be "any movement at all": these are physical detented
+ * encoders and tapping a small one nudges it, so a single stray detent between
+ * two taps was cancelling the gesture. Two is still far below a deliberate
+ * turn — you cannot adjust anything by one detent and mean it — and it makes
+ * the gesture survive a clumsy tap.
+ */
+export const TAP_TURN_TOLERANCE = 2;
 
 /** How many times a page will re-read the contract waiting for late metadata. */
 export const META_RETRY_LIMIT = 8;
@@ -310,6 +321,9 @@ export function createController(io = {}) {
          * TURNED since. Together they are the double-tap — see DOUBLE_TAP_MS. */
         lastTapMs: Object.create(null),
         turnedSinceTap: Object.create(null),
+        /* key -> the first value we ever read for it on this page set. What a
+         * param that declares no default resets to — see resetToDefault. */
+        loadedValues: Object.create(null),
         /* Name of the menu page currently ENTERED, or null. */
         menuEntered: null,
     };
@@ -359,6 +373,7 @@ export function createController(io = {}) {
         s.metaRetries = 0;
         s.metaSettled = false;
         s.knobStates = Object.create(null);
+        s.loadedValues = Object.create(null);
         s.lastWriteMs = Object.create(null);
         s.pendingWrite = Object.create(null);
         /* A rebuild after a module finishes loading shifts every index, so land
@@ -536,6 +551,11 @@ export function createController(io = {}) {
          * params it hides or reveals are not otherwise reachable. */
         const changed = s.values[key] !== raw;
         s.values[key] = raw;
+        /* The value this param HAD when the page opened — whatever put it
+         * there, a preset or the module's own startup state. It is what a
+         * reset falls back to for the great majority of params, which declare
+         * no default at all. First read wins; a turn cannot overwrite it. */
+        if (s.loadedValues[key] === undefined) s.loadedValues[key] = raw;
         if (changed) replanIfCondition(key);
         return key;
     }
@@ -739,6 +759,13 @@ export function createController(io = {}) {
 
         const t = nowMs === undefined ? now() : nowMs;
 
+        /* If the cursor has not reached this key yet, the value about to be
+         * turned is still the one the page opened with — keep it before the
+         * turn destroys the evidence. */
+        if (s.loadedValues[key] === undefined && s.values[key] !== undefined) {
+            s.loadedValues[key] = s.values[key];
+        }
+
         /* Turning claims the header: "last touched or MOVED" is the one you are
          * working on, and a knob can be turned without the capacitive touch
          * ever registering. It does not join touchOrder — nothing is being
@@ -753,9 +780,9 @@ export function createController(io = {}) {
             s.turnClaimMs = 0;
         }
 
-        /* This knob is being adjusted, so the tap that started it is not the
-         * first half of a double-tap. */
-        s.turnedSinceTap[slot] = true;
+        /* Detents since the last tap. Past the tolerance this knob is being
+         * ADJUSTED, and the tap that started it is not half a double-tap. */
+        s.turnedSinceTap[slot] = (s.turnedSinceTap[slot] || 0) + 1;
         /* The Movy layout turns like Movy — see movy_knob.mjs — not like
          * Schwung's own dial/bar grid (knob_engine.mjs, a different,
          * time-based acceleration feel that predates this port). Same state
@@ -894,9 +921,9 @@ export function createController(io = {}) {
         }
         const tapAt = now();
         const doubled = (tapAt - (s.lastTapMs[slot] || 0)) < DOUBLE_TAP_MS
-                        && !s.turnedSinceTap[slot];
+                        && (s.turnedSinceTap[slot] || 0) < TAP_TURN_TOLERANCE;
         s.lastTapMs[slot] = tapAt;
-        s.turnedSinceTap[slot] = false;
+        s.turnedSinceTap[slot] = 0;
 
         if (s.touchOrder.indexOf(slot) < 0) s.touchOrder.push(slot);
         s.touched = slot;
@@ -966,16 +993,40 @@ export function createController(io = {}) {
     function resetToDefault(slot) {
         const key = keyAt(slot);
         const meta = metaAt(slot);
-        if (!key || !meta || meta.default === undefined || meta.default === null) return false;
-        if (!isTurnable(meta)) return false;
+        if (!key || !meta || !isTurnable(meta)) return false;
 
-        const wire = formatParamForSet(meta.default, meta);
+        /*
+         * Two things to go back TO, in order of authority.
+         *
+         * A declared default is the module saying what this param ought to be,
+         * and it wins. But only 744 params across the whole fleet declare one,
+         * so on most module pages a reset had nothing to aim at and silently
+         * did nothing — which is indistinguishable, in the hand, from the
+         * gesture not working.
+         *
+         * The fallback is the value the param HAD when the page opened. That
+         * is never nothing: a preset put it there, or the module's own startup
+         * state did. It makes the gesture a general undo for "I turned this
+         * and I want it back", which is what it is reached for anyway.
+         */
+        const declared = (meta.default !== undefined && meta.default !== null);
+        const wire = declared
+            ? formatParamForSet(meta.default, meta)
+            : s.loadedValues[key];
+        if (wire === undefined || wire === null || wire === "") return false;
+        /* Already there — say so rather than announcing a change that is not
+         * one, and skip the write. */
+        if (String(s.values[key]) === String(wire)) {
+            announce(`${meta.label || key}, already ${declared ? "default" : "as loaded"}`);
+            return true;
+        }
+
         s.values[key] = wire;
         s.settleUntil[key] = s.tickCount + SETTLE_TICKS;
         delete s.knobStates[key];       /* next turn starts from the new value */
         setParam(fullKey(key), wire);
         replanIfCondition(key);
-        announce(`${meta.label || key}, default, ${announceTurn(meta, wire)}`);
+        announce(`${meta.label || key}, ${declared ? "default" : "as loaded"}, ${announceTurn(meta, wire)}`);
         return true;
     }
 

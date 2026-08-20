@@ -54,7 +54,9 @@ export const SLOT_GRID_PARAMS = [
     /* Volume is a GAIN of 0..4, not a 0..1 fraction, so `unit: "%"` alone leaves it
      * reading "1.00%". An explicit format scales it: 1.0 gain reads 100%, which is
      * what the list has always shown. */
-    { key: "volume", name: "Volume", type: "float", min: 0, max: 4, step: 0.05, default: 1,
+    /* Max 2.0 = 200% = +6 dB. Must match the list editor's own slot:volume
+     * range in shadow_ui.js, or the same setting has two ceilings. */
+    { key: "volume", name: "Volume", type: "float", min: 0, max: 2, step: 0.05, default: 1,
       display_format: ".0%" },
     { key: "muted", name: "Mute", type: "enum", options: ["Off", "On"], short_options: ["OFF", "ON"],
       default: 0 },

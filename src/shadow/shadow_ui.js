@@ -1721,7 +1721,13 @@ function checkForUpdatesInBackground() {
 /* Chain settings (shown when Settings component is selected) */
 const CHAIN_SETTINGS_ITEMS = [
     { key: "knobs", label: "Knobs", type: "action" },  // Opens knob assignment editor
-    { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 4, step: 0.05 },
+    /* 2.0 is +6 dB. It was 4.0 (+12 dB), which is more headroom than a slot
+     * has any use for and reads as an alarming 400% now that the knob grid
+     * shows it as a percentage. Capped in BOTH places or the two surfaces
+     * disagree — see SLOT_GRID_PARAMS. An existing slot saved above 2.0 keeps
+     * its stored gain until something turns the knob, which then pulls it into
+     * range. */
+    { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 2, step: 0.05 },
     { key: "slot:muted", label: "Muted", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:soloed", label: "Soloed", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 0, max: 16, step: 1 },
