@@ -30,7 +30,7 @@
 import { planPages, PAGE_KNOBS } from "./page_plan.mjs";
 import { buildMetaIndex, inferFromValue, isTurnable, KIND_ENUM, KIND_OPAQUE } from "./param_meta.mjs";
 import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page.mjs";
-import { renderPageMovy, LAYOUT_MOVY } from "./render_page_movy.mjs";
+import { renderPageMovy, drawFooter, RULE_Y, LAYOUT_MOVY } from "./render_page_movy.mjs";
 import { resolveViz } from "./viz.mjs";
 
 export { LAYOUT_MOVY };
@@ -728,7 +728,14 @@ export function createController(io = {}) {
      * per-slot p-locks) or an embedding `rect`: it draws its own header full
      * width, the way Movy itself always does. Anything using those keeps
      * LAYOUT_DIAL/LAYOUT_BAR — see setLayout. */
-    function render(ctx, { title, rect } = {}) {
+    /*
+     * `footer` is [key, action] hint pairs, most important first, supplied by
+     * the CALLER — the gestures belong to whoever owns the input mapping, same
+     * reason the first-run hint panel's text does. Movy layout only: the
+     * dial/bar grid has no footer band reserved and would draw over its last
+     * label row.
+     */
+    function render(ctx, { title, rect, footer } = {}) {
         if (s.layout === LAYOUT_MOVY) {
             const drawGrid = () => renderPageMovy(ctx, {
                 page: page(), metaIndex: s.metaIndex, values: s.values,
@@ -738,6 +745,7 @@ export function createController(io = {}) {
                 modValues: s.modValues,
                 pageGroups: pageGroups(),
                 viz: vizEnabled ? vizGroups() : [],
+                footer,
             });
             if (s.hintLines) {
                 drawGrid();
@@ -745,7 +753,13 @@ export function createController(io = {}) {
                 return;
             }
             if (s.pickerOpen) {
-                renderPicker(ctx, { rect, entries: s.pickerEntries, index: s.pickerIndex, title: "Sections" });
+                /* The picker sizes itself to its rect, so it has to be told the
+                 * footer band exists or it draws its last row underneath it. */
+                const pickRect = footer
+                    ? { x: 0, y: 0, w: 128, h: RULE_Y }
+                    : rect;
+                renderPicker(ctx, { rect: pickRect, entries: s.pickerEntries, index: s.pickerIndex, title: "Sections" });
+                if (footer) drawFooter(ctx, footer);
                 return;
             }
             drawGrid();
