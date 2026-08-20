@@ -140,6 +140,67 @@ int main(void) {
         }
     }
 
+    /*
+     * The UNDERSCORE spelling: "fx3_module".
+     *
+     * This is the readback the chain editor uses to ask what occupies a
+     * position, and it was served for fx1 and fx2 only. The result was not an
+     * error but a silence: fx_count answered 3, fx3_module answered nothing, an
+     * unserved key reads as "", and the reader treats a trailing empty as the
+     * end of the chain. A third FX loaded, ran and was audible while being
+     * invisible in the editor (hardware, 2026-08-20).
+     */
+    {
+        for (int i = 0; i < TEST_MAX_FX; i++) {
+            char key[32];
+            snprintf(key, sizeof(key), "fx%d_module", i + 1);
+            int got = chain_fx_index_from_suffixed(key, "fx", TEST_MAX_FX, "_module");
+            if (got != i) {
+                fprintf(stderr, "FAIL suffixed: %s -> %d, want %d\n", key, got, i);
+                failures++;
+            }
+        }
+        for (int i = 0; i < TEST_MAX_MIDI_FX; i++) {
+            char key[40];
+            snprintf(key, sizeof(key), "midi_fx%d_module", i + 1);
+            int got = chain_fx_index_from_suffixed(key, "midi_fx", TEST_MAX_MIDI_FX, "_module");
+            if (got != i) {
+                fprintf(stderr, "FAIL suffixed midi: %s -> %d, want %d\n", key, got, i);
+                failures++;
+            }
+        }
+        /* midi_fx must never be read as an audio fx, in either direction. */
+        if (chain_fx_index_from_suffixed("midi_fx1_module", "fx", TEST_MAX_FX, "_module") >= 0) {
+            fprintf(stderr, "FAIL: midi_fx1_module parsed as an audio fx id\n");
+            failures++;
+        }
+        if (chain_fx_index_from_suffixed("fx1_module", "midi_fx", TEST_MAX_MIDI_FX, "_module") >= 0) {
+            fprintf(stderr, "FAIL: fx1_module parsed as a midi fx id\n");
+            failures++;
+        }
+        /* The suffix is part of the contract: the bare id and the colon form
+         * are different keys and must not be answered by this branch. */
+        const char *reject[] = {
+            "fx1", "fx1:module", "fx1_modules", "fx1_mod", "fx0_module",
+            "fx01_module", "fx_module", "fx9999999999_module", "",
+        };
+        for (size_t k = 0; k < sizeof(reject) / sizeof(reject[0]); k++) {
+            if (chain_fx_index_from_suffixed(reject[k], "fx", TEST_MAX_FX, "_module") >= 0) {
+                fprintf(stderr, "FAIL: %s should not parse as fxN_module\n", reject[k]);
+                failures++;
+            }
+        }
+        /* Past the cap is refused, so a hand-edited patch cannot index out. */
+        {
+            char key[32];
+            snprintf(key, sizeof(key), "fx%d_module", TEST_MAX_FX + 1);
+            if (chain_fx_index_from_suffixed(key, "fx", TEST_MAX_FX, "_module") >= 0) {
+                fprintf(stderr, "FAIL: %s is past the cap and must be refused\n", key);
+                failures++;
+            }
+        }
+    }
+
     if (failures) {
         fprintf(stderr, "FAIL: %d chain_key_index check(s) failed\n", failures);
         return 1;

@@ -85,6 +85,25 @@ static inline int chain_fx_index_from_id(const char *id, const char *prefix,
     return idx;
 }
 
+/*
+ * "fx3_module" -> 2, for the UNDERSCORE spelling the get_param readback uses.
+ *
+ * This is a third spelling of the same id and it is not decorative: the editor
+ * asks "what is in position N" with `fxN_module`, and only `fx1_module` and
+ * `fx2_module` were ever served. `fx_count` answered 3 correctly while
+ * `fx3_module` answered nothing, an unserved key reads as "", and the reader
+ * discards a trailing empty — so a third FX loaded, ran, made sound, and was
+ * invisible in the editor. Observed on hardware 2026-08-20.
+ */
+static inline int chain_fx_index_from_suffixed(const char *key, const char *prefix,
+                                               int max, const char *suffix) {
+    const char *end = NULL;
+    int idx = chain_fx_index_scan(key, prefix, max, &end);
+    if (idx < 0) return -1;
+    if (!suffix || strcmp(end, suffix) != 0) return -1;
+    return idx;
+}
+
 /* "fx" + 3 -> "fx3": the component id chain_mod_* and the patch layer use. */
 static inline void chain_fx_component_id(char *buf, size_t buf_len,
                                          const char *prefix, int index) {
