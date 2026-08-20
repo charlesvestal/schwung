@@ -872,7 +872,21 @@ function drawKnobRow(ctx, o, row, rowY, lblY) {
  *
  * So the caller passes hints most-important-first and the tail is dropped, not
  * squeezed: a half-drawn pill running off the right edge is worse than an
- * absent one. Put BACK first if BACK is the one that matters.
+ * absent one.
+ *
+ * BACK IS THE EXCEPTION, AND IT IS A RULE: a back hint is PINNED TO THE RIGHT
+ * EDGE, and it is the last hint to be dropped, not the first.
+ *
+ * Being last in the array is not the same as being on the right. With two
+ * pairs, packing left-to-right leaves BACK sitting mid-screen with ~30px of
+ * space beside it — which is what "JOG MOVE / BACK EXIT" looked like on the
+ * chain editor under Shift. "Back is bottom-right" is a fixed place the user
+ * can learn, so it must not move with the number of hints beside it.
+ *
+ * This also removes the old advice to "put BACK first if it matters", which
+ * traded the rule away to survive the tail-drop. Pinning gets both: BACK holds
+ * the right edge AND is protected, so the hints that lose to a narrow screen
+ * are the middle ones.
  */
 export const HINT_PAD = 2;
 export const HINT_GAP = 4;
@@ -887,26 +901,50 @@ export function hintPairWidth(key, action) {
  * @param {Array<[string,string]>} hints  [key, action] pairs, most important first
  * @returns {number} how many pairs were drawn
  */
+/** Is this hint the BACK affordance? The one hint with a fixed home. */
+export function isBackHint(h) {
+    return !!h && /^back$/i.test(String(h[0]).trim());
+}
+
 export function drawFooter(ctx, hints) {
     ctx.fillRect(0, RULE_Y, W, 1, 1);
     if (!hints || !hints.length) return 0;
     const ty = FOOTER_Y + Math.floor((FOOTER_H - FONT4_HEIGHT) / 2);
-    let x = 1, drawn = 0;
-    for (const h of hints) {
-        if (!h) continue;
+
+    const list = hints.filter(Boolean);
+    /* Exactly one back hint is pinned. If a caller passes two (nobody does),
+     * the extra stays an ordinary hint rather than fighting for the same x. */
+    const backIdx = list.findIndex(isBackHint);
+    const back = backIdx >= 0 ? list[backIdx] : null;
+    const flow = backIdx >= 0 ? list.filter((_, i) => i !== backIdx) : list;
+
+    /* One pair, drawn with its KEY inverted into a pill and its ACTION plain,
+     * so the pair reads as one thing. Without the pill a row of hints is an
+     * unparseable run: "JOG PAGE CLK MENU BACK EXIT". */
+    const drawPair = (x, h) => {
         const key = caps(h[0]), action = caps(h[1]);
-        if (x + hintPairWidth(key, action) > W) break;
         const kw = fontWidth4x5(key);
-        /* The KEY is inverted into a pill and the ACTION is plain, so the pair
-         * reads as one thing. Without it a row of hints is an unparseable run:
-         * "JOG PAGE CLK MENU BACK EXIT". */
         ctx.fillRect(x, ty - 1, kw + HINT_PAD * 2, FONT4_HEIGHT + 2, 1);
         fontPrint4x5(ctx, x + HINT_PAD, ty, key, 0);
-        x += kw + HINT_PAD + HINT_GAP;
-        fontPrint4x5(ctx, x, ty, action, 1);
-        x += fontWidth4x5(action) + HINT_GAP;
+        fontPrint4x5(ctx, x + kw + HINT_PAD + HINT_GAP, ty, action, 1);
+    };
+
+    let drawn = 0;
+    /* Reserve the back hint's room BEFORE laying anything else out — that is
+     * what makes the middle hints lose the fight for a narrow screen instead
+     * of BACK losing it. */
+    const backW = back ? hintPairWidth(caps(back[0]), caps(back[1])) : 0;
+    const backX = back ? W - backW : W;
+    const limit = back ? backX : W;
+
+    let x = 1;
+    for (const h of flow) {
+        if (x + hintPairWidth(caps(h[0]), caps(h[1])) > limit) break;
+        drawPair(x, h);
+        x += hintPairWidth(caps(h[0]), caps(h[1]));
         drawn++;
     }
+    if (back) { drawPair(Math.max(x, backX), back); drawn++; }
     return drawn;
 }
 
