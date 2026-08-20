@@ -7411,6 +7411,95 @@ function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp) {
     needsRedraw = true;
 }
 
+/*
+ * Perform a slot-settings ACTION, by key.
+ *
+ * Lifted verbatim out of the CHAIN_SETTINGS jog-click handler, which is the
+ * only place it lived. It is a function so a second surface — the knob grid,
+ * whose menu page returns an { action } and performs nothing itself — can run
+ * the SAME Save rather than growing its own.
+ *
+ * `slot` is what the handler called `selectedSlot`, passed explicitly rather
+ * than read from the module global, so the caller cannot get the two out of
+ * step. Everything else it touches (pendingSaveName, confirmingOverwrite,
+ * lfoCtx, ...) is module state it always mutated and still does.
+ */
+function runChainSettingAction(slot, key) {
+    if (key === "knobs") {
+        enterKnobEditor(slot);
+        return;
+    }
+
+    if (key === "save") {
+        /* Start save flow */
+        const currentName = slots[slot] ? slots[slot].name : "";
+        if (!currentName || currentName === "" || currentName === "Untitled") {
+            /* New - show name preview with Edit/OK */
+            pendingSaveName = generateSlotPresetName(slot);
+            showingNamePreview = true;
+            namePreviewIndex = 1;  /* Default to OK */
+            overwriteFromKeyboard = true;  /* Will use keyboard if Edit is selected */
+            announceSavePreview(pendingSaveName, namePreviewIndex);
+            needsRedraw = true;
+        } else {
+            /* Existing - confirm overwrite (no keyboard needed) */
+            pendingSaveName = currentName;
+            overwriteTargetIndex = findPatchByName(currentName);
+            confirmingOverwrite = true;
+            overwriteFromKeyboard = false;  /* Direct save, no keyboard */
+            confirmIndex = 0;
+            needsRedraw = true;
+        }
+        return;
+    }
+
+    if (key === "save_as") {
+        /* Save As - show name preview with Edit/OK */
+        const currentName = slots[slot] ? slots[slot].name : "";
+        pendingSaveName = currentName && currentName !== "" && currentName !== "Untitled"
+            ? currentName
+            : generateSlotPresetName(slot);
+        showingNamePreview = true;
+        namePreviewIndex = 1;  /* Default to OK */
+        overwriteFromKeyboard = true;  /* Will use keyboard if Edit is selected */
+        announceSavePreview(pendingSaveName, namePreviewIndex);
+        needsRedraw = true;
+        return;
+    }
+
+    if (key === "lfo1" || key === "lfo2") {
+        const lfoIdx = (key === "lfo1") ? 0 : 1;
+        lfoCtx = makeSlotLfoCtx(slot, lfoIdx);
+        selectedLfoItem = 0;
+        editingLfoValue = false;
+        setView(VIEWS.LFO_EDIT);
+        const enabled = lfoCtx.getParam("enabled");
+        if (enabled === "1") {
+            const target = lfoCtx.getParam("target") || "";
+            const param = lfoCtx.getParam("target_param") || "";
+            if (target && param) {
+                announce(lfoCtx.title + ", " + target + ":" + param);
+            } else {
+                announce(lfoCtx.title + ", no target");
+            }
+        } else {
+            announce(lfoCtx.title + ", Off");
+        }
+        return;
+    }
+
+    if (key === "delete") {
+        if (isExistingPreset(slot)) {
+            confirmingDelete = true;
+            confirmIndex = 0;
+            const patchName = slots[slot]?.name || "patch";
+            announce(`Delete ${patchName}?`);
+            needsRedraw = true;
+        }
+        return;
+    }
+}
+
 /* Enter chain settings view */
 function enterChainSettings(slotIndex) {
     selectedSlot = slotIndex;
@@ -12255,66 +12344,7 @@ function handleSelect() {
                 const items = getChainSettingsItems(selectedSlot);
                 const setting = items[selectedChainSetting];
                 if (setting.type === "action") {
-                    if (setting.key === "knobs") {
-                        enterKnobEditor(selectedSlot);
-                    } else if (setting.key === "save") {
-                        /* Start save flow */
-                        const currentName = slots[selectedSlot] ? slots[selectedSlot].name : "";
-                        if (!currentName || currentName === "" || currentName === "Untitled") {
-                            /* New - show name preview with Edit/OK */
-                            pendingSaveName = generateSlotPresetName(selectedSlot);
-                            showingNamePreview = true;
-                            namePreviewIndex = 1;  /* Default to OK */
-                            overwriteFromKeyboard = true;  /* Will use keyboard if Edit is selected */
-                            announceSavePreview(pendingSaveName, namePreviewIndex);
-                            needsRedraw = true;
-                        } else {
-                            /* Existing - confirm overwrite (no keyboard needed) */
-                            pendingSaveName = currentName;
-                            overwriteTargetIndex = findPatchByName(currentName);
-                            confirmingOverwrite = true;
-                            overwriteFromKeyboard = false;  /* Direct save, no keyboard */
-                            confirmIndex = 0;
-                            needsRedraw = true;
-                        }
-                    } else if (setting.key === "save_as") {
-                        /* Save As - show name preview with Edit/OK */
-                        const currentName = slots[selectedSlot] ? slots[selectedSlot].name : "";
-                        pendingSaveName = currentName && currentName !== "" && currentName !== "Untitled"
-                            ? currentName
-                            : generateSlotPresetName(selectedSlot);
-                        showingNamePreview = true;
-                        namePreviewIndex = 1;  /* Default to OK */
-                        overwriteFromKeyboard = true;  /* Will use keyboard if Edit is selected */
-                        announceSavePreview(pendingSaveName, namePreviewIndex);
-                        needsRedraw = true;
-                    } else if (setting.key === "lfo1" || setting.key === "lfo2") {
-                        const lfoIdx = (setting.key === "lfo1") ? 0 : 1;
-                        lfoCtx = makeSlotLfoCtx(selectedSlot, lfoIdx);
-                        selectedLfoItem = 0;
-                        editingLfoValue = false;
-                        setView(VIEWS.LFO_EDIT);
-                        const enabled = lfoCtx.getParam("enabled");
-                        if (enabled === "1") {
-                            const target = lfoCtx.getParam("target") || "";
-                            const param = lfoCtx.getParam("target_param") || "";
-                            if (target && param) {
-                                announce(lfoCtx.title + ", " + target + ":" + param);
-                            } else {
-                                announce(lfoCtx.title + ", no target");
-                            }
-                        } else {
-                            announce(lfoCtx.title + ", Off");
-                        }
-                    } else if (setting.key === "delete") {
-                        if (isExistingPreset(selectedSlot)) {
-                            confirmingDelete = true;
-                            confirmIndex = 0;
-                            const patchName = slots[selectedSlot]?.name || "patch";
-                            announce(`Delete ${patchName}?`);
-                            needsRedraw = true;
-                        }
-                    }
+                    runChainSettingAction(selectedSlot, setting.key);
                 } else {
                     editingChainSettingValue = !editingChainSettingValue;
                 }
@@ -14063,6 +14093,12 @@ function drawHelpDetail() {
     /* Knob-grid view (shadow_ui_param_pages.mjs) */
     _ctx.evaluateVisibilityCondition = (...args) => evaluateVisibilityCondition(...args);
     _ctx.openParamEditor = (slot, fullKey, meta) => openParamEditorFromGrid(slot, fullKey, meta);
+    /* Slot-settings actions (Save / Delete / LFO / Knob Mapping). Exposed so
+     * every branch can be EXECUTED by the tests: this code was previously
+     * reachable only by pressing a specific row on a specific screen, and a
+     * ReferenceError inside one branch is swallowed by the tick try/catch into
+     * "UI error, recovering" — invisible unless something runs it. */
+    _ctx.runSlotAction = (slot, key) => runChainSettingAction(slot, key);
     /* Which specialised editor is up, if any. Exposed so the editor-routing
      * pathways can be tested headlessly: "clicking a wav_position shows the
      * WAVEFORM, clicking a filepath shows the BROWSER, and Back from either
