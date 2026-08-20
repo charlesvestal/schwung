@@ -166,6 +166,19 @@ export const MOD_FAST_READS_PER_TICK = 1;
 export const TURN_CLAIM_MS = 1200;
 
 /**
+ * Lift-to-re-touch time that still makes two taps a DOUBLE tap.
+ *
+ * Measured from the previous RELEASE, not the previous press. This is the
+ * third interval tried and the first that matches a hand, because it is the
+ * only one the user controls: the press-to-press distance also contains the
+ * dwell, and the dwell is capacitive decay. Captured on hardware, one user
+ * tapping at what felt like a constant rate produced press-to-press of
+ * 786-1023ms — a spread of 240ms that made the gesture look random — while the
+ * air gap underneath it was 384-588ms.
+ *
+ * 700 covers that spread with room, and still rejects the 1321ms gap in the
+ * same capture where the user paused between taps.
+ *
  * Two taps on the same knob inside this window reset it to its declared
  * default. 744 params across 39 modules declare one, and there is otherwise no
  * way back to it short of reloading the preset.
@@ -181,25 +194,35 @@ export const TURN_CLAIM_MS = 1200;
  * not the first half of a double-tap, whatever its timing. So the gesture is
  * "tap, tap" and never "tap, turn, tap".
  */
-export const DOUBLE_TAP_MS = 900;
+export const DOUBLE_TAP_MS = 700;
 
 /**
  * The longest contact that still counts as a TAP rather than a hold.
  *
- * This is what lets the window above be generous without making the gesture
- * fire by accident. Measured on hardware, the capacitive pad reports a finger
- * as present for 283-367ms on what the user experienced as a quick tap — the
- * dwell is sensor decay, not intent, and it is most of the interval between
- * two taps. Requiring the pair inside 500ms of each other therefore left about
- * 200ms of real slack and the gesture only fired on the fastest attempt in
- * three.
+ * This is what lets the window be generous without the gesture firing by
+ * accident: two BRIEF contacts on one knob with no turn between them is a
+ * deliberate thing to do, while touching a knob to read its value and touching
+ * it again is a rest, and a rest dwells.
  *
- * So the window is wide, and what keeps it honest is that BOTH contacts have
- * to be short. Touching a knob to read its value and touching it again is a
- * rest, not a tap: it dwells. Two brief contacts on the same knob, with no
- * turn between them, is a deliberate thing to do.
+ * 650, from the same capture the window comes from. A real tap measured
+ * 400-454ms of reported contact — the pad holds a finger long after it has
+ * gone — and the first threshold tried, 450, sat inside that spread and was
+ * already rejecting good taps. Holds in the same capture ran 763-1126ms, so
+ * the two populations separate cleanly either side of ~650.
  */
-export const TAP_MAX_DWELL_MS = 450;
+export const TAP_MAX_DWELL_MS = 650;
+
+/**
+ * How long a reset cell flashes.
+ *
+ * A reset is the one edit the user did not make by hand — the value simply
+ * changes — so unlike a turn it needs to say that something happened. The
+ * screen reader already announces it; this is the same statement for eyes.
+ *
+ * Long enough to catch out of the corner of an eye, short enough not to hide
+ * the value you just reset to.
+ */
+export const RESET_FLASH_MS = 220;
 
 /**
  * Detents that turn a tap into an ADJUSTMENT rather than half a double-tap.
@@ -335,12 +358,15 @@ export function createController(io = {}) {
         /* The last touch-down and why it did or did not count as a double-tap.
          * Diagnostic only — see onKnobTouch. */
         lastTap: null,
+        /* { slot, untilMs } — the cell currently flashing a reset. */
+        flash: null,
         /* ms at which a TURN claimed the header with nothing held, or 0.
          * Only such a claim expires — see TURN_CLAIM_MS. */
         turnClaimMs: 0,
-        /* slot -> ms of the last touch-down, and whether that knob has been
-         * TURNED since. Together they are the double-tap — see DOUBLE_TAP_MS. */
-        lastTapMs: Object.create(null),
+        /* slot -> ms of the last RELEASE, and whether that knob has been TURNED
+         * since the last press. Together they are the double-tap — see
+         * DOUBLE_TAP_MS. */
+        lastUpMs: Object.create(null),
         turnedSinceTap: Object.create(null),
         /* key -> the first value we ever read for it on this page set. What a
          * param that declares no default resets to — see resetToDefault. */
@@ -495,6 +521,10 @@ export function createController(io = {}) {
         s.tickCount++;
         flushDueWrites();
         expireTurnClaim();
+        /* Expired HERE and not only at render time: whether a flash is still
+         * running is controller state, and must not depend on which renderer
+         * the caller happens to be using. */
+        if (s.flash && now() >= s.flash.untilMs) s.flash = null;
         const p = page();
         if (!p || p.kind !== PAGE_KNOBS || p.keys.length === 0) return null;
 
@@ -926,8 +956,10 @@ export function createController(io = {}) {
         if (down && s.pickerOpen) closePicker();
         if (!down) {
             /* How long this contact lasted, for the NEXT tap to judge. */
+            const upAt = now();
             const downAt = s.downAtMs[slot];
-            if (downAt) s.lastDwellMs[slot] = now() - downAt;
+            if (downAt) s.lastDwellMs[slot] = upAt - downAt;
+            s.lastUpMs[slot] = upAt;
             const at = s.touchOrder.indexOf(slot);
             if (at >= 0) s.touchOrder.splice(at, 1);
             /* The header falls back to whatever is still held, not to nothing. */
@@ -949,7 +981,9 @@ export function createController(io = {}) {
             return;
         }
         const tapAt = now();
-        const gapMs = tapAt - (s.lastTapMs[slot] || 0);
+        /* From the previous RELEASE: the air gap, which is the part of the
+         * gesture the hand actually performs. */
+        const gapMs = tapAt - (s.lastUpMs[slot] || 0);
         const turns = s.turnedSinceTap[slot] || 0;
         /* The previous contact has to have been a TAP. Undefined means there
          * was no previous contact at all, which is not one. */
@@ -962,7 +996,6 @@ export function createController(io = {}) {
         s.lastTap = { slot, gapMs, turns, doubled, reset: false, at: tapAt,
                       prevDwell: prevDwell === undefined ? -1 : prevDwell };
         s.downAtMs[slot] = tapAt;
-        s.lastTapMs[slot] = tapAt;
         s.turnedSinceTap[slot] = 0;
 
         if (s.touchOrder.indexOf(slot) < 0) s.touchOrder.push(slot);
@@ -973,7 +1006,9 @@ export function createController(io = {}) {
          * resetToDefault announces the new value itself. It also consumes the
          * tap: a third tap starts a fresh pair rather than resetting again. */
         if (doubled) {
-            s.lastTapMs[slot] = 0;
+            /* Consume the pair: a third tap starts a fresh one rather than
+             * resetting again. */
+            s.lastUpMs[slot] = 0;
             const did = resetToDefault(slot);
             s.lastTap.reset = did;
             if (did) return;
@@ -1066,6 +1101,7 @@ export function createController(io = {}) {
         s.values[key] = wire;
         s.settleUntil[key] = s.tickCount + SETTLE_TICKS;
         delete s.knobStates[key];       /* next turn starts from the new value */
+        s.flash = { slot, untilMs: now() + RESET_FLASH_MS };
         setParam(fullKey(key), wire);
         replanIfCondition(key);
         announce(`${meta.label || key}, ${declared ? "default" : "as loaded"}, ${announceTurn(meta, wire)}`);
@@ -1160,6 +1196,7 @@ export function createController(io = {}) {
                 page: page(), metaIndex: s.metaIndex, values: s.values,
                 title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
                 touched: s.hintLines ? -1 : s.touched,
+                flashSlot: flashSlot(),
                 displayFor: formatValue
                     ? (key, raw, surface) => formatValue(fullKey(key), raw, surface)
                     : null,
@@ -1269,6 +1306,14 @@ export function createController(io = {}) {
              * decorations are active. */
             viz: (vizEnabled && !s.decorations) ? vizGroups() : [],
         });
+    }
+
+    /* The cell flashing a reset right now, or -1. Expires by wall clock: the
+     * grid redraws continuously, so nothing has to schedule the end of it. */
+    function flashSlot() {
+        if (!s.flash) return -1;
+        if (now() >= s.flash.untilMs) { s.flash = null; return -1; }
+        return s.flash.slot;
     }
 
     let vizCache = null;
