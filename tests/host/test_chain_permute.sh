@@ -37,7 +37,7 @@ for cap in MAX_AUDIO_FX MAX_MIDI_FX; do
     | sed -E 's/.*[ *(]([a-z_0-9]+)\['"$cap"'\].*/\1/' \
     | sort -u)
   for f in $fields; do
-    if ! command grep -q "inst->$f)" "$src"; then
+    if ! command grep -qE "PERM_(FIELD|OWNED)\(inst->$f[,)]" "$src"; then
       missing="$missing $cap:$f"
     fi
   done
@@ -51,11 +51,59 @@ if [ -n "$missing" ]; then
 fi
 
 # ...and the reverse: the collectors must not claim a field that is gone.
-for f in $(command grep -oE 'inst->[a-z_0-9]+\)' "$src" | sed -e 's/inst->//' -e 's/)//' | sort -u); do
+for f in $(command grep -oE 'PERM_(FIELD|OWNED)\(inst->[a-z_0-9]+' "$src" \
+           | sed -E 's/.*inst->//' | sort -u); do
   if ! printf '%s\n' "$struct_body" | command grep -q "[ *(]$f\[MAX_"; then
     echo "FAIL: chain_reorder.c permutes '$f', which is not a per-position field" >&2
     exit 1
   fi
 done
 
-echo "PASS: chain permute enumeration — every per-position field of chain_instance_t is permuted"
+# --------------------------------------------------------------------------
+# THE CLASSIFICATION, which is the one that reached hardware.
+#
+# A per-position array is either a VALUE array (vacating a position zeroes its
+# bytes) or an OWNED-BUFFER array -- a pointer to a block allocated once per
+# position and NEVER NULL. The second kind must be ROTATED: zeroing the pointer
+# leaves a null that the next module load writes its param table through, which
+# is a SIGSEGV on the SCHED_FIFO SPI callback (seen loading a MIDI FX in front
+# of an existing one), and the shift also leaks the allocation it overwrites.
+#
+# The two kinds are indistinguishable to chain_permute.h, so the classification
+# is written by hand in chain_reorder.c -- and therefore must not be TRUSTED.
+# The set of owned buffers is not a matter of opinion: it is exactly what
+# chain_alloc_position_storage allocates. Derive it from there and compare.
+# --------------------------------------------------------------------------
+owned=$(awk '/^static inline int chain_alloc_position_storage/,/^\}/' "$hdr" \
+  | command grep -oE 'inst->[a-z_0-9]+\[i\] *= *\(' \
+  | sed -E 's/inst->([a-z_0-9]+).*/\1/' | sort -u)
+
+if [ -z "$owned" ]; then
+  echo "FAIL: could not read the owned-buffer set out of chain_alloc_position_storage" >&2
+  exit 1
+fi
+
+for f in $owned; do
+  if ! command grep -q "PERM_OWNED(inst->$f," "$src"; then
+    echo "FAIL: '$f' is allocated per position by chain_alloc_position_storage but is" >&2
+    echo "      NOT registered as PERM_OWNED in chain_reorder.c. Vacating a position" >&2
+    echo "      would zero its POINTER instead of its contents -- a NULL deref inside" >&2
+    echo "      the next module load, on the audio thread." >&2
+    exit 1
+  fi
+done
+
+# ...and nothing else may claim to be one: rotating a value array would treat
+# its bytes as an address.
+for f in $(command grep -oE 'PERM_OWNED\(inst->[a-z_0-9]+' "$src" \
+           | sed -E 's/.*inst->//' | sort -u); do
+  if ! printf '%s\n' "$owned" | command grep -qx "$f"; then
+    echo "FAIL: chain_reorder.c registers '$f' as an owned buffer, but" >&2
+    echo "      chain_alloc_position_storage never allocates one for it" >&2
+    exit 1
+  fi
+done
+
+echo "PASS: chain permute enumeration — every per-position field of chain_instance_t is"
+echo "      permuted, and every owned buffer is classified from the allocator rather"
+echo "      than by hand"

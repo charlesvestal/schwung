@@ -33,10 +33,18 @@
 CHAIN_INTERNAL void v2_chain_log(chain_instance_t *inst, const char *msg) {
     (void)inst; (void)msg;
 }
+/*
+ * WRITES THROUGH THE POINTER, exactly as the real one does. That is not
+ * incidental fidelity: a stub that only reported success would sail through the
+ * null metadata pointer an insert used to leave behind, which is the SIGSEGV
+ * this file now reproduces. It must dereference `params` for the test to be
+ * worth running.
+ */
 CHAIN_INTERNAL int parse_chain_params(const char *module_path,
                                       chain_param_info_t *params, int *count) {
-    (void)module_path; (void)params;
-    if (count) *count = 0;
+    (void)module_path;
+    snprintf(params[0].key, sizeof(params[0].key), "%s", "fixture_param");
+    if (count) *count = 1;
     return 0;
 }
 CHAIN_INTERNAL int parse_ui_hierarchy_cache(const char *module_path, char *out, int out_len) {
@@ -61,6 +69,12 @@ CHAIN_INTERNAL chain_param_info_t *knob_find_param(chain_instance_t *inst,
 CHAIN_INTERNAL void knob_forward_value(chain_instance_t *inst, const char *target,
                                        const char *param, const char *val_str) {
     (void)inst; (void)target; (void)param; (void)val_str;
+}
+/* chain_reorder.c reaches the audio-FX unloader on its remove path; this file
+ * only drives the MIDI side, and the audio loader lives in the one TU that
+ * cannot be compiled natively. */
+CHAIN_INTERNAL void v2_unload_audio_fx_slot(chain_instance_t *inst, int slot) {
+    (void)inst; (void)slot;
 }
 
 /* ------------------------------------------------------------------ harness */
@@ -226,6 +240,79 @@ int main(void) {
         release(inst);
     }
 
+    /*
+     * THE HARDWARE CRASH, driven end to end against a real chain_instance_t.
+     *
+     * Loading a MIDI FX in FRONT of an existing one is `midi_fx:insert=1`
+     * followed by `midi_fx1:module=<id>`. The insert used to zero the vacated
+     * position's metadata POINTER rather than its contents, so the load then
+     * parsed the new module's param table straight through NULL: SIGSEGV,
+     * si_addr=0, on the SCHED_FIFO SPI callback. Reproduced twice on device,
+     * and invisible to every unit test at the time.
+     */
+    {
+        chain_instance_t *inst = fresh_instance();
+        expect_int("seed load", v2_load_midi_fx_slot(inst, 0, "mfxa"), 0);
+        /* Snapshot the metadata pointers: a permutation may move them, but it
+           may not lose, duplicate or null one. */
+        void *params_before[MAX_MIDI_FX], *hier_before[MAX_MIDI_FX];
+        for (int i = 0; i < MAX_MIDI_FX; i++) {
+            params_before[i] = inst->midi_fx_params[i];
+            hier_before[i] = inst->midi_fx_ui_hierarchy[i];
+        }
+
+        expect_int("insert at the head", chain_reorder_insert(inst, 1, 0), 1);
+        expect_int("count after insert", inst->midi_fx_count, 2);
+        expect_slot_holds(inst, 1, "mfxa");   /* pushed along, still loaded */
+
+        for (int i = 0; i < MAX_MIDI_FX; i++) {
+            if (!inst->midi_fx_params[i])
+                fail("midi_fx_params went NULL after a head insert -- the next load "
+                     "writes a param table straight through it");
+            if (!inst->midi_fx_ui_hierarchy[i])
+                fail("midi_fx_ui_hierarchy went NULL after a head insert");
+        }
+        for (int i = 0; i < MAX_MIDI_FX; i++) {
+            int p = 0, h = 0;
+            for (int k = 0; k < MAX_MIDI_FX; k++) {
+                if ((void *)inst->midi_fx_params[k] == params_before[i]) p++;
+                if ((void *)inst->midi_fx_ui_hierarchy[k] == hier_before[i]) h++;
+            }
+            if (p != 1) fail("a midi_fx_params buffer was LEAKED or duplicated by the insert");
+            if (h != 1) fail("a midi_fx_ui_hierarchy buffer was LEAKED or duplicated");
+        }
+
+        /* ...and the load into the hole is the call that used to fault. */
+        expect_int("load into the opened hole", v2_load_midi_fx_slot(inst, 0, "mfxb"), 0);
+        expect_slot_holds(inst, 0, "mfxb");
+        expect_slot_holds(inst, 1, "mfxa");
+        expect_int("param table populated", inst->midi_fx_param_counts[0], 1);
+        if (strcmp(inst->midi_fx_params[0][0].key, "fixture_param") != 0)
+            fail("the inserted module param table was not written into its own buffer");
+        release(inst);
+    }
+
+    /* A REMOVE must not strand a buffer either: the departing position's block
+       goes to the tail the shift vacates, cleared, rather than being nulled. */
+    {
+        chain_instance_t *inst = fresh_instance();
+        v2_load_midi_fx_slot(inst, 0, "mfxa");
+        v2_load_midi_fx_slot(inst, 1, "mfxb");
+        void *before[MAX_MIDI_FX];
+        for (int i = 0; i < MAX_MIDI_FX; i++) before[i] = inst->midi_fx_params[i];
+        expect_int("remove position 0", chain_reorder_remove(inst, 1, 0), 1);
+        expect_int("count after remove", inst->midi_fx_count, 1);
+        expect_slot_holds(inst, 0, "mfxb");
+        for (int i = 0; i < MAX_MIDI_FX; i++) {
+            if (!inst->midi_fx_params[i]) fail("a remove left a NULL metadata pointer");
+            int seen = 0;
+            for (int k = 0; k < MAX_MIDI_FX; k++)
+                if ((void *)inst->midi_fx_params[k] == before[i]) seen++;
+            if (seen != 1) fail("a remove leaked or duplicated a metadata buffer");
+        }
+        release(inst);
+    }
+
     /* A failed load clears the addressed slot rather than leaving it
      * half-loaded: the slot is unloaded before the dlopen is attempted, which
      * is what v2_load_audio_fx_slot does too. */
@@ -241,6 +328,7 @@ int main(void) {
         fprintf(stderr, "FAIL: %d midi_fx slot check(s) failed\n", failures);
         return 1;
     }
-    printf("PASS: midi_fx<N>:module loads into slot N\n");
+    printf("PASS: midi_fx<N>:module loads into slot N, and inserting in FRONT of a "
+           "loaded FX keeps every metadata buffer live (no NULL, no leak)\n");
     return 0;
 }
