@@ -38,6 +38,11 @@ export const DEFAULT_X = 8;
 export const DEFAULT_Y = 14;
 export const MARK_DY = -6;
 
+/* The synth landmark: a filled band across the top of the box. 2px reads as
+ * deliberate at this size where 1px reads as a drawing artefact, and the label
+ * sits at y+5 so there is no chance of overlap. */
+export const SYNTH_BAND_H = 2;
+
 /**
  * How many boxes fit.
  *
@@ -178,18 +183,21 @@ export function drawChainDiagram(ctx, components, selectedIndex, opts = {}) {
         }
 
         /*
-         * The synth wears a second ring, drawn in whichever colour the box is
-         * NOT. It is the landmark the scroll leans on — once the chain is
-         * longer than the screen it is the only orientation left — so it has
-         * to stay distinguishable while selected too.
+         * The synth wears a filled band across its top, drawn in whichever
+         * colour the box is NOT. It is the landmark the scroll leans on — once
+         * the chain is longer than the screen it is the only orientation left —
+         * so it has to stay distinguishable while selected too.
          *
-         * Inset 1 horizontally and 2 vertically, not 2 all round. An even inset
-         * left 16px inside the ring, and a three-character abbrev ("9W9") is
-         * ~17px, so the label collided with its own landmark. The ring reads
-         * just as clearly as a wider-than-tall band, and gives back the 2px
-         * that made the difference.
+         * A BAND, not a ring. The ring this replaces was inset on all four
+         * sides, which cost width the label needed: a three-character abbrev
+         * ("9W9") is ~17px against the 16px a ring left, so the label collided
+         * with its own landmark. A horizontal band costs no width at all, so
+         * the synth gets the same room as every other box and the collision
+         * cannot come back by arithmetic.
          */
-        if (comp.kind === "synth") outline(ctx, x + 1, y + 2, BOX_W - 2, BOX_H - 4, selected ? 0 : 1, 0);
+        if (comp.kind === "synth") {
+            ctx.fillRect(x + 1, y + 1, BOX_W - 2, SYNTH_BAND_H, selected ? 0 : 1);
+        }
 
         /*
          * Fit the label to the room INSIDE whatever was just drawn.
@@ -200,7 +208,9 @@ export function drawChainDiagram(ctx, components, selectedIndex, opts = {}) {
          * abbrev started outside its own box and ran over the neighbour. And
          * the synth's inner ring is not accounted for by the box width at all.
          */
-        const room = BOX_W - (comp.kind === "synth" ? 4 : 2);
+        /* Every box now has the same label room: the synth mark is horizontal,
+         * so it takes none. */
+        const room = BOX_W - 2;
         const abbrev = fitAbbrev(ctx, String(abbrevOf(comp) || "--"), room);
         /* Selection inverts the label whatever the box is: the `+` box fills
          * its interior rather than the whole rect, but the label sits in that
