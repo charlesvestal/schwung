@@ -7412,196 +7412,10 @@ function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp) {
 }
 
 /* Enter chain settings view */
-/*
- * Perform a slot-settings ACTION. Lifted out of the CHAIN_SETTINGS jog-click
- * handler so the knob grid menu page can run the same thing: the grid returns
- * an { action: "menu", entry } intent and never performs anything itself, so
- * without a shared entry point the two surfaces would drift into two
- * behaviours for one Save button.
- */
-/*
- * Slot settings, expressed as a module contract so the knob grid can draw it.
- *
- * A slot is not a module and publishes no ui_hierarchy, but everything the grid
- * needs is a hierarchy plus chain_params — the same trick
- * buildSynthHierarchyFromChainParams already plays for a component with no
- * contract of its own. Eight values fill one page exactly, and the seven
- * actions become a menu page, which is the kind that exists for entries with a
- * name, a consequence and nothing to show.
- *
- * Every int becomes an ENUM with words. That is the real gain over the list,
- * which shows Recv Ch as 0 and Fwd Ch as -2 and expects you to know that 0
- * means All and -2 means THRU.
- *
- * Option words are <= 3 characters because the enum square sets two lines of
- * the 5x3 font: "THRU" renders as "THR/U" and "POST" as "POS/T".
- */
-const SLOT_GRID_CHANNELS = (() => {
-    const out = [];
-    for (let i = 1; i <= 16; i++) out.push(String(i));
-    return out;
-})();
-
-const SLOT_GRID_PARAMS = [
-    { key: "volume", name: "Volume", type: "float", min: 0, max: 4, step: 0.05, default: 1 },
-    { key: "muted", name: "Mute", type: "enum", options: ["OFF", "ON"] },
-    { key: "soloed", name: "Solo", type: "enum", options: ["OFF", "ON"] },
-    { key: "transpose", name: "Trsp", type: "int", min: -12, max: 12, step: 1 },
-    { key: "receive_channel", name: "Recv", type: "enum", options: ["ALL"].concat(SLOT_GRID_CHANNELS) },
-    { key: "forward_channel", name: "Fwd", type: "enum", options: ["THR", "AUT"].concat(SLOT_GRID_CHANNELS) },
-    { key: "midi_fx_pre_mode", name: "MFX", type: "enum", options: ["SCH", "S+M"] },
-    { key: "mpe_mode", name: "MPE", type: "enum", options: ["OFF", "ON"] },
-];
-
-function slotGridHierarchy(slotIndex) {
-    const existing = isExistingPreset(slotIndex);
-    const menu = [{ label: "Knob Mapping", action: "knobs" },
-                  { label: "LFO 1", action: "lfo1" },
-                  { label: "LFO 2", action: "lfo2" },
-                  { label: "Save", action: "save" }];
-    /* Save As and Delete only mean something once a preset exists — the same
-     * filter getChainSettingsItems applies to the list. */
-    if (existing) {
-        menu.push({ label: "Save As", action: "save_as" });
-        menu.push({ label: "Delete", action: "delete" });
-    }
-    return {
-        modes: null,
-        levels: {
-            root: {
-                label: "Slot",
-                knobs: SLOT_GRID_PARAMS.map((p) => p.key),
-                params: SLOT_GRID_PARAMS.map((p) => ({ key: p.key })),
-                menu: menu,
-                menu_label: "Actions",
-            },
-        },
-    };
-}
-
-/*
- * The grid asks for "<prefix>:<key>"; the slot params do not share one prefix.
- * volume/muted/... really are "slot:*", midi_fx_pre_mode is bare, and mpe_mode
- * is not a stored param at all — it is a derived view of recv+fwd+synth, so it
- * is read through isSlotMpeMode and written through the compound handler that
- * already knows how to save and restore the pre-MPE channels.
- *
- * forward_channel is offset by 2 because the grid drives an enum by INDEX and
- * the stored value starts at -2 (THRU).
- */
-const SLOT_GRID_FWD_OFFSET = 2;
-
-function slotGridIo(slotIndex) {
-    const bare = (fullKey) => String(fullKey || "").replace(/^slot:/, "");
-    return {
-        getParam: (fullKey) => {
-            const k = bare(fullKey);
-            if (k === "ui_hierarchy") return JSON.stringify(slotGridHierarchy(slotIndex));
-            if (k === "chain_params") return JSON.stringify(SLOT_GRID_PARAMS);
-            if (k === "mpe_mode") return isSlotMpeMode(slotIndex) ? "1" : "0";
-            if (k === "midi_fx_pre_mode") return getSlotParam(slotIndex, "midi_fx_pre_mode") || "0";
-            if (k === "forward_channel") {
-                const v = parseInt(getSlotParam(slotIndex, "slot:forward_channel"));
-                return String((isNaN(v) ? -1 : v) + SLOT_GRID_FWD_OFFSET);
-            }
-            return getSlotParam(slotIndex, "slot:" + k);
-        },
-        setParam: (fullKey, value) => {
-            const k = bare(fullKey);
-            if (k === "mpe_mode") {
-                const want = parseInt(value) ? 1 : 0;
-                const have = isSlotMpeMode(slotIndex) ? 1 : 0;
-                if (want !== have) adjustChainSetting(slotIndex, { key: "mpe_mode" }, want ? 1 : -1);
-                return;
-            }
-            if (k === "midi_fx_pre_mode") return setSlotParam(slotIndex, "midi_fx_pre_mode", String(value));
-            if (k === "forward_channel") {
-                const idx = parseInt(value);
-                return setSlotParam(slotIndex, "slot:forward_channel",
-                                    String((isNaN(idx) ? SLOT_GRID_FWD_OFFSET : idx) - SLOT_GRID_FWD_OFFSET));
-            }
-            return setSlotParam(slotIndex, "slot:" + k, String(value));
-        },
-    };
-}
-
-function runChainSettingAction(selectedSlot, key) {
-                    if (key === "knobs") {
-                        enterKnobEditor(selectedSlot);
-                    } else if (key === "save") {
-                        /* Start save flow */
-                        const currentName = slots[selectedSlot] ? slots[selectedSlot].name : "";
-                        if (!currentName || currentName === "" || currentName === "Untitled") {
-                            /* New - show name preview with Edit/OK */
-                            pendingSaveName = generateSlotPresetName(selectedSlot);
-                            showingNamePreview = true;
-                            namePreviewIndex = 1;  /* Default to OK */
-                            overwriteFromKeyboard = true;  /* Will use keyboard if Edit is selected */
-                            announceSavePreview(pendingSaveName, namePreviewIndex);
-                            needsRedraw = true;
-                        } else {
-                            /* Existing - confirm overwrite (no keyboard needed) */
-                            pendingSaveName = currentName;
-                            overwriteTargetIndex = findPatchByName(currentName);
-                            confirmingOverwrite = true;
-                            overwriteFromKeyboard = false;  /* Direct save, no keyboard */
-                            confirmIndex = 0;
-                            needsRedraw = true;
-                        }
-                    } else if (key === "save_as") {
-                        /* Save As - show name preview with Edit/OK */
-                        const currentName = slots[selectedSlot] ? slots[selectedSlot].name : "";
-                        pendingSaveName = currentName && currentName !== "" && currentName !== "Untitled"
-                            ? currentName
-                            : generateSlotPresetName(selectedSlot);
-                        showingNamePreview = true;
-                        namePreviewIndex = 1;  /* Default to OK */
-                        overwriteFromKeyboard = true;  /* Will use keyboard if Edit is selected */
-                        announceSavePreview(pendingSaveName, namePreviewIndex);
-                        needsRedraw = true;
-                    } else if (key === "lfo1" || setting.key === "lfo2") {
-                        const lfoIdx = (setting.key === "lfo1") ? 0 : 1;
-                        lfoCtx = makeSlotLfoCtx(selectedSlot, lfoIdx);
-                        selectedLfoItem = 0;
-                        editingLfoValue = false;
-                        setView(VIEWS.LFO_EDIT);
-                        const enabled = lfoCtx.getParam("enabled");
-                        if (enabled === "1") {
-                            const target = lfoCtx.getParam("target") || "";
-                            const param = lfoCtx.getParam("target_param") || "";
-                            if (target && param) {
-                                announce(lfoCtx.title + ", " + target + ":" + param);
-                            } else {
-                                announce(lfoCtx.title + ", no target");
-                            }
-                        } else {
-                            announce(lfoCtx.title + ", Off");
-                        }
-                    } else if (key === "delete") {
-                        if (isExistingPreset(selectedSlot)) {
-                            confirmingDelete = true;
-                            confirmIndex = 0;
-                            const patchName = slots[selectedSlot]?.name || "patch";
-                            announce(`Delete ${patchName}?`);
-                            needsRedraw = true;
-                        }
-                    }
-}
-
 function enterChainSettings(slotIndex) {
     selectedSlot = slotIndex;
     selectedChainSetting = 0;
     editingChainSettingValue = false;
-
-    /* Knob grid instead of the list, when the user has opted in. Same gate and
-     * same one-shot escape the component editor uses, so the screen reader (and
-     * anything that needs a selectable cursor) still gets the list. */
-    if (paramPagesEnabled() && !suppressParamPagesOnce) {
-        enterParamPages(slotIndex, "slot", "slot", null, slotGridIo(slotIndex));
-        return;
-    }
-    suppressParamPagesOnce = false;
-
     setView(VIEWS.CHAIN_SETTINGS);
     needsRedraw = true;
 
@@ -12441,7 +12255,66 @@ function handleSelect() {
                 const items = getChainSettingsItems(selectedSlot);
                 const setting = items[selectedChainSetting];
                 if (setting.type === "action") {
-                    runChainSettingAction(selectedSlot, setting.key);
+                    if (setting.key === "knobs") {
+                        enterKnobEditor(selectedSlot);
+                    } else if (setting.key === "save") {
+                        /* Start save flow */
+                        const currentName = slots[selectedSlot] ? slots[selectedSlot].name : "";
+                        if (!currentName || currentName === "" || currentName === "Untitled") {
+                            /* New - show name preview with Edit/OK */
+                            pendingSaveName = generateSlotPresetName(selectedSlot);
+                            showingNamePreview = true;
+                            namePreviewIndex = 1;  /* Default to OK */
+                            overwriteFromKeyboard = true;  /* Will use keyboard if Edit is selected */
+                            announceSavePreview(pendingSaveName, namePreviewIndex);
+                            needsRedraw = true;
+                        } else {
+                            /* Existing - confirm overwrite (no keyboard needed) */
+                            pendingSaveName = currentName;
+                            overwriteTargetIndex = findPatchByName(currentName);
+                            confirmingOverwrite = true;
+                            overwriteFromKeyboard = false;  /* Direct save, no keyboard */
+                            confirmIndex = 0;
+                            needsRedraw = true;
+                        }
+                    } else if (setting.key === "save_as") {
+                        /* Save As - show name preview with Edit/OK */
+                        const currentName = slots[selectedSlot] ? slots[selectedSlot].name : "";
+                        pendingSaveName = currentName && currentName !== "" && currentName !== "Untitled"
+                            ? currentName
+                            : generateSlotPresetName(selectedSlot);
+                        showingNamePreview = true;
+                        namePreviewIndex = 1;  /* Default to OK */
+                        overwriteFromKeyboard = true;  /* Will use keyboard if Edit is selected */
+                        announceSavePreview(pendingSaveName, namePreviewIndex);
+                        needsRedraw = true;
+                    } else if (setting.key === "lfo1" || setting.key === "lfo2") {
+                        const lfoIdx = (setting.key === "lfo1") ? 0 : 1;
+                        lfoCtx = makeSlotLfoCtx(selectedSlot, lfoIdx);
+                        selectedLfoItem = 0;
+                        editingLfoValue = false;
+                        setView(VIEWS.LFO_EDIT);
+                        const enabled = lfoCtx.getParam("enabled");
+                        if (enabled === "1") {
+                            const target = lfoCtx.getParam("target") || "";
+                            const param = lfoCtx.getParam("target_param") || "";
+                            if (target && param) {
+                                announce(lfoCtx.title + ", " + target + ":" + param);
+                            } else {
+                                announce(lfoCtx.title + ", no target");
+                            }
+                        } else {
+                            announce(lfoCtx.title + ", Off");
+                        }
+                    } else if (setting.key === "delete") {
+                        if (isExistingPreset(selectedSlot)) {
+                            confirmingDelete = true;
+                            confirmIndex = 0;
+                            const patchName = slots[selectedSlot]?.name || "patch";
+                            announce(`Delete ${patchName}?`);
+                            needsRedraw = true;
+                        }
+                    }
                 } else {
                     editingChainSettingValue = !editingChainSettingValue;
                 }
@@ -14190,12 +14063,6 @@ function drawHelpDetail() {
     /* Knob-grid view (shadow_ui_param_pages.mjs) */
     _ctx.evaluateVisibilityCondition = (...args) => evaluateVisibilityCondition(...args);
     _ctx.openParamEditor = (slot, fullKey, meta) => openParamEditorFromGrid(slot, fullKey, meta);
-    /* Slot-settings menu entries (Save / Delete / LFO 1 / Knob Mapping) run the
-     * SAME code the list runs — the grid only says which one was chosen. */
-    _ctx.runSlotMenuAction = (slot, key) => runChainSettingAction(slot, key);
-    /* Entry point for slot settings, exposed so the grid routing is testable
-     * from outside this file — the same reason activeParamEditor is. */
-    _ctx.enterChainSettings = (slot) => enterChainSettings(slot);
     /* Which specialised editor is up, if any. Exposed so the editor-routing
      * pathways can be tested headlessly: "clicking a wav_position shows the
      * WAVEFORM, clicking a filepath shows the BROWSER, and Back from either

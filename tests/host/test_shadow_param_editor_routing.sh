@@ -146,24 +146,12 @@ globalThis.shadow_get_param = (slot, key) => getParam(key);
 globalThis.shadow_set_param = (slot, key, v) => { setParam(key, v); return true; };
 globalThis.shadow_get_shift_held = () => 0;
 globalThis.host_file_exists = () => true;
-/* Param View = Knobs. paramPagesEnabled() reads this through the persisted
- * setting, so without it every entry point falls back to the LIST and the grid
- * routing under test never runs. */
-globalThis.host_read_file = (path) =>
-  (String(path).indexOf("param_view") >= 0 ? JSON.stringify({ param_view: 1 }) : "");
-globalThis.tts_get_enabled = () => false;
+globalThis.host_read_file = () => "";
 globalThis.host_write_file = () => true;
 
 const ui  = await import(TREE + "/shadow/ui.mjs");
 const { ctx } = await import(TREE + "/shadow/shadow_ui_ctx.mjs");
 const V   = await import(TREE + "/shadow/shadow_ui_param_pages.mjs");
-
-/* Param View = Knobs. shadow_ui.js sets this from persisted config in init(),
- * which the harness never calls; paramPagesEnabled() reads the global at call
- * time, so overriding it here is what the setting would have done. Without it
- * every entry point falls back to the LIST and the routing under test never
- * runs. */
-globalThis.param_view_get_mode = () => 1;
 
 ctx.getSlotParam = (slot, key) => getParam(key);
 ctx.setSlotParam = (slot, key, v) => setParam(key, v);
@@ -343,81 +331,6 @@ function gotoSlotFor(name) {
   for (const h of [plain, V.paramPagesFooterHints()]) {
     if (width(h) > 128) fail("footer overflows: " + flat(h) + " = " + width(h) + "px");
   }
-}
-
-/* ---- 9. SLOT SETTINGS opens as a grid, with a menu page of actions ------ */
-{
-  /* A slot publishes no ui_hierarchy — the contract is synthesised — so this
-   * exercises the io override end to end: values read through slot:*,
-   * midi_fx_pre_mode bare, mpe_mode derived, forward_channel offset by 2. */
-  const slotStore = {
-    "slot:volume": "1.00", "slot:muted": "0", "slot:soloed": "0",
-    "slot:transpose": "0", "slot:receive_channel": "1",
-    "slot:forward_channel": "-1", "midi_fx_pre_mode": "0",
-  };
-  const prevGet = globalThis.shadow_get_param, prevSet = globalThis.shadow_set_param;
-  globalThis.shadow_get_param = (slot, key) => (key in slotStore ? slotStore[key] : getParam(key));
-  globalThis.shadow_set_param = (slot, key, v) => { slotStore[key] = String(v); return true; };
-
-  V.exitParamPages();
-  /* Enter through the REAL entry point so the routing is what is tested. */
-  ctx.enterChainSettings(0);
-  for (let i = 0; i < 12; i++) V.tickParamPages();
-
-  if (ctx.view !== ctx.VIEWS.PARAM_PAGES) {
-    fail("slot settings did not open as the knob grid, view=" + ctx.view);
-  } else {
-    const p0 = V.currentParamPage();
-    if (!p0 || p0.kind !== "knobs") fail("slot settings page 1 should be a knob grid, got " + (p0 && p0.kind));
-    const keys = (p0 && p0.keys) || [];
-    for (const want of ["volume", "muted", "soloed", "transpose",
-                        "receive_channel", "forward_channel", "midi_fx_pre_mode", "mpe_mode"]) {
-      if (!keys.includes(want)) fail("slot grid page 1 is missing " + want + ": " + JSON.stringify(keys));
-    }
-
-    /* forward_channel is stored at -1 (AUTO) and shown as enum index 1. */
-    /*
-     * Fwd Ch is stored from -2 (THRU) up, but the grid drives an enum by INDEX
-     * from 0, so the io offsets by 2 in both directions. What matters is the
-     * ROUND TRIP — that a turn leaves the stored value and the index the grid
-     * reads back consistent — not which way a given encoder tick happens to
-     * move it, which depends on knob acceleration state.
-     */
-    /*
-     * NOT asserted here: turning Fwd Ch and checking the offset round-trip.
-     *
-     * The offset itself (stored -2..15 <-> enum index 0..17) is exercised by
-     * simply opening the page — an out-of-range index would not render. But
-     * driving the TURN from this harness moves the value the wrong way: from
-     * -1 a +1 tick wrote -2, and from -2 eight ticks moved nothing. The same
-     * turn through the controller directly (onKnobTurn) moves 1 -> 2 correctly,
-     * so the difference is in this harness, not the offset: it feeds a knob CC
-     * with no preceding capacitive TOUCH, which real hardware always sends and
-     * which the Movy knob engine keys its per-knob state off.
-     *
-     * Left unasserted rather than asserted loosely — a range check here passed
-     * with the offset deleted, i.e. it was vacuous. Verify the direction on
-     * hardware, then pin it properly.
-     */
-
-    /* The last page is the actions menu. */
-    let guard = 0, page = V.currentParamPage();
-    while (page && page.kind !== "menu" && guard++ < 20) {
-      feed([0xb0, 14, 1]);
-      for (let i = 0; i < 4; i++) V.tickParamPages();
-      page = V.currentParamPage();
-    }
-    if (!page || page.kind !== "menu") {
-      fail("slot settings has no actions menu page");
-    } else {
-      const labels = (page.entries || []).map((e) => e.label);
-      for (const want of ["Knob Mapping", "LFO 1", "Save"]) {
-        if (!labels.includes(want)) fail("actions menu missing " + want + ": " + JSON.stringify(labels));
-      }
-    }
-  }
-  globalThis.shadow_get_param = prevGet;
-  globalThis.shadow_set_param = prevSet;
 }
 
 if (failures) process.exit(1);
