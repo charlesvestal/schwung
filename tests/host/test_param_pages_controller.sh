@@ -39,6 +39,9 @@ Promise.all([
     return { dev, ctl };
   };
 
+  /* Comfortably past any double-tap window, for tests that need a clean start. */
+  const DOUBLE_TAP_GAP_CLEAR = 5000;
+
   /* A one-param contract, for tests that need to control every read. */
   const hierFixture = {
     "synth:chain_params": JSON.stringify([
@@ -653,6 +656,83 @@ Promise.all([
       ctl.onKnobTouch(slot, true); ctl.onKnobTouch(slot, false);
       if (writes.some(([, v]) => isDefault(v)))
         fail("two taps " + (C.DOUBLE_TAP_MS + 50) + "ms apart must not count as a double-tap");
+    }
+
+    /* ---- the gesture must fire on a REAL hand, measured on hardware ------
+     *
+     * Captured from the device (2026-08-20, slot settings, knob 0), three
+     * consecutive attempts the user considered identical double-taps:
+     *
+     *   dwell 367ms, next down 820ms after the previous down   -> missed
+     *   dwell 283ms, next down 890ms                           -> missed
+     *   dwell 288ms, next down 334ms                           -> fired
+     *
+     * The pad reports a finger for ~300ms on a quick tap, so a window measured
+     * down-to-down spends most of itself on sensor decay. All three of these
+     * are the same gesture and all three must fire.
+     */
+    {
+      let clock = 100000;
+      const dev = D.createFakeDevice({ id: "sf2" });
+      const writes = [];
+      const ctl = C.createController({
+        getParam: dev.getParam, announce: dev.announce, now: () => clock,
+        setParam: (k, v) => { writes.push([k, v]); dev.setParam(k, v); },
+      });
+      ctl.load({ slot: 0, component: "synth" });
+      let slot = -1;
+      for (let p = 0; p < ctl.pages.length && slot < 0; p++) {
+        ctl.goToPage(p);
+        if (!ctl.page || ctl.page.kind !== "knobs") continue;
+        for (let i = 0; i < 8; i++) {
+          const m = ctl.metaAt(i);
+          if (m && m.type === "float" && m.default !== undefined && m.default !== null) { slot = i; break; }
+        }
+      }
+      if (slot < 0) fail("need a param with a declared default");
+      for (let i = 0; i < 12; i++) ctl.tick();
+      const key = ctl.keyAt(slot);
+      const dflt = Number(ctl.metaAt(slot).default);
+
+      /* One tap: down, dwell, up. Returns nothing; the assertions look at the
+       * value, which is what the user sees. */
+      const tap = (dwell) => {
+        ctl.onKnobTouch(slot, true);
+        clock += dwell;
+        ctl.onKnobTouch(slot, false);
+      };
+
+      for (const [dwell, downToDown] of [[367, 820], [283, 890], [288, 334]]) {
+        /* Move it away first so each attempt has something to undo. */
+        for (let i = 0; i < 25; i++) ctl.onKnobTurn(slot, 1, (clock += 20));
+        if (Number(ctl.state.values[key]) === dflt) fail("setup: value did not move");
+        clock += DOUBLE_TAP_GAP_CLEAR;
+
+        tap(dwell);
+        /* The second down lands `downToDown` after the FIRST down. */
+        clock += Math.max(1, downToDown - dwell);
+        ctl.onKnobTouch(slot, true);
+        const fired = Number(ctl.state.values[key]) === dflt;
+        ctl.onKnobTouch(slot, false);
+        if (!fired) {
+          fail("a real double-tap measured on hardware did not fire: dwell " + dwell +
+               "ms, down-to-down " + downToDown + "ms — the window must not be spent " +
+               "on capacitive dwell");
+        }
+      }
+
+      /* A HOLD is not half a double-tap. Rest a finger on the knob, lift, then
+       * touch again — that is reading the value, not resetting it. */
+      for (let i = 0; i < 25; i++) ctl.onKnobTurn(slot, 1, (clock += 20));
+      clock += DOUBLE_TAP_GAP_CLEAR;
+      writes.length = 0;
+      tap(C.TAP_MAX_DWELL_MS + 200);        /* a rest, not a tap */
+      clock += 100;
+      ctl.onKnobTouch(slot, true);
+      if (writes.some(([, v]) => Number(v) === dflt))
+        fail("a long contact followed by a touch reset the param — that is reading " +
+             "the value, not double-tapping it");
+      ctl.onKnobTouch(slot, false);
     }
 
     /* ---- a param with NO declared default resets to what it loaded with --

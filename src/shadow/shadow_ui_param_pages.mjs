@@ -27,7 +27,7 @@
  */
 
 import { ctx } from './shadow_ui_ctx.mjs';
-import { createController, DOUBLE_TAP_MS, TAP_TURN_TOLERANCE }
+import { createController, DOUBLE_TAP_MS, TAP_TURN_TOLERANCE, TAP_MAX_DWELL_MS }
     from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
 import { decodeInput, applyInput } from '/data/UserData/schwung/shared/param_pages/page_input.mjs';
 import { PAGE_KNOBS, PAGE_MENU } from '/data/UserData/schwung/shared/param_pages/page_plan.mjs';
@@ -617,9 +617,10 @@ export function handleParamPagesMidi(data) {
     if (intent.type === 'touch' && intent.down && isLoggingEnabled()) {
         const t = controller.state.lastTap;
         if (t) {
-            log('param_pages', `  tap slot=${t.slot} gap=${t.gapMs}ms turns=${t.turns}`
-                + ` doubled=${t.doubled} reset=${t.reset}`
-                + ` (window=${DOUBLE_TAP_MS}ms tolerance=${TAP_TURN_TOLERANCE})`);
+            log('param_pages', `  tap slot=${t.slot} gap=${t.gapMs}ms prevDwell=${t.prevDwell}ms`
+                + ` turns=${t.turns} doubled=${t.doubled} reset=${t.reset}`
+                + ` (window=${DOUBLE_TAP_MS}ms maxDwell=${TAP_MAX_DWELL_MS}ms`
+                + ` tolerance=${TAP_TURN_TOLERANCE})`);
         }
     }
     if (!todo) return true;

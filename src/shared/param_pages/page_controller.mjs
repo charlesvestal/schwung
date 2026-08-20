@@ -181,7 +181,25 @@ export const TURN_CLAIM_MS = 1200;
  * not the first half of a double-tap, whatever its timing. So the gesture is
  * "tap, tap" and never "tap, turn, tap".
  */
-export const DOUBLE_TAP_MS = 500;
+export const DOUBLE_TAP_MS = 900;
+
+/**
+ * The longest contact that still counts as a TAP rather than a hold.
+ *
+ * This is what lets the window above be generous without making the gesture
+ * fire by accident. Measured on hardware, the capacitive pad reports a finger
+ * as present for 283-367ms on what the user experienced as a quick tap — the
+ * dwell is sensor decay, not intent, and it is most of the interval between
+ * two taps. Requiring the pair inside 500ms of each other therefore left about
+ * 200ms of real slack and the gesture only fired on the fastest attempt in
+ * three.
+ *
+ * So the window is wide, and what keeps it honest is that BOTH contacts have
+ * to be short. Touching a knob to read its value and touching it again is a
+ * rest, not a tap: it dwells. Two brief contacts on the same knob, with no
+ * turn between them, is a deliberate thing to do.
+ */
+export const TAP_MAX_DWELL_MS = 450;
 
 /**
  * Detents that turn a tap into an ADJUSTMENT rather than half a double-tap.
@@ -327,6 +345,11 @@ export function createController(io = {}) {
         /* key -> the first value we ever read for it on this page set. What a
          * param that declares no default resets to — see resetToDefault. */
         loadedValues: Object.create(null),
+        /* slot -> ms the previous contact lasted, and when it began. A long
+         * contact is a hold and cannot be half a double-tap — see
+         * TAP_MAX_DWELL_MS. */
+        lastDwellMs: Object.create(null),
+        downAtMs: Object.create(null),
         /* Name of the menu page currently ENTERED, or null. */
         menuEntered: null,
     };
@@ -902,6 +925,9 @@ export function createController(io = {}) {
          * back out of first. */
         if (down && s.pickerOpen) closePicker();
         if (!down) {
+            /* How long this contact lasted, for the NEXT tap to judge. */
+            const downAt = s.downAtMs[slot];
+            if (downAt) s.lastDwellMs[slot] = now() - downAt;
             const at = s.touchOrder.indexOf(slot);
             if (at >= 0) s.touchOrder.splice(at, 1);
             /* The header falls back to whatever is still held, not to nothing. */
@@ -925,11 +951,17 @@ export function createController(io = {}) {
         const tapAt = now();
         const gapMs = tapAt - (s.lastTapMs[slot] || 0);
         const turns = s.turnedSinceTap[slot] || 0;
-        const doubled = gapMs < DOUBLE_TAP_MS && turns < TAP_TURN_TOLERANCE;
+        /* The previous contact has to have been a TAP. Undefined means there
+         * was no previous contact at all, which is not one. */
+        const prevDwell = s.lastDwellMs[slot];
+        const wasTap = prevDwell !== undefined && prevDwell <= TAP_MAX_DWELL_MS;
+        const doubled = gapMs < DOUBLE_TAP_MS && turns < TAP_TURN_TOLERANCE && wasTap;
         /* Why this tap did or did not count. Recorded rather than logged: this
          * module has no logger and should not acquire one — the host reads it
          * off the state and decides whether anyone is listening. */
-        s.lastTap = { slot, gapMs, turns, doubled, reset: false, at: tapAt };
+        s.lastTap = { slot, gapMs, turns, doubled, reset: false, at: tapAt,
+                      prevDwell: prevDwell === undefined ? -1 : prevDwell };
+        s.downAtMs[slot] = tapAt;
         s.lastTapMs[slot] = tapAt;
         s.turnedSinceTap[slot] = 0;
 
