@@ -3051,11 +3051,58 @@ function dismissWarning() {
 /* Initialize chain configs for all slots */
 function initChainConfigs() {
     chainConfigs = [];
+    chainConfigFresh = [];
     lastSlotModuleSignatures = [];
     for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
         chainConfigs.push(createEmptyChainConfig());
+        chainConfigFresh.push(false);
         lastSlotModuleSignatures.push("");
     }
+}
+
+/*
+ * Whether a slot's cached chain config is known to still describe the DSP.
+ *
+ * drawChainEdit used to call loadChainConfigFromSlot on EVERY FRAME, which is
+ * `3 + <chain length>` IPC round trips at ~2.8ms each — 10 reads (~28ms) on a
+ * two-FX chain and 25 (~70ms) on a full one, against a 16.67ms frame. It grew
+ * with the chain, which is exactly what a variable-length chain makes possible,
+ * so the longest chains drew the slowest. A whole page render is 1.68ms: the
+ * reload cost more than everything it was feeding.
+ *
+ * A frame is the wrong cadence for a question whose answer only changes when
+ * somebody edits the chain. Two mechanisms keep the cache honest, and they are
+ * deliberately not the same one:
+ *
+ * - The user's own edits mark it stale HERE, at every point that writes the
+ *   model or the DSP. That is a short list and it is enumerable
+ *   (writeChainOrder, the picker, the `+` box) because there are only four
+ *   places in the file that assign `chainConfigs[i]`.
+ * - Everything else — a patch restore, a set load, the shim loading a slot
+ *   underneath us — is caught by the periodic refreshSlotModuleSignature
+ *   (every 30 ticks), which already reloads on a changed signature. That is
+ *   the pre-existing self-heal; this does not compete with it, it just stops
+ *   asking the same question sixty times a second in between.
+ *
+ * A signature CANNOT be the invalidator for the first kind: writeChainOrder
+ * also carries `<id>:state` and re-aims `lfoN:target`, both of which change
+ * what a slot does without changing which modules it holds. Nor can object
+ * identity: a picker swap mutates the config IN PLACE.
+ */
+let chainConfigFresh = [];
+
+/** The cached chain config is no longer known to match the DSP. */
+function invalidateChainConfig(slotIndex) {
+    if (slotIndex === undefined) chainConfigFresh = [];
+    else chainConfigFresh[slotIndex] = false;
+}
+
+/** The slot's chain config, reloading from the DSP only if it went stale. */
+function ensureChainConfigFresh(slotIndex) {
+    if (chainConfigFresh[slotIndex]) {
+        return chainConfigs[slotIndex] || createEmptyChainConfig();
+    }
+    return loadChainConfigFromSlot(slotIndex);
 }
 
 /* Load chain config from current patch info */
@@ -3129,6 +3176,9 @@ function loadChainConfigFromSlot(slotIndex) {
     }
 
     chainConfigs[slotIndex] = cfg;
+    /* This IS the reload every other path invalidates towards, so the slot is
+     * clean by definition once it returns. */
+    chainConfigFresh[slotIndex] = true;
     return cfg;
 }
 
@@ -3273,6 +3323,14 @@ function writeChainOrder(slotIndex, section, prevList) {
         if (c.state) setSlotParam(slotIndex, `${chainSectionId(section, c.to)}:state`, c.state);
     }
     for (const w of lfoWrites) setSlotParam(slotIndex, w.key, w.val);
+
+    /* The slot the editor is drawing from has just been renumbered underneath
+     * it. Here rather than in the two callers so a third one cannot forget —
+     * and note this fires even when no `:module` write went out (two of the
+     * same module swapping places), because the `:state` and `lfoN:target`
+     * writes above change what the slot DOES without changing which modules it
+     * holds. Nothing keyed on the module signature would notice those. */
+    invalidateChainConfig(slotIndex);
 }
 
 /*
@@ -7875,6 +7933,11 @@ function applyComponentSelection() {
     const choice = applyPickerChoiceToChain(cfg, comp.key,
                                             selected && selected.id ? selected.id : "");
     chainConfigs[selectedSlot] = choice.cfg;
+    /* A swap MUTATES `cfg` in place and `None` hands back a different object,
+     * so neither identity nor the module signature can be what notices this.
+     * The confirm path reloads (and the declined-gate path reloads too), but
+     * the model and the DSP disagree from here until one of them runs. */
+    invalidateChainConfig(selectedSlot);
 
     /* Track explicit user-removal so autosave can bypass the boot-glitch
      * guard. Set when the slot is now fully empty; reset on any non-empty
@@ -12903,6 +12966,13 @@ function handleSelect() {
                     }
                     cfg[comp.section] = cfg[comp.section].concat([null]);
                     chainConfigs[selectedSlot] = cfg;
+                    /* The pending entry exists only in the model, so the cache
+                     * is stale the moment it is added — and stale in BOTH
+                     * directions: backing out of the picker is supposed to
+                     * drop it, and it is a reload that drops it (trailing
+                     * empties are discarded on read). Without this the editor
+                     * would come back still drawing a `+` that was cancelled. */
+                    invalidateChainConfig(selectedSlot);
                     enterComponentSelect(selectedSlot,
                         slotChainComponentIndex(selectedSlot,
                             comp.section === "midiFx" && cfg.midiFx.length === 1
@@ -14064,11 +14134,14 @@ function drawChainEdit() {
      */
     const movy = { fillRect: fill_rect, print, textWidth: text_width, setPixel: set_pixel };
 
-    /* Refresh chain config from DSP each render to ensure display matches actual state.
-     * Without this, the cached chainConfigs can be stale if the slot was loaded
-     * externally (e.g. patch restore) and the periodic signature refresh hasn't run yet. */
-    loadChainConfigFromSlot(selectedSlot);
-    const cfg = chainConfigs[selectedSlot] || createEmptyChainConfig();
+    /* The chain config, reloaded from the DSP only when something has made it
+     * stale — see chainConfigFresh. This was an unconditional reload per frame,
+     * `3 + <chain length>` IPC round trips at ~2.8ms, which is several frame
+     * budgets on a short chain and grows with a long one. An external load
+     * (patch restore, the shim loading a slot) is caught by the periodic
+     * refreshSlotModuleSignature, which is what that reload was really standing
+     * in for. */
+    const cfg = ensureChainConfigFresh(selectedSlot);
     const chainSelected = selectedChainComponent === -1;
 
     /*
