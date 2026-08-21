@@ -282,9 +282,10 @@ export const SLOT_GRID_ACTIONS = [
     /* LFO 1 and LFO 2 are PAGES now, not menu entries — eight of their nine
      * params are turnable and the widgets draw the thing itself. */
     { label: "Save", action: "save", always: true },
-    /* Save As and Delete mean nothing until a preset exists — the same filter
-     * getChainSettingsItems applies to the list. */
-    { label: "Save As", action: "save_as", always: false },
+    /* Save As stays even with nothing saved: it goes straight to the keyboard
+     * where Save offers a generated name. Only DELETE is meaningless. Same
+     * filter getChainSettingsItems applies to the list. */
+    { label: "Save As", action: "save_as", always: true },
     { label: "Delete", action: "delete", always: false },
 ];
 
@@ -483,9 +484,13 @@ export const MASTER_GRID_ACTIONS = [
      * restatement are noise. The ACTION KEY is unchanged — it is what
      * handleMasterFxSettingsAction dispatches on. */
     { label: "Save", action: "save", always: true },
-    /* Save As and Delete mean nothing until a preset exists — the same filter
-     * getMasterFxSettingsItems applies to the list. */
-    { label: "Save As", action: "save_as", always: false },
+    /*
+     * Save As stays even with nothing saved, and here it is load-bearing: the
+     * master bus has no Knob Mapping entry, so filtering it left a ONE ENTRY
+     * menu page — a page you must enter in order to press a single button.
+     * Same filter getMasterFxSettingsItems applies to the list.
+     */
+    { label: "Save As", action: "save_as", always: true },
     { label: "Delete", action: "delete", always: false },
 ];
 
