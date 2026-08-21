@@ -50,6 +50,33 @@ let currentComponent = 'synth';
  * param has to use this — `midiFx_module` and `midiFx:is_loading` are keys no
  * one serves, so the header abbreviation read "--" and is_loading never fired. */
 let currentPrefix = 'synth';
+/*
+ * CHROME — the three things that differ between the two chain editors, handed
+ * in as DATA rather than worked out here.
+ *
+ * The grid is opened from a slot chain and from Master FX, and those two
+ * spell three things differently:
+ *
+ *   label      the header band says "S2" for a slot chain and "MFX" for the
+ *              master bus -- which is addressed at IPC slot 0 by convention
+ *              and is NOT instrument slot 1, so `S${slot+1}` would be a lie.
+ *   moduleKey  the key naming the module behind the view. A slot chain says
+ *              "fx1_module"; Master FX says "master_fx:fx1:module". Get this
+ *              wrong and the read is merely unserved -- an unserved key reads
+ *              back as "" -- so the header quietly loses its name instead of
+ *              failing.
+ *   returnView where Back goes. Hardcoding VIEWS.CHAIN_EDIT here dropped a
+ *              Master FX user into the slot chain editor.
+ *
+ * Deliberately NOT a `startsWith("master_fx:")` test in this file. One place
+ * knows there are two chain editors (chainEditorFocus / the chain targets in
+ * shadow_ui.js); a second copy of that knowledge here is exactly the drift
+ * that left Master FX without the knob card for a day.
+ *
+ * null means the slot-chain defaults, so the four existing call sites are
+ * unchanged.
+ */
+let currentChrome = null;
 
 /**
  * Shift state does NOT arrive as MIDI here.
@@ -116,11 +143,16 @@ export function paramPagesEnabled() {
  *   default. Slot settings needs it: a slot publishes no ui_hierarchy and its
  *   params do not share one prefix, so the contract and the mapping are handed
  *   in (see shadow_ui_slot_grid.mjs) rather than read off a component.
+ * @param {object} [chrome]  {label, moduleKey, returnView} — see currentChrome.
+ *   Omitted means the slot-chain defaults.
  */
-export function enterParamPages(slot, component, prefix, restorePageName, io) {
+export function enterParamPages(slot, component, prefix, restorePageName, io, chrome) {
     currentSlot = slot;
     currentComponent = component;
     currentPrefix = prefix || component;
+    /* Reset, not merge: an entry that supplies no chrome IS the slot chain, and
+     * carrying the last one over would leave a Master FX header on it. */
+    currentChrome = chrome || null;
 
     /* Rebuild when the accessors change, not just when there is no controller:
      * it CLOSES OVER them, so one built for a module would keep reading the
@@ -493,6 +525,45 @@ function footerHints() {
     return orderedHints({ jog, click: "MENU", extra: fine });
 }
 
+/**
+ * The header band, "<chain> > <name>".
+ *
+ * Exported for the same reason paramPagesFooterHints() is: the movy renderer
+ * sets this in its own font, drawing every glyph as fillRect pixels, so a
+ * recording print() sees nothing at all and the string cannot be read back off
+ * the framebuffer. It is built HERE and used by the one draw call, so what is
+ * asserted is what is drawn rather than a second copy of the rule.
+ */
+export function headerTitle() {
+    /* Cached: this was a synchronous round trip on EVERY draw (1.4 of the
+     * grid's 7.1 reads per tick, measured on device) to render a two-letter
+     * abbreviation that cannot change without going back through
+     * openParamPages, which clears the cache. */
+    /* Slot settings is a synthesised contract, not a module — there is no
+     * "slot_module" to abbreviate, so the lookup returned nothing and the
+     * header read "S1 > ---". It has a name of its own. */
+    if (currentComponent === 'slot') _abbrevCache = 'Settings';
+    if (_abbrevCache === null) {
+        /* The master bus spells this "master_fx:fx1:module"; a slot chain
+         * spells it "fx1_module". An unserved key reads back as "" rather than
+         * erroring, so the wrong spelling loses the name silently. */
+        const moduleKey = (currentChrome && currentChrome.moduleKey)
+            || `${currentPrefix}_module`;
+        _abbrevCache = ctx.getModuleAbbrev
+            ? ctx.getModuleAbbrev(ctx.getSlotParam(currentSlot, moduleKey) || '')
+            : currentComponent.toUpperCase();
+    }
+    /* A hardware synth puts the PATCH name in its display, not the model
+     * number — and the module's identity is already visible in the chain
+     * editor you came from. Falls back to the abbreviation until the read
+     * cursor has picked the name up, and for modules with no presets. */
+    const name = (controller && controller.presetName) || _abbrevCache;
+    /* "MFX", never "S1", on the master bus: it is ADDRESSED at IPC slot 0 by
+     * convention and is not instrument slot 1. */
+    const label = (currentChrome && currentChrome.label) || `S${currentSlot + 1}`;
+    return `${label} > ${name}`;
+}
+
 export function drawParamPages() {
     if (!controller) return false;
     /* The section picker is drawn over whatever page you were on, including a
@@ -541,25 +612,6 @@ export function drawParamPages() {
     }
 
     clear_screen();
-    /* Cached: this was a synchronous round trip on EVERY draw (1.4 of the
-     * grid's 7.1 reads per tick, measured on device) to render a two-letter
-     * abbreviation that cannot change without going back through
-     * openParamPages, which clears the cache. */
-    /* Slot settings is a synthesised contract, not a module — there is no
-     * "slot_module" to abbreviate, so the lookup returned nothing and the
-     * header read "S1 > ---". It has a name of its own. */
-    if (currentComponent === 'slot') _abbrevCache = 'Settings';
-    if (_abbrevCache === null) {
-        _abbrevCache = ctx.getModuleAbbrev
-            ? ctx.getModuleAbbrev(ctx.getSlotParam(currentSlot, `${currentPrefix}_module`) || '')
-            : currentComponent.toUpperCase();
-    }
-    const abbrev = _abbrevCache;
-    /* A hardware synth puts the PATCH name in its display, not the model
-     * number — and the module's identity is already visible in the chain
-     * editor you came from. Falls back to the abbreviation until the read
-     * cursor has picked the name up, and for modules with no presets. */
-    const name = controller.presetName || abbrev;
 
     /* draw_line / draw_circle / fill_circle (src/host/js_display.c) do the
      * whole shape in C — one QuickJS<->native crossing regardless of length,
@@ -576,7 +628,7 @@ export function drawParamPages() {
             drawCircle: typeof draw_circle === "function" ? draw_circle : undefined,
             drawArc: typeof draw_arc === "function" ? draw_arc : undefined,
         },
-        { title: `S${currentSlot + 1} > ${name}`, footer: footerHints() }
+        { title: headerTitle(), footer: footerHints() }
     ));
     return true;
 }
@@ -647,8 +699,11 @@ export function handleParamPagesMidi(data) {
     if (!todo) return true;
 
     if (todo.action === 'exit') {
+        /* Back to the editor you came IN through. Read BEFORE exitParamPages so
+         * the destination cannot depend on what the teardown leaves behind. */
+        const back = (currentChrome && currentChrome.returnView) || ctx.VIEWS.CHAIN_EDIT;
         exitParamPages();
-        ctx.setView(ctx.VIEWS.CHAIN_EDIT);
+        ctx.setView(back);
         return true;
     }
     if (todo.action === 'menu') {

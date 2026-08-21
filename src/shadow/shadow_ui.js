@@ -1153,7 +1153,8 @@ let knobCardMeta = null;        /* metaIndex for the focused component */
 let knobCardRowValues = null;   /* raw values, keyed by param key */
 let knobCardViz = null;
 let knobCardModKey = null;      /* the ONE key known to be modulated (see below) */
-let knobCardName = null;        /* header name, null when the card is not up */
+let knobCardName = null;        /* the ANNOUNCED name, null when the card is not up */
+let knobCardCardName = null;    /* the name DRAWN in the header band — see below */
 let knobCardHeaderValue = null; /* header value, ditto */
 let knobCardAnnouncedKnob = -1; /* which knob the last announcement was about */
 
@@ -1176,6 +1177,7 @@ function knobCardClose() {
      * not have this bug because its comparison is `overlayActive && ...`, so a
      * newly raised overlay always announces; this is that `overlayActive`. */
     knobCardName = null;
+    knobCardCardName = null;
     knobCardHeaderValue = null;
     knobCardAnnouncedKnob = -1;
     needsRedraw = true;
@@ -1210,7 +1212,21 @@ function knobCardActive() {
 function knobCardDrawState() {
     if (!knobCardActive()) return null;
     return {
-        name: knobCardName,
+        /*
+         * THE BARE PARAMETER NAME, not the announced title.
+         *
+         * The band is 116px of content shared with the value, and the value
+         * never loses a collision (drawCardHeader truncates the name), so a
+         * composed "MFX: cloudseed mix" was chewed down to a few letters of
+         * "MFX: clou" — spending the whole band saying what the diagram behind
+         * the card already shows. The announcement keeps the full string; only
+         * the pixels get the short one. See showKnobFeedback.
+         *
+         * ONE fallback, and it lives at the assignment in showKnobFeedback, not
+         * here: a second `|| knobCardName` in this line would make removing
+         * that one invisible to every test.
+         */
+        name: knobCardCardName,
         value: knobCardHeaderValue,
         row: knobCardKnob >> 2,
         touched: knobCardKnob,
@@ -1313,7 +1329,13 @@ function knobCardOpen(knobIndex, focus) {
  * chain, which position" for both, so there is no view test left here to
  * forget to widen next time.
  */
-function showKnobFeedback(knobIndex, name, value, raw) {
+/*
+ * `name` is what gets SPOKEN; `cardName` is what gets DRAWN. Two questions,
+ * two answers — see the note above buildChainKnobContext. Callers pass
+ * `ctx.title` and `ctx.cardName`; a caller whose name is already bare passes
+ * one argument and the card falls back to it.
+ */
+function showKnobFeedback(knobIndex, name, value, raw, cardName) {
     const focus = chainEditorFocus();
     if (!focus) { showOverlay(name, value); return; }
 
@@ -1399,6 +1421,11 @@ function showKnobFeedback(knobIndex, name, value, raw) {
     const changed = (knobCardAnnouncedKnob !== knobIndex ||
                      knobCardName !== name || knobCardHeaderValue !== value);
     knobCardName = name;
+    /* The tilde stays on `name` and never reaches here: the modulation mark is
+     * appended to the ANNOUNCED title by showKnobOverlay, and knobCardModKey
+     * above still reads it off `name`. The card shows modulation as a tick in
+     * the cell, not as a character in the band. */
+    knobCardCardName = (cardName === undefined || cardName === null) ? name : cardName;
     knobCardHeaderValue = value;
     if (changed) {
         knobCardAnnouncedKnob = knobIndex;
@@ -1571,6 +1598,53 @@ function masterFxSelectedIsModule() {
 function masterFxComponentKey(i) {
     if (typeof i !== "number" || i < 0 || i >= MASTER_FX_SLOTS) return null;
     return `fx${i + 1}`;
+}
+
+/*
+ * The Master FX position a HIERARCHY-EDITOR component key names, or -1.
+ *
+ * The inverse of the `master_fx:${fxKey}` spelling resetHierarchyEditorFor
+ * documents: Master FX carries the PREFIXED key ("master_fx:fx2") where a slot
+ * chain carries the bare one ("fx2"), which is what makes the two chains'
+ * params addressable through one string. Everything that takes a component key
+ * from the editor — or from the knob grid, which stores the same key — needs to
+ * be able to get back to "which Master FX position is this", because the master
+ * entry points are indexed.
+ *
+ * Bounded by MASTER_FX_SLOTS: an out-of-range "fx9" would otherwise be routed
+ * as a real position and land on whatever the shim does with an unmatched key,
+ * which is slot 0 under a garbage param name (see shadow_chain_mgmt.c).
+ */
+function masterFxIndexFromComponentKey(componentKey) {
+    const m = /^master_fx:fx(\d+)$/.exec(String(componentKey || ""));
+    if (!m) return -1;
+    const i = Number(m[1]) - 1;
+    return (i >= 0 && i < MASTER_FX_SLOTS) ? i : -1;
+}
+
+/*
+ * The knob grid's CHROME for a component key — its header label, the key that
+ * names the module behind it, and where Back goes — or null for the slot-chain
+ * defaults.
+ *
+ * The grid is one view serving both chain editors, and the three things above
+ * are all it has to be told to serve either. Built HERE, from the chain target,
+ * because shadow_ui.js is the one place that knows there are two chains;
+ * shadow_ui_param_pages.mjs deliberately takes them as data instead of testing
+ * the key prefix itself. See currentChrome there.
+ */
+function paramPagesChromeFor(componentKey) {
+    const mfx = masterFxIndexFromComponentKey(componentKey);
+    if (mfx < 0) return null;
+    return {
+        label: MASTER_CHAIN_TARGET.label,
+        /* "master_fx:fx2:module", NOT "master_fx:fx2_module" — the underscore
+         * form is the slot chain's spelling and is unserved here, and an
+         * unserved key reads back as "" rather than erroring, so the header
+         * would just quietly lose its module name. */
+        moduleKey: MASTER_CHAIN_TARGET.key(masterFxComponentKey(mfx), "module"),
+        returnView: VIEWS.MASTER_FX,
+    };
 }
 
 /* The chain of one instrument slot. */
@@ -1925,7 +1999,8 @@ function returnToParamPagesFromEditor() {
     paramEditorOpenedFromGrid = false;
     paramEditorReturnPage = "";
     exitHierarchyEditor();
-    enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey), returnPage);
+    enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey), returnPage,
+                    null, paramPagesChromeFor(componentKey));
     needsRedraw = true;
 }
 
@@ -2032,7 +2107,15 @@ function openParamEditorFromGrid(slotIndex, fullKey, meta) {
     const page = currentParamPage();
     const level = page && page.level;
     paramEditorReturnPage = (page && page.name) || "";
-    const bare = String(fullKey || "").replace(/^[^:]+:/, "");
+    /* The grid builds every fullKey as `${prefix}:${key}`, so strip THAT exact
+     * prefix rather than "everything up to the first colon". Master FX's prefix
+     * contains a colon of its own ("master_fx:fx2"), and the old rule left
+     * "fx2:sample_path" as the param name — a key no level lists, so clicking
+     * an opaque param there landed on the module menu instead of the editor. */
+    const paramPrefix = `${getComponentParamPrefix(componentKey)}:`;
+    const raw = String(fullKey || "");
+    const bare = raw.startsWith(paramPrefix) ? raw.slice(paramPrefix.length)
+                                             : raw.replace(/^[^:]+:/, "");
 
     exitParamPages();
     /* Without this the list entry below sees Param View = Knobs and bounces
@@ -10062,6 +10145,21 @@ function enterComponentEditFallback(slotIndex, componentKey) {
 /* Enter hierarchy-based parameter editor for a component. Fetches the
  * component's real ui_hierarchy; falls back to the preset browser if absent. */
 function enterHierarchyEditor(slotIndex, componentKey) {
+    /*
+     * A Master FX position arrives here only from the knob grid's two hand-offs
+     * (a non-grid page kind, and an opaque param), which carry the component key
+     * the grid was opened with and nothing else. Route it to the master entry
+     * point rather than letting it fall through: this path would set
+     * hierEditorIsMasterFx = false, and that flag is what exitHierarchyEditor
+     * reads to decide where Back goes — so a Master FX module opened from the
+     * grid would eject into the SLOT chain editor. (Its param reads would have
+     * been right, since "master_fx:fx2" is self-addressing; only the identity
+     * would have been lost, which is the failure that looks like a UI glitch
+     * and reads like nothing at all in review.)
+     */
+    const mfx = masterFxIndexFromComponentKey(componentKey);
+    if (mfx >= 0) { enterMasterFxHierarchyEditor(mfx); return; }
+
     const hierarchy = getComponentHierarchy(slotIndex, componentKey);
     if (!hierarchy) {
         /* No hierarchy - fall back to simple preset browser */
@@ -10214,7 +10312,8 @@ function enterHierarchyEditorWith(slotIndex, componentKey, hierarchy) {
      * about entry differs — and paramPagesEnabled() forces the list whenever the
      * screen reader is on, since a grid has nothing selected to read out. */
     if (paramPagesEnabled() && !suppressParamPagesOnce) {
-        enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey));
+        enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey),
+                        null, null, paramPagesChromeFor(componentKey));
         return;
     }
     suppressParamPagesOnce = false;
@@ -10265,13 +10364,38 @@ function enterMasterFxHierarchyEditor(fxSlot) {
      * instrument slot 0), and hierEditorComponent carries the prefixed form
      * "master_fx:fxN" so params become "master_fx:fxN:param". */
     const fxKey = masterFxComponentKey(fxSlot);
-    resetHierarchyEditorFor(0, `master_fx:${fxKey}`, hierarchy, true, fxSlot);
+    const componentKey = `master_fx:${fxKey}`;
+
+    /*
+     * Param View = Knobs opens the grid HERE TOO.
+     *
+     * The gate is a copy of enterHierarchyEditorWith's, and it is a copy on
+     * purpose: the two entry points differ in how they resolve the hierarchy
+     * and in nothing else, and this is the smaller half of converging them.
+     * Without it the setting was silently slot-chain-only — the same module
+     * opened the labelled knob grid in a slot and the scrolling list in Master
+     * FX, which is the drift §1b of the variable-length design exists to end,
+     * and it was reported from the device within a day.
+     *
+     * The chrome is what makes the grid say "MFX", read the master spelling of
+     * the module key, and send Back to the Master FX editor rather than to the
+     * slot chain. See paramPagesChromeFor.
+     */
+    if (paramPagesEnabled() && !suppressParamPagesOnce) {
+        enterParamPages(MASTER_CHAIN_TARGET.slot, componentKey,
+                        getComponentParamPrefix(componentKey), null, null,
+                        paramPagesChromeFor(componentKey));
+        return;
+    }
+    suppressParamPagesOnce = false;
+
+    resetHierarchyEditorFor(0, componentKey, hierarchy, true, fxSlot);
 
     /* Fetch chain_params metadata for this Master FX slot */
     hierEditorChainParams = getMasterFxChainParams(fxSlot);
 
     /* Set up param shims for Master FX component */
-    setupModuleParamShims(0, `master_fx:${fxKey}`);
+    setupModuleParamShims(0, componentKey);
 
     /* Load current level's params and knobs */
     loadHierarchyLevel();
@@ -10924,6 +11048,24 @@ function invalidateKnobContextCache() {
  * the one thing the two chains genuinely do differently. `target.label` is
  * what the title says first ("S2" / "MFX").
  */
+/*
+ * `title` and `cardName` are TWO ANSWERS TO TWO QUESTIONS, and they were one
+ * value until the header band started carrying it.
+ *
+ *   title    what the screen reader says: "MFX: cloudseed Mix". A blind user
+ *            has no diagram behind the card, so the chain and the module are
+ *            the only context there is and dropping them makes the utterance
+ *            useless.
+ *   cardName what the card's header band shows: "Mix". A sighted user is
+ *            looking AT the diagram the card floats over, with the selected
+ *            box already highlighted — so the band would spend a 116px
+ *            content width restating what is on screen, and "MFX: cloudseed
+ *            mix" does not fit next to its value anyway. Reported from the
+ *            device: "you know where you are".
+ *
+ * Do not collapse these back into one field. Whichever one you keep, one of
+ * the two users loses.
+ */
 function buildChainKnobContext(target, comp, knobIndex, pluginName, hasModule) {
     const generic = (name, title, extra) => Object.assign({
         slot: target.slot,
@@ -10933,6 +11075,9 @@ function buildChainKnobContext(target, comp, knobIndex, pluginName, hasModule) {
         pluginName: name,
         displayName: `Knob ${knobIndex + 1}`,
         title,
+        /* The box's own label ("FX 2") or the module name — the one thing the
+         * long title adds nothing to once you can see which box is selected. */
+        cardName: name,
     }, extra);
 
     if (!hasModule) {
@@ -10947,6 +11092,8 @@ function buildChainKnobContext(target, comp, knobIndex, pluginName, hasModule) {
         pluginName,
         displayName,
         title: `${target.label}: ${pluginName} ${displayName}`,
+        /* The parameter, alone. See the note above buildChainKnobContext. */
+        cardName: displayName,
     });
 
     const hierarchy = chainTargetHierarchy(target, comp.key);
@@ -10995,7 +11142,10 @@ function buildKnobContextForKnob(knobIndex) {
             meta,
             pluginName,
             displayName,
-            title: `S${hierEditorSlot + 1}: ${pluginName} ${displayName}`
+            title: `S${hierEditorSlot + 1}: ${pluginName} ${displayName}`,
+            /* See the note above buildChainKnobContext: announcement keeps the
+             * context, the card header does not. */
+            cardName: displayName
         };
     }
     /* Multi-marker editor view: knob 8 is the dedicated zoom knob even if the
@@ -11013,6 +11163,8 @@ function buildKnobContextForKnob(knobIndex) {
                 pluginName: "",
                 displayName: mmRole.type === "zoom" ? "Zoom" : (mmRole.member.meta.name || mmRole.member.key),
                 title: mmRole.type === "zoom" ? "Zoom" : (mmRole.member.meta.name || mmRole.member.key),
+                /* Already bare — this title carries no chain or module. */
+                cardName: mmRole.type === "zoom" ? "Zoom" : (mmRole.member.meta.name || mmRole.member.key),
                 noMapping: true
             };
         }
@@ -11119,7 +11271,7 @@ function showKnobOverlay(knobIndex, value) {
     if (ctx) {
         if (ctx.noModule) {
             /* Show "No Module Selected" when no module is loaded in slot */
-            showKnobFeedback(knobIndex, ctx.title, "No Module Selected");
+            showKnobFeedback(knobIndex, ctx.title, "No Module Selected", undefined, ctx.cardName);
         } else if (ctx.noMapping) {
             /* Show "not mapped" for unmapped knob */
             showKnobFeedback(knobIndex, `Knob ${knobIndex + 1}`, "not mapped");
@@ -11161,7 +11313,7 @@ function showKnobOverlay(knobIndex, value) {
             }
             /* `value` is the raw the caller turned to, if any — on a pure touch
              * it is undefined and the card's own touch-down read supplies it. */
-            showKnobFeedback(knobIndex, title, displayVal, value);
+            showKnobFeedback(knobIndex, title, displayVal, value, ctx.cardName);
         }
         needsRedraw = true;
         return true;
@@ -11183,7 +11335,7 @@ function adjustKnobAndShow(knobIndex, delta) {
         if (ctx.noModule) {
             /* No module loaded - show "No Module Selected" */
             debugLog(`adjustKnobAndShow: noModule, showing overlay`);
-            showKnobFeedback(knobIndex, ctx.title, "No Module Selected");
+            showKnobFeedback(knobIndex, ctx.title, "No Module Selected", undefined, ctx.cardName);
             needsRedraw = true;
             return true;
         }
@@ -11281,20 +11433,24 @@ function processPendingHierKnob() {
                     if (ctx.meta && (ctx.meta.type === "enum" || ctx.meta.type === "bool")) {
                         if (isTriggerEnumMeta(ctx.meta)) {
                             showKnobFeedback(pendingHierKnobIndex, ctx.title,
-                                             getTriggerEnumOverlayValue(pendingHierKnobIndex));
+                                             getTriggerEnumOverlayValue(pendingHierKnobIndex),
+                                             undefined, ctx.cardName);
                         } else {
                             showKnobFeedback(pendingHierKnobIndex, ctx.title,
-                                             formatMetaOptionValue(ctx.meta, cached), cached);
+                                             formatMetaOptionValue(ctx.meta, cached), cached,
+                                             ctx.cardName);
                         }
                     } else if (ctx.meta && ctx.meta.type === "canvas") {
                         showKnobFeedback(pendingHierKnobIndex, ctx.title,
-                                         formatCanvasDisplayValue(String(cached), ctx.meta), cached);
+                                         formatCanvasDisplayValue(String(cached), ctx.meta), cached,
+                                         ctx.cardName);
                     } else if (ctx.meta && ctx.meta.type === "string") {
                         showKnobFeedback(pendingHierKnobIndex, ctx.title,
-                                         String(cached || ""), cached);
+                                         String(cached || ""), cached, ctx.cardName);
                     } else {
                         showKnobFeedback(pendingHierKnobIndex, ctx.title,
-                                         formatParamForOverlay(cached, ctx.meta), cached);
+                                         formatParamForOverlay(cached, ctx.meta), cached,
+                                         ctx.cardName);
                     }
                     needsRedraw = true;
                 }
@@ -11385,9 +11541,10 @@ function processPendingHierKnob() {
             const shouldFire = updateTriggerEnumAccum(knobIndex, delta);
             if (shouldFire) {
                 setSlotParam(ctx.slot, ctx.fullKey, "trigger");
-                showKnobFeedback(knobIndex, ctx.title, "Triggered");
+                showKnobFeedback(knobIndex, ctx.title, "Triggered", undefined, ctx.cardName);
             } else {
-                showKnobFeedback(knobIndex, ctx.title, getTriggerEnumOverlayValue(knobIndex));
+                showKnobFeedback(knobIndex, ctx.title, getTriggerEnumOverlayValue(knobIndex),
+                                 undefined, ctx.cardName);
             }
             return;
         }
@@ -11414,7 +11571,7 @@ function processPendingHierKnob() {
              * something happening, but DON'T setSlotParam (no value change). */
             showKnobFeedback(knobIndex, ctx.title,
                              formatMetaOptionValue(ctx.meta, ctx.meta.options[currentIndex]),
-                             ctx.meta.options[currentIndex]);
+                             ctx.meta.options[currentIndex], ctx.cardName);
             return;
         }
         const newVal = ctx.meta.options[newIndex];
@@ -11427,18 +11584,20 @@ function processPendingHierKnob() {
             refreshHierarchyChainParams();
         }
         refreshHierarchyVisibility();
-        showKnobFeedback(knobIndex, ctx.title, formatMetaOptionValue(ctx.meta, newVal), newVal);
+        showKnobFeedback(knobIndex, ctx.title, formatMetaOptionValue(ctx.meta, newVal), newVal,
+                         ctx.cardName);
         return;
     }
 
     if (ctx.meta && ctx.meta.type === "canvas") {
         showKnobFeedback(knobIndex, ctx.title,
-                         formatCanvasDisplayValue(String(currentVal), ctx.meta), currentVal);
+                         formatCanvasDisplayValue(String(currentVal), ctx.meta), currentVal,
+                         ctx.cardName);
         return;
     }
 
     if (ctx.meta && ctx.meta.type === "string") {
-        showKnobFeedback(knobIndex, ctx.title, String(currentVal || ""), currentVal);
+        showKnobFeedback(knobIndex, ctx.title, String(currentVal || ""), currentVal, ctx.cardName);
         return;
     }
 
@@ -11483,7 +11642,7 @@ function processPendingHierKnob() {
     /* Show overlay directly — avoid showKnobOverlay which calls
      * isHierarchyParamModulated (1-3 blocking IPC reads). */
     const displayVal = formatParamForOverlay(newVal, ctx.meta);
-    showKnobFeedback(knobIndex, ctx.title, displayVal, newVal);
+    showKnobFeedback(knobIndex, ctx.title, displayVal, newVal, ctx.cardName);
     needsRedraw = true;
 }
 
@@ -14215,7 +14374,8 @@ function handleSelect() {
                     const componentKey = hierEditorComponent;
                     cameFromParamPages = false;
                     exitHierarchyEditor();
-                    enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey));
+                    enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey),
+                        null, null, paramPagesChromeFor(componentKey));
                 } else {
                     /* No children - enter preset edit mode to show params/swap */
                     hierEditorPresetEditMode = true;
@@ -15168,7 +15328,8 @@ function refreshPendingKnobOverlay() {
     const mapping = knobMappings[pendingKnobIndex];
     if (mapping && mapping.name) {
         const displayName = `S${targetSlot + 1}: ${mapping.name}`;
-        showKnobFeedback(pendingKnobIndex, displayName, mapping.value);
+        /* Announced with the slot, drawn without it — see showKnobFeedback. */
+        showKnobFeedback(pendingKnobIndex, displayName, mapping.value, undefined, mapping.name);
     } else {
         /* No mapping for this knob */
         showKnobFeedback(pendingKnobIndex, `Knob ${pendingKnobIndex + 1}`, "not mapped");
