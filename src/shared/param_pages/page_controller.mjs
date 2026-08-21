@@ -945,7 +945,8 @@ export function createController(io = {}) {
      *
      * Where to leave TO is the declaration's business: a level with navigate_to
      * is saying "having chosen, you want to be here". Without one, the first
-     * grid page, same as the preset browser.
+     * grid page, same as the preset browser. A named level that plans both a
+     * preset browser and a grid means the browser — see below.
      */
     function commitItem() {
         const p = page();
@@ -968,7 +969,28 @@ export function createController(io = {}) {
         s.menuEntered = null;
         let target = -1;
         if (p.navigateTo) {
-            target = s.pages.findIndex((q) => q.level === p.navigateTo && q.kind === PAGE_KNOBS);
+            /*
+             * A level can produce TWO pages -- a preset browser and a knob
+             * grid -- and naming it did not say which. Prefer the browser.
+             *
+             * This is obxd, reported from the device as "jump to category
+             * lands on knobs, not the preset list": its `banks` level declares
+             * navigate_to `root`, and root carries list_param/count_param AND
+             * knobs. Filtering to PAGE_KNOBS could only ever find the grid, so
+             * choosing a bank landed you on the sliders rather than in that
+             * bank's presets. A chooser that filters a list means "now show me
+             * the list" -- that is the whole reason it exists.
+             *
+             * Preferring rather than adding a `navigate_to: {level, kind}`
+             * form is deliberate. Only three modules in the fleet declare
+             * navigate_to at all, and the other two (303, jv880) name levels
+             * with no preset page, so they are untouched -- while a new
+             * declaration would repeat today's `options_as_string` lesson,
+             * which was documented for months and set by nobody.
+             */
+            const at = (kind) => s.pages.findIndex((q) => q.level === p.navigateTo && q.kind === kind);
+            target = at(PAGE_PRESET);
+            if (target < 0) target = at(PAGE_KNOBS);
         }
         if (target < 0) target = firstGrid(s.pages);
         announce(it.label);
