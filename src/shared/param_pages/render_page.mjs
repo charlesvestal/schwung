@@ -26,7 +26,7 @@
  * looking at it — see LAYOUT_BAR / LAYOUT_DIAL below.
  */
 
-import { KIND_ENUM, KIND_OPAQUE } from "./param_meta.mjs";
+import { KIND_ENUM, KIND_OPAQUE, enumIndexOf } from "./param_meta.mjs";
 import { formatParamValue } from "../param_format.mjs";
 import { drawVizGroup, VIZ_ROWS, VIZ_MIN_W } from "./viz_draw.mjs";
 
@@ -361,9 +361,30 @@ export function hbar(ctx, x, y, w, h, frac, color) {
 
 export function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
 
+/*
+ * An enum may report its value as the option NAME rather than as an index, so
+ * resolve it the way every other reader in this layer does before treating it
+ * as a number. A bare Number("On") is NaN, which lands as fraction 0 — the
+ * widget then sits at the bottom of its travel no matter what the module says.
+ *
+ * That is exactly the bug #228 fixed in drawSwitch, and this is the same flaw
+ * two functions away in the file it was editing: drawFader and viz_draw's frac()
+ * helper both come through here with no enum handling of their own.
+ *
+ * LATENT, not live: no module in the fleet capture currently binds a viz role
+ * or a fader to an enum key. It is worth closing anyway because detectSwitch
+ * DERIVES a switch from any two-option boolean enum rather than requiring a
+ * declaration, so a module can create one of these bindings without opting in —
+ * which is how the drawSwitch case went unnoticed.
+ */
 export function fractionOf(meta, raw) {
     if (!meta) return 0;
-    const num = Number(raw);
+    let value = raw;
+    if (meta.kind === KIND_ENUM) {
+        const idx = enumIndexOf(meta, raw);
+        if (idx >= 0) value = idx;
+    }
+    const num = Number(value);
     if (!isFinite(num)) return 0;
     const min = typeof meta.min === "number" ? meta.min : 0;
     const max = typeof meta.max === "number" ? meta.max : 1;
