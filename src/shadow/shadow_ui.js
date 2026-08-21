@@ -19193,6 +19193,21 @@ globalThis.onMidiMessageInternal = function(data) {
              * decay deadline, and that distinction is read from here. */
             knobTouched[knobIndex] = true;
 
+            /*
+             * The picker owns the screen, so a knob touch raises nothing.
+             *
+             * Letting go and taking hold again re-raised the parameter
+             * overlay OVER the option list — reported from the device. The
+             * overlay answers "what does this knob do", which the list is
+             * already answering, in more detail, with the full option set. It
+             * also covers the very rows you are scrolling.
+             *
+             * The touch is still RECORDED above, so the knob-card decay logic
+             * stays consistent for whatever is underneath when the picker
+             * closes; only the drawing is suppressed.
+             */
+            if (view === VIEWS.ENUM_PICKER) return;
+
             /* Multi-marker view overrides the level's knob row:
              *   marker knobs (1..N) → switch active marker + show its value
              *   zoom knob (8)       → show current zoom level
