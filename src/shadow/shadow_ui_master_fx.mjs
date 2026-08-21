@@ -13,6 +13,9 @@ import {
     truncateText
 } from '/data/UserData/schwung/shared/chain_ui_views.mjs';
 import {
+    drawChainDiagram, DIAGRAM_W, BOX_H as DIAGRAM_BOX_H
+} from '/data/UserData/schwung/shared/chain_diagram.mjs';
+import {
     drawMenuHeader as drawHeader,
     drawMenuFooter as drawFooter,
     drawMenuList,
@@ -118,143 +121,86 @@ export function drawMasterFx() {
 
     drawHeader("Master FX");
 
-    const BOX_W = 22;
-    const BOX_H = 16;
-    const GAP = 2;
-    const TOTAL_W = 5 * BOX_W + 4 * GAP;
-    const START_X = Math.floor((SCREEN_WIDTH - TOTAL_W) / 2);
+    /*
+     * The row of boxes is shared/chain_diagram.mjs — the same renderer the slot
+     * chain editor draws, so the two screens stop looking like different
+     * products.
+     *
+     * What it replaces was a fixed row: `TOTAL_W = 5 * BOX_W + 4 * GAP`, five
+     * 22px boxes filling 118 of the 128px screen exactly. A fixed row cannot
+     * report that it overflowed. At the 8-slot cap the nine boxes are 214px
+     * wide, and boxes 6..9 — together with their bypass "B" and LFO "~"
+     * markers, which were drawn by two more hand-rolled loops over the FULL
+     * component list — would have gone off the right edge with no clipping and
+     * no error. The shared diagram windows the row around the selection
+     * (scrollWindow in chain_model.mjs) and puts a dotted rail in the margin on
+     * whichever side has more chain, so the count can grow without the layout
+     * having an opinion about it.
+     */
     const BOX_Y = 20;
+    /* Centred, unlike the slot editor, which shifts right to clear its
+     * slot-indicator column. Master FX has no such column, so the strip keeps
+     * the x it has always had. */
+    const START_X = Math.floor((SCREEN_WIDTH - DIAGRAM_W) / 2);
 
     const presetSelected = selectedMasterFxComponent === -1;
 
-    for (let i = 0; i < MASTER_FX_CHAIN_COMPONENTS.length; i++) {
-        const comp = MASTER_FX_CHAIN_COMPONENTS[i];
-        const x = START_X + i * (BOX_W + GAP);
-        const isSelected = i === selectedMasterFxComponent;
+    /* The device hands the renderers these four primitives and nothing else. */
+    const dctx = {
+        fillRect: fill_rect,
+        print: print,
+        textWidth: typeof text_width === "function" ? text_width : undefined,
+        setPixel: set_pixel,
+    };
 
-        let abbrev = "--";
-        if (comp.key === "settings") {
-            abbrev = "*";
-        } else {
-            const moduleData = masterFxConfig[comp.key];
-            abbrev = moduleData ? getModuleAbbrev(moduleData.module) : "--";
-        }
-
-        const fillBox = presetSelected || isSelected;
-        if (fillBox) {
-            fill_rect(x, BOX_Y, BOX_W, BOX_H, 1);
-        } else {
-            draw_rect(x, BOX_Y, BOX_W, BOX_H, 1);
-        }
-
-        const textColor = fillBox ? 0 : 1;
-        const textX = x + Math.floor((BOX_W - abbrev.length * 5) / 2) + 1;
-        const textY = BOX_Y + 5;
-        print(textX, textY, abbrev, textColor);
-    }
-
-    /* Draw bypass 'B' marker above box, left side. Same style as the chain
-     * editor: 3-wide × 4-tall glyph at iy=BOX_Y-6. Sits left of where the LFO
-     * indicator is centered, so they coexist without overlap. */
+    /*
+     * Which components an LFO is pointed at. Four IPC reads, FIXED — the
+     * question is asked of the two LFOs, never of each box, so it does not grow
+     * with the slot cap.
+     */
+    const mfxLfoTargets = {};
     if (typeof shadow_get_param === "function") {
-        for (let i = 0; i < MASTER_FX_CHAIN_COMPONENTS.length; i++) {
-            const comp = MASTER_FX_CHAIN_COMPONENTS[i];
-            if (comp.key === "settings") continue;
-            const bypassed = parseInt(
-                shadow_get_param(0, `master_fx:${comp.key}:bypassed`) || "0", 10
-            ) === 1;
-            if (!bypassed) continue;
-            const x = START_X + i * (BOX_W + GAP);
-            const bx = x + 1;
-            const by = BOX_Y - 6;
-            /* "B" glyph: ##. / #.# / ##. / ### */
-            set_pixel(bx,     by,     1); set_pixel(bx + 1, by,     1);
-            set_pixel(bx,     by + 1, 1); set_pixel(bx + 2, by + 1, 1);
-            set_pixel(bx,     by + 2, 1); set_pixel(bx + 1, by + 2, 1);
-            set_pixel(bx,     by + 3, 1); set_pixel(bx + 1, by + 3, 1); set_pixel(bx + 2, by + 3, 1);
-        }
-    }
-
-    /* Draw LFO indicators above targeted FX boxes */
-    if (typeof shadow_get_param === "function") {
-        const mfxLfoTargets = {};
         for (let li = 1; li <= 2; li++) {
-            const enabled = shadow_get_param(0, "master_fx:lfo" + li + ":enabled");
-            if (enabled === "1") {
-                const t = shadow_get_param(0, "master_fx:lfo" + li + ":target") || "";
-                if (t) {
-                    if (!mfxLfoTargets[t]) mfxLfoTargets[t] = {};
-                    mfxLfoTargets[t]["lfo" + li] = true;
-                }
-            }
-        }
-        /* 4px-high tiny indicators: ~1, ~2, or ~1+2 */
-        /* Tilde: 4w x 2h squiggle (rows 1-2 of 4, padded top/bottom) */
-        const TILDE_4PX = [0x0, 0x5, 0xA, 0x0];  /* .... / .#.# / #.#. / .... */
-        /* Digits: 3w x 4h */
-        const DIGIT_1_4PX = [0x2, 0x6, 0x2, 0x2]; /* .#. / ##. / .#. / .#. */
-        const DIGIT_2_4PX = [0x6, 0x1, 0x2, 0x7]; /* ##. / ..# / .#. / ### */
-
-        for (let i = 0; i < MASTER_FX_CHAIN_COMPONENTS.length; i++) {
-            const comp = MASTER_FX_CHAIN_COMPONENTS[i];
-            if (comp.key === "settings") continue;
-            const targets = mfxLfoTargets[comp.key];
-            if (!targets) continue;
-
-            const x = START_X + i * (BOX_W + GAP);
-            const indicY = BOX_Y - 5;
-            const has1 = targets.lfo1;
-            const has2 = targets.lfo2;
-
-            let cx = x + Math.floor(BOX_W / 2) - 4;
-            /* Draw tilde (4 wide) */
-            for (let row = 0; row < 4; row++) {
-                const bits = TILDE_4PX[row];
-                for (let bit = 0; bit < 4; bit++) {
-                    if (bits & (1 << (3 - bit))) set_pixel(cx + bit, indicY + row, 1);
-                }
-            }
-            cx += 5;
-            if (has1 && has2) {
-                /* "1+2" */
-                for (let row = 0; row < 4; row++) {
-                    const bits = DIGIT_1_4PX[row];
-                    for (let bit = 0; bit < 3; bit++) {
-                        if (bits & (1 << (2 - bit))) set_pixel(cx + bit, indicY + row, 1);
-                    }
-                }
-                cx += 3;
-                /* tiny "+": cross centered vertically */
-                set_pixel(cx, indicY + 2, 1);
-                set_pixel(cx + 1, indicY + 1, 1); set_pixel(cx + 1, indicY + 2, 1); set_pixel(cx + 1, indicY + 3, 1);
-                set_pixel(cx + 2, indicY + 2, 1);
-                cx += 4;
-                for (let row = 0; row < 4; row++) {
-                    const bits = DIGIT_2_4PX[row];
-                    for (let bit = 0; bit < 3; bit++) {
-                        if (bits & (1 << (2 - bit))) set_pixel(cx + bit, indicY + row, 1);
-                    }
-                }
-            } else if (has1) {
-                for (let row = 0; row < 4; row++) {
-                    const bits = DIGIT_1_4PX[row];
-                    for (let bit = 0; bit < 3; bit++) {
-                        if (bits & (1 << (2 - bit))) set_pixel(cx + bit, indicY + row, 1);
-                    }
-                }
-            } else if (has2) {
-                for (let row = 0; row < 4; row++) {
-                    const bits = DIGIT_2_4PX[row];
-                    for (let bit = 0; bit < 3; bit++) {
-                        if (bits & (1 << (2 - bit))) set_pixel(cx + bit, indicY + row, 1);
-                    }
-                }
-            }
+            if (shadow_get_param(0, "master_fx:lfo" + li + ":enabled") !== "1") continue;
+            const t = shadow_get_param(0, "master_fx:lfo" + li + ":target") || "";
+            if (!t) continue;
+            if (!mfxLfoTargets[t]) mfxLfoTargets[t] = {};
+            mfxLfoTargets[t]["lfo" + li] = true;
         }
     }
+
+    drawChainDiagram(dctx, MASTER_FX_CHAIN_COMPONENTS, selectedMasterFxComponent, {
+        x: START_X,
+        y: BOX_Y,
+        /* Selecting the preset row lights the whole chain, as it always has. */
+        allSelected: presetSelected,
+        abbrev: (comp) => {
+            if (comp.kind === "settings") return "*";
+            /* masterFxConfig is the cached copy the editor already holds — no
+             * IPC here. Nothing in this list is `kind: "synth"`, so no box gets
+             * the synth band: Master FX has no synth to landmark. */
+            const moduleData = masterFxConfig[comp.key];
+            return moduleData ? getModuleAbbrev(moduleData.module) : "--";
+        },
+        marks: (comp) => {
+            /* The settings box is not an FX slot: it has no bypass parameter
+             * and cannot be an LFO target, so it must never be asked. */
+            if (comp.kind === "settings") return null;
+            const lfo = mfxLfoTargets[comp.key];
+            /* One read per DRAWN box — at most the diagram capacity, five —
+             * rather than one per slot. The loop this came from ran the whole
+             * component list, so the 4 -> 8 raise would otherwise have doubled
+             * the per-frame IPC cost of a screen that redraws every frame, at
+             * ~2.8ms a read against a 1.68ms whole-page render. */
+            const bypassed = typeof shadow_get_param === "function" &&
+                parseInt(shadow_get_param(0, `master_fx:${comp.key}:bypassed`) || "0", 10) === 1;
+            if (!lfo && !bypassed) return null;
+            return { bypassed, lfo1: lfo && lfo.lfo1, lfo2: lfo && lfo.lfo2 };
+        },
+    });
 
     const selectedComp = presetSelected ? null : MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
-    const labelY = BOX_Y + BOX_H + 4;
+    const labelY = BOX_Y + DIAGRAM_BOX_H + 4;
     const label = presetSelected ? "Preset" : (selectedComp ? selectedComp.label : "");
     const labelX = Math.floor((SCREEN_WIDTH - label.length * 5) / 2);
     print(labelX, labelY, label, 1);
