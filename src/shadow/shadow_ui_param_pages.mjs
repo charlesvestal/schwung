@@ -523,6 +523,16 @@ function footerHints() {
     const held = controller.state ? controller.state.touched : -1;
     if (held >= 0) {
         const meta = controller.metaAt ? controller.metaAt(held) : null;
+        /*
+         * A TRIGGER is a button: the click does the thing rather than opening
+         * anything, so it says FIRE. Without this it fell through to CLK MENU
+         * -- the footer advertised the section menu while the click ran a
+         * destructive action, which is the same promise-versus-behaviour
+         * mismatch the divable line above exists to prevent.
+         */
+        if (meta && meta.writeOnly) {
+            return orderedHints({ jog: "PAGE", click: "FIRE", extra: fine });
+        }
         if (meta && meta.divable) {
             return orderedHints({ jog: "PAGE", click: "OPEN", extra: fine });
         }

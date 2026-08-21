@@ -31,7 +31,7 @@ node -e '
 Promise.all([
   import("./src/shared/param_pages/param_meta.mjs"),
   import("./src/shared/param_pages/page_controller.mjs"),
-]).then(([M, C]) => {
+]).then(async ([M, C]) => {
   const fail = (m) => { console.log("FAIL: " + m); process.exit(1); };
 
   /* ---- the axis itself --------------------------------------------- */
@@ -113,6 +113,48 @@ Promise.all([
   ctl.onKnobTurn(roSlot, 1, 6000);
   if (writes.length) fail("a readout was written to: " + JSON.stringify(writes));
 
+  /* ---- a trigger must LOOK like a button ----------------------------
+   *
+   * It works and looks broken otherwise: the module reports a constant idle
+   * spelling, and euclidrum reports an em-dash the 5x7 atlas cannot draw at
+   * all, so the cell rendered as a BLANK square with no footer hint. Reported
+   * from the device as "works, but we need some other way to do it than a
+   * blank square and no footer".
+   *
+   * The square is drawn with a bitmap font through fillRect, not ctx.print, so
+   * "blank" is a pixel question and is asserted as one: render the same cell
+   * as a trigger and as a plain enum showing that same unrenderable value, and
+   * the trigger must put glyph pixels inside the box where the plain enum puts
+   * none. */
+  {
+    const R = await import("./src/shared/param_pages/render_page_movy.mjs");
+    const render = (access) => {
+      let pixels = 0;
+      const ctx = {
+        /* Count only small rects: the box frame is 1px lines the full width,
+         * glyphs are little blocks. Both are fillRect, so size discriminates. */
+        fillRect: (x, y, w, h) => { if (w <= 4 && h <= 6) pixels += w * h; },
+        print: () => {}, textWidth: (t) => String(t).length * 4,
+      };
+      const decl = { key: "rnd_preset", name: "Rnd Preset", type: "enum",
+                     options: ["\u2014", "Rnd!"] };
+      if (access) decl.access = access;
+      const ix2 = M.buildMetaIndex({ chainParams: [decl] });
+      R.renderPageMovy(ctx, {
+        page: { kind: "knobs", name: "P", keys: ["rnd_preset"], level: "root" },
+        metaIndex: ix2, values: { rnd_preset: "\u2014" },
+        pageIndex: 0, pageCount: 1, header: "T",
+      });
+      return pixels;
+    };
+    const plain = render(null);        /* today: an em-dash the font cannot draw */
+    const trigger = render("write");   /* the action mark */
+    if (trigger <= plain)
+      fail("a trigger cell drew " + trigger + " glyph pixels vs " + plain +
+           " for the unrenderable idle value — it is still blank");
+  }
+
+  console.log("  ok  trigger cell draws an action mark, never the idle value");
   console.log("  ok  default is readwrite; plain enums and floats unaffected");
   console.log("  ok  readout: not turnable, not divable, never written");
   console.log("  ok  trigger: fires once on click, through the module wire (\"Rnd!\"), not turnable");

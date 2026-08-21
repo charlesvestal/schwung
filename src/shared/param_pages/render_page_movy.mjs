@@ -599,6 +599,11 @@ function fitLine(text, maxWidth) {
     return fontWidth4x5(t) > maxWidth ? "" : t;
 }
 
+/* What a trigger's square says when the module has not chosen its own wording.
+ * Two characters, so it can never truncate in the 3-per-line square, and a verb
+ * rather than a state — the cell label below already names the action. */
+const TRIGGER_MARK = "GO";
+
 function drawEnumSquare(ctx, kx, ky, text) {
     const w = ENUM_W, h = BOX_H;
     ctx.fillRect(kx, ky, w, 1, 1);
@@ -702,6 +707,32 @@ function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, cellText)
      * animates under modulation instead of freezing on the base. */
     const shown = (liveRaw === null || liveRaw === undefined) ? raw : liveRaw;
     if (meta.kind === KIND_OPAQUE) { drawOpaqueBox(ctx, kx, ky, shown, cellText); return; }
+    /*
+     * A TRIGGER is a button, so the cell shows the ACTION, not the value.
+     *
+     * Drawing its "current option" is meaningless — the module reports a
+     * constant idle spelling, and for euclidrum that constant is an em-dash,
+     * which the 5x7 atlas cannot draw at all. The result was a blank square:
+     * a control that looked broken while working perfectly.
+     *
+     * So the square shows an ACTION mark and the cell's own label underneath
+     * says which action it is — "Clear", "Rnd Preset", "Recover Loop".
+     *
+     * Deliberately NOT options[1]. That is the value that FIRES it, not a verb,
+     * and the fleet proves it is not reliably readable: euclidrum's is "Rnd!"
+     * (fine) but magneto's is "Cleared" and "Saved" — past participles that
+     * read as STATUS under a label that already says "Clear". A module that
+     * wants its own wording can supply short_options[1], which is the existing
+     * hook for "what this widget should say in three characters".
+     */
+    if (meta.writeOnly) {
+        const shortActs = Array.isArray(meta.short_options) ? meta.short_options : null;
+        const label = (shortActs && shortActs[1] !== undefined)
+            ? String(shortActs[1])
+            : TRIGGER_MARK;
+        drawEnumSquare(ctx, cellLeft(g, col) + Math.floor((g.cellW - ENUM_W) / 2), ky, label);
+        return;
+    }
     if (meta.kind === KIND_ENUM) {
         /* A plugin may report an enum as its option NAME rather than as an
          * index (see learnEnumWireFormat) — resolve either to the index, or
