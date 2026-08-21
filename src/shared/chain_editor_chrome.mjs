@@ -1,5 +1,6 @@
 /**
- * chain_editor_chrome.mjs — the bands around a chain editor's row of boxes.
+ * chain_editor_chrome.mjs — the bands around a chain editor's row of boxes, and
+ * the module picker it opens on a position.
  *
  * There are two chain editors: the slot chain (drawChainEdit in shadow_ui.js)
  * and Master FX (drawMasterFx in shadow_ui_master_fx.mjs). Step 4a-2 of the
@@ -29,7 +30,13 @@
  * by pixel (tests/host/test_chain_editor_snapshot.sh).
  */
 
-import { drawHeader, drawFooter } from "./param_pages/render_page_movy.mjs";
+import { drawHeader, drawFooter, RULE_Y as MOVY_RULE_Y }
+    from "./param_pages/render_page_movy.mjs";
+import { renderPicker, fitText } from "./param_pages/render_page.mjs";
+/* The list rect the knob grid`s own menu pages use. Imported rather than
+ * restated: the two pickers below must occupy the SAME rectangle, and a second
+ * copy of "x 8, y 10, w 112" is how they would come to stop doing so. */
+import { MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W } from "./param_pages/page_controller.mjs";
 import { DEFAULT_Y as DIAGRAM_Y, BOX_H as DIAGRAM_BOX_H } from "./chain_diagram.mjs";
 import { SCREEN_WIDTH, truncateText } from "./chain_ui_views.mjs";
 
@@ -77,4 +84,71 @@ export function drawChainEditorBands(ctx, o) {
     ctx.print(centreX(info), INFO_Y, info, 1);
 
     drawFooter(ctx, o.hints);
+}
+
+/**
+ * The module picker a chain editor opens on one of its positions — for BOTH
+ * editors, because there is only one picker.
+ *
+ * WHY THIS EXISTS. The slot chain and Master FX already chose their rows from
+ * the same list: the module scan plus this position`s Move Left / Move Right,
+ * built by the same chainMoveEntries. They then drew that identical list two
+ * completely different ways — the slot picker in the movy chrome
+ * (drawHeader/renderPicker/drawFooter), Master FX in the older menu chrome
+ * (drawMenuHeader/drawMenuList/"Back: cancel  Click: apply"). A user moving
+ * between the two screens saw two products. That is the drift §1b of the
+ * variable-length design exists to end, reported from the device in exactly
+ * those words, and shared ENTRIES with unshared DRAWING is the shape it takes
+ * when only half a screen is converged.
+ *
+ * WHY IT WENT UNSEEN. tests/host/test_chain_editor_snapshot.sh wires both
+ * pickers to fail-if-reached stubs, so neither screen was ever rendered by the
+ * only harness that renders these screens at all. Nothing compared them because
+ * nothing drew them. Both are snapshotted now, from the same payload, so a
+ * future divergence is a diff between two pictures built to be identical.
+ *
+ * The parameters are DATA, deliberately — a header line, rows, which row is
+ * current, what to say when there are none. No branch in here may ask which
+ * editor is calling: a shared function with a `kind === "master"` in it drifts
+ * exactly as well as two functions did.
+ *
+ * @param ctx  fillRect / print / textWidth
+ * @param o    { headerLeft, entries, index, currentId, emptyMessage }
+ *             `entries` are the picker`s own rows ({id, name}), already
+ *             including the Move rows — not the raw module scan.
+ */
+export function drawChainPicker(ctx, o) {
+    drawHeader(ctx, o.headerLeft, "SELECT", false);
+
+    const entries = o.entries || [];
+    if (entries.length === 0) {
+        /* Fitted with the SAME fitText the list rows use, because the two
+         * pickers name different things ("No modules available" against "No FX
+         * modules available") and the longer one runs off the 128px screen at
+         * this x. The device clips silently, so a message that overflowed would
+         * simply lose its last word with nothing to say it had. */
+        ctx.print(MENU_LIST_X, MENU_LIST_Y + 8,
+                  fitText(ctx, o.emptyMessage || "No modules available", MENU_LIST_W), 1);
+        /* Still a footer: a screen with nothing on it and no way out named is
+         * the one place a hint matters most. BACK is EXIT here by FOOTER_CANON
+         * — it leaves the picker entirely and lands back on the editor. */
+        drawFooter(ctx, [["BACK", "EXIT"]]);
+        return;
+    }
+
+    renderPicker(ctx, {
+        rect: { x: MENU_LIST_X, y: MENU_LIST_Y,
+                w: MENU_LIST_W, h: MOVY_RULE_Y - MENU_LIST_Y },
+        entries: entries.map((item) => ({
+            name: item.name || item.id || "Unknown",
+            /* The one already loaded, marked where a menu page puts its value.
+             * The rule lives HERE and not in either caller: a mark that only
+             * one of the two pickers drew is the same bug one layer down. */
+            value: (o.currentId && item.id === o.currentId) ? "*" : "",
+        })),
+        index: o.index,
+        header: false,
+    });
+
+    drawFooter(ctx, [["JOG", "SEL"], ["CLK", "LOAD"], ["BACK", "EXIT"]]);
 }

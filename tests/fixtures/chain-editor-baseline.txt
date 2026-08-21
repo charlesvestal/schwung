@@ -17,6 +17,10 @@
 #
 # Step 4b ADDED the four knob-card cases below and moved NONE.
 #
+# The 12 picker/ cases ADDED the two module pickers, which had never been
+# rendered here at all, and moved NONE. Six payloads, each drawn down both
+# editors, so slot and master must differ only in the header.
+#
 # Step 4e made Master FX a variable-length chain: every master/ hash moved,
 # two cases naming an empty position past the end of the chain were deleted,
 # and eight were added for the `+` box and the Shift footer. Reviewed case by
@@ -107,3 +111,15 @@ master/len8/sel-fx8 b55c9536dadb6ec45ffcf9a4dd473fdfe3f964cd
 master/len8/sel-preset 94e78fc5da985a2fa6eca04538d9ed289df9c2c8
 master/len8/sel-settings 8827db0482d0562325ef307ffb2852f7d4fec961
 master/len8/shift 8a594c0486cdc9223d5dedfb3830149c411c1c46
+picker/master/empty 314b3dc9c3607e6bc652b9de9a2145dd17a6be53
+picker/master/loaded-last e0d206a5868aa994de10c58b0adae58363c60370
+picker/master/long-name cf8acb789b672ba09819a669cbf046b95607bd2f
+picker/master/moves-both 51de910d2c4eb14252b5b394272137ee1888f7b4
+picker/master/moves-right caa1a14690dd7cdf9dab6b97c04e44e9726ea45b
+picker/master/scrolled 2822f7617beace1e62294f94bb8c7df7d4a50d2a
+picker/slot/empty a01bf69c3a94497edc0ffeb31c09d0516fd66391
+picker/slot/loaded-last ea9352069c91668e537bf729b75c0a879df1e65e
+picker/slot/long-name adf679b39c1be03ef2f49654f97e209afb07f295
+picker/slot/moves-both e6230cfd3c41e2e9ed880b56024b825197ef0924
+picker/slot/moves-right 6675f380ece9fcd45d97523ecf6458632bc737a3
+picker/slot/scrolled 4ff76190752e0d50ab7a48cd491ffa56fc495a41

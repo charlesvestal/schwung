@@ -45,13 +45,15 @@ import {
 } from '/data/UserData/schwung/shared/chain_ui_views.mjs';
 
 import { decodeDelta } from '/data/UserData/schwung/shared/input_filter.mjs';
-/* The knob-grid chrome, so screens reached FROM it look like it — see
- * drawComponentSelect. Pure drawing helpers; no state travels with them. */
-import { drawHeader as drawMovyHeader, drawFooter as drawMovyFooter, RULE_Y as MOVY_RULE_Y }
+/* The knob-grid chrome's footer rule row, which the chain editor's slot
+ * indicator column stops above. The header/footer/list DRAWING that used to be
+ * imported here went to chain_editor_chrome.mjs, so both editors do it once. */
+import { RULE_Y as MOVY_RULE_Y }
     from '/data/UserData/schwung/shared/param_pages/render_page_movy.mjs';
 /* The bands around a chain editor's row of boxes — header, label, info,
- * footer. Shared with Master FX so the two editors wear the same furniture. */
-import { drawChainEditorBands }
+ * footer — and the module picker it opens on a position. Both shared with
+ * Master FX so the two editors wear the same furniture. */
+import { drawChainEditorBands, drawChainPicker }
     from '/data/UserData/schwung/shared/chain_editor_chrome.mjs';
 /* The chain editor's knob feedback card, and the two resolvers it needs to be
  * handed a row: what each key IS (metaIndex) and which cells a viz group
@@ -59,9 +61,6 @@ import { drawChainEditorBands }
 import { drawKnobCard } from '/data/UserData/schwung/shared/param_pages/knob_card.mjs';
 import { buildMetaIndex } from '/data/UserData/schwung/shared/param_pages/param_meta.mjs';
 import { resolveViz } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
-import { renderPicker as renderMovyPicker } from '/data/UserData/schwung/shared/param_pages/render_page.mjs';
-import { MENU_LIST_X as MOVY_LIST_X, MENU_LIST_Y as MOVY_LIST_Y, MENU_LIST_W as MOVY_LIST_W }
-    from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
 import { describeLfoTarget } from '/data/UserData/schwung/shared/lfo_target_label.mjs';
 import { emptyChain, parseId as parseChainId, chainComponents, moveBy as chainMoveBy,
          removeAt as chainRemoveAt, insertAt as chainInsertAt, MAX_FX, MAX_MIDI_FX }
@@ -15534,6 +15533,11 @@ function drawChainEdit() {
  * header font, no footer at all — which made choosing a module feel like
  * leaving the editor rather than a step inside it.
  *
+ * The DRAWING is drawChainPicker, shared with Master FX. Master FX kept the
+ * older chrome after this screen moved, so the two pickers chose from the same
+ * chainMoveEntries-built list and then looked like different products — see the
+ * comment on drawChainPicker for why that had to stop being possible.
+ *
  * No bank bar: there is no page set here, and drawing one would claim a
  * position among pages that do not exist.
  */
@@ -15542,29 +15546,17 @@ function drawComponentSelect() {
     const comp = slotChainComponents(selectedSlot)[selectedChainComponent];
     const ctx = { fillRect: fill_rect, print, textWidth: text_width };
 
-    drawMovyHeader(ctx, `S${selectedSlot + 1} > ${comp ? comp.label : "Module"}`, "SELECT", false);
-
-    if (availableModules.length === 0) {
-        print(MOVY_LIST_X, MOVY_LIST_Y + 8, "No modules available", 1);
-        drawMovyFooter(ctx, [["BACK", "EXIT"]]);
-        return;
-    }
-
     const current = comp ? getChainComponentModule(chainConfigs[selectedSlot], comp.key) : null;
-    const currentId = current ? current.module : null;
 
-    renderMovyPicker(ctx, {
-        rect: { x: MOVY_LIST_X, y: MOVY_LIST_Y, w: MOVY_LIST_W, h: MOVY_RULE_Y - MOVY_LIST_Y },
-        entries: availableModules.map((item) => ({
-            name: item.name || item.id || "Unknown",
-            /* The one already loaded, marked where a menu page puts its value. */
-            value: (currentId && currentId === item.id) ? "*" : "",
-        })),
+    drawChainPicker(ctx, {
+        /* Which chain, then which position in it — the slot editor's own header
+         * grammar, one level deeper. */
+        headerLeft: `S${selectedSlot + 1} > ${comp ? comp.label : "Module"}`,
+        entries: availableModules,
         index: selectedModuleIndex,
-        header: false,
+        currentId: current ? current.module : null,
+        emptyMessage: "No modules available",
     });
-
-    drawMovyFooter(ctx, [["JOG", "SEL"], ["CLK", "LOAD"], ["BACK", "EXIT"]]);
 }
 
 /* ===== Store Picker Drawing Functions ===== */

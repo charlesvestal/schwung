@@ -17,7 +17,7 @@ import {
 } from '/data/UserData/schwung/shared/chain_diagram.mjs';
 /* The bands around the row of boxes — header, label, info, footer. The SAME
  * call drawChainEdit makes: 4a-3 of the Master FX variable-length design. */
-import { drawChainEditorBands }
+import { drawChainEditorBands, drawChainPicker }
     from '/data/UserData/schwung/shared/chain_editor_chrome.mjs';
 /* The knob card, drawn over the diagram — the SAME renderer drawChainEdit uses.
  * It shipped 2026-08-20 scoped to the slot chain, so a Master FX knob still
@@ -328,6 +328,17 @@ export function drawMasterFx() {
     }
 }
 
+/*
+ * STAYS ON THE OLD MENU CHROME, deliberately, and this is the reasoning so the
+ * next person does not have to redo it.
+ *
+ * Its twin is the slot chain's settings screen, drawChainSettings in
+ * shadow_ui_settings.mjs, and that one is on the SAME old chrome —
+ * drawMenuHeader, a list, a text footer. The two agree today. Converting this
+ * one alone would recreate the exact bug that brought us here, only mirrored:
+ * two settings screens, one movy and one not. Whoever moves this moves both, in
+ * one change, and reads the pair side by side afterwards.
+ */
 function drawMasterFxSettingsMenu() {
     const { currentMasterPresetName, selectedMasterFxSetting,
             getMasterFxSettingsItems, getMasterFxSettingValue } = ctx;
@@ -352,34 +363,62 @@ function drawMasterFxSettingsMenu() {
     drawFooter("Back: FX chain");
 }
 
+/*
+ * The module picker, drawn by drawChainPicker — the SAME function the slot
+ * chain's drawComponentSelect calls.
+ *
+ * What this replaces, and why it had to go: the two pickers already chose from
+ * the same rows (the module scan plus this position's Move Left / Move Right,
+ * both built by chainMoveEntries) and then drew them completely differently —
+ * this one wore drawMenuHeader's "Select FX 2", drawMenuList, and a
+ * "Back: cancel / Click: apply" text footer, while the slot picker had moved to
+ * the movy band, renderPicker and the [JOG SEL][CLK LOAD][BACK EXIT] hints.
+ * Reported from the device as "the module select here is different than the
+ * module select in slots", which is precisely the drift §1b of the
+ * variable-length design exists to end.
+ *
+ * The `*` on the loaded module, the Move rows, the empty-list message and where
+ * Back goes are all unchanged: Back cancels the selection and returns to the
+ * Master FX chain view (handleBack, VIEWS.MASTER_FX), which is EXIT by
+ * FOOTER_CANON — it leaves the picker entirely, the same as the slot picker's.
+ */
 function drawMasterFxModuleSelect() {
     const { selectedMasterFxComponent, MASTER_FX_CHAIN_COMPONENTS,
             masterFxPickerItems, selectedMasterFxModuleIndex,
             masterFxConfig } = ctx;
 
     const comp = MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
-    drawHeader(`Select ${comp ? comp.label : "FX"}`);
 
-    /* The picker`s OWN rows — the modules plus this position`s Move Left /
-     * Move Right — not the raw module scan. */
-    if (masterFxPickerItems.length === 0) {
-        print(LIST_LABEL_X, LIST_TOP_Y, "No FX modules available", 1);
-        return;
-    }
-
-    drawMenuList({
-        items: masterFxPickerItems,
-        selectedIndex: selectedMasterFxModuleIndex,
-        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
-        getLabel: (item) => item.name,
-        getValue: (item) => {
-            const currentModule = comp ? (masterFxConfig[comp.key]?.module || "") : "";
-            return (currentModule && item.id === currentModule) ? "*" : "";
-        }
+    drawChainPicker({
+        fillRect: fill_rect, print,
+        textWidth: typeof text_width === "function" ? text_width : undefined,
+    }, {
+        /* The slot picker's header grammar — which chain, then which position
+         * in it — with MFX where the slot editor says S1. Same two words the
+         * Master FX chain view already puts on the right of its own band. */
+        headerLeft: `MFX > ${comp ? comp.label : "FX"}`,
+        entries: masterFxPickerItems,
+        index: selectedMasterFxModuleIndex,
+        currentId: comp ? (masterFxConfig[comp.key]?.module || "") : "",
+        /* Master FX loads audio FX and nothing else, so the empty case can say
+         * so; the slot picker, which can be opened on a synth or a MIDI FX,
+         * cannot. That is a difference in what the two lists CONTAIN, not in
+         * how they are drawn. */
+        emptyMessage: "No FX modules available",
     });
-    drawFooter({left: "Back: cancel", right: "Click: apply"});
 }
 
+/*
+ * Also stays, for the same reason: its twin is the slot chain's patch library
+ * (drawPatches in shadow_ui_patches.mjs), which lists saved chains with a `*`
+ * on the loaded one and a "Back: settings / Click: load" footer — the same
+ * screen, the same chrome. The pair is consistent; moving one of them is what
+ * would make it not.
+ *
+ * (The `[New]` first row is genuinely Master-FX-only — the slot side reaches
+ * Save from its settings menu instead — but that is a difference in ROWS, not
+ * in how they are drawn, and it is not what anyone noticed.)
+ */
 function drawMasterPresetPicker() {
     const { masterPresets, selectedMasterPresetIndex,
             currentMasterPresetName } = ctx;
