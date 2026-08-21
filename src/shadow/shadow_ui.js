@@ -9627,29 +9627,34 @@ function enterHierarchyEditorFromParamPages() {
  * changeHierPreset() early-returns and the loading-transition re-fetch is
  * guarded by `if (newHier)` — don't "fix" those guards to re-pull the
  * hierarchy unconditionally or it would clobber the synthesized one with null. */
-function enterHierarchyEditorWith(slotIndex, componentKey, hierarchy) {
-    if (!hierarchy) {
-        /* No hierarchy - fall back to simple preset browser */
-        enterComponentEditFallback(slotIndex, componentKey);
-        return;
-    }
-
-    /* Dismiss any active overlay and clear pending knob state */
+/*
+ * Dismiss whatever is over the editor and drop the knob state left pointing at
+ * the last component.
+ *
+ * Called by both chain editors, but NOT folded into resetHierarchyEditorFor:
+ * the slot path runs it BEFORE the paramPages early return, so opening the
+ * knob grid clears the overlay too. Order is the behaviour here.
+ */
+function dismissOverlayForHierarchyEntry() {
     hideOverlay();
     invalidateKnobContextCache();
     pendingHierKnobIndex = -1;
     pendingHierKnobDelta = 0;
+}
 
-    /* Preview: the knob grid replaces the list for this component when the
-     * user has opted in. It plans from the same declared contract, so nothing
-     * about entry differs — and paramPagesEnabled() forces the list whenever the
-     * screen reader is on, since a grid has nothing selected to read out. */
-    if (paramPagesEnabled() && !suppressParamPagesOnce) {
-        enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey));
-        return;
-    }
-    suppressParamPagesOnce = false;
-
+/*
+ * The hierarchy editor's per-entry state, aimed at one component.
+ *
+ * Shared by BOTH chain editors. `componentKey` is what hierEditorComponent
+ * holds, which is the editor key for a slot chain ("midiFx", "fx2") and the
+ * prefixed form for Master FX ("master_fx:fx2") — the one place the two
+ * genuinely disagree, so it is a parameter rather than something derived.
+ *
+ * `isMasterFx` / `masterFxSlot` are the legacy pair the rest of the file still
+ * asks (`hierEditorIsMasterFx`) to know which chain it is editing. They will
+ * be a chain target once the exit paths follow.
+ */
+function resetHierarchyEditorFor(slotIndex, componentKey, hierarchy, isMasterFx, masterFxSlot) {
     hierEditorSlot = slotIndex;
     hierEditorComponent = componentKey;
     hierEditorHierarchy = hierarchy;
@@ -9661,11 +9666,56 @@ function enterHierarchyEditorWith(slotIndex, componentKey, hierarchy) {
     hierEditorSelectedIdx = 0;
     hierEditorEditMode = false;
     resetHierarchyEditState();
-    hierEditorIsMasterFx = false;
-    hierEditorMasterFxSlot = -1;
+    hierEditorIsMasterFx = isMasterFx;
+    hierEditorMasterFxSlot = masterFxSlot;
+    resetDynamicParamPickerState();
+}
+
+/*
+ * What the screen reader says on arrival, for BOTH chain editors: the preset
+ * name and its position when the level is a preset browser, the first param
+ * otherwise, and an explicit "No parameters" rather than silence.
+ */
+function announceHierarchyEditorEntry(moduleName) {
+    if (hierEditorIsPresetLevel && hierEditorPresetCount > 0) {
+        /* Preset browser level - announce preset name first, then position */
+        const presetName = hierEditorPresetName || `Preset ${hierEditorPresetIndex + 1}`;
+        announce(`${moduleName}, ${presetName}, Preset ${hierEditorPresetIndex + 1} of ${hierEditorPresetCount}`);
+    } else if (hierEditorParams.length > 0) {
+        const param = hierEditorParams[0];
+        const label = param.label || param.key;
+        const value = param.value || "";
+        announce(`${moduleName}, ${label}: ${value}`);
+    } else {
+        announce(`${moduleName}, No parameters`);
+    }
+}
+
+function enterHierarchyEditorWith(slotIndex, componentKey, hierarchy) {
+    if (!hierarchy) {
+        /* No hierarchy - fall back to simple preset browser */
+        enterComponentEditFallback(slotIndex, componentKey);
+        return;
+    }
+
+    dismissOverlayForHierarchyEntry();
+
+    /* Preview: the knob grid replaces the list for this component when the
+     * user has opted in. It plans from the same declared contract, so nothing
+     * about entry differs — and paramPagesEnabled() forces the list whenever the
+     * screen reader is on, since a grid has nothing selected to read out. */
+    if (paramPagesEnabled() && !suppressParamPagesOnce) {
+        enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey));
+        return;
+    }
+    suppressParamPagesOnce = false;
+
+    resetHierarchyEditorFor(slotIndex, componentKey, hierarchy, false, -1);
+    /* Only the slot path clears the file browser. Master FX never has, which is
+     * an asymmetry rather than a decision — left alone here because 4a-2 is a
+     * refactor with no behaviour change. */
     filepathBrowserState = null;
     filepathBrowserParamKey = "";
-    resetDynamicParamPickerState();
 
     /* Fetch chain_params metadata for this component */
     hierEditorChainParams = getComponentChainParams(slotIndex, componentKey);
@@ -9687,19 +9737,7 @@ function enterHierarchyEditorWith(slotIndex, componentKey, hierarchy) {
     /* Announce menu title + initial selection */
     const prefix = getComponentParamPrefix(componentKey);
     const moduleName = getSlotParam(slotIndex, `${prefix}:name`) || componentKey;
-
-    if (hierEditorIsPresetLevel && hierEditorPresetCount > 0) {
-        /* Preset browser level - announce preset name first, then position */
-        const presetName = hierEditorPresetName || `Preset ${hierEditorPresetIndex + 1}`;
-        announce(`${moduleName}, ${presetName}, Preset ${hierEditorPresetIndex + 1} of ${hierEditorPresetCount}`);
-    } else if (hierEditorParams.length > 0) {
-        const param = hierEditorParams[0];
-        const label = param.label || param.key;
-        const value = param.value || "";
-        announce(`${moduleName}, ${label}: ${value}`);
-    } else {
-        announce(`${moduleName}, No parameters`);
-    }
+    announceHierarchyEditorEntry(moduleName);
 }
 
 /* Enter hierarchy-based parameter editor for a Master FX slot */
@@ -9712,30 +9750,13 @@ function enterMasterFxHierarchyEditor(fxSlot) {
         return;
     }
 
-    /* Dismiss any active overlay and clear pending knob state */
-    hideOverlay();
-    invalidateKnobContextCache();
-    pendingHierKnobIndex = -1;
-    pendingHierKnobDelta = 0;
+    dismissOverlayForHierarchyEntry();
 
-    /* Set up hierarchy editor for Master FX
-     * Use slot 0 (all Master FX params use slot 0)
-     * Component key is "master_fx:fxN" so params become "master_fx:fxN:param" */
-    const fxKey = `fx${fxSlot + 1}`;
-    hierEditorSlot = 0;
-    hierEditorComponent = `master_fx:${fxKey}`;
-    hierEditorHierarchy = hierarchy;
-    hierEditorLevel = hierarchy.modes ? null : "root";
-    hierEditorPath = [];
-    hierEditorChildIndex = -1;
-    hierEditorChildCount = 0;
-    hierEditorChildLabel = "";
-    hierEditorSelectedIdx = 0;
-    hierEditorEditMode = false;
-    resetHierarchyEditState();
-    hierEditorIsMasterFx = true;
-    hierEditorMasterFxSlot = fxSlot;
-    resetDynamicParamPickerState();
+    /* Master FX params are addressed at IPC slot 0 (a convention, NOT
+     * instrument slot 0), and hierEditorComponent carries the prefixed form
+     * "master_fx:fxN" so params become "master_fx:fxN:param". */
+    const fxKey = masterFxComponentKey(fxSlot);
+    resetHierarchyEditorFor(0, `master_fx:${fxKey}`, hierarchy, true, fxSlot);
 
     /* Fetch chain_params metadata for this Master FX slot */
     hierEditorChainParams = getMasterFxChainParams(fxSlot);
@@ -9750,19 +9771,8 @@ function enterMasterFxHierarchyEditor(fxSlot) {
     needsRedraw = true;
 
     /* Announce menu title + initial selection */
-    const moduleName = getSlotParam(0, `master_fx:${fxKey}:name`) || `FX ${fxSlot + 1}`;
-    if (hierEditorIsPresetLevel && hierEditorPresetCount > 0) {
-        /* Preset browser level - announce preset name first, then position */
-        const presetName = hierEditorPresetName || `Preset ${hierEditorPresetIndex + 1}`;
-        announce(`${moduleName}, ${presetName}, Preset ${hierEditorPresetIndex + 1} of ${hierEditorPresetCount}`);
-    } else if (hierEditorParams.length > 0) {
-        const param = hierEditorParams[0];
-        const label = param.label || param.key;
-        const value = param.value || "";
-        announce(`${moduleName}, ${label}: ${value}`);
-    } else {
-        announce(`${moduleName}, No parameters`);
-    }
+    const moduleName = getMasterFxParam(fxSlot, "name") || `FX ${fxSlot + 1}`;
+    announceHierarchyEditorEntry(moduleName);
 }
 
 /* Load params and knobs for current hierarchy level */
