@@ -51,6 +51,11 @@ _Static_assert(MASTER_FX_SLOTS > 0 && MASTER_FX_SLOTS <= 9999,
  * Types
  * ============================================================================ */
 
+/* Size of one position's cached chain_params JSON. Shared by both Master FX
+ * caches: the module.json snapshot below and the runtime refresh buffer in
+ * shadow_chain_mgmt.c. */
+#define MASTER_FX_CHAIN_PARAMS_MAX 65536
+
 /* Master FX chain slot */
 typedef struct {
     void *handle;                    /* dlopen handle */
@@ -59,7 +64,26 @@ typedef struct {
     char module_path[256];           /* Full DSP path */
     char module_id[64];              /* Module ID for display */
     shadow_capture_rules_t capture;  /* Capture rules for this FX */
-    char chain_params_cache[65536];  /* Cached chain_params to avoid file I/O in audio thread */
+    /* Cached chain_params to avoid file I/O in the audio thread.
+     *
+     * OWNED BUFFER, NEVER NULL. MASTER_FX_CHAIN_PARAMS_MAX bytes, allocated
+     * once per position by shadow_master_fx_storage_ensure() and never freed.
+     * It is a pointer rather than an inline array because Master FX is
+     * becoming a list with insert/remove/move, and that reordering is a
+     * PERMUTATION executed on the SPI callback (~900 us of budget after the
+     * transfer). Rotating a pointer is free; memmoving 64 KB per position is
+     * not. Nothing about this is a memory saving — the allocation is the same
+     * bytes in a different place — so do not "simplify" it back to an inline
+     * array without first moving the permutation off the audio thread.
+     *
+     * Vacating a position must ROTATE this pointer (hand it the buffer
+     * displaced off the end of the shift) and clear its CONTENTS. Nulling it
+     * instead is the exact mistake that took the SPI callback down on the slot
+     * chain: v2_load_midi_fx_slot parsed a param table through the NULLed
+     * pointer and SIGSEGV'd on the audio thread, and the shift silently leaked
+     * the allocation it overwrote. See the PERMUTATION section of CLAUDE.md
+     * and PERM_OWNED in src/modules/chain/dsp/chain_permute.h. */
+    char *chain_params_cache;
     int chain_params_cached;         /* 1 if cache is valid */
     void (*on_midi)(void *instance, const uint8_t *msg, int len, int source);  /* Optional MIDI handler */
     int bypassed;                    /* 1 = skip this MFX slot (dry passthrough), 0 = active */
@@ -232,6 +256,21 @@ void shadow_apply_mute(int slot, int is_muted);
 void shadow_toggle_solo(int slot);
 
 /* --- Master FX --- */
+
+/* Give every Master FX position its owned chain_params buffers (the struct
+ * member above and the runtime refresh cache inside shadow_chain_mgmt.c).
+ * Idempotent and gap-filling: it allocates only positions that do not have a
+ * buffer yet, so calling it twice is free and a partial failure is retryable.
+ * Returns 1 when every position has both buffers, 0 otherwise.
+ *
+ * Call it from a thread that can cope with malloc failing. chain_mgmt_init()
+ * and shadow_chain_defaults() both do, and both run at shim startup — the
+ * point is that no allocation ever happens on the SPI callback, where a NULL
+ * return has nowhere to go. shadow_master_fx_slot_load_with_config() refuses
+ * to bring a position up while this returns 0, so a reader can never reach a
+ * missing buffer. */
+int shadow_master_fx_storage_ensure(void);
+
 void shadow_master_fx_slot_unload(int slot);
 void shadow_master_fx_unload_all(void);
 int shadow_master_fx_slot_load(int slot, const char *dsp_path);
