@@ -41,7 +41,7 @@ import("./src/shared/param_pages/list_knob.mjs").then((L) => {
 
   /* ---- a short list must NOT accelerate ------------------------------ */
   const shortSlow = run(12, 30, 400);
-  const shortFast = run(12, 30, 8);
+  const shortFast = run(12, 30, 6);
   if (shortFast !== shortSlow)
     fail("a 12-entry list accelerated (" + shortSlow + " slow vs " + shortFast +
          " fast) — there is nowhere to go, so it should feel identical");
@@ -54,7 +54,7 @@ import("./src/shared/param_pages/list_knob.mjs").then((L) => {
    * and it was the gate being wide open rather than the ceiling being wrong.
    * 20ms/detent is a normal purposeful turn and must stay at the base rate
    * for anything a person steers through. */
-  for (const n of [6, 12, 17, 47]) {
+  for (const n of [6, 12, 17, 47, 116]) {
     /* The reference has to be UNAMBIGUOUSLY slow — 400ms/detent, far outside
      * any plausible gate. Using 60ms here hid the bug once already: widening
      * the gate to 60 made the reference accelerate too, so the comparison was
@@ -68,12 +68,16 @@ import("./src/shared/param_pages/list_knob.mjs").then((L) => {
 
   /* ---- a long list must accelerate, and enough to be usable ---------- */
   const longSlow = run(519, 60, 400);
-  const longFast = run(519, 60, 8);
+  const longFast = run(519, 60, 6);
   if (longFast <= longSlow)
     fail("a 519-entry list did not accelerate (" + longSlow + " slow vs " + longFast + " fast)");
-  if (longFast < 519 / 4)
-    fail("a fast spin of 60 detents covered only " + longFast + " of 519 entries — " +
-         "crossing the list would take an unreasonable amount of turning");
+  /* Relative, not absolute. An absolute coverage target encodes one particular
+   * base speed, and DETENTS_PER_ENTRY is exactly the number being tuned by
+   * feel — it has already been halved once. What must stay true is that a
+   * flick is worth substantially more than steering. */
+  if (longFast < longSlow * 4)
+    fail("a flick covered " + longFast + " vs " + longSlow + " steering — " +
+         "acceleration is not worth reaching for");
 
   /* ...but not so much that it is uncontrollable. */
   const maxPerStep = L.ACCEL_MAX_MULTIPLIER;
