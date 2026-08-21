@@ -15767,26 +15767,7 @@ function makeSlotLfoCtx(slot, lfoIdx) {
             return comps;
         },
         getTargetParams: function(compKey) {
-            /* LFO-to-LFO: return hardcoded LFO params */
-            if (compKey === "lfo1" || compKey === "lfo2") {
-                return LFO_TARGET_PARAMS.slice();
-            }
-            const result = [];
-            const paramsJson = getSlotParam(slot, compKey + ":chain_params");
-            if (paramsJson) {
-                try {
-                    const params = JSON.parse(paramsJson);
-                    for (let i = 0; i < params.length; i++) {
-                        const p = params[i];
-                        if (p.type === "float" || p.type === "int" || p.type === "enum") {
-                            result.push({ key: p.key, label: p.name || p.label || p.key });
-                        }
-                    }
-                } catch (e) {
-                    debugLog("LFO: Failed to parse chain_params: " + e);
-                }
-            }
-            return result;
+            return lfoTargetParamsFor(slotChainTarget(slot), compKey, "LFO");
         },
         title: "LFO " + (lfoIdx + 1),
         returnView: VIEWS.CHAIN_SETTINGS,
@@ -15802,13 +15783,46 @@ const LFO_TARGET_PARAMS = [
     { key: "phase_offset", label: "Phase Offset" },
 ];
 
+/*
+ * What a component offers an LFO to modulate — for EITHER chain.
+ *
+ * The slot and Master FX LFO editors held two copies of this that differed
+ * only in how the chain_params key was spelled, which the chain target now
+ * answers. Only continuous types are offered: a string or an action has no
+ * range for a depth to mean anything against.
+ */
+function lfoTargetParamsFor(target, compKey, logLabel) {
+    /* LFO-to-LFO: return hardcoded LFO params */
+    if (compKey === "lfo1" || compKey === "lfo2") return LFO_TARGET_PARAMS.slice();
+    const result = [];
+    try {
+        const json = chainTargetGetParam(target, compKey, "chain_params");
+        if (json) {
+            const params = JSON.parse(json);
+            for (let i = 0; i < params.length; i++) {
+                const p = params[i];
+                if (p.type === "float" || p.type === "int" || p.type === "enum") {
+                    result.push({ key: p.key, label: p.name || p.label || p.key });
+                }
+            }
+        }
+    } catch (e) {
+        debugLog(logLabel + ": Failed to parse chain_params: " + e);
+    }
+    return result;
+}
+
 function makeMfxLfoCtx(lfoIdx) {
     const prefix = "master_fx:lfo" + (lfoIdx + 1) + ":";
     return {
         lfoIdx: lfoIdx,
         scopeId: "mfx:lfo" + lfoIdx,
-        getParam: function(key) { return shadow_get_param(0, prefix + key); },
-        setParam: function(key, val) { shadow_set_param(0, prefix + key, val); },
+        /* Through getSlotParam / setSlotParam, exactly as makeSlotLfoCtx does:
+         * Master FX is addressed at IPC slot 0 by convention (it is NOT
+         * instrument slot 0), and the raw host calls it used instead threw
+         * when the binding was absent where the slot side returned null. */
+        getParam: function(key) { return getSlotParam(0, prefix + key); },
+        setParam: function(key, val) { setSlotParam(0, prefix + key, val); },
         setParamBlocking: function(key, val) { return shadowSetParamBlocking(0, prefix + key, val); },
         getTargetComponents: function() {
             const comps = [];
@@ -15821,7 +15835,7 @@ function makeMfxLfoCtx(lfoIdx) {
              * FX 5-8 from the LFO target picker. Bound by the constant so the
              * cap moves it. */
             for (let i = 0; i < MASTER_FX_SLOTS; i++) {
-                const name = shadow_get_param(0, "master_fx:fx" + (i + 1) + ":name") || "";
+                const name = getMasterFxParam(i, "name");
                 if (name) {
                     comps.push({ key: "fx" + (i + 1), label: "FX " + (i + 1) + ": " + name });
                 }
@@ -15833,26 +15847,7 @@ function makeMfxLfoCtx(lfoIdx) {
             return comps;
         },
         getTargetParams: function(compKey) {
-            /* LFO-to-LFO: return hardcoded LFO params */
-            if (compKey === "lfo1" || compKey === "lfo2") {
-                return LFO_TARGET_PARAMS.slice();
-            }
-            const result = [];
-            try {
-                const json = shadow_get_param(0, "master_fx:" + compKey + ":chain_params");
-                if (json) {
-                    const params = JSON.parse(json);
-                    for (let i = 0; i < params.length; i++) {
-                        const p = params[i];
-                        if (p.type === "float" || p.type === "int" || p.type === "enum") {
-                            result.push({ key: p.key, label: p.name || p.label || p.key });
-                        }
-                    }
-                }
-            } catch (e) {
-                debugLog("MFX LFO: Failed to parse chain_params: " + e);
-            }
-            return result;
+            return lfoTargetParamsFor(MASTER_CHAIN_TARGET, compKey, "MFX LFO");
         },
         title: "MFX LFO " + (lfoIdx + 1),
         returnView: VIEWS.MASTER_FX,
