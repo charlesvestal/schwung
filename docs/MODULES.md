@@ -1452,6 +1452,44 @@ These map to knobs 1-8 in the Shadow UI for quick access.
 }
 ```
 
+### `max_param` is NOT supported — publish a real `max`
+
+Eight modules declare `"max_param": "preset_count"` (or similar) hoping the host
+will resolve the bound at runtime. **Nothing has ever consumed it.** It is
+parsed and then read by no one, in C or in JS.
+
+Until 2026-08 it also *damaged* the parameter it decorated: the parser set an
+internal `max_val = -1` marker that the chain host serialised literally, so sf2
+shipped `{"min":0,"max":-1}` — an inverted range — and every other user lost its
+declared bound. That marker is gone; a `max_param` declaration is now recorded
+and otherwise inert, and your declared `max` survives.
+
+It is deliberately not implemented, because the two real uses disagree about
+what the referenced key means:
+
+```
+preset        max_param="preset_count"   wants count - 1   (7 modules)
+laneN_pulses  max_param="laneN_steps"    wants the value   (eucalypso)
+```
+
+Picking one convention would silently be wrong for the other, which is the exact
+failure this field already caused once.
+
+**Do this instead:** emit a real `max`. Every module using `max_param` builds its
+`chain_params` string at runtime from `get_param`, so it already knows the number
+at the moment it serialises:
+
+```c
+/* not: "min":0,"max_param":"preset_count"   */
+offset += snprintf(buf + offset, buf_len - offset,
+    "{\"key\":\"preset\",\"type\":\"int\",\"min\":0,\"max\":%d}",
+    preset_count > 0 ? preset_count - 1 : 0);
+```
+
+A knob declared `0..9999` against 27 real presets is ~99.7% dead travel, and
+that shape is currently in `hera`, `surge`, `moog`, `minijv`, `helm`, `nusaw`,
+`rex` and `obxd`.
+
 ### Recognized Units
 
 The shared shadow-UI formatter (`src/shared/param_format.mjs`) renders any

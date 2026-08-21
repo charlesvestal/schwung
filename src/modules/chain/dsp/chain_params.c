@@ -332,7 +332,29 @@ static int parse_param_object(const char *param_json, chain_param_info_t *param)
         }
     }
 
-    /* Extract max_param (dynamic max reference) */
+    /*
+     * Extract max_param — RECORDED BUT NOT IMPLEMENTED, deliberately.
+     *
+     * Eight modules declare it (sf2, hush1, hera, surge, moog, minijv, helm,
+     * eucalypso) and NOTHING has ever consumed it: it is parsed into the struct
+     * here and read by no one, in C or in JS. Its only effect was the marker
+     * below, `max_val = -1`, which chain_host serialises literally — so sf2
+     * shipped `{"min":0,"max":-1}`, an inverted range, and the rest lost their
+     * declared bound. A field that silently corrupts what it decorates is worse
+     * than one that does nothing, so the marker is gone and the declared max
+     * (or the type default) now stands.
+     *
+     * It is NOT implemented because the two real uses disagree about what the
+     * referenced key means, and picking one would be guessing at someone else's
+     * intent:
+     *
+     *   preset       max_param="preset_count"  -> wants count - 1  (7 modules)
+     *   laneN_pulses max_param="laneN_steps"   -> wants the value  (eucalypso)
+     *
+     * Modules should publish a real `max` instead. Every one of these builds
+     * its chain_params string at runtime, so it already knows the number at the
+     * moment it serialises — see docs/MODULES.md.
+     */
     const char *max_param_start = bounded_strstr(param_json, param_obj_end, "\"max_param\"");
     if (max_param_start) {
         max_param_start = strchr(max_param_start, ':');
@@ -346,7 +368,20 @@ static int parse_param_object(const char *param_json, chain_param_info_t *param)
                     if (len >= sizeof(param->max_param)) len = sizeof(param->max_param) - 1;
                     memcpy(param->max_param, max_param_start, len);
                     param->max_param[len] = '\0';
-                    param->max_val = -1; /* Marker for dynamic max */
+                    /*
+                     * These declarations pair max_param with NO literal "max"
+                     * (sf2, hush1), so dropping the marker would leave max_val
+                     * at its memset 0 — a 0..0 knob that cannot move, which is
+                     * no better than the inverted range we are removing. Fall
+                     * back to the same default a max-less int already gets in
+                     * parse_chain_params_array_json below, so the param behaves
+                     * like every other unbounded int rather than like a bug.
+                     * Only reached when max_param is declared; nothing else
+                     * changes.
+                     */
+                    if (!bounded_strstr(param_json, param_obj_end, "\"max\"")) {
+                        param->max_val = (param->type == KNOB_TYPE_FLOAT) ? 1.0f : 9999.0f;
+                    }
                 }
             }
         }
@@ -721,7 +756,8 @@ int parse_chain_params(const char *module_path, chain_param_info_t *params, int 
             }
         }
 
-        /* Parse max_param (dynamic max) */
+        /* Parse max_param. UNIMPLEMENTED — see the note at the other parse
+         * site; recorded for diagnostics only, and it must NOT touch max_val. */
         const char *max_param_pos = strstr(obj_start, "\"max_param\":");
         if (max_param_pos && max_param_pos < obj_end) {
             const char *q1 = strchr(max_param_pos + 12, '"');
@@ -732,7 +768,6 @@ int parse_chain_params(const char *module_path, chain_param_info_t *params, int 
                     int len = (int)(q2 - q1);
                     if (len > 31) len = 31;
                     strncpy(p->max_param, q1, len);
-                    p->max_val = -1.0f;  /* Marker for dynamic max */
                 }
             }
         }
