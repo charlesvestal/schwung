@@ -15,6 +15,7 @@
 #include "shadow_chain_mgmt.h"
 #include "shadow_fx_key.h"    /* shadow_key_is_fx_module — header-only so tests/host can run it */
 #include "master_fx_key.h"    /* master_fx_route_* — header-only so tests/host can run it */
+#include "chain_permute.h"    /* insert/remove/move as an array permutation; shared with the chain DSP */
 #include "shadow_set_pages.h"
 #include "shadow_sampler.h"
 #include "shadow_dbus.h"
@@ -79,6 +80,44 @@ static int mfx_lfo_base_valid[MASTER_FX_LFO_COUNT];
 static char *mfx_runtime_chain_params_cache[MASTER_FX_SLOTS];
 static int mfx_runtime_chain_params_cached[MASTER_FX_SLOTS];
 static uint64_t mfx_runtime_chain_params_last_fetch_ms[MASTER_FX_SLOTS];
+
+/*
+ * How long the Master FX chain IS, as opposed to how long it could be.
+ *
+ * Master FX was a fixed array of MASTER_FX_SLOTS positions and published
+ * nothing, so the editor drew all eight — which is why an empty Master FX
+ * looked like eight uninformative boxes after the cap was raised. Once a
+ * position can be REMOVED, "where does the chain end" stops being derivable
+ * from the cap at all, and CLAUDE.md's rule applies: bound loops by the
+ * published count, never by the cap.
+ *
+ * Semantics: the length of the live prefix, holes included. A hole is legal
+ * (picking None empties a position without shortening the chain, exactly as in
+ * a slot chain's fx section), so unloading does NOT shrink this; only an
+ * explicit remove does.
+ */
+static int mfx_fx_count = 0;
+
+/*
+ * The count a reader should trust: never less than "highest loaded + 1".
+ *
+ * Two paths load a position without going through a shape edit — boot restore
+ * and a patch/config load — and neither has a count to set. If the stored
+ * count could sit below a running module, that module would make sound and be
+ * invisible to the editor. That is not hypothetical: it is exactly the
+ * fx3_module bug of 2026-08-20, where fx_count answered 3 while the key that
+ * names position 3 answered nothing, and a third FX ran unseen. So the
+ * published count is repaired from the array rather than merely reported.
+ */
+static int mfx_fx_count_effective(void) {
+    int n = mfx_fx_count;
+    if (n < 0) n = 0;
+    if (n > MASTER_FX_SLOTS) n = MASTER_FX_SLOTS;
+    for (int i = MASTER_FX_SLOTS - 1; i >= n; i--) {
+        if (shadow_master_fx_slots[i].instance) { n = i + 1; break; }
+    }
+    return n;
+}
 
 int shadow_master_fx_storage_ensure(void) {
     int all_present = 1;
@@ -500,6 +539,7 @@ void shadow_chain_defaults(void) {
             shadow_master_fx_slots[i].chain_params_cache[0] = '\0';
         }
     }
+    mfx_fx_count = 0;
 }
 
 void shadow_chain_load_config(void) {
@@ -744,6 +784,182 @@ void shadow_master_fx_unload_all(void) {
     for (int i = 0; i < MASTER_FX_SLOTS; i++) {
         shadow_master_fx_slot_unload(i);
     }
+    /* Nothing is left to be a hole IN, so the chain is genuinely empty. Note
+     * the contrast with a single-position unload, which leaves the length
+     * alone: there, the hole is still part of the chain. */
+    mfx_fx_count = 0;
+}
+
+/* ----------------------------------------------------------------------------
+ * Shape edits: insert, remove, move — as an ARRAY PERMUTATION
+ *
+ * The instances keep running and only their index changes. Expressing a shape
+ * edit as a run of `fxN:module` writes instead would unload and dlopen() every
+ * position behind the edit: a reverb loses the tail that was ringing, and a
+ * delay restarts. See chain_permute.h for the whole argument, and
+ * chain_reorder.c for the slot chain's half of it — this is the same operation
+ * over the shim's own arrays.
+ *
+ * THREAD SAFETY IS FREE. All of this runs from
+ * shadow_inprocess_handle_param_request, which the shim calls from
+ * shim_pre_transfer on the SPI audio thread AFTER shadow_mix_audio. Nothing
+ * else touches these arrays, so a permutation cannot interleave with a render.
+ * (Module loading already dlopen()s from this thread, which IS a pre-existing
+ * realtime violation — a permutation is strictly cheaper than the reload it
+ * replaces, and 4c indirected the 64 KB param caches so a position is 408
+ * bytes here rather than 128 KB.)
+ * -------------------------------------------------------------------------- */
+
+#define MFX_PERM_FIELD(arr) { (void *)(arr), sizeof((arr)[0]), 0 }
+#define MFX_PERM_OWNED(arr) { (void *)(arr), sizeof((arr)[0]), MASTER_FX_CHAIN_PARAMS_MAX }
+
+/* Room for every per-position array plus headroom, so adding one is an edit to
+ * the collector and not also to this number. */
+#define MFX_PERM_MAX_ARRAYS 16
+
+/*
+ * EVERY per-position array of Master FX, as data. This list is the whole
+ * correctness argument: one left out keeps the value belonging to whatever
+ * module USED to be at that index, and for the param caches that means
+ * position 3 serving position 5's metadata — a knob writing another module's
+ * parameter.
+ *
+ * Master FX's arrays do not all live in one struct the way a chain
+ * instance's do: three are file-static, right here, outside any struct. That
+ * is why tests/host/test_master_fx_permute.sh derives the list from the FILE
+ * (every `[MASTER_FX_SLOTS]` declaration in this file and in the header)
+ * rather than from a struct body, which would be structurally blind to them.
+ *
+ * `owned_ptrs` is a caller-supplied scratch array and the one piece of
+ * cleverness here. shadow_master_fx_slots[] is an array of STRUCTS that
+ * contains an owned pointer member, and chain_permute.h classifies a whole
+ * array as one kind or the other — there is no "value array with a pointer
+ * inside" shape, and there should not be: vacating the struct memsets it,
+ * which would NULL that pointer, which is the SIGSEGV. So the owned pointers
+ * are lifted OUT into their own array for the duration of the permutation
+ * (where they are correctly rotated), the struct travels as pure values, and
+ * mfx_perm_restore_owned puts them back.
+ */
+static int mfx_perm_collect(chain_perm_array_t *out, char **owned_ptrs) {
+    int n = 0;
+    for (int i = 0; i < MASTER_FX_SLOTS; i++) {
+        owned_ptrs[i] = shadow_master_fx_slots[i].chain_params_cache;
+        shadow_master_fx_slots[i].chain_params_cache = NULL;
+    }
+    out[n++] = (chain_perm_array_t)MFX_PERM_FIELD(shadow_master_fx_slots);
+    out[n++] = (chain_perm_array_t)MFX_PERM_OWNED(owned_ptrs);
+    out[n++] = (chain_perm_array_t)MFX_PERM_OWNED(mfx_runtime_chain_params_cache);
+    out[n++] = (chain_perm_array_t)MFX_PERM_FIELD(mfx_runtime_chain_params_cached);
+    out[n++] = (chain_perm_array_t)MFX_PERM_FIELD(mfx_runtime_chain_params_last_fetch_ms);
+    return n;
+}
+
+static void mfx_perm_restore_owned(char **owned_ptrs) {
+    for (int i = 0; i < MASTER_FX_SLOTS; i++) {
+        shadow_master_fx_slots[i].chain_params_cache = owned_ptrs[i];
+    }
+}
+
+/*
+ * Re-aim the ONE table that names a position by string: the two Master FX
+ * LFOs' `target` ("fx1".."fx8"), strcmp'd at four sites. Master FX has no
+ * modulation-target table and no knob mappings, so this is one string against
+ * the slot chain's three.
+ *
+ * The base snapshot is why this is not a one-liner. mfx_lfo_base_valid[] is
+ * indexed BY LFO, not by position, and holds the modulation base of whatever
+ * the LFO currently points at. A MOVE keeps the base valid — the module went
+ * with its index, and the base belongs to the module. A REMOVE does not: the
+ * target string is cleared here, and if the base were left marked valid the
+ * next target the user picks would be modulated around the departed module's
+ * value until something happened to re-snapshot it. So the removal clears both
+ * halves of the routing AND invalidates the base.
+ */
+static void mfx_perm_retarget_lfos(const int *map, int count) {
+    for (int i = 0; i < MASTER_FX_LFO_COUNT; i++) {
+        lfo_state_t *l = &shadow_master_fx_lfos[i];
+        if (chain_perm_retarget(l->target, sizeof(l->target),
+                                "fx", MASTER_FX_SLOTS, map, count) < 0) {
+            /* Leaving `param` naming a departed module's parameter is how a
+             * later `target` write silently revives half a routing. */
+            l->param[0] = '\0';
+            l->active = 0;
+            mfx_lfo_base_valid[i] = 0;
+            mfx_lfo_base_value[i] = 0.0f;
+        }
+    }
+}
+
+/*
+ * Open an empty position at `at` (0-based), shifting the rest along.
+ *
+ * Nothing is loaded: the caller follows with the ordinary `fxN:module` write,
+ * and for the frames in between the chain has a hole in it, which the render
+ * walk skips (it tests instance/api per position). Returns 1 on success.
+ */
+int shadow_master_fx_insert(int at) {
+    chain_perm_array_t arrays[MFX_PERM_MAX_ARRAYS];
+    char *owned[MASTER_FX_SLOTS];
+    int map[CHAIN_PERM_MAX_POS];
+
+    int count = mfx_fx_count_effective();
+    int n = mfx_perm_collect(arrays, owned);
+    int now = chain_perm_insert(arrays, n, count, MASTER_FX_SLOTS, at, map);
+    mfx_perm_restore_owned(owned);
+    if (now < 0) return 0;   /* refused before anything moved */
+    mfx_perm_retarget_lfos(map, count);
+    mfx_fx_count = now;
+    return 1;
+}
+
+/*
+ * Unload position `at` and close the gap.
+ *
+ * The unload is real — the module is leaving, so its instance is destroyed and
+ * its dlopen handle closed. It must go through shadow_master_fx_slot_unload
+ * and never a memset: the struct holds both, and zeroing it leaks both
+ * silently, which is quieter than the slot chain's crash and therefore worse.
+ * What is NEW is that everything BEHIND it is only renumbered, not rebuilt.
+ */
+int shadow_master_fx_remove(int at) {
+    chain_perm_array_t arrays[MFX_PERM_MAX_ARRAYS];
+    char *owned[MASTER_FX_SLOTS];
+    int map[CHAIN_PERM_MAX_POS];
+
+    int count = mfx_fx_count_effective();
+    if (at < 0 || at >= count) return 0;
+
+    shadow_master_fx_slot_unload(at);
+
+    int n = mfx_perm_collect(arrays, owned);
+    int now = chain_perm_remove(arrays, n, count, at, map);
+    mfx_perm_restore_owned(owned);
+    if (now < 0) return 0;
+    mfx_perm_retarget_lfos(map, count);
+    mfx_fx_count = now;
+    return 1;
+}
+
+/* Move position `from` to position `to`, both 0-based. from == to is refused
+ * rather than treated as a no-op, so the caller cannot announce a move that
+ * did not happen. */
+int shadow_master_fx_move(int from, int to) {
+    chain_perm_array_t arrays[MFX_PERM_MAX_ARRAYS];
+    char *owned[MASTER_FX_SLOTS];
+    int map[CHAIN_PERM_MAX_POS];
+
+    int count = mfx_fx_count_effective();
+    int n = mfx_perm_collect(arrays, owned);
+    int now = chain_perm_move(arrays, n, count, from, to, map);
+    mfx_perm_restore_owned(owned);
+    if (now < 0) return 0;
+    mfx_perm_retarget_lfos(map, count);
+    mfx_fx_count = now;
+    return 1;
+}
+
+int shadow_master_fx_count(void) {
+    return mfx_fx_count_effective();
 }
 
 int shadow_master_fx_slot_load(int slot, const char *dsp_path) {
@@ -906,6 +1122,12 @@ int shadow_master_fx_slot_load_with_config(int slot, const char *dsp_path, const
         typedef void (*fx_on_midi_fn)(void *, const uint8_t *, int, int);
         s->on_midi = (fx_on_midi_fn)dlsym(s->handle, "move_audio_fx_on_midi");
     }
+
+    /* A load can extend the chain, and two paths get here without a shape edit
+     * to set the length: boot restore and a patch/config load. Raising the
+     * count here is what stops a running module being invisible to an editor
+     * that bounds its list by the published count. */
+    if (slot >= mfx_fx_count) mfx_fx_count = slot + 1;
 
     fprintf(stderr, "Shadow master FX[%d]: loaded %s\n", slot, dsp_path);
     return 0;
@@ -2733,6 +2955,75 @@ void shadow_inprocess_handle_param_request(void) {
             }
             shadow_param_publish_response(req_id);
             return;
+        }
+
+        /* ---- Shape: the length, and the three verbs that change it ----------
+         *
+         * Spelled to match the slot chain's `fx:insert` / `fx:remove` /
+         * `fx:move` / `fx_count` byte for byte, so the editor's one shared
+         * emitter differs between the two targets only in the `master_fx:`
+         * prefix its key() adds. A separate spelling here is how the two
+         * editors drift apart, which is the whole point of this work.
+         *
+         * Ids are 1-BASED on the wire, matching "fx1".."fx8"; the C below is
+         * 0-based. Caught before the generic dispatch so the key can never
+         * reach a sub-plugin, and gated on !has_slot_prefix so a module that
+         * happens to expose a param called "insert" is unaffected. */
+        if (!has_slot_prefix) {
+            int is_count  = (strcmp(param_key, "fx_count") == 0);
+            int is_insert = (strcmp(param_key, "fx:insert") == 0);
+            int is_remove = (strcmp(param_key, "fx:remove") == 0);
+            int is_move   = (strcmp(param_key, "fx:move") == 0);
+
+            if (is_count) {
+                if (req_type == 2) {  /* GET */
+                    snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%d",
+                             shadow_master_fx_count());
+                    shadow_param->error = 0;
+                    shadow_param->result_len = strlen(shadow_param->value);
+                } else {
+                    /* Read-only: the count is a consequence of the verbs, and
+                     * a writable length could name a position past what is
+                     * loaded, or hide one that is. */
+                    shadow_param->error = 14;
+                    shadow_param->result_len = -1;
+                }
+                shadow_param_publish_response(req_id);
+                return;
+            }
+
+            if (is_insert || is_remove || is_move) {
+                if (req_type != 1) {  /* GET */
+                    shadow_param->error = 14;
+                    shadow_param->result_len = -1;
+                    shadow_param_publish_response(req_id);
+                    return;
+                }
+                int ok = 0;
+                if (is_move) {
+                    /* "1>3" — one write, because two (remove then insert)
+                     * would be two permutations with a torn chain between
+                     * them, audible on the SPI callback. */
+                    const char *arrow = strchr(shadow_param->value, '>');
+                    if (arrow) {
+                        int from = atoi(shadow_param->value);
+                        int to = atoi(arrow + 1);
+                        if (from >= 1 && to >= 1) {
+                            ok = shadow_master_fx_move(from - 1, to - 1);
+                        }
+                    }
+                } else {
+                    int at = atoi(shadow_param->value);
+                    if (at >= 1) {
+                        ok = is_insert ? shadow_master_fx_insert(at - 1)
+                                       : shadow_master_fx_remove(at - 1);
+                    }
+                }
+                shadow_param->error = ok ? 0 : 15;
+                shadow_param->result_len = 0;
+                shadow_param_publish_response(req_id);
+                return;
+            }
         }
 
         if (req_type == 1) {  /* SET */
