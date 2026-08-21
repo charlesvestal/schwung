@@ -34,6 +34,17 @@ cd "$(dirname "$0")/../.."
 # are deliberately the same card payload on both screens: they must differ only
 # in what is BEHIND the card.
 #
+# The two MODULE PICKERS were added next, and moved NOTHING -- 12 new cases,
+# six payloads rendered down both editors. They had never been rendered here at
+# all: drawComponentSelect had no case and drawMasterFxModuleSelect was one of
+# the fail-if-reached stubs, so the harness that exists to stop these two
+# screens drifting was blind to the one screen that had drifted furthest. A user
+# found it on the device instead -- "the module select here is different than
+# the module select in slots" -- and it was: the same chainMoveEntries-built row
+# list drawn in the movy chrome on one side and the old menu chrome on the
+# other. They are ONE function now (drawChainPicker) and the cases are PAIRED,
+# so a future divergence is a diff between two pictures built from one payload.
+#
 # Step 4e made Master FX a VARIABLE-LENGTH chain, so all 19 remaining master/
 # cases moved: the row is the loaded chain, one `+`, and Settings, instead of a
 # fixed run of cap boxes with the unloaded ones drawn empty. That is the change
@@ -57,6 +68,10 @@ cd "$(dirname "$0")/../.."
 #   drawMasterFx   is lifted out of shadow_ui_master_fx.mjs the same way, but it
 #                  takes its shared state through the `ctx` object, so the state
 #                  itself is supplied directly rather than reconstructed.
+#   the pickers    are lifted the same two ways -- drawComponentSelect from
+#                  shadow_ui.js with a dependency list, drawMasterFxModuleSelect
+#                  from shadow_ui_master_fx.mjs with its ctx -- and both end in
+#                  the one shared drawChainPicker.
 #
 # THE CONTENT FLOOR is the defence against exactly that. Every case must light a
 # minimum number of pixels AND leave none of its bands empty -- header, diagram,
@@ -89,7 +104,7 @@ import { drawKnobCard } from "./src/shared/param_pages/knob_card.mjs";
 import { buildMetaIndex } from "./src/shared/param_pages/param_meta.mjs";
 import { drawMenuHeader } from "./src/shared/menu_layout.mjs";
 import { truncateText } from "./src/shared/chain_ui_views.mjs";
-import { drawChainEditorBands } from "./src/shared/chain_editor_chrome.mjs";
+import { drawChainEditorBands, drawChainPicker } from "./src/shared/chain_editor_chrome.mjs";
 
 const BASELINE_PATH = "tests/fixtures/chain-editor-baseline.txt";
 const SCREEN_WIDTH = 128;
@@ -286,7 +301,15 @@ function masterComponents(config) {
    directly. The six sibling draws it can early-return into are supplied as
    deps that FAIL if reached -- none of the snapshot cases raise a modal, and a
    case that silently drew a preset picker instead of the chain would otherwise
-   be baselined as if it were the chain. */
+   be baselined as if it were the chain.
+
+   The stubs STAY even for drawMasterFxModuleSelect, which now has cases of its
+   own further down: what the stub asserts is that a CHAIN case did not fall
+   through into the picker, which is a different claim from the picker being
+   rendered somewhere. The four still uncovered here -- text entry, name
+   preview, and the two confirms, plus the preset picker and the settings menu
+   -- keep failing loudly rather than quietly drawing the wrong screen, which is
+   exactly the silence that let the two pickers diverge. */
 const boom = (what) => () => { fail("drawMasterFx fell through to " + what); };
 const MFX_DRAW_DEPS = ["ctx", "drawHeader", "drawChainDiagram", "DIAGRAM_W",
   "DIAGRAM_Y", "SCREEN_WIDTH", "truncateText", "drawMasterNamePreview",
@@ -355,6 +378,88 @@ function renderMaster(c) {
     boom("drawMasterConfirmOverwrite"), boom("drawMasterConfirmDelete"),
     boom("drawMasterPresetPicker"), boom("drawMasterFxSettingsMenu"),
     boom("drawMasterFxModuleSelect"), drawChainEditorBands, drawKnobCard);
+  draw();
+  clearGlobals();
+  return fb;
+}
+
+/* ======================================================================== */
+/* THE TWO MODULE PICKERS                                                    */
+/* ======================================================================== */
+/*
+ * Both editors open a picker on a position, and until now NEITHER was rendered
+ * here: drawComponentSelect had no case at all and drawMasterFxModuleSelect was
+ * one of the six fail-if-reached stubs above. So the only harness that draws
+ * these screens drew neither of them, and the two pickers were free to diverge
+ * completely -- which they did, and a user found it on the device before any
+ * test did. drawMenuHeader/drawMenuList/"Back: cancel" on one side, the movy
+ * band and renderPicker on the other, over the SAME chainMoveEntries-built row
+ * list.
+ *
+ * They are snapshotted as a PAIR, from one payload, the same trick the
+ * *-strip knob-card cases use: a divergence then shows up as a diff between two
+ * pictures that were built to be the same screen. The stubs stay for the four
+ * modals that still are not covered, so the harness keeps failing loudly rather
+ * than quietly drawing the wrong screen.
+ */
+
+/* The picker`s rows, built by the REAL chainMoveEntries -- the function both
+   editors already share -- so a case cannot quietly pin rows the device does
+   not produce. */
+const chainComponentIdTop = lift("chainComponentId", [])();
+const chainMoveEntries = lift("chainMoveEntries",
+  ["parseChainId", "chainComponentId"])(parseChainId, chainComponentIdTop);
+
+/* The rows as BOTH callers assemble them: the module scan, with this position`s
+   Move rows tucked under whichever entry is currently loaded. One helper for
+   both sides on purpose -- an entry list that differed between them would make
+   the paired cases prove nothing. */
+function pickerEntries(config, key, options, loadedId) {
+  const rows = options.slice();
+  const at = loadedId ? rows.findIndex((o) => o.id === loadedId) : -1;
+  rows.splice(at >= 0 ? at + 1 : 0, 0, ...chainMoveEntries(config, key));
+  return rows;
+}
+
+const CHAIN_PICKER_DEPS = ["clear_screen", "slotChainComponents", "selectedSlot",
+  "selectedChainComponent", "fill_rect", "print", "text_width",
+  "getChainComponentModule", "chainConfigs", "availableModules",
+  "selectedModuleIndex", "drawChainPicker"];
+const mkChainPicker = lift("drawComponentSelect", CHAIN_PICKER_DEPS);
+/* drawMasterFxModuleSelect reads everything off ctx, so it needs exactly the
+   shared draw plus that object -- which is itself the evidence that the screen
+   is now one function with two callers. */
+const mkMasterPicker = liftFrom(mfxSrc, "shadow_ui_master_fx.mjs",
+  "drawMasterFxModuleSelect", ["ctx", "drawChainPicker"]);
+
+function renderChainPicker(c) {
+  const fb = createFramebuffer();
+  const g = installGlobals(fb, () => "");
+  const w = chainWorld(c.state);
+  w.ensureChainConfigFresh(0);
+  const sel = w.slotChainComponents(0).findIndex((x) => x.key === c.selKey);
+  if (sel < 0) fail("picker case " + c.id + " names a component that does not exist: " + c.selKey);
+  const draw = mkChainPicker(g.clear_screen, w.slotChainComponents, 0, sel,
+    g.fill_rect, g.print, g.text_width, w.getChainComponentModule, w.chainConfigs,
+    c.entries, c.index, drawChainPicker);
+  draw();
+  clearGlobals();
+  return fb;
+}
+
+function renderMasterPicker(c) {
+  const fb = createFramebuffer();
+  installGlobals(fb, () => "");
+  const comps = masterComponents(c.config);
+  const sel = comps.findIndex((x) => x.key === c.selKey);
+  if (sel < 0) fail("picker case " + c.id + " names a component that does not exist: " + c.selKey);
+  const draw = mkMasterPicker({
+    selectedMasterFxComponent: sel,
+    MASTER_FX_CHAIN_COMPONENTS: comps,
+    masterFxPickerItems: c.entries,
+    selectedMasterFxModuleIndex: c.index,
+    masterFxConfig: c.config,
+  }, drawChainPicker);
   draw();
   clearGlobals();
   return fb;
@@ -617,6 +722,60 @@ addMaster("master/len5/shift",        { modules: M5, sel: "fx3", shift: true });
 addMaster("master/len8/shift",        { modules: M8, sel: "fx8", shift: true });
 addMaster("master/len0/shift",        { modules: [], sel: "add_fx", shift: true });
 
+/* --- the pickers, one payload per PAIR ----------------------------------- *
+ *
+ * Every case below is rendered TWICE, once through drawComponentSelect and once
+ * through drawMasterFxModuleSelect, from the same modules / position / rows /
+ * cursor. The two are not expected to hash the same -- the header says which
+ * chain you are in, "S1 > FX 2" against "MFX > FX 2" -- but everything under it
+ * is, so a divergence is a diff between two pictures built to be one screen.
+ */
+const PICKER_OPTIONS = [
+  { id: "freeverb", name: "Freeverb" },
+  { id: "cloudseed", name: "CloudSeed" },
+  { id: "psxverb", name: "PSX Reverb" },
+];
+const pickerCases = [];
+const addPicker = (id, o) => {
+  const modules = o.modules || [];
+  const config = {};
+  for (let i = 1; i <= MASTER_FX_SLOTS; i++) config["fx" + i] = { module: "" };
+  modules.forEach((m, i) => { if (m) config["fx" + (i + 1)] = { module: m }; });
+  const state = chainState({ fx: modules });
+  /* The row list comes from the SLOT config, and is then handed to both sides.
+     Both editors build it from the same chainMoveEntries on the device, so one
+     list here is the honest model of that -- and it means the paired renders
+     differ only in how the rows are DRAWN. */
+  const w = chainWorld(state);
+  w.ensureChainConfigFresh(0);
+  const at = parseChainId(o.selKey);
+  const loadedId = at ? (modules[at.index] || "") : "";
+  const entries = o.entries !== undefined ? o.entries
+    : pickerEntries(w.chainConfigs[0], o.selKey, o.options || PICKER_OPTIONS, loadedId);
+  pickerCases.push({ id, selKey: o.selKey, state, config, entries,
+                     index: o.index === undefined ? 0 : o.index });
+};
+
+/* Nothing installed at all -- the one branch that draws no list, and the one
+   the old Master FX picker left with no footer on it. */
+addPicker("picker/empty", { modules: ["freeverb"], selKey: "fx1", entries: [] });
+/* A loaded module, marked with the `*`, with the Move rows under it. One
+   neighbour to the left only, so exactly one Move row is offered. */
+addPicker("picker/loaded-last", { modules: ["freeverb", "cloudseed"], selKey: "fx2", index: 3 });
+/* Mid-chain: both Move rows, and the cursor on one of them. */
+addPicker("picker/moves-both", { modules: ["freeverb", "cloudseed", "psxverb"],
+  selKey: "fx2", index: 2 });
+/* First position of a chain with somewhere to go: Move Right only. */
+addPicker("picker/moves-right", { modules: ["freeverb", "cloudseed"], selKey: "fx1", index: 0 });
+/* A name far wider than the list column, which renderPicker must fit rather
+   than run off the edge -- and the `*` still has to land in its column. */
+addPicker("picker/long-name", { modules: ["cloudseed"], selKey: "fx1", index: 1,
+  options: [{ id: "freeverb", name: "Freeverb" },
+            { id: "cloudseed", name: "CloudSeed Algorithmic Reverb XL" }] });
+/* More rows than fit, so the window scrolls and the selection centres. */
+addPicker("picker/scrolled", { modules: ["freeverb"], selKey: "fx1", index: 8,
+  options: Array.from({ length: 12 }, (_, i) => ({ id: "m" + i, name: "Module " + i })) });
+
 /* ======================================================================== */
 /* RENDER, FLOOR, HASH                                                       */
 /* ======================================================================== */
@@ -643,7 +802,18 @@ const EDITOR_BANDS = [
   ["label/info", DIAGRAM_Y + DIAGRAM_BOX_H + 3, MOVY_RULE_Y - 1],
   ["footer", MOVY_RULE_Y, 63],
 ];
-const BANDS = { chain: EDITOR_BANDS, master: EDITOR_BANDS };
+/*
+ * The picker has its own three, because it has no diagram and its list is one
+ * band rather than a label and an info line. Same principle: a screen that lost
+ * its header or its footer -- which is exactly what the old Master FX picker
+ * did, it drew no hints at all in the empty case -- cannot pass as a baseline.
+ */
+const PICKER_BANDS = [
+  ["header", 0, MOVY_HEADER_H - 1],
+  ["list", MOVY_HEADER_H, MOVY_RULE_Y - 1],
+  ["footer", MOVY_RULE_Y, 63],
+];
+const BANDS = { chain: EDITOR_BANDS, master: EDITOR_BANDS, picker: PICKER_BANDS };
 const MIN_LIT = 120;
 
 function inkInBand(fb, y0, y1) {
@@ -677,6 +847,12 @@ const run = (cases, render, kind) => {
 };
 run(chainCases, renderChain, "chain");
 run(masterCases, renderMaster, "master");
+/* The same six payloads down both pickers. Ids are prefixed by which editor
+   drew them so a mismatch names the side that moved. */
+run(pickerCases.map((c) => Object.assign({}, c, { id: "picker/slot/" + c.id.slice(7) })),
+    renderChainPicker, "picker");
+run(pickerCases.map((c) => Object.assign({}, c, { id: "picker/master/" + c.id.slice(7) })),
+    renderMasterPicker, "picker");
 
 const ids = Object.keys(current);
 if (ids.length < 50) fail("only " + ids.length + " cases -- the matrix has collapsed");
@@ -723,6 +899,10 @@ if (process.env.UPDATE_CHAIN_EDITOR_BASELINE) {
     "#",
     "# Step 4b ADDED the four knob-card cases below and moved NONE.",
     "#",
+    "# The 12 picker/ cases ADDED the two module pickers, which had never been",
+    "# rendered here at all, and moved NONE. Six payloads, each drawn down both",
+    "# editors, so slot and master must differ only in the header.",
+    "#",
     "# Step 4e made Master FX a variable-length chain: every master/ hash moved,",
     "# two cases naming an empty position past the end of the chain were deleted,",
     "# and eight were added for the `+` box and the Shift footer. Reviewed case by",
@@ -767,8 +947,9 @@ if (!failures) {
 }
 
 if (failures) process.exit(1);
-console.log("PASS: chain editor snapshot — " + chainCases.length + " slot-chain and " +
-            masterCases.length + " Master FX renders match the baseline, " +
+console.log("PASS: chain editor snapshot — " + chainCases.length + " slot-chain, " +
+            masterCases.length + " Master FX and " + (pickerCases.length * 2) +
+            " module-picker renders match the baseline, " +
             "every one of them inside the display, in the device font, and with ink in " +
             "each band");
 '
