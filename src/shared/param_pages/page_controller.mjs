@@ -177,6 +177,44 @@ export const META_RETRY_LIMIT = 8;
 export const META_RETRY_INTERVAL_TICKS = 344;
 
 /**
+ * Ticks between a SELECTION and the contract re-read it earns (~500 ms).
+ *
+ * A selection can republish the whole parameter set — that is what choosing a
+ * preset, a soundfont or a CLAP effect IS — but it does not republish it
+ * SYNCHRONOUSLY. schwung-airwindows updates its selected index inside
+ * set_param, so `plugin_name` is instantly right, and then schedules the
+ * actual plugin load on a worker thread 300 ms later
+ * (clap_fx.cpp:806-822, PLUGIN_LOAD_DEBOUNCE_MS). `chain_params` is generated
+ * from the LOADED plugin, so for that whole window it still describes the
+ * previous effect. Reading the instant the write lands therefore caches the
+ * wrong contract: reported from hardware as the grid sitting exactly one
+ * selection behind.
+ *
+ * So the read waits, and the deadline is RE-ARMED on every detent: a spin down
+ * a 519-effect list costs one read at the end, not 519 on the way.
+ *
+ * In MILLISECONDS, not ticks. The thing being waited out is another process
+ * debounce, which is in milliseconds, and the shadow UI tick rate is neither
+ * fixed nor owned by this file.
+ *
+ * A deadline is a guess about someone else's debounce, which is why it is
+ * backed by the bounded re-arm below rather than trusted on its own. Where a
+ * module implements `is_loading` the host uses its ready edge instead
+ * (shadow_ui_param_pages.mjs) — that is a genuine signal and a better one.
+ * This exists because most of the fleet does not implement it, and correctness
+ * cannot be a thing third-party modules have to remember to opt into.
+ */
+export const CONTRACT_SETTLE_MS = 500;
+/**
+ * How many times that deadline re-arms while the answer still looks unsettled.
+ *
+ * Bounded, and small: three reads is ~8 ms of IPC spread over a second and a
+ * half. Unbounded would mean a module whose contract legitimately never
+ * changes polls forever.
+ */
+export const CONTRACT_SETTLE_RETRIES = 3;
+
+/**
  * How many times a page will re-try a contract read that FAILED.
  *
  * Bounded for the same reason META_RETRY_LIMIT is: a component whose channel
@@ -293,6 +331,16 @@ export function createController(io = {}) {
          * has been planned from it. See load() and maybeReresolveContract. */
         contractUnresolved: false,
         contractRetries: 0,
+        /* Wall-clock ms at which a selection-driven contract re-read comes
+         * due, or 0 for none pending. Re-armed per detent — see
+         * CONTRACT_SETTLE_MS. */
+        contractDirtyAt: 0,
+        contractSettleTries: 0,
+        /* Fingerprint of the previous POST-DEADLINE reading. Two that agree is
+         * what "settled" means here; see maybeSettleContract. */
+        contractSettleLastFp: null,
+        /* null = never asked, true/false = latched. See isLoadingSays. */
+        isLoadingSupported: null,
         /* Param keys a visible_if condition reads. A condition is driven by a
          * VALUE, which moves without the declared contract moving, so the
          * fingerprint cannot see it — these are watched explicitly instead.
@@ -358,6 +406,9 @@ export function createController(io = {}) {
          * unresolved read may keep — see below. */
         const sameComponent = (s.slot === slot && s.component === component && s.prefix === nextPrefix);
         s.lastLoadOpts = { mode, visible };
+        /* A different component may well implement is_loading even if the last
+         * one did not, so the latch is per-component, not per-session. */
+        if (!sameComponent) s.isLoadingSupported = null;
         s.slot = slot;
         s.component = component;
         s.prefix = nextPrefix;
@@ -413,6 +464,7 @@ export function createController(io = {}) {
             s.cursor = 0;
             s.pageIndex = 0;
             s.metaRetries = 0;
+            s.isLoadingSupported = null;
             s.knobStates = Object.create(null);
             s.lastWriteMs = Object.create(null);
             s.pendingWrite = Object.create(null);
@@ -422,7 +474,26 @@ export function createController(io = {}) {
         s.contractRetries = 0;
 
         const hierarchy = parse(rawHierarchy);
-        const chainParams = parse(getParam(`${s.prefix}:chain_params`));
+        /*
+         * A chain_params read can fail the same way a ui_hierarchy read can,
+         * and it is the same defect one key over.
+         *
+         * null is "the channel would not answer", "" is "nobody serves this
+         * key". Collapsing them parsed a TIMEOUT as "this module declares no
+         * chain_params", rebuilt the metaIndex from the hierarchy alone, and
+         * every knob lost its name — permanently, because for a contract with
+         * no enum placeholder nothing ever reads again.
+         *
+         * The hierarchy answered, so the plan is sound; only the metadata is
+         * missing. Keep the metadata we already had, and let the settle below
+         * fetch it again.
+         */
+        const rawChain = getParam(`${s.prefix}:chain_params`);
+        const chainFailed = (rawChain === null || rawChain === undefined);
+        const chainParams = chainFailed
+            ? (sameComponent ? s.chainParams : null)
+            : parse(rawChain);
+        if (chainFailed && sameComponent) armContractSettle();
         const planned = planPages({ hierarchy, chainParams, mode, visible });
         /* Retained so a visibility re-plan costs no extra device reads. */
         s.hierarchy = hierarchy;
@@ -456,6 +527,119 @@ export function createController(io = {}) {
     /** Poll for a contract that changed underneath us (async ROM/sample loads). */
     function reloadIfChanged(opts) {
         return load({ slot: s.slot, component: s.component, prefix: s.prefix, ...opts });
+    }
+
+    /**
+     * A selection was made: the contract it publishes comes due shortly.
+     *
+     * Idempotent and re-arming, which is the whole point — every detent of a
+     * jog through a long list pushes the deadline out, so the read happens
+     * once, when the hand stops.
+     */
+    function armContractSettle() {
+        s.contractDirtyAt = now() + CONTRACT_SETTLE_MS;
+        s.contractSettleTries = 0;
+        /* Both agreeing readings must post-date THIS deadline. */
+        s.contractSettleLastFp = null;
+        /* Where a module DOES implement is_loading, its ready edge fires first
+         * and this deadline finds nothing left to change. Cheap either way. */
+        s.metaSettled = false;
+        s.metaRetries = 0;
+    }
+
+    /**
+     * Does the contract we just read still describe a module mid-load?
+     *
+     * schwung-airwindows answers "[]" for the entire dlopen window, because
+     * its param cache is filled from the plugin pointer and that pointer is
+     * NULL until the load completes (clap_fx.cpp:342-343, 914-916). The chain
+     * host now treats "[]" as no answer and substitutes the module.json
+     * fallback, which for that module is a single `plugin_id`. Both shapes
+     * mean the same thing and neither is the contract we are waiting for.
+     *
+     * Asked as "does anything on the knob page have declared metadata" rather
+     * than by naming either shape, so a third module that degrades a third way
+     * is covered without being enumerated.
+     */
+    function contractLooksUnsettled() {
+        if (!s.metaIndex) return true;
+        const p = s.pages.find((q) => q && q.kind === PAGE_KNOBS && (q.keys || []).length);
+        if (!p) return false;
+        return p.keys.every((k) => s.metaIndex.getOrGuess(k).guessed);
+    }
+
+    /**
+     * Does this component serve `is_loading`, asked at most once per component?
+     *
+     * An unserved key answers "" — the shim replies with an error and a zeroed
+     * buffer — and only an unclaimable channel answers null. So one probe
+     * settles it forever: "1"/"0" is a module that implements it, anything
+     * else is one of the many that do not, and we never ask again.
+     *
+     * Only ever consulted while a settle is already pending, so a component
+     * nobody selects anything on never spends this read at all.
+     */
+    function isLoadingSays() {
+        if (s.isLoadingSupported === false) return null;
+        const raw = getParam(`${s.prefix}:is_loading`);
+        if (raw === null || raw === undefined) return null;   /* claim failed */
+        if (raw !== "1" && raw !== "0") { s.isLoadingSupported = false; return null; }
+        s.isLoadingSupported = true;
+        return raw;
+    }
+
+    /**
+     * Re-read a contract a selection made stale, once it has settled.
+     *
+     * Returns true when it spent a read.
+     *
+     * Deciding it HAS settled takes two readings that agree, and both of them
+     * must be taken AFTER the deadline. Comparing the first reading against
+     * the fingerprint from before the write is the tempting shortcut — it
+     * settles a static module in a single probe — but it settles WRONGLY
+     * whenever the module load lands just after that first probe, which is the
+     * original bug rediscovered one layer up.
+     *
+     * `is_loading` is the fast path and never the mechanism: a module that
+     * answers it tells us exactly when to look, so one confirming read is
+     * enough and a "1" costs a re-arm with no contract read at all. The fleet
+     * that does not implement it is unaffected and still correct.
+     */
+    function maybeSettleContract(reload) {
+        if (!s.contractDirtyAt || now() < s.contractDirtyAt) return false;
+        /*
+         * Never rebuild under a hand that is on a knob. A rebuild drops
+         * s.values and resets the read cursor, so doing it mid-turn makes the
+         * cell the user is holding blink back to "--". Deferred, not dropped.
+         */
+        if (s.touchOrder.length) {
+            s.contractDirtyAt = now() + CONTRACT_SETTLE_MS;
+            return false;
+        }
+        /* A failed read has its own bounded retry, which owns this state until
+         * it lands; two loops re-reading the same key would just race. */
+        if (s.contractUnresolved) return false;
+
+        const rearm = () => { s.contractDirtyAt = now() + CONTRACT_SETTLE_MS; };
+        s.contractSettleTries++;
+        const capped = s.contractSettleTries >= CONTRACT_SETTLE_RETRIES;
+
+        const loading = isLoadingSays();
+        if (loading === "1" && !capped) { rearm(); return true; }
+
+        reload();
+        const fp = s.fingerprint;
+
+        if (capped) { s.contractDirtyAt = 0; return true; }
+        /* Still describing a module mid-load: keep probing, never plan from it. */
+        if (contractLooksUnsettled()) { rearm(); return true; }
+        /* The module said it is ready, so this reading is the answer. */
+        if (loading === "0") { s.contractDirtyAt = 0; return true; }
+        /* Otherwise: two post-deadline readings that agree. */
+        if (s.contractSettleLastFp === fp) { s.contractDirtyAt = 0; return true; }
+        s.contractSettleLastFp = fp;
+        rearm();
+        return true;
     }
 
     /**
@@ -582,6 +766,17 @@ export function createController(io = {}) {
         if (s.contractUnresolved && s.tickCount % CONTRACT_RETRY_INTERVAL_TICKS === 0) {
             triedReresolve = true;
             maybeReresolveContract(() => reloadIfChanged(s.lastLoadOpts));
+        }
+
+        /*
+         * The settle runs BEFORE the page-kind guards below, because the
+         * selection that made the contract stale is made ON the preset or
+         * items page and those return early. Waiting until the user reached a
+         * knob page would mean the read never happened while browsing, which
+         * is precisely when the labels are wrong.
+         */
+        if (!triedReresolve) {
+            triedReresolve = maybeSettleContract(() => reloadIfChanged(s.lastLoadOpts));
         }
 
         const p = page();
@@ -752,10 +947,17 @@ export function createController(io = {}) {
         const it = st.list[st.cursor];
         if (p.selectParam) setParam(fullKey(p.selectParam), String(it.index));
         st.current = it.index;
-        /* The chosen item can republish the whole contract — a different
-         * soundfont has different presets — so let it be re-read. */
-        s.metaSettled = false;
-        s.metaRetries = 0;
+        /*
+         * The chosen item can republish the whole contract — a different
+         * soundfont has different presets — so let it be re-read.
+         *
+         * Clearing metaSettled is NOT enough on its own, and that gap is the
+         * airwindows bug: maybeResettle only fires for an enum still showing a
+         * placeholder, so a float-only contract re-latched on the next tick
+         * having read nothing. armContractSettle is what actually books the
+         * read.
+         */
+        armContractSettle();
         s.menuEntered = null;
         let target = -1;
         if (p.navigateTo) {
@@ -812,9 +1014,10 @@ export function createController(io = {}) {
         st.name = (nm && nm.length) ? nm : null;
         /* The new preset can publish a different parameter set — that is what
          * a preset IS — so let the contract be re-read rather than leaving the
-         * knob pages describing the preset you just left. */
-        s.metaSettled = false;
-        s.metaRetries = 0;
+         * knob pages describing the preset you just left. Deadline, not an
+         * immediate read: the module may still be loading it, and every detent
+         * re-arms so a fast spin costs one read rather than one per step. */
+        armContractSettle();
         /* Throttled exactly as a turned knob is: a fast spin down a 2427-preset
          * list is hundreds of announcements a second, which no one can follow
          * and which competes with the redraw for the same tick. */
@@ -1687,6 +1890,10 @@ export function createController(io = {}) {
 
     return {
         load, reloadIfChanged, tick,
+        /* For a selection made OUTSIDE the controller — the list editor drives
+         * the same modules through its own preset browser and has the same
+         * race. Books the settle; costs nothing until it comes due. */
+        selectionChanged: armContractSettle,
         onJog, goToPage, onKnobTurn, onKnobTouch, onClick, takePending, commitEnum,
         openPicker, closePicker, pickerSelect, showHint, dismissHint,
         menuEntry, menuIndex: () => menuIndex(page()),

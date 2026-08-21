@@ -54,6 +54,19 @@ export function createFakeDevice({ id, prefix = "synth", initial = {} } = {}) {
     let loading = false;
     const lag = Object.create(null);      /* key -> { remaining, value } */
     const failing = Object.create(null);  /* key -> reads still to fail */
+    let staged = null;                    /* see stagePlugin */
+    /*
+     * A clock the test drives.
+     *
+     * A debounce is measured in MILLISECONDS, not in reads — the whole defect
+     * is that the UI re-reads too SOON, and a read-counted debounce cannot
+     * express "too soon" because it is the reads themselves that move it along.
+     * Pass this as `io.now` and advance it explicitly.
+     */
+    let clock = 0;
+    /** Whether this device answers `is_loading` at all. Almost no module does,
+     *  and a fix that depends on it would be a fix for a fleet of one. */
+    let servesIsLoading = true;
 
     const seed = () => {
         for (const p of (mod.chain_params || [])) {
@@ -80,8 +93,25 @@ export function createFakeDevice({ id, prefix = "synth", initial = {} } = {}) {
          * buffer, and the JS binding hands that back as an empty string. Only
          * an unservable request is null. */
         if (bare === "ui_hierarchy") return mod.ui_hierarchy ? JSON.stringify(mod.ui_hierarchy) : "";
-        if (bare === "chain_params") return mod.chain_params ? JSON.stringify(mod.chain_params) : "";
-        if (bare === "is_loading") return loading ? "1" : "0";
+        if (bare === "chain_params") {
+            /*
+             * A staged contract is not visible until its debounce has run out
+             * — see stagePlugin. Until then this answers with what is still
+             * LOADED, which is the previous selection's contract, and that is
+             * the whole of the airwindows one-behind bug.
+             */
+            if (staged) {
+                const pending = staged.reads > 0 || clock < staged.untilMs;
+                if (pending) { if (staged.reads > 0) staged.reads--; return JSON.stringify(staged.during); }
+                mod = { ...mod, chain_params: staged.after };
+                staged = null;
+            }
+            return mod.chain_params ? JSON.stringify(mod.chain_params) : "";
+        }
+        /* An unserved key answers "", not null — see the header. Almost nothing
+         * in the fleet implements is_loading, so a test can turn it off and
+         * prove the behaviour under test does not secretly depend on it. */
+        if (bare === "is_loading") return servesIsLoading ? (loading ? "1" : "0") : "";
 
         /* A lagging param serves its stale value for a few reads — this is the
          * race that makes write-back suppression necessary rather than tidy. */
@@ -110,6 +140,11 @@ export function createFakeDevice({ id, prefix = "synth", initial = {} } = {}) {
 
         /* device behaviours a test can provoke */
         setLoading: (on) => { loading = !!on; },
+        /** The injectable clock. Pass as `io.now`; move it with `advance`. */
+        now: () => clock,
+        advance: (ms) => { clock += ms; return clock; },
+        /** Stop answering `is_loading` at all — what the fleet actually does. */
+        setServesIsLoading: (on) => { servesIsLoading = !!on; },
         /** Swap the loaded module, as an async load finishing with a bigger tree. */
         becomeModule: (newId) => { mod = moduleById(newId); seed(); },
         /** Rewrite the loaded module's chain_params, as a DSP does when it
@@ -127,6 +162,39 @@ export function createFakeDevice({ id, prefix = "synth", initial = {} } = {}) {
          * contract read the UI issues milliseconds later gets nothing back.
          */
         failParam: (bare, n) => { failing[bare] = { remaining: n }; },
+        /**
+         * Select something whose contract only arrives after a debounce.
+         *
+         * schwung-airwindows is the case this exists for. Writing
+         * `plugin_index` updates `selected_plugin_index` synchronously — so
+         * `plugin_name` is immediately right — but only SCHEDULES the plugin
+         * load on a worker thread, 300 ms later
+         * (clap_fx.cpp:806-822, PLUGIN_LOAD_DEBOUNCE_MS). `chain_params` is
+         * generated from `cached_param_names`, which is not rewritten until
+         * that load finishes, so for the whole debounce it reports the
+         * PREVIOUS effect.
+         *
+         * @param {Array}  after         the contract once the load lands
+         * @param {object} [o]
+         * @param {number} [o.debounceReads]  reads served stale first
+         * @param {number} [o.debounceMs]     ms of CLOCK the load takes. The
+         *                                    honest unit: 300 ms of debounce
+         *                                    plus the dlopen. Reads do not
+         *                                    move it along, which is the point.
+         * @param {Array}  [o.during]         what is served meanwhile;
+         *                                    defaults to the current contract,
+         *                                    which is what the module does.
+         *                                    Pass [] for the window in which
+         *                                    the plugin pointer is NULL.
+         */
+        stagePlugin: (after, { debounceReads = 0, debounceMs = 0, during } = {}) => {
+            staged = {
+                reads: debounceReads,
+                untilMs: clock + debounceMs,
+                during: during !== undefined ? during : (mod.chain_params || []),
+                after,
+            };
+        },
         get moduleId() { return mod.id; },
     };
 }
