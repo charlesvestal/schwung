@@ -34,10 +34,14 @@ export const GAP = 2;
  * The strip the boxes live in — right of the four slot indicators, which own
  * x 0..3.
  *
- * 120 at x=6, from 118 at x=8. The budget is tighter than it looks: the scroll
- * rails need a column on EACH side (`lay.x - 2` and `lay.x + DIAGRAM_W + 1`),
- * and the four slot indicators own x 0..3, so the strip cannot start before 6
- * without the left rail landing on them.
+ * 119 at x=7. The budget is tighter than it looks: the scroll rails need a
+ * column on EACH side (`lay.x - 2` and `lay.x + DIAGRAM_W + 1`), and the four
+ * slot indicators own x 0..3.
+ *
+ * x=6 put the left rail at 4, immediately beside the indicators with no clear
+ * column between them — reported as the rail running into the track marks. x=7
+ * leaves one dark column at 5, which is what makes them read as two separate
+ * things. DIAGRAM_W drops to 119 to keep the right rail on screen at 127.
  *
  * SETTINGS_GAP then pushes the last box to x+120..x+121, one column past the
  * strip — which is fine, and not by luck. The RIGHT RAIL and the settings box
@@ -54,8 +58,8 @@ export const GAP = 2;
  *
  * x=6 keeps two clear columns beside the indicators, and 6+122 = 128 exactly.
  */
-export const DIAGRAM_W = 120;
-export const DEFAULT_X = 6;
+export const DIAGRAM_W = 119;
+export const DEFAULT_X = 7;
 
 /**
  * 14, not the old 20: the movy header band is 7 rows against the old header's
