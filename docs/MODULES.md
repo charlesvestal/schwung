@@ -768,6 +768,74 @@ const path = stack.getPath();  // ['Main', 'Settings']
 
 For audio synthesis/processing, create a native plugin implementing the C API.
 
+### Threading: there is no control thread
+
+**Read this before writing a line of DSP.** Every plugin entry point runs on the
+SPI audio callback — SCHED_FIFO 90, core 3, ~900 µs of budget per block:
+
+| Entry point | Runs on the SPI callback? |
+|---|---|
+| `create_instance` / `destroy_instance` | **yes** |
+| `set_param` | **yes** |
+| `get_param` | **yes** |
+| `on_midi` / `process_midi` | **yes** |
+| `render_block` / `process_block` / `tick` | **yes** |
+
+There is no separate control thread, no UI thread, and no "MIDI thread". A
+2026-08 audit of all 113 catalogued modules found ~150 confirmed realtime
+violations, and several came with comments asserting the opposite — *"control
+thread only (blocking dir + file I/O)"*, *"run on the control thread, NEVER from
+process_block — so this malloc is realtime-safe"*, *"safe because it runs in the
+MIDI callback (not the RT render thread)"*. Each of those produced a
+multi-megabyte blocking operation on the audio thread.
+
+**Never, in any of the calls above:**
+
+- file I/O — `fopen`/`fread`/`fwrite`/`open`/`stat`/`opendir`/`readdir`/`mkdir`
+- allocation or free — `malloc`/`calloc`/`realloc`/`free`/`new`/`delete`
+- locks held by a non-realtime thread
+- `fork`/`exec`/`system`/`popen`/`dlopen`
+- logging, including `host->log` **and a bare `fprintf(stderr, …)`** — stderr is
+  unbuffered, so that is a `write()` syscall even when your debug flag is off
+- unbounded work: an FFT, a whole-buffer `memset`, a directory sort
+
+The symptom is not a glitch in your module: it is a **device-wide** audio
+dropout, because you are holding the thread that services every other module's
+audio and Move's own.
+
+#### Threads inherit SCHED_FIFO 90
+
+`pthread_create()` from any of those entry points gives your worker the audio
+callback's realtime priority. Move's own `Link Main` publisher runs at **FIFO
+35**, so an inherited-priority worker starves Move's audio and causes the very
+dropouts you went off-thread to avoid. Demote as the worker's first action:
+
+```c
+static void *worker(void *arg) {
+    struct sched_param sp = { .sched_priority = 0 };
+    sched_setscheduler(0, SCHED_OTHER, &sp);      /* MUST be first */
+
+    cpu_set_t set; CPU_ZERO(&set);                 /* keep core 3 free for SPI */
+    CPU_SET(0, &set); CPU_SET(1, &set); CPU_SET(2, &set);
+    sched_setaffinity(0, sizeof(set), &set);
+    ...
+}
+```
+
+References that do this correctly: `schwung-keydetect`
+(`keyfinder_wrapper.cpp`) and `schwung-airwindows` (`clap_fx.cpp`,
+`loader_thread_fn`). The audit found at least 14 modules that do not.
+
+#### What to do instead
+
+Load files, allocate buffers and build lists on your own `SCHED_OTHER` worker,
+and publish the result to the audio path as a pointer swap. Keep `get_param`
+cheap in particular — a `get_param` that rescans a directory is served on the
+audio thread **once per repaint**, not once per click, so it is worse than the
+equivalent `set_param`. Seven modules in the audit had exactly that bug.
+
+See `docs/REALTIME_SAFETY.md` for the measurements.
+
 ### Plugin API v2 (Recommended)
 
 V2 supports multiple instances and is **required for Signal Chain integration**:
