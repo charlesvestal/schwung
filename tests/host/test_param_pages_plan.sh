@@ -32,9 +32,23 @@ import("./src/shared/param_pages/page_plan.mjs").then(async (m) => {
     if (!mod) fail("fixture has no module \"" + id + "\"");
     return { mod, ...planPages({ hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params }) };
   };
+  /*
+   * Every key a page gives you a way to change -- not only knob cells.
+   *
+   * A preset browser IS the control for its list_param, and an items list IS
+   * the control for its select_param; both are richer than a knob, which is
+   * why the planner now drops a selector from knobs[] even when the module
+   * authored it there. Counting only p.keys modelled the OLD rule and would
+   * report those keys as unreachable when they are in fact the whole subject
+   * of their own page.
+   */
   const keysOf = (pages) => {
     const s = new Set();
-    for (const p of pages) for (const k of (p.keys || [])) s.add(k);
+    for (const p of pages) {
+      for (const k of (p.keys || [])) s.add(k);
+      if (p.listParam) s.add(p.listParam);
+      if (p.selectParam) s.add(p.selectParam);
+    }
     return s;
   };
 
@@ -286,6 +300,40 @@ import("./src/shared/param_pages/page_plan.mjs").then(async (m) => {
       if (r.pages[0].name !== "Params") fail(id + ": fallback page 1 is named " + r.pages[0].name);
       if (r.pages[0].keys[0] !== m.chain_params[0].key)
         fail(id + ": fallback no longer paginates in declaration order");
+    }
+  }
+
+  /* ---- a SELECTOR key never takes a knob, even when authored -----------
+   *
+   * Reported from the device: "why is preset a knob on impressive chords?"
+   * Its root level declares preset_index as list_param AND lists it first in
+   * knobs[], so it got a browser page and knob 1. knobs[] there is
+   * byte-identical to params[] -- the author listed everything rather than
+   * curating -- and the knob could not work anyway: preset_index is declared
+   * int 0..500 against 52 presets.
+   *
+   * Fleet-wide only two levels do this (impressive-chords, breakbeat) and both
+   * are the uncurated case, so dropping it costs nothing and no module loses a
+   * control: the browser page built from the same list_param is still there.
+   */
+  {
+    for (const id of ["impressive-chords", "breakbeat"]) {
+      const m = fx.modules.find((x) => x.id === id);
+      if (!m) fail(id + " is missing from the fixture");
+      const r = planPages({ hierarchy: m.ui_hierarchy, chainParams: m.chain_params });
+      const lv = (m.ui_hierarchy.levels || {}).root || {};
+      const sel = lv.list_param;
+      if (!sel) fail(id + " root no longer declares list_param; pick another module");
+      if (!(lv.knobs || []).includes(sel))
+        fail(id + " no longer authors " + sel + " as a knob; this case is gone from the fleet");
+      for (const pg of r.pages) {
+        if (pg.kind !== "knobs") continue;
+        if ((pg.keys || []).includes(sel))
+          fail(id + ": selector " + sel + " still took a knob cell on page " + pg.name);
+      }
+      /* The control is not lost -- it has its own page, from the same key. */
+      if (!r.pages.some((pg) => pg.kind === "preset" && pg.listParam === sel))
+        fail(id + ": dropping " + sel + " from the knobs also lost its browser page");
     }
   }
 
