@@ -600,10 +600,9 @@ export function createController(io = {}) {
      * whenever the module load lands just after that first probe, which is the
      * original bug rediscovered one layer up.
      *
-     * `is_loading` is the fast path and never the mechanism: a module that
-     * answers it tells us exactly when to look, so one confirming read is
-     * enough and a "1" costs a re-arm with no contract read at all. The fleet
-     * that does not implement it is unaffected and still correct.
+     * `is_loading` is the fast path and never the mechanism: while it says "1"
+     * a probe costs one cheap read and no contract read at all. It is not
+     * allowed to shorten the confirmation — see the note at the bottom.
      */
     function maybeSettleContract(reload) {
         if (!s.contractDirtyAt || now() < s.contractDirtyAt) return false;
@@ -633,9 +632,17 @@ export function createController(io = {}) {
         if (capped) { s.contractDirtyAt = 0; return true; }
         /* Still describing a module mid-load: keep probing, never plan from it. */
         if (contractLooksUnsettled()) { rearm(); return true; }
-        /* The module said it is ready, so this reading is the answer. */
-        if (loading === "0") { s.contractDirtyAt = 0; return true; }
-        /* Otherwise: two post-deadline readings that agree. */
+        /*
+         * Two post-deadline readings that agree — including when is_loading
+         * just said "0".
+         *
+         * Letting a "0" stand in for the second reading was tried and is
+         * wrong: a module can report ready while its contract is still the
+         * previous one (the fleet fake does exactly this), and then the fast
+         * path settles on the stale answer — the original bug, restored by the
+         * thing meant to avoid it. is_loading may spend FEWER reads; it may
+         * never remove a confirmation.
+         */
         if (s.contractSettleLastFp === fp) { s.contractDirtyAt = 0; return true; }
         s.contractSettleLastFp = fp;
         rearm();

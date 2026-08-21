@@ -150,10 +150,12 @@ Promise.all([
     const dev = D.createFakeDevice({ id: "clap", prefix: "fx1" });
     dev.setServesIsLoading(false);
     const ctl = openGrid(dev);
-    /* The degenerate window must OUTLAST the settle deadline, or the first
-       re-read lands after it and the guard is never asked anything. */
+    /* The degenerate window must outlast TWO probes, or the two-agree rule
+       absorbs it on its own and the guard is never asked anything. A real
+       module load blocks the callback for ~673 ms (docs/), so a window this
+       wide is not a contrivance. */
     dev.stagePlugin(contractFor("kosmos"),
-                    { debounceMs: C.CONTRACT_SETTLE_MS + 200, during: [] });
+                    { debounceMs: C.CONTRACT_SETTLE_MS * 2 + 200, during: [] });
     ctl.selectionChanged();
     settle(ctl, dev, SETTLED_MS);
     if (labels(ctl) !== want("kosmos"))
@@ -276,20 +278,25 @@ Promise.all([
            "the support latch is not holding");
   }
 
-  /* ---- 9. a module that DOES serve it settles on its ready edge --------- */
+  /* ---- 9. a module that DOES serve it is not probed while it says 1 ----- */
   {
     const dev = D.createFakeDevice({ id: "clap", prefix: "fx1" });
     const ctl = openGrid(dev);            /* serves is_loading by default */
-    const before = dev.readsFor("chain_params");
+    dev.setLoading(true);
     dev.stagePlugin(contractFor("kosmos"), { debounceMs: DEBOUNCE_MS });
     ctl.selectionChanged();
+    const before = dev.readsFor("chain_params");
+    /* While the module says it is loading, probing the contract is pointless
+       and must cost nothing but the cheap flag read. */
+    settle(ctl, dev, C.CONTRACT_SETTLE_MS * 2);
+    if (dev.readsFor("chain_params") !== before)
+      fail("a module reporting is_loading=1 was still probed for its " +
+           "contract " + (dev.readsFor("chain_params") - before) + " times");
+    /* ...and the moment it reports ready, the ordinary settle takes over. */
+    dev.setLoading(false);
     settle(ctl, dev, SETTLED_MS);
     if (labels(ctl) !== want("kosmos"))
       fail("an is_loading-serving module did not settle: " + labels(ctl));
-    /* One confirming contract read, because the module said when to look. */
-    if (dev.readsFor("chain_params") - before > 1)
-      fail("is_loading bought no read back: " +
-           (dev.readsFor("chain_params") - before) + " contract reads");
   }
 
   /* ---- 10. a load landing AFTER the first probe is still picked up ------ */
@@ -311,6 +318,77 @@ Promise.all([
       fail("THE TRAP: settled on the intermediate contract " + labels(ctl));
     if (labels(ctl) !== want("kosmos"))
       fail("did not reach the final contract: " + labels(ctl));
+  }
+
+
+  /* ---- 11. the agreement is not carried across selections -------------- */
+  {
+    /* A completed settle leaves the last reading fingerprint equal to the
+       contract now on screen. If that survives into the NEXT selection, the
+       first probe of that selection agrees with it immediately and settles on
+       the contract being replaced — the original bug, laundered through the
+       confirmation. The agreement has to start empty on every arm. */
+    const dev = D.createFakeDevice({ id: "clap", prefix: "fx1" });
+    dev.setServesIsLoading(false);
+    const ctl = openGrid(dev);
+    const SLOW = C.CONTRACT_SETTLE_MS + 200;   /* outlasts the first probe */
+
+    dev.stagePlugin(contractFor("Ensemble"), { debounceMs: SLOW });
+    ctl.selectionChanged();
+    settle(ctl, dev, SETTLED_MS);
+    if (labels(ctl) !== want("Ensemble"))
+      fail("first slow selection did not settle: " + labels(ctl));
+
+    dev.stagePlugin(contractFor("kosmos"), { debounceMs: SLOW });
+    ctl.selectionChanged();
+    settle(ctl, dev, SETTLED_MS);
+    if (labels(ctl) === want("Ensemble"))
+      fail("THE BUG: the second selection settled on the contract it was " +
+           "replacing, " + labels(ctl));
+    if (labels(ctl) !== want("kosmos"))
+      fail("second slow selection did not settle: " + labels(ctl));
+  }
+
+  /* ---- 12. the is_loading verdict is per COMPONENT, not per session ----- */
+  {
+    /* Latching "this module does not implement it" forever would mean the
+       first component you happen to open decides it for every module you open
+       afterwards. */
+    const serves = { fx1: false, fx2: true };
+    const asked = { fx1: 0, fx2: 0 };
+    const contract = JSON.stringify([
+      { key: "param_0", name: "P", type: "float", min: 0, max: 1 },
+    ]);
+    const hierarchy = JSON.stringify({
+      modes: null,
+      levels: { root: { knobs: ["param_0"], params: ["param_0"] } },
+    });
+    let clock = 0;
+    const io = {
+      getParam(key) {
+        const [pfx, bare] = [key.split(":")[0], key.split(":").slice(1).join(":")];
+        if (bare === "ui_hierarchy") return hierarchy;
+        if (bare === "chain_params") return contract;
+        if (bare === "is_loading") { asked[pfx]++; return serves[pfx] ? "0" : ""; }
+        return "0.5";
+      },
+      setParam() {}, announce() {}, now: () => clock,
+    };
+    const ctl = C.createController(io);
+    ctl.load({ slot: 0, component: "fx1", prefix: "fx1" });
+    for (let i = 0; i < 4; i++) {
+      ctl.selectionChanged();
+      for (let t = 0; t < C.CONTRACT_SETTLE_MS * 4; t += 10) { clock += 10; ctl.tick(); }
+    }
+    if (asked.fx1 > 1)
+      fail("is_loading asked " + asked.fx1 + " times on a component that answers empty");
+
+    ctl.load({ slot: 0, component: "fx2", prefix: "fx2" });
+    ctl.selectionChanged();
+    for (let t = 0; t < C.CONTRACT_SETTLE_MS * 4; t += 10) { clock += 10; ctl.tick(); }
+    if (asked.fx2 === 0)
+      fail("THE BUG: a component that DOES implement is_loading was never " +
+           "asked, because the previous one latched unsupported");
   }
 
   console.log("PASS: contract settle");
