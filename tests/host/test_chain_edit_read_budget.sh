@@ -195,8 +195,16 @@ function world() {
      not restated: a target rebuilt here would spell the keys itself, which is
      the drift the target exists to end -- and the read counts below are only
      the real ones if the real addressing is what runs. */
+  /* Declared BEFORE the target, which writes to it through setSelection. */
+  w.lastChainComponent = [];
   const slotChainTarget = lift("slotChainTarget",
-    ["chainComponentParamKey", "slotChainComponents"])(chainComponentParamKey, slotChainComponents);
+    ["chainComponentParamKey", "slotChainComponents", "chainConfigs",
+     "createEmptyChainConfig", "invalidateChainConfig", "loadChainConfigFromSlot",
+     "CHAIN_CAP", "selectedChainComponent", "lastChainComponent", "selectedSlot"])(
+    chainComponentParamKey, slotChainComponents, w.chainConfigs, createEmptyChainConfig,
+    invalidateChainConfig, loadChainConfigFromSlot, CHAIN_CAP, 0, w.lastChainComponent, 0);
+  w.slotChainTarget = slotChainTarget;
+  w.target = slotChainTarget(0);
   const chainTargetGetParam = lift("chainTargetGetParam", ["getSlotParam"])(getSlotParam);
   const chainLfoTargetMap = lift("chainLfoTargetMap", ["getSlotParam"])(getSlotParam);
   const chainComponentBypassed = lift("chainComponentBypassed",
@@ -204,14 +212,13 @@ function world() {
 
   const chainSectionPrefix = lift("chainSectionPrefix", [])();
   const writeChainShape = lift("writeChainShape",
-    ["chainSectionPrefix", "setSlotParam", "invalidateChainConfig"])(
-    chainSectionPrefix, setSlotParam, invalidateChainConfig);
+    ["chainSectionPrefix", "setSlotParam"])(chainSectionPrefix, setSlotParam);
   w.writeChainShape = writeChainShape;
 
   w.moveChainComponent = lift("moveChainComponent",
-    ["chainConfigs", "chainComponentId", "parseChainId", "chainMoveBy", "writeChainShape",
+    ["chainComponentId", "parseChainId", "chainMoveBy", "writeChainShape",
      "resetLfoTargetLabels", "invalidateKnobContextCache"])(
-    w.chainConfigs, chainComponentId, parseChainId, chainMoveBy, writeChainShape, noop, noop);
+    chainComponentId, parseChainId, chainMoveBy, writeChainShape, noop, noop);
 
   const applyPickerChoiceToChain = lift("applyPickerChoiceToChain",
     ["chainComponentId", "parseChainId", "chainRemoveAt", "setChainComponentModule",
@@ -221,7 +228,6 @@ function world() {
 
   const getSlotModuleSignature = lift("getSlotModuleSignature", ["getSlotParam", "CHAIN_CAP"])(getSlotParam, CHAIN_CAP);
 
-  w.lastChainComponent = [];
   w.slotUserCleared = [];
   /* A picker swap drops any LFO routing aimed at the position it replaces --
      see test_chain_lfo_routing_swap.sh. Lifted rather than stubbed so the
@@ -230,24 +236,21 @@ function world() {
   const clearLfoRoutingForComponent = lift("clearLfoRoutingForComponent",
     ["getSlotParam", "setSlotParam"])(getSlotParam, setSlotParam);
   const applyComponentSelectionConfirmed = lift("applyComponentSelectionConfirmed",
-    ["writeChainShape", "host_log", "setSlotParam", "print", "host_track_event",
+    ["writeChainShape", "slotChainTarget", "host_log", "setSlotParam", "print", "host_track_event",
      "loadChainConfigFromSlot", "lastSlotModuleSignatures", "getSlotModuleSignature",
      "invalidateKnobContextCache", "selectedSlot", "slotChainComponents",
      "selectedChainComponent", "lastChainComponent", "setView", "VIEWS", "needsRedraw",
      "pickerReplacedModule", "clearLfoRoutingForComponent", "getComponentParamPrefix"])(
-    writeChainShape, undefined, setSlotParam, noop, undefined,
+    writeChainShape, slotChainTarget, undefined, setSlotParam, noop, undefined,
     loadChainConfigFromSlot, [], getSlotModuleSignature,
     noop, 0, slotChainComponents, 0, w.lastChainComponent, noop, VIEWS, false,
     pickerReplacedModule, clearLfoRoutingForComponent, getComponentParamPrefix);
 
   const pend = liftBlock("let pendingChainInsert = null;", "withPendingChainInsert",
-    ["chainEditorKeyAt", "getChainComponentModule", "chainConfigs",
-     "loadChainConfigFromSlot", "selectedSlot", "slotChainComponentIndex",
-     "selectedChainComponent", "lastChainComponent"],
-    ["beginPendingChainInsert", "pendingChainInsertFor",
+    ["chainEditorKeyAt", "getChainComponentModule", "announce", "chainInsertAt"],
+    ["beginPendingChainInsert", "beginChainInsertFromAddBox", "pendingChainInsertFor",
      "cancelPendingChainInsert", "withPendingChainInsert"])(
-    chainEditorKeyAt, getChainComponentModule, w.chainConfigs,
-    loadChainConfigFromSlot, 0, slotChainComponentIndex, 0, w.lastChainComponent);
+    chainEditorKeyAt, getChainComponentModule, noop, chainInsertAt);
   Object.assign(w, pend);
 
   /* availableModules / selectedModuleIndex are what the picker was showing when
@@ -261,7 +264,8 @@ function world() {
     ["slotChainComponents", "selectedSlot", "selectedChainComponent", "availableModules",
      "selectedModuleIndex", "isChainModuleKey", "setView", "VIEWS", "getChainComponentModule",
      "chainConfigs", "enterPresetBrowser", "getComponentParamPrefix", "enterStorePicker",
-     "moveChainComponent", "slotChainComponentIndex", "chainEditorKeyAt", "lastChainComponent",
+     "moveChainComponent", "slotChainTarget", "slotChainComponentIndex", "chainEditorKeyAt",
+     "lastChainComponent",
      "announce", "needsRedraw", "createEmptyChainConfig", "applyPickerChoiceToChain",
      "invalidateChainConfig", "slotUserCleared", "chainHasAnyModule", "resetLfoTargetLabels",
      "chainComponentParamKey", "host_get_module_metadata", "host_log",
@@ -271,7 +275,8 @@ function world() {
     slotChainComponents, 0, w.picker.selectedChainComponent, w.picker.availableModules,
     w.picker.selectedModuleIndex, isChainModuleKey, noop, VIEWS, getChainComponentModule,
     w.chainConfigs, noop, getComponentParamPrefix, noop,
-    w.moveChainComponent, slotChainComponentIndex, chainEditorKeyAt, w.lastChainComponent,
+    w.moveChainComponent, slotChainTarget, slotChainComponentIndex, chainEditorKeyAt,
+    w.lastChainComponent,
     noop, false, createEmptyChainConfig, applyPickerChoiceToChain,
     invalidateChainConfig, w.slotUserCleared, chainHasAnyModule, noop,
     chainComponentParamKey, undefined, undefined,
@@ -299,17 +304,12 @@ function world() {
     const close = at >= 0 ? src.indexOf("\n                }", at) : -1;
     if (close < 0) fail("the `+` click handler is gone from the CHAIN_EDIT switch");
     else {
-      const deps = ["chainConfigs", "createEmptyChainConfig", "CHAIN_CAP", "announce",
-                    "selectedSlot", "beginPendingChainInsert", "chainInsertAt",
-                    "invalidateChainConfig", "enterComponentSelect",
-                    "slotChainComponentIndex", "chainEditorKeyAt"];
+      const deps = ["beginChainInsertFromAddBox", "slotChainTarget", "selectedSlot",
+                    "enterComponentSelect"];
       w.clickAdd = new Function(...deps,
         "return function(comp) { switch (1) { case 1:\n" +
         src.slice(at, close + 18) + "\n} };")(
-        w.chainConfigs, createEmptyChainConfig, CHAIN_CAP, noop,
-        0, pend.beginPendingChainInsert, chainInsertAt,
-        invalidateChainConfig, enterComponentSelect,
-        slotChainComponentIndex, chainEditorKeyAt);
+        pend.beginChainInsertFromAddBox, slotChainTarget, 0, enterComponentSelect);
     }
   }
   /*
@@ -490,7 +490,7 @@ function loadSlot(w, opts) {
   const w = world();
   loadSlot(w, { fx: ["freeverb", "cloudseed", "tapescam"] });
   if (w.screen() !== "sf2,freeverb,cloudseed,tapescam") fail("B1 setup: " + w.screen());
-  if (!w.moveChainComponent(0, "fx1", 1)) fail("B1: the move was refused");
+  if (!w.moveChainComponent(w.target, "fx1", 1)) fail("B1: the move was refused");
   if (w.screen() !== "sf2,cloudseed,freeverb,tapescam")
     fail("B1: the editor still draws the OLD order after a reorder: " + w.screen());
 }
@@ -508,7 +508,7 @@ function loadSlot(w, opts) {
   const before = w.chainConfigFresh[0];
   if (before !== true) fail("B2 setup: the draw did not mark the slot fresh");
   const prev = w.chainConfigs[0].fx.slice();
-  if (!w.moveChainComponent(0, "fx1", 1)) fail("B2: the move was refused");
+  if (!w.moveChainComponent(w.target, "fx1", 1)) fail("B2: the move was refused");
   const moduleWrites = Object.keys(w.state).filter((k) => /_module$/.test(k)).length;
   if (w.state["fx1_module"] !== "freeverb" || w.state["fx2_module"] !== "freeverb")
     fail("B2 setup: the two positions should still hold the same module");
@@ -844,21 +844,21 @@ const sectionOf = (w, prefix) => {
   loadSlot(w, { midiFx: ["arp"] });
   w.screen();
   w.pressAdd("midiFx");
-  if (!w.pendingChainInsertFor(0, "midiFx"))
+  if (!w.pendingChainInsertFor(w.target, "midiFx"))
     fail("D7d: the `+` did not record a pending insert at all");
-  if (w.pendingChainInsertFor(1, "midiFx"))
+  if (w.pendingChainInsertFor(w.slotChainTarget(1), "midiFx"))
     fail("D7d: another SLOT pick adopted this slot pending insert");
-  if (w.pendingChainInsertFor(0, "midi_fx2"))
+  if (w.pendingChainInsertFor(w.target, "midi_fx2"))
     fail("D7d: another POSITION adopted the pending insert");
   /* An empty position in the OTHER section is the case the emptiness guard
      cannot catch on its own -- nothing is loaded there either, so only the key
      says this record is not about it. */
-  if (w.pendingChainInsertFor(0, "fx1"))
+  if (w.pendingChainInsertFor(w.target, "fx1"))
     fail("D7d: a position in the other SECTION adopted the pending insert");
   /* Anything that reloaded the slot underneath the picker has already dropped
      the hole; the record left behind would be a lie. */
   w.chainConfigs[0].midiFx[0] = { module: "chord", params: {} };
-  if (w.pendingChainInsertFor(0, "midiFx"))
+  if (w.pendingChainInsertFor(w.target, "midiFx"))
     fail("D7d: the pending insert was claimed for a position that is no longer empty");
 }
 

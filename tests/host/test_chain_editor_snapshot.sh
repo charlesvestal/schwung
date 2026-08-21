@@ -34,6 +34,16 @@ cd "$(dirname "$0")/../.."
 # are deliberately the same card payload on both screens: they must differ only
 # in what is BEHIND the card.
 #
+# Step 4e made Master FX a VARIABLE-LENGTH chain, so all 19 remaining master/
+# cases moved: the row is the loaded chain, one `+`, and Settings, instead of a
+# fixed run of cap boxes with the unloaded ones drawn empty. That is the change
+# the step exists for -- an empty Master FX showed eight boxes of nothing -- and
+# it is a reviewed refresh again, read case by case first. Two cases were
+# DELETED rather than refreshed because the state they named no longer exists
+# (an empty position past the end of the chain), and eight were added for the
+# states that now do. Again: ZERO chain/ hashes moved with them, which is what
+# says the screen that was not supposed to move did not.
+#
 # HOW THE SCREENS ARE DRIVEN
 #   drawChainEdit  is LIFTED out of shadow_ui.js with `new Function` and an
 #                  explicit dependency list, the technique
@@ -253,15 +263,24 @@ function renderChain(c) {
 /* ======================================================================== */
 
 const MASTER_FX_SLOTS = 8;
-const MASTER_FX_CHAIN_COMPONENTS = (function () {
-  const comps = [];
-  for (let i = 0; i < MASTER_FX_SLOTS; i++)
-    comps.push({ key: "fx" + (i + 1), kind: "fx", label: "FX " + (i + 1),
-                 position: i, paramPrefix: "master_fx:fx" + (i + 1) + ":" });
-  comps.push({ key: "settings", kind: "settings", label: "Settings",
-               position: MASTER_FX_SLOTS, paramPrefix: "" });
-  return comps;
-})();
+
+/*
+ * The Master FX component list is DERIVED from the chain now, not from the cap
+ * -- `count` modules, then one `+`, then Settings -- so it is built here by the
+ * SAME two functions the device builds it with (masterFxChainConfig and
+ * chainEditorComponents, both lifted) rather than by a fixed table. A fixed
+ * table here would keep snapshotting the eight empty boxes that step 4e exists
+ * to remove.
+ */
+const chainEditorComponents = lift("chainEditorComponents", ["chainComponents"])(chainComponents);
+function masterComponents(config) {
+  const held = { c: config };
+  const decls = new Function("masterFxConfig", "MASTER_FX_SLOTS",
+    uiSrc.slice(uiSrc.indexOf("let masterFxChainLength = -1;"),
+                uiSrc.indexOf("\n}\n", uiSrc.indexOf("function masterFxChainConfig("))) +
+    "\n}\nreturn masterFxChainConfig;")(held.c, MASTER_FX_SLOTS);
+  return chainEditorComponents(decls(), { hasSynth: false, hasMidiFx: false });
+}
 
 /* drawMasterFx takes its shared state through ctx, so the state goes in
    directly. The six sibling draws it can early-return into are supplied as
@@ -305,6 +324,10 @@ function renderMaster(c) {
     ["chainTargetGetParam"])(mChainTargetGetParam);
   const mfxCtx = {
     MASTER_CHAIN_TARGET: mTarget,
+    /* Derived per case, from that case`s config. */
+    MASTER_FX_CHAIN_COMPONENTS: masterComponents(c.config),
+    ensureMasterFxConfigFresh: () => {},
+    isShiftHeld: () => !!c.shift,
     chainLfoTargetMap: mLfoMap,
     chainComponentBypassed: mBypassed,
     masterShowingNamePreview: false, masterConfirmingOverwrite: false,
@@ -313,7 +336,6 @@ function renderMaster(c) {
     selectingMasterFxModule: false,
     selectedMasterFxComponent: c.sel,
     masterFxConfig: c.config,
-    MASTER_FX_CHAIN_COMPONENTS,
     MASTER_FX_OPTIONS: c.options || [],
     currentMasterPresetName: c.presetName || "",
     getMasterFxParam: (i, key) =>
@@ -482,12 +504,23 @@ addChain("chain/len2/knob-card-strip", Object.assign({ selKey: "fx1",
 const masterCases = [];
 const addMaster = (id, o) => {
   const config = {};
+  for (let i = 1; i <= MASTER_FX_SLOTS; i++) config["fx" + i] = { module: "" };
   (o.modules || []).forEach((m, i) => { if (m) config["fx" + (i + 1)] = { module: m }; });
   let sel = o.sel;
-  if (typeof sel === "string") sel = MASTER_FX_CHAIN_COMPONENTS.findIndex((c) => c.key === sel);
-  if (sel === undefined || sel < -1) fail("master case " + id + " has no selection");
+  /* Resolved by KEY against THIS case`s list, because the list is only as long
+     as the chain: `settings` is at index 2 on an empty Master FX and at index 9
+     on a full one. An index baked into a case name would drift with it. */
+  if (typeof sel === "string") {
+    sel = masterComponents(config).findIndex((c) => c.key === sel);
+    /* -1 is the PRESET row, so a key that resolves to it is a case naming a box
+       that is not there -- which is how "sel-fx1 on an empty chain" would have
+       gone on quietly snapshotting the preset row instead. */
+    if (sel < 0) fail("master case " + id + " names a component that does not exist: " + o.sel);
+  }
+  if (sel === undefined || sel < -1)
+    fail("master case " + id + " has no selection");
   masterCases.push({ id, sel, config, state: o.extra || {},
-                     card: o.card || null,
+                     card: o.card || null, shift: !!o.shift,
                      presetName: o.presetName || "",
                      options: o.options || [{ id: "cloudseed", name: "CloudSeed" }] });
 };
@@ -496,11 +529,14 @@ const M2 = ["freeverb", "cloudseed"];
 const M5 = ["freeverb", "cloudseed", "tapescam", "psxverb", "freeverb"];
 const M8 = rep(8, "cloudseed");
 
-addMaster("master/len0/sel-fx1",      { modules: [], sel: "fx1" });
+/* NOTE: there is no `master/len0/sel-fx1` any more, and no
+   `master/len1/sel-fx2-empty`. Both named an EMPTY POSITION past the end of the
+   chain, which is exactly what step 4e removed: a Master FX holding one module
+   has one module box and a `+`, not eight boxes with seven of them blank. Their
+   replacements are the sel-add-fx cases below. */
 addMaster("master/len0/sel-settings", { modules: [], sel: "settings" });
 addMaster("master/len0/sel-preset",   { modules: [], sel: -1 });
 addMaster("master/len1/sel-fx1",      { modules: ["freeverb"], sel: "fx1" });
-addMaster("master/len1/sel-fx2-empty",{ modules: ["freeverb"], sel: "fx2" });
 addMaster("master/len2/sel-fx1",      { modules: M2, sel: "fx1" });
 addMaster("master/len2/sel-fx2",      { modules: M2, sel: "fx2" });
 addMaster("master/len5/sel-fx1",      { modules: M5, sel: "fx1" });
@@ -551,6 +587,26 @@ addMaster("master/len5/knob-card", { modules: M5, sel: "fx4",
           metaIndex: null, values: null, viz: null, modulated: null } });
 addMaster("master/len2/knob-card-strip", { modules: M2, sel: "fx1",
   card: FULL_CARD });
+
+/* --- the variable-length chain (4e) -------------------------------------- *
+ *
+ * The states that did not exist before: a chain shorter than the cap ENDS, and
+ * the box after its last module is a `+` rather than the sixth of eight empty
+ * ones. An empty Master FX is two boxes. And Shift now means MOVE here, so the
+ * footer changes under it the way the slot editor`s does.
+ */
+addMaster("master/len0/sel-add-fx",   { modules: [], sel: "add_fx" });
+addMaster("master/len1/sel-add-fx",   { modules: ["freeverb"], sel: "add_fx" });
+addMaster("master/len2/sel-add-fx",   { modules: M2, sel: "add_fx" });
+/* At the cap the `+` is still offered -- and still refused, with an
+   announcement, by beginChainInsertFromAddBox. The slot chain draws its `+` at
+   its own cap too (chain/full/sel-add-fx), and a Master FX that hid it there
+   would be a difference between the two editors for no reason. */
+addMaster("master/len8/sel-add-fx",   { modules: M8, sel: "add_fx" });
+addMaster("master/len2/shift",        { modules: M2, sel: "fx1", shift: true });
+addMaster("master/len5/shift",        { modules: M5, sel: "fx3", shift: true });
+addMaster("master/len8/shift",        { modules: M8, sel: "fx8", shift: true });
+addMaster("master/len0/shift",        { modules: [], sel: "add_fx", shift: true });
 
 /* ======================================================================== */
 /* RENDER, FLOOR, HASH                                                       */
@@ -657,6 +713,11 @@ if (process.env.UPDATE_CHAIN_EDITOR_BASELINE) {
     "# did not. Any FURTHER master/ movement is a regression again.",
     "#",
     "# Step 4b ADDED the four knob-card cases below and moved NONE.",
+    "#",
+    "# Step 4e made Master FX a variable-length chain: every master/ hash moved,",
+    "# two cases naming an empty position past the end of the chain were deleted,",
+    "# and eight were added for the `+` box and the Shift footer. Reviewed case by",
+    "# case, and NO chain/ hash moved with them.",
     "#",
     "# A mismatch names which case moved, and the runner prints the render.",
     "#",

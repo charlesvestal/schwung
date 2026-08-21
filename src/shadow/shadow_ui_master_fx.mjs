@@ -39,8 +39,7 @@ import {
 
 export function enterMasterFxSettings() {
     const { scanForAudioFxModules, loadMasterFxChainConfig,
-            getMasterFxSlotModule, MASTER_FX_CHAIN_COMPONENTS,
-            setView, VIEWS } = ctx;
+            getMasterFxSlotModule, setView, VIEWS } = ctx;
 
     ctx.MASTER_FX_OPTIONS = scanForAudioFxModules();
     loadMasterFxChainConfig();
@@ -49,9 +48,14 @@ export function enterMasterFxSettings() {
     setView(VIEWS.MASTER_FX);
     ctx.needsRedraw = true;
 
-    const comp = MASTER_FX_CHAIN_COMPONENTS[0];
-    const moduleName = getMasterFxSlotModule(0) || "Empty";
-    announce(`Master FX, ${comp.label} ${moduleName}`);
+    /* READ AFTER the load: the component list is derived from the chain, so it
+     * is only as long as what was just loaded. On an empty chain position 0 is
+     * the `+`, whose label already is the whole instruction — "Add FX, Empty"
+     * would say nothing. */
+    const comp = ctx.MASTER_FX_CHAIN_COMPONENTS[0];
+    if (!comp) announce("Master FX");
+    else if (comp.kind === "add") announce(`Master FX, ${comp.label}`);
+    else announce(`Master FX, ${comp.label} ${getMasterFxSlotModule(0) || "Empty"}`);
 }
 
 /* ---- Display name (used in slot list) ----------------------------------- */
@@ -78,11 +82,12 @@ export function drawMasterFx() {
             masterConfirmingDelete, helpDetailScrollState, helpNavStack,
             inMasterPresetPicker, inMasterFxSettingsMenu,
             selectingMasterFxModule, selectedMasterFxComponent,
-            masterFxConfig, MASTER_FX_CHAIN_COMPONENTS, MASTER_FX_OPTIONS,
+            masterFxConfig, MASTER_FX_OPTIONS,
             currentMasterPresetName, getMasterFxParam,
             getModuleAbbrev, isTextEntryActive, drawTextEntry,
             drawHelpDetail, drawHelpList,
             MASTER_CHAIN_TARGET, chainLfoTargetMap, chainComponentBypassed,
+            ensureMasterFxConfigFresh, isShiftHeld,
             knobCardDrawState } = ctx;
 
     clear_screen();
@@ -151,6 +156,20 @@ export function drawMasterFx() {
      * because Master FX still wore the taller menu_layout header when the slot
      * editor moved to the movy band; nothing chose the gap. DIAGRAM_Y is the
      * diagram's own default, so neither screen restates it. */
+    /*
+     * The chain, reloaded from the DSP only when something has made it stale —
+     * a shape edit renumbers the positions underneath the editor without
+     * changing WHICH modules it holds, so nothing keyed on a module id would
+     * notice. Here rather than higher up because the `+` box materialises a
+     * position in the MODEL ONLY, and the picker draws through one of the early
+     * returns above: reloading before them would wipe the pending position out
+     * from under the picker that was just opened on it.
+     */
+    ensureMasterFxConfigFresh();
+    /* AFTER the reload, and through the ctx getter, so the list is as long as
+     * the chain actually is. */
+    const MASTER_FX_CHAIN_COMPONENTS = ctx.MASTER_FX_CHAIN_COMPONENTS;
+
     const BOX_Y = DIAGRAM_Y;
     /* Centred, unlike the slot editor, which shifts right to clear its
      * slot-indicator column. THIS difference is real and stays: Master FX is
@@ -185,17 +204,19 @@ export function drawMasterFx() {
         /* Selecting the preset row lights the whole chain, as it always has. */
         allSelected: presetSelected,
         abbrev: (comp) => {
+            if (comp.kind === "add") return "+";
             if (comp.kind === "settings") return "*";
             /* masterFxConfig is the cached copy the editor already holds — no
              * IPC here. Nothing in this list is `kind: "synth"`, so no box gets
              * the synth band: Master FX has no synth to landmark. */
             const moduleData = masterFxConfig[comp.key];
-            return moduleData ? getModuleAbbrev(moduleData.module) : "--";
+            return (moduleData && moduleData.module) ? getModuleAbbrev(moduleData.module) : "--";
         },
         marks: (comp) => {
-            /* The settings box is not an FX slot: it has no bypass parameter
-             * and cannot be an LFO target, so it must never be asked. */
-            if (comp.kind === "settings") return null;
+            /* Neither the settings box nor the `+` is an FX position: neither
+             * has a bypass parameter and neither can be an LFO target, so
+             * neither must ever be asked. */
+            if (comp.kind !== "module") return null;
             const lfo = mfxLfoTargets[comp.key];
             /* One read per DRAWN box — at most the diagram capacity, five —
              * rather than one per slot. The loop this came from ran the whole
@@ -222,7 +243,9 @@ export function drawMasterFx() {
          * thing rather than one position in it", which is why they share the
          * band — they just name different objects. */
         infoLine = currentMasterPresetName || "(no preset)";
-    } else if (selectedComp && selectedComp.key !== "settings") {
+    } else if (selectedComp && selectedComp.kind === "add") {
+        infoLine = "New effect";
+    } else if (selectedComp && selectedComp.kind === "module") {
         const moduleData = masterFxConfig[selectedComp.key];
         if (moduleData && moduleData.module) {
             const opt = MASTER_FX_OPTIONS.find(o => o.id === moduleData.module);
@@ -233,7 +256,7 @@ export function drawMasterFx() {
         } else {
             infoLine = "(empty)";
         }
-    } else if (selectedComp && selectedComp.key === "settings") {
+    } else if (selectedComp && selectedComp.kind === "settings") {
         infoLine = "Configure master FX";
     }
 
@@ -250,19 +273,24 @@ export function drawMasterFx() {
      * for the movy band.
      *
      * FOOTER. Master FX had none at all, so nothing on the screen said what the
-     * jog or the click did. These are the gestures it ACTUALLY has today:
-     * handleJog moves the selection (it ignores Shift here — the reorder
-     * gesture is 4e, and a JOG MOVE hint before then would be a lie),
-     * handleSelect opens the picker / settings / preset list, and Back at this
-     * level calls shadow_request_exit — it leaves shadow mode entirely, same as
-     * the chain editor, so the word is EXIT and not OUT.
+     * jog or the click did. handleJog moves the selection, handleSelect opens
+     * the picker / settings / preset list, and Back at this level calls
+     * shadow_request_exit — it leaves shadow mode entirely, same as the chain
+     * editor, so the word is EXIT and not OUT.
+     *
+     * The hints follow the modifier, exactly as the slot editor`s do, because
+     * Shift silently repurposes the jog into a reorder: a move gesture with a
+     * footer still reading SEL is a gesture nobody finds. 4a-3 left this pair
+     * out deliberately — the gesture did not exist then. It does now.
      */
     drawChainEditorBands(dctx, {
         headerLeft: currentMasterPresetName || "Master FX",
         headerRight: "MFX",
         label,
         info: infoLine,
-        hints: [["JOG", "SEL"], ["CLK", "OPEN"], ["BACK", "EXIT"]],
+        hints: isShiftHeld()
+            ? [["JOG", "MOVE"], ["BACK", "EXIT"]]
+            : [["JOG", "SEL"], ["CLK", "OPEN"], ["BACK", "EXIT"]],
     });
 
     /*
@@ -326,25 +354,27 @@ function drawMasterFxSettingsMenu() {
 
 function drawMasterFxModuleSelect() {
     const { selectedMasterFxComponent, MASTER_FX_CHAIN_COMPONENTS,
-            MASTER_FX_OPTIONS, selectedMasterFxModuleIndex,
+            masterFxPickerItems, selectedMasterFxModuleIndex,
             masterFxConfig } = ctx;
 
     const comp = MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
     drawHeader(`Select ${comp ? comp.label : "FX"}`);
 
-    if (MASTER_FX_OPTIONS.length === 0) {
+    /* The picker`s OWN rows — the modules plus this position`s Move Left /
+     * Move Right — not the raw module scan. */
+    if (masterFxPickerItems.length === 0) {
         print(LIST_LABEL_X, LIST_TOP_Y, "No FX modules available", 1);
         return;
     }
 
     drawMenuList({
-        items: MASTER_FX_OPTIONS,
+        items: masterFxPickerItems,
         selectedIndex: selectedMasterFxModuleIndex,
         listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
         getLabel: (item) => item.name,
         getValue: (item) => {
-            const currentModule = masterFxConfig[comp.key]?.module || "";
-            return item.id === currentModule ? "*" : "";
+            const currentModule = comp ? (masterFxConfig[comp.key]?.module || "") : "";
+            return (currentModule && item.id === currentModule) ? "*" : "";
         }
     });
     drawFooter({left: "Back: cancel", right: "Click: apply"});

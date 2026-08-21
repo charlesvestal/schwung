@@ -69,30 +69,62 @@ if (fails.length) {
 }
 const block = jsSrc.slice(startIdx, endIdx);
 
-/* MASTER_CHAIN_TARGET.key parses a position id with the chain model parseId,
- * so the real one is lifted out of chain_model.mjs rather than restated here —
- * a second copy of "what fx3 means" is the drift this file exists to catch. */
+/* The chain MODEL, evaluated whole: MASTER_CHAIN_TARGET.key parses a position
+ * id with parseId, and the Master FX component list is now DERIVED from
+ * chainComponents through the same chainEditorComponents the slot chain uses.
+ * Both are taken from source rather than restated here — a second copy of
+ * "what fx3 means" is the drift this file exists to catch. */
 const modelSrc = fs.readFileSync("src/shared/chain_model.mjs", "utf8");
-const parseIdAt = modelSrc.indexOf("export function parseId(");
-check(parseIdAt >= 0, "could not find parseId in src/shared/chain_model.mjs");
-const parseIdSrc = modelSrc.slice(parseIdAt, modelSrc.indexOf("\n}\n", parseIdAt) + 2)
-    .replace("export function", "function");
-const parseChainId = new Function(parseIdSrc + "\nreturn parseId;")();
+const model = new Function(modelSrc.replace(/^export /gm, "") +
+    "\nreturn { parseId, chainComponents };")();
+const parseChainId = model.parseId;
 
-const decls = new Function("parseChainId", block + `
-    return { MASTER_FX_SLOTS, MASTER_FX_CHAIN_COMPONENTS,
-             MASTER_FX_SETTINGS_INDEX, masterFxConfig, makeEmptyMasterFxConfig,
-             masterFxComponentKey, MASTER_CHAIN_TARGET };
-`)(parseChainId);
+/* chainEditorComponents is in shadow_ui.js, not in the block, so it is lifted
+ * separately and handed in — the block calls it to build the Master FX list. */
+const ceAt = jsSrc.indexOf("function chainEditorComponents(");
+check(ceAt >= 0, "chainEditorComponents is gone from " + JS);
+const chainEditorComponents = new Function("chainComponents",
+    jsSrc.slice(ceAt, jsSrc.indexOf("\n}\n", ceAt) + 2) +
+    "\nreturn chainEditorComponents;")(model.chainComponents);
+
+const decls = new Function("parseChainId", "chainEditorComponents", block + `
+    return { MASTER_FX_SLOTS, masterFxChainComponents, masterFxChainConfig,
+             setMasterFxChainConfig, masterFxConfig, makeEmptyMasterFxConfig,
+             masterFxComponentKey, MASTER_CHAIN_TARGET,
+             setConfig: (c) => { masterFxConfig = c; } };
+`)(parseChainId, chainEditorComponents);
 
 check(decls.MASTER_FX_SLOTS === cap, "evaluated MASTER_FX_SLOTS !== parsed cap");
 
-/* ---- 3. MASTER_FX_CHAIN_COMPONENTS ------------------------------------ */
+/* ---- 3. the component list is the CHAIN, not the cap ------------------ */
 
-const comps = decls.MASTER_FX_CHAIN_COMPONENTS;
-check(Array.isArray(comps), "MASTER_FX_CHAIN_COMPONENTS is not an array");
-check(comps.length === cap + 1,
-    "MASTER_FX_CHAIN_COMPONENTS has " + comps.length + " entries, expected cap+1 = " + (cap + 1));
+/* THE POINT OF STEP 4e. A Master FX holding nothing must show ONE `+` box and
+ * a Settings box, not `cap` empty ones: a fixed array of empty positions
+ * communicates nothing, and at the 8 cap it is eight boxes of nothing. */
+{
+    const comps = decls.masterFxChainComponents();
+    check(comps.length === 2,
+        "an EMPTY Master FX draws " + comps.length + " boxes; it must draw two — " +
+        "the `+` and Settings");
+    check(comps[0] && comps[0].kind === "add",
+        "the first box of an empty Master FX is " + JSON.stringify(comps[0] && comps[0].kind) +
+        ", expected the `+`");
+    check(comps[0] && comps[0].label === "Add FX",
+        "the `+` announces as " + JSON.stringify(comps[0] && comps[0].label) +
+        " — `+` read aloud is nothing at all");
+    check(comps[1] && comps[1].key === "settings", "the second box is not Settings");
+}
+
+/* And a FULL one is cap modules, then the `+`, then Settings — the same shape
+ * the slot chain's audio-FX section has at its own cap. */
+decls.setConfig((() => {
+    const c = decls.makeEmptyMasterFxConfig();
+    for (let i = 1; i <= cap; i++) c["fx" + i] = { module: "freeverb" };
+    return c;
+})());
+const comps = decls.masterFxChainComponents();
+check(comps.length === cap + 2,
+    "a full Master FX has " + comps.length + " boxes, expected cap+2 = " + (cap + 2));
 
 for (let i = 0; i < cap; i++) {
     const c = comps[i] || {};
@@ -101,21 +133,37 @@ for (let i = 0; i < cap; i++) {
     check(c.label === "FX " + (i + 1),
         "component " + i + " label is " + JSON.stringify(c.label));
     check(c.position === i, "component " + i + " position is " + c.position);
-    check(c.paramPrefix === "master_fx:fx" + (i + 1) + ":",
-        "component " + i + " paramPrefix is " + JSON.stringify(c.paramPrefix));
+    check(c.kind === "module", "component " + i + " kind is " + JSON.stringify(c.kind));
+    /* NEVER "synth": the diagram paints a filled band across the top of a synth
+     * box as the landmark its scroll leans on, and Master FX has none. */
+    check(c.kind !== "synth", "component " + i + " claims to be a synth");
 }
 
 const last = comps[comps.length - 1] || {};
 check(last.key === "settings", "last component key is " + JSON.stringify(last.key) + ", expected settings");
-check(last.position === cap, "settings component position is " + last.position + ", expected " + cap);
-check(last.paramPrefix === "", "settings component has a non-empty paramPrefix");
+check(last.position === cap + 1, "settings component position is " + last.position);
+check(comps[cap] && comps[cap].kind === "add",
+    "a full Master FX does not draw its `+` — the slot chain draws one at its cap too");
 
 check(!comps.some(c => c.key === "fx" + (cap + 1)),
     "a component is keyed fx" + (cap + 1) + " — one past the cap");
 
-check(decls.MASTER_FX_SETTINGS_INDEX === comps.length - 1,
-    "MASTER_FX_SETTINGS_INDEX is " + decls.MASTER_FX_SETTINGS_INDEX +
-    ", expected the last component index " + (comps.length - 1));
+/* A hole in FRONT of a loaded module is KEPT, and trailing empties are dropped:
+ * position i of this list IS fx(i+1) in the DSP, so compacting a hole away on
+ * READ would leave the editor addressing fx1 params while the audio ran through
+ * fx2. Same rule loadChainConfigFromSlot follows for a slot chain. */
+{
+    const c = decls.makeEmptyMasterFxConfig();
+    c.fx1 = { module: "freeverb" };
+    c.fx3 = { module: "cloudseed" };
+    decls.setConfig(c);
+    const held = decls.masterFxChainComponents();
+    check(held.length === 5,
+        "a chain with a hole at fx2 draws " + held.length + " boxes, expected 5");
+    check(held[1] && !held[1].module, "the hole at fx2 was compacted away on READ");
+    check(held[2] && held[2].key === "fx3", "the module after the hole is not fx3");
+}
+decls.setConfig(decls.makeEmptyMasterFxConfig());
 
 /* ---- 4. masterFxConfig keys ------------------------------------------- */
 
@@ -165,8 +213,10 @@ if (mfxTarget) {
         "MASTER_CHAIN_TARGET builds a param key for a synth it does not have");
     check(mfxTarget.key("midi_fx1", "cutoff") === null,
         "MASTER_CHAIN_TARGET builds a param key for a MIDI FX it does not have");
-    check(mfxTarget.components().length === comps.length,
-        "MASTER_CHAIN_TARGET.components() is not MASTER_FX_CHAIN_COMPONENTS");
+    check(mfxTarget.components().length === decls.masterFxChainComponents().length,
+        "MASTER_CHAIN_TARGET.components() is not the Master FX component list");
+    check(typeof mfxTarget.cap === "function" && mfxTarget.cap("fx") === cap,
+        "MASTER_CHAIN_TARGET.cap does not report the shim array size");
 }
 
 /* 5b. Non-vacuity: the index-taking accessors must actually route through it,
@@ -255,6 +305,7 @@ if (fails.length) {
     for (const f of fails) console.error("FAIL: " + f);
     process.exit(1);
 }
-console.log("PASS: Master FX JS cap derived (" + cap + "), components/config/bounds " +
-    "consistent, no hand-enumerated literals remain");
+console.log("PASS: Master FX JS cap derived (" + cap + "), the component list is the CHAIN " +
+    "rather than the cap (empty draws one `+`, full draws " + (cap + 2) + " boxes), " +
+    "config/bounds consistent, no hand-enumerated literals remain");
 NODE
