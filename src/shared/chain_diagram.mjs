@@ -134,23 +134,24 @@ function outline(ctx, x, y, w, h, color, dash) {
  * where a gear turns into a dotted ring or a solid blob, and it still reads
  * when the box inverts under selection.
  *
- * 12 wide because 22 minus an even width centres exactly. Three 4px knobs
- * cannot make an even total with odd gaps, so the knobs are flush (0-3, 4-7,
- * 8-11) and the tracks sit at 1, 5 and 9. The knobs are at different heights
- * on purpose: level faders read as a picture of nothing.
+ * 11 wide and therefore half a pixel off centre in a 22px box, deliberately.
+ * A symmetric icon with a CENTRAL element — the middle fader — wants an odd
+ * width, and odd inside even can never be exact. Widening the icon would move
+ * the middle fader off its own centre, which is the more visible error; the
+ * alternative was a 21px box, which fits but would move every label and every
+ * snapshot to buy half a pixel.
  */
 const SETTINGS_ICON = [
-    ".#...#...#..",
-    ".#...#...#..",
-    ".#...#...#..",
-    ".#..####.#..",
-    ".#...#...#..",
-    ".#...#..####",
-    ".#...#...#..",
-    "####.#...#..",
-    ".#...#...#..",
-    ".#...#...#..",
-    ".#...#...#..",
+    ".#...#...#.",
+    ".#..###..#.",
+    ".#..#.#..#.",
+    ".#..###..#.",
+    ".#...#...#.",
+    ".#...#...#.",
+    "###..#..###",
+    "#.#..#..#.#",
+    "###..#..###",
+    ".#...#...#.",
 ];
 const SETTINGS_ICON_W = SETTINGS_ICON[0].length;
 const SETTINGS_ICON_H = SETTINGS_ICON.length;
