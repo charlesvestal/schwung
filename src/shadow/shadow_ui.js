@@ -1438,6 +1438,104 @@ const MASTER_FX_CHAIN_COMPONENTS = (function () {
  * slot cap, so gates on the selection use this and not MASTER_FX_SLOTS. */
 const MASTER_FX_SETTINGS_INDEX = MASTER_FX_CHAIN_COMPONENTS.length - 1;
 
+/* ============================================================================
+ * CHAIN TARGETS — which chain an editor operation is talking about
+ * ============================================================================
+ *
+ * There are two chain editors in this file and they are the SAME SCREEN wearing
+ * two implementations. That is not an aesthetic complaint: features land in one
+ * and not the other, one reasonable-sounding scope boundary at a time. The knob
+ * card went in on 2026-08-20 for the slot chain only, so a Master FX knob still
+ * raises the old `Value: 0.62` box — one day of drift. Master FX had no
+ * windowed scroll until three commits ago, and it still has no reorder.
+ *
+ * The two differ in exactly TWO things:
+ *
+ *   | | Slot chain                  | Master FX                             |
+ *   | param key | "fx1:cutoff" @ slot N | "master_fx:fx1:cutoff" @ slot 0     |
+ *   | components| slotChainComponents(N) | MASTER_FX_CHAIN_COMPONENTS         |
+ *
+ * plus which SECTIONS exist, which is what `hasSynth` / `hasMidiFx` state.
+ *
+ * Branch on those CAPABILITIES, never on `kind`. A shared function containing
+ * `if (target.kind === "master") return;` drifts exactly as well as two
+ * functions did, and states no reason for the difference.
+ *
+ * `slot` is the IPC slot index: N for a slot chain, and 0 for Master FX — by
+ * convention only. Master FX is NOT instrument slot 0; its keys are merely
+ * addressed there. Never conflate it with selectedSlot.
+ */
+
+/* The Master FX component key at index i (0-based), or null when i is outside
+ * the cap. This IS the Master FX bounds guard, written once — the four
+ * accessors below used to each carry their own copy of `i < 0 || i >= CAP`. */
+function masterFxComponentKey(i) {
+    if (typeof i !== "number" || i < 0 || i >= MASTER_FX_SLOTS) return null;
+    return `fx${i + 1}`;
+}
+
+/* The chain of one instrument slot. */
+function slotChainTarget(slotIndex) {
+    return {
+        kind: "slot",
+        slot: slotIndex,
+        key: (componentKey, suffix) => chainComponentParamKey(componentKey, suffix),
+        components: () => slotChainComponents(slotIndex),
+        hasSynth: true,
+        hasMidiFx: true,
+    };
+}
+
+/* The master bus chain. One section, no synth, addressed at slot 0 under the
+ * "master_fx:" prefix. */
+const MASTER_CHAIN_TARGET = {
+    kind: "master",
+    slot: 0,
+    key: (componentKey, suffix) => {
+        /* "settings" is a box in the list but not a module position, so it has
+         * no params — same rule chainComponentParamKey applies for the slot
+         * chain via isChainModuleKey. */
+        if (!componentKey || componentKey === "settings") return null;
+        const at = parseChainId(componentKey);
+        if (!at || at.section !== "fx" || at.index >= MASTER_FX_SLOTS) return null;
+        return `master_fx:${componentKey}:${suffix}`;
+    },
+    components: () => MASTER_FX_CHAIN_COMPONENTS,
+    hasSynth: false,
+    hasMidiFx: false,
+};
+
+/* Read one param of one component of a chain. null when the component has no
+ * params to read (the settings box, or an id outside the chain) — which is the
+ * same answer getSlotParam gives for an unreachable key, so callers that
+ * coerce with `|| ""` are unaffected. */
+function chainTargetGetParam(target, componentKey, suffix) {
+    const key = target.key(componentKey, suffix);
+    if (!key) return null;
+    return getSlotParam(target.slot, key);
+}
+
+function chainTargetSetParam(target, componentKey, suffix, value) {
+    const key = target.key(componentKey, suffix);
+    if (!key) return false;
+    return setSlotParam(target.slot, key, value);
+}
+
+/* Parse a JSON param out of a component, with the shape its callers expect on
+ * failure. Both editors had their own copy of these two, differing only in how
+ * the key was spelled. */
+function chainTargetChainParams(target, componentKey) {
+    const json = chainTargetGetParam(target, componentKey, "chain_params");
+    if (!json) return [];
+    try { return JSON.parse(json); } catch (e) { return []; }
+}
+
+function chainTargetHierarchy(target, componentKey) {
+    const json = chainTargetGetParam(target, componentKey, "ui_hierarchy");
+    if (!json) return null;
+    try { return JSON.parse(json); } catch (e) { return null; }
+}
+
 function makeEmptyMasterFxConfig() {
     const cfg = {};
     for (let i = 1; i <= MASTER_FX_SLOTS; i++) {
@@ -5255,20 +5353,10 @@ function chainComponentParamKey(componentKey, suffix) {
     return `${chainComponentId(componentKey)}:${suffix}`;
 }
 
-/* Fetch chain_params metadata from a component */
+/* Fetch chain_params metadata from a component.
+ * Chain params are typically in module.json, but we query via get_param. */
 function getComponentChainParams(slot, componentKey) {
-    /* Chain params are typically in module.json, but we query via get_param */
-    const key = chainComponentParamKey(componentKey, "chain_params");
-    if (!key) return [];
-
-    const json = getSlotParam(slot, key);
-    if (!json) return [];
-
-    try {
-        return JSON.parse(json);
-    } catch (e) {
-        return [];
-    }
+    return chainTargetChainParams(slotChainTarget(slot), componentKey);
 }
 
 /* Synthesize a minimal one-level ui_hierarchy from a component's chain_params
@@ -5293,7 +5381,12 @@ function buildSynthHierarchyFromChainParams(chainParams) {
 
 /* Fetch ui_hierarchy from a component */
 function getComponentHierarchy(slot, componentKey) {
-    const key = chainComponentParamKey(componentKey, "ui_hierarchy");
+    /* Addressed through the chain target, like the Master FX equivalent. The
+     * parse is spelled out here rather than deferred to chainTargetHierarchy
+     * only because these two debugLogs want the key and the raw JSON, and
+     * re-reading to get them would cost a second ~2.8ms IPC round trip. */
+    const target = slotChainTarget(slot);
+    const key = target.key(componentKey, "ui_hierarchy");
     if (!key) {
         debugLog(`getComponentHierarchy: no key for componentKey=${componentKey}`);
         return null;
@@ -5310,32 +5403,16 @@ function getComponentHierarchy(slot, componentKey) {
     }
 }
 
-/* Fetch chain_params metadata from a Master FX slot */
+/* Fetch chain_params metadata from a Master FX slot.
+ * Index-taking wrapper over the shared chain-target accessor — the bounds
+ * guard and the JSON handling now live in ONE place for both editors. */
 function getMasterFxChainParams(fxSlot) {
-    if (fxSlot < 0 || fxSlot >= MASTER_FX_SLOTS) return [];
-    const fxKey = `fx${fxSlot + 1}`;
-    const key = `master_fx:${fxKey}:chain_params`;
-    const json = shadow_get_param(0, key);
-    if (!json) return [];
-    try {
-        return JSON.parse(json);
-    } catch (e) {
-        return [];
-    }
+    return chainTargetChainParams(MASTER_CHAIN_TARGET, masterFxComponentKey(fxSlot));
 }
 
 /* Fetch ui_hierarchy from a Master FX slot */
 function getMasterFxHierarchy(fxSlot) {
-    if (fxSlot < 0 || fxSlot >= MASTER_FX_SLOTS) return null;
-    const fxKey = `fx${fxSlot + 1}`;
-    const key = `master_fx:${fxKey}:ui_hierarchy`;
-    const json = shadow_get_param(0, key);
-    if (!json) return null;
-    try {
-        return JSON.parse(json);
-    } catch (e) {
-        return null;
-    }
+    return chainTargetHierarchy(MASTER_CHAIN_TARGET, masterFxComponentKey(fxSlot));
 }
 
 /* fetchPatchDetail -> shadow_ui_patches.mjs */
@@ -7440,37 +7517,25 @@ function loadMasterFxChainConfig() {
     }
 }
 
-/* Get a parameter from a master FX slot (0..MASTER_FX_SLOTS-1) */
+/* Get a parameter from a master FX slot (0..MASTER_FX_SLOTS-1).
+ * Index-taking wrapper over the shared chain-target accessor. The "" rather
+ * than null is this caller's convention and is preserved here. */
 function getMasterFxParam(slotIndex, key) {
-    if (typeof shadow_get_param !== "function") return "";
-    try {
-        return shadow_get_param(0, `master_fx:fx${slotIndex + 1}:${key}`) || "";
-    } catch (e) {
-        return "";
-    }
+    return chainTargetGetParam(MASTER_CHAIN_TARGET, masterFxComponentKey(slotIndex), key) || "";
 }
 
-/* Get module ID loaded in a master FX slot (0..MASTER_FX_SLOTS-1) */
+/* Get module ID loaded in a master FX slot (0..MASTER_FX_SLOTS-1).
+ * The shim answers ":name" with the module_id. */
 function getMasterFxSlotModule(slotIndex) {
-    if (typeof shadow_get_param !== "function") return "";
-    try {
-        /* Query returns the module_id from the shim */
-        return shadow_get_param(0, `master_fx:fx${slotIndex + 1}:name`) || "";
-    } catch (e) {
-        return "";
-    }
+    return getMasterFxParam(slotIndex, "name");
 }
 
 /* Set module for a master FX slot */
 function setMasterFxSlotModule(slotIndex, dspPath) {
-    if (typeof shadow_set_param !== "function") return false;
     /* Clear warning tracking for this slot so warning can show again for new module */
     warningShownForMasterFx.delete(slotIndex);
-    try {
-        return shadow_set_param(0, `master_fx:fx${slotIndex + 1}:module`, dspPath || "");
-    } catch (e) {
-        return false;
-    }
+    return chainTargetSetParam(MASTER_CHAIN_TARGET, masterFxComponentKey(slotIndex),
+                               "module", dspPath || "");
 }
 
 /* Enter module selection for a Master FX slot */

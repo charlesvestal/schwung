@@ -69,10 +69,21 @@ if (fails.length) {
 }
 const block = jsSrc.slice(startIdx, endIdx);
 
-const decls = new Function(block + `
+/* MASTER_CHAIN_TARGET.key parses a position id with the chain model parseId,
+ * so the real one is lifted out of chain_model.mjs rather than restated here —
+ * a second copy of "what fx3 means" is the drift this file exists to catch. */
+const modelSrc = fs.readFileSync("src/shared/chain_model.mjs", "utf8");
+const parseIdAt = modelSrc.indexOf("export function parseId(");
+check(parseIdAt >= 0, "could not find parseId in src/shared/chain_model.mjs");
+const parseIdSrc = modelSrc.slice(parseIdAt, modelSrc.indexOf("\n}\n", parseIdAt) + 2)
+    .replace("export function", "function");
+const parseChainId = new Function(parseIdSrc + "\nreturn parseId;")();
+
+const decls = new Function("parseChainId", block + `
     return { MASTER_FX_SLOTS, MASTER_FX_CHAIN_COMPONENTS,
-             MASTER_FX_SETTINGS_INDEX, masterFxConfig, makeEmptyMasterFxConfig };
-`)();
+             MASTER_FX_SETTINGS_INDEX, masterFxConfig, makeEmptyMasterFxConfig,
+             masterFxComponentKey, MASTER_CHAIN_TARGET };
+`)(parseChainId);
 
 check(decls.MASTER_FX_SLOTS === cap, "evaluated MASTER_FX_SLOTS !== parsed cap");
 
@@ -118,7 +129,56 @@ check(Object.keys(decls.masterFxConfig).join(",") === wantKeys.join(","),
 
 /* ---- 5. the bounds guards reject the cap and accept cap-1 -------------- */
 
-const guarded = ["getMasterFxChainParams", "getMasterFxHierarchy", "enterMasterFxHierarchyEditor"];
+/* 5a. The ONE guard. getMasterFxChainParams / getMasterFxHierarchy /
+ * getMasterFxParam no longer each carry a copy of `i < 0 || i >= cap`; they
+ * turn an index into a component key through masterFxComponentKey and the
+ * chain target rejects what that returns null for. So the guard is asserted
+ * where it now lives, by RUNNING it rather than by matching its text. */
+const mfxKey = decls.masterFxComponentKey;
+check(typeof mfxKey === "function", "masterFxComponentKey is gone — the Master FX bounds guard has no single home");
+if (typeof mfxKey === "function") {
+    check(mfxKey(-1) === null, "masterFxComponentKey accepts -1");
+    check(mfxKey(cap) === null,
+        "masterFxComponentKey ACCEPTS slot " + cap + ", one past the cap");
+    check(mfxKey(cap + 1) === null, "masterFxComponentKey accepts slot " + (cap + 1));
+    check(mfxKey(cap - 1) === "fx" + cap,
+        "masterFxComponentKey REJECTS slot " + (cap - 1) + ", the last real slot");
+    check(mfxKey(0) === "fx1", "masterFxComponentKey rejects slot 0");
+}
+
+/* And the target itself refuses a key past the cap, refuses the settings box,
+ * and addresses everything under "master_fx:" at slot 0. */
+const mfxTarget = decls.MASTER_CHAIN_TARGET;
+check(mfxTarget && mfxTarget.slot === 0, "MASTER_CHAIN_TARGET is not addressed at slot 0");
+check(mfxTarget && mfxTarget.hasSynth === false && mfxTarget.hasMidiFx === false,
+    "MASTER_CHAIN_TARGET claims a synth or MIDI FX section");
+if (mfxTarget) {
+    check(mfxTarget.key("fx1", "cutoff") === "master_fx:fx1:cutoff",
+        "MASTER_CHAIN_TARGET.key(fx1, cutoff) is " + mfxTarget.key("fx1", "cutoff"));
+    check(mfxTarget.key("fx" + cap, "cutoff") === "master_fx:fx" + cap + ":cutoff",
+        "MASTER_CHAIN_TARGET refuses fx" + cap + ", the last real slot");
+    check(mfxTarget.key("fx" + (cap + 1), "cutoff") === null,
+        "MASTER_CHAIN_TARGET ACCEPTS fx" + (cap + 1) + ", one past the cap");
+    check(mfxTarget.key("settings", "cutoff") === null,
+        "MASTER_CHAIN_TARGET builds a param key for the settings box");
+    check(mfxTarget.key("synth", "cutoff") === null,
+        "MASTER_CHAIN_TARGET builds a param key for a synth it does not have");
+    check(mfxTarget.key("midi_fx1", "cutoff") === null,
+        "MASTER_CHAIN_TARGET builds a param key for a MIDI FX it does not have");
+    check(mfxTarget.components().length === comps.length,
+        "MASTER_CHAIN_TARGET.components() is not MASTER_FX_CHAIN_COMPONENTS");
+}
+
+/* 5b. Non-vacuity: the index-taking accessors must actually route through it,
+ * or 5a would be asserting a guard nothing calls. */
+for (const fn of ["getMasterFxChainParams", "getMasterFxHierarchy", "getMasterFxParam"]) {
+    const body = jsSrc.match(new RegExp("function\\s+" + fn + "\\s*\\([^)]*\\)\\s*\\{([\\s\\S]*?)\\n\\}"));
+    check(!!body, fn + " is gone");
+    check(!!body && body[1].indexOf("masterFxComponentKey") >= 0,
+        fn + " does not go through masterFxComponentKey, so it has an unguarded index");
+}
+
+const guarded = ["enterMasterFxHierarchyEditor"];
 for (const fn of guarded) {
     const m = jsSrc.match(new RegExp("function\\s+" + fn + "\\s*\\(fxSlot\\)\\s*\\{\\s*if\\s*\\(([^)]*)\\)"));
     if (!m) { check(false, fn + ": no `if (...)` bounds guard found on fxSlot"); continue; }
