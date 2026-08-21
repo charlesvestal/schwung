@@ -1252,6 +1252,23 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
 
                 knob_mapping_t *m = &patch->knob_mappings[patch->knob_mapping_count];
 
+                /*
+                 * Clear the row before parsing into it.
+                 *
+                 * `m` is only ADVANCED when a row is accepted, so a REJECTED
+                 * row leaves its cc/target/param sitting in the slot and the
+                 * next row inherits every field it happens to omit — a mapping
+                 * silently pointed at a module named by a row that was thrown
+                 * away. Rejected rows used to be a curiosity of hand-edited
+                 * patches; the permutation makes them routine, because vacating
+                 * a position blanks a mapping in place rather than removing it.
+                 *
+                 * It also terminates `target`: the strncpy below caps `len` at
+                 * exactly sizeof-1, and strncpy writes no NUL when it copies
+                 * the full count.
+                 */
+                memset(m, 0, sizeof(*m));
+
                 /* Parse cc */
                 const char *cc_pos = strstr(obj_start, "\"cc\"");
                 if (cc_pos && cc_pos < obj_end) {
