@@ -21,11 +21,25 @@ export const BOX_W = 22;
 export const BOX_H = 16;
 export const GAP = 2;
 
-/** The strip the boxes live in — right of the four slot indicators, which own
- *  x 0..3. Unchanged from the fixed five-box diagram, so the screen the user
- *  knows keeps its proportions as the chain grows past it. */
-export const DIAGRAM_W = 118;
-export const DEFAULT_X = 8;
+/**
+ * The strip the boxes live in — right of the four slot indicators, which own
+ * x 0..3.
+ *
+ * 120 at x=6, from 118 at x=8. The budget is tighter than it looks: the scroll
+ * rails need a column on EACH side (`lay.x - 2` and `lay.x + DIAGRAM_W + 1`),
+ * and the four slot indicators own x 0..3, so the strip cannot start before 6
+ * without the left rail landing on them. That leaves 120 columns, and
+ * 4*(BOX_W+GAP) + SETTINGS_GAP + SETTINGS_BOX_W is exactly 120.
+ *
+ * That mattered more than the pixels: three separate tests assert that NOTHING
+ * is drawn outside the 128x64 display, and that assertion has caught two real
+ * overruns. Letting the box clip would have meant an exception in each of them
+ * — three guards weakened to buy a gap the layout could afford outright.
+ *
+ * x=6 keeps two clear columns beside the indicators, and 6+122 = 128 exactly.
+ */
+export const DIAGRAM_W = 120;
+export const DEFAULT_X = 6;
 
 /**
  * 14, not the old 20: the movy header band is 7 rows against the old header's
@@ -121,6 +135,48 @@ export function defaultAbbrev(comp) {
 }
 
 /**
+ * The settings box is not a chain position, so it is pushed away from the ones
+ * that are.
+ *
+ * Reported as the settings box reading like just another module slot. The
+ * extra space is the whole separation — there is no divider glyph, because a
+ * gap already means "different kind of thing" everywhere else on this screen.
+ *
+ * TWO deliberate consequences, both chosen over reflowing the strip:
+ *
+ * The gap is paid for by the strip, not by the edge: DIAGRAM_W was widened from
+ * 118 to 122 using slack that was already there (see above). So it applies
+ * always — including while settings is selected — and nothing clips. An
+ * earlier version let the box run off the display instead, which would have
+ * needed a clipping exception in each of the three tests that assert nothing
+ * is drawn outside it.
+ */
+export const SETTINGS_GAP = 6;
+
+/**
+ * The settings box is NARROWER than a module box, as well as further from one.
+ *
+ * Two signals for the same thing, and the second one is what pays for the
+ * first: five full-width boxes plus a 6px gap does not fit beside the rails,
+ * and the box only ever holds a single `*`. Narrowing the one box that is not
+ * a chain position buys the gap that says so.
+ */
+export const SETTINGS_BOX_W = 18;
+
+/** Module boxes are BOX_W; the settings box is narrower — see SETTINGS_BOX_W. */
+export function boxWidthFor(comp) {
+    return comp && comp.kind === "settings" ? SETTINGS_BOX_W : BOX_W;
+}
+
+function settingsShift(components, index, first) {
+    for (let i = first + 1; i <= index; i++) {
+        const c = components[i];
+        if (c && c.kind === "settings") return SETTINGS_GAP;
+    }
+    return 0;
+}
+
+/**
  * Which components are on screen and where each one lands.
  *
  * Split out from the drawing so the caller — and the test — can ask about the
@@ -160,7 +216,8 @@ export function layoutChainDiagram(components, selectedIndex, opts = {}) {
         scrolledRight: win.first + count < total,
         /** Screen x of component `index` (an index into `components`, not into
          *  the window — off-window indices are simply not drawn). */
-        boxX: (index) => x + pad + (index - win.first) * (BOX_W + GAP),
+        boxX: (index) => x + pad + (index - win.first) * (BOX_W + GAP)
+                       + settingsShift(components, index, win.first),
     };
 }
 
@@ -184,6 +241,7 @@ export function drawChainDiagram(ctx, components, selectedIndex, opts = {}) {
         const comp = components[i];
         const x = lay.boxX(i);
         const y = lay.y;
+        const bw = boxWidthFor(comp);
         const selected = opts.allSelected || i === selectedIndex;
 
         if (comp.kind === "add") {
@@ -191,12 +249,12 @@ export function drawChainDiagram(ctx, components, selectedIndex, opts = {}) {
              * read as an empty module position, which is a different thing:
              * one of them holds a seat in the chain and the other offers a new
              * one. Selection fills the interior instead, inside the dots. */
-            outline(ctx, x, y, BOX_W, BOX_H, 1, 2);
-            if (selected) ctx.fillRect(x + 2, y + 2, BOX_W - 4, BOX_H - 4, 1);
+            outline(ctx, x, y, bw, BOX_H, 1, 2);
+            if (selected) ctx.fillRect(x + 2, y + 2, bw - 4, BOX_H - 4, 1);
         } else if (selected) {
-            ctx.fillRect(x, y, BOX_W, BOX_H, 1);
+            ctx.fillRect(x, y, bw, BOX_H, 1);
         } else {
-            outline(ctx, x, y, BOX_W, BOX_H, 1, 0);
+            outline(ctx, x, y, bw, BOX_H, 1, 0);
         }
 
         /*
@@ -213,7 +271,7 @@ export function drawChainDiagram(ctx, components, selectedIndex, opts = {}) {
          * cannot come back by arithmetic.
          */
         if (comp.kind === "synth") {
-            ctx.fillRect(x + 1, y + 1, BOX_W - 2, SYNTH_BAND_H, selected ? 0 : 1);
+            ctx.fillRect(x + 1, y + 1, bw - 2, SYNTH_BAND_H, selected ? 0 : 1);
         }
 
         /*
@@ -227,17 +285,17 @@ export function drawChainDiagram(ctx, components, selectedIndex, opts = {}) {
          */
         /* Every box now has the same label room: the synth mark is horizontal,
          * so it takes none. */
-        const room = BOX_W - 2;
+        const room = bw - 2;
         const abbrev = fitAbbrev(ctx, String(abbrevOf(comp) || "--"), room);
         /* Selection inverts the label whatever the box is: the `+` box fills
          * its interior rather than the whole rect, but the label sits in that
          * interior, so a white "+" on it would simply vanish. */
         const textColor = selected ? 0 : 1;
-        const inset = Math.floor((BOX_W - room) / 2);
+        const inset = Math.floor((bw - room) / 2);
         ctx.print(x + inset + Math.max(0, Math.floor((room - measure(ctx, abbrev)) / 2)),
                   y + 5, abbrev, textColor);
 
-        drawMarks(ctx, px, x, y, marksOf(comp));
+        drawMarks(ctx, px, x, y, marksOf(comp), bw);
     }
 
     /* A dotted rail in the margin either side, so "there is more chain that
@@ -259,7 +317,7 @@ function dottedRail(px, x, y, h) {
  * 4px-high hand-plotted glyphs rather than the font: they sit in a 4-row band
  * between the header and the boxes, and the smallest real face is 5.
  */
-function drawMarks(ctx, px, x, y, marks) {
+function drawMarks(ctx, px, x, y, marks, boxW = BOX_W) {
     if (!marks) return;
     const my = y + MARK_DY;
 
@@ -276,7 +334,7 @@ function drawMarks(ctx, px, x, y, marks) {
     const has1 = !!marks.lfo1, has2 = !!marks.lfo2;
     if (!has1 && !has2) return;
 
-    let cx = x + Math.floor(BOX_W / 2);
+    let cx = x + Math.floor(boxW / 2);
     cx -= (has1 && has2) ? 7 : 3;
     /* tilde: .... / .#.# / #.#. / .... */
     px(cx + 1, my + 1, 1); px(cx + 3, my + 1, 1);
