@@ -17,7 +17,16 @@
 
 import { scrollWindow } from "./chain_model.mjs";
 
-export const BOX_W = 22;
+/**
+ * 21, not 22, and the parity is the point.
+ *
+ * Everything centred in a box is ODD: a two-letter shortcode is 11px of ink
+ * (34 of the 36 glyphs advance 6, so 5 + 1 + 5), 9 when a letter is narrow
+ * like MI, and the settings icon is 11. An even box cannot centre an odd
+ * thing — 22 - 11 = 11, so the label sits half a pixel left, every time, on
+ * every box. 21 - 11 = 10 centres exactly, and so does 21 - 9.
+ */
+export const BOX_W = 21;
 export const BOX_H = 16;
 export const GAP = 2;
 
@@ -112,17 +121,32 @@ function outline(ctx, x, y, w, h, color, dash) {
         ctx.fillRect(x + w - 1, y, 1, h, color);
         return;
     }
+    /*
+     * ONE continuous path around the rect, not four independent runs.
+     *
+     * Four runs each restarting the dash at 0 put two dots on the top-left
+     * corner, one on each of the other two — and NONE on the bottom-right,
+     * because with an even width and an even height neither the horizontal
+     * run (w-1 odd) nor the vertical one (h-1 odd) lands on it. A dotted box
+     * with a missing corner and a doubled one, which is what it looked like.
+     *
+     * Walking the perimeter as a single path spaces the dashes evenly THROUGH
+     * the corners. It closes cleanly when the perimeter 2*(w-1) + 2*(h-1) is a
+     * multiple of `dash`; at 21x16 that is 70, so a 2px dash meets itself.
+     *
+     * TWO of the four corners land on a dash, not four. For all four, both
+     * w-1 and h-1 must be even, so BOX_H would have to be odd — and an odd
+     * height decentres the 10px settings icon vertically. Asked which mattered
+     * more, Charles said the icon. So the height stays even and the corners
+     * stay as they fall; do not "fix" this by making BOX_H odd.
+     */
     const px = pixelFn(ctx);
-    for (let i = 0; i < w; i++) {
-        if (i % dash) continue;
-        px(x + i, y, color);
-        px(x + i, y + h - 1, color);
-    }
-    for (let i = 0; i < h; i++) {
-        if (i % dash) continue;
-        px(x, y + i, color);
-        px(x + w - 1, y + i, color);
-    }
+    let n = 0;
+    const step = (sx, sy) => { if (n % dash === 0) px(sx, sy, color); n++; };
+    for (let i = 0; i < w - 1; i++) step(x + i, y);
+    for (let i = 0; i < h - 1; i++) step(x + w - 1, y + i);
+    for (let i = w - 1; i > 0; i--) step(x + i, y + h - 1);
+    for (let i = h - 1; i > 0; i--) step(x, y + i);
 }
 
 /**
