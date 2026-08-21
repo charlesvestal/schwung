@@ -42,19 +42,29 @@ export const DETENTS_PER_ENTRY = 3;
  * effects (ceiling capped at 16, ~98 detents), a Recv Ch has 17 (ceiling 2 —
  * present but gentle, since you are usually going one or two places).
  */
-export const ACCEL_DIVISOR = 8;
+export const ACCEL_DIVISOR = 16;
 
 /** Hard ceiling on entries per step, however long the list or fast the turn. */
-export const ACCEL_MAX_MULTIPLIER = 16;
+export const ACCEL_MAX_MULTIPLIER = 8;
 
-/* Same-direction gaps under these many ms count as a fast turn. Two bands
- * rather than a curve: the ear for this is coarse, and two are tunable by
- * someone reading the numbers. */
-const FAST_MS = 60;
-const BRISK_MS = 140;
+/*
+ * Per-DETENT gaps, in ms, that count as a fast turn.
+ *
+ * Per detent, not per step, and that distinction was a bug worth recording. A
+ * step is DETENTS_PER_ENTRY detents, so measuring the gap between STEPS and
+ * calling 60 ms "fast" actually meant 20 ms per detent — an ordinary brisk
+ * turn. Nearly every real spin hit the ceiling immediately, which is what
+ * "the fast spins are too fast" was: not the ceiling being wrong, the gate
+ * being wide open.
+ *
+ * 12 ms per detent is a genuine flick; 25 ms is a purposeful spin. Below that
+ * you are steering, and steering must not accelerate.
+ */
+const FAST_MS_PER_DETENT = 12;
+const BRISK_MS_PER_DETENT = 25;
 
 export function listKnobInit() {
-    return { accum: 0, lastStepMs: 0, lastDir: 0 };
+    return { accum: 0, lastDetentMs: 0, lastDir: 0, rateMs: Infinity };
 }
 
 /**
@@ -75,13 +85,24 @@ export function listKnobStep(state, delta, nowMs, length) {
      * stopped — the same inconsistency #228 fixed on the grid. */
     if (state.accum !== 0 && Math.sign(state.accum) !== Math.sign(delta)) state.accum = 0;
 
+    /* Track the turn rate on EVERY detent, not only on the ones that produce
+     * a step — otherwise the measured gap is DETENTS_PER_ENTRY detents long
+     * and every threshold means something three times faster than it reads.
+     * Smoothed, so one stray fast detent cannot trip the ceiling. */
+    const gap = state.lastDetentMs > 0 ? (nowMs - state.lastDetentMs) / Math.abs(delta)
+                                       : Infinity;
+    state.lastDetentMs = nowMs;
+    state.rateMs = isFinite(state.rateMs) && isFinite(gap)
+        ? state.rateMs * 0.5 + gap * 0.5
+        : gap;
+
     state.accum += delta;
     let steps = Math.trunc(state.accum / DETENTS_PER_ENTRY);
     if (steps === 0) return 0;
     state.accum -= steps * DETENTS_PER_ENTRY;
 
     const dir = Math.sign(steps);
-    const elapsed = state.lastStepMs > 0 ? nowMs - state.lastStepMs : Infinity;
+    const rate = state.rateMs;
 
     /* How much acceleration this list can even use. Floors to 1 — i.e. none —
      * for anything shorter than ACCEL_DIVISOR entries. */
@@ -91,11 +112,10 @@ export function listKnobStep(state, delta, nowMs, length) {
 
     let mult = 1;
     if (dir === state.lastDir && ceiling > 1) {
-        if (elapsed <= FAST_MS) mult = ceiling;
-        else if (elapsed <= BRISK_MS) mult = Math.max(1, Math.floor(ceiling / 2));
+        if (rate <= FAST_MS_PER_DETENT) mult = ceiling;
+        else if (rate <= BRISK_MS_PER_DETENT) mult = Math.max(1, Math.floor(ceiling / 2));
     }
 
-    state.lastStepMs = nowMs;
     state.lastDir = dir;
     return steps * mult;
 }

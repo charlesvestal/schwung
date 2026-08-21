@@ -41,14 +41,34 @@ import("./src/shared/param_pages/list_knob.mjs").then((L) => {
 
   /* ---- a short list must NOT accelerate ------------------------------ */
   const shortSlow = run(12, 30, 400);
-  const shortFast = run(12, 30, 10);
+  const shortFast = run(12, 30, 8);
   if (shortFast !== shortSlow)
     fail("a 12-entry list accelerated (" + shortSlow + " slow vs " + shortFast +
          " fast) — there is nowhere to go, so it should feel identical");
 
+  /* ---- an ORDINARY turn must never accelerate, at any length ---------
+   *
+   * The gate is per DETENT, not per step. Measuring between steps meant
+   * "60ms" actually gated on 20ms per detent — an ordinary brisk turn — so
+   * every real spin hit the ceiling. That was "the fast spins are too fast",
+   * and it was the gate being wide open rather than the ceiling being wrong.
+   * 20ms/detent is a normal purposeful turn and must stay at the base rate
+   * for anything a person steers through. */
+  for (const n of [6, 12, 17, 47]) {
+    /* The reference has to be UNAMBIGUOUSLY slow — 400ms/detent, far outside
+     * any plausible gate. Using 60ms here hid the bug once already: widening
+     * the gate to 60 made the reference accelerate too, so the comparison was
+     * between two accelerated runs and passed. */
+    const steering = run(n, 60, 400);
+    const ordinary = run(n, 60, 20);
+    if (ordinary !== steering)
+      fail("a " + n + "-entry list accelerated on an ORDINARY 20ms/detent turn (" +
+           steering + " steering vs " + ordinary + ") — the gate is too wide");
+  }
+
   /* ---- a long list must accelerate, and enough to be usable ---------- */
   const longSlow = run(519, 60, 400);
-  const longFast = run(519, 60, 10);
+  const longFast = run(519, 60, 8);
   if (longFast <= longSlow)
     fail("a 519-entry list did not accelerate (" + longSlow + " slow vs " + longFast + " fast)");
   if (longFast < 519 / 4)
