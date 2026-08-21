@@ -275,6 +275,53 @@ Promise.all([
     if (ctl.pickerOpen) fail("touching a knob should dismiss the picker");
   }
 
+  /* ---- 9c-2. a section you NAME in the picker opens ----------------------
+   *
+   * Reported from the device for airwindows, whose whole picker is three
+   * sections -- Presets, Main, Jump to Category -- two of them doors: "if i
+   * choose presets (or jump to category) in airwindows, it is kind of weird
+   * that they are not already active". Same argument as navigate_to: the jog
+   * is inert on a door you PAGED past, so browsing cannot audition every
+   * preset it goes by, but naming a section is choosing it.
+   *
+   * Driven on clap deliberately -- it is the module reported, and the one
+   * where "the module id identifies the parameter set" is false, so it is
+   * worth keeping in the exercised set.
+   *
+   * (No apostrophes anywhere in this file: the whole suite is one
+   * single-quoted node -e argument, and one would end it.)
+   */
+  {
+    const { dev, ctl } = setup("clap");
+    ctl.dismissHint();
+    const presetAt = ctl.pages.findIndex((p) => p.kind === "preset");
+    if (presetAt < 0) fail("clap should plan a preset browser");
+    if (!ctl.openPicker()) fail("clap should offer a section picker");
+    /* Walk to the top of the picker, then forward to the browser. */
+    for (let i = 0; i < 16 && ctl.pickerIndex > 0; i++) ctl.onJog(-1);
+    for (let i = 0; i < 16 && ctl.pickerEntries[ctl.pickerIndex].index !== presetAt; i++) ctl.onJog(1);
+    if (ctl.pickerEntries[ctl.pickerIndex].index !== presetAt)
+      fail("the preset browser is not reachable as its own section");
+
+    dev.resetCounters();
+    ctl.pickerSelect();
+    if (ctl.pageIndex !== presetAt) fail("selecting did not land on the browser");
+    if (!ctl.menuEntered())
+      fail("a section you named in the picker should arrive entered, not need a click");
+    if (dev.writes.length)
+      fail("arriving on the browser wrote to the device: " + JSON.stringify(dev.writes));
+
+    /* The old rule survives where it was earned: PAGING onto a door leaves it
+     * shut, so browsing past a browser still cannot audition it. */
+    const ctl2 = setup("clap").ctl;
+    ctl2.dismissHint();
+    ctl2.goToPage(presetAt + 1, { remember: false });
+    if (ctl2.pageIndex !== presetAt + 1) fail("could not set up a page next to the browser");
+    ctl2.onJog(-1);
+    if (ctl2.pageIndex !== presetAt) fail("could not page onto the browser");
+    if (ctl2.menuEntered()) fail("PAGING onto a door must still leave it shut");
+  }
+
   /* ---- 9d. Elektron patterns: fine adjust, reset, section memory -------- */
   {
     /* Find a float with a declared default — 744 params across 39 modules
@@ -973,6 +1020,18 @@ Promise.all([
       if (ctl3.pageIndex !== rootPreset)
         fail("choosing a bank should land on the root preset browser, got page " +
              ctl3.pageIndex + " (" + (ctl3.page && ctl3.page.kind) + ")");
+
+      /* ...and it arrives ENTERED. Reported from the device once the landing
+       * was right: "shouldnt presets be already active? i have to click into
+       * it." The jog is inert on a door you PAGED to, so that browsing past
+       * one cannot audition every preset it passes — but this one was chosen,
+       * and one deliberate gesture should not need a second to take effect. */
+      if (!ctl3.menuEntered())
+        fail("a preset browser you were SENT to should arrive entered, not need a click");
+      /* Entering must not have written: a browser auditions on turn, not on
+       * arrival, so being handed the jog cannot load a preset by itself. */
+      if (dev3.writes.some(([k]) => /:preset$/.test(String(k))))
+        fail("arriving on the preset browser loaded a preset: " + JSON.stringify(dev3.writes));
     }
 
     /* ---- shift still escapes from inside -------------------------------- */

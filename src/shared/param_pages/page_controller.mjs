@@ -994,7 +994,13 @@ export function createController(io = {}) {
         }
         if (target < 0) target = firstGrid(s.pages);
         announce(it.label);
-        if (target >= 0 && target !== s.pageIndex) goToPage(target, { remember: false });
+        /*
+         * A door you were SENT to opens — see goToPage. Reported from the
+         * device: "factory does dump me to presets, but shouldn't presets be
+         * already active? I have to click into it." Entering writes nothing; a
+         * browser auditions on TURN, so this hands you the jog without loading.
+         */
+        if (target >= 0) goToPage(target, { remember: false, enterIfDoor: true });
         return true;
     }
 
@@ -1197,7 +1203,10 @@ export function createController(io = {}) {
         if (!s.pickerOpen) return false;
         const entry = s.pickerEntries[s.pickerIndex];
         s.pickerOpen = false;
-        if (entry) goToPage(entry.index);
+        /* Naming a section in the picker is choosing it, not paging past it —
+         * reported for airwindows, where Presets and Jump To Category are both
+         * sections and both arrived shut. Same rule as navigate_to. */
+        if (entry) goToPage(entry.index, { enterIfDoor: true });
         return true;
     }
 
@@ -1290,8 +1299,27 @@ export function createController(io = {}) {
         return s.pageIndex;
     }
 
-    /** Jump straight to a page (from the index or group picker). */
-    function goToPage(index, { remember = true } = {}) {
+    /**
+     * Jump straight to a page (from the index or group picker).
+     *
+     * `enterIfDoor` is the difference between arriving by PAGING and arriving
+     * by CHOOSING. The jog is inert on a door until you click in, so that
+     * paging past a preset browser cannot audition every preset it passes —
+     * but a page you named, from a picker or by following a navigate_to, was
+     * not passed, it was asked for. Needing a second gesture to make the first
+     * one take effect is the bug; both of those callers opt in, and everything
+     * that pages keeps the old rule.
+     *
+     * Deciding it HERE rather than at the call site is not tidiness: with
+     * `remember` on, restoreSection can land you on a different page of the
+     * section than the index you passed, so only this function knows what you
+     * actually arrived at.
+     *
+     * The enter does the announcing when it happens — otherwise the reader
+     * utters the item you chose, then the page name, then the entered list,
+     * and only the last is news.
+     */
+    function goToPage(index, { remember = true, enterIfDoor = false } = {}) {
         /* Paging away cannot leave a menu entered — returning later would
          * silently hand the jog back to the list. (Page names are unique, so
          * this and "any index change" are the same rule; onJog carries the
@@ -1299,14 +1327,19 @@ export function createController(io = {}) {
         if (s.menuEntered && s.pages[index] && s.pages[index].name !== s.menuEntered) {
             s.menuEntered = null;
         }
-        if (index === s.pageIndex) return s.pageIndex;
+        if (index === s.pageIndex) {
+            /* Naming the page you are already on still means "open it". */
+            if (enterIfDoor && isDoor(page()) && !menuEntered()) enterMenu();
+            return s.pageIndex;
+        }
         rememberSection();
         const target = Math.max(0, Math.min(s.pages.length - 1, index));
         s.pageIndex = remember ? restoreSection(target) : target;
         s.cursor = 0;
         s.touched = -1;
         s.turnClaimMs = 0;
-        announcePageChange();
+        /* enterMenu refuses an empty list, and then nobody has spoken yet. */
+        if (!(enterIfDoor && isDoor(page()) && enterMenu())) announcePageChange();
         return s.pageIndex;
     }
 
