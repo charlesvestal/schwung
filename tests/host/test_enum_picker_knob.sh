@@ -66,4 +66,37 @@ if ! grep -q "Math.max(0" <<<"$jog" || ! grep -q "Math.min(" <<<"$jog"; then
   exit 1
 fi
 
+# A knob TOUCH must raise nothing while the picker is up. Letting go and taking
+# hold again re-raised the parameter overlay over the option list — the overlay
+# answers "what does this knob do", which the list is already answering in more
+# detail, and it covers the rows being scrolled.
+# The NOTE-ON touch handler specifically: there are three `MoveKnob1Touch`
+# tests in the file (a co-run one and a note-off one), so anchor on the
+# knobTouched record that only the note-on branch does.
+touch_start=$(grep -n "knobTouched\[knobIndex\] = true" "$file" | head -n 1 | cut -d: -f1)
+if [ -z "$touch_start" ]; then
+  echo "FAIL: could not find the knob-touch record in $file" >&2
+  exit 1
+fi
+touch_block=$(sed -n "$((touch_start - 6)),$((touch_start + 30))p" "$file")
+if [ -z "$touch_block" ]; then
+  echo "FAIL: could not find the knob-touch handler in $file" >&2
+  exit 1
+fi
+if ! grep -q "VIEWS.ENUM_PICKER" <<<"$touch_block"; then
+  echo "FAIL: a knob TOUCH still raises an overlay while the picker is open." >&2
+  echo "      Releasing and re-gripping the knob covers the list you are scrolling." >&2
+  exit 1
+fi
+# The touch must still be RECORDED before the early return, or the knob-card
+# decay logic under the picker goes inconsistent once it closes.
+rec_line=$(grep -n "knobTouched\[knobIndex\] = true" <<<"$touch_block" | head -n 1 | cut -d: -f1)
+ret_line=$(grep -n "VIEWS.ENUM_PICKER" <<<"$touch_block" | head -n 1 | cut -d: -f1)
+if [ -z "$rec_line" ] || [ -z "$ret_line" ] || [ "$rec_line" -ge "$ret_line" ]; then
+  echo "FAIL: the picker early-return must come AFTER knobTouched is recorded" >&2
+  echo "      (recorded at $rec_line, returned at $ret_line)" >&2
+  exit 1
+fi
+echo "  ok  a knob touch raises nothing while the picker is up, but is still recorded"
+
 echo "PASS: a knob scrolls the enum picker, before adjustKnobAndShow, and returns"
