@@ -76,6 +76,56 @@ static int chain_read_clock_output_enabled(void) {
     return 1;  /* Unknown value: avoid false warnings. */
 }
 
+/*
+ * Diagnostic: what actually reaches the synth, and how many MIDI FX the chain
+ * thinks it has.
+ *
+ * `touch /data/UserData/schwung/chain_midi_trace_on` -> lines in debug.log:
+ *
+ *   chain_trace IN 90 47 3b  midi_fx_count=1 -> out=6
+ *   chain_trace   -> synth 90 35 7f
+ *
+ * OFF BY DEFAULT and it must stay that way: this runs on the SPI callback and
+ * host->log is unified_log, which is not realtime-safe. The flag file is
+ * stat()ed once every CHAIN_TRACE_CHECK_CALLS calls rather than per event, and
+ * NOTE EVENTS ONLY are traced -- tracing clock would be 24 lines a beat and
+ * would itself cause the dropouts it is being used to investigate (see the
+ * debug_log_on lesson). Remember to remove the flag file when finished.
+ *
+ * Added while chasing the impressive-chords dry note, after three hypotheses
+ * that each fitted the symptom and each turned out to be wrong. The rule from
+ * that hunt applies here: read the values, do not infer them.
+ */
+#define CHAIN_TRACE_CHECK_CALLS 512
+static int chain_midi_trace_enabled(void) {
+    static int enabled = 0;
+    static int counter = 0;
+    if (counter++ % CHAIN_TRACE_CHECK_CALLS == 0) {
+        enabled = (access("/data/UserData/schwung/chain_midi_trace_on", F_OK) == 0);
+    }
+    return enabled;
+}
+
+static int chain_midi_is_note(const uint8_t *msg, int len) {
+    if (!msg || len < 3) return 0;
+    int t = msg[0] & 0xF0;
+    return t == 0x90 || t == 0x80;
+}
+
+static void chain_midi_trace(const chain_instance_t *inst, const char *what,
+                             const uint8_t *msg, int len, int a, int b) {
+    if (!inst || !inst->host || !inst->host->log) return;
+    char line[128];
+    if (a >= 0) {
+        snprintf(line, sizeof(line), "chain_trace %s %02x %02x %02x  midi_fx_count=%d -> out=%d",
+                 what, msg[0], msg[1], len > 2 ? msg[2] : 0, a, b);
+    } else {
+        snprintf(line, sizeof(line), "chain_trace %s %02x %02x %02x",
+                 what, msg[0], msg[1], len > 2 ? msg[2] : 0);
+    }
+    inst->host->log(line);
+}
+
 static void chain_refresh_clock_output_enabled(uint64_t now_ms) {
     if (now_ms < g_clock_next_refresh_ms) return;
     g_clock_output_enabled = chain_read_clock_output_enabled();
@@ -504,6 +554,12 @@ void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
         /* Send generated messages to synth */
         for (int i = 0; i < count; i++) {
             if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->on_midi) {
+                /* Traced separately from the v2_on_midi path: a MIDI FX can
+                 * emit here instead of there (impressive-chords queues all but
+                 * the first release voice for tick), and a trace that covers
+                 * only one of the two makes the other look like silence. */
+                if (chain_midi_is_note(out_msgs[i], out_lens[i]) && chain_midi_trace_enabled())
+                    chain_midi_trace(inst, "  ~> synth(tick)", out_msgs[i], out_lens[i], -1, 0);
                 inst->synth_plugin_v2->on_midi(inst->synth_instance, out_msgs[i], out_lens[i], 0);
             }
         }
@@ -800,9 +856,13 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
     int out_lens[MIDI_FX_MAX_OUT_MSGS];
     int out_count = v2_process_midi_fx(inst, msg, len, out_msgs, out_lens, MIDI_FX_MAX_OUT_MSGS);
 
+    const int trace = chain_midi_is_note(msg, len) && chain_midi_trace_enabled();
+    if (trace) chain_midi_trace(inst, "IN", msg, len, inst->midi_fx_count, out_count);
+
     /* Send processed messages to synth */
     for (int i = 0; i < out_count; i++) {
         if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->on_midi) {
+            if (trace) chain_midi_trace(inst, "  -> synth", out_msgs[i], out_lens[i], -1, 0);
             inst->synth_plugin_v2->on_midi(inst->synth_instance, out_msgs[i], out_lens[i], source);
         }
     }
