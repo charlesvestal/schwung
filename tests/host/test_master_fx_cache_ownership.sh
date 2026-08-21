@@ -97,6 +97,9 @@ void unified_log(const char *source, int level, const char *fmt, ...) {
 }
 EOF
 
+# -lm because shadow_chain_mgmt.c pulls fmod/roundf in through the LFO
+# tick. macOS folds libm into libSystem, so a missing -lm links fine there and
+# only fails on the Linux CI runner -- which is exactly what it did.
 cc -std=gnu11 -Wall -Wextra -Wno-unused-parameter -shared -fPIC \
   -Isrc/host \
   "$work/fixture.c" -o "$work/fixture/dsp.so"
@@ -106,6 +109,6 @@ cc -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
   -Isrc/host \
   -DFIXTURE_DSP_PATH="\"$work/fixture/dsp.so\"" \
   tests/host/test_master_fx_cache_ownership.c "$work/stubs.c" \
-  -o "$bin"
+  -lm -o "$bin"
 
 "$bin"
