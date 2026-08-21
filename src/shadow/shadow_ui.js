@@ -1544,6 +1544,30 @@ function chainTargetHierarchy(target, componentKey) {
  * `label` is the component's, because the announcement names the box the user
  * is pointing at ("FX 2 bypassed"), not the module inside it.
  */
+/*
+ * The hierarchy level whose `knobs` array drives the physical knobs.
+ *
+ * Root, unless root declared no knobs and names a child level that did — a
+ * module whose real controls live one level down (a preset browser at the top)
+ * would otherwise offer nothing on the knobs at all.
+ *
+ * Shared by both chain editors, which each had a copy. The LEVEL is returned
+ * rather than the mapped key, because the slot editor logs it when the lookup
+ * misses and a key alone cannot say why.
+ */
+function knobLevelForHierarchy(hierarchy) {
+    if (!hierarchy || !hierarchy.levels) return null;
+    let levelDef = hierarchy.levels.root || hierarchy.levels[Object.keys(hierarchy.levels)[0]];
+    /* If root has no knobs but has children, use first child level for knob mapping */
+    if (levelDef && (!levelDef.knobs || levelDef.knobs.length === 0) && levelDef.children) {
+        const childLevel = hierarchy.levels[levelDef.children];
+        if (childLevel && childLevel.knobs && childLevel.knobs.length > 0) {
+            levelDef = childLevel;
+        }
+    }
+    return levelDef;
+}
+
 function toggleChainComponentBypass(target, componentKey, label) {
     const cur = parseInt(chainTargetGetParam(target, componentKey, "bypassed") || "0", 10);
     const next = cur ? 0 : 1;
@@ -10459,15 +10483,11 @@ function buildKnobContextForKnob(knobIndex) {
             const hierarchy = getComponentHierarchy(selectedSlot, comp.key);
             debugLog(`buildKnobContext: hierarchy=${hierarchy ? JSON.stringify(hierarchy).substring(0, 200) : 'null'}`);
             if (hierarchy && hierarchy.levels) {
-                let levelDef = hierarchy.levels.root || hierarchy.levels[Object.keys(hierarchy.levels)[0]];
+                /* NOTE: this log now reports the level knob mapping actually
+                 * uses. It used to print the ROOT level and then fall through
+                 * to a child, so it could name a level with no knobs in it. */
+                const levelDef = knobLevelForHierarchy(hierarchy);
                 debugLog(`buildKnobContext: levelDef=${levelDef ? JSON.stringify(levelDef) : 'null'}, knobIndex=${knobIndex}`);
-                /* If root has no knobs but has children, use first child level for knob mapping */
-                if (levelDef && (!levelDef.knobs || levelDef.knobs.length === 0) && levelDef.children) {
-                    const childLevel = hierarchy.levels[levelDef.children];
-                    if (childLevel && childLevel.knobs && childLevel.knobs.length > 0) {
-                        levelDef = childLevel;
-                    }
-                }
                 if (levelDef && levelDef.knobs && knobIndex < levelDef.knobs.length) {
                     const key = levelDef.knobs[knobIndex];
                     const fullKey = `${prefix}:${key}`;
@@ -10529,7 +10549,7 @@ function buildKnobContextForKnob(knobIndex) {
         const comp = MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
         if (comp && comp.key !== "settings") {
             const chainParams = getMasterFxChainParams(selectedMasterFxComponent);
-            const pluginName = shadow_get_param(0, `master_fx:${comp.key}:name`) || "";
+            const pluginName = getMasterFxParam(selectedMasterFxComponent, "name");
             const hasModule = pluginName && pluginName.length > 0;
 
             /* No module loaded in this slot */
@@ -10551,17 +10571,10 @@ function buildKnobContextForKnob(knobIndex) {
             /* Try ui_hierarchy first for explicit knob mappings */
             const hierarchy = getMasterFxHierarchy(selectedMasterFxComponent);
             if (hierarchy && hierarchy.levels) {
-                let levelDef = hierarchy.levels.root || hierarchy.levels[Object.keys(hierarchy.levels)[0]];
-                /* If root has no knobs but has children, use first child level for knob mapping */
-                if (levelDef && (!levelDef.knobs || levelDef.knobs.length === 0) && levelDef.children) {
-                    const childLevel = hierarchy.levels[levelDef.children];
-                    if (childLevel && childLevel.knobs && childLevel.knobs.length > 0) {
-                        levelDef = childLevel;
-                    }
-                }
+                const levelDef = knobLevelForHierarchy(hierarchy);
                 if (levelDef && levelDef.knobs && knobIndex < levelDef.knobs.length) {
                     const key = levelDef.knobs[knobIndex];
-                    const fullKey = `master_fx:${comp.key}:${key}`;
+                    const fullKey = MASTER_CHAIN_TARGET.key(comp.key, key);
                     const rawMeta = chainParams.find(p => p.key === key);
                     const meta = normalizeExpandedParamMeta(key, rawMeta);
                     const displayName = meta && meta.name ? meta.name : key.replace(/_/g, " ");
@@ -10583,7 +10596,7 @@ function buildKnobContextForKnob(knobIndex) {
             if (chainParams && chainParams.length > 0 && knobIndex < chainParams.length) {
                 const param = chainParams[knobIndex];
                 const key = param.key;
-                const fullKey = `master_fx:${comp.key}:${key}`;
+                const fullKey = MASTER_CHAIN_TARGET.key(comp.key, key);
                 const displayName = param.name || key.replace(/_/g, " ");
                 return {
                     slot: 0,
