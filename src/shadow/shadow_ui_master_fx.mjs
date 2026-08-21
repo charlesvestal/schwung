@@ -44,9 +44,12 @@ export function enterMasterFxSettings() {
 /* ---- Display name (used in slot list) ----------------------------------- */
 
 export function getMasterFxDisplayName() {
-    const { masterFxConfig } = ctx;
+    /* MASTER_FX_SLOTS comes across on ctx, mirroring the constant in
+     * shadow_ui.js (itself a mirror of shadow_chain_mgmt.h). Never re-derive
+     * the cap here. */
+    const { masterFxConfig, MASTER_FX_SLOTS } = ctx;
     const parts = [];
-    for (let i = 1; i <= 4; i++) {
+    for (let i = 1; i <= MASTER_FX_SLOTS; i++) {
         const key = `fx${i}`;
         if (masterFxConfig[key]?.module) {
             parts.push(masterFxConfig[key].module);

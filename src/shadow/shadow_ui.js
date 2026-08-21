@@ -1395,23 +1395,51 @@ let lastSlotModuleSignatures = [];  // Track per-slot module changes for knob ca
 let currentMasterFxId = "";  // Currently loaded master FX module ID
 let currentMasterFxPath = ""; // Full path to currently loaded DSP
 
-/* Master FX chain components (4 FX slots + settings) */
-const MASTER_FX_CHAIN_COMPONENTS = [
-    { key: "fx1", label: "FX 1", position: 0, paramPrefix: "master_fx:fx1:" },
-    { key: "fx2", label: "FX 2", position: 1, paramPrefix: "master_fx:fx2:" },
-    { key: "fx3", label: "FX 3", position: 2, paramPrefix: "master_fx:fx3:" },
-    { key: "fx4", label: "FX 4", position: 3, paramPrefix: "master_fx:fx4:" },
-    { key: "settings", label: "Settings", position: 4, paramPrefix: "" }
-];
+/* Number of Master FX slots. This is a MIRROR of MASTER_FX_SLOTS in
+ * src/host/shadow_chain_mgmt.h — the shim owns the actual array and this side
+ * only addresses it by "master_fx:fx<N>:" key, so the two names must move
+ * together or the UI silently stops seeing the slots past its own idea of the
+ * cap. Every Master FX enumeration in this file and in
+ * shadow_ui_master_fx.mjs is derived from this name; nothing hand-lists
+ * fx1..fxN. Pinned by tests/host/test_master_fx_slots_js.sh, which reads both
+ * values out of source and fails if they disagree. */
+const MASTER_FX_SLOTS = 4;
+
+/* Master FX chain components: one box per FX slot, then a settings box.
+ * Generated, never hand-listed — a hand-written fx1..fxN table that nobody
+ * remembers to extend is the exact failure mode this indirection exists to
+ * prevent. */
+const MASTER_FX_CHAIN_COMPONENTS = (function () {
+    const comps = [];
+    for (let i = 0; i < MASTER_FX_SLOTS; i++) {
+        comps.push({
+            key: `fx${i + 1}`,
+            label: `FX ${i + 1}`,
+            position: i,
+            paramPrefix: `master_fx:fx${i + 1}:`
+        });
+    }
+    comps.push({ key: "settings", label: "Settings", position: MASTER_FX_SLOTS, paramPrefix: "" });
+    return comps;
+})();
+
+/* Index of the settings box — always the last component. "Is a module box
+ * rather than the settings box" is a statement about THIS list, not about the
+ * slot cap, so gates on the selection use this and not MASTER_FX_SLOTS. */
+const MASTER_FX_SETTINGS_INDEX = MASTER_FX_CHAIN_COMPONENTS.length - 1;
+
+function makeEmptyMasterFxConfig() {
+    const cfg = {};
+    for (let i = 1; i <= MASTER_FX_SLOTS; i++) {
+        cfg[`fx${i}`] = { module: "" };
+    }
+    return cfg;
+}
 
 /* Master FX chain editing state */
-let masterFxConfig = {
-    fx1: { module: "" },
-    fx2: { module: "" },
-    fx3: { module: "" },
-    fx4: { module: "" }
-};
-let selectedMasterFxComponent = 0;    // -1=preset, 0-4: fx1, fx2, fx3, fx4, settings
+let masterFxConfig = makeEmptyMasterFxConfig();
+/* -1 = preset; 0..MASTER_FX_SLOTS-1 = fx1..fxN; MASTER_FX_SETTINGS_INDEX = settings */
+let selectedMasterFxComponent = 0;
 let selectingMasterFxModule = false;  // True when selecting module for a component
 let selectedMasterFxModuleIndex = 0;  // Index in MASTER_FX_OPTIONS during selection
 
@@ -2447,7 +2475,7 @@ function getPhysKnobState(fullKey, currentValue) {
 }
 /* Master FX flag - when true, exit returns to MASTER_FX view instead of CHAIN_EDIT */
 let hierEditorIsMasterFx = false;
-let hierEditorMasterFxSlot = -1;      // Which Master FX slot (0-3) we're editing
+let hierEditorMasterFxSlot = -1;      // Which Master FX slot (0..MASTER_FX_SLOTS-1) we're editing
 
 /* Set by enterHierarchyEditorFromParamPages(): the list editor is only open
  * here because the grid handed off a non-grid page (preset browser, items
@@ -3290,8 +3318,8 @@ function checkAndShowMidiFxError(slotIndex) {
 
 /* Check for Master FX error in a slot and show warning if found */
 function checkAndShowMasterFxError(fxSlot) {
-    /* fxSlot is 0-3 for the 4 Master FX slots */
-    const fxNum = fxSlot + 1;  /* fx1, fx2, fx3, fx4 */
+    /* fxSlot is 0-based: 0 .. MASTER_FX_SLOTS-1 */
+    const fxNum = fxSlot + 1;  /* fx1, fx2, ... */
     const fxError = getMasterFxParam(fxSlot, "error");
     if (fxError && fxError.length > 0) {
         const fxName = getMasterFxParam(fxSlot, "name") || `FX ${fxNum}`;
@@ -5274,7 +5302,7 @@ function getComponentHierarchy(slot, componentKey) {
 
 /* Fetch chain_params metadata from a Master FX slot */
 function getMasterFxChainParams(fxSlot) {
-    if (fxSlot < 0 || fxSlot >= 4) return [];
+    if (fxSlot < 0 || fxSlot >= MASTER_FX_SLOTS) return [];
     const fxKey = `fx${fxSlot + 1}`;
     const key = `master_fx:${fxKey}:chain_params`;
     const json = shadow_get_param(0, key);
@@ -5288,7 +5316,7 @@ function getMasterFxChainParams(fxSlot) {
 
 /* Fetch ui_hierarchy from a Master FX slot */
 function getMasterFxHierarchy(fxSlot) {
-    if (fxSlot < 0 || fxSlot >= 4) return null;
+    if (fxSlot < 0 || fxSlot >= MASTER_FX_SLOTS) return null;
     const fxKey = `fx${fxSlot + 1}`;
     const key = `master_fx:${fxKey}:ui_hierarchy`;
     const json = shadow_get_param(0, key);
@@ -6095,7 +6123,7 @@ function findMasterPresetByName(name) {
 
 function generateMasterPresetName() {
     const parts = [];
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < MASTER_FX_SLOTS; i++) {
         const key = `fx${i + 1}`;
         const moduleId = masterFxConfig[key]?.module;
         if (moduleId) {
@@ -6107,8 +6135,8 @@ function generateMasterPresetName() {
 }
 
 function clearMasterFx() {
-    /* Clear all 4 FX slots */
-    for (let i = 0; i < 4; i++) {
+    /* Clear every FX slot */
+    for (let i = 0; i < MASTER_FX_SLOTS; i++) {
         setMasterFxSlotModule(i, "");
         masterFxConfig[`fx${i + 1}`].module = "";
         /* Different module — it may implement display_name even if the
@@ -6132,7 +6160,7 @@ function loadMasterPreset(index, presetName) {
         const fx = preset.master_fx || {};
 
         /* Apply each FX slot */
-        for (let i = 0; i < 4; i++) {
+        for (let i = 0; i < MASTER_FX_SLOTS; i++) {
             const key = `fx${i + 1}`;
             const fxConfig = fx[key];
             if (fxConfig && fxConfig.type) {
@@ -6208,15 +6236,12 @@ function loadMasterPreset(index, presetName) {
 
 /* Build JSON for saving master preset */
 function buildMasterPresetJson(name) {
-    const preset = {
-        custom_name: name,
-        fx1: null,
-        fx2: null,
-        fx3: null,
-        fx4: null
-    };
+    const preset = { custom_name: name };
+    for (let i = 1; i <= MASTER_FX_SLOTS; i++) {
+        preset[`fx${i}`] = null;
+    }
 
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < MASTER_FX_SLOTS; i++) {
         const key = `fx${i + 1}`;
         const moduleId = masterFxConfig[key]?.module;
         if (moduleId) {
@@ -7390,15 +7415,10 @@ function handleGlobalSettingsAction(key) {
 
 /* Load master FX chain configuration from DSP */
 function loadMasterFxChainConfig() {
-    masterFxConfig = {
-        fx1: { module: "" },
-        fx2: { module: "" },
-        fx3: { module: "" },
-        fx4: { module: "" }
-    };
+    masterFxConfig = makeEmptyMasterFxConfig();
 
     /* Query each slot's module from DSP */
-    for (let i = 1; i <= 4; i++) {
+    for (let i = 1; i <= MASTER_FX_SLOTS; i++) {
         const key = `fx${i}`;
         const moduleId = getMasterFxSlotModule(i - 1);
         masterFxConfig[key].module = moduleId || "";
@@ -7410,7 +7430,7 @@ function loadMasterFxChainConfig() {
     }
 }
 
-/* Get a parameter from a master FX slot (0-3) */
+/* Get a parameter from a master FX slot (0..MASTER_FX_SLOTS-1) */
 function getMasterFxParam(slotIndex, key) {
     if (typeof shadow_get_param !== "function") return "";
     try {
@@ -7420,7 +7440,7 @@ function getMasterFxParam(slotIndex, key) {
     }
 }
 
-/* Get module ID loaded in a master FX slot (0-3) */
+/* Get module ID loaded in a master FX slot (0..MASTER_FX_SLOTS-1) */
 function getMasterFxSlotModule(slotIndex) {
     if (typeof shadow_get_param !== "function") return "";
     try {
@@ -7516,7 +7536,7 @@ function saveMasterFxChainConfig() {
                 masterFxLfoConfig = lfos;
             }
         }
-        for (let i = 1; i <= 4; i++) {
+        for (let i = 1; i <= MASTER_FX_SLOTS; i++) {
             const key = `fx${i}`;
             const slotIdx = i - 1;
             const moduleId = masterFxConfig[key]?.module || "";
@@ -7883,7 +7903,7 @@ function loadMasterFxChainFromConfig() {
         }
 
         /* Sync masterFxConfig from state files (shim already loaded the modules) */
-        for (let i = 0; i < 4; i++) {
+        for (let i = 0; i < MASTER_FX_SLOTS; i++) {
             const key = `fx${i + 1}`;
             const stateFilePath = activeSlotStateDir + "/master_fx_" + i + ".json";
             try {
@@ -9609,7 +9629,7 @@ function enterHierarchyEditorWith(slotIndex, componentKey, hierarchy) {
 
 /* Enter hierarchy-based parameter editor for a Master FX slot */
 function enterMasterFxHierarchyEditor(fxSlot) {
-    if (fxSlot < 0 || fxSlot >= 4) return;
+    if (fxSlot < 0 || fxSlot >= MASTER_FX_SLOTS) return;
 
     const hierarchy = getMasterFxHierarchy(fxSlot);
     if (!hierarchy) {
@@ -10404,7 +10424,7 @@ function buildKnobContextForKnob(knobIndex) {
     }
 
     /* Master FX view with FX slot selected */
-    if (view === VIEWS.MASTER_FX && selectedMasterFxComponent >= 0 && selectedMasterFxComponent < 4) {
+    if (view === VIEWS.MASTER_FX && selectedMasterFxComponent >= 0 && selectedMasterFxComponent < MASTER_FX_SETTINGS_INDEX) {
         const comp = MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
         if (comp && comp.key !== "settings") {
             const chainParams = getMasterFxChainParams(selectedMasterFxComponent);
@@ -12807,7 +12827,7 @@ function updateFocusedSlot(slot) {
 
     /* Check for Master FX errors when selecting the Master FX slot (slot 4) */
     if (slot === SHADOW_UI_SLOTS) {  /* Slot 4 = Master FX */
-        for (let fx = 0; fx < 4; fx++) {
+        for (let fx = 0; fx < MASTER_FX_SLOTS; fx++) {
             if (warningShownForMasterFx.has(fx)) continue;
             const fxModule = getMasterFxParam(fx, "module");
             if (fxModule && fxModule.length > 0) {
@@ -15231,6 +15251,8 @@ function drawHelpDetail() {
     });
 
     _ctx.MASTER_FX_CHAIN_COMPONENTS = MASTER_FX_CHAIN_COMPONENTS;
+    _ctx.MASTER_FX_SLOTS = MASTER_FX_SLOTS;
+    _ctx.MASTER_FX_SETTINGS_INDEX = MASTER_FX_SETTINGS_INDEX;
 
     /* Utility functions */
     _ctx.setView = setView;
@@ -15715,12 +15737,15 @@ function makeMfxLfoCtx(lfoIdx) {
         setParamBlocking: function(key, val) { return shadowSetParamBlocking(0, prefix + key, val); },
         getTargetComponents: function() {
             const comps = [];
-            /* Four, not a published count: Master FX is a FIXED array of
+            /* The cap, not a published count: Master FX is a FIXED array of
              * MASTER_FX_SLOTS (shadow_chain_mgmt.h), not a variable-length
-             * list, and it publishes no count to ask. This walks the whole
-             * thing already, so it has none of the slot version's blind spot
-             * — do not "fix" it to match. */
-            for (let i = 0; i < 4; i++) {
+             * list, and it publishes no count to ask. So do NOT "fix" this to
+             * read a count the way the slot version does — there isn't one.
+             * It must, however, TRACK THE CAP: this used to be a bare 4, and a
+             * bare 4 walks only half an 8-slot Master FX, silently dropping
+             * FX 5-8 from the LFO target picker. Bound by the constant so the
+             * cap moves it. */
+            for (let i = 0; i < MASTER_FX_SLOTS; i++) {
                 const name = shadow_get_param(0, "master_fx:fx" + (i + 1) + ":name") || "";
                 if (name) {
                     comps.push({ key: "fx" + (i + 1), label: "FX " + (i + 1) + ": " + name });
@@ -16626,6 +16651,14 @@ globalThis.tick = function() {
                     for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
                         const src = host_read_file(copySourceDir + "/slot_" + i + ".json");
                         if (src) host_write_file(newDir + "/slot_" + i + ".json", src);
+                    }
+                    /* master_fx_N.json is bounded by MASTER_FX_SLOTS, NOT by
+                     * the instrument-slot count. They are different concepts
+                     * that merely happen to both be 4 today; copying both
+                     * families in one SHADOW_UI_SLOTS loop means duplicating a
+                     * set would silently drop Master FX 5-8. The C seeder
+                     * (shadow_set_pages.c) is split the same way. */
+                    for (let i = 0; i < MASTER_FX_SLOTS; i++) {
                         const mfx = host_read_file(copySourceDir + "/master_fx_" + i + ".json");
                         if (mfx) host_write_file(newDir + "/master_fx_" + i + ".json", mfx);
                     }
@@ -16637,6 +16670,9 @@ globalThis.tick = function() {
                     debugLog("SET_CHANGED: new set, starting with empty slots");
                     for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
                         host_write_file(newDir + "/slot_" + i + ".json", "{}\n");
+                    }
+                    /* Separate bound — see the copy path above. */
+                    for (let i = 0; i < MASTER_FX_SLOTS; i++) {
                         host_write_file(newDir + "/master_fx_" + i + ".json", "{}\n");
                     }
                     /* Seed a default chain config so receive channels reset to
@@ -16720,7 +16756,7 @@ globalThis.tick = function() {
             autosaveSuppressUntil = 150; /* ~5 seconds at 30fps */
 
             /* 7. Reload master FX modules from per-set state files */
-            for (let mfxi = 0; mfxi < 4; mfxi++) {
+            for (let mfxi = 0; mfxi < MASTER_FX_SLOTS; mfxi++) {
                 const mfxPath = activeSlotStateDir + "/master_fx_" + mfxi + ".json";
                 let mfxDspPath = "";
                 let mfxModuleId = "";
@@ -16969,8 +17005,8 @@ globalThis.tick = function() {
             }
         }
         /* Master FX */
-        const masterFxKeys = ["fx1", "fx2", "fx3", "fx4"];
-        for (const key of masterFxKeys) {
+        for (const { key } of MASTER_FX_CHAIN_COMPONENTS) {
+            if (key === "settings") continue;
             if (!masterFxConfig[key] || !masterFxConfig[key].module) continue;
             const cacheKey = `master:${key}`;
             const name = pollFxDisplayName(0, `master_fx:${key}:display_name`, cacheKey);
@@ -17675,7 +17711,7 @@ globalThis.onMidiMessageInternal = function(data) {
                 runCoRunChainEdit(function() {
                     if (hostShiftHeld && view === VIEWS.CHAIN_EDIT && selectedChainComponent >= 0) {
                         handleShiftSelect();
-                    } else if (hostShiftHeld && view === VIEWS.MASTER_FX && selectedMasterFxComponent >= 0 && selectedMasterFxComponent < 4) {
+                    } else if (hostShiftHeld && view === VIEWS.MASTER_FX && selectedMasterFxComponent >= 0 && selectedMasterFxComponent < MASTER_FX_SETTINGS_INDEX) {
                         enterMasterFxModuleSelect(selectedMasterFxComponent);
                     } else {
                         handleSelect();
@@ -17863,7 +17899,7 @@ globalThis.onMidiMessageInternal = function(data) {
             /* Shift+Click in chain edit enters component edit mode */
             if (isShiftHeld() && view === VIEWS.CHAIN_EDIT && selectedChainComponent >= 0) {
                 handleShiftSelect();
-            } else if (isShiftHeld() && view === VIEWS.MASTER_FX && selectedMasterFxComponent >= 0 && selectedMasterFxComponent < 4) {
+            } else if (isShiftHeld() && view === VIEWS.MASTER_FX && selectedMasterFxComponent >= 0 && selectedMasterFxComponent < MASTER_FX_SETTINGS_INDEX) {
                 /* Shift+Click in Master FX view enters module selector for the slot */
                 enterMasterFxModuleSelect(selectedMasterFxComponent);
             } else {
