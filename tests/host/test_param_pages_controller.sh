@@ -973,6 +973,18 @@ Promise.all([
       if (ctl3.pageIndex !== rootPreset)
         fail("choosing a bank should land on the root preset browser, got page " +
              ctl3.pageIndex + " (" + (ctl3.page && ctl3.page.kind) + ")");
+
+      /* ...and it arrives ENTERED. Reported from the device once the landing
+       * was right: "shouldnt presets be already active? i have to click into
+       * it." The jog is inert on a door you PAGED to, so that browsing past
+       * one cannot audition every preset it passes — but this one was chosen,
+       * and one deliberate gesture should not need a second to take effect. */
+      if (!ctl3.menuEntered())
+        fail("a preset browser you were SENT to should arrive entered, not need a click");
+      /* Entering must not have written: a browser auditions on turn, not on
+       * arrival, so being handed the jog cannot load a preset by itself. */
+      if (dev3.writes.some(([k]) => /:preset$/.test(String(k))))
+        fail("arriving on the preset browser loaded a preset: " + JSON.stringify(dev3.writes));
     }
 
     /* ---- shift still escapes from inside -------------------------------- */
