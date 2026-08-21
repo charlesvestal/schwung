@@ -41,6 +41,7 @@
             },
             {
               "key": "curve_preset",
+              "options_as_string": true,
               "name": "Curve Preset",
               "type": "enum",
               "options": ["Linear", "Soft", "Softer", "Hard", "Harder"],

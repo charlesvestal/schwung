@@ -29,6 +29,7 @@ import { clamp01, fractionOf, line } from "./render_page.mjs";
 import {
     VIZ_ENVELOPE, VIZ_FILTER, VIZ_LFO, VIZ_WAVEFORM, VIZ_FADER, VIZ_SWITCH, VIZ_EQ, VIZ_SAMPLE,
 } from "./viz.mjs";
+import { enumIndexOf } from "./param_meta.mjs";
 
 /* -------------------------------------------------------------- primitives */
 
@@ -310,7 +311,8 @@ function optionText(metaIndex, key, values) {
     const meta = metaIndex.getOrGuess(key);
     const raw = values ? values[key] : undefined;
     if (!meta || !Array.isArray(meta.options)) return "";
-    const idx = Math.round(Number(raw));
+    /* Resolves a name-reporting plugin's value too — see enumIndexOf. */
+    const idx = enumIndexOf(meta, raw);
     return (idx >= 0 && idx < meta.options.length) ? String(meta.options[idx]) : "";
 }
 

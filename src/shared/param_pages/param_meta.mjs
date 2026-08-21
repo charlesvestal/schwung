@@ -24,6 +24,8 @@
  *                  narrow fallback and never infers structure.
  */
 
+import { enumWiresNames } from "../param_format.mjs";
+
 /** A knob turns it continuously — float/int. */
 export const KIND_NUMBER = "number";
 /** A knob steps through discrete options — enum/toggle. */
@@ -184,16 +186,87 @@ function normalize(key, raw) {
     const opaqueType = OPAQUE_TYPES.has(type);
     const ranged = typeof meta.min === "number" && typeof meta.max === "number"
                    && meta.max > meta.min;
-    meta.divable = opaqueType;
+    /*
+     * An ENUM is a third case, and it is why `divable` and the MARK had to come
+     * apart as well.
+     *
+     * Every enum opens a list of its options on a click, and the knob keeps
+     * stepping it — a Recv Ch with seventeen options or a Braids algorithm with
+     * forty-seven is not something you want to hunt for one detent at a time.
+     * So an enum is divable AND KIND_ENUM, exactly the pairing wav_position
+     * already needed.
+     *
+     * But it must NOT wear the corner brackets. There are ~135 enum params in
+     * the fleet against ~5 filepath/string/canvas ones: bracket them all and
+     * nearly every cell on nearly every page is marked, which is the same as
+     * marking none. Worse, the mark is STRUCTURAL for an opaque cell —
+     * drawOpaqueBox draws no frame of its own, the brackets are its frame (see
+     * render_page_movy.mjs) — so it cannot simply be made rarer either.
+     *
+     * Hence `divable_mark`, which is what the renderer keys on, and which stays
+     * exactly where it was: the opaque types, wav_position included. The
+     * affordance for an enum is the footer, which flips to CLK OPEN off
+     * `divable` for free.
+     *
+     * An enum that declares NO options is index-addressed and has no list to
+     * show, so it is not a door.
+     */
+    const listableEnum = type === "enum"
+                       && Array.isArray(meta.options) && meta.options.length > 0;
+    meta.divable_mark = opaqueType;
+    meta.divable = opaqueType || listableEnum;
     meta.kind = (opaqueType && !(type === "wav_position" && ranged)) ? KIND_OPAQUE
               : type === "enum" ? KIND_ENUM
               : KIND_NUMBER;
     return meta;
 }
 
+/**
+ * An enum's raw value as an INDEX, whichever convention it arrived in.
+ *
+ * The grid holds enums as numbers end to end, but a plugin is equally entitled
+ * to report `"major"` as `"1"` (see learnEnumWireFormat in param_format.mjs),
+ * and `Number("major")` is NaN — which seeds a knob at option 0 instead of
+ * where the value actually is, and makes a widget fall back to printing the
+ * raw string instead of consulting `short_options`.
+ *
+ * @returns {number} the index, or -1 when the value resolves to neither
+ */
+export function enumIndexOf(meta, raw) {
+    if (!meta || raw === null || raw === undefined) return -1;
+    const s = String(raw);
+    if (s.trim() === "") return -1;
+    const byName = Array.isArray(meta.options)
+        ? (meta.options.indexOf(s) >= 0 ? meta.options.indexOf(s) : meta.options.indexOf(s.trim()))
+        : -1;
+    const num = Number(s.trim());
+    const byNumber = isFinite(num) ? Math.round(num) : -1;
+    /*
+     * An enum whose OPTIONS are themselves numerals ("1", "2", "4", "8") makes
+     * the two readings disagree — "4" is the name of option 2 — and nothing in
+     * the value can settle it. The known convention can: ask the name first
+     * for a plugin that speaks names, and the number first for one that does
+     * not. Same precedence as shadow_ui.js's `pluginUsesIndex`, which checks
+     * `options.indexOf(currentVal)` before parsing an int.
+     */
+    if (enumWiresNames(meta)) return byName >= 0 ? byName : byNumber;
+    return byNumber >= 0 ? byNumber : byName;
+}
+
 /** True when clicking this param should open an editor the grid does not own. */
 export function isDivable(meta) {
     return !!meta && !!meta.divable;
+}
+
+/**
+ * True when the cell should WEAR the corner brackets.
+ *
+ * Deliberately not the same question as isDivable — see normalize(). Every
+ * enum is divable and none of them is marked, because a mark on 135 of 140
+ * params is not a mark.
+ */
+export function isDivableMarked(meta) {
+    return !!meta && !!meta.divable_mark;
 }
 
 /** True when a knob can drive this param at all. */

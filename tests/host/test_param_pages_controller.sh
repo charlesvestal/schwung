@@ -926,6 +926,55 @@ Promise.all([
         fail("navigate_to should land on the level it names, got page " + ctl2.pageIndex);
     }
 
+    /* ---- ...and when that level is BOTH pages, it means the list --------
+     *
+     * Reported from the device as "jump to category lands on knobs, not the
+     * preset list". This is obxd: `banks` declares navigate_to `root`, and
+     * root carries list_param/count_param AND knobs, so it plans a preset
+     * browser AND a grid. Naming the level did not say which, and the lookup
+     * filtered to PAGE_KNOBS, so it could only ever find the grid.
+     *
+     * Driven off the real fleet fixture rather than a hand-written hierarchy:
+     * the whole reason this went unnoticed is that no invented contract has
+     * a level wearing both hats, and hand-rolling one here would pin the fix
+     * without pinning the case that motivated it.
+     *
+     * (No apostrophes anywhere in this file: the whole suite is one
+     * single-quoted node -e argument, and one would end it.)
+     */
+    {
+      const dev3 = D.createFakeDevice({ id: "obxd" });
+      const banks = [{ index: 0, label: "Factory" }, { index: 1, label: "Vintage" }];
+      const ctl3 = C.createController({
+        ...dev3,
+        getParam: (k) => {
+          const b = String(k).replace(/^[^:]+:/, "");
+          if (b === "fxb_bank_list") return JSON.stringify(banks);
+          if (b === "bank_index") return "0";
+          return dev3.getParam(k);
+        },
+      });
+      ctl3.load({ slot: 0, component: "synth" });
+
+      const banksAt = ctl3.pages.findIndex((p) => p.kind === "items" && p.level === "banks");
+      const rootPreset = ctl3.pages.findIndex((p) => p.level === "root" && p.kind === "preset");
+      const rootGrid = ctl3.pages.findIndex((p) => p.level === "root" && p.kind === "knobs");
+      if (banksAt < 0) fail("obxd fixture should plan a banks items page");
+      if (rootPreset < 0 || rootGrid < 0)
+        fail("obxd root should plan BOTH a preset browser and a grid - the whole point of this case");
+
+      ctl3.goToPage(banksAt, { remember: false });
+      for (let i = 0; i < 8; i++) ctl3.tick();
+      ctl3.onClick(-1);   /* enter the list */
+      ctl3.onClick(-1);   /* choose the highlighted bank */
+
+      if (ctl3.pageIndex === rootGrid)
+        fail("choosing a bank landed on the root knob grid - the reported bug");
+      if (ctl3.pageIndex !== rootPreset)
+        fail("choosing a bank should land on the root preset browser, got page " +
+             ctl3.pageIndex + " (" + (ctl3.page && ctl3.page.kind) + ")");
+    }
+
     /* ---- shift still escapes from inside -------------------------------- */
     ctl.goToPage(itemsAt, { remember: false });
     for (let i = 0; i < 6; i++) ctl.tick();

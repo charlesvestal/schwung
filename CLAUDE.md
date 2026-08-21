@@ -397,6 +397,49 @@ byte-identical against `tests/fixtures/movy-geom-baseline.txt`
 Preview it without deploying: `node tools/param-pages/preview_knob_card.mjs
 <module-id> --knob N [--short] [--png DIR --scale 4]`.
 
+### Every enum opens a LIST
+
+Any enum that declares `options` is divable: hold its knob, click, pick from a
+scrolling list, Back cancels. The knob still steps it one detent at a time —
+the list is the other half, for a Recv Ch with seventeen options or a Braids
+model with forty-seven. `VIEWS.ENUM_PICKER`, `drawEnumPicker` in
+`src/shadow/shadow_ui.js`, hints `JOG SEL` / `CLK SET` / `BACK EXIT`
+(`enumPickerFooterHints` in `shadow_ui_param_pages.mjs` — the hint vocabulary is
+a canon, so the wording is built there and not at the draw site).
+
+**`meta.divable` and `meta.divable_mark` are separate on purpose.** The corner
+brackets key on `divable_mark`, which stays exactly where it was: the opaque
+types. ~135 enums in the fleet against ~5 opaque params — bracket them all and
+every cell on every page is marked, which is the same as marking none; and for
+an opaque cell the brackets are STRUCTURAL, because `drawOpaqueBox` draws no
+frame of its own. Net pixel change on the grid is zero. The affordance for an
+enum is the footer, which flips to `CLK OPEN` off `divable` for free. An enum
+with no declared options has no list, so it is not a door.
+
+**The picker wears the movy chrome from BOTH entry points** — the knob grid, and
+a jog-click on an enum row in the hierarchy list editor — and reuses the one
+shared `drawMenuList`. Following the caller's chrome instead would be a
+`cameFromGrid` branch inside a shared draw, which is the exact thing
+`chain_editor_chrome.mjs` records the module picker doing before ("the module
+select here is different than the module select in slots", reported from the
+device). Entry-point chrome is that branch coming back.
+
+**The list rect starts at y=9, not `MENU_LIST_Y`.** `MENU_LIST_Y` (10) leaves
+44px, which at a 9px line is FOUR options where the old chrome showed FIVE. 9 is
+safe only because this header is not inverted — the glyphs stop at row 5, so the
+selected row's highlight at row 8 still has air above it. **A menu page cannot
+do the same: its bank bar owns row 7.** `tests/host/test_enum_picker_chrome.sh`
+pins it as `CAPACITY === OLD_CAPACITY` and `clipped() === 0`, because the device
+clips silently and losing the last option to a band drawn over it is a failure
+this codebase has already had.
+
+Nothing is written on the way in or while scrolling, so Back is a real cancel
+and the draw path costs no IPC. The grid path keeps its controller alive and
+commits through `controller.commitEnum` — that is what makes the picker work on
+Slot Settings and Master FX Settings, which are synthesised contracts with no
+`ui_hierarchy` to enter, and it keeps the slot io's own mappings (Fwd's offset,
+MPE's compound write) applied rather than bypassed.
+
 ### Recording / capture
 
 Audio capture is shim-side: the Quantized Sampler (Shift+Sample) and Skipback
@@ -407,6 +450,43 @@ unreachable v1 plugin path.)
 ## Shadow Mode
 
 Shim intercepts hardware I/O to mix shadow audio with Move's output.
+
+### A param read has THREE answers, not two
+
+`shadow_get_param` (`js_shadow_get_param`, `src/shadow/shadow_ui.c`) returns:
+
+```
+JSON / text   the component answered
+""            the channel served us, the key produced nothing
+null          the read did not complete — claim refused, response timed out,
+              or the answer belonged to somebody else
+```
+
+`null` is **not news about the module.** Collapsing it into `""` cost three
+separate bugs in one day: `impressive-chords` reporting a literal `"[]"` for
+`chain_params` and being believed; missing metadata making the grid invent a
+`float 0..1 step 0.01` knob and write `0.058750` into an enum; and granny's
+knobs reordering with `sample_path` on knob 1, because a timed-out
+`ui_hierarchy` read was read as "this module has no hierarchy", paginated
+`chain_params` instead — and then **latched**, because the invented metadata
+looked complete enough to settle.
+
+**Never let a failed read produce a plan, a default, or a cached verdict.**
+Branch on the RAW value before parsing: `parse(null)` and `parse("")` both give
+`null`, so by the time it is parsed the distinction is gone and only the caller
+that saw the wire can report it. In `page_controller.mjs` that is
+`contractUnresolved` — plan nothing, keep the previous page set if it is the
+same component, retry on `CONTRACT_RETRY_INTERVAL_TICKS` up to
+`CONTRACT_RETRY_LIMIT`, and refuse to `metaSettled` while unresolved.
+`planPages({ unresolved: true })` returns no pages for any other consumer.
+
+Wrinkle: `tests/fixtures/module-contracts.json` records `ui_hierarchy: null` for
+the four modules that genuinely declare none, so at PLANNER level `null` still
+means absent. The tri-state exists only where the wire is visible.
+
+(granny's read fails because it loads a WAV synchronously inside `set_param`, on
+the SPI thread that serves param requests. That realtime violation lives in its
+own repo and is not fixed here.)
 
 ### Shortcuts
 

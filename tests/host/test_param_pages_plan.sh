@@ -223,6 +223,72 @@ import("./src/shared/param_pages/page_plan.mjs").then(async (m) => {
     if (kNone.size >= kAll.size) fail("visible_if evaluator had no effect");
   }
 
+  /* ---- 11. a FAILED contract read must not produce a page plan ---------- */
+  {
+    /*
+     * The wire has three answers for `<prefix>:ui_hierarchy` and only two of
+     * them are the same thing:
+     *
+     *   JSON      the module declares this hierarchy
+     *   ""        the module declares NO hierarchy      -> paginate chain_params
+     *   null      the READ FAILED (param channel busy)  -> we know nothing
+     *
+     * The first two both parse to something the planner can act on; a failed
+     * read parses to nothing, which is indistinguishable from absence by the
+     * time it gets here — the fleet capture itself records `ui_hierarchy: null`
+     * for the four modules that genuinely have none. So the caller, the only
+     * one that saw the wire, passes `unresolved`.
+     *
+     * Collapsing the two is the granny bug: pick a sample, granny loads the WAV
+     * synchronously on the param-serving thread, the ui_hierarchy read times
+     * out at 100 ms, and the planner happily paginates chain_params instead —
+     * whose first entry is `sample_path`, so the sample file lands on knob 1
+     * and every other knob shifts.
+     */
+    const g = fx.modules.find((x) => x.id === "granny");
+    if (!g) fail("fixture has no module \"granny\"");
+    if (g.chain_params[0].key !== "sample_path")
+      fail("granny fixture changed: chain_params[0] is no longer sample_path, " +
+           "so this test no longer reproduces the reported bug");
+
+    const good = planPages({ hierarchy: g.ui_hierarchy, chainParams: g.chain_params });
+    if (good.pages[0].keys[0] !== "position")
+      fail("granny page 1 knob 1 should be position, got " + good.pages[0].keys[0]);
+    if (good.unresolved) fail("a good contract was reported unresolved");
+
+    /* What the bug looked like: chain_params paginated as though the module had
+     * declared no hierarchy at all. Pinned so the symptom stays legible. */
+    const asAbsent = planPages({ hierarchy: null, chainParams: g.chain_params });
+    if (asAbsent.pages[0].keys[0] !== "sample_path")
+      fail("the granny chain_params fallback no longer starts with sample_path — " +
+           "this test no longer describes the reported symptom");
+
+    /* ...and that is exactly what an unresolved read must NOT produce. */
+    for (const h of [null, g.ui_hierarchy]) {
+      const r = planPages({ hierarchy: h, chainParams: g.chain_params, unresolved: true });
+      if (!r.unresolved) fail("planPages did not report unresolved back to the caller");
+      if (r.pages.length !== 0)
+        fail("an unresolved contract produced " + r.pages.length + " page(s): " +
+             JSON.stringify((r.pages[0] || {}).keys));
+      if ((r.pages[0] || { keys: [] }).keys[0] === "sample_path")
+        fail("an unresolved contract put sample_path on knob 1");
+    }
+
+    /* ...and the fallback that legitimately exists must be untouched: four
+     * fleet modules publish chain_params and no hierarchy at all. */
+    for (const id of ["branchage", "belt-in", "po32-drum", "smack-in"]) {
+      const m = fx.modules.find((x) => x.id === id);
+      if (!m) continue;
+      if (m.ui_hierarchy) fail(id + " grew a ui_hierarchy; pick another no-hierarchy module");
+      const r = planPages({ hierarchy: m.ui_hierarchy, chainParams: m.chain_params });
+      if (r.unresolved) fail(id + ": genuine absence was reported as unresolved");
+      if (!r.pages.length) fail(id + ": chain_params pagination fallback stopped working");
+      if (r.pages[0].name !== "Params") fail(id + ": fallback page 1 is named " + r.pages[0].name);
+      if (r.pages[0].keys[0] !== m.chain_params[0].key)
+        fail(id + ": fallback no longer paginates in declaration order");
+    }
+  }
+
   console.log("PASS: param-page planner — " + fx.modules.length + " modules, " + totalPages +
               " pages, every declared key reachable, no duplicate page names");
 });

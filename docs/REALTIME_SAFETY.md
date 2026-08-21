@@ -109,10 +109,57 @@ load), and the current-set filesystem scan (results delivered through a
 seqlock snapshot consumed on the SPI thread). When adding RT-path work that
 needs file I/O or process spawning: post an event, add a hook.
 
-## Accepted tradeoff: patch/module load runs on the SPI thread
+## Module load blocks the SPI callback — MEASURED at 673 ms
 
-`set_param("load_patch")` and Master-FX slot loads reach dlopen/fopen/calloc
-from the SPI thread by design — the audible hiccup on load is accepted.
-A glitch-free alternative (loader thread + atomic instance swap, masked by
-the existing fade machinery) is sketched in the 2026-06-11 cleanup review.
-Don't re-investigate "why does loading glitch" — this is it.
+`set_param("<id>:module")`, `load_patch`, `load_file` and Master-FX slot loads
+reach `dlopen` / `fopen` / `calloc` and the plugin's own `create_instance` from
+the SPI thread. This was recorded here as an "accepted tradeoff" with an
+"audible hiccup". It is not a hiccup.
+
+**Measured on hardware 2026-08-21, loading minijv from the chain editor:**
+
+```
+param  = 678 / 672889 us     one param request took 672.9 ms
+total  max = 673487 us       the whole frame
+pre    max = 673004 us       essentially all of it before the transfer
+ioctl  max =   2932 us       the transfer itself was normal
+```
+
+Against a **2900 us** frame budget that is **~232 consecutive dropped frames**.
+Idle `param` max is 35-80 us, so a load is roughly four orders of magnitude
+over. Corroborated independently one line earlier in the same log by a
+different subsystem: `[link_subscriber] cbgap slot=3 674.3 ms`. The whole
+system stops, not just the slot being loaded.
+
+**Where the time goes.** Not `dlopen`, and not file I/O. minijv loads ROMs
+inside `create_instance`, and **the plugin API has no realtime contract** —
+`create_instance` may do anything, most modules ship outside this tree, and
+the cost is therefore unbounded and unknowable from here. Any budget set
+against modules in this repo is a lower bound.
+
+**The previous entry cited a design that does not exist.** It pointed at
+`docs/plans/2026-06-11-codebase-cleanup-review.md`; that file's only mention
+(line 103) is a one-line TODO to *write this section*. The citation was
+circular, and "don't re-investigate" then discouraged anyone from finding out
+the number was 673 ms.
+
+**The design does exist, in code.** `SHIM_EVT_OVERTAKE_DSP_LOAD`
+(`src/schwung_shim.c:1570-1805`) already does loader-thread + staged instance +
+detach-then-defer free for overtake modules, including a deliberate
+leak-on-timeout because "a leak is recoverable; a use-after-free in the audio
+path is not". The chain path never adopted it. See residual 2.6.
+
+**What makes the port non-trivial** (all verified, not assumed):
+- The module triple (`handle` / `plugin_v2` / `instance`) is a check-then-call
+  over three non-atomic words read from `chain_midi.c` in five places. Off
+  thread, a `dlclose` under a reader is a jump into an unmapped segment.
+- Chain instances are touched on **both** sides of the ioctl — `mix_audio` and
+  `forward_midi` before, `render_block` / `shadow_chain_process_fx` after — so a
+  worker must be excluded from two windows separated by a ~2 ms blocking call,
+  not one.
+- Four **synchronous read-backs** live inside the param handler in C
+  (`shadow_chain_mgmt.c:3341`, `:3362`, `:3388`, `:3406`). The
+  `default_forward_channel` one fails *silently* if the load is deferred: wrong
+  MIDI routing, no error, no crash.
+- The patch path is already fade-masked to silence before loading; the
+  `<id>:module` write path is not, and that is the one users hit.
