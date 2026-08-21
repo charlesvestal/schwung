@@ -6317,10 +6317,30 @@ function generateSlotPresetName(slotIndex) {
  * slot_N.json, and the next pass is five seconds away. So it takes one extra
  * attempt, not three.
  */
+/*
+ * A state read has THREE answers, and only retrying is right for one of them.
+ *
+ *   JSON/text  the component serialised its state
+ *   ""         the channel served us and the module declares no `state` key
+ *   null       the read did not complete (claim refused, timeout, stolen)
+ *
+ * `if (state)` collapsed the last two, so a module that legitimately
+ * implements no `state` looked identical to a shim round-trip that timed out —
+ * and the caller's bail-to-protect-a-good-file then abandoned the WHOLE slot's
+ * autosave, including the other components in it. `denis` and `branchage`
+ * implement no `state`; a slot containing either never autosaved anything,
+ * ever, and neither did the FX behind it. Found in the 2026-08 fleet audit.
+ *
+ * This is the same rule as the contract reads in page_controller.mjs, one
+ * layer up: branch on the RAW value before testing it for truthiness, because
+ * `""` and `null` are both falsy and by then the distinction is gone.
+ */
 function getSlotStateWithRetry(slotIndex, key, retries) {
     const limit = (typeof retries === "number") ? retries : 3;
     let state = getSlotParam(slotIndex, key);
     if (state) return state;
+    /* Served, and the module has nothing here. Retrying cannot change that. */
+    if (state === "") return "";
     for (let attempt = 1; attempt <= limit; attempt++) {
         state = getSlotParam(slotIndex, key);
         if (state) {
@@ -6328,6 +6348,7 @@ function getSlotStateWithRetry(slotIndex, key, retries) {
                      key + " succeeded on retry " + attempt);
             return state;
         }
+        if (state === "") return "";
     }
     return null;
 }
@@ -6377,11 +6398,17 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
                 /* State is not JSON (e.g. key=value pairs) — store as opaque string */
                 config = { state: stateJson };
             }
-        } else if (bailIfEmpty) {
-            /* State query timed out AND the module is unchanged — skip autosave
-             * to avoid clobbering a good file (it would revert to defaults). */
+        } else if (stateJson === null && bailIfEmpty) {
+            /* The read FAILED (timeout / refused claim) and the module is
+             * unchanged — skip autosave rather than clobber a good file, which
+             * would revert it to defaults.
+             *
+             * `stateJson === null` is load-bearing: `""` means the module
+             * declares no `state`, which is an answer, not a failure. Bailing
+             * on that abandoned the whole slot forever for denis and branchage
+             * — see getSlotStateWithRetry. */
             debugLog("buildSlotPatchJson: slot " + slotIndex + " " + id +
-                     ":state empty after retries — bailing (preserving existing slot_" +
+                     ":state read FAILED after retries — bailing (preserving existing slot_" +
                      slotIndex + ".json)");
             return BAIL;
         }
