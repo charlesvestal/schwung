@@ -1,0 +1,83 @@
+# One line per chain-editor case: <id> <sha1-of-the-128x64-pixel-buffer>, sorted.
+#
+# Captured BEFORE step 4a of the Master FX variable-length design converges
+# drawChainEdit and drawMasterFx into one editor. That order is the whole
+# point: a baseline regenerated after the refactor compares the new code
+# against itself. This file must stay re-derivable from the commit before
+# 4a touches either draw function.
+#
+# A mismatch names which case moved, and the runner prints the render.
+#
+# Regenerate with:
+#     UPDATE_CHAIN_EDITOR_BASELINE=1 bash tests/host/test_chain_editor_snapshot.sh
+chain/full/lfo-midi-fx1 d78e6ffd1ec0888013014fb28c64bc69e48f6b39
+chain/full/sel-add-fx 9d3a314450ec58c3ca50b1226eab5f517c1cf6ef
+chain/full/sel-add-midi c4912ee36b8aeb96effc1c7fa8bf628620f7ca55
+chain/full/sel-fx8 aa8c5e71c96ad67aa272f9730373c5f4c8751248
+chain/full/sel-midiFx e2559d8746eec2fc562c887bc888795aa4aa7415
+chain/full/sel-patch 183e0670ca7a91fe11a7c3cccb69836baa7cf5cd
+chain/full/sel-settings 117837b0ee96246e9192d8c20f238c0b43222a07
+chain/full/sel-synth ac97092d6e1f7f6dad442aad79041b7127849b5d
+chain/full/shift bb059dd5a694176f6582b9d7b836db66f6d98a26
+chain/len0/no-synth 911d8f1ac171d1a92742f86a580ff251806c53f1
+chain/len0/sel-add-fx 3601abc4dbb36fa0abb9bca7f0bd4281d89fcc58
+chain/len0/sel-add-midi 093ee15e19f89f769e05be9af81d81aaee0a0d9a
+chain/len0/sel-patch bf4452377229a27bb740a37912508341c6932023
+chain/len0/sel-settings c63c79d06ac208d01fb76d9a496b93c0303af4e1
+chain/len0/sel-synth 1c565f9e3df7b8e5c377f63c5fe874980be0aa43
+chain/len0/shift f7ad8be2a8f06c011b505bd5c2db6eba9f4f2b47
+chain/len1/knob-card e21f2f59bd8c069069c62d3ea09931f48b432316
+chain/len1/sel-first 6fcac943a373d303574ef580de5a440ef233af6d
+chain/len1/sel-fx1 170cfeacae21f98c3116deffb3c3514a462812a2
+chain/len2/bypassed 325bd468ed7058dadb36f456060718d31e24f487
+chain/len2/bypassed-selected 21c815c407c4f0439bd53eb2da20b61bf0912990
+chain/len2/bypassed-synth 607dcd81d92e3a52c01592e89b3cd963719908ac
+chain/len2/info-preset ef4d067720f82707c50dac2acfa764e7c4e63dd7
+chain/len2/info-rnbo c36515ef36fc630ee0b956d3a66e07b77bb9e718
+chain/len2/lfo1 3329863e8e3ccbf3a526900e4e858288fa030d0b
+chain/len2/lfo1+2 4396e1323ed7c61e26311b1b85ab8fb8d2e55b7b
+chain/len2/lfo2 0d254501ecd1d1bcab4df49d0e5834573be25b39
+chain/len2/patch-dirty 70c9d34df00f97812c717afd25d977c6007b7523
+chain/len2/patch-named 867ecb4c5828b0bc1f951f59ff10e04ece269b85
+chain/len2/patch-selected-named efb4843bae5890f5b94cf10328ee073b33c65305
+chain/len2/sel-fx1 f960a7c9e985db6b65d12c80e96f99f3f5d6e43f
+chain/len2/sel-fx2 7b0caa67bbe4c302763c5c2bebc121bc9cce5e72
+chain/len2/sel-settings 70c7b7332b23e57aa9d19daa19021e1f32efd938
+chain/len2/sel-synth 68f821ac407522bcb0946a016b61d5cbfdb3d519
+chain/len2/shift 9ebc570acda818db31043790b8b2e82bba50eb30
+chain/len5/bypassed+lfo1+2 888e1de57213de4f62e2bb46c467cfa6cb806617
+chain/len5/knob-card 1aeceace4d623d68b2b9756c430d5c087dd7f31d
+chain/len5/sel-add-fx 00af4e4bbdcb22dd86923944e6449027de89ed33
+chain/len5/sel-fx4 0ad0a7659718efd9afda8578d37bd12ca3cd98ec
+chain/len5/sel-synth c3cd1d4854402927bd324421ebca10088452280a
+chain/len5/shift b18ff3703c61ea843bf418811be1e9b6198da692
+chain/len8/sel-add-midi 3ae3b830e356856a8a5e642c759b4853dc7b7eae
+chain/len8/sel-fx4 e527665760bec5f75a11d634fb0c2fa029ff1dc3
+chain/len8/sel-fx8 fa051c1794dabe81052161cf82d5e7432aec4cc9
+chain/len8/sel-patch b7e74c263f187297be02cda13bc7589de15e16a5
+chain/len8/sel-settings 1e0ed46465cc3bc73c27614f0ad6af3a86789bc0
+master/hole/sel-fx3 75dcc136b4e9f8f35c3b0373abe127d172b68ce8
+master/len0/sel-fx1 a654477068e30e10e83b1dd63b679110614bd4f3
+master/len0/sel-preset 5b1f254a936d0beb7d9ec61089b366c8471e00f9
+master/len0/sel-settings 40461a2fb38523cf6946dd120ff3294c5fc3c30f
+master/len1/preset-named 105d75ae4d0e3847927f6181ebd531638e021fe7
+master/len1/sel-fx1 a43de92b40402c15bc37c84721203dfcbc33a6a9
+master/len1/sel-fx2-empty fd14b3ad642f84b4931b0e69307d1681c8fa262b
+master/len2/bypassed 4e3493dcfd4fec92fa9b59d2bcb8cfc451caaffc
+master/len2/bypassed-selected cf8fa0fb30bc4c564749f4a6a0e845ea6028845c
+master/len2/info-optname 01241bda8fb474ee72188ba9bd348087ec6d1c12
+master/len2/info-preset cddabff3b98af0e4cf53a7c13c2a09f466105456
+master/len2/lfo1 b088ccee6d3c52ddd650aeb1bbbfde5f24092594
+master/len2/lfo1+2 3c464a86e31ae075801b0da6c1a9f3715f2d0b07
+master/len2/lfo2 e638803e3e1c55208fdd05b969429e5052919e5d
+master/len2/sel-fx1 8e49b533cf1ff8214d0b70e86a042085caa309cf
+master/len2/sel-fx2 a4bdcd2129c1aea2c7ff25f906a1e60d79384af0
+master/len5/bypassed+lfo1+2 e5c26b0a83def4bca125d2a4c8e02172671857a5
+master/len5/sel-fx1 7f17186597c547d34a0ab34d53330b5e47d433bb
+master/len5/sel-fx3 99c507f35bdb486369f84c9eaa6d1ccf6081d63f
+master/len5/sel-fx5 26452bf8b2351260b11f1928594f4309742652d9
+master/len8/sel-fx1 6a3dd05d4cd53cd19c50fce2f5eac6410ec25b5a
+master/len8/sel-fx4 43e78c28f5a387e6a4ae07bd222a7c78cf71378d
+master/len8/sel-fx8 caf055d7c3beb39083234241a1da4554651aebea
+master/len8/sel-preset 537c74738540f5032912c51b7a3cb2be22b65b5a
+master/len8/sel-settings 545701475b77b4f3720661cd25c89bc0de62ba0c
