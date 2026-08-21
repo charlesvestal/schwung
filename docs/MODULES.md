@@ -1349,6 +1349,53 @@ int get_param(void *instance, const char *key, char *buf, int buf_len) {
 }
 ```
 
+#### Pattern: a knob whose options depend on another selection
+
+*"Select a folder, then turn a pot through the wavetables in it."* This works
+today; nothing needs adding to the host. Reported as impossible by a module
+author, so it is written down here.
+
+**Why a `filepath` cannot do it.** `type: "filepath"` is **opaque**: the grid can
+*open* it but never *turn* it, on purpose — turning would write nonsense into a
+path. A knob asking to drive a filepath is asking for a control the host has
+classified as un-turnable. That is usually the whole reason this looks impossible.
+
+**The shape that works:**
+
+1. Declare the dependent control as `type: "enum"` with an `options` array
+   holding the current folder's entries. It becomes turnable *and* divable —
+   hold the knob and click opens a scrolling picker, which is what you want past
+   a handful of entries.
+2. Serve `chain_params` from `get_param` (dynamic, above) rather than a static
+   string, so the option list can change.
+3. Offer the folder as its own level with `items_param` / `select_param`.
+
+**The host re-reads your contract when the user chooses.** Committing an items
+selection arms a settle deadline; once your answer stops changing, the host
+re-reads `chain_params` / `ui_hierarchy` and re-plans the pages, so the knob
+steps the new folder's list. It is throttled — the deadline re-arms per detent
+and two agreeing readings are required — so spinning a folder list costs about
+five contract reads in total, not one per step.
+
+**The obligation: do not scan the filesystem to answer.** `get_param` and
+`set_param` are the SPI audio callback (see the threading section). Scan on your
+own `SCHED_OTHER` worker when the folder changes, publish the result by pointer
+swap, and let `get_param` only *format* an already-cached list. A module that
+scans a directory inside `get_param` pays that cost **once per repaint**.
+
+**Limits to design against:**
+
+| Limit | Value | What happens past it |
+|---|---|---|
+| `MAX_ENUM_OPTIONS` (`chain_internal.h`) | 128 | The knob grid still lists them (JS parses the JSON itself), but the chain host's C-side knob-mapping and modulation tables truncate — the picker works while CC mapping quietly does not |
+| `chain_params` string | 64 KB (`SHADOW_PARAM_VALUE_LEN`) | The read fails; see the three-answers rule |
+
+Keep a folder under 128 entries, or paginate it into sub-levels.
+
+And the enum wire rule still applies: index in, index out — or names both ways
+with `options_as_string: true`. A module that already resolves an index into its
+scan list should report the index and declare nothing.
+
 ### Parameter Types
 
 Use the canonical type list in `Shadow UI Parameter Hierarchy -> Parameter Types`.
