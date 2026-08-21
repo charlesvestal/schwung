@@ -440,6 +440,40 @@ Slot Settings and Master FX Settings, which are synthesised contracts with no
 `ui_hierarchy` to enter, and it keeps the slot io's own mappings (Fwd's offset,
 MPE's compound write) applied rather than bypassed.
 
+### A door you were SENT to opens; one you PAGED past stays shut
+
+Preset browsers, items lists and menu pages are **doors**: the jog pages until
+you click in. That rule is load-bearing — a preset browser auditions live, so
+browsing past one must not audition every preset it goes by.
+
+It does not apply to arrivals you asked for. **Choosing** a page enters it:
+`navigate_to` after picking from a list, and naming a section in the jog-click
+picker. Reported from the device both times — *"factory does dump me to
+presets, but shouldn't presets be already active? I have to click into it"*, and
+for airwindows, whose entire picker is Presets / Main / Jump to Category, two of
+them doors. One deliberate gesture should not need a second to take effect.
+
+The switch is `goToPage(index, { enterIfDoor: true })`, and **it belongs there,
+not at the call sites**: with `remember` on, `restoreSection` can land you on a
+different page of the section than the index passed in, so only `goToPage` knows
+what you actually arrived at. Entering writes nothing — a browser auditions on
+*turn* — so this hands over the jog without loading anything. Landing on a knob
+grid is unchanged; there is nothing to enter.
+
+`onJog` does not route through `goToPage`, which is what keeps paging inert.
+`tests/host/test_param_pages_controller.sh` pins both halves, and mutating
+`enterIfDoor` away in either direction fails it: dropping the picker opt-in
+breaks the new case, and making *every* `goToPage` enter breaks the existing
+"jog pages off an un-entered preset page".
+
+**A `navigate_to` naming a level that plans BOTH pages means the browser.** obxd
+is the case: its `banks` level names `root`, and root carries
+`list_param`/`count_param` *and* `knobs`. The lookup used to filter to
+`PAGE_KNOBS`, so choosing a bank landed on the sliders. Preferring the browser
+rather than inventing a `navigate_to: {level, kind}` form is deliberate — only
+three modules declare `navigate_to` at all, and new vocabulary repeats the
+`options_as_string` lesson: documented for months, set by nobody.
+
 ### Recording / capture
 
 Audio capture is shim-side: the Quantized Sampler (Shift+Sample) and Skipback
