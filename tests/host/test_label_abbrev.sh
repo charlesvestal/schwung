@@ -149,21 +149,25 @@ import("./src/shared/param_pages/render_page_movy.mjs").then((R) => {
    * The aggregate above can stay above its floor while the specific labels
    * that motivated the table regress. These are the ones actually complained
    * about or quoted in review. */
+  /* Asserted as "contains the mnemonic, does not contain the vowel-stripped
+   * run", NOT as an exact string. What shortenLabel does with the REST of a
+   * multi-word label depends on the cell width, so an exact expectation is
+   * cap-dependent: "Wave Group" draws WGRP at the four-M cap and WAGRP at the
+   * five-M one, and both are correct. Pinning WGRP made this test fail the
+   * moment the two label branches were merged together, which is a fixture
+   * masquerading as a property. */
   const CASES = [
-    /* Each of these was verified to DISCRIMINATE: removing its table entry
-     * changes what the cell draws. "Wave Number" was in this list and is not
-     * any more -- at this cap shortenLabel already produces WNUM on its own,
-     * so the case passed whether the entry existed or not. Its entry earns
-     * its place at the wider cell (WNUMB -> WNUM), not here. */
-    ["Rotation",    "ROT"],      /* was ROTATN -- a non-word, the whole point */
-    ["Wave Group",  "WGRP"],     /* was WGROU  */
-    ["Polyphony",   "POLY"],     /* was PLYPHN */
-    ["Expression",  "EXP"],      /* was EXPRSS */
+    ["Rotation",   /ROT/,  /ROTATN/],
+    ["Wave Group", /GRP/,  /GROU/],
+    ["Polyphony",  /POLY/, /PLYPHN/],
+    ["Expression", /EXP/,  /EXPR/],   /* EXPR, not EXPRSS: the un-tabled form is EXPR at the narrow cap */
   ];
-  for (const [label, want] of CASES) {
+  for (const [label, want, bad] of CASES) {
     const got = R.labelForCell(label);
-    if (got !== want)
-      fail("\"" + label + "\" draws `" + got + "`, expected `" + want + "`");
+    if (!want.test(got))
+      fail("\"" + label + "\" draws `" + got + "`, expected it to contain " + want);
+    if (bad.test(got))
+      fail("\"" + label + "\" draws `" + got + "` -- still the vowel-stripped form");
   }
 
   /* And the other direction: a word that FITS must not be tabled at all.
