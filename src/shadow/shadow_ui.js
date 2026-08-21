@@ -62,6 +62,7 @@ import { drawChainEditorBands, drawChainPicker }
 import { drawKnobCard } from '/data/UserData/schwung/shared/param_pages/knob_card.mjs';
 import { buildMetaIndex } from '/data/UserData/schwung/shared/param_pages/param_meta.mjs';
 import { resolveViz } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
+import { listKnobInit, listKnobStep } from '/data/UserData/schwung/shared/param_pages/list_knob.mjs';
 import { describeLfoTarget } from '/data/UserData/schwung/shared/lfo_target_label.mjs';
 import { emptyChain, parseId as parseChainId, chainComponents, moveBy as chainMoveBy,
          removeAt as chainRemoveAt, insertAt as chainInsertAt, MAX_FX, MAX_MIDI_FX }
@@ -17062,6 +17063,9 @@ let enumPickerIndex = 0;
 let enumPickerOpenIndex = 0;
 let enumPickerCommit = null;
 let enumPickerReturnToGrid = false;
+/* Knob-scroll accumulator for the picker. The JOG stays 1:1 — a jog detent
+ * is a deliberate click; a knob detent is a fraction of a twist. */
+let enumPickerKnob = listKnobInit();
 
 function openEnumPicker(o) {
     const options = Array.isArray(o && o.options) ? o.options : [];
@@ -17073,6 +17077,7 @@ function openEnumPicker(o) {
     enumPickerOpenIndex = enumPickerIndex;
     enumPickerCommit = (o && typeof o.commit === "function") ? o.commit : null;
     enumPickerReturnToGrid = !!(o && o.returnToGrid);
+    enumPickerKnob = listKnobInit();
     setView(VIEWS.ENUM_PICKER);
     needsRedraw = true;
     announce(enumPickerTitle + ", " + enumPickerOptions[enumPickerIndex]
@@ -19117,6 +19122,42 @@ globalThis.onMidiMessageInternal = function(data) {
             const knobIndex = d1 - KNOB_CC_START;
             const delta = decodeDelta(d2);
 
+            /*
+             * While the option list is up, a knob SCROLLS IT.
+             *
+             * You reach this picker by holding a knob and clicking, so the
+             * hand is already on the knob and the reflex is to keep turning
+             * it: "I keep trying to keep turning it", reported from the
+             * device. Jog-only made the gesture change hands halfway through.
+             *
+             * Any knob, not just the one that opened it — the picker is
+             * modal and full-screen, so there is no other visible control a
+             * turn could mean, and requiring the right knob would leave a
+             * neighbour silently dead. It also has to work when the picker
+             * was opened from the hierarchy list editor, where no knob
+             * opened it at all.
+             *
+             * This is ALSO a fix, not only an affordance: without it the turn
+             * fell through to adjustKnobAndShow and moved the value BEHIND
+             * the list — invisibly, since the picker covers the grid, and
+             * then Back "cancelled" a change that had already been written.
+             *
+             * One option per detent, matching the jog. The 4-detent enum gate
+             * is for turning an enum blind on the grid; inside a list you are
+             * looking straight at it.
+             */
+            if (view === VIEWS.ENUM_PICKER) {
+                /* Through the list accumulator, NOT enumPickerJog directly:
+                 * 1:1 is right for the jog and much too fast for a knob
+                 * ("still like 1 detent per entry which feels way too fast").
+                 * Slow turns cost several detents an entry; fast ones
+                 * accelerate, but only as far as the list is long. */
+                const step = listKnobStep(enumPickerKnob, delta, Date.now(),
+                                          enumPickerOptions.length);
+                if (step) enumPickerJog(step);
+                return;
+            }
+
             /* Use shared knob handler for hierarchy/chain editor contexts */
             if (adjustKnobAndShow(knobIndex, delta)) {
                 return;
@@ -19151,6 +19192,21 @@ globalThis.onMidiMessageInternal = function(data) {
              * the knob card: a card raised while the finger is down has no
              * decay deadline, and that distinction is read from here. */
             knobTouched[knobIndex] = true;
+
+            /*
+             * The picker owns the screen, so a knob touch raises nothing.
+             *
+             * Letting go and taking hold again re-raised the parameter
+             * overlay OVER the option list — reported from the device. The
+             * overlay answers "what does this knob do", which the list is
+             * already answering, in more detail, with the full option set. It
+             * also covers the very rows you are scrolling.
+             *
+             * The touch is still RECORDED above, so the knob-card decay logic
+             * stays consistent for whatever is underneath when the picker
+             * closes; only the drawing is suppressed.
+             */
+            if (view === VIEWS.ENUM_PICKER) return;
 
             /* Multi-marker view overrides the level's knob row:
              *   marker knobs (1..N) → switch active marker + show its value

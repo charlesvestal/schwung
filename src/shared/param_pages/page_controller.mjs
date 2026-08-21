@@ -231,6 +231,26 @@ export const CONTRACT_RETRY_LIMIT = 40;
  * the normal case.
  */
 export const CONTRACT_RETRY_INTERVAL_TICKS = 30;
+/**
+ * After the retry budget is spent, how often to quietly probe again.
+ *
+ * Giving up releases the screen — holding it forever on a component that will
+ * never answer is worse than drawing the no-page fallback — but before this
+ * existed, giving up ALSO meant never asking again, so the component stayed
+ * blank for the rest of the session and only a navigate-away-and-back fixed
+ * it. Reported from the device: loading tablor drew a blank chain, and
+ * "switching to another chain and back I saw it".
+ *
+ * The cause there was a module copying 116 files (20.4 MB) inside
+ * create_instance, on the SPI callback — so the contract genuinely could not
+ * be read for several seconds, and no retry budget is the right answer to
+ * that. What IS ours is that the recovery has to be automatic.
+ *
+ * Ten seconds: slow enough to be free (one read per interval, and only while
+ * the component is unreadable), fast enough that a user who steps away and
+ * looks back finds it working.
+ */
+export const CONTRACT_RECOVER_INTERVAL_TICKS = 600;
 
 export function createController(io = {}) {
     const getParam = io.getParam || (() => null);
@@ -330,6 +350,10 @@ export function createController(io = {}) {
          * answer — so we do not know what this component declares and nothing
          * has been planned from it. See load() and maybeReresolveContract. */
         contractUnresolved: false,
+        /* Retries exhausted: the screen is released but a slow probe keeps
+         * looking, so an unreadable component recovers without the user
+         * having to navigate away and back. */
+        contractGaveUp: false,
         contractRetries: 0,
         /* Wall-clock ms at which a selection-driven contract re-read comes
          * due, or 0 for none pending. Re-armed per detent — see
@@ -409,6 +433,9 @@ export function createController(io = {}) {
         /* A different component may well implement is_loading even if the last
          * one did not, so the latch is per-component, not per-session. */
         if (!sameComponent) s.isLoadingSupported = null;
+        /* Likewise "we gave up on this one" — a new component gets a clean
+         * slate, and the retry budget below is already per-component. */
+        if (!sameComponent) s.contractGaveUp = false;
         s.slot = slot;
         s.component = component;
         s.prefix = nextPrefix;
@@ -472,6 +499,7 @@ export function createController(io = {}) {
         }
         s.contractUnresolved = false;
         s.contractRetries = 0;
+        s.contractGaveUp = false;
 
         const hierarchy = parse(rawHierarchy);
         /*
@@ -709,8 +737,13 @@ export function createController(io = {}) {
             /* Given up. Stop CLAIMING to be mid-resolve: the host holds the
              * screen while this is true, and holding it forever on a component
              * that will never answer is worse than running the ordinary
-             * no-drawable-page fallback. */
+             * no-drawable-page fallback.
+             *
+             * Giving up the SCREEN is not giving up the COMPONENT, though —
+             * those were the same thing until 2026-08 and that is the bug.
+             * A slow probe keeps running so the page comes back on its own. */
             s.contractUnresolved = false;
+            s.contractGaveUp = true;
             return false;
         }
         s.contractRetries++;
@@ -773,6 +806,29 @@ export function createController(io = {}) {
         if (s.contractUnresolved && s.tickCount % CONTRACT_RETRY_INTERVAL_TICKS === 0) {
             triedReresolve = true;
             maybeReresolveContract(() => reloadIfChanged(s.lastLoadOpts));
+        } else if (s.contractGaveUp && s.tickCount % CONTRACT_RECOVER_INTERVAL_TICKS === 0) {
+            /* The budget is spent and the screen is released, but keep
+             * looking: whatever was blocking the channel (a module loading a
+             * bank on the audio thread) ends eventually, and the user should
+             * not have to navigate away and back to find out. Costs one read
+             * per interval, and only while the component is unreadable. */
+            triedReresolve = true;
+            reloadIfChanged(s.lastLoadOpts);
+            if (s.contractUnresolved) {
+                /*
+                 * Still refusing. Put it straight back to given-up.
+                 *
+                 * A failed reload sets contractUnresolved and, because the
+                 * flag had been cleared, hands out a FRESH retry budget — so
+                 * without this the slow probe re-arms the fast loop every
+                 * time, and "one read every ten seconds" becomes a permanent
+                 * 30-tick retry cycle that also re-holds the screen. Caught by
+                 * the read-count assertion in test_contract_recovery.sh, which
+                 * is why that test counts reads and not just outcomes.
+                 */
+                s.contractUnresolved = false;
+                s.contractGaveUp = true;
+            }
         }
 
         /*

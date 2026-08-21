@@ -145,19 +145,37 @@ Promise.all([
       fail("after 4 failed reads knob 1 is " + keys1(ctl)[0] + ", expected position");
   }
 
-  /* ---- 6. the retry is BOUNDED ----------------------------------------- */
+  /* ---- 6. the retry is BOUNDED, and the recovery probe is SLOW --------- *
+   *
+   * Two rates, deliberately. The FAST retry (CONTRACT_RETRY_INTERVAL_TICKS)
+   * is bounded by CONTRACT_RETRY_LIMIT: a component whose channel never
+   * answers must not cost a read every interval for the rest of the session,
+   * and must not hold the screen forever.
+   *
+   * After that budget it keeps probing at CONTRACT_RECOVER_INTERVAL_TICKS —
+   * ~20x slower — because giving up the SCREEN is not giving up the
+   * COMPONENT. Those were the same act until 2026-08, which is why loading
+   * tablor drew a blank chain that only a navigate-away-and-back fixed. The
+   * budget below allows for that slow probe; it does not allow for the fast
+   * loop coming back, which is what a failed probe used to do by handing out
+   * a fresh budget.
+   */
   {
-    /* A component whose channel never answers must cost a fixed number of
-     * reads, not one per interval for the rest of the session. */
     const dev = D.createFakeDevice({ id: "granny" });
     dev.failParam("ui_hierarchy", 1e9);
     const ctl = C.createController(dev);
     ctl.load({ slot: 0, component: "synth", prefix: "synth" });
     dev.resetCounters();
-    tickFor(ctl, C.CONTRACT_RETRY_INTERVAL_TICKS * (C.CONTRACT_RETRY_LIMIT + 20));
+    const ticks = C.CONTRACT_RETRY_INTERVAL_TICKS * (C.CONTRACT_RETRY_LIMIT + 20);
+    tickFor(ctl, ticks);
     const n = dev.readsFor("ui_hierarchy");
-    if (n > C.CONTRACT_RETRY_LIMIT)
-      fail("unbounded contract retries: " + n + " reads, limit is " + C.CONTRACT_RETRY_LIMIT);
+    const probes = Math.ceil(ticks / C.CONTRACT_RECOVER_INTERVAL_TICKS);
+    if (n > C.CONTRACT_RETRY_LIMIT + probes)
+      fail("unbounded contract retries: " + n + " reads, limit is " +
+           C.CONTRACT_RETRY_LIMIT + " + " + probes + " slow probe(s)");
+    if (n <= C.CONTRACT_RETRY_LIMIT)
+      fail("the slow recovery probe never ran (" + n + " reads) — an unreadable " +
+           "component would stay blank for the whole session");
     if (n < 2) fail("the contract retry loop is not running at all (" + n + " reads)");
   }
 
