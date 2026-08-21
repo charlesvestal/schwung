@@ -252,6 +252,12 @@ export const CONTRACT_RETRY_INTERVAL_TICKS = 30;
  */
 export const CONTRACT_RECOVER_INTERVAL_TICKS = 600;
 
+/* How long a trigger press stays interesting to the renderer (its burst is
+ * still on screen), and how many overlapping presses to keep. Both exist only
+ * to bound the list — the renderer decides what it actually draws. */
+const TRIGGER_BURST_KEEP_MS = 400;
+const TRIGGER_BURST_MAX = 4;
+
 export function createController(io = {}) {
     const getParam = io.getParam || (() => null);
     const setParam = io.setParam || (() => {});
@@ -354,6 +360,8 @@ export function createController(io = {}) {
          * looking, so an unreadable component recovers without the user
          * having to navigate away and back. */
         contractGaveUp: false,
+        /* key -> ms when a trigger last fired, for the bang flash. */
+        triggerFiredAt: Object.create(null),
         contractRetries: 0,
         /* Wall-clock ms at which a selection-driven contract re-read comes
          * due, or 0 for none pending. Re-armed per detent — see
@@ -1719,6 +1727,25 @@ export function createController(io = {}) {
                 setParam(fullKey(key), "1");
                 announce(`${meta.label}`);
             }
+            /*
+             * Stamp the fire time so the bang can flash. OVERWRITING is the
+             * point: clicking again mid-flash restarts the animation from the
+             * beginning rather than being swallowed by the one in progress, so
+             * two clicks look like two events. The renderer derives everything
+             * from this one number, so there is no animation state to clear.
+             */
+            /*
+             * APPEND, do not overwrite. A press must not cancel the bursts
+             * already travelling — a fast double-tap should throw two rings,
+             * not restart one. Trimmed to what can still be on screen, so the
+             * list cannot grow.
+             */
+            const t = now();
+            const prev = s.triggerFiredAt[key] || [];
+            s.triggerFiredAt[key] = prev
+                .filter((p) => t - p < TRIGGER_BURST_KEEP_MS)
+                .slice(-TRIGGER_BURST_MAX + 1)
+                .concat(t);
             return null;
         }
 
@@ -2060,6 +2087,7 @@ export function createController(io = {}) {
          *  if any, is the previous one — nothing here was planned from the
          *  failure. */
         get contractUnresolved() { return s.contractUnresolved; },
+        get triggerFiredAt() { return s.triggerFiredAt; },
         keyAt, metaAt,
         jumpIndex: () => jumpIndex(s.pages),
         groupIndex: () => groupIndex(s.pages),

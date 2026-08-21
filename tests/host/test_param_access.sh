@@ -154,7 +154,43 @@ Promise.all([
            " for the unrenderable idle value — it is still blank");
   }
 
-  console.log("  ok  trigger cell draws an action mark, never the idle value");
+  /* ---- the button must stay INSIDE its row band ---------------------
+   *
+   * This is the bug it shipped with: a span from a to b is b - a + 1 rows,
+   * so a button budgeted at 2*RY + DEPTH was one row taller than that and
+   * overflowed into the label beneath it. The harness clipped() counter
+   * cannot catch it, because those pixels are still on the screen.
+   *
+   * Rendered with a BLANK label, so any ink at or below the label row is the
+   * widget overflowing and nothing else. */
+  {
+    const R = await import("./src/shared/param_pages/render_page_movy.mjs");
+    const fbmod = await import("./tools/param-pages/harness.mjs");
+    const probe = (access) => {
+      const fb = fbmod.createFramebuffer();
+      const ix3 = M.buildMetaIndex({ chainParams: [
+        { key: "t", name: " ", type: "enum", options: ["a", "b"],
+          ...(access ? { access } : {}) } ] });
+      R.renderPageMovy(fbmod.drawContext(fb), {
+        page: { kind: "knobs", name: "P", keys: ["t"], level: "root" },
+        metaIndex: ix3, values: { t: "a" }, pageIndex: 0, pageCount: 1, header: " ",
+        triggerFiredAt: { t: 1 }, nowMs: 40,      /* pressed: the tallest state */
+      });
+      const px = fb.pixels || fb.px;
+      let lowest = -1;
+      for (let y = 0; y < 64; y++) for (let x = 0; x < 128; x++)
+        if (px[y * 128 + x]) { lowest = Math.max(lowest, y); }
+      return lowest;
+    };
+    const band_end = R.ROW0_Y + 15 - 1;          /* BOX_H */
+    const lowest = probe("write");
+    if (lowest > band_end)
+      fail("the trigger widget drew down to row " + lowest + ", past the band end at " +
+           band_end + " — it is overflowing into the label");
+  }
+
+  console.log("  ok  trigger draws a button, never the unrenderable idle value");
+  console.log("  ok  the button stays inside its 15-row band");
   console.log("  ok  default is readwrite; plain enums and floats unaffected");
   console.log("  ok  readout: not turnable, not divable, never written");
   console.log("  ok  trigger: fires once on click, through the module wire (\"Rnd!\"), not turnable");

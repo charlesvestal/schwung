@@ -28,11 +28,12 @@
 
 import { KIND_ENUM, KIND_OPAQUE, enumIndexOf } from "./param_meta.mjs";
 import { formatParamValue } from "../param_format.mjs";
-import { asciiFold, fitText, shortenLabel, line } from "./render_page.mjs";
+import { asciiFold, fitText, shortenLabel, line, circle } from "./render_page.mjs";
 import { drawVizGroup } from "./viz_draw.mjs";
 import { enumSquareLines } from "./font5x3.mjs";
 import { fontPrint as tzPrint, fontWidth as tzWidth, HEIGHT as TZ_H } from "./font_tamzen6x12.mjs";
 import { fontWidth4x5, fontPrint4x5, FONT4_HEIGHT, FONT4_MEASURE } from "./font4x5.mjs";
+import { fontWidth5x3, fontPrint5x3 } from "./font5x3.mjs";
 
 /**
  * Text is set in caps with labels abbreviated to a mnemonic. The HEADER and the
@@ -599,10 +600,193 @@ function fitLine(text, maxWidth) {
     return fontWidth4x5(t) > maxWidth ? "" : t;
 }
 
-/* What a trigger's square says when the module has not chosen its own wording.
- * Two characters, so it can never truncate in the 3-per-line square, and a verb
- * rather than a state — the cell label below already names the action. */
-const TRIGGER_MARK = "GO";
+/*
+ * A TRIGGER is a BANG, not a square.
+ *
+ * Reusing the enum square said "this is an enum", which is the one thing a
+ * momentary action is not — reported from the device as "this shouldn't be a
+ * square. It's different."
+ *
+ * A circle because that is what a momentary action looks like in music
+ * software: Max and Pd both draw a bang as a circle, so the shape already
+ * means "click me and something happens" to the people using this. It is also
+ * unambiguous against everything else on the grid — the dial is a circle WITH
+ * a pointer and a gap, the enum is a rectangle, the fader is a column.
+ *
+ * FILLED while firing, and that matters more than it looks: a trigger has no
+ * state, so nothing else on the screen changes when you click it. Without the
+ * flash there is no confirmation that anything happened at all.
+ */
+/*
+ * A TRIGGER is a PUSH BUTTON, not a square and not a value.
+ *
+ * Reusing the enum square said "this is an enum", which is the one thing a
+ * momentary action is not. Drawn as a cap ellipse with two straight sides down
+ * to a base arc -- a physical button in perspective -- because it is then
+ * unmistakable against everything else on the grid: the dial is an arc with a
+ * pointer, the enum a rectangle, the fader a column.
+ *
+ * The cap TRAVELS when it fires. That is the whole reason to prefer it to a
+ * flash: a trigger has no value, so nothing else on screen changes when you
+ * click it, and a button that visibly moves is a stronger confirmation than a
+ * widget that merely inverts.
+ *
+ * Sized to the cell rather than to taste: BTN_RX 7 makes it 15 wide inside a
+ * KW of 17, and cap + depth + base is 12 rows inside a BOX_H of 15, which
+ * leaves room for the 2px travel without touching the label below.
+ */
+/*
+ * Sized by the row budget, not by taste. The widget band is BOX_H = 15 rows
+ * and everything must stay inside it (see the note above drawKnobWidget):
+ *
+ *     1  air
+ *    13  the button: BTN_RY (cap top half) + BTN_DEPTH + BTN_RY (base arc)
+ *     1  air                              ... + 1, because a span from a to b
+ *    ---                                      is b - a + 1 rows, not b - a
+ *    15
+ *
+ * That +1 is not pedantry: it is the bug this shape shipped with first. The
+ * button overflowed one row into the label beneath it, and clipped() cannot
+ * catch that because the pixels are still on the screen.
+ *
+ * There is no CLK cue on the widget. It was tried, cost 7 of these 15 rows,
+ * and squeezed the cap to a 15x5 lozenge -- and the footer already says CLK
+ * FIRE the moment the knob is held, which is the same promise in a place that
+ * costs nothing.
+ */
+const BTN_RX = 7;
+const BTN_RY = 3;
+const BTN_DEPTH = 6;
+const BTN_TRAVEL = 2;
+
+/*
+ * Timing, and why the two halves come apart.
+ *
+ * A real button pops back long before the flash of the thing it did has
+ * faded, so the cap returns at BTN_PRESS_MS while the burst keeps expanding
+ * to BTN_FLASH_MS. Held together they read as one state change; apart they
+ * read as an event with a consequence.
+ *
+ * The burst geometry is the startup animation's impact lines
+ * (src/modules/tools/splash-test/ui.js): IMPACT_GAP 2 and a very SHORT line.
+ * Unlike the splash, which holds three static lines for 20 ticks, these
+ * EXPAND -- the gap grows as the burst travels outward and the stubs go with
+ * it, which is what makes it read as radiating rather than as a decoration
+ * switched on.
+ */
+const BTN_PRESS_MS = 120;
+const BTN_FLASH_MS = 300;
+const BTN_RAYS = 8;
+const BTN_RAY_GAP = 2;
+const BTN_RAY_LEN = 2;
+const BTN_RAY_TRAVEL = 4;   /* how far the burst moves out over its life */
+
+/*
+ * A clean 1px ellipse outline.
+ *
+ * Thresholding on distance (|hypot(dx/rx, dy/ry) - 1| <= k) is the obvious
+ * way and it looks JAGGED at this size: the tolerance band is wider where the
+ * curve runs shallow, so the outline goes two and three pixels thick along the
+ * top and bottom and thin at the sides. Walking each column for its exact y
+ * and each row for its exact x, and taking the union, gives an even, connected
+ * hairline instead.
+ */
+function ellipseOutline(ctx, cx, cy, rx, ry, color, bottomOnly) {
+    const put = (x, y) => {
+        if (bottomOnly && y < cy) return;
+        ctx.fillRect(x, y, 1, 1, color);
+    };
+    for (let dx = -rx; dx <= rx; dx++) {
+        const dy = Math.round(ry * Math.sqrt(Math.max(0, 1 - (dx / rx) ** 2)));
+        put(cx + dx, cy + dy);
+        put(cx + dx, cy - dy);
+    }
+    for (let dy = -ry; dy <= ry; dy++) {
+        const dx = Math.round(rx * Math.sqrt(Math.max(0, 1 - (dy / ry) ** 2)));
+        put(cx + dx, cy + dy);
+        put(cx - dx, cy + dy);
+    }
+}
+
+function ellipseFill(ctx, cx, cy, rx, ry, color) {
+    for (let dy = -ry; dy <= ry; dy++) {
+        const w = Math.round(rx * Math.sqrt(Math.max(0, 1 - (dy / ry) ** 2)));
+        if (w > 0) ctx.fillRect(cx - w, cy + dy, w * 2 + 1, 1, color);
+    }
+}
+
+/* Impact stubs, following the cap's ellipse so they sit an even gap off the
+ * rim rather than bunching at the flat top and bottom. */
+function buttonRays(ctx, cx, cy, progress) {
+    const out = BTN_RAY_GAP + Math.round(progress * BTN_RAY_TRAVEL);
+    for (let i = 0; i < BTN_RAYS; i++) {
+        const a = (Math.PI * 2 * i) / BTN_RAYS;
+        const ux = Math.cos(a), uy = Math.sin(a);
+        const x0 = cx + ux * (BTN_RX + out);
+        const y0 = cy + uy * (BTN_RY + out);
+        const x1 = cx + ux * (BTN_RX + out + BTN_RAY_LEN);
+        const y1 = cy + uy * (BTN_RY + out + BTN_RAY_LEN);
+        line(ctx, Math.round(x0), Math.round(y0), Math.round(x1), Math.round(y1), 1);
+    }
+}
+
+/*
+ * Three states:
+ *   idle      raised outline
+ *   selected  cap filled with CLK knocked out -- the affordance has to be ON
+ *             the control, not only in the footer, because a button has no
+ *             value to read and nothing else says it is pressable
+ *   fired     cap pressed down BTN_TRAVEL, sides shortened, stubs radiating
+ */
+function drawButton(ctx, cx, rowY, phase) {
+    const pressed = phase.pressed;
+    const travel = pressed ? BTN_TRAVEL : 0;
+    /* One row of air top and bottom; see the budget above. */
+    const capY = rowY + 1 + BTN_RY + travel;
+    const baseY = capY + BTN_DEPTH - travel;
+
+    ellipseOutline(ctx, cx, baseY, BTN_RX, BTN_RY, 1, true);   /* base arc */
+    line(ctx, cx - BTN_RX, capY, cx - BTN_RX, baseY, 1);        /* sides */
+    line(ctx, cx + BTN_RX, capY, cx + BTN_RX, baseY, 1);
+
+    /* Highlighted and pressed both FILL the cap -- the filled disk is the
+     * highlight. The outline goes on top of the fill, not instead of it:
+     * filling alone left the rim a pixel short at the shallow top and bottom,
+     * so the disk looked like it was missing a line. */
+    if (phase.filled) ellipseFill(ctx, cx, capY, BTN_RX, BTN_RY, 1);
+    ellipseOutline(ctx, cx, capY, BTN_RX, BTN_RY, 1, false);
+
+    /* One burst per press still in flight, so a fast double-tap throws two
+     * expanding rings rather than cancelling the first. */
+    for (const b of phase.bursts) buttonRays(ctx, cx, capY, b);
+}
+
+/*
+ * Idle / highlighted / pressed, resolved from the press timestamps alone.
+ *
+ * A press does NOT clear the bursts already travelling. Overwriting a single
+ * timestamp made a rapid second press swallow the first ring and restart from
+ * the centre, which reads as an animation glitch rather than as two events.
+ * Keeping every press still inside BTN_FLASH_MS lets them overlap, and the
+ * cap is pressed if ANY of them is recent.
+ *
+ * Accepts a bare number as well as a list: a caller that has only ever stamped
+ * one time still works.
+ */
+function buttonPhase(fired, now, held) {
+    const stamps = Array.isArray(fired) ? fired : (fired > 0 ? [fired] : []);
+    const bursts = [];
+    let pressed = false;
+    if (typeof now === "number") {
+        for (const t of stamps) {
+            const age = now - t;
+            if (age < 0 || age >= BTN_FLASH_MS) continue;
+            bursts.push(age / BTN_FLASH_MS);
+            if (age < BTN_PRESS_MS) pressed = true;
+        }
+    }
+    return { pressed, filled: held || bursts.length > 0, bursts };
+}
 
 function drawEnumSquare(ctx, kx, ky, text) {
     const w = ENUM_W, h = BOX_H;
@@ -701,7 +885,7 @@ function drawDivableMark(ctx, g, col, rowY) {
     drawBrackets(ctx, cellLeft(g, col) + 1, rowY, g.cellW - 2, BOX_H);
 }
 
-function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, cellText) {
+function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, cellText, btnPhase) {
     const kx = cellLeft(g, col) + Math.floor((g.cellW - KW) / 2), ky = rowY;
     /* Anything that cannot show two values at once shows the live one, so it
      * animates under modulation instead of freezing on the base. */
@@ -726,11 +910,15 @@ function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, cellText)
      * hook for "what this widget should say in three characters".
      */
     if (meta.writeOnly) {
-        const shortActs = Array.isArray(meta.short_options) ? meta.short_options : null;
-        const label = (shortActs && shortActs[1] !== undefined)
-            ? String(shortActs[1])
-            : TRIGGER_MARK;
-        drawEnumSquare(ctx, cellLeft(g, col) + Math.floor((g.cellW - ENUM_W) / 2), ky, label);
+        /* The cell's own label underneath names the action ("Clear", "Rnd
+         * Preset"), so the bang carries no text — which also sidesteps the
+         * module's idle spelling entirely. euclidrum's is an em-dash the 5x7
+         * atlas cannot draw, and drawing it was the original blank square. */
+        /* Clock injected, never read here: this renderer is pure with respect
+         * to the device, which is what lets the harness draw what the device
+         * draws. `now` absent simply means "never lit". */
+        drawButton(ctx, cellLeft(g, col) + Math.floor(g.cellW / 2), ky,
+                   btnPhase || { pressed: false, filled: false, burst: -1 });
         return;
     }
     if (meta.kind === KIND_ENUM) {
@@ -934,10 +1122,15 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
              * driving; `values` stays the base the user dialled in. */
             /* Knob: base + dot. Enum/opaque: the live value, no baseline —
              * drawKnobWidget picks per kind. */
+            /* Trigger flash: injected, never clocked here — this renderer is
+             * pure with respect to the device, which is what lets the harness
+             * draw what the device draws. Absent means "never lit". */
+            const firedAt = (o.triggerFiredAt && o.triggerFiredAt[key]) || 0;
+            const btnPhase = buttonPhase(firedAt, o.nowMs, isTouched);
             drawKnobWidget(ctx, g, col, rowY, meta, raw,
                            modValues ? modValues[key] : undefined,
                            liveValues ? liveValues[key] : undefined,
-                           cellText);
+                           cellText, btnPhase);
         }
 
         /* Budget in CHARACTERS, not pixels: Elektron's labels are 3-4 glyphs
