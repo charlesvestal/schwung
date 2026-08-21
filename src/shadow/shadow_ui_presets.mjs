@@ -40,18 +40,16 @@
  */
 import * as os from 'os';
 import { ctx } from './shadow_ui_ctx.mjs';
-import {
-    SCREEN_WIDTH,
-    LIST_TOP_Y,
-    LIST_LABEL_X,
-    FOOTER_RULE_Y,
-    truncateText
-} from '/data/UserData/schwung/shared/chain_ui_views.mjs';
-import {
-    drawMenuHeader as drawHeader,
-    drawMenuFooter as drawFooter,
-    drawMenuList
-} from '/data/UserData/schwung/shared/menu_layout.mjs';
+import { truncateText } from '/data/UserData/schwung/shared/chain_ui_views.mjs';
+/* The knob-grid chrome. These screens are reached from a component and go
+ * straight back to one, so they are steps inside that flow and should look
+ * like it — see drawPresets. */
+import { drawHeader as drawMovyHeader, drawFooter as drawMovyFooter, RULE_Y as MOVY_RULE_Y }
+    from '/data/UserData/schwung/shared/param_pages/render_page_movy.mjs';
+import { renderPicker as renderMovyPicker }
+    from '/data/UserData/schwung/shared/param_pages/render_page.mjs';
+import { MENU_LIST_X as MOVY_LIST_X, MENU_LIST_Y as MOVY_LIST_Y, MENU_LIST_W as MOVY_LIST_W }
+    from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
 import {
     announce, announceMenuItem
 } from '/data/UserData/schwung/shared/screen_reader.mjs';
@@ -459,53 +457,70 @@ function enterPresetDetail(presetIndex) {
 
 /* ---- Draw --------------------------------------------------------------- */
 
+/* One draw context for this file: the three globals the shared renderers use. */
+function movyCtx() {
+    return { fillRect: fill_rect, print, textWidth: text_width };
+}
+
+/* The list rect every screen in the page chrome shares — see MENU_LIST_*. */
+function movyRect() {
+    return { x: MOVY_LIST_X, y: MOVY_LIST_Y, w: MOVY_LIST_W, h: MOVY_RULE_Y - MOVY_LIST_Y };
+}
+
 export function drawPresets() {
     clear_screen();
-    drawHeader(`${truncateText(presetModuleLabel, 12)} Presets`);
+    const c = movyCtx();
+    drawMovyHeader(c, truncateText(presetModuleLabel, 16), "PRESETS", false);
 
     if (!presetModule) {
-        print(LIST_LABEL_X, LIST_TOP_Y, "No module in slot", 1);
-        drawFooter("Back");
+        print(MOVY_LIST_X, MOVY_LIST_Y + 8, "No module in slot", 1);
+        drawMovyFooter(c, [["BACK", "EXIT"]]);
         return;
     }
 
-    const rows = displayedRows();
-    drawMenuList({
-        items: rows.map((label) => ({ label })),
-        selectedIndex: selectedPreset,
-        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
-        getLabel: (item) => item.label
+    renderMovyPicker(c, {
+        rect: movyRect(),
+        entries: displayedRows().map((label) => ({ name: label, value: "" })),
+        index: selectedPreset,
+        header: false,
     });
-    drawFooter({ left: "Back", right: "Click: open" });
+    drawMovyFooter(c, [["JOG", "SEL"], ["CLK", "OPEN"], ["BACK", "EXIT"]]);
 }
 
 export function drawPresetDetail() {
     clear_screen();
+    const c = movyCtx();
     const entry = presets[selectedPreset - 1];
     const name = entry ? entry.name : "Preset";
-    drawHeader(truncateText(name, 18));
 
+    /*
+     * The DELETE confirm reads as the same screen with a different question,
+     * rather than a different screen: the header right says what is being
+     * asked and the body is the two answers, in the same list every other
+     * screen here uses. It used to draw its own full-width rows in a second
+     * geometry, which made the most destructive step in this flow the one that
+     * looked least like the rest of it.
+     */
     if (confirmingDelete) {
-        print(LIST_LABEL_X, LIST_TOP_Y, `Delete ${truncateText(name, 12)}?`, 1);
-        const opts = ["No", "Yes"];
-        for (let i = 0; i < opts.length; i++) {
-            const y = LIST_TOP_Y + 14 + i * 12;
-            const sel = i === confirmIndex;
-            if (sel) fill_rect(0, y - 1, SCREEN_WIDTH, 12, 1);
-            print(LIST_LABEL_X, y, `${sel ? "> " : "  "}${opts[i]}`, sel ? 0 : 1);
-        }
-        drawFooter({ left: "Back", right: "Click: confirm" });
+        drawMovyHeader(c, truncateText(name, 16), "DELETE?", false);
+        renderMovyPicker(c, {
+            rect: movyRect(),
+            entries: [{ name: "No", value: "" }, { name: "Yes", value: "" }],
+            index: confirmIndex,
+            header: false,
+        });
+        drawMovyFooter(c, [["JOG", "SEL"], ["CLK", "GO"], ["BACK", "OUT"]]);
         return;
     }
 
-    const items = ["Load", "Delete"];
-    for (let i = 0; i < items.length; i++) {
-        const y = LIST_TOP_Y + i * 12;
-        const sel = i === selectedDetailItem;
-        if (sel) fill_rect(0, y - 1, SCREEN_WIDTH, 12, 1);
-        print(LIST_LABEL_X, y, `${sel ? "> " : "  "}${items[i]}`, sel ? 0 : 1);
-    }
-    drawFooter({ left: "Back", right: "Click: select" });
+    drawMovyHeader(c, truncateText(name, 16), "PRESET", false);
+    renderMovyPicker(c, {
+        rect: movyRect(),
+        entries: [{ name: "Load", value: "" }, { name: "Delete", value: "" }],
+        index: selectedDetailItem,
+        header: false,
+    });
+    drawMovyFooter(c, [["JOG", "SEL"], ["CLK", "GO"], ["BACK", "OUT"]]);
 }
 
 /* ---- Jog ---------------------------------------------------------------- */
@@ -530,7 +545,24 @@ export function handlePresetDetailJog(delta) {
 /* ---- Select ------------------------------------------------------------- */
 
 export function handlePresetsSelect() {
-    if (!presetModule) return;
+    /*
+     * A bare `return` here is a dead button: the row is drawn, the click does
+     * nothing, and NOTHING is announced -- the "No module in this slot" line
+     * lives in startSaveFlow, which this returns before reaching. Reported from
+     * hardware as "when I choose save, simply nothing happens".
+     *
+     * The state is also contradictory and worth saying so: this screen is only
+     * reachable through a [User Presets] row that is drawn ONLY when the same
+     * lookup found a module, so arriving here without one means the config
+     * changed underneath us between building the picker and this click.
+     */
+    if (!presetModule) {
+        announce("No module in this slot");
+        if (typeof host_log === "function") {
+            host_log("presets: save refused, presetModule empty for prefix " + presetPrefix);
+        }
+        return;
+    }
     if (selectedPreset === 0) {
         /* Save snapshots the live state — make sure a lingering preview has
          * reverted to the original first. */

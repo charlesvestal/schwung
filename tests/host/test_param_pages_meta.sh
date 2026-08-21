@@ -85,14 +85,20 @@ Promise.all([
   {
     const { idx } = idxFor("mrsample");
     const wav = idx.get("loop_start");
-    if (wav.kind !== KIND_OPAQUE) fail("wav_position must classify opaque, got " + wav.kind);
-    if (isTurnable(wav)) fail("wav_position must not be turnable");
-
+    /* A RANGED wav_position is a number a knob can turn that ALSO opens a
+   * waveform editor — divable and turnable are different questions. Both
+   * wav_position params in the fleet declare min/max/step. */
+  if (wav.kind !== KIND_NUMBER) fail("a ranged wav_position must classify number, got " + wav.kind);
+  if (!wav.divable) fail("a ranged wav_position must still be divable");
+  if (!isTurnable(wav)) fail("a ranged wav_position must be turnable");
+  
     const { idx: pnp } = idxFor("pushnpull");
     if (pnp.get("view").kind !== KIND_OPAQUE) fail("canvas must classify opaque");
+  if (!pnp.get("view").divable) fail("canvas must be divable");
 
     const { idx: bb } = idxFor("breakbeat");
     if (bb.get("A_sample_path").kind !== KIND_OPAQUE) fail("filepath must classify opaque");
+  if (!bb.get("A_sample_path").divable) fail("filepath must be divable");
   }
 
   /* ---- 5. ui_type is an alias for type ---------------------------------- */
@@ -101,7 +107,8 @@ Promise.all([
       hierarchy: null,
       chainParams: [{ key: "p", type: "float", ui_type: "wav_position", min: 0, max: 1 }],
     });
-    if (index.get("p").kind !== KIND_OPAQUE) fail("ui_type:wav_position must classify opaque even when type says float");
+    if (index.get("p").kind !== KIND_NUMBER) fail("ui_type:wav_position with a range must classify number even when type says float");
+  if (!index.get("p").divable) fail("ui_type:wav_position must be divable");
   }
 
   /* ---- 6. toggle becomes a two-option enum ------------------------------ */

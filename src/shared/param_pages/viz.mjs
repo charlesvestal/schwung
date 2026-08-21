@@ -146,7 +146,22 @@ function collectDeclared(keys, metaIndex, invalid) {
         if (v.group) {
             if (!groups.has(v.group)) groups.set(v.group, { kind: v.kind || null, roles: {}, groupId: v.group });
             const g = groups.get(v.group);
-            if (v.role) g.roles[v.role] = { key, slot };
+            /*
+             * `span: false` — a role that lends the graphic its VALUE without
+             * joining the run of cells it covers.
+             *
+             * An LFO polarity is the case this exists for: whether the wave
+             * swings about its baseline or sits on it is the single most
+             * legible thing the picture can say, but the control belongs with
+             * the other setup switches, not among the four cells the wave is
+             * drawn across. Counting it in the span would make the group
+             * straddle the row boundary and the graphic would vanish entirely —
+             * adjacency is a hard gate.
+             *
+             * Such a role is also NOT claimed, so its own cell still draws as
+             * an ordinary control. It informs the picture; it is not part of it.
+             */
+            if (v.role) g.roles[v.role] = { key, slot, span: v.span !== false };
             if (v.kind && !g.kind) g.kind = v.kind;
         } else if (v.kind) {
             singles.push({ kind: v.kind, key, slot });
@@ -155,16 +170,23 @@ function collectDeclared(keys, metaIndex, invalid) {
 
     const out = [];
     for (const g of groups.values()) {
-        const slots = Object.values(g.roles).map((r) => r.slot);
+        /* Only SPANNING roles decide where the graphic sits and how wide it is,
+         * and only they are claimed. A span:false role is read for its value. */
+        const spanning = Object.values(g.roles).filter((r) => r.span !== false);
+        const slots = spanning.map((r) => r.slot);
         const kind = g.kind || inferKindFromRoles(Object.keys(g.roles));
         if (!kind) continue;
+        if (!slots.length) {
+            invalid.push({ group: g.groupId, kind, reason: "no spanning roles" });
+            continue;
+        }
         if (!isAdjacentRun(slots)) {
             invalid.push({ group: g.groupId, kind, reason: "roles not adjacent on one row" });
             continue;
         }
         out.push({
             kind, group: g.groupId, roles: mapRoles(g.roles),
-            keys: Object.values(g.roles).map((r) => r.key),
+            keys: spanning.map((r) => r.key),
             ...span(slots), source: VIZ_SOURCE_DECLARED,
         });
     }

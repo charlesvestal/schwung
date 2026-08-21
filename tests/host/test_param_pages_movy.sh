@@ -157,6 +157,17 @@ Promise.all([
       page, metaIndex, values: { cutoff: "0.5" }, title: "T", pageIndex: 0, pageCount: 1, viz: [],
     });
 
+    /* The ring sample window is 2r+1 = 17 rows, but the widget band is BOX_H
+     * (15) — so once the footer tightened the rhythm (LBL0_Y 28 -> 25) the last
+     * rows of the window land on the LABEL band, and the label glyphs showed
+     * up in the art. The knob itself still stops well short of it (its bottom
+     * three rows are the deliberate track gap, asserted below), so clear the
+     * label band before reading back: this assertion is about the ring outline,
+     * and the label band has its own tests. */
+    for (let y = RM.LBL0_Y; y < RM.LBL0_Y + RM.LBL_H; y++) {
+      for (let x = 0; x < fb.width; x++) fb.pixels[y * fb.width + x] = 0;
+    }
+
     /* Knob 0 sits at column 0 of row 0: kx = (CELL_W-KW)/2, ky = ROW0_Y. */
     const kx = Math.floor((RM.CELL_W - RM.KW) / 2), ky = RM.ROW0_Y;
     const r = RM.KNOB_R, cx = kx + r, cy = ky + r;
@@ -316,7 +327,19 @@ Promise.all([
     /* Centring on a midpoint (kx + KW/2) rather than on the SPAN put the
      * extra pixel on whichever side rounding happened to fall: "KIC" sat 3px
      * from the left frame and 2px from the right. The rule now is that an odd
-     * leftover always goes right, so every widget disagrees the same way. */
+     * leftover always goes right, so every widget disagrees the same way.
+     *
+     * This assertion used to scan the whole box and take the extreme lit pixel
+     * on each side. That measured the FRAME, not the text: the frame is
+     * symmetric by construction, so it reported left=1 right=1 for every input
+     * and could never fail. The opaque box has no frame now (the divable
+     * brackets are its frame), which is what exposed it.
+     *
+     * So measure the INK against the text span it was centred into. The
+     * tolerance is 2px rather than 1 because glyph side bearings are not
+     * symmetric — a trailing "." inks the left of its 6px advance, so the
+     * ink box is narrower than the advance box on that side, and no
+     * placement rule can make the two agree. */
     const meta = { key: "p", label: "Sample", kind: "opaque", type: "string" };
     const page = { kind: P.PAGE_KNOBS, name: "O", level: "root", keys: ["p"] };
     const paths = ["/s/kick_01.wav", "/x/hall.wav", "/a/b.wav", "/q/ir.wav", "/z/mmm.wav"];
@@ -327,24 +350,28 @@ Promise.all([
         title: "T", pageIndex: 0, pageCount: 1, viz: [],
       });
       const bx = Math.floor((RM.CELL_W - RM.KW) / 2), by = RM.ROW0_Y;
-      let left = 99, right = 99;
-      for (let y = by + 1; y < by + RM.KW - 1; y++) {
-        for (let x = bx + 1; x < bx + RM.KW - 1; x++) {
-          if (fb.pixels[y * fb.width + x]) { left = Math.min(left, x - bx); break; }
-        }
-        for (let x = bx + RM.KW - 2; x > bx; x--) {
-          if (fb.pixels[y * fb.width + x]) { right = Math.min(right, (bx + RM.KW - 1) - x); break; }
+      /* The span drawOpaqueBox centres into: frame inset of 2 on each side. */
+      const spanX = bx + 2, spanW = RM.KW - 4;
+      /* Rows strictly inside the widget band, so the bracket runs on the first
+       * and last row of the band are never counted as text. */
+      let inkL = 99, inkR = -1;
+      for (let y = by + 1; y < by + RM.BOX_H - 1; y++) {
+        for (let x = spanX; x < spanX + spanW; x++) {
+          if (fb.pixels[y * fb.width + x]) {
+            if (x < inkL) inkL = x;
+            if (x > inkR) inkR = x;
+          }
         }
       }
-      if (left === 99) continue;                       /* nothing drawn */
-      if (Math.abs(left - right) > 1) {
-        fail("opaque box for " + JSON.stringify(v) + " is off centre: " + left +
-             "px from the left frame, " + right + "px from the right");
+      if (inkR < 0) continue;                          /* nothing drawn */
+      if (inkL < spanX || inkR > spanX + spanW - 1) {
+        fail("opaque box text for " + JSON.stringify(v) + " escapes its span: ink " +
+             inkL + ".." + inkR + " against span " + spanX + ".." + (spanX + spanW - 1));
       }
-      if (left > right) {
-        fail("opaque box for " + JSON.stringify(v) + " leans RIGHT (" + left + "/" + right +
-             "); an odd leftover pixel must always go to the right, so every widget " +
-             "rounds the same way");
+      const inkMid = (inkL + inkR) / 2, spanMid = spanX + (spanW - 1) / 2;
+      if (Math.abs(inkMid - spanMid) > 2) {
+        fail("opaque box text for " + JSON.stringify(v) + " is off centre: ink centre " +
+             inkMid + " against span centre " + spanMid);
       }
     }
   }
@@ -612,6 +639,68 @@ Promise.all([
       if (fb.clipped() > 0) fail("modulation dots drew outside the display at value " + v);
     }
     console.log("PASS: Movy modulation dot — rides the arc, suppressed at base, never clipped");
+  }
+
+  /* ---- displayFor: a value the HOST resolves, per surface ---------------
+   *
+   * An LFO target is stored as "fx1" and means "Room Size on the Freeverb in
+   * FX 1". Only the host can know that, so the renderer takes an optional
+   * formatter — and it has to reach BOTH the header (76px, which is the point
+   * of resolving at all) and the cell (30px, which gets the short form). The
+   * wiring is the risk: an override honoured in one place and not the other
+   * looks fine on screen and is wrong in exactly the case it exists for.
+   *
+   * Compared as PIXELS against the same page drawn without a formatter, so
+   * this cannot pass by the string being computed and then dropped.
+   */
+  {
+    const key = "target";
+    const meta = { key: key, label: "Targ", type: "string", kind: "opaque" };
+    const metaIndex = { getOrGuess: () => meta };
+    const page = { kind: "knobs", name: "LFO 1", level: "lfo1",
+                   keys: [key, null, null, null, null, null, null, null] };
+    const render = (opts) => {
+      const fb = H.createFramebuffer();
+      RM.renderPageMovy(H.drawContext(fb), Object.assign({
+        page: page, metaIndex: metaIndex, values: { target: "fx1" },
+        title: "S1", pageIndex: 0, pageCount: 3, touched: -1,
+        modulated: () => false, modValues: {}, pageGroups: [], viz: [],
+      }, opts));
+      return fb;
+    };
+    const band = (fb, y0, y1) => {
+      let n = 0;
+      for (let y = y0; y < y1; y++) for (let x = 0; x < 128; x++) if (fb.pixels[y * fb.width + x]) n++;
+      return n;
+    };
+
+    const fmt = (k, raw, surface) =>
+      (k === key ? (surface === "header" ? "FX 1: Room Size" : "Room Size") : null);
+
+    /* The CELL, untouched: the opaque box shows the value, and the label band
+     * shows the value while held. Both must change. */
+    const plainCell = render({});
+    const fmtCell = render({ displayFor: fmt });
+    if (band(plainCell, RM.ROW0_Y, RM.LBL0_Y + RM.LBL_H) === band(fmtCell, RM.ROW0_Y, RM.LBL0_Y + RM.LBL_H)) {
+      fail("displayFor never reached the cell — it still drew the stored key");
+    }
+
+    /* The HEADER, while the knob is held. */
+    const plainHdr = render({ touched: 0, touchedSlots: [0] });
+    const fmtHdr = render({ touched: 0, touchedSlots: [0], displayFor: fmt });
+    if (band(plainHdr, 0, RM.HEADER_H) === band(fmtHdr, 0, RM.HEADER_H)) {
+      fail("displayFor never reached the held-knob header — the surface with the room for it");
+    }
+
+    /* Returning null must leave the ordinary path EXACTLY as it was: this is
+     * an opt-in for one key, not a new display path for every param. */
+    const nulled = render({ displayFor: () => null });
+    if (nulled.countLit() !== plainCell.countLit()) {
+      fail("a displayFor returning null changed the drawing — the fallback is not identical");
+    }
+    if (fmtCell.clipped() > 0 || fmtHdr.clipped() > 0) {
+      fail("a host-resolved value drew outside the display");
+    }
   }
 
   console.log("PASS: Movy layout — " + rendered + " page renders through the native draw context, " +

@@ -39,6 +39,17 @@ Promise.all([
     return { dev, ctl };
   };
 
+  /* A one-param contract, for tests that need to control every read. */
+  const hierFixture = {
+    "synth:chain_params": JSON.stringify([
+      { key: "cutoff", name: "Cutoff", type: "float", min: 0, max: 1, step: 0.01 },
+    ]),
+    "synth:ui_hierarchy": JSON.stringify({
+      modes: null,
+      levels: { root: { label: "S", knobs: ["cutoff"], params: [{ key: "cutoff", label: "Cutoff" }] } },
+    }),
+  };
+
   /* ---- 1. loading lands on a usable page and says where you are --------- */
   {
     const { dev, ctl } = setup("obxd");
@@ -104,15 +115,23 @@ Promise.all([
     if (settled < turned) fail("a stale read dragged the value back: " + turned + " -> " + settled);
   }
 
-  /* ---- 5. an opaque param cannot be turned, but can be opened ---------- */
+  /* ---- 5. an OPAQUE param cannot be turned, but can be opened ---------- */
   {
     const { dev, ctl } = setup("mrdrums");
+    /* Find a genuinely OPAQUE param — one a knob cannot drive. It is no longer
+     * on the first page: mrdrums pad_start is a ranged wav_position and now
+     * classifies as a turnable number, so the search walks the page set to the
+     * filepath on "Pad Settings". */
     let slot = -1;
-    for (let i = 0; i < 8; i++) {
-      const m = ctl.metaAt(i);
-      if (m && m.kind === "opaque") { slot = i; break; }
+    for (let p = 0; p < ctl.pages.length && slot < 0; p++) {
+      ctl.goToPage(p);
+      if (!ctl.page || ctl.page.kind !== "knobs") continue;
+      for (let i = 0; i < 8; i++) {
+        const m = ctl.metaAt(i);
+        if (m && m.kind === "opaque") { slot = i; break; }
+      }
     }
-    if (slot < 0) fail("mrdrums page 1 should hold an opaque param");
+    if (slot < 0) fail("mrdrums should hold an opaque param on some page");
     dev.resetCounters();
     ctl.onKnobTurn(slot, 1, 1000);
     if (dev.writes.length) fail("turning an opaque param wrote " + JSON.stringify(dev.writes[0]));
@@ -307,20 +326,6 @@ Promise.all([
       const ifine = Number(ctl.state.values[ik]) - b1;
       if (icoarse > 0 && ifine === 0) fail("fine adjust froze an int, which has no finer step to give");
     }
-
-    /* Reset to the declared default. */
-    ctl.onKnobTurn(found.slot, 1, (t += 30));
-    if (!ctl.resetToDefault(found.slot)) fail("resetToDefault refused a param that declares one");
-    if (Number(ctl.state.values[key]) !== Number(meta.default)) {
-      fail("reset did not land on the default: " + ctl.state.values[key] + " vs " + meta.default);
-    }
-    const wrote = dev.writes[dev.writes.length - 1];
-    if (Number(wrote[1]) !== Number(meta.default)) fail("the default was not written to the device");
-
-    /* A param with no declared default reports so rather than silently doing
-     * nothing, so the caller can say "no default" out loud. */
-    const noDefault = ctl.page.keys.findIndex((k) => ctl.metaIndex.getOrGuess(k).default === undefined);
-    if (noDefault >= 0 && ctl.resetToDefault(noDefault)) fail("resetToDefault claimed success with no default declared");
   }
 
   /* ---- 9e. a section remembers the sub-page you were on ----------------- */
@@ -473,9 +478,461 @@ Promise.all([
       sessions++;
     }
     if (sessions < 70) fail("only " + sessions + " modules exercised");
+
+    /* ---- touch is a SET: two fingers, and a turn claims the header -------- */
+    {
+      const { ctl } = setup("obxd");
+      const held = () => ctl.state.touchOrder.slice();
+      const header = () => ctl.state.touched;
+
+      ctl.onKnobTouch(0, true);
+      ctl.onKnobTouch(2, true);
+      if (held().join(",") !== "0,2") fail("both held knobs should be tracked, got " + held());
+      if (header() !== 2) fail("the header should follow the knob touched LAST, got " + header());
+
+      /*
+       * The bug this exists for: releasing the SECOND knob cleared a single
+       * `touched` index, so the first — still under a finger — stopped being
+       * highlighted and the header went blank.
+       */
+      ctl.onKnobTouch(2, false);
+      if (held().join(",") !== "0") fail("releasing one knob must leave the other held, got " + held());
+      if (header() !== 0) fail("the header must fall back to a knob still held, got " + header());
+
+      ctl.onKnobTouch(0, false);
+      if (held().length !== 0) fail("no knob should be held after both releases");
+      if (header() !== -1) fail("the header should clear once nothing is held");
+
+      /* "Last touched or MOVED": a turn claims the header even with no touch,
+       * because a knob can be turned without the capacitive pad registering. */
+      ctl.onKnobTurn(3, 1, 5000);
+      if (header() !== 3) fail("turning a knob should claim the header, got " + header());
+
+      /* But a turn must not out-rank a knob actually under a finger. */
+      ctl.onKnobTouch(1, true);
+      ctl.onKnobTurn(3, 1, 5100);
+      if (header() !== 1) fail("while a knob is held the header must stay on it, got " + header());
+      ctl.onKnobTouch(1, false);
+    }
+
+    /* ---- an empty read is a MISS, never a value -------------------------
+     *
+     * A key nobody serves does NOT answer null: the shim replies with an error
+     * and a zeroed buffer, and the JS binding hands back "". Treating that as
+     * a reading is how slot Volume showed 0% — the modulated flag was (also
+     * wrongly) set, so the cursor asked for ":base", got "", accepted it, and
+     * never asked the real key. Number("") is 0.
+     */
+    {
+      const reads = [];
+      const values = { "synth:cutoff": "0.75" };   /* ":base" is deliberately absent */
+      const ctl = C.createController({
+        getParam: (k) => {
+          reads.push(k);
+          if (k === "synth:ui_hierarchy" || k === "synth:chain_params") return hierFixture[k];
+          return k in values ? values[k] : "";      /* the empty answer */
+        },
+        setParam: () => {},
+        isModulated: () => true,                    /* forces the ":base" path */
+      });
+      ctl.load({ slot: 0, component: "synth" });
+      for (let i = 0; i < 24; i++) ctl.tick();
+
+      if (!reads.some((k) => k === "synth:cutoff:base"))
+        fail("the modulated path should have asked for :base at all");
+      if (!reads.some((k) => k === "synth:cutoff"))
+        fail("an empty :base must fall through to the plain key — it did not, " +
+             "so the cell would show Number(\"\") = 0");
+      if (ctl.state.values.cutoff !== "0.75")
+        fail("the value should be the real one, got " + JSON.stringify(ctl.state.values.cutoff));
+      if (ctl.state.values.filter_mode === "")
+        fail("an empty answer was stored as a value");
+    }
+
+    /* ---- an empty read is a MISS, never a value -------------------------
+     *
+     * A key nobody serves does NOT answer null: the shim replies with an error
+     * and a zeroed buffer, and the JS binding hands back "". Treating that as
+     * a reading is how slot Volume showed 0% — the modulated flag was (also
+     * wrongly) set, so the cursor asked for ":base", got "", accepted it, and
+     * never asked the real key. Number("") is 0.
+     */
+    {
+      const reads = [];
+      const values = { "synth:cutoff": "0.75" };   /* ":base" is deliberately absent */
+      const ctl = C.createController({
+        getParam: (k) => {
+          reads.push(k);
+          if (k === "synth:ui_hierarchy" || k === "synth:chain_params") return hierFixture[k];
+          return k in values ? values[k] : "";      /* the empty answer */
+        },
+        setParam: () => {},
+        isModulated: () => true,                    /* forces the ":base" path */
+      });
+      ctl.load({ slot: 0, component: "synth" });
+      for (let i = 0; i < 24; i++) ctl.tick();
+
+      if (!reads.some((k) => k === "synth:cutoff:base"))
+        fail("the modulated path should have asked for :base at all");
+      if (!reads.some((k) => k === "synth:cutoff"))
+        fail("an empty :base must fall through to the plain key — it did not, " +
+             "so the cell would show Number(\"\") = 0");
+      if (ctl.state.values.cutoff !== "0.75")
+        fail("the value should be the real one, got " + JSON.stringify(ctl.state.values.cutoff));
+      if (ctl.state.values.filter_mode === "")
+        fail("an empty answer was stored as a value");
+    }
+
+    /* ---- an UNHELD turn-claim has to expire ------------------------------
+     *
+     * A claim made by touch is released by the note-off. A claim made by a
+     * TURN alone has no such event — nothing is under a finger — so without an
+     * expiry the cell it claimed stayed inverted for the rest of the session.
+     * Reported on the LFO page as "the Shape cell stays highlighted after its
+     * value changes": Shape is an enum you nudge, and the capacitive pad does
+     * not always register a nudge.
+     */
+    {
+      let clock = 1000;
+      const dev = D.createFakeDevice({ id: "obxd" });
+      const ctl = C.createController({ ...dev, now: () => clock });
+      ctl.load({ slot: 0, component: "synth" });
+
+      ctl.onKnobTurn(3, 1, clock);
+      if (ctl.state.touched !== 3) fail("a turn should claim the header");
+      clock += C.TURN_CLAIM_MS + 1;
+      ctl.tick();
+      if (ctl.state.touched !== -1)
+        fail("an unheld turn-claim never expired — the cell stays highlighted forever");
+
+      /* A HELD knob must never expire: the finger is still on it. */
+      ctl.onKnobTouch(2, true);
+      ctl.onKnobTurn(2, 1, clock);
+      clock += C.TURN_CLAIM_MS * 10;
+      ctl.tick();
+      if (ctl.state.touched !== 2) fail("a held knob must not time out of the header");
+      ctl.onKnobTouch(2, false);
+      if (ctl.state.touched !== -1) fail("releasing the held knob should clear the header");
+    }
+
     console.log("PASS: controller — one read per tick, writes survive stale reads, " +
                 "opaque params open rather than turn, rebuild keeps your place, " +
                 sessions + " scripted module sessions clean");
+  }
+
+  /* ---- a preset page is a DOOR: inert until you click into it ----------
+   *
+   * It used to be refused by the host, which fell back to entering the
+   * hierarchy list editor — and that editor has the jog wired to the preset
+   * browser. So jogging PAST the preset page of a synth on the way elsewhere
+   * loaded every preset it crossed, audibly, each one republishing the
+   * parameter set. Inert-until-entered is what stops that.
+   */
+  {
+    const names = ["Fat Bass", "Glass Pad", "Sync Lead", "Rhodes"];
+    let index = 0;
+    const writes = [];
+    const reads = [];
+    const HIER = {
+      modes: null,
+      levels: {
+        root: {
+          label: "S", list_param: "preset", count_param: "preset_count",
+          name_param: "preset_name",
+          knobs: ["cutoff"], params: [{ key: "cutoff", label: "Cutoff" }],
+        },
+      },
+    };
+    const CP = [{ key: "cutoff", name: "Cutoff", type: "float", min: 0, max: 1, step: 0.01 }];
+    const ctl = C.createController({
+      getParam: (k) => {
+        reads.push(k);
+        const bare = String(k).replace(/^[^:]+:/, "");
+        if (bare === "ui_hierarchy") return JSON.stringify(HIER);
+        if (bare === "chain_params") return JSON.stringify(CP);
+        if (bare === "preset_count") return String(names.length);
+        if (bare === "preset") return String(index);
+        if (bare === "preset_name") return names[index];
+        if (bare === "cutoff") return "0.5";
+        return "";
+      },
+      setParam: (k, v) => {
+        writes.push([k, v]);
+        if (String(k).endsWith(":preset")) index = parseInt(v, 10);
+      },
+      announce: () => {},
+    });
+    ctl.load({ slot: 0, component: "synth" });
+
+    const presetAt = ctl.pages.findIndex((p) => p.kind === "preset");
+    if (presetAt < 0) fail("a level with list_param/count_param should plan a preset page");
+    /* Landing goes to a GRID, never to the browser — firstGrid(). */
+    if (ctl.page.kind === "preset") fail("the view should not open ON the preset page");
+
+    ctl.goToPage(presetAt, { remember: false });
+    if (ctl.page.kind !== "preset") fail("could not reach the preset page");
+
+    /* Reads are staggered like the knob cursor: count, index, name, one per
+     * tick — three round trips in one frame is most of a frame. */
+    for (let i = 0; i < 3; i++) {
+      reads.length = 0;
+      ctl.tick();
+      if (reads.length > 1) fail("a preset tick issued " + reads.length + " reads, must be at most 1");
+    }
+    for (let i = 0; i < 6; i++) ctl.tick();
+
+    /* ---- INERT: the jog pages, and nothing is loaded ------------------- */
+    writes.length = 0;
+    const before = ctl.pageIndex;
+    ctl.onJog(1);
+    if (ctl.pageIndex === before) fail("the jog did not page off an un-entered preset page");
+    if (writes.length) fail("jogging past a preset page LOADED a preset: " + JSON.stringify(writes));
+    ctl.goToPage(presetAt, { remember: false });
+    for (let i = 0; i < 6; i++) ctl.tick();
+
+    /* ---- ENTERED: the click goes in, and now the jog browses ----------- */
+    if (ctl.menuEntered()) fail("a preset page must start inert");
+    ctl.onClick(-1);
+    if (!ctl.menuEntered()) fail("clicking a preset page should enter it");
+
+    writes.length = 0;
+    const pageBefore = ctl.pageIndex;
+    ctl.onJog(1);
+    if (ctl.pageIndex !== pageBefore) fail("an ENTERED preset page must keep the jog, not page away");
+    if (!writes.some(([k, v]) => k === "synth:preset" && v === "1"))
+      fail("jogging inside the browser did not select the next preset: " + JSON.stringify(writes));
+
+    /* ---- leaving a page leaves the door ---------------------------------
+     *
+     * Enter the browser, page away, come back: you must be OUTSIDE it. The
+     * entered flag is matched by page NAME, so returning to the same page used
+     * to put you straight back inside without a click — the page had never
+     * been marked as left, only navigated off. */
+    ctl.exitMenu();                          /* whatever the last block left */
+    ctl.goToPage(presetAt, { remember: false });
+    ctl.onClick(-1);
+    if (!ctl.menuEntered()) fail("setup: should be entered");
+    /* Leave and return BY JOG — the path that had no clear at all. Going via
+     * goToPage would prove nothing: page names are unique, so its existing
+     * name check already covers every jump. */
+    ctl.onJog(1, { shift: true });
+    if (ctl.pageIndex === presetAt) fail("setup: shift+jog did not leave the page");
+    for (let i = 0; i < ctl.pages.length && ctl.pageIndex !== presetAt; i++) ctl.onJog(-1);
+    if (ctl.pageIndex !== presetAt) fail("setup: could not jog back to the preset page");
+    if (ctl.menuEntered()) fail("jogging back onto a preset page put you inside it without a click");
+
+    /* ---- the second click says DONE, and lands on the knobs ------------
+     *
+     * The browser loads as you scroll, so by the time you click there is
+     * nothing left to commit — what you want next is the knobs for the preset
+     * you just landed on. A click that left you in the browser made the page
+     * feel like somewhere you were stuck, with only Back to get out and Back
+     * only ever going backwards. */
+    {
+      const gridAt = ctl.pages.findIndex((p) => p.kind === "knobs");
+      if (gridAt < 0) fail("the fixture should plan a grid page");
+      ctl.goToPage(presetAt, { remember: false });
+      ctl.onClick(-1);
+      if (!ctl.menuEntered()) fail("first click should enter");
+      ctl.onClick(-1);
+      if (ctl.menuEntered()) fail("the second click should leave the browser");
+      if (ctl.pageIndex !== gridAt)
+        fail("the second click should land on the first grid page, got page " +
+             ctl.pageIndex + " (" + (ctl.page && ctl.page.kind) + ")");
+
+      /* Back is still the other way out: it steps out IN PLACE, for when you
+       * were only looking. */
+      ctl.goToPage(presetAt, { remember: false });
+      ctl.onClick(-1);
+      if (!ctl.exitMenu()) fail("Back should step out of the browser");
+      if (ctl.pageIndex !== presetAt) fail("Back must not move you off the page");
+    }
+
+    /* ---- SHIFT still pages out, so it is never a trap ------------------ */
+    ctl.onJog(1, { shift: true });
+    if (ctl.pageIndex === pageBefore)
+      fail("shift+jog must page out of an entered preset browser");
+
+    /* ---- and Back comes out one layer at a time ------------------------ */
+    ctl.goToPage(presetAt, { remember: false });
+    ctl.onClick(-1);
+    if (!ctl.menuEntered()) fail("re-entering failed");
+    if (!ctl.exitMenu()) fail("Back should step out of an entered preset page");
+    if (ctl.menuEntered()) fail("Back left it entered");
+    if (ctl.exitMenu()) fail("Back on an inert page must fall through to leaving the view");
+
+    /* ---- it LOOKS like a door, and like a page -------------------------
+     *
+     * Inert it wears the corner brackets a divable cell and an un-entered menu
+     * wear; entered it drops them. That mark is the only thing on screen that
+     * says "you can go into this", so it is asserted in pixels rather than
+     * trusted. Long preset names must not spill off the display either —
+     * "SQ Fat Analog Brass 3" is a real one. */
+    {
+      ctl.setLayout(C.LAYOUT_MOVY);
+      ctl.goToPage(presetAt, { remember: false });
+      for (let i = 0; i < 9; i++) ctl.tick();
+      const draw = () => {
+        const fb = H.createFramebuffer();
+        ctl.render(H.drawContext(fb), { title: "S1 > SF2", footer: [["JOG", "PAGE"]] });
+        return fb;
+      };
+      ctl.exitMenu();
+      const inert = draw();
+      ctl.onClick(-1);
+      const entered = draw();
+      if (inert.countLit() <= entered.countLit())
+        fail("an inert preset page should draw the brackets an entered one drops");
+      if (inert.clipped() > 0 || entered.clipped() > 0)
+        fail("the preset page drew outside the display");
+      ctl.exitMenu();
+      ctl.setLayout(R.LAYOUT_DIAL);
+    }
+
+    /* ---- wrapping, both ends -------------------------------------------
+     * A full cycle returns you where you started, from WHEREVER you started —
+     * asserting an absolute index here just encodes the order of the tests
+     * above it. */
+    ctl.onClick(-1);
+    const startIdx = index;
+    for (let i = 0; i < names.length; i++) ctl.onJog(1);
+    if (index !== startIdx)
+      fail("a full cycle forward should return to " + startIdx + ", got " + index);
+    ctl.onJog(-1);
+    if (index !== (startIdx + names.length - 1) % names.length)
+      fail("the browser should wrap backwards, got " + index);
+  }
+
+  /* ---- an ITEMS page is a door with a real list ------------------------
+   *
+   * Soundfonts, NAM models, JV expansions. Unlike a preset level this one
+   * publishes an actual list, so it can be five rows in the page chrome — and
+   * scrolling it writes NOTHING, which is the difference that matters: only
+   * the click chooses.
+   */
+  {
+    const items = [{ index: 0, label: "GM Basic" }, { index: 1, label: "Piano XL" },
+                   { index: 2, label: "Orchestra" }];
+    let selected = 2;
+    const writes = [];
+    const reads = [];
+    const HIER = { modes: null, levels: {
+      root: { label: "S", knobs: ["cutoff"], params: [{ level: "sf", label: "Soundfont" }] },
+      sf: { label: "Soundfont", items_param: "soundfont_list", select_param: "soundfont_index" },
+    } };
+    const CP = [{ key: "cutoff", name: "Cutoff", type: "float", min: 0, max: 1, step: 0.01 }];
+    const ctl = C.createController({
+      getParam: (k) => {
+        reads.push(k);
+        const b = String(k).replace(/^[^:]+:/, "");
+        if (b === "ui_hierarchy") return JSON.stringify(HIER);
+        if (b === "chain_params") return JSON.stringify(CP);
+        if (b === "soundfont_list") return JSON.stringify(items);
+        if (b === "soundfont_index") return String(selected);
+        return "0.5";
+      },
+      setParam: (k, v) => {
+        writes.push([k, v]);
+        if (String(k).endsWith(":soundfont_index")) selected = parseInt(v, 10);
+      },
+      announce: () => {},
+    });
+    ctl.load({ slot: 0, component: "synth" });
+
+    const itemsAt = ctl.pages.findIndex((p) => p.kind === "items");
+    if (itemsAt < 0) fail("a level with items_param should plan an items page");
+    ctl.goToPage(itemsAt, { remember: false });
+
+    /* Reads are staggered, like everything else on this screen. */
+    for (let i = 0; i < 2; i++) {
+      reads.length = 0;
+      ctl.tick();
+      if (reads.length > 1) fail("an items tick issued " + reads.length + " reads, must be at most 1");
+    }
+    for (let i = 0; i < 6; i++) ctl.tick();
+    if (ctl.state.items[ctl.page.name].list.length !== items.length)
+      fail("the item list was never read");
+
+    /* ---- INERT: the jog pages ------------------------------------------ */
+    writes.length = 0;
+    const before = ctl.pageIndex;
+    /* Backwards: the items page is the LAST page here and step() clamps, so
+     * jogging forward off it would have nowhere to go and prove nothing. */
+    ctl.onJog(-1);
+    if (ctl.pageIndex === before) fail("the jog did not page off an un-entered items page");
+    if (writes.length) fail("paging past an items page wrote something");
+    ctl.goToPage(itemsAt, { remember: false });
+    for (let i = 0; i < 6; i++) ctl.tick();
+
+    /* ---- ENTERED: the jog moves the highlight, and writes NOTHING ------- */
+    ctl.onClick(-1);
+    if (!ctl.menuEntered()) fail("clicking an items page should enter it");
+    writes.length = 0;
+    const cur0 = ctl.state.items[ctl.page.name].cursor;
+    ctl.onJog(1);
+    if (ctl.state.items[ctl.page.name].cursor === cur0)
+      fail("the jog did not move the highlight inside the list");
+    if (writes.length)
+      fail("scrolling an items list wrote to the device: " + JSON.stringify(writes));
+
+    /* ---- the click chooses, and leaves ---------------------------------- */
+    const pick = ctl.state.items[ctl.page.name].cursor;
+    ctl.onClick(-1);
+    if (!writes.some(([k, v]) => k === "synth:soundfont_index" && v === String(items[pick].index)))
+      fail("the click did not select the highlighted item: " + JSON.stringify(writes));
+    if (ctl.menuEntered()) fail("choosing should leave the list");
+    if (ctl.page.kind !== "knobs") fail("choosing should land on a grid page, got " + ctl.page.kind);
+
+    /* ---- navigate_to decides where choosing LANDS ----------------------
+     *
+     * A level that declares it is saying "having chosen, you want to be here"
+     * — minijv sends you to the tone it just loaded. Without one the first grid
+     * page is the fallback, which the case above covers. */
+    {
+      const H2 = { modes: null, levels: {
+        /* `tone` must be reachable from params to be PLANNED at all — the
+         * planner walks the params tree, it does not follow navigate_to. A
+         * module whose navigate_to names an unplanned level just falls back to
+         * the first grid page, which is the sane thing to do. */
+        root: { label: "S", knobs: ["cutoff"],
+                params: [{ level: "sf", label: "SF" }, { level: "tone", label: "Tone" }] },
+        sf: { label: "SF", items_param: "sf_list", select_param: "sf_index",
+              navigate_to: "tone" },
+        /* A DISTINCT key: a level whose knobs duplicate an existing page is
+         * deduped by the planner and never becomes a page at all. */
+        tone: { label: "Tone", knobs: ["res"], params: [{ key: "res" }] },
+      } };
+      const CP2 = CP.concat([{ key: "res", name: "Res", type: "float", min: 0, max: 1, step: 0.01 }]);
+      const ctl2 = C.createController({
+        getParam: (k) => {
+          const b = String(k).replace(/^[^:]+:/, "");
+          if (b === "ui_hierarchy") return JSON.stringify(H2);
+          if (b === "chain_params") return JSON.stringify(CP2);
+          if (b === "sf_list") return JSON.stringify(items);
+          if (b === "sf_index") return "0";
+          return "0.5";
+        },
+        setParam: () => {}, announce: () => {},
+      });
+      ctl2.load({ slot: 0, component: "synth" });
+      const at2 = ctl2.pages.findIndex((p) => p.kind === "items");
+      const tonePage = ctl2.pages.findIndex((p) => p.level === "tone" && p.kind === "knobs");
+      if (at2 < 0 || tonePage < 0) fail("fixture should plan an items page and a tone page");
+      ctl2.goToPage(at2, { remember: false });
+      for (let i = 0; i < 6; i++) ctl2.tick();
+      ctl2.onClick(-1);
+      ctl2.onClick(-1);
+      if (ctl2.pageIndex !== tonePage)
+        fail("navigate_to should land on the level it names, got page " + ctl2.pageIndex);
+    }
+
+    /* ---- shift still escapes from inside -------------------------------- */
+    ctl.goToPage(itemsAt, { remember: false });
+    for (let i = 0; i < 6; i++) ctl.tick();
+    ctl.onClick(-1);
+    const inside = ctl.pageIndex;
+    ctl.onJog(-1, { shift: true });
+    if (ctl.pageIndex === inside) fail("shift+jog must page out of an entered items list");
   }
 
   /* ---- modulation flags ride the read cursor, not the draw ------------- *

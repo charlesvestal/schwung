@@ -164,9 +164,6 @@ static shadow_midi_dsp_t **host_shadow_midi_dsp_shm;
 static shadow_midi_inject_t **host_shadow_midi_inject_shm;
 static uint8_t *host_shadow_mailbox;
 
-/* Capture */
-static shadow_capture_rules_t *host_master_fx_capture;
-
 /* Idle tracking */
 static int *host_slot_idle;
 static int *host_slot_silence_frames;
@@ -194,7 +191,6 @@ void midi_routing_init(const midi_host_t *host)
     host_shadow_midi_dsp_shm = host->shadow_midi_dsp_shm;
     host_shadow_midi_inject_shm = host->shadow_midi_inject_shm;
     host_shadow_mailbox = host->shadow_mailbox;
-    host_master_fx_capture = host->master_fx_capture;
     host_slot_idle = host->slot_idle;
     host_slot_silence_frames = host->slot_silence_frames;
     host_slot_fx_idle = host->slot_fx_idle;
@@ -337,26 +333,16 @@ void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *mi
          * mode have no synth or audio FX but still need to dispatch
          * incoming MIDI to drive the FX and inject to Move. */
         if (!host_chain_slots[i].active) {
-            if (pv2 && pv2->get_param &&
-                host_chain_slots[i].instance) {
-                static const char *probe_keys[] = {
-                    "synth_module", "fx1_module", "fx2_module",
-                    "midi_fx1_module", "midi_fx2_module"
-                };
-                for (size_t k = 0; k < sizeof(probe_keys)/sizeof(probe_keys[0]); k++) {
-                    char buf[64];
-                    int len = pv2->get_param(host_chain_slots[i].instance,
-                                              probe_keys[k], buf, sizeof(buf));
-                    if (len <= 0) continue;
-                    if (len < (int)sizeof(buf)) buf[len] = '\0';
-                    else buf[sizeof(buf) - 1] = '\0';
-                    if (buf[0] != '\0') {
-                        host_chain_slots[i].active = 1;
-                        if (host_ui_state_update_slot)
-                            host_ui_state_update_slot(i);
-                        break;
-                    }
-                }
+            /* This used to probe five hard-coded keys and so could only see
+             * fx1/fx2 and midi_fx1/midi_fx2; a slot whose only module sat in
+             * fx5 never activated and stayed silent.  The shared probe covers
+             * all eight positions of both lists in three reads by asking the
+             * DSP for its list LENGTHS — which is also cheaper than what it
+             * replaces, and matters because this runs in the SPI callback. */
+            if (shadow_slot_has_loaded_component(pv2, host_chain_slots[i].instance)) {
+                host_chain_slots[i].active = 1;
+                if (host_ui_state_update_slot)
+                    host_ui_state_update_slot(i);
             }
             if (!host_chain_slots[i].active) continue;
         }
@@ -1184,19 +1170,50 @@ void shadow_forward_midi(void)
  * Capture rules lookup
  * ============================================================================ */
 
-/* Get capture rules for the focused slot (0-3 = chain, 4 = master FX) */
-const shadow_capture_rules_t *shadow_get_focused_capture(void)
+/* Does the focused target capture this control? (slots 0-3 = chain, 4 = Master FX)
+ *
+ * This used to hand back a shadow_capture_rules_t* and let the caller test the
+ * bit. For Master FX that pointer was cached at init from the host struct as
+ * a raw pointer to shadow_master_fx_slots[0].capture
+ * — so only POSITION 0's rules were ever consulted, and the pointer aimed into
+ * an array whose contents now permute.
+ *
+ * Both halves of that had to go. Capture belongs to the module, not to the
+ * index it happens to sit at: once the Master FX editor grew a move gesture,
+ * dragging a MIDI-triggered module (a ducker on the master bus is the obvious
+ * one) off position 0 would silently stop it receiving MIDI, with no swap and
+ * no reload to blame it on. Asking per event, from the live array, is also the
+ * only shape that stays correct across an insert / remove / move.
+ *
+ * Both call sites only ever asked "does the focused thing want this byte", so
+ * the API is the predicate rather than the rules. SPI-callback safe: a bounded
+ * loop over positions plus one bit test, no allocation, I/O or locks. */
+int shadow_focused_captures_note(uint8_t note)
 {
     shadow_control_t *shadow_control = *host_shadow_control;
-    if (!shadow_control) return NULL;
+    if (!shadow_control) return 0;
 
     int slot = shadow_control->ui_slot;
     if (slot == SHADOW_CHAIN_INSTANCES) {
-        /* Master FX is focused (slot 4) */
-        return host_master_fx_capture;
+        return shadow_master_fx_captures_note(note);
     }
     if (slot >= 0 && slot < SHADOW_CHAIN_INSTANCES) {
-        return &host_chain_slots[slot].capture;
+        return capture_has_note(&host_chain_slots[slot].capture, note);
     }
-    return NULL;
+    return 0;
+}
+
+int shadow_focused_captures_cc(uint8_t cc)
+{
+    shadow_control_t *shadow_control = *host_shadow_control;
+    if (!shadow_control) return 0;
+
+    int slot = shadow_control->ui_slot;
+    if (slot == SHADOW_CHAIN_INSTANCES) {
+        return shadow_master_fx_captures_cc(cc);
+    }
+    if (slot >= 0 && slot < SHADOW_CHAIN_INSTANCES) {
+        return capture_has_cc(&host_chain_slots[slot].capture, cc);
+    }
+    return 0;
 }

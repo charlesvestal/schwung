@@ -40,7 +40,7 @@ export const TOUCH_NOTE_LAST = 7;
  *   { type: "knob",   slot, direction, fine }  turn knob `slot`
  *   { type: "touch",  slot, down, mute }
  *   { type: "page",   delta, byLevel }
- *   { type: "click" }                     jog click — open / commit
+ *   { type: "click",  shift }             jog click — open / commit
  *   { type: "back" }
  *   { type: "shift",  down }              modifier state changed
  *   { type: "mute",   down }              modifier state changed
@@ -66,7 +66,7 @@ export function decodeInput(data, mods = {}) {
             return { type: "page", delta: delta > 0 ? 1 : -1, byLevel: !!mods.shift };
         }
         /* Buttons report press as a non-zero value and release as 0. */
-        if (d1 === JOG_CLICK_CC) return d2 > 0 ? { type: "click" } : null;
+        if (d1 === JOG_CLICK_CC) return d2 > 0 ? { type: "click", shift: !!mods.shift } : null;
         if (d1 === BACK_CC) return d2 > 0 ? { type: "back" } : null;
         if (d1 === SHIFT_CC) return { type: "shift", down: d2 > 0 };
         if (d1 === MUTE_CC) return { type: "mute", down: d2 > 0 };
@@ -106,22 +106,21 @@ export function applyInput(controller, intent, { nowMs, reveal } = {}) {
             return null;
 
         case "touch":
-            /* Mute + touch resets that param to its declared default.
+            /*
+             * There is deliberately no Mute+touch reset here.
              *
-             * Mute rather than Shift: Shift is precision mode, so during fine
-             * adjustment you are ALREADY holding shift with a knob under your
-             * finger — putting a destructive action one stray press away from
-             * the most delicate operation in the UI. Mute is also the modifier
-             * Schwung already uses for destructive/state actions in this same
-             * view (Mute+JogClick bypasses a module, Mute+Track mutes a slot).
+             * It existed, and it could never be advertised: CC 88 is forwarded
+             * to Move unconditionally, so holding Mute to reach the gesture
+             * also mutes the selected track. A shortcut whose documentation
+             * has to warn you what else it does is not a shortcut. It also had
+             * a quiet cost — returning early meant the controller never saw
+             * the press, so the matching release left a dwell from an older,
+             * unrelated contact in the state the double-tap is judged against.
              *
-             * Touch-down rather than a double-tap: lifting and re-placing a
-             * finger mid-adjustment is a normal thing to do, and a double-tap
-             * would read that as a reset. */
-            if (intent.down && intent.mute) {
-                controller.resetToDefault(intent.slot);
-                return null;
-            }
+             * Reset lives on the double-tap alone. `intent.mute` is still
+             * decoded because other gestures in this view use Mute as a
+             * modifier.
+             */
             controller.onKnobTouch(intent.slot, intent.down);
             return null;
 
@@ -131,12 +130,40 @@ export function applyInput(controller, intent, { nowMs, reveal } = {}) {
 
         case "click": {
             if (controller.dismissHint && controller.dismissHint()) return null;
+            /*
+             * Shift+Click is the section picker, EVERYWHERE.
+             *
+             * Plain click is contextual — it opens a held param, and on a menu
+             * page it enters the menu — which means the page set is not always
+             * reachable from it. Shift already means "sections" on the jog, so
+             * it means the same at rest, and there is one gesture that always
+             * gets you to the pages no matter what is on screen.
+             */
+            if (intent.shift && !controller.pickerOpen) {
+                if (controller.openPicker) controller.openPicker();
+                return null;
+            }
             /* Two meanings, disambiguated by whether a knob is under your hand.
              * Holding one: open that param's editor (the only unambiguous target
              * on a grid, where nothing is "selected"). Holding none: the click
              * has no target, so it opens the section picker — which is also the
              * only spare gesture, and the thing a 76-page module needs. */
             if (controller.pickerOpen) { controller.pickerSelect(); return null; }
+            /* A DOOR page owns the plain click: first press enters it, and on
+             * a menu the second activates the highlighted entry. Nothing is
+             * "held" on one, so this must come before the no-knob-held branch
+             * below or the section picker would swallow it.
+             *
+             * Three kinds are doors — a menu, a preset browser and a runtime
+             * item list. Shift+click
+             * above still reaches the section list from inside either, which is
+             * what keeps them from being traps. */
+            const mpage = controller.page;
+            if (mpage && (mpage.kind === "menu" || mpage.kind === "preset"
+                          || mpage.kind === "items")) {
+                const opened = controller.onClick(-1);
+                return opened ? controller.takePending() : null;
+            }
             const held = controller.state.touched;
             if (held < 0) { controller.openPicker(); return null; }
             const opened = controller.onClick(held);
@@ -145,9 +172,12 @@ export function applyInput(controller, intent, { nowMs, reveal } = {}) {
 
         case "back":
             if (controller.dismissHint && controller.dismissHint()) return null;
-            /* Back closes the picker first, then leaves the view — one layer at
-             * a time, matching the rest of Move. */
+            /* Back closes the picker first, then steps out of an entered menu,
+             * then leaves the view — one layer at a time, matching the rest of
+             * Move. A menu you have entered is a layer exactly like the picker
+             * is: you went into it, so Back comes out of it. */
             if (controller.pickerOpen) { controller.closePicker(); return null; }
+            if (controller.exitMenu && controller.exitMenu()) return null;
             return { action: "exit" };
 
         case "shift":

@@ -16,7 +16,17 @@ BUILD_DIR = ../../build/tests/host
 
 TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_overtake_native_led_repaint \
-	$(BUILD_DIR)/test_shadow_midi_filter
+	$(BUILD_DIR)/test_shadow_midi_filter \
+	$(BUILD_DIR)/test_master_fx_slot_routing
+
+# Read the Master FX cap out of the shipped header instead of restating it, so
+# the routing test covers whatever range Master FX actually runs with. Raising
+# MASTER_FX_SLOTS widens the test automatically; a test that hard-coded 4 would
+# go on passing while covering half the slots.
+MASTER_FX_SLOTS := $(shell awk '/^\#define MASTER_FX_SLOTS /{print $$3}' ../../src/host/shadow_chain_mgmt.h)
+ifeq ($(strip $(MASTER_FX_SLOTS)),)
+$(error could not read MASTER_FX_SLOTS from ../../src/host/shadow_chain_mgmt.h)
+endif
 
 .PHONY: all test clean
 
@@ -33,6 +43,9 @@ $(BUILD_DIR)/test_overtake_native_led_repaint: test_overtake_native_led_repaint.
 
 $(BUILD_DIR)/test_shadow_midi_filter: test_shadow_midi_filter.c ../../src/host/shadow_midi_filter.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/test_master_fx_slot_routing: test_master_fx_slot_routing.c ../../src/host/master_fx_key.h ../../src/host/shadow_chain_mgmt.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) -DTEST_MASTER_FX_SLOTS=$(MASTER_FX_SLOTS) $< -o $@ $(LDFLAGS)
 
 test: $(TARGETS)
 	@for t in $(TARGETS); do \

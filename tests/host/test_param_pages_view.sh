@@ -67,7 +67,7 @@ Promise.all([
   const views = [];
   const opened = [];
   Object.assign(C.ctx, {
-    VIEWS: { PARAM_PAGES: "parampages", CHAIN_EDIT: "chainedit" },
+    VIEWS: { PARAM_PAGES: "parampages", CHAIN_EDIT: "chainedit", MASTER_FX: "masterfx" },
     setView: (v) => views.push(v),
     getSlotParam: (slot, key) => dev.getParam(key),
     setSlotParam: (slot, key, value) => dev.setParam(key, value),
@@ -204,7 +204,7 @@ Promise.all([
     V.exitParamPages();
   }
 
-  /* ---- 6. an opaque param is handed to the existing editor -------------- */
+  /* ---- 6. a DIVABLE param is handed to the existing editor -------------- */
   {
     const dev2 = D.createFakeDevice({ id: "mrdrums" });
     C.ctx.getSlotParam = (slot, key) => dev2.getParam(key);
@@ -214,7 +214,9 @@ Promise.all([
 
     const page = V.currentParamPage();
     if (!page) fail("no page for mrdrums");
-    /* Hold the knob whose param a knob cannot turn, then click it. */
+    /* Hold the knob whose param opens an editor, then click it. Note this is
+     * no longer the same as "a knob cannot turn it": mrdrums pad_start is a
+     * ranged wav_position, so it is turnable AND divable. */
     let slot = -1;
     for (let i = 0; i < 8; i++) {
       const before = opened.length;
@@ -223,9 +225,11 @@ Promise.all([
       if (opened.length > before) { slot = i; break; }
       V.handleParamPagesMidi([0x80, i, 0]);
     }
-    if (slot < 0) fail("clicking a held opaque param never reached the existing editor");
+    if (slot < 0) fail("clicking a held divable param never reached the existing editor");
     const [, key, kind] = opened[opened.length - 1];
-    if (kind !== "opaque") fail("handed a non-opaque param to the editor: " + kind);
+    const handed = V.paramPagesController
+      ? V.paramPagesController().metaAt(slot) : null;
+    if (handed && !handed.divable) fail("handed a non-divable param to the editor: " + kind);
     if (!/^synth:/.test(key)) fail("the editor was handed an unprefixed key: " + key);
     V.exitParamPages();
   }
@@ -236,15 +240,21 @@ Promise.all([
     C.ctx.getSlotParam = (slot, key) => dev3.getParam(key);
     C.ctx.setSlotParam = (slot, key, value) => dev3.setParam(key, value);
     V.enterParamPages(0, "synth", "synth");
-    /* Entering lands on the first GRID page, so minijv mode-select and preset
-     * pages sit behind it — jogging back reaches them, and they belong to the
-     * list editor rather than to the grid. */
+    /* Entering lands on the first GRID page, so minijv mode-select and child
+     * pages sit behind it — jogging back reaches them, and those belong to the
+     * list editor rather than to the grid.
+     *
+     * PRESET, MENU and ITEMS are NOT in that set: the grid draws all three, in
+     * its own chrome, as doors you click into. A preset page especially had to
+     * stop handing off — the list editor it landed in wires the jog to the
+     * preset browser, so jogging past one loaded every preset it crossed. */
     if (V.currentParamPage().kind !== "knobs") fail("entering should land on a grid page");
     let sawNonGrid = false;
     for (let i = 0; i < 8; i++) {
       V.handleParamPagesMidi([0xb0, 14, 127]);   /* jog anticlockwise */
       const page = V.currentParamPage();
-      if (page && page.kind !== "knobs") {
+      const ownKinds = ["knobs", "menu", "preset", "items"];
+      if (page && ownKinds.indexOf(page.kind) < 0) {
         sawNonGrid = true;
         if (V.drawParamPages()) fail("the grid drew a " + page.kind + " page it does not own");
       }
@@ -267,7 +277,81 @@ Promise.all([
     V.exitParamPages();
   }
 
+  /* ---- 9. the same grid, opened from MASTER FX ------------------------- *
+   *
+   * Master FX is a chain editor too, and the Param View setting was silently
+   * slot-chain-only: the same module opened the labelled knob grid in a slot
+   * and the scrolling hierarchy list on the master bus. Reported from the
+   * device the day after the knob card shipped, and the same drift section 1b
+   * of the Master FX variable-length design exists to end.
+   *
+   * The grid serves either chain given three pieces of CHROME, and all three
+   * fail QUIETLY if they are wrong, which is why each is asserted separately:
+   *
+   *   label      "MFX", never "S1" -- the master bus is ADDRESSED at IPC slot
+   *              0 by convention and is not instrument slot 1.
+   *   moduleKey  "master_fx:fx1:module". The slot chain spelling "<prefix>_module"
+   *              spelling is simply unserved here, and an unserved key reads
+   *              back as "" rather than erroring, so the header would lose its
+   *              module name with nothing in the logs.
+   *   returnView Back goes to the Master FX editor. Hardcoded, it dropped the
+   *              user into the slot chain editor instead.
+   */
+  {
+    const devM = D.createFakeDevice({ id: "obxd", prefix: "master_fx:fx1" });
+    let abbrevArg = null;
+    C.ctx.getSlotParam = (slot, key) =>
+      (key === "master_fx:fx1:module" ? "cloudseed" : devM.getParam(key));
+    C.ctx.setSlotParam = (slot, key, value) => devM.setParam(key, value);
+    C.ctx.getModuleAbbrev = (id) => { abbrevArg = id; return "CS"; };
+
+    V.enterParamPages(0, "master_fx:fx1", "master_fx:fx1", null, null,
+                      { label: "MFX", moduleKey: "master_fx:fx1:module",
+                        returnView: C.ctx.VIEWS.MASTER_FX });
+    for (let i = 0; i < 12; i++) V.tickParamPages();
+
+    drawCalls.length = 0;
+    if (!V.drawParamPages()) fail("the grid did not draw for a Master FX component");
+
+    /* Read through headerTitle(), which is what drawParamPages passes to the
+     * renderer. It cannot be read back off the framebuffer: the movy renderer
+     * sets the header in its own font and draws every glyph as fillRect
+     * pixels, so a recording print() sees nothing -- the same reason
+     * paramPagesFooterHints() is exported. */
+    const title = V.headerTitle();
+    if (!/^MFX > /.test(title)) fail("the header does not say MFX: " + JSON.stringify(title));
+    if (/^S1 > /.test(title))
+      fail("the header called the master bus a slot: " + JSON.stringify(title));
+
+    if (abbrevArg !== "cloudseed")
+      fail("the module behind the view was resolved through the wrong key -- " +
+           "getModuleAbbrev saw " + JSON.stringify(abbrevArg));
+
+    V.handleParamPagesMidi([0xb0, 51, 127]);
+    if (V.paramPagesActive()) fail("back should leave the view");
+    if (views[views.length - 1] !== "masterfx")
+      fail("back from a Master FX component landed on " + views[views.length - 1] +
+           " -- it must return to the editor it was opened from");
+
+    /* And the defaults must be untouched: an entry with NO chrome is still the
+     * slot chain, and carrying the last one over would leave an MFX header on
+     * it. */
+    const devS = D.createFakeDevice({ id: "obxd" });
+    C.ctx.getSlotParam = (slot, key) => devS.getParam(key);
+    C.ctx.setSlotParam = (slot, key, value) => devS.setParam(key, value);
+    V.enterParamPages(1, "synth", "synth");
+    for (let i = 0; i < 12; i++) V.tickParamPages();
+    V.drawParamPages();
+    const t2 = V.headerTitle();
+    if (!/^S2 > /.test(t2))
+      fail("a chrome-less entry did not fall back to the slot header: " + JSON.stringify(t2));
+    V.handleParamPagesMidi([0xb0, 51, 127]);
+    if (views[views.length - 1] !== "chainedit")
+      fail("a chrome-less entry did not return to the chain editor");
+  }
+
   console.log("PASS: shadow view module — setting and screen-reader gating, one read per frame, " +
-              "MIDI routed, opaque params and non-grid pages handed to existing screens");
+              "MIDI routed, opaque params and non-grid pages handed to existing screens, " +
+              "and the same grid serves Master FX with its own header, module key and return view");
 });
 '

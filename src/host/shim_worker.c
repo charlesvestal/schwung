@@ -97,7 +97,17 @@ static const flag_spec_t FLAGS[] = {
     { "/data/UserData/schwung/main_fx_dump_trigger", SHIM_FLAG_MAIN_FX_DUMP, 1 },
 };
 
+/* Knob-touch ground truth — see the touch trace block in schwung_shim.c.
+ * A plain int rather than a shim_debug_flags bit because the SPI callback
+ * reads it on every note event and a plain load is the cheapest thing it can
+ * do; correctness does not depend on when the change is observed. */
+extern int shim_touch_trace_on;
+void shim_touch_trace_drain(void);
+
 static void poll_flags(void) {
+    shim_touch_trace_on =
+        (access("/data/UserData/schwung/touch_trace_on", F_OK) == 0);
+
     for (size_t i = 0; i < sizeof(FLAGS) / sizeof(FLAGS[0]); i++) {
         int present = (access(FLAGS[i].path, F_OK) == 0);
         if (FLAGS[i].oneshot) {
@@ -256,6 +266,7 @@ static void *worker_main(void *arg) {
     for (;;) {
         usleep(200 * 1000);             /* 200 ms cadence */
         drain_events();                 /* event latency ≤ ~200 ms */
+        shim_touch_trace_drain();       /* file I/O for the SPI callback */
 
         /* Persist jack state when the RT path reports a new CC 115 value. */
         int jp = shim_jack_persist;

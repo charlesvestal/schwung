@@ -13,12 +13,26 @@
 #include "plugin_api_v1.h"
 #include "audio_fx_api_v2.h"
 #include "lfo_common.h"
+#include "master_fx_key.h"
 
 /* ============================================================================
  * Constants
  * ============================================================================ */
 
-#define MASTER_FX_SLOTS 4
+/* Number of Master FX slots. Raising this should be a one-line change: all
+ * "fx<N>:" key routing goes through master_fx_key.h with this passed in as
+ * slot_count, and every loop over the slots is bounded by this name. Pinned by
+ * tests/host/test_master_fx_slot_routing.sh, which reads the value out of this
+ * line and proves the routing covers 1..MASTER_FX_SLOTS and rejects the slot
+ * just past it. */
+#define MASTER_FX_SLOTS 8
+
+/* "fx%d" LFO target keys are formatted into MASTER_FX_TARGET_KEY_LEN buffers
+ * and strcmp'd against lfo_state_t.target. A truncated format would compare
+ * unequal and silently stop modulating, so pin the digit budget here rather
+ * than discover it at slot 10000. */
+_Static_assert(MASTER_FX_SLOTS > 0 && MASTER_FX_SLOTS <= 9999,
+               "MASTER_FX_SLOTS must fit \"fx%d\" in MASTER_FX_TARGET_KEY_LEN");
 #define SHADOW_CHAIN_MODULE_DIR "/data/UserData/schwung/modules/chain"
 #define SHADOW_CHAIN_DSP_PATH "/data/UserData/schwung/modules/chain/dsp.so"
 
@@ -37,6 +51,11 @@
  * Types
  * ============================================================================ */
 
+/* Size of one position's cached chain_params JSON. Shared by both Master FX
+ * caches: the module.json snapshot below and the runtime refresh buffer in
+ * shadow_chain_mgmt.c. */
+#define MASTER_FX_CHAIN_PARAMS_MAX 65536
+
 /* Master FX chain slot */
 typedef struct {
     void *handle;                    /* dlopen handle */
@@ -45,7 +64,26 @@ typedef struct {
     char module_path[256];           /* Full DSP path */
     char module_id[64];              /* Module ID for display */
     shadow_capture_rules_t capture;  /* Capture rules for this FX */
-    char chain_params_cache[65536];  /* Cached chain_params to avoid file I/O in audio thread */
+    /* Cached chain_params to avoid file I/O in the audio thread.
+     *
+     * OWNED BUFFER, NEVER NULL. MASTER_FX_CHAIN_PARAMS_MAX bytes, allocated
+     * once per position by shadow_master_fx_storage_ensure() and never freed.
+     * It is a pointer rather than an inline array because Master FX is
+     * becoming a list with insert/remove/move, and that reordering is a
+     * PERMUTATION executed on the SPI callback (~900 us of budget after the
+     * transfer). Rotating a pointer is free; memmoving 64 KB per position is
+     * not. Nothing about this is a memory saving — the allocation is the same
+     * bytes in a different place — so do not "simplify" it back to an inline
+     * array without first moving the permutation off the audio thread.
+     *
+     * Vacating a position must ROTATE this pointer (hand it the buffer
+     * displaced off the end of the shift) and clear its CONTENTS. Nulling it
+     * instead is the exact mistake that took the SPI callback down on the slot
+     * chain: v2_load_midi_fx_slot parsed a param table through the NULLed
+     * pointer and SIGSEGV'd on the audio thread, and the shift silently leaked
+     * the allocation it overwrote. See the PERMUTATION section of CLAUDE.md
+     * and PERM_OWNED in src/host/chain_permute.h. */
+    char *chain_params_cache;
     int chain_params_cached;         /* 1 if cache is valid */
     void (*on_midi)(void *instance, const uint8_t *msg, int len, int source);  /* Optional MIDI handler */
     int bypassed;                    /* 1 = skip this MFX slot (dry passthrough), 0 = active */
@@ -128,7 +166,12 @@ void shadow_direct_set_param(uint8_t slot, const char *key, const char *value);
 #define shadow_master_fx (shadow_master_fx_slots[0].api)
 #define shadow_master_fx_instance (shadow_master_fx_slots[0].instance)
 #define shadow_master_fx_module (shadow_master_fx_slots[0].module_path)
-#define shadow_master_fx_capture (shadow_master_fx_slots[0].capture)
+/* There is deliberately no `shadow_master_fx_capture` here any more. It named
+ * position 0's capture rules, and shadow_midi.c cached a pointer to it at init
+ * — so a Master FX module that declared `capture` was heard only if it sat
+ * first, and a move gesture would silently take a MIDI-triggered module off
+ * the air. Use shadow_master_fx_captures_note / _cc, which ask every loaded
+ * position, per event, from the live array. */
 
 /* MIDI out log file (for log_enabled check in shim) */
 extern FILE *shadow_midi_out_log;
@@ -195,6 +238,15 @@ void capture_apply_group(shadow_capture_rules_t *rules, const char *group);
 void capture_parse_json(shadow_capture_rules_t *rules, const char *json);
 
 /* --- Chain management --- */
+
+/* Does this chain instance hold ANY loaded component — synth, audio FX, or
+ * MIDI FX, in any position? This is the shim's definition of an "active" slot,
+ * and every activation site shares it. Costs three in-process get_param calls
+ * regardless of the FX caps: it asks the DSP for its list LENGTHS rather than
+ * probing each position, so MAX_AUDIO_FX / MAX_MIDI_FX are never restated on
+ * this side. Callers run inside the SPI callback — keep it that cheap. */
+int shadow_slot_has_loaded_component(const plugin_api_v2_t *pv2, void *instance);
+
 int shadow_chain_parse_channel(int ch);
 void shadow_chain_defaults(void);
 void shadow_chain_load_config(void);
@@ -209,6 +261,21 @@ void shadow_apply_mute(int slot, int is_muted);
 void shadow_toggle_solo(int slot);
 
 /* --- Master FX --- */
+
+/* Give every Master FX position its owned chain_params buffers (the struct
+ * member above and the runtime refresh cache inside shadow_chain_mgmt.c).
+ * Idempotent and gap-filling: it allocates only positions that do not have a
+ * buffer yet, so calling it twice is free and a partial failure is retryable.
+ * Returns 1 when every position has both buffers, 0 otherwise.
+ *
+ * Call it from a thread that can cope with malloc failing. chain_mgmt_init()
+ * and shadow_chain_defaults() both do, and both run at shim startup — the
+ * point is that no allocation ever happens on the SPI callback, where a NULL
+ * return has nowhere to go. shadow_master_fx_slot_load_with_config() refuses
+ * to bring a position up while this returns 0, so a reader can never reach a
+ * missing buffer. */
+int shadow_master_fx_storage_ensure(void);
+
 void shadow_master_fx_slot_unload(int slot);
 void shadow_master_fx_unload_all(void);
 int shadow_master_fx_slot_load(int slot, const char *dsp_path);
@@ -216,7 +283,49 @@ int shadow_master_fx_slot_load_with_config(int slot, const char *dsp_path,
                                             const char *config_json);
 int shadow_master_fx_load(const char *dsp_path);
 void shadow_master_fx_unload(void);
+
+/* --- Master FX shape: insert / remove / move, as an ARRAY PERMUTATION ---
+ *
+ * The instances keep running and only their index changes. Expressed as a run
+ * of `fxN:module` writes instead, each position behind the edit would be
+ * unloaded and dlopen'd afresh — a reverb loses the tail that was ringing.
+ * All three take 0-based positions and return 1 on success, 0 when refused
+ * (out of range, chain full, from == to). A refused edit changes nothing.
+ *
+ * Insert only opens the hole; the caller follows with the ordinary `fxN:module`
+ * write. Remove unloads the occupant through shadow_master_fx_slot_unload —
+ * never a memset, which would leak the dlopen handle and the FX instance.
+ *
+ * Reached from the shadow UI as `master_fx:fx:insert` / `:remove` / `:move`,
+ * spelled to match the slot chain's `fx:insert` exactly so one shared emitter
+ * serves both editors. */
+int shadow_master_fx_insert(int at);
+int shadow_master_fx_remove(int at);
+int shadow_master_fx_move(int from, int to);
+
+/* How long the Master FX chain is, holes included — NOT the cap. Published as
+ * `master_fx:fx_count`. Once a position can be removed, the cap no longer says
+ * where the chain ends; bound loops by this. Never reports less than
+ * "highest loaded position + 1", so a module can never run unseen. */
+int shadow_master_fx_count(void);
 void shadow_master_fx_forward_midi(const uint8_t *msg, int len, int source);
+
+/* Does ANY loaded Master FX position capture this note / CC?
+ *
+ * A UNION over positions, deliberately: capture belongs to the MODULE, not to
+ * the index it currently sits at. The predicate this replaced read position 0
+ * only (shadow_midi.c cached, at init, a raw pointer to
+ * shadow_master_fx_slots[0].capture), which was invisible while
+ * Master FX was a fixed array nobody reordered. With the move gesture it turns
+ * into: drag a MIDI-triggered module — a ducker is the obvious one on a master
+ * bus — off position 0 and it silently stops receiving MIDI, with no swap and
+ * no reload to blame it on.
+ *
+ * Evaluated from the live array on every event; nothing caches a pointer into
+ * an array whose contents permute. Runs on the SPI callback: no allocation, no
+ * I/O, no locks — at most MASTER_FX_SLOTS pointer tests and one bit test. */
+int shadow_master_fx_captures_note(uint8_t note);
+int shadow_master_fx_captures_cc(uint8_t cc);
 
 /* --- Capture loading --- */
 void shadow_slot_load_capture(int slot, int patch_index);

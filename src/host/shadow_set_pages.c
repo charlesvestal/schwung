@@ -18,6 +18,7 @@
 
 #include "shadow_set_pages.h"
 #include "shadow_sampler.h"  /* for SAMPLER_SETS_DIR, sampler_read_set_tempo */
+#include "shadow_chain_mgmt.h"  /* for MASTER_FX_SLOTS */
 
 /* ============================================================================
  * Globals
@@ -121,6 +122,13 @@ static void seed_empty_set_state(const char *set_dir) {
     for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
         snprintf(path, sizeof(path), "%s/slot_%d.json", set_dir, i);
         write_text_file_as_ableton(path, "{}\n");
+    }
+    /* Master FX files are bounded by MASTER_FX_SLOTS, not by the chain-slot
+     * count. The two constants happen to both be 4 today, and this loop used
+     * to seed both families together off SHADOW_CHAIN_INSTANCES — so raising
+     * only the Master FX cap would have left the higher slots unseeded, with
+     * nothing to say so. */
+    for (int i = 0; i < MASTER_FX_SLOTS; i++) {
         snprintf(path, sizeof(path), "%s/master_fx_%d.json", set_dir, i);
         write_text_file_as_ableton(path, "{}\n");
     }

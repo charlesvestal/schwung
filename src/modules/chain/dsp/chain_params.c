@@ -866,43 +866,60 @@ chain_param_info_t *find_param_info(chain_param_info_t *params, int count, const
     return NULL;
 }
 
-/* Look up param metadata from a knob mapping's target string (synth/fx1-3/midi_fx1-2). */
+/*
+ * Look up param metadata from a knob/modulation target string
+ * ("synth", "fx1".."fxN", "midi_fx1".."midi_fxN").
+ *
+ * Indexed, not enumerated: this used to stop at fx3/midi_fx2, which is how a
+ * five-FX chain got a target it could route but not modulate. The bound is
+ * MAX_AUDIO_FX / MAX_MIDI_FX so the next cap bump needs no edit here.
+ */
 chain_param_info_t *knob_find_param(chain_instance_t *inst, const char *target, const char *param) {
+    if (!inst || !target) return NULL;
     if (strcmp(target, "synth") == 0)
         return find_param_info(inst->synth_params, inst->synth_param_count, param);
-    if (strcmp(target, "fx1") == 0 && inst->fx_count > 0)
-        return find_param_info(inst->fx_params[0], inst->fx_param_counts[0], param);
-    if (strcmp(target, "fx2") == 0 && inst->fx_count > 1)
-        return find_param_info(inst->fx_params[1], inst->fx_param_counts[1], param);
-    if (strcmp(target, "fx3") == 0 && inst->fx_count > 2)
-        return find_param_info(inst->fx_params[2], inst->fx_param_counts[2], param);
-    if (strcmp(target, "midi_fx1") == 0 && inst->midi_fx_count > 0)
-        return find_param_info(inst->midi_fx_params[0], inst->midi_fx_param_counts[0], param);
-    if (strcmp(target, "midi_fx2") == 0 && inst->midi_fx_count > 1)
-        return find_param_info(inst->midi_fx_params[1], inst->midi_fx_param_counts[1], param);
+
+    int fx = chain_fx_index_from_id(target, "fx", MAX_AUDIO_FX);
+    if (fx >= 0) {
+        if (fx >= inst->fx_count) return NULL;
+        return find_param_info(inst->fx_params[fx], inst->fx_param_counts[fx], param);
+    }
+
+    int mfx = chain_fx_index_from_id(target, "midi_fx", MAX_MIDI_FX);
+    if (mfx >= 0) {
+        if (mfx >= inst->midi_fx_count) return NULL;
+        return find_param_info(inst->midi_fx_params[mfx], inst->midi_fx_param_counts[mfx], param);
+    }
+
     return NULL;
 }
 
 /* Forward a formatted value string to the plugin identified by target. */
 void knob_forward_value(chain_instance_t *inst, const char *target, const char *param, const char *val_str) {
+    if (!inst || !target) return;
+
     if (strcmp(target, "synth") == 0) {
         if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->set_param)
             inst->synth_plugin_v2->set_param(inst->synth_instance, param, val_str);
-    } else if (strcmp(target, "fx1") == 0 && inst->fx_count > 0) {
-        if (inst->fx_is_v2[0] && inst->fx_plugins_v2[0] && inst->fx_instances[0])
-            inst->fx_plugins_v2[0]->set_param(inst->fx_instances[0], param, val_str);
-    } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1) {
-        if (inst->fx_is_v2[1] && inst->fx_plugins_v2[1] && inst->fx_instances[1])
-            inst->fx_plugins_v2[1]->set_param(inst->fx_instances[1], param, val_str);
-    } else if (strcmp(target, "fx3") == 0 && inst->fx_count > 2) {
-        if (inst->fx_is_v2[2] && inst->fx_plugins_v2[2] && inst->fx_instances[2])
-            inst->fx_plugins_v2[2]->set_param(inst->fx_instances[2], param, val_str);
-    } else if (strcmp(target, "midi_fx1") == 0 && inst->midi_fx_count > 0) {
-        if (inst->midi_fx_plugins[0] && inst->midi_fx_instances[0] && inst->midi_fx_plugins[0]->set_param)
-            inst->midi_fx_plugins[0]->set_param(inst->midi_fx_instances[0], param, val_str);
-    } else if (strcmp(target, "midi_fx2") == 0 && inst->midi_fx_count > 1) {
-        if (inst->midi_fx_plugins[1] && inst->midi_fx_instances[1] && inst->midi_fx_plugins[1]->set_param)
-            inst->midi_fx_plugins[1]->set_param(inst->midi_fx_instances[1], param, val_str);
+        return;
+    }
+
+    int fx = chain_fx_index_from_id(target, "fx", MAX_AUDIO_FX);
+    if (fx >= 0) {
+        if (fx >= inst->fx_count) return;
+        if (inst->fx_is_v2[fx] && inst->fx_plugins_v2[fx] && inst->fx_instances[fx] &&
+            inst->fx_plugins_v2[fx]->set_param)
+            inst->fx_plugins_v2[fx]->set_param(inst->fx_instances[fx], param, val_str);
+        return;
+    }
+
+    int mfx = chain_fx_index_from_id(target, "midi_fx", MAX_MIDI_FX);
+    if (mfx >= 0) {
+        if (mfx >= inst->midi_fx_count) return;
+        if (inst->midi_fx_plugins[mfx] && inst->midi_fx_instances[mfx] &&
+            inst->midi_fx_plugins[mfx]->set_param)
+            inst->midi_fx_plugins[mfx]->set_param(inst->midi_fx_instances[mfx], param, val_str);
+        return;
     }
 }
 

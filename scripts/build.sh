@@ -482,6 +482,8 @@ if needs_rebuild build/modules/chain/dsp.so \
     src/modules/chain/dsp/chain_host.c src/modules/chain/dsp/chain_json.c \
     src/modules/chain/dsp/chain_params.c src/modules/chain/dsp/chain_mod.c \
     src/modules/chain/dsp/chain_midi.c src/modules/chain/dsp/chain_patch.c \
+    src/modules/chain/dsp/chain_reorder.c src/host/chain_permute.h \
+    src/host/chain_key_index.h \
     src/modules/chain/dsp/chain_internal.h src/host/unified_log.c \
     src/host/unified_log.h src/host/plugin_api_v1.h src/host/audio_fx_api_v1.h \
     src/host/audio_fx_api_v2.h src/host/midi_fx_api_v1.h src/host/lfo_common.h; then
@@ -493,6 +495,7 @@ if needs_rebuild build/modules/chain/dsp.so \
         src/modules/chain/dsp/chain_mod.c \
         src/modules/chain/dsp/chain_midi.c \
         src/modules/chain/dsp/chain_patch.c \
+        src/modules/chain/dsp/chain_reorder.c \
         src/host/unified_log.c \
         -o build/modules/chain/dsp.so \
         -Isrc \
