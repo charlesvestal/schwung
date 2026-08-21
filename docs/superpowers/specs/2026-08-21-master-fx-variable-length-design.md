@@ -179,6 +179,40 @@ Established by reading the struct and the file:
   zeroing it leaks both. Quieter than the slot chain's crash, and therefore
   worse.
 
+### 6b. Found during 4c — four corrections to §6
+
+**a. It is one struct member and one file-static array, not two struct
+members.** The `PERM_OWNED`/`PERM_FIELD` split spans two storage locations:
+`master_fx_slot_t.chain_params_cache` (owned) and
+`mfx_runtime_chain_params_cache[]` (owned, file-static), with
+`..._cached[]` / `..._last_fetch_ms[]` as values beside it.
+
+**b. §7's "derive from every `[MASTER_FX_SLOTS]` declaration" is weaker than it
+sounds.** That derivation finds the arrays but **cannot tell owned from value by
+shape** — a `char *` array and a value array holding pointers look identical.
+The split must be derived from `shadow_master_fx_storage_ensure()`, which is the
+analogue of `chain_alloc_position_storage`, exactly as `test_chain_permute.sh`
+does. This is the same trap that let the slot chain's permutation ship with
+28/28 mutations killed and still segfault.
+
+**c. The LFO base snapshot is indexed by LFO, not by position.**
+`mfx_lfo_base_valid[]` / `mfx_lfo_base_value[]` hold the modulation base for
+whichever position the LFO targets. Re-aiming `lfo->target` on a move is **not
+sufficient**: a remove that clears a target must also invalidate
+`mfx_lfo_base_valid[i]`, or the LFO modulates the next module it is pointed at
+around a stale base.
+
+**d. MIDI capture is hard-wired to position 0, and the move gesture makes that
+user-visible.** `shadow_midi.c:197` caches a raw pointer taken at init from
+`shadow_master_fx_capture`, which is `#define`d to
+`shadow_master_fx_slots[0].capture` — only position 0's capture rules are ever
+consulted. Pre-existing and harmless while nothing moves. Once move ships,
+**dragging a MIDI-capturing Master FX module off position 0 silently stops it
+receiving MIDI**, with no swap or reload to blame. Decide this before 4e:
+either follow the module (capture rules become per-position and the cached
+pointer goes), or state that Master FX MIDI capture belongs to the *position*
+rather than the module.
+
 ## 7. The existing test technique does not transfer
 
 `tests/host/test_chain_permute.sh` works by deriving the array list from the
