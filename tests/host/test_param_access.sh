@@ -197,3 +197,34 @@ Promise.all([
   console.log("PASS: access read/write/readwrite");
 });
 '
+
+# ---- the footer names the GESTURE, not the consequence ----------------------
+#
+# The hint vocabulary is a canon (JOG SEL / CLK OPEN / BACK EXIT) and the canon
+# names what to DO. A trigger is drawn as a push button, so it asks to be
+# PUSHed. It said FIRE first, which names the consequence instead -- a second
+# thing to learn about a control the picture already explains.
+#
+# footerHints() is module-private and reads a module-level controller, so this
+# is asserted at the source, the same way the other footer rules in this file
+# are. The value is pinned, not merely the absence of MENU: "not MENU" would
+# pass for any word at all, including the one being replaced.
+pp="src/shadow/shadow_ui_param_pages.mjs"
+wo=$(awk '/if \(meta && meta.writeOnly\)/,/^        }/' "$pp")
+if [ -z "$wo" ]; then
+  echo "FAIL: could not find the held-trigger footer branch in $pp" >&2
+  exit 1
+fi
+if ! grep -q 'click: "PUSH"' <<<"$wo"; then
+  echo "FAIL: a held trigger does not advertise CLK PUSH." >&2
+  echo "      The widget is a push button; the hint must name that gesture." >&2
+  echo "$wo" >&2
+  exit 1
+fi
+# The neighbouring vocabulary must not have moved with it.
+dv=$(awk '/if \(meta && meta.divable\)/,/^        }/' "$pp")
+if ! grep -q 'click: "OPEN"' <<<"$dv"; then
+  echo "FAIL: a held divable no longer advertises CLK OPEN" >&2
+  exit 1
+fi
+echo "  ok  a held trigger advertises CLK PUSH, divable still CLK OPEN"
