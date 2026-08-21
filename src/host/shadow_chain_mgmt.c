@@ -70,11 +70,42 @@ master_fx_slot_t shadow_master_fx_slots[MASTER_FX_SLOTS];
 lfo_state_t shadow_master_fx_lfos[MASTER_FX_LFO_COUNT];
 static float mfx_lfo_base_value[MASTER_FX_LFO_COUNT];
 static int mfx_lfo_base_valid[MASTER_FX_LFO_COUNT];
-#define MFX_RUNTIME_CHAIN_PARAMS_MAX 65536
+#define MFX_RUNTIME_CHAIN_PARAMS_MAX MASTER_FX_CHAIN_PARAMS_MAX
 #define MFX_RUNTIME_CHAIN_PARAMS_REFRESH_MS 500
-static char mfx_runtime_chain_params_cache[MASTER_FX_SLOTS][MFX_RUNTIME_CHAIN_PARAMS_MAX];
+/* OWNED BUFFERS, NEVER NULL — same contract as master_fx_slot_t.chain_params_cache;
+ * see the comment on that member for the SIGSEGV this shape once caused. These
+ * three arrays are per-POSITION and must permute in lockstep with the slot
+ * array: miss one and FX 3 serves FX 5's param metadata. */
+static char *mfx_runtime_chain_params_cache[MASTER_FX_SLOTS];
 static int mfx_runtime_chain_params_cached[MASTER_FX_SLOTS];
 static uint64_t mfx_runtime_chain_params_last_fetch_ms[MASTER_FX_SLOTS];
+
+int shadow_master_fx_storage_ensure(void) {
+    int all_present = 1;
+    for (int i = 0; i < MASTER_FX_SLOTS; i++) {
+        if (!shadow_master_fx_slots[i].chain_params_cache) {
+            shadow_master_fx_slots[i].chain_params_cache =
+                calloc(1, MASTER_FX_CHAIN_PARAMS_MAX);
+        }
+        if (!mfx_runtime_chain_params_cache[i]) {
+            mfx_runtime_chain_params_cache[i] =
+                calloc(1, MASTER_FX_CHAIN_PARAMS_MAX);
+        }
+        if (!shadow_master_fx_slots[i].chain_params_cache ||
+            !mfx_runtime_chain_params_cache[i]) {
+            all_present = 0;
+        }
+    }
+    if (!all_present) {
+        /* Not fatal here, and deliberately not rolled back: whatever was
+         * allocated stays, a later call fills the gaps, and no position can be
+         * loaded meanwhile. Handling it HERE is the whole point — on the SPI
+         * callback there is no answer to a failed malloc. */
+        unified_log("shim", LOG_LEVEL_ERROR,
+                    "Master FX: chain_params cache allocation failed; Master FX disabled");
+    }
+    return all_present;
+}
 
 /* MIDI out log file */
 FILE *shadow_midi_out_log = NULL;
@@ -95,6 +126,10 @@ static uint32_t shadow_ui_request_seen = 0;
 
 void chain_mgmt_init(const chain_mgmt_host_t *h) {
     host = *h;
+    /* Earliest point on a thread that can survive a failed malloc. Every
+     * Master FX position gets its owned param caches here, before anything can
+     * load a module or read one. */
+    (void)shadow_master_fx_storage_ensure();
     chain_mgmt_initialized = 1;
 }
 
@@ -443,9 +478,27 @@ void shadow_chain_defaults(void) {
         shadow_chain_slots[i].patch_name[sizeof(shadow_chain_slots[i].patch_name) - 1] = '\0';
     }
     shadow_solo_count = 0;
-    /* Clear all master FX slots */
+    /* Clear all master FX slots.
+     *
+     * This used to memset the struct. It cannot any more: chain_params_cache
+     * is an owned buffer, so zeroing the bytes would strand the allocation and
+     * leave a NULL pointer behind for the next loader to parse a param table
+     * through — the SIGSEGV described on the member. memset was already the
+     * wrong shape for the dlopen handle and the FX instance, which it leaked
+     * just as silently; it only got away with it because boot runs this on
+     * empty slots. Vacate through the sanctioned path instead, then clear the
+     * remaining value members, leaving the buffers in place with empty
+     * contents. */
+    if (!shadow_master_fx_storage_ensure()) {
+        unified_log("shim", LOG_LEVEL_ERROR,
+                    "Master FX: no param cache storage; slots stay unloadable");
+    }
     for (int i = 0; i < MASTER_FX_SLOTS; i++) {
-        memset(&shadow_master_fx_slots[i], 0, sizeof(master_fx_slot_t));
+        shadow_master_fx_slot_unload(i);
+        shadow_master_fx_slots[i].chain_params_cached = 0;
+        if (shadow_master_fx_slots[i].chain_params_cache) {
+            shadow_master_fx_slots[i].chain_params_cache[0] = '\0';
+        }
     }
 }
 
@@ -679,7 +732,11 @@ void shadow_master_fx_slot_unload(int slot) {
     s->bypassed = 0;
     capture_clear(&s->capture);
     mfx_runtime_chain_params_cached[slot] = 0;
-    mfx_runtime_chain_params_cache[slot][0] = '\0';
+    /* Clear the CONTENTS, keep the buffer. The pointer belongs to the position
+     * for the life of the process; a permutation rotates it. */
+    if (mfx_runtime_chain_params_cache[slot]) {
+        mfx_runtime_chain_params_cache[slot][0] = '\0';
+    }
     mfx_runtime_chain_params_last_fetch_ms[slot] = 0;
 }
 
@@ -700,6 +757,14 @@ int shadow_master_fx_slot_load_with_config(int slot, const char *dsp_path, const
     if (!dsp_path || !dsp_path[0]) {
         shadow_master_fx_slot_unload(slot);
         return 0;
+    }
+
+    /* This runs on the SPI callback, so it cannot allocate. If startup failed
+     * to give this position its owned caches, refuse rather than load a module
+     * whose param readers would then dereference NULL on the audio thread.
+     * Cheap pointer test, not a retry. */
+    if (!s->chain_params_cache || !mfx_runtime_chain_params_cache[slot]) {
+        return -1;
     }
 
     /* Already loaded? (skip check if config_json provided) */
@@ -798,7 +863,7 @@ int shadow_master_fx_slot_load_with_config(int slot, const char *dsp_path, const
                             arr_end++;
                         }
                         int len = (int)(arr_end - arr_start);
-                        if (len > 0 && len < (int)sizeof(s->chain_params_cache) - 1) {
+                        if (len > 0 && len < MASTER_FX_CHAIN_PARAMS_MAX - 1) {
                             memcpy(s->chain_params_cache, arr_start, len);
                             s->chain_params_cache[len] = '\0';
                             s->chain_params_cached = 1;
@@ -821,7 +886,7 @@ int shadow_master_fx_slot_load_with_config(int slot, const char *dsp_path, const
                                     arr_end++;
                                 }
                                 int len = (int)(arr_end - arr_start);
-                                if (len > 0 && len < (int)sizeof(s->chain_params_cache) - 1) {
+                                if (len > 0 && len < MASTER_FX_CHAIN_PARAMS_MAX - 1) {
                                     memcpy(s->chain_params_cache, arr_start, len);
                                     s->chain_params_cache[len] = '\0';
                                     s->chain_params_cached = 1;
