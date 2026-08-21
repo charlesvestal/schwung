@@ -62,6 +62,7 @@ import { drawChainEditorBands, drawChainPicker }
 import { drawKnobCard } from '/data/UserData/schwung/shared/param_pages/knob_card.mjs';
 import { buildMetaIndex } from '/data/UserData/schwung/shared/param_pages/param_meta.mjs';
 import { resolveViz } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
+import { listKnobInit, listKnobStep } from '/data/UserData/schwung/shared/param_pages/list_knob.mjs';
 import { describeLfoTarget } from '/data/UserData/schwung/shared/lfo_target_label.mjs';
 import { emptyChain, parseId as parseChainId, chainComponents, moveBy as chainMoveBy,
          removeAt as chainRemoveAt, insertAt as chainInsertAt, MAX_FX, MAX_MIDI_FX }
@@ -17062,6 +17063,9 @@ let enumPickerIndex = 0;
 let enumPickerOpenIndex = 0;
 let enumPickerCommit = null;
 let enumPickerReturnToGrid = false;
+/* Knob-scroll accumulator for the picker. The JOG stays 1:1 — a jog detent
+ * is a deliberate click; a knob detent is a fraction of a twist. */
+let enumPickerKnob = listKnobInit();
 
 function openEnumPicker(o) {
     const options = Array.isArray(o && o.options) ? o.options : [];
@@ -17073,6 +17077,7 @@ function openEnumPicker(o) {
     enumPickerOpenIndex = enumPickerIndex;
     enumPickerCommit = (o && typeof o.commit === "function") ? o.commit : null;
     enumPickerReturnToGrid = !!(o && o.returnToGrid);
+    enumPickerKnob = listKnobInit();
     setView(VIEWS.ENUM_PICKER);
     needsRedraw = true;
     announce(enumPickerTitle + ", " + enumPickerOptions[enumPickerIndex]
@@ -19142,7 +19147,14 @@ globalThis.onMidiMessageInternal = function(data) {
              * looking straight at it.
              */
             if (view === VIEWS.ENUM_PICKER) {
-                if (delta) enumPickerJog(delta);
+                /* Through the list accumulator, NOT enumPickerJog directly:
+                 * 1:1 is right for the jog and much too fast for a knob
+                 * ("still like 1 detent per entry which feels way too fast").
+                 * Slow turns cost several detents an entry; fast ones
+                 * accelerate, but only as far as the list is long. */
+                const step = listKnobStep(enumPickerKnob, delta, Date.now(),
+                                          enumPickerOptions.length);
+                if (step) enumPickerJog(step);
                 return;
             }
 
