@@ -55,6 +55,16 @@ cd "$(dirname "$0")/../.."
 # states that now do. Again: ZERO chain/ hashes moved with them, which is what
 # says the screen that was not supposed to move did not.
 #
+# Step 4f ADDED six settings/ cases and moved NONE. The Master FX Settings
+# position now opens the KNOB GRID -- four pages, Volume / LFO 1 / LFO 2 /
+# Actions -- instead of drawMasterFxSettingsMenu, which was one of the
+# fail-if-reached stubs and had therefore never been rendered here. Leaving the
+# replacement uncovered would put this harness back in the blind spot that let
+# the two module pickers diverge. They are driven through the REAL controller
+# and the REAL synthesised contract, and the LFO pages are built by the SAME
+# lfoParams/lfoLevels the slot Settings grid uses -- so a change aimed at a slot
+# LFO moves a master hash here, which is the point.
+#
 # HOW THE SCREENS ARE DRIVEN
 #   drawChainEdit  is LIFTED out of shadow_ui.js with `new Function` and an
 #                  explicit dependency list, the technique
@@ -466,6 +476,143 @@ function renderMasterPicker(c) {
 }
 
 /* ======================================================================== */
+/* MASTER FX SETTINGS, AS THE KNOB GRID                                      */
+/* ======================================================================== */
+/*
+ * The Settings position of the Master FX chain used to open a scrolling list
+ * (drawMasterFxSettingsMenu), which is one of the fail-if-reached stubs above
+ * -- so the screen behind that box has never been rendered here. It is four
+ * knob-grid pages now (Volume, LFO 1, LFO 2, Actions), and leaving the
+ * REPLACEMENT uncovered would put the harness back in exactly the blind spot
+ * that let the two module pickers diverge until a user found it.
+ *
+ * Driven through the REAL page controller and the REAL synthesised contract
+ * from shadow_ui_slot_grid.mjs -- no lift is needed, because both are pure
+ * modules with no host globals in them. That is also what makes these cases
+ * worth something: the LFO pages are built by the SAME lfoParams/lfoLevels the
+ * slot contract uses, so a change that only meant to touch a slot LFO moves a
+ * master hash here.
+ */
+const { createController } = await import("./src/shared/param_pages/page_controller.mjs");
+const { LAYOUT_MOVY } = await import("./src/shared/param_pages/render_page_movy.mjs");
+const { createMasterGridIo } = await import("./src/shadow/shadow_ui_slot_grid.mjs");
+
+/* The hint pairs footerHints() produces for these two page kinds. Spelled out
+   rather than imported: shadow_ui_param_pages.mjs resolves its imports from
+   /data/UserData/schwung on the device and cannot be loaded here. The FOOTER
+   GRAMMAR itself is pinned by test_footer_canon.sh; what these buy is that the
+   band is not empty. */
+const SETTINGS_FOOTER = {
+  knobs: [["JOG", "PAGE"], ["CLK", "MENU"]],
+  menu:  [["JOG", "PAGE"], ["CLK", "ENTER"]],
+};
+
+function renderSettings(c) {
+  const fb = createFramebuffer();
+  const store = c.state;
+  installGlobals(fb, (slot, key) => (store[key] !== undefined ? store[key] : ""));
+  const io = createMasterGridIo({
+    readParam: (k) => (store[k] !== undefined ? store[k] : ""),
+    writeParam: (k, v) => { store[k] = String(v); },
+    hasPreset: () => !!c.presetName,
+    /* The host resolves an LFO target to a NAME; stubbed with the shape
+       shared/lfo_target_label.mjs returns. */
+    describeTarget: (i) => (c.targets ? (c.targets[i] || null) : null),
+    isModulated: () => false,
+    runAction: () => { fail(c.id + " ran an action while merely rendering"); },
+  });
+  /* The visibility evaluator the host binds to the master bus. A condition key
+     carrying its own ":" is used verbatim -- which is the whole reason the LFO
+     params are declared with the "master_fx:" prefix on both the key AND the
+     condition. */
+  io.visible = (cond) => {
+    if (!cond || !cond.param) return true;
+    const v = store[cond.param] !== undefined ? store[cond.param] : "";
+    return String(v) === String(cond.equals);
+  };
+  const ctl = createController(Object.assign({ announce: noop }, io));
+  ctl.load({ slot: 0, component: "master_settings", prefix: "master_settings",
+             visible: io.visible });
+  ctl.setLayout(LAYOUT_MOVY);
+  const names = ctl.pages.map((p) => p.name);
+  const at = names.indexOf(c.page);
+  if (at < 0) fail(c.id + " names a page that does not exist: " + c.page +
+                   " (pages: " + names.join(", ") + ")");
+  ctl.goToPage(Math.max(0, at));
+  /* The controller reads ONE param per tick on purpose (a round trip is ~2.8ms
+     on device), so a render straight after load would draw a page of blanks.
+     Wound forward until every declared key has been picked up. */
+  for (let i = 0; i < 400; i++) ctl.tick();
+  ctl.render(drawContext(fb), {
+    title: "MFX > Settings",
+    footer: SETTINGS_FOOTER[ctl.page.kind] || SETTINGS_FOOTER.knobs,
+  });
+  clearGlobals();
+  return fb;
+}
+
+/* A master-bus state map, as the shim would answer it. Both LFOs are always
+   fully populated: an unread key draws as an empty cell, which would make a
+   case pass its content floor on the OTHER cells and quietly stop protecting
+   the one that went missing. */
+function masterSettingsState(o) {
+  const s = {
+    "master_fx:volume": o.volume === undefined ? "1.00" : o.volume,
+  };
+  for (const n of [1, 2]) {
+    const l = o["lfo" + n] || {};
+    const p = "master_fx:lfo" + n + ":";
+    s[p + "target"] = l.target || "";
+    s[p + "target_param"] = l.targetParam || "";
+    s[p + "enabled"] = l.enabled || "0";
+    s[p + "polarity"] = l.polarity || "0";
+    s[p + "sync"] = l.sync || "0";
+    s[p + "shape"] = l.shape || "0";
+    s[p + "rate_hz"] = l.rateHz || "1.0";
+    s[p + "rate_div"] = l.rateDiv || "19";
+    s[p + "depth"] = l.depth || "1.0";
+    s[p + "phase_offset"] = l.phase || "0";
+  }
+  return s;
+}
+
+const settingsCases = [];
+const addSettings = (id, o) => settingsCases.push({
+  id, page: o.page, state: masterSettingsState(o),
+  presetName: o.presetName || "", targets: o.targets || null,
+});
+
+/* The VALUES page: one cell, and that is the point. A page with fewer than
+   eight params draws fewer than eight cells (arp is baselined at four), so a
+   lone Volume knob is the smallest case of an existing shape rather than a
+   half-drawn grid -- and this case is what would notice if it ever became one. */
+addSettings("settings/master/main", { page: "Main", volume: "0.85", presetName: "Glue Bus" });
+addSettings("settings/master/main-unity", { page: "Main", volume: "1.00" });
+
+/* An LFO page in each of its two states. The pair matters because ONE rate
+   cell is on the page at a time -- rate_hz when Free, rate_div when Sync -- and
+   a visibility condition resolved against the wrong slot reads empty, compares
+   false and hides BOTH, which is a page with a hole in it rather than an error. */
+addSettings("settings/master/lfo1-free", {
+  page: "LFO 1",
+  lfo1: { target: "fx1", targetParam: "room_size", enabled: "1", polarity: "1",
+          sync: "0", shape: "0", rateHz: "2.4", depth: "0.65", phase: "0.25" },
+  targets: { 0: { short: "F1 ROOM", header: "FX 1", long: "FX 1: Room Size" } },
+});
+addSettings("settings/master/lfo2-sync", {
+  page: "LFO 2",
+  lfo2: { target: "fx2", targetParam: "mix", enabled: "1", polarity: "0",
+          sync: "1", shape: "3", rateDiv: "19", depth: "0.4", phase: "0" },
+  targets: { 1: { short: "F2 MIX", header: "FX 2", long: "FX 2: Mix" } },
+});
+
+/* The ACTIONS menu, both lengths. Save As and Delete mean nothing until a
+   preset exists, and the filter is the same one the list applied -- so the
+   no-preset case is a one-entry menu, and it must still draw a menu. */
+addSettings("settings/master/actions", { page: "Actions", presetName: "Glue Bus" });
+addSettings("settings/master/actions-nopreset", { page: "Actions" });
+
+/* ======================================================================== */
 /* THE CASE MATRIX                                                           */
 /* ======================================================================== */
 
@@ -813,7 +960,20 @@ const PICKER_BANDS = [
   ["list", MOVY_HEADER_H, MOVY_RULE_Y - 1],
   ["footer", MOVY_RULE_Y, 63],
 ];
-const BANDS = { chain: EDITOR_BANDS, master: EDITOR_BANDS, picker: PICKER_BANDS };
+/*
+ * The knob grid has three bands. Same principle again: the header carries
+ * "MFX > SETTINGS" and the page name, the body is the grid or the menu, and
+ * the footer is the hint pills. A settings page that lost its footer -- which
+ * is exactly what the Master FX screens kept doing before 4a-3 -- cannot pass
+ * as a baseline.
+ */
+const SETTINGS_BANDS = [
+  ["header", 0, MOVY_HEADER_H - 1],
+  ["body", MOVY_HEADER_H, MOVY_RULE_Y - 1],
+  ["footer", MOVY_RULE_Y, 63],
+];
+const BANDS = { chain: EDITOR_BANDS, master: EDITOR_BANDS, picker: PICKER_BANDS,
+                settings: SETTINGS_BANDS };
 const MIN_LIT = 120;
 
 function inkInBand(fb, y0, y1) {
@@ -853,6 +1013,7 @@ run(pickerCases.map((c) => Object.assign({}, c, { id: "picker/slot/" + c.id.slic
     renderChainPicker, "picker");
 run(pickerCases.map((c) => Object.assign({}, c, { id: "picker/master/" + c.id.slice(7) })),
     renderMasterPicker, "picker");
+run(settingsCases, renderSettings, "settings");
 
 const ids = Object.keys(current);
 if (ids.length < 50) fail("only " + ids.length + " cases -- the matrix has collapsed");
@@ -903,6 +1064,9 @@ if (process.env.UPDATE_CHAIN_EDITOR_BASELINE) {
     "# rendered here at all, and moved NONE. Six payloads, each drawn down both",
     "# editors, so slot and master must differ only in the header.",
     "#",
+    "# Step 4f ADDED the six settings/ cases -- the Master FX Settings position",
+    "# as the knob grid, a screen this harness had never rendered -- and moved NONE.",
+    "#",
     "# Step 4e made Master FX a variable-length chain: every master/ hash moved,",
     "# two cases naming an empty position past the end of the chain were deleted,",
     "# and eight were added for the `+` box and the Shift footer. Reviewed case by",
@@ -948,8 +1112,9 @@ if (!failures) {
 
 if (failures) process.exit(1);
 console.log("PASS: chain editor snapshot — " + chainCases.length + " slot-chain, " +
-            masterCases.length + " Master FX and " + (pickerCases.length * 2) +
-            " module-picker renders match the baseline, " +
+            masterCases.length + " Master FX, " + (pickerCases.length * 2) +
+            " module-picker and " + settingsCases.length +
+            " Master FX settings renders match the baseline, " +
             "every one of them inside the display, in the device font, and with ink in " +
             "each band");
 '

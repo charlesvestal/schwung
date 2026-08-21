@@ -543,6 +543,11 @@ export function headerTitle() {
      * "slot_module" to abbreviate, so the lookup returned nothing and the
      * header read "S1 > ---". It has a name of its own. */
     if (currentComponent === 'slot') _abbrevCache = 'Settings';
+    /* Any other synthesised contract says its own name through the chrome —
+     * Master FX settings is one, and there is no "master_settings_module" to
+     * abbreviate either. Declared as DATA rather than as a second literal
+     * component name here, so a third one needs no edit to this file. */
+    if (currentChrome && currentChrome.name) _abbrevCache = currentChrome.name;
     if (_abbrevCache === null) {
         /* The master bus spells this "master_fx:fx1:module"; a slot chain
          * spells it "fx1_module". An unserved key reads back as "" rather than
@@ -711,8 +716,21 @@ export function handleParamPagesMidi(data) {
          * the host owns what Save or Knob Mapping means — so this only forwards
          * which one was chosen, and the host runs the same code the list runs. */
         const entry = todo.entry || {};
-        if (entry.action && typeof ctx.runSlotAction === 'function') {
-            ctx.runSlotAction(currentSlot, entry.action);
+        if (entry.action) {
+            /*
+             * A synthesised contract may carry its OWN runner, and Master FX
+             * settings has to: the generic host runner takes the IPC SLOT, and
+             * Master FX is addressed at IPC slot 0 by convention — so "save"
+             * from the master bus would have saved instrument slot 1's patch.
+             * The io is the only thing in this file that knows which contract
+             * is loaded, which is why the choice is made from it rather than
+             * from a test on the component name.
+             */
+            if (controllerIo && typeof controllerIo.runAction === 'function') {
+                controllerIo.runAction(entry.action);
+            } else if (typeof ctx.runSlotAction === 'function') {
+                ctx.runSlotAction(currentSlot, entry.action);
+            }
         }
         return true;
     }

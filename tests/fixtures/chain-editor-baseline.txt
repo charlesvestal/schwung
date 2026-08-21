@@ -21,6 +21,9 @@
 # rendered here at all, and moved NONE. Six payloads, each drawn down both
 # editors, so slot and master must differ only in the header.
 #
+# Step 4f ADDED the six settings/ cases -- the Master FX Settings position
+# as the knob grid, a screen this harness had never rendered -- and moved NONE.
+#
 # Step 4e made Master FX a variable-length chain: every master/ hash moved,
 # two cases naming an empty position past the end of the chain were deleted,
 # and eight were added for the `+` box and the Shift footer. Reviewed case by
@@ -123,3 +126,9 @@ picker/slot/long-name adf679b39c1be03ef2f49654f97e209afb07f295
 picker/slot/moves-both e6230cfd3c41e2e9ed880b56024b825197ef0924
 picker/slot/moves-right 6675f380ece9fcd45d97523ecf6458632bc737a3
 picker/slot/scrolled 4ff76190752e0d50ab7a48cd491ffa56fc495a41
+settings/master/actions 2751915b0a887a06bf478cbed2c8c168f2c46c1a
+settings/master/actions-nopreset d753e816d0444d9ab41aa90fd4204296dc3eeb7d
+settings/master/lfo1-free 9ac512cd34a23bb4a1efe0be95789faa9fd92c91
+settings/master/lfo2-sync 441d016e783111a2ca524d3a912f277d1f5df389
+settings/master/main 90541793e81c5a26cbde98ad7e55f7f01ab4fbe9
+settings/master/main-unity cac1a356f5fa872cb1c1031c412accfcc42c2145
