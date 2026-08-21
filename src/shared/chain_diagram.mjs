@@ -28,8 +28,15 @@ export const GAP = 2;
  * 120 at x=6, from 118 at x=8. The budget is tighter than it looks: the scroll
  * rails need a column on EACH side (`lay.x - 2` and `lay.x + DIAGRAM_W + 1`),
  * and the four slot indicators own x 0..3, so the strip cannot start before 6
- * without the left rail landing on them. That leaves 120 columns, and
- * 4*(BOX_W+GAP) + SETTINGS_GAP + SETTINGS_BOX_W is exactly 120.
+ * without the left rail landing on them.
+ *
+ * SETTINGS_GAP then pushes the last box to x+120..x+121, one column past the
+ * strip — which is fine, and not by luck. The RIGHT RAIL and the settings box
+ * can never both be drawn: the rail means "there is more to the right", and
+ * settings is always the last position, so when it is on screen there is
+ * nothing beyond it. The two share the column because they are mutually
+ * exclusive, and a test pins that so a future position after settings cannot
+ * quietly break it.
  *
  * That mattered more than the pixels: three separate tests assert that NOTHING
  * is drawn outside the 128x64 display, and that assertion has caught two real
@@ -151,22 +158,7 @@ export function defaultAbbrev(comp) {
  * needed a clipping exception in each of the three tests that assert nothing
  * is drawn outside it.
  */
-export const SETTINGS_GAP = 6;
-
-/**
- * The settings box is NARROWER than a module box, as well as further from one.
- *
- * Two signals for the same thing, and the second one is what pays for the
- * first: five full-width boxes plus a 6px gap does not fit beside the rails,
- * and the box only ever holds a single `*`. Narrowing the one box that is not
- * a chain position buys the gap that says so.
- */
-export const SETTINGS_BOX_W = 18;
-
-/** Module boxes are BOX_W; the settings box is narrower — see SETTINGS_BOX_W. */
-export function boxWidthFor(comp) {
-    return comp && comp.kind === "settings" ? SETTINGS_BOX_W : BOX_W;
-}
+export const SETTINGS_GAP = 4;
 
 function settingsShift(components, index, first) {
     for (let i = first + 1; i <= index; i++) {
@@ -241,7 +233,7 @@ export function drawChainDiagram(ctx, components, selectedIndex, opts = {}) {
         const comp = components[i];
         const x = lay.boxX(i);
         const y = lay.y;
-        const bw = boxWidthFor(comp);
+        const bw = BOX_W;
         const selected = opts.allSelected || i === selectedIndex;
 
         if (comp.kind === "add") {
