@@ -1,11 +1,20 @@
 /*
- * shadow_ui_slot_grid.mjs — slot settings, expressed as a module contract.
+ * shadow_ui_slot_grid.mjs — settings, expressed as a module contract.
  *
  * A slot is not a module: it publishes no ui_hierarchy and its params do not
  * share one prefix. But everything the knob grid needs is a hierarchy plus
  * chain_params, so the contract is synthesised here — the same trick
  * buildSynthHierarchyFromChainParams already plays for a component that has
  * none of its own.
+ *
+ * There are TWO such contracts now — a slot's Settings position and Master
+ * FX's — and they live in ONE file on purpose. They share the LFO pages
+ * outright (see lfoParams / lfoLevels) and differ only in their values page,
+ * their actions and their key prefix. Master FX getting its own file is
+ * precisely how the two chain editors drifted apart in the first place: one
+ * reasonable-sounding scope boundary at a time, until the knob card worked on
+ * one screen and not the other. §1b of the Master FX variable-length design
+ * says so at length.
  *
  * Its own file, not another thousand lines of shadow_ui.js, because all of it
  * is pure: hand it four accessors and it can be tested with no UI, no device
@@ -127,8 +136,34 @@ export const LFO_DIVISIONS_SHORT = [
     "16", "16T", "32", "32T",
 ];
 
-export function lfoParams(lfoIndex) {
+/**
+ * ONE builder, two contracts.
+ *
+ * A slot's LFOs are stored as "lfoN:<key>" and Master FX's as
+ * "master_fx:lfoN:<key>"; everything else about them — the nine params, the
+ * ordering the viz group depends on, the one-rate-cell visibility condition —
+ * is identical. So the only thing parameterised is the key prefix.
+ *
+ * A SECOND COPY OF THIS FUNCTION IS HOW THE TWO EDITORS DRIFTED. Master FX went
+ * years without a windowed diagram, then shipped without the knob card, because
+ * each feature landed in a Master-FX-shaped copy of something the slot chain
+ * already had — or did not land at all. Anything added below therefore arrives
+ * on both screens by construction. If a future difference is genuinely needed,
+ * it belongs as another argument here, not as a fork of the file.
+ *
+ * @param {number} lfoIndex   1-based
+ * @param {string} [keyPrefix]  "" for a slot, "master_fx:" for the master bus.
+ *   It prefixes the param keys AND the visibility condition, which is the part
+ *   that is easy to miss: normalizeVisibilityConditionKey passes any key
+ *   containing ":" straight through unchanged, so an unprefixed "lfo1:sync"
+ *   would be resolved against slot 0's chain rather than the master bus, read
+ *   empty, compare false, and hide BOTH rate cells rather than one.
+ */
+export function lfoParams(lfoIndex, keyPrefix = "") {
+    /* The viz group is a name scoped to ONE page, and an LFO is exactly one
+     * page, so it does not need the prefix and stays "lfoN" for both. */
     const g = `lfo${lfoIndex}`;
+    const k = (name) => `${keyPrefix}lfo${lfoIndex}:${name}`;
     return [
         /*
          * ROW 1 — what the modulator IS: where it goes, whether it runs, how it
@@ -148,21 +183,21 @@ export function lfoParams(lfoIndex) {
         /* A door: clicking opens the existing two-step target picker. Declared
          * `string` so it is opaque (a knob cannot turn it) and divable, and so
          * the cell shows the current target rather than a blank frame. */
-        { key: `lfo${lfoIndex}:target`, name: "Targ", type: "string" },
-        { key: `lfo${lfoIndex}:enabled`, name: "On", type: "enum",
+        { key: k("target"), name: "Targ", type: "string" },
+        { key: k("enabled"), name: "On", type: "enum",
           options: ["Off", "On"], short_options: ["OFF", "ON"] },
         /*
          * span:false — it lends the graphic its baseline without joining the
          * four cells the wave is drawn across. Counting it in the span would
          * straddle the row boundary and the graphic would not draw at all.
          */
-        { key: `lfo${lfoIndex}:polarity`, name: "Mode", type: "enum",
+        { key: k("polarity"), name: "Mode", type: "enum",
           options: ["Unipolar", "Bipolar"], short_options: ["UNI", "BI"],
           viz: { group: g, role: "polarity", span: false } },
-        { key: `lfo${lfoIndex}:sync`, name: "Sync", type: "enum",
+        { key: k("sync"), name: "Sync", type: "enum",
           options: ["Free", "Sync"], short_options: ["FRE", "SYN"] },
 
-        { key: `lfo${lfoIndex}:shape`, name: "Shape", type: "enum",
+        { key: k("shape"), name: "Shape", type: "enum",
           options: LFO_SHAPES, short_options: LFO_SHAPES_SHORT,
           viz: { group: g, role: "shape" } },
         /*
@@ -179,20 +214,20 @@ export function lfoParams(lfoIndex) {
          * Both carry role "rate": only ever one of them is on the page, so the
          * group finds exactly one either way.
          */
-        { key: `lfo${lfoIndex}:rate_hz`, name: "Rate", type: "float", min: 0.1, max: 20, step: 0.1, unit: "Hz",
-          visible_if: { param: `lfo${lfoIndex}:sync`, equals: "0" },
+        { key: k("rate_hz"), name: "Rate", type: "float", min: 0.1, max: 20, step: 0.1, unit: "Hz",
+          visible_if: { param: k("sync"), equals: "0" },
           viz: { group: g, role: "rate" } },
-        { key: `lfo${lfoIndex}:rate_div`, name: "Rate", type: "enum",
+        { key: k("rate_div"), name: "Rate", type: "enum",
           options: LFO_DIVISIONS, short_options: LFO_DIVISIONS_SHORT,
-          visible_if: { param: `lfo${lfoIndex}:sync`, equals: "1" },
+          visible_if: { param: k("sync"), equals: "1" },
           viz: { group: g, role: "rate" } },
         /* Percent, not a raw fraction: "65%" is the value, "0.65" is the storage.
          * Bipolar is kept — a negative depth INVERTS the modulation, which is a
          * real feature, so the range reads -100%..+100% rather than 0..100%. */
-        { key: `lfo${lfoIndex}:depth`, name: "Depth", type: "float", min: -1, max: 1, step: 0.01, unit: "%",
+        { key: k("depth"), name: "Depth", type: "float", min: -1, max: 1, step: 0.01, unit: "%",
           default: 1,
           viz: { group: g, role: "depth" } },
-        { key: `lfo${lfoIndex}:phase_offset`, name: "Phase", type: "float", min: 0, max: 1, step: 0.0417, unit: "%",
+        { key: k("phase_offset"), name: "Phase", type: "float", min: 0, max: 1, step: 0.0417, unit: "%",
           viz: { group: g, role: "phase" } },
     ];
 }
@@ -207,8 +242,38 @@ export function lfoParams(lfoIndex) {
  * one a per-slot LFO reaches for more often. Retrigger stays editable in the
  * list view.
  */
-export function lfoKnobKeys(lfoIndex) {
-    return lfoParams(lfoIndex).map((p) => p.key);
+export function lfoKnobKeys(lfoIndex, keyPrefix = "") {
+    return lfoParams(lfoIndex, keyPrefix).map((p) => p.key);
+}
+
+/**
+ * The LFO LEVELS, ready to merge into a hierarchy — the second half of the
+ * sharing, and the half that is easy to forget.
+ *
+ * lfoParams alone is not enough: `visible_if` has to travel on the LEVEL param
+ * entry, because that is what isHiddenParam reads. A condition declared only in
+ * chain_params is never consulted when planning which keys get a knob, so a
+ * contract that copied the params but assembled its own level would show BOTH
+ * rate cells and push a real param off the page. That is exactly the kind of
+ * near-miss a second copy produces, so the assembly is shared too.
+ *
+ * @param {number[]} indices    which LFOs, 1-based
+ * @param {string} [keyPrefix]  see lfoParams
+ * @returns {object} { lfo1: {...}, lfo2: {...} } keyed by LEVEL name, which is
+ *   unprefixed — a level name is internal to the hierarchy, not a param key.
+ */
+export function lfoLevels(indices, keyPrefix = "") {
+    const levels = {};
+    for (const n of indices) {
+        levels["lfo" + n] = {
+            label: "LFO " + n,
+            knobs: lfoKnobKeys(n, keyPrefix),
+            params: lfoParams(n, keyPrefix).map((p) => (
+                p.visible_if ? { key: p.key, visible_if: p.visible_if } : { key: p.key }
+            )),
+        };
+    }
+    return levels;
 }
 
 /** Actions, in the order they appear on the menu page. */
@@ -249,18 +314,7 @@ export function slotGridHierarchy(hasPreset) {
                          { level: "actions", label: "Actions" }]),
         },
     };
-    for (const n of [1, 2]) {
-        levels["lfo" + n] = {
-            label: "LFO " + n,
-            knobs: lfoKnobKeys(n),
-            /* visible_if travels on the LEVEL param entry, which is what
-             * isHiddenParam reads — a condition declared only in chain_params
-             * is never consulted when planning which keys get a knob. */
-            params: lfoParams(n).map((p) => (
-                p.visible_if ? { key: p.key, visible_if: p.visible_if } : { key: p.key }
-            )),
-        };
-    }
+    Object.assign(levels, lfoLevels([1, 2]));
     levels.actions = { label: "Actions", knobs: [], params: [], menu: menu, menu_label: "Actions" };
     return { modes: null, levels };
 }
@@ -386,6 +440,156 @@ export function createSlotGridIo(io) {
             }
             const real = realKeyFor(k);
             if (real) io.writeSlotParam(real, String(value));
+        },
+    };
+}
+
+/* ======================================================================== *
+ * MASTER FX SETTINGS — the same contract, one bus over.
+ * ======================================================================== */
+
+/*
+ * Every master-bus key is addressed at IPC slot 0 under "master_fx:" — a
+ * CONVENTION, not instrument slot 0 — so the prefix is declared once and every
+ * key below carries it. That means the io needs no mapping table at all: the
+ * declared key IS the real key, and the only thing between the two is the grid
+ * stripping its own page prefix back off.
+ */
+export const MASTER_KEY_PREFIX = "master_fx:";
+
+/*
+ * ONE value, and that is the whole page.
+ *
+ * The grid draws fewer than eight cells whenever a page has fewer (see
+ * branchage in the render snapshots — a sparse page marks its unused positions
+ * rather than leaving them blank), so a single Volume knob is a deliberate
+ * page, not a broken one. The alternative — folding Volume into the actions
+ * menu to avoid a thin page — would put the one turnable thing on the master
+ * bus somewhere a knob cannot reach it.
+ *
+ * Range 0..1 step 0.05, matching the list editor's own master_volume entry, or
+ * the same setting would have two ceilings. Rendered as a percentage because
+ * that is what the list has always shown.
+ */
+export const MASTER_GRID_PARAMS = [
+    { key: MASTER_KEY_PREFIX + "volume", name: "Volume", type: "float",
+      min: 0, max: 1, step: 0.05, default: 1, display_format: ".0%" },
+];
+
+/** Actions, in the order they appear on the menu page. */
+export const MASTER_GRID_ACTIONS = [
+    /* The list spells this "[Save MFX Preset]"; a menu page is already titled
+     * Actions and sits under an "MFX >" header, so the brackets and the
+     * restatement are noise. The ACTION KEY is unchanged — it is what
+     * handleMasterFxSettingsAction dispatches on. */
+    { label: "Save", action: "save", always: true },
+    /* Save As and Delete mean nothing until a preset exists — the same filter
+     * getMasterFxSettingsItems applies to the list. */
+    { label: "Save As", action: "save_as", always: false },
+    { label: "Delete", action: "delete", always: false },
+];
+
+/**
+ * Page order is Volume, LFO 1, LFO 2, Actions — the slot's order with the
+ * values page shorter and Knob Mapping absent (the master bus has no knob
+ * mapping table; §6 of the variable-length design records that as the one
+ * genuinely easier thing about it).
+ *
+ * @param {boolean} hasPreset  whether a master preset is currently loaded
+ */
+export function masterGridHierarchy(hasPreset) {
+    const menu = MASTER_GRID_ACTIONS
+        .filter((a) => a.always || hasPreset)
+        .map((a) => ({ label: a.label, action: a.action }));
+    const levels = {
+        root: {
+            label: "Master",
+            knobs: MASTER_GRID_PARAMS.map((p) => p.key),
+            params: MASTER_GRID_PARAMS.map((p) => ({ key: p.key }))
+                .concat([{ level: "lfo1", label: "LFO 1" },
+                         { level: "lfo2", label: "LFO 2" },
+                         { level: "actions", label: "Actions" }]),
+        },
+    };
+    /* The SAME builder the slot contract uses, one bus over. */
+    Object.assign(levels, lfoLevels([1, 2], MASTER_KEY_PREFIX));
+    levels.actions = { label: "Actions", knobs: [], params: [], menu: menu, menu_label: "Actions" };
+    return { modes: null, levels };
+}
+
+/** Every declared param across the volume page and both LFO pages. */
+export function allMasterGridParams() {
+    return MASTER_GRID_PARAMS
+        .concat(lfoParams(1, MASTER_KEY_PREFIX))
+        .concat(lfoParams(2, MASTER_KEY_PREFIX));
+}
+
+const MASTER_LFO_KEY = new RegExp("^" + MASTER_KEY_PREFIX + "lfo[12]:");
+const MASTER_LFO_TARGET = new RegExp("^" + MASTER_KEY_PREFIX + "lfo([12]):target$");
+
+/**
+ * The param accessors the grid drives the master bus through.
+ *
+ * Far thinner than createSlotGridIo, and for a reason worth stating: a slot
+ * stores its settings under three different conventions and derives a fourth,
+ * while every master-bus key is already spelled the way the shim serves it. So
+ * there is no mapping here — only the contract, the modulation answer and the
+ * LFO-target formatter, all three of which the slot version needs for exactly
+ * the same reasons.
+ *
+ * @param {object} io
+ * @param {(key:string)=>string}       io.readParam   read a REAL key at slot 0
+ * @param {(key:string,v:string)=>any} io.writeParam  write a REAL key at slot 0
+ * @param {()=>boolean}                io.hasPreset
+ * @param {(action:string)=>any}       [io.runAction]  perform a menu action.
+ *   Carried on the io rather than reached through the host's generic
+ *   runSlotAction, which takes the IPC SLOT — and Master FX's IPC slot is 0,
+ *   so "save" from here would have saved instrument slot 1's patch.
+ * @param {(lfoIndex:number)=>object}  [io.describeTarget]  see createSlotGridIo
+ * @param {(realKey:string)=>boolean}  [io.isModulated]
+ */
+export function createMasterGridIo(io) {
+    const bare = (fullKey) => String(fullKey || "").replace(/^[^:]*:/, "");
+
+    return {
+        getParam(fullKey) {
+            const k = bare(fullKey);
+            if (k === "ui_hierarchy") return JSON.stringify(masterGridHierarchy(!!io.hasPreset()));
+            if (k === "chain_params") return JSON.stringify(allMasterGridParams());
+            return io.readParam(k);
+        },
+
+        /*
+         * Only an LFO param can be modulated — the other LFO can drive it.
+         * master_fx:volume is not a modulation target, and letting the host's
+         * generic oracle answer for it would cost up to three IPC round trips
+         * per tick to conclude "no", then wrongly conclude "yes": an unserved
+         * `<key>:base` reads back as "" rather than null, which compares
+         * unequal to the live value and wears the modulation tilde. That is the
+         * bug createSlotGridIo.isModulated exists to prevent, and it would
+         * arrive here identically.
+         */
+        isModulated(fullKey) {
+            const k = bare(fullKey);
+            if (!MASTER_LFO_KEY.test(k)) return false;
+            if (!io.isModulated) return false;
+            return !!io.isModulated(k);
+        },
+
+        formatValue(fullKey, raw, surface) {
+            const m = MASTER_LFO_TARGET.exec(bare(fullKey));
+            if (!m || !io.describeTarget) return null;
+            const d = io.describeTarget(parseInt(m[1], 10) - 1);
+            if (!d) return null;
+            return surface === "header" ? d.long : d.short;
+        },
+
+        setParam(fullKey, value) {
+            io.writeParam(bare(fullKey), String(value));
+        },
+
+        runAction(action) {
+            if (io.runAction) return io.runAction(action);
         },
     };
 }

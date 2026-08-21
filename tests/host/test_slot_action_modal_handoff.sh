@@ -155,14 +155,15 @@ function run(state) {
     confirmingOverwrite: false, confirmingDelete: false,
     suppressSlotGridOnce: false, selectedSlot: 2,
   }, state);
-  const fn = new Function("s", "enterChainSettings",
+  const fn = new Function("s", "enterChainSettings", "isTextEntryActive",
     body.replace(/slotModalFromGrid/g, "s.slotModalFromGrid")
         .replace(/showingNamePreview/g, "s.showingNamePreview")
         .replace(/confirmingOverwrite/g, "s.confirmingOverwrite")
         .replace(/confirmingDelete/g, "s.confirmingDelete")
         .replace(/suppressSlotGridOnce/g, "s.suppressSlotGridOnce")
         .replace(/selectedSlot/g, "s.selectedSlot") +
-    "\nreturn maybeReturnToSlotGrid;")(s, (slot) => { log.entered = slot; });
+    "\nreturn maybeReturnToSlotGrid;")(s, (slot) => { log.entered = slot; },
+                                       () => !!s.textEntry);
   return { went: fn(), s, log };
 }
 
@@ -191,7 +192,144 @@ for (const f of ["showingNamePreview", "confirmingOverwrite", "confirmingDelete"
   if (went || log.entered !== null) fail("hijacked the list view for a user who opened the list");
 }
 
+/* 4. The on-screen KEYBOARD is part of the flow, not the end of it.
+ *
+ * The name previews Edit clears showingNamePreview before opening the keyboard,
+ * so for the whole of the text entry none of the three modal flags is set. A
+ * reconcile that only watched those flags would pull the grid up over a name
+ * the user is halfway through typing. */
+{
+  const { went, log } = run({ slotModalFromGrid: true, textEntry: true });
+  if (went || log.entered !== null)
+    fail("returned to the grid while the on-screen keyboard was still up");
+}
+
 if (failures) process.exit(1);
 console.log("PASS: slot modal return - the grid comes back once the modal is done, " +
-            "not before, and not for list-view users");
+            "not before, not over the keyboard, and not for list-view users");
+'
+
+# The SAME two hand-offs on the MASTER BUS.
+#
+# Master FX Settings opens the knob grid too, and its Save / Save As / Delete
+# raise modals drawn under `case VIEWS.MASTER_FX`. The hazard is identical, so
+# it is tested identically -- a feature that cannot state what it does on Master
+# FX is not finished (section 1b of the variable-length design).
+node -e '
+const fs = require("fs");
+let failures = 0;
+const fail = (m) => { console.error("FAIL: " + m); failures++; };
+
+const src = fs.readFileSync("src/shadow/shadow_ui.js", "utf8");
+
+/* ---- the hand-off OUT ---------------------------------------------------- */
+{
+  const at = src.indexOf("function runMasterFxActionFromGrid(key) {");
+  if (at < 0) {
+    fail("runMasterFxActionFromGrid is gone - a Master FX modal opened from the grid would go nowhere");
+    process.exit(1);
+  }
+  const body = src.slice(at, src.indexOf("\n}\n", at) + 2);
+
+  const run = (state) => {
+    const log = { exited: 0, view: null };
+    const s = Object.assign({
+      masterShowingNamePreview: false, masterConfirmingOverwrite: false,
+      masterConfirmingDelete: false, suppressMasterGridOnce: false,
+      masterModalFromGrid: false, needsRedraw: false,
+    }, state);
+    const fn = new Function("s", "handleMasterFxSettingsAction", "exitParamPages",
+      "setView", "VIEWS",
+      body.replace(/masterShowingNamePreview/g, "s.masterShowingNamePreview")
+          .replace(/masterConfirmingOverwrite/g, "s.masterConfirmingOverwrite")
+          .replace(/masterConfirmingDelete/g, "s.masterConfirmingDelete")
+          .replace(/suppressMasterGridOnce/g, "s.suppressMasterGridOnce")
+          .replace(/masterModalFromGrid/g, "s.masterModalFromGrid")
+          .replace(/needsRedraw/g, "s.needsRedraw") +
+      "\nreturn runMasterFxActionFromGrid;")(
+        s,
+        () => { if (state.setsFlag) s[state.setsFlag] = true; },
+        () => { log.exited++; },
+        (v) => { log.view = v; },
+        { MASTER_FX: "masterfx" });
+    return { handed: fn("save"), s, log };
+  };
+
+  for (const f of ["masterShowingNamePreview", "masterConfirmingOverwrite",
+                   "masterConfirmingDelete"]) {
+    const { handed, log, s } = run({ setsFlag: f });
+    if (!handed) fail(f + " did not hand off - the modal would be invisible");
+    if (log.exited !== 1) fail(f + " left the grid controller alive");
+    if (log.view !== "masterfx") fail(f + " went to " + log.view + ", want VIEWS.MASTER_FX");
+    if (!s.suppressMasterGridOnce)
+      fail(f + " did not suppress the grid - it would re-enter and drop the confirmation");
+    if (!s.masterModalFromGrid) fail(f + " left no marker for the return trip");
+  }
+  /* An action that raises no modal must be left alone. */
+  {
+    const { handed, log, s } = run({ setsFlag: null });
+    if (handed) fail("a non-modal Master FX action handed off anyway");
+    if (log.exited !== 0) fail("a non-modal Master FX action tore down the grid");
+    if (s.suppressMasterGridOnce) fail("a non-modal Master FX action suppressed the grid");
+  }
+}
+
+/* ---- and the return trip ------------------------------------------------- */
+{
+  const at = src.indexOf("function maybeReturnToMasterGrid() {");
+  if (at < 0) {
+    fail("maybeReturnToMasterGrid is gone - a Master FX modal would strand the user in the list");
+    process.exit(1);
+  }
+  const body = src.slice(at, src.indexOf("\n}\n", at) + 2);
+
+  if (!/if \(view === VIEWS\.MASTER_FX\) maybeReturnToMasterGrid\(\);/.test(src))
+    fail("maybeReturnToMasterGrid is never called from the tick");
+  const tickAt = src.indexOf("globalThis.tick = function()");
+  const callAt = src.indexOf("if (view === VIEWS.MASTER_FX) maybeReturnToMasterGrid();");
+  if (tickAt >= 0 && callAt >= 0 && callAt < tickAt)
+    fail("the Master FX reconcile call is OUTSIDE globalThis.tick");
+
+  const run = (state) => {
+    const log = { entered: 0 };
+    const s = Object.assign({
+      masterModalFromGrid: false, masterShowingNamePreview: false,
+      masterConfirmingOverwrite: false, masterConfirmingDelete: false,
+      inMasterPresetPicker: false, suppressMasterGridOnce: false,
+    }, state);
+    const fn = new Function("s", "enterMasterFxSettingsGrid", "isTextEntryActive",
+      body.replace(/masterModalFromGrid/g, "s.masterModalFromGrid")
+          .replace(/masterShowingNamePreview/g, "s.masterShowingNamePreview")
+          .replace(/masterConfirmingOverwrite/g, "s.masterConfirmingOverwrite")
+          .replace(/masterConfirmingDelete/g, "s.masterConfirmingDelete")
+          .replace(/inMasterPresetPicker/g, "s.inMasterPresetPicker")
+          .replace(/suppressMasterGridOnce/g, "s.suppressMasterGridOnce") +
+      "\nreturn maybeReturnToMasterGrid;")(s, () => { log.entered++; },
+                                           () => !!s.textEntry);
+    return { went: fn(), s, log };
+  };
+
+  {
+    const { went, s, log } = run({ masterModalFromGrid: true, suppressMasterGridOnce: true });
+    if (!went || log.entered !== 1) fail("the Master FX modal finished but the grid was not restored");
+    if (s.suppressMasterGridOnce)
+      fail("the suppression was not consumed - the entry would spend it and hand back the list");
+    if (s.masterModalFromGrid) fail("the marker was not cleared - it would bounce on every later visit");
+  }
+  for (const f of ["masterShowingNamePreview", "masterConfirmingOverwrite",
+                   "masterConfirmingDelete", "textEntry"]) {
+    const st = { masterModalFromGrid: true }; st[f] = true;
+    const { went, log } = run(st);
+    if (went || log.entered !== 0) fail("returned to the grid while " + f + " was still up");
+  }
+  {
+    const { went, log } = run({ masterModalFromGrid: false });
+    if (went || log.entered !== 0) fail("hijacked the Master FX view for a list-view user");
+  }
+}
+
+if (failures) process.exit(1);
+console.log("PASS: Master FX modal hand-off and return - the three confirm flows " +
+            "reach the view that can draw them and the grid comes back after, " +
+            "not before, and not over the keyboard");
 '

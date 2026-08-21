@@ -508,9 +508,212 @@ function makeSlot(over) {
     fail("the Fwd default index and the stored AUTO value disagree");
 }
 
+/* ======================================================================== */
+/* MASTER FX SETTINGS — the same contract, one bus over                      */
+/* ======================================================================== */
+
+function makeMaster(over) {
+  const store = Object.assign({ "master_fx:volume": "1.00" }, over || {});
+  const state = { store, preset: false, actions: [], targets: {} };
+  const io = SG.createMasterGridIo({
+    readParam: (k) => (k in store ? store[k] : ""),
+    writeParam: (k, v) => { store[k] = String(v); },
+    hasPreset: () => state.preset,
+    describeTarget: (i) => state.targets[i] || null,
+    isModulated: (k) => !!store[k + ":modulated"],
+    runAction: (a) => { state.actions.push(a); },
+  });
+  return { state, store, io };
+}
+
+/* ---- M1. the same four pages, in the same order ------------------------- */
+{
+  const { io, state } = makeMaster();
+  state.preset = true;
+  const hier = JSON.parse(io.getParam("master_settings:ui_hierarchy"));
+  const cp = JSON.parse(io.getParam("master_settings:chain_params"));
+  const visFree = (cond) => !cond || String(cond.equals) === "0";
+  const { pages } = planPages({ hierarchy: hier, chainParams: cp, visible: visFree });
+
+  const names = pages.map((p) => p.name);
+  const order = ["Main", "LFO 1", "LFO 2", "Actions"];
+  if (names.join("|") !== order.join("|"))
+    fail("master page order should be " + order.join(" / ") + ", got " + names.join(" / "));
+  if (pages[pages.length - 1].kind !== "menu")
+    fail("master Actions must be the LAST page and a menu");
+
+  /* ONE cell, and that is the ask: Volume alone. A page that quietly grew a
+     second control would mean something leaked in from the slot contract. */
+  const main = pages[0];
+  if ((main.keys || []).filter(Boolean).length !== 1)
+    fail("the master values page should hold exactly one knob, got " +
+         JSON.stringify(main.keys));
+  if (main.keys[0] !== "master_fx:volume")
+    fail("the master values page should hold master_fx:volume, got " + main.keys[0]);
+
+  /* Each LFO is exactly ONE page here too: nine params chunk to 8 + 1 unless
+     one rate cell is hidden, and an orphan page holding a single control would
+     land between LFO 1 and LFO 2. */
+  for (const g of pages.filter((p) => p.kind === "knobs").slice(1)) {
+    if ((g.keys || []).length !== 8)
+      fail("master page " + JSON.stringify(g.name) + " should hold 8 knobs, got " +
+           (g.keys || []).length);
+  }
+
+  const meta = buildMetaIndex({ hierarchy: hier, chainParams: cp });
+  for (const p of pages) for (const k of (p.keys || [])) {
+    if (!k) continue;
+    if (meta.getOrGuess(k).guessed)
+      fail(k + " has no declared metadata — the grid would guess it");
+  }
+}
+
+/* ---- M2. THE ANTI-DRIFT ASSERTION: one LFO builder, two contracts --------
+ *
+ * The whole reason Master FX settings is a grid at all is that the two editors
+ * kept diverging one reasonable-sounding scope boundary at a time. So this does
+ * not check that the master LFO pages are CORRECT — M1 does that — it checks
+ * that they are the SLOT pages with a prefix, param for param, condition for
+ * condition. A second copy of lfoParams would pass every other test in this
+ * file and fail here.
+ */
+{
+  const P = "master_fx:";
+  for (const n of [1, 2]) {
+    const slotSide = SG.lfoParams(n);
+    const masterSide = SG.lfoParams(n, P);
+    if (slotSide.length !== masterSide.length)
+      fail("LFO " + n + " has " + slotSide.length + " params on a slot and " +
+           masterSide.length + " on the master bus — they are not one builder");
+    for (let i = 0; i < slotSide.length; i++) {
+      const a = slotSide[i], b = masterSide[i];
+      if (P + a.key !== b.key)
+        fail("LFO " + n + " param " + i + ": expected " + P + a.key + ", got " + b.key);
+      /* The condition has to be prefixed TOO. It is the one easy to miss:
+         normalizeVisibilityConditionKey passes any key containing ":" straight
+         through, so an unprefixed condition resolves against slot 0 rather than
+         the master bus, reads empty, compares false, and hides BOTH rate cells
+         instead of one. */
+      if (!!a.visible_if !== !!b.visible_if)
+        fail("LFO " + n + " param " + a.key + " lost its visibility condition");
+      if (a.visible_if && b.visible_if.param !== P + a.visible_if.param)
+        fail("LFO " + n + " " + a.key + " condition should read " + P +
+             a.visible_if.param + ", got " + b.visible_if.param);
+      /* Everything else must be IDENTICAL — names, ranges, options, viz roles.
+         Compared wholesale so a future field is covered without an edit here. */
+      const strip = (o) => {
+        const c = Object.assign({}, o);
+        delete c.key; delete c.visible_if;
+        return JSON.stringify(c);
+      };
+      if (strip(a) !== strip(b))
+        fail("LFO " + n + " " + a.key + " differs beyond its prefix:\n  slot   " +
+             strip(a) + "\n  master " + strip(b));
+    }
+  }
+}
+
+/* ---- M3. one rate cell, swapped by Sync, on the master bus too ----------- */
+{
+  const { io } = makeMaster();
+  const hier = JSON.parse(io.getParam("master_settings:ui_hierarchy"));
+  const cp = JSON.parse(io.getParam("master_settings:chain_params"));
+  for (const [sync, want, gone] of [["0", "rate_hz", "rate_div"],
+                                    ["1", "rate_div", "rate_hz"]]) {
+    const vis = (cond) => {
+      if (!cond || !cond.param) return true;
+      if (cond.param !== "master_fx:lfo1:sync") return true;
+      return String(cond.equals) === sync;
+    };
+    const { pages } = planPages({ hierarchy: hier, chainParams: cp, visible: vis });
+    const lfo1 = pages.find((p) => p.name === "LFO 1");
+    const keys = (lfo1.keys || []).filter(Boolean);
+    if (!keys.includes("master_fx:lfo1:" + want))
+      fail("with sync=" + sync + " the master LFO 1 page should show " + want);
+    if (keys.includes("master_fx:lfo1:" + gone))
+      fail("with sync=" + sync + " the master LFO 1 page should NOT show " + gone);
+  }
+}
+
+/* ---- M4. Save As and Delete appear only with a preset -------------------- */
+{
+  const { io, state } = makeMaster();
+  const bare = () => JSON.parse(io.getParam("master_settings:ui_hierarchy"))
+                       .levels.actions.menu.map((m) => m.action);
+  if (bare().join(",") !== "save")
+    fail("with no preset the master actions menu should be Save alone, got " + bare().join(","));
+  state.preset = true;
+  if (bare().join(",") !== "save,save_as,delete")
+    fail("with a preset the master actions menu should be Save/Save As/Delete, got " +
+         bare().join(","));
+  /* There is no Knob Mapping here: the master bus has no knob-mapping table.
+     Asserted so it cannot arrive by a copy-paste from the slot contract. */
+  if (bare().includes("knobs"))
+    fail("the master bus has no knob mapping table — Knob Mapping must not appear");
+}
+
+/* ---- M5. keys pass straight through, both directions --------------------- */
+{
+  const { io, store } = makeMaster({ "master_fx:lfo2:depth": "0.25" });
+  if (io.getParam("master_settings:master_fx:volume") !== "1.00")
+    fail("volume did not read through");
+  if (io.getParam("master_settings:master_fx:lfo2:depth") !== "0.25")
+    fail("an LFO param did not read through");
+  io.setParam("master_settings:master_fx:volume", "0.5");
+  if (store["master_fx:volume"] !== "0.5")
+    fail("volume did not write to master_fx:volume, store is " + JSON.stringify(store));
+  io.setParam("master_settings:master_fx:lfo1:shape", "3");
+  if (store["master_fx:lfo1:shape"] !== "3") fail("an LFO param did not write through");
+}
+
+/* ---- M6. only LFO params can be modulated -------------------------------
+ *
+ * The host generic oracle both gets this wrong for non-LFO keys — an unserved
+ * "<key>:base" reads back as "" rather than null, compares unequal to the live
+ * value and wears the modulation tilde — and costs up to three IPC round trips
+ * per tick to do it. Volume is not a modulation target.
+ */
+{
+  const { io, store } = makeMaster();
+  store["master_fx:volume:modulated"] = "1";
+  store["master_fx:lfo1:depth:modulated"] = "1";
+  if (io.isModulated("master_settings:master_fx:volume"))
+    fail("master_fx:volume must never report as modulated");
+  if (!io.isModulated("master_settings:master_fx:lfo1:depth"))
+    fail("an LFO param driven by the other LFO should report as modulated");
+}
+
+/* ---- M7. an LFO target reads as a NAME, differently per surface ---------- */
+{
+  const { io, state } = makeMaster();
+  state.targets[0] = { short: "F1 ROOM", header: "FX 1", long: "FX 1: Room Size" };
+  const cell = io.formatValue("master_settings:master_fx:lfo1:target", "fx1", "cell");
+  const head = io.formatValue("master_settings:master_fx:lfo1:target", "fx1", "header");
+  if (cell !== "F1 ROOM") fail("the cell should get the SHORT form, got " + JSON.stringify(cell));
+  if (head !== "FX 1: Room Size")
+    fail("the header should get the LONG form, got " + JSON.stringify(head));
+  if (io.formatValue("master_settings:master_fx:volume", "1.0", "cell") !== null)
+    fail("formatValue must ignore every key but an LFO target");
+}
+
+/* ---- M8. a menu action goes to the MASTER runner ------------------------
+ *
+ * Carried on the io rather than reached through the host generic runSlotAction,
+ * which takes the IPC SLOT — and Master FX is addressed at IPC slot 0 by
+ * convention, so "save" from the master bus would have saved instrument slot 1.
+ */
+{
+  const { io, state } = makeMaster();
+  io.runAction("save_as");
+  if (state.actions.join(",") !== "save_as")
+    fail("runAction did not forward, got " + JSON.stringify(state.actions));
+}
+
 if (failures) process.exit(1);
 console.log("PASS: slot grid contract — Main + LFO 1 + LFO 2 + Actions in that order, " +
             "Save As/Delete gated on a preset, all three storage conventions, " +
             "the Fwd Ch offset pinned at both ends, MPE derived and edge-triggered, " +
-            "LFO targets resolved per surface");
+            "LFO targets resolved per surface. Master FX: the same four pages, " +
+            "the SAME LFO builder param for param, actions gated, keys passed " +
+            "through, and its own action runner");
 '

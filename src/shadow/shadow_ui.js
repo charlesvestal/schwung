@@ -212,7 +212,7 @@ import {
     tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage,
     paramPagesComponent, paramPagesSlot, clearParamPagesTouch
 } from './shadow_ui_param_pages.mjs';
-import { createSlotGridIo } from './shadow_ui_slot_grid.mjs';
+import { createSlotGridIo, createMasterGridIo } from './shadow_ui_slot_grid.mjs';
 import {
     drawMasterFx as _drawMasterFx,
     getMasterFxDisplayName as _getMasterFxDisplayName,
@@ -2083,12 +2083,16 @@ function openParamEditorFromGrid(slotIndex, fullKey, meta) {
      * Target, which has its own two-step picker — so open that and refuse
      * everything else rather than land somewhere wrong.
      */
-    if (componentKey === "slot") {
-        const m = /^slot:lfo([12]):target$/.exec(String(fullKey || ""));
+    if (componentKey === "slot" || componentKey === MASTER_SETTINGS_COMPONENT) {
+        const isMaster = componentKey === MASTER_SETTINGS_COMPONENT;
+        const m = isMaster
+            ? /^master_settings:master_fx:lfo([12]):target$/.exec(String(fullKey || ""))
+            : /^slot:lfo([12]):target$/.exec(String(fullKey || ""));
         if (m) {
             /* enterLfoTargetPicker reads lfoCtx, so point it at this LFO first —
              * the same context the list editor builds. */
-            lfoCtx = makeSlotLfoCtx(slotIndex, Number(m[1]) - 1);
+            lfoCtx = isMaster ? makeMfxLfoCtx(Number(m[1]) - 1)
+                              : makeSlotLfoCtx(slotIndex, Number(m[1]) - 1);
             /* Mark the hand-off BEFORE opening, so every exit from the picker
              * knows where it came from. The grid controller stays alive. */
             lfoTargetFromGrid = true;
@@ -2183,6 +2187,12 @@ let suppressSlotGridOnce = false;
 /* A slot-action modal is up in the LIST because the grid handed it over; go
  * back to the grid when it finishes. See maybeReturnToSlotGrid. */
 let slotModalFromGrid = false;
+
+/* ...and the Master FX pair. THREE flags, not one shared set, for the reason
+ * spelled out above: a suppress pending for one hand-off must not be spent by
+ * an unrelated entry, and Master FX settings is a third independent hand-off. */
+let suppressMasterGridOnce = false;
+let masterModalFromGrid = false;
 
 function saveParamViewConfig() {
     try {
@@ -9265,6 +9275,12 @@ function runSlotActionFromGrid(slot, key) {
 function maybeReturnToSlotGrid() {
     if (!slotModalFromGrid) return false;
     if (showingNamePreview || confirmingOverwrite || confirmingDelete) return false;
+    /* The name preview's "Edit" CLEARS showingNamePreview and opens the on-screen
+     * keyboard, so for the length of that keyboard none of the three flags is
+     * set and the reconcile would fire — pulling the grid up over a text entry
+     * the user is halfway through. The keyboard is part of the flow, not the
+     * end of it. */
+    if (isTextEntryActive()) return false;
     slotModalFromGrid = false;
     /* Consume the suppression that kept the list up for the modal, or
      * enterChainSettings would spend it and hand back the list again. */
@@ -9304,6 +9320,101 @@ function slotGridIoFor(slotIndex) {
     io.visible = (condition, levelDef) =>
         evaluateVisibilityConditionForContext(slotIndex, "slot", condition, levelDef, -1);
     return io;
+}
+
+/*
+ * MASTER FX SETTINGS, as the knob grid — the same four pages a slot gets.
+ *
+ * The component name is not a module and not "slot"; it names the SYNTHESISED
+ * contract so headerTitle() and openParamEditorFromGrid can tell the two
+ * settings screens apart without asking which chain they are on.
+ */
+const MASTER_SETTINGS_COMPONENT = "master_settings";
+
+function masterGridIoFor() {
+    const io = createMasterGridIo({
+        /* IPC slot 0 by CONVENTION — Master FX is not instrument slot 0. Every
+         * declared key already carries its "master_fx:" prefix, so these are
+         * pass-throughs rather than a mapping. */
+        readParam: (key) => getSlotParam(0, key),
+        writeParam: (key, value) => setSlotParam(0, key, value),
+        hasPreset: () => !!currentMasterPresetName,
+        /* The SAME resolver the MFX LFO list editor uses, so the grid and the
+         * list can never describe one routing differently, and cached per scope
+         * because a miss is a dozen IPC round trips inside a draw. */
+        describeTarget: (lfoIndex) => describeLfoTargetFor(makeMfxLfoCtx(lfoIndex)),
+        isModulated: (realKey) => isHierarchyParamModulated(0, realKey),
+        runAction: (action) => runMasterFxActionFromGrid(action),
+    });
+    /*
+     * Visibility, bound to the master bus. Same trap as the slot grid: the
+     * default evaluator reads the LIST editor's slot/component, which are stale
+     * while the grid is up. The condition keys carry the full "master_fx:lfoN:"
+     * prefix, so the component prefix passed here is unused (see
+     * normalizeVisibilityConditionKey) — but the SLOT is not, and it must be 0.
+     */
+    io.visible = (condition, levelDef) =>
+        evaluateVisibilityConditionForContext(0, "master_fx", condition, levelDef, -1);
+    return io;
+}
+
+function enterMasterFxSettingsGrid() {
+    enterParamPages(0, MASTER_SETTINGS_COMPONENT, MASTER_SETTINGS_COMPONENT, null,
+                    masterGridIoFor(),
+                    /* No moduleKey: there is no module behind this contract to
+                     * abbreviate. `name` is what the header shows instead. Back
+                     * goes where the settings LIST's Back went — the Master FX
+                     * chain editor. */
+                    { label: MASTER_CHAIN_TARGET.label, name: "Settings",
+                      returnView: VIEWS.MASTER_FX });
+}
+
+/*
+ * A Master FX action chosen from the KNOB GRID.
+ *
+ * Exactly the hand-off runSlotActionFromGrid performs, and for exactly the same
+ * reason: Save / Save As / Delete do not act, they raise a modal, and both the
+ * drawing of those modals and the jog/click that answer them live under
+ * `case VIEWS.MASTER_FX`. Left in the grid, pressing Save would appear to do
+ * nothing at all.
+ *
+ * It asks WHETHER A MODAL IS NOW OPEN rather than listing which keys are modal
+ * ones, so a fourth action that opens a confirm is not silently broken in the
+ * same way.
+ */
+function runMasterFxActionFromGrid(key) {
+    handleMasterFxSettingsAction(key);
+    if (!(masterShowingNamePreview || masterConfirmingOverwrite || masterConfirmingDelete)) {
+        return false;
+    }
+    exitParamPages();
+    /* The Master FX view must stay the LIST/modal surface while the modal is
+     * up — re-entering the grid would drop the confirmation on the floor. */
+    suppressMasterGridOnce = true;
+    masterModalFromGrid = true;
+    setView(VIEWS.MASTER_FX);
+    needsRedraw = true;
+    return true;
+}
+
+/* ...and back to the grid once the modal is done with. RECONCILES rather than
+ * firing at the end of each flow — see maybeReturnToSlotGrid for why hooking
+ * each exit is how the original bug got there. */
+function maybeReturnToMasterGrid() {
+    if (!masterModalFromGrid) return false;
+    if (masterShowingNamePreview || masterConfirmingOverwrite || masterConfirmingDelete) return false;
+    /* ...and while the on-screen keyboard is up. The name preview's "Edit"
+     * clears masterShowingNamePreview before opening it, so all three flags are
+     * down for the whole of the text entry. See maybeReturnToSlotGrid. */
+    if (isTextEntryActive()) return false;
+    /* Only once the Master FX surface is actually idle. The preset picker is
+     * the one other screen a finished modal can leave up, and re-entering the
+     * grid over it would take a screen the user is looking at. */
+    if (inMasterPresetPicker) return false;
+    masterModalFromGrid = false;
+    suppressMasterGridOnce = false;
+    enterMasterFxSettingsGrid();
+    return true;
 }
 
 /* Enter chain settings view */
@@ -14127,6 +14238,16 @@ function handleSelect() {
                 }
                 if (selectedComp.key === "settings") {
                     /* Enter settings submenu */
+                    /* Knob grid instead of the list, when the user has opted
+                     * in — the SAME gate, and the same four pages, a slot's
+                     * Settings position gets. The screen reader still gets the
+                     * list (paramPagesEnabled returns false for it): a grid has
+                     * eight cells and nothing selected to read out. */
+                    if (paramPagesEnabled() && !suppressMasterGridOnce) {
+                        enterMasterFxSettingsGrid();
+                        break;
+                    }
+                    suppressMasterGridOnce = false;
                     inMasterFxSettingsMenu = true;
                     selectedMasterFxSetting = 0;
                     editingMasterFxSetting = false;
@@ -17912,6 +18033,9 @@ globalThis.tick = function() {
      * back to the grid the user actually opened. Flags only, no IPC. Runs
      * before the draw so the frame that notices is already the grid's. */
     if (view === VIEWS.CHAIN_SETTINGS) maybeReturnToSlotGrid();
+    /* The Master FX half of the same reconcile. Its modals live under
+     * VIEWS.MASTER_FX rather than a settings view of their own. */
+    if (view === VIEWS.MASTER_FX) maybeReturnToMasterGrid();
 
     /* Guarded: a throw in any draw function would otherwise repeat every
      * frame — frozen screen with no recovery, since the C loop keeps
