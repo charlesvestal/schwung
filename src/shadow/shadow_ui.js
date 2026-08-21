@@ -1536,6 +1536,22 @@ function chainTargetHierarchy(target, componentKey) {
     try { return JSON.parse(json); } catch (e) { return null; }
 }
 
+/*
+ * Mute + Jog Click on a populated module toggles its bypass — in EITHER chain.
+ * The two editors held identical copies of this that differed only in how the
+ * key was spelled, which is the whole of the difference between them.
+ *
+ * `label` is the component's, because the announcement names the box the user
+ * is pointing at ("FX 2 bypassed"), not the module inside it.
+ */
+function toggleChainComponentBypass(target, componentKey, label) {
+    const cur = parseInt(chainTargetGetParam(target, componentKey, "bypassed") || "0", 10);
+    const next = cur ? 0 : 1;
+    chainTargetSetParam(target, componentKey, "bypassed", String(next));
+    announce(next ? `${label} bypassed` : `${label} active`);
+    needsRedraw = true;
+}
+
 function makeEmptyMasterFxConfig() {
     const cfg = {};
     for (let i = 1; i <= MASTER_FX_SLOTS; i++) {
@@ -13488,12 +13504,8 @@ function handleSelect() {
 
                     /* Mute+JogClick: toggle bypass on a populated MFX slot */
                     if (hostMuteHeld && moduleData && moduleData.module) {
-                        const fullKey = `master_fx:${selectedComp.key}:bypassed`;
-                        const cur = parseInt(shadow_get_param(0, fullKey) || "0", 10);
-                        const next = cur ? 0 : 1;
-                        shadow_set_param(0, fullKey, String(next));
-                        announce(next ? `${selectedComp.label} bypassed` : `${selectedComp.label} active`);
-                        needsRedraw = true;
+                        toggleChainComponentBypass(MASTER_CHAIN_TARGET,
+                                                   selectedComp.key, selectedComp.label);
                         break;
                     }
 
@@ -13588,12 +13600,8 @@ function handleSelect() {
 
                 /* Mute+JogClick: toggle bypass on a populated module */
                 if (hostMuteHeld && moduleData && moduleData.module) {
-                    const key = chainComponentParamKey(comp.key, "bypassed");
-                    const cur = parseInt(getSlotParam(selectedSlot, key) || "0", 10);
-                    const next = cur ? 0 : 1;
-                    setSlotParam(selectedSlot, key, String(next));
-                    announce(next ? `${comp.label} bypassed` : `${comp.label} active`);
-                    needsRedraw = true;
+                    toggleChainComponentBypass(slotChainTarget(selectedSlot),
+                                               comp.key, comp.label);
                     break;
                 }
 
