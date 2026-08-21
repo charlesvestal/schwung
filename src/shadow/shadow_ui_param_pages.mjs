@@ -27,7 +27,10 @@
  */
 
 import { ctx } from './shadow_ui_ctx.mjs';
-import { createController } from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
+import { createController, CONTRACT_SETTLE_MS } from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
+/* Re-exported so the LIST editor waits out the same module-side debounce the
+ * grid does, from the same number. Two hand-written 500s would drift. */
+export { CONTRACT_SETTLE_MS };
 import { decodeInput, applyInput } from '/data/UserData/schwung/shared/param_pages/page_input.mjs';
 import { PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS } from '/data/UserData/schwung/shared/param_pages/page_plan.mjs';
 import { LAYOUT_BAR, LAYOUT_DIAL } from '/data/UserData/schwung/shared/param_pages/render_page.mjs';

@@ -212,7 +212,7 @@ import {
     paramPagesEnabled, enterParamPages, exitParamPages, paramPagesActive,
     tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage,
     paramPagesComponent, paramPagesSlot, clearParamPagesTouch,
-    enumPickerFooterHints
+    enumPickerFooterHints, CONTRACT_SETTLE_MS
 } from './shadow_ui_param_pages.mjs';
 import { createSlotGridIo, createMasterGridIo } from './shadow_ui_slot_grid.mjs';
 import {
@@ -10749,10 +10749,15 @@ function changeHierPreset(delta) {
      * internally (e.g. ambiotica mode change rewrites all 8 knobs). The
      * cached values are now stale, so force a re-read on next knob touch. */
     invalidateKnobValueCache();
+    /* ...and book a second look for after any module-side debounce, because
+     * the refetch above may have read the contract of the preset we just
+     * LEFT. See armHierEditorContractSettle. */
+    armHierEditorContractSettle();
 }
 
 /* Exit hierarchy editor */
 function exitHierarchyEditor() {
+    hierEditorContractDueMs = 0;
     /* Clear pending knob state to prevent stale overlays */
     pendingHierKnobIndex = -1;
     pendingHierKnobDelta = 0;
@@ -13065,6 +13070,49 @@ function drawFilepathBrowser() {
  * inside changeHierPreset observes the previous preset's knob list. */
 let hierEditorPrevLoading = false;
 
+/*
+ * When the deferred contract re-read below comes due, or 0 for none pending.
+ *
+ * The refetch in changeHierPreset happens on the line after the write, and for
+ * a module that publishes its new contract synchronously that is right and
+ * stays. schwung-airwindows does not: writing the selection only SCHEDULES the
+ * plugin load, 300 ms later on a worker thread (clap_fx.cpp:806-822), and
+ * `chain_params` describes the plugin that is still LOADED until it finishes.
+ * The immediate refetch therefore wins the race and caches the previous
+ * effect — the grid and the list both sat exactly one selection behind.
+ *
+ * So the immediate refetch is kept (nothing that answers straight away should
+ * get slower) and a second one is booked for after the debounce. Re-armed on
+ * every detent, so a spin down a 519-effect list costs one extra refetch when
+ * the hand stops rather than one per step.
+ */
+let hierEditorContractDueMs = 0;
+
+function armHierEditorContractSettle() {
+    hierEditorContractDueMs = Date.now() + CONTRACT_SETTLE_MS;
+}
+
+/* Re-read the contract a selection made stale, once it has settled. */
+function serviceHierEditorContractSettle() {
+    if (!hierEditorContractDueMs || Date.now() < hierEditorContractDueMs) return;
+    hierEditorContractDueMs = 0;
+    let newHier = null;
+    if (hierEditorIsMasterFx) {
+        hierEditorChainParams = getMasterFxChainParams(hierEditorMasterFxSlot);
+        newHier = getMasterFxHierarchy(hierEditorMasterFxSlot);
+    } else {
+        hierEditorChainParams = getComponentChainParams(hierEditorSlot, hierEditorComponent);
+        newHier = getComponentHierarchy(hierEditorSlot, hierEditorComponent);
+    }
+    if (newHier) {
+        hierEditorHierarchy = newHier;
+        loadHierarchyLevel();
+    }
+    invalidateKnobContextCache();
+    invalidateKnobValueCache();
+    needsRedraw = true;
+}
+
 /* Draw the hierarchy-based parameter editor */
 function drawHierarchyEditor() {
     clear_screen();
@@ -13102,6 +13150,10 @@ function drawHierarchyEditor() {
         }
         hierEditorPrevLoading = loadingNow;
     }
+
+    /* The deferred half of a preset change. Costs nothing on any frame where
+     * nothing is pending, which is almost all of them. */
+    serviceHierEditorContractSettle();
 
     /* Get plugin info */
     const prefix = getComponentParamPrefix(hierEditorComponent);
