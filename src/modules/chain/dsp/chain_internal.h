@@ -30,7 +30,12 @@
  * receive_channel (0=All) and forward_channel (0=ch 1 internal). */
 #define PATCH_CHANNEL_UNSET INT_MIN
 
-#include "chain_key_index.h"
+/* Lives in src/host/ rather than beside this file: the SHIM needs it too
+ * (Master FX is a permuted list now), and there is no include path from
+ * src/host/ into a dlopen'd module's private directory. Nothing about it is
+ * chain-specific, and a second copy is precisely the bug class that made
+ * fx3..fx8 silent. Reached the same way as plugin_api_v1.h below. */
+#include "host/chain_key_index.h"
 #include "host/plugin_api_v1.h"
 #include "host/audio_fx_api_v2.h"
 #include "host/midi_fx_api_v1.h"

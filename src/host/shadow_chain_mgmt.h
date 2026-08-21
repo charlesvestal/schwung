@@ -82,7 +82,7 @@ typedef struct {
      * chain: v2_load_midi_fx_slot parsed a param table through the NULLed
      * pointer and SIGSEGV'd on the audio thread, and the shift silently leaked
      * the allocation it overwrote. See the PERMUTATION section of CLAUDE.md
-     * and PERM_OWNED in src/modules/chain/dsp/chain_permute.h. */
+     * and PERM_OWNED in src/host/chain_permute.h. */
     char *chain_params_cache;
     int chain_params_cached;         /* 1 if cache is valid */
     void (*on_midi)(void *instance, const uint8_t *msg, int len, int source);  /* Optional MIDI handler */
