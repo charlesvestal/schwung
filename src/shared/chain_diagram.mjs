@@ -126,6 +126,48 @@ function outline(ctx, x, y, w, h, color, dash) {
 }
 
 /**
+ * The settings box shows three faders, not a character.
+ *
+ * `*` was a stand-in. The box is a door to volume, the LFOs and the preset
+ * actions — a mixer strip, not machinery — and at this size a fader icon is
+ * the only thing that survives: every feature is 1px, so it stays legible
+ * where a gear turns into a dotted ring or a solid blob, and it still reads
+ * when the box inverts under selection.
+ *
+ * 12 wide because 22 minus an even width centres exactly. Three 4px knobs
+ * cannot make an even total with odd gaps, so the knobs are flush (0-3, 4-7,
+ * 8-11) and the tracks sit at 1, 5 and 9. The knobs are at different heights
+ * on purpose: level faders read as a picture of nothing.
+ */
+const SETTINGS_ICON = [
+    ".#...#...#..",
+    ".#...#...#..",
+    ".#...#...#..",
+    ".#..####.#..",
+    ".#...#...#..",
+    ".#...#..####",
+    ".#...#...#..",
+    "####.#...#..",
+    ".#...#...#..",
+    ".#...#...#..",
+    ".#...#...#..",
+];
+const SETTINGS_ICON_W = SETTINGS_ICON[0].length;
+const SETTINGS_ICON_H = SETTINGS_ICON.length;
+
+/** Centred in the box, in whichever colour the box is not. */
+function drawSettingsIcon(px, x, y, color) {
+    const ix = x + Math.floor((BOX_W - SETTINGS_ICON_W) / 2);
+    const iy = y + Math.floor((BOX_H - SETTINGS_ICON_H) / 2);
+    for (let r = 0; r < SETTINGS_ICON_H; r++) {
+        const row = SETTINGS_ICON[r];
+        for (let c = 0; c < SETTINGS_ICON_W; c++) {
+            if (row[c] === "#") px(ix + c, iy + r, color);
+        }
+    }
+}
+
+/**
  * The default two-character label inside a box.
  *
  * The real editor overrides this with the module's declared `abbrev` (see
@@ -277,6 +319,14 @@ export function drawChainDiagram(ctx, components, selectedIndex, opts = {}) {
          */
         /* Every box now has the same label room: the synth mark is horizontal,
          * so it takes none. */
+        /* The settings box is an ICON, not a label — see SETTINGS_ICON. Drawn
+         * before the marks so a bypass B or an LFO tilde still lands on top. */
+        if (comp.kind === "settings") {
+            drawSettingsIcon(px, x, y, selected ? 0 : 1);
+            drawMarks(ctx, px, x, y, marksOf(comp), bw);
+            continue;
+        }
+
         const room = bw - 2;
         const abbrev = fitAbbrev(ctx, String(abbrevOf(comp) || "--"), room);
         /* Selection inverts the label whatever the box is: the `+` box fills
