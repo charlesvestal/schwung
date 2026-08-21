@@ -16132,11 +16132,27 @@ globalThis.init = function() {
                     if (chain && chain.synth && chain.synth.bypassed) {
                         setSlotParam(i, "synth:bypassed", "1");
                     }
-                    if (chain && Array.isArray(chain.midi_fx) && chain.midi_fx[0] && chain.midi_fx[0].bypassed) {
-                        setSlotParam(i, "midi_fx1:bypassed", "1");
+                    /*
+                     * BOTH lists, and bounded by the CAP rather than by a
+                     * number that used to be the cap.
+                     *
+                     * This read `chain.midi_fx[0]` and `fx < 4` — written when
+                     * a chain was one MIDI FX and two audio FX. The chain has
+                     * been a list of up to MAX_MIDI_FX and MAX_FX since, so
+                     * bypass silently stopped being restored past the first
+                     * MIDI FX and past the fourth audio FX: you bypassed a
+                     * module, rebooted, and it came back live with the B glyph
+                     * gone. Nothing failed and nothing logged.
+                     */
+                    if (chain && Array.isArray(chain.midi_fx)) {
+                        for (let mf = 0; mf < chain.midi_fx.length && mf < MAX_MIDI_FX; mf++) {
+                            if (chain.midi_fx[mf] && chain.midi_fx[mf].bypassed) {
+                                setSlotParam(i, `midi_fx${mf + 1}:bypassed`, "1");
+                            }
+                        }
                     }
                     if (chain && Array.isArray(chain.audio_fx)) {
-                        for (let fx = 0; fx < chain.audio_fx.length && fx < 4; fx++) {
+                        for (let fx = 0; fx < chain.audio_fx.length && fx < MAX_FX; fx++) {
                             if (chain.audio_fx[fx] && chain.audio_fx[fx].bypassed) {
                                 setSlotParam(i, `fx${fx + 1}:bypassed`, "1");
                             }
