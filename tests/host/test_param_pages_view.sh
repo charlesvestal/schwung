@@ -67,7 +67,7 @@ Promise.all([
   const views = [];
   const opened = [];
   Object.assign(C.ctx, {
-    VIEWS: { PARAM_PAGES: "parampages", CHAIN_EDIT: "chainedit" },
+    VIEWS: { PARAM_PAGES: "parampages", CHAIN_EDIT: "chainedit", MASTER_FX: "masterfx" },
     setView: (v) => views.push(v),
     getSlotParam: (slot, key) => dev.getParam(key),
     setSlotParam: (slot, key, value) => dev.setParam(key, value),
@@ -277,7 +277,81 @@ Promise.all([
     V.exitParamPages();
   }
 
+  /* ---- 9. the same grid, opened from MASTER FX ------------------------- *
+   *
+   * Master FX is a chain editor too, and the Param View setting was silently
+   * slot-chain-only: the same module opened the labelled knob grid in a slot
+   * and the scrolling hierarchy list on the master bus. Reported from the
+   * device the day after the knob card shipped, and the same drift section 1b
+   * of the Master FX variable-length design exists to end.
+   *
+   * The grid serves either chain given three pieces of CHROME, and all three
+   * fail QUIETLY if they are wrong, which is why each is asserted separately:
+   *
+   *   label      "MFX", never "S1" -- the master bus is ADDRESSED at IPC slot
+   *              0 by convention and is not instrument slot 1.
+   *   moduleKey  "master_fx:fx1:module". The slot chain spelling "<prefix>_module"
+   *              spelling is simply unserved here, and an unserved key reads
+   *              back as "" rather than erroring, so the header would lose its
+   *              module name with nothing in the logs.
+   *   returnView Back goes to the Master FX editor. Hardcoded, it dropped the
+   *              user into the slot chain editor instead.
+   */
+  {
+    const devM = D.createFakeDevice({ id: "obxd", prefix: "master_fx:fx1" });
+    let abbrevArg = null;
+    C.ctx.getSlotParam = (slot, key) =>
+      (key === "master_fx:fx1:module" ? "cloudseed" : devM.getParam(key));
+    C.ctx.setSlotParam = (slot, key, value) => devM.setParam(key, value);
+    C.ctx.getModuleAbbrev = (id) => { abbrevArg = id; return "CS"; };
+
+    V.enterParamPages(0, "master_fx:fx1", "master_fx:fx1", null, null,
+                      { label: "MFX", moduleKey: "master_fx:fx1:module",
+                        returnView: C.ctx.VIEWS.MASTER_FX });
+    for (let i = 0; i < 12; i++) V.tickParamPages();
+
+    drawCalls.length = 0;
+    if (!V.drawParamPages()) fail("the grid did not draw for a Master FX component");
+
+    /* Read through headerTitle(), which is what drawParamPages passes to the
+     * renderer. It cannot be read back off the framebuffer: the movy renderer
+     * sets the header in its own font and draws every glyph as fillRect
+     * pixels, so a recording print() sees nothing -- the same reason
+     * paramPagesFooterHints() is exported. */
+    const title = V.headerTitle();
+    if (!/^MFX > /.test(title)) fail("the header does not say MFX: " + JSON.stringify(title));
+    if (/^S1 > /.test(title))
+      fail("the header called the master bus a slot: " + JSON.stringify(title));
+
+    if (abbrevArg !== "cloudseed")
+      fail("the module behind the view was resolved through the wrong key -- " +
+           "getModuleAbbrev saw " + JSON.stringify(abbrevArg));
+
+    V.handleParamPagesMidi([0xb0, 51, 127]);
+    if (V.paramPagesActive()) fail("back should leave the view");
+    if (views[views.length - 1] !== "masterfx")
+      fail("back from a Master FX component landed on " + views[views.length - 1] +
+           " -- it must return to the editor it was opened from");
+
+    /* And the defaults must be untouched: an entry with NO chrome is still the
+     * slot chain, and carrying the last one over would leave an MFX header on
+     * it. */
+    const devS = D.createFakeDevice({ id: "obxd" });
+    C.ctx.getSlotParam = (slot, key) => devS.getParam(key);
+    C.ctx.setSlotParam = (slot, key, value) => devS.setParam(key, value);
+    V.enterParamPages(1, "synth", "synth");
+    for (let i = 0; i < 12; i++) V.tickParamPages();
+    V.drawParamPages();
+    const t2 = V.headerTitle();
+    if (!/^S2 > /.test(t2))
+      fail("a chrome-less entry did not fall back to the slot header: " + JSON.stringify(t2));
+    V.handleParamPagesMidi([0xb0, 51, 127]);
+    if (views[views.length - 1] !== "chainedit")
+      fail("a chrome-less entry did not return to the chain editor");
+  }
+
   console.log("PASS: shadow view module — setting and screen-reader gating, one read per frame, " +
-              "MIDI routed, opaque params and non-grid pages handed to existing screens");
+              "MIDI routed, opaque params and non-grid pages handed to existing screens, " +
+              "and the same grid serves Master FX with its own header, module key and return view");
 });
 '

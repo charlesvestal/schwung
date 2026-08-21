@@ -476,6 +476,15 @@ addChain("chain/len2/info-rnbo", Object.assign({ selKey: "fx1",
  * that any chain-editor behaviour is tested against both targets: a card that
  * came out different on Master FX would show as a diff between two cases that
  * were built from identical payloads.
+ *
+ * `name` is the BARE parameter name, and must stay that way. The device sends
+ * the card a short name and the SCREEN READER the composed
+ * "MFX: cloudseed Mix" -- two answers to two questions, because a sighted user
+ * has the diagram behind the card and a screen-reader user has nothing. That
+ * split lives in shadow_ui.js and is pinned by
+ * tests/host/test_knob_card_header_name.sh; these payloads only have to keep
+ * modelling what the renderer is actually handed. Feeding a composed title in
+ * here would snapshot a picture the device no longer draws.
  */
 const CARD_PARAMS = [
   { key: "a", name: "Room", type: "float", min: 0, max: 1, step: 0.01 },

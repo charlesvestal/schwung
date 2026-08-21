@@ -83,6 +83,41 @@ want(/paramPagesEnabled\(\) && !suppressParamPagesOnce/,
      "list entry ignores the anti-loop guard — handing off would bounce back into the grid forever");
 want(/suppressParamPagesOnce = false;/, "the guard is never cleared, so the grid would stay disabled");
 
+/* ---- BOTH chain editors honour the setting ---------------------------- *
+ *
+ * Param View = Knobs was silently slot-chain-only: enterHierarchyEditorWith
+ * had the gate and enterMasterFxHierarchyEditor did not, so the same module
+ * opened the labelled knob grid in a slot and the scrolling list on the master
+ * bus. Reported from the device the day after the knob card shipped, and the
+ * same drift section 1b of the Master FX variable-length design exists to end.
+ *
+ * Checked INSIDE the master entry point, not as a file-wide count: a second
+ * occurrence anywhere would satisfy a count while the master screen went on
+ * ignoring the setting.
+ */
+{
+  const at = s.indexOf("function enterMasterFxHierarchyEditor(");
+  if (at < 0) fail("enterMasterFxHierarchyEditor is gone");
+  const end = s.indexOf("\n}\n", at);
+  const body = s.slice(at, end < 0 ? s.length : end);
+  if (!/paramPagesEnabled\(\) && !suppressParamPagesOnce/.test(body))
+    fail("Master FX ignores the Param View setting - it always opens the hierarchy list");
+  if (!/enterParamPages\(/.test(body))
+    fail("Master FX never opens the knob grid");
+  if (!/paramPagesChromeFor\(/.test(body))
+    fail("Master FX opens the grid with no chrome - it would say S1, read the slot " +
+         "spelling of the module key, and send Back to the slot chain editor");
+  if (!/suppressParamPagesOnce = false;/.test(body))
+    fail("the master entry point never clears the anti-loop guard, so the grid would " +
+         "stay disabled after one hand-off");
+}
+/* And a Master FX component reaching the LIST editor must be routed to the
+ * master entry point: the generic path sets hierEditorIsMasterFx = false, and
+ * that flag is what decides where Back goes. */
+want(/masterFxIndexFromComponentKey\(componentKey\)[\s\S]{0,160}enterMasterFxHierarchyEditor\(/,
+     "enterHierarchyEditor does not route a Master FX component key to the master " +
+     "entry point - Back would eject into the slot chain editor");
+
 /* ---- the screen reader keeps the list --------------------------------- */
 want(/tts_get_enabled[\s\S]{0,80}return false/, "the screen reader does not force the list", v);
 
