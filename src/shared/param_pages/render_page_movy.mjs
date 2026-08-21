@@ -60,7 +60,28 @@ import { fontWidth4x5, fontPrint4x5, FONT4_HEIGHT, FONT4_MEASURE } from "./font4
  * and SAW as "SAU". font4x5 fixed that and is still what the enum square
  * uses; it is only the LABELS that wanted more height.
  */
-const LABEL_CHARS = 4;
+/*
+ * The label cap, in M-widths.
+ *
+ * It is a CAP, not a fit, and it was stricter than the space available:
+ * labelWidth is min(cellW - 2, fontWidth4x5("M" * LABEL_CHARS)), so a 4-across
+ * grid offered 30px of cell and the cap allowed 23. "Clear" is 24px and drew
+ * as "CLEA" -- reported from the device.
+ *
+ * 4 is a leftover. It dates from when labels were set in the 6px-advance
+ * Tamzen, where four characters genuinely was 24px and all that fit. Labels
+ * moved to the PROPORTIONAL font4x5 in the change described above and the 4
+ * came with them, even though M is now the widest glyph in the font rather
+ * than the only width -- so measuring in Ms is pessimistic for every real
+ * word. "Clear" is five characters in 24px because L and E are narrow.
+ *
+ * 5 gives 29px, still inside the 30px cell, so nothing can overflow: the
+ * min() against cellW is what actually guarantees that, and it is unchanged.
+ * 6 would be 35px, at which point the cap is inert and the cell width decides
+ * everything -- which throws away the mnemonic discipline this constant exists
+ * to impose.
+ */
+const LABEL_CHARS = 5;
 
 /** Uppercase, ascii-folded — the Elektron register. font4x5 has no lowercase. */
 function caps(s) { return asciiFold(String(s == null ? "" : s)).toUpperCase(); }
