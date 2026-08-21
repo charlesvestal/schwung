@@ -26,7 +26,7 @@
  */
 
 /** Detents of knob travel per list entry at the slowest, most deliberate turn. */
-export const DETENTS_PER_ENTRY = 3;
+export const DETENTS_PER_ENTRY = 6;
 
 /**
  * Entries per unit of acceleration ceiling: a list of N can move up to N/8
@@ -57,11 +57,16 @@ export const ACCEL_MAX_MULTIPLIER = 8;
  * "the fast spins are too fast" was: not the ceiling being wrong, the gate
  * being wide open.
  *
- * 12 ms per detent is a genuine flick; 25 ms is a purposeful spin. Below that
- * you are steering, and steering must not accelerate.
+ * 8 ms per detent is a genuine flick; 14 ms is a hard spin. Anything slower is
+ * steering, and steering must not accelerate AT ALL.
+ *
+ * These were 12/25 and both were still too generous: at 20 ms/detent — an
+ * ordinary purposeful turn — a 116-entry wavetable list took the brisk band,
+ * 3 entries a step, i.e. one entry per detent. Reported as "everything still
+ * feels 2x too fast (looking at the wavetable list)".
  */
-const FAST_MS_PER_DETENT = 12;
-const BRISK_MS_PER_DETENT = 25;
+const FAST_MS_PER_DETENT = 8;
+const BRISK_MS_PER_DETENT = 14;
 
 export function listKnobInit() {
     return { accum: 0, lastDetentMs: 0, lastDir: 0, rateMs: Infinity };
