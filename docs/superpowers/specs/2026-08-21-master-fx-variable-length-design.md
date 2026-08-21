@@ -218,9 +218,23 @@ Convergence first, with **no behaviour change**, then the feature once. This is
 the same shape as Steps 1 and 2 — harden at the current cap, then flip — which
 worked twice and made each raise a one-line diff.
 
-- **4a. The target abstraction.** Route Master FX through the shared chain
-  editor. Zero behaviour change; the screen must look and act identically
-  afterwards. Deletes most of the 24 `MasterFx` functions.
+- **4a-1. Pixel baseline for both screens, before anything moves.** DONE
+  (`41af213b`) — 71 cases, `tests/host/test_chain_editor_snapshot.sh`.
+- **4a-2. The target abstraction, with the baseline UNCHANGED.** Route both
+  screens through shared code. Both must still render byte-identically:
+  **any pixel that moves in 4a-2 is a bug.** Deletes most of the 24 `MasterFx`
+  functions.
+- **4a-3. Unify the chrome, deliberately.** 4a-1 found the two screens do not
+  merely differ in plumbing: Master FX draws **no footer at all** and never
+  reads `isShiftHeld`, wears the older header instead of the movy band, sits
+  6px lower and is centred rather than offset (it has no slot-indicator
+  column). Converging those is the *point*, but it is a visible change, so it
+  is its own step with its own baseline regeneration — a reviewed refresh, per
+  this repo's fixture convention.
+
+  Splitting 4a-2 from 4a-3 is what keeps "no behaviour change" a checkable
+  claim. Bundled, every pixel diff would be ambiguous between an intended
+  unification and a refactor mistake.
 - **4b. The knob card lands on Master FX** — free once 4a is done, and it
   repays tonight's drift.
 - **4c. Indirect the param cache** (§4). Still no user-visible change.
