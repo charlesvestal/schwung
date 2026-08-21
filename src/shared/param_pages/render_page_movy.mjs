@@ -146,7 +146,116 @@ const WORD_ABBREV = {
     sample: "SMP", start: "STR", length: "LEN", reverse: "RVS",
     speed: "SPD", random: "RND", quantize: "QNT", divide: "DIV",
     portion: "PRT", channel: "CHN", output: "OUT", input: "IN",
+
+    /*
+     * Second pass, chosen by measuring the fleet rather than by guessing.
+     *
+     * Of the labels the cell still cuts, 371 distinct words of five or more
+     * characters had no entry, and the damage they do is not truncation -- it
+     * is that shortenLabel falls back to dropping vowels, which turns a word
+     * into a non-word. "Rotation" became ROTATN, "Mod Sens A" became MOSEA,
+     * "Wave Group" became WGROU. A mnemonic is both SHORTER and readable,
+     * which is the whole argument for a table over a wider cell: widening the
+     * cell to fit ROTATN buys nothing, because ROTATN was never the goal.
+     *
+     * Ordered by fleet frequency, most damaging first. `scene` alone appears
+     * 84 times.
+     */
+    voice: "VCE", voices: "VCES", 
+    trigger: "TRG", retrigger: "RTG", retrig: "RTG", 
+    scaling: "SCLG", rotation: "ROT",
+    rotate: "ROT", rhythm: "RHY", 
+    density: "DNS", unison: "UNI", macro: "MCR", operator: "OP",
+    right: "RGT", left: "LFT", deform: "DFM", unipolar: "UNP", bipolar: "BIP",
+    division: "DIV", matrix: "MTX", 
+    porta: "GLD", branch: "BRN", enabled: "EN", enable: "EN", 
+    settings: "SET", stereo: "STO", distort: "DST", keytrack: "KTK",
+    cycle: "CYC", general: "GEN", polyphony: "POLY",
+    sends: "SND", send: "SND", expression: "EXP", switch: "SW", group: "GRP",
+    number: "NUM", reset: "RST", advanced: "ADV",
+    predelay: "PDLY", humanize: "HUM", sweep: "SWP", control: "CTL",
+    break: "BRK", point: "PNT", assign: "ASN", performance: "PERF",
+    perform: "PERF", route: "RTE", source: "SRC", grain: "GRN",
+    spectra: "SPC", motion: "MTN", capture: "CAP", oscillators: "OSCS",
+    harmonics: "HRM", brightness: "BRT",
+    transport: "TRS", compress: "CMP", flutter: "FLU", stutter: "STU",
+    octaves: "OCTS", reson: "RES",
 };
+
+/*
+ * Words that DELIBERATELY share an abbreviation.
+ *
+ * Two different words mapping to one mnemonic is normally a bug -- the label
+ * stops identifying the parameter -- so the test treats a collision as a
+ * failure unless it is declared here. Most groups are morphological (freq /
+ * frequency), but not all: portamento, porta and glide are three spellings of
+ * one control, and no prefix rule would catch that.
+ *
+ * Exported for tests/host/test_label_abbrev.sh, which is the only consumer.
+ */
+export const ABBREV_SYNONYMS = Object.freeze([
+    ["envelope", "env"],
+    ["amount", "amt"],
+    ["frequency", "freq"],
+    ["resonance", "reso", "resonant", "reson"],
+    ["glide", "portamento", "porta"],
+    ["divide", "division"],
+    ["distortion", "distort"],
+    ["compressor", "compress"],
+    ["retrigger", "retrig"],
+    ["enable", "enabled"],
+    ["send", "sends"],
+    ["perform", "performance"],
+    ["rotation", "rotate"],
+    ["waveform", "wave"],
+]);
+
+/** Exported for the same test; not part of the drawing API. */
+export { WORD_ABBREV };
+
+/**
+ * The label a cell actually shows: abbreviate per word, then squeeze to fit.
+ *
+ * Exported because the test has to measure the REAL thing. Re-deriving these
+ * two lines in the test would let the table and the assertions about it drift
+ * apart, which is the failure mode where a green suite proves nothing.
+ *
+ * @param {string} text    the declared name or key
+ * @param {number} cellW   cell width in px; the grid is 32, the knob card 29
+ */
+export function labelForCell(text, cellW = CELL_W) {
+    const labelWidth = Math.min(cellW - 2, fontWidth4x5("M".repeat(LABEL_CHARS)));
+
+    /*
+     * The table applies UNCONDITIONALLY, even to a word that would have fit.
+     *
+     * "Abbreviate only when it does not fit" looks like a strict improvement
+     * and is not: it splits a family. ATK / DEC / SUS / REL is one set, but
+     * "Attack" does not fit and "Decay" does, so the conditional version draws
+     * ATK / DECAY / SUS / REL down a row of four knobs. The consistency IS the
+     * legibility here -- that is the whole reason this table exists rather
+     * than a wider cell.
+     *
+     * The corollary is a rule for adding entries, enforced by
+     * tests/host/test_label_abbrev.sh: do not table a word that already fits
+     * unless it belongs to a family whose other members do not. Tempo, Latch
+     * and Swing fit; tabling them bought nothing and cost the real word.
+     */
+    return caps(shortenLabel(LBL_MEASURE, preAbbreviate(text), labelWidth));
+}
+
+/**
+ * What the word pass produced, BEFORE any squeezing to fit.
+ *
+ * The reference the test compares labelForCell against, and it has to be a
+ * separate function rather than labelForCell with a huge cell: the width is
+ * `min(cellW - 2, LABEL_CHARS worth of Ms)`, so a huge cell still clamps to
+ * the same cap and the comparison is a value against itself. That mistake
+ * reported 2665/2665 labels complete and proved nothing.
+ */
+export function labelUnsqueezed(text) {
+    return caps(preAbbreviate(text));
+}
 
 /** Word-level pass before shortenLabel. Numbers and short words pass through. */
 function preAbbreviate(label) {
@@ -1167,8 +1276,7 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
         if (meta.divable_mark) drawDivableMark(ctx, g, col, rowY);
 
 
-        const labelWidth = Math.min(g.cellW - 2, fontWidth4x5("M".repeat(LABEL_CHARS)));
-        const label = caps(shortenLabel(LBL_MEASURE, preAbbreviate(meta.label || meta.key), labelWidth));
+        const label = labelForCell(meta.label || meta.key, g.cellW);
         const display = fitDev(ctx,
             (cellText === null || cellText === undefined) ? displayValue(raw, meta) : String(cellText),
             g.cellW - 2);
