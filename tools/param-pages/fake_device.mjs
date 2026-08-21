@@ -52,7 +52,8 @@ export function createFakeDevice({ id, prefix = "synth", initial = {} } = {}) {
     const writes = [];
     const announcements = [];
     let loading = false;
-    const lag = Object.create(null);     /* key -> { remaining, value } */
+    const lag = Object.create(null);      /* key -> { remaining, value } */
+    const failing = Object.create(null);  /* key -> reads still to fail */
 
     const seed = () => {
         for (const p of (mod.chain_params || [])) {
@@ -69,8 +70,17 @@ export function createFakeDevice({ id, prefix = "synth", initial = {} } = {}) {
         if (!key.startsWith(prefix + ":")) return null;
         const bare = key.slice(prefix.length + 1);
 
-        if (bare === "ui_hierarchy") return mod.ui_hierarchy ? JSON.stringify(mod.ui_hierarchy) : null;
-        if (bare === "chain_params") return mod.chain_params ? JSON.stringify(mod.chain_params) : null;
+        /* A read the param channel could not SERVE answers null, and it is not
+         * the same answer as "" — see failParam. Checked first, because the
+         * contract keys below are exactly the ones worth failing. */
+        const f = failing[bare];
+        if (f && f.remaining > 0) { f.remaining--; return null; }
+
+        /* Genuine absence is "": the shim replies with an error and a zeroed
+         * buffer, and the JS binding hands that back as an empty string. Only
+         * an unservable request is null. */
+        if (bare === "ui_hierarchy") return mod.ui_hierarchy ? JSON.stringify(mod.ui_hierarchy) : "";
+        if (bare === "chain_params") return mod.chain_params ? JSON.stringify(mod.chain_params) : "";
         if (bare === "is_loading") return loading ? "1" : "0";
 
         /* A lagging param serves its stale value for a few reads — this is the
@@ -107,6 +117,16 @@ export function createFakeDevice({ id, prefix = "synth", initial = {} } = {}) {
         patchChainParams: (fn) => { mod = { ...mod, chain_params: fn(JSON.parse(JSON.stringify(mod.chain_params || []))) }; },
         /** Make a key serve a stale value for the next `n` reads. */
         lagParam: (bare, staleValue, n) => { lag[bare] = { remaining: n, value: String(staleValue) }; },
+        /**
+         * Make a key FAIL for the next `n` reads — null, the way the binding
+         * answers when it cannot claim the param channel within its 100 ms
+         * timeout. Distinct from an absent key, which answers "".
+         *
+         * This is the granny sequence: picking a sample makes the module load a
+         * WAV synchronously on the thread that serves param requests, and the
+         * contract read the UI issues milliseconds later gets nothing back.
+         */
+        failParam: (bare, n) => { failing[bare] = { remaining: n }; },
         get moduleId() { return mod.id; },
     };
 }

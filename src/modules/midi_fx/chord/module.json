@@ -14,6 +14,7 @@
           "params": [
             {
               "key": "type",
+              "options_as_string": true,
               "name": "Type",
               "type": "enum",
               "options": ["none", "major", "minor", "dim", "aug", "sus2", "sus4", "maj7", "min7", "dom7", "dim7", "power", "5th", "octave", "add9"],
@@ -21,6 +22,7 @@
             },
             {
               "key": "inversion",
+              "options_as_string": true,
               "name": "Inversion",
               "type": "enum",
               "options": ["root", "1st", "2nd", "3rd"],
@@ -28,6 +30,7 @@
             },
             {
               "key": "voicing",
+              "options_as_string": true,
               "name": "Voicing",
               "type": "enum",
               "options": ["close", "open", "drop2", "drop3"],
@@ -44,6 +47,7 @@
             },
             {
               "key": "strum_dir",
+              "options_as_string": true,
               "name": "Strum Dir",
               "type": "enum",
               "options": ["up", "down"],

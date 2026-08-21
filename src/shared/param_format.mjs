@@ -118,6 +118,91 @@ export function formatParamValue(rawValue, meta) {
     return num.toFixed(decimals) + (unit ? " " + unit : "");
 }
 
+/* The two conventions a plugin's set_param can speak for an enum. */
+export const WIRE_NAME = "name";
+export const WIRE_INDEX = "index";
+
+/**
+ * Learn which of the two an enum's plugin speaks, from a value the PLUGIN
+ * reported, and latch it onto the metadata.
+ *
+ * The problem this solves: `chord_set_param` is a strcmp ladder over the option
+ * NAMES with no trailing else, so a numeric index is silently discarded — the
+ * value never moves while the UI renders the index it just invented, and the
+ * user watches it change and snap back. Plenty of plugins are the other way
+ * round (an atoi()) and plenty accept both. Nothing in the contract obliges an
+ * author to say which, and until now the knob grid guessed "index" for
+ * everyone unless a module declared `options_as_string`.
+ *
+ * The two enum writers in shadow_ui.js never needed a declaration — they ask
+ * what the plugin currently REPORTS and answer in kind:
+ *
+ *     const pluginUsesIndex = (ctx.meta.options.indexOf(currentVal) < 0);
+ *
+ * This is the same question, asked once per key and remembered, because the
+ * grid — unlike those two — holds the enum as a number end to end and would
+ * otherwise have to re-derive it from a value it wrote itself.
+ *
+ * TWO RULES, and both are load-bearing:
+ *
+ *   `raw` MUST have come from the device. The grid's own writes populate
+ *   `s.values`; learning from that cache means the first index write teaches
+ *   it "this plugin uses indices" for the rest of the session, which is a
+ *   verdict that makes itself true and looks right in a one-detent test.
+ *
+ *   A value that is NEITHER a declared option nor a number teaches nothing.
+ *   That is the one place this deliberately diverges from `pluginUsesIndex`,
+ *   which treats any non-name as an index: those two recompute per write and
+ *   self-correct, this one latches, so an unrecognised reading leaves the
+ *   question open for the next read rather than locking in an answer derived
+ *   from a value neither convention explains.
+ *
+ * An explicit `options_as_string: true` is an OVERRIDE and is never learned
+ * over — a module that declares its convention has said the last word.
+ *
+ * @returns {string|null} the latched convention, or null if still unknown
+ */
+export function learnEnumWireFormat(meta, raw) {
+    if (!meta || meta.type !== "enum" || !Array.isArray(meta.options)) return null;
+    if (meta.options_as_string) return WIRE_NAME;
+    if (meta.wire_format) return meta.wire_format;
+    if (raw === null || raw === undefined) return null;
+    const s = String(raw);
+    if (s === "" || s.trim() === "") return null;
+    if (meta.options.indexOf(s) >= 0 || meta.options.indexOf(s.trim()) >= 0) {
+        meta.wire_format = WIRE_NAME;
+        return WIRE_NAME;
+    }
+    if (isFinite(Number(s.trim()))) {
+        meta.wire_format = WIRE_INDEX;
+        return WIRE_INDEX;
+    }
+    return null;
+}
+
+/** True when this enum should be written as its option NAME. */
+export function enumWiresNames(meta) {
+    return !!meta && (!!meta.options_as_string || meta.wire_format === WIRE_NAME);
+}
+
+/**
+ * The wire value for picking option `index`, in whatever convention this
+ * plugin speaks — the one call an option PICKER should make.
+ *
+ * A picker is not a knob: it does not carry a running numeric state, it hands
+ * you an index straight out of a list. The temptation is therefore to write
+ * `String(index)`, which is precisely the write chord silently discards. So the
+ * detection is not optional here, and `currentRaw` — the value the PLUGIN last
+ * reported — is what settles it, exactly as learnEnumWireFormat requires.
+ *
+ * Pass `currentRaw` undefined when the format is already latched (or declared);
+ * the learn step is a no-op then.
+ */
+export function enumWireValue(meta, index, currentRaw) {
+    learnEnumWireFormat(meta, currentRaw);
+    return formatParamForSet(index, meta);
+}
+
 /* Wire-format value for set_param (no unit suffix; numeric strings only). */
 export function formatParamForSet(rawValue, meta) {
     if (!meta) {
@@ -134,7 +219,7 @@ export function formatParamForSet(rawValue, meta) {
             idx = Math.round(Number(rawValue));
         }
         if (!isFinite(idx) || idx < 0) idx = 0;
-        if (meta.options_as_string && Array.isArray(meta.options) &&
+        if (enumWiresNames(meta) && Array.isArray(meta.options) &&
             idx < meta.options.length) {
             return meta.options[idx];
         }

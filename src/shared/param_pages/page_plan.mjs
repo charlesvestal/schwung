@@ -137,8 +137,11 @@ function balancedChunk(arr, size) {
 
 /**
  * @param {object}   o
- * @param {object}   o.hierarchy    parsed ui_hierarchy (may be null)
+ * @param {object}   o.hierarchy    parsed ui_hierarchy (null = the module
+ *                                  declares none)
  * @param {Array}    o.chainParams  parsed chain_params (may be null/empty)
+ * @param {boolean}  [o.unresolved] the contract could not be READ. Plans
+ *                                  nothing at all — see the note in the body.
  * @param {string}   [o.mode]       active value of hierarchy.mode_param
  * @param {Function} [o.visible]    (condition, levelDef) => boolean. Lets the
  *                                  caller wire the shadow UI's visible_if
@@ -147,7 +150,7 @@ function balancedChunk(arr, size) {
  *                                  is what the native evaluator does too).
  * @returns {{pages: Array, fingerprint: string, warnings: string[]}}
  */
-export function planPages({ hierarchy, chainParams, mode, visible } = {}) {
+export function planPages({ hierarchy, chainParams, mode, visible, unresolved } = {}) {
     const warnings = [];
     /* Keys any visible_if condition reads. Returned so the caller can re-plan
      * when one of THEM changes — a condition is driven by a param VALUE, which
@@ -170,6 +173,38 @@ export function planPages({ hierarchy, chainParams, mode, visible } = {}) {
      * count and no level — hashing the length alone would call that unchanged
      * and leave the placeholder on screen for the rest of the session. */
     const fingerprint = fingerprintOf([hierarchy || null, chainParams || null, mode || null]);
+
+    /*
+     * "the module declares no hierarchy" and "we could not READ the hierarchy"
+     * are different answers, and collapsing them is a bug with a visible
+     * symptom. On the wire:
+     *
+     *   JSON   the module declares this hierarchy
+     *   ""     the module declares NO hierarchy       -> the fallback below
+     *   null   the read FAILED, we know NOTHING       -> `unresolved: true`
+     *
+     * Both of the first two parse to a value the planner can act on, and a
+     * failed read parses to nothing — which is indistinguishable from absence
+     * by the time it reaches here. So the caller, who is the only one that saw
+     * the wire, says so explicitly. (`hierarchy: null` on its own still means
+     * ABSENT: that is what the fleet capture records for the four modules that
+     * publish chain_params and nothing else.)
+     *
+     * Picking a sample in granny loads the WAV synchronously on the thread that
+     * serves param requests; the ui_hierarchy read issued milliseconds later
+     * times out, and paginating chain_params in response put `sample_path` —
+     * granny's first declared param — on knob 1 and shifted every other knob
+     * along, until a full teardown of the controller.
+     *
+     * A plan is a statement about what a module declares. With a failed read we
+     * have no such statement, so we make none.
+     */
+    if (unresolved) {
+        return {
+            pages: [], fingerprint, conditionKeys: new Set(), unresolved: true,
+            warnings: ["ui_hierarchy unresolved — the contract read failed"],
+        };
+    }
 
     const levels = (hierarchy && hierarchy.levels && typeof hierarchy.levels === "object")
         ? hierarchy.levels : null;

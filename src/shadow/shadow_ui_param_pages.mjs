@@ -596,7 +596,19 @@ export function drawParamPages() {
      */
     const drawable = page && (page.kind === PAGE_KNOBS || page.kind === PAGE_MENU
                               || page.kind === PAGE_PRESET || page.kind === PAGE_ITEMS);
-    if (!controller.pickerOpen && !drawable) return false;
+    /*
+     * A contract we could not READ has no page set, and refusing to draw ejects
+     * to the list editor — a whole view change, in response to a 100 ms timeout
+     * that is usually about to clear. So hold the screen while the controller
+     * retries (it stops claiming to be unresolved once it gives up, and the
+     * ordinary fallback runs then) rather than showing a plan built from the
+     * failure, which is what put granny's sample_path on knob 1.
+     *
+     * Only reachable on a FIRST entry: a re-entry keeps the page set it already
+     * had, so the reported granny sequence never shows this.
+     */
+    const holdForContract = !controller.pickerOpen && !drawable && controller.contractUnresolved;
+    if (!controller.pickerOpen && !drawable && !holdForContract) return false;
 
     const nowMs = Date.now();
     if (nowMs - lastDrawMs < MOVY_REDRAW_MIN_MS) return true;
@@ -617,6 +629,15 @@ export function drawParamPages() {
     }
 
     clear_screen();
+
+    /* The hold frame — see holdForContract above. Deliberately after the
+     * redraw throttle, so a screen that says one word costs one draw per
+     * MOVY_REDRAW_MIN_MS like any other. */
+    if (holdForContract) {
+        const msg = "Loading...";
+        print(Math.max(0, (128 - text_width(msg)) >> 1), 28, msg, 1);
+        return true;
+    }
 
     /* draw_line / draw_circle / fill_circle (src/host/js_display.c) do the
      * whole shape in C — one QuickJS<->native crossing regardless of length,
@@ -735,6 +756,39 @@ export function handleParamPagesMidi(data) {
         return true;
     }
     if (todo.action === 'open') {
+        /*
+         * An ENUM opens the option picker, and it does NOT go the long way
+         * round through the list editor.
+         *
+         * The other divable types hand off to a screen that only exists inside
+         * the hierarchy editor, so openParamEditor has to exit the grid, enter
+         * that editor and find the param again. An option list needs none of
+         * that — it needs the options and an index, both of which the intent is
+         * carrying — so the grid CONTROLLER STAYS ALIVE and the page and cell
+         * survive by construction, exactly as the LFO target picker does.
+         *
+         * That is also the only thing that makes this work on SLOT SETTINGS and
+         * MASTER FX SETTINGS, which are synthesised contracts with no
+         * ui_hierarchy to enter and whose enums (Recv Ch, Fwd Ch, MPE) are the
+         * ones with the longest option lists on the device. The commit goes
+         * back through the controller so the slot io's own mappings — Fwd's
+         * offset, MPE's compound write — are applied rather than bypassed.
+         */
+        if (Array.isArray(todo.options) && todo.options.length > 0 &&
+            typeof ctx.openEnumPicker === 'function') {
+            /* The note-off for the held knob will go to the PICKER, so drop the
+             * touch now or the cell stays highlighted after we come back. */
+            clearParamPagesTouch();
+            const key = todo.key;
+            ctx.openEnumPicker({
+                title: todo.meta && (todo.meta.label || todo.meta.name) || key,
+                options: todo.options,
+                index: todo.index || 0,
+                commit: (i) => { if (controller) controller.commitEnum(key, i); },
+                returnToGrid: true,
+            });
+            return true;
+        }
         /* A filepath, canvas, wav_position or string param: hand it to the
          * editor the list view already has rather than building a second one. */
         if (typeof ctx.openParamEditor === 'function') {
@@ -791,6 +845,27 @@ export function paramPagesRevealing() {
  */
 export function paramPagesFooterHints() {
     return footerHints();
+}
+
+/**
+ * The footer hints for the ENUM OPTION PICKER.
+ *
+ * Lives here, next to footerHints(), rather than at the picker's own draw site,
+ * because the hint vocabulary is a canon (FOOTER_CANON in render_page_movy.mjs)
+ * and a second place that invents wording is how a canon stops being one. The
+ * picker is drawn from shadow_ui.js, which is not importable under node, so
+ * building the list HERE is also what lets a test read the words at all — the
+ * footer is set in font4x5 and cannot be read back off the framebuffer.
+ *
+ * SEL / SET, not PAGE / OPEN: inside the picker the jog moves the highlight
+ * through one param's options and the click writes the highlighted one. BACK is
+ * EXIT by the canon, not OUT — it leaves the picker entirely and lands back on
+ * whichever editor opened it, exactly as the module picker's BACK does.
+ *
+ * Constant, so it takes no controller and works from both entry points.
+ */
+export function enumPickerFooterHints() {
+    return orderedHints({ jog: "SEL", click: "SET", extra: [["BACK", "EXIT"]] });
 }
 
 /** True while the section picker is over the grid. */

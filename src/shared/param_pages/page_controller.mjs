@@ -28,7 +28,7 @@
  */
 
 import { planPages, PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS } from "./page_plan.mjs";
-import { buildMetaIndex, inferFromValue, isTurnable, KIND_ENUM, KIND_OPAQUE } from "./param_meta.mjs";
+import { buildMetaIndex, inferFromValue, isTurnable, enumIndexOf, KIND_ENUM, KIND_OPAQUE } from "./param_meta.mjs";
 import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page.mjs";
 import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
          drawBrackets, drawPresetBody, RULE_Y, LAYOUT_MOVY } from "./render_page_movy.mjs";
@@ -86,7 +86,7 @@ const MENU_FRAME_BOTTOM_INSET = 1;
 const MENU_BRACKET_LEN = 7;
 import { knobInit, knobTick, knobConfigFromMeta } from "../knob_engine.mjs";
 import { movyKnobInit, movyKnobTick } from "./movy_knob.mjs";
-import { formatParamForSet } from "../param_format.mjs";
+import { formatParamForSet, learnEnumWireFormat, enumWireValue } from "../param_format.mjs";
 import { announcePage, announceTouch, announceTurn, announcePageContents } from "./announce_page.mjs";
 
 /** Ticks a key ignores incoming reads after being turned (~200 ms at 44 Hz). */
@@ -175,6 +175,24 @@ export const META_RETRY_LIMIT = 8;
  *  9 ticks, which would burn the whole retry budget in under two seconds —
  *  long before a module that loads a ROM has finished. */
 export const META_RETRY_INTERVAL_TICKS = 344;
+
+/**
+ * How many times a page will re-try a contract read that FAILED.
+ *
+ * Bounded for the same reason META_RETRY_LIMIT is: a component whose channel
+ * never answers must cost a fixed number of reads, not one per interval for
+ * the rest of the session.
+ */
+export const CONTRACT_RETRY_LIMIT = 40;
+/**
+ * Ticks between those attempts. Much tighter than META_RETRY_INTERVAL_TICKS —
+ * a failed claim is transient (the param channel unblocks as soon as whatever
+ * was hogging it returns), and until it clears the grid is showing the
+ * PREVIOUS page set, or none at all on a first load. One read per interval
+ * while unresolved and zero once resolved, so the read budget is unaffected in
+ * the normal case.
+ */
+export const CONTRACT_RETRY_INTERVAL_TICKS = 30;
 
 export function createController(io = {}) {
     const getParam = io.getParam || (() => null);
@@ -270,6 +288,11 @@ export function createController(io = {}) {
          * the session. Re-resolution is bounded and latching — see maybeResettle. */
         metaRetries: 0,
         metaSettled: false,
+        /* The `<prefix>:ui_hierarchy` read FAILED — the channel would not
+         * answer — so we do not know what this component declares and nothing
+         * has been planned from it. See load() and maybeReresolveContract. */
+        contractUnresolved: false,
+        contractRetries: 0,
         /* Param keys a visible_if condition reads. A condition is driven by a
          * VALUE, which moves without the declared contract moving, so the
          * fingerprint cannot see it — these are watched explicitly instead.
@@ -330,12 +353,75 @@ export function createController(io = {}) {
      * actually changed, and keeps the user's place when it does.
      */
     function load({ slot = 0, component = "synth", prefix, mode, visible } = {}) {
+        const nextPrefix = prefix || component;
+        /* Whether we are re-reading the SAME component decides what an
+         * unresolved read may keep — see below. */
+        const sameComponent = (s.slot === slot && s.component === component && s.prefix === nextPrefix);
         s.lastLoadOpts = { mode, visible };
         s.slot = slot;
         s.component = component;
-        s.prefix = prefix || component;
+        s.prefix = nextPrefix;
 
-        const hierarchy = parse(getParam(`${s.prefix}:ui_hierarchy`));
+        /*
+         * A contract read has three answers and only two of them are the same
+         * thing (see planPages): JSON is a declaration, "" is "I declare none",
+         * and null is "the channel would not answer". The last one is not news
+         * about the module, so nothing here may be derived from it.
+         *
+         * Reads fail legitimately — granny loads a WAV synchronously on the
+         * thread that serves param requests, so the read the UI issues on the
+         * way back from its file browser times out at 100 ms. What was wrong was
+         * treating that silence as "this module has no hierarchy" and
+         * paginating chain_params, which put granny's `sample_path` on knob 1.
+         */
+        const rawHierarchy = getParam(`${s.prefix}:ui_hierarchy`);
+        if (rawHierarchy === null || rawHierarchy === undefined) {
+            /* A fresh failure gets a fresh retry budget; a repeat one does not,
+             * or a channel that never answers would retry forever. */
+            if (!s.contractUnresolved) s.contractRetries = 0;
+            s.contractUnresolved = true;
+            /* Do not latch: the retry loop owns this until the read lands. */
+            s.metaSettled = false;
+            /* Deliberately NOT read: chain_params on its own cannot produce a
+             * plan we are willing to show, so asking for it would just be a
+             * second doomed round trip on a channel already refusing. */
+            if (sameComponent) {
+                /*
+                 * Keep the page set we already had.
+                 *
+                 * The component has not changed, so the plan on screen is still
+                 * the plan this component declared — it is stale by at most the
+                 * retry interval, and stale-but-right beats a page built from a
+                 * failure. The granny case is exactly this: the plan we keep is
+                 * byte-identical to the one that arrives.
+                 */
+                return false;
+            }
+            /*
+             * A DIFFERENT component, though, we know nothing about — keeping the
+             * previous one would show one module the other module knobs. Show
+             * nothing until the read lands.
+             */
+            flushDueWritesUnconditionally();
+            s.pages = [];
+            s.fingerprint = null;
+            s.hierarchy = null;
+            s.chainParams = null;
+            s.metaIndex = null;
+            s.conditionKeys = new Set();
+            s.values = Object.create(null);
+            s.cursor = 0;
+            s.pageIndex = 0;
+            s.metaRetries = 0;
+            s.knobStates = Object.create(null);
+            s.lastWriteMs = Object.create(null);
+            s.pendingWrite = Object.create(null);
+            return true;
+        }
+        s.contractUnresolved = false;
+        s.contractRetries = 0;
+
+        const hierarchy = parse(rawHierarchy);
         const chainParams = parse(getParam(`${s.prefix}:chain_params`));
         const planned = planPages({ hierarchy, chainParams, mode, visible });
         /* Retained so a visibility re-plan costs no extra device reads. */
@@ -401,9 +487,42 @@ export function createController(io = {}) {
      * enum legitimately reads "(none)" must not make us poll forever.
      */
     function maybeResettle(reload) {
+        /*
+         * Never LATCH on a contract we could not read.
+         *
+         * metaUnsettled() inspects the page we are holding, and while the read
+         * is failing that page is either the previous component or nothing at
+         * all — "looks complete" would be a verdict about the wrong data, and
+         * once it sets metaSettled nothing ever reads again. That latch is why
+         * the granny symptom survived until a full teardown of the controller
+         * rather than clearing itself a frame later. The contract retry below
+         * owns this state until the read lands.
+         */
+        if (s.contractUnresolved) return false;
         if (s.metaSettled || s.metaRetries >= META_RETRY_LIMIT) return false;
         if (!metaUnsettled()) { s.metaSettled = true; return false; }
         s.metaRetries++;
+        return reload();
+    }
+
+    /**
+     * Bounded re-try of a contract read that FAILED.
+     *
+     * One read per CONTRACT_RETRY_INTERVAL_TICKS while unresolved, capped, and
+     * nothing at all once it lands — the grid cannot recover on its own
+     * otherwise, because there is no page to hang the ordinary read cursor on.
+     */
+    function maybeReresolveContract(reload) {
+        if (!s.contractUnresolved) return false;
+        if (s.contractRetries >= CONTRACT_RETRY_LIMIT) {
+            /* Given up. Stop CLAIMING to be mid-resolve: the host holds the
+             * screen while this is true, and holding it forever on a component
+             * that will never answer is worse than running the ordinary
+             * no-drawable-page fallback. */
+            s.contractUnresolved = false;
+            return false;
+        }
+        s.contractRetries++;
         return reload();
     }
 
@@ -453,6 +572,18 @@ export function createController(io = {}) {
         s.tickCount++;
         flushDueWrites();
         expireTurnClaim();
+
+        /*
+         * Re-try an unresolved contract BEFORE the page guards below: an
+         * unresolved first load leaves no page at all, so anything hung off the
+         * read cursor would never run and the grid would stay blank forever.
+         */
+        let triedReresolve = false;
+        if (s.contractUnresolved && s.tickCount % CONTRACT_RETRY_INTERVAL_TICKS === 0) {
+            triedReresolve = true;
+            maybeReresolveContract(() => reloadIfChanged(s.lastLoadOpts));
+        }
+
         const p = page();
         if (p && p.kind === PAGE_PRESET) { tickPreset(p); return null; }
         if (p && p.kind === PAGE_ITEMS) { tickItems(p); return null; }
@@ -468,7 +599,7 @@ export function createController(io = {}) {
         s.cursor = (s.cursor + 1) % stops;
 
         /* Give late metadata a chance to arrive, on a wall-clock cadence. */
-        if (s.tickCount % META_RETRY_INTERVAL_TICKS === 0) {
+        if (!triedReresolve && s.tickCount % META_RETRY_INTERVAL_TICKS === 0) {
             maybeResettle(() => reloadIfChanged(s.lastLoadOpts));
         }
 
@@ -528,6 +659,13 @@ export function createController(io = {}) {
 
         /* First successful read repairs a guessed range, once. */
         const meta = s.metaIndex.getOrGuess(key);
+        /*
+         * ...and teaches an enum which wire format its plugin speaks. This is
+         * THE read detection is allowed to use: it comes from the device, it is
+         * already being made, and it keeps arriving, so a verdict is never
+         * derived from a value the grid itself wrote. See learnEnumWireFormat.
+         */
+        learnEnumWireFormat(meta, raw);
         if (meta.guessed) {
             const patch = inferFromValue(meta, raw);
             if (patch) Object.assign(meta, patch);
@@ -978,8 +1116,29 @@ export function createController(io = {}) {
         const useMovy = s.layout === LAYOUT_MOVY;
         let st = s.knobStates[key];
         if (!st) {
-            const current = s.values[key] !== undefined ? Number(s.values[key]) : Number(getParam(fullKey(key)));
-            const start = isFinite(current) ? current : 0;
+            /* Turning a knob the read cursor has not reached yet is the one
+             * case that reads here — and since that read IS from the device,
+             * it is also allowed to settle the enum wire format, for a page
+             * whose first gesture beats its first read. */
+            let raw = s.values[key];
+            if (raw === undefined) {
+                raw = getParam(fullKey(key));
+                learnEnumWireFormat(meta, raw);
+            }
+            /* An enum reported as a NAME is still an index to the engine —
+             * Number("major") is NaN, which used to seed every such knob at
+             * option 0 and jump the value on the first detent. */
+            let start;
+            if (meta.kind === KIND_ENUM) {
+                const idx = enumIndexOf(meta, raw);
+                start = idx >= 0 ? idx : 0;
+            } else {
+                /* A plain number keeps its sign — clamping to >= 0 here would
+                 * seed a bipolar param (transpose, pan) at 0 instead of where
+                 * it is. */
+                const num = Number(raw);
+                start = isFinite(num) ? num : 0;
+            }
             st = s.knobStates[key] = useMovy ? movyKnobInit(start) : knobInit(start);
         }
 
@@ -1023,6 +1182,47 @@ export function createController(io = {}) {
             s.lastAnnounceMs[key] = t;
             announce(announceTurn(meta, wire));
         }
+        return wire;
+    }
+
+    /**
+     * Set an enum to a chosen OPTION INDEX, as an option picker does.
+     *
+     * The same tail as onKnobTurn — format, cache, settle, write, re-plan —
+     * minus the knob engine, because a picker has no running numeric state to
+     * carry: it hands over an index straight out of a list.
+     *
+     * Two details that are not decoration:
+     *
+     *   the write goes through enumWireValue, so a plugin that only accepts
+     *   option NAMES gets a name. Writing String(index) here is exactly the
+     *   chord bug, and a picker is where it is most tempting.
+     *
+     *   the knob state for this key is DROPPED. It was seeded from the value
+     *   before the picker ran, so the first detent afterwards would step from
+     *   there and snap the value back to where the user had just moved it away
+     *   from. It is re-seeded from s.values on the next turn.
+     *
+     * The wire format is NOT learned here: `s.values` holds writes the grid
+     * made as well as reads from the device, and learning from our own write
+     * is a verdict that makes itself true. Detection belongs on the read
+     * cursor and on the picker-open read (see onClick).
+     */
+    function commitEnum(key, index) {
+        const meta = key ? s.metaIndex.getOrGuess(key) : null;
+        if (!meta || meta.kind !== KIND_ENUM) return null;
+        let i = Math.round(Number(index));
+        if (!isFinite(i)) return null;
+        const n = Array.isArray(meta.options) ? meta.options.length : 0;
+        if (n > 0) i = Math.max(0, Math.min(n - 1, i));
+        const wire = enumWireValue(meta, i);
+        s.values[key] = wire;
+        s.settleUntil[key] = s.tickCount + SETTLE_TICKS;
+        s.lastWriteMs[key] = now();
+        delete s.pendingWrite[key];
+        delete s.knobStates[key];
+        setParam(fullKey(key), wire);
+        replanIfCondition(key);
         return wire;
     }
 
@@ -1178,6 +1378,26 @@ export function createController(io = {}) {
         const meta = metaAt(slot);
         if (!key || !meta || !meta.divable) return null;
         s.pending = { action: "open", key, fullKey: fullKey(key), meta };
+        /*
+         * An enum opens a list of its OPTIONS, so the intent carries the list
+         * and where in it we currently are — the host should not have to spend
+         * an IPC read to find out what the cursor already knows.
+         *
+         * The read below is the exception, and it is also the only honest place
+         * left to settle the wire format for a page whose first gesture beats
+         * its first read: it comes from the DEVICE. Learning from s.values
+         * would risk learning from a value the grid itself wrote.
+         */
+        if (meta.kind === KIND_ENUM && Array.isArray(meta.options)) {
+            let raw = s.values[key];
+            if (raw === undefined) {
+                raw = getParam(fullKey(key));
+                learnEnumWireFormat(meta, raw);
+            }
+            const idx = enumIndexOf(meta, raw);
+            s.pending.options = meta.options.slice();
+            s.pending.index = idx >= 0 ? idx : 0;
+        }
         return s.pending;
     }
 
@@ -1467,7 +1687,7 @@ export function createController(io = {}) {
 
     return {
         load, reloadIfChanged, tick,
-        onJog, goToPage, onKnobTurn, onKnobTouch, onClick, takePending,
+        onJog, goToPage, onKnobTurn, onKnobTouch, onClick, takePending, commitEnum,
         openPicker, closePicker, pickerSelect, showHint, dismissHint,
         menuEntry, menuIndex: () => menuIndex(page()),
         menuEntered, enterMenu, exitMenu, clearTouch,
@@ -1486,6 +1706,10 @@ export function createController(io = {}) {
          *  isModulated is deliberately NOT called during a draw. */
         isModulatedCached: (key) => !!s.modCache[key],
         get metaIndex() { return s.metaIndex; },
+        /** True while `<prefix>:ui_hierarchy` could not be READ. The page set,
+         *  if any, is the previous one — nothing here was planned from the
+         *  failure. */
+        get contractUnresolved() { return s.contractUnresolved; },
         keyAt, metaAt,
         jumpIndex: () => jumpIndex(s.pages),
         groupIndex: () => groupIndex(s.pages),
