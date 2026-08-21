@@ -534,6 +534,66 @@ static void test_knob_high_slots(chain_instance_t *inst, patch_info_t *patch) {
     }
 }
 
+/* ---- 2c. A rejected knob row must not bleed into the next one ----
+ *
+ * The parser only ADVANCES its cursor when a row is accepted, so a rejected
+ * row leaves its cc, target and param sitting in the slot the next row parses
+ * into -- and the next row inherits every field it happens to omit. The result
+ * is a mapping silently aimed at a module named by a row that was thrown away.
+ *
+ * This used to need a hand-edited patch to reach, because the emitter always
+ * writes every key. The permutation changed that: vacating a position BLANKS a
+ * knob mapping in place rather than removing the row, so patches now routinely
+ * carry rejected rows, and a following row that omits a key is no longer
+ * exotic.
+ *
+ * Each row below omits exactly one field, so an inherited value is the only
+ * way it could come back non-empty.
+ */
+static void test_knob_rejected_row_does_not_bleed(chain_instance_t *inst, patch_info_t *patch) {
+    if (MAX_AUDIO_FX < 2) return;
+
+    static const char json[] =
+        "{\n  \"name\": \"bleed\",\n"
+        "  \"audio_fx\": [{\"type\": \"afx1\"}, {\"type\": \"afx2\"}],\n"
+        "  \"knob_mappings\": ["
+        /* accepted, and the source of everything that could bleed */
+        "{\"cc\": 71, \"target\": \"fx1\", \"param\": \"gain\", \"value\": 0.9}, "
+        /* REJECTED: blank param. Its target must not survive. */
+        "{\"cc\": 72, \"target\": \"fx2\", \"param\": \"\"}, "
+        /* accepted, and omits `target` entirely -- must come back EMPTY */
+        "{\"cc\": 73, \"param\": \"gain\"}, "
+        /* REJECTED: cc out of range. Its param must not survive. */
+        "{\"cc\": 3, \"target\": \"fx1\", \"param\": \"drive\"}, "
+        /* accepted, and omits `param` -- must therefore be REJECTED itself,
+           not rescued by the drive it would otherwise inherit */
+        "{\"cc\": 74, \"target\": \"fx1\"}]\n}\n";
+
+    write_patch(json);
+    reset_state(inst);
+    memset(patch, 0, sizeof(*patch));
+
+    CHECK(v2_parse_patch_file(inst, patch_path, patch) == 0, "bleed patch parse failed");
+
+    /* Two survive: CC 71 and CC 73. CC 74 has no param of its own and must not
+       inherit one from the rejected row before it. */
+    CHECK(patch->knob_mapping_count == 2,
+          "parsed %d knob mappings, want 2 -- a rejected row was inherited by the "
+          "row after it", patch->knob_mapping_count);
+    if (patch->knob_mapping_count != 2) return;
+
+    CHECK(patch->knob_mappings[0].cc == 71, "first mapping CC %d, want 71",
+          patch->knob_mappings[0].cc);
+    CHECK(strcmp(patch->knob_mappings[0].target, "fx1") == 0,
+          "first mapping target \"%s\", want fx1", patch->knob_mappings[0].target);
+
+    CHECK(patch->knob_mappings[1].cc == 73, "second mapping CC %d, want 73",
+          patch->knob_mappings[1].cc);
+    CHECK(patch->knob_mappings[1].target[0] == '\0',
+          "a mapping that names no target came back aimed at \"%s\" -- inherited "
+          "from the rejected row before it", patch->knob_mappings[1].target);
+}
+
 /* ---- 3. Modulation / knob targets reach every slot ---- */
 static void test_target_lookup(chain_instance_t *inst) {
     reset_state(inst);
@@ -714,6 +774,7 @@ int main(int argc, char **argv) {
     test_hostile_json(inst, patch);
     test_midi_fx_state_forms(inst, patch);
     test_knob_high_slots(inst, patch);
+    test_knob_rejected_row_does_not_bleed(inst, patch);
     test_target_lookup(inst);
     /* Reuses the chain test_target_lookup just populated. */
     test_id_parser_divergence_fixture(inst);
