@@ -987,6 +987,16 @@ const current = {};
 const run = (cases, render, kind) => {
   for (const c of cases) {
     const fb = render(c);
+    /*
+     * Nothing may fall off the display. Not "almost nothing".
+     *
+     * SETTINGS_GAP was briefly allowed to push the settings box past the right
+     * edge, which needed a per-case allowance here and in two other tests --
+     * three guards weakened to buy a gap. The gap is paid for by the strip now
+     * (chain_diagram.mjs: a narrower settings box and a wider DIAGRAM_W), so
+     * this is unconditional again. It has caught two real overruns; keep it
+     * that way.
+     */
     if (fb.clipped() !== 0)
       fail(c.id + " drew " + fb.clipped() + " pixels outside the 128x64 display");
     if (fb.missingGlyphs.size)
