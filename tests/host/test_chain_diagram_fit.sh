@@ -23,7 +23,8 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 node --input-type=module -e '
-import { drawChainDiagram, layoutChainDiagram, fitAbbrev, BOX_W, BOX_H, GAP, DEFAULT_X, DEFAULT_Y, SYNTH_BAND_H }
+import { drawChainDiagram, layoutChainDiagram, fitAbbrev, BOX_W, BOX_H, GAP, DEFAULT_X, DEFAULT_Y,
+         SYNTH_BAND_H, SYNTH_BAND_H_UNSELECTED }
   from "./src/shared/chain_diagram.mjs";
 
 /*
@@ -85,8 +86,21 @@ for (const selected of [false, true]) {
   }
   /* The label occupies 7 rows of the 5x7 face. */
   const tTop = t.y, tBot = t.y + 6;
-  const band = p.rects.find((r) => r.h === SYNTH_BAND_H && r.w === BOX_W - 2 &&
+  /* The band is THINNER unselected -- an outlined box already has an edge
+     above it, so 2px there merges into one thick top rule. Look for whichever
+     height this state draws, and assert it is the right one: a band that
+     silently reverted to a single height in both states is a regression this
+     test should see, not shrug at. */
+  const wantH = selected ? SYNTH_BAND_H : SYNTH_BAND_H_UNSELECTED;
+  const band = p.rects.find((r) => r.h === wantH && r.w === BOX_W - 2 &&
                                    r.x >= ORIGIN && r.x < ORIGIN + BOX_W);
+  const wrongH = p.rects.find((r) => r.h !== wantH && r.w === BOX_W - 2 &&
+                                     r.h <= 2 && r.x >= ORIGIN && r.x < ORIGIN + BOX_W);
+  if (!band && wrongH) {
+    fail(where + ": the synth band is " + wrongH.h + "px, want " + wantH +
+         " -- the two states draw different heights on purpose");
+    continue;
+  }
   if (!band) {
     fail(where + ": the synth drew no band - it is the only landmark once the " +
          "chain scrolls, and it must survive selection too");

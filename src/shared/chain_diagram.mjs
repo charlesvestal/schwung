@@ -68,10 +68,23 @@ export const DEFAULT_X = 6;
 export const DEFAULT_Y = 14;
 export const MARK_DY = -6;
 
-/* The synth landmark: a filled band across the top of the box. 2px reads as
- * deliberate at this size where 1px reads as a drawing artefact, and the label
- * sits at y+5 so there is no chance of overlap. */
+/*
+ * The synth landmark: filled bands across the TOP AND BOTTOM of the box.
+ *
+ * Two rules rather than one, which the 17px box has room for: unselected they
+ * sit at rows 1 and 15 with the label at 5..11, so three clear rows either
+ * side; selected they are 2px at 1..2 and 14..15, still two clear rows. A
+ * pair reads as a band AROUND the box where a single rule reads as a lid.
+ *
+ * THINNER when the box is unselected, and the asymmetry is the point. On an
+ * outlined box the band sits directly under the outline, so at 2px the two
+ * merge into one thick top edge and the landmark stops reading as a band at
+ * all -- 1px there is separated by the interior and reads cleanly. On a
+ * SELECTED box the band is knocked out of a solid fill with nothing above it
+ * to confuse it with, and 1px of black in white is a scratch; it needs 2.
+ */
 export const SYNTH_BAND_H = 2;
+export const SYNTH_BAND_H_UNSELECTED = 1;
 
 /**
  * How many boxes fit.
@@ -355,7 +368,10 @@ export function drawChainDiagram(ctx, components, selectedIndex, opts = {}) {
          * cannot come back by arithmetic.
          */
         if (comp.kind === "synth") {
-            ctx.fillRect(x + 1, y + 1, bw - 2, SYNTH_BAND_H, selected ? 0 : 1);
+            const bandH = selected ? SYNTH_BAND_H : SYNTH_BAND_H_UNSELECTED;
+            const bandColor = selected ? 0 : 1;
+            ctx.fillRect(x + 1, y + 1, bw - 2, bandH, bandColor);
+            ctx.fillRect(x + 1, y + BOX_H - 1 - bandH, bw - 2, bandH, bandColor);
         }
 
         /*
