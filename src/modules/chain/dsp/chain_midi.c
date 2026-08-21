@@ -632,22 +632,13 @@ static void pre_delay_flush(chain_instance_t *inst) {
     inst->pre_delay_count = 0;
 }
 
-/* Send a note to synth with optional transposition (for chords) */
-static void inst_send_note_to_synth(chain_instance_t *inst, const uint8_t *msg, int len, int source, int interval) {
-    if (!inst || len < 3) return;
-
-    uint8_t out_msg[3] = { msg[0], msg[1], msg[2] };
-
-    if (interval != 0) {
-        int transposed = (int)msg[1] + interval;
-        if (transposed < 0 || transposed > 127) return;  /* Out of range */
-        out_msg[1] = (uint8_t)transposed;
-    }
-
-    if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->on_midi) {
-        inst->synth_plugin_v2->on_midi(inst->synth_instance, out_msg, len, source);
-    }
-}
+/* `inst_send_note_to_synth` lived here: a raw-msg-to-synth call with an optional
+ * transpose, left over from the built-in chord FX. It had no callers, and it is
+ * exactly the shape of bug that gets hunted through this file -- a route to the
+ * synth that bypasses the MIDI FX chain. Deleted 2026-08-21 while proving the
+ * impressive-chords dry note does NOT come from here; see
+ * docs/plans/2026-08-21-impressive-chords-dry-note.md. Every remaining
+ * synth->on_midi call site in this file is fed by v2_process_midi_fx output. */
 
 /* V2 on_midi handler */
 void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
