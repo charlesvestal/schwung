@@ -27,7 +27,7 @@ import { scrollWindow } from "./chain_model.mjs";
  * every box. 21 - 11 = 10 centres exactly, and so does 21 - 9.
  */
 export const BOX_W = 21;
-export const BOX_H = 16;
+export const BOX_H = 17;
 export const GAP = 2;
 
 /**
@@ -90,6 +90,30 @@ const pixelFn = (ctx) =>
     (typeof ctx.setPixel === "function"
         ? ctx.setPixel
         : (x, y, c) => ctx.fillRect(x, y, 1, 1, c));
+
+/**
+ * The device font puts one blank column AFTER every glyph, including the last,
+ * so an advance is one wider than the ink it draws. Centring has to subtract
+ * it or everything sits half a glyph left; fitting must NOT, because the
+ * trailing column is real space the next glyph would need.
+ */
+const CHAR_ADVANCE_TAIL = 1;
+
+/**
+ * Where a label sits vertically.
+ *
+ * The device font draws a 7-row cell, so centring the CELL centres every
+ * label consistently — a `+` is 5 rows of ink inside that cell and stays put
+ * relative to the letters, which is what keeps a row of mixed boxes on one
+ * line.
+ *
+ * This was a hardcoded `y + 5`, one pixel low on everything: caps came out
+ * 5 above / 4 below, the `+` 6/5, the empty `--` 8/7. BOX_H is even and the
+ * cell is odd so exact is impossible; 4/5 puts the extra pixel BELOW, which
+ * is where the eye expects it for capitals with no descenders.
+ */
+const FONT_CELL_H = 7;
+const LABEL_DY = Math.floor((BOX_H - FONT_CELL_H) / 2);
 
 const measure = (ctx, text) =>
     (typeof ctx.textWidth === "function" ? ctx.textWidth(text) : String(text).length * 5);
@@ -175,6 +199,7 @@ const SETTINGS_ICON = [
     "###..#..###",
     "#.#..#..#.#",
     "###..#..###",
+    ".#...#...#.",
     ".#...#...#.",
 ];
 const SETTINGS_ICON_W = SETTINGS_ICON[0].length;
@@ -358,9 +383,23 @@ export function drawChainDiagram(ctx, components, selectedIndex, opts = {}) {
          * its interior rather than the whole rect, but the label sits in that
          * interior, so a white "+" on it would simply vanish. */
         const textColor = selected ? 0 : 1;
-        const inset = Math.floor((bw - room) / 2);
-        ctx.print(x + inset + Math.max(0, Math.floor((room - measure(ctx, abbrev)) / 2)),
-                  y + 5, abbrev, textColor);
+        /*
+         * Centre the INK in the BOX. Two things used to push every label two
+         * pixels left of centre, and they stacked:
+         *
+         *   - `textWidth` is an ADVANCE, not an ink width: it counts the
+         *     trailing inter-character space after the last glyph. Centring a
+         *     12-wide advance whose ink is 11 loses a pixel to the right.
+         *   - centring inside `room` (bw - 2) and then adding the 1px inset
+         *     re-centres within a narrower box, which is the same thing as
+         *     shifting left again.
+         *
+         * `room` is the FIT budget -- it keeps a clear column each side so a
+         * long abbrev cannot touch the outline -- and it has no business
+         * deciding the position. Measured: OB was 4/6, `+` was 7/9, MI 5/7.
+         */
+        const ink = Math.max(0, measure(ctx, abbrev) - CHAR_ADVANCE_TAIL);
+        ctx.print(x + Math.max(0, Math.floor((bw - ink) / 2)), y + LABEL_DY, abbrev, textColor);
 
         drawMarks(ctx, px, x, y, marksOf(comp), bw);
     }
