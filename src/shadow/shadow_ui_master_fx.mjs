@@ -71,7 +71,8 @@ export function drawMasterFx() {
             masterFxConfig, MASTER_FX_CHAIN_COMPONENTS, MASTER_FX_OPTIONS,
             currentMasterPresetName, getMasterFxParam,
             getModuleAbbrev, isTextEntryActive, drawTextEntry,
-            drawHelpDetail, drawHelpList } = ctx;
+            drawHelpDetail, drawHelpList,
+            MASTER_CHAIN_TARGET, chainLfoTargetMap, chainComponentBypassed } = ctx;
 
     clear_screen();
 
@@ -157,17 +158,12 @@ export function drawMasterFx() {
      * Which components an LFO is pointed at. Four IPC reads, FIXED — the
      * question is asked of the two LFOs, never of each box, so it does not grow
      * with the slot cap.
+     *
+     * This is chainLfoTargetMap, the SAME function the slot chain editor calls,
+     * aimed at the master target. Two copies of it is how the two screens end
+     * up disagreeing about what an LFO marker means.
      */
-    const mfxLfoTargets = {};
-    if (typeof shadow_get_param === "function") {
-        for (let li = 1; li <= 2; li++) {
-            if (shadow_get_param(0, "master_fx:lfo" + li + ":enabled") !== "1") continue;
-            const t = shadow_get_param(0, "master_fx:lfo" + li + ":target") || "";
-            if (!t) continue;
-            if (!mfxLfoTargets[t]) mfxLfoTargets[t] = {};
-            mfxLfoTargets[t]["lfo" + li] = true;
-        }
-    }
+    const mfxLfoTargets = chainLfoTargetMap(MASTER_CHAIN_TARGET);
 
     drawChainDiagram(dctx, MASTER_FX_CHAIN_COMPONENTS, selectedMasterFxComponent, {
         x: START_X,
@@ -192,8 +188,7 @@ export function drawMasterFx() {
              * component list, so the 4 -> 8 raise would otherwise have doubled
              * the per-frame IPC cost of a screen that redraws every frame, at
              * ~2.8ms a read against a 1.68ms whole-page render. */
-            const bypassed = typeof shadow_get_param === "function" &&
-                parseInt(shadow_get_param(0, `master_fx:${comp.key}:bypassed`) || "0", 10) === 1;
+            const bypassed = chainComponentBypassed(MASTER_CHAIN_TARGET, comp.key);
             if (!lfo && !bypassed) return null;
             return { bypassed, lfo1: lfo && lfo.lfo1, lfo2: lfo && lfo.lfo2 };
         },

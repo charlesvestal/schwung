@@ -191,6 +191,17 @@ function world() {
                      getChainComponentModule, setChainComponentModule, slotChainComponents,
                      getComponentParamPrefix });
 
+  /* The CHAIN TARGET, and the two shared draw helpers that take one. Lifted,
+     not restated: a target rebuilt here would spell the keys itself, which is
+     the drift the target exists to end -- and the read counts below are only
+     the real ones if the real addressing is what runs. */
+  const slotChainTarget = lift("slotChainTarget",
+    ["chainComponentParamKey", "slotChainComponents"])(chainComponentParamKey, slotChainComponents);
+  const chainTargetGetParam = lift("chainTargetGetParam", ["getSlotParam"])(getSlotParam);
+  const chainLfoTargetMap = lift("chainLfoTargetMap", ["getSlotParam"])(getSlotParam);
+  const chainComponentBypassed = lift("chainComponentBypassed",
+    ["chainTargetGetParam"])(chainTargetGetParam);
+
   const chainSectionPrefix = lift("chainSectionPrefix", [])();
   const writeChainShape = lift("writeChainShape",
     ["chainSectionPrefix", "setSlotParam", "invalidateChainConfig"])(
@@ -358,6 +369,8 @@ function world() {
        newest thing on this screen and its whole claim is that it costs nothing
        per frame, so it belongs INSIDE the budget, not outside it. */
     "knobCardDrawState", "drawKnobCard",
+    /* The chain target and the two helpers shared with the Master FX editor. */
+    "slotChainTarget", "chainLfoTargetMap", "chainComponentBypassed",
   ];
   const mk = lift("drawChainEdit", drawDeps);
   const makeDraw = (diagram, cardState) => mk(noop, {}, 0, () => false, [{ name: "s" }], truncateText,
@@ -367,7 +380,8 @@ function world() {
     chainComponentParamKey, DIAGRAM_BOX_H, SCREEN_WIDTH, getComponentParamPrefix,
     noop, () => false, ensureChainConfigFresh,
     () => (cardState === undefined ? null : cardState),
-    () => { w.cardDraws++; });
+    () => { w.cardDraws++; },
+    slotChainTarget, chainLfoTargetMap, chainComponentBypassed);
   w.cardDraws = 0;
   w.draw = makeDraw(recording);
   w.drawReal = makeDraw(drawChainDiagram);
