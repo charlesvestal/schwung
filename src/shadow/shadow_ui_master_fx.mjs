@@ -19,6 +19,12 @@ import {
  * call drawChainEdit makes: 4a-3 of the Master FX variable-length design. */
 import { drawChainEditorBands }
     from '/data/UserData/schwung/shared/chain_editor_chrome.mjs';
+/* The knob card, drawn over the diagram — the SAME renderer drawChainEdit uses.
+ * It shipped 2026-08-20 scoped to the slot chain, so a Master FX knob still
+ * raised the old centred `Value: 0.62` box; step 4b of the Master FX
+ * variable-length design is that scope boundary being repaid. */
+import { drawKnobCard }
+    from '/data/UserData/schwung/shared/param_pages/knob_card.mjs';
 import {
     drawMenuHeader as drawHeader,
     drawMenuFooter as drawFooter,
@@ -76,7 +82,8 @@ export function drawMasterFx() {
             currentMasterPresetName, getMasterFxParam,
             getModuleAbbrev, isTextEntryActive, drawTextEntry,
             drawHelpDetail, drawHelpList,
-            MASTER_CHAIN_TARGET, chainLfoTargetMap, chainComponentBypassed } = ctx;
+            MASTER_CHAIN_TARGET, chainLfoTargetMap, chainComponentBypassed,
+            knobCardDrawState } = ctx;
 
     clear_screen();
 
@@ -257,6 +264,40 @@ export function drawMasterFx() {
         info: infoLine,
         hints: [["JOG", "SEL"], ["CLK", "OPEN"], ["BACK", "EXIT"]],
     });
+
+    /*
+     * The card last, over everything — it is a modal. Every value it draws was
+     * read once on touch-down (knobCardOpen in shadow_ui.js), so this costs no
+     * IPC per frame, which is the whole design argument for the feature: a
+     * round trip is ~2.8ms against a 1.68ms whole-page render.
+     *
+     * The early returns above are the reason masterFxChainDiagramVisible()
+     * exists: this is the ONLY path that draws the card, so the touch handler
+     * must not raise one while a picker or a confirm is covering the diagram.
+     *
+     * knobCardDrawState comes over ctx (it reads shadow_ui.js state); it is
+     * destructured at the top rather than being a free identifier because it
+     * cannot be both that and a lifted parameter in the tests — a `const`
+     * cannot shadow a parameter of the same name. drawKnobCard IS free, so
+     * it is in MFX_DRAW_DEPS in both tests that lift this function.
+     */
+    const card = knobCardDrawState();
+    if (card) {
+        /* dctx carries the four primitives the diagram needs. The card draws
+         * real widgets — arc knobs, enum squares, bars — and each of those
+         * probes for a native primitive and takes a slow JS path without it.
+         * A SEPARATE object rather than four more fields on dctx: the renderers
+         * branch on what they are handed, so widening dctx could move diagram
+         * pixels, and the whole of 4a was about the two screens rendering the
+         * same. This is the same probe list drawChainEdit builds. */
+        drawKnobCard({
+            fillRect: fill_rect, print, textWidth: text_width, setPixel: set_pixel,
+            line: typeof draw_line === "function" ? draw_line : undefined,
+            fillCircle: typeof fill_circle === "function" ? fill_circle : undefined,
+            drawCircle: typeof draw_circle === "function" ? draw_circle : undefined,
+            drawArc: typeof draw_arc === "function" ? draw_arc : undefined,
+        }, card);
+    }
 }
 
 function drawMasterFxSettingsMenu() {

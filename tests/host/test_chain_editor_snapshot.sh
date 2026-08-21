@@ -14,19 +14,25 @@ cd "$(dirname "$0")/../.."
 #
 # THE ORDER IS THE POINT. A baseline regenerated after the refactor compares the
 # new code against itself and proves exactly nothing -- it is not a weaker test,
-# it is a test of a tautology that still prints PASS. So the 46 chain/ hashes in
-# tests/fixtures/chain-editor-baseline.txt must be re-derivable from the commit
-# BEFORE 4a touches either draw function, and a reviewer should check that by
-# regenerating from that parent commit and byte-comparing. The same trap was
-# avoided once already on this branch, for render_page_movy (commit c4f61538).
+# it is a test of a tautology that still prints PASS. So the 46 ORIGINAL chain/
+# hashes in tests/fixtures/chain-editor-baseline.txt must be re-derivable from
+# the commit BEFORE 4a touches either draw function, and a reviewer should check
+# that by regenerating from that parent commit and byte-comparing. The same trap
+# was avoided once already on this branch, for render_page_movy (c4f61538).
 #
-# The 25 master/ hashes were refreshed ONCE, at step 4a-3, whose entire purpose
-# was to move those pixels: Master FX drew no footer, wore the older header and
-# sat 6px low, and 4a-3 gave it the slot editor chrome. The refresh is what this
-# repo calls a reviewed fixture change (tools/param-pages/regenerate.mjs says so
-# explicitly) -- the renders were read case by case first, and the check that it
-# was not a cover for a refactor mistake is that ZERO chain/ hashes moved in the
-# same commit.
+# The 25 original master/ hashes were refreshed ONCE, at step 4a-3, whose entire
+# purpose was to move those pixels: Master FX drew no footer, wore the older
+# header and sat 6px low, and 4a-3 gave it the slot editor chrome. The refresh is
+# what this repo calls a reviewed fixture change (tools/param-pages/regenerate.mjs
+# says so explicitly) -- the renders were read case by case first, and the check
+# that it was not a cover for a refactor mistake is that ZERO chain/ hashes moved
+# in the same commit.
+#
+# Step 4b ADDED four cases and moved none. The knob card now draws on Master FX
+# too, which is new behaviour and gets its own cases rather than a regeneration
+# of somebody else`s. Three of the four are the card, and the two *-strip cases
+# are deliberately the same card payload on both screens: they must differ only
+# in what is BEHIND the card.
 #
 # HOW THE SCREENS ARE DRIVEN
 #   drawChainEdit  is LIFTED out of shadow_ui.js with `new Function` and an
@@ -70,6 +76,7 @@ import { drawHeader as drawMovyHeader, drawFooter as drawMovyFooter,
          RULE_Y as MOVY_RULE_Y, HEADER_H as MOVY_HEADER_H }
   from "./src/shared/param_pages/render_page_movy.mjs";
 import { drawKnobCard } from "./src/shared/param_pages/knob_card.mjs";
+import { buildMetaIndex } from "./src/shared/param_pages/param_meta.mjs";
 import { drawMenuHeader } from "./src/shared/menu_layout.mjs";
 import { truncateText } from "./src/shared/chain_ui_views.mjs";
 import { drawChainEditorBands } from "./src/shared/chain_editor_chrome.mjs";
@@ -268,7 +275,16 @@ const MFX_DRAW_DEPS = ["ctx", "drawHeader", "drawChainDiagram", "DIAGRAM_W",
   "drawMasterFxSettingsMenu", "drawMasterFxModuleSelect",
   /* Same shared bands the slot editor draws, 4a-3 -- which is what makes the
      two screens the same screen from the header rule down. */
-  "drawChainEditorBands"];
+  "drawChainEditorBands",
+  /* The knob card, 4b. A module IMPORT in shadow_ui_master_fx.mjs, so it is a
+     free identifier under the lift and MUST be a dependency: leave it out and
+     the card block throws, and the tempting fix -- a typeof guard -- would make
+     it silently unreachable and baseline a Master FX screen with the feature
+     switched off. That exact bug already happened once here (5c9fcd51).
+     knobCardDrawState is deliberately NOT here: drawMasterFx destructures it
+     from ctx, and a const cannot shadow a parameter of the same name. It is
+     supplied on mfxCtx below instead, where a missing one is a TypeError. */
+  "drawKnobCard"];
 const mkMasterDraw = liftFrom(mfxSrc, "shadow_ui_master_fx.mjs", "drawMasterFx", MFX_DRAW_DEPS);
 
 function renderMaster(c) {
@@ -308,12 +324,15 @@ function renderMaster(c) {
     drawTextEntry: boom("drawTextEntry"),
     drawHelpDetail: boom("drawHelpDetail"),
     drawHelpList: boom("drawHelpList"),
+    /* Same shape renderChain passes drawChainEdit, so a card case on one
+       screen and a card case on the other are driven from identical data. */
+    knobCardDrawState: () => (c.card || null),
   };
   const draw = mkMasterDraw(mfxCtx, drawMenuHeader, drawChainDiagram, DIAGRAM_W,
     DIAGRAM_Y, SCREEN_WIDTH, truncateText, boom("drawMasterNamePreview"),
     boom("drawMasterConfirmOverwrite"), boom("drawMasterConfirmDelete"),
     boom("drawMasterPresetPicker"), boom("drawMasterFxSettingsMenu"),
-    boom("drawMasterFxModuleSelect"), drawChainEditorBands);
+    boom("drawMasterFxModuleSelect"), drawChainEditorBands, drawKnobCard);
   draw();
   clearGlobals();
   return fb;
@@ -426,13 +445,38 @@ addChain("chain/len2/info-preset", Object.assign({ selKey: "fx1",
 addChain("chain/len2/info-rnbo", Object.assign({ selKey: "fx1",
   fx: ["rnbo-fx-shimmer", "cloudseed"] }));
 
-/* --- the knob card, over the diagram ------------------------------------ */
+/* --- the knob card, over the diagram ------------------------------------ *
+ *
+ * FULL_CARD is the card with its widget strip -- the four cells of the touched
+ * knob`s row, drawn by the SAME drawKnobRow the knob grid uses. The two cases
+ * below it are header-only (page: null), which is the card a knob with no
+ * resolvable row raises. Both shapes are used on BOTH screens, per the rule
+ * that any chain-editor behaviour is tested against both targets: a card that
+ * came out different on Master FX would show as a diff between two cases that
+ * were built from identical payloads.
+ */
+const CARD_PARAMS = [
+  { key: "a", name: "Room", type: "float", min: 0, max: 1, step: 0.01 },
+  { key: "b", name: "Damp", type: "float", min: 0, max: 1, step: 0.01 },
+  { key: "c", name: "Mode", type: "enum", options: ["Hall", "Room", "Plate"] },
+  { key: "d", name: "Mix",  type: "float", min: 0, max: 1, step: 0.01 },
+];
+const FULL_CARD = {
+  name: "ROOM SIZE", value: "0.62", row: 0, touched: 1,
+  page: { kind: "knobs", keys: ["a", "b", "c", "d", null, null, null, null] },
+  metaIndex: buildMetaIndex({ hierarchy: null, chainParams: CARD_PARAMS }),
+  values: { a: 0.62, b: 0.25, c: 1, d: 0.8 },
+  viz: null, modulated: null,
+};
+
 addChain("chain/len1/knob-card", { fx: ["freeverb"], selKey: "fx1",
   card: { name: "CUTOFF", value: "0.62", row: 0, touched: 0, page: null,
           metaIndex: null, values: null, viz: null, modulated: null } });
 addChain("chain/len5/knob-card", Object.assign({ selKey: "fx4",
   card: { name: "RESONANCE", value: "0.31", row: 0, touched: 0, page: null,
           metaIndex: null, values: null, viz: null, modulated: null } }, FIVE));
+addChain("chain/len2/knob-card-strip", Object.assign({ selKey: "fx1",
+  card: FULL_CARD }, SHORT));
 
 /* --- master fx ----------------------------------------------------------- */
 const masterCases = [];
@@ -443,6 +487,7 @@ const addMaster = (id, o) => {
   if (typeof sel === "string") sel = MASTER_FX_CHAIN_COMPONENTS.findIndex((c) => c.key === sel);
   if (sel === undefined || sel < -1) fail("master case " + id + " has no selection");
   masterCases.push({ id, sel, config, state: o.extra || {},
+                     card: o.card || null,
                      presetName: o.presetName || "",
                      options: o.options || [{ id: "cloudseed", name: "CloudSeed" }] });
 };
@@ -488,6 +533,24 @@ addMaster("master/len2/info-preset",  { modules: M2, sel: "fx2",
   extra: { "master_fx:fx2:preset_name": "Cathedral" } });
 addMaster("master/len2/info-optname", { modules: M2, sel: "fx2",
   options: [{ id: "cloudseed", name: "CloudSeed Reverb" }] });
+
+/* --- the knob card, over the Master FX diagram (4b) ---------------------- *
+ *
+ * New cases rather than a regeneration: a card on Master FX is new behaviour
+ * and needs its own protection, the way the chain editor has had two card
+ * cases since the feature shipped. These mirror chain/len1/knob-card and
+ * chain/len5/knob-card exactly -- same card payload, same selection depth --
+ * so a card that renders differently on the two screens shows up as a diff
+ * between two cases that were built to be the same picture.
+ */
+addMaster("master/len1/knob-card", { modules: ["freeverb"], sel: "fx1",
+  card: { name: "CUTOFF", value: "0.62", row: 0, touched: 0, page: null,
+          metaIndex: null, values: null, viz: null, modulated: null } });
+addMaster("master/len5/knob-card", { modules: M5, sel: "fx4",
+  card: { name: "RESONANCE", value: "0.31", row: 0, touched: 0, page: null,
+          metaIndex: null, values: null, viz: null, modulated: null } });
+addMaster("master/len2/knob-card-strip", { modules: M2, sel: "fx1",
+  card: FULL_CARD });
 
 /* ======================================================================== */
 /* RENDER, FLOOR, HASH                                                       */
@@ -583,15 +646,17 @@ if (process.env.UPDATE_CHAIN_EDITOR_BASELINE) {
     "# point: a baseline regenerated after the refactor compares the new code",
     "# against itself.",
     "#",
-    "# The 46 chain/ hashes are still the ORIGINAL capture and must stay",
-    "# re-derivable from the commit before 4a touched either draw function.",
+    "# The 46 original chain/ hashes are still the ORIGINAL capture and must",
+    "# stay re-derivable from the commit before 4a touched either draw function.",
     "#",
-    "# The 25 master/ hashes were refreshed ONCE, at step 4a-3, which unified the",
-    "# two editors chrome on purpose: Master FX gained the movy header band and",
-    "# the hint footer and moved up to the slot editors box row. Every one of the",
-    "# 25 was rendered and read before the refresh, and no chain/ hash moved with",
-    "# them -- which is what said the screen that was not supposed to move did",
-    "# not. Any FURTHER master/ movement is a regression again.",
+    "# The 25 original master/ hashes were refreshed ONCE, at 4a-3, which unified",
+    "# the two editors chrome on purpose: Master FX gained the movy header band",
+    "# and the hint footer and moved up to the slot editors box row. Every one of",
+    "# the 25 was rendered and read before the refresh, and no chain/ hash moved",
+    "# with them -- which is what said the screen that was not supposed to move",
+    "# did not. Any FURTHER master/ movement is a regression again.",
+    "#",
+    "# Step 4b ADDED the four knob-card cases below and moved NONE.",
     "#",
     "# A mismatch names which case moved, and the runner prints the render.",
     "#",

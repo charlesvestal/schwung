@@ -1133,7 +1133,7 @@ const KNOB_CARD_DECAY_MS = 700;
 const knobTouched = new Array(NUM_KNOBS).fill(false);
 let knobCardKnob = -1;          /* physical knob the card follows, or -1 */
 let knobCardExpiry = 0;         /* ms deadline; 0 means held, so no deadline */
-let knobCardSlot = -1;          /* slot the row below was resolved against */
+let knobCardSlot = -1;          /* target slot the row below was resolved against */
 let knobCardCompKey = null;     /* component key ditto — see showKnobFeedback */
 let knobCardKeys = null;        /* param key per physical knob, or null */
 let knobCardMeta = null;        /* metaIndex for the focused component */
@@ -1224,6 +1224,13 @@ function knobCardDrawState() {
  * input event. tests/host/test_knob_card_open_budget.sh pins the number,
  * because this comment used to say four and nothing contradicted it.
  *
+ * The SAME six on Master FX, and structurally rather than by coincidence: every
+ * read here goes through the chain TARGET, and a target answers in one round
+ * trip whatever the key is spelled like. "master_fx:fx1:cutoff" is a longer
+ * string than "fx1:cutoff", not another read. The budget test asserts the two
+ * bills are equal as well as asserting each is six, because two independent
+ * "this one is six" assertions would still pass if one were re-baselined.
+ *
  * It could be four: buildKnobContextForKnob fetched both of these for this same
  * component moments earlier and dropped them. Carrying them would mean a second
  * cache of module metadata with its own staleness window, next to the one whose
@@ -1233,9 +1240,11 @@ function knobCardDrawState() {
  * The neighbours do not animate under modulation. That is the trade: animating
  * them means four reads EVERY frame to move a pointer nobody is looking at.
  */
-function knobCardOpen(knobIndex) {
+function knobCardOpen(knobIndex, focus) {
+    const target = focus.target;
+    const comp = focus.comp;
     knobCardKnob = knobIndex;
-    knobCardSlot = selectedSlot;
+    knobCardSlot = target.slot;
     knobCardCompKey = null;
     knobCardKeys = null;
     knobCardMeta = null;
@@ -1243,13 +1252,13 @@ function knobCardOpen(knobIndex) {
     knobCardViz = null;
     knobCardModKey = null;
 
-    const comps = slotChainComponents(selectedSlot);
-    const comp = selectedChainComponent >= 0 ? comps[selectedChainComponent] : null;
     knobCardCompKey = comp ? comp.key : null;
-    if (!comp || !isChainModuleKey(comp.key)) return;  /* short card */
+    /* Not a module position — the whole-chain selection, a "+" box, the slot
+     * settings box or Master FX's settings box. Short card, and free. */
+    if (!chainTargetIsModulePosition(target, comp && comp.key)) return;
 
-    const hierarchy = getComponentHierarchy(selectedSlot, comp.key);
-    const chainParams = getComponentChainParams(selectedSlot, comp.key);
+    const hierarchy = chainTargetHierarchy(target, comp.key);
+    const chainParams = chainTargetChainParams(target, comp.key);
     if (!hierarchy || !chainParams || !chainParams.length) return;
 
     const keys = new Array(NUM_KNOBS).fill(null);
@@ -1263,13 +1272,12 @@ function knobCardOpen(knobIndex) {
     knobCardKeys = keys;
     knobCardViz = resolveViz({ keys, metaIndex: knobCardMeta }).groups;
 
-    const prefix = getComponentParamPrefix(comp.key);
     const base = (knobIndex >> 2) * 4;
     const values = {};
     for (let c = 0; c < 4; c++) {
         const k = keys[base + c];
         if (!k) continue;
-        const raw = getSlotParam(selectedSlot, `${prefix}:${k}`);
+        const raw = getSlotParam(target.slot, target.key(comp.key, k));
         /* An unserved key reads back as "", NOT as an error — the shim answers
          * error=4 with a zeroed buffer and js_shadow_get_param never looks at
          * error. Left as "" it would reach formatParamValue, where Number("")
@@ -1281,12 +1289,20 @@ function knobCardOpen(knobIndex) {
 }
 
 /*
- * The chain editor answers a knob with the CARD; every other view keeps the
+ * EITHER chain editor answers a knob with the CARD; every other view keeps the
  * centred name/value box. Both announce, so the screen reader does not care
  * which is up.
+ *
+ * The card shipped 2026-08-20 gated on `view !== VIEWS.CHAIN_EDIT`, so a Master
+ * FX knob still raised the old `Value: 0.62` box — one reasonable-sounding
+ * scope boundary, one day of drift, and the concrete example §1b of the Master
+ * FX variable-length design exists to end. chainEditorFocus answers "which
+ * chain, which position" for both, so there is no view test left here to
+ * forget to widen next time.
  */
 function showKnobFeedback(knobIndex, name, value, raw) {
-    if (view !== VIEWS.CHAIN_EDIT) { showOverlay(name, value); return; }
+    const focus = chainEditorFocus();
+    if (!focus) { showOverlay(name, value); return; }
 
     /* A centred box left over from the screen we came in through would draw
      * ON TOP of the card — drawOverlay runs after the view switch and nothing
@@ -1304,13 +1320,16 @@ function showKnobFeedback(knobIndex, name, value, raw) {
      * NEW component's value in under the OLD key. The number is current; the
      * name beside it belongs to a parameter you are not touching.
      *
-     * slotChainComponents reads chainConfigs, not the DSP, so this costs
-     * nothing.
+     * chainEditorFocus reads chainConfigs (or a constant list, on Master FX),
+     * not the DSP, so this costs nothing.
+     *
+     * The slot compared is the TARGET's, which is selectedSlot for a slot chain
+     * and the constant 0 for Master FX — where Track 1-4 moves selectedSlot
+     * without changing anything the card is showing, so comparing selectedSlot
+     * there would re-resolve, and pay six IPC reads, for nothing.
      */
-    const idComps = slotChainComponents(selectedSlot);
-    const idCompKey = (selectedChainComponent >= 0 && idComps[selectedChainComponent])
-        ? idComps[selectedChainComponent].key : null;
-    if (knobCardKnob !== knobIndex || knobCardSlot !== selectedSlot ||
+    const idCompKey = focus.comp ? focus.comp.key : null;
+    if (knobCardKnob !== knobIndex || knobCardSlot !== focus.target.slot ||
         knobCardCompKey !== idCompKey) {
         /*
          * A malformed ui_hierarchy can throw in here — buildMetaIndex iterates
@@ -1322,7 +1341,7 @@ function showKnobFeedback(knobIndex, name, value, raw) {
          * there as "held, no deadline" with no note-off coming to clear it.
          */
         try {
-            knobCardOpen(knobIndex);
+            knobCardOpen(knobIndex, focus);
         } catch (e) {
             debugLog(`knobCardOpen failed for knob ${knobIndex}: ${e}`);
             /* Drop the half-built row, then re-establish the identity: what is
@@ -1330,7 +1349,7 @@ function showKnobFeedback(knobIndex, name, value, raw) {
              * (the name and value below do not come from the row). */
             knobCardClose();
             knobCardKnob = knobIndex;
-            knobCardSlot = selectedSlot;
+            knobCardSlot = focus.target.slot;
             knobCardCompKey = idCompKey;
         }
     }
@@ -1483,6 +1502,13 @@ function slotChainTarget(slotIndex) {
     return {
         kind: "slot",
         slot: slotIndex,
+        /* How this chain names itself in a knob title or an announcement —
+         * "S2: CloudSeed Room Size". DATA, not a kind test: it is the one thing
+         * the two chains genuinely have to say differently, and buildChainKnobContext
+         * reads it rather than asking which chain it is looking at. The two
+         * builders it replaced spelled the whole title twice, which is how the
+         * fallback rule below came to differ between them unnoticed. */
+        label: `S${slotIndex + 1}`,
         key: (componentKey, suffix) => chainComponentParamKey(componentKey, suffix),
         /* A key belonging to the CHAIN rather than to a position in it — the
          * two LFOs, and whatever else the bus grows. */
@@ -1498,6 +1524,10 @@ function slotChainTarget(slotIndex) {
 const MASTER_CHAIN_TARGET = {
     kind: "master",
     slot: 0,
+    /* See slotChainTarget.label. "MFX", never "S1" — Master FX is addressed at
+     * slot 0 but it is not instrument slot 1, and a title that said so would be
+     * the conflation that comment warns about. */
+    label: "MFX",
     key: (componentKey, suffix) => {
         /* "settings" is a box in the list but not a module position, so it has
          * no params — same rule chainComponentParamKey applies for the slot
@@ -1538,10 +1568,82 @@ function chainTargetChainParams(target, componentKey) {
     try { return JSON.parse(json); } catch (e) { return []; }
 }
 
+/*
+ * Does this component hold a module whose parameters can be addressed?
+ *
+ * Answered by the target's OWN key rule rather than by a second copy of it:
+ * both targets already return null from key() for a box that is not a module
+ * position (the settings box, a "+", an id past the cap). isChainModuleKey is
+ * that rule for the slot chain; asking the target gets the same answer for
+ * either chain without the caller knowing which it holds.
+ */
+function chainTargetIsModulePosition(target, componentKey) {
+    return !!componentKey && target.key(componentKey, "module") !== null;
+}
+
 function chainTargetHierarchy(target, componentKey) {
     const json = chainTargetGetParam(target, componentKey, "ui_hierarchy");
     if (!json) return null;
     try { return JSON.parse(json); } catch (e) { return null; }
+}
+
+/*
+ * Is the Master FX CHAIN DIAGRAM the thing on screen right now?
+ *
+ * drawMasterFx is a dispatcher: nine flags can put a text entry, a confirm, a
+ * help page, the preset browser, the settings menu or the module picker in
+ * FRONT of the diagram, and it early-returns into each of them. The knob card
+ * is a modal over the diagram, so raising it while one of those is up would
+ * leave the knob with no feedback at all — the card would be state-set and
+ * never drawn, and the centred name/value box it replaces would not be shown
+ * either. The slot chain has no equivalent because each of its sub-screens is
+ * its own `view`.
+ *
+ * This list MIRRORS drawMasterFx's dispatch chain and the two must not drift;
+ * tests/host/test_master_fx_knob_card.sh derives both from source and fails
+ * when they disagree, because nothing else would say so.
+ */
+function masterFxChainDiagramVisible() {
+    if (isTextEntryActive()) return false;
+    if (masterShowingNamePreview) return false;
+    if (masterConfirmingOverwrite) return false;
+    if (masterConfirmingDelete) return false;
+    if (helpDetailScrollState) return false;
+    if (helpNavStack.length > 0) return false;
+    if (inMasterPresetPicker) return false;
+    if (inMasterFxSettingsMenu) return false;
+    if (selectingMasterFxModule) return false;
+    return true;
+}
+
+/*
+ * Which chain the editor is showing, and which position in it is selected —
+ * for EITHER chain, or null when the screen in front of the user is not a
+ * chain editor with its diagram up.
+ *
+ * THE ONE PLACE that knows there are two chain-editor views. Everything
+ * downstream (the knob card, and buildChainKnobContext through it) takes the
+ * target and stops caring: that is what makes a feature land on both screens
+ * by construction instead of one reasonable-sounding scope boundary at a time.
+ *
+ * `comp` is null for the whole-chain selection (-1) and for a box that is not
+ * a module position; callers test it rather than the index, because the two
+ * editors number their lists differently and only one of them has a synth.
+ */
+function chainEditorFocus() {
+    let target = null;
+    let index = -1;
+    if (view === VIEWS.CHAIN_EDIT) {
+        target = slotChainTarget(selectedSlot);
+        index = selectedChainComponent;
+    } else if (view === VIEWS.MASTER_FX && masterFxChainDiagramVisible()) {
+        target = MASTER_CHAIN_TARGET;
+        index = selectedMasterFxComponent;
+    } else {
+        return null;
+    }
+    const comps = target.components();
+    return { target, comp: (index >= 0 && index < comps.length) ? comps[index] : null };
 }
 
 /*
@@ -9728,6 +9830,22 @@ function dismissOverlayForHierarchyEntry() {
  * `isMasterFx` / `masterFxSlot` are the legacy pair the rest of the file still
  * asks (`hierEditorIsMasterFx`) to know which chain it is editing. They will
  * be a chain target once the exit paths follow.
+ *
+ * NOT in 4b, and the reason is worth recording so the next reader does not
+ * re-derive it. The knob CONTEXT carried a dead copy of the same pair and that
+ * is gone — nothing read it. This pair has FOURTEEN read sites across the
+ * hierarchy editor's refresh, exit, preset and LFO paths, and two obstacles a
+ * knob-card change cannot absorb:
+ *
+ *   - `hierEditorComponent` holds the PREFIXED key on Master FX
+ *     ("master_fx:fx2") while a chain target's key() takes the bare position
+ *     ("fx2"), so every site needs a conversion, not a substitution.
+ *   - Half the sites ask it "which chain am I in / where do I go back to",
+ *     which a target can only answer with `target.kind` — the kind test §1b
+ *     forbids. Those sites need a return-destination of their own first.
+ *
+ * That is a refactor of the hierarchy editor's chain identity, in the largest
+ * switch in this file, with no pixel baseline over it. Its own step.
  */
 function resetHierarchyEditorFor(slotIndex, componentKey, hierarchy, isMasterFx, masterFxSlot) {
     hierEditorSlot = slotIndex;
@@ -10444,6 +10562,105 @@ function invalidateKnobContextCache() {
 }
 
 /*
+ * What one physical knob does at one position of a chain — for EITHER chain.
+ *
+ * This was two ~90-line branches of buildKnobContextForKnob, one per editor.
+ * They looked like the same code twice and were not: they disagreed on the
+ * FALLBACK RULE, silently, and only one of them was right.
+ *
+ * ---------------------------------------------------------------------------
+ * THE FALLBACK RULE, and why it is this one
+ * ---------------------------------------------------------------------------
+ * A module declares its knob row in `ui_hierarchy` and its parameter metadata
+ * in `chain_params`. The two lists are not the same length. The question is
+ * what a knob does when the declared row runs out before the eight knobs do.
+ *
+ *   Slot editor  (kept): fall back to chain_params ONLY when there is no
+ *                        hierarchy at all. A declared row is the author's
+ *                        answer, including for the knobs it leaves empty.
+ *   Master FX (dropped): fall back whenever the hierarchy had no knob at THAT
+ *                        INDEX, filling the rest from chain_params[knobIndex].
+ *
+ * Six audio-FX modules in tests/fixtures/module-contracts.json declare a
+ * hierarchy with fewer than eight knobs AND carry extra chain_params, so six
+ * modules behaved differently depending on which chain they were loaded into:
+ * belt, freeverb, nam, ottx, psxverb, smack. Two of them show why the dropped
+ * rule is not merely "more knobs":
+ *
+ *   psxverb  knobs [model, decay, mix, reverb_level], chain_params [model,
+ *            decay, mix, input_gain, reverb_level]. Knob 5 became
+ *            chain_params[4] = reverb_level — a DUPLICATE of knob 4 — while
+ *            input_gain stayed unreachable. The index into chain_params has no
+ *            relationship to the knobs already mapped.
+ *   smack    knobs [loop_len, slice_res, fx_density, order_density],
+ *            chain_params[4..7] = capture, arm, ab, reroll — trigger enums
+ *            ("Capture Now", "Arm Record", "Re-Roll"). On Master FX, knobs 5-8
+ *            FIRED those. The author left them off the knob row on purpose.
+ *
+ * So the declared row wins, and the extra params stay reachable where they
+ * always were: through the menu, which lists all of chain_params. This is a
+ * USER-VISIBLE change on Master FX for those six modules — knobs past the
+ * declared row now read "not mapped" instead of driving an arbitrary
+ * parameter. Do not "fix" it back without redoing that count.
+ * ---------------------------------------------------------------------------
+ *
+ * `pluginName` / `hasModule` come from the caller because resolving them is
+ * the one thing the two chains genuinely do differently. `target.label` is
+ * what the title says first ("S2" / "MFX").
+ */
+function buildChainKnobContext(target, comp, knobIndex, pluginName, hasModule) {
+    const generic = (name, title, extra) => Object.assign({
+        slot: target.slot,
+        key: null,
+        fullKey: null,
+        meta: null,
+        pluginName: name,
+        displayName: `Knob ${knobIndex + 1}`,
+        title,
+    }, extra);
+
+    if (!hasModule) {
+        return generic(comp.label, `${target.label} ${comp.label}`, { noModule: true });
+    }
+
+    const mapped = (key, meta, displayName) => ({
+        slot: target.slot,
+        key,
+        fullKey: target.key(comp.key, key),
+        meta,
+        pluginName,
+        displayName,
+        title: `${target.label}: ${pluginName} ${displayName}`,
+    });
+
+    const hierarchy = chainTargetHierarchy(target, comp.key);
+    if (hierarchy && hierarchy.levels) {
+        /* knobLevelForHierarchy reports the level the mapping ACTUALLY uses —
+         * root, or the first child when root declares no knobs. */
+        const levelDef = knobLevelForHierarchy(hierarchy);
+        if (levelDef && levelDef.knobs && knobIndex < levelDef.knobs.length) {
+            const key = levelDef.knobs[knobIndex];
+            const chainParams = chainTargetChainParams(target, comp.key);
+            const meta = normalizeExpandedParamMeta(key, chainParams.find(p => p.key === key));
+            return mapped(key, meta, meta && meta.name ? meta.name : key.replace(/_/g, " "));
+        }
+        debugLog(`buildKnobContext: no knob mapping for knobIndex=${knobIndex} on ${comp.key}`);
+    } else {
+        /* No declared row at all — see THE FALLBACK RULE above. This is the
+         * only branch where chain_params order decides what a knob does, and
+         * it is defensible here because there is nothing else to go on. */
+        const chainParams = chainTargetChainParams(target, comp.key);
+        if (chainParams && knobIndex < chainParams.length) {
+            const param = chainParams[knobIndex];
+            return mapped(param.key, normalizeExpandedParamMeta(param.key, param),
+                          param.name || param.key.replace(/_/g, " "));
+        }
+    }
+
+    return generic(pluginName, `${target.label} ${pluginName}`, { noMapping: true });
+}
+
+/*
  * Build knob context for a single knob - internal, called by rebuildKnobContextCache
  */
 function buildKnobContextForKnob(knobIndex) {
@@ -10485,180 +10702,40 @@ function buildKnobContextForKnob(knobIndex) {
         }
     }
 
-    /* Chain editor with component selected */
-    if (view === VIEWS.CHAIN_EDIT && selectedChainComponent >= 0 && selectedChainComponent < slotChainComponents(selectedSlot).length) {
-            const comp = slotChainComponents(selectedSlot)[selectedChainComponent];
-            /* Only a module position has knobs. Asking for "add_fx_module"
-             * would be a real IPC round trip answering "". */
-            if (comp && isChainModuleKey(comp.key)) {
-                const prefix = getComponentParamPrefix(comp.key);
-                /* MIDI FX serves no `:name`, so its header falls back to the id */
-                const isMidiFx = comp.key === "midiFx";
-                const moduleIdKey = `${prefix}_module`;
-                const moduleId = getSlotParam(selectedSlot, moduleIdKey) || "";
-                const nameParamKey = isMidiFx ? null : `${prefix}:name`;
-                const pluginName = (nameParamKey ? getSlotParam(selectedSlot, nameParamKey) : null) || moduleId || "";
-                const hasModule = moduleId && moduleId.length > 0;
-                debugLog(`buildKnobContext: slot=${selectedSlot}, comp=${comp.key}, prefix=${prefix}, nameParamKey=${nameParamKey}, pluginName=${pluginName}, hasModule=${hasModule}`);
-
-            /* No module loaded in this slot */
-            if (!hasModule) {
-                return {
-                    slot: selectedSlot,
-                    key: null,
-                    fullKey: null,
-                    meta: null,
-                    pluginName: comp.label,
-                    displayName: `Knob ${knobIndex + 1}`,
-                    title: `S${selectedSlot + 1} ${comp.label}`,
-                    noModule: true
-                };
-            }
-
-            const hierarchy = getComponentHierarchy(selectedSlot, comp.key);
-            debugLog(`buildKnobContext: hierarchy=${hierarchy ? JSON.stringify(hierarchy).substring(0, 200) : 'null'}`);
-            if (hierarchy && hierarchy.levels) {
-                /* NOTE: this log now reports the level knob mapping actually
-                 * uses. It used to print the ROOT level and then fall through
-                 * to a child, so it could name a level with no knobs in it. */
-                const levelDef = knobLevelForHierarchy(hierarchy);
-                debugLog(`buildKnobContext: levelDef=${levelDef ? JSON.stringify(levelDef) : 'null'}, knobIndex=${knobIndex}`);
-                if (levelDef && levelDef.knobs && knobIndex < levelDef.knobs.length) {
-                    const key = levelDef.knobs[knobIndex];
-                    const fullKey = `${prefix}:${key}`;
-                    const chainParams = getComponentChainParams(selectedSlot, comp.key);
-                    debugLog(`buildKnobContext: found knob key=${key}, fullKey=${fullKey}, chainParams count=${chainParams.length}`);
-                    const rawMeta = chainParams.find(p => p.key === key);
-                    const meta = normalizeExpandedParamMeta(key, rawMeta);
-                    const displayName = meta && meta.name ? meta.name : key.replace(/_/g, " ");
-                    return {
-                        slot: selectedSlot,
-                        key,
-                        fullKey,
-                        meta,
-                        pluginName,
-                        displayName,
-                        title: `S${selectedSlot + 1}: ${pluginName} ${displayName}`
-                    };
-                }
-                debugLog(`buildKnobContext: no knob mapping for knobIndex=${knobIndex}, levelDef.knobs=${levelDef?.knobs ? JSON.stringify(levelDef.knobs) : 'undefined'}`);
-            } else {
-                debugLog(`buildKnobContext: no hierarchy or no levels`);
-            }
-
-            /* Fallback to chain_params if ui_hierarchy is missing */
-            if (!hierarchy || !hierarchy.levels) {
-                const chainParams = getComponentChainParams(selectedSlot, comp.key);
-                if (chainParams && chainParams.length > 0 && knobIndex < chainParams.length) {
-                    const param = chainParams[knobIndex];
-                    const key = param.key;
-                    const fullKey = `${prefix}:${key}`;
-                    const displayName = param.name || key.replace(/_/g, " ");
-                    return {
-                        slot: selectedSlot,
-                        key,
-                        fullKey,
-                        meta: normalizeExpandedParamMeta(key, param),
-                        pluginName,
-                        displayName,
-                        title: `S${selectedSlot + 1}: ${pluginName} ${displayName}`
-                    };
-                }
-            }
-            /* Component selected but no knob mappings - return generic context */
-            return {
-                slot: selectedSlot,
-                key: null,
-                fullKey: null,
-                meta: null,
-                pluginName,
-                displayName: `Knob ${knobIndex + 1}`,
-                title: `S${selectedSlot + 1} ${pluginName}`,
-                noMapping: true
-            };
+    /* Slot chain editor with a component selected. Only the IDENTITY of the
+     * module is resolved here — how a chain answers "what is loaded at this
+     * position and what is it called" is genuinely per-chain (a slot serves
+     * `fx1_module`, Master FX serves `master_fx:fx1:name`). Everything after
+     * that is buildChainKnobContext, once. */
+    if (view === VIEWS.CHAIN_EDIT && selectedChainComponent >= 0 &&
+        selectedChainComponent < slotChainComponents(selectedSlot).length) {
+        const comp = slotChainComponents(selectedSlot)[selectedChainComponent];
+        /* Only a module position has knobs. Asking for "add_fx_module"
+         * would be a real IPC round trip answering "". */
+        if (comp && isChainModuleKey(comp.key)) {
+            const prefix = getComponentParamPrefix(comp.key);
+            /* MIDI FX serves no `:name`, so its header falls back to the id */
+            const isMidiFx = comp.key === "midiFx";
+            const moduleId = getSlotParam(selectedSlot, `${prefix}_module`) || "";
+            const pluginName = (isMidiFx ? null : getSlotParam(selectedSlot, `${prefix}:name`))
+                || moduleId || "";
+            debugLog(`buildKnobContext: slot=${selectedSlot}, comp=${comp.key}, ` +
+                     `prefix=${prefix}, pluginName=${pluginName}, moduleId=${moduleId}`);
+            return buildChainKnobContext(slotChainTarget(selectedSlot), comp, knobIndex,
+                                         pluginName, moduleId.length > 0);
         }
     }
 
-    /* Master FX view with FX slot selected */
-    if (view === VIEWS.MASTER_FX && selectedMasterFxComponent >= 0 && selectedMasterFxComponent < MASTER_FX_SETTINGS_INDEX) {
+    /* Master FX with an FX position selected. Same builder, same rules. */
+    if (view === VIEWS.MASTER_FX && selectedMasterFxComponent >= 0 &&
+        selectedMasterFxComponent < MASTER_FX_SETTINGS_INDEX) {
         const comp = MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
         if (comp && comp.key !== "settings") {
-            const chainParams = getMasterFxChainParams(selectedMasterFxComponent);
+            /* The shim answers ":name" with the module id, so this one read is
+             * both the identity and the display name. */
             const pluginName = getMasterFxParam(selectedMasterFxComponent, "name");
-            const hasModule = pluginName && pluginName.length > 0;
-
-            /* No module loaded in this slot */
-            if (!hasModule) {
-                return {
-                    slot: 0,
-                    key: null,
-                    fullKey: null,
-                    meta: null,
-                    pluginName: comp.label,
-                    displayName: `Knob ${knobIndex + 1}`,
-                    title: `MFX ${comp.label}`,
-                    noModule: true,
-                    isMasterFx: true,
-                    masterFxSlot: selectedMasterFxComponent
-                };
-            }
-
-            /* Try ui_hierarchy first for explicit knob mappings */
-            const hierarchy = getMasterFxHierarchy(selectedMasterFxComponent);
-            if (hierarchy && hierarchy.levels) {
-                const levelDef = knobLevelForHierarchy(hierarchy);
-                if (levelDef && levelDef.knobs && knobIndex < levelDef.knobs.length) {
-                    const key = levelDef.knobs[knobIndex];
-                    const fullKey = MASTER_CHAIN_TARGET.key(comp.key, key);
-                    const rawMeta = chainParams.find(p => p.key === key);
-                    const meta = normalizeExpandedParamMeta(key, rawMeta);
-                    const displayName = meta && meta.name ? meta.name : key.replace(/_/g, " ");
-                    return {
-                        slot: 0,  /* Master FX always uses slot 0 for param access */
-                        key,
-                        fullKey,
-                        meta,
-                        pluginName,
-                        displayName,
-                        title: `MFX ${pluginName} ${displayName}`,
-                        isMasterFx: true,
-                        masterFxSlot: selectedMasterFxComponent
-                    };
-                }
-            }
-
-            /* Fall back to chain_params: map first 8 params to knobs 1-8 */
-            if (chainParams && chainParams.length > 0 && knobIndex < chainParams.length) {
-                const param = chainParams[knobIndex];
-                const key = param.key;
-                const fullKey = MASTER_CHAIN_TARGET.key(comp.key, key);
-                const displayName = param.name || key.replace(/_/g, " ");
-                return {
-                    slot: 0,
-                    key,
-                    fullKey,
-                    meta: normalizeExpandedParamMeta(key, param),
-                    pluginName,
-                    displayName,
-                    title: `MFX ${pluginName} ${displayName}`,
-                    isMasterFx: true,
-                    masterFxSlot: selectedMasterFxComponent
-                };
-            }
-
-            /* FX slot selected but no params available */
-            return {
-                slot: 0,
-                key: null,
-                fullKey: null,
-                meta: null,
-                pluginName,
-                displayName: `Knob ${knobIndex + 1}`,
-                title: `MFX ${pluginName}`,
-                noMapping: true,
-                isMasterFx: true,
-                masterFxSlot: selectedMasterFxComponent
-            };
+            return buildChainKnobContext(MASTER_CHAIN_TARGET, comp, knobIndex,
+                                         pluginName, !!(pluginName && pluginName.length));
         }
     }
 
@@ -15390,6 +15467,10 @@ function drawHelpDetail() {
     _ctx.chainComponentBypassed = (...args) => chainComponentBypassed(...args);
     _ctx.MASTER_FX_SLOTS = MASTER_FX_SLOTS;
     _ctx.MASTER_FX_SETTINGS_INDEX = MASTER_FX_SETTINGS_INDEX;
+    /* The knob card's draw state — null unless a knob is being touched or has
+     * just been turned. Costs no IPC: everything in it was read on touch-down.
+     * Master FX draws the SAME card the slot chain editor does (4b). */
+    _ctx.knobCardDrawState = () => knobCardDrawState();
 
     /* Utility functions */
     _ctx.setView = setView;
