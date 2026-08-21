@@ -25,6 +25,71 @@ slot chains got:
 > Adding, removing or moving something in a chain must not perturb the modules
 > already in it.
 
+## 1b. The real requirement: STOP HAVING TWO EDITORS
+
+**Charles:** *"I have had issues where master fx and chain edit end up out of
+sync with features. We want this to be as shared as possible."*
+
+This is the governing constraint, not a nice-to-have, and the evidence is
+current rather than historical:
+
+- **The knob card, added 2026-08-20, works only in `CHAIN_EDIT`.** Master FX
+  knobs still raise the old `Value: 0.62` box. The spec for it said *"Scope is
+  CHAIN_EDIT. Master FX keeps today's overlay; residual 2.2 revisits Master
+  FX."* That is how the drift happens — one reasonable-sounding scope boundary
+  at a time.
+- Master FX had **no windowed scroll** until Step 3 of this same residual,
+  years after the slot diagram got one.
+- Master FX has **no reorder at all**, which is the entire reason Step 4 exists.
+- There are **24 `MasterFx`-prefixed functions** in `shadow_ui.js` shadowing
+  chain-editor equivalents.
+
+Adding insert/remove/move to Master FX as its own implementation would make it
+worse: an eighth parallel copy, and a guarantee of this conversation happening
+again.
+
+**So Step 4 converges the two editors first, then adds the feature once.**
+
+### The target abstraction
+
+The two screens differ in exactly two things: **where the components come from**
+and **how a param key is addressed**.
+
+| | Slot chain | Master FX |
+|---|---|---|
+| Param key | `getSlotParam(N, "fx1:cutoff")` | `getSlotParam(0, "master_fx:fx1:cutoff")` |
+| Components | `slotChainComponents(N)` | `MASTER_FX_CHAIN_COMPONENTS` |
+| Sections | `midiFx`, synth, `fx` | `fx` only |
+
+Everything else — the diagram, the picker, bypass, the hierarchy editor, the
+LFO target picker, the knob card, the verbs, the footer grammar — is the same
+screen wearing two implementations.
+
+Introduce a **chain target**:
+
+```
+{ kind: "slot" | "master",
+  slot,                       /* IPC slot index: N, or 0 for master */
+  key(componentKey, param),   /* "fx1:cutoff" | "master_fx:fx1:cutoff" */
+  components(),               /* bounded by the PUBLISHED COUNT, not the cap */
+  hasSynth, hasMidiFx }       /* master has neither */
+```
+
+`drawChainEdit` and `drawMasterFx` become one draw parameterised by it;
+`VIEWS.MASTER_FX` becomes `CHAIN_EDIT` with the master target. Every feature
+added after that lands in both by construction.
+
+### The rule that keeps it converged
+
+Shared code is necessary but not sufficient — a shared function with a
+`if (target.kind === "master") return;` in it drifts just as well. So:
+
+> **Any test of chain-editor behaviour runs against BOTH targets.** A feature
+> that cannot state what it does on Master FX is not finished.
+
+That is the mechanism. `tests/host/test_chain_gestures.sh` and the knob-card
+tests are the first candidates to parameterise.
+
 ## 2. Most of this is already built
 
 | Piece | Where | Reusable? |
@@ -147,6 +212,27 @@ Also required, and separate from any ordering assertion:
   re-anchor by **id** across an edit, never by index. `indexOfId` in
   `chain_model.mjs` exists for exactly this and its comment explains why.
 
+## 8b. Order of work
+
+Convergence first, with **no behaviour change**, then the feature once. This is
+the same shape as Steps 1 and 2 — harden at the current cap, then flip — which
+worked twice and made each raise a one-line diff.
+
+- **4a. The target abstraction.** Route Master FX through the shared chain
+  editor. Zero behaviour change; the screen must look and act identically
+  afterwards. Deletes most of the 24 `MasterFx` functions.
+- **4b. The knob card lands on Master FX** — free once 4a is done, and it
+  repays tonight's drift.
+- **4c. Indirect the param cache** (§4). Still no user-visible change.
+- **4d. Promote the permutation header** (§3), add `master_fx:fx_count` (§5),
+  write the C permutation (§6).
+- **4e. Verbs and gestures, added ONCE in shared code** — insert, remove, move
+  — so both targets get them in the same commit.
+- **4f. Tests, parameterised over both targets** (§7, §1b).
+
+4a is the load-bearing step. If it is skipped, everything after it is an eighth
+parallel implementation.
+
 ## 9. Risks
 
 1. **The owned-buffer permutation is the known-dangerous part** (§4). It
@@ -163,3 +249,12 @@ Also required, and separate from any ordering assertion:
 4. **Set persistence**: `master_fx_N.json` has no count and no version field.
    A chain that had a hole and now closes it changes which file holds which
    module. Migration needs stating.
+5. **4a is a refactor of a 17,900-line file** that is the shadow UI, cannot be
+   run off-device, and has no behavioural test harness beyond the lifted-block
+   trick in `test_chain_edit_read_budget.sh`. It must be done in small,
+   individually-verifiable moves with the screen rendered headlessly and
+   compared before/after — the same way `render_page_movy`'s geometry change
+   was proven inert against a per-page snapshot. **A snapshot of both screens,
+   captured before 4a starts, is the only thing that can prove "no behaviour
+   change" here**, and it must be captured first for the same reason the movy
+   baseline had to be.
