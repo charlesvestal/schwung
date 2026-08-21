@@ -1542,6 +1542,43 @@ These map to knobs 1-8 in the Shadow UI for quick access.
 }
 ```
 
+### `access` — which direction a param means something in
+
+Optional on a `chain_params` entry. Defaults to `readwrite`; declare it when
+your parameter is not both.
+
+| value | meaning | host behaviour |
+|---|---|---|
+| `readwrite` | an ordinary control (default) | turnable, divable if it has options |
+| `read` | a **readout** — the value means something, writing means nothing | never turnable, never opens a picker, still refreshed on screen |
+| `write` | a **trigger** — writing does something, the value means nothing | never turnable, a click **fires** it |
+
+```json
+{"key": "detected_key", "type": "enum", "options": ["C","C#","D"], "access": "read"}
+{"key": "rnd_preset",   "type": "enum", "options": ["—","Rnd!"],   "access": "write"}
+```
+
+**Why a readout needs saying.** `keydetect`'s `detected_key` is 25 key names
+with no `set_param` branch at all — deliberately, and documented as such back
+when an enum could only be nudged one detent at a time. Enums became divable in
+1.0, so the picker opened on it and silently discarded whatever you chose. That
+was a gap in the contract, not a bug in the module: display-only was never
+expressible.
+
+**Why a trigger needs saying, and why it is the more urgent half.** A momentary
+action modelled as a two-option enum is a live hazard. `euclidrum`'s
+`rnd_preset` declares `["—","Rnd!"]` and fires on anything that is not the
+em-dash — so an **index** write of `"0"`, which *means* the em-dash, "do
+nothing", randomises all eight lanes and destroys the kit. Declaring
+`access: "write"` makes the host fire it through your own enum wire (the
+**name**, if that is what your `get_param` reports) and never scrub it with a
+knob, so the "do nothing" option can never be written by accident.
+
+A trigger is not the same as a **switch**. `["Off","On"]` is a two-state
+*setting* — it has a value worth reading, it should be turnable, and it draws as
+a switch. Leave those as ordinary enums; roughly 150 params in the fleet are
+switches and only about ten are triggers.
+
 ### `max_param` is NOT supported — publish a real `max`
 
 Eight modules declare `"max_param": "preset_count"` (or similar) hoping the host
