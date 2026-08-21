@@ -55,10 +55,21 @@ export const INFO_Y = LABEL_Y + 11;
  *  5px advance is 120 of the 128 columns. */
 export const INFO_MAX_CHARS = 24;
 
-/** Centred on the device's fixed 5px advance — the same arithmetic both
- *  editors did inline. */
-function centreX(text) {
-    return Math.floor((SCREEN_WIDTH - String(text).length * 5) / 2);
+/**
+ * Centred by MEASURING, not by counting glyphs.
+ *
+ * Both editors did `length * 5` inline and this inherited it. The device font
+ * is PROPORTIONAL — `I` is 1px and `W` is 5 — so a character count overstates
+ * the width of anything with narrow glyphs in it, and the line lands left of
+ * centre by half the error. "Configure master FX" is full of them and visibly
+ * sat off to the left; a run of capitals happened to look fine, which is why
+ * it survived.
+ *
+ * render_page_movy.mjs already carries the same warning over `fitLine`: never
+ * assume N glyphs are N advances wide.
+ */
+function centreX(ctx, text) {
+    return Math.floor((SCREEN_WIDTH - ctx.textWidth(String(text))) / 2);
 }
 
 /**
@@ -78,10 +89,10 @@ export function drawChainEditorBands(ctx, o) {
     drawHeader(ctx, o.headerLeft, o.headerRight, false);
 
     const label = o.label == null ? "" : String(o.label);
-    ctx.print(centreX(label), LABEL_Y, label, 1);
+    ctx.print(centreX(ctx, label), LABEL_Y, label, 1);
 
     const info = truncateText(o.info == null ? "" : String(o.info), INFO_MAX_CHARS);
-    ctx.print(centreX(info), INFO_Y, info, 1);
+    ctx.print(centreX(ctx, info), INFO_Y, info, 1);
 
     drawFooter(ctx, o.hints);
 }
