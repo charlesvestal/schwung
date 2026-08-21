@@ -38,6 +38,27 @@ const render = (comps, sel) => {
   return fb;
 };
 
+/* ---- 0. settings is LAST, which is what lets it share a column with the rail --
+ *
+ * SETTINGS_GAP pushes the settings box one column past the strip, onto the
+ * column the right scroll rail uses. That is safe only because the two can
+ * never both be drawn: the rail means there is more to the right, and settings
+ * is the last position, so when it is on screen there is nothing beyond it.
+ *
+ * Add a position after settings and that stops being true silently -- the rail
+ * would draw over the box, or the box past the display. So the ordering is
+ * pinned here rather than assumed by the layout. */
+for (const nfx of [0, 3, 12]) {
+  const comps = M.chainComponents(build(nfx, nfx ? 1 : 0));
+  const last = comps[comps.length - 1];
+  if (!last || last.kind !== "settings")
+    fail(nfx + " fx: the last chain position is " + (last && last.kind) +
+         ", not settings -- the settings box shares the right rail column and " +
+         "may only do so while nothing can follow it");
+  const strays = comps.filter((c, i) => c.kind === "settings" && i !== comps.length - 1);
+  if (strays.length) fail(nfx + " fx: a settings position is not last");
+}
+
 /* ---- 1. nothing is drawn off-screen, at either end of any length ---- */
 for (const nfx of [0, 3, 12]) {
   const comps = M.chainComponents(build(nfx, nfx ? 1 : 0));
