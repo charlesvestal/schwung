@@ -6,6 +6,11 @@
  * for it. The routing in chain_host.c is one branch per prefix now, so this
  * parser is the single point where an off-by-one would silently send a
  * parameter to the wrong FX slot.
+ *
+ * In src/host/ rather than beside chain_host.c because chain_permute.h needs
+ * it and chain_permute.h is now shared with the shim — see the location note
+ * at the top of that file. Despite the name, nothing here is chain-specific:
+ * the prefix and the cap are both parameters.
  */
 #ifndef CHAIN_KEY_INDEX_H
 #define CHAIN_KEY_INDEX_H

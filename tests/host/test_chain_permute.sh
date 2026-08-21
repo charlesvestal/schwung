@@ -7,7 +7,7 @@ bin="build/tests/test_chain_permute"
 mkdir -p "$(dirname "$bin")"
 
 cc -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
-  -Isrc/modules/chain/dsp \
+  -Isrc/modules/chain/dsp -Isrc/host \
   tests/host/test_chain_permute.c \
   -o "$bin"
 

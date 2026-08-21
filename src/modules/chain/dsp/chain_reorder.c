@@ -21,7 +21,7 @@
  */
 
 #include "chain_internal.h"
-#include "chain_permute.h"
+#include "host/chain_permute.h"
 
 /*
  * EVERY per-position field of a chain section, as data.

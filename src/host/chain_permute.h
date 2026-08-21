@@ -17,6 +17,15 @@
  * and dependency-free (like chain_key_index.h beside it) so it can be compiled
  * and RUN natively by tests/host rather than only verified by ear on hardware.
  *
+ * WHY IT LIVES IN src/host/. It was written for the chain DSP and sat in
+ * src/modules/chain/dsp/. Master FX is a permuted list too, and it lives in the
+ * SHIM (shadow_chain_mgmt.c) — which has no include path into a dlopen'd
+ * module's private directory, and must not grow one. The alternative was a
+ * second copy, and a copy of a cap or a shift is exactly the bug class that
+ * made fx3..fx8 silent. So the header moved to the place both units already
+ * reach (the chain includes host/plugin_api_v1.h from here), and it stays pure:
+ * nothing in it knows what a chain is.
+ *
  * WHAT MAKES IT SAFE. A chain position is described by a dozen parallel arrays
  * — the dlopen handle, the vtable, the instance pointer, the module name, the
  * param metadata, the bypass flag, and so on. Anything a permutation MISSES
