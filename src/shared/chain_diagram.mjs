@@ -133,17 +133,34 @@ export function layoutChainDiagram(components, selectedIndex, opts = {}) {
     const total = components.length;
     const win = scrollWindow(total, selectedIndex < 0 ? 0 : selectedIndex, CAPACITY);
     const count = Math.min(win.count, total - win.first);
+    /*
+     * A chain SHORTER than the window is centred, not left-aligned.
+     *
+     * The strip is sized for CAPACITY boxes, so anything shorter used to hug
+     * the left edge with the whole remainder as dead space on the right —
+     * reported as "weirdly smooshed to the left". A slot chain never hit it:
+     * its shortest possible form is patch + `+` + synth + `+` + settings,
+     * which is exactly CAPACITY, so it always fills the strip. Master FX is a
+     * single section and starts at two boxes, so it is nearly always short.
+     *
+     * This is deliberately NOT a scroll offset — it only applies when nothing
+     * is scrolled (a short chain has no off-window positions), so it cannot
+     * fight `scrollWindow`, and `scrolledLeft`/`scrolledRight` stay false.
+     */
+    const pad = count < CAPACITY
+        ? Math.floor(((CAPACITY - count) * (BOX_W + GAP)) / 2)
+        : 0;
     return {
         first: win.first,
         count,
-        x, y,
+        x: x + pad, y,
         boxW: BOX_W, boxH: BOX_H,
         capacity: CAPACITY,
         scrolledLeft: win.first > 0,
         scrolledRight: win.first + count < total,
         /** Screen x of component `index` (an index into `components`, not into
          *  the window — off-window indices are simply not drawn). */
-        boxX: (index) => x + (index - win.first) * (BOX_W + GAP),
+        boxX: (index) => x + pad + (index - win.first) * (BOX_W + GAP),
     };
 }
 

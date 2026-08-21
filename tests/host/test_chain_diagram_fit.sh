@@ -23,8 +23,19 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 node --input-type=module -e '
-import { drawChainDiagram, fitAbbrev, BOX_W, BOX_H, GAP, DEFAULT_X, DEFAULT_Y, SYNTH_BAND_H }
+import { drawChainDiagram, layoutChainDiagram, fitAbbrev, BOX_W, BOX_H, GAP, DEFAULT_X, DEFAULT_Y, SYNTH_BAND_H }
   from "./src/shared/chain_diagram.mjs";
+
+/*
+ * Where the boxes ACTUALLY start.
+ *
+ * This test drives a TWO box chain, and a chain shorter than the window is
+ * CENTRED rather than left aligned, so DEFAULT_X is the origin of the strip
+ * and not the origin of the first box. Asking the layout is the same discipline
+ * the ring recovery below already follows: hardcoding where a thing is assumed
+ * to be is how this test missed the regression it exists for.
+ */
+const ORIGIN = layoutChainDiagram([0, 0], 0).boxX(0);
 
 let failures = 0;
 const fail = (m) => { console.error("FAIL: " + m); failures++; };
@@ -75,7 +86,7 @@ for (const selected of [false, true]) {
   /* The label occupies 7 rows of the 5x7 face. */
   const tTop = t.y, tBot = t.y + 6;
   const band = p.rects.find((r) => r.h === SYNTH_BAND_H && r.w === BOX_W - 2 &&
-                                   r.x >= DEFAULT_X && r.x < DEFAULT_X + BOX_W);
+                                   r.x >= ORIGIN && r.x < ORIGIN + BOX_W);
   if (!band) {
     fail(where + ": the synth drew no band - it is the only landmark once the " +
          "chain scrolls, and it must survive selection too");
@@ -86,7 +97,7 @@ for (const selected of [false, true]) {
          ") overlaps the label (rows " + tTop + ".." + tBot + ")");
   }
   /* And the band must stay inside its own box. */
-  if (band.x < DEFAULT_X || band.x + band.w > DEFAULT_X + BOX_W ||
+  if (band.x < ORIGIN || band.x + band.w > ORIGIN + BOX_W ||
       band.y < DEFAULT_Y || band.y + band.h > DEFAULT_Y + BOX_H) {
     fail(where + ": the synth band is not inside its box");
   }
@@ -101,8 +112,8 @@ for (const selected of [false, true]) {
   const a = p.filter((q) => q.s === "9W9");
   if (a.length !== 2) fail("expected the label on both boxes, got " + a.length);
   else {
-    const offA = a[0].x - DEFAULT_X;
-    const offB = a[1].x - (DEFAULT_X + BOX_W + GAP);
+    const offA = a[0].x - ORIGIN;
+    const offB = a[1].x - (ORIGIN + BOX_W + GAP);
     if (offA !== offB) {
       fail("the synth label sits at offset " + offA + " but the FX label at " + offB +
            " - the synth is being given different room again");
@@ -113,8 +124,8 @@ for (const selected of [false, true]) {
 /* ---- 2. a long label never leaves its own box ------------------------- */
 {
   const p = draw({ fx1: "STRUCT" });
-  const boxL = DEFAULT_X + BOX_W + GAP;      /* fx1 is the second box */
-  const t = p.find((q) => q.s.startsWith("S") && q.x >= DEFAULT_X + BOX_W);
+  const boxL = ORIGIN + BOX_W + GAP;      /* fx1 is the second box */
+  const t = p.find((q) => q.s.startsWith("S") && q.x >= ORIGIN + BOX_W);
   if (!t) {
     fail("the long label was not drawn: " + JSON.stringify(p.map((q) => [q.x, q.s])));
   } else {
