@@ -1026,7 +1026,50 @@ Modules expose a navigable parameter hierarchy to the Shadow UI via `ui_hierarch
 | `list_param` / `count_param` / `name_param` | For preset browser levels |
 | `items_param` / `select_param` | For dynamic item selection levels |
 | `child_prefix` / `child_count` / `child_label` | For repeated elements (see below) |
+| `navigate_to` | Where to land after choosing from this level's list (see below) |
 | `visible_if` | Optional conditional visibility rule for this level |
+
+#### Selector keys must not appear in `knobs`
+
+The keys named by `list_param`, `count_param`, `name_param`, `items_param` and
+`select_param` get their own page — a preset browser or an items list — which is
+a better control than a knob and is where the host expects you to choose from.
+**Listing one in `knobs` as well is now ignored.**
+
+Two modules did it (`impressive-chords` `preset_index`, `breakbeat` `preset`) and
+in both the `knobs` array was byte-identical to `params` — everything listed
+rather than eight chosen — so the selector happened to land on knob 1. It could
+not have worked anyway: `impressive-chords` declares `preset_index` as
+`int 0..500` against 52 presets, so ~90% of that knob was dead travel landing on
+nothing.
+
+You lose nothing by leaving it out. Reported from the device as *"why is preset a
+knob on impressive chords?"*.
+
+#### `navigate_to` — where choosing leaves you
+
+A level with `items_param` may declare `navigate_to: "<level>"`, meaning *"having
+chosen from this list, the user wants to be there"*. Without it, choosing lands
+on the first grid page.
+
+Two behaviours worth knowing, both of which changed in 2026-08:
+
+- **If the named level plans BOTH a preset browser and a knob grid, you get the
+  browser.** `obxd` declares `banks -> navigate_to: "root"`, and its `root`
+  carries `list_param`/`count_param` *and* `knobs`. Naming the level never said
+  which, and the lookup used to filter to knob pages only — so choosing a bank
+  landed on the sliders instead of in that bank's presets. A chooser that filters
+  a list means "now show me the list".
+- **You arrive with the page already open.** The jog is normally inert on a
+  preset browser or items list until you click in (so that *paging past* one
+  cannot audition every preset it goes by). A page you were **sent** to opens:
+  you did not page there, you chose your way there, and one deliberate gesture
+  should not need a second to take effect. Naming a level that plans no preset
+  page still lands on its grid, as before.
+
+There is deliberately no `navigate_to: {level, kind}` form. Only three modules in
+the fleet declare `navigate_to` at all, and new vocabulary nobody adopts is how
+`options_as_string` sat documented and unused for months.
 
 ### Parameter Item Types
 
@@ -2142,6 +2185,28 @@ Modules that already support per-slot autosave get module presets for free. A mo
 doesn't expose a self-contained `state` (or that returns a referential blob) won't produce a
 usable preset, so make `state` round-trip-complete. (User-facing usage is covered in the
 manual.)
+
+#### If you implement no `state` at all
+
+Your parameters do not survive a reboot. That is the expected cost and it is
+yours alone to pay — **but until 2026-08 it was not.** The host asked for
+`state`, could not tell `""` ("this module declares none") apart from `null`
+("the read did not complete"), and took the second reading: it then skipped the
+save to avoid clobbering a good file with defaults, and skipped it for the
+**whole slot**, including the other components in it.
+
+So a slot containing `denis` or `branchage` never autosaved *anything*, ever —
+not the synth, not the FX behind it — and silently, because the thing that fires
+is a guard designed to leave your file alone. Fixed; the two answers are kept
+apart now.
+
+The obligation this leaves you: **answer the `state` query one way or the
+other.** Return your blob, or return `-1` / an empty buffer to say you have
+none. What you must not do is fail to answer — a read that times out is still
+indistinguishable from a module that is simply slow, and the host will (rightly)
+protect the existing file rather than overwrite it with defaults. If your
+`get_param` can block — see the threading section; several modules read files
+from it — that is the same bug wearing a different hat.
 
 ### Testing Shadow Mode
 
