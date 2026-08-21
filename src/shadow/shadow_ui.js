@@ -48,7 +48,8 @@ import { decodeDelta } from '/data/UserData/schwung/shared/input_filter.mjs';
 /* The knob-grid chrome's footer rule row, which the chain editor's slot
  * indicator column stops above. The header/footer/list DRAWING that used to be
  * imported here went to chain_editor_chrome.mjs, so both editors do it once. */
-import { RULE_Y as MOVY_RULE_Y }
+import { RULE_Y as MOVY_RULE_Y,
+         drawHeader as drawMovyHeader, drawFooter as drawMovyFooter }
     from '/data/UserData/schwung/shared/param_pages/render_page_movy.mjs';
 /* The bands around a chain editor's row of boxes — header, label, info,
  * footer — and the module picker it opens on a position. Both shared with
@@ -210,7 +211,8 @@ import {
 import {
     paramPagesEnabled, enterParamPages, exitParamPages, paramPagesActive,
     tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage,
-    paramPagesComponent, paramPagesSlot, clearParamPagesTouch
+    paramPagesComponent, paramPagesSlot, clearParamPagesTouch,
+    enumPickerFooterHints
 } from './shadow_ui_param_pages.mjs';
 import { createSlotGridIo, createMasterGridIo } from './shadow_ui_slot_grid.mjs';
 import {
@@ -372,7 +374,8 @@ const VIEWS = {
     LFO_EDIT: "lfoedit",                      // LFO sub-menu editor
     ANALYTICS_PROMPT: "analyticsprompt",       // First-run analytics opt-out prompt
     LFO_TARGET_COMPONENT: "lfotargetcomp",    // LFO target picker step 1: component
-    LFO_TARGET_PARAM: "lfotargetparam"        // LFO target picker step 2: parameter
+    LFO_TARGET_PARAM: "lfotargetparam",       // LFO target picker step 2: parameter
+    ENUM_PICKER: "enumpick"                   // Option list for an enum param
 };
 
 /* ==== CO-RUN VIEW ADDRESSING ====
@@ -2049,6 +2052,42 @@ function openHierarchyParamEditor(selectedKey, meta, forceOpen) {
     }
     if (!hierEditorEditMode && meta && meta.type === "filepath") {
         openHierarchyFilepathBrowser(selectedKey, meta);
+        return;
+    }
+    /*
+     * An ENUM opens its option list. The jog still steps it in place from the
+     * row (adjustHierSelectedParam), so this is the other half of the same
+     * affordance the knob grid gets — one behaviour on both editors, which is
+     * the point of putting it here rather than only on the grid path.
+     *
+     * The write goes through the same auto-detect the row's own nudge uses:
+     * ask what the plugin REPORTS, answer in kind. chord's set_param is a
+     * strcmp ladder over the names with no trailing else, so an index would be
+     * discarded in silence.
+     */
+    if (!hierEditorEditMode && meta && meta.type === "enum" &&
+        Array.isArray(meta.options) && meta.options.length > 0) {
+        const fullKey = buildHierarchyParamKey(selectedKey);
+        const currentVal = getSlotParam(hierEditorSlot, fullKey);
+        const nameIdx = meta.options.indexOf(currentVal);
+        const pluginUsesIndex = (nameIdx < 0);
+        let index = nameIdx;
+        if (pluginUsesIndex) {
+            const parsed = parseInt(currentVal, 10);
+            index = (!isNaN(parsed) && parsed >= 0 && parsed < meta.options.length) ? parsed : 0;
+        }
+        const slot = hierEditorSlot;
+        openEnumPicker({
+            title: meta.name || meta.label || selectedKey,
+            options: meta.options,
+            index,
+            commit: (i) => {
+                setSlotParam(slot, fullKey, pluginUsesIndex ? String(i) : meta.options[i]);
+                if (shouldRefreshDynamicRateMeta(selectedKey)) refreshHierarchyChainParams();
+                refreshHierarchyVisibility();
+            },
+            returnToGrid: false,
+        });
         return;
     }
     /* Everything else — including wav_position, whose editor IS edit mode on a
@@ -14105,6 +14144,9 @@ function handleJog(delta, shift = isShiftHeld()) {
                 announceMenuItem(lfoTargetParams[selectedLfoTargetParam].label);
             }
             break;
+        case VIEWS.ENUM_PICKER:
+            enumPickerJog(delta);
+            break;
         case VIEWS.OVERTAKE_MODULE:
             /* Overtake module handles its own jog input */
             break;
@@ -14946,6 +14988,9 @@ function handleSelect() {
             }
             break;
         }
+        case VIEWS.ENUM_PICKER:
+            closeEnumPicker(true);
+            break;
         case VIEWS.OVERTAKE_MODULE:
             /* Overtake module handles its own select input */
             break;
@@ -15412,6 +15457,11 @@ function handleBack() {
                 announce("Target, " + lfoTargetComponents[selectedLfoTargetComp].label);
             }
             needsRedraw = true;
+            break;
+        case VIEWS.ENUM_PICKER:
+            /* Nothing was written on the way in or while scrolling, so cancel
+             * is simply not writing now. */
+            closeEnumPicker(false);
             break;
         case VIEWS.OVERTAKE_MODULE:
             /* Overtake module handles its own back input.
@@ -16314,7 +16364,12 @@ function drawHelpDetail() {
      * WAVEFORM, clicking a filepath shows the BROWSER, and Back from either
      * returns to the grid" is four states, and none of them was observable
      * from outside this file — which is why all three routing bugs shipped. */
+    /* The enum option picker. Handed the list and the index rather than a key,
+     * because the two callers (knob grid, list editor) write through different
+     * owners — see openEnumPicker. */
+    _ctx.openEnumPicker = (o) => openEnumPicker(o);
     _ctx.activeParamEditor = () => {
+        if (view === VIEWS.ENUM_PICKER) return "enum";
         if (view === VIEWS.FILEPATH_BROWSER) return "filepath";
         if (view === VIEWS.CANVAS) return "canvas";
         if (view !== VIEWS.HIERARCHY_EDITOR) return null;
@@ -16895,6 +16950,168 @@ function drawLfoTargetParam() {
         selectedIndex: selectedLfoTargetParam,
         getLabel: function(item) { return item.label; },
     });
+}
+
+/* ======================================================================== *
+ * ENUM OPTION PICKER
+ *
+ * A scrolling list of one enum param's options. Reached two ways and it is the
+ * SAME screen both times, on purpose:
+ *
+ *   the knob grid   clicking a held enum knob (footer: CLK OPEN)
+ *   the list editor jog-clicking an enum row
+ *
+ * Why it exists: an enum is turnable, so both editors let you step it one
+ * detent at a time — which is fine for Off/On and useless for a Recv Ch with
+ * seventeen options or a macro-oscillator model with forty-seven. Stepping does
+ * not go away; this is the other half.
+ *
+ * It owns NO param knowledge. The caller hands over the option list, where in
+ * it we currently are, and a `commit` closure — because the two callers write
+ * through different owners: the grid writes through its controller (so the slot
+ * contract's Fwd offset and MPE compound write still apply) and the list editor
+ * writes through setSlotParam. One screen, two owners, no second copy of the
+ * wire-format decision.
+ *
+ * Nothing is written while you scroll, so Back is a genuine cancel and there is
+ * nothing to revert. That also keeps the draw path free of IPC: every value it
+ * shows was resolved once, at open.
+ * ======================================================================== */
+let enumPickerTitle = "";
+let enumPickerOptions = [];
+let enumPickerIndex = 0;
+let enumPickerOpenIndex = 0;
+let enumPickerCommit = null;
+let enumPickerReturnToGrid = false;
+
+function openEnumPicker(o) {
+    const options = Array.isArray(o && o.options) ? o.options : [];
+    if (options.length === 0) return false;
+    enumPickerTitle = String((o && o.title) || "Options");
+    enumPickerOptions = options.map((v) => String(v));
+    const i = Math.round(Number(o && o.index));
+    enumPickerIndex = (isFinite(i) && i >= 0 && i < options.length) ? i : 0;
+    enumPickerOpenIndex = enumPickerIndex;
+    enumPickerCommit = (o && typeof o.commit === "function") ? o.commit : null;
+    enumPickerReturnToGrid = !!(o && o.returnToGrid);
+    setView(VIEWS.ENUM_PICKER);
+    needsRedraw = true;
+    announce(enumPickerTitle + ", " + enumPickerOptions[enumPickerIndex]
+             + ", " + (enumPickerIndex + 1) + " of " + enumPickerOptions.length);
+    return true;
+}
+
+/* Leave the picker. `commit` is false for Back, which must leave the value
+ * exactly where it was — nothing was written on the way in or while scrolling,
+ * so that is simply a matter of not writing now. */
+function closeEnumPicker(commit) {
+    const title = enumPickerTitle;
+    const chosen = enumPickerOptions[enumPickerIndex];
+    const write = commit ? enumPickerCommit : null;
+    const idx = enumPickerIndex;
+    const toGrid = enumPickerReturnToGrid;
+
+    enumPickerCommit = null;
+    enumPickerOptions = [];
+    enumPickerTitle = "";
+    enumPickerIndex = 0;
+    enumPickerOpenIndex = 0;
+    enumPickerReturnToGrid = false;
+
+    if (write) write(idx);
+
+    if (toGrid && paramPagesActive()) {
+        setView(VIEWS.PARAM_PAGES);
+    } else {
+        setView(VIEWS.HIERARCHY_EDITOR);
+    }
+    needsRedraw = true;
+    if (commit) announceParameter(title, chosen);
+    else announce("Cancelled, " + title);
+}
+
+function enumPickerJog(delta) {
+    if (enumPickerOptions.length === 0) return;
+    enumPickerIndex = Math.max(0, Math.min(enumPickerOptions.length - 1,
+                                           enumPickerIndex + delta));
+    needsRedraw = true;
+    announce(enumPickerOptions[enumPickerIndex] + ", "
+             + (enumPickerIndex + 1) + " of " + enumPickerOptions.length);
+}
+
+/*
+ * THE LIST RECT, and why it is nine and not ten.
+ *
+ * The movy bands cost vertical space the old chrome did not: a footer rule at
+ * 55 with an 8-row hint band under it takes the bottom of the screen, where
+ * drawMenuList's default indicator row (62) used to sit. Left at its defaults
+ * the list would have run its last row and its down-arrow straight through the
+ * footer, and the device clips silently — nothing would have said so.
+ *
+ * The obvious top is MENU_LIST_Y (10), the rect the knob grid's own menu pages
+ * use. It costs a row: 10..54 is 44px, and at a 9px line that is FOUR options
+ * where the old chrome showed FIVE. One row up is 45px and buys the fifth back,
+ * and it is free here because this header is NOT inverted — drawHeader only
+ * fills the band when told to, so under a plain header the glyphs stop at row 5
+ * and the selected row's highlight starting at row 8 still has clear air above
+ * it. (A menu page cannot do the same: its bank bar owns row 7.)
+ *
+ * Losing the last option of a list to a band drawn over it is a failure this
+ * codebase has hit before, which is why test_enum_picker_chrome.sh asserts the
+ * row COUNT and clipped() === 0 rather than just eyeballing the render.
+ */
+const ENUM_PICKER_LIST_TOP_Y = 9;
+const ENUM_PICKER_LIST_BOTTOM_Y = MOVY_RULE_Y - 1;
+
+/*
+ * The picker wears the KNOB GRID's chrome — movy header band, hint footer —
+ * unconditionally, from BOTH entry points.
+ *
+ * It is reached from the grid (holding an enum knob and clicking) and from the
+ * hierarchy list editor (jog-clicking an enum row), and the list editor still
+ * wears the older device chrome. So there was a choice: follow the caller, or
+ * be one screen. Following the caller means a `cameFromGrid` branch in the draw
+ * — which is precisely the `kind === "master"` that drawChainPicker's comment
+ * forbids, for the reason it gives: a shared function with a caller test in it
+ * drifts exactly as well as two functions did, and this screen's own header
+ * comment already promises it is the SAME screen both times. It is also the
+ * shape of the bug a user reported from the device about the module pickers
+ * ("the module select here is different than the module select in slots").
+ *
+ * So: one look. The list editor is the frame that will move to match, not this.
+ */
+function drawEnumPicker() {
+    clear_screen();
+    const ctx = { fillRect: fill_rect, print, textWidth: text_width };
+    /* SELECT on the right, the same word drawChainPicker puts there: both are
+     * "a list, pick one", and the grammar of the band is what tells you so
+     * before you have read the title. */
+    drawMovyHeader(ctx, enumPickerTitle, "SELECT", false);
+    if (enumPickerOptions.length === 0) {
+        print(LIST_LABEL_X, ENUM_PICKER_LIST_TOP_Y + 8, "No options", 1);
+        /* Still a footer. openEnumPicker refuses an empty list so this should
+         * be unreachable, but a screen with nothing on it is the one place a
+         * way out most needs naming. */
+        drawMovyFooter(ctx, [["BACK", "EXIT"]]);
+        return;
+    }
+    /* The same list every other picker on this device uses. A second list
+     * widget is how Master FX and the chain editor drifted apart. The tick
+     * marks which option is CURRENTLY set, so scrolling away from it stays
+     * legible as "you have moved off the live value". */
+    drawMenuList({
+        items: enumPickerOptions,
+        selectedIndex: enumPickerIndex,
+        listArea: { topY: ENUM_PICKER_LIST_TOP_Y, bottomY: ENUM_PICKER_LIST_BOTTOM_Y },
+        getLabel: function(item) { return String(item); },
+        /* Which option is CURRENTLY set, so scrolling away from it still reads
+         * as "you have moved off the live value" rather than as nothing. */
+        getValue: function(item, i) { return i === enumPickerOpenIndex ? "*" : ""; },
+        /* This screen announces its own, richer string ("Room, 2 of 17"), so
+         * the list must not also announce "Room: *". */
+        announce: false,
+    });
+    drawMovyFooter(ctx, enumPickerFooterHints());
 }
 
 globalThis.init = function() {
@@ -18211,6 +18428,9 @@ globalThis.tick = function() {
             break;
         case VIEWS.LFO_TARGET_PARAM:
             drawLfoTargetParam();
+            break;
+        case VIEWS.ENUM_PICKER:
+            drawEnumPicker();
             break;
         case VIEWS.OVERTAKE_MODULE:
             try {

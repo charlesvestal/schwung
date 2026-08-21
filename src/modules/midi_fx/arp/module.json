@@ -14,6 +14,7 @@
           "params": [
             {
               "key": "mode",
+              "options_as_string": true,
               "name": "Mode",
               "type": "enum",
               "options": ["off", "up", "down", "up_down", "random"],
@@ -30,6 +31,7 @@
             },
             {
               "key": "division",
+              "options_as_string": true,
               "name": "Division",
               "type": "enum",
               "options": ["1/4.", "1/4", "1/4T", "1/8.", "1/8", "1/8T", "1/16.", "1/16", "1/16T", "1/32"],
@@ -37,6 +39,7 @@
             },
             {
               "key": "sync",
+              "options_as_string": true,
               "name": "Sync",
               "type": "enum",
               "options": ["internal", "clock"],
