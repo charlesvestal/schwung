@@ -44,7 +44,7 @@ import { drawChainEditorBands } from "./src/shared/chain_editor_chrome.mjs";
    pixels off the display. Case 6 renders one. */
 import { drawKnobCard } from "./src/shared/param_pages/knob_card.mjs";
 import { buildMetaIndex } from "./src/shared/param_pages/param_meta.mjs";
-import { parseId as parseChainId } from "./src/shared/chain_model.mjs";
+import { parseId as parseChainId, chainComponents } from "./src/shared/chain_model.mjs";
 
 let failures = 0;
 const fail = (m) => { console.error("FAIL: " + m); failures++; };
@@ -58,15 +58,22 @@ const capM = jsSrc.match(/^const MASTER_FX_SLOTS = (\d+);/m);
 if (!capM) { console.error("FAIL: could not read MASTER_FX_SLOTS"); process.exit(1); }
 const CAP = parseInt(capM[1], 10);
 
-/* MASTER_FX_CHAIN_COMPONENTS, evaluated out of shadow_ui.js rather than
-   reconstructed -- the list the device draws is the list under test. */
+/* The Master FX declaration block, evaluated out of shadow_ui.js rather than
+   reconstructed -- the list the device draws is the list under test. The list
+   is now DERIVED from the loaded chain through chainEditorComponents, so that
+   is lifted and handed in too. */
 function componentsAtCap(cap) {
   let block = jsSrc.slice(jsSrc.indexOf("const MASTER_FX_SLOTS = "),
                           jsSrc.indexOf("let selectingMasterFxModule"));
   block = block.replace(/const MASTER_FX_SLOTS = \d+;/, "const MASTER_FX_SLOTS = " + cap + ";");
-  return new Function("parseChainId", block +
-    "return {MASTER_FX_CHAIN_COMPONENTS, makeEmptyMasterFxConfig, MASTER_CHAIN_TARGET};")(
-    parseChainId);
+  const ceAt = jsSrc.indexOf("function chainEditorComponents(");
+  const chainEditorComponents = new Function("chainComponents",
+    jsSrc.slice(ceAt, jsSrc.indexOf("\n}\n", ceAt) + 2) +
+    "\nreturn chainEditorComponents;")(chainComponents);
+  return new Function("parseChainId", "chainEditorComponents", block +
+    "return {masterFxChainComponents, makeEmptyMasterFxConfig, MASTER_CHAIN_TARGET," +
+    " setConfig: (c) => { masterFxConfig = c; }};")(
+    parseChainId, chainEditorComponents);
 }
 
 /* drawMasterFx paints its LFO and bypass markers through the SHARED helpers
@@ -102,8 +109,11 @@ function render(cap, selected, opts = {}) {
     return "";
   };
   const cfg = decls.makeEmptyMasterFxConfig();
-  /* Every slot loaded: the worst case for both width and read count. */
-  for (let i = 1; i <= cap; i++) cfg["fx" + i].module = "module" + i;
+  /* Every slot loaded: the worst case for both width and read count, and the
+     only state in which the component list reaches the cap at all -- it is the
+     CHAIN that bounds it now, not the array size. */
+  if (!opts.empty) for (let i = 1; i <= cap; i++) cfg["fx" + i].module = "module" + i;
+  decls.setConfig(cfg);
 
   const uictx = {
     masterShowingNamePreview: false, masterConfirmingOverwrite: false,
@@ -112,7 +122,11 @@ function render(cap, selected, opts = {}) {
     selectingMasterFxModule: false,
     selectedMasterFxComponent: selected,
     masterFxConfig: cfg,
-    MASTER_FX_CHAIN_COMPONENTS: decls.MASTER_FX_CHAIN_COMPONENTS,
+    /* A GETTER, as the device ctx has: the list changes length on every shape
+       edit, and a snapshot taken here would be the fixed row this step removed. */
+    get MASTER_FX_CHAIN_COMPONENTS() { return decls.masterFxChainComponents(); },
+    ensureMasterFxConfigFresh: () => {},
+    isShiftHeld: () => !!opts.shift,
     MASTER_FX_OPTIONS: [],
     currentMasterPresetName: "",
     getMasterFxParam: (i, k) => { reads.push("master_fx:fx" + (i + 1) + ":" + k); return ""; },
@@ -164,7 +178,9 @@ function render(cap, selected, opts = {}) {
  * which lights every box at once). The ends are where a windowed row fails:
  * the first and last windows are the two the scroll arithmetic clamps.
  */
-const SELECTIONS = [-1, 0, 1, Math.floor(CAP / 2), CAP - 1, CAP];
+/* CAP is the `+` box and CAP+1 is Settings once every position is loaded --
+   both are drawn boxes and both are ends of the window. */
+const SELECTIONS = [-1, 0, 1, Math.floor(CAP / 2), CAP - 1, CAP, CAP + 1];
 for (const sel of SELECTIONS) {
   const { fb } = render(CAP, sel, {
     /* Markers on the first and last FX slot, so a marker drawn against an
@@ -225,12 +241,29 @@ for (const sel of SELECTIONS) {
   }
 }
 
-/* ---- 4. the settings box is never treated as an FX slot ---------------- */
+/* ---- 4. the settings box and the `+` are never treated as FX slots ----- */
 {
-  const { reads } = render(CAP, CAP, {});
-  if (reads.some((k) => k.indexOf("master_fx:settings") === 0)) {
-    fail("the settings box was asked for a slot parameter: " +
-         reads.filter((k) => k.indexOf("master_fx:settings") === 0).join(" "));
+  const { reads } = render(CAP, CAP + 1, {});
+  for (const bad of ["master_fx:settings", "master_fx:add_fx"]) {
+    if (reads.some((k) => k.indexOf(bad) === 0)) {
+      fail("a non-module box was asked for a slot parameter: " +
+           reads.filter((k) => k.indexOf(bad) === 0).join(" "));
+    }
+  }
+}
+
+/* ---- 4b. AN EMPTY CHAIN: one `+`, and it still fits ------------------- *
+ *
+ * The state the whole step exists for. Eight empty boxes said nothing; one `+`
+ * says everything. Rendered at both of its two positions, with Shift held and
+ * not, because the footer changes under the modifier now. */
+{
+  for (const sel of [0, 1]) for (const shift of [false, true]) {
+    const decls = componentsAtCap(CAP);
+    const { fb, reads } = render(CAP, sel, { shift, empty: true });
+    if (fb.clipped() !== 0)
+      fail("an empty Master FX at selection " + sel + " clipped " + fb.clipped() + " pixels");
+    void reads; void decls;
   }
 }
 
@@ -241,7 +274,11 @@ for (const sel of SELECTIONS) {
  * claiming that kind would put a landmark on an ordinary FX.
  */
 {
-  const comps = componentsAtCap(CAP).MASTER_FX_CHAIN_COMPONENTS;
+  const decls = componentsAtCap(CAP);
+  const full = decls.makeEmptyMasterFxConfig();
+  for (let i = 1; i <= CAP; i++) full["fx" + i].module = "module" + i;
+  decls.setConfig(full);
+  const comps = decls.masterFxChainComponents();
   const synth = comps.filter((c) => c.kind === "synth");
   if (synth.length) {
     fail("Master FX components claim kind synth: " +

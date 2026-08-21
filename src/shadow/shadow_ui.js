@@ -456,11 +456,24 @@ const CHAIN_CAP = { midiFx: MAX_MIDI_FX, fx: MAX_FX };
  * unchanged for everything that existed before: "synth", "midiFx" for the first
  * MIDI FX, "fx1"/"fx2"…, "settings". A second MIDI FX takes its model id
  * ("midi_fx2") rather than colliding on "midiFx".
+ *
+ * `caps` says which SECTIONS the chain has — `{ hasSynth, hasMidiFx }`, which is
+ * exactly what a chain target carries, so the target IS the argument. Master FX
+ * is one audio-FX section with no synth and no MIDI FX, so those positions are
+ * dropped and what is left is `fx1..fxN`, the `+`, and Settings. Branching on
+ * the CAPABILITY rather than on which chain this is: a third chain with a synth
+ * and no MIDI FX would need no new case here, and "does this chain have a MIDI
+ * FX section" states the reason where "is this master" would not. Absent, both
+ * are assumed present, which is what every caller that predates Master FX means.
  */
-function chainEditorComponents(cfg) {
+function chainEditorComponents(cfg, caps) {
+    const hasSynth = !caps || caps.hasSynth !== false;
+    const hasMidiFx = !caps || caps.hasMidiFx !== false;
     const out = [];
     for (const pos of chainComponents(cfg)) {
         if (pos.kind === "patch") continue;
+        if (!hasSynth && pos.kind === "synth") continue;
+        if (!hasMidiFx && pos.section === "midiFx") continue;
         const key = pos.kind === "synth" ? "synth"
             : pos.kind === "add" ? pos.id
             : pos.kind === "settings" ? "settings"
@@ -1428,38 +1441,101 @@ let currentMasterFxPath = ""; // Full path to currently loaded DSP
  * values out of source and fails if they disagree. */
 const MASTER_FX_SLOTS = 8;
 
-/* Master FX chain components: one box per FX slot, then a settings box.
- * Generated, never hand-listed — a hand-written fx1..fxN table that nobody
- * remembers to extend is the exact failure mode this indirection exists to
- * prevent.
+/*
+ * The Master FX chain as a chain-model config.
  *
- * `kind` is what shared/chain_diagram.mjs dispatches on, and it is set
- * EXPLICITLY here rather than left undefined. The kind that matters by its
- * absence is "synth": the diagram paints a filled band across the top of a
- * synth box as the landmark the scroll leans on, and Master FX has no synth,
- * so no entry may ever claim that kind. "fx" and "settings" are both plain
- * boxes to the diagram; "settings" is also what the draw code tests to know a
- * box has no bypass parameter and cannot be an LFO target. */
-const MASTER_FX_CHAIN_COMPONENTS = (function () {
-    const comps = [];
-    for (let i = 0; i < MASTER_FX_SLOTS; i++) {
-        comps.push({
-            key: `fx${i + 1}`,
-            kind: "fx",
-            label: `FX ${i + 1}`,
-            position: i,
-            paramPrefix: `master_fx:fx${i + 1}:`
-        });
-    }
-    comps.push({ key: "settings", kind: "settings", label: "Settings",
-                 position: MASTER_FX_SLOTS, paramPrefix: "" });
-    return comps;
-})();
+ * masterFxConfig is a fixed fx1..fxN dictionary because that is how the chain
+ * is PERSISTED (one `master_fx_N.json` per position). The editor wants a LIST,
+ * and the list is bounded by how many positions are actually loaded — not by
+ * the cap. That distinction is the whole of the 8-slot complaint: a fixed array
+ * of eight empty boxes says nothing, a chain of one module and a `+` says
+ * everything.
+ *
+ * Trailing empties are dropped and a hole in FRONT of a loaded module is KEPT,
+ * exactly as loadChainConfigFromSlot does for a slot chain, and for the same
+ * reason: position i of this list IS `fx(i+1)` in the DSP, so compacting a hole
+ * away on READ would leave the editor addressing fx1's params while the audio
+ * ran through fx2. The user's own edit compacts it (removeAt + the `remove`
+ * verb), which renumbers the DSP at the same time.
+ *
+ * Once the DSP publishes `master_fx:fx_count` (step 4d) this becomes a read of
+ * that count rather than a walk of the cap; the list it produces is the same
+ * either way, which is why the display does not wait on it.
+ */
+/*
+ * HOW LONG the Master FX chain is. -1 means "derive it from what is loaded".
+ *
+ * This is the published count, held client-side until the DSP publishes
+ * `master_fx:fx_count` (step 4d). It has to be a value rather than always a
+ * derivation for one reason: the position a `+` box opens is EMPTY, and an
+ * empty position at the end is indistinguishable from the end of the chain. A
+ * derivation would drop it the moment it was created, and the picker would be
+ * standing on a position that no longer exists.
+ */
+let masterFxChainLength = -1;
 
-/* Index of the settings box — always the last component. "Is a module box
- * rather than the settings box" is a statement about THIS list, not about the
- * slot cap, so gates on the selection use this and not MASTER_FX_SLOTS. */
-const MASTER_FX_SETTINGS_INDEX = MASTER_FX_CHAIN_COMPONENTS.length - 1;
+function masterFxChainConfig() {
+    const fx = [];
+    for (let i = 1; i <= MASTER_FX_SLOTS; i++) {
+        const m = masterFxConfig[`fx${i}`];
+        fx.push(m && m.module ? m : null);
+    }
+    /* Derived: trailing empties are dropped so the list says what is actually
+     * loaded, and a hole in FRONT of a loaded module is KEPT — exactly as
+     * loadChainConfigFromSlot does for a slot chain, and for the same reason.
+     * The explicit length may only EXTEND past that end, never truncate: the
+     * one thing it knows that the derivation cannot is a trailing hole a `+`
+     * box just opened, and clamping it this way means a stale value can at
+     * worst leave one empty box until the next reload rather than hide a
+     * module. */
+    let n = fx.length;
+    while (n > 0 && !fx[n - 1]) n--;
+    if (masterFxChainLength > n) n = Math.min(masterFxChainLength, MASTER_FX_SLOTS);
+    fx.length = Math.max(0, n);
+    return { midiFx: [], synth: null, fx };
+}
+
+/* Write a chain-model config back into the persisted fx1..fxN dictionary. The
+ * positions past the chain's end are CLEARED, which is what makes a removal
+ * close the gap rather than leave the old tail behind, and the LENGTH is kept
+ * so a trailing hole survives until the picker resolves it. */
+function setMasterFxChainConfig(cfg) {
+    const list = cfg.fx || [];
+    for (let i = 1; i <= MASTER_FX_SLOTS; i++) {
+        const m = list[i - 1];
+        masterFxConfig[`fx${i}`] = { module: (m && m.module) || "" };
+    }
+    masterFxChainLength = Math.min(list.length, MASTER_FX_SLOTS);
+}
+
+/*
+ * Master FX chain components: the loaded positions, then a `+`, then Settings.
+ *
+ * DERIVED from the same model the slot chain's list is derived from, through
+ * the same chainEditorComponents — never hand-listed, and never bounded by the
+ * cap. `kind` therefore comes from the model too: "module" for a position,
+ * "add" for the `+`, "settings" for the last box. The kind that matters by its
+ * absence is "synth" — the diagram paints a filled band across the top of a
+ * synth box as the landmark the scroll leans on, and Master FX has no synth, so
+ * no entry may ever claim that kind. The MASTER_CHAIN_TARGET's `hasSynth:false`
+ * is what guarantees it.
+ *
+ * ONE `+`, appended: Master FX has one section, and its `+` is the audio-FX end
+ * of a slot chain wearing the same rules.
+ */
+function masterFxChainComponents() {
+    return chainEditorComponents(masterFxChainConfig(), MASTER_CHAIN_TARGET);
+}
+
+/* Is the Master FX selection on a module POSITION — as opposed to the preset
+ * row, the `+`, the Settings box, or an index left over from a chain that got
+ * shorter? The gates that used to compare the index against a fixed settings
+ * position ask this instead; there is no fixed settings position any more. */
+function masterFxSelectedIsModule() {
+    if (selectedMasterFxComponent < 0) return false;
+    const comp = masterFxChainComponents()[selectedMasterFxComponent];
+    return !!comp && comp.kind === "module";
+}
 
 /* ============================================================================
  * CHAIN TARGETS — which chain an editor operation is talking about
@@ -1501,6 +1577,10 @@ function masterFxComponentKey(i) {
 function slotChainTarget(slotIndex) {
     return {
         kind: "slot",
+        /* A STABLE NAME for this chain, so a record made against it (the pending
+         * `+` insert) can be matched later. Identity cannot do that job: this
+         * function builds a fresh object on every call. */
+        id: `slot${slotIndex}`,
         slot: slotIndex,
         /* How this chain names itself in a knob title or an announcement —
          * "S2: CloudSeed Room Size". DATA, not a kind test: it is the one thing
@@ -1514,6 +1594,30 @@ function slotChainTarget(slotIndex) {
          * two LFOs, and whatever else the bus grows. */
         chainKey: (suffix) => suffix,
         components: () => slotChainComponents(slotIndex),
+        /* The chain as a MODEL config, and how to put an edited one back. The
+         * shape editors (insert / remove / move) are written once against these
+         * two, so neither has to know where a chain keeps its list. */
+        config: () => chainConfigs[slotIndex] || createEmptyChainConfig(),
+        setConfig: (cfg) => { chainConfigs[slotIndex] = cfg; },
+        /* The cached view of this chain is no longer known to match the DSP.
+         * LAZY: the next draw reloads it. */
+        invalidate: () => { invalidateChainConfig(slotIndex); },
+        /* Re-read it from the DSP NOW. The one caller that cannot wait is the
+         * `+` cancel: it has to resolve the `+` box's index in the chain the
+         * DSP actually holds, and with the cancelled hole still in the model
+         * the `+` sits one place further right. */
+        reload: () => loadChainConfigFromSlot(slotIndex),
+        /* Which position the editor is pointing at. -1 is the patch row and is
+         * not a position; it is preserved rather than clamped. */
+        selection: () => selectedChainComponent,
+        setSelection: (i) => {
+            selectedChainComponent = i;
+            lastChainComponent[slotIndex] = i;
+        },
+        /* Is this the chain the editor is pointing at? There are four of these
+         * and the shim can switch between them underneath a picker. */
+        isSelectedChain: () => selectedSlot === slotIndex,
+        cap: (section) => CHAIN_CAP[section],
         hasSynth: true,
         hasMidiFx: true,
     };
@@ -1523,6 +1627,8 @@ function slotChainTarget(slotIndex) {
  * "master_fx:" prefix. */
 const MASTER_CHAIN_TARGET = {
     kind: "master",
+    /* See slotChainTarget.id. */
+    id: "master",
     slot: 0,
     /* See slotChainTarget.label. "MFX", never "S1" — Master FX is addressed at
      * slot 0 but it is not instrument slot 1, and a title that said so would be
@@ -1538,7 +1644,27 @@ const MASTER_CHAIN_TARGET = {
         return `master_fx:${componentKey}:${suffix}`;
     },
     chainKey: (suffix) => `master_fx:${suffix}`,
-    components: () => MASTER_FX_CHAIN_COMPONENTS,
+    components: () => masterFxChainComponents(),
+    config: () => masterFxChainConfig(),
+    setConfig: (cfg) => { setMasterFxChainConfig(cfg); },
+    /* masterFxConfig is the model, so "the cached view is stale" means "re-read
+     * the positions from the DSP". LAZY, exactly as invalidateChainConfig is,
+     * and for a reason that is not about cost: the `+` box materialises a
+     * position IN THE MODEL ONLY, and an eager reload here would read the chain
+     * back from a DSP that has never heard of it and wipe the hole out from
+     * under the picker that was just opened on it. drawMasterFx reloads on its
+     * next diagram frame instead — and the picker draws before that point, so
+     * the pending position survives for exactly as long as it has to. */
+    invalidate: () => { invalidateMasterFxConfig(); },
+    reload: () => loadMasterFxChainConfig(),
+    selection: () => selectedMasterFxComponent,
+    setSelection: (i) => { selectedMasterFxComponent = i; },
+    /* There is exactly one master bus, so it is always the master chain the
+     * editor is pointing at. */
+    isSelectedChain: () => true,
+    /* One section, and its cap is the shim's array size — the constant this
+     * file already mirrors — not the slot chain's. */
+    cap: () => MASTER_FX_SLOTS,
     hasSynth: false,
     hasMidiFx: false,
 };
@@ -1729,7 +1855,15 @@ function makeEmptyMasterFxConfig() {
 
 /* Master FX chain editing state */
 let masterFxConfig = makeEmptyMasterFxConfig();
-/* -1 = preset; 0..MASTER_FX_SLOTS-1 = fx1..fxN; MASTER_FX_SETTINGS_INDEX = settings */
+/*
+ * -1 = the preset row; 0..N-1 = fx1..fxN; then the `+`, then Settings.
+ *
+ * AN INDEX INTO A LIST THAT CHANGES LENGTH. Every shape edit shifts it —
+ * removing a position shortens the chain, so a selection that pointed at
+ * Settings now points at the `+` — so nothing may carry it across an edit.
+ * Re-anchor by the component's KEY through the target's component list, the way
+ * chainReorderJog and applyMasterFxModuleSelection do.
+ */
 let selectedMasterFxComponent = 0;
 let selectingMasterFxModule = false;  // True when selecting module for a component
 let selectedMasterFxModuleIndex = 0;  // Index in MASTER_FX_OPTIONS during selection
@@ -3807,24 +3941,31 @@ function chainSectionPrefix(section) {
  *            audio and the MIDI walk skip per position.
  *   remove   unload `index` and close the gap.
  *   move     `index` -> `to`, rotating the span between.
+ *
+ * `target` says WHICH chain, and it is the only difference between the two
+ * editors here: the verb is spelled `fx:insert` for a slot and
+ * `master_fx:fx:insert` for the master bus, which is exactly what
+ * `target.chainKey` was introduced for. One emitter, so a shape edit cannot
+ * mean two different things depending on which screen the user is standing on.
  */
-function writeChainShape(slotIndex, op) {
+function writeChainShape(target, op) {
     if (!op || !op.section) return;
     const prefix = chainSectionPrefix(op.section);
+    const verb = (name) => target.chainKey(`${prefix}:${name}`);
     if (op.kind === "insert") {
-        setSlotParam(slotIndex, `${prefix}:insert`, String(op.index + 1));
+        setSlotParam(target.slot, verb("insert"), String(op.index + 1));
     } else if (op.kind === "remove") {
-        setSlotParam(slotIndex, `${prefix}:remove`, String(op.index + 1));
+        setSlotParam(target.slot, verb("remove"), String(op.index + 1));
     } else if (op.kind === "move") {
-        setSlotParam(slotIndex, `${prefix}:move`, `${op.index + 1}>${op.to + 1}`);
+        setSlotParam(target.slot, verb("move"), `${op.index + 1}>${op.to + 1}`);
     } else {
         return;
     }
-    /* The slot the editor is drawing from has just been renumbered underneath
+    /* The chain the editor is drawing from has just been renumbered underneath
      * it. Here rather than in each caller so a fourth one cannot forget — and
      * note this matters even though no `<id>:module` write went out, because
      * nothing keyed on the module signature would notice a pure reorder. */
-    invalidateChainConfig(slotIndex);
+    target.invalidate();
 }
 
 /*
@@ -3875,12 +4016,13 @@ function pickerReplacedModule(replaced, moduleId) {
     return String(replaced).toLowerCase() !== String(moduleId || "").toLowerCase();
 }
 
-function clearLfoRoutingForComponent(slotIndex, componentId) {
+function clearLfoRoutingForComponent(target, componentId) {
     if (!componentId) return;
     for (let li = 1; li <= 2; li++) {
-        if ((getSlotParam(slotIndex, `lfo${li}:target`) || "") !== componentId) continue;
-        setSlotParam(slotIndex, `lfo${li}:target`, "");
-        setSlotParam(slotIndex, `lfo${li}:target_param`, "");
+        const aim = target.chainKey(`lfo${li}:target`);
+        if ((getSlotParam(target.slot, aim) || "") !== componentId) continue;
+        setSlotParam(target.slot, aim, "");
+        setSlotParam(target.slot, target.chainKey(`lfo${li}:target_param`), "");
     }
 }
 
@@ -3904,8 +4046,8 @@ function clearLfoRoutingForComponent(slotIndex, componentId) {
  * running, which is the difference between reordering a chain and rebuilding it
  * (see writeChainShape).
  */
-function moveChainComponent(slotIndex, componentKey, delta) {
-    const cfg = chainConfigs[slotIndex];
+function moveChainComponent(target, componentKey, delta) {
+    const cfg = target.config();
     if (!cfg) return false;
     const id = chainComponentId(componentKey);
     const at = parseChainId(id);
@@ -3917,9 +4059,9 @@ function moveChainComponent(slotIndex, componentKey, delta) {
     const next = chainMoveBy(cfg, id, delta);
     const after = next[at.section];
     if (after.length === before.length && after.every((m, i) => m === before[i])) return false;
-    chainConfigs[slotIndex] = next;
-    writeChainShape(slotIndex, { kind: "move", section: at.section,
-                                index: at.index, to: at.index + delta });
+    target.setConfig(next);
+    writeChainShape(target, { kind: "move", section: at.section,
+                             index: at.index, to: at.index + delta });
     /* An LFO label names a module by the position it was routed to, and both
      * just changed. The knob context self-heals within ~30 ticks via
      * applySlotModuleSignature; this cache does not, so a stale label would sit
@@ -4021,10 +4163,53 @@ function applyPickerChoiceToChain(cfg, componentKey, moduleId) {
  */
 let pendingChainInsert = null;
 
-/** Remember a `+` box's new position until the picker resolves it. */
-function beginPendingChainInsert(slotIndex, section, index, count) {
-    pendingChainInsert = { slot: slotIndex, section, index, count,
+/** Remember a `+` box's new position until the picker resolves it. `target.id`
+ *  rather than the target object: slotChainTarget builds a fresh one per call,
+ *  so identity would never match on the way back out. */
+function beginPendingChainInsert(target, section, index, count) {
+    pendingChainInsert = { target, id: target.id, section, index, count,
                            key: chainEditorKeyAt(section, index) };
+}
+
+/*
+ * A `+` box was clicked: open a NEW position WHERE THE BOX IS DRAWN, and hand
+ * back its index in the (now longer) component list so the caller can raise its
+ * picker on it. -1 when the section is full, which is announced here.
+ *
+ * The two `+` boxes sit at opposite ends of the diagram — the MIDI one is the
+ * LEFTMOST box, ahead of every MIDI FX, and the audio one comes after the last
+ * FX — so the audio `+` appends and the MIDI `+` inserts at the head. Sharing
+ * one append made the MIDI side put the new module at the far end of the
+ * section from the button that was pressed. The asymmetry is the rule, not an
+ * exception to it. Master FX has only the audio end, so its `+` appends.
+ *
+ * The position is materialised in the MODEL only. NOTHING IS WRITTEN here: an
+ * insert with anything to its right renumbers the section, and it is the
+ * picker's confirm that owes the DSP that (withPendingChainInsert). Backing out
+ * writes nothing at all, which is why the record of the pending position is
+ * kept rather than inferred.
+ *
+ * Written once for both chains — a second copy is how "Master FX can append but
+ * cannot move" happens.
+ */
+function beginChainInsertFromAddBox(target, comp) {
+    const cfg = target.config();
+    const list = cfg[comp.section] || [];
+    if (list.length >= target.cap(comp.section)) {
+        announce(`${comp.label} full`);
+        return -1;
+    }
+    const at = comp.section === "midiFx" ? 0 : list.length;
+    beginPendingChainInsert(target, comp.section, at, list.length);
+    target.setConfig(chainInsertAt(cfg, comp.section, at, null));
+    /* The pending entry exists only in the model, so the cached view is stale
+     * the moment it is added — and stale in BOTH directions: backing out of the
+     * picker is supposed to drop it, and it is a reload that drops it (the DSP
+     * never held it). Without this the editor would come back still drawing a
+     * `+` that was cancelled. */
+    target.invalidate();
+    const want = chainEditorKeyAt(comp.section, at);
+    return target.components().findIndex((c) => c.key === want);
 }
 
 /*
@@ -4046,10 +4231,10 @@ function beginPendingChainInsert(slotIndex, section, index, count) {
  * The CANCEL paths still clear explicitly, because backing out leaves the
  * position empty and there is nothing for this to notice.
  */
-function pendingChainInsertFor(slotIndex, componentKey) {
+function pendingChainInsertFor(target, componentKey) {
     const p = pendingChainInsert;
-    if (!p || p.slot !== slotIndex || p.key !== componentKey) return null;
-    if (getChainComponentModule(chainConfigs[slotIndex], componentKey)) return null;
+    if (!p || p.id !== target.id || p.key !== componentKey) return null;
+    if (getChainComponentModule(target.config(), componentKey)) return null;
     return p;
 }
 
@@ -4071,14 +4256,19 @@ function cancelPendingChainInsert() {
     const p = pendingChainInsert;
     pendingChainInsert = null;
     if (!p) return;
-    loadChainConfigFromSlot(p.slot);
-    if (p.slot !== selectedSlot) return;
-    const at = slotChainComponentIndex(p.slot,
-        p.section === "midiFx" ? "add_midi" : "add_fx");
-    if (at >= 0) {
-        selectedChainComponent = at;
-        lastChainComponent[p.slot] = at;
-    }
+    /* The reload IS the drop: the DSP never heard of the entry, so reading the
+     * chain back from it is what removes the hole — wherever in the list it
+     * sat. NOW rather than lazily, because the selection below has to name a
+     * position in the chain that is left. */
+    p.target.reload();
+    /* The editor may be pointing at a DIFFERENT chain by now — there are four
+     * slot chains and the shim can switch between them — and putting the
+     * selection back would move it on a chain the user is not looking at. Asked
+     * of the target: there is only one master bus, so it answers yes. */
+    if (!p.target.isSelectedChain()) return;
+    const at = p.target.components().findIndex(
+        (c) => c.key === (p.section === "midiFx" ? "add_midi" : "add_fx"));
+    if (at >= 0) p.target.setSelection(at);
 }
 
 /*
@@ -7677,9 +7867,32 @@ function handleGlobalSettingsAction(key) {
 
 /* enterMasterFxSettings() -> shadow_ui_master_fx.mjs */
 
+/*
+ * Whether masterFxConfig is known to still describe the DSP.
+ *
+ * The exact counterpart of chainConfigFresh, and it exists for the same two
+ * reasons: a shape edit renumbers the chain underneath the editor without
+ * changing WHICH modules it holds (so nothing keyed on a module id would
+ * notice), and a `+` box materialises a position that only exists in the model
+ * (so the reload must not happen until the picker has resolved it).
+ */
+let masterFxConfigFresh = false;
+
+function invalidateMasterFxConfig() { masterFxConfigFresh = false; }
+
+/** Reload the Master FX positions from the DSP only if they went stale. */
+function ensureMasterFxConfigFresh() {
+    if (!masterFxConfigFresh) loadMasterFxChainConfig();
+    return masterFxConfig;
+}
+
 /* Load master FX chain configuration from DSP */
 function loadMasterFxChainConfig() {
     masterFxConfig = makeEmptyMasterFxConfig();
+    /* This IS the reload every other path invalidates towards, and the DSP is
+     * the authority on the length again. */
+    masterFxConfigFresh = true;
+    masterFxChainLength = -1;
 
     /* Query each slot's module from DSP */
     for (let i = 1; i <= MASTER_FX_SLOTS; i++) {
@@ -7711,47 +7924,149 @@ function getMasterFxSlotModule(slotIndex) {
 function setMasterFxSlotModule(slotIndex, dspPath) {
     /* Clear warning tracking for this slot so warning can show again for new module */
     warningShownForMasterFx.delete(slotIndex);
+    /*
+     * A position was written, so the chain's length is derivable again.
+     *
+     * masterFxChainLength is only ever explicitly set to cover a TRAILING HOLE
+     * — the position a `+` box opens, which is empty and would otherwise look
+     * like the end of the chain. Once a module write lands there the hole is
+     * gone and the derivation is correct, so dropping the override here is both
+     * safe and the one place that catches every bulk path (preset load, set
+     * load, clear) without each of them having to remember.
+     */
+    masterFxChainLength = -1;
     return chainTargetSetParam(MASTER_CHAIN_TARGET, masterFxComponentKey(slotIndex),
                                "module", dspPath || "");
 }
 
-/* Enter module selection for a Master FX slot */
+/*
+ * The rows the Master FX picker shows: the modules, plus this position's Move
+ * Left / Move Right.
+ *
+ * Held rather than recomputed because the confirm has to resolve the SAME index
+ * the draw and the jog were addressing, and the move rows only exist while the
+ * position has somewhere to go — which the confirm itself changes.
+ */
+let masterFxPickerItems = [];
+
+/* Enter module selection for a Master FX position */
 function enterMasterFxModuleSelect(componentIndex) {
-    const comp = MASTER_FX_CHAIN_COMPONENTS[componentIndex];
-    if (!comp || comp.key === "settings") return;
+    const comp = masterFxChainComponents()[componentIndex];
+    if (!comp || comp.kind !== "module") return;
+
+    /*
+     * Move Left / Move Right, tucked under the loaded module — the same rows
+     * the slot chain's picker carries, built by the same chainMoveEntries, so
+     * Shift+jog is not the only way to reorder a Master FX chain either. A
+     * modifier gesture with no discoverable equivalent is a feature only the
+     * person who wrote it knows about. Offered only where they would DO
+     * something, so the list never carries a row that answers a click by doing
+     * nothing.
+     */
+    const currentModule = masterFxConfig[comp.key]?.module || "";
+    masterFxPickerItems = MASTER_FX_OPTIONS.slice();
+    const loadedIdx = currentModule
+        ? masterFxPickerItems.findIndex(o => o.id === currentModule) : -1;
+    masterFxPickerItems.splice(loadedIdx >= 0 ? loadedIdx + 1 : 0, 0,
+        ...chainMoveEntries(masterFxChainConfig(), comp.key));
 
     /* Set selection index to current module if any */
-    const currentModule = masterFxConfig[comp.key]?.module || "";
-    selectedMasterFxModuleIndex = MASTER_FX_OPTIONS.findIndex(o => o.id === currentModule);
+    selectedMasterFxModuleIndex = masterFxPickerItems.findIndex(o => o.id === currentModule);
     if (selectedMasterFxModuleIndex < 0) selectedMasterFxModuleIndex = 0;
 
     selectingMasterFxModule = true;
     needsRedraw = true;
 
     /* Announce menu title + initial selection */
-    const moduleName = MASTER_FX_OPTIONS[selectedMasterFxModuleIndex]?.name || "None";
+    const moduleName = masterFxPickerItems[selectedMasterFxModuleIndex]?.name || "None";
     announce(`Select ${comp.label}, ${moduleName}`);
 }
 
-/* Apply module selection for Master FX slot */
+/*
+ * Apply a Master FX picker choice.
+ *
+ * The shape half of this is the slot chain's, function for function:
+ * applyPickerChoiceToChain turns `None` on a list position into a `remove`,
+ * withPendingChainInsert turns a `+` that is not an append into an `insert`,
+ * and writeChainShape sends whichever verb resulted. The only Master-FX-shaped
+ * thing left is that the module write takes a DSP PATH rather than a module id
+ * — the shim loads master positions by path.
+ */
 function applyMasterFxModuleSelection() {
-    const comp = MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
-    if (!comp || comp.key === "settings") return;
-
-    const selected = MASTER_FX_OPTIONS[selectedMasterFxModuleIndex];
-    if (selected) {
-        if (selected.id === "__get_more__") {
-            /* Open store picker for audio FX modules */
-            selectingMasterFxModule = false;
-            enterStorePicker('master_fx');
-            return;
-        }
-        /* Load the module into the slot */
-        setMasterFxSlotModule(selectedMasterFxComponent, selected.dspPath || "");
-        masterFxConfig[comp.key].module = selected.id;
-        /* Save to config */
-        saveMasterFxChainConfig();
+    const comps = masterFxChainComponents();
+    const comp = comps[selectedMasterFxComponent];
+    if (!comp || comp.kind !== "module") {
+        cancelPendingChainInsert();
+        selectingMasterFxModule = false;
+        needsRedraw = true;
+        return;
     }
+
+    /* Was this picker opened from a `+` box? Read BEFORE the choice is applied,
+     * because applying it fills the very hole this recognises. */
+    const pending = pendingChainInsertFor(MASTER_CHAIN_TARGET, comp.key);
+    const selected = masterFxPickerItems[selectedMasterFxModuleIndex];
+
+    if (selected && selected.id === "__get_more__") {
+        /* Open store picker for audio FX modules */
+        selectingMasterFxModule = false;
+        enterStorePicker('master_fx');
+        return;
+    }
+
+    /* Move Left / Move Right — the same reorder the Shift+jog gesture performs,
+     * through the same moveChainComponent, so the bounds are the model's in
+     * both. */
+    if (selected && (selected.id === "__move_left__" || selected.id === "__move_right__")) {
+        const delta = selected.id === "__move_left__" ? -1 : 1;
+        if (moveChainComponent(MASTER_CHAIN_TARGET, comp.key, delta)) {
+            const after = masterFxChainComponents();
+            const at = after.findIndex(
+                (c) => c.key === chainEditorKeyAt(comp.section, comp.index + delta));
+            if (at >= 0) selectedMasterFxComponent = at;
+            const moved = after[selectedMasterFxComponent];
+            announce(`${moved ? moved.label : comp.label} moved ${delta < 0 ? "left" : "right"}`);
+            saveMasterFxChainConfig();
+        }
+        selectingMasterFxModule = false;
+        needsRedraw = true;
+        return;
+    }
+
+    const picked = selected && selected.id ? selected.id : "";
+
+    /*
+     * `None` from a `+` box is a CANCEL, not a removal. The position it would
+     * remove was never written, so there is nothing to renumber — and running
+     * it through the removal path would send `<section>:remove` for a position
+     * the DSP does not have, compacting away a module the user never touched.
+     */
+    if (pending && !picked) {
+        cancelPendingChainInsert();
+        selectingMasterFxModule = false;
+        needsRedraw = true;
+        return;
+    }
+
+    const choice = withPendingChainInsert(
+        applyPickerChoiceToChain(masterFxChainConfig(), comp.key, picked), pending);
+    MASTER_CHAIN_TARGET.setConfig(choice.cfg);
+
+    /* A shape change first, if the choice asked for one: a removal compacts the
+     * list and an insert opens a hole in it, and either way every position past
+     * the edit is renumbered — which one `<id>:module` write cannot say. One
+     * verb, and the DSP permutes rather than reloading. A removal is COMPLETE
+     * here; an insert only opens the hole and the module write below fills it. */
+    if (choice.shape) writeChainShape(MASTER_CHAIN_TARGET, choice.shape);
+    if (!(choice.shape && choice.shape.kind === "remove")) {
+        if (pickerReplacedModule(choice.replaced, picked)) {
+            clearLfoRoutingForComponent(MASTER_CHAIN_TARGET, comp.key);
+        }
+        setMasterFxSlotModule(selectedMasterFxComponent, (selected && selected.dspPath) || "");
+    }
+
+    resetLfoTargetLabels();
+    saveMasterFxChainConfig();
 
     /* Exit module selection mode */
     selectingMasterFxModule = false;
@@ -8531,7 +8846,7 @@ function applyComponentSelection() {
 
     /* Was this picker opened from a `+` box? Read BEFORE the choice is applied,
      * because applying it fills the very hole this recognises. */
-    const pending = pendingChainInsertFor(selectedSlot, comp.key);
+    const pending = pendingChainInsertFor(slotChainTarget(selectedSlot), comp.key);
 
     /* Check if user selected this component's User Presets manager */
     if (selected && selected.id === "__user_presets__") {
@@ -8552,7 +8867,7 @@ function applyComponentSelection() {
      * moveChainComponent, so the bounds are the model's in both. */
     if (selected && (selected.id === "__move_left__" || selected.id === "__move_right__")) {
         const delta = selected.id === "__move_left__" ? -1 : 1;
-        if (moveChainComponent(selectedSlot, comp.key, delta)) {
+        if (moveChainComponent(slotChainTarget(selectedSlot), comp.key, delta)) {
             selectedChainComponent = slotChainComponentIndex(selectedSlot,
                 chainEditorKeyAt(comp.section, comp.index + delta));
             lastChainComponent[selectedSlot] = selectedChainComponent;
@@ -8664,7 +8979,7 @@ function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, c
      * than returning.
      */
     const shape = choice && choice.shape;
-    if (shape) writeChainShape(slotIndex, shape);
+    if (shape) writeChainShape(slotChainTarget(slotIndex), shape);
     if (shape && shape.kind === "remove") {
         /* nothing more to write: the verb did the unload */
     } else if (paramKey) {
@@ -8679,7 +8994,8 @@ function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, c
          * routing does to the module that lands here next.
          */
         if (pickerReplacedModule(choice ? choice.replaced : null, moduleId)) {
-            clearLfoRoutingForComponent(slotIndex, getComponentParamPrefix(comp.key));
+            clearLfoRoutingForComponent(slotChainTarget(slotIndex),
+                                        getComponentParamPrefix(comp.key));
         }
         const success = setSlotParam(slotIndex, paramKey, moduleId);
         if (typeof host_log === "function") host_log(`applyComponentSelection: setSlotParam returned ${success}`);
@@ -10726,11 +11042,13 @@ function buildKnobContextForKnob(knobIndex) {
         }
     }
 
-    /* Master FX with an FX position selected. Same builder, same rules. */
-    if (view === VIEWS.MASTER_FX && selectedMasterFxComponent >= 0 &&
-        selectedMasterFxComponent < MASTER_FX_SETTINGS_INDEX) {
-        const comp = MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
-        if (comp && comp.key !== "settings") {
+    /* Master FX with an FX position selected. Same builder, same rules.
+     * Gated on the component's KIND rather than on an index compared against a
+     * fixed settings position: the list is as long as the chain now, so the
+     * settings box is not at a constant index and the `+` is not a module. */
+    if (view === VIEWS.MASTER_FX && selectedMasterFxComponent >= 0) {
+        const comp = masterFxChainComponents()[selectedMasterFxComponent];
+        if (comp && comp.kind === "module") {
             /* The shim answers ":name" with the module id, so this one read is
              * both the identity and the display name. */
             const pluginName = getMasterFxParam(selectedMasterFxComponent, "name");
@@ -13068,27 +13386,35 @@ function updateFocusedSlot(slot) {
 }
 
 /*
- * Shift+jog in the chain editor: move the selected module, and take the
+ * Shift+jog in EITHER chain editor: move the selected module, and take the
  * selection with it.
  *
  * Returns whether the gesture was CONSUMED, which is not the same as whether
  * anything moved — a module already at the end of its section consumes the
  * jog and says so, rather than quietly turning back into a selection change
  * halfway through a reorder.
+ *
+ * Written once against a chain target, so Master FX gets the gesture in the
+ * same commit rather than in some later one that never comes. Nothing in here
+ * asks which chain it is holding: the selection, the list and the move all come
+ * off the target.
  */
-function chainReorderJog(delta) {
-    const comp = slotChainComponents(selectedSlot)[selectedChainComponent];
+function chainReorderJog(target, delta) {
+    const comp = target.components()[target.selection()];
     if (!comp || comp.kind !== "module") return false;
     if (!comp.module) { announce(`${comp.label} empty`); return true; }
-    if (!moveChainComponent(selectedSlot, comp.key, delta)) {
+    if (!moveChainComponent(target, comp.key, delta)) {
         announce(`${comp.label} ${delta < 0 ? "at the start" : "at the end"}`);
         return true;
     }
-    /* Re-anchor by where the module WENT, not by the index it left behind. */
-    selectedChainComponent = slotChainComponentIndex(selectedSlot,
-        chainEditorKeyAt(comp.section, comp.index + delta));
-    lastChainComponent[selectedSlot] = selectedChainComponent;
-    const moved = slotChainComponents(selectedSlot)[selectedChainComponent];
+    /* Re-anchor by where the module WENT, not by the index it left behind: the
+     * list is as long as the chain and every shape edit shifts it, so an index
+     * carried across one points at whatever took the vacated place. */
+    const after = target.components();
+    const want = chainEditorKeyAt(comp.section, comp.index + delta);
+    const at = after.findIndex((c) => c.key === want);
+    if (at >= 0) target.setSelection(at);
+    const moved = after[target.selection()];
     announce(`${moved ? moved.label : comp.label} moved ${delta < 0 ? "left" : "right"}`);
     needsRedraw = true;
     return true;
@@ -13146,21 +13472,37 @@ function handleJog(delta, shift = isShiftHeld()) {
                     announceMenuItem(item.label, value);
                 }
             } else if (selectingMasterFxModule) {
-                /* Navigate module list */
-                selectedMasterFxModuleIndex = Math.max(0, Math.min(MASTER_FX_OPTIONS.length - 1, selectedMasterFxModuleIndex + delta));
-                const module = MASTER_FX_OPTIONS[selectedMasterFxModuleIndex];
-                announceMenuItem("Module", module.name);
+                /* Navigate the picker's own rows — the modules plus this
+                 * position's Move Left / Move Right. */
+                selectedMasterFxModuleIndex = Math.max(0, Math.min(masterFxPickerItems.length - 1, selectedMasterFxModuleIndex + delta));
+                const module = masterFxPickerItems[selectedMasterFxModuleIndex];
+                if (module) announceMenuItem("Module", module.name);
+            } else if (shift && chainReorderJog(MASTER_CHAIN_TARGET, delta)) {
+                /* Shift turns the jog from "which module" into "where does this
+                 * module go" — the SAME gesture the slot chain has, through the
+                 * same function. It is consumed either way once a module is
+                 * selected, so the selection cannot creep sideways underneath a
+                 * reorder the user thinks they are performing. */
+                needsRedraw = true;
             } else {
                 /* Navigate chain components (-1 = preset selection, like instrument slots)
-                 * Preset picker is only accessible via click, not scroll */
-                selectedMasterFxComponent = Math.max(-1, Math.min(MASTER_FX_CHAIN_COMPONENTS.length - 1, selectedMasterFxComponent + delta));
+                 * Preset picker is only accessible via click, not scroll.
+                 * Bounded by the list's own length, which is the LOADED chain
+                 * plus its `+` and Settings — never by the cap. */
+                const comps = masterFxChainComponents();
+                selectedMasterFxComponent = Math.max(-1, Math.min(comps.length - 1, selectedMasterFxComponent + delta));
                 if (selectedMasterFxComponent === -1) {
                     announce("Preset Selection");
                 } else {
-                    const comp = MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
-                    const compKey = comp.key;
-                    const moduleName = masterFxConfig?.[compKey]?.module || "Empty";
-                    announceMenuItem(comp.label, moduleName);
+                    const comp = comps[selectedMasterFxComponent];
+                    if (comp.kind === "add") {
+                        /* "+, Empty" says nothing. The label already is the
+                         * whole instruction. */
+                        announce(comp.label);
+                    } else {
+                        const moduleName = masterFxConfig?.[comp.key]?.module || "Empty";
+                        announceMenuItem(comp.label, moduleName);
+                    }
                 }
             }
             break;
@@ -13189,7 +13531,7 @@ function handleJog(delta, shift = isShiftHeld()) {
                  * this module go". It is consumed either way once a module is
                  * selected, so the selection cannot creep sideways underneath a
                  * reorder the user thinks they are performing. */
-                if (shift && chainReorderJog(delta)) break;
+                if (shift && chainReorderJog(slotChainTarget(selectedSlot), delta)) break;
                 const comps = slotChainComponents(selectedSlot);
                 selectedChainComponent = Math.max(-1, Math.min(comps.length - 1, selectedChainComponent + delta));
                 lastChainComponent[selectedSlot] = selectedChainComponent;
@@ -13609,7 +13951,22 @@ function handleSelect() {
                 /* Preset selected - enter preset picker */
                 enterMasterPresetPicker();
             } else {
-                const selectedComp = MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
+                const selectedComp = masterFxChainComponents()[selectedMasterFxComponent];
+                if (!selectedComp) {
+                    /* The list is as long as the chain now, so a selection can
+                     * outlive the position it named. Nothing to open. */
+                    break;
+                }
+                if (selectedComp.kind === "add") {
+                    /* The `+`: same gesture, same helper, same rules as the slot
+                     * chain's audio-FX `+`. */
+                    const at = beginChainInsertFromAddBox(MASTER_CHAIN_TARGET, selectedComp);
+                    if (at >= 0) {
+                        selectedMasterFxComponent = at;
+                        enterMasterFxModuleSelect(at);
+                    }
+                    break;
+                }
                 if (selectedComp.key === "settings") {
                     /* Enter settings submenu */
                     inMasterFxSettingsMenu = true;
@@ -13679,45 +14036,12 @@ function handleSelect() {
                 /* Component selected - check if populated or empty */
                 const comp = slotChainComponents(selectedSlot)[selectedChainComponent];
 
-                /*
-                 * A `+` box: open the picker on a NEW position WHERE THE BOX IS
-                 * DRAWN.
-                 *
-                 * The two boxes sit at opposite ends of the diagram — the MIDI
-                 * one is the LEFTMOST box, ahead of every MIDI FX, and the audio
-                 * one comes after the last FX — so the audio `+` appends and the
-                 * MIDI `+` inserts at the head. Sharing one append made the MIDI
-                 * side put the new module at the far end of the section from the
-                 * button that was pressed, nearest the synth. The asymmetry is
-                 * the rule, not an exception to it.
-                 *
-                 * The position is materialised in the MODEL only. Nothing is
-                 * written here: a head insert renumbers midi_fx1 to midi_fx2 and
-                 * so on, and it is the picker's confirm that owes the DSP that
-                 * whole-section rewrite (withPendingChainInsert). Backing out
-                 * writes nothing at all, which is why the record of the pending
-                 * position is kept rather than inferred.
-                 */
+                /* A `+` box: open the picker on a NEW position WHERE THE BOX IS
+                 * DRAWN. See beginChainInsertFromAddBox, which Master FX's `+`
+                 * goes through too. */
                 if (comp && comp.kind === "add") {
-                    const cfg = chainConfigs[selectedSlot] || createEmptyChainConfig();
-                    if (cfg[comp.section].length >= CHAIN_CAP[comp.section]) {
-                        announce(`${comp.label} full`);
-                        break;
-                    }
-                    const at = comp.section === "midiFx" ? 0 : cfg[comp.section].length;
-                    beginPendingChainInsert(selectedSlot, comp.section, at,
-                                            cfg[comp.section].length);
-                    chainConfigs[selectedSlot] = chainInsertAt(cfg, comp.section, at, null);
-                    /* The pending entry exists only in the model, so the cache
-                     * is stale the moment it is added — and stale in BOTH
-                     * directions: backing out of the picker is supposed to drop
-                     * it, and it is a reload that drops it (the DSP never held
-                     * it). Without this the editor would come back still drawing
-                     * a `+` that was cancelled. */
-                    invalidateChainConfig(selectedSlot);
-                    enterComponentSelect(selectedSlot,
-                        slotChainComponentIndex(selectedSlot,
-                            chainEditorKeyAt(comp.section, at)));
+                    const at = beginChainInsertFromAddBox(slotChainTarget(selectedSlot), comp);
+                    if (at >= 0) enterComponentSelect(selectedSlot, at);
                     break;
                 }
 
@@ -14423,7 +14747,10 @@ function handleBack() {
                 needsRedraw = true;
                 announce("Master FX");
             } else if (selectingMasterFxModule) {
-                /* Cancel module selection, return to chain view */
+                /* Cancel module selection, return to chain view. Backing out of
+                 * a `+` picker WRITES NOTHING AT ALL — the position it opened
+                 * only ever existed in the model, and dropping it is a reload.*/
+                cancelPendingChainInsert();
                 selectingMasterFxModule = false;
                 needsRedraw = true;
                 announce("Master FX");
@@ -15438,6 +15765,9 @@ function drawHelpDetail() {
     Object.defineProperty(_ctx, 'selectedMasterFxSetting', {
         get() { return selectedMasterFxSetting; }, enumerable: true
     });
+    Object.defineProperty(_ctx, 'masterFxPickerItems', {
+        get() { return masterFxPickerItems; }, enumerable: true
+    });
     Object.defineProperty(_ctx, 'selectedMasterFxModuleIndex', {
         get() { return selectedMasterFxModuleIndex; }, enumerable: true
     });
@@ -15457,7 +15787,12 @@ function drawHelpDetail() {
         get() { return masterConfirmIndex; }, enumerable: true
     });
 
-    _ctx.MASTER_FX_CHAIN_COMPONENTS = MASTER_FX_CHAIN_COMPONENTS;
+    Object.defineProperty(_ctx, 'MASTER_FX_CHAIN_COMPONENTS', {
+        /* A GETTER: the list is derived from the chain and changes length on
+         * every shape edit, so a snapshot taken once at init would be the
+         * eight fixed boxes this step exists to remove. */
+        get() { return masterFxChainComponents(); }, enumerable: true
+    });
     /* The chain target and the two draw helpers that take one. The Master FX
      * view module draws its diagram markers from the SAME code the slot chain
      * editor does, so an LFO marker or a bypass "B" cannot appear on one
@@ -15466,7 +15801,6 @@ function drawHelpDetail() {
     _ctx.chainLfoTargetMap = (...args) => chainLfoTargetMap(...args);
     _ctx.chainComponentBypassed = (...args) => chainComponentBypassed(...args);
     _ctx.MASTER_FX_SLOTS = MASTER_FX_SLOTS;
-    _ctx.MASTER_FX_SETTINGS_INDEX = MASTER_FX_SETTINGS_INDEX;
     /* The knob card's draw state — null unless a knob is being touched or has
      * just been turned. Costs no IPC: everything in it was read on touch-down.
      * Master FX draws the SAME card the slot chain editor does (4b). */
@@ -15488,6 +15822,8 @@ function drawHelpDetail() {
     /* Master FX functions */
     _ctx.scanForAudioFxModules = (...args) => scanForAudioFxModules(...args);
     _ctx.loadMasterFxChainConfig = (...args) => loadMasterFxChainConfig(...args);
+    _ctx.ensureMasterFxConfigFresh = () => ensureMasterFxConfigFresh();
+    _ctx.isShiftHeld = () => isShiftHeld();
     _ctx.getMasterFxSlotModule = (...args) => getMasterFxSlotModule(...args);
     _ctx.getMasterFxParam = (...args) => getMasterFxParam(...args);
     _ctx.getModuleAbbrev = (...args) => getModuleAbbrev(...args);
@@ -17234,7 +17570,7 @@ globalThis.tick = function() {
             }
         }
         /* Master FX */
-        for (const { key } of MASTER_FX_CHAIN_COMPONENTS) {
+        for (const { key } of masterFxChainComponents()) {
             if (key === "settings") continue;
             if (!masterFxConfig[key] || !masterFxConfig[key].module) continue;
             const cacheKey = `master:${key}`;
@@ -17940,7 +18276,7 @@ globalThis.onMidiMessageInternal = function(data) {
                 runCoRunChainEdit(function() {
                     if (hostShiftHeld && view === VIEWS.CHAIN_EDIT && selectedChainComponent >= 0) {
                         handleShiftSelect();
-                    } else if (hostShiftHeld && view === VIEWS.MASTER_FX && selectedMasterFxComponent >= 0 && selectedMasterFxComponent < MASTER_FX_SETTINGS_INDEX) {
+                    } else if (hostShiftHeld && view === VIEWS.MASTER_FX && masterFxSelectedIsModule()) {
                         enterMasterFxModuleSelect(selectedMasterFxComponent);
                     } else {
                         handleSelect();
@@ -18128,7 +18464,7 @@ globalThis.onMidiMessageInternal = function(data) {
             /* Shift+Click in chain edit enters component edit mode */
             if (isShiftHeld() && view === VIEWS.CHAIN_EDIT && selectedChainComponent >= 0) {
                 handleShiftSelect();
-            } else if (isShiftHeld() && view === VIEWS.MASTER_FX && selectedMasterFxComponent >= 0 && selectedMasterFxComponent < MASTER_FX_SETTINGS_INDEX) {
+            } else if (isShiftHeld() && view === VIEWS.MASTER_FX && masterFxSelectedIsModule()) {
                 /* Shift+Click in Master FX view enters module selector for the slot */
                 enterMasterFxModuleSelect(selectedMasterFxComponent);
             } else {

@@ -177,7 +177,7 @@ import { chainComponents } from "./src/shared/chain_model.mjs";
 const fail = (m) => { console.log("FAIL: " + m); process.exit(1); };
 const s = readFileSync("src/shadow/shadow_ui.js", "utf8");
 
-const at = s.indexOf("function chainEditorComponents(cfg) {");
+const at = s.indexOf("function chainEditorComponents(cfg, caps) {");
 if (at < 0) fail("chainEditorComponents is gone - the editor list is no longer derived");
 const end = s.indexOf("\n}\n", at);
 if (end < 0) fail("could not find the end of chainEditorComponents");
@@ -188,8 +188,9 @@ const src = s.slice(at, end + 2);
 const derive = new Function("chainComponents",
                             src + "\nreturn chainEditorComponents;")(chainComponents);
 const mod = (id) => ({ module: id, params: {} });
-const got = derive({ midiFx: [mod("arp")], synth: mod("sf2"), fx: [mod("freeverb"), mod("cloudseed")] })
-    .map((c) => ({ key: c.key, label: c.label, kind: c.kind, position: c.position }));
+const shape = (l) => l.map((c) => ({ key: c.key, label: c.label, kind: c.kind, position: c.position }));
+const CFG = { midiFx: [mod("arp")], synth: mod("sf2"), fx: [mod("freeverb"), mod("cloudseed")] };
+const got = shape(derive(CFG));
 
 /*
  * Seven positions, not five: the two `+` boxes are part of the editor list
@@ -211,6 +212,38 @@ if (JSON.stringify(got) !== JSON.stringify(want_)) {
        "      got:  " + JSON.stringify(got) + "\n" +
        "      want: " + JSON.stringify(want_));
 }
+/*
+ * ...and the SAME derivation with the Master FX capabilities off.
+ *
+ * That is the whole of what makes Master FX a chain editor rather than a second
+ * implementation of one: it hands chainEditorComponents a target with no synth
+ * and no MIDI FX section, and gets the audio-FX end of this same list. A
+ * `caps` argument that stopped being honoured would show up here as the synth
+ * reappearing in the master row -- where the diagram would paint its landmark
+ * band on a chain that has no synth to landmark.
+ */
+const mfx = shape(derive(CFG, { hasSynth: false, hasMidiFx: false }));
+const wantMfx = [
+  { key: "fx1",      label: "FX 1",     kind: "module",   position: 0 },
+  { key: "fx2",      label: "FX 2",     kind: "module",   position: 1 },
+  { key: "add_fx",   label: "Add FX",   kind: "add",      position: 2 },
+  { key: "settings", label: "Settings", kind: "settings", position: 3 },
+];
+if (JSON.stringify(mfx) !== JSON.stringify(wantMfx)) {
+  fail("the Master FX derivation of the same list changed.\n" +
+       "      got:  " + JSON.stringify(mfx) + "\n" +
+       "      want: " + JSON.stringify(wantMfx));
+}
+/* And the capabilities are read INDEPENDENTLY -- a single "is this master"
+   flag would make these two indistinguishable. */
+const noSynthOnly = shape(derive(CFG, { hasSynth: false, hasMidiFx: true }));
+if (noSynthOnly.some((c) => c.kind === "synth"))
+  fail("hasSynth:false left the synth in the list");
+if (!noSynthOnly.some((c) => c.key === "midiFx"))
+  fail("hasSynth:false also dropped the MIDI FX section, so the two capabilities " +
+       "are one flag wearing two names");
+
 console.log("PASS: chain editor list — derived from chain_model, " + want_.length +
-            " positions, labels and order unchanged");
+            " positions for a slot chain and " + wantMfx.length + " for Master FX out " +
+            "of the SAME derivation, labels and order unchanged");
 '

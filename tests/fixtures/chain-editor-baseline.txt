@@ -17,6 +17,11 @@
 #
 # Step 4b ADDED the four knob-card cases below and moved NONE.
 #
+# Step 4e made Master FX a variable-length chain: every master/ hash moved,
+# two cases naming an empty position past the end of the chain were deleted,
+# and eight were added for the `+` box and the Shift footer. Reviewed case by
+# case, and NO chain/ hash moved with them.
+#
 # A mismatch names which case moved, and the runner prints the render.
 #
 # Regenerate with:
@@ -68,31 +73,37 @@ chain/len8/sel-fx4 e527665760bec5f75a11d634fb0c2fa029ff1dc3
 chain/len8/sel-fx8 fa051c1794dabe81052161cf82d5e7432aec4cc9
 chain/len8/sel-patch b7e74c263f187297be02cda13bc7589de15e16a5
 chain/len8/sel-settings 1e0ed46465cc3bc73c27614f0ad6af3a86789bc0
-master/hole/sel-fx3 69fba231b1809ab1058994264960ac70a0c240d9
-master/len0/sel-fx1 d44b68940e7c164df051b557d789b243249a7510
-master/len0/sel-preset ecb72a073a899a72b5ef5578d063a9fe477ddbab
-master/len0/sel-settings c4e191dbc16d28c993c3c94710261a8ab14654d9
-master/len1/knob-card d681e241373cf2862b8fd3c0e9fa6a3c8e57ab08
-master/len1/preset-named b4c0dc6be19e2d4f865837000d49ea5bb3008d4b
-master/len1/sel-fx1 9b765721893caecb8fa1ece17617f02e87bf9cd6
-master/len1/sel-fx2-empty 6f7eb388554a0eb72f26c333e13cb1610fcd104b
-master/len2/bypassed 91ec9983acf6a9c6bb92e3db76974f16abf60443
-master/len2/bypassed-selected bd7f460507995484570f0b4a67b5fbc5a3fa5b8f
-master/len2/info-optname f460f3d03f163bc4d779ba1349f2b577319f90ed
-master/len2/info-preset 2397eb5b07f14307254693d71bf1a61ab7763684
+master/hole/sel-fx3 a4c846caf45cc48910a714b3f50176689c86f2fd
+master/len0/sel-add-fx a96afeccae2be62d84cfddb0e4b44686b40600f3
+master/len0/sel-preset 6dd36ad41d2ed1e9350e9f57f5df0ea43b5976cc
+master/len0/sel-settings d09a68ccb652a8db34983a60d6b0283a2d8f594a
+master/len0/shift f4d03c4e4dd87f2d4616c10ea516095799693b83
+master/len1/knob-card b475a813fb38701da6f2e2c99d8022c335733baf
+master/len1/preset-named 1dd61739bb15823a72878086b3cfd96e9164ae87
+master/len1/sel-add-fx 464a14b245ccbb196e983975f8c622a0bf466f19
+master/len1/sel-fx1 dffa87372ab34dcf21f4100619b0cb5f4e90cc8c
+master/len2/bypassed a6f803d8e73799d95d6d3415dc8363f766ab3b87
+master/len2/bypassed-selected 28b8c3ddd3f5148bef02a357948c6cdf98d3502d
+master/len2/info-optname 8686882095f0694ef980329cc1190ff26e86f1d2
+master/len2/info-preset 82321b2856cd033bfbe38008eefdfbcdcc6d60fb
 master/len2/knob-card-strip 0dfa282687bd2d780cd99731cb75d15a22f7a85d
-master/len2/lfo1 998e2ebbf9856ca0cd100a0f7de6fecd1ffaf42a
-master/len2/lfo1+2 314feccaf70e4f0327d4a12457dd9961aac52f09
-master/len2/lfo2 c9e009df687015cb8035f9f4de9190edce662f4f
-master/len2/sel-fx1 aa8c340e7178ab1e8d5f156032853f9d8f0da2f4
-master/len2/sel-fx2 f3581c5bcb3d36b322c81ccd2a38466369ee414c
+master/len2/lfo1 f3704fbe5dc3502f0cd8f7e1c3c96b3a275b8966
+master/len2/lfo1+2 80589b33cc946f3edff5199bc89c35b5ede0c5f9
+master/len2/lfo2 1bfaab1e2bd9727cab365222e0a54a57f900b562
+master/len2/sel-add-fx 4bda5beb7a5b8069f9901bcd14f5f878975ea553
+master/len2/sel-fx1 3464be30deb808cf4da18c34efb145cfa962e497
+master/len2/sel-fx2 3419cc180f4ddd1ddbdc49421437f27cd606cfeb
+master/len2/shift ed567a5fb9409a7eab37c52a173cc99cbe1218a1
 master/len5/bypassed+lfo1+2 5c538fe0b3a7cb3534ccba9d16346a6a23d9c9a2
-master/len5/knob-card d89744e35b3258f8e19c9ec378b56501cbb76d6b
+master/len5/knob-card ed66b3e99909217e9677c116471f758725e05f70
 master/len5/sel-fx1 05e05dcf95e3df365071932c713629d6dc22f783
 master/len5/sel-fx3 18f5f69d0dc02b70c74faa05daea69660dbd0358
-master/len5/sel-fx5 d36389a7446b475cda0ddd2600b89ed667716e4d
+master/len5/sel-fx5 0418f2c0da41296e7900993a0db55d75c0603b99
+master/len5/shift 0354b181fb349597234f6ce1680dc75b592ccb04
+master/len8/sel-add-fx 16fbb3a121692a1c85bd9c32192229c7f090f8e4
 master/len8/sel-fx1 95e311823cb41c276bd47821e119e5e120bee787
 master/len8/sel-fx4 fb15b67239881f6a4f548dd0eca420230bf7693a
-master/len8/sel-fx8 da0a45ed73e4119f4a922205ace31ddf0decb368
+master/len8/sel-fx8 b55c9536dadb6ec45ffcf9a4dd473fdfe3f964cd
 master/len8/sel-preset 94e78fc5da985a2fa6eca04538d9ed289df9c2c8
-master/len8/sel-settings 437d9141578e220cd29c133382d4870cbc27f742
+master/len8/sel-settings 8827db0482d0562325ef307ffb2852f7d4fec961
+master/len8/shift 8a594c0486cdc9223d5dedfb3830149c411c1c46

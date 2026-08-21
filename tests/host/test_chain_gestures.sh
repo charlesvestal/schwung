@@ -74,19 +74,34 @@ const order = (list) => list.map((m) => (m ? m.module : "-")).join(",");
 /* ---- the move ---------------------------------------------------------- */
 
 const makeMove = lift("moveChainComponent",
-  ["chainConfigs", "chainComponentId", "parseChainId", "chainMoveBy", "writeChainShape",
+  ["chainComponentId", "parseChainId", "chainMoveBy", "writeChainShape",
    "resetLfoTargetLabels", "invalidateKnobContextCache"]);
 if (!makeMove) process.exit(1);
 
+/* A chain target holding one config. The move is written ONCE against this
+   interface, which is what gets Master FX the gesture in the same commit. */
+function fakeTarget(cfg, opts) {
+  const held = { cfg };
+  return Object.assign({
+    id: "t", slot: 0,
+    chainKey: (k) => k,
+    config: () => held.cfg,
+    setConfig: (c) => { held.cfg = c; },
+    invalidate: () => {},
+    cap: () => 8,
+    hasSynth: true, hasMidiFx: true,
+  }, opts || {});
+}
+
 function move(cfg, key, delta) {
-  const cfgs = [cfg];
   const written = [];
   let resets = 0;
-  const fn = makeMove(cfgs, chainComponentId, parseId, moveBy,
-                      (slot, shape) => written.push(shape),
+  const t = fakeTarget(cfg);
+  const fn = makeMove(chainComponentId, parseId, moveBy,
+                      (tgt, shape) => written.push(shape),
                       () => { resets++; }, () => {});
-  const moved = fn(0, key, delta);
-  return { moved, cfg: cfgs[0], written, resets };
+  const moved = fn(t, key, delta);
+  return { moved, cfg: t.config(), written, resets };
 }
 
 /* Three FX, so a wrap is distinguishable from a stop. */
@@ -154,12 +169,18 @@ function move(cfg, key, delta) {
 
 /* A tiny editor list, shaped like the real one, so the jog handlers have
    something to index. Only the fields they read are present. */
-const editorComps = (cfg) => {
-  const out = [{ key: "add_midi", kind: "add", section: "midiFx", label: "Add MIDI FX" }];
-  cfg.midiFx.forEach((m, i) => out.push({
-    key: i === 0 ? "midiFx" : "midi_fx" + (i + 1), kind: "module", section: "midiFx",
-    index: i, label: "MIDI FX " + (i + 1), module: m }));
-  out.push({ key: "synth", kind: "synth", label: "Synth", module: cfg.synth });
+const editorComps = (cfg, master) => {
+  const out = [];
+  /* Master FX has neither a MIDI FX section nor a synth, so its list is the
+     loaded FX, the `+`, and Settings -- the same shape the real
+     chainEditorComponents produces for a target with both capabilities off. */
+  if (!master) {
+    out.push({ key: "add_midi", kind: "add", section: "midiFx", label: "Add MIDI FX" });
+    cfg.midiFx.forEach((m, i) => out.push({
+      key: i === 0 ? "midiFx" : "midi_fx" + (i + 1), kind: "module", section: "midiFx",
+      index: i, label: "MIDI FX " + (i + 1), module: m }));
+    out.push({ key: "synth", kind: "synth", label: "Synth", module: cfg.synth });
+  }
   cfg.fx.forEach((m, i) => out.push({
     key: "fx" + (i + 1), kind: "module", section: "fx", index: i,
     label: "FX " + (i + 1), module: m }));
@@ -168,20 +189,45 @@ const editorComps = (cfg) => {
   return out;
 };
 
-function gestureRig(cfg, selection) {
+function gestureRig(cfg, selection, opts) {
   const cfgs = [cfg];
   const said = [];
   const moves = [];
-  const st = { selectedChainComponent: selection, needsRedraw: false };
-  const comps = () => editorComps(cfgs[0]);
+  const st = { selectedChainComponent: selection, selectedMasterFxComponent: selection,
+               needsRedraw: false };
+  const master = !!(opts && opts.master);
+  const comps = () => editorComps(cfgs[0], master);
+  /* THE TARGET IS THE SELECTION. chainReorderJog reads and writes it through
+     the target rather than through a module-level variable, which is what lets
+     the same function drive both editors -- and what makes the re-anchor
+     observable here. */
+  const target = {
+    id: master ? "master" : "slot0", slot: 0,
+    chainKey: (k) => (master ? "master_fx:" + k : k),
+    components: () => comps(),
+    config: () => cfgs[0],
+    setConfig: (c) => { cfgs[0] = c; },
+    invalidate: () => {},
+    cap: () => 8,
+    isSelectedChain: () => true,
+    selection: () => (master ? st.selectedMasterFxComponent : st.selectedChainComponent),
+    setSelection: (i) => {
+      if (master) st.selectedMasterFxComponent = i; else st.selectedChainComponent = i;
+    },
+    hasSynth: !master, hasMidiFx: !master,
+  };
   const deps = {
     slotChainComponents: () => comps(),
+    slotChainTarget: () => target,
+    MASTER_CHAIN_TARGET: target,
     slotChainComponentIndex: (s, key) => comps().findIndex((c) => c.key === key),
     chainEditorKeyAt,
     selectedSlot: 0,
     lastChainComponent: [selection],
     announce: (t) => said.push(t),
-    moveChainComponent: (slot, key, delta) => {
+    masterFxChainComponents: () => comps(),
+    masterFxConfig: {},
+    moveChainComponent: (tgt, key, delta) => {
       moves.push(key + " " + delta);
       const at = parseId(chainComponentId(key));
       if (!at) return false;
@@ -199,52 +245,72 @@ function gestureRig(cfg, selection) {
     chainConfigs: cfgs,
     announceMenuItem: (a, b) => said.push(a + ", " + b),
   };
-  return { st, said, moves, deps, cfgs };
+  return { st, said, moves, deps, cfgs, target };
 }
 const call = (maker, deps, names) => maker(...names.map((n) => deps[n]));
 
-/* The reorder gesture itself. */
+/*
+ * The reorder gesture itself -- ON BOTH CHAINS.
+ *
+ * chainReorderJog takes a chain TARGET and reads and writes the selection
+ * through it, so the master bus gets the gesture in the same commit as the slot
+ * chain. Running the matrix twice is the rule from section 1b of the design:
+ * any test of chain-editor behaviour runs against both targets.
+ */
 {
-  const NAMES = ["slotChainComponents", "selectedSlot", "announce", "moveChainComponent",
-                 "slotChainComponentIndex", "chainEditorKeyAt", "lastChainComponent"];
-  const maker = liftStateful("chainReorderJog", NAMES,
-                             ["selectedChainComponent", "needsRedraw"]);
-  if (maker) {
-    /* [add_midi][synth][fx1][fx2][fx3][add_fx][settings] -- fx1 is index 2. */
-    const rig = gestureRig({ midiFx: [], synth: { module: "sf2" }, fx: mods(["a", "b", "c"]) }, 2);
-    const jog = maker(rig.st, ...NAMES.map((n) => rig.deps[n]));
+  const NAMES = ["announce", "moveChainComponent", "chainEditorKeyAt"];
+  const maker = liftStateful("chainReorderJog", NAMES, ["needsRedraw"]);
+  /* The slot list is [add_midi][synth][fx1][fx2][fx3][add_fx][settings], so
+     fx1 is index 2; the master list is [fx1][fx2][fx3][add_fx][settings], so
+     fx1 is index 0. The MODULE is the same in both. */
+  const CHAINS = [["slot", false, 2, 3], ["master", true, 0, 1]];
+  for (const [name, master, atFx1, atFx2] of CHAINS) {
+    if (!maker) break;
+    {
+      const rig = gestureRig({ midiFx: [], synth: { module: "sf2" }, fx: mods(["a", "b", "c"]) },
+                             atFx1, { master });
+      const jog = maker(rig.st, ...NAMES.map((n) => rig.deps[n]));
 
-    if (jog(1) !== true) fail("Shift+jog on a module did not consume the gesture");
-    if (order(rig.cfgs[0].fx) !== "b,a,c") fail("Shift+jog did not move the module");
-    /* THE re-anchor: the module is now fx2, so the selection must be on fx2 --
-       one further along. Following the old INDEX would leave it pointing at the
-       module that just took the vacated slot. */
-    if (rig.st.selectedChainComponent !== 3)
-      fail("the selection did not follow the module (expected 3, got " +
-           rig.st.selectedChainComponent + ")");
-    if (!rig.said.some((s) => /moved right/.test(s)))
-      fail("a move was not announced: " + rig.said.join(" | "));
-    if (rig.st.needsRedraw !== true) fail("a move did not ask for a redraw");
-  }
+      if (jog(rig.target, 1) !== true)
+        fail(name + ": Shift+jog on a module did not consume the gesture");
+      if (order(rig.cfgs[0].fx) !== "b,a,c") fail(name + ": Shift+jog did not move the module");
+      /* THE re-anchor: the module is now fx2, so the selection must be on fx2 --
+         one further along. Following the old INDEX would leave it pointing at
+         the module that just took the vacated place, and on a list that changes
+         length it can point past the end entirely. */
+      if (rig.target.selection() !== atFx2)
+        fail(name + ": the selection did not follow the module (expected " + atFx2 +
+             ", got " + rig.target.selection() + ")");
+      if (!rig.said.some((s) => /moved right/.test(s)))
+        fail(name + ": a move was not announced: " + rig.said.join(" | "));
+      if (rig.st.needsRedraw !== true) fail(name + ": a move did not ask for a redraw");
+    }
 
-  /* CONSUMED EVEN WHEN REFUSED. A module at the end of its section must not
-     have the gesture quietly turn back into a selection change halfway through
-     a reorder the user thinks they are performing. */
-  if (maker) {
-    const rig = gestureRig({ midiFx: [], synth: { module: "sf2" }, fx: mods(["a", "b"]) }, 3);
-    const jog = maker(rig.st, ...NAMES.map((n) => rig.deps[n]));
-    if (jog(1) !== true) fail("Shift+jog at the end of a section did not consume the gesture");
-    if (rig.st.selectedChainComponent !== 3) fail("a refused move still moved the selection");
-    if (!rig.said.some((s) => /at the end/.test(s)))
-      fail("a refused move said nothing: " + rig.said.join(" | "));
-  }
+    /* CONSUMED EVEN WHEN REFUSED. A module at the end of its section must not
+       have the gesture quietly turn back into a selection change halfway
+       through a reorder the user thinks they are performing. */
+    {
+      const rig = gestureRig({ midiFx: [], synth: { module: "sf2" }, fx: mods(["a", "b"]) },
+                             atFx2, { master });
+      const jog = maker(rig.st, ...NAMES.map((n) => rig.deps[n]));
+      if (jog(rig.target, 1) !== true)
+        fail(name + ": Shift+jog at the end of a section did not consume the gesture");
+      if (rig.target.selection() !== atFx2)
+        fail(name + ": a refused move still moved the selection");
+      if (!rig.said.some((s) => /at the end/.test(s)))
+        fail(name + ": a refused move said nothing: " + rig.said.join(" | "));
+    }
 
-  /* Not a module: the synth and the plus boxes are not reorderable, so the jog
-     falls through to ordinary selection rather than being swallowed. */
-  if (maker) {
-    const rig = gestureRig({ midiFx: [], synth: { module: "sf2" }, fx: mods(["a"]) }, 1);
-    const jog = maker(rig.st, ...NAMES.map((n) => rig.deps[n]));
-    if (jog(1) !== false) fail("Shift+jog on the synth consumed the gesture");
+    /* Not a module: the `+` box is not reorderable (and on the slot chain
+       neither is the synth), so the jog falls through to ordinary selection
+       rather than being swallowed. */
+    {
+      const rig = gestureRig({ midiFx: [], synth: { module: "sf2" }, fx: mods(["a"]) },
+                             master ? 1 : 1, { master });
+      const jog = maker(rig.st, ...NAMES.map((n) => rig.deps[n]));
+      if (jog(rig.target, 1) !== false)
+        fail(name + ": Shift+jog on a box that is not a module consumed the gesture");
+    }
   }
 }
 
@@ -261,8 +327,8 @@ const call = (maker, deps, names) => maker(...names.map((n) => deps[n]));
   if (hj < 0 || caseAt < 0 || caseEnd < 0) fail("could not find the CHAIN_EDIT jog case");
   else {
     const body = src.slice(caseAt + "case VIEWS.CHAIN_EDIT:".length, caseEnd + term.length);
-    const NAMES = ["chainReorderJog", "slotChainComponents", "selectedSlot", "announce",
-                   "getChainComponentModule", "chainConfigs", "announceMenuItem",
+    const NAMES = ["chainReorderJog", "slotChainTarget", "slotChainComponents", "selectedSlot",
+                   "announce", "getChainComponentModule", "chainConfigs", "announceMenuItem",
                    "lastChainComponent"];
     const maker = liftStateful(null, NAMES, ["selectedChainComponent"],
       "var __f = function (delta, shift) { switch (1) { case 1: " + body + " } };");
@@ -283,6 +349,73 @@ const call = (maker, deps, names) => maker(...names.map((n) => deps[n]));
     if (plainReorder !== 0) fail("a plain jog reordered the chain");
     if (plain.st.selectedChainComponent !== 3)
       fail("a plain jog did not move the selection, got " + plain.st.selectedChainComponent);
+  }
+}
+
+/*
+ * ...and the SAME dispatch on Master FX. 4a-3 deliberately left the reorder out
+ * of that screen because the gesture did not exist; 4e adds it, and the only
+ * thing that says the modifier is wired up there is running it.
+ */
+{
+  const hj = src.indexOf("function handleJog(");
+  const caseAt = src.indexOf("case VIEWS.MASTER_FX:", hj);
+  const term = "\n            break;";
+  const caseEnd = src.indexOf(term, caseAt);
+  if (hj < 0 || caseAt < 0 || caseEnd < 0) fail("could not find the MASTER_FX jog case");
+  else {
+    const body = src.slice(caseAt + "case VIEWS.MASTER_FX:".length, caseEnd + term.length);
+    const NAMES = ["masterShowingNamePreview", "masterConfirmingOverwrite",
+                   "masterConfirmingDelete", "helpDetailScrollState", "helpNavStack",
+                   "inMasterPresetPicker", "inMasterFxSettingsMenu", "selectingMasterFxModule",
+                   "chainReorderJog", "MASTER_CHAIN_TARGET", "masterFxChainComponents",
+                   "announce", "announceMenuItem", "masterFxConfig"];
+    const maker = liftStateful(null, NAMES, ["selectedMasterFxComponent", "needsRedraw"],
+      "var __f = function (delta, shift) { switch (1) { case 1: " + body + " } };");
+
+    const rigFor = () => {
+      const rig = gestureRig({ midiFx: [], synth: null, fx: mods(["a", "b"]) }, 0,
+                             { master: true });
+      rig.deps.masterShowingNamePreview = false;
+      rig.deps.masterConfirmingOverwrite = false;
+      rig.deps.masterConfirmingDelete = false;
+      rig.deps.helpDetailScrollState = null;
+      rig.deps.helpNavStack = [];
+      rig.deps.inMasterPresetPicker = false;
+      rig.deps.inMasterFxSettingsMenu = false;
+      rig.deps.selectingMasterFxModule = false;
+      return rig;
+    };
+
+    const withShift = rigFor();
+    let reordered = 0;
+    withShift.deps.chainReorderJog = () => { reordered++; return true; };
+    maker(withShift.st, ...NAMES.map((n) => withShift.deps[n]))(1, true);
+    if (reordered !== 1)
+      fail("SHIFT+JOG NEVER REACHES THE REORDER ON MASTER FX -- handleJog does not " +
+           "dispatch on the modifier there");
+    if (withShift.st.selectedMasterFxComponent !== 0)
+      fail("a consumed Master FX reorder also moved the selection");
+
+    const plain = rigFor();
+    let plainReorder = 0;
+    plain.deps.chainReorderJog = () => { plainReorder++; return true; };
+    maker(plain.st, ...NAMES.map((n) => plain.deps[n]))(1, false);
+    if (plainReorder !== 0) fail("a plain jog reordered the Master FX chain");
+    if (plain.st.selectedMasterFxComponent !== 1)
+      fail("a plain Master FX jog did not move the selection, got " +
+           plain.st.selectedMasterFxComponent);
+
+    /* And the list it is bounded by is the CHAIN, not the cap: two modules plus
+       the `+` and Settings is four boxes, so index 3 is the end. Eight fixed
+       boxes would let the selection run to 8. */
+    const far = rigFor();
+    far.deps.chainReorderJog = () => false;
+    const jog = maker(far.st, ...NAMES.map((n) => far.deps[n]));
+    for (let i = 0; i < 12; i++) jog(1, false);
+    if (far.st.selectedMasterFxComponent !== 3)
+      fail("the Master FX selection is bounded by the CAP rather than the chain: got " +
+           far.st.selectedMasterFxComponent + ", expected 3");
   }
 }
 
@@ -395,26 +528,35 @@ function fits(what, hints) {
   fits("with Shift held", held);
 }
 
-/* --- Master FX: the same grammar, for the gestures it ACTUALLY has -------
+/* --- Master FX: the SAME footer, bound to the same modifier --------------
  *
- * No JOG MOVE variant, and that is the assertion, not an omission: Master FX
- * has no reorder gesture until step 4e, and a hint for a gesture that does
- * nothing is worse than no hint. Back leaves shadow mode from here exactly as
- * it does from the chain editor, so the word is EXIT.
+ * The JOG MOVE pair was deliberately absent until 4e: Master FX had no reorder
+ * gesture, and a hint for a gesture that does nothing is worse than no hint.
+ * It has one now, through the same chainReorderJog the slot chain uses, so the
+ * footer has to say so -- a modifier that silently repurposes the jog with the
+ * footer still reading SEL is a gesture nobody finds. Compared against the slot
+ * editor`s own strings above, which is the point: the two screens must not
+ * grow different words for the same gesture. Back leaves shadow mode from here
+ * exactly as it does from the chain editor, so the word is EXIT.
  */
 {
   const mfx = readFileSync("src/shadow/shadow_ui_master_fx.mjs", "utf8");
   const at = mfx.indexOf("export function drawMasterFx(");
-  const hints = hintsFrom(mfx, "drawMasterFx", at,
-    ["dctx", "currentMasterPresetName", "label", "infoLine"], [{}, "", "", ""]);
-  if (flat(hints) !== "JOG SEL / CLK OPEN / BACK EXIT")
-    fail("the Master FX footer reads [" + flat(hints) + "]");
-  fits("on Master FX", hints);
+  const shown = (shift) => hintsFrom(mfx, "drawMasterFx", at,
+    ["isShiftHeld", "dctx", "currentMasterPresetName", "label", "infoLine"],
+    [() => shift, {}, "", "", ""]);
+  const rest = shown(false), held = shown(true);
+  if (flat(rest) !== "JOG SEL / CLK OPEN / BACK EXIT")
+    fail("at rest the Master FX footer reads [" + flat(rest) + "]");
+  if (flat(held) !== "JOG MOVE / BACK EXIT")
+    fail("with Shift held the Master FX footer reads [" + flat(held) + "]");
+  fits("on Master FX at rest", rest);
+  fits("on Master FX with Shift held", held);
 }
 
 if (failures) process.exit(1);
 console.log("PASS: chain gestures — handleJog dispatches Shift to the reorder, the selection " +
             "follows the module and a refused move is still consumed, moves stay inside their " +
             "own section and stop at the ends, None compacts, a swap moves nothing, and each " +
-            "footer is bound to its modifier and fits");
+            "footer is bound to its modifier and fits — ALL OF IT on both chains");
 '

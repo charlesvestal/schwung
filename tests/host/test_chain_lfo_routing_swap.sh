@@ -63,10 +63,28 @@ function device(state) {
   const set = (slot, key, val) => { writes.push(key + "=" + val); state[key] = String(val); return true; };
   return { get, set, writes, reads, state };
 }
-const clearFor = (state, slot, id) => {
+/*
+ * The chain TARGET is how the key is spelled: `lfo1:target` for a slot and
+ * `master_fx:lfo1:target` for the master bus. One helper, two spellings -- the
+ * whole difference between the two editors -- so every case below runs on both
+ * and asserts against that chain own prefix.
+ */
+const targetFor = (kind) => ({
+  slot: 0,
+  chainKey: (suffix) => (kind === "master" ? "master_fx:" + suffix : suffix),
+});
+const CHAINS = [["slot", ""], ["master", "master_fx:"]];
+const clearFor = (state, kind, id) => {
   const d = device(state);
-  makeClear(d.get, d.set)(slot, id);
+  makeClear(d.get, d.set)(targetFor(kind), id);
   return d;
+};
+/* A state map written in slot spelling, re-keyed for whichever chain is under
+   test, so a case is stated once. */
+const at = (pre, o) => {
+  const out = {};
+  for (const k of Object.keys(o)) out[pre + k] = o[k];
+  return out;
 };
 const chain = (fx, synth) => ({
   midiFx: [], synth: synth ? { module: synth, params: {} } : null,
@@ -78,54 +96,61 @@ const chain = (fx, synth) => ({
 /* 1. A routing naming the replaced position is cleared, BOTH halves. Leaving
       target_param behind leaves the dead module param name stored, ready for
       the next write of target alone to revive it. */
-{
-  const d = clearFor({ "lfo1:target": "fx1", "lfo1:target_param": "room_size" }, 0, "fx1");
-  if (d.state["lfo1:target"] !== "")
-    fail("the routing survived the replacement: " + d.state["lfo1:target"]);
-  if (d.state["lfo1:target_param"] !== "")
-    fail("target_param still names " + d.state["lfo1:target_param"] +
+for (const [kind, pre] of CHAINS) {
+  const d = clearFor(at(pre, { "lfo1:target": "fx1", "lfo1:target_param": "room_size" }),
+                     kind, "fx1");
+  if (d.state[pre + "lfo1:target"] !== "")
+    fail(kind + ": the routing survived the replacement: " + d.state[pre + "lfo1:target"]);
+  if (d.state[pre + "lfo1:target_param"] !== "")
+    fail(kind + ": target_param still names " + d.state[pre + "lfo1:target_param"] +
          ", a param of the module that just left");
+  /* And it wrote to THIS chain keys, not the other one. */
+  if (d.writes.some((w) => w.indexOf(pre) !== 0))
+    fail(kind + ": cleared a routing belonging to the OTHER chain: " + d.writes.join(" "));
 }
 
 /* 2. A routing aimed somewhere ELSE is untouched -- the helper clears one
       position, not every routing it can see. */
-{
-  const d = clearFor({ "lfo1:target": "fx2", "lfo1:target_param": "mix",
-                       "lfo2:target": "synth", "lfo2:target_param": "cutoff" }, 0, "fx1");
+for (const [kind, pre] of CHAINS) {
+  const d = clearFor(at(pre, { "lfo1:target": "fx2", "lfo1:target_param": "mix",
+                               "lfo2:target": "synth", "lfo2:target_param": "cutoff" }),
+                     kind, "fx1");
   if (d.writes.length !== 0)
-    fail("routings aimed elsewhere were cleared: " + d.writes.join(" "));
+    fail(kind + ": routings aimed elsewhere were cleared: " + d.writes.join(" "));
 }
 
 /* 3. BOTH LFOs are covered. Two is the whole table (LFO_COUNT), and a loop
       that stops at the first is the shape this codebase keeps growing. */
-{
-  const d = clearFor({ "lfo1:target": "fx1", "lfo1:target_param": "a",
-                       "lfo2:target": "fx1", "lfo2:target_param": "b" }, 0, "fx1");
-  if (d.state["lfo2:target"] !== "" || d.state["lfo2:target_param"] !== "")
-    fail("only the first LFO was cleared: " + d.writes.join(" "));
+for (const [kind, pre] of CHAINS) {
+  const d = clearFor(at(pre, { "lfo1:target": "fx1", "lfo1:target_param": "a",
+                               "lfo2:target": "fx1", "lfo2:target_param": "b" }),
+                     kind, "fx1");
+  if (d.state[pre + "lfo2:target"] !== "" || d.state[pre + "lfo2:target_param"] !== "")
+    fail(kind + ": only the first LFO was cleared: " + d.writes.join(" "));
 }
 
 /* 4. The synth is a component like any other here: swapping it out has to take
       routings aimed at it too. */
 {
-  const d = clearFor({ "lfo1:target": "synth", "lfo1:target_param": "cutoff" }, 0, "synth");
+  const d = clearFor({ "lfo1:target": "synth", "lfo1:target_param": "cutoff" }, "slot", "synth");
   if (d.state["lfo1:target"] !== "") fail("a synth routing survived a synth swap");
 }
 
 /* 5. midi_fx positions are named the same way and are reached by the same
       path -- the id is a string, so nothing about it is FX-only. */
 {
-  const d = clearFor({ "lfo1:target": "midi_fx3", "lfo1:target_param": "rate" }, 0, "midi_fx3");
+  const d = clearFor({ "lfo1:target": "midi_fx3", "lfo1:target_param": "rate" },
+                     "slot", "midi_fx3");
   if (d.state["lfo1:target"] !== "") fail("a MIDI FX routing survived a swap");
 }
 
 /* 6. Nothing to clear costs two reads and no writes. This runs on a user
       gesture, but a helper that writes unconditionally would reload routings
       that were never stale. */
-{
-  const d = clearFor({}, 0, "fx1");
-  if (d.writes.length !== 0) fail("wrote with nothing routed: " + d.writes.join(" "));
-  if (d.reads.length > 2) fail("read more than the two LFOs: " + d.reads.join(" "));
+for (const [kind] of CHAINS) {
+  const d = clearFor({}, kind, "fx1");
+  if (d.writes.length !== 0) fail(kind + ": wrote with nothing routed: " + d.writes.join(" "));
+  if (d.reads.length > 2) fail(kind + ": read more than the two LFOs: " + d.reads.join(" "));
 }
 
 /* ---- what the picker hands the caller ----------------------------------- */
