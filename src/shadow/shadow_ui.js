@@ -49,6 +49,10 @@ import { decodeDelta } from '/data/UserData/schwung/shared/input_filter.mjs';
  * drawComponentSelect. Pure drawing helpers; no state travels with them. */
 import { drawHeader as drawMovyHeader, drawFooter as drawMovyFooter, RULE_Y as MOVY_RULE_Y }
     from '/data/UserData/schwung/shared/param_pages/render_page_movy.mjs';
+/* The bands around a chain editor's row of boxes — header, label, info,
+ * footer. Shared with Master FX so the two editors wear the same furniture. */
+import { drawChainEditorBands }
+    from '/data/UserData/schwung/shared/chain_editor_chrome.mjs';
 /* The chain editor's knob feedback card, and the two resolvers it needs to be
  * handed a row: what each key IS (metaIndex) and which cells a viz group
  * covers. Both are pure and both are already on the device for the knob grid. */
@@ -14832,7 +14836,6 @@ function drawChainEdit() {
     const headerRight = synthMod
         ? (getSlotParamCached(selectedSlot, "synth:name", synthMod) || synthMod)
         : "CHAIN";
-    drawMovyHeader(movy, headerText, headerRight, false);
 
     const BOX_Y = DIAGRAM_Y;
 
@@ -14885,15 +14888,12 @@ function drawChainEdit() {
         },
     });
 
-    /* Draw component label below boxes */
+    /* What the two bands under the boxes say: the selected component's label,
+     * and the module/preset it holds. drawChainEditorBands draws them — the
+     * geometry and the centring are shared with Master FX. */
     const selectedComp = chainSelected ? null : comps[selectedChainComponent];
-    const labelY = BOX_Y + DIAGRAM_BOX_H + 3;
     const label = chainSelected ? "Chain" : (selectedComp ? selectedComp.label : "");
-    const labelX = Math.floor((SCREEN_WIDTH - label.length * 5) / 2);
-    print(labelX, labelY, label, 1);
 
-    /* Draw current module name/preset below label */
-    const infoY = labelY + 11;
     let infoLine = "";
     if (chainSelected) {
         /* Show patch name when chain is selected */
@@ -14922,16 +14922,18 @@ function drawChainEdit() {
     } else if (selectedComp && selectedComp.key === "settings") {
         infoLine = "Configure slot";
     }
-    infoLine = truncateText(infoLine, 24);
-    const infoX = Math.floor((SCREEN_WIDTH - infoLine.length * 5) / 2);
-    print(infoX, infoY, infoLine, 1);
 
     /*
-     * Back leaves shadow mode entirely from here — the one screen where it
-     * does — so the footer says EXIT rather than OUT.
+     * The bands: header, label, info, footer -> shared/chain_editor_chrome.mjs,
+     * the same call Master FX makes, so the two editors cannot drift apart on
+     * their furniture again.
      *
-     * It follows the modifier because Shift silently repurposes the jog: a
-     * reorder gesture with a footer still reading SEL is a gesture nobody
+     * Back leaves shadow mode entirely from here — one of the two screens where
+     * it does, Master FX being the other — so the footer says EXIT rather than
+     * OUT.
+     *
+     * The hints follow the modifier because Shift silently repurposes the jog:
+     * a reorder gesture with a footer still reading SEL is a gesture nobody
      * finds. Shift drops CLK, which is unchanged, rather than adding a fourth
      * pair — three pairs only fit while every word is <= 4 characters, and
      * drawFooter drops what does not fit rather than squeezing it.
@@ -14939,9 +14941,15 @@ function drawChainEdit() {
      * isShiftHeld() is a read of the control SHM, not an IPC round trip, so
      * this is a per-frame call that costs nothing measurable.
      */
-    drawMovyFooter(movy, isShiftHeld()
-        ? [["JOG", "MOVE"], ["BACK", "EXIT"]]
-        : [["JOG", "SEL"], ["CLK", "OPEN"], ["BACK", "EXIT"]]);
+    drawChainEditorBands(movy, {
+        headerLeft: headerText,
+        headerRight,
+        label,
+        info: infoLine,
+        hints: isShiftHeld()
+            ? [["JOG", "MOVE"], ["BACK", "EXIT"]]
+            : [["JOG", "SEL"], ["CLK", "OPEN"], ["BACK", "EXIT"]],
+    });
 
     /*
      * The card last, over everything — it is a modal. Every value it draws was

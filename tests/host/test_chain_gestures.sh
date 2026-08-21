@@ -355,31 +355,61 @@ if (makeEntries) {
  * the tail rather than running a half-drawn pill off the right edge, so a hint
  * that does not fit is a hint the user never sees. The real renderer decides.
  */
+const ctx = { fillRect: () => {}, setPixel: () => {}, print: () => {} };
+const flat = (h) => (h || []).map((p) => p.join(" ")).join(" / ");
+
+/* Both editors emit their hints through the SAME call, drawChainEditorBands --
+   so both are pulled out and evaluated the same way. Since 4a-3 the two screens
+   share their chrome, and the rule that keeps them converged is that anything
+   asserted about one is asserted about the other. */
+function hintsFrom(text, what, at, extraNames, extraValues) {
+  const call = text.indexOf("drawChainEditorBands(", at);
+  if (at < 0 || call < 0) { fail(what + " no longer draws a footer"); return null; }
+  const stmt = text.slice(call, text.indexOf("\n    });", call) + 7);
+  let got;
+  try {
+    new Function(...extraNames, "drawChainEditorBands", stmt)(
+      ...extraValues, (c, o) => { got = o.hints; });
+  } catch (e) { fail(what + " footer would not evaluate: " + e.message); return null; }
+  return got;
+}
+function fits(what, hints) {
+  if (!hints) return;
+  if (drawFooter(ctx, hints) !== hints.length)
+    fail("the footer " + what + " does not fit: [" + flat(hints) + "]");
+}
+
+/* --- the slot chain editor: bound to the modifier ------------------------ */
 {
   const at = src.indexOf("function drawChainEdit(");
-  const call = src.indexOf("drawMovyFooter(movy,", at);
-  if (at < 0 || call < 0) fail("drawChainEdit no longer draws a footer");
-  else {
-    const stmt = src.slice(call, src.indexOf(");", call) + 2);
-    const shown = (shift) => {
-      let got = null;
-      new Function("isShiftHeld", "drawMovyFooter", "movy", stmt)(
-        () => shift, (ctx, hints) => { got = hints; }, {});
-      return got;
-    };
-    const ctx = { fillRect: () => {}, setPixel: () => {}, print: () => {} };
-    const flat = (h) => (h || []).map((p) => p.join(" ")).join(" / ");
+  const shown = (shift) => hintsFrom(src, "drawChainEdit", at,
+    ["isShiftHeld", "movy", "headerText", "headerRight", "label", "infoLine"],
+    [() => shift, {}, "", "", "", ""]);
 
-    const rest = shown(false), held = shown(true);
-    if (flat(rest) !== "JOG SEL / CLK OPEN / BACK EXIT")
-      fail("at rest the footer reads [" + flat(rest) + "]");
-    if (flat(held) !== "JOG MOVE / BACK EXIT")
-      fail("with Shift held the footer reads [" + flat(held) + "]");
-    for (const [what, hints] of [["at rest", rest], ["with Shift held", held]]) {
-      if (drawFooter(ctx, hints) !== hints.length)
-        fail("the footer " + what + " does not fit: [" + flat(hints) + "]");
-    }
-  }
+  const rest = shown(false), held = shown(true);
+  if (flat(rest) !== "JOG SEL / CLK OPEN / BACK EXIT")
+    fail("at rest the footer reads [" + flat(rest) + "]");
+  if (flat(held) !== "JOG MOVE / BACK EXIT")
+    fail("with Shift held the footer reads [" + flat(held) + "]");
+  fits("at rest", rest);
+  fits("with Shift held", held);
+}
+
+/* --- Master FX: the same grammar, for the gestures it ACTUALLY has -------
+ *
+ * No JOG MOVE variant, and that is the assertion, not an omission: Master FX
+ * has no reorder gesture until step 4e, and a hint for a gesture that does
+ * nothing is worse than no hint. Back leaves shadow mode from here exactly as
+ * it does from the chain editor, so the word is EXIT.
+ */
+{
+  const mfx = readFileSync("src/shadow/shadow_ui_master_fx.mjs", "utf8");
+  const at = mfx.indexOf("export function drawMasterFx(");
+  const hints = hintsFrom(mfx, "drawMasterFx", at,
+    ["dctx", "currentMasterPresetName", "label", "infoLine"], [{}, "", "", ""]);
+  if (flat(hints) !== "JOG SEL / CLK OPEN / BACK EXIT")
+    fail("the Master FX footer reads [" + flat(hints) + "]");
+  fits("on Master FX", hints);
 }
 
 if (failures) process.exit(1);

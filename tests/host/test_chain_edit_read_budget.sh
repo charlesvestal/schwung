@@ -371,6 +371,11 @@ function world() {
     "knobCardDrawState", "drawKnobCard",
     /* The chain target and the two helpers shared with the Master FX editor. */
     "slotChainTarget", "chainLfoTargetMap", "chainComponentBypassed",
+    /* The shared bands (header / label / info / footer). A noop here: they draw
+       through the injected ctx and read no params, so they cost nothing this
+       test is measuring -- what it measures is the info line the editor
+       COMPUTES before handing it over, which is still done above. */
+    "drawChainEditorBands",
   ];
   const mk = lift("drawChainEdit", drawDeps);
   const makeDraw = (diagram, cardState) => mk(noop, {}, 0, () => false, [{ name: "s" }], truncateText,
@@ -381,7 +386,7 @@ function world() {
     noop, () => false, ensureChainConfigFresh,
     () => (cardState === undefined ? null : cardState),
     () => { w.cardDraws++; },
-    slotChainTarget, chainLfoTargetMap, chainComponentBypassed);
+    slotChainTarget, chainLfoTargetMap, chainComponentBypassed, noop);
   w.cardDraws = 0;
   w.draw = makeDraw(recording);
   w.drawReal = makeDraw(drawChainDiagram);

@@ -14,11 +14,19 @@ cd "$(dirname "$0")/../.."
 #
 # THE ORDER IS THE POINT. A baseline regenerated after the refactor compares the
 # new code against itself and proves exactly nothing -- it is not a weaker test,
-# it is a test of a tautology that still prints PASS. So this file and
+# it is a test of a tautology that still prints PASS. So the 46 chain/ hashes in
 # tests/fixtures/chain-editor-baseline.txt must be re-derivable from the commit
 # BEFORE 4a touches either draw function, and a reviewer should check that by
 # regenerating from that parent commit and byte-comparing. The same trap was
 # avoided once already on this branch, for render_page_movy (commit c4f61538).
+#
+# The 25 master/ hashes were refreshed ONCE, at step 4a-3, whose entire purpose
+# was to move those pixels: Master FX drew no footer, wore the older header and
+# sat 6px low, and 4a-3 gave it the slot editor chrome. The refresh is what this
+# repo calls a reviewed fixture change (tools/param-pages/regenerate.mjs says so
+# explicitly) -- the renders were read case by case first, and the check that it
+# was not a cover for a refactor mistake is that ZERO chain/ hashes moved in the
+# same commit.
 #
 # HOW THE SCREENS ARE DRIVEN
 #   drawChainEdit  is LIFTED out of shadow_ui.js with `new Function` and an
@@ -36,8 +44,8 @@ cd "$(dirname "$0")/../.."
 #
 # THE CONTENT FLOOR is the defence against exactly that. Every case must light a
 # minimum number of pixels AND leave none of its bands empty -- header, diagram,
-# and footer (or the label/info band, on the screen that has no footer). A
-# silently blank region cannot pass as a baseline.
+# label/info and footer. Since 4a-3 that is the SAME band list for both screens.
+# A silently blank region cannot pass as a baseline.
 #
 # Renderers are the real ones (chain_diagram.mjs, render_page_movy.mjs,
 # menu_layout.mjs, knob_card.mjs) and the native draw primitives are supplied,
@@ -62,8 +70,9 @@ import { drawHeader as drawMovyHeader, drawFooter as drawMovyFooter,
          RULE_Y as MOVY_RULE_Y, HEADER_H as MOVY_HEADER_H }
   from "./src/shared/param_pages/render_page_movy.mjs";
 import { drawKnobCard } from "./src/shared/param_pages/knob_card.mjs";
-import { drawMenuHeader, TITLE_RULE_Y } from "./src/shared/menu_layout.mjs";
+import { drawMenuHeader } from "./src/shared/menu_layout.mjs";
 import { truncateText } from "./src/shared/chain_ui_views.mjs";
+import { drawChainEditorBands } from "./src/shared/chain_editor_chrome.mjs";
 
 const BASELINE_PATH = "tests/fixtures/chain-editor-baseline.txt";
 const SCREEN_WIDTH = 128;
@@ -203,6 +212,10 @@ const CHAIN_DRAW_DEPS = [
   "getComponentParamPrefix", "drawMovyFooter", "isShiftHeld", "ensureChainConfigFresh",
   "knobCardDrawState", "drawKnobCard",
   "slotChainTarget", "chainLfoTargetMap", "chainComponentBypassed",
+  /* The shared bands (header / label / info / footer), 4a-3. Supplied REAL --
+     a noop here would empty three of the four bands the content floor checks,
+     which is the whole point of checking them. */
+  "drawChainEditorBands",
 ];
 const mkChainDraw = lift("drawChainEdit", CHAIN_DRAW_DEPS);
 
@@ -221,7 +234,8 @@ function renderChain(c) {
     w.getModuleAbbrev, w.chainComponentParamKey, DIAGRAM_BOX_H, SCREEN_WIDTH,
     w.getComponentParamPrefix, drawMovyFooter, () => !!c.shift, w.ensureChainConfigFresh,
     () => (c.card || null), drawKnobCard,
-    w.slotChainTarget, w.chainLfoTargetMap, w.chainComponentBypassed);
+    w.slotChainTarget, w.chainLfoTargetMap, w.chainComponentBypassed,
+    drawChainEditorBands);
   draw();
   clearGlobals();
   return fb;
@@ -249,9 +263,12 @@ const MASTER_FX_CHAIN_COMPONENTS = (function () {
    be baselined as if it were the chain. */
 const boom = (what) => () => { fail("drawMasterFx fell through to " + what); };
 const MFX_DRAW_DEPS = ["ctx", "drawHeader", "drawChainDiagram", "DIAGRAM_W",
-  "DIAGRAM_BOX_H", "SCREEN_WIDTH", "truncateText", "drawMasterNamePreview",
+  "DIAGRAM_Y", "SCREEN_WIDTH", "truncateText", "drawMasterNamePreview",
   "drawMasterConfirmOverwrite", "drawMasterConfirmDelete", "drawMasterPresetPicker",
-  "drawMasterFxSettingsMenu", "drawMasterFxModuleSelect"];
+  "drawMasterFxSettingsMenu", "drawMasterFxModuleSelect",
+  /* Same shared bands the slot editor draws, 4a-3 -- which is what makes the
+     two screens the same screen from the header rule down. */
+  "drawChainEditorBands"];
 const mkMasterDraw = liftFrom(mfxSrc, "shadow_ui_master_fx.mjs", "drawMasterFx", MFX_DRAW_DEPS);
 
 function renderMaster(c) {
@@ -293,10 +310,10 @@ function renderMaster(c) {
     drawHelpList: boom("drawHelpList"),
   };
   const draw = mkMasterDraw(mfxCtx, drawMenuHeader, drawChainDiagram, DIAGRAM_W,
-    DIAGRAM_BOX_H, SCREEN_WIDTH, truncateText, boom("drawMasterNamePreview"),
+    DIAGRAM_Y, SCREEN_WIDTH, truncateText, boom("drawMasterNamePreview"),
     boom("drawMasterConfirmOverwrite"), boom("drawMasterConfirmDelete"),
     boom("drawMasterPresetPicker"), boom("drawMasterFxSettingsMenu"),
-    boom("drawMasterFxModuleSelect"));
+    boom("drawMasterFxModuleSelect"), drawChainEditorBands);
   draw();
   clearGlobals();
   return fb;
@@ -485,17 +502,20 @@ addMaster("master/len2/info-optname", { modules: M2, sel: "fx2",
  * that lost its footer, its diagram or its header cannot be blessed as a
  * baseline just because the remaining pixels are stable.
  *
- * Master FX has NO footer -- that is a real difference between the two editors
- * today, and one 4a has to either preserve or change on purpose, so it is
- * recorded here rather than papered over.
+ * ONE band list, for both screens, since 4a-3. It used to be two: Master FX
+ * drew no footer, wore the taller menu_layout header (hence TITLE_RULE_Y) and
+ * sat its boxes at y=20. Those were historical rather than chosen, and 4a-3
+ * removed them -- so a single list is now the stronger check, because a Master
+ * FX case that lost its footer or drifted back up the screen fails here rather
+ * than being described by its own private geometry.
  */
-const BANDS = {
-  chain: [["header", 0, MOVY_HEADER_H - 1], ["diagram", DIAGRAM_Y, DIAGRAM_Y + DIAGRAM_BOX_H - 1],
-          ["label/info", DIAGRAM_Y + DIAGRAM_BOX_H + 3, MOVY_RULE_Y - 1],
-          ["footer", MOVY_RULE_Y, 63]],
-  master: [["header", 0, TITLE_RULE_Y], ["diagram", 20, 20 + DIAGRAM_BOX_H - 1],
-           ["label/info", 40, 58]],
-};
+const EDITOR_BANDS = [
+  ["header", 0, MOVY_HEADER_H - 1],
+  ["diagram", DIAGRAM_Y, DIAGRAM_Y + DIAGRAM_BOX_H - 1],
+  ["label/info", DIAGRAM_Y + DIAGRAM_BOX_H + 3, MOVY_RULE_Y - 1],
+  ["footer", MOVY_RULE_Y, 63],
+];
+const BANDS = { chain: EDITOR_BANDS, master: EDITOR_BANDS };
 const MIN_LIT = 120;
 
 function inkInBand(fb, y0, y1) {
@@ -561,8 +581,17 @@ if (process.env.UPDATE_CHAIN_EDITOR_BASELINE) {
     "# Captured BEFORE step 4a of the Master FX variable-length design converges",
     "# drawChainEdit and drawMasterFx into one editor. That order is the whole",
     "# point: a baseline regenerated after the refactor compares the new code",
-    "# against itself. This file must stay re-derivable from the commit before",
-    "# 4a touches either draw function.",
+    "# against itself.",
+    "#",
+    "# The 46 chain/ hashes are still the ORIGINAL capture and must stay",
+    "# re-derivable from the commit before 4a touched either draw function.",
+    "#",
+    "# The 25 master/ hashes were refreshed ONCE, at step 4a-3, which unified the",
+    "# two editors chrome on purpose: Master FX gained the movy header band and",
+    "# the hint footer and moved up to the slot editors box row. Every one of the",
+    "# 25 was rendered and read before the refresh, and no chain/ hash moved with",
+    "# them -- which is what said the screen that was not supposed to move did",
+    "# not. Any FURTHER master/ movement is a regression again.",
     "#",
     "# A mismatch names which case moved, and the runner prints the render.",
     "#",
@@ -604,7 +633,7 @@ if (!failures) {
 
 if (failures) process.exit(1);
 console.log("PASS: chain editor snapshot — " + chainCases.length + " slot-chain and " +
-            masterCases.length + " Master FX renders match the pre-convergence baseline, " +
+            masterCases.length + " Master FX renders match the baseline, " +
             "every one of them inside the display, in the device font, and with ink in " +
             "each band");
 '
