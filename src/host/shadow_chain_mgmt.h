@@ -278,6 +278,31 @@ int shadow_master_fx_slot_load_with_config(int slot, const char *dsp_path,
                                             const char *config_json);
 int shadow_master_fx_load(const char *dsp_path);
 void shadow_master_fx_unload(void);
+
+/* --- Master FX shape: insert / remove / move, as an ARRAY PERMUTATION ---
+ *
+ * The instances keep running and only their index changes. Expressed as a run
+ * of `fxN:module` writes instead, each position behind the edit would be
+ * unloaded and dlopen'd afresh — a reverb loses the tail that was ringing.
+ * All three take 0-based positions and return 1 on success, 0 when refused
+ * (out of range, chain full, from == to). A refused edit changes nothing.
+ *
+ * Insert only opens the hole; the caller follows with the ordinary `fxN:module`
+ * write. Remove unloads the occupant through shadow_master_fx_slot_unload —
+ * never a memset, which would leak the dlopen handle and the FX instance.
+ *
+ * Reached from the shadow UI as `master_fx:fx:insert` / `:remove` / `:move`,
+ * spelled to match the slot chain's `fx:insert` exactly so one shared emitter
+ * serves both editors. */
+int shadow_master_fx_insert(int at);
+int shadow_master_fx_remove(int at);
+int shadow_master_fx_move(int from, int to);
+
+/* How long the Master FX chain is, holes included — NOT the cap. Published as
+ * `master_fx:fx_count`. Once a position can be removed, the cap no longer says
+ * where the chain ends; bound loops by this. Never reports less than
+ * "highest loaded position + 1", so a module can never run unseen. */
+int shadow_master_fx_count(void);
 void shadow_master_fx_forward_midi(const uint8_t *msg, int len, int source);
 
 /* --- Capture loading --- */
