@@ -20,6 +20,8 @@
  * kind of "ported but currently inert" note.
  */
 
+import { BOOL_OPTION } from "./viz.mjs";
+
 /** Physical clicks per value step for a narrow int range, and for every enum. */
 export const ENUM_DELTA_DIV = 4;
 /** Sensitivity multiplier for a continuous arc-rendered knob — every knob in
@@ -64,6 +66,29 @@ function wideStepCount(state, direction, nowMs) {
     return direction * multiplier;
 }
 
+/**
+ * A two-state boolean, i.e. exactly what viz.mjs `detectSwitch` draws as a
+ * switch. Kept on the same BOOL_OPTION test so a control cannot be drawn as a
+ * switch but turned like a list (or the reverse).
+ */
+function isSwitchMeta(meta) {
+    const opts = Array.isArray(meta.options) ? meta.options : null;
+    return !!opts && opts.length === 2
+        && opts.every((o) => BOOL_OPTION.test(String(o).trim()));
+}
+
+/**
+ * Reversing direction drops whatever partial turn was banked the other way.
+ * Without it the residue is spent cancelling the new direction first, so a
+ * reversal costs up to div + (div - 1) detents — 7 at ENUM_DELTA_DIV 4 — and
+ * how many depends on where the previous turn happened to stop, which is why
+ * the same knob feels inconsistent from one reversal to the next.
+ */
+function clearOnReversal(state, delta) {
+    if (state.detentAccum !== 0 && Math.sign(state.detentAccum) !== Math.sign(delta))
+        state.detentAccum = 0;
+}
+
 export function movyKnobInit(initialValue) {
     return { value: initialValue, detentAccum: 0, lastTurnMs: 0, lastDirection: 0 };
 }
@@ -87,7 +112,17 @@ export function movyKnobTick(state, meta, delta, nowMs, fine = false) {
     if (delta === 0) return state.value;
 
     if (meta.kind === "enum" || meta.type === "enum") {
+        /* A switch has two states and no travel, so it flips on ONE detent, in
+         * the direction turned. Running it through the click gate below cost 4
+         * detents to move at all (and up to 7 to come back), which reads as a
+         * dead control: the drawn knob simply does not move when you turn it. */
+        if (isSwitchMeta(meta)) {
+            state.detentAccum = 0;
+            state.value = delta > 0 ? 1 : 0;
+            return state.value;
+        }
         const div = fine ? 1 : ENUM_DELTA_DIV;
+        clearOnReversal(state, delta);
         state.detentAccum += delta;
         const steps = Math.trunc(state.detentAccum / div);
         if (steps === 0) return state.value;
@@ -111,6 +146,7 @@ export function movyKnobTick(state, meta, delta, nowMs, fine = false) {
     const div = fine ? 1 : detentsPerStep(meta);
     let steps = delta;
     if (div > 1) {
+        clearOnReversal(state, delta);
         state.detentAccum += delta;
         steps = Math.trunc(state.detentAccum / div);
         if (steps === 0) return state.value;
