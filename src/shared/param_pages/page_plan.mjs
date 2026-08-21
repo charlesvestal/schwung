@@ -380,12 +380,34 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved } 
          * on no knob. Rendering knobs[] alone would hide 28% of declared params
          * relative to the list editor, so the level's remaining editable params
          * follow its authored knobs as continuation pages. */
-        const authored = knobKeys(lvl).filter((k) => !isHiddenParam(lvl, k, isVisible));
-        /* Overflow keys are filtered where authored knobs are not: a knob the
-         * author placed is intent and is honoured whatever it is called, but a
-         * key we are pulling in from params[] has to earn its cell.
+        /*
+         * A SELECTOR key is dropped even when authored. This is the one
+         * exception to "an authored knob is intent", and it is carried by
+         * evidence rather than taste: fleet-wide, exactly two levels place a
+         * selector on a knob — impressive-chords `preset_index` and breakbeat
+         * `preset` — and in BOTH the knobs[] array is byte-identical to
+         * params[]. Neither curated anything; they listed every param and the
+         * selector happened to be first, so it took knob 1.
+         *
+         * Nobody does it deliberately, and the cost of honouring it is high:
+         * the key already has its own browser page built from the same
+         * list_param, so the knob is a duplicate — and a duplicate that cannot
+         * work, because impressive-chords declares preset_index as int 0..500
+         * against 52 presets, i.e. a knob that is ~90% dead travel and lands
+         * on nothing.
+         *
+         * Reported from the device as "why is preset a knob on impressive
+         * chords?".
+         */
+        const authored = knobKeys(lvl).filter(
+            (k) => !isHiddenParam(lvl, k, isVisible) && !selectorKeys.has(k));
+        /* Overflow keys are filtered further than authored ones: a knob the
+         * author placed is otherwise intent and is honoured whatever it is
+         * called, but a key we are pulling in from params[] has to earn its
+         * cell.
          *
          *  - a selector param belongs to its own page kind, not a knob
+         *    (also dropped above, for authored knobs)
          *  - `ui_`-prefixed keys are module UI state (ui_current_pad,
          *    ui_preset_path), not musical parameters — a naming convention the
          *    ecosystem already uses, and one Movy formalised independently
