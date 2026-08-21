@@ -563,7 +563,29 @@ Co-run lets an **overtake tool share Move's control surface with a second UI** f
 
 ### Master FX Chain
 
-4-slot Master FX processes mixed shadow output. Access: Shift+Vol+Menu.
+8-slot Master FX processes mixed shadow output. Access: Shift+Vol+Menu.
+
+The cap lives in **two** places that must move together — `MASTER_FX_SLOTS` in
+`src/host/shadow_chain_mgmt.h` and in `src/shadow/shadow_ui.js` —, and
+`tests/host/test_master_fx_slots_js.sh` fails on drift between them. Key routing
+is cap-derived through `src/host/master_fx_key.h`
+(`master_fx_route_param_key` / `master_fx_route_target`), pinned by
+`test_master_fx_slot_routing`, which widens with the cap rather than quietly
+covering half the range.
+
+**The diagram is `chain_diagram.mjs`, the same one the slot editor uses.** It
+replaced a fixed `TOTAL_W = 5 * BOX_W + 4 * GAP` row that filled 118 of 128
+pixels: nine boxes would have been 214px, drawn off-screen with no clipping and
+no error, taking the bypass `B` and the LFO `~` marks with them. A fixed row
+cannot report that it overflowed, which is why
+`tests/host/test_master_fx_diagram_fit.sh` asserts `clipped() === 0` at the cap
+and one past it. Per-box reads are bounded by the ~5 boxes DRAWN, not by the
+cap, so raising 4 → 8 cost one read per frame rather than four.
+
+Master FX still has **no insert, remove or move** — removal is picking `None`,
+which unloads in place and leaves a hole. Adding those (and the permutation
+that must come with them) is residual 2.2 Step 4, and it is a new feature, not
+a port of `chain_reorder.c`.
 
 ### Overtake Modules
 
