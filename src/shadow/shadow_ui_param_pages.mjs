@@ -264,19 +264,31 @@ export function tickParamPages() {
     if (++_loadingPoll >= _loadingInterval) {
         _loadingPoll = 0;
         const raw = ctx.getSlotParam(currentSlot, `${currentPrefix}:is_loading`);
-        if (raw === null || raw === undefined) {
-            /* The module does not implement is_loading — most don't; it exists
-             * for the ones with an async ROM or sample load. Measured on
-             * device, this errored 5-7 times a SECOND, and an errored read
-             * still costs the full ~2.8ms round trip: the error is free, the
-             * round trip is not.
+        if (raw === '') {
+            /*
+             * NOBODY SERVES THIS KEY. Stop asking, for this component.
              *
-             * Backed off rather than switched off, because this poll is
-             * correctness-relevant — it is what re-plans the page tree when a
-             * module finishes loading. A module that is genuinely mid-load can
-             * error first and answer later, so giving up entirely could strand
-             * the page on a stale tree. Backing off keeps the edge, just
-             * later. Reset on entry to the view and on any successful read. */
+             * An unserved key answers "" — the shim replies with an error and
+             * a zeroed buffer, and the binding hands that back as an empty
+             * string. Only an unclaimable channel answers null. The back-off
+             * below tested for null, so for the overwhelming majority of the
+             * fleet — which does not implement is_loading at all — it never
+             * engaged: the poll fell through to the `else`, read "" as
+             * not-loading, reset the interval to full rate, and did that
+             * forever. Measured on device at 5-7 errored reads a SECOND, and
+             * an errored read still costs the whole ~2.8 ms round trip.
+             *
+             * Giving up entirely is safe now in a way it was not before,
+             * because the contract no longer depends on this edge: a selection
+             * books its own settle in the controller (armContractSettle), and
+             * that path needs no cooperation from the module.
+             */
+            _loadingInterval = Infinity;
+        } else if (raw === null || raw === undefined) {
+            /* The channel would not answer — transient, unlike "". Back off
+             * rather than give up: a module genuinely mid-load can fail a
+             * claim first and answer later, and this is what re-plans the page
+             * tree when it finishes. Reset on entry and on any real read. */
             if (_loadingInterval < LOADING_POLL_MAX_TICKS) _loadingInterval *= 2;
         } else {
             _loadingInterval = LOADING_POLL_TICKS;
