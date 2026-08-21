@@ -119,7 +119,15 @@ function makeSlot(over) {
     fail("LFO 1 must be a page, not a menu entry: " + JSON.stringify(saved));
   }
   if (empty.includes("Delete")) fail("Delete must not be offered on a slot with no preset");
-  if (empty.includes("Save As")) fail("Save As must not be offered on a slot with no preset");
+  /* Save As STAYS with no preset. It is not redundant with Save: Save offers a
+     generated name to accept or edit, Save As goes straight to the keyboard.
+     And the actions menu must never be ONE entry -- the grid draws a menu page
+     you have to enter in order to press a single button. Master FX hit that
+     because it has no Knob Mapping row; both contracts are asserted below. */
+  if (!empty.includes("Save As")) fail("Save As must stay on a slot with no preset");
+  if (empty.length < 2)
+    fail("the slot actions menu is " + empty.length + " entry: a menu page you must " +
+         "enter to press one button. " + JSON.stringify(empty));
   if (!empty.includes("Save")) fail("Save must always be offered");
   if (!saved.includes("Delete") || !saved.includes("Save As")) {
     fail("Save As and Delete must appear once a preset exists: " + JSON.stringify(saved));
@@ -640,8 +648,15 @@ function makeMaster(over) {
   const { io, state } = makeMaster();
   const bare = () => JSON.parse(io.getParam("master_settings:ui_hierarchy"))
                        .levels.actions.menu.map((m) => m.action);
-  if (bare().join(",") !== "save")
-    fail("with no preset the master actions menu should be Save alone, got " + bare().join(","));
+  if (bare().join(",") !== "save,save_as")
+    fail("with no preset the master actions menu should be Save and Save As, got " +
+         bare().join(","));
+  /* The invariant, asserted separately from the contents: a ONE entry menu page
+     is a page you must enter in order to press a single button, which is what
+     this looked like before Save As stayed. The master bus has no Knob Mapping
+     row to pad it, so it is the chain that actually hits this. */
+  if (bare().length < 2)
+    fail("the master actions menu is " + bare().length + " entry: " + bare().join(","));
   state.preset = true;
   if (bare().join(",") !== "save,save_as,delete")
     fail("with a preset the master actions menu should be Save/Save As/Delete, got " +

@@ -2480,10 +2480,17 @@ function getMasterFxSettingsItems() {
         /* Existing preset: show all items */
         return MASTER_FX_SETTINGS_ITEMS_BASE;
     }
-    /* New/unsaved: hide Save As and Delete */
-    return MASTER_FX_SETTINGS_ITEMS_BASE.filter(item =>
-        item.key !== "save_as" && item.key !== "delete"
-    );
+    /*
+     * Unsaved: hide DELETE, but keep Save As.
+     *
+     * Save and Save As are genuinely different with nothing saved yet — Save
+     * offers a generated name to accept or edit, Save As goes straight to the
+     * keyboard. Hiding Save As left Master FX with a ONE ENTRY actions menu,
+     * which the knob grid draws as a menu page you have to enter to press a
+     * single button. A slot never hit that because it also carries Knob
+     * Mapping; the master bus has no knob-mapping table, so it did.
+     */
+    return MASTER_FX_SETTINGS_ITEMS_BASE.filter(item => item.key !== "delete");
 }
 
 let selectedMasterFxSetting = 0;
@@ -6205,9 +6212,12 @@ function getChainSettingsItems(slotIndex) {
         /* Existing preset: show all items (Save, Save As, Delete) */
         return CHAIN_SETTINGS_ITEMS;
     }
-    /* New preset: hide Save As and Delete (only Save makes sense) */
+    /* New preset: hide DELETE, but keep Save As — see the Master FX twin of
+     * this filter. Save suggests a name, Save As asks for one; both are
+     * meaningful before anything is saved, and the two chains must offer the
+     * same entries or their settings screens drift again. */
     return CHAIN_SETTINGS_ITEMS.filter(function(item) {
-        return item.key !== "save_as" && item.key !== "delete";
+        return item.key !== "delete";
     });
 }
 
