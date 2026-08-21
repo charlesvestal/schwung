@@ -244,6 +244,40 @@ worked twice and made each raise a one-line diff.
   — so both targets get them in the same commit.
 - **4f. Tests, parameterised over both targets** (§7, §1b).
 
+### REPRIORITISED 2026-08-21 — the cap raise made the screen worse
+
+**Charles, looking at the deployed build:** *"it shows 8 slots. let's show 1 slot
+with + please, to match the chain behavior (and also removing slots?). otherwise
+you can't tell anything's there."*
+
+He is right, and the ordering error is ours: Step 3 raised the cap to 8 before
+the list behaviour existed, so an empty Master FX went from four uninformative
+boxes to eight. A fixed array of empty positions communicates nothing; a chain
+of one module and a `+` communicates everything.
+
+**Asked whether move was included, and what the target behaviour is:**
+*"we should be able to move too?"* / *"it should behave the same as the fx
+section of the chain???"*
+
+**Yes. Full parity with a slot chain's `fx` section — insert, remove, move, the
+`+` box, Shift+Jog — and no staged subset.**
+
+A staged subset was considered and rejected on his correction. It would have
+shipped the display, the `+`, append and remove-from-the-end first, since none
+of those shift a position and so none need the permutation; only mid-chain
+remove and move do. But *"Master FX can append but cannot move"* is a feature
+difference between the two editors, which is **precisely the drift §1b exists to
+end**. Building half of it to be quick would recreate the problem in the act of
+fixing it.
+
+So the display improvement arrives with 4e, and 4c/4d are its prerequisites
+rather than a separate concern.
+
+**The count needs no new C param.** The JS already maintains `masterFxConfig`
+and persists it; the loaded count is derivable client-side today. A published
+`master_fx:fx_count` is still wanted for 4d, when the DSP becomes the authority
+after a permutation — but it does not block the visual.
+
 4a is the load-bearing step. If it is skipped, everything after it is an eighth
 parallel implementation.
 
