@@ -3435,15 +3435,30 @@ function unloadModuleUi() {
 
 /* Check for synth error in a slot and show warning if found */
 function checkAndShowSynthError(slotIndex) {
+    /* NOT chainComponentParamKey: the synth serves its error at "synth_error",
+     * a flat key, where every other position uses "<id>:error". */
     const synthError = getSlotParam(slotIndex, "synth_error");
     if (synthError && synthError.length > 0) {
         const synthName = getSlotParam(slotIndex, "synth:name") || "Synth";
-        warningTitle = `${synthName} Warning`;
-        warningLines = wrapText(synthError, 18);
-        warningActive = true;
-        /* Announce the error */
-        announce(`${warningTitle}: ${synthError}`);
-        needsRedraw = true;
+        showWarning(`${synthName} Warning`, synthError);
+        return true;
+    }
+    return false;
+}
+
+/*
+ * A component's asset warning, raised on screen — for EITHER chain.
+ *
+ * The three copies of this differed only in how the key was spelled and what
+ * the box is called when the module serves no name. `fallbackName` is that,
+ * and it is the POSITION ("MIDI FX", "FX 3"), because a module with no name
+ * cannot supply one.
+ */
+function checkAndShowComponentError(target, componentKey, fallbackName) {
+    const err = chainTargetGetParam(target, componentKey, "error");
+    if (err && err.length > 0) {
+        const name = chainTargetGetParam(target, componentKey, "name") || fallbackName;
+        showWarning(`${name} Warning`, err);
         return true;
     }
     return false;
@@ -3451,35 +3466,14 @@ function checkAndShowSynthError(slotIndex) {
 
 /* Check for MIDI FX warning in a slot and show warning if found */
 function checkAndShowMidiFxError(slotIndex) {
-    const midiFxError = getSlotParam(slotIndex, "midi_fx1:error");
-    if (midiFxError && midiFxError.length > 0) {
-        const midiFxName = getSlotParam(slotIndex, "midi_fx1:name") || "MIDI FX";
-        warningTitle = `${midiFxName} Warning`;
-        warningLines = wrapText(midiFxError, 18);
-        warningActive = true;
-        announce(`${warningTitle}: ${midiFxError}`);
-        needsRedraw = true;
-        return true;
-    }
-    return false;
+    return checkAndShowComponentError(slotChainTarget(slotIndex), "midiFx", "MIDI FX");
 }
 
 /* Check for Master FX error in a slot and show warning if found */
 function checkAndShowMasterFxError(fxSlot) {
     /* fxSlot is 0-based: 0 .. MASTER_FX_SLOTS-1 */
-    const fxNum = fxSlot + 1;  /* fx1, fx2, ... */
-    const fxError = getMasterFxParam(fxSlot, "error");
-    if (fxError && fxError.length > 0) {
-        const fxName = getMasterFxParam(fxSlot, "name") || `FX ${fxNum}`;
-        warningTitle = `${fxName} Warning`;
-        warningLines = wrapText(fxError, 18);
-        warningActive = true;
-        /* Announce the error */
-        announce(`${warningTitle}: ${fxError}`);
-        needsRedraw = true;
-        return true;
-    }
-    return false;
+    return checkAndShowComponentError(MASTER_CHAIN_TARGET, masterFxComponentKey(fxSlot),
+                                      `FX ${fxSlot + 1}`);
 }
 
 /* Show the warning overlay with a title and wrapped message */
