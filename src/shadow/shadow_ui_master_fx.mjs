@@ -13,8 +13,12 @@ import {
     truncateText
 } from '/data/UserData/schwung/shared/chain_ui_views.mjs';
 import {
-    drawChainDiagram, DIAGRAM_W, BOX_H as DIAGRAM_BOX_H
+    drawChainDiagram, DIAGRAM_W, DEFAULT_Y as DIAGRAM_Y
 } from '/data/UserData/schwung/shared/chain_diagram.mjs';
+/* The bands around the row of boxes — header, label, info, footer. The SAME
+ * call drawChainEdit makes: 4a-3 of the Master FX variable-length design. */
+import { drawChainEditorBands }
+    from '/data/UserData/schwung/shared/chain_editor_chrome.mjs';
 import {
     drawMenuHeader as drawHeader,
     drawMenuFooter as drawFooter,
@@ -120,8 +124,6 @@ export function drawMasterFx() {
         return;
     }
 
-    drawHeader("Master FX");
-
     /*
      * The row of boxes is shared/chain_diagram.mjs — the same renderer the slot
      * chain editor draws, so the two screens stop looking like different
@@ -138,10 +140,15 @@ export function drawMasterFx() {
      * whichever side has more chain, so the count can grow without the layout
      * having an opinion about it.
      */
-    const BOX_Y = 20;
+    /* The slot editor's own box row, to the row. This was 20 — six rows lower —
+     * because Master FX still wore the taller menu_layout header when the slot
+     * editor moved to the movy band; nothing chose the gap. DIAGRAM_Y is the
+     * diagram's own default, so neither screen restates it. */
+    const BOX_Y = DIAGRAM_Y;
     /* Centred, unlike the slot editor, which shifts right to clear its
-     * slot-indicator column. Master FX has no such column, so the strip keeps
-     * the x it has always had. */
+     * slot-indicator column. THIS difference is real and stays: Master FX is
+     * one chain, not one of four, so there is no indicator column to clear and
+     * an 8px offset would just push the strip off-centre for nothing. */
     const START_X = Math.floor((SCREEN_WIDTH - DIAGRAM_W) / 2);
 
     const presetSelected = selectedMasterFxComponent === -1;
@@ -195,14 +202,18 @@ export function drawMasterFx() {
     });
 
     const selectedComp = presetSelected ? null : MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
-    const labelY = BOX_Y + DIAGRAM_BOX_H + 4;
+    /* The label and info bands are drawn by drawChainEditorBands below, at the
+     * slot editor's spacing (+3 / +11). They were +4 / +12 here, which is the
+     * same kind of accident as the box row: nobody chose a Master-FX-specific
+     * gutter, the two screens were just written at different times. */
     const label = presetSelected ? "Preset" : (selectedComp ? selectedComp.label : "");
-    const labelX = Math.floor((SCREEN_WIDTH - label.length * 5) / 2);
-    print(labelX, labelY, label, 1);
 
-    const infoY = labelY + 12;
     let infoLine = "";
     if (presetSelected) {
+        /* The PRESET ROW, at index -1, is Master FX's alone and stays: the slot
+         * editor's -1 is the patch and it says "Chain". Both are "the whole
+         * thing rather than one position in it", which is why they share the
+         * band — they just name different objects. */
         infoLine = currentMasterPresetName || "(no preset)";
     } else if (selectedComp && selectedComp.key !== "settings") {
         const moduleData = masterFxConfig[selectedComp.key];
@@ -218,9 +229,34 @@ export function drawMasterFx() {
     } else if (selectedComp && selectedComp.key === "settings") {
         infoLine = "Configure master FX";
     }
-    infoLine = truncateText(infoLine, 24);
-    const infoX = Math.floor((SCREEN_WIDTH - infoLine.length * 5) / 2);
-    print(infoX, infoY, infoLine, 1);
+
+    /*
+     * The bands, from the same function the slot editor calls.
+     *
+     * HEADER. Left is the screen's own identity plus the thing that names this
+     * chain — the preset — exactly where the slot editor puts its patch name.
+     * Right is "MFX", the screen name, which is what the slot editor puts there
+     * when it has no synth to landmark ("CHAIN"): Master FX never has one, so
+     * there is no honest value for that side and a constant is the truth.
+     * What this replaces was drawMenuHeader("Master FX") — the device 5x7 font
+     * and a rule, ~18 rows — which is the header every other screen left behind
+     * for the movy band.
+     *
+     * FOOTER. Master FX had none at all, so nothing on the screen said what the
+     * jog or the click did. These are the gestures it ACTUALLY has today:
+     * handleJog moves the selection (it ignores Shift here — the reorder
+     * gesture is 4e, and a JOG MOVE hint before then would be a lie),
+     * handleSelect opens the picker / settings / preset list, and Back at this
+     * level calls shadow_request_exit — it leaves shadow mode entirely, same as
+     * the chain editor, so the word is EXIT and not OUT.
+     */
+    drawChainEditorBands(dctx, {
+        headerLeft: currentMasterPresetName || "Master FX",
+        headerRight: "MFX",
+        label,
+        info: infoLine,
+        hints: [["JOG", "SEL"], ["CLK", "OPEN"], ["BACK", "EXIT"]],
+    });
 }
 
 function drawMasterFxSettingsMenu() {

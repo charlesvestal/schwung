@@ -3,8 +3,17 @@
 # Captured BEFORE step 4a of the Master FX variable-length design converges
 # drawChainEdit and drawMasterFx into one editor. That order is the whole
 # point: a baseline regenerated after the refactor compares the new code
-# against itself. This file must stay re-derivable from the commit before
-# 4a touches either draw function.
+# against itself.
+#
+# The 46 chain/ hashes are still the ORIGINAL capture and must stay
+# re-derivable from the commit before 4a touched either draw function.
+#
+# The 25 master/ hashes were refreshed ONCE, at step 4a-3, which unified the
+# two editors chrome on purpose: Master FX gained the movy header band and
+# the hint footer and moved up to the slot editors box row. Every one of the
+# 25 was rendered and read before the refresh, and no chain/ hash moved with
+# them -- which is what said the screen that was not supposed to move did
+# not. Any FURTHER master/ movement is a regression again.
 #
 # A mismatch names which case moved, and the runner prints the render.
 #
@@ -56,28 +65,28 @@ chain/len8/sel-fx4 e527665760bec5f75a11d634fb0c2fa029ff1dc3
 chain/len8/sel-fx8 fa051c1794dabe81052161cf82d5e7432aec4cc9
 chain/len8/sel-patch b7e74c263f187297be02cda13bc7589de15e16a5
 chain/len8/sel-settings 1e0ed46465cc3bc73c27614f0ad6af3a86789bc0
-master/hole/sel-fx3 75dcc136b4e9f8f35c3b0373abe127d172b68ce8
-master/len0/sel-fx1 a654477068e30e10e83b1dd63b679110614bd4f3
-master/len0/sel-preset 5b1f254a936d0beb7d9ec61089b366c8471e00f9
-master/len0/sel-settings 40461a2fb38523cf6946dd120ff3294c5fc3c30f
-master/len1/preset-named 105d75ae4d0e3847927f6181ebd531638e021fe7
-master/len1/sel-fx1 a43de92b40402c15bc37c84721203dfcbc33a6a9
-master/len1/sel-fx2-empty fd14b3ad642f84b4931b0e69307d1681c8fa262b
-master/len2/bypassed 4e3493dcfd4fec92fa9b59d2bcb8cfc451caaffc
-master/len2/bypassed-selected cf8fa0fb30bc4c564749f4a6a0e845ea6028845c
-master/len2/info-optname 01241bda8fb474ee72188ba9bd348087ec6d1c12
-master/len2/info-preset cddabff3b98af0e4cf53a7c13c2a09f466105456
-master/len2/lfo1 b088ccee6d3c52ddd650aeb1bbbfde5f24092594
-master/len2/lfo1+2 3c464a86e31ae075801b0da6c1a9f3715f2d0b07
-master/len2/lfo2 e638803e3e1c55208fdd05b969429e5052919e5d
-master/len2/sel-fx1 8e49b533cf1ff8214d0b70e86a042085caa309cf
-master/len2/sel-fx2 a4bdcd2129c1aea2c7ff25f906a1e60d79384af0
-master/len5/bypassed+lfo1+2 e5c26b0a83def4bca125d2a4c8e02172671857a5
-master/len5/sel-fx1 7f17186597c547d34a0ab34d53330b5e47d433bb
-master/len5/sel-fx3 99c507f35bdb486369f84c9eaa6d1ccf6081d63f
-master/len5/sel-fx5 26452bf8b2351260b11f1928594f4309742652d9
-master/len8/sel-fx1 6a3dd05d4cd53cd19c50fce2f5eac6410ec25b5a
-master/len8/sel-fx4 43e78c28f5a387e6a4ae07bd222a7c78cf71378d
-master/len8/sel-fx8 caf055d7c3beb39083234241a1da4554651aebea
-master/len8/sel-preset 537c74738540f5032912c51b7a3cb2be22b65b5a
-master/len8/sel-settings 545701475b77b4f3720661cd25c89bc0de62ba0c
+master/hole/sel-fx3 69fba231b1809ab1058994264960ac70a0c240d9
+master/len0/sel-fx1 d44b68940e7c164df051b557d789b243249a7510
+master/len0/sel-preset ecb72a073a899a72b5ef5578d063a9fe477ddbab
+master/len0/sel-settings c4e191dbc16d28c993c3c94710261a8ab14654d9
+master/len1/preset-named b4c0dc6be19e2d4f865837000d49ea5bb3008d4b
+master/len1/sel-fx1 9b765721893caecb8fa1ece17617f02e87bf9cd6
+master/len1/sel-fx2-empty 6f7eb388554a0eb72f26c333e13cb1610fcd104b
+master/len2/bypassed 91ec9983acf6a9c6bb92e3db76974f16abf60443
+master/len2/bypassed-selected bd7f460507995484570f0b4a67b5fbc5a3fa5b8f
+master/len2/info-optname f460f3d03f163bc4d779ba1349f2b577319f90ed
+master/len2/info-preset 2397eb5b07f14307254693d71bf1a61ab7763684
+master/len2/lfo1 998e2ebbf9856ca0cd100a0f7de6fecd1ffaf42a
+master/len2/lfo1+2 314feccaf70e4f0327d4a12457dd9961aac52f09
+master/len2/lfo2 c9e009df687015cb8035f9f4de9190edce662f4f
+master/len2/sel-fx1 aa8c340e7178ab1e8d5f156032853f9d8f0da2f4
+master/len2/sel-fx2 f3581c5bcb3d36b322c81ccd2a38466369ee414c
+master/len5/bypassed+lfo1+2 5c538fe0b3a7cb3534ccba9d16346a6a23d9c9a2
+master/len5/sel-fx1 05e05dcf95e3df365071932c713629d6dc22f783
+master/len5/sel-fx3 18f5f69d0dc02b70c74faa05daea69660dbd0358
+master/len5/sel-fx5 d36389a7446b475cda0ddd2600b89ed667716e4d
+master/len8/sel-fx1 95e311823cb41c276bd47821e119e5e120bee787
+master/len8/sel-fx4 fb15b67239881f6a4f548dd0eca420230bf7693a
+master/len8/sel-fx8 da0a45ed73e4119f4a922205ace31ddf0decb368
+master/len8/sel-preset 94e78fc5da985a2fa6eca04538d9ed289df9c2c8
+master/len8/sel-settings 437d9141578e220cd29c133382d4870cbc27f742

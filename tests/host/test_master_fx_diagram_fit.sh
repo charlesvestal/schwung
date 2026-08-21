@@ -32,8 +32,12 @@ fi
 node --input-type=module -e '
 import { readFileSync } from "node:fs";
 import { createFramebuffer } from "./tools/param-pages/harness.mjs";
-import { drawChainDiagram, DIAGRAM_W, BOX_H as DIAGRAM_BOX_H, CAPACITY }
+import { drawChainDiagram, DIAGRAM_W, BOX_H as DIAGRAM_BOX_H, CAPACITY,
+         DEFAULT_Y as DIAGRAM_Y }
   from "./src/shared/chain_diagram.mjs";
+/* The shared bands, REAL: they draw the header band and the hint footer, and
+   the off-display check below is about what actually reaches the screen. */
+import { drawChainEditorBands } from "./src/shared/chain_editor_chrome.mjs";
 import { parseId as parseChainId } from "./src/shared/chain_model.mjs";
 
 let failures = 0;
@@ -132,7 +136,7 @@ function render(cap, selected, opts = {}) {
     text_width: fb.textWidth,
     shadow_get_param,
     drawHeader: (t) => { fb.print(2, 0, String(t), 1); },
-    drawChainDiagram, DIAGRAM_W, DIAGRAM_BOX_H,
+    drawChainDiagram, DIAGRAM_W, DIAGRAM_BOX_H, DIAGRAM_Y, drawChainEditorBands,
     SCREEN_WIDTH: 128,
     truncateText: (t, n) => String(t == null ? "" : t).slice(0, n),
     drawMasterNamePreview: () => {}, drawMasterConfirmOverwrite: () => {},
