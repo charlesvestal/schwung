@@ -525,13 +525,19 @@ function footerHints() {
         const meta = controller.metaAt ? controller.metaAt(held) : null;
         /*
          * A TRIGGER is a button: the click does the thing rather than opening
-         * anything, so it says FIRE. Without this it fell through to CLK MENU
-         * -- the footer advertised the section menu while the click ran a
-         * destructive action, which is the same promise-versus-behaviour
-         * mismatch the divable line above exists to prevent.
+         * anything. Without this it fell through to CLK MENU -- the footer
+         * advertised the section menu while the click ran a destructive
+         * action, which is the same promise-versus-behaviour mismatch the
+         * divable line above exists to prevent.
+         *
+         * PUSH, not FIRE. The widget is drawn as a push button, and the hint
+         * vocabulary should name the GESTURE the picture is asking for, the
+         * way JOG SEL and CLK OPEN do. FIRE names the consequence instead,
+         * which is a second thing to learn about a control that is already
+         * self-explanatory once it looks like a button.
          */
         if (meta && meta.writeOnly) {
-            return orderedHints({ jog: "PAGE", click: "FIRE", extra: fine });
+            return orderedHints({ jog: "PAGE", click: "PUSH", extra: fine });
         }
         if (meta && meta.divable) {
             return orderedHints({ jog: "PAGE", click: "OPEN", extra: fine });
