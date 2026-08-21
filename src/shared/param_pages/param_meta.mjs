@@ -211,10 +211,38 @@ function normalize(key, raw) {
      * An enum that declares NO options is index-addressed and has no list to
      * show, so it is not a door.
      */
+    /*
+     * ACCESS: which direction this parameter actually means something in.
+     *
+     *   "readwrite"  (default) an ordinary control
+     *   "read"       a READOUT. The value means something, writing means
+     *                nothing. keydetect's `detected_key` is 25 key names with
+     *                no set_param branch at all — deliberately, and documented
+     *                as such when an enum could only be nudged. Enums became
+     *                divable in 1.0, so the picker opened on it and silently
+     *                discarded the choice. That is a design gap, not a bug in
+     *                keydetect: a display-only item was never expressible.
+     *   "write"      a TRIGGER. Writing does something, the value means
+     *                nothing — the module reports a constant. This is the more
+     *                dangerous end: euclidrum's `rnd_preset` declares
+     *                ["—","Rnd!"] and fires on anything that is not the
+     *                em-dash, so an INDEX write of "0" — which MEANS the
+     *                em-dash, "do nothing" — randomises all eight lanes and
+     *                destroys the kit.
+     *
+     * One axis rather than two flags, because they are the same question asked
+     * in opposite directions, and a param cannot be both.
+     */
+    const access = lower(meta.access);
+    meta.readOnly = access === "read";
+    meta.writeOnly = access === "write";
+
     const listableEnum = type === "enum"
                        && Array.isArray(meta.options) && meta.options.length > 0;
     meta.divable_mark = opaqueType;
-    meta.divable = opaqueType || listableEnum;
+    /* Neither end of the axis opens a list. A readout has nothing to choose;
+     * a trigger's options are a spelling of "do it", not a menu. */
+    meta.divable = (opaqueType || listableEnum) && !meta.readOnly && !meta.writeOnly;
     meta.kind = (opaqueType && !(type === "wav_position" && ranged)) ? KIND_OPAQUE
               : type === "enum" ? KIND_ENUM
               : KIND_NUMBER;
@@ -271,8 +299,25 @@ export function isDivableMarked(meta) {
 
 /** True when a knob can drive this param at all. */
 export function isTurnable(meta) {
-    return !!meta && meta.kind !== KIND_OPAQUE;
+    /* A readout has nothing to set; a trigger is fired, not scrubbed — turning
+     * one would walk it through "do nothing" and "do it" as if they were
+     * values, which for euclidrum's rnd_preset means randomising a kit on the
+     * way past. */
+    return !!meta && meta.kind !== KIND_OPAQUE && !meta.readOnly && !meta.writeOnly;
 }
+
+/** A readout: the value means something, writing to it does not. */
+export function isReadOnly(meta) { return !!meta && !!meta.readOnly; }
+
+/**
+ * A trigger: writing does something, the value means nothing.
+ *
+ * The wire value that FIRES it is the module's business — ["idle","trigger"],
+ * ["—","Rnd!"], ["Play","Save"] are all in the fleet — so the host sends
+ * option 1 through the ordinary enum wire (enumWireValue), which respects
+ * whichever convention that module speaks.
+ */
+export function isTrigger(meta) { return !!meta && !!meta.writeOnly; }
 
 /**
  * One-shot repair for a param whose type/range we had to guess (`meta.guessed`).

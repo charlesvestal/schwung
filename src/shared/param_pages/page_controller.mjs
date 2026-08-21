@@ -1697,7 +1697,32 @@ export function createController(io = {}) {
         }
         const key = keyAt(slot);
         const meta = metaAt(slot);
-        if (!key || !meta || !meta.divable) return null;
+        if (!key || !meta) return null;
+
+        /*
+         * A TRIGGER fires. It is not a value to open or scrub — the module
+         * reports a constant and acts on the write, so a click is the whole
+         * interaction.
+         *
+         * The wire value that fires it is the module's business
+         * (["idle","trigger"], ["—","Rnd!"], ["Play","Save"] are all in the
+         * fleet), so option 1 goes out through the ordinary enum wire, which
+         * speaks whichever convention that module uses. Writing a bare "1"
+         * here is exactly the bug that makes euclidrum randomise a kit when
+         * asked to do nothing.
+         */
+        if (meta.writeOnly) {
+            if (meta.kind === KIND_ENUM && Array.isArray(meta.options) && meta.options.length > 1) {
+                setParam(fullKey(key), enumWireValue(meta, 1));
+                announce(`${meta.label}, ${meta.options[1]}`);
+            } else {
+                setParam(fullKey(key), "1");
+                announce(`${meta.label}`);
+            }
+            return null;
+        }
+
+        if (!meta.divable) return null;
         s.pending = { action: "open", key, fullKey: fullKey(key), meta };
         /*
          * An enum opens a list of its OPTIONS, so the intent carries the list
