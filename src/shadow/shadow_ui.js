@@ -1910,6 +1910,21 @@ function knobLevelForHierarchy(hierarchy) {
     return levelDef;
 }
 
+/*
+ * A parameter's metadata as the LEVEL declares it, or null.
+ *
+ * The level's `params` list is mixed: plain strings (a key with no metadata),
+ * `{level, label}` navigation rows, and `{key, name, type, ...}` declarations.
+ * Only the last kind carries a type, so only the last kind is answered here.
+ */
+function hierarchyLevelParamMeta(levelDef, key) {
+    if (!levelDef || !Array.isArray(levelDef.params)) return null;
+    for (const p of levelDef.params) {
+        if (p && typeof p === "object" && p.key === key) return p;
+    }
+    return null;
+}
+
 function toggleChainComponentBypass(target, componentKey, label) {
     const cur = parseInt(chainTargetGetParam(target, componentKey, "bypassed") || "0", 10);
     const next = cur ? 0 : 1;
@@ -11224,7 +11239,41 @@ function buildChainKnobContext(target, comp, knobIndex, pluginName, hasModule) {
         if (levelDef && levelDef.knobs && knobIndex < levelDef.knobs.length) {
             const key = levelDef.knobs[knobIndex];
             const chainParams = chainTargetChainParams(target, comp.key);
-            const meta = normalizeExpandedParamMeta(key, chainParams.find(p => p.key === key));
+            /*
+             * TWO SOURCES, and chain_params is only the preferred one.
+             *
+             * A module may declare a parameter's type inline in the same level
+             * that named the knob (`{key, name, type: "int", min, max}`), and
+             * many do — it is the shape the ui_hierarchy docs show. The host
+             * normally renders chain_params out of exactly those declarations,
+             * so the two agree and the merge is invisible. It stops being
+             * invisible the moment a plugin ANSWERS chain_params itself: the
+             * host takes any answer of non-zero length (`result > 0`), so a
+             * module that serves the two characters "[]" — impressive-chords
+             * does, when the chain_params.json it reads at runtime is not
+             * installed — suppresses the host's correct fallback and the knob
+             * is left with no metadata at all.
+             *
+             * knobConfigFromMeta does not fail on that; it INVENTS a float
+             * 0..1 step 0.01. So an int -24..24 is turned as a fraction, the
+             * module's atoi reads it as 0, and an enum takes option 0 — while
+             * the overlay, which runs on local arithmetic, moves normally.
+             * Reported from the device as "i could see the values change, but
+             * when i release, it reset to the default".
+             *
+             * The list editor never had this: getParamMetadata has always
+             * merged the hierarchy's own params under chain_params, which is
+             * why the same parameter was editable from the menu and not from
+             * the knob. Same precedence here — chain_params wins key by key,
+             * because a plugin serving it at runtime is serving something it
+             * computed (a live range, a dynamic options list) and the static
+             * declaration is the floor under it, never an override.
+             */
+            const declared = hierarchyLevelParamMeta(levelDef, key);
+            const served = chainParams.find(p => p && p.key === key);
+            const merged = (declared && served) ? { ...declared, ...served }
+                                                : (served || declared);
+            const meta = normalizeExpandedParamMeta(key, merged);
             return mapped(key, meta, meta && meta.name ? meta.name : key.replace(/_/g, " "));
         }
         debugLog(`buildKnobContext: no knob mapping for knobIndex=${knobIndex} on ${comp.key}`);
