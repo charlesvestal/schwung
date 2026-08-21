@@ -1,0 +1,134 @@
+# One line per chain-editor case: <id> <sha1-of-the-128x64-pixel-buffer>, sorted.
+#
+# Captured BEFORE step 4a of the Master FX variable-length design converges
+# drawChainEdit and drawMasterFx into one editor. That order is the whole
+# point: a baseline regenerated after the refactor compares the new code
+# against itself.
+#
+# The 46 original chain/ hashes are still the ORIGINAL capture and must
+# stay re-derivable from the commit before 4a touched either draw function.
+#
+# The 25 original master/ hashes were refreshed ONCE, at 4a-3, which unified
+# the two editors chrome on purpose: Master FX gained the movy header band
+# and the hint footer and moved up to the slot editors box row. Every one of
+# the 25 was rendered and read before the refresh, and no chain/ hash moved
+# with them -- which is what said the screen that was not supposed to move
+# did not. Any FURTHER master/ movement is a regression again.
+#
+# Step 4b ADDED the four knob-card cases below and moved NONE.
+#
+# The 12 picker/ cases ADDED the two module pickers, which had never been
+# rendered here at all, and moved NONE. Six payloads, each drawn down both
+# editors, so slot and master must differ only in the header.
+#
+# Step 4f ADDED the six settings/ cases -- the Master FX Settings position
+# as the knob grid, a screen this harness had never rendered -- and moved NONE.
+#
+# Step 4e made Master FX a variable-length chain: every master/ hash moved,
+# two cases naming an empty position past the end of the chain were deleted,
+# and eight were added for the `+` box and the Shift footer. Reviewed case by
+# case, and NO chain/ hash moved with them.
+#
+# A mismatch names which case moved, and the runner prints the render.
+#
+# Regenerate with:
+#     UPDATE_CHAIN_EDITOR_BASELINE=1 bash tests/host/test_chain_editor_snapshot.sh
+chain/full/lfo-midi-fx1 4d1ca2a43bc83ca7e60cfa4e9ce5ee706450017e
+chain/full/sel-add-fx 3aa88364230fd1a8b208314d0dfe3dd9ddbc7bab
+chain/full/sel-add-midi 86831dbe8e95d436e26d1c1c8897e3496e6341f5
+chain/full/sel-fx8 3964dcc4737c03ecf161f24b75eabae3c6b949e1
+chain/full/sel-midiFx 39f5d3f84ee923cf44db3da307bd85905adcc076
+chain/full/sel-patch 2c596dc619a4fb8313dc52c6cd1837d0498c33a3
+chain/full/sel-settings 36f66214a11894431c8218fa3a9dfefda064663c
+chain/full/sel-synth e9fc7d82787bf7fdfb34c8b74f6b51e2739bfae1
+chain/full/shift 5d50ab8044ec98b7533855f09af73c5efd3d82b8
+chain/len0/no-synth 74342edec8694c2526af9b6e7f301839a7dce70e
+chain/len0/sel-add-fx 5bcd99e46c5389fca16085dfaa64aa28e167c97c
+chain/len0/sel-add-midi 0b625eccbc407355fb31d6eb8e5c4ac113af4612
+chain/len0/sel-patch 19b909c6edcdd5cb1885e810f1e699dbb5dd5222
+chain/len0/sel-settings cf507ccfb0f2583954a27f0074c400261e789f95
+chain/len0/sel-synth 850df04ddf913c35b78bd675cee72feb4f466abe
+chain/len0/shift 4432f86c3af38964dcc2751d03afcc461a4f7f22
+chain/len1/knob-card f12a82fdc348f33c8f10df53fd73bb04b95962c3
+chain/len1/sel-first 4c7fc8f324ec4db34d926801b319fc83843825c4
+chain/len1/sel-fx1 0b40afdea95af88b02a9a8e267e2bdb75e91e107
+chain/len2/bypassed 634a0beace3f77e381bfe1c2d5857182447b64a7
+chain/len2/bypassed-selected 2baed8b5d83044b5e768c12a728a33eb250676be
+chain/len2/bypassed-synth fc3d8a9d9ac7a021abd99b387011893b1e6ab56a
+chain/len2/info-preset b74d1c4720caa572d7ac00e5876eac3b57b569b8
+chain/len2/info-rnbo d6333882d1bdd7d8da19e639066d8b59f453dfe5
+chain/len2/knob-card-strip 503a1a9ca8872fc48eb980876dc0e9ac7ff879af
+chain/len2/lfo1 5ef949648d318cef987d1dca92dad00bc1515b17
+chain/len2/lfo1+2 27c9b982b9859b2e73895cef22eb7e1c9adfe7dd
+chain/len2/lfo2 01cde003e9bb2d05d30cf854efd1377b6ef7443d
+chain/len2/patch-dirty 87bf1b54d12b2408b5181d995ed10832d8905bd1
+chain/len2/patch-named 4e6c0cbe7e49229681f2ba5befadccce3f2ef186
+chain/len2/patch-selected-named dff664aea09bbafbc37471980e4c3dab66fdd4ab
+chain/len2/sel-fx1 2e6ce8bb19798b5bb03db1df807905d274c8ef54
+chain/len2/sel-fx2 d4bccc3d621f1b08415481c25a96cbdfc537f8b4
+chain/len2/sel-settings 28ab08443b5217f5334d66f76f5212e703b2df6c
+chain/len2/sel-synth 3f49e635610e3c9a38df053112993f6baa5436b4
+chain/len2/shift 392a91be0c4f97b5cb6a1bcace22b6dae1108cc0
+chain/len5/bypassed+lfo1+2 9c12522a83ce5e326f59dae72efa82b8e8b06f1c
+chain/len5/knob-card 81b298d51ebf6570f409cf7b6f8d68553df951a3
+chain/len5/sel-add-fx aa246bd96090123aaf762381168684acfc64b57e
+chain/len5/sel-fx4 6bd8c53422dbae6f2172c8c85ba372ba6452b81c
+chain/len5/sel-synth ea2cfd231b99e69798ad83c514fc6f859f1f1d3e
+chain/len5/shift e97eb86b7266a32c648cc56cfd99eceba2c6442f
+chain/len8/sel-add-midi e15b48daf957464f733b5b5d5f20e6a442dd5c96
+chain/len8/sel-fx4 b11152063005d4e6d806afdb68eafed3298c4a0e
+chain/len8/sel-fx8 08671fc8da1d9cda6ff567fa3230725829ebad24
+chain/len8/sel-patch 8e75fd51072bb6957e891c97aa49f9bc455387b2
+chain/len8/sel-settings 361ac8293c608f38543cfc70b6559b8372582c55
+master/hole/sel-fx3 ae82ea70be5609f1f9225ff864ff7bd26db692f2
+master/len0/sel-add-fx 1dbce907baeffdbbbe5192198175fa78ecc07948
+master/len0/sel-preset c2ee02ebce925378085cbd108806be2d62e42fec
+master/len0/sel-settings 5db97e1fc24ce94263948246d6ae3f367c37b534
+master/len0/shift 94b2bf1bb9c23a172e94a130da6c24b9a8d982e6
+master/len1/knob-card c8f67645ea2783f8acf38218c530d48e027be69c
+master/len1/preset-named 16e7130356d4c478cd2dd33e906d253a18856f2e
+master/len1/sel-add-fx 3394585d4aea71ed45180742018255f1b4dbb0e0
+master/len1/sel-fx1 869367a4ee52d45712576a6123fe1d8d11f885b9
+master/len2/bypassed 23da6258580a75e5cd416b53a324bcd71cc4287a
+master/len2/bypassed-selected b5b71965657d002eb849b491e85beb8bf705e07c
+master/len2/info-optname 8f3517ef1868900fb455045ad0cca041be864bc9
+master/len2/info-preset 305c369342561e4e26a3342023499de82c7e3c1f
+master/len2/knob-card-strip 0dfa282687bd2d780cd99731cb75d15a22f7a85d
+master/len2/lfo1 cfb28532aa456d3db12fb2ac3cc59bcda2a73c85
+master/len2/lfo1+2 d0e398db1c0cb064ca73eb0402697cc4fd67da42
+master/len2/lfo2 e48db86e99de4e95416d1a99c366d8c70a6c9f3f
+master/len2/sel-add-fx 3d1f572f0c3f385ae64265d4471e7102d178e2e9
+master/len2/sel-fx1 db9b4e75dade5a3b0c2d4d13603b2d0653dd717b
+master/len2/sel-fx2 6ee7aeee5862daa11f154c8d1c06e5adcdb7a12e
+master/len2/shift 3996fa1fab0cc0c2f18af1d04857e6365a5ed4d1
+master/len5/bypassed+lfo1+2 fcbf339bfdf3bbc2c9ebe318464787fbb9fe0a09
+master/len5/knob-card d121847ddc3d67ddc9bafc1ca1bc7dbe5425dbaf
+master/len5/sel-fx1 c41cbd6229637547e155f05bdf693e8b6f986f8b
+master/len5/sel-fx3 bd938648b472eb9b7fe4251cb52948b0728cf111
+master/len5/sel-fx5 0f3a541819014d4343d641f3c945ca83972670a7
+master/len5/shift 8655ecd0737b9c3a48054ce8cc1a33227cd36d5e
+master/len8/sel-add-fx e7654e58e484638415f1ed9e74f831c2a4f268b8
+master/len8/sel-fx1 c887958a1321f4c535a1495930ca75bfc436b16a
+master/len8/sel-fx4 85843b642ab58602f88cf7dc537ff80f04f969dd
+master/len8/sel-fx8 8dbb6517c5e81f2cf4139ce6276bcaf28353692a
+master/len8/sel-preset f8ceab9d4dcb344f2464691d037ca4c882ff0403
+master/len8/sel-settings b43cb41aa450f00d8112bc57a608c179735d0178
+master/len8/shift efa5829adf0389a918d4a22820701d622bb4229c
+picker/master/empty 314b3dc9c3607e6bc652b9de9a2145dd17a6be53
+picker/master/loaded-last e0d206a5868aa994de10c58b0adae58363c60370
+picker/master/long-name cf8acb789b672ba09819a669cbf046b95607bd2f
+picker/master/moves-both 51de910d2c4eb14252b5b394272137ee1888f7b4
+picker/master/moves-right caa1a14690dd7cdf9dab6b97c04e44e9726ea45b
+picker/master/scrolled 2822f7617beace1e62294f94bb8c7df7d4a50d2a
+picker/slot/empty a01bf69c3a94497edc0ffeb31c09d0516fd66391
+picker/slot/loaded-last ea9352069c91668e537bf729b75c0a879df1e65e
+picker/slot/long-name adf679b39c1be03ef2f49654f97e209afb07f295
+picker/slot/moves-both e6230cfd3c41e2e9ed880b56024b825197ef0924
+picker/slot/moves-right 6675f380ece9fcd45d97523ecf6458632bc737a3
+picker/slot/scrolled 4ff76190752e0d50ab7a48cd491ffa56fc495a41
+settings/master/actions 2751915b0a887a06bf478cbed2c8c168f2c46c1a
+settings/master/actions-nopreset ccb6b9a3bebd6729234d053f70e4248477e5073b
+settings/master/lfo1-free 9ac512cd34a23bb4a1efe0be95789faa9fd92c91
+settings/master/lfo2-sync 441d016e783111a2ca524d3a912f277d1f5df389
+settings/master/main 90541793e81c5a26cbde98ad7e55f7f01ab4fbe9
+settings/master/main-unity cac1a356f5fa872cb1c1031c412accfcc42c2145

@@ -32,7 +32,7 @@ import {
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4,
     MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
     MoveKnob1Touch, MoveKnob8Touch,  // Capacitive touch notes (0-7)
-    MidiNoteOn
+    MidiNoteOn, MidiNoteOff
 } from '/data/UserData/schwung/shared/constants.mjs';
 
 import {
@@ -45,6 +45,28 @@ import {
 } from '/data/UserData/schwung/shared/chain_ui_views.mjs';
 
 import { decodeDelta } from '/data/UserData/schwung/shared/input_filter.mjs';
+/* The knob-grid chrome's footer rule row, which the chain editor's slot
+ * indicator column stops above. The header/footer/list DRAWING that used to be
+ * imported here went to chain_editor_chrome.mjs, so both editors do it once. */
+import { RULE_Y as MOVY_RULE_Y }
+    from '/data/UserData/schwung/shared/param_pages/render_page_movy.mjs';
+/* The bands around a chain editor's row of boxes — header, label, info,
+ * footer — and the module picker it opens on a position. Both shared with
+ * Master FX so the two editors wear the same furniture. */
+import { drawChainEditorBands, drawChainPicker }
+    from '/data/UserData/schwung/shared/chain_editor_chrome.mjs';
+/* The chain editor's knob feedback card, and the two resolvers it needs to be
+ * handed a row: what each key IS (metaIndex) and which cells a viz group
+ * covers. Both are pure and both are already on the device for the knob grid. */
+import { drawKnobCard } from '/data/UserData/schwung/shared/param_pages/knob_card.mjs';
+import { buildMetaIndex } from '/data/UserData/schwung/shared/param_pages/param_meta.mjs';
+import { resolveViz } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
+import { describeLfoTarget } from '/data/UserData/schwung/shared/lfo_target_label.mjs';
+import { emptyChain, parseId as parseChainId, chainComponents, moveBy as chainMoveBy,
+         removeAt as chainRemoveAt, insertAt as chainInsertAt, MAX_FX, MAX_MIDI_FX }
+    from '/data/UserData/schwung/shared/chain_model.mjs';
+import { drawChainDiagram, DEFAULT_Y as DIAGRAM_Y, BOX_H as DIAGRAM_BOX_H }
+    from '/data/UserData/schwung/shared/chain_diagram.mjs';
 import { runDrawBench } from '/data/UserData/schwung/shared/draw_bench.mjs';
 import { installParamTally, paramTallyTick, paramTallyArmed } from '/data/UserData/schwung/shared/param_tally.mjs';
 import { knobInit, knobTick, knobConfigFromMeta } from '/data/UserData/schwung/shared/knob_engine.mjs';
@@ -188,8 +210,9 @@ import {
 import {
     paramPagesEnabled, enterParamPages, exitParamPages, paramPagesActive,
     tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage,
-    paramPagesComponent, paramPagesSlot
+    paramPagesComponent, paramPagesSlot, clearParamPagesTouch
 } from './shadow_ui_param_pages.mjs';
+import { createSlotGridIo, createMasterGridIo } from './shadow_ui_slot_grid.mjs';
 import {
     drawMasterFx as _drawMasterFx,
     getMasterFxDisplayName as _getMasterFxDisplayName,
@@ -414,14 +437,179 @@ globalThis.shadow_corun_close = function() {
 /* Special action key for swap module option */
 const SWAP_MODULE_ACTION = "__swap_module__";
 
-/* Chain component types for horizontal editor */
-const CHAIN_COMPONENTS = [
-    { key: "midiFx", label: "MIDI FX", position: 0 },
-    { key: "synth", label: "Synth", position: 1 },
-    { key: "fx1", label: "FX 1", position: 2 },
-    { key: "fx2", label: "FX 2", position: 3 },
-    { key: "settings", label: "Settings", position: 4 }
-];
+/* Upper bound on a section's length. The DSP reports how many positions it
+ * actually holds; this only stops a garbled reply from turning into a long
+ * run of IPC reads. */
+const CHAIN_CAP = { midiFx: MAX_MIDI_FX, fx: MAX_FX };
+
+/*
+ * The editor's positions, in signal order, DERIVED from the chain model.
+ *
+ * The model bookends its list with Patch, the two `+` boxes and Settings. Only
+ * Patch is dropped: the editor reaches it at selection index -1, where it has
+ * always been. The `+` boxes ARE part of the editor's list, because they are
+ * how a chain of variable length grows — with no fixed empty positions left to
+ * click, they are the only way in.
+ *
+ * `key` is what the rest of the file addresses a position by, and it is
+ * unchanged for everything that existed before: "synth", "midiFx" for the first
+ * MIDI FX, "fx1"/"fx2"…, "settings". A second MIDI FX takes its model id
+ * ("midi_fx2") rather than colliding on "midiFx".
+ *
+ * `caps` says which SECTIONS the chain has — `{ hasSynth, hasMidiFx }`, which is
+ * exactly what a chain target carries, so the target IS the argument. Master FX
+ * is one audio-FX section with no synth and no MIDI FX, so those positions are
+ * dropped and what is left is `fx1..fxN`, the `+`, and Settings. Branching on
+ * the CAPABILITY rather than on which chain this is: a third chain with a synth
+ * and no MIDI FX would need no new case here, and "does this chain have a MIDI
+ * FX section" states the reason where "is this master" would not. Absent, both
+ * are assumed present, which is what every caller that predates Master FX means.
+ */
+function chainEditorComponents(cfg, caps) {
+    const hasSynth = !caps || caps.hasSynth !== false;
+    const hasMidiFx = !caps || caps.hasMidiFx !== false;
+    const out = [];
+    for (const pos of chainComponents(cfg)) {
+        if (pos.kind === "patch") continue;
+        if (!hasSynth && pos.kind === "synth") continue;
+        if (!hasMidiFx && pos.section === "midiFx") continue;
+        const key = pos.kind === "synth" ? "synth"
+            : pos.kind === "add" ? pos.id
+            : pos.kind === "settings" ? "settings"
+            : (pos.section === "midiFx" && pos.index === 0) ? "midiFx" : pos.id;
+        /* The `+` boxes draw as "+" but they are ANNOUNCED and labelled in
+         * words — "+" read aloud is nothing at all. */
+        const label = pos.kind === "add"
+            ? (pos.section === "midiFx" ? "Add MIDI FX" : "Add FX")
+            : (pos.section === "midiFx" && cfg.midiFx.length === 1) ? "MIDI FX"
+            : pos.label;
+        out.push({ ...pos, key, label, position: out.length });
+    }
+    return out;
+}
+
+/*
+ * The positions of ONE slot's chain — now genuinely per-slot, because the
+ * length is whatever that slot's DSP instance holds.
+ */
+function slotChainComponents(slotIndex) {
+    return chainEditorComponents(chainConfigs[slotIndex] || createEmptyChainConfig());
+}
+
+/* Where the selection lands when the editor is entered with no history: the
+ * synth, which is the one position every chain has and the landmark the
+ * diagram's scroll is anchored on. Position 0 is a `+` box, which is a poor
+ * thing to be pointed at on arrival. */
+function defaultChainComponent(slotIndex) {
+    const at = slotChainComponentIndex(slotIndex, "synth");
+    return at >= 0 ? at : 0;
+}
+
+/*
+ * Load the slot and put the selection somewhere that EXISTS.
+ *
+ * The remembered index is no longer safe on its own: the list is as long as
+ * the chain, so a slot whose FX were removed elsewhere comes back shorter than
+ * the index left pointing into it, and every caller downstream reads
+ * `comps[selectedChainComponent].key` without checking. -1 is kept as-is; it
+ * is the patch selection, not an out-of-range index.
+ */
+function restoreChainComponent(slotIndex) {
+    loadChainConfigFromSlot(slotIndex);
+    const len = slotChainComponents(slotIndex).length;
+    const want = lastChainComponent[slotIndex];
+    selectedChainComponent = (typeof want === "number" && want >= -1 && want < len)
+        ? want : defaultChainComponent(slotIndex);
+}
+
+/*
+ * The chain-model id of a component key — which is also its DSP param prefix,
+ * by construction, so this and getComponentParamPrefix agree.
+ */
+function chainComponentId(componentKey) {
+    return componentKey === "midiFx" ? "midi_fx1" : componentKey;
+}
+
+/*
+ * The editor key of position `index` in a section — the inverse of
+ * chainComponentId, carrying the same single exception: the first MIDI FX is
+ * keyed "midiFx" for everything that predates the list.
+ *
+ * A reorder needs this because a module's key CHANGES as it moves. Following
+ * it by remembering the selection index instead would follow the position,
+ * which is the thing the gesture just moved out from under it.
+ */
+function chainEditorKeyAt(section, index) {
+    if (section === "midiFx") return index === 0 ? "midiFx" : `midi_fx${index + 1}`;
+    return `fx${index + 1}`;
+}
+
+/* True for a key that addresses a module position (i.e. not "settings"). */
+function isChainModuleKey(componentKey) {
+    return componentKey === "synth" || parseChainId(chainComponentId(componentKey)) !== null;
+}
+
+/*
+ * The module occupying a component position, or null.
+ *
+ * Replaces the old `cfg[comp.key]`, which stopped meaning anything once the FX
+ * became a list: "fx2" is a position in that list, not a property.
+ */
+function getChainComponentModule(cfg, componentKey) {
+    if (!cfg) return null;
+    if (componentKey === "synth") return cfg.synth || null;
+    const at = parseChainId(chainComponentId(componentKey));
+    if (!at) return null;
+    const list = cfg[at.section];
+    return (list && list[at.index]) || null;
+}
+
+/*
+ * Put a module (or null for empty) at a component position, IN PLACE.
+ *
+ * Deliberately not the model's removeAt: that compacts the list, which would
+ * renumber every module downstream of a box the user only meant to clear. The
+ * DSP still keeps an empty fx1 in front of a loaded fx2, and this mirrors it.
+ */
+function setChainComponentModule(cfg, componentKey, module) {
+    if (!cfg) return;
+    if (componentKey === "synth") { cfg.synth = module; return; }
+    const at = parseChainId(chainComponentId(componentKey));
+    if (!at) return;
+    const list = cfg[at.section];
+    while (list.length <= at.index) list.push(null);
+    list[at.index] = module;
+}
+
+/*
+ * Where a component key sits in a slot's editor list, or -1.
+ *
+ * The model's indexOfId answers the same question about ITS list, which keeps
+ * the Patch and `+` bookends this one drops — so the lookup runs against the
+ * editor's list, and the index it returns is the one selectedChainComponent
+ * speaks.
+ */
+function slotChainComponentIndex(slotIndex, componentKey) {
+    return slotChainComponents(slotIndex).findIndex(c => c.key === componentKey);
+}
+
+/*
+ * Is anything loaded anywhere in this chain?
+ *
+ * INVARIANT this relies on: a non-null list entry always carries a non-empty
+ * `module`. Both construction sites hold it — loadChainConfigFromSlot stores
+ * null rather than an entry when the DSP reports "", and the picker only builds
+ * an entry from a non-empty selected.id. The callers this replaced tested mere
+ * object presence, so an entry with an empty module id would have counted as
+ * loaded there and does not count as loaded here — which would read as a slot
+ * silently autosaving itself empty. Keep the invariant, or make this test
+ * presence again.
+ */
+function chainHasAnyModule(cfg) {
+    if (!cfg) return false;
+    if (cfg.synth && cfg.synth.module) return true;
+    return cfg.midiFx.some(m => m && m.module) || cfg.fx.some(m => m && m.module);
+}
 
 /* Module abbreviations cache - populated from module.json "abbrev" field */
 const moduleAbbrevCache = {
@@ -430,14 +618,14 @@ const moduleAbbrevCache = {
     "empty": "--"
 };
 
-/* In-memory chain configuration (for future save/load) */
+/* In-memory chain configuration (for future save/load).
+ *
+ * `{ midiFx: [], synth: null, fx: [] }` — a list per section, each entry
+ * `{ module: "cloudseed", params: {} }` or null for an empty position.
+ * Positions are addressed by id ("fx2") through the chain model, never by
+ * property, so an unoccupied trailing position is simply absent. */
 function createEmptyChainConfig() {
-    return {
-        midiFx: null,    // { module: "chord", params: {} } or null
-        synth: null,     // { module: "dexed", params: {} } or null
-        fx1: null,       // { module: "freeverb", params: {} } or null
-        fx2: null        // { module: "cloudseed", params: {} } or null
-    };
+    return emptyChain();
 }
 
 /* Master FX options - populated by scanning modules directory */
@@ -467,7 +655,8 @@ function invalidateAutosaveWriteCache() {
 }
 let autosaveSuppressUntil = 0;  /* suppress autosave after set change */
 let slotDirtyCache = [false, false, false, false];
-/* Module signature ("synth|midiFx|fx1|fx2") from the last successful autosave.
+/* Module signature ("synth|midi_fx1|fx1|fx2", one field per chain position, in
+ * signal order — see getSlotModuleSignature) from the last successful autosave.
  * Used to relax the "empty state → bail" guard when the user swaps to a module
  * that lacks state get/set — a module change makes the prior file stale anyway. */
 let lastSavedSlotSignature = ["", "", "", ""];
@@ -650,6 +839,18 @@ function getSlotParamCached(slot, key, moduleId) {
 /* Helper to change view and announce it */
 function setView(newView, customLabel) {
     if (view === newView) return;  /* No change */
+    /* The card belongs to the chain editor and to one knob gesture; it must
+     * not survive a screen change.
+     *
+     * The touch set goes with it, because a screen change can EAT the release:
+     * handleParamPagesMidi claims knob-touch notes and returns before the
+     * handlers below ever see them, so holding a knob here and letting go
+     * inside the knob grid leaves this entry stuck true — and a stuck-true
+     * entry stamps the next card as held-with-no-deadline, which nothing then
+     * clears. Cheapest correct answer: no view change can begin with a finger
+     * already down on a knob it knows about. */
+    knobCardClose();
+    knobTouched.fill(false);
     view = newView;
     needsRedraw = true;
 
@@ -932,6 +1133,306 @@ let cachedKnobContextsComp = -1; // Component when cache was built
 let cachedKnobContextsLevel = ""; // Hierarchy level when cache was built
 let cachedKnobContextsChildIndex = -1; // Child index when cache was built
 
+/*
+ * The chain editor's knob card (shared/param_pages/knob_card.mjs).
+ *
+ * Raised by TOUCH, not by turn: resting a finger tells you what the knob does
+ * before you move it, and it is the same signal the knob grid already follows.
+ * A turn with no touch raises it too and decays, because a cap sensor that
+ * misses must not be able to strand the feature.
+ */
+const KNOB_CARD_DECAY_MS = 700;
+const knobTouched = new Array(NUM_KNOBS).fill(false);
+let knobCardKnob = -1;          /* physical knob the card follows, or -1 */
+let knobCardExpiry = 0;         /* ms deadline; 0 means held, so no deadline */
+let knobCardSlot = -1;          /* target slot the row below was resolved against */
+let knobCardCompKey = null;     /* component key ditto — see showKnobFeedback */
+let knobCardKeys = null;        /* param key per physical knob, or null */
+let knobCardMeta = null;        /* metaIndex for the focused component */
+let knobCardRowValues = null;   /* raw values, keyed by param key */
+let knobCardViz = null;
+let knobCardModKey = null;      /* the ONE key known to be modulated (see below) */
+let knobCardName = null;        /* the ANNOUNCED name, null when the card is not up */
+let knobCardCardName = null;    /* the name DRAWN in the header band — see below */
+let knobCardHeaderValue = null; /* header value, ditto */
+let knobCardAnnouncedKnob = -1; /* which knob the last announcement was about */
+
+function knobCardClose() {
+    if (knobCardKnob < 0) return;
+    knobCardKnob = -1;
+    knobCardExpiry = 0;
+    knobCardSlot = -1;
+    knobCardCompKey = null;
+    knobCardKeys = null;
+    knobCardMeta = null;
+    knobCardRowValues = null;
+    knobCardViz = null;
+    knobCardModKey = null;
+    /* Cleared so the NEXT raise announces. The `changed` test in
+     * showKnobFeedback is a content comparison, and content that survived a
+     * close matched itself: touch a knob, release, touch it again without
+     * moving it and the screen reader said nothing — which is precisely the
+     * gesture a screen-reader user makes to re-check a value. showOverlay does
+     * not have this bug because its comparison is `overlayActive && ...`, so a
+     * newly raised overlay always announces; this is that `overlayActive`. */
+    knobCardName = null;
+    knobCardCardName = null;
+    knobCardHeaderValue = null;
+    knobCardAnnouncedKnob = -1;
+    needsRedraw = true;
+}
+
+/* Deliberately mutating for a predicate, and the only place in this feature
+ * where the draw path writes state: the frame that finds the card expired is
+ * the frame that must draw without it, and expiry moves one way, so doing it
+ * here rather than in tick() removes a second place to forget. */
+function knobCardActive() {
+    if (knobCardKnob < 0) return false;
+    if (knobCardExpiry && Date.now() > knobCardExpiry) { knobCardClose(); return false; }
+    return true;
+}
+
+/*
+ * Everything drawKnobCard needs, or null when the card is not up.
+ *
+ * ONE accessor rather than nine module-level reads at the call site, and the
+ * reason is a test rather than tidiness: drawChainEdit is LIFTED out of this
+ * file by tests/host/test_chain_edit_read_budget.sh with `new Function` and an
+ * explicit dependency list, where any free identifier is a ReferenceError.
+ * Nine free identifiers there is nine chances for that test to stop exercising
+ * the card — and it very nearly did, behind a `typeof knobCardActive ===
+ * "function"` guard that made the whole block silently unreachable under the
+ * lift. The test that measures the chain editor's per-frame read cost was
+ * therefore measuring it with the card switched off, which is the one
+ * configuration nobody needed reassurance about.
+ *
+ * Costs no IPC: every value was read on touch-down. See knobCardOpen.
+ */
+function knobCardDrawState() {
+    if (!knobCardActive()) return null;
+    return {
+        /*
+         * THE BARE PARAMETER NAME, not the announced title.
+         *
+         * The band is 116px of content shared with the value, and the value
+         * never loses a collision (drawCardHeader truncates the name), so a
+         * composed "MFX: cloudseed mix" was chewed down to a few letters of
+         * "MFX: clou" — spending the whole band saying what the diagram behind
+         * the card already shows. The announcement keeps the full string; only
+         * the pixels get the short one. See showKnobFeedback.
+         *
+         * ONE fallback, and it lives at the assignment in showKnobFeedback, not
+         * here: a second `|| knobCardName` in this line would make removing
+         * that one invisible to every test.
+         */
+        name: knobCardCardName,
+        value: knobCardHeaderValue,
+        row: knobCardKnob >> 2,
+        touched: knobCardKnob,
+        page: knobCardKeys ? { kind: "knobs", keys: knobCardKeys } : null,
+        metaIndex: knobCardMeta,
+        values: knobCardRowValues,
+        viz: knobCardViz,
+        modulated: knobCardModKey ? ((k) => k === knobCardModKey) : null,
+    };
+}
+
+/*
+ * Everything the card needs, resolved ONCE on touch-down.
+ *
+ * The reads happen here, on an input event, and never on the draw path: an IPC
+ * round trip is ~2.8ms against a 1.68ms whole-page render, so a read costs more
+ * than redrawing the whole screen. The turned knob is updated by local
+ * arithmetic afterwards (showKnobFeedback), so the card costs nothing per frame
+ * while it is up.
+ *
+ * SIX reads, not four, and the difference is the two below: `ui_hierarchy` and
+ * `chain_params` are each an IPC round trip in their own right, on top of one
+ * per key in the touched knob ROW. That is ~17ms — a whole frame, spent on an
+ * input event. tests/host/test_knob_card_open_budget.sh pins the number,
+ * because this comment used to say four and nothing contradicted it.
+ *
+ * The SAME six on Master FX, and structurally rather than by coincidence: every
+ * read here goes through the chain TARGET, and a target answers in one round
+ * trip whatever the key is spelled like. "master_fx:fx1:cutoff" is a longer
+ * string than "fx1:cutoff", not another read. The budget test asserts the two
+ * bills are equal as well as asserting each is six, because two independent
+ * "this one is six" assertions would still pass if one were re-baselined.
+ *
+ * It could be four: buildKnobContextForKnob fetched both of these for this same
+ * component moments earlier and dropped them. Carrying them would mean a second
+ * cache of module metadata with its own staleness window, next to the one whose
+ * staleness is the bug documented in showKnobFeedback — not worth 5.6ms on a
+ * gesture, off the draw path.
+ *
+ * The neighbours do not animate under modulation. That is the trade: animating
+ * them means four reads EVERY frame to move a pointer nobody is looking at.
+ */
+function knobCardOpen(knobIndex, focus) {
+    const target = focus.target;
+    const comp = focus.comp;
+    knobCardKnob = knobIndex;
+    knobCardSlot = target.slot;
+    knobCardCompKey = null;
+    knobCardKeys = null;
+    knobCardMeta = null;
+    knobCardRowValues = null;
+    knobCardViz = null;
+    knobCardModKey = null;
+
+    knobCardCompKey = comp ? comp.key : null;
+    /* Not a module position — the whole-chain selection, a "+" box, the slot
+     * settings box or Master FX's settings box. Short card, and free. */
+    if (!chainTargetIsModulePosition(target, comp && comp.key)) return;
+
+    const hierarchy = chainTargetHierarchy(target, comp.key);
+    const chainParams = chainTargetChainParams(target, comp.key);
+    if (!hierarchy || !chainParams || !chainParams.length) return;
+
+    const keys = new Array(NUM_KNOBS).fill(null);
+    for (let i = 0; i < NUM_KNOBS; i++) {
+        const kc = getKnobContext(i);
+        keys[i] = (kc && kc.key) ? kc.key : null;
+    }
+    if (!keys.some(Boolean)) return;
+
+    knobCardMeta = buildMetaIndex({ hierarchy, chainParams });
+    knobCardKeys = keys;
+    knobCardViz = resolveViz({ keys, metaIndex: knobCardMeta }).groups;
+
+    const base = (knobIndex >> 2) * 4;
+    const values = {};
+    for (let c = 0; c < 4; c++) {
+        const k = keys[base + c];
+        if (!k) continue;
+        const raw = getSlotParam(target.slot, target.key(comp.key, k));
+        /* An unserved key reads back as "", NOT as an error — the shim answers
+         * error=4 with a zeroed buffer and js_shadow_get_param never looks at
+         * error. Left as "" it would reach formatParamValue, where Number("")
+         * is 0 and finite, and the cell would confidently read 0.00 for a
+         * parameter that was never answered. null is the renderer's "--". */
+        values[k] = (raw === null || raw === undefined || raw === "") ? null : raw;
+    }
+    knobCardRowValues = values;
+}
+
+/*
+ * EITHER chain editor answers a knob with the CARD; every other view keeps the
+ * centred name/value box. Both announce, so the screen reader does not care
+ * which is up.
+ *
+ * The card shipped 2026-08-20 gated on `view !== VIEWS.CHAIN_EDIT`, so a Master
+ * FX knob still raised the old `Value: 0.62` box — one reasonable-sounding
+ * scope boundary, one day of drift, and the concrete example §1b of the Master
+ * FX variable-length design exists to end. chainEditorFocus answers "which
+ * chain, which position" for both, so there is no view test left here to
+ * forget to widen next time.
+ */
+/*
+ * `name` is what gets SPOKEN; `cardName` is what gets DRAWN. Two questions,
+ * two answers — see the note above buildChainKnobContext. Callers pass
+ * `ctx.title` and `ctx.cardName`; a caller whose name is already bare passes
+ * one argument and the card falls back to it.
+ */
+function showKnobFeedback(knobIndex, name, value, raw, cardName) {
+    const focus = chainEditorFocus();
+    if (!focus) { showOverlay(name, value); return; }
+
+    /* A centred box left over from the screen we came in through would draw
+     * ON TOP of the card — drawOverlay runs after the view switch and nothing
+     * dismisses it on input. Only one of the two is ever allowed up. */
+    hideOverlay();
+
+    /*
+     * The card is resolved against a SLOT and a COMPONENT, and both of them
+     * move without a view change — the jog steps selectedChainComponent, Track
+     * 1-4 sets selectedSlot, and a chain shape edit clamps the selection. Only
+     * setView closes the card, so reopening on the knob index alone gives a
+     * WRONG READING, not a stale-looking one: turn knob 1, jog once inside the
+     * 700ms decay window, turn knob 1 again, and the row still carries the
+     * previous module's keys, labels and meta while the line below writes the
+     * NEW component's value in under the OLD key. The number is current; the
+     * name beside it belongs to a parameter you are not touching.
+     *
+     * chainEditorFocus reads chainConfigs (or a constant list, on Master FX),
+     * not the DSP, so this costs nothing.
+     *
+     * The slot compared is the TARGET's, which is selectedSlot for a slot chain
+     * and the constant 0 for Master FX — where Track 1-4 moves selectedSlot
+     * without changing anything the card is showing, so comparing selectedSlot
+     * there would re-resolve, and pay six IPC reads, for nothing.
+     */
+    const idCompKey = focus.comp ? focus.comp.key : null;
+    if (knobCardKnob !== knobIndex || knobCardSlot !== focus.target.slot ||
+        knobCardCompKey !== idCompKey) {
+        /*
+         * A malformed ui_hierarchy can throw in here — buildMetaIndex iterates
+         * `lvl.params`, so a module serving `"params": 5` is a TypeError, and
+         * buildKnobContextForKnob never touched that field so this is a new
+         * exception surface on the touch path. Uncaught it would abort the rest
+         * of the MIDI handler AND strand the card: knobCardKnob is set at the
+         * top of knobCardOpen but the expiry is stamped below, so it would sit
+         * there as "held, no deadline" with no note-off coming to clear it.
+         */
+        try {
+            knobCardOpen(knobIndex, focus);
+        } catch (e) {
+            debugLog(`knobCardOpen failed for knob ${knobIndex}: ${e}`);
+            /* Drop the half-built row, then re-establish the identity: what is
+             * left is the short header-only card, which still tells the truth
+             * (the name and value below do not come from the row). */
+            knobCardClose();
+            knobCardKnob = knobIndex;
+            knobCardSlot = focus.target.slot;
+            knobCardCompKey = idCompKey;
+        }
+    }
+    /* Held keeps it up with no deadline; a turn with no touch gets a decay. */
+    knobCardExpiry = knobTouched[knobIndex] ? 0 : Date.now() + KNOB_CARD_DECAY_MS;
+
+    /* The turned knob, updated by local arithmetic — the only thing that moves
+     * while the card is up, and the reason it costs no IPC per frame. Empty
+     * normalises to null for the same reason it does in knobCardOpen. */
+    if (knobCardRowValues && knobCardKeys && knobCardKeys[knobIndex] && raw !== undefined) {
+        knobCardRowValues[knobCardKeys[knobIndex]] = (raw === null || raw === "") ? null : raw;
+    }
+    /*
+     * Only the TOUCHED key's modulation is known, because that read is one
+     * showKnobOverlay already pays for. Marking the neighbours would cost up to
+     * three more reads each.
+     *
+     * STICKY for as long as the card follows this knob, and never cleared here:
+     * the tilde only ever arrives from the touch path, because the turn path
+     * (processPendingHierKnob) deliberately avoids showKnobOverlay to dodge
+     * isHierarchyParamModulated's 1-3 reads and so passes a title with no
+     * tilde. Recomputing per call therefore made the mark vanish the instant
+     * you moved the knob. knobCardOpen clears it, which is the only moment a
+     * different parameter can appear under this knob — and modulation routing
+     * cannot change while a finger is on it.
+     */
+    if (name && name.endsWith("~") && knobCardKeys) {
+        knobCardModKey = knobCardKeys[knobIndex];
+    }
+
+    /* The knob index is part of the comparison because a title alone is not
+     * unique: the noModule branch gives every knob the same ctx.title, so two
+     * knobs in a row would announce once between them. */
+    const changed = (knobCardAnnouncedKnob !== knobIndex ||
+                     knobCardName !== name || knobCardHeaderValue !== value);
+    knobCardName = name;
+    /* The tilde stays on `name` and never reaches here: the modulation mark is
+     * appended to the ANNOUNCED title by showKnobOverlay, and knobCardModKey
+     * above still reads it off `name`. The card shows modulation as a tick in
+     * the cell, not as a character in the band. */
+    knobCardCardName = (cardName === undefined || cardName === null) ? name : cardName;
+    knobCardHeaderValue = value;
+    if (changed) {
+        knobCardAnnouncedKnob = knobIndex;
+        announceParameter(name, value);
+    }
+    needsRedraw = true;
+}
+
 /* Knob editor state - for creating/editing knob assignments */
 let knobEditorSlot = 0;          // Which slot we're editing knobs for
 let knobEditorIndex = 0;         // Selected knob (0-7) in editor
@@ -956,23 +1457,487 @@ let lastSlotModuleSignatures = [];  // Track per-slot module changes for knob ca
 let currentMasterFxId = "";  // Currently loaded master FX module ID
 let currentMasterFxPath = ""; // Full path to currently loaded DSP
 
-/* Master FX chain components (4 FX slots + settings) */
-const MASTER_FX_CHAIN_COMPONENTS = [
-    { key: "fx1", label: "FX 1", position: 0, paramPrefix: "master_fx:fx1:" },
-    { key: "fx2", label: "FX 2", position: 1, paramPrefix: "master_fx:fx2:" },
-    { key: "fx3", label: "FX 3", position: 2, paramPrefix: "master_fx:fx3:" },
-    { key: "fx4", label: "FX 4", position: 3, paramPrefix: "master_fx:fx4:" },
-    { key: "settings", label: "Settings", position: 4, paramPrefix: "" }
-];
+/* Number of Master FX slots. This is a MIRROR of MASTER_FX_SLOTS in
+ * src/host/shadow_chain_mgmt.h — the shim owns the actual array and this side
+ * only addresses it by "master_fx:fx<N>:" key, so the two names must move
+ * together or the UI silently stops seeing the slots past its own idea of the
+ * cap. Every Master FX enumeration in this file and in
+ * shadow_ui_master_fx.mjs is derived from this name; nothing hand-lists
+ * fx1..fxN. Pinned by tests/host/test_master_fx_slots_js.sh, which reads both
+ * values out of source and fails if they disagree. */
+const MASTER_FX_SLOTS = 8;
+
+/*
+ * The Master FX chain as a chain-model config.
+ *
+ * masterFxConfig is a fixed fx1..fxN dictionary because that is how the chain
+ * is PERSISTED (one `master_fx_N.json` per position). The editor wants a LIST,
+ * and the list is bounded by how many positions are actually loaded — not by
+ * the cap. That distinction is the whole of the 8-slot complaint: a fixed array
+ * of eight empty boxes says nothing, a chain of one module and a `+` says
+ * everything.
+ *
+ * Trailing empties are dropped and a hole in FRONT of a loaded module is KEPT,
+ * exactly as loadChainConfigFromSlot does for a slot chain, and for the same
+ * reason: position i of this list IS `fx(i+1)` in the DSP, so compacting a hole
+ * away on READ would leave the editor addressing fx1's params while the audio
+ * ran through fx2. The user's own edit compacts it (removeAt + the `remove`
+ * verb), which renumbers the DSP at the same time.
+ *
+ * Once the DSP publishes `master_fx:fx_count` (step 4d) this becomes a read of
+ * that count rather than a walk of the cap; the list it produces is the same
+ * either way, which is why the display does not wait on it.
+ */
+/*
+ * HOW LONG the Master FX chain is. -1 means "derive it from what is loaded".
+ *
+ * This is the published count, held client-side until the DSP publishes
+ * `master_fx:fx_count` (step 4d). It has to be a value rather than always a
+ * derivation for one reason: the position a `+` box opens is EMPTY, and an
+ * empty position at the end is indistinguishable from the end of the chain. A
+ * derivation would drop it the moment it was created, and the picker would be
+ * standing on a position that no longer exists.
+ */
+let masterFxChainLength = -1;
+
+function masterFxChainConfig() {
+    const fx = [];
+    for (let i = 1; i <= MASTER_FX_SLOTS; i++) {
+        const m = masterFxConfig[`fx${i}`];
+        fx.push(m && m.module ? m : null);
+    }
+    /* Derived: trailing empties are dropped so the list says what is actually
+     * loaded, and a hole in FRONT of a loaded module is KEPT — exactly as
+     * loadChainConfigFromSlot does for a slot chain, and for the same reason.
+     * The explicit length may only EXTEND past that end, never truncate: the
+     * one thing it knows that the derivation cannot is a trailing hole a `+`
+     * box just opened, and clamping it this way means a stale value can at
+     * worst leave one empty box until the next reload rather than hide a
+     * module. */
+    let n = fx.length;
+    while (n > 0 && !fx[n - 1]) n--;
+    if (masterFxChainLength > n) n = Math.min(masterFxChainLength, MASTER_FX_SLOTS);
+    fx.length = Math.max(0, n);
+    return { midiFx: [], synth: null, fx };
+}
+
+/* Write a chain-model config back into the persisted fx1..fxN dictionary. The
+ * positions past the chain's end are CLEARED, which is what makes a removal
+ * close the gap rather than leave the old tail behind, and the LENGTH is kept
+ * so a trailing hole survives until the picker resolves it. */
+function setMasterFxChainConfig(cfg) {
+    const list = cfg.fx || [];
+    for (let i = 1; i <= MASTER_FX_SLOTS; i++) {
+        const m = list[i - 1];
+        masterFxConfig[`fx${i}`] = { module: (m && m.module) || "" };
+    }
+    masterFxChainLength = Math.min(list.length, MASTER_FX_SLOTS);
+}
+
+/*
+ * Master FX chain components: the loaded positions, then a `+`, then Settings.
+ *
+ * DERIVED from the same model the slot chain's list is derived from, through
+ * the same chainEditorComponents — never hand-listed, and never bounded by the
+ * cap. `kind` therefore comes from the model too: "module" for a position,
+ * "add" for the `+`, "settings" for the last box. The kind that matters by its
+ * absence is "synth" — the diagram paints a filled band across the top of a
+ * synth box as the landmark the scroll leans on, and Master FX has no synth, so
+ * no entry may ever claim that kind. The MASTER_CHAIN_TARGET's `hasSynth:false`
+ * is what guarantees it.
+ *
+ * ONE `+`, appended: Master FX has one section, and its `+` is the audio-FX end
+ * of a slot chain wearing the same rules.
+ */
+function masterFxChainComponents() {
+    return chainEditorComponents(masterFxChainConfig(), MASTER_CHAIN_TARGET);
+}
+
+/* Is the Master FX selection on a module POSITION — as opposed to the preset
+ * row, the `+`, the Settings box, or an index left over from a chain that got
+ * shorter? The gates that used to compare the index against a fixed settings
+ * position ask this instead; there is no fixed settings position any more. */
+function masterFxSelectedIsModule() {
+    if (selectedMasterFxComponent < 0) return false;
+    const comp = masterFxChainComponents()[selectedMasterFxComponent];
+    return !!comp && comp.kind === "module";
+}
+
+/* ============================================================================
+ * CHAIN TARGETS — which chain an editor operation is talking about
+ * ============================================================================
+ *
+ * There are two chain editors in this file and they are the SAME SCREEN wearing
+ * two implementations. That is not an aesthetic complaint: features land in one
+ * and not the other, one reasonable-sounding scope boundary at a time. The knob
+ * card went in on 2026-08-20 for the slot chain only, so a Master FX knob still
+ * raises the old `Value: 0.62` box — one day of drift. Master FX had no
+ * windowed scroll until three commits ago, and it still has no reorder.
+ *
+ * The two differ in exactly TWO things:
+ *
+ *   | | Slot chain                  | Master FX                             |
+ *   | param key | "fx1:cutoff" @ slot N | "master_fx:fx1:cutoff" @ slot 0     |
+ *   | components| slotChainComponents(N) | MASTER_FX_CHAIN_COMPONENTS         |
+ *
+ * plus which SECTIONS exist, which is what `hasSynth` / `hasMidiFx` state.
+ *
+ * Branch on those CAPABILITIES, never on `kind`. A shared function containing
+ * `if (target.kind === "master") return;` drifts exactly as well as two
+ * functions did, and states no reason for the difference.
+ *
+ * `slot` is the IPC slot index: N for a slot chain, and 0 for Master FX — by
+ * convention only. Master FX is NOT instrument slot 0; its keys are merely
+ * addressed there. Never conflate it with selectedSlot.
+ */
+
+/* The Master FX component key at index i (0-based), or null when i is outside
+ * the cap. This IS the Master FX bounds guard, written once — the four
+ * accessors below used to each carry their own copy of `i < 0 || i >= CAP`. */
+function masterFxComponentKey(i) {
+    if (typeof i !== "number" || i < 0 || i >= MASTER_FX_SLOTS) return null;
+    return `fx${i + 1}`;
+}
+
+/*
+ * The Master FX position a HIERARCHY-EDITOR component key names, or -1.
+ *
+ * The inverse of the `master_fx:${fxKey}` spelling resetHierarchyEditorFor
+ * documents: Master FX carries the PREFIXED key ("master_fx:fx2") where a slot
+ * chain carries the bare one ("fx2"), which is what makes the two chains'
+ * params addressable through one string. Everything that takes a component key
+ * from the editor — or from the knob grid, which stores the same key — needs to
+ * be able to get back to "which Master FX position is this", because the master
+ * entry points are indexed.
+ *
+ * Bounded by MASTER_FX_SLOTS: an out-of-range "fx9" would otherwise be routed
+ * as a real position and land on whatever the shim does with an unmatched key,
+ * which is slot 0 under a garbage param name (see shadow_chain_mgmt.c).
+ */
+function masterFxIndexFromComponentKey(componentKey) {
+    const m = /^master_fx:fx(\d+)$/.exec(String(componentKey || ""));
+    if (!m) return -1;
+    const i = Number(m[1]) - 1;
+    return (i >= 0 && i < MASTER_FX_SLOTS) ? i : -1;
+}
+
+/*
+ * The knob grid's CHROME for a component key — its header label, the key that
+ * names the module behind it, and where Back goes — or null for the slot-chain
+ * defaults.
+ *
+ * The grid is one view serving both chain editors, and the three things above
+ * are all it has to be told to serve either. Built HERE, from the chain target,
+ * because shadow_ui.js is the one place that knows there are two chains;
+ * shadow_ui_param_pages.mjs deliberately takes them as data instead of testing
+ * the key prefix itself. See currentChrome there.
+ */
+function paramPagesChromeFor(componentKey) {
+    const mfx = masterFxIndexFromComponentKey(componentKey);
+    if (mfx < 0) return null;
+    return {
+        label: MASTER_CHAIN_TARGET.label,
+        /* "master_fx:fx2:module", NOT "master_fx:fx2_module" — the underscore
+         * form is the slot chain's spelling and is unserved here, and an
+         * unserved key reads back as "" rather than erroring, so the header
+         * would just quietly lose its module name. */
+        moduleKey: MASTER_CHAIN_TARGET.key(masterFxComponentKey(mfx), "module"),
+        returnView: VIEWS.MASTER_FX,
+    };
+}
+
+/* The chain of one instrument slot. */
+function slotChainTarget(slotIndex) {
+    return {
+        kind: "slot",
+        /* A STABLE NAME for this chain, so a record made against it (the pending
+         * `+` insert) can be matched later. Identity cannot do that job: this
+         * function builds a fresh object on every call. */
+        id: `slot${slotIndex}`,
+        slot: slotIndex,
+        /* How this chain names itself in a knob title or an announcement —
+         * "S2: CloudSeed Room Size". DATA, not a kind test: it is the one thing
+         * the two chains genuinely have to say differently, and buildChainKnobContext
+         * reads it rather than asking which chain it is looking at. The two
+         * builders it replaced spelled the whole title twice, which is how the
+         * fallback rule below came to differ between them unnoticed. */
+        label: `S${slotIndex + 1}`,
+        key: (componentKey, suffix) => chainComponentParamKey(componentKey, suffix),
+        /* A key belonging to the CHAIN rather than to a position in it — the
+         * two LFOs, and whatever else the bus grows. */
+        chainKey: (suffix) => suffix,
+        components: () => slotChainComponents(slotIndex),
+        /* The chain as a MODEL config, and how to put an edited one back. The
+         * shape editors (insert / remove / move) are written once against these
+         * two, so neither has to know where a chain keeps its list. */
+        config: () => chainConfigs[slotIndex] || createEmptyChainConfig(),
+        setConfig: (cfg) => { chainConfigs[slotIndex] = cfg; },
+        /* The cached view of this chain is no longer known to match the DSP.
+         * LAZY: the next draw reloads it. */
+        invalidate: () => { invalidateChainConfig(slotIndex); },
+        /* Re-read it from the DSP NOW. The one caller that cannot wait is the
+         * `+` cancel: it has to resolve the `+` box's index in the chain the
+         * DSP actually holds, and with the cancelled hole still in the model
+         * the `+` sits one place further right. */
+        reload: () => loadChainConfigFromSlot(slotIndex),
+        /* Which position the editor is pointing at. -1 is the patch row and is
+         * not a position; it is preserved rather than clamped. */
+        selection: () => selectedChainComponent,
+        setSelection: (i) => {
+            selectedChainComponent = i;
+            lastChainComponent[slotIndex] = i;
+        },
+        /* Is this the chain the editor is pointing at? There are four of these
+         * and the shim can switch between them underneath a picker. */
+        isSelectedChain: () => selectedSlot === slotIndex,
+        cap: (section) => CHAIN_CAP[section],
+        hasSynth: true,
+        hasMidiFx: true,
+    };
+}
+
+/* The master bus chain. One section, no synth, addressed at slot 0 under the
+ * "master_fx:" prefix. */
+const MASTER_CHAIN_TARGET = {
+    kind: "master",
+    /* See slotChainTarget.id. */
+    id: "master",
+    slot: 0,
+    /* See slotChainTarget.label. "MFX", never "S1" — Master FX is addressed at
+     * slot 0 but it is not instrument slot 1, and a title that said so would be
+     * the conflation that comment warns about. */
+    label: "MFX",
+    key: (componentKey, suffix) => {
+        /* "settings" is a box in the list but not a module position, so it has
+         * no params — same rule chainComponentParamKey applies for the slot
+         * chain via isChainModuleKey. */
+        if (!componentKey || componentKey === "settings") return null;
+        const at = parseChainId(componentKey);
+        if (!at || at.section !== "fx" || at.index >= MASTER_FX_SLOTS) return null;
+        return `master_fx:${componentKey}:${suffix}`;
+    },
+    chainKey: (suffix) => `master_fx:${suffix}`,
+    components: () => masterFxChainComponents(),
+    config: () => masterFxChainConfig(),
+    setConfig: (cfg) => { setMasterFxChainConfig(cfg); },
+    /* masterFxConfig is the model, so "the cached view is stale" means "re-read
+     * the positions from the DSP". LAZY, exactly as invalidateChainConfig is,
+     * and for a reason that is not about cost: the `+` box materialises a
+     * position IN THE MODEL ONLY, and an eager reload here would read the chain
+     * back from a DSP that has never heard of it and wipe the hole out from
+     * under the picker that was just opened on it. drawMasterFx reloads on its
+     * next diagram frame instead — and the picker draws before that point, so
+     * the pending position survives for exactly as long as it has to. */
+    invalidate: () => { invalidateMasterFxConfig(); },
+    reload: () => loadMasterFxChainConfig(),
+    selection: () => selectedMasterFxComponent,
+    setSelection: (i) => { selectedMasterFxComponent = i; },
+    /* There is exactly one master bus, so it is always the master chain the
+     * editor is pointing at. */
+    isSelectedChain: () => true,
+    /* One section, and its cap is the shim's array size — the constant this
+     * file already mirrors — not the slot chain's. */
+    cap: () => MASTER_FX_SLOTS,
+    hasSynth: false,
+    hasMidiFx: false,
+};
+
+/* Read one param of one component of a chain. null when the component has no
+ * params to read (the settings box, or an id outside the chain) — which is the
+ * same answer getSlotParam gives for an unreachable key, so callers that
+ * coerce with `|| ""` are unaffected. */
+function chainTargetGetParam(target, componentKey, suffix) {
+    const key = target.key(componentKey, suffix);
+    if (!key) return null;
+    return getSlotParam(target.slot, key);
+}
+
+function chainTargetSetParam(target, componentKey, suffix, value) {
+    const key = target.key(componentKey, suffix);
+    if (!key) return false;
+    return setSlotParam(target.slot, key, value);
+}
+
+/* Parse a JSON param out of a component, with the shape its callers expect on
+ * failure. Both editors had their own copy of these two, differing only in how
+ * the key was spelled. */
+function chainTargetChainParams(target, componentKey) {
+    const json = chainTargetGetParam(target, componentKey, "chain_params");
+    if (!json) return [];
+    try { return JSON.parse(json); } catch (e) { return []; }
+}
+
+/*
+ * Does this component hold a module whose parameters can be addressed?
+ *
+ * Answered by the target's OWN key rule rather than by a second copy of it:
+ * both targets already return null from key() for a box that is not a module
+ * position (the settings box, a "+", an id past the cap). isChainModuleKey is
+ * that rule for the slot chain; asking the target gets the same answer for
+ * either chain without the caller knowing which it holds.
+ */
+function chainTargetIsModulePosition(target, componentKey) {
+    return !!componentKey && target.key(componentKey, "module") !== null;
+}
+
+function chainTargetHierarchy(target, componentKey) {
+    const json = chainTargetGetParam(target, componentKey, "ui_hierarchy");
+    if (!json) return null;
+    try { return JSON.parse(json); } catch (e) { return null; }
+}
+
+/*
+ * Is the Master FX CHAIN DIAGRAM the thing on screen right now?
+ *
+ * drawMasterFx is a dispatcher: nine flags can put a text entry, a confirm, a
+ * help page, the preset browser, the settings menu or the module picker in
+ * FRONT of the diagram, and it early-returns into each of them. The knob card
+ * is a modal over the diagram, so raising it while one of those is up would
+ * leave the knob with no feedback at all — the card would be state-set and
+ * never drawn, and the centred name/value box it replaces would not be shown
+ * either. The slot chain has no equivalent because each of its sub-screens is
+ * its own `view`.
+ *
+ * This list MIRRORS drawMasterFx's dispatch chain and the two must not drift;
+ * tests/host/test_master_fx_knob_card.sh derives both from source and fails
+ * when they disagree, because nothing else would say so.
+ */
+function masterFxChainDiagramVisible() {
+    if (isTextEntryActive()) return false;
+    if (masterShowingNamePreview) return false;
+    if (masterConfirmingOverwrite) return false;
+    if (masterConfirmingDelete) return false;
+    if (helpDetailScrollState) return false;
+    if (helpNavStack.length > 0) return false;
+    if (inMasterPresetPicker) return false;
+    if (inMasterFxSettingsMenu) return false;
+    if (selectingMasterFxModule) return false;
+    return true;
+}
+
+/*
+ * Which chain the editor is showing, and which position in it is selected —
+ * for EITHER chain, or null when the screen in front of the user is not a
+ * chain editor with its diagram up.
+ *
+ * THE ONE PLACE that knows there are two chain-editor views. Everything
+ * downstream (the knob card, and buildChainKnobContext through it) takes the
+ * target and stops caring: that is what makes a feature land on both screens
+ * by construction instead of one reasonable-sounding scope boundary at a time.
+ *
+ * `comp` is null for the whole-chain selection (-1) and for a box that is not
+ * a module position; callers test it rather than the index, because the two
+ * editors number their lists differently and only one of them has a synth.
+ */
+function chainEditorFocus() {
+    let target = null;
+    let index = -1;
+    if (view === VIEWS.CHAIN_EDIT) {
+        target = slotChainTarget(selectedSlot);
+        index = selectedChainComponent;
+    } else if (view === VIEWS.MASTER_FX && masterFxChainDiagramVisible()) {
+        target = MASTER_CHAIN_TARGET;
+        index = selectedMasterFxComponent;
+    } else {
+        return null;
+    }
+    const comps = target.components();
+    return { target, comp: (index >= 0 && index < comps.length) ? comps[index] : null };
+}
+
+/*
+ * Mute + Jog Click on a populated module toggles its bypass — in EITHER chain.
+ * The two editors held identical copies of this that differed only in how the
+ * key was spelled, which is the whole of the difference between them.
+ *
+ * `label` is the component's, because the announcement names the box the user
+ * is pointing at ("FX 2 bypassed"), not the module inside it.
+ */
+/*
+ * Which components an LFO is pointed at — { key: {lfo1, lfo2} } — for EITHER
+ * chain, which is what the diagram paints its "~" markers from.
+ *
+ * FOUR IPC reads, FIXED: the question is asked of the two LFOs, never of each
+ * box, so it does not grow with the chain. Both editors had this loop; keeping
+ * that property in two places is how one of them eventually asks per box.
+ */
+function chainLfoTargetMap(target) {
+    const out = {};
+    for (let li = 1; li <= 2; li++) {
+        if (getSlotParam(target.slot, target.chainKey(`lfo${li}:enabled`)) !== "1") continue;
+        let t = getSlotParam(target.slot, target.chainKey(`lfo${li}:target`)) || "";
+        /* The first MIDI FX is keyed "midiFx" in the editor; every other
+         * position is keyed by its model id, which is what the LFO stores.
+         * Gated on the CAPABILITY, not the kind: a chain with no MIDI FX
+         * section can never have stored that id, and asking "does this chain
+         * have MIDI FX" says why the rewrite is skipped where "is this master"
+         * would not. */
+        if (target.hasMidiFx && t === "midi_fx1") t = "midiFx";
+        if (!t) continue;
+        if (!out[t]) out[t] = {};
+        out[t][`lfo${li}`] = true;
+    }
+    return out;
+}
+
+/* Is this position bypassed? False, without an IPC read, for anything that has
+ * no bypass parameter — the settings box and the `+` boxes. */
+function chainComponentBypassed(target, componentKey) {
+    return parseInt(chainTargetGetParam(target, componentKey, "bypassed") || "0", 10) === 1;
+}
+
+/*
+ * The hierarchy level whose `knobs` array drives the physical knobs.
+ *
+ * Root, unless root declared no knobs and names a child level that did — a
+ * module whose real controls live one level down (a preset browser at the top)
+ * would otherwise offer nothing on the knobs at all.
+ *
+ * Shared by both chain editors, which each had a copy. The LEVEL is returned
+ * rather than the mapped key, because the slot editor logs it when the lookup
+ * misses and a key alone cannot say why.
+ */
+function knobLevelForHierarchy(hierarchy) {
+    if (!hierarchy || !hierarchy.levels) return null;
+    let levelDef = hierarchy.levels.root || hierarchy.levels[Object.keys(hierarchy.levels)[0]];
+    /* If root has no knobs but has children, use first child level for knob mapping */
+    if (levelDef && (!levelDef.knobs || levelDef.knobs.length === 0) && levelDef.children) {
+        const childLevel = hierarchy.levels[levelDef.children];
+        if (childLevel && childLevel.knobs && childLevel.knobs.length > 0) {
+            levelDef = childLevel;
+        }
+    }
+    return levelDef;
+}
+
+function toggleChainComponentBypass(target, componentKey, label) {
+    const cur = parseInt(chainTargetGetParam(target, componentKey, "bypassed") || "0", 10);
+    const next = cur ? 0 : 1;
+    chainTargetSetParam(target, componentKey, "bypassed", String(next));
+    announce(next ? `${label} bypassed` : `${label} active`);
+    needsRedraw = true;
+}
+
+function makeEmptyMasterFxConfig() {
+    const cfg = {};
+    for (let i = 1; i <= MASTER_FX_SLOTS; i++) {
+        cfg[`fx${i}`] = { module: "" };
+    }
+    return cfg;
+}
 
 /* Master FX chain editing state */
-let masterFxConfig = {
-    fx1: { module: "" },
-    fx2: { module: "" },
-    fx3: { module: "" },
-    fx4: { module: "" }
-};
-let selectedMasterFxComponent = 0;    // -1=preset, 0-4: fx1, fx2, fx3, fx4, settings
+let masterFxConfig = makeEmptyMasterFxConfig();
+/*
+ * -1 = the preset row; 0..N-1 = fx1..fxN; then the `+`, then Settings.
+ *
+ * AN INDEX INTO A LIST THAT CHANGES LENGTH. Every shape edit shifts it —
+ * removing a position shortens the chain, so a selection that pointed at
+ * Settings now points at the `+` — so nothing may carry it across an edit.
+ * Re-anchor by the component's KEY through the target's component list, the way
+ * chainReorderJog and applyMasterFxModuleSelection do.
+ */
+let selectedMasterFxComponent = 0;
 let selectingMasterFxModule = false;  // True when selecting module for a component
 let selectedMasterFxModuleIndex = 0;  // Index in MASTER_FX_OPTIONS during selection
 
@@ -998,20 +1963,236 @@ globalThis.param_view_get_mode = function() { return paramViewGlobal; };
  * The grid does not reimplement those editors; it steps aside and hands the
  * component to the list, which already has all of them. Announced, because
  * otherwise the view changing under you looks like a glitch. */
+/*
+ * Open the editor for ONE hierarchy param, dispatched on its declared type.
+ *
+ * Extracted from the jog-click handler so the knob grid can open a param
+ * directly. Clicking a bracketed cell used to call enterHierarchyEditor() and
+ * nothing else, which drops you at the component hierarchy with the param
+ * unselected — you asked to open Position and got granny's menu. "Open this"
+ * has to mean this one.
+ *
+ * forceOpen: the grid has nothing to toggle, so it always opens. The jog-click
+ * caller passes false and keeps its open/close toggle.
+ */
+/* Leave the hierarchy editor and put the knob grid back up, on the same slot
+ * and component it handed off. */
+/*
+ * Back to the grid from the LFO target picker. Returns true when it handled it.
+ * The controller was never torn down, so the grid comes back on the page and
+ * the cell it left from.
+ */
+function returnToSlotGridFromLfoTarget() {
+    if (!lfoTargetFromGrid) return false;
+    lfoTargetFromGrid = false;
+    if (!paramPagesActive()) return false;
+    setView(VIEWS.PARAM_PAGES);
+    needsRedraw = true;
+    return true;
+}
+
+function returnToParamPagesFromEditor() {
+    const slotIndex = hierEditorSlot;
+    const componentKey = hierEditorComponent;
+    const returnPage = paramEditorReturnPage;
+    paramEditorOpenedFromGrid = false;
+    paramEditorReturnPage = "";
+    exitHierarchyEditor();
+    enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey), returnPage,
+                    null, paramPagesChromeFor(componentKey));
+    needsRedraw = true;
+}
+
+function openHierarchyParamEditor(selectedKey, meta, forceOpen) {
+    if (hierEditorEditMode && !forceOpen) {
+        hierEditorEditMode = false;
+        resetHierarchyEditState();
+        invalidateKnobContextCache();
+        return;
+    }
+    if (!hierEditorEditMode && meta && meta.type === "string") {
+        const fullKey = buildHierarchyParamKey(selectedKey);
+        const currentText = getSlotParam(hierEditorSlot, fullKey) || "";
+        openTextEntry({
+            title: meta.name || selectedKey,
+            initialText: String(currentText),
+            onAnnounce: announce,
+            onConfirm: (nextText) => {
+                setSlotParam(hierEditorSlot, fullKey, String(nextText || ""));
+                refreshHierarchyVisibility();
+                announceParameter(meta.name || selectedKey, String(nextText || ""));
+                needsRedraw = true;
+            },
+            onCancel: () => { needsRedraw = true; }
+        });
+        return;
+    }
+    if (!hierEditorEditMode && meta && meta.type === "canvas") {
+        openCanvasPreview(selectedKey, meta);
+        needsRedraw = true;
+        return;
+    }
+    if (!hierEditorEditMode && meta && meta.type === "filepath") {
+        openHierarchyFilepathBrowser(selectedKey, meta);
+        return;
+    }
+    /* Everything else — including wav_position, whose editor IS edit mode on a
+     * selected wav_position (see isInWavPositionEditor). */
+    if (beginHierarchyParamEdit(selectedKey)) {
+        hierEditorEditMode = true;
+        /* Knob context override depends on edit mode + multi-marker role;
+         * force re-evaluation. */
+        invalidateKnobContextCache();
+    }
+}
+
+/* Index of `bare` in the CURRENT level's param list, or -1. */
+function indexOfHierParam(bare) {
+    if (!Array.isArray(hierEditorParams)) return -1;
+    for (let i = 0; i < hierEditorParams.length; i++) {
+        const entry = hierEditorParams[i];
+        const k = (entry && typeof entry === "object") ? (entry.key || "") : String(entry || "");
+        if (k && k === bare) return i;
+    }
+    return -1;
+}
+
+/* The level whose params[] actually lists `bare`, or null. A level's knobs[]
+ * does not count: the list editor selects out of params[], so a knob-only
+ * mention is not somewhere it can put a cursor. */
+function findLevelListingParam(bare) {
+    const levels = hierEditorHierarchy && hierEditorHierarchy.levels;
+    if (!levels) return null;
+    for (const [name, def] of Object.entries(levels)) {
+        if (!def || !Array.isArray(def.params)) continue;
+        for (const entry of def.params) {
+            if (!entry) continue;
+            if (typeof entry === "string") { if (entry === bare) return name; continue; }
+            if (typeof entry === "object" && !entry.level && entry.key === bare) return name;
+        }
+    }
+    return null;
+}
+
 function openParamEditorFromGrid(slotIndex, fullKey, meta) {
     const componentKey = paramPagesComponent();
+    /*
+     * Slot settings is a synthesised contract, not a component: there is no
+     * "slot:ui_hierarchy" to fetch, so enterHierarchyEditor would fall through
+     * to the no-presets fallback. The one divable thing on its pages is an LFO
+     * Target, which has its own two-step picker — so open that and refuse
+     * everything else rather than land somewhere wrong.
+     */
+    if (componentKey === "slot" || componentKey === MASTER_SETTINGS_COMPONENT) {
+        const isMaster = componentKey === MASTER_SETTINGS_COMPONENT;
+        const m = isMaster
+            ? /^master_settings:master_fx:lfo([12]):target$/.exec(String(fullKey || ""))
+            : /^slot:lfo([12]):target$/.exec(String(fullKey || ""));
+        if (m) {
+            /* enterLfoTargetPicker reads lfoCtx, so point it at this LFO first —
+             * the same context the list editor builds. */
+            lfoCtx = isMaster ? makeMfxLfoCtx(Number(m[1]) - 1)
+                              : makeSlotLfoCtx(slotIndex, Number(m[1]) - 1);
+            /* Mark the hand-off BEFORE opening, so every exit from the picker
+             * knows where it came from. The grid controller stays alive. */
+            lfoTargetFromGrid = true;
+            /* The note-off for the knob being held will go to the PICKER, not
+             * back here, so drop the touch now or the cell stays highlighted
+             * forever once we return. */
+            clearParamPagesTouch();
+            enterLfoTargetPicker();
+            needsRedraw = true;
+        }
+        return;
+    }
+    /* Read the grid page BEFORE exiting — the level it was on is where the
+     * param lives, and exitParamPages tears the controller down. */
+    const page = currentParamPage();
+    const level = page && page.level;
+    paramEditorReturnPage = (page && page.name) || "";
+    /* The grid builds every fullKey as `${prefix}:${key}`, so strip THAT exact
+     * prefix rather than "everything up to the first colon". Master FX's prefix
+     * contains a colon of its own ("master_fx:fx2"), and the old rule left
+     * "fx2:sample_path" as the param name — a key no level lists, so clicking
+     * an opaque param there landed on the module menu instead of the editor. */
+    const paramPrefix = `${getComponentParamPrefix(componentKey)}:`;
+    const raw = String(fullKey || "");
+    const bare = raw.startsWith(paramPrefix) ? raw.slice(paramPrefix.length)
+                                             : raw.replace(/^[^:]+:/, "");
+
     exitParamPages();
-    announce((meta && meta.label ? meta.label : "Parameter") + ", opening in list");
     /* Without this the list entry below sees Param View = Knobs and bounces
      * straight back into the grid, forever. The flag is consumed by the next
      * enterHierarchyEditorWith and nothing else. */
     suppressParamPagesOnce = true;
     enterHierarchyEditor(slotIndex, componentKey);
+
+    /* Land on the level the grid was on, not the hierarchy root. */
+    if (level && hierEditorHierarchy && hierEditorHierarchy.levels &&
+        hierEditorHierarchy.levels[level] && level !== hierEditorLevel) {
+        hierEditorLevel = level;
+        hierEditorPath = [];
+        hierEditorChildIndex = -1;
+        loadHierarchyLevel();
+    }
+
+    /* Select the param that was clicked and open ITS editor. Without this the
+     * user asked to open one parameter and got the module menu.
+     *
+     * The grid page level is NOT necessarily where the list editor keeps the
+     * param. granny's root declares knobs:["position",...] but params:
+     * ["level:main","level:scan_menu",...] — navigation entries only — so
+     * `position` is on a root knob and in no root param list at all. It lives
+     * in the `main` level. Searching only the page level found nothing and fell
+     * through to the module menu, which is exactly the bug. So if the page
+     * level does not list it, find the level that does and go there. */
+    let idx = indexOfHierParam(bare);
+    if (idx < 0) {
+        const owner = findLevelListingParam(bare);
+        if (owner && owner !== hierEditorLevel) {
+            hierEditorLevel = owner;
+            hierEditorPath = [];
+            hierEditorChildIndex = -1;
+            loadHierarchyLevel();
+            idx = indexOfHierParam(bare);
+        }
+    }
+    if (idx < 0) {
+        /* The param is not on this level after all — leave the user in the
+         * editor rather than nowhere, and say so instead of silently landing
+         * somewhere unexplained. */
+        announce((meta && meta.label ? meta.label : "Parameter") + ", opening in list");
+        return;
+    }
+    hierEditorSelectedIdx = idx;
+    const liveMeta = (typeof getParamMetadata === "function" ? getParamMetadata(bare) : null) || meta;
+    announce((liveMeta && (liveMeta.name || liveMeta.label)) || bare);
+    paramEditorOpenedFromGrid = true;
+    openHierarchyParamEditor(bare, liveMeta, true);
+    needsRedraw = true;
 }
 
-/* One-shot override forcing the LIST editor for the next entry, so the grid can
- * hand a param it cannot edit to the screen that can. */
+/* One-shot override forcing the LIST editor for the next COMPONENT entry, so
+ * the grid can hand a param it cannot edit to the screen that can. */
 let suppressParamPagesOnce = false;
+/*
+ * The same idea for SLOT settings, deliberately a SEPARATE flag.
+ *
+ * Sharing one meant a pending suppress set by a component hand-off leaked into
+ * the next slot-settings entry — which then showed the list for no reason the
+ * user could see — and that consuming it there stole it from the component
+ * entry it had been set for. Two unrelated hand-offs, two flags.
+ */
+let suppressSlotGridOnce = false;
+/* A slot-action modal is up in the LIST because the grid handed it over; go
+ * back to the grid when it finishes. See maybeReturnToSlotGrid. */
+let slotModalFromGrid = false;
+
+/* ...and the Master FX pair. THREE flags, not one shared set, for the reason
+ * spelled out above: a suppress pending for one hand-off must not be spent by
+ * an unrelated entry, and Master FX settings is a third independent hand-off. */
+let suppressMasterGridOnce = false;
+let masterModalFromGrid = false;
 
 function saveParamViewConfig() {
     try {
@@ -1299,10 +2480,17 @@ function getMasterFxSettingsItems() {
         /* Existing preset: show all items */
         return MASTER_FX_SETTINGS_ITEMS_BASE;
     }
-    /* New/unsaved: hide Save As and Delete */
-    return MASTER_FX_SETTINGS_ITEMS_BASE.filter(item =>
-        item.key !== "save_as" && item.key !== "delete"
-    );
+    /*
+     * Unsaved: hide DELETE, but keep Save As.
+     *
+     * Save and Save As are genuinely different with nothing saved yet — Save
+     * offers a generated name to accept or edit, Save As goes straight to the
+     * keyboard. Hiding Save As left Master FX with a ONE ENTRY actions menu,
+     * which the knob grid draws as a menu page you have to enter to press a
+     * single button. A slot never hit that because it also carries Knob
+     * Mapping; the master bus has no knob-mapping table, so it did.
+     */
+    return MASTER_FX_SETTINGS_ITEMS_BASE.filter(item => item.key !== "delete");
 }
 
 let selectedMasterFxSetting = 0;
@@ -1326,7 +2514,9 @@ let helpReturnView = null;    /* View to return to from help viewer */
 
 /* Chain editing state */
 let chainConfigs = [];         // In-memory chain configs per slot
-let selectedChainComponent = 0; // -1=chain, 0-4 (midiFx, synth, fx1, fx2, settings)
+// -1 = chain/patch; 0..n = an index into slotChainComponents(), whose length
+// follows the chain rather than being fixed at five.
+let selectedChainComponent = 0;
 let lastChainComponent = [0, 0, 0, 0]; // Remember last selected component per slot
 let selectingModule = false;   // True when in module selection for a component
 let availableModules = [];     // Modules available for selected component type
@@ -1525,7 +2715,13 @@ function checkForUpdatesInBackground() {
 /* Chain settings (shown when Settings component is selected) */
 const CHAIN_SETTINGS_ITEMS = [
     { key: "knobs", label: "Knobs", type: "action" },  // Opens knob assignment editor
-    { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 4, step: 0.05 },
+    /* 2.0 is +6 dB. It was 4.0 (+12 dB), which is more headroom than a slot
+     * has any use for and reads as an alarming 400% now that the knob grid
+     * shows it as a percentage. Capped in BOTH places or the two surfaces
+     * disagree — see SLOT_GRID_PARAMS. An existing slot saved above 2.0 keeps
+     * its stored gain until something turns the knob, which then pulls it into
+     * range. */
+    { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 2, step: 0.05 },
     { key: "slot:muted", label: "Muted", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:soloed", label: "Soloed", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 0, max: 16, step: 1 },
@@ -1638,7 +2834,7 @@ function isShiftHeld() {
 }
 
 /* Component edit state (for Shift+Click editing) */
-let editingComponentKey = "";    // "synth", "fx1", "fx2", "midiFx"
+let editingComponentKey = "";    // a component key: "synth", "midiFx", or "fxN"
 let editComponentPresetCount = 0;
 let editComponentPreset = 0;
 let editComponentPresetName = "";
@@ -1803,7 +2999,7 @@ function getPhysKnobState(fullKey, currentValue) {
 }
 /* Master FX flag - when true, exit returns to MASTER_FX view instead of CHAIN_EDIT */
 let hierEditorIsMasterFx = false;
-let hierEditorMasterFxSlot = -1;      // Which Master FX slot (0-3) we're editing
+let hierEditorMasterFxSlot = -1;      // Which Master FX slot (0..MASTER_FX_SLOTS-1) we're editing
 
 /* Set by enterHierarchyEditorFromParamPages(): the list editor is only open
  * here because the grid handed off a non-grid page (preset browser, items
@@ -1812,6 +3008,29 @@ let hierEditorMasterFxSlot = -1;      // Which Master FX slot (0-3) we're editin
  * UI — see the preset-edit-mode branch below. Cleared once consumed, and by
  * exitHierarchyEditor()/Back so a manual exit does not also bounce back. */
 let cameFromParamPages = false;
+/*
+ * Set when the knob grid opened ONE param directly (openParamEditorFromGrid).
+ * Back has to undo the thing the user actually did: they were on the grid, they
+ * clicked a bracketed cell, so closing that editor belongs back on the grid.
+ * Without it Back exits edit mode into the hierarchy LIST — a screen they never
+ * opened and, with Param View = Knobs, cannot get out of except by leaving the
+ * component. Distinct from cameFromParamPages, which is about the grid handing
+ * off a whole PAGE (a preset browser) rather than a single param.
+ */
+let paramEditorOpenedFromGrid = false;
+/* The grid page that was on screen when the hand-off happened, by NAME. Coming
+ * back to page 1 after editing something on page 5 is its own small betrayal. */
+let paramEditorReturnPage = "";
+/*
+ * True while the LFO target picker was opened from the knob grid.
+ *
+ * The picker returns to VIEWS.LFO_EDIT from three places — Back, clearing the
+ * target, and committing one — because that is where the LIST enters it from.
+ * Entered from a grid cell, all three land on a screen the user never opened.
+ * The grid controller is left alive across the hand-off, so returning is just a
+ * setView and the page position survives untouched.
+ */
+let lfoTargetFromGrid = false;
 
 /* Preset browser state (for preset_browser type levels) */
 let hierEditorIsPresetLevel = false;  // true when current level is a preset browser
@@ -2329,7 +3548,7 @@ function applyLivePreview(state, selected) {
 /* Loaded module UI state */
 let loadedModuleUi = null;       // The chain_ui object from loaded module
 let loadedModuleSlot = -1;       // Which slot the module UI is for
-let loadedModuleComponent = "";  // "synth", "fx1", "fx2"
+let loadedModuleComponent = "";  // a component key: "synth", "midiFx", or "fxN"
 let moduleUiLoadError = false;   // True if load failed
 
 /* Asset warning overlay state */
@@ -2406,9 +3625,10 @@ function getModuleUiPath(moduleId) {
     return null;
 }
 
-/* Convert component key to DSP param prefix (midiFx -> midi_fx1) */
+/* Convert component key to DSP param prefix (midiFx -> midi_fx1). The prefix
+ * IS the position's id in the chain model — one definition, above. */
 function getComponentParamPrefix(componentKey) {
-    return componentKey === "midiFx" ? "midi_fx1" : componentKey;
+    return chainComponentId(componentKey);
 }
 
 /* Set up shims for host_module_get_param and host_module_set_param
@@ -2432,7 +3652,7 @@ function setupModuleParamShims(slot, componentKey) {
     };
 
     globalThis.host_swap_module = function() {
-        const compIndex = CHAIN_COMPONENTS.findIndex(c => c.key === componentKey);
+        const compIndex = slotChainComponentIndex(slot, componentKey);
         if (compIndex >= 0) {
             unloadModuleUi();
             enterComponentSelect(slot, compIndex);
@@ -2591,15 +3811,30 @@ function unloadModuleUi() {
 
 /* Check for synth error in a slot and show warning if found */
 function checkAndShowSynthError(slotIndex) {
+    /* NOT chainComponentParamKey: the synth serves its error at "synth_error",
+     * a flat key, where every other position uses "<id>:error". */
     const synthError = getSlotParam(slotIndex, "synth_error");
     if (synthError && synthError.length > 0) {
         const synthName = getSlotParam(slotIndex, "synth:name") || "Synth";
-        warningTitle = `${synthName} Warning`;
-        warningLines = wrapText(synthError, 18);
-        warningActive = true;
-        /* Announce the error */
-        announce(`${warningTitle}: ${synthError}`);
-        needsRedraw = true;
+        showWarning(`${synthName} Warning`, synthError);
+        return true;
+    }
+    return false;
+}
+
+/*
+ * A component's asset warning, raised on screen — for EITHER chain.
+ *
+ * The three copies of this differed only in how the key was spelled and what
+ * the box is called when the module serves no name. `fallbackName` is that,
+ * and it is the POSITION ("MIDI FX", "FX 3"), because a module with no name
+ * cannot supply one.
+ */
+function checkAndShowComponentError(target, componentKey, fallbackName) {
+    const err = chainTargetGetParam(target, componentKey, "error");
+    if (err && err.length > 0) {
+        const name = chainTargetGetParam(target, componentKey, "name") || fallbackName;
+        showWarning(`${name} Warning`, err);
         return true;
     }
     return false;
@@ -2607,35 +3842,14 @@ function checkAndShowSynthError(slotIndex) {
 
 /* Check for MIDI FX warning in a slot and show warning if found */
 function checkAndShowMidiFxError(slotIndex) {
-    const midiFxError = getSlotParam(slotIndex, "midi_fx1:error");
-    if (midiFxError && midiFxError.length > 0) {
-        const midiFxName = getSlotParam(slotIndex, "midi_fx1:name") || "MIDI FX";
-        warningTitle = `${midiFxName} Warning`;
-        warningLines = wrapText(midiFxError, 18);
-        warningActive = true;
-        announce(`${warningTitle}: ${midiFxError}`);
-        needsRedraw = true;
-        return true;
-    }
-    return false;
+    return checkAndShowComponentError(slotChainTarget(slotIndex), "midiFx", "MIDI FX");
 }
 
 /* Check for Master FX error in a slot and show warning if found */
 function checkAndShowMasterFxError(fxSlot) {
-    /* fxSlot is 0-3 for the 4 Master FX slots */
-    const fxNum = fxSlot + 1;  /* fx1, fx2, fx3, fx4 */
-    const fxError = getMasterFxParam(fxSlot, "error");
-    if (fxError && fxError.length > 0) {
-        const fxName = getMasterFxParam(fxSlot, "name") || `FX ${fxNum}`;
-        warningTitle = `${fxName} Warning`;
-        warningLines = wrapText(fxError, 18);
-        warningActive = true;
-        /* Announce the error */
-        announce(`${warningTitle}: ${fxError}`);
-        needsRedraw = true;
-        return true;
-    }
-    return false;
+    /* fxSlot is 0-based: 0 .. MASTER_FX_SLOTS-1 */
+    return checkAndShowComponentError(MASTER_CHAIN_TARGET, masterFxComponentKey(fxSlot),
+                                      `FX ${fxSlot + 1}`);
 }
 
 /* Show the warning overlay with a title and wrapped message */
@@ -2658,11 +3872,58 @@ function dismissWarning() {
 /* Initialize chain configs for all slots */
 function initChainConfigs() {
     chainConfigs = [];
+    chainConfigFresh = [];
     lastSlotModuleSignatures = [];
     for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
         chainConfigs.push(createEmptyChainConfig());
+        chainConfigFresh.push(false);
         lastSlotModuleSignatures.push("");
     }
+}
+
+/*
+ * Whether a slot's cached chain config is known to still describe the DSP.
+ *
+ * drawChainEdit used to call loadChainConfigFromSlot on EVERY FRAME, which is
+ * `3 + <chain length>` IPC round trips at ~2.8ms each — 10 reads (~28ms) on a
+ * two-FX chain and 25 (~70ms) on a full one, against a 16.67ms frame. It grew
+ * with the chain, which is exactly what a variable-length chain makes possible,
+ * so the longest chains drew the slowest. A whole page render is 1.68ms: the
+ * reload cost more than everything it was feeding.
+ *
+ * A frame is the wrong cadence for a question whose answer only changes when
+ * somebody edits the chain. Two mechanisms keep the cache honest, and they are
+ * deliberately not the same one:
+ *
+ * - The user's own edits mark it stale HERE, at every point that writes the
+ *   model or the DSP. That is a short list and it is enumerable
+ *   (writeChainShape, the picker, the `+` box) because there are only four
+ *   places in the file that assign `chainConfigs[i]`.
+ * - Everything else — a patch restore, a set load, the shim loading a slot
+ *   underneath us — is caught by the periodic refreshSlotModuleSignature
+ *   (every 30 ticks), which already reloads on a changed signature. That is
+ *   the pre-existing self-heal; this does not compete with it, it just stops
+ *   asking the same question sixty times a second in between.
+ *
+ * A signature CANNOT be the invalidator for the first kind: a pure reorder
+ * changes which module is at which position without changing WHICH modules the
+ * slot holds, so the signature is byte-identical across it. Nor can object
+ * identity: a picker swap mutates the config IN PLACE.
+ */
+let chainConfigFresh = [];
+
+/** The cached chain config is no longer known to match the DSP. */
+function invalidateChainConfig(slotIndex) {
+    if (slotIndex === undefined) chainConfigFresh = [];
+    else chainConfigFresh[slotIndex] = false;
+}
+
+/** The slot's chain config, reloading from the DSP only if it went stale. */
+function ensureChainConfigFresh(slotIndex) {
+    if (chainConfigFresh[slotIndex]) {
+        return chainConfigs[slotIndex] || createEmptyChainConfig();
+    }
+    return loadChainConfigFromSlot(slotIndex);
 }
 
 /* Load chain config from current patch info */
@@ -2671,43 +3932,498 @@ function loadChainConfigFromSlot(slotIndex) {
 
     /* Read current patch configuration from DSP
      * Note: get_param uses underscores (synth_module), set_param uses colons (synth:module) */
-    const synthModule = getSlotParam(slotIndex, "synth_module");
-    const midiFxModule = getSlotParam(slotIndex, "midi_fx1_module");
-    const fx1Module = getSlotParam(slotIndex, "fx1_module");
-    const fx2Module = getSlotParam(slotIndex, "fx2_module");
+    /* An unserved key answers "" rather than null, which reads the same as an
+     * empty position — both mean "nothing loaded here". */
+    const readPosition = (id) => {
+        const moduleId = getSlotParam(slotIndex, `${id}_module`);
+        return moduleId && moduleId !== ""
+            ? { module: moduleId.toLowerCase(), params: {} } : null;
+    };
+    /*
+     * How long the section is, ASKED rather than probed.
+     *
+     * The DSP publishes fx_count / midi_fx_count (chain_host.c), so finding out
+     * that a chain has no FX costs ONE read. Probing fx1..fx8 to discover the
+     * same thing would cost eight — and this function runs from drawChainEdit
+     * on every frame at ~2.8ms per IPC round trip, which is more per frame than
+     * rendering the entire page. An unserved key answers "", and Number("") is
+     * 0, so the parse is explicit about its fallback.
+     */
+    const readCount = (key, cap) => {
+        const raw = getSlotParam(slotIndex, key);
+        const n = parseInt(raw, 10);
+        return (isNaN(n) || n < 0) ? 0 : Math.min(n, cap);
+    };
 
-    const oldFx1 = cfg.fx1 ? cfg.fx1.module : null;
-    const oldFx2 = cfg.fx2 ? cfg.fx2.module : null;
+    /*
+     * Trailing empties are dropped so the list says what is actually loaded; a
+     * hole in FRONT of a loaded module is KEPT.
+     *
+     * That is deliberate and it is the one place the chain model does not get
+     * the last word. Position i of this list IS `fx(i+1)` in the DSP — that is
+     * what makes `getComponentParamPrefix` correct — so compacting a hole away
+     * on READ would leave the editor addressing fx1's params while the audio
+     * ran through fx2. The model compacts on the user's own edit
+     * (removeAt + the `remove` verb), which renumbers the DSP at the same time.
+     * A legacy patch with a hole therefore draws its hole, once, and closes it
+     * the first time the user changes the order.
+     */
+    const readSection = (idAt, count) => {
+        const list = [];
+        for (let i = 0; i < count; i++) list.push(readPosition(idAt(i)));
+        while (list.length && !list[list.length - 1]) list.pop();
+        return list;
+    };
 
-    cfg.synth = synthModule && synthModule !== "" ? { module: synthModule.toLowerCase(), params: {} } : null;
-    cfg.midiFx = midiFxModule && midiFxModule !== "" ? { module: midiFxModule.toLowerCase(), params: {} } : null;
-    cfg.fx1 = fx1Module && fx1Module !== "" ? { module: fx1Module.toLowerCase(), params: {} } : null;
-    cfg.fx2 = fx2Module && fx2Module !== "" ? { module: fx2Module.toLowerCase(), params: {} } : null;
+    const oldFx = cfg.fx;
 
-    /* Clear display_name cache when FX modules change (prevents stale announcement on swap) */
-    const newFx1 = cfg.fx1 ? cfg.fx1.module : null;
-    const newFx2 = cfg.fx2 ? cfg.fx2.module : null;
-    /* Also drop the poll backoff: a different module may well implement
-     * display_name even though the last one didn't. */
+    cfg.synth = readPosition("synth");
+    cfg.midiFx = readSection((i) => `midi_fx${i + 1}`,
+                             readCount("midi_fx_count", CHAIN_CAP.midiFx));
+    cfg.fx = readSection((i) => `fx${i + 1}`, readCount("fx_count", CHAIN_CAP.fx));
+
+    /* Clear display_name cache when FX modules change (prevents stale
+     * announcement on swap). Also drop the poll backoff: a different module may
+     * well implement display_name even though the last one didn't. */
     const forgetFxName = (ck) => {
         delete fxDisplayNameCache[ck];
         delete fxDisplayNameSkip[ck];
         delete fxDisplayNameBackoff[ck];
     };
-    if (newFx1 !== oldFx1) forgetFxName(`${slotIndex}:fx1`);
-    if (newFx2 !== oldFx2) forgetFxName(`${slotIndex}:fx2`);
+    for (let i = 0; i < Math.max(oldFx.length, cfg.fx.length); i++) {
+        const before = oldFx[i] ? oldFx[i].module : null;
+        const after = cfg.fx[i] ? cfg.fx[i].module : null;
+        if (before !== after) forgetFxName(`${slotIndex}:fx${i + 1}`);
+    }
 
     chainConfigs[slotIndex] = cfg;
+    /* This IS the reload every other path invalidates towards, so the slot is
+     * clean by definition once it returns. */
+    chainConfigFresh[slotIndex] = true;
     return cfg;
 }
 
-/* Build a signature of module IDs for a slot to detect changes */
+/* The DSP's name for a section, which is the prefix its position ids and its
+ * reorder verbs both carry: "midi_fx" or "fx". */
+function chainSectionPrefix(section) {
+    return section === "midiFx" ? "midi_fx" : "fx";
+}
+
+/*
+ * Change a section's SHAPE in the DSP: one write, and nothing is reloaded.
+ *
+ * This replaced writeChainOrder, which pushed a whole section as a run of
+ * `<id>:module` writes. Every one of those unloads the position and dlopen()s a
+ * fresh instance (v2_load_audio_fx_slot / v2_load_midi_fx_slot), so renumbering
+ * a chain destroyed and rebuilt every module the renumber touched. Inserting a
+ * MIDI FX at the head rebuilt every MIDI FX behind it; removing a mid-chain
+ * reverb rebuilt everything downstream. writeChainOrder tried to make that
+ * survivable by carrying each module's opaque `<id>:state`, its modulation base
+ * and its LFO routing across the shift, keyed by object identity — a large
+ * amount of careful machinery for something that should not have been happening
+ * at all. A state blob is not an instance: it cannot carry a running
+ * arpeggiator's phase or the tail ringing in a delay. Reported on hardware as
+ * "we can't change phase of a running module by just adding a new one".
+ *
+ * The DSP now PERMUTES its per-position arrays instead (chain_permute.h), so
+ * the instances keep running and only their index changes. It also re-aims
+ * everything that names a position by string — modulation targets, both LFOs,
+ * the knob mappings — which is why none of that is carried from here any more:
+ * the modulation entry is never destroyed, so its base never needs restoring.
+ *
+ * `op` is `{ kind, section, index, to }` with 0-based indices; the wire is
+ * 1-based to match the ids ("fx2"), so the conversion happens here, once.
+ *
+ *   insert   open an empty position at `index`, shifting the rest along. The
+ *            caller follows with the ordinary `<id>:module` write; for the one
+ *            audio frame in between the chain has a hole in it, which both the
+ *            audio and the MIDI walk skip per position.
+ *   remove   unload `index` and close the gap.
+ *   move     `index` -> `to`, rotating the span between.
+ *
+ * `target` says WHICH chain, and it is the only difference between the two
+ * editors here: the verb is spelled `fx:insert` for a slot and
+ * `master_fx:fx:insert` for the master bus, which is exactly what
+ * `target.chainKey` was introduced for. One emitter, so a shape edit cannot
+ * mean two different things depending on which screen the user is standing on.
+ */
+function writeChainShape(target, op) {
+    if (!op || !op.section) return;
+    const prefix = chainSectionPrefix(op.section);
+    const verb = (name) => target.chainKey(`${prefix}:${name}`);
+    if (op.kind === "insert") {
+        setSlotParam(target.slot, verb("insert"), String(op.index + 1));
+    } else if (op.kind === "remove") {
+        setSlotParam(target.slot, verb("remove"), String(op.index + 1));
+    } else if (op.kind === "move") {
+        setSlotParam(target.slot, verb("move"), `${op.index + 1}>${op.to + 1}`);
+    } else {
+        return;
+    }
+    /* The chain the editor is drawing from has just been renumbered underneath
+     * it. Here rather than in each caller so a fourth one cannot forget — and
+     * note this matters even though no `<id>:module` write went out, because
+     * nothing keyed on the module signature would notice a pure reorder. */
+    target.invalidate();
+}
+
+/*
+ * Drop every LFO routing aimed at one component position.
+ *
+ * A position keeps its NAME across a module change — "fx1" is "fx1" whatever
+ * is loaded there — so nothing about swapping the module invalidates a routing
+ * that names it. The DSP does clear the position's modulation ENTRIES when it
+ * unloads (chain_mod_clear_target_entries, chain_host.c), but the LFO itself
+ * still holds `target:"fx1", target_param:"room_size"` and keeps emitting. Two
+ * consequences, both seen on hardware:
+ *
+ *   - the LFO editor shows the routing as live, naming a param of a module
+ *     that is no longer in the chain; and
+ *   - if the NEW module happens to declare a param of the same name — `mix`,
+ *     `gain`, `feedback` are not rare — the LFO silently starts modulating it.
+ *     That is the dangerous half: audible, and attributable to nothing the
+ *     user did.
+ *
+ * So a module leaving a position takes the routings aimed at that position
+ * with it. Both keys: `target` alone would leave `target_param` naming the
+ * dead module's param, ready to be revived by the next `target` write.
+ *
+ * Bounded by LFO_COUNT (2) reads, on a user gesture. Only the routings that
+ * actually name this component are written.
+ */
+/*
+ * Did a picker choice REPLACE what was at a position, as opposed to leaving it
+ * or removing it?
+ *
+ * `replaced` is what applyPickerChoiceToChain saw there before. Three answers,
+ * and each of them is a decision:
+ *
+ *   null       a REMOVAL. It hands back a whole section to rewrite, and
+ *              the DSP owns the routing there because it alone can tell a
+ *              module that left from a module that only moved down.
+ *   same id    a reload, not a replacement. The routing still names the module
+ *              the user routed, so it stays.
+ *   anything   a replacement, INCLUDING filling a position that was empty: a
+ *   else       routing left over from that position previous occupant would
+ *              otherwise land on the module arriving now.
+ *
+ * Case-insensitive because module ids reach here from both the picker and the
+ * DSP, and the DSP answers lowercase.
+ */
+function pickerReplacedModule(replaced, moduleId) {
+    if (replaced === null || replaced === undefined) return false;
+    return String(replaced).toLowerCase() !== String(moduleId || "").toLowerCase();
+}
+
+function clearLfoRoutingForComponent(target, componentId) {
+    if (!componentId) return;
+    for (let li = 1; li <= 2; li++) {
+        const aim = target.chainKey(`lfo${li}:target`);
+        if ((getSlotParam(target.slot, aim) || "") !== componentId) continue;
+        setSlotParam(target.slot, aim, "");
+        setSlotParam(target.slot, target.chainKey(`lfo${li}:target_param`), "");
+    }
+}
+
+/*
+ * Move one module one place along its own section, model and DSP together.
+ *
+ * Returns whether anything moved, so the caller can say "at the end" rather
+ * than announce a move that did not happen.
+ *
+ * The bounds are the MODEL's — chainMoveBy refuses to cross a section boundary
+ * (a MIDI FX passing the synth would be a type change, not a reorder) and
+ * stops at the ends rather than wrapping. Rather than restate those rules here
+ * and risk the two drifting, this asks the model for the result and compares:
+ * a refused move returns the list it was given. The one rule that IS here is
+ * that an EMPTY position does not move — the pending entry a `+` box
+ * materialises is exactly that, and dragging a hole around is not a gesture.
+ *
+ * The model edit and the DSP write happen in the SAME call, so the editor's
+ * list and the chain the audio runs through can never disagree about the order.
+ * The DSP write is ONE verb and reloads nothing — a module that moves keeps
+ * running, which is the difference between reordering a chain and rebuilding it
+ * (see writeChainShape).
+ */
+function moveChainComponent(target, componentKey, delta) {
+    const cfg = target.config();
+    if (!cfg) return false;
+    const id = chainComponentId(componentKey);
+    const at = parseChainId(id);
+    /* The synth is not a list position; Settings and the `+` boxes are not
+     * modules at all. None of them move. */
+    if (!at) return false;
+    const before = cfg[at.section] || [];
+    if (!before[at.index]) return false;
+    const next = chainMoveBy(cfg, id, delta);
+    const after = next[at.section];
+    if (after.length === before.length && after.every((m, i) => m === before[i])) return false;
+    target.setConfig(next);
+    writeChainShape(target, { kind: "move", section: at.section,
+                             index: at.index, to: at.index + delta });
+    /* An LFO label names a module by the position it was routed to, and both
+     * just changed. The knob context self-heals within ~30 ticks via
+     * applySlotModuleSignature; this cache does not, so a stale label would sit
+     * there naming a module that has moved on. */
+    resetLfoTargetLabels();
+    invalidateKnobContextCache();
+    return true;
+}
+
+/*
+ * The picker's Move rows for a component position.
+ *
+ * They exist so Shift+jog is not the ONLY way to reorder a chain: a modifier
+ * gesture with no discoverable equivalent is a feature only the person who
+ * wrote it knows about.
+ *
+ * Offered only where they would DO something — an occupied list position with
+ * somewhere to go — so the list never carries a row that answers a click by
+ * doing nothing. That is also why the synth has neither: it is not a list
+ * position, and the sections either side of it are not the same kind of thing.
+ * Neither `+` nor Settings ever reaches a picker at all.
+ */
+function chainMoveEntries(cfg, componentKey) {
+    const at = parseChainId(chainComponentId(componentKey));
+    if (!cfg || !at) return [];
+    const list = cfg[at.section] || [];
+    if (!list[at.index]) return [];
+    const out = [];
+    if (at.index > 0) out.push({ id: "__move_left__", name: "  Move Left" });
+    if (at.index < list.length - 1) out.push({ id: "__move_right__", name: "  Move Right" });
+    return out;
+}
+
+/*
+ * What a picker choice does to the chain, IN THE MODEL, and what the DSP owes
+ * for it.
+ *
+ * The swap/remove distinction lives here because the two sit one entry apart
+ * in the same list: `None` is the first row, every module below it is a swap.
+ *
+ * A swap REPLACES the occupant and moves nothing — resequencing a patch the
+ * user only meant to retouch would change the signal path behind their back —
+ * so it asks for no shape change, only the one `<id>:module` write the caller
+ * already makes.
+ *
+ * `None` on a list position REMOVES and CLOSES THE GAP, which renumbers every
+ * module downstream of it. That is a SHAPE change, and it goes to the DSP as
+ * one `remove` verb: the module leaving is unloaded, and everything behind it
+ * is renumbered by permuting the arrays rather than by being rebuilt (see
+ * writeChainShape). `None` on the synth is a clear, not a removal: the synth
+ * has no neighbours to renumber.
+ *
+ * `replaced` is the module id that was there BEFORE, for the two branches that
+ * write a single position. The caller needs it to decide whether any LFO aimed
+ * at that position is still meaningful — see clearLfoRoutingForComponent. The
+ * removal branch does not report one: the DSP re-aims the routings itself
+ * across a permutation, and it alone can tell a module that LEFT from one that
+ * only moved along, which one position in isolation cannot.
+ */
+function applyPickerChoiceToChain(cfg, componentKey, moduleId) {
+    const id = chainComponentId(componentKey);
+    const at = parseChainId(id);
+    const before = getChainComponentModule(cfg, componentKey);
+    const replaced = (before && before.module) ? String(before.module) : "";
+    if (!moduleId) {
+        if (at) {
+            return { cfg: chainRemoveAt(cfg, id), replaced: null,
+                     shape: { kind: "remove", section: at.section, index: at.index } };
+        }
+        setChainComponentModule(cfg, componentKey, null);
+        return { cfg, shape: null, replaced };
+    }
+    setChainComponentModule(cfg, componentKey, { module: moduleId, params: {} });
+    return { cfg, shape: null, replaced };
+}
+
+/*
+ * The position a `+` box opened, which exists ONLY IN THE MODEL.
+ *
+ * Clicking `+` materialises an empty entry and opens the picker on it; nothing
+ * is loaded and NOTHING IS WRITTEN until the picker resolves, so until then the
+ * DSP has never heard of it. Two things have to know it is there, and they are
+ * different problems:
+ *
+ *  - THE CONFIRM PATH, because where the entry went decides what the DSP is
+ *    asked for. The audio `+` appends and renumbers nothing, so the single
+ *    `<id>:module` write an ordinary pick makes is right. The MIDI `+` is the
+ *    LEFTMOST box on screen and inserts at the head, which pushes midi_fx1 to
+ *    midi_fx2 and every other MIDI FX along with it — that single write would
+ *    land on midi_fx1 and CLOBBER the module already there, leaving the rest
+ *    stale. See withPendingChainInsert.
+ *
+ *  - EVERY WAY OUT of the picker, because an entry that is not dropped leaves
+ *    the editor drawing a box the user cancelled. See cancelPendingChainInsert.
+ *
+ * `count` is how long the section was BEFORE the entry, which is the whole
+ * question the confirm path asks of it: an entry at the end is an append and
+ * needs nothing, an entry anywhere else renumbers.
+ */
+let pendingChainInsert = null;
+
+/** Remember a `+` box's new position until the picker resolves it. `target.id`
+ *  rather than the target object: slotChainTarget builds a fresh one per call,
+ *  so identity would never match on the way back out. */
+function beginPendingChainInsert(target, section, index, count) {
+    pendingChainInsert = { target, id: target.id, section, index, count,
+                           key: chainEditorKeyAt(section, index) };
+}
+
+/*
+ * A `+` box was clicked: open a NEW position WHERE THE BOX IS DRAWN, and hand
+ * back its index in the (now longer) component list so the caller can raise its
+ * picker on it. -1 when the section is full, which is announced here.
+ *
+ * The two `+` boxes sit at opposite ends of the diagram — the MIDI one is the
+ * LEFTMOST box, ahead of every MIDI FX, and the audio one comes after the last
+ * FX — so the audio `+` appends and the MIDI `+` inserts at the head. Sharing
+ * one append made the MIDI side put the new module at the far end of the
+ * section from the button that was pressed. The asymmetry is the rule, not an
+ * exception to it. Master FX has only the audio end, so its `+` appends.
+ *
+ * The position is materialised in the MODEL only. NOTHING IS WRITTEN here: an
+ * insert with anything to its right renumbers the section, and it is the
+ * picker's confirm that owes the DSP that (withPendingChainInsert). Backing out
+ * writes nothing at all, which is why the record of the pending position is
+ * kept rather than inferred.
+ *
+ * Written once for both chains — a second copy is how "Master FX can append but
+ * cannot move" happens.
+ */
+function beginChainInsertFromAddBox(target, comp) {
+    const cfg = target.config();
+    const list = cfg[comp.section] || [];
+    if (list.length >= target.cap(comp.section)) {
+        announce(`${comp.label} full`);
+        return -1;
+    }
+    const at = comp.section === "midiFx" ? 0 : list.length;
+    beginPendingChainInsert(target, comp.section, at, list.length);
+    target.setConfig(chainInsertAt(cfg, comp.section, at, null));
+    /* The pending entry exists only in the model, so the cached view is stale
+     * the moment it is added — and stale in BOTH directions: backing out of the
+     * picker is supposed to drop it, and it is a reload that drops it (the DSP
+     * never held it). Without this the editor would come back still drawing a
+     * `+` that was cancelled. */
+    target.invalidate();
+    const want = chainEditorKeyAt(comp.section, at);
+    return target.components().findIndex((c) => c.key === want);
+}
+
+/*
+ * The pending insert a picker choice belongs to, or null.
+ *
+ * Keyed on the slot AND the position, so a pick made somewhere else can never
+ * adopt it — adopting one would turn an ordinary swap into a renumber of an
+ * edit that never happened.
+ *
+ * The emptiness check is what makes the record SELF-EXPIRING, and it is the
+ * only forgetting mechanism on the confirm path deliberately: once the pick has
+ * landed the position is occupied, so the record cannot be claimed again, and a
+ * second "clear it here too" would be a rule that has to agree with this one
+ * forever. It also covers the case nothing else could — anything that reloaded
+ * the slot underneath the picker (a set load, the shim loading the slot) has
+ * already dropped the hole, and the record left behind would be a lie. It costs
+ * no IPC: the config it reads is the cached one.
+ *
+ * The CANCEL paths still clear explicitly, because backing out leaves the
+ * position empty and there is nothing for this to notice.
+ */
+function pendingChainInsertFor(target, componentKey) {
+    const p = pendingChainInsert;
+    if (!p || p.id !== target.id || p.key !== componentKey) return null;
+    if (getChainComponentModule(target.config(), componentKey)) return null;
+    return p;
+}
+
+/*
+ * Drop a pending position WITHOUT WRITING ANYTHING.
+ *
+ * The model is discarded rather than repaired: loadChainConfigFromSlot reads the
+ * section back from the DSP, which never heard of the entry, so the reload IS
+ * the drop — wherever in the list it sat. That matters now that it can sit at
+ * the HEAD: the old "trailing empties are dropped on read" reasoning only ever
+ * covered the appending `+`, and a leading hole is deliberately KEPT by the
+ * reader (see loadChainConfigFromSlot) because a hole in front of a loaded
+ * module is a real thing a legacy patch can hold.
+ *
+ * The selection goes back to the `+` the user pressed: it is where they were
+ * standing, and it is the one position guaranteed to still exist afterwards.
+ */
+function cancelPendingChainInsert() {
+    const p = pendingChainInsert;
+    pendingChainInsert = null;
+    if (!p) return;
+    /* The reload IS the drop: the DSP never heard of the entry, so reading the
+     * chain back from it is what removes the hole — wherever in the list it
+     * sat. NOW rather than lazily, because the selection below has to name a
+     * position in the chain that is left. */
+    p.target.reload();
+    /* The editor may be pointing at a DIFFERENT chain by now — there are four
+     * slot chains and the shim can switch between them — and putting the
+     * selection back would move it on a chain the user is not looking at. Asked
+     * of the target: there is only one master bus, so it answers yes. */
+    if (!p.target.isSelectedChain()) return;
+    const at = p.target.components().findIndex(
+        (c) => c.key === (p.section === "midiFx" ? "add_midi" : "add_fx"));
+    if (at >= 0) p.target.setSelection(at);
+}
+
+/*
+ * Fold a pending `+` insert into what the picker choice asks the DSP for.
+ *
+ * An insert with anything to its RIGHT shifts those positions along, so the DSP
+ * is asked to OPEN A HOLE there first (`<section>:insert`) and the module write
+ * then lands in it. Without that, the single `<id>:module` write would land on
+ * the position the shift was supposed to vacate and overwrite the module
+ * already there.
+ *
+ * The hole is opened by permuting the section's arrays, so the modules being
+ * pushed along are not reloaded — they keep their instance, and with it their
+ * phase, their tails, their live modulation entries and the base values inside
+ * them. That is why nothing is carried from here.
+ *
+ * `replaced` is dropped for the same reason a removal drops it: the DSP re-aims
+ * position routings across the permutation itself, and it alone can tell a
+ * module that left from one that only moved along.
+ *
+ * An APPEND is deliberately left alone. Nothing is to its right, so nothing
+ * shifts, and the module write on its own already grows the section.
+ */
+function withPendingChainInsert(choice, pending) {
+    if (!choice || !pending) return choice;
+    if (pending.index >= pending.count) return choice;
+    return { cfg: choice.cfg, replaced: null,
+             shape: { kind: "insert", section: pending.section, index: pending.index } };
+}
+
+/*
+ * A signature of a slot's loaded module ids, read from the DSP.
+ *
+ * It has to come from the DSP, not from the cached config: this is precisely
+ * the thing that NOTICES the DSP changing underneath the UI (a patch restore,
+ * the shim's own slot load), and a signature derived from the cache could
+ * never differ from itself.
+ *
+ * Length comes from the published counts, so a slot holding nothing is three
+ * reads rather than a walk of the cap.
+ */
 function getSlotModuleSignature(slotIndex) {
-    const synthModule = getSlotParam(slotIndex, "synth_module") || "";
-    const midiFxModule = getSlotParam(slotIndex, "midi_fx1_module") || "";
-    const fx1Module = getSlotParam(slotIndex, "fx1_module") || "";
-    const fx2Module = getSlotParam(slotIndex, "fx2_module") || "";
-    return `${synthModule}|${midiFxModule}|${fx1Module}|${fx2Module}`;
+    const read = (id) => getSlotParam(slotIndex, `${id}_module`) || "";
+    const count = (key, cap) => {
+        const n = parseInt(getSlotParam(slotIndex, key), 10);
+        return (isNaN(n) || n < 0) ? 0 : Math.min(n, cap);
+    };
+    const parts = [read("synth")];
+    const nMidi = count("midi_fx_count", CHAIN_CAP.midiFx);
+    for (let i = 0; i < nMidi; i++) parts.push(read(`midi_fx${i + 1}`));
+    /* A separator, so [a] + [] and [] + [a] are different signatures rather
+     * than the same "a" with the sections' lengths silently swapped. */
+    parts.push("/");
+    const nFx = count("fx_count", CHAIN_CAP.fx);
+    for (let i = 0; i < nFx; i++) parts.push(read(`fx${i + 1}`));
+    return parts.join("|");
 }
 
 /* Refresh module signature for a slot and invalidate knob cache on changes */
@@ -4082,23 +5798,31 @@ function drawOvertakeMenu() {
     drawFooter({left: "Back: exit", right: "Jog: select"});
 }
 
-/* Fetch chain_params metadata from a component */
+/*
+ * A `<prefix>:<suffix>` device key for a component, or null when the key does
+ * not address a module position (e.g. "settings").
+ *
+ * WIDER THAN WHAT IT REPLACED, and the difference is a cost rather than a bug.
+ * The ternary ladders here before answered null for anything but synth / fx1 /
+ * fx2 / midiFx, so an unknown component cost NOTHING. This accepts any valid
+ * position id, so `fx3` now produces a real key and a real IPC round trip
+ * (~2.8ms) — which comes back "" from the DSP, not null, i.e. indistinguishable
+ * from "this module serves no chain_params".
+ *
+ * Not reachable by accident: the editor's list is built from the positions the
+ * DSP says it holds (fx_count), so a caller can only name fx3 when there IS an
+ * fx3. What is NOT protected is a caller inventing an id — every such call is
+ * one wasted round trip, on a draw path that is a frame's worth of budget.
+ */
+function chainComponentParamKey(componentKey, suffix) {
+    if (!isChainModuleKey(componentKey)) return null;
+    return `${chainComponentId(componentKey)}:${suffix}`;
+}
+
+/* Fetch chain_params metadata from a component.
+ * Chain params are typically in module.json, but we query via get_param. */
 function getComponentChainParams(slot, componentKey) {
-    /* Chain params are typically in module.json, but we query via get_param */
-    const key = componentKey === "synth" ? "synth:chain_params" :
-                componentKey === "fx1" ? "fx1:chain_params" :
-                componentKey === "fx2" ? "fx2:chain_params" :
-                componentKey === "midiFx" ? "midi_fx1:chain_params" : null;
-    if (!key) return [];
-
-    const json = getSlotParam(slot, key);
-    if (!json) return [];
-
-    try {
-        return JSON.parse(json);
-    } catch (e) {
-        return [];
-    }
+    return chainTargetChainParams(slotChainTarget(slot), componentKey);
 }
 
 /* Synthesize a minimal one-level ui_hierarchy from a component's chain_params
@@ -4123,10 +5847,12 @@ function buildSynthHierarchyFromChainParams(chainParams) {
 
 /* Fetch ui_hierarchy from a component */
 function getComponentHierarchy(slot, componentKey) {
-    const key = componentKey === "synth" ? "synth:ui_hierarchy" :
-                componentKey === "fx1" ? "fx1:ui_hierarchy" :
-                componentKey === "fx2" ? "fx2:ui_hierarchy" :
-                componentKey === "midiFx" ? "midi_fx1:ui_hierarchy" : null;
+    /* Addressed through the chain target, like the Master FX equivalent. The
+     * parse is spelled out here rather than deferred to chainTargetHierarchy
+     * only because these two debugLogs want the key and the raw JSON, and
+     * re-reading to get them would cost a second ~2.8ms IPC round trip. */
+    const target = slotChainTarget(slot);
+    const key = target.key(componentKey, "ui_hierarchy");
     if (!key) {
         debugLog(`getComponentHierarchy: no key for componentKey=${componentKey}`);
         return null;
@@ -4143,32 +5869,16 @@ function getComponentHierarchy(slot, componentKey) {
     }
 }
 
-/* Fetch chain_params metadata from a Master FX slot */
+/* Fetch chain_params metadata from a Master FX slot.
+ * Index-taking wrapper over the shared chain-target accessor — the bounds
+ * guard and the JSON handling now live in ONE place for both editors. */
 function getMasterFxChainParams(fxSlot) {
-    if (fxSlot < 0 || fxSlot >= 4) return [];
-    const fxKey = `fx${fxSlot + 1}`;
-    const key = `master_fx:${fxKey}:chain_params`;
-    const json = shadow_get_param(0, key);
-    if (!json) return [];
-    try {
-        return JSON.parse(json);
-    } catch (e) {
-        return [];
-    }
+    return chainTargetChainParams(MASTER_CHAIN_TARGET, masterFxComponentKey(fxSlot));
 }
 
 /* Fetch ui_hierarchy from a Master FX slot */
 function getMasterFxHierarchy(fxSlot) {
-    if (fxSlot < 0 || fxSlot >= 4) return null;
-    const fxKey = `fx${fxSlot + 1}`;
-    const key = `master_fx:${fxKey}:ui_hierarchy`;
-    const json = shadow_get_param(0, key);
-    if (!json) return null;
-    try {
-        return JSON.parse(json);
-    } catch (e) {
-        return null;
-    }
+    return chainTargetHierarchy(MASTER_CHAIN_TARGET, masterFxComponentKey(fxSlot));
 }
 
 /* fetchPatchDetail -> shadow_ui_patches.mjs */
@@ -4502,9 +6212,12 @@ function getChainSettingsItems(slotIndex) {
         /* Existing preset: show all items (Save, Save As, Delete) */
         return CHAIN_SETTINGS_ITEMS;
     }
-    /* New preset: hide Save As and Delete (only Save makes sense) */
+    /* New preset: hide DELETE, but keep Save As — see the Master FX twin of
+     * this filter. Save suggests a name, Save As asks for one; both are
+     * meaningful before anything is saved, and the two chains must offer the
+     * same entries or their settings screens drift again. */
     return CHAIN_SETTINGS_ITEMS.filter(function(item) {
-        return item.key !== "save_as" && item.key !== "delete";
+        return item.key !== "delete";
     });
 }
 
@@ -4520,13 +6233,9 @@ function generateSlotPresetName(slotIndex) {
         const abbrev = moduleAbbrevCache[cfg.synth.module] || cfg.synth.module.toUpperCase().slice(0, 3);
         parts.push(abbrev);
     }
-    if (cfg.fx1 && cfg.fx1.module) {
-        const abbrev = moduleAbbrevCache[cfg.fx1.module] || cfg.fx1.module.toUpperCase().slice(0, 2);
-        parts.push(abbrev);
-    }
-    if (cfg.fx2 && cfg.fx2.module) {
-        const abbrev = moduleAbbrevCache[cfg.fx2.module] || cfg.fx2.module.toUpperCase().slice(0, 2);
-        parts.push(abbrev);
+    for (const fx of cfg.fx) {
+        if (!fx || !fx.module) continue;
+        parts.push(moduleAbbrevCache[fx.module] || fx.module.toUpperCase().slice(0, 2));
     }
 
     return parts.length > 0 ? parts.join(" + ") : "Untitled";
@@ -4597,104 +6306,69 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
         audio_fx: []
     };
 
-    if (cfg.synth && cfg.synth.module) {
-        /* Try to get full state from synth plugin */
-        let synthConfig = cfg.synth.params || {};
-        const stateJson = getSlotStateWithRetry(slotIndex, "synth:state", stateRetries);
+    /*
+     * One position's saved payload: its opaque state (or the in-memory params
+     * when the module serves none) and its bypass flag. Returns BAIL when the
+     * state query came back empty and bailing is on — the caller then abandons
+     * the whole save rather than clobbering a good file.
+     */
+    const BAIL = {};
+    const componentEntry = (id, moduleData) => {
+        let config = moduleData.params || {};
+        const stateJson = getSlotStateWithRetry(slotIndex, `${id}:state`, stateRetries);
         if (stateJson) {
             try {
-                const state = JSON.parse(stateJson);
-                synthConfig = { state: state };
+                config = { state: JSON.parse(stateJson) };
             } catch (e) {
                 /* State is not JSON (e.g. key=value pairs) — store as opaque string */
-                synthConfig = { state: stateJson };
+                config = { state: stateJson };
             }
         } else if (bailIfEmpty) {
             /* State query timed out AND the module is unchanged — skip autosave
-             * to avoid clobbering a good file (synth would revert to defaults). */
-            debugLog("buildSlotPatchJson: slot " + slotIndex +
-                     " synth:state empty after retries — bailing (preserving existing slot_" +
+             * to avoid clobbering a good file (it would revert to defaults). */
+            debugLog("buildSlotPatchJson: slot " + slotIndex + " " + id +
+                     ":state empty after retries — bailing (preserving existing slot_" +
                      slotIndex + ".json)");
-            return null;
+            return BAIL;
         }
+        return {
+            config,
+            bypassed: parseInt(getSlotParam(slotIndex, `${id}:bypassed`) || "0", 10) === 1 ? 1 : 0
+        };
+    };
+
+    if (cfg.synth && cfg.synth.module) {
+        const entry = componentEntry("synth", cfg.synth);
+        if (entry === BAIL) return null;
         patch.synth = {
             module: cfg.synth.module,
-            config: synthConfig,
-            bypassed: parseInt(getSlotParam(slotIndex, "synth:bypassed") || "0", 10) === 1 ? 1 : 0
+            config: entry.config,
+            bypassed: entry.bypassed
         };
     }
 
-    if (cfg.midiFx && cfg.midiFx.module) {
-        /* Try to get full state from midi_fx plugin */
-        let midiFxConfig = cfg.midiFx.params || {};
-        const midiFxStateJson = getSlotStateWithRetry(slotIndex, "midi_fx1:state", stateRetries);
-        if (midiFxStateJson) {
-            try {
-                const state = JSON.parse(midiFxStateJson);
-                midiFxConfig = { state: state };
-            } catch (e) {
-                /* State is not JSON — store as opaque string */
-                midiFxConfig = { state: midiFxStateJson };
-            }
-        } else if (bailIfEmpty) {
-            debugLog("buildSlotPatchJson: slot " + slotIndex +
-                     " midi_fx1:state empty after retries — bailing (preserving existing slot_" +
-                     slotIndex + ".json)");
-            return null;
-        }
-        patch.midi_fx = [{
-            type: cfg.midiFx.module,
-            params: midiFxConfig,
-            bypassed: parseInt(getSlotParam(slotIndex, "midi_fx1:bypassed") || "0", 10) === 1 ? 1 : 0
-        }];
-    }
-
-    if (cfg.fx1 && cfg.fx1.module) {
-        /* Try to get full state from fx1 plugin */
-        let fx1Config = cfg.fx1.params || {};
-        const fx1StateJson = getSlotStateWithRetry(slotIndex, "fx1:state", stateRetries);
-        if (fx1StateJson) {
-            try {
-                const state = JSON.parse(fx1StateJson);
-                fx1Config = { state: state };
-            } catch (e) {
-                /* State is not JSON (e.g. key=value pairs) — store as opaque string */
-                fx1Config = { state: fx1StateJson };
-            }
-        } else if (bailIfEmpty) {
-            debugLog("buildSlotPatchJson: slot " + slotIndex +
-                     " fx1:state empty after retries — bailing (preserving existing slot_" +
-                     slotIndex + ".json)");
-            return null;
-        }
-        patch.audio_fx.push({
-            type: cfg.fx1.module,
-            params: fx1Config,
-            bypassed: parseInt(getSlotParam(slotIndex, "fx1:bypassed") || "0", 10) === 1 ? 1 : 0
+    for (let i = 0; i < cfg.midiFx.length; i++) {
+        const moduleData = cfg.midiFx[i];
+        if (!moduleData || !moduleData.module) continue;
+        const entry = componentEntry(`midi_fx${i + 1}`, moduleData);
+        if (entry === BAIL) return null;
+        if (!patch.midi_fx) patch.midi_fx = [];
+        patch.midi_fx.push({
+            type: moduleData.module,
+            params: entry.config,
+            bypassed: entry.bypassed
         });
     }
-    if (cfg.fx2 && cfg.fx2.module) {
-        /* Try to get full state from fx2 plugin */
-        let fx2Config = cfg.fx2.params || {};
-        const fx2StateJson = getSlotStateWithRetry(slotIndex, "fx2:state", stateRetries);
-        if (fx2StateJson) {
-            try {
-                const state = JSON.parse(fx2StateJson);
-                fx2Config = { state: state };
-            } catch (e) {
-                /* State is not JSON (e.g. key=value pairs) — store as opaque string */
-                fx2Config = { state: fx2StateJson };
-            }
-        } else if (bailIfEmpty) {
-            debugLog("buildSlotPatchJson: slot " + slotIndex +
-                     " fx2:state empty after retries — bailing (preserving existing slot_" +
-                     slotIndex + ".json)");
-            return null;
-        }
+
+    for (let i = 0; i < cfg.fx.length; i++) {
+        const moduleData = cfg.fx[i];
+        if (!moduleData || !moduleData.module) continue;
+        const entry = componentEntry(`fx${i + 1}`, moduleData);
+        if (entry === BAIL) return null;
         patch.audio_fx.push({
-            type: cfg.fx2.module,
-            params: fx2Config,
-            bypassed: parseInt(getSlotParam(slotIndex, "fx2:bypassed") || "0", 10) === 1 ? 1 : 0
+            type: moduleData.module,
+            params: entry.config,
+            bypassed: entry.bypassed
         });
     }
 
@@ -4759,11 +6433,7 @@ function autosaveOneSlot(i) {
     const currentSig = getSlotModuleSignature(i);
     applySlotModuleSignature(i, currentSig);
     const cfg = chainConfigs[i];
-    const hasSynth = cfg && cfg.synth && cfg.synth.module;
-    const hasFx1 = cfg && cfg.fx1 && cfg.fx1.module;
-    const hasFx2 = cfg && cfg.fx2 && cfg.fx2.module;
-    const hasMidiFx = cfg && cfg.midiFx && cfg.midiFx.module;
-    if (!hasSynth && !hasFx1 && !hasFx2 && !hasMidiFx) {
+    if (!chainHasAnyModule(cfg)) {
         /* Cross-check before clobbering: if the slot has a preset name
          * but the shim is reporting "no modules" AND the user did not
          * explicitly clear the slot via the picker, it's a transient
@@ -5009,7 +6679,7 @@ function findMasterPresetByName(name) {
 
 function generateMasterPresetName() {
     const parts = [];
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < MASTER_FX_SLOTS; i++) {
         const key = `fx${i + 1}`;
         const moduleId = masterFxConfig[key]?.module;
         if (moduleId) {
@@ -5021,8 +6691,8 @@ function generateMasterPresetName() {
 }
 
 function clearMasterFx() {
-    /* Clear all 4 FX slots */
-    for (let i = 0; i < 4; i++) {
+    /* Clear every FX slot */
+    for (let i = 0; i < MASTER_FX_SLOTS; i++) {
         setMasterFxSlotModule(i, "");
         masterFxConfig[`fx${i + 1}`].module = "";
         /* Different module — it may implement display_name even if the
@@ -5046,7 +6716,7 @@ function loadMasterPreset(index, presetName) {
         const fx = preset.master_fx || {};
 
         /* Apply each FX slot */
-        for (let i = 0; i < 4; i++) {
+        for (let i = 0; i < MASTER_FX_SLOTS; i++) {
             const key = `fx${i + 1}`;
             const fxConfig = fx[key];
             if (fxConfig && fxConfig.type) {
@@ -5122,15 +6792,12 @@ function loadMasterPreset(index, presetName) {
 
 /* Build JSON for saving master preset */
 function buildMasterPresetJson(name) {
-    const preset = {
-        custom_name: name,
-        fx1: null,
-        fx2: null,
-        fx3: null,
-        fx4: null
-    };
+    const preset = { custom_name: name };
+    for (let i = 1; i <= MASTER_FX_SLOTS; i++) {
+        preset[`fx${i}`] = null;
+    }
 
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < MASTER_FX_SLOTS; i++) {
         const key = `fx${i + 1}`;
         const moduleId = masterFxConfig[key]?.module;
         if (moduleId) {
@@ -5219,10 +6886,9 @@ function handleMasterFxSettingsAction(key) {
         setView(VIEWS.LFO_EDIT);
         const enabled = lfoCtx.getParam("enabled");
         if (enabled === "1") {
-            const target = lfoCtx.getParam("target") || "";
-            const param = lfoCtx.getParam("target_param") || "";
-            if (target && param) {
-                announce(lfoCtx.title + ", " + target + ":" + param);
+            const targetDesc = describeCurrentLfoTarget();
+            if (targetDesc && !targetDesc.empty) {
+                announce(lfoCtx.title + ", " + targetDesc.long);
             } else {
                 announce(lfoCtx.title + ", no target");
             }
@@ -6303,17 +7969,35 @@ function handleGlobalSettingsAction(key) {
 
 /* enterMasterFxSettings() -> shadow_ui_master_fx.mjs */
 
+/*
+ * Whether masterFxConfig is known to still describe the DSP.
+ *
+ * The exact counterpart of chainConfigFresh, and it exists for the same two
+ * reasons: a shape edit renumbers the chain underneath the editor without
+ * changing WHICH modules it holds (so nothing keyed on a module id would
+ * notice), and a `+` box materialises a position that only exists in the model
+ * (so the reload must not happen until the picker has resolved it).
+ */
+let masterFxConfigFresh = false;
+
+function invalidateMasterFxConfig() { masterFxConfigFresh = false; }
+
+/** Reload the Master FX positions from the DSP only if they went stale. */
+function ensureMasterFxConfigFresh() {
+    if (!masterFxConfigFresh) loadMasterFxChainConfig();
+    return masterFxConfig;
+}
+
 /* Load master FX chain configuration from DSP */
 function loadMasterFxChainConfig() {
-    masterFxConfig = {
-        fx1: { module: "" },
-        fx2: { module: "" },
-        fx3: { module: "" },
-        fx4: { module: "" }
-    };
+    masterFxConfig = makeEmptyMasterFxConfig();
+    /* This IS the reload every other path invalidates towards, and the DSP is
+     * the authority on the length again. */
+    masterFxConfigFresh = true;
+    masterFxChainLength = -1;
 
     /* Query each slot's module from DSP */
-    for (let i = 1; i <= 4; i++) {
+    for (let i = 1; i <= MASTER_FX_SLOTS; i++) {
         const key = `fx${i}`;
         const moduleId = getMasterFxSlotModule(i - 1);
         masterFxConfig[key].module = moduleId || "";
@@ -6325,76 +8009,166 @@ function loadMasterFxChainConfig() {
     }
 }
 
-/* Get a parameter from a master FX slot (0-3) */
+/* Get a parameter from a master FX slot (0..MASTER_FX_SLOTS-1).
+ * Index-taking wrapper over the shared chain-target accessor. The "" rather
+ * than null is this caller's convention and is preserved here. */
 function getMasterFxParam(slotIndex, key) {
-    if (typeof shadow_get_param !== "function") return "";
-    try {
-        return shadow_get_param(0, `master_fx:fx${slotIndex + 1}:${key}`) || "";
-    } catch (e) {
-        return "";
-    }
+    return chainTargetGetParam(MASTER_CHAIN_TARGET, masterFxComponentKey(slotIndex), key) || "";
 }
 
-/* Get module ID loaded in a master FX slot (0-3) */
+/* Get module ID loaded in a master FX slot (0..MASTER_FX_SLOTS-1).
+ * The shim answers ":name" with the module_id. */
 function getMasterFxSlotModule(slotIndex) {
-    if (typeof shadow_get_param !== "function") return "";
-    try {
-        /* Query returns the module_id from the shim */
-        return shadow_get_param(0, `master_fx:fx${slotIndex + 1}:name`) || "";
-    } catch (e) {
-        return "";
-    }
+    return getMasterFxParam(slotIndex, "name");
 }
 
 /* Set module for a master FX slot */
 function setMasterFxSlotModule(slotIndex, dspPath) {
-    if (typeof shadow_set_param !== "function") return false;
     /* Clear warning tracking for this slot so warning can show again for new module */
     warningShownForMasterFx.delete(slotIndex);
-    try {
-        return shadow_set_param(0, `master_fx:fx${slotIndex + 1}:module`, dspPath || "");
-    } catch (e) {
-        return false;
-    }
+    /*
+     * A position was written, so the chain's length is derivable again.
+     *
+     * masterFxChainLength is only ever explicitly set to cover a TRAILING HOLE
+     * — the position a `+` box opens, which is empty and would otherwise look
+     * like the end of the chain. Once a module write lands there the hole is
+     * gone and the derivation is correct, so dropping the override here is both
+     * safe and the one place that catches every bulk path (preset load, set
+     * load, clear) without each of them having to remember.
+     */
+    masterFxChainLength = -1;
+    return chainTargetSetParam(MASTER_CHAIN_TARGET, masterFxComponentKey(slotIndex),
+                               "module", dspPath || "");
 }
 
-/* Enter module selection for a Master FX slot */
+/*
+ * The rows the Master FX picker shows: the modules, plus this position's Move
+ * Left / Move Right.
+ *
+ * Held rather than recomputed because the confirm has to resolve the SAME index
+ * the draw and the jog were addressing, and the move rows only exist while the
+ * position has somewhere to go — which the confirm itself changes.
+ */
+let masterFxPickerItems = [];
+
+/* Enter module selection for a Master FX position */
 function enterMasterFxModuleSelect(componentIndex) {
-    const comp = MASTER_FX_CHAIN_COMPONENTS[componentIndex];
-    if (!comp || comp.key === "settings") return;
+    const comp = masterFxChainComponents()[componentIndex];
+    if (!comp || comp.kind !== "module") return;
+
+    /*
+     * Move Left / Move Right, tucked under the loaded module — the same rows
+     * the slot chain's picker carries, built by the same chainMoveEntries, so
+     * Shift+jog is not the only way to reorder a Master FX chain either. A
+     * modifier gesture with no discoverable equivalent is a feature only the
+     * person who wrote it knows about. Offered only where they would DO
+     * something, so the list never carries a row that answers a click by doing
+     * nothing.
+     */
+    const currentModule = masterFxConfig[comp.key]?.module || "";
+    masterFxPickerItems = MASTER_FX_OPTIONS.slice();
+    const loadedIdx = currentModule
+        ? masterFxPickerItems.findIndex(o => o.id === currentModule) : -1;
+    masterFxPickerItems.splice(loadedIdx >= 0 ? loadedIdx + 1 : 0, 0,
+        ...chainMoveEntries(masterFxChainConfig(), comp.key));
 
     /* Set selection index to current module if any */
-    const currentModule = masterFxConfig[comp.key]?.module || "";
-    selectedMasterFxModuleIndex = MASTER_FX_OPTIONS.findIndex(o => o.id === currentModule);
+    selectedMasterFxModuleIndex = masterFxPickerItems.findIndex(o => o.id === currentModule);
     if (selectedMasterFxModuleIndex < 0) selectedMasterFxModuleIndex = 0;
 
     selectingMasterFxModule = true;
     needsRedraw = true;
 
     /* Announce menu title + initial selection */
-    const moduleName = MASTER_FX_OPTIONS[selectedMasterFxModuleIndex]?.name || "None";
+    const moduleName = masterFxPickerItems[selectedMasterFxModuleIndex]?.name || "None";
     announce(`Select ${comp.label}, ${moduleName}`);
 }
 
-/* Apply module selection for Master FX slot */
+/*
+ * Apply a Master FX picker choice.
+ *
+ * The shape half of this is the slot chain's, function for function:
+ * applyPickerChoiceToChain turns `None` on a list position into a `remove`,
+ * withPendingChainInsert turns a `+` that is not an append into an `insert`,
+ * and writeChainShape sends whichever verb resulted. The only Master-FX-shaped
+ * thing left is that the module write takes a DSP PATH rather than a module id
+ * — the shim loads master positions by path.
+ */
 function applyMasterFxModuleSelection() {
-    const comp = MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
-    if (!comp || comp.key === "settings") return;
-
-    const selected = MASTER_FX_OPTIONS[selectedMasterFxModuleIndex];
-    if (selected) {
-        if (selected.id === "__get_more__") {
-            /* Open store picker for audio FX modules */
-            selectingMasterFxModule = false;
-            enterStorePicker('master_fx');
-            return;
-        }
-        /* Load the module into the slot */
-        setMasterFxSlotModule(selectedMasterFxComponent, selected.dspPath || "");
-        masterFxConfig[comp.key].module = selected.id;
-        /* Save to config */
-        saveMasterFxChainConfig();
+    const comps = masterFxChainComponents();
+    const comp = comps[selectedMasterFxComponent];
+    if (!comp || comp.kind !== "module") {
+        cancelPendingChainInsert();
+        selectingMasterFxModule = false;
+        needsRedraw = true;
+        return;
     }
+
+    /* Was this picker opened from a `+` box? Read BEFORE the choice is applied,
+     * because applying it fills the very hole this recognises. */
+    const pending = pendingChainInsertFor(MASTER_CHAIN_TARGET, comp.key);
+    const selected = masterFxPickerItems[selectedMasterFxModuleIndex];
+
+    if (selected && selected.id === "__get_more__") {
+        /* Open store picker for audio FX modules */
+        selectingMasterFxModule = false;
+        enterStorePicker('master_fx');
+        return;
+    }
+
+    /* Move Left / Move Right — the same reorder the Shift+jog gesture performs,
+     * through the same moveChainComponent, so the bounds are the model's in
+     * both. */
+    if (selected && (selected.id === "__move_left__" || selected.id === "__move_right__")) {
+        const delta = selected.id === "__move_left__" ? -1 : 1;
+        if (moveChainComponent(MASTER_CHAIN_TARGET, comp.key, delta)) {
+            const after = masterFxChainComponents();
+            const at = after.findIndex(
+                (c) => c.key === chainEditorKeyAt(comp.section, comp.index + delta));
+            if (at >= 0) selectedMasterFxComponent = at;
+            const moved = after[selectedMasterFxComponent];
+            announce(`${moved ? moved.label : comp.label} moved ${delta < 0 ? "left" : "right"}`);
+            saveMasterFxChainConfig();
+        }
+        selectingMasterFxModule = false;
+        needsRedraw = true;
+        return;
+    }
+
+    const picked = selected && selected.id ? selected.id : "";
+
+    /*
+     * `None` from a `+` box is a CANCEL, not a removal. The position it would
+     * remove was never written, so there is nothing to renumber — and running
+     * it through the removal path would send `<section>:remove` for a position
+     * the DSP does not have, compacting away a module the user never touched.
+     */
+    if (pending && !picked) {
+        cancelPendingChainInsert();
+        selectingMasterFxModule = false;
+        needsRedraw = true;
+        return;
+    }
+
+    const choice = withPendingChainInsert(
+        applyPickerChoiceToChain(masterFxChainConfig(), comp.key, picked), pending);
+    MASTER_CHAIN_TARGET.setConfig(choice.cfg);
+
+    /* A shape change first, if the choice asked for one: a removal compacts the
+     * list and an insert opens a hole in it, and either way every position past
+     * the edit is renumbered — which one `<id>:module` write cannot say. One
+     * verb, and the DSP permutes rather than reloading. A removal is COMPLETE
+     * here; an insert only opens the hole and the module write below fills it. */
+    if (choice.shape) writeChainShape(MASTER_CHAIN_TARGET, choice.shape);
+    if (!(choice.shape && choice.shape.kind === "remove")) {
+        if (pickerReplacedModule(choice.replaced, picked)) {
+            clearLfoRoutingForComponent(MASTER_CHAIN_TARGET, comp.key);
+        }
+        setMasterFxSlotModule(selectedMasterFxComponent, (selected && selected.dspPath) || "");
+    }
+
+    resetLfoTargetLabels();
+    saveMasterFxChainConfig();
 
     /* Exit module selection mode */
     selectingMasterFxModule = false;
@@ -6431,7 +8205,7 @@ function saveMasterFxChainConfig() {
                 masterFxLfoConfig = lfos;
             }
         }
-        for (let i = 1; i <= 4; i++) {
+        for (let i = 1; i <= MASTER_FX_SLOTS; i++) {
             const key = `fx${i}`;
             const slotIdx = i - 1;
             const moduleId = masterFxConfig[key]?.module || "";
@@ -6798,7 +8572,7 @@ function loadMasterFxChainFromConfig() {
         }
 
         /* Sync masterFxConfig from state files (shim already loaded the modules) */
-        for (let i = 0; i < 4; i++) {
+        for (let i = 0; i < MASTER_FX_SLOTS; i++) {
             const key = `fx${i + 1}`;
             const stateFilePath = activeSlotStateDir + "/master_fx_" + i + ".json";
             try {
@@ -6840,20 +8614,24 @@ function loadMasterFxChainFromConfig() {
 function enterChainEdit(slotIndex) {
     selectedSlot = slotIndex;
     updateFocusedSlot(slotIndex);
-    selectedChainComponent = lastChainComponent[slotIndex] || 0;
-    /* Load current chain config from DSP */
-    loadChainConfigFromSlot(slotIndex);
+    /* Loads the config, then anchors the selection to something that exists. */
+    restoreChainComponent(slotIndex);
     setView(VIEWS.CHAIN_EDIT);
     needsRedraw = true;
 
-    /* Announce menu title + initial selection */
-    const comp = CHAIN_COMPONENTS[selectedChainComponent];
-    const cfg = chainConfigs[selectedSlot];
-    const moduleData = cfg && cfg[comp.key];
+    /* Announce menu title + initial selection. The remembered selection can be
+     * -1 (the patch), which is not a component — it was always able to be, and
+     * reading `.key` off it threw. */
+    const comp = slotChainComponents(selectedSlot)[selectedChainComponent];
+    if (!comp) {
+        announce(`Slot ${slotIndex + 1}, Patch Selection`);
+        return;
+    }
+    const moduleData = getChainComponentModule(chainConfigs[selectedSlot], comp.key);
 
     let info = "(empty)";
     if (moduleData && moduleData.module) {
-        const prefix = comp.key === "midiFx" ? "midi_fx1" : comp.key;
+        const prefix = getComponentParamPrefix(comp.key);
         const displayName = getSlotParam(selectedSlot, `${prefix}:name`) || moduleData.module;
         info = displayName;
     }
@@ -6873,10 +8651,14 @@ function scanModulesForType(componentType) {
     if (componentType === "synth") {
         searchDirs = [`${MODULES_DIR}/sound_generators`];
         expectedTypes = ["sound_generator"];
-    } else if (componentType === "midiFx") {
+    } else if (componentType === "midiFx" ||
+               parseChainId(componentType)?.section === "midiFx") {
+        /* "midiFx" is the first position's legacy key; "midi_fx2".. are the
+         * rest, and they take the same directory. */
         searchDirs = [`${MODULES_DIR}/midi_fx`];
         expectedTypes = ["midi_fx"];
-    } else if (componentType === "fx1" || componentType === "fx2") {
+    } else if (parseChainId(componentType)?.section === "fx") {
+        /* Any FX position — "fx1", "fx2", ... — takes the same directory. */
         searchDirs = [`${MODULES_DIR}/audio_fx`];
         expectedTypes = ["audio_fx"];
     }
@@ -6978,12 +8760,14 @@ function scanModulesForType(componentType) {
 function componentKeyToCategoryId(componentKey) {
     switch (componentKey) {
         case 'synth': return 'sound_generator';
-        case 'fx1':
-        case 'fx2':
         case 'master_fx': return 'audio_fx';
         case 'midiFx': return 'midi_fx';
         case 'overtake': return 'overtake';
-        default: return null;
+        default: {
+            /* Any FX position — "fx1", "fx2", ... */
+            const at = parseChainId(componentKey);
+            return at && at.section === "fx" ? 'audio_fx' : null;
+        }
     }
 }
 
@@ -7054,7 +8838,8 @@ function handleStorePickerResultSelect() {
     }
     if (storePickerCategory) {
         /* Came from the chain component picker. */
-        availableModules = scanModulesForType(CHAIN_COMPONENTS[selectedChainComponent].key);
+        availableModules = scanModulesForType(
+            slotChainComponents(selectedSlot)[selectedChainComponent].key);
         setView(VIEWS.COMPONENT_SELECT);
         storeCatalog = null;
         storePickerCategory = null;
@@ -7075,8 +8860,11 @@ function handleStorePickerBack() {
 
 /* Enter component module selection view */
 function enterComponentSelect(slotIndex, componentIndex) {
-    const comp = CHAIN_COMPONENTS[componentIndex];
-    if (!comp || comp.key === "settings") return;
+    const comp = slotChainComponents(slotIndex)[componentIndex];
+    /* Only a real module position has modules to pick from. Settings never
+     * did; the `+` boxes are resolved to a position by their caller before
+     * they get here, so one arriving unresolved is a bug, not a gesture. */
+    if (!comp || !isChainModuleKey(comp.key)) return;
 
     selectedSlot = slotIndex;
     selectedChainComponent = componentIndex;
@@ -7092,7 +8880,7 @@ function enterComponentSelect(slotIndex, componentIndex) {
      * module is loaded, since a preset snapshots its <component>:state. */
     let presetsRowIndex = -1;
     {
-        const loaded = chainConfigs[slotIndex] && chainConfigs[slotIndex][comp.key];
+        const loaded = getChainComponentModule(chainConfigs[slotIndex], comp.key);
         const loadedId = loaded && loaded.module;
         if (loadedId) {
             const presetsRow = {
@@ -7109,6 +8897,21 @@ function enterComponentSelect(slotIndex, componentIndex) {
         }
     }
 
+    /*
+     * Move Left / Move Right, tucked under the loaded module beside its
+     * presets.
+     *
+     * They exist so Shift+jog is not the ONLY way to reorder a chain: a
+     * modifier gesture with no discoverable equivalent is a feature only the
+     * person who wrote it knows about. Offered only where they would do
+     * something — an occupied list position with somewhere to go — so the list
+     * never carries a row that answers a click by doing nothing. That is also
+     * why the synth has neither: it is not a list position, and the sections
+     * either side of it are not the same kind of thing.
+     */
+    availableModules.splice(presetsRowIndex >= 0 ? presetsRowIndex + 1 : 0, 0,
+        ...chainMoveEntries(chainConfigs[slotIndex], comp.key));
+
     selectedModuleIndex = 0;
 
     if (presetsRowIndex >= 0) {
@@ -7117,8 +8920,7 @@ function enterComponentSelect(slotIndex, componentIndex) {
         selectedModuleIndex = presetsRowIndex;
     } else {
         /* Nothing loaded — default the cursor to the current module if any. */
-        const cfg = chainConfigs[slotIndex];
-        const current = cfg && cfg[comp.key];
+        const current = getChainComponentModule(chainConfigs[slotIndex], comp.key);
         if (current && current.module) {
             const idx = availableModules.findIndex(m => m.id === current.module);
             if (idx >= 0) selectedModuleIndex = idx;
@@ -7135,17 +8937,22 @@ function enterComponentSelect(slotIndex, componentIndex) {
 
 /* Apply the selected module to the component - updates DSP in realtime */
 function applyComponentSelection() {
-    const comp = CHAIN_COMPONENTS[selectedChainComponent];
+    const comp = slotChainComponents(selectedSlot)[selectedChainComponent];
     const selected = availableModules[selectedModuleIndex];
 
-    if (!comp || comp.key === "settings") {
+    if (!comp || !isChainModuleKey(comp.key)) {
+        cancelPendingChainInsert();
         setView(VIEWS.CHAIN_EDIT);
         return;
     }
 
+    /* Was this picker opened from a `+` box? Read BEFORE the choice is applied,
+     * because applying it fills the very hole this recognises. */
+    const pending = pendingChainInsertFor(slotChainTarget(selectedSlot), comp.key);
+
     /* Check if user selected this component's User Presets manager */
     if (selected && selected.id === "__user_presets__") {
-        const loaded = chainConfigs[selectedSlot] && chainConfigs[selectedSlot][comp.key];
+        const loaded = getChainComponentModule(chainConfigs[selectedSlot], comp.key);
         enterPresetBrowser(selectedSlot, comp.key, loaded && loaded.module,
                            getComponentParamPrefix(comp.key));
         return;
@@ -7157,38 +8964,70 @@ function applyComponentSelection() {
         return;
     }
 
-    /* Update in-memory config */
-    const cfg = chainConfigs[selectedSlot] || createEmptyChainConfig();
-    if (selected && selected.id) {
-        cfg[comp.key] = { module: selected.id, params: {} };
-    } else {
-        cfg[comp.key] = null;
+    /* Move Left / Move Right — the same reorder the Shift+jog gesture performs,
+     * offered here so the gesture is not the only way in. Both go through
+     * moveChainComponent, so the bounds are the model's in both. */
+    if (selected && (selected.id === "__move_left__" || selected.id === "__move_right__")) {
+        const delta = selected.id === "__move_left__" ? -1 : 1;
+        if (moveChainComponent(slotChainTarget(selectedSlot), comp.key, delta)) {
+            selectedChainComponent = slotChainComponentIndex(selectedSlot,
+                chainEditorKeyAt(comp.section, comp.index + delta));
+            lastChainComponent[selectedSlot] = selectedChainComponent;
+            const moved = slotChainComponents(selectedSlot)[selectedChainComponent];
+            announce(`${moved ? moved.label : comp.label} moved ${delta < 0 ? "left" : "right"}`);
+        }
+        setView(VIEWS.CHAIN_EDIT);
+        needsRedraw = true;
+        return;
     }
-    chainConfigs[selectedSlot] = cfg;
+
+    /* Update in-memory config. `None` on a list position REMOVES and compacts,
+     * which renumbers everything downstream and so cannot be expressed as the
+     * single `<id>:module` write below — applyPickerChoiceToChain says which
+     * section, if any, has to be rewritten whole. */
+    const picked = selected && selected.id ? selected.id : "";
+
+    /*
+     * `None` from a `+` box is a CANCEL, not a removal.
+     *
+     * The position it would remove was never written, so there is nothing to
+     * renumber — and running it through the removal path would be actively
+     * wrong: that path sends `<section>:remove` for a position the DSP does not
+     * have, which would unload and compact away a module the user never
+     * touched. The cheapest correct answer is the same one backing out gives:
+     * write nothing.
+     */
+    if (pending && !picked) {
+        cancelPendingChainInsert();
+        setView(VIEWS.CHAIN_EDIT);
+        needsRedraw = true;
+        return;
+    }
+
+    const cfg = chainConfigs[selectedSlot] || createEmptyChainConfig();
+    const choice = withPendingChainInsert(
+        applyPickerChoiceToChain(cfg, comp.key, picked), pending);
+    chainConfigs[selectedSlot] = choice.cfg;
+    /* A swap MUTATES `cfg` in place and `None` hands back a different object,
+     * so neither identity nor the module signature can be what notices this.
+     * The confirm path reloads (and the declined-gate path reloads too), but
+     * the model and the DSP disagree from here until one of them runs. */
+    invalidateChainConfig(selectedSlot);
 
     /* Track explicit user-removal so autosave can bypass the boot-glitch
      * guard. Set when the slot is now fully empty; reset on any non-empty
      * pick (the user is rebuilding the slot). */
-    slotUserCleared[selectedSlot] =
-        !cfg.synth && !cfg.fx1 && !cfg.fx2 && !cfg.midiFx;
+    slotUserCleared[selectedSlot] = !chainHasAnyModule(choice.cfg);
+
+    /* A component changed, so any LFO label naming that component by module
+     * is now wrong. The label cache keys on the stored ROUTING, which a swap
+     * does not touch — "Freeverb: Room Size" would survive the Freeverb
+     * leaving. Cheap to drop: it re-resolves on the next draw that needs it. */
+    resetLfoTargetLabels();
 
     /* Apply to DSP - map component key to param key */
-    const moduleId = selected && selected.id ? selected.id : "";
-    let paramKey = "";
-    switch (comp.key) {
-        case "synth":
-            paramKey = "synth:module";
-            break;
-        case "fx1":
-            paramKey = "fx1:module";
-            break;
-        case "fx2":
-            paramKey = "fx2:module";
-            break;
-        case "midiFx":
-            paramKey = "midi_fx1:module";
-            break;
-    }
+    const moduleId = picked;
+    const paramKey = chainComponentParamKey(comp.key, "module") || "";
 
     /* Feedback gate: if the picked module pulls line-in, warn about speakers.
      * Callback-based — schwung's QuickJS doesn't pump pending jobs so
@@ -7216,29 +9055,63 @@ function applyComponentSelection() {
                 needsRedraw = true;
                 return;
             }
-            applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp);
+            applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, choice);
         });
         return;
     }
 
     /* Clearing a slot (empty moduleId) — no feedback risk, run directly. */
-    applyComponentSelectionConfirmed(selectedSlot, paramKey, moduleId, comp);
+    applyComponentSelectionConfirmed(selectedSlot, paramKey, moduleId, comp, choice);
 }
 
-function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp) {
-    if (paramKey) {
+function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, choice) {
+    /*
+     * A SHAPE change first, if the choice asked for one.
+     *
+     * A removal compacts the list and an insert opens a hole in it, and either
+     * way every position past the edit is renumbered — which one `<id>:module`
+     * write cannot say, and which used to be expressed as a rewrite of the
+     * whole section that reloaded each of those modules in passing. It is now
+     * one verb that permutes the DSP's arrays and reloads nothing
+     * (writeChainShape).
+     *
+     * A removal is COMPLETE here: the verb unloads the position itself, so
+     * there is no module write to follow. An insert only opens the hole, and
+     * the module write below fills it — hence `insert` falling through rather
+     * than returning.
+     */
+    const shape = choice && choice.shape;
+    if (shape) writeChainShape(slotChainTarget(slotIndex), shape);
+    if (shape && shape.kind === "remove") {
+        /* nothing more to write: the verb did the unload */
+    } else if (paramKey) {
         if (typeof host_log === "function") host_log(`applyComponentSelection: slot=${slotIndex} param=${paramKey} module=${moduleId}`);
+        /*
+         * BEFORE the module write, because the write reloads the position and
+         * takes its modulation entries with it — after it, there is nothing
+         * left to say the routing was ever valid, and the LFO keeps its aim.
+         * Only when the module actually CHANGES: re-picking the same module is
+         * a reload, not a replacement, and the routing still names the module
+         * the user routed. See clearLfoRoutingForComponent for what a stale
+         * routing does to the module that lands here next.
+         */
+        if (pickerReplacedModule(choice ? choice.replaced : null, moduleId)) {
+            clearLfoRoutingForComponent(slotChainTarget(slotIndex),
+                                        getComponentParamPrefix(comp.key));
+        }
         const success = setSlotParam(slotIndex, paramKey, moduleId);
         if (typeof host_log === "function") host_log(`applyComponentSelection: setSlotParam returned ${success}`);
         if (!success) {
             print(2, 50, "Failed to apply", 1);
         }
+    }
 
-        /* Track component selection for analytics */
-        if (moduleId && typeof host_track_event === "function") {
-            host_track_event('module_loaded', '"module_id":"' + moduleId + '","source":"picker","component":"' + comp.key + '"');
-        }
-
+    /* Track component selection for analytics. Outside the branches, because a
+     * `+` that INSERTS loads a module through the section rewrite and would
+     * otherwise be the one way of adding one that reports nothing. `moduleId`
+     * is empty for a removal, which is what still keeps this to loads. */
+    if (moduleId && typeof host_track_event === "function") {
+        host_track_event('module_loaded', '"module_id":"' + moduleId + '","source":"picker","component":"' + comp.key + '"');
     }
 
     /* Force sync chainConfigs from DSP and reset caches after module change.
@@ -7248,8 +9121,310 @@ function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp) {
     loadChainConfigFromSlot(slotIndex);
     lastSlotModuleSignatures[slotIndex] = getSlotModuleSignature(slotIndex);
     invalidateKnobContextCache();
+    /* A removal shortened the list, so the remembered index can now point past
+     * its end — and the CHAIN_EDIT handlers read `comps[selection].key` without
+     * checking. One removal can only ever overshoot by one, but the clamp is
+     * here rather than in each of them. */
+    if (slotIndex === selectedSlot && shape) {
+        const len = slotChainComponents(slotIndex).length;
+        if (selectedChainComponent >= len) selectedChainComponent = len - 1;
+        lastChainComponent[slotIndex] = selectedChainComponent;
+    }
     setView(VIEWS.CHAIN_EDIT);
     needsRedraw = true;
+}
+
+/*
+ * Perform a slot-settings ACTION, by key.
+ *
+ * Lifted verbatim out of the CHAIN_SETTINGS jog-click handler, which is the
+ * only place it lived. It is a function so a second surface — the knob grid,
+ * whose menu page returns an { action } and performs nothing itself — can run
+ * the SAME Save rather than growing its own.
+ *
+ * `slot` is what the handler called `selectedSlot`, passed explicitly rather
+ * than read from the module global, so the caller cannot get the two out of
+ * step. Everything else it touches (pendingSaveName, confirmingOverwrite,
+ * lfoCtx, ...) is module state it always mutated and still does.
+ */
+function runChainSettingAction(slot, key) {
+    if (key === "knobs") {
+        enterKnobEditor(slot);
+        return;
+    }
+
+    if (key === "save") {
+        /* Start save flow */
+        const currentName = slots[slot] ? slots[slot].name : "";
+        if (!currentName || currentName === "" || currentName === "Untitled") {
+            /* New - show name preview with Edit/OK */
+            pendingSaveName = generateSlotPresetName(slot);
+            showingNamePreview = true;
+            namePreviewIndex = 1;  /* Default to OK */
+            overwriteFromKeyboard = true;  /* Will use keyboard if Edit is selected */
+            announceSavePreview(pendingSaveName, namePreviewIndex);
+            needsRedraw = true;
+        } else {
+            /* Existing - confirm overwrite (no keyboard needed) */
+            pendingSaveName = currentName;
+            overwriteTargetIndex = findPatchByName(currentName);
+            confirmingOverwrite = true;
+            overwriteFromKeyboard = false;  /* Direct save, no keyboard */
+            confirmIndex = 0;
+            needsRedraw = true;
+        }
+        return;
+    }
+
+    if (key === "save_as") {
+        /* Save As - show name preview with Edit/OK */
+        const currentName = slots[slot] ? slots[slot].name : "";
+        pendingSaveName = currentName && currentName !== "" && currentName !== "Untitled"
+            ? currentName
+            : generateSlotPresetName(slot);
+        showingNamePreview = true;
+        namePreviewIndex = 1;  /* Default to OK */
+        overwriteFromKeyboard = true;  /* Will use keyboard if Edit is selected */
+        announceSavePreview(pendingSaveName, namePreviewIndex);
+        needsRedraw = true;
+        return;
+    }
+
+    if (key === "lfo1" || key === "lfo2") {
+        const lfoIdx = (key === "lfo1") ? 0 : 1;
+        lfoCtx = makeSlotLfoCtx(slot, lfoIdx);
+        selectedLfoItem = 0;
+        editingLfoValue = false;
+        setView(VIEWS.LFO_EDIT);
+        const enabled = lfoCtx.getParam("enabled");
+        if (enabled === "1") {
+            const targetDesc = describeCurrentLfoTarget();
+            if (targetDesc && !targetDesc.empty) {
+                announce(lfoCtx.title + ", " + targetDesc.long);
+            } else {
+                announce(lfoCtx.title + ", no target");
+            }
+        } else {
+            announce(lfoCtx.title + ", Off");
+        }
+        return;
+    }
+
+    if (key === "delete") {
+        if (isExistingPreset(slot)) {
+            confirmingDelete = true;
+            confirmIndex = 0;
+            const patchName = slots[slot]?.name || "patch";
+            announce(`Delete ${patchName}?`);
+            needsRedraw = true;
+        }
+        return;
+    }
+}
+
+/*
+ * The param accessors the slot grid drives this slot through.
+ *
+ * All the mapping lives in shadow_ui_slot_grid.mjs, which is pure and tested on
+ * its own; this only supplies the four host functions it needs. Built fresh per
+ * entry so it always closes over the slot actually being edited.
+ */
+/*
+ * A slot action chosen from the KNOB GRID, with a hand-off for the ones that
+ * open a modal.
+ *
+ * Save / Save As / Delete do not act immediately: they set showingNamePreview
+ * or confirmingOverwrite / confirmingDelete and wait for a confirmation. Both
+ * the DRAWING of those (drawChainSettings, in shadow_ui_settings.mjs) and the
+ * jog/click that answer them live under `case VIEWS.CHAIN_SETTINGS` -- the LIST
+ * view. Slot settings now open as the grid, so from there the flag flipped and
+ * nothing rendered it and nothing could answer it.
+ *
+ * On device that read as: pressing Save did nothing whatsoever, and jogging
+ * afterwards announced no "Edit"/"OK" -- because that handler was never
+ * reached. The action HAD run. It ran into a view with no way to show or
+ * finish it.
+ *
+ * So hand off to the list, exactly as an opaque param does (see
+ * enterHierarchyEditorFromParamPages). Teaching the grid to draw and drive
+ * three confirm flows would be a second implementation of screens that already
+ * work.
+ *
+ * The hand-off asks WHETHER A MODAL IS NOW OPEN rather than listing which keys
+ * are modal ones. A fifth action that opens a confirm would otherwise be
+ * silently broken in precisely the same way, and that is the failure mode worth
+ * designing out rather than re-fixing.
+ */
+function runSlotActionFromGrid(slot, key) {
+    runChainSettingAction(slot, key);
+    if (!(showingNamePreview || confirmingOverwrite || confirmingDelete)) return false;
+    exitParamPages();
+    /* The list must STAY the list while the modal is up -- re-entering the grid
+     * would drop the confirmation on the floor again. */
+    suppressSlotGridOnce = true;
+    slotModalFromGrid = true;
+    setView(VIEWS.CHAIN_SETTINGS);
+    needsRedraw = true;
+    return true;
+}
+
+/*
+ * ...and back to the grid once the modal is done with.
+ *
+ * You opened the knob grid, so that is where you should still be afterwards;
+ * being dropped into the list is a view you did not ask for and did not
+ * navigate to.
+ *
+ * This RECONCILES rather than firing at the end of each flow, because the modal
+ * has many ways to finish -- confirm, decline, Back, and for Save a decline
+ * that returns to the name preview instead of exiting. Hooking each one means
+ * being wrong about exactly one of them, which is how the original bug got
+ * here. Instead: while a hand-off is outstanding and no modal is open any more,
+ * go back. Cheap (flags only, no IPC) and correct for exits nobody enumerated.
+ */
+function maybeReturnToSlotGrid() {
+    if (!slotModalFromGrid) return false;
+    if (showingNamePreview || confirmingOverwrite || confirmingDelete) return false;
+    /* The name preview's "Edit" CLEARS showingNamePreview and opens the on-screen
+     * keyboard, so for the length of that keyboard none of the three flags is
+     * set and the reconcile would fire — pulling the grid up over a text entry
+     * the user is halfway through. The keyboard is part of the flow, not the
+     * end of it. */
+    if (isTextEntryActive()) return false;
+    slotModalFromGrid = false;
+    /* Consume the suppression that kept the list up for the modal, or
+     * enterChainSettings would spend it and hand back the list again. */
+    suppressSlotGridOnce = false;
+    enterChainSettings(selectedSlot);
+    return true;
+}
+
+function slotGridIoFor(slotIndex) {
+    const io = createSlotGridIo({
+        readSlotParam: (key) => getSlotParam(slotIndex, key),
+        writeSlotParam: (key, value) => setSlotParam(slotIndex, key, value),
+        isMpeMode: () => isSlotMpeMode(slotIndex),
+        /* The compound handler: recv + fwd + the synth flag, with the pre-MPE
+         * channels stashed for the way back. adjustChainSetting takes a DELTA,
+         * and only acts when the state actually differs. */
+        setMpeMode: (on) => adjustChainSetting(slotIndex, { key: "mpe_mode" }, on ? 1 : -1),
+        hasPreset: () => isExistingPreset(slotIndex),
+        /* An LFO's target reads as a name, not as "fx1" — see
+         * shared/lfo_target_label.mjs. Resolved through the same ctx the LFO
+         * editor uses, so the grid and the list can never describe the same
+         * routing differently, and cached per scope because a miss is a dozen
+         * IPC round trips inside a draw. */
+        describeTarget: (lfoIndex) => describeLfoTargetFor(makeSlotLfoCtx(slotIndex, lfoIndex)),
+        /* Only the LFO params reach this — see createSlotGridIo.isModulated. */
+        isModulated: (realKey) => isHierarchyParamModulated(slotIndex, realKey),
+    });
+    /*
+     * Visibility, bound to THIS slot. The default evaluator reads
+     * hierEditorSlot/hierEditorComponent, which belong to the list editor and
+     * are stale while the grid is up — it would resolve every condition against
+     * the wrong slot, and a condition that reads empty compares false, so BOTH
+     * rate cells would vanish rather than one. The condition keys carry their
+     * own "lfoN:" prefix, so the component prefix is unused (see
+     * normalizeVisibilityConditionKey: a key containing ":" passes through).
+     */
+    io.visible = (condition, levelDef) =>
+        evaluateVisibilityConditionForContext(slotIndex, "slot", condition, levelDef, -1);
+    return io;
+}
+
+/*
+ * MASTER FX SETTINGS, as the knob grid — the same four pages a slot gets.
+ *
+ * The component name is not a module and not "slot"; it names the SYNTHESISED
+ * contract so headerTitle() and openParamEditorFromGrid can tell the two
+ * settings screens apart without asking which chain they are on.
+ */
+const MASTER_SETTINGS_COMPONENT = "master_settings";
+
+function masterGridIoFor() {
+    const io = createMasterGridIo({
+        /* IPC slot 0 by CONVENTION — Master FX is not instrument slot 0. Every
+         * declared key already carries its "master_fx:" prefix, so these are
+         * pass-throughs rather than a mapping. */
+        readParam: (key) => getSlotParam(0, key),
+        writeParam: (key, value) => setSlotParam(0, key, value),
+        hasPreset: () => !!currentMasterPresetName,
+        /* The SAME resolver the MFX LFO list editor uses, so the grid and the
+         * list can never describe one routing differently, and cached per scope
+         * because a miss is a dozen IPC round trips inside a draw. */
+        describeTarget: (lfoIndex) => describeLfoTargetFor(makeMfxLfoCtx(lfoIndex)),
+        isModulated: (realKey) => isHierarchyParamModulated(0, realKey),
+        runAction: (action) => runMasterFxActionFromGrid(action),
+    });
+    /*
+     * Visibility, bound to the master bus. Same trap as the slot grid: the
+     * default evaluator reads the LIST editor's slot/component, which are stale
+     * while the grid is up. The condition keys carry the full "master_fx:lfoN:"
+     * prefix, so the component prefix passed here is unused (see
+     * normalizeVisibilityConditionKey) — but the SLOT is not, and it must be 0.
+     */
+    io.visible = (condition, levelDef) =>
+        evaluateVisibilityConditionForContext(0, "master_fx", condition, levelDef, -1);
+    return io;
+}
+
+function enterMasterFxSettingsGrid() {
+    enterParamPages(0, MASTER_SETTINGS_COMPONENT, MASTER_SETTINGS_COMPONENT, null,
+                    masterGridIoFor(),
+                    /* No moduleKey: there is no module behind this contract to
+                     * abbreviate. `name` is what the header shows instead. Back
+                     * goes where the settings LIST's Back went — the Master FX
+                     * chain editor. */
+                    { label: MASTER_CHAIN_TARGET.label, name: "Settings",
+                      returnView: VIEWS.MASTER_FX });
+}
+
+/*
+ * A Master FX action chosen from the KNOB GRID.
+ *
+ * Exactly the hand-off runSlotActionFromGrid performs, and for exactly the same
+ * reason: Save / Save As / Delete do not act, they raise a modal, and both the
+ * drawing of those modals and the jog/click that answer them live under
+ * `case VIEWS.MASTER_FX`. Left in the grid, pressing Save would appear to do
+ * nothing at all.
+ *
+ * It asks WHETHER A MODAL IS NOW OPEN rather than listing which keys are modal
+ * ones, so a fourth action that opens a confirm is not silently broken in the
+ * same way.
+ */
+function runMasterFxActionFromGrid(key) {
+    handleMasterFxSettingsAction(key);
+    if (!(masterShowingNamePreview || masterConfirmingOverwrite || masterConfirmingDelete)) {
+        return false;
+    }
+    exitParamPages();
+    /* The Master FX view must stay the LIST/modal surface while the modal is
+     * up — re-entering the grid would drop the confirmation on the floor. */
+    suppressMasterGridOnce = true;
+    masterModalFromGrid = true;
+    setView(VIEWS.MASTER_FX);
+    needsRedraw = true;
+    return true;
+}
+
+/* ...and back to the grid once the modal is done with. RECONCILES rather than
+ * firing at the end of each flow — see maybeReturnToSlotGrid for why hooking
+ * each exit is how the original bug got there. */
+function maybeReturnToMasterGrid() {
+    if (!masterModalFromGrid) return false;
+    if (masterShowingNamePreview || masterConfirmingOverwrite || masterConfirmingDelete) return false;
+    /* ...and while the on-screen keyboard is up. The name preview's "Edit"
+     * clears masterShowingNamePreview before opening it, so all three flags are
+     * down for the whole of the text entry. See maybeReturnToSlotGrid. */
+    if (isTextEntryActive()) return false;
+    /* Only once the Master FX surface is actually idle. The preset picker is
+     * the one other screen a finished modal can leave up, and re-entering the
+     * grid over it would take a screen the user is looking at. */
+    if (inMasterPresetPicker) return false;
+    masterModalFromGrid = false;
+    suppressMasterGridOnce = false;
+    enterMasterFxSettingsGrid();
+    return true;
 }
 
 /* Enter chain settings view */
@@ -7257,6 +9432,16 @@ function enterChainSettings(slotIndex) {
     selectedSlot = slotIndex;
     selectedChainSetting = 0;
     editingChainSettingValue = false;
+
+    /* Knob grid instead of the list, when the user has opted in. Same gate the
+     * component editor uses, so the screen reader still gets the list — a grid
+     * has nothing selected to read out. */
+    if (paramPagesEnabled() && !suppressSlotGridOnce) {
+        enterParamPages(slotIndex, "slot", "slot", null, slotGridIoFor(slotIndex));
+        return;
+    }
+    suppressSlotGridOnce = false;
+
     setView(VIEWS.CHAIN_SETTINGS);
     needsRedraw = true;
 
@@ -7391,29 +9576,17 @@ function getKnobTargets(slot) {
     const cfg = chainConfigs[slot];
     if (!cfg) return targets;
 
-    /* MIDI FX */
-    if (cfg.midiFx && cfg.midiFx.module) {
-        const name = getSlotParam(slot, "midi_fx1:name") || cfg.midiFx.module;
-        targets.push({ id: "midi_fx1", name: `MIDI FX: ${name}` });
-    }
-
-    /* Synth */
-    if (cfg.synth && cfg.synth.module) {
-        const name = getSlotParam(slot, "synth:name") || cfg.synth.module;
-        targets.push({ id: "synth", name: `Synth: ${name}` });
-    }
-
-    /* FX 1 */
-    if (cfg.fx1 && cfg.fx1.module) {
-        const name = getSlotParam(slot, "fx1:name") || cfg.fx1.module;
-        targets.push({ id: "fx1", name: `FX1: ${name}` });
-    }
-
-    /* FX 2 */
-    if (cfg.fx2 && cfg.fx2.module) {
-        const name = getSlotParam(slot, "fx2:name") || cfg.fx2.module;
-        targets.push({ id: "fx2", name: `FX2: ${name}` });
-    }
+    /* In signal order, so the list reads the way the chain does. The prefix is
+     * spelled per kind ("FX1", not "FX 1") — these strings are what the knob
+     * editor has always shown. */
+    const push = (id, prefix, moduleData) => {
+        if (!moduleData || !moduleData.module) return;
+        const name = getSlotParam(slot, `${id}:name`) || moduleData.module;
+        targets.push({ id, name: `${prefix}: ${name}` });
+    };
+    cfg.midiFx.forEach((m, i) => push(`midi_fx${i + 1}`, "MIDI FX", m));
+    push("synth", "Synth", cfg.synth);
+    cfg.fx.forEach((m, i) => push(`fx${i + 1}`, `FX${i + 1}`, m));
 
     return targets;
 }
@@ -7987,8 +10160,8 @@ function applyKnobAssignment(target, param) {
 
 /* Handle Shift+Click - enter component edit mode */
 function handleShiftSelect() {
-    const comp = CHAIN_COMPONENTS[selectedChainComponent];
-    if (!comp || comp.key === "settings") return;
+    const comp = slotChainComponents(selectedSlot)[selectedChainComponent];
+    if (!comp || !isChainModuleKey(comp.key)) return;
 
     /* Shift+click always goes to module chooser (for swapping) */
     enterComponentSelect(selectedSlot, selectedChainComponent);
@@ -8025,8 +10198,7 @@ function enterComponentEditFallback(slotIndex, componentKey) {
     editingComponentKey = componentKey;
 
     /* Get module ID from chain config */
-    const cfg = chainConfigs[slotIndex];
-    const moduleData = cfg && cfg[componentKey];
+    const moduleData = getChainComponentModule(chainConfigs[slotIndex], componentKey);
     const moduleId = moduleData ? moduleData.module : null;
 
     /* Try to load the module's UI */
@@ -8045,7 +10217,7 @@ function enterComponentEditFallback(slotIndex, componentKey) {
      * hierarchy editor. Gated to the no-preset case so preset-having modules
      * keep the working preset browser; non-co-run paths are untouched. */
     if (coRunChainEditSlot >= 0) {
-        const cPrefix = componentKey === "midiFx" ? "midi_fx1" : componentKey;
+        const cPrefix = getComponentParamPrefix(componentKey);
         const cCountStr = getSlotParam(slotIndex, `${cPrefix}:preset_count`);
         const cPresetCount = cCountStr ? parseInt(cCountStr) : 0;
         if (cPresetCount <= 0) {
@@ -8061,7 +10233,7 @@ function enterComponentEditFallback(slotIndex, componentKey) {
     }
 
     /* Fall back to simple preset browser */
-    const prefix = componentKey === "midiFx" ? "midi_fx1" : componentKey;
+    const prefix = getComponentParamPrefix(componentKey);
 
     /* Fetch preset count and current preset */
     const countStr = getSlotParam(slotIndex, `${prefix}:preset_count`);
@@ -8093,6 +10265,21 @@ function enterComponentEditFallback(slotIndex, componentKey) {
 /* Enter hierarchy-based parameter editor for a component. Fetches the
  * component's real ui_hierarchy; falls back to the preset browser if absent. */
 function enterHierarchyEditor(slotIndex, componentKey) {
+    /*
+     * A Master FX position arrives here only from the knob grid's two hand-offs
+     * (a non-grid page kind, and an opaque param), which carry the component key
+     * the grid was opened with and nothing else. Route it to the master entry
+     * point rather than letting it fall through: this path would set
+     * hierEditorIsMasterFx = false, and that flag is what exitHierarchyEditor
+     * reads to decide where Back goes — so a Master FX module opened from the
+     * grid would eject into the SLOT chain editor. (Its param reads would have
+     * been right, since "master_fx:fx2" is self-addressing; only the identity
+     * would have been lost, which is the failure that looks like a UI glitch
+     * and reads like nothing at all in review.)
+     */
+    const mfx = masterFxIndexFromComponentKey(componentKey);
+    if (mfx >= 0) { enterMasterFxHierarchyEditor(mfx); return; }
+
     const hierarchy = getComponentHierarchy(slotIndex, componentKey);
     if (!hierarchy) {
         /* No hierarchy - fall back to simple preset browser */
@@ -8151,29 +10338,50 @@ function enterHierarchyEditorFromParamPages() {
  * changeHierPreset() early-returns and the loading-transition re-fetch is
  * guarded by `if (newHier)` — don't "fix" those guards to re-pull the
  * hierarchy unconditionally or it would clobber the synthesized one with null. */
-function enterHierarchyEditorWith(slotIndex, componentKey, hierarchy) {
-    if (!hierarchy) {
-        /* No hierarchy - fall back to simple preset browser */
-        enterComponentEditFallback(slotIndex, componentKey);
-        return;
-    }
-
-    /* Dismiss any active overlay and clear pending knob state */
+/*
+ * Dismiss whatever is over the editor and drop the knob state left pointing at
+ * the last component.
+ *
+ * Called by both chain editors, but NOT folded into resetHierarchyEditorFor:
+ * the slot path runs it BEFORE the paramPages early return, so opening the
+ * knob grid clears the overlay too. Order is the behaviour here.
+ */
+function dismissOverlayForHierarchyEntry() {
     hideOverlay();
     invalidateKnobContextCache();
     pendingHierKnobIndex = -1;
     pendingHierKnobDelta = 0;
+}
 
-    /* Preview: the knob grid replaces the list for this component when the
-     * user has opted in. It plans from the same declared contract, so nothing
-     * about entry differs — and paramPagesEnabled() forces the list whenever the
-     * screen reader is on, since a grid has nothing selected to read out. */
-    if (paramPagesEnabled() && !suppressParamPagesOnce) {
-        enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey));
-        return;
-    }
-    suppressParamPagesOnce = false;
-
+/*
+ * The hierarchy editor's per-entry state, aimed at one component.
+ *
+ * Shared by BOTH chain editors. `componentKey` is what hierEditorComponent
+ * holds, which is the editor key for a slot chain ("midiFx", "fx2") and the
+ * prefixed form for Master FX ("master_fx:fx2") — the one place the two
+ * genuinely disagree, so it is a parameter rather than something derived.
+ *
+ * `isMasterFx` / `masterFxSlot` are the legacy pair the rest of the file still
+ * asks (`hierEditorIsMasterFx`) to know which chain it is editing. They will
+ * be a chain target once the exit paths follow.
+ *
+ * NOT in 4b, and the reason is worth recording so the next reader does not
+ * re-derive it. The knob CONTEXT carried a dead copy of the same pair and that
+ * is gone — nothing read it. This pair has FOURTEEN read sites across the
+ * hierarchy editor's refresh, exit, preset and LFO paths, and two obstacles a
+ * knob-card change cannot absorb:
+ *
+ *   - `hierEditorComponent` holds the PREFIXED key on Master FX
+ *     ("master_fx:fx2") while a chain target's key() takes the bare position
+ *     ("fx2"), so every site needs a conversion, not a substitution.
+ *   - Half the sites ask it "which chain am I in / where do I go back to",
+ *     which a target can only answer with `target.kind` — the kind test §1b
+ *     forbids. Those sites need a return-destination of their own first.
+ *
+ * That is a refactor of the hierarchy editor's chain identity, in the largest
+ * switch in this file, with no pixel baseline over it. Its own step.
+ */
+function resetHierarchyEditorFor(slotIndex, componentKey, hierarchy, isMasterFx, masterFxSlot) {
     hierEditorSlot = slotIndex;
     hierEditorComponent = componentKey;
     hierEditorHierarchy = hierarchy;
@@ -8185,11 +10393,57 @@ function enterHierarchyEditorWith(slotIndex, componentKey, hierarchy) {
     hierEditorSelectedIdx = 0;
     hierEditorEditMode = false;
     resetHierarchyEditState();
-    hierEditorIsMasterFx = false;
-    hierEditorMasterFxSlot = -1;
+    hierEditorIsMasterFx = isMasterFx;
+    hierEditorMasterFxSlot = masterFxSlot;
+    resetDynamicParamPickerState();
+}
+
+/*
+ * What the screen reader says on arrival, for BOTH chain editors: the preset
+ * name and its position when the level is a preset browser, the first param
+ * otherwise, and an explicit "No parameters" rather than silence.
+ */
+function announceHierarchyEditorEntry(moduleName) {
+    if (hierEditorIsPresetLevel && hierEditorPresetCount > 0) {
+        /* Preset browser level - announce preset name first, then position */
+        const presetName = hierEditorPresetName || `Preset ${hierEditorPresetIndex + 1}`;
+        announce(`${moduleName}, ${presetName}, Preset ${hierEditorPresetIndex + 1} of ${hierEditorPresetCount}`);
+    } else if (hierEditorParams.length > 0) {
+        const param = hierEditorParams[0];
+        const label = param.label || param.key;
+        const value = param.value || "";
+        announce(`${moduleName}, ${label}: ${value}`);
+    } else {
+        announce(`${moduleName}, No parameters`);
+    }
+}
+
+function enterHierarchyEditorWith(slotIndex, componentKey, hierarchy) {
+    if (!hierarchy) {
+        /* No hierarchy - fall back to simple preset browser */
+        enterComponentEditFallback(slotIndex, componentKey);
+        return;
+    }
+
+    dismissOverlayForHierarchyEntry();
+
+    /* Preview: the knob grid replaces the list for this component when the
+     * user has opted in. It plans from the same declared contract, so nothing
+     * about entry differs — and paramPagesEnabled() forces the list whenever the
+     * screen reader is on, since a grid has nothing selected to read out. */
+    if (paramPagesEnabled() && !suppressParamPagesOnce) {
+        enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey),
+                        null, null, paramPagesChromeFor(componentKey));
+        return;
+    }
+    suppressParamPagesOnce = false;
+
+    resetHierarchyEditorFor(slotIndex, componentKey, hierarchy, false, -1);
+    /* Only the slot path clears the file browser. Master FX never has, which is
+     * an asymmetry rather than a decision — left alone here because 4a-2 is a
+     * refactor with no behaviour change. */
     filepathBrowserState = null;
     filepathBrowserParamKey = "";
-    resetDynamicParamPickerState();
 
     /* Fetch chain_params metadata for this component */
     hierEditorChainParams = getComponentChainParams(slotIndex, componentKey);
@@ -8209,26 +10463,14 @@ function enterHierarchyEditorWith(slotIndex, componentKey, hierarchy) {
     needsRedraw = true;
 
     /* Announce menu title + initial selection */
-    const prefix = componentKey === "midiFx" ? "midi_fx1" : componentKey;
+    const prefix = getComponentParamPrefix(componentKey);
     const moduleName = getSlotParam(slotIndex, `${prefix}:name`) || componentKey;
-
-    if (hierEditorIsPresetLevel && hierEditorPresetCount > 0) {
-        /* Preset browser level - announce preset name first, then position */
-        const presetName = hierEditorPresetName || `Preset ${hierEditorPresetIndex + 1}`;
-        announce(`${moduleName}, ${presetName}, Preset ${hierEditorPresetIndex + 1} of ${hierEditorPresetCount}`);
-    } else if (hierEditorParams.length > 0) {
-        const param = hierEditorParams[0];
-        const label = param.label || param.key;
-        const value = param.value || "";
-        announce(`${moduleName}, ${label}: ${value}`);
-    } else {
-        announce(`${moduleName}, No parameters`);
-    }
+    announceHierarchyEditorEntry(moduleName);
 }
 
 /* Enter hierarchy-based parameter editor for a Master FX slot */
 function enterMasterFxHierarchyEditor(fxSlot) {
-    if (fxSlot < 0 || fxSlot >= 4) return;
+    if (fxSlot < 0 || fxSlot >= MASTER_FX_SLOTS) return;
 
     const hierarchy = getMasterFxHierarchy(fxSlot);
     if (!hierarchy) {
@@ -8236,36 +10478,44 @@ function enterMasterFxHierarchyEditor(fxSlot) {
         return;
     }
 
-    /* Dismiss any active overlay and clear pending knob state */
-    hideOverlay();
-    invalidateKnobContextCache();
-    pendingHierKnobIndex = -1;
-    pendingHierKnobDelta = 0;
+    dismissOverlayForHierarchyEntry();
 
-    /* Set up hierarchy editor for Master FX
-     * Use slot 0 (all Master FX params use slot 0)
-     * Component key is "master_fx:fxN" so params become "master_fx:fxN:param" */
-    const fxKey = `fx${fxSlot + 1}`;
-    hierEditorSlot = 0;
-    hierEditorComponent = `master_fx:${fxKey}`;
-    hierEditorHierarchy = hierarchy;
-    hierEditorLevel = hierarchy.modes ? null : "root";
-    hierEditorPath = [];
-    hierEditorChildIndex = -1;
-    hierEditorChildCount = 0;
-    hierEditorChildLabel = "";
-    hierEditorSelectedIdx = 0;
-    hierEditorEditMode = false;
-    resetHierarchyEditState();
-    hierEditorIsMasterFx = true;
-    hierEditorMasterFxSlot = fxSlot;
-    resetDynamicParamPickerState();
+    /* Master FX params are addressed at IPC slot 0 (a convention, NOT
+     * instrument slot 0), and hierEditorComponent carries the prefixed form
+     * "master_fx:fxN" so params become "master_fx:fxN:param". */
+    const fxKey = masterFxComponentKey(fxSlot);
+    const componentKey = `master_fx:${fxKey}`;
+
+    /*
+     * Param View = Knobs opens the grid HERE TOO.
+     *
+     * The gate is a copy of enterHierarchyEditorWith's, and it is a copy on
+     * purpose: the two entry points differ in how they resolve the hierarchy
+     * and in nothing else, and this is the smaller half of converging them.
+     * Without it the setting was silently slot-chain-only — the same module
+     * opened the labelled knob grid in a slot and the scrolling list in Master
+     * FX, which is the drift §1b of the variable-length design exists to end,
+     * and it was reported from the device within a day.
+     *
+     * The chrome is what makes the grid say "MFX", read the master spelling of
+     * the module key, and send Back to the Master FX editor rather than to the
+     * slot chain. See paramPagesChromeFor.
+     */
+    if (paramPagesEnabled() && !suppressParamPagesOnce) {
+        enterParamPages(MASTER_CHAIN_TARGET.slot, componentKey,
+                        getComponentParamPrefix(componentKey), null, null,
+                        paramPagesChromeFor(componentKey));
+        return;
+    }
+    suppressParamPagesOnce = false;
+
+    resetHierarchyEditorFor(0, componentKey, hierarchy, true, fxSlot);
 
     /* Fetch chain_params metadata for this Master FX slot */
     hierEditorChainParams = getMasterFxChainParams(fxSlot);
 
     /* Set up param shims for Master FX component */
-    setupModuleParamShims(0, `master_fx:${fxKey}`);
+    setupModuleParamShims(0, componentKey);
 
     /* Load current level's params and knobs */
     loadHierarchyLevel();
@@ -8274,19 +10524,8 @@ function enterMasterFxHierarchyEditor(fxSlot) {
     needsRedraw = true;
 
     /* Announce menu title + initial selection */
-    const moduleName = getSlotParam(0, `master_fx:${fxKey}:name`) || `FX ${fxSlot + 1}`;
-    if (hierEditorIsPresetLevel && hierEditorPresetCount > 0) {
-        /* Preset browser level - announce preset name first, then position */
-        const presetName = hierEditorPresetName || `Preset ${hierEditorPresetIndex + 1}`;
-        announce(`${moduleName}, ${presetName}, Preset ${hierEditorPresetIndex + 1} of ${hierEditorPresetCount}`);
-    } else if (hierEditorParams.length > 0) {
-        const param = hierEditorParams[0];
-        const label = param.label || param.key;
-        const value = param.value || "";
-        announce(`${moduleName}, ${label}: ${value}`);
-    } else {
-        announce(`${moduleName}, No parameters`);
-    }
+    const moduleName = getMasterFxParam(fxSlot, "name") || `FX ${fxSlot + 1}`;
+    announceHierarchyEditorEntry(moduleName);
 }
 
 /* Load params and knobs for current hierarchy level */
@@ -8464,6 +10703,12 @@ function exitHierarchyEditor() {
     pendingHierKnobIndex = -1;
     pendingHierKnobDelta = 0;
     cameFromParamPages = false;
+    /* Cleared on EVERY exit, not just the return-to-grid one: leaving the
+     * editor any other way (Back at root, a slot swap, the shortcut out) must
+     * not leave the flag armed for a later list-originated session, or the
+     * next Back out of an unrelated param edit would teleport to the grid. */
+    paramEditorOpenedFromGrid = false;
+    paramEditorReturnPage = "";
 
     clearModuleParamShims();
     clearWavZoomStates();
@@ -8581,6 +10826,14 @@ function closeHierarchyFilepathBrowser() {
     filepathBrowserState = null;
     filepathBrowserParamKey = "";
     resetDynamicParamPickerState();
+    /* Back where the user came from. All three call sites — committing a
+     * selection, Back, and the no-state guard — funnel through here, so the
+     * grid return lives here rather than being repeated (and forgotten) at
+     * each one. Committing a sample used to drop you in the hierarchy list. */
+    if (paramEditorOpenedFromGrid) {
+        returnToParamPagesFromEditor();
+        return;
+    }
     setView(VIEWS.HIERARCHY_EDITOR);
 }
 
@@ -8713,7 +10966,20 @@ function isHierarchyParamModulated(slot, fullKey) {
 
     /* Fallback for targets that don't implement :modulated. */
     const baseVal = getSlotParam(slot, `${fullKey}:base`);
-    if (baseVal === null || baseVal === undefined) return false;
+    /*
+     * EMPTY is a failed read, not a base of "".
+     *
+     * A key nobody serves does not come back null: the shim answers with
+     * error=4 and a zeroed value buffer, and js_shadow_get_param does not look
+     * at `error`, so JS receives "". Comparing a real live value against that
+     * empty string then said "modulated" for every param whose live read
+     * happens to succeed — which is every slot-level setting, since `slot:*`
+     * keys are real but `slot:*:base` is not. Volume, Mute, Solo, Transpose,
+     * Recv and Fwd all wore the modulation tilde on the slot-settings grid.
+     *
+     * A base is a parameter value; "" is never one.
+     */
+    if (baseVal === null || baseVal === undefined || baseVal === "") return false;
     const liveVal = getSlotParam(slot, fullKey);
     return liveVal !== null && liveVal !== undefined && liveVal !== baseVal;
 }
@@ -8856,6 +11122,128 @@ function invalidateKnobContextCache() {
 }
 
 /*
+ * What one physical knob does at one position of a chain — for EITHER chain.
+ *
+ * This was two ~90-line branches of buildKnobContextForKnob, one per editor.
+ * They looked like the same code twice and were not: they disagreed on the
+ * FALLBACK RULE, silently, and only one of them was right.
+ *
+ * ---------------------------------------------------------------------------
+ * THE FALLBACK RULE, and why it is this one
+ * ---------------------------------------------------------------------------
+ * A module declares its knob row in `ui_hierarchy` and its parameter metadata
+ * in `chain_params`. The two lists are not the same length. The question is
+ * what a knob does when the declared row runs out before the eight knobs do.
+ *
+ *   Slot editor  (kept): fall back to chain_params ONLY when there is no
+ *                        hierarchy at all. A declared row is the author's
+ *                        answer, including for the knobs it leaves empty.
+ *   Master FX (dropped): fall back whenever the hierarchy had no knob at THAT
+ *                        INDEX, filling the rest from chain_params[knobIndex].
+ *
+ * Six audio-FX modules in tests/fixtures/module-contracts.json declare a
+ * hierarchy with fewer than eight knobs AND carry extra chain_params, so six
+ * modules behaved differently depending on which chain they were loaded into:
+ * belt, freeverb, nam, ottx, psxverb, smack. Two of them show why the dropped
+ * rule is not merely "more knobs":
+ *
+ *   psxverb  knobs [model, decay, mix, reverb_level], chain_params [model,
+ *            decay, mix, input_gain, reverb_level]. Knob 5 became
+ *            chain_params[4] = reverb_level — a DUPLICATE of knob 4 — while
+ *            input_gain stayed unreachable. The index into chain_params has no
+ *            relationship to the knobs already mapped.
+ *   smack    knobs [loop_len, slice_res, fx_density, order_density],
+ *            chain_params[4..7] = capture, arm, ab, reroll — trigger enums
+ *            ("Capture Now", "Arm Record", "Re-Roll"). On Master FX, knobs 5-8
+ *            FIRED those. The author left them off the knob row on purpose.
+ *
+ * So the declared row wins, and the extra params stay reachable where they
+ * always were: through the menu, which lists all of chain_params. This is a
+ * USER-VISIBLE change on Master FX for those six modules — knobs past the
+ * declared row now read "not mapped" instead of driving an arbitrary
+ * parameter. Do not "fix" it back without redoing that count.
+ * ---------------------------------------------------------------------------
+ *
+ * `pluginName` / `hasModule` come from the caller because resolving them is
+ * the one thing the two chains genuinely do differently. `target.label` is
+ * what the title says first ("S2" / "MFX").
+ */
+/*
+ * `title` and `cardName` are TWO ANSWERS TO TWO QUESTIONS, and they were one
+ * value until the header band started carrying it.
+ *
+ *   title    what the screen reader says: "MFX: cloudseed Mix". A blind user
+ *            has no diagram behind the card, so the chain and the module are
+ *            the only context there is and dropping them makes the utterance
+ *            useless.
+ *   cardName what the card's header band shows: "Mix". A sighted user is
+ *            looking AT the diagram the card floats over, with the selected
+ *            box already highlighted — so the band would spend a 116px
+ *            content width restating what is on screen, and "MFX: cloudseed
+ *            mix" does not fit next to its value anyway. Reported from the
+ *            device: "you know where you are".
+ *
+ * Do not collapse these back into one field. Whichever one you keep, one of
+ * the two users loses.
+ */
+function buildChainKnobContext(target, comp, knobIndex, pluginName, hasModule) {
+    const generic = (name, title, extra) => Object.assign({
+        slot: target.slot,
+        key: null,
+        fullKey: null,
+        meta: null,
+        pluginName: name,
+        displayName: `Knob ${knobIndex + 1}`,
+        title,
+        /* The box's own label ("FX 2") or the module name — the one thing the
+         * long title adds nothing to once you can see which box is selected. */
+        cardName: name,
+    }, extra);
+
+    if (!hasModule) {
+        return generic(comp.label, `${target.label} ${comp.label}`, { noModule: true });
+    }
+
+    const mapped = (key, meta, displayName) => ({
+        slot: target.slot,
+        key,
+        fullKey: target.key(comp.key, key),
+        meta,
+        pluginName,
+        displayName,
+        title: `${target.label}: ${pluginName} ${displayName}`,
+        /* The parameter, alone. See the note above buildChainKnobContext. */
+        cardName: displayName,
+    });
+
+    const hierarchy = chainTargetHierarchy(target, comp.key);
+    if (hierarchy && hierarchy.levels) {
+        /* knobLevelForHierarchy reports the level the mapping ACTUALLY uses —
+         * root, or the first child when root declares no knobs. */
+        const levelDef = knobLevelForHierarchy(hierarchy);
+        if (levelDef && levelDef.knobs && knobIndex < levelDef.knobs.length) {
+            const key = levelDef.knobs[knobIndex];
+            const chainParams = chainTargetChainParams(target, comp.key);
+            const meta = normalizeExpandedParamMeta(key, chainParams.find(p => p.key === key));
+            return mapped(key, meta, meta && meta.name ? meta.name : key.replace(/_/g, " "));
+        }
+        debugLog(`buildKnobContext: no knob mapping for knobIndex=${knobIndex} on ${comp.key}`);
+    } else {
+        /* No declared row at all — see THE FALLBACK RULE above. This is the
+         * only branch where chain_params order decides what a knob does, and
+         * it is defensible here because there is nothing else to go on. */
+        const chainParams = chainTargetChainParams(target, comp.key);
+        if (chainParams && knobIndex < chainParams.length) {
+            const param = chainParams[knobIndex];
+            return mapped(param.key, normalizeExpandedParamMeta(param.key, param),
+                          param.name || param.key.replace(/_/g, " "));
+        }
+    }
+
+    return generic(pluginName, `${target.label} ${pluginName}`, { noMapping: true });
+}
+
+/*
  * Build knob context for a single knob - internal, called by rebuildKnobContextCache
  */
 function buildKnobContextForKnob(knobIndex) {
@@ -8874,7 +11262,10 @@ function buildKnobContextForKnob(knobIndex) {
             meta,
             pluginName,
             displayName,
-            title: `S${hierEditorSlot + 1}: ${pluginName} ${displayName}`
+            title: `S${hierEditorSlot + 1}: ${pluginName} ${displayName}`,
+            /* See the note above buildChainKnobContext: announcement keeps the
+             * context, the card header does not. */
+            cardName: displayName
         };
     }
     /* Multi-marker editor view: knob 8 is the dedicated zoom knob even if the
@@ -8892,194 +11283,49 @@ function buildKnobContextForKnob(knobIndex) {
                 pluginName: "",
                 displayName: mmRole.type === "zoom" ? "Zoom" : (mmRole.member.meta.name || mmRole.member.key),
                 title: mmRole.type === "zoom" ? "Zoom" : (mmRole.member.meta.name || mmRole.member.key),
+                /* Already bare — this title carries no chain or module. */
+                cardName: mmRole.type === "zoom" ? "Zoom" : (mmRole.member.meta.name || mmRole.member.key),
                 noMapping: true
             };
         }
     }
 
-    /* Chain editor with component selected */
-    if (view === VIEWS.CHAIN_EDIT && selectedChainComponent >= 0 && selectedChainComponent < CHAIN_COMPONENTS.length) {
-            const comp = CHAIN_COMPONENTS[selectedChainComponent];
-            if (comp && comp.key !== "settings") {
-                const prefix = getComponentParamPrefix(comp.key);
-                /* MIDI FX uses different param key format than synth/fx */
-                const isMidiFx = comp.key === "midiFx";
-                const moduleIdKey = isMidiFx ? "midi_fx1_module" : `${prefix}_module`;
-                const moduleId = getSlotParam(selectedSlot, moduleIdKey) || "";
-                const nameParamKey = isMidiFx ? null : `${prefix}:name`;
-                const pluginName = (nameParamKey ? getSlotParam(selectedSlot, nameParamKey) : null) || moduleId || "";
-                const hasModule = moduleId && moduleId.length > 0;
-                debugLog(`buildKnobContext: slot=${selectedSlot}, comp=${comp.key}, prefix=${prefix}, nameParamKey=${nameParamKey}, pluginName=${pluginName}, hasModule=${hasModule}`);
-
-            /* No module loaded in this slot */
-            if (!hasModule) {
-                return {
-                    slot: selectedSlot,
-                    key: null,
-                    fullKey: null,
-                    meta: null,
-                    pluginName: comp.label,
-                    displayName: `Knob ${knobIndex + 1}`,
-                    title: `S${selectedSlot + 1} ${comp.label}`,
-                    noModule: true
-                };
-            }
-
-            const hierarchy = getComponentHierarchy(selectedSlot, comp.key);
-            debugLog(`buildKnobContext: hierarchy=${hierarchy ? JSON.stringify(hierarchy).substring(0, 200) : 'null'}`);
-            if (hierarchy && hierarchy.levels) {
-                let levelDef = hierarchy.levels.root || hierarchy.levels[Object.keys(hierarchy.levels)[0]];
-                debugLog(`buildKnobContext: levelDef=${levelDef ? JSON.stringify(levelDef) : 'null'}, knobIndex=${knobIndex}`);
-                /* If root has no knobs but has children, use first child level for knob mapping */
-                if (levelDef && (!levelDef.knobs || levelDef.knobs.length === 0) && levelDef.children) {
-                    const childLevel = hierarchy.levels[levelDef.children];
-                    if (childLevel && childLevel.knobs && childLevel.knobs.length > 0) {
-                        levelDef = childLevel;
-                    }
-                }
-                if (levelDef && levelDef.knobs && knobIndex < levelDef.knobs.length) {
-                    const key = levelDef.knobs[knobIndex];
-                    const fullKey = `${prefix}:${key}`;
-                    const chainParams = getComponentChainParams(selectedSlot, comp.key);
-                    debugLog(`buildKnobContext: found knob key=${key}, fullKey=${fullKey}, chainParams count=${chainParams.length}`);
-                    const rawMeta = chainParams.find(p => p.key === key);
-                    const meta = normalizeExpandedParamMeta(key, rawMeta);
-                    const displayName = meta && meta.name ? meta.name : key.replace(/_/g, " ");
-                    return {
-                        slot: selectedSlot,
-                        key,
-                        fullKey,
-                        meta,
-                        pluginName,
-                        displayName,
-                        title: `S${selectedSlot + 1}: ${pluginName} ${displayName}`
-                    };
-                }
-                debugLog(`buildKnobContext: no knob mapping for knobIndex=${knobIndex}, levelDef.knobs=${levelDef?.knobs ? JSON.stringify(levelDef.knobs) : 'undefined'}`);
-            } else {
-                debugLog(`buildKnobContext: no hierarchy or no levels`);
-            }
-
-            /* Fallback to chain_params if ui_hierarchy is missing */
-            if (!hierarchy || !hierarchy.levels) {
-                const chainParams = getComponentChainParams(selectedSlot, comp.key);
-                if (chainParams && chainParams.length > 0 && knobIndex < chainParams.length) {
-                    const param = chainParams[knobIndex];
-                    const key = param.key;
-                    const fullKey = `${prefix}:${key}`;
-                    const displayName = param.name || key.replace(/_/g, " ");
-                    return {
-                        slot: selectedSlot,
-                        key,
-                        fullKey,
-                        meta: normalizeExpandedParamMeta(key, param),
-                        pluginName,
-                        displayName,
-                        title: `S${selectedSlot + 1}: ${pluginName} ${displayName}`
-                    };
-                }
-            }
-            /* Component selected but no knob mappings - return generic context */
-            return {
-                slot: selectedSlot,
-                key: null,
-                fullKey: null,
-                meta: null,
-                pluginName,
-                displayName: `Knob ${knobIndex + 1}`,
-                title: `S${selectedSlot + 1} ${pluginName}`,
-                noMapping: true
-            };
+    /* Slot chain editor with a component selected. Only the IDENTITY of the
+     * module is resolved here — how a chain answers "what is loaded at this
+     * position and what is it called" is genuinely per-chain (a slot serves
+     * `fx1_module`, Master FX serves `master_fx:fx1:name`). Everything after
+     * that is buildChainKnobContext, once. */
+    if (view === VIEWS.CHAIN_EDIT && selectedChainComponent >= 0 &&
+        selectedChainComponent < slotChainComponents(selectedSlot).length) {
+        const comp = slotChainComponents(selectedSlot)[selectedChainComponent];
+        /* Only a module position has knobs. Asking for "add_fx_module"
+         * would be a real IPC round trip answering "". */
+        if (comp && isChainModuleKey(comp.key)) {
+            const prefix = getComponentParamPrefix(comp.key);
+            /* MIDI FX serves no `:name`, so its header falls back to the id */
+            const isMidiFx = comp.key === "midiFx";
+            const moduleId = getSlotParam(selectedSlot, `${prefix}_module`) || "";
+            const pluginName = (isMidiFx ? null : getSlotParam(selectedSlot, `${prefix}:name`))
+                || moduleId || "";
+            debugLog(`buildKnobContext: slot=${selectedSlot}, comp=${comp.key}, ` +
+                     `prefix=${prefix}, pluginName=${pluginName}, moduleId=${moduleId}`);
+            return buildChainKnobContext(slotChainTarget(selectedSlot), comp, knobIndex,
+                                         pluginName, moduleId.length > 0);
         }
     }
 
-    /* Master FX view with FX slot selected */
-    if (view === VIEWS.MASTER_FX && selectedMasterFxComponent >= 0 && selectedMasterFxComponent < 4) {
-        const comp = MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
-        if (comp && comp.key !== "settings") {
-            const chainParams = getMasterFxChainParams(selectedMasterFxComponent);
-            const pluginName = shadow_get_param(0, `master_fx:${comp.key}:name`) || "";
-            const hasModule = pluginName && pluginName.length > 0;
-
-            /* No module loaded in this slot */
-            if (!hasModule) {
-                return {
-                    slot: 0,
-                    key: null,
-                    fullKey: null,
-                    meta: null,
-                    pluginName: comp.label,
-                    displayName: `Knob ${knobIndex + 1}`,
-                    title: `MFX ${comp.label}`,
-                    noModule: true,
-                    isMasterFx: true,
-                    masterFxSlot: selectedMasterFxComponent
-                };
-            }
-
-            /* Try ui_hierarchy first for explicit knob mappings */
-            const hierarchy = getMasterFxHierarchy(selectedMasterFxComponent);
-            if (hierarchy && hierarchy.levels) {
-                let levelDef = hierarchy.levels.root || hierarchy.levels[Object.keys(hierarchy.levels)[0]];
-                /* If root has no knobs but has children, use first child level for knob mapping */
-                if (levelDef && (!levelDef.knobs || levelDef.knobs.length === 0) && levelDef.children) {
-                    const childLevel = hierarchy.levels[levelDef.children];
-                    if (childLevel && childLevel.knobs && childLevel.knobs.length > 0) {
-                        levelDef = childLevel;
-                    }
-                }
-                if (levelDef && levelDef.knobs && knobIndex < levelDef.knobs.length) {
-                    const key = levelDef.knobs[knobIndex];
-                    const fullKey = `master_fx:${comp.key}:${key}`;
-                    const rawMeta = chainParams.find(p => p.key === key);
-                    const meta = normalizeExpandedParamMeta(key, rawMeta);
-                    const displayName = meta && meta.name ? meta.name : key.replace(/_/g, " ");
-                    return {
-                        slot: 0,  /* Master FX always uses slot 0 for param access */
-                        key,
-                        fullKey,
-                        meta,
-                        pluginName,
-                        displayName,
-                        title: `MFX ${pluginName} ${displayName}`,
-                        isMasterFx: true,
-                        masterFxSlot: selectedMasterFxComponent
-                    };
-                }
-            }
-
-            /* Fall back to chain_params: map first 8 params to knobs 1-8 */
-            if (chainParams && chainParams.length > 0 && knobIndex < chainParams.length) {
-                const param = chainParams[knobIndex];
-                const key = param.key;
-                const fullKey = `master_fx:${comp.key}:${key}`;
-                const displayName = param.name || key.replace(/_/g, " ");
-                return {
-                    slot: 0,
-                    key,
-                    fullKey,
-                    meta: normalizeExpandedParamMeta(key, param),
-                    pluginName,
-                    displayName,
-                    title: `MFX ${pluginName} ${displayName}`,
-                    isMasterFx: true,
-                    masterFxSlot: selectedMasterFxComponent
-                };
-            }
-
-            /* FX slot selected but no params available */
-            return {
-                slot: 0,
-                key: null,
-                fullKey: null,
-                meta: null,
-                pluginName,
-                displayName: `Knob ${knobIndex + 1}`,
-                title: `MFX ${pluginName}`,
-                noMapping: true,
-                isMasterFx: true,
-                masterFxSlot: selectedMasterFxComponent
-            };
+    /* Master FX with an FX position selected. Same builder, same rules.
+     * Gated on the component's KIND rather than on an index compared against a
+     * fixed settings position: the list is as long as the chain now, so the
+     * settings box is not at a constant index and the `+` is not a module. */
+    if (view === VIEWS.MASTER_FX && selectedMasterFxComponent >= 0) {
+        const comp = masterFxChainComponents()[selectedMasterFxComponent];
+        if (comp && comp.kind === "module") {
+            /* The shim answers ":name" with the module id, so this one read is
+             * both the identity and the display name. */
+            const pluginName = getMasterFxParam(selectedMasterFxComponent, "name");
+            return buildChainKnobContext(MASTER_CHAIN_TARGET, comp, knobIndex,
+                                         pluginName, !!(pluginName && pluginName.length));
         }
     }
 
@@ -9145,10 +11391,10 @@ function showKnobOverlay(knobIndex, value) {
     if (ctx) {
         if (ctx.noModule) {
             /* Show "No Module Selected" when no module is loaded in slot */
-            showOverlay(ctx.title, "No Module Selected");
+            showKnobFeedback(knobIndex, ctx.title, "No Module Selected", undefined, ctx.cardName);
         } else if (ctx.noMapping) {
             /* Show "not mapped" for unmapped knob */
-            showOverlay(`Knob ${knobIndex + 1}`, "not mapped");
+            showKnobFeedback(knobIndex, `Knob ${knobIndex + 1}`, "not mapped");
         } else if (ctx.fullKey) {
             /* Mapped knob - show value */
             const title = isHierarchyParamModulated(ctx.slot, ctx.fullKey) ? `${ctx.title}~` : ctx.title;
@@ -9185,7 +11431,9 @@ function showKnobOverlay(knobIndex, value) {
                     displayVal = !isNaN(num) ? formatParamForOverlay(num, ctx.meta) : (currentVal || "-");
                 }
             }
-            showOverlay(title, displayVal);
+            /* `value` is the raw the caller turned to, if any — on a pure touch
+             * it is undefined and the card's own touch-down read supplies it. */
+            showKnobFeedback(knobIndex, title, displayVal, value, ctx.cardName);
         }
         needsRedraw = true;
         return true;
@@ -9207,7 +11455,7 @@ function adjustKnobAndShow(knobIndex, delta) {
         if (ctx.noModule) {
             /* No module loaded - show "No Module Selected" */
             debugLog(`adjustKnobAndShow: noModule, showing overlay`);
-            showOverlay(ctx.title, "No Module Selected");
+            showKnobFeedback(knobIndex, ctx.title, "No Module Selected", undefined, ctx.cardName);
             needsRedraw = true;
             return true;
         }
@@ -9220,7 +11468,7 @@ function adjustKnobAndShow(knobIndex, delta) {
             const overrideAccepts = mmRole && (mmRole.type === "zoom" || mmRole.type === "marker");
             if (!overrideAccepts) {
                 debugLog(`adjustKnobAndShow: noMapping or no fullKey, showing not mapped`);
-                showOverlay(`Knob ${knobIndex + 1}`, "not mapped");
+                showKnobFeedback(knobIndex, `Knob ${knobIndex + 1}`, "not mapped");
                 needsRedraw = true;
                 return true;
             }
@@ -9298,18 +11546,31 @@ function processPendingHierKnob() {
             if (ctx && ctx.fullKey) {
                 const cached = getKnobCachedValue(pendingHierKnobIndex, ctx);
                 if (cached !== null) {
+                    /* The knob index here is pendingHierKnobIndex, NOT a local
+                     * `knobIndex` — this branch runs at tick time for whatever
+                     * knob is still pending, and feeding the wrong one to the
+                     * card shows the wrong parameter. */
                     if (ctx.meta && (ctx.meta.type === "enum" || ctx.meta.type === "bool")) {
                         if (isTriggerEnumMeta(ctx.meta)) {
-                            showOverlay(ctx.title, getTriggerEnumOverlayValue(pendingHierKnobIndex));
+                            showKnobFeedback(pendingHierKnobIndex, ctx.title,
+                                             getTriggerEnumOverlayValue(pendingHierKnobIndex),
+                                             undefined, ctx.cardName);
                         } else {
-                            showOverlay(ctx.title, formatMetaOptionValue(ctx.meta, cached));
+                            showKnobFeedback(pendingHierKnobIndex, ctx.title,
+                                             formatMetaOptionValue(ctx.meta, cached), cached,
+                                             ctx.cardName);
                         }
                     } else if (ctx.meta && ctx.meta.type === "canvas") {
-                        showOverlay(ctx.title, formatCanvasDisplayValue(String(cached), ctx.meta));
+                        showKnobFeedback(pendingHierKnobIndex, ctx.title,
+                                         formatCanvasDisplayValue(String(cached), ctx.meta), cached,
+                                         ctx.cardName);
                     } else if (ctx.meta && ctx.meta.type === "string") {
-                        showOverlay(ctx.title, String(cached || ""));
+                        showKnobFeedback(pendingHierKnobIndex, ctx.title,
+                                         String(cached || ""), cached, ctx.cardName);
                     } else {
-                        showOverlay(ctx.title, formatParamForOverlay(cached, ctx.meta));
+                        showKnobFeedback(pendingHierKnobIndex, ctx.title,
+                                         formatParamForOverlay(cached, ctx.meta), cached,
+                                         ctx.cardName);
                     }
                     needsRedraw = true;
                 }
@@ -9364,7 +11625,8 @@ function processPendingHierKnob() {
                 hierEditorEditValue = formatted;
             }
             knobValueCache[knobIndex] = newVal;
-            showOverlay(m.meta.name || m.key, formatParamForOverlay(newVal, m.meta));
+            showKnobFeedback(knobIndex, m.meta.name || m.key,
+                             formatParamForOverlay(newVal, m.meta), newVal);
             needsRedraw = true;
             return;
         }
@@ -9399,9 +11661,10 @@ function processPendingHierKnob() {
             const shouldFire = updateTriggerEnumAccum(knobIndex, delta);
             if (shouldFire) {
                 setSlotParam(ctx.slot, ctx.fullKey, "trigger");
-                showOverlay(ctx.title, "Triggered");
+                showKnobFeedback(knobIndex, ctx.title, "Triggered", undefined, ctx.cardName);
             } else {
-                showOverlay(ctx.title, getTriggerEnumOverlayValue(knobIndex));
+                showKnobFeedback(knobIndex, ctx.title, getTriggerEnumOverlayValue(knobIndex),
+                                 undefined, ctx.cardName);
             }
             return;
         }
@@ -9426,7 +11689,9 @@ function processPendingHierKnob() {
         if (newIndex === currentIndex) {
             /* No option crossed yet — only update the overlay so the user sees
              * something happening, but DON'T setSlotParam (no value change). */
-            showOverlay(ctx.title, formatMetaOptionValue(ctx.meta, ctx.meta.options[currentIndex]));
+            showKnobFeedback(knobIndex, ctx.title,
+                             formatMetaOptionValue(ctx.meta, ctx.meta.options[currentIndex]),
+                             ctx.meta.options[currentIndex], ctx.cardName);
             return;
         }
         const newVal = ctx.meta.options[newIndex];
@@ -9439,17 +11704,20 @@ function processPendingHierKnob() {
             refreshHierarchyChainParams();
         }
         refreshHierarchyVisibility();
-        showOverlay(ctx.title, formatMetaOptionValue(ctx.meta, newVal));
+        showKnobFeedback(knobIndex, ctx.title, formatMetaOptionValue(ctx.meta, newVal), newVal,
+                         ctx.cardName);
         return;
     }
 
     if (ctx.meta && ctx.meta.type === "canvas") {
-        showOverlay(ctx.title, formatCanvasDisplayValue(String(currentVal), ctx.meta));
+        showKnobFeedback(knobIndex, ctx.title,
+                         formatCanvasDisplayValue(String(currentVal), ctx.meta), currentVal,
+                         ctx.cardName);
         return;
     }
 
     if (ctx.meta && ctx.meta.type === "string") {
-        showOverlay(ctx.title, String(currentVal || ""));
+        showKnobFeedback(knobIndex, ctx.title, String(currentVal || ""), currentVal, ctx.cardName);
         return;
     }
 
@@ -9494,7 +11762,7 @@ function processPendingHierKnob() {
     /* Show overlay directly — avoid showKnobOverlay which calls
      * isHierarchyParamModulated (1-3 blocking IPC reads). */
     const displayVal = formatParamForOverlay(newVal, ctx.meta);
-    showOverlay(ctx.title, displayVal);
+    showKnobFeedback(knobIndex, ctx.title, displayVal, newVal, ctx.cardName);
     needsRedraw = true;
 }
 
@@ -10750,7 +13018,7 @@ function drawHierarchyEditor() {
     /* Get plugin info */
     const prefix = getComponentParamPrefix(hierEditorComponent);
     const cfg = chainConfigs[hierEditorSlot] || createEmptyChainConfig();
-    const moduleData = cfg && cfg[hierEditorComponent];
+    const moduleData = getChainComponentModule(cfg, hierEditorComponent);
     const abbrev = moduleData ? getModuleAbbrev(moduleData.module) : hierEditorComponent.toUpperCase();
 
     /* Get bank or preset name for header depending on view */
@@ -10979,7 +13247,7 @@ function changeComponentPreset(delta) {
     if (newPreset >= editComponentPresetCount) newPreset = 0;
 
     /* Apply the preset change */
-    const prefix = editingComponentKey === "midiFx" ? "midi_fx1" : editingComponentKey;
+    const prefix = getComponentParamPrefix(editingComponentKey);
     setSlotParam(selectedSlot, `${prefix}:preset`, String(newPreset));
 
     /* Update local state */
@@ -11382,7 +13650,7 @@ function updateFocusedSlot(slot) {
 
     /* Check for Master FX errors when selecting the Master FX slot (slot 4) */
     if (slot === SHADOW_UI_SLOTS) {  /* Slot 4 = Master FX */
-        for (let fx = 0; fx < 4; fx++) {
+        for (let fx = 0; fx < MASTER_FX_SLOTS; fx++) {
             if (warningShownForMasterFx.has(fx)) continue;
             const fxModule = getMasterFxParam(fx, "module");
             if (fxModule && fxModule.length > 0) {
@@ -11396,7 +13664,49 @@ function updateFocusedSlot(slot) {
     }
 }
 
-function handleJog(delta) {
+/*
+ * Shift+jog in EITHER chain editor: move the selected module, and take the
+ * selection with it.
+ *
+ * Returns whether the gesture was CONSUMED, which is not the same as whether
+ * anything moved — a module already at the end of its section consumes the
+ * jog and says so, rather than quietly turning back into a selection change
+ * halfway through a reorder.
+ *
+ * Written once against a chain target, so Master FX gets the gesture in the
+ * same commit rather than in some later one that never comes. Nothing in here
+ * asks which chain it is holding: the selection, the list and the move all come
+ * off the target.
+ */
+function chainReorderJog(target, delta) {
+    const comp = target.components()[target.selection()];
+    if (!comp || comp.kind !== "module") return false;
+    if (!comp.module) { announce(`${comp.label} empty`); return true; }
+    if (!moveChainComponent(target, comp.key, delta)) {
+        announce(`${comp.label} ${delta < 0 ? "at the start" : "at the end"}`);
+        return true;
+    }
+    /* Re-anchor by where the module WENT, not by the index it left behind: the
+     * list is as long as the chain and every shape edit shifts it, so an index
+     * carried across one points at whatever took the vacated place. */
+    const after = target.components();
+    const want = chainEditorKeyAt(comp.section, comp.index + delta);
+    const at = after.findIndex((c) => c.key === want);
+    if (at >= 0) target.setSelection(at);
+    const moved = after[target.selection()];
+    announce(`${moved ? moved.label : comp.label} moved ${delta < 0 ? "left" : "right"}`);
+    needsRedraw = true;
+    return true;
+}
+
+/*
+ * `shift` defaults to the live modifier rather than being passed by every
+ * caller: there are two call sites (plain and co-run) and both want the same
+ * answer, so a parameter they both had to remember to fill in would be a
+ * parameter one of them eventually forgot. It is a parameter at all so the
+ * gesture can be driven without a device.
+ */
+function handleJog(delta, shift = isShiftHeld()) {
     hideOverlay();
     switch (view) {
         case VIEWS.SLOTS:
@@ -11441,21 +13751,37 @@ function handleJog(delta) {
                     announceMenuItem(item.label, value);
                 }
             } else if (selectingMasterFxModule) {
-                /* Navigate module list */
-                selectedMasterFxModuleIndex = Math.max(0, Math.min(MASTER_FX_OPTIONS.length - 1, selectedMasterFxModuleIndex + delta));
-                const module = MASTER_FX_OPTIONS[selectedMasterFxModuleIndex];
-                announceMenuItem("Module", module.name);
+                /* Navigate the picker's own rows — the modules plus this
+                 * position's Move Left / Move Right. */
+                selectedMasterFxModuleIndex = Math.max(0, Math.min(masterFxPickerItems.length - 1, selectedMasterFxModuleIndex + delta));
+                const module = masterFxPickerItems[selectedMasterFxModuleIndex];
+                if (module) announceMenuItem("Module", module.name);
+            } else if (shift && chainReorderJog(MASTER_CHAIN_TARGET, delta)) {
+                /* Shift turns the jog from "which module" into "where does this
+                 * module go" — the SAME gesture the slot chain has, through the
+                 * same function. It is consumed either way once a module is
+                 * selected, so the selection cannot creep sideways underneath a
+                 * reorder the user thinks they are performing. */
+                needsRedraw = true;
             } else {
                 /* Navigate chain components (-1 = preset selection, like instrument slots)
-                 * Preset picker is only accessible via click, not scroll */
-                selectedMasterFxComponent = Math.max(-1, Math.min(MASTER_FX_CHAIN_COMPONENTS.length - 1, selectedMasterFxComponent + delta));
+                 * Preset picker is only accessible via click, not scroll.
+                 * Bounded by the list's own length, which is the LOADED chain
+                 * plus its `+` and Settings — never by the cap. */
+                const comps = masterFxChainComponents();
+                selectedMasterFxComponent = Math.max(-1, Math.min(comps.length - 1, selectedMasterFxComponent + delta));
                 if (selectedMasterFxComponent === -1) {
                     announce("Preset Selection");
                 } else {
-                    const comp = MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
-                    const compKey = comp.key;
-                    const moduleName = masterFxConfig?.[compKey]?.module || "Empty";
-                    announceMenuItem(comp.label, moduleName);
+                    const comp = comps[selectedMasterFxComponent];
+                    if (comp.kind === "add") {
+                        /* "+, Empty" says nothing. The label already is the
+                         * whole instruction. */
+                        announce(comp.label);
+                    } else {
+                        const moduleName = masterFxConfig?.[comp.key]?.module || "Empty";
+                        announceMenuItem(comp.label, moduleName);
+                    }
                 }
             }
             break;
@@ -11479,16 +13805,30 @@ function handleJog(delta) {
             break;
         case VIEWS.CHAIN_EDIT:
             /* Navigate horizontally through chain components (-1 = chain/patch selection) */
-            selectedChainComponent = Math.max(-1, Math.min(CHAIN_COMPONENTS.length - 1, selectedChainComponent + delta));
-            lastChainComponent[selectedSlot] = selectedChainComponent;
-            /* Announce component */
-            if (selectedChainComponent === -1) {
-                announce("Patch Selection");
-            } else {
-                const comp = CHAIN_COMPONENTS[selectedChainComponent];
-                const compKey = comp.key;
-                const moduleName = chainConfigs[selectedSlot]?.[compKey]?.module || "Empty";
-                announceMenuItem(comp.label, moduleName);
+            {
+                /* Shift turns the jog from "which module" into "where does
+                 * this module go". It is consumed either way once a module is
+                 * selected, so the selection cannot creep sideways underneath a
+                 * reorder the user thinks they are performing. */
+                if (shift && chainReorderJog(slotChainTarget(selectedSlot), delta)) break;
+                const comps = slotChainComponents(selectedSlot);
+                selectedChainComponent = Math.max(-1, Math.min(comps.length - 1, selectedChainComponent + delta));
+                lastChainComponent[selectedSlot] = selectedChainComponent;
+                /* Announce component */
+                if (selectedChainComponent === -1) {
+                    announce("Patch Selection");
+                } else {
+                    const comp = comps[selectedChainComponent];
+                    if (comp.kind === "add") {
+                        /* "+, Empty" says nothing. The label already is the
+                         * whole instruction. */
+                        announce(comp.label);
+                    } else {
+                        const moduleName =
+                            getChainComponentModule(chainConfigs[selectedSlot], comp.key)?.module || "Empty";
+                        announceMenuItem(comp.label, moduleName);
+                    }
+                }
             }
             break;
         case VIEWS.COMPONENT_SELECT:
@@ -11890,9 +14230,34 @@ function handleSelect() {
                 /* Preset selected - enter preset picker */
                 enterMasterPresetPicker();
             } else {
-                const selectedComp = MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
+                const selectedComp = masterFxChainComponents()[selectedMasterFxComponent];
+                if (!selectedComp) {
+                    /* The list is as long as the chain now, so a selection can
+                     * outlive the position it named. Nothing to open. */
+                    break;
+                }
+                if (selectedComp.kind === "add") {
+                    /* The `+`: same gesture, same helper, same rules as the slot
+                     * chain's audio-FX `+`. */
+                    const at = beginChainInsertFromAddBox(MASTER_CHAIN_TARGET, selectedComp);
+                    if (at >= 0) {
+                        selectedMasterFxComponent = at;
+                        enterMasterFxModuleSelect(at);
+                    }
+                    break;
+                }
                 if (selectedComp.key === "settings") {
                     /* Enter settings submenu */
+                    /* Knob grid instead of the list, when the user has opted
+                     * in — the SAME gate, and the same four pages, a slot's
+                     * Settings position gets. The screen reader still gets the
+                     * list (paramPagesEnabled returns false for it): a grid has
+                     * eight cells and nothing selected to read out. */
+                    if (paramPagesEnabled() && !suppressMasterGridOnce) {
+                        enterMasterFxSettingsGrid();
+                        break;
+                    }
+                    suppressMasterGridOnce = false;
                     inMasterFxSettingsMenu = true;
                     selectedMasterFxSetting = 0;
                     editingMasterFxSetting = false;
@@ -11910,12 +14275,8 @@ function handleSelect() {
 
                     /* Mute+JogClick: toggle bypass on a populated MFX slot */
                     if (hostMuteHeld && moduleData && moduleData.module) {
-                        const fullKey = `master_fx:${selectedComp.key}:bypassed`;
-                        const cur = parseInt(shadow_get_param(0, fullKey) || "0", 10);
-                        const next = cur ? 0 : 1;
-                        shadow_set_param(0, fullKey, String(next));
-                        announce(next ? `${selectedComp.label} bypassed` : `${selectedComp.label} active`);
-                        needsRedraw = true;
+                        toggleChainComponentBypass(MASTER_CHAIN_TARGET,
+                                                   selectedComp.key, selectedComp.label);
                         break;
                     }
 
@@ -11957,24 +14318,28 @@ function handleSelect() {
             if (selectedChainComponent === -1) {
                 /* Chain selected - open patch browser */
                 enterPatchBrowser(selectedSlot);
-            } else if (selectedChainComponent === CHAIN_COMPONENTS.length - 1) {
+            } else if (selectedChainComponent === slotChainComponents(selectedSlot).length - 1) {
                 /* Settings selected - go to chain settings */
                 enterChainSettings(selectedSlot);
             } else {
                 /* Component selected - check if populated or empty */
-                const comp = CHAIN_COMPONENTS[selectedChainComponent];
-                const cfg = chainConfigs[selectedSlot];
-                const moduleData = cfg && cfg[comp.key];
+                const comp = slotChainComponents(selectedSlot)[selectedChainComponent];
+
+                /* A `+` box: open the picker on a NEW position WHERE THE BOX IS
+                 * DRAWN. See beginChainInsertFromAddBox, which Master FX's `+`
+                 * goes through too. */
+                if (comp && comp.kind === "add") {
+                    const at = beginChainInsertFromAddBox(slotChainTarget(selectedSlot), comp);
+                    if (at >= 0) enterComponentSelect(selectedSlot, at);
+                    break;
+                }
+
+                const moduleData = getChainComponentModule(chainConfigs[selectedSlot], comp.key);
 
                 /* Mute+JogClick: toggle bypass on a populated module */
                 if (hostMuteHeld && moduleData && moduleData.module) {
-                    const dspPrefix = comp.key === "midiFx" ? "midi_fx1" : comp.key;
-                    const key = `${dspPrefix}:bypassed`;
-                    const cur = parseInt(getSlotParam(selectedSlot, key) || "0", 10);
-                    const next = cur ? 0 : 1;
-                    setSlotParam(selectedSlot, key, String(next));
-                    announce(next ? `${comp.label} bypassed` : `${comp.label} active`);
-                    needsRedraw = true;
+                    toggleChainComponentBypass(slotChainTarget(selectedSlot),
+                                               comp.key, comp.label);
                     break;
                 }
 
@@ -12082,66 +14447,7 @@ function handleSelect() {
                 const items = getChainSettingsItems(selectedSlot);
                 const setting = items[selectedChainSetting];
                 if (setting.type === "action") {
-                    if (setting.key === "knobs") {
-                        enterKnobEditor(selectedSlot);
-                    } else if (setting.key === "save") {
-                        /* Start save flow */
-                        const currentName = slots[selectedSlot] ? slots[selectedSlot].name : "";
-                        if (!currentName || currentName === "" || currentName === "Untitled") {
-                            /* New - show name preview with Edit/OK */
-                            pendingSaveName = generateSlotPresetName(selectedSlot);
-                            showingNamePreview = true;
-                            namePreviewIndex = 1;  /* Default to OK */
-                            overwriteFromKeyboard = true;  /* Will use keyboard if Edit is selected */
-                            announceSavePreview(pendingSaveName, namePreviewIndex);
-                            needsRedraw = true;
-                        } else {
-                            /* Existing - confirm overwrite (no keyboard needed) */
-                            pendingSaveName = currentName;
-                            overwriteTargetIndex = findPatchByName(currentName);
-                            confirmingOverwrite = true;
-                            overwriteFromKeyboard = false;  /* Direct save, no keyboard */
-                            confirmIndex = 0;
-                            needsRedraw = true;
-                        }
-                    } else if (setting.key === "save_as") {
-                        /* Save As - show name preview with Edit/OK */
-                        const currentName = slots[selectedSlot] ? slots[selectedSlot].name : "";
-                        pendingSaveName = currentName && currentName !== "" && currentName !== "Untitled"
-                            ? currentName
-                            : generateSlotPresetName(selectedSlot);
-                        showingNamePreview = true;
-                        namePreviewIndex = 1;  /* Default to OK */
-                        overwriteFromKeyboard = true;  /* Will use keyboard if Edit is selected */
-                        announceSavePreview(pendingSaveName, namePreviewIndex);
-                        needsRedraw = true;
-                    } else if (setting.key === "lfo1" || setting.key === "lfo2") {
-                        const lfoIdx = (setting.key === "lfo1") ? 0 : 1;
-                        lfoCtx = makeSlotLfoCtx(selectedSlot, lfoIdx);
-                        selectedLfoItem = 0;
-                        editingLfoValue = false;
-                        setView(VIEWS.LFO_EDIT);
-                        const enabled = lfoCtx.getParam("enabled");
-                        if (enabled === "1") {
-                            const target = lfoCtx.getParam("target") || "";
-                            const param = lfoCtx.getParam("target_param") || "";
-                            if (target && param) {
-                                announce(lfoCtx.title + ", " + target + ":" + param);
-                            } else {
-                                announce(lfoCtx.title + ", no target");
-                            }
-                        } else {
-                            announce(lfoCtx.title + ", Off");
-                        }
-                    } else if (setting.key === "delete") {
-                        if (isExistingPreset(selectedSlot)) {
-                            confirmingDelete = true;
-                            confirmIndex = 0;
-                            const patchName = slots[selectedSlot]?.name || "patch";
-                            announce(`Delete ${patchName}?`);
-                            needsRedraw = true;
-                        }
-                    }
+                    runChainSettingAction(selectedSlot, setting.key);
                 } else {
                     editingChainSettingValue = !editingChainSettingValue;
                 }
@@ -12154,7 +14460,7 @@ function handleSelect() {
                 const selectedMode = hierEditorParams[hierEditorSelectedIdx];
                 /* Check for swap module action first */
                 if (selectedMode === SWAP_MODULE_ACTION) {
-                    const compIndex = CHAIN_COMPONENTS.findIndex(c => c.key === hierEditorComponent);
+                    const compIndex = slotChainComponentIndex(hierEditorSlot, hierEditorComponent);
                     const slotToSwap = hierEditorSlot;
                     if (compIndex >= 0) {
                         exitHierarchyEditor();
@@ -12198,7 +14504,8 @@ function handleSelect() {
                     const componentKey = hierEditorComponent;
                     cameFromParamPages = false;
                     exitHierarchyEditor();
-                    enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey));
+                    enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey),
+                        null, null, paramPagesChromeFor(componentKey));
                 } else {
                     /* No children - enter preset edit mode to show params/swap */
                     hierEditorPresetEditMode = true;
@@ -12309,7 +14616,7 @@ function handleSelect() {
                         enterMasterFxModuleSelect(fxSlot);
                     } else {
                         /* Regular chain slot: find component index and enter module select */
-                        const compIndex = CHAIN_COMPONENTS.findIndex(c => c.key === hierEditorComponent);
+                        const compIndex = slotChainComponentIndex(hierEditorSlot, hierEditorComponent);
                         const slotToSwap = hierEditorSlot;  /* Save before exit clears it */
                         if (compIndex >= 0) {
                             exitHierarchyEditor();
@@ -12327,41 +14634,8 @@ function handleSelect() {
                     const meta = getParamMetadata(selectedKey);
                     if (!hierEditorEditMode && meta && meta.picker_type) {
                         openDynamicParamPicker(selectedKey, meta);
-                    } else if (!hierEditorEditMode && meta && meta.type === "string") {
-                        const fullKey = buildHierarchyParamKey(selectedKey);
-                        const currentText = getSlotParam(hierEditorSlot, fullKey) || "";
-                        openTextEntry({
-                            title: meta.name || selectedKey,
-                            initialText: String(currentText),
-                            onAnnounce: announce,
-                            onConfirm: (nextText) => {
-                                setSlotParam(hierEditorSlot, fullKey, String(nextText || ""));
-                                refreshHierarchyVisibility();
-                                announceParameter(meta.name || selectedKey, String(nextText || ""));
-                                needsRedraw = true;
-                            },
-                            onCancel: () => {
-                                needsRedraw = true;
-                            }
-                        });
-                    } else if (!hierEditorEditMode && meta && meta.type === "canvas") {
-                        openCanvasPreview(selectedKey, meta);
-                        needsRedraw = true;
-                    } else if (!hierEditorEditMode && meta && meta.type === "filepath") {
-                        openHierarchyFilepathBrowser(selectedKey, meta);
                     } else {
-                        if (!hierEditorEditMode) {
-                            if (beginHierarchyParamEdit(selectedKey)) {
-                                hierEditorEditMode = true;
-                                /* Knob context override depends on edit mode +
-                                 * multi-marker role; force re-evaluation. */
-                                invalidateKnobContextCache();
-                            }
-                        } else {
-                            hierEditorEditMode = false;
-                            resetHierarchyEditState();
-                            invalidateKnobContextCache();
-                        }
+                        openHierarchyParamEditor(selectedKey, meta, false);
                     }
                 }
             }
@@ -12602,7 +14876,7 @@ function handleSelect() {
                 if (comp.key === "__clear__") {
                     lfoCtx.setParamBlocking("target", "");
                     lfoCtx.setParamBlocking("target_param", "");
-                    setView(VIEWS.LFO_EDIT);
+                    if (!returnToSlotGridFromLfoTarget()) setView(VIEWS.LFO_EDIT);
                     announce("Target cleared");
                     needsRedraw = true;
                 } else {
@@ -12617,7 +14891,7 @@ function handleSelect() {
                 const param = lfoTargetParams[selectedLfoTargetParam];
                 lfoCtx.setParamBlocking("target", comp.key);
                 lfoCtx.setParamBlocking("target_param", param.key);
-                setView(VIEWS.LFO_EDIT);
+                if (!returnToSlotGridFromLfoTarget()) setView(VIEWS.LFO_EDIT);
                 announce("Target set: " + comp.label + " " + param.label);
                 needsRedraw = true;
             }
@@ -12763,7 +15037,10 @@ function handleBack() {
                 needsRedraw = true;
                 announce("Master FX");
             } else if (selectingMasterFxModule) {
-                /* Cancel module selection, return to chain view */
+                /* Cancel module selection, return to chain view. Backing out of
+                 * a `+` picker WRITES NOTHING AT ALL — the position it opened
+                 * only ever existed in the model, and dropping it is a reload.*/
+                cancelPendingChainInsert();
                 selectingMasterFxModule = false;
                 needsRedraw = true;
                 announce("Master FX");
@@ -12781,7 +15058,12 @@ function handleBack() {
             }
             break;
         case VIEWS.COMPONENT_SELECT:
-            /* Return to chain edit */
+            /* Return to chain edit. A picker opened from a `+` box leaves with
+             * the position it materialised — and with the RECORD of it, which
+             * matters more: left set, the next ordinary swap at that same key
+             * would be mistaken for the insert and rewritten as a renumber
+             * of an edit that never happened. */
+            cancelPendingChainInsert();
             setView(VIEWS.CHAIN_EDIT);
             announce("Chain Editor");
             needsRedraw = true;
@@ -12846,7 +15128,18 @@ function handleBack() {
                 hierEditorEditMode = false;
                 resetHierarchyEditState();
                 needsRedraw = true;
-                announceHierLevel();
+                if (paramEditorOpenedFromGrid) {
+                    /* The grid opened this one param; closing it goes back to
+                     * the grid, not to a list the user never asked for. */
+                    returnToParamPagesFromEditor();
+                } else {
+                    announceHierLevel();
+                }
+            } else if (paramEditorOpenedFromGrid) {
+                /* Not in edit mode, but we still got here from the grid — a
+                 * filepath/canvas/string editor is its own VIEW, so it has
+                 * already returned here by the time Back is pressed again. */
+                returnToParamPagesFromEditor();
             } else if (hierEditorPresetEditMode) {
                 /* Exit preset edit mode - return to preset browser */
                 hierEditorPresetEditMode = false;
@@ -13057,6 +15350,9 @@ function handleBack() {
             }
             break;
         case VIEWS.LFO_TARGET_COMPONENT:
+            /* Opened from a grid cell? Go back to the grid, not to the list
+             * editor screen the user never opened. */
+            if (returnToSlotGridFromLfoTarget()) break;
             setView(VIEWS.LFO_EDIT);
             announce(lfoCtx ? lfoCtx.title : "LFO");
             needsRedraw = true;
@@ -13156,14 +15452,17 @@ function refreshPendingKnobOverlay() {
         knobMappings[pendingKnobIndex].value = newValue || "-";
     }
 
-    /* Show overlay using shared overlay system */
+    /* Show the feedback (card in the chain editor, centred box elsewhere).
+     * The knob index is pendingKnobIndex, which this function CLEARS below —
+     * read it here, while it is still the knob this refresh is about. */
     const mapping = knobMappings[pendingKnobIndex];
     if (mapping && mapping.name) {
         const displayName = `S${targetSlot + 1}: ${mapping.name}`;
-        showOverlay(displayName, mapping.value);
+        /* Announced with the slot, drawn without it — see showKnobFeedback. */
+        showKnobFeedback(pendingKnobIndex, displayName, mapping.value, undefined, mapping.name);
     } else {
         /* No mapping for this knob */
-        showOverlay(`Knob ${pendingKnobIndex + 1}`, "not mapped");
+        showKnobFeedback(pendingKnobIndex, `Knob ${pendingKnobIndex + 1}`, "not mapped");
     }
 
     pendingKnobRefresh = false;
@@ -13184,31 +15483,63 @@ function drawChainEdit() {
     const dirtyMark = slotDirtyCache[selectedSlot] ? "*" : "";
     const patchName = isExistingPreset(selectedSlot) ? slots[selectedSlot].name : null;
     const headerText = patchName
-        ? truncateText(`${dirtyMark}${patchName}`, 24)
+        ? truncateText(`${dirtyMark}${patchName}`, 20)
         : `${dirtyMark}Slot ${selectedSlot + 1}`;
-    drawHeader(headerText);
+    /*
+     * The knob-grid chrome. This is the screen you pass through to reach every
+     * other one, so it was the last place still announcing itself in a
+     * different font with no footer — you left the editor and the furniture
+     * changed. The body is a diagram rather than a list, so only the bands
+     * move: header at the top, hints at the bottom, and the boxes refitted
+     * between them.
+     */
+    /*
+     * The same primitive set shadow_ui_param_pages.mjs hands the knob grid: the
+     * knob card draws real widgets, and the arc knob takes a C path when
+     * draw_arc is there and a slow JS fallback when it is not. Each is probed
+     * because the harness and the older host builds do not have all of them.
+     */
+    const movy = {
+        fillRect: fill_rect, print, textWidth: text_width, setPixel: set_pixel,
+        line: typeof draw_line === "function" ? draw_line : undefined,
+        fillCircle: typeof fill_circle === "function" ? fill_circle : undefined,
+        drawCircle: typeof draw_circle === "function" ? draw_circle : undefined,
+        drawArc: typeof draw_arc === "function" ? draw_arc : undefined,
+    };
 
-    /* Refresh chain config from DSP each render to ensure display matches actual state.
-     * Without this, the cached chainConfigs can be stale if the slot was loaded
-     * externally (e.g. patch restore) and the periodic signature refresh hasn't run yet. */
-    loadChainConfigFromSlot(selectedSlot);
-    const cfg = chainConfigs[selectedSlot] || createEmptyChainConfig();
+    /* The chain config, reloaded from the DSP only when something has made it
+     * stale — see chainConfigFresh. This was an unconditional reload per frame,
+     * `3 + <chain length>` IPC round trips at ~2.8ms, which is several frame
+     * budgets on a short chain and grows with a long one. An external load
+     * (patch restore, the shim loading a slot) is caught by the periodic
+     * refreshSlotModuleSignature, which is what that reload was really standing
+     * in for. */
+    const cfg = ensureChainConfigFresh(selectedSlot);
     const chainSelected = selectedChainComponent === -1;
 
-    /* Calculate box layout - 5 components, offset right to make room for slot indicators */
-    const BOX_W = 22;
-    const BOX_H = 16;
-    const GAP = 2;
-    const TOTAL_W = 5 * BOX_W + 4 * GAP;  // 118px
-    const START_X = 6 + Math.floor((SCREEN_WIDTH - 6 - TOTAL_W) / 2);  // centered right of indicators
-    const BOX_Y = 20;  // Below header
+    /*
+     * The header's right-hand side names the SYNTH, not the screen.
+     *
+     * Once the chain is longer than the five boxes that fit, the diagram
+     * scrolls and the synth can be off-screen — and it is the one position
+     * every chain has and the only landmark in a row of two-letter
+     * abbreviations. "CHAIN" was already obvious from everything else on the
+     * screen; which synth you are building on is not. Cached, so this is not
+     * an IPC read per frame.
+     */
+    const synthMod = cfg.synth && cfg.synth.module;
+    const headerRight = synthMod
+        ? (getSlotParamCached(selectedSlot, "synth:name", synthMod) || synthMod)
+        : "CHAIN";
+
+    const BOX_Y = DIAGRAM_Y;
 
     /* Draw slot indicators - 4 marks in left margin, spanning from below header to footer */
     const INDICATOR_X = 0;
     const INDICATOR_W = 4;
     const INDICATOR_GAP = 1;
     const INDICATOR_START_Y = BOX_Y;  // same margin below title rule as boxes
-    const INDICATOR_END_Y = FOOTER_RULE_Y;  // same margin above footer
+    const INDICATOR_END_Y = MOVY_RULE_Y;   // same margin above the footer rule
     const INDICATOR_H = Math.floor((INDICATOR_END_Y - INDICATOR_START_Y - 3 * INDICATOR_GAP) / 4);
     for (let s = 0; s < 4; s++) {
         const iy = INDICATOR_START_Y + s * (INDICATOR_H + INDICATOR_GAP);
@@ -13219,133 +15550,56 @@ function drawChainEdit() {
         }
     }
 
-    /* Build map of LFO-targeted component keys → which LFOs (1, 2, or both) */
-    const lfoTargets = {};  /* key → {lfo1: bool, lfo2: bool} */
-    for (let li = 1; li <= 2; li++) {
-        if (getSlotParam(selectedSlot, "lfo" + li + ":enabled") === "1") {
-            let t = getSlotParam(selectedSlot, "lfo" + li + ":target") || "";
-            if (t === "midi_fx1" || t === "midi_fx2") t = "midiFx";
-            if (t) {
-                if (!lfoTargets[t]) lfoTargets[t] = {};
-                lfoTargets[t]["lfo" + li] = true;
-            }
-        }
-    }
+    /*
+     * Which components an LFO is pointed at — shared with Master FX, see
+     * chainLfoTargetMap. Four IPC reads, fixed.
+     */
+    const target = slotChainTarget(selectedSlot);
+    const lfoTargets = chainLfoTargetMap(target);  /* key -> {lfo1: bool, lfo2: bool} */
 
-    /* Draw each component box */
-    for (let i = 0; i < CHAIN_COMPONENTS.length; i++) {
-        const comp = CHAIN_COMPONENTS[i];
-        const x = START_X + i * (BOX_W + GAP);
-        const isSelected = i === selectedChainComponent;
+    /*
+     * The diagram itself -> shared/chain_diagram.mjs, which is pure and can
+     * therefore be rendered into a framebuffer and inspected (see
+     * tests/host/test_chain_diagram.sh). Everything it needs that costs an IPC
+     * read is fetched HERE, once per box, so the module stays testable and the
+     * read count stays visible in one place.
+     */
+    const comps = slotChainComponents(selectedSlot);
+    drawChainDiagram(movy, comps, selectedChainComponent, {
+        allSelected: chainSelected,
+        abbrev: (comp) => {
+            if (comp.kind === "add") return "+";
+            if (comp.kind === "settings") return "*";
+            const moduleData = getChainComponentModule(cfg, comp.key);
+            return moduleData ? getModuleAbbrev(moduleData.module) : "--";
+        },
+        marks: (comp) => {
+            const lfo = lfoTargets[comp.key];
+            /* One read per DRAWN module box — five at most, because that is
+             * how many fit — rather than one per position in the chain. */
+            const bypassed = chainComponentBypassed(target, comp.key);
+            if (!lfo && !bypassed) return null;
+            return { bypassed, lfo1: lfo && lfo.lfo1, lfo2: lfo && lfo.lfo2 };
+        },
+    });
 
-        /* Get abbreviation for this component */
-        let abbrev = "--";
-        if (comp.key === "settings") {
-            abbrev = "*";
-        } else {
-            const moduleData = cfg[comp.key];
-            abbrev = moduleData ? getModuleAbbrev(moduleData.module) : "--";
-        }
-
-        /* Draw box:
-         * - If chain selected (position -1): all boxes filled (inverted)
-         * - If individual component selected: that box filled
-         * - Otherwise: outlined box */
-        const fillBox = chainSelected || isSelected;
-        if (fillBox) {
-            fill_rect(x, BOX_Y, BOX_W, BOX_H, 1);
-        } else {
-            draw_rect(x, BOX_Y, BOX_W, BOX_H, 1);
-        }
-
-        /* Draw abbreviation centered in box (original tuned formula) */
-        const textColor = fillBox ? 0 : 1;
-        const textX = x + Math.floor((BOX_W - abbrev.length * 5) / 2);
-        const textY = BOX_Y + 5;
-        print(textX, textY, abbrev, textColor);
-
-        /* Draw bypass 'B' marker above box, same style as the LFO `~N` indicator
-         * (4px-high glyph). Positioned at left so it doesn't collide with the
-         * centered LFO marker when both are present. */
-        let bypassed = false;
-        if (comp.key !== "settings") {
-            const dspPrefix = comp.key === "midiFx" ? "midi_fx1" : comp.key;
-            bypassed = parseInt(getSlotParam(selectedSlot, `${dspPrefix}:bypassed`) || "0", 10) === 1;
-        }
-        if (bypassed) {
-            const bx = x + 1;
-            const by = BOX_Y - 6;
-            /* "B" glyph: ##. / #.# / ##. / ### */
-            set_pixel(bx,     by,     1); set_pixel(bx + 1, by,     1);
-            set_pixel(bx,     by + 1, 1); set_pixel(bx + 2, by + 1, 1);
-            set_pixel(bx,     by + 2, 1); set_pixel(bx + 1, by + 2, 1);
-            set_pixel(bx,     by + 3, 1); set_pixel(bx + 1, by + 3, 1); set_pixel(bx + 2, by + 3, 1);
-        }
-
-        /* Draw LFO indicator above box: ~1, ~2, or ~1+2 using 4px-high tiny digits */
-        const lfoInfo = lfoTargets[comp.key];
-        if (lfoInfo) {
-            const has1 = lfoInfo.lfo1;
-            const has2 = lfoInfo.lfo2;
-            const iy = BOX_Y - 6;  /* 6px above box top (4px glyph + 2px gap) */
-            let cx = x + Math.floor(BOX_W / 2);
-            if (has1 && has2) cx -= 7; /* center ~1+2 */
-            else cx -= 3;              /* center ~N */
-            /* 4px-high tilde squiggle: .... / .#.# / #.#. / .... */
-            set_pixel(cx + 1, iy + 1, 1); set_pixel(cx + 3, iy + 1, 1);
-            set_pixel(cx, iy + 2, 1); set_pixel(cx + 2, iy + 2, 1);
-            let dx = cx + 5;
-            if (has1 && has2) {
-                /* tiny "1": .#. / ##. / .#. / .#. */
-                set_pixel(dx + 1, iy, 1);
-                set_pixel(dx, iy + 1, 1); set_pixel(dx + 1, iy + 1, 1);
-                set_pixel(dx + 1, iy + 2, 1);
-                set_pixel(dx + 1, iy + 3, 1);
-                dx += 3;
-                /* tiny "+": cross centered vertically */
-                set_pixel(dx, iy + 2, 1);
-                set_pixel(dx + 1, iy + 1, 1); set_pixel(dx + 1, iy + 2, 1); set_pixel(dx + 1, iy + 3, 1);
-                set_pixel(dx + 2, iy + 2, 1);
-                dx += 4;
-                /* tiny "2": ##. / ..# / .#. / ### */
-                set_pixel(dx, iy, 1); set_pixel(dx + 1, iy, 1);
-                set_pixel(dx + 2, iy + 1, 1);
-                set_pixel(dx + 1, iy + 2, 1);
-                set_pixel(dx, iy + 3, 1); set_pixel(dx + 1, iy + 3, 1); set_pixel(dx + 2, iy + 3, 1);
-            } else if (has1) {
-                /* tiny "1": .#. / ##. / .#. / .#. */
-                set_pixel(dx + 1, iy, 1);
-                set_pixel(dx, iy + 1, 1); set_pixel(dx + 1, iy + 1, 1);
-                set_pixel(dx + 1, iy + 2, 1);
-                set_pixel(dx + 1, iy + 3, 1);
-            } else {
-                /* tiny "2": ##. / ..# / .#. / ### */
-                set_pixel(dx, iy, 1); set_pixel(dx + 1, iy, 1);
-                set_pixel(dx + 2, iy + 1, 1);
-                set_pixel(dx + 1, iy + 2, 1);
-                set_pixel(dx, iy + 3, 1); set_pixel(dx + 1, iy + 3, 1); set_pixel(dx + 2, iy + 3, 1);
-            }
-        }
-    }
-
-    /* Draw component label below boxes */
-    const selectedComp = chainSelected ? null : CHAIN_COMPONENTS[selectedChainComponent];
-    const labelY = BOX_Y + BOX_H + 4;
+    /* What the two bands under the boxes say: the selected component's label,
+     * and the module/preset it holds. drawChainEditorBands draws them — the
+     * geometry and the centring are shared with Master FX. */
+    const selectedComp = chainSelected ? null : comps[selectedChainComponent];
     const label = chainSelected ? "Chain" : (selectedComp ? selectedComp.label : "");
-    const labelX = Math.floor((SCREEN_WIDTH - label.length * 5) / 2);
-    print(labelX, labelY, label, 1);
 
-    /* Draw current module name/preset below label */
-    const infoY = labelY + 12;
     let infoLine = "";
     if (chainSelected) {
         /* Show patch name when chain is selected */
         infoLine = slots[selectedSlot]?.name || "(no patch)";
+    } else if (selectedComp && selectedComp.kind === "add") {
+        infoLine = selectedComp.section === "midiFx" ? "New MIDI effect" : "New effect";
     } else if (selectedComp && selectedComp.key !== "settings") {
-        const moduleData = cfg[selectedComp.key];
+        const moduleData = getChainComponentModule(cfg, selectedComp.key);
         if (moduleData) {
             /* Get display name from DSP if available */
-            const prefix = selectedComp.key === "midiFx" ? "midi_fx1" : selectedComp.key;
+            const prefix = getComponentParamPrefix(selectedComp.key);
             /* Cached: these were three IPC round-trips per frame. */
             const mid = moduleData.module;
             let displayName = getSlotParamCached(selectedSlot, `${prefix}:name`, mid) || mid;
@@ -13363,35 +15617,76 @@ function drawChainEdit() {
     } else if (selectedComp && selectedComp.key === "settings") {
         infoLine = "Configure slot";
     }
-    infoLine = truncateText(infoLine, 24);
-    const infoX = Math.floor((SCREEN_WIDTH - infoLine.length * 5) / 2);
-    print(infoX, infoY, infoLine, 1);
+
+    /*
+     * The bands: header, label, info, footer -> shared/chain_editor_chrome.mjs,
+     * the same call Master FX makes, so the two editors cannot drift apart on
+     * their furniture again.
+     *
+     * Back leaves shadow mode entirely from here — one of the two screens where
+     * it does, Master FX being the other — so the footer says EXIT rather than
+     * OUT.
+     *
+     * The hints follow the modifier because Shift silently repurposes the jog:
+     * a reorder gesture with a footer still reading SEL is a gesture nobody
+     * finds. Shift drops CLK, which is unchanged, rather than adding a fourth
+     * pair — three pairs only fit while every word is <= 4 characters, and
+     * drawFooter drops what does not fit rather than squeezing it.
+     *
+     * isShiftHeld() is a read of the control SHM, not an IPC round trip, so
+     * this is a per-frame call that costs nothing measurable.
+     */
+    drawChainEditorBands(movy, {
+        headerLeft: headerText,
+        headerRight,
+        label,
+        info: infoLine,
+        hints: isShiftHeld()
+            ? [["JOG", "MOVE"], ["BACK", "EXIT"]]
+            : [["JOG", "SEL"], ["CLK", "OPEN"], ["BACK", "EXIT"]],
+    });
+
+    /*
+     * The card last, over everything — it is a modal. Every value it draws was
+     * read on touch-down, so this costs no IPC. See knobCardOpen.
+     */
+    const card = knobCardDrawState();
+    if (card) drawKnobCard(movy, card);
 }
 
 /* Draw component module selection list */
+/*
+ * The module picker, in the knob-grid chrome.
+ *
+ * You reach this from a component and you go straight back to it, so it is
+ * part of that flow and should look like it: same header band and face, same
+ * list rect, same footer. It used to wear the older list chrome — a different
+ * header font, no footer at all — which made choosing a module feel like
+ * leaving the editor rather than a step inside it.
+ *
+ * The DRAWING is drawChainPicker, shared with Master FX. Master FX kept the
+ * older chrome after this screen moved, so the two pickers chose from the same
+ * chainMoveEntries-built list and then looked like different products — see the
+ * comment on drawChainPicker for why that had to stop being possible.
+ *
+ * No bank bar: there is no page set here, and drawing one would claim a
+ * position among pages that do not exist.
+ */
 function drawComponentSelect() {
     clear_screen();
-    const comp = CHAIN_COMPONENTS[selectedChainComponent];
-    drawHeader(`Select ${comp ? comp.label : "Module"}`);
+    const comp = slotChainComponents(selectedSlot)[selectedChainComponent];
+    const ctx = { fillRect: fill_rect, print, textWidth: text_width };
 
-    if (availableModules.length === 0) {
-        print(LIST_LABEL_X, LIST_TOP_Y, "No modules available", 1);
-        return;
-    }
+    const current = comp ? getChainComponentModule(chainConfigs[selectedSlot], comp.key) : null;
 
-    drawMenuList({
-        items: availableModules,
-        selectedIndex: selectedModuleIndex,
-        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
-        lineHeight: 9,  /* Smaller to fit 4 items */
-        getLabel: (item) => item.name || item.id || "Unknown",
-        getValue: (item) => {
-            const cfg = chainConfigs[selectedSlot];
-            const compKey = CHAIN_COMPONENTS[selectedChainComponent]?.key;
-            const current = cfg && cfg[compKey];
-            const currentId = current ? current.module : null;
-            return currentId === item.id ? "*" : "";
-        }
+    drawChainPicker(ctx, {
+        /* Which chain, then which position in it — the slot editor's own header
+         * grammar, one level deeper. */
+        headerLeft: `S${selectedSlot + 1} > ${comp ? comp.label : "Module"}`,
+        entries: availableModules,
+        index: selectedModuleIndex,
+        currentId: current ? current.module : null,
+        emptyMessage: "No modules available",
     });
 }
 
@@ -13424,12 +15719,11 @@ function drawComponentEdit() {
     clear_screen();
 
     /* Get component info */
-    const cfg = chainConfigs[selectedSlot];
-    const moduleData = cfg && cfg[editingComponentKey];
+    const moduleData = getChainComponentModule(chainConfigs[selectedSlot], editingComponentKey);
     const moduleName = moduleData ? moduleData.module.toUpperCase() : "Unknown";
 
     /* Get display name from DSP if available */
-    const prefix = editingComponentKey === "midiFx" ? "midi_fx1" : editingComponentKey;
+    const prefix = getComponentParamPrefix(editingComponentKey);
     const cmpMid = moduleData ? moduleData.module : moduleName;
     const displayName = getSlotParamCached(selectedSlot, `${prefix}:name`, cmpMid) || moduleName;
 
@@ -13755,6 +16049,9 @@ function drawHelpDetail() {
     Object.defineProperty(_ctx, 'selectedMasterFxSetting', {
         get() { return selectedMasterFxSetting; }, enumerable: true
     });
+    Object.defineProperty(_ctx, 'masterFxPickerItems', {
+        get() { return masterFxPickerItems; }, enumerable: true
+    });
     Object.defineProperty(_ctx, 'selectedMasterFxModuleIndex', {
         get() { return selectedMasterFxModuleIndex; }, enumerable: true
     });
@@ -13774,7 +16071,24 @@ function drawHelpDetail() {
         get() { return masterConfirmIndex; }, enumerable: true
     });
 
-    _ctx.MASTER_FX_CHAIN_COMPONENTS = MASTER_FX_CHAIN_COMPONENTS;
+    Object.defineProperty(_ctx, 'MASTER_FX_CHAIN_COMPONENTS', {
+        /* A GETTER: the list is derived from the chain and changes length on
+         * every shape edit, so a snapshot taken once at init would be the
+         * eight fixed boxes this step exists to remove. */
+        get() { return masterFxChainComponents(); }, enumerable: true
+    });
+    /* The chain target and the two draw helpers that take one. The Master FX
+     * view module draws its diagram markers from the SAME code the slot chain
+     * editor does, so an LFO marker or a bypass "B" cannot appear on one
+     * screen and not the other. */
+    _ctx.MASTER_CHAIN_TARGET = MASTER_CHAIN_TARGET;
+    _ctx.chainLfoTargetMap = (...args) => chainLfoTargetMap(...args);
+    _ctx.chainComponentBypassed = (...args) => chainComponentBypassed(...args);
+    _ctx.MASTER_FX_SLOTS = MASTER_FX_SLOTS;
+    /* The knob card's draw state — null unless a knob is being touched or has
+     * just been turned. Costs no IPC: everything in it was read on touch-down.
+     * Master FX draws the SAME card the slot chain editor does (4b). */
+    _ctx.knobCardDrawState = () => knobCardDrawState();
 
     /* Utility functions */
     _ctx.setView = setView;
@@ -13792,6 +16106,8 @@ function drawHelpDetail() {
     /* Master FX functions */
     _ctx.scanForAudioFxModules = (...args) => scanForAudioFxModules(...args);
     _ctx.loadMasterFxChainConfig = (...args) => loadMasterFxChainConfig(...args);
+    _ctx.ensureMasterFxConfigFresh = () => ensureMasterFxConfigFresh();
+    _ctx.isShiftHeld = () => isShiftHeld();
     _ctx.getMasterFxSlotModule = (...args) => getMasterFxSlotModule(...args);
     _ctx.getMasterFxParam = (...args) => getMasterFxParam(...args);
     _ctx.getModuleAbbrev = (...args) => getModuleAbbrev(...args);
@@ -13912,6 +16228,50 @@ function drawHelpDetail() {
     /* Knob-grid view (shadow_ui_param_pages.mjs) */
     _ctx.evaluateVisibilityCondition = (...args) => evaluateVisibilityCondition(...args);
     _ctx.openParamEditor = (slot, fullKey, meta) => openParamEditorFromGrid(slot, fullKey, meta);
+    /* Slot-settings actions (Save / Delete / LFO / Knob Mapping). Exposed so
+     * every branch can be EXECUTED by the tests: this code was previously
+     * reachable only by pressing a specific row on a specific screen, and a
+     * ReferenceError inside one branch is swallowed by the tick try/catch into
+     * "UI error, recovering" — invisible unless something runs it. */
+    /*
+     * Slot actions from the knob grid, with a hand-off for the ones that open a
+     * modal.
+     *
+     * Save / Save As / Delete do not act immediately: they set
+     * showingNamePreview or confirmingOverwrite/confirmingDelete and wait for a
+     * confirmation. Both the DRAWING of those (drawChainSettings, via
+     * shadow_ui_settings.mjs) and the jog/click that drive them live under
+     * `case VIEWS.CHAIN_SETTINGS` -- the LIST view. Slot settings now open as
+     * the grid, so from there the flag flipped and NOTHING rendered it and
+     * nothing could answer it. On device: pressing Save did nothing at all, and
+     * the jog gave no "Edit"/"OK", because that handler was never reached.
+     *
+     * So hand off to the list, the same way an opaque param does
+     * (enterHierarchyEditorFromParamPages above). Teaching the grid to draw and
+     * drive three confirm flows would be a second implementation of screens
+     * that already work.
+     *
+     * Detected by ASKING WHETHER A MODAL IS NOW OPEN rather than by listing
+     * which keys are modal ones: a fifth action that opens a confirm would
+     * otherwise be silently broken in exactly the same way, and that is the
+     * failure mode worth designing out.
+     */
+    _ctx.runSlotAction = (slot, key) => runSlotActionFromGrid(slot, key);
+    /* The slot-settings entry point, exposed so the grid routing can be driven
+     * from a test rather than by pressing Shift+Vol+Track on hardware. */
+    _ctx.enterChainSettings = (slot) => enterChainSettings(slot);
+    /* Which specialised editor is up, if any. Exposed so the editor-routing
+     * pathways can be tested headlessly: "clicking a wav_position shows the
+     * WAVEFORM, clicking a filepath shows the BROWSER, and Back from either
+     * returns to the grid" is four states, and none of them was observable
+     * from outside this file — which is why all three routing bugs shipped. */
+    _ctx.activeParamEditor = () => {
+        if (view === VIEWS.FILEPATH_BROWSER) return "filepath";
+        if (view === VIEWS.CANVAS) return "canvas";
+        if (view !== VIEWS.HIERARCHY_EDITOR) return null;
+        if (!hierEditorEditMode) return null;
+        return isInWavPositionEditor() ? "wav_position" : "value";
+    };
     _ctx.isParamModulated = (slot, fullKey) => isHierarchyParamModulated(slot, fullKey);
     _ctx.isMuteHeld = () => hostMuteHeld;
 
@@ -14103,6 +16463,9 @@ function makeSlotLfoCtx(slot, lfoIdx) {
     const prefix = "lfo" + (lfoIdx + 1) + ":";
     return {
         lfoIdx: lfoIdx,
+        /* Identifies the ROUTING SPACE for the label cache — `title` does not:
+         * slot 2's "LFO 1" and slot 3's "LFO 1" are different components. */
+        scopeId: "slot" + slot + ":lfo" + lfoIdx,
         getParam: function(key) { return getSlotParam(slot, prefix + key); },
         setParam: function(key, val) { setSlotParam(slot, prefix + key, val); },
         setParamBlocking: function(key, val) { return shadowSetParamBlocking(slot, prefix + key, val); },
@@ -14118,15 +16481,42 @@ function makeSlotLfoCtx(slot, lfoIdx) {
                 }
                 comps.push({ key: "synth", label: "Synth: " + name });
             }
-            for (let i = 1; i <= 2; i++) {
+            /*
+             * Both sections are as long as the chain SAYS it is.
+             *
+             * They used to stop at two, which was the old fixed shape; the DSP
+             * has held eight of each for a while, so an eight-FX chain offered
+             * modulation of the first two positions and silently pretended the
+             * rest were not there.
+             *
+             * The bound is the PUBLISHED COUNT, never the cap. This function
+             * runs inside a draw on a describeLfoTargetFor cache miss, and a
+             * reorder forces one (resetLfoTargetLabels), so every position
+             * walked costs two IPC round trips at ~2.8ms — walking to the cap
+             * would turn the frame after every reorder into ~16 reads, ~45ms,
+             * for positions that mostly hold nothing. One read for the count
+             * buys the right length, and a two-FX chain costs what it always
+             * did.
+             *
+             * The count is a HIGH-WATER MARK (chain_host.c keeps
+             * `fx_count = slot + 1` and only trims a trailing NULL), so an
+             * interior position inside it can still be empty — hence the
+             * per-position guard stays.
+             */
+            const count = (key, cap) => {
+                const n = parseInt(getSlotParam(slot, key), 10);
+                return (isNaN(n) || n < 0) ? 0 : Math.min(n, cap);
+            };
+            const fxCount = count("fx_count", CHAIN_CAP.fx);
+            for (let i = 1; i <= fxCount; i++) {
                 const fxModule = getSlotParam(slot, "fx" + i + "_module");
                 if (fxModule) {
                     const name = getSlotParam(slot, "fx" + i + ":name") || fxModule;
                     comps.push({ key: "fx" + i, label: "FX " + i + ": " + name });
                 }
             }
-            const midiFxCount = parseInt(getSlotParam(slot, "midi_fx_count") || "0");
-            for (let i = 1; i <= midiFxCount && i <= 2; i++) {
+            const midiFxCount = count("midi_fx_count", CHAIN_CAP.midiFx);
+            for (let i = 1; i <= midiFxCount; i++) {
                 const mfxModule = getSlotParam(slot, "midi_fx" + i + "_module");
                 if (mfxModule) {
                     const name = getSlotParam(slot, "midi_fx" + i + ":name") || mfxModule;
@@ -14140,26 +16530,7 @@ function makeSlotLfoCtx(slot, lfoIdx) {
             return comps;
         },
         getTargetParams: function(compKey) {
-            /* LFO-to-LFO: return hardcoded LFO params */
-            if (compKey === "lfo1" || compKey === "lfo2") {
-                return LFO_TARGET_PARAMS.slice();
-            }
-            const result = [];
-            const paramsJson = getSlotParam(slot, compKey + ":chain_params");
-            if (paramsJson) {
-                try {
-                    const params = JSON.parse(paramsJson);
-                    for (let i = 0; i < params.length; i++) {
-                        const p = params[i];
-                        if (p.type === "float" || p.type === "int" || p.type === "enum") {
-                            result.push({ key: p.key, label: p.name || p.label || p.key });
-                        }
-                    }
-                } catch (e) {
-                    debugLog("LFO: Failed to parse chain_params: " + e);
-                }
-            }
-            return result;
+            return lfoTargetParamsFor(slotChainTarget(slot), compKey, "LFO");
         },
         title: "LFO " + (lfoIdx + 1),
         returnView: VIEWS.CHAIN_SETTINGS,
@@ -14175,17 +16546,59 @@ const LFO_TARGET_PARAMS = [
     { key: "phase_offset", label: "Phase Offset" },
 ];
 
+/*
+ * What a component offers an LFO to modulate — for EITHER chain.
+ *
+ * The slot and Master FX LFO editors held two copies of this that differed
+ * only in how the chain_params key was spelled, which the chain target now
+ * answers. Only continuous types are offered: a string or an action has no
+ * range for a depth to mean anything against.
+ */
+function lfoTargetParamsFor(target, compKey, logLabel) {
+    /* LFO-to-LFO: return hardcoded LFO params */
+    if (compKey === "lfo1" || compKey === "lfo2") return LFO_TARGET_PARAMS.slice();
+    const result = [];
+    try {
+        const json = chainTargetGetParam(target, compKey, "chain_params");
+        if (json) {
+            const params = JSON.parse(json);
+            for (let i = 0; i < params.length; i++) {
+                const p = params[i];
+                if (p.type === "float" || p.type === "int" || p.type === "enum") {
+                    result.push({ key: p.key, label: p.name || p.label || p.key });
+                }
+            }
+        }
+    } catch (e) {
+        debugLog(logLabel + ": Failed to parse chain_params: " + e);
+    }
+    return result;
+}
+
 function makeMfxLfoCtx(lfoIdx) {
     const prefix = "master_fx:lfo" + (lfoIdx + 1) + ":";
     return {
         lfoIdx: lfoIdx,
-        getParam: function(key) { return shadow_get_param(0, prefix + key); },
-        setParam: function(key, val) { shadow_set_param(0, prefix + key, val); },
+        scopeId: "mfx:lfo" + lfoIdx,
+        /* Through getSlotParam / setSlotParam, exactly as makeSlotLfoCtx does:
+         * Master FX is addressed at IPC slot 0 by convention (it is NOT
+         * instrument slot 0), and the raw host calls it used instead threw
+         * when the binding was absent where the slot side returned null. */
+        getParam: function(key) { return getSlotParam(0, prefix + key); },
+        setParam: function(key, val) { setSlotParam(0, prefix + key, val); },
         setParamBlocking: function(key, val) { return shadowSetParamBlocking(0, prefix + key, val); },
         getTargetComponents: function() {
             const comps = [];
-            for (let i = 0; i < 4; i++) {
-                const name = shadow_get_param(0, "master_fx:fx" + (i + 1) + ":name") || "";
+            /* The cap, not a published count: Master FX is a FIXED array of
+             * MASTER_FX_SLOTS (shadow_chain_mgmt.h), not a variable-length
+             * list, and it publishes no count to ask. So do NOT "fix" this to
+             * read a count the way the slot version does — there isn't one.
+             * It must, however, TRACK THE CAP: this used to be a bare 4, and a
+             * bare 4 walks only half an 8-slot Master FX, silently dropping
+             * FX 5-8 from the LFO target picker. Bound by the constant so the
+             * cap moves it. */
+            for (let i = 0; i < MASTER_FX_SLOTS; i++) {
+                const name = getMasterFxParam(i, "name");
                 if (name) {
                     comps.push({ key: "fx" + (i + 1), label: "FX " + (i + 1) + ": " + name });
                 }
@@ -14197,26 +16610,7 @@ function makeMfxLfoCtx(lfoIdx) {
             return comps;
         },
         getTargetParams: function(compKey) {
-            /* LFO-to-LFO: return hardcoded LFO params */
-            if (compKey === "lfo1" || compKey === "lfo2") {
-                return LFO_TARGET_PARAMS.slice();
-            }
-            const result = [];
-            try {
-                const json = shadow_get_param(0, "master_fx:" + compKey + ":chain_params");
-                if (json) {
-                    const params = JSON.parse(json);
-                    for (let i = 0; i < params.length; i++) {
-                        const p = params[i];
-                        if (p.type === "float" || p.type === "int" || p.type === "enum") {
-                            result.push({ key: p.key, label: p.name || p.label || p.key });
-                        }
-                    }
-                }
-            } catch (e) {
-                debugLog("MFX LFO: Failed to parse chain_params: " + e);
-            }
-            return result;
+            return lfoTargetParamsFor(MASTER_CHAIN_TARGET, compKey, "MFX LFO");
         },
         title: "MFX LFO " + (lfoIdx + 1),
         returnView: VIEWS.MASTER_FX,
@@ -14225,6 +16619,53 @@ function makeMfxLfoCtx(lfoIdx) {
 }
 
 /* --- Generic LFO Editor Functions (driven by lfoCtx) --- */
+
+/*
+ * What the current LFO's target is CALLED — see shared/lfo_target_label.mjs.
+ *
+ * CACHED on the stored pair, because resolving it is not cheap: building the
+ * component list reads synth_module, each fx module, the midi fx count and a
+ * name per component, and the param list parses that component's whole
+ * chain_params — a dozen-odd IPC round trips at ~2.8ms each. Called from a
+ * DRAW, that is the entire frame budget several times over.
+ *
+ * The pair only changes when the user commits a new routing, so a cache keyed
+ * on it resolves once and then costs a string compare. `lfoCtx.title` is in
+ * the key too: a slot LFO and a Master FX LFO can hold the identical pair and
+ * mean different components.
+ */
+/* Per SCOPE, not one entry: the knob grid asks for a slot's LFO while the
+ * editor's own lfoCtx may be a Master FX LFO, and a single slot would thrash
+ * between them — every miss is the dozen round trips above, inside a draw. */
+const _lfoTargetLabelCache = Object.create(null);
+function describeLfoTargetFor(ctx) {
+    if (!ctx) return null;
+    const scope = ctx.scopeId || ctx.title || "lfo";
+    const target = ctx.getParam("target") || "";
+    const param = ctx.getParam("target_param") || "";
+    const cacheKey = target + "|" + param;
+    const hit = _lfoTargetLabelCache[scope];
+    if (hit && hit.key === cacheKey) return hit.value;
+    const value = describeLfoTarget({
+        target: target,
+        targetParam: param,
+        components: ctx.getTargetComponents ? ctx.getTargetComponents() : [],
+        params: (ctx.getTargetParams && target) ? ctx.getTargetParams(target) : [],
+    });
+    _lfoTargetLabelCache[scope] = { key: cacheKey, value: value };
+    return value;
+}
+
+/** Drop every cached label. Called when a component module changes: the cache
+ *  keys on the routing, and a swap changes the NAME without changing it. */
+function resetLfoTargetLabels() {
+    for (const k in _lfoTargetLabelCache) delete _lfoTargetLabelCache[k];
+}
+
+/** The LFO the editor is currently pointed at. */
+function describeCurrentLfoTarget() {
+    return lfoCtx ? describeLfoTargetFor(lfoCtx) : null;
+}
 
 function getLfoItems() {
     if (!lfoCtx) return [];
@@ -14274,10 +16715,10 @@ function getLfoDisplayValue(item) {
     if (item.key === "phase_offset") return Math.round(parseFloat(raw) * 360) + "\u00b0";
     if (item.key === "retrigger") return raw === "1" ? "On" : "Off";
     if (item.key === "target") {
-        const target = lfoCtx.getParam("target") || "";
-        const param = lfoCtx.getParam("target_param") || "";
-        if (target && param) return target + ":" + param;
-        return "None";
+        /* The module by name, as the picker offered it — not the stored keys.
+         * This row read "fx1:room_size" for as long as it has existed. */
+        const d = describeCurrentLfoTarget();
+        return d ? d.long : "None";
     }
     return raw;
 }
@@ -14304,12 +16745,14 @@ function drawLfoEdit() {
     if (!lfoCtx) return;
     clear_screen();
     const enabled = lfoCtx.getParam("enabled") === "1";
-    const target = lfoCtx.getParam("target") || "";
-    const param = lfoCtx.getParam("target_param") || "";
+    const targetDesc = describeCurrentLfoTarget();
 
     let title = lfoCtx.title;
-    if (enabled && target && param) {
-        title += ": " + target + ":" + param;
+    /* The PARAM alone here, not the module: 22 characters is the whole title
+     * and "LFO 1" plus a module name plus a param name does not come close.
+     * Which module it is, is one row down. */
+    if (enabled && targetDesc && !targetDesc.empty) {
+        title += ": " + targetDesc.short;
     } else if (!enabled) {
         title += ": Off";
     }
@@ -14512,11 +16955,27 @@ globalThis.init = function() {
                     if (chain && chain.synth && chain.synth.bypassed) {
                         setSlotParam(i, "synth:bypassed", "1");
                     }
-                    if (chain && Array.isArray(chain.midi_fx) && chain.midi_fx[0] && chain.midi_fx[0].bypassed) {
-                        setSlotParam(i, "midi_fx1:bypassed", "1");
+                    /*
+                     * BOTH lists, and bounded by the CAP rather than by a
+                     * number that used to be the cap.
+                     *
+                     * This read `chain.midi_fx[0]` and `fx < 4` — written when
+                     * a chain was one MIDI FX and two audio FX. The chain has
+                     * been a list of up to MAX_MIDI_FX and MAX_FX since, so
+                     * bypass silently stopped being restored past the first
+                     * MIDI FX and past the fourth audio FX: you bypassed a
+                     * module, rebooted, and it came back live with the B glyph
+                     * gone. Nothing failed and nothing logged.
+                     */
+                    if (chain && Array.isArray(chain.midi_fx)) {
+                        for (let mf = 0; mf < chain.midi_fx.length && mf < MAX_MIDI_FX; mf++) {
+                            if (chain.midi_fx[mf] && chain.midi_fx[mf].bypassed) {
+                                setSlotParam(i, `midi_fx${mf + 1}:bypassed`, "1");
+                            }
+                        }
                     }
                     if (chain && Array.isArray(chain.audio_fx)) {
-                        for (let fx = 0; fx < chain.audio_fx.length && fx < 4; fx++) {
+                        for (let fx = 0; fx < chain.audio_fx.length && fx < MAX_FX; fx++) {
                             if (chain.audio_fx[fx] && chain.audio_fx[fx].bypassed) {
                                 setSlotParam(i, `fx${fx + 1}:bypassed`, "1");
                             }
@@ -15041,6 +17500,14 @@ globalThis.tick = function() {
                     for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
                         const src = host_read_file(copySourceDir + "/slot_" + i + ".json");
                         if (src) host_write_file(newDir + "/slot_" + i + ".json", src);
+                    }
+                    /* master_fx_N.json is bounded by MASTER_FX_SLOTS, NOT by
+                     * the instrument-slot count. They are different concepts
+                     * that merely happen to both be 4 today; copying both
+                     * families in one SHADOW_UI_SLOTS loop means duplicating a
+                     * set would silently drop Master FX 5-8. The C seeder
+                     * (shadow_set_pages.c) is split the same way. */
+                    for (let i = 0; i < MASTER_FX_SLOTS; i++) {
                         const mfx = host_read_file(copySourceDir + "/master_fx_" + i + ".json");
                         if (mfx) host_write_file(newDir + "/master_fx_" + i + ".json", mfx);
                     }
@@ -15052,6 +17519,9 @@ globalThis.tick = function() {
                     debugLog("SET_CHANGED: new set, starting with empty slots");
                     for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
                         host_write_file(newDir + "/slot_" + i + ".json", "{}\n");
+                    }
+                    /* Separate bound — see the copy path above. */
+                    for (let i = 0; i < MASTER_FX_SLOTS; i++) {
                         host_write_file(newDir + "/master_fx_" + i + ".json", "{}\n");
                     }
                     /* Seed a default chain config so receive channels reset to
@@ -15135,7 +17605,7 @@ globalThis.tick = function() {
             autosaveSuppressUntil = 150; /* ~5 seconds at 30fps */
 
             /* 7. Reload master FX modules from per-set state files */
-            for (let mfxi = 0; mfxi < 4; mfxi++) {
+            for (let mfxi = 0; mfxi < MASTER_FX_SLOTS; mfxi++) {
                 const mfxPath = activeSlotStateDir + "/master_fx_" + mfxi + ".json";
                 let mfxDspPath = "";
                 let mfxModuleId = "";
@@ -15364,13 +17834,13 @@ globalThis.tick = function() {
     /* Poll FX display_name for change-based announcements (e.g. key detection).
      * Check every ~1 second (30 ticks at 30fps). Only poll slots that have FX loaded. */
     if (!isOvertakeActive && refreshCounter % 30 === 0) {
-        const fxComponents = ["fx1", "fx2"];
         /* Per-slot FX */
         for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
             const cfg = chainConfigs[i];
             if (!cfg) continue;
-            for (const comp of fxComponents) {
-                if (!cfg[comp] || !cfg[comp].module) continue;
+            for (let f = 0; f < cfg.fx.length; f++) {
+                if (!cfg.fx[f] || !cfg.fx[f].module) continue;
+                const comp = `fx${f + 1}`;
                 const cacheKey = `${i}:${comp}`;
                 const name = pollFxDisplayName(i, `${comp}:display_name`, cacheKey);
                 if (name && name !== fxDisplayNameCache[cacheKey]) {
@@ -15384,8 +17854,8 @@ globalThis.tick = function() {
             }
         }
         /* Master FX */
-        const masterFxKeys = ["fx1", "fx2", "fx3", "fx4"];
-        for (const key of masterFxKeys) {
+        for (const { key } of masterFxChainComponents()) {
+            if (key === "settings") continue;
             if (!masterFxConfig[key] || !masterFxConfig[key].module) continue;
             const cacheKey = `master:${key}`;
             const name = pollFxDisplayName(0, `master_fx:${key}:display_name`, cacheKey);
@@ -15557,8 +18027,7 @@ globalThis.tick = function() {
                  * (must stay VIEWS.OVERTAKE_MODULE so the tool keeps ticking). */
                 selectedSlot = _slot;
                 if (typeof updateFocusedSlot === "function") updateFocusedSlot(_slot);
-                selectedChainComponent = lastChainComponent[_slot] || 0;
-                if (typeof loadChainConfigFromSlot === "function") loadChainConfigFromSlot(_slot);
+                restoreChainComponent(_slot);
                 coRunView = VIEWS.CHAIN_EDIT;
                 needsRedraw = true;
             } else {
@@ -15569,6 +18038,14 @@ globalThis.tick = function() {
             }
         }
     }
+
+    /* A slot-action modal that the grid handed to the list has finished — go
+     * back to the grid the user actually opened. Flags only, no IPC. Runs
+     * before the draw so the frame that notices is already the grid's. */
+    if (view === VIEWS.CHAIN_SETTINGS) maybeReturnToSlotGrid();
+    /* The Master FX half of the same reconcile. Its modals live under
+     * VIEWS.MASTER_FX rather than a settings view of their own. */
+    if (view === VIEWS.MASTER_FX) maybeReturnToMasterGrid();
 
     /* Guarded: a throw in any draw function would otherwise repeat every
      * frame — frozen screen with no recovery, since the C loop keeps
@@ -16086,7 +18563,7 @@ globalThis.onMidiMessageInternal = function(data) {
                 runCoRunChainEdit(function() {
                     if (hostShiftHeld && view === VIEWS.CHAIN_EDIT && selectedChainComponent >= 0) {
                         handleShiftSelect();
-                    } else if (hostShiftHeld && view === VIEWS.MASTER_FX && selectedMasterFxComponent >= 0 && selectedMasterFxComponent < 4) {
+                    } else if (hostShiftHeld && view === VIEWS.MASTER_FX && masterFxSelectedIsModule()) {
                         enterMasterFxModuleSelect(selectedMasterFxComponent);
                     } else {
                         handleSelect();
@@ -16145,8 +18622,7 @@ globalThis.onMidiMessageInternal = function(data) {
                     coRunChainEditSlot = _slot;
                     selectedSlot = _slot;
                     if (typeof updateFocusedSlot === "function") updateFocusedSlot(_slot);
-                    selectedChainComponent = lastChainComponent[_slot] || 0;
-                    if (typeof loadChainConfigFromSlot === "function") loadChainConfigFromSlot(_slot);
+                    restoreChainComponent(_slot);
                     coRunView = VIEWS.CHAIN_EDIT;
                     if (typeof shadow_corun_begin === "function") shadow_corun_begin(CORUN_TARGET_CHAIN_EDIT, _slot, 0);
                     needsRedraw = true;
@@ -16199,10 +18675,17 @@ globalThis.onMidiMessageInternal = function(data) {
          * notes pre-change; keeping that avoids a stranded knobTouched on exit).
          * Release drains BOTH the hierarchy (pendingHierKnob) and slot-global
          * (pendingKnob) paths, which is what actually clears the value popup. */
-        if (coRunUiActive() && (status & 0xF0) === MidiNoteOn &&
+        if (coRunUiActive() &&
+                ((status & 0xF0) === MidiNoteOn || (status & 0xF0) === MidiNoteOff) &&
                 d1 >= MoveKnob1Touch && d1 <= MoveKnob8Touch && coRunWants(CORUN_GRP_TOUCH)) {
             const _tk = d1 - MoveKnob1Touch;
-            if (d2 > 0) {
+            /* Same touch bookkeeping as the non-overtake handler below, both
+             * spellings of release included for the same reason: inside
+             * runCoRunChainEdit the view IS the chain editor, so these edges
+             * raise and drop the knob card and it must not be left held. */
+            const _down = ((status & 0xF0) === MidiNoteOn && d2 > 0);
+            knobTouched[_tk] = _down;
+            if (_down) {
                 runCoRunChainEdit(function() {
                     const mmRole = getMultiMarkerKnobRole(_tk);
                     if (mmRole) {
@@ -16233,6 +18716,9 @@ globalThis.onMidiMessageInternal = function(data) {
                         refreshPendingKnobOverlay();
                     }
                 });
+                /* After the drain, for the reason spelled out on the
+                 * non-overtake release path: the drain shows feedback too. */
+                if (knobCardKnob === _tk) knobCardClose();
             }
             needsRedraw = true;
         }
@@ -16265,7 +18751,7 @@ globalThis.onMidiMessageInternal = function(data) {
             /* Shift+Click in chain edit enters component edit mode */
             if (isShiftHeld() && view === VIEWS.CHAIN_EDIT && selectedChainComponent >= 0) {
                 handleShiftSelect();
-            } else if (isShiftHeld() && view === VIEWS.MASTER_FX && selectedMasterFxComponent >= 0 && selectedMasterFxComponent < 4) {
+            } else if (isShiftHeld() && view === VIEWS.MASTER_FX && masterFxSelectedIsModule()) {
                 /* Shift+Click in Master FX view enters module selector for the slot */
                 enterMasterFxModuleSelect(selectedMasterFxComponent);
             } else {
@@ -16313,6 +18799,10 @@ globalThis.onMidiMessageInternal = function(data) {
     if ((status & 0xF0) === MidiNoteOn && d2 > 0) {
         if (d1 >= MoveKnob1Touch && d1 <= MoveKnob8Touch) {
             const knobIndex = d1 - MoveKnob1Touch;
+            /* Recorded BEFORE any of the branches below, all of which can raise
+             * the knob card: a card raised while the finger is down has no
+             * decay deadline, and that distinction is read from here. */
+            knobTouched[knobIndex] = true;
 
             /* Multi-marker view overrides the level's knob row:
              *   marker knobs (1..N) → switch active marker + show its value
@@ -16352,10 +18842,21 @@ globalThis.onMidiMessageInternal = function(data) {
     }
 
     /* Handle Note Off for knob release - clear pending knob state
-     * This ensures accumulated deltas are processed before next touch */
-    if ((status & 0xF0) === MidiNoteOn && d2 === 0) {
+     * This ensures accumulated deltas are processed before next touch.
+     *
+     * BOTH spellings of release. shared/param_pages/page_input.mjs has carried
+     * the reason since the knob grid shipped: "Move sends note-on with velocity
+     * 0 for release as well as note-off, so both spellings must clear the touch
+     * or a knob can be left stuck as held." This branch used to match only the
+     * velocity-0 note-on, which was harmless while it merely drained deltas —
+     * knobTouched made it load-bearing, because a knob stuck as held stamps the
+     * card with no decay deadline and a turn-raised card has no note-off
+     * coming to clear it. */
+    if (((status & 0xF0) === MidiNoteOn && d2 === 0) ||
+        (status & 0xF0) === MidiNoteOff) {
         if (d1 >= MoveKnob1Touch && d1 <= MoveKnob8Touch) {
             const knobIndex = d1 - MoveKnob1Touch;
+            knobTouched[knobIndex] = false;
             /* Process hierarchy knob delta */
             if (pendingHierKnobIndex === knobIndex) {
                 processPendingHierKnob();
@@ -16366,6 +18867,17 @@ globalThis.onMidiMessageInternal = function(data) {
             if (pendingKnobIndex === knobIndex && pendingKnobDelta !== 0) {
                 refreshPendingKnobOverlay();
             }
+            /* Let go and the diagram is back.
+             *
+             * LAST, after the pending flush, because that flush shows feedback
+             * too: closing first only had the card reopen itself — with six
+             * fresh IPC reads — on the way out of the gesture. Unconditional on
+             * the knob matching, for the same reason: the flush has already
+             * stamped a decay deadline on it (the finger is gone by then), so a
+             * "only if it is held" test would leave the card up for another
+             * 700ms after release. A card raised by a TURN never sees this
+             * branch — no touch, so no note-off. */
+            if (knobCardKnob === knobIndex) knobCardClose();
             return;
         }
     }

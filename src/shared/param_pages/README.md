@@ -198,6 +198,42 @@ against a fake device (`tools/param-pages/fake_device.mjs`), so what is left to
 verify on hardware is that the wiring is connected and that eight live values
 per page keep up.
 
+### Values only the host can read
+
+An enum declares both of its readings statically — `options` for anywhere with
+room, `short_options` for the three characters of the enum square. Some values
+cannot be declared that way at all. An LFO's target is stored as `"fx1"` and
+means "Room Size on the Freeverb loaded in FX 1": what it READS as depends on
+what is loaded, which is host state, and resolving it costs IPC.
+
+For those, the io may supply a formatter:
+
+```js
+createController({
+    getParam, setParam, announce,
+    // surface: "cell" (a 30px label band) | "header" (the held-knob strip,
+    // and what the screen reader speaks). Return null to fall through.
+    formatValue: (fullKey, raw, surface) =>
+        fullKey.endsWith(":lfo1:target")
+            ? (surface === "header" ? "FX 1: Room Size" : "Room Size")
+            : null,
+});
+```
+
+Two rules make it safe to add to an existing host:
+
+- **Returning `null` is the normal answer.** A formatter that answers for one
+  key and null for everything else leaves every other param on the ordinary
+  display path, byte for byte — it is an opt-in for a key, not a second
+  display path for the page.
+- **Cache on the host side.** The formatter is called from a DRAW, once per
+  visible surface. Resolving an LFO target is a dozen IPC round trips at
+  ~2.8ms each; doing that per frame is the frame budget several times over.
+  See `describeLfoTargetFor` in `shadow_ui.js` for the shape: key the cache on
+  the stored value, drop it when the thing it names changes.
+
+Movy layout only — the dial/bar renderer has no equivalent seam yet.
+
 **The controller never opens a screen.** An opaque param (filepath, canvas,
 `wav_position`, string) returns an intent and the host opens the editor the list
 view already has. Same for leaving the view. That is what keeps the library

@@ -2926,6 +2926,65 @@ static uint64_t last_speech_time_ms = 0;  /* Rate limiting for TTS */
  * a wholesale memset on the consumer side could wipe events written
  * between the producer's slot-empty check and the consumer's clear,
  * dropping note-offs under burst (4-pad simultaneous release, etc.). */
+/* =========================================================================
+ * Touch trace — knob-touch edges as the HARDWARE delivered them.
+ *
+ * Exists because three separate explanations for an unreliable double-tap
+ * were argued from JS-side timestamps, which sit behind a SHM ring and a
+ * 60Hz loop, and all three were wrong. This records the edge in the SPI
+ * callback itself, before the ring, the loop and JS can drop, reorder or
+ * delay it, so "what did the sensor actually send" stops being an opinion.
+ *
+ * RT-safe by construction: one clock_gettime and a store into a fixed array.
+ * No allocation, no lock, no I/O — the worker thread does the writing, at its
+ * own 200ms cadence. Disarmed it costs one branch.
+ *
+ * Arm with:  touch /data/UserData/schwung/touch_trace_on
+ * Read out:  /data/UserData/schwung/touch_trace.txt
+ * ========================================================================= */
+#define TOUCH_TRACE_CAP 512
+typedef struct {
+    uint64_t mono_us;
+    uint32_t hw_stamp;      /* the 4 timestamp bytes the XMOS appends */
+    uint8_t status, d1, d2, cable;
+} touch_trace_ev_t;
+static touch_trace_ev_t touch_trace_buf[TOUCH_TRACE_CAP];
+static volatile uint32_t touch_trace_head = 0;   /* producer: SPI callback */
+static uint32_t touch_trace_tail = 0;            /* consumer: worker thread */
+int shim_touch_trace_on = 0;
+
+static inline void touch_trace_record(uint8_t cable, uint8_t status,
+                                      uint8_t d1, uint8_t d2, uint32_t hw_stamp) {
+    if (!shim_touch_trace_on) return;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint32_t h = touch_trace_head;
+    touch_trace_ev_t *e = &touch_trace_buf[h % TOUCH_TRACE_CAP];
+    e->mono_us = (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
+    e->hw_stamp = hw_stamp;
+    e->status = status; e->d1 = d1; e->d2 = d2; e->cable = cable;
+    __atomic_store_n(&touch_trace_head, h + 1, __ATOMIC_RELEASE);
+}
+
+/* Worker thread only — never the SPI callback. */
+void shim_touch_trace_drain(void) {
+    uint32_t head = __atomic_load_n(&touch_trace_head, __ATOMIC_ACQUIRE);
+    if (head == touch_trace_tail) return;
+    FILE *f = fopen("/data/UserData/schwung/touch_trace.txt", "a");
+    if (!f) { touch_trace_tail = head; return; }
+    while (touch_trace_tail != head) {
+        const touch_trace_ev_t *e = &touch_trace_buf[touch_trace_tail % TOUCH_TRACE_CAP];
+        int down = ((e->status & 0xF0) == 0x90) && e->d2 > 0;
+        fprintf(f, "%llu.%03llu ms  knob=%u %s vel=%-3u status=%02x cable=%u hw=%u\n",
+                (unsigned long long)(e->mono_us / 1000),
+                (unsigned long long)(e->mono_us % 1000),
+                (unsigned)e->d1, down ? "DOWN" : "up  ", (unsigned)e->d2,
+                (unsigned)e->status, (unsigned)e->cable, (unsigned)e->hw_stamp);
+        touch_trace_tail++;
+    }
+    fclose(f);
+}
+
 static inline void shadow_ui_midi_publish(uint8_t head, uint8_t status,
                                           uint8_t d1, uint8_t d2) {
     if (head == 0 || !shadow_ui_midi_shm || !shadow_control) return;
@@ -4600,7 +4659,6 @@ static void shim_init_subsystems(void)
             .shadow_midi_dsp_shm = &shadow_midi_dsp_shm,
             .shadow_midi_inject_shm = &shadow_midi_inject_shm,
             .shadow_mailbox = shadow_buf,
-            .master_fx_capture = &shadow_master_fx_capture,
             .slot_idle = shadow_slot_idle,
             .slot_silence_frames = shadow_slot_silence_frames,
             .slot_fx_idle = shadow_slot_fx_idle,
@@ -6253,6 +6311,34 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
     /* Root span for the post-ioctl half of the SPI frame. */
     TRACE_SCOPE("spi.post");
 
+    /*
+     * Knob-touch ground truth, UNCONDITIONALLY.
+     *
+     * This deliberately sits before every mode gate below. An earlier version
+     * lived inside the `shadow_display_mode` branch, which meant it could only
+     * ever answer "what does the sensor send while our UI is on screen" — and
+     * the obvious control experiment, "what does it send in native Move mode,
+     * where the knobs feel responsive", was the one thing it could not
+     * measure. A probe that can only observe the suspect is not a probe.
+     *
+     * Reads the unfiltered hardware mailbox, so it is upstream of the
+     * Move-facing filter, the shadow forward, the ring and every gate.
+     */
+    if (shim_touch_trace_on && hw) {
+        const uint8_t *tsrc = (const uint8_t *)hw + MIDI_IN_OFFSET;
+        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
+            uint8_t thead = tsrc[j];
+            if (thead == 0) continue;
+            uint8_t tstatus = tsrc[j + 1];
+            uint8_t ttype = tstatus & 0xF0;
+            uint8_t td1 = tsrc[j + 2];
+            if ((ttype != 0x90 && ttype != 0x80) || td1 > 9) continue;
+            uint32_t tstamp = (uint32_t)tsrc[j + 4] | ((uint32_t)tsrc[j + 5] << 8)
+                            | ((uint32_t)tsrc[j + 6] << 16) | ((uint32_t)tsrc[j + 7] << 24);
+            touch_trace_record((thead >> 4) & 0x0F, tstatus, td1, tsrc[j + 3], tstamp);
+        }
+    }
+
     /* Timing: reuse statics from pre-transfer (same translation unit) */
     /* spi_post_start is at file scope */
 
@@ -7699,8 +7785,10 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 /* Skip knobs - they're handled by shadow UI, not routed to DSP */
                 int is_knob_cc = (d1 >= 71 && d1 <= 78);
                 {
-                    const shadow_capture_rules_t *capture = shadow_get_focused_capture();
-                    if (capture && capture_has_cc(capture, d1) && !is_knob_cc) {
+                    /* !is_knob_cc first: knob CCs stream continuously and are
+                     * never routed here, so there is no reason to walk the
+                     * capture rules for them. */
+                    if (!is_knob_cc && shadow_focused_captures_cc(d1)) {
                         /* Route captured CC to focused slot's DSP */
                         int slot = shadow_control ? shadow_control->ui_slot : 0;
                         if (slot >= 0 && slot < SHADOW_CHAIN_INSTANCES &&
@@ -7738,8 +7826,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 /* Check capture rules for focused slot.
                  * Never route knob touch notes (0-9) to DSP even if in capture rules. */
                 {
-                    const shadow_capture_rules_t *capture = shadow_get_focused_capture();
-                    if (capture && d1 >= 10 && capture_has_note(capture, d1)) {
+                    if (d1 >= 10 && shadow_focused_captures_note(d1)) {
                         /* Route captured note to focused slot's DSP */
                         int slot = shadow_control ? shadow_control->ui_slot : 0;
                         if (slot >= 0 && slot < SHADOW_CHAIN_INSTANCES &&

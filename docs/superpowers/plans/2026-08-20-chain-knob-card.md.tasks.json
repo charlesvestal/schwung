@@ -1,0 +1,59 @@
+{
+ "planPath": "docs/superpowers/plans/2026-08-20-chain-knob-card.md",
+ "tasks": [
+  {
+   "id": 1,
+   "subject": "Task 1: Parameterise Movy row cell geometry",
+   "status": "completed",
+   "blockedBy": [],
+   "description": "**Goal:** render_page_movy.mjs can draw a knob row at any origin and cell width, and its default output is byte-identical to before.\n\n**Files:**\n- Modify: src/shared/param_pages/render_page_movy.mjs\n- Create: tests/host/test_knob_card.sh\n- Create: tests/fixtures/movy-geom-baseline.json\n\n**Acceptance Criteria:**\n- [ ] drawKnobStrip exported taking {x0, cellW}\n- [ ] GRID_GEOM exported as {x0:0, cellW:CELL_W}\n- [ ] renderPageMovy byte-identical against pre-refactor baseline for every fixture page\n- [ ] non-default geometry moves the cells\n- [ ] clipped()===0 and no missing glyphs for both geometries\n\n**Verify:** bash tests/host/test_knob_card.sh && bash tests/host/test_param_pages_movy.sh && bash tests/host/test_param_pages_render.sh && bash tests/host/test_param_pages_viz.sh\n\n**Steps:** see docs/superpowers/plans/2026-08-20-chain-knob-card.md\n\n```json:metadata\n{\"files\":[\"src/shared/param_pages/render_page_movy.mjs\",\"tests/host/test_knob_card.sh\",\"tests/fixtures/movy-geom-baseline.json\"],\"verifyCommand\":\"bash tests/host/test_knob_card.sh && bash tests/host/test_param_pages_movy.sh && bash tests/host/test_param_pages_render.sh && bash tests/host/test_param_pages_viz.sh\",\"acceptanceCriteria\":[\"drawKnobStrip exported taking {x0, cellW}\",\"GRID_GEOM exported as {x0:0, cellW:CELL_W}\",\"renderPageMovy byte-identical against pre-refactor baseline for every fixture page\",\"non-default geometry moves the cells\",\"clipped()===0 and no missing glyphs for both geometries\"],\"modelTier\":\"standard\"}\n```"
+  },
+  {
+   "id": 2,
+   "subject": "Task 2: The knob card renderer",
+   "status": "completed",
+   "blockedBy": [
+    1
+   ],
+   "description": "**Goal:** A pure knob_card.mjs that draws the frame and the strip, with the black gap between border and header band asserted on the pixel buffer.\n\n**Files:**\n- Create: src/shared/param_pages/knob_card.mjs\n- Modify: tests/host/test_knob_card.sh\n\n**Acceptance Criteria:**\n- [ ] knobCardRect(true) is {x:3,y:12,w:122,h:38} and knobCardRect(false) is {x:3,y:24,w:122,h:15}\n- [ ] gap row/column inside the border is black for both heights with every knob touched in turn\n- [ ] border pixels are present\n- [ ] content 116px wide, cells 29px\n- [ ] clipped()===0 and no missing glyphs across float/int/enum/opaque/short\n- [ ] long name truncates but the value survives\n\n**Verify:** bash tests/host/test_knob_card.sh\n\n**Steps:** see docs/superpowers/plans/2026-08-20-chain-knob-card.md\n\n```json:metadata\n{\"files\":[\"src/shared/param_pages/knob_card.mjs\",\"tests/host/test_knob_card.sh\"],\"verifyCommand\":\"bash tests/host/test_knob_card.sh\",\"acceptanceCriteria\":[\"knobCardRect(true) is {x:3,y:12,w:122,h:38} and knobCardRect(false) is {x:3,y:24,w:122,h:15}\",\"gap row/column inside the border is black for both heights with every knob touched in turn\",\"border pixels are present\",\"content 116px wide, cells 29px\",\"clipped()===0 and no missing glyphs across float/int/enum/opaque/short\",\"long name truncates but the value survives\"],\"modelTier\":\"standard\"}\n```"
+  },
+  {
+   "id": 3,
+   "subject": "Task 3: Preview the card without a deploy",
+   "status": "completed",
+   "blockedBy": [
+    2
+   ],
+   "description": "**Goal:** preview_knob_card.mjs renders the card over a real chain diagram, so the frame can be judged from a PNG.\n\n**Files:**\n- Create: tools/param-pages/preview_knob_card.mjs\n\n**Acceptance Criteria:**\n- [ ] half-block art by default, PNG with --png/--scale\n- [ ] background is the real chain diagram plus real header and footer\n- [ ] --knob N and --short both work\n- [ ] clipped=0 reported for all eight knobs and the short card\n\n**Verify:** for k in 0 1 2 3 4 5 6 7; do node tools/param-pages/preview_knob_card.mjs obxd --knob $k | tail -1; done; node tools/param-pages/preview_knob_card.mjs --short | tail -1\n\n**Steps:** see docs/superpowers/plans/2026-08-20-chain-knob-card.md\n\n```json:metadata\n{\"files\":[\"tools/param-pages/preview_knob_card.mjs\"],\"verifyCommand\":\"for k in 0 1 2 3 4 5 6 7; do node tools/param-pages/preview_knob_card.mjs obxd --knob $k | tail -1; done; node tools/param-pages/preview_knob_card.mjs --short | tail -1\",\"acceptanceCriteria\":[\"half-block art by default, PNG with --png/--scale\",\"background is the real chain diagram plus real header and footer\",\"--knob N and --short both work\",\"clipped=0 reported for all eight knobs and the short card\"],\"modelTier\":\"mechanical\"}\n```"
+  },
+  {
+   "id": 4,
+   "subject": "Task 4: Wire the card into the chain editor",
+   "status": "completed",
+   "blockedBy": [
+    2
+   ],
+   "description": "**Goal:** Touching a knob in VIEWS.CHAIN_EDIT raises the card; releasing drops it; no IPC happens on the draw path.\n\n**Files:**\n- Modify: src/shadow/shadow_ui.js\n\n**Acceptance Criteria:**\n- [ ] touch raises the card with the touched knob row, its cell inverted\n- [ ] release drops it; a turn with no touch decays after ~700ms\n- [ ] no component selected gives the short header-only card\n- [ ] screen reader announces only on content change\n- [ ] leaving CHAIN_EDIT closes the card\n- [ ] HIERARCHY_EDITOR and the Zoom overlays are unchanged\n\n**Verify:** bash tests/host/test_chain_edit_read_budget.sh && bash tests/host/test_param_pages_wiring.sh && bash tests/host/test_chain_gestures.sh\n\n**Steps:** see docs/superpowers/plans/2026-08-20-chain-knob-card.md\n\n```json:metadata\n{\"files\":[\"src/shadow/shadow_ui.js\"],\"verifyCommand\":\"bash tests/host/test_chain_edit_read_budget.sh && bash tests/host/test_param_pages_wiring.sh && bash tests/host/test_chain_gestures.sh\",\"acceptanceCriteria\":[\"touch raises the card with the touched knob row, its cell inverted\",\"release drops it; a turn with no touch decays after ~700ms\",\"no component selected gives the short header-only card\",\"screen reader announces only on content change\",\"leaving CHAIN_EDIT closes the card\",\"HIERARCHY_EDITOR and the Zoom overlays are unchanged\"],\"modelTier\":\"standard\"}\n```"
+  },
+  {
+   "id": 5,
+   "subject": "Task 5: Prove the card costs no IPC per frame",
+   "status": "completed",
+   "blockedBy": [
+    2
+   ],
+   "description": "**Goal:** A test that fails if drawing the card ever reads a parameter.\n\n**Files:**\n- Create: tests/host/test_chain_knob_card_reads.sh\n\n**Acceptance Criteria:**\n- [ ] knob_card.mjs holds no param I/O identifiers\n- [ ] 60 renders issue zero reads through the ctx stubs and the values Proxy\n- [ ] the test demonstrably fails when a read is introduced\n\n**Verify:** bash tests/host/test_chain_knob_card_reads.sh\n\n**Steps:** see docs/superpowers/plans/2026-08-20-chain-knob-card.md\n\n```json:metadata\n{\"files\":[\"tests/host/test_chain_knob_card_reads.sh\"],\"verifyCommand\":\"bash tests/host/test_chain_knob_card_reads.sh\",\"acceptanceCriteria\":[\"knob_card.mjs holds no param I/O identifiers\",\"60 renders issue zero reads through the ctx stubs and the values Proxy\",\"the test demonstrably fails when a read is introduced\"],\"modelTier\":\"mechanical\"}\n```"
+  },
+  {
+   "id": 6,
+   "subject": "Task 6: Full suite, deploy, hardware check, docs",
+   "status": "in_progress",
+   "blockedBy": [
+    4,
+    5
+   ],
+   "description": "**Goal:** The change is verified on device and the documentation matches it.\n\n**Files:**\n- Modify: CLAUDE.md\n- Modify: src/shared/help_content.json\n- Modify: ../schwung-catalog-site/manual.html\n\n**Acceptance Criteria:**\n- [ ] tests/host failure count is 32 and all are rg-missing\n- [ ] deployed md5sum matches the local build\n- [ ] eight knobs on synth, audio FX and MIDI FX raise the correct row; release drops it\n- [ ] turn with no touch decays after ~700ms\n- [ ] short card shows the global mapping when nothing is selected\n- [ ] screen reader announces on change without per-frame repeat\n- [ ] CLAUDE.md, manual.html and help_content.json describe the card\n\n**Verify:** for t in tests/host/*.sh; do bash \"$t\" >/dev/null 2>&1 || echo \"FAIL $t\"; done | wc -l\n\n**Steps:** see docs/superpowers/plans/2026-08-20-chain-knob-card.md\n\n```json:metadata\n{\"files\":[\"CLAUDE.md\",\"src/shared/help_content.json\",\"../schwung-catalog-site/manual.html\"],\"verifyCommand\":\"for t in tests/host/*.sh; do bash \\\"$t\\\" >/dev/null 2>&1 || echo \\\"FAIL $t\\\"; done | wc -l\",\"acceptanceCriteria\":[\"tests/host failure count is 32 and all are rg-missing\",\"deployed md5sum matches the local build\",\"eight knobs on synth, audio FX and MIDI FX raise the correct row; release drops it\",\"turn with no touch decays after ~700ms\",\"short card shows the global mapping when nothing is selected\",\"screen reader announces on change without per-frame repeat\",\"CLAUDE.md, manual.html and help_content.json describe the card\"],\"modelTier\":\"standard\"}\n```"
+  }
+ ],
+ "lastUpdated": "2026-08-20T21:57:10.547Z"
+}

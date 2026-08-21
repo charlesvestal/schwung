@@ -57,6 +57,18 @@ static void* v2_create_instance(const char *module_dir, const char *config_json)
     chain_instance_t *inst = calloc(1, sizeof(chain_instance_t));
     if (!inst) return NULL;
 
+    /*
+     * Per-position metadata storage, allocated EAGERLY for every position.
+     *
+     * These used to be inline arrays, so every position's buffer existed from
+     * the moment the instance did and no call site ever checked for one —
+     * `inst->fx_ui_hierarchy[i][0]` is read in a dozen places. Allocating
+     * lazily on load would make each of those a null dereference in the audio
+     * callback for an unloaded position. Eager keeps the old invariant exactly;
+     * only the indirection is new (see chain_internal.h for why it is there).
+     */
+    if (!chain_alloc_position_storage(inst)) { free(inst); return NULL; }
+
     strncpy(inst->module_dir, module_dir, MAX_PATH_LEN - 1);
 
     /* Channel fields default to "absent" — getters return empty length until
@@ -94,8 +106,10 @@ static void v2_destroy_instance(void *instance) {
     /* Unload all plugins */
     v2_synth_panic(inst);
     v2_unload_all_audio_fx(inst);
+    v2_unload_all_midi_fx(inst);
     v2_unload_synth(inst);
 
+    chain_free_position_storage(inst);
     free(inst);
 }
 
@@ -156,7 +170,7 @@ void v2_unload_all_audio_fx(chain_instance_t *inst) {
 
     for (int i = 0; i < inst->fx_count; i++) {
         char target_name[16];
-        snprintf(target_name, sizeof(target_name), "fx%d", i + 1);
+        chain_fx_component_id(target_name, sizeof(target_name), "fx", i);
         chain_mod_clear_target_entries(inst, target_name, 0);
 
         if (inst->fx_is_v2[i]) {
@@ -183,11 +197,13 @@ void v2_unload_all_audio_fx(chain_instance_t *inst) {
     inst->fx_count = 0;
 }
 
-/* V2 unload a single audio FX slot */
-static void v2_unload_audio_fx_slot(chain_instance_t *inst, int slot) {
+/* V2 unload a single audio FX slot. Not static: chain_reorder.c removes a
+ * position through it, so the dlclose and the modulation-entry clear stay in
+ * one place rather than being restated there. */
+void v2_unload_audio_fx_slot(chain_instance_t *inst, int slot) {
     if (!inst || slot < 0 || slot >= MAX_AUDIO_FX) return;
     char target_name[16];
-    snprintf(target_name, sizeof(target_name), "fx%d", slot + 1);
+    chain_fx_component_id(target_name, sizeof(target_name), "fx", slot);
     chain_mod_clear_target_entries(inst, target_name, 0);
 
     if (inst->fx_is_v2[slot]) {
@@ -305,7 +321,7 @@ static int v2_load_audio_fx_slot(chain_instance_t *inst, int slot, const char *f
         inst->fx_ui_hierarchy[slot][0] = '\0';
         return -1;
     }
-    parse_ui_hierarchy_cache(fx_dir, inst->fx_ui_hierarchy[slot], sizeof(inst->fx_ui_hierarchy[slot]));
+    parse_ui_hierarchy_cache(fx_dir, inst->fx_ui_hierarchy[slot], CHAIN_UI_HIERARCHY_LEN);
     inst->mod_param_refresh_ms_fx[slot] = 0;
 
     /* Read capabilities.requires_continuous_processing from module.json — stateful
@@ -635,7 +651,7 @@ int v2_load_audio_fx(chain_instance_t *inst, const char *fx_name) {
         inst->fx_ui_hierarchy[slot][0] = '\0';
         return -1;
     }
-    parse_ui_hierarchy_cache(fx_dir, inst->fx_ui_hierarchy[slot], sizeof(inst->fx_ui_hierarchy[slot]));
+    parse_ui_hierarchy_cache(fx_dir, inst->fx_ui_hierarchy[slot], CHAIN_UI_HIERARCHY_LEN);
     inst->mod_param_refresh_ms_fx[slot] = 0;
 
     inst->fx_count++;
@@ -701,31 +717,77 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         parse_debug_log(dbg);
     }
 
+    /*
+     * ---- Section reorder verbs -------------------------------------------
+     *
+     * "fx:insert" / "fx:remove" / "fx:move", and the midi_fx spellings.
+     * Positions are 1-BASED, matching the ids everything else speaks ("fx2"),
+     * so a caller never has to convert; "move" takes "A>B".
+     *
+     * These exist so that changing a chain's SHAPE stops meaning "reload it".
+     * The editor used to express an insert, a removal or a reorder as a run of
+     * `<id>:module` writes, and each of those unloads the position and dlopen()s
+     * a fresh instance — so adding a MIDI FX at the head rebuilt every MIDI FX
+     * behind it, and removing a mid-chain reverb rebuilt everything downstream.
+     * A running arp lost its phase; a delay lost its repeats. Here the arrays
+     * are permuted and the instances are left alone (chain_permute.h).
+     *
+     * Ahead of every other route because they are the only keys whose subkey is
+     * a verb rather than a parameter name, and a sub-plugin must never see one.
+     */
+    {
+        int is_midi = -1;
+        const char *verb = NULL;
+        if (strncmp(key, "midi_fx:", 8) == 0)  { is_midi = 1; verb = key + 8; }
+        else if (strncmp(key, "fx:", 3) == 0)  { is_midi = 0; verb = key + 3; }
+        if (is_midi >= 0) {
+            const char *v = val ? val : "";
+            if (strcmp(verb, "insert") == 0) {
+                chain_reorder_insert(inst, is_midi, atoi(v) - 1);
+                return;
+            }
+            if (strcmp(verb, "remove") == 0) {
+                chain_reorder_remove(inst, is_midi, atoi(v) - 1);
+                return;
+            }
+            if (strcmp(verb, "move") == 0) {
+                const char *sep = strchr(v, '>');
+                if (sep) chain_reorder_move(inst, is_midi, atoi(v) - 1, atoi(sep + 1) - 1);
+                return;
+            }
+            /* Anything else under these prefixes falls through on purpose —
+             * "midi_fx:pre_capable" is an existing key that lives further
+             * down, so this must claim the three verbs and nothing more. */
+        }
+    }
+
     /* Per-component bypass flags. Handled BEFORE the prefix routes below
      * so we don't forward "bypassed" down to the sub-plugin's set_param. */
     if (strcmp(key, "synth:bypassed") == 0) {
         inst->synth_bypassed = (val && atoi(val)) ? 1 : 0;
         return;
     }
-    if (strcmp(key, "midi_fx1:bypassed") == 0) {
-        inst->midi_fx_bypassed[0] = (val && atoi(val)) ? 1 : 0;
-        return;
-    }
-    if (strcmp(key, "fx1:bypassed") == 0) {
-        inst->fx_bypassed[0] = (val && atoi(val)) ? 1 : 0;
-        return;
-    }
-    if (strcmp(key, "fx2:bypassed") == 0) {
-        inst->fx_bypassed[1] = (val && atoi(val)) ? 1 : 0;
-        return;
-    }
-    if (strcmp(key, "fx3:bypassed") == 0) {
-        inst->fx_bypassed[2] = (val && atoi(val)) ? 1 : 0;
-        return;
-    }
-    if (strcmp(key, "fx4:bypassed") == 0) {
-        inst->fx_bypassed[3] = (val && atoi(val)) ? 1 : 0;
-        return;
+    /*
+     * BEHAVIOUR CHANGE at midi_fx2. The enumerated version handled only
+     * "midi_fx1:bypassed"; "midi_fx2:bypassed" fell through to the generic
+     * midi_fx2: route, which handed "bypassed" to the plugin as if it were one
+     * of its own params and never set the flag — so MIDI FX 2 could not
+     * actually be bypassed, even though chain_midi.c already reads
+     * midi_fx_bypassed[] for every slot. Indexing it fixes that, and the
+     * fixed-4 fxN:bypassed cases had the same shape of hole above fx4.
+     */
+    {
+        const char *bsub = NULL;
+        int bidx = chain_fx_index_from_key(key, "midi_fx", MAX_MIDI_FX, &bsub);
+        if (bidx >= 0 && strcmp(bsub, "bypassed") == 0) {
+            inst->midi_fx_bypassed[bidx] = (val && atoi(val)) ? 1 : 0;
+            return;
+        }
+        bidx = chain_fx_index_from_key(key, "fx", MAX_AUDIO_FX, &bsub);
+        if (bidx >= 0 && strcmp(bsub, "bypassed") == 0) {
+            inst->fx_bypassed[bidx] = (val && atoi(val)) ? 1 : 0;
+            return;
+        }
     }
 
     if (strcmp(key, "load_patch") == 0 || strcmp(key, "patch") == 0) {
@@ -870,17 +932,25 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             inst->dirty = 1;
         }
     }
-    else if (strncmp(key, "fx1:", 4) == 0) {
-        const char *subkey = key + 4;
-        /* Intercept module change to swap FX1 dynamically */
+    else if (chain_fx_index_from_key(key, "fx", MAX_AUDIO_FX, NULL) >= 0) {
+        const char *subkey = NULL;
+        int fxi = chain_fx_index_from_key(key, "fx", MAX_AUDIO_FX, &subkey);
         if (strcmp(subkey, "module") == 0) {
-            v2_load_audio_fx_slot(inst, 0, val);
-            smoother_reset(&inst->fx_smoothers[0]);  /* Reset smoother on module change */
+            v2_load_audio_fx_slot(inst, fxi, val);
+            smoother_reset(&inst->fx_smoothers[fxi]);
             inst->dirty = 1;
-        } else if (inst->fx_count > 0) {
-            if (chain_mod_is_target_active(inst, "fx1", subkey)) {
-                chain_mod_update_base_from_set_param(inst, "fx1", subkey, val);
-                mod_target_state_t *entry = chain_mod_find_target_entry(inst, "fx1", subkey);
+        } else if (inst->fx_count > fxi) {
+            /* Anything below fx_count only: a param for a slot that holds no
+             * FX is DROPPED, deliberately and silently. There is nothing to
+             * forward it to, and the slot's module is set by "fxN:module"
+             * above -- do not "fix" this into an auto-load. With eight slots
+             * and a reorder UI, a stale key naming a slot that no longer
+             * exists is an ordinary event, not a bug to be recovered from. */
+            char fx_id[16];
+            chain_fx_component_id(fx_id, sizeof(fx_id), "fx", fxi);
+            if (chain_mod_is_target_active(inst, fx_id, subkey)) {
+                chain_mod_update_base_from_set_param(inst, fx_id, subkey, val);
+                mod_target_state_t *entry = chain_mod_find_target_entry(inst, fx_id, subkey);
                 if (entry) {
                     chain_mod_apply_effective_value(inst, entry, 0);
                     inst->dirty = 1;
@@ -890,102 +960,48 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
 
             float fval;
             if (is_smoothable_float(val, &fval)) {
-                chain_param_info_t *pinfo = find_param_info(inst->fx_params[0], inst->fx_param_counts[0], subkey);
+                chain_param_info_t *pinfo = find_param_info(inst->fx_params[fxi], inst->fx_param_counts[fxi], subkey);
                 if (!pinfo || pinfo->type == KNOB_TYPE_FLOAT) {
-                    smoother_set_target(&inst->fx_smoothers[0], subkey, fval);
+                    smoother_set_target(&inst->fx_smoothers[fxi], subkey, fval);
                 }
             }
-            if (inst->fx_is_v2[0] && inst->fx_plugins_v2[0] && inst->fx_instances[0]) {
-                inst->fx_plugins_v2[0]->set_param(inst->fx_instances[0], subkey, val);
+            if (inst->fx_is_v2[fxi] && inst->fx_plugins_v2[fxi] && inst->fx_instances[fxi]) {
+                inst->fx_plugins_v2[fxi]->set_param(inst->fx_instances[fxi], subkey, val);
             }
             if (strcmp(subkey, "plugin_id") == 0) {
-                inst->fx_param_counts[0] = 0;
-                inst->mod_param_refresh_ms_fx[0] = 0;
+                inst->fx_param_counts[fxi] = 0;
+                inst->mod_param_refresh_ms_fx[fxi] = 0;
             }
             inst->dirty = 1;
         }
     }
-    else if (strncmp(key, "fx2:", 4) == 0) {
-        const char *subkey = key + 4;
-        /* Intercept module change to swap FX2 dynamically */
+    else if (chain_fx_index_from_key(key, "midi_fx", MAX_MIDI_FX, NULL) >= 0) {
+        const char *subkey = NULL;
+        int mfi = chain_fx_index_from_key(key, "midi_fx", MAX_MIDI_FX, &subkey);
         if (strcmp(subkey, "module") == 0) {
-            v2_load_audio_fx_slot(inst, 1, val);
-            smoother_reset(&inst->fx_smoothers[1]);  /* Reset smoother on module change */
+            /* The index is the SLOT, exactly as it is for "fxN:module" above.
+             * This used to parse mfi and then discard it: the loader appended
+             * at midi_fx_count, so on an empty chain "midi_fx4:module" and
+             * "midi_fx1:module" were the same operation, and slot 1
+             * additionally unloaded every other MIDI FX first. See
+             * v2_load_midi_fx_slot in chain_midi.c for why slot 1 is no longer
+             * special and what a caller shortening the chain must now do. */
+            v2_load_midi_fx_slot(inst, mfi, val);
             inst->dirty = 1;
-        } else if (inst->fx_count > 1) {
-            if (chain_mod_is_target_active(inst, "fx2", subkey)) {
-                chain_mod_update_base_from_set_param(inst, "fx2", subkey, val);
-                mod_target_state_t *entry = chain_mod_find_target_entry(inst, "fx2", subkey);
+        } else if (inst->midi_fx_count > mfi && inst->midi_fx_plugins[mfi] && inst->midi_fx_instances[mfi]) {
+            /* Dropped if the slot holds nothing — see the audio FX branch. */
+            char mfx_id[16];
+            chain_fx_component_id(mfx_id, sizeof(mfx_id), "midi_fx", mfi);
+            if (chain_mod_is_target_active(inst, mfx_id, subkey)) {
+                chain_mod_update_base_from_set_param(inst, mfx_id, subkey, val);
+                mod_target_state_t *entry = chain_mod_find_target_entry(inst, mfx_id, subkey);
                 if (entry) {
                     chain_mod_apply_effective_value(inst, entry, 0);
                     inst->dirty = 1;
                     return;
                 }
             }
-
-            float fval;
-            if (is_smoothable_float(val, &fval)) {
-                chain_param_info_t *pinfo = find_param_info(inst->fx_params[1], inst->fx_param_counts[1], subkey);
-                if (!pinfo || pinfo->type == KNOB_TYPE_FLOAT) {
-                    smoother_set_target(&inst->fx_smoothers[1], subkey, fval);
-                }
-            }
-            if (inst->fx_is_v2[1] && inst->fx_plugins_v2[1] && inst->fx_instances[1]) {
-                inst->fx_plugins_v2[1]->set_param(inst->fx_instances[1], subkey, val);
-            }
-            if (strcmp(subkey, "plugin_id") == 0) {
-                inst->fx_param_counts[1] = 0;
-                inst->mod_param_refresh_ms_fx[1] = 0;
-            }
-            inst->dirty = 1;
-        }
-    }
-    else if (strncmp(key, "midi_fx1:", 9) == 0) {
-        const char *subkey = key + 9;
-        /* Intercept module change to swap MIDI FX1 dynamically */
-        if (strcmp(subkey, "module") == 0) {
-            /* Unload existing MIDI FX if any */
-            if (inst->midi_fx_count > 0) {
-                v2_unload_all_midi_fx(inst);
-            }
-            if (val && val[0] != '\0' && strcmp(val, "none") != 0) {
-                v2_load_midi_fx(inst, val);
-            }
-            inst->dirty = 1;
-        } else if (inst->midi_fx_count > 0 && inst->midi_fx_plugins[0] && inst->midi_fx_instances[0]) {
-            if (chain_mod_is_target_active(inst, "midi_fx1", subkey)) {
-                chain_mod_update_base_from_set_param(inst, "midi_fx1", subkey, val);
-                mod_target_state_t *entry = chain_mod_find_target_entry(inst, "midi_fx1", subkey);
-                if (entry) {
-                    chain_mod_apply_effective_value(inst, entry, 0);
-                    inst->dirty = 1;
-                    return;
-                }
-            }
-            inst->midi_fx_plugins[0]->set_param(inst->midi_fx_instances[0], subkey, val);
-            inst->dirty = 1;
-        }
-    }
-    else if (strncmp(key, "midi_fx2:", 9) == 0) {
-        const char *subkey = key + 9;
-        /* Intercept module change to swap MIDI FX2 dynamically */
-        if (strcmp(subkey, "module") == 0) {
-            /* For slot 2, we'd need to unload just slot 2 - simplified for now */
-            if (val && val[0] != '\0' && strcmp(val, "none") != 0) {
-                v2_load_midi_fx(inst, val);
-            }
-            inst->dirty = 1;
-        } else if (inst->midi_fx_count > 1 && inst->midi_fx_plugins[1] && inst->midi_fx_instances[1]) {
-            if (chain_mod_is_target_active(inst, "midi_fx2", subkey)) {
-                chain_mod_update_base_from_set_param(inst, "midi_fx2", subkey, val);
-                mod_target_state_t *entry = chain_mod_find_target_entry(inst, "midi_fx2", subkey);
-                if (entry) {
-                    chain_mod_apply_effective_value(inst, entry, 0);
-                    inst->dirty = 1;
-                    return;
-                }
-            }
-            inst->midi_fx_plugins[1]->set_param(inst->midi_fx_instances[1], subkey, val);
+            inst->midi_fx_plugins[mfi]->set_param(inst->midi_fx_instances[mfi], subkey, val);
             inst->dirty = 1;
         }
     }
@@ -1007,8 +1023,19 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                 if (lfo->rate_hz < 0.1f && !lfo->sync) {
                     lfo->rate_hz = 1.0f;
                 }
+                /*
+                 * Full depth, not half. An LFO you have just switched on should
+                 * DO something — at 50% the effect was there but easy to miss,
+                 * and the row-wide waveform now drawn on the LFO page reads as
+                 * a half-height wave for no reason the user chose.
+                 *
+                 * The guard is what makes this safe: it fires only when depth is
+                 * exactly 0 AND no target has been picked yet, i.e. a genuinely
+                 * fresh LFO. Anything already configured, or restored from a
+                 * saved slot, sets depth explicitly and is untouched.
+                 */
                 if (lfo->depth == 0.0f && !lfo->target[0] && !lfo->param[0]) {
-                    lfo->depth = 0.5f;
+                    lfo->depth = 1.0f;
                 }
                 lfo->active = (lfo->target[0] && lfo->param[0]);
             }
@@ -1094,21 +1121,12 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                 }
 
                 if (target[0] && param[0]) {
-                    /* Look up param info from the target's chain_params */
-                    chain_param_info_t *pinfo = NULL;
-                    if (strcmp(target, "synth") == 0) {
-                        pinfo = find_param_info(inst->synth_params, inst->synth_param_count, param);
-                    } else if (strcmp(target, "fx1") == 0 && inst->fx_count > 0) {
-                        pinfo = find_param_info(inst->fx_params[0], inst->fx_param_counts[0], param);
-                    } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1) {
-                        pinfo = find_param_info(inst->fx_params[1], inst->fx_param_counts[1], param);
-                    } else if (strcmp(target, "fx3") == 0 && inst->fx_count > 2) {
-                        pinfo = find_param_info(inst->fx_params[2], inst->fx_param_counts[2], param);
-                    } else if (strcmp(target, "midi_fx1") == 0 && inst->midi_fx_count > 0) {
-                        pinfo = find_param_info(inst->midi_fx_params[0], inst->midi_fx_param_counts[0], param);
-                    } else if (strcmp(target, "midi_fx2") == 0 && inst->midi_fx_count > 1) {
-                        pinfo = find_param_info(inst->midi_fx_params[1], inst->midi_fx_param_counts[1], param);
-                    }
+                    /* Look up param info from the target's chain_params.
+                     * knob_find_param parses the index out of the id, so
+                     * fx4..fx8 / midi_fx3..midi_fx8 resolve too; the ladder
+                     * this replaces stopped at fx3/midi_fx2 and silently left
+                     * pinfo NULL (no step size, no range, no enum options). */
+                    chain_param_info_t *pinfo = knob_find_param(inst, target, param);
 
                     /* Set mapping */
                     if (found >= 0) {
@@ -1235,20 +1253,18 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     if (strcmp(key, "synth:bypassed") == 0) {
         return snprintf(buf, buf_len, "%d", inst->synth_bypassed ? 1 : 0);
     }
-    if (strcmp(key, "midi_fx1:bypassed") == 0) {
-        return snprintf(buf, buf_len, "%d", inst->midi_fx_bypassed[0] ? 1 : 0);
-    }
-    if (strcmp(key, "fx1:bypassed") == 0) {
-        return snprintf(buf, buf_len, "%d", inst->fx_bypassed[0] ? 1 : 0);
-    }
-    if (strcmp(key, "fx2:bypassed") == 0) {
-        return snprintf(buf, buf_len, "%d", inst->fx_bypassed[1] ? 1 : 0);
-    }
-    if (strcmp(key, "fx3:bypassed") == 0) {
-        return snprintf(buf, buf_len, "%d", inst->fx_bypassed[2] ? 1 : 0);
-    }
-    if (strcmp(key, "fx4:bypassed") == 0) {
-        return snprintf(buf, buf_len, "%d", inst->fx_bypassed[3] ? 1 : 0);
+    /* Indexed for the same reason as the set_param side above: reading
+     * "midi_fx2:bypassed" used to reach the plugin instead of our flag. */
+    {
+        const char *bsub = NULL;
+        int bidx = chain_fx_index_from_key(key, "midi_fx", MAX_MIDI_FX, &bsub);
+        if (bidx >= 0 && strcmp(bsub, "bypassed") == 0) {
+            return snprintf(buf, buf_len, "%d", inst->midi_fx_bypassed[bidx] ? 1 : 0);
+        }
+        bidx = chain_fx_index_from_key(key, "fx", MAX_AUDIO_FX, &bsub);
+        if (bidx >= 0 && strcmp(bsub, "bypassed") == 0) {
+            return snprintf(buf, buf_len, "%d", inst->fx_bypassed[bidx] ? 1 : 0);
+        }
     }
 
     if (strcmp(key, "dirty") == 0) {
@@ -1312,20 +1328,26 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     if (strcmp(key, "synth_error") == 0 || strcmp(key, "load_error") == 0) {
         return v2_synth_get_error(inst, buf, buf_len);
     }
-    if (strcmp(key, "fx1_module") == 0) {
-        return snprintf(buf, buf_len, "%s", inst->current_fx_modules[0]);
-    }
-    if (strcmp(key, "fx2_module") == 0) {
-        return snprintf(buf, buf_len, "%s", inst->current_fx_modules[1]);
+    /*
+     * "fx<N>_module" / "midi_fx<N>_module" — what the editor asks to find out
+     * what occupies a position. INDEXED, not enumerated: only fx1 and fx2 were
+     * ever answered, so a third module loaded, ran and made sound while the
+     * editor could not see it. `fx_count` said 3, `fx3_module` said nothing, an
+     * unserved key reads back as "", and the reader drops a trailing empty.
+     * Found on hardware 2026-08-20.
+     */
+    {
+        int mi = chain_fx_index_from_suffixed(key, "midi_fx", MAX_MIDI_FX, "_module");
+        if (mi >= 0) {
+            return snprintf(buf, buf_len, "%s", inst->current_midi_fx_modules[mi]);
+        }
+        int fi = chain_fx_index_from_suffixed(key, "fx", MAX_AUDIO_FX, "_module");
+        if (fi >= 0) {
+            return snprintf(buf, buf_len, "%s", inst->current_fx_modules[fi]);
+        }
     }
     if (strcmp(key, "midi_fx_count") == 0) {
         return snprintf(buf, buf_len, "%d", inst->midi_fx_count);
-    }
-    if (strcmp(key, "midi_fx1_module") == 0) {
-        return snprintf(buf, buf_len, "%s", inst->current_midi_fx_modules[0]);
-    }
-    if (strcmp(key, "midi_fx2_module") == 0) {
-        return snprintf(buf, buf_len, "%s", inst->current_midi_fx_modules[1]);
     }
     /* Master preset queries */
     if (strcmp(key, "master_preset_count") == 0) {
@@ -1428,17 +1450,23 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             /* Try to read actual value from DSP plugin */
             char val_buf[64];
             int got = -1;
+            /* Indexed, not enumerated: this ladder stopped at fx2/midi_fx1, so
+             * a knob on fx3+ saved the STALE tracking value into the patch
+             * instead of the plugin's live one. The per-position plugin/
+             * instance checks stay — fx_count is a high-water mark and an
+             * interior position can be empty. */
             if (strcmp(target, "synth") == 0 && inst->synth_plugin_v2 && inst->synth_instance) {
                 got = inst->synth_plugin_v2->get_param(inst->synth_instance, param, val_buf, sizeof(val_buf));
-            } else if (strcmp(target, "fx1") == 0 && inst->fx_count > 0 &&
-                       inst->fx_is_v2[0] && inst->fx_plugins_v2[0] && inst->fx_instances[0]) {
-                got = inst->fx_plugins_v2[0]->get_param(inst->fx_instances[0], param, val_buf, sizeof(val_buf));
-            } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1 &&
-                       inst->fx_is_v2[1] && inst->fx_plugins_v2[1] && inst->fx_instances[1]) {
-                got = inst->fx_plugins_v2[1]->get_param(inst->fx_instances[1], param, val_buf, sizeof(val_buf));
-            } else if (strcmp(target, "midi_fx1") == 0 && inst->midi_fx_count > 0 &&
-                       inst->midi_fx_plugins[0] && inst->midi_fx_instances[0]) {
-                got = inst->midi_fx_plugins[0]->get_param(inst->midi_fx_instances[0], param, val_buf, sizeof(val_buf));
+            } else {
+                int fxi = chain_fx_index_from_id(target, "fx", MAX_AUDIO_FX);
+                int mfi = chain_fx_index_from_id(target, "midi_fx", MAX_MIDI_FX);
+                if (fxi >= 0 && fxi < inst->fx_count &&
+                    inst->fx_is_v2[fxi] && inst->fx_plugins_v2[fxi] && inst->fx_instances[fxi]) {
+                    got = inst->fx_plugins_v2[fxi]->get_param(inst->fx_instances[fxi], param, val_buf, sizeof(val_buf));
+                } else if (mfi >= 0 && mfi < inst->midi_fx_count &&
+                           inst->midi_fx_plugins[mfi] && inst->midi_fx_instances[mfi]) {
+                    got = inst->midi_fx_plugins[mfi]->get_param(inst->midi_fx_instances[mfi], param, val_buf, sizeof(val_buf));
+                }
             }
             if (got > 0) {
                 chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
@@ -1469,21 +1497,10 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                     /* Look up param info for all queries */
                     const char *target = inst->knob_mappings[i].target;
                     const char *param = inst->knob_mappings[i].param;
-                    chain_param_info_t *pinfo = NULL;
-
-                    if (strcmp(target, "synth") == 0) {
-                        pinfo = find_param_info(inst->synth_params, inst->synth_param_count, param);
-                    } else if (strcmp(target, "fx1") == 0 && inst->fx_count > 0) {
-                        pinfo = find_param_info(inst->fx_params[0], inst->fx_param_counts[0], param);
-                    } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1) {
-                        pinfo = find_param_info(inst->fx_params[1], inst->fx_param_counts[1], param);
-                    } else if (strcmp(target, "fx3") == 0 && inst->fx_count > 2) {
-                        pinfo = find_param_info(inst->fx_params[2], inst->fx_param_counts[2], param);
-                    } else if (strcmp(target, "midi_fx1") == 0 && inst->midi_fx_count > 0) {
-                        pinfo = find_param_info(inst->midi_fx_params[0], inst->midi_fx_param_counts[0], param);
-                    } else if (strcmp(target, "midi_fx2") == 0 && inst->midi_fx_count > 1) {
-                        pinfo = find_param_info(inst->midi_fx_params[1], inst->midi_fx_param_counts[1], param);
-                    }
+                    /* Indexed, not enumerated — see the knob_N_set site. This
+                     * pinfo feeds the min/max/step/options answers below, so
+                     * an unresolved fx4+ target made the whole knob undrivable. */
+                    chain_param_info_t *pinfo = knob_find_param(inst, target, param);
 
                     if (strcmp(query_param, "name") == 0) {
                         /* Construct display name from target and param */
@@ -1600,20 +1617,23 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         return -1;
     }
 
-    /* Route fx1: prefixed params to FX1 (strip prefix) */
-    if (strncmp(key, "fx1:", 4) == 0) {
-        const char *subkey = key + 4;
-        int base_result = chain_mod_get_base_for_subkey(inst, "fx1", subkey, buf, buf_len);
+    /* Route fx<N>: prefixed params to that audio FX slot (strip prefix) */
+    if (chain_fx_index_from_key(key, "fx", MAX_AUDIO_FX, NULL) >= 0) {
+        const char *subkey = NULL;
+        int fxi = chain_fx_index_from_key(key, "fx", MAX_AUDIO_FX, &subkey);
+        char fx_id[16];
+        chain_fx_component_id(fx_id, sizeof(fx_id), "fx", fxi);
+        int base_result = chain_mod_get_base_for_subkey(inst, fx_id, subkey, buf, buf_len);
         if (base_result >= 0) return base_result;
-        int mod_result = chain_mod_get_modulated_for_subkey(inst, "fx1", subkey, buf, buf_len);
+        int mod_result = chain_mod_get_modulated_for_subkey(inst, fx_id, subkey, buf, buf_len);
         if (mod_result >= 0) return mod_result;
 
         /* For ui_hierarchy: return cached JSON from module.json, fall through to plugin if empty */
-        if (strcmp(subkey, "ui_hierarchy") == 0 && inst->fx_count > 0) {
-            if (inst->fx_ui_hierarchy[0][0]) {
-                int len = strlen(inst->fx_ui_hierarchy[0]);
+        if (strcmp(subkey, "ui_hierarchy") == 0 && inst->fx_count > fxi) {
+            if (inst->fx_ui_hierarchy[fxi][0]) {
+                int len = strlen(inst->fx_ui_hierarchy[fxi]);
                 if (len < buf_len) {
-                    strcpy(buf, inst->fx_ui_hierarchy[0]);
+                    strcpy(buf, inst->fx_ui_hierarchy[fxi]);
                     return len;
                 }
             }
@@ -1621,18 +1641,18 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         }
 
         /* For chain_params: try plugin first, fall back to parsed module.json data */
-        if (strcmp(subkey, "chain_params") == 0 && inst->fx_count > 0) {
+        if (strcmp(subkey, "chain_params") == 0 && inst->fx_count > fxi) {
             /* Try plugin's own chain_params handler first */
-            if (inst->fx_is_v2[0] && inst->fx_plugins_v2[0] && inst->fx_instances[0] && inst->fx_plugins_v2[0]->get_param) {
-                int result = inst->fx_plugins_v2[0]->get_param(inst->fx_instances[0], subkey, buf, buf_len);
+            if (inst->fx_is_v2[fxi] && inst->fx_plugins_v2[fxi] && inst->fx_instances[fxi] && inst->fx_plugins_v2[fxi]->get_param) {
+                int result = inst->fx_plugins_v2[fxi]->get_param(inst->fx_instances[fxi], subkey, buf, buf_len);
                 if (result > 0) return result;
             }
             /* Fall back to parsed module.json data */
-            if (inst->fx_param_counts[0] > 0) {
+            if (inst->fx_param_counts[fxi] > 0) {
                 int offset = 0;
                 offset += snprintf(buf + offset, buf_len - offset, "[");
-                for (int i = 0; i < inst->fx_param_counts[0] && offset < buf_len - 100; i++) {
-                    chain_param_info_t *p = &inst->fx_params[0][i];
+                for (int i = 0; i < inst->fx_param_counts[fxi] && offset < buf_len - 100; i++) {
+                    chain_param_info_t *p = &inst->fx_params[fxi][i];
                     if (i > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
                     const char *type_str = (p->type == KNOB_TYPE_INT) ? "int" :
                                           (p->type == KNOB_TYPE_ENUM) ? "enum" : "float";
@@ -1665,117 +1685,47 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             return -1;
         }
 
-        if (inst->fx_count > 0) {
-            if (inst->fx_is_v2[0] && inst->fx_plugins_v2[0] && inst->fx_instances[0] && inst->fx_plugins_v2[0]->get_param) {
-                return inst->fx_plugins_v2[0]->get_param(inst->fx_instances[0], subkey, buf, buf_len);
+        if (inst->fx_count > fxi) {
+            if (inst->fx_is_v2[fxi] && inst->fx_plugins_v2[fxi] && inst->fx_instances[fxi] && inst->fx_plugins_v2[fxi]->get_param) {
+                return inst->fx_plugins_v2[fxi]->get_param(inst->fx_instances[fxi], subkey, buf, buf_len);
             }
         }
         return -1;
     }
 
-    /* Route fx2: prefixed params to FX2 (strip prefix) */
-    if (strncmp(key, "fx2:", 4) == 0) {
-        const char *subkey = key + 4;
-        int base_result = chain_mod_get_base_for_subkey(inst, "fx2", subkey, buf, buf_len);
+    /* Route midi_fx<N>: prefixed params to that MIDI FX slot (strip prefix) */
+    if (chain_fx_index_from_key(key, "midi_fx", MAX_MIDI_FX, NULL) >= 0) {
+        const char *subkey = NULL;
+        int mfi = chain_fx_index_from_key(key, "midi_fx", MAX_MIDI_FX, &subkey);
+        char mfx_id[16];
+        chain_fx_component_id(mfx_id, sizeof(mfx_id), "midi_fx", mfi);
+        int base_result = chain_mod_get_base_for_subkey(inst, mfx_id, subkey, buf, buf_len);
         if (base_result >= 0) return base_result;
-        int mod_result = chain_mod_get_modulated_for_subkey(inst, "fx2", subkey, buf, buf_len);
-        if (mod_result >= 0) return mod_result;
-
-        /* For ui_hierarchy: return cached JSON from module.json, fall through to plugin if empty */
-        if (strcmp(subkey, "ui_hierarchy") == 0 && inst->fx_count > 1) {
-            if (inst->fx_ui_hierarchy[1][0]) {
-                int len = strlen(inst->fx_ui_hierarchy[1]);
-                if (len < buf_len) {
-                    strcpy(buf, inst->fx_ui_hierarchy[1]);
-                    return len;
-                }
-            }
-            /* Cache empty - fall through to plugin get_param below */
-        }
-
-        /* For chain_params: try plugin first, fall back to parsed module.json data */
-        if (strcmp(subkey, "chain_params") == 0 && inst->fx_count > 1) {
-            /* Try plugin's own chain_params handler first */
-            if (inst->fx_is_v2[1] && inst->fx_plugins_v2[1] && inst->fx_instances[1] && inst->fx_plugins_v2[1]->get_param) {
-                int result = inst->fx_plugins_v2[1]->get_param(inst->fx_instances[1], subkey, buf, buf_len);
-                if (result > 0) return result;
-            }
-            /* Fall back to parsed module.json data */
-            if (inst->fx_param_counts[1] > 0) {
-                int offset = 0;
-                offset += snprintf(buf + offset, buf_len - offset, "[");
-                for (int i = 0; i < inst->fx_param_counts[1] && offset < buf_len - 100; i++) {
-                    chain_param_info_t *p = &inst->fx_params[1][i];
-                    if (i > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
-                    const char *type_str = (p->type == KNOB_TYPE_INT) ? "int" :
-                                          (p->type == KNOB_TYPE_ENUM) ? "enum" : "float";
-                    offset += snprintf(buf + offset, buf_len - offset,
-                        "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"%s\",\"min\":%g,\"max\":%g",
-                        p->key, p->name[0] ? p->name : p->key,
-                        type_str,
-                        p->min_val, p->max_val);
-                    /* Add options array for enum types */
-                    if (p->type == KNOB_TYPE_ENUM && p->option_count > 0) {
-                        offset += snprintf(buf + offset, buf_len - offset, ",\"options\":[");
-                        for (int j = 0; j < p->option_count && j < MAX_ENUM_OPTIONS; j++) {
-                            if (j > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
-                            offset += snprintf(buf + offset, buf_len - offset, "\"%s\"", p->options[j]);
-                        }
-                        offset += snprintf(buf + offset, buf_len - offset, "]");
-                    }
-                    /* Add unit and display_format if present */
-                    if (p->unit[0]) {
-                        offset += snprintf(buf + offset, buf_len - offset, ",\"unit\":\"%s\"", p->unit);
-                    }
-                    if (p->display_format[0]) {
-                        offset += snprintf(buf + offset, buf_len - offset, ",\"display_format\":\"%s\"", p->display_format);
-                    }
-                    offset += snprintf(buf + offset, buf_len - offset, "}");
-                }
-                offset += snprintf(buf + offset, buf_len - offset, "]");
-                return offset;
-            }
-            return -1;
-        }
-
-        if (inst->fx_count > 1) {
-            if (inst->fx_is_v2[1] && inst->fx_plugins_v2[1] && inst->fx_instances[1] && inst->fx_plugins_v2[1]->get_param) {
-                return inst->fx_plugins_v2[1]->get_param(inst->fx_instances[1], subkey, buf, buf_len);
-            }
-        }
-        return -1;
-    }
-
-    /* Route midi_fx1: prefixed params to MIDI FX1 (strip prefix) */
-    if (strncmp(key, "midi_fx1:", 9) == 0) {
-        const char *subkey = key + 9;
-        int base_result = chain_mod_get_base_for_subkey(inst, "midi_fx1", subkey, buf, buf_len);
-        if (base_result >= 0) return base_result;
-        int mod_result = chain_mod_get_modulated_for_subkey(inst, "midi_fx1", subkey, buf, buf_len);
+        int mod_result = chain_mod_get_modulated_for_subkey(inst, mfx_id, subkey, buf, buf_len);
         if (mod_result >= 0) return mod_result;
         /* For ui_hierarchy: return cached JSON from module.json, fall through to plugin if empty */
-        if (strcmp(subkey, "ui_hierarchy") == 0 && inst->midi_fx_count > 0) {
-            if (inst->midi_fx_ui_hierarchy[0][0]) {
-                int len = strlen(inst->midi_fx_ui_hierarchy[0]);
+        if (strcmp(subkey, "ui_hierarchy") == 0 && inst->midi_fx_count > mfi) {
+            if (inst->midi_fx_ui_hierarchy[mfi][0]) {
+                int len = strlen(inst->midi_fx_ui_hierarchy[mfi]);
                 if (len < buf_len) {
-                    strcpy(buf, inst->midi_fx_ui_hierarchy[0]);
+                    strcpy(buf, inst->midi_fx_ui_hierarchy[mfi]);
                     return len;
                 }
             }
             /* Cache empty - fall through to plugin get_param below */
         }
         /* For chain_params: try plugin first, fall back to parsed module.json data */
-        if (strcmp(subkey, "chain_params") == 0 && inst->midi_fx_count > 0) {
+        if (strcmp(subkey, "chain_params") == 0 && inst->midi_fx_count > mfi) {
             /* Try plugin's own chain_params handler first */
-            if (inst->midi_fx_plugins[0] && inst->midi_fx_instances[0] && inst->midi_fx_plugins[0]->get_param) {
-                int result = inst->midi_fx_plugins[0]->get_param(inst->midi_fx_instances[0], subkey, buf, buf_len);
+            if (inst->midi_fx_plugins[mfi] && inst->midi_fx_instances[mfi] && inst->midi_fx_plugins[mfi]->get_param) {
+                int result = inst->midi_fx_plugins[mfi]->get_param(inst->midi_fx_instances[mfi], subkey, buf, buf_len);
                 if (result > 0) return result;
             }
             /* Fall back to parsed module.json data */
-            if (inst->midi_fx_param_counts[0] > 0) {
+            if (inst->midi_fx_param_counts[mfi] > 0) {
                 int written = snprintf(buf, buf_len, "[");
-                for (int i = 0; i < inst->midi_fx_param_counts[0] && written < buf_len - 10; i++) {
-                    chain_param_info_t *p = &inst->midi_fx_params[0][i];
+                for (int i = 0; i < inst->midi_fx_param_counts[mfi] && written < buf_len - 10; i++) {
+                    chain_param_info_t *p = &inst->midi_fx_params[mfi][i];
                     if (i > 0) written += snprintf(buf + written, buf_len - written, ",");
                     const char *type_str = (p->type == KNOB_TYPE_INT) ? "int" :
                                           (p->type == KNOB_TYPE_ENUM) ? "enum" : "float";
@@ -1808,76 +1758,8 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             }
             return -1;  /* No chain_params available */
         }
-        if (inst->midi_fx_count > 0 && inst->midi_fx_plugins[0] && inst->midi_fx_instances[0] && inst->midi_fx_plugins[0]->get_param) {
-            return inst->midi_fx_plugins[0]->get_param(inst->midi_fx_instances[0], subkey, buf, buf_len);
-        }
-        return -1;
-    }
-
-    /* Route midi_fx2: prefixed params to MIDI FX2 (strip prefix) */
-    if (strncmp(key, "midi_fx2:", 9) == 0) {
-        const char *subkey = key + 9;
-        int base_result = chain_mod_get_base_for_subkey(inst, "midi_fx2", subkey, buf, buf_len);
-        if (base_result >= 0) return base_result;
-        int mod_result = chain_mod_get_modulated_for_subkey(inst, "midi_fx2", subkey, buf, buf_len);
-        if (mod_result >= 0) return mod_result;
-        /* For ui_hierarchy: return cached JSON from module.json, fall through to plugin if empty */
-        if (strcmp(subkey, "ui_hierarchy") == 0 && inst->midi_fx_count > 1) {
-            if (inst->midi_fx_ui_hierarchy[1][0]) {
-                int len = strlen(inst->midi_fx_ui_hierarchy[1]);
-                if (len < buf_len) {
-                    strcpy(buf, inst->midi_fx_ui_hierarchy[1]);
-                    return len;
-                }
-            }
-            /* Cache empty - fall through to plugin get_param below */
-        }
-        /* For chain_params: try plugin first, fall back to parsed module.json data */
-        if (strcmp(subkey, "chain_params") == 0 && inst->midi_fx_count > 1) {
-            /* Try plugin's own chain_params handler first */
-            if (inst->midi_fx_plugins[1] && inst->midi_fx_instances[1] && inst->midi_fx_plugins[1]->get_param) {
-                int result = inst->midi_fx_plugins[1]->get_param(inst->midi_fx_instances[1], subkey, buf, buf_len);
-                if (result > 0) return result;
-            }
-            /* Fall back to parsed module.json data */
-            if (inst->midi_fx_param_counts[1] > 0) {
-                int written = snprintf(buf, buf_len, "[");
-                for (int i = 0; i < inst->midi_fx_param_counts[1] && written < buf_len - 10; i++) {
-                    chain_param_info_t *p = &inst->midi_fx_params[1][i];
-                    if (i > 0) written += snprintf(buf + written, buf_len - written, ",");
-                    const char *type_str = (p->type == KNOB_TYPE_INT) ? "int" :
-                                          (p->type == KNOB_TYPE_ENUM) ? "enum" : "float";
-                    written += snprintf(buf + written, buf_len - written,
-                        "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"%s\"",
-                        p->key, p->name, type_str);
-                    if (p->type == KNOB_TYPE_FLOAT || p->type == KNOB_TYPE_INT) {
-                        written += snprintf(buf + written, buf_len - written,
-                            ",\"min\":%.2f,\"max\":%.2f,\"default\":%.2f",
-                            p->min_val, p->max_val, p->default_val);
-                    } else if (p->type == KNOB_TYPE_ENUM && p->option_count > 0) {
-                        written += snprintf(buf + written, buf_len - written, ",\"options\":[");
-                        for (int j = 0; j < p->option_count; j++) {
-                            if (j > 0) written += snprintf(buf + written, buf_len - written, ",");
-                            written += snprintf(buf + written, buf_len - written, "\"%s\"", p->options[j]);
-                        }
-                        written += snprintf(buf + written, buf_len - written, "]");
-                    }
-                    /* Add unit and display_format if present */
-                    if (p->unit[0]) {
-                        written += snprintf(buf + written, buf_len - written, ",\"unit\":\"%s\"", p->unit);
-                    }
-                    if (p->display_format[0]) {
-                        written += snprintf(buf + written, buf_len - written, ",\"display_format\":\"%s\"", p->display_format);
-                    }
-                    written += snprintf(buf + written, buf_len - written, "}");
-                }
-                written += snprintf(buf + written, buf_len - written, "]");
-                return written;
-            }
-            return -1;
-        }
-        if (inst->midi_fx_count > 1 && inst->midi_fx_plugins[1] && inst->midi_fx_instances[1] && inst->midi_fx_plugins[1]->get_param) {
-            return inst->midi_fx_plugins[1]->get_param(inst->midi_fx_instances[1], subkey, buf, buf_len);
+        if (inst->midi_fx_count > mfi && inst->midi_fx_plugins[mfi] && inst->midi_fx_instances[mfi] && inst->midi_fx_plugins[mfi]->get_param) {
+            return inst->midi_fx_plugins[mfi]->get_param(inst->midi_fx_instances[mfi], subkey, buf, buf_len);
         }
         return -1;
     }

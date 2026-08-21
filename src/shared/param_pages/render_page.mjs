@@ -69,6 +69,29 @@ const CELL_PAD = 1;
 const HEADER_TEXT_Y = 0;
 const RULE_Y = 8;
 const HEADER_BLOCK = 11;         /* header text + page rule + 1 px breathing */
+/*
+ * The PICKER header is its own measurement, deliberately smaller than
+ * HEADER_BLOCK — which belongs to the dial/bar grid and cannot move without
+ * relaying that whole layout.
+ *
+ * The picker sat 3 rows lower than the page it draws over: an 8-row filled band
+ * (HEADER_BLOCK - 3) plus 3 rows of breathing, against the Movy page header of a
+ * 7-row band and a 1-row bank bar. Two headers for the same screen, one visibly
+ * taller than the other, and the extra rows cost list entries.
+ *
+ * At 7 + a dark row + a gutter the two agree, and the list gets rows back:
+ *   full screen (h 64):        floor((64 - 9) / 9) = 6   was 5
+ *   with the hint footer (55): floor((55 - 9) / 9) = 5   was 4
+ * so the footer no longer costs an entry at all.
+ */
+/*
+ * 8, not 7: the header text is the 7-row device font, so a 7-row band leaves it
+ * no clear row and the glyphs run into the edge of the fill — the same smudge
+ * LBL_H exists to avoid. 8 gives one clear row under the text, and costs
+ * nothing: both row counts below are unchanged at 8.
+ */
+const PICKER_HEADER_H = 8;       /* 7-row text + 1 clear row */
+const PICKER_LIST_TOP = 9;       /* band + 1 gutter */
 const FONT_H = 7;
 
 const BAR_H = 4;
@@ -684,30 +707,45 @@ export function renderHint(ctx, { rect, lines, title }) {
  * under 25 sections, and a 76-entry list is the same chore in a different
  * shape.
  */
-export function renderPicker(ctx, { rect, entries, index, title }) {
+export function renderPicker(ctx, { rect, entries, index, title, header = true }) {
     const r = rect || { x: 0, y: 0, w: SCREEN_WIDTH, h: SCREEN_HEIGHT };
-    const rows = Math.max(1, Math.floor((r.h - HEADER_BLOCK) / (FONT_H + 2)));
+    /* header:false is the MENU PAGE case — the page chrome (drawHeader + the
+     * bank bar) has already drawn a header, and drawing a second one under it
+     * is two headers for one screen. Body-only also buys a row back. */
+    const top = header ? PICKER_LIST_TOP : 0;
+    const rows = Math.max(1, Math.floor((r.h - top) / (FONT_H + 2)));
     const total = (entries || []).length;
-    const cur = Math.max(0, Math.min(total - 1, index | 0));
+    /* index < 0 = nothing selected. An INERT menu page previews its entries
+     * without claiming one is current, so no row inverts and the window starts
+     * at the top. */
+    const none = (index | 0) < 0;
+    const cur = none ? 0 : Math.max(0, Math.min(total - 1, index | 0));
 
     /* Keep the selection centred so the list does not jump when it can scroll. */
     let first = cur - Math.floor(rows / 2);
     if (first > total - rows) first = total - rows;
     if (first < 0) first = 0;
 
-    ctx.fillRect(r.x, r.y, r.w, HEADER_BLOCK - 3, 1);
-    ctx.print(r.x + 1, r.y + HEADER_TEXT_Y, fitText(ctx, title || "Sections", r.w - 40), 0);
-    const pos = `${cur + 1}/${total}`;
-    ctx.print(r.x + r.w - ctx.textWidth(pos) - 1, r.y + HEADER_TEXT_Y, pos, 0);
+    if (header) {
+        ctx.fillRect(r.x, r.y, r.w, PICKER_HEADER_H, 1);
+        ctx.print(r.x + 1, r.y + HEADER_TEXT_Y, fitText(ctx, title || "Sections", r.w - 40), 0);
+        const pos = `${cur + 1}/${total}`;
+        ctx.print(r.x + r.w - ctx.textWidth(pos) - 1, r.y + HEADER_TEXT_Y, pos, 0);
+    }
 
     for (let i = 0; i < rows && first + i < total; i++) {
         const e = entries[first + i];
-        const y = r.y + HEADER_BLOCK + i * (FONT_H + 2);
-        const selected = (first + i) === cur;
+        const y = r.y + top + i * (FONT_H + 2);
+        const selected = !none && (first + i) === cur;
         if (selected) ctx.fillRect(r.x, y - 1, r.w, FONT_H + 2, 1);
         /* A section spanning several pages says so, so "Filter" and a 6-page
          * "Oscillator" do not look like the same size of thing. */
-        const count = e.pages > 1 ? `${e.pages}` : "";
+        /* A menu entry may carry a `value` instead of a page count — same
+         * column, same right alignment, so a settings menu reads like the list
+         * it replaces. */
+        const count = e.value !== undefined && e.value !== null && e.value !== ""
+            ? String(e.value)
+            : (e.pages > 1 ? `${e.pages}` : "");
         const cw = count ? ctx.textWidth(count) + 4 : 0;
         ctx.print(r.x + 2, y, fitText(ctx, e.name, r.w - 6 - cw), selected ? 0 : 1);
         if (count) ctx.print(r.x + r.w - ctx.textWidth(count) - 2, y, count, selected ? 0 : 1);

@@ -433,38 +433,53 @@ static char *extract_fx_section_dup(const char *json, const char *key) {
 /* Build the wrapped master-preset JSON on the heap. Returns NULL on OOM or
  * format overflow (callers log and fail the save). */
 static char *build_master_preset_json(const char *name, const char *json_str) {
-    char *fx1 = extract_fx_section_dup(json_str, "fx1");
-    char *fx2 = extract_fx_section_dup(json_str, "fx2");
-    char *fx3 = extract_fx_section_dup(json_str, "fx3");
-    char *fx4 = extract_fx_section_dup(json_str, "fx4");
+    /* One section per FX slot the master chain can actually hold. Hand-listing
+     * fx1..fx4 here is what capped master presets below the chain's own slot
+     * count; empty slots serialise as null exactly as they always did, so a
+     * preset saved before this change reads back unchanged. */
+    char *fx[MAX_AUDIO_FX] = {0};
     char *out = NULL;
-    if (fx1 && fx2 && fx3 && fx4) {
-        size_t cap = strlen(fx1) + strlen(fx2) + strlen(fx3) + strlen(fx4)
-                   + strlen(name) + 160;
+    size_t cap = strlen(name) + 64;
+    int ok = 1;
+
+    for (int i = 0; i < MAX_AUDIO_FX; i++) {
+        char key[MAX_NAME_LEN];
+        chain_fx_component_id(key, sizeof(key), "fx", i);
+        fx[i] = extract_fx_section_dup(json_str, key);
+        if (!fx[i]) { ok = 0; break; }
+        /* section + the `        "fxNN": ` prefix, comma and newline */
+        cap += strlen(fx[i]) + sizeof(key) + 16;
+    }
+
+    if (ok) {
         out = malloc(cap);
-        if (out) {
-            int n = snprintf(out, cap,
-                "{\n"
-                "    \"name\": \"%s\",\n"
-                "    \"version\": 1,\n"
-                "    \"master_fx\": {\n"
-                "        \"fx1\": %s,\n"
-                "        \"fx2\": %s,\n"
-                "        \"fx3\": %s,\n"
-                "        \"fx4\": %s\n"
-                "    }\n"
-                "}\n",
-                name, fx1, fx2, fx3, fx4);
-            if (n < 0 || (size_t)n >= cap) {
-                free(out);
-                out = NULL;
-            }
+    }
+    if (out) {
+        size_t used = 0;
+        int overflow = 0;
+        #define APPEND(...) do { \
+            int _n = snprintf(out + used, cap - used, __VA_ARGS__); \
+            if (_n < 0 || (size_t)_n >= cap - used) { overflow = 1; } \
+            else { used += (size_t)_n; } \
+        } while (0)
+
+        APPEND("{\n    \"name\": \"%s\",\n    \"version\": 1,\n    \"master_fx\": {\n", name);
+        for (int i = 0; i < MAX_AUDIO_FX && !overflow; i++) {
+            char key[MAX_NAME_LEN];
+            chain_fx_component_id(key, sizeof(key), "fx", i);
+            APPEND("        \"%s\": %s%s\n", key, fx[i],
+                   (i == MAX_AUDIO_FX - 1) ? "" : ",");
+        }
+        if (!overflow) APPEND("    }\n}\n");
+        #undef APPEND
+
+        if (overflow) {
+            free(out);
+            out = NULL;
         }
     }
-    free(fx1);
-    free(fx2);
-    free(fx3);
-    free(fx4);
+
+    for (int i = 0; i < MAX_AUDIO_FX; i++) free(fx[i]);
     return out;
 }
 
@@ -618,6 +633,52 @@ int load_master_preset_json(int index, char *buf, int buf_len) {
 
 /* ========== End Master Preset Functions ========== */
 
+/*
+ * Matching bracket/brace for the '[' or '{' at `start`, or NULL if unbalanced.
+ *
+ * String-aware, and that is the whole point: an FX's saved state may be an
+ * OPAQUE string (the "key=val;" format has its own branch below), so its bytes
+ * are arbitrary. Counting braces and brackets through string contents made a
+ * '{' or a ']' inside one state blob mis-terminate the object or array around
+ * it — silently dropping every effect after it. Eight slots of state per patch
+ * is twice the exposure four was.
+ *
+ * One convention for every span in this parser: never scan for a closing
+ * delimiter with strchr or a naive depth walk, always come through here.
+ */
+static const char *json_span_end(const char *start) {
+    if (!start || (*start != '[' && *start != '{')) return NULL;
+    int depth = 0;
+    int in_str = 0;
+    for (const char *p = start; *p; p++) {
+        if (in_str) {
+            if (*p == '\\' && *(p + 1)) p++;
+            else if (*p == '"') in_str = 0;
+            continue;
+        }
+        if (*p == '"') in_str = 1;
+        else if (*p == '[' || *p == '{') depth++;
+        else if (*p == ']' || *p == '}') {
+            depth--;
+            if (depth == 0) return p;
+            if (depth < 0) return NULL;
+        }
+    }
+    return NULL;
+}
+
+/* Matching ']' for an array, or NULL (including when the span closed on '}'). */
+static const char *json_array_end(const char *arr_start) {
+    const char *end = json_span_end(arr_start);
+    return (end && *end == ']') ? end : NULL;
+}
+
+/* Matching '}' for an object, or NULL (including when the span closed on ']'). */
+static const char *json_object_end(const char *obj_start) {
+    const char *end = json_span_end(obj_start);
+    return (end && *end == '}') ? end : NULL;
+}
+
 /* V2 parse patch file - simplified version */
 int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *patch) {
     (void)inst;
@@ -680,15 +741,9 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
                     const char *sv = state_colon + 1;
                     while (*sv == ' ' || *sv == '\t' || *sv == '\n') sv++;
                     if (*sv == '{') {
-                        /* Extract state as JSON object */
-                        const char *end = sv + 1;
-                        int depth = 1;
-                        while (*end && depth > 0) {
-                            if (*end == '{') depth++;
-                            else if (*end == '}') depth--;
-                            if (depth > 0) end++;
-                        }
-                        if (*end && depth == 0) {
+                        /* Extract state as JSON object (string-aware span). */
+                        const char *end = json_object_end(sv);
+                        if (end) {
                             int len = end - sv + 1;
                             if (len > 0 && len < MAX_SYNTH_STATE_LEN) {
                                 strncpy(patch->synth_state, sv, len);
@@ -720,22 +775,26 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
     const char *fx_pos = strstr(json, "\"audio_fx\"");
     if (fx_pos) {
         const char *bracket = strchr(fx_pos, '[');
-        if (bracket) {
+        /* The scan MUST stop at the array's own ']'. Without a bound it walked
+         * on into whatever followed — "midi_fx" is written straight after
+         * "audio_fx" — and adopted those objects as audio FX until it hit
+         * MAX_AUDIO_FX. Raising the cap from 4 to 8 only widened that window.
+         *
+         * No trustworthy end means we parse NOTHING, matching the midi_fx scan
+         * below. Failing open here would put the old unbounded walk back for
+         * exactly the corrupt input that most needs the bound: better to
+         * refuse nonsense than to invent effects from it. */
+        const char *fx_arr_end = bracket ? json_array_end(bracket) : NULL;
+        if (bracket && fx_arr_end) {
             bracket++;
             while (patch->audio_fx_count < MAX_AUDIO_FX) {
                 /* Find the start of next FX object */
                 const char *obj_start = strchr(bracket, '{');
-                if (!obj_start) break;
+                if (!obj_start || obj_start > fx_arr_end) break;
 
-                /* Find matching closing brace (handle nested objects) */
-                const char *obj_end = obj_start + 1;
-                int depth = 1;
-                while (*obj_end && depth > 0) {
-                    if (*obj_end == '{') depth++;
-                    else if (*obj_end == '}') depth--;
-                    if (depth > 0) obj_end++;
-                }
-                if (!*obj_end || depth != 0) break;
+                /* Matching closing brace, string-aware (opaque state blobs). */
+                const char *obj_end = json_object_end(obj_start);
+                if (!obj_end || obj_end > fx_arr_end) break;
 
                 audio_fx_config_t *cfg = &patch->audio_fx[patch->audio_fx_count];
                 memset(cfg, 0, sizeof(*cfg));
@@ -782,17 +841,10 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
                 }
                 if (params_pos && params_pos < obj_end) {
                     const char *params_obj = strchr(params_pos, '{');
-                    /* Find matching closing brace for params (handle nested objects) */
+                    /* Matching closing brace for params, string-aware. */
                     const char *params_end = NULL;
                     if (params_obj && params_obj < obj_end) {
-                        const char *p = params_obj + 1;
-                        int pdepth = 1;
-                        while (*p && pdepth > 0 && p < obj_end) {
-                            if (*p == '{') pdepth++;
-                            else if (*p == '}') pdepth--;
-                            if (pdepth > 0) p++;
-                        }
-                        if (pdepth == 0) params_end = p;
+                        params_end = json_object_end(params_obj);
                     }
                     {
                         char dbg[256];
@@ -814,14 +866,8 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
                                 if (*sv == '{') {
                                     /* Extract entire state object */
                                     const char *state_start = sv;
-                                    const char *se = sv + 1;
-                                    int sdepth = 1;
-                                    while (*se && sdepth > 0 && se < params_end) {
-                                        if (*se == '{') sdepth++;
-                                        else if (*se == '}') sdepth--;
-                                        if (sdepth > 0) se++;
-                                    }
-                                    if (sdepth == 0) {
+                                    const char *se = json_object_end(sv);
+                                    if (se && se <= params_end) {
                                         int slen = se - state_start + 1;
                                         if (slen > 0 && slen < MAX_FX_STATE_LEN) {
                                             strncpy(cfg->state, state_start, slen);
@@ -985,7 +1031,7 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
     const char *midi_fx_pos = strstr(json, "\"midi_fx\"");
     if (midi_fx_pos) {
         const char *arr_start = strchr(midi_fx_pos, '[');
-        const char *arr_end = arr_start ? strchr(arr_start, ']') : NULL;
+        const char *arr_end = arr_start ? json_array_end(arr_start) : NULL;
 
         if (arr_start && arr_end) {
             const char *obj_start = arr_start;
@@ -993,15 +1039,9 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
                 obj_start = strchr(obj_start + 1, '{');
                 if (!obj_start || obj_start > arr_end) break;
 
-                /* Find matching closing brace for midi_fx object (handle nested objects) */
-                const char *obj_end = obj_start + 1;
-                int mfx_depth = 1;
-                while (*obj_end && mfx_depth > 0 && obj_end < arr_end) {
-                    if (*obj_end == '{') mfx_depth++;
-                    else if (*obj_end == '}') mfx_depth--;
-                    if (mfx_depth > 0) obj_end++;
-                }
-                if (!*obj_end || mfx_depth != 0) break;
+                /* Matching closing brace, string-aware (opaque state blobs). */
+                const char *obj_end = json_object_end(obj_start);
+                if (!obj_end || obj_end > arr_end) break;
 
                 midi_fx_config_t *cfg = &patch->midi_fx[patch->midi_fx_count];
                 memset(cfg, 0, sizeof(*cfg));
@@ -1027,15 +1067,9 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
                 if (params_pos && params_pos < obj_end) {
                     const char *params_obj = strchr(params_pos, '{');
                     if (params_obj && params_obj < obj_end) {
-                        /* Find matching closing brace for params */
-                        const char *params_end = params_obj + 1;
-                        int pdepth = 1;
-                        while (*params_end && pdepth > 0 && params_end < obj_end) {
-                            if (*params_end == '{') pdepth++;
-                            else if (*params_end == '}') pdepth--;
-                            if (pdepth > 0) params_end++;
-                        }
-                        if (pdepth == 0) {
+                        /* Matching closing brace for params, string-aware. */
+                        const char *params_end = json_object_end(params_obj);
+                        if (params_end && params_end <= obj_end) {
                             /* Look for state object inside params */
                             const char *state_key = strstr(params_obj, "\"state\"");
                             if (state_key && state_key < params_end) {
@@ -1045,19 +1079,36 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
                                     while (sv < params_end && (*sv == ' ' || *sv == '\t' || *sv == '\n')) sv++;
                                     if (*sv == '{') {
                                         const char *state_start = sv;
-                                        const char *se = sv + 1;
-                                        int sdepth = 1;
-                                        while (*se && sdepth > 0 && se < params_end) {
-                                            if (*se == '{') sdepth++;
-                                            else if (*se == '}') sdepth--;
-                                            if (sdepth > 0) se++;
-                                        }
-                                        if (sdepth == 0) {
+                                        const char *se = json_object_end(sv);
+                                        if (se && se <= params_end) {
                                             int slen = se - state_start + 1;
                                             if (slen > 0 && slen < MAX_FX_STATE_LEN) {
                                                 strncpy(cfg->state, state_start, slen);
                                                 cfg->state[slen] = '\0';
                                                 parse_debug_log("[parse] Extracted midi_fx state object");
+                                            }
+                                        }
+                                    } else if (*sv == '"') {
+                                        /* Opaque state (non-JSON formats like
+                                         * key=val;...), mirroring audio_fx.
+                                         * Without this branch the string was
+                                         * read as nothing and the MIDI FX came
+                                         * back at defaults on every load, even
+                                         * though the save side had written it
+                                         * and the load side would have applied
+                                         * it. */
+                                        const char *str_start = sv + 1;
+                                        const char *str_end = str_start;
+                                        while (str_end < params_end && *str_end != '"') {
+                                            if (*str_end == '\\' && *(str_end + 1)) str_end++;  /* skip escaped chars */
+                                            str_end++;
+                                        }
+                                        if (*str_end == '"') {
+                                            int slen = str_end - str_start;
+                                            if (slen > 0 && slen < MAX_FX_STATE_LEN) {
+                                                strncpy(cfg->state, str_start, slen);
+                                                cfg->state[slen] = '\0';
+                                                parse_debug_log("[parse] Extracted midi_fx state string");
                                             }
                                         }
                                     }
@@ -1200,6 +1251,23 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
                 if (!obj_end || obj_end > arr_end) break;
 
                 knob_mapping_t *m = &patch->knob_mappings[patch->knob_mapping_count];
+
+                /*
+                 * Clear the row before parsing into it.
+                 *
+                 * `m` is only ADVANCED when a row is accepted, so a REJECTED
+                 * row leaves its cc/target/param sitting in the slot and the
+                 * next row inherits every field it happens to omit — a mapping
+                 * silently pointed at a module named by a row that was thrown
+                 * away. Rejected rows used to be a curiosity of hand-edited
+                 * patches; the permutation makes them routine, because vacating
+                 * a position blanks a mapping in place rather than removing it.
+                 *
+                 * It also terminates `target`: the strncpy below caps `len` at
+                 * exactly sizeof-1, and strncpy writes no NUL when it copies
+                 * the full count.
+                 */
+                memset(m, 0, sizeof(*m));
 
                 /* Parse cc */
                 const char *cc_pos = strstr(obj_start, "\"cc\"");
@@ -1469,20 +1537,21 @@ int v2_load_from_patch_info(chain_instance_t *inst, patch_info_t *patch) {
 
         char val_buf[64];
         int got = -1;
+        /* Indexed rather than enumerated: the old fx1/fx2 + midi_fx1/midi_fx2
+         * ladder silently fell through for any higher slot, leaving those
+         * knobs pinned at the saved (possibly stale) value on every load. */
+        int fx_i = chain_fx_index_from_id(target, "fx", MAX_AUDIO_FX);
+        int mfx_i = chain_fx_index_from_id(target, "midi_fx", MAX_MIDI_FX);
         if (strcmp(target, "synth") == 0 && inst->synth_plugin_v2 && inst->synth_instance) {
             got = inst->synth_plugin_v2->get_param(inst->synth_instance, param, val_buf, sizeof(val_buf));
-        } else if (strcmp(target, "fx1") == 0 && inst->fx_count > 0 &&
-                   inst->fx_is_v2[0] && inst->fx_plugins_v2[0] && inst->fx_instances[0]) {
-            got = inst->fx_plugins_v2[0]->get_param(inst->fx_instances[0], param, val_buf, sizeof(val_buf));
-        } else if (strcmp(target, "fx2") == 0 && inst->fx_count > 1 &&
-                   inst->fx_is_v2[1] && inst->fx_plugins_v2[1] && inst->fx_instances[1]) {
-            got = inst->fx_plugins_v2[1]->get_param(inst->fx_instances[1], param, val_buf, sizeof(val_buf));
-        } else if (strcmp(target, "midi_fx1") == 0 && inst->midi_fx_count > 0 &&
-                   inst->midi_fx_plugins[0] && inst->midi_fx_instances[0]) {
-            got = inst->midi_fx_plugins[0]->get_param(inst->midi_fx_instances[0], param, val_buf, sizeof(val_buf));
-        } else if (strcmp(target, "midi_fx2") == 0 && inst->midi_fx_count > 1 &&
-                   inst->midi_fx_plugins[1] && inst->midi_fx_instances[1]) {
-            got = inst->midi_fx_plugins[1]->get_param(inst->midi_fx_instances[1], param, val_buf, sizeof(val_buf));
+        } else if (fx_i >= 0 && fx_i < inst->fx_count &&
+                   inst->fx_is_v2[fx_i] && inst->fx_plugins_v2[fx_i] && inst->fx_instances[fx_i] &&
+                   inst->fx_plugins_v2[fx_i]->get_param) {
+            got = inst->fx_plugins_v2[fx_i]->get_param(inst->fx_instances[fx_i], param, val_buf, sizeof(val_buf));
+        } else if (mfx_i >= 0 && mfx_i < inst->midi_fx_count &&
+                   inst->midi_fx_plugins[mfx_i] && inst->midi_fx_instances[mfx_i] &&
+                   inst->midi_fx_plugins[mfx_i]->get_param) {
+            got = inst->midi_fx_plugins[mfx_i]->get_param(inst->midi_fx_instances[mfx_i], param, val_buf, sizeof(val_buf));
         }
 
         chain_param_info_t *pinfo = find_param_by_key(inst, target, param);

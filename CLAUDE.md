@@ -293,7 +293,109 @@ Types: `float` (min/max/step), `int` (min/max), `enum` (options). Optional: `def
 
 ### Chain Architecture
 
-Chain host (`modules/chain/dsp/chain_host.c` — lifecycle/set+get_param/render; helpers split into `chain_{json,params,mod,midi,patch}.c`, shared decls in `chain_internal.h`) dlopens sub-plugins, forwards MIDI to sound generator, routes audio through FX. Patches in `/data/UserData/schwung/patches/*.json`. Built-in MIDI FX: chord, arp (up/down/up_down/random). Built-in audio FX: freeverb. MIDI sources can provide `ui_chain.js` for fullscreen chain UI.
+Chain host (`modules/chain/dsp/chain_host.c` — lifecycle/set+get_param/render; helpers split into `chain_{json,params,mod,midi,patch,reorder}.c`, shared decls in `chain_internal.h`) dlopens sub-plugins, forwards MIDI to sound generator, routes audio through FX. Patches in `/data/UserData/schwung/patches/*.json`. Built-in MIDI FX: chord, arp (up/down/up_down/random). Built-in audio FX: freeverb. MIDI sources can provide `ui_chain.js` for fullscreen chain UI.
+
+### Chain shape edits are a PERMUTATION, never a reload
+
+Adding, removing or reordering a position used to be expressed as a run of
+`<id>:module` writes, and each of those unloads the position and dlopen()s a
+fresh instance — so inserting at the head rebuilt every module behind it and
+removing a mid-chain FX rebuilt everything downstream. A running arp lost its
+phase; a reverb lost its tail. Three set_param verbs replace that, **1-based to
+match the ids**:
+
+```
+fx:insert = "1"     midi_fx:insert = "1"    open an empty position, shift the rest along
+fx:remove = "3"     midi_fx:remove = "2"    unload that position and close the gap
+fx:move   = "1>3"   midi_fx:move   = "3>1"  rotate the span between two positions
+```
+
+`chain_reorder.c` shifts every per-position array together (`chain_permute.h`)
+and re-aims the three tables that name a position by string — modulation targets,
+the two LFOs, the knob mappings. Instances keep running, so **nothing is
+carried**: state, modulation base and routing are still the originals.
+
+**Two kinds of per-position array, and the difference is a crash.** A VALUE
+array is vacated by zeroing its bytes (`PERM_FIELD`). An OWNED-BUFFER array
+holds a pointer to a block allocated once per position by
+`chain_alloc_position_storage` and **never null** — `fx_params`,
+`midi_fx_params`, and the two `ui_hierarchy` caches (`PERM_OWNED`). Those are
+**rotated**: the vacated position gets the buffer displaced off the end of the
+shift and its *contents* are cleared. Zeroing the pointer instead left a NULL
+that `v2_load_midi_fx_slot` parsed a param table through — SIGSEGV on the SPI
+callback, loading a MIDI FX in front of an existing one — and leaked the
+allocation the shift overwrote.
+
+`tests/host/test_chain_permute.sh` pins both: a new
+`[MAX_AUDIO_FX]`/`[MAX_MIDI_FX]` member not in a collector fails, and the
+owned/value split is derived from `chain_alloc_position_storage` rather than
+trusted. `tests/host/test_chain_midi_fx_slot.sh` drives the crashing sequence
+against a real `chain_instance_t` with the real loader.
+
+Insert only opens the hole — the caller follows with the ordinary
+`<id>:module` write. Both chain walks skip a hole per position, so the frame in
+between renders correctly.
+
+**Thread safety is free**: parameter requests are serviced from
+`shim_pre_transfer` on the SPI audio thread, after `shadow_mix_audio`, and
+nothing else touches a chain instance — a permutation cannot interleave with a
+render. (That same property is what lets module loading `dlopen()` from this
+thread, which *is* a pre-existing realtime violation.)
+
+In the shadow UI, `writeChainShape` emits these verbs. It replaced
+`writeChainOrder`, whose state / modulation-base / LFO-remap carries are all
+deleted. `clearLfoRoutingForComponent` stays: a picker **swap** genuinely does
+destroy and create a module.
+
+The two `+` boxes add **where they are drawn** — the MIDI one at the head of the
+chain (index 0), the audio one appended. Backing out of a `+` picker, or picking
+`None` in one, writes nothing at all.
+
+### Chain editor knob feedback is a CARD
+
+Touching a knob in the chain editor raises a bordered card
+(`src/shared/param_pages/knob_card.mjs`) showing the four cells of that knob's
+row, drawn with the knob grid's own widgets via `drawKnobRow` at a 29px cell
+instead of the grid's 32. Touch raises it, release drops it; a turn with no
+touch raises it too and decays after ~700ms, so a cap sensor that misses cannot
+strand the feature. With no component selected the slot's global mappings serve
+a name and a value but no type metadata, so that case gets a header-only card.
+
+The card consumes no input. A jog-click while a knob is held falls through to
+the chain editor and opens the focused component, and `setView` closes the card
+on the way — dismiss-and-descend, not a modal inside a modal.
+
+**The 1px black gap between the border and the header band is load-bearing.**
+Both are white, so where they touch the border stops existing and the card reads
+as a stripe across the diagram. **The divable brackets are load-bearing too** —
+nothing dives from the card, so dropping `drawDivableMark` looks like an obvious
+simplification, but `drawOpaqueBox` has no frame of its own and the brackets ARE
+its frame. Both are asserted on the pixel buffer in
+`tests/host/test_knob_card.sh`, with the outermost cell touched, because neither
+is visible in code review.
+
+**Every value is read on touch-down, never on the draw path** (`knobCardOpen` in
+`shadow_ui.js`) — a read is ~2.8ms against a 1.68ms whole-page render. Two tests
+pin it: `test_chain_knob_card_reads.sh` for the renderer, and
+`test_chain_edit_read_budget.sh` for `drawChainEdit` itself. The latter LIFTS
+`drawChainEdit` with `new Function` and a fixed dependency list, so the card
+reaches it through a single `knobCardDrawState()` accessor — nine free
+identifiers there is nine chances for a `typeof` guard to make the block
+unreachable and leave the budget measured with the card switched off, which is
+what happened the first time. Consequence of the read budget: a modulated
+NEIGHBOUR does not animate while a knob is held; only the touched knob carries a
+modulation mark, because that read is one `showKnobOverlay` already pays for.
+
+`render_page_movy.mjs`'s cell geometry is a parameter (`GRID_GEOM`,
+`drawKnobRow`'s optional `geom`), so the card and the grid share one row
+renderer. `geom` is **all-or-nothing** — a partial `{cellW}` makes every cell
+origin `NaN`, which reaches `line()`'s `for(;;)` and never satisfies its
+equality break: a frozen `shadow_ui` tick. The default path is pinned
+byte-identical against `tests/fixtures/movy-geom-baseline.txt`
+(`UPDATE_GEOM_BASELINE=1` to refresh).
+
+Preview it without deploying: `node tools/param-pages/preview_knob_card.mjs
+<module-id> --knob N [--short] [--png DIR --scale 4]`.
 
 ### Recording / capture
 
@@ -461,7 +563,29 @@ Co-run lets an **overtake tool share Move's control surface with a second UI** f
 
 ### Master FX Chain
 
-4-slot Master FX processes mixed shadow output. Access: Shift+Vol+Menu.
+8-slot Master FX processes mixed shadow output. Access: Shift+Vol+Menu.
+
+The cap lives in **two** places that must move together — `MASTER_FX_SLOTS` in
+`src/host/shadow_chain_mgmt.h` and in `src/shadow/shadow_ui.js` —, and
+`tests/host/test_master_fx_slots_js.sh` fails on drift between them. Key routing
+is cap-derived through `src/host/master_fx_key.h`
+(`master_fx_route_param_key` / `master_fx_route_target`), pinned by
+`test_master_fx_slot_routing`, which widens with the cap rather than quietly
+covering half the range.
+
+**The diagram is `chain_diagram.mjs`, the same one the slot editor uses.** It
+replaced a fixed `TOTAL_W = 5 * BOX_W + 4 * GAP` row that filled 118 of 128
+pixels: nine boxes would have been 214px, drawn off-screen with no clipping and
+no error, taking the bypass `B` and the LFO `~` marks with them. A fixed row
+cannot report that it overflowed, which is why
+`tests/host/test_master_fx_diagram_fit.sh` asserts `clipped() === 0` at the cap
+and one past it. Per-box reads are bounded by the ~5 boxes DRAWN, not by the
+cap, so raising 4 → 8 cost one read per frame rather than four.
+
+Master FX still has **no insert, remove or move** — removal is picking `None`,
+which unloads in place and leaves a hole. Adding those (and the permutation
+that must come with them) is residual 2.2 Step 4, and it is a new feature, not
+a port of `chain_reorder.c`.
 
 ### Overtake Modules
 

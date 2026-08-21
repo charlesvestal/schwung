@@ -30,6 +30,12 @@
  * receive_channel (0=All) and forward_channel (0=ch 1 internal). */
 #define PATCH_CHANNEL_UNSET INT_MIN
 
+/* Lives in src/host/ rather than beside this file: the SHIM needs it too
+ * (Master FX is a permuted list now), and there is no include path from
+ * src/host/ into a dlopen'd module's private directory. Nothing about it is
+ * chain-specific, and a second copy is precisely the bug class that made
+ * fx3..fx8 silent. Reached the same way as plugin_api_v1.h below. */
+#include "host/chain_key_index.h"
 #include "host/plugin_api_v1.h"
 #include "host/audio_fx_api_v2.h"
 #include "host/midi_fx_api_v1.h"
@@ -39,8 +45,8 @@
 
 /* Limits */
 #define MAX_PATCHES 32      /* Max patches to list in browser */
-#define MAX_AUDIO_FX 4      /* Max FX loaded per active chain */
-#define MAX_MIDI_FX 2       /* Max native MIDI FX modules per chain */
+#define MAX_AUDIO_FX 8      /* Max FX loaded per active chain */
+#define MAX_MIDI_FX 8       /* Max native MIDI FX modules per chain */
 #define CHAIN_PRE_DELAY_MAX 32  /* Pre-mode inject-delay buffer: one clock's output */
 #define MAX_PATH_LEN 256
 #define MAX_NAME_LEN 64
@@ -101,6 +107,9 @@ typedef struct {
 /* Chain parameter info from module.json */
 #define MAX_CHAIN_PARAMS 256
 #define MAX_ENUM_OPTIONS 128
+/* Cached ui_hierarchy JSON, per position. Named because the buffers it sizes
+ * are now reached through a pointer, where sizeof() would answer 8. */
+#define CHAIN_UI_HIERARCHY_LEN 65536
 typedef struct {
     char key[32];           /* Parameter key (e.g., "preset", "decay") */
     char name[64];          /* Display name */
@@ -252,9 +261,24 @@ typedef struct chain_instance {
     /* Module parameter info */
     chain_param_info_t synth_params[MAX_CHAIN_PARAMS];
     int synth_param_count;
-    chain_param_info_t fx_params[MAX_AUDIO_FX][MAX_CHAIN_PARAMS];
+    /*
+     * POINTERS, not inline arrays, and the reason is the reorder.
+     *
+     * These two are by far the largest per-position things a chain holds — one
+     * `chain_param_info_t` is ~4 KB (it carries 128 enum option strings), so a
+     * position's metadata is ~1.1 MB and its cached ui_hierarchy another 64 KB.
+     * Moving a module from position N to N+1 has to move its metadata with it,
+     * and inline that is a multi-megabyte memmove inside the SPI audio callback
+     * (~900 µs budget). Through a pointer it is 8 bytes.
+     *
+     * Allocated EAGERLY for every position at create_instance and freed at
+     * destroy, so they are never NULL and the ~19 MB an instance costs is
+     * exactly what it cost when these were inline — nothing about lifetime or
+     * footprint changed, only that the elements can now be permuted.
+     */
+    chain_param_info_t *fx_params[MAX_AUDIO_FX];
     int fx_param_counts[MAX_AUDIO_FX];
-    char fx_ui_hierarchy[MAX_AUDIO_FX][65536];  /* Cached ui_hierarchy JSON */
+    char *fx_ui_hierarchy[MAX_AUDIO_FX];  /* CHAIN_UI_HIERARCHY_LEN each */
 
     /* Patch state */
     patch_info_t patches[MAX_PATCHES];
@@ -267,9 +291,10 @@ typedef struct chain_instance {
     void *midi_fx_instances[MAX_MIDI_FX];
     int midi_fx_count;
     char current_midi_fx_modules[MAX_MIDI_FX][MAX_NAME_LEN];
-    chain_param_info_t midi_fx_params[MAX_MIDI_FX][MAX_CHAIN_PARAMS];
+    /* Pointers for the same reason as fx_params / fx_ui_hierarchy above. */
+    chain_param_info_t *midi_fx_params[MAX_MIDI_FX];
     int midi_fx_param_counts[MAX_MIDI_FX];
-    char midi_fx_ui_hierarchy[MAX_MIDI_FX][65536];  /* Cached ui_hierarchy JSON */
+    char *midi_fx_ui_hierarchy[MAX_MIDI_FX];  /* CHAIN_UI_HIERARCHY_LEN each */
 
     /* Knob mapping state */
     knob_mapping_t knob_mappings[MAX_KNOB_MAPPINGS];
@@ -377,6 +402,52 @@ typedef struct chain_instance {
 
 #define CHAIN_INTERNAL __attribute__((visibility("hidden")))
 
+/*
+ * Per-position metadata blocks, allocated and released together.
+ *
+ * `static inline` in the header rather than a function in chain_host.c because
+ * chain_host.c is the one TU that cannot be compiled natively (it dlopens
+ * plugins and owns the whole param surface), and several tests/host fixtures
+ * build a chain_instance_t of their own with calloc. While these were inline
+ * arrays a calloc'd instance was ready to use; now that they are pointers, a
+ * fixture that skips this reads a null one. One definition, so production and
+ * fixtures cannot disagree about what a usable instance is.
+ *
+ * ALL OR NOTHING: chain_alloc_position_storage frees what it managed to get and
+ * answers 0, because a half-allocated instance is a null dereference in the
+ * audio callback later, which is far worse than refusing to create the slot.
+ */
+static inline void chain_free_position_storage(chain_instance_t *inst) {
+    if (!inst) return;
+    for (int i = 0; i < MAX_AUDIO_FX; i++) {
+        free(inst->fx_params[i]);        inst->fx_params[i] = NULL;
+        free(inst->fx_ui_hierarchy[i]);  inst->fx_ui_hierarchy[i] = NULL;
+    }
+    for (int i = 0; i < MAX_MIDI_FX; i++) {
+        free(inst->midi_fx_params[i]);       inst->midi_fx_params[i] = NULL;
+        free(inst->midi_fx_ui_hierarchy[i]); inst->midi_fx_ui_hierarchy[i] = NULL;
+    }
+}
+
+static inline int chain_alloc_position_storage(chain_instance_t *inst) {
+    if (!inst) return 0;
+    int ok = 1;
+    for (int i = 0; i < MAX_AUDIO_FX; i++) {
+        inst->fx_params[i] = (chain_param_info_t *)calloc(MAX_CHAIN_PARAMS,
+                                                          sizeof(chain_param_info_t));
+        inst->fx_ui_hierarchy[i] = (char *)calloc(1, CHAIN_UI_HIERARCHY_LEN);
+        if (!inst->fx_params[i] || !inst->fx_ui_hierarchy[i]) ok = 0;
+    }
+    for (int i = 0; i < MAX_MIDI_FX; i++) {
+        inst->midi_fx_params[i] = (chain_param_info_t *)calloc(MAX_CHAIN_PARAMS,
+                                                               sizeof(chain_param_info_t));
+        inst->midi_fx_ui_hierarchy[i] = (char *)calloc(1, CHAIN_UI_HIERARCHY_LEN);
+        if (!inst->midi_fx_params[i] || !inst->midi_fx_ui_hierarchy[i]) ok = 0;
+    }
+    if (!ok) chain_free_position_storage(inst);
+    return ok;
+}
+
 /* Get current time in milliseconds (for knob acceleration) */
 static inline uint64_t get_time_ms(void) {
     struct timespec ts;
@@ -400,6 +471,13 @@ CHAIN_INTERNAL int v2_load_audio_fx(chain_instance_t *inst, const char *fx_name)
 CHAIN_INTERNAL int v2_load_synth(chain_instance_t *inst, const char *module_name);
 CHAIN_INTERNAL void v2_synth_panic(chain_instance_t *inst);
 CHAIN_INTERNAL void v2_unload_all_audio_fx(chain_instance_t *inst);
+CHAIN_INTERNAL void v2_unload_audio_fx_slot(chain_instance_t *inst, int slot);
+
+/* chain_reorder.c — insert/remove/reorder a position by permuting the
+ * instance's per-position arrays instead of reloading modules. 0-based. */
+CHAIN_INTERNAL int chain_reorder_insert(chain_instance_t *inst, int is_midi, int at);
+CHAIN_INTERNAL int chain_reorder_remove(chain_instance_t *inst, int is_midi, int at);
+CHAIN_INTERNAL int chain_reorder_move(chain_instance_t *inst, int is_midi, int from, int to);
 CHAIN_INTERNAL void v2_unload_synth(chain_instance_t *inst);
 
 /* chain_json.c */
@@ -443,9 +521,11 @@ CHAIN_INTERNAL void chain_mod_update_base_from_set_param(chain_instance_t *inst,
 /* chain_midi.c */
 CHAIN_INTERNAL int chain_get_clock_status(void);
 CHAIN_INTERNAL int v2_load_midi_fx(chain_instance_t *inst, const char *fx_name);
+CHAIN_INTERNAL int v2_load_midi_fx_slot(chain_instance_t *inst, int slot, const char *fx_name);
 CHAIN_INTERNAL void v2_on_midi(void *instance, const uint8_t *msg, int len, int source);
 CHAIN_INTERNAL void v2_tick_midi_fx(chain_instance_t *inst, int frames);
 CHAIN_INTERNAL void v2_unload_all_midi_fx(chain_instance_t *inst);
+CHAIN_INTERNAL void v2_unload_midi_fx_slot(chain_instance_t *inst, int slot);
 
 /* chain_patch.c */
 CHAIN_INTERNAL int delete_master_preset(int index);

@@ -29,16 +29,54 @@
 import { ctx } from './shadow_ui_ctx.mjs';
 import { createController } from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
 import { decodeInput, applyInput } from '/data/UserData/schwung/shared/param_pages/page_input.mjs';
-import { PAGE_KNOBS } from '/data/UserData/schwung/shared/param_pages/page_plan.mjs';
+import { PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS } from '/data/UserData/schwung/shared/param_pages/page_plan.mjs';
 import { LAYOUT_BAR, LAYOUT_DIAL } from '/data/UserData/schwung/shared/param_pages/render_page.mjs';
 import { LAYOUT_MOVY } from '/data/UserData/schwung/shared/param_pages/render_page_movy.mjs';
 import { announce } from '/data/UserData/schwung/shared/screen_reader.mjs';
+import { log, isLoggingEnabled } from '/data/UserData/schwung/shared/logger.mjs';
 
 /* The live controller, or null when the view is not open. One at a time: the
  * grid always shows a single component, and rebuilding on entry is cheap. */
 let controller = null;
+/* Which param accessors the live controller closes over, so switching between
+ * a module and a synthesised contract (slot settings) rebuilds it instead of
+ * silently keeping the old ones. */
+let controllerIo = null;
 let currentSlot = 0;
 let currentComponent = 'synth';
+/* The component's DSP param prefix, which is NOT the component key: the MIDI
+ * FX component is `midiFx` and its params live under `midi_fx1` (see
+ * getComponentParamPrefix in shadow_ui.js). Anything asking the device for a
+ * param has to use this — `midiFx_module` and `midiFx:is_loading` are keys no
+ * one serves, so the header abbreviation read "--" and is_loading never fired. */
+let currentPrefix = 'synth';
+/*
+ * CHROME — the three things that differ between the two chain editors, handed
+ * in as DATA rather than worked out here.
+ *
+ * The grid is opened from a slot chain and from Master FX, and those two
+ * spell three things differently:
+ *
+ *   label      the header band says "S2" for a slot chain and "MFX" for the
+ *              master bus -- which is addressed at IPC slot 0 by convention
+ *              and is NOT instrument slot 1, so `S${slot+1}` would be a lie.
+ *   moduleKey  the key naming the module behind the view. A slot chain says
+ *              "fx1_module"; Master FX says "master_fx:fx1:module". Get this
+ *              wrong and the read is merely unserved -- an unserved key reads
+ *              back as "" -- so the header quietly loses its name instead of
+ *              failing.
+ *   returnView where Back goes. Hardcoding VIEWS.CHAIN_EDIT here dropped a
+ *              Master FX user into the slot chain editor.
+ *
+ * Deliberately NOT a `startsWith("master_fx:")` test in this file. One place
+ * knows there are two chain editors (chainEditorFocus / the chain targets in
+ * shadow_ui.js); a second copy of that knowledge here is exactly the drift
+ * that left Master FX without the knob card for a day.
+ *
+ * null means the slot-chain defaults, so the four existing call sites are
+ * unchanged.
+ */
+let currentChrome = null;
 
 /**
  * Shift state does NOT arrive as MIDI here.
@@ -84,27 +122,69 @@ export function paramPagesEnabled() {
  * @param {string} component   'synth' | 'fx1' | 'fx2' | 'midiFx' | 'master_fx:fx1' …
  * @param {string} prefix      the DSP param prefix for that component
  */
-/* "Once per session" (see showHint below) has to live here, not in the
- * controller's own state: exitParamPages() drops `controller` on every exit
- * (chain edit, switching modules), so `if (!controller)` below builds a
- * BRAND NEW one on the next entry, and a per-controller "already shown" flag
- * resets right along with it — the hint was popping up on every single
- * module open instead of once, which is what it looks like without this. */
-let hintShownThisSession = false;
+/* No first-use overlay. The grid used to open behind a panel listing its
+ * gestures, because they are not guessable and a preview nobody can operate
+ * produces no useful feedback. The hint FOOTER carries that now — it names the
+ * jog, the click and one contextual gesture on every page, permanently, in
+ * eight rows bought from the label bands — so the panel taught something the
+ * screen already says and cost a modal on entry to do it.
+ *
+ * The library's showHint/renderHint stay: they are caller-supplied, and a tool
+ * embedding the grid with its own gestures may still want one. This host does
+ * not. */
 
-export function enterParamPages(slot, component, prefix) {
+/**
+ * @param {string} [restorePageName]  land on the page with this name instead of
+ *   the first one. Used when an editor hands control back: the user was on
+ *   page 5 when they clicked a sample, and page 1 is not where they were.
+ *   Matched by NAME, not index — controller.load rebuilds the page set and
+ *   every index can shift (same reason page_nav reanchors by name).
+ * @param {object} [io]  {getParam,setParam} to use instead of the slot/component
+ *   default. Slot settings needs it: a slot publishes no ui_hierarchy and its
+ *   params do not share one prefix, so the contract and the mapping are handed
+ *   in (see shadow_ui_slot_grid.mjs) rather than read off a component.
+ * @param {object} [chrome]  {label, moduleKey, returnView} — see currentChrome.
+ *   Omitted means the slot-chain defaults.
+ */
+export function enterParamPages(slot, component, prefix, restorePageName, io, chrome) {
     currentSlot = slot;
     currentComponent = component;
+    currentPrefix = prefix || component;
+    /* Reset, not merge: an entry that supplies no chrome IS the slot chain, and
+     * carrying the last one over would leave a Master FX header on it. */
+    currentChrome = chrome || null;
 
-    if (!controller) {
-        controller = createController({
+    /* Rebuild when the accessors change, not just when there is no controller:
+     * it CLOSES OVER them, so one built for a module would keep reading the
+     * module after a switch to slot settings. */
+    if (!controller || controllerIo !== (io || null)) {
+        controllerIo = io || null;
+        /*
+         * The DEFAULTS, then the caller's io spread over the top.
+         *
+         * Spread, not field-by-field. Picking the fields by hand dropped
+         * `formatValue` on the floor: the slot-settings contract supplied one,
+         * the controller expected one, and this line — the only thing between
+         * them — did not mention it. Both ends were tested; the join was not,
+         * and an LFO target went on reading "FX1" on the device while every
+         * test passed. Spreading makes a new capability arrive by default, so
+         * the failure mode is at worst an ignored key rather than a silently
+         * missing one.
+         *
+         * `announce` is deliberately not overridable this way today; nothing
+         * supplies one, and it would be spread over if something did.
+         */
+        controller = createController(Object.assign({
             getParam: (key) => ctx.getSlotParam(currentSlot, key),
             setParam: (key, value) => ctx.setSlotParam(currentSlot, key, value),
             announce,
-            /* The list editor marks these with "~"; the grid ticks the cell. */
+            /* The list editor marks these with "~"; the grid ticks the cell.
+             * A synthesised contract may answer for itself — slot settings
+             * does, because the generic oracle both got it wrong for `slot:*`
+             * keys and cost three IPC round trips per tick to do so. */
             isModulated: (key) => (typeof ctx.isParamModulated === 'function'
                 ? !!ctx.isParamModulated(currentSlot, key) : false),
-        });
+        }, io || {}));
     }
     /* Entering the view is the only way the module behind it can have changed,
      * so this is where the cached abbreviation is dropped. */
@@ -113,30 +193,33 @@ export function enterParamPages(slot, component, prefix) {
      * the last one didn't, so start asking at full rate again. */
     _loadingInterval = LOADING_POLL_TICKS;
     _loadingPoll = 0;
-    controller.load({ slot, component, prefix: prefix || component, visible: ctx.evaluateVisibilityCondition });
+    /* `visible` resolves visible_if conditions. The default binds to the LIST
+     * editor slot/component, which is stale while the grid is up — fine for a
+     * component (the grid and the list agree on which one), wrong for a
+     * synthesised contract, so an io may carry its own. */
+    controller.load({
+        slot, component, prefix: prefix || component,
+        visible: (io && io.visible) ? io.visible : ctx.evaluateVisibilityCondition,
+    });
     /* "Knobs" IS schwung-movy's own knob-page layout now, not Schwung's
      * earlier dial/bar grid — see render_page_movy.mjs. The setting stays a
      * plain List/Knobs toggle; this is what "Knobs" draws. */
     controller.setLayout(LAYOUT_MOVY);
-    /* Once per session: the grid's gestures are not guessable, and a preview
-     * nobody can operate produces no useful feedback. Any input clears it. */
-    if (!hintShownThisSession) {
-        hintShownThisSession = true;
-        /* ~19 characters fit at 5x7 across the panel; longer lines silently clip. */
-        controller.showHint([
-            "Jog: page",
-            "Shift+Jog: section",
-            "Click: section list",
-            "Hold knob: name",
-            "Shift: fine + values",
-            "Mute+knob: default",
-        ], "Param Pages");
+    if (restorePageName) {
+        const pages = controller.pages || [];
+        for (let i = 0; i < pages.length; i++) {
+            if (pages[i] && pages[i].name === restorePageName) {
+                controller.goToPage(i);
+                break;
+            }
+        }
     }
     ctx.setView(ctx.VIEWS.PARAM_PAGES);
 }
 
 export function exitParamPages() {
     controller = null;
+    controllerIo = null;
 }
 
 export function paramPagesActive() {
@@ -177,7 +260,7 @@ export function tickParamPages() {
      * load it is waiting on. */
     if (++_loadingPoll >= _loadingInterval) {
         _loadingPoll = 0;
-        const raw = ctx.getSlotParam(currentSlot, `${currentComponent}:is_loading`);
+        const raw = ctx.getSlotParam(currentSlot, `${currentPrefix}:is_loading`);
         if (raw === null || raw === undefined) {
             /* The module does not implement is_loading — most don't; it exists
              * for the ones with an async ROM or sample load. Measured on
@@ -304,12 +387,216 @@ function traced(name, fn) {
     finally { if (h && typeof host_trace_end === 'function') host_trace_end(h); }
 }
 
+/*
+ * What the footer says, per context.
+ *
+ * Ordered MOST IMPORTANT FIRST, because drawFooter drops the tail rather than
+ * squeezing it: three pairs only fit when every word is <= 4 characters, and
+ * two always fit. So Back leads wherever losing it would strand you.
+ *
+ * Kept here, not in the library: these are Schwung's gestures. A sequencer
+ * embedding the same grid has its own and passes its own.
+ */
+/*
+ * Does Shift+Jog actually differ from Jog on THIS module?
+ *
+ * stepLevel skips pages belonging to the level you are already on, so it only
+ * differs where a level spans more than one page. granny has six pages and six
+ * distinct levels, so Shift+Jog walks exactly the same sequence as Jog — and a
+ * footer saying JOG SECT there is advertising a distinction the module does not
+ * have. minijv, at 76 pages over ~20 levels, is where it earns its place.
+ *
+ * Memoised on the pages array itself, which is replaced whenever the controller
+ * rebuilds, so a module swap recomputes without any explicit invalidation.
+ */
+let _sectionsPages = null;
+let _sectionsDiffer = false;
+function sectionsAreDistinct() {
+    const pages = controller ? controller.pages : null;
+    if (!pages || !pages.length) return false;
+    if (pages === _sectionsPages) return _sectionsDiffer;
+    _sectionsPages = pages;
+    const seen = new Set();
+    _sectionsDiffer = false;
+    for (const p of pages) {
+        const lv = p && p.level;
+        if (lv == null) continue;
+        if (seen.has(lv)) { _sectionsDiffer = true; break; }
+        seen.add(lv);
+    }
+    return _sectionsDiffer;
+}
+
+/*
+ * Build the footer in a FIXED ORDER: jog first, click second, anything else
+ * after. Positional, not descriptive — the eye learns that slot 1 is the wheel
+ * and slot 2 is the button and stops re-reading them. When a state has no jog
+ * or no click meaning, the slot is simply absent; nothing else slides into it.
+ *
+ * Enforced here rather than at each call site, because "remember to put jog
+ * first" is exactly the kind of rule that holds for three states and breaks on
+ * the fourth — which is what happened: the held-knob footer led with CLK and
+ * the others led with JOG, so the two pills swapped places under your finger.
+ */
+function orderedHints({ jog, click, extra }) {
+    const out = [];
+    if (jog) out.push(["JOG", jog]);
+    if (click) out.push(["CLK", click]);
+    for (const e of (extra || [])) if (e) out.push(e);
+    return out;
+}
+
+function footerHints() {
+    if (!controller) return null;
+
+    /* "EXIT", not "CLOSE": with CLOSE the three pairs are 129px — one pixel
+     * over — and the pair dropped was CLK GO, i.e. how you commit. */
+    if (controller.pickerOpen) {
+        return orderedHints({ jog: "SECT", click: "GO", extra: [["BACK", "EXIT"]] });
+    }
+
+    const shift = shiftIsHeld();
+    const fine = shift ? [["KNB", "FINE"]] : null;
+
+    /*
+     * A menu page is a door at page scale: inert until entered, so the jog
+     * still pages and the click is what goes in. Once inside, the jog drives
+     * the list and Back comes out — the same ladder a picker has.
+     */
+    const mp = controller.page;
+    if (mp && mp.kind === "menu") {
+        return controller.menuEntered && controller.menuEntered()
+            ? orderedHints({ jog: "SEL", click: "OPEN", extra: [["BACK", "OUT"]] })
+            : orderedHints({ jog: "PAGE", click: "ENTER", extra: fine });
+    }
+
+    /*
+     * A preset browser is the same door, and the footer is where the promise
+     * lives: OUTSIDE it the jog pages, so scrolling past a synth cannot load
+     * its presets; INSIDE it the jog is the browser and every step auditions.
+     * Saying which of the two you are in is the entire safety of the thing.
+     */
+    /* A runtime item list: scrolling it writes nothing, so unlike the preset
+     * browser there is no auditioning to warn about — CLK LOAD is the whole
+     * story, and it is only true once you are inside. */
+    if (mp && mp.kind === PAGE_ITEMS) {
+        return controller.menuEntered && controller.menuEntered()
+            ? orderedHints({ jog: "SEL", click: "LOAD", extra: [["BACK", "OUT"]] })
+            : orderedHints({ jog: "PAGE", click: "ENTER", extra: fine });
+    }
+
+    if (mp && mp.kind === PAGE_PRESET) {
+        /* Three pairs fit only when every word is <= 4 characters, and these
+         * are: JOG PRST / CLK EDIT / BACK OUT is 126px. */
+        return controller.menuEntered && controller.menuEntered()
+            ? orderedHints({ jog: "PRST", click: "EDIT", extra: [["BACK", "OUT"]] })
+            : orderedHints({ jog: "PAGE", click: "ENTER", extra: fine });
+    }
+
+    /*
+     * A knob under the hand changes what the CLICK means and nothing else, so
+     * only that slot changes. Holding a knob whose param opens an editor, the
+     * click opens it; holding any other knob, the click still opens the section
+     * menu, so the footer must keep saying MENU.
+     *
+     * Keyed on meta.divable, NOT kind === "opaque". Those came apart when a
+     * ranged wav_position became a turnable number that still opens a waveform
+     * editor, and this line was missed — so holding granny's Position (divable,
+     * kind "number") advertised CLK MENU while the click opened the editor. The
+     * footer promised one thing and the button did another.
+     */
+    const held = controller.state ? controller.state.touched : -1;
+    if (held >= 0) {
+        const meta = controller.metaAt ? controller.metaAt(held) : null;
+        if (meta && meta.divable) {
+            return orderedHints({ jog: "PAGE", click: "OPEN", extra: fine });
+        }
+    }
+
+    /*
+     * Shift changes what the JOG does — but only on a module where it actually
+     * does something different. stepLevel skips pages of the level you are
+     * already on, so on granny (six pages, six distinct levels) Shift+Jog walks
+     * exactly the same sequence as Jog. Claiming SECT there advertises a
+     * distinction the module has not got; 18 of the 72 fleet modules are like
+     * that. minijv, 76 pages over ~20 levels, is where it earns its place.
+     */
+    const jog = (shift && sectionsAreDistinct()) ? "SECT" : "PAGE";
+    return orderedHints({ jog, click: "MENU", extra: fine });
+}
+
+/**
+ * The header band, "<chain> > <name>".
+ *
+ * Exported for the same reason paramPagesFooterHints() is: the movy renderer
+ * sets this in its own font, drawing every glyph as fillRect pixels, so a
+ * recording print() sees nothing at all and the string cannot be read back off
+ * the framebuffer. It is built HERE and used by the one draw call, so what is
+ * asserted is what is drawn rather than a second copy of the rule.
+ */
+export function headerTitle() {
+    /* Cached: this was a synchronous round trip on EVERY draw (1.4 of the
+     * grid's 7.1 reads per tick, measured on device) to render a two-letter
+     * abbreviation that cannot change without going back through
+     * openParamPages, which clears the cache. */
+    /* Slot settings is a synthesised contract, not a module — there is no
+     * "slot_module" to abbreviate, so the lookup returned nothing and the
+     * header read "S1 > ---". It has a name of its own. */
+    if (currentComponent === 'slot') _abbrevCache = 'Settings';
+    /* Any other synthesised contract says its own name through the chrome —
+     * Master FX settings is one, and there is no "master_settings_module" to
+     * abbreviate either. Declared as DATA rather than as a second literal
+     * component name here, so a third one needs no edit to this file. */
+    if (currentChrome && currentChrome.name) _abbrevCache = currentChrome.name;
+    if (_abbrevCache === null) {
+        /* The master bus spells this "master_fx:fx1:module"; a slot chain
+         * spells it "fx1_module". An unserved key reads back as "" rather than
+         * erroring, so the wrong spelling loses the name silently. */
+        const moduleKey = (currentChrome && currentChrome.moduleKey)
+            || `${currentPrefix}_module`;
+        _abbrevCache = ctx.getModuleAbbrev
+            ? ctx.getModuleAbbrev(ctx.getSlotParam(currentSlot, moduleKey) || '')
+            : currentComponent.toUpperCase();
+    }
+    /* A hardware synth puts the PATCH name in its display, not the model
+     * number — and the module's identity is already visible in the chain
+     * editor you came from. Falls back to the abbreviation until the read
+     * cursor has picked the name up, and for modules with no presets. */
+    const name = (controller && controller.presetName) || _abbrevCache;
+    /* "MFX", never "S1", on the master bus: it is ADDRESSED at IPC slot 0 by
+     * convention and is not instrument slot 1. */
+    const label = (currentChrome && currentChrome.label) || `S${currentSlot + 1}`;
+    return `${label} > ${name}`;
+}
+
 export function drawParamPages() {
     if (!controller) return false;
     /* The section picker is drawn over whatever page you were on, including a
      * non-grid one, so it is checked before the page kind. */
     const page = controller.page;
-    if (!controller.pickerOpen && (!page || page.kind !== PAGE_KNOBS)) return false;
+    /*
+     * PAGE_MENU and PAGE_PRESET are drawn by the controller in the page chrome,
+     * so they must NOT be refused here. Refusing a kind makes the host run its
+     * fallback — enterHierarchyEditorFromParamPages — which enters the
+     * hierarchy editor for the component. For slot settings that component is
+     * "slot", which has no ui_hierarchy, so jogging to the actions page ejected
+     * straight to "No presets".
+     *
+     * PAGE_PRESET joined them because that eject was worse than ugly: the list
+     * editor it landed in has the jog wired to the preset browser, so jogging
+     * PAST a synth's preset page on the way somewhere else loaded every preset
+     * it crossed. It is a door now — inert until you click into it.
+     *
+     * PAGE_ITEMS joined them too: a soundfont or NAM-model list is a real
+     * list, so unlike a preset level it can be five rows in the page chrome
+     * rather than a separate screen.
+     *
+     * The remaining kinds (modes, child) genuinely belong to screens this file
+     * does not own, and still hand off.
+     */
+    const drawable = page && (page.kind === PAGE_KNOBS || page.kind === PAGE_MENU
+                              || page.kind === PAGE_PRESET || page.kind === PAGE_ITEMS);
+    if (!controller.pickerOpen && !drawable) return false;
 
     const nowMs = Date.now();
     if (nowMs - lastDrawMs < MOVY_REDRAW_MIN_MS) return true;
@@ -330,21 +617,6 @@ export function drawParamPages() {
     }
 
     clear_screen();
-    /* Cached: this was a synchronous round trip on EVERY draw (1.4 of the
-     * grid's 7.1 reads per tick, measured on device) to render a two-letter
-     * abbreviation that cannot change without going back through
-     * openParamPages, which clears the cache. */
-    if (_abbrevCache === null) {
-        _abbrevCache = ctx.getModuleAbbrev
-            ? ctx.getModuleAbbrev(ctx.getSlotParam(currentSlot, `${currentComponent}_module`) || '')
-            : currentComponent.toUpperCase();
-    }
-    const abbrev = _abbrevCache;
-    /* A hardware synth puts the PATCH name in its display, not the model
-     * number — and the module's identity is already visible in the chain
-     * editor you came from. Falls back to the abbreviation until the read
-     * cursor has picked the name up, and for modules with no presets. */
-    const name = controller.presetName || abbrev;
 
     /* draw_line / draw_circle / fill_circle (src/host/js_display.c) do the
      * whole shape in C — one QuickJS<->native crossing regardless of length,
@@ -361,7 +633,7 @@ export function drawParamPages() {
             drawCircle: typeof draw_circle === "function" ? draw_circle : undefined,
             drawArc: typeof draw_arc === "function" ? draw_arc : undefined,
         },
-        { title: `S${currentSlot + 1} > ${name}` }
+        { title: headerTitle(), footer: footerHints() }
     ));
     return true;
 }
@@ -401,15 +673,65 @@ export function handleParamPagesMidi(data) {
     if (!intent) return false;
     if (intent.type === 'knob') _knobTurnCount++;
 
+    /*
+     * Touch trace: every touch edge as the view received it, with its arrival
+     * time and the order.
+     *
+     * Kept after the reset gesture it was built to debug was dropped, because
+     * it is the JS-side half of a pair: `touch_trace_on` in the shim records
+     * the same edges in the SPI callback, and comparing the two is what proved
+     * this path faithful to within 7ms. Any future "the UI missed my input"
+     * question starts here.
+     *
+     * Costs a native "is logging on?" check per touch event when off.
+     */
+    if (intent.type === 'touch' && isLoggingEnabled()) {
+        const st = controller.state;
+        const prev = st.lastTouchMs || 0;
+        const gap = prev ? (Date.now() - prev) : -1;
+        st.lastTouchMs = Date.now();
+        log('param_pages', `touch slot=${intent.slot} ${intent.down ? 'DOWN' : 'up  '}`
+            + ` t=${Date.now()}`
+            + ` sincePrev=${gap < 0 ? 'n/a' : gap + 'ms'}`
+            + ` held=[${st.touchOrder.join(',')}]`);
+    }
+
     /* reveal:false — this host drives reveal from the polled shift state in
      * tickParamPages, not from an intent it will never see. */
     const todo = traced("js.grid.input",
         () => applyInput(controller, intent, { nowMs: Date.now(), reveal: false }));
+
     if (!todo) return true;
 
     if (todo.action === 'exit') {
+        /* Back to the editor you came IN through. Read BEFORE exitParamPages so
+         * the destination cannot depend on what the teardown leaves behind. */
+        const back = (currentChrome && currentChrome.returnView) || ctx.VIEWS.CHAIN_EDIT;
         exitParamPages();
-        ctx.setView(ctx.VIEWS.CHAIN_EDIT);
+        ctx.setView(back);
+        return true;
+    }
+    if (todo.action === 'menu') {
+        /* A menu entry was activated. The controller never performs an action —
+         * the host owns what Save or Knob Mapping means — so this only forwards
+         * which one was chosen, and the host runs the same code the list runs. */
+        const entry = todo.entry || {};
+        if (entry.action) {
+            /*
+             * A synthesised contract may carry its OWN runner, and Master FX
+             * settings has to: the generic host runner takes the IPC SLOT, and
+             * Master FX is addressed at IPC slot 0 by convention — so "save"
+             * from the master bus would have saved instrument slot 1's patch.
+             * The io is the only thing in this file that knows which contract
+             * is loaded, which is why the choice is made from it rather than
+             * from a test on the component name.
+             */
+            if (controllerIo && typeof controllerIo.runAction === 'function') {
+                controllerIo.runAction(entry.action);
+            } else if (typeof ctx.runSlotAction === 'function') {
+                ctx.runSlotAction(currentSlot, entry.action);
+            }
+        }
         return true;
     }
     if (todo.action === 'open') {
@@ -433,6 +755,18 @@ export function setParamPagesLayout(layout) {
     if (controller) controller.setLayout(layout === 'bar' ? LAYOUT_BAR : LAYOUT_DIAL);
 }
 
+/**
+ * Forget any held knob.
+ *
+ * The grid keeps its controller alive across a hand-off (that is how the page
+ * and cell survive coming back), but the note-off for the knob you were holding
+ * goes to whatever screen took over and never reaches the grid — so the cell
+ * stayed highlighted for good. Holding Target and clicking it is exactly that.
+ */
+export function clearParamPagesTouch() {
+    if (controller && typeof controller.clearTouch === 'function') controller.clearTouch();
+}
+
 /** The section picker, for anything that wants to drive it from outside. */
 export function paramPagesJumpIndex() {
     return controller ? controller.groupIndex() : [];
@@ -445,6 +779,18 @@ export function paramPagesGoTo(index) {
 /** True while values are revealed (shift held). */
 export function paramPagesRevealing() {
     return !!(controller && controller.state.revealValues);
+}
+
+/**
+ * The footer hints for the CURRENT state, in draw order.
+ *
+ * Exported so the ordering rule (jog slot 1, click slot 2) and the per-state
+ * wording can be asserted. They cannot be read back off the framebuffer: the
+ * footer is set in font4x5, which draws glyphs as fillRect pixels, so a
+ * recording print() sees nothing at all.
+ */
+export function paramPagesFooterHints() {
+    return footerHints();
 }
 
 /** True while the section picker is over the grid. */

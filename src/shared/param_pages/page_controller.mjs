@@ -27,14 +27,63 @@
  *   being turned and for a short settling window afterwards.
  */
 
-import { planPages, PAGE_KNOBS } from "./page_plan.mjs";
+import { planPages, PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS } from "./page_plan.mjs";
 import { buildMetaIndex, inferFromValue, isTurnable, KIND_ENUM, KIND_OPAQUE } from "./param_meta.mjs";
 import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page.mjs";
-import { renderPageMovy, LAYOUT_MOVY } from "./render_page_movy.mjs";
+import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
+         drawBrackets, drawPresetBody, RULE_Y, LAYOUT_MOVY } from "./render_page_movy.mjs";
 import { resolveViz } from "./viz.mjs";
 
 export { LAYOUT_MOVY };
 import { step, stepLevel, reanchor, firstGrid, jumpIndex, groupIndex } from "./page_nav.mjs";
+
+/*
+ * Menu page geometry.
+ *
+ * The list keeps FIVE rows, the same as every other list on this screen, in
+ * both the inert and the entered state — so entering a menu highlights a row
+ * rather than reflowing the page. The bracket frame is therefore drawn OUTSIDE
+ * the list, not around a shrunken one:
+ *
+ *   row 8        top bracket arms
+ *   rows 9..53   the five list rows (fills are y-1 .. y+7 from y=10,19,28,37,46)
+ *   row 54       bottom bracket arms
+ *
+ * and horizontally the frame sits at x=2..125 while the list text starts at
+ * x=10 and its right-aligned values end at x=118, so nothing collides and
+ * nothing touches the screen edge.
+ */
+/* Exported because other screens in the page chrome — the module picker, for
+ * one — must sit in exactly this rect or the two look subtly unlike each
+ * other. One definition, not a matching pair of magic numbers. */
+export const MENU_LIST_X = 8, MENU_LIST_Y = 10, MENU_LIST_W = 112;
+/*
+ * The frame lives in the list margin, one pixel clear of the dividers.
+ *
+ * Horizontally: side arms at x=4 and x=123, inside the screen edge and outside
+ * the text (starts x=10) and the right-aligned values (end x=118).
+ *
+ * Vertically there looked to be no room — five rows at a 9px stride is 45 of
+ * the 47 rows between the bank bar and the footer rule. But renderPicker only
+ * FILLS a row when it is selected, and an inert menu has nothing selected, so
+ * the only occupied rows are the glyphs themselves:
+ *
+ *   row  7          bank bar (its CURRENT-page segment is 2px, so that one
+ *                   segment also occupies row 8; the rest of the bar does not)
+ *   row  8          clear except under that segment
+ *   row  9          top arms          <- 1px off the bar
+ *   rows 10..52     glyph rows (10..16, 19..25, 28..34, 37..43, 46..52)
+ *   row  53         bottom arms       <- 1px off the rule
+ *   row  54         clear
+ *   row  55         footer rule
+ *
+ * The side arms run 9..15 and 47..53, which pass through the gaps between
+ * glyph rows and never touch a glyph. Nothing is given up: still five rows.
+ */
+const MENU_FRAME_X = 4, MENU_FRAME_Y = 9, MENU_FRAME_W = 120;
+/* One clear row above the frame and one below, hence the 1 on each side. */
+const MENU_FRAME_BOTTOM_INSET = 1;
+const MENU_BRACKET_LEN = 7;
 import { knobInit, knobTick, knobConfigFromMeta } from "../knob_engine.mjs";
 import { movyKnobInit, movyKnobTick } from "./movy_knob.mjs";
 import { formatParamForSet } from "../param_format.mjs";
@@ -105,6 +154,20 @@ export const SETPARAM_THROTTLE_MS = 20;
  */
 export const MOD_FAST_READS_PER_TICK = 1;
 
+/**
+ * How long the header keeps following a knob that was TURNED but is not held.
+ *
+ * A claim made by touch is given up by the note-off. A claim made by a turn
+ * alone has no such event — nothing is under a finger — so it has to time out
+ * or the cell it claimed stays inverted for the rest of the session. That was
+ * the "Shape cell stays highlighted after its value changes" report: an enum
+ * you nudge, on a knob whose capacitive pad did not register the nudge.
+ *
+ * Long enough to read the name and value you just changed, short enough that
+ * it reads as a readout rather than as a stuck cell.
+ */
+export const TURN_CLAIM_MS = 1200;
+
 /** How many times a page will re-read the contract waiting for late metadata. */
 export const META_RETRY_LIMIT = 8;
 /** Ticks between those attempts (~1 s at the shadow UI's 344 Hz tick).
@@ -121,6 +184,26 @@ export function createController(io = {}) {
      * library cannot answer that — it is host state — so it is injected, and
      * defaults to "no" for callers that have no modulation. */
     const isModulated = io.isModulated || (() => false);
+    /*
+     * Optional: how the HOST wants a value read on a given surface.
+     *
+     *   formatValue(fullKey, raw, surface) -> string | null
+     *   surface: "cell" (a 30px label band) | "header" (the held-knob strip,
+     *            also what the screen reader speaks)
+     *
+     * For values whose reading cannot be declared statically, the way an enum's
+     * can with options/short_options. An LFO's target is stored as "fx1" and
+     * reads "FX 1: Room Size" — only the host knows what is loaded in fx1, and
+     * resolving it costs IPC, so both the lookup and its caching stay on the
+     * host side of the injection. Returning null falls back to the ordinary
+     * displayValue path, so a formatter can answer for one key and ignore the
+     * rest.
+     *
+     * Given the FULL key, like getParam and setParam — the renderer works in
+     * bare page keys and an io that had to handle both spellings would be an
+     * invitation to handle one of them wrong.
+     */
+    const formatValue = io.formatValue || null;
     const now = io.now || (() => Date.now());
     /* Graphics default on; a caller can pass `enableViz: false` to keep the
      * plain grid (a tool that wants every cell individually addressable), and
@@ -200,6 +283,34 @@ export function createController(io = {}) {
          * pages each). Applies to SECTION jumps only; a fine jog still steps
          * linearly, or you could never walk the set in order. */
         sectionMemory: Object.create(null),
+        /* Cursor per MENU page, keyed by page name for the same reason
+         * sectionMemory is: a rebuild moves every index. */
+        menuCursor: Object.create(null),
+        /* Every knob currently held, oldest first. See onKnobTouch. */
+        touchOrder: [],
+        /* ms at which a TURN claimed the header with nothing held, or 0.
+         * Only such a claim expires — see TURN_CLAIM_MS. */
+        turnClaimMs: 0,
+        /* Name of the menu page currently ENTERED, or null. */
+        menuEntered: null,
+        /*
+         * The preset browser's live state, per page name.
+         *
+         * A preset level publishes a COUNT, a current INDEX and the name of
+         * whichever preset is selected — there is no way to ask for a list of
+         * names, so the page shows the one you are on rather than a window of
+         * five. Keyed by page name because a rebuild moves every index, the
+         * same reason sectionMemory and menuCursor are.
+         */
+        preset: Object.create(null),
+        /*
+         * The runtime item lists — soundfonts, NAM models, JV expansions.
+         *
+         * Unlike a preset level this one publishes a real LIST, so the page can
+         * show five at a time, and scrolling costs nothing: only the click
+         * writes. Keyed by page name, like every other per-page memory here.
+         */
+        items: Object.create(null),
     };
 
     const fullKey = (key) => `${s.prefix}:${key}`;
@@ -314,6 +425,7 @@ export function createController(io = {}) {
         for (const key in s.pendingWrite) {
             if (t - (s.lastWriteMs[key] || 0) < SETPARAM_THROTTLE_MS) continue;
             setParam(fullKey(key), s.pendingWrite[key]);
+                replanIfCondition(key);
             s.lastWriteMs[key] = t;
             delete s.pendingWrite[key];
         }
@@ -324,13 +436,26 @@ export function createController(io = {}) {
     function flushDueWritesUnconditionally() {
         for (const key in s.pendingWrite) {
             setParam(fullKey(key), s.pendingWrite[key]);
+                replanIfCondition(key);
         }
+    }
+
+    /* Give up a header claim made by a turn once the hand has moved on. Held
+     * knobs are exempt: their claim ends with the note-off. */
+    function expireTurnClaim() {
+        if (!s.turnClaimMs || s.touchOrder.length) return;
+        if (now() - s.turnClaimMs < TURN_CLAIM_MS) return;
+        s.turnClaimMs = 0;
+        s.touched = -1;
     }
 
     function tick() {
         s.tickCount++;
         flushDueWrites();
+        expireTurnClaim();
         const p = page();
+        if (p && p.kind === PAGE_PRESET) { tickPreset(p); return null; }
+        if (p && p.kind === PAGE_ITEMS) { tickItems(p); return null; }
         if (!p || p.kind !== PAGE_KNOBS || p.keys.length === 0) return null;
 
         refreshModulatedValues(p);
@@ -383,8 +508,23 @@ export function createController(io = {}) {
          * the flag and the target ever disagree. */
         let raw = null;
         if (s.modCache[key]) raw = getParam(fullKey(key) + ":base");
-        if (raw === null || raw === undefined) raw = getParam(fullKey(key));
-        if (raw === null || raw === undefined) return null;
+        /*
+         * "" counts as a MISS, not as a value.
+         *
+         * A key nobody serves does not answer null — the shim replies with an
+         * error and a zeroed buffer, and the JS binding hands back "". So an
+         * empty `:base` sailed through this fallback as a legitimate reading,
+         * the plain key was never asked, and the cell showed Number("") = 0.
+         *
+         * On the slot-settings grid that was the visible bug: turn Volume, let
+         * go, and ~200ms later — when the settle window expires and the cursor
+         * reads again — it dropped to 0%. Volume was never 0; the value the UI
+         * held was an empty string. Both halves of the fallback take the same
+         * view, so a module that answers "" for a real key is also not
+         * mistaken for one that answered zero.
+         */
+        if (raw === null || raw === undefined || raw === "") raw = getParam(fullKey(key));
+        if (raw === null || raw === undefined || raw === "") return null;
 
         /* First successful read repairs a guessed range, once. */
         const meta = s.metaIndex.getOrGuess(key);
@@ -397,21 +537,7 @@ export function createController(io = {}) {
          * params it hides or reveals are not otherwise reachable. */
         const changed = s.values[key] !== raw;
         s.values[key] = raw;
-        if (changed && s.conditionKeys.has(key)) {
-            const oldPages = s.pages, oldIndex = s.pageIndex;
-            const planned = planPages({
-                hierarchy: s.hierarchy, chainParams: s.chainParams,
-                mode: s.lastLoadOpts && s.lastLoadOpts.mode,
-                visible: s.lastLoadOpts && s.lastLoadOpts.visible,
-            });
-            if (planned.pages.length !== oldPages.length ||
-                planned.pages.some((p, i) => (p.keys || []).join() !== ((oldPages[i] || {}).keys || []).join())) {
-                s.pages = planned.pages;
-                s.conditionKeys = planned.conditionKeys || new Set();
-                s.pageIndex = reanchor(oldPages, oldIndex, s.pages);
-                s.cursor = 0;
-            }
-        }
+        if (changed) replanIfCondition(key);
         return key;
     }
 
@@ -422,6 +548,259 @@ export function createController(io = {}) {
      * list of 76 pages is the same chore in a different shape. minijv folds to
      * under 25 entries this way.
      */
+    /* ------------------------------------------------------------- menu */
+
+
+    /* ------------------------------------------------------------ items */
+
+    function itemsState(p) {
+        const pg = p || page();
+        if (!pg || pg.kind !== PAGE_ITEMS) return null;
+        let st = s.items[pg.name];
+        if (!st) st = s.items[pg.name] = { list: [], cursor: 0, current: -1, read: 0 };
+        return st;
+    }
+
+    /**
+     * Two reads, alternating: the list itself and the current selection.
+     *
+     * The list is re-read rather than fetched once because it is runtime data —
+     * a soundfont appears when the user copies one onto the device — but on the
+     * same one-per-tick budget as everything else on this screen.
+     */
+    function tickItems(p) {
+        const st = itemsState(p);
+        if (!st) return;
+        const at = st.read % 2;
+        st.read++;
+        if (at === 0) {
+            const parsed = parse(getParam(fullKey(p.itemsParam)));
+            if (Array.isArray(parsed)) {
+                st.list = parsed.map((it, i) => ({
+                    index: (it && it.index !== undefined) ? it.index : i,
+                    label: String((it && (it.label || it.name)) || `Item ${i + 1}`),
+                }));
+                if (st.cursor >= st.list.length) st.cursor = Math.max(0, st.list.length - 1);
+            }
+        } else if (p.selectParam) {
+            const n = parseInt(getParam(fullKey(p.selectParam)), 10);
+            if (isFinite(n)) st.current = n;
+        }
+    }
+
+    /** Move the highlight. No device write — choosing is the click. */
+    function stepItems(delta) {
+        const st = itemsState();
+        if (!st || !st.list.length) return false;
+        const before = st.cursor;
+        st.cursor = Math.max(0, Math.min(st.list.length - 1, st.cursor + delta));
+        if (st.cursor === before) return false;
+        const it = st.list[st.cursor];
+        announce(`${it.label}, ${st.cursor + 1} of ${st.list.length}`);
+        return true;
+    }
+
+    /**
+     * Commit the highlighted item and leave.
+     *
+     * Where to leave TO is the declaration's business: a level with navigate_to
+     * is saying "having chosen, you want to be here". Without one, the first
+     * grid page, same as the preset browser.
+     */
+    function commitItem() {
+        const p = page();
+        const st = itemsState(p);
+        if (!st || !st.list.length) return false;
+        const it = st.list[st.cursor];
+        if (p.selectParam) setParam(fullKey(p.selectParam), String(it.index));
+        st.current = it.index;
+        /* The chosen item can republish the whole contract — a different
+         * soundfont has different presets — so let it be re-read. */
+        s.metaSettled = false;
+        s.metaRetries = 0;
+        s.menuEntered = null;
+        let target = -1;
+        if (p.navigateTo) {
+            target = s.pages.findIndex((q) => q.level === p.navigateTo && q.kind === PAGE_KNOBS);
+        }
+        if (target < 0) target = firstGrid(s.pages);
+        announce(it.label);
+        if (target >= 0 && target !== s.pageIndex) goToPage(target, { remember: false });
+        return true;
+    }
+
+    /* ---------------------------------------------------------- presets */
+
+    /** Live state for the preset page on screen, created on first sight. */
+    function presetState(p) {
+        const pg = p || page();
+        if (!pg || pg.kind !== PAGE_PRESET) return null;
+        let st = s.preset[pg.name];
+        if (!st) st = s.preset[pg.name] = { count: 0, index: 0, name: null, read: 0 };
+        return st;
+    }
+
+    /** "Fat Bass, 12 of 2427" — what the page says and what it announces. */
+    function presetSpoken() {
+        const st = presetState();
+        if (!st) return "";
+        const name = st.name || `Preset ${st.index + 1}`;
+        return st.count > 0 ? `${name}, ${st.index + 1} of ${st.count}` : name;
+    }
+
+    /**
+     * Move the selection, which LOADS that preset — the browser auditions, the
+     * way the list editor always has.
+     *
+     * Writes the index and re-reads the name, so it costs one write and one
+     * read per detent. That is affordable because it only happens while the
+     * page is entered and the jog is being turned, and it is the whole point
+     * of the gesture; it is not on the idle path.
+     */
+    function stepPreset(delta) {
+        const p = page();
+        const st = presetState(p);
+        if (!st || !p || st.count <= 0) return false;
+        let next = st.index + delta;
+        if (next < 0) next = st.count - 1;
+        if (next >= st.count) next = 0;
+        if (next === st.index) return false;
+        st.index = next;
+        setParam(fullKey(p.listParam), String(next));
+        /* Hold off the read cursor for the same reason a turned knob does: a
+         * read issued before this write lands after it. */
+        s.settleUntil[p.listParam] = s.tickCount + SETTLE_TICKS;
+        const nm = getParam(fullKey(p.nameParam));
+        st.name = (nm && nm.length) ? nm : null;
+        /* The new preset can publish a different parameter set — that is what
+         * a preset IS — so let the contract be re-read rather than leaving the
+         * knob pages describing the preset you just left. */
+        s.metaSettled = false;
+        s.metaRetries = 0;
+        /* Throttled exactly as a turned knob is: a fast spin down a 2427-preset
+         * list is hundreds of announcements a second, which no one can follow
+         * and which competes with the redraw for the same tick. */
+        const nowMs = now();
+        if (nowMs - (s.lastAnnounceMs[p.listParam] || 0) >= ANNOUNCE_THROTTLE_MS) {
+            s.lastAnnounceMs[p.listParam] = nowMs;
+            announce(presetSpoken());
+        }
+        return true;
+    }
+
+    /**
+     * One preset read per tick, cycling count -> index -> name.
+     *
+     * On the same budget as the knob cursor and for the same reason: three
+     * synchronous round trips in one frame is most of the frame. The page
+     * shows "--" until they land, which takes ~3 ticks.
+     */
+    function tickPreset(p) {
+        const st = presetState(p);
+        if (!st) return;
+        const at = st.read % 3;
+        st.read++;
+        if (at === 0) {
+            const c = getParam(fullKey(p.countParam));
+            const n = parseInt(c, 10);
+            if (isFinite(n) && n >= 0) st.count = n;
+        } else if (at === 1) {
+            /* Not while the user is turning: a read issued before the write
+             * lands after it and drags the selection backwards, exactly as it
+             * would for a knob. */
+            if ((s.settleUntil[p.listParam] || 0) > s.tickCount) return;
+            const v = getParam(fullKey(p.listParam));
+            const n = parseInt(v, 10);
+            if (isFinite(n) && n >= 0) st.index = n;
+        } else {
+            const nm = getParam(fullKey(p.nameParam));
+            st.name = (nm && nm.length) ? nm : null;
+        }
+    }
+
+    /* Cursor per MENU page, by page NAME — page indices move on rebuild. */
+    function menuIndex(p) {
+        if (!p || p.kind !== PAGE_MENU) return 0;
+        const n = (p.entries || []).length;
+        const cur = s.menuCursor[p.name] || 0;
+        return Math.max(0, Math.min(n - 1, cur));
+    }
+    function setMenuIndex(p, i) {
+        if (!p || p.kind !== PAGE_MENU) return;
+        const n = (p.entries || []).length;
+        s.menuCursor[p.name] = Math.max(0, Math.min(n - 1, i));
+    }
+    /** The highlighted entry on a menu page, or null. */
+    function menuEntry() {
+        const p = page();
+        if (!p || p.kind !== PAGE_MENU) return null;
+        return (p.entries || [])[menuIndex(p)] || null;
+    }
+
+    /*
+     * A menu page is INERT until you enter it.
+     *
+     * The first cut had the jog drive the list whenever a menu was on screen,
+     * which quietly gave the jog two meanings depending on which page you were
+     * on — an invisible mode — and then needed Shift as an escape from the trap
+     * that created. This way the jog means ONE thing everywhere: it pages.
+     *
+     * A menu is simply a door at page scale. It wears the same brackets a
+     * divable cell wears, it is entered with the same click, and it is left
+     * with Back — the identical grammar one level up. Inert, it is also a
+     * preview: you can read the actions while paging past without engaging.
+     */
+    /*
+     * Which page kinds are DOORS: inert on arrival, entered with a click, left
+     * with Back.
+     *
+     * A menu was the first. A preset browser is the second, and wants it more:
+     * paging onto one used to hand the jog straight to the preset list, so
+     * scrolling past a synth's presets on the way somewhere else LOADED every
+     * preset it passed. The jog means one thing everywhere — it pages — until
+     * you have said otherwise by clicking in.
+     */
+    function isDoor(p) {
+        return !!(p && (p.kind === PAGE_MENU || p.kind === PAGE_PRESET
+                        || p.kind === PAGE_ITEMS));
+    }
+    function menuEntered() {
+        const p = page();
+        return !!(isDoor(p) && s.menuEntered === p.name);
+    }
+    /** Enter the menu on this page. False when there is nothing to enter. */
+    function enterMenu() {
+        const p = page();
+        if (!isDoor(p)) return false;
+        if (p.kind === PAGE_MENU && !(p.entries || []).length) return false;
+        if (p.kind === PAGE_ITEMS) {
+            const st = itemsState(p);
+            if (!st || !st.list.length) return false;   /* nothing to choose from */
+        }
+        s.menuEntered = p.name;
+        if (p.kind === PAGE_PRESET) {
+            announce(`${p.name}, ${presetSpoken()}`);
+            return true;
+        }
+        if (p.kind === PAGE_ITEMS) {
+            const st = itemsState(p);
+            const it = st && st.list[st.cursor];
+            announce(it ? `${p.name}, ${it.label}, ${st.cursor + 1} of ${st.list.length}`
+                        : `${p.name}, empty`);
+            return true;
+        }
+        const e = menuEntry();
+        if (e) announce(`${p.name}, ${e.label}${e.value ? ", " + e.value : ""}`);
+        return true;
+    }
+    /** Leave the menu without activating anything. */
+    function exitMenu() {
+        if (!menuEntered()) return false;
+        s.menuEntered = null;
+        announcePageChange();
+        return true;
+    }
+
     function openPicker() {
         s.pickerEntries = groupIndex(s.pages);
         if (!s.pickerEntries.length) return false;
@@ -458,7 +837,7 @@ export function createController(io = {}) {
      * let memory of one hijack a jump to the other. Picking "Presets" from
      * the section list landed back on "Main" because sectionMemory["root"]
      * held the knobs page and restoreSection only checked level. */
-    function sectionKey(p) { return p ? `${p.level} ${p.kind}` : null; }
+    function sectionKey(p) { return p ? `${p.level}\u0000${p.kind}` : null; }
 
     /* Remember where you were within the current section. */
     function rememberSection() {
@@ -492,6 +871,36 @@ export function createController(io = {}) {
             }
             return s.pageIndex;
         }
+        /* On a menu page the jog belongs to the LIST, not to the page set —
+         * the entries are what you are navigating. Shift still pages out, so
+         * the menu is never a trap. */
+        const mp = page();
+        /* Entered items page: the jog moves the highlight. Nothing is written
+         * until you click, so scrolling a soundfont list is free. */
+        if (mp && mp.kind === PAGE_ITEMS && menuEntered() && !shift) {
+            stepItems(delta > 0 ? 1 : -1);
+            return s.pageIndex;
+        }
+        /* Entered preset page: the jog is the browser. Shift still pages out,
+         * so the page set is never unreachable — same escape a menu has. */
+        if (mp && mp.kind === PAGE_PRESET && menuEntered() && !shift) {
+            stepPreset(delta > 0 ? 1 : -1);
+            return s.pageIndex;
+        }
+        if (mp && mp.kind === PAGE_MENU && menuEntered() && !shift) {
+            const n = (mp.entries || []).length;
+            if (n > 0) {
+                const before = menuIndex(mp);
+                setMenuIndex(mp, before + (delta > 0 ? 1 : -1));
+                const now = menuIndex(mp);
+                if (now !== before) {
+                    const e = mp.entries[now];
+                    announce(`${e.label}${e.value ? ", " + e.value : ""}, ${now + 1} of ${n}`);
+                }
+                return s.pageIndex;
+            }
+        }
+
         if (!s.pages.length || delta === 0) return s.pageIndex;
         const before = s.pageIndex;
         rememberSection();
@@ -500,6 +909,12 @@ export function createController(io = {}) {
         if (s.pageIndex !== before) {
             s.cursor = 0;
             s.touched = -1;
+            s.turnClaimMs = 0;
+            /* Leaving a page leaves the door it was. Without this, entering a
+             * browser, Shift+jogging away and jogging BACK put you inside it
+             * again without a click — the page had never been marked as left,
+             * only navigated off. */
+            s.menuEntered = null;
             announcePageChange();
         }
         return s.pageIndex;
@@ -507,12 +922,20 @@ export function createController(io = {}) {
 
     /** Jump straight to a page (from the index or group picker). */
     function goToPage(index, { remember = true } = {}) {
+        /* Paging away cannot leave a menu entered — returning later would
+         * silently hand the jog back to the list. (Page names are unique, so
+         * this and "any index change" are the same rule; onJog carries the
+         * equivalent clear.) */
+        if (s.menuEntered && s.pages[index] && s.pages[index].name !== s.menuEntered) {
+            s.menuEntered = null;
+        }
         if (index === s.pageIndex) return s.pageIndex;
         rememberSection();
         const target = Math.max(0, Math.min(s.pages.length - 1, index));
         s.pageIndex = remember ? restoreSection(target) : target;
         s.cursor = 0;
         s.touched = -1;
+        s.turnClaimMs = 0;
         announcePageChange();
         return s.pageIndex;
     }
@@ -532,6 +955,21 @@ export function createController(io = {}) {
         if (!isTurnable(meta)) return null;
 
         const t = nowMs === undefined ? now() : nowMs;
+
+        /* Turning claims the header: "last touched or MOVED" is the one you are
+         * working on, and a knob can be turned without the capacitive touch
+         * ever registering. It does not join touchOrder — nothing is being
+         * held — so it stops leading the header as soon as a held knob does,
+         * and if nothing is held it expires on its own (TURN_CLAIM_MS): there
+         * is no release event coming for a knob no finger registered on. */
+        if (!s.touchOrder.length) {
+            s.touched = slot;
+            s.turnClaimMs = t;
+        } else if (s.touchOrder.indexOf(slot) >= 0) {
+            s.touched = slot;
+            s.turnClaimMs = 0;
+        }
+
         /* The Movy layout turns like Movy — see movy_knob.mjs — not like
          * Schwung's own dial/bar grid (knob_engine.mjs, a different,
          * time-based acceleration feel that predates this port). Same state
@@ -574,6 +1012,7 @@ export function createController(io = {}) {
             s.lastWriteMs[key] = t;
             delete s.pendingWrite[key];
             setParam(fullKey(key), wire);
+        replanIfCondition(key);
         } else {
             s.pendingWrite[key] = wire;
         }
@@ -587,7 +1026,59 @@ export function createController(io = {}) {
         return wire;
     }
 
-    /** Capacitive touch. Down announces the full name and value. */
+    /*
+     * A key that gates visibility has changed — re-plan, because the params it
+     * hides or reveals are not otherwise reachable.
+     *
+     * Called from the READ cursor and from every WRITE. Read-only was not
+     * enough: turning the gating knob updates s.values immediately, so when the
+     * cursor next reads that key nothing has "changed" and the re-plan never
+     * fired. Switching an LFO to Sync left the Hz cell on screen — the value had
+     * moved and the page had not.
+     */
+    function replanIfCondition(key) {
+        if (!s.conditionKeys.has(key)) return;
+        const oldPages = s.pages, oldIndex = s.pageIndex;
+        const planned = planPages({
+            hierarchy: s.hierarchy, chainParams: s.chainParams,
+            mode: s.lastLoadOpts && s.lastLoadOpts.mode,
+            visible: s.lastLoadOpts && s.lastLoadOpts.visible,
+        });
+        if (planned.pages.length !== oldPages.length ||
+            planned.pages.some((p, i) => (p.keys || []).join() !== ((oldPages[i] || {}).keys || []).join())) {
+            s.pages = planned.pages;
+            s.conditionKeys = planned.conditionKeys || new Set();
+            s.pageIndex = reanchor(oldPages, oldIndex, s.pages);
+            s.cursor = 0;
+        }
+    }
+
+    /**
+     * Forget every held knob.
+     *
+     * Called when the grid hands off to another screen: the note-off for the
+     * knob you were holding goes to THAT screen, never back to the grid, so
+     * without this the cell stays highlighted for the rest of the session.
+     * Holding Target and clicking it is exactly that sequence.
+     */
+    function clearTouch() {
+        s.touchOrder.length = 0;
+        s.touched = -1;
+        s.turnClaimMs = 0;
+    }
+
+    /*
+     * Capacitive touch. Down announces the full name and value.
+     *
+     * TOUCH IS A SET, not a slot. Hands have more than one finger: hold one
+     * knob, touch a second, release the second, and the first is still held —
+     * but a single `touched` index had already been overwritten and then
+     * cleared, so the knob under your finger stopped being highlighted.
+     *
+     * `touchOrder` keeps every knob currently down, in the order they were
+     * touched. Every one of them highlights; the header follows the LAST one
+     * touched or turned, which is the one you are actually working on.
+     */
     function onKnobTouch(slot, down) {
         if (s.hintLines) dismissHint();
         /* Reaching for a knob is an unambiguous "I want the grid", so it
@@ -595,7 +1086,12 @@ export function createController(io = {}) {
          * back out of first. */
         if (down && s.pickerOpen) closePicker();
         if (!down) {
-            if (s.touched === slot) s.touched = -1;
+            const at = s.touchOrder.indexOf(slot);
+            if (at >= 0) s.touchOrder.splice(at, 1);
+            /* The header falls back to whatever is still held, not to nothing. */
+            s.touched = s.touchOrder.length ? s.touchOrder[s.touchOrder.length - 1] : -1;
+            /* A real hold outranks and cancels any pending turn-claim. */
+            s.turnClaimMs = 0;
             /* Release flushes immediately rather than waiting out
              * SETPARAM_THROTTLE_MS — the hand has stopped, so there is no
              * more flooding to protect against, and the settled value should
@@ -604,53 +1100,85 @@ export function createController(io = {}) {
             const key = keyAt(slot);
             if (key && s.pendingWrite[key] !== undefined) {
                 setParam(fullKey(key), s.pendingWrite[key]);
+                replanIfCondition(key);
                 s.lastWriteMs[key] = now();
                 delete s.pendingWrite[key];
             }
             return;
         }
+        if (s.touchOrder.indexOf(slot) < 0) s.touchOrder.push(slot);
         s.touched = slot;
+        s.turnClaimMs = 0;
         const key = keyAt(slot);
         const meta = metaAt(slot);
         const dec = s.decorations ? s.decorations[slot] : null;
-        announce(announceTouch(meta, key ? s.values[key] : null, slot, dec));
+        /* Whatever the header is about to show is what gets spoken — a routing
+         * read out as "fx1" is no more use by ear than it is by eye. */
+        let spoken = key ? s.values[key] : null;
+        if (formatValue && key) {
+            const resolved = formatValue(fullKey(key), spoken, "header");
+            if (resolved !== null && resolved !== undefined) spoken = resolved;
+        }
+        announce(announceTouch(meta, spoken, slot, dec));
     }
 
     /**
-     * Click on a knob's cell. A turnable param has nothing to open; an opaque
-     * one (filepath, canvas, wav_position, string) asks the caller to open the
-     * editor the list view already has. The controller never opens it itself —
-     * that screen belongs to the host.
+     * Click on a knob's cell. A DIVABLE param (filepath, canvas, string, and a
+     * ranged wav_position) asks the caller to open the editor the list view
+     * already has. The controller never opens it itself — that screen belongs to
+     * the host.
+     *
+     * Gated on meta.divable rather than kind === OPAQUE so a wav_position, which
+     * is a turnable number, still opens its waveform editor on click while the
+     * knob keeps driving it.
      */
     function onClick(slot) {
+        /* A menu page has no knobs, so the click has exactly one meaning:
+         * activate the highlighted entry. The controller does not perform it —
+         * the host owns whatever Save or Knob Mapping means, same rule that
+         * keeps it out of the editors. */
+        const mp = page();
+        /*
+         * A preset page: the first click goes IN, the second says done.
+         *
+         * Done means the first grid page, not "nothing". You came here to
+         * choose a sound and the browser loads as you scroll, so by the time
+         * you click there is nothing left to commit — what you want next is
+         * the knobs for the preset you just landed on. Leaving you in the
+         * browser makes the click do nothing and the page feel like somewhere
+         * you are stuck, with only Back to get out and Back only ever going
+         * backwards.
+         *
+         * Back still steps out in place, for when you were only looking.
+         */
+        if (mp && mp.kind === PAGE_ITEMS) {
+            if (!menuEntered()) { enterMenu(); return null; }
+            commitItem();
+            return null;
+        }
+        if (mp && mp.kind === PAGE_PRESET) {
+            if (!menuEntered()) { enterMenu(); return null; }
+            s.menuEntered = null;
+            const grid = firstGrid(s.pages);
+            if (grid >= 0 && grid !== s.pageIndex) goToPage(grid, { remember: false });
+            else announcePageChange();
+            return null;
+        }
+        if (mp && mp.kind === PAGE_MENU) {
+            /* First click enters the menu; the next activates the entry under
+             * the cursor. The same two-step a divable cell has (hold, then
+             * click) and the picker has (open, then choose). */
+            if (!menuEntered()) { enterMenu(); return null; }
+            const e = menuEntry();
+            if (!e) return null;
+            s.pending = { action: "menu", entry: e, level: mp.level };
+            return s.pending;
+        }
         const key = keyAt(slot);
         const meta = metaAt(slot);
-        if (!key || !meta || meta.kind !== KIND_OPAQUE) return null;
+        if (!key || !meta || !meta.divable) return null;
         s.pending = { action: "open", key, fullKey: fullKey(key), meta };
         return s.pending;
-    }
-
-    /**
-     * Reset a knob's param to the default its module declared. 744 params across
-     * 39 modules declare one, and there is otherwise no way back to it short of
-     * reloading the preset.
-     *
-     * Returns false when the param declares no default, so the caller can say
-     * so rather than silently doing nothing.
-     */
-    function resetToDefault(slot) {
-        const key = keyAt(slot);
-        const meta = metaAt(slot);
-        if (!key || !meta || meta.default === undefined || meta.default === null) return false;
-        if (!isTurnable(meta)) return false;
-
-        const wire = formatParamForSet(meta.default, meta);
-        s.values[key] = wire;
-        s.settleUntil[key] = s.tickCount + SETTLE_TICKS;
-        delete s.knobStates[key];       /* next turn starts from the new value */
-        setParam(fullKey(key), wire);
-        announce(`${meta.label || key}, default, ${announceTurn(meta, wire)}`);
-        return true;
     }
 
     function takePending() {
@@ -728,16 +1256,30 @@ export function createController(io = {}) {
      * per-slot p-locks) or an embedding `rect`: it draws its own header full
      * width, the way Movy itself always does. Anything using those keeps
      * LAYOUT_DIAL/LAYOUT_BAR — see setLayout. */
-    function render(ctx, { title, rect } = {}) {
+    /*
+     * `footer` is [key, action] hint pairs, most important first, supplied by
+     * the CALLER — the gestures belong to whoever owns the input mapping, same
+     * reason the first-run hint panel's text does. Movy layout only: the
+     * dial/bar grid has no footer band reserved and would draw over its last
+     * label row.
+     */
+    function render(ctx, { title, rect, footer } = {}) {
         if (s.layout === LAYOUT_MOVY) {
             const drawGrid = () => renderPageMovy(ctx, {
                 page: page(), metaIndex: s.metaIndex, values: s.values,
                 title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
                 touched: s.hintLines ? -1 : s.touched,
+                displayFor: formatValue
+                    ? (key, raw, surface) => formatValue(fullKey(key), raw, surface)
+                    : null,
+                /* Every knob under a finger inverts its label, not just the one
+                 * the header is following. */
+                touchedSlots: s.hintLines ? [] : s.touchOrder,
                 modulated: (key) => !!s.modCache[key],
                 modValues: s.modValues,
                 pageGroups: pageGroups(),
                 viz: vizEnabled ? vizGroups() : [],
+                footer,
             });
             if (s.hintLines) {
                 drawGrid();
@@ -745,7 +1287,120 @@ export function createController(io = {}) {
                 return;
             }
             if (s.pickerOpen) {
-                renderPicker(ctx, { rect, entries: s.pickerEntries, index: s.pickerIndex, title: "Sections" });
+                /*
+                 * The section picker wears the PAGE chrome, not a chrome of its
+                 * own. It used to draw its own taller header, so the one screen
+                 * that is explicitly about navigating pages was the one screen
+                 * that did not look like a page. Same header band, same bank
+                 * bar, same list rect and same five rows as a menu page — the
+                 * only difference is what the list holds.
+                 */
+                const pbottom = footer ? RULE_Y : 64;
+                drawHeaderMovy(ctx, title || "", "SECTIONS", false);
+                drawBankBar(ctx, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
+                renderPicker(ctx, {
+                    rect: { x: MENU_LIST_X, y: MENU_LIST_Y,
+                            w: MENU_LIST_W, h: pbottom - MENU_LIST_Y },
+                    entries: s.pickerEntries,
+                    index: s.pickerIndex,
+                    header: false,
+                });
+                if (footer) drawFooter(ctx, footer);
+                return;
+            }
+            const mp = page();
+            if (mp && mp.kind === PAGE_ITEMS) {
+                /* A real list, so it draws like a menu page: same chrome, same
+                 * five rows, same rect. Inert it highlights nothing — the page
+                 * is something you can go INTO, not something you are in. */
+                drawHeaderMovy(ctx, title || "", mp.name, false);
+                drawBankBar(ctx, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
+                const ibottom = footer ? RULE_Y : 64;
+                const ist = itemsState(mp) || { list: [], cursor: 0, current: -1 };
+                const entered = menuEntered();
+                renderPicker(ctx, {
+                    rect: { x: MENU_LIST_X, y: MENU_LIST_Y,
+                            w: MENU_LIST_W, h: ibottom - MENU_LIST_Y },
+                    entries: ist.list.length
+                        ? ist.list.map((it) => ({
+                            name: it.label,
+                            /* The one in force marks itself where a menu page
+                             * puts a value, same as the module picker. */
+                            value: it.index === ist.current ? "*" : "",
+                          }))
+                        : [{ name: "(none)", value: "" }],
+                    index: entered ? ist.cursor : -1,
+                    header: false,
+                });
+                if (!entered) {
+                    drawBrackets(ctx, MENU_FRAME_X, MENU_FRAME_Y, MENU_FRAME_W,
+                                 ibottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
+                                 MENU_BRACKET_LEN);
+                }
+                if (footer) drawFooter(ctx, footer);
+                return;
+            }
+            if (mp && mp.kind === PAGE_PRESET) {
+                /* Same chrome as a grid page — module name, page name, bank
+                 * bar and footer all stay put, so the preset browser reads as
+                 * one of this module's pages rather than as somewhere else.
+                 * That is the whole point: it used to eject into the list
+                 * editor, which looks nothing like this. */
+                drawHeaderMovy(ctx, title || "", mp.name, false);
+                drawBankBar(ctx, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
+                const pbottom = footer ? RULE_Y : 64;
+                const prect = { x: MENU_FRAME_X, y: MENU_FRAME_Y,
+                                w: MENU_FRAME_W, h: pbottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET };
+                const pst = presetState(mp) || {};
+                drawPresetBody(ctx, prect, {
+                    name: pst.name, index: pst.index, count: pst.count,
+                    entered: menuEntered(),
+                });
+                /* Inert: it wears the same brackets a divable cell and an
+                 * un-entered menu wear, because it is the same offer. */
+                if (!menuEntered()) {
+                    drawBrackets(ctx, MENU_FRAME_X, MENU_FRAME_Y, MENU_FRAME_W,
+                                 pbottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
+                                 MENU_BRACKET_LEN);
+                }
+                if (footer) drawFooter(ctx, footer);
+                return;
+            }
+            if (mp && mp.kind === PAGE_MENU) {
+                /* Same chrome as a grid page — the module name, the page name
+                 * and the bank bar all stay put, so a menu reads as one of this
+                 * module's pages rather than as somewhere else. header:false
+                 * because that header is already drawn. */
+                drawHeaderMovy(ctx, title || "", mp.name, false);
+                drawBankBar(ctx, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
+                const bottom = footer ? RULE_Y : 64;
+                const entered = menuEntered();
+                /*
+                 * ONE list rect for both states. Shrinking it to make room for
+                 * the brackets cost a row (4 vs 5 everywhere else) and made the
+                 * rows jump as you entered. Instead the list is inset far enough
+                 * that the brackets sit OUTSIDE it: the top arm lands on row 8
+                 * and the bottom on row 54, both clear of the row fills
+                 * (9..53), and the side arms clear the text at x+2 and the
+                 * right-aligned values at x+w-2.
+                 */
+                const listRect = { x: MENU_LIST_X, y: MENU_LIST_Y,
+                                   w: MENU_LIST_W, h: bottom - MENU_LIST_Y };
+                renderPicker(ctx, {
+                    rect: listRect,
+                    entries: (mp.entries || []).map((e) => ({ name: e.label, value: e.value })),
+                    /* Inert: nothing is highlighted, because nothing is selected
+                     * yet — the page is something you can go INTO, not something
+                     * you are already in. */
+                    index: entered ? menuIndex(mp) : -1,
+                    header: false,
+                });
+                if (!entered) {
+                    drawBrackets(ctx, MENU_FRAME_X, MENU_FRAME_Y, MENU_FRAME_W,
+                                 bottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
+                                 MENU_BRACKET_LEN);
+                }
+                if (footer) drawFooter(ctx, footer);
                 return;
             }
             drawGrid();
@@ -813,7 +1468,9 @@ export function createController(io = {}) {
     return {
         load, reloadIfChanged, tick,
         onJog, goToPage, onKnobTurn, onKnobTouch, onClick, takePending,
-        openPicker, closePicker, pickerSelect, showHint, dismissHint, resetToDefault,
+        openPicker, closePicker, pickerSelect, showHint, dismissHint,
+        menuEntry, menuIndex: () => menuIndex(page()),
+        menuEntered, enterMenu, exitMenu, clearTouch,
         get pickerOpen() { return s.pickerOpen; },
         get pickerEntries() { return s.pickerEntries; },
         get pickerIndex() { return s.pickerIndex; },

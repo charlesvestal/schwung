@@ -109,6 +109,11 @@ for (const { p, i } of chosen) {
         renderPageMovy(drawContext(fb), {
             page: p, metaIndex, values, title,
             pageIndex: i, pageCount: pages.length, touched, viz: groups,
+            /* Representative hints so previews show the real vertical budget.
+             * The device's own hints come from shadow_ui_param_pages.mjs. */
+            footer: touched >= 0
+                ? [["MUTE", "DFLT"], ["SHFT", "FINE"]]
+                : [["JOG", "PG"], ["SHFT", "SECT"], ["CLK", "MENU"]],
         });
     } else {
         renderPage(drawContext(fb), {

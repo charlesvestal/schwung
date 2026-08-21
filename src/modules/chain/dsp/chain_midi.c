@@ -6,6 +6,7 @@
 
 #include "chain_internal.h"
 #include "chain_pre_inject.h"
+#include "chain_midi_chain.h"
 
 /* Clock availability state for sync-aware MIDI FX (arp, etc.). */
 static int g_clock_output_enabled = 1;              /* midiClockMode == "output" */
@@ -132,15 +133,55 @@ static void chain_update_clock_runtime(const uint8_t *msg, int len) {
 static inline void pre_mode_track_inject(chain_instance_t *inst,
                                          const uint8_t *out_msg, int out_len);
 
-/* Load a MIDI FX plugin into an instance slot */
-int v2_load_midi_fx(chain_instance_t *inst, const char *fx_name) {
+/*
+ * Load a MIDI FX plugin into the slot it is addressed to.
+ *
+ * Mirrors v2_load_audio_fx_slot in chain_host.c, deliberately, down to the
+ * count rule: `midi_fx_count` is a HIGH-WATER MARK, not a compacted length.
+ * "midi_fx4:module" on an empty chain gives count 4 with slots 0-2 NULL, and
+ * both loops that walk the list (v2_process_midi_fx, v2_tick_midi_fx) skip a
+ * NULL plugin rather than stopping at it. Holes are legal on this side for the
+ * same reason they are legal on the audio side: an eight-slot list with a
+ * reorder UI hands out sparse writes as an ordinary event, and compacting on
+ * the DSP side would silently renumber slots out from under whoever is holding
+ * an index — the modulation matrix, the UI, the patch file.
+ *
+ * SLOT 1 IS NOT SPECIAL. It used to be: "midi_fx1:module" called
+ * v2_unload_all_midi_fx first, on the rule that slot 1 owned the whole list.
+ * That was harmless at a cap of 2 and is not at a cap of 8, where it destroys
+ * up to seven neighbours. It also made a whole-chain rewrite depend on write
+ * ORDER: writing midi_fx1:, midi_fx2:, midi_fx3: in sequence happened to work
+ * only because the first write cleared the list and the rest appended; the
+ * same three keys in any other order lost FX. Per-slot replace is order-free.
+ *
+ * Nothing in the field changes: the shadow UI only ever wrote midi_fx1:module
+ * against a single-MIDI-FX chain, and there "unload all then load" and
+ * "replace slot 0" are the same operation.
+ *
+ * What a caller must now do that it did not before: a rewrite that SHORTENS
+ * the chain has to clear the tail explicitly ("midi_fx<N>:module=none" for
+ * each dropped slot). The old nuke covered that by accident. The audio FX side
+ * has always had this contract; this makes the two agree.
+ */
+int v2_load_midi_fx_slot(chain_instance_t *inst, int slot, const char *fx_name) {
     char msg[256];
 
-    if (!inst || !fx_name || !fx_name[0]) return -1;
+    if (!inst || slot < 0 || slot >= MAX_MIDI_FX) return -1;
 
-    if (inst->midi_fx_count >= MAX_MIDI_FX) {
-        v2_chain_log(inst, "Max MIDI FX reached");
-        return -1;
+    /* Whatever was here goes first — including on the failure paths below, so
+     * a bad name leaves a clean slot rather than a half-loaded one. */
+    v2_unload_midi_fx_slot(inst, slot);
+
+    /* Empty or "none" means just clear. Trailing empties shrink the mark so a
+     * cleared tail does not leave the list reporting a length it no longer
+     * has; an interior hole leaves it alone. */
+    if (!fx_name || !fx_name[0] || strcmp(fx_name, "none") == 0) {
+        while (inst->midi_fx_count > 0 && inst->midi_fx_handles[inst->midi_fx_count - 1] == NULL) {
+            inst->midi_fx_count--;
+        }
+        snprintf(msg, sizeof(msg), "MIDI FX slot %d cleared", slot);
+        v2_chain_log(inst, msg);
+        return 0;
     }
 
     /* Build path to MIDI FX - in modules/midi_fx/ */
@@ -160,8 +201,6 @@ int v2_load_midi_fx(chain_instance_t *inst, const char *fx_name) {
         v2_chain_log(inst, msg);
         return -1;
     }
-
-    int slot = inst->midi_fx_count;
 
     /* Look for init function */
     midi_fx_init_fn init_fn = (midi_fx_init_fn)dlsym(handle, MIDI_FX_INIT_SYMBOL);
@@ -207,7 +246,7 @@ int v2_load_midi_fx(chain_instance_t *inst, const char *fx_name) {
         return -1;
     }
 
-    parse_ui_hierarchy_cache(fx_dir, inst->midi_fx_ui_hierarchy[slot], sizeof(inst->midi_fx_ui_hierarchy[slot]));
+    parse_ui_hierarchy_cache(fx_dir, inst->midi_fx_ui_hierarchy[slot], CHAIN_UI_HIERARCHY_LEN);
 
     /* Read optional "pre_capable" hint from module.json capabilities.
      * This informs the Shadow UI default on first placement; does not gate
@@ -236,49 +275,88 @@ int v2_load_midi_fx(chain_instance_t *inst, const char *fx_name) {
         fclose(mj);
     }
 
-    inst->midi_fx_count++;
+    if (slot >= inst->midi_fx_count) {
+        inst->midi_fx_count = slot + 1;
+    }
 
     snprintf(msg, sizeof(msg), "MIDI FX loaded: %s (slot %d)", fx_name, slot);
     v2_chain_log(inst, msg);
     return 0;
 }
 
+/*
+ * Append at the end of the list. The patch loader wants this — it walks a
+ * saved chain in order and relies on `midi_fx_count - 1` naming what it just
+ * loaded — and so does anything that does not care where an FX lands.
+ * Addressed writes go through v2_load_midi_fx_slot.
+ */
+int v2_load_midi_fx(chain_instance_t *inst, const char *fx_name) {
+    if (!inst || !fx_name || !fx_name[0]) return -1;
+    if (inst->midi_fx_count >= MAX_MIDI_FX) {
+        v2_chain_log(inst, "Max MIDI FX reached");
+        return -1;
+    }
+    return v2_load_midi_fx_slot(inst, inst->midi_fx_count, fx_name);
+}
+
+/*
+ * Tear down one slot. Does NOT touch midi_fx_count: the caller decides whether
+ * the mark moves, because clearing an interior slot must not shorten the list
+ * (see v2_load_midi_fx_slot).
+ */
+void v2_unload_midi_fx_slot(chain_instance_t *inst, int slot) {
+    if (!inst || slot < 0 || slot >= MAX_MIDI_FX) return;
+
+    char target[16];
+    snprintf(target, sizeof(target), "midi_fx%d", slot + 1);
+    chain_mod_clear_target_entries(inst, target, 0);
+
+    if (inst->midi_fx_plugins[slot] && inst->midi_fx_instances[slot] &&
+        inst->midi_fx_plugins[slot]->destroy_instance) {
+        inst->midi_fx_plugins[slot]->destroy_instance(inst->midi_fx_instances[slot]);
+    }
+    if (inst->midi_fx_handles[slot]) {
+        dlclose(inst->midi_fx_handles[slot]);
+    }
+    inst->midi_fx_handles[slot] = NULL;
+    inst->midi_fx_plugins[slot] = NULL;
+    inst->midi_fx_instances[slot] = NULL;
+    inst->current_midi_fx_modules[slot][0] = '\0';
+    inst->midi_fx_param_counts[slot] = 0;
+    inst->mod_param_refresh_ms_midi_fx[slot] = 0;
+    inst->midi_fx_ui_hierarchy[slot][0] = '\0';
+    inst->midi_fx_pre_capable[slot] = 0;
+    inst->midi_fx_bypassed[slot] = 0;
+
+    /* Stale refcount entries from a now-unloaded MIDI FX would orphan future
+     * note-ons. Reset with the FX, along with the pad-held tracker — whichever
+     * FX replaces this one starts clean. Drop any buffered clock-driven inject
+     * batch too, so the next clock doesn't flush the old FX's orphaned
+     * note-ons into Move.
+     *
+     * This is chain-wide state, cleared on a per-slot unload. That is the
+     * behaviour "midi_fx1:module" already had (it went through the unload-all
+     * path), kept rather than narrowed: the tracker is not keyed by slot, so
+     * there is nothing to clear selectively. The cost is that unloading one FX
+     * can orphan a note another FX in the chain is still holding down — a
+     * stuck note on Move until the next unload. Keying pre_injected_notes by
+     * slot would fix it properly. */
+    memset(inst->pre_injected_notes, 0, sizeof(inst->pre_injected_notes));
+    memset(inst->pre_pad_held, 0, sizeof(inst->pre_pad_held));
+    inst->pre_delay_count = 0;
+}
+
 /* Unload all MIDI FX from an instance */
 void v2_unload_all_midi_fx(chain_instance_t *inst) {
     if (!inst) return;
 
-    for (int i = 0; i < inst->midi_fx_count; i++) {
-        char target[16];
-        snprintf(target, sizeof(target), "midi_fx%d", i + 1);
-        chain_mod_clear_target_entries(inst, target, 0);
-
-        if (inst->midi_fx_plugins[i] && inst->midi_fx_instances[i] &&
-            inst->midi_fx_plugins[i]->destroy_instance) {
-            inst->midi_fx_plugins[i]->destroy_instance(inst->midi_fx_instances[i]);
-        }
-        if (inst->midi_fx_handles[i]) {
-            dlclose(inst->midi_fx_handles[i]);
-        }
-        inst->midi_fx_handles[i] = NULL;
-        inst->midi_fx_plugins[i] = NULL;
-        inst->midi_fx_instances[i] = NULL;
-        inst->current_midi_fx_modules[i][0] = '\0';
-        inst->midi_fx_param_counts[i] = 0;
-        inst->mod_param_refresh_ms_midi_fx[i] = 0;
-        inst->midi_fx_ui_hierarchy[i][0] = '\0';
-        inst->midi_fx_pre_capable[i] = 0;
-        inst->midi_fx_bypassed[i] = 0;
+    /* Every slot, not just the ones below the high-water mark. The mark is
+     * bookkeeping and a failed load can leave it out of step with what is
+     * actually held; sweeping the array cannot leak a dlopen handle. */
+    for (int i = 0; i < MAX_MIDI_FX; i++) {
+        v2_unload_midi_fx_slot(inst, i);
     }
     inst->midi_fx_count = 0;
-
-    /* Stale refcount entries from a now-unloaded MIDI FX would orphan
-     * future note-ons. Reset with the FX chain, along with the pad-held
-     * tracker — whichever FX replaces this one starts clean. Drop any
-     * buffered clock-driven inject batch too, so the next clock doesn't
-     * flush the old FX's orphaned note-ons into Move. */
-    memset(inst->pre_injected_notes, 0, sizeof(inst->pre_injected_notes));
-    memset(inst->pre_pad_held, 0, sizeof(inst->pre_pad_held));
-    inst->pre_delay_count = 0;
 }
 
 /* Process MIDI through all loaded MIDI FX modules */
@@ -320,11 +398,17 @@ static int v2_process_midi_fx(chain_instance_t *inst,
 
         /* Process each message from previous stage */
         for (int m = 0; m < current_count && next_count < MIDI_FX_MAX_OUT_MSGS; m++) {
+            int room = MIDI_FX_MAX_OUT_MSGS - next_count;
             int out_count = api->process_midi(fx_inst,
                                               current[m], current_lens[m],
                                               &next[next_count], &next_lens[next_count],
-                                              MIDI_FX_MAX_OUT_MSGS - next_count);
-            next_count += out_count;
+                                              room);
+            /* Believe the buffer, not the plugin: an over-reported count would
+             * push next_count past the end of `next`/`current` and corrupt the
+             * stack inside the audio callback. Same clamp, and same reasoning,
+             * as chain_midi_run_from -- found by the test for that one. */
+            if (out_count > room) out_count = room;
+            if (out_count > 0) next_count += out_count;
         }
 
         /* Copy to current for next iteration */
@@ -350,6 +434,53 @@ static int v2_process_midi_fx(chain_instance_t *inst,
 }
 
 /* Call tick on all MIDI FX modules and send generated messages to synth */
+/*
+ * Run a message set through the MIDI FX chain STARTING AT `from`.
+ *
+ * This exists for GENERATED notes. An arpeggiator does not emit from
+ * process_midi -- it holds the incoming note and produces on its own clock via
+ * tick() -- and that output used to go straight to the synth, skipping every FX
+ * after it. So two arps did not chain: both ran off the same input in parallel
+ * and both fed the synth, which is not what a left-to-right chain promises.
+ * Reported on hardware: "i'd expect arp 1 to output notes that are fed into
+ * arp 2".
+ *
+ * Starting at `from` (the caller passes stage + 1) is what makes this safe: a
+ * stage can never feed itself or anything upstream, so there is no cycle to
+ * guard against and no need for a depth counter.
+ *
+ * Transforms in place and returns the new count. One `next` buffer is reused
+ * across stages rather than nested, so the stack cost is flat in chain length
+ * -- this runs in the audio callback.
+ */
+static int v2_stage_active(void *ctx, int stage) {
+    chain_instance_t *inst = (chain_instance_t *)ctx;
+    if (!inst) return 0;
+    if (stage < MAX_MIDI_FX && inst->midi_fx_bypassed[stage]) return 0;
+    midi_fx_api_v1_t *api = inst->midi_fx_plugins[stage];
+    /* Holes are legal on this side -- an inactive stage is SKIPPED, never a
+     * reason to stop walking the list. */
+    return api && inst->midi_fx_instances[stage] && api->process_midi;
+}
+
+static int v2_stage_process(void *ctx, int stage, const uint8_t *in, int in_len,
+                            uint8_t (*out)[3], int *out_lens, int max) {
+    chain_instance_t *inst = (chain_instance_t *)ctx;
+    return inst->midi_fx_plugins[stage]->process_midi(
+        inst->midi_fx_instances[stage], in, in_len, out, out_lens, max);
+}
+
+static int v2_run_midi_fx_from(chain_instance_t *inst, int from,
+                               uint8_t msgs[][3], int lens[], int count) {
+    if (!inst) return count;
+    uint8_t scratch[MIDI_FX_MAX_OUT_MSGS][3];
+    int scratch_lens[MIDI_FX_MAX_OUT_MSGS];
+    return chain_midi_run_from(from, inst->midi_fx_count,
+                               v2_stage_active, v2_stage_process, inst,
+                               msgs, lens, count,
+                               scratch, scratch_lens, MIDI_FX_MAX_OUT_MSGS);
+}
+
 void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
     if (!inst) return;
 
@@ -363,6 +494,12 @@ void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
         int out_lens[MIDI_FX_MAX_OUT_MSGS];
         int count = api->tick(fx_inst, frames, SAMPLE_RATE,
                               out_msgs, out_lens, MIDI_FX_MAX_OUT_MSGS);
+
+        /* Generated notes travel the REST of the chain, like any other note.
+         * Without this an arp's output skipped every FX after it, so two arps
+         * ran in parallel off the same input instead of feeding each other.
+         * Downstream only (fx + 1), so a stage can never feed itself. */
+        count = v2_run_midi_fx_from(inst, fx + 1, out_msgs, out_lens, count);
 
         /* Send generated messages to synth */
         for (int i = 0; i < count; i++) {

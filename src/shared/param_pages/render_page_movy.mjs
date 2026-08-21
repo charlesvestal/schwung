@@ -35,19 +35,21 @@ import { fontPrint as tzPrint, fontWidth as tzWidth, HEIGHT as TZ_H } from "./fo
 import { fontWidth4x5, fontPrint4x5, FONT4_HEIGHT, FONT4_MEASURE } from "./font4x5.mjs";
 
 /**
- * Text is set in the DEVICE 5x7 font, in caps, with labels abbreviated to a
- * mnemonic. font4x5 is kept for the enum square alone.
+ * Text is set in caps with labels abbreviated to a mnemonic. The HEADER and the
+ * opaque box use the device-height Tamzen; the LABEL CELLS and the enum square
+ * use font4x5.
  *
  * On hardware the 5-row font read as too small — legibility mattered more
  * than knob size, and the Move panel is physically smaller than the Elektron
  * one this grid was measured against, so matching its pixel geometry does not
  * reproduce its apparent size. The device font is 40% taller (7 rows vs 5).
  *
- * It costs almost nothing horizontally, because the labels are already
- * mnemonics: at a 6px monospaced advance a 4-character label is 24px in a
- * 30px cell, against 23px for the same label in font4x5, whose M is 6 wide
- * too. Vertically it costs 2 rows per label band (LBL_H 7 -> 9), paid for by
- * the bottom pad and one row off each widget row.
+ * That was the state until 2026-08-20, when the hint FOOTER needed eight rows
+ * and the label bands were the only non-widget source of them. Labels went back
+ * to font4x5 (LBL_H 9 -> 7). It costs almost nothing horizontally, because the
+ * labels are already mnemonics: at a 6px monospaced advance a 4-character label
+ * is 24px in a 30px cell, against 23px in font4x5, whose M is 6 wide too. The
+ * header keeps Tamzen, so the module and page name are still full height.
  *
  * The enum SQUARE stays on font4x5: two stacked 7-row lines need 15 rows and
  * the box interior is 13, so the small font is the only thing that fits there
@@ -65,6 +67,26 @@ function caps(s) { return asciiFold(String(s == null ? "" : s)).toUpperCase(); }
 /** fitText/shortenLabel measure through ctx.textWidth; hand them Tamzen. */
 const TZ_MEASURE = { textWidth: tzWidth };
 function fitDev(ctx, s, maxWidth) { return caps(fitText(TZ_MEASURE, caps(s), maxWidth)); }
+
+/*
+ * What a cell or the held-knob strip should SHOW for a value.
+ *
+ * formatParamValue is a numeric formatter: handed the empty string it returns
+ * "0.00", which is what an unset filepath became in the header strip — holding
+ * granny's Sample File read "0.00", a number, for a param that has no numeric
+ * meaning and cannot be turned. The box beneath it already showed "--", so the
+ * two disagreed about the same param.
+ *
+ * An opaque value is a path or a string: show its tail, which is the part that
+ * identifies it, and "--" when there is nothing set.
+ */
+function displayValue(raw, meta) {
+    if (raw === null || raw === undefined) return "--";
+    if (meta && meta.kind === KIND_OPAQUE) {
+        return String(raw).split("/").pop() || "--";
+    }
+    return formatParamValue(raw, meta);
+}
 
 /**
  * The synth vocabulary, abbreviated the way hardware does it.
@@ -126,23 +148,32 @@ export const LAYOUT_MOVY = "movy";
  *
  * Elektron's screen, recovered from a 4x capture, puts a 1-3px gutter between
  * every band. With font4x5 the label band drops from 8 rows to 6, which pays
- * for a 2px gutter on both sides of every label:
+ * for a 2px gutter on both sides of every label.
  *
- *      0..6    header      (7)   text at y=1, 5 tall
- *      7..8    bank bar    (2)
- *      9..10   gutter      (2)
- *     11..26   knob row 0  (16)  16 because viz bodies need rect.y+1..+14
- *     27..28   gutter      (2)
- *     29..34   label row 0 (6)
- *     35..36   gutter      (2)
- *     37..52   knob row 1  (16)
- *     53..54   gutter      (2)
- *     55..60   label row 1 (6)
- *     61..63   bottom pad  (3)
+ * THE FOOTER (2026-08-20) is bought from that rhythm rather than from the
+ * widgets. Before it, the screen was exactly full — LBL1_Y(55) + LBL_H(9) ===
+ * 64 — so a hint bar had to come from somewhere, and the two candidates were
+ * the widget rows and the label bands. Shrinking the widget rows is the one
+ * change that cannot be made: a viz body occupies rect.y+1..+14 and a box is
+ * BOX_H(15), so anything under 15 stands the graphics down (see the minimum-cell
+ * rule in render_page.mjs). The label bands can pay instead, by going back to
+ * font4x5 — 5 glyph rows, so LBL_H 9 -> 7 with a clear row each side — and the
+ * gutters give up the rest:
  *
- * The knob itself is only ~12 rows tall now that the arc is open at the
- * bottom, so a knob row carries more air below it than a graphic row does.
- * The 16 is held for the graphics, which still draw a full 15-row body.
+ *      0..6    header      (7)   text at y=0, 7 tall
+ *      7       bank bar    (1)
+ *      8..9    gutter      (2)   was 4
+ *     10..24   knob row 0  (15)  UNCHANGED height — graphics still fit
+ *     25..31   label row 0 (7)   was 9 (tamzen); font4x5 + 1 clear row each side
+ *     32       gutter      (1)   was 2
+ *     33..47   knob row 1  (15)  UNCHANGED height
+ *     48..54   label row 1 (7)   was 9
+ *     55       rule        (1)
+ *     56..63   FOOTER      (8)
+ *
+ * Eight rows found, none of them taken from a widget. The knob itself is only
+ * ~12 rows tall now that the arc is open at the bottom, so a knob row carries
+ * more air below it than a graphic row does; the 15 is held for the graphics.
  */
 export const W = 128;
 /*
@@ -160,11 +191,42 @@ export const HEADER_H = 7;
 export const BAR_Y = HEADER_H;       /* no separator row — the band has its own */
 /* One row of gutter here, not two — the bank bar is itself a separator, so
  * this is the cheapest row on the screen to give back to the header. */
-export const ROW0_Y = 12;
-export const LBL0_Y = 28;
-export const ROW1_Y = 39;
-export const LBL1_Y = 55;
+export const ROW0_Y = 10;
+export const LBL0_Y = 25;
+export const ROW1_Y = 33;
+export const LBL1_Y = 48;
 export const CELL_W = 32;
+/**
+ * Where a row's cells sit.
+ *
+ * The grid draws four 32px cells from x=0, which is what every constant here
+ * was written against. The chain editor's knob card (knob_card.mjs) draws the
+ * SAME row inside a bordered box, so it needs a narrower cell at an offset
+ * origin. Rather than a second copy of the row — which is how the two
+ * renderers in this directory came to disagree about a pixel — the origin and
+ * the width became parameters with the grid's own values as the default.
+ *
+ * Nothing else changes: the widgets, the fonts, the label budget and the
+ * touched-cell inversion are all the same code, so a card cell and a grid cell
+ * cannot drift apart.
+ *
+ * Frozen because it is the shared default every caller who omits `geom`
+ * receives the SAME object for — a caller that mutated it (rather than
+ * passing its own) would move every other page's cells too.
+ */
+export const GRID_GEOM = Object.freeze({ x0: 0, cellW: CELL_W });
+/*
+ * `cellW` has a floor: `Math.floor((cellW - ENUM_W) / 2)` goes negative below
+ * ENUM_W (20) and the same for KW (17) in the knob widget, spilling a widget
+ * into its neighbour with no clip count and no error to say so. Nothing here
+ * enforces it -- the card's 29px cell clears it with room to spare -- but a
+ * future geometry needs to stay at or above ENUM_W.
+ */
+const cellLeft = (g, col) => g.x0 + col * g.cellW;
+/* The hint footer, and the rule that separates it from the last label band. */
+export const RULE_Y = 55;
+export const FOOTER_Y = 56;
+export const FOOTER_H = 8;
 /*
  * ODD, for the same reason BOX_H is: 5 glyph rows centred in the band leave a
  * remainder that only splits evenly when the band is odd. At 6 the touched
@@ -176,8 +238,13 @@ export const CELL_W = 32;
  * The two rows this costs come back from the widget rows, which drop 16 -> 15:
  * a viz body occupies rect.y+1..rect.y+14 and a box is BOX_H (15), so 15 is
  * all either ever needed.
+ *
+ * 2026-08-20: back to 7 with font4x5 labels, to buy the footer. The band is
+ * the only place on the screen with rows to give that is not a widget — see
+ * the vertical rhythm note above. The HEADER and the opaque box keep the
+ * device-height Tamzen; it is only the label cells that shrink.
  */
-export const LBL_H = 9;
+export const LBL_H = 7;
 export const KW = 17;
 /*
  * The enum square is WIDER than a knob box, because it is the one widget whose
@@ -253,6 +320,10 @@ function centreX(x0, span, w) {
  * band inverted, so a descender would be black on black and vanish.
  */
 const FONT_H = TZ_H;
+/* Labels alone are set in font4x5 (see LBL_H) — the header, the opaque box and
+ * the empty-page string all stay on the device-height Tamzen. */
+const LBL_FONT_H = FONT4_HEIGHT;
+const LBL_MEASURE = FONT4_MEASURE;
 
 function centeredText(ctx, x0, span, y, text, color) {
     const t = caps(text);
@@ -547,35 +618,103 @@ function drawEnumSquare(ctx, kx, ky, text) {
     if (line2.length > 0) fontPrint4x5(ctx, tx(fontWidth4x5(line2)), startY + 6, line2, 1);
 }
 
-/** A knob that cannot be turned (filepath/canvas/wav_position/string): same
- * framed box as an enum square, showing the value's tail. Not part of Movy's
- * vocabulary (its modules do not carry this param type in the fleet this was
- * built against) but needed so an opaque param on a Movy-style page is a door
- * to its existing editor rather than a blank cell. */
-function drawOpaqueBox(ctx, kx, ky, value) {
+/** A knob that cannot be turned (filepath/canvas/wav_position/string), showing
+ * the value's tail. Not part of Movy's vocabulary (its modules do not carry
+ * this param type in the fleet this was built against) but needed so an opaque
+ * param on a Movy-style page is a door to its existing editor.
+ *
+ * It draws NO frame: the divable brackets (drawDivableMark) are its frame. It
+ * used to draw the same solid box as an enum square, which meant a door and a
+ * turnable enum were pixel-identical — you found out which was which by
+ * turning one and having nothing happen. */
+function drawOpaqueBox(ctx, kx, ky, value, override) {
     const h = BOX_H;
-    ctx.fillRect(kx, ky, KW, 1, 1);
-    ctx.fillRect(kx, ky + h - 1, KW, 1, 1);
-    ctx.fillRect(kx, ky, 1, h, 1);
-    ctx.fillRect(kx + KW - 1, ky, 1, h, 1);
-    const shown = String(value == null ? "" : value).split("/").pop() || "--";
-    /* Centre inside the text area (frame + 1px margin on each side) both ways,
-     * the same spans the enum square uses. */
+    const shown = (override === null || override === undefined)
+        ? displayValue(value === undefined ? null : value, { kind: KIND_OPAQUE })
+        : String(override);
     centeredText(ctx, kx + 2, KW - 4,
         ky + 1 + Math.floor((h - 2 - FONT_H) / 2), fitDev(ctx, shown, KW - 4), 1);
 }
 
-function drawKnobWidget(ctx, col, rowY, meta, raw, modRaw, liveRaw) {
-    const kx = col * CELL_W + Math.floor((CELL_W - KW) / 2), ky = rowY;
+/*
+ * "You can go into this."
+ *
+ * Corner brackets around the CELL, drawn after the widget, so the mark is
+ * independent of what the widget is: it reads the same over a box, over an arc
+ * knob, and over a viz graphic that spans and covers the cell. That is what
+ * makes it a grammar rather than a decoration on one widget type — the
+ * alternatives tried (dashed frame, dog-ear, chevron) all attach to a frame,
+ * and a divable param drawn as a waveform hasn't got one.
+ *
+ * Rejected: a "..." mark on the label. It collides with truncation, and does so
+ * worst exactly here, where the value shown IS truncated ("kick_01.wav" -> "KI")
+ * so "SMP.." reads as a cut-off label. Rejected: a box-with-arrow icon; at the
+ * ~8px of clear corner a 32px cell has, it does not resolve into a box and an
+ * arrow, it resolves into a smudge.
+ *
+ * Keyed on meta.divable, NOT on kind === OPAQUE. They are different questions:
+ * granny's wav_position is a ranged number a knob turns perfectly well AND has a
+ * waveform editor worth opening, so it draws as a KNOB wearing brackets. Keying
+ * the mark on opaqueness made that knob dead.
+ *
+ * MUST stay inside rowY..rowY+BOX_H-1. One row of overflow lands on LBL0_Y and
+ * the brackets merge into the label below.
+ */
+const BRACKET_LEN = 4;
+/**
+ * Corner brackets around an arbitrary rect. Exported because the mark works at
+ * two scales: around a CELL it says "this parameter opens something", and
+ * around a whole menu page body it says the same thing about the page. One
+ * grammar, one drawing, so the two can never drift apart.
+ *
+ * `len` is the arm length. A 32px cell wants the default 4; a 124px page frame
+ * wants more, or the corners read as specks rather than as a frame.
+ */
+export function drawBrackets(ctx, x, y, w, h, len = BRACKET_LEN) {
+    for (let i = 0; i < len; i++) {
+        ctx.fillRect(x + i, y, 1, 1, 1);
+        ctx.fillRect(x + w - 1 - i, y, 1, 1, 1);
+        ctx.fillRect(x + i, y + h - 1, 1, 1, 1);
+        ctx.fillRect(x + w - 1 - i, y + h - 1, 1, 1, 1);
+    }
+    for (let i = 0; i < len - 1; i++) {
+        ctx.fillRect(x, y + i, 1, 1, 1);
+        ctx.fillRect(x + w - 1, y + i, 1, 1, 1);
+        ctx.fillRect(x, y + h - 1 - i, 1, 1, 1);
+        ctx.fillRect(x + w - 1, y + h - 1 - i, 1, 1, 1);
+    }
+}
+
+function drawDivableMark(ctx, g, col, rowY) {
+    drawBrackets(ctx, cellLeft(g, col) + 1, rowY, g.cellW - 2, BOX_H);
+}
+
+function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, cellText) {
+    const kx = cellLeft(g, col) + Math.floor((g.cellW - KW) / 2), ky = rowY;
     /* Anything that cannot show two values at once shows the live one, so it
      * animates under modulation instead of freezing on the base. */
     const shown = (liveRaw === null || liveRaw === undefined) ? raw : liveRaw;
-    if (meta.kind === KIND_OPAQUE) { drawOpaqueBox(ctx, kx, ky, shown); return; }
+    if (meta.kind === KIND_OPAQUE) { drawOpaqueBox(ctx, kx, ky, shown, cellText); return; }
     if (meta.kind === KIND_ENUM) {
         const idx = Math.round(Number(shown));
-        const text = (Array.isArray(meta.options) && meta.options[idx] !== undefined) ? String(meta.options[idx]) : String(shown ?? "");
+        /*
+         * `short_options` is for the SQUARE only.
+         *
+         * The square is two lines of the 5x3 font — three characters a line —
+         * so a declared option of "Bipolar" or "THRU" has to be cut down. The
+         * wrong way to solve that is to declare the short form as the option
+         * itself, which is what happened first: the held-knob HEADER then also
+         * read "BI" and "THR", and the header exists precisely to show the full
+         * value. So options stay full and readable everywhere, and a module may
+         * supply a parallel short_options that only this widget consults.
+         */
+        const shortOpts = Array.isArray(meta.short_options) ? meta.short_options : null;
+        const text = (shortOpts && shortOpts[idx] !== undefined)
+            ? String(shortOpts[idx])
+            : ((Array.isArray(meta.options) && meta.options[idx] !== undefined)
+                ? String(meta.options[idx]) : String(shown ?? ""));
         /* Its own centring — it is ENUM_W wide, not KW. */
-        drawEnumSquare(ctx, col * CELL_W + Math.floor((CELL_W - ENUM_W) / 2), ky, text);
+        drawEnumSquare(ctx, cellLeft(g, col) + Math.floor((g.cellW - ENUM_W) / 2), ky, text);
         return;
     }
     const min = typeof meta.min === "number" ? meta.min : 0;
@@ -610,32 +749,83 @@ function drawWaveMark(ctx, x, y, on) {
  * per-lane-automation concept the grid does not have) so only the touched
  * inversion and the modulation mark are ported.
  */
-function drawLabelCell(ctx, col, lblY, label, displayValue, touched, modulated) {
-    const cellX = col * CELL_W;
-    const text = touched ? displayValue : label;
-    const tw = tzWidth(text);
+/*
+ * `showValue` and `inverted` are separate arguments although every caller
+ * currently passes the same value for both: a held cell shows its value in an
+ * inverted strip. They came apart for a gesture that has since been removed,
+ * and are kept apart because "which text" and "which polarity" are genuinely
+ * two questions — collapsing them is what made the removed gesture hard to
+ * express in the first place.
+ */
+function drawLabelCell(ctx, g, col, lblY, label, displayValue, showValue, inverted, modulated) {
+    const cellX = cellLeft(g, col);
+    const text = showValue ? displayValue : label;
+    const tw = fontWidth4x5(text);
     /* Same rule as every other centred run — `floor(CELL_W/2) - floor(tw/2)`
      * biases the other way on odd widths, which made a label and the box above
      * it disagree by a pixel. */
-    const tx = centreX(cellX, CELL_W, tw);
+    const tx = centreX(cellX, g.cellW, tw);
     /* One clear row above and below the glyphs inside the band — see LBL_H. */
-    const ty = lblY + Math.floor((LBL_H - FONT_H) / 2);
-    if (touched) {
-        ctx.fillRect(cellX, lblY, CELL_W, LBL_H, 1);
-        tzPrint(ctx, tx, ty, text, 0);
+    const ty = lblY + Math.floor((LBL_H - LBL_FONT_H) / 2);
+    if (inverted) {
+        ctx.fillRect(cellX, lblY, g.cellW, LBL_H, 1);
+        fontPrint4x5(ctx, tx, ty, text, 0);
     } else {
-        tzPrint(ctx, tx, ty, text, 1);
+        fontPrint4x5(ctx, tx, ty, text, 1);
     }
     if (modulated) {
         const wx = Math.max(cellX, tx - 6);
-        drawWaveMark(ctx, wx, lblY + 1, touched ? 0 : 1);
+        drawWaveMark(ctx, wx, lblY + 1, inverted ? 0 : 1);
     }
 }
 
 /* --------------------------------------------------------------- one row */
 
-function drawKnobRow(ctx, o, row, rowY, lblY) {
+/*
+ * A partial geometry is a caller bug, not a shorthand. `{cellW: 29}` leaves
+ * `x0` undefined, every `cellLeft` result NaN, and the knob pointer reaches
+ * render_page.mjs's `line()` -- a `for (;;)` loop whose exit condition is
+ * `x0 === x1 && y0 === y1` -- which NaN never satisfies, so it spins the UI
+ * tick forever. Confirmed: the call did not return in 8 seconds. Fail loudly
+ * at the boundary instead of drawing a plausibly-wrong screen or hanging.
+ *
+ * Deliberately NOT `{ ...GRID_GEOM, ...geom }`: that would make a typo like
+ * `{x: 6, cellW: 30}` silently fall back to x0=0 and draw a screen that looks
+ * plausible and is wrong, instead of throwing.
+ */
+function resolveGeom(geom) {
+    if (geom === undefined || geom === null) return GRID_GEOM;
+    if (!Number.isFinite(geom.x0) || !Number.isFinite(geom.cellW))
+        throw new TypeError("drawKnobRow: geom needs both x0 and cellW");
+    return geom;
+}
+
+/**
+ * One row of the knob grid: four cells, each a widget above a label band.
+ *
+ * A public entry point for knob_card.mjs, which does not exist yet, so its
+ * non-obvious constraints are recorded here rather than left to be
+ * rediscovered by that caller:
+ *
+ *   - always exactly 4 columns (`slotBase = row * 4`) -- there is no
+ *     narrower strip;
+ *   - `rowY` and `lblY` are ABSOLUTE screen rows, not offsets from `geom`;
+ *   - `geom` is all-or-nothing -- see `resolveGeom` above. Omit it entirely
+ *     for the grid's own {x0: 0, cellW: CELL_W}, or pass both fields.
+ */
+export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
+    const g = resolveGeom(geom);
     const { page, metaIndex, values, touched, modulated, viz, modValues } = o;
+    /*
+     * EVERY held knob inverts, not just the one the header follows. A single
+     * index could not express two fingers: touching a second knob overwrote it
+     * and releasing that one cleared it, so a knob still under a finger stopped
+     * being highlighted. Falls back to the single `touched` when a caller does
+     * not supply the set.
+     */
+    const held = Array.isArray(o.touchedSlots) && o.touchedSlots.length
+        ? o.touchedSlots
+        : (typeof touched === "number" && touched >= 0 ? [touched] : []);
     /*
      * What each widget animates.
      *
@@ -664,44 +854,188 @@ function drawKnobRow(ctx, o, row, rowY, lblY) {
     const slotBase = row * 4;
 
     const covered = new Array(4).fill(false);
-    for (const g of (viz || [])) {
-        if (!g || typeof g.slotStart !== "number") continue;
-        if (Math.floor(g.slotStart / 4) !== row) continue;
-        const localStart = g.slotStart - slotBase;
-        for (let s = localStart; s < localStart + g.slotSpan && s < 4; s++) covered[s] = true;
+    for (const group of (viz || [])) {
+        if (!group || typeof group.slotStart !== "number") continue;
+        if (Math.floor(group.slotStart / 4) !== row) continue;
+        const localStart = group.slotStart - slotBase;
+        for (let s = localStart; s < localStart + group.slotSpan && s < 4; s++) covered[s] = true;
+        /* The widget band's height is the gap between the row and its label,
+         * not a constant -- LBL0_Y - ROW0_Y is only correct for the grid's
+         * own two rows because both of the grid's gaps happen to be 15px. */
         drawVizGroup(ctx, {
-            x: localStart * CELL_W, y: rowY, w: g.slotSpan * CELL_W, h: LBL0_Y - ROW0_Y,
-        }, g, liveValues, metaIndex);
+            x: cellLeft(g, localStart), y: rowY,
+            w: group.slotSpan * g.cellW, h: lblY - rowY,
+        }, group, liveValues, metaIndex);
     }
 
     for (let col = 0; col < 4; col++) {
         const slot = slotBase + col;
+        const cellX = cellLeft(g, col);
         const key = page.keys[slot];
         if (!key) continue;
         const meta = metaIndex.getOrGuess(key);
         const raw = values ? values[key] : null;
-        const isTouched = touched === slot;
+        const isTouched = held.indexOf(slot) >= 0;
+
+        /*
+         * A value the HOST resolves, per surface. `displayFor` is the same
+         * separate-short-and-long-labels idea short_options solves for enums,
+         * for a value whose reading cannot be declared statically: an LFO's
+         * target is stored as "fx1" and reads "FX 1: Room Size", and only the
+         * host knows what is loaded in fx1. Optional everywhere; the ordinary
+         * displayValue path is untouched when no formatter is supplied.
+         */
+        const cellText = o.displayFor ? o.displayFor(key, raw, "cell") : null;
 
         if (!covered[col]) {
             /* modValues holds the live modulated value for keys a source is
              * driving; `values` stays the base the user dialled in. */
             /* Knob: base + dot. Enum/opaque: the live value, no baseline —
              * drawKnobWidget picks per kind. */
-            drawKnobWidget(ctx, col, rowY, meta, raw,
+            drawKnobWidget(ctx, g, col, rowY, meta, raw,
                            modValues ? modValues[key] : undefined,
-                           liveValues ? liveValues[key] : undefined);
+                           liveValues ? liveValues[key] : undefined,
+                           cellText);
         }
 
         /* Budget in CHARACTERS, not pixels: Elektron's labels are 3-4 glyphs
          * whether or not more would technically fit, which is what keeps a row
          * of them scannable. `M` is the widest glyph, so measuring that many
          * of it gives a width no LABEL_CHARS-long label can exceed. */
-        const labelWidth = Math.min(CELL_W - 2, tzWidth("M".repeat(LABEL_CHARS)));
-        const label = caps(shortenLabel(TZ_MEASURE, preAbbreviate(meta.label || meta.key), labelWidth));
-        const display = (raw === null || raw === undefined)
-            ? "--" : fitDev(ctx, formatParamValue(raw, meta), CELL_W - 2);
-        drawLabelCell(ctx, col, lblY, label, display, isTouched, modulated ? !!modulated(key) : false);
+        /* AFTER the widget and OUTSIDE the `covered` test: a viz group that
+         * spans the cell (mrsample's SMP waveform) is still divable, and the
+         * mark is the only thing that says so. */
+        if (meta.divable) drawDivableMark(ctx, g, col, rowY);
+
+
+        const labelWidth = Math.min(g.cellW - 2, fontWidth4x5("M".repeat(LABEL_CHARS)));
+        const label = caps(shortenLabel(LBL_MEASURE, preAbbreviate(meta.label || meta.key), labelWidth));
+        const display = fitDev(ctx,
+            (cellText === null || cellText === undefined) ? displayValue(raw, meta) : String(cellText),
+            g.cellW - 2);
+        drawLabelCell(ctx, g, col, lblY, label, display, isTouched, isTouched,
+                      modulated ? !!modulated(key) : false);
     }
+}
+
+/*
+ * The hint footer.
+ *
+ * Hints come from the CALLER, never from here: which gesture does what is the
+ * input mapping's business, and this library does not own input (same rule that
+ * puts the first-run hint panel's text in the caller's hands). A tool embedding
+ * the grid has its own gestures and must be able to say so.
+ *
+ * FIT-AWARE, in priority order. Measured across the real vocabulary, a pair
+ * costs 24-38px, so THREE pairs only fit when every word is <= 4 characters:
+ *
+ *     JOG PAGE / SHFT SECT / CLK MENU     134px   does NOT fit
+ *     JOG SCRUB / CLK OPEN / MUTE DFLT    139px   does NOT fit
+ *     JOG SEL / CLK LOAD / BACK EXIT      126px   fits
+ *     any two pairs                       84-98px always fits
+ *
+ * So the caller passes hints most-important-first and the tail is dropped, not
+ * squeezed: a half-drawn pill running off the right edge is worse than an
+ * absent one.
+ *
+ * BACK IS THE EXCEPTION, AND IT IS A RULE: a back hint is PINNED TO THE RIGHT
+ * EDGE, and it is the last hint to be dropped, not the first.
+ *
+ * Being last in the array is not the same as being on the right. With two
+ * pairs, packing left-to-right leaves BACK sitting mid-screen with ~30px of
+ * space beside it — which is what "JOG MOVE / BACK EXIT" looked like on the
+ * chain editor under Shift. "Back is bottom-right" is a fixed place the user
+ * can learn, so it must not move with the number of hints beside it.
+ *
+ * This also removes the old advice to "put BACK first if it matters", which
+ * traded the rule away to survive the tail-drop. Pinning gets both: BACK holds
+ * the right edge AND is protected, so the hints that lose to a narrow screen
+ * are the middle ones.
+ */
+export const HINT_PAD = 2;
+export const HINT_GAP = 4;
+
+/** Width one [KEY] ACTION pair occupies, so a caller can budget before drawing. */
+export function hintPairWidth(key, action) {
+    return fontWidth4x5(caps(key)) + HINT_PAD + HINT_GAP
+         + fontWidth4x5(caps(action)) + HINT_GAP;
+}
+
+/**
+ * @param {Array<[string,string]>} hints  [key, action] pairs, most important first
+ * @returns {number} how many pairs were drawn
+ */
+/** Is this hint the BACK affordance? The one hint with a fixed home. */
+export function isBackHint(h) {
+    return !!h && /^back$/i.test(String(h[0]).trim());
+}
+
+/*
+ * The footer canon, for the NEW footer only.
+ *
+ * menu_layout.mjs has FOOTER_VERBS for the old text footer, pinned by
+ * tests/shadow/test_footer_verb_consistency.sh — that canon exists because the
+ * old footer drifted into verb soup ("Push:" vs "Click:", "Exit" vs "exit").
+ * The new footer never got the same treatment, so this is it.
+ *
+ * KEYS name the physical control, so they are fixed by the hardware, not by
+ * taste. ACTIONS are free except after BACK.
+ *
+ * BACK's action word says WHERE BACK GOES, and the two are not synonyms:
+ *
+ *   EXIT  leaves this view entirely   (module picker, preset browser list)
+ *   OUT   rises one level, staying in the view
+ *         (an entered menu page, a confirm modal)
+ *
+ * Keeping both is deliberate. Collapsing them would tell the user "back" does
+ * one thing when it does two, and the difference is the one thing they cannot
+ * see before pressing it.
+ */
+export const FOOTER_CANON = Object.freeze({
+    keys: Object.freeze(["JOG", "CLK", "BACK", "SHFT", "MUTE", "KNB"]),
+    backActions: Object.freeze(["EXIT", "OUT"]),
+});
+
+export function drawFooter(ctx, hints) {
+    ctx.fillRect(0, RULE_Y, W, 1, 1);
+    if (!hints || !hints.length) return 0;
+    const ty = FOOTER_Y + Math.floor((FOOTER_H - FONT4_HEIGHT) / 2);
+
+    const list = hints.filter(Boolean);
+    /* Exactly one back hint is pinned. If a caller passes two (nobody does),
+     * the extra stays an ordinary hint rather than fighting for the same x. */
+    const backIdx = list.findIndex(isBackHint);
+    const back = backIdx >= 0 ? list[backIdx] : null;
+    const flow = backIdx >= 0 ? list.filter((_, i) => i !== backIdx) : list;
+
+    /* One pair, drawn with its KEY inverted into a pill and its ACTION plain,
+     * so the pair reads as one thing. Without the pill a row of hints is an
+     * unparseable run: "JOG PAGE CLK MENU BACK EXIT". */
+    const drawPair = (x, h) => {
+        const key = caps(h[0]), action = caps(h[1]);
+        const kw = fontWidth4x5(key);
+        ctx.fillRect(x, ty - 1, kw + HINT_PAD * 2, FONT4_HEIGHT + 2, 1);
+        fontPrint4x5(ctx, x + HINT_PAD, ty, key, 0);
+        fontPrint4x5(ctx, x + kw + HINT_PAD + HINT_GAP, ty, action, 1);
+    };
+
+    let drawn = 0;
+    /* Reserve the back hint's room BEFORE laying anything else out — that is
+     * what makes the middle hints lose the fight for a narrow screen instead
+     * of BACK losing it. */
+    const backW = back ? hintPairWidth(caps(back[0]), caps(back[1])) : 0;
+    const backX = back ? W - backW : W;
+    const limit = back ? backX : W;
+
+    let x = 1;
+    for (const h of flow) {
+        if (x + hintPairWidth(caps(h[0]), caps(h[1])) > limit) break;
+        drawPair(x, h);
+        x += hintPairWidth(caps(h[0]), caps(h[1]));
+        drawn++;
+    }
+    if (back) { drawPair(Math.max(x, backX), back); drawn++; }
+    return drawn;
 }
 
 /* ------------------------------------------------------------------ page */
@@ -719,16 +1053,51 @@ function drawKnobRow(ctx, o, row, rowY, lblY) {
  * @param {Array}  [o.pageGroups] one bank id per page, for the bank bar
  * @param {Function} [o.modulated] (key) => boolean
  * @param {Array}  [o.viz]       resolved graphic groups (viz.mjs resolveViz)
+ * @param {Array}  [o.footer]    [key, action] hint pairs, most important first
  */
+/**
+ * The preset browser's body, in the page chrome.
+ *
+ * A preset level publishes a count, an index and the name of whichever preset
+ * is selected — there is no list to show, so this shows the one you are on, as
+ * large as the space allows, with its position underneath. Same header, same
+ * bank bar, same footer as every other page; only the body differs.
+ *
+ * @param {object} o  { name, index, count, entered }
+ */
+export function drawPresetBody(ctx, rect, o) {
+    const name = o && o.name ? String(o.name) : "--";
+    const has = o && typeof o.count === "number" && o.count > 0;
+    const pos = has ? `${(o.index | 0) + 1} of ${o.count}` : "";
+
+    /* The NAME in the big face, centred, truncated to the full width. Preset
+     * names run long ("SQ Fat Analog Brass 3") and there is nothing else on
+     * this page competing for the room. */
+    const nameY = rect.y + Math.floor((rect.h - FONT_H - FONT4_HEIGHT - 3) / 2);
+    const shown = fitText({ textWidth: tzWidth }, caps(name), rect.w - 8);
+    tzPrint(ctx, centreX(rect.x, rect.w, tzWidth(shown)), nameY, shown, 1);
+
+    /* Position underneath in the small face: it is reference, not the thing
+     * you are reading. */
+    if (pos) {
+        const py = nameY + FONT_H + 3;
+        fontPrint4x5(ctx, centreX(rect.x, rect.w, fontWidth4x5(caps(pos))), py, caps(pos), 1);
+    }
+}
+
 export function renderPageMovy(ctx, o) {
     const page = o.page;
     const touched = typeof o.touched === "number" ? o.touched : -1;
 
     if (touched >= 0 && page && page.keys && page.keys[touched] && o.metaIndex) {
-        const m = o.metaIndex.getOrGuess(page.keys[touched]);
-        const v = o.values ? o.values[page.keys[touched]] : null;
-        const val = (v === null || v === undefined) ? "--" : formatParamValue(v, m);
-        drawHeader(ctx, m.label || m.key, val, true);
+        const hk = page.keys[touched];
+        const m = o.metaIndex.getOrGuess(hk);
+        const v = o.values ? o.values[hk] : null;
+        /* "header", not "cell": this is the surface with room, and the whole
+         * reason a host-resolved value has two forms at all. */
+        const hv = o.displayFor ? o.displayFor(hk, v, "header") : null;
+        drawHeader(ctx, m.label || m.key,
+                   (hv === null || hv === undefined) ? displayValue(v, m) : String(hv), true);
     } else {
         drawHeader(ctx, o.title || "", page ? page.name : null, false);
     }
@@ -738,9 +1107,11 @@ export function renderPageMovy(ctx, o) {
     const hasParams = page.keys.some(Boolean);
     if (!hasParams) {
         tzPrint(ctx, 2, ROW0_Y + 4, caps("No params"), 1);
+        if (o.footer) drawFooter(ctx, o.footer);
         return;
     }
 
     drawKnobRow(ctx, o, 0, ROW0_Y, LBL0_Y);
     drawKnobRow(ctx, o, 1, ROW1_Y, LBL1_Y);
+    if (o.footer) drawFooter(ctx, o.footer);
 }

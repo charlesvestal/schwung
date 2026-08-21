@@ -1,0 +1,102 @@
+{
+  "planPath": "docs/superpowers/plans/2026-08-20-variable-length-chain.md",
+  "tasks": [
+    {
+      "id": 1,
+      "subject": "Task 1: Chain model \u2014 ordered list and operations",
+      "status": "completed",
+      "description": "**Goal:** A pure module that owns chain order.\n\n**Files:** Create src/shared/chain_model.mjs; Test tests/host/test_chain_model.sh\n\n**Verify:** bash tests/host/test_chain_model.sh\n\n```json:metadata\n{\"files\": [\"src/shared/chain_model.mjs\", \"tests/host/test_chain_model.sh\"], \"verifyCommand\": \"bash tests/host/test_chain_model.sh\", \"acceptanceCriteria\": [\"order\", \"insert appends\", \"remove compacts\", \"swap in place\", \"move bounded, no wrap\", \"caps at 8\"], \"modelTier\": \"standard\"}\n```"
+    },
+    {
+      "id": 2,
+      "subject": "Task 2: DSP \u2014 indexed FX routing, caps to 8",
+      "status": "completed",
+      "description": "**Goal:** fx<N>: routes by parsed index.\n\n**Files:** chain_internal.h:42-43; chain_host.c:873,908,1615,1688; tests/host/test_chain_fx_index_routing.sh\n\n**Verify:** bash tests/host/test_chain_fx_index_routing.sh && ./scripts/build.sh\n\n```json:metadata\n{\"files\": [\"src/modules/chain/dsp/chain_internal.h\", \"src/modules/chain/dsp/chain_host.c\", \"tests/host/test_chain_fx_index_routing.sh\"], \"verifyCommand\": \"bash tests/host/test_chain_fx_index_routing.sh && ./scripts/build.sh\", \"acceptanceCriteria\": [\"caps are 8\", \"single indexed branch\", \"fx1/fx2 unchanged\", \"build succeeds\"], \"modelTier\": \"standard\"}\n```"
+    },
+    {
+      "id": 3,
+      "subject": "Task 3: Route shadow_ui.js through the model",
+      "status": "completed",
+      "blockedBy": [
+        1
+      ],
+      "description": "**Goal:** Pure refactor \u2014 CHAIN_COMPONENTS derived, behaviour unchanged.\n\n**Files:** src/shadow/shadow_ui.js:427-433,443-450 + 38 cfg.fx1/fx2 sites; tests/host/test_param_pages_wiring.sh\n\n**Verify:** full tests/host suite still 32 failures\n\n```json:metadata\n{\"files\": [\"src/shadow/shadow_ui.js\", \"tests/host/test_param_pages_wiring.sh\"], \"verifyCommand\": \"fails=0; for t in tests/host/*.sh; do bash \\\"$t\\\" >/dev/null 2>&1 || fails=$((fails+1)); done; echo $fails\", \"acceptanceCriteria\": [\"config holds arrays\", \"no cfg.fx1/fx2\", \"behaviour unchanged\", \"32 failures, none new\"], \"modelTier\": \"standard\"}\n```"
+    },
+    {
+      "id": 4,
+      "subject": "Task 4: The scrolling chain diagram",
+      "status": "completed",
+      "blockedBy": [
+        1,
+        3
+      ],
+      "description": "**Goal:** Variable-length diagram, synth-centred while it fits.\n\n**Files:** Create src/shared/chain_diagram.mjs; modify drawChainEdit; tests/host/test_chain_diagram.sh\n\n**Verify:** bash tests/host/test_chain_diagram.sh\n\n```json:metadata\n{\"files\": [\"src/shared/chain_diagram.mjs\", \"src/shadow/shadow_ui.js\", \"tests/host/test_chain_diagram.sh\"], \"verifyCommand\": \"bash tests/host/test_chain_diagram.sh\", \"acceptanceCriteria\": [\"0/3/12 FX no clipping\", \"synth distinct\", \"header shows synth name\", \"+ boxes dotted\"], \"modelTier\": \"standard\"}\n```"
+    },
+    {
+      "id": 5,
+      "subject": "Task 5: Persist chain order; pin no migration",
+      "status": "completed",
+      "blockedBy": [
+        2,
+        3
+      ],
+      "description": "**Goal:** writeChainOrder + a no-migration regression test.\n\n**Files:** src/shadow/shadow_ui.js; tests/host/test_chain_order_persist.sh\n\n**Verify:** bash tests/host/test_chain_order_persist.sh\n\n```json:metadata\n{\"files\": [\"src/shadow/shadow_ui.js\", \"tests/host/test_chain_order_persist.sh\"], \"verifyCommand\": \"bash tests/host/test_chain_order_persist.sh\", \"acceptanceCriteria\": [\"writes fx1..fxN in order and clears the tail\", \"two-FX slot loads unchanged\", \"no write when order unchanged\"], \"modelTier\": \"standard\"}\n```"
+    },
+    {
+      "id": 6,
+      "subject": "Task 6: Shift+jog reorders; footer follows modifier",
+      "status": "completed",
+      "blockedBy": [
+        4,
+        5
+      ],
+      "description": "**Goal:** Reorder by gesture; footer says so under Shift.\n\n**Files:** src/shadow/shadow_ui.js handleJog/CHAIN_EDIT cases/drawChainEdit; tests/host/test_chain_gestures.sh\n\n**Verify:** bash tests/host/test_chain_gestures.sh\n\n```json:metadata\n{\"files\": [\"src/shadow/shadow_ui.js\", \"tests/host/test_chain_gestures.sh\"], \"verifyCommand\": \"bash tests/host/test_chain_gestures.sh\", \"acceptanceCriteria\": [\"shift+jog moves, bounded, no cross\", \"footer JOG MOVE under shift\", \"+ appends\", \"None compacts, swap in place\"], \"modelTier\": \"standard\"}\n```"
+    },
+    {
+      "id": 7,
+      "subject": "Task 7: Picker move entries + hardware verification",
+      "status": "pending",
+      "blockedBy": [
+        6
+      ],
+      "description": "**Goal:** Move Left/Right in the picker, then verify on a Move.\n\n**USER-ORDERED GATE \u2014 NON-SKIPPABLE.** Close only after every acceptance criterion has been re-validated independently, with output captured.\n\n**Files:** src/shadow/shadow_ui.js\n\n**Verify:** ./scripts/build.sh && ./scripts/install.sh local --skip-modules --skip-confirmation, then drive the device\n\n```json:metadata\n{\"files\": [\"src/shadow/shadow_ui.js\"], \"verifyCommand\": \"./scripts/build.sh && ./scripts/install.sh local --skip-modules --skip-confirmation\", \"acceptanceCriteria\": [\"picker lists Move Left/Right for module positions only\", \"hardware: 4+ FX chain renders and scrolls, synth identifiable\", \"hardware: shift+jog reorders, footer reads JOG MOVE\", \"hardware: existing two-FX patch loads unchanged\"], \"userGate\": true, \"tags\": [\"user-gate\"], \"gateScope\": \"hardware\", \"modelTier\": \"standard\"}\n```"
+    },
+    {
+      "id": 8,
+      "subject": "Task 8: Modulation targets + patch persistence for fx5-8",
+      "status": "completed",
+      "description": "Added during execution; found by review. See the plan document."
+    },
+    {
+      "id": 9,
+      "subject": "Task 9: Make midi_fx slots index-addressable",
+      "status": "completed",
+      "description": "Added during execution; found by review. See the plan document."
+    },
+    {
+      "id": 10,
+      "subject": "Task 10: Slot activation must see fx3-8",
+      "status": "completed",
+      "description": "Added during execution; found by review. See the plan document."
+    },
+    {
+      "id": 11,
+      "subject": "Task 11: MIDI FX opaque state is dropped on load",
+      "status": "completed",
+      "description": "Added during execution; found by review. See the plan document."
+    },
+    {
+      "id": "12",
+      "status": "completed",
+      "subject": "Task 12: Stop reloading the whole slot every frame",
+      "description": "drawChainEdit re-reads the slot every frame (~12 reads, ~34ms on a full chain). Cache per slot and invalidate on every chain edit path. Acceptance: reads per frame do not scale with chain length (measure with a counting getSlotParam, as Task 4 did); prove invalidation is complete against the implementer's enumerated edit-path list."
+    },
+    {
+      "id": "13",
+      "status": "completed",
+      "subject": "Task 13: Knob mappings must resolve past fx3",
+      "description": "Sixth cap-raise site. chain_host.c knob metadata ladders stopped at fx3/midi_fx2. Two were open-coded duplicates of knob_find_param (chain_params.c:877), which was ALREADY indexed and count-bounded - deleted the copies rather than writing a third parser. Site 2 was a different defect: a live-value read stopping at fx2, whose failure mode was a patch saving a stale value for knobs on fx3+."
+    }
+  ],
+  "lastUpdated": "2026-08-20T14:51:04.777582+00:00"
+}

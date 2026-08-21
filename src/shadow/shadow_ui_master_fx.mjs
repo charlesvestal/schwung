@@ -13,6 +13,19 @@ import {
     truncateText
 } from '/data/UserData/schwung/shared/chain_ui_views.mjs';
 import {
+    drawChainDiagram, DIAGRAM_W, DEFAULT_Y as DIAGRAM_Y
+} from '/data/UserData/schwung/shared/chain_diagram.mjs';
+/* The bands around the row of boxes — header, label, info, footer. The SAME
+ * call drawChainEdit makes: 4a-3 of the Master FX variable-length design. */
+import { drawChainEditorBands, drawChainPicker }
+    from '/data/UserData/schwung/shared/chain_editor_chrome.mjs';
+/* The knob card, drawn over the diagram — the SAME renderer drawChainEdit uses.
+ * It shipped 2026-08-20 scoped to the slot chain, so a Master FX knob still
+ * raised the old centred `Value: 0.62` box; step 4b of the Master FX
+ * variable-length design is that scope boundary being repaid. */
+import { drawKnobCard }
+    from '/data/UserData/schwung/shared/param_pages/knob_card.mjs';
+import {
     drawMenuHeader as drawHeader,
     drawMenuFooter as drawFooter,
     drawMenuList,
@@ -26,8 +39,7 @@ import {
 
 export function enterMasterFxSettings() {
     const { scanForAudioFxModules, loadMasterFxChainConfig,
-            getMasterFxSlotModule, MASTER_FX_CHAIN_COMPONENTS,
-            setView, VIEWS } = ctx;
+            getMasterFxSlotModule, setView, VIEWS } = ctx;
 
     ctx.MASTER_FX_OPTIONS = scanForAudioFxModules();
     loadMasterFxChainConfig();
@@ -36,17 +48,25 @@ export function enterMasterFxSettings() {
     setView(VIEWS.MASTER_FX);
     ctx.needsRedraw = true;
 
-    const comp = MASTER_FX_CHAIN_COMPONENTS[0];
-    const moduleName = getMasterFxSlotModule(0) || "Empty";
-    announce(`Master FX, ${comp.label} ${moduleName}`);
+    /* READ AFTER the load: the component list is derived from the chain, so it
+     * is only as long as what was just loaded. On an empty chain position 0 is
+     * the `+`, whose label already is the whole instruction — "Add FX, Empty"
+     * would say nothing. */
+    const comp = ctx.MASTER_FX_CHAIN_COMPONENTS[0];
+    if (!comp) announce("Master FX");
+    else if (comp.kind === "add") announce(`Master FX, ${comp.label}`);
+    else announce(`Master FX, ${comp.label} ${getMasterFxSlotModule(0) || "Empty"}`);
 }
 
 /* ---- Display name (used in slot list) ----------------------------------- */
 
 export function getMasterFxDisplayName() {
-    const { masterFxConfig } = ctx;
+    /* MASTER_FX_SLOTS comes across on ctx, mirroring the constant in
+     * shadow_ui.js (itself a mirror of shadow_chain_mgmt.h). Never re-derive
+     * the cap here. */
+    const { masterFxConfig, MASTER_FX_SLOTS } = ctx;
     const parts = [];
-    for (let i = 1; i <= 4; i++) {
+    for (let i = 1; i <= MASTER_FX_SLOTS; i++) {
         const key = `fx${i}`;
         if (masterFxConfig[key]?.module) {
             parts.push(masterFxConfig[key].module);
@@ -62,10 +82,13 @@ export function drawMasterFx() {
             masterConfirmingDelete, helpDetailScrollState, helpNavStack,
             inMasterPresetPicker, inMasterFxSettingsMenu,
             selectingMasterFxModule, selectedMasterFxComponent,
-            masterFxConfig, MASTER_FX_CHAIN_COMPONENTS, MASTER_FX_OPTIONS,
+            masterFxConfig, MASTER_FX_OPTIONS,
             currentMasterPresetName, getMasterFxParam,
             getModuleAbbrev, isTextEntryActive, drawTextEntry,
-            drawHelpDetail, drawHelpList } = ctx;
+            drawHelpDetail, drawHelpList,
+            MASTER_CHAIN_TARGET, chainLfoTargetMap, chainComponentBypassed,
+            ensureMasterFxConfigFresh, isShiftHeld,
+            knobCardDrawState } = ctx;
 
     clear_screen();
 
@@ -113,154 +136,116 @@ export function drawMasterFx() {
         return;
     }
 
-    drawHeader("Master FX");
+    /*
+     * The row of boxes is shared/chain_diagram.mjs — the same renderer the slot
+     * chain editor draws, so the two screens stop looking like different
+     * products.
+     *
+     * What it replaces was a fixed row: `TOTAL_W = 5 * BOX_W + 4 * GAP`, five
+     * 22px boxes filling 118 of the 128px screen exactly. A fixed row cannot
+     * report that it overflowed. At the 8-slot cap the nine boxes are 214px
+     * wide, and boxes 6..9 — together with their bypass "B" and LFO "~"
+     * markers, which were drawn by two more hand-rolled loops over the FULL
+     * component list — would have gone off the right edge with no clipping and
+     * no error. The shared diagram windows the row around the selection
+     * (scrollWindow in chain_model.mjs) and puts a dotted rail in the margin on
+     * whichever side has more chain, so the count can grow without the layout
+     * having an opinion about it.
+     */
+    /* The slot editor's own box row, to the row. This was 20 — six rows lower —
+     * because Master FX still wore the taller menu_layout header when the slot
+     * editor moved to the movy band; nothing chose the gap. DIAGRAM_Y is the
+     * diagram's own default, so neither screen restates it. */
+    /*
+     * The chain, reloaded from the DSP only when something has made it stale —
+     * a shape edit renumbers the positions underneath the editor without
+     * changing WHICH modules it holds, so nothing keyed on a module id would
+     * notice. Here rather than higher up because the `+` box materialises a
+     * position in the MODEL ONLY, and the picker draws through one of the early
+     * returns above: reloading before them would wipe the pending position out
+     * from under the picker that was just opened on it.
+     */
+    ensureMasterFxConfigFresh();
+    /* AFTER the reload, and through the ctx getter, so the list is as long as
+     * the chain actually is. */
+    const MASTER_FX_CHAIN_COMPONENTS = ctx.MASTER_FX_CHAIN_COMPONENTS;
 
-    const BOX_W = 22;
-    const BOX_H = 16;
-    const GAP = 2;
-    const TOTAL_W = 5 * BOX_W + 4 * GAP;
-    const START_X = Math.floor((SCREEN_WIDTH - TOTAL_W) / 2);
-    const BOX_Y = 20;
+    const BOX_Y = DIAGRAM_Y;
+    /* Centred, unlike the slot editor, which shifts right to clear its
+     * slot-indicator column. THIS difference is real and stays: Master FX is
+     * one chain, not one of four, so there is no indicator column to clear and
+     * an 8px offset would just push the strip off-centre for nothing. */
+    const START_X = Math.floor((SCREEN_WIDTH - DIAGRAM_W) / 2);
 
     const presetSelected = selectedMasterFxComponent === -1;
 
-    for (let i = 0; i < MASTER_FX_CHAIN_COMPONENTS.length; i++) {
-        const comp = MASTER_FX_CHAIN_COMPONENTS[i];
-        const x = START_X + i * (BOX_W + GAP);
-        const isSelected = i === selectedMasterFxComponent;
+    /* The device hands the renderers these four primitives and nothing else. */
+    const dctx = {
+        fillRect: fill_rect,
+        print: print,
+        textWidth: typeof text_width === "function" ? text_width : undefined,
+        setPixel: set_pixel,
+    };
 
-        let abbrev = "--";
-        if (comp.key === "settings") {
-            abbrev = "*";
-        } else {
+    /*
+     * Which components an LFO is pointed at. Four IPC reads, FIXED — the
+     * question is asked of the two LFOs, never of each box, so it does not grow
+     * with the slot cap.
+     *
+     * This is chainLfoTargetMap, the SAME function the slot chain editor calls,
+     * aimed at the master target. Two copies of it is how the two screens end
+     * up disagreeing about what an LFO marker means.
+     */
+    const mfxLfoTargets = chainLfoTargetMap(MASTER_CHAIN_TARGET);
+
+    drawChainDiagram(dctx, MASTER_FX_CHAIN_COMPONENTS, selectedMasterFxComponent, {
+        x: START_X,
+        y: BOX_Y,
+        /* Selecting the preset row lights the whole chain, as it always has. */
+        allSelected: presetSelected,
+        abbrev: (comp) => {
+            if (comp.kind === "add") return "+";
+            if (comp.kind === "settings") return "*";
+            /* masterFxConfig is the cached copy the editor already holds — no
+             * IPC here. Nothing in this list is `kind: "synth"`, so no box gets
+             * the synth band: Master FX has no synth to landmark. */
             const moduleData = masterFxConfig[comp.key];
-            abbrev = moduleData ? getModuleAbbrev(moduleData.module) : "--";
-        }
-
-        const fillBox = presetSelected || isSelected;
-        if (fillBox) {
-            fill_rect(x, BOX_Y, BOX_W, BOX_H, 1);
-        } else {
-            draw_rect(x, BOX_Y, BOX_W, BOX_H, 1);
-        }
-
-        const textColor = fillBox ? 0 : 1;
-        const textX = x + Math.floor((BOX_W - abbrev.length * 5) / 2) + 1;
-        const textY = BOX_Y + 5;
-        print(textX, textY, abbrev, textColor);
-    }
-
-    /* Draw bypass 'B' marker above box, left side. Same style as the chain
-     * editor: 3-wide × 4-tall glyph at iy=BOX_Y-6. Sits left of where the LFO
-     * indicator is centered, so they coexist without overlap. */
-    if (typeof shadow_get_param === "function") {
-        for (let i = 0; i < MASTER_FX_CHAIN_COMPONENTS.length; i++) {
-            const comp = MASTER_FX_CHAIN_COMPONENTS[i];
-            if (comp.key === "settings") continue;
-            const bypassed = parseInt(
-                shadow_get_param(0, `master_fx:${comp.key}:bypassed`) || "0", 10
-            ) === 1;
-            if (!bypassed) continue;
-            const x = START_X + i * (BOX_W + GAP);
-            const bx = x + 1;
-            const by = BOX_Y - 6;
-            /* "B" glyph: ##. / #.# / ##. / ### */
-            set_pixel(bx,     by,     1); set_pixel(bx + 1, by,     1);
-            set_pixel(bx,     by + 1, 1); set_pixel(bx + 2, by + 1, 1);
-            set_pixel(bx,     by + 2, 1); set_pixel(bx + 1, by + 2, 1);
-            set_pixel(bx,     by + 3, 1); set_pixel(bx + 1, by + 3, 1); set_pixel(bx + 2, by + 3, 1);
-        }
-    }
-
-    /* Draw LFO indicators above targeted FX boxes */
-    if (typeof shadow_get_param === "function") {
-        const mfxLfoTargets = {};
-        for (let li = 1; li <= 2; li++) {
-            const enabled = shadow_get_param(0, "master_fx:lfo" + li + ":enabled");
-            if (enabled === "1") {
-                const t = shadow_get_param(0, "master_fx:lfo" + li + ":target") || "";
-                if (t) {
-                    if (!mfxLfoTargets[t]) mfxLfoTargets[t] = {};
-                    mfxLfoTargets[t]["lfo" + li] = true;
-                }
-            }
-        }
-        /* 4px-high tiny indicators: ~1, ~2, or ~1+2 */
-        /* Tilde: 4w x 2h squiggle (rows 1-2 of 4, padded top/bottom) */
-        const TILDE_4PX = [0x0, 0x5, 0xA, 0x0];  /* .... / .#.# / #.#. / .... */
-        /* Digits: 3w x 4h */
-        const DIGIT_1_4PX = [0x2, 0x6, 0x2, 0x2]; /* .#. / ##. / .#. / .#. */
-        const DIGIT_2_4PX = [0x6, 0x1, 0x2, 0x7]; /* ##. / ..# / .#. / ### */
-
-        for (let i = 0; i < MASTER_FX_CHAIN_COMPONENTS.length; i++) {
-            const comp = MASTER_FX_CHAIN_COMPONENTS[i];
-            if (comp.key === "settings") continue;
-            const targets = mfxLfoTargets[comp.key];
-            if (!targets) continue;
-
-            const x = START_X + i * (BOX_W + GAP);
-            const indicY = BOX_Y - 5;
-            const has1 = targets.lfo1;
-            const has2 = targets.lfo2;
-
-            let cx = x + Math.floor(BOX_W / 2) - 4;
-            /* Draw tilde (4 wide) */
-            for (let row = 0; row < 4; row++) {
-                const bits = TILDE_4PX[row];
-                for (let bit = 0; bit < 4; bit++) {
-                    if (bits & (1 << (3 - bit))) set_pixel(cx + bit, indicY + row, 1);
-                }
-            }
-            cx += 5;
-            if (has1 && has2) {
-                /* "1+2" */
-                for (let row = 0; row < 4; row++) {
-                    const bits = DIGIT_1_4PX[row];
-                    for (let bit = 0; bit < 3; bit++) {
-                        if (bits & (1 << (2 - bit))) set_pixel(cx + bit, indicY + row, 1);
-                    }
-                }
-                cx += 3;
-                /* tiny "+": cross centered vertically */
-                set_pixel(cx, indicY + 2, 1);
-                set_pixel(cx + 1, indicY + 1, 1); set_pixel(cx + 1, indicY + 2, 1); set_pixel(cx + 1, indicY + 3, 1);
-                set_pixel(cx + 2, indicY + 2, 1);
-                cx += 4;
-                for (let row = 0; row < 4; row++) {
-                    const bits = DIGIT_2_4PX[row];
-                    for (let bit = 0; bit < 3; bit++) {
-                        if (bits & (1 << (2 - bit))) set_pixel(cx + bit, indicY + row, 1);
-                    }
-                }
-            } else if (has1) {
-                for (let row = 0; row < 4; row++) {
-                    const bits = DIGIT_1_4PX[row];
-                    for (let bit = 0; bit < 3; bit++) {
-                        if (bits & (1 << (2 - bit))) set_pixel(cx + bit, indicY + row, 1);
-                    }
-                }
-            } else if (has2) {
-                for (let row = 0; row < 4; row++) {
-                    const bits = DIGIT_2_4PX[row];
-                    for (let bit = 0; bit < 3; bit++) {
-                        if (bits & (1 << (2 - bit))) set_pixel(cx + bit, indicY + row, 1);
-                    }
-                }
-            }
-        }
-    }
+            return (moduleData && moduleData.module) ? getModuleAbbrev(moduleData.module) : "--";
+        },
+        marks: (comp) => {
+            /* Neither the settings box nor the `+` is an FX position: neither
+             * has a bypass parameter and neither can be an LFO target, so
+             * neither must ever be asked. */
+            if (comp.kind !== "module") return null;
+            const lfo = mfxLfoTargets[comp.key];
+            /* One read per DRAWN box — at most the diagram capacity, five —
+             * rather than one per slot. The loop this came from ran the whole
+             * component list, so the 4 -> 8 raise would otherwise have doubled
+             * the per-frame IPC cost of a screen that redraws every frame, at
+             * ~2.8ms a read against a 1.68ms whole-page render. */
+            const bypassed = chainComponentBypassed(MASTER_CHAIN_TARGET, comp.key);
+            if (!lfo && !bypassed) return null;
+            return { bypassed, lfo1: lfo && lfo.lfo1, lfo2: lfo && lfo.lfo2 };
+        },
+    });
 
     const selectedComp = presetSelected ? null : MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
-    const labelY = BOX_Y + BOX_H + 4;
+    /* The label and info bands are drawn by drawChainEditorBands below, at the
+     * slot editor's spacing (+3 / +11). They were +4 / +12 here, which is the
+     * same kind of accident as the box row: nobody chose a Master-FX-specific
+     * gutter, the two screens were just written at different times. */
     const label = presetSelected ? "Preset" : (selectedComp ? selectedComp.label : "");
-    const labelX = Math.floor((SCREEN_WIDTH - label.length * 5) / 2);
-    print(labelX, labelY, label, 1);
 
-    const infoY = labelY + 12;
     let infoLine = "";
     if (presetSelected) {
+        /* The PRESET ROW, at index -1, is Master FX's alone and stays: the slot
+         * editor's -1 is the patch and it says "Chain". Both are "the whole
+         * thing rather than one position in it", which is why they share the
+         * band — they just name different objects. */
         infoLine = currentMasterPresetName || "(no preset)";
-    } else if (selectedComp && selectedComp.key !== "settings") {
+    } else if (selectedComp && selectedComp.kind === "add") {
+        infoLine = "New effect";
+    } else if (selectedComp && selectedComp.kind === "module") {
         const moduleData = masterFxConfig[selectedComp.key];
         if (moduleData && moduleData.module) {
             const opt = MASTER_FX_OPTIONS.find(o => o.id === moduleData.module);
@@ -271,14 +256,89 @@ export function drawMasterFx() {
         } else {
             infoLine = "(empty)";
         }
-    } else if (selectedComp && selectedComp.key === "settings") {
+    } else if (selectedComp && selectedComp.kind === "settings") {
         infoLine = "Configure master FX";
     }
-    infoLine = truncateText(infoLine, 24);
-    const infoX = Math.floor((SCREEN_WIDTH - infoLine.length * 5) / 2);
-    print(infoX, infoY, infoLine, 1);
+
+    /*
+     * The bands, from the same function the slot editor calls.
+     *
+     * HEADER. Left is the screen's own identity plus the thing that names this
+     * chain — the preset — exactly where the slot editor puts its patch name.
+     * Right is "MFX", the screen name, which is what the slot editor puts there
+     * when it has no synth to landmark ("CHAIN"): Master FX never has one, so
+     * there is no honest value for that side and a constant is the truth.
+     * What this replaces was drawMenuHeader("Master FX") — the device 5x7 font
+     * and a rule, ~18 rows — which is the header every other screen left behind
+     * for the movy band.
+     *
+     * FOOTER. Master FX had none at all, so nothing on the screen said what the
+     * jog or the click did. handleJog moves the selection, handleSelect opens
+     * the picker / settings / preset list, and Back at this level calls
+     * shadow_request_exit — it leaves shadow mode entirely, same as the chain
+     * editor, so the word is EXIT and not OUT.
+     *
+     * The hints follow the modifier, exactly as the slot editor`s do, because
+     * Shift silently repurposes the jog into a reorder: a move gesture with a
+     * footer still reading SEL is a gesture nobody finds. 4a-3 left this pair
+     * out deliberately — the gesture did not exist then. It does now.
+     */
+    drawChainEditorBands(dctx, {
+        headerLeft: currentMasterPresetName || "Master FX",
+        headerRight: "MFX",
+        label,
+        info: infoLine,
+        hints: isShiftHeld()
+            ? [["JOG", "MOVE"], ["BACK", "EXIT"]]
+            : [["JOG", "SEL"], ["CLK", "OPEN"], ["BACK", "EXIT"]],
+    });
+
+    /*
+     * The card last, over everything — it is a modal. Every value it draws was
+     * read once on touch-down (knobCardOpen in shadow_ui.js), so this costs no
+     * IPC per frame, which is the whole design argument for the feature: a
+     * round trip is ~2.8ms against a 1.68ms whole-page render.
+     *
+     * The early returns above are the reason masterFxChainDiagramVisible()
+     * exists: this is the ONLY path that draws the card, so the touch handler
+     * must not raise one while a picker or a confirm is covering the diagram.
+     *
+     * knobCardDrawState comes over ctx (it reads shadow_ui.js state); it is
+     * destructured at the top rather than being a free identifier because it
+     * cannot be both that and a lifted parameter in the tests — a `const`
+     * cannot shadow a parameter of the same name. drawKnobCard IS free, so
+     * it is in MFX_DRAW_DEPS in both tests that lift this function.
+     */
+    const card = knobCardDrawState();
+    if (card) {
+        /* dctx carries the four primitives the diagram needs. The card draws
+         * real widgets — arc knobs, enum squares, bars — and each of those
+         * probes for a native primitive and takes a slow JS path without it.
+         * A SEPARATE object rather than four more fields on dctx: the renderers
+         * branch on what they are handed, so widening dctx could move diagram
+         * pixels, and the whole of 4a was about the two screens rendering the
+         * same. This is the same probe list drawChainEdit builds. */
+        drawKnobCard({
+            fillRect: fill_rect, print, textWidth: text_width, setPixel: set_pixel,
+            line: typeof draw_line === "function" ? draw_line : undefined,
+            fillCircle: typeof fill_circle === "function" ? fill_circle : undefined,
+            drawCircle: typeof draw_circle === "function" ? draw_circle : undefined,
+            drawArc: typeof draw_arc === "function" ? draw_arc : undefined,
+        }, card);
+    }
 }
 
+/*
+ * STAYS ON THE OLD MENU CHROME, deliberately, and this is the reasoning so the
+ * next person does not have to redo it.
+ *
+ * Its twin is the slot chain's settings screen, drawChainSettings in
+ * shadow_ui_settings.mjs, and that one is on the SAME old chrome —
+ * drawMenuHeader, a list, a text footer. The two agree today. Converting this
+ * one alone would recreate the exact bug that brought us here, only mirrored:
+ * two settings screens, one movy and one not. Whoever moves this moves both, in
+ * one change, and reads the pair side by side afterwards.
+ */
 function drawMasterFxSettingsMenu() {
     const { currentMasterPresetName, selectedMasterFxSetting,
             getMasterFxSettingsItems, getMasterFxSettingValue } = ctx;
@@ -303,32 +363,62 @@ function drawMasterFxSettingsMenu() {
     drawFooter("Back: FX chain");
 }
 
+/*
+ * The module picker, drawn by drawChainPicker — the SAME function the slot
+ * chain's drawComponentSelect calls.
+ *
+ * What this replaces, and why it had to go: the two pickers already chose from
+ * the same rows (the module scan plus this position's Move Left / Move Right,
+ * both built by chainMoveEntries) and then drew them completely differently —
+ * this one wore drawMenuHeader's "Select FX 2", drawMenuList, and a
+ * "Back: cancel / Click: apply" text footer, while the slot picker had moved to
+ * the movy band, renderPicker and the [JOG SEL][CLK LOAD][BACK EXIT] hints.
+ * Reported from the device as "the module select here is different than the
+ * module select in slots", which is precisely the drift §1b of the
+ * variable-length design exists to end.
+ *
+ * The `*` on the loaded module, the Move rows, the empty-list message and where
+ * Back goes are all unchanged: Back cancels the selection and returns to the
+ * Master FX chain view (handleBack, VIEWS.MASTER_FX), which is EXIT by
+ * FOOTER_CANON — it leaves the picker entirely, the same as the slot picker's.
+ */
 function drawMasterFxModuleSelect() {
     const { selectedMasterFxComponent, MASTER_FX_CHAIN_COMPONENTS,
-            MASTER_FX_OPTIONS, selectedMasterFxModuleIndex,
+            masterFxPickerItems, selectedMasterFxModuleIndex,
             masterFxConfig } = ctx;
 
     const comp = MASTER_FX_CHAIN_COMPONENTS[selectedMasterFxComponent];
-    drawHeader(`Select ${comp ? comp.label : "FX"}`);
 
-    if (MASTER_FX_OPTIONS.length === 0) {
-        print(LIST_LABEL_X, LIST_TOP_Y, "No FX modules available", 1);
-        return;
-    }
-
-    drawMenuList({
-        items: MASTER_FX_OPTIONS,
-        selectedIndex: selectedMasterFxModuleIndex,
-        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
-        getLabel: (item) => item.name,
-        getValue: (item) => {
-            const currentModule = masterFxConfig[comp.key]?.module || "";
-            return item.id === currentModule ? "*" : "";
-        }
+    drawChainPicker({
+        fillRect: fill_rect, print,
+        textWidth: typeof text_width === "function" ? text_width : undefined,
+    }, {
+        /* The slot picker's header grammar — which chain, then which position
+         * in it — with MFX where the slot editor says S1. Same two words the
+         * Master FX chain view already puts on the right of its own band. */
+        headerLeft: `MFX > ${comp ? comp.label : "FX"}`,
+        entries: masterFxPickerItems,
+        index: selectedMasterFxModuleIndex,
+        currentId: comp ? (masterFxConfig[comp.key]?.module || "") : "",
+        /* Master FX loads audio FX and nothing else, so the empty case can say
+         * so; the slot picker, which can be opened on a synth or a MIDI FX,
+         * cannot. That is a difference in what the two lists CONTAIN, not in
+         * how they are drawn. */
+        emptyMessage: "No FX modules available",
     });
-    drawFooter({left: "Back: cancel", right: "Click: apply"});
 }
 
+/*
+ * Also stays, for the same reason: its twin is the slot chain's patch library
+ * (drawPatches in shadow_ui_patches.mjs), which lists saved chains with a `*`
+ * on the loaded one and a "Back: settings / Click: load" footer — the same
+ * screen, the same chrome. The pair is consistent; moving one of them is what
+ * would make it not.
+ *
+ * (The `[New]` first row is genuinely Master-FX-only — the slot side reaches
+ * Save from its settings menu instead — but that is a difference in ROWS, not
+ * in how they are drawn, and it is not what anyone noticed.)
+ */
 function drawMasterPresetPicker() {
     const { masterPresets, selectedMasterPresetIndex,
             currentMasterPresetName } = ctx;
