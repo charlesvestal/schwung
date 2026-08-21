@@ -1419,12 +1419,48 @@ will see `50` displayed as `5000%`.
 
 #### Enum wire format
 
-By default the formatter sends the option's numeric INDEX over the
-`set_param` wire. If your DSP plugin only accepts the option's STRING label
-(no `atoi` fallback in `set_param`), declare `options_as_string: true` on the
-chain_params entry. The shadow UI's enum cycle path is independent of this
-setting (it auto-detects from the plugin's `get_param` echo), so most modules
-don't need to set it.
+An enum can go over the `set_param` wire as its numeric INDEX or as its option
+NAME. The UI **auto-detects which your plugin speaks** and latches the answer
+per key: it looks at what `get_param` reports — a value that matches a declared
+option means names, a value that parses as a number means indices, anything
+else teaches nothing and leaves the question open for the next read.
+Detection only ever uses values that came from the DSP, never values the UI
+itself wrote (`learnEnumWireFormat` in `src/shared/param_format.mjs`); the
+option picker asks the same question through `enumWireValue`.
+
+`options_as_string: true` on the chain_params entry is therefore an **override,
+not a requirement** — it is checked first and never learned over. Declare it if
+you want the convention nailed down regardless of what your `get_param` says.
+
+**The one obligation: a `set_param` that accepts only NAMES must report NAMES
+from `get_param`.** That read is the only signal detection has. Report an index
+while accepting only names and every write is discarded in silence — which is
+exactly what the built-in `chord` module did: its `set_param` is a `strcmp`
+ladder over the option names with **no trailing `else`**, so the value never
+moved while the UI drew the index it had invented.
+
+Two `set_param` shapes worth avoiding, both found in the fleet, neither of which
+reports an error:
+
+- **No trailing `else`** (chord) — an unrecognised value is silently ignored.
+- **`else atof(val)`** (arp's `division`) — an unrecognised value is silently
+  *accepted*, turning index `3` into a division of `3.0`.
+
+Prefer accepting both conventions and rejecting anything else loudly enough to
+show up in a log.
+
+#### `divable` vs `divable_mark`
+
+Every enum with a non-empty `options` array is **divable**: on the knob grid,
+holding its knob and clicking opens a scrolling option list. You get this for
+free — there is nothing to declare, and nothing to declare it away.
+
+Divability is not the same as the corner-bracket **mark**, which stays on the
+opaque types only (`filepath`/`file`, `string`, `canvas`, `wav_position`, the
+two picker types). With ~135
+enums in the fleet against ~5 opaque params, bracketing every enum would erase
+what the mark means. The affordance for an enum is the footer's `CLK OPEN`.
+Module authors influence this only through `type` and `options`.
 
 ### Knob Acceleration
 

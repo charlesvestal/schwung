@@ -417,6 +417,42 @@ typedef struct chain_instance {
  * answers 0, because a half-allocated instance is a null dereference in the
  * audio callback later, which is far worse than refusing to create the slot.
  */
+/*
+ * Did the plugin actually ANSWER the chain_params query?
+ *
+ * Every one of the three get_param routes (synth, audio FX, MIDI FX) asks the
+ * sub-plugin for "chain_params" first and only renders its own module.json
+ * fallback if the plugin declines. "Declined" was `result <= 0`, which is a
+ * length test, and a length test cannot tell a real table from an empty one.
+ *
+ * impressive-chords v0.1.24 reads its chain_params from a JSON file at runtime
+ * and returns the two characters "[]" when that file is not installed — which
+ * it is not, in the shipped tarball. Length 2 counted as an answer, so the
+ * host discarded the fifteen correct parameter declarations it had already
+ * parsed out of that module's own module.json and served "[]" instead. The
+ * Shadow UI's knob row then had no type for any of them and drove every one as
+ * a float 0..1: an int wrote a fraction its atoi read as 0, an enum took
+ * option 0. Reported as "i could see the values change, but when i release, it
+ * reset to the default".
+ *
+ * An empty array is therefore treated as no answer, and the fallback runs. A
+ * plugin that genuinely has no parameters loses nothing: the fallback finds no
+ * parsed params either and the caller ends up returning -1, which the UI reads
+ * exactly as it read "[]".
+ *
+ * Pure scan over a caller-owned buffer — no allocation, no I/O — because these
+ * routes are serviced from the SPI callback.
+ */
+static inline int chain_params_answer_is_useful(const char *buf, int result) {
+    if (result <= 0 || !buf) return 0;
+    for (int i = 0; i < result && buf[i]; i++) {
+        char c = buf[i];
+        if (c == '[' || c == ']' || c == ' ' || c == '\t' || c == '\n' || c == '\r') continue;
+        return 1;
+    }
+    return 0;
+}
+
 static inline void chain_free_position_storage(chain_instance_t *inst) {
     if (!inst) return;
     for (int i = 0; i < MAX_AUDIO_FX; i++) {

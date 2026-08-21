@@ -26,7 +26,7 @@
  * device's own print(), same as the dial/bar grid.
  */
 
-import { KIND_ENUM, KIND_OPAQUE } from "./param_meta.mjs";
+import { KIND_ENUM, KIND_OPAQUE, enumIndexOf } from "./param_meta.mjs";
 import { formatParamValue } from "../param_format.mjs";
 import { asciiFold, fitText, shortenLabel, line } from "./render_page.mjs";
 import { drawVizGroup } from "./viz_draw.mjs";
@@ -652,10 +652,17 @@ function drawOpaqueBox(ctx, kx, ky, value, override) {
  * ~8px of clear corner a 32px cell has, it does not resolve into a box and an
  * arrow, it resolves into a smudge.
  *
- * Keyed on meta.divable, NOT on kind === OPAQUE. They are different questions:
- * granny's wav_position is a ranged number a knob turns perfectly well AND has a
- * waveform editor worth opening, so it draws as a KNOB wearing brackets. Keying
- * the mark on opaqueness made that knob dead.
+ * Keyed on meta.divable_mark, which is NOT kind === OPAQUE and is no longer
+ * meta.divable either. Three different questions:
+ *
+ *   kind === OPAQUE   a knob cannot turn it. granny's wav_position is a ranged
+ *                     number a knob turns perfectly well AND has a waveform
+ *                     editor worth opening, so it draws as a KNOB wearing
+ *                     brackets; keying the mark on opaqueness made it dead.
+ *   divable           a click opens something. Every enum does now.
+ *   divable_mark      it wears these brackets. Opaque types only — bracketing
+ *                     135 enums would erase the mark's meaning, and the footer
+ *                     already says CLK OPEN while such a knob is held.
  *
  * MUST stay inside rowY..rowY+BOX_H-1. One row of overflow lands on LBL0_Y and
  * the brackets merge into the label below.
@@ -696,7 +703,11 @@ function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, cellText)
     const shown = (liveRaw === null || liveRaw === undefined) ? raw : liveRaw;
     if (meta.kind === KIND_OPAQUE) { drawOpaqueBox(ctx, kx, ky, shown, cellText); return; }
     if (meta.kind === KIND_ENUM) {
-        const idx = Math.round(Number(shown));
+        /* A plugin may report an enum as its option NAME rather than as an
+         * index (see learnEnumWireFormat) — resolve either to the index, or
+         * `short_options` is skipped for exactly the modules whose values are
+         * words and therefore need shortening most. */
+        const idx = enumIndexOf(meta, shown);
         /*
          * `short_options` is for the SQUARE only.
          *
@@ -905,7 +916,10 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
         /* AFTER the widget and OUTSIDE the `covered` test: a viz group that
          * spans the cell (mrsample's SMP waveform) is still divable, and the
          * mark is the only thing that says so. */
-        if (meta.divable) drawDivableMark(ctx, g, col, rowY);
+        /* `divable_mark`, NOT `divable` — an enum opens a picker but is not
+         * bracketed. See param_meta.mjs normalize() for why the mark cannot
+         * simply follow divability. */
+        if (meta.divable_mark) drawDivableMark(ctx, g, col, rowY);
 
 
         const labelWidth = Math.min(g.cellW - 2, fontWidth4x5("M".repeat(LABEL_CHARS)));

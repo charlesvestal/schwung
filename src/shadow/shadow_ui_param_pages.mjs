@@ -27,7 +27,10 @@
  */
 
 import { ctx } from './shadow_ui_ctx.mjs';
-import { createController } from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
+import { createController, CONTRACT_SETTLE_MS } from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
+/* Re-exported so the LIST editor waits out the same module-side debounce the
+ * grid does, from the same number. Two hand-written 500s would drift. */
+export { CONTRACT_SETTLE_MS };
 import { decodeInput, applyInput } from '/data/UserData/schwung/shared/param_pages/page_input.mjs';
 import { PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS } from '/data/UserData/schwung/shared/param_pages/page_plan.mjs';
 import { LAYOUT_BAR, LAYOUT_DIAL } from '/data/UserData/schwung/shared/param_pages/render_page.mjs';
@@ -261,19 +264,31 @@ export function tickParamPages() {
     if (++_loadingPoll >= _loadingInterval) {
         _loadingPoll = 0;
         const raw = ctx.getSlotParam(currentSlot, `${currentPrefix}:is_loading`);
-        if (raw === null || raw === undefined) {
-            /* The module does not implement is_loading — most don't; it exists
-             * for the ones with an async ROM or sample load. Measured on
-             * device, this errored 5-7 times a SECOND, and an errored read
-             * still costs the full ~2.8ms round trip: the error is free, the
-             * round trip is not.
+        if (raw === '') {
+            /*
+             * NOBODY SERVES THIS KEY. Stop asking, for this component.
              *
-             * Backed off rather than switched off, because this poll is
-             * correctness-relevant — it is what re-plans the page tree when a
-             * module finishes loading. A module that is genuinely mid-load can
-             * error first and answer later, so giving up entirely could strand
-             * the page on a stale tree. Backing off keeps the edge, just
-             * later. Reset on entry to the view and on any successful read. */
+             * An unserved key answers "" — the shim replies with an error and
+             * a zeroed buffer, and the binding hands that back as an empty
+             * string. Only an unclaimable channel answers null. The back-off
+             * below tested for null, so for the overwhelming majority of the
+             * fleet — which does not implement is_loading at all — it never
+             * engaged: the poll fell through to the `else`, read "" as
+             * not-loading, reset the interval to full rate, and did that
+             * forever. Measured on device at 5-7 errored reads a SECOND, and
+             * an errored read still costs the whole ~2.8 ms round trip.
+             *
+             * Giving up entirely is safe now in a way it was not before,
+             * because the contract no longer depends on this edge: a selection
+             * books its own settle in the controller (armContractSettle), and
+             * that path needs no cooperation from the module.
+             */
+            _loadingInterval = Infinity;
+        } else if (raw === null || raw === undefined) {
+            /* The channel would not answer — transient, unlike "". Back off
+             * rather than give up: a module genuinely mid-load can fail a
+             * claim first and answer later, and this is what re-plans the page
+             * tree when it finishes. Reset on entry and on any real read. */
             if (_loadingInterval < LOADING_POLL_MAX_TICKS) _loadingInterval *= 2;
         } else {
             _loadingInterval = LOADING_POLL_TICKS;
@@ -596,7 +611,19 @@ export function drawParamPages() {
      */
     const drawable = page && (page.kind === PAGE_KNOBS || page.kind === PAGE_MENU
                               || page.kind === PAGE_PRESET || page.kind === PAGE_ITEMS);
-    if (!controller.pickerOpen && !drawable) return false;
+    /*
+     * A contract we could not READ has no page set, and refusing to draw ejects
+     * to the list editor — a whole view change, in response to a 100 ms timeout
+     * that is usually about to clear. So hold the screen while the controller
+     * retries (it stops claiming to be unresolved once it gives up, and the
+     * ordinary fallback runs then) rather than showing a plan built from the
+     * failure, which is what put granny's sample_path on knob 1.
+     *
+     * Only reachable on a FIRST entry: a re-entry keeps the page set it already
+     * had, so the reported granny sequence never shows this.
+     */
+    const holdForContract = !controller.pickerOpen && !drawable && controller.contractUnresolved;
+    if (!controller.pickerOpen && !drawable && !holdForContract) return false;
 
     const nowMs = Date.now();
     if (nowMs - lastDrawMs < MOVY_REDRAW_MIN_MS) return true;
@@ -617,6 +644,15 @@ export function drawParamPages() {
     }
 
     clear_screen();
+
+    /* The hold frame — see holdForContract above. Deliberately after the
+     * redraw throttle, so a screen that says one word costs one draw per
+     * MOVY_REDRAW_MIN_MS like any other. */
+    if (holdForContract) {
+        const msg = "Loading...";
+        print(Math.max(0, (128 - text_width(msg)) >> 1), 28, msg, 1);
+        return true;
+    }
 
     /* draw_line / draw_circle / fill_circle (src/host/js_display.c) do the
      * whole shape in C — one QuickJS<->native crossing regardless of length,
@@ -735,6 +771,39 @@ export function handleParamPagesMidi(data) {
         return true;
     }
     if (todo.action === 'open') {
+        /*
+         * An ENUM opens the option picker, and it does NOT go the long way
+         * round through the list editor.
+         *
+         * The other divable types hand off to a screen that only exists inside
+         * the hierarchy editor, so openParamEditor has to exit the grid, enter
+         * that editor and find the param again. An option list needs none of
+         * that — it needs the options and an index, both of which the intent is
+         * carrying — so the grid CONTROLLER STAYS ALIVE and the page and cell
+         * survive by construction, exactly as the LFO target picker does.
+         *
+         * That is also the only thing that makes this work on SLOT SETTINGS and
+         * MASTER FX SETTINGS, which are synthesised contracts with no
+         * ui_hierarchy to enter and whose enums (Recv Ch, Fwd Ch, MPE) are the
+         * ones with the longest option lists on the device. The commit goes
+         * back through the controller so the slot io's own mappings — Fwd's
+         * offset, MPE's compound write — are applied rather than bypassed.
+         */
+        if (Array.isArray(todo.options) && todo.options.length > 0 &&
+            typeof ctx.openEnumPicker === 'function') {
+            /* The note-off for the held knob will go to the PICKER, so drop the
+             * touch now or the cell stays highlighted after we come back. */
+            clearParamPagesTouch();
+            const key = todo.key;
+            ctx.openEnumPicker({
+                title: todo.meta && (todo.meta.label || todo.meta.name) || key,
+                options: todo.options,
+                index: todo.index || 0,
+                commit: (i) => { if (controller) controller.commitEnum(key, i); },
+                returnToGrid: true,
+            });
+            return true;
+        }
         /* A filepath, canvas, wav_position or string param: hand it to the
          * editor the list view already has rather than building a second one. */
         if (typeof ctx.openParamEditor === 'function') {
@@ -791,6 +860,27 @@ export function paramPagesRevealing() {
  */
 export function paramPagesFooterHints() {
     return footerHints();
+}
+
+/**
+ * The footer hints for the ENUM OPTION PICKER.
+ *
+ * Lives here, next to footerHints(), rather than at the picker's own draw site,
+ * because the hint vocabulary is a canon (FOOTER_CANON in render_page_movy.mjs)
+ * and a second place that invents wording is how a canon stops being one. The
+ * picker is drawn from shadow_ui.js, which is not importable under node, so
+ * building the list HERE is also what lets a test read the words at all — the
+ * footer is set in font4x5 and cannot be read back off the framebuffer.
+ *
+ * SEL / SET, not PAGE / OPEN: inside the picker the jog moves the highlight
+ * through one param's options and the click writes the highlighted one. BACK is
+ * EXIT by the canon, not OUT — it leaves the picker entirely and lands back on
+ * whichever editor opened it, exactly as the module picker's BACK does.
+ *
+ * Constant, so it takes no controller and works from both entry points.
+ */
+export function enumPickerFooterHints() {
+    return orderedHints({ jog: "SEL", click: "SET", extra: [["BACK", "EXIT"]] });
 }
 
 /** True while the section picker is over the grid. */

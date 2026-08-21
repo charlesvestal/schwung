@@ -90,6 +90,10 @@ const CHAIN_PARAMS = [
     filepath_param: "sample_path", min: 0, max: 1, step: 0.01 },
   { key: "sample_path", name: "Sample File", type: "filepath",
     root: "/tmp", filter: ".wav" },
+  /* An enum, reported by NAME — the chord case. Divable now (clicking a held
+   * enum knob opens its option list) while the knob still steps it. */
+  { key: "mode", name: "Mode", type: "enum",
+    options: ["Hall", "Room", "Plate", "Cave"] },
 ];
 /*
  * Shaped like granny ON PURPOSE: root puts the params on KNOBS but its params[]
@@ -116,11 +120,11 @@ const HIERARCHY = {
       label: "Main",
       knobs: ["gain", ...FILLER],
       params: [{ key: "gain" }, ...FILLER.map((k) => ({ key: k })),
-               { key: "position" }, { key: "sample_path" }],
+               { key: "position" }, { key: "sample_path" }, { key: "mode" }],
     },
   },
 };
-const values = { gain: "0.5", position: "0.25", sample_path: "" };
+const values = { gain: "0.5", position: "0.25", sample_path: "", mode: "Hall" };
 for (const k of FILLER) values[k] = "0.5";
 function getParam(key) {
   const bare = String(key).replace(/^[^:]+:/, "");
@@ -343,6 +347,142 @@ function gotoSlotFor(name) {
   }
 }
 
+/* ---- 7. an ENUM opens the OPTION PICKER, and the knob still turns it ----
+ *
+ * Every enum is a door now. The knob keeps stepping the value -- that is what
+ * makes this different from the opaque types, which a knob cannot drive at all
+ * -- so both abilities are asserted on the same param.
+ *
+ * There is deliberately NO bracket mark on an enum cell (see
+ * test_enum_picker.sh); the whole affordance is the footer flipping to
+ * CLK OPEN, which is why that is checked here rather than left implicit.
+ */
+{
+  openGrid();
+  const slot = gotoSlotFor("mode");
+  if (slot < 0) {
+    fail("mode never reached the grid");
+  } else {
+    const pageName = (V.currentParamPage() || {}).name;
+    feed(noteOn(slot));
+
+    const held = V.paramPagesFooterHints() || [];
+    if (!held.length || held[1] === undefined || held[1][1] !== "OPEN") {
+      fail("holding an ENUM knob must say CLK OPEN, got " +
+           JSON.stringify((held || []).map((p) => p.join(" ")).join(" / ")) +
+           " -- the footer is the ONLY affordance an enum gets, because the " +
+           "bracket mark is deliberately withheld from enums");
+    }
+
+    feed(click());
+    if (ctx.activeParamEditor() !== "enum") {
+      fail("clicking a held enum opened " + JSON.stringify(ctx.activeParamEditor()) +
+           ", expected the option picker. A \"value\" here is the inline nudge " +
+           "editor openHierarchyParamEditor falls through to, which is the gap " +
+           "this fills");
+    }
+    /*
+     * The grid CONTROLLER must survive. An enum picker does not go the long way
+     * round through the list editor the way a filepath does — it has the
+     * options and the index already — so the grid is not torn down and rebuilt,
+     * and the commit closure it handed over is still pointing at a live
+     * controller. If this is null the hand-off has gone through
+     * openParamEditorFromGrid, which calls exitParamPages(), and the commit
+     * below would write through a corpse.
+     */
+    if (!V.currentParamPage()) {
+      fail("the grid was torn down to open the option picker -- the enum path " +
+           "must keep the controller alive, the way the LFO target picker does");
+    }
+
+    /* Scroll one and commit. The value must go out as a NAME: this fixtures
+     * plugin reports "Hall", so an index would be silently discarded by a
+     * strcmp ladder (the chord bug). */
+    feed([0xb0, 14, 1]);
+    feed(click());
+    if (values.mode !== "Room") {
+      fail("committing the picker wrote " + JSON.stringify(values.mode) +
+           ", expected \"Room\" -- the wire format must be auto-detected from " +
+           "what the plugin reports, not hardcoded to String(index)");
+    }
+    if (ctx.view !== ctx.VIEWS.PARAM_PAGES) {
+      fail("committing the picker landed on view " + ctx.view + ", expected the grid");
+    } else {
+      const b = V.currentParamPage();
+      if (!b || b.name !== pageName) {
+        fail("committing the picker landed on page " + JSON.stringify(b && b.name) +
+             ", expected " + JSON.stringify(pageName));
+      }
+      /*
+       * The note-off for the held knob went to the PICKER, so the grid never
+       * saw it. Unless the hand-off drops the touch, that cell stays
+       * highlighted for good -- which is exactly what clearParamPagesTouch
+       * exists for. Observed through the footer, which says CLK OPEN only
+       * while a divable knob is held.
+       */
+      const after = V.paramPagesFooterHints() || [];
+      if (after[1] && after[1][1] === "OPEN") {
+        fail("the grid still thinks the enum knob is held after the picker " +
+             "returned -- the note-off went to the picker, so the hand-off " +
+             "must clear the touch");
+      }
+    }
+    feed(noteOff(slot));
+  }
+}
+
+/* ---- 8. Back out of the picker leaves the value ALONE ------------------- */
+{
+  openGrid();
+  const slot = gotoSlotFor("mode");
+  if (slot < 0) {
+    fail("mode never reached the grid for the cancel case");
+  } else {
+    const before = values.mode;
+    feed(noteOn(slot));
+    feed(click());
+    if (ctx.activeParamEditor() !== "enum") fail("the picker did not open for the cancel case");
+    feed([0xb0, 14, 1]);
+    feed([0xb0, 14, 1]);
+    if (values.mode !== before) {
+      fail("scrolling the picker wrote " + JSON.stringify(values.mode) +
+           " -- scrolling must not commit, or Back has nothing to cancel");
+    }
+    feed(back());
+    if (values.mode !== before) {
+      fail("Back out of the picker changed the value to " + JSON.stringify(values.mode) +
+           ", expected it untouched at " + JSON.stringify(before));
+    }
+    if (ctx.view !== ctx.VIEWS.PARAM_PAGES) {
+      fail("Back out of the picker landed on view " + ctx.view + ", expected the grid");
+    }
+    feed(noteOff(slot));
+  }
+}
+
+/* ---- 8b. the knob still STEPS the enum -------------------------------- */
+{
+  openGrid();
+  const slot = gotoSlotFor("mode");
+  if (slot < 0) {
+    fail("mode never reached the grid for the turn case");
+  } else {
+    const before = values.mode;
+    feed(noteOn(slot));
+    for (let i = 0; i < 24; i++) feed([0xb0, 71 + slot, 1]);
+    for (let i = 0; i < 8; i++) V.tickParamPages();
+    feed(noteOff(slot));
+    for (let i = 0; i < 4; i++) V.tickParamPages();
+    if (values.mode === before) {
+      fail("turning the enum knob no longer moves it (still " + JSON.stringify(before) +
+           ") -- making it divable must not make it opaque");
+    }
+    if (ctx.view !== ctx.VIEWS.PARAM_PAGES) {
+      fail("turning the enum knob left the grid, view=" + ctx.view);
+    }
+  }
+}
+
 /* ---- 9. SLOT SETTINGS opens as a grid and its menu runs the real actions -- */
 {
   const slotStore = {
@@ -372,6 +512,50 @@ function gotoSlotFor(name) {
 
     /* The io must be reaching the real store, not a component. */
     if (V.paramPagesComponent() !== "slot") fail("the grid is not pointed at the slot");
+
+    /* ---- 9a. the enum picker on a SYNTHESISED contract --------------------
+     *
+     * Slot settings is where the picker earns its keep — Fwd Ch has eighteen
+     * options — and it is also the case that cannot go through the list
+     * editor at all: "slot" has no ui_hierarchy, so openParamEditorFromGrid
+     * refuses everything but the LFO target. The enum path therefore must NOT
+     * be routed through there.
+     *
+     * And the commit must go back through the CONTROLLER, not straight to
+     * setSlotParam: Fwd is stored offset (Thru = -2, Auto = -1) by the slot
+     * io, so a picker that wrote the raw index would move every channel two
+     * places. Index 3 is "Ch 2", which the io stores as 1.
+     */
+    {
+      const fwd = ((V.currentParamPage() || {}).keys || []).indexOf("forward_channel");
+      if (fwd < 0) {
+        fail("forward_channel is not on the slot grid page");
+      } else {
+        feed(noteOn(fwd));
+        feed(click());
+        if (ctx.activeParamEditor() !== "enum") {
+          fail("clicking Fwd Ch on slot settings opened " +
+               JSON.stringify(ctx.activeParamEditor()) + " — a synthesised " +
+               "contract has no hierarchy to fall back to, so this must not be " +
+               "routed through the list editor");
+        } else {
+          feed([0xb0, 14, 1]);   /* Auto -> Ch 1 */
+          feed([0xb0, 14, 1]);   /* Ch 1  -> Ch 2 */
+          feed(click());
+          if (slotStore["slot:forward_channel"] !== "1") {
+            fail("the picker stored forward_channel as " +
+                 JSON.stringify(slotStore["slot:forward_channel"]) +
+                 ", expected \"1\" (Ch 2) — the commit must go through the slot " +
+                 "io, which offsets Thru/Auto, not straight to setSlotParam");
+          }
+          if (ctx.view !== ctx.VIEWS.PARAM_PAGES) {
+            fail("committing on slot settings landed on view " + ctx.view);
+          }
+        }
+        feed(noteOff(fwd));
+        for (let i = 0; i < 4; i++) V.tickParamPages();
+      }
+    }
 
     /* A slot has no module to abbreviate, so the header read "S1 > ---". */
     const titles = [];

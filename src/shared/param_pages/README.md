@@ -51,10 +51,14 @@ import { buildMetaIndex } from "shared/param_pages/param_meta.mjs";
 import { renderPage } from "shared/param_pages/render_page.mjs";
 import { step, stepLevel, reanchor } from "shared/param_pages/page_nav.mjs";
 
-const hierarchy   = JSON.parse(getParam("synth:ui_hierarchy"));
-const chainParams = JSON.parse(getParam("synth:chain_params"));
+/* Branch on the RAW value before parsing — see "Three answers" below. */
+const rawHierarchy = getParam("synth:ui_hierarchy");
+const unresolved   = (rawHierarchy === null || rawHierarchy === undefined);
+const hierarchy    = unresolved ? null : parse(rawHierarchy);
+const chainParams  = unresolved ? null : parse(getParam("synth:chain_params"));
 
-const { pages, fingerprint } = planPages({ hierarchy, chainParams, mode, visible });
+const { pages, fingerprint } = planPages({ hierarchy, chainParams, mode, visible,
+                                           unresolved });
 const metaIndex = buildMetaIndex({ hierarchy, chainParams });
 
 renderPage(ctx, {
@@ -68,6 +72,35 @@ renderPage(ctx, {
     rect,             // defaults to the whole 128x64 screen
 });
 ```
+
+### Three answers, not two
+
+A contract read has three outcomes and only two of them say anything about the
+module:
+
+```
+JSON   the module declares this contract
+""     the module declares NONE            -> the chain_params fallback
+null   the read FAILED, we know nothing    -> planPages({ unresolved: true })
+```
+
+`unresolved` makes `planPages` return **no pages at all** (and echoes
+`unresolved: true` back), because a plan is a statement about what a module
+declares and a failed read is not one. It has to be passed in by the caller:
+`parse(null)` and `parse("")` both give `null`, so by the time the planner sees
+it the distinction is already gone — only the caller saw the wire.
+
+The symptom this prevents: granny loads a WAV synchronously on the thread that
+serves param requests, the `ui_hierarchy` read issued straight after times out,
+and paginating `chain_params` in response put granny's first declared param
+(`sample_path`) on knob 1 and shifted every other knob along — and latched,
+because the fallback metadata looked complete enough to settle.
+
+`page_controller.mjs` does this for you: it short-circuits before `planPages`,
+keeps the page set it already had when the component has not changed, retries
+on `CONTRACT_RETRY_INTERVAL_TICKS` up to `CONTRACT_RETRY_LIMIT`, and exposes
+`controller.contractUnresolved` so the host can hold the screen instead of
+ejecting. `hierarchy: null` on its own still means ABSENT.
 
 ### Graphics (`viz`)
 
