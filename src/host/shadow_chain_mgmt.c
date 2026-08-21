@@ -1150,6 +1150,34 @@ void shadow_master_fx_forward_midi(const uint8_t *msg, int len, int source) {
     }
 }
 
+/* Union of the capture rules of every LOADED Master FX position.
+ *
+ * Gated on `instance` for the same reason shadow_master_fx_forward_midi is: a
+ * position with no instance cannot receive the event, so it must not claim it.
+ * Bounded by the cap rather than shadow_master_fx_count() on purpose — this
+ * answers "can any running module hear this", and a count that has drifted
+ * below a loaded position must not silence it.
+ *
+ * See the header for why this is a union over positions instead of the
+ * position-0 pointer it replaced. */
+int shadow_master_fx_captures_note(uint8_t note) {
+    for (int i = 0; i < MASTER_FX_SLOTS; i++) {
+        const master_fx_slot_t *s = &shadow_master_fx_slots[i];
+        if (!s->instance) continue;
+        if (capture_has_note(&s->capture, note)) return 1;
+    }
+    return 0;
+}
+
+int shadow_master_fx_captures_cc(uint8_t cc) {
+    for (int i = 0; i < MASTER_FX_SLOTS; i++) {
+        const master_fx_slot_t *s = &shadow_master_fx_slots[i];
+        if (!s->instance) continue;
+        if (capture_has_cc(&s->capture, cc)) return 1;
+    }
+    return 0;
+}
+
 /* ============================================================================
  * Capture Loading
  * ============================================================================ */

@@ -545,6 +545,96 @@ static void test_count_honesty(void) {
           shadow_master_fx_count());
 }
 
+/* ------------------------------------------------------------- MIDI CAPTURE
+ *
+ * Capture follows the MODULE, never the position.
+ *
+ * shadow_midi.c used to answer "does Master FX want this control" from a raw
+ * shadow_capture_rules_t* cached at init, taken from what was then
+ * shadow_master_fx_slots[0].capture -- POSITION 0 and nothing else. That was
+ * invisible while Master FX was a fixed array nobody reordered. With the move
+ * gesture it becomes: drag a MIDI-triggered module -- a ducker, which is
+ * exactly what people put on a master bus -- off position 0, and it silently
+ * stops receiving MIDI. No swap, no reload, nothing to blame it on.
+ *
+ * So the assertion is not "capture works": it is that a module declaring
+ * capture is heard from EVERY position, and keeps being heard after a
+ * permutation moves it. The negatives are load-bearing too -- a union that
+ * simply returned 1 would satisfy every positive above.
+ */
+static void capturing_fixture_path(char *buf, size_t n) {
+    snprintf(buf, n, "%s/mfxcap/dsp.so", FIXTURE_DIR);
+}
+
+static void expect_capture(const char *stage, int pads, int tracks) {
+    CHECK(shadow_master_fx_captures_note(CAPTURE_PADS_NOTE_MIN) == pads,
+          "[%s] pad note %d: captures_note said %d, expected %d",
+          stage, CAPTURE_PADS_NOTE_MIN,
+          shadow_master_fx_captures_note(CAPTURE_PADS_NOTE_MIN), pads);
+    CHECK(shadow_master_fx_captures_note(CAPTURE_PADS_NOTE_MAX) == pads,
+          "[%s] pad note %d: captures_note said %d, expected %d",
+          stage, CAPTURE_PADS_NOTE_MAX,
+          shadow_master_fx_captures_note(CAPTURE_PADS_NOTE_MAX), pads);
+    CHECK(shadow_master_fx_captures_cc(CAPTURE_TRACKS_CC_MIN) == tracks,
+          "[%s] track CC %d: captures_cc said %d, expected %d",
+          stage, CAPTURE_TRACKS_CC_MIN,
+          shadow_master_fx_captures_cc(CAPTURE_TRACKS_CC_MIN), tracks);
+    /* The fixture declares pads + tracks and nothing else. Without these, a
+     * predicate that always said yes would pass every check above. */
+    CHECK(!shadow_master_fx_captures_note(CAPTURE_STEPS_NOTE_MIN),
+          "[%s] a step note was claimed by a chain that never declared steps", stage);
+    CHECK(!shadow_master_fx_captures_cc(CAPTURE_KNOBS_CC_MIN),
+          "[%s] a knob CC was claimed by a chain that never declared knobs", stage);
+}
+
+static void test_capture_follows_the_module(void) {
+    char cap_path[512];
+    capturing_fixture_path(cap_path, sizeof(cap_path));
+
+    shadow_master_fx_unload_all();
+    expect_capture("nothing loaded", 0, 0);
+
+    /* THE one: every position, alone, must be heard. */
+    for (int p = 0; p < MASTER_FX_SLOTS; p++) {
+        shadow_master_fx_unload_all();
+        CHECK(shadow_master_fx_slot_load(p, cap_path) == 0,
+              "the capturing fixture failed to load at position %d", p);
+        char stage[64];
+        snprintf(stage, sizeof(stage), "capturing module alone at position %d", p);
+        expect_capture(stage, 1, 1);
+    }
+
+    /* A loaded chain of modules that declare nothing must claim nothing --
+     * otherwise the loop above proves only that something, somewhere, is on. */
+    load_chain(MASTER_FX_SLOTS);
+    expect_capture("a chain of non-capturing modules", 0, 0);
+
+    /* Now the gesture that made this user-visible. Put the capturing module at
+     * the head, with plain modules behind it, and move it away. */
+    shadow_master_fx_unload_all();
+    for (int i = 1; i < 4; i++) {
+        char path[512];
+        fixture_path(i, path, sizeof(path));
+        CHECK(shadow_master_fx_slot_load(i, path) == 0,
+              "fixture load of position %d failed", i);
+    }
+    CHECK(shadow_master_fx_slot_load(0, cap_path) == 0,
+          "the capturing fixture failed to load at the head");
+    expect_capture("capturing module at the head", 1, 1);
+
+    CHECK(shadow_master_fx_move(0, 3) == 1, "move 0->3 was refused");
+    CHECK(strcmp(shadow_master_fx_slots[3].module_id, "mfxcap") == 0,
+          "after move 0->3 the capturing module is at neither end: position 3 holds "
+          "\"%s\"", shadow_master_fx_slots[3].module_id);
+    expect_capture("capturing module dragged from position 0 to position 3", 1, 1);
+
+    /* ...and its rules leave with it, rather than haunting the position. */
+    CHECK(shadow_master_fx_remove(3) == 1, "remove of position 3 was refused");
+    expect_capture("capturing module removed", 0, 0);
+
+    shadow_master_fx_unload_all();
+}
+
 /* ------------------------------------------------------- the param surface
  *
  * 4e is pure JS, which is only true if the wire keys already work. So drive
@@ -642,6 +732,7 @@ int main(void) {
     test_lfo_routing();
     test_refusals();
     test_count_honesty();
+    test_capture_follows_the_module();
     test_param_surface();
 
     shadow_master_fx_unload_all();

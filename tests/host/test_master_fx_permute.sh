@@ -189,6 +189,28 @@ printf '%s\n' "$body" | command grep -q 'mfx_lfo_base_valid\[i\] = 0' \
 departed target. mfx_lfo_base_valid[] is indexed by LFO, so the next target the user \
 picks would be modulated around the removed module's value."
 
+# --------------------------------------------------------------------------
+# NO CACHED POINTER TO POSITION 0's CAPTURE RULES.
+#
+# The run half proves the union is right today. These two pin the shape that
+# made it wrong: a `#define` naming position 0's capture rules, and a raw
+# pointer to them cached once at init in shadow_midi.c. A pointer captured at
+# init into an array whose contents PERMUTE is a bug whichever position it
+# names, and reintroducing either would restore "a MIDI-triggered module goes
+# silent when someone reorders the chain" without failing the run half, which
+# calls the union directly.
+# --------------------------------------------------------------------------
+if command grep -qE '^#define[[:space:]]+shadow_master_fx_capture' "$hdr"; then
+  fail "shadow_chain_mgmt.h defines shadow_master_fx_capture again. It names \
+position 0's rules, and the last thing that used it cached a pointer to it at init \
+-- so a capturing module was heard only while it sat first."
+fi
+if command grep -qE 'static[[:space:]]+shadow_capture_rules_t[[:space:]]*\*' src/host/shadow_midi.c; then
+  fail "shadow_midi.c caches a shadow_capture_rules_t pointer again. Master FX \
+capture must be read per event from the live array: a pointer taken at init keeps \
+aiming at one index while insert/remove/move rotate the modules underneath it."
+fi
+
 # ---------------------------------------------------------------- run half
 work="$(mktemp -d "${TMPDIR:-/tmp}/schwung-mfx-permute.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
@@ -272,6 +294,14 @@ while [ "$i" -lt "$slots" ]; do
     "$i" > "$work/mfx$i/module.json"
   i=$((i + 1))
 done
+
+# One more fixture, the only one that DECLARES capture. The run half loads it
+# at each position in turn: a module that asked for MIDI must be heard wherever
+# it sits, or moving a ducker off position 0 takes it off the air.
+mkdir -p "$work/mfxcap"
+cp "$work/fixture.so" "$work/mfxcap/dsp.so"
+printf '%s\n' '{"id":"mfxcap","component_type":"audio_fx","capabilities":{"chainable":true,"capture":{"groups":["pads","tracks"]}}}' \
+  > "$work/mfxcap/module.json"
 
 bin="$work/test_master_fx_permute"
 cc -std=gnu11 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function \

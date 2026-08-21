@@ -166,7 +166,12 @@ void shadow_direct_set_param(uint8_t slot, const char *key, const char *value);
 #define shadow_master_fx (shadow_master_fx_slots[0].api)
 #define shadow_master_fx_instance (shadow_master_fx_slots[0].instance)
 #define shadow_master_fx_module (shadow_master_fx_slots[0].module_path)
-#define shadow_master_fx_capture (shadow_master_fx_slots[0].capture)
+/* There is deliberately no `shadow_master_fx_capture` here any more. It named
+ * position 0's capture rules, and shadow_midi.c cached a pointer to it at init
+ * — so a Master FX module that declared `capture` was heard only if it sat
+ * first, and a move gesture would silently take a MIDI-triggered module off
+ * the air. Use shadow_master_fx_captures_note / _cc, which ask every loaded
+ * position, per event, from the live array. */
 
 /* MIDI out log file (for log_enabled check in shim) */
 extern FILE *shadow_midi_out_log;
@@ -304,6 +309,23 @@ int shadow_master_fx_move(int from, int to);
  * "highest loaded position + 1", so a module can never run unseen. */
 int shadow_master_fx_count(void);
 void shadow_master_fx_forward_midi(const uint8_t *msg, int len, int source);
+
+/* Does ANY loaded Master FX position capture this note / CC?
+ *
+ * A UNION over positions, deliberately: capture belongs to the MODULE, not to
+ * the index it currently sits at. The predicate this replaced read position 0
+ * only (shadow_midi.c cached, at init, a raw pointer to
+ * shadow_master_fx_slots[0].capture), which was invisible while
+ * Master FX was a fixed array nobody reordered. With the move gesture it turns
+ * into: drag a MIDI-triggered module — a ducker is the obvious one on a master
+ * bus — off position 0 and it silently stops receiving MIDI, with no swap and
+ * no reload to blame it on.
+ *
+ * Evaluated from the live array on every event; nothing caches a pointer into
+ * an array whose contents permute. Runs on the SPI callback: no allocation, no
+ * I/O, no locks — at most MASTER_FX_SLOTS pointer tests and one bit test. */
+int shadow_master_fx_captures_note(uint8_t note);
+int shadow_master_fx_captures_cc(uint8_t cc);
 
 /* --- Capture loading --- */
 void shadow_slot_load_capture(int slot, int patch_index);

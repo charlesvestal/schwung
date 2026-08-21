@@ -88,8 +88,11 @@ typedef struct {
     shadow_midi_dsp_t **shadow_midi_dsp_shm;
     shadow_midi_inject_t **shadow_midi_inject_shm;
     uint8_t *shadow_mailbox;
-    /* Capture state */
-    shadow_capture_rules_t *master_fx_capture;
+    /* No Master FX capture pointer here on purpose: it used to be
+     * a pointer to shadow_master_fx_slots[0].capture, cached at init into a
+     * raw pointer aimed at an array whose contents now permute. Master FX capture
+     * is read per event from the live array instead — see
+     * shadow_focused_captures_note/cc below. */
     /* Per-slot idle tracking */
     int *slot_idle;
     int *slot_silence_frames;
@@ -170,7 +173,10 @@ int shadow_chain_midi_inject(const uint8_t *msg, int len);
 /* Copy incoming MIDI from mailbox to shadow shared memory. */
 void shadow_forward_midi(void);
 
-/* Get capture rules for the focused slot (0-3 = chain, 4 = master FX). */
-const shadow_capture_rules_t *shadow_get_focused_capture(void);
+/* Does the focused target capture this control? (0-3 = chain slot, 4 = Master
+ * FX, in which case it is a union over every loaded Master FX position, so a
+ * capturing module keeps its MIDI wherever a move gesture puts it.) */
+int shadow_focused_captures_note(uint8_t note);
+int shadow_focused_captures_cc(uint8_t cc);
 
 #endif /* SHADOW_MIDI_H */

@@ -4659,7 +4659,6 @@ static void shim_init_subsystems(void)
             .shadow_midi_dsp_shm = &shadow_midi_dsp_shm,
             .shadow_midi_inject_shm = &shadow_midi_inject_shm,
             .shadow_mailbox = shadow_buf,
-            .master_fx_capture = &shadow_master_fx_capture,
             .slot_idle = shadow_slot_idle,
             .slot_silence_frames = shadow_slot_silence_frames,
             .slot_fx_idle = shadow_slot_fx_idle,
@@ -7786,8 +7785,10 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 /* Skip knobs - they're handled by shadow UI, not routed to DSP */
                 int is_knob_cc = (d1 >= 71 && d1 <= 78);
                 {
-                    const shadow_capture_rules_t *capture = shadow_get_focused_capture();
-                    if (capture && capture_has_cc(capture, d1) && !is_knob_cc) {
+                    /* !is_knob_cc first: knob CCs stream continuously and are
+                     * never routed here, so there is no reason to walk the
+                     * capture rules for them. */
+                    if (!is_knob_cc && shadow_focused_captures_cc(d1)) {
                         /* Route captured CC to focused slot's DSP */
                         int slot = shadow_control ? shadow_control->ui_slot : 0;
                         if (slot >= 0 && slot < SHADOW_CHAIN_INSTANCES &&
@@ -7825,8 +7826,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 /* Check capture rules for focused slot.
                  * Never route knob touch notes (0-9) to DSP even if in capture rules. */
                 {
-                    const shadow_capture_rules_t *capture = shadow_get_focused_capture();
-                    if (capture && d1 >= 10 && capture_has_note(capture, d1)) {
+                    if (d1 >= 10 && shadow_focused_captures_note(d1)) {
                         /* Route captured note to focused slot's DSP */
                         int slot = shadow_control ? shadow_control->ui_slot : 0;
                         if (slot >= 0 && slot < SHADOW_CHAIN_INSTANCES &&
