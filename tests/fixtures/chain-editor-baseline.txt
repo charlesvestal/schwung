@@ -5,15 +5,17 @@
 # point: a baseline regenerated after the refactor compares the new code
 # against itself.
 #
-# The 46 chain/ hashes are still the ORIGINAL capture and must stay
-# re-derivable from the commit before 4a touched either draw function.
+# The 46 original chain/ hashes are still the ORIGINAL capture and must
+# stay re-derivable from the commit before 4a touched either draw function.
 #
-# The 25 master/ hashes were refreshed ONCE, at step 4a-3, which unified the
-# two editors chrome on purpose: Master FX gained the movy header band and
-# the hint footer and moved up to the slot editors box row. Every one of the
-# 25 was rendered and read before the refresh, and no chain/ hash moved with
-# them -- which is what said the screen that was not supposed to move did
-# not. Any FURTHER master/ movement is a regression again.
+# The 25 original master/ hashes were refreshed ONCE, at 4a-3, which unified
+# the two editors chrome on purpose: Master FX gained the movy header band
+# and the hint footer and moved up to the slot editors box row. Every one of
+# the 25 was rendered and read before the refresh, and no chain/ hash moved
+# with them -- which is what said the screen that was not supposed to move
+# did not. Any FURTHER master/ movement is a regression again.
+#
+# Step 4b ADDED the four knob-card cases below and moved NONE.
 #
 # A mismatch names which case moved, and the runner prints the render.
 #
@@ -43,6 +45,7 @@ chain/len2/bypassed-selected 21c815c407c4f0439bd53eb2da20b61bf0912990
 chain/len2/bypassed-synth 607dcd81d92e3a52c01592e89b3cd963719908ac
 chain/len2/info-preset ef4d067720f82707c50dac2acfa764e7c4e63dd7
 chain/len2/info-rnbo c36515ef36fc630ee0b956d3a66e07b77bb9e718
+chain/len2/knob-card-strip 65dea360619c7edba496996a1a45212f19db7892
 chain/len2/lfo1 3329863e8e3ccbf3a526900e4e858288fa030d0b
 chain/len2/lfo1+2 4396e1323ed7c61e26311b1b85ab8fb8d2e55b7b
 chain/len2/lfo2 0d254501ecd1d1bcab4df49d0e5834573be25b39
@@ -69,6 +72,7 @@ master/hole/sel-fx3 69fba231b1809ab1058994264960ac70a0c240d9
 master/len0/sel-fx1 d44b68940e7c164df051b557d789b243249a7510
 master/len0/sel-preset ecb72a073a899a72b5ef5578d063a9fe477ddbab
 master/len0/sel-settings c4e191dbc16d28c993c3c94710261a8ab14654d9
+master/len1/knob-card d681e241373cf2862b8fd3c0e9fa6a3c8e57ab08
 master/len1/preset-named b4c0dc6be19e2d4f865837000d49ea5bb3008d4b
 master/len1/sel-fx1 9b765721893caecb8fa1ece17617f02e87bf9cd6
 master/len1/sel-fx2-empty 6f7eb388554a0eb72f26c333e13cb1610fcd104b
@@ -76,12 +80,14 @@ master/len2/bypassed 91ec9983acf6a9c6bb92e3db76974f16abf60443
 master/len2/bypassed-selected bd7f460507995484570f0b4a67b5fbc5a3fa5b8f
 master/len2/info-optname f460f3d03f163bc4d779ba1349f2b577319f90ed
 master/len2/info-preset 2397eb5b07f14307254693d71bf1a61ab7763684
+master/len2/knob-card-strip 0dfa282687bd2d780cd99731cb75d15a22f7a85d
 master/len2/lfo1 998e2ebbf9856ca0cd100a0f7de6fecd1ffaf42a
 master/len2/lfo1+2 314feccaf70e4f0327d4a12457dd9961aac52f09
 master/len2/lfo2 c9e009df687015cb8035f9f4de9190edce662f4f
 master/len2/sel-fx1 aa8c340e7178ab1e8d5f156032853f9d8f0da2f4
 master/len2/sel-fx2 f3581c5bcb3d36b322c81ccd2a38466369ee414c
 master/len5/bypassed+lfo1+2 5c538fe0b3a7cb3534ccba9d16346a6a23d9c9a2
+master/len5/knob-card d89744e35b3258f8e19c9ec378b56501cbb76d6b
 master/len5/sel-fx1 05e05dcf95e3df365071932c713629d6dc22f783
 master/len5/sel-fx3 18f5f69d0dc02b70c74faa05daea69660dbd0358
 master/len5/sel-fx5 d36389a7446b475cda0ddd2600b89ed667716e4d

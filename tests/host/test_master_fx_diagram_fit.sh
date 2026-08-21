@@ -38,6 +38,12 @@ import { drawChainDiagram, DIAGRAM_W, BOX_H as DIAGRAM_BOX_H, CAPACITY,
 /* The shared bands, REAL: they draw the header band and the hint footer, and
    the off-display check below is about what actually reaches the screen. */
 import { drawChainEditorBands } from "./src/shared/chain_editor_chrome.mjs";
+/* The knob card, REAL. It is a module import in shadow_ui_master_fx.mjs, so
+   under the lift it is a free identifier and must be a dependency -- and it
+   draws OVER the diagram, which is exactly the kind of thing that can put
+   pixels off the display. Case 6 renders one. */
+import { drawKnobCard } from "./src/shared/param_pages/knob_card.mjs";
+import { buildMetaIndex } from "./src/shared/param_pages/param_meta.mjs";
 import { parseId as parseChainId } from "./src/shared/chain_model.mjs";
 
 let failures = 0;
@@ -114,6 +120,9 @@ function render(cap, selected, opts = {}) {
     getModuleAbbrev: (id) => (id ? String(id).slice(0, 3).toUpperCase() : "--"),
     isTextEntryActive: () => false,
     drawTextEntry: () => {}, drawHelpDetail: () => {}, drawHelpList: () => {},
+    /* Costs no IPC by construction: the card is handed its values, it never
+       reads. A card here must not move the read budget below. */
+    knobCardDrawState: () => (opts.card || null),
   };
 
   const getSlotParam = (slot, key) => shadow_get_param(slot, key);
@@ -142,6 +151,7 @@ function render(cap, selected, opts = {}) {
     drawMasterNamePreview: () => {}, drawMasterConfirmOverwrite: () => {},
     drawMasterConfirmDelete: () => {}, drawMasterPresetPicker: () => {},
     drawMasterFxSettingsMenu: () => {}, drawMasterFxModuleSelect: () => {},
+    drawKnobCard,
   };
   const names = Object.keys(deps);
   new Function(...names, body + "\nreturn drawMasterFx;")(...names.map(n => deps[n]))();
@@ -244,7 +254,50 @@ for (const sel of SELECTIONS) {
   }
 }
 
+/* ---- 6. the knob card draws, and stays on the display ----------------- *
+ *
+ * 4b put the slot editors knob card on Master FX. It is a modal drawn OVER the
+ * diagram, and the modal is the last thing on the screen, so a card that
+ * overhangs would clip silently in exactly the way the fixed box row used to.
+ * Rendered at both ends of the row and with a full widget strip.
+ *
+ * It also has to be REACHED: a card block made unreachable by a typeof guard
+ * would pass every clipping assertion in this file while drawing nothing, so
+ * the pixel count is compared with the card on and off.
+ */
+{
+  const CARD = { name: "ROOM SIZE", value: "0.62", row: 0, touched: 1,
+    page: { kind: "knobs", keys: ["a", "b", "c", "d", null, null, null, null] },
+    metaIndex: buildMetaIndex({ hierarchy: null, chainParams: [
+      { key: "a", name: "Room", type: "float", min: 0, max: 1, step: 0.01 },
+      { key: "b", name: "Damp", type: "float", min: 0, max: 1, step: 0.01 },
+      { key: "c", name: "Mode", type: "enum", options: ["Hall", "Room", "Plate"] },
+      { key: "d", name: "Mix",  type: "float", min: 0, max: 1, step: 0.01 }] }),
+    values: { a: 0.62, b: 0.25, c: 1, d: 0.8 },
+    viz: null, modulated: null };
+  const plain = render(CAP, 0, {});
+  for (const sel of [0, CAP - 1]) {
+    const { fb, reads } = render(CAP, sel, { card: CARD });
+    if (fb.clipped() !== 0)
+      fail("selection " + sel + " with the knob card up drew " + fb.clipped() +
+           " pixels OUTSIDE the display");
+    if (fb.missingGlyphs.size)
+      fail("the knob card asked for glyphs the device font lacks: " +
+           [...fb.missingGlyphs].join(""));
+    if (reads.length > plain.reads.length)
+      fail("the knob card cost " + (reads.length - plain.reads.length) +
+           " extra reads on the DRAW path - every value it shows was read on " +
+           "touch-down, and a round trip is ~2.8ms against a 1.68ms page render");
+  }
+  const withCard = render(CAP, 0, { card: CARD });
+  if (withCard.fb.countLit() === plain.fb.countLit())
+    fail("the screen is pixel-identical with and without the knob card - the " +
+         "card block is unreachable, which is how a lift silently measures a " +
+         "feature that is switched off");
+}
+
 if (failures) process.exit(1);
 console.log("PASS: Master FX row fits at cap " + CAP + " (and " + (CAP + 1) +
-            "), read budget bounded by the " + CAPACITY + " drawn boxes");
+            "), read budget bounded by the " + CAPACITY + " drawn boxes, and " +
+            "the knob card draws over it for free");
 '
