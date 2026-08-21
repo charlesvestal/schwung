@@ -19117,6 +19117,35 @@ globalThis.onMidiMessageInternal = function(data) {
             const knobIndex = d1 - KNOB_CC_START;
             const delta = decodeDelta(d2);
 
+            /*
+             * While the option list is up, a knob SCROLLS IT.
+             *
+             * You reach this picker by holding a knob and clicking, so the
+             * hand is already on the knob and the reflex is to keep turning
+             * it: "I keep trying to keep turning it", reported from the
+             * device. Jog-only made the gesture change hands halfway through.
+             *
+             * Any knob, not just the one that opened it — the picker is
+             * modal and full-screen, so there is no other visible control a
+             * turn could mean, and requiring the right knob would leave a
+             * neighbour silently dead. It also has to work when the picker
+             * was opened from the hierarchy list editor, where no knob
+             * opened it at all.
+             *
+             * This is ALSO a fix, not only an affordance: without it the turn
+             * fell through to adjustKnobAndShow and moved the value BEHIND
+             * the list — invisibly, since the picker covers the grid, and
+             * then Back "cancelled" a change that had already been written.
+             *
+             * One option per detent, matching the jog. The 4-detent enum gate
+             * is for turning an enum blind on the grid; inside a list you are
+             * looking straight at it.
+             */
+            if (view === VIEWS.ENUM_PICKER) {
+                if (delta) enumPickerJog(delta);
+                return;
+            }
+
             /* Use shared knob handler for hierarchy/chain editor contexts */
             if (adjustKnobAndShow(knobIndex, delta)) {
                 return;
