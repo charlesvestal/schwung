@@ -812,9 +812,19 @@ const SW_IN_W = [18, 22, 22, 24, 24, 24, 22, 22, 18];
 const SW_KN_X = [3, 1, 1, 0, 0, 0, 1, 1, 3];
 const SW_KN_W = [3, 7, 7, 9, 9, 9, 7, 7, 3];
 
-export function drawSwitch(ctx, rect, key, values) {
+export function drawSwitch(ctx, rect, key, values, metaIndex) {
     const raw = values ? values[key] : undefined;
-    const on = Math.round(Number(raw)) === 1;
+    /* Resolves a name-reporting plugin's value too — see enumIndexOf.
+     *
+     * A bare Number(raw) reads NaN for the "Off"/"On" spelling (and for
+     * "No"/"Yes", "Disabled"/"Enabled" — every non-numeric pair detectSwitch
+     * accepts), so the knob stayed pinned to the OFF seat no matter what the
+     * module reported: the switch drew, but it never moved. The rest of this
+     * file already goes through enumIndexOf for exactly this reason; the
+     * metaIndex needed for it was already being passed to us and dropped. */
+    const meta = metaIndex ? metaIndex.getOrGuess(key) : null;
+    const idx = meta ? enumIndexOf(meta, raw) : Math.round(Number(raw));
+    const on = idx === 1;
     const kx = Math.round(rect.x + rect.w / 2 - 8), ky = rect.y;
 
     const x = kx - 5, y = ky + 2;
