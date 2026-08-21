@@ -994,7 +994,31 @@ export function createController(io = {}) {
         }
         if (target < 0) target = firstGrid(s.pages);
         announce(it.label);
-        if (target >= 0 && target !== s.pageIndex) goToPage(target, { remember: false });
+        /*
+         * Arriving by CHOOSING is not the same as arriving by paging.
+         *
+         * The jog is inert on a door until you click in — that rule exists so
+         * paging past a preset browser cannot audition every preset it passes.
+         * But you did not page here, you chose your way here, and reported from
+         * the device: "factory does dump me to presets, but shouldn't presets
+         * be already active? I have to click into it." One deliberate gesture
+         * should not need a second one to take effect.
+         *
+         * So a door you were SENT to opens. Landing on a grid is unchanged —
+         * there is nothing to enter — and paging in afterwards still has to
+         * click, because that is the case the rule was written for.
+         *
+         * Entering writes nothing. A preset browser auditions on TURN, not on
+         * entry, so this hands you the jog without loading anything.
+         */
+        if (target >= 0 && target !== s.pageIndex) {
+            const willEnter = isDoor(s.pages[target]);
+            goToPage(target, { remember: false, silent: willEnter });
+            /* enterMenu refuses an empty list — then nobody has spoken yet. */
+            if (willEnter && !enterMenu()) announcePageChange();
+        } else if (isDoor(page())) {
+            enterMenu();
+        }
         return true;
     }
 
@@ -1290,8 +1314,15 @@ export function createController(io = {}) {
         return s.pageIndex;
     }
 
-    /** Jump straight to a page (from the index or group picker). */
-    function goToPage(index, { remember = true } = {}) {
+    /**
+     * Jump straight to a page (from the index or group picker).
+     *
+     * `silent` is for the one caller that is going to say something better in
+     * the same breath — commitItem, which lands on a door and immediately
+     * enters it. Without it the screen reader utters the item you chose, then
+     * the page name, then the entered list, and only the third is news.
+     */
+    function goToPage(index, { remember = true, silent = false } = {}) {
         /* Paging away cannot leave a menu entered — returning later would
          * silently hand the jog back to the list. (Page names are unique, so
          * this and "any index change" are the same rule; onJog carries the
@@ -1306,7 +1337,7 @@ export function createController(io = {}) {
         s.cursor = 0;
         s.touched = -1;
         s.turnClaimMs = 0;
-        announcePageChange();
+        if (!silent) announcePageChange();
         return s.pageIndex;
     }
 
