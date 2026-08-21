@@ -25,7 +25,7 @@
  * tests/host/test_master_fx_slot_routing.sh, which reads the value out of this
  * line and proves the routing covers 1..MASTER_FX_SLOTS and rejects the slot
  * just past it. */
-#define MASTER_FX_SLOTS 4
+#define MASTER_FX_SLOTS 8
 
 /* "fx%d" LFO target keys are formatted into MASTER_FX_TARGET_KEY_LEN buffers
  * and strcmp'd against lfo_state_t.target. A truncated format would compare

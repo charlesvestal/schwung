@@ -1403,23 +1403,33 @@ let currentMasterFxPath = ""; // Full path to currently loaded DSP
  * shadow_ui_master_fx.mjs is derived from this name; nothing hand-lists
  * fx1..fxN. Pinned by tests/host/test_master_fx_slots_js.sh, which reads both
  * values out of source and fails if they disagree. */
-const MASTER_FX_SLOTS = 4;
+const MASTER_FX_SLOTS = 8;
 
 /* Master FX chain components: one box per FX slot, then a settings box.
  * Generated, never hand-listed — a hand-written fx1..fxN table that nobody
  * remembers to extend is the exact failure mode this indirection exists to
- * prevent. */
+ * prevent.
+ *
+ * `kind` is what shared/chain_diagram.mjs dispatches on, and it is set
+ * EXPLICITLY here rather than left undefined. The kind that matters by its
+ * absence is "synth": the diagram paints a filled band across the top of a
+ * synth box as the landmark the scroll leans on, and Master FX has no synth,
+ * so no entry may ever claim that kind. "fx" and "settings" are both plain
+ * boxes to the diagram; "settings" is also what the draw code tests to know a
+ * box has no bypass parameter and cannot be an LFO target. */
 const MASTER_FX_CHAIN_COMPONENTS = (function () {
     const comps = [];
     for (let i = 0; i < MASTER_FX_SLOTS; i++) {
         comps.push({
             key: `fx${i + 1}`,
+            kind: "fx",
             label: `FX ${i + 1}`,
             position: i,
             paramPrefix: `master_fx:fx${i + 1}:`
         });
     }
-    comps.push({ key: "settings", label: "Settings", position: MASTER_FX_SLOTS, paramPrefix: "" });
+    comps.push({ key: "settings", kind: "settings", label: "Settings",
+                 position: MASTER_FX_SLOTS, paramPrefix: "" });
     return comps;
 })();
 
