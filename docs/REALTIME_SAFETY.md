@@ -40,7 +40,43 @@ SPI runs at FIFO 90 on core 3. Other threads landing there cause cache/memory co
 
 **Fix:** Pin compute-heavy processes to cores 0-2 with `taskset 0x7`. For RNBO, this is done in `rnbo-runner/ui.js` at launch and re-applied at frame 50.
 
-### 4. Guard against thread accumulation
+### 4. Module entry points ARE the SPI callback
+
+This rule is about third-party modules, and it is the one the ecosystem gets
+wrong. `create_instance`, `destroy_instance`, `set_param`, `get_param`,
+`on_midi`/`process_midi` and `render_block`/`process_block`/`tick` all run on
+the SPI callback. There is no control thread.
+
+A 2026-08 audit of all 113 catalogued modules found ~150 confirmed violations.
+The instructive part is not the count, it is that several modules **document the
+opposite**:
+
+| module | comment | what it actually does |
+|---|---|---|
+| `magneto.c:572,838` | "Control-thread only (blocking dir + file I/O)"; "not the audio thread" | 10.6 MB `fwrite` from `on_midi`, and from a knob detent |
+| `war_bells params.c:294` | "run on the control thread, NEVER from process_block — so this malloc is realtime-safe" | 21 MB `calloc` from `set_param`, reachable by MIDI CC |
+| `breakbeat.c:431` | "safe because it runs in the MIDI callback (not the RT render thread)" | `open`+`mmap` of a WAV inside `render_block` |
+| `dj_plugin.cpp:2501` | "outside the hot render path" | `free()` inside `render_block` |
+
+So the failure mode is not carelessness — authors infer a plausible
+architecture and nothing contradicts them. The contract is now stated at the
+top of `src/host/plugin_api_v1.h` and in `docs/MODULES.md`; keep all three in
+sync.
+
+**Worst shapes seen, worth grepping any new module for:**
+
+- `fork`/`exec` from `render_block` (`webstream`, `radiogarden`, `streamrtsp`)
+- a synchronous sample/preset/ROM load inside `set_param` (`sf2`, `nam`,
+  `granny`, `mrsample`, `slicer`, `surge`, `helm`, `hush1`, `mrdrums`)
+- **`get_param` that rescans a directory** — served once per repaint, so it
+  recurs per frame rather than per click (`dexed`, `sf2`, `sfz`, `obxd`,
+  `midiverb`, `nam`, `noisemaker`)
+- `pthread_create` with no `SCHED_OTHER` demotion — at least 14 modules
+- unconditional `fprintf(stderr, …)` or `host->log` on a parameter path
+- writing to **`/tmp`** on the device (`streamrtsp`, `airplay`); Move's rootfs is
+  ~463 MB and usually full. Use `/data/UserData/`.
+
+### 5. Guard against thread accumulation
 
 Background processes launched from tick (like jack_midi_connect) can accumulate if they hang.
 
