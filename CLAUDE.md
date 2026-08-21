@@ -192,6 +192,21 @@ SPI callback runs SCHED_FIFO 90 on core 3. Budget ~900µs/frame after the ~2ms t
 
 **CPU pinning:** Keep core 3 free for SPI. Pin compute-heavy procs (RNBO) to cores 0–2 (`taskset 0x7`). See `docs/REALTIME_SAFETY.md`.
 
+**Module entry points ARE the SPI callback — and the ecosystem does not know
+it.** `create_instance`, `destroy_instance`, `set_param`, `get_param`,
+`on_midi`/`process_midi` and `render_block`/`tick` all run there. A 2026-08
+audit of all 113 catalogued modules found ~150 confirmed violations, several
+carrying comments asserting the opposite in so many words ("control-thread
+only", "NEVER from process_block — so this malloc is realtime-safe"). Authors
+infer a control thread because nothing contradicted them. The contract now
+lives at the top of `src/host/plugin_api_v1.h`, in `docs/MODULES.md`, and as
+rule 4 of `docs/REALTIME_SAFETY.md` — **keep all three in sync.**
+
+Two consequences worth remembering: `pthread_create` from those entry points
+inherits **FIFO 90** (at least 14 modules do this; Move's own `Link Main` is
+FIFO 35, so it starves), and a **`get_param` that scans a directory is served
+once per repaint**, which makes it worse than the equivalent `set_param`.
+
 ## Deployment Layout
 
 ```

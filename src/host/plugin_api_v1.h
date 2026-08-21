@@ -3,6 +3,75 @@
  *
  * Stable ABI for DSP modules loaded by the host runtime.
  * Modules are .so files loaded via dlopen() and must export move_plugin_init_v1().
+ *
+ * ===========================================================================
+ * THREADING CONTRACT — READ THIS FIRST
+ * ===========================================================================
+ *
+ * THERE IS NO CONTROL THREAD. Every entry point below runs on the SPI audio
+ * callback: SCHED_FIFO 90, pinned to core 3, with roughly 900 microseconds of
+ * budget per 128-frame block after the ~2 ms transfer.
+ *
+ *      create_instance     <- yes, this one too
+ *      destroy_instance
+ *      set_param           <- yes, this one too
+ *      get_param           <- yes, this one too
+ *      on_midi / process_midi
+ *      render_block / process_block / tick
+ *
+ * This is the single most misunderstood thing about writing a Schwung module.
+ * A 2026-08 audit of all 113 catalogued modules found ~150 confirmed realtime
+ * violations, and several carried comments asserting the opposite in so many
+ * words — "control-thread only (blocking dir + file I/O)", "run on the control
+ * thread, NEVER from process_block, so this malloc is realtime-safe", "safe
+ * because it runs in the MIDI callback (not the RT render thread)". Every one
+ * of those premises is false, and each produced a multi-megabyte blocking
+ * operation on the audio thread. If you take one thing from this header, take
+ * this paragraph.
+ *
+ * FORBIDDEN in all of the calls listed above:
+ *
+ *   - file I/O: fopen/fread/fwrite/open/read/stat/opendir/readdir/mkdir/unlink
+ *   - allocation or free: malloc/calloc/realloc/free/new/delete
+ *   - locks held by any non-RT thread (and any lock without PRIO_INHERIT)
+ *   - fork/exec/system/popen, dlopen
+ *   - logging of any kind, including host->log and a bare fprintf(stderr, ...)
+ *     -- stderr is unbuffered, so that is a write() syscall even when your
+ *     debug flag is off
+ *   - unbounded work: an FFT, a full-buffer memset, a directory sort
+ *
+ * The symptom is not a glitch in your module. It is a device-wide audio
+ * dropout, because you are holding the thread that services every other
+ * module's audio and Move's own.
+ *
+ * THREADS INHERIT SCHED_FIFO 90. pthread_create() called from any of the
+ * above hands your worker the callback's realtime priority. Move's own
+ * `Link Main` thread runs at SCHED_FIFO 35, so an inherited-priority worker
+ * starves Move's audio publisher and produces exactly the dropouts you were
+ * trying to avoid by going off-thread. Every worker must demote itself as its
+ * FIRST action:
+ *
+ *      struct sched_param sp = { .sched_priority = 0 };
+ *      sched_setscheduler(0, SCHED_OTHER, &sp);
+ *      // and keep core 3 free for SPI:
+ *      cpu_set_t set; CPU_ZERO(&set);
+ *      CPU_SET(0, &set); CPU_SET(1, &set); CPU_SET(2, &set);
+ *      sched_setaffinity(0, sizeof(set), &set);
+ *
+ * Reference implementations that get this right: schwung-keydetect
+ * (keyfinder_wrapper.cpp -- demotes and pins) and schwung-airwindows
+ * (clap_fx.cpp loader_thread_fn -- demotes, with a comment naming the
+ * inheritance problem). The audit found at least 14 modules that do not.
+ *
+ * WHAT TO DO INSTEAD. Load files, allocate buffers and build lists on your own
+ * SCHED_OTHER worker thread, and have the audio path pick up the result by
+ * publishing a pointer. Keep get_param cheap: a `get_param` that rescans a
+ * directory is served on this thread once per repaint, not once per click.
+ * If you must do work at create time, prefer doing it lazily on the worker and
+ * rendering silence until it lands.
+ *
+ * See docs/REALTIME_SAFETY.md for the measurements behind all of this.
+ * ===========================================================================
  */
 
 #ifndef MOVE_PLUGIN_API_V1_H
