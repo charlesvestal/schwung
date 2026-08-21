@@ -1480,6 +1480,9 @@ function slotChainTarget(slotIndex) {
         kind: "slot",
         slot: slotIndex,
         key: (componentKey, suffix) => chainComponentParamKey(componentKey, suffix),
+        /* A key belonging to the CHAIN rather than to a position in it — the
+         * two LFOs, and whatever else the bus grows. */
+        chainKey: (suffix) => suffix,
         components: () => slotChainComponents(slotIndex),
         hasSynth: true,
         hasMidiFx: true,
@@ -1500,6 +1503,7 @@ const MASTER_CHAIN_TARGET = {
         if (!at || at.section !== "fx" || at.index >= MASTER_FX_SLOTS) return null;
         return `master_fx:${componentKey}:${suffix}`;
     },
+    chainKey: (suffix) => `master_fx:${suffix}`,
     components: () => MASTER_FX_CHAIN_COMPONENTS,
     hasSynth: false,
     hasMidiFx: false,
@@ -1544,6 +1548,39 @@ function chainTargetHierarchy(target, componentKey) {
  * `label` is the component's, because the announcement names the box the user
  * is pointing at ("FX 2 bypassed"), not the module inside it.
  */
+/*
+ * Which components an LFO is pointed at — { key: {lfo1, lfo2} } — for EITHER
+ * chain, which is what the diagram paints its "~" markers from.
+ *
+ * FOUR IPC reads, FIXED: the question is asked of the two LFOs, never of each
+ * box, so it does not grow with the chain. Both editors had this loop; keeping
+ * that property in two places is how one of them eventually asks per box.
+ */
+function chainLfoTargetMap(target) {
+    const out = {};
+    for (let li = 1; li <= 2; li++) {
+        if (getSlotParam(target.slot, target.chainKey(`lfo${li}:enabled`)) !== "1") continue;
+        let t = getSlotParam(target.slot, target.chainKey(`lfo${li}:target`)) || "";
+        /* The first MIDI FX is keyed "midiFx" in the editor; every other
+         * position is keyed by its model id, which is what the LFO stores.
+         * Gated on the CAPABILITY, not the kind: a chain with no MIDI FX
+         * section can never have stored that id, and asking "does this chain
+         * have MIDI FX" says why the rewrite is skipped where "is this master"
+         * would not. */
+        if (target.hasMidiFx && t === "midi_fx1") t = "midiFx";
+        if (!t) continue;
+        if (!out[t]) out[t] = {};
+        out[t][`lfo${li}`] = true;
+    }
+    return out;
+}
+
+/* Is this position bypassed? False, without an IPC read, for anything that has
+ * no bypass parameter — the settings box and the `+` boxes. */
+function chainComponentBypassed(target, componentKey) {
+    return parseInt(chainTargetGetParam(target, componentKey, "bypassed") || "0", 10) === 1;
+}
+
 /*
  * The hierarchy level whose `knobs` array drives the physical knobs.
  *
@@ -14816,23 +14853,11 @@ function drawChainEdit() {
     }
 
     /*
-     * Which components an LFO is pointed at. Four IPC reads, fixed — it does
-     * not grow with the chain, because the question is asked of the two LFOs
-     * rather than of each box.
+     * Which components an LFO is pointed at — shared with Master FX, see
+     * chainLfoTargetMap. Four IPC reads, fixed.
      */
-    const lfoTargets = {};  /* key -> {lfo1: bool, lfo2: bool} */
-    for (let li = 1; li <= 2; li++) {
-        if (getSlotParam(selectedSlot, "lfo" + li + ":enabled") === "1") {
-            let t = getSlotParam(selectedSlot, "lfo" + li + ":target") || "";
-            /* The first MIDI FX is keyed "midiFx" in the editor; every other
-             * position is keyed by its model id, which is what the LFO stores. */
-            if (t === "midi_fx1") t = "midiFx";
-            if (t) {
-                if (!lfoTargets[t]) lfoTargets[t] = {};
-                lfoTargets[t]["lfo" + li] = true;
-            }
-        }
-    }
+    const target = slotChainTarget(selectedSlot);
+    const lfoTargets = chainLfoTargetMap(target);  /* key -> {lfo1: bool, lfo2: bool} */
 
     /*
      * The diagram itself -> shared/chain_diagram.mjs, which is pure and can
@@ -14854,10 +14879,7 @@ function drawChainEdit() {
             const lfo = lfoTargets[comp.key];
             /* One read per DRAWN module box — five at most, because that is
              * how many fit — rather than one per position in the chain. */
-            const bypassKey = chainComponentParamKey(comp.key, "bypassed");
-            const bypassed = bypassKey
-                ? parseInt(getSlotParam(selectedSlot, bypassKey) || "0", 10) === 1
-                : false;
+            const bypassed = chainComponentBypassed(target, comp.key);
             if (!lfo && !bypassed) return null;
             return { bypassed, lfo1: lfo && lfo.lfo1, lfo2: lfo && lfo.lfo2 };
         },
@@ -15351,6 +15373,13 @@ function drawHelpDetail() {
     });
 
     _ctx.MASTER_FX_CHAIN_COMPONENTS = MASTER_FX_CHAIN_COMPONENTS;
+    /* The chain target and the two draw helpers that take one. The Master FX
+     * view module draws its diagram markers from the SAME code the slot chain
+     * editor does, so an LFO marker or a bypass "B" cannot appear on one
+     * screen and not the other. */
+    _ctx.MASTER_CHAIN_TARGET = MASTER_CHAIN_TARGET;
+    _ctx.chainLfoTargetMap = (...args) => chainLfoTargetMap(...args);
+    _ctx.chainComponentBypassed = (...args) => chainComponentBypassed(...args);
     _ctx.MASTER_FX_SLOTS = MASTER_FX_SLOTS;
     _ctx.MASTER_FX_SETTINGS_INDEX = MASTER_FX_SETTINGS_INDEX;
 

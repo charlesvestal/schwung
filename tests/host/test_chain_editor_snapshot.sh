@@ -170,10 +170,21 @@ function chainWorld(state) {
   const getSlotParamCached = lift("getSlotParamCached",
     ["slotParamCache", "SLOT_PARAM_CACHE_TTL_MS", "getSlotParam"])({}, 5000, getSlotParam);
 
+  /* The CHAIN TARGET and the two draw helpers that take one -- shared with the
+     Master FX editor. Lifted rather than restated: a target rebuilt here would
+     spell the keys itself, which is exactly the drift it exists to end. */
+  const slotChainTarget = lift("slotChainTarget",
+    ["chainComponentParamKey", "slotChainComponents"])(chainComponentParamKey, slotChainComponents);
+  const chainTargetGetParam = lift("chainTargetGetParam", ["getSlotParam"])(getSlotParam);
+  const chainLfoTargetMap = lift("chainLfoTargetMap", ["getSlotParam"])(getSlotParam);
+  const chainComponentBypassed = lift("chainComponentBypassed",
+    ["chainTargetGetParam"])(chainTargetGetParam);
+
   return { getSlotParam, getSlotParamCached, chainConfigs, chainConfigFresh,
            createEmptyChainConfig, ensureChainConfigFresh, chainComponentParamKey,
            getChainComponentModule, getComponentParamPrefix, getModuleAbbrev,
-           slotChainComponents };
+           slotChainComponents, slotChainTarget, chainTargetGetParam,
+           chainLfoTargetMap, chainComponentBypassed };
 }
 
 /*
@@ -191,6 +202,7 @@ const CHAIN_DRAW_DEPS = [
   "getModuleAbbrev", "chainComponentParamKey", "DIAGRAM_BOX_H", "SCREEN_WIDTH",
   "getComponentParamPrefix", "drawMovyFooter", "isShiftHeld", "ensureChainConfigFresh",
   "knobCardDrawState", "drawKnobCard",
+  "slotChainTarget", "chainLfoTargetMap", "chainComponentBypassed",
 ];
 const mkChainDraw = lift("drawChainEdit", CHAIN_DRAW_DEPS);
 
@@ -208,7 +220,8 @@ function renderChain(c) {
     w.getSlotParam, w.slotChainComponents, drawChainDiagram, w.getChainComponentModule,
     w.getModuleAbbrev, w.chainComponentParamKey, DIAGRAM_BOX_H, SCREEN_WIDTH,
     w.getComponentParamPrefix, drawMovyFooter, () => !!c.shift, w.ensureChainConfigFresh,
-    () => (c.card || null), drawKnobCard);
+    () => (c.card || null), drawKnobCard,
+    w.slotChainTarget, w.chainLfoTargetMap, w.chainComponentBypassed);
   draw();
   clearGlobals();
   return fb;
@@ -244,7 +257,23 @@ const mkMasterDraw = liftFrom(mfxSrc, "shadow_ui_master_fx.mjs", "drawMasterFx",
 function renderMaster(c) {
   const fb = createFramebuffer();
   installGlobals(fb, (slot, key) => (c.state[key] !== undefined ? c.state[key] : ""));
+  /* The master chain target and the two draw helpers, lifted from shadow_ui.js
+     -- the same ones renderChain drives. drawMasterFx now paints its LFO and
+     bypass markers through them, so this harness must supply the REAL ones or
+     it would be snapshotting a screen the device never draws. */
+  const mGetSlotParam = (slot, key) => (c.state[key] !== undefined ? c.state[key] : "");
+  const mTarget = new Function("parseChainId", "MASTER_FX_SLOTS",
+    uiSrc.slice(uiSrc.indexOf("const MASTER_CHAIN_TARGET = {"),
+                uiSrc.indexOf("\n};\n", uiSrc.indexOf("const MASTER_CHAIN_TARGET = {")) + 4) +
+    "\nreturn MASTER_CHAIN_TARGET;")(parseChainId, MASTER_FX_SLOTS);
+  const mChainTargetGetParam = lift("chainTargetGetParam", ["getSlotParam"])(mGetSlotParam);
+  const mLfoMap = lift("chainLfoTargetMap", ["getSlotParam"])(mGetSlotParam);
+  const mBypassed = lift("chainComponentBypassed",
+    ["chainTargetGetParam"])(mChainTargetGetParam);
   const mfxCtx = {
+    MASTER_CHAIN_TARGET: mTarget,
+    chainLfoTargetMap: mLfoMap,
+    chainComponentBypassed: mBypassed,
     masterShowingNamePreview: false, masterConfirmingOverwrite: false,
     masterConfirmingDelete: false, helpDetailScrollState: null, helpNavStack: [],
     inMasterPresetPicker: false, inMasterFxSettingsMenu: false,

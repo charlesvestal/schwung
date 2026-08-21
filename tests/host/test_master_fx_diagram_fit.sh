@@ -34,6 +34,7 @@ import { readFileSync } from "node:fs";
 import { createFramebuffer } from "./tools/param-pages/harness.mjs";
 import { drawChainDiagram, DIAGRAM_W, BOX_H as DIAGRAM_BOX_H, CAPACITY }
   from "./src/shared/chain_diagram.mjs";
+import { parseId as parseChainId } from "./src/shared/chain_model.mjs";
 
 let failures = 0;
 const fail = (m) => { console.error("FAIL: " + m); failures++; };
@@ -53,8 +54,20 @@ function componentsAtCap(cap) {
   let block = jsSrc.slice(jsSrc.indexOf("const MASTER_FX_SLOTS = "),
                           jsSrc.indexOf("let selectingMasterFxModule"));
   block = block.replace(/const MASTER_FX_SLOTS = \d+;/, "const MASTER_FX_SLOTS = " + cap + ";");
-  return new Function(block +
-    "return {MASTER_FX_CHAIN_COMPONENTS, makeEmptyMasterFxConfig};")();
+  return new Function("parseChainId", block +
+    "return {MASTER_FX_CHAIN_COMPONENTS, makeEmptyMasterFxConfig, MASTER_CHAIN_TARGET};")(
+    parseChainId);
+}
+
+/* drawMasterFx paints its LFO and bypass markers through the SHARED helpers
+   the slot chain editor uses, reached over ctx. They are lifted out of
+   shadow_ui.js rather than stubbed, because what this file measures is the
+   READ COUNT and a stub would be measuring the stub. */
+function liftJs(name, deps) {
+  const at = jsSrc.indexOf("function " + name + "(");
+  const end = at >= 0 ? jsSrc.indexOf("\n}\n", at) : -1;
+  if (end < 0) { console.error("FAIL: " + name + " is gone from shadow_ui.js"); process.exit(1); }
+  return new Function(...deps, jsSrc.slice(at, end + 2) + "\nreturn " + name + ";");
 }
 
 /* drawMasterFx cannot be imported -- the module imports by absolute device
@@ -98,6 +111,13 @@ function render(cap, selected, opts = {}) {
     isTextEntryActive: () => false,
     drawTextEntry: () => {}, drawHelpDetail: () => {}, drawHelpList: () => {},
   };
+
+  const getSlotParam = (slot, key) => shadow_get_param(slot, key);
+  const chainTargetGetParam = liftJs("chainTargetGetParam", ["getSlotParam"])(getSlotParam);
+  uictx.MASTER_CHAIN_TARGET = decls.MASTER_CHAIN_TARGET;
+  uictx.chainLfoTargetMap = liftJs("chainLfoTargetMap", ["getSlotParam"])(getSlotParam);
+  uictx.chainComponentBypassed =
+    liftJs("chainComponentBypassed", ["chainTargetGetParam"])(chainTargetGetParam);
 
   const deps = {
     ctx: uictx,
