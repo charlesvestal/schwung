@@ -36,6 +36,11 @@ var OUT_PATH = "/data/UserData/schwung/module-contracts.json";
  * minijv) can take seconds to appear. This is a busy-spin inside the shadow UI
  * tick, so it is also the per-module ceiling on how long the UI is frozen. */
 var LOAD_CONFIRM_MS = 6000;
+/* Settling: sample the whole contract until two consecutive samples agree.
+ * 750ms apart so a bank that lands between samples is caught, and 20s of
+ * headroom for the ROM loaders. A static module costs one extra sample. */
+var SETTLE_INTERVAL_MS = 750;
+var SETTLE_MAX_MS = 20000;
 
 /* Category directory -> the chain component a module of that type loads into. */
 var CATEGORIES = [
@@ -154,6 +159,61 @@ function loadModule(component, id, prevChainParams) {
     return null;
 }
 
+/*
+ * Read the whole contract as one signature: hierarchy, params, and the preset
+ * COUNT. The count has to be in here — minijv's hierarchy and chain_params are
+ * stable long before its ROM bank finishes, and the only thing that moves is
+ * the count.
+ */
+function contractSignature(component) {
+    var hierRaw = shadow_get_param(PROBE_SLOT, component + ":ui_hierarchy");
+    var cpRaw = shadow_get_param(PROBE_SLOT, component + ":chain_params");
+    var count = "";
+    var hier = null;
+    try { hier = hierRaw ? JSON.parse(hierRaw) : null; } catch (e) { hier = null; }
+    if (hier && hier.levels) {
+        for (var lname in hier.levels) {
+            var lvl = hier.levels[lname];
+            if (lvl && lvl.list_param && lvl.count_param) {
+                count = shadow_get_param(PROBE_SLOT, component + ":" + lvl.count_param) || "";
+                break;
+            }
+        }
+    }
+    return { hierRaw: hierRaw, cpRaw: cpRaw, count: count,
+             sig: String(hierRaw) + " " + String(cpRaw) + " " + String(count) };
+}
+
+/*
+ * Wait for the contract to STOP CHANGING.
+ *
+ * waitUntilReady polls is_loading, and the overwhelming majority of the fleet
+ * does not implement it -- it answers "" and the wait returns immediately. So
+ * the guard that existed precisely for the async loaders (Virus, minijv, the
+ * ROM and sample banks) has never actually guarded anything.
+ *
+ * That is not theoretical. The first good capture recorded minijv with 192
+ * presets where the fixture has 2427: it answered as soon as its first bank was
+ * up, and the capture believed it. The whole run took 20 seconds for 96
+ * modules, which is the tell -- nothing waited for anything.
+ *
+ * Settling needs no cooperation from the module: sample the contract until two
+ * consecutive samples agree. Cheap for the static majority (one extra sample),
+ * and it is the only thing that catches a loader that never says it is loading.
+ *
+ * Returns the settled chain_params, or null if it never stopped moving.
+ */
+function waitUntilSettled(component) {
+    var prev = contractSignature(component);
+    for (var waited = 0; waited < SETTLE_MAX_MS; waited += SETTLE_INTERVAL_MS) {
+        spin(SETTLE_INTERVAL_MS);
+        var now = contractSignature(component);
+        if (now.sig === prev.sig) return now.cpRaw;
+        prev = now;
+    }
+    return null;
+}
+
 globalThis.dumpModuleContracts = function () {
     var scanErrors = [];
     var mods = listInstalledModules(scanErrors);
@@ -187,6 +247,11 @@ globalThis.dumpModuleContracts = function () {
         if (confirmed) {
             prevChainParams[comp2] = confirmed;
             waitUntilReady(comp2, 15000);
+            /* Confirmation says the module is ANSWERING; settling says it has
+             * finished. See waitUntilSettled -- minijv answers with 192 presets
+             * and finishes with 2427. */
+            confirmed = waitUntilSettled(comp2) || confirmed;
+            prevChainParams[comp2] = confirmed;
         }
 
         /*

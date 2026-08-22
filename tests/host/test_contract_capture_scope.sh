@@ -73,6 +73,10 @@ const fail = (m) => { console.log("FAIL: " + m); process.exit(1); };
 const before = src;
 src = src.replace(/var LOAD_CONFIRM_MS = \d+;/, "var LOAD_CONFIRM_MS = 200;");
 if (src === before) fail("LOAD_CONFIRM_MS is gone -- the confirm-by-readback loop was renamed or removed");
+const beforeSettle = src;
+src = src.replace(/var SETTLE_INTERVAL_MS = \d+;/, "var SETTLE_INTERVAL_MS = 5;")
+         .replace(/var SETTLE_MAX_MS = \d+;/, "var SETTLE_MAX_MS = 100;");
+if (src === beforeSettle) fail("the settle constants are gone -- an async loader would be captured mid-load again");
 
 /* Evaluate the tool the way the fixed hook does: os/std as parameters. The
  * point of the test is what happens when that scan cannot see a fleet. */
@@ -211,6 +215,37 @@ const oneModule = { readdir: (p) => p.endsWith("sound_generators") ? [["braids"]
     fail("a module that served nothing at all was recorded as " +
          JSON.stringify(doc.modules[0].status) + " -- the confirm is not confirming");
   console.log("  ok  a module that serves nothing is still a failure");
+}
+
+/* ---- F: an async loader must be captured SETTLED ------------------------
+ *
+ * waitUntilReady polls is_loading, which most of the fleet does not implement
+ * -- it answers "" and the wait returns instantly, so the guard written for
+ * the ROM loaders never guarded anything. Measured: the first good capture
+ * recorded minijv with 192 presets against the fixture\u0027s 2427, and the whole
+ * 96-module run took 20 seconds. Nothing waited for anything.
+ *
+ * Settling needs no cooperation from the module: sample until two consecutive
+ * samples agree. */
+{
+  let n = 0;
+  const growing = (s, k) => {
+    if (k.endsWith(":chain_params")) return "[{}]";
+    if (k.endsWith(":ui_hierarchy"))
+      return JSON.stringify({ levels: { root: { list_param: "p", count_param: "c" } } });
+    if (k.endsWith(":c")) return String(++n < 4 ? n * 100 : 400);   /* settles at 400 */
+    return "";
+  };
+  const { run, writes } = load(oneModule, growing, () => true);
+  run();
+  const doc = JSON.parse(writes[0][1]);
+  if (!doc.modules[0].presets)
+    fail("no preset metadata captured, so the settle cannot have looked at the count");
+  if (doc.modules[0].presets.count !== 400)
+    fail("captured a preset count of " + doc.modules[0].presets.count +
+         " from a bank that was still growing; expected the settled 400. This is " +
+         "the minijv 192-vs-2427 bug.");
+  console.log("  ok  a growing bank is captured after it settles, not on first answer");
 }
 
 console.log("PASS: the contract capture cannot silently capture nothing");
