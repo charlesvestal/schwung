@@ -27,11 +27,17 @@ import { KIND_ENUM, KIND_OPAQUE } from "./param_meta.mjs";
  * Continuation pages read as "page 2 of Filter" rather than "Filter - 2", which
  * is punctuation read aloud.
  */
-export function announcePage(page, pageIndex, pageCount) {
+export function announcePage(page, pageIndex, pageCount, label) {
     if (!page) return "";
     const pos = `${pageIndex + 1} of ${pageCount}`;
-    const m = String(page.name || "").match(/^(.*?) - (\d+)$/);
-    const name = m ? `page ${m[2]} of ${m[1]}` : (page.name || "");
+    /* `label` is what the header shows, which for a child level names the
+     * CHILD ("Part 2") rather than the level and its continuation index. The
+     * screen reader saying something different from the screen is the same
+     * bug wearing headphones. */
+    const shown = (label !== undefined && label !== null && label !== "")
+        ? String(label) : String(page.name || "");
+    const m = shown.match(/^(.*?) - (\d+)$/);
+    const name = m ? `page ${m[2]} of ${m[1]}` : shown;
 
     if (page.kind === "preset") return `${name}, preset browser, ${pos}`;
     if (page.kind === "items") return `${name}, list, ${pos}`;
