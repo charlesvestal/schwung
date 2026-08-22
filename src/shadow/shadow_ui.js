@@ -1641,11 +1641,21 @@ function paramPagesChromeFor(componentKey) {
     if (mfx < 0) return null;
     return {
         label: MASTER_CHAIN_TARGET.label,
-        /* "master_fx:fx2:module", NOT "master_fx:fx2_module" — the underscore
-         * form is the slot chain's spelling and is unserved here, and an
-         * unserved key reads back as "" rather than erroring, so the header
-         * would just quietly lose its module name. */
-        moduleKey: MASTER_CHAIN_TARGET.key(masterFxComponentKey(mfx), "module"),
+        /*
+         * ":name", which serves the module ID -- NOT ":module", which serves
+         * the plugin PATH, and not the slot chain's "master_fx:fx2_module"
+         * underscore spelling, which is unserved here.
+         *
+         * All three spellings fail differently, and the middle one is the
+         * nasty one. The underscore form is unserved, and an unserved read
+         * comes back as "" so the header quietly loses its name. ":module" IS
+         * served -- with a filesystem path -- and the abbreviation fallback
+         * turned that into "/D", so every Master FX module showed the same
+         * confident wrong label. A bad value believed because it parsed.
+         *
+         * The path key is deliberately left alone; other callers use it.
+         */
+        moduleKey: MASTER_CHAIN_TARGET.key(masterFxComponentKey(mfx), "name"),
         returnView: VIEWS.MASTER_FX,
     };
 }
@@ -4517,12 +4527,43 @@ function cacheModuleAbbrev(json) {
     }
 }
 
-/* Get abbreviation for a module */
+/*
+ * Get abbreviation for a module.
+ *
+ * Takes a module ID -- and defends against being handed a filesystem PATH,
+ * which is how the Master FX header came to read "MFX > /D" for every module:
+ * the chrome asked for a key that serves the plugin path, and the fallback
+ * below happily returned the first two characters of "/data/UserData/...".
+ * A wrong KEY would have been survivable, since an unserved read comes back
+ * as "" and the header just loses its name; a served key with the wrong KIND
+ * of value produced a confident, plausible-looking answer instead.
+ *
+ * The path handling is INLINE, not a helper. Several tests lift this function
+ * out of the file with `new Function` and an explicit dependency list -- see
+ * tests/host/test_chain_editor_snapshot.sh -- so a new free identifier here
+ * is a ReferenceError there, which is the same trap drawChainEdit documents.
+ *
+ * Note the last path segment is NOT the id: a module path names the plugin
+ * FILE (".../cloudseed/dsp.so" -- shadow_chain_mgmt.c stores dsp_path), so a
+ * plain basename gives "dsp.so" and an abbreviation of "DS" for every module
+ * in the fleet. The id is the directory holding the plugin.
+ */
 function getModuleAbbrev(moduleId) {
     if (!moduleId) return "--";
-    const lower = moduleId.toLowerCase();
-    return moduleAbbrevCache[lower] || moduleId.substring(0, 2).toUpperCase();
+    let id = String(moduleId);
+    if (id.indexOf("/") >= 0) {
+        const parts = id.split("/").filter(Boolean);
+        if (!parts.length) return "--";
+        const last = parts[parts.length - 1];
+        id = (/\.[A-Za-z0-9]+$/.test(last) && parts.length >= 2)
+            ? parts[parts.length - 2]
+            : last;
+    }
+    if (!id) return "--";
+    const lower = id.toLowerCase();
+    return moduleAbbrevCache[lower] || id.substring(0, 2).toUpperCase();
 }
+
 
 /* Param API helper functions */
 function getSlotParam(slot, key) {
