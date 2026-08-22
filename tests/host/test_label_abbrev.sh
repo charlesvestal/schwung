@@ -25,9 +25,13 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 node -e '
-import("./src/shared/param_pages/render_page_movy.mjs").then((R) => {
+Promise.all([
+  import("./src/shared/param_pages/render_page_movy.mjs"),
+  import("./src/shared/param_pages/font4x5.mjs"),
+]).then(([R, F]) => {
   const fail = (m) => { console.log("FAIL: " + m); process.exit(1); };
   const T = R.WORD_ABBREV;
+  const budgetOf = () => Math.min(R.CELL_W, F.fontWidth4x5("M".repeat(R.LABEL_CHARS)));
   const words = Object.keys(T);
 
   /* ---- 1. an abbreviation must abbreviate ---------------------------- */
@@ -79,17 +83,42 @@ import("./src/shared/param_pages/render_page_movy.mjs").then((R) => {
            " — declare them in ABBREV_SYNONYMS if that is deliberate");
   }
 
-  /* ---- 3. every entry must actually LAND ------------------------------
+  /* ---- 3. every mnemonic must FIT when it is used --------------------
    *
-   * An abbreviation still goes through shortenLabel afterwards. A four-letter
-   * mnemonic that gets squeezed again is worse than no entry at all: it looks
-   * covered in the table and renders as a stump on the device. Rendered on
-   * its own, each entry must come out intact. */
+   * A mnemonic still goes through shortenLabel afterwards, and one that gets
+   * squeezed again is worse than no entry: it looks covered in the table and
+   * renders as a stump on the device.
+   *
+   * Probed at a budget sized to THIS entry -- exactly the width of the mnemonic
+   * itself -- which is the condition under which the table fires for it. A
+   * single fixed narrow budget does not work: it has to be wider than every
+   * mnemonic and narrower than every full word, and those overlap ("FINE" is
+   * 14px, "FIN" is 11px).
+   *
+   * This used to assert labelForCell(word) === mnemonic at the DEFAULT cell,
+   * which the group-aware rule breaks by design: a word whose full form fits
+   * now renders that instead. */
   for (const w of words) {
-    const shown = R.labelForCell(w);
+    const probe = F.fontWidth4x5(T[w]);
+    const shown = R.labelForCell(w, probe + 2);
     if (shown !== T[w])
-      fail("`" + w + "` is tabled as `" + T[w] + "` but the cell draws `" + shown +
-           "` — the mnemonic does not fit and the entry is a lie");
+      fail("at a " + probe + "px budget `" + w + "` is tabled as `" + T[w] +
+           "` but the cell draws `" + shown + "` -- the mnemonic does not fit");
+  }
+
+  /* ---- 3b. a synonym group must agree ON SCREEN ----------------------
+   *
+   * Property 2 pins the TABLE; this pins the RENDER, and they are not the
+   * same check. A per-word "expand it if it fits" rule keeps the table
+   * perfectly consistent while drawing Amount as AMOUNT and Amt as AMT --
+   * one control reading two ways depending on which spelling its module
+   * used. That is the regression this catches and property 2 does not. */
+  for (const g of R.ABBREV_SYNONYMS) {
+    const shown = new Set(g.map((w) => R.labelForCell(w)));
+    if (shown.size !== 1)
+      fail("the synonym group " + JSON.stringify(g) + " renders as " +
+           JSON.stringify([...shown]) + " -- the same control reads differently " +
+           "depending on the spelling a module happened to use");
   }
 
   /* ---- 4. the table must EARN its place on the real fleet -------------
@@ -170,36 +199,38 @@ import("./src/shared/param_pages/render_page_movy.mjs").then((R) => {
       fail("\"" + label + "\" draws `" + got + "` -- still the vowel-stripped form");
   }
 
-  /* And the other direction: a word that FITS must not be tabled at all.
+  /* And the other direction: a word that FITS must render as the WORD.
    *
-   * Nineteen entries were removed for exactly this -- ACCENT was being
-   * rewritten to ACC and TEMPO to TMP, both of which fit the cell whole --
-   * and re-adding one while extending the table is an easy mistake.
+   * This used to assert those words were ABSENT from the table, because the
+   * table applied unconditionally and tabling ACCENT meant drawing ACC. The
+   * rule is now conditional, so presence in the table is harmless and the
+   * thing to check is the render. Nineteen words were removed under the old
+   * rule and could safely come back under this one.
    *
-   * Asserted as ABSENCE from the table, not by rendering into a wide cell:
-   * labelForCell clamps to min(cellW - 2, LABEL_CHARS worth of Ms), so a wide
-   * cell is still the same cap and the render proves nothing. That mistake
-   * has now been made twice in this file; hence the absence check.
-   *
-   * The list is the measured one -- each of these was verified against the
-   * fleet fixture to make more labels worse than better at the wider cell. */
-  const FITS_WHOLE = ["accent", "patch", "preset", "scale", "tempo", "drift",
-                      "morph", "clock", "model", "choke", "color", "colour",
-                      "pulse", "chord", "curve", "range", "keyflw", "scene",
-                      "chance"];
+   * Includes `color`, which is tabled precisely BECAUSE it fits: without an
+   * entry it has no synonym group, and Color/Colour render two different
+   * ways. A word can need a table entry for agreement rather than for
+   * length. */
+  const FITS_WHOLE = ["Accent", "Patch", "Preset", "Scale", "Tempo", "Drift",
+                      "Morph", "Clock", "Model", "Choke", "Color", "Pulse",
+                      "Chord", "Curve", "Range", "Scene", "Chance",
+                      "Pitch", "Attack", "Decay", "Cutoff", "Octave", "Drive"];
   for (const w of FITS_WHOLE) {
-    if (T[w])
-      fail("`" + w + "` is back in the table as `" + T[w] + "`, but it fits the " +
-           "cell whole -- a mnemonic must never replace a word that fits");
+    const upper = w.toUpperCase();
+    if (F.fontWidth4x5(upper) > budgetOf()) continue;    /* does not fit: mnemonic is right */
+    const shown = R.labelForCell(w);
+    if (shown !== upper)
+      fail("\"" + w + "\" fits the cell whole but draws `" + shown +
+           "` -- a mnemonic must never replace a word that fits");
   }
 
   console.log("  ok  " + words.length + " entries, all shorter, upper case, drawable");
   console.log("  ok  every collision is declared in ABBREV_SYNONYMS");
-  console.log("  ok  every entry survives shortenLabel intact");
+  console.log("  ok  every mnemonic fits when it fires, and every synonym group renders as one word");
   console.log("  ok  " + complete + "/" + labels.size + " fleet labels complete (floor " + FLOOR + ")");
-  console.log("  ok  the reported labels draw their mnemonic; " + FITS_WHOLE.length + " words that fit stay untabled");
+  console.log("  ok  the reported labels draw their mnemonic; " + FITS_WHOLE.length + " words that fit render whole");
   console.log("  .. " + vowelStripped + " vowel-stripped (ceiling " + VOWEL_CEILING +
               " -- slack at this cap, bites at the wider one)");
   console.log("PASS: the abbreviation table abbreviates, does not collide, and fits");
-});
+}).catch((e) => { console.log("FAIL: " + e); process.exit(1); });
 '
