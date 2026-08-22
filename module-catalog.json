@@ -1257,6 +1257,17 @@
       "min_host_version": "0.11.6"
     },
     {
+      "id": "tablor",
+      "name": "Tablor",
+      "description": "2-osc wavetable synth. Position morphing, bend, formant shift and 4-voice unison; sub and noise; multimode filter with its own ADSR; 2 envelopes, 2 LFOs, 4-slot mod matrix and 8 assignable macros. 8 voices poly or mono with glide. Unlimited shareable .tblr presets, 115 seeded wavetables, and Serum/Vital/Ableton tables via Move Manager. Web panel with a live display of the loaded wavetable.",
+      "author": "athousanddetails; after Wavetable by Roland Rabien (FigBug)",
+      "component_type": "sound_generator",
+      "github_repo": "athousanddetails/schwung-tablor",
+      "default_branch": "main",
+      "asset_name": "tablor-module.tar.gz",
+      "min_host_version": "0.12.0"
+    },
+    {
       "id": "chord-finder",
       "name": "Chord Finder",
       "description": "Scale-aware chord progression finder with 16 ranked chord choices, root-driven revoicing, a piano-note display, and eight-slot MIDI loop capture.",
