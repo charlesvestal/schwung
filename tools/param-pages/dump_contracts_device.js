@@ -31,6 +31,11 @@
 var PROBE_SLOT = 3;
 var MODULE_ROOT = "/data/UserData/schwung/modules";
 var OUT_PATH = "/data/UserData/schwung/module-contracts.json";
+/* A module load is confirmed by reading it back, not by the write's return
+ * value -- see loadModule. A heavy module (surge, osirus, minijv) can take
+ * seconds to appear. */
+var LOAD_ATTEMPTS = 2;
+var LOAD_CONFIRM_MS = 8000;
 
 /* Category directory -> the chain component a module of that type loads into. */
 var CATEGORIES = [
@@ -46,12 +51,26 @@ function readJsonFile(path) {
     } catch (e) { return null; }
 }
 
-function listInstalledModules() {
+/*
+ * A category that cannot be scanned must SAY SO. This used to be
+ * `catch (e) { continue; }`, which cannot tell "no modules of this kind
+ * installed" from "os is not defined" -- and it was the latter: the trigger
+ * evaluated this file in global scope, where the shadow UI's `os` import is
+ * not visible. All three scans threw, the capture wrote module_count 0 in
+ * 18ms, and the run looked like a success. Silence about a failure is worse
+ * than the failure.
+ */
+function listInstalledModules(scanErrors) {
     var out = [];
     for (var c = 0; c < CATEGORIES.length; c++) {
         var cat = CATEGORIES[c];
         var entries;
-        try { entries = os.readdir(MODULE_ROOT + "/" + cat.dir)[0] || []; } catch (e) { continue; }
+        try {
+            entries = os.readdir(MODULE_ROOT + "/" + cat.dir)[0] || [];
+        } catch (e) {
+            scanErrors.push({ dir: cat.dir, error: String(e) });
+            continue;
+        }
         for (var i = 0; i < entries.length; i++) {
             var id = entries[i];
             if (id === "." || id === "..") continue;
@@ -78,17 +97,61 @@ function waitUntilReady(component, timeoutMs) {
     while (waited < timeoutMs) {
         var loading = shadow_get_param(PROBE_SLOT, component + ":is_loading");
         if (loading !== "1") return true;
-        /* No sleep binding here; burn a short spin between polls. */
-        var spinUntil = Date.now() + 100;
-        while (Date.now() < spinUntil) { /* wait */ }
+        spin(100);
         waited += 100;
     }
     return false;
 }
 
+function spin(ms) {
+    /* No sleep binding in this context; burn the wait. This runs inside the
+     * shadow UI tick, so the UI is frozen for the duration -- acceptable for a
+     * one-shot capture, and the alternative (returning to the tick between
+     * modules) would mean rewriting the tool as a state machine. */
+    var until = Date.now() + ms;
+    while (Date.now() < until) { /* wait */ }
+}
+
+/*
+ * Load a module and CONFIRM it, rather than believing the write's return value.
+ *
+ * shadow_set_param returns false when the parameter channel refused or timed
+ * out, which is not the same as the module failing to load -- the same
+ * three-answer distinction that bit the READ path. The first real run recorded
+ * 50 of 96 modules as "load failed", and the failures were exactly the heavy
+ * ones (surge, osirus, minijv, cloudseed): they load slowly enough that the
+ * write did not come back inside the channel's timeout. Believing that produced
+ * a capture that was silently missing more than half the fleet, and missing it
+ * in a biased way -- the complicated modules, i.e. the ones a contract fixture
+ * is for.
+ *
+ * So: retry the write, then confirm by reading the component's module back.
+ */
+function loadModule(component, id) {
+    for (var attempt = 0; attempt < LOAD_ATTEMPTS; attempt++) {
+        try { shadow_set_param(PROBE_SLOT, component + ":module", id); } catch (e) { /* see below */ }
+        /* Confirm from the device, not from the return value. */
+        for (var waited = 0; waited < LOAD_CONFIRM_MS; waited += 100) {
+            var cur = shadow_get_param(PROBE_SLOT, component + ":module");
+            if (cur && String(cur).indexOf(id) !== -1) return true;
+            spin(100);
+        }
+    }
+    return false;
+}
+
 globalThis.dumpModuleContracts = function () {
-    var mods = listInstalledModules();
+    var scanErrors = [];
+    var mods = listInstalledModules(scanErrors);
     print("dumping " + mods.length + " modules from slot " + PROBE_SLOT);
+    /* Refuse to overwrite a good capture with an empty one. A zero here is
+     * never a fact about the device -- there is always a fleet -- so it is a
+     * failure of this tool, and writing it would destroy the fixture source. */
+    if (mods.length === 0) {
+        throw new Error("fleet scan found no modules under " + MODULE_ROOT +
+            (scanErrors.length ? "; scan errors: " + JSON.stringify(scanErrors)
+                               : "; no scan errors, so the tree is unexpectedly empty"));
+    }
 
     var restore = {};
     for (var c = 0; c < CATEGORIES.length; c++) {
@@ -103,8 +166,7 @@ globalThis.dumpModuleContracts = function () {
     for (var i = 0; i < mods.length; i++) {
         var m = mods[i];
         var comp2 = m.componentKey;
-        var ok = false;
-        try { ok = shadow_set_param(PROBE_SLOT, comp2 + ":module", m.id); } catch (e) { ok = false; }
+        var ok = loadModule(comp2, m.id);
         if (ok) waitUntilReady(comp2, 15000);
 
         if (!ok) {
@@ -159,6 +221,7 @@ globalThis.dumpModuleContracts = function () {
         module_count: out.length,
         modules: out,
         failures: failures,
+        scan_errors: scanErrors,
     };
     host_write_file(OUT_PATH, JSON.stringify(doc));
     print("wrote " + OUT_PATH + " (" + out.length + " modules, " + failures.length + " failures)");

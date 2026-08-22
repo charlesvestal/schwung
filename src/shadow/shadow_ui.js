@@ -18345,20 +18345,51 @@ globalThis.tick = function() {
         contractDumpCheckedMs = _cdNow;
         if (host_file_exists("/data/UserData/schwung/dump_contracts_trigger")) {
         contractDumpDone = true;
-        try { host_write_file("/data/UserData/schwung/dump_contracts_trigger", ""); } catch (e) {}
+        /* DELETE the trigger, don't empty it. contractDumpDone only latches for
+         * the life of this process, so an emptied-but-present trigger re-fired
+         * the whole loud capture on the next service restart -- which is
+         * exactly what a deploy does. Observed: install.sh restarted the shadow
+         * UI and the capture ran again unbidden, before the new tool had even
+         * been staged.
+         *
+         * There is deliberately no "empty means disarmed" fallback: `touch`
+         * creates an empty file, so that rule would disarm the documented way
+         * of arming it. */
+        try { os.remove("/data/UserData/schwung/dump_contracts_trigger"); } catch (e) {}
         try {
             const src = host_read_file("/data/UserData/schwung/tools/dump_contracts_device.js");
             if (!src) {
                 debugLog("dump_contracts: tools/dump_contracts_device.js not on the device");
             } else {
-                /* eval, not import: the tool is written in ES5 var/function
-                 * style with no exports precisely so it can be loaded this
-                 * way. */
-                (0, eval)(src);
+                /* Evaluated rather than imported: the tool is written in ES5
+                 * var/function style with no exports precisely so it can be
+                 * loaded this way.
+                 *
+                 * new Function, NOT (0, eval). Indirect eval runs in GLOBAL
+                 * scope, and `os` here is an ES module IMPORT -- a
+                 * module-scoped binding that is not on globalThis. The tool
+                 * enumerates the fleet with os.readdir, so under indirect eval
+                 * every one of its three category scans threw ReferenceError
+                 * into a `catch { continue; }` and it captured zero modules in
+                 * 18ms while reporting success. Passing os/std in as
+                 * parameters makes the dependency explicit and keeps them off
+                 * globalThis. */
+                new Function("os", "std", src)(os, std);
                 if (typeof globalThis.dumpModuleContracts === "function") {
                     debugLog("dump_contracts: starting -- slot 3 will make noise");
-                    const n = globalThis.dumpModuleContracts();
-                    debugLog("dump_contracts: wrote " + n + " modules");
+                    globalThis.dumpModuleContracts();
+                    /* The tool returns its OUTPUT PATH, not a count -- reading
+                     * the count back out of the file is the only honest report,
+                     * and a zero here means the run found no modules at all
+                     * rather than that the fleet is empty. */
+                    let n = -1;
+                    try {
+                        n = JSON.parse(host_read_file(
+                            "/data/UserData/schwung/module-contracts.json")).module_count;
+                    } catch (e) {}
+                    if (n > 0) debugLog("dump_contracts: captured " + n + " modules");
+                    else debugLog("dump_contracts: FAILED -- captured " + n +
+                                  " modules; the fleet scan found nothing");
                 } else {
                     debugLog("dump_contracts: the tool defined no dumpModuleContracts()");
                 }
