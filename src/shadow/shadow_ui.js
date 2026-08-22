@@ -10646,9 +10646,29 @@ function enterHierarchyEditorFromParamPages() {
     if (page && page.level && hierEditorHierarchy &&
         hierEditorHierarchy.levels && hierEditorHierarchy.levels[page.level] &&
         page.level !== hierEditorLevel) {
+        const levelDef = hierEditorHierarchy.levels[page.level];
         hierEditorLevel = page.level;
         hierEditorPath = [];
         hierEditorChildIndex = -1;
+        /*
+         * The CHILD COUNT travels with the level, and this path used to drop
+         * it.
+         *
+         * enterHierarchyEditor -> resetHierarchyEditorFor has just zeroed it,
+         * and loadHierarchyLevel gates its child selector on
+         * `child_prefix && hierEditorChildCount > 0`. So handing off a child
+         * level from the grid produced neither the selector nor an error: the
+         * level fell through to the generic param list, and
+         * buildHierarchyParamKey -- which needs hierEditorChildIndex >= 0 to
+         * add the prefix -- emitted the unprefixed template keys. Eleven rows
+         * of parameters addressing keys the DSP does not serve.
+         *
+         * Reported from the device as minijv's "Edit Parts doesn't do
+         * anything". The other two navigation sites set these; only the
+         * hand-off from the grid did not.
+         */
+        hierEditorChildCount = levelDef.child_count || 0;
+        hierEditorChildLabel = levelDef.child_label || "Child";
         loadHierarchyLevel();
     }
 }
