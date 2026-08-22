@@ -99,6 +99,11 @@ cd "$(dirname "$0")/../.."
 if ! command -v node >/dev/null 2>&1; then echo "FAIL: node required" >&2; exit 1; fi
 
 node --input-type=module -e '
+/* The REAL shiftHintsFor from the shared chrome. These renders are pixel
+   baselines, so a stub would bake in a footer nobody actually draws. */
+const CHROME = await import("./src/shared/chain_editor_chrome.mjs");
+const CHROME_SHIFT_HINTS = CHROME.shiftHintsFor;
+const CHROME_REST_HINTS = CHROME.CHAIN_HINTS_AT_REST;
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { createFramebuffer, drawContext } from "./tools/param-pages/harness.mjs";
@@ -251,7 +256,7 @@ const CHAIN_DRAW_DEPS = [
   "getSlotParamCached", "drawMovyHeader", "DIAGRAM_Y", "MOVY_RULE_Y", "draw_rect",
   "getSlotParam", "slotChainComponents", "drawChainDiagram", "getChainComponentModule",
   "getModuleAbbrev", "chainComponentParamKey", "DIAGRAM_BOX_H", "SCREEN_WIDTH",
-  "getComponentParamPrefix", "drawMovyFooter", "isShiftHeld", "ensureChainConfigFresh",
+  "getComponentParamPrefix", "drawMovyFooter", "isShiftHeld", "shiftHintsFor", "CHAIN_HINTS_AT_REST", "ensureChainConfigFresh",
   "knobCardDrawState", "drawKnobCard",
   "slotChainTarget", "chainLfoTargetMap", "chainComponentBypassed",
   /* The shared bands (header / label / info / footer), 4a-3. Supplied REAL --
@@ -274,7 +279,8 @@ function renderChain(c) {
     w.getSlotParamCached, drawMovyHeader, DIAGRAM_Y, MOVY_RULE_Y, g.draw_rect,
     w.getSlotParam, w.slotChainComponents, drawChainDiagram, w.getChainComponentModule,
     w.getModuleAbbrev, w.chainComponentParamKey, DIAGRAM_BOX_H, SCREEN_WIDTH,
-    w.getComponentParamPrefix, drawMovyFooter, () => !!c.shift, w.ensureChainConfigFresh,
+    w.getComponentParamPrefix, drawMovyFooter, () => !!c.shift, CHROME_SHIFT_HINTS,
+    CHROME_REST_HINTS, w.ensureChainConfigFresh,
     () => (c.card || null), drawKnobCard,
     w.slotChainTarget, w.chainLfoTargetMap, w.chainComponentBypassed,
     drawChainEditorBands);
@@ -328,6 +334,10 @@ const MFX_DRAW_DEPS = ["ctx", "drawHeader", "drawChainDiagram", "DIAGRAM_W",
   /* Same shared bands the slot editor draws, 4a-3 -- which is what makes the
      two screens the same screen from the header rule down. */
   "drawChainEditorBands",
+  /* And the Shift footer helper that lives beside them, for the same reason:
+     one spelling of a gesture, drawn by both screens. REAL, not a stub -- a
+     stub would baseline a footer nobody draws. */
+  "shiftHintsFor", "CHAIN_HINTS_AT_REST",
   /* The knob card, 4b. A module IMPORT in shadow_ui_master_fx.mjs, so it is a
      free identifier under the lift and MUST be a dependency: leave it out and
      the card block throws, and the tempting fix -- a typeof guard -- would make
@@ -387,7 +397,8 @@ function renderMaster(c) {
     DIAGRAM_Y, SCREEN_WIDTH, truncateText, boom("drawMasterNamePreview"),
     boom("drawMasterConfirmOverwrite"), boom("drawMasterConfirmDelete"),
     boom("drawMasterPresetPicker"), boom("drawMasterFxSettingsMenu"),
-    boom("drawMasterFxModuleSelect"), drawChainEditorBands, drawKnobCard);
+    boom("drawMasterFxModuleSelect"), drawChainEditorBands, CHROME_SHIFT_HINTS,
+    CHROME_REST_HINTS, drawKnobCard);
   draw();
   clearGlobals();
   return fb;
@@ -1038,11 +1049,22 @@ if (process.env.DUMP_CASE) {
 }
 
 /* Two screens that render identically would mean one of them is not being
-   driven at all. */
+   driven at all.
+   
+   DECLARED exceptions, because one pair is identical on purpose: on an empty
+   Master FX chain the only selectable cell is the `+`, and Shift changes
+   NOTHING there -- shift+click opens the same picker a plain click does. The
+   footer rule is that an action Shift does not change keeps its place, so the
+   two renders are supposed to match, and that is worth pinning rather than
+   working around by pointing the case at a different cell. */
+const SAME_ON_PURPOSE = [["master/len0/sel-add-fx", "master/len0/shift"]];
+const sameAllowed = (a, b) =>
+  SAME_ON_PURPOSE.some((p) => p.indexOf(a) >= 0 && p.indexOf(b) >= 0);
 {
   const bySha = {};
   for (const id of ids) {
-    if (bySha[current[id].sha]) fail("cases " + bySha[current[id].sha] + " and " + id +
+    if (bySha[current[id].sha] && !sameAllowed(bySha[current[id].sha], id))
+      fail("cases " + bySha[current[id].sha] + " and " + id +
       " render the SAME pixels -- one of them is not varying what it claims to");
     bySha[current[id].sha] = id;
   }

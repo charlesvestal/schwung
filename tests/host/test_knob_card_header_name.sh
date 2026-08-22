@@ -71,6 +71,10 @@ Promise.all([
     "announceParameter", "chainTargetIsModulePosition", "chainTargetHierarchy",
     "chainTargetChainParams", "getKnobContext", "buildMetaIndex", "resolveViz",
     "getSlotParam",
+    /* The card hands the renderer its trigger fire times; without this the
+       lift throws. A stub returning {} is right here -- this file is about the
+       header NAME, and the animation is pinned in its own test. */
+    "triggerFiredAtForRow",
   ];
 
   const spoken = [];
@@ -113,6 +117,7 @@ Promise.all([
     buildMetaIndex: () => ({}),
     resolveViz: () => ({ groups: null }),
     getSlotParam: () => "0.50",
+    triggerFiredAtForRow: () => ({}),
   };
 
   let api;

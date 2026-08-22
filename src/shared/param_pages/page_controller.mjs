@@ -84,8 +84,7 @@ const MENU_FRAME_X = 4, MENU_FRAME_Y = 9, MENU_FRAME_W = 120;
 /* One clear row above the frame and one below, hence the 1 on each side. */
 const MENU_FRAME_BOTTOM_INSET = 1;
 const MENU_BRACKET_LEN = 7;
-import { knobInit, knobTick, knobConfigFromMeta } from "../knob_engine.mjs";
-import { movyKnobInit, movyKnobTick } from "./movy_knob.mjs";
+import { knobInit, knobStep } from "../knob_engine.mjs";
 import { formatParamForSet, learnEnumWireFormat, enumWireValue } from "../param_format.mjs";
 import { announcePage, announceTouch, announceTurn, announcePageContents } from "./announce_page.mjs";
 
@@ -252,6 +251,12 @@ export const CONTRACT_RETRY_INTERVAL_TICKS = 30;
  */
 export const CONTRACT_RECOVER_INTERVAL_TICKS = 600;
 
+/* How long a trigger press stays interesting to the renderer (its burst is
+ * still on screen), and how many overlapping presses to keep. Both exist only
+ * to bound the list — the renderer decides what it actually draws. */
+const TRIGGER_BURST_KEEP_MS = 400;
+const TRIGGER_BURST_MAX = 4;
+
 export function createController(io = {}) {
     const getParam = io.getParam || (() => null);
     const setParam = io.setParam || (() => {});
@@ -354,6 +359,8 @@ export function createController(io = {}) {
          * looking, so an unreadable component recovers without the user
          * having to navigate away and back. */
         contractGaveUp: false,
+        /* key -> ms when a trigger last fired, for the bang flash. */
+        triggerFiredAt: Object.create(null),
         contractRetries: 0,
         /* Wall-clock ms at which a selection-driven contract re-read comes
          * due, or 0 for none pending. Re-armed per detent — see
@@ -1147,6 +1154,24 @@ export function createController(io = {}) {
         } else {
             const nm = getParam(fullKey(p.nameParam));
             st.name = (nm && nm.length) ? nm : null;
+            /*
+             * The HEADER's name too, from this same read.
+             *
+             * s.presetName is otherwise only refreshed by the knob page's
+             * rotation, and this branch returns before that -- so scrolling a
+             * preset browser changed the sound while the header kept naming
+             * the preset you started on, and it only caught up once you
+             * navigated to the knobs. Reported from the device for airwindows,
+             * whose browser is the module identity: "it only updates after
+             * going to the knobs, not on preset change".
+             *
+             * Free: it is the read that just happened, not a new one. A
+             * browser's name_param IS the name of the current selection, which
+             * is exactly what the header wants -- airwindows spells it
+             * `plugin_name` rather than `preset_name`, so keying off the name
+             * the page declares is also what makes it work there.
+             */
+            if (st.name) s.presetName = st.name;
         }
     }
 
@@ -1429,12 +1454,10 @@ export function createController(io = {}) {
             s.turnClaimMs = 0;
         }
 
-        /* The Movy layout turns like Movy — see movy_knob.mjs — not like
-         * Schwung's own dial/bar grid (knob_engine.mjs, a different,
-         * time-based acceleration feel that predates this port). Same state
-         * slot, different init/tick pair, picked once per key so a turn
-         * mid-gesture never switches models under your hand. */
-        const useMovy = s.layout === LAYOUT_MOVY;
+        /* ONE knob model, whatever the layout. There used to be two, and this
+         * branch picked between them by layout -- a knob that behaves
+         * differently depending on which screen you touched it from is a bug,
+         * not a layout choice. See shared/knob_engine.mjs. */
         let st = s.knobStates[key];
         if (!st) {
             /* Turning a knob the read cursor has not reached yet is the one
@@ -1460,26 +1483,22 @@ export function createController(io = {}) {
                 const num = Number(raw);
                 start = isFinite(num) ? num : 0;
             }
-            st = s.knobStates[key] = useMovy ? movyKnobInit(start) : knobInit(start);
+            st = s.knobStates[key] = knobInit(start);
         }
 
-        let value;
-        if (useMovy) {
-            value = movyKnobTick(st, meta, direction, t, fine);
-        } else {
-            /* Fine adjust: Elektron's [FUNC]+encoder. Holding shift already
-             * reveals every value, so precision mode and "show me the
-             * numbers" are the same gesture — which is what you want when
-             * you are chasing a value.
-             *
-             * Only floats have a finer step to give. An int already moves in
-             * whole units and an enum in whole options; there is nothing
-             * below that, and pretending otherwise would just make them feel
-             * broken under shift. */
-            const cfg = knobConfigFromMeta(meta);
-            const canRefine = fine && meta.type === "float";
-            value = knobTick(st, canRefine ? { ...cfg, step: (cfg.step || 0.01) / 10 } : cfg, direction, t);
-        }
+        /*
+         * Fine adjust: Elektron's [FUNC]+encoder. Holding shift already reveals
+         * every value, so precision mode and "show me the numbers" are the same
+         * gesture -- which is what you want when chasing a value.
+         *
+         * Passed through for EVERY type. It used to be gated to floats here on
+         * the reasoning that an int moves in whole units and an enum in whole
+         * options, so there is nothing finer. That is wrong on both counts once
+         * the step is normalised to the range: a 0..20000 int moves 100 at a
+         * time coarse, and an enum is gated at 4 detents per option, so both
+         * have a finer setting to give and shift did nothing at all on them.
+         */
+        const value = knobStep(st, meta, direction, t, fine);
         const wire = formatParamForSet(value, meta);
 
         s.values[key] = wire;
@@ -1697,7 +1716,51 @@ export function createController(io = {}) {
         }
         const key = keyAt(slot);
         const meta = metaAt(slot);
-        if (!key || !meta || !meta.divable) return null;
+        if (!key || !meta) return null;
+
+        /*
+         * A TRIGGER fires. It is not a value to open or scrub — the module
+         * reports a constant and acts on the write, so a click is the whole
+         * interaction.
+         *
+         * The wire value that fires it is the module's business
+         * (["idle","trigger"], ["—","Rnd!"], ["Play","Save"] are all in the
+         * fleet), so option 1 goes out through the ordinary enum wire, which
+         * speaks whichever convention that module uses. Writing a bare "1"
+         * here is exactly the bug that makes euclidrum randomise a kit when
+         * asked to do nothing.
+         */
+        if (meta.writeOnly) {
+            if (meta.kind === KIND_ENUM && Array.isArray(meta.options) && meta.options.length > 1) {
+                setParam(fullKey(key), enumWireValue(meta, 1));
+                announce(`${meta.label}, ${meta.options[1]}`);
+            } else {
+                setParam(fullKey(key), "1");
+                announce(`${meta.label}`);
+            }
+            /*
+             * Stamp the fire time so the bang can flash. OVERWRITING is the
+             * point: clicking again mid-flash restarts the animation from the
+             * beginning rather than being swallowed by the one in progress, so
+             * two clicks look like two events. The renderer derives everything
+             * from this one number, so there is no animation state to clear.
+             */
+            /*
+             * APPEND, do not overwrite. A press must not cancel the bursts
+             * already travelling — a fast double-tap should throw two rings,
+             * not restart one. Trimmed to what can still be on screen, so the
+             * list cannot grow.
+             */
+            const t = now();
+            const prev = s.triggerFiredAt[key] || [];
+            s.triggerFiredAt[key] = prev
+                .filter((p) => t - p < TRIGGER_BURST_KEEP_MS)
+                .slice(-TRIGGER_BURST_MAX + 1)
+                .concat(t);
+            return null;
+        }
+
+        if (!meta.divable) return null;
         s.pending = { action: "open", key, fullKey: fullKey(key), meta };
         /*
          * An enum opens a list of its OPTIONS, so the intent carries the list
@@ -1820,6 +1883,16 @@ export function createController(io = {}) {
                 modValues: s.modValues,
                 pageGroups: pageGroups(),
                 viz: vizEnabled ? vizGroups() : [],
+                /*
+                 * The trigger button's press animation. Both of these have to
+                 * come from here: the renderer is pure and reads the clock off
+                 * `o`, so without them every button draws in its idle phase
+                 * forever -- which is exactly what shipped, because the test
+                 * handed the renderer both directly and so only ever proved
+                 * the renderer, never the wiring.
+                 */
+                triggerFiredAt: s.triggerFiredAt,
+                nowMs: now(),
                 footer,
             });
             if (s.hintLines) {
@@ -2035,6 +2108,7 @@ export function createController(io = {}) {
          *  if any, is the previous one — nothing here was planned from the
          *  failure. */
         get contractUnresolved() { return s.contractUnresolved; },
+        get triggerFiredAt() { return s.triggerFiredAt; },
         keyAt, metaAt,
         jumpIndex: () => jumpIndex(s.pages),
         groupIndex: () => groupIndex(s.pages),

@@ -28,11 +28,12 @@
 
 import { KIND_ENUM, KIND_OPAQUE, enumIndexOf } from "./param_meta.mjs";
 import { formatParamValue } from "../param_format.mjs";
-import { asciiFold, fitText, shortenLabel, line } from "./render_page.mjs";
+import { asciiFold, fitText, shortenLabel, line, circle } from "./render_page.mjs";
 import { drawVizGroup } from "./viz_draw.mjs";
 import { enumSquareLines } from "./font5x3.mjs";
 import { fontPrint as tzPrint, fontWidth as tzWidth, HEIGHT as TZ_H } from "./font_tamzen6x12.mjs";
 import { fontWidth4x5, fontPrint4x5, FONT4_HEIGHT, FONT4_MEASURE } from "./font4x5.mjs";
+import { fontWidth5x3, fontPrint5x3 } from "./font5x3.mjs";
 
 /**
  * Text is set in caps with labels abbreviated to a mnemonic. The HEADER and the
@@ -60,7 +61,31 @@ import { fontWidth4x5, fontPrint4x5, FONT4_HEIGHT, FONT4_MEASURE } from "./font4
  * and SAW as "SAU". font4x5 fixed that and is still what the enum square
  * uses; it is only the LABELS that wanted more height.
  */
-const LABEL_CHARS = 4;
+/*
+ * The label cap, in M-widths.
+ *
+ * It is a CAP, not a fit, and it was stricter than the space available:
+ * labelWidth is min(cellW - 2, fontWidth4x5("M" * LABEL_CHARS)), so a 4-across
+ * grid offered 30px of cell and the cap allowed 23. "Clear" is 24px and drew
+ * as "CLEA" -- reported from the device.
+ *
+ * 4 is a leftover. It dates from when labels were set in the 6px-advance
+ * Tamzen, where four characters genuinely was 24px and all that fit. Labels
+ * moved to the PROPORTIONAL font4x5 in the change described above and the 4
+ * came with them, even though M is now the widest glyph in the font rather
+ * than the only width -- so measuring in Ms is pessimistic for every real
+ * word. "Clear" is five characters in 24px because L and E are narrow.
+ *
+ * 5 gives 29px, still inside the 30px cell, so nothing can overflow: the
+ * min() against cellW is what actually guarantees that, and it is unchanged.
+ * 6 would be 35px, at which point the cap is inert and the cell width decides
+ * everything -- which throws away the mnemonic discipline this constant exists
+ * to impose.
+ *
+ * Exported so a test can derive the same budget rather than hard-coding a
+ * pixel number that a cap change would silently invalidate.
+ */
+export const LABEL_CHARS = 5;
 
 /** Uppercase, ascii-folded — the Elektron register. font4x5 has no lowercase. */
 function caps(s) { return asciiFold(String(s == null ? "" : s)).toUpperCase(); }
@@ -124,14 +149,228 @@ const WORD_ABBREV = {
     sample: "SMP", start: "STR", length: "LEN", reverse: "RVS",
     speed: "SPD", random: "RND", quantize: "QNT", divide: "DIV",
     portion: "PRT", channel: "CHN", output: "OUT", input: "IN",
+
+    /*
+     * Second pass, chosen by measuring the fleet rather than by guessing.
+     *
+     * Of the labels the cell still cuts, 371 distinct words of five or more
+     * characters had no entry, and the damage they do is not truncation -- it
+     * is that shortenLabel falls back to dropping vowels, which turns a word
+     * into a non-word. "Rotation" became ROTATN, "Mod Sens A" became MOSEA,
+     * "Wave Group" became WGROU. A mnemonic is both SHORTER and readable,
+     * which is the whole argument for a table over a wider cell: widening the
+     * cell to fit ROTATN buys nothing, because ROTATN was never the goal.
+     *
+     * Ordered by fleet frequency, most damaging first. `scene` alone appears
+     * 84 times.
+     */
+    voice: "VCE", voices: "VCES", 
+    trigger: "TRG", retrigger: "RTG", retrig: "RTG", 
+    scaling: "SCLG", rotation: "ROT",
+    rotate: "ROT", rhythm: "RHY", 
+    density: "DNS", unison: "UNI", macro: "MCR", operator: "OP",
+    right: "RGT", left: "LFT", deform: "DFM", unipolar: "UNP", bipolar: "BIP",
+    division: "DIV", matrix: "MTX", color: "CLR", colour: "CLR", 
+    porta: "GLD", branch: "BRN", enabled: "EN", enable: "EN", 
+    settings: "SET", stereo: "STO", distort: "DST", keytrack: "KTK",
+    cycle: "CYC", general: "GEN", polyphony: "POLY",
+    sends: "SND", send: "SND", expression: "EXP", switch: "SW", group: "GRP",
+    number: "NUM", reset: "RST", advanced: "ADV",
+    predelay: "PDLY", humanize: "HUM", sweep: "SWP", control: "CTL",
+    break: "BRK", point: "PNT", assign: "ASN", performance: "PERF",
+    perform: "PERF", route: "RTE", source: "SRC", grain: "GRN",
+    spectra: "SPC", motion: "MTN", capture: "CAP", oscillators: "OSCS",
+    harmonics: "HRM", brightness: "BRT",
+    transport: "TRS", compress: "CMP", flutter: "FLU", stutter: "STU",
+    octaves: "OCTS", reson: "RES",
 };
 
-/** Word-level pass before shortenLabel. Numbers and short words pass through. */
-function preAbbreviate(label) {
+/*
+ * Words that DELIBERATELY share an abbreviation.
+ *
+ * Two different words mapping to one mnemonic is normally a bug -- the label
+ * stops identifying the parameter -- so the test treats a collision as a
+ * failure unless it is declared here. Most groups are morphological (freq /
+ * frequency), but not all: portamento, porta and glide are three spellings of
+ * one control, and no prefix rule would catch that.
+ *
+ * Exported for tests/host/test_label_abbrev.sh, which is the only consumer.
+ */
+export const ABBREV_SYNONYMS = Object.freeze([
+    ["envelope", "env"],
+    ["amount", "amt"],
+    ["frequency", "freq"],
+    ["resonance", "reso", "resonant", "reson"],
+    ["glide", "portamento", "porta"],
+    /* Two spellings of one word. Without the group they render COLOR and
+     * COLOUR side by side -- the drift this list exists to stop, and the
+     * reason a word that already fits can still need a table entry. */
+    ["color", "colour"],
+    ["divide", "division"],
+    ["distortion", "distort"],
+    ["compressor", "compress"],
+    ["retrigger", "retrig"],
+    ["enable", "enabled"],
+    ["send", "sends"],
+    ["perform", "performance"],
+    ["rotation", "rotate"],
+    ["waveform", "wave"],
+]);
+
+/** Exported for the same test; not part of the drawing API. */
+export { WORD_ABBREV };
+
+/**
+ * The label a cell actually shows: abbreviate per word, then squeeze to fit.
+ *
+ * Exported because the test has to measure the REAL thing. Re-deriving these
+ * two lines in the test would let the table and the assertions about it drift
+ * apart, which is the failure mode where a green suite proves nothing.
+ *
+ * @param {string} text    the declared name or key
+ * @param {number} cellW   cell width in px; the grid is 32, the knob card 29
+ */
+export function labelForCell(text, cellW = CELL_W) {
+    /*
+     * The CAP governs, not the cell.
+     *
+     * This was min(cellW - 2, cap), and the -2 made the label depend on which
+     * surface was drawing it. The knob card runs this same row renderer at a
+     * 29px cell against the grid's 32px, so the card's budget came out 27px
+     * against the grid's 29px and 39% of fleet labels rendered differently in
+     * the two -- the label changed under your finger as you touched the knob.
+     *
+     * "Touching a knob should not change its label" is the rule, and it is
+     * worth more than the margin: the label you learn has to be the label you
+     * see. The min() against the cell stays as an overflow guard for any
+     * future surface narrower than the cap; at 29px cap and 29px card cell it
+     * no longer binds.
+     *
+     * The cost is real and was measured rather than waved past: at the card's
+     * 29px cell a full-width label leaves no gutter, and 24% of adjacent
+     * label pairs in the fleet come within 2px of each other IN THE CARD. The
+     * grid is unaffected -- its 32px cell was never the binding constraint,
+     * which is why this change moves no grid pixels at all.
+     */
+    const labelWidth = Math.min(cellW, fontWidth4x5("M".repeat(LABEL_CHARS)));
+
+    /*
+     * The table applies UNCONDITIONALLY, even to a word that would have fit.
+     *
+     * "Abbreviate only when it does not fit" looks like a strict improvement
+     * and is not: it splits a family. ATK / DEC / SUS / REL is one set, but
+     * "Attack" does not fit and "Decay" does, so the conditional version draws
+     * ATK / DECAY / SUS / REL down a row of four knobs. The consistency IS the
+     * legibility here -- that is the whole reason this table exists rather
+     * than a wider cell.
+     *
+     * The corollary is a rule for adding entries, enforced by
+     * tests/host/test_label_abbrev.sh: do not table a word that already fits
+     * unless it belongs to a family whose other members do not. Tempo, Latch
+     * and Swing fit; tabling them bought nothing and cost the real word.
+     */
+    /*
+     * CAPS BEFORE MEASURING.
+     *
+     * The cell draws upper case, so the width that matters is the upper-case
+     * one. Capitalising AFTER shortenLabel measured the mixed-case string
+     * against the budget, and the two widths differ in both directions:
+     *
+     *   - upper case is narrower for ordinary words ("Pitch" 24px, "PITCH"
+     *     20px), so a label was cut to fit a width it would have fitted
+     *     anyway -- PITC, GRAI, DRIV. 351 fleet labels lose a character.
+     *   - but WIDER once shortenLabel has devowelled, because the letters it
+     *     keeps are the narrow lowercase ones ("Ecldrm" fits, "ECLDRM" is
+     *     30px in a 29px cell). 68 fleet labels currently overrun their
+     *     budget and eat the gutter between neighbouring cells.
+     *
+     * The second half is the one that is invisible in code review, and it is
+     * why this is a bug rather than a missed optimisation.
+     *
+     * The value path next door already had it right -- fitDev caps before it
+     * measures -- so the label path was the outlier, not the precedent.
+     *
+     * Safe to fold case first: shortenLabel's only case-sensitive step is
+     * devowel, whose vowel test is /[aeiou]/i.
+     */
+    return shortenLabel(LBL_MEASURE, caps(preAbbreviate(text, labelWidth)), labelWidth);
+}
+
+/**
+ * What the word pass produced, BEFORE any squeezing to fit.
+ *
+ * The reference the test compares labelForCell against, and it has to be a
+ * separate function rather than labelForCell with a huge cell: the width is
+ * `min(cellW - 2, LABEL_CHARS worth of Ms)`, so a huge cell still clamps to
+ * the same cap and the comparison is a value against itself. That mistake
+ * reported 2665/2665 labels complete and proved nothing.
+ */
+export function labelUnsqueezed(text) {
+    return caps(preAbbreviate(text));
+}
+
+/**
+ * word -> the first-listed member of its synonym group, or itself.
+ *
+ * Built once. The GROUP is the unit of the decision below, not the word: if
+ * one spelling of a control expands to its full form and another does not,
+ * the same parameter reads differently depending on which spelling its module
+ * happened to use -- Amount/AMOUNT next to Amt/AMT. That is the exact drift
+ * ABBREV_SYNONYMS exists to prevent.
+ */
+const ABBREV_CANONICAL = (() => {
+    const m = new Map();
+    for (const g of ABBREV_SYNONYMS) for (const w of g) m.set(w, g[0]);
+    return m;
+})();
+
+/**
+ * Word-level pass before shortenLabel.
+ *
+ * A mnemonic is a CONSOLATION for not fitting, never an improvement on the
+ * real word: nobody reads PIT more easily than PITCH. So the table applies
+ * only when the real word will not fit the cell -- ATK stays ATK because
+ * ATTACK does not fit, while PITCH, CUTOFF, DECAY and OCTAVE come back.
+ *
+ * Decided per GROUP, not per word. Taking each word on its own merits looks
+ * equivalent and is not: Amount would expand to AMOUNT while Amt stayed AMT,
+ * and Glide would become GLIDE while Portamento stayed GLD -- one control
+ * reading two ways depending on the spelling its module used. The group's
+ * canonical word decides for every member, so they agree or they all fall
+ * back together.
+ *
+ * `budget` is the cell's label width. Zero or absent means "no budget known",
+ * which keeps the old unconditional behaviour for any caller that has not got
+ * one -- the table is still the safe default.
+ */
+function preAbbreviate(label, budget) {
     const s = asciiFold(String(label == null ? "" : label)).trim();
     if (!s) return "";
-    return s.split(/[\s_]+/).filter(Boolean)
-        .map((w) => WORD_ABBREV[w.toLowerCase()] || w)
+    const parts = s.split(/[\s_]+/).filter(Boolean);
+
+    /*
+     * The expansion is for SINGLE-word labels only.
+     *
+     * The budget belongs to the whole label, so on a multi-word name no word
+     * actually has it -- and handing each one the full budget makes the pair
+     * LONGER, which shortenLabel then squeezes into something worse than the
+     * mnemonics would have produced. "Wave Group" is the case: expanding
+     * `group` to GROUP gives "WAVE GROUP" and a rendered WGROU, against WGRP
+     * from WAV + GRP. Mnemonics are exactly what a multi-word label needs,
+     * which is what the table was built for ("Filter Envelope" -> FLT ENV ->
+     * FENV).
+     */
+    const expandable = parts.length === 1 && budget > 0;
+
+    return parts
+        .map((w) => {
+            const lw = w.toLowerCase();
+            const abbrev = WORD_ABBREV[lw];
+            if (!abbrev) return w;
+            if (!expandable) return abbrev;
+            const canonical = (ABBREV_CANONICAL.get(lw) || lw).toUpperCase();
+            return fontWidth4x5(canonical) <= budget ? canonical : abbrev;
+        })
         .join(" ");
 }
 
@@ -345,6 +584,11 @@ function centeredText(ctx, x0, span, y, text, color) {
  * knob's FULL parameter name next to its value, which is the answer to a
  * label being abbreviated at all.
  */
+/** Clear pixels between the header's two sides, so they never read as one word. */
+export const HEADER_GAP = 4;
+/** The title's floor: the old fixed 55%, so the worst case is what shipped. */
+export const HEADER_MIN_LEFT = Math.floor(W * 0.55);
+
 export function drawHeader(ctx, left, right, inverted = false) {
     /* font4x5, not the label face: the header is secondary text (the slot
      * title, the page name, and the touched parameter's full name and value),
@@ -366,12 +610,34 @@ export function drawHeader(ctx, left, right, inverted = false) {
     if (inverted) ctx.fillRect(0, 0, W, HEADER_H, 1);
     const color = inverted ? 0 : 1;
     const fit5 = (t, maxW) => caps(fitText(FONT4_MEASURE, caps(t), maxW));
-    const l = fit5(left, right ? Math.floor(W * 0.55) : W - 4);
-    fontPrint4x5(ctx, 2, 1, l, color);
-    if (right) {
-        const r = fit5(right, Math.floor(W * 0.6));
-        fontPrint4x5(ctx, W - fontWidth4x5(r) - 2, 1, r, color);
+
+    /*
+     * The split between the two sides is MEASURED, not fixed.
+     *
+     * It used to be a flat 55% for the left and 60% for the right, which is
+     * two problems. The right side is usually a page name and those are
+     * short -- 29px at the fleet median -- so the left was capped at 70px
+     * while a third of the bar sat empty, and a long title was cut for room
+     * nobody was using. That is what made an airwindows effect read as
+     * "MFX > BRIGHTAMBI": the name is 94px and there was 104px of bar.
+     *
+     * And 55 + 60 is 115%, so with a long page name the two sides OVERLAPPED
+     * and drew glyphs through each other. Measuring the right first and
+     * giving the left the remainder makes that unrepresentable.
+     *
+     * HEADER_MIN_LEFT is the floor, so a very long page name cannot squeeze
+     * the title to nothing -- the right gives ground first. It is the old
+     * 55%, so the worst case is exactly what shipped before.
+     */
+    let r = right ? fit5(right, Math.floor(W * 0.6)) : "";
+    let rw = r ? fontWidth4x5(r) : 0;
+    if (rw && W - 4 - rw - HEADER_GAP < HEADER_MIN_LEFT) {
+        r = fit5(right, Math.max(0, W - 4 - HEADER_MIN_LEFT - HEADER_GAP));
+        rw = r ? fontWidth4x5(r) : 0;
     }
+    const l = fit5(left, W - 4 - (rw ? rw + HEADER_GAP : 0));
+    fontPrint4x5(ctx, 2, 1, l, color);
+    if (r) fontPrint4x5(ctx, W - rw - 2, 1, r, color);
 }
 
 /**
@@ -599,6 +865,194 @@ function fitLine(text, maxWidth) {
     return fontWidth4x5(t) > maxWidth ? "" : t;
 }
 
+/*
+ * A TRIGGER is a BANG, not a square.
+ *
+ * Reusing the enum square said "this is an enum", which is the one thing a
+ * momentary action is not — reported from the device as "this shouldn't be a
+ * square. It's different."
+ *
+ * A circle because that is what a momentary action looks like in music
+ * software: Max and Pd both draw a bang as a circle, so the shape already
+ * means "click me and something happens" to the people using this. It is also
+ * unambiguous against everything else on the grid — the dial is a circle WITH
+ * a pointer and a gap, the enum is a rectangle, the fader is a column.
+ *
+ * FILLED while firing, and that matters more than it looks: a trigger has no
+ * state, so nothing else on the screen changes when you click it. Without the
+ * flash there is no confirmation that anything happened at all.
+ */
+/*
+ * A TRIGGER is a PUSH BUTTON, not a square and not a value.
+ *
+ * Reusing the enum square said "this is an enum", which is the one thing a
+ * momentary action is not. Drawn as a cap ellipse with two straight sides down
+ * to a base arc -- a physical button in perspective -- because it is then
+ * unmistakable against everything else on the grid: the dial is an arc with a
+ * pointer, the enum a rectangle, the fader a column.
+ *
+ * The cap TRAVELS when it fires. That is the whole reason to prefer it to a
+ * flash: a trigger has no value, so nothing else on screen changes when you
+ * click it, and a button that visibly moves is a stronger confirmation than a
+ * widget that merely inverts.
+ *
+ * Sized to the cell rather than to taste: BTN_RX 7 makes it 15 wide inside a
+ * KW of 17, and cap + depth + base is 12 rows inside a BOX_H of 15, which
+ * leaves room for the 2px travel without touching the label below.
+ */
+/*
+ * Sized by the row budget, not by taste. The widget band is BOX_H = 15 rows
+ * and everything must stay inside it (see the note above drawKnobWidget):
+ *
+ *     1  air
+ *    13  the button: BTN_RY (cap top half) + BTN_DEPTH + BTN_RY (base arc)
+ *     1  air                              ... + 1, because a span from a to b
+ *    ---                                      is b - a + 1 rows, not b - a
+ *    15
+ *
+ * That +1 is not pedantry: it is the bug this shape shipped with first. The
+ * button overflowed one row into the label beneath it, and clipped() cannot
+ * catch that because the pixels are still on the screen.
+ *
+ * There is no CLK cue on the widget. It was tried, cost 7 of these 15 rows,
+ * and squeezed the cap to a 15x5 lozenge -- and the footer already says CLK
+ * FIRE the moment the knob is held, which is the same promise in a place that
+ * costs nothing.
+ */
+const BTN_RX = 7;
+const BTN_RY = 3;
+const BTN_DEPTH = 6;
+const BTN_TRAVEL = 2;
+
+/*
+ * Timing, and why the two halves come apart.
+ *
+ * A real button pops back long before the flash of the thing it did has
+ * faded, so the cap returns at BTN_PRESS_MS while the burst keeps expanding
+ * to BTN_FLASH_MS. Held together they read as one state change; apart they
+ * read as an event with a consequence.
+ *
+ * The burst geometry is the startup animation's impact lines
+ * (src/modules/tools/splash-test/ui.js): IMPACT_GAP 2 and a very SHORT line.
+ * Unlike the splash, which holds three static lines for 20 ticks, these
+ * EXPAND -- the gap grows as the burst travels outward and the stubs go with
+ * it, which is what makes it read as radiating rather than as a decoration
+ * switched on.
+ */
+const BTN_PRESS_MS = 120;
+const BTN_FLASH_MS = 300;
+const BTN_RAYS = 8;
+const BTN_RAY_GAP = 2;
+const BTN_RAY_LEN = 2;
+const BTN_RAY_TRAVEL = 4;   /* how far the burst moves out over its life */
+
+/*
+ * A clean 1px ellipse outline.
+ *
+ * Thresholding on distance (|hypot(dx/rx, dy/ry) - 1| <= k) is the obvious
+ * way and it looks JAGGED at this size: the tolerance band is wider where the
+ * curve runs shallow, so the outline goes two and three pixels thick along the
+ * top and bottom and thin at the sides. Walking each column for its exact y
+ * and each row for its exact x, and taking the union, gives an even, connected
+ * hairline instead.
+ */
+function ellipseOutline(ctx, cx, cy, rx, ry, color, bottomOnly) {
+    const put = (x, y) => {
+        if (bottomOnly && y < cy) return;
+        ctx.fillRect(x, y, 1, 1, color);
+    };
+    for (let dx = -rx; dx <= rx; dx++) {
+        const dy = Math.round(ry * Math.sqrt(Math.max(0, 1 - (dx / rx) ** 2)));
+        put(cx + dx, cy + dy);
+        put(cx + dx, cy - dy);
+    }
+    for (let dy = -ry; dy <= ry; dy++) {
+        const dx = Math.round(rx * Math.sqrt(Math.max(0, 1 - (dy / ry) ** 2)));
+        put(cx + dx, cy + dy);
+        put(cx - dx, cy + dy);
+    }
+}
+
+function ellipseFill(ctx, cx, cy, rx, ry, color) {
+    for (let dy = -ry; dy <= ry; dy++) {
+        const w = Math.round(rx * Math.sqrt(Math.max(0, 1 - (dy / ry) ** 2)));
+        if (w > 0) ctx.fillRect(cx - w, cy + dy, w * 2 + 1, 1, color);
+    }
+}
+
+/* Impact stubs, following the cap's ellipse so they sit an even gap off the
+ * rim rather than bunching at the flat top and bottom. */
+function buttonRays(ctx, cx, cy, progress) {
+    const out = BTN_RAY_GAP + Math.round(progress * BTN_RAY_TRAVEL);
+    for (let i = 0; i < BTN_RAYS; i++) {
+        const a = (Math.PI * 2 * i) / BTN_RAYS;
+        const ux = Math.cos(a), uy = Math.sin(a);
+        const x0 = cx + ux * (BTN_RX + out);
+        const y0 = cy + uy * (BTN_RY + out);
+        const x1 = cx + ux * (BTN_RX + out + BTN_RAY_LEN);
+        const y1 = cy + uy * (BTN_RY + out + BTN_RAY_LEN);
+        line(ctx, Math.round(x0), Math.round(y0), Math.round(x1), Math.round(y1), 1);
+    }
+}
+
+/*
+ * Three states:
+ *   idle      raised outline
+ *   selected  cap filled with CLK knocked out -- the affordance has to be ON
+ *             the control, not only in the footer, because a button has no
+ *             value to read and nothing else says it is pressable
+ *   fired     cap pressed down BTN_TRAVEL, sides shortened, stubs radiating
+ */
+function drawButton(ctx, cx, rowY, phase) {
+    const pressed = phase.pressed;
+    const travel = pressed ? BTN_TRAVEL : 0;
+    /* One row of air top and bottom; see the budget above. */
+    const capY = rowY + 1 + BTN_RY + travel;
+    const baseY = capY + BTN_DEPTH - travel;
+
+    ellipseOutline(ctx, cx, baseY, BTN_RX, BTN_RY, 1, true);   /* base arc */
+    line(ctx, cx - BTN_RX, capY, cx - BTN_RX, baseY, 1);        /* sides */
+    line(ctx, cx + BTN_RX, capY, cx + BTN_RX, baseY, 1);
+
+    /* Highlighted and pressed both FILL the cap -- the filled disk is the
+     * highlight. The outline goes on top of the fill, not instead of it:
+     * filling alone left the rim a pixel short at the shallow top and bottom,
+     * so the disk looked like it was missing a line. */
+    if (phase.filled) ellipseFill(ctx, cx, capY, BTN_RX, BTN_RY, 1);
+    ellipseOutline(ctx, cx, capY, BTN_RX, BTN_RY, 1, false);
+
+    /* One burst per press still in flight, so a fast double-tap throws two
+     * expanding rings rather than cancelling the first. */
+    for (const b of phase.bursts) buttonRays(ctx, cx, capY, b);
+}
+
+/*
+ * Idle / highlighted / pressed, resolved from the press timestamps alone.
+ *
+ * A press does NOT clear the bursts already travelling. Overwriting a single
+ * timestamp made a rapid second press swallow the first ring and restart from
+ * the centre, which reads as an animation glitch rather than as two events.
+ * Keeping every press still inside BTN_FLASH_MS lets them overlap, and the
+ * cap is pressed if ANY of them is recent.
+ *
+ * Accepts a bare number as well as a list: a caller that has only ever stamped
+ * one time still works.
+ */
+function buttonPhase(fired, now, held) {
+    const stamps = Array.isArray(fired) ? fired : (fired > 0 ? [fired] : []);
+    const bursts = [];
+    let pressed = false;
+    if (typeof now === "number") {
+        for (const t of stamps) {
+            const age = now - t;
+            if (age < 0 || age >= BTN_FLASH_MS) continue;
+            bursts.push(age / BTN_FLASH_MS);
+            if (age < BTN_PRESS_MS) pressed = true;
+        }
+    }
+    return { pressed, filled: held || bursts.length > 0, bursts };
+}
+
 function drawEnumSquare(ctx, kx, ky, text) {
     const w = ENUM_W, h = BOX_H;
     ctx.fillRect(kx, ky, w, 1, 1);
@@ -696,12 +1150,42 @@ function drawDivableMark(ctx, g, col, rowY) {
     drawBrackets(ctx, cellLeft(g, col) + 1, rowY, g.cellW - 2, BOX_H);
 }
 
-function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, cellText) {
+function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, cellText, btnPhase) {
     const kx = cellLeft(g, col) + Math.floor((g.cellW - KW) / 2), ky = rowY;
     /* Anything that cannot show two values at once shows the live one, so it
      * animates under modulation instead of freezing on the base. */
     const shown = (liveRaw === null || liveRaw === undefined) ? raw : liveRaw;
     if (meta.kind === KIND_OPAQUE) { drawOpaqueBox(ctx, kx, ky, shown, cellText); return; }
+    /*
+     * A TRIGGER is a button, so the cell shows the ACTION, not the value.
+     *
+     * Drawing its "current option" is meaningless — the module reports a
+     * constant idle spelling, and for euclidrum that constant is an em-dash,
+     * which the 5x7 atlas cannot draw at all. The result was a blank square:
+     * a control that looked broken while working perfectly.
+     *
+     * So the square shows an ACTION mark and the cell's own label underneath
+     * says which action it is — "Clear", "Rnd Preset", "Recover Loop".
+     *
+     * Deliberately NOT options[1]. That is the value that FIRES it, not a verb,
+     * and the fleet proves it is not reliably readable: euclidrum's is "Rnd!"
+     * (fine) but magneto's is "Cleared" and "Saved" — past participles that
+     * read as STATUS under a label that already says "Clear". A module that
+     * wants its own wording can supply short_options[1], which is the existing
+     * hook for "what this widget should say in three characters".
+     */
+    if (meta.writeOnly) {
+        /* The cell's own label underneath names the action ("Clear", "Rnd
+         * Preset"), so the bang carries no text — which also sidesteps the
+         * module's idle spelling entirely. euclidrum's is an em-dash the 5x7
+         * atlas cannot draw, and drawing it was the original blank square. */
+        /* Clock injected, never read here: this renderer is pure with respect
+         * to the device, which is what lets the harness draw what the device
+         * draws. `now` absent simply means "never lit". */
+        drawButton(ctx, cellLeft(g, col) + Math.floor(g.cellW / 2), ky,
+                   btnPhase || { pressed: false, filled: false, burst: -1 });
+        return;
+    }
     if (meta.kind === KIND_ENUM) {
         /* A plugin may report an enum as its option NAME rather than as an
          * index (see learnEnumWireFormat) — resolve either to the index, or
@@ -903,10 +1387,15 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
              * driving; `values` stays the base the user dialled in. */
             /* Knob: base + dot. Enum/opaque: the live value, no baseline —
              * drawKnobWidget picks per kind. */
+            /* Trigger flash: injected, never clocked here — this renderer is
+             * pure with respect to the device, which is what lets the harness
+             * draw what the device draws. Absent means "never lit". */
+            const firedAt = (o.triggerFiredAt && o.triggerFiredAt[key]) || 0;
+            const btnPhase = buttonPhase(firedAt, o.nowMs, isTouched);
             drawKnobWidget(ctx, g, col, rowY, meta, raw,
                            modValues ? modValues[key] : undefined,
                            liveValues ? liveValues[key] : undefined,
-                           cellText);
+                           cellText, btnPhase);
         }
 
         /* Budget in CHARACTERS, not pixels: Elektron's labels are 3-4 glyphs
@@ -922,8 +1411,7 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
         if (meta.divable_mark) drawDivableMark(ctx, g, col, rowY);
 
 
-        const labelWidth = Math.min(g.cellW - 2, fontWidth4x5("M".repeat(LABEL_CHARS)));
-        const label = caps(shortenLabel(LBL_MEASURE, preAbbreviate(meta.label || meta.key), labelWidth));
+        const label = labelForCell(meta.label || meta.key, g.cellW);
         const display = fitDev(ctx,
             (cellText === null || cellText === undefined) ? displayValue(raw, meta) : String(cellText),
             g.cellW - 2);
