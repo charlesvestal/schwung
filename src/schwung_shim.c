@@ -1305,7 +1305,7 @@ static void shadow_inprocess_process_midi(void) {
              * frame and the echo frame.  The ring closes that race. */
             int is_external_echo = 0;
             const uint8_t *in_buf = global_mmap_addr + MIDI_IN_OFFSET;
-            for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
+            for (int j = 0; j < SHADOW_MIDI_IN_BYTES; j += 8) {
                 if ((in_buf[j] >> 4) == 2 &&          /* cable 2 */
                     in_buf[j + 1] == p1 &&             /* same status+channel */
                     in_buf[j + 2] == p2 &&             /* same data1 */
@@ -4771,7 +4771,7 @@ void midi_monitor()
         return;
     }
 
-    for (int i = 0; i < MIDI_BUFFER_SIZE; i += 8)
+    for (int i = 0; i < SHADOW_MIDI_IN_BYTES; i += 8)
     {
         if (memcmp(&src[i], &hotkey_prev[i], 4) == 0) {
             continue;
@@ -5415,7 +5415,7 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
         extern int midi_indicator_active_notes;
         extern int midi_indicator_out_active_notes;
         const uint8_t *mi = global_mmap_addr + MIDI_IN_OFFSET;
-        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
+        for (int j = 0; j < SHADOW_MIDI_IN_BYTES; j += 8) {
             if (((mi[j] >> 4) & 0x0F) != 2) continue;  /* cable 2 only */
             uint8_t st = mi[j + 1], ty = st & 0xF0, d1b = mi[j + 2], d2b = mi[j + 3];
             if (ty == 0x90 && d2b > 0) {
@@ -6326,7 +6326,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
      */
     if (shim_touch_trace_on && hw) {
         const uint8_t *tsrc = (const uint8_t *)hw + MIDI_IN_OFFSET;
-        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
+        for (int j = 0; j < SHADOW_MIDI_IN_BYTES; j += 8) {
             uint8_t thead = tsrc[j];
             if (thead == 0) continue;
             uint8_t tstatus = tsrc[j + 1];
@@ -6567,8 +6567,14 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             (corun_target(shadow_control) == CORUN_TARGET_MOVE_NATIVE) &&
             !(corun_keep_mask_eff(shadow_control) & CORUN_GRP_KNOBS);
 
-        /* Filter MIDI_IN: zero out jog/back/knobs */
-        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
+        /* Filter MIDI_IN: zero out jog/back/knobs.
+         *
+         * Bound is SHADOW_MIDI_IN_BYTES (248 = 31 × 8), NOT MIDI_BUFFER_SIZE
+         * (256). MIDI_IN holds 31 events and the RX display-status word sits
+         * immediately behind it at +248; at the 256 bound the last iteration
+         * read that word as a 32nd event and, whenever it looked like a
+         * filtered control, ZEROED it. */
+        for (int j = 0; j < SHADOW_MIDI_IN_BYTES; j += 8) {
             uint8_t cin = hw_midi[j] & 0x0F;
             uint8_t cable = (hw_midi[j] >> 4) & 0x0F;
             uint8_t status = hw_midi[j + 1];
@@ -6732,7 +6738,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 else if (delta < -63) delta = -63;
                 s_corun_knob_accum[k] -= delta;   /* carry remainder to next emit */
                 uint8_t d2 = (delta >= 0) ? (uint8_t)delta : (uint8_t)(delta + 128);
-                for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
+                for (int j = 0; j < SHADOW_MIDI_IN_BYTES; j += 8) {
                     if (sh_midi[j] == 0 && sh_midi[j + 1] == 0 &&
                         sh_midi[j + 2] == 0 && sh_midi[j + 3] == 0) {
                         sh_midi[j]     = 0x0B;     /* cable 0, CIN 0x0B = CC */
@@ -6764,7 +6770,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
      * This works regardless of shadow_display_mode.
      * Skip entirely in overtake mode - overtake module owns all input. */
     if (overtake_mode) goto skip_shift_menu;
-    for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
+    for (int j = 0; j < SHADOW_MIDI_IN_BYTES; j += 8) {
         uint8_t cin = hw_midi[j] & 0x0F;
         uint8_t cable = (hw_midi[j] >> 4) & 0x0F;
         if (cable != 0x00) continue;  /* Only internal cable */
@@ -6847,7 +6853,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
      * Always block Shift+Record so the first press doesn't leak through.
      * Block jog while sampler is armed or recording. */
     {
-        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
+        for (int j = 0; j < SHADOW_MIDI_IN_BYTES; j += 8) {
             uint8_t cin = sh_midi[j] & 0x0F;
             uint8_t cable = (sh_midi[j] >> 4) & 0x0F;
             if (cable != 0x00) continue;
@@ -6944,7 +6950,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
      * MIDI_IN events are 8 bytes (4 USB-MIDI + 4 timestamp). */
     if (hardware_mmap_addr) {
         const uint8_t *src_early = hardware_mmap_addr + MIDI_IN_OFFSET;
-        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
+        for (int j = 0; j < SHADOW_MIDI_IN_BYTES; j += 8) {
             uint8_t cin   = src_early[j] & 0x0F;
             uint8_t cable = (src_early[j] >> 4) & 0x0F;
             if (cable != 0x00) continue;
@@ -6992,7 +6998,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
     if (hardware_mmap_addr && shadow_inprocess_ready) {
         uint8_t *src = hardware_mmap_addr + MIDI_IN_OFFSET;
         int overtake_active = shadow_control ? shadow_control->overtake_mode : 0;
-        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
+        for (int j = 0; j < SHADOW_MIDI_IN_BYTES; j += 8) {
             uint8_t cin = src[j] & 0x0F;
             uint8_t cable = (src[j] >> 4) & 0x0F;
             if (cable != 0x00) continue;  /* Only internal cable */
@@ -7453,7 +7459,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
 
         /* External MIDI trigger (cable 2): any note-on triggers recording when armed */
         if (sampler_state == SAMPLER_ARMED) {
-            for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
+            for (int j = 0; j < SHADOW_MIDI_IN_BYTES; j += 8) {
                 uint8_t cable = (src[j] >> 4) & 0x0F;
                 uint8_t cin = src[j] & 0x0F;
                 if (cable != 0x02) continue;
@@ -7488,7 +7494,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
     if (!shadow_display_mode && overlay_active && shadow_ui_enabled &&
         shadow_inprocess_ready && global_mmap_addr) {
         uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
-        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
+        for (int j = 0; j < SHADOW_MIDI_IN_BYTES; j += 8) {
             uint8_t cin = src[j] & 0x0F;
             uint8_t cable = (src[j] >> 4) & 0x0F;
             if (cable != 0x00) continue;  /* Only internal cable */
@@ -7578,7 +7584,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
     if (!shadow_display_mode && overlay_knobs_mode == OVERLAY_KNOBS_NATIVE &&
         shadow_ui_enabled && shadow_inprocess_ready && global_mmap_addr) {
         uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
-        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
+        for (int j = 0; j < SHADOW_MIDI_IN_BYTES; j += 8) {
             uint8_t cin = src[j] & 0x0F;
             uint8_t cable = (src[j] >> 4) & 0x0F;
             if (cable != 0x00) continue;  /* Only internal cable */
@@ -7665,7 +7671,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
         uint8_t *src = hardware_mmap_addr + MIDI_IN_OFFSET;  /* Scan unfiltered hardware buffer */
         int overtake_mode = shadow_control->overtake_mode;
 
-        for (int j = 0; j < MIDI_BUFFER_SIZE; j += 8) {
+        for (int j = 0; j < SHADOW_MIDI_IN_BYTES; j += 8) {
             uint8_t cin = src[j] & 0x0F;
             uint8_t cable = (src[j] >> 4) & 0x0F;
             /* In overtake mode, allow sysex (CIN 0x04-0x07) and normal messages (0x08-0x0E) */
@@ -7933,23 +7939,58 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
         shadow_flush_pending_input_leds();
     }
 
+    /* === POST-IOCTL: CLOSE THE GAPS THE FILTERING LEFT ===
+     * Every place above that suppresses an event does it by zeroing that slot
+     * in place. Move's firmware MIDI_IN reader STOPS at the first empty slot
+     * (the Ableton SPI convention — schwung_usb_midi_msg_is_empty), so a
+     * zeroed slot is not a hole, it is a TERMINATOR: everything behind it is
+     * invisible to Move for that frame.
+     *
+     * That is how a held pad gets stuck. With the shadow UI up, knob CCs
+     * (71-78) and knob-touch notes (0-9) are filtered on every detent; spin a
+     * knob while pads are held and a pad note-off landing in a later slot of
+     * the same frame never reaches Move. Move keeps the pad lit and its own
+     * instrument sounding — and chain slots are fed from Move's MIDI_OUT
+     * echo, so the slot synth never sees the note-off either. One drop, two
+     * stuck consumers, which is exactly what was measured on hardware while
+     * the note-off sat correct and in order in the raw mailbox.
+     *
+     * Compact LAST: the blocking sites above pair `sh[j]` with `hw[j]` by
+     * index, so nothing may move while they run.
+     *
+     * Not compacting was recorded as a rule ("never compact MIDI_IN",
+     * SIGABRT) from the RTP-MIDI WIP — but that branch walked MIDI_IN at a
+     * 4-byte stride, i.e. it was shifting events by half an event, and it
+     * never stabilised for unrelated reasons. Dense-prefix-then-zero is the
+     * shape the hardware delivers, and events already shift between slots
+     * across frames, which is why the dedup rings key on content plus
+     * timestamp rather than position. */
+    if (global_mmap_addr)
+        shadow_midi_in_compact(global_mmap_addr + MIDI_IN_OFFSET);
+
     /* === POST-IOCTL: INJECT KNOB RELEASE EVENTS ===
      * When toggling shadow mode, inject note-off events for knob touches
      * so Move doesn't think knobs are still being held.
-     * This MUST happen AFTER filtering to avoid being zeroed out. */
+     * This MUST happen AFTER filtering to avoid being zeroed out — and after
+     * the compaction above, so the free slots are a contiguous tail. */
     if (shadow_inject_knob_release && global_mmap_addr) {
         shadow_inject_knob_release = 0;
         uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
         /* Find empty slots and inject note-offs for knobs 0, 7, 8 (Knob1, Knob8, Volume) */
         const uint8_t knob_notes[] = { 0, 7, 8 };  /* Knob 1, Knob 8, Volume */
         int injected = 0;
-        for (int j = 0; j < MIDI_BUFFER_SIZE && injected < 3; j += 4) {
-            if (src[j] == 0 && src[j+1] == 0 && src[j+2] == 0 && src[j+3] == 0) {
+        /* 8-byte stride: MIDI_IN events are 4 USB-MIDI + 4 timestamp bytes.
+         * At the old 4-byte stride the second and third note-offs were written
+         * into the *timestamp* halves of the events before them — malformed,
+         * and it also left the injected packets' own timestamps un-zeroed. */
+        for (int j = 0; j < SHADOW_MIDI_IN_BYTES && injected < 3; j += SHADOW_MIDI_IN_STRIDE) {
+            if (shadow_midi_in_slot_empty(&src[j])) {
                 /* Empty slot - inject note-off */
                 src[j] = 0x08;  /* CIN = Note Off, Cable 0 */
                 src[j + 1] = 0x80;  /* Note Off, channel 0 */
                 src[j + 2] = knob_notes[injected];  /* Note number */
                 src[j + 3] = 0x00;  /* Velocity 0 */
+                memset(&src[j + 4], 0, 4);  /* synthetic event: zero timestamp */
                 injected++;
             }
         }
