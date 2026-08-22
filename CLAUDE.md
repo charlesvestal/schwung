@@ -182,6 +182,43 @@ TX (offset 0):                       RX (offset 2048):
 
 Cable numbers: 0 = internal hw, 2 = external USB, 14 = system, 15 = SPI protocol. See `docs/SPI_PROTOCOL.md`.
 
+### A zeroed MIDI_IN slot is a TERMINATOR, not a hole
+
+MIDI_IN is **31 × 8 = 248 bytes** — not `MIDI_BUFFER_SIZE` (256), which runs one
+slot into the RX display-status word at +248. Bound every 8-stride walk with
+`SHADOW_MIDI_IN_BYTES`.
+
+Move's firmware reads MIDI_IN **until the first empty slot** (cable, CIN and all
+three payload bytes zero — `schwung_usb_midi_msg_is_empty`; `schwung_jack_bridge.c`
+breaks on it too). So suppressing an event by zeroing its slot in place does not
+punch a hole, it plants an end-of-list marker and **everything behind it is
+invisible to Move for that frame**.
+
+That is a real stuck-note bug, not a theoretical one. Knob CCs 71-78, knob-touch
+notes 0-9, jog, Back and Menu are filtered on every event while the shadow UI is
+up; spin a knob with pads held and the pad note-off lands behind a terminator.
+Move keeps the pad lit and its instrument sounding — **and so does the slot
+synth, because chain slots are fed from Move's MIDI_OUT echo, not from MIDI_IN.**
+One drop, two stuck consumers, with the note-off sitting present and correctly
+ordered in the raw hardware mailbox the whole time. That last part is what makes
+this look like it must be somewhere else; it isn't.
+
+`shadow_midi_in_compact()` (`src/host/shadow_midi_filter.c`) closes the gaps and
+runs **last** in `shim_post_transfer` — the blocking sites above it pair `sh[j]`
+with `hw[j]` by index, so nothing may move while they run. Zero a slot after it
+and the bug is back; `tests/host/test_midi_in_compact_call_site.sh` fails on
+exactly that.
+
+Compaction is safe because events already shift between slots across frames —
+which is why the dedup rings key on content + timestamp rather than position.
+The old "never compact MIDI_IN (SIGABRT)" note came from the RTP-MIDI WIP
+(`271bcd0b`), which walked MIDI_IN at a **4-byte stride**, i.e. shifted events by
+half an event, and never stabilised for reasons it recorded as unknown.
+
+**Nothing may walk MIDI_IN at a 4-byte stride.** Two places still do
+(`shadow_forward_external_cc_to_out` and `shadow_forward_midi`, both in
+`shadow_midi.c`); they read timestamps as packets and are unfixed.
+
 ## Realtime Safety
 
 SPI callback runs SCHED_FIFO 90 on core 3. Budget ~900µs/frame after the ~2ms transfer.
