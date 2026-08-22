@@ -1613,7 +1613,14 @@ export function renderPageMovy(ctx, o) {
         drawHeader(ctx, m.label || m.key,
                    (hv === null || hv === undefined) ? displayValue(v, m) : String(hv), true);
     } else {
-        drawHeader(ctx, o.title || "", page ? page.name : null, false);
+        /* pageLabel, not page.name: a page belonging to a CHILD level is
+         * named after WHICH CHILD it is showing, which the planned name
+         * cannot know. Falls back to the name for every other page. */
+        drawHeader(ctx, o.title || "",
+                   (o.pageLabel !== undefined && o.pageLabel !== null)
+                       ? o.pageLabel
+                       : (page ? page.name : null),
+                   false);
     }
     drawBankBar(ctx, o.pageIndex | 0, Math.max(1, o.pageCount | 0), o.pageGroups);
 

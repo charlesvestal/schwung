@@ -51,7 +51,7 @@ Promise.all([
   import("./src/shared/param_pages/param_meta.mjs"),
   import("./src/shared/param_pages/child_key.mjs"),
   import("./src/shared/param_pages/page_controller.mjs"),
-]).then(([P, M, K, C]) => {
+]).then(async ([P, M, K, C]) => {
   const say = (m) => { console.log("FAIL: " + m); process.exit(1); };
   const j = JSON.parse(require("fs").readFileSync("tests/fixtures/module-contracts.json", "utf8"));
 
@@ -135,7 +135,46 @@ Promise.all([
     say("a knob turn wrote " + JSON.stringify(writes) + " — not the resolved child key");
 
   console.log("  ok  " + checked + " module(s) with child levels: a selector, and parameter pages that carry it");
+  /* ---- the header must say WHICH CHILD -------------------------------
+   *
+   * The planned name is the page identity and cannot know which child is
+   * selected: minijv plans "Edit Parts - 2", where the 2 is the second page
+   * OF THE LEVEL. A user who just chose a part reads that as the part -- the
+   * numbers collide by coincidence -- and at 57px it truncated to
+   * "EDIT PARTS -" and showed no number at all.
+   */
+  {
+    const shown = String(ctl.pageLabel());
+    if (!/^Part 3\b/.test(shown))
+      say("after choosing Part 3 the header reads " + JSON.stringify(shown) +
+          " -- it must name the child");
+    if (/Edit Parts/.test(shown))
+      say("the header still shows the level name and its continuation index: " +
+          JSON.stringify(shown));
+    /* The planned name is UNTOUCHED -- other machinery is keyed by it. */
+    if (!/^Edit Parts/.test(String(ctl.page.name)))
+      say("the planned page name changed to " + JSON.stringify(ctl.page.name) +
+          " -- that is the page IDENTITY");
+    /* And it must FIT the ~50px the right side gets once the title claims its
+       floor, which is what truncated the old one. */
+    const F = await import("./src/shared/param_pages/font4x5.mjs");
+    const w = F.fontWidth4x5(shown.toUpperCase());
+    if (w > 50)
+      say("the header label " + JSON.stringify(shown) + " is " + w + "px, over the " +
+          "~50px the right side gets -- it will truncate");
+  }
+
   console.log("  ok  choosing a child writes nothing, lands on its parameters, and re-keys reads and writes");
+  console.log("  ok  the header names the child, fits, and leaves the page identity alone");
 });
 '
+# The label has to reach the RENDERER, not merely exist on the controller.
+# Dropping `pageLabel:` from the render options leaves every unit assertion
+# green while the screen goes back to "EDIT PARTS -".
+command grep -q "pageLabel: pageLabel()," src/shared/param_pages/page_controller.mjs || {
+  echo "FAIL: the render options no longer carry pageLabel" >&2; exit 1; }
+command grep -q "o.pageLabel" src/shared/param_pages/render_page_movy.mjs || {
+  echo "FAIL: renderPageMovy ignores pageLabel and draws page.name" >&2; exit 1; }
+echo "  ok  the label reaches the renderer"
+
 echo "PASS: child levels are selectable and address concrete keys"
