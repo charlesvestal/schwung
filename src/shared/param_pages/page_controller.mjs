@@ -447,6 +447,37 @@ export function createController(io = {}) {
     };
     const fullKey = (key) => `${s.prefix}:${childResolve(key)}`;
     const page = () => s.pages[s.pageIndex] || null;
+
+    /*
+     * What the header calls this page.
+     *
+     * The planned name is the page IDENTITY -- section memory, restorePage and
+     * the items state are all keyed by it -- so it must not move. But for a
+     * page belonging to a child level it is the wrong thing to SHOW: minijv
+     * plans "Edit Parts - 2", where the 2 is the second page OF THE LEVEL, and
+     * a user who has just chosen Part 2 reads that as the part. The two
+     * numbers collide by coincidence, which is worse than either alone.
+     *
+     * It did not fit either: 57px against the ~50px the right side gets once
+     * the title claims its floor, so it truncated to "EDIT PARTS -" and lost
+     * even the wrong number. Reported from the device as exactly that.
+     *
+     * Numbered among the LEVEL'S OWN knob pages rather than by the planned
+     * suffix: the selector took the level's base name, so the first parameter
+     * page is planned "- 2" and there is never a "- 1", which would display as
+     * "Part 2 - 2" for the FIRST page of Part 2.
+     */
+    function pageLabel(p) {
+        const pg = p || page();
+        if (!pg) return null;
+        if (!pg.childLevel || pg.kind !== PAGE_KNOBS) return pg.name;
+        const label = pg.childLevel.child_label || "Item";
+        const at = childIndexFor(pg.level) + 1;
+        const siblings = s.pages.filter(
+            (q) => q.level === pg.level && q.kind === PAGE_KNOBS);
+        const ord = siblings.indexOf(pg);
+        return ord > 0 ? `${label} ${at} - ${ord + 1}` : `${label} ${at}`;
+    }
     const keyAt = (slot) => {
         const p = page();
         return p && p.kind === PAGE_KNOBS ? (p.keys[slot] || null) : null;
@@ -2012,6 +2043,7 @@ export function createController(io = {}) {
                 modulated: (key) => !!s.modCache[key],
                 modValues: s.modValues,
                 pageGroups: pageGroups(),
+                pageLabel: pageLabel(),
                 viz: vizEnabled ? vizGroups() : [],
                 /*
                  * The trigger button's press animation. Both of these have to
@@ -2206,7 +2238,7 @@ export function createController(io = {}) {
     }
 
     function announcePageChange() {
-        announce(announcePage(page(), s.pageIndex, s.pages.length));
+        announce(announcePage(page(), s.pageIndex, s.pages.length, pageLabel()));
     }
 
     return {
@@ -2215,7 +2247,7 @@ export function createController(io = {}) {
          * the same modules through its own preset browser and has the same
          * race. Books the settle; costs nothing until it comes due. */
         selectionChanged: armContractSettle,
-        onJog, goToPage, restorePage, onKnobTurn, onKnobTouch, onClick, takePending, commitEnum,
+        onJog, goToPage, restorePage, pageLabel, onKnobTurn, onKnobTouch, onClick, takePending, commitEnum,
         openPicker, closePicker, pickerSelect, showHint, dismissHint,
         menuEntry, menuIndex: () => menuIndex(page()),
         menuEntered, enterMenu, exitMenu, clearTouch,
