@@ -170,7 +170,7 @@ const WORD_ABBREV = {
     rotate: "ROT", rhythm: "RHY", 
     density: "DNS", unison: "UNI", macro: "MCR", operator: "OP",
     right: "RGT", left: "LFT", deform: "DFM", unipolar: "UNP", bipolar: "BIP",
-    division: "DIV", matrix: "MTX", 
+    division: "DIV", matrix: "MTX", color: "CLR", colour: "CLR", 
     porta: "GLD", branch: "BRN", enabled: "EN", enable: "EN", 
     settings: "SET", stereo: "STO", distort: "DST", keytrack: "KTK",
     cycle: "CYC", general: "GEN", polyphony: "POLY",
@@ -202,6 +202,10 @@ export const ABBREV_SYNONYMS = Object.freeze([
     ["frequency", "freq"],
     ["resonance", "reso", "resonant", "reson"],
     ["glide", "portamento", "porta"],
+    /* Two spellings of one word. Without the group they render COLOR and
+     * COLOUR side by side -- the drift this list exists to stop, and the
+     * reason a word that already fits can still need a table entry. */
+    ["color", "colour"],
     ["divide", "division"],
     ["distortion", "distort"],
     ["compressor", "compress"],
@@ -289,7 +293,7 @@ export function labelForCell(text, cellW = CELL_W) {
      * Safe to fold case first: shortenLabel's only case-sensitive step is
      * devowel, whose vowel test is /[aeiou]/i.
      */
-    return shortenLabel(LBL_MEASURE, caps(preAbbreviate(text)), labelWidth);
+    return shortenLabel(LBL_MEASURE, caps(preAbbreviate(text, labelWidth)), labelWidth);
 }
 
 /**
@@ -305,12 +309,68 @@ export function labelUnsqueezed(text) {
     return caps(preAbbreviate(text));
 }
 
-/** Word-level pass before shortenLabel. Numbers and short words pass through. */
-function preAbbreviate(label) {
+/**
+ * word -> the first-listed member of its synonym group, or itself.
+ *
+ * Built once. The GROUP is the unit of the decision below, not the word: if
+ * one spelling of a control expands to its full form and another does not,
+ * the same parameter reads differently depending on which spelling its module
+ * happened to use -- Amount/AMOUNT next to Amt/AMT. That is the exact drift
+ * ABBREV_SYNONYMS exists to prevent.
+ */
+const ABBREV_CANONICAL = (() => {
+    const m = new Map();
+    for (const g of ABBREV_SYNONYMS) for (const w of g) m.set(w, g[0]);
+    return m;
+})();
+
+/**
+ * Word-level pass before shortenLabel.
+ *
+ * A mnemonic is a CONSOLATION for not fitting, never an improvement on the
+ * real word: nobody reads PIT more easily than PITCH. So the table applies
+ * only when the real word will not fit the cell -- ATK stays ATK because
+ * ATTACK does not fit, while PITCH, CUTOFF, DECAY and OCTAVE come back.
+ *
+ * Decided per GROUP, not per word. Taking each word on its own merits looks
+ * equivalent and is not: Amount would expand to AMOUNT while Amt stayed AMT,
+ * and Glide would become GLIDE while Portamento stayed GLD -- one control
+ * reading two ways depending on the spelling its module used. The group's
+ * canonical word decides for every member, so they agree or they all fall
+ * back together.
+ *
+ * `budget` is the cell's label width. Zero or absent means "no budget known",
+ * which keeps the old unconditional behaviour for any caller that has not got
+ * one -- the table is still the safe default.
+ */
+function preAbbreviate(label, budget) {
     const s = asciiFold(String(label == null ? "" : label)).trim();
     if (!s) return "";
-    return s.split(/[\s_]+/).filter(Boolean)
-        .map((w) => WORD_ABBREV[w.toLowerCase()] || w)
+    const parts = s.split(/[\s_]+/).filter(Boolean);
+
+    /*
+     * The expansion is for SINGLE-word labels only.
+     *
+     * The budget belongs to the whole label, so on a multi-word name no word
+     * actually has it -- and handing each one the full budget makes the pair
+     * LONGER, which shortenLabel then squeezes into something worse than the
+     * mnemonics would have produced. "Wave Group" is the case: expanding
+     * `group` to GROUP gives "WAVE GROUP" and a rendered WGROU, against WGRP
+     * from WAV + GRP. Mnemonics are exactly what a multi-word label needs,
+     * which is what the table was built for ("Filter Envelope" -> FLT ENV ->
+     * FENV).
+     */
+    const expandable = parts.length === 1 && budget > 0;
+
+    return parts
+        .map((w) => {
+            const lw = w.toLowerCase();
+            const abbrev = WORD_ABBREV[lw];
+            if (!abbrev) return w;
+            if (!expandable) return abbrev;
+            const canonical = (ABBREV_CANONICAL.get(lw) || lw).toUpperCase();
+            return fontWidth4x5(canonical) <= budget ? canonical : abbrev;
+        })
         .join(" ");
 }
 
