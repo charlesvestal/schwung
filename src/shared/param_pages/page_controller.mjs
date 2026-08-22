@@ -1872,6 +1872,16 @@ export function createController(io = {}) {
                 modValues: s.modValues,
                 pageGroups: pageGroups(),
                 viz: vizEnabled ? vizGroups() : [],
+                /*
+                 * The trigger button's press animation. Both of these have to
+                 * come from here: the renderer is pure and reads the clock off
+                 * `o`, so without them every button draws in its idle phase
+                 * forever -- which is exactly what shipped, because the test
+                 * handed the renderer both directly and so only ever proved
+                 * the renderer, never the wiring.
+                 */
+                triggerFiredAt: s.triggerFiredAt,
+                nowMs: now(),
                 footer,
             });
             if (s.hintLines) {
