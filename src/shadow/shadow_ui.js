@@ -54,7 +54,7 @@ import { RULE_Y as MOVY_RULE_Y,
 /* The bands around a chain editor's row of boxes — header, label, info,
  * footer — and the module picker it opens on a position. Both shared with
  * Master FX so the two editors wear the same furniture. */
-import { drawChainEditorBands, drawChainPicker }
+import { drawChainEditorBands, drawChainPicker, shiftHintsFor }
     from '/data/UserData/schwung/shared/chain_editor_chrome.mjs';
 /* The chain editor's knob feedback card, and the two resolvers it needs to be
  * handed a row: what each key IS (metaIndex) and which cells a viz group
@@ -15989,9 +15989,8 @@ function drawChainEdit() {
         headerRight,
         label,
         info: infoLine,
-        hints: isShiftHeld()
-            ? [["JOG", "MOVE"], ["BACK", "EXIT"]]
-            : [["JOG", "SEL"], ["CLK", "OPEN"], ["BACK", "EXIT"]],
+        hints: isShiftHeld() ? shiftHintsFor(selectedComp)
+                             : [["JOG", "SEL"], ["CLK", "OPEN"], ["BACK", "EXIT"]],
     });
 
     /*

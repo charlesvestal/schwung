@@ -99,6 +99,9 @@ cd "$(dirname "$0")/../.."
 if ! command -v node >/dev/null 2>&1; then echo "FAIL: node required" >&2; exit 1; fi
 
 node --input-type=module -e '
+/* The REAL shiftHintsFor from the shared chrome. These renders are pixel
+   baselines, so a stub would bake in a footer nobody actually draws. */
+const CHROME_SHIFT_HINTS = (await import("./src/shared/chain_editor_chrome.mjs")).shiftHintsFor;
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { createFramebuffer, drawContext } from "./tools/param-pages/harness.mjs";
@@ -251,7 +254,7 @@ const CHAIN_DRAW_DEPS = [
   "getSlotParamCached", "drawMovyHeader", "DIAGRAM_Y", "MOVY_RULE_Y", "draw_rect",
   "getSlotParam", "slotChainComponents", "drawChainDiagram", "getChainComponentModule",
   "getModuleAbbrev", "chainComponentParamKey", "DIAGRAM_BOX_H", "SCREEN_WIDTH",
-  "getComponentParamPrefix", "drawMovyFooter", "isShiftHeld", "ensureChainConfigFresh",
+  "getComponentParamPrefix", "drawMovyFooter", "isShiftHeld", "shiftHintsFor", "ensureChainConfigFresh",
   "knobCardDrawState", "drawKnobCard",
   "slotChainTarget", "chainLfoTargetMap", "chainComponentBypassed",
   /* The shared bands (header / label / info / footer), 4a-3. Supplied REAL --
@@ -274,7 +277,8 @@ function renderChain(c) {
     w.getSlotParamCached, drawMovyHeader, DIAGRAM_Y, MOVY_RULE_Y, g.draw_rect,
     w.getSlotParam, w.slotChainComponents, drawChainDiagram, w.getChainComponentModule,
     w.getModuleAbbrev, w.chainComponentParamKey, DIAGRAM_BOX_H, SCREEN_WIDTH,
-    w.getComponentParamPrefix, drawMovyFooter, () => !!c.shift, w.ensureChainConfigFresh,
+    w.getComponentParamPrefix, drawMovyFooter, () => !!c.shift, CHROME_SHIFT_HINTS,
+    w.ensureChainConfigFresh,
     () => (c.card || null), drawKnobCard,
     w.slotChainTarget, w.chainLfoTargetMap, w.chainComponentBypassed,
     drawChainEditorBands);
@@ -328,6 +332,10 @@ const MFX_DRAW_DEPS = ["ctx", "drawHeader", "drawChainDiagram", "DIAGRAM_W",
   /* Same shared bands the slot editor draws, 4a-3 -- which is what makes the
      two screens the same screen from the header rule down. */
   "drawChainEditorBands",
+  /* And the Shift footer helper that lives beside them, for the same reason:
+     one spelling of a gesture, drawn by both screens. REAL, not a stub -- a
+     stub would baseline a footer nobody draws. */
+  "shiftHintsFor",
   /* The knob card, 4b. A module IMPORT in shadow_ui_master_fx.mjs, so it is a
      free identifier under the lift and MUST be a dependency: leave it out and
      the card block throws, and the tempting fix -- a typeof guard -- would make
@@ -387,7 +395,8 @@ function renderMaster(c) {
     DIAGRAM_Y, SCREEN_WIDTH, truncateText, boom("drawMasterNamePreview"),
     boom("drawMasterConfirmOverwrite"), boom("drawMasterConfirmDelete"),
     boom("drawMasterPresetPicker"), boom("drawMasterFxSettingsMenu"),
-    boom("drawMasterFxModuleSelect"), drawChainEditorBands, drawKnobCard);
+    boom("drawMasterFxModuleSelect"), drawChainEditorBands, CHROME_SHIFT_HINTS,
+    drawKnobCard);
   draw();
   clearGlobals();
   return fb;
