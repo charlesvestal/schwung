@@ -103,6 +103,35 @@ const WAVEFORM_NAMES = /\b(sine|sin|tri|triangle|saw|sawtooth|square|pulse|ramp|
 export const BOOL_OPTION = /^(off|on|no|yes|0|1|false|true|disabled|enabled)$/i;
 
 /**
+ * A boolean, however its author spelled it.
+ *
+ * Two spellings mean the same control. `enum` with Off/On options is the one
+ * this file recognised; `int` with min 0 and max 1 is the one it did not, and
+ * that is 61 parameters across 11 modules — obxd alone declares 25 of them
+ * (unison, osc1_saw, osc1_pulse...), dexed 8, and it is how ambiotica spells
+ * its Tempo Sync. All of them drew as a NUMBER, which is the one widget that
+ * tells you nothing: "1" does not say what the other state is, or that there
+ * are only two.
+ *
+ * Deliberately NOT float 0..1 — that is a mix or an amount, the single most
+ * common continuous range in the fleet, and treating it as a switch would
+ * collapse hundreds of real dials into on/off.
+ *
+ * A range of exactly 1 is required rather than `max <= 1`, so a 0..0
+ * degenerate declaration is left alone rather than drawn as a switch that
+ * cannot move.
+ */
+export function isBooleanMeta(meta) {
+    if (!meta) return false;
+    const opts = Array.isArray(meta.options) ? meta.options.map(String) : null;
+    if (opts && opts.length === 2)
+        return opts.every((o) => BOOL_OPTION.test(o.trim()));
+    if (opts) return false;      /* an options list of any other length is a list */
+    const isInt = meta.type === "int" || meta.kind === "int";
+    return !!isInt && meta.min === 0 && meta.max === 1;
+}
+
+/**
  * Strip the matched role word out of a key, leaving whatever names the
  * SUBSYSTEM it belongs to ("chorus_lfo_shape" minus "shape" -> "chorus_lfo").
  * Adjacent role-name regex matches plus contiguous slots is not enough
@@ -386,10 +415,7 @@ function detectFader(pool) {
 function detectSwitch(pool) {
     const out = [];
     for (const item of pool) {
-        if (!isEnum(item.meta)) continue;
-        const opts = (item.meta.options || []).map(String);
-        if (opts.length !== 2) continue;
-        if (!opts.every((o) => BOOL_OPTION.test(o.trim()))) continue;
+        if (!isBooleanMeta(item.meta)) continue;
         out.push({
             kind: VIZ_SWITCH, group: null, roles: { value: item.key }, keys: [item.key],
             slotStart: item.slot, slotSpan: 1, source: VIZ_SOURCE_DETECTED,
