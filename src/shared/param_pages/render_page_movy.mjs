@@ -130,6 +130,16 @@ function displayValue(raw, meta) {
  * recurs across the fleet, not every possible name.
  */
 const WORD_ABBREV = {
+    /* Added when the fleet capture went from 76 to 95 modules. Each of these
+     * was rendering as a vowel-stripped run -- BNDPSS, DSTNTN, CMPLXT -- which
+     * is what the table exists to prevent. */
+    bandpass: "BPF", highpass: "HPF", lowpass: "LPF", bandwidth: "BW",
+    bitcrusher: "CRU", crusher: "CRU", character: "CHR", channels: "CHN",
+    complexity: "CPX", destination: "DES", multiplier: "MUL",
+    modulations: "MOD", generations: "GNS", progression: "PRG",
+    recordings: "REC", resonators: "RSN", smoothing: "SMO",
+    passthru: "PTH", passthrough: "PTH", fallthrough: "FAL",
+    configuration: "CFG", soundfont: "SF", category: "CAT",
     attack: "ATK", decay: "DEC", sustain: "SUS", release: "REL", hold: "HLD",
     envelope: "ENV", env: "ENV", amount: "AMT", amt: "AMT", depth: "DPT",
     cutoff: "CUT", frequency: "FRQ", freq: "FRQ", resonance: "RES", reso: "RES",
@@ -198,6 +208,10 @@ const WORD_ABBREV = {
  */
 export const ABBREV_SYNONYMS = Object.freeze([
     ["envelope", "env"],
+    ["modulations", "modulation"],
+    ["channels", "channel"],
+    ["bitcrusher", "crusher"],
+    ["passthru", "passthrough"],
     ["amount", "amt"],
     ["frequency", "freq"],
     ["resonance", "reso", "resonant", "reson"],

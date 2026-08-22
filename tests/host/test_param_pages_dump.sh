@@ -88,9 +88,18 @@ Promise.all([
     const dump = D.dumpContracts(makeDevice(fx.modules));
     const jv = dump.modules.find((m) => m.id === "minijv");
     if (!jv.presets) fail("minijv preset metadata was not captured");
-    if (jv.presets.count !== 2427) fail("minijv preset count wrong: " + jv.presets.count);
-    /* 2427 names read one call at a time would take minutes and produce a
-     * fixture nobody can read. */
+    /* The COUNT is asserted as "large enough to need paginating", not as an
+     * exact number. It used to be pinned at 2427, which is not a property of
+     * the capture at all -- it is how many patches the CAPTURING DEVICE happened to have
+     * installed. Re-capturing on a Move with a smaller JV-880 ROM set brought
+     * it back as 192, and a settle-until-stable wait confirmed 192 is where it
+     * stops: nothing was captured early, the banks are simply not there.
+     *
+     * Pinning the asset inventory of one device makes every future recapture
+     * fail for a reason that has nothing to do with the code under test. */
+    if (!(jv.presets.count > 1)) fail("minijv preset count wrong: " + jv.presets.count);
+    /* Names read one call at a time would take minutes and produce a fixture
+     * nobody can read -- that is the invariant, and it holds at any count. */
     for (const m of dump.modules) {
       if (m.presets && m.presets.names !== null) fail(m.id + ": preset names must not be captured");
     }
