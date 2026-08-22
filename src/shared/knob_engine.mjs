@@ -45,7 +45,7 @@
  * trigger.
  */
 
-import { BOOL_OPTION } from "./param_pages/viz.mjs";
+import { isBooleanMeta } from "./param_pages/viz.mjs";
 
 /*
  * The type tags the older call sites build their configs with. They name the
@@ -105,9 +105,7 @@ function wideStepCount(state, direction, nowMs) {
  * switch but turned like a list (or the reverse).
  */
 function isSwitchMeta(meta) {
-    const opts = Array.isArray(meta.options) ? meta.options : null;
-    return !!opts && opts.length === 2
-        && opts.every((o) => BOOL_OPTION.test(String(o).trim()));
+    return isBooleanMeta(meta);
 }
 
 /**
@@ -176,16 +174,23 @@ export function knobStep(state, meta, delta, nowMs, fine = false) {
         };
     }
 
+    /* A boolean flips on ONE detent in the direction turned, whether its author
+     * spelled it as an Off/On enum or as an int 0..1. Hoisted ABOVE the enum
+     * branch because an int never enters that branch -- it would fall through
+     * to the numeric path, which reaches the same two values but by
+     * accumulating rather than by direction, so a reversal could spend a
+     * detent doing nothing. The picture and the feel have to agree. */
+    if (isSwitchMeta(meta)) {
+        state.detentAccum = 0;
+        state.value = delta > 0 ? 1 : 0;
+        return state.value;
+    }
+
     if (meta.kind === "enum" || meta.type === "enum") {
         /* A switch has two states and no travel, so it flips on ONE detent, in
          * the direction turned. Running it through the click gate below cost 4
          * detents to move at all (and up to 7 to come back), which reads as a
          * dead control: the drawn knob simply does not move when you turn it. */
-        if (isSwitchMeta(meta)) {
-            state.detentAccum = 0;
-            state.value = delta > 0 ? 1 : 0;
-            return state.value;
-        }
         const div = fine ? 1 : ENUM_DELTA_DIV;
         clearOnReversal(state, delta);
         state.detentAccum += delta;
