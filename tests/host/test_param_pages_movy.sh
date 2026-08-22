@@ -627,9 +627,22 @@ Promise.all([
     if (added <= 0) fail("the modulation dot drew nothing");
     if (added > 8) fail("the modulation dot drew " + added + " pixels — it should be a 2x2 mark, not a blob");
 
-    /* Coincident with the pointer it says nothing and just thickens it. */
-    if (draw({ modValues: { cutoff: "0.5" } }).countLit() !== plain.countLit()) {
-      fail("a modulation dot equal to the base value must be suppressed");
+    /* Coincident with the pointer, the dot is drawn ANYWAY.
+     *
+     * This used to assert the opposite -- suppressed within 0.02 of the base,
+     * because a dot under the pointer only thickens it. True about the pixels
+     * and wrong about the meaning: with it gone the knob is pixel-identical to
+     * one nothing is driving, so it reads as "there is no LFO" rather than
+     * "the LFO is at its base". Reported from the device, where a bipolar LFO
+     * on a knob at 0 clamps there for half of every cycle and the indicator
+     * blinked out for that half.
+     *
+     * Pinned as a DIFFERENCE from the unmodulated render rather than as an
+     * exact pixel count, which is what test_mod_dot_at_base.sh measures per
+     * position. */
+    if (draw({ modValues: { cutoff: "0.5" } }).countLit() === plain.countLit()) {
+      fail("a modulation dot coincident with the base was suppressed — the knob " +
+           "is then indistinguishable from an unmodulated one");
     }
 
     /* Both rails, every knob — the arc is what it rides, so an off-by-one in
@@ -638,7 +651,7 @@ Promise.all([
       const fb = draw({ modValues: Object.fromEntries(KEYS.map((k) => [k, v])) });
       if (fb.clipped() > 0) fail("modulation dots drew outside the display at value " + v);
     }
-    console.log("PASS: Movy modulation dot — rides the arc, suppressed at base, never clipped");
+    console.log("PASS: Movy modulation dot — rides the arc, visible even AT the base, never clipped");
   }
 
   /* ---- displayFor: a value the HOST resolves, per surface ---------------

@@ -208,15 +208,22 @@ export function enterParamPages(slot, component, prefix, restorePageName, io, ch
      * earlier dial/bar grid — see render_page_movy.mjs. The setting stays a
      * plain List/Knobs toggle; this is what "Knobs" draws. */
     controller.setLayout(LAYOUT_MOVY);
-    if (restorePageName) {
-        const pages = controller.pages || [];
-        for (let i = 0; i < pages.length; i++) {
-            if (pages[i] && pages[i].name === restorePageName) {
-                controller.goToPage(i);
-                break;
-            }
-        }
-    }
+    /*
+     * Hand the NAME to the controller rather than resolving it here.
+     *
+     * This used to look through controller.pages once and give up if the page
+     * was not there. Coming back from granny's file browser it is not: granny
+     * loads the WAV synchronously inside set_param, on the SPI thread that
+     * also serves param reads, so the contract read straight after a sample
+     * selection times out and the planner correctly refuses to invent pages
+     * from a failed read. The list was empty, the loop found nothing, and you
+     * landed on page 1 -- reported from the device.
+     *
+     * controller.restorePage() re-applies the request each time the pages are
+     * planned, and drops it once the contract settles without producing that
+     * page.
+     */
+    if (restorePageName) controller.restorePage(restorePageName);
     ctx.setView(ctx.VIEWS.PARAM_PAGES);
 }
 

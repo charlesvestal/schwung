@@ -311,6 +311,8 @@ export function createController(io = {}) {
         /* key -> last-read modulation flag, refreshed on the read cursor
          * rather than per cell per draw. See tick(). */
         modCache: Object.create(null),
+        /* A page name to land on once the pages exist; see restorePage(). */
+        restoreName: null,
         /* key -> live modulated ("effective") value, for the dot on the arc.
          * Only modulated keys are in here, and they get their own fast lane in
          * tick() because they are the only values that move on their own. */
@@ -555,8 +557,49 @@ export function createController(io = {}) {
         /* A rebuild after a module finishes loading shifts every index, so land
          * by name rather than by position; a first load lands on a grid. */
         s.pageIndex = oldPages.length ? reanchor(oldPages, oldIndex, s.pages) : firstGrid(s.pages);
+        /* A restore that could not be honoured yet gets its chance here.
+         * See restorePage(): the pages may not have existed when the caller
+         * asked. */
+        applyPendingRestore();
         announcePageChange();
         return true;
+    }
+
+    /**
+     * Land on the page with this NAME, now or as soon as it exists.
+     *
+     * The caller (returnToParamPagesFromEditor) knows which page you left; it
+     * cannot know whether the pages are back yet. Coming out of granny's file
+     * browser they are NOT: granny loads the WAV synchronously inside
+     * set_param, on the SPI thread that also serves param reads, so the
+     * contract read right after a sample selection times out and planPages
+     * refuses to invent pages from a failed read. The old restore looked once,
+     * found an empty list, and silently gave up -- which is why choosing a
+     * sample dropped you on page 1 instead of the page you were on.
+     *
+     * So the request is REMEMBERED and re-applied whenever the page set is
+     * (re)planned. It is one-shot: once honoured, or once the user has moved
+     * somewhere themselves, it is dropped rather than fighting them.
+     */
+    function restorePage(name) {
+        s.restoreName = (typeof name === "string" && name) ? name : null;
+        applyPendingRestore();
+    }
+
+    function applyPendingRestore() {
+        if (!s.restoreName) return;
+        const pages = s.pages || [];
+        for (let i = 0; i < pages.length; i++) {
+            if (pages[i] && pages[i].name === s.restoreName) {
+                s.pageIndex = i;
+                s.restoreName = null;
+                return;
+            }
+        }
+        /* Not there yet. Left armed for the next plan -- unless the contract
+         * has settled, in which case the page genuinely does not exist and
+         * waiting forever would hijack a later navigation. */
+        if (s.metaSettled) s.restoreName = null;
     }
 
     /** Poll for a contract that changed underneath us (async ROM/sample loads). */
@@ -2085,7 +2128,7 @@ export function createController(io = {}) {
          * the same modules through its own preset browser and has the same
          * race. Books the settle; costs nothing until it comes due. */
         selectionChanged: armContractSettle,
-        onJog, goToPage, onKnobTurn, onKnobTouch, onClick, takePending, commitEnum,
+        onJog, goToPage, restorePage, onKnobTurn, onKnobTouch, onClick, takePending, commitEnum,
         openPicker, closePicker, pickerSelect, showHint, dismissHint,
         menuEntry, menuIndex: () => menuIndex(page()),
         menuEntered, enterMenu, exitMenu, clearTouch,

@@ -1217,14 +1217,26 @@ function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, cellText,
     const num = Number(raw);
     const normVal = (max > min && isFinite(num)) ? Math.max(0, Math.min(1, (num - min) / (max - min))) : 0;
     drawArcKnob(ctx, kx, ky, normVal);
-    /* Only when modulation is actually driving this param somewhere OTHER
-     * than the base — a dot sitting under the pointer says nothing and just
-     * thickens it. */
+    /*
+     * The dot is drawn whenever a source is driving this parameter, INCLUDING
+     * when the live value has landed exactly on the base.
+     *
+     * It used to be suppressed within 0.02 of the base, on the reasoning that
+     * "a dot sitting under the pointer says nothing and just thickens it".
+     * That is true about the pixels and wrong about the meaning: absent, the
+     * knob is pixel-identical to an unmodulated one, so the reading is not
+     * "the LFO is at its base" but "there is no LFO". Reported from the
+     * device -- a bipolar LFO on a knob at 0 spends half its cycle clamped
+     * there, and the indicator vanished for that half.
+     *
+     * The label keeps its own tilde either way, but that is four pixels on
+     * the row beneath; the dot is the mark you actually read on the knob.
+     */
     if (modRaw !== null && modRaw !== undefined) {
         const mnum = Number(modRaw);
         if (isFinite(mnum) && max > min) {
             const modNorm = Math.max(0, Math.min(1, (mnum - min) / (max - min)));
-            if (Math.abs(modNorm - normVal) > 0.02) drawModDot(ctx, kx, ky, modNorm);
+            drawModDot(ctx, kx, ky, modNorm);
         }
     }
 }
