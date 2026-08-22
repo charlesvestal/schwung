@@ -145,26 +145,72 @@ const oneModule = { readdir: (p) => p.endsWith("sound_generators") ? [["braids"]
  * Same shape as the param-read tri-state: never let a failed transaction
  * produce a verdict. */
 {
-  let get = (slot, key) => key.endsWith(":module") ? "braids" : "";
-  const { run, writes } = load(oneModule, (s, k) => get(s, k), () => false);
+  const { run, writes } = load(oneModule, (s, k) => k.endsWith(":chain_params") ? "[{}]" : "",
+                               () => false);
   run();
   const doc = JSON.parse(writes[0][1]);
   if (doc.modules[0].status !== "ok")
-    fail("a module whose set_param returned FALSE but which reads back as loaded " +
+    fail("a module whose set_param returned FALSE but whose contract came back " +
          "was recorded as " + JSON.stringify(doc.modules[0].status) + ". The return " +
-         "value of the write is not the verdict -- the readback is.");
-  console.log("  ok  a refused write is confirmed by readback, not believed");
+         "value of the write is not the verdict -- what the module serves is.");
+  console.log("  ok  a refused write is confirmed against the contract, not believed");
+}
+
+/* ---- D: the confirm must watch a key that is actually SERVED -------------
+ *
+ * The first version of the confirm read `<comp>:module` back. Nothing serves a
+ * GET for it, so it errored every time: on hardware every module loaded twice,
+ * LOAD_CONFIRM_MS apart, and the run was heading for a fleet marked entirely
+ * load-failed. A confirm against an unreadable key is worse than no confirm --
+ * it turns every success into a slow failure.
+ *
+ * Pinned as a behaviour, not as a string match on the key: with ONLY
+ * chain_params served, the capture must still succeed. */
+{
+  const { run, writes } = load(oneModule,
+    (s, k) => k.endsWith(":chain_params") ? "[{}]" : null, () => true);
+  run();
+  const doc = JSON.parse(writes[0][1]);
+  if (doc.modules[0].status !== "ok")
+    fail("with chain_params served and everything else erroring, the module was " +
+         "recorded as " + JSON.stringify(doc.modules[0].status) + " -- the confirm " +
+         "is keyed on something the device does not answer");
+  console.log("  ok  the confirm keys on a served value, not on <comp>:module");
+}
+
+/* ---- E: an unconfirmed load is captured, not dropped ---------------------
+ *
+ * Two modules in a row whose chain_params are byte-identical look unconfirmed,
+ * and so does a module whose contract is genuinely empty. Skipping those would
+ * repeat the exact bias the confirm was added to fix: silently missing the
+ * awkward cases. They are captured and LABELLED instead. */
+{
+  const two = { readdir: (p) => p.endsWith("sound_generators") ? [["a", "b"], 0] : [[], 0] };
+  const { run, writes } = load(two, (s, k) => k.endsWith(":chain_params") ? "[{}]" : "", () => true);
+  run();
+  const doc = JSON.parse(writes[0][1]);
+  if (doc.modules.length !== 2)
+    fail("expected both modules in the capture, got " + doc.modules.length);
+  if (doc.modules[0].status !== "ok")
+    fail("the first module should confirm, got " + JSON.stringify(doc.modules[0].status));
+  if (doc.modules[1].status !== "unconfirmed")
+    fail("a second module with identical chain_params was recorded as " +
+         JSON.stringify(doc.modules[1].status) + ", expected \"unconfirmed\"");
+  if (!doc.modules[1].chain_params)
+    fail("the unconfirmed module was captured without its contract -- dropping it " +
+         "is the bias the confirm exists to prevent");
+  console.log("  ok  an unconfirmed load is captured and labelled, not skipped");
 }
 {
-  /* ...and a module that genuinely never appears IS a failure. The guard must
+  /* ...and a component that serves NOTHING is still a failure. The guard must
    * not have become "always ok". */
   const { run, writes } = load(oneModule, () => "", () => true);
   run();
   const doc = JSON.parse(writes[0][1]);
   if (doc.modules[0].status !== "load-failed")
-    fail("a module that never read back was recorded as " +
+    fail("a module that served nothing at all was recorded as " +
          JSON.stringify(doc.modules[0].status) + " -- the confirm is not confirming");
-  console.log("  ok  a module that never reads back is still a failure");
+  console.log("  ok  a module that serves nothing is still a failure");
 }
 
 console.log("PASS: the contract capture cannot silently capture nothing");

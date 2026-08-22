@@ -31,11 +31,11 @@
 var PROBE_SLOT = 3;
 var MODULE_ROOT = "/data/UserData/schwung/modules";
 var OUT_PATH = "/data/UserData/schwung/module-contracts.json";
-/* A module load is confirmed by reading it back, not by the write's return
- * value -- see loadModule. A heavy module (surge, osirus, minijv) can take
- * seconds to appear. */
-var LOAD_ATTEMPTS = 2;
-var LOAD_CONFIRM_MS = 8000;
+/* A module load is confirmed by watching chain_params CHANGE, not by the
+ * return value of the write -- see loadModule. A heavy module (surge, osirus,
+ * minijv) can take seconds to appear. This is a busy-spin inside the shadow UI
+ * tick, so it is also the per-module ceiling on how long the UI is frozen. */
+var LOAD_CONFIRM_MS = 6000;
 
 /* Category directory -> the chain component a module of that type loads into. */
 var CATEGORIES = [
@@ -125,19 +125,33 @@ function spin(ms) {
  * in a biased way -- the complicated modules, i.e. the ones a contract fixture
  * is for.
  *
- * So: retry the write, then confirm by reading the component's module back.
+ * So: confirm from the device instead of from the return value.
+ *
+ * WHAT to confirm against took a second run to get right. Reading
+ * `<comp>:module` back is the obvious choice and it is WRONG -- nothing serves
+ * a GET for it (the shadow UI knows the loaded module from its own chain
+ * config, not from a param), so the read errors every time. That run burned
+ * both attempts on all 96 modules -- observed as each one loading exactly twice,
+ * LOAD_CONFIRM_MS apart, and `param_giveup ... last_key=synth:module` in the
+ * log -- and would have finished with the whole fleet marked load-failed. A
+ * confirm against a key that cannot be read is worse than no confirm: it turns
+ * every success into a slow failure.
+ *
+ * The signal that does exist is the contract itself. `chain_params` is served
+ * by the LOADED module, so waiting for it to CHANGE says a different module is
+ * now answering. It is also the thing being captured, so the wait costs nothing
+ * extra -- the value that ends the wait is the value that gets recorded.
+ *
+ * Returns the confirmed chain_params string, or null if it never changed.
  */
-function loadModule(component, id) {
-    for (var attempt = 0; attempt < LOAD_ATTEMPTS; attempt++) {
-        try { shadow_set_param(PROBE_SLOT, component + ":module", id); } catch (e) { /* see below */ }
-        /* Confirm from the device, not from the return value. */
-        for (var waited = 0; waited < LOAD_CONFIRM_MS; waited += 100) {
-            var cur = shadow_get_param(PROBE_SLOT, component + ":module");
-            if (cur && String(cur).indexOf(id) !== -1) return true;
-            spin(100);
-        }
+function loadModule(component, id, prevChainParams) {
+    try { shadow_set_param(PROBE_SLOT, component + ":module", id); } catch (e) { /* below */ }
+    for (var waited = 0; waited < LOAD_CONFIRM_MS; waited += 250) {
+        var cp = shadow_get_param(PROBE_SLOT, component + ":chain_params");
+        if (cp && cp !== prevChainParams) return cp;
+        spin(250);
     }
-    return false;
+    return null;
 }
 
 globalThis.dumpModuleContracts = function () {
@@ -162,22 +176,37 @@ globalThis.dumpModuleContracts = function () {
 
     var out = [];
     var failures = [];
+    /* Per component, the chain_params of the module loaded there before this
+     * one -- the baseline loadModule watches for a change against. */
+    var prevChainParams = {};
 
     for (var i = 0; i < mods.length; i++) {
         var m = mods[i];
         var comp2 = m.componentKey;
-        var ok = loadModule(comp2, m.id);
-        if (ok) waitUntilReady(comp2, 15000);
+        var confirmed = loadModule(comp2, m.id, prevChainParams[comp2] || null);
+        if (confirmed) {
+            prevChainParams[comp2] = confirmed;
+            waitUntilReady(comp2, 15000);
+        }
 
-        if (!ok) {
-            failures.push({ id: m.id, reason: "load failed" });
+        /*
+         * An unconfirmed load is NOT skipped. Capture whatever the component
+         * serves and label it, rather than recording a bare "load-failed" and
+         * moving on: this tool exists to produce a contract fixture, and a
+         * module that answers is worth having even if the confirm did not fire
+         * (two modules with byte-identical chain_params in a row would look
+         * unconfirmed, and so would a module whose contract is genuinely
+         * empty). Dropping it would repeat the bias the confirm was added to
+         * fix -- silently missing exactly the awkward cases.
+         */
+        var hierRaw = shadow_get_param(PROBE_SLOT, comp2 + ":ui_hierarchy");
+        var cpRaw = confirmed || shadow_get_param(PROBE_SLOT, comp2 + ":chain_params");
+        if (!confirmed && !cpRaw && !hierRaw) {
+            failures.push({ id: m.id, reason: "load not confirmed and nothing served" });
             out.push({ id: m.id, category: m.category, component_key: comp2, status: "load-failed" });
             print("  " + m.id + ": load failed");
             continue;
         }
-
-        var hierRaw = shadow_get_param(PROBE_SLOT, comp2 + ":ui_hierarchy");
-        var cpRaw = shadow_get_param(PROBE_SLOT, comp2 + ":chain_params");
         var hier = null, cp = null;
         try { hier = hierRaw ? JSON.parse(hierRaw) : null; } catch (e) { hier = null; }
         try { cp = cpRaw ? JSON.parse(cpRaw) : null; } catch (e) { cp = null; }
@@ -202,7 +231,8 @@ globalThis.dumpModuleContracts = function () {
         }
 
         out.push({
-            id: m.id, category: m.category, component_key: comp2, status: "ok",
+            id: m.id, category: m.category, component_key: comp2,
+            status: confirmed ? "ok" : "unconfirmed",
             name: m.name, version: m.version,
             ui_hierarchy: hier, chain_params: cp, presets: presets,
         });
