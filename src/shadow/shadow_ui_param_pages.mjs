@@ -569,9 +569,16 @@ export function headerTitle() {
          * erroring, so the wrong spelling loses the name silently. */
         const moduleKey = (currentChrome && currentChrome.moduleKey)
             || `${currentPrefix}_module`;
-        _abbrevCache = ctx.getModuleAbbrev
-            ? ctx.getModuleAbbrev(ctx.getSlotParam(currentSlot, moduleKey) || '')
-            : currentComponent.toUpperCase();
+        /* The NAME, not the abbreviation. An abbreviation is a placeholder
+         * for a name that has not arrived; on Master FX, where a module often
+         * has no presets, it was the permanent answer and the header read
+         * "MFX > CS" forever. getModuleDisplayName falls back to the
+         * abbreviation until module.json has been read, so nothing blanks. */
+        const moduleRef = ctx.getSlotParam(currentSlot, moduleKey) || '';
+        _abbrevCache = ctx.getModuleDisplayName
+            ? ctx.getModuleDisplayName(moduleRef)
+            : (ctx.getModuleAbbrev ? ctx.getModuleAbbrev(moduleRef)
+                                   : currentComponent.toUpperCase());
     }
     /* A hardware synth puts the PATCH name in its display, not the model
      * number — and the module's identity is already visible in the chain
