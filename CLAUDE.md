@@ -499,6 +499,69 @@ Slot Settings and Master FX Settings, which are synthesised contracts with no
 `ui_hierarchy` to enter, and it keeps the slot io's own mappings (Fwd's offset,
 MPE's compound write) applied rather than bypassed.
 
+### The knob grid is the DEFAULT param view, and it reflows to stay drawable
+
+`paramViewGlobal` defaults to 1 (the grid). The hierarchy list is still there
+under Global Settings → Display → Param View, and it remains the better view for
+the 11 modules that publish no `ui_hierarchy` at all — a knob grid over a flat
+paginated param list is worse than a list of them.
+
+`param_view.json` is written **only by the toggle**. That is what lets the
+default change at all: a device that never touched the setting has no file and
+follows the new default, and one where the user explicitly chose List keeps
+List. Save it anywhere else — init, a load, an autosave — and every existing
+install is pinned to whatever it booted with, forever.
+`tests/host/test_param_view_default.sh` asserts the call COUNT, because a
+second call site *is* the whole failure.
+
+**A graphic must sit inside ONE ROW.** Row 0's knobs draw at y=10 with their
+LABELS at y=25..32 and row 1 starts at y=33, so a shape spanning both would
+draw straight through the label band. That is geometry, not a tunable.
+
+The consequence was not acceptable: 26 fleet groups were rejected for LAYOUT
+alone — the ADSR on the Main page of obxd, hush1, minijv, moog, surge, rex and
+osirus, plus twelve surge LFO pages. An author writing attack/decay/sustain/
+release in the obvious order lands on slots 3..6 and gets four separate dials.
+`planPages` now moves such a block into a row (`alignGroupsToRows`), 24 pages
+across the fleet.
+
+Three rules keep that from being vandalism:
+
+- **it is a permutation WITHIN a page.** No knob is pushed to another page and
+  no orphan page holding one control is created. Max group span is 4 and a row
+  is 4 wide, so a group always fits.
+- **row two is preferred, but only for a block that must move.** "Always put
+  the envelope on row two" is wrong: 29 envelopes already sit inside row one
+  and draw correctly, many on pages that exist FOR that envelope
+  (obxd/Filter Env, hera/Envelope, tablor/Env) where row two would leave the
+  top half empty. An always-rule makes 29 pages worse to fix 24. For a block
+  that IS straddling, moving it DOWN leaves the head of the page alone —
+  minijv keeps `macro_cutoff` on knob 1, where a nearest-fit rule pushed it
+  to knob 5.
+- **the real detector confirms the result**, and a move that loses a group
+  that already drew is rejected.
+
+An earlier version scored by keys covered with no cost bound and did what that
+invites: schwung-filter moved cutoff from knob 1 to knob 6 — five knobs
+displaced on a FILTER module — to pull one `mode` key into a group that already
+drew. It was also 37ms on minijv, twelve times the rest of the plan. Driving
+the search from the counterfactual "what would group if the row rule were
+lifted?" is both correct and 6.5ms.
+
+**A detector role is OPTIONAL or REQUIRED, and the difference is a whole
+group.** `detectFilter` built its slot run from cutoff, resonance AND whichever
+of mode/slope it found, then required the lot to be contiguous — so a Mode knob
+parked at the far end of the page deleted the corroborated pair. Optionals are
+now dropped when they do not fit; `detectEnvelope` takes the longest adjacent
+RUN rather than demanding every role found be adjacent.
+
+**`present` is filtered by ROLE and must never be assumed to contain any
+particular one.** `drawPartialEnv` computed its attack rise unconditionally, so
+surge's twelve hold/sustain/release LFO pages — no attack at all — produced NaN
+coordinates, and NaN reaches `line()`'s `for(;;)` whose equality break is never
+satisfied. A HANG, not a wrong picture, and unreachable until alignment made
+those pages drawable.
+
 ### A door you were SENT to opens; one you PAGED past stays shut
 
 Preset browsers, items lists and menu pages are **doors**: the jog pages until
