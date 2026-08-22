@@ -1147,6 +1147,24 @@ export function createController(io = {}) {
         } else {
             const nm = getParam(fullKey(p.nameParam));
             st.name = (nm && nm.length) ? nm : null;
+            /*
+             * The HEADER's name too, from this same read.
+             *
+             * s.presetName is otherwise only refreshed by the knob page's
+             * rotation, and this branch returns before that -- so scrolling a
+             * preset browser changed the sound while the header kept naming
+             * the preset you started on, and it only caught up once you
+             * navigated to the knobs. Reported from the device for airwindows,
+             * whose browser is the module identity: "it only updates after
+             * going to the knobs, not on preset change".
+             *
+             * Free: it is the read that just happened, not a new one. A
+             * browser's name_param IS the name of the current selection, which
+             * is exactly what the header wants -- airwindows spells it
+             * `plugin_name` rather than `preset_name`, so keying off the name
+             * the page declares is also what makes it work there.
+             */
+            if (st.name) s.presetName = st.name;
         }
     }
 
