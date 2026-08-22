@@ -71,7 +71,7 @@ import { drawChainDiagram, DEFAULT_Y as DIAGRAM_Y, BOX_H as DIAGRAM_BOX_H }
     from '/data/UserData/schwung/shared/chain_diagram.mjs';
 import { runDrawBench } from '/data/UserData/schwung/shared/draw_bench.mjs';
 import { installParamTally, paramTallyTick, paramTallyArmed } from '/data/UserData/schwung/shared/param_tally.mjs';
-import { knobInit, knobTick, knobConfigFromMeta } from '/data/UserData/schwung/shared/knob_engine.mjs';
+import { knobInit, knobStep } from '/data/UserData/schwung/shared/knob_engine.mjs';
 import {
     formatParamValue as ufFormatParamValue,
     formatParamForSet as ufFormatParamForSet,
@@ -11326,8 +11326,8 @@ function buildChainKnobContext(target, comp, knobIndex, pluginName, hasModule) {
              * installed — suppresses the host's correct fallback and the knob
              * is left with no metadata at all.
              *
-             * knobConfigFromMeta does not fail on that; it INVENTS a float
-             * 0..1 step 0.01. So an int -24..24 is turned as a fraction, the
+             * The knob model does not fail on that; with no min/max declared
+             * it falls back to a float 0..1. So an int -24..24 is turned as a fraction, the
              * module's atoi reads it as 0, and an enum takes option 0 — while
              * the overlay, which runs on local arithmetic, moves normally.
              * Reported from the device as "i could see the values change, but
@@ -11719,7 +11719,7 @@ function processPendingHierKnob() {
              * accel divides further so slow turns feel smooth, fast turns snap. */
             const cfg = { type: "float", min: 0, max: 8, step: 0.5 };
             const st = getWavZoomKnobState(groupKey, cur);
-            const newZoom = knobTick(st, cfg, delta, Date.now());
+            const newZoom = knobStep(st, cfg, delta, Date.now());
             setWavZoomLevel(hierEditorSlot, anchor.meta, anchor.fullKey, newZoom);
             needsRedraw = true;
             const factor = Math.pow(2, newZoom);
@@ -11735,11 +11735,15 @@ function processPendingHierKnob() {
             if (currentMarkerVal === null) return;
             const num = parseFloat(currentMarkerVal);
             if (isNaN(num)) return;
-            const knobCfg = knobConfigFromMeta(m.meta);
+            /* Zooming in makes the marker knob finer, so the step is scaled
+             * on a COPY of the metadata — mutating chain_params metadata in
+             * place would leak the zoomed step to every other consumer. */
             const z = getWavZoomLevel(slot, m.meta, m.fullKey);
-            if (z > 0) knobCfg.step = knobCfg.step / Math.pow(2, z);
+            const knobMeta = z > 0
+                ? { ...m.meta, step: (m.meta.step > 0 ? m.meta.step : 1) / Math.pow(2, z) }
+                : m.meta;
             const st = getPhysKnobState(m.fullKey, num);
-            const newVal = knobTick(st, knobCfg, delta, Date.now());
+            const newVal = knobStep(st, knobMeta, delta, Date.now());
             const formatted = formatParamForSet(newVal, m.meta);
             setSlotParam(slot, m.fullKey, formatted);
             if (hierEditorEditMode && hierEditorEditKey === m.fullKey) {
@@ -11804,9 +11808,8 @@ function processPendingHierKnob() {
         }
         /* Run through knob_engine so the divisor curve applies — many ticks
          * required per option change, with the same staleness reset semantics. */
-        const enumCfg = knobConfigFromMeta(ctx.meta);
         const st = getPhysKnobState(ctx.fullKey, currentIndex);
-        const newIndex = knobTick(st, enumCfg, delta, Date.now());
+        const newIndex = knobStep(st, ctx.meta, delta, Date.now());
         if (newIndex === currentIndex) {
             /* No option crossed yet — only update the overlay so the user sees
              * something happening, but DON'T setSlotParam (no value change). */
@@ -11845,21 +11848,27 @@ function processPendingHierKnob() {
     const num = (typeof currentVal === "number") ? currentVal : parseFloat(currentVal);
     if (isNaN(num)) return;
 
-    /* Build knob config from meta. */
-    const knobCfg = knobConfigFromMeta(ctx.meta);
-    /* Shift fine-step override for wav_position. */
-    if (ctx.meta && ctx.meta.ui_type === "wav_position" && isShiftHeld()) {
-        const fineStep = Math.abs(knobCfg.step) * getWavPositionShiftMultiplier(ctx.meta);
-        if (fineStep > 0) knobCfg.step = fineStep;
-    }
-    /* wav_position with enable_zoom: scale step by 1/2^zoom so knob movement
-     * stays proportional to the visible viewport. */
-    if (ctx.meta && ctx.meta.ui_type === "wav_position" && ctx.meta.enable_zoom) {
-        const z = getWavZoomLevel(ctx.slot, ctx.meta, ctx.fullKey);
-        if (z > 0) knobCfg.step = knobCfg.step / Math.pow(2, z);
+    /*
+     * wav_position carries two step overrides of its own — a shift multiplier
+     * and a zoom scale. They are applied to a COPY of the metadata: mutating
+     * ctx.meta in place would leak a zoomed step into every other reader of
+     * the same chain_params entry.
+     */
+    let knobMeta = ctx.meta;
+    if (ctx.meta && ctx.meta.ui_type === "wav_position") {
+        let step = ctx.meta.step > 0 ? ctx.meta.step : 0.01;
+        if (isShiftHeld()) {
+            const mult = getWavPositionShiftMultiplier(ctx.meta);
+            if (Math.abs(step) * mult > 0) step = Math.abs(step) * mult;
+        }
+        if (ctx.meta.enable_zoom) {
+            const z = getWavZoomLevel(ctx.slot, ctx.meta, ctx.fullKey);
+            if (z > 0) step = step / Math.pow(2, z);
+        }
+        knobMeta = { ...ctx.meta, step };
     }
     const st = getPhysKnobState(ctx.fullKey, num);
-    const newVal = knobTick(st, knobCfg, delta, Date.now());
+    const newVal = knobStep(st, knobMeta, delta, Date.now());
 
     /* Update local cache — no IPC read needed on next turn */
     knobValueCache[knobIndex] = newVal;
