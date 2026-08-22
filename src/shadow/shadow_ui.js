@@ -11797,7 +11797,7 @@ function processPendingHierKnob() {
              * accel divides further so slow turns feel smooth, fast turns snap. */
             const cfg = { type: "float", min: 0, max: 8, step: 0.5 };
             const st = getWavZoomKnobState(groupKey, cur);
-            const newZoom = knobStep(st, cfg, delta, Date.now());
+            const newZoom = knobStep(st, cfg, delta, Date.now(), isShiftHeld());
             setWavZoomLevel(hierEditorSlot, anchor.meta, anchor.fullKey, newZoom);
             needsRedraw = true;
             const factor = Math.pow(2, newZoom);
@@ -11821,7 +11821,7 @@ function processPendingHierKnob() {
                 ? { ...m.meta, step: (m.meta.step > 0 ? m.meta.step : 1) / Math.pow(2, z) }
                 : m.meta;
             const st = getPhysKnobState(m.fullKey, num);
-            const newVal = knobStep(st, knobMeta, delta, Date.now());
+            const newVal = knobStep(st, knobMeta, delta, Date.now(), isShiftHeld());
             const formatted = formatParamForSet(newVal, m.meta);
             setSlotParam(slot, m.fullKey, formatted);
             if (hierEditorEditMode && hierEditorEditKey === m.fullKey) {
@@ -11887,7 +11887,7 @@ function processPendingHierKnob() {
         /* Run through knob_engine so the divisor curve applies — many ticks
          * required per option change, with the same staleness reset semantics. */
         const st = getPhysKnobState(ctx.fullKey, currentIndex);
-        const newIndex = knobStep(st, ctx.meta, delta, Date.now());
+        const newIndex = knobStep(st, ctx.meta, delta, Date.now(), isShiftHeld());
         if (newIndex === currentIndex) {
             /* No option crossed yet — only update the overlay so the user sees
              * something happening, but DON'T setSlotParam (no value change). */
@@ -11945,8 +11945,21 @@ function processPendingHierKnob() {
         }
         knobMeta = { ...ctx.meta, step };
     }
+    /*
+     * Shift is FINE ADJUST here too.
+     *
+     * The chain editor's knob overlay never passed it -- reported from the
+     * device as "shift doesn't work on an overlay knob from the chain
+     * editor". The gesture existed only on the param-pages grid, so the same
+     * knob refined under shift on one screen and ignored it on the other.
+     *
+     * NOT for wav_position, which folds shift into its own step multiplier a
+     * few lines above (getWavPositionShiftMultiplier). Passing it here as
+     * well would apply the gesture twice.
+     */
+    const wavPos = !!(ctx.meta && ctx.meta.ui_type === "wav_position");
     const st = getPhysKnobState(ctx.fullKey, num);
-    const newVal = knobStep(st, knobMeta, delta, Date.now());
+    const newVal = knobStep(st, knobMeta, delta, Date.now(), !wavPos && isShiftHeld());
 
     /* Update local cache — no IPC read needed on next turn */
     knobValueCache[knobIndex] = newVal;
