@@ -503,6 +503,11 @@ function centeredText(ctx, x0, span, y, text, color) {
  * knob's FULL parameter name next to its value, which is the answer to a
  * label being abbreviated at all.
  */
+/** Clear pixels between the header's two sides, so they never read as one word. */
+export const HEADER_GAP = 4;
+/** The title's floor: the old fixed 55%, so the worst case is what shipped. */
+export const HEADER_MIN_LEFT = Math.floor(W * 0.55);
+
 export function drawHeader(ctx, left, right, inverted = false) {
     /* font4x5, not the label face: the header is secondary text (the slot
      * title, the page name, and the touched parameter's full name and value),
@@ -524,12 +529,34 @@ export function drawHeader(ctx, left, right, inverted = false) {
     if (inverted) ctx.fillRect(0, 0, W, HEADER_H, 1);
     const color = inverted ? 0 : 1;
     const fit5 = (t, maxW) => caps(fitText(FONT4_MEASURE, caps(t), maxW));
-    const l = fit5(left, right ? Math.floor(W * 0.55) : W - 4);
-    fontPrint4x5(ctx, 2, 1, l, color);
-    if (right) {
-        const r = fit5(right, Math.floor(W * 0.6));
-        fontPrint4x5(ctx, W - fontWidth4x5(r) - 2, 1, r, color);
+
+    /*
+     * The split between the two sides is MEASURED, not fixed.
+     *
+     * It used to be a flat 55% for the left and 60% for the right, which is
+     * two problems. The right side is usually a page name and those are
+     * short -- 29px at the fleet median -- so the left was capped at 70px
+     * while a third of the bar sat empty, and a long title was cut for room
+     * nobody was using. That is what made an airwindows effect read as
+     * "MFX > BRIGHTAMBI": the name is 94px and there was 104px of bar.
+     *
+     * And 55 + 60 is 115%, so with a long page name the two sides OVERLAPPED
+     * and drew glyphs through each other. Measuring the right first and
+     * giving the left the remainder makes that unrepresentable.
+     *
+     * HEADER_MIN_LEFT is the floor, so a very long page name cannot squeeze
+     * the title to nothing -- the right gives ground first. It is the old
+     * 55%, so the worst case is exactly what shipped before.
+     */
+    let r = right ? fit5(right, Math.floor(W * 0.6)) : "";
+    let rw = r ? fontWidth4x5(r) : 0;
+    if (rw && W - 4 - rw - HEADER_GAP < HEADER_MIN_LEFT) {
+        r = fit5(right, Math.max(0, W - 4 - HEADER_MIN_LEFT - HEADER_GAP));
+        rw = r ? fontWidth4x5(r) : 0;
     }
+    const l = fit5(left, W - 4 - (rw ? rw + HEADER_GAP : 0));
+    fontPrint4x5(ctx, 2, 1, l, color);
+    if (r) fontPrint4x5(ctx, W - rw - 2, 1, r, color);
 }
 
 /**
