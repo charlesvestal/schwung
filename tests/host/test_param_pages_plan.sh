@@ -24,7 +24,7 @@ fi
 node -e '
 import("./src/shared/param_pages/page_plan.mjs").then(async (m) => {
   const fs = await import("node:fs");
-  const { planPages, pageSlotKeys, PAGE_KNOBS, PAGE_PRESET, PAGE_MODES, PAGE_ITEMS } = m;
+  const { planPages, pageSlotKeys, PAGE_KNOBS, PAGE_PRESET, PAGE_ITEMS } = m;
   const fx = JSON.parse(fs.readFileSync("tests/fixtures/module-contracts.json", "utf8"));
   const fail = (msg) => { console.log("FAIL: " + msg); process.exit(1); };
   const plan = (id) => {
@@ -157,7 +157,10 @@ import("./src/shared/param_pages/page_plan.mjs").then(async (m) => {
   /* ---- 4. minijv: the fleet in one module ------------------------------- */
   {
     const { pages } = plan("minijv");
-    if (pages[0].kind !== PAGE_MODES) fail("minijv must open on the mode select, got " + pages[0].kind);
+    /* The mode selector is an ITEMS page now -- same gesture, same machinery.
+       PAGE_ITEMS was a kind nothing ever drew. */
+    if (!(pages[0].kind === PAGE_ITEMS && pages[0].modeSelect))
+      fail("minijv must open on the mode select, got " + pages[0].kind);
     if (!pages.some((p) => p.kind === PAGE_PRESET)) fail("minijv has no preset page");
     if (!pages.some((p) => p.kind === PAGE_ITEMS && p.childOf))
       fail("minijv lost its child_prefix part selector");

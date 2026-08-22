@@ -129,7 +129,10 @@ Promise.all([
   /* ---- 8. the landing page skips a leading preset/mode screen ----------- */
   {
     const jv = plan("minijv");
-    if (jv[0].kind !== "modes") fail("minijv should open with a mode page");
+    /* "items" with modeSelect: the mode picker reuses the items page rather
+       than being a kind nothing draws. */
+    if (!(jv[0].kind === "items" && jv[0].modeSelect))
+      fail("minijv should open with a mode page, got " + jv[0].kind);
     if (jv[N.firstGrid(jv)].kind !== "knobs") fail("firstGrid should find a grid page");
     const only = [{ kind: "preset", name: "Presets", level: "root" }];
     if (N.firstGrid(only) !== 0) fail("with no grid page, firstGrid should be 0");
