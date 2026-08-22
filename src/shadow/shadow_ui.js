@@ -1071,6 +1071,41 @@ let triggerEnumAccum = [0, 0, 0, 0, 0, 0, 0, 0];
 let triggerEnumLastMs = [0, 0, 0, 0, 0, 0, 0, 0];
 let triggerEnumLatched = [false, false, false, false, false, false, false, false];
 
+/*
+ * `access`, as the list editor sees it.
+ *
+ * The axis was implemented on the param-pages grid and never reached this
+ * file, which is the DEFAULT param view -- so on the surface most people use,
+ * a trigger was an ordinary enum. Turning its knob wrote the fire value:
+ * magneto's `clear` wipes the deck and euclidrum's `rnd_preset` randomises
+ * all eight lanes, from a knob nudge.
+ *
+ * These read the raw declaration rather than param_meta's normalised form,
+ * which belongs to the grid and is not built here.
+ */
+function isTriggerParam(meta) {
+    return !!(meta && String(meta.access || "").toLowerCase() === "write");
+}
+function isReadoutParam(meta) {
+    return !!(meta && String(meta.access || "").toLowerCase() === "read");
+}
+
+/*
+ * The value that FIRES a trigger, in the format the module reports.
+ *
+ * Option 1, never a bare index unless the module is already speaking indices:
+ * euclidrum declares ["\u2014","Rnd!"] and fires on anything that is not the
+ * em-dash, so writing "1" as a number would be read as a name it does not
+ * know -- and writing "0" MEANS the em-dash, i.e. "do nothing", which is the
+ * write that destroys a kit.
+ */
+function triggerFireValue(meta, currentVal) {
+    const opts = (meta && Array.isArray(meta.options)) ? meta.options : null;
+    if (!opts || opts.length < 2) return null;
+    const usesIndex = opts.indexOf(currentVal) < 0 && !isNaN(parseInt(currentVal, 10));
+    return usesIndex ? "1" : opts[1];
+}
+
 function isTriggerEnumMeta(meta) {
     return !!(meta &&
               meta.type === "enum" &&
@@ -2076,6 +2111,21 @@ function openHierarchyParamEditor(selectedKey, meta, forceOpen) {
      * strcmp ladder over the names with no trailing else, so an index would be
      * discarded in silence.
      */
+    /*
+     * A TRIGGER is pushed, not opened. Clicking it fires; it must not raise
+     * the option picker -- a two-item list whose second item is the action is
+     * a way to fire it by accident, and there is nothing to browse.
+     */
+    if (!hierEditorEditMode && isTriggerParam(meta)) {
+        const fullKey = buildHierarchyParamKey(selectedKey);
+        const fire = triggerFireValue(meta, getSlotParam(hierEditorSlot, fullKey));
+        if (fire !== null) setSlotParam(hierEditorSlot, fullKey, fire);
+        return;
+    }
+    /* A READOUT has nothing to set. Opening a picker on it discarded the
+     * choice in silence, which is the keydetect case. */
+    if (!hierEditorEditMode && isReadoutParam(meta)) return;
+
     if (!hierEditorEditMode && meta && meta.type === "enum" &&
         Array.isArray(meta.options) && meta.options.length > 0) {
         const fullKey = buildHierarchyParamKey(selectedKey);
@@ -11854,6 +11904,20 @@ function processPendingHierKnob() {
         }
     }
 
+    /*
+     * A trigger is FIRED, never scrubbed: turning walks THROUGH the fire
+     * value, so a nudge runs the action. A readout has nothing to set.
+     * Neither may write from a knob turn -- the grid has refused this since
+     * the access axis landed and this surface never did.
+     */
+    if (isTriggerParam(ctx.meta) || isReadoutParam(ctx.meta)) {
+        showKnobFeedback(knobIndex, ctx.title,
+                         isTriggerParam(ctx.meta) ? "Click to fire" : "Read only",
+                         undefined, ctx.cardName);
+        needsRedraw = true;
+        return;
+    }
+
     /* Get current value from cache (one-time IPC read, then local) */
     const currentVal = getKnobCachedValue(knobIndex, ctx);
     if (currentVal === null) return;
@@ -19202,6 +19266,30 @@ globalThis.onMidiMessageInternal = function(data) {
             return;
         }
         if (d1 === MoveMainButton && d2 > 0) {
+            /*
+             * A held TRIGGER is fired by the click, and the click stops there.
+             *
+             * Holding a knob and clicking normally dives -- into the focused
+             * component from the chain editor, or into the parameter editor.
+             * A trigger has nothing to dive into: it is a button, and the
+             * gesture the card is already advertising is a push. So the click
+             * fires it and is consumed; everything else still dives, which is
+             * what makes this a special case rather than a mode.
+             */
+            if (knobCardKnob >= 0) {
+                const tctx = getKnobContext(knobCardKnob);
+                if (tctx && tctx.fullKey && isTriggerParam(tctx.meta)) {
+                    const fire = triggerFireValue(tctx.meta,
+                                                  getSlotParam(tctx.slot, tctx.fullKey));
+                    if (fire !== null) {
+                        setSlotParam(tctx.slot, tctx.fullKey, fire);
+                        showKnobFeedback(knobCardKnob, tctx.title, "Fired",
+                                         undefined, tctx.cardName);
+                        needsRedraw = true;
+                    }
+                    return;
+                }
+            }
             /* Shift+Click in chain edit enters component edit mode */
             if (isShiftHeld() && view === VIEWS.CHAIN_EDIT && selectedChainComponent >= 0) {
                 handleShiftSelect();
