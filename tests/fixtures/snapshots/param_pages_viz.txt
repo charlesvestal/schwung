@@ -47,6 +47,7 @@ chordism	Filter	filter	detected	filter_cutoff,filter_resonance,filter_mode,filte
 chordism	Filter - 2	switch	detected	fenv_hard_reset
 chordism	Filter - 2	waveform	detected	filter_lfo_shape
 chordism	Main	fader	detected	volume
+chordism	Main	filter	detected	filter_cutoff,filter_resonance
 chordism	Modulation	lfo	detected	lfo_shape,lfo_rate,lfo_depth
 chordism	Morph	lfo	detected	lm_lfo_rate,lm_lfo_depth
 chordism	Morph - 2	waveform	detected	lm_lfo_shape
@@ -83,6 +84,7 @@ dissolver	Advanced - 2	envelope	detected	attack_time,release_time
 dragonfly-hall	Main	fader	detected	dry_level
 dragonfly-hall	Main	fader	detected	early_level
 dragonfly-hall	Main	fader	detected	late_level
+ducker	Main	envelope	detected	attack,hold,release
 essaim	Global	switch	detected	all_mono
 essaim	Voice	fader	detected	volume
 essaim	Voice - 2	waveform	detected	v_lfo_shape
@@ -113,6 +115,7 @@ euclidrum	Main	switch	detected	lane7_enabled
 euclidrum	Main	switch	detected	lane8_enabled
 filter	Envelope	envelope	detected	env_attack,env_release
 filter	LFO	waveform	detected	lfo_shape
+filter	Main	filter	detected	cutoff,resonance
 fizzik	Exciter	fader	detected	vel_level
 fizzik	Mod	lfo	detected	lfo1_rate,lfo1_depth,lfo1_shape
 fizzik	Mod	waveform	detected	lfo2_shape
@@ -147,11 +150,12 @@ freak	Cycling Envelope	switch	detected	cycle_bipolar
 freak	Cycling Envelope	switch	detected	cycle_retrig
 freak	Cycling Envelope	switch	detected	cycle_sync
 freak	Envelope	switch	detected	env_retrig
-freak	Filter	filter	detected	filter_cutoff,filter_resonance,filter_mode
+freak	Filter	filter	detected	filter_mode,filter_cutoff,filter_resonance
 freak	LFO	switch	detected	lfo_retrig
 freak	LFO	waveform	detected	lfo_shape
 freak	Random	switch	detected	random_retrig
 freak	Voice & Mix	fader	detected	volume
+gate	Main	envelope	detected	attack,hold,release
 gesture-test	Main	sample	detected	sample_path
 gesture-test	Main	switch	detected	power
 granny	ADSR Envelope	fader	detected	amp_attack_ms
@@ -292,7 +296,7 @@ mrdrums	Main	fader	detected	pad_vol
 mrdrums	Main	switch	detected	ui_auto_select_pad
 mrdrums	Pad Settings	fader	detected	pad_rand_vol_amt
 mrdrums	Pad Settings	sample	detected	pad_sample_path
-mrsample	Filter	filter	detected	filter_cutoff,filter_res,filter_type
+mrsample	Filter	filter	detected	filter_type,filter_cutoff,filter_res
 mrsample	Global	fader	detected	gain
 mrsample	Main	fader	detected	gain
 mrsample	Main	filter	detected	filter_cutoff,filter_res
@@ -312,7 +316,7 @@ noisemaker	Delay	switch	detected	delay_sync
 noisemaker	Env 3 (Free)	fader	detected	volume
 noisemaker	Env 3 (Free)	filter	detected	cutoff,resonance
 noisemaker	Env Draw	fader	detected	volume
-noisemaker	Filter	filter	detected	cutoff,resonance,filter_type
+noisemaker	Filter	filter	detected	filter_type,cutoff,resonance
 noisemaker	Filter Env	filter	detected	cutoff,resonance
 noisemaker	LFO 1	fader	detected	volume
 noisemaker	LFO 1	switch	detected	lfo1_keytrig
@@ -378,6 +382,7 @@ po32-drum	Params	fader	detected	level
 psxverb	Main	fader	detected	input_gain
 psxverb	Main	fader	detected	reverb_level
 punchfx	Main	fader	detected	volume
+pushnpull	Filter	filter	detected	cutoff,resonance
 pushnpull	Main - 2	switch	detected	band_on
 radiogarden	Params	fader	detected	gain
 rex	Main	fader	detected	gain
@@ -429,8 +434,8 @@ superarp	Main	switch	detected	latch
 superboom	Seal	switch	detected	limiter
 superboom	Skulpt - 2	switch	detected	micControl
 surge	Amp Envelope	envelope	detected	env1_attack,env1_decay,env1_sustain,env1_release
-surge	Filter 1	filter	detected	filter1_cutoff,filter1_resonance,filter1_type
-surge	Filter 2	filter	detected	filter2_cutoff,filter2_resonance,filter2_type
+surge	Filter 1	filter	detected	filter1_type,filter1_cutoff,filter1_resonance
+surge	Filter 2	filter	detected	filter2_type,filter2_cutoff,filter2_resonance
 surge	Filter 2	switch	detected	f2_cf_is_offset
 surge	Filter 2	switch	detected	f2_link_resonance
 surge	Filter Envelope	envelope	detected	env2_attack,env2_decay,env2_sustain,env2_release
