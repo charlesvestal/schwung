@@ -1486,7 +1486,10 @@ export function createController(io = {}) {
              * broken under shift. */
             const cfg = knobConfigFromMeta(meta);
             const canRefine = fine && meta.type === "float";
-            value = knobTick(st, canRefine ? { ...cfg, step: (cfg.step || 0.01) / 10 } : cfg, direction, t);
+            /* `fine` goes to the ENGINE, not into a pre-divided step. Dividing
+             * cfg.step here was undone by the engine's range floor, leaving
+             * fine and coarse identical. */
+            value = knobTick(st, cfg, direction, t, { fine: canRefine });
         }
         const wire = formatParamForSet(value, meta);
 
