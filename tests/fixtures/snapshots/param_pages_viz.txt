@@ -2,6 +2,18 @@
 303	Main	fader	detected	volume
 303	Main	filter	detected	cutoff,resonance
 303	Main - 2	waveform	detected	waveform
+9w9	Params - 10	fader	declared	hc_volume
+9w9	Params - 11	fader	declared	cr_volume
+9w9	Params - 11	fader	declared	ohh_volume
+9w9	Params - 11	fader	declared	rc_volume
+9w9	Params - 12	fader	declared	volume
+9w9	Params - 2	fader	declared	bd_c_level
+9w9	Params - 3	fader	declared	sd_c_level
+9w9	Params - 5	fader	declared	lt_c_level
+9w9	Params - 7	fader	declared	mt_c_level
+9w9	Params - 8	fader	declared	ht_c_level
+9w9	Params - 9	fader	declared	rs_volume
+airplay	Params	fader	detected	gain
 aphex	MG / ESP	fader	detected	esp_in_gain
 aphex	Main	fader	detected	volume
 aphex	Modern	switch	detected	ms10_mode
@@ -13,9 +25,11 @@ belt	Harmony	fader	detected	harm_level
 belt	Setup	switch	detected	hard
 belt-in	Params - 2	fader	detected	harm_level
 belt-in	Params - 2	switch	detected	hard
-braids	Amp Envelope	envelope	detected	attack,decay,sustain,release
-braids	Filter	filter	detected	cutoff,resonance
-braids	Global	fader	detected	volume
+braids	Amp Envelope	envelope	declared	attack,decay,sustain,release
+braids	Filter	envelope	declared	f_attack,f_decay,f_sustain,f_release
+braids	Filter	filter	declared	cutoff,resonance
+braids	Global	fader	declared	volume
+braids	Main	filter	declared	cutoff
 breakbeat	Main	sample	detected	A_sample_path
 breakbeat	Main	sample	detected	B_sample_path
 chiptune	Main	envelope	detected	env_attack,env_decay,env_sustain,env_release
@@ -127,6 +141,7 @@ forge	Voice/Osc	waveform	detected	cv_wave
 forge	Voice/Osc - 2	switch	detected	cv_xfm
 forge	Voice/Setup	switch	detected	cv_init
 forge	Voice/Setup - 2	switch	detected	cv_mute
+fork	Global Settings	switch	detected	fallthrough
 freak	Cycling Envelope	envelope	detected	cycle_attack_ms,cycle_decay_ms
 freak	Cycling Envelope	switch	detected	cycle_bipolar
 freak	Cycling Envelope	switch	detected	cycle_retrig
@@ -137,6 +152,8 @@ freak	LFO	switch	detected	lfo_retrig
 freak	LFO	waveform	detected	lfo_shape
 freak	Random	switch	detected	random_retrig
 freak	Voice & Mix	fader	detected	volume
+gesture-test	Main	sample	detected	sample_path
+gesture-test	Main	switch	detected	power
 granny	ADSR Envelope	fader	detected	amp_attack_ms
 granny	ADSR Envelope	fader	detected	amp_decay_ms
 granny	ADSR Envelope	fader	detected	amp_release_ms
@@ -151,6 +168,46 @@ granular	Advanced	switch	detected	mute
 granular	Main	switch	detected	freeze
 granular	Randomize	fader	detected	random_vol
 granular	Sync	switch	detected	sync
+helm	Amp Envelope	envelope	detected	amp_attack,amp_decay,amp_sustain,amp_release
+helm	Arpeggiator	switch	detected	arp_on
+helm	Delay	switch	detected	delay_on
+helm	Distortion	switch	detected	distortion_on
+helm	Filter	filter	detected	cutoff,resonance
+helm	Filter	switch	detected	filter_on
+helm	Filter Envelope	envelope	detected	fil_attack,fil_decay,fil_sustain,fil_release
+helm	Formant	switch	detected	formant_on
+helm	Main	fader	detected	amp_attack
+helm	Main	fader	detected	amp_decay
+helm	Main	fader	detected	amp_release
+helm	Main	fader	detected	amp_sustain
+helm	Main	fader	detected	volume
+helm	Main	filter	detected	cutoff,resonance
+helm	Mod Envelope	envelope	detected	mod_attack,mod_decay,mod_sustain,mod_release
+helm	Mono LFO 1	waveform	detected	mono_lfo_1_waveform
+helm	Mono LFO 2	waveform	detected	mono_lfo_2_waveform
+helm	Noise / Feedback	fader	detected	noise_volume
+helm	Oscillator 1	fader	detected	osc_1_volume
+helm	Oscillator 1	switch	detected	unison_1_harmonize
+helm	Oscillator 1	waveform	detected	osc_1_waveform
+helm	Oscillator 2	fader	detected	osc_2_volume
+helm	Oscillator 2	switch	detected	unison_2_harmonize
+helm	Oscillator 2	waveform	detected	osc_2_waveform
+helm	Poly LFO	waveform	detected	poly_lfo_waveform
+helm	Reverb	switch	detected	reverb_on
+helm	Settings	fader	detected	volume
+helm	Settings	switch	detected	legato
+helm	Settings	switch	detected	sync_bpm
+helm	Slot 1	switch	detected	mod_0_enable
+helm	Slot 2	switch	detected	mod_1_enable
+helm	Slot 3	switch	detected	mod_2_enable
+helm	Slot 4	switch	detected	mod_3_enable
+helm	Slot 5	switch	detected	mod_4_enable
+helm	Slot 6	switch	detected	mod_5_enable
+helm	Slot 7	switch	detected	mod_6_enable
+helm	Slot 8	switch	detected	mod_7_enable
+helm	Stutter	switch	detected	stutter_on
+helm	Sub Oscillator	fader	detected	sub_volume
+helm	Sub Oscillator	waveform	detected	sub_waveform
 hera	DCO	fader	detected	noise_level
 hera	DCO	fader	detected	pulse_level
 hera	DCO	fader	detected	saw_level
@@ -185,6 +242,7 @@ magneto	Deck	switch	detected	bwd
 magneto	Deck	switch	detected	fwd
 magneto	Main	fader	detected	volume
 magneto	Perform	switch	detected	tape_stop
+midi-player	Main	switch	detected	loop
 midiverb	Extras	lfo	detected	lfo_rate,lfo_depth
 midiverb	Main	fader	detected	input_gain
 midiverb	Main	fader	detected	output_gain
@@ -243,6 +301,36 @@ mrsample	Sample	switch	detected	loop_mode
 mverb	Main	fader	detected	gain
 nam	Main	fader	detected	input_level
 nam	Main	fader	detected	output_level
+noisemaker	Amp Env	fader	detected	vel_vol
+noisemaker	Amp Env	fader	detected	volume
+noisemaker	Chorus / Reverb	fader	detected	volume
+noisemaker	Chorus / Reverb	switch	detected	chorus1
+noisemaker	Chorus / Reverb	switch	detected	chorus2
+noisemaker	Delay	switch	detected	delay_fac_l
+noisemaker	Delay	switch	detected	delay_fac_r
+noisemaker	Delay	switch	detected	delay_sync
+noisemaker	Env 3 (Free)	fader	detected	volume
+noisemaker	Env 3 (Free)	filter	detected	cutoff,resonance
+noisemaker	Env Draw	fader	detected	volume
+noisemaker	Filter	filter	detected	cutoff,resonance,filter_type
+noisemaker	Filter Env	filter	detected	cutoff,resonance
+noisemaker	LFO 1	fader	detected	volume
+noisemaker	LFO 1	switch	detected	lfo1_keytrig
+noisemaker	LFO 1	switch	detected	lfo1_sync
+noisemaker	LFO 1	waveform	detected	lfo1_wave
+noisemaker	LFO 2	fader	detected	volume
+noisemaker	LFO 2	switch	detected	lfo2_keytrig
+noisemaker	LFO 2	switch	detected	lfo2_sync
+noisemaker	LFO 2	waveform	detected	lfo2_wave
+noisemaker	Main	fader	detected	volume
+noisemaker	Main	filter	detected	cutoff,resonance
+noisemaker	Oscillators	fader	detected	osc1_vol
+noisemaker	Oscillators	fader	detected	osc2_vol
+noisemaker	Oscillators	fader	detected	osc3_vol
+noisemaker	Oscillators	waveform	detected	osc1_wave
+noisemaker	Oscillators	waveform	detected	osc2_wave
+noisemaker	Oscillators - 3	switch	detected	osc_sync
+noisemaker	Voicing / Vel	fader	detected	vel_vol
 nusaw	Amp Env	envelope	detected	attack,decay,sustain,release
 nusaw	Filter	filter	detected	cutoff,resonance
 nusaw	Filter Env	envelope	detected	f_attack,f_decay,f_sustain,f_release
@@ -291,6 +379,7 @@ psxverb	Main	fader	detected	input_gain
 psxverb	Main	fader	detected	reverb_level
 punchfx	Main	fader	detected	volume
 pushnpull	Main - 2	switch	detected	band_on
+radiogarden	Params	fader	detected	gain
 rex	Main	fader	detected	gain
 rex	Main - 2	switch	detected	choke
 sf2	Main	fader	detected	chorus_level
@@ -319,10 +408,20 @@ signal	Voice 3 - 3	switch	detected	v3_ghost_crescendo
 signal	Voice 4	fader	detected	v4_vol
 signal	Voice 4	waveform	detected	v4_wave
 signal	Voice 4 - 3	switch	detected	v4_ghost_crescendo
-smack	Setup	switch	detected	pad_play
+slicer	Params	fader	detected	global_gain
+slicer	Params	switch	detected	mono_mode
+slicer	Params	switch	detected	slice_algo
+slicer	Params	switch	detected	sync
+slicer	Params	switch	detected	velocity_sens
+slicer	Params - 2	envelope	detected	global_attack,global_decay
+slicer	Params - 2	switch	detected	playthrough
+slicer	Params - 3	fader	detected	slice_gain
+slicer	Params - 3	switch	detected	slice_mode
+smack	Perform - 2	switch	detected	pad_play
 smack-in	Params - 2	switch	detected	pad_play
 spectra	Control - 2	switch	detected	limiter
 spectra	Motion	waveform	detected	motion_shape
+streamrtsp	Params	fader	detected	gain
 structor	Randomize	switch	detected	seq_on
 superarp	Global	switch	detected	latch
 superarp	Global	switch	detected	triplet
@@ -402,6 +501,27 @@ surge	Scene LFO 5 - 2	switch	detected	lfo10_unipolar
 surge	Scene LFO 6	envelope	detected	lfo11_attack,lfo11_decay
 surge	Scene LFO 6	waveform	detected	lfo11_shape
 surge	Scene LFO 6 - 2	switch	detected	lfo11_unipolar
+tablor	Env	envelope	declared	flt_a,flt_d,flt_s,flt_r
+tablor	Env	envelope	declared	vca_a,vca_d,vca_s,vca_r
+tablor	Filter	fader	declared	noise_level
+tablor	Filter	fader	declared	sub_level
+tablor	Filter	filter	declared	flt_freq,flt_res,flt_type
+tablor	Filter	waveform	declared	sub_wave
+tablor	Global	fader	declared	volume
+tablor	Global	switch	declared	legato
+tablor	Global	switch	declared	save_preset
+tablor	Lfo 1	lfo	declared	lfo1_shape,lfo1_rate,lfo1_depth,lfo1_phase
+tablor	Lfo 1	switch	declared	lfo1_sync
+tablor	Lfo 2	lfo	declared	lfo2_shape,lfo2_rate,lfo2_depth,lfo2_phase
+tablor	Lfo 2	switch	declared	lfo2_sync
+tablor	Main	fader	declared	wt1_level
+tablor	Main	fader	declared	wt2_level
+tablor	Main - 2	sample	declared	wt1_table
+tablor	Main - 2	sample	declared	wt2_table
+tablor	Mod 1-2	switch	declared	m1_on
+tablor	Mod 1-2	switch	declared	m2_on
+tablor	Mod 3-4	switch	declared	m3_on
+tablor	Mod 3-4	switch	declared	m4_on
 tapescam	Main - 2	switch	detected	widen
 usefulity	Main	switch	detected	bass_mono
 usefulity	Main	switch	detected	mono
@@ -426,8 +546,14 @@ war_bells	Motion	waveform	detected	mot_shape
 war_bells	Perform	switch	detected	hold
 war_bells	Perform	switch	detected	reverse
 war_bells	Tone	fader	detected	effect_vol
+webstream	Params	fader	detected	gain
 weird-dreams	Main	fader	detected	cv_vol
 weird-dreams	Voice - 2	envelope	detected	cv_nattack,cv_ndecay
 weird-dreams	Voice - 2	fader	detected	cv_level
+work	Main	fader	detected	level
+work	Modulation	waveform	detected	vlfo1_wave
+work	Modulation - 2	waveform	detected	vlfo2_wave
+work	Modulation - 3	waveform	detected	flfo1_wave
+work	Modulation - 4	waveform	detected	flfo2_wave
 wurl	Main	envelope	detected	attack,decay
 wurl	Main	fader	detected	volume

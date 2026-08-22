@@ -69,12 +69,22 @@ if (!process.argv.includes("--write")) {
 }
 
 /* Keep the fixture trimmed to the declared contract; raw param blobs are what
- * made the original capture 2.2 MB. */
+ * made the original capture 2.2 MB.
+ *
+ * A module that did not load is recorded by ID and left OUT of `modules`. It
+ * published no contract, so an entry with ui_hierarchy: null and
+ * chain_params: null is not a contract that renders nothing -- it is the
+ * absence of an observation, and every consumer that walks the fixture has to
+ * special-case it. The fleet validator does not, and reported the first one to
+ * arrive ("work-in: no ui_hierarchy and no chain_params") as a module that
+ * cannot render, which is a claim the capture never made. */
+const captured = incoming.modules.filter((m) => m.status === "ok");
 const out = {
     _source: incoming._source || "Captured from a device.",
     generated_at: incoming.generated_at,
-    module_count: incoming.modules.length,
-    modules: incoming.modules.map((m) => ({
+    module_count: captured.length,
+    not_captured: failed.map((m) => ({ id: m.id, status: m.status })),
+    modules: captured.map((m) => ({
         id: m.id, category: m.category, component_key: m.component_key, status: m.status,
         name: m.name || null, version: m.version || null,
         ui_hierarchy: m.ui_hierarchy || null,
