@@ -154,6 +154,68 @@ Promise.all([
            " for the unrenderable idle value — it is still blank");
   }
 
+  /* ---- the animation must be WIRED, not merely implemented -----------
+   *
+   * This is the bug it shipped with, reported from the device as "i dont see
+   * the animation". The renderer is pure and reads its clock and its fire
+   * times off the options object, and the production draw call in
+   * page_controller passed NEITHER -- so every button drew its idle phase
+   * forever. The renderer tests above did not catch it because they hand
+   * renderPageMovy both values directly, proving the renderer and never the
+   * wiring.
+   *
+   * So this drives controller.render(), the real path.
+   *
+   * Its own controller with an INJECTED clock, for two reasons: the shared
+   * one above has already fired this trigger, so it is mid-animation and both
+   * snapshots would match (the first version of this test failed exactly
+   * there), and settling on the wall clock would mean really sleeping. */
+  {
+    const fbmod = await import("./tools/param-pages/harness.mjs");
+    const RPM = await import("./src/shared/param_pages/render_page_movy.mjs");
+    let clock = 100000;
+    const anim = C.createController({
+      getParam: (k) => {
+        const b = String(k).replace(/^[^:]+:/, "");
+        if (b === "ui_hierarchy") return HIER;
+        if (b === "chain_params") return CP;
+        if (b === "rnd_preset") return "\u2014";
+        return "0";
+      },
+      setParam: () => {}, announce: () => {}, now: () => clock,
+    });
+    anim.load({ slot: 0, component: "synth" });
+    for (let i = 0; i < 6; i++) anim.tick();
+    /* The button only exists in the movy layout; the default is the dial grid,
+     * where there would be no button and so no difference to detect. */
+    anim.setLayout(RPM.LAYOUT_MOVY);
+    const slot = (anim.page.keys || []).indexOf("rnd_preset");
+    if (slot < 0) fail("the animation fixture did not put the trigger on the grid");
+
+    /* A SIGNATURE of the buffer, not a pixel COUNT: the button travels, so a
+     * count can be identical while the image is completely different. */
+    const sig = () => {
+      const fb = fbmod.createFramebuffer();
+      anim.render(fbmod.drawContext(fb), { title: "T" });
+      const px = fb.pixels || fb.px;
+      let h = 0;
+      for (let i = 0; i < 128 * 64; i++) if (px[i]) h = (h * 31 + i) | 0;
+      return h;
+    };
+
+    const idle = sig();
+    anim.onClick(slot);
+    const pressed = sig();
+    if (pressed === idle)
+      fail("the button drew identically before and after a click -- the press " +
+           "animation is not reaching the renderer through controller.render()");
+
+    /* ...and it must come back down on its own, or it is a latch, not a press. */
+    clock += 5000;
+    if (sig() !== idle)
+      fail("the button never returned to idle -- a press that stays down is a switch");
+  }
+
   /* ---- the button must stay INSIDE its row band ---------------------
    *
    * This is the bug it shipped with: a span from a to b is b - a + 1 rows,
@@ -191,6 +253,7 @@ Promise.all([
 
   console.log("  ok  trigger draws a button, never the unrenderable idle value");
   console.log("  ok  the button stays inside its 15-row band");
+  console.log("  ok  the press animation reaches the screen through controller.render()");
   console.log("  ok  default is readwrite; plain enums and floats unaffected");
   console.log("  ok  readout: not turnable, not divable, never written");
   console.log("  ok  trigger: fires once on click, through the module wire (\"Rnd!\"), not turnable");
