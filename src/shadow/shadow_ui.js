@@ -472,11 +472,34 @@ const CHAIN_CAP = { midiFx: MAX_MIDI_FX, fx: MAX_FX };
 function chainEditorComponents(cfg, caps) {
     const hasSynth = !caps || caps.hasSynth !== false;
     const hasMidiFx = !caps || caps.hasMidiFx !== false;
+    /*
+     * A FULL section has no `+`.
+     *
+     * chainComponents emits both boxes unconditionally -- it models the chain,
+     * not the caps -- so Master FX kept offering "New effect" with all 8 slots
+     * taken, and clicking it either did nothing or silently landed on a
+     * position that could not exist. Reported from the device.
+     *
+     * The limit comes from the target's own cap(), which both chains already
+     * publish (CHAIN_CAP for a slot, MASTER_FX_SLOTS for the master bus), so
+     * this reads the number rather than keeping a third copy of it -- the
+     * thing that has gone wrong every previous time a chain cap moved.
+     */
+    const full = (section) => {
+        if (!caps || typeof caps.cap !== "function") return false;
+        const limit = caps.cap(section);
+        if (!(limit > 0)) return false;
+        const held = section === "midiFx" ? (cfg.midiFx || []).length
+                                          : (cfg.fx || []).length;
+        return held >= limit;
+    };
+
     const out = [];
     for (const pos of chainComponents(cfg)) {
         if (pos.kind === "patch") continue;
         if (!hasSynth && pos.kind === "synth") continue;
         if (!hasMidiFx && pos.section === "midiFx") continue;
+        if (pos.kind === "add" && full(pos.section)) continue;
         const key = pos.kind === "synth" ? "synth"
             : pos.kind === "add" ? pos.id
             : pos.kind === "settings" ? "settings"
@@ -2691,7 +2714,20 @@ let chainConfigs = [];         // In-memory chain configs per slot
 // -1 = chain/patch; 0..n = an index into slotChainComponents(), whose length
 // follows the chain rather than being fixed at five.
 let selectedChainComponent = 0;
-let lastChainComponent = [0, 0, 0, 0]; // Remember last selected component per slot
+/*
+ * Remember the last selected component per slot -- or null for "never chosen".
+ *
+ * NULL, not 0. Index 0 of a slot chain is the MIDI FX `+` box (the editor list
+ * is add_midi, [midi fx...], synth, [fx...], add_fx, settings), so seeding
+ * these with 0 meant every slot opened on "add a MIDI effect" in a fresh
+ * session -- reported from the device as slots defaulting to MIDI FX. And 0 is
+ * a VALID index, so restoreChainComponent accepted it and defaultChainComponent
+ * (which returns the synth) never ran.
+ *
+ * null makes "no memory" unrepresentable as a position, which is what lets the
+ * default apply.
+ */
+let lastChainComponent = [null, null, null, null];
 let selectingModule = false;   // True when in module selection for a component
 let availableModules = [];     // Modules available for selected component type
 let selectedModuleIndex = 0;   // Index in availableModules
@@ -18160,6 +18196,12 @@ globalThis.tick = function() {
              * behalf. */
             invalidateAutosaveWriteCache();
             debugLog("SET_CHANGED: " + oldDir + " -> " + newDir);
+            /* A remembered position belongs to the set it was chosen in. Carried
+             * across, it points at whatever occupies that index in the NEW
+             * chain -- usually the MIDI FX `+`, since a fresh set is empty and
+             * that is index 0. Forgetting lets defaultChainComponent put the
+             * selection on the synth, which is what a slot is about. */
+            for (let i = 0; i < lastChainComponent.length; i++) lastChainComponent[i] = null;
             loadChainConfigFromDir(newDir);
 
             /* 6. Two-pass reload: clear ALL old slots first (freeing memory),

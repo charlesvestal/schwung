@@ -115,16 +115,22 @@ check(decls.MASTER_FX_SLOTS === cap, "evaluated MASTER_FX_SLOTS !== parsed cap")
     check(comps[1] && comps[1].key === "settings", "the second box is not Settings");
 }
 
-/* And a FULL one is cap modules, then the `+`, then Settings — the same shape
- * the slot chain's audio-FX section has at its own cap. */
+/* And a FULL one is cap modules then Settings, with NO `+`.
+ *
+ * This used to assert the `+` was still there, on the grounds that the slot
+ * chain drew one at its cap too. The invariant worth keeping is that the two
+ * chains AGREE -- and they still do; both hide it now. Offering "New effect"
+ * with every slot taken was reported from the device, and clicking it either
+ * did nothing or aimed at a position that cannot exist. */
 decls.setConfig((() => {
     const c = decls.makeEmptyMasterFxConfig();
     for (let i = 1; i <= cap; i++) c["fx" + i] = { module: "freeverb" };
     return c;
 })());
 const comps = decls.masterFxChainComponents();
-check(comps.length === cap + 2,
-    "a full Master FX has " + comps.length + " boxes, expected cap+2 = " + (cap + 2));
+check(comps.length === cap + 1,
+    "a full Master FX has " + comps.length + " boxes, expected cap+1 = " + (cap + 1) +
+    " (the modules and Settings, with no `+`)");
 
 for (let i = 0; i < cap; i++) {
     const c = comps[i] || {};
@@ -141,9 +147,19 @@ for (let i = 0; i < cap; i++) {
 
 const last = comps[comps.length - 1] || {};
 check(last.key === "settings", "last component key is " + JSON.stringify(last.key) + ", expected settings");
-check(last.position === cap + 1, "settings component position is " + last.position);
-check(comps[cap] && comps[cap].kind === "add",
-    "a full Master FX does not draw its `+` — the slot chain draws one at its cap too");
+check(last.position === cap, "settings component position is " + last.position);
+check(!comps.some((c) => c && c.kind === "add"),
+    "a full Master FX still draws a `+` — there is nowhere for it to add to");
+
+/* One BELOW the cap it must come back, or the guard has turned into "never". */
+decls.setConfig((() => {
+    const c = decls.makeEmptyMasterFxConfig();
+    for (let i = 1; i <= cap - 1; i++) c["fx" + i] = { module: "freeverb" };
+    return c;
+})());
+const nearly = decls.masterFxChainComponents();
+check(nearly.some((c) => c && c.kind === "add"),
+    "one below the cap there is no `+` — the guard is hiding it always");
 
 check(!comps.some(c => c.key === "fx" + (cap + 1)),
     "a component is keyed fx" + (cap + 1) + " — one past the cap");
