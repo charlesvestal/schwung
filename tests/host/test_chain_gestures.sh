@@ -520,9 +520,10 @@ function fits(what, hints) {
    strings drifted before. Lifted once, out here, so the two blocks below are
    asserting the same function and cannot diverge. */
 const chrome = readFileSync("src/shared/chain_editor_chrome.mjs", "utf8");
-const shiftMaker = lift("shiftHintsFor", [], chrome);
+const REST_HINTS = [["JOG", "SEL"], ["CLK", "OPEN"], ["BACK", "EXIT"]];
+const shiftMaker = lift("shiftHintsFor", ["CHAIN_HINTS_AT_REST"], chrome);
 if (!shiftMaker) fail("shiftHintsFor is gone from the shared chrome");
-const shiftHintsFor = shiftMaker ? shiftMaker() : (() => []);
+const shiftHintsFor = shiftMaker ? shiftMaker(REST_HINTS) : (() => []);
 
 /* --- the slot chain editor: bound to the modifier ------------------------ */
 {
@@ -531,8 +532,8 @@ const shiftHintsFor = shiftMaker ? shiftMaker() : (() => []);
      offers different things depending on what the focused position holds. */
   const shown = (shift, comp) => hintsFrom(src, "drawChainEdit", at,
     ["isShiftHeld", "movy", "headerText", "headerRight", "label", "infoLine",
-     "shiftHintsFor", "selectedComp"],
-    [() => shift, {}, "", "", "", "", shiftHintsFor, comp]);
+     "shiftHintsFor", "selectedComp", "CHAIN_HINTS_AT_REST"],
+    [() => shift, {}, "", "", "", "", shiftHintsFor, comp, REST_HINTS]);
 
   /* The kinds chain_model actually emits. An empty position is the `add` box,
      NOT a module with a null module -- that combination never exists, and
@@ -562,21 +563,49 @@ const shiftHintsFor = shiftMaker ? shiftMaker() : (() => []);
   const heldEmpty = shown(true, EMPTY);
   if (/MOVE/.test(flat(heldEmpty)))
     fail("Shift on the + (the empty position) still offers MOVE: [" + flat(heldEmpty) + "]");
-  if (flat(heldEmpty) !== "CLK OPEN / BACK EXIT")
-    fail("Shift on the + reads [" + flat(heldEmpty) + "]");
+  if (flat(heldEmpty) !== flat(rest))
+    fail("Shift on the + reads [" + flat(heldEmpty) + "] but changes nothing there, " +
+         "so it must read exactly like the resting footer");
   fits("with Shift held on the +", heldEmpty);
 
   /* The SYNTH swaps but cannot move: there is exactly one of it. */
   const heldSynth = shown(true, SYNTH);
   if (/MOVE/.test(flat(heldSynth)))
     fail("Shift on the synth offers MOVE, which has nowhere to go: [" + flat(heldSynth) + "]");
-  if (flat(heldSynth) !== "CLK SWAP / BACK EXIT")
+  if (flat(heldSynth) !== "JOG SEL / CLK SWAP / BACK EXIT")
     fail("Shift on the synth reads [" + flat(heldSynth) + "]");
 
-  /* Neither applies to the chain node itself; handleShiftSelect refuses it. */
+  /* ---- THE RULE: an action Shift does not change keeps its PLACE ------
+   *
+   * The footer is read by position -- the eye goes to the middle for the
+   * click -- so a pair that slides left because the pair before it vanished
+   * reads as a different control. Asserted by INDEX against the resting
+   * footer, for every case that keeps a given verb. */
+  const slotOf = (hints, verb) => (hints || []).findIndex((p) => p[1] === verb);
+  for (const [name, hints] of [["the +", heldEmpty], ["the synth", heldSynth],
+                               ["a populated cell", heldFull]]) {
+    for (const verb of ["SEL", "OPEN", "EXIT", "MOVE", "SWAP"]) {
+      const at = slotOf(hints, verb), was = slotOf(rest, verb);
+      if (at < 0 || was < 0) continue;          /* not in both: nothing to hold */
+      if (at !== was)
+        fail("on " + name + ", " + verb + " moved from slot " + was + " to " + at +
+             " when Shift went down -- an unchanged action must keep its place");
+    }
+    /* And a verb that REPLACED another must land in that other one slot. */
+    if (slotOf(hints, "SWAP") >= 0 && slotOf(hints, "SWAP") !== slotOf(rest, "OPEN"))
+      fail("on " + name + ", SWAP is not in the slot OPEN occupies at rest");
+    if (slotOf(hints, "MOVE") >= 0 && slotOf(hints, "MOVE") !== slotOf(rest, "SEL"))
+      fail("on " + name + ", MOVE is not in the slot SEL occupies at rest");
+  }
+
+  /* The chain node has no Shift gesture of its own, so by the rule it shows
+     the resting footer unchanged -- not a shorter rearranged one, which would
+     announce a change that is not there. */
   const heldChain = shown(true, CHAIN);
-  if (/MOVE|SWAP|OPEN/.test(flat(heldChain)))
+  if (/MOVE|SWAP/.test(flat(heldChain)))
     fail("Shift on the chain node offers a component gesture: [" + flat(heldChain) + "]");
+  if (flat(heldChain) !== flat(rest))
+    fail("Shift on the chain node reads [" + flat(heldChain) + "], not the resting footer");
 }
 
 /* --- Master FX: the SAME footer, bound to the same modifier --------------
@@ -595,8 +624,8 @@ const shiftHintsFor = shiftMaker ? shiftMaker() : (() => []);
   const at = mfx.indexOf("export function drawMasterFx(");
   const shown = (shift, comp) => hintsFrom(mfx, "drawMasterFx", at,
     ["isShiftHeld", "dctx", "currentMasterPresetName", "label", "infoLine",
-     "shiftHintsFor", "selectedComp"],
-    [() => shift, {}, "", "", "", shiftHintsFor, comp]);
+     "shiftHintsFor", "selectedComp", "CHAIN_HINTS_AT_REST"],
+    [() => shift, {}, "", "", "", shiftHintsFor, comp, REST_HINTS]);
   const FULL2 = { kind: "module", module: "cloudseed" };
   const EMPTY2 = { kind: "add", section: "fx", label: "+" };
   const rest = shown(false, FULL2);
@@ -609,8 +638,9 @@ const shiftHintsFor = shiftMaker ? shiftMaker() : (() => []);
   if (flat(heldFull2) !== "JOG MOVE / CLK SWAP")
     fail("Shift on a populated Master FX cell reads [" + flat(heldFull2) + "]");
   const heldEmpty2 = shown(true, EMPTY2);
-  if (flat(heldEmpty2) !== "CLK OPEN / BACK EXIT")
-    fail("Shift on the Master FX + reads [" + flat(heldEmpty2) + "]");
+  if (flat(heldEmpty2) !== flat(rest))
+    fail("Shift on the Master FX + reads [" + flat(heldEmpty2) + "] but changes " +
+         "nothing there, so it must read exactly like the resting footer");
   fits("on Master FX with Shift held", heldFull2);
   fits("on Master FX with Shift held, empty", heldEmpty2);
 }

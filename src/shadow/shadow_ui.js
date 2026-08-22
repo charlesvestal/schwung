@@ -54,7 +54,7 @@ import { RULE_Y as MOVY_RULE_Y,
 /* The bands around a chain editor's row of boxes — header, label, info,
  * footer — and the module picker it opens on a position. Both shared with
  * Master FX so the two editors wear the same furniture. */
-import { drawChainEditorBands, drawChainPicker, shiftHintsFor }
+import { drawChainEditorBands, drawChainPicker, shiftHintsFor, CHAIN_HINTS_AT_REST }
     from '/data/UserData/schwung/shared/chain_editor_chrome.mjs';
 /* The chain editor's knob feedback card, and the two resolvers it needs to be
  * handed a row: what each key IS (metaIndex) and which cells a viz group
@@ -16078,7 +16078,7 @@ function drawChainEdit() {
         label,
         info: infoLine,
         hints: isShiftHeld() ? shiftHintsFor(selectedComp)
-                             : [["JOG", "SEL"], ["CLK", "OPEN"], ["BACK", "EXIT"]],
+                             : CHAIN_HINTS_AT_REST,
     });
 
     /*
@@ -19376,8 +19376,22 @@ globalThis.onMidiMessageInternal = function(data) {
                     if (fire !== null) {
                         setSlotParam(tctx.slot, tctx.fullKey, fire);
                         noteTriggerFired(tctx.fullKey);
-                        showKnobFeedback(knobCardKnob, tctx.title,
-                                         getSlotParam(tctx.slot, tctx.fullKey) || "",
+                        /*
+                         * Re-read AND re-seed the knob cache.
+                         *
+                         * A trigger is the one parameter whose value changes
+                         * because of something other than the knob, so the
+                         * cache -- which is only invalidated when the KEY
+                         * changes -- goes stale the moment it fires. Pressing
+                         * read fresh and showed "Fired 6" while turning showed
+                         * the cached "Fired 1", reported from the device as
+                         * exactly that disagreement. Both paths now read the
+                         * same number because the press writes it back.
+                         */
+                        const after = getSlotParam(tctx.slot, tctx.fullKey);
+                        knobValueCache[knobCardKnob] = after;
+                        knobCardRowValues[knobCardKeys[knobCardKnob]] = after;
+                        showKnobFeedback(knobCardKnob, tctx.title, after || "",
                                          undefined, tctx.cardName);
                         needsRedraw = true;
                     }

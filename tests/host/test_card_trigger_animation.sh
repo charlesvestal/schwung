@@ -52,6 +52,17 @@ note=$(awk '/^function noteTriggerFired\(/,/^}/' "$file")
 command grep -q "filter" <<<"$note" || \
   fail "noteTriggerFired never drops old timestamps -- the array grows for the whole session"
 
+# A trigger is the one parameter whose value changes for a reason other than
+# the knob, so the knob cache -- invalidated only when the KEY changes -- goes
+# stale the instant it fires. Pressing read fresh and showed "Fired 6" while
+# turning showed the cached "Fired 1". The press must write the new value back.
+held=$(awk '/A held TRIGGER is fired by the click/,/^            }/' "$file")
+command grep -q "knobValueCache\[knobCardKnob\] = after" <<<"$held" || \
+  fail "firing does not re-seed the knob cache -- a later turn will show a stale count"
+command grep -q "knobCardRowValues\[knobCardKeys\[knobCardKnob\]\] = after" <<<"$held" || \
+  fail "firing does not update the card row -- the cell will show a stale count"
+echo "  ok  firing re-seeds both caches, so press and turn agree"
+
 echo "  ok  the card hands the renderer fire times and a clock"
 echo "  ok  every fire path records, and old timestamps are dropped"
 echo "PASS: the press animation is wired on the chain-editor card too"

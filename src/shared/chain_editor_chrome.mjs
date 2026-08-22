@@ -85,51 +85,57 @@ function centreX(ctx, text) {
  *             `hints` is [key, action] pairs for drawFooter, which drops the
  *             tail rather than squeezing and pins BACK to the right edge.
  */
+/** The footer at rest. Shift substitutes into these SLOTS, never reflows them. */
+export const CHAIN_HINTS_AT_REST = Object.freeze(
+    [["JOG", "SEL"], ["CLK", "OPEN"], ["BACK", "EXIT"]]);
+
 /*
  * What Shift offers on the focused chain cell.
+ *
+ * THE RULE: an action that Shift does not change keeps its PLACE. The footer
+ * is read by position -- the eye goes to the middle for the click -- so a pair
+ * that slides left because the pair before it vanished reads as a different
+ * control. Reported as: "if the same action is in shift and nonshift, dont
+ * change its place".
+ *
+ * So this substitutes into the slots of CHAIN_HINTS_AT_REST rather than
+ * building a list per case, and the honest consequence is that Shift on a cell
+ * it does nothing to shows exactly the resting footer -- because nothing HAS
+ * changed. It used to show a shorter, rearranged one, which announced a change
+ * that was not there.
  *
  * Keyed on comp.kind, and the kinds are not what they look like: chain_model
  * only emits a `module` for a position that HOLDS one, so an empty position is
  * the `add` box and never a module with a null module. Reading "empty" as
  * `kind === "module" && !comp.module` produced a branch nothing could reach,
  * which is why no CLK hint appeared on either screen.
- *
- * Here, not in either editor, because BOTH have the same cells and the rule
- * that keeps the two screens converged is that a gesture is spelled once. The
- * slot chain and Master FX grew separate copies of their footer strings before
- * and immediately drifted -- "the module select here is different than the
- * module select in slots", reported from the device.
- *
- * It used to say JOG MOVE on everything, which is wrong twice. An EMPTY
- * position has nothing to move -- chainReorderJog refuses it and announces
- * "empty" -- so the footer named a gesture that does nothing. And what Shift
- * actually does on a cell is CLICK: shift+click opens the module picker, which
- * on an empty position is how you put a module in and on a populated one is
- * how you swap it. Neither was advertised at all.
- *
- * The populated case is TWO pairs, not three. MOVE / SWAP / EXIT measures one
- * character over the bar -- the unshifted set only fits three because SEL is
- * three letters -- and drawFooter DROPS what does not fit rather than
- * squeezing it, silently. BACK EXIT is the pair to lose: it is the one Shift
- * does not change, and it is on screen in the unshifted footer you were
- * looking at a moment ago.
  */
 export function shiftHintsFor(comp) {
-    if (!comp) return [["BACK", "EXIT"]];
-    switch (comp.kind) {
-        /* A filled position: reorderable and swappable. */
-        case "module": return [["JOG", "MOVE"], ["CLK", "SWAP"]];
-        /* The synth is a real module and swaps like one, but it has no
-         * position to move -- there is exactly one of it. Advertising MOVE
-         * here would be the same dead gesture as on an empty cell. */
-        case "synth":  return [["CLK", "SWAP"], ["BACK", "EXIT"]];
-        /* The "+" IS the empty cell -- chain_model only emits a `module` for a
-         * position that holds one, so an unfilled slot appears as this box.
-         * Clicking it opens the picker, which is how you fill it. */
-        case "add":    return [["CLK", "OPEN"], ["BACK", "EXIT"]];
-        /* The patch node and the slot settings are neither. */
-        default:       return [["BACK", "EXIT"]];
-    }
+    const kind = comp && comp.kind;
+
+    /*
+     * A filled position is the one case that cannot keep all three: Shift
+     * changes BOTH the jog and the click, and JOG MOVE / CLK SWAP / BACK EXIT
+     * measures one character over the bar -- the resting set only fits three
+     * because SEL is three letters. drawFooter drops silently, so the pair is
+     * dropped here, deliberately, from the END: the two that moved keep their
+     * places and the one that goes is the one Shift does not change.
+     */
+    if (kind === "module") return [["JOG", "MOVE"], ["CLK", "SWAP"]];
+
+    /*
+     * The synth swaps like any module but has no position to move -- there is
+     * exactly one of it -- so the jog keeps doing what it did, and says so in
+     * the slot it already occupied.
+     */
+    if (kind === "synth") return [["JOG", "SEL"], ["CLK", "SWAP"], ["BACK", "EXIT"]];
+
+    /*
+     * The `+` IS the empty position. Shift+click opens the picker there, which
+     * is what a plain click does too, so every word is unchanged -- and by the
+     * rule above, so is every position.
+     */
+    return CHAIN_HINTS_AT_REST;
 }
 
 export function drawChainEditorBands(ctx, o) {
