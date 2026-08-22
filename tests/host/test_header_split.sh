@@ -59,6 +59,25 @@ Promise.all([
     return { leftW: cols[at - 1] - cols[0] + 1, gap: best, any: true };
   };
 
+  /*
+   * An ABSOLUTE floor for the gutter, independent of HEADER_GAP.
+   *
+   * Asserting only "gap >= HEADER_GAP" is self-referential: it reads the
+   * constant for both the guarantee and the bar, so lowering the constant
+   * lowers the bar and the test stays green. Mutating HEADER_GAP to 3
+   * survived exactly that way.
+   *
+   * 4px is not arbitrary. font4x5 advances 1px between glyphs and its space
+   * is 2px, so a gutter of 3 or less is inside the range the eye reads as
+   * ordinary word spacing -- the page name would join the end of the title
+   * as if it were the last word of it.
+   */
+  const MIN_LEGIBLE_GUTTER = 4;
+  if (R.HEADER_GAP < MIN_LEGIBLE_GUTTER)
+    fail("HEADER_GAP is " + R.HEADER_GAP + "px. font4x5 puts 1px between glyphs " +
+         "and 2px in a space, so anything under " + MIN_LEGIBLE_GUTTER +
+         "px reads as word spacing and the page name joins the title");
+
   const LONG_PAGE = "PERFORMANCE";
   const CASES = [
     ["MFX > BRIGHTAMBIENCE3", "ROOT"],
@@ -68,13 +87,22 @@ Promise.all([
     ["S1 > SURGE XT", "AMP_ENV"],
   ];
 
-  /* ---- 1. the two sides must never touch ---------------------------- */
+  /* ---- 1. the two sides keep a MINIMUM GUTTER -----------------------
+   *
+   * Not merely "do not overlap". HEADER_GAP is guaranteed by construction --
+   * the left is fitted to W - 4 - rightWidth - HEADER_GAP and the right is
+   * drawn at W - rightWidth - 2 -- so the assertion is the constant itself,
+   * measured at 4px across 2160 title/page-name combinations and never less.
+   *
+   * Pinning ">= 2" instead would pass with the guarantee halved, which is the
+   * kind of slack that lets a fixed-fraction split creep back. */
   for (const [l, r] of CASES) {
     const { gap, any } = measure(l, r);
     if (!any) continue;
-    if (gap < 2)
+    if (gap < Math.max(R.HEADER_GAP, MIN_LEGIBLE_GUTTER))
       fail("\"" + l + "\" / \"" + r + "\": the two sides are " + gap +
-           "px apart -- they read as one string, or overlap");
+           "px apart, under the " + R.HEADER_GAP + "px gutter -- they read as " +
+           "one string, or overlap");
   }
 
   /* ---- 2. a SHORT right side hands its room to the title ------------
@@ -101,7 +129,8 @@ Promise.all([
            R.HEADER_MIN_LEFT + "px floor");
   }
 
-  console.log("  ok  the two sides never overlap, across long/short combinations");
+  console.log("  ok  the two sides hold their " + R.HEADER_GAP +
+              "px gutter, across long/short combinations");
   console.log("  ok  a short page name gives its room to the title (BRIGHTAMBIENCE3 fits whole)");
   console.log("  ok  a long page name cannot squeeze the title below the " +
               R.HEADER_MIN_LEFT + "px floor");
