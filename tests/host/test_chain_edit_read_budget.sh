@@ -376,6 +376,10 @@ function world() {
        test is measuring -- what it measures is the info line the editor
        COMPUTES before handing it over, which is still done above. */
     "drawChainEditorBands",
+    /* ...and the Shift footer helper beside them, for the same reason: it is a
+       free identifier under the lift, and a typeof guard would make the footer
+       block unreachable. A noop is right here -- it reads no params. */
+    "shiftHintsFor", "CHAIN_HINTS_AT_REST",
   ];
   const mk = lift("drawChainEdit", drawDeps);
   const makeDraw = (diagram, cardState) => mk(noop, {}, 0, () => false, [{ name: "s" }], truncateText,
@@ -386,7 +390,8 @@ function world() {
     noop, () => false, ensureChainConfigFresh,
     () => (cardState === undefined ? null : cardState),
     () => { w.cardDraws++; },
-    slotChainTarget, chainLfoTargetMap, chainComponentBypassed, noop);
+    slotChainTarget, chainLfoTargetMap, chainComponentBypassed, noop,
+    () => [], []);
   w.cardDraws = 0;
   w.draw = makeDraw(recording);
   w.drawReal = makeDraw(drawChainDiagram);
