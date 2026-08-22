@@ -478,8 +478,20 @@ function detectSwitch(pool) {
     return out;
 }
 
+/*
+ * The band words require a separator, which is what keeps "lowpass" and
+ * "highpass" out of the EQ detector. The `[lmh]gain` forms are the exception
+ * that has to be spelled out: ottx declares lgain / mgain / hgain, adjacent
+ * and all -30..30 dB — a textbook three-band EQ that matched none of the
+ * patterns because there is no separator to anchor on.
+ *
+ * Anchored whole-string and restricted to the single letter plus "gain", so it
+ * cannot reach for "lfo_gain" or "make_gain".
+ */
 const EQ_BAND_WORD = {
-    low: /(^|_)(low|lo|bass)($|_)/, mid: /(^|_)mid($|_)/, high: /(^|_)(high|hi|treble)($|_)/,
+    low: /(^|_)(low|lo|bass)($|_)|^lgain$/,
+    mid: /(^|_)mid($|_)|^mgain$/,
+    high: /(^|_)(high|hi|treble)($|_)|^hgain$/,
 };
 
 function detectEq(pool) {

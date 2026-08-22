@@ -176,10 +176,48 @@ export function fontPrint5x3(ctx, x, y, str, color) {
 export function enumSquareLines(value) {
     const num = String(value == null ? "" : value).trim();
     if (/^[+-]?\d+$/.test(num)) return [num, ""];
-    const parts = String(value).toUpperCase().replace(/[_-]/g, " ").trim().split(/\s+/);
+    /*
+     * "_" always separates. "-" separates only BETWEEN two word characters --
+     * "low-cut" is two words, but "+-1" is one value meaning plus-or-minus one,
+     * and splitting it produced "+" on one line and "1" on the other, which
+     * drops the minus entirely. eucalypso and superarp both declare it.
+     */
+    const parts = String(value).toUpperCase()
+        .replace(/_/g, " ")
+        .replace(/(?<=[A-Z0-9])-(?=[A-Z0-9])/g, " ")
+        .trim().split(/\s+/);
     if (parts.length >= 2) {
         return [parts[0].substring(0, 3), parts[1].substring(0, 3)];
     }
     const w = parts[0] || "";
+
+    /*
+     * A "+" INSIDE a word is a break opportunity, and the "+" itself must stay
+     * visible.
+     *
+     * Junologue Chorus declares modes I / I+II / II. With no space or
+     * underscore to break on, "I+II" fell to the blind 3+3 slice below and
+     * came out as "I+I" over "I" -- which is not "I+II" split badly, it is a
+     * DIFFERENT VALUE on screen, and the top line is indistinguishable from
+     * mode "I".
+     *
+     * The "+" carries the meaning ("both", "plus an octave"), so it is
+     * attached to whichever line has room for it rather than dropped: "I+"/"II"
+     * where the left side fits in three, "OSC"/"+2" where it does not. Dropping
+     * it would make "Osc1+2" and "Osc1 2" identical.
+     *
+     * A LEADING or TRAILING "+" is not a break -- "+1", "+3rd", "+Oct" and
+     * "Comb+" are single tokens whose "+" is a sign or a suffix, and splitting
+     * them would put a bare "+" on a line by itself.
+     */
+    const plus = w.indexOf("+");
+    if (plus > 0 && plus < w.length - 1) {
+        const left = w.substring(0, plus + 1);          /* includes the + */
+        const right = w.substring(plus + 1);
+        return left.length <= 3
+            ? [left, right.substring(0, 3)]
+            : [w.substring(0, 3), ("+" + right).substring(0, 3)];
+    }
+
     return [w.substring(0, 3), w.substring(3, 6)];
 }
