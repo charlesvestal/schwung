@@ -550,14 +550,22 @@ function makeMaster(over) {
   if (pages[pages.length - 1].kind !== "menu")
     fail("master Actions must be the LAST page and a menu");
 
-  /* ONE cell, and that is the ask: Volume alone. A page that quietly grew a
-     second control would mean something leaked in from the slot contract. */
+  /* The values page must hold EXACTLY the declared master-bus params, in
+     order. The point is leakage: a cell that appeared here without being
+     declared in MASTER_GRID_PARAMS came in from the slot contract, which is a
+     different bus. Asserting against the declaration rather than a hardcoded
+     count keeps that check honest when the master bus legitimately gains a
+     param — it gained MIDI Ch — while still failing on anything undeclared.
+     Volume is named explicitly because it must stay FIRST: it is the one
+     control the master page has always led with. */
   const main = pages[0];
-  if ((main.keys || []).filter(Boolean).length !== 1)
-    fail("the master values page should hold exactly one knob, got " +
-         JSON.stringify(main.keys));
-  if (main.keys[0] !== "master_fx:volume")
-    fail("the master values page should hold master_fx:volume, got " + main.keys[0]);
+  const declared = SG.MASTER_GRID_PARAMS.map((p) => p.key);
+  const got = (main.keys || []).filter(Boolean);
+  if (got.join("|") !== declared.join("|"))
+    fail("the master values page should hold exactly the declared master params " +
+         JSON.stringify(declared) + ", got " + JSON.stringify(got));
+  if (got[0] !== "master_fx:volume")
+    fail("the master values page should lead with master_fx:volume, got " + got[0]);
 
   /* Each LFO is exactly ONE page here too: nine params chunk to 8 + 1 unless
      one rate cell is hidden, and an orphan page holding a single control would

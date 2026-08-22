@@ -796,9 +796,20 @@ a **pitch**, and clamping to 68–99 silences five octaves of a keyboard.
 `tests/host/test_fx_midi_filter_call_sites.sh` asserts that as an *absence* —
 a test that only checked "the guard exists" would pass with it wrongly applied.
 
-**Global Settings → Audio → MFX MIDI Ch** (`master_fx_midi_channel` in
+**Master FX → Settings → MIDI Ch** (`master_fx_midi_channel` in
 `shadow_config.json`; param `master_fx:midi_channel`, −1 = All) selects the
-listen channel. **Default All**, deliberately: Master FX heard everything
+listen channel. It lives on `MASTER_FX_SETTINGS_ITEMS_BASE` and in
+`MASTER_GRID_PARAMS`, **not** in Global Settings — the first cut put it under
+Global → Audio beside the other `master_fx:*` shim settings, which is where the
+*plumbing* lives but not where a Master FX setting is looked for, and it was
+reported missing from the device. Note the two representations: the wire
+(`master_fx:midi_channel`, the config key, and the shim's variable) carries the
+REAL channel (−1 = All, 0–15), while an enum cell is addressed by OPTION INDEX
+(0–16). They are off by one and disagree about All, so the conversion is pinned
+to `createMasterGridIo`'s `getParam`/`setParam` in `shadow_ui_slot_grid.mjs`
+(`mfxMidiChannelToIndex` / `…FromIndex`) rather than repeated per call site.
+
+**Default All**, deliberately: Master FX heard everything
 before this existed, so any other default silently kills every sidechain in
 the field — and a user whose ducker stopped after an update cannot connect
 that to a setting they never saw. Note that the channel setting **cannot**

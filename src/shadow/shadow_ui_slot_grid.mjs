@@ -472,9 +472,42 @@ export const MASTER_KEY_PREFIX = "master_fx:";
  * the same setting would have two ceilings. Rendered as a percentage because
  * that is what the list has always shown.
  */
+/*
+ * The Master FX listen channel, as an ENUM with two representations.
+ *
+ * The wire (`master_fx:midi_channel`, shadow_config.json, and the shim's
+ * master_fx_midi_channel) carries the REAL channel: -1 for All, 0..15 for MIDI
+ * channels 1..16, matching the status byte's low nibble so the filter can
+ * compare without arithmetic. An enum cell, though, is addressed by OPTION
+ * INDEX — 0..16 here. The two are off by one and disagree about All, so the
+ * conversion is pinned to the io boundary below rather than left for each call
+ * site to remember.
+ */
+export const MFX_MIDI_CHANNEL_KEY = MASTER_KEY_PREFIX + "midi_channel";
+export const MFX_MIDI_CHANNEL_ALL_WIRE = -1;
+export const MFX_MIDI_CHANNEL_OPTIONS = ["All"].concat(
+    Array.from({ length: 16 }, (_, i) => String(i + 1)));
+
+/** Wire value (-1 / 0..15) -> option index (0..16). Anything else is All. */
+export function mfxMidiChannelToIndex(wire) {
+    const ch = parseInt(wire, 10);
+    return (Number.isFinite(ch) && ch >= 0 && ch <= 15) ? ch + 1 : 0;
+}
+
+/** Option index (0..16) -> wire value. Index 0 is All. */
+export function mfxMidiChannelFromIndex(index) {
+    const i = parseInt(index, 10);
+    return (Number.isFinite(i) && i >= 1 && i <= 16) ? i - 1 : MFX_MIDI_CHANNEL_ALL_WIRE;
+}
+
 export const MASTER_GRID_PARAMS = [
     { key: MASTER_KEY_PREFIX + "volume", name: "Volume", type: "float",
       min: 0, max: 1, step: 0.05, default: 1, display_format: ".0%" },
+    /* Second knob on what used to be a deliberate one-cell page. Divable like
+     * every other enum that declares options, which is what makes 17 choices
+     * usable from a knob at all. */
+    { key: MFX_MIDI_CHANNEL_KEY, name: "MIDI Ch", type: "enum",
+      options: MFX_MIDI_CHANNEL_OPTIONS, default: 0 },
 ];
 
 /** Actions, in the order they appear on the menu page. */
@@ -561,6 +594,14 @@ export function createMasterGridIo(io) {
             const k = bare(fullKey);
             if (k === "ui_hierarchy") return JSON.stringify(masterGridHierarchy(!!io.hasPreset()));
             if (k === "chain_params") return JSON.stringify(allMasterGridParams());
+            /* Wire -> option index. A failed read must stay a failed read: the
+             * grid distinguishes null from "", and turning either into index 0
+             * would silently assert "All" for a channel we never saw. */
+            if (k === MFX_MIDI_CHANNEL_KEY) {
+                const raw = io.readParam(k);
+                if (raw === null || raw === "") return raw;
+                return String(mfxMidiChannelToIndex(raw));
+            }
             return io.readParam(k);
         },
 
@@ -590,7 +631,13 @@ export function createMasterGridIo(io) {
         },
 
         setParam(fullKey, value) {
-            io.writeParam(bare(fullKey), String(value));
+            const k = bare(fullKey);
+            /* Option index -> wire, the inverse of getParam's mapping. */
+            if (k === MFX_MIDI_CHANNEL_KEY) {
+                io.writeParam(k, String(mfxMidiChannelFromIndex(value)));
+                return;
+            }
+            io.writeParam(k, String(value));
         },
 
         runAction(action) {

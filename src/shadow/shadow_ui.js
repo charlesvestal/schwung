@@ -215,7 +215,9 @@ import {
     paramPagesComponent, paramPagesSlot, clearParamPagesTouch,
     enumPickerFooterHints, CONTRACT_SETTLE_MS
 } from './shadow_ui_param_pages.mjs';
-import { createSlotGridIo, createMasterGridIo } from './shadow_ui_slot_grid.mjs';
+import { createSlotGridIo, createMasterGridIo,
+         MFX_MIDI_CHANNEL_OPTIONS, mfxMidiChannelToIndex,
+         mfxMidiChannelFromIndex } from './shadow_ui_slot_grid.mjs';
 import {
     drawMasterFx as _drawMasterFx,
     getMasterFxDisplayName as _getMasterFxDisplayName,
@@ -2119,6 +2121,13 @@ let selectedMasterFxModuleIndex = 0;  // Index in MASTER_FX_OPTIONS during selec
 /* Master FX settings (shown when Settings component is selected) */
 const MASTER_FX_SETTINGS_ITEMS_BASE = [
     { key: "master_volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
+    /* Which channel Master FX hears. Lives here rather than in Global Settings
+     * because this is where a Master FX setting is looked for — reported from
+     * the device on the first cut, which put it under Global > Audio next to
+     * the other master_fx:* shim settings and so was never found. "All" is the
+     * default and the pre-existing behaviour; narrowing it is opt-in. */
+    { key: "master_fx_midi_channel", label: "MIDI Ch", type: "enum",
+      options: MFX_MIDI_CHANNEL_OPTIONS },
     { key: "mfx_lfo1", label: "LFO 1", type: "action" },
     { key: "mfx_lfo2", label: "LFO 2", type: "action" },
     { key: "save", label: "[Save MFX Preset]", type: "action" },
@@ -2438,29 +2447,6 @@ function loadParamViewConfig() {
     } catch (e) {}
 }
 
-/* Master FX listen channel: "All" plus the 16 MIDI channels. Built rather
- * than written out so the option list and the wire values cannot drift — the
- * wire is 0-based (matching the status low nibble) while the display is
- * 1-based, which is exactly the kind of off-by-one two hand-typed literal
- * arrays acquire. -1 is FX_MIDI_CHANNEL_ALL in fx_midi_filter.h. */
-const MFX_MIDI_CHANNEL_OPTIONS = ["All"];
-const MFX_MIDI_CHANNEL_VALUES = [-1];
-const MIDI_CHANNEL_COUNT = 16;
-for (let i = 0; i < MIDI_CHANNEL_COUNT; i++) {
-    MFX_MIDI_CHANNEL_OPTIONS.push(String(i + 1));
-    MFX_MIDI_CHANNEL_VALUES.push(i);
-}
-
-/* Coerce a stored/wire value to one this UI can actually display, falling
- * back to All (-1). Validating by membership in the values array rather than
- * by a numeric range keeps the accepted set in one place — and keeps a bare
- * `> 15` out of Master FX code, where it is indistinguishable from a stale
- * copy of the slot cap (test_master_fx_slots_js.sh). */
-function normalizeMfxMidiChannel(raw) {
-    const ch = parseInt(raw, 10);
-    return MFX_MIDI_CHANNEL_VALUES.indexOf(ch) >= 0 ? ch : -1;
-}
-
 /* Global Settings — hierarchical sections for Shift+Vol+Step2 menu.
  * The canonical schema is also in shared/settings-schema.json for the
  * schwung-manager web UI. Keep both in sync when adding settings. */
@@ -2491,13 +2477,7 @@ const GLOBAL_SETTINGS_SECTIONS = [
             { key: "skipback_seconds", label: "Skipback Len", type: "enum",
               options: ["30s", "1m", "2m", "3m", "4m", "5m"], values: [30, 60, 120, 180, 240, 300] },
             { key: "browser_preview", label: "Browser Preview", type: "bool" },
-            { key: "usbc_out_persist", label: "USB-C Persist", type: "bool" },
-            /* Which channel Master FX hears. "All" is the default and the
-             * behaviour before this existed — narrowing it is opt-in, because
-             * a ducker that stops working after an update is unconnectable to
-             * a setting the user never saw. */
-            { key: "master_fx_midi_channel", label: "MFX MIDI Ch", type: "enum",
-              options: MFX_MIDI_CHANNEL_OPTIONS, values: MFX_MIDI_CHANNEL_VALUES }
+            { key: "usbc_out_persist", label: "USB-C Persist", type: "bool" }
         ]
     },
     {
@@ -8940,7 +8920,10 @@ function loadMasterFxChainFromConfig() {
             /* Like usbc_out_persist, the shim reads this key straight from
              * shadow_config.json at init, so the filter is already in force
              * before the first frame. This push only keeps the two in sync. */
-            const val = normalizeMfxMidiChannel(config.master_fx_midi_channel);
+            /* Round-tripped through the index so a garbage stored value lands
+             * on All rather than being written straight back to the shim. */
+            const val = mfxMidiChannelFromIndex(
+                mfxMidiChannelToIndex(config.master_fx_midi_channel));
             shadow_set_param(0, "master_fx:midi_channel", String(val));
             cachedMasterFxMidiChannel = val;
         }
@@ -13852,10 +13835,12 @@ function getMasterFxSettingValue(setting) {
         /* Branch on the RAW value: a failed read is null, an unserved key is
          * "", and parseInt turns both into NaN. Reporting "All" for a read
          * that never completed would show the user a setting they don't have. */
+        /* Branch on the RAW value: a failed read is null, an unserved key is
+         * "", and both parse to the same thing. Reporting "All" for a read
+         * that never completed would show the user a setting they don't have. */
         const raw = shadow_get_param(0, "master_fx:midi_channel");
         if (raw === null || raw === "") return "--";
-        const ch = normalizeMfxMidiChannel(raw);
-        return (ch < 0) ? "All" : String(ch + 1);
+        return MFX_MIDI_CHANNEL_OPTIONS[mfxMidiChannelToIndex(raw)];
     }
     if (setting.key === "resample_bridge") {
         const modeRaw = shadow_get_param(0, "master_fx:resample_bridge");
@@ -13999,11 +13984,12 @@ function adjustMasterFxSetting(setting, delta) {
          * never actually saw would move the setting somewhere the user did
          * not ask for, and the shim would then persist it. */
         if (raw === null || raw === "") return;
-        const current = normalizeMfxMidiChannel(raw);
-        let idx = MFX_MIDI_CHANNEL_VALUES.indexOf(current);
-        if (idx < 0) idx = 0;
-        idx = (idx + 1) % MFX_MIDI_CHANNEL_VALUES.length;
-        const newVal = MFX_MIDI_CHANNEL_VALUES[idx];
+        const n = MFX_MIDI_CHANNEL_OPTIONS.length;
+        /* Honour delta rather than always stepping +1: the click path passes 1,
+         * but a jog turn passes -1 and a hardcoded increment would make the
+         * encoder only ever go forwards. Modulo twice so a negative wraps. */
+        const idx = ((mfxMidiChannelToIndex(raw) + delta) % n + n) % n;
+        const newVal = mfxMidiChannelFromIndex(idx);
         shadow_set_param(0, "master_fx:midi_channel", String(newVal));
         cachedMasterFxMidiChannel = newVal;
         saveMasterFxChainConfig();
