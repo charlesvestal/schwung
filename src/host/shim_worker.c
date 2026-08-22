@@ -135,6 +135,19 @@ static void rt_audit_tick(void)
     static rt_thread_info_t prev[RT_AUDIT_MAX_THREADS];
     static int prev_n = 0;
     static int have_baseline = 0;
+    /* The pre-module snapshot, kept separately from `prev`: Move's own audio
+     * threads are permanently busy at FIFO 70 and would otherwise be reported
+     * as burners on every single tick, burying the finding. */
+    static rt_thread_info_t base[RT_AUDIT_MAX_THREADS];
+    static int base_n = 0;
+    static long clk_hz = 0;
+
+    /* CPU accounting is in whole clock ticks (10 ms at the usual USER_HZ 100),
+     * so the floor cannot usefully go below one tick. 20 ms in a ~1 s window is
+     * 2% of a core — well under what starves `Link Main`, and high enough that
+     * an idle thread never trips it. */
+    const int RT_BURN_FLOOR_MS = 20;
+    const int RT_BURN_WINDOW_MS = 1000;   /* nominal; the tick is ~1 Hz */
 
     if (!(shim_debug_flags & SHIM_FLAG_RT_AUDIT)) {
         /* Disarmed: drop the baseline so re-arming starts clean rather than
@@ -201,6 +214,10 @@ static void rt_audit_tick(void)
 
         memcpy(prev, cur, sizeof(rt_thread_info_t) * (size_t)cur_n);
         prev_n = cur_n;
+        memcpy(base, cur, sizeof(rt_thread_info_t) * (size_t)cur_n);
+        base_n = cur_n;
+        clk_hz = sysconf(_SC_CLK_TCK);
+        if (clk_hz <= 0) clk_hz = 100;
         have_baseline = 1;
         return;
     }
@@ -214,6 +231,23 @@ static void rt_audit_tick(void)
                          rt_audit_module[0] ? rt_audit_module : NULL,
                          desc, sizeof(desc));
         snprintf(line, sizeof(line), "rt-audit: NEW realtime thread %s", desc);
+        unified_log("shim", LOG_LEVEL_WARN, line);
+    }
+
+    /* WHICH threads exist is the suspect list; how much CPU they BURN at
+     * realtime priority is the harm. `Link Main` runs at FIFO 35 and only gets
+     * what a FIFO 70 thread leaves it, so a parked worker costs nothing and a
+     * sample loader costs everything. Report the second. */
+    rt_thread_burn_t burn[RT_AUDIT_MAX_THREADS];
+    int bn = rt_thread_burners(base, base_n, prev, prev_n, cur, cur_n,
+                               (int)clk_hz, RT_BURN_FLOOR_MS,
+                               burn, RT_AUDIT_MAX_THREADS);
+    for (int i = 0; i < bn; i++) {
+        char desc[224];
+        rt_thread_format_burn(&burn[i],
+                              rt_audit_module[0] ? rt_audit_module : NULL,
+                              RT_BURN_WINDOW_MS, desc, sizeof(desc));
+        snprintf(line, sizeof(line), "rt-audit: %s", desc);
         unified_log("shim", LOG_LEVEL_WARN, line);
     }
 

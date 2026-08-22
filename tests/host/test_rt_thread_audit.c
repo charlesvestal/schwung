@@ -21,12 +21,27 @@ static int fails = 0;
 
 /* Build a /proc stat line: fields 1-2 then filler up to 38, then
  * processor / rt_priority / policy at 39 / 40 / 41. */
+static void make_stat_cpu(char *buf, int len, int tid, const char *comm,
+                          int cpu, int rtprio, int policy,
+                          unsigned long utime, unsigned long stime);
+
 static void make_stat(char *buf, int len, int tid, const char *comm,
                       int cpu, int rtprio, int policy)
 {
+    make_stat_cpu(buf, len, tid, comm, cpu, rtprio, policy, 0, 0);
+}
+
+/* Same, with utime/stime (proc(5) fields 14 and 15) placed exactly. */
+static void make_stat_cpu(char *buf, int len, int tid, const char *comm,
+                          int cpu, int rtprio, int policy,
+                          unsigned long utime, unsigned long stime)
+{
     int n = snprintf(buf, (size_t)len, "%d (%s) S 1 1 1 0 -1 4194560", tid, comm);
     /* fields so far: 1 pid, 2 comm, 3 state, 4-9 = six more. Next is 10. */
-    for (int f = 10; f <= 38; f++)
+    for (int f = 10; f <= 13; f++)
+        n += snprintf(buf + n, (size_t)(len - n), " %d", f);
+    n += snprintf(buf + n, (size_t)(len - n), " %lu %lu", utime, stime);
+    for (int f = 16; f <= 38; f++)
         n += snprintf(buf + n, (size_t)(len - n), " %d", f);
     snprintf(buf + n, (size_t)(len - n), " %d %d %d 0 0 0", cpu, rtprio, policy);
 }
@@ -180,6 +195,123 @@ static void test_format_never_overruns(void)
     CHECK(tiny[sizeof(tiny) - 1] == '\0', "always NUL-terminates");
 }
 
+
+/* ---- CPU burn: the number that actually maps onto the dropouts ---------- */
+
+static rt_thread_info_t mk(int tid, int prio, unsigned long ut, unsigned long st)
+{
+    rt_thread_info_t t = { 0 };
+    t.tid = tid; t.policy = RT_AUDIT_SCHED_FIFO; t.rtprio = prio;
+    t.utime = ut; t.stime = st;
+    snprintf(t.comm, sizeof(t.comm), "Audio Main/SPI");
+    return t;
+}
+
+static void test_utime_stime_are_parsed_from_fields_14_15(void)
+{
+    char line[1024];
+    rt_thread_info_t t;
+    make_stat_cpu(line, sizeof(line), 22339, "Audio Main/SPI", 3, 70,
+                  RT_AUDIT_SCHED_FIFO, 1234, 56);
+    CHECK(rt_thread_parse_stat(line, &t), "a line with CPU fields parses");
+    CHECK(t.utime == 1234, "utime is field 14");
+    CHECK(t.stime == 56, "stime is field 15");
+    CHECK(t.rtprio == 70 && t.cpu == 3,
+          "adding the CPU fields did not shift the scheduling fields");
+}
+
+/* A parked thread is NOT the finding. This is the whole point of measuring
+ * burn instead of counting threads: po32-drum's render worker and fork's I/O
+ * thread sit on a condvar at FIFO 70 and starve nobody. */
+static void test_a_parked_realtime_thread_is_not_a_burner(void)
+{
+    rt_thread_info_t base[1] = { mk(900, 90, 0, 0) };
+    rt_thread_info_t prev[2] = { mk(900, 90, 100, 0), mk(1000, 70, 5, 0) };
+    rt_thread_info_t cur[2]  = { mk(900, 90, 200, 0), mk(1000, 70, 5, 0) };
+    rt_thread_burn_t out[8];
+
+    CHECK(rt_thread_burners(base, 1, prev, 2, cur, 2, 100, 20, out, 8) == 0,
+          "a module thread that consumed no CPU is not reported");
+}
+
+static void test_a_busy_module_thread_is_reported_with_its_ms(void)
+{
+    rt_thread_info_t base[1] = { mk(900, 90, 0, 0) };
+    rt_thread_info_t prev[2] = { mk(900, 90, 100, 0), mk(1000, 70, 0, 0) };
+    /* 18 ticks user + 4 system at 100 Hz = 220 ms. */
+    rt_thread_info_t cur[2]  = { mk(900, 90, 200, 0), mk(1000, 70, 18, 4) };
+    rt_thread_burn_t out[8];
+
+    int n = rt_thread_burners(base, 1, prev, 2, cur, 2, 100, 20, out, 8);
+    CHECK(n == 1, "the busy module thread is reported");
+    CHECK(out[0].thread.tid == 1000, "and it is the right one");
+    CHECK(out[0].cpu_ms == 220, "220 ms from 22 ticks at 100 Hz");
+
+    char buf[256];
+    rt_thread_format_burn(&out[0], "sfz", 1000, buf, sizeof(buf));
+    CHECK(strstr(buf, "BURNED 220 ms") != NULL, "the message states the cost");
+    CHECK(strstr(buf, "22%") != NULL, "and it as a share of the window");
+    CHECK(strstr(buf, "sfz") != NULL, "and names the module");
+}
+
+/* Move's own audio threads are permanently busy at FIFO 70. If they were not
+ * excluded they would drown every real finding on every tick. */
+static void test_moves_own_threads_are_excluded_by_the_baseline(void)
+{
+    rt_thread_info_t base[2] = { mk(900, 90, 0, 0), mk(976, 70, 0, 0) };
+    rt_thread_info_t prev[2] = { mk(900, 90, 100, 0), mk(976, 70, 500, 0) };
+    rt_thread_info_t cur[2]  = { mk(900, 90, 300, 0), mk(976, 70, 900, 0) };
+    rt_thread_burn_t out[8];
+
+    CHECK(rt_thread_burners(base, 2, prev, 2, cur, 2, 100, 20, out, 8) == 0,
+          "threads present before any module loaded are the environment");
+}
+
+/* A thread that appears AND does its damage inside one sample window must not
+ * be missed for having no previous reading. */
+static void test_a_brand_new_thread_counts_its_whole_lifetime(void)
+{
+    rt_thread_info_t base[1] = { mk(900, 90, 0, 0) };
+    rt_thread_info_t prev[1] = { mk(900, 90, 100, 0) };
+    rt_thread_info_t cur[2]  = { mk(900, 90, 200, 0), mk(1100, 70, 21, 0) };
+    rt_thread_burn_t out[8];
+
+    int n = rt_thread_burners(base, 1, prev, 1, cur, 2, 100, 20, out, 8);
+    CHECK(n == 1 && out[0].cpu_ms == 210,
+          "a thread absent from prev is measured from zero, not skipped");
+}
+
+static void test_burners_are_ordered_worst_first_and_bounded(void)
+{
+    rt_thread_info_t base[1] = { mk(900, 90, 0, 0) };
+    rt_thread_info_t prev[4] = { mk(900,90,0,0), mk(1,70,0,0), mk(2,70,0,0), mk(3,70,0,0) };
+    rt_thread_info_t cur[4]  = { mk(900,90,0,0), mk(1,70,5,0), mk(2,70,50,0), mk(3,70,20,0) };
+    rt_thread_burn_t out[8];
+
+    int n = rt_thread_burners(base, 1, prev, 4, cur, 4, 100, 20, out, 8);
+    CHECK(n == 3, "three burners over the floor");
+    CHECK(out[0].thread.tid == 2 && out[1].thread.tid == 3 && out[2].thread.tid == 1,
+          "ordered worst first");
+
+    rt_thread_burn_t one[1];
+    CHECK(rt_thread_burners(base, 1, prev, 4, cur, 4, 100, 20, one, 1) >= 1,
+          "out_max is honoured");
+    CHECK(one[0].thread.tid == 2, "and the ONE kept is the worst, not the first seen");
+}
+
+/* Counters only go up. A tid reused by a new thread reads as a huge negative
+ * delta; guessing at it would invent a finding. */
+static void test_tid_reuse_is_not_guessed_at(void)
+{
+    rt_thread_info_t base[1] = { mk(900, 90, 0, 0) };
+    rt_thread_info_t prev[2] = { mk(900,90,0,0), mk(1000, 70, 5000, 0) };
+    rt_thread_info_t cur[2]  = { mk(900,90,0,0), mk(1000, 70, 3, 0) };
+    rt_thread_burn_t out[8];
+
+    CHECK(rt_thread_burners(base, 1, prev, 2, cur, 2, 100, 20, out, 8) == 0,
+          "a counter that went backwards is dropped, not reported");
+}
+
 int main(void)
 {
     test_parses_the_scheduling_fields();
@@ -191,6 +323,13 @@ int main(void)
     test_churn_does_not_mask_a_new_rt_thread();
     test_counting_and_bounds();
     test_format_never_overruns();
+    test_utime_stime_are_parsed_from_fields_14_15();
+    test_a_parked_realtime_thread_is_not_a_burner();
+    test_a_busy_module_thread_is_reported_with_its_ms();
+    test_moves_own_threads_are_excluded_by_the_baseline();
+    test_a_brand_new_thread_counts_its_whole_lifetime();
+    test_burners_are_ordered_worst_first_and_bounded();
+    test_tid_reuse_is_not_guessed_at();
 
     if (fails) {
         fprintf(stderr, "%d check(s) failed\n", fails);

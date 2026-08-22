@@ -6,6 +6,8 @@
 #include "rt_thread_audit.h"
 
 /* Field numbers in proc(5), 1-based, counting the bracketed comm as field 2. */
+#define FIELD_UTIME     14
+#define FIELD_STIME     15
 #define FIELD_PROCESSOR 39
 #define FIELD_RT_PRIO   40
 #define FIELD_POLICY    41
@@ -45,7 +47,9 @@ int rt_thread_parse_stat(const char *line, rt_thread_info_t *out)
         const char *tok = p;
         while (*p && *p != ' ' && *p != '\t' && *p != '\n') p++;
 
-        if (field == FIELD_PROCESSOR) { out->cpu = atoi(tok);    got_cpu = 1; }
+        if (field == FIELD_UTIME)      out->utime = strtoul(tok, NULL, 10);
+        else if (field == FIELD_STIME) out->stime = strtoul(tok, NULL, 10);
+        else if (field == FIELD_PROCESSOR) { out->cpu = atoi(tok);    got_cpu = 1; }
         else if (field == FIELD_RT_PRIO) { out->rtprio = atoi(tok); got_prio = 1; }
         else if (field == FIELD_POLICY)  { out->policy = atoi(tok); got_policy = 1; break; }
     }
@@ -125,6 +129,80 @@ int rt_thread_format(const rt_thread_info_t *t, const char *module,
                      module ? module : "",
                      shared_name ? " (shared name — Move uses it too; identify by tid)" : "");
 
+    if (n < 0) { buf[0] = '\0'; return 0; }
+    if (n >= buf_len) n = buf_len - 1;
+    return n;
+}
+
+static int burn_find(const rt_thread_info_t *a, int n, int tid)
+{
+    for (int i = 0; i < n; i++)
+        if (a[i].tid == tid) return i;
+    return -1;
+}
+
+int rt_thread_burners(const rt_thread_info_t *base, int base_n,
+                      const rt_thread_info_t *prev, int prev_n,
+                      const rt_thread_info_t *cur, int cur_n,
+                      int hz, int min_ms,
+                      rt_thread_burn_t *out, int out_max)
+{
+    if (!cur || cur_n <= 0 || !out || out_max <= 0) return 0;
+    if (hz <= 0) return 0;
+    if (base_n < 0) base_n = 0;
+    if (prev_n < 0) prev_n = 0;
+
+    int written = 0;
+    for (int i = 0; i < cur_n; i++) {
+        if (!rt_thread_is_realtime(&cur[i])) continue;
+
+        /* Move's own audio threads are permanently busy at FIFO 70; they are
+         * the environment, not the finding. */
+        if (base && burn_find(base, base_n, cur[i].tid) >= 0) continue;
+
+        int pi = prev ? burn_find(prev, prev_n, cur[i].tid) : -1;
+        unsigned long before = (pi >= 0) ? (prev[pi].utime + prev[pi].stime) : 0;
+        unsigned long now = cur[i].utime + cur[i].stime;
+
+        /* A tid absent from prev is brand new; count its whole lifetime so a
+         * thread that does all its damage in its first second is not missed. */
+        if (now < before) continue;                 /* tid reuse — do not guess */
+        unsigned long ticks = now - before;
+
+        int ms = (int)((ticks * 1000UL) / (unsigned long)hz);
+        if (ms < min_ms) continue;
+
+        /* Insertion sort, worst first: the list is at most a handful and the
+         * top entry is the one anybody reads. */
+        int at = written;
+        while (at > 0 && out[at - 1].cpu_ms < ms) at--;
+        if (written < out_max) written++;
+        for (int k = (written < out_max ? written : out_max) - 1; k > at; k--)
+            out[k] = out[k - 1];
+        if (at < out_max) {
+            out[at].thread = cur[i];
+            out[at].cpu_ms = ms;
+        }
+    }
+    return written;
+}
+
+int rt_thread_format_burn(const rt_thread_burn_t *b, const char *module,
+                          int window_ms, char *buf, int buf_len)
+{
+    if (!buf || buf_len <= 0) return 0;
+    buf[0] = '\0';
+    if (!b) return 0;
+
+    char who[192];
+    rt_thread_format(&b->thread, module, who, sizeof(who));
+
+    /* Percent of the window is the number that maps onto the harm: `Link Main`
+     * runs at FIFO 35 and only gets the CPU this thread does not take. */
+    int pct = (window_ms > 0) ? (int)((b->cpu_ms * 100) / window_ms) : 0;
+
+    int n = snprintf(buf, (size_t)buf_len, "%s BURNED %d ms (%d%% of %d ms)",
+                     who, b->cpu_ms, pct, window_ms);
     if (n < 0) { buf[0] = '\0'; return 0; }
     if (n >= buf_len) n = buf_len - 1;
     return n;
