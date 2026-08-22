@@ -46,7 +46,8 @@ export const VIZ_SOURCE_DECLARED = "declared";
 export const VIZ_SOURCE_OVERRIDE = "override";
 export const VIZ_SOURCE_DETECTED = "detected";
 
-const ENVELOPE_ROLE_ORDER = ["attack", "decay", "sustain", "release"];
+/* Time order, which is also draw order: A H D S R. */
+const ENVELOPE_ROLE_ORDER = ["attack", "hold", "decay", "sustain", "release"];
 const FILTER_ROLE_ORDER = ["cutoff", "resonance", "mode", "slope"];
 const LFO_ROLE_ORDER = ["shape", "rate", "depth", "phase"];
 const EQ_ROLE_ORDER = ["low", "mid", "high"];
@@ -228,6 +229,18 @@ function inferKindFromRoles(roles) {
 
 const ROLE_WORD = {
     attack: /attack/, decay: /decay/, sustain: /sustain/, release: /release/,
+    /*
+     * HOLD is the one role that needs a boundary. The others are bare
+     * substrings and can afford to be, but "threshold" ENDS IN "hold" -- and
+     * gate declares `threshold` on knob 1 and `hold` on knob 3, so a bare
+     * /hold/ would bind the hold role to the threshold, which is the first
+     * match in the pool. The group would then be built out of the wrong knob
+     * and drawn as a plateau whose height is a dB threshold.
+     *
+     * (^|_) matches `hold`, `gate_hold`, `lfo0_hold`; it does not match
+     * `threshold`.
+     */
+    hold: /(^|_)hold/,
 };
 
 function detectEnvelope(pool) {
@@ -238,8 +251,17 @@ function detectEnvelope(pool) {
         else if (!byRole.decay && ROLE_WORD.decay.test(k)) byRole.decay = { ...item, stem: stemOf(k, ROLE_WORD.decay) };
         else if (!byRole.sustain && ROLE_WORD.sustain.test(k)) byRole.sustain = { ...item, stem: stemOf(k, ROLE_WORD.sustain) };
         else if (!byRole.release && ROLE_WORD.release.test(k)) byRole.release = { ...item, stem: stemOf(k, ROLE_WORD.release) };
+        /*
+         * Hold is accepted only if it is a NUMBER. Every other role is
+         * numeric-checked after the fact, and failing that check rejects the
+         * WHOLE envelope -- so a non-numeric hold would not merely be skipped,
+         * it would delete an otherwise perfect ADSR. "arp_hold" (chordism,
+         * osirus) is a switch, and it sits on pages that have real envelopes
+         * on them.
+         */
+        else if (!byRole.hold && ROLE_WORD.hold.test(k) && isNumeric(item.meta)) byRole.hold = { ...item, stem: stemOf(k, ROLE_WORD.hold) };
     }
-    const present = ENVELOPE_ROLE_ORDER.filter((r) => byRole[r]);
+    let present = ENVELOPE_ROLE_ORDER.filter((r) => byRole[r]);
     if (present.length < 2) return [];
     /* Every role param must be a turnable number — an enum called "attack"
      * would not be a time or level. */
@@ -247,6 +269,33 @@ function detectEnvelope(pool) {
     /* "f_attack"/"f_decay" belong together; "amp_attack"/"filter_decay" do
      * not, whatever the adjacency looks like. */
     if (!stemsAgree(present.map((r) => byRole[r]))) return [];
+
+    /*
+     * Take the longest ADJACENT RUN of roles, rather than requiring every role
+     * found on the page to be adjacent.
+     *
+     * Requiring all of them means one stray role deletes a group that is
+     * otherwise perfect. linein is the case: its Gate Settings page declares
+     * threshold/attack/release/range on knobs, and `gate_hold` is undeclared,
+     * so the planner appends it at the END. Slots [1, 4, 2] are not a run, and
+     * an attack/release pair sitting side by side stopped being an envelope
+     * because of a knob four positions away.
+     *
+     * Same shape as the optional-role bug in detectFilter, and worth fixing as
+     * the general rule rather than as another special case: what corroborates
+     * a group is roles that are TOGETHER, so the answer is to find them, not
+     * to give up because something else also matched.
+     */
+    const bySlot = present.slice().sort((a, b) => byRole[a].slot - byRole[b].slot);
+    let best = [], run = [];
+    for (const r of bySlot) {
+        if (run.length && byRole[r].slot !== byRole[run[run.length - 1]].slot + 1) run = [];
+        run.push(r);
+        if (run.length > best.length) best = run.slice();
+    }
+    if (best.length < 2) return [];
+    /* Back to time order for the roles map and the draw. */
+    present = ENVELOPE_ROLE_ORDER.filter((r) => best.includes(r));
     const slots = present.map((r) => byRole[r].slot);
     if (!isAdjacentRun(slots)) return [];
     return [{
@@ -278,16 +327,47 @@ function detectFilter(pool) {
     }
     if (!cutoff || !resonance) return [];
     if (!isNumeric(cutoff.meta) || !isNumeric(resonance.meta)) return [];
-    const roles = { cutoff: cutoff.key, resonance: resonance.key };
-    const items = [cutoff, resonance];
-    if (mode) { roles.mode = mode.key; items.push(mode); }
-    if (slope && (isNumeric(slope.meta) || isEnum(slope.meta))) { roles.slope = slope.key; items.push(slope); }
     /* Cutoff and resonance sharing no stem ("hp_cutoff" next to a totally
      * unrelated "eq_resonance") is not a filter, just two knobs that landed
      * beside each other. */
     if (!stemsAgree([cutoff, resonance])) return [];
+
+    const roles = { cutoff: cutoff.key, resonance: resonance.key };
+    const items = [cutoff, resonance];
+    if (!isAdjacentRun(items.map((i) => i.slot))) return [];
+
+    /*
+     * mode and slope are OPTIONAL, so a non-adjacent one is DROPPED -- it must
+     * not disqualify the pair that does corroborate.
+     *
+     * It used to. schwung-filter puts cutoff and resonance on knobs 1 and 2
+     * and its Mode enum on knob 8, so the slot run was [0, 1, 7], the
+     * adjacency check failed, and the module whose entire purpose is a filter
+     * drew two unrelated dials. 303, whose root page has no mode key at all,
+     * grouped correctly off the identical cutoff/resonance pair -- so the
+     * failure looked like something specific to schwung-filter rather than
+     * what it was: an optional role behaving like a required one.
+     *
+     * Added one at a time in slot order, keeping each only while the run stays
+     * contiguous, so a mode that IS adjacent still joins the group. */
+    const optional = [];
+    if (mode) optional.push(["mode", mode]);
+    if (slope && (isNumeric(slope.meta) || isEnum(slope.meta))) optional.push(["slope", slope]);
+    optional.sort((a, b) => a[1].slot - b[1].slot);
+    for (const [role, item] of optional) {
+        const widened = items.concat([item]);
+        if (!isAdjacentRun(widened.map((i) => i.slot))) continue;
+        /* No stem check on the optionals. It was tried and it is wrong here:
+         * noisemaker names its pair bare ("cutoff", "resonance") and its mode
+         * "filter_type", so the stems disagree and the mode was dropped from a
+         * group it plainly belongs to. Adjacency is the corroboration -- a
+         * mode sitting directly beside a cutoff/resonance pair is that pair's
+         * mode. */
+        roles[role] = item.key;
+        items.push(item);
+    }
+    items.sort((a, b) => a.slot - b.slot);
     const slots = items.map((i) => i.slot);
-    if (!isAdjacentRun(slots)) return [];
     return [{
         kind: VIZ_FILTER, group: null, roles, keys: items.map((i) => i.key),
         ...span(slots), source: VIZ_SOURCE_DETECTED,
