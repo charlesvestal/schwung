@@ -82,6 +82,7 @@ if [ -z "$CROSS_PREFIX" ] && [ ! -f "/.dockerenv" ]; then
         -u "$(id -u):$(id -g)" \
         -e DISABLE_SCREEN_READER="$DISABLE_SCREEN_READER" \
         -e REQUIRE_SCREEN_READER="$REQUIRE_SCREEN_READER" \
+        -e SCHWUNG_BUILD_TEST_MODULES="${SCHWUNG_BUILD_TEST_MODULES:-}" \
         "$IMAGE_NAME"
 
     echo ""
@@ -519,6 +520,20 @@ if needs_rebuild build/modules/audio_fx/freeverb/freeverb.so \
         -lm
 else
     echo "Skipping freeverb (up to date)"
+fi
+
+# Build Gesture Test audio FX — a hardware TEST FIXTURE, not a shipped module.
+# Gated on SCHWUNG_BUILD_TEST_MODULES so a release never carries it; set the
+# variable when you want to test knob gestures on the device.
+if [ -n "${SCHWUNG_BUILD_TEST_MODULES:-}" ]; then
+    mkdir -p ./build/modules/audio_fx/gesture-test/
+    echo "Building gesture-test (test fixture)..."
+    "${CROSS_PREFIX}gcc" -g -O2 -shared -fPIC \
+        src/modules/audio_fx/gesture-test/gesture_test.c \
+        -o build/modules/audio_fx/gesture-test/gesture_test.so \
+        -Isrc \
+        -lm
+    cp src/modules/audio_fx/gesture-test/module.json build/modules/audio_fx/gesture-test/
 fi
 
 echo "Building MIDI FX plugins..."

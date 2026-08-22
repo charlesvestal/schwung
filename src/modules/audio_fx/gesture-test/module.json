@@ -1,0 +1,14 @@
+{
+  "id": "gesture-test",
+  "name": "Gesture Test",
+  "abbrev": "GT",
+  "version": "0.1.0",
+  "dsp": "gesture_test.so",
+  "api_version": 1,
+  "component_type": "audio_fx",
+  "description": "Test fixture: one knob row of every parameter kind whose click means something different. Audio passes through untouched.",
+  "capabilities": {
+    "chainable": true,
+    "component_type": "audio_fx"
+  }
+}
