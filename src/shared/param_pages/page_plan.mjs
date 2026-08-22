@@ -446,6 +446,27 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved } 
         }
         for (const p of balancedChunk(extraKeys, KNOBS_PER_PAGE)) parts.push(p);
 
+        /*
+         * A CHILD level's keys are TEMPLATES, not addresses.
+         *
+         * minijv's `part_selector` lists `partlevel`, `partpan` and so on, but
+         * the DSP serves `sram_part_<n>_partlevel` -- it gates on the
+         * `sram_part_` prefix and knows nothing about the bare name. Planning
+         * knob pages straight from those keys produced two pages of cells that
+         * looked completely alive (chain_params gives them labels and int
+         * 0..127 ranges) and did nothing at all when turned, because every
+         * read and write went to a key nobody serves. No error, no blank, no
+         * signal of any kind -- which is worse than the level simply not being
+         * reachable.
+         *
+         * The PAGE_CHILD page above is the level's real entry point. Until the
+         * grid can carry a selected child index and resolve keys through
+         * child_key.mjs (resolveChildKey is written and currently unused), the
+         * honest thing is to emit no knob pages for such a level rather than
+         * pages that lie.
+         */
+        if (hasChildren(lvl)) parts.length = 0;
+
         if (parts.length > 0) {
             for (const p of parts) for (const k of p) emitted.add(k);
             parts.forEach((keys) => {
