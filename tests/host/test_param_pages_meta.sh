@@ -51,15 +51,33 @@ Promise.all([
 
   /* ---- 2. inline-only metadata is honoured ------------------------------ */
   {
-    /* impressive-chords publishes no chain_params whatsoever. */
-    const { mod, idx } = idxFor("impressive-chords");
-    if ((mod.chain_params || []).length !== 0) fail("fixture changed: impressive-chords now has chain_params");
+    /* This case used to be anchored on impressive-chords, which the fixture
+     * recorded as publishing no chain_params at all. That was never true of
+     * the module -- it is the literal "[]" that a failed read was believed to
+     * be, the bug the param-read tri-state exists to prevent. A recapture
+     * brings back 15 real params, so the fleet no longer has an instance of
+     * "hierarchy metadata with no chain_params" to point at.
+     *
+     * Synthetic, therefore. The behaviour under test is a property of
+     * buildMetaIndex, not of any particular module, and anchoring it to a
+     * module made it hostage to that module\u0027s contract -- and, worse, kept a
+     * known-bad capture alive as if it were a fact. */
+    const idx = buildMetaIndex({
+      hierarchy: { levels: { root: {
+        knobs: ["mode", "amount"],
+        params: [
+          { key: "mode", label: "Mode", options: ["Off", "On"] },
+          { key: "amount", label: "Amount", min: 0, max: 12 },
+        ],
+      } } },
+      chainParams: [],
+    });
     const withMeta = idx.keys.filter((k) => { const m = idx.get(k); return m && (m.options || m.max !== null); });
-    if (withMeta.length === 0) fail("impressive-chords resolved no inline metadata");
+    if (withMeta.length === 0) fail("inline-only contract resolved no metadata");
     for (const k of idx.keys) {
       const m = idx.get(k);
-      if (!m) fail("impressive-chords key \"" + k + "\" resolved to nothing");
-      if (m.guessed) fail("impressive-chords key \"" + k + "\" was guessed despite inline metadata");
+      if (!m) fail("inline-only key \"" + k + "\" resolved to nothing");
+      if (m.guessed) fail("inline-only key \"" + k + "\" was guessed despite inline metadata");
     }
   }
 

@@ -168,7 +168,17 @@ Promise.all([
    * reads 54 and a careless removal from the table pushes it up. Recorded as
    * slack rather than deleted, and said out loud rather than presented as a
    * passing check. */
-  const VOWEL_CEILING = 60;
+  /* 63 on the 95-module fleet, against 54 on the 76-module one. The count grew
+   * by less than the fleet did (54 x 95/76 would be ~68) because the table was
+   * extended alongside the recapture -- BNDPSS, DSTNTN, CMPLXT and 17 others
+   * are now declared words.
+   *
+   * What is LEFT is mostly not vowel-stripping at all: FLTDRV, FBKDPT, RNDGRN,
+   * DLFDBK are two good mnemonics joined, and the proxy regex cannot tell that
+   * from a stripped word. So the ceiling is a tripwire against the table
+   * rotting, not a target to drive to zero -- 65 leaves a little headroom
+   * without leaving room for a whole module of regressions. */
+  const VOWEL_CEILING = 65;
   if (vowelStripped > VOWEL_CEILING)
     fail(vowelStripped + " fleet labels render as a vowel-stripped run, " +
          "over the ceiling of " + VOWEL_CEILING);
