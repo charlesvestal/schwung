@@ -1289,6 +1289,17 @@
       "default_branch": "main",
       "asset_name": "tape-echo2-module.tar.gz",
       "min_host_version": "0.7.13"
+    },
+    {
+      "id": "capicola",
+      "name": "Capicola",
+      "description": "Live keyframe time stretcher with transient re-anchoring, by Heavylight Industries",
+      "author": "Heavylight Industries (port: charlesvestal)",
+      "component_type": "audio_fx",
+      "github_repo": "charlesvestal/schwung-capicola",
+      "default_branch": "main",
+      "asset_name": "capicola-module.tar.gz",
+      "min_host_version": "0.3.0"
     }
   ]
 }
