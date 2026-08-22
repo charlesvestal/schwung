@@ -66,10 +66,14 @@ function rowOf(slot) { return Math.floor(slot / ROW_WIDTH); }
  * gap between row 0 and row 1, and a non-contiguous set (roles scattered
  * across a page) cannot be drawn as one shape at all.
  */
+/* `ignoreRows` is used by alignGroupsToRows to ask the counterfactual "what
+ * would group if the row constraint were lifted?" — it is never used to DRAW,
+ * because a shape cannot span the row-0 label band. */
+let IGNORE_ROWS = false;
 function isAdjacentRun(slots) {
     if (slots.length === 0) return false;
     const sorted = [...slots].sort((a, b) => a - b);
-    if (rowOf(sorted[0]) !== rowOf(sorted[sorted.length - 1])) return false;
+    if (!IGNORE_ROWS && rowOf(sorted[0]) !== rowOf(sorted[sorted.length - 1])) return false;
     for (let i = 1; i < sorted.length; i++) if (sorted[i] !== sorted[i - 1] + 1) return false;
     return true;
 }
@@ -567,8 +571,17 @@ const DETECTORS = [
  *   adjacent) — validate.mjs surfaces these so an author can see why nothing
  *   appeared.
  */
-export function resolveViz({ keys, metaIndex, overrides } = {}) {
+export function resolveViz({ keys, metaIndex, overrides, ignoreRows } = {}) {
     if (!keys || !metaIndex) return { groups: [], invalid: [] };
+    IGNORE_ROWS = !!ignoreRows;
+    try {
+        return resolveVizInner({ keys, metaIndex, overrides });
+    } finally {
+        IGNORE_ROWS = false;
+    }
+}
+
+function resolveVizInner({ keys, metaIndex, overrides }) {
     const invalid = [];
     const { groups: declared, excluded } = collectDeclared(keys, metaIndex, invalid);
 
@@ -636,4 +649,104 @@ export function resolveViz({ keys, metaIndex, overrides } = {}) {
 
     out.sort((a, b) => a.slotStart - b.slotStart);
     return { groups: out, invalid };
+}
+
+/**
+ * Nudge a page's knob order so a group that is one slot from being drawable
+ * becomes drawable.
+ *
+ * A graphic must sit inside ONE ROW (isAdjacentRun) because row 0's knobs are
+ * drawn at y=10 with their LABELS at y=25..32 and row 1 starts at y=33 — a
+ * shape spanning both would draw straight through the label band. That is a
+ * real constraint, not a tunable one.
+ *
+ * The consequence, measured on the 95-module fleet: 26 groups are rejected for
+ * LAYOUT alone, and they are the flagship case — the ADSR on the Main page of
+ * obxd, hush1, minijv, moog, surge, rex, osirus, helm, braids and sfz, plus
+ * twelve surge LFO pages. An author writing `attack, decay, sustain, release`
+ * in the obvious order lands on slots 3..6 and gets four separate dials.
+ *
+ * WHAT THIS DOES NOT DO is as important as what it does:
+ *
+ *   * it never changes WHICH keys are on the page, so no knob is pushed to
+ *     another page and no orphan page is created. Max group span is 4 and a
+ *     row is 4 wide, so a group always fits somewhere in the 8 — measured, 25
+ *     of the 26 displace exactly ONE knob and one displaces two.
+ *   * it never reorders for cosmetics. The move must strictly increase the
+ *     number of keys covered by a group; a page whose groups already draw is
+ *     returned untouched.
+ *   * it preserves relative order. The candidate is a BLOCK MOVE, so the
+ *     author's sequence survives apart from the block that moved.
+ *
+ * It is still us overruling a hand-written layout, so page_plan records it and
+ * validate_contract surfaces it — an author who wonders why their cutoff moved
+ * gets an answer instead of a mystery.
+ *
+ * @param {Array} keys       page.keys, up to KNOBS_PER_PAGE, may contain nulls
+ * @param {object} metaIndex from param_meta.buildMetaIndex
+ * @returns {{keys: Array, moved: boolean, from: number, to: number, span: number}}
+ */
+/* Aligning a block inside a row of four never needs more than three shifts, so
+ * anything beyond that is not alignment. */
+export const MAX_ALIGN_DISPLACE = 3;
+
+export function alignGroupsToRows(keys, metaIndex) {
+    const none = { keys, moved: false, from: -1, to: -1, span: 0 };
+    if (!keys || !metaIndex || keys.length <= ROW_WIDTH) return none;
+
+    const sig = (gs) => new Set(gs.map((g) => g.keys.join("\u0000")));
+    const drawn = sig(resolveViz({ keys, metaIndex }).groups || []);
+    /* The counterfactual: what would group if a shape could span the rows. */
+    const wanted = (resolveViz({ keys, metaIndex, ignoreRows: true }).groups || [])
+        .filter((g) => !drawn.has(g.keys.join("\u0000")))
+        /* A non-contiguous candidate is not a layout problem, it is a
+         * different page; only a run that straddles the row break is
+         * rescuable by moving it. */
+        .filter((g) => g.slotSpan === g.keys.length && g.slotSpan <= ROW_WIDTH)
+        .sort((a, b) => b.slotSpan - a.slotSpan);
+    if (wanted.length === 0) return none;
+
+    const move = (arr, from, span, to) => {
+        const block = arr.slice(from, from + span);
+        const rest = arr.slice(0, from).concat(arr.slice(from + span));
+        return rest.slice(0, to).concat(block, rest.slice(to));
+    };
+
+    for (const g of wanted) {
+        /*
+         * ROW TWO IS PREFERRED, BUT ONLY FOR A BLOCK THAT HAS TO MOVE.
+         *
+         * "Always put the envelope on row two" is tempting and wrong: 29
+         * envelopes in the fleet already sit inside row one and draw
+         * correctly, and many of them are on pages that exist FOR that
+         * envelope -- obxd/Filter Env, hush1/Amp Envelope, hera/Envelope,
+         * tablor/Env -- where slots 0..3 is exactly where it belongs and row
+         * one would otherwise be empty. An always-rule makes 29 pages worse to
+         * fix 24.
+         *
+         * For a block that is straddling and must move regardless, row two is
+         * the better destination: it keeps whatever the author put FIRST
+         * (cutoff and resonance, almost always) on knobs 1 and 2. minijv is
+         * the case — its ADSR sits at slots 2..5, and moving it down keeps
+         * macro_cutoff on knob 1, where a nearest-fit search moved it to
+         * knob 5.
+         */
+        const targets = [ROW_WIDTH, 2 * ROW_WIDTH - g.slotSpan, 0, ROW_WIDTH - g.slotSpan];
+        for (const to of targets) {
+            if (to < 0 || to + g.slotSpan > keys.length) continue;
+            if (rowOf(to) !== rowOf(to + g.slotSpan - 1)) continue;
+            if (Math.abs(to - g.slotStart) > MAX_ALIGN_DISPLACE) continue;
+            const cand = move(keys, g.slotStart, g.slotSpan, to);
+            /* Verify against the REAL detector. The counterfactual said this
+             * group wants to exist; only the real pass can say it now does,
+             * and that it did not cost an existing one. */
+            const after = sig(resolveViz({ keys: cand, metaIndex }).groups || []);
+            if (!after.has(g.keys.join("\u0000"))) continue;
+            let lost = false;
+            for (const d of drawn) if (!after.has(d)) { lost = true; break; }
+            if (lost) continue;
+            return { keys: cand, moved: true, from: g.slotStart, to, span: g.slotSpan };
+        }
+    }
+    return none;
 }

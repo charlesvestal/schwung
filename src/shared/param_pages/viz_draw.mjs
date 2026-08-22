@@ -392,10 +392,35 @@ function drawPartialEnv(ctx, leftX, xEnd, topY, baseY, present, roles, values, m
     for (const r of present) val[r] = frac(metaIndex, roles[r], values);
     const susY = has("sustain") ? baseY - Math.round(val.sustain * usableH) : baseY;
 
-    const pts = [[leftX, baseY]];
-    const peakX = Math.min(rightX - 2, leftX + 4 + Math.round(val.attack * span * 0.4));
-    pts.push([peakX, topY]);
-    let cur = peakX;
+    /*
+     * ATTACK IS NOT GUARANTEED.
+     *
+     * The rise was drawn unconditionally from `val.attack`, and an envelope
+     * with no attack role makes that `undefined` -- so peakX is NaN, the NaN
+     * reaches line()'s `for(;;)` and its equality break is never satisfied.
+     * Not a wrong picture: a HANG, the same one CLAUDE.md records for a
+     * partial GRID_GEOM freezing the shadow_ui tick.
+     *
+     * It was unreachable until knob alignment made these pages drawable:
+     * surge declares twelve LFO pages carrying hold/sustain/release and no
+     * attack at all, and every one of them was blocked by the row constraint
+     * before. A latent renderer bug, exposed rather than caused by the
+     * alignment -- and the reason `present` is filtered by ROLE and must never
+     * be assumed to contain any particular one.
+     *
+     * With no attack the shape simply starts at full level, which is what an
+     * envelope with no rise means.
+     */
+    const pts = [];
+    let cur;
+    if (has("attack")) {
+        pts.push([leftX, baseY]);
+        cur = Math.min(rightX - 2, leftX + 4 + Math.round(val.attack * span * 0.4));
+        pts.push([cur, topY]);
+    } else {
+        cur = leftX;
+        pts.push([cur, topY]);
+    }
     /* Hold is a plateau AT THE PEAK, between the attack rise and whatever
      * falls next -- for an AHR (gate, ducker) that is the release. */
     if (has("hold")) {

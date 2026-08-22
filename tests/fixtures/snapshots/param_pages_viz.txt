@@ -29,6 +29,7 @@ braids	Amp Envelope	envelope	declared	attack,decay,sustain,release
 braids	Filter	envelope	declared	f_attack,f_decay,f_sustain,f_release
 braids	Filter	filter	declared	cutoff,resonance
 braids	Global	fader	declared	volume
+braids	Main	envelope	declared	attack,decay,sustain
 braids	Main	filter	declared	cutoff
 breakbeat	Main	sample	detected	A_sample_path
 breakbeat	Main	sample	detected	B_sample_path
@@ -116,6 +117,7 @@ euclidrum	Main	switch	detected	lane8_enabled
 filter	Envelope	envelope	detected	env_attack,env_release
 filter	LFO	waveform	detected	lfo_shape
 filter	Main	filter	detected	cutoff,resonance
+fizzik	Exciter	envelope	detected	exc_attack,exc_decay
 fizzik	Exciter	fader	detected	vel_level
 fizzik	Mod	lfo	detected	lfo1_rate,lfo1_depth,lfo1_shape
 fizzik	Mod	waveform	detected	lfo2_shape
@@ -227,6 +229,7 @@ hush1	Advanced - 2	fader	detected	filter_volume_correction
 hush1	Amp Envelope	envelope	detected	attack,decay,sustain,release
 hush1	Filter	filter	detected	cutoff,resonance
 hush1	Filter Envelope	envelope	detected	f_attack,f_decay,f_sustain,f_release
+hush1	Main	envelope	detected	attack,decay,sustain,release
 hush1	Main	fader	detected	volume
 hush1	Main	filter	detected	cutoff,resonance
 hush1	Modulation	switch	detected	lfo_invert
@@ -256,6 +259,7 @@ minijv	Common / Control - 2	switch	detected	nvram_patchCommon_velocityswitch
 minijv	Edit Parts - 2	switch	detected	chorusswitch
 minijv	Edit Parts - 2	switch	detected	reverbswitch
 minijv	Edit Tones	switch	detected	link_tones
+minijv	Main	envelope	detected	macro_attack,macro_decay,macro_sustain,macro_release
 minijv	Main	filter	detected	macro_cutoff,macro_resonance
 minijv	Tone 1	fader	detected	nvram_tone_0_level
 minijv	Tone 2	fader	detected	nvram_tone_1_level
@@ -280,6 +284,7 @@ minijv	Tone4/Wave	switch	detected	nvram_tone_3_toneswitch
 moog	Amp Env	envelope	detected	attack,decay,sustain,release
 moog	Filter	filter	detected	cutoff,resonance
 moog	Filter Env	envelope	detected	f_attack,f_decay,f_sustain,f_release
+moog	Main	envelope	detected	attack,decay,sustain,release
 moog	Main	filter	detected	cutoff,resonance
 moog	Mixer	fader	detected	osc1_volume
 moog	Mixer	fader	detected	osc2_volume
@@ -316,6 +321,7 @@ noisemaker	Delay	switch	detected	delay_sync
 noisemaker	Env 3 (Free)	fader	detected	volume
 noisemaker	Env 3 (Free)	filter	detected	cutoff,resonance
 noisemaker	Env Draw	fader	detected	volume
+noisemaker	Env Draw	filter	detected	cutoff,resonance
 noisemaker	Filter	filter	detected	filter_type,cutoff,resonance
 noisemaker	Filter Env	filter	detected	cutoff,resonance
 noisemaker	LFO 1	fader	detected	volume
@@ -347,6 +353,7 @@ obxd	Amp Env	fader	detected	vel_amp
 obxd	Filter	filter	detected	cutoff,resonance
 obxd	Filter Env	envelope	detected	f_attack,f_decay,f_sustain,f_release
 obxd	Global	fader	detected	volume
+obxd	Main	envelope	detected	attack,decay,sustain,release
 obxd	Main	filter	detected	cutoff,resonance
 obxd	Voice Variation	fader	detected	level_var
 osirus	Amp Env	envelope	detected	amp_attack,amp_decay,amp_sustain,amp_release
@@ -362,6 +369,7 @@ osirus	LFO 1	waveform	detected	lfo1_shape
 osirus	LFO 2	switch	detected	lfo2_env_mode
 osirus	LFO 2	waveform	detected	lfo2_shape
 osirus	LFO 3	waveform	detected	lfo3_shape
+osirus	Main	envelope	detected	flt_attack,flt_decay,flt_sustain,flt_release
 osirus	Oscillators	waveform	detected	osc1_wave_select
 osirus	Oscillators - 2	switch	detected	osc2_sync
 osirus	Oscillators - 2	waveform	detected	osc2_wave_select
@@ -371,6 +379,7 @@ osirus	Oscillators - 3	fader	detected	sub_osc_volume
 osirus	Oscillators - 3	waveform	detected	sub_osc_shape
 osirus	Performance	fader	detected	patch_volume
 osirus	Settings	fader	detected	gain
+ottx	Advanced	eq	detected	lgain,mgain,hgain
 palette	PRESETS&RND	fader	detected	input_vol
 palette	PRESETS&RND	switch	detected	rnd_amount
 palette	PRESETS&RND	switch	detected	rnd_effect
@@ -385,6 +394,7 @@ punchfx	Main	fader	detected	volume
 pushnpull	Filter	filter	detected	cutoff,resonance
 pushnpull	Main - 2	switch	detected	band_on
 radiogarden	Params	fader	detected	gain
+rex	Main	envelope	detected	attack,decay,sustain,release
 rex	Main	fader	detected	gain
 rex	Main - 2	switch	detected	choke
 sf2	Main	fader	detected	chorus_level
@@ -392,6 +402,7 @@ sf2	Main	fader	detected	gain
 sf2	Main	fader	detected	reverb_level
 sf2	Main	switch	detected	chorus_on
 sf2	Main	switch	detected	reverb_on
+sfz	Main - 2	envelope	detected	attack,decay,sustain
 sfz	Main - 2	fader	detected	gain
 sfz	Main - 3	filter	detected	cutoff,reso
 signal	General	fader	detected	master_vol
@@ -441,22 +452,29 @@ surge	Filter 2	switch	detected	f2_link_resonance
 surge	Filter Envelope	envelope	detected	env2_attack,env2_decay,env2_sustain,env2_release
 surge	LFO 1	envelope	detected	lfo0_attack,lfo0_decay
 surge	LFO 1	waveform	detected	lfo0_shape
+surge	LFO 1 - 2	envelope	detected	lfo0_hold,lfo0_sustain,lfo0_release
 surge	LFO 1 - 2	switch	detected	lfo0_unipolar
 surge	LFO 2	envelope	detected	lfo1_attack,lfo1_decay
 surge	LFO 2	waveform	detected	lfo1_shape
+surge	LFO 2 - 2	envelope	detected	lfo1_hold,lfo1_sustain,lfo1_release
 surge	LFO 2 - 2	switch	detected	lfo1_unipolar
 surge	LFO 3	envelope	detected	lfo2_attack,lfo2_decay
 surge	LFO 3	waveform	detected	lfo2_shape
+surge	LFO 3 - 2	envelope	detected	lfo2_hold,lfo2_sustain,lfo2_release
 surge	LFO 3 - 2	switch	detected	lfo2_unipolar
 surge	LFO 4	envelope	detected	lfo3_attack,lfo3_decay
 surge	LFO 4	waveform	detected	lfo3_shape
+surge	LFO 4 - 2	envelope	detected	lfo3_hold,lfo3_sustain,lfo3_release
 surge	LFO 4 - 2	switch	detected	lfo3_unipolar
 surge	LFO 5	envelope	detected	lfo4_attack,lfo4_decay
 surge	LFO 5	waveform	detected	lfo4_shape
+surge	LFO 5 - 2	envelope	detected	lfo4_hold,lfo4_sustain,lfo4_release
 surge	LFO 5 - 2	switch	detected	lfo4_unipolar
 surge	LFO 6	envelope	detected	lfo5_attack,lfo5_decay
 surge	LFO 6	waveform	detected	lfo5_shape
+surge	LFO 6 - 2	envelope	detected	lfo5_hold,lfo5_sustain,lfo5_release
 surge	LFO 6 - 2	switch	detected	lfo5_unipolar
+surge	Main	envelope	detected	env1_attack,env1_decay,env1_sustain,env1_release
 surge	Main	fader	detected	volume
 surge	Main	filter	detected	filter1_cutoff,filter1_resonance
 surge	Mixer	fader	detected	level_noise
@@ -490,21 +508,27 @@ surge	Scene	fader	detected	volume
 surge	Scene	switch	detected	sync_bpm
 surge	Scene LFO 1	envelope	detected	lfo6_attack,lfo6_decay
 surge	Scene LFO 1	waveform	detected	lfo6_shape
+surge	Scene LFO 1 - 2	envelope	detected	lfo6_hold,lfo6_sustain,lfo6_release
 surge	Scene LFO 1 - 2	switch	detected	lfo6_unipolar
 surge	Scene LFO 2	envelope	detected	lfo7_attack,lfo7_decay
 surge	Scene LFO 2	waveform	detected	lfo7_shape
+surge	Scene LFO 2 - 2	envelope	detected	lfo7_hold,lfo7_sustain,lfo7_release
 surge	Scene LFO 2 - 2	switch	detected	lfo7_unipolar
 surge	Scene LFO 3	envelope	detected	lfo8_attack,lfo8_decay
 surge	Scene LFO 3	waveform	detected	lfo8_shape
+surge	Scene LFO 3 - 2	envelope	detected	lfo8_hold,lfo8_sustain,lfo8_release
 surge	Scene LFO 3 - 2	switch	detected	lfo8_unipolar
 surge	Scene LFO 4	envelope	detected	lfo9_attack,lfo9_decay
 surge	Scene LFO 4	waveform	detected	lfo9_shape
+surge	Scene LFO 4 - 2	envelope	detected	lfo9_hold,lfo9_sustain,lfo9_release
 surge	Scene LFO 4 - 2	switch	detected	lfo9_unipolar
 surge	Scene LFO 5	envelope	detected	lfo10_attack,lfo10_decay
 surge	Scene LFO 5	waveform	detected	lfo10_shape
+surge	Scene LFO 5 - 2	envelope	detected	lfo10_hold,lfo10_sustain,lfo10_release
 surge	Scene LFO 5 - 2	switch	detected	lfo10_unipolar
 surge	Scene LFO 6	envelope	detected	lfo11_attack,lfo11_decay
 surge	Scene LFO 6	waveform	detected	lfo11_shape
+surge	Scene LFO 6 - 2	envelope	detected	lfo11_hold,lfo11_sustain,lfo11_release
 surge	Scene LFO 6 - 2	switch	detected	lfo11_unipolar
 tablor	Env	envelope	declared	flt_a,flt_d,flt_s,flt_r
 tablor	Env	envelope	declared	vca_a,vca_d,vca_s,vca_r

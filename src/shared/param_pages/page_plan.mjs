@@ -21,6 +21,8 @@
 
 import { hasChildren, childCount } from "./child_key.mjs";
 
+import { alignGroupsToRows } from "./viz.mjs";
+import { buildMetaIndex } from "./param_meta.mjs";
 export const KNOBS_PER_PAGE = 8;
 
 /* Page kinds. Only PAGE_KNOBS needs a new renderer; every other kind dispatches
@@ -150,6 +152,25 @@ function balancedChunk(arr, size) {
  */
 export function planPages({ hierarchy, chainParams, mode, visible, unresolved } = {}) {
     const warnings = [];
+    /*
+     * Built once per plan so knob pages can be nudged into a drawable layout —
+     * see alignGroupsToRows. Planning happens on component load, not per frame,
+     * and the alignment pass is pure array work on at most 8 keys.
+     */
+    let _metaIndex = null;
+    const metaIndexOnce = () => {
+        if (!_metaIndex) _metaIndex = buildMetaIndex({ hierarchy, chainParams });
+        return _metaIndex;
+    };
+    /* Records every page whose knobs we reordered, so validate_contract can
+     * tell an author their layout was adjusted rather than leaving them to
+     * wonder why a knob moved. */
+    const realigned = [];
+    const alignKnobs = (ks, where) => {
+        const r = alignGroupsToRows(ks, metaIndexOnce());
+        if (r.moved) realigned.push({ page: where, from: r.from, to: r.to, span: r.span });
+        return r.keys;
+    };
     /* Keys any visible_if condition reads. Returned so the caller can re-plan
      * when one of THEM changes — a condition is driven by a param VALUE, which
      * moves without the declared contract moving, so the fingerprint cannot see
@@ -214,11 +235,12 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved } 
         const keys = (chainParams || []).map((p) => p && p.key).filter(Boolean);
         if (keys.length === 0) return { pages: [], fingerprint, warnings: ["no ui_hierarchy and no chain_params"], conditionKeys: new Set() };
         warnings.push("no ui_hierarchy — paginated from chain_params");
-        const pages = chunk(keys, KNOBS_PER_PAGE).map((ks, i) => ({
-            kind: PAGE_KNOBS, name: i === 0 ? "Params" : `Params - ${i + 1}`,
-            level: null, keys: ks, authored: false,
-        }));
-        return { pages, fingerprint, warnings };
+        const pages = chunk(keys, KNOBS_PER_PAGE).map((ks, i) => {
+            const name = i === 0 ? "Params" : `Params - ${i + 1}`;
+            return { kind: PAGE_KNOBS, name, level: null,
+                     keys: alignKnobs(ks, name), authored: false };
+        });
+        return { pages, fingerprint, warnings, realigned };
     }
 
     for (const lvl of Object.values(levels)) {
@@ -499,10 +521,11 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved } 
         if (parts.length > 0) {
             for (const p of parts) for (const k of p) emitted.add(k);
             parts.forEach((keys) => {
+                const pageName = claimName(title);
                 pages.push({
                     kind: PAGE_KNOBS,
-                    name: claimName(title),
-                    level: levelKey, keys,
+                    name: pageName,
+                    level: levelKey, keys: alignKnobs(keys, pageName),
                     /* The level object travels with the page so the controller
                      * resolves concrete child keys without re-reading the
                      * hierarchy. Null for an ordinary level, which is what
@@ -594,7 +617,7 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved } 
         visit(key, null, false);
     }
 
-    return { pages, fingerprint, warnings, conditionKeys };
+    return { pages, fingerprint, warnings, conditionKeys, realigned };
 }
 
 /**
