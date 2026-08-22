@@ -28,6 +28,7 @@
  */
 
 import { planPages, PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS } from "./page_plan.mjs";
+import { resolveChildKey } from "./child_key.mjs";
 import { buildMetaIndex, inferFromValue, isTurnable, enumIndexOf, KIND_ENUM, KIND_OPAQUE } from "./param_meta.mjs";
 import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page.mjs";
 import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
@@ -311,6 +312,8 @@ export function createController(io = {}) {
         /* key -> last-read modulation flag, refreshed on the read cursor
          * rather than per cell per draw. See tick(). */
         modCache: Object.create(null),
+        /* Selected child per child-level, by level key. See childResolve(). */
+        childIndex: Object.create(null),
         /* key -> live modulated ("effective") value, for the dot on the arc.
          * Only modulated keys are in here, and they get their own fast lane in
          * tick() because they are the only values that move on their own. */
@@ -415,7 +418,32 @@ export function createController(io = {}) {
         items: Object.create(null),
     };
 
-    const fullKey = (key) => `${s.prefix}:${key}`;
+    /*
+     * key -> the concrete key on the wire.
+     *
+     * Identity for an ordinary page. For a page belonging to a CHILD level it
+     * resolves the template: minijv's `part_selector` lists `partlevel`, and
+     * the DSP serves `sram_part_<n>_partlevel` where n is the child the
+     * selector page committed.
+     *
+     * Only keys ON the current page are resolved -- fullKey is also used for
+     * out-of-band reads (ui_hierarchy, chain_params, preset_name), which are
+     * not the level's parameters and must pass through untouched.
+     *
+     * METADATA stays keyed by the BARE name: chain_params declares `partlevel`,
+     * not the resolved form, so only the wire key moves.
+     */
+    const childIndexFor = (level) => {
+        const at = s.childIndex[level];
+        return (typeof at === "number" && at >= 0) ? at : 0;
+    };
+    const childResolve = (key) => {
+        const p = page();
+        if (!p || !p.childLevel || !Array.isArray(p.keys)) return key;
+        if (p.keys.indexOf(key) < 0) return key;
+        return resolveChildKey(p.childLevel, childIndexFor(p.level), key) || key;
+    };
+    const fullKey = (key) => `${s.prefix}:${childResolve(key)}`;
     const page = () => s.pages[s.pageIndex] || null;
     const keyAt = (slot) => {
         const p = page();
@@ -961,6 +989,26 @@ export function createController(io = {}) {
         if (!pg || pg.kind !== PAGE_ITEMS) return null;
         let st = s.items[pg.name];
         if (!st) st = s.items[pg.name] = { list: [], cursor: 0, current: -1, read: 0 };
+        /*
+         * A DERIVED list is built HERE, not in tickItems, because it needs no
+         * read and therefore must not depend on tick order. Built there, a
+         * click that arrived before the first tick found an empty list and
+         * enterMenu refused it -- the selector looked dead until a frame had
+         * passed.
+         *
+         * The level declares how many children and what to call them, so this
+         * is arithmetic, not I/O.
+         */
+        if (pg.childCount !== undefined) {
+            const n = Math.max(0, pg.childCount | 0);
+            if (st.list.length !== n) {
+                st.list = [];
+                for (let i = 0; i < n; i++)
+                    st.list.push({ index: i, label: `${pg.childLabel || "Item"} ${i + 1}` });
+                if (st.cursor >= n) st.cursor = Math.max(0, n - 1);
+            }
+            st.current = childIndexFor(pg.childOf);
+        }
         return st;
     }
 
@@ -974,6 +1022,14 @@ export function createController(io = {}) {
     function tickItems(p) {
         const st = itemsState(p);
         if (!st) return;
+        /*
+         * A DERIVED list costs no IPC. The level declares how many children
+         * and what to call them, so there is nothing to read and nothing that
+         * can go stale -- and `current` comes from local state rather than
+         * from a module param.
+         */
+        /* itemsState has already built it, and there is nothing to read. */
+        if (p.childCount !== undefined) return;
         const at = st.read % 2;
         st.read++;
         if (at === 0) {
@@ -1016,7 +1072,27 @@ export function createController(io = {}) {
         const st = itemsState(p);
         if (!st || !st.list.length) return false;
         const it = st.list[st.cursor];
-        if (p.selectParam) setParam(fullKey(p.selectParam), String(it.index));
+        if (p.childOf) {
+            /*
+             * A child is chosen LOCALLY -- there is no param to write. It
+             * re-keys the level's own pages, so the same `partlevel` cell now
+             * addresses a different part, and every value cached for that
+             * level belonged to the previous one. Dropping them is what stops
+             * the old part's numbers sitting under the new part's labels.
+             */
+            s.childIndex[p.childOf] = it.index;
+            for (const pg of s.pages) {
+                if (pg.level !== p.childOf || !Array.isArray(pg.keys)) continue;
+                for (const k of pg.keys) {
+                    delete s.values[k];
+                    delete s.pendingWrite[k];
+                    delete s.knobStates[k];
+                }
+            }
+            s.cursor = 0;
+        } else if (p.selectParam) {
+            setParam(fullKey(p.selectParam), String(it.index));
+        }
         st.current = it.index;
         /*
          * The chosen item can republish the whole contract — a different
@@ -1054,6 +1130,17 @@ export function createController(io = {}) {
             const at = (kind) => s.pages.findIndex((q) => q.level === p.navigateTo && q.kind === kind);
             target = at(PAGE_PRESET);
             if (target < 0) target = at(PAGE_KNOBS);
+        }
+        /*
+         * A child selector navigates to ITS OWN level's parameters. Those are
+         * the pages the choice just re-keyed, and there is nowhere else the
+         * gesture could sensibly mean. Without this it fell through to
+         * firstGrid and landed on the module's first page -- you chose Part 3
+         * and were shown Main.
+         */
+        if (target < 0 && p.childOf) {
+            target = s.pages.findIndex(
+                (q) => q.level === p.childOf && q.kind === PAGE_KNOBS);
         }
         if (target < 0) target = firstGrid(s.pages);
         announce(it.label);

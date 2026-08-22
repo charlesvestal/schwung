@@ -24,7 +24,7 @@ fi
 node -e '
 import("./src/shared/param_pages/page_plan.mjs").then(async (m) => {
   const fs = await import("node:fs");
-  const { planPages, pageSlotKeys, PAGE_KNOBS, PAGE_PRESET, PAGE_MODES, PAGE_CHILD, PAGE_ITEMS } = m;
+  const { planPages, pageSlotKeys, PAGE_KNOBS, PAGE_PRESET, PAGE_MODES, PAGE_ITEMS } = m;
   const fx = JSON.parse(fs.readFileSync("tests/fixtures/module-contracts.json", "utf8"));
   const fail = (msg) => { console.log("FAIL: " + msg); process.exit(1); };
   const plan = (id) => {
@@ -159,7 +159,8 @@ import("./src/shared/param_pages/page_plan.mjs").then(async (m) => {
     const { pages } = plan("minijv");
     if (pages[0].kind !== PAGE_MODES) fail("minijv must open on the mode select, got " + pages[0].kind);
     if (!pages.some((p) => p.kind === PAGE_PRESET)) fail("minijv has no preset page");
-    if (!pages.some((p) => p.kind === PAGE_CHILD)) fail("minijv lost its child_prefix part selector");
+    if (!pages.some((p) => p.kind === PAGE_ITEMS && p.childOf))
+      fail("minijv lost its child_prefix part selector");
     if (pages.filter((p) => p.kind === PAGE_ITEMS).length < 3) fail("minijv lost items_param pages");
     if (pages.length < 60) fail("minijv collapsed to " + pages.length + " pages (expected ~76)");
 
