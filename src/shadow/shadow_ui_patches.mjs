@@ -26,7 +26,7 @@ import {
     formatParamValue as ufFormatParamValue,
     formatParamForSet as ufFormatParamForSet,
 } from '/data/UserData/schwung/shared/param_format.mjs';
-import { knobInit, knobTick, knobConfigFromMeta } from '/data/UserData/schwung/shared/knob_engine.mjs';
+import { knobInit, knobStep } from '/data/UserData/schwung/shared/knob_engine.mjs';
 
 /* ---- Constants ---------------------------------------------------------- */
 
@@ -183,7 +183,6 @@ function formatParamValue(param) {
 }
 
 function adjustParamValue(param, delta) {
-    const cfg = knobConfigFromMeta(param);
     const cur = parseFloat(param.value);
     const seed = isNaN(cur) ? 0 : cur;
     let st = patchKnobStates.get(param.key);
@@ -193,7 +192,7 @@ function adjustParamValue(param, delta) {
     } else {
         st.value = seed;
     }
-    const newVal = knobTick(st, cfg, delta, Date.now());
+    const newVal = knobStep(st, param, delta, Date.now());
     return ufFormatParamForSet(newVal, param);
 }
 
