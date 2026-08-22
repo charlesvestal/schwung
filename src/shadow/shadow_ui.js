@@ -1288,6 +1288,10 @@ let knobCardKeys = null;        /* param key per physical knob, or null */
  * opens because that is the only place the target and component are in scope,
  * and the fire-time lookup needs the same spelling the writes used. */
 let knobCardFullKey = null;
+/* One capture per boot: the trigger file is emptied rather than removed (there
+ * is no host_remove_file), so this stops a re-run on the next tick. */
+let contractDumpDone = false;
+let contractDumpCheckedMs = 0;
 let knobCardMeta = null;        /* metaIndex for the focused component */
 let knobCardRowValues = null;   /* raw values, keyed by param key */
 let knobCardViz = null;
@@ -18401,6 +18405,89 @@ globalThis.tick = function() {
             debugLog("SET_CHANGED: reload complete");
         }
         /* SETTINGS and SCREENREADER flags are handled earlier with SLOT/MFX/OVERTAKE */
+    }
+
+    /*
+     * FLEET CONTRACT CAPTURE, on a trigger file.
+     *
+     * tools/param-pages/dump_contracts_device.js can only run in this QuickJS
+     * context -- ui_hierarchy and chain_params are served by the LOADED DSP,
+     * not by files on disk, so every module has to be instantiated to be
+     * captured. Its own header says to call it "from the shadow UI\'s script
+     * hook", and there was no such hook: the tool has been unrunnable since it
+     * was written, which is why the test fixture is still a third-party
+     * capture from 2026-07-15 covering 76 of ~113 modules.
+     *
+     * Same idiom as align_dump_trigger and the other debug files: absent by
+     * default, costs one host_file_exists per second, and deletes itself so a
+     * forgotten trigger cannot re-run on every boot.
+     *
+     * DESTRUCTIVE and LOUD: it loads each module into slot 3 in turn and you
+     * will hear them. The tool saves and restores that slot, but a crash
+     * mid-run leaves the wrong module there. Use an empty slot.
+     *
+     *   ssh ableton@move.local "touch /data/UserData/schwung/dump_contracts_trigger"
+     *   ...then collect /data/UserData/schwung/module-contracts.json
+     */
+    const _cdNow = Date.now();
+    if (!contractDumpDone && (_cdNow - contractDumpCheckedMs) > 1000 &&
+        typeof host_file_exists === "function") {
+        contractDumpCheckedMs = _cdNow;
+        if (host_file_exists("/data/UserData/schwung/dump_contracts_trigger")) {
+        contractDumpDone = true;
+        /* DELETE the trigger, don't empty it. contractDumpDone only latches for
+         * the life of this process, so an emptied-but-present trigger re-fired
+         * the whole loud capture on the next service restart -- which is
+         * exactly what a deploy does. Observed: install.sh restarted the shadow
+         * UI and the capture ran again unbidden, before the new tool had even
+         * been staged.
+         *
+         * There is deliberately no "empty means disarmed" fallback: `touch`
+         * creates an empty file, so that rule would disarm the documented way
+         * of arming it. */
+        try { os.remove("/data/UserData/schwung/dump_contracts_trigger"); } catch (e) {}
+        try {
+            const src = host_read_file("/data/UserData/schwung/tools/dump_contracts_device.js");
+            if (!src) {
+                debugLog("dump_contracts: tools/dump_contracts_device.js not on the device");
+            } else {
+                /* Evaluated rather than imported: the tool is written in ES5
+                 * var/function style with no exports precisely so it can be
+                 * loaded this way.
+                 *
+                 * new Function, NOT (0, eval). Indirect eval runs in GLOBAL
+                 * scope, and `os` here is an ES module IMPORT -- a
+                 * module-scoped binding that is not on globalThis. The tool
+                 * enumerates the fleet with os.readdir, so under indirect eval
+                 * every one of its three category scans threw ReferenceError
+                 * into a `catch { continue; }` and it captured zero modules in
+                 * 18ms while reporting success. Passing os/std in as
+                 * parameters makes the dependency explicit and keeps them off
+                 * globalThis. */
+                new Function("os", "std", src)(os, std);
+                if (typeof globalThis.dumpModuleContracts === "function") {
+                    debugLog("dump_contracts: starting -- slot 3 will make noise");
+                    globalThis.dumpModuleContracts();
+                    /* The tool returns its OUTPUT PATH, not a count -- reading
+                     * the count back out of the file is the only honest report,
+                     * and a zero here means the run found no modules at all
+                     * rather than that the fleet is empty. */
+                    let n = -1;
+                    try {
+                        n = JSON.parse(host_read_file(
+                            "/data/UserData/schwung/module-contracts.json")).module_count;
+                    } catch (e) {}
+                    if (n > 0) debugLog("dump_contracts: captured " + n + " modules");
+                    else debugLog("dump_contracts: FAILED -- captured " + n +
+                                  " modules; the fleet scan found nothing");
+                } else {
+                    debugLog("dump_contracts: the tool defined no dumpModuleContracts()");
+                }
+            }
+        } catch (e) {
+            debugLog("dump_contracts: failed: " + e);
+        }
+        }
     }
 
     /* Check for open-in-tool command from web UI */
