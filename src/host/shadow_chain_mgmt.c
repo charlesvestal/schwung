@@ -14,6 +14,7 @@
 
 #include "shadow_chain_mgmt.h"
 #include "shadow_fx_key.h"    /* shadow_key_is_fx_module — header-only so tests/host can run it */
+#include "shim_worker.h"   /* SHIM_FLAG_RT_AUDIT, shim_rt_audit_note_module */
 #include "master_fx_key.h"    /* master_fx_route_* — header-only so tests/host can run it */
 #include "fx_midi_filter.h"   /* fx_midi_channel_accepts — header-only so tests/host can run it */
 #include "chain_permute.h"    /* insert/remove/move as an array permutation; shared with the chain DSP */
@@ -3352,10 +3353,30 @@ void shadow_inprocess_handle_param_request(void) {
             strncpy(value_copy, shadow_param->value, sizeof(value_copy) - 1);
             value_copy[sizeof(value_copy) - 1] = '\0';
 
+            /* A `<prefix>:module` write is where the chain host dlopens the
+             * sub-plugin and calls its create_instance — synchronously, right
+             * here, on the SPI callback. So it is also the only moment at
+             * which a thread the module spawns can be attributed to it by
+             * name. Name it for the RT-thread audit across the call and clear
+             * it after; costs a bounded strcmp per param write when the audit
+             * is disarmed, which is every normal session. */
+            int noted_module = (shim_debug_flags & SHIM_FLAG_RT_AUDIT) &&
+                               (strcmp(key_copy, "synth:module") == 0 ||
+                                shadow_key_is_fx_module(key_copy));
+            if (noted_module)
+                shim_rt_audit_note_module(value_copy[0] ? value_copy : "(unload)");
+
             shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance,
                                         key_copy, value_copy);
             shadow_param->error = 0;
             shadow_param->result_len = 0;
+
+            /* Deliberately NOT cleared here. The audit runs on the worker at
+             * ~1 Hz, so a thread created during this call is seen up to a
+             * second later — clearing now would strip the attribution off
+             * every finding it is meant to carry. The next module load
+             * overwrites it, which is the correct lifetime. */
+            (void)noted_module;
 
             if (strcmp(key_copy, "synth:module") == 0) {
                 if (value_copy[0] != '\0') {
