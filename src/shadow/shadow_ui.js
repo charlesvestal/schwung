@@ -54,7 +54,7 @@ import { RULE_Y as MOVY_RULE_Y,
 /* The bands around a chain editor's row of boxes — header, label, info,
  * footer — and the module picker it opens on a position. Both shared with
  * Master FX so the two editors wear the same furniture. */
-import { drawChainEditorBands, drawChainPicker }
+import { drawChainEditorBands, drawChainPicker, shiftHintsFor, CHAIN_HINTS_AT_REST }
     from '/data/UserData/schwung/shared/chain_editor_chrome.mjs';
 /* The chain editor's knob feedback card, and the two resolvers it needs to be
  * handed a row: what each key IS (metaIndex) and which cells a viz group
@@ -71,7 +71,7 @@ import { drawChainDiagram, DEFAULT_Y as DIAGRAM_Y, BOX_H as DIAGRAM_BOX_H }
     from '/data/UserData/schwung/shared/chain_diagram.mjs';
 import { runDrawBench } from '/data/UserData/schwung/shared/draw_bench.mjs';
 import { installParamTally, paramTallyTick, paramTallyArmed } from '/data/UserData/schwung/shared/param_tally.mjs';
-import { knobInit, knobTick, knobConfigFromMeta } from '/data/UserData/schwung/shared/knob_engine.mjs';
+import { knobInit, knobStep } from '/data/UserData/schwung/shared/knob_engine.mjs';
 import {
     formatParamValue as ufFormatParamValue,
     formatParamForSet as ufFormatParamForSet,
@@ -1071,6 +1071,87 @@ let triggerEnumAccum = [0, 0, 0, 0, 0, 0, 0, 0];
 let triggerEnumLastMs = [0, 0, 0, 0, 0, 0, 0, 0];
 let triggerEnumLatched = [false, false, false, false, false, false, false, false];
 
+/*
+ * `access`, on every knob surface that is not the param-pages grid.
+ *
+ * The axis was implemented on the grid and never reached this file, so a
+ * trigger was an ordinary enum everywhere else -- and "everywhere else" is
+ * wider than it looks. getKnobContext serves the CHAIN EDITOR, MASTER FX and
+ * the hierarchy list editor alike, so all three turned a trigger by writing
+ * the value the turn walked onto: magneto's `clear` wipes the deck,
+ * euclidrum's `rnd_preset` randomises all eight lanes, from a knob nudge.
+ *
+ * Worth being exact about, because the list editor is on its way out: if this
+ * were only the list editor it would be near-dead code. The chain editor and
+ * Master FX overlays are not going anywhere.
+ *
+ * These read the raw declaration rather than param_meta's normalised form,
+ * which belongs to the grid and is not built here.
+ */
+/*
+ * When each trigger last fired, keyed by full param key.
+ *
+ * The knob card draws its row with the SAME drawKnobRow the grid uses, and
+ * that renderer is pure: it takes the fire times and the clock off its options
+ * object. page_controller passes them; this file did not, so a trigger drew
+ * its idle phase forever and the press animation was invisible everywhere
+ * outside the param-pages grid.
+ *
+ * One renderer, two hosts, and the plumbing is the thing that diverges -- the
+ * same omission that shipped once already on the grid side.
+ *
+ * Bounded by construction: one entry per parameter key that has ever been
+ * fired in this session, which is a handful.
+ */
+const triggerFiredAt = Object.create(null);
+const TRIGGER_KEEP_MS = 1200;
+
+function noteTriggerFired(fullKey) {
+    if (!fullKey) return;
+    const t = Date.now();
+    const prev = triggerFiredAt[fullKey] || [];
+    /* An ARRAY, because two presses close together must read as two: the
+     * renderer restarts its animation per timestamp. Old ones are dropped so
+     * this cannot grow. */
+    triggerFiredAt[fullKey] = prev.filter((p) => t - p < TRIGGER_KEEP_MS).concat(t);
+}
+
+/* The fire times for the row the card is showing, in the renderer shape: it
+ * keys by the PARAM key, not the full slot-qualified one. */
+function triggerFiredAtForRow(keys, prefixed) {
+    const out = Object.create(null);
+    if (!keys) return out;
+    for (const k of keys) {
+        if (!k) continue;
+        const full = prefixed ? prefixed(k) : k;
+        if (triggerFiredAt[full]) out[k] = triggerFiredAt[full];
+    }
+    return out;
+}
+
+function isTriggerParam(meta) {
+    return !!(meta && String(meta.access || "").toLowerCase() === "write");
+}
+function isReadoutParam(meta) {
+    return !!(meta && String(meta.access || "").toLowerCase() === "read");
+}
+
+/*
+ * The value that FIRES a trigger, in the format the module reports.
+ *
+ * Option 1, never a bare index unless the module is already speaking indices:
+ * euclidrum declares ["\u2014","Rnd!"] and fires on anything that is not the
+ * em-dash, so writing "1" as a number would be read as a name it does not
+ * know -- and writing "0" MEANS the em-dash, i.e. "do nothing", which is the
+ * write that destroys a kit.
+ */
+function triggerFireValue(meta, currentVal) {
+    const opts = (meta && Array.isArray(meta.options)) ? meta.options : null;
+    if (!opts || opts.length < 2) return null;
+    const usesIndex = opts.indexOf(currentVal) < 0 && !isNaN(parseInt(currentVal, 10));
+    return usesIndex ? "1" : opts[1];
+}
+
 function isTriggerEnumMeta(meta) {
     return !!(meta &&
               meta.type === "enum" &&
@@ -1152,6 +1233,10 @@ let knobCardExpiry = 0;         /* ms deadline; 0 means held, so no deadline */
 let knobCardSlot = -1;          /* target slot the row below was resolved against */
 let knobCardCompKey = null;     /* component key ditto — see showKnobFeedback */
 let knobCardKeys = null;        /* param key per physical knob, or null */
+/* param key -> the slot-qualified key it was read with. Captured when the card
+ * opens because that is the only place the target and component are in scope,
+ * and the fire-time lookup needs the same spelling the writes used. */
+let knobCardFullKey = null;
 let knobCardMeta = null;        /* metaIndex for the focused component */
 let knobCardRowValues = null;   /* raw values, keyed by param key */
 let knobCardViz = null;
@@ -1168,6 +1253,7 @@ function knobCardClose() {
     knobCardSlot = -1;
     knobCardCompKey = null;
     knobCardKeys = null;
+    knobCardFullKey = null;
     knobCardMeta = null;
     knobCardRowValues = null;
     knobCardViz = null;
@@ -1238,6 +1324,10 @@ function knobCardDrawState() {
         values: knobCardRowValues,
         viz: knobCardViz,
         modulated: knobCardModKey ? ((k) => k === knobCardModKey) : null,
+        /* The press animation. Pure renderer: without these two the button
+         * draws its idle phase forever -- see triggerFiredAt. */
+        triggerFiredAt: triggerFiredAtForRow(knobCardKeys, knobCardFullKey),
+        nowMs: Date.now(),
     };
 }
 
@@ -1302,6 +1392,7 @@ function knobCardOpen(knobIndex, focus) {
 
     knobCardMeta = buildMetaIndex({ hierarchy, chainParams });
     knobCardKeys = keys;
+    knobCardFullKey = (k) => target.key(comp.key, k);
     knobCardViz = resolveViz({ keys, metaIndex: knobCardMeta }).groups;
 
     const base = (knobIndex >> 2) * 4;
@@ -1641,11 +1732,21 @@ function paramPagesChromeFor(componentKey) {
     if (mfx < 0) return null;
     return {
         label: MASTER_CHAIN_TARGET.label,
-        /* "master_fx:fx2:module", NOT "master_fx:fx2_module" — the underscore
-         * form is the slot chain's spelling and is unserved here, and an
-         * unserved key reads back as "" rather than erroring, so the header
-         * would just quietly lose its module name. */
-        moduleKey: MASTER_CHAIN_TARGET.key(masterFxComponentKey(mfx), "module"),
+        /*
+         * ":name", which serves the module ID -- NOT ":module", which serves
+         * the plugin PATH, and not the slot chain's "master_fx:fx2_module"
+         * underscore spelling, which is unserved here.
+         *
+         * All three spellings fail differently, and the middle one is the
+         * nasty one. The underscore form is unserved, and an unserved read
+         * comes back as "" so the header quietly loses its name. ":module" IS
+         * served -- with a filesystem path -- and the abbreviation fallback
+         * turned that into "/D", so every Master FX module showed the same
+         * confident wrong label. A bad value believed because it parsed.
+         *
+         * The path key is deliberately left alone; other callers use it.
+         */
+        moduleKey: MASTER_CHAIN_TARGET.key(masterFxComponentKey(mfx), "name"),
         returnView: VIEWS.MASTER_FX,
     };
 }
@@ -2066,6 +2167,24 @@ function openHierarchyParamEditor(selectedKey, meta, forceOpen) {
      * strcmp ladder over the names with no trailing else, so an index would be
      * discarded in silence.
      */
+    /*
+     * A TRIGGER is pushed, not opened. Clicking it fires; it must not raise
+     * the option picker -- a two-item list whose second item is the action is
+     * a way to fire it by accident, and there is nothing to browse.
+     */
+    if (!hierEditorEditMode && isTriggerParam(meta)) {
+        const fullKey = buildHierarchyParamKey(selectedKey);
+        const fire = triggerFireValue(meta, getSlotParam(hierEditorSlot, fullKey));
+        if (fire !== null) {
+            setSlotParam(hierEditorSlot, fullKey, fire);
+            noteTriggerFired(fullKey);
+        }
+        return;
+    }
+    /* A READOUT has nothing to set. Opening a picker on it discarded the
+     * choice in silence, which is the keydetect case. */
+    if (!hierEditorEditMode && isReadoutParam(meta)) return;
+
     if (!hierEditorEditMode && meta && meta.type === "enum" &&
         Array.isArray(meta.options) && meta.options.length > 0) {
         const fullKey = buildHierarchyParamKey(selectedKey);
@@ -4510,19 +4629,87 @@ function applySlotModuleSignature(slotIndex, signature) {
     return false;
 }
 
-/* Cache a module's abbreviation from its module.json */
+/*
+ * A module's DISPLAY NAME, from the same module.json the abbreviation comes
+ * from. Populated by cacheModuleAbbrev because it already reads and parses the
+ * file at both call sites -- this costs no extra I/O.
+ */
+const moduleNameCache = {};
+
+/* Cache a module's abbreviation and display name from its module.json */
 function cacheModuleAbbrev(json) {
     if (json && json.id && json.abbrev) {
         moduleAbbrevCache[json.id.toLowerCase()] = json.abbrev;
     }
+    if (json && json.id && json.name) {
+        moduleNameCache[json.id.toLowerCase()] = json.name;
+    }
 }
 
-/* Get abbreviation for a module */
+/*
+ * The name to show for a module, preferring the real one.
+ *
+ * The param-pages header used to show only the abbreviation, so Master FX read
+ * "MFX > CS" permanently for a module with no presets -- and an abbreviation
+ * is a placeholder, not an identity. "MFX > CLOUDSEED" is 70px in a 70px
+ * budget and "MFX > CAPICOLA" is 62px, so the names that matter here fit; the
+ * long ones truncate, and a truncated name still says more than two letters.
+ *
+ * Falls back to the abbreviation when the module.json has not been read yet,
+ * so the header never goes blank waiting for a name.
+ */
+function getModuleDisplayName(moduleId) {
+    if (!moduleId) return "--";
+    let id = String(moduleId);
+    if (id.indexOf("/") >= 0) {
+        const parts = id.split("/").filter(Boolean);
+        if (!parts.length) return "--";
+        const last = parts[parts.length - 1];
+        id = (/\.[A-Za-z0-9]+$/.test(last) && parts.length >= 2)
+            ? parts[parts.length - 2]
+            : last;
+    }
+    if (!id) return "--";
+    return moduleNameCache[id.toLowerCase()] || getModuleAbbrev(id);
+}
+
+/*
+ * Get abbreviation for a module.
+ *
+ * Takes a module ID -- and defends against being handed a filesystem PATH,
+ * which is how the Master FX header came to read "MFX > /D" for every module:
+ * the chrome asked for a key that serves the plugin path, and the fallback
+ * below happily returned the first two characters of "/data/UserData/...".
+ * A wrong KEY would have been survivable, since an unserved read comes back
+ * as "" and the header just loses its name; a served key with the wrong KIND
+ * of value produced a confident, plausible-looking answer instead.
+ *
+ * The path handling is INLINE, not a helper. Several tests lift this function
+ * out of the file with `new Function` and an explicit dependency list -- see
+ * tests/host/test_chain_editor_snapshot.sh -- so a new free identifier here
+ * is a ReferenceError there, which is the same trap drawChainEdit documents.
+ *
+ * Note the last path segment is NOT the id: a module path names the plugin
+ * FILE (".../cloudseed/dsp.so" -- shadow_chain_mgmt.c stores dsp_path), so a
+ * plain basename gives "dsp.so" and an abbreviation of "DS" for every module
+ * in the fleet. The id is the directory holding the plugin.
+ */
 function getModuleAbbrev(moduleId) {
     if (!moduleId) return "--";
-    const lower = moduleId.toLowerCase();
-    return moduleAbbrevCache[lower] || moduleId.substring(0, 2).toUpperCase();
+    let id = String(moduleId);
+    if (id.indexOf("/") >= 0) {
+        const parts = id.split("/").filter(Boolean);
+        if (!parts.length) return "--";
+        const last = parts[parts.length - 1];
+        id = (/\.[A-Za-z0-9]+$/.test(last) && parts.length >= 2)
+            ? parts[parts.length - 2]
+            : last;
+    }
+    if (!id) return "--";
+    const lower = id.toLowerCase();
+    return moduleAbbrevCache[lower] || id.substring(0, 2).toUpperCase();
 }
+
 
 /* Param API helper functions */
 function getSlotParam(slot, key) {
@@ -10243,7 +10430,27 @@ function applyKnobAssignment(target, param) {
 /* Handle Shift+Click - enter component edit mode */
 function handleShiftSelect() {
     const comp = slotChainComponents(selectedSlot)[selectedChainComponent];
-    if (!comp || !isChainModuleKey(comp.key)) return;
+    if (!comp) return;
+
+    /*
+     * The `+` IS the empty position, so Shift opens the picker on it too.
+     *
+     * enterComponentSelect refuses an unresolved `+` by design -- it wants a
+     * real position -- so the box is resolved first, exactly as the plain
+     * click does. Without this, shift+click did nothing on an empty cell in
+     * the slot chain while working in Master FX, whose own handler already
+     * resolved it. Reported from the device as precisely that asymmetry.
+     */
+    if (comp.kind === "add") {
+        const at = beginChainInsertFromAddBox(slotChainTarget(selectedSlot), comp);
+        if (at >= 0) {
+            selectedChainComponent = at;
+            enterComponentSelect(selectedSlot, at);
+        }
+        return;
+    }
+
+    if (!isChainModuleKey(comp.key)) return;
 
     /* Shift+click always goes to module chooser (for swapping) */
     enterComponentSelect(selectedSlot, selectedChainComponent);
@@ -11326,8 +11533,8 @@ function buildChainKnobContext(target, comp, knobIndex, pluginName, hasModule) {
              * installed — suppresses the host's correct fallback and the knob
              * is left with no metadata at all.
              *
-             * knobConfigFromMeta does not fail on that; it INVENTS a float
-             * 0..1 step 0.01. So an int -24..24 is turned as a fraction, the
+             * The knob model does not fail on that; with no min/max declared
+             * it falls back to a float 0..1. So an int -24..24 is turned as a fraction, the
              * module's atoi reads it as 0, and an enum takes option 0 — while
              * the overlay, which runs on local arithmetic, moves normally.
              * Reported from the device as "i could see the values change, but
@@ -11719,7 +11926,7 @@ function processPendingHierKnob() {
              * accel divides further so slow turns feel smooth, fast turns snap. */
             const cfg = { type: "float", min: 0, max: 8, step: 0.5 };
             const st = getWavZoomKnobState(groupKey, cur);
-            const newZoom = knobTick(st, cfg, delta, Date.now());
+            const newZoom = knobStep(st, cfg, delta, Date.now(), isShiftHeld());
             setWavZoomLevel(hierEditorSlot, anchor.meta, anchor.fullKey, newZoom);
             needsRedraw = true;
             const factor = Math.pow(2, newZoom);
@@ -11735,11 +11942,15 @@ function processPendingHierKnob() {
             if (currentMarkerVal === null) return;
             const num = parseFloat(currentMarkerVal);
             if (isNaN(num)) return;
-            const knobCfg = knobConfigFromMeta(m.meta);
+            /* Zooming in makes the marker knob finer, so the step is scaled
+             * on a COPY of the metadata — mutating chain_params metadata in
+             * place would leak the zoomed step to every other consumer. */
             const z = getWavZoomLevel(slot, m.meta, m.fullKey);
-            if (z > 0) knobCfg.step = knobCfg.step / Math.pow(2, z);
+            const knobMeta = z > 0
+                ? { ...m.meta, step: (m.meta.step > 0 ? m.meta.step : 1) / Math.pow(2, z) }
+                : m.meta;
             const st = getPhysKnobState(m.fullKey, num);
-            const newVal = knobTick(st, knobCfg, delta, Date.now());
+            const newVal = knobStep(st, knobMeta, delta, Date.now(), isShiftHeld());
             const formatted = formatParamForSet(newVal, m.meta);
             setSlotParam(slot, m.fullKey, formatted);
             if (hierEditorEditMode && hierEditorEditKey === m.fullKey) {
@@ -11770,6 +11981,34 @@ function processPendingHierKnob() {
             (selMeta.enable_zoom || selMeta.view_group)) {
             return;
         }
+    }
+
+    /*
+     * A trigger is FIRED, never scrubbed: turning walks THROUGH the fire
+     * value, so a nudge runs the action. A readout has nothing to set.
+     * Neither may write from a knob turn -- the grid has refused this since
+     * the access axis landed and this surface never did.
+     */
+    if (isTriggerParam(ctx.meta) || isReadoutParam(ctx.meta)) {
+        /*
+         * Show the VALUE, not a sentence about the parameter.
+         *
+         * This said "Read only" and "Click to fire", which is the surface
+         * explaining itself in the slot where the reading goes. A readout is a
+         * static value and displaying it is the entire point of declaring one
+         * -- keydetect exists to be READ. Reported from the device: "we show
+         * READ ONLY in the header, that doesn't make sense, it just is a
+         * static value".
+         *
+         * A trigger has no value worth reading, but it draws a BUTTON in its
+         * cell and the button is the affordance; the footer already says PUSH.
+         */
+        const cached = getKnobCachedValue(knobIndex, ctx);
+        showKnobFeedback(knobIndex, ctx.title,
+                         cached === null ? "" : formatParamForOverlay(cached, ctx.meta),
+                         cached === null ? undefined : cached, ctx.cardName);
+        needsRedraw = true;
+        return;
     }
 
     /* Get current value from cache (one-time IPC read, then local) */
@@ -11804,9 +12043,8 @@ function processPendingHierKnob() {
         }
         /* Run through knob_engine so the divisor curve applies — many ticks
          * required per option change, with the same staleness reset semantics. */
-        const enumCfg = knobConfigFromMeta(ctx.meta);
         const st = getPhysKnobState(ctx.fullKey, currentIndex);
-        const newIndex = knobTick(st, enumCfg, delta, Date.now());
+        const newIndex = knobStep(st, ctx.meta, delta, Date.now(), isShiftHeld());
         if (newIndex === currentIndex) {
             /* No option crossed yet — only update the overlay so the user sees
              * something happening, but DON'T setSlotParam (no value change). */
@@ -11845,21 +12083,40 @@ function processPendingHierKnob() {
     const num = (typeof currentVal === "number") ? currentVal : parseFloat(currentVal);
     if (isNaN(num)) return;
 
-    /* Build knob config from meta. */
-    const knobCfg = knobConfigFromMeta(ctx.meta);
-    /* Shift fine-step override for wav_position. */
-    if (ctx.meta && ctx.meta.ui_type === "wav_position" && isShiftHeld()) {
-        const fineStep = Math.abs(knobCfg.step) * getWavPositionShiftMultiplier(ctx.meta);
-        if (fineStep > 0) knobCfg.step = fineStep;
+    /*
+     * wav_position carries two step overrides of its own — a shift multiplier
+     * and a zoom scale. They are applied to a COPY of the metadata: mutating
+     * ctx.meta in place would leak a zoomed step into every other reader of
+     * the same chain_params entry.
+     */
+    let knobMeta = ctx.meta;
+    if (ctx.meta && ctx.meta.ui_type === "wav_position") {
+        let step = ctx.meta.step > 0 ? ctx.meta.step : 0.01;
+        if (isShiftHeld()) {
+            const mult = getWavPositionShiftMultiplier(ctx.meta);
+            if (Math.abs(step) * mult > 0) step = Math.abs(step) * mult;
+        }
+        if (ctx.meta.enable_zoom) {
+            const z = getWavZoomLevel(ctx.slot, ctx.meta, ctx.fullKey);
+            if (z > 0) step = step / Math.pow(2, z);
+        }
+        knobMeta = { ...ctx.meta, step };
     }
-    /* wav_position with enable_zoom: scale step by 1/2^zoom so knob movement
-     * stays proportional to the visible viewport. */
-    if (ctx.meta && ctx.meta.ui_type === "wav_position" && ctx.meta.enable_zoom) {
-        const z = getWavZoomLevel(ctx.slot, ctx.meta, ctx.fullKey);
-        if (z > 0) knobCfg.step = knobCfg.step / Math.pow(2, z);
-    }
+    /*
+     * Shift is FINE ADJUST here too.
+     *
+     * The chain editor's knob overlay never passed it -- reported from the
+     * device as "shift doesn't work on an overlay knob from the chain
+     * editor". The gesture existed only on the param-pages grid, so the same
+     * knob refined under shift on one screen and ignored it on the other.
+     *
+     * NOT for wav_position, which folds shift into its own step multiplier a
+     * few lines above (getWavPositionShiftMultiplier). Passing it here as
+     * well would apply the gesture twice.
+     */
+    const wavPos = !!(ctx.meta && ctx.meta.ui_type === "wav_position");
     const st = getPhysKnobState(ctx.fullKey, num);
-    const newVal = knobTick(st, knobCfg, delta, Date.now());
+    const newVal = knobStep(st, knobMeta, delta, Date.now(), !wavPos && isShiftHeld());
 
     /* Update local cache — no IPC read needed on next turn */
     knobValueCache[knobIndex] = newVal;
@@ -15820,9 +16077,8 @@ function drawChainEdit() {
         headerRight,
         label,
         info: infoLine,
-        hints: isShiftHeld()
-            ? [["JOG", "MOVE"], ["BACK", "EXIT"]]
-            : [["JOG", "SEL"], ["CLK", "OPEN"], ["BACK", "EXIT"]],
+        hints: isShiftHeld() ? shiftHintsFor(selectedComp)
+                             : CHAIN_HINTS_AT_REST,
     });
 
     /*
@@ -16290,6 +16546,7 @@ function drawHelpDetail() {
     _ctx.getMasterFxSlotModule = (...args) => getMasterFxSlotModule(...args);
     _ctx.getMasterFxParam = (...args) => getMasterFxParam(...args);
     _ctx.getModuleAbbrev = (...args) => getModuleAbbrev(...args);
+    _ctx.getModuleDisplayName = (...args) => getModuleDisplayName(...args);
     _ctx.isTextEntryActive = () => isTextEntryActive();
     _ctx.drawTextEntry = () => drawTextEntry();
     _ctx.drawHelpDetail = () => drawHelpDetail();
@@ -19101,6 +19358,60 @@ globalThis.onMidiMessageInternal = function(data) {
             return;
         }
         if (d1 === MoveMainButton && d2 > 0) {
+            /*
+             * A held TRIGGER is fired by the click, and the click stops there.
+             *
+             * Holding a knob and clicking normally dives -- into the focused
+             * component from the chain editor, or into the parameter editor.
+             * A trigger has nothing to dive into: it is a button, and the
+             * gesture the card is already advertising is a push. So the click
+             * fires it and is consumed; everything else still dives, which is
+             * what makes this a special case rather than a mode.
+             */
+            if (knobCardKnob >= 0) {
+                const tctx = getKnobContext(knobCardKnob);
+                if (tctx && tctx.fullKey && isTriggerParam(tctx.meta)) {
+                    const fire = triggerFireValue(tctx.meta,
+                                                  getSlotParam(tctx.slot, tctx.fullKey));
+                    if (fire !== null) {
+                        setSlotParam(tctx.slot, tctx.fullKey, fire);
+                        noteTriggerFired(tctx.fullKey);
+                        /*
+                         * Re-read AND re-seed the knob cache.
+                         *
+                         * A trigger is the one parameter whose value changes
+                         * because of something other than the knob, so the
+                         * cache -- which is only invalidated when the KEY
+                         * changes -- goes stale the moment it fires. Pressing
+                         * read fresh and showed "Fired 6" while turning showed
+                         * the cached "Fired 1", reported from the device as
+                         * exactly that disagreement. Both paths now read the
+                         * same number because the press writes it back.
+                         */
+                        const after = getSlotParam(tctx.slot, tctx.fullKey);
+                        knobValueCache[knobCardKnob] = after;
+                        knobCardRowValues[knobCardKeys[knobCardKnob]] = after;
+                        showKnobFeedback(knobCardKnob, tctx.title, after || "",
+                                         undefined, tctx.cardName);
+                        needsRedraw = true;
+                    }
+                }
+                /*
+                 * ...and the click STOPS HERE either way.
+                 *
+                 * The card is a panel over the diagram and the component
+                 * behind it is only incidentally selected -- diving into it
+                 * from a gesture aimed at the card is acting on something the
+                 * user cannot see. Reported from the device: "when the
+                 * overlay is active clicking shouldn't take you into the
+                 * module, it's a hidden element that it's still selected".
+                 *
+                 * This replaces dismiss-and-descend, which was deliberate and
+                 * is now wrong: releasing the knob drops the card, so there is
+                 * a way out that does not also do something.
+                 */
+                return;
+            }
             /* Shift+Click in chain edit enters component edit mode */
             if (isShiftHeld() && view === VIEWS.CHAIN_EDIT && selectedChainComponent >= 0) {
                 handleShiftSelect();

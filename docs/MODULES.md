@@ -1080,6 +1080,57 @@ Each entry in `params` is either:
 
 **Important:** Use `key` (not `param`) for editable parameter objects. Metadata (type, min, max) can come from either the hierarchy or `chain_params`.
 
+### Naming a parameter: the knob grid has ~5 characters
+
+A `name` (or a hierarchy item's `label`) is drawn into a 32px-wide cell on the
+knob grid, and the label band budgets **the width of five `M`s**, which is
+about 5-7 characters depending on the letters. Everything longer is squeezed,
+and knowing how it is squeezed is the difference between a readable page and a
+row of stumps.
+
+Three passes, in order:
+
+1. **Per-word mnemonics.** A shared table maps common audio vocabulary to a
+   fixed short form — `attack`→`ATK`, `envelope`→`ENV`, `resonance`→`RES`,
+   `rotation`→`ROT`, `polyphony`→`POLY`. Applied word by word, so "Filter
+   Envelope" becomes `FLT ENV`.
+2. **Squeeze.** Whatever is left is fitted to the cell: initials for the
+   leading words, the last word kept longest, trailing indices preserved
+   ("Osc 1 Octave" keeps its 1).
+3. **Truncate**, if it still does not fit.
+
+**The failure mode worth designing against is step 2 on an unknown word: it
+drops vowels.** A word the table does not know becomes a non-word rather than
+an abbreviation — `Rotation` used to draw `ROTATN`, `Wave Group` drew `WGROU`,
+`Polyphony` drew `PLYPHN`. That is worse than truncation, and it is not fixed
+by a wider cell.
+
+So:
+
+- **Prefer a short `name`.** "Fdbk Src" beats "Feedback Source"; you know the
+  abbreviation you want, and the renderer is guessing.
+- **Check what it actually draws** rather than counting characters — the
+  budget is in pixels, so `I` and `M` are not the same:
+
+  ```bash
+  node -e 'import("./src/shared/param_pages/render_page_movy.mjs")
+    .then(R => console.log(R.labelForCell("Your Param Name")))'
+  ```
+
+  Or see the whole page: `node tools/param-pages/preview_knob_card.mjs <module-id>`.
+- **If a common word is missing from the table, add it there** rather than
+  pre-abbreviating in your module — an entry fixes that word for every module
+  that uses it. The table is `WORD_ABBREV` in
+  `src/shared/param_pages/render_page_movy.mjs`, with the rules and a test in
+  `tests/host/test_label_abbrev.sh`. Do not add a word that already fits: a
+  mnemonic is a consolation for not fitting, never an improvement on the real
+  word.
+
+**Enum `options` are tighter still.** An enum value is drawn in a ~16px square,
+roughly 3-4 characters, so long option strings are heavily cut. `["In", "Out"]`
+survives where `["Input Env", "Output Env"]` does not — and the parameter's own
+name is already carrying the context, so the option only has to disambiguate.
+
 ### Parameter Types
 
 | Type | Fields | Description |
@@ -1541,6 +1592,43 @@ These map to knobs 1-8 in the Shadow UI for quick access.
   }
 }
 ```
+
+### `access` — which direction a param means something in
+
+Optional on a `chain_params` entry. Defaults to `readwrite`; declare it when
+your parameter is not both.
+
+| value | meaning | host behaviour |
+|---|---|---|
+| `readwrite` | an ordinary control (default) | turnable, divable if it has options |
+| `read` | a **readout** — the value means something, writing means nothing | never turnable, never opens a picker, still refreshed on screen |
+| `write` | a **trigger** — writing does something, the value means nothing | never turnable, a click **fires** it |
+
+```json
+{"key": "detected_key", "type": "enum", "options": ["C","C#","D"], "access": "read"}
+{"key": "rnd_preset",   "type": "enum", "options": ["—","Rnd!"],   "access": "write"}
+```
+
+**Why a readout needs saying.** `keydetect`'s `detected_key` is 25 key names
+with no `set_param` branch at all — deliberately, and documented as such back
+when an enum could only be nudged one detent at a time. Enums became divable in
+1.0, so the picker opened on it and silently discarded whatever you chose. That
+was a gap in the contract, not a bug in the module: display-only was never
+expressible.
+
+**Why a trigger needs saying, and why it is the more urgent half.** A momentary
+action modelled as a two-option enum is a live hazard. `euclidrum`'s
+`rnd_preset` declares `["—","Rnd!"]` and fires on anything that is not the
+em-dash — so an **index** write of `"0"`, which *means* the em-dash, "do
+nothing", randomises all eight lanes and destroys the kit. Declaring
+`access: "write"` makes the host fire it through your own enum wire (the
+**name**, if that is what your `get_param` reports) and never scrub it with a
+knob, so the "do nothing" option can never be written by accident.
+
+A trigger is not the same as a **switch**. `["Off","On"]` is a two-state
+*setting* — it has a value worth reading, it should be turnable, and it draws as
+a switch. Leave those as ordinary enums; roughly 150 params in the fleet are
+switches and only about ten are triggers.
 
 ### `max_param` is NOT supported — publish a real `max`
 

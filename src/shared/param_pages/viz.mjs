@@ -98,7 +98,7 @@ export function isGainRange(meta) {
 }
 
 const WAVEFORM_NAMES = /\b(sine|sin|tri|triangle|saw|sawtooth|square|pulse|ramp|noise|random|s\s?&\s?h|sample\s?&?\s?hold)\b/i;
-/* Exported so movy_knob.mjs turns exactly the controls detectSwitch draws as a
+/* Exported so knob_engine.mjs turns exactly the controls detectSwitch draws as a
  * switch — the feel and the picture must agree on what a boolean is. */
 export const BOOL_OPTION = /^(off|on|no|yes|0|1|false|true|disabled|enabled)$/i;
 

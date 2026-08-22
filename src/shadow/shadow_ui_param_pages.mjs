@@ -523,6 +523,22 @@ function footerHints() {
     const held = controller.state ? controller.state.touched : -1;
     if (held >= 0) {
         const meta = controller.metaAt ? controller.metaAt(held) : null;
+        /*
+         * A TRIGGER is a button: the click does the thing rather than opening
+         * anything. Without this it fell through to CLK MENU -- the footer
+         * advertised the section menu while the click ran a destructive
+         * action, which is the same promise-versus-behaviour mismatch the
+         * divable line above exists to prevent.
+         *
+         * PUSH, not FIRE. The widget is drawn as a push button, and the hint
+         * vocabulary should name the GESTURE the picture is asking for, the
+         * way JOG SEL and CLK OPEN do. FIRE names the consequence instead,
+         * which is a second thing to learn about a control that is already
+         * self-explanatory once it looks like a button.
+         */
+        if (meta && meta.writeOnly) {
+            return orderedHints({ jog: "PAGE", click: "PUSH", extra: fine });
+        }
         if (meta && meta.divable) {
             return orderedHints({ jog: "PAGE", click: "OPEN", extra: fine });
         }
@@ -569,9 +585,16 @@ export function headerTitle() {
          * erroring, so the wrong spelling loses the name silently. */
         const moduleKey = (currentChrome && currentChrome.moduleKey)
             || `${currentPrefix}_module`;
-        _abbrevCache = ctx.getModuleAbbrev
-            ? ctx.getModuleAbbrev(ctx.getSlotParam(currentSlot, moduleKey) || '')
-            : currentComponent.toUpperCase();
+        /* The NAME, not the abbreviation. An abbreviation is a placeholder
+         * for a name that has not arrived; on Master FX, where a module often
+         * has no presets, it was the permanent answer and the header read
+         * "MFX > CS" forever. getModuleDisplayName falls back to the
+         * abbreviation until module.json has been read, so nothing blanks. */
+        const moduleRef = ctx.getSlotParam(currentSlot, moduleKey) || '';
+        _abbrevCache = ctx.getModuleDisplayName
+            ? ctx.getModuleDisplayName(moduleRef)
+            : (ctx.getModuleAbbrev ? ctx.getModuleAbbrev(moduleRef)
+                                   : currentComponent.toUpperCase());
     }
     /* A hardware synth puts the PATCH name in its display, not the model
      * number — and the module's identity is already visible in the chain
