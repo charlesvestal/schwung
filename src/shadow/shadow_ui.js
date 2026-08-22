@@ -1072,13 +1072,18 @@ let triggerEnumLastMs = [0, 0, 0, 0, 0, 0, 0, 0];
 let triggerEnumLatched = [false, false, false, false, false, false, false, false];
 
 /*
- * `access`, as the list editor sees it.
+ * `access`, on every knob surface that is not the param-pages grid.
  *
- * The axis was implemented on the param-pages grid and never reached this
- * file, which is the DEFAULT param view -- so on the surface most people use,
- * a trigger was an ordinary enum. Turning its knob wrote the fire value:
- * magneto's `clear` wipes the deck and euclidrum's `rnd_preset` randomises
- * all eight lanes, from a knob nudge.
+ * The axis was implemented on the grid and never reached this file, so a
+ * trigger was an ordinary enum everywhere else -- and "everywhere else" is
+ * wider than it looks. getKnobContext serves the CHAIN EDITOR, MASTER FX and
+ * the hierarchy list editor alike, so all three turned a trigger by writing
+ * the value the turn walked onto: magneto's `clear` wipes the deck,
+ * euclidrum's `rnd_preset` randomises all eight lanes, from a knob nudge.
+ *
+ * Worth being exact about, because the list editor is on its way out: if this
+ * were only the list editor it would be near-dead code. The chain editor and
+ * Master FX overlays are not going anywhere.
  *
  * These read the raw declaration rather than param_meta's normalised form,
  * which belongs to the grid and is not built here.
