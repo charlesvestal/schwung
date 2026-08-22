@@ -2126,11 +2126,23 @@ const MASTER_FX_SETTINGS_ITEMS_BASE = [
     { key: "delete", label: "[Delete]", type: "action" }
 ];
 
-/* Param View (preview): 0 = the hierarchy list editor, 1 = the knob grid.
- * Defaults to the list — the grid ships as an opt-in preview before becoming
- * the default in a later release. Read through a global so the view module can
- * ask without importing shadow_ui.js. See shadow_ui_param_pages.mjs. */
-let paramViewGlobal = 0;
+/* Param View: 0 = the hierarchy list editor, 1 = the knob grid.
+ *
+ * The grid is now the default. It shipped as an opt-in preview because it
+ * could not draw everything the list could, and that gap is what kept it
+ * opt-in rather than any doubt about the layout: mode selectors, child levels
+ * and enum lists all had to land first, and the fleet contract fixture had to
+ * be recaptured (76 modules -> 95) before "the grid covers the fleet" was a
+ * measurement rather than a hope.
+ *
+ * The list is not deprecated. It stays reachable from Global Settings, and it
+ * remains the better view for a module whose contract the grid cannot serve
+ * well -- 11 modules publish no ui_hierarchy at all, and a knob grid over a
+ * flat paginated param list is worse than a list of them.
+ *
+ * Read through a global so the view module can ask without importing
+ * shadow_ui.js. See shadow_ui_param_pages.mjs. */
+let paramViewGlobal = 1;
 const PARAM_VIEW_CONFIG_PATH = "/data/UserData/schwung/param_view.json";
 globalThis.param_view_get_mode = function() { return paramViewGlobal; };
 
