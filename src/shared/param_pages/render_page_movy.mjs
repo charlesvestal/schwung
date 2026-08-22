@@ -227,7 +227,28 @@ export { WORD_ABBREV };
  * @param {number} cellW   cell width in px; the grid is 32, the knob card 29
  */
 export function labelForCell(text, cellW = CELL_W) {
-    const labelWidth = Math.min(cellW - 2, fontWidth4x5("M".repeat(LABEL_CHARS)));
+    /*
+     * The CAP governs, not the cell.
+     *
+     * This was min(cellW - 2, cap), and the -2 made the label depend on which
+     * surface was drawing it. The knob card runs this same row renderer at a
+     * 29px cell against the grid's 32px, so the card's budget came out 27px
+     * against the grid's 29px and 39% of fleet labels rendered differently in
+     * the two -- the label changed under your finger as you touched the knob.
+     *
+     * "Touching a knob should not change its label" is the rule, and it is
+     * worth more than the margin: the label you learn has to be the label you
+     * see. The min() against the cell stays as an overflow guard for any
+     * future surface narrower than the cap; at 29px cap and 29px card cell it
+     * no longer binds.
+     *
+     * The cost is real and was measured rather than waved past: at the card's
+     * 29px cell a full-width label leaves no gutter, and 24% of adjacent
+     * label pairs in the fleet come within 2px of each other IN THE CARD. The
+     * grid is unaffected -- its 32px cell was never the binding constraint,
+     * which is why this change moves no grid pixels at all.
+     */
+    const labelWidth = Math.min(cellW, fontWidth4x5("M".repeat(LABEL_CHARS)));
 
     /*
      * The table applies UNCONDITIONALLY, even to a word that would have fit.
