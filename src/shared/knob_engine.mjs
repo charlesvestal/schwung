@@ -8,7 +8,9 @@
  *   gap == 0 or <= 50ms → divisor 4   (fast sweep)
  *   first tick (lastTickMs == 0) → divisor 1   (intentional "click" on motion start)
  *
- * Float: step / divisor per tick.
+ * Float: step / divisor per tick, where step is max(declared, 1% of range) —
+ *        see floatStep(). A declared step is about precision, not sweep, and
+ *        taking it literally made a wide-range param need ~80,000 detents.
  * Int:   accumulate ticks; emit ±1 once accum reaches divisor.
  * Enum:  fixed enum_divisor = 10 ticks per option, regardless of count.
  *        Binary toggles and 47-option pickers feel equally snappy.
@@ -30,6 +32,20 @@ export const KNOB_TYPE_ENUM = "enum";
 const KNOB_ACCEL_FAST_MS = 50;
 const KNOB_ACCEL_MED_MS = 150;
 const KNOB_STALE_MS = 2000;   // gap above this → treat as cold start (engine self-resets)
+/* Shared with the Movy knob model (param_pages/movy_knob.mjs), deliberately:
+ * the two engines should normalize a wide range to the same fraction even
+ * though their acceleration curves differ. */
+export const MIN_STEP_RANGE_FRAC = 0.01;
+/*
+ * Shift-held fine adjust, as a divisor of the EFFECTIVE step.
+ *
+ * It has to live in here, not at the call site. The caller used to hand
+ * knobTick a config with its declared step pre-divided by 10, which the
+ * range floor above then simply undid -- fine and coarse came out 1.2x
+ * apart, i.e. the same. Caught by tests/host/test_param_pages_controller.sh,
+ * which had already pinned that fine must be meaningfully finer.
+ */
+export const FINE_DIVISOR = 10;
 
 export function knobInit(initialValue) {
     return { lastTickMs: 0, value: initialValue, tickAccum: 0 };
@@ -55,12 +71,48 @@ function tickDivisor(state, nowMs) {
     return 4;
 }
 
-export function knobTick(state, config, direction, nowMs) {
+/**
+ * A float knob's per-detent step: the declared one, or 1% of the param's own
+ * range, whichever is BIGGER.
+ *
+ * Reported from the device as knobs being "super slow in the overlay" on the
+ * Master FX chain. The declared `step` is a statement about precision, not
+ * about sweep, and a module that declares a fine one on a wide range makes
+ * this engine unusable: a 20..20000 Hz param with step 1 needed ~80,000
+ * detents to cross, against ~200 for the same param on the knob grid.
+ *
+ * 1% is not a new invention -- MIN_STEP_RANGE_FRAC is the number the Movy
+ * knob model already normalizes to, and the grid has shipped with it. This
+ * makes the two feel like relatives instead of strangers.
+ *
+ * A FLOOR, not a replacement: a param whose declared step is already coarser
+ * than 1% keeps it. So 0..1 step 0.01 is completely unaffected, which is most
+ * of the fleet.
+ *
+ * The trade is precision at the extreme: on a very wide range you can no
+ * longer land on an exact value by turning, and the slow end of the divisor
+ * curve (step/16) is the fine control. Typing an exact value is what the
+ * editor's edit mode is for.
+ *
+ * Deliberately NOT applied to the INT path, which is a different bug: that
+ * path ignores `config.step` entirely and always moves +/-1 per divisor
+ * ticks, so a 0..20000 int is just as slow and cannot be fixed by a floor
+ * without also making most values unreachable. Left alone rather than
+ * half-fixed.
+ */
+export function floatStep(config, fine = false) {
+    const declared = config.step > 0 ? config.step : 0.01;
+    const range = (config.max - config.min);
+    const base = (range > 0) ? Math.max(declared, range * MIN_STEP_RANGE_FRAC) : declared;
+    return fine ? base / FINE_DIVISOR : base;
+}
+
+export function knobTick(state, config, direction, nowMs, { fine = false } = {}) {
     const divisor = tickDivisor(state, nowMs);
     state.lastTickMs = nowMs;
 
     if (config.type === KNOB_TYPE_FLOAT) {
-        const step = config.step > 0 ? config.step : 0.01;
+        const step = floatStep(config, fine);
         const delta = (step / divisor) * direction;
         state.value = clampf(state.value + delta, config.min, config.max);
     } else if (config.type === KNOB_TYPE_INT) {
