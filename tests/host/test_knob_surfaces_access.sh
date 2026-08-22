@@ -3,11 +3,13 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-# The list editor must honour `access` too.
+# Every knob surface must honour `access`, not just the param-pages grid.
 #
-# The axis landed on the param-pages knob grid and never reached shadow_ui.js
-# -- which is the DEFAULT param view. So on the surface most people are
-# actually using, a trigger was an ordinary enum:
+# The axis landed on the param-pages knob grid and never reached shadow_ui.js.
+# getKnobContext there serves the CHAIN EDITOR, MASTER FX and the hierarchy
+# list editor alike, so on all three a trigger was an ordinary enum. That
+# breadth is the point: the list editor is being deprecated, and if this were
+# only about the list editor it would be near-dead code.
 #
 #   - TURNING its knob walked through the fire value and ran the action.
 #     magneto's `clear` wipes the deck; euclidrum's `rnd_preset` randomises all
@@ -80,4 +82,4 @@ echo "  ok  a held trigger fires on click and consumes it; anything else still d
 echo "  ok  a knob turn cannot write a trigger or a readout, and bails before the read"
 echo "  ok  a click fires a trigger through the module wire, and never opens a picker"
 echo "  ok  a click on a readout opens nothing"
-echo "PASS: the list editor honours access"
+echo "PASS: every knob surface honours access"
