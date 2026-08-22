@@ -857,6 +857,24 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         v2_unload_all_midi_fx(inst);
         v2_unload_all_audio_fx(inst);
         v2_unload_synth(inst);
+        /*
+         * The LFOs go too. They are per-SLOT state, not per-module, so
+         * unloading everything they could point at used to leave them running
+         * and aimed at a component that no longer exists.
+         *
+         * Reported from the device: "when i created a new set, the LFO was
+         * still active and targeting the now empty synth slot." A set switch
+         * clears every slot through here, so the routing outlived the set that
+         * defined it.
+         *
+         * Safe to zero rather than preserve: loading a patch assigns the whole
+         * array from the patch (chain_patch.c, `inst->lfos[i] = patch->lfos[i]`),
+         * so nothing a patch defines can be lost by clearing first. Zero is
+         * inert -- no target, no depth.
+         */
+        memset(inst->lfos, 0, sizeof(inst->lfos));
+        memset(inst->lfo_base_values, 0, sizeof(inst->lfo_base_values));
+        memset(inst->lfo_base_valid, 0, sizeof(inst->lfo_base_valid));
         inst->current_patch = -1;
         inst->dirty = 0;
         malloc_trim(0);
