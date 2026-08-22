@@ -28,6 +28,7 @@
  */
 
 import { planPages, PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS } from "./page_plan.mjs";
+import { resolveChildKey } from "./child_key.mjs";
 import { buildMetaIndex, inferFromValue, isTurnable, enumIndexOf, KIND_ENUM, KIND_OPAQUE } from "./param_meta.mjs";
 import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page.mjs";
 import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
@@ -311,6 +312,8 @@ export function createController(io = {}) {
         /* key -> last-read modulation flag, refreshed on the read cursor
          * rather than per cell per draw. See tick(). */
         modCache: Object.create(null),
+        /* Selected child per child-level, by level key. See childResolve(). */
+        childIndex: Object.create(null),
         /* A page name to land on once the pages exist; see restorePage(). */
         restoreName: null,
         /* key -> live modulated ("effective") value, for the dot on the arc.
@@ -417,8 +420,64 @@ export function createController(io = {}) {
         items: Object.create(null),
     };
 
-    const fullKey = (key) => `${s.prefix}:${key}`;
+    /*
+     * key -> the concrete key on the wire.
+     *
+     * Identity for an ordinary page. For a page belonging to a CHILD level it
+     * resolves the template: minijv's `part_selector` lists `partlevel`, and
+     * the DSP serves `sram_part_<n>_partlevel` where n is the child the
+     * selector page committed.
+     *
+     * Only keys ON the current page are resolved -- fullKey is also used for
+     * out-of-band reads (ui_hierarchy, chain_params, preset_name), which are
+     * not the level's parameters and must pass through untouched.
+     *
+     * METADATA stays keyed by the BARE name: chain_params declares `partlevel`,
+     * not the resolved form, so only the wire key moves.
+     */
+    const childIndexFor = (level) => {
+        const at = s.childIndex[level];
+        return (typeof at === "number" && at >= 0) ? at : 0;
+    };
+    const childResolve = (key) => {
+        const p = page();
+        if (!p || !p.childLevel || !Array.isArray(p.keys)) return key;
+        if (p.keys.indexOf(key) < 0) return key;
+        return resolveChildKey(p.childLevel, childIndexFor(p.level), key) || key;
+    };
+    const fullKey = (key) => `${s.prefix}:${childResolve(key)}`;
     const page = () => s.pages[s.pageIndex] || null;
+
+    /*
+     * What the header calls this page.
+     *
+     * The planned name is the page IDENTITY -- section memory, restorePage and
+     * the items state are all keyed by it -- so it must not move. But for a
+     * page belonging to a child level it is the wrong thing to SHOW: minijv
+     * plans "Edit Parts - 2", where the 2 is the second page OF THE LEVEL, and
+     * a user who has just chosen Part 2 reads that as the part. The two
+     * numbers collide by coincidence, which is worse than either alone.
+     *
+     * It did not fit either: 57px against the ~50px the right side gets once
+     * the title claims its floor, so it truncated to "EDIT PARTS -" and lost
+     * even the wrong number. Reported from the device as exactly that.
+     *
+     * Numbered among the LEVEL'S OWN knob pages rather than by the planned
+     * suffix: the selector took the level's base name, so the first parameter
+     * page is planned "- 2" and there is never a "- 1", which would display as
+     * "Part 2 - 2" for the FIRST page of Part 2.
+     */
+    function pageLabel(p) {
+        const pg = p || page();
+        if (!pg) return null;
+        if (!pg.childLevel || pg.kind !== PAGE_KNOBS) return pg.name;
+        const label = pg.childLevel.child_label || "Item";
+        const at = childIndexFor(pg.level) + 1;
+        const siblings = s.pages.filter(
+            (q) => q.level === pg.level && q.kind === PAGE_KNOBS);
+        const ord = siblings.indexOf(pg);
+        return ord > 0 ? `${label} ${at} - ${ord + 1}` : `${label} ${at}`;
+    }
     const keyAt = (slot) => {
         const p = page();
         return p && p.kind === PAGE_KNOBS ? (p.keys[slot] || null) : null;
@@ -1004,6 +1063,26 @@ export function createController(io = {}) {
         if (!pg || pg.kind !== PAGE_ITEMS) return null;
         let st = s.items[pg.name];
         if (!st) st = s.items[pg.name] = { list: [], cursor: 0, current: -1, read: 0 };
+        /*
+         * A DERIVED list is built HERE, not in tickItems, because it needs no
+         * read and therefore must not depend on tick order. Built there, a
+         * click that arrived before the first tick found an empty list and
+         * enterMenu refused it -- the selector looked dead until a frame had
+         * passed.
+         *
+         * The level declares how many children and what to call them, so this
+         * is arithmetic, not I/O.
+         */
+        if (pg.childCount !== undefined) {
+            const n = Math.max(0, pg.childCount | 0);
+            if (st.list.length !== n) {
+                st.list = [];
+                for (let i = 0; i < n; i++)
+                    st.list.push({ index: i, label: `${pg.childLabel || "Item"} ${i + 1}` });
+                if (st.cursor >= n) st.cursor = Math.max(0, n - 1);
+            }
+            st.current = childIndexFor(pg.childOf);
+        }
         return st;
     }
 
@@ -1017,6 +1096,14 @@ export function createController(io = {}) {
     function tickItems(p) {
         const st = itemsState(p);
         if (!st) return;
+        /*
+         * A DERIVED list costs no IPC. The level declares how many children
+         * and what to call them, so there is nothing to read and nothing that
+         * can go stale -- and `current` comes from local state rather than
+         * from a module param.
+         */
+        /* itemsState has already built it, and there is nothing to read. */
+        if (p.childCount !== undefined) return;
         const at = st.read % 2;
         st.read++;
         if (at === 0) {
@@ -1059,7 +1146,27 @@ export function createController(io = {}) {
         const st = itemsState(p);
         if (!st || !st.list.length) return false;
         const it = st.list[st.cursor];
-        if (p.selectParam) setParam(fullKey(p.selectParam), String(it.index));
+        if (p.childOf) {
+            /*
+             * A child is chosen LOCALLY -- there is no param to write. It
+             * re-keys the level's own pages, so the same `partlevel` cell now
+             * addresses a different part, and every value cached for that
+             * level belonged to the previous one. Dropping them is what stops
+             * the old part's numbers sitting under the new part's labels.
+             */
+            s.childIndex[p.childOf] = it.index;
+            for (const pg of s.pages) {
+                if (pg.level !== p.childOf || !Array.isArray(pg.keys)) continue;
+                for (const k of pg.keys) {
+                    delete s.values[k];
+                    delete s.pendingWrite[k];
+                    delete s.knobStates[k];
+                }
+            }
+            s.cursor = 0;
+        } else if (p.selectParam) {
+            setParam(fullKey(p.selectParam), String(it.index));
+        }
         st.current = it.index;
         /*
          * The chosen item can republish the whole contract — a different
@@ -1097,6 +1204,17 @@ export function createController(io = {}) {
             const at = (kind) => s.pages.findIndex((q) => q.level === p.navigateTo && q.kind === kind);
             target = at(PAGE_PRESET);
             if (target < 0) target = at(PAGE_KNOBS);
+        }
+        /*
+         * A child selector navigates to ITS OWN level's parameters. Those are
+         * the pages the choice just re-keyed, and there is nowhere else the
+         * gesture could sensibly mean. Without this it fell through to
+         * firstGrid and landed on the module's first page -- you chose Part 3
+         * and were shown Main.
+         */
+        if (target < 0 && p.childOf) {
+            target = s.pages.findIndex(
+                (q) => q.level === p.childOf && q.kind === PAGE_KNOBS);
         }
         if (target < 0) target = firstGrid(s.pages);
         announce(it.label);
@@ -1925,6 +2043,7 @@ export function createController(io = {}) {
                 modulated: (key) => !!s.modCache[key],
                 modValues: s.modValues,
                 pageGroups: pageGroups(),
+                pageLabel: pageLabel(),
                 viz: vizEnabled ? vizGroups() : [],
                 /*
                  * The trigger button's press animation. Both of these have to
@@ -2119,7 +2238,7 @@ export function createController(io = {}) {
     }
 
     function announcePageChange() {
-        announce(announcePage(page(), s.pageIndex, s.pages.length));
+        announce(announcePage(page(), s.pageIndex, s.pages.length, pageLabel()));
     }
 
     return {
@@ -2128,7 +2247,7 @@ export function createController(io = {}) {
          * the same modules through its own preset browser and has the same
          * race. Books the settle; costs nothing until it comes due. */
         selectionChanged: armContractSettle,
-        onJog, goToPage, restorePage, onKnobTurn, onKnobTouch, onClick, takePending, commitEnum,
+        onJog, goToPage, restorePage, pageLabel, onKnobTurn, onKnobTouch, onClick, takePending, commitEnum,
         openPicker, closePicker, pickerSelect, showHint, dismissHint,
         menuEntry, menuIndex: () => menuIndex(page()),
         menuEntered, enterMenu, exitMenu, clearTouch,
