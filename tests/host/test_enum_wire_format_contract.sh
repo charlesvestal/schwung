@@ -166,12 +166,11 @@ Promise.all([
        and each wire value is formatted by the real formatter. */
     let current = "major";
     const st = KE.knobInit(meta.options.indexOf(current));
-    const cfg = KE.knobConfigFromMeta(meta);
     const wires = [];
     let moved = 0;
     const t0 = Date.now();
     for (let i = 0; i < 120; i++) {
-      const v = KE.knobTick(st, cfg, 1, t0 + i * 40);
+      const v = KE.knobStep(st, meta, 1, t0 + i * 40);
       const wire = PF.formatParamForSet(v, meta);
       if (wires[wires.length - 1] === wire) continue;
       wires.push(wire);
