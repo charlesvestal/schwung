@@ -859,6 +859,34 @@ function getSlotParamCached(slot, key, moduleId) {
         return hit.value;
     }
     const value = getSlotParam(slot, key);
+
+    /*
+     * A FAILED read is never cached.
+     *
+     * null from getSlotParam is the third answer: the read did not complete --
+     * the claim was refused, or the response timed out, or it belonged to
+     * somebody else. It is not news about the module, and storing it turns a
+     * momentary channel stall into a 500ms lie about the chain.
+     *
+     * That is what a blank slot after loading granny is: granny reads its WAV
+     * synchronously inside set_param, on the SPI thread that also serves param
+     * requests, so every read during the load fails. Cached, the slot rendered
+     * empty and STAYED empty for the TTL -- and because the cache is keyed by
+     * slot, coming back to it hit the same poisoned entry, which is why it
+     * took switching slots a few times to clear.
+     *
+     * "" is a different thing and IS cached: the channel served us and the key
+     * produced nothing.
+     *
+     * On failure the last known-good value for the same module is preferred
+     * over propagating the failure. It is stale by at most the stall, and it
+     * is a value the module really did report -- where null makes the caller
+     * draw a blank it will only redraw on the next frame anyway.
+     */
+    if (value === null || value === undefined) {
+        return (hit && hit.module === moduleId) ? hit.value : value;
+    }
+
     slotParamCache[ck] = { module: moduleId, value, ts: now };
     return value;
 }
