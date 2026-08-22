@@ -181,7 +181,7 @@ function contractSignature(component) {
         }
     }
     return { hierRaw: hierRaw, cpRaw: cpRaw, count: count,
-             sig: String(hierRaw) + " " + String(cpRaw) + " " + String(count) };
+             sig: String(hierRaw) + "|" + String(cpRaw) + "|" + String(count) };
 }
 
 /*
