@@ -569,6 +569,9 @@ function renderSettings(c) {
 function masterSettingsState(o) {
   const s = {
     "master_fx:volume": o.volume === undefined ? "1.00" : o.volume,
+    /* WIRE value, not the option index: -1 is All. The io maps it on read,
+       and mocking the index here would baseline the mapping as a no-op. */
+    "master_fx:midi_channel": o.midiChannel === undefined ? "-1" : o.midiChannel,
   };
   for (const n of [1, 2]) {
     const l = o["lfo" + n] || {};

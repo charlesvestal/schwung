@@ -215,7 +215,9 @@ import {
     paramPagesComponent, paramPagesSlot, clearParamPagesTouch,
     enumPickerFooterHints, CONTRACT_SETTLE_MS
 } from './shadow_ui_param_pages.mjs';
-import { createSlotGridIo, createMasterGridIo } from './shadow_ui_slot_grid.mjs';
+import { createSlotGridIo, createMasterGridIo,
+         MFX_MIDI_CHANNEL_OPTIONS, mfxMidiChannelToIndex,
+         mfxMidiChannelFromIndex } from './shadow_ui_slot_grid.mjs';
 import {
     drawMasterFx as _drawMasterFx,
     getMasterFxDisplayName as _getMasterFxDisplayName,
@@ -2119,6 +2121,13 @@ let selectedMasterFxModuleIndex = 0;  // Index in MASTER_FX_OPTIONS during selec
 /* Master FX settings (shown when Settings component is selected) */
 const MASTER_FX_SETTINGS_ITEMS_BASE = [
     { key: "master_volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
+    /* Which channel Master FX hears. Lives here rather than in Global Settings
+     * because this is where a Master FX setting is looked for — reported from
+     * the device on the first cut, which put it under Global > Audio next to
+     * the other master_fx:* shim settings and so was never found. "All" is the
+     * default and the pre-existing behaviour; narrowing it is opt-in. */
+    { key: "master_fx_midi_channel", label: "MIDI Ch", type: "enum",
+      options: MFX_MIDI_CHANNEL_OPTIONS },
     { key: "mfx_lfo1", label: "LFO 1", type: "action" },
     { key: "mfx_lfo2", label: "LFO 2", type: "action" },
     { key: "save", label: "[Save MFX Preset]", type: "action" },
@@ -3055,6 +3064,10 @@ let cachedLatencyCompEnabled = false;
 /* Default true: restoring Move's USB-C audio-out source is on unless the
  * user turns it off. Mirrors usbc_out_persist_enabled in the shim. */
 let cachedUsbcOutPersist = true;
+/* Default -1 (All): Master FX heard every channel before this setting
+ * existed, so anything else here is a silent regression for every sidechain
+ * already in the field. Mirrors master_fx_midi_channel in the shim. */
+let cachedMasterFxMidiChannel = -1;
 let systemLinkEnabled = null; /* null = not checked yet */
 
 /* Master preset CRUD state (reuse pattern from slot presets) */
@@ -8671,6 +8684,7 @@ function saveMasterFxChainConfig() {
         config.link_audio_publish = cachedLinkAudioPublish;
         config.latency_comp_enabled = cachedLatencyCompEnabled;
         config.usbc_out_persist = cachedUsbcOutPersist;
+        config.master_fx_midi_channel = cachedMasterFxMidiChannel;
 
         host_write_file(configPath, JSON.stringify(config, null, 2));
     } catch (e) {
@@ -8901,6 +8915,17 @@ function loadMasterFxChainFromConfig() {
              * here. This push only keeps the two in sync for the UI. */
             shadow_set_param(0, "master_fx:usbc_out_persist", config.usbc_out_persist ? "1" : "0");
             cachedUsbcOutPersist = !!config.usbc_out_persist;
+        }
+        if (config.master_fx_midi_channel !== undefined && typeof shadow_set_param === "function") {
+            /* Like usbc_out_persist, the shim reads this key straight from
+             * shadow_config.json at init, so the filter is already in force
+             * before the first frame. This push only keeps the two in sync. */
+            /* Round-tripped through the index so a garbage stored value lands
+             * on All rather than being written straight back to the shim. */
+            const val = mfxMidiChannelFromIndex(
+                mfxMidiChannelToIndex(config.master_fx_midi_channel));
+            shadow_set_param(0, "master_fx:midi_channel", String(val));
+            cachedMasterFxMidiChannel = val;
         }
 
         /* Restore loaded preset name */
@@ -13806,6 +13831,17 @@ function getMasterFxSettingValue(setting) {
         const val = shadow_get_param(0, "master_fx:latency_comp_enabled");
         return (val === "1") ? "On" : "Off";
     }
+    if (setting.key === "master_fx_midi_channel") {
+        /* Branch on the RAW value: a failed read is null, an unserved key is
+         * "", and parseInt turns both into NaN. Reporting "All" for a read
+         * that never completed would show the user a setting they don't have. */
+        /* Branch on the RAW value: a failed read is null, an unserved key is
+         * "", and both parse to the same thing. Reporting "All" for a read
+         * that never completed would show the user a setting they don't have. */
+        const raw = shadow_get_param(0, "master_fx:midi_channel");
+        if (raw === null || raw === "") return "--";
+        return MFX_MIDI_CHANNEL_OPTIONS[mfxMidiChannelToIndex(raw)];
+    }
     if (setting.key === "resample_bridge") {
         const modeRaw = shadow_get_param(0, "master_fx:resample_bridge");
         const mode = parseResampleBridgeMode(modeRaw);
@@ -13939,6 +13975,23 @@ function adjustMasterFxSetting(setting, delta) {
         const newVal = (current === "1") ? "0" : "1";
         shadow_set_param(0, "master_fx:usbc_out_persist", newVal);
         cachedUsbcOutPersist = (newVal === "1");
+        saveMasterFxChainConfig();
+        return;
+    }
+    if (setting.key === "master_fx_midi_channel") {
+        const raw = shadow_get_param(0, "master_fx:midi_channel");
+        /* A failed read must not produce a write. Stepping from a value we
+         * never actually saw would move the setting somewhere the user did
+         * not ask for, and the shim would then persist it. */
+        if (raw === null || raw === "") return;
+        const n = MFX_MIDI_CHANNEL_OPTIONS.length;
+        /* Honour delta rather than always stepping +1: the click path passes 1,
+         * but a jog turn passes -1 and a hardcoded increment would make the
+         * encoder only ever go forwards. Modulo twice so a negative wraps. */
+        const idx = ((mfxMidiChannelToIndex(raw) + delta) % n + n) % n;
+        const newVal = mfxMidiChannelFromIndex(idx);
+        shadow_set_param(0, "master_fx:midi_channel", String(newVal));
+        cachedMasterFxMidiChannel = newVal;
         saveMasterFxChainConfig();
         return;
     }

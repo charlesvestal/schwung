@@ -252,6 +252,34 @@ void native_resample_bridge_load_mode_from_shadow_config(void)
         }
     }
 
+    /* Load the Master FX listen channel. Read at shim init like the settings
+     * above so it is in force before the first SPI frame — a filter that only
+     * engages once the UI has been opened would let a burst through on every
+     * boot. Absent or unparseable key keeps the All default; see
+     * fx_midi_filter.h for why All is the only safe default. */
+    char *mfx_ch_key = strstr(json, "\"master_fx_midi_channel\"");
+    if (mfx_ch_key) {
+        char *colon = strchr(mfx_ch_key, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ' || *colon == '\t') colon++;
+            int val = atoi(colon);
+            master_fx_midi_channel =
+                (val >= 0 && val <= 15) ? val : FX_MIDI_CHANNEL_ALL;
+            if (host.log) {
+                char msg[64];
+                if (master_fx_midi_channel < 0)
+                    snprintf(msg, sizeof(msg),
+                             "Master FX MIDI channel: All (from config)");
+                else
+                    snprintf(msg, sizeof(msg),
+                             "Master FX MIDI channel: %d (from config)",
+                             master_fx_midi_channel + 1);
+                host.log(msg);
+            }
+        }
+    }
+
     free(json);
 }
 
