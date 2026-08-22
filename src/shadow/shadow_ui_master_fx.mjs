@@ -17,7 +17,7 @@ import {
 } from '/data/UserData/schwung/shared/chain_diagram.mjs';
 /* The bands around the row of boxes — header, label, info, footer. The SAME
  * call drawChainEdit makes: 4a-3 of the Master FX variable-length design. */
-import { drawChainEditorBands, drawChainPicker }
+import { drawChainEditorBands, drawChainPicker, shiftHintsFor }
     from '/data/UserData/schwung/shared/chain_editor_chrome.mjs';
 /* The knob card, drawn over the diagram — the SAME renderer drawChainEdit uses.
  * It shipped 2026-08-20 scoped to the slot chain, so a Master FX knob still
@@ -288,9 +288,8 @@ export function drawMasterFx() {
         headerRight: "MFX",
         label,
         info: infoLine,
-        hints: isShiftHeld()
-            ? [["JOG", "MOVE"], ["BACK", "EXIT"]]
-            : [["JOG", "SEL"], ["CLK", "OPEN"], ["BACK", "EXIT"]],
+        hints: isShiftHeld() ? shiftHintsFor(selectedComp)
+                             : [["JOG", "SEL"], ["CLK", "OPEN"], ["BACK", "EXIT"]],
     });
 
     /*

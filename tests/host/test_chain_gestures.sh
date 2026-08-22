@@ -30,15 +30,18 @@ const src = readFileSync("src/shadow/shadow_ui.js", "utf8");
 let failures = 0;
 const fail = (m) => { console.error("FAIL: " + m); failures++; };
 
-const bodyOf = (name) => {
+/* `text` defaults to shadow_ui.js; the shared chrome is a second source now
+   that a gesture helper lives there rather than in either editor. */
+const bodyOf = (name, text = src) => {
+  const src = text;
   const at = src.indexOf("function " + name + "(");
   if (at < 0) { fail(name + " is gone"); return null; }
   const end = src.indexOf("\n}\n", at);
   if (end < 0) { fail("could not find the end of " + name); return null; }
   return src.slice(at, end + 2);
 };
-function lift(name, deps) {
-  const b = bodyOf(name);
+function lift(name, deps, text) {
+  const b = bodyOf(name, text);
   return b === null ? null : new Function(...deps, b + "\nreturn " + name + ";");
 }
 /*
@@ -512,20 +515,56 @@ function fits(what, hints) {
     fail("the footer " + what + " does not fit: [" + flat(hints) + "]");
 }
 
+/* The Shift hints come from the SHARED chrome, not from either editor: both
+   screens must spell a gesture the same way, and separate copies of these
+   strings drifted before. Lifted once, out here, so the two blocks below are
+   asserting the same function and cannot diverge. */
+const chrome = readFileSync("src/shared/chain_editor_chrome.mjs", "utf8");
+const shiftMaker = lift("shiftHintsFor", [], chrome);
+if (!shiftMaker) fail("shiftHintsFor is gone from the shared chrome");
+const shiftHintsFor = shiftMaker ? shiftMaker() : (() => []);
+
 /* --- the slot chain editor: bound to the modifier ------------------------ */
 {
   const at = src.indexOf("function drawChainEdit(");
-  const shown = (shift) => hintsFrom(src, "drawChainEdit", at,
-    ["isShiftHeld", "movy", "headerText", "headerRight", "label", "infoLine"],
-    [() => shift, {}, "", "", "", ""]);
+  /* shiftHintsFor is lifted too, and the CELL is a parameter now: Shift
+     offers different things depending on what the focused position holds. */
+  const shown = (shift, comp) => hintsFrom(src, "drawChainEdit", at,
+    ["isShiftHeld", "movy", "headerText", "headerRight", "label", "infoLine",
+     "shiftHintsFor", "selectedComp"],
+    [() => shift, {}, "", "", "", "", shiftHintsFor, comp]);
 
-  const rest = shown(false), held = shown(true);
+  const FULL = { kind: "module", module: "cloudseed" };
+  const EMPTY = { kind: "module", module: null };
+  const CHAIN = { kind: "chain" };
+
+  const rest = shown(false, FULL);
   if (flat(rest) !== "JOG SEL / CLK OPEN / BACK EXIT")
     fail("at rest the footer reads [" + flat(rest) + "]");
-  if (flat(held) !== "JOG MOVE / BACK EXIT")
-    fail("with Shift held the footer reads [" + flat(held) + "]");
   fits("at rest", rest);
-  fits("with Shift held", held);
+
+  /* A POPULATED position can be moved and can be swapped. Two pairs, not
+     three: MOVE / SWAP / EXIT is one character over the bar and drawFooter
+     drops what does not fit, silently -- which fits() is here to catch. */
+  const heldFull = shown(true, FULL);
+  if (flat(heldFull) !== "JOG MOVE / CLK SWAP")
+    fail("Shift on a populated cell reads [" + flat(heldFull) + "]");
+  fits("with Shift held on a populated cell", heldFull);
+
+  /* An EMPTY position has nothing to move -- chainReorderJog refuses it and
+     announces "empty" -- so naming MOVE there advertises a dead gesture. What
+     Shift does do is CLICK: the module picker, which is how you fill it. */
+  const heldEmpty = shown(true, EMPTY);
+  if (/MOVE/.test(flat(heldEmpty)))
+    fail("Shift on an EMPTY cell still offers MOVE: [" + flat(heldEmpty) + "]");
+  if (flat(heldEmpty) !== "CLK OPEN / BACK EXIT")
+    fail("Shift on an empty cell reads [" + flat(heldEmpty) + "]");
+  fits("with Shift held on an empty cell", heldEmpty);
+
+  /* Neither applies to the chain node itself; handleShiftSelect refuses it. */
+  const heldChain = shown(true, CHAIN);
+  if (/MOVE|SWAP|OPEN/.test(flat(heldChain)))
+    fail("Shift on the chain node offers a component gesture: [" + flat(heldChain) + "]");
 }
 
 /* --- Master FX: the SAME footer, bound to the same modifier --------------
@@ -542,16 +581,26 @@ function fits(what, hints) {
 {
   const mfx = readFileSync("src/shadow/shadow_ui_master_fx.mjs", "utf8");
   const at = mfx.indexOf("export function drawMasterFx(");
-  const shown = (shift) => hintsFrom(mfx, "drawMasterFx", at,
-    ["isShiftHeld", "dctx", "currentMasterPresetName", "label", "infoLine"],
-    [() => shift, {}, "", "", ""]);
-  const rest = shown(false), held = shown(true);
+  const shown = (shift, comp) => hintsFrom(mfx, "drawMasterFx", at,
+    ["isShiftHeld", "dctx", "currentMasterPresetName", "label", "infoLine",
+     "shiftHintsFor", "selectedComp"],
+    [() => shift, {}, "", "", "", shiftHintsFor, comp]);
+  const FULL2 = { kind: "module", module: "cloudseed" };
+  const EMPTY2 = { kind: "module", module: null };
+  const rest = shown(false, FULL2);
   if (flat(rest) !== "JOG SEL / CLK OPEN / BACK EXIT")
     fail("at rest the Master FX footer reads [" + flat(rest) + "]");
-  if (flat(held) !== "JOG MOVE / BACK EXIT")
-    fail("with Shift held the Master FX footer reads [" + flat(held) + "]");
   fits("on Master FX at rest", rest);
-  fits("on Master FX with Shift held", held);
+  /* The SAME words as the slot chain, from the same helper. Two screens that
+     grew their own strings for one gesture is the drift this guards. */
+  const heldFull2 = shown(true, FULL2);
+  if (flat(heldFull2) !== "JOG MOVE / CLK SWAP")
+    fail("Shift on a populated Master FX cell reads [" + flat(heldFull2) + "]");
+  const heldEmpty2 = shown(true, EMPTY2);
+  if (flat(heldEmpty2) !== "CLK OPEN / BACK EXIT")
+    fail("Shift on an empty Master FX cell reads [" + flat(heldEmpty2) + "]");
+  fits("on Master FX with Shift held", heldFull2);
+  fits("on Master FX with Shift held, empty", heldEmpty2);
 }
 
 if (failures) process.exit(1);

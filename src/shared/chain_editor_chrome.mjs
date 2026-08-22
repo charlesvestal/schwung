@@ -85,6 +85,36 @@ function centreX(ctx, text) {
  *             `hints` is [key, action] pairs for drawFooter, which drops the
  *             tail rather than squeezing and pins BACK to the right edge.
  */
+/*
+ * What Shift offers on the focused chain cell.
+ *
+ * Here, not in either editor, because BOTH have the same cells and the rule
+ * that keeps the two screens converged is that a gesture is spelled once. The
+ * slot chain and Master FX grew separate copies of their footer strings before
+ * and immediately drifted -- "the module select here is different than the
+ * module select in slots", reported from the device.
+ *
+ * It used to say JOG MOVE on everything, which is wrong twice. An EMPTY
+ * position has nothing to move -- chainReorderJog refuses it and announces
+ * "empty" -- so the footer named a gesture that does nothing. And what Shift
+ * actually does on a cell is CLICK: shift+click opens the module picker, which
+ * on an empty position is how you put a module in and on a populated one is
+ * how you swap it. Neither was advertised at all.
+ *
+ * The populated case is TWO pairs, not three. MOVE / SWAP / EXIT measures one
+ * character over the bar -- the unshifted set only fits three because SEL is
+ * three letters -- and drawFooter DROPS what does not fit rather than
+ * squeezing it, silently. BACK EXIT is the pair to lose: it is the one Shift
+ * does not change, and it is on screen in the unshifted footer you were
+ * looking at a moment ago.
+ */
+export function shiftHintsFor(comp) {
+    if (!comp || comp.kind !== "module") return [["BACK", "EXIT"]];
+    return comp.module
+        ? [["JOG", "MOVE"], ["CLK", "SWAP"]]
+        : [["CLK", "OPEN"], ["BACK", "EXIT"]];
+}
+
 export function drawChainEditorBands(ctx, o) {
     drawHeader(ctx, o.headerLeft, o.headerRight, false);
 

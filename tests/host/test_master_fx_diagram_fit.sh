@@ -30,6 +30,9 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 node --input-type=module -e '
+/* The REAL shiftHintsFor from the shared chrome. These renders are pixel
+   baselines, so a stub would bake in a footer nobody actually draws. */
+const CHROME_SHIFT_HINTS = (await import("./src/shared/chain_editor_chrome.mjs")).shiftHintsFor;
 import { readFileSync } from "node:fs";
 import { createFramebuffer } from "./tools/param-pages/harness.mjs";
 import { drawChainDiagram, DIAGRAM_W, BOX_H as DIAGRAM_BOX_H, CAPACITY,
@@ -160,6 +163,9 @@ function render(cap, selected, opts = {}) {
     shadow_get_param,
     drawHeader: (t) => { fb.print(2, 0, String(t), 1); },
     drawChainDiagram, DIAGRAM_W, DIAGRAM_BOX_H, DIAGRAM_Y, drawChainEditorBands,
+    /* REAL, like drawChainEditorBands beside it: the Shift footer is drawn
+       from the shared chrome, and a stub would bake in a footer nobody draws. */
+    shiftHintsFor: CHROME_SHIFT_HINTS,
     SCREEN_WIDTH: 128,
     truncateText: (t, n) => String(t == null ? "" : t).slice(0, n),
     drawMasterNamePreview: () => {}, drawMasterConfirmOverwrite: () => {},
