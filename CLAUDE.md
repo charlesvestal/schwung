@@ -221,7 +221,16 @@ half an event, and never stabilised for reasons it recorded as unknown.
 
 ## Realtime Safety
 
-SPI callback runs SCHED_FIFO 90 on core 3. Budget ~900µs/frame after the ~2ms transfer.
+SPI callback runs on core 3. Budget ~900µs/frame after the ~2ms transfer.
+
+**Priority: FIFO 70, not 90.** Measured 2026-08-22 with the RT-thread audit —
+nothing anywhere in the MoveOriginal process is above 70. This file said 90
+here and "the shim runs in MoveOriginal's FIFO 70 threads" two lines down; the
+second one is right. What the hardware runs, with no module loaded, is 23
+threads of which 11 are realtime: `MoveOriginal` at 10, **`Link Main` at 35**,
+three `Audio Worker` at 70, and six threads named `Audio Main/SPI` at 70 (one
+at 45). Arm it and look before reasoning about priorities:
+`touch /data/UserData/schwung/rt_thread_audit_on`.
 
 **Never in the SPI callback path:** `unified_log()`, `fprintf()`, `fopen()`, any file I/O; allocation; locks held by non-RT threads.
 
@@ -240,8 +249,12 @@ lives at the top of `src/host/plugin_api_v1.h`, in `docs/MODULES.md`, and as
 rule 4 of `docs/REALTIME_SAFETY.md` — **keep all three in sync.**
 
 Two consequences worth remembering: `pthread_create` from those entry points
-inherits **FIFO 90** (at least 14 modules do this; Move's own `Link Main` is
-FIFO 35, so it starves), and a **`get_param` that scans a directory is served
+inherits the callback's priority — **FIFO 70** (Move's own `Link Main` is FIFO
+35, so it starves). A source audit put this at seven modules; measuring it
+found five, and not the same five — see
+`docs/plans/2026-08-22-rt-thread-audit-findings.md`. **Existence is not the
+harm**: a worker that parks on a condvar starves nobody, so the number that
+matters is CPU burned at realtime priority, which is what the audit reports, and a **`get_param` that scans a directory is served
 once per repaint**, which makes it worse than the equivalent `set_param`.
 
 ## Deployment Layout
