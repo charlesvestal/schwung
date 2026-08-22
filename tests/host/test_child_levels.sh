@@ -44,13 +44,14 @@ ldl=$(command grep -n "loadHierarchyLevel()" <<<"$blk" | tail -n 1 | cut -d: -f1
   fail "the child count is set AFTER loadHierarchyLevel — the selector gate has already been evaluated"
 echo "  ok  the grid hand-off carries child_count/child_label, before the level loads"
 
-# ---- (a) no knob pages built from template keys -----------------------------
+# ---- (a) the level's knob pages resolve to CONCRETE keys --------------------
 node -e '
 Promise.all([
   import("./src/shared/param_pages/page_plan.mjs"),
   import("./src/shared/param_pages/param_meta.mjs"),
   import("./src/shared/param_pages/child_key.mjs"),
-]).then(([P, M, K]) => {
+  import("./src/shared/param_pages/page_controller.mjs"),
+]).then(([P, M, K, C]) => {
   const say = (m) => { console.log("FAIL: " + m); process.exit(1); };
   const j = JSON.parse(require("fs").readFileSync("tests/fixtures/module-contracts.json", "utf8"));
 
@@ -68,27 +69,73 @@ Promise.all([
     const pages = P.planPages({ hierarchy: h, chainParams: cp, metaIndex: ix }).pages;
 
     for (const lvl of childLevels) {
-      const knobPages = pages.filter((p) => p.level === lvl && p.kind === P.PAGE_KNOBS);
-      if (knobPages.length)
-        say(mod.id + "/" + lvl + " planned " + knobPages.length + " knob page(s) from " +
-            "TEMPLATE keys (" + knobPages[0].keys.slice(0, 3).join(",") + ") — those cells " +
-            "read and write keys the DSP does not serve, and look alive doing it");
-      const childPages = pages.filter((p) => p.level === lvl && p.kind === P.PAGE_CHILD);
-      if (!childPages.length)
-        say(mod.id + "/" + lvl + " has no child page at all — the level is unreachable");
+      const sel = pages.filter((p) => p.level === lvl && p.kind === P.PAGE_ITEMS && p.childOf);
+      if (!sel.length) say(mod.id + "/" + lvl + " has no selector page — the level is unreachable");
+      /* The knob pages are BACK, and each must carry its level or its keys
+         cannot be resolved and the cells go back to addressing templates. */
+      const knobs = pages.filter((p) => p.level === lvl && p.kind === P.PAGE_KNOBS);
+      if (!knobs.length) say(mod.id + "/" + lvl + " has no parameter pages at all");
+      for (const kp of knobs)
+        if (!kp.childLevel)
+          say(mod.id + "/" + lvl + " knob page " + JSON.stringify(kp.name) +
+              " carries no level -- its keys would go to the wire as templates");
     }
   }
-  if (!checked) say("no module in the fixture declares a child level — this test is asserting nothing");
+  if (!checked) say("no module in the fixture declares a child level — this test asserts nothing");
 
-  /* And the resolver the real fix will need still produces what the DSP wants. */
-  const lvl = { child_prefix: "sram_part_", child_count: 8 };
-  const got = K.resolveChildKey(lvl, 0, "partlevel");
-  if (got !== "sram_part_0_partlevel")
-    say("resolveChildKey produced " + JSON.stringify(got) + ", not the sram_part_<n>_<key> " +
-        "form jv880_plugin.cpp gates on");
+  /* ---- end to end: choosing a child re-keys the level ------------------ */
+  const m = j.modules.find((x) => x.id === "minijv");
+  let h = m.ui_hierarchy, cp = m.chain_params;
+  if (typeof h === "string") h = JSON.parse(h);
+  if (typeof cp === "string") cp = JSON.parse(cp);
+  const reads = [], writes = [];
+  const ctl = C.createController({
+    getParam: (k) => {
+      const b = String(k).replace(/^[^:]+:/, "");
+      if (b === "ui_hierarchy") return JSON.stringify(h);
+      if (b === "chain_params") return JSON.stringify(cp);
+      reads.push(b); return "10";
+    },
+    setParam: (k) => writes.push(String(k).replace(/^[^:]+:/, "")),
+    announce: () => {},
+  });
+  ctl.load({ slot: 0, component: "synth" });
+  for (let i = 0; i < 10; i++) ctl.tick();
 
-  console.log("  ok  " + checked + " module(s) with child levels: a child page, and no template knob pages");
-  console.log("  ok  resolveChildKey still yields the concrete key the DSP serves");
+  const at = ctl.pages.findIndex((p) => p.childOf);
+  if (at < 0) say("minijv has no child selector");
+  ctl.goToPage(at);
+  ctl.onClick(0);                       /* enter the list */
+  ctl.onJog(1); ctl.onJog(1);           /* highlight the third */
+  writes.length = 0;
+  ctl.onClick(0);                       /* commit */
+
+  if (writes.length)
+    say("choosing a child WROTE " + JSON.stringify(writes) + " — it is a local selection, " +
+        "there is no param behind it");
+  if (!(ctl.page && ctl.page.level === "part_selector" && ctl.page.kind === P.PAGE_KNOBS))
+    say("after choosing a part we are on " + JSON.stringify(ctl.page && ctl.page.name) +
+        " — the choice must land on the parameters it just re-keyed");
+
+  reads.length = 0;
+  for (let i = 0; i < 12; i++) ctl.tick();
+  const bare = reads.filter((k) => /^part(level|pan)$/.test(k));
+  if (bare.length)
+    say("still reading TEMPLATE keys after choosing a child: " + JSON.stringify(bare));
+  if (!reads.some((k) => k.startsWith("sram_part_2_")))
+    say("reads after choosing Part 3 are " + JSON.stringify([...new Set(reads)].slice(0, 4)) +
+        " — expected sram_part_2_*");
+
+  /* And a turn must WRITE the resolved key, not the template. */
+  writes.length = 0;
+  ctl.onKnobTurn(0, 1, 1000);
+  ctl.flushWrites && ctl.flushWrites();
+  for (let i = 0; i < 6; i++) ctl.tick();
+  if (writes.length && !writes.some((k) => k.startsWith("sram_part_2_")))
+    say("a knob turn wrote " + JSON.stringify(writes) + " — not the resolved child key");
+
+  console.log("  ok  " + checked + " module(s) with child levels: a selector, and parameter pages that carry it");
+  console.log("  ok  choosing a child writes nothing, lands on its parameters, and re-keys reads and writes");
 });
 '
-echo "PASS: child levels hand off cleanly instead of drawing dead knobs"
+echo "PASS: child levels are selectable and address concrete keys"

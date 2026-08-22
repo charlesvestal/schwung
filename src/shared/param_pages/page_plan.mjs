@@ -29,7 +29,6 @@ export const PAGE_KNOBS  = "knobs";   /* grid of up to 8 turnable params */
 export const PAGE_PRESET = "preset";  /* list_param/count_param/name_param browser */
 export const PAGE_ITEMS  = "items";   /* items_param/select_param runtime list */
 export const PAGE_MODES  = "modes";   /* hierarchy-level mode select (minijv) */
-export const PAGE_CHILD  = "child";   /* child_prefix instance selector */
 /*
  * A list of entries that are NOT parameters — an action with a name and a
  * consequence and nothing to show, or a plain jump to another level.
@@ -367,10 +366,27 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved } 
          * level object travels with the page so the caller can resolve concrete
          * keys without re-reading the hierarchy (see child_key.mjs). */
         if (hasChildren(lvl)) {
+            /*
+             * A child selector IS an items page.
+             *
+             * Same gesture in every respect -- a list, a cursor, a current
+             * marker, click to choose -- so it reuses PAGE_ITEMS rather than
+             * being a second kind with its own state, its own jog handler and
+             * its own copy of the renderer. The two module pickers drifted
+             * apart exactly that way once already.
+             *
+             * The one difference is where the list comes from and what
+             * choosing does: an ordinary items page reads `items_param` and
+             * writes `select_param`, while this one DERIVES its list from the
+             * level (count and label are declared, so it costs no IPC) and
+             * commits to a local index that re-keys the level's own pages.
+             * Both are expressed as fields on the page, not as a new kind.
+             */
             pages.push({
-                kind: PAGE_CHILD, name: claimName(base), level: levelKey,
+                kind: PAGE_ITEMS, name: claimName(base), level: levelKey,
                 childCount: childCount(lvl),
                 childLabel: lvl.child_label || "Item",
+                childOf: levelKey,
                 childLevel: lvl,
             });
         }
@@ -449,23 +465,17 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved } 
         /*
          * A CHILD level's keys are TEMPLATES, not addresses.
          *
-         * minijv's `part_selector` lists `partlevel`, `partpan` and so on, but
-         * the DSP serves `sram_part_<n>_partlevel` -- it gates on the
-         * `sram_part_` prefix and knows nothing about the bare name. Planning
-         * knob pages straight from those keys produced two pages of cells that
-         * looked completely alive (chain_params gives them labels and int
-         * 0..127 ranges) and did nothing at all when turned, because every
-         * read and write went to a key nobody serves. No error, no blank, no
-         * signal of any kind -- which is worse than the level simply not being
-         * reachable.
+         * minijv's `part_selector` lists `partlevel`, but the DSP serves
+         * `sram_part_<n>_partlevel` and gates on that prefix. The page carries
+         * its LEVEL so the controller can resolve the concrete key for
+         * whichever child the selector page has committed -- see
+         * child_key.mjs and childResolve() in page_controller.mjs.
          *
-         * The PAGE_CHILD page above is the level's real entry point. Until the
-         * grid can carry a selected child index and resolve keys through
-         * child_key.mjs (resolveChildKey is written and currently unused), the
-         * honest thing is to emit no knob pages for such a level rather than
-         * pages that lie.
+         * These pages were suppressed entirely until that resolution existed,
+         * because a cell addressing a key nobody serves looks completely alive
+         * (chain_params gives it a label and a range) and does nothing at all
+         * when turned. No error, no blank, no signal.
          */
-        if (hasChildren(lvl)) parts.length = 0;
 
         if (parts.length > 0) {
             for (const p of parts) for (const k of p) emitted.add(k);
@@ -474,6 +484,11 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved } 
                     kind: PAGE_KNOBS,
                     name: claimName(title),
                     level: levelKey, keys,
+                    /* The level object travels with the page so the controller
+                     * resolves concrete child keys without re-reading the
+                     * hierarchy. Null for an ordinary level, which is what
+                     * makes the resolution a no-op everywhere else. */
+                    childLevel: hasChildren(lvl) ? lvl : null,
                     /* true when every key on this page came from knobs[] — i.e.
                      * the author placed it there. Pages built from params[] are
                      * false, including a page that mixes the two. */

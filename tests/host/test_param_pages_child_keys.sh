@@ -118,7 +118,11 @@ Promise.all([
       },
     };
     const { pages } = P.planPages({ hierarchy, chainParams: [{ key: "gain" }] });
-    const sel = pages.find((p) => p.kind === P.PAGE_CHILD);
+    /* The selector is an ITEMS page carrying childOf -- it is the same
+       gesture (a list, a cursor, a current marker, click to choose) and reuses
+       that machinery rather than being a second page kind with its own state,
+       jog handler and renderer. */
+    const sel = pages.find((p) => p.kind === P.PAGE_ITEMS && p.childOf);
     if (!sel) fail("no child selector page emitted");
     if (sel.childCount !== 16) fail("selector lost its count");
     if (!sel.childLevel) fail("the selector must carry its level so keys can be resolved without re-reading");
