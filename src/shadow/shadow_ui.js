@@ -4520,11 +4520,48 @@ function applySlotModuleSignature(slotIndex, signature) {
     return false;
 }
 
-/* Cache a module's abbreviation from its module.json */
+/*
+ * A module's DISPLAY NAME, from the same module.json the abbreviation comes
+ * from. Populated by cacheModuleAbbrev because it already reads and parses the
+ * file at both call sites -- this costs no extra I/O.
+ */
+const moduleNameCache = {};
+
+/* Cache a module's abbreviation and display name from its module.json */
 function cacheModuleAbbrev(json) {
     if (json && json.id && json.abbrev) {
         moduleAbbrevCache[json.id.toLowerCase()] = json.abbrev;
     }
+    if (json && json.id && json.name) {
+        moduleNameCache[json.id.toLowerCase()] = json.name;
+    }
+}
+
+/*
+ * The name to show for a module, preferring the real one.
+ *
+ * The param-pages header used to show only the abbreviation, so Master FX read
+ * "MFX > CS" permanently for a module with no presets -- and an abbreviation
+ * is a placeholder, not an identity. "MFX > CLOUDSEED" is 70px in a 70px
+ * budget and "MFX > CAPICOLA" is 62px, so the names that matter here fit; the
+ * long ones truncate, and a truncated name still says more than two letters.
+ *
+ * Falls back to the abbreviation when the module.json has not been read yet,
+ * so the header never goes blank waiting for a name.
+ */
+function getModuleDisplayName(moduleId) {
+    if (!moduleId) return "--";
+    let id = String(moduleId);
+    if (id.indexOf("/") >= 0) {
+        const parts = id.split("/").filter(Boolean);
+        if (!parts.length) return "--";
+        const last = parts[parts.length - 1];
+        id = (/\.[A-Za-z0-9]+$/.test(last) && parts.length >= 2)
+            ? parts[parts.length - 2]
+            : last;
+    }
+    if (!id) return "--";
+    return moduleNameCache[id.toLowerCase()] || getModuleAbbrev(id);
 }
 
 /*
@@ -16340,6 +16377,7 @@ function drawHelpDetail() {
     _ctx.getMasterFxSlotModule = (...args) => getMasterFxSlotModule(...args);
     _ctx.getMasterFxParam = (...args) => getMasterFxParam(...args);
     _ctx.getModuleAbbrev = (...args) => getModuleAbbrev(...args);
+    _ctx.getModuleDisplayName = (...args) => getModuleDisplayName(...args);
     _ctx.isTextEntryActive = () => isTextEntryActive();
     _ctx.drawTextEntry = () => drawTextEntry();
     _ctx.drawHelpDetail = () => drawHelpDetail();

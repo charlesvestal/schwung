@@ -81,8 +81,11 @@ import { fontWidth5x3, fontPrint5x3 } from "./font5x3.mjs";
  * 6 would be 35px, at which point the cap is inert and the cell width decides
  * everything -- which throws away the mnemonic discipline this constant exists
  * to impose.
+ *
+ * Exported so a test can derive the same budget rather than hard-coding a
+ * pixel number that a cap change would silently invalidate.
  */
-const LABEL_CHARS = 5;
+export const LABEL_CHARS = 5;
 
 /** Uppercase, ascii-folded — the Elektron register. font4x5 has no lowercase. */
 function caps(s) { return asciiFold(String(s == null ? "" : s)).toUpperCase(); }
@@ -241,7 +244,31 @@ export function labelForCell(text, cellW = CELL_W) {
      * unless it belongs to a family whose other members do not. Tempo, Latch
      * and Swing fit; tabling them bought nothing and cost the real word.
      */
-    return caps(shortenLabel(LBL_MEASURE, preAbbreviate(text), labelWidth));
+    /*
+     * CAPS BEFORE MEASURING.
+     *
+     * The cell draws upper case, so the width that matters is the upper-case
+     * one. Capitalising AFTER shortenLabel measured the mixed-case string
+     * against the budget, and the two widths differ in both directions:
+     *
+     *   - upper case is narrower for ordinary words ("Pitch" 24px, "PITCH"
+     *     20px), so a label was cut to fit a width it would have fitted
+     *     anyway -- PITC, GRAI, DRIV. 351 fleet labels lose a character.
+     *   - but WIDER once shortenLabel has devowelled, because the letters it
+     *     keeps are the narrow lowercase ones ("Ecldrm" fits, "ECLDRM" is
+     *     30px in a 29px cell). 68 fleet labels currently overrun their
+     *     budget and eat the gutter between neighbouring cells.
+     *
+     * The second half is the one that is invisible in code review, and it is
+     * why this is a bug rather than a missed optimisation.
+     *
+     * The value path next door already had it right -- fitDev caps before it
+     * measures -- so the label path was the outlier, not the precedent.
+     *
+     * Safe to fold case first: shortenLabel's only case-sensitive step is
+     * devowel, whose vowel test is /[aeiou]/i.
+     */
+    return shortenLabel(LBL_MEASURE, caps(preAbbreviate(text)), labelWidth);
 }
 
 /**
