@@ -84,8 +84,7 @@ const MENU_FRAME_X = 4, MENU_FRAME_Y = 9, MENU_FRAME_W = 120;
 /* One clear row above the frame and one below, hence the 1 on each side. */
 const MENU_FRAME_BOTTOM_INSET = 1;
 const MENU_BRACKET_LEN = 7;
-import { knobInit, knobTick, knobConfigFromMeta } from "../knob_engine.mjs";
-import { movyKnobInit, movyKnobTick } from "./movy_knob.mjs";
+import { knobInit, knobStep } from "../knob_engine.mjs";
 import { formatParamForSet, learnEnumWireFormat, enumWireValue } from "../param_format.mjs";
 import { announcePage, announceTouch, announceTurn, announcePageContents } from "./announce_page.mjs";
 
@@ -1429,12 +1428,10 @@ export function createController(io = {}) {
             s.turnClaimMs = 0;
         }
 
-        /* The Movy layout turns like Movy — see movy_knob.mjs — not like
-         * Schwung's own dial/bar grid (knob_engine.mjs, a different,
-         * time-based acceleration feel that predates this port). Same state
-         * slot, different init/tick pair, picked once per key so a turn
-         * mid-gesture never switches models under your hand. */
-        const useMovy = s.layout === LAYOUT_MOVY;
+        /* ONE knob model, whatever the layout. There used to be two, and this
+         * branch picked between them by layout -- a knob that behaves
+         * differently depending on which screen you touched it from is a bug,
+         * not a layout choice. See shared/knob_engine.mjs. */
         let st = s.knobStates[key];
         if (!st) {
             /* Turning a knob the read cursor has not reached yet is the one
@@ -1460,29 +1457,22 @@ export function createController(io = {}) {
                 const num = Number(raw);
                 start = isFinite(num) ? num : 0;
             }
-            st = s.knobStates[key] = useMovy ? movyKnobInit(start) : knobInit(start);
+            st = s.knobStates[key] = knobInit(start);
         }
 
-        let value;
-        if (useMovy) {
-            value = movyKnobTick(st, meta, direction, t, fine);
-        } else {
-            /* Fine adjust: Elektron's [FUNC]+encoder. Holding shift already
-             * reveals every value, so precision mode and "show me the
-             * numbers" are the same gesture — which is what you want when
-             * you are chasing a value.
-             *
-             * Only floats have a finer step to give. An int already moves in
-             * whole units and an enum in whole options; there is nothing
-             * below that, and pretending otherwise would just make them feel
-             * broken under shift. */
-            const cfg = knobConfigFromMeta(meta);
-            const canRefine = fine && meta.type === "float";
-            /* `fine` goes to the ENGINE, not into a pre-divided step. Dividing
-             * cfg.step here was undone by the engine's range floor, leaving
-             * fine and coarse identical. */
-            value = knobTick(st, cfg, direction, t, { fine: canRefine });
-        }
+        /*
+         * Fine adjust: Elektron's [FUNC]+encoder. Holding shift already reveals
+         * every value, so precision mode and "show me the numbers" are the same
+         * gesture -- which is what you want when chasing a value.
+         *
+         * Passed through for EVERY type. It used to be gated to floats here on
+         * the reasoning that an int moves in whole units and an enum in whole
+         * options, so there is nothing finer. That is wrong on both counts once
+         * the step is normalised to the range: a 0..20000 int moves 100 at a
+         * time coarse, and an enum is gated at 4 detents per option, so both
+         * have a finer setting to give and shift did nothing at all on them.
+         */
+        const value = knobStep(st, meta, direction, t, fine);
         const wire = formatParamForSet(value, meta);
 
         s.values[key] = wire;

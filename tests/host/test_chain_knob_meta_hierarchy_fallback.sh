@@ -18,7 +18,7 @@ cd "$(dirname "$0")/../.."
 # "answered" (`result > 0`).
 #
 # So chain_params is empty. buildChainKnobContext resolved meta from
-# chain_params ALONE, `find` returned undefined, and knobConfigFromMeta(meta)
+# chain_params ALONE, `find` returned undefined, and the knob engine
 # invents a float 0..1 step 0.01 for anything it is not told about. Turning
 # `transpose` (int, -24..24) then wrote "0.058750", which the module's atoi
 # reads as 0; turning `retrig` (enum) wrote the same string, whose first
@@ -136,7 +136,7 @@ Promise.all([
       if (!c0.meta || c0.meta.type !== "int")
         fail(at + "with chain_params " + JSON.stringify(answer) + ", knob 1 got meta " +
              JSON.stringify(c0.meta) + " for an int declared in the hierarchy level " +
-             "that named the knob. knobConfigFromMeta turns that into a float 0..1 " +
+             "that named the knob. The knob engine turns that into a float 0..1 " +
              "step 0.01, so the turn writes a fraction and the module reads it as 0");
       if (c0.meta && (c0.meta.min !== -24 || c0.meta.max !== 24))
         fail(at + "knob 1 range is " + c0.meta.min + ".." + c0.meta.max + ", not -24..24");
@@ -183,17 +183,18 @@ Promise.all([
     const build = builder(world("midi_fx1", "[]"));
     const target = { slot: 0, label: "S1", key: (c, s) => keyer(c, s) };
     const ctx = build(target, TARGETS.slot.comp, 0, "mod", true);
-    const cfg = KE.knobConfigFromMeta(ctx.meta);
+    /* Driven through the one knob entry point, on the metadata itself --
+       there is no config shape any more; see tests/host/test_knob_engine_single.sh. */
     const st = KE.knobInit(0);
     let v = 0;
-    for (let i = 0; i < 40; i++) v = KE.knobTick(st, cfg, 1, Date.now() + i * 100);
+    for (let i = 0; i < 40; i++) v = KE.knobStep(st, ctx.meta, 1, Date.now() + i * 100);
     if (parseInt(String(v), 10) === 0 && v !== 0)
       fail("40 detents on transpose produced " + v + ", which atoi() reads as 0 -- " +
-           "the knob moves on screen and the DSP never changes. cfg was " +
-           JSON.stringify(cfg));
-    if (cfg.max === 1 && cfg.min === 0)
+           "the knob moves on screen and the DSP never changes. meta was " +
+           JSON.stringify(ctx.meta));
+    if (ctx.meta.max === 1 && ctx.meta.min === 0)
       fail("transpose is being driven as a 0..1 float; the metadata merge is not " +
-           "reaching knobConfigFromMeta");
+           "reaching the knob engine");
   }
 
   if (failures) process.exit(1);
