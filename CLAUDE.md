@@ -760,6 +760,54 @@ which unloads in place and leaves a hole. Adding those (and the permutation
 that must come with them) is residual 2.2 Step 4, and it is a new feature, not
 a port of `chain_reorder.c`.
 
+### A STEP button is not a note, and audio FX were told it was
+
+Audio FX are fed from **three** places, and the only guard any of them had was
+`d1 >= 10` — which exists solely to drop the capacitive knob-touch notes 0–9,
+and was never a claim about what counts as musical input:
+
+```
+src/schwung_shim.c   MIDI_IN cable 0 (Move's own surface)   notes, d1 >= 10
+src/host/shadow_midi.c   shadow_chain_dispatch_midi_to_slots    ALL voice msgs, no guard
+src/host/shadow_midi.c   shadow_dispatch_direct_external_midi   cable-2 THRU, d1 >= 10
+```
+
+So on Move's own surface the **step buttons (16–31) and track buttons (40–43)
+reached every loaded audio FX as played notes.** Found with an FX whose note
+handler fires a one-shot action (capicola's forced re-slice): in Master FX it
+fired on essentially any button press. The ducker had the identical exposure
+and merely read as "sensitive". Both `shadow_master_fx_forward_midi` and the
+slot `FX_BROADCAST` were affected — the asymmetry is **not** master-vs-slot, it
+is broadcast-vs-dispatch: `chain_midi.c:720` handles `FX_BROADCAST` by
+forwarding to every audio FX and returning *before* any channel logic, so only
+the non-broadcast dispatch was ever channel-matched.
+
+Two guards fix it, in `src/host/fx_midi_filter.h`, and **the split is the
+point**:
+
+- `move_surface_note_is_pad(d1)` — cable-0 sites ONLY, where a note number is a
+  physical control identity. Replaces `d1 >= 10` at both shim broadcasts.
+- `fx_midi_channel_accepts(ch, status)` — applied **inside**
+  `shadow_master_fx_forward_midi`, not at its callers, so all three feeds are
+  gated by construction and a fourth cannot be added ungated.
+
+Never apply the note-range guard to the external sites: there a note number is
+a **pitch**, and clamping to 68–99 silences five octaves of a keyboard.
+`tests/host/test_fx_midi_filter_call_sites.sh` asserts that as an *absence* —
+a test that only checked "the guard exists" would pass with it wrongly applied.
+
+**Global Settings → Audio → MFX MIDI Ch** (`master_fx_midi_channel` in
+`shadow_config.json`; param `master_fx:midi_channel`, −1 = All) selects the
+listen channel. **Default All**, deliberately: Master FX heard everything
+before this existed, so any other default silently kills every sidechain in
+the field — and a user whose ducker stopped after an update cannot connect
+that to a setting they never saw. Note that the channel setting **cannot**
+substitute for the pad guard: pads and steps share one cable-0 surface, so no
+channel value separates them. Persisted like `usbc_out_persist` and parsed by
+the shim at init (`shadow_resample.c`), so the filter is in force before the
+first SPI frame. An out-of-range stored value fails **open** (All) rather than
+muting every FX with no visible cause.
+
 ### Overtake Modules
 
 Take full UI control in shadow mode. Listed in Tools menu below "Overtake" divider. Set `component_type: "overtake"` to keep the overtake lifecycle (LED clear, ~500 ms init delay, Shift+Vol+Jog-Click exit).

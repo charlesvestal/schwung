@@ -2438,6 +2438,29 @@ function loadParamViewConfig() {
     } catch (e) {}
 }
 
+/* Master FX listen channel: "All" plus the 16 MIDI channels. Built rather
+ * than written out so the option list and the wire values cannot drift — the
+ * wire is 0-based (matching the status low nibble) while the display is
+ * 1-based, which is exactly the kind of off-by-one two hand-typed literal
+ * arrays acquire. -1 is FX_MIDI_CHANNEL_ALL in fx_midi_filter.h. */
+const MFX_MIDI_CHANNEL_OPTIONS = ["All"];
+const MFX_MIDI_CHANNEL_VALUES = [-1];
+const MIDI_CHANNEL_COUNT = 16;
+for (let i = 0; i < MIDI_CHANNEL_COUNT; i++) {
+    MFX_MIDI_CHANNEL_OPTIONS.push(String(i + 1));
+    MFX_MIDI_CHANNEL_VALUES.push(i);
+}
+
+/* Coerce a stored/wire value to one this UI can actually display, falling
+ * back to All (-1). Validating by membership in the values array rather than
+ * by a numeric range keeps the accepted set in one place — and keeps a bare
+ * `> 15` out of Master FX code, where it is indistinguishable from a stale
+ * copy of the slot cap (test_master_fx_slots_js.sh). */
+function normalizeMfxMidiChannel(raw) {
+    const ch = parseInt(raw, 10);
+    return MFX_MIDI_CHANNEL_VALUES.indexOf(ch) >= 0 ? ch : -1;
+}
+
 /* Global Settings — hierarchical sections for Shift+Vol+Step2 menu.
  * The canonical schema is also in shared/settings-schema.json for the
  * schwung-manager web UI. Keep both in sync when adding settings. */
@@ -2468,7 +2491,13 @@ const GLOBAL_SETTINGS_SECTIONS = [
             { key: "skipback_seconds", label: "Skipback Len", type: "enum",
               options: ["30s", "1m", "2m", "3m", "4m", "5m"], values: [30, 60, 120, 180, 240, 300] },
             { key: "browser_preview", label: "Browser Preview", type: "bool" },
-            { key: "usbc_out_persist", label: "USB-C Persist", type: "bool" }
+            { key: "usbc_out_persist", label: "USB-C Persist", type: "bool" },
+            /* Which channel Master FX hears. "All" is the default and the
+             * behaviour before this existed — narrowing it is opt-in, because
+             * a ducker that stops working after an update is unconnectable to
+             * a setting the user never saw. */
+            { key: "master_fx_midi_channel", label: "MFX MIDI Ch", type: "enum",
+              options: MFX_MIDI_CHANNEL_OPTIONS, values: MFX_MIDI_CHANNEL_VALUES }
         ]
     },
     {
@@ -3055,6 +3084,10 @@ let cachedLatencyCompEnabled = false;
 /* Default true: restoring Move's USB-C audio-out source is on unless the
  * user turns it off. Mirrors usbc_out_persist_enabled in the shim. */
 let cachedUsbcOutPersist = true;
+/* Default -1 (All): Master FX heard every channel before this setting
+ * existed, so anything else here is a silent regression for every sidechain
+ * already in the field. Mirrors master_fx_midi_channel in the shim. */
+let cachedMasterFxMidiChannel = -1;
 let systemLinkEnabled = null; /* null = not checked yet */
 
 /* Master preset CRUD state (reuse pattern from slot presets) */
@@ -8671,6 +8704,7 @@ function saveMasterFxChainConfig() {
         config.link_audio_publish = cachedLinkAudioPublish;
         config.latency_comp_enabled = cachedLatencyCompEnabled;
         config.usbc_out_persist = cachedUsbcOutPersist;
+        config.master_fx_midi_channel = cachedMasterFxMidiChannel;
 
         host_write_file(configPath, JSON.stringify(config, null, 2));
     } catch (e) {
@@ -8901,6 +8935,14 @@ function loadMasterFxChainFromConfig() {
              * here. This push only keeps the two in sync for the UI. */
             shadow_set_param(0, "master_fx:usbc_out_persist", config.usbc_out_persist ? "1" : "0");
             cachedUsbcOutPersist = !!config.usbc_out_persist;
+        }
+        if (config.master_fx_midi_channel !== undefined && typeof shadow_set_param === "function") {
+            /* Like usbc_out_persist, the shim reads this key straight from
+             * shadow_config.json at init, so the filter is already in force
+             * before the first frame. This push only keeps the two in sync. */
+            const val = normalizeMfxMidiChannel(config.master_fx_midi_channel);
+            shadow_set_param(0, "master_fx:midi_channel", String(val));
+            cachedMasterFxMidiChannel = val;
         }
 
         /* Restore loaded preset name */
@@ -13806,6 +13848,15 @@ function getMasterFxSettingValue(setting) {
         const val = shadow_get_param(0, "master_fx:latency_comp_enabled");
         return (val === "1") ? "On" : "Off";
     }
+    if (setting.key === "master_fx_midi_channel") {
+        /* Branch on the RAW value: a failed read is null, an unserved key is
+         * "", and parseInt turns both into NaN. Reporting "All" for a read
+         * that never completed would show the user a setting they don't have. */
+        const raw = shadow_get_param(0, "master_fx:midi_channel");
+        if (raw === null || raw === "") return "--";
+        const ch = normalizeMfxMidiChannel(raw);
+        return (ch < 0) ? "All" : String(ch + 1);
+    }
     if (setting.key === "resample_bridge") {
         const modeRaw = shadow_get_param(0, "master_fx:resample_bridge");
         const mode = parseResampleBridgeMode(modeRaw);
@@ -13939,6 +13990,22 @@ function adjustMasterFxSetting(setting, delta) {
         const newVal = (current === "1") ? "0" : "1";
         shadow_set_param(0, "master_fx:usbc_out_persist", newVal);
         cachedUsbcOutPersist = (newVal === "1");
+        saveMasterFxChainConfig();
+        return;
+    }
+    if (setting.key === "master_fx_midi_channel") {
+        const raw = shadow_get_param(0, "master_fx:midi_channel");
+        /* A failed read must not produce a write. Stepping from a value we
+         * never actually saw would move the setting somewhere the user did
+         * not ask for, and the shim would then persist it. */
+        if (raw === null || raw === "") return;
+        const current = normalizeMfxMidiChannel(raw);
+        let idx = MFX_MIDI_CHANNEL_VALUES.indexOf(current);
+        if (idx < 0) idx = 0;
+        idx = (idx + 1) % MFX_MIDI_CHANNEL_VALUES.length;
+        const newVal = MFX_MIDI_CHANNEL_VALUES[idx];
+        shadow_set_param(0, "master_fx:midi_channel", String(newVal));
+        cachedMasterFxMidiChannel = newVal;
         saveMasterFxChainConfig();
         return;
     }

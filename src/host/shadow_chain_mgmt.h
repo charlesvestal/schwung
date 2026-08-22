@@ -14,6 +14,7 @@
 #include "audio_fx_api_v2.h"
 #include "lfo_common.h"
 #include "master_fx_key.h"
+#include "fx_midi_filter.h"   /* FX_MIDI_CHANNEL_ALL, for master_fx_midi_channel below */
 
 /* ============================================================================
  * Constants
@@ -308,6 +309,12 @@ int shadow_master_fx_move(int from, int to);
  * where the chain ends; bound loops by this. Never reports less than
  * "highest loaded position + 1", so a module can never run unseen. */
 int shadow_master_fx_count(void);
+
+/* Master FX listen channel, 0-based (0 = MIDI ch 1); FX_MIDI_CHANNEL_ALL (-1)
+ * = every channel, the default. Enforced inside shadow_master_fx_forward_midi
+ * rather than at its callers — see the comment there. */
+extern volatile int master_fx_midi_channel;
+
 void shadow_master_fx_forward_midi(const uint8_t *msg, int len, int source);
 
 /* Does ANY loaded Master FX position capture this note / CC?

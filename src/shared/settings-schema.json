@@ -130,6 +130,21 @@
         "key": "usbc_out_persist",
         "label": "USB-C Persist",
         "type": "bool"
+      },
+      {
+        "key": "master_fx_midi_channel",
+        "label": "MFX MIDI Ch",
+        "type": "enum",
+        "options": [
+          "All",
+          "1", "2", "3", "4", "5", "6", "7", "8",
+          "9", "10", "11", "12", "13", "14", "15", "16"
+        ],
+        "values": [
+          -1,
+          0, 1, 2, 3, 4, 5, 6, 7,
+          8, 9, 10, 11, 12, 13, 14, 15
+        ]
       }
     ]
   },

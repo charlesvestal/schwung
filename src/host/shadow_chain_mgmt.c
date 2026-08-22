@@ -15,6 +15,7 @@
 #include "shadow_chain_mgmt.h"
 #include "shadow_fx_key.h"    /* shadow_key_is_fx_module — header-only so tests/host can run it */
 #include "master_fx_key.h"    /* master_fx_route_* — header-only so tests/host can run it */
+#include "fx_midi_filter.h"   /* fx_midi_channel_accepts — header-only so tests/host can run it */
 #include "chain_permute.h"    /* insert/remove/move as an array permutation; shared with the chain DSP */
 #include "shadow_set_pages.h"
 #include "shadow_sampler.h"
@@ -1141,7 +1142,28 @@ void shadow_master_fx_unload(void) {
     shadow_master_fx_slot_unload(0);
 }
 
+/* Which MIDI channel Master FX listens on. FX_MIDI_CHANNEL_ALL (the default)
+ * means every channel, which is what Master FX did before this setting existed
+ * — see fx_midi_filter.h for why any other default is a silent break.
+ * Published as `master_fx:midi_channel`; persisted in shadow_config.json and
+ * re-read at shim init. */
+volatile int master_fx_midi_channel = FX_MIDI_CHANNEL_ALL;
+
+/* THE chokepoint for MIDI into Master FX.
+ *
+ * The channel filter lives HERE rather than at the call sites on purpose.
+ * There are three of them — the shim's cable-0 MIDI_IN scan, and both
+ * shadow_midi.c dispatch paths — and the bug this fixes is precisely that
+ * each grew its own ad-hoc guard (or none) without anyone noticing the others
+ * existed. Filtering at the single point they all funnel through means a
+ * fourth caller cannot be added ungated.
+ *
+ * Note-range filtering is deliberately NOT here: two of the three callers
+ * carry external MIDI, where a note number is a pitch. That guard is
+ * cable-0-only and lives at those call sites. */
 void shadow_master_fx_forward_midi(const uint8_t *msg, int len, int source) {
+    if (len >= 1 && !fx_midi_channel_accepts(master_fx_midi_channel, msg[0]))
+        return;
     for (int i = 0; i < MASTER_FX_SLOTS; i++) {
         master_fx_slot_t *s = &shadow_master_fx_slots[i];
         if (s->on_midi && s->instance) {

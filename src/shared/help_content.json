@@ -456,6 +456,34 @@
             "really does switch it",
             "back."
           ]
+        },
+        {
+          "title": "MFX MIDI Channel",
+          "lines": [
+            "Master FX that react",
+            "to MIDI - a ducker's",
+            "sidechain, a slicer's",
+            "trigger - listen to",
+            "every channel by",
+            "default.",
+            "",
+            "Global Settings >",
+            "Audio > MFX MIDI Ch",
+            "narrows that to one",
+            "channel, so only the",
+            "part you nominate",
+            "drives them.",
+            "",
+            "All is the default and",
+            "keeps existing setups",
+            "working unchanged.",
+            "",
+            "Separately, Move's own",
+            "step and track",
+            "buttons no longer",
+            "trigger audio FX -",
+            "only the pads do."
+          ]
         }
       ]
     },
