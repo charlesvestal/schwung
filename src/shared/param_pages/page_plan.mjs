@@ -28,7 +28,6 @@ export const KNOBS_PER_PAGE = 8;
 export const PAGE_KNOBS  = "knobs";   /* grid of up to 8 turnable params */
 export const PAGE_PRESET = "preset";  /* list_param/count_param/name_param browser */
 export const PAGE_ITEMS  = "items";   /* items_param/select_param runtime list */
-export const PAGE_MODES  = "modes";   /* hierarchy-level mode select (minijv) */
 /*
  * A list of entries that are NOT parameters — an action with a name and a
  * consequence and nothing to show, or a plain jump to another level.
@@ -284,9 +283,23 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved } 
     let rootKey = "root";
     const modes = Array.isArray(hierarchy.modes) ? hierarchy.modes : null;
     if (modes && modes.length > 0) {
+        /*
+         * The mode selector IS an items page too -- a list, a cursor, a
+         * current marker, click to choose -- so it reuses that machinery
+         * instead of being a kind nothing draws. PAGE_MODES was planned and
+         * rendered by NOBODY, so minijv's Mode page ejected to the list
+         * editor, which is also why its performance mode was unreachable from
+         * the grid (and therefore why editing parts appeared to do nothing).
+         *
+         * Unlike a child selector this one DOES write a param: the module
+         * takes the mode name. Unlike an ordinary items page the choice
+         * re-roots the whole hierarchy, so it also forces a re-plan.
+         */
         pages.push({
-            kind: PAGE_MODES, name: claimName("Mode"), level: null,
-            modes: modes.slice(), modeParam: hierarchy.mode_param || "mode",
+            kind: PAGE_ITEMS, name: claimName("Mode"), level: null,
+            derivedLabels: modes.slice(),
+            selectParam: hierarchy.mode_param || "mode",
+            modeSelect: true,
         });
         const active = (mode && modes.includes(mode)) ? mode : modes[0];
         rootKey = levels[active] ? active : "root";
@@ -386,6 +399,12 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved } 
                 kind: PAGE_ITEMS, name: claimName(base), level: levelKey,
                 childCount: childCount(lvl),
                 childLabel: lvl.child_label || "Item",
+                /* The SAME derived-list field the mode selector uses. One
+                 * mechanism: the planner decides what the labels say, and
+                 * itemsState never learns there are two kinds of source. */
+                derivedLabels: Array.from(
+                    { length: childCount(lvl) },
+                    (_, i) => `${lvl.child_label || "Item"} ${i + 1}`),
                 childOf: levelKey,
                 childLevel: lvl,
             });

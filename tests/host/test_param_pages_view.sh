@@ -240,26 +240,29 @@ Promise.all([
     C.ctx.getSlotParam = (slot, key) => dev3.getParam(key);
     C.ctx.setSlotParam = (slot, key, value) => dev3.setParam(key, value);
     V.enterParamPages(0, "synth", "synth");
-    /* Entering lands on the first GRID page, so minijv mode-select and child
-     * pages sit behind it — jogging back reaches them, and those belong to the
-     * list editor rather than to the grid.
+    /*
+     * The grid now owns EVERY page minijv plans, so jogging never ejects.
      *
-     * PRESET, MENU and ITEMS are NOT in that set: the grid draws all three, in
-     * its own chrome, as doors you click into. A preset page especially had to
-     * stop handing off — the list editor it landed in wires the jog to the
-     * preset browser, so jogging past one loaded every preset it crossed. */
+     * This used to assert the opposite: that jogging back reached a kind the
+     * grid did not own (the mode select), and that drawParamPages refused it.
+     * That was true while PAGE_MODES was planned and rendered by nobody --
+     * which is exactly what made the performance mode of minijv unreachable from
+     * the grid. The mode selector is an items page now, and the child selector
+     * with it, so there is nothing left to hand off.
+     *
+     * minijv is the module that had all three unowned features, so if any kind
+     * can still escape the grid it will escape here.
+     */
     if (V.currentParamPage().kind !== "knobs") fail("entering should land on a grid page");
-    let sawNonGrid = false;
-    for (let i = 0; i < 8; i++) {
+    const ownKinds = ["knobs", "menu", "preset", "items"];
+    for (let i = 0; i < 12; i++) {
       V.handleParamPagesMidi([0xb0, 14, 127]);   /* jog anticlockwise */
       const page = V.currentParamPage();
-      const ownKinds = ["knobs", "menu", "preset", "items"];
-      if (page && ownKinds.indexOf(page.kind) < 0) {
-        sawNonGrid = true;
-        if (V.drawParamPages()) fail("the grid drew a " + page.kind + " page it does not own");
-      }
+      if (page && ownKinds.indexOf(page.kind) < 0)
+        fail("jogging reached a " + page.kind + " page the grid does not own — it will eject to the list");
+      if (page && !V.drawParamPages())
+        fail("the grid refused to draw its own " + page.kind + " page");
     }
-    if (!sawNonGrid) fail("jogging back should reach minijv non-grid pages");
     V.exitParamPages();
   }
 

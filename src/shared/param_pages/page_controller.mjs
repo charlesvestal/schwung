@@ -1073,15 +1073,15 @@ export function createController(io = {}) {
          * The level declares how many children and what to call them, so this
          * is arithmetic, not I/O.
          */
-        if (pg.childCount !== undefined) {
-            const n = Math.max(0, pg.childCount | 0);
+        if (Array.isArray(pg.derivedLabels)) {
+            const n = pg.derivedLabels.length;
             if (st.list.length !== n) {
-                st.list = [];
-                for (let i = 0; i < n; i++)
-                    st.list.push({ index: i, label: `${pg.childLabel || "Item"} ${i + 1}` });
+                st.list = pg.derivedLabels.map((label, i) => ({ index: i, label }));
                 if (st.cursor >= n) st.cursor = Math.max(0, n - 1);
             }
-            st.current = childIndexFor(pg.childOf);
+            /* A child selector knows its own answer; a mode selector is told
+             * by the module, so its `current` comes from the tick read. */
+            if (pg.childOf) st.current = childIndexFor(pg.childOf);
         }
         return st;
     }
@@ -1102,8 +1102,28 @@ export function createController(io = {}) {
          * can go stale -- and `current` comes from local state rather than
          * from a module param.
          */
-        /* itemsState has already built it, and there is nothing to read. */
-        if (p.childCount !== undefined) return;
+        /*
+         * The LIST is already built and cannot go stale. A child selector has
+         * nothing else to ask for either -- the selection is ours. A MODE is
+         * the module's state, so its current value is still read, on the same
+         * one-per-tick budget.
+         */
+        if (Array.isArray(p.derivedLabels)) {
+            if (!p.selectParam || p.childOf) return;
+            const raw = getParam(fullKey(p.selectParam));
+            if (raw === null || raw === undefined) return;   /* failed read: not news */
+            const at = p.derivedLabels.findIndex(
+                (l) => String(l).toLowerCase() === String(raw).trim().toLowerCase());
+            /* The module answers "Performance" where the hierarchy says
+             * "performance", so the match is case-insensitive. A numeric
+             * answer is an index. */
+            if (at >= 0) st.current = at;
+            else {
+                const n = parseInt(raw, 10);
+                if (isFinite(n) && n >= 0 && n < st.list.length) st.current = n;
+            }
+            return;
+        }
         const at = st.read % 2;
         st.read++;
         if (at === 0) {
@@ -1146,6 +1166,24 @@ export function createController(io = {}) {
         const st = itemsState(p);
         if (!st || !st.list.length) return false;
         const it = st.list[st.cursor];
+        if (p.modeSelect) {
+            /*
+             * A mode RE-ROOTS the hierarchy: the level named by the mode
+             * becomes the walk root, so every page after this one is a
+             * different page. The param write below tells the module; this
+             * tells the planner, and re-plans from the cached contract so the
+             * new pages are there before the next frame.
+             *
+             * armContractSettle further down books a re-read as well, because
+             * the module may republish once it has switched -- minijv resets
+             * its emulator to change mode, which is not instant.
+             */
+            const chosen = (p.derivedLabels || [])[it.index];
+            if (chosen !== undefined) {
+                if (s.lastLoadOpts) s.lastLoadOpts.mode = chosen;
+                else s.lastLoadOpts = { mode: chosen };
+            }
+        }
         if (p.childOf) {
             /*
              * A child is chosen LOCALLY -- there is no param to write. It
@@ -1179,6 +1217,7 @@ export function createController(io = {}) {
          * read.
          */
         armContractSettle();
+        if (p.modeSelect) replanForMode();
         s.menuEntered = null;
         let target = -1;
         if (p.navigateTo) {
@@ -1737,6 +1776,31 @@ export function createController(io = {}) {
      * fired. Switching an LFO to Sync left the Hz cell on screen — the value had
      * moved and the page had not.
      */
+    /*
+     * Re-plan from the cached contract with the current mode.
+     *
+     * Same operation replanIfCondition performs for a visibility change -- the
+     * hierarchy and chain_params are already in hand, so this costs no device
+     * reads -- but unconditional, because a mode changes the walk ROOT and
+     * therefore every page, not just which of them are visible.
+     */
+    function replanForMode() {
+        if (!s.hierarchy) return;
+        const planned = planPages({
+            hierarchy: s.hierarchy, chainParams: s.chainParams,
+            mode: s.lastLoadOpts && s.lastLoadOpts.mode,
+            visible: s.lastLoadOpts && s.lastLoadOpts.visible,
+        });
+        if (!planned.pages.length) return;   /* never plan from nothing */
+        s.pages = planned.pages;
+        s.fingerprint = planned.fingerprint;
+        s.conditionKeys = planned.conditionKeys || new Set();
+        s.values = Object.create(null);
+        s.knobStates = Object.create(null);
+        s.cursor = 0;
+        s.pageIndex = firstGrid(s.pages);
+    }
+
     function replanIfCondition(key) {
         if (!s.conditionKeys.has(key)) return;
         const oldPages = s.pages, oldIndex = s.pageIndex;
