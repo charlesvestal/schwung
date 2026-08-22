@@ -1088,6 +1088,47 @@ let triggerEnumLatched = [false, false, false, false, false, false, false, false
  * These read the raw declaration rather than param_meta's normalised form,
  * which belongs to the grid and is not built here.
  */
+/*
+ * When each trigger last fired, keyed by full param key.
+ *
+ * The knob card draws its row with the SAME drawKnobRow the grid uses, and
+ * that renderer is pure: it takes the fire times and the clock off its options
+ * object. page_controller passes them; this file did not, so a trigger drew
+ * its idle phase forever and the press animation was invisible everywhere
+ * outside the param-pages grid.
+ *
+ * One renderer, two hosts, and the plumbing is the thing that diverges -- the
+ * same omission that shipped once already on the grid side.
+ *
+ * Bounded by construction: one entry per parameter key that has ever been
+ * fired in this session, which is a handful.
+ */
+const triggerFiredAt = Object.create(null);
+const TRIGGER_KEEP_MS = 1200;
+
+function noteTriggerFired(fullKey) {
+    if (!fullKey) return;
+    const t = Date.now();
+    const prev = triggerFiredAt[fullKey] || [];
+    /* An ARRAY, because two presses close together must read as two: the
+     * renderer restarts its animation per timestamp. Old ones are dropped so
+     * this cannot grow. */
+    triggerFiredAt[fullKey] = prev.filter((p) => t - p < TRIGGER_KEEP_MS).concat(t);
+}
+
+/* The fire times for the row the card is showing, in the renderer shape: it
+ * keys by the PARAM key, not the full slot-qualified one. */
+function triggerFiredAtForRow(keys, prefixed) {
+    const out = Object.create(null);
+    if (!keys) return out;
+    for (const k of keys) {
+        if (!k) continue;
+        const full = prefixed ? prefixed(k) : k;
+        if (triggerFiredAt[full]) out[k] = triggerFiredAt[full];
+    }
+    return out;
+}
+
 function isTriggerParam(meta) {
     return !!(meta && String(meta.access || "").toLowerCase() === "write");
 }
@@ -1192,6 +1233,10 @@ let knobCardExpiry = 0;         /* ms deadline; 0 means held, so no deadline */
 let knobCardSlot = -1;          /* target slot the row below was resolved against */
 let knobCardCompKey = null;     /* component key ditto — see showKnobFeedback */
 let knobCardKeys = null;        /* param key per physical knob, or null */
+/* param key -> the slot-qualified key it was read with. Captured when the card
+ * opens because that is the only place the target and component are in scope,
+ * and the fire-time lookup needs the same spelling the writes used. */
+let knobCardFullKey = null;
 let knobCardMeta = null;        /* metaIndex for the focused component */
 let knobCardRowValues = null;   /* raw values, keyed by param key */
 let knobCardViz = null;
@@ -1208,6 +1253,7 @@ function knobCardClose() {
     knobCardSlot = -1;
     knobCardCompKey = null;
     knobCardKeys = null;
+    knobCardFullKey = null;
     knobCardMeta = null;
     knobCardRowValues = null;
     knobCardViz = null;
@@ -1278,6 +1324,10 @@ function knobCardDrawState() {
         values: knobCardRowValues,
         viz: knobCardViz,
         modulated: knobCardModKey ? ((k) => k === knobCardModKey) : null,
+        /* The press animation. Pure renderer: without these two the button
+         * draws its idle phase forever -- see triggerFiredAt. */
+        triggerFiredAt: triggerFiredAtForRow(knobCardKeys, knobCardFullKey),
+        nowMs: Date.now(),
     };
 }
 
@@ -1342,6 +1392,7 @@ function knobCardOpen(knobIndex, focus) {
 
     knobCardMeta = buildMetaIndex({ hierarchy, chainParams });
     knobCardKeys = keys;
+    knobCardFullKey = (k) => target.key(comp.key, k);
     knobCardViz = resolveViz({ keys, metaIndex: knobCardMeta }).groups;
 
     const base = (knobIndex >> 2) * 4;
@@ -2124,7 +2175,10 @@ function openHierarchyParamEditor(selectedKey, meta, forceOpen) {
     if (!hierEditorEditMode && isTriggerParam(meta)) {
         const fullKey = buildHierarchyParamKey(selectedKey);
         const fire = triggerFireValue(meta, getSlotParam(hierEditorSlot, fullKey));
-        if (fire !== null) setSlotParam(hierEditorSlot, fullKey, fire);
+        if (fire !== null) {
+            setSlotParam(hierEditorSlot, fullKey, fire);
+            noteTriggerFired(fullKey);
+        }
         return;
     }
     /* A READOUT has nothing to set. Opening a picker on it discarded the
@@ -10376,7 +10430,27 @@ function applyKnobAssignment(target, param) {
 /* Handle Shift+Click - enter component edit mode */
 function handleShiftSelect() {
     const comp = slotChainComponents(selectedSlot)[selectedChainComponent];
-    if (!comp || !isChainModuleKey(comp.key)) return;
+    if (!comp) return;
+
+    /*
+     * The `+` IS the empty position, so Shift opens the picker on it too.
+     *
+     * enterComponentSelect refuses an unresolved `+` by design -- it wants a
+     * real position -- so the box is resolved first, exactly as the plain
+     * click does. Without this, shift+click did nothing on an empty cell in
+     * the slot chain while working in Master FX, whose own handler already
+     * resolved it. Reported from the device as precisely that asymmetry.
+     */
+    if (comp.kind === "add") {
+        const at = beginChainInsertFromAddBox(slotChainTarget(selectedSlot), comp);
+        if (at >= 0) {
+            selectedChainComponent = at;
+            enterComponentSelect(selectedSlot, at);
+        }
+        return;
+    }
+
+    if (!isChainModuleKey(comp.key)) return;
 
     /* Shift+click always goes to module chooser (for swapping) */
     enterComponentSelect(selectedSlot, selectedChainComponent);
@@ -11916,9 +11990,23 @@ function processPendingHierKnob() {
      * the access axis landed and this surface never did.
      */
     if (isTriggerParam(ctx.meta) || isReadoutParam(ctx.meta)) {
+        /*
+         * Show the VALUE, not a sentence about the parameter.
+         *
+         * This said "Read only" and "Click to fire", which is the surface
+         * explaining itself in the slot where the reading goes. A readout is a
+         * static value and displaying it is the entire point of declaring one
+         * -- keydetect exists to be READ. Reported from the device: "we show
+         * READ ONLY in the header, that doesn't make sense, it just is a
+         * static value".
+         *
+         * A trigger has no value worth reading, but it draws a BUTTON in its
+         * cell and the button is the affordance; the footer already says PUSH.
+         */
+        const cached = getKnobCachedValue(knobIndex, ctx);
         showKnobFeedback(knobIndex, ctx.title,
-                         isTriggerParam(ctx.meta) ? "Click to fire" : "Read only",
-                         undefined, ctx.cardName);
+                         cached === null ? "" : formatParamForOverlay(cached, ctx.meta),
+                         cached === null ? undefined : cached, ctx.cardName);
         needsRedraw = true;
         return;
     }
@@ -19287,12 +19375,28 @@ globalThis.onMidiMessageInternal = function(data) {
                                                   getSlotParam(tctx.slot, tctx.fullKey));
                     if (fire !== null) {
                         setSlotParam(tctx.slot, tctx.fullKey, fire);
-                        showKnobFeedback(knobCardKnob, tctx.title, "Fired",
+                        noteTriggerFired(tctx.fullKey);
+                        showKnobFeedback(knobCardKnob, tctx.title,
+                                         getSlotParam(tctx.slot, tctx.fullKey) || "",
                                          undefined, tctx.cardName);
                         needsRedraw = true;
                     }
-                    return;
                 }
+                /*
+                 * ...and the click STOPS HERE either way.
+                 *
+                 * The card is a panel over the diagram and the component
+                 * behind it is only incidentally selected -- diving into it
+                 * from a gesture aimed at the card is acting on something the
+                 * user cannot see. Reported from the device: "when the
+                 * overlay is active clicking shouldn't take you into the
+                 * module, it's a hidden element that it's still selected".
+                 *
+                 * This replaces dismiss-and-descend, which was deliberate and
+                 * is now wrong: releasing the knob drops the card, so there is
+                 * a way out that does not also do something.
+                 */
+                return;
             }
             /* Shift+Click in chain edit enters component edit mode */
             if (isShiftHeld() && view === VIEWS.CHAIN_EDIT && selectedChainComponent >= 0) {

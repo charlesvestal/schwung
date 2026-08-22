@@ -77,7 +77,34 @@ command grep -q "return;" <<<"$held" || fail "the click is not consumed -- it wo
 hl=$(command grep -n "A held TRIGGER is fired by the click" "$file" | head -n 1 | cut -d: -f1)
 dl=$(command grep -n "Shift+Click in chain edit enters component edit mode" "$file" | head -n 1 | cut -d: -f1)
 [ "$hl" -lt "$dl" ] || fail "the held-trigger branch runs after the dive"
-echo "  ok  a held trigger fires on click and consumes it; anything else still dives"
+echo "  ok  a held trigger fires on click and consumes it"
+
+# --- the overlay shows the VALUE, not a sentence about the parameter ---------
+#
+# It said "Read only" and "Click to fire", which is the surface explaining
+# itself in the slot where the reading goes. Reported from the device: "we show
+# READ ONLY in the header, that doesnt make sense, it just is a static value".
+# A readout exists to be READ -- keydetect is nothing but its value.
+# Code lines only -- the comment above the fix quotes the old strings, and
+# matching those made this fail on its own explanation.
+if command grep -nE '^[^*/]*"(Read only|Click to fire)"' "$file" | command grep -qv '^\s*[0-9]*:\s*\*'; then
+  echo "FAIL: the overlay still prints a sentence about the parameter instead of its value" >&2
+  command grep -nE '^[^*/]*"(Read only|Click to fire)"' "$file" >&2
+  exit 1
+fi
+command grep -q "formatParamForOverlay(cached, ctx.meta)" <<<"$turn" || \
+  fail "the refused turn no longer shows the parameter value"
+echo "  ok  a refused turn shows the value, not a sentence about the parameter"
+
+# --- while the card is up, a click never dives -------------------------------
+#
+# "when the overlay is active clicking shouldnt take you into the module, its a
+# hidden element that its still selected." Releasing the knob drops the card,
+# so there is a way out that does not also act on something you cannot see.
+held=$(awk '/A held TRIGGER is fired by the click/,/Shift\+Click in chain edit/' "$file")
+command grep -q "the click STOPS HERE either way" <<<"$held" || \
+  fail "a click while the card is up can still fall through and dive into the component"
+echo "  ok  a click while the card is up never dives"
 
 echo "  ok  a knob turn cannot write a trigger or a readout, and bails before the read"
 echo "  ok  a click fires a trigger through the module wire, and never opens a picker"

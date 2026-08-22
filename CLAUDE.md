@@ -376,9 +376,16 @@ touch raises it too and decays after ~700ms, so a cap sensor that misses cannot
 strand the feature. With no component selected the slot's global mappings serve
 a name and a value but no type metadata, so that case gets a header-only card.
 
-The card consumes no input. A jog-click while a knob is held falls through to
-the chain editor and opens the focused component, and `setView` closes the card
-on the way — dismiss-and-descend, not a modal inside a modal.
+The card consumes no TURN. A jog-click while it is up is swallowed — it fires
+the parameter if that parameter is a trigger, and otherwise does nothing.
+
+It used to be dismiss-and-descend: the click fell through and opened the
+focused component. That was deliberate and it was wrong. The card is a panel
+over the diagram and the component behind it is only incidentally selected, so
+descending acted on something the user could not see — *"when the overlay is
+active clicking shouldn't take you into the module, it's a hidden element that
+it's still selected"*. Releasing the knob drops the card, so there is already a
+way out that does not also do something.
 
 **The 1px black gap between the border and the header band is load-bearing.**
 Both are white, so where they touch the border stops existing and the card reads

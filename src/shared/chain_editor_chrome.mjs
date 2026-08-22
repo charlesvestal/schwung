@@ -88,6 +88,12 @@ function centreX(ctx, text) {
 /*
  * What Shift offers on the focused chain cell.
  *
+ * Keyed on comp.kind, and the kinds are not what they look like: chain_model
+ * only emits a `module` for a position that HOLDS one, so an empty position is
+ * the `add` box and never a module with a null module. Reading "empty" as
+ * `kind === "module" && !comp.module` produced a branch nothing could reach,
+ * which is why no CLK hint appeared on either screen.
+ *
  * Here, not in either editor, because BOTH have the same cells and the rule
  * that keeps the two screens converged is that a gesture is spelled once. The
  * slot chain and Master FX grew separate copies of their footer strings before
@@ -109,10 +115,21 @@ function centreX(ctx, text) {
  * looking at a moment ago.
  */
 export function shiftHintsFor(comp) {
-    if (!comp || comp.kind !== "module") return [["BACK", "EXIT"]];
-    return comp.module
-        ? [["JOG", "MOVE"], ["CLK", "SWAP"]]
-        : [["CLK", "OPEN"], ["BACK", "EXIT"]];
+    if (!comp) return [["BACK", "EXIT"]];
+    switch (comp.kind) {
+        /* A filled position: reorderable and swappable. */
+        case "module": return [["JOG", "MOVE"], ["CLK", "SWAP"]];
+        /* The synth is a real module and swaps like one, but it has no
+         * position to move -- there is exactly one of it. Advertising MOVE
+         * here would be the same dead gesture as on an empty cell. */
+        case "synth":  return [["CLK", "SWAP"], ["BACK", "EXIT"]];
+        /* The "+" IS the empty cell -- chain_model only emits a `module` for a
+         * position that holds one, so an unfilled slot appears as this box.
+         * Clicking it opens the picker, which is how you fill it. */
+        case "add":    return [["CLK", "OPEN"], ["BACK", "EXIT"]];
+        /* The patch node and the slot settings are neither. */
+        default:       return [["BACK", "EXIT"]];
+    }
 }
 
 export function drawChainEditorBands(ctx, o) {
