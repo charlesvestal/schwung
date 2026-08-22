@@ -527,10 +527,12 @@ fi
 # variable when you want to test knob gestures on the device.
 if [ -n "${SCHWUNG_BUILD_TEST_MODULES:-}" ]; then
     mkdir -p ./build/modules/audio_fx/gesture-test/
+    # The chain host derives an FX path as audio_fx/<id>/<id>.so and ignores
+    # module.json's "dsp" field, so the object MUST be named for the id.
     echo "Building gesture-test (test fixture)..."
     "${CROSS_PREFIX}gcc" -g -O2 -shared -fPIC \
         src/modules/audio_fx/gesture-test/gesture_test.c \
-        -o build/modules/audio_fx/gesture-test/gesture_test.so \
+        -o build/modules/audio_fx/gesture-test/gesture-test.so \
         -Isrc \
         -lm
     cp src/modules/audio_fx/gesture-test/module.json build/modules/audio_fx/gesture-test/
