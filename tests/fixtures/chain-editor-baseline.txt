@@ -48,7 +48,7 @@ chain/len0/sel-add-midi 0b625eccbc407355fb31d6eb8e5c4ac113af4612
 chain/len0/sel-patch 19b909c6edcdd5cb1885e810f1e699dbb5dd5222
 chain/len0/sel-settings cf507ccfb0f2583954a27f0074c400261e789f95
 chain/len0/sel-synth 850df04ddf913c35b78bd675cee72feb4f466abe
-chain/len0/shift 4feec154776a255f9a2e6513e9f4661c53a84f0f
+chain/len0/shift c4ab65100ccd5175141d7b95422ee789ee68eaac
 chain/len1/knob-card f12a82fdc348f33c8f10df53fd73bb04b95962c3
 chain/len1/sel-first 4c7fc8f324ec4db34d926801b319fc83843825c4
 chain/len1/sel-fx1 0b40afdea95af88b02a9a8e267e2bdb75e91e107
@@ -84,7 +84,7 @@ master/hole/sel-fx3 ae82ea70be5609f1f9225ff864ff7bd26db692f2
 master/len0/sel-add-fx 1dbce907baeffdbbbe5192198175fa78ecc07948
 master/len0/sel-preset c2ee02ebce925378085cbd108806be2d62e42fec
 master/len0/sel-settings 5db97e1fc24ce94263948246d6ae3f367c37b534
-master/len0/shift 33ded7af97536c6a7029791936c4bfa0cc85f4e7
+master/len0/shift fbc7fd052dc7ad9d4a285ae99e85aa31481660d6
 master/len1/knob-card c8f67645ea2783f8acf38218c530d48e027be69c
 master/len1/preset-named 16e7130356d4c478cd2dd33e906d253a18856f2e
 master/len1/sel-add-fx 3394585d4aea71ed45180742018255f1b4dbb0e0

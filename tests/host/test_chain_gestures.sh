@@ -534,9 +534,14 @@ const shiftHintsFor = shiftMaker ? shiftMaker() : (() => []);
      "shiftHintsFor", "selectedComp"],
     [() => shift, {}, "", "", "", "", shiftHintsFor, comp]);
 
+  /* The kinds chain_model actually emits. An empty position is the `add` box,
+     NOT a module with a null module -- that combination never exists, and
+     writing the test against it was how a branch nobody could reach passed
+     review. The synth is its own kind and cannot move. */
   const FULL = { kind: "module", module: "cloudseed" };
-  const EMPTY = { kind: "module", module: null };
-  const CHAIN = { kind: "chain" };
+  const EMPTY = { kind: "add", section: "fx", label: "+" };
+  const SYNTH = { kind: "synth", module: "braids" };
+  const CHAIN = { kind: "patch" };
 
   const rest = shown(false, FULL);
   if (flat(rest) !== "JOG SEL / CLK OPEN / BACK EXIT")
@@ -556,10 +561,17 @@ const shiftHintsFor = shiftMaker ? shiftMaker() : (() => []);
      Shift does do is CLICK: the module picker, which is how you fill it. */
   const heldEmpty = shown(true, EMPTY);
   if (/MOVE/.test(flat(heldEmpty)))
-    fail("Shift on an EMPTY cell still offers MOVE: [" + flat(heldEmpty) + "]");
+    fail("Shift on the + (the empty position) still offers MOVE: [" + flat(heldEmpty) + "]");
   if (flat(heldEmpty) !== "CLK OPEN / BACK EXIT")
-    fail("Shift on an empty cell reads [" + flat(heldEmpty) + "]");
-  fits("with Shift held on an empty cell", heldEmpty);
+    fail("Shift on the + reads [" + flat(heldEmpty) + "]");
+  fits("with Shift held on the +", heldEmpty);
+
+  /* The SYNTH swaps but cannot move: there is exactly one of it. */
+  const heldSynth = shown(true, SYNTH);
+  if (/MOVE/.test(flat(heldSynth)))
+    fail("Shift on the synth offers MOVE, which has nowhere to go: [" + flat(heldSynth) + "]");
+  if (flat(heldSynth) !== "CLK SWAP / BACK EXIT")
+    fail("Shift on the synth reads [" + flat(heldSynth) + "]");
 
   /* Neither applies to the chain node itself; handleShiftSelect refuses it. */
   const heldChain = shown(true, CHAIN);
@@ -586,7 +598,7 @@ const shiftHintsFor = shiftMaker ? shiftMaker() : (() => []);
      "shiftHintsFor", "selectedComp"],
     [() => shift, {}, "", "", "", shiftHintsFor, comp]);
   const FULL2 = { kind: "module", module: "cloudseed" };
-  const EMPTY2 = { kind: "module", module: null };
+  const EMPTY2 = { kind: "add", section: "fx", label: "+" };
   const rest = shown(false, FULL2);
   if (flat(rest) !== "JOG SEL / CLK OPEN / BACK EXIT")
     fail("at rest the Master FX footer reads [" + flat(rest) + "]");
@@ -598,7 +610,7 @@ const shiftHintsFor = shiftMaker ? shiftMaker() : (() => []);
     fail("Shift on a populated Master FX cell reads [" + flat(heldFull2) + "]");
   const heldEmpty2 = shown(true, EMPTY2);
   if (flat(heldEmpty2) !== "CLK OPEN / BACK EXIT")
-    fail("Shift on an empty Master FX cell reads [" + flat(heldEmpty2) + "]");
+    fail("Shift on the Master FX + reads [" + flat(heldEmpty2) + "]");
   fits("on Master FX with Shift held", heldFull2);
   fits("on Master FX with Shift held, empty", heldEmpty2);
 }
