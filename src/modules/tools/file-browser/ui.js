@@ -527,16 +527,19 @@ function drawHeader(title) {
     fill_rect(0, 12, SCREEN_W, 1, 1);
 }
 
-function drawFooter(text) {
+/* file-browser's own footer (still the pre-movy chrome): a bare hint string, or
+ * an ordered array of hints. Order is display order — first flush left, last
+ * flush right — matching drawMenuFooter's shape so the two never disagree about
+ * what a caller is describing. */
+function drawFooter(hints) {
     fill_rect(0, 55, SCREEN_W, 1, 1);
-    if (typeof text === "string") {
-        print(2, 57, text, 1);
-    } else if (text && typeof text === "object") {
-        if (text.left) print(2, 57, text.left, 1);
-        if (text.right) {
-            var w = text_width(text.right);
-            print(SCREEN_W - w - 2, 57, text.right, 1);
-        }
+    if (!hints) return;
+    var list = Array.isArray(hints) ? hints : [hints];
+    if (list.length && list[0]) print(2, 57, list[0], 1);
+    if (list.length > 1 && list[list.length - 1]) {
+        var last = list[list.length - 1];
+        var w = text_width(last);
+        print(SCREEN_W - w - 2, 57, last, 1);
     }
 }
 
@@ -642,7 +645,7 @@ function drawConfirm() {
     print(4, 18, "Delete this " + (isDirectory(confirmPath) ? "folder" : "file") + "?", 1);
     print(4, 30, truncLabel(name, 20), 1);
 
-    drawFooter({ left: "Back: No", right: "Push: Delete" });
+    drawFooter(["Back: No", "Push: Delete"]);
 }
 
 function drawDestBrowser() {

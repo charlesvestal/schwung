@@ -105,7 +105,7 @@ question named.
 | stepping a value | `knob_engine.mjs` |
 | announcements | `announce_page.mjs` |
 | chrome (header, bank bar, brackets, footer) | `render_page_movy.mjs` |
-| five-row list geometry | `MENU_LIST_*` in `page_controller.mjs` |
+| five-row list geometry | `src/shared/list_geometry.mjs` (leaf, no imports) |
 | **drawing a list row** | **`drawMenuList`** — §3 |
 | **the chrome around a list** (header band, footer, list rect) | **`drawMenuList`** — §3, re-skinned to movy |
 | what a Global Setting *is* | `shadow_ui_global_grid.mjs` — §5 |
@@ -121,6 +121,44 @@ and any proposal that duplicates a row of this table is wrong regardless of how
 reasonable the scope boundary sounds.
 
 ---
+
+## 2a. Correction, found during execution: the geometry was NEVER single-sourced
+
+The table above originally named `page_controller.mjs` as the one home of the
+list geometry. **That was wrong, and believing it cost a whole task.**
+
+`src/shared/chain_ui_views.mjs` carried a complete SECOND copy — `TITLE_Y`,
+`TITLE_RULE_Y`, `LIST_TOP_Y = 15`, `LIST_LINE_HEIGHT`, `LIST_HIGHLIGHT_HEIGHT`,
+`LIST_LABEL_X = 4`, `LIST_VALUE_X`, `FOOTER_*` — and **every** shadow view
+module imported `LIST_TOP_Y` from there, then handed it back as
+`listArea.topY`. So when §3's re-skin moved `menu_layout.mjs`'s default to 10,
+~20 call sites overrode it with the stale 15.
+
+Two consequences, and the second is the lesson:
+
+- On the device the re-skin was **inert**: an 8-row dead band under the header
+  band, and a 4-row window where the work claimed 5.
+- `tests/host/test_list_behavior.sh` imported `LIST_TOP_Y` from
+  `menu_layout.mjs`, so it measured a rect **nothing rendered with**. It passed,
+  it reported the intended 4→5 gain, and it was describing a screen that did not
+  exist. A green matrix only proves the axis you chose.
+
+There was also a THIRD list-row renderer, `createSelectListRenderer`
+(`chain_ui_views.mjs:129`) — dead, zero callers, already marked
+`@deprecated` by the 2026-06 sweep.
+
+Fixed by `src/shared/list_geometry.mjs`: a true leaf that imports nothing, from
+which `menu_layout.mjs`, `chain_ui_views.mjs`, `render_page.mjs` and
+`render_page_movy.mjs` all re-export the names their consumers already use — so
+no view module changed. The test now greps `src/` for exactly one
+`export const` per geometry name, and asserts by identity that the value
+`menu_layout` holds IS the one the screens receive, before believing any window
+arithmetic.
+
+**The general rule this earns:** before trusting that a concern is
+single-sourced, grep for a second `export const` of its name. An import that
+looks like it reaches the shared definition may reach a stale twin, and every
+test above it will agree with the twin.
 
 ## 3. One list, wearing the movy chrome (first, not later)
 
@@ -331,6 +369,49 @@ call `saveMasterFxChainConfig()` and write a cache var (`cachedLinkAudioRouting`
 `cachedResampleBridgeMode`, `cachedLatencyCompEnabled`, `cachedUsbcOutPersist`).
 Those side effects move into `writeParam`, or toggling Link routing sets the
 param and never persists it — silently.
+
+### 5.3a Persistence is THREE things, not one
+
+Found while converting `adjustMasterFxSetting`. The 25 Global Settings params do
+not share one save path:
+
+| kind | count | how it persists |
+|---|---|---|
+| shared sink | 6 | `saveMasterFxChainConfig()` — the `PERSISTING_KEYS` set |
+| own saver | 7 | a dedicated call welded to the assignment (`saveParamViewConfig`, `savePadTypingConfig`, `saveFilebrowserConfig`, `saveAutoUpdateConfig`, …) |
+| backend-owned / session | 12 | the backend persists it (`tts_set_*`), or it is deliberately not persisted |
+
+The distinction is load-bearing: a write in group 1 that skips its
+`saveMasterFxChainConfig()` sets the param and loses it on reboot, **silently**.
+`PERSISTING_KEYS` is therefore **derived from the routing table**, not
+hand-listed — a hand-list rots the first time a key changes category, and the
+mutation that widens it to every key is the one that proves the test is not
+vacuous.
+
+### 5.5a Stored values are not indexes
+
+`resample_bridge` stores `[0, 2]`. Treating an enum's index as its value writes
+mode `1`, which does not exist — and does so silently. Any enum whose stored
+values are not `0..n-1` needs its real values declared (`GLOBAL_ENUM_VALUES`)
+and round-tripped in the test.
+
+### 5.5b An unknown wire state needs its own option
+
+`usbc_out_persist` annotates a bool with the source last seen on the wire. But
+the source can be **unobserved** (`-1`) before anything has crossed it, and the
+old code simply omitted the annotation in that case — a formatter can drop a
+parenthetical; a declaration cannot.
+
+Mapping unknown onto `On (Mic)` was rejected: this row exists *because* Move's
+own Settings screen goes stale, so it "is the only honest read of what is
+actually routed". A confident "Mic" that has never been observed is worse than
+the stale screen it was added to correct. The declaration gets a fourth option —
+`["Off", "On", "On (Mic)", "On (Main Out)"]` — where plain `On` means
+*persistence is on, source not yet seen*. All three On indexes store `1`.
+
+**The general rule:** a contract must be able to express every state its
+formatter could, including "not known". A state the old code showed by omission
+becomes an explicit option, not a default that guesses.
 
 ### 5.4 Modal hand-off
 

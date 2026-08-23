@@ -6,13 +6,13 @@
     {
       "id": 1,
       "subject": "Task 1: Behaviour harness for the one list",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** Assert what must survive the re-skin — items, ordering, selection movement, scroll boundary, value text, edit mode — WITHOUT asserting pixels.\n\n> **USER-ORDERED GATE — NON-SKIPPABLE.** This task was requested by the user in the current conversation. It MUST NOT be closed by walking around it, by declaring it \"verified inline\", or by substituting a cheaper check. Close only after every item in `acceptanceCriteria` has been re-validated independently, with output captured.\n\n**Why not pixels:** Phase 1 changes every list's chrome on purpose. A pixel-identity gate would fail on success and pass only if the work were skipped. Order still matters: write these against the list as it behaves TODAY. Commit before Task 2.\n\n**Files:**\n- Create: `tests/host/test_list_behavior.sh`\n- Create: `tools/param-pages/list_probe.mjs`\n\n**Acceptance Criteria:**\n- probe captures labels, values, selected index, edit brackets\n- assertions cover 3-item, 12-item at 0/6/11, empty value, action item, editMode\n- probe records TEXT, never x/y\n- all pass against today's drawMenuList\n- commit touches only test + probe\n\n**Verify:** `bash tests/host/test_list_behavior.sh`\n\n```json:metadata\n{\"files\": [\"tests/host/test_list_behavior.sh\", \"tools/param-pages/list_probe.mjs\"], \"verifyCommand\": \"bash tests/host/test_list_behavior.sh\", \"acceptanceCriteria\": [\"probe captures labels, values, selected index and edit brackets per draw\", \"assertions cover 3-item, 12-item at index 0/6/11, empty value, action item, editMode\", \"probe records text only, no x/y assertions\", \"all assertions pass against today's drawMenuList before any re-skin\", \"commit touches only the test and the probe, not menu_layout.mjs\"], \"modelTier\": \"standard\", \"userGate\": true, \"tags\": [\"user-gate\"], \"gateScope\": \"ordering\", \"failurePolicy\": \"block\"}\n```"
     },
     {
       "id": 2,
       "subject": "Task 2: Re-skin drawMenuList to the movy chrome",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         1
       ],
@@ -21,7 +21,7 @@
     {
       "id": 3,
       "subject": "Task 3: Six stragglers join the one list",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         2
       ],
@@ -30,7 +30,7 @@
     {
       "id": 4,
       "subject": "Task 4: Page chrome delegates rows; pin zero",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         3
       ],
@@ -39,7 +39,7 @@
     {
       "id": 5,
       "subject": "Task 5: PAGE_KNOBS renders as a list layout",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         4
       ],
@@ -48,7 +48,7 @@
     {
       "id": 6,
       "subject": "Task 6: param_view selects the layout",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         5
       ],
@@ -57,7 +57,7 @@
     {
       "id": 7,
       "subject": "Task 7: Global Settings contract module",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         6
       ],
@@ -66,7 +66,7 @@
     {
       "id": 8,
       "subject": "Task 8: Accessor routing with persistence pinned",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         7
       ],
@@ -75,7 +75,7 @@
     {
       "id": 9,
       "subject": "Task 9: Wire up, hand off modals, delete bespoke path",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         8
       ],

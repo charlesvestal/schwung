@@ -116,7 +116,7 @@ export function drawToolsMenu() {
 
     if (toolModules.length === 0) {
         print(4, 28, "No tools installed", 1);
-        drawFooter({left: "Back: Exit"});
+        drawFooter(["Back: Exit"]);
         return;
     }
 
@@ -136,7 +136,7 @@ export function drawToolsMenu() {
         getValue: (item) => item.value
     });
 
-    drawFooter({left: "Back: Exit", right: "Jog: Select"});
+    drawFooter(["Back: Exit", "Jog: Select"]);
 }
 
 export function drawToolFileBrowser() {
@@ -147,7 +147,7 @@ export function drawToolFileBrowser() {
     if (!toolBrowserState) {
         drawHeader("Browser");
         print(4, 28, "No files found", 1);
-        drawFooter({left: "Back: Up"});
+        drawFooter(["Back: Up"]);
         return;
     }
 
@@ -157,7 +157,7 @@ export function drawToolFileBrowser() {
 
     if (toolBrowserState.items.length === 0) {
         print(4, 28, "No files found", 1);
-        drawFooter({left: "Back: Up"});
+        drawFooter(["Back: Up"]);
         return;
     }
 
@@ -172,7 +172,7 @@ export function drawToolFileBrowser() {
         getValue: () => ""
     });
 
-    drawFooter({left: "Back: Up", right: "Jog: Select"});
+    drawFooter(["Back: Up", "Jog: Select"]);
 }
 
 export function drawToolEngineSelect() {
@@ -196,7 +196,7 @@ export function drawToolEngineSelect() {
         getValue: (item) => item.value
     });
 
-    drawFooter({left: "Back: Files", right: "Jog: Select"});
+    drawFooter(["Back: Files", "Jog: Select"]);
 }
 
 export function drawToolConfirm() {
@@ -222,7 +222,7 @@ export function drawToolConfirm() {
         }
     }
 
-    drawFooter({right: "Jog: Confirm"});
+    drawFooter(["Jog: Confirm"]);
 }
 
 export function drawToolProcessing() {
@@ -272,7 +272,7 @@ export function drawToolProcessing() {
         }
     }
 
-    drawFooter({left: "Back: Cancel"});
+    drawFooter(["Back: Cancel"]);
 }
 
 export function drawToolResult() {
@@ -288,7 +288,7 @@ export function drawToolResult() {
         y += 12;
     }
 
-    drawFooter({left: "Back: Tools"});
+    drawFooter(["Back: Tools"]);
 }
 
 export function drawToolStemReview() {
@@ -325,7 +325,7 @@ export function drawToolStemReview() {
         getValue: (item) => item.value
     });
 
-    drawFooter({right: "Select"});
+    drawFooter(["Select"]);
 }
 
 export function drawToolSetPicker() {
@@ -336,7 +336,7 @@ export function drawToolSetPicker() {
 
     if (toolSetList.length === 0) {
         print(4, 28, "No sets found", 1);
-        drawFooter({left: "Back: Tools"});
+        drawFooter(["Back: Tools"]);
         return;
     }
 
@@ -351,5 +351,5 @@ export function drawToolSetPicker() {
         getValue: () => ""
     });
 
-    drawFooter({left: "Back: Tools", right: "Jog: Select"});
+    drawFooter(["Back: Tools", "Jog: Select"]);
 }
