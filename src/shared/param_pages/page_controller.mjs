@@ -211,6 +211,15 @@ export function drawPageChromeList(ctx, rect, entries, index, { editMode = false
             return e.pages > 1 ? String(e.pages) : "";
         },
         valueAlignRight: true,
+        /* The label floor below makes long values truncate, which on a knobs
+         * page is most of them: "1/2 bar" becomes "1/2...", "kick_01.wav"
+         * becomes "kick...". That is the right trade for the UNSELECTED rows —
+         * a readable label beats a readable value when you are choosing which
+         * row to act on — but it would leave the row you are actually ON
+         * unreadable too, and there is no other way to see the full value from
+         * here. So the selected row's value marquees, exactly as its label
+         * already does. Costs nothing when the value fits. */
+        scrollSelectedValue: true,
         /* `valueX` is the LEFT FLOOR a right-aligned value may not cross, and
          * its default (92) is calibrated for a value edge at 126. Here the edge
          * is 118, or 108 with an arrow on screen, and the floor then wins: "Off"
