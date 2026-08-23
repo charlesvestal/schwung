@@ -35,6 +35,7 @@ import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
          drawBrackets, drawPresetBody, RULE_Y, LAYOUT_MOVY,
          MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W } from "./render_page_movy.mjs";
 import { resolveViz } from "./viz.mjs";
+import { drawMenuList } from "../menu_layout.mjs";
 
 export { LAYOUT_MOVY };
 import { step, stepLevel, reanchor, firstGrid, jumpIndex, groupIndex } from "./page_nav.mjs";
@@ -69,7 +70,7 @@ export { MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W } from "./render_page_movy.mjs";
  * the text (starts x=10) and the right-aligned values (end x=118).
  *
  * Vertically there looked to be no room — five rows at a 9px stride is 45 of
- * the 47 rows between the bank bar and the footer rule. But renderPicker only
+ * the 47 rows between the bank bar and the footer rule. But the list only
  * FILLS a row when it is selected, and an inert menu has nothing selected, so
  * the only occupied rows are the glyphs themselves:
  *
@@ -89,6 +90,113 @@ const MENU_FRAME_X = 4, MENU_FRAME_Y = 9, MENU_FRAME_W = 120;
 /* One clear row above the frame and one below, hence the 1 on each side. */
 const MENU_FRAME_BOTTOM_INSET = 1;
 const MENU_BRACKET_LEN = 7;
+
+/*
+ * The scroll-arrow column for a page-chrome list.
+ *
+ * drawMenuList's default is 120, which is right for a list that owns the whole
+ * 128px screen: the arrow occupies 120..124 and nothing else is out there. This
+ * list does not own the screen — MENU_FRAME's right arm is the column x=123,
+ * rows 47..53, and an INERT menu longer than five entries draws both (the
+ * brackets and a down arrow at 120..124, rows 52..54). They would land on top of
+ * each other in the bottom-right corner and read as a smudge, not as two marks.
+ *
+ * The frame's exclusion zone on the right is x >= 117 on rows 9 and 53 (the
+ * corner arms) plus the whole column x=123. 114 is NOT far enough — rendered
+ * and looked at: the down arrow's foot lands on row 53 at x=115 and x=117, one
+ * pixel off the arm and then on it, and the two read as a single blob in the
+ * corner. 110 clears the arm by three columns and the arrow reads as an arrow.
+ *
+ * drawMenuList derives the right-hand value edge from this, so values pull in to
+ * 108 while an arrow is on screen and go back out to 118 when it is not.
+ */
+const MENU_LIST_INDICATOR_X = 110;
+
+/*
+ * THE ONE LIST, as a page-chrome list.
+ *
+ * Every row on a menu page, an items page and the section picker is drawn here,
+ * by the same drawMenuList that draws the slot editor, Master FX, the file
+ * browser and the enum picker. Before this it was renderPicker, which was
+ * *similar* — same rect, same five rows, same 9px stride — and similar is what
+ * this project exists to end.
+ *
+ * WHAT MOVED, so nobody has to rediscover it from a photograph:
+ *
+ * 1. THE SCROLL WINDOW. renderPicker centred the cursor:
+ *        first = clamp(cur - floor(rows/2), 0, total - rows)
+ *    drawMenuList reserves the last row instead (`keepOffLastRow`):
+ *        first = max(0, sel - (rows - 2))
+ *    For a 10-entry list in a 5-row window:
+ *        sel=0  picker 0..4  (sel on row 0)   list 0..4  (sel row 0)   same
+ *        sel=3  picker 1..5  (sel on row 2)   list 0..4  (sel row 3)
+ *        sel=5  picker 3..7  (sel on row 2)   list 2..6  (sel row 3)
+ *        sel=9  picker 5..9  (sel on row 4)   list 6..9  (sel row 3)
+ *    So: the cursor now settles on the FOURTH row rather than the middle one,
+ *    and at the very end of a list the window shows four entries with the fifth
+ *    row blank rather than five with the cursor on the bottom row. That is
+ *    accepted, not incidental — it is how every other list in the shadow UI
+ *    already scrolls, and one list means one scroll rule.
+ *
+ * 2. Rows gain a "> " cursor prefix, the selected row's fill spans the whole
+ *    128px width rather than stopping at the rect, and scroll arrows appear
+ *    (renderPicker drew none at all, so a long list gave no sign it continued).
+ *
+ * 3. Labels truncate a little sooner: drawMenuList budgets a fixed 6px per glyph
+ *    and pays 2 glyphs for the cursor prefix, where renderPicker measured the
+ *    proportional font with fitText. ~14 chars against ~21 on a valueless row.
+ *
+ * `announce: false` is not optional. This controller already announces every
+ * menu / items / section move itself (announceEntry, announcePageChange, the
+ * picker's own announce) with position and value; letting drawMenuList announce
+ * as well would say everything twice to a screen-reader user.
+ *
+ * EXPORTED, and chain_editor_chrome.mjs's module picker draws through it too.
+ * That file already imports MENU_LIST_X/Y/W from here, with the note "imported
+ * rather than restated: the two pickers must occupy the SAME rectangle, and a
+ * second copy of 'x 8, y 10, w 112' is how they would come to stop doing so".
+ * The row renderer is the same argument one level up: converting the page
+ * chrome and leaving the module picker on renderPicker would put two different
+ * lists in one rectangle, which is the drift this whole exercise exists to end.
+ * The picker draws no bracket frame, so the arrow column is more conservative
+ * there than it needs to be — identical is worth more than six pixels.
+ */
+export function drawPageChromeList(ctx, rect, entries, index) {
+    drawMenuList({
+        ctx,
+        items: entries || [],
+        selectedIndex: (index | 0) < 0 ? -1 : (index | 0),
+        listArea: { topY: rect.y, bottomY: rect.y + rect.h },
+        labelX: rect.x,
+        indicatorX: MENU_LIST_INDICATOR_X,
+        indicatorBottomY: rect.y + rect.h,
+        getLabel: (e) => (e && e.name != null ? String(e.name) : ""),
+        /* A menu entry carries a value; a section carries a page count, and a
+         * one-page section says nothing rather than "1". */
+        getValue: (e) => {
+            if (!e) return "";
+            if (e.value !== undefined && e.value !== null && e.value !== "") return String(e.value);
+            return e.pages > 1 ? String(e.pages) : "";
+        },
+        valueAlignRight: true,
+        /* `valueX` is the LEFT FLOOR a right-aligned value may not cross, and
+         * its default (92) is calibrated for a value edge at 126. Here the edge
+         * is 118, or 108 with an arrow on screen, and the floor then wins: "Off"
+         * right-aligned to 108 wants x=90, gets pushed to 92, and is truncated
+         * to fit the 16px left over — it rendered as "Of". renderPicker had no
+         * floor at all (it right-aligned and fitted the LABEL to what was left),
+         * so the floor goes to the list's own left edge and the label budget,
+         * which drawMenuList already derives from the value's position, does the
+         * work. Found by rendering it and looking, not by reading it. */
+        valueX: rect.x,
+        /* Values end at x=118, not the 126 a full-width list uses: the frame's
+         * right arm is the column x=123 and it runs through the first and last
+         * glyph rows. This is the number renderPicker used (r.x + r.w - 2) and
+         * the number the MENU_FRAME comment above is written against. */
+        valuePaddingRight: 10,
+        announce: false,
+    });
+}
 import { knobInit, knobStep } from "../knob_engine.mjs";
 import { formatParamForSet, learnEnumWireFormat, enumWireValue } from "../param_format.mjs";
 import { announcePage, announceTouch, announceTurn, announcePageContents } from "./announce_page.mjs";
@@ -2142,13 +2250,10 @@ export function createController(io = {}) {
                 const pbottom = footer ? RULE_Y : 64;
                 drawHeaderMovy(ctx, title || "", "SECTIONS", false);
                 drawBankBar(ctx, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
-                renderPicker(ctx, {
-                    rect: { x: MENU_LIST_X, y: MENU_LIST_Y,
-                            w: MENU_LIST_W, h: pbottom - MENU_LIST_Y },
-                    entries: s.pickerEntries,
-                    index: s.pickerIndex,
-                    header: false,
-                });
+                drawPageChromeList(ctx,
+                    { x: MENU_LIST_X, y: MENU_LIST_Y,
+                      w: MENU_LIST_W, h: pbottom - MENU_LIST_Y },
+                    s.pickerEntries, s.pickerIndex);
                 if (footer) drawFooter(ctx, footer);
                 return;
             }
@@ -2162,10 +2267,10 @@ export function createController(io = {}) {
                 const ibottom = footer ? RULE_Y : 64;
                 const ist = itemsState(mp) || { list: [], cursor: 0, current: -1 };
                 const entered = menuEntered();
-                renderPicker(ctx, {
-                    rect: { x: MENU_LIST_X, y: MENU_LIST_Y,
-                            w: MENU_LIST_W, h: ibottom - MENU_LIST_Y },
-                    entries: ist.list.length
+                drawPageChromeList(ctx,
+                    { x: MENU_LIST_X, y: MENU_LIST_Y,
+                      w: MENU_LIST_W, h: ibottom - MENU_LIST_Y },
+                    ist.list.length
                         ? ist.list.map((it) => ({
                             name: it.label,
                             /* The one in force marks itself where a menu page
@@ -2173,9 +2278,7 @@ export function createController(io = {}) {
                             value: it.index === ist.current ? "*" : "",
                           }))
                         : [{ name: "(none)", value: "" }],
-                    index: entered ? ist.cursor : -1,
-                    header: false,
-                });
+                    entered ? ist.cursor : -1);
                 if (!entered) {
                     drawBrackets(ctx, MENU_FRAME_X, MENU_FRAME_Y, MENU_FRAME_W,
                                  ibottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
@@ -2230,15 +2333,12 @@ export function createController(io = {}) {
                  */
                 const listRect = { x: MENU_LIST_X, y: MENU_LIST_Y,
                                    w: MENU_LIST_W, h: bottom - MENU_LIST_Y };
-                renderPicker(ctx, {
-                    rect: listRect,
-                    entries: (mp.entries || []).map((e) => ({ name: e.label, value: e.value })),
+                drawPageChromeList(ctx, listRect,
+                    (mp.entries || []).map((e) => ({ name: e.label, value: e.value })),
                     /* Inert: nothing is highlighted, because nothing is selected
                      * yet — the page is something you can go INTO, not something
                      * you are already in. */
-                    index: entered ? menuIndex(mp) : -1,
-                    header: false,
-                });
+                    entered ? menuIndex(mp) : -1);
                 if (!entered) {
                     drawBrackets(ctx, MENU_FRAME_X, MENU_FRAME_Y, MENU_FRAME_W,
                                  bottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
