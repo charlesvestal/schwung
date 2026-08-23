@@ -213,9 +213,9 @@ export const PERSISTING_KEYS = new Set(
  */
 export function globalStoredValue(key, engineValue) {
     if (key === "usbc_out_persist") {
-        /* Three options, two states: both On indexes store 1. The third option
-         * exists only to carry the wire annotation on the surfaces with room
-         * for it — the source is read-only, Move's own menu still chooses it. */
+        /* Four options, two states: every On index stores 1. The extra three
+         * carry only the wire annotation on the surfaces with room for it —
+         * the source is read-only, Move's own menu still chooses it. */
         return (Number(engineValue) > 0) ? "1" : "0";
     }
     const values = GLOBAL_ENUM_VALUES[key];
@@ -254,11 +254,20 @@ export function readGlobalParam(io, key) {
         const on = io.readParam("usbc_out_persist");
         if (on === null || on === undefined || on === "") return on;
         if (String(on) !== "1") return "0";
-        /* Which On: annotate with the source last seen on the wire. Unknown
-         * (-1, before anything has been observed) falls back to the plain On
-         * index rather than claiming a route. */
+        /*
+         * Which On: annotate with the source last seen on the wire.
+         *
+         * Unknown (-1, before anything has been observed) resolves to the
+         * PLAIN On, index 1, and that is the point of the fourth option. This
+         * row is the only honest read of what is actually routed — Move's own
+         * Settings screen goes stale after Schwung restores the value — so
+         * naming a source that has not been seen would mislead precisely the
+         * user who came here to check.
+         */
         const src = io.readParam("usbc_out_source");
-        return String(src) === "1" ? "2" : "1";
+        if (String(src) === "1") return "3";   /* Main Out */
+        if (String(src) === "0") return "2";   /* Mic */
+        return "1";                            /* observed nothing yet */
     }
     return globalEngineValue(key, io.readParam(key));
 }
@@ -324,14 +333,29 @@ export const AUDIO_PARAMS = [
      * bool, which is the part the user sets; the annotation appears everywhere
      * with room for it.
      *
-     * Both On indexes store 1. The wire source is read-only — Move's menu
+     * All three On indexes store 1. The wire source is read-only — Move's menu
      * still chooses it — so the io reads back whichever On index matches the
-     * source and collapses both to "1" on write. That belongs to the io, not
-     * to the declaration.
+     * source and collapses all of them to "1" on write. That belongs to the
+     * io, not to the declaration.
+     *
+     * THE FOURTH OPTION IS THE UNKNOWN STATE, and it is not padding.
+     *
+     * The source is -1 until something is seen on the wire. GLOBAL_SETTINGS_
+     * SECTIONS never modelled that, because the old code formatted the
+     * annotation at READ time and simply omitted the parenthetical when the
+     * source was unknown. A three-option declaration cannot express the
+     * omission, so it has to pick an annotated index — and picking "On (Mic)"
+     * states as fact the one thing this row exists to tell the truth about.
+     * Move's own Settings screen goes stale after Schwung restores the value,
+     * which is the whole reason for the annotation; a confident "Mic" with
+     * nothing observed is worse than the stale screen it was added to correct.
+     *
+     * So plain "On" is a real state: persistence is on, the source has not
+     * been observed. A declaration has to be able to say "not yet known".
      */
     { key: "usbc_out_persist", name: "USB-C", type: "enum",
-      options: ["Off", "On (Mic)", "On (Main Out)"],
-      short_options: ["OFF", "ON", "ON"], default: 1 },
+      options: ["Off", "On", "On (Mic)", "On (Main Out)"],
+      short_options: ["OFF", "ON", "ON", "ON"], default: 1 },
 ];
 
 /* ------------------------------------------------------------ accessibility */
