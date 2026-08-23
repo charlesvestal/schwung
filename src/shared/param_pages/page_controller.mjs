@@ -2392,6 +2392,11 @@ export function createController(io = {}) {
         selectionChanged: armContractSettle,
         onJog, goToPage, restorePage, pageLabel, onKnobTurn, onKnobTouch, onClick, takePending, commitEnum,
         enumPeek,
+        /* The resolved graphics for the current page. Exposed so the host can
+         * advance a sample's peak-envelope job from its TICK without planning
+         * a second time -- the result is cached per fingerprint+page, so
+         * asking every tick is free. */
+        vizGroups,
         openPicker, closePicker, pickerSelect, showHint, dismissHint,
         menuEntry, menuIndex: () => menuIndex(page()),
         menuEntered, enterMenu, exitMenu, clearTouch,

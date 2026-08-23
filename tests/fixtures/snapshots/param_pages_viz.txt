@@ -41,6 +41,8 @@ braids	Main	filter	declared	cutoff
 branchage	Params - 2	switch	detected	kick_branch_enabled
 branchage	Params - 3	switch	detected	hat_branch_enabled
 branchage	Params - 3	switch	detected	snare_branch_enabled
+breakbeat	Main	sample	detected	A_sample_path
+breakbeat	Main	sample	detected	B_sample_path
 breakbeat	Main - 2	switch	detected	save_preset
 chiptune	Main	envelope	detected	env_attack,env_decay,env_sustain,env_release
 chiptune	Main	fader	detected	volume
@@ -175,6 +177,7 @@ freak	LFO	waveform	detected	lfo_shape
 freak	Random	switch	detected	random_retrig
 freak	Voice & Mix	fader	detected	volume
 gate	Main	envelope	detected	attack,hold,release
+gesture-test	Main	sample	detected	sample_path
 gesture-test	Main	switch	detected	power
 granny	ADSR Envelope	fader	detected	amp_attack_ms
 granny	ADSR Envelope	fader	detected	amp_decay_ms
@@ -328,6 +331,7 @@ mrdrums	Main	fader	detected	pad_vol
 mrdrums	Main	sample	detected	pad_start
 mrdrums	Main	switch	detected	ui_auto_select_pad
 mrdrums	Pad Settings	fader	detected	pad_rand_vol_amt
+mrdrums	Pad Settings	sample	detected	pad_sample_path
 mrsample	Filter	filter	detected	filter_type,filter_cutoff,filter_res
 mrsample	Global	fader	detected	gain
 mrsample	Main	fader	detected	gain

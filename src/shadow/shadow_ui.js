@@ -220,6 +220,12 @@ import {
     paramPagesComponent, paramPagesSlot, clearParamPagesTouch,
     enumPickerFooterHints, CONTRACT_SETTLE_MS
 } from './shadow_ui_param_pages.mjs';
+/* Registers the QuickJS file IO for the sample cell's peak envelope. Imported
+ * for its side effect, and from HERE because this file is the shadow UI's only
+ * genuinely device-only module — node never imports it (the host tests lift the
+ * functions they need with new Function). wav_io_qjs.mjs names `std` and `os`,
+ * which are QuickJS modules; anywhere node can reach, that import is fatal. */
+import '/data/UserData/schwung/shared/param_pages/wav_io_qjs.mjs';
 import { createSlotGridIo, createMasterGridIo,
          MFX_MIDI_CHANNEL_OPTIONS, mfxMidiChannelToIndex,
          mfxMidiChannelFromIndex } from './shadow_ui_slot_grid.mjs';
