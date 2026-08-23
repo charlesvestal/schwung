@@ -890,9 +890,17 @@ Expected: no new `FAIL` lines versus a `main` baseline.
 
 - [ ] **Step 7: Verify on hardware**
 
+**STOP HERE — this is a checkpoint, not a command.** Run the build:
+
 ```bash
-./scripts/build.sh && ./scripts/install.sh local --skip-modules --skip-confirmation
+./scripts/build.sh
 ```
+
+Then hand over. **Do not run `install.sh`**: a deploy restarts the service and
+swaps the shim under whatever the user is doing on the Move, which is an
+instrument and not a test rig. Report what is built, what to look at, and what
+question only the hardware can answer. Resume when they come back with the
+answer.
 
 Open a slot's knob grid. Confirm knobs 1–4 read white and 5–8 amber, that intensity tracks the values on screen, and that a page with fewer than 8 bound params leaves the spare knobs dark. Check `debug.log` for output-buffer complaints during a fast page flip.
 
@@ -1980,9 +1988,17 @@ Export `advancePendingPeakJobs` from `wav_peaks.mjs` — it walks the cache and 
 
 - [ ] **Step 8: Verify on hardware**
 
+**STOP HERE — this is a checkpoint, not a command.** Run the build:
+
 ```bash
-./scripts/build.sh && ./scripts/install.sh local --skip-modules --skip-confirmation
+./scripts/build.sh
 ```
+
+Then hand over. **Do not run `install.sh`**: a deploy restarts the service and
+swaps the shim under whatever the user is doing on the Move, which is an
+instrument and not a test rig. Report what is built, what to look at, and what
+question only the hardware can answer. Resume when they come back with the
+answer.
 
 Load granny with a real sample and a long one (30 s+). Confirm the envelope resolves within a second or so and that the knob grid's frame rate does not drop while it does:
 
