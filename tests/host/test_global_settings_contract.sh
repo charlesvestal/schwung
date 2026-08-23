@@ -281,7 +281,7 @@ const plan = planPages({ hierarchy, chainParams });
   const EXPECT = {
     display_mirror: "Mirror", overlay_knobs: "Overlay",
     pad_typing: "Pad Typing", text_preview: "Preview",
-    midi_indicator_enabled: "Readout", param_view: "Param View",
+    midi_indicator_enabled: "Show MIDI", param_view: "Param View",
     link_audio_routing: "Move>Schwung", link_audio_publish: "Schwung>Link",
     latency_comp_enabled: "Latency Comp", resample_bridge: "Resample",
     skipback_shortcut: "Skipback", skipback_seconds: "Skipback Len",
