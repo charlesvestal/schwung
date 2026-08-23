@@ -28,11 +28,16 @@
  *   `state` is the parsed synth:state object when it is JSON, otherwise the
  *   raw opaque string (mirrors how buildSlotPatchJson stores synth state).
  *
- * Entry point: Shift+Click any loaded chain component (synth / FX / MIDI FX) ->
- * module picker -> "[User Presets]" (indented row tucked just
+ * Entry points: Shift+Click any loaded chain component (synth / FX / MIDI FX)
+ * -> module picker -> "[User Presets]" (indented row tucked just
  * beneath the loaded module; injected in enterComponentSelect as the
  * __user_presets__ synthetic entry and cursor-defaulted there, routed from
- * applyComponentSelection with the component key + DSP prefix + module id).
+ * applyComponentSelection with the component key + DSP prefix + module id) --
+ * AND the knob grid's "User Presets" trailing page (shadow_ui.js
+ * componentTrailingMenus / runComponentActionFromGrid), which reaches
+ * enterPresetBrowser directly for Load and adds three grid-only entry points
+ * below (overwriteUserPreset, enterPresetSaveAs, enterPresetDeleteConfirm)
+ * for Save / Save As / Delete without a detour through the picker.
  *
  * State accessors come from the shared `ctx` (populated by shadow_ui.js); see
  * shadow_ui_ctx.mjs. As with the other view modules, only touch ctx.* inside
@@ -222,6 +227,7 @@ function doSavePreset(slot, rawName) {
         showSaveError();
         return;
     }
+    const savedPrefix = presetPrefix;
 
     const dir = presetDir(presetModule);
     if (typeof host_ensure_dir === "function") host_ensure_dir(dir);
@@ -260,6 +266,15 @@ function doSavePreset(slot, rawName) {
     selectedPreset = idx >= 0 ? idx + 1 : 0;
     announce(`Saved ${name}`);
     ctx.needsRedraw = true;
+    /* Tell the grid's User Presets row what is now loaded, whether or not the
+     * grid is the thing that asked for this save — the hook is a no-op when
+     * it is not up. One call site for every path that can WRITE a preset
+     * (this one and the browser's own "[Save current...]" row both run
+     * through here), so the record can never fall out of step with the
+     * disk. */
+    if (typeof ctx.onPresetSaved === "function") {
+        ctx.onPresetSaved(slot, savedPrefix, name, stateJson);
+    }
 }
 
 function showSaveError() {
@@ -316,10 +331,17 @@ function applyStateBlob(slot, str) {
     return true;
 }
 
-/* Explicit Load (commit): read + apply, with error announcements. */
+/* Explicit Load (commit): read + apply, with error announcements. Scrolling
+ * the list auditions live but must NOT reach this — nothing is committed
+ * until Load, which is also the only place that updates the grid's "which
+ * preset is loaded" record. */
 function applyPreset(slot, entry) {
     const str = readPresetStateString(entry, true);
-    return applyStateBlob(slot, str);
+    const ok = applyStateBlob(slot, str);
+    if (ok && typeof ctx.onPresetLoaded === "function") {
+        ctx.onPresetLoaded(slot, presetPrefix, entry ? entry.name : "", str);
+    }
+    return ok;
 }
 
 /* ---- Live preview ------------------------------------------------------- */
@@ -396,6 +418,13 @@ function doDeletePreset(entry) {
         /* ignore — refresh below reflects reality either way */
     }
     loadPresetList();
+    /* The grid's record clears only when the DELETED name matches the one
+     * currently loaded — deleting some other saved preset from the list must
+     * not disturb it. That comparison is the host's (it owns the record); this
+     * only reports what happened. */
+    if (typeof ctx.onPresetDeleted === "function") {
+        ctx.onPresetDeleted(ctx.selectedSlot, presetPrefix, entry.name);
+    }
 }
 
 /* ---- Enter -------------------------------------------------------------- */
@@ -453,6 +482,116 @@ function enterPresetDetail(presetIndex) {
     ctx.needsRedraw = true;
     const entry = presets[presetIndex - 1];
     announce(`${entry ? entry.name : "Preset"}, Load`);
+}
+
+/* ---- Grid-driven actions -------------------------------------------------
+ *
+ * The knob grid's "User Presets" trailing page (shadow_ui.js,
+ * componentTrailingMenus / runComponentActionFromGrid) offers Load / Save /
+ * Save As / Delete without detouring through the module picker. Load reuses
+ * enterPresetBrowser outright, unchanged. Save and Delete need new entry
+ * points below because neither existing flow does what they need: the
+ * browser's own Save never overwrites (a name collision auto-appends a
+ * number, by design), and Delete has never been reachable without first
+ * paging into the list.
+ */
+
+/*
+ * Overwrite the named preset's state, in place. Refuses on a FAILED read
+ * (null/undefined) — a timed-out `<prefix>:state` must never replace a good
+ * preset with nothing. An EMPTY declared state ("") is a real answer from the
+ * module and is written. Returns true on success.
+ */
+export function overwriteUserPreset(slot, prefix, moduleId, name) {
+    if (!moduleId || !name) return false;
+    const dsPrefix = prefix || "synth";
+    const stateJson = ctx.getSlotStateWithRetry(slot, dsPrefix + ":state");
+    if (stateJson === null || stateJson === undefined) return false;
+
+    presetPrefix = dsPrefix;
+    presetModule = moduleId;
+    loadPresetList();
+    const entry = presets.find((p) => p.name === name);
+    if (!entry) return false;
+
+    let state;
+    try {
+        state = JSON.parse(stateJson);
+    } catch (e) {
+        state = stateJson;
+    }
+    const payload = JSON.stringify({
+        name: name,
+        module: moduleId,
+        version: PRESET_VERSION,
+        state: state
+    });
+    let ok = false;
+    if (typeof host_write_file === "function") {
+        ok = host_write_file(`${presetDir(moduleId)}/${entry.file}`, payload);
+    }
+    if (ok) loadPresetList();
+    return ok;
+}
+
+/*
+ * Straight to the keyboard — no browser, no list. Commits through the SAME
+ * doSavePreset the "[Save current...]" row uses (never-overwrite, auto-dedup
+ * name), so there is one save implementation rather than two; doSavePreset
+ * itself notifies ctx.onPresetSaved once the write lands, which is what
+ * updates the grid's record and refreshes the trailing page.
+ */
+export function enterPresetSaveAs(slot, componentKey, moduleId, prefix) {
+    if (!moduleId) {
+        announce("No module in this slot");
+        return;
+    }
+    presetPrefix = prefix || "synth";
+    presetModule = moduleId;
+    presetModuleLabel = ctx.getSlotParam(slot, presetPrefix + ":name") || presetModule || "Module";
+    loadPresetList();
+    openTextEntry({
+        title: "",
+        initialText: defaultSaveName(slot),
+        onAnnounce: announce,
+        onConfirm: (name) => {
+            doSavePreset(slot, (name || "").trim() || "Preset");
+        },
+        onCancel: () => {
+            announce("Save cancelled");
+            ctx.needsRedraw = true;
+        }
+    });
+}
+
+/*
+ * The SAME confirm-delete screen the detail view raises (VIEWS.PRESET_DETAIL,
+ * confirmingDelete), entered directly rather than through the list — one
+ * delete path, one confirmation. Confirming or backing out falls through to
+ * the existing handlers unchanged.
+ */
+export function enterPresetDeleteConfirm(slot, componentKey, moduleId, prefix, name) {
+    const { setView, updateFocusedSlot, VIEWS } = ctx;
+    presetPrefix = prefix || "synth";
+    presetModule = moduleId || "";
+    loadPresetList();
+    const idx = presets.findIndex((p) => p.name === name);
+    if (idx < 0) {
+        /* The grid's record and the disk have fallen out of step (the file
+         * was removed from under it). Nothing safe to confirm against. */
+        announce("Preset not found");
+        return;
+    }
+    presetModuleLabel = ctx.getSlotParam(slot, presetPrefix + ":name") || presetModule || "Module";
+    ctx.selectedSlot = slot;
+    updateFocusedSlot(slot);
+    selectedPreset = idx + 1;
+    selectedDetailItem = DETAIL_DELETE;
+    confirmingDelete = true;
+    confirmIndex = 0;
+    setView(VIEWS.PRESET_DETAIL);
+    ctx.needsRedraw = true;
+    announce(`Delete ${name}?`);
 }
 
 /* ---- Draw --------------------------------------------------------------- */
