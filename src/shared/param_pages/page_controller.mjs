@@ -134,7 +134,7 @@ const MENU_BRACKET_LEN = 7;
  * drawMenuList derives the right-hand value edge from this, so values pull in to
  * 108 while an arrow is on screen and go back out to 118 when it is not.
  */
-const MENU_LIST_INDICATOR_X = 110;
+const MENU_LIST_INDICATOR_X = 122;
 
 /*
  * THE ONE LIST, as a page-chrome list.
