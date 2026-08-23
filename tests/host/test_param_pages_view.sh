@@ -37,14 +37,14 @@ const REPO = process.env.REPO;
 let cleared = 0;
 const drawCalls = [];
 globalThis.clear_screen = () => { cleared++; };
-globalThis.fill_rect = (...a) => { drawCalls.push(a); };
-globalThis.print = (...a) => { drawCalls.push(a); };
+globalThis.fill_rect = (...a) => { drawCalls.push(["fill_rect", ...a]); };
+globalThis.print = (...a) => { drawCalls.push(["print", ...a]); };
 globalThis.text_width = (t) => String(t == null ? "" : t).length * 6;
 /* draw_line / fill_circle: native shapes the Movy-style renderer prefers
  * over a JS-side Bresenham/circle walk when the host provides them — see
  * src/host/js_display.c and viz_draw.mjs / render_page_movy.mjs. */
-globalThis.draw_line = (...a) => { drawCalls.push(a); };
-globalThis.fill_circle = (...a) => { drawCalls.push(a); };
+globalThis.draw_line = (...a) => { drawCalls.push(["draw_line", ...a]); };
+globalThis.fill_circle = (...a) => { drawCalls.push(["fill_circle", ...a]); };
 globalThis.host_send_screenreader = (t) => spoken.push(t);
 globalThis.shadow_get_display_mode = () => 1;
 let ttsOn = false;
@@ -59,7 +59,8 @@ Promise.all([
   import(process.env.VIEW),
   import(REPO + "/src/shadow/shadow_ui_ctx.mjs"),
   import(REPO + "/tools/param-pages/fake_device.mjs"),
-]).then(([V, C, D]) => {
+  import(REPO + "/src/shared/param_pages/page_controller.mjs"),
+]).then(([V, C, D, PC]) => {
   const fail = (msg) => { console.log("FAIL: " + msg); process.exit(1); };
 
   /* ---- a fake shadow_ui: only what this view module touches ------------- */
@@ -76,16 +77,37 @@ Promise.all([
     evaluateVisibilityCondition: undefined,
   });
 
-  /* ---- 1. the setting gates it, and the screen reader overrides --------- */
+  /* ---- 1. TWO questions, two functions ----------------------------------
+   *
+   * UPDATED 2026-08-23 (design §4, "param_view selects the layout"). This block
+   * used to assert `Param View = List must not enable the grid`, i.e. that List
+   * forked the user out of the page chrome entirely and into the hierarchy
+   * editor. That fork existed only because PAGE_KNOBS had no list arrangement;
+   * it does now (LAYOUT_LIST, test_knobs_list_layout.sh), so List is an
+   * arrangement inside this engine rather than a different engine. The
+   * assertion is therefore restated, not deleted: paramPagesEnabled() answers
+   * only "may the page chrome run", paramPagesLayout() answers "which
+   * arrangement".
+   *
+   * The screen-reader half is UNCHANGED and must stay that way: TTS still
+   * refuses the page chrome outright, so TTS users keep reaching the hierarchy
+   * editor exactly as before. Flipping that is design §6.
+   */
   {
     paramView = 0; ttsOn = false;
-    if (V.paramPagesEnabled()) fail("Param View = List must not enable the grid");
+    if (!V.paramPagesEnabled()) fail("Param View = List must still run the page chrome — List is a layout now, not a fork");
+    if (V.paramPagesLayout() !== PC.LAYOUT_LIST) fail("Param View = List must select the list layout");
     paramView = 1;
-    if (!V.paramPagesEnabled()) fail("Param View = Knobs should enable the grid");
-    /* A grid has eight cells and nothing selected; until the announce calls are
-     * proven on hardware, the list stays the accessible surface. */
+    if (!V.paramPagesEnabled()) fail("Param View = Knobs should enable the page chrome");
+    if (V.paramPagesLayout() !== PC.LAYOUT_MOVY) fail("Param View = Knobs must select the movy grid layout");
+    /* A grid has eight cells and nothing selected, and the announcements for the list
+     * layout are not proven on hardware; until then the hierarchy editor
+     * stays the accessible surface. */
     ttsOn = true;
-    if (V.paramPagesEnabled()) fail("the screen reader must force the list regardless of the setting");
+    if (V.paramPagesEnabled()) fail("the screen reader must refuse the page chrome regardless of the setting");
+    /* ...and it says nothing about the ARRANGEMENT. The two questions are
+     * separate, which is the whole point of the split. */
+    if (V.paramPagesLayout() !== PC.LAYOUT_MOVY) fail("the screen reader must not change what paramPagesLayout reports");
     ttsOn = false;
   }
 
@@ -116,6 +138,39 @@ Promise.all([
     if (!V.drawParamPages()) fail("drawParamPages should report that it drew");
     if (!cleared) fail("the view did not clear the screen");
     if (drawCalls.length < 20) fail("the view barely drew anything: " + drawCalls.length + " calls");
+  }
+
+  /* ---- 4b. the SETTING reaches the DRAW, with no re-entry ---------------
+   *
+   * The layout is applied at the page-draw call site, so flipping Param View
+   * while the view is up must change what the next frame draws. Asserted on the
+   * draw calls rather than on a state getter, because a `setLayout` that is
+   * called but not honoured looks identical from outside otherwise.
+   *
+   * The discriminator is COST. Eight cells with rings, arcs, labels and value
+   * bands are several hundred primitives; five label-and-value rows are a small
+   * fraction of that (measured: ~793 vs ~273 on obxd page 1). Counting a
+   * specific primitive would be brittle — draw_circle is optional and falls
+   * back to fill_rect when the host does not provide it, which is exactly the
+   * case here. */
+  {
+    const drawWith = (mode) => {
+      paramView = mode;
+      drawCalls.length = 0;
+      if (!V.drawParamPages()) fail("drawParamPages should report that it drew at param_view=" + mode);
+      return drawCalls.slice();
+    };
+    const kind = V.currentParamPage() && V.currentParamPage().kind;
+    if (kind !== "knobs") fail("4b needs a knobs page to compare layouts, got " + kind);
+    const grid = drawWith(1);
+    const list = drawWith(0);
+    if (JSON.stringify(grid) === JSON.stringify(list))
+      fail("Param View made no difference to the frame — the layout is not reaching the draw");
+    if (!(grid.length > list.length * 2))
+      fail("the list frame is not visibly cheaper than the grid frame: "
+           + grid.length + " vs " + list.length + " — is it still drawing cells?");
+    paramView = 1;
+    V.drawParamPages();
   }
 
   /* ---- 5. MIDI routes through, and back hands the view back ------------- */
