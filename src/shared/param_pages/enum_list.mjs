@@ -38,10 +38,12 @@
  * codebase has already had, which is why test_enum_picker_chrome.sh asserts the
  * row COUNT and clipped() === 0 rather than eyeballing one render.
  */
-import { RULE_Y, drawHeader, drawFooter }
-    from '/data/UserData/schwung/shared/param_pages/render_page_movy.mjs';
-import { LIST_LABEL_X, drawMenuList }
-    from '/data/UserData/schwung/shared/menu_layout.mjs';
+/* RELATIVE, like every other shared/param_pages module — they are imported
+ * under node by the host tests, and a device-absolute path (the convention in
+ * the src/shadow files, which are not importable anyway) makes this module and
+ * everything that pulls it in unresolvable there. */
+import { RULE_Y, drawHeader, drawFooter } from "./render_page_movy.mjs";
+import { LIST_LABEL_X, drawMenuList } from "../menu_layout.mjs";
 
 export const ENUM_LIST_TOP_Y = 9;
 export const ENUM_LIST_BOTTOM_Y = RULE_Y - 1;

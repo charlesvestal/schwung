@@ -35,6 +35,9 @@ import { decodeInput, applyInput } from '/data/UserData/schwung/shared/param_pag
 import { PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS } from '/data/UserData/schwung/shared/param_pages/page_plan.mjs';
 import { LAYOUT_BAR, LAYOUT_DIAL } from '/data/UserData/schwung/shared/param_pages/render_page.mjs';
 import { LAYOUT_MOVY } from '/data/UserData/schwung/shared/param_pages/render_page_movy.mjs';
+/* The enum option screen, shared with the picker view in shadow_ui.js — one
+ * screen, two entries, opposite commit semantics. See enum_list.mjs. */
+import { drawEnumList } from '/data/UserData/schwung/shared/param_pages/enum_list.mjs';
 import { announce } from '/data/UserData/schwung/shared/screen_reader.mjs';
 import { log, isLoggingEnabled } from '/data/UserData/schwung/shared/logger.mjs';
 
@@ -701,6 +704,41 @@ export function drawParamPages() {
         },
         { title: headerTitle(), footer: footerHints() }
     ));
+
+    /*
+     * THE ENUM PEEK, over the grid.
+     *
+     * Deliberately not a view. The detent that raised it has ALREADY written,
+     * so there is nothing for Back to cancel and no state to unwind — it just
+     * stops being drawn. Routing it through VIEWS.ENUM_PICKER would give the
+     * same screen two meanings for Back, one of them a lie.
+     *
+     * Full-screen rather than a card: while you are turning a knob you are not
+     * reading the rest of the grid, and a card-sized rect would show fewer
+     * options than the picker does, which is the whole thing the list is for.
+     * Sharing enum_list.mjs is what keeps the two one screen; the only
+     * difference is the header word.
+     *
+     * Drawn AFTER the grid and over it, so a frame in which the peek expires
+     * falls back to a complete page rather than to a hole.
+     */
+    const peek = controller.enumPeek();
+    if (peek) {
+        clear_screen();
+        drawEnumList({ fillRect: fill_rect, print, textWidth: text_width }, {
+            title: peek.title,
+            /* Not "SELECT". Nothing is being selected — the value is already
+             * set — and naming a gesture the screen does not have is how a
+             * user learns to press a button that does nothing. */
+            headerRight: "TURNING",
+            options: peek.options,
+            index: peek.index,
+            /* Cursor and live value are the SAME here, unlike the picker where
+             * the `*` marks what Back would return you to. */
+            markIndex: peek.index,
+            footer: [["TURN", "SET"]],
+        });
+    }
     return true;
 }
 
