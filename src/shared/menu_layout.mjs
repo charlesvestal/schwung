@@ -396,9 +396,32 @@ export function drawMenuList({
      * this is 118, i.e. exactly SCREEN_WIDTH - VALUE_RIGHT_CLEARANCE — the
      * constant is kept as the statement of the 10px budget and as the ceiling
      * on how far right a value may ever sit. */
-    const valueRightEdge = hasScrollArrow
-        ? Math.min(indicatorX - 2, SCREEN_WIDTH - VALUE_RIGHT_CLEARANCE)
-        : SCREEN_WIDTH - valuePaddingRight;
+    const valueRightEdgeClear = SCREEN_WIDTH - valuePaddingRight;
+    const valueRightEdgeArrow = Math.min(indicatorX - 2,
+                                         SCREEN_WIDTH - VALUE_RIGHT_CLEARANCE);
+    /*
+     * THE CLEARANCE IS CHARGED PER ROW, not to the whole list.
+     *
+     * The arrows are drawn at exactly two places — drawArrowUp at
+     * resolvedTopY and drawArrowDown at resolvedBottomY - 3 — so they overlap
+     * the FIRST visible row and the LAST visible row and nothing in between.
+     * Reserving the column for the whole list therefore took 10px off every
+     * row to make room for a glyph that touches two of them, and on the
+     * page-chrome list (whose edge is already pulled in to 118 by the frame)
+     * that left 100px for label + value. "Latency Comp" measures 71 and "On"
+     * measures 12, which with the cursor prefix and the gap is 101 — so a row
+     * that fits by a pixel was truncated to "Latency..." to pay for an arrow
+     * three rows away. Reported from the device, twice.
+     *
+     * A middle row now gets the full 118. The two rows that really do sit
+     * under an arrow still pull in to 108, which is the only place the
+     * collision was ever possible.
+     */
+    const upArrowRow   = (startIdx > 0) ? startIdx : -1;
+    const downArrowRow = (endIdx < totalItems) ? endIdx - 1 : -1;
+    const valueRightEdgeFor = (i) =>
+        (i === upArrowRow || i === downArrowRow) ? valueRightEdgeArrow
+                                                 : valueRightEdgeClear;
 
     /* The no-value label column needs no equivalent: its budget is
      * `indicatorX - labelX - labelGap`, which stops at 120 whether or not an
@@ -464,9 +487,10 @@ export function drawMenuList({
          * an edge pulled in by the CLOSING bracket, and is then shifted left by
          * the OPENING one, which puts the "]" precisely on valueRightEdge. */
         const bracketed = editMode && valueAlignRight && isSelected;
+        const rowEdge = valueRightEdgeFor(i);
         const rowValueRightEdge = bracketed
-            ? valueRightEdge - measure("]")
-            : valueRightEdge;
+            ? rowEdge - measure("]")
+            : rowEdge;
 
         if (valueAlignRight && fullValue) {
             let valueXFloor = valueX;

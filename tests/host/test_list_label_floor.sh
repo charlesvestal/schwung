@@ -43,17 +43,25 @@ const fail = (m) => { console.error("FAIL: " + m); failures++; };
 /* breakbeats real first knobs page: two samples that differ only in their
  * LABEL, which is exactly the case the old budget destroyed. */
 const ROWS = [
-    { name: "A Sample", value: "kick_01.wav" },
-    { name: "A Length", value: "1/2 bar" },
-    { name: "B Sample", value: "kick_01.wav" },
-    { name: "B Length", value: "4 bars" },
-    { name: "B Chance", value: "63" },
-    /* A sixth entry in a five-row rect, so a scroll arrow is on screen and the
-     * value edge pulls in to 108 — the geometry the screenshot above was taken
-     * in. Without it the rows have eight more pixels and the defect is milder
-     * than the one being fixed. */
+    { name: "A Sample", value: "kick_01_long.wav" },
+    { name: "A Length", value: "1/2 bar triplet" },
+    { name: "B Sample", value: "kick_01_long.wav" },
+    { name: "B Length", value: "4 bars looped" },
+    { name: "B Chance", value: "63 percent" },
+    /* A sixth entry in a five-row rect, so a scroll arrow IS on screen. It no
+     * longer widens the defect for every row — the clearance is charged per
+     * row now, and only the first and last visible rows sit under an arrow —
+     * but it keeps this fixture rendering the same five-of-six window the
+     * screenshot above was taken in. */
     { name: "Complexity", value: "63" },
 ];
+/* The filenames are long ON PURPOSE. With the arrow clearance charged per row
+ * (see menu_layout.mjs) a middle row gets the full 118px, and at the old
+ * `kick_01.wav` the floor stopped biting there at all — assertion 5, the
+ * vacuity guard in this file, caught that immediately and refused to let
+ * assertion 1 pass on a fixture that no longer reproduces anything. Long
+ * enough to crush an eight-character label at 118px is the property this
+ * fixture has to keep, not any particular filename. */
 const VISIBLE = 5;
 /* The page-chrome list rect, i.e. the geometry drawPageChromeList renders in. */
 const RECT = { x: 8, y: 10, w: 112, h: 45 };
