@@ -446,6 +446,90 @@ const lastTwo = (pages) => pages.slice(-2).map((p) => p.name).join(",");
   if (c2.pages.some((p) => p.trailing)) fail("no io.trailingMenus must mean no trailing pages");
 }
 
+/* ---- replanForMode must keep the trailing pages, and keep them LAST ---- */
+{
+  const HIER3 = { modes: ["a", "b"], mode_param: "mode", levels: {
+    a: { label: "A", knobs: ["x"], params: [{ key: "x" }] },
+    b: { label: "B", knobs: ["y"], params: [{ key: "y" }] },
+  } };
+  const CP3 = ["x", "y"].map((k) => ({ key: k, type: "float", min: 0, max: 1, step: 0.01 }));
+  const store3 = { "synth:ui_hierarchy": JSON.stringify(HIER3),
+                   "synth:chain_params": JSON.stringify(CP3),
+                   "synth:mode": "a", "synth:x": "0.1", "synth:y": "0.2" };
+  const trailingMenus3 = () => ([{ name: "Module",
+    entries: [{ label: "Remove Module", action: "remove" }] }]);
+  const c3 = createController({
+    getParam: (k) => (k in store3 ? store3[k] : ""),
+    setParam: (k, v) => { store3[k] = v; },
+    announce: () => {},
+    trailingMenus: trailingMenus3,
+  });
+  c3.load({ slot: 0, component: "synth", prefix: "synth" });
+
+  const trailingOf3 = () => c3.pages.filter((p) => p.trailing);
+  if (trailingOf3().length !== 1) fail("initial plan must carry the trailing page");
+
+  const modeAt = c3.pages.findIndex((p) => p.modeSelect);
+  if (modeAt < 0) fail("expected a mode selector page");
+  c3.goToPage(modeAt);
+  c3.onClick(0);      /* enter the mode list */
+  c3.onJog(1);        /* highlight mode b */
+  c3.onClick(0);      /* choose it, forcing replanForMode */
+
+  /* Confirm the rebuild really happened before trusting anything past it. */
+  const rootLevel3 = (c3.pages.filter((p) => p.level)[0] || {}).level;
+  if (rootLevel3 !== "b") fail("choosing mode b did not re-root the walk, got " + rootLevel3);
+
+  if (trailingOf3().length !== 1) fail("replanForMode dropped the trailing pages");
+  if (!c3.pages[c3.pages.length - 1].trailing) {
+    fail("replanForMode must keep the trailing pages LAST, got: " + c3.pages.map((p) => p.name).join(","));
+  }
+}
+
+/* ---- replanIfCondition must keep the trailing pages, and keep them LAST */
+{
+  const HIER4 = { levels: { root: {
+    label: "Synth", knobs: ["gate", "b"],
+    params: [{ key: "gate" }, { key: "b", visible_if: { param: "gate" } }],
+  } } };
+  const CP4 = [
+    { key: "gate", type: "int", min: 0, max: 1 },
+    { key: "b", type: "float", min: 0, max: 1, step: 0.01 },
+  ];
+  const store4 = { "synth:ui_hierarchy": JSON.stringify(HIER4),
+                   "synth:chain_params": JSON.stringify(CP4),
+                   "synth:gate": "0", "synth:b": "0.5" };
+  const trailingMenus4 = () => ([{ name: "Module",
+    entries: [{ label: "Remove Module", action: "remove" }] }]);
+  const vis4 = (cond) => store4["synth:" + cond.param] === "1";
+  const c4 = createController({
+    getParam: (k) => (k in store4 ? store4[k] : ""),
+    setParam: (k, v) => { store4[k] = v; },
+    announce: () => {},
+    trailingMenus: trailingMenus4,
+  });
+  c4.load({ slot: 0, component: "synth", prefix: "synth", visible: vis4 });
+
+  const gridAt4 = c4.pages.findIndex((p) => p.kind === PAGE_KNOBS && (p.keys || []).includes("gate"));
+  if (gridAt4 < 0) fail("expected a grid page carrying gate");
+  c4.goToPage(gridAt4, { remember: false });
+  for (let i = 0; i < 40; i++) c4.tick();
+  if ((c4.page.keys || []).includes("b")) fail("b should start hidden while gate is 0");
+
+  store4["synth:gate"] = "1";
+  for (let i = 0; i < 40; i++) c4.tick();
+
+  /* Confirm the rebuild really happened: b is now reachable somewhere. */
+  const revealed4 = c4.pages.some((p) => (p.keys || []).includes("b"));
+  if (!revealed4) fail("writing gate did not reveal b -- replanIfCondition did not fire");
+
+  const trailingOf4 = () => c4.pages.filter((p) => p.trailing);
+  if (trailingOf4().length !== 1) fail("replanIfCondition dropped the trailing pages");
+  if (!c4.pages[c4.pages.length - 1].trailing) {
+    fail("replanIfCondition must keep the trailing pages LAST, got: " + c4.pages.map((p) => p.name).join(","));
+  }
+}
+
 if (failures) process.exit(1);
 console.log("PASS: PAGE_MENU — planned last, INERT until entered so the jog always pages, " +
             "click enters then activates, Shift+Click always reaches the sections, " +
