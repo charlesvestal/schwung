@@ -2803,7 +2803,25 @@ let filebrowserEnabled = false;    // Off by default, toggle in Settings > Servi
 let midiIndicatorEnabled = (typeof midi_indicator_get === "function") ? !!midi_indicator_get() : false;
 
 /* Preview player state */
-let previewEnabled = true;         // Global setting: auto-preview in file browser
+/*
+ * Global setting: audition what the cursor is on before you commit to it.
+ *
+ * Two consumers, one switch: the file browser plays a highlighted WAV, and the
+ * User Presets list applies the highlighted preset to the live slot. Both are
+ * "hear it before you pick it", and both are surprising if you did not ask for
+ * them, so they share a gate rather than growing one each.
+ *
+ * DEFAULT OFF, and the in-memory initial value has to say so too — the settings
+ * screen reads THIS variable, so a device with no stored config would otherwise
+ * draw "On" while the declared default is Off. Persisted only by the toggle
+ * (saveBrowserPreviewConfig has exactly one caller), which is what lets the
+ * default move at all: a device that never chose follows it, one that chose
+ * keeps its choice. Same mechanism as param_view.
+ *
+ * The stored key stays `browser_preview` — renaming it would silently discard
+ * every existing user's choice.
+ */
+let previewEnabled = false;
 let previewPendingPath = "";       // Path waiting for debounce
 let previewPendingTime = 0;        // Date.now() when path was set
 const PREVIEW_DEBOUNCE_MS = 300;
@@ -17192,6 +17210,10 @@ function drawHelpDetail() {
     Object.defineProperty(_ctx, 'editingChainSettingValue', {
         get() { return editingChainSettingValue; }, enumerable: true
     });
+    /* The audition gate (Global Settings -> Audition). Read through ctx like
+     * every other host fact the view modules need, so the presets list does not
+     * reach for a host global directly. */
+    _ctx.auditionEnabled = () => previewEnabled;
     _ctx.getChainSettingsItems = (...args) => getChainSettingsItems(...args);
     _ctx.getChainSettingValue = (...args) => getChainSettingValue(...args);
 

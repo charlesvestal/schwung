@@ -307,7 +307,12 @@ export const AUDIO_PARAMS = [
      * where it is not needed is a second list to keep in step for nothing. */
     { key: "skipback_seconds", name: "Skip Len", type: "enum",
       options: ["30s", "1m", "2m", "3m", "4m", "5m"], default: 0 },
-    bool("browser_preview", "Brws Prv", 1),
+    /* Gates BOTH the file browser WAV preview and the User Presets scroll
+     * audition -- one "hear it before you pick it" switch, not one each. The
+     * stored key stays browser_preview so existing choices survive; the label
+     * says what it now covers. Default OFF: auditioning applies state to the
+     * live slot, which is not something to do to someone who did not ask. */
+    bool("browser_preview", "Audition", 0),
     /*
      * usbc_out_persist IS A BOOL. The parenthetical is a readout, not a choice.
      *

@@ -459,14 +459,24 @@ export function enterPresetBrowser(slotIndex, componentKey, moduleId, prefix) {
 
     /* Capture the slot's current state so scroll-audition can revert on cancel.
      * If we can't read it, disable preview (no safe undo) and fall back to the
-     * old behaviour: load only on an explicit Load. */
+     * old behaviour: load only on an explicit Load.
+     *
+     * Gated on Global Settings -> Audition, the same switch the file browser
+     * uses to decide whether highlighting a WAV plays it. Auditioning APPLIES
+     * the highlighted preset to the live slot, so it is not something to do to
+     * someone who did not ask for it — and this list is far easier to land on
+     * than it used to be, now that it is a page at the end of every component
+     * rather than an indented row inside a picker. Default is off.
+     *
+     * Off does not disable the list, only the audition: Load still loads. */
     originalState = null;
     previewEnabled = false;
     previewActive = false;
     pendingPreviewIndex = PREVIEW_NONE;
     previewDelay = 0;
     lastPreviewedIndex = -1;       /* selectedPreset 0 already == original */
-    if (presetModule) {
+    const auditionOn = typeof ctx.auditionEnabled === "function" ? !!ctx.auditionEnabled() : false;
+    if (presetModule && auditionOn) {
         const cur = ctx.getSlotStateWithRetry(slotIndex, presetPrefix + ":state");
         if (cur) {
             originalState = cur;
