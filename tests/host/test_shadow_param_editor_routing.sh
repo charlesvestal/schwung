@@ -73,7 +73,9 @@ const fail = (m) => { console.error("FAIL: " + m); failures++; };
 
 /* ---- device + host globals the UI draws and talks through --------------- */
 for (const n of ["print","fill_rect","clear_screen","text_width","draw_line",
-                 "draw_circle","fill_circle","draw_arc","flush_display"]) {
+                 "draw_circle","fill_circle","draw_arc","flush_display",
+                 /* the knob indicator ring LEDs go out through this one */
+                 "move_midi_internal_send"]) {
   globalThis[n] = () => 0;
 }
 

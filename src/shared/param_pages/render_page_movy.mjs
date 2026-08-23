@@ -832,6 +832,40 @@ function drawModDot(ctx, kx, ky, normVal) {
     ctx.fillRect(x, y + 1, 1, 1, 1);
 }
 
+/**
+ * A parameter's value as 0..1, or null when it has not been read.
+ *
+ * Extracted from drawKnobWidget, where it was an inline expression, because the
+ * knob LEDs light from the same number (knob_leds.mjs). Two copies would let a
+ * knob whose arc sits at three-quarters light as if it were at a third, and
+ * nothing on screen would say which of them was lying.
+ *
+ * NULL IS NOT ZERO. An unserved key reads back as "" and Number("") is 0, which
+ * is finite — so a parameter that was never answered would confidently
+ * normalise to the bottom of its range. That is the same collapse the tri-state
+ * read contract exists to prevent, so it is refused here and each caller says
+ * what it wants: the arc points at 0 (it must point somewhere), the LED goes
+ * dark (an unlit knob already means "nothing to turn here").
+ *
+ * An ENUM normalises across its OPTIONS, not its min/max — it usually declares
+ * neither, and "option 3 of 5" is the only reading of an enum that a brightness
+ * can carry.
+ */
+export function normalizedOf(meta, raw) {
+    if (!meta) return null;
+    if (raw === null || raw === undefined || raw === "") return null;
+    const num = Number(raw);
+    if (!isFinite(num)) return null;
+    if (Array.isArray(meta.options) && meta.options.length > 0) {
+        if (meta.options.length === 1) return 0;
+        return Math.max(0, Math.min(1, num / (meta.options.length - 1)));
+    }
+    const min = typeof meta.min === "number" ? meta.min : 0;
+    const max = typeof meta.max === "number" ? meta.max : 1;
+    if (!(max > min)) return null;
+    return Math.max(0, Math.min(1, (num - min) / (max - min)));
+}
+
 function drawArcKnob(ctx, kx, ky, normVal) {
     const cx = kx + KNOB_R, cy = ky + KNOB_R, r = KNOB_R;
     if (typeof ctx.drawArc === "function") {
@@ -1226,11 +1260,11 @@ function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, cellText,
         drawEnumSquare(ctx, cellLeft(g, col) + Math.floor((g.cellW - ENUM_W) / 2), ky, text);
         return;
     }
-    const min = typeof meta.min === "number" ? meta.min : 0;
-    const max = typeof meta.max === "number" ? meta.max : 1;
-    const num = Number(raw);
-    const normVal = (max > min && isFinite(num)) ? Math.max(0, Math.min(1, (num - min) / (max - min))) : 0;
-    drawArcKnob(ctx, kx, ky, normVal);
+    /* `?? 0` because the ARC has to point somewhere: an unread value draws its
+     * "--" in the label cell below, and a knob with no pointer at all would
+     * read as a missing widget rather than a missing value. The LED, which
+     * shares this normaliser, treats null differently — see knob_leds.mjs. */
+    drawArcKnob(ctx, kx, ky, normalizedOf(meta, raw) ?? 0);
     /*
      * The dot is drawn whenever a source is driving this parameter, INCLUDING
      * when the live value has landed exactly on the base.
@@ -1247,11 +1281,13 @@ function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, cellText,
      * the row beneath; the dot is the mark you actually read on the knob.
      */
     if (modRaw !== null && modRaw !== undefined) {
-        const mnum = Number(modRaw);
-        if (isFinite(mnum) && max > min) {
-            const modNorm = Math.max(0, Math.min(1, (mnum - min) / (max - min)));
-            drawModDot(ctx, kx, ky, modNorm);
-        }
+        /* The SAME normaliser as the pointer above. The dot and the pointer are
+         * read against each other -- "how far the LFO has pulled it from where
+         * you set it" -- so two mappings would make that distance meaningless.
+         * null (unread, or a range that cannot be normalised) draws no dot,
+         * which is right: there is nothing to compare. */
+        const modNorm = normalizedOf(meta, modRaw);
+        if (modNorm !== null) drawModDot(ctx, kx, ky, modNorm);
     }
 }
 
