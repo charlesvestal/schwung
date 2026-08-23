@@ -139,7 +139,7 @@ function mapMenuEntries(rawEntries) {
  * happens BEFORE `claimName` exists lexically, so it needs its own `Set` —
  * but that only justifies two Sets, not two copies of the numbering loop.
  */
-function makeClaimer(used) {
+export function makeClaimer(used) {
     return (base) => {
         if (!used.has(base)) { used.add(base); return base; }
         for (let n = 2; ; n++) {
@@ -147,6 +147,44 @@ function makeClaimer(used) {
             if (!used.has(candidate)) { used.add(candidate); return candidate; }
         }
     };
+}
+
+/*
+ * The caller-supplied trailingMenus, turned into PAGE_MENU page objects.
+ *
+ * Extracted out of appendTrailing (below) so page_controller.mjs's
+ * refreshTrailing can rebuild ONLY the trailing pages — after a Save/Delete
+ * changes what a "User Presets" row offers — without a second copy of the
+ * entry transform or the name-collision loop. `claim` is a naming function
+ * from makeClaimer, already bound to whatever names must not collide.
+ */
+export function buildTrailingPages(trailingMenus, claim) {
+    const built = [];
+    const warnings = [];
+    for (const m of (trailingMenus || [])) {
+        if (!m) continue;
+        /*
+         * The guard must run on the MAPPED result, not the raw one: an
+         * entry whose only items lack a `label` (a typo'd or missing
+         * field) still has a nonzero raw length, so a length check on
+         * `m.entries` before mapping lets it through and produces a
+         * real, empty, inert PAGE_MENU page — silently, since nothing
+         * downstream flags an empty entry list as wrong.
+         */
+        const entries = mapMenuEntries(m.entries);
+        if (entries.length === 0) {
+            warnings.push(`trailingMenus "${m.name || "Menu"}" produced no usable entries — skipped`);
+            continue;
+        }
+        built.push({
+            kind: PAGE_MENU,
+            name: claim(String(m.name || "Menu")),
+            level: null,
+            trailing: true,
+            entries,
+        });
+    }
+    return { pages: built, warnings };
 }
 
 /**
@@ -284,29 +322,9 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
      * the editors.
      */
     const appendTrailing = (pages, claim) => {
-        for (const m of (trailingMenus || [])) {
-            if (!m) continue;
-            /*
-             * The guard must run on the MAPPED result, not the raw one: an
-             * entry whose only items lack a `label` (a typo'd or missing
-             * field) still has a nonzero raw length, so a length check on
-             * `m.entries` before mapping lets it through and produces a
-             * real, empty, inert PAGE_MENU page — silently, since nothing
-             * downstream flags an empty entry list as wrong.
-             */
-            const entries = mapMenuEntries(m.entries);
-            if (entries.length === 0) {
-                warnings.push(`trailingMenus "${m.name || "Menu"}" produced no usable entries — skipped`);
-                continue;
-            }
-            pages.push({
-                kind: PAGE_MENU,
-                name: claim(String(m.name || "Menu")),
-                level: null,
-                trailing: true,
-                entries,
-            });
-        }
+        const built = buildTrailingPages(trailingMenus, claim);
+        for (const w of built.warnings) warnings.push(w);
+        for (const p of built.pages) pages.push(p);
         return pages;
     };
 
