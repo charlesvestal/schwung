@@ -298,13 +298,13 @@ export function writeGlobalParam(io, key, value) {
 /* ------------------------------------------------------------------ display */
 
 export const DISPLAY_PARAMS = [
-    bool("display_mirror", "Mirror Display", 0),
-    { key: "overlay_knobs", name: "Overlay Knobs", type: "enum",
-      options: ["+Shift", "+Jog Touch", "Off", "Native"],
+    bool("display_mirror", "Mirror", 0),
+    { key: "overlay_knobs", name: "Overlay", type: "enum",
+      options: ["Shift", "Jog", "Off", "Native"],
       short_options: ["SHF", "JOG", "OFF", "NAT"], default: 0 },
     bool("pad_typing", "Pad Typing", 0),
-    bool("text_preview", "Typing Preview", 0),
-    bool("midi_indicator_enabled", "Channel Readout", 0),
+    bool("text_preview", "Preview", 0),
+    bool("midi_indicator_enabled", "Readout", 0),
     /* The grid is the default (tests/host/test_param_view_default.sh pins
      * paramViewGlobal = 1), so the default index here is Knobs. */
     { key: "param_view", name: "Param View", type: "enum",
@@ -316,20 +316,20 @@ export const DISPLAY_PARAMS = [
 export const AUDIO_PARAMS = [
     /* The arrow is ASCII and the 5x7 font draws it; the label is the direction
      * the audio travels, which is the whole content of the setting. */
-    bool("link_audio_routing", "Move->Schwung", 0),
-    bool("link_audio_publish", "Schwung->Link", 0),
+    bool("link_audio_routing", "Move>Schwung", 0),
+    bool("link_audio_publish", "Schwung>Link", 0),
     bool("latency_comp_enabled", "Latency Comp", 0),
     /* Stored 0 or 2 — see GLOBAL_ENUM_VALUES. */
-    { key: "resample_bridge", name: "Move Resample", type: "enum",
-      options: ["Native", "Schwung Mix"], short_options: ["NAT", "MIX"], default: 0 },
-    { key: "skipback_shortcut", name: "Skipback Key", type: "enum",
-      options: ["Sh+Cap", "Sh+Vol+Cap"], short_options: ["S+C", "SVC"], default: 0 },
+    { key: "resample_bridge", name: "Resample", type: "enum",
+      options: ["Native", "Mix"], short_options: ["NAT", "MIX"], default: 0 },
+    { key: "skipback_shortcut", name: "Skipback", type: "enum",
+      options: ["Cap", "Vol+Cap"], short_options: ["S+C", "SVC"], default: 0 },
     /* Every option already fits the square, so there is no short form to
      * declare. short_options exists for the ones that do not fit; declaring it
      * where it is not needed is a second list to keep in step for nothing. */
     { key: "skipback_seconds", name: "Skipback Len", type: "enum",
       options: ["30s", "1m", "2m", "3m", "4m", "5m"], default: 0 },
-    bool("browser_preview", "Audition Files", 1),
+    bool("browser_preview", "Audition", 1),
     /*
      * usbc_out_persist IS A BOOL. The parenthetical is a readout, not a choice.
      *
@@ -354,17 +354,17 @@ export const AUDIO_PARAMS = [
      * the parenthetical in exactly that case, and naming a source that was
      * never seen would mislead the user who came here to check.
      */
-    { key: "usbc_out_persist", name: "USB-C Persist", type: "enum",
+    { key: "usbc_out_persist", name: "USB-C", type: "enum",
       options: ["Off", "On"], short_options: ["OFF", "ON"], default: 1 },
 ];
 
 /* ------------------------------------------------------------ accessibility */
 
 export const ACCESSIBILITY_PARAMS = [
-    bool("screen_reader_enabled", "Screen Reader", 0),
-    { key: "screen_reader_engine", name: "TTS Engine", type: "enum",
-      options: ["eSpeak-NG", "Flite"], short_options: ["ESP", "FLI"], default: 0 },
-    { key: "screen_reader_speed", name: "Voice Speed", type: "float",
+    bool("screen_reader_enabled", "Reader", 0),
+    { key: "screen_reader_engine", name: "Engine", type: "enum",
+      options: ["eSpeak", "Flite"], short_options: ["ESP", "FLI"], default: 0 },
+    { key: "screen_reader_speed", name: "Speed", type: "float",
       min: 0.5, max: 6.0, step: 0.1, default: 1.0, unit: "x" },
     { key: "screen_reader_pitch", name: "Voice Pitch", type: "int",
       min: 80, max: 180, step: 5, default: 110, unit: "Hz" },
@@ -394,7 +394,7 @@ export const SHORTCUTS_PARAMS = [
      * display name and nothing else.
      */
     { key: "shadow_ui_trigger", name: "Open With", type: "enum",
-      options: ["Long Press", "Shift+Vol", "Both"],
+      options: ["Hold", "Sh+Vol", "Both"],
       short_options: ["LNG", "S+V", "BTH"], default: 2 },
 ];
 

@@ -279,15 +279,15 @@ const plan = planPages({ hierarchy, chainParams });
  */
 {
   const EXPECT = {
-    display_mirror: "Mirror Display", overlay_knobs: "Overlay Knobs",
-    pad_typing: "Pad Typing", text_preview: "Typing Preview",
-    midi_indicator_enabled: "Channel Readout", param_view: "Param View",
-    link_audio_routing: "Move->Schwung", link_audio_publish: "Schwung->Link",
-    latency_comp_enabled: "Latency Comp", resample_bridge: "Move Resample",
-    skipback_shortcut: "Skipback Key", skipback_seconds: "Skipback Len",
-    browser_preview: "Audition Files", usbc_out_persist: "USB-C Persist",
-    screen_reader_enabled: "Screen Reader", screen_reader_engine: "TTS Engine",
-    screen_reader_speed: "Voice Speed", screen_reader_pitch: "Voice Pitch",
+    display_mirror: "Mirror", overlay_knobs: "Overlay",
+    pad_typing: "Pad Typing", text_preview: "Preview",
+    midi_indicator_enabled: "Readout", param_view: "Param View",
+    link_audio_routing: "Move>Schwung", link_audio_publish: "Schwung>Link",
+    latency_comp_enabled: "Latency Comp", resample_bridge: "Resample",
+    skipback_shortcut: "Skipback", skipback_seconds: "Skipback Len",
+    browser_preview: "Audition", usbc_out_persist: "USB-C",
+    screen_reader_enabled: "Reader", screen_reader_engine: "Engine",
+    screen_reader_speed: "Speed", screen_reader_pitch: "Voice Pitch",
     screen_reader_volume: "Voice Vol", screen_reader_debounce: "Speak Delay",
     set_pages_enabled: "Set Pages", shadow_ui_trigger: "Open With",
     filebrowser_enabled: "File Browser",
@@ -504,6 +504,35 @@ const plan = planPages({ hierarchy, chainParams });
   if (read("1", "0") !== "1") fail("usbc_out_persist on must read index 1 with source Mic");
   if (read("1", "-1") !== "1") fail("usbc_out_persist on must read index 1 with the source unobserved");
   if (read(null, "1") !== null) fail("a failed usbc_out_persist read must pass through as null");
+}
+
+/* ---- 6d. EVERY ROW FITS ITS OWN WIDTH -----------------------------------
+ *
+ * A list row is one line: cursor prefix, label, gap, value, right edge. The
+ * label room is therefore whatever the WIDEST value of that parameter leaves
+ * behind -- so a name cannot be judged on its own. "Overlay Knobs" is a fine
+ * name beside "Off" and an impossible one beside "+Jog Touch", and the first
+ * cut of these names was chosen without measuring either.
+ *
+ * Measured with the real device font through the harness, not a 6px-per-glyph
+ * estimate: that over-reserves by up to 4px a character and would condemn rows
+ * that are fine.
+ *
+ * OURS ONLY. A sweep of the fleet fixture found 682 of 4598 module rows over
+ * their width -- 14%, and 165 of those by seven characters or more. Truncation
+ * on a list row is therefore normal, the marquee on the selected row is what
+ * answers it, and module authors own their own names. What this pins is that WE
+ * do not add another.
+ */
+{
+  const M = await import(R + "/tools/param-pages/measure_labels.mjs");
+  for (const r of chainParams.map((cp) => M.measureRow(cp)).filter((x) => !x.fits)) {
+    fail("row " + JSON.stringify(r.name) + " needs " + r.need + "px but its widest "
+       + "value (" + JSON.stringify(r.value) + ") leaves " + r.room + "px -- over by "
+       + r.over + "px. Shorten the NAME; or if the VALUE is what does not fit, "
+       + "shorten the option, because a four-character label is worse than a "
+       + "shorter value.");
+  }
 }
 
 if (failures) process.exit(1);
