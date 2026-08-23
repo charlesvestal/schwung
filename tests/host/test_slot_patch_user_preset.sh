@@ -4,11 +4,18 @@ cd "$(dirname "$0")/../.."
 
 # The loaded-preset record rides the slot autosave, not a param or SHM field --
 # it is pure UI bookkeeping the DSP never sees (see current_preset.mjs). This
-# pins two things: buildSlotPatchJson writes {name, hash} from INSIDE
+# pins three things: buildSlotPatchJson writes {name, hash} from INSIDE
 # componentEntry, conditionally, threaded through all three chain-position
-# shapes (synth/config, midi_fx/params, audio_fx/params); and the boot-restore
-# loop reads it back per component prefix, clearing any stale record when a
-# patch carries none -- which is every patch written before this existed.
+# shapes (synth/config, midi_fx/params, audio_fx/params); the shared reader
+# syncUserPresetRecordsFromChain reads it back per component prefix, clearing
+# any stale record when a patch carries none; and BOTH slot-load paths call
+# that ONE definition -- the boot-restore loop in init(), and the
+# SHADOW_UI_FLAG_SET_CHANGED "Pass 2" handler in tick(), which reloads a slot
+# in-session on an Ableton set switch with no reboot. The map is keyed
+# (slot, prefix), not by set, so a path that skips the sync leaves the
+# OUTGOING set's record attached to the INCOMING set's same-numbered slot --
+# this repo has already shipped one bug of exactly that shape (a stale global
+# slot_state propagating into every set).
 #
 # The BAIL guard (stateJson === null && bailIfEmpty -> abandon the whole save)
 # must be untouched: it still has to fire before any user_preset write, or a
@@ -134,6 +141,28 @@ if (buildSlotPatchJsonMaker) {
     () => ({ name: "Should Not Matter", hash: "x:1" }));
   const bailed = buildBailed(0, "Name", true, false);
   if (bailed !== null) fail("a failed state read with bailIfEmpty must still abandon the whole save (got non-null)");
+
+  /* Case E: MULTI-POSITION -- two midi_fx entries, a record on the first and
+     none on the second. Every fixture above is single-element per array, so
+     an index bug (e.g. always reading position 0, or off-by-one against the
+     1-based `${id}` prefix) would pass them all and still be wrong here. */
+  const cfg2 = {
+    synth: { module: "granny", params: {} },
+    midiFx: [{ module: "chord", params: {} }, { module: "arp", params: {} }],
+    fx: []
+  };
+  const chainConfigs2 = { 0: cfg2 };
+  const state2 = { "synth:state": "S", "midi_fx1:state": "M1", "midi_fx2:state": "M2" };
+  const getSlotStateWithRetry2 = (slot, key) => (key in state2 ? state2[key] : "");
+  const firstMidiOnly = (slot, prefix) => (prefix === "midi_fx1" ? { name: "Swing 8th", hash: "m1:2" } : null);
+  const buildMulti = buildSlotPatchJsonMaker(chainConfigs2, getSlotStateWithRetry2, debugLog, getSlotParam, firstMidiOnly);
+  const patchMulti = JSON.parse(buildMulti(0, "Name", false, false));
+  if (!patchMulti.midi_fx[0].user_preset || patchMulti.midi_fx[0].user_preset.name !== "Swing 8th") {
+    fail("multi-position: midi_fx[0] record did not reach the saved patch");
+  }
+  if ("user_preset" in patchMulti.midi_fx[1]) {
+    fail("multi-position: midi_fx[1] (no record) picked up a user_preset key -- index bug");
+  }
 }
 
 /* ---- behavioural: the reader (entryUserPreset) ---------------------------
@@ -175,54 +204,137 @@ if (buildSlotPatchJsonMaker) {
   }
 }
 
-/* ---- structural: the boot-restore loop actually calls the reader, once
-   per chain position, and CLEARS when absent (setUserPresetRecord is called
-   unconditionally with entryUserPreset(...), not gated by an `if (record)`
-   that would leave a stale entry from a previous load into this slot) ----- */
+/* ---- structural: exactly ONE definition of the sync helper -- a second
+   copy of "walk synth + every midi_fx<n> + every fx<n>" is exactly the kind
+   of defect this codebase treats as a bug in itself. ---------------------- */
 {
-  const marker = "Sync slot names + per-component bypass from autosave if present";
-  const at = src.indexOf(marker);
-  if (at < 0) { fail("boot-restore block (marker comment) not found"); }
-  else {
-    const end = src.indexOf("saveSlotsToConfig(slots);", at);
-    const block = src.slice(at, end);
-    if (!/setUserPresetRecord\(i,\s*"synth",\s*entryUserPreset\(/.test(block)) {
-      fail("boot restore does not call setUserPresetRecord for the synth position");
+  const count = (src.match(/function syncUserPresetRecordsFromChain\(/g) || []).length;
+  if (count !== 1) {
+    fail("expected exactly 1 definition of syncUserPresetRecordsFromChain, found " + count);
+  }
+}
+
+/* ---- structural: the helper is bounded by the published caps, not by the
+   saved array length -- a `.length &&` guard would leave stale entries PAST
+   whatever the old set happened to save, instead of clearing every position
+   up to the cap. ------------------------------------------------------------ */
+{
+  const at = src.indexOf("function syncUserPresetRecordsFromChain(");
+  const end = src.indexOf("\n}\n", at);
+  if (at < 0 || end < 0) {
+    fail("syncUserPresetRecordsFromChain is gone -- the record would be write-only");
+  } else {
+    const body = src.slice(at, end);
+    if (!/for \(let mf = 0; mf < MAX_MIDI_FX; mf\+\+\)/.test(body)) {
+      fail("syncUserPresetRecordsFromChain must walk midi_fx bounded by MAX_MIDI_FX alone, not array length");
     }
-    if (!/setUserPresetRecord\(i,\s*`midi_fx\$\{mf \+ 1\}`,\s*entryUserPreset\(/.test(block)) {
-      fail("boot restore does not call setUserPresetRecord for midi_fx positions");
+    if (!/for \(let fx = 0; fx < MAX_FX; fx\+\+\)/.test(body)) {
+      fail("syncUserPresetRecordsFromChain must walk audio_fx bounded by MAX_FX alone, not array length");
     }
-    if (!/setUserPresetRecord\(i,\s*`fx\$\{fx \+ 1\}`,\s*entryUserPreset\(/.test(block)) {
-      fail("boot restore does not call setUserPresetRecord for audio_fx positions");
-    }
-    /* Every call passes entryUserPreset(...) directly as the record argument
-       (not `x || undefined` or similar) -- so a null result CLEARS via
-       setUserPresetRecords own `if (record) ... else delete` branch, rather
-       than a stale record surviving because nothing overwrote it. */
-    if (/if\s*\(chain[^)]*\.synth\.user_preset\)[\s\S]{0,80}setUserPresetRecord/.test(block)) {
-      fail("boot restore looks conditionally gated before calling setUserPresetRecord -- " +
-           "that would leave a stale record instead of clearing it");
+    if (!/setUserPresetRecord\(slotIndex,\s*"synth",\s*entryUserPreset\(/.test(body)) {
+      fail("syncUserPresetRecordsFromChain does not sync the synth position");
     }
   }
 }
 
-/* ---- behavioural: setUserPresetRecord/getUserPresetRecord clear correctly */
+/* ---- structural: BOTH slot-load paths call the ONE helper -- boot-restore
+   in init(), and the SHADOW_UI_FLAG_SET_CHANGED "Pass 2" handler in tick(),
+   which reloads a slot in-session on a set switch with no reboot. Skipping
+   either leaves a record from the OLD set attached to the NEW sets
+   same-numbered slot. ------------------------------------------------------ */
 {
-  const at = src.indexOf("const currentUserPresets = Object.create(null)");
-  const end = src.indexOf("\n}\n", src.indexOf("function entryUserPreset("));
-  if (at < 0 || end < 0) {
-    fail("could not lift the record store block");
+  const bootMarker = "Sync slot names + per-component bypass from autosave if present";
+  const bootAt = src.indexOf(bootMarker);
+  if (bootAt < 0) { fail("boot-restore block (marker comment) not found"); }
+  else {
+    const bootEnd = src.indexOf("saveSlotsToConfig(slots);", bootAt);
+    const bootBlock = src.slice(bootAt, bootEnd);
+    if (!/syncUserPresetRecordsFromChain\(i, chain\)/.test(bootBlock)) {
+      fail("boot restore no longer calls syncUserPresetRecordsFromChain -- write-only regression");
+    }
+  }
+
+  const setChangedAt = src.indexOf("Pass 2: Load new state for non-empty slots");
+  if (setChangedAt < 0) { fail("SET_CHANGED Pass 2 block (marker comment) not found"); }
+  else {
+    const setChangedEnd = src.indexOf("Refresh UI state immediately", setChangedAt);
+    const setChangedBlock = src.slice(setChangedAt, setChangedEnd);
+    const calls = (setChangedBlock.match(/syncUserPresetRecordsFromChain\(/g) || []).length;
+    /* One call per branch: loaded+parsed, loaded+parse-failed, empty state,
+       no state file -- so a set switch that lands a slot in ANY of those
+       branches still syncs (parse-failure and "no file" must CLEAR, which is
+       exactly the shape of the bug this closes: an old record surviving
+       because the new slot has nothing to overwrite it with). */
+    if (calls < 4) {
+      fail("SET_CHANGED Pass 2 calls syncUserPresetRecordsFromChain " + calls +
+           " time(s), expected at least 4 -- some branch (parsed / parse-failed / " +
+           "empty / no-file) is not syncing, so a record can survive a set switch");
+    }
+    if (!/syncUserPresetRecordsFromChain\(i, chain\)/.test(setChangedBlock)) {
+      fail("SET_CHANGED Pass 2 never syncs from a successfully parsed chain");
+    }
+    if (!/syncUserPresetRecordsFromChain\(i, null\)/.test(setChangedBlock)) {
+      fail("SET_CHANGED Pass 2 never clears (sync with null) on an empty/missing/unparseable slot");
+    }
+  }
+}
+
+/* ---- behavioural: run the REAL syncUserPresetRecordsFromChain + its store,
+   lifted together (it closes over getUserPresetRecord/setUserPresetRecord/
+   entryUserPreset, which are defined right above it in the same block, and
+   over the imported MAX_MIDI_FX/MAX_FX, passed in as params). ------------- */
+{
+  const storeAt = src.indexOf("const currentUserPresets = Object.create(null)");
+  const syncAt = src.indexOf("function syncUserPresetRecordsFromChain(");
+  const syncEnd = src.indexOf("\n}\n", syncAt);
+  if (storeAt < 0 || syncAt < 0 || syncEnd < 0) {
+    fail("could not lift the record store + sync-helper block");
   } else {
-    const store = new Function(
-      src.slice(at, end + 2) +
-      "\nreturn { getUserPresetRecord, setUserPresetRecord, entryUserPreset };")();
-    if (store.getUserPresetRecord(0, "synth") !== null) fail("a fresh store must read back null");
-    store.setUserPresetRecord(0, "synth", { name: "A", hash: "h:1" });
-    if (store.getUserPresetRecord(0, "synth").name !== "A") fail("set then get did not round-trip");
-    if (store.getUserPresetRecord(1, "synth") !== null) fail("record leaked across slots -- keyed wrong");
-    if (store.getUserPresetRecord(0, "fx1") !== null) fail("record leaked across prefixes -- keyed wrong");
-    store.setUserPresetRecord(0, "synth", null);
-    if (store.getUserPresetRecord(0, "synth") !== null) fail("setUserPresetRecord(..., null) must clear, not leave the old record");
+    const world = new Function("MAX_MIDI_FX", "MAX_FX",
+      src.slice(storeAt, syncEnd + 2) +
+      "\nreturn { getUserPresetRecord, setUserPresetRecord, entryUserPreset, syncUserPresetRecordsFromChain };"
+    )(8, 8);
+
+    /* Store isolation (unchanged from before the extraction). */
+    if (world.getUserPresetRecord(0, "synth") !== null) fail("a fresh store must read back null");
+    world.setUserPresetRecord(0, "synth", { name: "A", hash: "h:1" });
+    if (world.getUserPresetRecord(0, "synth").name !== "A") fail("set then get did not round-trip");
+    if (world.getUserPresetRecord(1, "synth") !== null) fail("record leaked across slots -- keyed wrong");
+    if (world.getUserPresetRecord(0, "fx1") !== null) fail("record leaked across prefixes -- keyed wrong");
+    world.setUserPresetRecord(0, "synth", null);
+    if (world.getUserPresetRecord(0, "synth") !== null) fail("setUserPresetRecord(..., null) must clear, not leave the old record");
+
+    /* MULTI-POSITION read side: midi_fx[0] has a record, midi_fx[1] does not
+       -- same index-bug guard as the write-side Case E above, but for the
+       reader this time. */
+    world.syncUserPresetRecordsFromChain(2, {
+      synth: { user_preset: { name: "Fat Brass", hash: "s:1" } },
+      midi_fx: [{ user_preset: { name: "Swing 8th", hash: "m1:2" } }, { module: "arp" }],
+      audio_fx: []
+    });
+    const mf1 = world.getUserPresetRecord(2, "midi_fx1");
+    const mf2 = world.getUserPresetRecord(2, "midi_fx2");
+    if (!mf1 || mf1.name !== "Swing 8th") fail("multi-position read: midi_fx1 record did not restore");
+    if (mf2 !== null) fail("multi-position read: midi_fx2 (no record in the saved chain) restored a record anyway -- index bug");
+
+    /* CLEAR ON RESYNC -- the whole point of the fix. Seed a record on fx3
+       (simulating the OUTGOING sets slot 2), then sync as if the INCOMING
+       sets slot 2 has nothing there. It must not survive. */
+    world.setUserPresetRecord(2, "fx3", { name: "Stale From Old Set", hash: "x:9" });
+    if (world.getUserPresetRecord(2, "fx3") === null) fail("test setup broken -- seed did not take");
+    world.syncUserPresetRecordsFromChain(2, { synth: null, midi_fx: [], audio_fx: [] });
+    if (world.getUserPresetRecord(2, "fx3") !== null) {
+      fail("a stale record from a previous load into this slot survived a resync with an empty chain -- " +
+           "this is the exact cross-set leak the SET_CHANGED fix closes");
+    }
+    if (world.getUserPresetRecord(2, "synth") !== null) fail("resync with chain.synth=null must clear the synth record too");
+    if (world.getUserPresetRecord(2, "midi_fx1") !== null) fail("resync with an empty midi_fx array must clear midi_fx1 too");
+
+    /* A totally absent chain (e.g. an unparseable slot_N.json) clears every
+       position, same as an explicitly empty one. */
+    world.setUserPresetRecord(3, "synth", { name: "Also Stale", hash: "y:1" });
+    world.syncUserPresetRecordsFromChain(3, null);
+    if (world.getUserPresetRecord(3, "synth") !== null) fail("syncUserPresetRecordsFromChain(slot, null) must clear the synth position");
   }
 }
 
