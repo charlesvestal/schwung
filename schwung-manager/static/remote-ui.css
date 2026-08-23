@@ -617,6 +617,10 @@
     display: block;
     width: 100%;
     min-height: 400px;
+    /* Starting guess only. The embedded page reports its real height via
+     * postMessage (schwung-remote-api.js) and this is overwritten inline —
+     * a panel taller than 60vh used to be cropped with no way to scroll to
+     * the rest of it, because the iframe body does not scroll the parent. */
     height: 60vh;
     border: none;
     background: var(--bg);

@@ -64,6 +64,34 @@
             });
         }
 
+        // Tell the parent how tall this page actually is, so the iframe can be
+        // sized to its content instead of to a guess. Every embedded module
+        // gets this without opting in — the alternative is each module posting
+        // its own height, which means the ones that never do stay cropped.
+        //
+        // documentElement.scrollHeight, not body's: the body may be shorter
+        // than a floated/absolutely-positioned child, and cropping is exactly
+        // what we are fixing. Rounded up, because a fractional height the
+        // parent floors reintroduces a 1px scrollbar, which changes the width,
+        // which can change the height — a loop that never settles.
+        var lastHeight = 0;
+        function reportHeight() {
+            var h = Math.ceil(document.documentElement.scrollHeight);
+            if (!h || Math.abs(h - lastHeight) < 2) return;
+            lastHeight = h;
+            window.parent.postMessage({ type: "height", height: h }, "*");
+        }
+        if (typeof ResizeObserver === "function") {
+            new ResizeObserver(reportHeight).observe(document.documentElement);
+        } else {
+            window.addEventListener("resize", reportHeight);
+        }
+        window.addEventListener("load", reportHeight);
+        /* Fonts and late layout land after load; a few cheap re-checks cost
+         * nothing and save a permanently short frame. */
+        setTimeout(reportHeight, 100);
+        setTimeout(reportHeight, 600);
+
         window.schwungRemote = {
             /** Chain component this page drives ("synth", "fx1", …). */
             component: component,
