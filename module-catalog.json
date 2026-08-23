@@ -1265,7 +1265,7 @@
       "github_repo": "athousanddetails/schwung-9W9",
       "default_branch": "main",
       "asset_name": "9w9-module.tar.gz",
-      "min_host_version": "0.11.6"
+      "min_host_version": "0.12.1"
     },
     {
       "id": "tablor",
