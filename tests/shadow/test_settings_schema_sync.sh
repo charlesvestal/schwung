@@ -8,25 +8,27 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
-# shadow_ui.js:880 — "The canonical schema is also in shared/settings-schema.json
-# for the schwung-manager web UI. Keep both in sync when adding settings."
+# "The canonical schema is also in shared/settings-schema.json for the
+# schwung-manager web UI. Keep both in sync when adding settings."
 # This test enforces that: every editable (non-action) key in the on-device
-# GLOBAL_SETTINGS_SECTIONS must exist in settings-schema.json, or the web UI
-# silently cannot show/edit it. Device-only action sections (updates, help)
-# are exempt.
+# Global Settings declaration must exist in settings-schema.json, or the web UI
+# silently cannot show/edit it. Device-only sections (updates) are exempt.
+#
+# The source of truth MOVED. It used to be GLOBAL_SETTINGS_SECTIONS, a literal
+# in shadow_ui.js scraped out with a regex; Global Settings is a synthesised
+# module contract now, so the declaration is imported instead of parsed.
 
 node -e '
 const fs = require("fs");
-const src = fs.readFileSync("src/shadow/shadow_ui.js", "utf8");
-const m = src.match(/const GLOBAL_SETTINGS_SECTIONS = (\[[\s\S]*?\n\]);/);
-if (!m) { console.error("FAIL: GLOBAL_SETTINGS_SECTIONS not found"); process.exit(1); }
-const sections = new Function("return " + m[1])();
+const { pathToFileURL } = require("url");
+import(pathToFileURL(process.cwd() + "/src/shadow/shadow_ui_global_grid.mjs").href).then((G) => {
+const sections = G.GLOBAL_SECTIONS.map((s) => ({ id: s.id, items: s.params }));
 const schema = JSON.parse(fs.readFileSync("src/shared/settings-schema.json", "utf8"));
 
 const schemaKeys = new Set();
 for (const s of schema) for (const it of (s.items || [])) schemaKeys.add(it.key);
 
-const deviceOnlySections = new Set(["updates", "help"]);
+const deviceOnlySections = new Set(["updates"]);
 /* analytics_enabled persists via opt-in/opt-out flag files
  * (src/host/analytics.c), not features.json/shadow_config.json — the
  * schema-driven manager config cannot write it, so a schema entry would be
@@ -46,4 +48,5 @@ if (missing.length) {
   process.exit(1);
 }
 console.log("PASS: settings-schema.json covers all editable device settings");
+}).catch((e) => { console.error("FAIL: " + (e && e.stack || e)); process.exit(1); });
 '

@@ -70,7 +70,11 @@ want(/view === VIEWS\.PARAM_PAGES && paramPagesActive\(\)[\s\S]{0,200}handlePara
      "the view never receives MIDI");
 
 /* ---- the setting is real, defaults to the list, and persists ---------- */
-want(/key: "param_view"[\s\S]{0,120}options: \["List", "Knobs"\]/, "the Param View setting is not in the menu");
+/* Read from the CONTRACT, not from shadow_ui.js. Global Settings used to be a
+ * literal (GLOBAL_SETTINGS_SECTIONS) scraped out of shadow_ui.js; it is a
+ * synthesised module contract now, so this is where the declaration lives. */
+const g = fs.readFileSync("src/shadow/shadow_ui_global_grid.mjs", "utf8");
+want(/key: "param_view"[\s\S]{0,120}options: \["List", "Knobs"\]/, "the Param View setting is not in the menu", g);
 want(/let paramViewGlobal = 0;/, "Param View must default to 0 (the list) — this ships as an opt-in preview");
 want(/globalThis\.param_view_get_mode/, "the view module reads the setting through a global that is not defined");
 want(/function saveParamViewConfig/, "the setting does not persist");

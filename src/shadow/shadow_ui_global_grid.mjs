@@ -403,13 +403,37 @@ export const SERVICES_PARAMS = [
  * the web manager — the on-device install paths silently failed for users
  * without a current shim, so they were removed.
  *
- * Two entries with a name and a consequence and nothing to show, which is the
+ * Entries with a name and a consequence and nothing to show, which is the
  * definition of a menu page. There is no value to draw, so rendering them as
  * knob cells would spend the whole widget band on four words.
+ *
+ * [HELP...] IS THE THIRD ONE, and it is here because there is nowhere else it
+ * can be.
+ *
+ * It was declared as an action entry on `root` on the theory that "the host
+ * dispatches it" — but root is pure navigation and plans to NO page, so the
+ * planner walked past it and nothing ever drew it. There was no affordance:
+ * the section picker enumerates PAGES, and an entry on a level that is not a
+ * page is invisible from every surface. A declaration nothing can reach is the
+ * same as a deleted one, only harder to notice.
+ *
+ * The two obvious repairs are both closed. A `help` LEVEL is an eighth page,
+ * which sections-as-levels forbids and tests/host/test_global_settings_contract
+ * .sh pins twice over (seven pages, and no page whose name matches /help/i). A
+ * one-entry menu level is the shape the Master FX contract already records as a
+ * mistake — "a ONE ENTRY actions menu, which the knob grid draws as a menu page
+ * you have to enter to press a single button".
+ *
+ * So it joins the only menu this contract has. That is a demotion from the peer
+ * of a section it used to be, and it is stated rather than hidden: Help now
+ * lives one row below [Module Store] on the last page. The section LABEL stays
+ * "Updates" because the page-name check above forbids the honest "Updates &
+ * Help" — worth revisiting if that check is ever relaxed.
  */
 export const UPDATES_ACTIONS = [
     { label: "[Check Updates]", action: "check_updates" },
     { label: "[Module Store]", action: "module_store" },
+    { label: "[Help...]", action: "help" },
 ];
 
 /* --------------------------------------------------------------- assembly */
@@ -443,13 +467,11 @@ export function allGlobalParams() {
  * name each page: planPages prefers a nav entry's label over the level's own,
  * which is the label users already see.
  *
- * [Help...] rides along as an ACTION entry on root rather than as a level.
- * It is a navigation entry into the existing help stack — a screen outside
- * this contract — so it must not become an eighth page, and an entry with no
- * `key` and no `level` is exactly what the planner walks past. Declaring it
- * here rather than dropping it keeps the section list whole for the host that
- * dispatches it; declaring it as a level would put a blank page between
- * Updates and the end.
+ * [Help...] is NOT here. It used to be an action entry on root, which reads
+ * well and does nothing: root plans to no page, the planner walks past an entry
+ * with no `key` and no `level`, and the section picker enumerates pages — so it
+ * had no surface anywhere. It is an entry on the Updates menu now; see
+ * UPDATES_ACTIONS for why that is the only place left for it.
  *
  * @param {object} [io]  unused by the declaration; accepted so the call shape
  *   matches createSlotGridIo's and so a future runtime-shaped section (one
@@ -462,9 +484,7 @@ export function buildGlobalSettingsContract(io) {
         root: {
             label: "Settings",
             knobs: [],
-            params: GLOBAL_SECTIONS
-                .map((s) => ({ level: s.id, label: s.label }))
-                .concat([{ action: "help", label: "[Help...]" }]),
+            params: GLOBAL_SECTIONS.map((s) => ({ level: s.id, label: s.label })),
         },
     };
 

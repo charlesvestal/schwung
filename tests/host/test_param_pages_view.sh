@@ -105,9 +105,30 @@ Promise.all([
      * stays the accessible surface. */
     ttsOn = true;
     if (V.paramPagesEnabled()) fail("the screen reader must refuse the page chrome regardless of the setting");
-    /* ...and it says nothing about the ARRANGEMENT. The two questions are
-     * separate, which is the whole point of the split. */
-    if (V.paramPagesLayout() !== PC.LAYOUT_MOVY) fail("the screen reader must not change what paramPagesLayout reports");
+    /*
+     * RESTATED 2026-08-23 (design §5, Global Settings wired to the contract).
+     *
+     * This asserted the opposite — that TTS "says nothing about the
+     * ARRANGEMENT" and paramPagesLayout still reported MOVY. That was pinning a
+     * case nothing could reach: paramPagesEnabled() refused the chrome for
+     * every consumer, so with TTS on the layout answer was never asked for.
+     *
+     * Global Settings breaks the refusal on purpose. It is a contract with no
+     * hierarchy editor behind it (its bespoke list is deleted) and it is the
+     * screen you go to in order to turn the screen reader OFF, so it enters the
+     * page chrome unconditionally. The chrome therefore CAN run with TTS on
+     * now, and when it does it must be the list: a grid has nothing selected to
+     * read out, and a blind user who cannot operate this one screen cannot get
+     * back out of it.
+     *
+     * The seam itself is unchanged and is asserted one line above — TTS still
+     * refuses the chrome for every COMPONENT, which is design §6 and not this
+     * task. What moved is the answer for the one consumer that asks anyway.
+     */
+    if (V.paramPagesLayout() !== PC.LAYOUT_LIST) fail("the screen reader must select the list layout for a consumer that enters the chrome anyway");
+    paramView = 0;
+    if (V.paramPagesLayout() !== PC.LAYOUT_LIST) fail("the screen reader must select the list layout with Param View = List too");
+    paramView = 1;
     ttsOn = false;
   }
 
