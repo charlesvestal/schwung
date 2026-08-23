@@ -428,6 +428,44 @@ if (checked < 500) fail(`only ${checked} params compared across ${modulesSeen} m
         fail(`10 renders issued ${dev.reads.length} device reads: ${JSON.stringify(dev.reads.slice(0, 6))}`);
 }
 
+/* =======================================================================
+ * A PLAIN CLICK MUST ENTER THE LIST, NOT OPEN THE SECTION PICKER.
+ *
+ * page_input.mjs kept its OWN copy of "which pages are doors", spelled as a
+ * literal list of kinds ("menu" || "preset" || "items"). When PAGE_KNOBS
+ * became a door in the list layout, only the copy inside the controller learned it --
+ * so a plain click fell past that branch to the no-knob-held one and opened
+ * the SECTION PICKER. The list could not be entered at all, and nothing
+ * failed: the page was simply inert. Reported from the device.
+ *
+ * Driven through the REAL input path (decodeInput -> applyInput), because that
+ * is where the second definition lived. Calling controller.onClick directly
+ * passes with the bug still present, which is exactly why it survived.
+ * ======================================================================= */
+{
+    const PI = await import(R + "/src/shared/param_pages/page_input.mjs");
+    const mod = fleet.modules.find((m) => (m.chain_params || []).length >= 2)
+             || fleet.modules[0];
+    const { ctrl } = boot(mod, { layout: LAYOUT_LIST });
+
+    const p0 = ctrl.page;
+    if (!p0 || p0.kind !== "knobs") fail("expected a PAGE_KNOBS page to click on");
+    if (!ctrl.isDoor || !ctrl.isDoor())
+        fail("a knobs page in LAYOUT_LIST must report as a door");
+    if (ctrl.menuEntered()) fail("the page must start un-entered");
+
+    /* CC 3 = jog click; 127 = press. */
+    const intent = PI.decodeInput(new Uint8Array([0xb0, 3, 127]), {});
+    if (!intent || intent.type !== "click") fail("CC3/127 did not decode as a click");
+    PI.applyInput(ctrl, intent, { nowMs: 0 });
+
+    if (ctrl.pickerOpen)
+        fail("a plain click opened the SECTION PICKER -- page_input is not asking "
+           + "the controller which pages are doors");
+    if (!ctrl.menuEntered())
+        fail("a plain click did not enter the knobs list");
+}
+
 if (failures) { console.error(`\n${failures} failure(s)`); process.exit(1); }
-console.log(`PASS: knobs-as-list layout (${checked} params compared across ${modulesSeen} modules)`);
+console.log(`PASS: knobs-as-list layout (${checked} params compared across ${modulesSeen} modules), and a plain click enters it`);
 '

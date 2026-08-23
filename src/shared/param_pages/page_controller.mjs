@@ -2733,6 +2733,16 @@ export function createController(io = {}) {
         openPicker, closePicker, pickerSelect, showHint, dismissHint,
         menuEntry, menuIndex: () => menuIndex(page()),
         menuEntered, enterMenu, exitMenu, clearTouch,
+        /* IS THIS PAGE A DOOR — one definition, exported because page_input.mjs
+         * needs the same answer to route a plain click.
+         *
+         * It used to keep its own copy, spelled as a literal list of kinds
+         * ("menu" || "preset" || "items"). When PAGE_KNOBS became a door in the
+         * list layout that copy was not updated, so clicking a knobs-as-list
+         * page fell through to the no-knob-held branch and opened the SECTION
+         * PICKER instead of entering the list — the page was unusable, and
+         * nothing failed. Ask the controller; do not restate the kinds. */
+        isDoor: (p) => isDoor(p === undefined ? page() : p),
         /* The knob page as rows (LAYOUT_LIST). Read-only views, for the host's
          * footer hints and for tests — the rows carry the knob SLOT each came
          * from, which is what every edit is dispatched through. */
