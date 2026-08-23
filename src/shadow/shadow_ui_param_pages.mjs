@@ -28,6 +28,10 @@
 
 import { ctx } from './shadow_ui_ctx.mjs';
 import { createController, CONTRACT_SETTLE_MS, LAYOUT_LIST } from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
+/* Re-exported so a contract can PIN its layout in the chrome it already hands
+ * over (see paramPagesLayout). Global Settings does; slot and Master FX
+ * settings deliberately do not. */
+export { LAYOUT_LIST };
 /* Re-exported so the LIST editor waits out the same module-side debounce the
  * grid does, from the same number. Two hand-written 500s would drift. */
 export { CONTRACT_SETTLE_MS };
@@ -143,7 +147,25 @@ export function paramPagesEnabled() {
  * blind user cannot get back out of. A grid announces a page; a list announces
  * a row.
  */
+/*
+ * A contract may PIN its layout, and Global Settings does.
+ *
+ * Param View is a preference about module parameters — cutoff, resonance,
+ * decay — where eight cells you can grab at once is the whole point. Global
+ * Settings is not that. Every one of its 25 params is a set-once toggle, and
+ * several are destructive to brush past: link_audio_routing re-routes Move's
+ * audio, resample_bridge replaces the sampler's input, param_view changes the
+ * screen you are standing on. A knob has no detent to tell you that you have
+ * changed something.
+ *
+ * So the pin is a property of the CONTRACT, not of the user's preference, and
+ * it lives in the chrome the contract already hands over rather than in a
+ * `component === "global_settings"` test here — this function must not learn
+ * the names of screens. Slot Settings and Master FX Settings deliberately do
+ * NOT pin: their Volume, Mute and Solo genuinely are performance controls.
+ */
 export function paramPagesLayout() {
+    if (currentChrome && currentChrome.layout) return currentChrome.layout;
     if (typeof tts_get_enabled === 'function' && tts_get_enabled()) return LAYOUT_LIST;
     const mode = typeof param_view_get_mode === 'function' ? param_view_get_mode() : PARAM_VIEW_LIST;
     return mode === PARAM_VIEW_KNOBS ? LAYOUT_MOVY : LAYOUT_LIST;

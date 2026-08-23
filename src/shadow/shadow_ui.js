@@ -213,7 +213,7 @@ import {
     paramPagesEnabled, enterParamPages, exitParamPages, paramPagesActive,
     tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage,
     paramPagesComponent, paramPagesSlot, clearParamPagesTouch,
-    enumPickerFooterHints, CONTRACT_SETTLE_MS
+    enumPickerFooterHints, CONTRACT_SETTLE_MS, LAYOUT_LIST
 } from './shadow_ui_param_pages.mjs';
 import { createSlotGridIo, createMasterGridIo } from './shadow_ui_slot_grid.mjs';
 import { createGlobalGridIo, GLOBAL_SECTIONS } from './shadow_ui_global_grid.mjs';
@@ -8233,6 +8233,19 @@ function enterGlobalSettingsGrid(restorePageName) {
                      * abbreviate. Back leaves shadow mode, which is not a view,
                      * so it is an onExit rather than a returnView. */
                     { label: "Global", name: "Settings",
+                      /* PINNED TO THE LIST, whatever Param View says.
+                       *
+                       * Param View is a preference about MODULE parameters,
+                       * where eight cells you can grab at once is the point.
+                       * Every one of these 25 is a set-once toggle, and several
+                       * are destructive to brush past: link_audio_routing
+                       * re-routes Move's audio, resample_bridge replaces the
+                       * sampler's input, and param_view changes the screen you
+                       * are standing on. A knob has no detent to tell you it
+                       * moved. Slot and Master FX settings deliberately do not
+                       * pin — their Volume, Mute and Solo really are
+                       * performance controls. */
+                      layout: LAYOUT_LIST,
                       onExit: () => {
                           if (typeof shadow_request_exit === "function") shadow_request_exit();
                       } });
