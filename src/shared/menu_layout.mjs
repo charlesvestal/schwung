@@ -11,6 +11,11 @@ import { truncateText } from './chain_ui_views.mjs';
  * are the same screen and not two products. */
 import { drawHeader as drawMovyHeader,
          drawFooter as drawMovyFooter } from './param_pages/render_page_movy.mjs';
+/* THE truncator. fitText drops characters from the end until the string
+ * measures inside a pixel width; drawMenuList asks it for a COUNT (see
+ * fitCharCount) because truncateText and the marquee scroller are both
+ * character-budgeted. There is no second copy of that loop in this file. */
+import { fitText } from './param_pages/render_page.mjs';
 /* The geometry itself comes from the LEAF, ../list_geometry.mjs — the single
  * definition every screen shares. This file re-exports each name because ~41
  * call sites import them from here; chain_ui_views.mjs re-exports the same set
@@ -89,6 +94,42 @@ const DEVICE_CTX = {
         : String(text).length * DEFAULT_CHAR_WIDTH),
 };
 
+/* THE DEVICE FONT IS PROPORTIONAL. '!' and '|' are 2px, the quote family and
+ * 'i'/'l'/'I'/'(' are 3-4, and only the 78 widest glyphs are 6. A budget of
+ * `chars * DEFAULT_CHAR_WIDTH` therefore reserves the WIDEST glyph for every
+ * character in the string and truncates text that would have fitted — on the
+ * module picker "CloudSeed Algorithmic" came out "CloudSeed Algo" with visible
+ * empty column to its right. Everything below measures instead, through the
+ * same ctx the row is drawn with, which is what drawMenuHeader / drawMenuFooter
+ * (and renderPicker, the thing drawMenuList replaced) always did.
+ *
+ * DEFAULT_CHAR_WIDTH survives in exactly two roles: the fallback when a ctx has
+ * no textWidth (bare node, no harness, no device globals), and the worst-case
+ * glyph unit for the one budget that is stated in CHARACTERS rather than pixels
+ * — selectedMinLabelChars, a floor that must honour "at least N characters"
+ * whatever those characters turn out to be. */
+function measurer(ctx) {
+    return (ctx && typeof ctx.textWidth === 'function')
+        ? (s) => ctx.textWidth(String(s == null ? "" : s))
+        : (s) => String(s == null ? "" : s).length * DEFAULT_CHAR_WIDTH;
+}
+
+/**
+ * How many LEADING characters of `text` fit in `maxWidth` pixels.
+ *
+ * This is fitText asked for a count instead of a string — the row renderer
+ * needs a character budget because truncateText ellipsises by characters and
+ * the marquee scroller windows by characters. Measuring the whole string first
+ * keeps the common "it fits" case exact (fitText asciiFolds, which can change a
+ * string's LENGTH: "…" becomes "...").
+ */
+function fitCharCount(measure, text, maxWidth) {
+    const s = String(text == null ? "" : text);
+    if (!s || maxWidth <= 0) return 0;
+    if (measure(s) <= maxWidth) return s.length;
+    return fitText({ textWidth: measure }, s, maxWidth).length;
+}
+
 /* A ctx that came from the param-page engine (render_page.mjs / the harness's
  * drawContext) has no setPixel — its surface is fillRect/print/textWidth. A 1x1
  * fill is the same pixel, so the arrows work through either. */
@@ -165,6 +206,23 @@ export function drawMenuFooter(hints, y = FOOTER_TEXT_Y) {
     drawMovyFooter(DEVICE_CTX, list.map(hintPair).filter(Boolean));
 }
 
+/* Measuring against the DEVICE font, for the widgets below that draw through
+ * the globals rather than through an injected ctx. */
+const deviceMeasure = measurer(DEVICE_CTX);
+
+/**
+ * The quoted name shared by drawConfirmModal and drawNamePreview, fitted to the
+ * column it is actually printed in. It used to be a flat truncateText(name, 20)
+ * — 20 glyphs at the assumed 6px is 120px, in a column that is 118px wide, so
+ * the cap was simultaneously too generous for wide names and far too mean for
+ * narrow ones ("Illustrious Little Fi" fits where "Illustrious Litt" did).
+ */
+function fitQuotedName(name) {
+    const s = String(name ?? "");
+    const room = SCREEN_WIDTH - LIST_LABEL_X - 2 - deviceMeasure('""');
+    return '"' + truncateText(s, fitCharCount(deviceMeasure, s, room)) + '"';
+}
+
 /* Shared two-option confirmation modal (cleanup step 9, U-4): header +
  * optional quoted name + a vertical two-row selector + footer. Replaces the
  * four hand-rendered copies in the slot-preset (settings) and master-preset
@@ -180,7 +238,7 @@ export function drawConfirmModal({
 }) {
     drawMenuHeader(title);
     if (name !== undefined && name !== null && name !== "") {
-        print(LIST_LABEL_X, LIST_TOP_Y, '"' + truncateText(String(name), 20) + '"', 1);
+        print(LIST_LABEL_X, LIST_TOP_Y, fitQuotedName(name), 1);
     }
     /* +16 rather than a fresh constant: the whole modal rides LIST_TOP_Y, so
      * the movy re-skin lifted it 5 rows with the list (name at 10, rows at 26
@@ -211,7 +269,7 @@ export function drawNamePreview({
     footer = "Back: cancel"
 }) {
     drawMenuHeader(title);
-    print(LIST_LABEL_X, LIST_TOP_Y, '"' + truncateText(String(name ?? ""), 20) + '"', 1);
+    print(LIST_LABEL_X, LIST_TOP_Y, fitQuotedName(name), 1);
     const listY = LIST_TOP_Y + 16;
     for (let i = 0; i < labels.length; i++) {
         const rowY = listY + i * LIST_LINE_HEIGHT;
@@ -279,6 +337,9 @@ export function drawMenuList({
                         avoid double-announcing each selection move */
 }) {
     const totalItems = items.length;
+    /* Every width below is MEASURED through the ctx this row is drawn with, so
+     * the budget and the glyphs can never disagree. See measurer(). */
+    const measure = measurer(ctx);
     const itemHeight = getSubLabel ? (lineHeight + subLabelOffset) : lineHeight;
     const itemHighlightHeight = getSubLabel ? (lineHeight + subLabelOffset + 2) : highlightHeight;
     const resolvedTopY = listArea?.topY ?? topY;
@@ -350,7 +411,7 @@ export function drawMenuList({
         if (item && item.type === 'divider') {
             const midY = y + Math.floor(itemHeight / 2);
             if (item.label) {
-                const captionW = item.label.length * DEFAULT_CHAR_WIDTH;
+                const captionW = measure(item.label);
                 const captionX = labelX;
                 /* Line left of caption */
                 ctx.fillRect(0, midY, captionX - 2, 1, 1);
@@ -373,21 +434,40 @@ export function drawMenuList({
         let resolvedValueX = valueX;
         let maxLabelChars = 0;
 
+        /* The selected row in edit mode prints "[value]", not "value", and the
+         * brackets are real glyphs that have to come out of the same column.
+         * The 6px budget used to hide this: it over-reserved by (6 - w) on
+         * every character, which happened to absorb the two brackets. Measured
+         * exactly, "[100%]" ran 4px off the right edge of the display — the
+         * harness reported clipped=7. So the bracketed row right-aligns against
+         * an edge pulled in by the CLOSING bracket, and is then shifted left by
+         * the OPENING one, which puts the "]" precisely on valueRightEdge. */
+        const bracketed = editMode && valueAlignRight && isSelected;
+        const rowValueRightEdge = bracketed
+            ? valueRightEdge - measure("]")
+            : valueRightEdge;
+
         if (valueAlignRight && fullValue) {
             let valueXFloor = valueX;
             if (isSelected && prioritizeSelectedValue) {
+                /* The floor is the one budget stated in CHARACTERS: "leave the
+                 * selected label at least N of them". N is not a string yet, so
+                 * there is nothing to measure — the widest glyph is the only
+                 * reservation that honours the promise for any N. The PREFIX is
+                 * a real string and is measured. */
                 const minLabelChars = Math.max(0, selectedMinLabelChars | 0);
-                const minLabelWidth = ((labelPrefix.length + minLabelChars) * DEFAULT_CHAR_WIDTH) + labelGap;
+                const minLabelWidth = measure(labelPrefix)
+                    + (minLabelChars * DEFAULT_CHAR_WIDTH) + labelGap;
                 valueXFloor = labelX + minLabelWidth;
             }
 
-            resolvedValueX = valueRightEdge - (fullValue.length * DEFAULT_CHAR_WIDTH);
+            resolvedValueX = rowValueRightEdge - measure(fullValue);
             if (resolvedValueX < valueXFloor) {
                 resolvedValueX = valueXFloor;
             }
 
-            const maxValueWidth = Math.max(0, valueRightEdge - resolvedValueX);
-            const maxValueChars = Math.floor(maxValueWidth / DEFAULT_CHAR_WIDTH);
+            const maxValueWidth = Math.max(0, rowValueRightEdge - resolvedValueX);
+            const maxValueChars = fitCharCount(measure, fullValue, maxValueWidth);
             if (maxValueChars > 0 && fullValue.length > maxValueChars) {
                 if (isSelected && scrollSelectedValue) {
                     displayValue = labelScroller.getScrolledText(fullValue, maxValueChars);
@@ -397,11 +477,11 @@ export function drawMenuList({
             }
 
             const maxLabelWidth = Math.max(0, resolvedValueX - labelX - labelGap);
-            maxLabelChars = Math.floor((maxLabelWidth - (labelPrefix.length * DEFAULT_CHAR_WIDTH)) / DEFAULT_CHAR_WIDTH);
+            maxLabelChars = fitCharCount(measure, fullLabel, maxLabelWidth - measure(labelPrefix));
         } else {
             /* No value, label can use full width minus prefix and indicator */
             const maxLabelWidth = indicatorX - labelX - labelGap;
-            maxLabelChars = Math.floor((maxLabelWidth - (labelPrefix.length * DEFAULT_CHAR_WIDTH)) / DEFAULT_CHAR_WIDTH);
+            maxLabelChars = fitCharCount(measure, fullLabel, maxLabelWidth - measure(labelPrefix));
         }
 
         if (maxLabelChars > 0) {
@@ -421,8 +501,8 @@ export function drawMenuList({
                 /* Show brackets around value when in edit mode */
                 const shownValue = editMode ? `[${displayValue}]` : displayValue;
                 /* When valueAlignRight and editMode, shift left to account for added brackets */
-                const editValueX = (editMode && valueAlignRight)
-                    ? resolvedValueX - (1 * DEFAULT_CHAR_WIDTH)  /* Shift left for right bracket */
+                const editValueX = bracketed
+                    ? resolvedValueX - measure("[")  /* Shift left by the bracket's OWN width */
                     : resolvedValueX;
                 ctx.print(editValueX, y, shownValue, 0);
             }
@@ -437,7 +517,10 @@ export function drawMenuList({
             const subLabel = getSubLabel(item, i);
             if (subLabel) {
                 const subY = y + subLabelOffset;
-                const subX = labelX + (2 * DEFAULT_CHAR_WIDTH);
+                /* Indented to sit under the label, i.e. past the cursor prefix
+                 * — measured, so it is the prefix's real width and not two
+                 * worst-case glyphs. */
+                const subX = labelX + measure(labelPrefix);
                 ctx.print(subX, subY, subLabel, isSelected ? 0 : 1);
             }
         }
@@ -602,11 +685,11 @@ export function drawStatusOverlay(title, message) {
     drawRect(boxX + 1, boxY + 1, STATUS_OVERLAY_WIDTH - 2, STATUS_OVERLAY_HEIGHT - 2, 1);
 
     /* Center title */
-    const titleW = title.length * 6;
+    const titleW = deviceMeasure(title);
     print(Math.floor((SCREEN_WIDTH - titleW) / 2), boxY + 10, title, 1);
 
     /* Center message */
-    const msgW = message.length * 6;
+    const msgW = deviceMeasure(message);
     print(Math.floor((SCREEN_WIDTH - msgW) / 2), boxY + 24, message, 1);
 }
 
@@ -628,14 +711,14 @@ export function drawMessageOverlay(title, messageLines, showOk = true) {
     drawRect(boxX + 1, boxY + 1, STATUS_OVERLAY_WIDTH - 2, boxHeight - 2, 1);
 
     /* Center title */
-    const titleW = title.length * 6;
+    const titleW = deviceMeasure(title);
     print(Math.floor((SCREEN_WIDTH - titleW) / 2), boxY + 6, title, 1);
 
     /* Message lines */
     if (messageLines) {
         for (let i = 0; i < lineCount; i++) {
             const line = messageLines[i];
-            const lineW = line.length * 6;
+            const lineW = deviceMeasure(line);
             print(Math.floor((SCREEN_WIDTH - lineW) / 2), boxY + 18 + i * 10, line, 1);
         }
     }
@@ -643,7 +726,7 @@ export function drawMessageOverlay(title, messageLines, showOk = true) {
     /* OK button - highlighted to show it's the action */
     if (showOk) {
         const okText = '[OK]';
-        const okW = okText.length * 6;
+        const okW = deviceMeasure(okText);
         const okX = Math.floor((SCREEN_WIDTH - okW) / 2);
         const okY = boxY + boxHeight - 14;
         fill_rect(okX - 4, okY - 2, okW + 8, 12, 1);
@@ -670,19 +753,19 @@ export function drawConfirmOverlay(title, messageLines, footer) {
     drawRect(boxX, boxY, STATUS_OVERLAY_WIDTH, boxHeight, 1);
     drawRect(boxX + 1, boxY + 1, STATUS_OVERLAY_WIDTH - 2, boxHeight - 2, 1);
 
-    const titleW = title.length * 6;
+    const titleW = deviceMeasure(title);
     print(Math.floor((SCREEN_WIDTH - titleW) / 2), boxY + 6, title, 1);
 
     if (messageLines) {
         for (let i = 0; i < lineCount; i++) {
             const line = messageLines[i];
-            const lineW = line.length * 6;
+            const lineW = deviceMeasure(line);
             print(Math.floor((SCREEN_WIDTH - lineW) / 2), boxY + 18 + i * 8, line, 1);
         }
     }
 
     const footerText = footer || 'Back:No  Jog:Yes';
-    const footerW = footerText.length * 6;
+    const footerW = deviceMeasure(footerText);
     print(Math.floor((SCREEN_WIDTH - footerW) / 2), boxY + boxHeight - 12, footerText, 1);
 }
 
