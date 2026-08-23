@@ -6105,7 +6105,7 @@ function drawOvertakeMenu() {
         });
     }
 
-    drawFooter({left: "Back: exit", right: "Jog: select"});
+    drawFooter(["Back: exit", "Jog: select"]);
 }
 
 /*
@@ -13009,10 +13009,10 @@ function drawWavPositionEditor(selectedKey, selectedMeta) {
         }
     }
 
-    drawFooter({
-        left: truncateText(valueText, 20),
-        right: truncateText(sourceText, 12)
-    });
+    drawFooter([
+        truncateText(valueText, 20),
+        truncateText(sourceText, 12)
+    ]);
 }
 
 function resetCanvasState() {
@@ -13392,10 +13392,10 @@ function drawCanvasPreview() {
         }
     }
     if (!canvasParamMeta || canvasParamMeta.show_footer !== false) {
-        drawFooter({
-            left: truncateText(String(valueText || "-"), 20),
-            right: truncateText(title, 12)
-        });
+        drawFooter([
+            truncateText(String(valueText || "-"), 20),
+            truncateText(title, 12)
+        ]);
     }
 }
 
@@ -13409,7 +13409,7 @@ function drawFilepathBrowser() {
 
     if (!state) {
         print(4, LIST_TOP_Y, "Browser unavailable", 1);
-        drawFooter({ left: "Click: return", right: "Jog: scroll" });
+        drawFooter(["Click: return", "Jog: scroll"]);
         return;
     }
 
@@ -13433,7 +13433,7 @@ function drawFilepathBrowser() {
         ? state.items[state.selectedIndex]
         : null;
     const actionText = selected && selected.kind === "file" ? "Click: select" : "Click: open";
-    drawFooter({ left: actionText, right: "Jog: scroll" });
+    drawFooter([actionText, "Jog: scroll"]);
 }
 
 /* Track plugin async-load state per draw so a preset switch's deferred
@@ -13644,7 +13644,7 @@ function drawHierarchyEditor() {
         }
 
         /* Footer hints - always push to edit (for swap/params) */
-        drawFooter({left: "Click: edit", right: "Jog: browse"});
+        drawFooter(["Click: edit", "Jog: browse"]);
     } else {
         const selectedKey = getSelectedHierarchyEditableKey();
         const selectedMeta = selectedKey ? getParamMetadata(selectedKey) : null;
@@ -13740,11 +13740,11 @@ function drawHierarchyEditor() {
         }
 
         /* Footer hints */
-        let hint = hierEditorEditMode ? {left: "Click: done", right: "Jog: adjust"} : {left: "Click: edit", right: "Jog: scroll"};
+        let hint = hierEditorEditMode ? ["Click: done", "Jog: adjust"] : ["Click: edit", "Jog: scroll"];
         if (!hierEditorEditMode && selectedMeta && selectedMeta.type === "string") {
-            hint = { left: "Click: keyboard", right: "Jog: scroll" };
+            hint = ["Click: keyboard", "Jog: scroll"];
         } else if (!hierEditorEditMode && selectedMeta && selectedMeta.type === "canvas") {
-            hint = { left: "Click: open", right: "Jog: scroll" };
+            hint = ["Click: open", "Jog: scroll"];
         }
         drawFooter(hint);
     }
@@ -16269,7 +16269,7 @@ function drawComponentEdit() {
         const errorX = Math.floor((SCREEN_WIDTH - errorText.length * 5) / 2);
         print(errorX, centerY + 2, errorText, 1);
 
-        drawFooter({left: "Back: done"});
+        drawFooter(["Back: done"]);
         return;
     }
 
@@ -16307,7 +16307,7 @@ function drawComponentEdit() {
     }
 
     /* Show hint at bottom */
-    drawFooter({left: "Back: done", right: "Jog: preset"});
+    drawFooter(["Back: done", "Jog: preset"]);
 }
 
 /* Draw chain settings view */
@@ -16342,7 +16342,7 @@ function drawKnobEditor() {
         prioritizeSelectedValue: true
     });
 
-    drawFooter({left: "Back: cancel", right: "Click: edit"});
+    drawFooter(["Back: cancel", "Click: edit"]);
 }
 
 /* Draw param picker - select target then param for knob assignment */
@@ -16363,7 +16363,7 @@ function drawKnobParamPicker() {
             getValue: () => ""
         });
 
-        drawFooter({left: "Back: cancel", right: "Click: select"});
+        drawFooter(["Back: cancel", "Click: select"]);
     } else if (knobParamPickerHierarchy && knobParamPickerLevel) {
         /* Hierarchy mode - show current level */
         const levelDef = knobParamPickerHierarchy.levels[knobParamPickerLevel];
@@ -16379,7 +16379,7 @@ function drawKnobParamPicker() {
         });
 
         const hasNav = knobParamPickerParams.some(p => p.type === "nav");
-        drawFooter(hasNav ? {left: "Back: up", right: "Click: select"} : {left: "Back: up", right: "Click: assign"});
+        drawFooter(hasNav ? ["Back: up", "Click: select"] : ["Back: up", "Click: assign"]);
     } else {
         /* Flat mode - show params for selected target */
         drawHeader(`Knob ${knobNum} Param`);
@@ -16397,7 +16397,7 @@ function drawKnobParamPicker() {
             getValue: () => ""
         });
 
-        drawFooter({left: "Back: targets", right: "Click: assign"});
+        drawFooter(["Back: targets", "Click: assign"]);
     }
 }
 
@@ -16413,7 +16413,7 @@ function drawDynamicParamPicker() {
             getLabel: (item) => item.label || item.key || "",
             getValue: () => ""
         });
-        drawFooter({left: "Back: targets", right: "Click: select"});
+        drawFooter(["Back: targets", "Click: select"]);
     } else {
         drawHeader("Select Target");
         drawMenuList({
@@ -16423,7 +16423,7 @@ function drawDynamicParamPicker() {
             getLabel: (item) => item.label || item.id || "",
             getValue: () => ""
         });
-        drawFooter({left: "Back: cancel", right: "Click: select"});
+        drawFooter(["Back: cancel", "Click: select"]);
     }
 }
 

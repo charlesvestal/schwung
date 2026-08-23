@@ -247,9 +247,9 @@ export function drawSlotSettings() {
     });
 
     if (editingSettingValue) {
-        drawFooter({left: "Click: done", right: "Jog: adjust"});
+        drawFooter(["Click: done", "Jog: adjust"]);
     } else {
-        drawFooter({left: "Back: slots", right: "Click: edit"});
+        drawFooter(["Back: slots", "Click: edit"]);
     }
 }
 
