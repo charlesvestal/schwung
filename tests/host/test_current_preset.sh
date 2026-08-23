@@ -73,7 +73,20 @@ if (CP.presetRowValue(emptyName, "BLOB") !== "(none)") {
 /* ---- presetRowValue ---------------------------------------------------- */
 if (CP.presetRowValue(null, "BLOB") !== "(none)") fail("no preset reads (none)");
 if (CP.presetRowValue(rec, "BLOB") !== "Fat Brass") fail("unmodified reads the bare name");
-if (CP.presetRowValue(rec, "OTHER") !== "Fat Brass *") fail("modified appends a space-star");
+/* The mark LEADS the name. The list renderer truncates the tail, so a trailing
+ * mark is the first thing lost -- rendered on obxd, "Fat Brass *" drew as
+ * "Fat Br..." and the one character carrying the information was gone. */
+if (CP.presetRowValue(rec, "OTHER") !== "* Fat Brass") fail("modified must PREFIX a star, so truncation cannot eat it");
+/* Pin the reason, not just the string: the mark must survive a tail cut at any
+ * width a real row can impose. */
+{
+  const longRec = CP.makeRecord("Polysynth Brass Section 3", "BLOB");
+  const v = CP.presetRowValue(longRec, "OTHER");
+  if (v.slice(0, 2) !== "* ") fail("the mark must be within the first two chars for a long name, got: " + v);
+  for (let cut = 3; cut <= v.length; cut++) {
+    if (v.slice(0, cut).indexOf("*") !== 0) fail("a tail cut at " + cut + " lost the mark");
+  }
+}
 if (CP.presetRowValue(blind, "ANYTHING") !== "Fat Brass") {
   fail("a record with a null hash must render the bare name, never a star");
 }
