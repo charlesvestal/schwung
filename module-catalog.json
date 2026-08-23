@@ -1268,6 +1268,17 @@
       "min_host_version": "0.12.1"
     },
     {
+      "id": "6w6",
+      "name": "6W6",
+      "description": "TR-606 style drum machine. Every voice synthesized, no samples: kick, snare, low and hi tom, closed and open hat, cymbal, plus a clap. Fitted against recordings of a hardware 606 \u2014 the cymbal and the hi-hat metal bank are measured partial tables, and the default pot positions are the machine. Switchable hat choke (off / closed cuts open / mutual), per-voice and master drive/distortion, pad editor, remote web panel that follows the pad you hit, Movy template.",
+      "author": "athousanddetails; voices after 606-Inspired-Synth-Drums (Matthew Fecher / AudioKit Pro)",
+      "component_type": "sound_generator",
+      "github_repo": "athousanddetails/schwung-6W6",
+      "default_branch": "main",
+      "asset_name": "6w6-module.tar.gz",
+      "min_host_version": "0.12.1"
+    },
+    {
       "id": "tablor",
       "name": "Tablor",
       "description": "2-osc wavetable synth. Position morphing, bend, formant shift and 4-voice unison; sub and noise; multimode filter with its own ADSR; 2 envelopes, 2 LFOs, 4-slot mod matrix and 8 assignable macros. 8 voices poly or mono with glide. Unlimited shareable .tblr presets, 115 seeded wavetables, and Serum/Vital/Ableton tables via Move Manager. Web panel with a live display of the loaded wavetable.",
