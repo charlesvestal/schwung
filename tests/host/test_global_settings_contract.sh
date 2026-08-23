@@ -251,9 +251,190 @@ const plan = planPages({ hierarchy, chainParams });
   if (warns.length) fail(warns.length + " validator warning(s) — see above");
 }
 
+/* ---- 8. accessor routing: every key has a backend ------------------------
+ *
+ * A declared param with no routing entry reads BLANK and writes NOWHERE. The
+ * grid does not error on that — it draws an empty cell and swallows the turn —
+ * so it is exactly the shape of failure this file exists to catch.
+ */
+{
+  const routed = Object.keys(G.GLOBAL_ROUTING);
+  for (const cp of chainParams) {
+    if (!G.GLOBAL_ROUTING[cp.key]) {
+      fail(cp.key + " is declared in the contract but has no GLOBAL_ROUTING entry — " +
+           "it would read blank and write nowhere");
+    }
+  }
+  for (const k of routed) {
+    if (!chainParams.some((cp) => cp.key === k)) {
+      fail("GLOBAL_ROUTING routes " + k + ", which the contract does not declare");
+    }
+  }
+  if (routed.length !== chainParams.length) {
+    fail("GLOBAL_ROUTING has " + routed.length + " entries for " + chainParams.length + " params");
+  }
+  /* Every entry must actually name a backend on both sides. A half-filled row
+   * is the same blank cell with a plausible-looking table above it. */
+  for (const k of routed) {
+    const r = G.GLOBAL_ROUTING[k];
+    if (!r.read || !r.write) fail(k + " routing entry is missing a read or write backend");
+    if (!(r.persist === null || r.persist === "save" || r.persist === "own")) {
+      fail(k + " has an unknown persist kind: " + JSON.stringify(r.persist));
+    }
+  }
+}
+
+/* ---- 9. PERSISTENCE: a write that should save must call save --------------
+ *
+ * These keys set a cached module-level var AND call saveMasterFxChainConfig in
+ * the code this contract replaces. A writeParam that skips either sets the
+ * param and loses it on reboot -- silently. There is no error, no wrong value
+ * on screen, and no symptom until the device comes back up, which is why it is
+ * pinned here rather than trusted to review.
+ */
+{
+  const spy = () => {
+    const s = { writes: [], persists: 0, values: {} };
+    s.io = {
+      readParam: (k) => (k in s.values ? s.values[k] : "0"),
+      writeParam: (k, v) => { s.writes.push([k, v]); },
+      persist: () => { s.persists++; },
+    };
+    return s;
+  };
+
+  /* Transcribed from the six saveMasterFxChainConfig() calls in
+   * adjustMasterFxSetting. Asserted against PERSISTING_KEYS as a SET, so a key
+   * that quietly stopped persisting fails here, not on a device. */
+  const WANT_PERSIST = ["overlay_knobs", "link_audio_routing", "link_audio_publish",
+                        "latency_comp_enabled", "resample_bridge", "usbc_out_persist"].sort();
+  const got = Array.from(G.PERSISTING_KEYS).sort();
+  if (got.join(",") !== WANT_PERSIST.join(",")) {
+    fail("PERSISTING_KEYS should be exactly " + WANT_PERSIST.join(",") + ", got " + got.join(","));
+  }
+
+  for (const k of WANT_PERSIST) {
+    const s = spy();
+    G.writeGlobalParam(s.io, k, 1);
+    if (s.writes.length !== 1) {
+      fail("writing " + k + " should write exactly once, got " + JSON.stringify(s.writes));
+    }
+    if (s.persists !== 1) {
+      fail("writing " + k + " must call persist() (saveMasterFxChainConfig) — it sets a cached " +
+           "var that config serialises, so without the save the setting is lost on reboot; " +
+           "got " + s.persists + " calls");
+    }
+  }
+
+  /* NOT VACUOUS. If every key persisted, the loop above would pass no matter
+   * what writeGlobalParam did with the set. These four cover all three of the
+   * other persistence kinds: an own saver (pad_typing, filebrowser_enabled),
+   * a self-persisting backend (screen_reader_speed) and a feature flag
+   * (analytics_enabled). None may reach the shared sink. */
+  for (const k of ["pad_typing", "filebrowser_enabled", "screen_reader_speed", "analytics_enabled"]) {
+    if (G.PERSISTING_KEYS.has(k)) {
+      fail(k + " does not call saveMasterFxChainConfig in the code being replaced — " +
+           "including it makes the persistence assertion vacuous");
+    }
+    const s = spy();
+    G.writeGlobalParam(s.io, k, 1);
+    if (s.persists !== 0) {
+      fail("writing " + k + " must NOT call persist(): its persistence is elsewhere " +
+           "(or nowhere), and a set where everything persists proves nothing");
+    }
+    if (s.writes.length !== 1) fail("writing " + k + " should still write once");
+  }
+
+  /* persist is OPTIONAL on the io — an io without one must not throw. */
+  try {
+    G.writeGlobalParam({ readParam: () => "0", writeParam: () => {} }, "resample_bridge", 1);
+  } catch (e) {
+    fail("writeGlobalParam must tolerate an io with no persist(): " + (e && e.message));
+  }
+}
+
+/* ---- 10. stored values are not indexes ----------------------------------
+ *
+ * resample_bridge stores 0 and **2**. The knob engine and the enum picker both
+ * work in INDEXES, so an index-is-value write sets mode 1 — which does not
+ * exist — and the setting appears to do nothing at all. Round-tripped in both
+ * directions because either half alone can be wrong and still look consistent.
+ */
+{
+  const wrote = [];
+  const io = { readParam: () => "0", writeParam: (k, v) => wrote.push(v) };
+
+  G.writeGlobalParam(io, "resample_bridge", 0);
+  G.writeGlobalParam(io, "resample_bridge", 1);
+  if (wrote.join(",") !== "0,2") {
+    fail("resample_bridge indexes 0 and 1 must store 0 and 2, got [" + wrote.join(", ") + "] — " +
+         "writing the index sets mode 1, a mode that does not exist");
+  }
+
+  /* Back the other way: the STORED value must resolve to the index the grid
+   * draws. Reading 2 as index 2 would run off the end of a 2-option list. */
+  for (const [stored, index] of [["0", "0"], ["2", "1"]]) {
+    const got = G.readGlobalParam({ readParam: () => stored }, "resample_bridge");
+    if (got !== index) {
+      fail("resample_bridge stored " + stored + " must read back as index " + index + ", got " +
+           JSON.stringify(got));
+    }
+  }
+
+  /* The same trap in the other two tables that are not 0..n-1. */
+  const sec = [];
+  const secIo = { readParam: () => "0", writeParam: (k, v) => sec.push(v) };
+  G.writeGlobalParam(secIo, "skipback_seconds", 2);
+  if (sec[0] !== "120") fail("skipback_seconds index 2 stores 120 seconds, got " + JSON.stringify(sec[0]));
+  const eng = [];
+  const engIo = { readParam: () => "espeak", writeParam: (k, v) => eng.push(v) };
+  G.writeGlobalParam(engIo, "screen_reader_engine", 1);
+  if (eng[0] !== "flite") fail("screen_reader_engine index 1 stores \"flite\", got " + JSON.stringify(eng[0]));
+  if (G.readGlobalParam({ readParam: () => "flite" }, "screen_reader_engine") !== "1") {
+    fail("screen_reader_engine stored \"flite\" must read back as index 1");
+  }
+
+  /* A failed read is not an index. null means the read did not complete and ""
+   * means the channel served nothing; turning either into 0 reports "Native"
+   * as fact. See the three-answers rule in CLAUDE.md. */
+  for (const raw of [null, ""]) {
+    const got = G.readGlobalParam({ readParam: () => raw }, "resample_bridge");
+    if (got !== raw) {
+      fail("a " + JSON.stringify(raw) + " read must pass through, not become an index; got " +
+           JSON.stringify(got));
+    }
+  }
+}
+
+/* ---- 11. usbc_out_persist: three options, two states --------------------
+ *
+ * Both On indexes store 1 — the third exists only to carry the wire
+ * annotation, and the source is read-only because Move own menu still chooses
+ * it. Writing the index would set persist=2, which is not a bool.
+ */
+{
+  const wrote = [];
+  const io = { readParam: () => "0", writeParam: (k, v) => wrote.push(v) };
+  for (const idx of [0, 1, 2]) G.writeGlobalParam(io, "usbc_out_persist", idx);
+  if (wrote.join(",") !== "0,1,1") {
+    fail("usbc_out_persist indexes 0/1/2 must store 0/1/1, got [" + wrote.join(", ") + "]");
+  }
+
+  const read = (on, src) => G.readGlobalParam({
+    readParam: (k) => (k === "usbc_out_source" ? src : on),
+  }, "usbc_out_persist");
+  if (read("0", "1") !== "0") fail("usbc_out_persist off must read index 0 whatever the wire says");
+  if (read("1", "1") !== "2") fail("usbc_out_persist on with source Main Out must read index 2");
+  if (read("1", "0") !== "1") fail("usbc_out_persist on with source Mic must read index 1");
+  if (read("1", "-1") !== "1") fail("usbc_out_persist on with an unknown source must not claim a route");
+  if (read(null, "1") !== null) fail("a failed usbc_out_persist read must pass through as null");
+}
+
 if (failures) process.exit(1);
 console.log("PASS: global settings contract — seven levels (6/8/6/1/1/3 params + Updates as a " +
             "menu), every section one page with Audio at the limit, every enum listable with a " +
             "matching short_options, usbc_out_persist annotated in the long form only, " +
-            "validator clean, and no host global read");
+            "validator clean, no host global read, every key routed to a backend, the six " +
+            "saveMasterFxChainConfig keys persisting and four others provably not, and " +
+            "resample_bridge round-tripping [0, 2] rather than its indexes");
 '
