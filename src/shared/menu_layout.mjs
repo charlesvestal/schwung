@@ -9,48 +9,26 @@ import { truncateText } from './chain_ui_views.mjs';
  * header band now — same font, same 7 rows, same measured left/right split —
  * so that a list reached from the knob grid and a list reached from the menu
  * are the same screen and not two products. */
-/* MENU_LIST_X / MENU_LIST_Y come from the same module: they are the list rect
- * the knob grid's own menu pages occupy, and a second copy of "x 8, y 10" is
- * exactly the duplication this file is being folded into. They used to live in
- * the page controller and were moved next to HEADER_H / RULE_Y so that reading
- * two integers does not drag the whole page engine into every host module that
- * draws a list; the controller re-exports them, so nothing else changed. */
-import { drawHeader as drawMovyHeader, HEADER_H as MOVY_HEADER_H,
-         RULE_Y as MOVY_RULE_Y, MENU_LIST_X, MENU_LIST_Y }
-    from './param_pages/render_page_movy.mjs';
+import { drawHeader as drawMovyHeader } from './param_pages/render_page_movy.mjs';
+/* The geometry itself comes from the LEAF, ../list_geometry.mjs — the single
+ * definition every screen shares. This file re-exports each name because ~41
+ * call sites import them from here; chain_ui_views.mjs re-exports the same set
+ * for its own ~7 consumers. One value, three doors to it. */
+import {
+    SCREEN_WIDTH, SCREEN_HEIGHT, RULE_Y as MOVY_RULE_Y,
+    TITLE_Y, TITLE_RULE_Y, FOOTER_TEXT_Y, FOOTER_RULE_Y,
+    LIST_TOP_Y, LIST_LINE_HEIGHT, LIST_HIGHLIGHT_HEIGHT, LIST_HIGHLIGHT_OFFSET,
+    LIST_LABEL_X, LIST_VALUE_X,
+} from './list_geometry.mjs';
+export {
+    SCREEN_WIDTH, SCREEN_HEIGHT,
+    TITLE_Y, TITLE_RULE_Y, FOOTER_TEXT_Y, FOOTER_RULE_Y,
+    LIST_TOP_Y, LIST_LINE_HEIGHT, LIST_HIGHLIGHT_HEIGHT, LIST_HIGHLIGHT_OFFSET,
+    LIST_LABEL_X, LIST_VALUE_X,
+};
 
-/* Screen dimensions */
-export const SCREEN_WIDTH = 128;
-export const SCREEN_HEIGHT = 64;
-
-/* Header and footer positioning.
- *
- * TITLE_Y is the glyph row INSIDE the 7-row band (font4x5 is 5 rows, printed
- * at y=1 so there is one clear row above and one below). TITLE_RULE_Y is no
- * longer a rule at all — the band carries its own clear row — but the name is
- * kept and now means "the first row below the header band", which is what
- * every call site used it for. */
-export const TITLE_Y = 1;
-export const TITLE_RULE_Y = MOVY_HEADER_H;
-export const FOOTER_TEXT_Y = SCREEN_HEIGHT - 7;
-export const FOOTER_RULE_Y = MOVY_RULE_Y;   /* 55 — already agreed with movy */
-
-/* List rendering.
- *
- * ONE rect, MENU_LIST_Y (10) .. MOVY_RULE_Y (55), whether or not a footer is
- * on screen. The old chrome reserved a separate shorter rect for the footer
- * case and paid a whole row for it: floor((54-15)/9) = 4 against
- * floor((62-15)/9) = 5. The movy footer rule is at 55 and the last row's
- * highlight ends at 53, so the same rect serves both — the footer case GAINS
- * that row back (4 -> 5) and the no-footer case holds at 5. The three
- * *_BOTTOM_* names below are kept because ~41 call sites import them; they
- * are now three names for one edge. */
-export const LIST_TOP_Y = MENU_LIST_Y;
-export const LIST_LINE_HEIGHT = 9;                      // 5x7px font + 2px spacing
-export const LIST_HIGHLIGHT_HEIGHT = LIST_LINE_HEIGHT;
-export const LIST_HIGHLIGHT_OFFSET = 1;                 // Shift rect up 1px to vertically center
-export const LIST_LABEL_X = MENU_LIST_X;
-export const LIST_VALUE_X = 92;
+/* The three *_BOTTOM_* names below are kept because their call sites import
+ * them; they are now three names for one edge, the footer rule at 55. */
 export const LIST_MAX_VISIBLE = 5;   /* DEAD: drawMenuList never reads it */
 export const LIST_INDICATOR_X = 120;
 export const LIST_INDICATOR_BOTTOM_Y = MOVY_RULE_Y;

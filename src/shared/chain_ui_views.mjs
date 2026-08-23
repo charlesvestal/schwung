@@ -4,18 +4,34 @@
  * Shared between main chain UI and shadow UI for consistent rendering.
  */
 
-/* Layout constants */
-export const SCREEN_WIDTH = 128;
-export const SCREEN_HEIGHT = 64;
-export const TITLE_Y = 2;
-export const TITLE_RULE_Y = 12;
-export const LIST_TOP_Y = 15;
-export const LIST_LINE_HEIGHT = 9;
-export const LIST_HIGHLIGHT_HEIGHT = LIST_LINE_HEIGHT;
-export const LIST_LABEL_X = 4;
-export const LIST_VALUE_X = 92;
-export const FOOTER_TEXT_Y = SCREEN_HEIGHT - 7;
-export const FOOTER_RULE_Y = FOOTER_TEXT_Y - 2;
+/* Layout constants — RE-EXPORTED, not defined.
+ *
+ * This file used to carry a complete second copy of the chrome geometry, and
+ * that copy was the OLD one (TITLE_Y 2, TITLE_RULE_Y 12, LIST_TOP_Y 15,
+ * LIST_LABEL_X 4). Every shadow view module imports LIST_TOP_Y from HERE and
+ * hands it back to drawMenuList as `listArea: { topY: LIST_TOP_Y }`, so those
+ * ~20 call sites silently overrode menu_layout's re-skinned default and the
+ * new chrome never reached the device: an 8-row dead band under the header and
+ * four list rows instead of five.
+ *
+ * The names stay so the ~7 consumers need no edit; the values now come from the
+ * one definition. This file cannot import them from menu_layout.mjs — that
+ * module imports truncateText from here, so it would be a cycle. The leaf sits
+ * below both, which is why it has no imports of its own. */
+import {
+    SCREEN_WIDTH, SCREEN_HEIGHT,
+    TITLE_Y, TITLE_RULE_Y,
+    LIST_TOP_Y, LIST_LINE_HEIGHT, LIST_HIGHLIGHT_HEIGHT,
+    LIST_LABEL_X, LIST_VALUE_X,
+    FOOTER_TEXT_Y, FOOTER_RULE_Y,
+} from './list_geometry.mjs';
+export {
+    SCREEN_WIDTH, SCREEN_HEIGHT,
+    TITLE_Y, TITLE_RULE_Y,
+    LIST_TOP_Y, LIST_LINE_HEIGHT, LIST_HIGHLIGHT_HEIGHT,
+    LIST_LABEL_X, LIST_VALUE_X,
+    FOOTER_TEXT_Y, FOOTER_RULE_Y,
+};
 
 /* Parameter type constants */
 export const PARAM_TYPE = {
