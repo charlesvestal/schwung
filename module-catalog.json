@@ -35,7 +35,7 @@
     },
     {
       "id": "sfz",
-      "name": "SFZ Player",
+      "name": "Multisampler",
       "description": "SFZ and DecentSampler (.dspreset) sample player using sfizz engine",
       "author": "sfizz by sfztools (port: charlesvestal)",
       "component_type": "sound_generator",
