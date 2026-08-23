@@ -163,6 +163,32 @@ export function drawConfirmModal({
     drawMenuFooter(footer);
 }
 
+/* Shared "Save As" name preview: header + quoted name + a two-row Edit/OK
+ * selector + footer. Replaces the byte-identical copies in drawChainSettings
+ * (slot presets) and drawMasterNamePreview (master presets) -- the pair that
+ * made "fix the slot list and MFX stays broken" concrete. Same widget as
+ * drawConfirmModal, different labels. */
+export function drawNamePreview({
+    name,
+    selectedIndex,
+    title = "Save As",
+    labels = ["Edit", "OK"],
+    footer = "Back: cancel"
+}) {
+    drawMenuHeader(title);
+    print(LIST_LABEL_X, LIST_TOP_Y, '"' + truncateText(String(name ?? ""), 20) + '"', 1);
+    const listY = LIST_TOP_Y + 16;
+    for (let i = 0; i < labels.length; i++) {
+        const rowY = listY + i * LIST_LINE_HEIGHT;
+        const isSelected = i === selectedIndex;
+        if (isSelected) {
+            fill_rect(0, rowY - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
+        }
+        print(LIST_LABEL_X, rowY, labels[i], isSelected ? 0 : 1);
+    }
+    drawMenuFooter(footer);
+}
+
 export function drawArrowUp(x, y) {
     set_pixel(x + 2, y, 1);
     set_pixel(x + 1, y + 1, 1);

@@ -6,9 +6,9 @@
  */
 import { ctx } from './shadow_ui_ctx.mjs';
 import {
-    SCREEN_WIDTH,
-    LIST_TOP_Y, LIST_LINE_HEIGHT, LIST_HIGHLIGHT_HEIGHT,
-    LIST_LABEL_X, LIST_VALUE_X,
+    /* Row geometry is gone from this file: nothing here draws a row any more,
+     * drawMenuList / drawNamePreview do. */
+    LIST_TOP_Y,
     FOOTER_RULE_Y,
     truncateText
 } from '/data/UserData/schwung/shared/chain_ui_views.mjs';
@@ -16,7 +16,8 @@ import {
     drawMenuHeader as drawHeader,
     drawMenuFooter as drawFooter,
     drawMenuList,
-    drawConfirmModal
+    drawConfirmModal,
+    drawNamePreview
 } from '/data/UserData/schwung/shared/menu_layout.mjs';
 
 /* ---- Draw --------------------------------------------------------------- */
@@ -31,20 +32,7 @@ export function drawChainSettings() {
     clear_screen();
 
     if (showingNamePreview) {
-        drawHeader("Save As");
-        const name = truncateText(pendingSaveName, 20);
-        print(LIST_LABEL_X, LIST_TOP_Y, '"' + name + '"', 1);
-
-        const listY = LIST_TOP_Y + 16;
-        for (let i = 0; i < 2; i++) {
-            const y = listY + i * LIST_LINE_HEIGHT;
-            const isSelected = i === namePreviewIndex;
-            if (isSelected) {
-                fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
-            }
-            print(LIST_LABEL_X, y, i === 0 ? "Edit" : "OK", isSelected ? 0 : 1);
-        }
-        drawFooter("Back: cancel");
+        drawNamePreview({ name: pendingSaveName, selectedIndex: namePreviewIndex });
         return;
     }
 
@@ -65,42 +53,19 @@ export function drawChainSettings() {
     drawHeader("S" + (selectedSlot + 1) + " Settings");
 
     const items = getChainSettingsItems(selectedSlot);
-    const listY = LIST_TOP_Y;
-    const lineHeight = 9;
-    const maxVisible = Math.floor((FOOTER_RULE_Y - LIST_TOP_Y) / lineHeight);
 
-    let scrollOffset = 0;
-    if (selectedChainSetting >= maxVisible) {
-        scrollOffset = selectedChainSetting - maxVisible + 1;
-    }
-
-    for (let i = 0; i < maxVisible && (i + scrollOffset) < items.length; i++) {
-        const itemIdx = i + scrollOffset;
-        const y = listY + i * lineHeight;
-        const setting = items[itemIdx];
-        const isSelected = itemIdx === selectedChainSetting;
-
-        if (isSelected) {
-            fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
-        }
-
-        const labelColor = isSelected ? 0 : 1;
-        print(LIST_LABEL_X, y, setting.label, labelColor);
-
-        if (setting.type !== "action") {
-            const value = getChainSettingValue(selectedSlot, setting);
-            if (value) {
-                const valueX = SCREEN_WIDTH - value.length * 5 - 4;
-                if (isSelected && editingChainSettingValue) {
-                    print(valueX - 8, y, "<", 0);
-                    print(valueX, y, value, 0);
-                    print(valueX + value.length * 5 + 2, y, ">", 0);
-                } else {
-                    print(valueX, y, value, labelColor);
-                }
-            }
-        }
-    }
+    drawMenuList({
+        items,
+        selectedIndex: selectedChainSetting,
+        getLabel: (item) => item.label,
+        getValue: (item) => item.type === "action"
+            ? ""
+            : (getChainSettingValue(selectedSlot, item) || ""),
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+        valueAlignRight: true,
+        prioritizeSelectedValue: true,
+        editMode: editingChainSettingValue
+    });
 }
 
 export function drawGlobalSettings() {
@@ -129,20 +94,18 @@ export function drawGlobalSettings() {
         drawMenuList({
             items: section.items,
             selectedIndex: globalSettingsItemIndex,
-            getLabel: (item) => {
-                if (globalSettingsEditing &&
-                    section.items[globalSettingsItemIndex] === item) {
-                    return "[" + item.label + "]";
-                }
-                return item.label;
-            },
+            getLabel: (item) => item.label,
             getValue: (item) => {
                 if (item.type === "action") return "";
                 return getMasterFxSettingValue(item);
             },
             listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
             valueAlignRight: true,
-            prioritizeSelectedValue: true
+            prioritizeSelectedValue: true,
+            /* The fourth spelling of "you are editing this row" was
+             * bracket-the-LABEL. editMode brackets the VALUE, which is what
+             * every other list on the device does. */
+            editMode: globalSettingsEditing
         });
 
         drawFooter("Back: Settings");

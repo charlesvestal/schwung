@@ -16318,10 +16318,6 @@ function drawKnobEditor() {
     clear_screen();
     drawHeader(`S${knobEditorSlot + 1} Knobs`);
 
-    const listY = LIST_TOP_Y;
-    const lineHeight = 10;
-    const maxVisible = Math.floor((FOOTER_RULE_Y - LIST_TOP_Y) / lineHeight);
-
     /* List all 8 knobs */
     const items = [];
     for (let i = 0; i < NUM_KNOBS; i++) {
@@ -16332,33 +16328,19 @@ function drawKnobEditor() {
         });
     }
 
-    /* Calculate scroll offset */
-    let scrollOffset = 0;
-    if (knobEditorIndex >= maxVisible) {
-        scrollOffset = knobEditorIndex - maxVisible + 1;
-    }
-
-    for (let i = 0; i < maxVisible && (i + scrollOffset) < items.length; i++) {
-        const itemIdx = i + scrollOffset;
-        const item = items[itemIdx];
-        const y = listY + i * lineHeight;
-        const isSelected = itemIdx === knobEditorIndex;
-
-        if (isSelected) {
-            fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
-        }
-
-        const labelColor = isSelected ? 0 : 1;
-        print(LIST_LABEL_X, y, item.label, labelColor);
-
-        /* Show assignment on the right */
-        if (item.type === "knob") {
-            const value = getKnobAssignmentLabel(item.assignment);
-            const truncValue = truncateText(value, 12);
-            const valueX = SCREEN_WIDTH - truncValue.length * 5 - 4;
-            print(valueX, y, truncValue, labelColor);
-        }
-    }
+    /* No editMode: the knob editor has no in-place editing state -- a click
+     * opens the param picker instead. */
+    drawMenuList({
+        items,
+        selectedIndex: knobEditorIndex,
+        getLabel: (item) => item.label,
+        getValue: (item) => item.type === "knob"
+            ? truncateText(getKnobAssignmentLabel(item.assignment), 12)
+            : "",
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+        valueAlignRight: true,
+        prioritizeSelectedValue: true
+    });
 
     drawFooter({left: "Back: cancel", right: "Click: edit"});
 }
@@ -17287,40 +17269,16 @@ function drawLfoEdit() {
     }
     drawHeader(truncateText(title, 22));
 
-    const items = getLfoItems();
-    const lineHeight = 9;
-    const maxVisible = Math.floor((FOOTER_RULE_Y - LIST_TOP_Y) / lineHeight);
-
-    let scrollOffset = 0;
-    if (selectedLfoItem >= maxVisible) {
-        scrollOffset = selectedLfoItem - maxVisible + 1;
-    }
-
-    for (let i = 0; i < maxVisible && (i + scrollOffset) < items.length; i++) {
-        const itemIdx = i + scrollOffset;
-        const y = LIST_TOP_Y + i * lineHeight;
-        const item = items[itemIdx];
-        const isSelected = itemIdx === selectedLfoItem;
-
-        if (isSelected) {
-            fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
-        }
-
-        const labelColor = isSelected ? 0 : 1;
-        print(LIST_LABEL_X, y, item.label, labelColor);
-
-        const value = getLfoDisplayValue(item);
-        if (value) {
-            const valueX = SCREEN_WIDTH - value.length * 5 - 4;
-            if (isSelected && editingLfoValue) {
-                print(valueX - 8, y, "<", 0);
-                print(valueX, y, value, 0);
-                print(valueX + value.length * 5 + 2, y, ">", 0);
-            } else {
-                print(valueX, y, value, labelColor);
-            }
-        }
-    }
+    drawMenuList({
+        items: getLfoItems(),
+        selectedIndex: selectedLfoItem,
+        getLabel: (item) => item.label,
+        getValue: (item) => getLfoDisplayValue(item) || "",
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+        valueAlignRight: true,
+        prioritizeSelectedValue: true,
+        editMode: editingLfoValue
+    });
 }
 
 /* LFO target picker: step 1 - select component */
