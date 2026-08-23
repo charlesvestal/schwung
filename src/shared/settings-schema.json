@@ -32,12 +32,12 @@
       },
       {
         "key": "text_preview",
-        "label": "Text Preview",
+        "label": "Typing Preview",
         "type": "bool"
       },
       {
         "key": "midi_indicator_enabled",
-        "label": "MIDI Channel Indicator",
+        "label": "Channel Readout",
         "type": "bool"
       },
       {
@@ -76,7 +76,7 @@
       },
       {
         "key": "resample_bridge",
-        "label": "Sample Source",
+        "label": "Move Resample",
         "type": "enum",
         "options": [
           "Native",
@@ -89,7 +89,7 @@
       },
       {
         "key": "skipback_shortcut",
-        "label": "Skipback",
+        "label": "Skipback Key",
         "type": "enum",
         "options": [
           "Shift+Capture",
@@ -123,7 +123,7 @@
       },
       {
         "key": "browser_preview",
-        "label": "Browser Preview",
+        "label": "Audition Files",
         "type": "bool"
       },
       {
@@ -181,7 +181,7 @@
       },
       {
         "key": "screen_reader_debounce",
-        "label": "Debounce",
+        "label": "Speak Delay",
         "type": "int",
         "min": 0,
         "max": 1000,
