@@ -236,6 +236,108 @@ if (ctl.menuEntry().label !== beforeName) {
   if (RULE_ROW - FRAME_BOTTOM < 2) fail("the bottom frame arm must clear the footer rule by a row");
 }
 
+/* ---- trailing menus ---------------------------------------------------- */
+/*
+ * Appended AFTER the whole walk, not emitted by a level.
+ *
+ * A level emits its menu straight after its own grids and before any level it
+ * navigates to, so a menu on root lands SECOND. Slot Settings works around
+ * that by giving the menu its own level (shadow_ui_slot_grid.mjs) — but that
+ * requires owning the hierarchy, and we do not own a module hierarchy. 11 of the 95
+ * modules in the fleet publish no `levels` object at all, minijv has no
+ * `root`, and with `modes` the walk root is chosen from the active mode.
+ * Appending after the walk is the only thing that is last in all four shapes.
+ */
+const TRAILING = [
+  { name: "User Presets", entries: [{ label: "Load…", action: "up_load" }] },
+  { name: "Module", entries: [{ label: "Swap Module", action: "swap" },
+                              { label: "Remove Module", action: "remove" }] },
+];
+const lastTwo = (pages) => pages.slice(-2).map((p) => p.name).join(",");
+
+/* (a) ordinary hierarchy with a child level */
+{
+  const h = { levels: {
+    root: { label: "Synth", knobs: ["a"], params: [{ key: "a" }, { level: "filter", label: "Filter" }] },
+    filter: { label: "Filter", knobs: ["c"], params: [{ key: "c" }] },
+  } };
+  const cp = ["a", "c"].map((k) => ({ key: k, type: "float", min: 0, max: 1, step: 0.01 }));
+  const { pages } = planPages({ hierarchy: h, chainParams: cp, trailingMenus: TRAILING });
+  if (lastTwo(pages) !== "User Presets,Module") {
+    fail("trailing pages must be LAST past a child level, got: " + pages.map((p) => p.name).join(","));
+  }
+  if (!pages[pages.length - 1].trailing) fail("appended pages must carry trailing:true");
+  if (pages[pages.length - 1].kind !== PAGE_MENU) fail("appended pages must be PAGE_MENU");
+}
+
+/* (b) no ui_hierarchy — the chain_params fallback (11 modules in the fleet) */
+{
+  const cp = ["a", "b"].map((k) => ({ key: k, type: "float", min: 0, max: 1, step: 0.01 }));
+  const { pages } = planPages({ hierarchy: null, chainParams: cp, trailingMenus: TRAILING });
+  if (lastTwo(pages) !== "User Presets,Module") {
+    fail("trailing pages must be last on the chain_params fallback, got: " +
+         pages.map((p) => p.name).join(","));
+  }
+}
+
+/* (c) modes — the walk root is the active mode level (minijv) */
+{
+  const h = { modes: ["perf", "patch"], mode_param: "mode", levels: {
+    perf: { label: "Perf", knobs: ["a"], params: [{ key: "a" }] },
+    patch: { label: "Patch", knobs: ["b"], params: [{ key: "b" }] },
+  } };
+  const cp = ["a", "b"].map((k) => ({ key: k, type: "float", min: 0, max: 1, step: 0.01 }));
+  for (const mode of ["perf", "patch"]) {
+    const { pages } = planPages({ hierarchy: h, chainParams: cp, mode, trailingMenus: TRAILING });
+    if (lastTwo(pages) !== "User Presets,Module") {
+      fail(`trailing pages must be last in mode ${mode}, got: ` + pages.map((p) => p.name).join(","));
+    }
+  }
+}
+
+/* (d) no `root` level at all (minijv real shape) */
+{
+  const h = { levels: { patch: { label: "Patch", knobs: ["a"], params: [{ key: "a" }] } } };
+  const cp = [{ key: "a", type: "float", min: 0, max: 1, step: 0.01 }];
+  const { pages } = planPages({ hierarchy: h, chainParams: cp, trailingMenus: TRAILING });
+  if (lastTwo(pages) !== "User Presets,Module") {
+    fail("trailing pages must be last with no root level, got: " + pages.map((p) => p.name).join(","));
+  }
+}
+
+/* (e) opt-in: a tool embedding the grid for parameter locks has no slot to
+ *     swap a module in, so absence of the option must mean absence of pages. */
+{
+  const h = { levels: { root: { label: "Synth", knobs: ["a"], params: [{ key: "a" }] } } };
+  const cp = [{ key: "a", type: "float", min: 0, max: 1, step: 0.01 }];
+  const { pages } = planPages({ hierarchy: h, chainParams: cp });
+  if (pages.some((p) => p.trailing)) fail("no trailingMenus option must mean no trailing pages");
+}
+
+/* (f) a FAILED contract read must not manufacture a Remove Module button.
+ *     "A plan is a statement about what a module declares. With a failed read
+ *     we have no such statement, so we make none." */
+{
+  const { pages, unresolved } = planPages({ hierarchy: null, chainParams: null,
+                                            unresolved: true, trailingMenus: TRAILING });
+  if (!unresolved) fail("unresolved must survive the trailing append");
+  if (pages.length !== 0) fail("unresolved must plan NOTHING, got " + pages.length + " pages");
+}
+
+/* (g) names go through claimName, so a module that already has a page called
+ *     "Module" does not end up with two pages of the same name — the name is
+ *     what reanchor() matches on after a rebuild. */
+{
+  const h = { levels: {
+    root: { label: "Synth", knobs: ["a"], params: [{ key: "a" }, { level: "mod", label: "Module" }] },
+    mod: { label: "Module", knobs: ["c"], params: [{ key: "c" }] },
+  } };
+  const cp = ["a", "c"].map((k) => ({ key: k, type: "float", min: 0, max: 1, step: 0.01 }));
+  const { pages } = planPages({ hierarchy: h, chainParams: cp, trailingMenus: TRAILING });
+  const names = pages.map((p) => p.name);
+  if (new Set(names).size !== names.length) fail("page names must stay unique: " + names.join(","));
+}
+
 if (failures) process.exit(1);
 console.log("PASS: PAGE_MENU — planned last, INERT until entered so the jog always pages, " +
             "click enters then activates, Shift+Click always reaches the sections, " +
