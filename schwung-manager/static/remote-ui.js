@@ -2171,6 +2171,17 @@
         if (!msg || !msg.type) return;
 
         switch (msg.type) {
+            case "height":
+                // The panel measured itself, so stop guessing at 60vh. Clamped
+                // both ways: a module that mis-measures should look wrong, not
+                // produce a 40000px frame or collapse to a sliver.
+                var hf = customUIFrames[srcComp];
+                var h = Number(msg.height);
+                if (hf && hf.iframe && isFinite(h) && h > 0) {
+                    hf.iframe.style.height =
+                        Math.min(Math.max(Math.round(h), 200), 4000) + "px";
+                }
+                break;
             case "getParam":
                 handleIframeGetParam(msg, srcComp);
                 break;
