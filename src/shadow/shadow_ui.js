@@ -2202,6 +2202,29 @@ function returnToSlotGridFromLfoTarget() {
     return true;
 }
 
+/*
+ * AN EDITOR THAT OWNS ITS OWN VIEW MUST HAND THE SCREEN BACK ITSELF.
+ *
+ * The grid can open a parameter whose editor is a whole VIEW rather than an
+ * overlay -- the filepath browser, the canvas/wave editor, the enum picker.
+ * Those close by calling setView() themselves, so unless they ask where they
+ * came from they all default to the hierarchy list. From the grid that reads as
+ * "I dived into a wave editor and came back somewhere else", and it costs a
+ * second Back to undo.
+ *
+ * The filepath browser already carried this branch inline, under a comment
+ * saying the return "lives here rather than being repeated (and forgotten) at
+ * each one". It was then forgotten at the canvas -- reported from the device as
+ * granny's position editor returning to the menu instead of the knobs. So it is
+ * a shared helper now, and test_editor_returns_to_caller.sh fails when a new
+ * own-view editor closes without consulting it.
+ */
+function closeOwnViewEditorToCaller() {
+    if (!paramEditorOpenedFromGrid) return false;
+    returnToParamPagesFromEditor();
+    return true;
+}
+
 function returnToParamPagesFromEditor() {
     const slotIndex = hierEditorSlot;
     const componentKey = hierEditorComponent;
@@ -11586,10 +11609,7 @@ function closeHierarchyFilepathBrowser() {
      * selection, Back, and the no-state guard — funnel through here, so the
      * grid return lives here rather than being repeated (and forgotten) at
      * each one. Committing a sample used to drop you in the hierarchy list. */
-    if (paramEditorOpenedFromGrid) {
-        returnToParamPagesFromEditor();
-        return;
-    }
+    if (closeOwnViewEditorToCaller()) return;
     setView(VIEWS.HIERARCHY_EDITOR);
 }
 
@@ -13733,7 +13753,7 @@ function closeCanvasPreview(cancelled) {
     invokeCanvasOverlayHook("onClose", { cancelled: !!cancelled });
     invokeCanvasOverlayHook("onExit", { cancelled: !!cancelled });
     resetCanvasState();
-    setView(VIEWS.HIERARCHY_EDITOR);
+    if (!closeOwnViewEditorToCaller()) setView(VIEWS.HIERARCHY_EDITOR);
     needsRedraw = true;
 }
 
