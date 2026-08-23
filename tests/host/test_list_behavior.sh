@@ -21,7 +21,10 @@ if ! command -v node >/dev/null 2>&1; then echo "FAIL: node required" >&2; exit 
 
 node --input-type=module -e '
 const R = process.cwd();
-const { drawMenuList } = await import(R + "/src/shared/menu_layout.mjs");
+const {
+    drawMenuList, LIST_TOP_Y, FOOTER_RULE_Y, LIST_INDICATOR_BOTTOM_Y,
+    LIST_LINE_HEIGHT, LIST_MAX_VISIBLE,
+} = await import(R + "/src/shared/menu_layout.mjs");
 const { probe } = await import(R + "/tools/param-pages/list_probe.mjs");
 
 let failures = 0;
@@ -41,6 +44,7 @@ const run = (opts) => {
      * : ""` fallback (menu_layout.mjs:227) -- a genuinely absent key, not a
      * no-op function supplied by this harness. */
     if (!opts.omitGetValue) call.getValue = opts.getValue || ((item) => item.value || "");
+    if (opts.listArea) call.listArea = opts.listArea;
     return probe(() => drawMenuList(call));
 };
 
@@ -62,15 +66,48 @@ const run = (opts) => {
         fail("3-item list at index 2: expected row 2 selected, got row " + r.selectedIndex);
 }
 
-/* ---- 3. 12-item list at index 0: window starts at Item 1; record window size N ---- */
-let N;
+/* ---- 3. 12-item list at index 0: window starts at Item 1; record window size N ----
+ *
+ * Two variants matter here, and they genuinely differ TODAY: a caller who
+ * lets `listArea` default (no footer on screen) gets the full run down to
+ * `LIST_INDICATOR_BOTTOM_Y`; a caller who reserves footer space (the common
+ * real case -- `listArea: {bottomY: FOOTER_RULE_Y}`) gets one fewer row.
+ * Both window sizes are DERIVED from the same constants drawMenuList itself
+ * divides by (`floor((bottomY - topY) / lineHeight)`), not hardcoded here,
+ * so this reads real behaviour rather than asserting a magic number.
+ *
+ * `LIST_MAX_VISIBLE` (exported at the top of menu_layout.mjs, = 5) is DEAD
+ * CODE -- drawMenuList never references it; the no-footer window size is 5
+ * only because LIST_INDICATOR_BOTTOM_Y/LIST_TOP_Y/LIST_LINE_HEIGHT happen to
+ * divide out to 5 too. Nobody should read LIST_MAX_VISIBLE as documenting
+ * behaviour, including future readers of this test.
+ *
+ * The movy re-skin is expected to move the WITH-FOOTER case from 4 to 5
+ * (one shared rect, MENU_LIST_Y=10..RULE_Y=55, regardless of footer) -- so
+ * if `footerN` below fails after that lands, that is the intended change
+ * landing, not a regression. */
+let N, footerN;
 {
     const r = run({ items: items(12), selectedIndex: 0 });
     if (r.labels[0] !== "Item 1")
         fail("12-item list at index 0: window should start at Item 1, got " + r.labels[0]);
     N = r.labels.length;
+    const expectedN = Math.floor((LIST_INDICATOR_BOTTOM_Y - LIST_TOP_Y) / LIST_LINE_HEIGHT);
+    if (N !== expectedN)
+        fail("no-footer window size: expected the derived " + expectedN + ", got " + N);
     if (r.selectedIndex !== 0)
         fail("12-item list at index 0: expected row 0 selected, got row " + r.selectedIndex);
+}
+{
+    const r = run({ items: items(12), selectedIndex: 0, listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y } });
+    if (r.labels[0] !== "Item 1")
+        fail("with-footer window at index 0: window should start at Item 1, got " + r.labels[0]);
+    footerN = r.labels.length;
+    const expectedFooterN = Math.floor((FOOTER_RULE_Y - LIST_TOP_Y) / LIST_LINE_HEIGHT);
+    if (footerN !== expectedFooterN)
+        fail("with-footer window size: expected the derived " + expectedFooterN + ", got " + footerN);
+    if (r.selectedIndex !== 0)
+        fail("with-footer window at index 0: expected row 0 selected, got row " + r.selectedIndex);
 }
 
 /* ---- 4. 12-item list at index 11: Item 12 is visible AND selected ----
@@ -154,5 +191,5 @@ let N;
 }
 
 if (failures) process.exit(1);
-console.log("PASS: list behaviour contract -- items, order, selection, scroll boundary (N=" + N + "), value text and edit mode all hold against todays drawMenuList");
+console.log("PASS: list behaviour contract -- items, order, selection, scroll boundary (no-footer N=" + N + ", with-footer N=" + footerN + "), value text and edit mode all hold against todays drawMenuList");
 '

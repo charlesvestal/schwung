@@ -9,22 +9,42 @@
  * Selection detection is deliberately redundant, for the same reason.
  * `drawMenuList` marks the selected row with BOTH inverted text (color === 0)
  * AND a fill_rect spanning the row -- two independent chrome signals for one
- * behaviour fact. A re-skin is free to change either mechanism on its own
- * (e.g. drop the inverted-text convention in favour of a marker glyph, or
- * stop filling the full row), so a row counts as selected if EITHER signal
- * is present. Detecting on only one would make this test couple to a chrome
- * decision it has no business caring about, and fail on a correct re-skin --
- * exactly the failure mode this file exists to avoid.
+ * behaviour fact, so a row counts as selected if EITHER is present. That
+ * specifically survives a re-skin dropping ONE of those two mechanisms (e.g.
+ * a highlight rect with no color inversion, or vice versa). It does NOT make
+ * every chrome decision invisible to this probe -- assertion 7 pins the
+ * `[value]` bracket convention for edit mode literally, because that
+ * convention (not merely "edit mode is signalled somehow") is what the task
+ * asked this file to protect.
  *
- * The value column is NOT given the same treatment: "the value is the last
- * print() cell on the row" is still a real assumption about today's chrome
- * (one label print + one value print per row, same y). That is a known,
- * accepted limitation rather than a solved one -- an extra print() on the
- * row (e.g. a right-hand glyph) or a value baseline that no longer shares
- * the label's exact y would break this grouping. If a Task 2 assertion about
- * `values` fails, check this grouping assumption before assuming a real
- * regression in the re-skinned list.
+ * Two more limitations worth naming rather than discovering by surprise:
+ *
+ * - The label marker prefix ("> " selected / "  " unselected today) is
+ *   stripped by treating any leading run of non-alphanumeric characters as
+ *   chrome, not by matching today's literal characters -- so a re-skin that
+ *   swaps the marker glyph (e.g. "> " -> "» ") does not require a probe
+ *   change. A label that legitimately starts with punctuation would be
+ *   mis-stripped; none of the fixtures here do.
+ *
+ * - `selectedIndex` and the entries in `labels`/`values` are ROW indices,
+ *   not ITEM indices, whenever `getSubLabel` or a `type: 'divider'` entry is
+ *   in play -- both draw an extra print() at a distinct y, which this probe
+ *   has no way to distinguish from a second list row. Both are live in real
+ *   menus (the file browser uses sub-labels; several Tools screens use
+ *   dividers), so a caller of this probe against such a list must not assume
+ *   `labels[i]` lines up with `items[i]`. None of the fixtures in
+ *   test_list_behavior.sh use either, so this file's own assertions are not
+ *   affected -- this is a note for whoever reuses the probe next.
+ *
+ * `announce: false` is passed by every fixture as a deliberate choice, not
+ * because the real code would crash without it: `announceMenuItem` /
+ * `announce()` guard on `typeof shadow_get_display_mode` and similar host
+ * globals and no-op harmlessly under plain node. It is disabled anyway so a
+ * probe run never depends on (or masks a change to) screen-reader behaviour,
+ * which is a separate contract from what is drawn.
  */
+import { LIST_LINE_HEIGHT } from '../../src/shared/menu_layout.mjs';
+
 export function probe(drawFn) {
     const rows = [];
     const fills = [];
@@ -38,16 +58,32 @@ export function probe(drawFn) {
     globalThis.clear_screen = () => { rows.length = 0; fills.length = 0; };
     globalThis.set_pixel = () => {};
     globalThis.text_width = (t) => String(t).length * 6;
-    globalThis.fill_rect = (x, y, w, h) => { fills.push({ x, y, w, h }); };
+    globalThis.fill_rect = (x, y, w, h, color) => { fills.push({ x, y, w, h, color }); };
     globalThis.print = (x, y, text, color) => {
         rows.push({ y, x, text: String(text), inverted: color === 0 });
     };
     try { drawFn(); } finally { Object.assign(globalThis, prev); }
 
-    /* A row's y is highlighted if any fill_rect's vertical span covers it --
-     * catches a highlight drawn as a filled band even if the re-skin stops
-     * inverting the text color. */
-    const rowFilled = (y) => fills.some((f) => y >= f.y && y < f.y + f.h);
+    /* A row's y is highlighted if a NON-CLEARING fill_rect's vertical span
+     * covers it. color !== 0 excludes a background clear (drawOverlay /
+     * drawStatusOverlay elsewhere in menu_layout.mjs already fill_rect with
+     * color 0 to blank an area) -- without that check, any re-skin that
+     * clears the list area before drawing would make every row read as
+     * selected.
+     *
+     * The span checked is capped to LIST_LINE_HEIGHT rather than the fill's
+     * full height: with a sub-label present, the selected row's highlight
+     * rect is taller than one row (it also covers the sub-label line), and
+     * its bottom edge can reach into the NEXT item's row y. Capping to one
+     * line height keeps the highlight test from flagging that neighbour too.
+     * `LIST_LINE_HEIGHT` is imported from the real module rather than
+     * hardcoded so this stays anchored to whatever line height the re-skin
+     * actually uses. */
+    const rowFilled = (y) => fills.some((f) => {
+        if (f.color === 0) return false;
+        const span = Math.min(f.h, LIST_LINE_HEIGHT);
+        return y >= f.y && y < f.y + span;
+    });
 
     /* Group by row (same y), left-to-right: label first, value second. */
     const byY = new Map();
@@ -66,7 +102,10 @@ export function probe(drawFn) {
     });
     return {
         rows: ordered,
-        labels: ordered.map((r) => r.label.replace(/^[>*]?\s*/, "").trim()),
+        /* Strip a leading run of non-alphanumeric characters (marker glyph
+         * and/or padding spaces) rather than today's literal "> "/"  " --
+         * see the file header. */
+        labels: ordered.map((r) => r.label.replace(/^[^A-Za-z0-9]+/, "").trim()),
         values: ordered.map((r) => r.value),
         selectedIndex: ordered.findIndex((r) => r.selected),
         editBrackets: ordered.some((r) => /^\[.*\]$/.test(r.value)),
