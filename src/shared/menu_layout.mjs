@@ -9,7 +9,8 @@ import { truncateText } from './chain_ui_views.mjs';
  * header band now — same font, same 7 rows, same measured left/right split —
  * so that a list reached from the knob grid and a list reached from the menu
  * are the same screen and not two products. */
-import { drawHeader as drawMovyHeader } from './param_pages/render_page_movy.mjs';
+import { drawHeader as drawMovyHeader,
+         drawFooter as drawMovyFooter } from './param_pages/render_page_movy.mjs';
 /* The geometry itself comes from the LEAF, ../list_geometry.mjs — the single
  * definition every screen shares. This file re-exports each name because ~41
  * call sites import them from here; chain_ui_views.mjs re-exports the same set
@@ -93,19 +94,56 @@ export function drawMenuHeader(title, titleRight = "", inverted = false) {
         inverted);
 }
 
+/**
+ * A call site's pre-joined hint string -> movy's [KEY, ACTION] pair.
+ *
+ * The hint VOCABULARY is unchanged — FOOTER_VERBS / footerHint() still decide
+ * the words, and tests/shadow/test_footer_verb_consistency.sh still pins them.
+ * This only decides where the colon that was always in those strings becomes
+ * the boundary between the inverted pill and the plain action.
+ *
+ * A string with no colon ("Press to continue", or an editor error) still has to
+ * become a pair, because a pair is the only shape the movy footer draws. The
+ * first word becomes the pill: a key of "" would draw a 4px stub of a pill,
+ * which reads as a rendering fault rather than as a hint.
+ */
+function hintPair(text) {
+    if (text === undefined || text === null) return null;
+    const s = String(text).trim();
+    if (!s) return null;
+    const colon = s.indexOf(':');
+    if (colon > 0) {
+        const key = s.slice(0, colon).trim();
+        const action = s.slice(colon + 1).trim();
+        if (key) return [key, action];
+    }
+    const sp = s.indexOf(' ');
+    return sp > 0 ? [s.slice(0, sp), s.slice(sp + 1)] : [s, ""];
+}
+
+/**
+ * The movy hint footer: the rule at RULE_Y, then [KEY] ACTION pills in font4x5
+ * centred in the 8-row band. It used to be the device 5x7 font printed flush
+ * against the bottom edge — geometrically right (its rule already sat at 55)
+ * but the last screen element still wearing the old chrome, so a list looked
+ * like two products stacked.
+ *
+ * Both existing signatures are preserved: a bare string, or { left, right }.
+ * `y` is accepted and ignored — the movy band centres its own text — and no
+ * call site ever passed it.
+ *
+ * Note movy's own canon still applies once the pairs reach drawFooter: a BACK
+ * hint is pulled to the right edge and its room reserved first, wherever the
+ * caller put it. `{ left: "Back: slots", right: "Click: edit" }` therefore
+ * renders as [CLICK] EDIT ... [BACK] SLOTS, which is the same place BACK sits
+ * on the knob grid.
+ */
 export function drawMenuFooter(text, y = FOOTER_TEXT_Y) {
     if (!text) return;
-    fill_rect(0, FOOTER_RULE_Y, SCREEN_WIDTH, 1, 1);
-    if (typeof text === 'object' && (text.left !== undefined || text.right !== undefined)) {
-        /* { left: "Back: exit", right: "Jog: browse" } */
-        if (text.left) print(2, y, text.left, 1);
-        if (text.right) {
-            const rightW = (typeof text_width === 'function') ? text_width(text.right) : (text.right.length * DEFAULT_CHAR_WIDTH);
-            print(SCREEN_WIDTH - rightW - 2, y, text.right, 1);
-        }
-    } else {
-        print(2, y, text, 1);
-    }
+    const hints = (typeof text === 'object' && (text.left !== undefined || text.right !== undefined))
+        ? [hintPair(text.left), hintPair(text.right)]
+        : [hintPair(text)];
+    drawMovyFooter(DEVICE_CTX, hints.filter(Boolean));
 }
 
 /* Shared two-option confirmation modal (cleanup step 9, U-4): header +
@@ -233,6 +271,25 @@ export function drawMenuList({
     }
     let endIdx = Math.min(startIdx + effectiveMaxVisible, totalItems);
 
+    /* The scroll arrows are drawn at indicatorX (120) and are 5px wide, so they
+     * own the column 120..124. A right-aligned value laid out against
+     * valuePaddingRight (2) runs to x=126 and is drawn straight THROUGH them —
+     * an item valued "v9" renders with the arrow crossing the glyphs.
+     *
+     * The clearance applies ONLY when an arrow is actually drawn. Reserving 8px
+     * of the value column on every list to guard against an arrow that is not
+     * there would narrow (and so truncate) values on every non-scrolling
+     * screen. The two arrow conditions are the same expressions used at the
+     * bottom of this function; they are derivable here because startIdx /
+     * endIdx / totalItems are all already settled. */
+    const hasScrollArrow = (startIdx > 0) || (endIdx < totalItems);
+    const valueRightEdge = SCREEN_WIDTH -
+        (hasScrollArrow ? VALUE_RIGHT_CLEARANCE : valuePaddingRight);
+
+    /* The no-value label column needs no equivalent: its budget is
+     * `indicatorX - labelX - labelGap`, which stops at 120 whether or not an
+     * arrow is there, so it cannot collide. */
+
     /* Get label scroller for selected item and tick it */
     const labelScroller = getMenuLabelScroller();
     labelScroller.setSelected(selectedIndex);
@@ -292,12 +349,12 @@ export function drawMenuList({
                 valueXFloor = labelX + minLabelWidth;
             }
 
-            resolvedValueX = SCREEN_WIDTH - (fullValue.length * DEFAULT_CHAR_WIDTH) - valuePaddingRight;
+            resolvedValueX = valueRightEdge - (fullValue.length * DEFAULT_CHAR_WIDTH);
             if (resolvedValueX < valueXFloor) {
                 resolvedValueX = valueXFloor;
             }
 
-            const maxValueWidth = Math.max(0, SCREEN_WIDTH - valuePaddingRight - resolvedValueX);
+            const maxValueWidth = Math.max(0, valueRightEdge - resolvedValueX);
             const maxValueChars = Math.floor(maxValueWidth / DEFAULT_CHAR_WIDTH);
             if (maxValueChars > 0 && fullValue.length > maxValueChars) {
                 if (isSelected && scrollSelectedValue) {
