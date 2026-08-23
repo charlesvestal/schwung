@@ -156,7 +156,6 @@ export const GLOBAL_ENUM_VALUES = {
  *   set_pages_enabled      | set_pages_get           | set_pages_set            | -       | -                      | -
  *   shadow_ui_trigger      | shadow_ui_trigger_get   | shadow_ui_trigger_set    | -       | -                      | -
  *   filebrowser_enabled    | filebrowserEnabled      | flag file + host_system_cmd | own  | filebrowserEnabled     | File Browser
- *   auto_update_check      | autoUpdateCheckEnabled  | autoUpdateCheckEnabled = | own     | autoUpdateCheckEnabled | -
  *   analytics_enabled      | host_get_analytics_enabled | host_set_analytics_enabled | -  | -                      | -
  *
  * Three kinds of persistence, and conflating them is how a write goes missing:
@@ -211,7 +210,6 @@ export const GLOBAL_ROUTING = {
     shadow_ui_trigger:      { read: "shadow_ui_trigger.get",  write: "shadow_ui_trigger.set",  persist: null,   cache: null,                     modal: null },
 
     filebrowser_enabled:    { read: "js.filebrowserEnabled",  write: "js.filebrowserEnabled",  persist: "own",  cache: "filebrowserEnabled",     modal: "filebrowser" },
-    auto_update_check:      { read: "js.autoUpdateCheckEnabled", write: "js.autoUpdateCheckEnabled", persist: "own", cache: "autoUpdateCheckEnabled", modal: null },
     analytics_enabled:      { read: "host.get_analytics_enabled", write: "host.set_analytics_enabled", persist: null, cache: null,               modal: null },
 };
 
@@ -385,14 +383,23 @@ export const SET_PAGES_PARAMS = [
 ];
 
 export const SHORTCUTS_PARAMS = [
-    { key: "shadow_ui_trigger", name: "Shadow UI Trigger", type: "enum",
+    /*
+     * "Open With", not "Shadow UI Trigger". The page is already titled
+     * Shortcuts, so "Trigger" restated the section, and "Shadow UI" named the
+     * code path rather than the thing the user is choosing between -- reported
+     * from the device as "what is shadow ui trigger? That sounds internal".
+     *
+     * THE KEY DOES NOT MOVE. `shadow_ui_trigger` is in features.json, is read
+     * by schwung_shim.c every frame, and rides in shadow_control_t. This is a
+     * display name and nothing else.
+     */
+    { key: "shadow_ui_trigger", name: "Open With", type: "enum",
       options: ["Long Press", "Shift+Vol", "Both"],
       short_options: ["LNG", "S+V", "BTH"], default: 2 },
 ];
 
 export const SERVICES_PARAMS = [
     bool("filebrowser_enabled", "File Browser", 0),
-    bool("auto_update_check", "Auto Update Check", 1),
     /* Opt-in, default off — see docs/plans on analytics. */
     bool("analytics_enabled", "Analytics", 0),
 ];

@@ -206,7 +206,7 @@
     "items": [
       {
         "key": "shadow_ui_trigger",
-        "label": "Shadow UI Trigger",
+        "label": "Open With",
         "type": "enum",
         "options": [
           "Long Press",
@@ -228,11 +228,6 @@
       {
         "key": "filebrowser_enabled",
         "label": "File Browser",
-        "type": "bool"
-      },
-      {
-        "key": "auto_update_check",
-        "label": "Auto Update Check",
         "type": "bool"
       }
     ]
