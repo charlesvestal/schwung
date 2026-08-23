@@ -696,6 +696,30 @@ let lastSavedSlotSignature = ["", "", "", ""];
  * for genuine user removals. Reset when the user picks any module, when a
  * set is loaded, or after the empty marker has been written. */
 let slotUserCleared = [false, false, false, false];
+/*
+ * Which USER PRESET each component is on — {name, hash} per slot+prefix.
+ *
+ * Pure UI bookkeeping: the DSP never sees it, so there is no param, no struct
+ * field and no SHM change. It rides slot_N.json because that is already the
+ * file that survives a reboot for this component.
+ */
+const currentUserPresets = Object.create(null);
+const userPresetKey = (slot, prefix) => `${slot}:${prefix}`;
+
+function getUserPresetRecord(slot, prefix) {
+    return currentUserPresets[userPresetKey(slot, prefix)] || null;
+}
+function setUserPresetRecord(slot, prefix, record) {
+    if (record) currentUserPresets[userPresetKey(slot, prefix)] = record;
+    else delete currentUserPresets[userPresetKey(slot, prefix)];
+}
+/* Pull {name, hash} out of a saved chain-position entry (synth / a midi_fx
+ * item / an audio_fx item), or null when it never carried one — including
+ * every patch written before user_preset existed. */
+function entryUserPreset(entry) {
+    if (!entry || !entry.user_preset || !entry.user_preset.name) return null;
+    return { name: entry.user_preset.name, hash: entry.user_preset.hash || null };
+}
 
 /* Splash screen state */
 let splashActive = true;
@@ -6640,10 +6664,16 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
                      slotIndex + ".json)");
             return BAIL;
         }
-        return {
+        const entry = {
             config,
             bypassed: parseInt(getSlotParam(slotIndex, `${id}:bypassed`) || "0", 10) === 1 ? 1 : 0
         };
+        /* Only when there is one. An absent key is how a component that has
+         * never loaded a preset is spelled, and how every patch written before
+         * this existed still reads. */
+        const record = getUserPresetRecord(slotIndex, id);
+        if (record) entry.user_preset = { name: record.name, hash: record.hash };
+        return entry;
     };
 
     if (cfg.synth && cfg.synth.module) {
@@ -6652,7 +6682,8 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
         patch.synth = {
             module: cfg.synth.module,
             config: entry.config,
-            bypassed: entry.bypassed
+            bypassed: entry.bypassed,
+            user_preset: entry.user_preset
         };
     }
 
@@ -6665,7 +6696,8 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
         patch.midi_fx.push({
             type: moduleData.module,
             params: entry.config,
-            bypassed: entry.bypassed
+            bypassed: entry.bypassed,
+            user_preset: entry.user_preset
         });
     }
 
@@ -6677,7 +6709,8 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
         patch.audio_fx.push({
             type: moduleData.module,
             params: entry.config,
-            bypassed: entry.bypassed
+            bypassed: entry.bypassed,
+            user_preset: entry.user_preset
         });
     }
 
@@ -17581,6 +17614,22 @@ globalThis.init = function() {
                     const chain = (parsed && parsed.chain) ? parsed.chain : parsed;
                     if (chain && chain.synth && chain.synth.bypassed) {
                         setSlotParam(i, "synth:bypassed", "1");
+                    }
+                    /* Restore which user preset each component was on. Absent
+                     * is the common case — every patch written before this
+                     * existed, and every component nobody has loaded a preset
+                     * into — and must CLEAR any stale record rather than leave
+                     * one behind from a previous load into this slot. */
+                    setUserPresetRecord(i, "synth", entryUserPreset(chain && chain.synth));
+                    if (chain && Array.isArray(chain.midi_fx)) {
+                        for (let mf = 0; mf < chain.midi_fx.length && mf < MAX_MIDI_FX; mf++) {
+                            setUserPresetRecord(i, `midi_fx${mf + 1}`, entryUserPreset(chain.midi_fx[mf]));
+                        }
+                    }
+                    if (chain && Array.isArray(chain.audio_fx)) {
+                        for (let fx = 0; fx < chain.audio_fx.length && fx < MAX_FX; fx++) {
+                            setUserPresetRecord(i, `fx${fx + 1}`, entryUserPreset(chain.audio_fx[fx]));
+                        }
                     }
                     /*
                      * BOTH lists, and bounded by the CAP rather than by a
