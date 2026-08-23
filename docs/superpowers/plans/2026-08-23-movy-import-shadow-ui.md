@@ -1725,7 +1725,20 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - Modify: `src/shadow/shadow_ui_param_pages.mjs` (`tickParamPages` advances the job)
 - Test: `tests/host/test_wav_peaks.sh`
 
+**Carried over from Task 3 — restore the file-only cell.** Anchoring on the
+marker means a page with a filepath and NO marker no longer draws a waveform:
+breakbeat (both `A_sample_path` and `B_sample_path`), gesture-test, and
+mrdrums' Pad Settings each lost their cell. That is correct *today*, because the
+envelope is synthetic and a fabricated waveform with no cursor is a picture of
+nothing. Once the peaks are real it stops being true — a real waveform with no
+cursor is genuine information about the loaded file. So when this task lands,
+add a fallback: if no marker is found but a filepath param is on the page,
+emit a `VIZ_SAMPLE` group with only `roles.value` set, and re-diff
+`tests/fixtures/snapshots/param_pages_viz.txt` to confirm exactly those four
+entries come back.
+
 **Acceptance Criteria:**
+- [ ] The three modules that lost a cell in Task 3 (breakbeat ×2, gesture-test, mrdrums Pad Settings) get it back, now showing a real envelope.
 - [ ] Parses RIFF/WAVE and FORM/AIFF(-C) headers from the first 4 KB, returning data offset, size, block align and codec.
 - [ ] The job is resumable: each `advance()` does a bounded number of blocks and returns whether more remain.
 - [ ] Memory is O(width) regardless of file length — the file is never held.
