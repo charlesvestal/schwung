@@ -148,13 +148,24 @@
     },
     {
       "id": "tapedelay",
-      "name": "Tape Echo 2",
-      "description": "Component-modeled vintage three-head tape echo with spring reverb: 12 head/reverb modes, in-loop tape saturation, wow & flutter, tape age, and tempo sync with the reference machine's leading-head note tables.",
-      "author": "Tape Echo 2 by Dusk Audio (GPL-3.0) · port: athousanddetails, charlesvestal",
+      "name": "TapeDelay",
+      "description": "Tape delay with flutter and tone shaping. Light on CPU — fits on every slot.",
+      "author": "cyrusasfa (port: charlesvestal)",
       "component_type": "audio_fx",
       "github_repo": "charlesvestal/schwung-space-delay",
       "default_branch": "main",
       "asset_name": "tapedelay-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
+      "id": "tape-echo2",
+      "name": "Tape Echo 2",
+      "description": "Component-modeled vintage three-head tape echo with spring reverb: 12 head/reverb modes, in-loop tape saturation, wow & flutter, tape age, and tempo sync with the reference machine's leading-head note tables. CPU-heavy: about two instances fit.",
+      "author": "Tape Echo 2 by Dusk Audio (GPL-3.0) · port: athousanddetails",
+      "component_type": "audio_fx",
+      "github_repo": "athousanddetails/schwung-tape-echo2",
+      "default_branch": "main",
+      "asset_name": "tape-echo2-module.tar.gz",
       "min_host_version": "0.7.13"
     },
     {
