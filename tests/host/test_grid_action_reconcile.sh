@@ -255,9 +255,14 @@ if (src.includes("Re-derived from slot+key") && /expected\s*\n?\s*\*?\s*to\s*\n?
         componentGridReturnKey: "synth",
         selectedSlot: 1,
         needsRedraw: false,
+        /* The position still holds a module unless a case says otherwise.
+           Remove Module is one of the actions that hands off, so "the slot
+           matches" is not enough on its own -- see 8e. */
+        chainConfigs: [null, { synth: { module: "obxd" } }, null, null],
       }, state);
       const textEntryActive = !!state.textEntryActive;
       const isTextEntryActive = () => textEntryActive;
+      const getChainComponentModule = (cfg, key) => (cfg && cfg[key]) || null;
       const getComponentParamPrefix = (k) => k;
       const componentParamPagesIo = () => ({ marker: "io" });
       const paramPagesChromeFor = () => ({ marker: "chrome" });
@@ -267,12 +272,15 @@ if (src.includes("Re-derived from slot+key") && /expected\s*\n?\s*\*?\s*to\s*\n?
         .replace(/\bcomponentGridReturnSlot\b/g, "s.componentGridReturnSlot")
         .replace(/\bcomponentGridReturnKey\b/g, "s.componentGridReturnKey")
         .replace(/\bselectedSlot\b/g, "s.selectedSlot")
+        .replace(/\bchainConfigs\b/g, "s.chainConfigs")
         .replace(/\bneedsRedraw\b/g, "s.needsRedraw");
       const fn = new Function(
         "s", "isTextEntryActive", "getComponentParamPrefix",
         "componentParamPagesIo", "paramPagesChromeFor", "enterParamPages",
+        "getChainComponentModule",
         patched + "\nreturn maybeReturnToComponentGrid;"
-      )(s, isTextEntryActive, getComponentParamPrefix, componentParamPagesIo, paramPagesChromeFor, enterParamPages);
+      )(s, isTextEntryActive, getComponentParamPrefix, componentParamPagesIo, paramPagesChromeFor, enterParamPages,
+        getChainComponentModule);
       return { fired: fn(), log, s };
     };
 
@@ -301,6 +309,42 @@ if (src.includes("Re-derived from slot+key") && /expected\s*\n?\s*\*?\s*to\s*\n?
       } else {
         fail("fired (or left the flag set) on a mismatched-slot arrival -- this is the reported [Critical] bug: " +
              JSON.stringify({ fired, entered: log.entered, flag: s.componentModalFromGrid }));
+      }
+    }
+
+    /* 8e. REPORTED FROM HARDWARE. Remove Module is one of the actions that
+       hands off, and it ends in setView(CHAIN_EDIT) on the SAME slot -- so the
+       slot match passes and the reconciler would re-enter the grid for the
+       component that was just deleted. A contract read with nobody to answer
+       it, which the device draws as a permanent "Loading...". The position
+       must still hold a module before we go back to it. */
+    {
+      const { fired, log, s } = run({
+        selectedSlot: 1,
+        chainConfigs: [null, { synth: null }, null, null],
+      });
+      if (fired === false && log.entered === 0 && s.componentModalFromGrid === false) {
+        ok("does NOT re-enter the grid for a component that was just REMOVED (the Loading... repro)");
+      } else {
+        fail("re-entered the grid for a removed component -- this is the hardware-reported " +
+             "Loading... screen: " +
+             JSON.stringify({ fired, entered: log.entered, flag: s.componentModalFromGrid }));
+      }
+    }
+
+    /* 8f. ...but a SWAP leaves a different module in the same position, and
+       that IS something to go back to. The guard must key on whether a module
+       is present, not on whether the module changed. */
+    {
+      const { fired, log } = run({
+        selectedSlot: 1,
+        chainConfigs: [null, { synth: { module: "braids" } }, null, null],
+      });
+      if (fired === true && log.entered === 1) {
+        ok("still fires after a SWAP, where the position holds a different module");
+      } else {
+        fail("failed to return to the grid after a swap: " +
+             JSON.stringify({ fired, entered: log.entered }));
       }
     }
 
