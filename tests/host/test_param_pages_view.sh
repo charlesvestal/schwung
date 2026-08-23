@@ -40,6 +40,8 @@ globalThis.clear_screen = () => { cleared++; };
 globalThis.fill_rect = (...a) => { drawCalls.push(a); };
 globalThis.print = (...a) => { drawCalls.push(a); };
 globalThis.text_width = (t) => String(t == null ? "" : t).length * 6;
+/* The knob indicator ring LEDs (CC 71-78) go out through this. */
+globalThis.move_midi_internal_send = () => 0;
 /* draw_line / fill_circle: native shapes the Movy-style renderer prefers
  * over a JS-side Bresenham/circle walk when the host provides them — see
  * src/host/js_display.c and viz_draw.mjs / render_page_movy.mjs. */
