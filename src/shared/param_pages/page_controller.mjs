@@ -168,6 +168,25 @@ export const MOD_FAST_READS_PER_TICK = 1;
  */
 export const TURN_CLAIM_MS = 1200;
 
+/*
+ * How long the enum option list stays up after the last detent.
+ *
+ * A knob steps an enum one option at a time, which is fine for Off/On and
+ * useless for a 47-model macro oscillator: you cannot see what is coming. The
+ * picker (hold, then click) is one answer; the PEEK is the other, and it costs
+ * no gesture at all — the turn raises it.
+ *
+ * A deadline is the only way out, because a turn has no release event coming:
+ * a knob can be moved without the capacitive touch ever registering, which is
+ * the same reason TURN_CLAIM_MS exists just above.
+ *
+ * 700 matches the chain editor card's KNOB_CARD_DECAY_MS. Deliberately NOT the
+ * same variable: that card lives in the chain editor and this list on the knob
+ * grid, so they never coexist, and one constant shared across two screens is a
+ * coupling that reads as intent and is not.
+ */
+export const ENUM_PEEK_MS = 700;
+
 /** How many times a page will re-read the contract waiting for late metadata. */
 export const META_RETRY_LIMIT = 8;
 /** Ticks between those attempts (~1 s at the shadow UI's 344 Hz tick).
@@ -398,6 +417,12 @@ export function createController(io = {}) {
         /* ms at which a TURN claimed the header with nothing held, or 0.
          * Only such a claim expires — see TURN_CLAIM_MS. */
         turnClaimMs: 0,
+        /* { key, title, options, index, at } while a divable enum is being
+         * turned; null otherwise. See ENUM_PEEK_MS and enumPeek().
+         *
+         * Holds no value of its own — `index` is the knob engine's, which is
+         * why the whole overlay costs no IPC read. */
+        peek: null,
         /* Name of the menu page currently ENTERED, or null. */
         menuEntered: null,
         /*
@@ -1520,6 +1545,9 @@ export function createController(io = {}) {
     /** Jog: pages. With shift: whole levels, skipping continuations. */
     function onJog(delta, { shift = false } = {}) {
         if (s.hintLines) dismissHint();
+        /* Paging away takes the parameter off the screen; the list goes with
+         * it. (Also covers the section picker, which opens over the grid.) */
+        s.peek = null;
         if (s.pickerOpen) {
             const n = s.pickerEntries.length;
             if (!n) return s.pageIndex;
@@ -1701,6 +1729,37 @@ export function createController(io = {}) {
         const value = knobStep(st, meta, direction, t, fine);
         const wire = formatParamForSet(value, meta);
 
+        /*
+         * THE PEEK: an enum's option list, raised by the turn itself.
+         *
+         * It writes nothing and reads nothing. `value` is the index the knob
+         * engine has just produced and `meta.options` came from cached
+         * chain_params, so the overlay is free — which matters, because an IPC
+         * read (~2.8 ms) costs more than rendering the entire screen (1.68 ms).
+         * test_enum_peek.sh asserts the zero.
+         *
+         * Two options is the floor: a one-option enum is not a list, and an
+         * enum declaring none has nothing to show. readOnly and writeOnly are
+         * already excluded by meta.divable.
+         *
+         * The else branch is not tidiness. Turning a NEIGHBOUR must take the
+         * list down — left up it would be describing a parameter your hand has
+         * left, which is a wrong reading rather than a stale-looking one.
+         */
+        if (meta.divable && meta.kind === KIND_ENUM
+            && Array.isArray(meta.options) && meta.options.length >= 2) {
+            const pi = Math.round(Number(value));
+            s.peek = {
+                key,
+                title: meta.name || key,
+                options: meta.options,
+                index: (isFinite(pi) && pi >= 0 && pi < meta.options.length) ? pi : 0,
+                at: t,
+            };
+        } else {
+            s.peek = null;
+        }
+
         s.values[key] = wire;
         s.settleUntil[key] = s.tickCount + SETTLE_TICKS;
         /* Throttled — see SETPARAM_THROTTLE_MS. A miss is never lost: it is
@@ -1846,6 +1905,9 @@ export function createController(io = {}) {
      */
     function onKnobTouch(slot, down) {
         if (s.hintLines) dismissHint();
+        /* A finger on a knob means you are aiming, not reading — and if it is a
+         * different knob the list is describing a parameter you have left. */
+        s.peek = null;
         /* Reaching for a knob is an unambiguous "I want the grid", so it
          * dismisses the picker rather than leaving you in a modal you have to
          * back out of first. */
@@ -2014,6 +2076,23 @@ export function createController(io = {}) {
         const p = s.pending;
         s.pending = null;
         return p;
+    }
+
+    /**
+     * The live enum peek, or null. See ENUM_PEEK_MS.
+     *
+     * Expiry is evaluated on READ rather than on a timer, for the same reason
+     * knobCardActive does it: there is no tick guaranteed to run between the
+     * last detent and the next draw, so a timer-cleared peek could still be
+     * drawn once after it expired. A stale overlay drawn once is a wrong
+     * reading, not a late one.
+     *
+     * Costs nothing: every field was resolved by the turn that set it.
+     */
+    function enumPeek() {
+        if (!s.peek) return null;
+        if (now() - s.peek.at > ENUM_PEEK_MS) { s.peek = null; return null; }
+        return s.peek;
     }
 
     /* --------------------------------------------------------- presentation */
@@ -2312,6 +2391,7 @@ export function createController(io = {}) {
          * race. Books the settle; costs nothing until it comes due. */
         selectionChanged: armContractSettle,
         onJog, goToPage, restorePage, pageLabel, onKnobTurn, onKnobTouch, onClick, takePending, commitEnum,
+        enumPeek,
         openPicker, closePicker, pickerSelect, showHint, dismissHint,
         menuEntry, menuIndex: () => menuIndex(page()),
         menuEntered, enterMenu, exitMenu, clearTouch,
