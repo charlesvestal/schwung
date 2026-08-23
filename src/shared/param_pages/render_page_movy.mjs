@@ -850,16 +850,40 @@ function drawModDot(ctx, kx, ky, normVal) {
  * An ENUM normalises across its OPTIONS, not its min/max — it usually declares
  * neither, and "option 3 of 5" is the only reading of an enum that a brightness
  * can carry.
+ *
+ * NOT render_page.mjs's fractionOf, and the two must not be merged without
+ * deciding which of these they are:
+ *
+ *   fractionOf   "where on the declared RANGE does this value sit", for the
+ *                VIZ shapes — an envelope, a filter curve, a fader. It returns
+ *                0 on failure because a shape has to be drawn somewhere, and
+ *                it measures an enum against min/max, which for the shapes is
+ *                what their geometry expects.
+ *   normalizedOf "how full is this control, or unknown", for the KNOB — arc,
+ *                modulation dot, indicator LED. It measures an enum across its
+ *                option list, because "option 3 of 5" is the only reading a
+ *                pointer or a brightness can carry, and it distinguishes
+ *                unread from zero because the LED must go dark rather than
+ *                claim the bottom of the range.
+ *
+ * Their pixels are separately baselined; collapsing them would move the viz
+ * shapes to answer a question they were not drawn for.
  */
 export function normalizedOf(meta, raw) {
     if (!meta) return null;
     if (raw === null || raw === undefined || raw === "") return null;
+    if (Array.isArray(meta.options) && meta.options.length > 0) {
+        /* enumIndexOf, NOT Number(): a plugin may report an enum by NAME, and
+         * Number("Room") is NaN. Getting this wrong would have left every
+         * name-reporting enum unlit — the exact class of bug the chord wire
+         * format already cost this codebase once. */
+        const idx = enumIndexOf(meta, raw);
+        if (idx < 0) return null;
+        if (meta.options.length === 1) return 0;
+        return Math.max(0, Math.min(1, idx / (meta.options.length - 1)));
+    }
     const num = Number(raw);
     if (!isFinite(num)) return null;
-    if (Array.isArray(meta.options) && meta.options.length > 0) {
-        if (meta.options.length === 1) return 0;
-        return Math.max(0, Math.min(1, num / (meta.options.length - 1)));
-    }
     const min = typeof meta.min === "number" ? meta.min : 0;
     const max = typeof meta.max === "number" ? meta.max : 1;
     if (!(max > min)) return null;
