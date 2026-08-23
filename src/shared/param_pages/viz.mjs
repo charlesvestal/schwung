@@ -549,29 +549,166 @@ function detectEq(pool) {
     }];
 }
 
-function detectSample(pool, metaIndex) {
-    const out = [];
+/*
+ * Ported from schwung-movy src/model/wav-viz.ts detectWavViz, with permission.
+ *
+ * ANCHORED ON THE MARKER, NOT THE FILE. The first version required a filepath
+ * param on the same page, so a page of nothing but Start / Loop Start / Loop
+ * End — the page that needs the picture MOST, because three separate knobs
+ * cannot show that a loop sits inside the region that plays — drew nothing at
+ * all. The marker is what indexes into a sample, so the marker is the anchor.
+ */
+
+/** The file a marker says it indexes, or null. */
+function markerFileKey(meta) {
+    return (meta && (meta.filepath_param || meta.filepathParam)) || null;
+}
+
+/*
+ * A marker is either TYPED `wav_position`, or a plain number that NAMES the
+ * file it indexes. mrsample types its Start and Loop Start as floats and
+ * declares `filepath_param: sample_path`; that declaration is the module
+ * telling us the knob is a position into that sample, and it is a stronger
+ * signal than a type string it never set.
+ */
+function isMarkerMeta(meta) {
+    if (!meta) return false;
+    if (meta.type === "wav_position") return true;
+    if (meta.type !== "float" && meta.type !== "int") return false;
+    return !!markerFileKey(meta);
+}
+
+/*
+ * Loop bounds draw as BRACKETS rather than as a cursor, so they have to be
+ * told apart from the playback position — by name, like everything else here
+ * infers. "to" is anchored because it is two letters and would otherwise match
+ * inside any word ("automation", "photo").
+ */
+const MARKER_LOOP_WORD = /loop/;
+const MARKER_END_WORD = /end|stop|finish|(^|[\s_])to($|[\s_])/;
+function markerKind(key, meta) {
+    const t = (String(key) + " " + String((meta && meta.name) || "")).toLowerCase();
+    if (!MARKER_LOOP_WORD.test(t)) return "position";
+    return MARKER_END_WORD.test(t) ? "loopEnd" : "loopStart";
+}
+
+/*
+ * The granular read spread, matched on the EXACT key.
+ *
+ * That narrowness is the design, not an oversight. "Spread", "Scatter" and
+ * "Diffuse" are all over the fleet and not one of them is a read-position
+ * spread: granny's OWN `spread` is stereo width between voices,
+ * fizzik/nusaw/freak spread is stereo, chordism's is chord voicing,
+ * cloudseed's diffusion is a reverb control. Matching any of them would draw a
+ * region on the sample that the DSP never reads a grain from.
+ */
+function isSprayMeta(key, meta) {
+    return String(key).toLowerCase() === "spray"
+        && !!meta && meta.type === "float" && meta.min === 0 && meta.max === 1;
+}
+
+function detectSample(pool) {
+    /* Prefer a playback cursor as the anchor; fall back to any marker, so an
+     * all-loop page still gets the graphic. */
+    let anchor = null;
     for (const item of pool) {
-        if (item.meta.type !== "filepath" && item.meta.type !== "file") continue;
-        /* The companion position marker is a `wav_position` param that may or
-         * may not be on this same page — search the whole module, not just
-         * the pool, the way the module contract intends a "position" role to
-         * work. Prefer one whose key shares a stem with the sample key. */
-        let position = null;
-        const stem = item.key.replace(/(path|file|sample)$/i, "");
-        for (const k of metaIndex.keys) {
-            const m = metaIndex.get(k);
-            if (!m || m.type !== "wav_position") continue;
-            if (!position || (stem && k.startsWith(stem))) position = k;
-        }
-        const roles = { value: item.key };
-        if (position) roles.position = position;
-        out.push({
-            kind: VIZ_SAMPLE, group: null, roles, keys: [item.key],
-            slotStart: item.slot, slotSpan: 1, source: VIZ_SOURCE_DETECTED,
-        });
+        if (!isMarkerMeta(item.meta)) continue;
+        if (markerKind(item.key, item.meta) === "position") { anchor = item; break; }
     }
-    return out;
+    if (!anchor) {
+        for (const item of pool) {
+            if (isMarkerMeta(item.meta)) { anchor = item; break; }
+        }
+    }
+    if (!anchor) return [];
+
+    /*
+     * Prefer the module's OWN declaration of which file this marker indexes
+     * over "the first file param on the page" — a page holding both a preset
+     * path and a sample path would otherwise be a coin toss.
+     */
+    let fileItem = null;
+    const declaredFile = markerFileKey(anchor.meta);
+    for (const item of pool) {
+        if (declaredFile) { if (item.key === declaredFile) { fileItem = item; break; } }
+        else if (item.meta.type === "filepath" || item.meta.type === "file") { fileItem = item; break; }
+    }
+
+    /*
+     * Every other marker on the SAME sample joins the graphic — by the
+     * module's own `view_group` when it declares one, otherwise by naming the
+     * same file. They belong on one picture: three separate knobs cannot show
+     * that a loop sits inside the region that plays.
+     */
+    const group = anchor.meta.view_group || anchor.meta.viewGroup || null;
+    const fileKey = fileItem ? fileItem.key : declaredFile;
+    const members = [anchor];
+    for (const item of pool) {
+        if (item === anchor || !isMarkerMeta(item.meta)) continue;
+        const itemGroup = item.meta.view_group || item.meta.viewGroup || null;
+        const sameGroup = !!group && itemGroup === group;
+        const sameFile = !!fileKey && markerFileKey(item.meta) === fileKey;
+        if (sameGroup || sameFile) members.push(item);
+    }
+    /* Only a PLAYBACK cursor has a spread — a loop bound does not. */
+    let sprayItem = null;
+    if (markerKind(anchor.key, anchor.meta) === "position") {
+        for (const item of pool) {
+            if (item !== anchor && isSprayMeta(item.key, item.meta)) { sprayItem = item; break; }
+        }
+    }
+
+    /*
+     * ROLES COME FROM EVERY MEMBER; ONLY THE ADJACENT RUN CLAIMS CELLS.
+     *
+     * These are two different questions and collapsing them broke both real
+     * modules on the fleet. A graphic must be CONTIGUOUS — it cannot be drawn
+     * across a foreign cell or across the row-0 label band — but what it can
+     * SHOW is not limited that way: a loop bound or a spread is read out of the
+     * value, not out of the neighbouring pixels.
+     *
+     * mrsample is the case for the bounds: it declares view_group "loop" on
+     * sample_start, loop_start and loop_end, exactly as intended — and puts
+     * `loop_mode` between them. Trimming the roles to the run left the flagship
+     * loop-bracket module with no brackets.
+     *
+     * granny is the case for the spray, and worse: `spray` sits three knobs
+     * from `position`, so the fences would never have drawn on the ONE module
+     * in the fleet that has a spray at all.
+     *
+     * A member outside the run keeps its own knob and also informs the picture.
+     * That redundancy is fine, and better than the alternatives: you can still
+     * turn the knob and read its number, and the graphic still tells you where
+     * the region sits.
+     */
+    const roles = {};
+    if (fileItem) roles.value = fileItem.key;
+    if (sprayItem) roles.spray = sprayItem.key;
+    for (const it of members) {
+        const kind = markerKind(it.key, it.meta);
+        if (!roles[kind]) roles[kind] = it.key;   /* first one wins per role */
+    }
+
+    /*
+     * The CELLS: the longest adjacent run containing the anchor, the same rule
+     * detectEnvelope uses. The spray is never a candidate — it is a modifier of
+     * the cursor rather than a position on the sample, so it has nothing to
+     * draw in a cell of its own and keeps its arc.
+     */
+    const claimable = [fileItem, ...members].filter(Boolean)
+        .slice().sort((a, b) => a.slot - b.slot);
+    let run = [], best = [];
+    for (const it of claimable) {
+        if (run.length && !isAdjacentRun([...run.map((r) => r.slot), it.slot])) run = [];
+        run.push(it);
+        if (run.indexOf(anchor) >= 0 && run.length > best.length) best = run.slice();
+    }
+    if (best.indexOf(anchor) < 0) best = [anchor];
+
+    return [{
+        kind: VIZ_SAMPLE, group: null, roles, keys: best.map((it) => it.key),
+        ...span(best.map((it) => it.slot)), source: VIZ_SOURCE_DETECTED,
+    }];
 }
 
 /* Priority order — see the module doc comment. Each function returns the
@@ -580,7 +717,7 @@ function detectSample(pool, metaIndex) {
 const DETECTORS = [
     detectEnvelope, detectFilter, detectLfo, detectWaveform,
     detectFader, detectSwitch, detectEq,
-    (pool, metaIndex) => detectSample(pool, metaIndex),
+    detectSample,
 ];
 
 /* ---------------------------------------------------------------- resolve */

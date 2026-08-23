@@ -904,10 +904,52 @@ export function drawSample(ctx, rect, roles, values, metaIndex) {
         else ctx.fillRect(x0 + i, midY - h, 1, 2 * h + 1, 1);
     }
 
-    if (roles.position && values && values[roles.position] !== undefined) {
-        const posMeta = metaIndex.getOrGuess(roles.position);
-        const posFrac = clamp01(fractionOf(posMeta, values[roles.position]));
-        const mi = Math.min(w - 1, Math.floor(posFrac * w));
+    /* Column i covers frames [i/w, (i+1)/w), so a marker belongs in
+     * floor(p*w). The obvious round(p*(w-1)) disagrees for a quarter of all
+     * positions and lands a pixel off the column that will actually play. */
+    const colOf = (p) => Math.min(w - 1, Math.floor(clamp01(p) * w));
+    const posOf = (role) => {
+        const k = roles[role];
+        if (!k || !values || values[k] === undefined || values[k] === null) return undefined;
+        return clamp01(fractionOf(metaIndex.getOrGuess(k), values[k]));
+    };
+
+    /*
+     * LOOP BOUNDS FIRST, so the playback cursor draws on top of them — the
+     * cursor is the thing that moves and the thing you are usually looking
+     * for, and a bound sitting on the same column would otherwise hide it
+     * exactly when the two matter most.
+     *
+     * Tips point INWARD, at the region that repeats. That is how you tell a
+     * start from an end with no room for a label, and it is invisible in code
+     * review: reversing `dir` still draws two brackets and still satisfies any
+     * "are there brackets" check, while reading as a loop that excludes the
+     * part it actually plays. test_viz_sample.sh pins the tip COLUMNS.
+     */
+    const bracket = (p, opening) => {
+        if (p === undefined) return;
+        const bx = x0 + colOf(p);
+        ctx.fillRect(bx, topY, 1, botY - topY + 1, 1);          /* the stem */
+        const tipX = bx + (opening ? 1 : -1);
+        if (tipX >= x0 && tipX < x0 + w) {
+            ctx.fillRect(tipX, topY, 1, 2, 1);
+            ctx.fillRect(tipX, botY - 1, 1, 2, 1);
+        }
+    };
+    bracket(posOf("loopStart"), true);
+    bracket(posOf("loopEnd"), false);
+
+    /*
+     * The cursor is the envelope's COMPLEMENT in its own column: the sample is
+     * cleared there and the space around it is lit. That inverts it over the
+     * waveform without ever reading the framebuffer back — and it is
+     * self-correcting, which is the point. Through a quiet passage it is a tall
+     * bright line; through a loud one it becomes a dark notch cut into the
+     * body. Either way it is the highest-contrast thing in the column.
+     */
+    const pos = posOf("position");
+    if (pos !== undefined) {
+        const mi = colOf(pos);
         const h = halfAt(mi), mx = x0 + mi;
         ctx.fillRect(mx, midY - h, 1, 2 * h + 1, 0);
         if (midY - h > topY) ctx.fillRect(mx, topY, 1, (midY - h) - topY, 1);
