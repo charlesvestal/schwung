@@ -2037,11 +2037,43 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
  */
 function maybeReturnToComponentGrid() {
     if (!componentModalFromGrid) return false;
+    if (isTextEntryActive()) return false;
+    /*
+     * Prove this CHAIN_EDIT arrival belongs to the hand-off that raised the
+     * flag, rather than assuming it does just because the flag is still set.
+     *
+     * CHAIN_EDIT is not a narrow purpose-built surface like CHAIN_SETTINGS /
+     * MASTER_FX / GLOBAL_SETTINGS -- it is the general chain-editor hub,
+     * reachable from many places that have nothing to do with a fired grid
+     * action (Shift+Vol+TrackN, long-press, ...) and that run every tick
+     * regardless of the current view. Enumerating those entry points to clear
+     * the flag at each one is exactly the mistake the reconcile-dont-hook
+     * pattern exists to avoid: get one wrong, or miss the next one added, and
+     * the flag survives it and fires on an unrelated arrival later.
+     *
+     * So the flag is resolved -- fired OR dropped -- the FIRST time CHAIN_EDIT
+     * is reached, by whichever route, and it can never survive past this call:
+     * it fires only when the slot CHAIN_EDIT is now showing still matches the
+     * slot the hand-off was raised for. A JUMP_TO_SLOT(3) while the flag was
+     * raised for slot 1 reassigns selectedSlot to 3 before landing here, so
+     * the mismatch drops the flag instead of yanking the user out of the
+     * slot-3 chain editor they deliberately opened.
+     *
+     * Known gap: a same-SLOT interruption (e.g. long-press Track1 while the
+     * flag is raised for slot 1) still matches and fires, landing on the grid
+     * instead of the chain editor that interruption asked for. Telling those
+     * two apart needs a token identifying the specific flow instance, which
+     * none of the hand-off screens (shadow_ui_presets.mjs, out of scope here)
+     * currently carry back out through Back/Load/Delete. No concrete repro has
+     * hit this; the slot-match closes the one that did.
+     */
+    const matchesReturnSlot = selectedSlot === componentGridReturnSlot;
     componentModalFromGrid = false;
     const slotIndex = componentGridReturnSlot;
     const componentKey = componentGridReturnKey;
     componentGridReturnSlot = -1;
     componentGridReturnKey = "";
+    if (!matchesReturnSlot) return false;
     enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey), "",
                     componentParamPagesIo(slotIndex, componentKey), paramPagesChromeFor(componentKey));
     needsRedraw = true;
