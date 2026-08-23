@@ -12,7 +12,7 @@
     {
       "id": 2,
       "subject": "Task 2: Re-skin drawMenuList to the movy chrome",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         1
       ],
@@ -21,7 +21,7 @@
     {
       "id": 3,
       "subject": "Task 3: Six stragglers join the one list",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         2
       ],
