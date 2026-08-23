@@ -338,6 +338,68 @@ const lastTwo = (pages) => pages.slice(-2).map((p) => p.name).join(",");
   if (new Set(names).size !== names.length) fail("page names must stay unique: " + names.join(","));
 }
 
+/* (h) malformed trailingMenus must never produce a phantom page — a real,
+ *     empty, inert PAGE_MENU that the guard let through because it checked
+ *     the RAW entry count instead of what survives the label filter. */
+{
+  const h = { levels: { root: { label: "Synth", knobs: ["a"], params: [{ key: "a" }] } } };
+  const cp = [{ key: "a", type: "float", min: 0, max: 1, step: 0.01 }];
+
+  /* h1: entries is an empty array outright. */
+  {
+    const bad = [{ name: "Empty", entries: [] }];
+    const { pages } = planPages({ hierarchy: h, chainParams: cp, trailingMenus: bad });
+    if (pages.some((p) => p.name === "Empty")) fail("an empty entries array must not become a page");
+  }
+
+  /* h2: the reproducer for the reported bug — one item, no label, so the RAW
+   *     count is 1 but the mapped/filtered count is 0. Assert both that no
+   *     page is produced AND that a warning records why. */
+  {
+    const bad = [{ name: "Broken", entries: [{ action: "swap" }] }];
+    const { pages, warnings } = planPages({ hierarchy: h, chainParams: cp, trailingMenus: bad });
+    if (pages.some((p) => p.name === "Broken")) {
+      fail("an entry with no usable label must not become a phantom page");
+    }
+    if (!warnings.some((w) => /Broken/.test(w))) {
+      fail("a trailingMenus entry with no usable label must be recorded in warnings, got: " +
+           JSON.stringify(warnings));
+    }
+  }
+
+  /* h3: no `name` at all — must not throw, and must not silently vanish
+   *     entries that DO have a label. */
+  {
+    const noName = [{ entries: [{ label: "Do Thing", action: "go" }] }];
+    const { pages } = planPages({ hierarchy: h, chainParams: cp, trailingMenus: noName });
+    const menu = pages.find((p) => p.trailing);
+    if (!menu) fail("a trailingMenus entry with no name must still plan a page");
+    else if (menu.entries.length !== 1 || menu.entries[0].label !== "Do Thing") {
+      fail("an unnamed trailingMenus entry lost its own entries: " + JSON.stringify(menu));
+    }
+  }
+}
+
+/* (i) fallbackClaim dedup, exercised independently of claimName. Every other
+ *     fallback-branch case above names its trailing pages "User Presets" /
+ *     "Module", which never collides with the fallback branch own page
+ *     names ("Params"), so a regression isolated to fallbackClaim would slip
+ *     past every other test in this file. Force a collision here. */
+{
+  const cp = ["a"].map((k) => ({ key: k, type: "float", min: 0, max: 1, step: 0.01 }));
+  const colliding = [
+    { name: "Params", entries: [{ label: "Load…", action: "up_load" }] },
+  ];
+  const { pages } = planPages({ hierarchy: null, chainParams: cp, trailingMenus: colliding });
+  const names = pages.map((p) => p.name);
+  if (new Set(names).size !== names.length) {
+    fail("fallbackClaim must dedupe against the fallback branch own page names: " + names.join(","));
+  }
+  if (!names.includes("Params - 2")) {
+    fail("fallbackClaim must number the collision, expected \"Params - 2\" among: " + names.join(","));
+  }
+}
+
 if (failures) process.exit(1);
 console.log("PASS: PAGE_MENU — planned last, INERT until entered so the jog always pages, " +
             "click enters then activates, Shift+Click always reaches the sections, " +
