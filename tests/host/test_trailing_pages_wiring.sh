@@ -66,9 +66,14 @@ while ((at = src.indexOf(marker, at)) !== -1) {
 if (calls.length < 4) fail("expected at least 4 enterParamPages() calls, found " + calls.length);
 
 const componentCalls = calls.filter((c) => c.includes("getComponentParamPrefix(componentKey)"));
-if (componentCalls.length !== 4) {
-    fail("expected exactly 4 component-site enterParamPages() calls (the ones " +
-         "this task touches), found " + componentCalls.length + ":\n" + componentCalls.join("\n---\n"));
+// At least the 4 this task touched -- NOT exactly 4: a later call site (e.g.
+// the hand-off back into the grid after Load/Delete/Swap/Remove) is legitimate
+// new product surface, and the invariant that matters is "every one of them
+// routes through the ONE helper", not a headcount frozen at the shape this
+// task shipped.
+if (componentCalls.length < 4) {
+    fail("expected at least 4 component-site enterParamPages() calls (the ones " +
+         "this task touched), found " + componentCalls.length + ":\n" + componentCalls.join("\n---\n"));
 }
 let bad = componentCalls.filter((c) => !c.includes("componentParamPagesIo("));
 if (bad.length) {
@@ -83,7 +88,8 @@ if (!masterCall.includes("componentParamPagesIo(MASTER_CHAIN_TARGET.slot, compon
     fail("the Master FX call site does not call componentParamPagesIo() — the " +
          "exclusion must be inside the helper, not special-cased at the call site:\n" + masterCall);
 }
-console.log("  ok  all 4 component enterParamPages() sites (incl. Master FX) call componentParamPagesIo()");
+console.log("  ok  every component enterParamPages() site (" + componentCalls.length +
+            ", incl. Master FX) calls componentParamPagesIo()");
 ' "$UI"
 
 # ============================================================================
@@ -381,6 +387,16 @@ const body = [
     "function slotChainComponents() { return [{ key: \"synth\" }]; }",
     "function enterComponentSelect() { calls.push(\"swap\"); }",
     "function applyChainComponentPick() { calls.push(\"remove\"); }",
+    // The hand-off-back-to-the-grid bookkeeping (componentModalFromGrid and
+    // friends) is a SEPARATE concern from dispatch, which is all this test
+    // pins -- stubbed inert (view never moves) so it does not interfere with
+    // the six assertions below, not re-tested here.
+    "let view = 0;",
+    "const VIEWS = { PARAM_PAGES: 0 };",
+    "function gridActionOpenedSomething() { return Array.prototype.some.call(arguments, Boolean); }",
+    "let componentModalFromGrid = false;",
+    "let componentGridReturnSlot = -1;",
+    "let componentGridReturnKey = \"\";",
     grab("runComponentActionFromGrid"),
     "const seen = {};",
     "for (const action of [\"up_load\",\"up_save\",\"up_save_as\",\"up_delete\",\"swap_module\",\"remove_module\"]) {",
@@ -416,8 +432,93 @@ console.log("  ok  runComponentActionFromGrid(): all six actions (up_load, up_sa
             "up_save_as, up_delete, swap_module, remove_module) reach their real handlers");
 
 // remove_module must clear the record BEFORE the removal write, not after —
-// asserted by shape rather than order-of-object-identity: the record passed
-// to setUserPresetRecord for remove_module is null.
+// only remove_module calls setUserPresetRecord in this harness (the other
+// five reach it only through onUserPresetSaved/Loaded/Deleted, which are
+// stubbed to markers above, not to the real setter), so ONE call across all
+// six iterations, with a null record, is exactly what a correct clear looks
+// like. Evidence gathered above and asserted here, not left to sit unread.
+const wantSetRecordCalls = [[1, "synth", null]];
+if (JSON.stringify(r.setRecordCalls) !== JSON.stringify(wantSetRecordCalls)) {
+    fail("remove_module must clear the grid record with setUserPresetRecord(slot, prefix, null) " +
+         "before the removal write -- expected " + JSON.stringify(wantSetRecordCalls) +
+         ", got " + JSON.stringify(r.setRecordCalls));
+}
+console.log("  ok  remove_module clears the User Preset record (setUserPresetRecord(1, \"synth\", null))");
 ' "$UI"
+
+# ============================================================================
+# 7. BEHAVIOUR: doSavePreset (shadow_ui_presets.mjs) treats a FAILED read
+#    (null) as the error and a DECLARED-EMPTY state ("") as writable — the
+#    same tri-state rule overwriteUserPreset already applies. enterPresetSaveAs
+#    is a new, grid-only entry point onto this same function, so a component
+#    that legitimately declares "" state can now reach it for the first time
+#    from a path this task added.
+# ============================================================================
+
+PRESETS_MJS="src/shadow/shadow_ui_presets.mjs"
+[ -f "$PRESETS_MJS" ] || fail "missing $PRESETS_MJS"
+
+node -e '
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[1], "utf8");
+const fail = (m) => { console.log("FAIL: " + m); process.exit(1); };
+
+const grab = (name) => {
+    const re = new RegExp("^function " + name + "\\([^]*?^}", "m");
+    const m = src.match(re);
+    if (!m) fail("could not lift " + name + "() out of shadow_ui_presets.mjs");
+    return m[0];
+};
+
+const runWith = (stateJson) => {
+    const body = [
+        "let writeCalls = [];",
+        "let errorCalls = 0;",
+        "let announceCalls = [];",
+        "let onSavedCalls = [];",
+        "const ctx = {",
+        "  getSlotStateWithRetry: () => " + JSON.stringify(stateJson) + ",",
+        "  needsRedraw: false,",
+        "  onPresetSaved: (...a) => onSavedCalls.push(a),",
+        "};",
+        "function showSaveError() { errorCalls++; }",
+        "function announce(t) { announceCalls.push(t); }",
+        "function presetDir(id) { return \"/presets/\" + id; }",
+        "function uniquePresetName(n) { return n; }",
+        "function safeFileStem(n) { return n; }",
+        "function uniquePresetPath(dir, stem) { return dir + \"/\" + stem + \".json\"; }",
+        "const PRESET_VERSION = 1;",
+        "let presetPrefix = \"synth\";",
+        "let presetModule = \"obxd\";",
+        "let presets = [];",
+        "let selectedPreset = 0;",
+        "function loadPresetList() {}",
+        "function host_write_file(path, payload) { writeCalls.push([path, payload]); return true; }",
+        grab("doSavePreset"),
+        "doSavePreset(1, \"My Preset\");",
+        "return { writeCalls, errorCalls, announceCalls, onSavedCalls };",
+    ].join("\n");
+    try {
+        return new Function(body)();
+    } catch (e) {
+        fail("doSavePreset behaviour (stateJson=" + JSON.stringify(stateJson) + "): " + e.message);
+    }
+};
+
+const failed = runWith(null);
+if (failed.writeCalls.length !== 0) fail("a failed (null) state read must not write a preset file, wrote " + JSON.stringify(failed.writeCalls));
+if (failed.errorCalls !== 1) fail("a failed (null) state read must raise exactly one save error, raised " + failed.errorCalls);
+if (failed.onSavedCalls.length !== 0) fail("a failed (null) state read must not notify onPresetSaved, notified " + JSON.stringify(failed.onSavedCalls));
+
+// A DECLARED-EMPTY read ("") is a real answer, not an error -- it must be
+// written through, exactly like overwriteUserPreset already does.
+const empty = runWith("");
+if (empty.errorCalls !== 0) fail("a declared-empty (\"\") state must NOT be treated as a save error, raised " + empty.errorCalls);
+if (empty.writeCalls.length !== 1) fail("a declared-empty (\"\") state must still write a preset file, wrote " + JSON.stringify(empty.writeCalls));
+if (empty.onSavedCalls.length !== 1) fail("a successful save of a declared-empty state must still notify onPresetSaved, notified " + JSON.stringify(empty.onSavedCalls));
+
+console.log("  ok  doSavePreset(): a FAILED (null) state read refuses to save; a DECLARED-EMPTY " +
+            "(\"\") state is a real answer and is written through");
+' "$PRESETS_MJS"
 
 echo "PASS"

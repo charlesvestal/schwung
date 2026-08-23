@@ -223,7 +223,20 @@ function doSavePreset(slot, rawName) {
     const { getSlotStateWithRetry } = ctx;
 
     const stateJson = getSlotStateWithRetry(slot, presetPrefix + ":state");
-    if (!stateJson) {
+    /*
+     * A read has THREE answers, and only one of them is an error: `null` is a
+     * FAILED read (writing it would replace a good preset with nothing --
+     * see overwriteUserPreset's identical guard); "" is the module declaring
+     * NO state, which is a real answer and is written through like any
+     * other. `if (!stateJson)` collapsed the two, and this repo has a
+     * documented case where exactly that collapse caused three separate bugs
+     * in one day (see param_read_null_vs_empty). Pre-existing here, but
+     * enterPresetSaveAs is a NEW entry point onto this same function, so a
+     * component that legitimately declares "" state and is Saved As from the
+     * grid would hit the bug for the first time through code added in this
+     * task -- worth fixing now rather than widening what reaches it.
+     */
+    if (stateJson === null || stateJson === undefined) {
         showSaveError();
         return;
     }
@@ -506,7 +519,17 @@ export function overwriteUserPreset(slot, prefix, moduleId, name) {
     if (!moduleId || !name) return false;
     const dsPrefix = prefix || "synth";
     const stateJson = ctx.getSlotStateWithRetry(slot, dsPrefix + ":state");
-    if (stateJson === null || stateJson === undefined) return false;
+    if (stateJson === null || stateJson === undefined) {
+        /* A FAILED read, not a declared-empty state ("" is written through
+         * below like any other answer) -- refusing is silent otherwise, and
+         * on-device that reads identically to a disk-write failure or a
+         * missing entry: the user just sees "Save failed" with no way to
+         * tell which. */
+        if (typeof host_log === "function") {
+            host_log("presets: overwrite refused, " + dsPrefix + ":state read failed for slot " + slot);
+        }
+        return false;
+    }
 
     presetPrefix = dsPrefix;
     presetModule = moduleId;
