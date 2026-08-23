@@ -41,8 +41,6 @@ braids	Main	filter	declared	cutoff
 branchage	Params - 2	switch	detected	kick_branch_enabled
 branchage	Params - 3	switch	detected	hat_branch_enabled
 branchage	Params - 3	switch	detected	snare_branch_enabled
-breakbeat	Main	sample	detected	A_sample_path
-breakbeat	Main	sample	detected	B_sample_path
 breakbeat	Main - 2	switch	detected	save_preset
 chiptune	Main	envelope	detected	env_attack,env_decay,env_sustain,env_release
 chiptune	Main	fader	detected	volume
@@ -177,15 +175,15 @@ freak	LFO	waveform	detected	lfo_shape
 freak	Random	switch	detected	random_retrig
 freak	Voice & Mix	fader	detected	volume
 gate	Main	envelope	detected	attack,hold,release
-gesture-test	Main	sample	detected	sample_path
 gesture-test	Main	switch	detected	power
 granny	ADSR Envelope	fader	detected	amp_attack_ms
 granny	ADSR Envelope	fader	detected	amp_decay_ms
 granny	ADSR Envelope	fader	detected	amp_release_ms
 granny	ADSR Envelope	fader	detected	amp_sustain
 granny	Main	fader	detected	grain_gain
+granny	Main	sample	detected	position
 granny	Main - 2	fader	detected	grain_gain
-granny	Main - 2	sample	detected	sample_path
+granny	Main - 2	sample	detected	position
 granny	Scan	switch	detected	scan_enable
 granny	Window / Tone	fader	detected	grain_gain
 granular	Advanced	fader	detected	gain
@@ -327,14 +325,15 @@ moog	Oscillator 4	fader	detected	osc4_volume
 mrdrums	Global	fader	detected	g_master_vol
 mrdrums	Main	envelope	detected	pad_attack_ms,pad_decay_ms
 mrdrums	Main	fader	detected	pad_vol
+mrdrums	Main	sample	detected	pad_start
 mrdrums	Main	switch	detected	ui_auto_select_pad
 mrdrums	Pad Settings	fader	detected	pad_rand_vol_amt
-mrdrums	Pad Settings	sample	detected	pad_sample_path
 mrsample	Filter	filter	detected	filter_type,filter_cutoff,filter_res
 mrsample	Global	fader	detected	gain
 mrsample	Main	fader	detected	gain
 mrsample	Main	filter	detected	filter_cutoff,filter_res
-mrsample	Sample	sample	detected	sample_path
+mrsample	Main	sample	detected	sample_start
+mrsample	Sample	sample	detected	sample_start
 mrsample	Sample	switch	detected	loop_mode
 mverb	Main	fader	detected	gain
 nam	Main	fader	detected	input_level
