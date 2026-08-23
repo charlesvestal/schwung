@@ -299,5 +299,36 @@ const groupOf = (cp, keys) => {
   ok(flipsMax < 6, "and it draws no fence at all (max column flips " + flipsMax + ")");
 }
 
+/* ===================================================================== 9 ==
+ * FILE, NO MARKER. Restored once the peaks became real.
+ *
+ * While the envelope was SYNTHETIC this cell was a fabricated picture of a
+ * file -- it looked like the sample shape and was not one -- so anchoring on
+ * the marker correctly dropped it. A real waveform with no cursor is genuine
+ * information about what is loaded, so it comes back.
+ */
+{
+  const cp = [{ key: "sample_path", name: "Sample", type: "filepath" }];
+  const keys = ["sample_path", null, null, null, null, null, null, null];
+  const { g } = groupOf(cp, keys);
+  ok(!!g, "a filepath with no marker anywhere still produces a sample group");
+  ok(g && g.roles.value === "sample_path", "with the file as its only role");
+  ok(g && !g.roles.position, "and no cursor invented for it");
+}
+
+/* Two samplers side by side each get their own picture -- breakbeat loads
+   A_sample_path and B_sample_path on one page. */
+{
+  const cp = [
+    { key: "A_sample_path", name: "A", type: "filepath" },
+    { key: "B_sample_path", name: "B", type: "filepath" },
+  ];
+  const keys = ["A_sample_path", "B_sample_path", null, null, null, null, null, null];
+  const mi = idx(cp, keys);
+  const { groups } = resolveViz({ keys, metaIndex: mi });
+  const gs = groups.filter((x) => x.kind === VIZ_SAMPLE);
+  ok(gs.length === 2, "two file params give TWO cells, not one (got " + gs.length + ")");
+}
+
 process.exit(fail ? 1 : 0);
 '

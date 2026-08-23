@@ -620,7 +620,30 @@ function detectSample(pool) {
             if (isMarkerMeta(item.meta)) { anchor = item; break; }
         }
     }
-    if (!anchor) return [];
+    /*
+     * NO MARKER, BUT A FILE: draw the waveform alone.
+     *
+     * Deferred from the marker-anchoring change, deliberately. While the
+     * envelope was SYNTHETIC this cell was a fabricated picture of a file --
+     * it looked like the sample's shape and was not one -- so breakbeat,
+     * gesture-test and mrdrums' Pad Settings were better off showing their
+     * filename. Now that the peaks are real, a waveform with no cursor is
+     * genuine information about what is loaded, so they get it back.
+     */
+    if (!anchor) {
+        /* EVERY file, not the first: breakbeat loads two samples side by side
+         * (A_sample_path and B_sample_path) and each is its own picture. */
+        const out = [];
+        for (const item of pool) {
+            if (item.meta.type !== "filepath" && item.meta.type !== "file") continue;
+            out.push({
+                kind: VIZ_SAMPLE, group: null, roles: { value: item.key },
+                keys: [item.key], slotStart: item.slot, slotSpan: 1,
+                source: VIZ_SOURCE_DETECTED,
+            });
+        }
+        return out;
+    }
 
     /*
      * Prefer the module's OWN declaration of which file this marker indexes
