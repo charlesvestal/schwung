@@ -294,6 +294,17 @@ export function exitParamPages() {
     controllerIo = null;
 }
 
+/*
+ * Rebuild ONLY the trailing pages ("User Presets" / "Module"), in place —
+ * after a Save or Delete changes what the User Presets rows offer, so the
+ * grid reflects it without moving the user off the page they are standing
+ * on. No-op when the grid is not up (e.g. a save committed from the
+ * module-picker's own preset browser, which never opened the grid).
+ */
+export function paramPagesRefreshTrailing() {
+    if (controller) controller.refreshTrailing();
+}
+
 export function paramPagesActive() {
     return controller !== null;
 }
