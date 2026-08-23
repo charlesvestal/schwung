@@ -117,6 +117,38 @@ function chunk(arr, size) {
     return out;
 }
 
+/* Shared by a level's own `menu` and the caller-supplied `trailingMenus`: both
+ * are lists of {label, action?, level?, value?} and both render through the
+ * same PAGE_MENU. A raw entry with no `label` is dropped — a menu row with no
+ * text is not a control, it is a hole — which is why the CALLER must check the
+ * length of what this returns, not the length of what it was given. */
+function mapMenuEntries(rawEntries) {
+    return (Array.isArray(rawEntries) ? rawEntries : []).map((e) => ({
+        label: String((e && e.label) || ""),
+        action: (e && e.action) || null,
+        target: (e && e.level) || null,
+        value: (e && e.value) !== undefined ? e.value : null,
+    })).filter((e) => e.label);
+}
+
+/*
+ * A page name is the only handle the user has on the module, and it is what
+ * reanchor() matches on after a rebuild, so uniqueness is not cosmetic (see
+ * claimName's fuller note at its call site). Two independent claimers are
+ * needed rather than one: the fallback (`chain_params`, no `levels`) return
+ * happens BEFORE `claimName` exists lexically, so it needs its own `Set` —
+ * but that only justifies two Sets, not two copies of the numbering loop.
+ */
+function makeClaimer(used) {
+    return (base) => {
+        if (!used.has(base)) { used.add(base); return base; }
+        for (let n = 2; ; n++) {
+            const candidate = `${base} - ${n}`;
+            if (!used.has(candidate)) { used.add(candidate); return candidate; }
+        }
+    };
+}
+
 /**
  * Split into the same number of pages a greedy fill would use, but spread
  * evenly — 9 keys become 5+4 rather than 8+1.
@@ -253,18 +285,26 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
      */
     const appendTrailing = (pages, claim) => {
         for (const m of (trailingMenus || [])) {
-            if (!m || !Array.isArray(m.entries) || m.entries.length === 0) continue;
+            if (!m) continue;
+            /*
+             * The guard must run on the MAPPED result, not the raw one: an
+             * entry whose only items lack a `label` (a typo'd or missing
+             * field) still has a nonzero raw length, so a length check on
+             * `m.entries` before mapping lets it through and produces a
+             * real, empty, inert PAGE_MENU page — silently, since nothing
+             * downstream flags an empty entry list as wrong.
+             */
+            const entries = mapMenuEntries(m.entries);
+            if (entries.length === 0) {
+                warnings.push(`trailingMenus "${m.name || "Menu"}" produced no usable entries — skipped`);
+                continue;
+            }
             pages.push({
                 kind: PAGE_MENU,
                 name: claim(String(m.name || "Menu")),
                 level: null,
                 trailing: true,
-                entries: m.entries.map((e) => ({
-                    label: String((e && e.label) || ""),
-                    action: (e && e.action) || null,
-                    target: (e && e.level) || null,
-                    value: (e && e.value) !== undefined ? e.value : null,
-                })).filter((e) => e.label),
+                entries,
             });
         }
         return pages;
@@ -291,15 +331,9 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
                      keys: alignKnobs(ks, name), authored: false };
         });
         /* No `claimName` in scope here — this branch never names by level, so
-         * give the append its own local claim over the names already used. */
-        const fallbackUsed = new Set(pages.map((p) => p.name));
-        const fallbackClaim = (base) => {
-            if (!fallbackUsed.has(base)) { fallbackUsed.add(base); return base; }
-            for (let n = 2; ; n++) {
-                const c = `${base} - ${n}`;
-                if (!fallbackUsed.has(c)) { fallbackUsed.add(c); return c; }
-            }
-        };
+         * give the append its own local claim over the names already used
+         * (see makeClaimer's note: two Sets, not two copies of the loop). */
+        const fallbackClaim = makeClaimer(new Set(pages.map((p) => p.name)));
         return { pages: appendTrailing(pages, fallbackClaim), fingerprint, warnings, realigned };
     }
 
@@ -352,13 +386,7 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
      * cosmetic.
      */
     const usedNames = new Set();
-    const claimName = (base) => {
-        if (!usedNames.has(base)) { usedNames.add(base); return base; }
-        for (let n = 2; ; n++) {
-            const candidate = `${base} - ${n}`;
-            if (!usedNames.has(candidate)) { usedNames.add(candidate); return candidate; }
-        }
-    };
+    const claimName = makeClaimer(usedNames);
 
     /* Mode select (minijv only in the fleet): with `modes` present the level
      * names ARE the mode names, so the active mode picks the walk root. */
@@ -607,17 +635,15 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
          * the opposite — Save/Delete are what you do when you have finished, so
          * landing on them is not where anyone wants to start. */
         if (Array.isArray(lvl.menu) && lvl.menu.length) {
-            pages.push({
-                kind: PAGE_MENU,
-                name: claimName(lvl.menu_label || `${base} Menu`),
-                level: levelKey,
-                entries: lvl.menu.map((m) => ({
-                    label: String((m && m.label) || ""),
-                    action: (m && m.action) || null,
-                    target: (m && m.level) || null,
-                    value: (m && m.value) !== undefined ? m.value : null,
-                })).filter((m) => m.label),
-            });
+            const menuEntries = mapMenuEntries(lvl.menu);
+            if (menuEntries.length > 0) {
+                pages.push({
+                    kind: PAGE_MENU,
+                    name: claimName(lvl.menu_label || `${base} Menu`),
+                    level: levelKey,
+                    entries: menuEntries,
+                });
+            }
         }
     }
 
