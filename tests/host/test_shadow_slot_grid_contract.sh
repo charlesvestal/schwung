@@ -521,7 +521,7 @@ function makeSlot(over) {
 /* ======================================================================== */
 
 function makeMaster(over) {
-  const store = Object.assign({ "master_fx:volume": "1.00" }, over || {});
+  const store = Object.assign({ "master_fx:midi_channel": "-1" }, over || {});
   const state = { store, preset: false, actions: [], targets: {} };
   const io = SG.createMasterGridIo({
     readParam: (k) => (k in store ? store[k] : ""),
@@ -555,17 +555,24 @@ function makeMaster(over) {
      declared in MASTER_GRID_PARAMS came in from the slot contract, which is a
      different bus. Asserting against the declaration rather than a hardcoded
      count keeps that check honest when the master bus legitimately gains a
-     param — it gained MIDI Ch — while still failing on anything undeclared.
-     Volume is named explicitly because it must stay FIRST: it is the one
-     control the master page has always led with. */
+     param — while still failing on anything undeclared.
+
+     MIDI Ch is named explicitly because it must stay FIRST, and because it is
+     now the ONLY cell on this page. It used to sit behind a Volume knob that
+     was inert end to end: `master_fx:volume` had no handler in
+     shadow_chain_mgmt.c or shim_handle_param_special, so it read back empty
+     and wrote into whichever module occupied Master FX slot 1. Nothing here
+     could have caught that — the io has no mapping table, so a declared key
+     round-trips through this test whether or not anything serves it. */
   const main = pages[0];
   const declared = SG.MASTER_GRID_PARAMS.map((p) => p.key);
   const got = (main.keys || []).filter(Boolean);
   if (got.join("|") !== declared.join("|"))
     fail("the master values page should hold exactly the declared master params " +
          JSON.stringify(declared) + ", got " + JSON.stringify(got));
-  if (got[0] !== "master_fx:volume")
-    fail("the master values page should lead with master_fx:volume, got " + got[0]);
+  if (got[0] !== SG.MFX_MIDI_CHANNEL_KEY)
+    fail("the master values page should lead with " + SG.MFX_MIDI_CHANNEL_KEY +
+         ", got " + got[0]);
 
   /* Each LFO is exactly ONE page here too: nine params chunk to 8 + 1 unless
      one rate cell is hidden, and an orphan page holding a single control would
@@ -678,15 +685,16 @@ function makeMaster(over) {
 /* ---- M5. keys pass straight through, both directions --------------------- */
 {
   const { io, store } = makeMaster({ "master_fx:lfo2:depth": "0.25" });
-  if (io.getParam("master_settings:master_fx:volume") !== "1.00")
-    fail("volume did not read through");
   if (io.getParam("master_settings:master_fx:lfo2:depth") !== "0.25")
     fail("an LFO param did not read through");
-  io.setParam("master_settings:master_fx:volume", "0.5");
-  if (store["master_fx:volume"] !== "0.5")
-    fail("volume did not write to master_fx:volume, store is " + JSON.stringify(store));
   io.setParam("master_settings:master_fx:lfo1:shape", "3");
   if (store["master_fx:lfo1:shape"] !== "3") fail("an LFO param did not write through");
+  /* Every key but the listen channel passes through untranslated, INCLUDING
+     one this contract does not declare — the io deliberately has no mapping
+     table, and the leakage check in M1 is what compensates for that. */
+  io.setParam("master_settings:master_fx:lfo2:depth", "0.5");
+  if (store["master_fx:lfo2:depth"] !== "0.5")
+    fail("an LFO param did not write through, store is " + JSON.stringify(store));
 }
 
 /* ---- M6. only LFO params can be modulated -------------------------------
@@ -694,14 +702,14 @@ function makeMaster(over) {
  * The host generic oracle both gets this wrong for non-LFO keys — an unserved
  * "<key>:base" reads back as "" rather than null, compares unequal to the live
  * value and wears the modulation tilde — and costs up to three IPC round trips
- * per tick to do it. Volume is not a modulation target.
+ * per tick to do it. The listen channel is not a modulation target.
  */
 {
   const { io, store } = makeMaster();
-  store["master_fx:volume:modulated"] = "1";
+  store["master_fx:midi_channel:modulated"] = "1";
   store["master_fx:lfo1:depth:modulated"] = "1";
-  if (io.isModulated("master_settings:master_fx:volume"))
-    fail("master_fx:volume must never report as modulated");
+  if (io.isModulated("master_settings:" + SG.MFX_MIDI_CHANNEL_KEY))
+    fail(SG.MFX_MIDI_CHANNEL_KEY + " must never report as modulated");
   if (!io.isModulated("master_settings:master_fx:lfo1:depth"))
     fail("an LFO param driven by the other LFO should report as modulated");
 }
@@ -715,7 +723,7 @@ function makeMaster(over) {
   if (cell !== "F1 ROOM") fail("the cell should get the SHORT form, got " + JSON.stringify(cell));
   if (head !== "FX 1: Room Size")
     fail("the header should get the LONG form, got " + JSON.stringify(head));
-  if (io.formatValue("master_settings:master_fx:volume", "1.0", "cell") !== null)
+  if (io.formatValue("master_settings:" + SG.MFX_MIDI_CHANNEL_KEY, "0", "cell") !== null)
     fail("formatValue must ignore every key but an LFO target");
 }
 
