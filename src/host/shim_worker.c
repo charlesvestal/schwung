@@ -10,8 +10,10 @@
 #include <pthread.h>
 #include <sched.h>
 #include <fcntl.h>
+#include <errno.h>
 
 #include "shim_worker.h"
+#include "rt_thread_audit.h"
 #include "shadow_set_pages.h"
 #include "unified_log.h"
 
@@ -95,7 +97,163 @@ static const flag_spec_t FLAGS[] = {
     { "/data/UserData/schwung/slot_fx_dump_trigger", SHIM_FLAG_SLOT_FX_DUMP, 1 },
     { "/data/UserData/schwung/align_dump_trigger",   SHIM_FLAG_ALIGN_DUMP,   1 },
     { "/data/UserData/schwung/main_fx_dump_trigger", SHIM_FLAG_MAIN_FX_DUMP, 1 },
+    { "/data/UserData/schwung/rt_thread_audit_on",   SHIM_FLAG_RT_AUDIT,     0 },
 };
+
+/* ---- realtime-thread audit ------------------------------------------- */
+
+/* Module entry points run on the SPI callback at SCHED_FIFO 90, and POSIX
+ * inherits scheduling by default — so a pthread_create from create_instance or
+ * set_param yields a worker born at FIFO 90 that starves Move's Link Main
+ * (FIFO 35). It also inherits the parent's `comm`, so it reports as
+ * "Audio Main/SPI" and is invisible in top or any thread list. See
+ * rt_thread_audit.h; the detector is a set diff over tids for that reason.
+ *
+ * Reading /proc is file I/O, which is why this lives on the worker and not in
+ * the callback. Off unless armed:
+ *     touch /data/UserData/schwung/rt_thread_audit_on
+ */
+
+static char rt_audit_module[64];
+static volatile int rt_audit_module_seq;
+
+void shim_rt_audit_note_module(const char *id)
+{
+    /* RT-safe: bounded copy, no allocation, no lock. */
+    if (!id || !id[0]) {
+        rt_audit_module[0] = '\0';
+    } else {
+        size_t n = strnlen(id, sizeof(rt_audit_module) - 1);
+        memcpy(rt_audit_module, id, n);
+        rt_audit_module[n] = '\0';
+    }
+    __sync_fetch_and_add(&rt_audit_module_seq, 1);
+}
+
+static void rt_audit_tick(void)
+{
+    static rt_thread_info_t prev[RT_AUDIT_MAX_THREADS];
+    static int prev_n = 0;
+    static int have_baseline = 0;
+    /* The pre-module snapshot, kept separately from `prev`: Move's own audio
+     * threads are permanently busy at FIFO 70 and would otherwise be reported
+     * as burners on every single tick, burying the finding. */
+    static rt_thread_info_t base[RT_AUDIT_MAX_THREADS];
+    static int base_n = 0;
+    static long clk_hz = 0;
+
+    /* CPU accounting is in whole clock ticks (10 ms at the usual USER_HZ 100),
+     * so the floor cannot usefully go below one tick. 20 ms in a ~1 s window is
+     * 2% of a core — well under what starves `Link Main`, and high enough that
+     * an idle thread never trips it. */
+    const int RT_BURN_FLOOR_MS = 20;
+    const int RT_BURN_WINDOW_MS = 1000;   /* nominal; the tick is ~1 Hz */
+
+    if (!(shim_debug_flags & SHIM_FLAG_RT_AUDIT)) {
+        /* Disarmed: drop the baseline so re-arming starts clean rather than
+         * diffing against a snapshot from minutes ago. */
+        have_baseline = 0;
+        prev_n = 0;
+        return;
+    }
+
+    /* Do not latch a baseline the log will not accept.
+     *
+     * The baseline is emitted ONCE and is the whole report for anything
+     * already loaded, so losing it loses the finding. unified_log only starts
+     * accepting after it notices debug_log_on, which it rechecks every 100
+     * calls — so arming both flags together, or leaving rt_thread_audit_on in
+     * place across a reboot, latched the baseline into a log that was still
+     * dropping writes. The audit then ran for twelve minutes reporting
+     * nothing, which is indistinguishable from a clean result. Wait for the
+     * log instead; the audit is a diagnostic and has nothing to do until
+     * someone can read it. */
+    if (!unified_log_enabled()) return;
+
+    rt_thread_info_t cur[RT_AUDIT_MAX_THREADS];
+    int cur_n = rt_thread_audit_scan(cur, RT_AUDIT_MAX_THREADS);
+
+    char line[256];
+
+    /* A scan that cannot read /proc must SAY so. Returning quietly here reads
+     * downstream as "armed, nothing realtime found" — a false all-clear, which
+     * is the one answer this tool must never give. */
+    if (cur_n < 0) {
+        static int moaned = 0;
+        if (!moaned) {
+            moaned = 1;
+            snprintf(line, sizeof(line),
+                     "rt-audit: armed but /proc/self/task is unreadable (errno=%d) — NO audit is running",
+                     errno);
+            unified_log("shim", LOG_LEVEL_ERROR, line);
+        }
+        return;
+    }
+
+    if (!have_baseline) {
+        /* Report the whole realtime set once. Arming mid-session cannot
+         * retroactively see a thread inherited at boot, so the baseline IS the
+         * finding for anything already loaded — printing only the diff would
+         * silently exonerate every module in the current set. */
+        snprintf(line, sizeof(line),
+                 "rt-audit: armed — %d thread(s), %d realtime (baseline)",
+                 cur_n, rt_thread_count_realtime(cur, cur_n));
+        unified_log("shim", LOG_LEVEL_INFO, line);
+
+        for (int i = 0; i < cur_n; i++) {
+            if (!rt_thread_is_realtime(&cur[i])) continue;
+            char desc[224];
+            rt_thread_format(&cur[i], NULL, desc, sizeof(desc));
+            snprintf(line, sizeof(line), "rt-audit: baseline %s", desc);
+            unified_log("shim", LOG_LEVEL_INFO, line);
+        }
+
+        if (cur_n >= RT_AUDIT_MAX_THREADS)
+            unified_log("shim", LOG_LEVEL_WARN,
+                        "rt-audit: thread table full — some threads not scanned");
+
+        memcpy(prev, cur, sizeof(rt_thread_info_t) * (size_t)cur_n);
+        prev_n = cur_n;
+        memcpy(base, cur, sizeof(rt_thread_info_t) * (size_t)cur_n);
+        base_n = cur_n;
+        clk_hz = sysconf(_SC_CLK_TCK);
+        if (clk_hz <= 0) clk_hz = 100;
+        have_baseline = 1;
+        return;
+    }
+
+    rt_thread_info_t found[RT_AUDIT_MAX_THREADS];
+    int n = rt_thread_new_realtime(prev, prev_n, cur, cur_n,
+                                   found, RT_AUDIT_MAX_THREADS);
+    for (int i = 0; i < n; i++) {
+        char desc[224];
+        rt_thread_format(&found[i],
+                         rt_audit_module[0] ? rt_audit_module : NULL,
+                         desc, sizeof(desc));
+        snprintf(line, sizeof(line), "rt-audit: NEW realtime thread %s", desc);
+        unified_log("shim", LOG_LEVEL_WARN, line);
+    }
+
+    /* WHICH threads exist is the suspect list; how much CPU they BURN at
+     * realtime priority is the harm. `Link Main` runs at FIFO 35 and only gets
+     * what a FIFO 70 thread leaves it, so a parked worker costs nothing and a
+     * sample loader costs everything. Report the second. */
+    rt_thread_burn_t burn[RT_AUDIT_MAX_THREADS];
+    int bn = rt_thread_burners(base, base_n, prev, prev_n, cur, cur_n,
+                               (int)clk_hz, RT_BURN_FLOOR_MS,
+                               burn, RT_AUDIT_MAX_THREADS);
+    for (int i = 0; i < bn; i++) {
+        char desc[224];
+        rt_thread_format_burn(&burn[i],
+                              rt_audit_module[0] ? rt_audit_module : NULL,
+                              RT_BURN_WINDOW_MS, desc, sizeof(desc));
+        snprintf(line, sizeof(line), "rt-audit: %s", desc);
+        unified_log("shim", LOG_LEVEL_WARN, line);
+    }
+
+    memcpy(prev, cur, sizeof(rt_thread_info_t) * (size_t)cur_n);
+    prev_n = cur_n;
+}
 
 /* Knob-touch ground truth — see the touch trace block in schwung_shim.c.
  * A plain int rather than a shim_debug_flags bit because the SPI callback
@@ -317,6 +475,7 @@ static void *worker_main(void *arg) {
         }
 
         if (tick % 5 == 0) poll_flags();          /* ~1 Hz */
+        if (tick % 5 == 0) rt_audit_tick();       /* ~1 Hz, no-op unless armed */
         if (tick % 7 == 0) shadow_poll_current_set(); /* ~1.4 s FS scan */
         tick++;
     }

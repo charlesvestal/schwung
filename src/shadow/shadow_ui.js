@@ -215,7 +215,9 @@ import {
     paramPagesComponent, paramPagesSlot, clearParamPagesTouch,
     enumPickerFooterHints, CONTRACT_SETTLE_MS, LAYOUT_LIST
 } from './shadow_ui_param_pages.mjs';
-import { createSlotGridIo, createMasterGridIo } from './shadow_ui_slot_grid.mjs';
+import { createSlotGridIo, createMasterGridIo,
+         MFX_MIDI_CHANNEL_OPTIONS, mfxMidiChannelToIndex,
+         mfxMidiChannelFromIndex } from './shadow_ui_slot_grid.mjs';
 import { createGlobalGridIo, GLOBAL_SECTIONS } from './shadow_ui_global_grid.mjs';
 import {
     drawMasterFx as _drawMasterFx,
@@ -2120,6 +2122,13 @@ let selectedMasterFxModuleIndex = 0;  // Index in MASTER_FX_OPTIONS during selec
 /* Master FX settings (shown when Settings component is selected) */
 const MASTER_FX_SETTINGS_ITEMS_BASE = [
     { key: "master_volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
+    /* Which channel Master FX hears. Lives here rather than in Global Settings
+     * because this is where a Master FX setting is looked for — reported from
+     * the device on the first cut, which put it under Global > Audio next to
+     * the other master_fx:* shim settings and so was never found. "All" is the
+     * default and the pre-existing behaviour; narrowing it is opt-in. */
+    { key: "master_fx_midi_channel", label: "MIDI Ch", type: "enum",
+      options: MFX_MIDI_CHANNEL_OPTIONS },
     { key: "mfx_lfo1", label: "LFO 1", type: "action" },
     { key: "mfx_lfo2", label: "LFO 2", type: "action" },
     { key: "save", label: "[Save MFX Preset]", type: "action" },
@@ -2127,11 +2136,23 @@ const MASTER_FX_SETTINGS_ITEMS_BASE = [
     { key: "delete", label: "[Delete]", type: "action" }
 ];
 
-/* Param View (preview): 0 = the hierarchy list editor, 1 = the knob grid.
- * Defaults to the list — the grid ships as an opt-in preview before becoming
- * the default in a later release. Read through a global so the view module can
- * ask without importing shadow_ui.js. See shadow_ui_param_pages.mjs. */
-let paramViewGlobal = 0;
+/* Param View: 0 = the hierarchy list editor, 1 = the knob grid.
+ *
+ * The grid is now the default. It shipped as an opt-in preview because it
+ * could not draw everything the list could, and that gap is what kept it
+ * opt-in rather than any doubt about the layout: mode selectors, child levels
+ * and enum lists all had to land first, and the fleet contract fixture had to
+ * be recaptured (76 modules -> 95) before "the grid covers the fleet" was a
+ * measurement rather than a hope.
+ *
+ * The list is not deprecated. It stays reachable from Global Settings, and it
+ * remains the better view for a module whose contract the grid cannot serve
+ * well -- 11 modules publish no ui_hierarchy at all, and a knob grid over a
+ * flat paginated param list is worse than a list of them.
+ *
+ * Read through a global so the view module can ask without importing
+ * shadow_ui.js. See shadow_ui_param_pages.mjs. */
+let paramViewGlobal = 1;
 const PARAM_VIEW_CONFIG_PATH = "/data/UserData/schwung/param_view.json";
 globalThis.param_view_get_mode = function() { return paramViewGlobal; };
 
@@ -2973,6 +2994,10 @@ let cachedLatencyCompEnabled = false;
 /* Default true: restoring Move's USB-C audio-out source is on unless the
  * user turns it off. Mirrors usbc_out_persist_enabled in the shim. */
 let cachedUsbcOutPersist = true;
+/* Default -1 (All): Master FX heard every channel before this setting
+ * existed, so anything else here is a silent regression for every sidechain
+ * already in the field. Mirrors master_fx_midi_channel in the shim. */
+let cachedMasterFxMidiChannel = -1;
 let systemLinkEnabled = null; /* null = not checked yet */
 
 /* Master preset CRUD state (reuse pattern from slot presets) */
@@ -8670,6 +8695,7 @@ function saveMasterFxChainConfig() {
         config.link_audio_publish = cachedLinkAudioPublish;
         config.latency_comp_enabled = cachedLatencyCompEnabled;
         config.usbc_out_persist = cachedUsbcOutPersist;
+        config.master_fx_midi_channel = cachedMasterFxMidiChannel;
 
         host_write_file(configPath, JSON.stringify(config, null, 2));
     } catch (e) {
@@ -8900,6 +8926,17 @@ function loadMasterFxChainFromConfig() {
              * here. This push only keeps the two in sync for the UI. */
             shadow_set_param(0, "master_fx:usbc_out_persist", config.usbc_out_persist ? "1" : "0");
             cachedUsbcOutPersist = !!config.usbc_out_persist;
+        }
+        if (config.master_fx_midi_channel !== undefined && typeof shadow_set_param === "function") {
+            /* Like usbc_out_persist, the shim reads this key straight from
+             * shadow_config.json at init, so the filter is already in force
+             * before the first frame. This push only keeps the two in sync. */
+            /* Round-tripped through the index so a garbage stored value lands
+             * on All rather than being written straight back to the shim. */
+            const val = mfxMidiChannelFromIndex(
+                mfxMidiChannelToIndex(config.master_fx_midi_channel));
+            shadow_set_param(0, "master_fx:midi_channel", String(val));
+            cachedMasterFxMidiChannel = val;
         }
 
         /* Restore loaded preset name */
@@ -14098,6 +14135,19 @@ function getMasterFxSettingValue(setting) {
         const num = parseFloat(val);
         return isNaN(num) ? val : `${Math.round(num * 100)}%`;
     }
+    /* master_fx_midi_channel is a MASTER FX setting, not a Global Settings one,
+     * so it stays here after the Global Settings keys moved into the contract
+     * (shadow_ui_global_grid.mjs). It arrived on main in #266 while this branch
+     * was deleting its neighbours -- carried across the merge deliberately.
+     *
+     * Branch on the RAW value: a failed read is null, an unserved key is "",
+     * and both parse to the same thing. Reporting "All" for a read that never
+     * completed would show the user a setting they do not have. */
+    if (setting.key === "master_fx_midi_channel") {
+        const raw = shadow_get_param(0, "master_fx:midi_channel");
+        if (raw === null || raw === "") return "--";
+        return MFX_MIDI_CHANNEL_OPTIONS[mfxMidiChannelToIndex(raw)];
+    }
     return "-";
 }
 
@@ -14109,6 +14159,29 @@ function adjustMasterFxSetting(setting, delta) {
         val += delta * setting.step;
         val = Math.max(setting.min, Math.min(setting.max, val));
         shadow_set_param(0, "master_fx:volume", val.toFixed(2));
+        return;
+    }
+
+    /* master_fx_midi_channel is a MASTER FX setting, not a Global Settings one,
+     * so it stays after the Global Settings keys moved into the contract
+     * (shadow_ui_global_grid.mjs). It arrived on main in #266 while this branch
+     * was deleting its neighbours -- carried across the merge deliberately. */
+    if (setting.key === "master_fx_midi_channel") {
+        const raw = shadow_get_param(0, "master_fx:midi_channel");
+        /* A failed read must not produce a write. Stepping from a value we
+         * never actually saw would move the setting somewhere the user did
+         * not ask for, and the shim would then persist it. */
+        if (raw === null || raw === "") return;
+        const n = MFX_MIDI_CHANNEL_OPTIONS.length;
+        /* Honour delta rather than always stepping +1: the click path passes 1,
+         * but a jog turn passes -1 and a hardcoded increment would make the
+         * encoder only ever go forwards. Modulo twice so a negative wraps. */
+        const idx = ((mfxMidiChannelToIndex(raw) + delta) % n + n) % n;
+        const newVal = mfxMidiChannelFromIndex(idx);
+        shadow_set_param(0, "master_fx:midi_channel", String(newVal));
+        cachedMasterFxMidiChannel = newVal;
+        saveMasterFxChainConfig();
+        return;
     }
 }
 
@@ -18294,20 +18367,51 @@ globalThis.tick = function() {
         contractDumpCheckedMs = _cdNow;
         if (host_file_exists("/data/UserData/schwung/dump_contracts_trigger")) {
         contractDumpDone = true;
-        try { host_write_file("/data/UserData/schwung/dump_contracts_trigger", ""); } catch (e) {}
+        /* DELETE the trigger, don't empty it. contractDumpDone only latches for
+         * the life of this process, so an emptied-but-present trigger re-fired
+         * the whole loud capture on the next service restart -- which is
+         * exactly what a deploy does. Observed: install.sh restarted the shadow
+         * UI and the capture ran again unbidden, before the new tool had even
+         * been staged.
+         *
+         * There is deliberately no "empty means disarmed" fallback: `touch`
+         * creates an empty file, so that rule would disarm the documented way
+         * of arming it. */
+        try { os.remove("/data/UserData/schwung/dump_contracts_trigger"); } catch (e) {}
         try {
             const src = host_read_file("/data/UserData/schwung/tools/dump_contracts_device.js");
             if (!src) {
                 debugLog("dump_contracts: tools/dump_contracts_device.js not on the device");
             } else {
-                /* eval, not import: the tool is written in ES5 var/function
-                 * style with no exports precisely so it can be loaded this
-                 * way. */
-                (0, eval)(src);
+                /* Evaluated rather than imported: the tool is written in ES5
+                 * var/function style with no exports precisely so it can be
+                 * loaded this way.
+                 *
+                 * new Function, NOT (0, eval). Indirect eval runs in GLOBAL
+                 * scope, and `os` here is an ES module IMPORT -- a
+                 * module-scoped binding that is not on globalThis. The tool
+                 * enumerates the fleet with os.readdir, so under indirect eval
+                 * every one of its three category scans threw ReferenceError
+                 * into a `catch { continue; }` and it captured zero modules in
+                 * 18ms while reporting success. Passing os/std in as
+                 * parameters makes the dependency explicit and keeps them off
+                 * globalThis. */
+                new Function("os", "std", src)(os, std);
                 if (typeof globalThis.dumpModuleContracts === "function") {
                     debugLog("dump_contracts: starting -- slot 3 will make noise");
-                    const n = globalThis.dumpModuleContracts();
-                    debugLog("dump_contracts: wrote " + n + " modules");
+                    globalThis.dumpModuleContracts();
+                    /* The tool returns its OUTPUT PATH, not a count -- reading
+                     * the count back out of the file is the only honest report,
+                     * and a zero here means the run found no modules at all
+                     * rather than that the fleet is empty. */
+                    let n = -1;
+                    try {
+                        n = JSON.parse(host_read_file(
+                            "/data/UserData/schwung/module-contracts.json")).module_count;
+                    } catch (e) {}
+                    if (n > 0) debugLog("dump_contracts: captured " + n + " modules");
+                    else debugLog("dump_contracts: FAILED -- captured " + n +
+                                  " modules; the fleet scan found nothing");
                 } else {
                     debugLog("dump_contracts: the tool defined no dumpModuleContracts()");
                 }

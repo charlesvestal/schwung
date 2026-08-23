@@ -328,13 +328,23 @@ function optionText(metaIndex, key, values) {
  * envelopes (2-3 roles) use Movy's span-relative formula directly.
  */
 export function drawEnvelope(ctx, rect, roles, values, metaIndex) {
-    const present = ["attack", "decay", "sustain", "release"].filter((r) => roles[r]);
+    /* Time order, which is draw order. HOLD is here because an AHR envelope is
+     * a real shape, not a degenerate ADSR: gate and ducker both declare
+     * attack/hold/release and nothing else. Leaving hold out of this list did
+     * not drop the group -- it drew the group WITHOUT its middle segment, so
+     * the knob was in the span, turning it moved nothing on screen, and the
+     * curve quietly lied about the shape. */
+    const present = ["attack", "hold", "decay", "sustain", "release"].filter((r) => roles[r]);
     if (present.length < 2) return;
 
     const x0 = rect.x, x1 = rect.x + rect.w;
     const { topY, botY: bodyBottom } = band(rect);
 
-    if (present.length === 4) {
+    /* drawFullAdsr is Movy's fixed ADSR reference geometry -- four named
+     * segments, no room for a fifth. Anything else, including a 4-role set
+     * that contains hold, goes to the span-relative builder. */
+    const isPlainAdsr = present.length === 4 && !roles.hold;
+    if (isPlainAdsr) {
         drawFullAdsr(ctx, x0, x1, topY, bodyBottom, roles, values, metaIndex);
     } else {
         drawPartialEnv(ctx, x0, x1, topY, bodyBottom, present, roles, values, metaIndex);
@@ -382,10 +392,41 @@ function drawPartialEnv(ctx, leftX, xEnd, topY, baseY, present, roles, values, m
     for (const r of present) val[r] = frac(metaIndex, roles[r], values);
     const susY = has("sustain") ? baseY - Math.round(val.sustain * usableH) : baseY;
 
-    const pts = [[leftX, baseY]];
-    const peakX = Math.min(rightX - 2, leftX + 4 + Math.round(val.attack * span * 0.4));
-    pts.push([peakX, topY]);
-    let cur = peakX;
+    /*
+     * ATTACK IS NOT GUARANTEED.
+     *
+     * The rise was drawn unconditionally from `val.attack`, and an envelope
+     * with no attack role makes that `undefined` -- so peakX is NaN, the NaN
+     * reaches line()'s `for(;;)` and its equality break is never satisfied.
+     * Not a wrong picture: a HANG, the same one CLAUDE.md records for a
+     * partial GRID_GEOM freezing the shadow_ui tick.
+     *
+     * It was unreachable until knob alignment made these pages drawable:
+     * surge declares twelve LFO pages carrying hold/sustain/release and no
+     * attack at all, and every one of them was blocked by the row constraint
+     * before. A latent renderer bug, exposed rather than caused by the
+     * alignment -- and the reason `present` is filtered by ROLE and must never
+     * be assumed to contain any particular one.
+     *
+     * With no attack the shape simply starts at full level, which is what an
+     * envelope with no rise means.
+     */
+    const pts = [];
+    let cur;
+    if (has("attack")) {
+        pts.push([leftX, baseY]);
+        cur = Math.min(rightX - 2, leftX + 4 + Math.round(val.attack * span * 0.4));
+        pts.push([cur, topY]);
+    } else {
+        cur = leftX;
+        pts.push([cur, topY]);
+    }
+    /* Hold is a plateau AT THE PEAK, between the attack rise and whatever
+     * falls next -- for an AHR (gate, ducker) that is the release. */
+    if (has("hold")) {
+        const holdEnd = Math.min(rightX - 2, cur + Math.round(val.hold * span * 0.3));
+        if (holdEnd > cur) { pts.push([holdEnd, topY]); cur = holdEnd; }
+    }
     if (has("decay")) {
         cur = Math.min(rightX - 2, cur + 4 + Math.round(val.decay * span * 0.35));
         pts.push([cur, susY]);

@@ -267,15 +267,38 @@ repos typically mirror that pattern.
 A module that wants a fully custom browser-based UI ships a
 `web_ui.html` next to its `module.json`. schwung-manager
 auto-discovers it and loads it in a sandboxed iframe on the Remote
-UI page (`http://move.local:7700/remote-ui`) whenever the module
-is loaded as the synth component of a shadow slot. The iframe
-replaces the auto-generated knob/slider UI for that component;
-the slot's FX and MIDI FX sections still render below it.
+UI page (`http://move.local:7700/remote-ui`) whenever that module
+is loaded in a shadow slot. The iframe replaces the auto-generated
+knob/slider UI for that component.
 
-**Synth slot only.** The iframe path is detected on the `synth`
-component of a shadow slot (`remote_ui.go` only checks there).
-Audio FX, MIDI FX, and master FX modules cannot supply a custom
-web UI — they always use the auto-generated controls.
+**Any chain component can supply one** — the synth, an audio FX
+(`fx1`/`fx2`), or a MIDI FX (`midi_fx1`). Where it appears differs:
+
+- A **synth** panel takes over the slot view, with the other
+  components' sections rendered below it.
+- An **audio/MIDI FX** panel renders inside that component's own
+  collapsible section, with its own pop-out button, so a slot can
+  show a custom synth panel and a custom FX panel at once.
+
+The slot's **Interface: Default** toggle still shows the
+auto-generated controls for every component, so a module's own
+parameters stay reachable whatever its panel does.
+
+Master FX slots have no custom-UI path yet.
+
+**Know which component you are driving.** The manager appends
+`?component=<comp>` to the iframe URL and exposes it as
+`schwungRemote.component`. Use it to build your parameter keys —
+an FX panel must write `fx1:mix`, not `synth:mix`:
+
+```js
+var comp = schwungRemote.component || "synth";   // "synth", "fx1", …
+schwungRemote.setParam(comp + ":mix", "0.5");
+```
+
+`getHierarchy()` and `getChainParams()` already return the metadata
+for *your* component, so they need no prefix. A page that ignores
+the flag defaults to `synth` and behaves exactly as before.
 
 ### File layout
 
@@ -329,11 +352,14 @@ Include the bundled helper to get a Promise-based wrapper:
 | `onParamChange(cb)` | device → iframe | Subscribes the iframe to all `param_update` messages for the active slot. Includes hardware knob changes and updates from other browser clients. |
 | `getParam(key)` | local cache | Returns the **last value the iframe has seen** for `key`, not a fresh device read. If you need a value before any update has arrived, call `onParamChange` first and seed from the initial burst. |
 | `setParam(key, value)` | iframe → device | Goes through the WebSocket `set_param` path. Value is coerced to a string. |
-| `getHierarchy()` | local cache | Returns the parsed `ui_hierarchy` object for the synth component (or `null` if the module didn't expose one). |
-| `getChainParams()` | local cache | Returns the parsed `chain_params` array (or `null`). |
+| `getHierarchy()` | local cache | Returns the parsed `ui_hierarchy` object for **your** component (or `null` if the module didn't expose one). |
+| `getChainParams()` | local cache | Returns the parsed `chain_params` array for **your** component (or `null`). |
+| `component` | property | The chain component this page drives — `"synth"`, `"fx1"`, `"fx2"`, `"midi_fx1"`. Use it to build parameter keys. |
 
 **Param keys are component-prefixed.** Use `"synth:cutoff"`, not
-`"cutoff"`. Slot-level keys like `slot:volume` and `knob_1_value`
+`"cutoff"` — and build the prefix from `schwungRemote.component`
+rather than hardcoding `synth`, or your page will only work in a
+synth slot. Slot-level keys like `slot:volume` and `knob_1_value`
 also flow through `onParamChange` if you want to mirror the
 slot/knob state.
 
@@ -361,13 +387,17 @@ That means:
 
   <script src="/static/schwung-remote-api.js"></script>
   <script>
+    // Works in a synth slot or an FX slot: the host says which.
+    const comp = schwungRemote.component || "synth";
+    const key = comp + ":cutoff";
+
     const cutoff = document.getElementById("cutoff");
     cutoff.addEventListener("input", () => {
-      schwungRemote.setParam("synth:cutoff", cutoff.value);
+      schwungRemote.setParam(key, cutoff.value);
     });
     schwungRemote.onParamChange((params) => {
-      if (params["synth:cutoff"] !== undefined) {
-        cutoff.value = params["synth:cutoff"];
+      if (params[key] !== undefined) {
+        cutoff.value = params[key];
       }
     });
   </script>
