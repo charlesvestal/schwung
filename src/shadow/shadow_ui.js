@@ -10987,6 +10987,35 @@ function enterHierarchyEditorFromParamPages() {
     const page = currentParamPage();
     const slotIndex = paramPagesSlot();
     const componentKey = paramPagesComponent();
+
+    /*
+     * A SYNTHESISED CONTRACT HAS NOWHERE TO EJECT TO.
+     *
+     * Global Settings, a slot's Settings and Master FX's are contracts, not
+     * components: there is no `ui_hierarchy` behind them, so entering the list
+     * editor for one shows nothing and means nothing. Worse, this function sets
+     * suppressParamPagesOnce -- a ONE-SHOT meant to stop the list editor
+     * bouncing straight back into the grid -- and nothing on these paths ever
+     * consumes it, because they do not re-enter through the component route.
+     *
+     * So the flag survived, and the NEXT component to open paid for it: it read
+     * the stale one-shot and fell through to the hierarchy editor. Reported from
+     * the device as granny opening as a list, and correctly diagnosed there as
+     * "keyed off of visiting the global settings" -- the module was never
+     * reloaded; it was simply the next thing opened after Global Settings had
+     * left the flag set.
+     *
+     * Refuse instead. The frame is dropped rather than redirected, which is
+     * right: whatever nulled the controller is mid-transition and owns where the
+     * view goes next.
+     */
+    if (componentKey === GLOBAL_SETTINGS_COMPONENT ||
+        componentKey === MASTER_SETTINGS_COMPONENT ||
+        componentKey === "slot") {
+        exitParamPages();
+        return false;
+    }
+
     exitParamPages();
     suppressParamPagesOnce = true;
     enterHierarchyEditor(slotIndex, componentKey);
@@ -11019,6 +11048,9 @@ function enterHierarchyEditorFromParamPages() {
         hierEditorChildLabel = levelDef.child_label || "Child";
         loadHierarchyLevel();
     }
+    /* Entered. The caller draws the editor only on true -- a synthesised
+     * contract returns false above and its frame is dropped instead. */
+    return true;
 }
 
 /* Enter the hierarchy editor with an explicit hierarchy object. Lets callers
@@ -17716,7 +17748,7 @@ function dispatchCoRunDraw() {
          * browser, items list, mode select, child selector) belongs to the
          * list editor, which drawParamPages declines by returning false. */
         case VIEWS.PARAM_PAGES:
-            if (!drawParamPages()) { enterHierarchyEditorFromParamPages(); drawHierarchyEditor(); }
+            if (!drawParamPages()) { if (enterHierarchyEditorFromParamPages()) drawHierarchyEditor(); }
             break;
         case VIEWS.CANVAS:               drawCanvasPreview(); break;
         case VIEWS.KNOB_EDITOR:          drawKnobEditor(); break;
@@ -18785,7 +18817,7 @@ globalThis.tick = function() {
          * items list, mode select, child selector) belongs to the list editor,
          * which drawParamPages declines by returning false. */
         case VIEWS.PARAM_PAGES:
-            if (!drawParamPages()) { enterHierarchyEditorFromParamPages(); drawHierarchyEditor(); }
+            if (!drawParamPages()) { if (enterHierarchyEditorFromParamPages()) drawHierarchyEditor(); }
             break;
         case VIEWS.CANVAS:
             drawCanvasPreview();
