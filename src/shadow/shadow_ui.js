@@ -51,6 +51,11 @@ import { decodeDelta } from '/data/UserData/schwung/shared/input_filter.mjs';
 import { RULE_Y as MOVY_RULE_Y,
          drawHeader as drawMovyHeader, drawFooter as drawMovyFooter }
     from '/data/UserData/schwung/shared/param_pages/render_page_movy.mjs';
+/* The enum option screen. Shared with the PEEK the knob grid raises on a turn:
+ * opposite commit semantics, so they cannot be one view, but one screen — see
+ * the module header. */
+import { drawEnumList }
+    from '/data/UserData/schwung/shared/param_pages/enum_list.mjs';
 /* The bands around a chain editor's row of boxes — header, label, info,
  * footer — and the module picker it opens on a position. Both shared with
  * Master FX so the two editors wear the same furniture. */
@@ -17522,30 +17527,6 @@ function enumPickerJog(delta) {
 }
 
 /*
- * THE LIST RECT, and why it is nine and not ten.
- *
- * The movy bands cost vertical space the old chrome did not: a footer rule at
- * 55 with an 8-row hint band under it takes the bottom of the screen, where
- * drawMenuList's default indicator row (62) used to sit. Left at its defaults
- * the list would have run its last row and its down-arrow straight through the
- * footer, and the device clips silently — nothing would have said so.
- *
- * The obvious top is MENU_LIST_Y (10), the rect the knob grid's own menu pages
- * use. It costs a row: 10..54 is 44px, and at a 9px line that is FOUR options
- * where the old chrome showed FIVE. One row up is 45px and buys the fifth back,
- * and it is free here because this header is NOT inverted — drawHeader only
- * fills the band when told to, so under a plain header the glyphs stop at row 5
- * and the selected row's highlight starting at row 8 still has clear air above
- * it. (A menu page cannot do the same: its bank bar owns row 7.)
- *
- * Losing the last option of a list to a band drawn over it is a failure this
- * codebase has hit before, which is why test_enum_picker_chrome.sh asserts the
- * row COUNT and clipped() === 0 rather than just eyeballing the render.
- */
-const ENUM_PICKER_LIST_TOP_Y = 9;
-const ENUM_PICKER_LIST_BOTTOM_Y = MOVY_RULE_Y - 1;
-
-/*
  * The picker wears the KNOB GRID's chrome — movy header band, hint footer —
  * unconditionally, from BOTH entry points.
  *
@@ -17561,39 +17542,27 @@ const ENUM_PICKER_LIST_BOTTOM_Y = MOVY_RULE_Y - 1;
  * ("the module select here is different than the module select in slots").
  *
  * So: one look. The list editor is the frame that will move to match, not this.
+ *
+ * The draw itself — including the list rect, and why its top is nine and not
+ * ten — now lives in shared/param_pages/enum_list.mjs, because the PEEK raised
+ * by turning a divable enum has to be the same screen and cannot be the same
+ * view: a turn has already written, so its Back would have nothing to cancel.
  */
 function drawEnumPicker() {
     clear_screen();
     const ctx = { fillRect: fill_rect, print, textWidth: text_width };
-    /* SELECT on the right, the same word drawChainPicker puts there: both are
-     * "a list, pick one", and the grammar of the band is what tells you so
-     * before you have read the title. */
-    drawMovyHeader(ctx, enumPickerTitle, "SELECT", false);
-    if (enumPickerOptions.length === 0) {
-        print(LIST_LABEL_X, ENUM_PICKER_LIST_TOP_Y + 8, "No options", 1);
-        /* Still a footer. openEnumPicker refuses an empty list so this should
-         * be unreachable, but a screen with nothing on it is the one place a
-         * way out most needs naming. */
-        drawMovyFooter(ctx, [["BACK", "EXIT"]]);
-        return;
-    }
-    /* The same list every other picker on this device uses. A second list
-     * widget is how Master FX and the chain editor drifted apart. The tick
-     * marks which option is CURRENTLY set, so scrolling away from it stays
-     * legible as "you have moved off the live value". */
-    drawMenuList({
-        items: enumPickerOptions,
-        selectedIndex: enumPickerIndex,
-        listArea: { topY: ENUM_PICKER_LIST_TOP_Y, bottomY: ENUM_PICKER_LIST_BOTTOM_Y },
-        getLabel: function(item) { return String(item); },
-        /* Which option is CURRENTLY set, so scrolling away from it still reads
-         * as "you have moved off the live value" rather than as nothing. */
-        getValue: function(item, i) { return i === enumPickerOpenIndex ? "*" : ""; },
-        /* This screen announces its own, richer string ("Room, 2 of 17"), so
-         * the list must not also announce "Room: *". */
-        announce: false,
+    drawEnumList(ctx, {
+        title: enumPickerTitle,
+        /* SELECT on the right, the same word drawChainPicker puts there: both
+         * are "a list, pick one", and the grammar of the band is what tells you
+         * so before you have read the title. */
+        headerRight: "SELECT",
+        options: enumPickerOptions,
+        index: enumPickerIndex,
+        /* The value currently SET, which is what Back would return you to. */
+        markIndex: enumPickerOpenIndex,
+        footer: enumPickerFooterHints(),
     });
-    drawMovyFooter(ctx, enumPickerFooterHints());
 }
 
 globalThis.init = function() {
