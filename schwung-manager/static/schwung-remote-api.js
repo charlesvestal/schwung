@@ -32,6 +32,10 @@
     // (and carries the slot); window.top === window.self is the fallback.
     var query = new URLSearchParams(window.location.search);
     var standalone = query.get("schwungStandalone") === "1" || window.top === window.self;
+    // Which chain component this page drives. The manager appends it to the
+    // iframe URL, so an audio FX panel asks for fx1/fx2 metadata rather than
+    // the synth's. Defaults to synth for pages predating the flag.
+    var component = query.get("component") || "synth";
 
     if (!standalone) {
         // ----------------------------------------------------------------
@@ -61,6 +65,8 @@
         }
 
         window.schwungRemote = {
+            /** Chain component this page drives ("synth", "fx1", …). */
+            component: component,
             /**
              * Get the current value of a parameter.
              * @param {string} key - Parameter key, e.g. "synth:cutoff"
@@ -180,14 +186,14 @@
                 }
                 break;
             case "hierarchy":
-                // Only the synth component drives the custom UI.
-                if (msg.component === "synth") {
+                // Take the metadata for the component this page drives.
+                if (msg.component === component) {
                     hierarchyData = msg.data;
                     resolveWaiters(hierarchyWaiters, hierarchyData);
                 }
                 break;
             case "chain_params":
-                if (msg.component === "synth") {
+                if (msg.component === component) {
                     chainParamsData = msg.data;
                     resolveWaiters(chainParamsWaiters, chainParamsData);
                 }
@@ -228,6 +234,8 @@
     connect();
 
     window.schwungRemote = {
+        /** Chain component this page drives ("synth", "fx1", …). */
+        component: component,
         getParam: function (key) {
             // Resolve from the local cache. Values stream in via param_update
             // shortly after subscribe, so early reads may be undefined — the
