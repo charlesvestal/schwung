@@ -37,7 +37,7 @@
       },
       {
         "key": "midi_indicator_enabled",
-        "label": "Channel Readout",
+        "label": "Show MIDI",
         "type": "bool"
       },
       {
