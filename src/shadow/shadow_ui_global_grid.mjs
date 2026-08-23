@@ -304,7 +304,7 @@ export const DISPLAY_PARAMS = [
       short_options: ["SHF", "JOG", "OFF", "NAT"], default: 0 },
     bool("pad_typing", "Pad Typing", 0),
     bool("text_preview", "Preview", 0),
-    bool("midi_indicator_enabled", "Readout", 0),
+    bool("midi_indicator_enabled", "Show MIDI", 0),
     /* The grid is the default (tests/host/test_param_view_default.sh pins
      * paramViewGlobal = 1), so the default index here is Knobs. */
     { key: "param_view", name: "Param View", type: "enum",
