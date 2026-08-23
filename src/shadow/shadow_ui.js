@@ -216,7 +216,7 @@ import {
     enumPickerFooterHints, CONTRACT_SETTLE_MS, LAYOUT_LIST
 } from './shadow_ui_param_pages.mjs';
 import { createSlotGridIo, createMasterGridIo,
-         MFX_MIDI_CHANNEL_OPTIONS, mfxMidiChannelToIndex,
+         MFX_MIDI_CHANNEL_OPTIONS, MFX_MIDI_CHANNEL_KEY, mfxMidiChannelToIndex,
          mfxMidiChannelFromIndex } from './shadow_ui_slot_grid.mjs';
 import { createGlobalGridIo, GLOBAL_SECTIONS } from './shadow_ui_global_grid.mjs';
 import {
@@ -9700,7 +9700,33 @@ function masterGridIoFor() {
          * declared key already carries its "master_fx:" prefix, so these are
          * pass-throughs rather than a mapping. */
         readParam: (key) => getSlotParam(0, key),
-        writeParam: (key, value) => setSlotParam(0, key, value),
+        /*
+         * A WRITE HERE CARRIES THE SAME SIDE EFFECTS THE LIST PATH CARRIED.
+         *
+         * adjustMasterFxSetting used to set the param, mirror the module-level
+         * cache var AND call saveMasterFxChainConfig(). When Master FX Settings
+         * became a contract, the grid started writing through this io -- which
+         * did the param and neither of the other two. So the listen channel took
+         * effect immediately and was then LOST on reboot, because the next
+         * saveMasterFxChainConfig() wrote the stale cachedMasterFxMidiChannel
+         * rather than what the user had just chosen. Reported from the device.
+         *
+         * This is the same shape as the Global Settings persistence keys, where
+         * the routing table declares which writes must persist and a test pins
+         * it (test_global_settings_contract.sh). Master FX's own contract never
+         * got that treatment; the check below is the whole of it, because
+         * midi_channel is the only param here with a side effect -- the LFO keys
+         * persist through the MFX LFO path and Volume was removed for writing
+         * into slot 1's module.
+         */
+        writeParam: (key, value) => {
+            setSlotParam(0, key, value);
+            if (key === MFX_MIDI_CHANNEL_KEY) {
+                const wire = parseInt(value, 10);
+                cachedMasterFxMidiChannel = Number.isFinite(wire) ? wire : -1;
+                saveMasterFxChainConfig();
+            }
+        },
         hasPreset: () => !!currentMasterPresetName,
         /* The SAME resolver the MFX LFO list editor uses, so the grid and the
          * list can never describe one routing differently, and cached per scope
