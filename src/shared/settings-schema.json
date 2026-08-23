@@ -32,12 +32,12 @@
       },
       {
         "key": "text_preview",
-        "label": "Text Preview",
+        "label": "Show Typed",
         "type": "bool"
       },
       {
         "key": "midi_indicator_enabled",
-        "label": "MIDI Channel Indicator",
+        "label": "Show MIDI",
         "type": "bool"
       },
       {
@@ -76,7 +76,7 @@
       },
       {
         "key": "resample_bridge",
-        "label": "Sample Source",
+        "label": "Move Resample",
         "type": "enum",
         "options": [
           "Native",
@@ -89,7 +89,7 @@
       },
       {
         "key": "skipback_shortcut",
-        "label": "Skipback",
+        "label": "Skipback Key",
         "type": "enum",
         "options": [
           "Shift+Capture",
@@ -123,7 +123,7 @@
       },
       {
         "key": "browser_preview",
-        "label": "Browser Preview",
+        "label": "Audition Files",
         "type": "bool"
       },
       {
@@ -157,7 +157,7 @@
       },
       {
         "key": "screen_reader_speed",
-        "label": "Voice Speed",
+        "label": "Speed",
         "type": "float",
         "min": 0.5,
         "max": 6.0,
@@ -165,7 +165,7 @@
       },
       {
         "key": "screen_reader_pitch",
-        "label": "Voice Pitch",
+        "label": "Pitch",
         "type": "float",
         "min": 80,
         "max": 180,
@@ -173,7 +173,7 @@
       },
       {
         "key": "screen_reader_volume",
-        "label": "Voice Volume",
+        "label": "Volume",
         "type": "int",
         "min": 0,
         "max": 100,
@@ -181,7 +181,7 @@
       },
       {
         "key": "screen_reader_debounce",
-        "label": "Debounce",
+        "label": "Speak Delay",
         "type": "int",
         "min": 0,
         "max": 1000,
@@ -206,7 +206,7 @@
     "items": [
       {
         "key": "shadow_ui_trigger",
-        "label": "Shadow UI Trigger",
+        "label": "Open With",
         "type": "enum",
         "options": [
           "Long Press",
@@ -228,11 +228,6 @@
       {
         "key": "filebrowser_enabled",
         "label": "File Browser",
-        "type": "bool"
-      },
-      {
-        "key": "auto_update_check",
-        "label": "Auto Update Check",
         "type": "bool"
       }
     ]

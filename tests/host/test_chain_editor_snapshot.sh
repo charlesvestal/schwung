@@ -598,10 +598,18 @@ const addSettings = (id, o) => settingsCases.push({
 
 /* The VALUES page: one cell, and that is the point. A page with fewer than
    eight params draws fewer than eight cells (arp is baselined at four), so a
-   lone Volume knob is the smallest case of an existing shape rather than a
-   half-drawn grid -- and this case is what would notice if it ever became one. */
-addSettings("settings/master/main", { page: "Main", volume: "0.85", presetName: "Glue Bus" });
-addSettings("settings/master/main-unity", { page: "Main", volume: "1.00" });
+   lone MIDI Ch knob is the smallest case of an existing shape rather than a
+   half-drawn grid -- and this case is what would notice if it ever became one.
+
+   THE PAIR USED TO VARY VOLUME AND NOW VARIES THE CHANNEL. master_fx:volume
+   was removed because nothing served it end to end (see MASTER_GRID_PARAMS);
+   with it gone the two cases differed only in presetName, which the values
+   page does not draw, so they rendered identically -- caught by the
+   same-pixels check below rather than by review, which is the check earning
+   its keep. All vs a numbered channel keeps the pair varying the one cell that
+   is left, and exercises the wire -> option-index mapping in both branches. */
+addSettings("settings/master/main-all", { page: "Main", midiChannel: "-1", presetName: "Glue Bus" });
+addSettings("settings/master/main-ch10", { page: "Main", midiChannel: "9" });
 
 /* An LFO page in each of its two states. The pair matters because ONE rate
    cell is on the page at a time -- rate_hz when Free, rate_div when Sync -- and

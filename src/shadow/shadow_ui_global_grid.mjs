@@ -64,6 +64,30 @@
  */
 const OFF_ON = { options: ["Off", "On"], short_options: ["OFF", "ON"] };
 
+/*
+ * NAMES ARE WRITTEN OUT IN FULL. Do not abbreviate them here.
+ *
+ * The first cut of this contract spelled every name for the eight-cell knob
+ * grid — "Pad Typ", "Text Prv", "Move>Sch", "Brws Prv", "Auto Chk". Then the
+ * screen was pinned to the LIST, which has room for the whole word, and the
+ * abbreviations were left describing a surface it no longer uses. Reported
+ * from the device: *"why are these truncated?"*
+ *
+ * They were wrong even for the grid. `labelForCell` / `WORD_ABBREV` in
+ * render_page_movy.mjs already squeeze a name into a cell, per WORD and with a
+ * fixed mnemonic per concept — that is a renderer's job, and doing it by hand
+ * here both duplicates it and does it worse. Same mistake as putting the
+ * usbc_out_persist annotation in the option set: a display concern written
+ * into the data.
+ *
+ * One abbreviation did real damage. `midi_indicator_enabled` became "MIDI Ch",
+ * which collides with Master FX's genuine "MIDI Ch" — its listen channel, an
+ * entirely different setting. This one is "MIDI Channel", the indicator.
+ *
+ * These strings are the labels the bespoke screen used, restored verbatim, and
+ * tests/host/test_global_settings_contract.sh pins them.
+ */
+
 /** A bool, which on the grid is an enum of two words drawn as a switch. */
 function bool(key, name, dflt) {
     return Object.assign({ key, name, type: "enum", default: dflt }, OFF_ON);
@@ -132,7 +156,6 @@ export const GLOBAL_ENUM_VALUES = {
  *   set_pages_enabled      | set_pages_get           | set_pages_set            | -       | -                      | -
  *   shadow_ui_trigger      | shadow_ui_trigger_get   | shadow_ui_trigger_set    | -       | -                      | -
  *   filebrowser_enabled    | filebrowserEnabled      | flag file + host_system_cmd | own  | filebrowserEnabled     | File Browser
- *   auto_update_check      | autoUpdateCheckEnabled  | autoUpdateCheckEnabled = | own     | autoUpdateCheckEnabled | -
  *   analytics_enabled      | host_get_analytics_enabled | host_set_analytics_enabled | -  | -                      | -
  *
  * Three kinds of persistence, and conflating them is how a write goes missing:
@@ -187,7 +210,6 @@ export const GLOBAL_ROUTING = {
     shadow_ui_trigger:      { read: "shadow_ui_trigger.get",  write: "shadow_ui_trigger.set",  persist: null,   cache: null,                     modal: null },
 
     filebrowser_enabled:    { read: "js.filebrowserEnabled",  write: "js.filebrowserEnabled",  persist: "own",  cache: "filebrowserEnabled",     modal: "filebrowser" },
-    auto_update_check:      { read: "js.autoUpdateCheckEnabled", write: "js.autoUpdateCheckEnabled", persist: "own", cache: "autoUpdateCheckEnabled", modal: null },
     analytics_enabled:      { read: "host.get_analytics_enabled", write: "host.set_analytics_enabled", persist: null, cache: null,               modal: null },
 };
 
@@ -276,16 +298,16 @@ export function writeGlobalParam(io, key, value) {
 /* ------------------------------------------------------------------ display */
 
 export const DISPLAY_PARAMS = [
-    bool("display_mirror", "Mirror", 0),
+    bool("display_mirror", "Mirror Display", 0),
     { key: "overlay_knobs", name: "Overlay", type: "enum",
-      options: ["+Shift", "+Jog Touch", "Off", "Native"],
+      options: ["Shift", "Jog", "Off", "Native"],
       short_options: ["SHF", "JOG", "OFF", "NAT"], default: 0 },
-    bool("pad_typing", "Pad Typ", 0),
-    bool("text_preview", "Text Prv", 0),
-    bool("midi_indicator_enabled", "MIDI Ch", 0),
+    bool("pad_typing", "Pad Typing", 0),
+    bool("text_preview", "Show Typed", 0),
+    bool("midi_indicator_enabled", "Show MIDI", 0),
     /* The grid is the default (tests/host/test_param_view_default.sh pins
      * paramViewGlobal = 1), so the default index here is Knobs. */
-    { key: "param_view", name: "Params", type: "enum",
+    { key: "param_view", name: "Param View", type: "enum",
       options: ["List", "Knobs"], short_options: ["LST", "KNB"], default: 1 },
 ];
 
@@ -294,24 +316,37 @@ export const DISPLAY_PARAMS = [
 export const AUDIO_PARAMS = [
     /* The arrow is ASCII and the 5x7 font draws it; the label is the direction
      * the audio travels, which is the whole content of the setting. */
-    bool("link_audio_routing", "Move>Sch", 0),
-    bool("link_audio_publish", "Sch>Link", 0),
-    bool("latency_comp_enabled", "Latency", 0),
+    bool("link_audio_routing", "Move->Schwung", 0),
+    bool("link_audio_publish", "Schwung->Link", 0),
+    bool("latency_comp_enabled", "Latency Comp", 0),
     /* Stored 0 or 2 — see GLOBAL_ENUM_VALUES. */
-    { key: "resample_bridge", name: "Smp Src", type: "enum",
-      options: ["Native", "Schwung Mix"], short_options: ["NAT", "MIX"], default: 0 },
+    { key: "resample_bridge", name: "Resample", type: "enum",
+      options: ["Native", "Mix"], short_options: ["NAT", "MIX"], default: 0 },
     { key: "skipback_shortcut", name: "Skipback", type: "enum",
-      options: ["Sh+Cap", "Sh+Vol+Cap"], short_options: ["S+C", "SVC"], default: 0 },
+      options: ["Cap", "Vol+Cap"], short_options: ["S+C", "SVC"], default: 0 },
     /* Every option already fits the square, so there is no short form to
      * declare. short_options exists for the ones that do not fit; declaring it
      * where it is not needed is a second list to keep in step for nothing. */
-    { key: "skipback_seconds", name: "Skip Len", type: "enum",
+    { key: "skipback_seconds", name: "Skipback Len", type: "enum",
       options: ["30s", "1m", "2m", "3m", "4m", "5m"], default: 0 },
-    /* Gates BOTH the file browser WAV preview and the User Presets scroll
-     * audition -- one "hear it before you pick it" switch, not one each. The
-     * stored key stays browser_preview so existing choices survive; the label
-     * says what it now covers. Default OFF: auditioning applies state to the
-     * live slot, which is not something to do to someone who did not ask. */
+    /*
+     * Gates BOTH the file browser WAV preview and the User Presets scroll
+     * audition -- one "hear it before you pick it" switch, not one each.
+     *
+     * Named "Audition", not "Audition Files": main renamed this row while this
+     * branch was open, and both sides independently landed on the word
+     * "audition". Main spelled it "Audition Files" under its new policy that
+     * names are written out rather than abbreviated for a grid -- which this
+     * keeps. It is no longer only files, though, so the noun narrows it to
+     * something it no longer only means.
+     *
+     * The stored key stays browser_preview: renaming it would silently discard
+     * every existing choice, because the toggle is its only writer.
+     *
+     * Default OFF (main had 1): auditioning a preset APPLIES state to the live
+     * slot, and the presets list stopped being hard to reach the moment it
+     * became a page at the end of every component.
+     */
     bool("browser_preview", "Audition", 0),
     /*
      * usbc_out_persist IS A BOOL. The parenthetical is a readout, not a choice.
@@ -344,18 +379,22 @@ export const AUDIO_PARAMS = [
 /* ------------------------------------------------------------ accessibility */
 
 export const ACCESSIBILITY_PARAMS = [
-    bool("screen_reader_enabled", "Reader", 0),
+    /* Deliberately wider than its row: the full name matters more than
+ * fitting, and it truncates by about one character. The exemption
+ * rides the parameter so it is visible where the name is chosen. */
+    Object.assign(bool("screen_reader_enabled", "Screen Reader", 0),
+                  { preferFullName: true }),
     { key: "screen_reader_engine", name: "Engine", type: "enum",
-      options: ["eSpeak-NG", "Flite"], short_options: ["ESP", "FLI"], default: 0 },
+      options: ["eSpeak", "Flite"], short_options: ["ESP", "FLI"], default: 0 },
     { key: "screen_reader_speed", name: "Speed", type: "float",
       min: 0.5, max: 6.0, step: 0.1, default: 1.0, unit: "x" },
     { key: "screen_reader_pitch", name: "Pitch", type: "int",
       min: 80, max: 180, step: 5, default: 110, unit: "Hz" },
     /* max 100 with unit "%" reads the raw value and appends the sign — the
      * x100 scaling in param_format only applies to a 0..1 fraction. */
-    { key: "screen_reader_volume", name: "Voice Vol", type: "int",
+    { key: "screen_reader_volume", name: "Volume", type: "int",
       min: 0, max: 100, step: 5, default: 70, unit: "%" },
-    { key: "screen_reader_debounce", name: "Debounce", type: "int",
+    { key: "screen_reader_debounce", name: "Speak Delay", type: "int",
       min: 0, max: 1000, step: 50, default: 300, unit: "ms" },
 ];
 
@@ -366,14 +405,23 @@ export const SET_PAGES_PARAMS = [
 ];
 
 export const SHORTCUTS_PARAMS = [
-    { key: "shadow_ui_trigger", name: "Trigger", type: "enum",
-      options: ["Long Press", "Shift+Vol", "Both"],
+    /*
+     * "Open With", not "Shadow UI Trigger". The page is already titled
+     * Shortcuts, so "Trigger" restated the section, and "Shadow UI" named the
+     * code path rather than the thing the user is choosing between -- reported
+     * from the device as "what is shadow ui trigger? That sounds internal".
+     *
+     * THE KEY DOES NOT MOVE. `shadow_ui_trigger` is in features.json, is read
+     * by schwung_shim.c every frame, and rides in shadow_control_t. This is a
+     * display name and nothing else.
+     */
+    { key: "shadow_ui_trigger", name: "Open With", type: "enum",
+      options: ["Hold", "Sh+Vol", "Both"],
       short_options: ["LNG", "S+V", "BTH"], default: 2 },
 ];
 
 export const SERVICES_PARAMS = [
-    bool("filebrowser_enabled", "Files", 0),
-    bool("auto_update_check", "Auto Chk", 1),
+    bool("filebrowser_enabled", "File Browser", 0),
     /* Opt-in, default off — see docs/plans on analytics. */
     bool("analytics_enabled", "Analytics", 0),
 ];

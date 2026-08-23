@@ -609,6 +609,35 @@ rather than inventing a `navigate_to: {level, kind}` form is deliberate — only
 three modules declare `navigate_to` at all, and new vocabulary repeats the
 `options_as_string` lesson: documented for months, set by nobody.
 
+### An editor returns to whoever OPENED it, through EVERY door
+
+Diving into a parameter from the knob grid can land you in three different
+places — the filepath browser, the canvas view, or the hierarchy editor with
+the row opened (edit mode). Each of those has to hand the screen back to the
+grid, and each has more than one way out. Miss one and the user comes back
+somewhere they did not ask for, one Back away from where they were.
+
+`closeOwnViewEditorToCaller()` is the single answer: it consults
+`paramEditorOpenedFromGrid` and returns true if it handled the return. All the
+exits go through it — `closeHierarchyFilepathBrowser`, `closeCanvasPreview`,
+and **both** ways out of edit mode.
+
+That last one is the trap. **Edit mode is not a view**, so it has no close
+function to fix; it is the hierarchy editor with the row opened, and for a
+float carrying a waveform strip that strip IS what a user calls "the wave
+editor" (granny's `position`). Back out of it already returned to the grid;
+the jog-click TOGGLE in `openHierarchyParamEditor` did not — so the gesture
+that OPENS the editor was the one that could not close it back. Fixing the two
+real views first changed nothing observable, which read as "not deployed".
+
+`tests/host/test_editor_returns_to_caller.sh` drives all three under both flag
+states. For the toggle it deliberately leaves the identifiers past the early
+return undeclared, so falling through throws instead of passing quietly.
+
+The LFO/knob-mapping target picker is **not** part of this: it is not opened
+through `paramEditorOpenedFromGrid` and has its own `lfoTargetFromGrid` /
+`returnToSlotGridFromLfoTarget`. Do not merge the two.
+
 ### Recording / capture
 
 Audio capture is shim-side: the Quantized Sampler (Shift+Sample) and Skipback
