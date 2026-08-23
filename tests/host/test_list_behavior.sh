@@ -19,6 +19,29 @@ cd "$(dirname "$0")/../.."
 
 if ! command -v node >/dev/null 2>&1; then echo "FAIL: node required" >&2; exit 1; fi
 
+# There must be exactly one definition of LIST_TOP_Y in src/. A second copy is
+# how the movy re-skin came to be inert on the device while this test stayed
+# green: every view module imported the stale duplicate and passed it back in
+# as listArea.topY, so the value under test was one nothing rendered with.
+#
+# The whole chrome is pinned, not just LIST_TOP_Y -- the duplicate was a block
+# of eleven constants, and pinning one of them would have let the other ten
+# fork again. `export const` is the shape that matters: a re-export
+# (`export { LIST_TOP_Y } from ...`) is how the same names reach ~50 call sites
+# from the one leaf and must NOT count as a definition.
+geom_failures=0
+for name in LIST_TOP_Y LIST_LABEL_X LIST_LINE_HEIGHT LIST_HIGHLIGHT_HEIGHT \
+            TITLE_Y TITLE_RULE_Y LIST_VALUE_X FOOTER_RULE_Y FOOTER_TEXT_Y \
+            HEADER_H RULE_Y MENU_LIST_X; do
+    n=$(grep -rn "export const ${name}\b" src | wc -l | tr -d ' ')
+    if [ "$n" != "1" ]; then
+        echo "FAIL: ${name} has ${n} definitions in src/, expected exactly 1"
+        grep -rn "export const ${name}\b" src || true
+        geom_failures=$((geom_failures + 1))
+    fi
+done
+if [ "$geom_failures" != "0" ]; then exit 1; fi
+
 node --input-type=module -e '
 const R = process.cwd();
 const {
@@ -26,9 +49,34 @@ const {
     LIST_LINE_HEIGHT, LIST_MAX_VISIBLE,
 } = await import(R + "/src/shared/menu_layout.mjs");
 const { probe } = await import(R + "/tools/param-pages/list_probe.mjs");
+const CV = await import(R + "/src/shared/chain_ui_views.mjs");
 
 let failures = 0;
 const fail = (m) => { console.error("FAIL: " + m); failures++; };
+
+/* ---- 0. The value under test is the value the SCREENS use ----------------
+ *
+ * Every shadow view module (shadow_ui.js, shadow_ui_slots / _settings /
+ * _master_fx / _patches / _tools / _store) imports these from
+ * chain_ui_views.mjs and passes them straight back to drawMenuList as
+ * `listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y }`. When
+ * chain_ui_views carried its own stale copy, this file measured menu_layout s
+ * default and the device rendered something else -- so both doors are checked
+ * here, by identity, before any window arithmetic is believed. */
+for (const [name, mine, theirs] of [
+    ["LIST_TOP_Y", LIST_TOP_Y, CV.LIST_TOP_Y],
+    ["FOOTER_RULE_Y", FOOTER_RULE_Y, CV.FOOTER_RULE_Y],
+    ["LIST_LINE_HEIGHT", LIST_LINE_HEIGHT, CV.LIST_LINE_HEIGHT],
+]) {
+    if (mine !== theirs)
+        fail(name + ": menu_layout says " + mine + " but chain_ui_views -- which is " +
+             "what every shadow view module actually imports -- says " + theirs +
+             "; this test would be measuring a rect no screen renders with");
+}
+if (LIST_TOP_Y !== 10)
+    fail("LIST_TOP_Y must be the movy value 10 (list rect 10..55, header band " +
+         "ends at row 6); got " + LIST_TOP_Y + ". 15 is the pre-re-skin value, " +
+         "and it leaves an 8-row dead band under the header and fits only 4 rows");
 
 const items = (n) => Array.from({ length: n }, (_, i) => ({ label: "Item " + (i + 1) }));
 
