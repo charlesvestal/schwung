@@ -130,5 +130,5 @@ settings/master/actions a4b750d8889ca7d50b05193375dd6e6d6162e90a
 settings/master/actions-nopreset 7b64eaa6921c183b267dc45772e694d56e631f18
 settings/master/lfo1-free 3744bcf92a28d5ddb8e1cbf6b3eaf498189d4247
 settings/master/lfo2-sync 2b4bb86d2ef6126a01ac48dc041d479885f579a7
-settings/master/main 66357fae09e7ac0f78681ce41021cac9f28b4c08
-settings/master/main-unity b8afa05c00c6c02bf16cefd5a0da8c1e88c92590
+settings/master/main-all ebf0c111249ddf784aefb184993a18bd33bb5cef
+settings/master/main-ch10 bd47e906a1756204669ab07244cacb43f3d7ce87
