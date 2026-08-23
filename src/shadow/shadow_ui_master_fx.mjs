@@ -7,8 +7,9 @@
 import { ctx } from './shadow_ui_ctx.mjs';
 import {
     SCREEN_WIDTH,
-    LIST_TOP_Y, LIST_LINE_HEIGHT, LIST_HIGHLIGHT_HEIGHT,
-    LIST_LABEL_X, LIST_VALUE_X,
+    /* No LIST_LINE_HEIGHT / LIST_HIGHLIGHT_HEIGHT / LIST_LABEL_X /
+     * LIST_VALUE_X: nothing here draws a row any more. */
+    LIST_TOP_Y,
     FOOTER_RULE_Y,
     truncateText
 } from '/data/UserData/schwung/shared/chain_ui_views.mjs';
@@ -29,7 +30,8 @@ import {
     drawMenuHeader as drawHeader,
     drawMenuFooter as drawFooter,
     drawMenuList,
-    drawConfirmModal
+    drawConfirmModal,
+    drawNamePreview
 } from '/data/UserData/schwung/shared/menu_layout.mjs';
 import {
     announce, announceMenuItem
@@ -444,23 +446,7 @@ function drawMasterPresetPicker() {
 
 function drawMasterNamePreview() {
     const { masterPendingSaveName, masterNamePreviewIndex } = ctx;
-
-    drawHeader("Save As");
-
-    const name = truncateText(masterPendingSaveName, 20);
-    print(LIST_LABEL_X, LIST_TOP_Y, '"' + name + '"', 1);
-
-    const listY = LIST_TOP_Y + 16;
-    for (let i = 0; i < 2; i++) {
-        const y = listY + i * LIST_LINE_HEIGHT;
-        const isSelected = i === masterNamePreviewIndex;
-        if (isSelected) {
-            fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
-        }
-        print(LIST_LABEL_X, y, i === 0 ? "Edit" : "OK", isSelected ? 0 : 1);
-    }
-
-    drawFooter("Back: cancel");
+    drawNamePreview({ name: masterPendingSaveName, selectedIndex: masterNamePreviewIndex });
 }
 
 function drawMasterConfirmOverwrite() {

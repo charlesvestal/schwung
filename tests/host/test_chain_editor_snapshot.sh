@@ -104,7 +104,7 @@ node --input-type=module -e '
 const CHROME = await import("./src/shared/chain_editor_chrome.mjs");
 const CHROME_SHIFT_HINTS = CHROME.shiftHintsFor;
 const CHROME_REST_HINTS = CHROME.CHAIN_HINTS_AT_REST;
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { createFramebuffer, drawContext } from "./tools/param-pages/harness.mjs";
 import { drawChainDiagram, DEFAULT_Y as DIAGRAM_Y, BOX_H as DIAGRAM_BOX_H }
@@ -1041,6 +1041,21 @@ run(settingsCases, renderSettings, "settings");
 
 const ids = Object.keys(current);
 if (ids.length < 50) fail("only " + ids.length + " cases -- the matrix has collapsed");
+
+/* LOOK at cases as pictures: DUMP_PNG=/some/dir [DUMP_CASE=picker/] bash ...
+ *
+ * Text art hides overlaps -- a scroll arrow drawn into the corner of the
+ * bracket frame reads as a plausible corner in half-blocks and as a smudge on
+ * the OLED. Half the point of a pixel baseline is that a human can review the
+ * change before regenerating it, and that review has to be visual. */
+if (process.env.DUMP_PNG) {
+  const dir = process.env.DUMP_PNG;
+  mkdirSync(dir, { recursive: true });
+  for (const id of Object.keys(current)) {
+    if (process.env.DUMP_CASE && id.indexOf(process.env.DUMP_CASE) < 0) continue;
+    writeFileSync(dir + "/" + id.replace(/\//g, "_") + ".png", current[id].fb.toPng(5));
+  }
+}
 
 /* Eyeball one case: DUMP_CASE=chain/len5/sel-fx4 bash tests/host/... */
 if (process.env.DUMP_CASE) {

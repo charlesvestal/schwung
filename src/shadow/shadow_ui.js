@@ -91,7 +91,7 @@ import {
     tickOverlay,
     drawOverlay,
     menuLayoutDefaults,
-    LIST_BOTTOM_CLEARANCE,
+    LIST_INDICATOR_BOTTOM_Y,
     VALUE_RIGHT_CLEARANCE
 } from '/data/UserData/schwung/shared/menu_layout.mjs';
 
@@ -213,11 +213,12 @@ import {
     paramPagesEnabled, enterParamPages, exitParamPages, paramPagesActive,
     tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage,
     paramPagesComponent, paramPagesSlot, clearParamPagesTouch,
-    enumPickerFooterHints, CONTRACT_SETTLE_MS
+    enumPickerFooterHints, CONTRACT_SETTLE_MS, LAYOUT_LIST
 } from './shadow_ui_param_pages.mjs';
 import { createSlotGridIo, createMasterGridIo,
          MFX_MIDI_CHANNEL_OPTIONS, mfxMidiChannelToIndex,
          mfxMidiChannelFromIndex } from './shadow_ui_slot_grid.mjs';
+import { createGlobalGridIo, GLOBAL_SECTIONS } from './shadow_ui_global_grid.mjs';
 import {
     drawMasterFx as _drawMasterFx,
     getMasterFxDisplayName as _getMasterFxDisplayName,
@@ -2444,6 +2445,11 @@ let slotModalFromGrid = false;
 let suppressMasterGridOnce = false;
 let masterModalFromGrid = false;
 
+/* ...and the Global Settings half. There is no suppress twin: Global Settings
+ * has no list to be handed back to, so the only thing outstanding is "go back
+ * to the page once the help stack closes". See maybeReturnToGlobalGrid. */
+let globalModalFromGrid = false;
+
 function saveParamViewConfig() {
     try {
         host_write_file(PARAM_VIEW_CONFIG_PATH, JSON.stringify({ param_view: paramViewGlobal }));
@@ -2458,95 +2464,6 @@ function loadParamViewConfig() {
         if (typeof cfg.param_view === "number") paramViewGlobal = cfg.param_view;
     } catch (e) {}
 }
-
-/* Global Settings — hierarchical sections for Shift+Vol+Step2 menu.
- * The canonical schema is also in shared/settings-schema.json for the
- * schwung-manager web UI. Keep both in sync when adding settings. */
-const GLOBAL_SETTINGS_SECTIONS = [
-    {
-        id: "display", label: "Display",
-        items: [
-            { key: "display_mirror", label: "Mirror Display", type: "bool" },
-            { key: "overlay_knobs", label: "Overlay Knobs", type: "enum",
-              options: ["+Shift", "+Jog Touch", "Off", "Native"], values: [0, 1, 2, 3] },
-            { key: "pad_typing", label: "Pad Typing", type: "bool" },
-            { key: "text_preview", label: "Text Preview", type: "bool" },
-            { key: "midi_indicator_enabled", label: "MIDI Channel", type: "bool" },
-            { key: "param_view", label: "Param View", type: "enum",
-              options: ["List", "Knobs"], values: [0, 1] }
-        ]
-    },
-    {
-        id: "audio", label: "Audio",
-        items: [
-            { key: "link_audio_routing", label: "Move->Schwung", type: "bool" },
-            { key: "link_audio_publish", label: "Schwung->Link", type: "bool" },
-            { key: "latency_comp_enabled", label: "Latency Comp", type: "bool" },
-            { key: "resample_bridge", label: "Sample Src", type: "enum",
-              options: ["Native", "Schwung Mix"], values: [0, 2] },
-            { key: "skipback_shortcut", label: "Skipback", type: "enum",
-              options: ["Sh+Cap", "Sh+Vol+Cap"], values: [0, 1] },
-            { key: "skipback_seconds", label: "Skipback Len", type: "enum",
-              options: ["30s", "1m", "2m", "3m", "4m", "5m"], values: [30, 60, 120, 180, 240, 300] },
-            { key: "browser_preview", label: "Browser Preview", type: "bool" },
-            { key: "usbc_out_persist", label: "USB-C Persist", type: "bool" }
-        ]
-    },
-    {
-        id: "accessibility", label: "Screen Reader",
-        items: [
-            { key: "screen_reader_enabled", label: "Screen Reader", type: "bool" },
-            { key: "screen_reader_engine", label: "TTS Engine", type: "enum",
-              options: ["eSpeak-NG", "Flite"], values: ["espeak", "flite"] },
-            { key: "screen_reader_speed", label: "Voice Speed", type: "float", min: 0.5, max: 6.0, step: 0.1 },
-            { key: "screen_reader_pitch", label: "Voice Pitch", type: "float", min: 80, max: 180, step: 5 },
-            { key: "screen_reader_volume", label: "Voice Vol", type: "int", min: 0, max: 100, step: 5 },
-            { key: "screen_reader_debounce", label: "Debounce", type: "int", min: 0, max: 1000, step: 50 }
-        ]
-    },
-    {
-        id: "set_pages", label: "Set Pages",
-        items: [
-            { key: "set_pages_enabled", label: "Set Pages", type: "bool" }
-        ]
-    },
-    {
-        id: "shortcuts", label: "Shortcuts",
-        items: [
-            { key: "shadow_ui_trigger", label: "Shadow UI Trigger", type: "enum",
-              options: ["Long Press", "Shift+Vol", "Both"], values: [0, 1, 2] }
-        ]
-    },
-    {
-        id: "services", label: "Services",
-        items: [
-            { key: "filebrowser_enabled", label: "File Browser", type: "bool" },
-            { key: "auto_update_check", label: "Auto Update Check", type: "bool" },
-            { key: "analytics_enabled", label: "Analytics", type: "bool" }
-        ]
-    },
-    {
-        id: "updates", label: "Updates",
-        items: [
-            /* Detection runs on-device (catalog scan + version compare) so
-             * users can see what's outdated without opening a browser. The
-             * actual install always happens via the web manager (or the
-             * GUI installer as fallback) — the on-device install paths
-             * silently failed for users without a current shim, so we
-             * removed them. */
-            { key: "check_updates", label: "[Check Updates]", type: "action" },
-            { key: "module_store",  label: "[Module Store]",  type: "action" }
-        ]
-    },
-    {
-        id: "help", label: "[Help...]", isAction: true
-    }
-];
-
-let globalSettingsSectionIndex = 0;
-let globalSettingsInSection = false;
-let globalSettingsItemIndex = 0;
-let globalSettingsEditing = false;
 
 /* Tools menu state */
 let toolsMenuIndex = 0;
@@ -2688,8 +2605,9 @@ function wavPlayerStop() {
     shadow_set_param(0, "overtake_dsp:playing", "0");
 }
 
-const RESAMPLE_BRIDGE_LABEL_BY_MODE = { 0: "Native", 2: "Schwung Mix" };
-const RESAMPLE_BRIDGE_VALUES = [0, 2];
+/* The labels and the stored values are the contract's now — options /
+ * short_options and GLOBAL_ENUM_VALUES in shadow_ui_global_grid.mjs. Two copies
+ * of [0, 2] is exactly how an index gets written as a mode. */
 
 /* Check Move's system Link setting via shim param (reads Settings.json) */
 function checkSystemLinkEnabled() {
@@ -4126,6 +4044,35 @@ function showWarning(title, message) {
     warningActive = true;
     announce(`${title}: ${message}`);
     needsRedraw = true;
+}
+
+/*
+ * Answer the message overlay, if one is up.
+ *
+ * The overlay is drawn OVER whatever view is on screen (see the draw path: it
+ * is outside the view switch), so it has to be ANSWERABLE from whatever view is
+ * on screen. It used to be dismissed from one site far down
+ * onMidiMessageInternal, below the early-out that hands input to the page
+ * chrome — so a warning raised by a write ON a page (Schwung Mix, Link Audio,
+ * File Browser: all three now come from the Global Settings contract) drew
+ * itself over a grid that went on consuming every button, and there was no
+ * press that could clear it.
+ *
+ * Extracted rather than moved: hoisting the one site above the early-out would
+ * also hoist it above splash, the analytics prompt, the feedback gate and text
+ * entry, each of which deliberately outranks it today.
+ *
+ * A knob turn does not dismiss — it is how the value that raised the warning is
+ * being changed, so the message would vanish on the same detent that produced
+ * it.
+ */
+function maybeDismissWarningFromInput(status, d1, d2) {
+    if (!warningActive) return false;
+    if ((status & 0xF0) !== 0xB0 || d2 <= 0) return false;
+    if (d1 === MoveMainKnob) return false;
+    if (d1 >= KNOB_CC_START && d1 <= KNOB_CC_END) return false;
+    dismissWarning();
+    return true;
 }
 
 /* Dismiss asset warning overlay */
@@ -6130,7 +6077,7 @@ function drawOvertakeMenu() {
         });
     }
 
-    drawFooter({left: "Back: exit", right: "Jog: select"});
+    drawFooter(["Back: exit", "Jog: select"]);
 }
 
 /*
@@ -8284,30 +8231,82 @@ function cancelToolProcess() {
 
 /* ========== Global Settings Functions ========== */
 
-function enterGlobalSettings() {
-    globalSettingsSectionIndex = 0;
-    globalSettingsInSection = false;
-    globalSettingsItemIndex = 0;
-    globalSettingsEditing = false;
-    setView(VIEWS.GLOBAL_SETTINGS);
+/*
+ * GLOBAL SETTINGS, as the page chrome — the same engine slot settings and
+ * Master FX settings run on.
+ *
+ * The component name is not a module and not "slot"; it names the SYNTHESISED
+ * contract, so headerTitle() has something to say and the io can tell which
+ * contract is loaded. The declaration is shadow_ui_global_grid.mjs and the
+ * backends are globalGridIoFor(); nothing about which params exist lives here.
+ *
+ * NOT gated on paramPagesEnabled(). Every other consumer of this engine has the
+ * hierarchy editor to fall back to when the screen reader is on; Global Settings
+ * has nothing — its bespoke list is deleted — and it is the screen you go to in
+ * order to turn the screen reader off. paramPagesLayout() forces the LIST for
+ * TTS instead, which is the arrangement that has a selected row to announce.
+ */
+const GLOBAL_SETTINGS_COMPONENT = "global_settings";
+
+function enterGlobalSettingsGrid(restorePageName) {
+    /* A fresh entry is not a return from a modal. Whatever hand-off was
+     * outstanding has been served by getting here. */
+    globalModalFromGrid = false;
+    enterParamPages(0, GLOBAL_SETTINGS_COMPONENT, GLOBAL_SETTINGS_COMPONENT,
+                    restorePageName || null, globalGridIoFor(),
+                    /* No moduleKey: there is no module behind this contract to
+                     * abbreviate. Back leaves shadow mode, which is not a view,
+                     * so it is an onExit rather than a returnView. */
+                    { label: "Global", name: "Settings",
+                      /* PINNED TO THE LIST, whatever Param View says.
+                       *
+                       * Param View is a preference about MODULE parameters,
+                       * where eight cells you can grab at once is the point.
+                       * Every one of these 25 is a set-once toggle, and several
+                       * are destructive to brush past: link_audio_routing
+                       * re-routes Move's audio, resample_bridge replaces the
+                       * sampler's input, and param_view changes the screen you
+                       * are standing on. A knob has no detent to tell you it
+                       * moved. Slot and Master FX settings deliberately do not
+                       * pin — their Volume, Mute and Solo really are
+                       * performance controls. */
+                      layout: LAYOUT_LIST,
+                      onExit: () => {
+                          if (typeof shadow_request_exit === "function") shadow_request_exit();
+                      } });
     needsRedraw = true;
-    const section = GLOBAL_SETTINGS_SECTIONS[0];
-    announce("Settings, " + section.label);
 }
 
+function enterGlobalSettings() {
+    enterGlobalSettingsGrid(null);
+}
+
+/*
+ * The page name enterGlobalSettingsScreenReader lands on.
+ *
+ * DERIVED from the section it names rather than spelled again. The engine
+ * restores a page by NAME (restorePageName; see enterParamPages) and the name
+ * planPages gives a section is its root nav entry's LABEL — so a hardcoded
+ * "Screen Reader" here would silently stop matching the day the label is
+ * reworded, and the jump would land on page 1 with nothing to say it had.
+ * `accessibility` is the level ID, which is the stable half.
+ */
+const GLOBAL_SCREEN_READER_PAGE =
+    (GLOBAL_SECTIONS.find((s) => s.id === "accessibility") || {}).label || null;
+
 function enterGlobalSettingsScreenReader() {
-    /* Enter Global Settings and jump directly to Screen Reader section */
-    const srIdx = GLOBAL_SETTINGS_SECTIONS.findIndex(s => s.id === "accessibility");
-    globalSettingsSectionIndex = srIdx >= 0 ? srIdx : 0;
-    globalSettingsInSection = true;
-    globalSettingsItemIndex = 0;
-    globalSettingsEditing = false;
-    setView(VIEWS.GLOBAL_SETTINGS);
-    needsRedraw = true;
-    const section = GLOBAL_SETTINGS_SECTIONS[globalSettingsSectionIndex];
-    const item = section.items[0];
-    const value = getMasterFxSettingValue(item);
-    announce("Screen Reader Settings, " + item.label + ": " + value);
+    enterGlobalSettingsGrid(GLOBAL_SCREEN_READER_PAGE);
+    /*
+     * ...and SAY so, which the restore itself will not.
+     *
+     * controller.restorePage is deliberately silent: its other caller is
+     * "return to the page you were already on" after an editor closes, where an
+     * announcement is noise. This is the opposite — a jump the user asked for
+     * from a shortcut — and load() has already announced "Display, 1 of 7" on
+     * the way past. Leaving it at that names the wrong page out loud to the one
+     * user who reached this screen by ear.
+     */
+    if (GLOBAL_SCREEN_READER_PAGE) announce(GLOBAL_SCREEN_READER_PAGE + " Settings");
 }
 
 function handleGlobalSettingsAction(key) {
@@ -9754,6 +9753,259 @@ function enterMasterFxSettingsGrid() {
 }
 
 /*
+ * GLOBAL SETTINGS, as the knob grid — the host half of the contract.
+ *
+ * The routing table lives in shadow_ui_global_grid.mjs and is tested with no
+ * device; what cannot leave this file is here and nothing else: the concrete
+ * backends, and the module-level cache vars a write must keep in step.
+ *
+ * WHY THE CACHE VARS AND THE SAVE MATTER MORE THAN THEY LOOK.
+ *
+ * This replaces adjustMasterFxSetting, which is delta-based and side-effectful:
+ * six of its branches call saveMasterFxChainConfig() and four assign a
+ * `cached*` var alongside the shadow_set_param. A converted write that drops
+ * either sets the param, reads back correctly, draws correctly — and is gone on
+ * reboot, with no error anywhere. That is the failure this shape exists to
+ * prevent, so the SHARED save is declared once (`persist`, applied by
+ * writeGlobalParam for exactly the keys the table marks) while the key-specific
+ * savers stay welded to the assignment they save.
+ */
+function globalGridIoFor() {
+    const mfx = (key) => shadow_get_param(0, "master_fx:" + key);
+    const mfxSet = (key, value) => shadow_set_param(0, "master_fx:" + key, value);
+    const bit = (on) => (on ? "1" : "0");
+
+    const io = {
+        readParam(key) {
+            switch (key) {
+            /* ---- display */
+            case "display_mirror":
+                return bit(typeof display_mirror_get === "function" && display_mirror_get());
+            case "overlay_knobs":
+                return String(typeof overlay_knobs_get_mode === "function" ? overlay_knobs_get_mode() : 0);
+            case "pad_typing":         return bit(padSelectGlobal);
+            case "text_preview":       return bit(textPreviewGlobal);
+            case "midi_indicator_enabled": return bit(midiIndicatorEnabled);
+            case "param_view":         return String(paramViewGlobal === 1 ? 1 : 0);
+
+            /* ---- audio. These four are the ONLY reads that cost IPC. */
+            case "link_audio_routing":
+            case "link_audio_publish":
+            case "latency_comp_enabled":
+            case "usbc_out_persist":
+            case "usbc_out_source":
+                return mfx(key);
+            case "resample_bridge": {
+                /* Normalised through the same parser the old path used, so an
+                 * unset or malformed value lands on a mode that exists. A read
+                 * that did not complete is passed through untouched — null is
+                 * not news about the setting. */
+                const raw = mfx("resample_bridge");
+                if (raw === null || raw === undefined || raw === "") return raw;
+                return String(parseResampleBridgeMode(raw));
+            }
+            case "skipback_shortcut":
+                return bit(typeof skipback_shortcut_get === "function" && skipback_shortcut_get());
+            case "skipback_seconds":
+                return String(typeof skipback_seconds_get === "function" ? skipback_seconds_get() : 30);
+            case "browser_preview":    return bit(previewEnabled);
+
+            /* ---- screen reader */
+            case "screen_reader_enabled":
+                return bit(typeof tts_get_enabled === "function" && tts_get_enabled());
+            case "screen_reader_engine":
+                return (typeof tts_get_engine === "function" && tts_get_engine() === "flite") ? "flite" : "espeak";
+            case "screen_reader_speed":
+                return String(typeof tts_get_speed === "function" ? tts_get_speed() : 1.0);
+            case "screen_reader_pitch":
+                return String(typeof tts_get_pitch === "function" ? Math.round(tts_get_pitch()) : 110);
+            case "screen_reader_volume":
+                return String(typeof tts_get_volume === "function" ? tts_get_volume() : 70);
+            case "screen_reader_debounce":
+                return String(typeof tts_get_debounce === "function" ? tts_get_debounce() : 300);
+
+            /* ---- set pages / shortcuts / services */
+            case "set_pages_enabled":
+                return bit(typeof set_pages_get === "function" && set_pages_get());
+            case "shadow_ui_trigger":
+                return String(typeof shadow_ui_trigger_get === "function" ? shadow_ui_trigger_get() : 2);
+            case "filebrowser_enabled": return bit(filebrowserEnabled);
+            case "auto_update_check":   return bit(autoUpdateCheckEnabled);
+            case "analytics_enabled":
+                return bit(typeof host_get_analytics_enabled === "function" && host_get_analytics_enabled());
+            }
+            return "";
+        },
+
+        /*
+         * ABSOLUTE, unlike the delta-based path this replaces. `value` is the
+         * STORED value as a string — writeGlobalParam has already turned an
+         * enum index into it, which is what keeps resample_bridge writing 2
+         * rather than the index 1, a mode that does not exist.
+         */
+        writeParam(key, value) {
+            const on = (value === "1");
+            switch (key) {
+            /* ---- display */
+            case "display_mirror":
+                if (typeof display_mirror_set === "function") display_mirror_set(on ? 1 : 0);
+                return;
+            case "overlay_knobs":
+                if (typeof overlay_knobs_set_mode === "function") overlay_knobs_set_mode(parseInt(value, 10) || 0);
+                return;
+            case "pad_typing":
+                setPadSelectGlobal(on);
+                savePadTypingConfig();
+                return;
+            case "text_preview":
+                setTextPreviewGlobal(on);
+                saveTextPreviewConfig();
+                return;
+            case "midi_indicator_enabled":
+                midiIndicatorEnabled = on;
+                if (typeof midi_indicator_set === "function") midi_indicator_set(on ? 1 : 0);
+                return;
+            case "param_view":
+                paramViewGlobal = on ? 1 : 0;
+                saveParamViewConfig();
+                announce(paramViewGlobal === 1 ? "Param View Knobs" : "Param View List");
+                return;
+
+            /* ---- audio. The cache var is not a cache of the write; it is what
+             * saveMasterFxChainConfig serialises, so skipping it writes the OLD
+             * value to disk and the setting reverts on reboot. */
+            case "link_audio_routing":
+                mfxSet(key, on ? "1" : "0");
+                cachedLinkAudioRouting = on;
+                /* Turning it ON with Link off in Move's System Settings does
+                 * nothing at all, silently — that is the whole reason for the
+                 * warning, so it rides with the write rather than with the
+                 * screen that used to perform it. */
+                if (on) warnIfLinkDisabled("Move->Schwung");
+                return;
+            case "link_audio_publish":
+                mfxSet(key, on ? "1" : "0");
+                cachedLinkAudioPublish = on;
+                if (on) warnIfLinkDisabled("Schwung->Link");
+                return;
+            case "latency_comp_enabled":
+                mfxSet(key, on ? "1" : "0");
+                cachedLatencyCompEnabled = on;
+                return;
+            case "usbc_out_persist":
+                /* Both On indexes store 1 — the third option carries only the
+                 * wire annotation, and the source is Move's to choose. */
+                mfxSet(key, on ? "1" : "0");
+                cachedUsbcOutPersist = on;
+                return;
+            case "resample_bridge": {
+                const mode = parseResampleBridgeMode(value);
+                mfxSet(key, String(mode));
+                cachedResampleBridgeMode = mode;
+                /* Schwung Mix takes over Mic and Line-in; a user who does not
+                 * know that hears their input vanish. */
+                if (mode === 2) {
+                    showWarning("Schwung Mix",
+                                "Replaces Mic and Line-in with ME + Move Audio");
+                }
+                return;
+            }
+            case "skipback_shortcut":
+                if (typeof skipback_shortcut_set === "function") skipback_shortcut_set(on ? 1 : 0);
+                return;
+            case "skipback_seconds":
+                if (typeof skipback_seconds_set === "function") skipback_seconds_set(parseInt(value, 10) || 30);
+                return;
+            case "browser_preview":
+                previewEnabled = on;
+                if (!previewEnabled) previewStopIfPlaying();
+                saveBrowserPreviewConfig();
+                return;
+
+            /* ---- screen reader. These persist themselves. */
+            case "screen_reader_enabled":
+                if (typeof tts_set_enabled === "function") tts_set_enabled(on);
+                return;
+            case "screen_reader_engine":
+                if (typeof tts_set_engine === "function") tts_set_engine(value === "flite" ? "flite" : "espeak");
+                return;
+            case "screen_reader_speed":
+                if (typeof tts_set_speed === "function") tts_set_speed(parseFloat(value));
+                return;
+            case "screen_reader_pitch":
+                if (typeof tts_set_pitch === "function") tts_set_pitch(Math.round(parseFloat(value)));
+                return;
+            case "screen_reader_volume":
+                if (typeof tts_set_volume === "function") tts_set_volume(Math.round(parseFloat(value)));
+                return;
+            case "screen_reader_debounce":
+                if (typeof tts_set_debounce === "function") tts_set_debounce(Math.round(parseFloat(value)));
+                return;
+
+            /* ---- set pages / shortcuts / services */
+            case "set_pages_enabled":
+                if (typeof set_pages_set === "function") set_pages_set(on ? 1 : 0);
+                return;
+            case "shadow_ui_trigger":
+                if (typeof shadow_ui_trigger_set === "function") shadow_ui_trigger_set(parseInt(value, 10) || 0);
+                return;
+            case "filebrowser_enabled":
+                filebrowserEnabled = on;
+                setFilebrowserRunning(on);
+                saveFilebrowserConfig();
+                /* The URL is the entire point of the setting and there is
+                 * nowhere else on the device it is written down. */
+                showWarning("File Browser",
+                            on ? "On. Access at http://move.local:404" : "Off.");
+                return;
+            case "auto_update_check":
+                autoUpdateCheckEnabled = on;
+                saveAutoUpdateConfig();
+                return;
+            case "analytics_enabled":
+                if (typeof host_set_analytics_enabled === "function") host_set_analytics_enabled(on ? 1 : 0);
+                return;
+            }
+        },
+
+        /* The SHARED sink, applied by writeGlobalParam for exactly the keys
+         * GLOBAL_ROUTING marks `persist: "save"`. */
+        persist: () => saveMasterFxChainConfig(),
+
+        /* The Updates menu page's entries, plus [Help...]. Own runner rather
+         * than the host's generic one for the same reason Master FX has one:
+         * the generic runner takes the IPC slot and would run a SLOT action. */
+        runAction: (action) => runGlobalActionFromGrid(action),
+    };
+
+    return createGlobalGridIo(io);
+}
+
+/*
+ * Start or stop the file browser to match the flag.
+ *
+ * Named rather than inlined into the write, because the flag file and the
+ * process must move together: a flag written without the process started reads
+ * as On with nothing listening on :404. The old adjustMasterFxSetting branch
+ * still inlines its own copy; it goes when that path does (Task 9), and until
+ * then this is the only caller.
+ */
+function setFilebrowserRunning(on) {
+    const flagPath = "/data/UserData/schwung/filebrowser_enabled";
+    if (on) {
+        host_write_file(flagPath, "1");
+        if (typeof host_system_cmd === "function") {
+            host_system_cmd("sh -c '/data/UserData/schwung/bin/filebrowser --noauth --address 0.0.0.0 --port 404 --root /data/UserData --database /data/UserData/schwung/filebrowser.db --disableThumbnails --disablePreviewResize --disableExec --disableTypeDetectionByHeader >/dev/null 2>&1 &'");
+        }
+    } else {
+        host_remove_dir(flagPath);
+        if (typeof host_system_cmd === "function") {
+            host_system_cmd("sh -c 'killall filebrowser 2>/dev/null'");
+        }
+    }
+}
+
+/*
  * A Master FX action chosen from the KNOB GRID.
  *
  * Exactly the hand-off runSlotActionFromGrid performs, and for exactly the same
@@ -9798,6 +10050,58 @@ function maybeReturnToMasterGrid() {
     masterModalFromGrid = false;
     suppressMasterGridOnce = false;
     enterMasterFxSettingsGrid();
+    return true;
+}
+
+/*
+ * A Global Settings action chosen from the page chrome.
+ *
+ * Third instance of runSlotActionFromGrid / runMasterFxActionFromGrid, and the
+ * two properties that make those work are kept:
+ *
+ * It asks WHETHER SOMETHING ELSE IS NOW ON SCREEN rather than listing which
+ * actions leave. All three of today's actions do leave — Help pushes the help
+ * stack, [Check Updates] and [Module Store] set a view of their own — so a test
+ * on the key would be right today and silently wrong for the fourth action.
+ *
+ * The two store screens set their own view and route back through
+ * storeReturnView; Help does not, so this is also where VIEWS.GLOBAL_SETTINGS
+ * gets set for it. That view no longer draws a settings list — it is the help
+ * viewer's host and nothing else.
+ */
+function runGlobalActionFromGrid(action) {
+    handleGlobalSettingsAction(action);
+    const opened = helpNavStack.length > 0 || !!helpDetailScrollState
+                   || view !== VIEWS.PARAM_PAGES;
+    if (!opened) return false;
+    exitParamPages();
+    globalModalFromGrid = true;
+    if (view === VIEWS.PARAM_PAGES) setView(VIEWS.GLOBAL_SETTINGS);
+    needsRedraw = true;
+    return true;
+}
+
+/* ...and back to the page once the help stack is done with.
+ *
+ * RECONCILES from the draw path rather than firing at the end of each flow —
+ * see maybeReturnToSlotGrid for why hooking each exit is how the original bug
+ * got there. Help has three ways out (Back off the last frame, Back out of a
+ * detail and then the frame, and the detail's own "Back" action row) and only
+ * one of them is a single obvious site.
+ *
+ * The store screens are NOT reconciled here: they leave VIEWS.GLOBAL_SETTINGS
+ * entirely and come back through storeReturnView -> enterGlobalSettings(),
+ * which clears the flag itself. */
+function maybeReturnToGlobalGrid() {
+    if (!globalModalFromGrid) return false;
+    if (helpNavStack.length > 0 || helpDetailScrollState) return false;
+    if (isTextEntryActive()) return false;
+    globalModalFromGrid = false;
+    /* Consumed: it is the MASTER FX back handler that reads this, and a stale
+     * GLOBAL_SETTINGS left in it would send a help session opened from Master FX
+     * to the settings page instead. */
+    if (helpReturnView === VIEWS.GLOBAL_SETTINGS) helpReturnView = null;
+    enterGlobalSettings();
     return true;
 }
 
@@ -13046,10 +13350,10 @@ function drawWavPositionEditor(selectedKey, selectedMeta) {
         }
     }
 
-    drawFooter({
-        left: truncateText(valueText, 20),
-        right: truncateText(sourceText, 12)
-    });
+    drawFooter([
+        truncateText(valueText, 20),
+        truncateText(sourceText, 12)
+    ]);
 }
 
 function resetCanvasState() {
@@ -13429,10 +13733,10 @@ function drawCanvasPreview() {
         }
     }
     if (!canvasParamMeta || canvasParamMeta.show_footer !== false) {
-        drawFooter({
-            left: truncateText(String(valueText || "-"), 20),
-            right: truncateText(title, 12)
-        });
+        drawFooter([
+            truncateText(String(valueText || "-"), 20),
+            truncateText(title, 12)
+        ]);
     }
 }
 
@@ -13446,7 +13750,7 @@ function drawFilepathBrowser() {
 
     if (!state) {
         print(4, LIST_TOP_Y, "Browser unavailable", 1);
-        drawFooter({ left: "Click: return", right: "Jog: scroll" });
+        drawFooter(["Click: return", "Jog: scroll"]);
         return;
     }
 
@@ -13470,7 +13774,7 @@ function drawFilepathBrowser() {
         ? state.items[state.selectedIndex]
         : null;
     const actionText = selected && selected.kind === "file" ? "Click: select" : "Click: open";
-    drawFooter({ left: actionText, right: "Jog: scroll" });
+    drawFooter([actionText, "Jog: scroll"]);
 }
 
 /* Track plugin async-load state per draw so a preset switch's deferred
@@ -13681,7 +13985,7 @@ function drawHierarchyEditor() {
         }
 
         /* Footer hints - always push to edit (for swap/params) */
-        drawFooter({left: "Click: edit", right: "Jog: browse"});
+        drawFooter(["Click: edit", "Jog: browse"]);
     } else {
         const selectedKey = getSelectedHierarchyEditableKey();
         const selectedMeta = selectedKey ? getParamMetadata(selectedKey) : null;
@@ -13763,7 +14067,7 @@ function drawHierarchyEditor() {
             drawMenuList({
                 items,
                 selectedIndex: hierEditorSelectedIdx,
-                listArea: { topY: LIST_TOP_Y, bottomY: LIST_BOTTOM_CLEARANCE },
+                listArea: { topY: LIST_TOP_Y, bottomY: LIST_INDICATOR_BOTTOM_Y },
                 getLabel: (item) => item.label,
                 getValue: (item) => item.value,
                 valueAlignRight: true,
@@ -13777,11 +14081,11 @@ function drawHierarchyEditor() {
         }
 
         /* Footer hints */
-        let hint = hierEditorEditMode ? {left: "Click: done", right: "Jog: adjust"} : {left: "Click: edit", right: "Jog: scroll"};
+        let hint = hierEditorEditMode ? ["Click: done", "Jog: adjust"] : ["Click: edit", "Jog: scroll"];
         if (!hierEditorEditMode && selectedMeta && selectedMeta.type === "string") {
-            hint = { left: "Click: keyboard", right: "Jog: scroll" };
+            hint = ["Click: keyboard", "Jog: scroll"];
         } else if (!hierEditorEditMode && selectedMeta && selectedMeta.type === "canvas") {
-            hint = { left: "Click: open", right: "Jog: scroll" };
+            hint = ["Click: open", "Jog: scroll"];
         }
         drawFooter(hint);
     }
@@ -13813,7 +14117,17 @@ function changeComponentPreset(delta) {
 
 /* getSlotSettingValue(), adjustSlotSetting() -> shadow_ui_slots.mjs */
 
-/* Get Master FX setting current value for display */
+/*
+ * MASTER FX SETTINGS LIST -- the value column and the jog, for the
+ * screen-reader fallback list under VIEWS.MASTER_FX.
+ *
+ * These two used to be a 120-line if-chain apiece, and the name is a lie about
+ * nearly all of it: every branch but one served GLOBAL SETTINGS, which is a
+ * synthesised module contract now (shadow_ui_global_grid.mjs) with its own
+ * absolute writes and its own persistence. What is left is what the name always
+ * claimed -- the master bus's own Volume -- plus the actions, which carry no
+ * value and are not adjustable.
+ */
 function getMasterFxSettingValue(setting) {
     if (setting.key === "master_volume") {
         const val = shadow_get_param(0, "master_fx:volume");
@@ -13821,130 +14135,22 @@ function getMasterFxSettingValue(setting) {
         const num = parseFloat(val);
         return isNaN(num) ? val : `${Math.round(num * 100)}%`;
     }
-    if (setting.key === "link_audio_routing") {
-        const val = shadow_get_param(0, "master_fx:link_audio_routing");
-        return (val === "1") ? "On" : "Off";
-    }
-    if (setting.key === "link_audio_publish") {
-        const val = shadow_get_param(0, "master_fx:link_audio_publish");
-        return (val === "1") ? "On" : "Off";
-    }
-    if (setting.key === "usbc_out_persist") {
-        /* Annotate with the source last seen on the wire. Move's own Settings
-         * screen keeps showing its boot default after Schwung restores the
-         * value, so this row is the only honest read of what's actually
-         * routed. Not a second control — Move's menu still chooses it. */
-        const on = shadow_get_param(0, "master_fx:usbc_out_persist") === "1";
-        const src = shadow_get_param(0, "master_fx:usbc_out_source");
-        const label = (src === "1") ? "Main Out" : (src === "0") ? "Mic" : null;
-        return (on ? "On" : "Off") + (label ? ` (${label})` : "");
-    }
-    if (setting.key === "latency_comp_enabled") {
-        const val = shadow_get_param(0, "master_fx:latency_comp_enabled");
-        return (val === "1") ? "On" : "Off";
-    }
+    /* master_fx_midi_channel is a MASTER FX setting, not a Global Settings one,
+     * so it stays here after the Global Settings keys moved into the contract
+     * (shadow_ui_global_grid.mjs). It arrived on main in #266 while this branch
+     * was deleting its neighbours -- carried across the merge deliberately.
+     *
+     * Branch on the RAW value: a failed read is null, an unserved key is "",
+     * and both parse to the same thing. Reporting "All" for a read that never
+     * completed would show the user a setting they do not have. */
     if (setting.key === "master_fx_midi_channel") {
-        /* Branch on the RAW value: a failed read is null, an unserved key is
-         * "", and parseInt turns both into NaN. Reporting "All" for a read
-         * that never completed would show the user a setting they don't have. */
-        /* Branch on the RAW value: a failed read is null, an unserved key is
-         * "", and both parse to the same thing. Reporting "All" for a read
-         * that never completed would show the user a setting they don't have. */
         const raw = shadow_get_param(0, "master_fx:midi_channel");
         if (raw === null || raw === "") return "--";
         return MFX_MIDI_CHANNEL_OPTIONS[mfxMidiChannelToIndex(raw)];
     }
-    if (setting.key === "resample_bridge") {
-        const modeRaw = shadow_get_param(0, "master_fx:resample_bridge");
-        const mode = parseResampleBridgeMode(modeRaw);
-        return RESAMPLE_BRIDGE_LABEL_BY_MODE[mode] || "Off";
-    }
-    if (setting.key === "overlay_knobs") {
-        const mode = typeof overlay_knobs_get_mode === "function" ? overlay_knobs_get_mode() : 0;
-        return ["+Shift", "+Jog Touch", "Off", "Native"][mode] || "+Shift";
-    }
-    if (setting.key === "display_mirror") {
-        return (typeof display_mirror_get === "function" && display_mirror_get()) ? "On" : "Off";
-    }
-    if (setting.key === "screen_reader_enabled") {
-        return (typeof tts_get_enabled === "function" && tts_get_enabled()) ? "On" : "Off";
-    }
-    if (setting.key === "screen_reader_engine") {
-        if (typeof tts_get_engine === "function") {
-            const eng = tts_get_engine();
-            return eng === "flite" ? "Flite" : "eSpeak-NG";
-        }
-        return "eSpeak-NG";
-    }
-    if (setting.key === "screen_reader_speed") {
-        if (typeof tts_get_speed === "function") {
-            return tts_get_speed().toFixed(1) + "x";
-        }
-        return "1.0x";
-    }
-    if (setting.key === "screen_reader_pitch") {
-        if (typeof tts_get_pitch === "function") {
-            return Math.round(tts_get_pitch()) + " Hz";
-        }
-        return "110 Hz";
-    }
-    if (setting.key === "screen_reader_volume") {
-        if (typeof tts_get_volume === "function") {
-            return tts_get_volume() + "%";
-        }
-        return "70%";
-    }
-    if (setting.key === "screen_reader_debounce") {
-        if (typeof tts_get_debounce === "function") {
-            return tts_get_debounce() + "ms";
-        }
-        return "300ms";
-    }
-    if (setting.key === "set_pages_enabled") {
-        return (typeof set_pages_get === "function" && set_pages_get()) ? "On" : "Off";
-    }
-    if (setting.key === "shadow_ui_trigger") {
-        const val = typeof shadow_ui_trigger_get === "function" ? shadow_ui_trigger_get() : 2;
-        const labels = (setting && Array.isArray(setting.options)) ? setting.options : ["Long Press", "Shift+Vol", "Both"];
-        return labels[val] || labels[2] || "Both";
-    }
-    if (setting.key === "skipback_shortcut") {
-        const val = typeof skipback_shortcut_get === "function" ? (skipback_shortcut_get() ? 1 : 0) : 0;
-        return ["Sh+Cap", "Sh+Vol+Cap"][val] || "Sh+Cap";
-    }
-    if (setting.key === "skipback_seconds") {
-        const sec = typeof skipback_seconds_get === "function" ? skipback_seconds_get() : 30;
-        if (sec >= 60) return (sec / 60) + "m";
-        return sec + "s";
-    }
-    if (setting.key === "auto_update_check") {
-        return autoUpdateCheckEnabled ? "On" : "Off";
-    }
-    if (setting.key === "browser_preview") {
-        return previewEnabled ? "On" : "Off";
-    }
-    if (setting.key === "pad_typing") {
-        return padSelectGlobal ? "On" : "Off";
-    }
-    if (setting.key === "text_preview") {
-        return textPreviewGlobal ? "On" : "Off";
-    }
-    if (setting.key === "param_view") {
-        return paramViewGlobal === 1 ? "Knobs" : "List";
-    }
-    if (setting.key === "filebrowser_enabled") {
-        return filebrowserEnabled ? "On" : "Off";
-    }
-    if (setting.key === "midi_indicator_enabled") {
-        return midiIndicatorEnabled ? "On" : "Off";
-    }
-    if (setting.key === "analytics_enabled") {
-        return (typeof host_get_analytics_enabled === "function" && host_get_analytics_enabled()) ? "On" : "Off";
-    }
     return "-";
 }
 
-/* Adjust Master FX setting value by delta */
 function adjustMasterFxSetting(setting, delta) {
     if (setting.type === "action") return;
 
@@ -13956,40 +14162,10 @@ function adjustMasterFxSetting(setting, delta) {
         return;
     }
 
-    if (setting.key === "link_audio_routing") {
-        const current = shadow_get_param(0, "master_fx:link_audio_routing");
-        const newVal = (current === "1") ? "0" : "1";
-        shadow_set_param(0, "master_fx:link_audio_routing", newVal);
-        cachedLinkAudioRouting = (newVal === "1");
-        saveMasterFxChainConfig();
-        if (newVal === "1") warnIfLinkDisabled("Move->Schwung");
-        return;
-    }
-    if (setting.key === "link_audio_publish") {
-        const current = shadow_get_param(0, "master_fx:link_audio_publish");
-        const newVal = (current === "1") ? "0" : "1";
-        shadow_set_param(0, "master_fx:link_audio_publish", newVal);
-        cachedLinkAudioPublish = (newVal === "1");
-        saveMasterFxChainConfig();
-        if (newVal === "1") warnIfLinkDisabled("Schwung->Link");
-        return;
-    }
-    if (setting.key === "latency_comp_enabled") {
-        const current = shadow_get_param(0, "master_fx:latency_comp_enabled");
-        const newVal = (current === "1") ? "0" : "1";
-        shadow_set_param(0, "master_fx:latency_comp_enabled", newVal);
-        cachedLatencyCompEnabled = (newVal === "1");
-        saveMasterFxChainConfig();
-        return;
-    }
-    if (setting.key === "usbc_out_persist") {
-        const current = shadow_get_param(0, "master_fx:usbc_out_persist");
-        const newVal = (current === "1") ? "0" : "1";
-        shadow_set_param(0, "master_fx:usbc_out_persist", newVal);
-        cachedUsbcOutPersist = (newVal === "1");
-        saveMasterFxChainConfig();
-        return;
-    }
+    /* master_fx_midi_channel is a MASTER FX setting, not a Global Settings one,
+     * so it stays after the Global Settings keys moved into the contract
+     * (shadow_ui_global_grid.mjs). It arrived on main in #266 while this branch
+     * was deleting its neighbours -- carried across the merge deliberately. */
     if (setting.key === "master_fx_midi_channel") {
         const raw = shadow_get_param(0, "master_fx:midi_channel");
         /* A failed read must not produce a write. Stepping from a value we
@@ -14005,202 +14181,6 @@ function adjustMasterFxSetting(setting, delta) {
         shadow_set_param(0, "master_fx:midi_channel", String(newVal));
         cachedMasterFxMidiChannel = newVal;
         saveMasterFxChainConfig();
-        return;
-    }
-    if (setting.key === "resample_bridge") {
-        const current = parseResampleBridgeMode(shadow_get_param(0, "master_fx:resample_bridge"));
-        const values = (Array.isArray(setting.values) && setting.values.length > 0)
-            ? setting.values
-            : RESAMPLE_BRIDGE_VALUES;
-        let idx = values.indexOf(current);
-        if (idx < 0) idx = 0;
-        const nextIdx = (idx + (delta > 0 ? 1 : values.length - 1)) % values.length;
-        shadow_set_param(0, "master_fx:resample_bridge", String(values[nextIdx]));
-        cachedResampleBridgeMode = values[nextIdx];
-        saveMasterFxChainConfig();
-        if (values[nextIdx] === 2) {
-            warningTitle = "Schwung Mix";
-            warningLines = wrapText("Replaces Mic and Line-in with ME + Move Audio", 18);
-            warningActive = true;
-        }
-        return;
-    }
-    if (setting.key === "overlay_knobs" && typeof overlay_knobs_set_mode === "function") {
-        const current = typeof overlay_knobs_get_mode === "function" ? overlay_knobs_get_mode() : 0;
-        const count = setting.values.length;
-        const next = ((current + (delta > 0 ? 1 : count - 1)) % count);
-        overlay_knobs_set_mode(next);
-        saveMasterFxChainConfig();
-        return;
-    }
-
-    if (setting.key === "display_mirror" && typeof display_mirror_set === "function") {
-        /* Toggle boolean */
-        const current = typeof display_mirror_get === "function" ? display_mirror_get() : false;
-        display_mirror_set(!current ? 1 : 0);
-        return;
-    }
-
-    if (setting.key === "screen_reader_enabled" && typeof tts_set_enabled === "function") {
-        /* Toggle boolean */
-        const current = typeof tts_get_enabled === "function" ? tts_get_enabled() : true;
-        tts_set_enabled(!current);
-        return;
-    }
-
-    if (setting.key === "screen_reader_engine" && typeof tts_set_engine === "function") {
-        const current = typeof tts_get_engine === "function" ? tts_get_engine() : "espeak";
-        const values = setting.values;
-        let idx = values.indexOf(current);
-        if (idx < 0) idx = 0;
-        const nextIdx = (idx + (delta > 0 ? 1 : values.length - 1)) % values.length;
-        tts_set_engine(values[nextIdx]);
-        return;
-    }
-
-    if (setting.key === "screen_reader_speed" && typeof tts_set_speed === "function") {
-        let val = typeof tts_get_speed === "function" ? tts_get_speed() : 1.0;
-        val += delta * setting.step;
-        val = Math.max(setting.min, Math.min(setting.max, val));
-        tts_set_speed(val);
-        return;
-    }
-
-    if (setting.key === "screen_reader_pitch" && typeof tts_set_pitch === "function") {
-        let val = typeof tts_get_pitch === "function" ? tts_get_pitch() : 110.0;
-        val += delta * setting.step;
-        val = Math.max(setting.min, Math.min(setting.max, val));
-        tts_set_pitch(val);
-        return;
-    }
-
-    if (setting.key === "screen_reader_volume" && typeof tts_set_volume === "function") {
-        let val = typeof tts_get_volume === "function" ? tts_get_volume() : 70;
-        val += delta * setting.step;
-        val = Math.max(setting.min, Math.min(setting.max, val));
-        tts_set_volume(Math.round(val));
-        return;
-    }
-
-    if (setting.key === "screen_reader_debounce" && typeof tts_set_debounce === "function") {
-        let val = typeof tts_get_debounce === "function" ? tts_get_debounce() : 300;
-        val += delta * setting.step;
-        val = Math.max(setting.min, Math.min(setting.max, val));
-        tts_set_debounce(Math.round(val));
-        return;
-    }
-
-    if (setting.key === "set_pages_enabled" && typeof set_pages_set === "function") {
-        const current = typeof set_pages_get === "function" ? set_pages_get() : true;
-        set_pages_set(!current ? 1 : 0);
-        return;
-    }
-
-    if (setting.key === "shadow_ui_trigger") {
-        if (typeof shadow_ui_trigger_set !== "function") return;
-        const current = typeof shadow_ui_trigger_get === "function" ? shadow_ui_trigger_get() : 2;
-        const values = (setting && Array.isArray(setting.values) && setting.values.length > 0)
-            ? setting.values
-            : [0, 1, 2];
-        let idx = values.indexOf(current);
-        if (idx < 0) idx = values.length - 1;
-        const nextIdx = (idx + (delta > 0 ? 1 : values.length - 1)) % values.length;
-        shadow_ui_trigger_set(values[nextIdx]);
-        return;
-    }
-
-    if (setting.key === "skipback_shortcut") {
-        if (typeof skipback_shortcut_set !== "function") return;
-        const current = typeof skipback_shortcut_get === "function" ? (skipback_shortcut_get() ? 1 : 0) : 0;
-        const values = setting.values;
-        let idx = values.indexOf(current);
-        if (idx < 0) idx = 0;
-        const nextIdx = (idx + (delta > 0 ? 1 : values.length - 1)) % values.length;
-        skipback_shortcut_set(values[nextIdx]);
-        return;
-    }
-
-    if (setting.key === "skipback_seconds") {
-        if (typeof skipback_seconds_set !== "function") return;
-        const current = typeof skipback_seconds_get === "function" ? skipback_seconds_get() : 30;
-        const values = setting.values;
-        let idx = values.indexOf(current);
-        if (idx < 0) idx = 0;
-        const nextIdx = (idx + (delta > 0 ? 1 : values.length - 1)) % values.length;
-        skipback_seconds_set(values[nextIdx]);
-        return;
-    }
-
-    if (setting.key === "auto_update_check") {
-        autoUpdateCheckEnabled = !autoUpdateCheckEnabled;
-        saveAutoUpdateConfig();
-        return;
-    }
-
-    if (setting.key === "browser_preview") {
-        previewEnabled = !previewEnabled;
-        if (!previewEnabled) previewStopIfPlaying();
-        saveBrowserPreviewConfig();
-        return;
-    }
-
-    if (setting.key === "pad_typing") {
-        setPadSelectGlobal(!padSelectGlobal);
-        savePadTypingConfig();
-        return;
-    }
-
-    if (setting.key === "text_preview") {
-        setTextPreviewGlobal(!textPreviewGlobal);
-        saveTextPreviewConfig();
-        return;
-    }
-
-    if (setting.key === "param_view") {
-        paramViewGlobal = paramViewGlobal === 1 ? 0 : 1;
-        saveParamViewConfig();
-        announce(paramViewGlobal === 1 ? "Param View Knobs" : "Param View List");
-        return;
-    }
-
-    if (setting.key === "filebrowser_enabled") {
-        filebrowserEnabled = !filebrowserEnabled;
-        const flagPath = "/data/UserData/schwung/filebrowser_enabled";
-        if (filebrowserEnabled) {
-            host_write_file(flagPath, "1");
-            /* Start filebrowser now */
-            if (typeof host_system_cmd === "function") {
-                host_system_cmd("sh -c '/data/UserData/schwung/bin/filebrowser --noauth --address 0.0.0.0 --port 404 --root /data/UserData --database /data/UserData/schwung/filebrowser.db --disableThumbnails --disablePreviewResize --disableExec --disableTypeDetectionByHeader >/dev/null 2>&1 &'");
-            }
-        } else {
-            host_remove_dir(flagPath);
-            /* Stop filebrowser now */
-            if (typeof host_system_cmd === "function") {
-                host_system_cmd("sh -c 'killall filebrowser 2>/dev/null'");
-            }
-        }
-        saveFilebrowserConfig();
-        warningTitle = "File Browser";
-        warningLines = filebrowserEnabled
-            ? wrapText("On. Access at http://move.local:404", 18)
-            : ["Off."];
-        warningActive = true;
-        return;
-    }
-
-    if (setting.key === "analytics_enabled") {
-        if (typeof host_set_analytics_enabled === "function") {
-            const current = typeof host_get_analytics_enabled === "function" && host_get_analytics_enabled();
-            host_set_analytics_enabled(current ? 0 : 1);
-        }
-        return;
-    }
-
-    if (setting.key === "midi_indicator_enabled") {
-        midiIndicatorEnabled = !midiIndicatorEnabled;
-        if (typeof midi_indicator_set === "function") {
-            midi_indicator_set(midiIndicatorEnabled ? 1 : 0);
-        }
         return;
     }
 }
@@ -14640,6 +14620,8 @@ function handleJog(delta, shift = isShiftHeld()) {
         case VIEWS.OVERTAKE_MODULE:
             /* Overtake module handles its own jog input */
             break;
+        /* The settings themselves are a contract on the page chrome now
+         * (enterGlobalSettingsGrid); this view is only the help viewer's host. */
         case VIEWS.GLOBAL_SETTINGS:
             if (helpDetailScrollState) {
                 handleScrollableTextJog(helpDetailScrollState, delta);
@@ -14647,25 +14629,6 @@ function handleJog(delta, shift = isShiftHeld()) {
                 const frame = helpNavStack[helpNavStack.length - 1];
                 frame.selectedIndex = Math.max(0, Math.min(frame.items.length - 1, frame.selectedIndex + delta));
                 announce(frame.items[frame.selectedIndex].title);
-            } else if (globalSettingsInSection) {
-                const section = GLOBAL_SETTINGS_SECTIONS[globalSettingsSectionIndex];
-                if (globalSettingsEditing) {
-                    /* Adjust value with jog */
-                    const item = section.items[globalSettingsItemIndex];
-                    adjustMasterFxSetting(item, delta);
-                    const newVal = getMasterFxSettingValue(item);
-                    announceParameter(item.label, newVal);
-                } else {
-                    /* Navigate items within section */
-                    globalSettingsItemIndex = Math.max(0, Math.min(section.items.length - 1, globalSettingsItemIndex + delta));
-                    const item = section.items[globalSettingsItemIndex];
-                    const value = item.type === "action" ? "" : getMasterFxSettingValue(item);
-                    announceMenuItem(item.label, value);
-                }
-            } else {
-                /* Navigate sections at top level */
-                globalSettingsSectionIndex = Math.max(0, Math.min(GLOBAL_SETTINGS_SECTIONS.length - 1, globalSettingsSectionIndex + delta));
-                announce(GLOBAL_SETTINGS_SECTIONS[globalSettingsSectionIndex].label);
             }
             break;
     }
@@ -15484,6 +15447,7 @@ function handleSelect() {
         case VIEWS.OVERTAKE_MODULE:
             /* Overtake module handles its own select input */
             break;
+        /* Help only — see the jog arm. */
         case VIEWS.GLOBAL_SETTINGS:
             if (helpDetailScrollState) {
                 if (isActionSelected(helpDetailScrollState)) {
@@ -15508,35 +15472,6 @@ function handleSelect() {
                     });
                     needsRedraw = true;
                     announce(item.title + ". " + item.lines.join(". "));
-                }
-            } else if (globalSettingsInSection) {
-                const section = GLOBAL_SETTINGS_SECTIONS[globalSettingsSectionIndex];
-                const item = section.items[globalSettingsItemIndex];
-                if (globalSettingsEditing) {
-                    /* Exit editing */
-                    globalSettingsEditing = false;
-                } else if (item.type === "action") {
-                    handleGlobalSettingsAction(item.key);
-                } else if (item.type === "bool" || item.type === "enum") {
-                    adjustMasterFxSetting(item, 1);
-                    const newVal = getMasterFxSettingValue(item);
-                    announceParameter(item.label, newVal);
-                } else if (item.type === "float" || item.type === "int") {
-                    globalSettingsEditing = !globalSettingsEditing;
-                }
-            } else {
-                const section = GLOBAL_SETTINGS_SECTIONS[globalSettingsSectionIndex];
-                if (section.isAction) {
-                    /* Direct action section (Help) */
-                    handleGlobalSettingsAction(section.id);
-                } else {
-                    /* Enter section */
-                    globalSettingsInSection = true;
-                    globalSettingsItemIndex = 0;
-                    const firstItem = section.items[0];
-                    const value = firstItem.type === "action" ? "" : getMasterFxSettingValue(firstItem);
-                    announce(section.label + ", " + firstItem.label + (value ? ": " + value : ""));
-                    if (section.id === "audio") warnIfLinkDisabled();
                 }
             }
             break;
@@ -15957,6 +15892,10 @@ function handleBack() {
             /* Overtake module handles its own back input.
              * Use Shift+Vol+Jog Click to exit overtake mode. */
             break;
+        /* Help only — see the jog arm. Popping the last frame leaves the stack
+         * empty and maybeReturnToGlobalGrid takes it from there; Back at the
+         * top of the SETTINGS themselves is the page chrome's exit intent
+         * (chrome.onExit), not this. */
         case VIEWS.GLOBAL_SETTINGS:
             if (helpDetailScrollState) {
                 helpDetailScrollState = null;
@@ -15969,27 +15908,10 @@ function handleBack() {
                 if (helpNavStack.length > 0) {
                     const frame = helpNavStack[helpNavStack.length - 1];
                     announce(frame.title + ", " + frame.items[frame.selectedIndex].title);
-                } else {
-                    announce("Settings, " + GLOBAL_SETTINGS_SECTIONS[globalSettingsSectionIndex].label);
                 }
-            } else if (globalSettingsEditing) {
-                /* Exit editing mode */
-                globalSettingsEditing = false;
-                needsRedraw = true;
-                const section = GLOBAL_SETTINGS_SECTIONS[globalSettingsSectionIndex];
-                const item = section.items[globalSettingsItemIndex];
-                const val = getMasterFxSettingValue(item);
-                announce(item.label + (val ? ", " + val : ""));
-            } else if (globalSettingsInSection) {
-                /* Return to section list */
-                globalSettingsInSection = false;
-                needsRedraw = true;
-                announce("Settings, " + GLOBAL_SETTINGS_SECTIONS[globalSettingsSectionIndex].label);
-            } else {
-                /* Exit Global Settings → exit shadow mode */
-                if (typeof shadow_request_exit === "function") {
-                    shadow_request_exit();
-                }
+            } else if (typeof shadow_request_exit === "function") {
+                /* Nothing left on this view to back out of. */
+                shadow_request_exit();
             }
             break;
     }
@@ -16334,7 +16256,7 @@ function drawComponentEdit() {
         const errorX = Math.floor((SCREEN_WIDTH - errorText.length * 5) / 2);
         print(errorX, centerY + 2, errorText, 1);
 
-        drawFooter({left: "Back: done"});
+        drawFooter(["Back: done"]);
         return;
     }
 
@@ -16372,7 +16294,7 @@ function drawComponentEdit() {
     }
 
     /* Show hint at bottom */
-    drawFooter({left: "Back: done", right: "Jog: preset"});
+    drawFooter(["Back: done", "Jog: preset"]);
 }
 
 /* Draw chain settings view */
@@ -16382,10 +16304,6 @@ function drawComponentEdit() {
 function drawKnobEditor() {
     clear_screen();
     drawHeader(`S${knobEditorSlot + 1} Knobs`);
-
-    const listY = LIST_TOP_Y;
-    const lineHeight = 10;
-    const maxVisible = Math.floor((FOOTER_RULE_Y - LIST_TOP_Y) / lineHeight);
 
     /* List all 8 knobs */
     const items = [];
@@ -16397,35 +16315,21 @@ function drawKnobEditor() {
         });
     }
 
-    /* Calculate scroll offset */
-    let scrollOffset = 0;
-    if (knobEditorIndex >= maxVisible) {
-        scrollOffset = knobEditorIndex - maxVisible + 1;
-    }
+    /* No editMode: the knob editor has no in-place editing state -- a click
+     * opens the param picker instead. */
+    drawMenuList({
+        items,
+        selectedIndex: knobEditorIndex,
+        getLabel: (item) => item.label,
+        getValue: (item) => item.type === "knob"
+            ? truncateText(getKnobAssignmentLabel(item.assignment), 12)
+            : "",
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+        valueAlignRight: true,
+        prioritizeSelectedValue: true
+    });
 
-    for (let i = 0; i < maxVisible && (i + scrollOffset) < items.length; i++) {
-        const itemIdx = i + scrollOffset;
-        const item = items[itemIdx];
-        const y = listY + i * lineHeight;
-        const isSelected = itemIdx === knobEditorIndex;
-
-        if (isSelected) {
-            fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
-        }
-
-        const labelColor = isSelected ? 0 : 1;
-        print(LIST_LABEL_X, y, item.label, labelColor);
-
-        /* Show assignment on the right */
-        if (item.type === "knob") {
-            const value = getKnobAssignmentLabel(item.assignment);
-            const truncValue = truncateText(value, 12);
-            const valueX = SCREEN_WIDTH - truncValue.length * 5 - 4;
-            print(valueX, y, truncValue, labelColor);
-        }
-    }
-
-    drawFooter({left: "Back: cancel", right: "Click: edit"});
+    drawFooter(["Back: cancel", "Click: edit"]);
 }
 
 /* Draw param picker - select target then param for knob assignment */
@@ -16446,7 +16350,7 @@ function drawKnobParamPicker() {
             getValue: () => ""
         });
 
-        drawFooter({left: "Back: cancel", right: "Click: select"});
+        drawFooter(["Back: cancel", "Click: select"]);
     } else if (knobParamPickerHierarchy && knobParamPickerLevel) {
         /* Hierarchy mode - show current level */
         const levelDef = knobParamPickerHierarchy.levels[knobParamPickerLevel];
@@ -16462,7 +16366,7 @@ function drawKnobParamPicker() {
         });
 
         const hasNav = knobParamPickerParams.some(p => p.type === "nav");
-        drawFooter(hasNav ? {left: "Back: up", right: "Click: select"} : {left: "Back: up", right: "Click: assign"});
+        drawFooter(hasNav ? ["Back: up", "Click: select"] : ["Back: up", "Click: assign"]);
     } else {
         /* Flat mode - show params for selected target */
         drawHeader(`Knob ${knobNum} Param`);
@@ -16480,7 +16384,7 @@ function drawKnobParamPicker() {
             getValue: () => ""
         });
 
-        drawFooter({left: "Back: targets", right: "Click: assign"});
+        drawFooter(["Back: targets", "Click: assign"]);
     }
 }
 
@@ -16496,7 +16400,7 @@ function drawDynamicParamPicker() {
             getLabel: (item) => item.label || item.key || "",
             getValue: () => ""
         });
-        drawFooter({left: "Back: targets", right: "Click: select"});
+        drawFooter(["Back: targets", "Click: select"]);
     } else {
         drawHeader("Select Target");
         drawMenuList({
@@ -16506,7 +16410,7 @@ function drawDynamicParamPicker() {
             getLabel: (item) => item.label || item.id || "",
             getValue: () => ""
         });
-        drawFooter({left: "Back: cancel", right: "Click: select"});
+        drawFooter(["Back: cancel", "Click: select"]);
     }
 }
 
@@ -16906,19 +16810,6 @@ function drawHelpDetail() {
     _ctx.getChainSettingValue = (...args) => getChainSettingValue(...args);
 
     /* Global settings state */
-    Object.defineProperty(_ctx, 'globalSettingsInSection', {
-        get() { return globalSettingsInSection; }, enumerable: true
-    });
-    Object.defineProperty(_ctx, 'globalSettingsSectionIndex', {
-        get() { return globalSettingsSectionIndex; }, enumerable: true
-    });
-    Object.defineProperty(_ctx, 'globalSettingsItemIndex', {
-        get() { return globalSettingsItemIndex; }, enumerable: true
-    });
-    Object.defineProperty(_ctx, 'globalSettingsEditing', {
-        get() { return globalSettingsEditing; }, enumerable: true
-    });
-    _ctx.GLOBAL_SETTINGS_SECTIONS = GLOBAL_SETTINGS_SECTIONS;
 
     /* View transitions - bound lazily since some may be defined after this block */
     _ctx.enterChainEdit = (...args) => enterChainEdit(...args);
@@ -17352,40 +17243,16 @@ function drawLfoEdit() {
     }
     drawHeader(truncateText(title, 22));
 
-    const items = getLfoItems();
-    const lineHeight = 9;
-    const maxVisible = Math.floor((FOOTER_RULE_Y - LIST_TOP_Y) / lineHeight);
-
-    let scrollOffset = 0;
-    if (selectedLfoItem >= maxVisible) {
-        scrollOffset = selectedLfoItem - maxVisible + 1;
-    }
-
-    for (let i = 0; i < maxVisible && (i + scrollOffset) < items.length; i++) {
-        const itemIdx = i + scrollOffset;
-        const y = LIST_TOP_Y + i * lineHeight;
-        const item = items[itemIdx];
-        const isSelected = itemIdx === selectedLfoItem;
-
-        if (isSelected) {
-            fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
-        }
-
-        const labelColor = isSelected ? 0 : 1;
-        print(LIST_LABEL_X, y, item.label, labelColor);
-
-        const value = getLfoDisplayValue(item);
-        if (value) {
-            const valueX = SCREEN_WIDTH - value.length * 5 - 4;
-            if (isSelected && editingLfoValue) {
-                print(valueX - 8, y, "<", 0);
-                print(valueX, y, value, 0);
-                print(valueX + value.length * 5 + 2, y, ">", 0);
-            } else {
-                print(valueX, y, value, labelColor);
-            }
-        }
-    }
+    drawMenuList({
+        items: getLfoItems(),
+        selectedIndex: selectedLfoItem,
+        getLabel: (item) => item.label,
+        getValue: (item) => getLfoDisplayValue(item) || "",
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+        valueAlignRight: true,
+        prioritizeSelectedValue: true,
+        editMode: editingLfoValue
+    });
 }
 
 /* LFO target picker: step 1 - select component */
@@ -18895,6 +18762,10 @@ globalThis.tick = function() {
     /* The Master FX half of the same reconcile. Its modals live under
      * VIEWS.MASTER_FX rather than a settings view of their own. */
     if (view === VIEWS.MASTER_FX) maybeReturnToMasterGrid();
+    /* ...and the Global Settings half. VIEWS.GLOBAL_SETTINGS is nothing but the
+     * help viewer's host now, so "the surface is idle again" means the help
+     * stack has emptied. */
+    if (view === VIEWS.GLOBAL_SETTINGS) maybeReturnToGlobalGrid();
 
     /* Guarded: a throw in any draw function would otherwise repeat every
      * frame — frozen screen with no recovery, since the C loop keeps
@@ -19200,7 +19071,15 @@ globalThis.onMidiMessageInternal = function(data) {
     /* Knob-grid view consumes the controls it owns. One early-out rather than a
      * case in each of the per-view switches: the grid's input mapping lives in
      * shared/param_pages/page_input.mjs and is tested there. */
+    /* The message overlay outranks the page, because a write ON the page is what
+     * raises it (Schwung Mix, Link Audio, File Browser — all three are Global
+     * Settings writes now). Asked as "IS A MODAL OPEN?" rather than as a list of
+     * the keys that raise one, which is the rule runMasterFxActionFromGrid
+     * records: it is what keeps a fourth modal-raising setting from being
+     * silently unanswerable. Left the overlay up with the grid eating every
+     * button and there is no press that can clear it. */
     if (view === VIEWS.PARAM_PAGES && paramPagesActive()) {
+        if (maybeDismissWarningFromInput(status, d1, d2)) { needsRedraw = true; return; }
         if (handleParamPagesMidi(data)) { needsRedraw = true; return; }
     }
 
@@ -19312,14 +19191,7 @@ globalThis.onMidiMessageInternal = function(data) {
     }
 
     /* Dismiss warning overlay on button presses, but not knob turns. */
-    if (warningActive && (status & 0xF0) === 0xB0 && d2 > 0) {
-        const isMainKnobTurn = d1 === MoveMainKnob;
-        const isParamKnobTurn = d1 >= KNOB_CC_START && d1 <= KNOB_CC_END;
-        if (!isMainKnobTurn && !isParamKnobTurn) {
-            dismissWarning();
-            return;  /* Consumed - don't process further */
-        }
-    }
+    if (maybeDismissWarningFromInput(status, d1, d2)) return;  /* Consumed */
 
     /* When a module UI is loaded, route MIDI to it (except Back button) */
     if (view === VIEWS.COMPONENT_EDIT && loadedModuleUi) {
