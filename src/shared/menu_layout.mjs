@@ -45,7 +45,7 @@ export const LIST_BOTTOM_CLEARANCE = MOVY_RULE_Y;
 /* Canonical footer-hint verb prefixes (cleanup step 9, U-2). The Move's jog
  * wheel click is "Click" (not "Push"); action words are lowercase. Build
  * hints with footerHint() so they don't drift back into verb soup:
- *   drawMenuFooter({ left: footerHint("click", "edit"), right: footerHint("jog", "scroll") })
+ *   drawMenuFooter([footerHint("click", "edit"), footerHint("jog", "scroll")])
  * Existing string-literal hints are equally valid as long as they follow the
  * same canon — pinned by tests/shadow/test_footer_verb_consistency.sh. */
 export const FOOTER_VERBS = Object.freeze({
@@ -128,22 +128,22 @@ function hintPair(text) {
  * but the last screen element still wearing the old chrome, so a list looked
  * like two products stacked.
  *
- * Both existing signatures are preserved: a bare string, or { left, right }.
- * `y` is accepted and ignored — the movy band centres its own text — and no
- * call site ever passed it.
+ * Takes either a bare hint string, or an ORDERED ARRAY of hint strings in
+ * display order. `y` is accepted and ignored — the movy band centres its own
+ * text — and no call site ever passed it.
  *
- * Note movy's own canon still applies once the pairs reach drawFooter: a BACK
- * hint is pulled to the right edge and its room reserved first, wherever the
- * caller put it. `{ left: "Back: slots", right: "Click: edit" }` therefore
- * renders as [CLICK] EDIT ... [BACK] SLOTS, which is the same place BACK sits
- * on the knob grid.
+ * The old `{ left, right }` shape is GONE, and deliberately not aliased: movy's
+ * own canon pulls a BACK hint to the right edge and reserves its room first,
+ * wherever the caller put it, so `{ left: "Back: slots" }` rendered on the
+ * RIGHT. A parameter named for a side it does not control is worse than no
+ * name. Order is the only thing the caller actually decides; everything else is
+ * movy's, and `["Back: slots", "Click: edit"]` still renders as
+ * [CLICK] EDIT ... [BACK] SLOTS — the same place BACK sits on the knob grid.
  */
-export function drawMenuFooter(text, y = FOOTER_TEXT_Y) {
-    if (!text) return;
-    const hints = (typeof text === 'object' && (text.left !== undefined || text.right !== undefined))
-        ? [hintPair(text.left), hintPair(text.right)]
-        : [hintPair(text)];
-    drawMovyFooter(DEVICE_CTX, hints.filter(Boolean));
+export function drawMenuFooter(hints, y = FOOTER_TEXT_Y) {
+    if (!hints) return;
+    const list = Array.isArray(hints) ? hints : [hints];
+    drawMovyFooter(DEVICE_CTX, list.map(hintPair).filter(Boolean));
 }
 
 /* Shared two-option confirmation modal (cleanup step 9, U-4): header +

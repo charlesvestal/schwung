@@ -52,7 +52,7 @@ shot("01-slot-settings", () => {
         listArea, valueAlignRight: true, prioritizeSelectedValue: true,
         announce: false,
     });
-    ML.drawMenuFooter({ left: "Back: slots", right: "Click: edit" });
+    ML.drawMenuFooter(["Back: slots", "Click: edit"]);
 });
 
 /* 2. The same list in edit mode -- the affordance all four spellings converged on. */
@@ -64,7 +64,7 @@ shot("02-edit-mode", () => {
         listArea, valueAlignRight: true, prioritizeSelectedValue: true,
         editMode: true, announce: false,
     });
-    ML.drawMenuFooter({ left: "Click: done", right: "Jog: adjust" });
+    ML.drawMenuFooter(["Click: done", "Jog: adjust"]);
 });
 
 /* 3. A long list, scrolled to the end -- scroll arrow, selection off the last row. */
@@ -78,7 +78,7 @@ shot("03-scrolled", () => {
         getLabel: (i) => i.label, getValue: (i) => i.value,
         listArea, valueAlignRight: true, announce: false,
     });
-    ML.drawMenuFooter({ left: "Back: return", right: "Jog: scroll" });
+    ML.drawMenuFooter(["Back: return", "Jog: scroll"]);
 });
 
 /* 4. The file picker -- labels only, no value column. */
@@ -93,7 +93,7 @@ shot("04-file-picker", () => {
         getLabel: (i) => i.label, getValue: () => "",
         listArea, announce: false,
     });
-    ML.drawMenuFooter({ left: "Click: select", right: "Jog: scroll" });
+    ML.drawMenuFooter(["Click: select", "Jog: scroll"]);
 });
 
 /* 5. Save As -- the widget that was copy-pasted between slots and Master FX. */
