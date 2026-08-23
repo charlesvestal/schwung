@@ -239,10 +239,11 @@ console.log("  ok  componentParamPagesIo(): null for a Master FX target, a live 
 # 5. BEHAVIOUR: componentTrailingMenus — row visibility and the `*`.
 # ============================================================================
 
-node -e '
-const fs = require("fs");
-const src = fs.readFileSync(process.argv[1], "utf8");
-const fail = (m) => { console.log("FAIL: " + m); process.exit(1); };
+node --input-type=module -e '
+import { readFileSync } from "node:fs";
+const R = process.cwd();
+const src = readFileSync(process.argv[1], "utf8");
+const fail = (m) => { console.error("FAIL: " + m); process.exit(1); };
 
 const grab = (name) => {
     const re = new RegExp("^function " + name + "\\([^]*?^}", "m");
@@ -251,35 +252,22 @@ const grab = (name) => {
     return m[0];
 };
 
-// hashState/makeRecord/isModified/presetRowValue is a small, pure, already
-// tested module (current_preset.mjs / test_current_preset.sh); re-implemented
-// here rather than imported so this stays a synchronous CommonJS `node -e`
-// like the rest of the plans repo lift tests. Kept byte-for-byte in spirit
-// with the real file: FNV-1a + length, `*` iff the live hash differs.
-const presetLib = `
-function hashState(blob) {
-    if (blob === null || blob === undefined) return null;
-    const s = String(blob);
-    let h = 0x811c9dc5;
-    for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0; }
-    return h.toString(16) + ":" + s.length;
-}
-function isModified(record, liveBlob) {
-    if (!record || !record.name || !record.hash) return false;
-    const live = hashState(liveBlob);
-    if (live === null) return false;
-    return live !== record.hash;
-}
-function presetRowValue(record, liveBlob) {
-    if (!record || !record.name) return "(none)";
-    return isModified(record, liveBlob) ? record.name + " *" : record.name;
-}
-`;
+// hashState/makeRecord/isModified/presetRowValue are the REAL, already-tested
+// module (current_preset.mjs / test_current_preset.sh) -- imported, not
+// re-typed. A hand copy here already drifted once: presetRowValue moved its
+// mark from trailing to LEADING the name (commit 7ebbc23b, because a trailing
+// mark is the first thing a truncating list eats) and an inlined copy kept
+// asserting the old, wrong shape while staying green. Importing means this
+// test tracks the shipping function by construction.
+const CP = await import(R + "/src/shared/param_pages/current_preset.mjs");
 
+// new Function(body) does not close over this scripts scope, so the imported
+// presetRowValue is handed in as a PARAMETER of the composed function -- the
+// grabbed componentTrailingMenus source references it as a free identifier,
+// which resolves through that parameter the same way it resolves through the
+// real modules top-level import in shadow_ui.js.
 const body = [
-    presetLib,
-    "let cfgSlot0 = { module: \"obxd\" };",
-    "let chainConfigs = { 1: { synth: cfgSlot0 } };",
+    "let chainConfigs = {};",
     "function createEmptyChainConfig() { return { synth: null }; }",
     "function getChainComponentModule(cfg, key) { return cfg && cfg.synth; }",
     "let userRecord = null;",
@@ -287,34 +275,40 @@ const body = [
     "let liveBlob = \"{}\";",
     "function getSlotStateWithRetry() { return liveBlob; }",
     grab("componentTrailingMenus"),
-    "const results = {};",
-    "",
-    "// No module loaded -> no trailing pages at all.",
-    "chainConfigs[2] = { synth: null };",
-    "results.empty = componentTrailingMenus(2, \"synth\", \"synth\");",
-    "",
-    "// Loaded, no user preset on record: Preset (none), Load + Save As only.",
-    "userRecord = null;",
-    "results.noRecord = componentTrailingMenus(1, \"synth\", \"synth\");",
-    "",
-    "// Loaded, record matches live state: no *, Save + Delete present.",
-    "userRecord = { name: \"Fat Brass\", hash: hashState(\"{}\") };",
-    "liveBlob = \"{}\";",
-    "results.clean = componentTrailingMenus(1, \"synth\", \"synth\");",
-    "",
-    "// Loaded, record present but live state has drifted: the *.",
-    "liveBlob = \"{\\\"x\\\":1}\";",
-    "results.dirty = componentTrailingMenus(1, \"synth\", \"synth\");",
-    "",
-    "return results;",
+    "return {",
+    "  run: (slot, key, prefix) => componentTrailingMenus(slot, key, prefix),",
+    "  setRecord: (r) => { userRecord = r; },",
+    "  setLiveBlob: (b) => { liveBlob = b; },",
+    "  setChainConfigs: (c) => { chainConfigs = c; },",
+    "};",
 ].join("\n");
 
-let r;
+let harness;
 try {
-    r = new Function(body)();
+    harness = new Function("presetRowValue", body)(CP.presetRowValue);
 } catch (e) {
-    fail("componentTrailingMenus behaviour: " + e.message);
+    fail("could not build the componentTrailingMenus harness: " + e.message);
 }
+
+const r = {};
+
+// No module loaded -> no trailing pages at all.
+harness.setChainConfigs({ 1: { synth: { module: "obxd" } }, 2: { synth: null } });
+r.empty = harness.run(2, "synth", "synth");
+
+// Loaded, no user preset on record: Preset (none), Load + Save As only.
+harness.setRecord(null);
+harness.setLiveBlob("{}");
+r.noRecord = harness.run(1, "synth", "synth");
+
+// Loaded, record matches live state: no *, Save + Delete present.
+harness.setRecord(CP.makeRecord("Fat Brass", "{}"));
+harness.setLiveBlob("{}");
+r.clean = harness.run(1, "synth", "synth");
+
+// Loaded, record present but live state has drifted.
+harness.setLiveBlob("{\"x\":1}");
+r.dirty = harness.run(1, "synth", "synth");
 
 const actions = (page) => page.entries.filter((e) => e.action).map((e) => e.action);
 const presetRow = (rows) => rows[0].entries[0];
@@ -332,14 +326,21 @@ if (presetRow(r.clean).value !== "Fat Brass") fail("unmodified record should rea
 a = actions(r.clean[0]);
 if (!a.includes("up_save") || !a.includes("up_delete")) fail("Save/Delete must be PRESENT with a preset loaded, got " + a.join(","));
 
-if (presetRow(r.dirty).value !== "Fat Brass *") fail("a drifted live state must show the *, got " + JSON.stringify(presetRow(r.dirty)));
+// The mark LEADS the name (see current_preset.mjs presetRowValue) -- a
+// trailing mark is the first character a truncating list drops.
+if (presetRow(r.dirty).value !== CP.presetRowValue(CP.makeRecord("Fat Brass", "{}"), "{\"x\":1}"))
+    fail("a drifted live state must match the REAL presetRowValue(), got " + JSON.stringify(presetRow(r.dirty)));
+if (!presetRow(r.dirty).value.startsWith("*"))
+    fail("the modified mark must LEAD the name (a trailing mark is the first thing a " +
+         "truncating list drops), got " + JSON.stringify(presetRow(r.dirty)));
 
 const moduleActions = actions(r.clean[1]);
 if (moduleActions.join(",") !== "swap_module,remove_module")
     fail("Module page must offer exactly Swap Module then Remove Module, got " + moduleActions.join(","));
 
 console.log("  ok  componentTrailingMenus(): [] when empty; (none)/Load+SaveAs-only when no " +
-            "record; Save+Delete when a record exists; the * appears iff the live state drifted");
+            "record; Save+Delete when a record exists; the real presetRowValue() decides the " +
+            "* (imported from current_preset.mjs, not re-typed)");
 ' "$UI"
 
 # ============================================================================
