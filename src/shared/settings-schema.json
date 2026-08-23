@@ -32,7 +32,7 @@
       },
       {
         "key": "text_preview",
-        "label": "Typing Preview",
+        "label": "Show Typed",
         "type": "bool"
       },
       {
@@ -157,7 +157,7 @@
       },
       {
         "key": "screen_reader_speed",
-        "label": "Voice Speed",
+        "label": "Speed",
         "type": "float",
         "min": 0.5,
         "max": 6.0,
@@ -165,7 +165,7 @@
       },
       {
         "key": "screen_reader_pitch",
-        "label": "Voice Pitch",
+        "label": "Pitch",
         "type": "float",
         "min": 80,
         "max": 180,
@@ -173,7 +173,7 @@
       },
       {
         "key": "screen_reader_volume",
-        "label": "Voice Volume",
+        "label": "Volume",
         "type": "int",
         "min": 0,
         "max": 100,

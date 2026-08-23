@@ -303,7 +303,7 @@ export const DISPLAY_PARAMS = [
       options: ["Shift", "Jog", "Off", "Native"],
       short_options: ["SHF", "JOG", "OFF", "NAT"], default: 0 },
     bool("pad_typing", "Pad Typing", 0),
-    bool("text_preview", "Preview", 0),
+    bool("text_preview", "Show Typed", 0),
     bool("midi_indicator_enabled", "Show MIDI", 0),
     /* The grid is the default (tests/host/test_param_view_default.sh pins
      * paramViewGlobal = 1), so the default index here is Knobs. */
@@ -361,16 +361,20 @@ export const AUDIO_PARAMS = [
 /* ------------------------------------------------------------ accessibility */
 
 export const ACCESSIBILITY_PARAMS = [
-    bool("screen_reader_enabled", "Reader", 0),
+    /* Deliberately wider than its row: the full name matters more than
+ * fitting, and it truncates by about one character. The exemption
+ * rides the parameter so it is visible where the name is chosen. */
+    Object.assign(bool("screen_reader_enabled", "Screen Reader", 0),
+                  { preferFullName: true }),
     { key: "screen_reader_engine", name: "Engine", type: "enum",
       options: ["eSpeak", "Flite"], short_options: ["ESP", "FLI"], default: 0 },
     { key: "screen_reader_speed", name: "Speed", type: "float",
       min: 0.5, max: 6.0, step: 0.1, default: 1.0, unit: "x" },
-    { key: "screen_reader_pitch", name: "Voice Pitch", type: "int",
+    { key: "screen_reader_pitch", name: "Pitch", type: "int",
       min: 80, max: 180, step: 5, default: 110, unit: "Hz" },
     /* max 100 with unit "%" reads the raw value and appends the sign — the
      * x100 scaling in param_format only applies to a 0..1 fraction. */
-    { key: "screen_reader_volume", name: "Voice Vol", type: "int",
+    { key: "screen_reader_volume", name: "Volume", type: "int",
       min: 0, max: 100, step: 5, default: 70, unit: "%" },
     { key: "screen_reader_debounce", name: "Speak Delay", type: "int",
       min: 0, max: 1000, step: 50, default: 300, unit: "ms" },
