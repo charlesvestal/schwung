@@ -18,6 +18,13 @@
  * filter, lfo, eq) resolve the same way the real controller does
  * (viz.mjs resolveViz), so this is what the "Knobs" setting on device draws.
  *
+ * --layout list renders the SAME page as five rows (page_controller.mjs,
+ * LAYOUT_LIST). It drives a real controller against a fake device serving the
+ * fixture's contract, so the values, labels and chrome are the ones the engine
+ * produces rather than a re-implementation. Add --enter to see the entered
+ * state (a row highlighted) and --edit to see a row opened for editing
+ * (`[value]`); without either it draws the inert, bracketed state you arrive on.
+ *
  * Values are synthesised (mid-range, deterministic per key) since there is no
  * device to read them from — enough to judge layout, not to judge a patch.
  */
@@ -30,7 +37,9 @@ import { planPages, PAGE_KNOBS } from "../../src/shared/param_pages/page_plan.mj
 import { buildMetaIndex } from "../../src/shared/param_pages/param_meta.mjs";
 import { renderPage, LAYOUT_DIAL, LAYOUT_BAR } from "../../src/shared/param_pages/render_page.mjs";
 import { renderPageMovy, LAYOUT_MOVY } from "../../src/shared/param_pages/render_page_movy.mjs";
+import { createController, LAYOUT_LIST } from "../../src/shared/param_pages/page_controller.mjs";
 import { resolveViz } from "../../src/shared/param_pages/viz.mjs";
+import { createFakeDevice } from "./fake_device.mjs";
 
 const ROOT = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))));
 const FIXTURE = path.join(ROOT, "tests", "fixtures", "module-contracts.json");
@@ -81,7 +90,7 @@ const { pages, warnings } = planPages({ hierarchy: mod.ui_hierarchy, chainParams
 const metaIndex = buildMetaIndex({ hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params });
 const gridPages = pages.map((p, i) => ({ p, i })).filter(({ p }) => p.kind === PAGE_KNOBS);
 
-const LAYOUTS = { dial: LAYOUT_DIAL, bar: LAYOUT_BAR, movy: LAYOUT_MOVY };
+const LAYOUTS = { dial: LAYOUT_DIAL, bar: LAYOUT_BAR, movy: LAYOUT_MOVY, list: LAYOUT_LIST };
 const layout = LAYOUTS[flag("layout", "dial")] || LAYOUT_DIAL;
 const touched = flag("touch") !== null ? parseInt(flag("touch"), 10) : -1;
 const revealValues = !!flag("reveal");
@@ -104,7 +113,28 @@ for (const { p, i } of chosen) {
     const values = {};
     for (const k of (p.keys || [])) values[k] = fakeValue(k, metaIndex.getOrGuess(k));
 
-    if (layout === LAYOUT_MOVY) {
+    if (layout === LAYOUT_LIST) {
+        /* Drive the REAL controller against a fake device serving this module's
+         * contract — the list layout lives in page_controller.mjs, so anything
+         * short of that would be previewing a re-implementation. */
+        const dev = createFakeDevice({ id: mod.id, prefix: "synth", initial: values });
+        const ctrl = createController({
+            getParam: dev.getParam, setParam: dev.setParam,
+            announce: () => {}, now: dev.now,
+        });
+        ctrl.load({ prefix: "synth" });
+        ctrl.setLayout(LAYOUT_LIST);
+        ctrl.goToPage(i, { remember: false });
+        /* One read per tick is the whole point of the cursor; give it enough
+         * ticks for the page's values to land, exactly as the device does. */
+        for (let t = 0; t < (p.keys || []).length + 3; t++) ctrl.tick();
+        if (flag("enter") || flag("edit")) ctrl.enterMenu();
+        if (flag("edit")) ctrl.onClick(0);
+        ctrl.render(drawContext(fb), {
+            title,
+            footer: [["JOG", "PG"], ["SHFT", "SECT"], ["CLK", "MENU"]],
+        });
+    } else if (layout === LAYOUT_MOVY) {
         const { groups } = resolveViz({ keys: p.keys || [], metaIndex });
         renderPageMovy(drawContext(fb), {
             page: p, metaIndex, values, title,
