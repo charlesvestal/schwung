@@ -182,5 +182,122 @@ const groupOf = (cp, keys) => {
      "a marker naming ANOTHER file does not join this graphic");
 }
 
+/* ===================================================================== 7 ==
+ * SPRAY FENCES. A granular sampler picks each grain from a random offset
+ * around the position -- a REGION on the axis the cursor already lives on, so
+ * it draws as a pair of fences rather than as a knob showing a percentage.
+ *
+ * Two behaviours copied from granny engine rather than guessed:
+ *   max_offset = spray * (sample_len - 1)   -> the WHOLE file, not a window
+ *   start_idx wraps into [0, len)           -> so the fence wraps too
+ * and because the offset is symmetric, +-0.5 already reaches every frame. Past
+ * that the region cannot grow, so the fences stop at the file edges instead of
+ * drifting on and implying a spread the DSP never applies.
+ *
+ * THE DECOY IS THE POINT. granny ALSO declares `spread`, which is stereo width
+ * between voices. Matching it would draw a region on the sample that no grain
+ * is ever read from -- and it would look entirely plausible.
+ */
+{
+  const cp = [
+    { key: "position", name: "Position", type: "wav_position", min: 0, max: 1 },
+    { key: "spray",    name: "Spray",    type: "float", min: 0, max: 1 },
+    { key: "spread",   name: "Spread",   type: "float", min: 0, max: 1 },
+  ];
+  const keys = ["position", "spray", "spread", null, null, null, null, null];
+  const { g, mi } = groupOf(cp, keys);
+  ok(g && g.roles.spray === "spray", "spray binds as the spread role");
+  ok(g && g.keys.indexOf("spray") < 0,
+     "spray does NOT claim a cell -- it is a modifier of the cursor, and it "
+     + "keeps its own arc");
+  ok(g && g.roles.spray !== "spread",
+     "spread does not win over spray when both are present");
+
+
+  const rect = { x: 0, y: 16, w: 128, h: 16 };
+  const render = (vals) => {
+    const fb = createFramebuffer();
+    drawVizGroup(drawContext(fb), rect, g, vals, mi);
+    return fb;
+  };
+  const colOf = (p) => Math.min(127, Math.floor(p * 128));
+  /*
+   * A fence is DOTTED: it alternates down the whole column. Counting lit
+   * pixels does not distinguish it from the solid waveform body, which is why
+   * the first version of this test passed two assertions with no fence code
+   * written at all. Count TRANSITIONS instead -- a dotted column flips many
+   * times, a solid body flips twice.
+   */
+  const flips = (fb, col) => {
+    let n = 0;
+    for (let y = 18; y <= 30; y++) if (at(fb, col, y) !== at(fb, col, y - 1)) n++;
+    return n;
+  };
+  const fenced = (fb, col) => flips(fb, col) >= 6;
+
+  {
+    const fb = render({ position: "0.5", spray: "0.2", spread: "1.0" });
+    ok(fenced(fb, colOf(0.3)), "lower fence sits at position - spray");
+    ok(fenced(fb, colOf(0.7)), "upper fence sits at position + spray");
+  }
+  {
+    const fb = render({ position: "0.9", spray: "0.2", spread: "0" });
+    ok(fenced(fb, colOf(0.1)), "the upper fence WRAPS rather than running off the edge");
+  }
+  {
+    const fb = render({ position: "0.5", spray: "0.8", spread: "0" });
+    ok(fenced(fb, 0) && fenced(fb, 127),
+       "past +-0.5 the fences pin to the file edges -- the region cannot grow");
+  }
+  {
+    const fb = render({ position: "0.5", spray: "0", spread: "1.0" });
+    let any = false;
+    for (let c = 0; c < 128; c++) if (c !== colOf(0.5) && fenced(fb, c)) any = true;
+    ok(!any, "spray 0 draws no fence -- and spread at 1.0 draws nothing either");
+
+    /* Scanning columns is not enough on its own: at spray 0 both fences land
+       on the CURSOR column, which the scan above skips, so a missing `> 0`
+       guard survives it. Compare against a render with no spray role at all --
+       the two must be pixel-identical, which is the actual claim. */
+    const bare = createFramebuffer();
+    const gNoSpray = JSON.parse(JSON.stringify(g));
+    delete gNoSpray.roles.spray;
+    drawVizGroup(drawContext(bare), rect, gNoSpray, { position: "0.5" }, mi);
+    let diff = 0;
+    for (let i = 0; i < fb.pixels.length; i++) if (fb.pixels[i] !== bare.pixels[i]) diff++;
+    ok(diff === 0,
+       "spray 0 renders identically to no spray at all (" + diff + " pixels differ)");
+  }
+}
+
+/* THE DECOY, ON ITS OWN. The assertion above is toothless by itself: `spray`
+ * comes first in the pool, so a matcher widened to /spray|spread/ still binds
+ * the right key and the test passes. fizzik, nusaw and freak declare `spread`
+ * and NO spray -- stereo width, which is not a position on the sample at all --
+ * so the case that actually matters is a page where spread is the only
+ * candidate. Binding it would draw a region no grain is ever read from, and it
+ * would look entirely plausible. */
+{
+  const cp = [
+    { key: "position", name: "Position", type: "wav_position", min: 0, max: 1 },
+    { key: "spread",   name: "Spread",   type: "float", min: 0, max: 1 },
+  ];
+  const keys = ["position", "spread", null, null, null, null, null, null];
+  const { g, mi } = groupOf(cp, keys);
+  ok(g && !g.roles.spray,
+     "a page with `spread` and no `spray` binds NO spread role");
+
+  const fb = createFramebuffer();
+  drawVizGroup(drawContext(fb), { x: 0, y: 16, w: 128, h: 16 }, g,
+    { position: "0.5", spread: "0.3" }, mi);
+  let flipsMax = 0;
+  for (let c = 0; c < 128; c++) {
+    let n = 0;
+    for (let y = 18; y <= 30; y++) if (at(fb, c, y) !== at(fb, c, y - 1)) n++;
+    if (c !== 64 && n > flipsMax) flipsMax = n;
+  }
+  ok(flipsMax < 6, "and it draws no fence at all (max column flips " + flipsMax + ")");
+}
+
 process.exit(fail ? 1 : 0);
 '
