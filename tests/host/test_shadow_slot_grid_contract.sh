@@ -740,6 +740,49 @@ function makeMaster(over) {
     fail("runAction did not forward, got " + JSON.stringify(state.actions));
 }
 
+/* ---- A WRITE THAT MUST PERSIST, PERSISTS -------------------------------
+ *
+ * master_fx:midi_channel is the one param on this contract with side effects.
+ * The LIST path (adjustMasterFxSetting) set the param, mirrored the cache var
+ * AND called saveMasterFxChainConfig. When the screen became a contract the
+ * grid began writing through createMasterGridIo instead, which did the param
+ * and neither of the other two -- so the listen channel took effect and was
+ * then LOST on the next reboot, because the save wrote the stale cache.
+ * Reported from the device.
+ *
+ * Pinned at the io boundary: writing the enum INDEX must reach the host as the
+ * WIRE value, and must announce that it needs persisting. A param that sets
+ * fine and reverts on reboot looks like nothing at all until you power-cycle.
+ */
+{
+    const writes = [];
+    const io = SG.createMasterGridIo({
+        readParam: () => "0",
+        writeParam: (k, v) => writes.push({ k, v }),
+        hasPreset: () => false,
+    });
+
+    /* options are [All, 1..16], so index 11 is channel 11 -> wire 10.
+     * Index 0 is All -> wire -1. */
+    io.setParam("master_settings:master_fx:midi_channel", 11);
+    io.setParam("master_settings:master_fx:midi_channel", 0);
+
+    const got = writes.map((w) => w.k + "=" + w.v);
+    const want = ["master_fx:midi_channel=10", "master_fx:midi_channel=-1"];
+    if (JSON.stringify(got) !== JSON.stringify(want)) {
+        fail("the listen channel must reach the host as the WIRE value, not the "
+           + "option index -- got " + JSON.stringify(got) + ", want " + JSON.stringify(want));
+    }
+
+    /* And the read is the inverse, so a round trip is the identity. */
+    const back = SG.createMasterGridIo({
+        readParam: () => "9", writeParam: () => {}, hasPreset: () => false,
+    }).getParam("master_settings:master_fx:midi_channel");
+    if (String(back) !== "10") {
+        fail("wire 9 must read back as option index 10, got " + JSON.stringify(back));
+    }
+}
+
 if (failures) process.exit(1);
 console.log("PASS: slot grid contract — Main + LFO 1 + LFO 2 + Actions in that order, " +
             "Save As/Delete gated on a preset, all three storage conventions, " +
