@@ -27,7 +27,8 @@
  *   being turned and for a short settling window afterwards.
  */
 
-import { planPages, PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS } from "./page_plan.mjs";
+import { planPages, PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS,
+         buildTrailingPages, makeClaimer } from "./page_plan.mjs";
 import { resolveChildKey } from "./child_key.mjs";
 import { buildMetaIndex, inferFromValue, isTurnable, enumIndexOf, KIND_ENUM, KIND_OPAQUE } from "./param_meta.mjs";
 import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page.mjs";
@@ -453,6 +454,17 @@ export function createController(io = {}) {
      * release — see viz.mjs resolveViz. */
     const vizEnabled = io.enableViz !== false;
     const vizOverrides = io.vizOverrides || null;
+    /*
+     * The trailing pages, re-evaluated on every plan.
+     *
+     * A function rather than an array because the rows are conditional — Save
+     * and Delete mean nothing with no preset loaded — and the page set outlives
+     * those conditions. Same shape as SLOT_GRID_ACTIONS' always-or-hasPreset
+     * filter, just evaluated by the host instead of filtered here: the
+     * controller does not know what a preset is.
+     */
+    const trailingMenus = () =>
+        (typeof io.trailingMenus === "function" ? (io.trailingMenus() || []) : []);
 
     const s = {
         slot: 0,
@@ -760,7 +772,7 @@ export function createController(io = {}) {
             ? (sameComponent ? s.chainParams : null)
             : parse(rawChain);
         if (chainFailed && sameComponent) armContractSettle();
-        const planned = planPages({ hierarchy, chainParams, mode, visible });
+        const planned = planPages({ hierarchy, chainParams, mode, visible, trailingMenus: trailingMenus() });
         /* Retained so a visibility re-plan costs no extra device reads. */
         s.hierarchy = hierarchy;
         s.chainParams = chainParams;
@@ -2131,6 +2143,7 @@ export function createController(io = {}) {
             hierarchy: s.hierarchy, chainParams: s.chainParams,
             mode: s.lastLoadOpts && s.lastLoadOpts.mode,
             visible: s.lastLoadOpts && s.lastLoadOpts.visible,
+            trailingMenus: trailingMenus(),
         });
         if (!planned.pages.length) return;   /* never plan from nothing */
         s.pages = planned.pages;
@@ -2142,6 +2155,28 @@ export function createController(io = {}) {
         s.pageIndex = firstGrid(s.pages);
     }
 
+    /*
+     * Re-evaluate ONLY the trailing pages, in place.
+     *
+     * Not a re-plan: replanForMode resets pageIndex to firstGrid and
+     * replanIfCondition reanchors, and both would move you off the page you
+     * are standing on — which is exactly the page whose rows just changed,
+     * because you are the one who changed them (pressing Save on a "User
+     * Presets" page). Costs no device reads: the rows come from the host's
+     * own state, not from the module.
+     *
+     * Reuses buildTrailingPages/makeClaimer rather than re-deriving the
+     * trailing pages by hand, so the entry transform and the name-collision
+     * loop stay defined exactly once, in page_plan.mjs.
+     */
+    function refreshTrailing() {
+        const nonTrailing = s.pages.filter((p) => !p.trailing);
+        const claim = makeClaimer(new Set(nonTrailing.map((p) => p.name)));
+        const built = buildTrailingPages(trailingMenus(), claim);
+        s.pages = nonTrailing.concat(built.pages);
+        if (s.pageIndex >= s.pages.length) s.pageIndex = Math.max(0, s.pages.length - 1);
+    }
+
     function replanIfCondition(key) {
         if (!s.conditionKeys.has(key)) return;
         const oldPages = s.pages, oldIndex = s.pageIndex;
@@ -2149,6 +2184,7 @@ export function createController(io = {}) {
             hierarchy: s.hierarchy, chainParams: s.chainParams,
             mode: s.lastLoadOpts && s.lastLoadOpts.mode,
             visible: s.lastLoadOpts && s.lastLoadOpts.visible,
+            trailingMenus: trailingMenus(),
         });
         if (planned.pages.length !== oldPages.length ||
             planned.pages.some((p, i) => (p.keys || []).join() !== ((oldPages[i] || {}).keys || []).join())) {
@@ -2724,7 +2760,7 @@ export function createController(io = {}) {
     }
 
     return {
-        load, reloadIfChanged, tick,
+        load, reloadIfChanged, tick, refreshTrailing,
         /* For a selection made OUTSIDE the controller — the list editor drives
          * the same modules through its own preset browser and has the same
          * race. Books the settle; costs nothing until it comes due. */
