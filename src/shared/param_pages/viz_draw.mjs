@@ -939,6 +939,43 @@ export function drawSample(ctx, rect, roles, values, metaIndex) {
     bracket(posOf("loopStart"), true);
     bracket(posOf("loopEnd"), false);
 
+    const pos = posOf("position");
+
+    /*
+     * GRANULAR SPREAD: the region grains are actually drawn from, as a dotted
+     * fence either side of the cursor. Dotted rather than solid so it reads as
+     * a boundary the cursor may wander past, not as a second cursor.
+     *
+     * Two behaviours copied from granny's engine rather than guessed:
+     *   max_offset = spray * (sample_len - 1)   -> the WHOLE file, not a window
+     *   start_idx wraps into [0, len)           -> so the fence wraps too
+     * and because the offset is symmetric, ±0.5 already reaches every frame:
+     * past that the region cannot grow, so the fences stop at the file edges
+     * instead of drifting on and implying a spread the DSP never applies.
+     */
+    const spray = posOf("spray");
+    /* `spray > 0` is inert in every reachable case -- at 0 both fences land on
+     * the cursor column and the cursor, drawn last as a solid full-height
+     * complement, overwrites them. Kept for intent and to skip the work; the
+     * mutation that removes it is an EQUIVALENT mutant, not an untested gap. */
+    if (pos !== undefined && spray !== undefined && spray > 0) {
+        const wrap = (f) => f - Math.floor(f);
+        const full = spray >= 0.5;
+        for (const side of [-1, 1]) {
+            const at = full ? (side < 0 ? 0 : 1 - 1 / w) : wrap(pos + side * spray);
+            const fx = x0 + colOf(at);
+            const fh = halfAt(fx - x0);
+            for (let yy = topY; yy <= botY; yy++) {
+                if (((yy + fx) & 1) !== 0) continue;
+                /* Inside the waveform body the fence must be CUT, not added: a
+                 * lit pixel over a lit body is invisible. Same complement
+                 * technique the cursor uses just below. */
+                const inWave = yy >= midY - fh && yy <= midY + fh;
+                ctx.fillRect(fx, yy, 1, 1, inWave ? 0 : 1);
+            }
+        }
+    }
+
     /*
      * The cursor is the envelope's COMPLEMENT in its own column: the sample is
      * cleared there and the space around it is lit. That inverts it over the
@@ -947,7 +984,6 @@ export function drawSample(ctx, rect, roles, values, metaIndex) {
      * bright line; through a loud one it becomes a dark notch cut into the
      * body. Either way it is the highest-contrast thing in the column.
      */
-    const pos = posOf("position");
     if (pos !== undefined) {
         const mi = colOf(pos);
         const h = halfAt(mi), mx = x0 + mi;
