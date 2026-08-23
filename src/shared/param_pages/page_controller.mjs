@@ -113,7 +113,12 @@ export { MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W } from "./render_page_movy.mjs";
 const MENU_FRAME_X = 4, MENU_FRAME_Y = 9, MENU_FRAME_W = 120;
 /* One clear row above the frame and one below, hence the 1 on each side. */
 const MENU_FRAME_BOTTOM_INSET = 1;
-const MENU_BRACKET_LEN = 7;
+/* 4, matching the divable-cell bracket in render_page_movy. It was 7, whose
+ * top-left arm ran x=4..10 on row 9 -- directly over where the first list row
+ * begins now that the caret is gone, so the two merged into one blob in the
+ * corner. Shorter arms clear the text AND read the same: a bracket is a corner
+ * tick, not a border. */
+const MENU_BRACKET_LEN = 4;
 
 /*
  * The scroll-arrow column for a page-chrome list.
