@@ -1058,6 +1058,36 @@ Modules expose a navigable parameter hierarchy to the Shadow UI via `ui_hierarch
 | `child_prefix` / `child_count` / `child_label` | For repeated elements (see below) |
 | `navigate_to` | Where to land after choosing from this level's list (see below) |
 | `visible_if` | Optional conditional visibility rule for this level |
+| `menu` | Array of `{label, action?, level?, value?}` rendered as a plain list page (see below) |
+
+#### `menu` — a level's own action list, and where it lands
+
+A level can declare its own list of actions/jumps that have no value to turn:
+
+```json
+"menu": [
+  { "label": "Save", "action": "save" },
+  { "label": "LFO 1", "level": "lfo1" },
+  { "label": "Mode", "action": "mode", "value": "Poly" }
+]
+```
+
+`value` is optional and right-aligned, so a settings-style menu reads like a
+list. **It lands right after THAT LEVEL's own grid pages — not at the end of
+the whole plan.** A `menu` on `root` is the SECOND page a user sees, not the
+last, because the tree walk emits it before descending into any level `root`
+navigates to. If you want your menu to read as a true finale, put it on its
+own level and reference that level last — that is how Slot Settings does it,
+and it only works there because that screen synthesises its entire hierarchy
+end to end. A module author does not own the order the rest of the walk
+takes, so there is no way to make an ordinary level's `menu` "last" from
+inside `ui_hierarchy` itself.
+
+**You never need this to get User Presets / Module actions.** Every loaded
+chain component already gets a "User Presets" and a "Module" page appended
+after its whole jog sequence, for free — declare nothing. See CLAUDE.md,
+"Every component's knob grid ends with two pages it never declared", for why
+that append happens in the planner rather than through this field.
 
 #### Selector keys must not appear in `knobs`
 
