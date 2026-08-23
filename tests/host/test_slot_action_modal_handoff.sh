@@ -58,8 +58,14 @@ function run({ setsFlag }) {
   const setView = (v) => { log.view = v; };
 
   /* eslint-disable no-new-func */
+  /* gridActionOpenedSomething is the shared did-this-open-a-modal predicate
+     (src/shadow/shadow_ui.js) that runSlotActionFromGrid now calls instead of
+     inlining its own OR of the three flags -- passed in here the same way the
+     other four dependencies are, so the lift stays a lift and not a copy of
+     the predicate logic. */
   const fn = new Function(
     "runChainSettingAction", "exitParamPages", "setView", "VIEWS", "state",
+    "gridActionOpenedSomething",
     body.replace(/showingNamePreview/g, "state.showingNamePreview")
         .replace(/confirmingOverwrite/g, "state.confirmingOverwrite")
         .replace(/confirmingDelete/g, "state.confirmingDelete")
@@ -77,7 +83,8 @@ function run({ setsFlag }) {
       if (setsFlag === "overwrite") state.confirmingOverwrite = true;
       if (setsFlag === "delete")    state.confirmingDelete = true;
     };
-    return fn(inner, exitParamPages, setView, VIEWS, state)(slot, key);
+    const gridActionOpenedSomething = (...conditions) => conditions.some(Boolean);
+    return fn(inner, exitParamPages, setView, VIEWS, state, gridActionOpenedSomething)(slot, key);
   };
   const handed = wrapped(2, "save");
   return { handed, log, state };
@@ -238,8 +245,13 @@ const src = fs.readFileSync("src/shadow/shadow_ui.js", "utf8");
       masterConfirmingDelete: false, suppressMasterGridOnce: false,
       masterModalFromGrid: false, needsRedraw: false,
     }, state);
+    /* gridActionOpenedSomething is the shared did-this-open-a-modal predicate
+       (src/shadow/shadow_ui.js) that runMasterFxActionFromGrid now calls
+       instead of inlining its own OR of the three flags -- passed in here the
+       same way the other dependencies are. */
+    const gridActionOpenedSomething = (...conditions) => conditions.some(Boolean);
     const fn = new Function("s", "handleMasterFxSettingsAction", "exitParamPages",
-      "setView", "VIEWS",
+      "setView", "VIEWS", "gridActionOpenedSomething",
       body.replace(/masterShowingNamePreview/g, "s.masterShowingNamePreview")
           .replace(/masterConfirmingOverwrite/g, "s.masterConfirmingOverwrite")
           .replace(/masterConfirmingDelete/g, "s.masterConfirmingDelete")
@@ -251,7 +263,8 @@ const src = fs.readFileSync("src/shadow/shadow_ui.js", "utf8");
         () => { if (state.setsFlag) s[state.setsFlag] = true; },
         () => { log.exited++; },
         (v) => { log.view = v; },
-        { MASTER_FX: "masterfx" });
+        { MASTER_FX: "masterfx" },
+        gridActionOpenedSomething);
     return { handed: fn("save"), s, log };
   };
 

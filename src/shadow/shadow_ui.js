@@ -1929,11 +1929,19 @@ function componentTrailingMenus(slotIndex, componentKey, prefix) {
 
 /*
  * Perform a "User Presets" / "Module" trailing-page ACTION, by key — the
- * counterpart to runSlotActionFromGrid / runMasterFxActionFromGrid, and the
- * simplest of the three. Save and Save As never leave VIEWS.PARAM_PAGES (a
- * text-entry overlay sits on top of it, same as the browser's own
- * "[Save current...]" row); Load, Delete and Swap hand off to screens that
- * already exist rather than growing new ones.
+ * fourth instance of the hand-off runSlotActionFromGrid / runMasterFxActionFromGrid
+ * / runGlobalActionFromGrid perform, and it asks the same shared question
+ * (gridActionOpenedSomething) rather than listing which of the six actions
+ * leave.
+ *
+ * Save and Save As never leave VIEWS.PARAM_PAGES (a text-entry overlay sits on
+ * top of it, same as the browser's own "[Save current...]" row) — so for those
+ * the predicate is false and nothing else happens, same as today. Load,
+ * Delete, Swap and Remove hand off to screens that already exist (the preset
+ * browser, the confirm-delete screen, the component picker) rather than
+ * growing new ones, and every one of those paths eventually backs out to
+ * VIEWS.CHAIN_EDIT — see maybeReturnToComponentGrid for the way back from
+ * there to the grid the user actually opened.
  */
 function runComponentActionFromGrid(slotIndex, componentKey, action) {
     const prefix = getComponentParamPrefix(componentKey);
@@ -1941,14 +1949,16 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
     const loaded = getChainComponentModule(cfg, componentKey);
     const moduleId = loaded && loaded.module;
     const record = getUserPresetRecord(slotIndex, prefix);
+    let result;
 
     switch (action) {
         case "up_load":
             enterPresetBrowser(slotIndex, componentKey, moduleId, prefix);
-            return true;
+            result = true;
+            break;
 
         case "up_save": {
-            if (!record || !record.name) return false;
+            if (!record || !record.name) { result = false; break; }
             const ok = overwriteUserPreset(slotIndex, prefix, moduleId, record.name);
             if (ok) {
                 const live = getSlotStateWithRetry(slotIndex, prefix + ":state");
@@ -1958,22 +1968,26 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
                 announce("Save failed");
                 needsRedraw = true;
             }
-            return true;
+            result = true;
+            break;
         }
 
         case "up_save_as":
             enterPresetSaveAs(slotIndex, componentKey, moduleId, prefix);
-            return true;
+            result = true;
+            break;
 
         case "up_delete":
-            if (!record || !record.name) return false;
+            if (!record || !record.name) { result = false; break; }
             enterPresetDeleteConfirm(slotIndex, componentKey, moduleId, prefix, record.name);
-            return true;
+            result = true;
+            break;
 
         case "swap_module": {
             const at = slotChainComponentIndex(slotIndex, componentKey);
             if (at >= 0) enterComponentSelect(slotIndex, at);
-            return true;
+            result = true;
+            break;
         }
 
         case "remove_module":
@@ -1984,11 +1998,54 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
              * None path, not a copy of it. */
             setUserPresetRecord(slotIndex, prefix, null);
             applyChainComponentPick(slotIndex, componentKey, "", null);
-            return true;
+            result = true;
+            break;
 
         default:
-            return false;
+            result = false;
     }
+
+    /* view !== VIEWS.PARAM_PAGES is the ONE test that is true for exactly the
+     * four cases above that hand off to a real screen (Load, Delete, Swap,
+     * Remove — the last via applyChainComponentPick, which always ends in
+     * setView(VIEWS.CHAIN_EDIT)) and false for Save/Save As/an unhandled key,
+     * which never move `view` at all. Asking the screen rather than the key
+     * is what keeps a future seventh action from being silently wrong here
+     * too. */
+    if (gridActionOpenedSomething(view !== VIEWS.PARAM_PAGES)) {
+        componentModalFromGrid = true;
+        componentGridReturnSlot = slotIndex;
+        componentGridReturnKey = componentKey;
+    }
+    return result;
+}
+
+/*
+ * ...and back to the grid once the hand-off screen is done with.
+ *
+ * Unlike the slot/Master FX/Global reconciles, the screens a component action
+ * hands off to are REAL navigations, not an overlay flag drawn by the same
+ * view the grid left — Load lands in VIEWS.PRESETS, Delete's confirm in
+ * VIEWS.PRESET_DETAIL, Swap/Remove in (or through) VIEWS.COMPONENT_SELECT —
+ * and every exit from any of those (Back, a completed Load, a completed
+ * delete-and-back-out) converges on VIEWS.CHAIN_EDIT, same as backing out of
+ * the component picker the ordinary way. So this RECONCILES from THAT
+ * arrival rather than hooking each of the several ways out of each of those
+ * screens — the same reasoning as maybeReturnToSlotGrid, aimed at a
+ * different convergence point because these hand-offs are navigations
+ * instead of overlays.
+ */
+function maybeReturnToComponentGrid() {
+    if (!componentModalFromGrid) return false;
+    componentModalFromGrid = false;
+    const slotIndex = componentGridReturnSlot;
+    const componentKey = componentGridReturnKey;
+    componentGridReturnSlot = -1;
+    componentGridReturnKey = "";
+    enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey), "",
+                    componentParamPagesIo(slotIndex, componentKey), paramPagesChromeFor(componentKey));
+    needsRedraw = true;
+    return true;
 }
 
 /*
@@ -2661,6 +2718,16 @@ let masterModalFromGrid = false;
  * has no list to be handed back to, so the only thing outstanding is "go back
  * to the page once the help stack closes". See maybeReturnToGlobalGrid. */
 let globalModalFromGrid = false;
+
+/* ...and the fourth: a component's "User Presets" / "Module" trailing page.
+ * No suppress twin either -- Load/Delete/Swap/Remove hand off to screens that
+ * already exist (the preset browser, the component picker) rather than a list
+ * of the grid's own, so there is nothing to keep showing while they run. Just
+ * where to come back to when they are done: the slot + component key the grid
+ * was open on. See maybeReturnToComponentGrid. */
+let componentModalFromGrid = false;
+let componentGridReturnSlot = -1;
+let componentGridReturnKey = "";
 
 function saveParamViewConfig() {
     try {
@@ -9700,7 +9767,7 @@ function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, c
     if (shape && shape.kind === "remove") {
         /* nothing more to write: the verb did the unload */
     } else if (paramKey) {
-        if (typeof host_log === "function") host_log(`applyComponentSelection: slot=${slotIndex} param=${paramKey} module=${moduleId}`);
+        if (typeof host_log === "function") host_log(`applyChainComponentPick: slot=${slotIndex} param=${paramKey} module=${moduleId}`);
         /*
          * BEFORE the module write, because the write reloads the position and
          * takes its modulation entries with it — after it, there is nothing
@@ -9715,7 +9782,7 @@ function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, c
                                         getComponentParamPrefix(comp.key));
         }
         const success = setSlotParam(slotIndex, paramKey, moduleId);
-        if (typeof host_log === "function") host_log(`applyComponentSelection: setSlotParam returned ${success}`);
+        if (typeof host_log === "function") host_log(`applyChainComponentPick: setSlotParam returned ${success}`);
         if (!success) {
             print(2, 50, "Failed to apply", 1);
         }
@@ -9838,6 +9905,25 @@ function runChainSettingAction(slot, key) {
 }
 
 /*
+ * Did the action just performed put something else on screen?
+ *
+ * The one question all four run*ActionFromGrid handlers ask, and the reason
+ * they ask it this way rather than testing the action key: a key test is
+ * right for today's actions and silently wrong for the next one added. Four
+ * copies of that reasoning is three chances to update three of them when a
+ * fifth action arrives.
+ *
+ * What counts as "something else" is screen-specific -- a slot's Save/Delete
+ * raise an overlay FLAG the list draws, Global Settings pushes a help stack or
+ * changes `view` outright, a component action changes `view` to a real screen
+ * -- so the caller states its own conditions and this only ORs them. The
+ * shared part is the QUESTION ("is any of this true"), not the mechanism.
+ */
+function gridActionOpenedSomething(...conditions) {
+    return conditions.some(Boolean);
+}
+
+/*
  * The param accessors the slot grid drives this slot through.
  *
  * All the mapping lives in shadow_ui_slot_grid.mjs, which is pure and tested on
@@ -9872,7 +9958,7 @@ function runChainSettingAction(slot, key) {
  */
 function runSlotActionFromGrid(slot, key) {
     runChainSettingAction(slot, key);
-    if (!(showingNamePreview || confirmingOverwrite || confirmingDelete)) return false;
+    if (!gridActionOpenedSomething(showingNamePreview, confirmingOverwrite, confirmingDelete)) return false;
     exitParamPages();
     /* The list must STAY the list while the modal is up -- re-entering the grid
      * would drop the confirmation on the floor again. */
@@ -10262,7 +10348,7 @@ function setFilebrowserRunning(on) {
  */
 function runMasterFxActionFromGrid(key) {
     handleMasterFxSettingsAction(key);
-    if (!(masterShowingNamePreview || masterConfirmingOverwrite || masterConfirmingDelete)) {
+    if (!gridActionOpenedSomething(masterShowingNamePreview, masterConfirmingOverwrite, masterConfirmingDelete)) {
         return false;
     }
     exitParamPages();
@@ -10313,8 +10399,8 @@ function maybeReturnToMasterGrid() {
  */
 function runGlobalActionFromGrid(action) {
     handleGlobalSettingsAction(action);
-    const opened = helpNavStack.length > 0 || !!helpDetailScrollState
-                   || view !== VIEWS.PARAM_PAGES;
+    const opened = gridActionOpenedSomething(
+        helpNavStack.length > 0, !!helpDetailScrollState, view !== VIEWS.PARAM_PAGES);
     if (!opened) return false;
     exitParamPages();
     globalModalFromGrid = true;
@@ -19042,6 +19128,10 @@ globalThis.tick = function() {
      * help viewer's host now, so "the surface is idle again" means the help
      * stack has emptied. */
     if (view === VIEWS.GLOBAL_SETTINGS) maybeReturnToGlobalGrid();
+    /* ...and the component-actions half. These hand-offs are navigations, not
+     * overlays, so "idle again" is arrival back at VIEWS.CHAIN_EDIT rather than
+     * staying on the view the grid left. See maybeReturnToComponentGrid. */
+    if (view === VIEWS.CHAIN_EDIT) maybeReturnToComponentGrid();
 
     /* Guarded: a throw in any draw function would otherwise repeat every
      * frame — frozen screen with no recovery, since the C loop keeps
