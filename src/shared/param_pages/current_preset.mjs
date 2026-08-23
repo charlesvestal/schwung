@@ -55,8 +55,18 @@ export function isModified(record, liveBlob) {
     return live !== record.hash;
 }
 
-/** The right-aligned value on the User Presets page first row. */
+/**
+ * The value on the User Presets page first row.
+ *
+ * The modified mark LEADS the name, which reads against convention — an editor
+ * would write "Fat Brass *". It is first because the row is 128px wide and the
+ * list renderer truncates the TAIL, so a trailing mark is the first thing lost:
+ * rendered on obxd, "Fat Brass *" drew as "Fat Br…" and the one character that
+ * carries the information was gone. A leading mark survives every name length.
+ *
+ * That was only visible in a rendered PNG. The text art read fine.
+ */
 export function presetRowValue(record, liveBlob) {
     if (!record || !record.name) return "(none)";
-    return isModified(record, liveBlob) ? `${record.name} *` : record.name;
+    return isModified(record, liveBlob) ? `* ${record.name}` : record.name;
 }
