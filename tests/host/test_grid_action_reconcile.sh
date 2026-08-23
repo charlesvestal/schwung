@@ -230,6 +230,103 @@ if (src.includes("Re-derived from slot+key") && /expected\s*\n?\s*\*?\s*to\s*\n?
   }
 }
 
+/* ---- 8. BEHAVIOUR: maybeReturnToComponentGrid must prove the arrival, ---- */
+/*         not just trust the flag.                                        */
+/*                                                                          */
+/* CHAIN_EDIT is reachable from places that have nothing to do with a fired */
+/* grid action (Shift+Vol+TrackN jumps, long-press, ...) and run every tick */
+/* regardless of view -- so "the flag is set and view is CHAIN_EDIT" is not */
+/* proof this arrival is the flow that raised the flag. A JUMP_TO_SLOT(3)   */
+/* while the flag was raised for slot 1 must NOT yank the user out of the   */
+/* slot-3 chain editor they deliberately opened. Driven behaviourally       */
+/* (lifted and RUN, not grepped) because a structural pin on the flag name  */
+/* alone would pass with the body having zero safety -- which is exactly    */
+/* what shipped before this was caught in review.                          */
+{
+  const body = findBody("maybeReturnToComponentGrid");
+  if (!body) {
+    fail("maybeReturnToComponentGrid is gone");
+  } else {
+    const run = (state) => {
+      const log = { entered: 0 };
+      const s = Object.assign({
+        componentModalFromGrid: true,
+        componentGridReturnSlot: 1,
+        componentGridReturnKey: "synth",
+        selectedSlot: 1,
+        needsRedraw: false,
+      }, state);
+      const textEntryActive = !!state.textEntryActive;
+      const isTextEntryActive = () => textEntryActive;
+      const getComponentParamPrefix = (k) => k;
+      const componentParamPagesIo = () => ({ marker: "io" });
+      const paramPagesChromeFor = () => ({ marker: "chrome" });
+      const enterParamPages = (...args) => { log.entered++; log.args = args; };
+      const patched = body
+        .replace(/\bcomponentModalFromGrid\b/g, "s.componentModalFromGrid")
+        .replace(/\bcomponentGridReturnSlot\b/g, "s.componentGridReturnSlot")
+        .replace(/\bcomponentGridReturnKey\b/g, "s.componentGridReturnKey")
+        .replace(/\bselectedSlot\b/g, "s.selectedSlot")
+        .replace(/\bneedsRedraw\b/g, "s.needsRedraw");
+      const fn = new Function(
+        "s", "isTextEntryActive", "getComponentParamPrefix",
+        "componentParamPagesIo", "paramPagesChromeFor", "enterParamPages",
+        patched + "\nreturn maybeReturnToComponentGrid;"
+      )(s, isTextEntryActive, getComponentParamPrefix, componentParamPagesIo, paramPagesChromeFor, enterParamPages);
+      return { fired: fn(), log, s };
+    };
+
+    /* 8a. Legitimate convergence: user backed all the way out to CHAIN_EDIT
+       on the SAME slot the hand-off was raised for. Must fire, must re-enter
+       the grid, must drop the flag. */
+    {
+      const { fired, log, s } = run({ selectedSlot: 1 });
+      if (fired === true && log.entered === 1 && s.componentModalFromGrid === false) {
+        ok("fires and re-enters the grid on the slot it was raised for");
+      } else {
+        fail("did not fire (or did not re-enter/clear) for the legitimate same-slot arrival: " +
+             JSON.stringify({ fired, entered: log.entered, flag: s.componentModalFromGrid }));
+      }
+    }
+
+    /* 8b. The reported repro: up_load raised the flag for slot 1, then
+       Shift+Vol+Track3 (JUMP_TO_SLOT) reassigns selectedSlot to 3 and lands on
+       CHAIN_EDIT before the user backed out. Must NOT re-enter the grid over
+       the slot-3 chain editor the user deliberately opened, and must drop the
+       now-stale flag so it cannot fire on some later, unrelated arrival. */
+    {
+      const { fired, log, s } = run({ selectedSlot: 3 });
+      if (fired === false && log.entered === 0 && s.componentModalFromGrid === false) {
+        ok("does NOT fire on a mismatched-slot arrival, and drops the stale flag (the JUMP_TO_SLOT repro)");
+      } else {
+        fail("fired (or left the flag set) on a mismatched-slot arrival -- this is the reported [Critical] bug: " +
+             JSON.stringify({ fired, entered: log.entered, flag: s.componentModalFromGrid }));
+      }
+    }
+
+    /* 8c. No flag raised at all: must be an inert no-op, every tick. */
+    {
+      const { fired, log } = run({ componentModalFromGrid: false, selectedSlot: 1 });
+      if (fired === false && log.entered === 0) {
+        ok("is a no-op when the flag was never raised");
+      } else {
+        fail("fired with no flag set");
+      }
+    }
+
+    /* 8d. Same slot, but a text-entry overlay is up (mirrors every sibling
+       reconciler): must not steal the keyboard out from under the user. */
+    {
+      const { fired, log, s } = run({ selectedSlot: 1, textEntryActive: true });
+      if (fired === false && log.entered === 0 && s.componentModalFromGrid === true) {
+        ok("does not fire over an active text entry, and leaves the flag raised for later");
+      } else {
+        fail("fired (or dropped the flag) while a text entry was active");
+      }
+    }
+  }
+}
+
 if (failures > 0) {
   console.error(failures + " failure(s)");
   process.exit(1);
