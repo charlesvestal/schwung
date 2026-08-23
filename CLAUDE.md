@@ -581,6 +581,45 @@ means absent. The tri-state exists only where the wire is visible.
 the SPI thread that serves param requests. That realtime violation lives in its
 own repo and is not fixed here.)
 
+### Global Settings is a SYNTHESISED CONTRACT, not a screen
+
+It runs on the same page engine as a module, a slot's settings and Master FX's
+settings — one list, one chrome, one set of widgets. The declaration is
+`src/shadow/shadow_ui_global_grid.mjs` (pure, no host globals, tested with no
+device by `tests/host/test_global_settings_contract.sh`); the concrete backends
+and the cache-var writes that cannot leave `shadow_ui.js` are `globalGridIoFor()`
+there. Entry is `enterGlobalSettingsGrid()`, modelled on
+`enterMasterFxSettingsGrid`.
+
+**Seven sections are seven PAGES**, jogged through on one axis with the section
+picker on click — Display, Audio, Screen Reader, Set Pages, Shortcuts, Services,
+Updates. Six are knob pages; Updates is a menu page. **One section, one page** is
+load-bearing: a ninth param in any section paginates silently and the bank bar
+takes over a split nobody chose. Audio sits at exactly eight. The contract test
+pins the per-section counts rather than trusting the shapes.
+
+Three consequences worth knowing:
+
+- **`[Help...]` lives on the Updates page**, one row under `[Module Store]`. It
+  used to be a peer of the sections; it cannot be a page of its own (that is an
+  eighth page, pinned against twice) and a one-entry menu page is the shape
+  Master FX already records as a mistake. See `UPDATES_ACTIONS`.
+- **`VIEWS.GLOBAL_SETTINGS` is now only the help viewer's host.** The section
+  list, the in-section list, the four `globalSettings*` state vars and the three
+  switch arms that drove them are gone. `runGlobalActionFromGrid` /
+  `maybeReturnToGlobalGrid` are the third instance of the slot / Master FX modal
+  hand-off, and reconcile the same way rather than hooking each exit.
+- **The screen reader forces the LIST layout** (`paramPagesLayout()`), because
+  Global Settings enters the page chrome even with TTS on — it has no hierarchy
+  editor behind it, and it is the screen you go to to turn TTS off.
+  `paramPagesEnabled()` still refuses the chrome for every *component*; that
+  seam is unchanged.
+
+Persistence is **three** things and conflating them loses a write silently: a
+shared `saveMasterFxChainConfig()` sink (derived from the routing table, never
+hand-listed), a key-specific saver welded to the assignment, or backend-owned.
+Stored values are **not** indexes — `resample_bridge` stores 0 and **2**.
+
 ### Shortcuts
 
 Shadow UI access gated by **Global Settings → Shortcuts → Shadow UI Trigger** (`shadow_ui_trigger` in `features.json`): `Both` (default) / `Long Press` / `Shift+Vol`.

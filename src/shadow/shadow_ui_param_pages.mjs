@@ -33,7 +33,6 @@ import { createController, CONTRACT_SETTLE_MS, LAYOUT_LIST } from '/data/UserDat
 export { CONTRACT_SETTLE_MS };
 import { decodeInput, applyInput } from '/data/UserData/schwung/shared/param_pages/page_input.mjs';
 import { PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS } from '/data/UserData/schwung/shared/param_pages/page_plan.mjs';
-import { LAYOUT_BAR, LAYOUT_DIAL } from '/data/UserData/schwung/shared/param_pages/render_page.mjs';
 import { LAYOUT_MOVY } from '/data/UserData/schwung/shared/param_pages/render_page_movy.mjs';
 import { announce } from '/data/UserData/schwung/shared/screen_reader.mjs';
 import { log, isLoggingEnabled } from '/data/UserData/schwung/shared/logger.mjs';
@@ -134,8 +133,18 @@ export function paramPagesEnabled() {
  * calls irreducible. So this is a value handed to the controller AT THE DRAW
  * CALL SITE, never a flag threaded down into widget code — that is the `geom`
  * all-or-nothing trap in another costume.
+ *
+ * THE SCREEN READER FORCES THE LIST, and that rule lives here rather than at a
+ * call site. paramPagesEnabled() above keeps TTS users on the hierarchy editor
+ * for every COMPONENT, so this looks redundant — but Global Settings is a
+ * contract with no other path at all (its bespoke list is gone), and it is the
+ * screen you go to in order to turn the screen reader OFF. Reaching it with TTS
+ * on and getting eight cells with nothing selected would be the one place a
+ * blind user cannot get back out of. A grid announces a page; a list announces
+ * a row.
  */
 export function paramPagesLayout() {
+    if (typeof tts_get_enabled === 'function' && tts_get_enabled()) return LAYOUT_LIST;
     const mode = typeof param_view_get_mode === 'function' ? param_view_get_mode() : PARAM_VIEW_LIST;
     return mode === PARAM_VIEW_KNOBS ? LAYOUT_MOVY : LAYOUT_LIST;
 }
@@ -169,7 +178,9 @@ export function paramPagesLayout() {
  *   default. Slot settings needs it: a slot publishes no ui_hierarchy and its
  *   params do not share one prefix, so the contract and the mapping are handed
  *   in (see shadow_ui_slot_grid.mjs) rather than read off a component.
- * @param {object} [chrome]  {label, moduleKey, returnView} — see currentChrome.
+ * @param {object} [chrome]  {label, name, moduleKey, returnView, onExit} — see
+ *   currentChrome. onExit replaces returnView for a contract with no view above
+ *   it (Global Settings); it is called instead of setView on Back.
  *   Omitted means the slot-chain defaults.
  */
 export function enterParamPages(slot, component, prefix, restorePageName, io, chrome) {
@@ -805,9 +816,16 @@ export function handleParamPagesMidi(data) {
     if (todo.action === 'exit') {
         /* Back to the editor you came IN through. Read BEFORE exitParamPages so
          * the destination cannot depend on what the teardown leaves behind. */
-        const back = (currentChrome && currentChrome.returnView) || ctx.VIEWS.CHAIN_EDIT;
+        const chrome = currentChrome;
+        const back = (chrome && chrome.returnView) || ctx.VIEWS.CHAIN_EDIT;
         exitParamPages();
-        ctx.setView(back);
+        /* A contract that is the TOP of its own stack has no view to go back
+         * to — Global Settings' Back leaves shadow mode entirely — so it hands
+         * in an onExit instead of a returnView. Expressed as a callback rather
+         * than a sentinel view id because "leave shadow mode" is not a view and
+         * pretending it is one would need a fake case in every switch. */
+        if (chrome && typeof chrome.onExit === 'function') chrome.onExit();
+        else ctx.setView(back);
         return true;
     }
     if (todo.action === 'menu') {
@@ -880,11 +898,6 @@ export function handleParamPagesMidi(data) {
 /** Read the page aloud — the gesture that stands in for a glance. */
 export function announceParamPageContents() {
     if (controller) controller.announceContents();
-}
-
-/** Layout preference, for the settings menu. */
-export function setParamPagesLayout(layout) {
-    if (controller) controller.setLayout(layout === 'bar' ? LAYOUT_BAR : LAYOUT_DIAL);
 }
 
 /**
