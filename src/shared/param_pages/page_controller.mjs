@@ -219,7 +219,14 @@ export function drawPageChromeList(ctx, rect, entries, index, { editMode = false
          * floor at all (it right-aligned and fitted the LABEL to what was left),
          * so the floor goes to the list's own left edge and the label budget,
          * which drawMenuList already derives from the value's position, does the
-         * work. Found by rendering it and looking, not by reading it. */
+         * work. Found by rendering it and looking, not by reading it.
+         *
+         * Handing the floor over like this is also why this is the ONE list that
+         * needed drawMenuList's `minLabelChars` — with no value-column floor of
+         * its own, a wide value took the whole row and left `A...` / `B...` for
+         * two different samples. The general floor is drawMenuList's default, so
+         * nothing is passed here; see THE LABEL FLOOR in menu_layout.mjs and
+         * tests/host/test_list_label_floor.sh. */
         valueX: rect.x,
         /* Values end at x=118, not the 126 a full-width list uses: the frame's
          * right arm is the column x=123 and it runs through the first and last
