@@ -48,6 +48,7 @@ import { renderPageMovy, LAYOUT_MOVY } from "../../src/shared/param_pages/render
 import { createController, LAYOUT_LIST } from "../../src/shared/param_pages/page_controller.mjs";
 import { resolveViz } from "../../src/shared/param_pages/viz.mjs";
 import { createFakeDevice } from "./fake_device.mjs";
+import { makeRecord, presetRowValue } from "../../src/shared/param_pages/current_preset.mjs";
 
 const ROOT = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))));
 const FIXTURE = path.join(ROOT, "tests", "fixtures", "module-contracts.json");
@@ -97,12 +98,20 @@ function fakeValue(key, meta) {
 /*
  * A representative "User Presets" / "Module" trailing set — same shape
  * shadow_ui.js's componentTrailingMenus builds, with a loaded preset that has
- * drifted (the `*`) so every row (including the Save/Delete pair that only
- * appear with a record) is visible in one render.
+ * drifted so every row (including the Save/Delete pair that only appear with
+ * a record) is visible in one render. The Preset row's VALUE is computed by
+ * the real presetRowValue() against a real record — not hand-typed — so a
+ * PNG rendered here draws what the device actually draws. A hardcoded
+ * "Fat Brass *" already once drifted from the shipping function's mark
+ * placement without this preview or its own test noticing (commit 7ebbc23b
+ * moved the mark from trailing to leading a name, because a trailing mark is
+ * the first character a truncating list drops).
  */
+const FIXTURE_RECORD = makeRecord("Fat Brass", "{}");
+const FIXTURE_DRIFTED_BLOB = "{\"x\":1}";
 const TRAILING_MENUS_FIXTURE = () => ([
     { name: "User Presets", entries: [
-        { label: "Preset", value: "Fat Brass *" },
+        { label: "Preset", value: presetRowValue(FIXTURE_RECORD, FIXTURE_DRIFTED_BLOB) },
         { label: "Load…", action: "up_load" },
         { label: "Save", action: "up_save" },
         { label: "Save As", action: "up_save_as" },
