@@ -150,6 +150,14 @@ ok(normalizedOf({ type: "float", min: 0, max: 1 }, "") === null,
   ok(normalizedOf(em, "0") === 0, "enum option 0 is the bottom");
   ok(normalizedOf(em, "4") === 1, "the last enum option is the top");
   ok(normalizedOf(em, "2") === 0.5, "a middle enum option is halfway");
+  /* A plugin may report an enum by NAME. Number("C") is NaN, so a normaliser
+     built on Number() leaves every such knob dark -- and nothing on screen
+     says so, because the cell reads the name correctly either way. */
+  ok(normalizedOf(em, "C") === 0.5, "an enum reported by NAME resolves to its index");
+  ok(normalizedOf(em, "E") === 1, "the last option by name is the top");
+  ok(normalizedOf(em, "nosuch") === null, "an unrecognised option name is unknown, not 0");
+  ok(knobLedColor(0, normalizedOf(em, "E")) === WHITE_LEVELS[2],
+     "a name-reporting enum at its last option lights FULL, not dark");
 }
 
 ok(NUM_KNOB_LEDS === 8, "there are 8 knob LEDs");
