@@ -1,4 +1,4 @@
-# Global Settings as a contract, and the list renderer — design, 2026-08-23
+# Global Settings as a contract, and the list layout — design, 2026-08-23
 
 > *"does it make sense to have global settings be 'knobs' like slot and master
 > fx settings? if nothing else, we need to get them movy-list-ified, right?"*
@@ -49,8 +49,8 @@ Three bugs at the same seam is not three coincidences. **The only page kind with
 no list rendering is `PAGE_KNOBS`.**
 
 So the ask is not "combine two engines". It is: give `PAGE_KNOBS` a list
-renderer, at which point `param_view` stops being a fork *between* engines and
-becomes a renderer choice *inside* one.
+layout, at which point `param_view` stops being a fork *between* engines and
+becomes a layout choice *inside* one.
 
 ---
 
@@ -74,16 +74,67 @@ picker.
 
 ## 3. What we are building
 
-### 3.1 The `PAGE_KNOBS` list renderer
+### 3.0 The governing constraint
 
-A new renderer in `src/shared/param_pages/`, beside `render_page_movy.mjs`.
-Same page object, same `io` accessors, list output. `drawParamPages` selects
-between renderers on `param_view`; TTS forces list at the seam
-`paramPagesEnabled()` already owns.
+> *"make sure we're not ending up in a rabbit hole of multiple parallel paths.
+> i dont want to have to update things in multiple places when it's one thing."*
 
-Announcements route through the library's existing `announce_page.mjs` rather
-than the hierarchy editor's bespoke `announceParameter` / `announceMenuItem`
-calls — one place, not two.
+This overrides every other preference here. Concretely, **one thing changed in
+one place** means:
+
+| Concern | The one place |
+|---|---|
+| which params are on a page | `page_plan.mjs` |
+| type, range, divability, opacity | `param_meta.mjs` |
+| the displayed value string | `param_format.mjs` (+ `options` / `short_options`) |
+| stepping a value | `knob_engine.mjs` |
+| announcements | `announce_page.mjs` |
+| chrome (header, bank bar, brackets, footer) | `render_page_movy.mjs` |
+| five-row list geometry | `MENU_LIST_*` in `page_controller.mjs` |
+| what a Global Setting *is* | `shadow_ui_global_grid.mjs` |
+
+Everything above is already single-sourced today except the last row. Adding an
+enum option, a param, a section, or a format must touch exactly one of these —
+never two.
+
+The **only** thing that legitimately differs between the grid surface and the
+list surface is pixel layout: eight cells in two rows of four, versus five rows
+of label-and-value. That difference is irreducible. Everything else is shared,
+and any proposal that duplicates a row of the table above is wrong regardless of
+how reasonable the scope boundary sounds.
+
+### 3.1 There is no second renderer
+
+An earlier draft of this document proposed "a new renderer in
+`src/shared/param_pages/`, beside `render_page_movy.mjs`." **That was the
+rabbit hole**, and it is struck.
+
+The five-row list already lives *inside* `page_controller.mjs` and already draws
+`PAGE_MENU`, `PAGE_PRESET` and `PAGE_ITEMS` through the movy primitives. Its
+geometry is exported for exactly this reason:
+
+> *"Exported because other screens in the page chrome — the module picker, for
+> one — must sit in exactly this rect or the two look subtly unlike each other.
+> **One definition, not a matching pair of magic numbers.**"*
+
+So a knobs page shown as a list is **the existing menu-page list fed the page's
+params instead of its entries**. What is genuinely new is small:
+
+- map a `PAGE_KNOBS` page's params to list rows (label + formatted value) —
+  the formatting call is the one `render_page_movy` already makes
+- route jog-to-edit through the same `knob_engine` step and the same `io.write`
+  the grid turn already uses
+
+`param_view` then selects a *layout* inside one engine, not a path between two.
+TTS forces list at the seam `paramPagesEnabled()` already owns. Announcements
+come from `announce_page.mjs` — which also retires the hierarchy editor's
+bespoke `announceParameter` / `announceMenuItem`.
+
+**The rejected alternative** is a mode flag threaded through
+`render_page_movy.mjs`'s 1638 lines. That is the `geom` all-or-nothing trap in
+another costume: a partial `{cellW}` makes every cell origin `NaN`, reaches
+`line()`'s `for(;;)`, and freezes the `shadow_ui` tick. Layout selection belongs
+at the page-draw call site, not woven through the widget code.
 
 ### 3.2 `shadow_ui_global_grid.mjs`
 
@@ -100,6 +151,29 @@ paper over an awkward split.
 
 Navigation goes from two levels (section list → item list) to one jog axis with
 a section picker on click.
+
+**Why a separate file, given the drift warning.** `shadow_ui_slot_grid.mjs`
+holds the slot *and* Master FX contracts in one file on purpose, and says so:
+
+> *"Master FX getting its own file is precisely how the two chain editors
+> drifted apart in the first place: one reasonable-sounding scope boundary at a
+> time, until the knob card worked on one screen and not the other."*
+
+That warning has to be answered, not stepped around. The test it implies is
+**shared substance**, not topical similarity: those two live together because
+they *share the LFO pages outright* — `lfoParams` / `lfoLevels` are one
+declaration serving both — and differ only in values page, actions and key
+prefix. Split them and you get two copies of the LFO pages, which is the drift.
+
+Global Settings shares **no** pages with either: no LFO, no chain prefix, no
+preset actions, a wholly different accessor set. There is nothing to duplicate
+by separating it, and nothing to unify by merging it — merging would produce one
+file holding two unrelated things, which is not the same property.
+
+The check that actually matters is §3.0's table, and it is unaffected either
+way. If Global Settings ever *does* grow a page shared with the slot contract,
+that page moves into the shared file — the rule is the substance, not the
+filename.
 
 ### 3.3 Accessor routing
 
@@ -135,17 +209,31 @@ The four `globalSettings*` state vars, the three switch arms, and
 
 ---
 
-## 4. The one display conflict
+## 4. `usbc_out_persist` needs no exception
 
-`usbc_out_persist` renders as `"On (Main Out)"` — a bool annotated with the
+An earlier draft called this "the one display conflict" and sanctioned a
+divergence between the two surfaces. **That was wrong** — the mechanism already
+exists.
+
+`usbc_out_persist` renders as `"On (Main Out)"`: a bool annotated with the
 source last seen on the wire, because Move's own Settings screen goes stale
-after Schwung restores the value and this row is the only honest read of what is
-actually routed.
+after Schwung restores the value, so this row is the only honest read of what is
+actually routed. A three-character enum square cannot show that.
 
-A grid switch widget cannot show that annotation. The list can. This is the one
-place the two renderers legitimately want to disagree about the same contract,
-so it is called out here rather than discovered later: either a
-`display_format`, or accept that the annotation appears in list mode only.
+But `short_options` is exactly that mechanism, and it already ships:
+`render_page_movy.mjs:1206` consults it **for the square only**, while every
+surface with room — the held-knob header, and now the list — uses the long
+`options`. `SLOT_GRID_PARAMS` already relies on it throughout (`THR`/`Thru`,
+`AUT`/`Auto`, `ALL`/`All`).
+
+So the annotation is the long option and `"ON"` is the short one. One
+declaration, two renderings of it, no per-surface special case, and nothing new
+to build.
+
+**Generalised:** any future value too long for a cell is a `short_options`
+entry, never a second code path. If a case ever arises that `short_options`
+genuinely cannot express, that is a signal to extend the shared formatter — not
+to branch on which surface is drawing.
 
 ---
 
@@ -179,7 +267,7 @@ same move `PAGE_MENU` / `PAGE_PRESET` / `PAGE_ITEMS` already made, for the same
 reason. Not new architecture; the fourth and fifth instances of a pattern with a
 track record.
 
-That work is deliberately scoped **after** the renderer exists, with real code
+That work is deliberately scoped **after** the list layout exists, with real code
 in hand, rather than guessed at now.
 
 ---
@@ -190,7 +278,7 @@ It is the simplest contract in the system: no presets, no child levels, no
 filepath params, no canvas, no LFO targets, no modulation, every section fits
 one page. It exercises **none** of §5's hard parts.
 
-That is exactly what makes it the right surface to prove the list renderer and
+That is exactly what makes it the right surface to prove the list layout and
 the two-mode `param_view` switch on — low risk, and no throwaway code, because
 the contract it produces is the one it keeps.
 
@@ -204,15 +292,23 @@ stop.
 
 ## 7. Testing
 
-Both of these fail **silently**, which is why they are pinned rather than left
-to review:
+All three fail **silently**, which is why they are pinned rather than left to
+review:
 
 1. **Persistence side effects.** A `writeParam` that skips its
    `saveMasterFxChainConfig()` / cache-var write sets the param and loses it on
    reboot. Assert per-key that a write reaches the persistence call.
-2. **Renderer agreement.** The list and grid renderers must display the same
-   value for the same contract, with `usbc_out_persist` (§4) as the declared
-   exception.
+2. **Surface agreement, with no exceptions.** The grid and list layouts must
+   display the same value for the same contract — **every key, no allow-list**.
+   An exceptions list is how §3.0's table grows a second column, so the test is
+   written to have nowhere to put one. `usbc_out_persist` passes via
+   `short_options` (§4), not via exemption.
+3. **No second definition.** A guard test in the spirit of
+   `test_master_fx_slots_js.sh` (which fails on `MASTER_FX_SLOTS` drift between
+   C and JS): the list layout must not introduce its own copy of anything in
+   §3.0's table — no second list geometry, no second formatter, no second
+   metadata resolver. Derived from the exports, not from a hand-maintained
+   list, so it widens on its own.
 
 Contract purity is testable with no UI, no device and no framebuffer — hand
 `shadow_ui_global_grid.mjs` its accessors, as `shadow_ui_slot_grid.mjs` already
