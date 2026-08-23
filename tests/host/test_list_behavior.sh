@@ -46,7 +46,7 @@ node --input-type=module -e '
 const R = process.cwd();
 const {
     drawMenuList, LIST_TOP_Y, FOOTER_RULE_Y, LIST_INDICATOR_BOTTOM_Y,
-    LIST_LINE_HEIGHT, LIST_MAX_VISIBLE,
+    LIST_LINE_HEIGHT,
 } = await import(R + "/src/shared/menu_layout.mjs");
 const { probe } = await import(R + "/tools/param-pages/list_probe.mjs");
 const CV = await import(R + "/src/shared/chain_ui_views.mjs");
@@ -124,11 +124,11 @@ const run = (opts) => {
  * divides by (`floor((bottomY - topY) / lineHeight)`), not hardcoded here,
  * so this reads real behaviour rather than asserting a magic number.
  *
- * `LIST_MAX_VISIBLE` (exported at the top of menu_layout.mjs, = 5) is DEAD
- * CODE -- drawMenuList never references it; the no-footer window size is 5
- * only because LIST_INDICATOR_BOTTOM_Y/LIST_TOP_Y/LIST_LINE_HEIGHT happen to
- * divide out to 5 too. Nobody should read LIST_MAX_VISIBLE as documenting
- * behaviour, including future readers of this test.
+ * There used to be a `LIST_MAX_VISIBLE = 5` exported at the top of
+ * menu_layout.mjs. It was DEAD -- drawMenuList never referenced it -- and the
+ * window size is 5 only because LIST_INDICATOR_BOTTOM_Y/LIST_TOP_Y/
+ * LIST_LINE_HEIGHT divide out to 5. It has been deleted rather than left
+ * around to be read as documenting behaviour it never controlled.
  *
  * The movy re-skin HAS NOW LANDED, and it moved the WITH-FOOTER case from 4
  * to 5: one shared rect, MENU_LIST_Y=10..RULE_Y=55, regardless of footer. The

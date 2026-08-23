@@ -91,7 +91,7 @@ import {
     tickOverlay,
     drawOverlay,
     menuLayoutDefaults,
-    LIST_BOTTOM_CLEARANCE,
+    LIST_INDICATOR_BOTTOM_Y,
     VALUE_RIGHT_CLEARANCE
 } from '/data/UserData/schwung/shared/menu_layout.mjs';
 
@@ -13726,7 +13726,7 @@ function drawHierarchyEditor() {
             drawMenuList({
                 items,
                 selectedIndex: hierEditorSelectedIdx,
-                listArea: { topY: LIST_TOP_Y, bottomY: LIST_BOTTOM_CLEARANCE },
+                listArea: { topY: LIST_TOP_Y, bottomY: LIST_INDICATOR_BOTTOM_Y },
                 getLabel: (item) => item.label,
                 getValue: (item) => item.value,
                 valueAlignRight: true,

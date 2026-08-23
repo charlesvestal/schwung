@@ -28,19 +28,24 @@ export {
     LIST_LABEL_X, LIST_VALUE_X,
 };
 
-/* The three *_BOTTOM_* names below are kept because their call sites import
- * them; they are now three names for one edge, the footer rule at 55. */
-export const LIST_MAX_VISIBLE = 5;   /* DEAD: drawMenuList never reads it */
+/* ONE name for the bottom edge of the list rect, the footer rule at 55.
+ *
+ * There used to be three (LIST_INDICATOR_BOTTOM_Y, LIST_BOTTOM_WITH_FOOTER,
+ * LIST_BOTTOM_CLEARANCE) plus a dead LIST_MAX_VISIBLE that drawMenuList never
+ * read. The movy re-skin collapsed the with-footer and no-footer rects into one
+ * (see list_geometry.mjs), so the three names became three spellings of 55 —
+ * and a name that can only agree with its siblings is a name that will one day
+ * disagree with them. menuLayoutDefaults still publishes listBottomWithFooter /
+ * listBottomNoFooter as KEYS, because ~30 call sites read them, but both now
+ * resolve to this single constant. */
 export const LIST_INDICATOR_X = 120;
 export const LIST_INDICATOR_BOTTOM_Y = MOVY_RULE_Y;
-export const LIST_BOTTOM_WITH_FOOTER = MOVY_RULE_Y;
 
 /* Text rendering */
 export const DEFAULT_CHAR_WIDTH = 6;
 export const DEFAULT_LABEL_GAP = 6;
 export const DEFAULT_VALUE_PADDING_RIGHT = 2;
 export const VALUE_RIGHT_CLEARANCE = 10;  /* Clearance from scroll-arrow column (LIST_INDICATOR_X = 120) */
-export const LIST_BOTTOM_CLEARANCE = MOVY_RULE_Y;
 
 /* Canonical footer-hint verb prefixes (cleanup step 9, U-2). The Move's jog
  * wheel click is "Click" (not "Push"); action words are lowercase. Build
@@ -66,17 +71,31 @@ let lastAnnouncedLabel = "";
 
 /* render_page_movy's renderers draw through an injected ctx (that is what makes
  * them testable into a framebuffer); menu_layout reaches for the device globals
- * by name. This adapter is the seam. The arrow bodies resolve `fill_rect` /
- * `print` at CALL time, not at module load, so a probe that swaps the globals
+ * by name. This adapter is the seam, and it is now drawMenuList's DEFAULT ctx
+ * rather than a special case: the page-chrome list (page_controller.mjs) passes
+ * its own injected ctx instead, which is what lets the knob grid's menu pages
+ * draw through the same one list every other screen uses.
+ *
+ * The arrow bodies resolve `fill_rect` / `print` / `set_pixel` at CALL time, not
+ * at module load, so a probe that swaps the globals
  * (tools/param-pages/list_probe.mjs, tests/host/test_enum_picker_chrome.sh)
  * still sees every draw. */
 const DEVICE_CTX = {
     fillRect: (x, y, w, h, color) => fill_rect(x, y, w, h, color),
     print: (x, y, text, color) => print(x, y, text, color),
+    setPixel: (x, y, color) => set_pixel(x, y, color),
     textWidth: (text) => (typeof text_width === 'function'
         ? text_width(String(text))
         : String(text).length * DEFAULT_CHAR_WIDTH),
 };
+
+/* A ctx that came from the param-page engine (render_page.mjs / the harness's
+ * drawContext) has no setPixel — its surface is fillRect/print/textWidth. A 1x1
+ * fill is the same pixel, so the arrows work through either. */
+function px(ctx, x, y, color) {
+    if (ctx.setPixel) ctx.setPixel(x, y, color);
+    else ctx.fillRect(x, y, 1, 1, color);
+}
 
 /**
  * The movy header band: 7 rows, font4x5, title on the left and the optional
@@ -205,25 +224,32 @@ export function drawNamePreview({
     drawMenuFooter(footer);
 }
 
-export function drawArrowUp(x, y) {
-    set_pixel(x + 2, y, 1);
-    set_pixel(x + 1, y + 1, 1);
-    set_pixel(x + 3, y + 1, 1);
+export function drawArrowUp(x, y, ctx = DEVICE_CTX) {
+    px(ctx, x + 2, y, 1);
+    px(ctx, x + 1, y + 1, 1);
+    px(ctx, x + 3, y + 1, 1);
     for (let i = 0; i < 5; i++) {
-        set_pixel(x + i, y + 2, 1);
+        px(ctx, x + i, y + 2, 1);
     }
 }
 
-export function drawArrowDown(x, y) {
+export function drawArrowDown(x, y, ctx = DEVICE_CTX) {
     for (let i = 0; i < 5; i++) {
-        set_pixel(x + i, y, 1);
+        px(ctx, x + i, y, 1);
     }
-    set_pixel(x + 1, y + 1, 1);
-    set_pixel(x + 3, y + 1, 1);
-    set_pixel(x + 2, y + 2, 1);
+    px(ctx, x + 1, y + 1, 1);
+    px(ctx, x + 3, y + 1, 1);
+    px(ctx, x + 2, y + 2, 1);
 }
 
 export function drawMenuList({
+    /* The draw surface. Defaults to the device globals, which is what every
+     * shadow view module wants and what this file always did. The param-page
+     * engine (page_controller.mjs) renders through an INJECTED ctx instead —
+     * that is what makes it testable into a framebuffer and previewable in
+     * tools/param-pages — so the one list has to be able to draw through one
+     * too, or the page chrome could never call it. */
+    ctx = DEVICE_CTX,
     items,
     selectedIndex,
     listArea,
@@ -283,8 +309,14 @@ export function drawMenuList({
      * bottom of this function; they are derivable here because startIdx /
      * endIdx / totalItems are all already settled. */
     const hasScrollArrow = (startIdx > 0) || (endIdx < totalItems);
-    const valueRightEdge = SCREEN_WIDTH -
-        (hasScrollArrow ? VALUE_RIGHT_CLEARANCE : valuePaddingRight);
+    /* Derived from indicatorX rather than restated, so a caller that moves the
+     * arrow column moves the value edge with it. At the default indicatorX=120
+     * this is 118, i.e. exactly SCREEN_WIDTH - VALUE_RIGHT_CLEARANCE — the
+     * constant is kept as the statement of the 10px budget and as the ceiling
+     * on how far right a value may ever sit. */
+    const valueRightEdge = hasScrollArrow
+        ? Math.min(indicatorX - 2, SCREEN_WIDTH - VALUE_RIGHT_CLEARANCE)
+        : SCREEN_WIDTH - valuePaddingRight;
 
     /* The no-value label column needs no equivalent: its budget is
      * `indicatorX - labelX - labelGap`, which stops at 120 whether or not an
@@ -321,13 +353,13 @@ export function drawMenuList({
                 const captionW = item.label.length * DEFAULT_CHAR_WIDTH;
                 const captionX = labelX;
                 /* Line left of caption */
-                fill_rect(0, midY, captionX - 2, 1, 1);
-                print(captionX, midY - 3, item.label, 1);
+                ctx.fillRect(0, midY, captionX - 2, 1, 1);
+                ctx.print(captionX, midY - 3, item.label, 1);
                 /* Line right of caption */
                 const rightStart = captionX + captionW + 2;
-                fill_rect(rightStart, midY, SCREEN_WIDTH - rightStart, 1, 1);
+                ctx.fillRect(rightStart, midY, SCREEN_WIDTH - rightStart, 1, 1);
             } else {
-                fill_rect(2, midY, SCREEN_WIDTH - 4, 1, 1);
+                ctx.fillRect(2, midY, SCREEN_WIDTH - 4, 1, 1);
             }
             continue;
         }
@@ -383,8 +415,8 @@ export function drawMenuList({
         }
 
         if (isSelected) {
-            fill_rect(0, y - highlightOffset, SCREEN_WIDTH, itemHighlightHeight, 1);
-            print(labelX, y, `${labelPrefix}${label}`, 0);
+            ctx.fillRect(0, y - highlightOffset, SCREEN_WIDTH, itemHighlightHeight, 1);
+            ctx.print(labelX, y, `${labelPrefix}${label}`, 0);
             if (displayValue) {
                 /* Show brackets around value when in edit mode */
                 const shownValue = editMode ? `[${displayValue}]` : displayValue;
@@ -392,12 +424,12 @@ export function drawMenuList({
                 const editValueX = (editMode && valueAlignRight)
                     ? resolvedValueX - (1 * DEFAULT_CHAR_WIDTH)  /* Shift left for right bracket */
                     : resolvedValueX;
-                print(editValueX, y, shownValue, 0);
+                ctx.print(editValueX, y, shownValue, 0);
             }
         } else {
-            print(labelX, y, `${labelPrefix}${label}`, 1);
+            ctx.print(labelX, y, `${labelPrefix}${label}`, 1);
             if (displayValue) {
-                print(resolvedValueX, y, displayValue, 1);
+                ctx.print(resolvedValueX, y, displayValue, 1);
             }
         }
 
@@ -406,27 +438,28 @@ export function drawMenuList({
             if (subLabel) {
                 const subY = y + subLabelOffset;
                 const subX = labelX + (2 * DEFAULT_CHAR_WIDTH);
-                print(subX, subY, subLabel, isSelected ? 0 : 1);
+                ctx.print(subX, subY, subLabel, isSelected ? 0 : 1);
             }
         }
     }
 
     if (startIdx > 0) {
-        drawArrowUp(indicatorX, resolvedTopY);
+        drawArrowUp(indicatorX, resolvedTopY, ctx);
     }
     if (endIdx < totalItems) {
         /* -3, not -2: the arrow is 3 rows tall, so -2 put its tip ON
          * resolvedBottomY. Under the old chrome that row was blank screen;
          * under the movy chrome the bottom of the rect IS the footer rule, and
          * the arrow read as growing out of it. */
-        drawArrowDown(indicatorX, resolvedBottomY - 3);
+        drawArrowDown(indicatorX, resolvedBottomY - 3, ctx);
     }
 }
 
 export const menuLayoutDefaults = {
     footerY: FOOTER_TEXT_Y,
     listTopY: LIST_TOP_Y,
-    listBottomWithFooter: LIST_BOTTOM_WITH_FOOTER,
+    /* One rect, so one number under both keys — see LIST_INDICATOR_BOTTOM_Y. */
+    listBottomWithFooter: LIST_INDICATOR_BOTTOM_Y,
     listBottomNoFooter: LIST_INDICATOR_BOTTOM_Y
 };
 
