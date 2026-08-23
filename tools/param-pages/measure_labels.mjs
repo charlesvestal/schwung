@@ -52,7 +52,14 @@ export function measureRow(p) {
     const value = widestValue(p);
     const room = ROW_BUDGET - w(value);
     const need = w(p.name || p.key);
-    return { name: p.name || p.key, value, room, need, fits: need <= room, over: need - room };
+    /* preferFullName: the declaration says this row may exceed its width because
+     * the whole name matters more than fitting. Reported as `exempt` rather
+     * than silently as `fits`, so a sweep still shows it and nobody discovers
+     * the truncation on a device wondering whether it is a bug. */
+    const exempt = !!p.preferFullName;
+    return { name: p.name || p.key, value, room, need,
+             fits: need <= room || exempt, exempt,
+             over: need - room };
 }
 
 /* ---------------------------------------------------------------- our own */
@@ -94,7 +101,14 @@ if (argv.includes("--json")) {
 } else {
     const bad = rows.filter((r) => !r.fits).sort((a, b) => b.over - a.over);
     console.log(`row budget ${ROW_BUDGET}px  (label + value, page-chrome list)\n`);
-    console.log(`${rows.length} rows measured, ${bad.length} do not fit\n`);
+    const exempt = rows.filter((r) => r.exempt && r.over > 0);
+    console.log(`${rows.length} rows measured, ${bad.length} do not fit` +
+        (exempt.length ? `, ${exempt.length} deliberately over (preferFullName)` : "") + "\n");
+    for (const r of exempt) {
+        console.log(`  over by ${r.over}px BY CHOICE: ${JSON.stringify(r.name)} ` +
+                    `beside ${JSON.stringify(r.value)}`);
+    }
+    if (exempt.length) console.log("");
     console.log("over  where     name                 value");
     for (const r of bad) {
         console.log(`${String(r.over).padStart(4)}  ${r.src.padEnd(9)} ` +
