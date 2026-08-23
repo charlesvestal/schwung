@@ -400,6 +400,52 @@ const lastTwo = (pages) => pages.slice(-2).map((p) => p.name).join(",");
   }
 }
 
+/* ---- controller plumbing ----------------------------------------------- */
+{
+  const HIER2 = { levels: { root: { label: "Synth", knobs: ["a"], params: [{ key: "a" }] } } };
+  const CP2 = [{ key: "a", type: "float", min: 0, max: 1, step: 0.01 }];
+  let hasPreset = false;
+  const store = { "synth:ui_hierarchy": JSON.stringify(HIER2),
+                  "synth:chain_params": JSON.stringify(CP2), "synth:a": "0.5" };
+  /* The rows are a FUNCTION, not an array: Save and Delete appear only with a
+   * preset loaded, and that changes while the page set is alive. */
+  const trailingMenus = () => ([{
+    name: "User Presets",
+    entries: [{ label: "Load", action: "up_load" }]
+      .concat(hasPreset ? [{ label: "Delete", action: "up_delete" }] : []),
+  }]);
+  const c = createController({
+    getParam: (k) => (k in store ? store[k] : ""),
+    setParam: (k, v) => { store[k] = v; },
+    announce: () => {},
+    trailingMenus,
+  });
+  c.load({ slot: 0, component: "synth", prefix: "synth" });
+
+  const trailingOf = () => c.pages.filter((p) => p.trailing);
+  if (trailingOf().length !== 1) fail("controller must plan the io trailing pages");
+  if (trailingOf()[0].entries.length !== 1) fail("Delete must be absent with no preset loaded");
+
+  /* The user is standing ON the trailing page when the row set changes. */
+  const idx = c.pages.length - 1;
+  c.goToPage(idx, { remember: false });
+  hasPreset = true;
+  c.refreshTrailing();
+  if (trailingOf()[0].entries.length !== 2) fail("refreshTrailing must re-evaluate the rows");
+  if (c.pageIndex !== idx) fail("refreshTrailing must not move the user, got " + c.pageIndex);
+
+  /* Shrinking back must not strand pageIndex past the end. */
+  hasPreset = false;
+  c.refreshTrailing();
+  if (c.pageIndex >= c.pages.length) fail("refreshTrailing must clamp pageIndex");
+
+  /* No option, no pages. */
+  const c2 = createController({ getParam: (k) => (k in store ? store[k] : ""),
+                                setParam: () => {}, announce: () => {} });
+  c2.load({ slot: 0, component: "synth", prefix: "synth" });
+  if (c2.pages.some((p) => p.trailing)) fail("no io.trailingMenus must mean no trailing pages");
+}
+
 if (failures) process.exit(1);
 console.log("PASS: PAGE_MENU — planned last, INERT until entered so the jog always pages, " +
             "click enters then activates, Shift+Click always reaches the sections, " +
