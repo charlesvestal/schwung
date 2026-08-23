@@ -279,13 +279,13 @@ const plan = planPages({ hierarchy, chainParams });
  */
 {
   const EXPECT = {
-    display_mirror: "Mirror", overlay_knobs: "Overlay",
+    display_mirror: "Mirror Display", overlay_knobs: "Overlay",
     pad_typing: "Pad Typing", text_preview: "Show Typed",
     midi_indicator_enabled: "Show MIDI", param_view: "Param View",
-    link_audio_routing: "Move>Schwung", link_audio_publish: "Schwung>Link",
+    link_audio_routing: "Move->Schwung", link_audio_publish: "Schwung->Link",
     latency_comp_enabled: "Latency Comp", resample_bridge: "Resample",
     skipback_shortcut: "Skipback", skipback_seconds: "Skipback Len",
-    browser_preview: "Audition", usbc_out_persist: "USB-C",
+    browser_preview: "Audition Files", usbc_out_persist: "USB-C",
     screen_reader_enabled: "Screen Reader", screen_reader_engine: "Engine",
     screen_reader_speed: "Speed", screen_reader_pitch: "Pitch",
     screen_reader_volume: "Volume", screen_reader_debounce: "Speak Delay",
