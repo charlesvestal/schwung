@@ -303,8 +303,8 @@ export const DISPLAY_PARAMS = [
       options: ["+Shift", "+Jog Touch", "Off", "Native"],
       short_options: ["SHF", "JOG", "OFF", "NAT"], default: 0 },
     bool("pad_typing", "Pad Typing", 0),
-    bool("text_preview", "Text Preview", 0),
-    bool("midi_indicator_enabled", "MIDI Channel", 0),
+    bool("text_preview", "Typing Preview", 0),
+    bool("midi_indicator_enabled", "Channel Readout", 0),
     /* The grid is the default (tests/host/test_param_view_default.sh pins
      * paramViewGlobal = 1), so the default index here is Knobs. */
     { key: "param_view", name: "Param View", type: "enum",
@@ -320,16 +320,16 @@ export const AUDIO_PARAMS = [
     bool("link_audio_publish", "Schwung->Link", 0),
     bool("latency_comp_enabled", "Latency Comp", 0),
     /* Stored 0 or 2 — see GLOBAL_ENUM_VALUES. */
-    { key: "resample_bridge", name: "Sample Src", type: "enum",
+    { key: "resample_bridge", name: "Move Resample", type: "enum",
       options: ["Native", "Schwung Mix"], short_options: ["NAT", "MIX"], default: 0 },
-    { key: "skipback_shortcut", name: "Skipback", type: "enum",
+    { key: "skipback_shortcut", name: "Skipback Key", type: "enum",
       options: ["Sh+Cap", "Sh+Vol+Cap"], short_options: ["S+C", "SVC"], default: 0 },
     /* Every option already fits the square, so there is no short form to
      * declare. short_options exists for the ones that do not fit; declaring it
      * where it is not needed is a second list to keep in step for nothing. */
     { key: "skipback_seconds", name: "Skipback Len", type: "enum",
       options: ["30s", "1m", "2m", "3m", "4m", "5m"], default: 0 },
-    bool("browser_preview", "Browser Preview", 1),
+    bool("browser_preview", "Audition Files", 1),
     /*
      * usbc_out_persist IS A BOOL. The parenthetical is a readout, not a choice.
      *
@@ -372,7 +372,7 @@ export const ACCESSIBILITY_PARAMS = [
      * x100 scaling in param_format only applies to a 0..1 fraction. */
     { key: "screen_reader_volume", name: "Voice Vol", type: "int",
       min: 0, max: 100, step: 5, default: 70, unit: "%" },
-    { key: "screen_reader_debounce", name: "Debounce", type: "int",
+    { key: "screen_reader_debounce", name: "Speak Delay", type: "int",
       min: 0, max: 1000, step: 50, default: 300, unit: "ms" },
 ];
 

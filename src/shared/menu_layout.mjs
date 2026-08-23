@@ -555,6 +555,31 @@ export function drawMenuList({
                 }
             }
 
+            /* RE-ALIGN A TRUNCATED VALUE, then budget the label against where it
+             * actually ended up.
+             *
+             * resolvedValueX above is the position for the value at its FULL
+             * width, clamped up to the label's floor. The value is then cut down
+             * to whatever fits from there — but it was still being DRAWN at that
+             * original x, so a cut value stopped short of the right edge and left
+             * a hole, and the label's budget was measured against a value that no
+             * longer reached that far. Both columns paid for space neither used:
+             *
+             *     "  Move..."  45px  +  "Schwu..."  38px  =  83px of 118
+             *
+             * on a row where both strings were truncated. Right-aligning the cut
+             * value restores the edge `valueAlignRight` promises, and hands the
+             * slack back to the label — which is the column that was crushed.
+             *
+             * One pass, deliberately, not a loop: a shorter label could in
+             * principle free more for the value, but the value has already been
+             * fitted and re-widening it would re-open the same negotiation. The
+             * label is the side that was starved, so it takes the slack. */
+            if (displayValue !== fullValue) {
+                resolvedValueX = Math.max(resolvedValueX,
+                                          rowValueRightEdge - measure(displayValue));
+            }
+
             const maxLabelWidth = Math.max(0, resolvedValueX - labelX - labelGap);
             maxLabelChars = fitCharCount(measure, fullLabel, maxLabelWidth - measure(labelPrefix));
         } else {
