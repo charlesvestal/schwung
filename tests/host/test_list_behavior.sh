@@ -29,14 +29,20 @@ const fail = (m) => { console.error("FAIL: " + m); failures++; };
 
 const items = (n) => Array.from({ length: n }, (_, i) => ({ label: "Item " + (i + 1) }));
 
-const run = (opts) => probe(() => drawMenuList({
-    items: opts.items,
-    selectedIndex: opts.selectedIndex,
-    getLabel: (item) => item.label,
-    getValue: opts.getValue || ((item) => item.value || ""),
-    announce: false,
-    editMode: opts.editMode || false,
-}));
+const run = (opts) => {
+    const call = {
+        items: opts.items,
+        selectedIndex: opts.selectedIndex,
+        getLabel: (item) => item.label,
+        announce: false,
+        editMode: opts.editMode || false,
+    };
+    /* omitGetValue exercises drawMenuList own `getValue ? getValue(item, i)
+     * : ""` fallback (menu_layout.mjs:227) -- a genuinely absent key, not a
+     * no-op function supplied by this harness. */
+    if (!opts.omitGetValue) call.getValue = opts.getValue || ((item) => item.value || "");
+    return probe(() => drawMenuList(call));
+};
 
 /* ---- 1. 3-item list at index 0: all three visible, in order, row 0 selected ---- */
 {
@@ -69,15 +75,27 @@ let N;
 
 /* ---- 4. 12-item list at index 11: Item 12 is visible AND selected ----
  *
- * keepOffLastRow (default true) reserves the bottom visual row so the
- * selection is never drawn on it. Near the end of a list that is one item
- * short of a full window, that reservation is satisfied by the ABSENCE of a
- * 13th item rather than by leaving a populated row blank -- so the window at
- * this boundary is genuinely N-1 items, not N. That is real behaviour of
- * todays drawMenuList, not a probe artifact: startIdx = selectedIndex -
- * (effectiveMaxVisible - 2) = 11 - 3 = 8, and endIdx = min(8+5, 12) = 12,
- * which spans only items 8..11 (4 items when N=5). Item 12 is visible and is
- * the selected row, just not the last row of the nominal window. */
+ * keepOffLastRow (default true) only comes into play once a list is longer
+ * than the window: maxSelectedRow = effectiveMaxVisible - 2 pins the
+ * selection to the second-to-last row instead of letting it reach the final
+ * one, and startIdx shifts so the selection lands there. The consequence:
+ * whenever selectedIndex is the LAST item of ANY list longer than the
+ * window, there is nothing left to fill the row after it, so the window
+ * drawn is N-1 items, not N -- true here (n=12, sel=11) and equally true for,
+ * say, n=13, sel=12. This is NOT a property of keepOffLastRow in general: a
+ * list that already fits inside the window (assertion 2 above, n=3, sel=2)
+ * never triggers this shift, and its last item is drawn on the actual last
+ * row, selected -- "the selection is never drawn on the bottom row" is only
+ * true of the scrolled case.
+ *
+ * Arithmetic for this case: startIdx = selectedIndex -
+ * (effectiveMaxVisible - 2) = 11 - 3 = 8, endIdx = min(8+5, 12) = 12, which
+ * spans only items 8..11 (4 items when N=5). Item 12 is visible and is the
+ * selected row, just not the last row of the nominal 5-row window.
+ *
+ * (The labels.length === N-1 check below is an additional pin beyond what
+ * the task strictly required -- kept because it is real, verified behaviour,
+ * not because the task asked for a window-size assertion at this index.) */
 {
     const r = run({ items: items(12), selectedIndex: 11 });
     if (r.labels[r.labels.length - 1] !== "Item 12")
@@ -106,8 +124,10 @@ let N;
     if (r.values[1] !== "")
         fail("item with an empty value: expected no value text, got " + JSON.stringify(r.values[1]));
 
-    /* Action item: no getValue at all (the default in run() returns ""). */
-    const r2 = run({ items: [{ label: "Do Thing" }], selectedIndex: 0, getValue: undefined });
+    /* Action item: genuinely no getValue key passed to drawMenuList, not a
+     * no-op function -- exercises the getValue-absent branch in
+     * menu_layout.mjs: `getValue ? getValue(item, i) : ""`. */
+    const r2 = run({ items: [{ label: "Do Thing" }], selectedIndex: 0, omitGetValue: true });
     if (r2.values[0] !== "")
         fail("action item: expected no value text, got " + JSON.stringify(r2.values[0]));
 }
