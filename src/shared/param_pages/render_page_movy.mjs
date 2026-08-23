@@ -1153,6 +1153,83 @@ function drawEnumSquare(ctx, kx, ky, text) {
  * used to draw the same solid box as an enum square, which meant a door and a
  * turnable enum were pixel-identical — you found out which was which by
  * turning one and having nothing happen. */
+/*
+ * A FRAMED NUMBER, for octave offsets, transposes and voice counts.
+ *
+ * An arc answers "how far along its range is this", which is right for a cutoff
+ * and wrong for an octave: -1 and +1 are two detents apart on a -24..24
+ * transpose and read as two nearly identical arcs. For a small integer the
+ * number IS the value, so draw the number.
+ *
+ * THE BOUND IS THE WHOLE DESIGN, and it has to be tight.
+ *
+ * Measured against the fleet, a span limit of 128 frames 1392 parameters across
+ * 60 modules — including obxd volume [0..100], 9w9 tune [0..127] and minijv
+ * macro_cutoff [0..127]. Those are continuous AMOUNTS that happen to be typed
+ * int, and an arc is the right picture of them. Framing everything is the same
+ * mistake divable_mark already records: a mark on almost every cell is a mark
+ * on none, and it would destroy the contrast that makes a framed number
+ * readable in the first place.
+ *
+ * The discriminator is span. A small range means the number IS the reading
+ * ("octave +2", "8 voices", "channel 10"); a wide one is a sweep, and its
+ * position on an arc is what you actually want.
+ *
+ * A BIPOLAR range earns more room, because the SIGN is information an arc
+ * physically cannot show: -1 and +1 sit two detents apart on a -24..24
+ * transpose and draw as two nearly identical arcs. That is the case this cell
+ * exists for, so it is worth a wider bound than a one-sided count.
+ *
+ * At 24/48 this frames 273 parameters and refuses every 0..127 amount.
+ *
+ * An int with no declared range is refused too: nothing bounds how many digits
+ * could arrive, and the cell has room for about three.
+ */
+export const FRAME_MAX_SPAN = 24;
+export const FRAME_BIPOLAR_MAX_SPAN = 48;
+
+export function shouldFrameNumber(meta) {
+    if (!meta) return false;
+    if (meta.kind === KIND_ENUM || meta.kind === KIND_OPAQUE) return false;
+    if (meta.type !== "int") return false;
+    if (typeof meta.min !== "number" || typeof meta.max !== "number") return false;
+    if (!isFinite(meta.min) || !isFinite(meta.max)) return false;
+    const span = meta.max - meta.min;
+    return span <= (meta.min < 0 ? FRAME_BIPOLAR_MAX_SPAN : FRAME_MAX_SPAN);
+}
+
+/*
+ * THE SIGN IS THE POINT, and only on a range that HAS a negative side. A bare
+ * "2" on a -24..24 transpose is ambiguous in exactly the way this cell exists
+ * to fix; a "+4" on a 1..8 voice count is noise, because there is nothing for
+ * it to contrast with.
+ *
+ * An unread value is "--", never 0: a parameter that was never answered
+ * reporting a confident zero is the collapse the tri-state read contract exists
+ * to prevent, and Number("") is 0 and finite.
+ */
+export function framedNumberText(meta, raw) {
+    if (raw === null || raw === undefined || raw === "") return "--";
+    const n = Math.round(Number(raw));
+    if (!isFinite(n)) return "--";
+    const bipolar = !!meta && typeof meta.min === "number" && meta.min < 0;
+    return (n > 0 && bipolar) ? "+" + n : String(n);
+}
+
+/*
+ * The SAME box the enum square draws — same width, same height, same frame, one
+ * centred line of 4x5. Sharing it is the point: these are the two "a value, in
+ * a box" cells on the grid, sitting side by side, and two frames drawn by two
+ * functions is how a pair like that comes to differ by a pixel that nobody
+ * meant. Their pixels are covered by the movy geometry baseline together.
+ */
+export const FRAME_W = ENUM_W;
+export const FRAME_H = BOX_H;
+
+export function drawFramedNumber(ctx, kx, ky, text) {
+    drawEnumSquare(ctx, kx, ky, text);
+}
+
 function drawOpaqueBox(ctx, kx, ky, value, override) {
     const h = BOX_H;
     const shown = (override === null || override === undefined)
@@ -1282,6 +1359,16 @@ function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, cellText,
                 ? String(meta.options[idx]) : String(shown ?? ""));
         /* Its own centring — it is ENUM_W wide, not KW. */
         drawEnumSquare(ctx, cellLeft(g, col) + Math.floor((g.cellW - ENUM_W) / 2), ky, text);
+        return;
+    }
+    /*
+     * A SMALL INT IS A NUMBER, not a position on a range — see
+     * shouldFrameNumber. Checked here, after the opaque/writeOnly/enum branches
+     * that own their cells outright, and before the arc it replaces.
+     */
+    if (shouldFrameNumber(meta)) {
+        drawFramedNumber(ctx, cellLeft(g, col) + Math.floor((g.cellW - FRAME_W) / 2), ky,
+                         framedNumberText(meta, raw));
         return;
     }
     /* `?? 0` because the ARC has to point somewhere: an unread value draws its
