@@ -107,8 +107,19 @@ function fitDev(ctx, s, maxWidth) { return caps(fitText(TZ_MEASURE, caps(s), max
  *
  * An opaque value is a path or a string: show its tail, which is the part that
  * identifies it, and "--" when there is nothing set.
+ *
+ * EXPORTED because it is THE value string, not this renderer's private one. The
+ * cell's label band, the held-knob header strip and the knob page drawn as a
+ * LIST (page_controller.mjs, LAYOUT_LIST) all show the same reading of the same
+ * value; a second formatter beside this one is the exact failure the one-list
+ * work exists to prevent, and tests/host/test_knobs_list_layout.sh pins that the
+ * two surfaces agree for every param in the fleet fixture.
+ *
+ * `short_options` is deliberately NOT consulted here — it belongs to the 3-char
+ * enum square alone (see drawKnobWidget). Every surface with room gets the long
+ * `options` form, which is the whole point of there being two declarations.
  */
-function displayValue(raw, meta) {
+export function displayValue(raw, meta) {
     if (raw === null || raw === undefined) return "--";
     if (meta && meta.kind === KIND_OPAQUE) {
         return String(raw).split("/").pop() || "--";
