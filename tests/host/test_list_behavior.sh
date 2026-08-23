@@ -252,3 +252,73 @@ if (footerN !== REQUIRED_ROWS)
 if (failures) process.exit(1);
 console.log("PASS: list behaviour contract -- items, order, selection, scroll boundary (no-footer N=" + N + ", with-footer N=" + footerN + "), value text and edit mode all hold against todays drawMenuList");
 '
+
+# ---------------------------------------------------------------------------
+# THE BUDGET IS MEASURED, NOT chars * 6.
+#
+# The block above runs through list_probe.mjs, which installs a MONOSPACE
+# text_width stand-in (length * 6) on purpose -- it pins behaviour and must not
+# see chrome. That is exactly why it could not catch this: drawMenuList budgeted
+# label and value width at a flat 6px per glyph while the device font is
+# proportional ('!' is 2px, 'i'/'l' are 4, only the widest 78 glyphs are 6), so
+# it reserved the WIDEST glyph for every character and truncated text that fits.
+#
+# This block therefore uses the real font atlas from the harness. It is still
+# not an x/y assertion: it asserts WHAT TEXT comes out.
+node --input-type=module -e '
+const R = process.cwd();
+const H = await import(R + "/tools/param-pages/harness.mjs");
+const { drawMenuList } = await import(R + "/src/shared/menu_layout.mjs");
+
+let failures = 0;
+const fail = (m) => { console.error("FAIL: " + m); failures++; };
+
+function draw(opts) {
+    const fb = H.createFramebuffer();
+    const printed = [];
+    globalThis.fill_rect = fb.fillRect;
+    globalThis.set_pixel = fb.setPixel;
+    globalThis.text_width = fb.textWidth;
+    globalThis.print = (x, y, t, c) => { printed.push(String(t)); return fb.print(x, y, t, c); };
+    drawMenuList(Object.assign({ announce: false }, opts));
+    return { printed, clipped: fb.clipped(), width: fb.textWidth };
+}
+
+/* "Braids" is 34px in the device font and 36px under the 6px assumption. The
+ * unselected value column here is exactly 34px wide (valueX 92 .. 126), so the
+ * assumption ellipsised it to "Br..." and the measurement does not. This is the
+ * literal regression, from tools/param-pages/preview_list.mjs 02-edit-mode. */
+{
+    const r = draw({
+        items: [{ l: "Patch:", v: "Braids" }, { l: "Volume:", v: "100%" }],
+        selectedIndex: 1,
+        getLabel: (i) => i.l, getValue: (i) => i.v,
+        valueAlignRight: true, editMode: true,
+    });
+    if (!r.printed.includes("Braids"))
+        fail("a value that MEASURES inside its column was truncated: " + JSON.stringify(r.printed));
+    if (r.clipped !== 0)
+        fail("edit-mode brackets ran off the display: clipped=" + r.clipped);
+    if (!r.printed.includes("[100%]"))
+        fail("the selected row lost its edit brackets: " + JSON.stringify(r.printed));
+}
+
+/* And the label column. A name of narrow glyphs must not be cut at the count a
+ * flat 6px would allow; a name of wide glyphs still must be. */
+{
+    const narrow = "Illlillilli Filter";      /* 18 chars, mostly 4px */
+    const r = draw({
+        items: [{ l: narrow }], selectedIndex: -1,
+        getLabel: (i) => i.l,
+        indicatorX: 120, labelX: 8,
+    });
+    const shown = r.printed[0].replace(/^\s+/, "");
+    if (shown !== narrow)
+        fail("a narrow-glyph label that fits was truncated to " + JSON.stringify(shown));
+    if (r.clipped !== 0)
+        fail("the label overran the display: clipped=" + r.clipped);
+}
+
+if (failures) process.exit(1);
+console.log("PASS: label and value budgets measure the proportional font, brackets included");
+'
