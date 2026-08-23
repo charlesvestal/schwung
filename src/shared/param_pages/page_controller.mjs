@@ -32,7 +32,8 @@ import { resolveChildKey } from "./child_key.mjs";
 import { buildMetaIndex, inferFromValue, isTurnable, enumIndexOf, KIND_ENUM, KIND_OPAQUE } from "./param_meta.mjs";
 import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page.mjs";
 import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
-         drawBrackets, drawPresetBody, RULE_Y, LAYOUT_MOVY } from "./render_page_movy.mjs";
+         drawBrackets, drawPresetBody, RULE_Y, LAYOUT_MOVY,
+         MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W } from "./render_page_movy.mjs";
 import { resolveViz } from "./viz.mjs";
 
 export { LAYOUT_MOVY };
@@ -54,10 +55,13 @@ import { step, stepLevel, reanchor, firstGrid, jumpIndex, groupIndex } from "./p
  * x=10 and its right-aligned values end at x=118, so nothing collides and
  * nothing touches the screen edge.
  */
-/* Exported because other screens in the page chrome — the module picker, for
- * one — must sit in exactly this rect or the two look subtly unlike each
- * other. One definition, not a matching pair of magic numbers. */
-export const MENU_LIST_X = 8, MENU_LIST_Y = 10, MENU_LIST_W = 112;
+/* The rect itself now lives with the rest of the movy chrome, in
+ * render_page_movy.mjs beside HEADER_H and RULE_Y — its consumers are
+ * RENDERERS, and menu_layout.mjs was importing this 2300-line controller (and
+ * the whole engine behind it) to obtain two integers, which is real parse cost
+ * on the device's QuickJS. Re-exported under the same names so every existing
+ * importer is untouched; still one definition. */
+export { MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W } from "./render_page_movy.mjs";
 /*
  * The frame lives in the list margin, one pixel clear of the dividers.
  *

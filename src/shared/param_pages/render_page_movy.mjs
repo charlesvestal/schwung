@@ -467,6 +467,26 @@ export const RULE_Y = 55;
 export const FOOTER_Y = 56;
 export const FOOTER_H = 8;
 /*
+ * The list rect, between the bank bar and that rule.
+ *
+ * Exported because other screens in the page chrome — the module picker, for
+ * one, and menu_layout.mjs's drawMenuList, which is every list in the shadow
+ * UI — must sit in exactly this rect or the two look subtly unlike each other.
+ * One definition, not a matching pair of magic numbers.
+ *
+ * It lives HERE, with HEADER_H and RULE_Y, rather than in page_controller.mjs
+ * where it was first written: its consumers are renderers, and the three bands
+ * are one piece of geometry. page_controller re-exports it under the same
+ * names, so nothing that imported it from there had to change — but
+ * menu_layout.mjs no longer drags the whole page engine in to read two
+ * integers, which on the device's QuickJS is parse cost paid at every host
+ * module load.
+ *
+ * Five rows at a 9px stride: y = 10, 19, 28, 37, 46, glyphs ending at 52 and
+ * the selected row's fill spanning 9..53, one clear row short of RULE_Y.
+ */
+export const MENU_LIST_X = 8, MENU_LIST_Y = 10, MENU_LIST_W = 112;
+/*
  * ODD, for the same reason BOX_H is: 5 glyph rows centred in the band leave a
  * remainder that only splits evenly when the band is odd. At 6 the touched
  * cell inverted rows 29-34 while the glyphs sat on 29-33 — no clear row at all
