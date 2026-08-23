@@ -92,7 +92,15 @@ export function probe(drawFn) {
         byY.get(r.y).push(r);
     }
     const ordered = [...byY.keys()].sort((a, b) => a - b).map((y) => {
-        const cells = byY.get(y).sort((a, b) => a.x - b.x);
+        let cells = byY.get(y).sort((a, b) => a.x - b.x);
+        /* The selection caret is its OWN print now (menu_layout draws it at
+         * labelX and starts the label at labelX + CARET_W, so a row does not
+         * shift when you select it). Drop it before reading the label, or the
+         * label column would read ">" on every selected row. */
+        const isCaret = (t) => /^[>*]$/.test(String(t).trim());
+        if (cells.length > 1 && isCaret(cells[0].t !== undefined ? cells[0].t : cells[0].text)) {
+            cells = cells.slice(1);
+        }
         return {
             y,
             label: (cells[0] && cells[0].text) || "",
