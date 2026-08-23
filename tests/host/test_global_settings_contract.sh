@@ -118,8 +118,8 @@ const plan = planPages({ hierarchy, chainParams });
 {
   /* The counts from GLOBAL_SETTINGS_SECTIONS, transcribed. Asserted per level
    * rather than only in aggregate: a param that moved from one section to
-   * another keeps the total at 25 and both totals-based checks green. */
-  const WANT_COUNT = { display: 6, audio: 8, accessibility: 6, set_pages: 1, shortcuts: 1, services: 3 };
+   * another keeps the total at 24 and both totals-based checks green. */
+  const WANT_COUNT = { display: 6, audio: 8, accessibility: 6, set_pages: 1, shortcuts: 1, services: 2 };
   for (const p of plan.pages) {
     if (p.kind !== PAGE_KNOBS) continue;
     const keys = (p.keys || []).filter(Boolean);
@@ -256,6 +256,62 @@ const plan = planPages({ hierarchy, chainParams });
   if (shared[0].options[1] !== "On") {
     fail("annotateUsbcOption mutated its input -- the shared declaration would keep " +
          "a previous entry annotation. Got " + JSON.stringify(shared[0].options[1]));
+  }
+}
+
+/* ---- 6c. names are written out in full ----------------------------------
+ *
+ * The first cut spelled every name for the eight-cell knob grid -- "Pad Typ",
+ * "Text Prv", "Move>Sch", "Brws Prv", "Auto Chk" -- and then the screen was
+ * pinned to the LIST, which has room for the whole word. Reported from the
+ * device: "why are these truncated?"
+ *
+ * They were wrong for the grid too: labelForCell / WORD_ABBREV in
+ * render_page_movy.mjs already squeeze a name into a cell, per word and with a
+ * fixed mnemonic per concept. Abbreviating here duplicates a renderer job and
+ * does it worse.
+ *
+ * The values are the labels the bespoke screen used, restored verbatim. Pinned
+ * because an abbreviation is a plausible-looking edit that nothing else fails
+ * on -- and because one of them ("MIDI Ch" for midi_indicator_enabled) collided
+ * with Master FX genuine MIDI Ch, its listen channel, which is a different
+ * setting entirely.
+ */
+{
+  const EXPECT = {
+    display_mirror: "Mirror Display", overlay_knobs: "Overlay",
+    pad_typing: "Pad Typing", text_preview: "Show Typed",
+    midi_indicator_enabled: "Show MIDI", param_view: "Param View",
+    link_audio_routing: "Move->Schwung", link_audio_publish: "Schwung->Link",
+    latency_comp_enabled: "Latency Comp", resample_bridge: "Resample",
+    skipback_shortcut: "Skipback", skipback_seconds: "Skipback Len",
+    /* "Audition", not "Audition Files": this row now gates the User Presets
+       scroll audition as well as the file browser WAV preview, so the noun
+       narrowed it to something it no longer only means. Still written out in
+       full, which is what this pin is actually protecting. */
+    browser_preview: "Audition", usbc_out_persist: "USB-C",
+    screen_reader_enabled: "Screen Reader", screen_reader_engine: "Engine",
+    screen_reader_speed: "Speed", screen_reader_pitch: "Pitch",
+    screen_reader_volume: "Volume", screen_reader_debounce: "Speak Delay",
+    set_pages_enabled: "Set Pages", shadow_ui_trigger: "Open With",
+    filebrowser_enabled: "File Browser",
+    analytics_enabled: "Analytics",
+  };
+  let seen = 0;
+  for (const p of chainParams) {
+    const want = EXPECT[p.key];
+    if (want === undefined) { fail("unexpected param in the contract: " + p.key); continue; }
+    seen++;
+    if (p.name !== want) {
+      fail("param " + p.key + " is named " + JSON.stringify(p.name) + ", expected " +
+           JSON.stringify(want) + " -- names are written out in full here; the cell " +
+           "renderer abbreviates (labelForCell / WORD_ABBREV)");
+    }
+  }
+  const total = Object.keys(EXPECT).length;
+  if (seen !== total) {
+    fail("expected " + total + " params in the contract, saw " + seen +
+         " -- a param was added or removed without updating this list");
   }
 }
 
@@ -454,8 +510,37 @@ const plan = planPages({ hierarchy, chainParams });
   if (read(null, "1") !== null) fail("a failed usbc_out_persist read must pass through as null");
 }
 
+/* ---- 6d. EVERY ROW FITS ITS OWN WIDTH -----------------------------------
+ *
+ * A list row is one line: cursor prefix, label, gap, value, right edge. The
+ * label room is therefore whatever the WIDEST value of that parameter leaves
+ * behind -- so a name cannot be judged on its own. "Overlay Knobs" is a fine
+ * name beside "Off" and an impossible one beside "+Jog Touch", and the first
+ * cut of these names was chosen without measuring either.
+ *
+ * Measured with the real device font through the harness, not a 6px-per-glyph
+ * estimate: that over-reserves by up to 4px a character and would condemn rows
+ * that are fine.
+ *
+ * OURS ONLY. A sweep of the fleet fixture found 682 of 4598 module rows over
+ * their width -- 14%, and 165 of those by seven characters or more. Truncation
+ * on a list row is therefore normal, the marquee on the selected row is what
+ * answers it, and module authors own their own names. What this pins is that WE
+ * do not add another.
+ */
+{
+  const M = await import(R + "/tools/param-pages/measure_labels.mjs");
+  for (const r of chainParams.map((cp) => M.measureRow(cp)).filter((x) => !x.fits)) {
+    fail("row " + JSON.stringify(r.name) + " needs " + r.need + "px but its widest "
+       + "value (" + JSON.stringify(r.value) + ") leaves " + r.room + "px -- over by "
+       + r.over + "px. Shorten the NAME; or if the VALUE is what does not fit, "
+       + "shorten the option, because a four-character label is worse than a "
+       + "shorter value.");
+  }
+}
+
 if (failures) process.exit(1);
-console.log("PASS: global settings contract — seven levels (6/8/6/1/1/3 params + Updates as a " +
+console.log("PASS: global settings contract — seven levels (6/8/6/1/1/2 params + Updates as a " +
             "menu), every section one page with Audio at the limit, every enum listable with a " +
             "matching short_options, usbc_out_persist a bool whose On label reports the observed source, " +
             "validator clean, no host global read, every key routed to a backend, the six " +
