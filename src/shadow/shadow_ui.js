@@ -223,7 +223,7 @@ import {
     paramPagesRefreshTrailing
 } from './shadow_ui_param_pages.mjs';
 import { createSlotGridIo, createMasterGridIo,
-         MFX_MIDI_CHANNEL_OPTIONS, mfxMidiChannelToIndex,
+         MFX_MIDI_CHANNEL_OPTIONS, MFX_MIDI_CHANNEL_KEY, mfxMidiChannelToIndex,
          mfxMidiChannelFromIndex } from './shadow_ui_slot_grid.mjs';
 import { createGlobalGridIo, GLOBAL_SECTIONS } from './shadow_ui_global_grid.mjs';
 import {
@@ -1004,9 +1004,20 @@ const TOOLS_DOUBLE_TAP_MS = 500;
 const ANALYTICS_PROMPTED_PATH = "/data/UserData/schwung/analytics-prompted";
 let analyticsPromptSelection = 0;  // 0 = Yes (default), 1 = No
 
-/* Auto-update state */
-let autoUpdateCheckEnabled = true;   // Default: enabled (opt-out)
-let pendingUpdates = [];              // Updates found on startup
+/* Auto-update state.
+ *
+ * There is no auto-update CHECK and there never was. `autoUpdateCheckEnabled`
+ * lived here, was persisted, and had a Services row -- but nothing consulted
+ * it: checkForUpdatesInBackground() has exactly one caller,
+ * showUpdatesAvailableScreen(), which runs only when the user picks
+ * [Check Updates] themselves. A flag with no reader is a promise the UI cannot
+ * keep, so the flag is gone and the manual path is stated instead.
+ *
+ * shadow_config.json on an existing device still carries `auto_update_check`.
+ * That is harmless: every saver here read-modify-writes the whole object, so
+ * the stale key is carried along untouched and simply never read.
+ */
+let pendingUpdates = [];              // Updates found by [Check Updates]
 
 /* Bootstrap-needed banner state. The self-heal mechanism (schwung-heal
  * setuid + entrypoint that invokes it at boot) requires one-time root
@@ -2435,8 +2446,11 @@ let selectingMasterFxModule = false;  // True when selecting module for a compon
 let selectedMasterFxModuleIndex = 0;  // Index in MASTER_FX_OPTIONS during selection
 
 /* Master FX settings (shown when Settings component is selected) */
+/* No Volume row here: `master_fx:volume` had no handler on either side of the
+ * wire, so it read back empty (drawn as a fake "100%") and wrote into whatever
+ * module sat in Master FX slot 1. See MASTER_GRID_PARAMS in
+ * shadow_ui_slot_grid.mjs for the full account. */
 const MASTER_FX_SETTINGS_ITEMS_BASE = [
-    { key: "master_volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
     /* Which channel Master FX hears. Lives here rather than in Global Settings
      * because this is where a Master FX setting is looked for — reported from
      * the device on the first cut, which put it under Global > Audio next to
@@ -2503,6 +2517,29 @@ function returnToSlotGridFromLfoTarget() {
     return true;
 }
 
+/*
+ * AN EDITOR THAT OWNS ITS OWN VIEW MUST HAND THE SCREEN BACK ITSELF.
+ *
+ * The grid can open a parameter whose editor is a whole VIEW rather than an
+ * overlay -- the filepath browser, the canvas/wave editor, the enum picker.
+ * Those close by calling setView() themselves, so unless they ask where they
+ * came from they all default to the hierarchy list. From the grid that reads as
+ * "I dived into a wave editor and came back somewhere else", and it costs a
+ * second Back to undo.
+ *
+ * The filepath browser already carried this branch inline, under a comment
+ * saying the return "lives here rather than being repeated (and forgotten) at
+ * each one". It was then forgotten at the canvas -- reported from the device as
+ * granny's position editor returning to the menu instead of the knobs. So it is
+ * a shared helper now, and test_editor_returns_to_caller.sh fails when a new
+ * own-view editor closes without consulting it.
+ */
+function closeOwnViewEditorToCaller() {
+    if (!paramEditorOpenedFromGrid) return false;
+    returnToParamPagesFromEditor();
+    return true;
+}
+
 function returnToParamPagesFromEditor() {
     const slotIndex = hierEditorSlot;
     const componentKey = hierEditorComponent;
@@ -2520,6 +2557,17 @@ function openHierarchyParamEditor(selectedKey, meta, forceOpen) {
         hierEditorEditMode = false;
         resetHierarchyEditState();
         invalidateKnobContextCache();
+        /* A CLICK closes edit mode too, and must land where BACK lands.
+         *
+         * Edit mode is not a separate view -- it is the hierarchy editor with
+         * the row opened, which for granny's `position` is the waveform strip
+         * the user calls the wave editor. Back already returned to the grid
+         * here; this toggle did not, so the gesture that OPENED the editor was
+         * the one that could not close it back to where it came from. Reported
+         * from the device after the canvas and filepath doors were fixed --
+         * this is the same bug through a third door, and the reason the first
+         * fix appeared to change nothing. */
+        closeOwnViewEditorToCaller();
         return;
     }
     if (!hierEditorEditMode && meta && meta.type === "string") {
@@ -9055,37 +9103,6 @@ function saveMasterFxChainConfig() {
     }
 }
 
-/* Save auto-update setting to shadow config */
-function saveAutoUpdateConfig() {
-    try {
-        const configPath = "/data/UserData/schwung/shadow_config.json";
-        let config = {};
-        try {
-            const content = host_read_file(configPath);
-            if (content) config = JSON.parse(content);
-        } catch (e) {}
-        config.auto_update_check = autoUpdateCheckEnabled;
-        host_write_file(configPath, JSON.stringify(config, null, 2));
-    } catch (e) {
-        /* Ignore errors */
-    }
-}
-
-/* Load auto-update setting from config */
-function loadAutoUpdateConfig() {
-    try {
-        const configPath = "/data/UserData/schwung/shadow_config.json";
-        const content = host_read_file(configPath);
-        if (!content) return;
-        const config = JSON.parse(content);
-        if (config.auto_update_check !== undefined) {
-            autoUpdateCheckEnabled = config.auto_update_check;
-        }
-    } catch (e) {
-        /* Ignore errors - default to enabled */
-    }
-}
-
 function saveBrowserPreviewConfig() {
     try {
         const configPath = "/data/UserData/schwung/shadow_config.json";
@@ -9213,9 +9230,6 @@ function syncJsOnlySettings() {
         }
         if (c.browser_preview !== undefined && c.browser_preview !== previewEnabled) {
             previewEnabled = c.browser_preview;
-        }
-        if (c.auto_update_check !== undefined) {
-            autoUpdateCheckEnabled = c.auto_update_check;
         }
         if (c.filebrowser_enabled !== undefined && c.filebrowser_enabled !== filebrowserEnabled) {
             filebrowserEnabled = c.filebrowser_enabled;
@@ -10112,7 +10126,33 @@ function masterGridIoFor() {
          * declared key already carries its "master_fx:" prefix, so these are
          * pass-throughs rather than a mapping. */
         readParam: (key) => getSlotParam(0, key),
-        writeParam: (key, value) => setSlotParam(0, key, value),
+        /*
+         * A WRITE HERE CARRIES THE SAME SIDE EFFECTS THE LIST PATH CARRIED.
+         *
+         * adjustMasterFxSetting used to set the param, mirror the module-level
+         * cache var AND call saveMasterFxChainConfig(). When Master FX Settings
+         * became a contract, the grid started writing through this io -- which
+         * did the param and neither of the other two. So the listen channel took
+         * effect immediately and was then LOST on reboot, because the next
+         * saveMasterFxChainConfig() wrote the stale cachedMasterFxMidiChannel
+         * rather than what the user had just chosen. Reported from the device.
+         *
+         * This is the same shape as the Global Settings persistence keys, where
+         * the routing table declares which writes must persist and a test pins
+         * it (test_global_settings_contract.sh). Master FX's own contract never
+         * got that treatment; the check below is the whole of it, because
+         * midi_channel is the only param here with a side effect -- the LFO keys
+         * persist through the MFX LFO path and Volume was removed for writing
+         * into slot 1's module.
+         */
+        writeParam: (key, value) => {
+            setSlotParam(0, key, value);
+            if (key === MFX_MIDI_CHANNEL_KEY) {
+                const wire = parseInt(value, 10);
+                cachedMasterFxMidiChannel = Number.isFinite(wire) ? wire : -1;
+                saveMasterFxChainConfig();
+            }
+        },
         hasPreset: () => !!currentMasterPresetName,
         /* The SAME resolver the MFX LFO list editor uses, so the grid and the
          * list can never describe one routing differently, and cached per scope
@@ -10222,7 +10262,6 @@ function globalGridIoFor() {
             case "shadow_ui_trigger":
                 return String(typeof shadow_ui_trigger_get === "function" ? shadow_ui_trigger_get() : 2);
             case "filebrowser_enabled": return bit(filebrowserEnabled);
-            case "auto_update_check":   return bit(autoUpdateCheckEnabled);
             case "analytics_enabled":
                 return bit(typeof host_get_analytics_enabled === "function" && host_get_analytics_enabled());
             }
@@ -10349,10 +10388,6 @@ function globalGridIoFor() {
                  * nowhere else on the device it is written down. */
                 showWarning("File Browser",
                             on ? "On. Access at http://move.local:404" : "Off.");
-                return;
-            case "auto_update_check":
-                autoUpdateCheckEnabled = on;
-                saveAutoUpdateConfig();
                 return;
             case "analytics_enabled":
                 if (typeof host_set_analytics_enabled === "function") host_set_analytics_enabled(on ? 1 : 0);
@@ -11404,6 +11439,35 @@ function enterHierarchyEditorFromParamPages() {
     const page = currentParamPage();
     const slotIndex = paramPagesSlot();
     const componentKey = paramPagesComponent();
+
+    /*
+     * A SYNTHESISED CONTRACT HAS NOWHERE TO EJECT TO.
+     *
+     * Global Settings, a slot's Settings and Master FX's are contracts, not
+     * components: there is no `ui_hierarchy` behind them, so entering the list
+     * editor for one shows nothing and means nothing. Worse, this function sets
+     * suppressParamPagesOnce -- a ONE-SHOT meant to stop the list editor
+     * bouncing straight back into the grid -- and nothing on these paths ever
+     * consumes it, because they do not re-enter through the component route.
+     *
+     * So the flag survived, and the NEXT component to open paid for it: it read
+     * the stale one-shot and fell through to the hierarchy editor. Reported from
+     * the device as granny opening as a list, and correctly diagnosed there as
+     * "keyed off of visiting the global settings" -- the module was never
+     * reloaded; it was simply the next thing opened after Global Settings had
+     * left the flag set.
+     *
+     * Refuse instead. The frame is dropped rather than redirected, which is
+     * right: whatever nulled the controller is mid-transition and owns where the
+     * view goes next.
+     */
+    if (componentKey === GLOBAL_SETTINGS_COMPONENT ||
+        componentKey === MASTER_SETTINGS_COMPONENT ||
+        componentKey === "slot") {
+        exitParamPages();
+        return false;
+    }
+
     exitParamPages();
     suppressParamPagesOnce = true;
     enterHierarchyEditor(slotIndex, componentKey);
@@ -11436,6 +11500,9 @@ function enterHierarchyEditorFromParamPages() {
         hierEditorChildLabel = levelDef.child_label || "Child";
         loadHierarchyLevel();
     }
+    /* Entered. The caller draws the editor only on true -- a synthesised
+     * contract returns false above and its frame is dropped instead. */
+    return true;
 }
 
 /* Enter the hierarchy editor with an explicit hierarchy object. Lets callers
@@ -11951,10 +12018,7 @@ function closeHierarchyFilepathBrowser() {
      * selection, Back, and the no-state guard — funnel through here, so the
      * grid return lives here rather than being repeated (and forgotten) at
      * each one. Committing a sample used to drop you in the hierarchy list. */
-    if (paramEditorOpenedFromGrid) {
-        returnToParamPagesFromEditor();
-        return;
-    }
+    if (closeOwnViewEditorToCaller()) return;
     setView(VIEWS.HIERARCHY_EDITOR);
 }
 
@@ -14098,7 +14162,7 @@ function closeCanvasPreview(cancelled) {
     invokeCanvasOverlayHook("onClose", { cancelled: !!cancelled });
     invokeCanvasOverlayHook("onExit", { cancelled: !!cancelled });
     resetCanvasState();
-    setView(VIEWS.HIERARCHY_EDITOR);
+    if (!closeOwnViewEditorToCaller()) setView(VIEWS.HIERARCHY_EDITOR);
     needsRedraw = true;
 }
 
@@ -14522,17 +14586,14 @@ function changeComponentPreset(delta) {
  * These two used to be a 120-line if-chain apiece, and the name is a lie about
  * nearly all of it: every branch but one served GLOBAL SETTINGS, which is a
  * synthesised module contract now (shadow_ui_global_grid.mjs) with its own
- * absolute writes and its own persistence. What is left is what the name always
- * claimed -- the master bus's own Volume -- plus the actions, which carry no
- * value and are not adjustable.
+ * absolute writes and its own persistence. What is left is the listen channel,
+ * plus the actions, which carry no value and are not adjustable.
+ *
+ * The master bus's own "Volume" used to be here too and was INERT -- see
+ * MASTER_GRID_PARAMS in shadow_ui_slot_grid.mjs. Its `if (!val) return "100%"`
+ * is why it was invisible: an unserved key drew a confident fake.
  */
 function getMasterFxSettingValue(setting) {
-    if (setting.key === "master_volume") {
-        const val = shadow_get_param(0, "master_fx:volume");
-        if (!val) return "100%";
-        const num = parseFloat(val);
-        return isNaN(num) ? val : `${Math.round(num * 100)}%`;
-    }
     /* master_fx_midi_channel is a MASTER FX setting, not a Global Settings one,
      * so it stays here after the Global Settings keys moved into the contract
      * (shadow_ui_global_grid.mjs). It arrived on main in #266 while this branch
@@ -14551,14 +14612,6 @@ function getMasterFxSettingValue(setting) {
 
 function adjustMasterFxSetting(setting, delta) {
     if (setting.type === "action") return;
-
-    if (setting.key === "master_volume") {
-        let val = parseFloat(shadow_get_param(0, "master_fx:volume") || "1.0");
-        val += delta * setting.step;
-        val = Math.max(setting.min, Math.min(setting.max, val));
-        shadow_set_param(0, "master_fx:volume", val.toFixed(2));
-        return;
-    }
 
     /* master_fx_midi_channel is a MASTER FX setting, not a Global Settings one,
      * so it stays after the Global Settings keys moved into the contract
@@ -17915,8 +17968,6 @@ globalThis.init = function() {
     scanModulesForType("synth");
     scanModulesForType("midiFx");
 
-    /* Load auto-update preference */
-    loadAutoUpdateConfig();
     loadBrowserPreviewConfig();
     loadPadTypingConfig();
     loadTextPreviewConfig();
@@ -18168,7 +18219,7 @@ function dispatchCoRunDraw() {
          * browser, items list, mode select, child selector) belongs to the
          * list editor, which drawParamPages declines by returning false. */
         case VIEWS.PARAM_PAGES:
-            if (!drawParamPages()) { enterHierarchyEditorFromParamPages(); drawHierarchyEditor(); }
+            if (!drawParamPages()) { if (enterHierarchyEditorFromParamPages()) drawHierarchyEditor(); }
             break;
         case VIEWS.CANVAS:               drawCanvasPreview(); break;
         case VIEWS.KNOB_EDITOR:          drawKnobEditor(); break;
@@ -19257,7 +19308,7 @@ globalThis.tick = function() {
          * items list, mode select, child selector) belongs to the list editor,
          * which drawParamPages declines by returning false. */
         case VIEWS.PARAM_PAGES:
-            if (!drawParamPages()) { enterHierarchyEditorFromParamPages(); drawHierarchyEditor(); }
+            if (!drawParamPages()) { if (enterHierarchyEditorFromParamPages()) drawHierarchyEditor(); }
             break;
         case VIEWS.CANVAS:
             drawCanvasPreview();

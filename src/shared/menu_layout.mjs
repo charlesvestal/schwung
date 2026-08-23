@@ -396,9 +396,32 @@ export function drawMenuList({
      * this is 118, i.e. exactly SCREEN_WIDTH - VALUE_RIGHT_CLEARANCE — the
      * constant is kept as the statement of the 10px budget and as the ceiling
      * on how far right a value may ever sit. */
-    const valueRightEdge = hasScrollArrow
-        ? Math.min(indicatorX - 2, SCREEN_WIDTH - VALUE_RIGHT_CLEARANCE)
-        : SCREEN_WIDTH - valuePaddingRight;
+    const valueRightEdgeClear = SCREEN_WIDTH - valuePaddingRight;
+    const valueRightEdgeArrow = Math.min(indicatorX - 2,
+                                         SCREEN_WIDTH - VALUE_RIGHT_CLEARANCE);
+    /*
+     * THE CLEARANCE IS CHARGED PER ROW, not to the whole list.
+     *
+     * The arrows are drawn at exactly two places — drawArrowUp at
+     * resolvedTopY and drawArrowDown at resolvedBottomY - 3 — so they overlap
+     * the FIRST visible row and the LAST visible row and nothing in between.
+     * Reserving the column for the whole list therefore took 10px off every
+     * row to make room for a glyph that touches two of them, and on the
+     * page-chrome list (whose edge is already pulled in to 118 by the frame)
+     * that left 100px for label + value. "Latency Comp" measures 71 and "On"
+     * measures 12, which with the cursor prefix and the gap is 101 — so a row
+     * that fits by a pixel was truncated to "Latency..." to pay for an arrow
+     * three rows away. Reported from the device, twice.
+     *
+     * A middle row now gets the full 118. The two rows that really do sit
+     * under an arrow still pull in to 108, which is the only place the
+     * collision was ever possible.
+     */
+    const upArrowRow   = (startIdx > 0) ? startIdx : -1;
+    const downArrowRow = (endIdx < totalItems) ? endIdx - 1 : -1;
+    const valueRightEdgeFor = (i) =>
+        (i === upArrowRow || i === downArrowRow) ? valueRightEdgeArrow
+                                                 : valueRightEdgeClear;
 
     /* The no-value label column needs no equivalent: its budget is
      * `indicatorX - labelX - labelGap`, which stops at 120 whether or not an
@@ -446,7 +469,17 @@ export function drawMenuList({
             continue;
         }
 
-        const labelPrefix = isSelected ? "> " : "  ";
+        /*
+         * NO CARET. The selected row is drawn INVERTED -- a full-width fill
+         * with the text knocked out of it -- and a ">" on top of that says the
+         * same thing twice on a display where inversion is unmistakable.
+         *
+         * It cost more than it looks. The prefix rode the label string as "> "
+         * or "  ", and in a proportional font those are 11px and 12px, so every
+         * label SHIFTED ONE PIXEL LEFT when its row was selected. Removing it
+         * takes that jitter with it and hands 12px back to the label on every
+         * row -- two characters on the page-chrome list.
+         */
         let label = getLabel(item, i);
         const fullLabel = label; /* Keep original for scrolling */
         const valueRaw = getValue ? getValue(item, i) : "";
@@ -464,9 +497,10 @@ export function drawMenuList({
          * an edge pulled in by the CLOSING bracket, and is then shifted left by
          * the OPENING one, which puts the "]" precisely on valueRightEdge. */
         const bracketed = editMode && valueAlignRight && isSelected;
+        const rowEdge = valueRightEdgeFor(i);
         const rowValueRightEdge = bracketed
-            ? valueRightEdge - measure("]")
-            : valueRightEdge;
+            ? rowEdge - measure("]")
+            : rowEdge;
 
         if (valueAlignRight && fullValue) {
             let valueXFloor = valueX;
@@ -519,7 +553,7 @@ export function drawMenuList({
             if (minLabelChars > 0 && !(isSelected && prioritizeSelectedValue)) {
                 /* slice() IS the min(): a label shorter than the floor reserves
                  * its own whole width and so costs the value nothing at all. */
-                const reserve = measure(labelPrefix)
+                const reserve = 0
                     + measure(String(fullLabel).slice(0, minLabelChars | 0));
                 const labelFloorX = labelX + reserve + labelGap;
                 const valueGuardX = rowValueRightEdge - 3 * DEFAULT_CHAR_WIDTH;
@@ -535,7 +569,7 @@ export function drawMenuList({
                  * has always been so that the ~30 callers passing this flag are
                  * bit-identical; the general floor above is the measured one. */
                 const selectedChars = Math.max(0, selectedMinLabelChars | 0);
-                const minLabelWidth = measure(labelPrefix)
+                const minLabelWidth = 0
                     + (selectedChars * DEFAULT_CHAR_WIDTH) + labelGap;
                 valueXFloor = labelX + minLabelWidth;
             }
@@ -555,12 +589,37 @@ export function drawMenuList({
                 }
             }
 
+            /* RE-ALIGN A TRUNCATED VALUE, then budget the label against where it
+             * actually ended up.
+             *
+             * resolvedValueX above is the position for the value at its FULL
+             * width, clamped up to the label's floor. The value is then cut down
+             * to whatever fits from there — but it was still being DRAWN at that
+             * original x, so a cut value stopped short of the right edge and left
+             * a hole, and the label's budget was measured against a value that no
+             * longer reached that far. Both columns paid for space neither used:
+             *
+             *     "  Move..."  45px  +  "Schwu..."  38px  =  83px of 118
+             *
+             * on a row where both strings were truncated. Right-aligning the cut
+             * value restores the edge `valueAlignRight` promises, and hands the
+             * slack back to the label — which is the column that was crushed.
+             *
+             * One pass, deliberately, not a loop: a shorter label could in
+             * principle free more for the value, but the value has already been
+             * fitted and re-widening it would re-open the same negotiation. The
+             * label is the side that was starved, so it takes the slack. */
+            if (displayValue !== fullValue) {
+                resolvedValueX = Math.max(resolvedValueX,
+                                          rowValueRightEdge - measure(displayValue));
+            }
+
             const maxLabelWidth = Math.max(0, resolvedValueX - labelX - labelGap);
-            maxLabelChars = fitCharCount(measure, fullLabel, maxLabelWidth - measure(labelPrefix));
+            maxLabelChars = fitCharCount(measure, fullLabel, maxLabelWidth);
         } else {
             /* No value, label can use full width minus prefix and indicator */
             const maxLabelWidth = indicatorX - labelX - labelGap;
-            maxLabelChars = fitCharCount(measure, fullLabel, maxLabelWidth - measure(labelPrefix));
+            maxLabelChars = fitCharCount(measure, fullLabel, maxLabelWidth);
         }
 
         if (maxLabelChars > 0) {
@@ -575,7 +634,7 @@ export function drawMenuList({
 
         if (isSelected) {
             ctx.fillRect(0, y - highlightOffset, SCREEN_WIDTH, itemHighlightHeight, 1);
-            ctx.print(labelX, y, `${labelPrefix}${label}`, 0);
+            ctx.print(labelX, y, label, 0);
             if (displayValue) {
                 /* Show brackets around value when in edit mode */
                 const shownValue = editMode ? `[${displayValue}]` : displayValue;
@@ -586,7 +645,7 @@ export function drawMenuList({
                 ctx.print(editValueX, y, shownValue, 0);
             }
         } else {
-            ctx.print(labelX, y, `${labelPrefix}${label}`, 1);
+            ctx.print(labelX, y, label, 1);
             if (displayValue) {
                 ctx.print(resolvedValueX, y, displayValue, 1);
             }
@@ -599,7 +658,7 @@ export function drawMenuList({
                 /* Indented to sit under the label, i.e. past the cursor prefix
                  * — measured, so it is the prefix's real width and not two
                  * worst-case glyphs. */
-                const subX = labelX + measure(labelPrefix);
+                const subX = labelX + DEFAULT_LABEL_GAP;
                 ctx.print(subX, subY, subLabel, isSelected ? 0 : 1);
             }
         }

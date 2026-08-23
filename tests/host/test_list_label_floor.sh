@@ -43,17 +43,25 @@ const fail = (m) => { console.error("FAIL: " + m); failures++; };
 /* breakbeats real first knobs page: two samples that differ only in their
  * LABEL, which is exactly the case the old budget destroyed. */
 const ROWS = [
-    { name: "A Sample", value: "kick_01.wav" },
-    { name: "A Length", value: "1/2 bar" },
-    { name: "B Sample", value: "kick_01.wav" },
-    { name: "B Length", value: "4 bars" },
-    { name: "B Chance", value: "63" },
-    /* A sixth entry in a five-row rect, so a scroll arrow is on screen and the
-     * value edge pulls in to 108 — the geometry the screenshot above was taken
-     * in. Without it the rows have eight more pixels and the defect is milder
-     * than the one being fixed. */
+    { name: "A Sample", value: "kick_01_long.wav" },
+    { name: "A Length", value: "1/2 bar triplet" },
+    { name: "B Sample", value: "kick_01_long.wav" },
+    { name: "B Length", value: "4 bars looped" },
+    { name: "B Chance", value: "63 percent" },
+    /* A sixth entry in a five-row rect, so a scroll arrow IS on screen. It no
+     * longer widens the defect for every row — the clearance is charged per
+     * row now, and only the first and last visible rows sit under an arrow —
+     * but it keeps this fixture rendering the same five-of-six window the
+     * screenshot above was taken in. */
     { name: "Complexity", value: "63" },
 ];
+/* The filenames are long ON PURPOSE. With the arrow clearance charged per row
+ * (see menu_layout.mjs) a middle row gets the full 118px, and at the old
+ * `kick_01.wav` the floor stopped biting there at all — assertion 5, the
+ * vacuity guard in this file, caught that immediately and refused to let
+ * assertion 1 pass on a fixture that no longer reproduces anything. Long
+ * enough to crush an eight-character label at 118px is the property this
+ * fixture has to keep, not any particular filename. */
 const VISIBLE = 5;
 /* The page-chrome list rect, i.e. the geometry drawPageChromeList renders in. */
 const RECT = { x: 8, y: 10, w: 112, h: 45 };
@@ -74,12 +82,21 @@ function render(draw) {
         if (!byRow.has(c.y)) byRow.set(c.y, []);
         byRow.get(c.y).push(c);
     }
-    const rows = [...byRow.entries()].sort((a, b) => a[0] - b[0]).map(([, cs]) => {
+    const rows = [...byRow.entries()].sort((a, b) => a[0] - b[0]).map(([, cs0]) => {
+        let cs = cs0;
         cs.sort((a, b) => a.x - b.x);
+        /* The caret is its OWN print now, at labelX, with the label starting at
+         * labelX + CARET_W so a row does not shift when selected. Drop it, or
+         * every selected rows label reads ">". */
+        if (cs.length > 1 && /^[>*]$/.test(String(cs[0].t).trim())) cs = cs.slice(1);
         /* The cursor prefix is chrome, not label. */
+        const last = cs[cs.length - 1];
         return {
             label: (cs[0] ? cs[0].t : "").replace(/^[^A-Za-z0-9]+/, ""),
-            value: cs.length > 1 ? cs[cs.length - 1].t : "",
+            value: cs.length > 1 ? last.t : "",
+            /* Where the value ENDS. valueAlignRight promises one edge for every
+             * row; assertion 6 checks a truncated value still reaches it. */
+            valueRight: cs.length > 1 ? last.x + fb.textWidth(last.t) : -1,
         };
     });
     return { rows, clipped: fb.clipped(), width: fb.textWidth };
@@ -213,6 +230,52 @@ const withFloor = (minLabelChars, index = 0) => render((ctx) => drawMenuList({
         fail(`the selected label never scrolled over 120 draws (always `
              + `${JSON.stringify([...seen][0])}) — the marquee stopped engaging`);
     }
+}
+
+/* ---- 6. A TRUNCATED VALUE IS STILL RIGHT-ALIGNED -------------------------
+ *
+ * valueAlignRight promises one right edge for every row. The value used to be
+ * POSITIONED at its full measured width, clamped up to the label floor, and
+ * only then cut down to what fit from there -- while still being drawn at the
+ * original x. So a cut value stopped short of the edge and left a hole, and the
+ * label was budgeted against a value that no longer reached that far. Both
+ * columns paid for space neither used:
+ *
+ *     "  Move..."  45px  +  "Schwu..."  38px  =  83px of 118
+ *
+ * Neither existing assertion could see it: the label floor was honoured (the
+ * label just did not spend its whole reservation) and the value did fit. The
+ * 99 chain-editor pixel cases missed it too -- none of them has a row where
+ * BOTH columns truncate.
+ */
+{
+    const LONG = [
+        { name: "Move Resample", value: "Schwung Mix" },   /* both truncate */
+        { name: "Skipback Key",  value: "Sh+Cap" },
+        { name: "Latency Comp",  value: "On" },            /* neither does */
+    ];
+    const { rows } = render((ctx) => drawMenuList({
+        ctx, items: LONG, selectedIndex: -1,
+        listArea: { topY: RECT.y, bottomY: RECT.y + RECT.h },
+        labelX: RECT.x, indicatorX: 110, indicatorBottomY: RECT.y + RECT.h,
+        getLabel: (e) => e.name, getValue: (e) => e.value,
+        valueAlignRight: true, valueX: RECT.x, valuePaddingRight: 10,
+        announce: false,
+    }));
+
+    const edges = rows.map((r) => r.valueRight).filter((x) => x >= 0);
+    const want = Math.max(...edges);
+    for (let i = 0; i < rows.length; i++) {
+        if (rows[i].valueRight < 0) continue;
+        if (rows[i].valueRight !== want) {
+            fail(`row ${i} (${JSON.stringify(rows[i].label)} / `
+                 + `${JSON.stringify(rows[i].value)}) ends its value at x=`
+                 + `${rows[i].valueRight}, but the column edge is x=${want} -- a `
+                 + `truncated value must still be right-aligned, or it leaves a `
+                 + `hole and the label is budgeted against space the value gave up`);
+        }
+    }
+
 }
 
 if (failures) { console.error(`${failures} failure(s)`); process.exit(1); }
