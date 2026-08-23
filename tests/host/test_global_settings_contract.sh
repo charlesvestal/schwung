@@ -199,40 +199,63 @@ const plan = planPages({ hierarchy, chainParams });
   }
 }
 
-/* ---- 6. usbc_out_persist carries the annotation as a LONG option --------
+/* ---- 6. usbc_out_persist IS A BOOL; the annotation is a readout ---------
  *
- * It renders as "On (Main Out)": a bool annotated with the source last seen on
- * the wire, because Move own Settings screen goes stale after Schwung restores
- * the value, so this row is the only honest read of what is actually routed. A
- * 3-char square cannot show that — which is what short_options is FOR. One
- * declaration, two renderings, no per-surface branch.
+ * It is On or Off -- whether Schwung restores the USB-C out source at boot. The
+ * "(Main Out)" suffix REPORTS the source last seen on the wire, which matters
+ * because Move own Settings screen goes stale after Schwung restores the value.
+ *
+ * It was briefly three options, then four, and both were wrong: putting the
+ * annotation in the option SET turns one choice into several indistinguishable
+ * "On"s to jog past, and implies the source is selectable here. It is not --
+ * it is read-only and Move own menu chooses it. Reported from the device:
+ * "it should be on or off and the () shows the last saved value".
  */
 {
   const usbc = chainParams.find((p) => p.key === "usbc_out_persist");
   if (!usbc) fail("usbc_out_persist is missing from the contract");
   else {
-    if (usbc.type !== "enum") fail("usbc_out_persist must be an enum to carry the annotation");
+    if (usbc.type !== "enum") fail("usbc_out_persist must be an enum");
     const opts = (usbc.options || []).map(String);
-    if (!opts.some((o) => /Main Out/.test(o))) {
-      fail("usbc_out_persist long options must carry the Main Out annotation, got " +
-           JSON.stringify(opts));
+    if (opts.length !== 2) {
+      fail("usbc_out_persist is a BOOL and must declare exactly two options -- the " +
+           "wire source is a readout on the On label, not a state you can jog to. " +
+           "Got " + JSON.stringify(opts));
     }
-    if (!opts.some((o) => /Mic/.test(o))) {
-      fail("usbc_out_persist long options must carry the Mic annotation, got " + JSON.stringify(opts));
+    if (opts[0] !== "Off") fail("usbc_out_persist index 0 must be Off, got " + JSON.stringify(opts[0]));
+    if (!/^On/.test(opts[1] || "")) fail("usbc_out_persist index 1 must start with On, got " + JSON.stringify(opts[1]));
+    if (!Array.isArray(usbc.short_options) || usbc.short_options.length !== 2
+        || usbc.short_options[0] !== "OFF" || usbc.short_options[1] !== "ON") {
+      fail("usbc_out_persist square must read OFF/ON, got " + JSON.stringify(usbc.short_options));
     }
-    if (!Array.isArray(usbc.short_options) || usbc.short_options.length !== opts.length) {
-      fail("usbc_out_persist needs a short_options of matching length for the square");
-    } else {
-      for (let i = 0; i < opts.length; i++) {
-        const on = /^On/.test(opts[i]);
-        const want = on ? "ON" : "OFF";
-        if (usbc.short_options[i] !== want) {
-          fail("usbc_out_persist square at index " + i + " should read " + want +
-               " (the square shows the BOOL; the annotation is the long form), got " +
-               JSON.stringify(usbc.short_options[i]));
-        }
-      }
-    }
+  }
+}
+
+/* ---- 6b. the On label reports the observed source, and only when observed --
+ *
+ * annotateUsbcOption is where the readout lives, applied per entry because the
+ * contract is rebuilt every time the screen opens. Unobserved must leave a
+ * PLAIN "On": naming a source nothing has seen misleads exactly the user who
+ * came here because Move screen was lying.
+ */
+{
+  const decl = () => [{ key: "usbc_out_persist", type: "enum",
+                        options: ["Off", "On"], short_options: ["OFF", "ON"] }];
+  const mk = (src) => G.annotateUsbcOption(decl(),
+      { readParam: (k) => (k === "usbc_out_source" ? src : "0") })[0].options[1];
+
+  if (mk("1") !== "On (Main Out)") fail("source 1 must annotate On (Main Out), got " + JSON.stringify(mk("1")));
+  if (mk("0") !== "On (Mic)")      fail("source 0 must annotate On (Mic), got " + JSON.stringify(mk("0")));
+  if (mk("-1") !== "On")           fail("an unobserved source must leave a plain On, got " + JSON.stringify(mk("-1")));
+  if (mk("") !== "On")             fail("an unserved source must leave a plain On, got " + JSON.stringify(mk("")));
+
+  /* Must not mutate its input: the declaration is module-level and shared, so a
+   * mutating annotate would carry one entry annotation into the next. */
+  const shared = decl();
+  G.annotateUsbcOption(shared, { readParam: () => "1" });
+  if (shared[0].options[1] !== "On") {
+    fail("annotateUsbcOption mutated its input -- the shared declaration would keep " +
+         "a previous entry annotation. Got " + JSON.stringify(shared[0].options[1]));
   }
 }
 
@@ -406,74 +429,35 @@ const plan = planPages({ hierarchy, chainParams });
   }
 }
 
-/* ---- 11. usbc_out_persist: four options, two states ---------------------
+/* ---- 11. usbc_out_persist: two indexes, two stored values ---------------
  *
- * Every On index stores 1 — the extra three exist only to carry the wire
- * annotation, and the source is read-only because Move own menu still chooses
- * it. Writing the index would set persist=3, which is not a bool.
- *
- * The FOURTH option is the unknown state, and it is the assertion that matters
- * most here. The source is -1 until something is seen on the wire, and this row
- * is the only honest read of what is actually routed — Move own Settings screen
- * goes stale after Schwung restores the value, which is the entire reason for
- * the annotation. Resolving unknown to the Mic index would state as fact the
- * one thing this parameter exists to tell the truth about, and it would mislead
- * exactly the user who came here to check. Worse than the stale screen it was
- * added to correct.
+ * The bool round-trips as itself. There is no annotated index to collapse any
+ * more -- putting the annotation in the option set was the modelling mistake
+ * this replaced, and the readout now rides the On LABEL (assertion 6b).
  */
 {
-  const usbc = chainParams.find((p) => p.key === "usbc_out_persist");
-  const opts = ((usbc && usbc.options) || []).map(String);
-  if (opts.length !== 4) {
-    fail("usbc_out_persist needs four options — Off, a plain On for the unobserved " +
-         "source, and the two annotated ones — got " + JSON.stringify(opts));
-  }
-
   const wrote = [];
   const io = { readParam: () => "0", writeParam: (k, v) => wrote.push(v) };
-  for (const idx of [0, 1, 2, 3]) G.writeGlobalParam(io, "usbc_out_persist", idx);
-  if (wrote.join(",") !== "0,1,1,1") {
-    fail("usbc_out_persist indexes 0/1/2/3 must store 0/1/1/1 — every On is the same " +
-         "bool, the annotation is display only — got [" + wrote.join(", ") + "]");
+  for (const idx of [0, 1]) G.writeGlobalParam(io, "usbc_out_persist", idx);
+  if (wrote.join(",") !== "0,1") {
+    fail("usbc_out_persist indexes 0/1 must store 0/1, got [" + wrote.join(", ") + "]");
   }
 
   const read = (on, src) => G.readGlobalParam({
     readParam: (k) => (k === "usbc_out_source" ? src : on),
   }, "usbc_out_persist");
+  /* The source must NOT move the index -- that is what made it selectable. */
   if (read("0", "1") !== "0") fail("usbc_out_persist off must read index 0 whatever the wire says");
-  if (read("1", "1") !== "3") fail("usbc_out_persist on with source Main Out must read index 3");
-  if (read("1", "0") !== "2") fail("usbc_out_persist on with source Mic must read index 2");
+  if (read("1", "1") !== "1") fail("usbc_out_persist on must read index 1 with source Main Out");
+  if (read("1", "0") !== "1") fail("usbc_out_persist on must read index 1 with source Mic");
+  if (read("1", "-1") !== "1") fail("usbc_out_persist on must read index 1 with the source unobserved");
   if (read(null, "1") !== null) fail("a failed usbc_out_persist read must pass through as null");
-
-  /* Unknown source: the index it resolves to must render as a PLAIN On, with
-   * no parenthetical. Asserted through the option TEXT rather than against the
-   * number 1, because an index is only as honest as the word it draws — a
-   * reordered options array would keep an index assertion green while the cell
-   * went back to claiming Mic. */
-  for (const src of ["-1", "", null]) {
-    const idx = read("1", src);
-    const word = opts[Number(idx)];
-    if (word === undefined) { fail("unknown source resolved to a nonexistent index " + idx); continue; }
-    if (!/^On$/.test(word)) {
-      fail("with the source unobserved (" + JSON.stringify(src) + ") usbc_out_persist must read " +
-           "a plain \"On\", not " + JSON.stringify(word) + " — naming a source nothing has seen " +
-           "misleads the one user who came here to check what is routed");
-    }
-  }
-  /* And the annotated indexes must still name their source, or the fourth
-   * option has swallowed the feature rather than completed it. */
-  if (!/Mic/.test(String(opts[Number(read("1", "0"))]))) {
-    fail("source Mic must still read an annotated option, got " + JSON.stringify(opts[Number(read("1", "0"))]));
-  }
-  if (!/Main Out/.test(String(opts[Number(read("1", "1"))]))) {
-    fail("source Main Out must still read an annotated option, got " + JSON.stringify(opts[Number(read("1", "1"))]));
-  }
 }
 
 if (failures) process.exit(1);
 console.log("PASS: global settings contract — seven levels (6/8/6/1/1/3 params + Updates as a " +
             "menu), every section one page with Audio at the limit, every enum listable with a " +
-            "matching short_options, usbc_out_persist annotated in the long form only, " +
+            "matching short_options, usbc_out_persist a bool whose On label reports the observed source, " +
             "validator clean, no host global read, every key routed to a backend, the six " +
             "saveMasterFxChainConfig keys persisting and four others provably not, and " +
             "resample_bridge round-tripping [0, 2] rather than its indexes");

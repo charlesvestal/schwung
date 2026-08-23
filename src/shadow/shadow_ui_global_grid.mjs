@@ -251,23 +251,13 @@ export function globalEngineValue(key, stored) {
  */
 export function readGlobalParam(io, key) {
     if (key === "usbc_out_persist") {
+        /* A bool. The source is NOT a state here -- it decorates the On label,
+         * which buildGlobalSettingsContract builds per entry. Reading it as an
+         * index would make the annotation selectable, which is what the three-
+         * and four-option spellings both got wrong. */
         const on = io.readParam("usbc_out_persist");
         if (on === null || on === undefined || on === "") return on;
-        if (String(on) !== "1") return "0";
-        /*
-         * Which On: annotate with the source last seen on the wire.
-         *
-         * Unknown (-1, before anything has been observed) resolves to the
-         * PLAIN On, index 1, and that is the point of the fourth option. This
-         * row is the only honest read of what is actually routed — Move's own
-         * Settings screen goes stale after Schwung restores the value — so
-         * naming a source that has not been seen would mislead precisely the
-         * user who came here to check.
-         */
-        const src = io.readParam("usbc_out_source");
-        if (String(src) === "1") return "3";   /* Main Out */
-        if (String(src) === "0") return "2";   /* Mic */
-        return "1";                            /* observed nothing yet */
+        return String(on) === "1" ? "1" : "0";
     }
     return globalEngineValue(key, io.readParam(key));
 }
@@ -319,43 +309,31 @@ export const AUDIO_PARAMS = [
       options: ["30s", "1m", "2m", "3m", "4m", "5m"], default: 0 },
     bool("browser_preview", "Brws Prv", 1),
     /*
-     * usbc_out_persist needs no exception, and this is why.
+     * usbc_out_persist IS A BOOL. The parenthetical is a readout, not a choice.
      *
-     * It renders as "On (Main Out)" — a bool annotated with the source last
-     * seen on the wire — because Move's own Settings screen keeps reading
-     * "Mic" after Schwung restores the value, so this row is the only honest
-     * read of what is actually routed. A three-character square cannot show
-     * that.
+     * It is On or Off -- whether Schwung restores the USB-C out source at boot.
+     * The "(Main Out)" suffix reports the source last seen on the wire, which
+     * matters because Move's own Settings screen keeps reading "Mic" after
+     * Schwung restores the value: this row is the only honest read of what is
+     * actually routed.
      *
-     * short_options is exactly that mechanism, and it already ships. So the
-     * annotation is the LONG option and "ON" is the short one: one
-     * declaration, two renderings, no per-surface branch. The square shows the
-     * bool, which is the part the user sets; the annotation appears everywhere
-     * with room for it.
+     * IT WAS BRIEFLY MODELLED AS THREE OPTIONS, THEN FOUR, AND BOTH WERE WRONG.
+     * Putting the annotation in the option set turns one choice into three
+     * indistinguishable "On"s you have to jog past, and implies you can pick
+     * the source here. You cannot -- it is read-only and Move's own menu
+     * chooses it. Reported from the device: "it should be on or off and the ()
+     * shows the last saved value".
      *
-     * All three On indexes store 1. The wire source is read-only — Move's menu
-     * still chooses it — so the io reads back whichever On index matches the
-     * source and collapses all of them to "1" on write. That belongs to the
-     * io, not to the declaration.
-     *
-     * THE FOURTH OPTION IS THE UNKNOWN STATE, and it is not padding.
-     *
-     * The source is -1 until something is seen on the wire. GLOBAL_SETTINGS_
-     * SECTIONS never modelled that, because the old code formatted the
-     * annotation at READ time and simply omitted the parenthetical when the
-     * source was unknown. A three-option declaration cannot express the
-     * omission, so it has to pick an annotated index — and picking "On (Mic)"
-     * states as fact the one thing this row exists to tell the truth about.
-     * Move's own Settings screen goes stale after Schwung restores the value,
-     * which is the whole reason for the annotation; a confident "Mic" with
-     * nothing observed is worse than the stale screen it was added to correct.
-     *
-     * So plain "On" is a real state: persistence is on, the source has not
-     * been observed. A declaration has to be able to say "not yet known".
+     * So there are two options, and the ON LABEL IS BUILT PER ENTRY from the
+     * observed source (annotateUsbcOption, applied in buildGlobalSettingsContract).
+     * The contract is rebuilt every time Global Settings is opened, so the
+     * readout is current without the declaration pretending to be a control.
+     * With nothing observed the label is a plain "On" -- the old code omitted
+     * the parenthetical in exactly that case, and naming a source that was
+     * never seen would mislead the user who came here to check.
      */
     { key: "usbc_out_persist", name: "USB-C", type: "enum",
-      options: ["Off", "On", "On (Mic)", "On (Main Out)"],
-      short_options: ["OFF", "ON", "ON", "ON"], default: 1 },
+      options: ["Off", "On"], short_options: ["OFF", "ON"], default: 1 },
 ];
 
 /* ------------------------------------------------------------ accessibility */
@@ -501,7 +479,42 @@ export function buildGlobalSettingsContract(io) {
         levels[s.id] = level;
     }
 
-    return { hierarchy: { modes: null, levels }, chainParams: allGlobalParams() };
+    return {
+        hierarchy: { modes: null, levels },
+        chainParams: annotateUsbcOption(allGlobalParams(), io),
+    };
+}
+
+/**
+ * Decorate usbc_out_persist's "On" with the source last seen on the wire.
+ *
+ * The parameter is a BOOL — On or Off, whether Schwung restores the USB-C out
+ * source at boot. The "(Main Out)" suffix is a READOUT of a read-only value
+ * that Move's own menu owns, and it belongs on the label rather than in the
+ * option set: a user must not be able to jog "the source".
+ *
+ * Applied at contract-build time because createGlobalGridIo rebuilds the
+ * contract on every entry — so the readout is current each time the screen is
+ * opened, exactly as fresh as the old read-time formatter was, without the
+ * declaration having to pretend the annotation is a state.
+ *
+ * Unobserved (-1) leaves a plain "On". Naming a source that nothing has seen
+ * would mislead the one user who came here because Move's screen was lying.
+ *
+ * COPIES the entry rather than mutating it: GLOBAL_PARAMS is module-level and
+ * shared across every entry, so writing through it would make one session's
+ * annotation stick to the next.
+ */
+export function annotateUsbcOption(params, io) {
+    if (!io || typeof io.readParam !== "function") return params;
+    const src = io.readParam("usbc_out_source");
+    const suffix = String(src) === "1" ? " (Main Out)"
+                 : String(src) === "0" ? " (Mic)"
+                 : "";
+    if (!suffix) return params;
+    return params.map((p) => (p && p.key === "usbc_out_persist")
+        ? { ...p, options: [p.options[0], p.options[1] + suffix] }
+        : p);
 }
 
 /**
