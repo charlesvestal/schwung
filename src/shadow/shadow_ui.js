@@ -950,9 +950,20 @@ const TOOLS_DOUBLE_TAP_MS = 500;
 const ANALYTICS_PROMPTED_PATH = "/data/UserData/schwung/analytics-prompted";
 let analyticsPromptSelection = 0;  // 0 = Yes (default), 1 = No
 
-/* Auto-update state */
-let autoUpdateCheckEnabled = true;   // Default: enabled (opt-out)
-let pendingUpdates = [];              // Updates found on startup
+/* Auto-update state.
+ *
+ * There is no auto-update CHECK and there never was. `autoUpdateCheckEnabled`
+ * lived here, was persisted, and had a Services row -- but nothing consulted
+ * it: checkForUpdatesInBackground() has exactly one caller,
+ * showUpdatesAvailableScreen(), which runs only when the user picks
+ * [Check Updates] themselves. A flag with no reader is a promise the UI cannot
+ * keep, so the flag is gone and the manual path is stated instead.
+ *
+ * shadow_config.json on an existing device still carries `auto_update_check`.
+ * That is harmless: every saver here read-modify-writes the whole object, so
+ * the stale key is carried along untouched and simply never read.
+ */
+let pendingUpdates = [];              // Updates found by [Check Updates]
 
 /* Bootstrap-needed banner state. The self-heal mechanism (schwung-heal
  * setuid + entrypoint that invokes it at boot) requires one-time root
@@ -2120,8 +2131,11 @@ let selectingMasterFxModule = false;  // True when selecting module for a compon
 let selectedMasterFxModuleIndex = 0;  // Index in MASTER_FX_OPTIONS during selection
 
 /* Master FX settings (shown when Settings component is selected) */
+/* No Volume row here: `master_fx:volume` had no handler on either side of the
+ * wire, so it read back empty (drawn as a fake "100%") and wrote into whatever
+ * module sat in Master FX slot 1. See MASTER_GRID_PARAMS in
+ * shadow_ui_slot_grid.mjs for the full account. */
 const MASTER_FX_SETTINGS_ITEMS_BASE = [
-    { key: "master_volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
     /* Which channel Master FX hears. Lives here rather than in Global Settings
      * because this is where a Master FX setting is looked for — reported from
      * the device on the first cut, which put it under Global > Audio next to
@@ -8703,37 +8717,6 @@ function saveMasterFxChainConfig() {
     }
 }
 
-/* Save auto-update setting to shadow config */
-function saveAutoUpdateConfig() {
-    try {
-        const configPath = "/data/UserData/schwung/shadow_config.json";
-        let config = {};
-        try {
-            const content = host_read_file(configPath);
-            if (content) config = JSON.parse(content);
-        } catch (e) {}
-        config.auto_update_check = autoUpdateCheckEnabled;
-        host_write_file(configPath, JSON.stringify(config, null, 2));
-    } catch (e) {
-        /* Ignore errors */
-    }
-}
-
-/* Load auto-update setting from config */
-function loadAutoUpdateConfig() {
-    try {
-        const configPath = "/data/UserData/schwung/shadow_config.json";
-        const content = host_read_file(configPath);
-        if (!content) return;
-        const config = JSON.parse(content);
-        if (config.auto_update_check !== undefined) {
-            autoUpdateCheckEnabled = config.auto_update_check;
-        }
-    } catch (e) {
-        /* Ignore errors - default to enabled */
-    }
-}
-
 function saveBrowserPreviewConfig() {
     try {
         const configPath = "/data/UserData/schwung/shadow_config.json";
@@ -8861,9 +8844,6 @@ function syncJsOnlySettings() {
         }
         if (c.browser_preview !== undefined && c.browser_preview !== previewEnabled) {
             previewEnabled = c.browser_preview;
-        }
-        if (c.auto_update_check !== undefined) {
-            autoUpdateCheckEnabled = c.auto_update_check;
         }
         if (c.filebrowser_enabled !== undefined && c.filebrowser_enabled !== filebrowserEnabled) {
             filebrowserEnabled = c.filebrowser_enabled;
@@ -9830,7 +9810,6 @@ function globalGridIoFor() {
             case "shadow_ui_trigger":
                 return String(typeof shadow_ui_trigger_get === "function" ? shadow_ui_trigger_get() : 2);
             case "filebrowser_enabled": return bit(filebrowserEnabled);
-            case "auto_update_check":   return bit(autoUpdateCheckEnabled);
             case "analytics_enabled":
                 return bit(typeof host_get_analytics_enabled === "function" && host_get_analytics_enabled());
             }
@@ -9957,10 +9936,6 @@ function globalGridIoFor() {
                  * nowhere else on the device it is written down. */
                 showWarning("File Browser",
                             on ? "On. Access at http://move.local:404" : "Off.");
-                return;
-            case "auto_update_check":
-                autoUpdateCheckEnabled = on;
-                saveAutoUpdateConfig();
                 return;
             case "analytics_enabled":
                 if (typeof host_set_analytics_enabled === "function") host_set_analytics_enabled(on ? 1 : 0);
@@ -14124,17 +14099,14 @@ function changeComponentPreset(delta) {
  * These two used to be a 120-line if-chain apiece, and the name is a lie about
  * nearly all of it: every branch but one served GLOBAL SETTINGS, which is a
  * synthesised module contract now (shadow_ui_global_grid.mjs) with its own
- * absolute writes and its own persistence. What is left is what the name always
- * claimed -- the master bus's own Volume -- plus the actions, which carry no
- * value and are not adjustable.
+ * absolute writes and its own persistence. What is left is the listen channel,
+ * plus the actions, which carry no value and are not adjustable.
+ *
+ * The master bus's own "Volume" used to be here too and was INERT -- see
+ * MASTER_GRID_PARAMS in shadow_ui_slot_grid.mjs. Its `if (!val) return "100%"`
+ * is why it was invisible: an unserved key drew a confident fake.
  */
 function getMasterFxSettingValue(setting) {
-    if (setting.key === "master_volume") {
-        const val = shadow_get_param(0, "master_fx:volume");
-        if (!val) return "100%";
-        const num = parseFloat(val);
-        return isNaN(num) ? val : `${Math.round(num * 100)}%`;
-    }
     /* master_fx_midi_channel is a MASTER FX setting, not a Global Settings one,
      * so it stays here after the Global Settings keys moved into the contract
      * (shadow_ui_global_grid.mjs). It arrived on main in #266 while this branch
@@ -14153,14 +14125,6 @@ function getMasterFxSettingValue(setting) {
 
 function adjustMasterFxSetting(setting, delta) {
     if (setting.type === "action") return;
-
-    if (setting.key === "master_volume") {
-        let val = parseFloat(shadow_get_param(0, "master_fx:volume") || "1.0");
-        val += delta * setting.step;
-        val = Math.max(setting.min, Math.min(setting.max, val));
-        shadow_set_param(0, "master_fx:volume", val.toFixed(2));
-        return;
-    }
 
     /* master_fx_midi_channel is a MASTER FX setting, not a Global Settings one,
      * so it stays after the Global Settings keys moved into the contract
@@ -17507,8 +17471,6 @@ globalThis.init = function() {
     scanModulesForType("synth");
     scanModulesForType("midiFx");
 
-    /* Load auto-update preference */
-    loadAutoUpdateConfig();
     loadBrowserPreviewConfig();
     loadPadTypingConfig();
     loadTextPreviewConfig();

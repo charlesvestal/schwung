@@ -118,8 +118,8 @@ const plan = planPages({ hierarchy, chainParams });
 {
   /* The counts from GLOBAL_SETTINGS_SECTIONS, transcribed. Asserted per level
    * rather than only in aggregate: a param that moved from one section to
-   * another keeps the total at 25 and both totals-based checks green. */
-  const WANT_COUNT = { display: 6, audio: 8, accessibility: 6, set_pages: 1, shortcuts: 1, services: 3 };
+   * another keeps the total at 24 and both totals-based checks green. */
+  const WANT_COUNT = { display: 6, audio: 8, accessibility: 6, set_pages: 1, shortcuts: 1, services: 2 };
   for (const p of plan.pages) {
     if (p.kind !== PAGE_KNOBS) continue;
     const keys = (p.keys || []).filter(Boolean);
@@ -289,8 +289,8 @@ const plan = planPages({ hierarchy, chainParams });
     screen_reader_enabled: "Screen Reader", screen_reader_engine: "TTS Engine",
     screen_reader_speed: "Voice Speed", screen_reader_pitch: "Voice Pitch",
     screen_reader_volume: "Voice Vol", screen_reader_debounce: "Debounce",
-    set_pages_enabled: "Set Pages", shadow_ui_trigger: "Shadow UI Trigger",
-    filebrowser_enabled: "File Browser", auto_update_check: "Auto Update Check",
+    set_pages_enabled: "Set Pages", shadow_ui_trigger: "Open With",
+    filebrowser_enabled: "File Browser",
     analytics_enabled: "Analytics",
   };
   let seen = 0;
@@ -507,7 +507,7 @@ const plan = planPages({ hierarchy, chainParams });
 }
 
 if (failures) process.exit(1);
-console.log("PASS: global settings contract — seven levels (6/8/6/1/1/3 params + Updates as a " +
+console.log("PASS: global settings contract — seven levels (6/8/6/1/1/2 params + Updates as a " +
             "menu), every section one page with Audio at the limit, every enum listable with a " +
             "matching short_options, usbc_out_persist a bool whose On label reports the observed source, " +
             "validator clean, no host global read, every key routed to a backend, the six " +
