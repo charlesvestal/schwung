@@ -66,7 +66,7 @@ export const FOOTER_H = 8;
  * It was 8 to leave room for a "> " caret that no longer exists -- the
  * selected row is inverted, which says it already. With the caret gone the
  * label starts here, and x=5..7 stopped being empty for no reason. */
-export const MENU_LIST_X = 6, MENU_LIST_Y = 10, MENU_LIST_W = 114;
+export const MENU_LIST_X = 9, MENU_LIST_Y = 10, MENU_LIST_W = 111;
 
 /* ---- Header / footer text rows ------------------------------------------
  *
