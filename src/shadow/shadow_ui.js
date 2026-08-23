@@ -2242,6 +2242,17 @@ function openHierarchyParamEditor(selectedKey, meta, forceOpen) {
         hierEditorEditMode = false;
         resetHierarchyEditState();
         invalidateKnobContextCache();
+        /* A CLICK closes edit mode too, and must land where BACK lands.
+         *
+         * Edit mode is not a separate view -- it is the hierarchy editor with
+         * the row opened, which for granny's `position` is the waveform strip
+         * the user calls the wave editor. Back already returned to the grid
+         * here; this toggle did not, so the gesture that OPENED the editor was
+         * the one that could not close it back to where it came from. Reported
+         * from the device after the canvas and filepath doors were fixed --
+         * this is the same bug through a third door, and the reason the first
+         * fix appeared to change nothing. */
+        closeOwnViewEditorToCaller();
         return;
     }
     if (!hierEditorEditMode && meta && meta.type === "string") {
