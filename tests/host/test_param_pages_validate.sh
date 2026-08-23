@@ -45,11 +45,28 @@ Promise.all([
 
   /* ---- 2. the known false positives stay dead --------------------------- */
   {
-    /* hush1 and sf2 declare "preset" as 0..-1 because count_param sizes it. */
-    for (const id of ["hush1", "sf2"]) {
-      const r = rules(id);
-      if (r.has("empty-range")) fail(id + ": a runtime-sized preset index must not be reported as an empty range");
-      if (!r.has("runtime-ranged")) fail(id + ": the runtime-sized index should still be noted as info");
+    /* A preset index whose size comes from count_param at runtime declares an
+     * empty range (0..-1) ON PURPOSE. That must be info, never a warning.
+     *
+     * Synthetic rather than fleet-anchored. This used to name hush1 and sf2,
+     * and a recapture found both now declaring 0..9999 -- the modules moved,
+     * and the test failed for a reason that had nothing to do with the
+     * validator. No module in the fleet declares max < min any more, so
+     * anchoring the case to one would just wait to break again. */
+    {
+      const runtimeRanged = V.validateContract({
+        id: "synthetic-runtime-ranged",
+        hierarchy: { levels: { root: {
+          list_param: "preset", count_param: "preset_count", name_param: "preset_name",
+          knobs: ["preset"],
+        } } },
+        chainParams: [{ key: "preset", name: "Preset", type: "int", min: 0, max: -1 }],
+      }).findings;
+      const r = new Set(runtimeRanged.map((f) => f.rule));
+      if (r.has("empty-range"))
+        fail("a runtime-sized preset index must not be reported as an empty range");
+      if (!r.has("runtime-ranged"))
+        fail("the runtime-sized index should still be noted as info");
     }
     /* the dexed "preset" is reached through the preset page, not through a list. */
     const dexed = check("dexed").filter((f) => f.rule === "unreachable-params");

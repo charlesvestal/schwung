@@ -18,6 +18,7 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_overtake_native_led_repaint \
 	$(BUILD_DIR)/test_shadow_midi_filter \
 	$(BUILD_DIR)/test_midi_in_compact \
+	$(BUILD_DIR)/test_rt_thread_audit \
 	$(BUILD_DIR)/test_master_fx_slot_routing
 
 # Read the Master FX cap out of the shipped header instead of restating it, so
@@ -46,6 +47,9 @@ $(BUILD_DIR)/test_shadow_midi_filter: test_shadow_midi_filter.c ../../src/host/s
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_midi_in_compact: test_midi_in_compact.c ../../src/host/shadow_midi_filter.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/test_rt_thread_audit: test_rt_thread_audit.c ../../src/host/rt_thread_audit.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_master_fx_slot_routing: test_master_fx_slot_routing.c ../../src/host/master_fx_key.h ../../src/host/shadow_chain_mgmt.h | $(BUILD_DIR)

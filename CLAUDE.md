@@ -221,7 +221,16 @@ half an event, and never stabilised for reasons it recorded as unknown.
 
 ## Realtime Safety
 
-SPI callback runs SCHED_FIFO 90 on core 3. Budget ~900µs/frame after the ~2ms transfer.
+SPI callback runs on core 3. Budget ~900µs/frame after the ~2ms transfer.
+
+**Priority: FIFO 70, not 90.** Measured 2026-08-22 with the RT-thread audit —
+nothing anywhere in the MoveOriginal process is above 70. This file said 90
+here and "the shim runs in MoveOriginal's FIFO 70 threads" two lines down; the
+second one is right. What the hardware runs, with no module loaded, is 23
+threads of which 11 are realtime: `MoveOriginal` at 10, **`Link Main` at 35**,
+three `Audio Worker` at 70, and six threads named `Audio Main/SPI` at 70 (one
+at 45). Arm it and look before reasoning about priorities:
+`touch /data/UserData/schwung/rt_thread_audit_on`.
 
 **Never in the SPI callback path:** `unified_log()`, `fprintf()`, `fopen()`, any file I/O; allocation; locks held by non-RT threads.
 
@@ -240,8 +249,12 @@ lives at the top of `src/host/plugin_api_v1.h`, in `docs/MODULES.md`, and as
 rule 4 of `docs/REALTIME_SAFETY.md` — **keep all three in sync.**
 
 Two consequences worth remembering: `pthread_create` from those entry points
-inherits **FIFO 90** (at least 14 modules do this; Move's own `Link Main` is
-FIFO 35, so it starves), and a **`get_param` that scans a directory is served
+inherits the callback's priority — **FIFO 70** (Move's own `Link Main` is FIFO
+35, so it starves). A source audit put this at seven modules; measuring it
+found five, and not the same five — see
+`docs/plans/2026-08-22-rt-thread-audit-findings.md`. **Existence is not the
+harm**: a worker that parks on a condvar starves nobody, so the number that
+matters is CPU burned at realtime priority, which is what the audit reports, and a **`get_param` that scans a directory is served
 once per repaint**, which makes it worse than the equivalent `set_param`.
 
 ## Deployment Layout
@@ -498,6 +511,69 @@ commits through `controller.commitEnum` — that is what makes the picker work o
 Slot Settings and Master FX Settings, which are synthesised contracts with no
 `ui_hierarchy` to enter, and it keeps the slot io's own mappings (Fwd's offset,
 MPE's compound write) applied rather than bypassed.
+
+### The knob grid is the DEFAULT param view, and it reflows to stay drawable
+
+`paramViewGlobal` defaults to 1 (the grid). The hierarchy list is still there
+under Global Settings → Display → Param View, and it remains the better view for
+the 11 modules that publish no `ui_hierarchy` at all — a knob grid over a flat
+paginated param list is worse than a list of them.
+
+`param_view.json` is written **only by the toggle**. That is what lets the
+default change at all: a device that never touched the setting has no file and
+follows the new default, and one where the user explicitly chose List keeps
+List. Save it anywhere else — init, a load, an autosave — and every existing
+install is pinned to whatever it booted with, forever.
+`tests/host/test_param_view_default.sh` asserts the call COUNT, because a
+second call site *is* the whole failure.
+
+**A graphic must sit inside ONE ROW.** Row 0's knobs draw at y=10 with their
+LABELS at y=25..32 and row 1 starts at y=33, so a shape spanning both would
+draw straight through the label band. That is geometry, not a tunable.
+
+The consequence was not acceptable: 26 fleet groups were rejected for LAYOUT
+alone — the ADSR on the Main page of obxd, hush1, minijv, moog, surge, rex and
+osirus, plus twelve surge LFO pages. An author writing attack/decay/sustain/
+release in the obvious order lands on slots 3..6 and gets four separate dials.
+`planPages` now moves such a block into a row (`alignGroupsToRows`), 24 pages
+across the fleet.
+
+Three rules keep that from being vandalism:
+
+- **it is a permutation WITHIN a page.** No knob is pushed to another page and
+  no orphan page holding one control is created. Max group span is 4 and a row
+  is 4 wide, so a group always fits.
+- **row two is preferred, but only for a block that must move.** "Always put
+  the envelope on row two" is wrong: 29 envelopes already sit inside row one
+  and draw correctly, many on pages that exist FOR that envelope
+  (obxd/Filter Env, hera/Envelope, tablor/Env) where row two would leave the
+  top half empty. An always-rule makes 29 pages worse to fix 24. For a block
+  that IS straddling, moving it DOWN leaves the head of the page alone —
+  minijv keeps `macro_cutoff` on knob 1, where a nearest-fit rule pushed it
+  to knob 5.
+- **the real detector confirms the result**, and a move that loses a group
+  that already drew is rejected.
+
+An earlier version scored by keys covered with no cost bound and did what that
+invites: schwung-filter moved cutoff from knob 1 to knob 6 — five knobs
+displaced on a FILTER module — to pull one `mode` key into a group that already
+drew. It was also 37ms on minijv, twelve times the rest of the plan. Driving
+the search from the counterfactual "what would group if the row rule were
+lifted?" is both correct and 6.5ms.
+
+**A detector role is OPTIONAL or REQUIRED, and the difference is a whole
+group.** `detectFilter` built its slot run from cutoff, resonance AND whichever
+of mode/slope it found, then required the lot to be contiguous — so a Mode knob
+parked at the far end of the page deleted the corroborated pair. Optionals are
+now dropped when they do not fit; `detectEnvelope` takes the longest adjacent
+RUN rather than demanding every role found be adjacent.
+
+**`present` is filtered by ROLE and must never be assumed to contain any
+particular one.** `drawPartialEnv` computed its attack rise unconditionally, so
+surge's twelve hold/sustain/release LFO pages — no attack at all — produced NaN
+coordinates, and NaN reaches `line()`'s `for(;;)` whose equality break is never
+satisfied. A HANG, not a wrong picture, and unreachable until alignment made
+those pages drawable.
 
 ### A door you were SENT to opens; one you PAGED past stays shut
 
@@ -798,6 +874,65 @@ Master FX still has **no insert, remove or move** — removal is picking `None`,
 which unloads in place and leaves a hole. Adding those (and the permutation
 that must come with them) is residual 2.2 Step 4, and it is a new feature, not
 a port of `chain_reorder.c`.
+
+### A STEP button is not a note, and audio FX were told it was
+
+Audio FX are fed from **three** places, and the only guard any of them had was
+`d1 >= 10` — which exists solely to drop the capacitive knob-touch notes 0–9,
+and was never a claim about what counts as musical input:
+
+```
+src/schwung_shim.c   MIDI_IN cable 0 (Move's own surface)   notes, d1 >= 10
+src/host/shadow_midi.c   shadow_chain_dispatch_midi_to_slots    ALL voice msgs, no guard
+src/host/shadow_midi.c   shadow_dispatch_direct_external_midi   cable-2 THRU, d1 >= 10
+```
+
+So on Move's own surface the **step buttons (16–31) and track buttons (40–43)
+reached every loaded audio FX as played notes.** Found with an FX whose note
+handler fires a one-shot action (capicola's forced re-slice): in Master FX it
+fired on essentially any button press. The ducker had the identical exposure
+and merely read as "sensitive". Both `shadow_master_fx_forward_midi` and the
+slot `FX_BROADCAST` were affected — the asymmetry is **not** master-vs-slot, it
+is broadcast-vs-dispatch: `chain_midi.c:720` handles `FX_BROADCAST` by
+forwarding to every audio FX and returning *before* any channel logic, so only
+the non-broadcast dispatch was ever channel-matched.
+
+Two guards fix it, in `src/host/fx_midi_filter.h`, and **the split is the
+point**:
+
+- `move_surface_note_is_pad(d1)` — cable-0 sites ONLY, where a note number is a
+  physical control identity. Replaces `d1 >= 10` at both shim broadcasts.
+- `fx_midi_channel_accepts(ch, status)` — applied **inside**
+  `shadow_master_fx_forward_midi`, not at its callers, so all three feeds are
+  gated by construction and a fourth cannot be added ungated.
+
+Never apply the note-range guard to the external sites: there a note number is
+a **pitch**, and clamping to 68–99 silences five octaves of a keyboard.
+`tests/host/test_fx_midi_filter_call_sites.sh` asserts that as an *absence* —
+a test that only checked "the guard exists" would pass with it wrongly applied.
+
+**Master FX → Settings → MIDI Ch** (`master_fx_midi_channel` in
+`shadow_config.json`; param `master_fx:midi_channel`, −1 = All) selects the
+listen channel. It lives on `MASTER_FX_SETTINGS_ITEMS_BASE` and in
+`MASTER_GRID_PARAMS`, **not** in Global Settings — the first cut put it under
+Global → Audio beside the other `master_fx:*` shim settings, which is where the
+*plumbing* lives but not where a Master FX setting is looked for, and it was
+reported missing from the device. Note the two representations: the wire
+(`master_fx:midi_channel`, the config key, and the shim's variable) carries the
+REAL channel (−1 = All, 0–15), while an enum cell is addressed by OPTION INDEX
+(0–16). They are off by one and disagree about All, so the conversion is pinned
+to `createMasterGridIo`'s `getParam`/`setParam` in `shadow_ui_slot_grid.mjs`
+(`mfxMidiChannelToIndex` / `…FromIndex`) rather than repeated per call site.
+
+**Default All**, deliberately: Master FX heard everything
+before this existed, so any other default silently kills every sidechain in
+the field — and a user whose ducker stopped after an update cannot connect
+that to a setting they never saw. Note that the channel setting **cannot**
+substitute for the pad guard: pads and steps share one cable-0 surface, so no
+channel value separates them. Persisted like `usbc_out_persist` and parsed by
+the shim at init (`shadow_resample.c`), so the filter is in force before the
+first SPI frame. An out-of-range stored value fails **open** (All) rather than
+muting every FX with no visible cause.
 
 ### Overtake Modules
 

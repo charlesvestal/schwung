@@ -31,6 +31,16 @@
 var PROBE_SLOT = 3;
 var MODULE_ROOT = "/data/UserData/schwung/modules";
 var OUT_PATH = "/data/UserData/schwung/module-contracts.json";
+/* A module load is confirmed by watching chain_params CHANGE, not by the
+ * return value of the write -- see loadModule. A heavy module (surge, osirus,
+ * minijv) can take seconds to appear. This is a busy-spin inside the shadow UI
+ * tick, so it is also the per-module ceiling on how long the UI is frozen. */
+var LOAD_CONFIRM_MS = 6000;
+/* Settling: sample the whole contract until two consecutive samples agree.
+ * 750ms apart so a bank that lands between samples is caught, and 20s of
+ * headroom for the ROM loaders. A static module costs one extra sample. */
+var SETTLE_INTERVAL_MS = 750;
+var SETTLE_MAX_MS = 20000;
 
 /* Category directory -> the chain component a module of that type loads into. */
 var CATEGORIES = [
@@ -46,12 +56,26 @@ function readJsonFile(path) {
     } catch (e) { return null; }
 }
 
-function listInstalledModules() {
+/*
+ * A category that cannot be scanned must SAY SO. This used to be
+ * `catch (e) { continue; }`, which cannot tell "no modules of this kind
+ * installed" from "os is not defined" -- and it was the latter: the trigger
+ * evaluated this file in global scope, where the shadow UI's `os` import is
+ * not visible. All three scans threw, the capture wrote module_count 0 in
+ * 18ms, and the run looked like a success. Silence about a failure is worse
+ * than the failure.
+ */
+function listInstalledModules(scanErrors) {
     var out = [];
     for (var c = 0; c < CATEGORIES.length; c++) {
         var cat = CATEGORIES[c];
         var entries;
-        try { entries = os.readdir(MODULE_ROOT + "/" + cat.dir)[0] || []; } catch (e) { continue; }
+        try {
+            entries = os.readdir(MODULE_ROOT + "/" + cat.dir)[0] || [];
+        } catch (e) {
+            scanErrors.push({ dir: cat.dir, error: String(e) });
+            continue;
+        }
         for (var i = 0; i < entries.length; i++) {
             var id = entries[i];
             if (id === "." || id === "..") continue;
@@ -78,17 +102,130 @@ function waitUntilReady(component, timeoutMs) {
     while (waited < timeoutMs) {
         var loading = shadow_get_param(PROBE_SLOT, component + ":is_loading");
         if (loading !== "1") return true;
-        /* No sleep binding here; burn a short spin between polls. */
-        var spinUntil = Date.now() + 100;
-        while (Date.now() < spinUntil) { /* wait */ }
+        spin(100);
         waited += 100;
     }
     return false;
 }
 
+function spin(ms) {
+    /* No sleep binding in this context; burn the wait. This runs inside the
+     * shadow UI tick, so the UI is frozen for the duration -- acceptable for a
+     * one-shot capture, and the alternative (returning to the tick between
+     * modules) would mean rewriting the tool as a state machine. */
+    var until = Date.now() + ms;
+    while (Date.now() < until) { /* wait */ }
+}
+
+/*
+ * Load a module and CONFIRM it, rather than believing the write's return value.
+ *
+ * shadow_set_param returns false when the parameter channel refused or timed
+ * out, which is not the same as the module failing to load -- the same
+ * three-answer distinction that bit the READ path. The first real run recorded
+ * 50 of 96 modules as "load failed", and the failures were exactly the heavy
+ * ones (surge, osirus, minijv, cloudseed): they load slowly enough that the
+ * write did not come back inside the channel's timeout. Believing that produced
+ * a capture that was silently missing more than half the fleet, and missing it
+ * in a biased way -- the complicated modules, i.e. the ones a contract fixture
+ * is for.
+ *
+ * So: confirm from the device instead of from the return value.
+ *
+ * WHAT to confirm against took a second run to get right. Reading
+ * `<comp>:module` back is the obvious choice and it is WRONG -- nothing serves
+ * a GET for it (the shadow UI knows the loaded module from its own chain
+ * config, not from a param), so the read errors every time. That run burned
+ * both attempts on all 96 modules -- observed as each one loading exactly twice,
+ * LOAD_CONFIRM_MS apart, and `param_giveup ... last_key=synth:module` in the
+ * log -- and would have finished with the whole fleet marked load-failed. A
+ * confirm against a key that cannot be read is worse than no confirm: it turns
+ * every success into a slow failure.
+ *
+ * The signal that does exist is the contract itself. `chain_params` is served
+ * by the LOADED module, so waiting for it to CHANGE says a different module is
+ * now answering. It is also the thing being captured, so the wait costs nothing
+ * extra -- the value that ends the wait is the value that gets recorded.
+ *
+ * Returns the confirmed chain_params string, or null if it never changed.
+ */
+function loadModule(component, id, prevChainParams) {
+    try { shadow_set_param(PROBE_SLOT, component + ":module", id); } catch (e) { /* below */ }
+    for (var waited = 0; waited < LOAD_CONFIRM_MS; waited += 250) {
+        var cp = shadow_get_param(PROBE_SLOT, component + ":chain_params");
+        if (cp && cp !== prevChainParams) return cp;
+        spin(250);
+    }
+    return null;
+}
+
+/*
+ * Read the whole contract as one signature: hierarchy, params, and the preset
+ * COUNT. The count has to be in here — minijv's hierarchy and chain_params are
+ * stable long before its ROM bank finishes, and the only thing that moves is
+ * the count.
+ */
+function contractSignature(component) {
+    var hierRaw = shadow_get_param(PROBE_SLOT, component + ":ui_hierarchy");
+    var cpRaw = shadow_get_param(PROBE_SLOT, component + ":chain_params");
+    var count = "";
+    var hier = null;
+    try { hier = hierRaw ? JSON.parse(hierRaw) : null; } catch (e) { hier = null; }
+    if (hier && hier.levels) {
+        for (var lname in hier.levels) {
+            var lvl = hier.levels[lname];
+            if (lvl && lvl.list_param && lvl.count_param) {
+                count = shadow_get_param(PROBE_SLOT, component + ":" + lvl.count_param) || "";
+                break;
+            }
+        }
+    }
+    return { hierRaw: hierRaw, cpRaw: cpRaw, count: count,
+             sig: String(hierRaw) + "|" + String(cpRaw) + "|" + String(count) };
+}
+
+/*
+ * Wait for the contract to STOP CHANGING.
+ *
+ * waitUntilReady polls is_loading, and the overwhelming majority of the fleet
+ * does not implement it -- it answers "" and the wait returns immediately. So
+ * the guard that existed precisely for the async loaders (Virus, minijv, the
+ * ROM and sample banks) has never actually guarded anything.
+ *
+ * That is not theoretical. The first good capture recorded minijv with 192
+ * presets where the fixture has 2427: it answered as soon as its first bank was
+ * up, and the capture believed it. The whole run took 20 seconds for 96
+ * modules, which is the tell -- nothing waited for anything.
+ *
+ * Settling needs no cooperation from the module: sample the contract until two
+ * consecutive samples agree. Cheap for the static majority (one extra sample),
+ * and it is the only thing that catches a loader that never says it is loading.
+ *
+ * Returns the settled chain_params, or null if it never stopped moving.
+ */
+function waitUntilSettled(component) {
+    var prev = contractSignature(component);
+    for (var waited = 0; waited < SETTLE_MAX_MS; waited += SETTLE_INTERVAL_MS) {
+        spin(SETTLE_INTERVAL_MS);
+        var now = contractSignature(component);
+        if (now.sig === prev.sig) return now.cpRaw;
+        prev = now;
+    }
+    return null;
+}
+
 globalThis.dumpModuleContracts = function () {
-    var mods = listInstalledModules();
+    var scanErrors = [];
+    var mods = listInstalledModules(scanErrors);
     print("dumping " + mods.length + " modules from slot " + PROBE_SLOT);
+    /* Refuse to overwrite a good capture with an empty one. A zero here is
+     * never a fact about the device -- there is always a fleet -- so it is a
+     * failure of this tool, and writing it would destroy the fixture source. */
+    if (mods.length === 0) {
+        throw new Error("fleet scan found no modules under " + MODULE_ROOT +
+            (scanErrors.length ? "; scan errors: " + JSON.stringify(scanErrors)
+                               : "; no scan errors, so the tree is unexpectedly empty"));
+    }
 
     var restore = {};
     for (var c = 0; c < CATEGORIES.length; c++) {
@@ -99,23 +236,42 @@ globalThis.dumpModuleContracts = function () {
 
     var out = [];
     var failures = [];
+    /* Per component, the chain_params of the module loaded there before this
+     * one -- the baseline loadModule watches for a change against. */
+    var prevChainParams = {};
 
     for (var i = 0; i < mods.length; i++) {
         var m = mods[i];
         var comp2 = m.componentKey;
-        var ok = false;
-        try { ok = shadow_set_param(PROBE_SLOT, comp2 + ":module", m.id); } catch (e) { ok = false; }
-        if (ok) waitUntilReady(comp2, 15000);
+        var confirmed = loadModule(comp2, m.id, prevChainParams[comp2] || null);
+        if (confirmed) {
+            prevChainParams[comp2] = confirmed;
+            waitUntilReady(comp2, 15000);
+            /* Confirmation says the module is ANSWERING; settling says it has
+             * finished. See waitUntilSettled -- minijv answers with 192 presets
+             * and finishes with 2427. */
+            confirmed = waitUntilSettled(comp2) || confirmed;
+            prevChainParams[comp2] = confirmed;
+        }
 
-        if (!ok) {
-            failures.push({ id: m.id, reason: "load failed" });
+        /*
+         * An unconfirmed load is NOT skipped. Capture whatever the component
+         * serves and label it, rather than recording a bare "load-failed" and
+         * moving on: this tool exists to produce a contract fixture, and a
+         * module that answers is worth having even if the confirm did not fire
+         * (two modules with byte-identical chain_params in a row would look
+         * unconfirmed, and so would a module whose contract is genuinely
+         * empty). Dropping it would repeat the bias the confirm was added to
+         * fix -- silently missing exactly the awkward cases.
+         */
+        var hierRaw = shadow_get_param(PROBE_SLOT, comp2 + ":ui_hierarchy");
+        var cpRaw = confirmed || shadow_get_param(PROBE_SLOT, comp2 + ":chain_params");
+        if (!confirmed && !cpRaw && !hierRaw) {
+            failures.push({ id: m.id, reason: "load not confirmed and nothing served" });
             out.push({ id: m.id, category: m.category, component_key: comp2, status: "load-failed" });
             print("  " + m.id + ": load failed");
             continue;
         }
-
-        var hierRaw = shadow_get_param(PROBE_SLOT, comp2 + ":ui_hierarchy");
-        var cpRaw = shadow_get_param(PROBE_SLOT, comp2 + ":chain_params");
         var hier = null, cp = null;
         try { hier = hierRaw ? JSON.parse(hierRaw) : null; } catch (e) { hier = null; }
         try { cp = cpRaw ? JSON.parse(cpRaw) : null; } catch (e) { cp = null; }
@@ -140,7 +296,8 @@ globalThis.dumpModuleContracts = function () {
         }
 
         out.push({
-            id: m.id, category: m.category, component_key: comp2, status: "ok",
+            id: m.id, category: m.category, component_key: comp2,
+            status: confirmed ? "ok" : "unconfirmed",
             name: m.name, version: m.version,
             ui_hierarchy: hier, chain_params: cp, presets: presets,
         });
@@ -159,6 +316,7 @@ globalThis.dumpModuleContracts = function () {
         module_count: out.length,
         modules: out,
         failures: failures,
+        scan_errors: scanErrors,
     };
     host_write_file(OUT_PATH, JSON.stringify(doc));
     print("wrote " + OUT_PATH + " (" + out.length + " modules, " + failures.length + " failures)");
