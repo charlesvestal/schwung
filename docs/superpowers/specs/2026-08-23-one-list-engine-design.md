@@ -107,6 +107,7 @@ question named.
 | chrome (header, bank bar, brackets, footer) | `render_page_movy.mjs` |
 | five-row list geometry | `MENU_LIST_*` in `page_controller.mjs` |
 | **drawing a list row** | **`drawMenuList`** — §3 |
+| **the chrome around a list** (header band, footer, list rect) | **`drawMenuList`** — §3, re-skinned to movy |
 | what a Global Setting *is* | `shadow_ui_global_grid.mjs` — §5 |
 
 Every row except the last two is already single-sourced. Adding an enum option,
@@ -121,31 +122,70 @@ reasonable the scope boundary sounds.
 
 ---
 
-## 3. Converge the six (first, not later)
+## 3. One list, wearing the movy chrome (first, not later)
 
-The six hand-rolled loops move onto `drawMenuList` **before** any new work
-lands. Converging after would mean building the new surface on top of the drift
-it is meant to end, and "we'll unify it later" is how there came to be six.
+> *"BEHAVIOR baseline is the goal, but we want one list that looks good in
+> slots and in mfx and as a file picker. it's one list."*
+>
+> *"pixel baseline is not the goal, unified is. it should look like Movy stuff:
+> header, footer, etc."*
 
-This is a refactor of **existing behaviour** — no screen should look or act
-different afterwards. That is what makes it verifiable: any visible change is a
-regression, not a feature.
+**`drawMenuList` is already the one list.** 53 call sites outside
+`menu_layout.mjs`, and the file picker is one of them
+(`drawFilepathBrowser`, `shadow_ui.js:13437`). It is not short of consumers.
 
-Two of the six are the Save-As pair (sites 1 and 3), which are the same code
-twice; they converge to one call and the duplication is gone by construction.
-The remaining four are item lists that `drawMenuList` already models —
-label, right-aligned value, selection fill, scroll offset.
+What it lacks is the **chrome**. Its callers pair it with `drawMenuHeader` —
+title text at `TITLE_Y = 2`, rule at `TITLE_RULE_Y = 12`, list from
+`LIST_TOP_Y = 15` — while the page chrome uses a 7px header band, the bank bar
+at row 7, and the list at `MENU_LIST_Y = 10`. Same footer rule at y55; the
+divergence is entirely above the list.
 
-Known wrinkle: `drawChainSettings` (site 2) draws `< value >` chevrons around
-the value while editing. `drawMenuList` has no chevron affordance today, so
-either it grows one — one option, serving every caller — or the edit affordance
-becomes the inverted row it already is elsewhere. **Growing `drawMenuList` is
-the correct answer**; a caller-side special case here is the same mistake at
-smaller scale.
+So the work is three moves, and **the point of all three is that the look
+changes**:
 
-Verification is manual per `CLAUDE.md` — each of the five screens brought up on
-hardware and compared. Add the guard in §7.3 in the same pass so the count can
-only go down.
+1. **Re-skin `drawMenuList` to the movy chrome** — header band, footer, list
+   rect at `MENU_LIST_X/Y/W`. All 53 callers inherit it at once; that is the
+   "looks good in slots and in mfx and as a file picker" property, and it is a
+   property of there being one widget rather than of any caller.
+2. **Bring the six stragglers onto it** (§1's table), so nothing draws its own
+   row.
+3. **Have `page_controller` draw its rows through it too**, so the page chrome
+   and every other screen are not merely similar but identical.
+
+### 3.1 The baseline is BEHAVIOUR, not pixels
+
+An earlier draft asserted "no screen should look or act different afterwards"
+and proposed pixel-hash identity as the gate. **The first half was wrong and it
+made the gate wrong.** Every screen is *supposed* to look different afterwards —
+that is the deliverable. A test demanding pixel identity would fail on success
+and pass only if the work were not done.
+
+What must hold across the change is **behaviour**:
+
+- the same items appear, in the same order
+- the selected index moves the same way under the same jog input
+- the scroll offset reveals the same item at the same boundary
+- the same value string renders for the same item
+- edit mode is enterable and the jog changes the value
+
+Those are assertable without a framebuffer. Pixel renders stay in the loop as a
+**review artifact** — regenerated freely, read case by case by a human — not as
+a pass/fail identity check. The repo already distinguishes these: a reviewed
+fixture change means reading the render, and
+`tests/host/test_chain_editor_snapshot.sh` refreshed its Master FX hashes
+exactly once, at the step whose purpose was to move those pixels.
+
+### 3.2 Edit affordance
+
+`drawChainSettings` and `drawLfoEdit` draw `< value >` chevrons; `drawSlotSettings`
+draws `[value]`; `drawGlobalSettings` brackets the *label*; `drawKnobEditor` has
+no edit state. Four spellings of one idea. `drawMenuList` already implements
+`editMode` → `[value]`, so that is the survivor and the other three converge on
+it. A caller-side special case here would be the same mistake at smaller scale.
+
+Converging first matters because building the new surface on top of the drift it
+is meant to end is how there came to be six. Add the guard in §7.3 in the same
+pass so the count can only go down.
 
 ---
 
