@@ -9410,20 +9410,38 @@ function applyComponentSelection() {
         return;
     }
 
-    const cfg = chainConfigs[selectedSlot] || createEmptyChainConfig();
+    applyChainComponentPick(selectedSlot, comp.key, picked, pending);
+}
+
+/*
+ * Apply a chain-component pick: the whole sequence, from one place.
+ *
+ * `picked` is the module id, or "" for None. None on a LIST position is a
+ * removal that closes the gap and renumbers everything downstream — a SHAPE
+ * change carried by one `remove` verb — while None on the synth is a clear
+ * with no neighbours to renumber. applyPickerChoiceToChain knows which; this
+ * function is everything that must happen either way, and it is extracted so
+ * the Module page's "Remove Module" IS this path rather than a copy of it.
+ */
+function applyChainComponentPick(slotIndex, componentKey, picked, pending) {
+    const at = slotChainComponentIndex(slotIndex, componentKey);
+    const comp = at >= 0 ? slotChainComponents(slotIndex)[at] : null;
+    if (!comp) return;
+
+    const cfg = chainConfigs[slotIndex] || createEmptyChainConfig();
     const choice = withPendingChainInsert(
-        applyPickerChoiceToChain(cfg, comp.key, picked), pending);
-    chainConfigs[selectedSlot] = choice.cfg;
+        applyPickerChoiceToChain(cfg, componentKey, picked), pending);
+    chainConfigs[slotIndex] = choice.cfg;
     /* A swap MUTATES `cfg` in place and `None` hands back a different object,
      * so neither identity nor the module signature can be what notices this.
      * The confirm path reloads (and the declined-gate path reloads too), but
      * the model and the DSP disagree from here until one of them runs. */
-    invalidateChainConfig(selectedSlot);
+    invalidateChainConfig(slotIndex);
 
     /* Track explicit user-removal so autosave can bypass the boot-glitch
      * guard. Set when the slot is now fully empty; reset on any non-empty
      * pick (the user is rebuilding the slot). */
-    slotUserCleared[selectedSlot] = !chainHasAnyModule(choice.cfg);
+    slotUserCleared[slotIndex] = !chainHasAnyModule(choice.cfg);
 
     /* A component changed, so any LFO label naming that component by module
      * is now wrong. The label cache keys on the stored ROUTING, which a swap
@@ -9433,13 +9451,12 @@ function applyComponentSelection() {
 
     /* Apply to DSP - map component key to param key */
     const moduleId = picked;
-    const paramKey = chainComponentParamKey(comp.key, "module") || "";
+    const paramKey = chainComponentParamKey(componentKey, "module") || "";
 
     /* Feedback gate: if the picked module pulls line-in, warn about speakers.
      * Callback-based — schwung's QuickJS doesn't pump pending jobs so
      * Promise.then never fires. */
     if (paramKey && moduleId) {
-        const slotIndex = selectedSlot;  /* capture — shim JUMP_TO_SLOT path can mutate selectedSlot */
         let meta = null;
         try {
             if (typeof host_get_module_metadata === 'function') {
@@ -9467,7 +9484,7 @@ function applyComponentSelection() {
     }
 
     /* Clearing a slot (empty moduleId) — no feedback risk, run directly. */
-    applyComponentSelectionConfirmed(selectedSlot, paramKey, moduleId, comp, choice);
+    applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, choice);
 }
 
 function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, choice) {
