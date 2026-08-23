@@ -30,8 +30,10 @@ import { KIND_ENUM, KIND_OPAQUE, enumIndexOf } from "./param_meta.mjs";
 import { formatParamValue } from "../param_format.mjs";
 import { drawVizGroup, VIZ_ROWS, VIZ_MIN_W } from "./viz_draw.mjs";
 
-export const SCREEN_WIDTH = 128;
-export const SCREEN_HEIGHT = 64;
+/* One definition, in the leaf; re-exported so this module's consumers are
+ * untouched. See ../list_geometry.mjs for why it is a leaf. */
+import { SCREEN_WIDTH, SCREEN_HEIGHT } from "../list_geometry.mjs";
+export { SCREEN_WIDTH, SCREEN_HEIGHT };
 export const COLS = 4;
 export const ROWS = 2;
 

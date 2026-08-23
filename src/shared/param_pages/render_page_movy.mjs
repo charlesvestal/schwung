@@ -34,6 +34,9 @@ import { enumSquareLines } from "./font5x3.mjs";
 import { fontPrint as tzPrint, fontWidth as tzWidth, HEIGHT as TZ_H } from "./font_tamzen6x12.mjs";
 import { fontWidth4x5, fontPrint4x5, FONT4_HEIGHT, FONT4_MEASURE } from "./font4x5.mjs";
 import { fontWidth5x3, fontPrint5x3 } from "./font5x3.mjs";
+/* The one definition of the chrome geometry (see the band comment below). */
+import { SCREEN_WIDTH as W, HEADER_H, RULE_Y, FOOTER_Y, FOOTER_H,
+         MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W } from "../list_geometry.mjs";
 
 /**
  * Text is set in caps with labels abbreviated to a mnemonic. The HEADER and the
@@ -104,8 +107,19 @@ function fitDev(ctx, s, maxWidth) { return caps(fitText(TZ_MEASURE, caps(s), max
  *
  * An opaque value is a path or a string: show its tail, which is the part that
  * identifies it, and "--" when there is nothing set.
+ *
+ * EXPORTED because it is THE value string, not this renderer's private one. The
+ * cell's label band, the held-knob header strip and the knob page drawn as a
+ * LIST (page_controller.mjs, LAYOUT_LIST) all show the same reading of the same
+ * value; a second formatter beside this one is the exact failure the one-list
+ * work exists to prevent, and tests/host/test_knobs_list_layout.sh pins that the
+ * two surfaces agree for every param in the fleet fixture.
+ *
+ * `short_options` is deliberately NOT consulted here — it belongs to the 3-char
+ * enum square alone (see drawKnobWidget). Every surface with room gets the long
+ * `options` form, which is the whole point of there being two declarations.
  */
-function displayValue(raw, meta) {
+export function displayValue(raw, meta) {
     if (raw === null || raw === undefined) return "--";
     if (meta && meta.kind === KIND_OPAQUE) {
         return String(raw).split("/").pop() || "--";
@@ -428,19 +442,24 @@ export const LAYOUT_MOVY = "movy";
  * ~12 rows tall now that the arc is open at the bottom, so a knob row carries
  * more air below it than a graphic row does; the 15 is held for the graphics.
  */
-export const W = 128;
 /*
- * The header BAND. Glyphs are printed at y=0 rather than y=1: the OLED has a
- * physical bezel, so the top row of the screen is already visually inset and
- * spending a pixel row on margin there buys nothing. That leaves the band one
- * row taller than the 7-row font, with the spare row BELOW the text.
+ * The canvas, the header BAND, the footer rule and the list rect are DEFINED in
+ * ../list_geometry.mjs and re-exported here under their existing names, so the
+ * ~15 modules that import them from this file are untouched. They moved down
+ * because chain_ui_views.mjs and menu_layout.mjs need the same numbers and
+ * cannot reach this file without dragging the whole page engine (five font
+ * tables, viz_draw, param_meta) into every host module that draws a list —
+ * and because menu_layout imports truncateText FROM chain_ui_views, so any
+ * arrangement where the geometry lives above them risks a cycle. A leaf below
+ * all three cannot.
  *
- * BAR_Y is then one further row down, so row HEADER_H is always dark. Without
- * it the bank bar butted straight against the bottom row of every glyph, and
- * with the header inverted the solid band merged into the bar into one thick
- * smudge.
+ * BAR_Y stays here: it is the knob grid's bank bar, not chrome any list shares.
+ * It sits one row below HEADER_H so row HEADER_H is always dark — without it
+ * the bar butted straight against the bottom row of every glyph, and with the
+ * header inverted band and bar merged into one thick smudge.
  */
-export const HEADER_H = 7;
+export { W, HEADER_H, RULE_Y, FOOTER_Y, FOOTER_H,
+         MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W };
 export const BAR_Y = HEADER_H;       /* no separator row — the band has its own */
 /* One row of gutter here, not two — the bank bar is itself a separator, so
  * this is the cheapest row on the screen to give back to the header. */
@@ -476,10 +495,14 @@ export const GRID_GEOM = Object.freeze({ x0: 0, cellW: CELL_W });
  * future geometry needs to stay at or above ENUM_W.
  */
 const cellLeft = (g, col) => g.x0 + col * g.cellW;
-/* The hint footer, and the rule that separates it from the last label band. */
-export const RULE_Y = 55;
-export const FOOTER_Y = 56;
-export const FOOTER_H = 8;
+/* The hint footer and its rule (RULE_Y / FOOTER_Y / FOOTER_H), and the list
+ * rect between the bank bar and that rule (MENU_LIST_X/Y/W), are defined in
+ * ../list_geometry.mjs and re-exported at the top of this file. They were
+ * written here, with HEADER_H, because the three bands are one piece of
+ * geometry and their consumers are renderers; they moved down when
+ * chain_ui_views.mjs turned out to need them too. page_controller.mjs still
+ * re-exports MENU_LIST_* under the same names, so nothing that imported them
+ * from there had to change. */
 /*
  * ODD, for the same reason BOX_H is: 5 glyph rows centred in the band leave a
  * remainder that only splits evenly when the band is odd. At 6 the touched

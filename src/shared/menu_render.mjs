@@ -20,7 +20,7 @@ import { formatItemValue } from './menu_items.mjs';
  * @param {string} options.title - Menu title
  * @param {Array} options.items - Menu items (from menu_items.mjs)
  * @param {Object} options.state - Menu state (from menu_nav.mjs createMenuState)
- * @param {string} [options.footer] - Optional footer text
+ * @param {string|string[]} [options.footer] - Optional footer hint, or ordered hints
  */
 export function drawHierarchicalMenu({ title, items, state, footer }) {
     drawMenuHeader(title);
@@ -58,7 +58,7 @@ export function drawHierarchicalMenu({ title, items, state, footer }) {
  * @param {Object} options
  * @param {Object} options.stack - Menu stack (from createMenuStack)
  * @param {Object} options.state - Menu state (from createMenuState)
- * @param {string} [options.footer] - Optional footer text
+ * @param {string|string[]} [options.footer] - Optional footer hint, or ordered hints
  */
 export function drawStackMenu({ stack, state, footer }) {
     const current = stack.current();

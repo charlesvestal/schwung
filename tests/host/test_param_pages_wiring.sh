@@ -70,8 +70,13 @@ want(/view === VIEWS\.PARAM_PAGES && paramPagesActive\(\)[\s\S]{0,200}handlePara
      "the view never receives MIDI");
 
 /* ---- the setting is real, defaults to the list, and persists ---------- */
-want(/key: "param_view"[\s\S]{0,120}options: \["List", "Knobs"\]/, "the Param View setting is not in the menu");
-/* The DEFAULT itself, and the migration around it, now live in
+/* Read the DECLARATION from the CONTRACT, not from shadow_ui.js. Global
+ * Settings used to be a literal (GLOBAL_SETTINGS_SECTIONS) scraped out of
+ * shadow_ui.js; it is a synthesised module contract now, so that is where the
+ * declaration lives. */
+const g = fs.readFileSync("src/shadow/shadow_ui_global_grid.mjs", "utf8");
+want(/key: "param_view"[\s\S]{0,120}options: \["List", "Knobs"\]/, "the Param View setting is not in the menu", g);
+/* The DEFAULT itself, and the migration around it, live in
  * test_param_view_default.sh -- it flipped to the knob grid once the grid could
  * draw everything the list could (mode selectors, child levels, enum pickers,
  * and a fleet fixture recaptured at 95 modules to prove the coverage).
