@@ -720,6 +720,29 @@ function entryUserPreset(entry) {
     if (!entry || !entry.user_preset || !entry.user_preset.name) return null;
     return { name: entry.user_preset.name, hash: entry.user_preset.hash || null };
 }
+/*
+ * Sync currentUserPresets for one slot from a parsed chain object (the
+ * `chain` in a slot_N.json, i.e. {synth, midi_fx: [...], audio_fx: [...]}).
+ *
+ * ONE definition, called from every place a slot gets (re)loaded from disk --
+ * originally just the boot-restore loop in init(), but the map is keyed
+ * (slot, prefix) and NOT by set, so a set switch that reloads a slot without
+ * going through this leaves the OLD set's record attached to the NEW set's
+ * slot. Every prefix is synced unconditionally (entryUserPreset returns null
+ * for "no record"), so a component with nothing saved CLEARS rather than
+ * keeping whatever was there before this call.
+ */
+function syncUserPresetRecordsFromChain(slotIndex, chain) {
+    setUserPresetRecord(slotIndex, "synth", entryUserPreset(chain && chain.synth));
+    const midiFx = (chain && Array.isArray(chain.midi_fx)) ? chain.midi_fx : [];
+    for (let mf = 0; mf < MAX_MIDI_FX; mf++) {
+        setUserPresetRecord(slotIndex, `midi_fx${mf + 1}`, entryUserPreset(midiFx[mf]));
+    }
+    const audioFx = (chain && Array.isArray(chain.audio_fx)) ? chain.audio_fx : [];
+    for (let fx = 0; fx < MAX_FX; fx++) {
+        setUserPresetRecord(slotIndex, `fx${fx + 1}`, entryUserPreset(audioFx[fx]));
+    }
+}
 
 /* Splash screen state */
 let splashActive = true;
@@ -17637,17 +17660,7 @@ globalThis.init = function() {
                      * existed, and every component nobody has loaded a preset
                      * into — and must CLEAR any stale record rather than leave
                      * one behind from a previous load into this slot. */
-                    setUserPresetRecord(i, "synth", entryUserPreset(chain && chain.synth));
-                    if (chain && Array.isArray(chain.midi_fx)) {
-                        for (let mf = 0; mf < chain.midi_fx.length && mf < MAX_MIDI_FX; mf++) {
-                            setUserPresetRecord(i, `midi_fx${mf + 1}`, entryUserPreset(chain.midi_fx[mf]));
-                        }
-                    }
-                    if (chain && Array.isArray(chain.audio_fx)) {
-                        for (let fx = 0; fx < chain.audio_fx.length && fx < MAX_FX; fx++) {
-                            setUserPresetRecord(i, `fx${fx + 1}`, entryUserPreset(chain.audio_fx[fx]));
-                        }
-                    }
+                    syncUserPresetRecordsFromChain(i, chain);
                     /*
                      * BOTH lists, and bounded by the CAP rather than by a
                      * number that used to be the cap.
@@ -18282,11 +18295,27 @@ globalThis.tick = function() {
                         } else {
                             debugLog("SET_CHANGED: slot " + (i + 1) + " not restored (load timeout)");
                         }
+                        /* load_file (native) restores the DSP side but not
+                         * this pure-JS bookkeeping -- same gap the boot-restore
+                         * loop's bypass comment describes. The map is keyed
+                         * (slot, prefix), not by set, so without this a preset
+                         * record from the OUTGOING set's slot i survives onto
+                         * the INCOMING set's slot i and gets written into ITS
+                         * autosave. Sync (and clear on parse failure) either way. */
+                        try {
+                            const parsed = JSON.parse(raw);
+                            const chain = (parsed && parsed.chain) ? parsed.chain : parsed;
+                            syncUserPresetRecordsFromChain(i, chain);
+                        } catch (e) {
+                            syncUserPresetRecordsFromChain(i, null);
+                        }
                     } else {
                         debugLog("SET_CHANGED: slot " + (i + 1) + " empty state (already cleared)");
+                        syncUserPresetRecordsFromChain(i, null);
                     }
                 } else {
                     debugLog("SET_CHANGED: slot " + (i + 1) + " no state file (already cleared)");
+                    syncUserPresetRecordsFromChain(i, null);
                 }
             }
             /* Refresh UI state immediately so display reflects new slot contents */
