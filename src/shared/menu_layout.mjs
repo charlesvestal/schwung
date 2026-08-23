@@ -5,35 +5,60 @@
 import { getMenuLabelScroller } from './text_scroll.mjs';
 import { announceMenuItem, announceParameter } from './screen_reader.mjs';
 import { truncateText } from './chain_ui_views.mjs';
+/* The movy chrome, imported rather than restated. drawMenuHeader IS the movy
+ * header band now — same font, same 7 rows, same measured left/right split —
+ * so that a list reached from the knob grid and a list reached from the menu
+ * are the same screen and not two products. */
+import { drawHeader as drawMovyHeader, HEADER_H as MOVY_HEADER_H,
+         RULE_Y as MOVY_RULE_Y } from './param_pages/render_page_movy.mjs';
+/* The list rect the knob grid's own menu pages use — the same import
+ * chain_editor_chrome.mjs already makes for the same reason. A second copy of
+ * "x 8, y 10" is exactly the duplication this file is being folded into. */
+import { MENU_LIST_X, MENU_LIST_Y } from './param_pages/page_controller.mjs';
 
 /* Screen dimensions */
 export const SCREEN_WIDTH = 128;
 export const SCREEN_HEIGHT = 64;
 
-/* Header and footer positioning */
-export const TITLE_Y = 2;
-export const TITLE_RULE_Y = 12;
+/* Header and footer positioning.
+ *
+ * TITLE_Y is the glyph row INSIDE the 7-row band (font4x5 is 5 rows, printed
+ * at y=1 so there is one clear row above and one below). TITLE_RULE_Y is no
+ * longer a rule at all — the band carries its own clear row — but the name is
+ * kept and now means "the first row below the header band", which is what
+ * every call site used it for. */
+export const TITLE_Y = 1;
+export const TITLE_RULE_Y = MOVY_HEADER_H;
 export const FOOTER_TEXT_Y = SCREEN_HEIGHT - 7;
-export const FOOTER_RULE_Y = FOOTER_TEXT_Y - 2;
+export const FOOTER_RULE_Y = MOVY_RULE_Y;   /* 55 — already agreed with movy */
 
-/* List rendering */
-export const LIST_TOP_Y = 15;
+/* List rendering.
+ *
+ * ONE rect, MENU_LIST_Y (10) .. MOVY_RULE_Y (55), whether or not a footer is
+ * on screen. The old chrome reserved a separate shorter rect for the footer
+ * case and paid a whole row for it: floor((54-15)/9) = 4 against
+ * floor((62-15)/9) = 5. The movy footer rule is at 55 and the last row's
+ * highlight ends at 53, so the same rect serves both — the footer case GAINS
+ * that row back (4 -> 5) and the no-footer case holds at 5. The three
+ * *_BOTTOM_* names below are kept because ~41 call sites import them; they
+ * are now three names for one edge. */
+export const LIST_TOP_Y = MENU_LIST_Y;
 export const LIST_LINE_HEIGHT = 9;                      // 5x7px font + 2px spacing
 export const LIST_HIGHLIGHT_HEIGHT = LIST_LINE_HEIGHT;
 export const LIST_HIGHLIGHT_OFFSET = 1;                 // Shift rect up 1px to vertically center
-export const LIST_LABEL_X = 4;
+export const LIST_LABEL_X = MENU_LIST_X;
 export const LIST_VALUE_X = 92;
-export const LIST_MAX_VISIBLE = 5;
+export const LIST_MAX_VISIBLE = 5;   /* DEAD: drawMenuList never reads it */
 export const LIST_INDICATOR_X = 120;
-export const LIST_INDICATOR_BOTTOM_Y = SCREEN_HEIGHT - 2;
-export const LIST_BOTTOM_WITH_FOOTER = FOOTER_RULE_Y - 1;
+export const LIST_INDICATOR_BOTTOM_Y = MOVY_RULE_Y;
+export const LIST_BOTTOM_WITH_FOOTER = MOVY_RULE_Y;
 
 /* Text rendering */
 export const DEFAULT_CHAR_WIDTH = 6;
 export const DEFAULT_LABEL_GAP = 6;
 export const DEFAULT_VALUE_PADDING_RIGHT = 2;
 export const VALUE_RIGHT_CLEARANCE = 10;  /* Clearance from scroll-arrow column (LIST_INDICATOR_X = 120) */
-export const LIST_BOTTOM_CLEARANCE = FOOTER_RULE_Y - 2;  /* 2px clearance below footer rule for down-arrow */
+export const LIST_BOTTOM_CLEARANCE = MOVY_RULE_Y;
 
 /* Canonical footer-hint verb prefixes (cleanup step 9, U-2). The Move's jog
  * wheel click is "Click" (not "Push"); action words are lowercase. Build
@@ -57,16 +82,34 @@ export function footerHint(verb, action) {
 let lastAnnouncedIndex = -1;
 let lastAnnouncedLabel = "";
 
-export function drawMenuHeader(title, titleRight = "") {
-    print(2, TITLE_Y, title, 1);
+/* render_page_movy's renderers draw through an injected ctx (that is what makes
+ * them testable into a framebuffer); menu_layout reaches for the device globals
+ * by name. This adapter is the seam. The arrow bodies resolve `fill_rect` /
+ * `print` at CALL time, not at module load, so a probe that swaps the globals
+ * (tools/param-pages/list_probe.mjs, tests/host/test_enum_picker_chrome.sh)
+ * still sees every draw. */
+const DEVICE_CTX = {
+    fillRect: (x, y, w, h, color) => fill_rect(x, y, w, h, color),
+    print: (x, y, text, color) => print(x, y, text, color),
+    textWidth: (text) => (typeof text_width === 'function'
+        ? text_width(String(text))
+        : String(text).length * DEFAULT_CHAR_WIDTH),
+};
 
-    if (titleRight) {
-        const rightW = (typeof text_width === 'function') ? text_width(titleRight) : (titleRight.length * DEFAULT_CHAR_WIDTH);
-        const rightX = SCREEN_WIDTH - rightW - 2;
-        print(Math.max(2, rightX), TITLE_Y, titleRight, 1);
-    }
-
-    fill_rect(0, TITLE_RULE_Y, SCREEN_WIDTH, 1, 1);
+/**
+ * The movy header band: 7 rows, font4x5, title on the left and the optional
+ * right-hand string measured first so the two can never overlap.
+ *
+ * It used to be the device 5x7 font at y=2 with a full-width rule at y=12, and
+ * the rule is why this could not move on its own: the list now starts at y=10,
+ * so a rule at 12 would be drawn straight through the first row. Header and
+ * list rect are one change.
+ */
+export function drawMenuHeader(title, titleRight = "", inverted = false) {
+    drawMovyHeader(DEVICE_CTX,
+        title === undefined || title === null ? "" : String(title),
+        titleRight ? String(titleRight) : "",
+        inverted);
 }
 
 export function drawMenuFooter(text, y = FOOTER_TEXT_Y) {
@@ -101,6 +144,10 @@ export function drawConfirmModal({
     if (name !== undefined && name !== null && name !== "") {
         print(LIST_LABEL_X, LIST_TOP_Y, '"' + truncateText(String(name), 20) + '"', 1);
     }
+    /* +16 rather than a fresh constant: the whole modal rides LIST_TOP_Y, so
+     * the movy re-skin lifted it 5 rows with the list (name at 10, rows at 26
+     * and 35, footer rule still 55). Nothing collides — the header band ends
+     * at row 6 and the name's glyphs start at 10 — so the offset is unchanged. */
     const listY = LIST_TOP_Y + 16;
     for (let i = 0; i < labels.length; i++) {
         const rowY = listY + i * LIST_LINE_HEIGHT;
@@ -304,7 +351,11 @@ export function drawMenuList({
         drawArrowUp(indicatorX, resolvedTopY);
     }
     if (endIdx < totalItems) {
-        drawArrowDown(indicatorX, resolvedBottomY - 2);
+        /* -3, not -2: the arrow is 3 rows tall, so -2 put its tip ON
+         * resolvedBottomY. Under the old chrome that row was blank screen;
+         * under the movy chrome the bottom of the rect IS the footer rule, and
+         * the arrow read as growing out of it. */
+        drawArrowDown(indicatorX, resolvedBottomY - 3);
     }
 }
 

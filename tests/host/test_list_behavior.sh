@@ -82,10 +82,13 @@ const run = (opts) => {
  * divide out to 5 too. Nobody should read LIST_MAX_VISIBLE as documenting
  * behaviour, including future readers of this test.
  *
- * The movy re-skin is expected to move the WITH-FOOTER case from 4 to 5
- * (one shared rect, MENU_LIST_Y=10..RULE_Y=55, regardless of footer) -- so
- * if `footerN` below fails after that lands, that is the intended change
- * landing, not a regression. */
+ * The movy re-skin HAS NOW LANDED, and it moved the WITH-FOOTER case from 4
+ * to 5: one shared rect, MENU_LIST_Y=10..RULE_Y=55, regardless of footer. The
+ * derived checks above self-adjust (they divide the same constants
+ * drawMenuList does), so on their own they would have accepted the change
+ * silently -- and would equally accept a future change that LOST a row. The
+ * two literal pins below exist for that: both windows must be 5, which is the
+ * bar the design set (no-footer holds at 5, with-footer gains a row back). */
 let N, footerN;
 {
     const r = run({ items: items(12), selectedIndex: 0 });
@@ -109,6 +112,14 @@ let N, footerN;
     if (r.selectedIndex !== 0)
         fail("with-footer window at index 0: expected row 0 selected, got row " + r.selectedIndex);
 }
+/* The literal bar, stated once for both windows. ONE rect means one number. */
+const REQUIRED_ROWS = 5;
+if (N !== REQUIRED_ROWS)
+    fail("no-footer window must hold " + REQUIRED_ROWS + " rows, got " + N);
+if (footerN !== REQUIRED_ROWS)
+    fail("with-footer window must hold " + REQUIRED_ROWS + " rows, got " + footerN +
+         " -- the one rect (10..55) fits five; a smaller number means the footer " +
+         "is reserving space again, which is the row the re-skin bought back");
 
 /* ---- 4. 12-item list at index 11: Item 12 is visible AND selected ----
  *
