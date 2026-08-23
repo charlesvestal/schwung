@@ -216,6 +216,7 @@ import {
     enumPickerFooterHints, CONTRACT_SETTLE_MS
 } from './shadow_ui_param_pages.mjs';
 import { createSlotGridIo, createMasterGridIo } from './shadow_ui_slot_grid.mjs';
+import { createGlobalGridIo } from './shadow_ui_global_grid.mjs';
 import {
     drawMasterFx as _drawMasterFx,
     getMasterFxDisplayName as _getMasterFxDisplayName,
@@ -9714,6 +9715,238 @@ function enterMasterFxSettingsGrid() {
                      * chain editor. */
                     { label: MASTER_CHAIN_TARGET.label, name: "Settings",
                       returnView: VIEWS.MASTER_FX });
+}
+
+/*
+ * GLOBAL SETTINGS, as the knob grid — the host half of the contract.
+ *
+ * The routing table lives in shadow_ui_global_grid.mjs and is tested with no
+ * device; what cannot leave this file is here and nothing else: the concrete
+ * backends, and the module-level cache vars a write must keep in step.
+ *
+ * WHY THE CACHE VARS AND THE SAVE MATTER MORE THAN THEY LOOK.
+ *
+ * This replaces adjustMasterFxSetting, which is delta-based and side-effectful:
+ * six of its branches call saveMasterFxChainConfig() and four assign a
+ * `cached*` var alongside the shadow_set_param. A converted write that drops
+ * either sets the param, reads back correctly, draws correctly — and is gone on
+ * reboot, with no error anywhere. That is the failure this shape exists to
+ * prevent, so the SHARED save is declared once (`persist`, applied by
+ * writeGlobalParam for exactly the keys the table marks) while the key-specific
+ * savers stay welded to the assignment they save.
+ */
+function globalGridIoFor() {
+    const mfx = (key) => shadow_get_param(0, "master_fx:" + key);
+    const mfxSet = (key, value) => shadow_set_param(0, "master_fx:" + key, value);
+    const bit = (on) => (on ? "1" : "0");
+
+    const io = {
+        readParam(key) {
+            switch (key) {
+            /* ---- display */
+            case "display_mirror":
+                return bit(typeof display_mirror_get === "function" && display_mirror_get());
+            case "overlay_knobs":
+                return String(typeof overlay_knobs_get_mode === "function" ? overlay_knobs_get_mode() : 0);
+            case "pad_typing":         return bit(padSelectGlobal);
+            case "text_preview":       return bit(textPreviewGlobal);
+            case "midi_indicator_enabled": return bit(midiIndicatorEnabled);
+            case "param_view":         return String(paramViewGlobal === 1 ? 1 : 0);
+
+            /* ---- audio. These four are the ONLY reads that cost IPC. */
+            case "link_audio_routing":
+            case "link_audio_publish":
+            case "latency_comp_enabled":
+            case "usbc_out_persist":
+            case "usbc_out_source":
+                return mfx(key);
+            case "resample_bridge": {
+                /* Normalised through the same parser the old path used, so an
+                 * unset or malformed value lands on a mode that exists. A read
+                 * that did not complete is passed through untouched — null is
+                 * not news about the setting. */
+                const raw = mfx("resample_bridge");
+                if (raw === null || raw === undefined || raw === "") return raw;
+                return String(parseResampleBridgeMode(raw));
+            }
+            case "skipback_shortcut":
+                return bit(typeof skipback_shortcut_get === "function" && skipback_shortcut_get());
+            case "skipback_seconds":
+                return String(typeof skipback_seconds_get === "function" ? skipback_seconds_get() : 30);
+            case "browser_preview":    return bit(previewEnabled);
+
+            /* ---- screen reader */
+            case "screen_reader_enabled":
+                return bit(typeof tts_get_enabled === "function" && tts_get_enabled());
+            case "screen_reader_engine":
+                return (typeof tts_get_engine === "function" && tts_get_engine() === "flite") ? "flite" : "espeak";
+            case "screen_reader_speed":
+                return String(typeof tts_get_speed === "function" ? tts_get_speed() : 1.0);
+            case "screen_reader_pitch":
+                return String(typeof tts_get_pitch === "function" ? Math.round(tts_get_pitch()) : 110);
+            case "screen_reader_volume":
+                return String(typeof tts_get_volume === "function" ? tts_get_volume() : 70);
+            case "screen_reader_debounce":
+                return String(typeof tts_get_debounce === "function" ? tts_get_debounce() : 300);
+
+            /* ---- set pages / shortcuts / services */
+            case "set_pages_enabled":
+                return bit(typeof set_pages_get === "function" && set_pages_get());
+            case "shadow_ui_trigger":
+                return String(typeof shadow_ui_trigger_get === "function" ? shadow_ui_trigger_get() : 2);
+            case "filebrowser_enabled": return bit(filebrowserEnabled);
+            case "auto_update_check":   return bit(autoUpdateCheckEnabled);
+            case "analytics_enabled":
+                return bit(typeof host_get_analytics_enabled === "function" && host_get_analytics_enabled());
+            }
+            return "";
+        },
+
+        /*
+         * ABSOLUTE, unlike the delta-based path this replaces. `value` is the
+         * STORED value as a string — writeGlobalParam has already turned an
+         * enum index into it, which is what keeps resample_bridge writing 2
+         * rather than the index 1, a mode that does not exist.
+         */
+        writeParam(key, value) {
+            const on = (value === "1");
+            switch (key) {
+            /* ---- display */
+            case "display_mirror":
+                if (typeof display_mirror_set === "function") display_mirror_set(on ? 1 : 0);
+                return;
+            case "overlay_knobs":
+                if (typeof overlay_knobs_set_mode === "function") overlay_knobs_set_mode(parseInt(value, 10) || 0);
+                return;
+            case "pad_typing":
+                setPadSelectGlobal(on);
+                savePadTypingConfig();
+                return;
+            case "text_preview":
+                setTextPreviewGlobal(on);
+                saveTextPreviewConfig();
+                return;
+            case "midi_indicator_enabled":
+                midiIndicatorEnabled = on;
+                if (typeof midi_indicator_set === "function") midi_indicator_set(on ? 1 : 0);
+                return;
+            case "param_view":
+                paramViewGlobal = on ? 1 : 0;
+                saveParamViewConfig();
+                announce(paramViewGlobal === 1 ? "Param View Knobs" : "Param View List");
+                return;
+
+            /* ---- audio. The cache var is not a cache of the write; it is what
+             * saveMasterFxChainConfig serialises, so skipping it writes the OLD
+             * value to disk and the setting reverts on reboot. */
+            case "link_audio_routing":
+                mfxSet(key, on ? "1" : "0");
+                cachedLinkAudioRouting = on;
+                return;
+            case "link_audio_publish":
+                mfxSet(key, on ? "1" : "0");
+                cachedLinkAudioPublish = on;
+                return;
+            case "latency_comp_enabled":
+                mfxSet(key, on ? "1" : "0");
+                cachedLatencyCompEnabled = on;
+                return;
+            case "usbc_out_persist":
+                /* Both On indexes store 1 — the third option carries only the
+                 * wire annotation, and the source is Move's to choose. */
+                mfxSet(key, on ? "1" : "0");
+                cachedUsbcOutPersist = on;
+                return;
+            case "resample_bridge": {
+                const mode = parseResampleBridgeMode(value);
+                mfxSet(key, String(mode));
+                cachedResampleBridgeMode = mode;
+                return;
+            }
+            case "skipback_shortcut":
+                if (typeof skipback_shortcut_set === "function") skipback_shortcut_set(on ? 1 : 0);
+                return;
+            case "skipback_seconds":
+                if (typeof skipback_seconds_set === "function") skipback_seconds_set(parseInt(value, 10) || 30);
+                return;
+            case "browser_preview":
+                previewEnabled = on;
+                if (!previewEnabled) previewStopIfPlaying();
+                saveBrowserPreviewConfig();
+                return;
+
+            /* ---- screen reader. These persist themselves. */
+            case "screen_reader_enabled":
+                if (typeof tts_set_enabled === "function") tts_set_enabled(on);
+                return;
+            case "screen_reader_engine":
+                if (typeof tts_set_engine === "function") tts_set_engine(value === "flite" ? "flite" : "espeak");
+                return;
+            case "screen_reader_speed":
+                if (typeof tts_set_speed === "function") tts_set_speed(parseFloat(value));
+                return;
+            case "screen_reader_pitch":
+                if (typeof tts_set_pitch === "function") tts_set_pitch(Math.round(parseFloat(value)));
+                return;
+            case "screen_reader_volume":
+                if (typeof tts_set_volume === "function") tts_set_volume(Math.round(parseFloat(value)));
+                return;
+            case "screen_reader_debounce":
+                if (typeof tts_set_debounce === "function") tts_set_debounce(Math.round(parseFloat(value)));
+                return;
+
+            /* ---- set pages / shortcuts / services */
+            case "set_pages_enabled":
+                if (typeof set_pages_set === "function") set_pages_set(on ? 1 : 0);
+                return;
+            case "shadow_ui_trigger":
+                if (typeof shadow_ui_trigger_set === "function") shadow_ui_trigger_set(parseInt(value, 10) || 0);
+                return;
+            case "filebrowser_enabled":
+                filebrowserEnabled = on;
+                setFilebrowserRunning(on);
+                saveFilebrowserConfig();
+                return;
+            case "auto_update_check":
+                autoUpdateCheckEnabled = on;
+                saveAutoUpdateConfig();
+                return;
+            case "analytics_enabled":
+                if (typeof host_set_analytics_enabled === "function") host_set_analytics_enabled(on ? 1 : 0);
+                return;
+            }
+        },
+
+        /* The SHARED sink, applied by writeGlobalParam for exactly the keys
+         * GLOBAL_ROUTING marks `persist: "save"`. */
+        persist: () => saveMasterFxChainConfig(),
+    };
+
+    return createGlobalGridIo(io);
+}
+
+/*
+ * Start or stop the file browser to match the flag.
+ *
+ * Named rather than inlined into the write, because the flag file and the
+ * process must move together: a flag written without the process started reads
+ * as On with nothing listening on :404. The old adjustMasterFxSetting branch
+ * still inlines its own copy; it goes when that path does (Task 9), and until
+ * then this is the only caller.
+ */
+function setFilebrowserRunning(on) {
+    const flagPath = "/data/UserData/schwung/filebrowser_enabled";
+    if (on) {
+        host_write_file(flagPath, "1");
+        if (typeof host_system_cmd === "function") {
+            host_system_cmd("sh -c '/data/UserData/schwung/bin/filebrowser --noauth --address 0.0.0.0 --port 404 --root /data/UserData --database /data/UserData/schwung/filebrowser.db --disableThumbnails --disablePreviewResize --disableExec --disableTypeDetectionByHeader >/dev/null 2>&1 &'");
+        }
+    } else {
+        host_remove_dir(flagPath);
+        if (typeof host_system_cmd === "function") {
+            host_system_cmd("sh -c 'killall filebrowser 2>/dev/null'");
+        }
+    }
 }
 
 /*

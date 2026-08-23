@@ -92,6 +92,188 @@ export const GLOBAL_ENUM_VALUES = {
     shadow_ui_trigger: [0, 1, 2],
 };
 
+/* ------------------------------------------------------------ accessor routing
+ *
+ * WHICH BACKEND EACH KEY READS AND WRITES, and what must ride along with the
+ * write. Derived by reading every branch of getMasterFxSettingValue and
+ * adjustMasterFxSetting in shadow_ui.js (both are MISNAMED — they serve Global
+ * Settings, not Master FX) and transcribed here so it is one declaration rather
+ * than a shape recovered from a 240-line if-chain.
+ *
+ * The hazard this table exists for: adjustMasterFxSetting is DELTA-BASED and
+ * SIDE-EFFECTFUL. Six of its branches also call saveMasterFxChainConfig() and
+ * set a module-level cache var. A converted absolute write that drops either
+ * sets the param, looks correct on screen, and loses it on reboot — silently.
+ * So persistence is declared per key here, PERSISTING_KEYS is DERIVED from it
+ * (never a second hand-kept list), and writeGlobalParam applies it.
+ *
+ *   key                    | read backend            | write backend            | persist | cache var              | modal
+ *   -----------------------+-------------------------+--------------------------+---------+------------------------+------
+ *   display_mirror         | display_mirror_get      | display_mirror_set       | -       | -                      | -
+ *   overlay_knobs          | overlay_knobs_get_mode  | overlay_knobs_set_mode   | SAVE    | -                      | -
+ *   pad_typing             | padSelectGlobal         | setPadSelectGlobal       | own     | padSelectGlobal        | -
+ *   text_preview           | textPreviewGlobal       | setTextPreviewGlobal     | own     | textPreviewGlobal      | -
+ *   midi_indicator_enabled | midiIndicatorEnabled    | midi_indicator_set       | -       | midiIndicatorEnabled   | -
+ *   param_view             | paramViewGlobal         | paramViewGlobal =        | own     | paramViewGlobal        | -
+ *   link_audio_routing     | master_fx: param        | master_fx: param         | SAVE    | cachedLinkAudioRouting | warnIfLinkDisabled
+ *   link_audio_publish     | master_fx: param        | master_fx: param         | SAVE    | cachedLinkAudioPublish | warnIfLinkDisabled
+ *   latency_comp_enabled   | master_fx: param        | master_fx: param         | SAVE    | cachedLatencyCompEnabled | -
+ *   resample_bridge        | master_fx: param        | master_fx: param         | SAVE    | cachedResampleBridgeMode | Schwung Mix (mode 2)
+ *   skipback_shortcut      | skipback_shortcut_get   | skipback_shortcut_set    | -       | -                      | -
+ *   skipback_seconds       | skipback_seconds_get    | skipback_seconds_set     | -       | -                      | -
+ *   browser_preview        | previewEnabled          | previewEnabled =         | own     | previewEnabled         | -
+ *   usbc_out_persist       | master_fx: param (+src) | master_fx: param         | SAVE    | cachedUsbcOutPersist   | -
+ *   screen_reader_enabled  | tts_get_enabled         | tts_set_enabled          | -       | -                      | -
+ *   screen_reader_engine   | tts_get_engine          | tts_set_engine           | -       | -                      | -
+ *   screen_reader_speed    | tts_get_speed           | tts_set_speed            | -       | -                      | -
+ *   screen_reader_pitch    | tts_get_pitch           | tts_set_pitch            | -       | -                      | -
+ *   screen_reader_volume   | tts_get_volume          | tts_set_volume           | -       | -                      | -
+ *   screen_reader_debounce | tts_get_debounce        | tts_set_debounce         | -       | -                      | -
+ *   set_pages_enabled      | set_pages_get           | set_pages_set            | -       | -                      | -
+ *   shadow_ui_trigger      | shadow_ui_trigger_get   | shadow_ui_trigger_set    | -       | -                      | -
+ *   filebrowser_enabled    | filebrowserEnabled      | flag file + host_system_cmd | own  | filebrowserEnabled     | File Browser
+ *   auto_update_check      | autoUpdateCheckEnabled  | autoUpdateCheckEnabled = | own     | autoUpdateCheckEnabled | -
+ *   analytics_enabled      | host_get_analytics_enabled | host_set_analytics_enabled | -  | -                      | -
+ *
+ * Three kinds of persistence, and conflating them is how a write goes missing:
+ *
+ *   "save"  saveMasterFxChainConfig() — the SHARED sink. These are the keys
+ *           writeGlobalParam persists via io.persist(), and only these.
+ *   "own"   a key-specific writer (savePadTypingConfig, saveFilebrowserConfig,
+ *           …). It is inseparable from the write itself, so it lives in the
+ *           host's writeParam beside the assignment it saves, not here — the
+ *           generic persist() must not fire for these or every key would look
+ *           persisted and the assertion that proves persistence would be
+ *           vacuous.
+ *   null    the backend persists itself (tts_*, display_mirror_*, the feature
+ *           flags), or the value is genuinely session-scoped.
+ *
+ * `modal` records the writes that raise an overlay. Those are the host's to
+ * raise — the hand-off is Task 9 — but they are declared here because a write
+ * whose modal is forgotten is the same class of silent loss as a missing save.
+ *
+ * BACKENDS ARE NAMED IN A DOTTED FORM (`tts.get_speed`, not `tts_get_speed`)
+ * and that is deliberate, not cosmetic. This module is asserted PURE against
+ * its own source with a regex that cannot tell an identifier from a string
+ * literal, so spelling the accessors as identifiers here would trip the purity
+ * check with a table that reads nothing. Dotted, they are unambiguously data —
+ * and the check keeps its teeth for the case it is actually for.
+ */
+export const GLOBAL_ROUTING = {
+    display_mirror:         { read: "display_mirror.get",     write: "display_mirror.set",     persist: null,   cache: null,                     modal: null },
+    overlay_knobs:          { read: "overlay_knobs.get_mode", write: "overlay_knobs.set_mode", persist: "save", cache: null,                     modal: null },
+    pad_typing:             { read: "js.padSelectGlobal",     write: "js.setPadSelectGlobal",  persist: "own",  cache: "padSelectGlobal",        modal: null },
+    text_preview:           { read: "js.textPreviewGlobal",   write: "js.setTextPreviewGlobal",persist: "own",  cache: "textPreviewGlobal",      modal: null },
+    midi_indicator_enabled: { read: "js.midiIndicatorEnabled",write: "midi_indicator.set",     persist: null,   cache: "midiIndicatorEnabled",   modal: null },
+    param_view:             { read: "js.paramViewGlobal",     write: "js.paramViewGlobal",     persist: "own",  cache: "paramViewGlobal",        modal: null },
+
+    link_audio_routing:     { read: "master_fx",              write: "master_fx",              persist: "save", cache: "cachedLinkAudioRouting",   modal: "link" },
+    link_audio_publish:     { read: "master_fx",              write: "master_fx",              persist: "save", cache: "cachedLinkAudioPublish",   modal: "link" },
+    latency_comp_enabled:   { read: "master_fx",              write: "master_fx",              persist: "save", cache: "cachedLatencyCompEnabled", modal: null },
+    resample_bridge:        { read: "master_fx",              write: "master_fx",              persist: "save", cache: "cachedResampleBridgeMode", modal: "resample" },
+    skipback_shortcut:      { read: "skipback_shortcut.get",  write: "skipback_shortcut.set",  persist: null,   cache: null,                     modal: null },
+    skipback_seconds:       { read: "skipback_seconds.get",   write: "skipback_seconds.set",   persist: null,   cache: null,                     modal: null },
+    browser_preview:        { read: "js.previewEnabled",      write: "js.previewEnabled",      persist: "own",  cache: "previewEnabled",         modal: null },
+    usbc_out_persist:       { read: "master_fx",              write: "master_fx",              persist: "save", cache: "cachedUsbcOutPersist",   modal: null },
+
+    screen_reader_enabled:  { read: "tts.get_enabled",        write: "tts.set_enabled",        persist: null,   cache: null,                     modal: null },
+    screen_reader_engine:   { read: "tts.get_engine",         write: "tts.set_engine",         persist: null,   cache: null,                     modal: null },
+    screen_reader_speed:    { read: "tts.get_speed",          write: "tts.set_speed",          persist: null,   cache: null,                     modal: null },
+    screen_reader_pitch:    { read: "tts.get_pitch",          write: "tts.set_pitch",          persist: null,   cache: null,                     modal: null },
+    screen_reader_volume:   { read: "tts.get_volume",         write: "tts.set_volume",         persist: null,   cache: null,                     modal: null },
+    screen_reader_debounce: { read: "tts.get_debounce",       write: "tts.set_debounce",       persist: null,   cache: null,                     modal: null },
+
+    set_pages_enabled:      { read: "set_pages.get",          write: "set_pages.set",          persist: null,   cache: null,                     modal: null },
+    shadow_ui_trigger:      { read: "shadow_ui_trigger.get",  write: "shadow_ui_trigger.set",  persist: null,   cache: null,                     modal: null },
+
+    filebrowser_enabled:    { read: "js.filebrowserEnabled",  write: "js.filebrowserEnabled",  persist: "own",  cache: "filebrowserEnabled",     modal: "filebrowser" },
+    auto_update_check:      { read: "js.autoUpdateCheckEnabled", write: "js.autoUpdateCheckEnabled", persist: "own", cache: "autoUpdateCheckEnabled", modal: null },
+    analytics_enabled:      { read: "host.get_analytics_enabled", write: "host.set_analytics_enabled", persist: null, cache: null,               modal: null },
+};
+
+/**
+ * The keys whose write must be followed by saveMasterFxChainConfig().
+ *
+ * DERIVED from GLOBAL_ROUTING rather than listed, because a hand-kept second
+ * list is exactly the drift this whole table exists to prevent: a key added to
+ * one and not the other persists on screen and not on disk.
+ */
+export const PERSISTING_KEYS = new Set(
+    Object.keys(GLOBAL_ROUTING).filter((k) => GLOBAL_ROUTING[k].persist === "save"));
+
+/**
+ * The STORED value for an engine value.
+ *
+ * The knob engine and the enum picker both work in INDEXES (`knob_engine.mjs`
+ * clamps an enum to `0..options.length-1`). Most of these enums store their
+ * index — but resample_bridge stores 0 and **2**, screen_reader_engine stores
+ * "espeak"/"flite", and skipback_seconds stores 30..300. Writing the index
+ * would set a mode that does not exist and the setting would appear to do
+ * nothing.
+ */
+export function globalStoredValue(key, engineValue) {
+    if (key === "usbc_out_persist") {
+        /* Three options, two states: both On indexes store 1. The third option
+         * exists only to carry the wire annotation on the surfaces with room
+         * for it — the source is read-only, Move's own menu still chooses it. */
+        return (Number(engineValue) > 0) ? "1" : "0";
+    }
+    const values = GLOBAL_ENUM_VALUES[key];
+    if (!values) return String(engineValue);
+    let i = Math.round(Number(engineValue));
+    if (!Number.isFinite(i)) i = 0;
+    i = Math.max(0, Math.min(values.length - 1, i));
+    return String(values[i]);
+}
+
+/**
+ * The engine value for a STORED value — the inverse of globalStoredValue.
+ *
+ * A failed read is passed through untouched. `null` means the read did not
+ * complete and `""` means the channel served us nothing; neither is an index,
+ * and turning either into 0 would report "Native"/"Off" as fact. See the
+ * three-answers rule in CLAUDE.md.
+ */
+export function globalEngineValue(key, stored) {
+    if (stored === null || stored === undefined || stored === "") return stored;
+    const values = GLOBAL_ENUM_VALUES[key];
+    if (!values) return String(stored);
+    /* Compare as strings: the stored side arrives off the wire as text, and the
+     * tables hold numbers for every enum except screen_reader_engine. */
+    const i = values.map(String).indexOf(String(stored));
+    return String(i < 0 ? 0 : i);
+}
+
+/**
+ * Read one Global Settings value, as the engine wants it.
+ *
+ * @param {{readParam:(key:string)=>string}} io
+ */
+export function readGlobalParam(io, key) {
+    if (key === "usbc_out_persist") {
+        const on = io.readParam("usbc_out_persist");
+        if (on === null || on === undefined || on === "") return on;
+        if (String(on) !== "1") return "0";
+        /* Which On: annotate with the source last seen on the wire. Unknown
+         * (-1, before anything has been observed) falls back to the plain On
+         * index rather than claiming a route. */
+        const src = io.readParam("usbc_out_source");
+        return String(src) === "1" ? "2" : "1";
+    }
+    return globalEngineValue(key, io.readParam(key));
+}
+
+/**
+ * Write one Global Settings value, absolutely, with the persistence that must
+ * ride along.
+ *
+ * @param {{writeParam:(key:string,v:string)=>any, persist?:()=>any}} io
+ */
+export function writeGlobalParam(io, key, value) {
+    io.writeParam(key, globalStoredValue(key, value));
+    if (PERSISTING_KEYS.has(key) && typeof io.persist === "function") io.persist();
+}
+
 /* ------------------------------------------------------------------ display */
 
 export const DISPLAY_PARAMS = [
@@ -276,4 +458,59 @@ export function buildGlobalSettingsContract(io) {
     }
 
     return { hierarchy: { modes: null, levels }, chainParams: allGlobalParams() };
+}
+
+/**
+ * The engine-facing io for Global Settings — the same shape createMasterGridIo
+ * returns, built on the low-level accessors the host supplies.
+ *
+ * The split is the point. Everything that can be decided without a device is
+ * decided here (which key is an enum, what its stored value is, which writes
+ * must persist); the host half is only the concrete backends and the cache-var
+ * assignments that cannot leave shadow_ui.js. There is exactly one routing
+ * table and it is the one above.
+ *
+ * Nothing here is modulated and nothing here is an LFO target, so there is no
+ * isModulated and no formatValue — unlike the two chain contracts, whose
+ * versions exist to stop the host's generic modulation oracle spending three
+ * IPC round trips per tick to answer "no" and then answering "yes" by mistake.
+ *
+ * @param {object} io
+ * @param {(key:string)=>string}       io.readParam   raw stored value, or
+ *   `null` for a read that did not complete and `""` for one the channel served
+ *   with nothing. Both are passed straight through — see readGlobalParam.
+ * @param {(key:string,v:string)=>any} io.writeParam  absolute write, including
+ *   the key-specific side effects (cache var, own save fn, modal).
+ * @param {()=>any}              [io.persist]   saveMasterFxChainConfig
+ * @param {(action:string)=>any} [io.runAction] perform an Updates menu action
+ */
+export function createGlobalGridIo(io) {
+    const bare = (fullKey) => String(fullKey || "").replace(/^[^:]*:/, "");
+    const contract = buildGlobalSettingsContract(io);
+
+    return {
+        getParam(fullKey) {
+            const k = bare(fullKey);
+            if (k === "ui_hierarchy") return JSON.stringify(contract.hierarchy);
+            if (k === "chain_params") return JSON.stringify(contract.chainParams);
+            if (!GLOBAL_ROUTING[k]) return "";
+            return readGlobalParam(io, k);
+        },
+
+        setParam(fullKey, value) {
+            const k = bare(fullKey);
+            if (!GLOBAL_ROUTING[k]) return;
+            writeGlobalParam(io, k, value);
+        },
+
+        /* Not a modulation target and not an LFO target — answered flatly
+         * rather than left to the host's generic oracle, which would compare
+         * each key against an unserved `<key>:base`, read "" instead of null,
+         * and hang the modulation tilde on every row. */
+        isModulated() { return false; },
+
+        runAction(action) {
+            if (io.runAction) return io.runAction(action);
+        },
+    };
 }
