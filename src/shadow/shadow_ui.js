@@ -2218,8 +2218,26 @@ function openHierarchyParamEditor(selectedKey, meta, forceOpen) {
                 refreshHierarchyVisibility();
                 announceParameter(meta.name || selectedKey, String(nextText || ""));
                 needsRedraw = true;
+                /*
+                 * Come back to the KNOB PAGE if that is where the click came
+                 * from -- the same promise the enum picker keeps with
+                 * returnToGrid, and the same one Back already keeps from here.
+                 *
+                 * A string cell has no editor of its own, so opening one exits
+                 * the grid into the list editor and edits the row there. That
+                 * is an implementation detail the user never asked for: naming
+                 * a preset from a Save cell left them sitting in a list of
+                 * rows, on a page they did not navigate to, with the grid they
+                 * were working on gone.
+                 */
+                if (paramEditorOpenedFromGrid) returnToParamPagesFromEditor();
             },
-            onCancel: () => { needsRedraw = true; }
+            onCancel: () => {
+                needsRedraw = true;
+                /* Cancel returns the same way: backing out of the keyboard
+                 * should undo the hand-off, not complete it. */
+                if (paramEditorOpenedFromGrid) returnToParamPagesFromEditor();
+            }
         });
         return;
     }
