@@ -40,6 +40,13 @@ import { LAYOUT_MOVY, normalizedOf }
  * drawn cell, and roughly where its parameter sits. */
 import { updateKnobLEDs, clearKnobLEDs, resetKnobLedCache, NUM_KNOB_LEDS }
     from '/data/UserData/schwung/shared/param_pages/knob_leds.mjs';
+/* NOTE: wav_io_qjs.mjs — which registers the QuickJS file IO wav_peaks.mjs
+ * needs — is imported from shadow_ui.js, NOT from here. This file IS loaded
+ * under node by test_param_pages_view.sh and test_param_pages_io_forwarding.sh,
+ * and wav_io_qjs names the `std`/`os` modules, which node has no idea about.
+ * shadow_ui.js is the only file in the shadow UI that node never imports. */
+import { wavPeaksTick } from '/data/UserData/schwung/shared/param_pages/wav_peaks.mjs';
+import { VIZ_SAMPLE } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
 /* The enum option screen, shared with the picker view in shadow_ui.js — one
  * screen, two entries, opposite commit semantics. See enum_list.mjs. */
 import { drawEnumList } from '/data/UserData/schwung/shared/param_pages/enum_list.mjs';
@@ -346,6 +353,26 @@ export function tickParamPages() {
      * leaving colours lit there would say eight knobs do something when none
      * of them does — the opposite of what the lighting is for.
      */
+    /*
+     * Advance the sample's peak envelope, on the TICK and never on the draw.
+     * The draw runs inside the redraw throttle and may be skipped, so a job
+     * driven from there would stall exactly when the screen was quiet — which
+     * is when it should be making progress. One bounded batch per tick.
+     *
+     * The path comes from the viz group the grid already resolved, so this
+     * costs no IPC and no extra planning: if there is no sample cell on the
+     * page there is nothing to advance.
+     */
+    const vg = typeof controller.vizGroups === 'function' ? controller.vizGroups() : null;
+    if (vg) {
+        for (const g of vg) {
+            if (g.kind !== VIZ_SAMPLE || !g.roles.value) continue;
+            const path = controller.state.values[g.roles.value];
+            if (path) wavPeaksTick(String(path));
+            break;      /* one sample cell per page */
+        }
+    }
+
     const kpage = controller.page;
     const st = controller.state;
     /* metaIndex is null until the contract resolves, and this runs from the

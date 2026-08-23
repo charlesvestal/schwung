@@ -30,6 +30,7 @@ import {
     VIZ_ENVELOPE, VIZ_FILTER, VIZ_LFO, VIZ_WAVEFORM, VIZ_FADER, VIZ_SWITCH, VIZ_EQ, VIZ_SAMPLE,
 } from "./viz.mjs";
 import { enumIndexOf } from "./param_meta.mjs";
+import { wavPeaks, resamplePeaks } from "./wav_peaks.mjs";
 
 /* -------------------------------------------------------------- primitives */
 
@@ -893,7 +894,28 @@ export function drawSample(ctx, rect, roles, values, metaIndex) {
     const x0 = rect.x, w = rect.w;
     const { topY, botY, midY, amp } = band(rect);
 
+    /*
+     * REAL PEAKS when we have them, a representative shape when we do not.
+     *
+     * The fallback is not decoration. wavPeaks fills in progressively, so the
+     * first frames after a sample loads have no data yet, and a cell that drew
+     * nothing would flicker empty on every sample change. It also covers an
+     * unreadable or non-audio file, where the picture must degrade to "a
+     * waveform-shaped thing with a correct cursor" rather than to a blank
+     * cell — the cursor and the brackets are still true.
+     *
+     * Normalised against the running PEAK, not against full scale, so a quiet
+     * sample still uses the full height of the cell. Guarded, because peak is
+     * 0 until the first block lands.
+     *
+     * No I/O here: wavPeaks never reads, and the job is advanced from the tick.
+     */
+    const file = roles.value && values ? values[roles.value] : null;
+    const pk = file ? wavPeaks(String(file)) : null;
+    const pts = (pk && !pk.error && pk.points.length) ? resamplePeaks(pk.points, w) : null;
+    const scale = (pk && pk.peak > 0) ? 1 / pk.peak : 1;
     const halfAt = (i) => {
+        if (pts) return Math.round(clamp01(pts[Math.min(pts.length - 1, i)] * scale) * amp);
         const t = i / Math.max(1, w);
         const v = Math.abs(Math.sin(t * Math.PI)) * (0.55 + 0.35 * Math.sin(t * 23));
         return Math.round(clamp01(v) * amp);
