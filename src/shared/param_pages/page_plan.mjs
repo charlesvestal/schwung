@@ -148,9 +148,15 @@ function balancedChunk(arr, size) {
  *                                  evaluator without the planner reading params.
  *                                  Default: everything visible (fail-open, which
  *                                  is what the native evaluator does too).
+ * @param {Array}    [o.trailingMenus] Caller-supplied PAGE_MENU pages appended
+ *                                  AFTER the whole walk — e.g. "User Presets"
+ *                                  and "Module". Opt-in: absent for a tool
+ *                                  embedding this grid with no slot to swap a
+ *                                  module in. See the note above appendTrailing.
  * @returns {{pages: Array, fingerprint: string, warnings: string[]}}
  */
-export function planPages({ hierarchy, chainParams, mode, visible, unresolved } = {}) {
+export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
+                            trailingMenus } = {}) {
     const warnings = [];
     /*
      * Built once per plan so knob pages can be nudged into a drawable layout —
@@ -219,18 +225,62 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved } 
      * have no such statement, so we make none.
      */
     if (unresolved) {
+        /* Left alone, deliberately: trailingMenus is never appended here.
+         * A failed read must never manufacture a "Remove Module" button — a
+         * plan is a statement about what a module declares, and a failed read
+         * has no statement to make. */
         return {
             pages: [], fingerprint, conditionKeys: new Set(), unresolved: true,
             warnings: ["ui_hierarchy unresolved — the contract read failed"],
         };
     }
 
+    /*
+     * Pages appended after the WHOLE walk, supplied by the caller.
+     *
+     * Not a level's `menu`: a level emits its menu straight after its own
+     * grids and before any level it navigates to, so a menu on root lands
+     * second. Slot Settings gives its menu its own level to dodge that
+     * (shadow_ui_slot_grid.mjs), which works only because it synthesises its
+     * whole hierarchy. We do not own a module's, and three fleet shapes make
+     * injection impossible anyway: 11 of 95 modules publish no `levels` object,
+     * minijv has no `root`, and with `modes` the walk root is the active mode.
+     *
+     * Opt-in, because a tool embedding this grid for parameter locks has no
+     * slot to swap a module in. The planner never learns what an action MEANS
+     * — that stays with the host, the same boundary that keeps actions out of
+     * the editors.
+     */
+    const appendTrailing = (pages, claim) => {
+        for (const m of (trailingMenus || [])) {
+            if (!m || !Array.isArray(m.entries) || m.entries.length === 0) continue;
+            pages.push({
+                kind: PAGE_MENU,
+                name: claim(String(m.name || "Menu")),
+                level: null,
+                trailing: true,
+                entries: m.entries.map((e) => ({
+                    label: String((e && e.label) || ""),
+                    action: (e && e.action) || null,
+                    target: (e && e.level) || null,
+                    value: (e && e.value) !== undefined ? e.value : null,
+                })).filter((e) => e.label),
+            });
+        }
+        return pages;
+    };
+
     const levels = (hierarchy && hierarchy.levels && typeof hierarchy.levels === "object")
         ? hierarchy.levels : null;
 
     /* No hierarchy at all — 4 modules in the fleet (branchage, belt-in,
      * po32-drum, smack-in) publish chain_params and nothing else. Paginate the
-     * declared params so they are not a blank screen. */
+     * declared params so they are not a blank screen.
+     *
+     * The "no hierarchy AND no chain_params" branch below is left alone,
+     * deliberately: it already produces nothing, and a view made only of
+     * trailing pages is a shape no consumer expects. The Shift+Click route
+     * still reaches Swap/Remove there. */
     if (!levels) {
         const keys = (chainParams || []).map((p) => p && p.key).filter(Boolean);
         if (keys.length === 0) return { pages: [], fingerprint, warnings: ["no ui_hierarchy and no chain_params"], conditionKeys: new Set() };
@@ -240,7 +290,17 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved } 
             return { kind: PAGE_KNOBS, name, level: null,
                      keys: alignKnobs(ks, name), authored: false };
         });
-        return { pages, fingerprint, warnings, realigned };
+        /* No `claimName` in scope here — this branch never names by level, so
+         * give the append its own local claim over the names already used. */
+        const fallbackUsed = new Set(pages.map((p) => p.name));
+        const fallbackClaim = (base) => {
+            if (!fallbackUsed.has(base)) { fallbackUsed.add(base); return base; }
+            for (let n = 2; ; n++) {
+                const c = `${base} - ${n}`;
+                if (!fallbackUsed.has(c)) { fallbackUsed.add(c); return c; }
+            }
+        };
+        return { pages: appendTrailing(pages, fallbackClaim), fingerprint, warnings, realigned };
     }
 
     for (const lvl of Object.values(levels)) {
@@ -329,6 +389,9 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved } 
     }
     if (!levels[rootKey]) {
         const first = Object.keys(levels)[0];
+        /* Left alone, deliberately, same as the no-chain_params branch above:
+         * `pages` is empty here, and trailing pages with nothing else on the
+         * view is a shape no consumer expects. */
         if (!first) return { pages, fingerprint, warnings: warnings.concat("no levels") };
         warnings.push(`no "${rootKey}" level — starting at "${first}"`);
         rootKey = first;
@@ -617,7 +680,8 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved } 
         visit(key, null, false);
     }
 
-    return { pages, fingerprint, warnings, conditionKeys, realigned };
+    return { pages: appendTrailing(pages, claimName), fingerprint, warnings,
+             conditionKeys, realigned };
 }
 
 /**
