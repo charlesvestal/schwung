@@ -27,7 +27,7 @@
  */
 
 import { ctx } from './shadow_ui_ctx.mjs';
-import { createController, CONTRACT_SETTLE_MS } from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
+import { createController, CONTRACT_SETTLE_MS, LAYOUT_LIST } from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
 /* Re-exported so the LIST editor waits out the same module-side debounce the
  * grid does, from the same number. Two hand-written 500s would drift. */
 export { CONTRACT_SETTLE_MS };
@@ -104,17 +104,40 @@ export const PARAM_VIEW_LIST = 0;
 export const PARAM_VIEW_KNOBS = 1;
 
 /**
- * Whether the knob grid should be used at all.
+ * Whether the page chrome may run at all.
  *
- * The screen reader forces the list regardless of the setting. A grid has eight
- * cells and nothing selected, so it is only navigable by ear once the announce
- * calls below are proven on hardware — until then the list, whose reading order
- * is its navigation order, stays the accessible surface.
+ * ONE question, and it is no longer "is the grid on". `param_view` used to be
+ * answered here too, which made choosing List fork the user into an entirely
+ * separate engine — the hierarchy editor in shadow_ui.js, ~34 functions and
+ * ~506 references. Now that PAGE_KNOBS has a list LAYOUT (LAYOUT_LIST), List is
+ * an arrangement inside this engine, so it is paramPagesLayout()'s to answer
+ * and this function no longer looks at it.
+ *
+ * What remains is the screen reader, and it is UNCHANGED on purpose. A grid has
+ * eight cells and nothing selected, and the controller's list layout has
+ * announcements nobody has validated on hardware; until they are, TTS keeps
+ * reaching the hierarchy editor exactly as before. Flipping that is a single
+ * deliberate act with the whole fleet behind it (design §6), not a side effect
+ * of splitting this seam.
  */
 export function paramPagesEnabled() {
     if (typeof tts_get_enabled === 'function' && tts_get_enabled()) return false;
+    return true;
+}
+
+/**
+ * WHICH arrangement the page chrome draws — the other half of the split above.
+ *
+ * The two layouts share everything a page is (page_plan, param_meta,
+ * knob_engine, param_format, announce_page, the chrome in render_page_movy);
+ * they differ only in pixel arrangement, which is the one difference the design
+ * calls irreducible. So this is a value handed to the controller AT THE DRAW
+ * CALL SITE, never a flag threaded down into widget code — that is the `geom`
+ * all-or-nothing trap in another costume.
+ */
+export function paramPagesLayout() {
     const mode = typeof param_view_get_mode === 'function' ? param_view_get_mode() : PARAM_VIEW_LIST;
-    return mode === PARAM_VIEW_KNOBS;
+    return mode === PARAM_VIEW_KNOBS ? LAYOUT_MOVY : LAYOUT_LIST;
 }
 
 /**
@@ -205,9 +228,15 @@ export function enterParamPages(slot, component, prefix, restorePageName, io, ch
         visible: (io && io.visible) ? io.visible : ctx.evaluateVisibilityCondition,
     });
     /* "Knobs" IS schwung-movy's own knob-page layout now, not Schwung's
-     * earlier dial/bar grid — see render_page_movy.mjs. The setting stays a
-     * plain List/Knobs toggle; this is what "Knobs" draws. */
-    controller.setLayout(LAYOUT_MOVY);
+     * earlier dial/bar grid — see render_page_movy.mjs. "List" is the same
+     * engine with the knob page arranged as five rows (LAYOUT_LIST). The
+     * setting stays a plain List/Knobs toggle; this is which one it draws.
+     *
+     * Set here as well as on the draw path because INPUT can arrive before the
+     * first frame does, and the controller's jog/click model reads its layout
+     * (a list has a row cursor; a grid does not). The draw path is what keeps
+     * it live if the setting changes while the view is up. */
+    controller.setLayout(paramPagesLayout());
     /*
      * Hand the NAME to the controller rather than resolving it here.
      *
@@ -692,6 +721,10 @@ export function drawParamPages() {
      * the knob ring wants; `fill_circle` is a solid disk. They are not
      * interchangeable — subtracting one disk from another does not give a
      * ring (see render_page_movy.mjs drawArcKnob). */
+    /* THE LAYOUT IS SELECTED HERE, at the page-draw call site — one value handed
+     * to the controller, not a mode flag woven through the renderer. Re-applied
+     * every frame so toggling Param View takes effect without re-entering. */
+    controller.setLayout(paramPagesLayout());
     traced("js.grid.draw", () => controller.render(
         {
             fillRect: fill_rect, print, textWidth: text_width, line: draw_line,
