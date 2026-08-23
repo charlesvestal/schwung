@@ -130,6 +130,24 @@ function fitCharCount(measure, text, maxWidth) {
     return fitText({ textWidth: measure }, s, maxWidth).length;
 }
 
+/**
+ * truncateText, minus the space that would otherwise sit in front of the
+ * ellipsis.
+ *
+ * With the label floor in place a value is cut where the LABEL stops needing
+ * room, not at a word boundary, so the cut lands after a space often enough to
+ * matter: "4 bars" fitted to 4 characters is `4 ...`, which reads as a
+ * rendering fault rather than as a truncation — the eye sees a gap, then dots.
+ * `4...` says the same thing in less room and looks deliberate. Nothing else
+ * changes: a cut that does not land on whitespace is truncateText's own output.
+ */
+function ellipsize(text, maxChars) {
+    const t = truncateText(text, maxChars);
+    return (t.length > 3 && t.slice(-3) === "...")
+        ? t.replace(/\s+\.\.\.$/, "...")
+        : t;
+}
+
 /* A ctx that came from the param-page engine (render_page.mjs / the harness's
  * drawContext) has no setPixel — its surface is fillRect/print/textWidth. A 1x1
  * fill is the same pixel, so the arrows work through either. */
@@ -332,6 +350,9 @@ export function drawMenuList({
     scrollSelectedValue = false,
     prioritizeSelectedValue = false,
     selectedMinLabelChars = 6,
+    /* THE LABEL FLOOR, and it applies to EVERY row — see the long note above
+     * the reservation itself. 0 opts a caller out entirely. */
+    minLabelChars = 8,
     announce = true  /* set false when the caller emits its own richer
                         screen-reader announcements (e.g. file-browser) to
                         avoid double-announcing each selection move */
@@ -449,15 +470,73 @@ export function drawMenuList({
 
         if (valueAlignRight && fullValue) {
             let valueXFloor = valueX;
+            /* THE LABEL FLOOR.
+             *
+             * The value used to be laid out FIRST, at its full measured width,
+             * and the label took whatever was left — with no floor at all on an
+             * unselected row. On a knobs page drawn as a list that produced rows
+             * that convey nothing:
+             *
+             *     A...        kick_01.wav
+             *     A Le...       1/2 bar
+             *     B...        kick_01.wav
+             *
+             * Two rows reading `kick_01.wav` with the labels `A...` and `B...`
+             * — the sample the user is looking at cannot be identified at all.
+             * A label cut to `A...` conveys strictly less than a value cut by a
+             * few characters, so when the two compete the label wins first.
+             *
+             * The reservation is min(what the label actually needs, the floor),
+             * which is why a short label still costs the value nothing: `Cutoff`
+             * against `60` reserves 36px, the value wants nowhere near that far
+             * left, and the row is unchanged. Only a label that would be crushed
+             * takes room back, and only up to the floor.
+             *
+             * The floor is stated in CHARACTERS but it is MEASURED, because here
+             * — unlike selectedMinLabelChars, which is resolved before the row's
+             * label is in hand (see measurer()) — the N characters are a string
+             * we already have: the label's own first N. Reserving N *
+             * DEFAULT_CHAR_WIDTH instead would be the 6px-per-glyph assumption
+             * this file spent a commit removing, and it over-reserves in exactly
+             * the way that makes the trade a bad one: `KBD CV Input` against
+             * `ESP CV` reserved 48px for eight glyphs that measure 46, so the
+             * label gained two pixels it could not use and the value lost a
+             * character to pay for them.
+             *
+             * The cap against rowValueRightEdge is a guard, not a policy: if a
+             * caller's geometry ever left less than three worst-case glyphs for
+             * the value, maxValueChars would come out 0 and the branch below
+             * would print the value UNTRUNCATED, off the right edge. It cannot
+             * bite at any shipped geometry (the widest floor here is 74 against
+             * an edge of 108).
+             *
+             * Interaction with valueX: taking the MAX means a full-width list,
+             * whose valueX floor is already 92, is bit-identical. Only lists that
+             * hand the floor to their own left edge — the page-chrome list, which
+             * passes `valueX: rect.x` precisely so the label budget does the work
+             * — actually move.
+             */
+            if (minLabelChars > 0 && !(isSelected && prioritizeSelectedValue)) {
+                /* slice() IS the min(): a label shorter than the floor reserves
+                 * its own whole width and so costs the value nothing at all. */
+                const reserve = measure(labelPrefix)
+                    + measure(String(fullLabel).slice(0, minLabelChars | 0));
+                const labelFloorX = labelX + reserve + labelGap;
+                const valueGuardX = rowValueRightEdge - 3 * DEFAULT_CHAR_WIDTH;
+                valueXFloor = Math.max(valueXFloor,
+                                       Math.min(labelFloorX, valueGuardX));
+            }
             if (isSelected && prioritizeSelectedValue) {
-                /* The floor is the one budget stated in CHARACTERS: "leave the
-                 * selected label at least N of them". N is not a string yet, so
-                 * there is nothing to measure — the widest glyph is the only
-                 * reservation that honours the promise for any N. The PREFIX is
-                 * a real string and is measured. */
-                const minLabelChars = Math.max(0, selectedMinLabelChars | 0);
+                /* The SELECTED row's own floor, and it REPLACES the general one
+                 * rather than adding to it — that is what prioritizeSelectedValue
+                 * asks for: the row you are on may give its value a larger share
+                 * than any other row would, down to selectedMinLabelChars (6,
+                 * against the general 8). Left as the worst-case-glyph budget it
+                 * has always been so that the ~30 callers passing this flag are
+                 * bit-identical; the general floor above is the measured one. */
+                const selectedChars = Math.max(0, selectedMinLabelChars | 0);
                 const minLabelWidth = measure(labelPrefix)
-                    + (minLabelChars * DEFAULT_CHAR_WIDTH) + labelGap;
+                    + (selectedChars * DEFAULT_CHAR_WIDTH) + labelGap;
                 valueXFloor = labelX + minLabelWidth;
             }
 
@@ -472,7 +551,7 @@ export function drawMenuList({
                 if (isSelected && scrollSelectedValue) {
                     displayValue = labelScroller.getScrolledText(fullValue, maxValueChars);
                 } else {
-                    displayValue = truncateText(fullValue, maxValueChars);
+                    displayValue = ellipsize(fullValue, maxValueChars);
                 }
             }
 
@@ -490,7 +569,7 @@ export function drawMenuList({
                 label = labelScroller.getScrolledText(fullLabel, maxLabelChars);
             } else {
                 /* Truncate non-selected or short text */
-                label = truncateText(fullLabel, maxLabelChars);
+                label = ellipsize(fullLabel, maxLabelChars);
             }
         }
 
