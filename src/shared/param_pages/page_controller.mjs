@@ -2170,8 +2170,17 @@ export function createController(io = {}) {
      * loop stay defined exactly once, in page_plan.mjs.
      */
     function refreshTrailing() {
+        /* Mirrors replanForMode's own guard: with no hierarchy there is
+         * nothing this component declared to rebuild against, and s.pages
+         * defaults to [] — without this a call before load() would replace
+         * that empty set with a lone trailing page and no non-trailing pages
+         * under it. */
+        if (!s.hierarchy) return;
         const nonTrailing = s.pages.filter((p) => !p.trailing);
         const claim = makeClaimer(new Set(nonTrailing.map((p) => p.name)));
+        /* built.warnings is dropped here, same as at every other plan site in
+         * this file — page_controller.mjs never surfaces planPages' warnings
+         * array; only validate_contract.mjs and preview.mjs consume it. */
         const built = buildTrailingPages(trailingMenus(), claim);
         s.pages = nonTrailing.concat(built.pages);
         if (s.pageIndex >= s.pages.length) s.pageIndex = Math.max(0, s.pages.length - 1);
