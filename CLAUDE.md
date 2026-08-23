@@ -828,6 +828,66 @@ Each of the 4 slots has:
 
 Per-component preset snapshots for any chain module (synth, audio FX, or MIDI FX). Reached from a component's module-swap list in the shadow UI — an indented `[User Presets]` row tucked under the loaded module. A preset captures that component's opaque `<prefix>:state` blob (`synth` / `fx1`..`fx4` / `midi_fx1`) — the same string slot autosave and chain patches use — saved to `/data/UserData/schwung/presets/<module-id>/<name>.json`. Keyed by **module id**, so a preset saved on a module in one slot is offered wherever that module is loaded (cross-slot reuse). Scrolling the list **auditions live** (debounced); Back reverts to the slot's original state, the detail screen's Load commits. Autosave is suppressed while auditioning (`isPresetPreviewActive()`) so an uncommitted preview is never persisted into `slot_N.json`. Impl: `src/shadow/shadow_ui_presets.mjs` (view module). Developer state-contract notes in `docs/MODULES.md`.
 
+### Every component's knob grid ends with two pages it never declared
+
+Load a synth, audio FX or MIDI FX in one of the 4 slots and its knob-grid jog
+sequence ends with two pages neither the module nor its author put there:
+**User Presets** (row 1 a readout — `Preset` / `(none)` or `Name` / `* Name` —
+then `Load…`, `Save` and `Delete` only with a preset loaded, `Save As`
+always) and **Module** (`Swap Module`, `Remove Module`). Both are doors: a
+`PAGE_MENU` must be entered before an entry fires, so jogging past the end
+cannot fire Remove Module by accident.
+
+**They are appended by the PLANNER, after the whole walk — not injected into
+a level's hierarchy — because injection cannot work for this fleet.** A
+level's own `menu:` field (the same PAGE_MENU kind) lands right after that
+level's OWN grids, not last: Slot Settings dodges that by giving its menu a
+level of its own, which only works because it synthesises its whole
+hierarchy end to end. We do not own a module's. And three fleet shapes rule
+out injection outright: 11 of the 95 modules in
+`tests/fixtures/module-contracts.json` publish no `levels` object at all
+(chain_params pagination fallback), minijv has `levels` but no `root`, and
+with `modes` present the walk root is whichever mode is active. There is no
+level guaranteed to exist that "append to the end" could target.
+`planPages({ trailingMenus })` in `src/shared/param_pages/page_plan.mjs`
+appends after the walk instead — see `buildTrailingPages`/`appendTrailing`
+there and `io.trailingMenus()`/`refreshTrailing()` in
+`src/shared/param_pages/page_controller.mjs`.
+
+**A failed contract read cannot manufacture them.** `planPages` returns no
+pages at all when `unresolved`, so the append only ever lands on a resolved
+plan — the same rule as "a plan is a statement about what a module declares"
+above.
+
+**Scope is exactly the 4 chain slots' real components.** Master FX chain
+components are excluded — `__user_presets__` is injected in
+`enterComponentSelect` only, so Master FX has no user presets today and this
+inherits that gap rather than widening it. Slot Settings and Master FX
+Settings are excluded because they are settings, not modules: no module id to
+key a preset folder on, nothing to swap. The exclusion lives in ONE helper,
+`componentParamPagesIo` in `src/shadow/shadow_ui.js`, called from every
+component `enterParamPages` site, so a new call site cannot silently opt
+Master FX in. Grid view only — the list view (`param_view = 0`) is a separate
+code path with no pages to jog through and keeps its existing Shift+Click
+route.
+
+**The `*` leads the name**, e.g. `* Fat Brass` not `Fat Brass *`, because the
+list renderer truncates the TAIL: rendered on obxd, `"Fat Brass *"` drew as
+`"Fat Br…"` and the one character carrying the information was the first
+thing lost. See `presetRowValue` in `src/shared/param_pages/current_preset.mjs`.
+It costs no draw-path read — it compares the live `<prefix>:state` blob
+against a stored hash at PLAN time and on explicit refresh, never per frame
+(`trailingMenus()` has exactly 4 call sites, none inside `render()`).
+
+**Save overwrites; Save As does not.** `overwriteUserPreset` refuses when the
+`:state` read returns `null` — a FAILED read, not empty state — because
+writing it would replace a good preset with nothing. **Remove Module IS the
+picker's `None`**: it goes through `applyChainComponentPick`, the same
+function the picker uses, because removal is not one write — it closes the
+gap and renumbers everything downstream via a `remove` verb that permutes the
+DSP arrays rather than reloading modules (see "Chain shape edits are a
+PERMUTATION" above).
+
 ### MIDI Cable Filtering
 
 MIDI_IN (offset 2048): cable 0 = Move hw controls, cable 2 = external USB MIDI.

@@ -142,6 +142,30 @@
           ]
         },
         {
+          "title": "Component Actions",
+          "lines": [
+            "Jog past a loaded",
+            "module's last knob",
+            "page for two more:",
+            "",
+            "User Presets: shows",
+            "the loaded preset",
+            "(* = changed since",
+            "load), then Load,",
+            "Save, Save As,",
+            "Delete.",
+            "",
+            "Module: Swap Module",
+            "or Remove Module.",
+            "",
+            "Both are lists -",
+            "jog to an entry and",
+            "click to run it.",
+            "Jogging past does",
+            "not fire anything."
+          ]
+        },
+        {
           "title": "Slot Settings",
           "lines": [
             "Last position in",
