@@ -259,6 +259,58 @@ const plan = planPages({ hierarchy, chainParams });
   }
 }
 
+/* ---- 6c. names are written out in full ----------------------------------
+ *
+ * The first cut spelled every name for the eight-cell knob grid -- "Pad Typ",
+ * "Text Prv", "Move>Sch", "Brws Prv", "Auto Chk" -- and then the screen was
+ * pinned to the LIST, which has room for the whole word. Reported from the
+ * device: "why are these truncated?"
+ *
+ * They were wrong for the grid too: labelForCell / WORD_ABBREV in
+ * render_page_movy.mjs already squeeze a name into a cell, per word and with a
+ * fixed mnemonic per concept. Abbreviating here duplicates a renderer job and
+ * does it worse.
+ *
+ * The values are the labels the bespoke screen used, restored verbatim. Pinned
+ * because an abbreviation is a plausible-looking edit that nothing else fails
+ * on -- and because one of them ("MIDI Ch" for midi_indicator_enabled) collided
+ * with Master FX genuine MIDI Ch, its listen channel, which is a different
+ * setting entirely.
+ */
+{
+  const EXPECT = {
+    display_mirror: "Mirror Display", overlay_knobs: "Overlay Knobs",
+    pad_typing: "Pad Typing", text_preview: "Text Preview",
+    midi_indicator_enabled: "MIDI Channel", param_view: "Param View",
+    link_audio_routing: "Move->Schwung", link_audio_publish: "Schwung->Link",
+    latency_comp_enabled: "Latency Comp", resample_bridge: "Sample Src",
+    skipback_shortcut: "Skipback", skipback_seconds: "Skipback Len",
+    browser_preview: "Browser Preview", usbc_out_persist: "USB-C Persist",
+    screen_reader_enabled: "Screen Reader", screen_reader_engine: "TTS Engine",
+    screen_reader_speed: "Voice Speed", screen_reader_pitch: "Voice Pitch",
+    screen_reader_volume: "Voice Vol", screen_reader_debounce: "Debounce",
+    set_pages_enabled: "Set Pages", shadow_ui_trigger: "Shadow UI Trigger",
+    filebrowser_enabled: "File Browser", auto_update_check: "Auto Update Check",
+    analytics_enabled: "Analytics",
+  };
+  let seen = 0;
+  for (const p of chainParams) {
+    const want = EXPECT[p.key];
+    if (want === undefined) { fail("unexpected param in the contract: " + p.key); continue; }
+    seen++;
+    if (p.name !== want) {
+      fail("param " + p.key + " is named " + JSON.stringify(p.name) + ", expected " +
+           JSON.stringify(want) + " -- names are written out in full here; the cell " +
+           "renderer abbreviates (labelForCell / WORD_ABBREV)");
+    }
+  }
+  const total = Object.keys(EXPECT).length;
+  if (seen !== total) {
+    fail("expected " + total + " params in the contract, saw " + seen +
+         " -- a param was added or removed without updating this list");
+  }
+}
+
 /* ---- 7. the shared validator accepts it --------------------------------- */
 {
   const report = validateContract({ id: "global_settings", hierarchy, chainParams });

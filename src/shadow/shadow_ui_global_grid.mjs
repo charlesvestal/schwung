@@ -64,6 +64,30 @@
  */
 const OFF_ON = { options: ["Off", "On"], short_options: ["OFF", "ON"] };
 
+/*
+ * NAMES ARE WRITTEN OUT IN FULL. Do not abbreviate them here.
+ *
+ * The first cut of this contract spelled every name for the eight-cell knob
+ * grid — "Pad Typ", "Text Prv", "Move>Sch", "Brws Prv", "Auto Chk". Then the
+ * screen was pinned to the LIST, which has room for the whole word, and the
+ * abbreviations were left describing a surface it no longer uses. Reported
+ * from the device: *"why are these truncated?"*
+ *
+ * They were wrong even for the grid. `labelForCell` / `WORD_ABBREV` in
+ * render_page_movy.mjs already squeeze a name into a cell, per WORD and with a
+ * fixed mnemonic per concept — that is a renderer's job, and doing it by hand
+ * here both duplicates it and does it worse. Same mistake as putting the
+ * usbc_out_persist annotation in the option set: a display concern written
+ * into the data.
+ *
+ * One abbreviation did real damage. `midi_indicator_enabled` became "MIDI Ch",
+ * which collides with Master FX's genuine "MIDI Ch" — its listen channel, an
+ * entirely different setting. This one is "MIDI Channel", the indicator.
+ *
+ * These strings are the labels the bespoke screen used, restored verbatim, and
+ * tests/host/test_global_settings_contract.sh pins them.
+ */
+
 /** A bool, which on the grid is an enum of two words drawn as a switch. */
 function bool(key, name, dflt) {
     return Object.assign({ key, name, type: "enum", default: dflt }, OFF_ON);
@@ -276,16 +300,16 @@ export function writeGlobalParam(io, key, value) {
 /* ------------------------------------------------------------------ display */
 
 export const DISPLAY_PARAMS = [
-    bool("display_mirror", "Mirror", 0),
-    { key: "overlay_knobs", name: "Overlay", type: "enum",
+    bool("display_mirror", "Mirror Display", 0),
+    { key: "overlay_knobs", name: "Overlay Knobs", type: "enum",
       options: ["+Shift", "+Jog Touch", "Off", "Native"],
       short_options: ["SHF", "JOG", "OFF", "NAT"], default: 0 },
-    bool("pad_typing", "Pad Typ", 0),
-    bool("text_preview", "Text Prv", 0),
-    bool("midi_indicator_enabled", "MIDI Ch", 0),
+    bool("pad_typing", "Pad Typing", 0),
+    bool("text_preview", "Text Preview", 0),
+    bool("midi_indicator_enabled", "MIDI Channel", 0),
     /* The grid is the default (tests/host/test_param_view_default.sh pins
      * paramViewGlobal = 1), so the default index here is Knobs. */
-    { key: "param_view", name: "Params", type: "enum",
+    { key: "param_view", name: "Param View", type: "enum",
       options: ["List", "Knobs"], short_options: ["LST", "KNB"], default: 1 },
 ];
 
@@ -294,20 +318,20 @@ export const DISPLAY_PARAMS = [
 export const AUDIO_PARAMS = [
     /* The arrow is ASCII and the 5x7 font draws it; the label is the direction
      * the audio travels, which is the whole content of the setting. */
-    bool("link_audio_routing", "Move>Sch", 0),
-    bool("link_audio_publish", "Sch>Link", 0),
-    bool("latency_comp_enabled", "Latency", 0),
+    bool("link_audio_routing", "Move->Schwung", 0),
+    bool("link_audio_publish", "Schwung->Link", 0),
+    bool("latency_comp_enabled", "Latency Comp", 0),
     /* Stored 0 or 2 — see GLOBAL_ENUM_VALUES. */
-    { key: "resample_bridge", name: "Smp Src", type: "enum",
+    { key: "resample_bridge", name: "Sample Src", type: "enum",
       options: ["Native", "Schwung Mix"], short_options: ["NAT", "MIX"], default: 0 },
     { key: "skipback_shortcut", name: "Skipback", type: "enum",
       options: ["Sh+Cap", "Sh+Vol+Cap"], short_options: ["S+C", "SVC"], default: 0 },
     /* Every option already fits the square, so there is no short form to
      * declare. short_options exists for the ones that do not fit; declaring it
      * where it is not needed is a second list to keep in step for nothing. */
-    { key: "skipback_seconds", name: "Skip Len", type: "enum",
+    { key: "skipback_seconds", name: "Skipback Len", type: "enum",
       options: ["30s", "1m", "2m", "3m", "4m", "5m"], default: 0 },
-    bool("browser_preview", "Brws Prv", 1),
+    bool("browser_preview", "Browser Preview", 1),
     /*
      * usbc_out_persist IS A BOOL. The parenthetical is a readout, not a choice.
      *
@@ -332,19 +356,19 @@ export const AUDIO_PARAMS = [
      * the parenthetical in exactly that case, and naming a source that was
      * never seen would mislead the user who came here to check.
      */
-    { key: "usbc_out_persist", name: "USB-C", type: "enum",
+    { key: "usbc_out_persist", name: "USB-C Persist", type: "enum",
       options: ["Off", "On"], short_options: ["OFF", "ON"], default: 1 },
 ];
 
 /* ------------------------------------------------------------ accessibility */
 
 export const ACCESSIBILITY_PARAMS = [
-    bool("screen_reader_enabled", "Reader", 0),
-    { key: "screen_reader_engine", name: "Engine", type: "enum",
+    bool("screen_reader_enabled", "Screen Reader", 0),
+    { key: "screen_reader_engine", name: "TTS Engine", type: "enum",
       options: ["eSpeak-NG", "Flite"], short_options: ["ESP", "FLI"], default: 0 },
-    { key: "screen_reader_speed", name: "Speed", type: "float",
+    { key: "screen_reader_speed", name: "Voice Speed", type: "float",
       min: 0.5, max: 6.0, step: 0.1, default: 1.0, unit: "x" },
-    { key: "screen_reader_pitch", name: "Pitch", type: "int",
+    { key: "screen_reader_pitch", name: "Voice Pitch", type: "int",
       min: 80, max: 180, step: 5, default: 110, unit: "Hz" },
     /* max 100 with unit "%" reads the raw value and appends the sign — the
      * x100 scaling in param_format only applies to a 0..1 fraction. */
@@ -361,14 +385,14 @@ export const SET_PAGES_PARAMS = [
 ];
 
 export const SHORTCUTS_PARAMS = [
-    { key: "shadow_ui_trigger", name: "Trigger", type: "enum",
+    { key: "shadow_ui_trigger", name: "Shadow UI Trigger", type: "enum",
       options: ["Long Press", "Shift+Vol", "Both"],
       short_options: ["LNG", "S+V", "BTH"], default: 2 },
 ];
 
 export const SERVICES_PARAMS = [
-    bool("filebrowser_enabled", "Files", 0),
-    bool("auto_update_check", "Auto Chk", 1),
+    bool("filebrowser_enabled", "File Browser", 0),
+    bool("auto_update_check", "Auto Update Check", 1),
     /* Opt-in, default off — see docs/plans on analytics. */
     bool("analytics_enabled", "Analytics", 0),
 ];
