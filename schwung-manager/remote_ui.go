@@ -502,6 +502,11 @@ func (ru *RemoteUI) handleSubscribe(ctx context.Context, c *ruClient, msg wsMess
 			continue
 		}
 		if comp != "synth" {
+			// An audio/MIDI FX may ship its own web_ui.html too; the client
+			// renders it inside that component's section.
+			if url := ru.findModuleWebUI(modID); url != "" {
+				ru.sendCustomUI(ctx, c, slot, comp, url)
+			}
 			ru.sendHierarchy(ctx, c, slot, comp)
 			ru.sendChainParams(ctx, c, slot, comp)
 		}
@@ -819,10 +824,12 @@ func (ru *RemoteUI) handleGetHierarchy(ctx context.Context, c *ruClient, msg wsM
 		if err != nil || modID == "" {
 			continue
 		}
-		if comp == "synth" {
-			if url := ru.findModuleWebUI(modID); url != "" {
-				ru.sendCustomUI(ctx, c, slot, comp, url)
-			}
+		// Any component may ship a web_ui.html, not just the synth: an audio
+		// FX gets its panel rendered inside its own section (the client keys
+		// custom UIs by component). findModuleWebUI already searches audio_fx
+		// and midi_fx.
+		if url := ru.findModuleWebUI(modID); url != "" {
+			ru.sendCustomUI(ctx, c, slot, comp, url)
 		}
 		ru.sendHierarchy(ctx, c, slot, comp)
 		ru.sendChainParams(ctx, c, slot, comp)
@@ -1811,10 +1818,8 @@ func (ru *RemoteUI) pollSlot(ctx context.Context, slot uint8, cache *slotCache) 
 			cache.modules[comp] = modID
 			ru.broadcastSlotInfo(ctx, slot)
 			if modID != "" {
-				if comp == "synth" {
-					if url := ru.findModuleWebUI(modID); url != "" {
-						ru.broadcastCustomUI(ctx, slot, comp, url)
-					}
+				if url := ru.findModuleWebUI(modID); url != "" {
+					ru.broadcastCustomUI(ctx, slot, comp, url)
 				}
 				ru.broadcastHierarchy(ctx, slot, comp)
 				ru.broadcastChainParams(ctx, slot, comp)
