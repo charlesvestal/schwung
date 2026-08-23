@@ -30,6 +30,10 @@ Recorded here because three of them cancelled work that looked necessary at the 
 
 **The `std` module is already available** in the shadow_ui QuickJS context. `JS_NewCustomContext` in `src/host/js_host_common.c:41` calls `js_init_module_std(ctx, "std")`, and `src/shadow/shadow_ui.c:2723-2726` calls `js_std_init_handlers` / `js_std_add_helpers`. `host_read_file` slurps whole files with no offset, but `std.open(path,'rb')` gives `.seek()` / `.read()` — which is exactly what movy's `wav-peaks.ts` uses. **No new host binding is needed**, so Task 6 is ungated.
 
+**The knob LEDs are CC 71–78 and nothing else.** Movy's `knob-leds.ts` writes both notes 0–7 and CCs 71–78, with a comment saying "the visible hardware LED type is not confirmed". It is confirmed, in two places. `charlesvestal/schwung-spi`'s `schwung_move_ui.h:193` heads the block `// --- Knob indicator ring LEDs (RGB) ---` with `SCHWUNG_CC_KNOB_LED1 71 // Same CC as encoder rotation`, and `:386` classifies them under `0x10 = CC-addressed LEDs (buttons, knob indicators, track selectors)`. The `extending-move` wiki lists "Knob Indicators 71-78" under **CCs** in its LED-addressing table. Notes 0–7 are `// --- Knob touch sensors ---`, input only — our own `constants.mjs:521` annotates them the same way, and unlike the step notes it does **not** say "and LED". **So the port writes CC 71–78 only**; the notes 0–7 half is deleted, and there is no hardware question left to settle.
+
+Movy's colour indices check out against `src/shared/constants.mjs` even though its hex comments do not: 124 is `DarkGrey2`, 118 `LightGrey`, 120 `White`, and the amber ramp 75 → 29 → 6 → 3 is `DarkBrown2` → `Mustard` → `Ochre` → `BrightOrange`, which ascends correctly. Use our names, not movy's hexes.
+
 **granny's contract confirms the spray design.** From `tests/fixtures/module-contracts.json`: granny declares `position` (`wav_position`, 0..1), `spray` (`float`, 0..1) **and** `spread` (`float`, 0..1). `spread` is stereo width between voices, not a read-position spread. Movy's exact-key match on `spray` is deliberate for that reason and must be copied verbatim, not loosened.
 
 ---
@@ -604,6 +608,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - [ ] Knobs 0–3 take white-scale colours (124 / 118 / 120); knobs 4–7 take amber-scale colours (75 / 29 / 6 / 3).
 - [ ] A knob with no bound parameter is colour 0.
 - [ ] A knob whose colour has not changed since the last call emits no MIDI.
+- [ ] Every write lands on **CC 71–78** — nothing is written to notes 0–7, which are touch sensors.
 - [ ] `resetKnobLedCache()` makes the next call re-emit every knob.
 - [ ] LEDs are reset to 0 on `exitParamPages`.
 
@@ -668,17 +673,18 @@ ok(knobLedColor(7, 1.0) === 3,   "knob 8 at 1.00 is bright orange");
 ok(knobLedColor(0, null) === 0,  "an unbound knob is 0");
 ok(knobLedColor(4, null) === 0,  "an unbound knob is 0 on the amber row too");
 
-/* 3. The diff cache. */
+/* 3. ONE address per knob. CC 71-78 is the indicator ring; notes 0-7 are touch
+ *    sensors and take no colour. Writing both would be 8 wasted packets per
+ *    change into a buffer that holds about 64. */
 {
   const sent = [];
-  const io = { setLED: (n, c) => sent.push(["led", n, c]),
-               setButtonLED: (cc, c) => sent.push(["btn", cc, c]) };
+  const io = { setButtonLED: (cc, c) => sent.push([cc, c]), knobCcBase: 71 };
   const vals = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
 
   resetKnobLedCache();
   updateKnobLEDs(vals, io);
-  const first = sent.length;
-  ok(first === 16, "first pass writes both LED channels for all 8 knobs (got " + first + ")");
+  ok(sent.length === 8, "first pass writes ONE channel per knob (got " + sent.length + ")");
+  ok(sent.every(([cc]) => cc >= 71 && cc <= 78), "every write lands on CC 71-78");
 
   sent.length = 0;
   updateKnobLEDs(vals, io);
@@ -686,12 +692,13 @@ ok(knobLedColor(4, null) === 0,  "an unbound knob is 0 on the amber row too");
 
   sent.length = 0;
   updateKnobLEDs([0.9, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8], io);
-  ok(sent.length === 2, "one changed knob writes exactly its two channels (got " + sent.length + ")");
+  ok(sent.length === 1 && sent[0][0] === 71,
+     "one changed knob writes exactly its own CC (got " + sent.length + ")");
 
   sent.length = 0;
   resetKnobLedCache();
   updateKnobLEDs([0.9, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8], io);
-  ok(sent.length === 16, "resetKnobLedCache re-emits everything (got " + sent.length + ")");
+  ok(sent.length === 8, "resetKnobLedCache re-emits everything (got " + sent.length + ")");
 }
 
 process.exit(fail ? 1 : 0);
@@ -736,12 +743,18 @@ Create `src/shared/param_pages/knob_leds.mjs`:
  * makes THIS cache the only thing between a knob grid and 8 MIDI sends every
  * tick, and the output buffer holds ~64 packets.
  *
- * BOTH ADDRESSES ARE WRITTEN. Notes 0-7 are the capacitive knob-touch notes and
- * CCs 71-78 are the knob turn CCs; which of them the visible LED answers to is
- * not confirmed in our own docs, and movy writes both for the same reason.
- * Once hardware settles it, delete the other -- see the plan's Task 2 note.
+ * CC 71-78 AND NOTHING ELSE. The same CC carries encoder rotation IN and the
+ * indicator ring colour OUT -- schwung-spi's schwung_move_ui.h:193
+ * ("Knob indicator ring LEDs (RGB)", "Same CC as encoder rotation") and its
+ * :386 classification of them as CC-addressed LEDs, plus the extending-move
+ * wiki's LED table. Notes 0-7 are TOUCH SENSORS, input only; constants.mjs
+ * annotates the step notes "and LED" and these deliberately not.
+ *
+ * movy's port writes both, with a comment saying the LED type is unconfirmed.
+ * It is confirmed, so the notes half is dropped -- it was eight wasted MIDI
+ * packets per change into a buffer that holds about 64.
  */
-import { setLED, setButtonLED, MoveKnob1 }
+import { setButtonLED, MoveKnob1 }
     from '/data/UserData/schwung/shared/input_filter.mjs';
 
 /* White intensity, knobs 1-4. DarkGrey #1A1A1A / LightGrey #595959 / White. */
@@ -780,14 +793,12 @@ export function knobLedColor(k, nv) {
  * @param {object} [io] injected for tests; defaults to the real LED helpers
  */
 export function updateKnobLEDs(values, io) {
-    const led = (io && io.setLED) || setLED;
     const btn = (io && io.setButtonLED) || setButtonLED;
     const base = (io && io.knobCcBase !== undefined) ? io.knobCcBase : MoveKnob1;
     for (let k = 0; k < NUM_KNOBS; k++) {
         const color = knobLedColor(k, values ? values[k] : null);
         if (lastKnobColor[k] === color) continue;
         lastKnobColor[k] = color;
-        led(k, color, true);
         btn(base + k, color, true);
     }
 }
@@ -883,7 +894,9 @@ Expected: no new `FAIL` lines versus a `main` baseline.
 ./scripts/build.sh && ./scripts/install.sh local --skip-modules --skip-confirmation
 ```
 
-Open a slot's knob grid. Confirm knobs 1–4 read white and 5–8 amber, that intensity tracks the values on screen, and that a page with fewer than 8 bound params leaves the spare knobs dark. **Then settle the open question:** if only one of the two LED addresses is doing anything, delete the other from `updateKnobLEDs` and say which in the commit. Check `debug.log` for output-buffer complaints during a fast page flip.
+Open a slot's knob grid. Confirm knobs 1–4 read white and 5–8 amber, that intensity tracks the values on screen, and that a page with fewer than 8 bound params leaves the spare knobs dark. Check `debug.log` for output-buffer complaints during a fast page flip.
+
+The one thing worth a second look on hardware is the **amber ramp**: 75 → 29 → 6 → 3 is `DarkBrown2` → `Mustard` → `Ochre` → `BrightOrange` in our palette, and movy's own hex comments for these did not match our table, so it picked the indices by eye on a device rather than from the palette. If the four steps do not read as an ascending ramp, re-pick from `src/shared/constants.mjs` and update `AMBER_LEVELS` — the test asserts the buckets, so change both together.
 
 - [ ] **Step 8: Commit**
 
