@@ -25,6 +25,14 @@
  * state (a row highlighted) and --edit to see a row opened for editing
  * (`[value]`); without either it draws the inert, bracketed state you arrive on.
  *
+ * --trailing appends the "User Presets" and "Module" pages every REAL
+ * component gets at the end of its jog sequence (shadow_ui.js
+ * componentTrailingMenus), with a representative loaded preset so the `*`
+ * and the Save/Delete rows are visible. Being PAGE_MENU pages (not
+ * PAGE_KNOBS), they are always driven through a real controller — same as
+ * --layout list — even under --layout movy, because a menu has no grid
+ * representation to hand-render.
+ *
  * Values are synthesised (mid-range, deterministic per key) since there is no
  * device to read them from — enough to judge layout, not to judge a patch.
  */
@@ -64,7 +72,7 @@ if (flag("list")) {
 
 const id = positional[0];
 if (!id) {
-    console.error("usage: preview.mjs <module-id> [--page N | --all] [--layout dial|bar|movy] [--reveal] [--touch N] [--png DIR] [--scale N]");
+    console.error("usage: preview.mjs <module-id> [--page N | --all] [--layout dial|bar|movy|list] [--trailing] [--reveal] [--touch N] [--png DIR] [--scale N]");
     process.exit(2);
 }
 const mod = fx.modules.find((m) => m.id === id);
@@ -86,7 +94,31 @@ function fakeValue(key, meta) {
     return meta.type === "int" || meta.type === "enum" ? String(Math.round(v)) : v.toFixed(3);
 }
 
-const { pages, warnings } = planPages({ hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params });
+/*
+ * A representative "User Presets" / "Module" trailing set — same shape
+ * shadow_ui.js's componentTrailingMenus builds, with a loaded preset that has
+ * drifted (the `*`) so every row (including the Save/Delete pair that only
+ * appear with a record) is visible in one render.
+ */
+const TRAILING_MENUS_FIXTURE = () => ([
+    { name: "User Presets", entries: [
+        { label: "Preset", value: "Fat Brass *" },
+        { label: "Load…", action: "up_load" },
+        { label: "Save", action: "up_save" },
+        { label: "Save As", action: "up_save_as" },
+        { label: "Delete", action: "up_delete" },
+    ] },
+    { name: "Module", entries: [
+        { label: "Swap Module", action: "swap_module" },
+        { label: "Remove Module", action: "remove_module" },
+    ] },
+]);
+const trailingFlag = !!flag("trailing");
+
+const { pages, warnings } = planPages({
+    hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params,
+    trailingMenus: trailingFlag ? TRAILING_MENUS_FIXTURE() : undefined,
+});
 const metaIndex = buildMetaIndex({ hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params });
 const gridPages = pages.map((p, i) => ({ p, i })).filter(({ p }) => p.kind === PAGE_KNOBS);
 
@@ -98,8 +130,13 @@ const pngDir = flag("png");
 const scale = parseInt(flag("scale", "4"), 10);
 
 let chosen;
-if (flag("all")) chosen = gridPages;
-else if (flag("page") !== null) {
+if (flag("all")) {
+    /* Same selection as before when there is nothing trailing to add — the
+     * filter is `p.trailing` (set by page_plan.mjs's buildTrailingPages), not
+     * a kind test, so PAGE_PRESET/PAGE_ITEMS pages elsewhere in a fixture
+     * stay excluded exactly as --all always excluded them. */
+    chosen = pages.map((p, i) => ({ p, i })).filter(({ p }) => p.kind === PAGE_KNOBS || p.trailing);
+} else if (flag("page") !== null) {
     const n = parseInt(flag("page"), 10);
     chosen = [pages[n] ? { p: pages[n], i: n } : gridPages[0]];
 } else chosen = gridPages.slice(0, 1);
@@ -113,17 +150,23 @@ for (const { p, i } of chosen) {
     const values = {};
     for (const k of (p.keys || [])) values[k] = fakeValue(k, metaIndex.getOrGuess(k));
 
-    if (layout === LAYOUT_LIST) {
+    if (layout === LAYOUT_LIST || p.kind !== PAGE_KNOBS) {
         /* Drive the REAL controller against a fake device serving this module's
-         * contract — the list layout lives in page_controller.mjs, so anything
-         * short of that would be previewing a re-implementation. */
+         * contract — the list layout, and every non-grid page kind (menu,
+         * preset, items), live in page_controller.mjs, so anything short of
+         * driving the real thing would be previewing a re-implementation. A
+         * trailing "User Presets"/"Module" page is PAGE_MENU, so it always
+         * takes this path, even under --layout movy — there is no grid
+         * representation of a menu for renderPageMovy to draw below. */
         const dev = createFakeDevice({ id: mod.id, prefix: "synth", initial: values });
         const ctrl = createController({
             getParam: dev.getParam, setParam: dev.setParam,
             announce: () => {}, now: dev.now,
+            trailingMenus: trailingFlag ? TRAILING_MENUS_FIXTURE : undefined,
         });
         ctrl.load({ prefix: "synth" });
-        ctrl.setLayout(LAYOUT_LIST);
+        const ctrlLayout = layout === LAYOUT_LIST ? LAYOUT_LIST : LAYOUT_MOVY;
+        ctrl.setLayout(ctrlLayout);
         ctrl.goToPage(i, { remember: false });
         /* One read per tick is the whole point of the cursor; give it enough
          * ticks for the page's values to land, exactly as the device does. */
