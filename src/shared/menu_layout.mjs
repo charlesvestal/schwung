@@ -469,7 +469,17 @@ export function drawMenuList({
             continue;
         }
 
-        const labelPrefix = isSelected ? "> " : "  ";
+        /*
+         * NO CARET. The selected row is drawn INVERTED -- a full-width fill
+         * with the text knocked out of it -- and a ">" on top of that says the
+         * same thing twice on a display where inversion is unmistakable.
+         *
+         * It cost more than it looks. The prefix rode the label string as "> "
+         * or "  ", and in a proportional font those are 11px and 12px, so every
+         * label SHIFTED ONE PIXEL LEFT when its row was selected. Removing it
+         * takes that jitter with it and hands 12px back to the label on every
+         * row -- two characters on the page-chrome list.
+         */
         let label = getLabel(item, i);
         const fullLabel = label; /* Keep original for scrolling */
         const valueRaw = getValue ? getValue(item, i) : "";
@@ -543,7 +553,7 @@ export function drawMenuList({
             if (minLabelChars > 0 && !(isSelected && prioritizeSelectedValue)) {
                 /* slice() IS the min(): a label shorter than the floor reserves
                  * its own whole width and so costs the value nothing at all. */
-                const reserve = measure(labelPrefix)
+                const reserve = 0
                     + measure(String(fullLabel).slice(0, minLabelChars | 0));
                 const labelFloorX = labelX + reserve + labelGap;
                 const valueGuardX = rowValueRightEdge - 3 * DEFAULT_CHAR_WIDTH;
@@ -559,7 +569,7 @@ export function drawMenuList({
                  * has always been so that the ~30 callers passing this flag are
                  * bit-identical; the general floor above is the measured one. */
                 const selectedChars = Math.max(0, selectedMinLabelChars | 0);
-                const minLabelWidth = measure(labelPrefix)
+                const minLabelWidth = 0
                     + (selectedChars * DEFAULT_CHAR_WIDTH) + labelGap;
                 valueXFloor = labelX + minLabelWidth;
             }
@@ -605,11 +615,11 @@ export function drawMenuList({
             }
 
             const maxLabelWidth = Math.max(0, resolvedValueX - labelX - labelGap);
-            maxLabelChars = fitCharCount(measure, fullLabel, maxLabelWidth - measure(labelPrefix));
+            maxLabelChars = fitCharCount(measure, fullLabel, maxLabelWidth);
         } else {
             /* No value, label can use full width minus prefix and indicator */
             const maxLabelWidth = indicatorX - labelX - labelGap;
-            maxLabelChars = fitCharCount(measure, fullLabel, maxLabelWidth - measure(labelPrefix));
+            maxLabelChars = fitCharCount(measure, fullLabel, maxLabelWidth);
         }
 
         if (maxLabelChars > 0) {
@@ -624,7 +634,7 @@ export function drawMenuList({
 
         if (isSelected) {
             ctx.fillRect(0, y - highlightOffset, SCREEN_WIDTH, itemHighlightHeight, 1);
-            ctx.print(labelX, y, `${labelPrefix}${label}`, 0);
+            ctx.print(labelX, y, label, 0);
             if (displayValue) {
                 /* Show brackets around value when in edit mode */
                 const shownValue = editMode ? `[${displayValue}]` : displayValue;
@@ -635,7 +645,7 @@ export function drawMenuList({
                 ctx.print(editValueX, y, shownValue, 0);
             }
         } else {
-            ctx.print(labelX, y, `${labelPrefix}${label}`, 1);
+            ctx.print(labelX, y, label, 1);
             if (displayValue) {
                 ctx.print(resolvedValueX, y, displayValue, 1);
             }
@@ -648,7 +658,7 @@ export function drawMenuList({
                 /* Indented to sit under the label, i.e. past the cursor prefix
                  * — measured, so it is the prefix's real width and not two
                  * worst-case glyphs. */
-                const subX = labelX + measure(labelPrefix);
+                const subX = labelX + DEFAULT_LABEL_GAP;
                 ctx.print(subX, subY, subLabel, isSelected ? 0 : 1);
             }
         }

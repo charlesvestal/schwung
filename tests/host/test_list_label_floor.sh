@@ -82,8 +82,13 @@ function render(draw) {
         if (!byRow.has(c.y)) byRow.set(c.y, []);
         byRow.get(c.y).push(c);
     }
-    const rows = [...byRow.entries()].sort((a, b) => a[0] - b[0]).map(([, cs]) => {
+    const rows = [...byRow.entries()].sort((a, b) => a[0] - b[0]).map(([, cs0]) => {
+        let cs = cs0;
         cs.sort((a, b) => a.x - b.x);
+        /* The caret is its OWN print now, at labelX, with the label starting at
+         * labelX + CARET_W so a row does not shift when selected. Drop it, or
+         * every selected rows label reads ">". */
+        if (cs.length > 1 && /^[>*]$/.test(String(cs[0].t).trim())) cs = cs.slice(1);
         /* The cursor prefix is chrome, not label. */
         const last = cs[cs.length - 1];
         return {
