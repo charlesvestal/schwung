@@ -30,7 +30,7 @@
     {
       "id": 4,
       "subject": "Task 4: Page chrome delegates rows; pin zero",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         3
       ],
@@ -39,7 +39,7 @@
     {
       "id": 5,
       "subject": "Task 5: PAGE_KNOBS renders as a list layout",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         4
       ],
@@ -48,7 +48,7 @@
     {
       "id": 6,
       "subject": "Task 6: param_view selects the layout",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         5
       ],
@@ -57,7 +57,7 @@
     {
       "id": 7,
       "subject": "Task 7: Global Settings contract module",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         6
       ],

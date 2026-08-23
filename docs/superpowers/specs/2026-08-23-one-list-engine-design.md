@@ -370,6 +370,49 @@ call `saveMasterFxChainConfig()` and write a cache var (`cachedLinkAudioRouting`
 Those side effects move into `writeParam`, or toggling Link routing sets the
 param and never persists it — silently.
 
+### 5.3a Persistence is THREE things, not one
+
+Found while converting `adjustMasterFxSetting`. The 25 Global Settings params do
+not share one save path:
+
+| kind | count | how it persists |
+|---|---|---|
+| shared sink | 6 | `saveMasterFxChainConfig()` — the `PERSISTING_KEYS` set |
+| own saver | 7 | a dedicated call welded to the assignment (`saveParamViewConfig`, `savePadTypingConfig`, `saveFilebrowserConfig`, `saveAutoUpdateConfig`, …) |
+| backend-owned / session | 12 | the backend persists it (`tts_set_*`), or it is deliberately not persisted |
+
+The distinction is load-bearing: a write in group 1 that skips its
+`saveMasterFxChainConfig()` sets the param and loses it on reboot, **silently**.
+`PERSISTING_KEYS` is therefore **derived from the routing table**, not
+hand-listed — a hand-list rots the first time a key changes category, and the
+mutation that widens it to every key is the one that proves the test is not
+vacuous.
+
+### 5.5a Stored values are not indexes
+
+`resample_bridge` stores `[0, 2]`. Treating an enum's index as its value writes
+mode `1`, which does not exist — and does so silently. Any enum whose stored
+values are not `0..n-1` needs its real values declared (`GLOBAL_ENUM_VALUES`)
+and round-tripped in the test.
+
+### 5.5b An unknown wire state needs its own option
+
+`usbc_out_persist` annotates a bool with the source last seen on the wire. But
+the source can be **unobserved** (`-1`) before anything has crossed it, and the
+old code simply omitted the annotation in that case — a formatter can drop a
+parenthetical; a declaration cannot.
+
+Mapping unknown onto `On (Mic)` was rejected: this row exists *because* Move's
+own Settings screen goes stale, so it "is the only honest read of what is
+actually routed". A confident "Mic" that has never been observed is worse than
+the stale screen it was added to correct. The declaration gets a fourth option —
+`["Off", "On", "On (Mic)", "On (Main Out)"]` — where plain `On` means
+*persistence is on, source not yet seen*. All three On indexes store `1`.
+
+**The general rule:** a contract must be able to express every state its
+formatter could, including "not known". A state the old code showed by omission
+becomes an explicit option, not a default that guesses.
+
 ### 5.4 Modal hand-off
 
 Two writes raise modals drawn and answered under `case VIEWS.GLOBAL_SETTINGS`:
