@@ -105,7 +105,7 @@ question named.
 | stepping a value | `knob_engine.mjs` |
 | announcements | `announce_page.mjs` |
 | chrome (header, bank bar, brackets, footer) | `render_page_movy.mjs` |
-| five-row list geometry | `MENU_LIST_*` in `page_controller.mjs` |
+| five-row list geometry | `src/shared/list_geometry.mjs` (leaf, no imports) |
 | **drawing a list row** | **`drawMenuList`** — §3 |
 | **the chrome around a list** (header band, footer, list rect) | **`drawMenuList`** — §3, re-skinned to movy |
 | what a Global Setting *is* | `shadow_ui_global_grid.mjs` — §5 |
@@ -121,6 +121,44 @@ and any proposal that duplicates a row of this table is wrong regardless of how
 reasonable the scope boundary sounds.
 
 ---
+
+## 2a. Correction, found during execution: the geometry was NEVER single-sourced
+
+The table above originally named `page_controller.mjs` as the one home of the
+list geometry. **That was wrong, and believing it cost a whole task.**
+
+`src/shared/chain_ui_views.mjs` carried a complete SECOND copy — `TITLE_Y`,
+`TITLE_RULE_Y`, `LIST_TOP_Y = 15`, `LIST_LINE_HEIGHT`, `LIST_HIGHLIGHT_HEIGHT`,
+`LIST_LABEL_X = 4`, `LIST_VALUE_X`, `FOOTER_*` — and **every** shadow view
+module imported `LIST_TOP_Y` from there, then handed it back as
+`listArea.topY`. So when §3's re-skin moved `menu_layout.mjs`'s default to 10,
+~20 call sites overrode it with the stale 15.
+
+Two consequences, and the second is the lesson:
+
+- On the device the re-skin was **inert**: an 8-row dead band under the header
+  band, and a 4-row window where the work claimed 5.
+- `tests/host/test_list_behavior.sh` imported `LIST_TOP_Y` from
+  `menu_layout.mjs`, so it measured a rect **nothing rendered with**. It passed,
+  it reported the intended 4→5 gain, and it was describing a screen that did not
+  exist. A green matrix only proves the axis you chose.
+
+There was also a THIRD list-row renderer, `createSelectListRenderer`
+(`chain_ui_views.mjs:129`) — dead, zero callers, already marked
+`@deprecated` by the 2026-06 sweep.
+
+Fixed by `src/shared/list_geometry.mjs`: a true leaf that imports nothing, from
+which `menu_layout.mjs`, `chain_ui_views.mjs`, `render_page.mjs` and
+`render_page_movy.mjs` all re-export the names their consumers already use — so
+no view module changed. The test now greps `src/` for exactly one
+`export const` per geometry name, and asserts by identity that the value
+`menu_layout` holds IS the one the screens receive, before believing any window
+arithmetic.
+
+**The general rule this earns:** before trusting that a concern is
+single-sourced, grep for a second `export const` of its name. An import that
+looks like it reaches the shared definition may reach a stale twin, and every
+test above it will agree with the twin.
 
 ## 3. One list, wearing the movy chrome (first, not later)
 
