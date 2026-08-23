@@ -30,7 +30,9 @@ const w = (s) => fb.textWidth(String(s == null ? "" : s));
  * The scroll arrow no longer pulls this in: it is charged to the two rows it
  * actually touches (see menu_layout.mjs). */
 export const VALUE_RIGHT_EDGE = SCREEN_WIDTH - 10;
-export const ROW_BUDGET = VALUE_RIGHT_EDGE - MENU_LIST_X - w("  ") - DEFAULT_LABEL_GAP;
+/* No cursor prefix: the selected row is inverted, so the caret is gone and the
+ * label starts at MENU_LIST_X itself. */
+export const ROW_BUDGET = VALUE_RIGHT_EDGE - MENU_LIST_X - DEFAULT_LABEL_GAP;
 
 /** The widest string this param can ever show in the value column. */
 export function widestValue(p) {

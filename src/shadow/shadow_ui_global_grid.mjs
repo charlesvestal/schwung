@@ -298,7 +298,7 @@ export function writeGlobalParam(io, key, value) {
 /* ------------------------------------------------------------------ display */
 
 export const DISPLAY_PARAMS = [
-    bool("display_mirror", "Mirror", 0),
+    bool("display_mirror", "Mirror Display", 0),
     { key: "overlay_knobs", name: "Overlay", type: "enum",
       options: ["Shift", "Jog", "Off", "Native"],
       short_options: ["SHF", "JOG", "OFF", "NAT"], default: 0 },
@@ -316,8 +316,8 @@ export const DISPLAY_PARAMS = [
 export const AUDIO_PARAMS = [
     /* The arrow is ASCII and the 5x7 font draws it; the label is the direction
      * the audio travels, which is the whole content of the setting. */
-    bool("link_audio_routing", "Move>Schwung", 0),
-    bool("link_audio_publish", "Schwung>Link", 0),
+    bool("link_audio_routing", "Move->Schwung", 0),
+    bool("link_audio_publish", "Schwung->Link", 0),
     bool("latency_comp_enabled", "Latency Comp", 0),
     /* Stored 0 or 2 — see GLOBAL_ENUM_VALUES. */
     { key: "resample_bridge", name: "Resample", type: "enum",
@@ -329,7 +329,7 @@ export const AUDIO_PARAMS = [
      * where it is not needed is a second list to keep in step for nothing. */
     { key: "skipback_seconds", name: "Skipback Len", type: "enum",
       options: ["30s", "1m", "2m", "3m", "4m", "5m"], default: 0 },
-    bool("browser_preview", "Audition", 1),
+    bool("browser_preview", "Audition Files", 1),
     /*
      * usbc_out_persist IS A BOOL. The parenthetical is a readout, not a choice.
      *

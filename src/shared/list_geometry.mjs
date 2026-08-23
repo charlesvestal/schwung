@@ -62,7 +62,11 @@ export const FOOTER_H = 8;
  * The knob grid's menu pages and drawMenuList — i.e. every list in the shadow
  * UI — occupy exactly this rect, or the two look subtly unlike each other.
  */
-export const MENU_LIST_X = 8, MENU_LIST_Y = 10, MENU_LIST_W = 112;
+/* MENU_LIST_X is the LABEL x, one pixel clear of the frame left arm at x=4.
+ * It was 8 to leave room for a "> " caret that no longer exists -- the
+ * selected row is inverted, which says it already. With the caret gone the
+ * label starts here, and x=5..7 stopped being empty for no reason. */
+export const MENU_LIST_X = 6, MENU_LIST_Y = 10, MENU_LIST_W = 114;
 
 /* ---- Header / footer text rows ------------------------------------------
  *
