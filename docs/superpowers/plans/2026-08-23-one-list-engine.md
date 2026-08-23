@@ -16,6 +16,8 @@
 - Full replacement of the hierarchy editor is the **goal**, scoped as a follow-up. ("Full replacement is the goal")
 - **Converge all hand-rolled loops first**, before any new surface. ("Converge all 13 first" — the true count is 6; see below.)
 - **Unified look is the goal, not preserved pixels.** *"pixel baseline is not the goal, unified is. it should look like Movy stuff: header, footer, etc."*
+- **Target look is movy, and `menu-style-v2` is superseded** — it predates the movy chrome by four months (2026-04-19 vs 2026-08-16). Not built on; its flag never ships. See spec §3.0.
+- **No style flag in the end state.** One list, one look; no `menu_style_v2` toggle, no ternaries.
 - **One list, everywhere.** *"BEHAVIOR baseline is the goal, but we want one list that looks good in slots and in mfx and as a file picker. it's one list."*
 - Spec reframed around the engine, not Global Settings. ("Rewrite as 'one list engine'")
 - *"our display engine should be shared across, i don't want to update the list view for slots and have it not fix something in mfx."*

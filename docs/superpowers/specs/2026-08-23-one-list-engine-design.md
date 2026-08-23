@@ -152,6 +152,40 @@ changes**:
 3. **Have `page_controller` draw its rows through it too**, so the page chrome
    and every other screen are not merely similar but identical.
 
+### 3.0 Why `menu-style-v2` is not built on
+
+There is an unmerged branch, `menu-style-v2` (worktree at
+`.worktrees/menu-style-v2`), whose 12 commits already re-skin
+`drawMenuHeader`, `drawMenuFooter` and `drawMenuList`. It is **superseded, not
+merged**, and the reason is a date:
+
+| | |
+|---|---|
+| `menu-style-v2` — design and all 12 commits | **2026-04-19**, in one day |
+| movy grid first landed | 2026-08-16 |
+| movy re-cut against its Elektron reference | 2026-08-19 |
+
+**v2 predates the movy design language by four months.** Its geometry was
+reverse-engineered from `capture_2.json` mockups before movy existed, so it was
+never an attempt to match it — the two are alternative directions, not
+variations. Three further reasons it is the wrong base:
+
+- **Its mechanism is the thing being removed.** V2 ships as a feature flag: a
+  `shadow_control_t` field, JS bindings, a `features.json` key, a Global
+  Settings toggle, and ~15 `v2 ? V2_X : X` ternaries *inside* `drawMenuList`.
+  That is a second code path living in the widget this design exists to make
+  singular. The end state carries no style choice at all.
+- **It is stale on a divergent branch** — 454 files and ~98k insertions from
+  main, carrying unrelated work (speaker EQ, Link Audio drain). Rebasing four
+  months across a `menu_layout.mjs` that §3 rewrites anyway costs about what
+  doing the work costs.
+- **The fleet already wears movy.** The knob grid, enum picker, module picker
+  and the three list page kinds in `page_controller` are movy today. Choosing
+  tamzen would mean re-skinning *those* to match the menus.
+
+The branch stays in place as a record. Nothing here builds on it, and its flag
+never ships.
+
 ### 3.1 The baseline is BEHAVIOUR, not pixels
 
 An earlier draft asserted "no screen should look or act different afterwards"
