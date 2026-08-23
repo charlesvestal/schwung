@@ -2059,13 +2059,25 @@ function maybeReturnToComponentGrid() {
      * the mismatch drops the flag instead of yanking the user out of the
      * slot-3 chain editor they deliberately opened.
      *
+     * ...and the position must STILL HOLD A MODULE, because one of the actions
+     * that hands off is Remove Module. Removal ends in setView(CHAIN_EDIT) on
+     * the same slot, so the slot match above passes and we would re-enter the
+     * grid for the component that was just deleted — a contract read with
+     * nobody to answer it, which the device draws as a permanent "Loading...".
+     * Reported from hardware; the slot-match alone did not close it.
+     *
+     * Asking whether there is still something to show, rather than listing the
+     * actions that destroy one, is the same discipline as asking what is on
+     * screen rather than which action ran: it covers Remove, a picker "None",
+     * and whatever the next destructive action turns out to be, without any of
+     * them having to remember to opt out.
+     *
      * Known gap: a same-SLOT interruption (e.g. long-press Track1 while the
      * flag is raised for slot 1) still matches and fires, landing on the grid
      * instead of the chain editor that interruption asked for. Telling those
      * two apart needs a token identifying the specific flow instance, which
      * none of the hand-off screens (shadow_ui_presets.mjs, out of scope here)
-     * currently carry back out through Back/Load/Delete. No concrete repro has
-     * hit this; the slot-match closes the one that did.
+     * currently carry back out through Back/Load/Delete.
      */
     const matchesReturnSlot = selectedSlot === componentGridReturnSlot;
     componentModalFromGrid = false;
@@ -2074,6 +2086,8 @@ function maybeReturnToComponentGrid() {
     componentGridReturnSlot = -1;
     componentGridReturnKey = "";
     if (!matchesReturnSlot) return false;
+    const stillLoaded = getChainComponentModule(chainConfigs[slotIndex], componentKey);
+    if (!stillLoaded || !stillLoaded.module) return false;
     enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey), "",
                     componentParamPagesIo(slotIndex, componentKey), paramPagesChromeFor(componentKey));
     needsRedraw = true;
