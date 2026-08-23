@@ -91,6 +91,47 @@ for (const fn of ["canvas", "filepath"]) {
     }
 }
 
+/*
+ * The THIRD door: edit mode is closed by a CLICK as well as by Back, and the
+ * click is the gesture that opened it. Edit mode is not its own view -- it is
+ * the hierarchy editor with the row opened (granny position''s waveform strip)
+ * -- so it is driven through openHierarchyParamEditor''s toggle branch rather
+ * than a close function. Identifiers past the early return are deliberately
+ * left undeclared: reaching them throws, and a throw is a failure here.
+ */
+function runEditModeClick(openedFromGrid) {
+    const log = [];
+    const deps = {
+        hierEditorEditMode: true,
+        paramEditorOpenedFromGrid: openedFromGrid,
+        resetHierarchyEditState: () => {},
+        invalidateKnobContextCache: () => {},
+        returnToParamPagesFromEditor: () => log.push("grid"),
+    };
+    const names = Object.keys(deps);
+    const preamble = names.map((n, i) => "let " + n + " = __d[" + i + "];").join("\n");
+    const f = new Function("__d",
+        preamble + "\n" + lift("closeOwnViewEditorToCaller") + "\n" +
+        lift("openHierarchyParamEditor") + "\n" +
+        "openHierarchyParamEditor(\"position\", { type: \"float\" }, false);");
+    try { f(names.map(n => deps[n])); }
+    catch (e) { log.push("threw:" + e.message); }
+    return log;
+}
+
+const clickFromGrid = runEditModeClick(true);
+if (!clickFromGrid.includes("grid")) {
+    console.log("FAIL: clicking out of edit mode from the grid did not return to it: " +
+                JSON.stringify(clickFromGrid));
+    bad++;
+}
+const clickFromList = runEditModeClick(false);
+if (clickFromList.length !== 0) {
+    console.log("FAIL: clicking out of edit mode from the list did not stay put: " +
+                JSON.stringify(clickFromList));
+    bad++;
+}
+
 if (bad === 0) console.log("PASS: own-view editors return to their caller");
 process.exit(bad === 0 ? 0 : 1);
 ' || FAIL=1
