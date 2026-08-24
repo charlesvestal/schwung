@@ -34,6 +34,7 @@ node --input-type=module -e '
 import { readFileSync } from "node:fs";
 import { createController, ENUM_PEEK_MS }
   from "./src/shared/param_pages/page_controller.mjs";
+import { applyInput } from "./src/shared/param_pages/page_input.mjs";
 
 let fail = 0;
 const ok = (c, m) => { console.log((c ? "PASS" : "FAIL") + ": " + m); if (!c) fail++; };
@@ -286,6 +287,57 @@ const spin = (ctl, slot, n) => {
   ok(store.filter_type !== "0",
      "and the turn still WROTE -- suppressing the panel must not suppress the "
      + "edit, got " + store.filter_type);
+}
+
+
+/* ===================================================================== N ==
+ * BACK TAKES THE PEEK DOWN. IT DOES NOT LEAVE THE MODULE.
+ *
+ * Back fell straight through to the view exit, so a press during the ~700ms
+ * the panel is up threw you out of the module -- a wildly disproportionate
+ * answer to a panel that was about to disappear on its own. Reported from the
+ * device as "if i hit back during autopeek it exits the module".
+ *
+ * The peek is a layer like the picker and the entered menu, and Back takes one
+ * layer at a time. It is the CHEAPEST such layer: the detent already wrote, so
+ * there is no edit to cancel and Back means only "I have read it".
+ */
+{
+  const { ctl, slotOf, store } = mk();
+  /* Clear the first-run hint: it is a layer ABOVE the peek and would eat the
+     press we are here to test. Doing it explicitly also pins the order. */
+  applyInput(ctl, { type: "back" }, { nowMs: clock, reveal: false });
+  const s = slotOf("shape");
+  spin(ctl, s, 6);
+  ok(!!ctl.enumPeek(), "a peek is up");
+  const wrote = store.shape;
+
+  const r1 = applyInput(ctl, { type: "back" }, { nowMs: clock, reveal: false });
+  ok(r1 === null, "Back is CONSUMED -- no exit action is returned");
+  ok(ctl.enumPeek() === null, "and the peek is gone");
+  ok(store.shape === wrote,
+     "the value the detent wrote is untouched -- Back here is not a cancel, "
+     + "got " + store.shape + " want " + wrote);
+
+  /* THE VERY NEXT Back still leaves. Eating one press is a layer; eating two
+     is a trap, and this screen has no other way out. */
+  const r2 = applyInput(ctl, { type: "back" }, { nowMs: clock, reveal: false });
+  ok(!!r2 && r2.action === "exit",
+     "the next Back leaves the view as it always did, got " + JSON.stringify(r2));
+}
+
+/* AN EXPIRED PEEK IS NOT A LAYER. If it were, a Back pressed after the panel
+   had already vanished would be silently eaten, and the user would press it
+   again wondering why nothing happened. */
+{
+  const { ctl, slotOf } = mk();
+  applyInput(ctl, { type: "back" }, { nowMs: clock, reveal: false });   /* the hint */
+  spin(ctl, slotOf("shape"), 6);
+  clock += ENUM_PEEK_MS + 50;
+  ok(ctl.enumPeek() === null, "the peek has expired on its own");
+  const r = applyInput(ctl, { type: "back" }, { nowMs: clock, reveal: false });
+  ok(!!r && r.action === "exit",
+     "Back after the timeout leaves immediately -- it is not swallowed");
 }
 
 process.exit(fail ? 1 : 0);
