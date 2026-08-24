@@ -329,7 +329,25 @@ export const AUDIO_PARAMS = [
      * where it is not needed is a second list to keep in step for nothing. */
     { key: "skipback_seconds", name: "Skipback Len", type: "enum",
       options: ["30s", "1m", "2m", "3m", "4m", "5m"], default: 0 },
-    bool("browser_preview", "Audition Files", 1),
+    /*
+     * Gates BOTH the file browser WAV preview and the User Presets scroll
+     * audition -- one "hear it before you pick it" switch, not one each.
+     *
+     * Named "Audition", not "Audition Files": main renamed this row while this
+     * branch was open, and both sides independently landed on the word
+     * "audition". Main spelled it "Audition Files" under its new policy that
+     * names are written out rather than abbreviated for a grid -- which this
+     * keeps. It is no longer only files, though, so the noun narrows it to
+     * something it no longer only means.
+     *
+     * The stored key stays browser_preview: renaming it would silently discard
+     * every existing choice, because the toggle is its only writer.
+     *
+     * Default OFF (main had 1): auditioning a preset APPLIES state to the live
+     * slot, and the presets list stopped being hard to reach the moment it
+     * became a page at the end of every component.
+     */
+    bool("browser_preview", "Audition", 0),
     /*
      * usbc_out_persist IS A BOOL. The parenthetical is a readout, not a choice.
      *

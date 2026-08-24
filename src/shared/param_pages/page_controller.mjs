@@ -27,7 +27,8 @@
  *   being turned and for a short settling window afterwards.
  */
 
-import { planPages, PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS } from "./page_plan.mjs";
+import { planPages, PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS,
+         buildTrailingPages, makeClaimer } from "./page_plan.mjs";
 import { resolveChildKey } from "./child_key.mjs";
 import { buildMetaIndex, inferFromValue, isTurnable, enumIndexOf, KIND_ENUM, KIND_OPAQUE } from "./param_meta.mjs";
 import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page.mjs";
@@ -458,6 +459,17 @@ export function createController(io = {}) {
      * release — see viz.mjs resolveViz. */
     const vizEnabled = io.enableViz !== false;
     const vizOverrides = io.vizOverrides || null;
+    /*
+     * The trailing pages, re-evaluated on every plan.
+     *
+     * A function rather than an array because the rows are conditional — Save
+     * and Delete mean nothing with no preset loaded — and the page set outlives
+     * those conditions. Same shape as SLOT_GRID_ACTIONS' always-or-hasPreset
+     * filter, just evaluated by the host instead of filtered here: the
+     * controller does not know what a preset is.
+     */
+    const trailingMenus = () =>
+        (typeof io.trailingMenus === "function" ? (io.trailingMenus() || []) : []);
 
     const s = {
         slot: 0,
@@ -765,7 +777,7 @@ export function createController(io = {}) {
             ? (sameComponent ? s.chainParams : null)
             : parse(rawChain);
         if (chainFailed && sameComponent) armContractSettle();
-        const planned = planPages({ hierarchy, chainParams, mode, visible });
+        const planned = planPages({ hierarchy, chainParams, mode, visible, trailingMenus: trailingMenus() });
         /* Retained so a visibility re-plan costs no extra device reads. */
         s.hierarchy = hierarchy;
         s.chainParams = chainParams;
@@ -815,8 +827,21 @@ export function createController(io = {}) {
      * (re)planned. It is one-shot: once honoured, or once the user has moved
      * somewhere themselves, it is dropped rather than fighting them.
      */
-    function restorePage(name) {
+    /*
+     * `enter` says whether the door OPENS on arrival, and the caller decides
+     * because only the caller knows why we came back.
+     *
+     * A door you were SENT to opens; a door you FINISHED with closes. Backing
+     * out of a browser without choosing anything never really left the menu,
+     * so it returns you inside it. Completing the thing you came for — loading
+     * a preset, saving one — is done, so it hands the jog back to paging.
+     * Deleting is management: you are likely to do more of it, so it stays in.
+     *
+     * Default false, which is what this did before the option existed.
+     */
+    function restorePage(name, { enter = false } = {}) {
         s.restoreName = (typeof name === "string" && name) ? name : null;
+        s.restoreEnter = !!enter;
         applyPendingRestore();
     }
 
@@ -827,6 +852,25 @@ export function createController(io = {}) {
             if (pages[i] && pages[i].name === s.restoreName) {
                 s.pageIndex = i;
                 s.restoreName = null;
+                /*
+                 * Open the door only when the CALLER said to — see restorePage.
+                 *
+                 * This used to open on every restore, on the reasoning that an
+                 * arrival you asked for should not need a second gesture. That
+                 * is right for backing out of a browser without choosing
+                 * anything (reported from hardware: Load... with nothing saved,
+                 * then Back, left the jog outside the menu you had just come
+                 * from) and for a delete, which is management you are likely to
+                 * continue. It is wrong for finishing: after loading or saving
+                 * a preset you are done with the menu and want the jog back.
+                 *
+                 * Entering costs nothing and writes nothing either way — a
+                 * preset browser auditions on TURN, not on entry. A knob page
+                 * is not a door, so the ordinary come-back-where-I-was restore
+                 * is unaffected whatever the caller asks for.
+                 */
+                if (s.restoreEnter && isDoor(page()) && !menuEntered()) enterMenu();
+                else if (!s.restoreEnter && menuEntered()) exitMenu();
                 return;
             }
         }
@@ -2136,6 +2180,7 @@ export function createController(io = {}) {
             hierarchy: s.hierarchy, chainParams: s.chainParams,
             mode: s.lastLoadOpts && s.lastLoadOpts.mode,
             visible: s.lastLoadOpts && s.lastLoadOpts.visible,
+            trailingMenus: trailingMenus(),
         });
         if (!planned.pages.length) return;   /* never plan from nothing */
         s.pages = planned.pages;
@@ -2147,6 +2192,37 @@ export function createController(io = {}) {
         s.pageIndex = firstGrid(s.pages);
     }
 
+    /*
+     * Re-evaluate ONLY the trailing pages, in place.
+     *
+     * Not a re-plan: replanForMode resets pageIndex to firstGrid and
+     * replanIfCondition reanchors, and both would move you off the page you
+     * are standing on — which is exactly the page whose rows just changed,
+     * because you are the one who changed them (pressing Save on a "User
+     * Presets" page). Costs no device reads: the rows come from the host's
+     * own state, not from the module.
+     *
+     * Reuses buildTrailingPages/makeClaimer rather than re-deriving the
+     * trailing pages by hand, so the entry transform and the name-collision
+     * loop stay defined exactly once, in page_plan.mjs.
+     */
+    function refreshTrailing() {
+        /* Mirrors replanForMode's own guard: with no hierarchy there is
+         * nothing this component declared to rebuild against, and s.pages
+         * defaults to [] — without this a call before load() would replace
+         * that empty set with a lone trailing page and no non-trailing pages
+         * under it. */
+        if (!s.hierarchy) return;
+        const nonTrailing = s.pages.filter((p) => !p.trailing);
+        const claim = makeClaimer(new Set(nonTrailing.map((p) => p.name)));
+        /* built.warnings is dropped here, same as at every other plan site in
+         * this file — page_controller.mjs never surfaces planPages' warnings
+         * array; only validate_contract.mjs and preview.mjs consume it. */
+        const built = buildTrailingPages(trailingMenus(), claim);
+        s.pages = nonTrailing.concat(built.pages);
+        if (s.pageIndex >= s.pages.length) s.pageIndex = Math.max(0, s.pages.length - 1);
+    }
+
     function replanIfCondition(key) {
         if (!s.conditionKeys.has(key)) return;
         const oldPages = s.pages, oldIndex = s.pageIndex;
@@ -2154,6 +2230,7 @@ export function createController(io = {}) {
             hierarchy: s.hierarchy, chainParams: s.chainParams,
             mode: s.lastLoadOpts && s.lastLoadOpts.mode,
             visible: s.lastLoadOpts && s.lastLoadOpts.visible,
+            trailingMenus: trailingMenus(),
         });
         if (planned.pages.length !== oldPages.length ||
             planned.pages.some((p, i) => (p.keys || []).join() !== ((oldPages[i] || {}).keys || []).join())) {
@@ -2729,7 +2806,7 @@ export function createController(io = {}) {
     }
 
     return {
-        load, reloadIfChanged, tick,
+        load, reloadIfChanged, tick, refreshTrailing,
         /* For a selection made OUTSIDE the controller — the list editor drives
          * the same modules through its own preset browser and has the same
          * race. Books the settle; costs nothing until it comes due. */
