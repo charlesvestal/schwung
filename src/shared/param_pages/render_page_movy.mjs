@@ -1185,17 +1185,17 @@ function drawEnumSquare(ctx, kx, ky, text) {
  * An int with no declared range is refused too: nothing bounds how many digits
  * could arrive, and the cell has room for about three.
  */
-export const FRAME_MAX_SPAN = 24;
-export const FRAME_BIPOLAR_MAX_SPAN = 48;
+export const BIG_NUM_MAX_SPAN = 24;
+export const BIG_NUM_BIPOLAR_MAX_SPAN = 48;
 
-export function shouldFrameNumber(meta) {
+export function shouldDrawBigNumber(meta) {
     if (!meta) return false;
     if (meta.kind === KIND_ENUM || meta.kind === KIND_OPAQUE) return false;
     if (meta.type !== "int") return false;
     if (typeof meta.min !== "number" || typeof meta.max !== "number") return false;
     if (!isFinite(meta.min) || !isFinite(meta.max)) return false;
     const span = meta.max - meta.min;
-    return span <= (meta.min < 0 ? FRAME_BIPOLAR_MAX_SPAN : FRAME_MAX_SPAN);
+    return span <= (meta.min < 0 ? BIG_NUM_BIPOLAR_MAX_SPAN : BIG_NUM_MAX_SPAN);
 }
 
 /*
@@ -1208,7 +1208,7 @@ export function shouldFrameNumber(meta) {
  * reporting a confident zero is the collapse the tri-state read contract exists
  * to prevent, and Number("") is 0 and finite.
  */
-export function framedNumberText(meta, raw) {
+export function bigNumberText(meta, raw) {
     if (raw === null || raw === undefined || raw === "") return "--";
     const n = Math.round(Number(raw));
     if (!isFinite(n)) return "--";
@@ -1223,11 +1223,30 @@ export function framedNumberText(meta, raw) {
  * functions is how a pair like that comes to differ by a pixel that nobody
  * meant. Their pixels are covered by the movy geometry baseline together.
  */
-export const FRAME_W = ENUM_W;
-export const FRAME_H = BOX_H;
-
-export function drawFramedNumber(ctx, kx, ky, text) {
-    drawEnumSquare(ctx, kx, ky, text);
+/*
+ * A BIG NUMBER, NOT A FRAMED ONE.
+ *
+ * This drew the enum square's box with the number inside it, on the reasoning
+ * that they are the two "a value, in a box" cells and should share one frame.
+ * That reasoning is about pixels; the problem is about meaning. The box IS the
+ * enum affordance — every enum that declares options is divable, and the
+ * corner brackets plus that square are what say "there is a list behind this".
+ * A small int has no list and can never have one, so framing it made the cell
+ * claim to be a door that does not open.
+ *
+ * Movy draws these as plain large numerals and that is the right call. The
+ * value gets the device font (6x7) instead of the enum square's condensed 4x5,
+ * so it is bigger AND stops lying — the two things that were in tension only
+ * while it was wearing the box.
+ *
+ * @param {number} cx  the CELL CENTRE, matching drawButton — the glyph width
+ *                     varies with the digits and the sign, so only this
+ *                     function can centre it.
+ */
+export function drawBigNumber(ctx, cx, ky, text) {
+    const s = String(text);
+    const w = tzWidth(s);
+    tzPrint(ctx, cx - Math.floor(w / 2), ky + Math.floor((BOX_H - TZ_H) / 2), s, 1);
 }
 
 function drawOpaqueBox(ctx, kx, ky, value, override) {
@@ -1363,12 +1382,12 @@ function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, cellText,
     }
     /*
      * A SMALL INT IS A NUMBER, not a position on a range — see
-     * shouldFrameNumber. Checked here, after the opaque/writeOnly/enum branches
+     * shouldDrawBigNumber. Checked here, after the opaque/writeOnly/enum branches
      * that own their cells outright, and before the arc it replaces.
      */
-    if (shouldFrameNumber(meta)) {
-        drawFramedNumber(ctx, cellLeft(g, col) + Math.floor((g.cellW - FRAME_W) / 2), ky,
-                         framedNumberText(meta, raw));
+    if (shouldDrawBigNumber(meta)) {
+        drawBigNumber(ctx, cellLeft(g, col) + Math.floor(g.cellW / 2), ky,
+                      bigNumberText(meta, raw));
         return;
     }
     /* `?? 0` because the ARC has to point somewhere: an unread value draws its
