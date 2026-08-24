@@ -499,6 +499,125 @@ Slot Settings and Master FX Settings, which are synthesised contracts with no
 `ui_hierarchy` to enter, and it keeps the slot io's own mappings (Fwd's offset,
 MPE's compound write) applied rather than bypassed.
 
+### A turn PEEKS the list; a cell that is already big does not
+
+Turning a divable enum raises its option list over the grid for ~700ms
+(`ENUM_PEEK_MS`), header `TURNING`, footer `TURN SET`. It is the same screen
+the picker draws (`enum_list.mjs`) with the opposite commit semantics: the
+detent has ALREADY written, so there is nothing to confirm and nothing to
+cancel. It never calls `setView` — a Back that "cancelled" it would be a lie.
+
+Three things take it down: the timeout, turning a NEIGHBOUR (left up it would
+describe a knob your hand has left), and Back. **Back closes the peek and stops
+there** — it used to fall through to the view exit and throw you out of the
+module, which is a wildly disproportionate answer to a panel about to vanish on
+its own. It is a layer like the picker and the entered menu, and Back takes one
+at a time. `dismissPeek` goes through `enumPeek()` so an EXPIRED peek is not a
+layer: swallowing one press is a layer, swallowing two is a trap, and this
+screen has no other way out.
+
+**A parameter drawn across MORE THAN ONE CELL does not peek** (`drawnWide`).
+The peek exists because a 30px cell cannot show a list; once the picture has
+the room, a panel over the top hides the rest of the row to show nothing new.
+Not hypothetical — 12 enum cells in the fleet sit inside a wide graphic, every
+one a filter type or an LFO shape, where turning the knob already redraws the
+curve better than a list of words can.
+
+### The sample cell draws the file it HAS, or nothing
+
+The envelope is the file's real peaks (`wav_peaks.mjs`, streamed and bounded,
+advanced from the tick — never from the draw path). When there are none there
+is no envelope, just the baseline, the cursor and the brackets.
+
+There used to be a fallback shape, `sin(t*PI)*(0.55+0.35*sin(t*23))`, drawn
+whenever the peaks were missing. It is the tri-state read rule in a different
+costume — **a read that did not answer must never become a picture** — and it
+cost the flagship granular module a waveform for a sample that was never
+loaded. granny declares `sample_path` in its hierarchy and on NO knobs list, so
+every page carrying `position` searched the page, found no file and drew the
+synthetic one.
+
+So `detectSample` resolves the file from the whole contract, not from the page,
+and returns it as `extraKeys`. Those are **not** `keys`: keys claim cells, and
+an off-page key has no cell to claim. The controller reads them as one extra
+stop in the value rotation, the same bargain the preset-name read takes.
+
+**`gatherGroupMembers` seats scattered members together** so the picture gets
+the width its controls warrant. `alignGroupsToRows` rescues a group that is
+already contiguous but straddles the row break; this is the other half, for
+members that are simply not next to each other. It carries the same guarantees,
+because it is the same kind of reorder behind an author's back: WHICH keys are
+on the page never changes, the result stays inside ONE ROW, and the real
+detector verifies the outcome. Measured over the fleet fixture **3 of 489 pages
+move** — granny/root 1→2, granny/main 1→2, mrsample/sample 1→3 — and that
+narrowness is the feature. A pass that re-seated every page would be a layout
+engine, which is a much larger decision. `tests/host/test_viz_gather.sh` pins
+the count.
+
+Spray is claimable for that reason. The old rule — it modifies the cursor
+rather than being a position, so it never takes a cell — described the
+parameter correctly and the layout wrongly: the fences drew on `position`'s
+cell while spray sat elsewhere with an arc that looked unrelated. Adjacency
+keeps it safe; where the two are apart the run rule still gives span 1.
+
+(A module may declare the same marker on two levels — granny declares
+`position` on both `root` and `main` — and the graphic then appears on both.
+That is the contract, not the detector.)
+
+### Small ints are BIG NUMBERS, not framed ones
+
+`shouldDrawBigNumber` / `bigNumberText` / `drawBigNumber` in
+`render_page_movy.mjs`: an int with a declared range spanning ≤24 (≤48 if
+bipolar) draws its value in the device 6x7 font instead of an arc, with a sign
+only where the range has a negative side.
+
+It used to draw inside the enum square's box. **The box is the ENUM
+affordance** — every enum declaring options is divable, and the square plus its
+corner brackets are what say a list is behind the cell. A small int has no list
+and can never have one, so the frame advertised a door that does not open.
+
+The span bound is load-bearing: an earlier version bounded at 128 and drew 1392
+params big across 60 modules, including `volume [0..100]` and `tune [0..127]`,
+which are sweeps where an arc is the honest picture.
+
+### Knob ring LEDs, and giving them back
+
+`knob_leds.mjs` paints CC 71-78 — knobs 1-4 white, 5-8 amber, brightness
+tracking value, colour 0 reserved for "nothing is bound here". CC 71-78 carries
+encoder rotation IN and the ring colour OUT; notes 0-7 are touch sensors, input
+only.
+
+**A ramp is one hue's `dark` → `dim` → full.** The palette header in
+`constants.mjs` gives every hue those variants, and it is the authority —
+picking constants by NAME produced `DarkBrown2 → Mustard → Ochre →
+BrightOrange`, i.e. `#250E05 → #876700 → #491804 → #C93C00`, whose third step
+is DARKER than its second: a sweep went dim, bright, dark, bright.
+`tests/host/test_knob_leds.sh` parses the hex out of that header and requires
+luminance to rise at every step, which is the assertion that catches it; the
+older tests only checked that a sweep walks the ramp in the order it is
+WRITTEN, which was true of the broken one too. Step boundaries are derived from
+ramp length, never written beside it.
+
+**Leaving the grid RESTORES the rings, it does not turn them off.** Move writes
+an LED only when its value changes, so going dark left Move's own rings dark
+indefinitely. `shadow_control_t.restore_knob_leds` (a JS-set edge the shim
+consumes and clears) arms `led_queue_restore_move_sysex_leds()` — the same call
+overtake exit makes.
+
+**The colour is in the SYSEX, not the CC.** `move_cc_led_state[71..78]` looks
+like the right cache and is not: Move drives the rings via
+`F0 00 21 1D 01 01 3B <subcmd> <idx> <6 rgb bytes> F7`, and the CC packets are
+latch triggers. Restoring the CC cache restored a latch or a zero and every
+ring came back blank. (That sysex is also the way to drive true per-LED RGB —
+brightness as `hue x value` rather than a walk through palette entries — but
+the encoder `<idx>` mapping is recorded nowhere in this tree and
+`led_queue_set_capture_enabled` has no caller and no dump path, so the restore
+replays the whole surface instead.)
+
+`invalidateLedCache()` is called with it: `input_filter`'s cache suppresses a
+write matching what it believes the hardware shows, which is only sound while
+it is the only writer — and the shim is about to repaint underneath it.
+
 ### A door you were SENT to opens; one you PAGED past stays shut
 
 Preset browsers, items lists and menu pages are **doors**: the jog pages until
