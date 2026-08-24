@@ -685,13 +685,24 @@ function drawSpecialButtons(charCount) {
     /* Fixed position: row 4 (bottom), right-aligned */
     const specialY = GRID_START_Y + 3 * ROW_HEIGHT;
 
-    /* Button definitions: label, width */
+    /*
+     * Button definitions: label, width.
+     *
+     * Widths leave room for the label PLUS a margin either side: the page
+     * switch is 3 characters = 18px, so at 18 wide its glyphs ran into both
+     * borders (and past the right one, since the label was drawn at a fixed
+     * +2 indent). Each width is now label + 4 at minimum.
+     */
     const buttons = [
-        { label: '...', width: 18 },      /* Page switch */
+        { label: '...', width: 22 },      /* Page switch */
         { label: '___', width: 24 },      /* Space */
         { label: 'x', width: 14 },        /* Backspace */
         { label: 'OK', width: 18 }        /* Confirm */
     ];
+
+    /* The device font advances 6px per character and stands 7px tall. */
+    const CHAR_ADVANCE = 6;
+    const GLYPH_HEIGHT = 7;
 
     /* Calculate total width for right-alignment */
     const totalWidth = buttons.reduce((sum, btn) => sum + btn.width + 2, 0) - 2;
@@ -703,13 +714,27 @@ function drawSpecialButtons(charCount) {
         const isSelected = state.selectedIndex === charCount + i;
         const btnHeight = ROW_HEIGHT + 1;
 
+        /*
+         * CENTRE the label in its box, both ways.
+         *
+         * It used to be drawn at a fixed (x + 2, specialY + 1) while the box
+         * is at (x, specialY + 2) -- so every label sat one pixel ABOVE its
+         * own border, and a label as wide as its box spilled out of the right
+         * edge. Deriving both offsets from the box means a label can never
+         * again be positioned independently of the thing it sits in.
+         */
+        const boxTop = specialY + 2;
+        const labelWidth = btn.label.length * CHAR_ADVANCE;
+        const textX = x + Math.max(0, Math.floor((btn.width - labelWidth) / 2));
+        const textY = boxTop + Math.max(0, Math.floor((btnHeight - GLYPH_HEIGHT) / 2));
+
         if (isSelected) {
-            fill_rect(x, specialY + 2, btn.width, btnHeight, 1);
-            print(x + 2, specialY + 1, btn.label, 0);
+            fill_rect(x, boxTop, btn.width, btnHeight, 1);
+            print(textX, textY, btn.label, 0);
         } else {
             /* Draw button outline */
-            drawRect(x, specialY + 2, btn.width, btnHeight, 1);
-            print(x + 2, specialY + 1, btn.label, 1);
+            drawRect(x, boxTop, btn.width, btnHeight, 1);
+            print(textX, textY, btn.label, 1);
         }
 
         x += btn.width + 2;
