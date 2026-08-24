@@ -249,7 +249,7 @@ if (ctl.menuEntry().label !== beforeName) {
  * Appending after the walk is the only thing that is last in all four shapes.
  */
 const TRAILING = [
-  { name: "User Presets", entries: [{ label: "Load…", action: "up_load" }] },
+  { name: "My Presets", entries: [{ label: "Load…", action: "up_load" }] },
   { name: "Module", entries: [{ label: "Swap Module", action: "swap" },
                               { label: "Remove Module", action: "remove" }] },
 ];
@@ -263,7 +263,7 @@ const lastTwo = (pages) => pages.slice(-2).map((p) => p.name).join(",");
   } };
   const cp = ["a", "c"].map((k) => ({ key: k, type: "float", min: 0, max: 1, step: 0.01 }));
   const { pages } = planPages({ hierarchy: h, chainParams: cp, trailingMenus: TRAILING });
-  if (lastTwo(pages) !== "User Presets,Module") {
+  if (lastTwo(pages) !== "My Presets,Module") {
     fail("trailing pages must be LAST past a child level, got: " + pages.map((p) => p.name).join(","));
   }
   if (!pages[pages.length - 1].trailing) fail("appended pages must carry trailing:true");
@@ -274,7 +274,7 @@ const lastTwo = (pages) => pages.slice(-2).map((p) => p.name).join(",");
 {
   const cp = ["a", "b"].map((k) => ({ key: k, type: "float", min: 0, max: 1, step: 0.01 }));
   const { pages } = planPages({ hierarchy: null, chainParams: cp, trailingMenus: TRAILING });
-  if (lastTwo(pages) !== "User Presets,Module") {
+  if (lastTwo(pages) !== "My Presets,Module") {
     fail("trailing pages must be last on the chain_params fallback, got: " +
          pages.map((p) => p.name).join(","));
   }
@@ -289,7 +289,7 @@ const lastTwo = (pages) => pages.slice(-2).map((p) => p.name).join(",");
   const cp = ["a", "b"].map((k) => ({ key: k, type: "float", min: 0, max: 1, step: 0.01 }));
   for (const mode of ["perf", "patch"]) {
     const { pages } = planPages({ hierarchy: h, chainParams: cp, mode, trailingMenus: TRAILING });
-    if (lastTwo(pages) !== "User Presets,Module") {
+    if (lastTwo(pages) !== "My Presets,Module") {
       fail(`trailing pages must be last in mode ${mode}, got: ` + pages.map((p) => p.name).join(","));
     }
   }
@@ -300,7 +300,7 @@ const lastTwo = (pages) => pages.slice(-2).map((p) => p.name).join(",");
   const h = { levels: { patch: { label: "Patch", knobs: ["a"], params: [{ key: "a" }] } } };
   const cp = [{ key: "a", type: "float", min: 0, max: 1, step: 0.01 }];
   const { pages } = planPages({ hierarchy: h, chainParams: cp, trailingMenus: TRAILING });
-  if (lastTwo(pages) !== "User Presets,Module") {
+  if (lastTwo(pages) !== "My Presets,Module") {
     fail("trailing pages must be last with no root level, got: " + pages.map((p) => p.name).join(","));
   }
 }
@@ -381,7 +381,7 @@ const lastTwo = (pages) => pages.slice(-2).map((p) => p.name).join(",");
 }
 
 /* (i) fallbackClaim dedup, exercised independently of claimName. Every other
- *     fallback-branch case above names its trailing pages "User Presets" /
+ *     fallback-branch case above names its trailing pages "My Presets" /
  *     "Module", which never collides with the fallback branch own page
  *     names ("Params"), so a regression isolated to fallbackClaim would slip
  *     past every other test in this file. Force a collision here. */
@@ -410,7 +410,7 @@ const lastTwo = (pages) => pages.slice(-2).map((p) => p.name).join(",");
   /* The rows are a FUNCTION, not an array: Save and Delete appear only with a
    * preset loaded, and that changes while the page set is alive. */
   const trailingMenus = () => ([{
-    name: "User Presets",
+    name: "My Presets",
     entries: [{ label: "Load", action: "up_load" }]
       .concat(hasPreset ? [{ label: "Delete", action: "up_delete" }] : []),
   }]);

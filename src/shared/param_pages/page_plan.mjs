@@ -154,7 +154,7 @@ export function makeClaimer(used) {
  *
  * Extracted out of appendTrailing (below) so page_controller.mjs's
  * refreshTrailing can rebuild ONLY the trailing pages — after a Save/Delete
- * changes what a "User Presets" row offers — without a second copy of the
+ * changes what a "My Presets" row offers — without a second copy of the
  * entry transform or the name-collision loop. `claim` is a naming function
  * from makeClaimer, already bound to whatever names must not collide.
  */
@@ -219,7 +219,7 @@ function balancedChunk(arr, size) {
  *                                  Default: everything visible (fail-open, which
  *                                  is what the native evaluator does too).
  * @param {Array}    [o.trailingMenus] Caller-supplied PAGE_MENU pages appended
- *                                  AFTER the whole walk — e.g. "User Presets"
+ *                                  AFTER the whole walk — e.g. "My Presets"
  *                                  and "Module". Opt-in: absent for a tool
  *                                  embedding this grid with no slot to swap a
  *                                  module in. See the note above appendTrailing.

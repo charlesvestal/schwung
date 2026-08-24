@@ -18,8 +18,9 @@
  *   - Live audition: scrolling the list applies the highlighted preset (after a
  *     short debounce, driven by tickPresetPreview from the host's global tick)
  *     so you hear it before committing. The slot's original :state is captured
- *     on entry; Back reverts to it, while the detail screen's Load commits.
- *     If the original can't be captured, preview is disabled (load-on-Load only).
+ *     on entry; Back reverts to it. PICKING a preset LOADS it immediately and
+ *     commits — there is no per-preset detail screen to Load or Delete from.
+ *     If the original can't be captured, preview is disabled (load-on-pick only).
  *   - Save never overwrites: a name collision auto-appends a number
  *     ("Fat Brass" -> "Fat Brass 2"). Delete removes the single file.
  *
@@ -28,16 +29,28 @@
  *   `state` is the parsed synth:state object when it is JSON, otherwise the
  *   raw opaque string (mirrors how buildSlotPatchJson stores synth state).
  *
+ * The browser is exactly ONE thing: choose a preset. Save, Save As and
+ * Delete are NOT here — they live on the component's own knob-grid "My
+ * Presets" page (shadow_ui.js componentTrailingMenus /
+ * runComponentActionFromGrid), which is also where this file's grid-only
+ * entry points below (overwriteUserPreset, enterPresetSaveAs,
+ * enterPresetDeleteConfirm) are reached from. Reported from hardware, three
+ * times over, all one cause: "loading a preset shouldnt show load/delete, it
+ * should just load it (delete is on the main menu)"; "after deleting i get to
+ * a menu of [save current] not the preset (none) page"; "i also see [save
+ * current] if i load without saving" — the verbs had moved to the grid page
+ * but the browser still offered its own copies.
+ *
  * Entry points: Shift+Click any loaded chain component (synth / FX / MIDI FX)
- * -> module picker -> "[User Presets]" (indented row tucked just
- * beneath the loaded module; injected in enterComponentSelect as the
- * __user_presets__ synthetic entry and cursor-defaulted there, routed from
+ * -> module picker -> "[User Presets]" (indented row tucked just beneath the
+ * loaded module; injected in enterComponentSelect as the __user_presets__
+ * synthetic entry and cursor-defaulted there, routed from
  * applyComponentSelection with the component key + DSP prefix + module id) --
- * AND the knob grid's "User Presets" trailing page (shadow_ui.js
- * componentTrailingMenus / runComponentActionFromGrid), which reaches
- * enterPresetBrowser directly for Load and adds three grid-only entry points
- * below (overwriteUserPreset, enterPresetSaveAs, enterPresetDeleteConfirm)
- * for Save / Save As / Delete without a detour through the picker.
+ * AND the knob grid's "My Presets" page's "Load…" action, which reaches
+ * enterPresetBrowser directly. Either way, picking a row here loads it and
+ * returns to the chain editor; maybeReturnToComponentGrid in shadow_ui.js
+ * is what routes that arrival back onto the My Presets page for the
+ * grid-driven flow (see its own note on the restorePageName it uses).
  *
  * State accessors come from the shared `ctx` (populated by shadow_ui.js); see
  * shadow_ui_ctx.mjs. As with the other view modules, only touch ctx.* inside
@@ -65,22 +78,18 @@ import { openTextEntry } from '/data/UserData/schwung/shared/text_entry.mjs';
 const PRESET_ROOT = "/data/UserData/schwung/presets";
 const PRESET_VERSION = 1;
 
-/* Synthetic first row of the list — opens the keyboard to save current state. */
-const SAVE_ROW_LABEL = "[Save current…]";
-
-/* Detail-screen actions for a selected preset. */
-const DETAIL_LOAD = 0;
-const DETAIL_DELETE = 1;
-
 /* ---- Module-local state ------------------------------------------------- */
 
 let presetModule = "";        /* module id for the active component (folder key) */
 let presetModuleLabel = "";   /* human label (module name) for the header */
 let presetPrefix = "synth";   /* DSP param prefix: synth | fx1..fx4 | midi_fx1 */
-let presets = [];             /* [{ name, file }] sorted by name, save-row excluded */
-let selectedPreset = 0;       /* index into the *displayed* list (0 = save row) */
+let presets = [];             /* [{ name, file }] sorted by name */
+let selectedPreset = 0;       /* index into `presets` */
 
-let selectedDetailItem = DETAIL_LOAD;
+/* VIEWS.PRESET_DETAIL now has exactly one reason to exist: the delete
+ * confirmation raised directly by enterPresetDeleteConfirm (the grid's
+ * Delete action). There is no more Load/Delete choice screen to select
+ * within it — picking a preset in the list loads it immediately. */
 let confirmingDelete = false;
 let confirmIndex = 0;         /* 0 = No, 1 = Yes */
 
@@ -155,11 +164,6 @@ export function loadPresetList() {
     });
 }
 
-/* The displayed list = save row + presets. */
-function displayedRows() {
-    return [SAVE_ROW_LABEL, ...presets.map((p) => p.name)];
-}
-
 /* True if any existing preset already uses this display name (case-insensitive). */
 function nameExists(name) {
     const lower = name.toLowerCase();
@@ -199,26 +203,10 @@ function defaultSaveName(slot) {
     return getSlotParam(slot, presetPrefix + ":preset_name") || presetModuleLabel || "Preset";
 }
 
-function startSaveFlow() {
-    const slot = ctx.selectedSlot;
-    if (!presetModule) {
-        announce("No module in this slot");
-        return;
-    }
-    openTextEntry({
-        title: "",
-        initialText: defaultSaveName(slot),
-        onAnnounce: announce,
-        onConfirm: (name) => {
-            doSavePreset(slot, (name || "").trim() || "Preset");
-        },
-        onCancel: () => {
-            announce("Save cancelled");
-            ctx.needsRedraw = true;
-        }
-    });
-}
-
+/* Save/Save As live on the component's My Presets grid page now (up_save /
+ * up_save_as, see shadow_ui.js runComponentActionFromGrid); there is no
+ * "[Save current…]" row in this list to start a save flow from. Only
+ * enterPresetSaveAs below opens the keyboard, straight through doSavePreset. */
 function doSavePreset(slot, rawName) {
     const { getSlotStateWithRetry } = ctx;
 
@@ -274,17 +262,16 @@ function doSavePreset(slot, rawName) {
     }
 
     loadPresetList();
-    /* Keep the just-saved preset highlighted. */
+    /* Keep the just-saved preset highlighted, in case the list is shown next. */
     const idx = presets.findIndex((p) => p.name === name);
-    selectedPreset = idx >= 0 ? idx + 1 : 0;
+    selectedPreset = idx >= 0 ? idx : 0;
     announce(`Saved ${name}`);
     ctx.needsRedraw = true;
-    /* Tell the grid's User Presets row what is now loaded, whether or not the
+    /* Tell the grid's My Presets row what is now loaded, whether or not the
      * grid is the thing that asked for this save — the hook is a no-op when
-     * it is not up. One call site for every path that can WRITE a preset
-     * (this one and the browser's own "[Save current...]" row both run
-     * through here), so the record can never fall out of step with the
-     * disk. */
+     * it is not up. Both writers that can produce a preset (this one, via
+     * Save/Save As on the grid page) run through here, so the record can
+     * never fall out of step with the disk. */
     if (typeof ctx.onPresetSaved === "function") {
         ctx.onPresetSaved(slot, savedPrefix, name, stateJson);
     }
@@ -359,16 +346,13 @@ function applyPreset(slot, entry) {
 
 /* ---- Live preview ------------------------------------------------------- */
 
-/* Apply whatever the given displayed-row index represents, silently. Row 0
- * (the save row) means "restore the original live sound". */
+/* Apply the preset at `rowIndex` in `presets`, silently. Every row here is a
+ * real preset now — there is no synthetic "restore the original" row, since
+ * the list no longer carries a save affordance of its own (see Back for the
+ * actual revert). */
 function applyPreviewForRow(rowIndex) {
     const slot = ctx.selectedSlot;
-    if (rowIndex <= 0) {
-        if (originalState != null) applyStateBlob(slot, originalState);
-        previewActive = false;
-        return;
-    }
-    const str = readPresetStateString(presets[rowIndex - 1], false);
+    const str = readPresetStateString(presets[rowIndex], false);
     if (str != null) {
         applyStateBlob(slot, str);
         previewActive = true;
@@ -380,17 +364,6 @@ function queuePreview(rowIndex) {
     if (!previewEnabled) return;
     pendingPreviewIndex = rowIndex;
     previewDelay = PREVIEW_DELAY_TICKS;
-}
-
-/* Apply the highlighted row immediately, cancelling any pending debounce —
- * used when leaving the list (into detail / save) so what you hear matches
- * what you'll act on. */
-function flushPreview(rowIndex) {
-    pendingPreviewIndex = PREVIEW_NONE;
-    if (!previewEnabled) return;
-    if (lastPreviewedIndex === rowIndex) return;
-    lastPreviewedIndex = rowIndex;
-    applyPreviewForRow(rowIndex);
 }
 
 /* True while a non-original preset is being auditioned (applied but not yet
@@ -474,7 +447,10 @@ export function enterPresetBrowser(slotIndex, componentKey, moduleId, prefix) {
     previewActive = false;
     pendingPreviewIndex = PREVIEW_NONE;
     previewDelay = 0;
-    lastPreviewedIndex = -1;       /* selectedPreset 0 already == original */
+    /* -1, not selectedPreset: nothing has been auditioned yet, so the first
+     * jog (or the initial highlight, if it is ever flushed) is a real change
+     * rather than a no-op match. */
+    lastPreviewedIndex = -1;
     const auditionOn = typeof ctx.auditionEnabled === "function" ? !!ctx.auditionEnabled() : false;
     if (presetModule && auditionOn) {
         const cur = ctx.getSlotStateWithRetry(slotIndex, presetPrefix + ":state");
@@ -494,29 +470,17 @@ export function enterPresetBrowser(slotIndex, componentKey, moduleId, prefix) {
     }
 }
 
-function enterPresetDetail(presetIndex) {
-    const { setView, VIEWS } = ctx;
-    selectedPreset = presetIndex;
-    /* Land the preview now so the audition matches what Load will apply. */
-    flushPreview(presetIndex);
-    selectedDetailItem = DETAIL_LOAD;
-    confirmingDelete = false;
-    setView(VIEWS.PRESET_DETAIL);
-    ctx.needsRedraw = true;
-    const entry = presets[presetIndex - 1];
-    announce(`${entry ? entry.name : "Preset"}, Load`);
-}
-
 /* ---- Grid-driven actions -------------------------------------------------
  *
- * The knob grid's "User Presets" trailing page (shadow_ui.js,
- * componentTrailingMenus / runComponentActionFromGrid) offers Load / Save /
- * Save As / Delete without detouring through the module picker. Load reuses
- * enterPresetBrowser outright, unchanged. Save and Delete need new entry
- * points below because neither existing flow does what they need: the
- * browser's own Save never overwrites (a name collision auto-appends a
- * number, by design), and Delete has never been reachable without first
- * paging into the list.
+ * The knob grid's "My Presets" page (shadow_ui.js, componentTrailingMenus /
+ * runComponentActionFromGrid) offers Load / Save / Save As / Delete without
+ * detouring through the module picker. Load reuses enterPresetBrowser
+ * outright, unchanged — picking a row there now loads it directly (see
+ * handlePresetsSelect), so there is no per-preset detail screen in this flow
+ * at all. Save and Delete need entry points below because neither existing
+ * flow does what they need: Save never overwrites (a name collision
+ * auto-appends a number, by design), and Delete needs to reach the SAME
+ * confirm screen without ever going through the list.
  */
 
 /*
@@ -569,10 +533,10 @@ export function overwriteUserPreset(slot, prefix, moduleId, name) {
 
 /*
  * Straight to the keyboard — no browser, no list. Commits through the SAME
- * doSavePreset the "[Save current...]" row uses (never-overwrite, auto-dedup
- * name), so there is one save implementation rather than two; doSavePreset
- * itself notifies ctx.onPresetSaved once the write lands, which is what
- * updates the grid's record and refreshes the trailing page.
+ * doSavePreset (never-overwrite, auto-dedup name) as every other writer, so
+ * there is one save implementation rather than two; doSavePreset itself
+ * notifies ctx.onPresetSaved once the write lands, which is what updates the
+ * grid's record and refreshes the trailing page.
  */
 export function enterPresetSaveAs(slot, componentKey, moduleId, prefix) {
     if (!moduleId) {
@@ -618,8 +582,7 @@ export function enterPresetDeleteConfirm(slot, componentKey, moduleId, prefix, n
     presetModuleLabel = ctx.getSlotParam(slot, presetPrefix + ":name") || presetModule || "Module";
     ctx.selectedSlot = slot;
     updateFocusedSlot(slot);
-    selectedPreset = idx + 1;
-    selectedDetailItem = DETAIL_DELETE;
+    selectedPreset = idx;
     confirmingDelete = true;
     confirmIndex = 0;
     setView(VIEWS.PRESET_DETAIL);
@@ -650,46 +613,51 @@ export function drawPresets() {
         return;
     }
 
-    renderMovyPicker(c, {
-        rect: movyRect(),
-        entries: displayedRows().map((label) => ({ name: label, value: "" })),
-        index: selectedPreset,
-        header: false,
-    });
-    drawMovyFooter(c, [["JOG", "SEL"], ["CLK", "OPEN"], ["BACK", "EXIT"]]);
-}
-
-export function drawPresetDetail() {
-    clear_screen();
-    const c = movyCtx();
-    const entry = presets[selectedPreset - 1];
-    const name = entry ? entry.name : "Preset";
-
-    /*
-     * The DELETE confirm reads as the same screen with a different question,
-     * rather than a different screen: the header right says what is being
-     * asked and the body is the two answers, in the same list every other
-     * screen here uses. It used to draw its own full-width rows in a second
-     * geometry, which made the most destructive step in this flow the one that
-     * looked least like the rest of it.
-     */
-    if (confirmingDelete) {
-        drawMovyHeader(c, truncateText(name, 16), "DELETE?", false);
-        renderMovyPicker(c, {
-            rect: movyRect(),
-            entries: [{ name: "No", value: "" }, { name: "Yes", value: "" }],
-            index: confirmIndex,
-            header: false,
-        });
-        drawMovyFooter(c, [["JOG", "SEL"], ["CLK", "GO"], ["BACK", "OUT"]]);
+    /* Nothing saved: a real state, not an empty list drawn as a blank rect --
+     * Save/Save As live on the My Presets grid page now, so this screen has
+     * nothing else to offer. */
+    if (!presets.length) {
+        print(MOVY_LIST_X, MOVY_LIST_Y + 8, "No presets saved", 1);
+        drawMovyFooter(c, [["BACK", "EXIT"]]);
         return;
     }
 
-    drawMovyHeader(c, truncateText(name, 16), "PRESET", false);
     renderMovyPicker(c, {
         rect: movyRect(),
-        entries: [{ name: "Load", value: "" }, { name: "Delete", value: "" }],
-        index: selectedDetailItem,
+        entries: presets.map((p) => ({ name: p.name, value: "" })),
+        index: selectedPreset,
+        header: false,
+    });
+    /* CLK LOAD, not CLK OPEN: picking a row loads it immediately -- there is
+     * no detail screen behind it any more (see handlePresetsSelect). */
+    drawMovyFooter(c, [["JOG", "SEL"], ["CLK", "LOAD"], ["BACK", "EXIT"]]);
+}
+
+/*
+ * The ONLY thing left on this screen: the delete confirmation, raised
+ * directly by enterPresetDeleteConfirm (the grid's Delete action). There is
+ * no more Load/Delete choice screen behind it — picking a preset in the list
+ * loads it immediately (see handlePresetsSelect) — so confirmingDelete is
+ * true on every arrival here and this draws nothing else.
+ */
+export function drawPresetDetail() {
+    clear_screen();
+    const c = movyCtx();
+    const entry = presets[selectedPreset];
+    const name = entry ? entry.name : "Preset";
+
+    /*
+     * The header right says what is being asked and the body is the two
+     * answers, in the same list every other screen here uses. It used to draw
+     * its own full-width rows in a second geometry, which made the most
+     * destructive step in this flow the one that looked least like the rest
+     * of it.
+     */
+    drawMovyHeader(c, truncateText(name, 16), "DELETE?", false);
+    renderMovyPicker(c, {
+        rect: movyRect(),
+        entries: [{ name: "No", value: "" }, { name: "Yes", value: "" }],
+        index: confirmIndex,
         header: false,
     });
     drawMovyFooter(c, [["JOG", "SEL"], ["CLK", "GO"], ["BACK", "OUT"]]);
@@ -698,88 +666,85 @@ export function drawPresetDetail() {
 /* ---- Jog ---------------------------------------------------------------- */
 
 export function handlePresetsJog(delta) {
-    const rows = displayedRows();
-    selectedPreset = Math.max(0, Math.min(rows.length - 1, selectedPreset + delta));
+    if (!presets.length) return;
+    selectedPreset = Math.max(0, Math.min(presets.length - 1, selectedPreset + delta));
     queuePreview(selectedPreset);
-    announceMenuItem("Preset", rows[selectedPreset]);
+    announceMenuItem("Preset", presets[selectedPreset].name);
 }
 
 export function handlePresetDetailJog(delta) {
-    if (confirmingDelete) {
-        confirmIndex = Math.max(0, Math.min(1, confirmIndex + delta));
-        announceMenuItem("Confirm", confirmIndex === 1 ? "Yes" : "No");
-        return;
-    }
-    selectedDetailItem = Math.max(DETAIL_LOAD, Math.min(DETAIL_DELETE, selectedDetailItem + delta));
-    announceMenuItem("Action", selectedDetailItem === DETAIL_DELETE ? "Delete" : "Load");
+    /* Only the delete confirm remains here — see drawPresetDetail's note. */
+    confirmIndex = Math.max(0, Math.min(1, confirmIndex + delta));
+    announceMenuItem("Confirm", confirmIndex === 1 ? "Yes" : "No");
 }
 
 /* ---- Select ------------------------------------------------------------- */
 
 export function handlePresetsSelect() {
     /*
-     * A bare `return` here is a dead button: the row is drawn, the click does
-     * nothing, and NOTHING is announced -- the "No module in this slot" line
-     * lives in startSaveFlow, which this returns before reaching. Reported from
-     * hardware as "when I choose save, simply nothing happens".
-     *
-     * The state is also contradictory and worth saying so: this screen is only
-     * reachable through a [User Presets] row that is drawn ONLY when the same
-     * lookup found a module, so arriving here without one means the config
-     * changed underneath us between building the picker and this click.
+     * A bare `return` here would be a dead button: the row is drawn, the
+     * click does nothing, and NOTHING is announced. Reported from hardware
+     * once already for the old save row ("when I choose save, simply nothing
+     * happens") — the state is contradictory and worth saying so: this screen
+     * is only reachable through a [User Presets] row, or the grid's Load…
+     * action, that are shown ONLY when the same lookup found a module, so
+     * arriving here without one means the config changed underneath us
+     * between building the picker and this click.
      */
     if (!presetModule) {
         announce("No module in this slot");
         if (typeof host_log === "function") {
-            host_log("presets: save refused, presetModule empty for prefix " + presetPrefix);
+            host_log("presets: load refused, presetModule empty for prefix " + presetPrefix);
         }
         return;
     }
-    if (selectedPreset === 0) {
-        /* Save snapshots the live state — make sure a lingering preview has
-         * reverted to the original first. */
-        flushPreview(0);
-        startSaveFlow();
-        return;
-    }
-    enterPresetDetail(selectedPreset);
-}
+    if (!presets.length) return;
 
-export function handlePresetDetailSelect() {
+    /*
+     * The browser is exactly ONE thing: choose a preset. Picking a row LOADS
+     * it and commits, straight away — no per-preset Load/Delete detail
+     * screen. Reported from hardware: "loading a preset shouldnt show
+     * load/delete, it should just load it (delete is on the main menu)".
+     */
     const { setView, VIEWS } = ctx;
-    const entry = presets[selectedPreset - 1];
-
-    if (confirmingDelete) {
-        if (confirmIndex === 1) {
-            doDeletePreset(entry);
-            confirmingDelete = false;
-            selectedPreset = 0;
-            /* The deleted preset was the one being auditioned — restore the
-             * original live sound now that we're back on the save row. */
-            revertToOriginal();
-            setView(VIEWS.PRESETS);
-            announce("Preset deleted");
-        } else {
-            confirmingDelete = false;
-        }
-        ctx.needsRedraw = true;
-        return;
-    }
-
-    if (selectedDetailItem === DETAIL_DELETE) {
-        confirmingDelete = true;
-        confirmIndex = 0;
-        announce(`Delete ${entry ? entry.name : "preset"}?`);
-        ctx.needsRedraw = true;
-        return;
-    }
-
-    /* Load (commit): apply and return to the chain editor. Clear preview state
-     * so the kept preset isn't reverted on the way out. */
+    const entry = presets[selectedPreset];
     if (applyPreset(ctx.selectedSlot, entry)) {
         previewActive = false;
         pendingPreviewIndex = PREVIEW_NONE;
-        announce(`Loaded ${entry ? entry.name : "preset"}`);
+        announce(`Loaded ${entry.name}`);
+        /* CHAIN_EDIT is the convergence point every hand-off from the grid's
+         * My Presets page returns through — maybeReturnToComponentGrid (in
+         * shadow_ui.js) is what routes a grid-driven arrival back onto that
+         * page specifically; a [User Presets]-row arrival (no grid open)
+         * lands plainly on the chain editor, as it always has. */
+        setView(VIEWS.CHAIN_EDIT);
+    }
+    ctx.needsRedraw = true;
+}
+
+export function handlePresetDetailSelect() {
+    /* Only the delete confirm remains here — see drawPresetDetail's note. */
+    const { setView, VIEWS } = ctx;
+    const entry = presets[selectedPreset];
+
+    if (confirmIndex === 1) {
+        doDeletePreset(entry);
+        confirmingDelete = false;
+        /* The deleted preset may have been the one being auditioned (only
+         * possible via a stale audition from an earlier list visit, since
+         * Delete no longer goes through the list) — restore the original
+         * live sound rather than leave a deleted preset's state playing. */
+        revertToOriginal();
+        /*
+         * Back to CHAIN_EDIT, not the list: Delete is reached exclusively
+         * from the grid's My Presets page now, and that page is where the
+         * result belongs. Reported from hardware: "after deleting i get to a
+         * menu of [save current] not the preset (none) page".
+         */
+        setView(VIEWS.CHAIN_EDIT);
+        announce("Preset deleted");
+    } else {
+        confirmingDelete = false;
         setView(VIEWS.CHAIN_EDIT);
     }
     ctx.needsRedraw = true;
@@ -789,9 +754,9 @@ export function handlePresetDetailSelect() {
 
 export function handlePresetsBack() {
     const { setView, VIEWS } = ctx;
-    /* Entered from the module picker (Shift+Click on the synth block); Back
-     * cancels the whole flow — revert any active audition to the original
-     * sound — and exits to the chain editor. */
+    /* Entered from the module picker (Shift+Click on the synth block) or the
+     * grid's Load… action; Back cancels the whole flow — revert any active
+     * audition to the original sound — and exits to the chain editor. */
     revertToOriginal();
     setView(VIEWS.CHAIN_EDIT);
     announce("Chain Editor");
@@ -799,13 +764,12 @@ export function handlePresetsBack() {
 }
 
 export function handlePresetDetailBack() {
+    /* The only screen behind this one now is the delete confirm — cancel it
+     * outright, straight back to the chain editor. There is no Load/Delete
+     * choice screen to fall back into any more. */
     const { setView, VIEWS } = ctx;
-    if (confirmingDelete) {
-        confirmingDelete = false;
-        ctx.needsRedraw = true;
-        return;
-    }
-    setView(VIEWS.PRESETS);
-    announce("Presets");
+    confirmingDelete = false;
+    setView(VIEWS.CHAIN_EDIT);
+    announce("Chain Editor");
     ctx.needsRedraw = true;
 }
