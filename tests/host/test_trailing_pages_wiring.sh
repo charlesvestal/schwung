@@ -403,6 +403,12 @@ const body = [
     "let componentModalFromGrid = false;",
     "let componentGridReturnSlot = -1;",
     "let componentGridReturnKey = \"\";",
+    "let componentGridReturnEnter = true;",
+    // Save acts IN PLACE, so it closes the menu behind itself rather than
+    // carrying a disposition through a return path. Stubbed as a spy: the
+    // dispatch assertions below only care that Save reaches it.
+    "let exitMenuCalls = 0;",
+    "function paramPagesExitMenu() { exitMenuCalls++; }",
     grab("runComponentActionFromGrid"),
     "const seen = {};",
     "for (const action of [\"up_load\",\"up_save\",\"up_save_as\",\"up_delete\",\"swap_module\",\"remove_module\"]) {",
