@@ -3264,6 +3264,7 @@ static void init_shadow_shm(void)
         shadow_control->selected_slot    = 0;
         shadow_control->skip_led_clear   = 0;
         shadow_control->overtake_suppress_sysex = 0;
+        shadow_control->overtake_suppress_master_volume = 0;
         shadow_control->overtake_fx_end_of_chain = 0;
         shadow_control->corun.target = CORUN_TARGET_NONE;  /* co-run inactive at boot */
         shadow_control->corun.id = -1;
@@ -3629,7 +3630,8 @@ static void shadow_swap_display(void)
     if (!shadow_volume_knob_touched) {
         shadow_block_plain_volume_hide_until_release = 0;
     }
-    if (shadow_volume_knob_touched && !shadow_shift_held) {
+    if (shadow_volume_knob_touched && !shadow_shift_held &&
+        !shadow_control->overtake_suppress_master_volume) {
         if (shadow_block_plain_volume_hide_until_release) {
             /* Keep shadow UI visible until shortcut's volume touch is fully released. */
             if (display_hidden_for_volume) {
@@ -6542,6 +6544,12 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
         /* Run overtake exit hook if it exists (modules install their own cleanup).
          * Skip if suspend_overtake is set — JACK keeps running. */
         if (prev_overtake_mode != 0 && overtake_mode == 0) {
+            /* Belt-and-braces: a stuck suppression permanently breaks the
+             * master volume knob for every module loaded after this one
+             * (unlike overtake_suppress_sysex's equivalent stuck state,
+             * which only affects LEDs). Clear it unconditionally on exit
+             * rather than relying solely on the tool's own endDivert(). */
+            if (shadow_control) shadow_control->overtake_suppress_master_volume = 0;
             if (shadow_control && shadow_control->suspend_overtake) {
                 shadow_control->suspend_overtake = 0;  /* consumed */
                 /* Freeze sysex cache so RNBO's init batch on resume
@@ -6623,13 +6631,19 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                  * - mode 1 (menu): allow only volume touch/turn passthrough */
                 if (overtake_mode == 2) {
                     if (status >= 0x80) filter = 1;
-                    /* Let volume knob CC and touch through so Move shows volume overlay */
-                    if (cin == 0x0B && type == 0xB0 && d1 == CC_MASTER_KNOB) {
+                    /* Let volume knob CC and touch through so Move shows volume overlay
+                     * — unless a tool has claimed the gesture for itself (movy:
+                     * hold a track button + turn master volume) and asked to
+                     * suppress it via overtake_suppress_master_volume, in which
+                     * case this behaves like any other cable-0 event. */
+                    if (cin == 0x0B && type == 0xB0 && d1 == CC_MASTER_KNOB &&
+                        !shadow_control->overtake_suppress_master_volume) {
                         filter = 0;
                     }
                     if ((cin == 0x09 || cin == 0x08) &&
                         (type == 0x90 || type == 0x80) &&
-                        d1 == 8) {
+                        d1 == 8 &&
+                        !shadow_control->overtake_suppress_master_volume) {
                         filter = 0;
                     }
                     /* Per-CC passthrough list (from the module's
@@ -6663,12 +6677,14 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     }
                 } else if (overtake_mode == 1) {
                     filter = 1;
-                    if (cin == 0x0B && type == 0xB0 && d1 == CC_MASTER_KNOB) {
+                    if (cin == 0x0B && type == 0xB0 && d1 == CC_MASTER_KNOB &&
+                        !shadow_control->overtake_suppress_master_volume) {
                         filter = 0;
                     }
                     if ((cin == 0x09 || cin == 0x08) &&
                         (type == 0x90 || type == 0x80) &&
-                        d1 == 8) {
+                        d1 == 8 &&
+                        !shadow_control->overtake_suppress_master_volume) {
                         filter = 0;
                     }
                     /* Same per-CC passthrough list applies at mode 1 (tool

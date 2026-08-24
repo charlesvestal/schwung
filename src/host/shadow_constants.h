@@ -52,7 +52,7 @@
  * MIDI_OUT must be bounded by this to avoid corrupting the display. */
 #define HW_MIDI_OUT_SIZE    80
 #define DISPLAY_BUFFER_SIZE 1024  /* 128x64 @ 1bpp = 1024 bytes */
-#define CONTROL_BUFFER_SIZE 84  /* corun masks widened to uint32 + flags byte (cede-default model); static-asserted below */
+#define CONTROL_BUFFER_SIZE 84  /* overtake_suppress_master_volume added into existing trailing pad byte; static-asserted below */
 #define SHADOW_UI_BUFFER_SIZE     512
 #define SHADOW_PARAM_BUFFER_SIZE  65664  /* Large buffer for complex ui_hierarchy */
 #define SHADOW_MIDI_OUT_BUFFER_SIZE 512  /* MIDI out buffer from shadow UI (128 packets) */
@@ -209,6 +209,17 @@ typedef struct shadow_control_t {
      * Set by JS on leaving the grid; the shim consumes it and clears it, so it
      * is an edge and not a state. */
     volatile uint8_t restore_knob_leds;
+    /* 1 = suppress CC 79 (master volume) and the master-touch note (8) from
+     * their hardcoded overtake passthrough to Move firmware, and from the
+     * plain-volume-touch OLED handoff in shadow_swap_display(). Both of
+     * those exemptions exist unconditionally today so Move can show its
+     * native volume overlay; a tool with its own per-track volume gesture
+     * (movy: hold a track button + turn master volume) sets this for the
+     * duration of that gesture so Move is excluded entirely instead of
+     * quietly tracking the turn on its own copy of the value. Opt-in per
+     * tool (shadow_set_overtake_suppress_master_volume); default 0 leaves
+     * the existing passthrough unchanged. */
+    volatile uint8_t overtake_suppress_master_volume;
 } shadow_control_t;
 
 /* Co-run control-surface groups. A co-running overtake tool declares which
