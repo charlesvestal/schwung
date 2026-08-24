@@ -618,6 +618,20 @@ static JSValue js_shadow_set_overtake_suppress_sysex(JSContext *ctx, JSValueCons
     return JS_UNDEFINED;
 }
 
+/* shadow_set_overtake_suppress_master_volume(flag) -> void
+ * Opt a full-overtake tool into suppressing CC 79 / master-touch note 8's
+ * hardcoded passthrough to Move firmware (and the matching OLED handoff in
+ * shadow_swap_display()) for the duration the tool sets. Set/cleared around
+ * the tool's own volume gesture; cleared automatically on shim init. */
+static JSValue js_shadow_set_overtake_suppress_master_volume(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 1) return JS_UNDEFINED;
+    int32_t flag = 0;
+    JS_ToInt32(ctx, &flag, argv[0]);
+    shadow_control->overtake_suppress_master_volume = flag ? 1 : 0;
+    return JS_UNDEFINED;
+}
+
 /* host_mute_move_audio(flag) -> void
  * Mute/unmute Move's audio output. Used for silent clip switching. */
 static JSValue js_host_mute_move_audio(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -2818,6 +2832,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_skip_led_clear", JS_NewCFunction(ctx, js_shadow_set_skip_led_clear, "shadow_set_skip_led_clear", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_restore_knob_leds", JS_NewCFunction(ctx, js_shadow_restore_knob_leds, "shadow_restore_knob_leds", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_overtake_suppress_sysex", JS_NewCFunction(ctx, js_shadow_set_overtake_suppress_sysex, "shadow_set_overtake_suppress_sysex", 1));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_set_overtake_suppress_master_volume", JS_NewCFunction(ctx, js_shadow_set_overtake_suppress_master_volume, "shadow_set_overtake_suppress_master_volume", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_overtake_fx_end_of_chain", JS_NewCFunction(ctx, js_shadow_set_overtake_fx_end_of_chain, "shadow_set_overtake_fx_end_of_chain", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_suspend_overtake", JS_NewCFunction(ctx, js_shadow_set_suspend_overtake, "shadow_set_suspend_overtake", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_suspend_overtake", JS_NewCFunction(ctx, js_shadow_get_suspend_overtake, "shadow_get_suspend_overtake", 0));
