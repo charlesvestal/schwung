@@ -44,6 +44,8 @@ import { knobLedColor, updateKnobLEDs, resetKnobLedCache, clearKnobLEDs,
 import { normalizedOf } from "./src/shared/param_pages/render_page_movy.mjs";
 import * as C from "./src/shared/constants.mjs";
 
+import { readFileSync } from "node:fs";
+
 let fail = 0;
 const ok = (c, m) => { console.log((c ? "PASS" : "FAIL") + ": " + m); if (!c) fail++; };
 
@@ -64,13 +66,33 @@ for (const c of WHITE_LEVELS.concat(AMBER_LEVELS))
 /* ===================================================================== 2 ==
  * BUCKETS.
  */
+/* DERIVED FROM THE RAMP, never from its length at the time of writing. These
+   assertions used to name WHITE_LEVELS[1] as "mid" and [2] as "full", which
+   pinned a 3-entry ramp -- so lengthening it to 5 failed a test that was
+   describing the ramp rather than the BEHAVIOUR. The behaviour is: bottom of
+   range is the first entry, top is the last, and it never skips or repeats. */
+const top = (r) => r[r.length - 1];
 ok(knobLedColor(0, 0.0) === WHITE_LEVELS[0], "knob 1 at 0.00 is the dimmest white");
-ok(knobLedColor(0, 0.5) === WHITE_LEVELS[1], "knob 1 at 0.50 is mid white");
-ok(knobLedColor(3, 1.0) === WHITE_LEVELS[2], "knob 4 at 1.00 is full white");
+ok(knobLedColor(3, 1.0) === top(WHITE_LEVELS), "knob 4 at 1.00 is full white");
 ok(knobLedColor(4, 0.0) === AMBER_LEVELS[0], "knob 5 at 0.00 is the dimmest amber");
-ok(knobLedColor(4, 0.3) === AMBER_LEVELS[1], "knob 5 at 0.30 is amber 2");
-ok(knobLedColor(7, 0.6) === AMBER_LEVELS[2], "knob 8 at 0.60 is amber 3");
-ok(knobLedColor(7, 1.0) === AMBER_LEVELS[3], "knob 8 at 1.00 is full amber");
+ok(knobLedColor(7, 1.0) === top(AMBER_LEVELS), "knob 8 at 1.00 is full amber");
+
+/* EVERY ENTRY IS REACHABLE AND THE ORDER IS MONOTONIC IN THE VALUE. The bug
+   this replaces was a ramp whose third entry was darker than its second, so
+   "monotonic" is asserted on the SEQUENCE the sweep produces, not on the
+   palette numbers (a palette index carries no ordering). */
+for (const [row, ramp, name] of [[0, WHITE_LEVELS, "white"], [4, AMBER_LEVELS, "amber"]]) {
+  const seen = [];
+  for (let i = 0; i <= 100; i++) {
+    const c = knobLedColor(row, i / 100);
+    if (seen[seen.length - 1] !== c) seen.push(c);
+  }
+  ok(seen.length === ramp.length,
+     "sweeping the " + name + " row visits every level exactly once, got "
+     + seen.length + " of " + ramp.length);
+  ok(seen.join(",") === ramp.join(","),
+     "and visits them IN RAMP ORDER (got " + seen.join(",") + ")");
+}
 ok(knobLedColor(0, null) === 0, "an unbound knob is 0");
 ok(knobLedColor(4, null) === 0, "an unbound knob is 0 on the amber row too");
 ok(knobLedColor(0, NaN) === 0, "a non-finite value is unbound, not 0.0 -- a knob "
@@ -156,8 +178,69 @@ ok(normalizedOf({ type: "float", min: 0, max: 1 }, "") === null,
   ok(normalizedOf(em, "C") === 0.5, "an enum reported by NAME resolves to its index");
   ok(normalizedOf(em, "E") === 1, "the last option by name is the top");
   ok(normalizedOf(em, "nosuch") === null, "an unrecognised option name is unknown, not 0");
-  ok(knobLedColor(0, normalizedOf(em, "E")) === WHITE_LEVELS[2],
+  ok(knobLedColor(0, normalizedOf(em, "E")) === WHITE_LEVELS[WHITE_LEVELS.length - 1],
      "a name-reporting enum at its last option lights FULL, not dark");
+}
+
+/* ===================================================================== N ==
+ * THE RAMPS ARE MONOTONIC IN ACTUAL BRIGHTNESS.
+ *
+ * Everything above checks that a sweep walks the ramp in the order the ramp is
+ * WRITTEN. That was true of the broken version too: DarkBrown2 -> Mustard ->
+ * Ochre -> BrightOrange is #250E05 -> #876700 -> #491804 -> #C93C00, and the
+ * third entry is darker than the second. A knob swept min to max went dim,
+ * bright, dark, bright, and every test passed.
+ *
+ * So read the HEX out of the palette header in constants.mjs -- the same table
+ * a person would read to pick a colour -- and require luminance to increase.
+ * This is the assertion that would have caught it.
+ */
+{
+  const src = readFileSync("./src/shared/constants.mjs", "utf8");
+
+  /* Lines look like:
+   *     3 : #C93C00  Bright Orange   dim  69 #5D1700   dark  70 #200D00
+   *   118 : #595959  Light Grey
+   * so every "<index> #RRGGBB" pair on a line is an entry, including the dim
+   * and dark variants, which is exactly where a ramp should be drawing from. */
+  const hex = new Map();
+  for (const m of src.matchAll(/(\d{1,3})\s*:?\s*#([0-9A-Fa-f]{6})/g))
+    if (!hex.has(Number(m[1]))) hex.set(Number(m[1]), m[2]);
+  for (const m of src.matchAll(/(?:dim|dark)\s+(\d{1,3})\s+#([0-9A-Fa-f]{6})/g))
+    if (!hex.has(Number(m[1]))) hex.set(Number(m[1]), m[2]);
+
+  ok(hex.size > 100, "the palette header was parsed, got " + hex.size + " entries");
+
+  /* Rec. 709 relative luminance. Any sane weighting orders these the same; the
+     point is that #876700 must not sort below #491804. */
+  const lum = (h) => {
+    const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16),
+          b = parseInt(h.slice(4, 6), 16);
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+
+  for (const [ramp, name] of [[WHITE_LEVELS, "white"], [AMBER_LEVELS, "amber"]]) {
+    const missing = ramp.filter((c) => !hex.has(c));
+    ok(missing.length === 0,
+       "every " + name + " level appears in the palette header, missing ["
+       + missing.join(",") + "]");
+    if (missing.length) continue;
+    const ls = ramp.map((c) => lum(hex.get(c)));
+    let rising = true;
+    for (let i = 1; i < ls.length; i++) if (ls[i] <= ls[i - 1]) rising = false;
+    ok(rising, "the " + name + " ramp gets STRICTLY brighter every step: "
+       + ramp.map((c, i) => "#" + hex.get(c) + "(" + ls[i].toFixed(0) + ")").join(" -> "));
+  }
+
+  /* THE ROWS MUST STAY TELLABLE APART, which is the whole reason there are two
+     ramps. Brightness alone cannot do it -- a dim white and a bright amber can
+     land at the same luminance -- so require a hue difference at every level. */
+  const warmth = (h) => parseInt(h.slice(0, 2), 16) - parseInt(h.slice(4, 6), 16);
+  const whiteWarm = WHITE_LEVELS.map((c) => warmth(hex.get(c)));
+  const amberWarm = AMBER_LEVELS.map((c) => warmth(hex.get(c)));
+  ok(Math.max.apply(null, whiteWarm) < Math.min.apply(null, amberWarm),
+     "every amber level is warmer than every white level, so the two rows are "
+     + "told apart by HUE at any brightness");
 }
 
 ok(NUM_KNOB_LEDS === 8, "there are 8 knob LEDs");

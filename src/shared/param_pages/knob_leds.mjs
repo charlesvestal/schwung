@@ -31,20 +31,45 @@
  * every tick.
  */
 import { setButtonLED } from "../input_filter.mjs";
-import { MoveKnob1, DarkGrey2, LightGrey, White,
-         DarkBrown2, Mustard, Ochre, BrightOrange } from "../constants.mjs";
+import { MoveKnob1, DarkGrey2, DarkGrey3, LightGrey, OffWhite, White,
+         DarkBrown, BurntSienna, Tan, BrightOrange } from "../constants.mjs";
 
 export const NUM_KNOB_LEDS = 8;
 
 /*
- * The two ramps, by NAME rather than by the raw index movy used — its hex
- * comments did not match our palette (it claimed #1A1A1A for 124, which is
- * #141414 here), so the indices were picked by eye on a device. The names are
- * what constants.mjs actually defines; if a ramp reads wrong on hardware,
- * re-pick from there rather than nudging a number.
+ * THE TWO RAMPS ARE ORDERED BY LUMINANCE, WHICH IS NOT THE SAME AS BY NAME.
+ *
+ * The first version picked its constants by what they were called, and the
+ * amber ramp was DarkBrown2 -> Mustard -> Ochre -> BrightOrange. Those are
+ * #250E05 -> #876700 -> #491804 -> #C93C00: the third step is DARKER than the
+ * second, so a knob swept from minimum to maximum went dim, bright, dark,
+ * bright. Reported from the device as "the LEDs work but the curve is off /
+ * weird", which is exactly what that is.
+ *
+ * The palette header in constants.mjs is the authority, and it already answers
+ * this: every hue lists a `dim` and a `dark` variant, e.g.
+ *
+ *     3 : #C93C00  Bright Orange   dim  69 #5D1700   dark  70 #200D00
+ *
+ * So a ramp is one hue's dark -> dim -> full, optionally with a neighbour of
+ * the same hue filling a gap — NOT a walk through whatever entries sound
+ * warm. Mustard (#876700) and Ochre (#491804) are different hues at different
+ * brightnesses and never belonged in one ramp.
+ *
+ * Verify a change by reading the hex out of that header, not by the name:
+ *
+ *     white  #141414  #1A1A1A(*)  #404040  #595959  #CCCCCC  #FFFFFF
+ *     amber  #200D00  #5D1700     #AC1F00  #C93C00
+ *
+ * (*) DarkGrey #1A1A1A is skipped: it is within 2% of DarkGrey2 #141414, so
+ * it costs a step of the ramp and shows nothing for it.
+ *
+ * The rows still differ by HUE at every level, which is the property that has
+ * to survive — a white knob at minimum must not be mistakable for an amber one
+ * at minimum.
  */
-export const WHITE_LEVELS = [DarkGrey2, LightGrey, White];
-export const AMBER_LEVELS = [DarkBrown2, Mustard, Ochre, BrightOrange];
+export const WHITE_LEVELS = [DarkGrey2, DarkGrey3, LightGrey, OffWhite, White];
+export const AMBER_LEVELS = [DarkBrown, BurntSienna, Tan, BrightOrange];
 
 const lastKnobColor = new Array(NUM_KNOB_LEDS).fill(-1);
 
@@ -64,15 +89,17 @@ export function resetKnobLedCache() { lastKnobColor.fill(-1); }
 export function knobLedColor(k, nv) {
     if (nv === null || nv === undefined || !isFinite(nv)) return 0;
     const v = Math.max(0, Math.min(1, nv));
-    if (k < 4) {
-        if (v < 0.33) return WHITE_LEVELS[0];
-        if (v < 0.67) return WHITE_LEVELS[1];
-        return WHITE_LEVELS[2];
-    }
-    if (v < 0.25) return AMBER_LEVELS[0];
-    if (v < 0.5)  return AMBER_LEVELS[1];
-    if (v < 0.75) return AMBER_LEVELS[2];
-    return AMBER_LEVELS[3];
+    const ramp = k < 4 ? WHITE_LEVELS : AMBER_LEVELS;
+    /*
+     * The step boundaries are DERIVED from the ramp, not written beside it.
+     * They were written beside it — `v < 0.33`, `v < 0.67` against a 3-entry
+     * white ramp and quarters against a 4-entry amber one — so lengthening
+     * either ramp silently left its last entries unreachable. That is the
+     * "green matrix only proves the axis you chose" failure in miniature: the
+     * ramp and the thresholds are one fact and belong in one place.
+     */
+    const i = Math.min(ramp.length - 1, Math.floor(v * ramp.length));
+    return ramp[i];
 }
 
 /**
