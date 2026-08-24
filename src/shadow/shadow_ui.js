@@ -1940,9 +1940,23 @@ function componentTrailingMenus(slotIndex, componentKey, prefix) {
     userPresetLiveBlobCache[userPresetKey(slotIndex, prefix)] = liveBlob;
     const hasRecord = !!(record && record.name);
 
+    /*
+     * Row 1 IS the door. It shows which preset you are on and opens the
+     * browser; there is no separate Load row.
+     *
+     * It began as a readout with no action, and a Load... row beneath it.
+     * Reported from hardware: "when a preset is loaded we dont need the load
+     * button, you should be able to just click on the name of the preset in
+     * the menu". Two rows said one thing, and the row you would reach for was
+     * the inert one -- the name is what you are pointing at when you want a
+     * different name.
+     *
+     * It carries the action with no preset loaded too, reading "(none)": that
+     * is the only way into the browser, so making it conditional would leave a
+     * component with nothing saved yet unable to reach its own list.
+     */
     const presetEntries = [
-        { label: "Preset", value: presetRowValue(record, liveBlob) },
-        { label: "Load…", action: "up_load" },
+        { label: "Preset", value: presetRowValue(record, liveBlob), action: "up_load" },
     ];
     /* Save and Delete both target the LOADED preset, so both are meaningless
      * with none loaded — same always-or-hasPreset filter SLOT_GRID_ACTIONS
@@ -2175,9 +2189,9 @@ function maybeReturnToComponentGrid() {
  * clear.
  */
 function recordUserPresetFromDevice(slot, prefix, name) {
-    refreshUserPresetLiveBlob(slot, prefix);
-    setUserPresetRecord(slot, prefix,
-        makeRecord(name, cachedUserPresetBlob(slot, prefix)));
+    const live = getSlotStateWithRetry(slot, prefix + ":state");
+    userPresetLiveBlobCache[userPresetKey(slot, prefix)] = live;
+    setUserPresetRecord(slot, prefix, makeRecord(name, live));
     paramPagesRefreshTrailing();
     needsRedraw = true;
 }

@@ -37,37 +37,87 @@ const ok = (m) => { console.error("ok: " + m); };
 const CP = await import(process.cwd() + "/src/shared/param_pages/current_preset.mjs");
 const src = fs.readFileSync("src/shadow/shadow_ui.js", "utf8");
 
+/* what we hand the module, and what a normalising module reports back */
+const WROTE = "{\"b\":2,\"a\":1}";
+const DEVICE_ANSWER = "{\"a\":1.000,\"b\":2.000}";
+
+
 /* ---- 1. the record is built from a DEVICE read ------------------------- */
 
-/* Structural: both hooks must route through the one helper, and that helper
-   must refresh the cache BEFORE it builds the record. */
-const body = (() => {
+/*
+ * BEHAVIOURAL, not a grep. The first version of this test asserted that
+ * recordUserPresetFromDevice mentions refreshUserPresetLiveBlob before
+ * makeRecord -- and PASSED while refreshUserPresetLiveBlob did not exist at
+ * all, because a rewrite had deleted it. A grep proves a call is written, not
+ * that it resolves; node --check does not catch it either, since an undefined
+ * function is a runtime ReferenceError, not a syntax error. On the device it
+ * threw inside onPresetLoaded AFTER the state had been applied, so a preset
+ * loaded its values and then never left the browser.
+ *
+ * So: LIFT the real function and RUN it, with every free identifier supplied.
+ * A missing one now throws here instead of on the device.
+ */
+{
   const at = src.indexOf("function recordUserPresetFromDevice(");
-  if (at < 0) return null;
-  return src.slice(at, src.indexOf("\n}\n", at) + 2);
-})();
-if (!body) {
-  fail("recordUserPresetFromDevice is gone -- the record would be hashed from the blob we wrote");
-} else {
-  const refreshAt = body.indexOf("refreshUserPresetLiveBlob");
-  const recordAt = body.indexOf("makeRecord");
-  if (refreshAt >= 0 && recordAt >= 0 && refreshAt < recordAt) {
-    ok("the live blob is re-read from the device BEFORE the record is built");
-  } else {
-    fail("recordUserPresetFromDevice does not re-read the device before hashing");
-  }
-  if (!body.includes("cachedUserPresetBlob")) {
-    fail("the record is not built from the refreshed cache");
+  if (at < 0) fail("recordUserPresetFromDevice is gone");
+  else {
+    const body = src.slice(at, src.indexOf("\n}\n", at) + 2);
+    const calls = [];
+    const deps = {
+      /* the device answers with a NORMALISED string, not what we wrote */
+      getSlotStateWithRetry: (slot, key) => { calls.push(["read", slot, key]); return DEVICE_ANSWER; },
+      userPresetLiveBlobCache: Object.create(null),
+      userPresetKey: (s2, p2) => s2 + ":" + p2,
+      setUserPresetRecord: (s2, p2, rec) => { calls.push(["record", s2, p2, rec]); deps._rec = rec; },
+      makeRecord: CP.makeRecord,
+      paramPagesRefreshTrailing: () => calls.push(["refresh"]),
+      needsRedraw: false,
+    };
+    let fn;
+    try {
+      fn = new Function(...Object.keys(deps), body + "\nreturn recordUserPresetFromDevice;")
+             (...Object.values(deps));
+    } catch (e) { fail("could not lift recordUserPresetFromDevice: " + e.message); }
+    if (fn) {
+      try {
+        fn(1, "synth", "tst");
+        ok("recordUserPresetFromDevice RUNS without throwing (a missing helper would ReferenceError here)");
+      } catch (e) {
+        fail("recordUserPresetFromDevice THREW: " + e.message +
+             " -- on device this aborts onPresetLoaded after the state was applied, " +
+             "so the preset loads its values and never leaves the browser");
+      }
+      const read = calls.find((c) => c[0] === "read");
+      if (read && read[2] === "synth:state") ok("it reads <prefix>:state back from the device");
+      else fail("it did not read the state back from the device: " + JSON.stringify(calls));
+      const rec = deps._rec;
+      if (rec && !CP.isModified(rec, DEVICE_ANSWER)) {
+        ok("the record it builds matches what the DEVICE reports -- the star clears");
+      } else {
+        fail("the record does not match the device answer, so the star would stay stuck");
+      }
+      if (rec && CP.isModified(rec, WROTE)) {
+        ok("and it did NOT hash the blob we wrote (which the module normalised away)");
+      } else {
+        fail("the record matches the string we wrote -- that is the stuck-star bug");
+      }
+      if (deps.userPresetLiveBlobCache["1:synth"] !== DEVICE_ANSWER) {
+        fail("the header cache was not refreshed, so the header mark would lag");
+      }
+      if (!calls.some((c) => c[0] === "refresh")) fail("the trailing rows were not refreshed");
+    }
   }
 }
+
+/* Both hooks must go through it rather than hashing stateJson themselves. */
 for (const hook of ["onUserPresetLoaded", "onUserPresetSaved"]) {
   const at = src.indexOf("function " + hook + "(");
   if (at < 0) { fail(hook + " is gone"); continue; }
   const h = src.slice(at, src.indexOf("\n}\n", at) + 2);
   if (h.includes("recordUserPresetFromDevice")) ok(hook + " routes through the shared helper");
-  else fail(hook + " builds its own record -- it will hash the blob we wrote, not the device answer");
+  else fail(hook + " builds its own record -- it will hash the blob we wrote");
   if (/makeRecord\(\s*name\s*,\s*stateJson\s*\)/.test(h)) {
-    fail(hook + " still hashes stateJson (the string we WROTE) -- this is the stuck-star bug");
+    fail(hook + " still hashes stateJson (the string we WROTE) -- the stuck-star bug");
   }
 }
 
@@ -76,8 +126,7 @@ for (const hook of ["onUserPresetLoaded", "onUserPresetSaved"]) {
    clear afterwards. Hashing the written string fails this; hashing the read
    string passes. */
 {
-  const written  = "{\"b\":2,\"a\":1}";          /* what we hand the module */
-  const reported = "{\"a\":1.000,\"b\":2.000}";  /* what it reports back */
+  const written = WROTE, reported = DEVICE_ANSWER;
 
   const fromWritten = CP.makeRecord("tst", written);
   if (!CP.isModified(fromWritten, reported)) {
