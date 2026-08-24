@@ -243,12 +243,30 @@ export function enterParamPages(slot, component, prefix, restorePageName, io, ch
 }
 
 export function exitParamPages() {
-    /* The grid is going away and its knobs no longer do anything, so they go
-     * dark. Reset the cache too: the next view may clear the LEDs by another
+    /*
+     * GIVE THE RINGS BACK, DO NOT JUST TURN THEM OFF.
+     *
+     * This used to call clearKnobLEDs(), on the reasoning that the grid is
+     * going away and its knobs no longer do anything. That is true of the
+     * GRID and false of the hardware: leave the grid into a Schwung track and
+     * Move's own eight rings stayed dark, because Move writes an LED only when
+     * its value changes and none of them had changed while we held them.
+     * Reported from the device as "if i go from within a schwung track, the
+     * LEDs dont restore — we need to do the same thing we do with
+     * overtake/tools".
+     *
+     * So do the same thing: the shim replays Move's own last value for CC
+     * 71-78 (service_knob_led_restore in shadow_led_queue.c), from the cache it
+     * already accumulates for overtake's snapshot/restore. Where Move never
+     * wrote a ring, off is the honest answer and off is what it gets.
+     *
+     * Reset the cache regardless: the next view may clear the LEDs by another
      * route, and a cache that outlived that clear would claim colours the
      * hardware no longer shows — the exact failure this module keeps its own
-     * cache to avoid. */
-    clearKnobLEDs();
+     * cache to avoid.
+     */
+    if (typeof shadow_restore_knob_leds === "function") shadow_restore_knob_leds();
+    else clearKnobLEDs();   /* older shim: dark is still better than wrong */
     resetKnobLedCache();
     controller = null;
     controllerIo = null;
