@@ -16,6 +16,7 @@
 #include "shadow_fx_key.h"    /* shadow_key_is_fx_module — header-only so tests/host can run it */
 #include "shim_worker.h"   /* shim_rt_audit_note_module */
 #include "master_fx_key.h"    /* master_fx_route_* — header-only so tests/host can run it */
+#include "master_fx_saved_state.h" /* object or opaque-string state at boot */
 #include "fx_midi_filter.h"   /* fx_midi_channel_accepts — header-only so tests/host can run it */
 #include "chain_permute.h"    /* insert/remove/move as an array permutation; shared with the chain DSP */
 #include "shadow_set_pages.h"
@@ -1628,28 +1629,22 @@ int shadow_inprocess_load_chain(void) {
 
         master_fx_slot_t *s = &shadow_master_fx_slots[mfx];
 
-        /* Restore state if available */
-        char *state_start = strstr(mjson, "\"state\":");
-        if (state_start && s->api && s->instance && s->api->set_param) {
-            char *obj_start = strchr(state_start, '{');
-            if (obj_start) {
-                int depth = 1;
-                char *obj_end = obj_start + 1;
-                while (*obj_end && depth > 0) {
-                    if (*obj_end == '{') depth++;
-                    else if (*obj_end == '}') depth--;
-                    obj_end++;
-                }
-                int slen = obj_end - obj_start;
-                char *state_buf = malloc(slen + 1);
-                if (state_buf) {
-                    memcpy(state_buf, obj_start, slen);
-                    state_buf[slen] = '\0';
+        /* Restore structured or opaque-string state. The saved file can be no
+         * larger than msize, so one bounded buffer covers either representation. */
+        int state_restored = 0;
+        if (s->api && s->instance && s->api->set_param) {
+            char *state_buf = malloc((size_t)msize + 1);
+            if (state_buf) {
+                int state_len = master_fx_saved_state_copy(
+                    mjson, state_buf, (size_t)msize + 1);
+                if (state_len > 0) {
                     s->api->set_param(s->instance, "state", state_buf);
-                    free(state_buf);
+                    state_restored = 1;
                 }
+                free(state_buf);
             }
-        } else if (params_start && s->api && s->instance && s->api->set_param) {
+        }
+        if (!state_restored && params_start && s->api && s->instance && s->api->set_param) {
             /* Fall back to individual params */
             char *obj_start = strchr(params_start, '{');
             if (obj_start) {
@@ -1713,7 +1708,7 @@ int shadow_inprocess_load_chain(void) {
             char msg[256];
             snprintf(msg, sizeof(msg), "MFX boot: slot %d loaded %s%s",
                      mfx, s->module_id,
-                     state_start ? " (with state)" : (strstr(mjson, "\"params\":") ? " (with params)" : ""));
+                     state_restored ? " (with state)" : (params_start ? " (with params)" : ""));
             shadow_log(msg);
         }
         free(mjson);
