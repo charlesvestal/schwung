@@ -220,7 +220,7 @@ import {
     tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage,
     paramPagesComponent, paramPagesSlot, clearParamPagesTouch,
     enumPickerFooterHints, CONTRACT_SETTLE_MS, LAYOUT_LIST,
-    paramPagesRefreshTrailing
+    paramPagesRefreshTrailing, paramPagesExitMenu
 } from './shadow_ui_param_pages.mjs';
 import { createSlotGridIo, createMasterGridIo,
          MFX_MIDI_CHANNEL_OPTIONS, MFX_MIDI_CHANNEL_KEY, mfxMidiChannelToIndex,
@@ -2016,6 +2016,13 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
             if (ok) {
                 const live = getSlotStateWithRetry(slotIndex, prefix + ":state");
                 onUserPresetSaved(slotIndex, prefix, record.name, live);
+                /* Save acts IN PLACE -- it never navigates, so it has no
+                 * return path to carry the "you are finished here"
+                 * disposition the way Load and Save As do. Close the menu
+                 * behind it explicitly: the jog goes back to paging, and the
+                 * cleared star is visible on the page you are left looking
+                 * at. */
+                paramPagesExitMenu();
                 announce(`Saved ${record.name}`);
             } else {
                 announce("Save failed");
@@ -2148,8 +2155,11 @@ function maybeReturnToComponentGrid() {
      * instead of back on the page you asked from read as "I get dumped to a
      * different menu". restorePage() matches by NAME and is a no-op if the
      * new plan does not have one, so this is never a hard failure. */
+    const enterOnArrival = componentGridReturnEnter;
+    componentGridReturnEnter = true;    /* back to the nothing-happened default */
     enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey), "My Presets",
-                    componentParamPagesIo(slotIndex, componentKey), paramPagesChromeFor(componentKey));
+                    componentParamPagesIo(slotIndex, componentKey), paramPagesChromeFor(componentKey),
+                    { enter: enterOnArrival });
     needsRedraw = true;
     return true;
 }
@@ -2188,6 +2198,17 @@ function maybeReturnToComponentGrid() {
  * for an unknown hash — the honest answer, and the safe one: no `*` you cannot
  * clear.
  */
+/*
+ * Should the return to My Presets land you INSIDE the menu?
+ *
+ * Back from the browser having chosen nothing never really left it, so yes.
+ * Delete is management and you are likely to do more, so yes. Load and Save
+ * are the thing you came for, and once it is done the jog belongs to paging
+ * again, so no. Defaults to true because "nothing happened" is the case with
+ * no hook to set it -- backing out.
+ */
+let componentGridReturnEnter = true;
+
 function recordUserPresetFromDevice(slot, prefix, name) {
     const live = getSlotStateWithRetry(slot, prefix + ":state");
     userPresetLiveBlobCache[userPresetKey(slot, prefix)] = live;
@@ -2196,12 +2217,15 @@ function recordUserPresetFromDevice(slot, prefix, name) {
     needsRedraw = true;
 }
 function onUserPresetSaved(slot, prefix, name, stateJson) {
+    componentGridReturnEnter = false;   /* finished */
     recordUserPresetFromDevice(slot, prefix, name);
 }
 function onUserPresetLoaded(slot, prefix, name, stateJson) {
+    componentGridReturnEnter = false;   /* finished */
     recordUserPresetFromDevice(slot, prefix, name);
 }
 function onUserPresetDeleted(slot, prefix, name) {
+    componentGridReturnEnter = true;    /* management -- stay in the menu */
     /* Only when the DELETED name matches the one currently loaded — deleting
      * some other saved preset from the list must not disturb the record. */
     const rec = getUserPresetRecord(slot, prefix);
