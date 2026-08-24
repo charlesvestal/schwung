@@ -855,17 +855,79 @@ Each of the 4 slots has:
 
 ### User Presets
 
-Per-component preset snapshots for any chain module (synth, audio FX, or MIDI FX). Reached from a component's module-swap list in the shadow UI — an indented `[User Presets]` row tucked under the loaded module. A preset captures that component's opaque `<prefix>:state` blob (`synth` / `fx1`..`fx4` / `midi_fx1`) — the same string slot autosave and chain patches use — saved to `/data/UserData/schwung/presets/<module-id>/<name>.json`. Keyed by **module id**, so a preset saved on a module in one slot is offered wherever that module is loaded (cross-slot reuse). Scrolling the list **auditions live** (debounced) **when Global Settings → Audition is on**; Back reverts to the slot's original state, the detail screen's Load commits. That gate (`browser_preview`, shared with the file browser's WAV preview) **defaults to OFF**: auditioning applies state to the live slot, and this list stopped being hard to reach the moment it became a page at the end of every component. Off disables the audition, not the list — Load still loads, and with it off the browser pays no `:state` read on entry. Autosave is suppressed while auditioning (`isPresetPreviewActive()`) so an uncommitted preview is never persisted into `slot_N.json`. Impl: `src/shadow/shadow_ui_presets.mjs` (view module). Developer state-contract notes in `docs/MODULES.md`.
+Per-component preset snapshots for any chain module (synth, audio FX, or MIDI FX). Reached from a component's module-swap list in the shadow UI — an indented `[User Presets]` row tucked under the loaded module, or the component's own knob-grid "My Presets" page's `Load…` action. A preset captures that component's opaque `<prefix>:state` blob (`synth` / `fx1`..`fx4` / `midi_fx1`) — the same string slot autosave and chain patches use — saved to `/data/UserData/schwung/presets/<module-id>/<name>.json`. Keyed by **module id**, so a preset saved on a module in one slot is offered wherever that module is loaded (cross-slot reuse).
+
+**The browser is exactly ONE thing: choose a preset.** Picking a row LOADS it
+immediately and commits — there is no per-preset Load/Delete detail screen.
+Save, Save As and Delete are not offered here at all; they live on the
+component's own "My Presets" grid page (see below). This was three separate
+hardware reports, one cause: the verbs had moved to the grid page but the
+browser still offered its own copies — *"loading a preset shouldnt show
+load/delete, it should just load it (delete is on the main menu)"*, *"after
+deleting i get to a menu of [save current] not the preset (none) page"*,
+*"i also see [save current] if i load without saving"*. Scrolling the list
+**auditions live** (debounced) **when Global Settings → Audition is on**;
+Back reverts to the slot's original state. That gate (`browser_preview`,
+shared with the file browser's WAV preview) **defaults to OFF**: auditioning
+applies state to the live slot, and this list stopped being hard to reach the
+moment it became reachable from a page at the end of every component. Off
+disables the audition, not the list — a pick still loads, and with it off the
+browser pays no `:state` read on entry. Autosave is suppressed while
+auditioning (`isPresetPreviewActive()`) so an uncommitted preview is never
+persisted into `slot_N.json`. Impl: `src/shadow/shadow_ui_presets.mjs` (view
+module). Developer state-contract notes in `docs/MODULES.md`.
+
+A committed Load, or a completed Delete (still reached exclusively from the
+grid's My Presets page, via `enterPresetDeleteConfirm` — the SAME
+confirm-delete screen as before, just with no detail screen left in front of
+it), both exit through `VIEWS.CHAIN_EDIT`. `maybeReturnToComponentGrid` (see
+below) is what routes a grid-driven arrival back onto the My Presets page
+specifically, by NAME; a `[User Presets]`-row arrival (no grid open) lands
+plainly on the chain editor, as it always did.
 
 ### Every component's knob grid ends with two pages it never declared
 
 Load a synth, audio FX or MIDI FX in one of the 4 slots and its knob-grid jog
 sequence ends with two pages neither the module nor its author put there:
-**User Presets** (row 1 a readout — `Preset` / `(none)` or `Name` / `* Name` —
+**My Presets** (row 1 a readout — `Preset` / `(none)` or `Name` / `* Name` —
 then `Load…`, `Save` and `Delete` only with a preset loaded, `Save As`
 always) and **Module** (`Swap Module`, `Remove Module`). Both are doors: a
 `PAGE_MENU` must be entered before an entry fires, so jogging past the end
 cannot fire Remove Module by accident.
+
+**Named "My Presets", not "User Presets"** — the header's right side is a
+MEASURED share against a `HEADER_MIN_LEFT` floor (70px), and "USER PRESETS"
+(56px) is past it and truncates to "USER PRESE". "My Presets" (46px) fits.
+"Presets" alone would be worse: 27 modules in the fleet already plan a page
+called that (obxd, sfz, hush1, minijv, sf2, hera, tablor, noisemaker, …), so
+`claimName` would dedupe this one to "Presets - 2". Reported from hardware —
+rendered PNGs, not text art, are what actually showed the truncation.
+
+**The `*` follows a knob write within one settle, not just a page
+re-entry.** Turning a knob on any OTHER page of the same component changes
+the live `<prefix>:state` blob the mark compares against, and nothing used to
+notice until the page was re-entered — *"changed a knob and * didnt appear
+until i exited and re entered the module"*. Fixed without adding a
+draw-path read: `componentParamPagesIo`'s `setParam` marks the write pending
+(`markComponentParamWrite`); `tickUserPresetStale`, driven from the main
+tick (never a draw function) alongside `tickParamPages`, waits out
+`CONTRACT_SETTLE_MS` and then asks ONCE — via `paramPagesRefreshTrailing()`,
+the same call Save/Load/Delete already use — and only when the grid is still
+open on the exact `(slot, component)` that wrote. One read per settle, never
+per detent, none once the user has moved on.
+
+**The header shows the loaded USER preset, with the same mark, on every
+page of the component** — `S1 > tst` clean, `S1 > * tst` dirty — falling
+back to the module's own patch name and then its abbreviation exactly as
+before when no user preset is loaded. Asked for on hardware and shipped:
+*"should we change the preset in the header from the system preset to the
+user preset? (Init -> tst) and then show the * there too?"*. Reads a CACHE
+(`userPresetLiveBlobCache`, keyed per slot+prefix), never the DSP —
+`userPresetHeaderMark` in `shadow_ui.js`, wired through `ctx` to
+`headerTitle()` in `shadow_ui_param_pages.mjs` — so this costs nothing beyond
+the read the My Presets page already pays for, and it answers `null`
+harmlessly for a synthesised contract (Slot/Master FX/Global Settings) or a
+Master FX component, none of which populate a record for their key.
 
 **They are appended by the PLANNER, after the whole walk — not injected into
 a level's hierarchy — because injection cannot work for this fleet.** A

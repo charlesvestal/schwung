@@ -64,10 +64,10 @@ import { buildMetaIndex } from '/data/UserData/schwung/shared/param_pages/param_
 import { resolveViz } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
 import { listKnobInit, listKnobStep } from '/data/UserData/schwung/shared/param_pages/list_knob.mjs';
 /* Which user preset a component is currently on, and whether the live state
- * has moved away from it since — the "User Presets" trailing page's row 1
+ * has moved away from it since — the "My Presets" trailing page's row 1
  * (see componentTrailingMenus below). Pure: the caller supplies the record and
  * the live blob, and never turns a failed read into a `*`. */
-import { makeRecord, presetRowValue } from '/data/UserData/schwung/shared/param_pages/current_preset.mjs';
+import { makeRecord, presetRowValue, isModified } from '/data/UserData/schwung/shared/param_pages/current_preset.mjs';
 import { describeLfoTarget } from '/data/UserData/schwung/shared/lfo_target_label.mjs';
 import { emptyChain, parseId as parseChainId, chainComponents, moveBy as chainMoveBy,
          removeAt as chainRemoveAt, insertAt as chainInsertAt, MAX_FX, MAX_MIDI_FX }
@@ -712,6 +712,16 @@ let slotUserCleared = [false, false, false, false];
  */
 const currentUserPresets = Object.create(null);
 const userPresetKey = (slot, prefix) => `${slot}:${prefix}`;
+
+/*
+ * The live `<prefix>:state` blob, cached per (slot, prefix), from the last
+ * time componentTrailingMenus() actually read it (page ENTRY, an explicit
+ * refresh, or the debounced settle in tickUserPresetStale below). NOT a
+ * second read path -- the header (userPresetHeaderMark) reads THIS, never
+ * the DSP, which is what lets it show the `*` on every page of a component
+ * for free: the read already happened for the My Presets page.
+ */
+let userPresetLiveBlobCache = Object.create(null);
 
 function getUserPresetRecord(slot, prefix) {
     return currentUserPresets[userPresetKey(slot, prefix)] || null;
@@ -1875,7 +1885,7 @@ function paramPagesChromeFor(componentKey) {
 }
 
 /*
- * The io a knob-grid COMPONENT page gets for its trailing pages ("User
+ * The io a knob-grid COMPONENT page gets for its trailing pages ("My
  * Presets", "Module") — or null for a Master FX target, which has none.
  *
  * ONE helper, called from every enterParamPages site that opens a chain
@@ -1886,6 +1896,11 @@ function paramPagesChromeFor(componentKey) {
  * so Master FX has no user presets today and this inherits that gap rather
  * than widening it. masterFxIndexFromComponentKey is the same test
  * paramPagesChromeFor already uses to tell the two chains apart.
+ *
+ * `setParam` marks the write PENDING for the debounced `*` refresh
+ * (tickUserPresetStale) rather than performing the write itself specially —
+ * it still goes through the ordinary setSlotParam, so this is a hook on the
+ * write, not a second write path.
  */
 function componentParamPagesIo(slotIndex, componentKey) {
     if (masterFxIndexFromComponentKey(componentKey) >= 0) return null;
@@ -1893,11 +1908,16 @@ function componentParamPagesIo(slotIndex, componentKey) {
     return {
         trailingMenus: () => componentTrailingMenus(slotIndex, componentKey, prefix),
         runAction: (action) => runComponentActionFromGrid(slotIndex, componentKey, action),
+        setParam: (key, value) => {
+            const ok = setSlotParam(slotIndex, key, value);
+            markComponentParamWrite(slotIndex, componentKey);
+            return ok;
+        },
     };
 }
 
 /*
- * The two trailing pages every REAL component gets: "User Presets" (an
+ * The two trailing pages every REAL component gets: "My Presets" (an
  * informational row 1, then Load / Save / Save As / Delete) and "Module"
  * (Swap Module / Remove Module). [] when the position is empty — nothing is
  * loaded to show a preset for or to swap/remove.
@@ -1915,6 +1935,9 @@ function componentTrailingMenus(slotIndex, componentKey, prefix) {
 
     const record = getUserPresetRecord(slotIndex, prefix);
     const liveBlob = getSlotStateWithRetry(slotIndex, prefix + ":state");
+    /* Cache it -- this is the ONE read the header's `*` (userPresetHeaderMark)
+     * rides on, on every page of the component, for free. */
+    userPresetLiveBlobCache[userPresetKey(slotIndex, prefix)] = liveBlob;
     const hasRecord = !!(record && record.name);
 
     const presetEntries = [
@@ -1930,7 +1953,12 @@ function componentTrailingMenus(slotIndex, componentKey, prefix) {
     if (hasRecord) presetEntries.push({ label: "Delete", action: "up_delete" });
 
     return [
-        { name: "User Presets", entries: presetEntries },
+        /* "My Presets", not "User Presets": at 56px "USER PRESETS" is past
+         * the header's HEADER_MIN_LEFT floor (70px) and truncates to "USER
+         * PRESE". "Presets" alone would be worse -- 27 modules in the fleet
+         * already plan a page called that, so claimName would dedupe this to
+         * "Presets - 2". "My Presets" (46px) collides with nothing. */
+        { name: "My Presets", entries: presetEntries },
         { name: "Module", entries: [
             { label: "Swap Module", action: "swap_module" },
             { label: "Remove Module", action: "remove_module" },
@@ -1939,7 +1967,7 @@ function componentTrailingMenus(slotIndex, componentKey, prefix) {
 }
 
 /*
- * Perform a "User Presets" / "Module" trailing-page ACTION, by key — the
+ * Perform a "My Presets" / "Module" trailing-page ACTION, by key — the
  * fourth instance of the hand-off runSlotActionFromGrid / runMasterFxActionFromGrid
  * / runGlobalActionFromGrid perform, and it asks the same shared question
  * (gridActionOpenedSomething) rather than listing which of the six actions
@@ -2099,7 +2127,14 @@ function maybeReturnToComponentGrid() {
     if (!matchesReturnSlot) return false;
     const stillLoaded = getChainComponentModule(chainConfigs[slotIndex], componentKey);
     if (!stillLoaded || !stillLoaded.module) return false;
-    enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey), "",
+    /* "My Presets", not the first page: every hand-off this reconciler serves
+     * (a committed Load, a completed Delete, backing out of Swap) is either
+     * about that page or leaves it just as good a landing spot as any other.
+     * Reported from hardware for both Load and Delete: landing on page 1
+     * instead of back on the page you asked from read as "I get dumped to a
+     * different menu". restorePage() matches by NAME and is a no-op if the
+     * new plan does not have one, so this is never a hard failure. */
+    enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey), "My Presets",
                     componentParamPagesIo(slotIndex, componentKey), paramPagesChromeFor(componentKey));
     needsRedraw = true;
     return true;
@@ -2107,14 +2142,13 @@ function maybeReturnToComponentGrid() {
 
 /*
  * Keep the grid's "which User Preset is loaded" record in step with the three
- * flows that can move it — Load, Save (including Save As and the browser's
- * own "[Save current...]" row), and Delete — all of which live in
- * shadow_ui_presets.mjs. Registered on ctx (see the wiring below) so that file
- * never has to import currentUserPresets or reach back into this one by name;
- * it only reports WHAT HAPPENED, and this decides what it means for the
- * record. refreshTrailing() is safe to call unconditionally: it is a no-op
- * when the grid is not the thing that asked (e.g. a save committed from the
- * module-picker's own preset browser).
+ * flows that can move it — Load, Save (including Save As), and Delete — all
+ * of which live in shadow_ui_presets.mjs. Registered on ctx (see the wiring
+ * below) so that file never has to import currentUserPresets or reach back
+ * into this one by name; it only reports WHAT HAPPENED, and this decides
+ * what it means for the record. refreshTrailing() is safe to call
+ * unconditionally: it is a no-op when the grid is not the thing that asked
+ * (e.g. a save committed from the module-picker's own preset browser).
  */
 function onUserPresetSaved(slot, prefix, name, stateJson) {
     setUserPresetRecord(slot, prefix, makeRecord(name, stateJson));
@@ -2133,6 +2167,71 @@ function onUserPresetDeleted(slot, prefix, name) {
     if (rec && rec.name === name) setUserPresetRecord(slot, prefix, null);
     paramPagesRefreshTrailing();
     needsRedraw = true;
+}
+
+/*
+ * The `*` without a draw-path read.
+ *
+ * componentTrailingMenus() already reads `<prefix>:state` on page ENTRY and
+ * on every explicit refresh (Save/Load/Delete) and caches it
+ * (userPresetLiveBlobCache) — that read is unavoidable and already paid for.
+ * What was missing is a WRITE made through the grid itself: turning a knob
+ * changes the live blob and nothing noticed until the page was re-entered —
+ * reported from hardware ("changed a knob and * didnt appear until i exited
+ * and re entered").
+ *
+ * Fixed without a second read path. componentParamPagesIo's `setParam` calls
+ * markComponentParamWrite on every write; tickUserPresetStale (driven from the
+ * main tick, NEVER from a draw function — see the call site alongside
+ * tickParamPages) waits for the hand to settle (CONTRACT_SETTLE_MS, the same
+ * window the contract machinery already waits out) and then asks ONCE, via
+ * paramPagesRefreshTrailing() — the very call Save/Load/Delete already use —
+ * and only when the grid is still open on the exact (slot, component) that
+ * wrote. One read per SETTLE, never one per detent, and none at all once the
+ * user has moved on.
+ */
+let userPresetWritePending = false;
+let userPresetWriteAt = 0;
+let userPresetWriteSlot = -1;
+let userPresetWriteComponent = "";
+
+function markComponentParamWrite(slotIndex, componentKey) {
+    userPresetWritePending = true;
+    userPresetWriteAt = Date.now();
+    userPresetWriteSlot = slotIndex;
+    userPresetWriteComponent = componentKey;
+}
+
+function tickUserPresetStale() {
+    if (!userPresetWritePending) return;
+    if (Date.now() - userPresetWriteAt < CONTRACT_SETTLE_MS) return;
+    userPresetWritePending = false;
+    /* Only when it can be SEEN: the grid must still be open on the exact
+     * component that wrote, or this is a read for nobody. */
+    if (!paramPagesActive()) return;
+    if (paramPagesSlot() !== userPresetWriteSlot) return;
+    if (paramPagesComponent() !== userPresetWriteComponent) return;
+    paramPagesRefreshTrailing();
+}
+
+/*
+ * The header's "S1 > <name>" answer for a loaded user preset, or null when
+ * none is loaded (the header falls back to the module's own preset name /
+ * abbreviation in that case — see headerTitle in shadow_ui_param_pages.mjs).
+ *
+ * Reads userPresetLiveBlobCache, never the DSP: this is the SAME cached
+ * comparison componentTrailingMenus already makes for the My Presets page,
+ * so showing it in the header on every page of the component costs nothing
+ * beyond the read that page already pays for. Answers null harmlessly for a
+ * synthesised contract (Slot Settings, Master FX/Global Settings) or a Master
+ * FX component, none of which ever populate currentUserPresets for their key.
+ */
+function userPresetHeaderMark(slotIndex, componentKey) {
+    const prefix = getComponentParamPrefix(componentKey);
+    const record = getUserPresetRecord(slotIndex, prefix);
+    if (!record || !record.name) return null;
+    const liveBlob = userPresetLiveBlobCache[userPresetKey(slotIndex, prefix)];
+    return { name: record.name, dirty: isModified(record, liveBlob) };
 }
 
 /* The chain of one instrument slot. */
@@ -2813,7 +2912,7 @@ let masterModalFromGrid = false;
  * to the page once the help stack closes". See maybeReturnToGlobalGrid. */
 let globalModalFromGrid = false;
 
-/* ...and the fourth: a component's "User Presets" / "Module" trailing page.
+/* ...and the fourth: a component's "My Presets" / "Module" trailing page.
  * No suppress twin either -- Load/Delete/Swap/Remove hand off to screens that
  * already exist (the preset browser, the component picker) rather than a list
  * of the grid's own, so there is nothing to keep showing while they run. Just
@@ -9758,7 +9857,7 @@ function applyComponentSelection() {
  */
 function applyChainComponentPick(slotIndex, componentKey, picked, pending) {
     /* Re-derived from slot+key rather than taken from the caller: a "Remove
-     * Module" row on the User Presets/Module trailing page only ever has
+     * Module" row on the My Presets/Module trailing page only ever has
      * slot+key to hand, so the picker's own lookup and this one are expected
      * to always agree. */
     const at = slotChainComponentIndex(slotIndex, componentKey);
@@ -17051,6 +17150,8 @@ function drawHelpDetail() {
     _ctx.onPresetSaved = (...args) => onUserPresetSaved(...args);
     _ctx.onPresetLoaded = (...args) => onUserPresetLoaded(...args);
     _ctx.onPresetDeleted = (...args) => onUserPresetDeleted(...args);
+    /* The header's user-preset mark — see userPresetHeaderMark's own note. */
+    _ctx.userPresetHeaderMark = (...args) => userPresetHeaderMark(...args);
 
     /* Master FX functions */
     _ctx.scanForAudioFxModules = (...args) => scanForAudioFxModules(...args);
@@ -18312,6 +18413,10 @@ globalThis.tick = function() {
     if (paramTallyArmed()) paramTallyTick();
     /* One staggered param read per frame while the grid is up. */
     if (view === VIEWS.PARAM_PAGES) tickParamPages();
+    /* The debounced `*` refresh (see tickUserPresetStale's own note) — driven
+     * from the tick, never from a draw function, and cheap to poll when
+     * nothing is pending (one boolean test). */
+    tickUserPresetStale();
 
     /* Splash screen on boot */
     if (splashActive) {

@@ -25,7 +25,7 @@
  * state (a row highlighted) and --edit to see a row opened for editing
  * (`[value]`); without either it draws the inert, bracketed state you arrive on.
  *
- * --trailing appends the "User Presets" and "Module" pages every REAL
+ * --trailing appends the "My Presets" and "Module" pages every REAL
  * component gets at the end of its jog sequence (shadow_ui.js
  * componentTrailingMenus), with a representative loaded preset so the `*`
  * and the Save/Delete rows are visible. Being PAGE_MENU pages (not
@@ -96,7 +96,7 @@ function fakeValue(key, meta) {
 }
 
 /*
- * A representative "User Presets" / "Module" trailing set — same shape
+ * A representative "My Presets" / "Module" trailing set — same shape
  * shadow_ui.js's componentTrailingMenus builds, with a loaded preset that has
  * drifted so every row (including the Save/Delete pair that only appear with
  * a record) is visible in one render. The Preset row's VALUE is computed by
@@ -110,7 +110,7 @@ function fakeValue(key, meta) {
 const FIXTURE_RECORD = makeRecord("Fat Brass", "{}");
 const FIXTURE_DRIFTED_BLOB = "{\"x\":1}";
 const TRAILING_MENUS_FIXTURE = () => ([
-    { name: "User Presets", entries: [
+    { name: "My Presets", entries: [
         { label: "Preset", value: presetRowValue(FIXTURE_RECORD, FIXTURE_DRIFTED_BLOB) },
         { label: "Load…", action: "up_load" },
         { label: "Save", action: "up_save" },
@@ -164,7 +164,7 @@ for (const { p, i } of chosen) {
          * contract — the list layout, and every non-grid page kind (menu,
          * preset, items), live in page_controller.mjs, so anything short of
          * driving the real thing would be previewing a re-implementation. A
-         * trailing "User Presets"/"Module" page is PAGE_MENU, so it always
+         * trailing "My Presets"/"Module" page is PAGE_MENU, so it always
          * takes this path, even under --layout movy — there is no grid
          * representation of a menu for renderPageMovy to draw below. */
         const dev = createFakeDevice({ id: mod.id, prefix: "synth", initial: values });
