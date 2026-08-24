@@ -76,6 +76,24 @@ export function setButtonLED(cc, color, force = false) {
     move_midi_internal_send([0x0b, MidiCC, cc, color]);
 }
 
+/*
+ * Forget what we believe the hardware is showing, without touching it.
+ *
+ * setLED/setButtonLED suppress a write that matches the cache, which is what
+ * keeps a repaint from costing 128 packets a frame. That is only sound while
+ * this cache is the only thing writing. When something else repaints the
+ * surface underneath us — the shim replaying Move's own LED state on the way
+ * out of the knob grid, an overtake LED clear — the cache goes on claiming
+ * colours the hardware no longer shows, and every one of those LEDs stays
+ * wrong until its value happens to change.
+ *
+ * Call this after any such repaint. The next draw re-emits everything, which
+ * costs one frame of packets and is the only way back to being correct.
+ */
+export function invalidateLedCache() {
+    for (let i = 0; i < 128; i++) { ledCache[i] = -1; buttonCache[i] = -1; }
+}
+
 /* Clear all LEDs */
 export function clearAllLEDs() {
     for (let i = 0; i < 128; i++) {

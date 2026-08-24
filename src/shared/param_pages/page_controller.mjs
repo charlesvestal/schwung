@@ -2129,6 +2129,20 @@ export function createController(io = {}) {
         return s.peek;
     }
 
+    /**
+     * Take the peek down. True if there was one, so Back can consume the press.
+     *
+     * Goes through enumPeek() rather than testing `s.peek` directly: an expired
+     * peek is not a layer, and treating it as one would eat a Back the user
+     * meant for the view — the same wrong-reading-not-late-reading distinction
+     * enumPeek exists to make.
+     */
+    function dismissPeek() {
+        if (!enumPeek()) return false;
+        s.peek = null;
+        return true;
+    }
+
     /* --------------------------------------------------------- presentation */
 
     /** Arm the first-run hint. Ignored once it has been shown and dismissed. */
@@ -2455,6 +2469,7 @@ export function createController(io = {}) {
         selectionChanged: armContractSettle,
         onJog, goToPage, restorePage, pageLabel, onKnobTurn, onKnobTouch, onClick, takePending, commitEnum,
         enumPeek,
+        dismissPeek,
         /* The resolved graphics for the current page. Exposed so the host can
          * advance a sample's peak-envelope job from its TICK without planning
          * a second time -- the result is cached per fingerprint+page, so
