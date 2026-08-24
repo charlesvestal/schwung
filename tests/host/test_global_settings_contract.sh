@@ -285,7 +285,11 @@ const plan = planPages({ hierarchy, chainParams });
     link_audio_routing: "Move->Schwung", link_audio_publish: "Schwung->Link",
     latency_comp_enabled: "Latency Comp", resample_bridge: "Resample",
     skipback_shortcut: "Skipback", skipback_seconds: "Skipback Len",
-    browser_preview: "Audition Files", usbc_out_persist: "USB-C",
+    /* "Audition", not "Audition Files": this row now gates the User Presets
+       scroll audition as well as the file browser WAV preview, so the noun
+       narrowed it to something it no longer only means. Still written out in
+       full, which is what this pin is actually protecting. */
+    browser_preview: "Audition", usbc_out_persist: "USB-C",
     screen_reader_enabled: "Screen Reader", screen_reader_engine: "Engine",
     screen_reader_speed: "Speed", screen_reader_pitch: "Pitch",
     screen_reader_volume: "Volume", screen_reader_debounce: "Speak Delay",

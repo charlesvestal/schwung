@@ -92,7 +92,7 @@ import("./src/shared/param_pages/page_controller.mjs").then((C) => {
 # feature still absent — this is a unit test of the controller, so the wiring
 # is pinned at the source.
 pp="src/shadow/shadow_ui_param_pages.mjs"
-if ! command grep -q "controller.restorePage(restorePageName)" "$pp"; then
+if ! command grep -q "controller.restorePage(restorePageName" "$pp"; then
   echo "FAIL: enterParamPages no longer asks the controller to restore the page" >&2
   exit 1
 fi

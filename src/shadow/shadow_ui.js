@@ -63,6 +63,11 @@ import { drawKnobCard } from '/data/UserData/schwung/shared/param_pages/knob_car
 import { buildMetaIndex } from '/data/UserData/schwung/shared/param_pages/param_meta.mjs';
 import { resolveViz } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
 import { listKnobInit, listKnobStep } from '/data/UserData/schwung/shared/param_pages/list_knob.mjs';
+/* Which user preset a component is currently on, and whether the live state
+ * has moved away from it since — the "My Presets" trailing page's row 1
+ * (see componentTrailingMenus below). Pure: the caller supplies the record and
+ * the live blob, and never turns a failed read into a `*`. */
+import { makeRecord, presetRowValue, isModified } from '/data/UserData/schwung/shared/param_pages/current_preset.mjs';
 import { describeLfoTarget } from '/data/UserData/schwung/shared/lfo_target_label.mjs';
 import { emptyChain, parseId as parseChainId, chainComponents, moveBy as chainMoveBy,
          removeAt as chainRemoveAt, insertAt as chainInsertAt, MAX_FX, MAX_MIDI_FX }
@@ -207,13 +212,15 @@ import {
     handlePresetsJog, handlePresetDetailJog,
     handlePresetsSelect, handlePresetDetailSelect,
     handlePresetsBack, handlePresetDetailBack,
-    tickPresetPreview, isPresetPreviewActive
+    tickPresetPreview, isPresetPreviewActive,
+    overwriteUserPreset, enterPresetSaveAs, enterPresetDeleteConfirm
 } from './shadow_ui_presets.mjs';
 import {
     paramPagesEnabled, enterParamPages, exitParamPages, paramPagesActive,
     tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage,
     paramPagesComponent, paramPagesSlot, clearParamPagesTouch,
-    enumPickerFooterHints, CONTRACT_SETTLE_MS, LAYOUT_LIST
+    enumPickerFooterHints, CONTRACT_SETTLE_MS, LAYOUT_LIST,
+    paramPagesRefreshTrailing, paramPagesExitMenu
 } from './shadow_ui_param_pages.mjs';
 import { createSlotGridIo, createMasterGridIo,
          MFX_MIDI_CHANNEL_OPTIONS, MFX_MIDI_CHANNEL_KEY, mfxMidiChannelToIndex,
@@ -696,6 +703,63 @@ let lastSavedSlotSignature = ["", "", "", ""];
  * for genuine user removals. Reset when the user picks any module, when a
  * set is loaded, or after the empty marker has been written. */
 let slotUserCleared = [false, false, false, false];
+/*
+ * Which USER PRESET each component is on — {name, hash} per slot+prefix.
+ *
+ * Pure UI bookkeeping: the DSP never sees it, so there is no param, no struct
+ * field and no SHM change. It rides slot_N.json because that is already the
+ * file that survives a reboot for this component.
+ */
+const currentUserPresets = Object.create(null);
+const userPresetKey = (slot, prefix) => `${slot}:${prefix}`;
+
+/*
+ * The live `<prefix>:state` blob, cached per (slot, prefix), from the last
+ * time componentTrailingMenus() actually read it (page ENTRY, an explicit
+ * refresh, or the debounced settle in tickUserPresetStale below). NOT a
+ * second read path -- the header (userPresetHeaderMark) reads THIS, never
+ * the DSP, which is what lets it show the `*` on every page of a component
+ * for free: the read already happened for the My Presets page.
+ */
+let userPresetLiveBlobCache = Object.create(null);
+
+function getUserPresetRecord(slot, prefix) {
+    return currentUserPresets[userPresetKey(slot, prefix)] || null;
+}
+function setUserPresetRecord(slot, prefix, record) {
+    if (record) currentUserPresets[userPresetKey(slot, prefix)] = record;
+    else delete currentUserPresets[userPresetKey(slot, prefix)];
+}
+/* Pull {name, hash} out of a saved chain-position entry (synth / a midi_fx
+ * item / an audio_fx item), or null when it never carried one — including
+ * every patch written before user_preset existed. */
+function entryUserPreset(entry) {
+    if (!entry || !entry.user_preset || !entry.user_preset.name) return null;
+    return { name: entry.user_preset.name, hash: entry.user_preset.hash || null };
+}
+/*
+ * Sync currentUserPresets for one slot from a parsed chain object (the
+ * `chain` in a slot_N.json, i.e. {synth, midi_fx: [...], audio_fx: [...]}).
+ *
+ * ONE definition, called from every place a slot gets (re)loaded from disk --
+ * originally just the boot-restore loop in init(), but the map is keyed
+ * (slot, prefix) and NOT by set, so a set switch that reloads a slot without
+ * going through this leaves the OLD set's record attached to the NEW set's
+ * slot. Every prefix is synced unconditionally (entryUserPreset returns null
+ * for "no record"), so a component with nothing saved CLEARS rather than
+ * keeping whatever was there before this call.
+ */
+function syncUserPresetRecordsFromChain(slotIndex, chain) {
+    setUserPresetRecord(slotIndex, "synth", entryUserPreset(chain && chain.synth));
+    const midiFx = (chain && Array.isArray(chain.midi_fx)) ? chain.midi_fx : [];
+    for (let mf = 0; mf < MAX_MIDI_FX; mf++) {
+        setUserPresetRecord(slotIndex, `midi_fx${mf + 1}`, entryUserPreset(midiFx[mf]));
+    }
+    const audioFx = (chain && Array.isArray(chain.audio_fx)) ? chain.audio_fx : [];
+    for (let fx = 0; fx < MAX_FX; fx++) {
+        setUserPresetRecord(slotIndex, `fx${fx + 1}`, entryUserPreset(audioFx[fx]));
+    }
+}
 
 /* Splash screen state */
 let splashActive = true;
@@ -1820,6 +1884,421 @@ function paramPagesChromeFor(componentKey) {
     };
 }
 
+/*
+ * The io a knob-grid COMPONENT page gets for its trailing pages ("My
+ * Presets", "Module") — or null for a Master FX target, which has none.
+ *
+ * ONE helper, called from every enterParamPages site that opens a chain
+ * component (as opposed to a synthesised contract like Slot Settings or
+ * Global Settings, which supply their own io and never reach here). Master FX
+ * is excluded HERE rather than remembered at each call site: __user_presets__
+ * is injected in enterComponentSelect only, never in enterMasterFxModuleSelect,
+ * so Master FX has no user presets today and this inherits that gap rather
+ * than widening it. masterFxIndexFromComponentKey is the same test
+ * paramPagesChromeFor already uses to tell the two chains apart.
+ *
+ * `setParam` marks the write PENDING for the debounced `*` refresh
+ * (tickUserPresetStale) rather than performing the write itself specially —
+ * it still goes through the ordinary setSlotParam, so this is a hook on the
+ * write, not a second write path.
+ */
+function componentParamPagesIo(slotIndex, componentKey) {
+    if (masterFxIndexFromComponentKey(componentKey) >= 0) return null;
+    const prefix = getComponentParamPrefix(componentKey);
+    return {
+        trailingMenus: () => componentTrailingMenus(slotIndex, componentKey, prefix),
+        runAction: (action) => runComponentActionFromGrid(slotIndex, componentKey, action),
+        setParam: (key, value) => {
+            const ok = setSlotParam(slotIndex, key, value);
+            markComponentParamWrite(slotIndex, componentKey);
+            return ok;
+        },
+    };
+}
+
+/*
+ * The two trailing pages every REAL component gets: "My Presets" (an
+ * informational row 1, then Load / Save / Save As / Delete) and "Module"
+ * (Swap Module / Remove Module). [] when the position is empty — nothing is
+ * loaded to show a preset for or to swap/remove.
+ *
+ * Called from planPages()/refreshTrailing() — i.e. on page ENTRY and after
+ * our own writes, never on the draw path. The `<prefix>:state` read this
+ * makes is the largest value on the wire, so it costs one read per PLAN, not
+ * one per frame — see refreshTrailing's own note on why a Save must call it
+ * explicitly rather than relying on the next tick to notice.
+ */
+function componentTrailingMenus(slotIndex, componentKey, prefix) {
+    const cfg = chainConfigs[slotIndex] || createEmptyChainConfig();
+    const loaded = getChainComponentModule(cfg, componentKey);
+    if (!loaded || !loaded.module) return [];
+
+    const record = getUserPresetRecord(slotIndex, prefix);
+    const liveBlob = getSlotStateWithRetry(slotIndex, prefix + ":state");
+    /* Cache it -- this is the ONE read the header's `*` (userPresetHeaderMark)
+     * rides on, on every page of the component, for free. */
+    userPresetLiveBlobCache[userPresetKey(slotIndex, prefix)] = liveBlob;
+    const hasRecord = !!(record && record.name);
+
+    /*
+     * Row 1 IS the door. It shows which preset you are on and opens the
+     * browser; there is no separate Load row.
+     *
+     * It began as a readout with no action, and a Load... row beneath it.
+     * Reported from hardware: "when a preset is loaded we dont need the load
+     * button, you should be able to just click on the name of the preset in
+     * the menu". Two rows said one thing, and the row you would reach for was
+     * the inert one -- the name is what you are pointing at when you want a
+     * different name.
+     *
+     * It carries the action with no preset loaded too, reading "(none)": that
+     * is the only way into the browser, so making it conditional would leave a
+     * component with nothing saved yet unable to reach its own list.
+     */
+    const presetEntries = [
+        { label: "Preset", value: presetRowValue(record, liveBlob), action: "up_load" },
+    ];
+    /* Save and Delete both target the LOADED preset, so both are meaningless
+     * with none loaded — same always-or-hasPreset filter SLOT_GRID_ACTIONS
+     * applies for the slot settings menu. Save As stays unconditional: it
+     * goes straight to the keyboard where Save offers a generated name. */
+    if (hasRecord) presetEntries.push({ label: "Save", action: "up_save" });
+    presetEntries.push({ label: "Save As", action: "up_save_as" });
+    if (hasRecord) presetEntries.push({ label: "Delete", action: "up_delete" });
+
+    return [
+        /* "My Presets", not "User Presets": at 56px "USER PRESETS" is past
+         * the header's HEADER_MIN_LEFT floor (70px) and truncates to "USER
+         * PRESE". "Presets" alone would be worse -- 27 modules in the fleet
+         * already plan a page called that, so claimName would dedupe this to
+         * "Presets - 2". "My Presets" (46px) collides with nothing. */
+        { name: "My Presets", entries: presetEntries },
+        { name: "Module", entries: [
+            { label: "Swap Module", action: "swap_module" },
+            { label: "Remove Module", action: "remove_module" },
+        ] },
+    ];
+}
+
+/*
+ * Perform a "My Presets" / "Module" trailing-page ACTION, by key — the
+ * fourth instance of the hand-off runSlotActionFromGrid / runMasterFxActionFromGrid
+ * / runGlobalActionFromGrid perform, and it asks the same shared question
+ * (gridActionOpenedSomething) rather than listing which of the six actions
+ * leave.
+ *
+ * Save and Save As never leave VIEWS.PARAM_PAGES (a text-entry overlay sits on
+ * top of it, same as the browser's own "[Save current...]" row) — so for those
+ * the predicate is false and nothing else happens, same as today. Load,
+ * Delete, Swap and Remove hand off to screens that already exist (the preset
+ * browser, the confirm-delete screen, the component picker) rather than
+ * growing new ones, and every one of those paths eventually backs out to
+ * VIEWS.CHAIN_EDIT — see maybeReturnToComponentGrid for the way back from
+ * there to the grid the user actually opened.
+ */
+function runComponentActionFromGrid(slotIndex, componentKey, action) {
+    const prefix = getComponentParamPrefix(componentKey);
+    const cfg = chainConfigs[slotIndex] || createEmptyChainConfig();
+    const loaded = getChainComponentModule(cfg, componentKey);
+    const moduleId = loaded && loaded.module;
+    const record = getUserPresetRecord(slotIndex, prefix);
+    let result;
+
+    switch (action) {
+        case "up_load":
+            enterPresetBrowser(slotIndex, componentKey, moduleId, prefix);
+            result = true;
+            break;
+
+        case "up_save": {
+            if (!record || !record.name) { result = false; break; }
+            const ok = overwriteUserPreset(slotIndex, prefix, moduleId, record.name);
+            if (ok) {
+                const live = getSlotStateWithRetry(slotIndex, prefix + ":state");
+                onUserPresetSaved(slotIndex, prefix, record.name, live);
+                /* Save acts IN PLACE -- it never navigates, so it has no
+                 * return path to carry the "you are finished here"
+                 * disposition the way Load and Save As do. Close the menu
+                 * behind it explicitly: the jog goes back to paging, and the
+                 * cleared star is visible on the page you are left looking
+                 * at. */
+                paramPagesExitMenu();
+                announce(`Saved ${record.name}`);
+            } else {
+                announce("Save failed");
+                needsRedraw = true;
+            }
+            result = true;
+            break;
+        }
+
+        case "up_save_as":
+            enterPresetSaveAs(slotIndex, componentKey, moduleId, prefix);
+            result = true;
+            break;
+
+        case "up_delete":
+            if (!record || !record.name) { result = false; break; }
+            enterPresetDeleteConfirm(slotIndex, componentKey, moduleId, prefix, record.name);
+            result = true;
+            break;
+
+        case "swap_module": {
+            const at = slotChainComponentIndex(slotIndex, componentKey);
+            if (at >= 0) enterComponentSelect(slotIndex, at);
+            result = true;
+            break;
+        }
+
+        case "remove_module":
+            /* A menu page is a door: reaching this row already took a
+             * deliberate click, and picking the module again undoes it — the
+             * same reasoning that keeps a `+` box's own "None" pick from
+             * raising a second confirmation. IS applyChainComponentPick's
+             * None path, not a copy of it. */
+            setUserPresetRecord(slotIndex, prefix, null);
+            applyChainComponentPick(slotIndex, componentKey, "", null);
+            result = true;
+            break;
+
+        default:
+            result = false;
+    }
+
+    /* view !== VIEWS.PARAM_PAGES is the ONE test that is true for exactly the
+     * four cases above that hand off to a real screen (Load, Delete, Swap,
+     * Remove — the last via applyChainComponentPick, which always ends in
+     * setView(VIEWS.CHAIN_EDIT)) and false for Save/Save As/an unhandled key,
+     * which never move `view` at all. Asking the screen rather than the key
+     * is what keeps a future seventh action from being silently wrong here
+     * too. */
+    if (gridActionOpenedSomething(view !== VIEWS.PARAM_PAGES)) {
+        componentModalFromGrid = true;
+        componentGridReturnSlot = slotIndex;
+        componentGridReturnKey = componentKey;
+    }
+    return result;
+}
+
+/*
+ * ...and back to the grid once the hand-off screen is done with.
+ *
+ * Unlike the slot/Master FX/Global reconciles, the screens a component action
+ * hands off to are REAL navigations, not an overlay flag drawn by the same
+ * view the grid left — Load lands in VIEWS.PRESETS, Delete's confirm in
+ * VIEWS.PRESET_DETAIL, Swap/Remove in (or through) VIEWS.COMPONENT_SELECT —
+ * and every exit from any of those (Back, a completed Load, a completed
+ * delete-and-back-out) converges on VIEWS.CHAIN_EDIT, same as backing out of
+ * the component picker the ordinary way. So this RECONCILES from THAT
+ * arrival rather than hooking each of the several ways out of each of those
+ * screens — the same reasoning as maybeReturnToSlotGrid, aimed at a
+ * different convergence point because these hand-offs are navigations
+ * instead of overlays.
+ */
+function maybeReturnToComponentGrid() {
+    if (!componentModalFromGrid) return false;
+    if (isTextEntryActive()) return false;
+    /*
+     * Prove this CHAIN_EDIT arrival belongs to the hand-off that raised the
+     * flag, rather than assuming it does just because the flag is still set.
+     *
+     * CHAIN_EDIT is not a narrow purpose-built surface like CHAIN_SETTINGS /
+     * MASTER_FX / GLOBAL_SETTINGS -- it is the general chain-editor hub,
+     * reachable from many places that have nothing to do with a fired grid
+     * action (Shift+Vol+TrackN, long-press, ...) and that run every tick
+     * regardless of the current view. Enumerating those entry points to clear
+     * the flag at each one is exactly the mistake the reconcile-dont-hook
+     * pattern exists to avoid: get one wrong, or miss the next one added, and
+     * the flag survives it and fires on an unrelated arrival later.
+     *
+     * So the flag is resolved -- fired OR dropped -- the FIRST time CHAIN_EDIT
+     * is reached, by whichever route, and it can never survive past this call:
+     * it fires only when the slot CHAIN_EDIT is now showing still matches the
+     * slot the hand-off was raised for. A JUMP_TO_SLOT(3) while the flag was
+     * raised for slot 1 reassigns selectedSlot to 3 before landing here, so
+     * the mismatch drops the flag instead of yanking the user out of the
+     * slot-3 chain editor they deliberately opened.
+     *
+     * ...and the position must STILL HOLD A MODULE, because one of the actions
+     * that hands off is Remove Module. Removal ends in setView(CHAIN_EDIT) on
+     * the same slot, so the slot match above passes and we would re-enter the
+     * grid for the component that was just deleted — a contract read with
+     * nobody to answer it, which the device draws as a permanent "Loading...".
+     * Reported from hardware; the slot-match alone did not close it.
+     *
+     * Asking whether there is still something to show, rather than listing the
+     * actions that destroy one, is the same discipline as asking what is on
+     * screen rather than which action ran: it covers Remove, a picker "None",
+     * and whatever the next destructive action turns out to be, without any of
+     * them having to remember to opt out.
+     *
+     * Known gap: a same-SLOT interruption (e.g. long-press Track1 while the
+     * flag is raised for slot 1) still matches and fires, landing on the grid
+     * instead of the chain editor that interruption asked for. Telling those
+     * two apart needs a token identifying the specific flow instance, which
+     * none of the hand-off screens (shadow_ui_presets.mjs, out of scope here)
+     * currently carry back out through Back/Load/Delete.
+     */
+    const matchesReturnSlot = selectedSlot === componentGridReturnSlot;
+    componentModalFromGrid = false;
+    const slotIndex = componentGridReturnSlot;
+    const componentKey = componentGridReturnKey;
+    componentGridReturnSlot = -1;
+    componentGridReturnKey = "";
+    if (!matchesReturnSlot) return false;
+    const stillLoaded = getChainComponentModule(chainConfigs[slotIndex], componentKey);
+    if (!stillLoaded || !stillLoaded.module) return false;
+    /* "My Presets", not the first page: every hand-off this reconciler serves
+     * (a committed Load, a completed Delete, backing out of Swap) is either
+     * about that page or leaves it just as good a landing spot as any other.
+     * Reported from hardware for both Load and Delete: landing on page 1
+     * instead of back on the page you asked from read as "I get dumped to a
+     * different menu". restorePage() matches by NAME and is a no-op if the
+     * new plan does not have one, so this is never a hard failure. */
+    const enterOnArrival = componentGridReturnEnter;
+    componentGridReturnEnter = true;    /* back to the nothing-happened default */
+    enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey), "My Presets",
+                    componentParamPagesIo(slotIndex, componentKey), paramPagesChromeFor(componentKey),
+                    { enter: enterOnArrival });
+    needsRedraw = true;
+    return true;
+}
+
+/*
+ * Keep the grid's "which User Preset is loaded" record in step with the three
+ * flows that can move it — Load, Save (including Save As), and Delete — all
+ * of which live in shadow_ui_presets.mjs. Registered on ctx (see the wiring
+ * below) so that file never has to import currentUserPresets or reach back
+ * into this one by name; it only reports WHAT HAPPENED, and this decides
+ * what it means for the record. refreshTrailing() is safe to call
+ * unconditionally: it is a no-op when the grid is not the thing that asked
+ * (e.g. a save committed from the module-picker's own preset browser).
+ */
+/*
+ * Record the preset as loaded/saved, hashing what the DEVICE now reports —
+ * NOT the blob we just handed it.
+ *
+ * Reported from hardware: loading the preset you are already on restored the
+ * values but never cleared the `*`, and it stayed on after loading a second
+ * preset and coming back. The cause is that these hashed `stateJson`, the
+ * string we WROTE. A module is free to normalise state on the way in — reorder
+ * keys, reformat floats, fill in defaults it did not receive — so the very
+ * next read of `<prefix>:state` is a different string with a different hash,
+ * and `isModified` is true forever with nothing the user can do about it.
+ * Pressing Save to clear it would then bake the normalised form in, which is
+ * the one repair that looks like it works.
+ *
+ * So read it back and hash THAT, which is what every later comparison sees.
+ * One extra IPC read on an explicit Load or Save — never on a draw path, and
+ * not a hot path: the read budget rule is about per-frame cost, not about a
+ * key the user pressed. Refreshing the cache here also means the header mark
+ * agrees immediately instead of waiting for the next settle.
+ *
+ * A FAILED read leaves the hash null, and `isModified` reports NOT modified
+ * for an unknown hash — the honest answer, and the safe one: no `*` you cannot
+ * clear.
+ */
+/*
+ * Should the return to My Presets land you INSIDE the menu?
+ *
+ * Back from the browser having chosen nothing never really left it, so yes.
+ * Delete is management and you are likely to do more, so yes. Load and Save
+ * are the thing you came for, and once it is done the jog belongs to paging
+ * again, so no. Defaults to true because "nothing happened" is the case with
+ * no hook to set it -- backing out.
+ */
+let componentGridReturnEnter = true;
+
+function recordUserPresetFromDevice(slot, prefix, name) {
+    const live = getSlotStateWithRetry(slot, prefix + ":state");
+    userPresetLiveBlobCache[userPresetKey(slot, prefix)] = live;
+    setUserPresetRecord(slot, prefix, makeRecord(name, live));
+    paramPagesRefreshTrailing();
+    needsRedraw = true;
+}
+function onUserPresetSaved(slot, prefix, name, stateJson) {
+    componentGridReturnEnter = false;   /* finished */
+    recordUserPresetFromDevice(slot, prefix, name);
+}
+function onUserPresetLoaded(slot, prefix, name, stateJson) {
+    componentGridReturnEnter = false;   /* finished */
+    recordUserPresetFromDevice(slot, prefix, name);
+}
+function onUserPresetDeleted(slot, prefix, name) {
+    componentGridReturnEnter = true;    /* management -- stay in the menu */
+    /* Only when the DELETED name matches the one currently loaded — deleting
+     * some other saved preset from the list must not disturb the record. */
+    const rec = getUserPresetRecord(slot, prefix);
+    if (rec && rec.name === name) setUserPresetRecord(slot, prefix, null);
+    paramPagesRefreshTrailing();
+    needsRedraw = true;
+}
+
+/*
+ * The `*` without a draw-path read.
+ *
+ * componentTrailingMenus() already reads `<prefix>:state` on page ENTRY and
+ * on every explicit refresh (Save/Load/Delete) and caches it
+ * (userPresetLiveBlobCache) — that read is unavoidable and already paid for.
+ * What was missing is a WRITE made through the grid itself: turning a knob
+ * changes the live blob and nothing noticed until the page was re-entered —
+ * reported from hardware ("changed a knob and * didnt appear until i exited
+ * and re entered").
+ *
+ * Fixed without a second read path. componentParamPagesIo's `setParam` calls
+ * markComponentParamWrite on every write; tickUserPresetStale (driven from the
+ * main tick, NEVER from a draw function — see the call site alongside
+ * tickParamPages) waits for the hand to settle (CONTRACT_SETTLE_MS, the same
+ * window the contract machinery already waits out) and then asks ONCE, via
+ * paramPagesRefreshTrailing() — the very call Save/Load/Delete already use —
+ * and only when the grid is still open on the exact (slot, component) that
+ * wrote. One read per SETTLE, never one per detent, and none at all once the
+ * user has moved on.
+ */
+let userPresetWritePending = false;
+let userPresetWriteAt = 0;
+let userPresetWriteSlot = -1;
+let userPresetWriteComponent = "";
+
+function markComponentParamWrite(slotIndex, componentKey) {
+    userPresetWritePending = true;
+    userPresetWriteAt = Date.now();
+    userPresetWriteSlot = slotIndex;
+    userPresetWriteComponent = componentKey;
+}
+
+function tickUserPresetStale() {
+    if (!userPresetWritePending) return;
+    if (Date.now() - userPresetWriteAt < CONTRACT_SETTLE_MS) return;
+    userPresetWritePending = false;
+    /* Only when it can be SEEN: the grid must still be open on the exact
+     * component that wrote, or this is a read for nobody. */
+    if (!paramPagesActive()) return;
+    if (paramPagesSlot() !== userPresetWriteSlot) return;
+    if (paramPagesComponent() !== userPresetWriteComponent) return;
+    paramPagesRefreshTrailing();
+}
+
+/*
+ * The header's "S1 > <name>" answer for a loaded user preset, or null when
+ * none is loaded (the header falls back to the module's own preset name /
+ * abbreviation in that case — see headerTitle in shadow_ui_param_pages.mjs).
+ *
+ * Reads userPresetLiveBlobCache, never the DSP: this is the SAME cached
+ * comparison componentTrailingMenus already makes for the My Presets page,
+ * so showing it in the header on every page of the component costs nothing
+ * beyond the read that page already pays for. Answers null harmlessly for a
+ * synthesised contract (Slot Settings, Master FX/Global Settings) or a Master
+ * FX component, none of which ever populate currentUserPresets for their key.
+ */
+function userPresetHeaderMark(slotIndex, componentKey) {
+    const prefix = getComponentParamPrefix(componentKey);
+    const record = getUserPresetRecord(slotIndex, prefix);
+    if (!record || !record.name) return null;
+    const liveBlob = userPresetLiveBlobCache[userPresetKey(slotIndex, prefix)];
+    return { name: record.name, dirty: isModified(record, liveBlob) };
+}
+
 /* The chain of one instrument slot. */
 function slotChainTarget(slotIndex) {
     return {
@@ -2233,7 +2712,7 @@ function returnToParamPagesFromEditor() {
     paramEditorReturnPage = "";
     exitHierarchyEditor();
     enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey), returnPage,
-                    null, paramPagesChromeFor(componentKey));
+                    componentParamPagesIo(slotIndex, componentKey), paramPagesChromeFor(componentKey));
     needsRedraw = true;
 }
 
@@ -2498,6 +2977,16 @@ let masterModalFromGrid = false;
  * to the page once the help stack closes". See maybeReturnToGlobalGrid. */
 let globalModalFromGrid = false;
 
+/* ...and the fourth: a component's "My Presets" / "Module" trailing page.
+ * No suppress twin either -- Load/Delete/Swap/Remove hand off to screens that
+ * already exist (the preset browser, the component picker) rather than a list
+ * of the grid's own, so there is nothing to keep showing while they run. Just
+ * where to come back to when they are done: the slot + component key the grid
+ * was open on. See maybeReturnToComponentGrid. */
+let componentModalFromGrid = false;
+let componentGridReturnSlot = -1;
+let componentGridReturnKey = "";
+
 function saveParamViewConfig() {
     try {
         host_write_file(PARAM_VIEW_CONFIG_PATH, JSON.stringify({ param_view: paramViewGlobal }));
@@ -2526,7 +3015,25 @@ let filebrowserEnabled = false;    // Off by default, toggle in Settings > Servi
 let midiIndicatorEnabled = (typeof midi_indicator_get === "function") ? !!midi_indicator_get() : false;
 
 /* Preview player state */
-let previewEnabled = true;         // Global setting: auto-preview in file browser
+/*
+ * Global setting: audition what the cursor is on before you commit to it.
+ *
+ * Two consumers, one switch: the file browser plays a highlighted WAV, and the
+ * User Presets list applies the highlighted preset to the live slot. Both are
+ * "hear it before you pick it", and both are surprising if you did not ask for
+ * them, so they share a gate rather than growing one each.
+ *
+ * DEFAULT OFF, and the in-memory initial value has to say so too — the settings
+ * screen reads THIS variable, so a device with no stored config would otherwise
+ * draw "On" while the declared default is Off. Persisted only by the toggle
+ * (saveBrowserPreviewConfig has exactly one caller), which is what lets the
+ * default move at all: a device that never chose follows it, one that chose
+ * keeps its choice. Same mechanism as param_view.
+ *
+ * The stored key stays `browser_preview` — renaming it would silently discard
+ * every existing user's choice.
+ */
+let previewEnabled = false;
 let previewPendingPath = "";       // Path waiting for debounce
 let previewPendingTime = 0;        // Date.now() when path was set
 const PREVIEW_DEBOUNCE_MS = 300;
@@ -6688,10 +7195,16 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
                      slotIndex + ".json)");
             return BAIL;
         }
-        return {
+        const entry = {
             config,
             bypassed: parseInt(getSlotParam(slotIndex, `${id}:bypassed`) || "0", 10) === 1 ? 1 : 0
         };
+        /* Only when there is one. An absent key is how a component that has
+         * never loaded a preset is spelled, and how every patch written before
+         * this existed still reads. */
+        const record = getUserPresetRecord(slotIndex, id);
+        if (record) entry.user_preset = { name: record.name, hash: record.hash };
+        return entry;
     };
 
     if (cfg.synth && cfg.synth.module) {
@@ -6700,7 +7213,8 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
         patch.synth = {
             module: cfg.synth.module,
             config: entry.config,
-            bypassed: entry.bypassed
+            bypassed: entry.bypassed,
+            user_preset: entry.user_preset
         };
     }
 
@@ -6713,7 +7227,8 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
         patch.midi_fx.push({
             type: moduleData.module,
             params: entry.config,
-            bypassed: entry.bypassed
+            bypassed: entry.bypassed,
+            user_preset: entry.user_preset
         });
     }
 
@@ -6725,7 +7240,8 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
         patch.audio_fx.push({
             type: moduleData.module,
             params: entry.config,
-            bypassed: entry.bypassed
+            bypassed: entry.bypassed,
+            user_preset: entry.user_preset
         });
     }
 
@@ -9391,20 +9907,42 @@ function applyComponentSelection() {
         return;
     }
 
-    const cfg = chainConfigs[selectedSlot] || createEmptyChainConfig();
+    applyChainComponentPick(selectedSlot, comp.key, picked, pending);
+}
+
+/*
+ * Apply a chain-component pick: the whole sequence, from one place.
+ *
+ * `picked` is the module id, or "" for None. None on a LIST position is a
+ * removal that closes the gap and renumbers everything downstream — a SHAPE
+ * change carried by one `remove` verb — while None on the synth is a clear
+ * with no neighbours to renumber. applyPickerChoiceToChain knows which; this
+ * function is everything that must happen either way, and it is extracted so
+ * the Module page's "Remove Module" IS this path rather than a copy of it.
+ */
+function applyChainComponentPick(slotIndex, componentKey, picked, pending) {
+    /* Re-derived from slot+key rather than taken from the caller: a "Remove
+     * Module" row on the My Presets/Module trailing page only ever has
+     * slot+key to hand, so the picker's own lookup and this one are expected
+     * to always agree. */
+    const at = slotChainComponentIndex(slotIndex, componentKey);
+    const comp = at >= 0 ? slotChainComponents(slotIndex)[at] : null;
+    if (!comp) return;
+
+    const cfg = chainConfigs[slotIndex] || createEmptyChainConfig();
     const choice = withPendingChainInsert(
-        applyPickerChoiceToChain(cfg, comp.key, picked), pending);
-    chainConfigs[selectedSlot] = choice.cfg;
+        applyPickerChoiceToChain(cfg, componentKey, picked), pending);
+    chainConfigs[slotIndex] = choice.cfg;
     /* A swap MUTATES `cfg` in place and `None` hands back a different object,
      * so neither identity nor the module signature can be what notices this.
      * The confirm path reloads (and the declined-gate path reloads too), but
      * the model and the DSP disagree from here until one of them runs. */
-    invalidateChainConfig(selectedSlot);
+    invalidateChainConfig(slotIndex);
 
     /* Track explicit user-removal so autosave can bypass the boot-glitch
      * guard. Set when the slot is now fully empty; reset on any non-empty
      * pick (the user is rebuilding the slot). */
-    slotUserCleared[selectedSlot] = !chainHasAnyModule(choice.cfg);
+    slotUserCleared[slotIndex] = !chainHasAnyModule(choice.cfg);
 
     /* A component changed, so any LFO label naming that component by module
      * is now wrong. The label cache keys on the stored ROUTING, which a swap
@@ -9414,13 +9952,12 @@ function applyComponentSelection() {
 
     /* Apply to DSP - map component key to param key */
     const moduleId = picked;
-    const paramKey = chainComponentParamKey(comp.key, "module") || "";
+    const paramKey = chainComponentParamKey(componentKey, "module") || "";
 
     /* Feedback gate: if the picked module pulls line-in, warn about speakers.
      * Callback-based — schwung's QuickJS doesn't pump pending jobs so
      * Promise.then never fires. */
     if (paramKey && moduleId) {
-        const slotIndex = selectedSlot;  /* capture — shim JUMP_TO_SLOT path can mutate selectedSlot */
         let meta = null;
         try {
             if (typeof host_get_module_metadata === 'function') {
@@ -9428,13 +9965,13 @@ function applyComponentSelection() {
             }
         } catch (err) {
             if (typeof host_log === 'function') {
-                host_log(`applyComponentSelection: feedback gate metadata error for ${moduleId}: ${err}`);
+                host_log(`applyChainComponentPick: feedback gate metadata error for ${moduleId}: ${err}`);
             }
         }
         maybeConfirmForModule(meta, (ok) => {
             if (!ok) {
                 if (typeof host_log === 'function') {
-                    host_log(`applyComponentSelection: declined feedback gate for ${moduleId}`);
+                    host_log(`applyChainComponentPick: declined feedback gate for ${moduleId}`);
                 }
                 loadChainConfigFromSlot(slotIndex);
                 slotUserCleared[slotIndex] = false;
@@ -9448,7 +9985,7 @@ function applyComponentSelection() {
     }
 
     /* Clearing a slot (empty moduleId) — no feedback risk, run directly. */
-    applyComponentSelectionConfirmed(selectedSlot, paramKey, moduleId, comp, choice);
+    applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, choice);
 }
 
 function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, choice) {
@@ -9472,7 +10009,7 @@ function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, c
     if (shape && shape.kind === "remove") {
         /* nothing more to write: the verb did the unload */
     } else if (paramKey) {
-        if (typeof host_log === "function") host_log(`applyComponentSelection: slot=${slotIndex} param=${paramKey} module=${moduleId}`);
+        if (typeof host_log === "function") host_log(`applyChainComponentPick: slot=${slotIndex} param=${paramKey} module=${moduleId}`);
         /*
          * BEFORE the module write, because the write reloads the position and
          * takes its modulation entries with it — after it, there is nothing
@@ -9487,7 +10024,7 @@ function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, c
                                         getComponentParamPrefix(comp.key));
         }
         const success = setSlotParam(slotIndex, paramKey, moduleId);
-        if (typeof host_log === "function") host_log(`applyComponentSelection: setSlotParam returned ${success}`);
+        if (typeof host_log === "function") host_log(`applyChainComponentPick: setSlotParam returned ${success}`);
         if (!success) {
             print(2, 50, "Failed to apply", 1);
         }
@@ -9610,6 +10147,25 @@ function runChainSettingAction(slot, key) {
 }
 
 /*
+ * Did the action just performed put something else on screen?
+ *
+ * The one question all four run*ActionFromGrid handlers ask, and the reason
+ * they ask it this way rather than testing the action key: a key test is
+ * right for today's actions and silently wrong for the next one added. Four
+ * copies of that reasoning is three chances to update three of them when a
+ * fifth action arrives.
+ *
+ * What counts as "something else" is screen-specific -- a slot's Save/Delete
+ * raise an overlay FLAG the list draws, Global Settings pushes a help stack or
+ * changes `view` outright, a component action changes `view` to a real screen
+ * -- so the caller states its own conditions and this only ORs them. The
+ * shared part is the QUESTION ("is any of this true"), not the mechanism.
+ */
+function gridActionOpenedSomething(...conditions) {
+    return conditions.some(Boolean);
+}
+
+/*
  * The param accessors the slot grid drives this slot through.
  *
  * All the mapping lives in shadow_ui_slot_grid.mjs, which is pure and tested on
@@ -9644,7 +10200,7 @@ function runChainSettingAction(slot, key) {
  */
 function runSlotActionFromGrid(slot, key) {
     runChainSettingAction(slot, key);
-    if (!(showingNamePreview || confirmingOverwrite || confirmingDelete)) return false;
+    if (!gridActionOpenedSomething(showingNamePreview, confirmingOverwrite, confirmingDelete)) return false;
     exitParamPages();
     /* The list must STAY the list while the modal is up -- re-entering the grid
      * would drop the confirmation on the floor again. */
@@ -10055,7 +10611,7 @@ function setFilebrowserRunning(on) {
  */
 function runMasterFxActionFromGrid(key) {
     handleMasterFxSettingsAction(key);
-    if (!(masterShowingNamePreview || masterConfirmingOverwrite || masterConfirmingDelete)) {
+    if (!gridActionOpenedSomething(masterShowingNamePreview, masterConfirmingOverwrite, masterConfirmingDelete)) {
         return false;
     }
     exitParamPages();
@@ -10106,8 +10662,8 @@ function maybeReturnToMasterGrid() {
  */
 function runGlobalActionFromGrid(action) {
     handleGlobalSettingsAction(action);
-    const opened = helpNavStack.length > 0 || !!helpDetailScrollState
-                   || view !== VIEWS.PARAM_PAGES;
+    const opened = gridActionOpenedSomething(
+        helpNavStack.length > 0, !!helpDetailScrollState, view !== VIEWS.PARAM_PAGES);
     if (!opened) return false;
     exitParamPages();
     globalModalFromGrid = true;
@@ -11218,7 +11774,8 @@ function enterHierarchyEditorWith(slotIndex, componentKey, hierarchy) {
      * screen reader is on, since a grid has nothing selected to read out. */
     if (paramPagesEnabled() && !suppressParamPagesOnce) {
         enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey),
-                        null, null, paramPagesChromeFor(componentKey));
+                        null, componentParamPagesIo(slotIndex, componentKey),
+                        paramPagesChromeFor(componentKey));
         return;
     }
     suppressParamPagesOnce = false;
@@ -11287,8 +11844,13 @@ function enterMasterFxHierarchyEditor(fxSlot) {
      * slot chain. See paramPagesChromeFor.
      */
     if (paramPagesEnabled() && !suppressParamPagesOnce) {
+        /* componentParamPagesIo returns null for a Master FX target (see its
+         * own note) — routed through the SAME helper as the slot-chain sites
+         * rather than skipped here so a future fifth call site cannot opt
+         * Master FX in by omission. */
         enterParamPages(MASTER_CHAIN_TARGET.slot, componentKey,
-                        getComponentParamPrefix(componentKey), null, null,
+                        getComponentParamPrefix(componentKey), null,
+                        componentParamPagesIo(MASTER_CHAIN_TARGET.slot, componentKey),
                         paramPagesChromeFor(componentKey));
         return;
     }
@@ -15102,7 +15664,8 @@ function handleSelect() {
                     cameFromParamPages = false;
                     exitHierarchyEditor();
                     enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey),
-                        null, null, paramPagesChromeFor(componentKey));
+                        null, componentParamPagesIo(slotIndex, componentKey),
+                        paramPagesChromeFor(componentKey));
                 } else {
                     /* No children - enter preset edit mode to show params/swap */
                     hierEditorPresetEditMode = true;
@@ -16647,6 +17210,13 @@ function drawHelpDetail() {
     _ctx.loadChainConfigFromSlot = (...args) => loadChainConfigFromSlot(...args);
     _ctx.getSlotStateWithRetry = (...args) => getSlotStateWithRetry(...args);
     _ctx.showWarning = (...args) => showWarning(...args);
+    /* User-preset record hooks for shadow_ui_presets.mjs — see the note above
+     * onUserPresetSaved. */
+    _ctx.onPresetSaved = (...args) => onUserPresetSaved(...args);
+    _ctx.onPresetLoaded = (...args) => onUserPresetLoaded(...args);
+    _ctx.onPresetDeleted = (...args) => onUserPresetDeleted(...args);
+    /* The header's user-preset mark — see userPresetHeaderMark's own note. */
+    _ctx.userPresetHeaderMark = (...args) => userPresetHeaderMark(...args);
 
     /* Master FX functions */
     _ctx.scanForAudioFxModules = (...args) => scanForAudioFxModules(...args);
@@ -16859,6 +17429,10 @@ function drawHelpDetail() {
     Object.defineProperty(_ctx, 'editingChainSettingValue', {
         get() { return editingChainSettingValue; }, enumerable: true
     });
+    /* The audition gate (Global Settings -> Audition). Read through ctx like
+     * every other host fact the view modules need, so the presets list does not
+     * reach for a host global directly. */
+    _ctx.auditionEnabled = () => previewEnabled;
     _ctx.getChainSettingsItems = (...args) => getChainSettingsItems(...args);
     _ctx.getChainSettingValue = (...args) => getChainSettingValue(...args);
 
@@ -17633,6 +18207,12 @@ globalThis.init = function() {
                     if (chain && chain.synth && chain.synth.bypassed) {
                         setSlotParam(i, "synth:bypassed", "1");
                     }
+                    /* Restore which user preset each component was on. Absent
+                     * is the common case — every patch written before this
+                     * existed, and every component nobody has loaded a preset
+                     * into — and must CLEAR any stale record rather than leave
+                     * one behind from a previous load into this slot. */
+                    syncUserPresetRecordsFromChain(i, chain);
                     /*
                      * BOTH lists, and bounded by the CAP rather than by a
                      * number that used to be the cap.
@@ -17898,6 +18478,10 @@ globalThis.tick = function() {
     if (paramTallyArmed()) paramTallyTick();
     /* One staggered param read per frame while the grid is up. */
     if (view === VIEWS.PARAM_PAGES) tickParamPages();
+    /* The debounced `*` refresh (see tickUserPresetStale's own note) — driven
+     * from the tick, never from a draw function, and cheap to poll when
+     * nothing is pending (one boolean test). */
+    tickUserPresetStale();
 
     /* Splash screen on boot */
     if (splashActive) {
@@ -18267,11 +18851,27 @@ globalThis.tick = function() {
                         } else {
                             debugLog("SET_CHANGED: slot " + (i + 1) + " not restored (load timeout)");
                         }
+                        /* load_file (native) restores the DSP side but not
+                         * this pure-JS bookkeeping -- same gap the boot-restore
+                         * loop's bypass comment describes. The map is keyed
+                         * (slot, prefix), not by set, so without this a preset
+                         * record from the OUTGOING set's slot i survives onto
+                         * the INCOMING set's slot i and gets written into ITS
+                         * autosave. Sync (and clear on parse failure) either way. */
+                        try {
+                            const parsed = JSON.parse(raw);
+                            const chain = (parsed && parsed.chain) ? parsed.chain : parsed;
+                            syncUserPresetRecordsFromChain(i, chain);
+                        } catch (e) {
+                            syncUserPresetRecordsFromChain(i, null);
+                        }
                     } else {
                         debugLog("SET_CHANGED: slot " + (i + 1) + " empty state (already cleared)");
+                        syncUserPresetRecordsFromChain(i, null);
                     }
                 } else {
                     debugLog("SET_CHANGED: slot " + (i + 1) + " no state file (already cleared)");
+                    syncUserPresetRecordsFromChain(i, null);
                 }
             }
             /* Refresh UI state immediately so display reflects new slot contents */
@@ -18817,6 +19417,10 @@ globalThis.tick = function() {
      * help viewer's host now, so "the surface is idle again" means the help
      * stack has emptied. */
     if (view === VIEWS.GLOBAL_SETTINGS) maybeReturnToGlobalGrid();
+    /* ...and the component-actions half. These hand-offs are navigations, not
+     * overlays, so "idle again" is arrival back at VIEWS.CHAIN_EDIT rather than
+     * staying on the view the grid left. See maybeReturnToComponentGrid. */
+    if (view === VIEWS.CHAIN_EDIT) maybeReturnToComponentGrid();
 
     /* Guarded: a throw in any draw function would otherwise repeat every
      * frame — frozen screen with no recovery, since the C loop keeps

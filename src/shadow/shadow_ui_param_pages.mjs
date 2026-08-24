@@ -205,7 +205,7 @@ export function paramPagesLayout() {
  *   it (Global Settings); it is called instead of setView on Back.
  *   Omitted means the slot-chain defaults.
  */
-export function enterParamPages(slot, component, prefix, restorePageName, io, chrome) {
+export function enterParamPages(slot, component, prefix, restorePageName, io, chrome, restoreOpts) {
     currentSlot = slot;
     currentComponent = component;
     currentPrefix = prefix || component;
@@ -285,13 +285,34 @@ export function enterParamPages(slot, component, prefix, restorePageName, io, ch
      * planned, and drops it once the contract settles without producing that
      * page.
      */
-    if (restorePageName) controller.restorePage(restorePageName);
+    /* restoreOpts.enter decides whether the restored page's door OPENS --
+     * see restorePage. Only the caller knows whether we are coming back from
+     * finishing something (jog back to paging) or from merely looking (stay
+     * inside the menu you never really left). */
+    if (restorePageName) controller.restorePage(restorePageName, restoreOpts || {});
     ctx.setView(ctx.VIEWS.PARAM_PAGES);
 }
 
 export function exitParamPages() {
     controller = null;
     controllerIo = null;
+}
+
+/*
+ * Rebuild ONLY the trailing pages ("My Presets" / "Module"), in place —
+ * after a Save or Delete changes what the My Presets rows offer, so the
+ * grid reflects it without moving the user off the page they are standing
+ * on. No-op when the grid is not up (e.g. a save committed from the
+ * module-picker's own preset browser, which never opened the grid).
+ */
+/* Close the menu on the page that is up, without leaving the page. Save acts
+ * in place -- it never navigates -- so it has no return path to carry the
+ * "you are finished here" disposition. This is that disposition. */
+export function paramPagesExitMenu() {
+    if (controller && typeof controller.exitMenu === 'function') controller.exitMenu();
+}
+export function paramPagesRefreshTrailing() {
+    if (controller) controller.refreshTrailing();
 }
 
 export function paramPagesActive() {
@@ -665,11 +686,28 @@ export function headerTitle() {
             : (ctx.getModuleAbbrev ? ctx.getModuleAbbrev(moduleRef)
                                    : currentComponent.toUpperCase());
     }
-    /* A hardware synth puts the PATCH name in its display, not the model
+    /*
+     * A loaded USER preset takes priority over the module's own patch name --
+     * asked for and answered yes on hardware ("should we change the preset in
+     * the header from the system preset to the user preset? (Init -> tst)
+     * and then show the * there too?"). Marked the SAME way the My Presets
+     * page's own row is (`* ` leading, never trailing -- see
+     * current_preset.mjs presetRowValue), and read from a cache
+     * (userPresetHeaderMark), never the DSP, so this costs nothing beyond the
+     * read the My Presets page already pays for.
+     *
+     * A synthesised contract (Slot Settings, Master FX/Global Settings) or a
+     * Master FX component never has a record for its key, so this answers
+     * null there and falls through unaffected.
+     *
+     * A hardware synth puts the PATCH name in its display, not the model
      * number — and the module's identity is already visible in the chain
      * editor you came from. Falls back to the abbreviation until the read
      * cursor has picked the name up, and for modules with no presets. */
-    const name = (controller && controller.presetName) || _abbrevCache;
+    const userMark = (typeof ctx.userPresetHeaderMark === 'function')
+        ? ctx.userPresetHeaderMark(currentSlot, currentComponent) : null;
+    const name = userMark ? `${userMark.dirty ? '* ' : ''}${userMark.name}`
+        : (controller && controller.presetName) || _abbrevCache;
     /* "MFX", never "S1", on the master bus: it is ADDRESSED at IPC slot 0 by
      * convention and is not instrument slot 1. */
     const label = (currentChrome && currentChrome.label) || `S${currentSlot + 1}`;
