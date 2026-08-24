@@ -105,7 +105,23 @@
             "it: hold the knob",
             "and click. Jog to",
             "choose, click to",
-            "set, Back cancels."
+            "set, Back cancels.",
+            "",
+            "Just turning it",
+            "shows the list too,",
+            "briefly. That one",
+            "is only a readout -",
+            "the turn already",
+            "changed the value.",
+            "Back closes it.",
+            "",
+            "The knob rings show",
+            "which knob is which",
+            "cell: 1-4 white,",
+            "5-8 amber, brighter",
+            "as the value rises.",
+            "Dark means nothing",
+            "is mapped there."
           ]
         },
         {
