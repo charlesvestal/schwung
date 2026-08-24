@@ -205,7 +205,7 @@ export function paramPagesLayout() {
  *   it (Global Settings); it is called instead of setView on Back.
  *   Omitted means the slot-chain defaults.
  */
-export function enterParamPages(slot, component, prefix, restorePageName, io, chrome) {
+export function enterParamPages(slot, component, prefix, restorePageName, io, chrome, restoreOpts) {
     currentSlot = slot;
     currentComponent = component;
     currentPrefix = prefix || component;
@@ -285,7 +285,11 @@ export function enterParamPages(slot, component, prefix, restorePageName, io, ch
      * planned, and drops it once the contract settles without producing that
      * page.
      */
-    if (restorePageName) controller.restorePage(restorePageName);
+    /* restoreOpts.enter decides whether the restored page's door OPENS --
+     * see restorePage. Only the caller knows whether we are coming back from
+     * finishing something (jog back to paging) or from merely looking (stay
+     * inside the menu you never really left). */
+    if (restorePageName) controller.restorePage(restorePageName, restoreOpts || {});
     ctx.setView(ctx.VIEWS.PARAM_PAGES);
 }
 
@@ -301,6 +305,12 @@ export function exitParamPages() {
  * on. No-op when the grid is not up (e.g. a save committed from the
  * module-picker's own preset browser, which never opened the grid).
  */
+/* Close the menu on the page that is up, without leaving the page. Save acts
+ * in place -- it never navigates -- so it has no return path to carry the
+ * "you are finished here" disposition. This is that disposition. */
+export function paramPagesExitMenu() {
+    if (controller && typeof controller.exitMenu === 'function') controller.exitMenu();
+}
 export function paramPagesRefreshTrailing() {
     if (controller) controller.refreshTrailing();
 }
