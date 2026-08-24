@@ -19,7 +19,8 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_shadow_midi_filter \
 	$(BUILD_DIR)/test_midi_in_compact \
 	$(BUILD_DIR)/test_rt_thread_audit \
-	$(BUILD_DIR)/test_master_fx_slot_routing
+	$(BUILD_DIR)/test_master_fx_slot_routing \
+	$(BUILD_DIR)/test_master_fx_saved_state
 
 # Read the Master FX cap out of the shipped header instead of restating it, so
 # the routing test covers whatever range Master FX actually runs with. Raising
