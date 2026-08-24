@@ -1084,7 +1084,7 @@ takes, so there is no way to make an ordinary level's `menu` "last" from
 inside `ui_hierarchy` itself.
 
 **You never need this to get User Presets / Module actions.** Every loaded
-chain component already gets a "User Presets" and a "Module" page appended
+chain component already gets a "My Presets" and a "Module" page appended
 after its whole jog sequence, for free — declare nothing. See CLAUDE.md,
 "Every component's knob grid ends with two pages it never declared", for why
 that append happens in the planner rather than through this field.

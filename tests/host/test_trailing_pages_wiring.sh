@@ -3,7 +3,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-# Pins Task 6 of the component-trailing-pages plan: "User Presets" and
+# Pins Task 6 of the component-trailing-pages plan: "My Presets" (renamed
+# from "User Presets" after hardware feedback — see current_preset.mjs) and
 # "Module" as trailing pages on every REAL component's knob-grid jog
 # sequence, with the Master FX exclusion routed through ONE helper
 # (componentParamPagesIo) rather than remembered at each call site, and the
@@ -280,6 +281,11 @@ const body = [
     "function getUserPresetRecord() { return userRecord; }",
     "let liveBlob = \"{}\";",
     "function getSlotStateWithRetry() { return liveBlob; }",
+    // componentTrailingMenus caches the live blob it reads so the header mark
+    // (userPresetHeaderMark) can answer without a second read -- see the
+    // note above userPresetLiveBlobCache in shadow_ui.js.
+    "const userPresetLiveBlobCache = Object.create(null);",
+    "const userPresetKey = (slot, prefix) => slot + \":\" + prefix;",
     grab("componentTrailingMenus"),
     "return {",
     "  run: (slot, key, prefix) => componentTrailingMenus(slot, key, prefix),",
@@ -321,8 +327,8 @@ const presetRow = (rows) => rows[0].entries[0];
 
 if (r.empty.length !== 0) fail("an empty component position must get NO trailing pages, got " + JSON.stringify(r.empty));
 
-if (r.noRecord.length !== 2 || r.noRecord[0].name !== "User Presets" || r.noRecord[1].name !== "Module")
-    fail("expected [\"User Presets\", \"Module\"] pages, got " + r.noRecord.map((p) => p.name).join(","));
+if (r.noRecord.length !== 2 || r.noRecord[0].name !== "My Presets" || r.noRecord[1].name !== "Module")
+    fail("expected [\"My Presets\", \"Module\"] pages, got " + r.noRecord.map((p) => p.name).join(","));
 if (presetRow(r.noRecord).value !== "(none)") fail("Preset row with no record should read (none), got " + JSON.stringify(presetRow(r.noRecord)));
 let a = actions(r.noRecord[0]);
 if (a.includes("up_save") || a.includes("up_delete")) fail("Save/Delete must be ABSENT with no preset loaded, got actions " + a.join(","));
