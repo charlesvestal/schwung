@@ -253,6 +253,8 @@ if (src.includes("Re-derived from slot+key") && /expected\s*\n?\s*\*?\s*to\s*\n?
         componentModalFromGrid: true,
         componentGridReturnSlot: 1,
         componentGridReturnKey: "synth",
+        /* the door-open disposition -- see the restorePage note */
+        componentGridReturnEnter: true,
         selectedSlot: 1,
         needsRedraw: false,
         /* The position still holds a module unless a case says otherwise.
@@ -271,6 +273,7 @@ if (src.includes("Re-derived from slot+key") && /expected\s*\n?\s*\*?\s*to\s*\n?
         .replace(/\bcomponentModalFromGrid\b/g, "s.componentModalFromGrid")
         .replace(/\bcomponentGridReturnSlot\b/g, "s.componentGridReturnSlot")
         .replace(/\bcomponentGridReturnKey\b/g, "s.componentGridReturnKey")
+        .replace(/\bcomponentGridReturnEnter\b/g, "s.componentGridReturnEnter")
         .replace(/\bselectedSlot\b/g, "s.selectedSlot")
         .replace(/\bchainConfigs\b/g, "s.chainConfigs")
         .replace(/\bneedsRedraw\b/g, "s.needsRedraw");

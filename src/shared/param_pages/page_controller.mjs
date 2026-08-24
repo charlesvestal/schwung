@@ -827,8 +827,21 @@ export function createController(io = {}) {
      * (re)planned. It is one-shot: once honoured, or once the user has moved
      * somewhere themselves, it is dropped rather than fighting them.
      */
-    function restorePage(name) {
+    /*
+     * `enter` says whether the door OPENS on arrival, and the caller decides
+     * because only the caller knows why we came back.
+     *
+     * A door you were SENT to opens; a door you FINISHED with closes. Backing
+     * out of a browser without choosing anything never really left the menu,
+     * so it returns you inside it. Completing the thing you came for — loading
+     * a preset, saving one — is done, so it hands the jog back to paging.
+     * Deleting is management: you are likely to do more of it, so it stays in.
+     *
+     * Default false, which is what this did before the option existed.
+     */
+    function restorePage(name, { enter = false } = {}) {
         s.restoreName = (typeof name === "string" && name) ? name : null;
+        s.restoreEnter = !!enter;
         applyPendingRestore();
     }
 
@@ -840,23 +853,24 @@ export function createController(io = {}) {
                 s.pageIndex = i;
                 s.restoreName = null;
                 /*
-                 * A restore is an arrival you ASKED for, so the door opens —
-                 * the same rule goToPage's enterIfDoor applies to picking a
-                 * section or following a navigate_to, and for the same reason:
-                 * one deliberate gesture should not need a second to take
-                 * effect.
+                 * Open the door only when the CALLER said to — see restorePage.
                  *
-                 * Reported from hardware: Load... on a component with nothing
-                 * saved yet, then Back, landed on My Presets with the jog still
-                 * outside it, so you had to click in again to reach the rows
-                 * you had just come from.
+                 * This used to open on every restore, on the reasoning that an
+                 * arrival you asked for should not need a second gesture. That
+                 * is right for backing out of a browser without choosing
+                 * anything (reported from hardware: Load... with nothing saved,
+                 * then Back, left the jog outside the menu you had just come
+                 * from) and for a delete, which is management you are likely to
+                 * continue. It is wrong for finishing: after loading or saving
+                 * a preset you are done with the menu and want the jog back.
                  *
-                 * Entering costs nothing and writes nothing: a preset browser
-                 * auditions on TURN, not on entry, so this hands over the jog
-                 * without loading anything. A knob page is not a door, so the
-                 * ordinary "come back where I was" restore is unchanged.
+                 * Entering costs nothing and writes nothing either way — a
+                 * preset browser auditions on TURN, not on entry. A knob page
+                 * is not a door, so the ordinary come-back-where-I-was restore
+                 * is unaffected whatever the caller asks for.
                  */
-                if (isDoor(page()) && !menuEntered()) enterMenu();
+                if (s.restoreEnter && isDoor(page()) && !menuEntered()) enterMenu();
+                else if (!s.restoreEnter && menuEntered()) exitMenu();
                 return;
             }
         }
