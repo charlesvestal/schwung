@@ -62,6 +62,7 @@
 #include "host/shadow_state.h"
 #include "host/shadow_xmos_audio.h"
 #include "host/shadow_midi.h"
+#include "host/shadow_overtake_midi.h"
 #include "host/shadow_midi_filter.h"
 #include "host/fx_midi_filter.h"
 #include "host/shadow_shm_util.h"
@@ -1688,7 +1689,7 @@ static void overtake_dsp_load_body(void) {
     overtake_host_api.midi_send_external = overtake_midi_send_external;
     overtake_host_api.get_bpm = shim_get_bpm;
     overtake_host_api.get_beat_position = shadow_transport_beat_position;
-    overtake_host_api.midi_inject_to_move = shadow_chain_midi_inject;
+    overtake_host_api.midi_inject_to_move = shadow_overtake_midi_send;
 
     /* Extract module directory from dsp path */
     char module_dir[256];
