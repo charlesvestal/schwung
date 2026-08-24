@@ -230,5 +230,63 @@ const spin = (ctl, slot, n) => {
      + (mk && mk[1].trim()) + " vs " + (ix && ix[1].trim()) + ")");
 }
 
+
+/* ===================================================================== N ==
+ * AN ENUM INSIDE A WIDE GRAPHIC DOES NOT PEEK.
+ *
+ * The peek exists because a 30px cell cannot show a list. When the parameter
+ * is a cell of a graphic that already spans several cells, the page is drawing
+ * the answer live and larger than a list of words can: turn a filter type and
+ * the CURVE changes in front of you. Covering that with a panel replaces the
+ * better picture with the worse one, and hides the rest of the row while it
+ * does it.
+ *
+ * Not hypothetical -- 12 enum cells in the fleet fixture sit inside a wide
+ * graphic, every one of them a filter type or an LFO shape.
+ */
+{
+  const CP = [
+    { key: "cutoff",    name: "Cutoff",    type: "float", min: 0, max: 1, step: 0.01 },
+    { key: "resonance", name: "Res",       type: "float", min: 0, max: 1, step: 0.01 },
+    { key: "filter_type", name: "Type",    type: "enum",
+      options: ["LP12", "LP24", "HP12", "HP24", "BP", "Notch"] },
+    { key: "drive",     name: "Drive",     type: "float", min: 0, max: 1, step: 0.01 },
+  ];
+  const H = { modes: null, levels: { root: { label: "F",
+    knobs: ["cutoff", "resonance", "filter_type", "drive"],
+    params: CP.map((p) => ({ key: p.key })) } } };
+
+  clock = 1000;
+  const store = { cutoff: "0.5", resonance: "0.2", filter_type: "0", drive: "0.1" };
+  const ctl = createController({
+    getParam: (k) => {
+      const b = String(k).replace(/^[^:]+:/, "");
+      if (b === "ui_hierarchy") return JSON.stringify(H);
+      if (b === "chain_params") return JSON.stringify(CP);
+      return b in store ? store[b] : "";
+    },
+    setParam: (k, v) => { store[String(k).replace(/^[^:]+:/, "")] = String(v); },
+    announce: () => {},
+    now: () => clock,
+  });
+  ctl.load({ prefix: "synth" });
+  for (let i = 0; i < 12; i++) ctl.tick();
+
+  const viz = ctl.vizGroups();
+  const wide = viz.filter((g) => g.slotSpan > 1);
+  ok(wide.length > 0, "the fixture really does produce a wide graphic");
+  ok(wide.some((g) => g.keys.indexOf("filter_type") >= 0),
+     "and filter_type is one of its cells -- otherwise this proves nothing");
+
+  const ft = (ctl.page.keys || []).indexOf("filter_type");
+  ok(ft >= 0, "filter_type reached the page");
+  for (let i = 0; i < 6; i++) { clock += 20; ctl.onKnobTurn(ft, 1, clock); }
+  ok(ctl.enumPeek() === null,
+     "turning an enum that is a cell of a WIDE graphic raises no peek");
+  ok(store.filter_type !== "0",
+     "and the turn still WROTE -- suppressing the panel must not suppress the "
+     + "edit, got " + store.filter_type);
+}
+
 process.exit(fail ? 1 : 0);
 '

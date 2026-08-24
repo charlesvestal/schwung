@@ -986,7 +986,20 @@ export function createController(io = {}) {
         /* One extra stop in the rotation reads the preset name, which a
          * hardware synth would put in its display and which no module declares
          * as a param. */
-        const stops = p.keys.length + 1;
+        /*
+         * ...and one stop per viz EXTRA KEY: a value the picture needs that is
+         * not on the page, so the ordinary per-key rotation never asks for it.
+         * granny is the case — `sample_path` is on no knobs list, so the sample
+         * cell had no filename to decode and drew a synthetic waveform for a
+         * sample that was never loaded.
+         *
+         * Bounded by construction: only detectSample sets extraKeys, only when
+         * the file is off-page, and only ever one of them. It is a stop in the
+         * rotation, not a read per frame — the same bargain the preset name
+         * takes.
+         */
+        const extraKeys = vizEnabled ? vizExtraKeys() : [];
+        const stops = p.keys.length + 1 + extraKeys.length;
         const at = s.cursor % stops;
         s.cursor = (s.cursor + 1) % stops;
 
@@ -998,6 +1011,17 @@ export function createController(io = {}) {
         if (at === p.keys.length) {
             const pn = getParam(`${s.prefix}:preset_name`);
             s.presetName = (pn && pn.length) ? pn : null;
+            return null;
+        }
+        if (at > p.keys.length) {
+            /* A plain read: an extra key is a filename, never modulated and
+             * never turned, so it skips the modulation and settle lanes. The
+             * tri-state still applies — a failed read must not become "" and
+             * then become "no sample". */
+            const ek = extraKeys[at - p.keys.length - 1];
+            if (!ek) return null;
+            const ev = getParam(fullKey(ek));
+            if (ev !== null && ev !== undefined && ev !== "") s.values[ek] = ev;
             return null;
         }
         const key = p.keys[at];
@@ -1746,7 +1770,17 @@ export function createController(io = {}) {
          * list down — left up it would be describing a parameter your hand has
          * left, which is a wrong reading rather than a stale-looking one.
          */
+        /*
+         * A KEY THE PAGE ALREADY DRAWS BIG DOES NOT PEEK.
+         *
+         * The peek exists because a 30px cell cannot show a list or a
+         * waveform. When the graphic has been given more than one cell — see
+         * gatherGroupMembers — it has the room, and covering the page with a
+         * panel would replace something legible with something no more
+         * informative, while hiding the rest of the row.
+         */
         if (meta.divable && meta.kind === KIND_ENUM
+            && !drawnWide(key)
             && Array.isArray(meta.options) && meta.options.length >= 2) {
             const pi = Math.round(Number(value));
             s.peek = {
@@ -2365,6 +2399,35 @@ export function createController(io = {}) {
         const { groups } = resolveViz({ keys: p.keys, metaIndex: s.metaIndex, overrides: vizOverrides });
         vizCache = { key: cacheKey, groups };
         return groups;
+    }
+
+    /**
+     * Keys a graphic on this page needs but the page does not carry.
+     *
+     * Read off the same cache vizGroups() fills, so asking every tick costs a
+     * lookup rather than a re-detect.
+     */
+    /**
+     * Is this key a cell of a graphic that spans more than one cell?
+     *
+     * The question the peek asks: "is what the user can already see too small
+     * to read". Span, not kind — a one-cell sample cell is as cramped as a
+     * one-cell enum, and a three-cell one is not.
+     */
+    function drawnWide(key) {
+        for (const g of vizGroups()) {
+            if (g.slotSpan > 1 && Array.isArray(g.keys) && g.keys.indexOf(key) >= 0) return true;
+        }
+        return false;
+    }
+
+    function vizExtraKeys() {
+        const out = [];
+        for (const g of vizGroups()) {
+            if (!Array.isArray(g.extraKeys)) continue;
+            for (const k of g.extraKeys) if (k && out.indexOf(k) < 0) out.push(k);
+        }
+        return out;
     }
 
     /** Read the current page aloud — the gesture that replaces a glance. */
