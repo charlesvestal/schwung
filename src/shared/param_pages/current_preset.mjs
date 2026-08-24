@@ -56,7 +56,7 @@ export function isModified(record, liveBlob) {
 }
 
 /**
- * The value on the User Presets page first row.
+ * The value on the My Presets page first row.
  *
  * The modified mark LEADS the name, which reads against convention — an editor
  * would write "Fat Brass *". It is first because the row is 128px wide and the
