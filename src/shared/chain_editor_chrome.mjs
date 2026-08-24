@@ -32,11 +32,15 @@
 
 import { drawHeader, drawFooter, RULE_Y as MOVY_RULE_Y }
     from "./param_pages/render_page_movy.mjs";
-import { renderPicker, fitText } from "./param_pages/render_page.mjs";
-/* The list rect the knob grid`s own menu pages use. Imported rather than
- * restated: the two pickers below must occupy the SAME rectangle, and a second
- * copy of "x 8, y 10, w 112" is how they would come to stop doing so. */
-import { MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W } from "./param_pages/page_controller.mjs";
+import { fitText } from "./param_pages/render_page.mjs";
+/* The list rect the knob grid`s own menu pages use, AND the row renderer that
+ * fills it. Imported rather than restated: the two pickers below must occupy
+ * the SAME rectangle and draw the SAME rows, and a second copy of
+ * "x 8, y 10, w 112" — or a second row loop — is how they would come to stop
+ * doing so. drawPageChromeList is drawMenuList, i.e. the one list every other
+ * screen in the shadow UI already draws with. */
+import { MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W, drawPageChromeList }
+    from "./param_pages/page_controller.mjs";
 import { DEFAULT_Y as DIAGRAM_Y, BOX_H as DIAGRAM_BOX_H } from "./chain_diagram.mjs";
 import { SCREEN_WIDTH, truncateText } from "./chain_ui_views.mjs";
 
@@ -200,19 +204,17 @@ export function drawChainPicker(ctx, o) {
         return;
     }
 
-    renderPicker(ctx, {
-        rect: { x: MENU_LIST_X, y: MENU_LIST_Y,
-                w: MENU_LIST_W, h: MOVY_RULE_Y - MENU_LIST_Y },
-        entries: entries.map((item) => ({
+    drawPageChromeList(ctx,
+        { x: MENU_LIST_X, y: MENU_LIST_Y,
+          w: MENU_LIST_W, h: MOVY_RULE_Y - MENU_LIST_Y },
+        entries.map((item) => ({
             name: item.name || item.id || "Unknown",
             /* The one already loaded, marked where a menu page puts its value.
              * The rule lives HERE and not in either caller: a mark that only
              * one of the two pickers drew is the same bug one layer down. */
             value: (o.currentId && item.id === o.currentId) ? "*" : "",
         })),
-        index: o.index,
-        header: false,
-    });
+        o.index);
 
     drawFooter(ctx, [["JOG", "SEL"], ["CLK", "LOAD"], ["BACK", "EXIT"]]);
 }

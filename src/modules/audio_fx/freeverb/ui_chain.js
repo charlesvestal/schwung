@@ -88,7 +88,7 @@ function drawUI() {
         print(SCREEN_WIDTH - valueStr.length * 6 - 4, y, valueStr, color);
     }
 
-    drawFooter({left: "Jog: select", right: "Knobs: adjust"});
+    drawFooter(["Jog: select", "Knobs: adjust"]);
     needsRedraw = false;
 }
 

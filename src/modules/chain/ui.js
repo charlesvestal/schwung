@@ -707,7 +707,7 @@ function drawSlotMenu() {
         getLabel: (item) => item.label
     });
 
-    drawMenuFooter({left: "Back: cancel", right: "Click: select"});
+    drawMenuFooter(["Back: cancel", "Click: select"]);
 }
 
 function getComponentsForSlot(slotType) {
@@ -753,7 +753,7 @@ function drawComponentPicker() {
         getLabel: (item) => item.name
     });
 
-    drawMenuFooter({left: "Back: cancel", right: "Click: select"});
+    drawMenuFooter(["Back: cancel", "Click: select"]);
 }
 
 function findComponent(slotType, componentId) {
@@ -832,7 +832,7 @@ function drawParamEditor() {
         valueAlignRight: true
     });
 
-    drawMenuFooter({left: "Up/Dn: nav", right: "Jog: value"});
+    drawMenuFooter(["Up/Dn: nav", "Jog: value"]);
 }
 
 function drawConfirmDelete() {
@@ -951,7 +951,7 @@ function drawKnobEditor() {
         valueAlignRight: true
     });
 
-    drawMenuFooter({left: "Back: return", right: "Click: assign"});
+    drawMenuFooter(["Back: return", "Click: assign"]);
 }
 
 function drawKnobParamPicker() {
@@ -975,7 +975,7 @@ function drawKnobParamPicker() {
             getLabel: (item) => item.name
         });
 
-        drawMenuFooter({left: "Back: return", right: "Click: select"});
+        drawMenuFooter(["Back: return", "Click: select"]);
     } else {
         /* Show main view with [Clear] and module folders */
         drawMenuHeader(`Knob ${knobNum} Param`);
@@ -997,7 +997,7 @@ function drawKnobParamPicker() {
             getValue: (item) => item.type === "folder" ? ">" : ""
         });
 
-        drawMenuFooter({left: "Back: cancel", right: "Click: select"});
+        drawMenuFooter(["Back: cancel", "Click: select"]);
     }
 }
 
@@ -2209,7 +2209,7 @@ function drawUI() {
             },
             getLabel: (item) => item.name
         });
-        drawMenuFooter({left: "Menu: edit", right: "Click: load"});
+        drawMenuFooter(["Menu: edit", "Click: load"]);
         needsRedraw = false;
         return;
     }

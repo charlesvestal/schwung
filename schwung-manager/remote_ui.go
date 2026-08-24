@@ -37,6 +37,11 @@ type RemoteUI struct {
 	mu      sync.Mutex
 	clients map[*ruClient]struct{}
 
+	// refetchMu guards refetchTimers: one debounce timer per "slot|component".
+	// See scheduleComponentRefetch.
+	refetchMu     sync.Mutex
+	refetchTimers map[string]*time.Timer
+
 	// toolPresent latches whether an overtake tool was active on the previous
 	// tool-tick, so a transition to "no tool" fires exactly one tool_info(gone)
 	// signal to Tool-tab clients. Guarded by mu.
@@ -502,6 +507,11 @@ func (ru *RemoteUI) handleSubscribe(ctx context.Context, c *ruClient, msg wsMess
 			continue
 		}
 		if comp != "synth" {
+			// An audio/MIDI FX may ship its own web_ui.html too; the client
+			// renders it inside that component's section.
+			if url := ru.findModuleWebUI(modID); url != "" {
+				ru.sendCustomUI(ctx, c, slot, comp, url)
+			}
 			ru.sendHierarchy(ctx, c, slot, comp)
 			ru.sendChainParams(ctx, c, slot, comp)
 		}
@@ -803,8 +813,69 @@ func (ru *RemoteUI) handleSetParam(ctx context.Context, c *ruClient, msg wsMessa
 				// Read shm once and fan out to all subscribers of this slot.
 				ru.broadcastInitialParamValues(ctx, slot, comp, ru.subscribedClients(slot))
 			}()
+		} else if isChainComponent(comp) {
+			ru.scheduleComponentRefetch(ctx, slot, comp)
 		}
 	}
+}
+
+// isChainComponent reports whether comp names a slot component we push params
+// for. Master FX keys ("master_fx:fx1:...") split differently and are excluded.
+func isChainComponent(comp string) bool {
+	for _, c := range componentPrefixes {
+		if c == comp {
+			return true
+		}
+	}
+	return false
+}
+
+// refetchDebounce is how long after the LAST write of a gesture the component's
+// params are re-read. Long enough that a knob drag produces one re-read at the
+// end rather than one per sample, short enough to read as immediate.
+const refetchDebounce = 250 * time.Millisecond
+
+// scheduleComponentRefetch re-reads a component's params shortly after a write
+// and pushes them to every subscriber.
+//
+// The manager does NOT poll params (2eef0766 removed that — it was starving
+// shadow_ui.js of the shared param channel), so after a set_param the browser
+// only knows about the key it just wrote. That is fine while one write changes
+// one param, and wrong the moment it doesn't: a MACRO changes several, and the
+// ones it moved stayed stale on screen until the tab was reloaded. Tape Echo
+// 2's TIME knob drives repeat_rate, so the head readout beside it — computed
+// from repeat_rate — sat at the old delay while the echo audibly moved.
+//
+// Debounced rather than immediate, and coalesced per component, because a knob
+// drag is a stream of writes and each re-read is a full param sweep over the
+// same channel the device UI is using. One sweep per gesture, not per sample.
+//
+// This is the same shape as the preset re-fetch above, which has always done
+// it unconditionally for the one case anybody had hit.
+func (ru *RemoteUI) scheduleComponentRefetch(ctx context.Context, slot uint8, comp string) {
+	k := fmt.Sprintf("%d|%s", slot, comp)
+
+	ru.refetchMu.Lock()
+	defer ru.refetchMu.Unlock()
+	if ru.refetchTimers == nil {
+		ru.refetchTimers = make(map[string]*time.Timer)
+	}
+	if t, ok := ru.refetchTimers[k]; ok {
+		// Still within the window — push it out rather than stacking a second.
+		t.Reset(refetchDebounce)
+		return
+	}
+	ru.refetchTimers[k] = time.AfterFunc(refetchDebounce, func() {
+		ru.refetchMu.Lock()
+		delete(ru.refetchTimers, k)
+		ru.refetchMu.Unlock()
+
+		clients := ru.subscribedClients(slot)
+		if len(clients) == 0 {
+			return
+		}
+		ru.broadcastInitialParamValues(ctx, slot, comp, clients)
+	})
 }
 
 func (ru *RemoteUI) handleGetHierarchy(ctx context.Context, c *ruClient, msg wsMessage) {
@@ -819,10 +890,12 @@ func (ru *RemoteUI) handleGetHierarchy(ctx context.Context, c *ruClient, msg wsM
 		if err != nil || modID == "" {
 			continue
 		}
-		if comp == "synth" {
-			if url := ru.findModuleWebUI(modID); url != "" {
-				ru.sendCustomUI(ctx, c, slot, comp, url)
-			}
+		// Any component may ship a web_ui.html, not just the synth: an audio
+		// FX gets its panel rendered inside its own section (the client keys
+		// custom UIs by component). findModuleWebUI already searches audio_fx
+		// and midi_fx.
+		if url := ru.findModuleWebUI(modID); url != "" {
+			ru.sendCustomUI(ctx, c, slot, comp, url)
 		}
 		ru.sendHierarchy(ctx, c, slot, comp)
 		ru.sendChainParams(ctx, c, slot, comp)
@@ -1811,10 +1884,8 @@ func (ru *RemoteUI) pollSlot(ctx context.Context, slot uint8, cache *slotCache) 
 			cache.modules[comp] = modID
 			ru.broadcastSlotInfo(ctx, slot)
 			if modID != "" {
-				if comp == "synth" {
-					if url := ru.findModuleWebUI(modID); url != "" {
-						ru.broadcastCustomUI(ctx, slot, comp, url)
-					}
+				if url := ru.findModuleWebUI(modID); url != "" {
+					ru.broadcastCustomUI(ctx, slot, comp, url)
 				}
 				ru.broadcastHierarchy(ctx, slot, comp)
 				ru.broadcastChainParams(ctx, slot, comp)

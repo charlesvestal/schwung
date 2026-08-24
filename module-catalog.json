@@ -35,7 +35,7 @@
     },
     {
       "id": "sfz",
-      "name": "SFZ Player",
+      "name": "Multisampler",
       "description": "SFZ and DecentSampler (.dspreset) sample player using sfizz engine",
       "author": "sfizz by sfztools (port: charlesvestal)",
       "component_type": "sound_generator",
@@ -149,13 +149,24 @@
     {
       "id": "tapedelay",
       "name": "TapeDelay",
-      "description": "Tape delay with flutter and tone shaping",
-      "author": "Charles Vestal",
+      "description": "Tape delay with flutter and tone shaping. Light on CPU — fits on every slot.",
+      "author": "cyrusasfa (port: charlesvestal)",
       "component_type": "audio_fx",
       "github_repo": "charlesvestal/schwung-space-delay",
       "default_branch": "main",
       "asset_name": "tapedelay-module.tar.gz",
       "min_host_version": "0.3.0"
+    },
+    {
+      "id": "tape-echo2",
+      "name": "Tape Echo 2",
+      "description": "Component-modeled vintage three-head tape echo with spring reverb: 12 head/reverb modes, in-loop tape saturation, wow & flutter, tape age, and tempo sync with the reference machine's leading-head note tables. CPU-heavy: about two instances fit.",
+      "author": "Tape Echo 2 by Dusk Audio (GPL-3.0) · port: athousanddetails",
+      "component_type": "audio_fx",
+      "github_repo": "athousanddetails/schwung-tape-echo2",
+      "default_branch": "main",
+      "asset_name": "tape-echo2-module.tar.gz",
+      "min_host_version": "0.7.13"
     },
     {
       "id": "junologue-chorus",
@@ -1254,7 +1265,18 @@
       "github_repo": "athousanddetails/schwung-9W9",
       "default_branch": "main",
       "asset_name": "9w9-module.tar.gz",
-      "min_host_version": "0.11.6"
+      "min_host_version": "0.12.1"
+    },
+    {
+      "id": "6w6",
+      "name": "6W6",
+      "description": "TR-606 style drum machine. Every voice synthesized, no samples: kick, snare, low and hi tom, closed and open hat, cymbal, plus a clap. Fitted against recordings of a hardware 606 \u2014 the cymbal and the hi-hat metal bank are measured partial tables, and the default pot positions are the machine. Switchable hat choke (off / closed cuts open / mutual), per-voice and master drive/distortion, pad editor, remote web panel that follows the pad you hit, Movy template.",
+      "author": "athousanddetails; voices after 606-Inspired-Synth-Drums (Matthew Fecher / AudioKit Pro)",
+      "component_type": "sound_generator",
+      "github_repo": "athousanddetails/schwung-6W6",
+      "default_branch": "main",
+      "asset_name": "6w6-module.tar.gz",
+      "min_host_version": "0.12.1"
     },
     {
       "id": "tablor",
@@ -1280,15 +1302,26 @@
       "requires": "Ableton Move 1.8 or newer; Move/USB-C audition requires matching Move track MIDI routing"
     },
     {
-      "id": "tape-echo2",
-      "name": "Tape Echo 2",
-      "description": "Component-modeled vintage three-head tape echo with spring reverb: 12 head/reverb modes, in-loop tape saturation, wow & flutter, tape age, and tempo sync with the reference machine's leading-head note tables.",
-      "author": "Tape Echo 2 by Dusk Audio (GPL-3.0) \u00b7 port: athousanddetails",
+      "id": "capicola",
+      "name": "Capicola",
+      "description": "Live keyframe time stretcher with transient re-anchoring, by Heavylight Industries",
+      "author": "Heavylight Industries (port: charlesvestal)",
       "component_type": "audio_fx",
-      "github_repo": "athousanddetails/schwung-tape-echo2",
+      "github_repo": "charlesvestal/schwung-capicola",
       "default_branch": "main",
-      "asset_name": "tape-echo2-module.tar.gz",
-      "min_host_version": "0.7.13"
+      "asset_name": "capicola-module.tar.gz",
+      "min_host_version": "0.3.0"
+    },
+    {
+      "id": "4k-eq",
+      "name": "4K EQ",
+      "description": "British console EQ for the master bus: four calibrated bands, stepped high- and low-pass filters, and the Brown and Black circuit revisions with their own control laws and band interactions. About 6.6% of one core at the 2x default.",
+      "author": "4K EQ 2 by Dusk Audio (GPL-3.0) \u00b7 port: athousanddetails",
+      "component_type": "audio_fx",
+      "github_repo": "athousanddetails/schwung-4keq",
+      "default_branch": "main",
+      "asset_name": "4k-eq-module.tar.gz",
+      "min_host_version": "0.12.1"
     }
   ]
 }

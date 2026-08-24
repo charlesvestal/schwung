@@ -6,17 +6,16 @@
  */
 import { ctx } from './shadow_ui_ctx.mjs';
 import {
-    SCREEN_WIDTH,
-    LIST_TOP_Y, LIST_LINE_HEIGHT, LIST_HIGHLIGHT_HEIGHT,
-    LIST_LABEL_X, LIST_VALUE_X,
-    FOOTER_RULE_Y,
-    truncateText
+    /* Row geometry is gone from this file: nothing here draws a row any more,
+     * drawMenuList / drawNamePreview do. */
+    LIST_TOP_Y,
+    FOOTER_RULE_Y
 } from '/data/UserData/schwung/shared/chain_ui_views.mjs';
 import {
     drawMenuHeader as drawHeader,
-    drawMenuFooter as drawFooter,
     drawMenuList,
-    drawConfirmModal
+    drawConfirmModal,
+    drawNamePreview
 } from '/data/UserData/schwung/shared/menu_layout.mjs';
 
 /* ---- Draw --------------------------------------------------------------- */
@@ -31,20 +30,7 @@ export function drawChainSettings() {
     clear_screen();
 
     if (showingNamePreview) {
-        drawHeader("Save As");
-        const name = truncateText(pendingSaveName, 20);
-        print(LIST_LABEL_X, LIST_TOP_Y, '"' + name + '"', 1);
-
-        const listY = LIST_TOP_Y + 16;
-        for (let i = 0; i < 2; i++) {
-            const y = listY + i * LIST_LINE_HEIGHT;
-            const isSelected = i === namePreviewIndex;
-            if (isSelected) {
-                fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
-            }
-            print(LIST_LABEL_X, y, i === 0 ? "Edit" : "OK", isSelected ? 0 : 1);
-        }
-        drawFooter("Back: cancel");
+        drawNamePreview({ name: pendingSaveName, selectedIndex: namePreviewIndex });
         return;
     }
 
@@ -65,51 +51,40 @@ export function drawChainSettings() {
     drawHeader("S" + (selectedSlot + 1) + " Settings");
 
     const items = getChainSettingsItems(selectedSlot);
-    const listY = LIST_TOP_Y;
-    const lineHeight = 9;
-    const maxVisible = Math.floor((FOOTER_RULE_Y - LIST_TOP_Y) / lineHeight);
 
-    let scrollOffset = 0;
-    if (selectedChainSetting >= maxVisible) {
-        scrollOffset = selectedChainSetting - maxVisible + 1;
-    }
-
-    for (let i = 0; i < maxVisible && (i + scrollOffset) < items.length; i++) {
-        const itemIdx = i + scrollOffset;
-        const y = listY + i * lineHeight;
-        const setting = items[itemIdx];
-        const isSelected = itemIdx === selectedChainSetting;
-
-        if (isSelected) {
-            fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
-        }
-
-        const labelColor = isSelected ? 0 : 1;
-        print(LIST_LABEL_X, y, setting.label, labelColor);
-
-        if (setting.type !== "action") {
-            const value = getChainSettingValue(selectedSlot, setting);
-            if (value) {
-                const valueX = SCREEN_WIDTH - value.length * 5 - 4;
-                if (isSelected && editingChainSettingValue) {
-                    print(valueX - 8, y, "<", 0);
-                    print(valueX, y, value, 0);
-                    print(valueX + value.length * 5 + 2, y, ">", 0);
-                } else {
-                    print(valueX, y, value, labelColor);
-                }
-            }
-        }
-    }
+    drawMenuList({
+        items,
+        selectedIndex: selectedChainSetting,
+        getLabel: (item) => item.label,
+        getValue: (item) => item.type === "action"
+            ? ""
+            : (getChainSettingValue(selectedSlot, item) || ""),
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+        valueAlignRight: true,
+        prioritizeSelectedValue: true,
+        editMode: editingChainSettingValue
+    });
 }
 
+/*
+ * VIEWS.GLOBAL_SETTINGS is the HELP VIEWER'S HOST and nothing else.
+ *
+ * The settings themselves are a synthesised module contract drawn by the page
+ * chrome (shadow_ui_global_grid.mjs + enterGlobalSettingsGrid), so the section
+ * list and the in-section list that used to live here are gone along with the
+ * four globalSettings* state vars and the three switch arms that drove them.
+ *
+ * The view survives because the help stack has to be drawn somewhere and it is
+ * already drawn here and under VIEWS.MASTER_FX; giving it a view of its own is
+ * a separate change. runGlobalActionFromGrid sets this view when [Help...] is
+ * chosen and maybeReturnToGlobalGrid takes the page back when the stack empties.
+ *
+ * Empty stack + this view is a state nothing should be able to reach, so it
+ * draws nothing rather than pretending: the reconcile runs before the draw.
+ */
 export function drawGlobalSettings() {
     const { helpDetailScrollState, helpNavStack,
-            drawHelpDetail, drawHelpList,
-            globalSettingsInSection, globalSettingsSectionIndex,
-            globalSettingsItemIndex, globalSettingsEditing,
-            GLOBAL_SETTINGS_SECTIONS,
-            getMasterFxSettingValue } = ctx;
+            drawHelpDetail, drawHelpList } = ctx;
 
     clear_screen();
 
@@ -119,45 +94,5 @@ export function drawGlobalSettings() {
     }
     if (helpNavStack.length > 0) {
         drawHelpList();
-        return;
-    }
-
-    if (globalSettingsInSection) {
-        const section = GLOBAL_SETTINGS_SECTIONS[globalSettingsSectionIndex];
-        drawHeader(truncateText(section.label, 18));
-
-        drawMenuList({
-            items: section.items,
-            selectedIndex: globalSettingsItemIndex,
-            getLabel: (item) => {
-                if (globalSettingsEditing &&
-                    section.items[globalSettingsItemIndex] === item) {
-                    return "[" + item.label + "]";
-                }
-                return item.label;
-            },
-            getValue: (item) => {
-                if (item.type === "action") return "";
-                return getMasterFxSettingValue(item);
-            },
-            listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
-            valueAlignRight: true,
-            prioritizeSelectedValue: true
-        });
-
-        drawFooter("Back: Settings");
-    } else {
-        drawHeader("Settings");
-
-        drawMenuList({
-            items: GLOBAL_SETTINGS_SECTIONS,
-            selectedIndex: globalSettingsSectionIndex,
-            getLabel: (section) => section.label,
-            getValue: () => "",
-            listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
-            valueAlignRight: false
-        });
-
-        drawFooter("Back: return");
     }
 }

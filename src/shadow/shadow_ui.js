@@ -68,6 +68,11 @@ import { drawKnobCard } from '/data/UserData/schwung/shared/param_pages/knob_car
 import { buildMetaIndex } from '/data/UserData/schwung/shared/param_pages/param_meta.mjs';
 import { resolveViz } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
 import { listKnobInit, listKnobStep } from '/data/UserData/schwung/shared/param_pages/list_knob.mjs';
+/* Which user preset a component is currently on, and whether the live state
+ * has moved away from it since — the "My Presets" trailing page's row 1
+ * (see componentTrailingMenus below). Pure: the caller supplies the record and
+ * the live blob, and never turns a failed read into a `*`. */
+import { makeRecord, presetRowValue, isModified } from '/data/UserData/schwung/shared/param_pages/current_preset.mjs';
 import { describeLfoTarget } from '/data/UserData/schwung/shared/lfo_target_label.mjs';
 import { emptyChain, parseId as parseChainId, chainComponents, moveBy as chainMoveBy,
          removeAt as chainRemoveAt, insertAt as chainInsertAt, MAX_FX, MAX_MIDI_FX }
@@ -96,7 +101,7 @@ import {
     tickOverlay,
     drawOverlay,
     menuLayoutDefaults,
-    LIST_BOTTOM_CLEARANCE,
+    LIST_INDICATOR_BOTTOM_Y,
     VALUE_RIGHT_CLEARANCE
 } from '/data/UserData/schwung/shared/menu_layout.mjs';
 
@@ -212,13 +217,15 @@ import {
     handlePresetsJog, handlePresetDetailJog,
     handlePresetsSelect, handlePresetDetailSelect,
     handlePresetsBack, handlePresetDetailBack,
-    tickPresetPreview, isPresetPreviewActive
+    tickPresetPreview, isPresetPreviewActive,
+    overwriteUserPreset, enterPresetSaveAs, enterPresetDeleteConfirm
 } from './shadow_ui_presets.mjs';
 import {
     paramPagesEnabled, enterParamPages, exitParamPages, paramPagesActive,
     tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage,
     paramPagesComponent, paramPagesSlot, clearParamPagesTouch,
-    enumPickerFooterHints, CONTRACT_SETTLE_MS
+    enumPickerFooterHints, CONTRACT_SETTLE_MS, LAYOUT_LIST,
+    paramPagesRefreshTrailing, paramPagesExitMenu
 } from './shadow_ui_param_pages.mjs';
 /* Registers the QuickJS file IO for the sample cell's peak envelope. Imported
  * for its side effect, and from HERE because this file is the shadow UI's only
@@ -227,8 +234,9 @@ import {
  * which are QuickJS modules; anywhere node can reach, that import is fatal. */
 import '/data/UserData/schwung/shared/param_pages/wav_io_qjs.mjs';
 import { createSlotGridIo, createMasterGridIo,
-         MFX_MIDI_CHANNEL_OPTIONS, mfxMidiChannelToIndex,
+         MFX_MIDI_CHANNEL_OPTIONS, MFX_MIDI_CHANNEL_KEY, mfxMidiChannelToIndex,
          mfxMidiChannelFromIndex } from './shadow_ui_slot_grid.mjs';
+import { createGlobalGridIo, GLOBAL_SECTIONS } from './shadow_ui_global_grid.mjs';
 import {
     drawMasterFx as _drawMasterFx,
     getMasterFxDisplayName as _getMasterFxDisplayName,
@@ -706,6 +714,63 @@ let lastSavedSlotSignature = ["", "", "", ""];
  * for genuine user removals. Reset when the user picks any module, when a
  * set is loaded, or after the empty marker has been written. */
 let slotUserCleared = [false, false, false, false];
+/*
+ * Which USER PRESET each component is on — {name, hash} per slot+prefix.
+ *
+ * Pure UI bookkeeping: the DSP never sees it, so there is no param, no struct
+ * field and no SHM change. It rides slot_N.json because that is already the
+ * file that survives a reboot for this component.
+ */
+const currentUserPresets = Object.create(null);
+const userPresetKey = (slot, prefix) => `${slot}:${prefix}`;
+
+/*
+ * The live `<prefix>:state` blob, cached per (slot, prefix), from the last
+ * time componentTrailingMenus() actually read it (page ENTRY, an explicit
+ * refresh, or the debounced settle in tickUserPresetStale below). NOT a
+ * second read path -- the header (userPresetHeaderMark) reads THIS, never
+ * the DSP, which is what lets it show the `*` on every page of a component
+ * for free: the read already happened for the My Presets page.
+ */
+let userPresetLiveBlobCache = Object.create(null);
+
+function getUserPresetRecord(slot, prefix) {
+    return currentUserPresets[userPresetKey(slot, prefix)] || null;
+}
+function setUserPresetRecord(slot, prefix, record) {
+    if (record) currentUserPresets[userPresetKey(slot, prefix)] = record;
+    else delete currentUserPresets[userPresetKey(slot, prefix)];
+}
+/* Pull {name, hash} out of a saved chain-position entry (synth / a midi_fx
+ * item / an audio_fx item), or null when it never carried one — including
+ * every patch written before user_preset existed. */
+function entryUserPreset(entry) {
+    if (!entry || !entry.user_preset || !entry.user_preset.name) return null;
+    return { name: entry.user_preset.name, hash: entry.user_preset.hash || null };
+}
+/*
+ * Sync currentUserPresets for one slot from a parsed chain object (the
+ * `chain` in a slot_N.json, i.e. {synth, midi_fx: [...], audio_fx: [...]}).
+ *
+ * ONE definition, called from every place a slot gets (re)loaded from disk --
+ * originally just the boot-restore loop in init(), but the map is keyed
+ * (slot, prefix) and NOT by set, so a set switch that reloads a slot without
+ * going through this leaves the OLD set's record attached to the NEW set's
+ * slot. Every prefix is synced unconditionally (entryUserPreset returns null
+ * for "no record"), so a component with nothing saved CLEARS rather than
+ * keeping whatever was there before this call.
+ */
+function syncUserPresetRecordsFromChain(slotIndex, chain) {
+    setUserPresetRecord(slotIndex, "synth", entryUserPreset(chain && chain.synth));
+    const midiFx = (chain && Array.isArray(chain.midi_fx)) ? chain.midi_fx : [];
+    for (let mf = 0; mf < MAX_MIDI_FX; mf++) {
+        setUserPresetRecord(slotIndex, `midi_fx${mf + 1}`, entryUserPreset(midiFx[mf]));
+    }
+    const audioFx = (chain && Array.isArray(chain.audio_fx)) ? chain.audio_fx : [];
+    for (let fx = 0; fx < MAX_FX; fx++) {
+        setUserPresetRecord(slotIndex, `fx${fx + 1}`, entryUserPreset(audioFx[fx]));
+    }
+}
 
 /* Splash screen state */
 let splashActive = true;
@@ -960,9 +1025,20 @@ const TOOLS_DOUBLE_TAP_MS = 500;
 const ANALYTICS_PROMPTED_PATH = "/data/UserData/schwung/analytics-prompted";
 let analyticsPromptSelection = 0;  // 0 = Yes (default), 1 = No
 
-/* Auto-update state */
-let autoUpdateCheckEnabled = true;   // Default: enabled (opt-out)
-let pendingUpdates = [];              // Updates found on startup
+/* Auto-update state.
+ *
+ * There is no auto-update CHECK and there never was. `autoUpdateCheckEnabled`
+ * lived here, was persisted, and had a Services row -- but nothing consulted
+ * it: checkForUpdatesInBackground() has exactly one caller,
+ * showUpdatesAvailableScreen(), which runs only when the user picks
+ * [Check Updates] themselves. A flag with no reader is a promise the UI cannot
+ * keep, so the flag is gone and the manual path is stated instead.
+ *
+ * shadow_config.json on an existing device still carries `auto_update_check`.
+ * That is harmless: every saver here read-modify-writes the whole object, so
+ * the stale key is carried along untouched and simply never read.
+ */
+let pendingUpdates = [];              // Updates found by [Check Updates]
 
 /* Bootstrap-needed banner state. The self-heal mechanism (schwung-heal
  * setuid + entrypoint that invokes it at boot) requires one-time root
@@ -1819,6 +1895,421 @@ function paramPagesChromeFor(componentKey) {
     };
 }
 
+/*
+ * The io a knob-grid COMPONENT page gets for its trailing pages ("My
+ * Presets", "Module") — or null for a Master FX target, which has none.
+ *
+ * ONE helper, called from every enterParamPages site that opens a chain
+ * component (as opposed to a synthesised contract like Slot Settings or
+ * Global Settings, which supply their own io and never reach here). Master FX
+ * is excluded HERE rather than remembered at each call site: __user_presets__
+ * is injected in enterComponentSelect only, never in enterMasterFxModuleSelect,
+ * so Master FX has no user presets today and this inherits that gap rather
+ * than widening it. masterFxIndexFromComponentKey is the same test
+ * paramPagesChromeFor already uses to tell the two chains apart.
+ *
+ * `setParam` marks the write PENDING for the debounced `*` refresh
+ * (tickUserPresetStale) rather than performing the write itself specially —
+ * it still goes through the ordinary setSlotParam, so this is a hook on the
+ * write, not a second write path.
+ */
+function componentParamPagesIo(slotIndex, componentKey) {
+    if (masterFxIndexFromComponentKey(componentKey) >= 0) return null;
+    const prefix = getComponentParamPrefix(componentKey);
+    return {
+        trailingMenus: () => componentTrailingMenus(slotIndex, componentKey, prefix),
+        runAction: (action) => runComponentActionFromGrid(slotIndex, componentKey, action),
+        setParam: (key, value) => {
+            const ok = setSlotParam(slotIndex, key, value);
+            markComponentParamWrite(slotIndex, componentKey);
+            return ok;
+        },
+    };
+}
+
+/*
+ * The two trailing pages every REAL component gets: "My Presets" (an
+ * informational row 1, then Load / Save / Save As / Delete) and "Module"
+ * (Swap Module / Remove Module). [] when the position is empty — nothing is
+ * loaded to show a preset for or to swap/remove.
+ *
+ * Called from planPages()/refreshTrailing() — i.e. on page ENTRY and after
+ * our own writes, never on the draw path. The `<prefix>:state` read this
+ * makes is the largest value on the wire, so it costs one read per PLAN, not
+ * one per frame — see refreshTrailing's own note on why a Save must call it
+ * explicitly rather than relying on the next tick to notice.
+ */
+function componentTrailingMenus(slotIndex, componentKey, prefix) {
+    const cfg = chainConfigs[slotIndex] || createEmptyChainConfig();
+    const loaded = getChainComponentModule(cfg, componentKey);
+    if (!loaded || !loaded.module) return [];
+
+    const record = getUserPresetRecord(slotIndex, prefix);
+    const liveBlob = getSlotStateWithRetry(slotIndex, prefix + ":state");
+    /* Cache it -- this is the ONE read the header's `*` (userPresetHeaderMark)
+     * rides on, on every page of the component, for free. */
+    userPresetLiveBlobCache[userPresetKey(slotIndex, prefix)] = liveBlob;
+    const hasRecord = !!(record && record.name);
+
+    /*
+     * Row 1 IS the door. It shows which preset you are on and opens the
+     * browser; there is no separate Load row.
+     *
+     * It began as a readout with no action, and a Load... row beneath it.
+     * Reported from hardware: "when a preset is loaded we dont need the load
+     * button, you should be able to just click on the name of the preset in
+     * the menu". Two rows said one thing, and the row you would reach for was
+     * the inert one -- the name is what you are pointing at when you want a
+     * different name.
+     *
+     * It carries the action with no preset loaded too, reading "(none)": that
+     * is the only way into the browser, so making it conditional would leave a
+     * component with nothing saved yet unable to reach its own list.
+     */
+    const presetEntries = [
+        { label: "Preset", value: presetRowValue(record, liveBlob), action: "up_load" },
+    ];
+    /* Save and Delete both target the LOADED preset, so both are meaningless
+     * with none loaded — same always-or-hasPreset filter SLOT_GRID_ACTIONS
+     * applies for the slot settings menu. Save As stays unconditional: it
+     * goes straight to the keyboard where Save offers a generated name. */
+    if (hasRecord) presetEntries.push({ label: "Save", action: "up_save" });
+    presetEntries.push({ label: "Save As", action: "up_save_as" });
+    if (hasRecord) presetEntries.push({ label: "Delete", action: "up_delete" });
+
+    return [
+        /* "My Presets", not "User Presets": at 56px "USER PRESETS" is past
+         * the header's HEADER_MIN_LEFT floor (70px) and truncates to "USER
+         * PRESE". "Presets" alone would be worse -- 27 modules in the fleet
+         * already plan a page called that, so claimName would dedupe this to
+         * "Presets - 2". "My Presets" (46px) collides with nothing. */
+        { name: "My Presets", entries: presetEntries },
+        { name: "Module", entries: [
+            { label: "Swap Module", action: "swap_module" },
+            { label: "Remove Module", action: "remove_module" },
+        ] },
+    ];
+}
+
+/*
+ * Perform a "My Presets" / "Module" trailing-page ACTION, by key — the
+ * fourth instance of the hand-off runSlotActionFromGrid / runMasterFxActionFromGrid
+ * / runGlobalActionFromGrid perform, and it asks the same shared question
+ * (gridActionOpenedSomething) rather than listing which of the six actions
+ * leave.
+ *
+ * Save and Save As never leave VIEWS.PARAM_PAGES (a text-entry overlay sits on
+ * top of it, same as the browser's own "[Save current...]" row) — so for those
+ * the predicate is false and nothing else happens, same as today. Load,
+ * Delete, Swap and Remove hand off to screens that already exist (the preset
+ * browser, the confirm-delete screen, the component picker) rather than
+ * growing new ones, and every one of those paths eventually backs out to
+ * VIEWS.CHAIN_EDIT — see maybeReturnToComponentGrid for the way back from
+ * there to the grid the user actually opened.
+ */
+function runComponentActionFromGrid(slotIndex, componentKey, action) {
+    const prefix = getComponentParamPrefix(componentKey);
+    const cfg = chainConfigs[slotIndex] || createEmptyChainConfig();
+    const loaded = getChainComponentModule(cfg, componentKey);
+    const moduleId = loaded && loaded.module;
+    const record = getUserPresetRecord(slotIndex, prefix);
+    let result;
+
+    switch (action) {
+        case "up_load":
+            enterPresetBrowser(slotIndex, componentKey, moduleId, prefix);
+            result = true;
+            break;
+
+        case "up_save": {
+            if (!record || !record.name) { result = false; break; }
+            const ok = overwriteUserPreset(slotIndex, prefix, moduleId, record.name);
+            if (ok) {
+                const live = getSlotStateWithRetry(slotIndex, prefix + ":state");
+                onUserPresetSaved(slotIndex, prefix, record.name, live);
+                /* Save acts IN PLACE -- it never navigates, so it has no
+                 * return path to carry the "you are finished here"
+                 * disposition the way Load and Save As do. Close the menu
+                 * behind it explicitly: the jog goes back to paging, and the
+                 * cleared star is visible on the page you are left looking
+                 * at. */
+                paramPagesExitMenu();
+                announce(`Saved ${record.name}`);
+            } else {
+                announce("Save failed");
+                needsRedraw = true;
+            }
+            result = true;
+            break;
+        }
+
+        case "up_save_as":
+            enterPresetSaveAs(slotIndex, componentKey, moduleId, prefix);
+            result = true;
+            break;
+
+        case "up_delete":
+            if (!record || !record.name) { result = false; break; }
+            enterPresetDeleteConfirm(slotIndex, componentKey, moduleId, prefix, record.name);
+            result = true;
+            break;
+
+        case "swap_module": {
+            const at = slotChainComponentIndex(slotIndex, componentKey);
+            if (at >= 0) enterComponentSelect(slotIndex, at);
+            result = true;
+            break;
+        }
+
+        case "remove_module":
+            /* A menu page is a door: reaching this row already took a
+             * deliberate click, and picking the module again undoes it — the
+             * same reasoning that keeps a `+` box's own "None" pick from
+             * raising a second confirmation. IS applyChainComponentPick's
+             * None path, not a copy of it. */
+            setUserPresetRecord(slotIndex, prefix, null);
+            applyChainComponentPick(slotIndex, componentKey, "", null);
+            result = true;
+            break;
+
+        default:
+            result = false;
+    }
+
+    /* view !== VIEWS.PARAM_PAGES is the ONE test that is true for exactly the
+     * four cases above that hand off to a real screen (Load, Delete, Swap,
+     * Remove — the last via applyChainComponentPick, which always ends in
+     * setView(VIEWS.CHAIN_EDIT)) and false for Save/Save As/an unhandled key,
+     * which never move `view` at all. Asking the screen rather than the key
+     * is what keeps a future seventh action from being silently wrong here
+     * too. */
+    if (gridActionOpenedSomething(view !== VIEWS.PARAM_PAGES)) {
+        componentModalFromGrid = true;
+        componentGridReturnSlot = slotIndex;
+        componentGridReturnKey = componentKey;
+    }
+    return result;
+}
+
+/*
+ * ...and back to the grid once the hand-off screen is done with.
+ *
+ * Unlike the slot/Master FX/Global reconciles, the screens a component action
+ * hands off to are REAL navigations, not an overlay flag drawn by the same
+ * view the grid left — Load lands in VIEWS.PRESETS, Delete's confirm in
+ * VIEWS.PRESET_DETAIL, Swap/Remove in (or through) VIEWS.COMPONENT_SELECT —
+ * and every exit from any of those (Back, a completed Load, a completed
+ * delete-and-back-out) converges on VIEWS.CHAIN_EDIT, same as backing out of
+ * the component picker the ordinary way. So this RECONCILES from THAT
+ * arrival rather than hooking each of the several ways out of each of those
+ * screens — the same reasoning as maybeReturnToSlotGrid, aimed at a
+ * different convergence point because these hand-offs are navigations
+ * instead of overlays.
+ */
+function maybeReturnToComponentGrid() {
+    if (!componentModalFromGrid) return false;
+    if (isTextEntryActive()) return false;
+    /*
+     * Prove this CHAIN_EDIT arrival belongs to the hand-off that raised the
+     * flag, rather than assuming it does just because the flag is still set.
+     *
+     * CHAIN_EDIT is not a narrow purpose-built surface like CHAIN_SETTINGS /
+     * MASTER_FX / GLOBAL_SETTINGS -- it is the general chain-editor hub,
+     * reachable from many places that have nothing to do with a fired grid
+     * action (Shift+Vol+TrackN, long-press, ...) and that run every tick
+     * regardless of the current view. Enumerating those entry points to clear
+     * the flag at each one is exactly the mistake the reconcile-dont-hook
+     * pattern exists to avoid: get one wrong, or miss the next one added, and
+     * the flag survives it and fires on an unrelated arrival later.
+     *
+     * So the flag is resolved -- fired OR dropped -- the FIRST time CHAIN_EDIT
+     * is reached, by whichever route, and it can never survive past this call:
+     * it fires only when the slot CHAIN_EDIT is now showing still matches the
+     * slot the hand-off was raised for. A JUMP_TO_SLOT(3) while the flag was
+     * raised for slot 1 reassigns selectedSlot to 3 before landing here, so
+     * the mismatch drops the flag instead of yanking the user out of the
+     * slot-3 chain editor they deliberately opened.
+     *
+     * ...and the position must STILL HOLD A MODULE, because one of the actions
+     * that hands off is Remove Module. Removal ends in setView(CHAIN_EDIT) on
+     * the same slot, so the slot match above passes and we would re-enter the
+     * grid for the component that was just deleted — a contract read with
+     * nobody to answer it, which the device draws as a permanent "Loading...".
+     * Reported from hardware; the slot-match alone did not close it.
+     *
+     * Asking whether there is still something to show, rather than listing the
+     * actions that destroy one, is the same discipline as asking what is on
+     * screen rather than which action ran: it covers Remove, a picker "None",
+     * and whatever the next destructive action turns out to be, without any of
+     * them having to remember to opt out.
+     *
+     * Known gap: a same-SLOT interruption (e.g. long-press Track1 while the
+     * flag is raised for slot 1) still matches and fires, landing on the grid
+     * instead of the chain editor that interruption asked for. Telling those
+     * two apart needs a token identifying the specific flow instance, which
+     * none of the hand-off screens (shadow_ui_presets.mjs, out of scope here)
+     * currently carry back out through Back/Load/Delete.
+     */
+    const matchesReturnSlot = selectedSlot === componentGridReturnSlot;
+    componentModalFromGrid = false;
+    const slotIndex = componentGridReturnSlot;
+    const componentKey = componentGridReturnKey;
+    componentGridReturnSlot = -1;
+    componentGridReturnKey = "";
+    if (!matchesReturnSlot) return false;
+    const stillLoaded = getChainComponentModule(chainConfigs[slotIndex], componentKey);
+    if (!stillLoaded || !stillLoaded.module) return false;
+    /* "My Presets", not the first page: every hand-off this reconciler serves
+     * (a committed Load, a completed Delete, backing out of Swap) is either
+     * about that page or leaves it just as good a landing spot as any other.
+     * Reported from hardware for both Load and Delete: landing on page 1
+     * instead of back on the page you asked from read as "I get dumped to a
+     * different menu". restorePage() matches by NAME and is a no-op if the
+     * new plan does not have one, so this is never a hard failure. */
+    const enterOnArrival = componentGridReturnEnter;
+    componentGridReturnEnter = true;    /* back to the nothing-happened default */
+    enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey), "My Presets",
+                    componentParamPagesIo(slotIndex, componentKey), paramPagesChromeFor(componentKey),
+                    { enter: enterOnArrival });
+    needsRedraw = true;
+    return true;
+}
+
+/*
+ * Keep the grid's "which User Preset is loaded" record in step with the three
+ * flows that can move it — Load, Save (including Save As), and Delete — all
+ * of which live in shadow_ui_presets.mjs. Registered on ctx (see the wiring
+ * below) so that file never has to import currentUserPresets or reach back
+ * into this one by name; it only reports WHAT HAPPENED, and this decides
+ * what it means for the record. refreshTrailing() is safe to call
+ * unconditionally: it is a no-op when the grid is not the thing that asked
+ * (e.g. a save committed from the module-picker's own preset browser).
+ */
+/*
+ * Record the preset as loaded/saved, hashing what the DEVICE now reports —
+ * NOT the blob we just handed it.
+ *
+ * Reported from hardware: loading the preset you are already on restored the
+ * values but never cleared the `*`, and it stayed on after loading a second
+ * preset and coming back. The cause is that these hashed `stateJson`, the
+ * string we WROTE. A module is free to normalise state on the way in — reorder
+ * keys, reformat floats, fill in defaults it did not receive — so the very
+ * next read of `<prefix>:state` is a different string with a different hash,
+ * and `isModified` is true forever with nothing the user can do about it.
+ * Pressing Save to clear it would then bake the normalised form in, which is
+ * the one repair that looks like it works.
+ *
+ * So read it back and hash THAT, which is what every later comparison sees.
+ * One extra IPC read on an explicit Load or Save — never on a draw path, and
+ * not a hot path: the read budget rule is about per-frame cost, not about a
+ * key the user pressed. Refreshing the cache here also means the header mark
+ * agrees immediately instead of waiting for the next settle.
+ *
+ * A FAILED read leaves the hash null, and `isModified` reports NOT modified
+ * for an unknown hash — the honest answer, and the safe one: no `*` you cannot
+ * clear.
+ */
+/*
+ * Should the return to My Presets land you INSIDE the menu?
+ *
+ * Back from the browser having chosen nothing never really left it, so yes.
+ * Delete is management and you are likely to do more, so yes. Load and Save
+ * are the thing you came for, and once it is done the jog belongs to paging
+ * again, so no. Defaults to true because "nothing happened" is the case with
+ * no hook to set it -- backing out.
+ */
+let componentGridReturnEnter = true;
+
+function recordUserPresetFromDevice(slot, prefix, name) {
+    const live = getSlotStateWithRetry(slot, prefix + ":state");
+    userPresetLiveBlobCache[userPresetKey(slot, prefix)] = live;
+    setUserPresetRecord(slot, prefix, makeRecord(name, live));
+    paramPagesRefreshTrailing();
+    needsRedraw = true;
+}
+function onUserPresetSaved(slot, prefix, name, stateJson) {
+    componentGridReturnEnter = false;   /* finished */
+    recordUserPresetFromDevice(slot, prefix, name);
+}
+function onUserPresetLoaded(slot, prefix, name, stateJson) {
+    componentGridReturnEnter = false;   /* finished */
+    recordUserPresetFromDevice(slot, prefix, name);
+}
+function onUserPresetDeleted(slot, prefix, name) {
+    componentGridReturnEnter = true;    /* management -- stay in the menu */
+    /* Only when the DELETED name matches the one currently loaded — deleting
+     * some other saved preset from the list must not disturb the record. */
+    const rec = getUserPresetRecord(slot, prefix);
+    if (rec && rec.name === name) setUserPresetRecord(slot, prefix, null);
+    paramPagesRefreshTrailing();
+    needsRedraw = true;
+}
+
+/*
+ * The `*` without a draw-path read.
+ *
+ * componentTrailingMenus() already reads `<prefix>:state` on page ENTRY and
+ * on every explicit refresh (Save/Load/Delete) and caches it
+ * (userPresetLiveBlobCache) — that read is unavoidable and already paid for.
+ * What was missing is a WRITE made through the grid itself: turning a knob
+ * changes the live blob and nothing noticed until the page was re-entered —
+ * reported from hardware ("changed a knob and * didnt appear until i exited
+ * and re entered").
+ *
+ * Fixed without a second read path. componentParamPagesIo's `setParam` calls
+ * markComponentParamWrite on every write; tickUserPresetStale (driven from the
+ * main tick, NEVER from a draw function — see the call site alongside
+ * tickParamPages) waits for the hand to settle (CONTRACT_SETTLE_MS, the same
+ * window the contract machinery already waits out) and then asks ONCE, via
+ * paramPagesRefreshTrailing() — the very call Save/Load/Delete already use —
+ * and only when the grid is still open on the exact (slot, component) that
+ * wrote. One read per SETTLE, never one per detent, and none at all once the
+ * user has moved on.
+ */
+let userPresetWritePending = false;
+let userPresetWriteAt = 0;
+let userPresetWriteSlot = -1;
+let userPresetWriteComponent = "";
+
+function markComponentParamWrite(slotIndex, componentKey) {
+    userPresetWritePending = true;
+    userPresetWriteAt = Date.now();
+    userPresetWriteSlot = slotIndex;
+    userPresetWriteComponent = componentKey;
+}
+
+function tickUserPresetStale() {
+    if (!userPresetWritePending) return;
+    if (Date.now() - userPresetWriteAt < CONTRACT_SETTLE_MS) return;
+    userPresetWritePending = false;
+    /* Only when it can be SEEN: the grid must still be open on the exact
+     * component that wrote, or this is a read for nobody. */
+    if (!paramPagesActive()) return;
+    if (paramPagesSlot() !== userPresetWriteSlot) return;
+    if (paramPagesComponent() !== userPresetWriteComponent) return;
+    paramPagesRefreshTrailing();
+}
+
+/*
+ * The header's "S1 > <name>" answer for a loaded user preset, or null when
+ * none is loaded (the header falls back to the module's own preset name /
+ * abbreviation in that case — see headerTitle in shadow_ui_param_pages.mjs).
+ *
+ * Reads userPresetLiveBlobCache, never the DSP: this is the SAME cached
+ * comparison componentTrailingMenus already makes for the My Presets page,
+ * so showing it in the header on every page of the component costs nothing
+ * beyond the read that page already pays for. Answers null harmlessly for a
+ * synthesised contract (Slot Settings, Master FX/Global Settings) or a Master
+ * FX component, none of which ever populate currentUserPresets for their key.
+ */
+function userPresetHeaderMark(slotIndex, componentKey) {
+    const prefix = getComponentParamPrefix(componentKey);
+    const record = getUserPresetRecord(slotIndex, prefix);
+    if (!record || !record.name) return null;
+    const liveBlob = userPresetLiveBlobCache[userPresetKey(slotIndex, prefix)];
+    return { name: record.name, dirty: isModified(record, liveBlob) };
+}
+
 /* The chain of one instrument slot. */
 function slotChainTarget(slotIndex) {
     return {
@@ -2130,8 +2621,11 @@ let selectingMasterFxModule = false;  // True when selecting module for a compon
 let selectedMasterFxModuleIndex = 0;  // Index in MASTER_FX_OPTIONS during selection
 
 /* Master FX settings (shown when Settings component is selected) */
+/* No Volume row here: `master_fx:volume` had no handler on either side of the
+ * wire, so it read back empty (drawn as a fake "100%") and wrote into whatever
+ * module sat in Master FX slot 1. See MASTER_GRID_PARAMS in
+ * shadow_ui_slot_grid.mjs for the full account. */
 const MASTER_FX_SETTINGS_ITEMS_BASE = [
-    { key: "master_volume", label: "Volume", type: "float", min: 0, max: 1, step: 0.05 },
     /* Which channel Master FX hears. Lives here rather than in Global Settings
      * because this is where a Master FX setting is looked for — reported from
      * the device on the first cut, which put it under Global > Audio next to
@@ -2146,11 +2640,23 @@ const MASTER_FX_SETTINGS_ITEMS_BASE = [
     { key: "delete", label: "[Delete]", type: "action" }
 ];
 
-/* Param View (preview): 0 = the hierarchy list editor, 1 = the knob grid.
- * Defaults to the list — the grid ships as an opt-in preview before becoming
- * the default in a later release. Read through a global so the view module can
- * ask without importing shadow_ui.js. See shadow_ui_param_pages.mjs. */
-let paramViewGlobal = 0;
+/* Param View: 0 = the hierarchy list editor, 1 = the knob grid.
+ *
+ * The grid is now the default. It shipped as an opt-in preview because it
+ * could not draw everything the list could, and that gap is what kept it
+ * opt-in rather than any doubt about the layout: mode selectors, child levels
+ * and enum lists all had to land first, and the fleet contract fixture had to
+ * be recaptured (76 modules -> 95) before "the grid covers the fleet" was a
+ * measurement rather than a hope.
+ *
+ * The list is not deprecated. It stays reachable from Global Settings, and it
+ * remains the better view for a module whose contract the grid cannot serve
+ * well -- 11 modules publish no ui_hierarchy at all, and a knob grid over a
+ * flat paginated param list is worse than a list of them.
+ *
+ * Read through a global so the view module can ask without importing
+ * shadow_ui.js. See shadow_ui_param_pages.mjs. */
+let paramViewGlobal = 1;
 const PARAM_VIEW_CONFIG_PATH = "/data/UserData/schwung/param_view.json";
 globalThis.param_view_get_mode = function() { return paramViewGlobal; };
 
@@ -2186,6 +2692,29 @@ function returnToSlotGridFromLfoTarget() {
     return true;
 }
 
+/*
+ * AN EDITOR THAT OWNS ITS OWN VIEW MUST HAND THE SCREEN BACK ITSELF.
+ *
+ * The grid can open a parameter whose editor is a whole VIEW rather than an
+ * overlay -- the filepath browser, the canvas/wave editor, the enum picker.
+ * Those close by calling setView() themselves, so unless they ask where they
+ * came from they all default to the hierarchy list. From the grid that reads as
+ * "I dived into a wave editor and came back somewhere else", and it costs a
+ * second Back to undo.
+ *
+ * The filepath browser already carried this branch inline, under a comment
+ * saying the return "lives here rather than being repeated (and forgotten) at
+ * each one". It was then forgotten at the canvas -- reported from the device as
+ * granny's position editor returning to the menu instead of the knobs. So it is
+ * a shared helper now, and test_editor_returns_to_caller.sh fails when a new
+ * own-view editor closes without consulting it.
+ */
+function closeOwnViewEditorToCaller() {
+    if (!paramEditorOpenedFromGrid) return false;
+    returnToParamPagesFromEditor();
+    return true;
+}
+
 function returnToParamPagesFromEditor() {
     const slotIndex = hierEditorSlot;
     const componentKey = hierEditorComponent;
@@ -2194,7 +2723,7 @@ function returnToParamPagesFromEditor() {
     paramEditorReturnPage = "";
     exitHierarchyEditor();
     enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey), returnPage,
-                    null, paramPagesChromeFor(componentKey));
+                    componentParamPagesIo(slotIndex, componentKey), paramPagesChromeFor(componentKey));
     needsRedraw = true;
 }
 
@@ -2203,6 +2732,17 @@ function openHierarchyParamEditor(selectedKey, meta, forceOpen) {
         hierEditorEditMode = false;
         resetHierarchyEditState();
         invalidateKnobContextCache();
+        /* A CLICK closes edit mode too, and must land where BACK lands.
+         *
+         * Edit mode is not a separate view -- it is the hierarchy editor with
+         * the row opened, which for granny's `position` is the waveform strip
+         * the user calls the wave editor. Back already returned to the grid
+         * here; this toggle did not, so the gesture that OPENED the editor was
+         * the one that could not close it back to where it came from. Reported
+         * from the device after the canvas and filepath doors were fixed --
+         * this is the same bug through a third door, and the reason the first
+         * fix appeared to change nothing. */
+        closeOwnViewEditorToCaller();
         return;
     }
     if (!hierEditorEditMode && meta && meta.type === "string") {
@@ -2443,6 +2983,21 @@ let slotModalFromGrid = false;
 let suppressMasterGridOnce = false;
 let masterModalFromGrid = false;
 
+/* ...and the Global Settings half. There is no suppress twin: Global Settings
+ * has no list to be handed back to, so the only thing outstanding is "go back
+ * to the page once the help stack closes". See maybeReturnToGlobalGrid. */
+let globalModalFromGrid = false;
+
+/* ...and the fourth: a component's "My Presets" / "Module" trailing page.
+ * No suppress twin either -- Load/Delete/Swap/Remove hand off to screens that
+ * already exist (the preset browser, the component picker) rather than a list
+ * of the grid's own, so there is nothing to keep showing while they run. Just
+ * where to come back to when they are done: the slot + component key the grid
+ * was open on. See maybeReturnToComponentGrid. */
+let componentModalFromGrid = false;
+let componentGridReturnSlot = -1;
+let componentGridReturnKey = "";
+
 function saveParamViewConfig() {
     try {
         host_write_file(PARAM_VIEW_CONFIG_PATH, JSON.stringify({ param_view: paramViewGlobal }));
@@ -2458,95 +3013,6 @@ function loadParamViewConfig() {
     } catch (e) {}
 }
 
-/* Global Settings — hierarchical sections for Shift+Vol+Step2 menu.
- * The canonical schema is also in shared/settings-schema.json for the
- * schwung-manager web UI. Keep both in sync when adding settings. */
-const GLOBAL_SETTINGS_SECTIONS = [
-    {
-        id: "display", label: "Display",
-        items: [
-            { key: "display_mirror", label: "Mirror Display", type: "bool" },
-            { key: "overlay_knobs", label: "Overlay Knobs", type: "enum",
-              options: ["+Shift", "+Jog Touch", "Off", "Native"], values: [0, 1, 2, 3] },
-            { key: "pad_typing", label: "Pad Typing", type: "bool" },
-            { key: "text_preview", label: "Text Preview", type: "bool" },
-            { key: "midi_indicator_enabled", label: "MIDI Channel", type: "bool" },
-            { key: "param_view", label: "Param View", type: "enum",
-              options: ["List", "Knobs"], values: [0, 1] }
-        ]
-    },
-    {
-        id: "audio", label: "Audio",
-        items: [
-            { key: "link_audio_routing", label: "Move->Schwung", type: "bool" },
-            { key: "link_audio_publish", label: "Schwung->Link", type: "bool" },
-            { key: "latency_comp_enabled", label: "Latency Comp", type: "bool" },
-            { key: "resample_bridge", label: "Sample Src", type: "enum",
-              options: ["Native", "Schwung Mix"], values: [0, 2] },
-            { key: "skipback_shortcut", label: "Skipback", type: "enum",
-              options: ["Sh+Cap", "Sh+Vol+Cap"], values: [0, 1] },
-            { key: "skipback_seconds", label: "Skipback Len", type: "enum",
-              options: ["30s", "1m", "2m", "3m", "4m", "5m"], values: [30, 60, 120, 180, 240, 300] },
-            { key: "browser_preview", label: "Browser Preview", type: "bool" },
-            { key: "usbc_out_persist", label: "USB-C Persist", type: "bool" }
-        ]
-    },
-    {
-        id: "accessibility", label: "Screen Reader",
-        items: [
-            { key: "screen_reader_enabled", label: "Screen Reader", type: "bool" },
-            { key: "screen_reader_engine", label: "TTS Engine", type: "enum",
-              options: ["eSpeak-NG", "Flite"], values: ["espeak", "flite"] },
-            { key: "screen_reader_speed", label: "Voice Speed", type: "float", min: 0.5, max: 6.0, step: 0.1 },
-            { key: "screen_reader_pitch", label: "Voice Pitch", type: "float", min: 80, max: 180, step: 5 },
-            { key: "screen_reader_volume", label: "Voice Vol", type: "int", min: 0, max: 100, step: 5 },
-            { key: "screen_reader_debounce", label: "Debounce", type: "int", min: 0, max: 1000, step: 50 }
-        ]
-    },
-    {
-        id: "set_pages", label: "Set Pages",
-        items: [
-            { key: "set_pages_enabled", label: "Set Pages", type: "bool" }
-        ]
-    },
-    {
-        id: "shortcuts", label: "Shortcuts",
-        items: [
-            { key: "shadow_ui_trigger", label: "Shadow UI Trigger", type: "enum",
-              options: ["Long Press", "Shift+Vol", "Both"], values: [0, 1, 2] }
-        ]
-    },
-    {
-        id: "services", label: "Services",
-        items: [
-            { key: "filebrowser_enabled", label: "File Browser", type: "bool" },
-            { key: "auto_update_check", label: "Auto Update Check", type: "bool" },
-            { key: "analytics_enabled", label: "Analytics", type: "bool" }
-        ]
-    },
-    {
-        id: "updates", label: "Updates",
-        items: [
-            /* Detection runs on-device (catalog scan + version compare) so
-             * users can see what's outdated without opening a browser. The
-             * actual install always happens via the web manager (or the
-             * GUI installer as fallback) — the on-device install paths
-             * silently failed for users without a current shim, so we
-             * removed them. */
-            { key: "check_updates", label: "[Check Updates]", type: "action" },
-            { key: "module_store",  label: "[Module Store]",  type: "action" }
-        ]
-    },
-    {
-        id: "help", label: "[Help...]", isAction: true
-    }
-];
-
-let globalSettingsSectionIndex = 0;
-let globalSettingsInSection = false;
-let globalSettingsItemIndex = 0;
-let globalSettingsEditing = false;
-
 /* Tools menu state */
 let toolsMenuIndex = 0;
 let toolModules = [];           // Populated by scanForToolModules()
@@ -2560,7 +3026,25 @@ let filebrowserEnabled = false;    // Off by default, toggle in Settings > Servi
 let midiIndicatorEnabled = (typeof midi_indicator_get === "function") ? !!midi_indicator_get() : false;
 
 /* Preview player state */
-let previewEnabled = true;         // Global setting: auto-preview in file browser
+/*
+ * Global setting: audition what the cursor is on before you commit to it.
+ *
+ * Two consumers, one switch: the file browser plays a highlighted WAV, and the
+ * User Presets list applies the highlighted preset to the live slot. Both are
+ * "hear it before you pick it", and both are surprising if you did not ask for
+ * them, so they share a gate rather than growing one each.
+ *
+ * DEFAULT OFF, and the in-memory initial value has to say so too — the settings
+ * screen reads THIS variable, so a device with no stored config would otherwise
+ * draw "On" while the declared default is Off. Persisted only by the toggle
+ * (saveBrowserPreviewConfig has exactly one caller), which is what lets the
+ * default move at all: a device that never chose follows it, one that chose
+ * keeps its choice. Same mechanism as param_view.
+ *
+ * The stored key stays `browser_preview` — renaming it would silently discard
+ * every existing user's choice.
+ */
+let previewEnabled = false;
 let previewPendingPath = "";       // Path waiting for debounce
 let previewPendingTime = 0;        // Date.now() when path was set
 const PREVIEW_DEBOUNCE_MS = 300;
@@ -2687,8 +3171,9 @@ function wavPlayerStop() {
     shadow_set_param(0, "overtake_dsp:playing", "0");
 }
 
-const RESAMPLE_BRIDGE_LABEL_BY_MODE = { 0: "Native", 2: "Schwung Mix" };
-const RESAMPLE_BRIDGE_VALUES = [0, 2];
+/* The labels and the stored values are the contract's now — options /
+ * short_options and GLOBAL_ENUM_VALUES in shadow_ui_global_grid.mjs. Two copies
+ * of [0, 2] is exactly how an index gets written as a mode. */
 
 /* Check Move's system Link setting via shim param (reads Settings.json) */
 function checkSystemLinkEnabled() {
@@ -4125,6 +4610,35 @@ function showWarning(title, message) {
     warningActive = true;
     announce(`${title}: ${message}`);
     needsRedraw = true;
+}
+
+/*
+ * Answer the message overlay, if one is up.
+ *
+ * The overlay is drawn OVER whatever view is on screen (see the draw path: it
+ * is outside the view switch), so it has to be ANSWERABLE from whatever view is
+ * on screen. It used to be dismissed from one site far down
+ * onMidiMessageInternal, below the early-out that hands input to the page
+ * chrome — so a warning raised by a write ON a page (Schwung Mix, Link Audio,
+ * File Browser: all three now come from the Global Settings contract) drew
+ * itself over a grid that went on consuming every button, and there was no
+ * press that could clear it.
+ *
+ * Extracted rather than moved: hoisting the one site above the early-out would
+ * also hoist it above splash, the analytics prompt, the feedback gate and text
+ * entry, each of which deliberately outranks it today.
+ *
+ * A knob turn does not dismiss — it is how the value that raised the warning is
+ * being changed, so the message would vanish on the same detent that produced
+ * it.
+ */
+function maybeDismissWarningFromInput(status, d1, d2) {
+    if (!warningActive) return false;
+    if ((status & 0xF0) !== 0xB0 || d2 <= 0) return false;
+    if (d1 === MoveMainKnob) return false;
+    if (d1 >= KNOB_CC_START && d1 <= KNOB_CC_END) return false;
+    dismissWarning();
+    return true;
 }
 
 /* Dismiss asset warning overlay */
@@ -6129,7 +6643,7 @@ function drawOvertakeMenu() {
         });
     }
 
-    drawFooter({left: "Back: exit", right: "Jog: select"});
+    drawFooter(["Back: exit", "Jog: select"]);
 }
 
 /*
@@ -6692,10 +7206,16 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
                      slotIndex + ".json)");
             return BAIL;
         }
-        return {
+        const entry = {
             config,
             bypassed: parseInt(getSlotParam(slotIndex, `${id}:bypassed`) || "0", 10) === 1 ? 1 : 0
         };
+        /* Only when there is one. An absent key is how a component that has
+         * never loaded a preset is spelled, and how every patch written before
+         * this existed still reads. */
+        const record = getUserPresetRecord(slotIndex, id);
+        if (record) entry.user_preset = { name: record.name, hash: record.hash };
+        return entry;
     };
 
     if (cfg.synth && cfg.synth.module) {
@@ -6704,7 +7224,8 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
         patch.synth = {
             module: cfg.synth.module,
             config: entry.config,
-            bypassed: entry.bypassed
+            bypassed: entry.bypassed,
+            user_preset: entry.user_preset
         };
     }
 
@@ -6717,7 +7238,8 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
         patch.midi_fx.push({
             type: moduleData.module,
             params: entry.config,
-            bypassed: entry.bypassed
+            bypassed: entry.bypassed,
+            user_preset: entry.user_preset
         });
     }
 
@@ -6729,7 +7251,8 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
         patch.audio_fx.push({
             type: moduleData.module,
             params: entry.config,
-            bypassed: entry.bypassed
+            bypassed: entry.bypassed,
+            user_preset: entry.user_preset
         });
     }
 
@@ -8283,30 +8806,82 @@ function cancelToolProcess() {
 
 /* ========== Global Settings Functions ========== */
 
-function enterGlobalSettings() {
-    globalSettingsSectionIndex = 0;
-    globalSettingsInSection = false;
-    globalSettingsItemIndex = 0;
-    globalSettingsEditing = false;
-    setView(VIEWS.GLOBAL_SETTINGS);
+/*
+ * GLOBAL SETTINGS, as the page chrome — the same engine slot settings and
+ * Master FX settings run on.
+ *
+ * The component name is not a module and not "slot"; it names the SYNTHESISED
+ * contract, so headerTitle() has something to say and the io can tell which
+ * contract is loaded. The declaration is shadow_ui_global_grid.mjs and the
+ * backends are globalGridIoFor(); nothing about which params exist lives here.
+ *
+ * NOT gated on paramPagesEnabled(). Every other consumer of this engine has the
+ * hierarchy editor to fall back to when the screen reader is on; Global Settings
+ * has nothing — its bespoke list is deleted — and it is the screen you go to in
+ * order to turn the screen reader off. paramPagesLayout() forces the LIST for
+ * TTS instead, which is the arrangement that has a selected row to announce.
+ */
+const GLOBAL_SETTINGS_COMPONENT = "global_settings";
+
+function enterGlobalSettingsGrid(restorePageName) {
+    /* A fresh entry is not a return from a modal. Whatever hand-off was
+     * outstanding has been served by getting here. */
+    globalModalFromGrid = false;
+    enterParamPages(0, GLOBAL_SETTINGS_COMPONENT, GLOBAL_SETTINGS_COMPONENT,
+                    restorePageName || null, globalGridIoFor(),
+                    /* No moduleKey: there is no module behind this contract to
+                     * abbreviate. Back leaves shadow mode, which is not a view,
+                     * so it is an onExit rather than a returnView. */
+                    { label: "Global", name: "Settings",
+                      /* PINNED TO THE LIST, whatever Param View says.
+                       *
+                       * Param View is a preference about MODULE parameters,
+                       * where eight cells you can grab at once is the point.
+                       * Every one of these 25 is a set-once toggle, and several
+                       * are destructive to brush past: link_audio_routing
+                       * re-routes Move's audio, resample_bridge replaces the
+                       * sampler's input, and param_view changes the screen you
+                       * are standing on. A knob has no detent to tell you it
+                       * moved. Slot and Master FX settings deliberately do not
+                       * pin — their Volume, Mute and Solo really are
+                       * performance controls. */
+                      layout: LAYOUT_LIST,
+                      onExit: () => {
+                          if (typeof shadow_request_exit === "function") shadow_request_exit();
+                      } });
     needsRedraw = true;
-    const section = GLOBAL_SETTINGS_SECTIONS[0];
-    announce("Settings, " + section.label);
 }
 
+function enterGlobalSettings() {
+    enterGlobalSettingsGrid(null);
+}
+
+/*
+ * The page name enterGlobalSettingsScreenReader lands on.
+ *
+ * DERIVED from the section it names rather than spelled again. The engine
+ * restores a page by NAME (restorePageName; see enterParamPages) and the name
+ * planPages gives a section is its root nav entry's LABEL — so a hardcoded
+ * "Screen Reader" here would silently stop matching the day the label is
+ * reworded, and the jump would land on page 1 with nothing to say it had.
+ * `accessibility` is the level ID, which is the stable half.
+ */
+const GLOBAL_SCREEN_READER_PAGE =
+    (GLOBAL_SECTIONS.find((s) => s.id === "accessibility") || {}).label || null;
+
 function enterGlobalSettingsScreenReader() {
-    /* Enter Global Settings and jump directly to Screen Reader section */
-    const srIdx = GLOBAL_SETTINGS_SECTIONS.findIndex(s => s.id === "accessibility");
-    globalSettingsSectionIndex = srIdx >= 0 ? srIdx : 0;
-    globalSettingsInSection = true;
-    globalSettingsItemIndex = 0;
-    globalSettingsEditing = false;
-    setView(VIEWS.GLOBAL_SETTINGS);
-    needsRedraw = true;
-    const section = GLOBAL_SETTINGS_SECTIONS[globalSettingsSectionIndex];
-    const item = section.items[0];
-    const value = getMasterFxSettingValue(item);
-    announce("Screen Reader Settings, " + item.label + ": " + value);
+    enterGlobalSettingsGrid(GLOBAL_SCREEN_READER_PAGE);
+    /*
+     * ...and SAY so, which the restore itself will not.
+     *
+     * controller.restorePage is deliberately silent: its other caller is
+     * "return to the page you were already on" after an editor closes, where an
+     * announcement is noise. This is the opposite — a jump the user asked for
+     * from a shortcut — and load() has already announced "Display, 1 of 7" on
+     * the way past. Leaving it at that names the wrong page out loud to the one
+     * user who reached this screen by ear.
+     */
+    if (GLOBAL_SCREEN_READER_PAGE) announce(GLOBAL_SCREEN_READER_PAGE + " Settings");
 }
 
 function handleGlobalSettingsAction(key) {
@@ -8703,37 +9278,6 @@ function saveMasterFxChainConfig() {
     }
 }
 
-/* Save auto-update setting to shadow config */
-function saveAutoUpdateConfig() {
-    try {
-        const configPath = "/data/UserData/schwung/shadow_config.json";
-        let config = {};
-        try {
-            const content = host_read_file(configPath);
-            if (content) config = JSON.parse(content);
-        } catch (e) {}
-        config.auto_update_check = autoUpdateCheckEnabled;
-        host_write_file(configPath, JSON.stringify(config, null, 2));
-    } catch (e) {
-        /* Ignore errors */
-    }
-}
-
-/* Load auto-update setting from config */
-function loadAutoUpdateConfig() {
-    try {
-        const configPath = "/data/UserData/schwung/shadow_config.json";
-        const content = host_read_file(configPath);
-        if (!content) return;
-        const config = JSON.parse(content);
-        if (config.auto_update_check !== undefined) {
-            autoUpdateCheckEnabled = config.auto_update_check;
-        }
-    } catch (e) {
-        /* Ignore errors - default to enabled */
-    }
-}
-
 function saveBrowserPreviewConfig() {
     try {
         const configPath = "/data/UserData/schwung/shadow_config.json";
@@ -8861,9 +9405,6 @@ function syncJsOnlySettings() {
         }
         if (c.browser_preview !== undefined && c.browser_preview !== previewEnabled) {
             previewEnabled = c.browser_preview;
-        }
-        if (c.auto_update_check !== undefined) {
-            autoUpdateCheckEnabled = c.auto_update_check;
         }
         if (c.filebrowser_enabled !== undefined && c.filebrowser_enabled !== filebrowserEnabled) {
             filebrowserEnabled = c.filebrowser_enabled;
@@ -9377,20 +9918,42 @@ function applyComponentSelection() {
         return;
     }
 
-    const cfg = chainConfigs[selectedSlot] || createEmptyChainConfig();
+    applyChainComponentPick(selectedSlot, comp.key, picked, pending);
+}
+
+/*
+ * Apply a chain-component pick: the whole sequence, from one place.
+ *
+ * `picked` is the module id, or "" for None. None on a LIST position is a
+ * removal that closes the gap and renumbers everything downstream — a SHAPE
+ * change carried by one `remove` verb — while None on the synth is a clear
+ * with no neighbours to renumber. applyPickerChoiceToChain knows which; this
+ * function is everything that must happen either way, and it is extracted so
+ * the Module page's "Remove Module" IS this path rather than a copy of it.
+ */
+function applyChainComponentPick(slotIndex, componentKey, picked, pending) {
+    /* Re-derived from slot+key rather than taken from the caller: a "Remove
+     * Module" row on the My Presets/Module trailing page only ever has
+     * slot+key to hand, so the picker's own lookup and this one are expected
+     * to always agree. */
+    const at = slotChainComponentIndex(slotIndex, componentKey);
+    const comp = at >= 0 ? slotChainComponents(slotIndex)[at] : null;
+    if (!comp) return;
+
+    const cfg = chainConfigs[slotIndex] || createEmptyChainConfig();
     const choice = withPendingChainInsert(
-        applyPickerChoiceToChain(cfg, comp.key, picked), pending);
-    chainConfigs[selectedSlot] = choice.cfg;
+        applyPickerChoiceToChain(cfg, componentKey, picked), pending);
+    chainConfigs[slotIndex] = choice.cfg;
     /* A swap MUTATES `cfg` in place and `None` hands back a different object,
      * so neither identity nor the module signature can be what notices this.
      * The confirm path reloads (and the declined-gate path reloads too), but
      * the model and the DSP disagree from here until one of them runs. */
-    invalidateChainConfig(selectedSlot);
+    invalidateChainConfig(slotIndex);
 
     /* Track explicit user-removal so autosave can bypass the boot-glitch
      * guard. Set when the slot is now fully empty; reset on any non-empty
      * pick (the user is rebuilding the slot). */
-    slotUserCleared[selectedSlot] = !chainHasAnyModule(choice.cfg);
+    slotUserCleared[slotIndex] = !chainHasAnyModule(choice.cfg);
 
     /* A component changed, so any LFO label naming that component by module
      * is now wrong. The label cache keys on the stored ROUTING, which a swap
@@ -9400,13 +9963,12 @@ function applyComponentSelection() {
 
     /* Apply to DSP - map component key to param key */
     const moduleId = picked;
-    const paramKey = chainComponentParamKey(comp.key, "module") || "";
+    const paramKey = chainComponentParamKey(componentKey, "module") || "";
 
     /* Feedback gate: if the picked module pulls line-in, warn about speakers.
      * Callback-based — schwung's QuickJS doesn't pump pending jobs so
      * Promise.then never fires. */
     if (paramKey && moduleId) {
-        const slotIndex = selectedSlot;  /* capture — shim JUMP_TO_SLOT path can mutate selectedSlot */
         let meta = null;
         try {
             if (typeof host_get_module_metadata === 'function') {
@@ -9414,13 +9976,13 @@ function applyComponentSelection() {
             }
         } catch (err) {
             if (typeof host_log === 'function') {
-                host_log(`applyComponentSelection: feedback gate metadata error for ${moduleId}: ${err}`);
+                host_log(`applyChainComponentPick: feedback gate metadata error for ${moduleId}: ${err}`);
             }
         }
         maybeConfirmForModule(meta, (ok) => {
             if (!ok) {
                 if (typeof host_log === 'function') {
-                    host_log(`applyComponentSelection: declined feedback gate for ${moduleId}`);
+                    host_log(`applyChainComponentPick: declined feedback gate for ${moduleId}`);
                 }
                 loadChainConfigFromSlot(slotIndex);
                 slotUserCleared[slotIndex] = false;
@@ -9434,7 +9996,7 @@ function applyComponentSelection() {
     }
 
     /* Clearing a slot (empty moduleId) — no feedback risk, run directly. */
-    applyComponentSelectionConfirmed(selectedSlot, paramKey, moduleId, comp, choice);
+    applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, choice);
 }
 
 function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, choice) {
@@ -9458,7 +10020,7 @@ function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, c
     if (shape && shape.kind === "remove") {
         /* nothing more to write: the verb did the unload */
     } else if (paramKey) {
-        if (typeof host_log === "function") host_log(`applyComponentSelection: slot=${slotIndex} param=${paramKey} module=${moduleId}`);
+        if (typeof host_log === "function") host_log(`applyChainComponentPick: slot=${slotIndex} param=${paramKey} module=${moduleId}`);
         /*
          * BEFORE the module write, because the write reloads the position and
          * takes its modulation entries with it — after it, there is nothing
@@ -9473,7 +10035,7 @@ function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, c
                                         getComponentParamPrefix(comp.key));
         }
         const success = setSlotParam(slotIndex, paramKey, moduleId);
-        if (typeof host_log === "function") host_log(`applyComponentSelection: setSlotParam returned ${success}`);
+        if (typeof host_log === "function") host_log(`applyChainComponentPick: setSlotParam returned ${success}`);
         if (!success) {
             print(2, 50, "Failed to apply", 1);
         }
@@ -9596,6 +10158,25 @@ function runChainSettingAction(slot, key) {
 }
 
 /*
+ * Did the action just performed put something else on screen?
+ *
+ * The one question all four run*ActionFromGrid handlers ask, and the reason
+ * they ask it this way rather than testing the action key: a key test is
+ * right for today's actions and silently wrong for the next one added. Four
+ * copies of that reasoning is three chances to update three of them when a
+ * fifth action arrives.
+ *
+ * What counts as "something else" is screen-specific -- a slot's Save/Delete
+ * raise an overlay FLAG the list draws, Global Settings pushes a help stack or
+ * changes `view` outright, a component action changes `view` to a real screen
+ * -- so the caller states its own conditions and this only ORs them. The
+ * shared part is the QUESTION ("is any of this true"), not the mechanism.
+ */
+function gridActionOpenedSomething(...conditions) {
+    return conditions.some(Boolean);
+}
+
+/*
  * The param accessors the slot grid drives this slot through.
  *
  * All the mapping lives in shadow_ui_slot_grid.mjs, which is pure and tested on
@@ -9630,7 +10211,7 @@ function runChainSettingAction(slot, key) {
  */
 function runSlotActionFromGrid(slot, key) {
     runChainSettingAction(slot, key);
-    if (!(showingNamePreview || confirmingOverwrite || confirmingDelete)) return false;
+    if (!gridActionOpenedSomething(showingNamePreview, confirmingOverwrite, confirmingDelete)) return false;
     exitParamPages();
     /* The list must STAY the list while the modal is up -- re-entering the grid
      * would drop the confirmation on the floor again. */
@@ -9720,7 +10301,33 @@ function masterGridIoFor() {
          * declared key already carries its "master_fx:" prefix, so these are
          * pass-throughs rather than a mapping. */
         readParam: (key) => getSlotParam(0, key),
-        writeParam: (key, value) => setSlotParam(0, key, value),
+        /*
+         * A WRITE HERE CARRIES THE SAME SIDE EFFECTS THE LIST PATH CARRIED.
+         *
+         * adjustMasterFxSetting used to set the param, mirror the module-level
+         * cache var AND call saveMasterFxChainConfig(). When Master FX Settings
+         * became a contract, the grid started writing through this io -- which
+         * did the param and neither of the other two. So the listen channel took
+         * effect immediately and was then LOST on reboot, because the next
+         * saveMasterFxChainConfig() wrote the stale cachedMasterFxMidiChannel
+         * rather than what the user had just chosen. Reported from the device.
+         *
+         * This is the same shape as the Global Settings persistence keys, where
+         * the routing table declares which writes must persist and a test pins
+         * it (test_global_settings_contract.sh). Master FX's own contract never
+         * got that treatment; the check below is the whole of it, because
+         * midi_channel is the only param here with a side effect -- the LFO keys
+         * persist through the MFX LFO path and Volume was removed for writing
+         * into slot 1's module.
+         */
+        writeParam: (key, value) => {
+            setSlotParam(0, key, value);
+            if (key === MFX_MIDI_CHANNEL_KEY) {
+                const wire = parseInt(value, 10);
+                cachedMasterFxMidiChannel = Number.isFinite(wire) ? wire : -1;
+                saveMasterFxChainConfig();
+            }
+        },
         hasPreset: () => !!currentMasterPresetName,
         /* The SAME resolver the MFX LFO list editor uses, so the grid and the
          * list can never describe one routing differently, and cached per scope
@@ -9753,6 +10360,254 @@ function enterMasterFxSettingsGrid() {
 }
 
 /*
+ * GLOBAL SETTINGS, as the knob grid — the host half of the contract.
+ *
+ * The routing table lives in shadow_ui_global_grid.mjs and is tested with no
+ * device; what cannot leave this file is here and nothing else: the concrete
+ * backends, and the module-level cache vars a write must keep in step.
+ *
+ * WHY THE CACHE VARS AND THE SAVE MATTER MORE THAN THEY LOOK.
+ *
+ * This replaces adjustMasterFxSetting, which is delta-based and side-effectful:
+ * six of its branches call saveMasterFxChainConfig() and four assign a
+ * `cached*` var alongside the shadow_set_param. A converted write that drops
+ * either sets the param, reads back correctly, draws correctly — and is gone on
+ * reboot, with no error anywhere. That is the failure this shape exists to
+ * prevent, so the SHARED save is declared once (`persist`, applied by
+ * writeGlobalParam for exactly the keys the table marks) while the key-specific
+ * savers stay welded to the assignment they save.
+ */
+function globalGridIoFor() {
+    const mfx = (key) => shadow_get_param(0, "master_fx:" + key);
+    const mfxSet = (key, value) => shadow_set_param(0, "master_fx:" + key, value);
+    const bit = (on) => (on ? "1" : "0");
+
+    const io = {
+        readParam(key) {
+            switch (key) {
+            /* ---- display */
+            case "display_mirror":
+                return bit(typeof display_mirror_get === "function" && display_mirror_get());
+            case "overlay_knobs":
+                return String(typeof overlay_knobs_get_mode === "function" ? overlay_knobs_get_mode() : 0);
+            case "pad_typing":         return bit(padSelectGlobal);
+            case "text_preview":       return bit(textPreviewGlobal);
+            case "midi_indicator_enabled": return bit(midiIndicatorEnabled);
+            case "param_view":         return String(paramViewGlobal === 1 ? 1 : 0);
+
+            /* ---- audio. These four are the ONLY reads that cost IPC. */
+            case "link_audio_routing":
+            case "link_audio_publish":
+            case "latency_comp_enabled":
+            case "usbc_out_persist":
+            case "usbc_out_source":
+                return mfx(key);
+            case "resample_bridge": {
+                /* Normalised through the same parser the old path used, so an
+                 * unset or malformed value lands on a mode that exists. A read
+                 * that did not complete is passed through untouched — null is
+                 * not news about the setting. */
+                const raw = mfx("resample_bridge");
+                if (raw === null || raw === undefined || raw === "") return raw;
+                return String(parseResampleBridgeMode(raw));
+            }
+            case "skipback_shortcut":
+                return bit(typeof skipback_shortcut_get === "function" && skipback_shortcut_get());
+            case "skipback_seconds":
+                return String(typeof skipback_seconds_get === "function" ? skipback_seconds_get() : 30);
+            case "browser_preview":    return bit(previewEnabled);
+
+            /* ---- screen reader */
+            case "screen_reader_enabled":
+                return bit(typeof tts_get_enabled === "function" && tts_get_enabled());
+            case "screen_reader_engine":
+                return (typeof tts_get_engine === "function" && tts_get_engine() === "flite") ? "flite" : "espeak";
+            case "screen_reader_speed":
+                return String(typeof tts_get_speed === "function" ? tts_get_speed() : 1.0);
+            case "screen_reader_pitch":
+                return String(typeof tts_get_pitch === "function" ? Math.round(tts_get_pitch()) : 110);
+            case "screen_reader_volume":
+                return String(typeof tts_get_volume === "function" ? tts_get_volume() : 70);
+            case "screen_reader_debounce":
+                return String(typeof tts_get_debounce === "function" ? tts_get_debounce() : 300);
+
+            /* ---- set pages / shortcuts / services */
+            case "set_pages_enabled":
+                return bit(typeof set_pages_get === "function" && set_pages_get());
+            case "shadow_ui_trigger":
+                return String(typeof shadow_ui_trigger_get === "function" ? shadow_ui_trigger_get() : 2);
+            case "filebrowser_enabled": return bit(filebrowserEnabled);
+            case "analytics_enabled":
+                return bit(typeof host_get_analytics_enabled === "function" && host_get_analytics_enabled());
+            }
+            return "";
+        },
+
+        /*
+         * ABSOLUTE, unlike the delta-based path this replaces. `value` is the
+         * STORED value as a string — writeGlobalParam has already turned an
+         * enum index into it, which is what keeps resample_bridge writing 2
+         * rather than the index 1, a mode that does not exist.
+         */
+        writeParam(key, value) {
+            const on = (value === "1");
+            switch (key) {
+            /* ---- display */
+            case "display_mirror":
+                if (typeof display_mirror_set === "function") display_mirror_set(on ? 1 : 0);
+                return;
+            case "overlay_knobs":
+                if (typeof overlay_knobs_set_mode === "function") overlay_knobs_set_mode(parseInt(value, 10) || 0);
+                return;
+            case "pad_typing":
+                setPadSelectGlobal(on);
+                savePadTypingConfig();
+                return;
+            case "text_preview":
+                setTextPreviewGlobal(on);
+                saveTextPreviewConfig();
+                return;
+            case "midi_indicator_enabled":
+                midiIndicatorEnabled = on;
+                if (typeof midi_indicator_set === "function") midi_indicator_set(on ? 1 : 0);
+                return;
+            case "param_view":
+                paramViewGlobal = on ? 1 : 0;
+                saveParamViewConfig();
+                announce(paramViewGlobal === 1 ? "Param View Knobs" : "Param View List");
+                return;
+
+            /* ---- audio. The cache var is not a cache of the write; it is what
+             * saveMasterFxChainConfig serialises, so skipping it writes the OLD
+             * value to disk and the setting reverts on reboot. */
+            case "link_audio_routing":
+                mfxSet(key, on ? "1" : "0");
+                cachedLinkAudioRouting = on;
+                /* Turning it ON with Link off in Move's System Settings does
+                 * nothing at all, silently — that is the whole reason for the
+                 * warning, so it rides with the write rather than with the
+                 * screen that used to perform it. */
+                if (on) warnIfLinkDisabled("Move->Schwung");
+                return;
+            case "link_audio_publish":
+                mfxSet(key, on ? "1" : "0");
+                cachedLinkAudioPublish = on;
+                if (on) warnIfLinkDisabled("Schwung->Link");
+                return;
+            case "latency_comp_enabled":
+                mfxSet(key, on ? "1" : "0");
+                cachedLatencyCompEnabled = on;
+                return;
+            case "usbc_out_persist":
+                /* Both On indexes store 1 — the third option carries only the
+                 * wire annotation, and the source is Move's to choose. */
+                mfxSet(key, on ? "1" : "0");
+                cachedUsbcOutPersist = on;
+                return;
+            case "resample_bridge": {
+                const mode = parseResampleBridgeMode(value);
+                mfxSet(key, String(mode));
+                cachedResampleBridgeMode = mode;
+                /* Schwung Mix takes over Mic and Line-in; a user who does not
+                 * know that hears their input vanish. */
+                if (mode === 2) {
+                    showWarning("Schwung Mix",
+                                "Replaces Mic and Line-in with ME + Move Audio");
+                }
+                return;
+            }
+            case "skipback_shortcut":
+                if (typeof skipback_shortcut_set === "function") skipback_shortcut_set(on ? 1 : 0);
+                return;
+            case "skipback_seconds":
+                if (typeof skipback_seconds_set === "function") skipback_seconds_set(parseInt(value, 10) || 30);
+                return;
+            case "browser_preview":
+                previewEnabled = on;
+                if (!previewEnabled) previewStopIfPlaying();
+                saveBrowserPreviewConfig();
+                return;
+
+            /* ---- screen reader. These persist themselves. */
+            case "screen_reader_enabled":
+                if (typeof tts_set_enabled === "function") tts_set_enabled(on);
+                return;
+            case "screen_reader_engine":
+                if (typeof tts_set_engine === "function") tts_set_engine(value === "flite" ? "flite" : "espeak");
+                return;
+            case "screen_reader_speed":
+                if (typeof tts_set_speed === "function") tts_set_speed(parseFloat(value));
+                return;
+            case "screen_reader_pitch":
+                if (typeof tts_set_pitch === "function") tts_set_pitch(Math.round(parseFloat(value)));
+                return;
+            case "screen_reader_volume":
+                if (typeof tts_set_volume === "function") tts_set_volume(Math.round(parseFloat(value)));
+                return;
+            case "screen_reader_debounce":
+                if (typeof tts_set_debounce === "function") tts_set_debounce(Math.round(parseFloat(value)));
+                return;
+
+            /* ---- set pages / shortcuts / services */
+            case "set_pages_enabled":
+                if (typeof set_pages_set === "function") set_pages_set(on ? 1 : 0);
+                return;
+            case "shadow_ui_trigger":
+                if (typeof shadow_ui_trigger_set === "function") shadow_ui_trigger_set(parseInt(value, 10) || 0);
+                return;
+            case "filebrowser_enabled":
+                filebrowserEnabled = on;
+                setFilebrowserRunning(on);
+                saveFilebrowserConfig();
+                /* The URL is the entire point of the setting and there is
+                 * nowhere else on the device it is written down. */
+                showWarning("File Browser",
+                            on ? "On. Access at http://move.local:404" : "Off.");
+                return;
+            case "analytics_enabled":
+                if (typeof host_set_analytics_enabled === "function") host_set_analytics_enabled(on ? 1 : 0);
+                return;
+            }
+        },
+
+        /* The SHARED sink, applied by writeGlobalParam for exactly the keys
+         * GLOBAL_ROUTING marks `persist: "save"`. */
+        persist: () => saveMasterFxChainConfig(),
+
+        /* The Updates menu page's entries, plus [Help...]. Own runner rather
+         * than the host's generic one for the same reason Master FX has one:
+         * the generic runner takes the IPC slot and would run a SLOT action. */
+        runAction: (action) => runGlobalActionFromGrid(action),
+    };
+
+    return createGlobalGridIo(io);
+}
+
+/*
+ * Start or stop the file browser to match the flag.
+ *
+ * Named rather than inlined into the write, because the flag file and the
+ * process must move together: a flag written without the process started reads
+ * as On with nothing listening on :404. The old adjustMasterFxSetting branch
+ * still inlines its own copy; it goes when that path does (Task 9), and until
+ * then this is the only caller.
+ */
+function setFilebrowserRunning(on) {
+    const flagPath = "/data/UserData/schwung/filebrowser_enabled";
+    if (on) {
+        host_write_file(flagPath, "1");
+        if (typeof host_system_cmd === "function") {
+            host_system_cmd("sh -c '/data/UserData/schwung/bin/filebrowser --noauth --address 0.0.0.0 --port 404 --root /data/UserData --database /data/UserData/schwung/filebrowser.db --disableThumbnails --disablePreviewResize --disableExec --disableTypeDetectionByHeader >/dev/null 2>&1 &'");
+        }
+    } else {
+        host_remove_dir(flagPath);
+        if (typeof host_system_cmd === "function") {
+            host_system_cmd("sh -c 'killall filebrowser 2>/dev/null'");
+        }
+    }
+}
+
+/*
  * A Master FX action chosen from the KNOB GRID.
  *
  * Exactly the hand-off runSlotActionFromGrid performs, and for exactly the same
@@ -9767,7 +10622,7 @@ function enterMasterFxSettingsGrid() {
  */
 function runMasterFxActionFromGrid(key) {
     handleMasterFxSettingsAction(key);
-    if (!(masterShowingNamePreview || masterConfirmingOverwrite || masterConfirmingDelete)) {
+    if (!gridActionOpenedSomething(masterShowingNamePreview, masterConfirmingOverwrite, masterConfirmingDelete)) {
         return false;
     }
     exitParamPages();
@@ -9797,6 +10652,58 @@ function maybeReturnToMasterGrid() {
     masterModalFromGrid = false;
     suppressMasterGridOnce = false;
     enterMasterFxSettingsGrid();
+    return true;
+}
+
+/*
+ * A Global Settings action chosen from the page chrome.
+ *
+ * Third instance of runSlotActionFromGrid / runMasterFxActionFromGrid, and the
+ * two properties that make those work are kept:
+ *
+ * It asks WHETHER SOMETHING ELSE IS NOW ON SCREEN rather than listing which
+ * actions leave. All three of today's actions do leave — Help pushes the help
+ * stack, [Check Updates] and [Module Store] set a view of their own — so a test
+ * on the key would be right today and silently wrong for the fourth action.
+ *
+ * The two store screens set their own view and route back through
+ * storeReturnView; Help does not, so this is also where VIEWS.GLOBAL_SETTINGS
+ * gets set for it. That view no longer draws a settings list — it is the help
+ * viewer's host and nothing else.
+ */
+function runGlobalActionFromGrid(action) {
+    handleGlobalSettingsAction(action);
+    const opened = gridActionOpenedSomething(
+        helpNavStack.length > 0, !!helpDetailScrollState, view !== VIEWS.PARAM_PAGES);
+    if (!opened) return false;
+    exitParamPages();
+    globalModalFromGrid = true;
+    if (view === VIEWS.PARAM_PAGES) setView(VIEWS.GLOBAL_SETTINGS);
+    needsRedraw = true;
+    return true;
+}
+
+/* ...and back to the page once the help stack is done with.
+ *
+ * RECONCILES from the draw path rather than firing at the end of each flow —
+ * see maybeReturnToSlotGrid for why hooking each exit is how the original bug
+ * got there. Help has three ways out (Back off the last frame, Back out of a
+ * detail and then the frame, and the detail's own "Back" action row) and only
+ * one of them is a single obvious site.
+ *
+ * The store screens are NOT reconciled here: they leave VIEWS.GLOBAL_SETTINGS
+ * entirely and come back through storeReturnView -> enterGlobalSettings(),
+ * which clears the flag itself. */
+function maybeReturnToGlobalGrid() {
+    if (!globalModalFromGrid) return false;
+    if (helpNavStack.length > 0 || helpDetailScrollState) return false;
+    if (isTextEntryActive()) return false;
+    globalModalFromGrid = false;
+    /* Consumed: it is the MASTER FX back handler that reads this, and a stale
+     * GLOBAL_SETTINGS left in it would send a help session opened from Master FX
+     * to the settings page instead. */
+    if (helpReturnView === VIEWS.GLOBAL_SETTINGS) helpReturnView = null;
+    enterGlobalSettings();
     return true;
 }
 
@@ -10707,6 +11614,35 @@ function enterHierarchyEditorFromParamPages() {
     const page = currentParamPage();
     const slotIndex = paramPagesSlot();
     const componentKey = paramPagesComponent();
+
+    /*
+     * A SYNTHESISED CONTRACT HAS NOWHERE TO EJECT TO.
+     *
+     * Global Settings, a slot's Settings and Master FX's are contracts, not
+     * components: there is no `ui_hierarchy` behind them, so entering the list
+     * editor for one shows nothing and means nothing. Worse, this function sets
+     * suppressParamPagesOnce -- a ONE-SHOT meant to stop the list editor
+     * bouncing straight back into the grid -- and nothing on these paths ever
+     * consumes it, because they do not re-enter through the component route.
+     *
+     * So the flag survived, and the NEXT component to open paid for it: it read
+     * the stale one-shot and fell through to the hierarchy editor. Reported from
+     * the device as granny opening as a list, and correctly diagnosed there as
+     * "keyed off of visiting the global settings" -- the module was never
+     * reloaded; it was simply the next thing opened after Global Settings had
+     * left the flag set.
+     *
+     * Refuse instead. The frame is dropped rather than redirected, which is
+     * right: whatever nulled the controller is mid-transition and owns where the
+     * view goes next.
+     */
+    if (componentKey === GLOBAL_SETTINGS_COMPONENT ||
+        componentKey === MASTER_SETTINGS_COMPONENT ||
+        componentKey === "slot") {
+        exitParamPages();
+        return false;
+    }
+
     exitParamPages();
     suppressParamPagesOnce = true;
     enterHierarchyEditor(slotIndex, componentKey);
@@ -10739,6 +11675,9 @@ function enterHierarchyEditorFromParamPages() {
         hierEditorChildLabel = levelDef.child_label || "Child";
         loadHierarchyLevel();
     }
+    /* Entered. The caller draws the editor only on true -- a synthesised
+     * contract returns false above and its frame is dropped instead. */
+    return true;
 }
 
 /* Enter the hierarchy editor with an explicit hierarchy object. Lets callers
@@ -10846,7 +11785,8 @@ function enterHierarchyEditorWith(slotIndex, componentKey, hierarchy) {
      * screen reader is on, since a grid has nothing selected to read out. */
     if (paramPagesEnabled() && !suppressParamPagesOnce) {
         enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey),
-                        null, null, paramPagesChromeFor(componentKey));
+                        null, componentParamPagesIo(slotIndex, componentKey),
+                        paramPagesChromeFor(componentKey));
         return;
     }
     suppressParamPagesOnce = false;
@@ -10915,8 +11855,13 @@ function enterMasterFxHierarchyEditor(fxSlot) {
      * slot chain. See paramPagesChromeFor.
      */
     if (paramPagesEnabled() && !suppressParamPagesOnce) {
+        /* componentParamPagesIo returns null for a Master FX target (see its
+         * own note) — routed through the SAME helper as the slot-chain sites
+         * rather than skipped here so a future fifth call site cannot opt
+         * Master FX in by omission. */
         enterParamPages(MASTER_CHAIN_TARGET.slot, componentKey,
-                        getComponentParamPrefix(componentKey), null, null,
+                        getComponentParamPrefix(componentKey), null,
+                        componentParamPagesIo(MASTER_CHAIN_TARGET.slot, componentKey),
                         paramPagesChromeFor(componentKey));
         return;
     }
@@ -11248,10 +12193,7 @@ function closeHierarchyFilepathBrowser() {
      * selection, Back, and the no-state guard — funnel through here, so the
      * grid return lives here rather than being repeated (and forgotten) at
      * each one. Committing a sample used to drop you in the hierarchy list. */
-    if (paramEditorOpenedFromGrid) {
-        returnToParamPagesFromEditor();
-        return;
-    }
+    if (closeOwnViewEditorToCaller()) return;
     setView(VIEWS.HIERARCHY_EDITOR);
 }
 
@@ -13045,10 +13987,10 @@ function drawWavPositionEditor(selectedKey, selectedMeta) {
         }
     }
 
-    drawFooter({
-        left: truncateText(valueText, 20),
-        right: truncateText(sourceText, 12)
-    });
+    drawFooter([
+        truncateText(valueText, 20),
+        truncateText(sourceText, 12)
+    ]);
 }
 
 function resetCanvasState() {
@@ -13395,7 +14337,7 @@ function closeCanvasPreview(cancelled) {
     invokeCanvasOverlayHook("onClose", { cancelled: !!cancelled });
     invokeCanvasOverlayHook("onExit", { cancelled: !!cancelled });
     resetCanvasState();
-    setView(VIEWS.HIERARCHY_EDITOR);
+    if (!closeOwnViewEditorToCaller()) setView(VIEWS.HIERARCHY_EDITOR);
     needsRedraw = true;
 }
 
@@ -13428,10 +14370,10 @@ function drawCanvasPreview() {
         }
     }
     if (!canvasParamMeta || canvasParamMeta.show_footer !== false) {
-        drawFooter({
-            left: truncateText(String(valueText || "-"), 20),
-            right: truncateText(title, 12)
-        });
+        drawFooter([
+            truncateText(String(valueText || "-"), 20),
+            truncateText(title, 12)
+        ]);
     }
 }
 
@@ -13445,7 +14387,7 @@ function drawFilepathBrowser() {
 
     if (!state) {
         print(4, LIST_TOP_Y, "Browser unavailable", 1);
-        drawFooter({ left: "Click: return", right: "Jog: scroll" });
+        drawFooter(["Click: return", "Jog: scroll"]);
         return;
     }
 
@@ -13469,7 +14411,7 @@ function drawFilepathBrowser() {
         ? state.items[state.selectedIndex]
         : null;
     const actionText = selected && selected.kind === "file" ? "Click: select" : "Click: open";
-    drawFooter({ left: actionText, right: "Jog: scroll" });
+    drawFooter([actionText, "Jog: scroll"]);
 }
 
 /* Track plugin async-load state per draw so a preset switch's deferred
@@ -13680,7 +14622,7 @@ function drawHierarchyEditor() {
         }
 
         /* Footer hints - always push to edit (for swap/params) */
-        drawFooter({left: "Click: edit", right: "Jog: browse"});
+        drawFooter(["Click: edit", "Jog: browse"]);
     } else {
         const selectedKey = getSelectedHierarchyEditableKey();
         const selectedMeta = selectedKey ? getParamMetadata(selectedKey) : null;
@@ -13762,7 +14704,7 @@ function drawHierarchyEditor() {
             drawMenuList({
                 items,
                 selectedIndex: hierEditorSelectedIdx,
-                listArea: { topY: LIST_TOP_Y, bottomY: LIST_BOTTOM_CLEARANCE },
+                listArea: { topY: LIST_TOP_Y, bottomY: LIST_INDICATOR_BOTTOM_Y },
                 getLabel: (item) => item.label,
                 getValue: (item) => item.value,
                 valueAlignRight: true,
@@ -13776,11 +14718,11 @@ function drawHierarchyEditor() {
         }
 
         /* Footer hints */
-        let hint = hierEditorEditMode ? {left: "Click: done", right: "Jog: adjust"} : {left: "Click: edit", right: "Jog: scroll"};
+        let hint = hierEditorEditMode ? ["Click: done", "Jog: adjust"] : ["Click: edit", "Jog: scroll"];
         if (!hierEditorEditMode && selectedMeta && selectedMeta.type === "string") {
-            hint = { left: "Click: keyboard", right: "Jog: scroll" };
+            hint = ["Click: keyboard", "Jog: scroll"];
         } else if (!hierEditorEditMode && selectedMeta && selectedMeta.type === "canvas") {
-            hint = { left: "Click: open", right: "Jog: scroll" };
+            hint = ["Click: open", "Jog: scroll"];
         }
         drawFooter(hint);
     }
@@ -13812,183 +14754,44 @@ function changeComponentPreset(delta) {
 
 /* getSlotSettingValue(), adjustSlotSetting() -> shadow_ui_slots.mjs */
 
-/* Get Master FX setting current value for display */
+/*
+ * MASTER FX SETTINGS LIST -- the value column and the jog, for the
+ * screen-reader fallback list under VIEWS.MASTER_FX.
+ *
+ * These two used to be a 120-line if-chain apiece, and the name is a lie about
+ * nearly all of it: every branch but one served GLOBAL SETTINGS, which is a
+ * synthesised module contract now (shadow_ui_global_grid.mjs) with its own
+ * absolute writes and its own persistence. What is left is the listen channel,
+ * plus the actions, which carry no value and are not adjustable.
+ *
+ * The master bus's own "Volume" used to be here too and was INERT -- see
+ * MASTER_GRID_PARAMS in shadow_ui_slot_grid.mjs. Its `if (!val) return "100%"`
+ * is why it was invisible: an unserved key drew a confident fake.
+ */
 function getMasterFxSettingValue(setting) {
-    if (setting.key === "master_volume") {
-        const val = shadow_get_param(0, "master_fx:volume");
-        if (!val) return "100%";
-        const num = parseFloat(val);
-        return isNaN(num) ? val : `${Math.round(num * 100)}%`;
-    }
-    if (setting.key === "link_audio_routing") {
-        const val = shadow_get_param(0, "master_fx:link_audio_routing");
-        return (val === "1") ? "On" : "Off";
-    }
-    if (setting.key === "link_audio_publish") {
-        const val = shadow_get_param(0, "master_fx:link_audio_publish");
-        return (val === "1") ? "On" : "Off";
-    }
-    if (setting.key === "usbc_out_persist") {
-        /* Annotate with the source last seen on the wire. Move's own Settings
-         * screen keeps showing its boot default after Schwung restores the
-         * value, so this row is the only honest read of what's actually
-         * routed. Not a second control — Move's menu still chooses it. */
-        const on = shadow_get_param(0, "master_fx:usbc_out_persist") === "1";
-        const src = shadow_get_param(0, "master_fx:usbc_out_source");
-        const label = (src === "1") ? "Main Out" : (src === "0") ? "Mic" : null;
-        return (on ? "On" : "Off") + (label ? ` (${label})` : "");
-    }
-    if (setting.key === "latency_comp_enabled") {
-        const val = shadow_get_param(0, "master_fx:latency_comp_enabled");
-        return (val === "1") ? "On" : "Off";
-    }
+    /* master_fx_midi_channel is a MASTER FX setting, not a Global Settings one,
+     * so it stays here after the Global Settings keys moved into the contract
+     * (shadow_ui_global_grid.mjs). It arrived on main in #266 while this branch
+     * was deleting its neighbours -- carried across the merge deliberately.
+     *
+     * Branch on the RAW value: a failed read is null, an unserved key is "",
+     * and both parse to the same thing. Reporting "All" for a read that never
+     * completed would show the user a setting they do not have. */
     if (setting.key === "master_fx_midi_channel") {
-        /* Branch on the RAW value: a failed read is null, an unserved key is
-         * "", and parseInt turns both into NaN. Reporting "All" for a read
-         * that never completed would show the user a setting they don't have. */
-        /* Branch on the RAW value: a failed read is null, an unserved key is
-         * "", and both parse to the same thing. Reporting "All" for a read
-         * that never completed would show the user a setting they don't have. */
         const raw = shadow_get_param(0, "master_fx:midi_channel");
         if (raw === null || raw === "") return "--";
         return MFX_MIDI_CHANNEL_OPTIONS[mfxMidiChannelToIndex(raw)];
     }
-    if (setting.key === "resample_bridge") {
-        const modeRaw = shadow_get_param(0, "master_fx:resample_bridge");
-        const mode = parseResampleBridgeMode(modeRaw);
-        return RESAMPLE_BRIDGE_LABEL_BY_MODE[mode] || "Off";
-    }
-    if (setting.key === "overlay_knobs") {
-        const mode = typeof overlay_knobs_get_mode === "function" ? overlay_knobs_get_mode() : 0;
-        return ["+Shift", "+Jog Touch", "Off", "Native"][mode] || "+Shift";
-    }
-    if (setting.key === "display_mirror") {
-        return (typeof display_mirror_get === "function" && display_mirror_get()) ? "On" : "Off";
-    }
-    if (setting.key === "screen_reader_enabled") {
-        return (typeof tts_get_enabled === "function" && tts_get_enabled()) ? "On" : "Off";
-    }
-    if (setting.key === "screen_reader_engine") {
-        if (typeof tts_get_engine === "function") {
-            const eng = tts_get_engine();
-            return eng === "flite" ? "Flite" : "eSpeak-NG";
-        }
-        return "eSpeak-NG";
-    }
-    if (setting.key === "screen_reader_speed") {
-        if (typeof tts_get_speed === "function") {
-            return tts_get_speed().toFixed(1) + "x";
-        }
-        return "1.0x";
-    }
-    if (setting.key === "screen_reader_pitch") {
-        if (typeof tts_get_pitch === "function") {
-            return Math.round(tts_get_pitch()) + " Hz";
-        }
-        return "110 Hz";
-    }
-    if (setting.key === "screen_reader_volume") {
-        if (typeof tts_get_volume === "function") {
-            return tts_get_volume() + "%";
-        }
-        return "70%";
-    }
-    if (setting.key === "screen_reader_debounce") {
-        if (typeof tts_get_debounce === "function") {
-            return tts_get_debounce() + "ms";
-        }
-        return "300ms";
-    }
-    if (setting.key === "set_pages_enabled") {
-        return (typeof set_pages_get === "function" && set_pages_get()) ? "On" : "Off";
-    }
-    if (setting.key === "shadow_ui_trigger") {
-        const val = typeof shadow_ui_trigger_get === "function" ? shadow_ui_trigger_get() : 2;
-        const labels = (setting && Array.isArray(setting.options)) ? setting.options : ["Long Press", "Shift+Vol", "Both"];
-        return labels[val] || labels[2] || "Both";
-    }
-    if (setting.key === "skipback_shortcut") {
-        const val = typeof skipback_shortcut_get === "function" ? (skipback_shortcut_get() ? 1 : 0) : 0;
-        return ["Sh+Cap", "Sh+Vol+Cap"][val] || "Sh+Cap";
-    }
-    if (setting.key === "skipback_seconds") {
-        const sec = typeof skipback_seconds_get === "function" ? skipback_seconds_get() : 30;
-        if (sec >= 60) return (sec / 60) + "m";
-        return sec + "s";
-    }
-    if (setting.key === "auto_update_check") {
-        return autoUpdateCheckEnabled ? "On" : "Off";
-    }
-    if (setting.key === "browser_preview") {
-        return previewEnabled ? "On" : "Off";
-    }
-    if (setting.key === "pad_typing") {
-        return padSelectGlobal ? "On" : "Off";
-    }
-    if (setting.key === "text_preview") {
-        return textPreviewGlobal ? "On" : "Off";
-    }
-    if (setting.key === "param_view") {
-        return paramViewGlobal === 1 ? "Knobs" : "List";
-    }
-    if (setting.key === "filebrowser_enabled") {
-        return filebrowserEnabled ? "On" : "Off";
-    }
-    if (setting.key === "midi_indicator_enabled") {
-        return midiIndicatorEnabled ? "On" : "Off";
-    }
-    if (setting.key === "analytics_enabled") {
-        return (typeof host_get_analytics_enabled === "function" && host_get_analytics_enabled()) ? "On" : "Off";
-    }
     return "-";
 }
 
-/* Adjust Master FX setting value by delta */
 function adjustMasterFxSetting(setting, delta) {
     if (setting.type === "action") return;
 
-    if (setting.key === "master_volume") {
-        let val = parseFloat(shadow_get_param(0, "master_fx:volume") || "1.0");
-        val += delta * setting.step;
-        val = Math.max(setting.min, Math.min(setting.max, val));
-        shadow_set_param(0, "master_fx:volume", val.toFixed(2));
-        return;
-    }
-
-    if (setting.key === "link_audio_routing") {
-        const current = shadow_get_param(0, "master_fx:link_audio_routing");
-        const newVal = (current === "1") ? "0" : "1";
-        shadow_set_param(0, "master_fx:link_audio_routing", newVal);
-        cachedLinkAudioRouting = (newVal === "1");
-        saveMasterFxChainConfig();
-        if (newVal === "1") warnIfLinkDisabled("Move->Schwung");
-        return;
-    }
-    if (setting.key === "link_audio_publish") {
-        const current = shadow_get_param(0, "master_fx:link_audio_publish");
-        const newVal = (current === "1") ? "0" : "1";
-        shadow_set_param(0, "master_fx:link_audio_publish", newVal);
-        cachedLinkAudioPublish = (newVal === "1");
-        saveMasterFxChainConfig();
-        if (newVal === "1") warnIfLinkDisabled("Schwung->Link");
-        return;
-    }
-    if (setting.key === "latency_comp_enabled") {
-        const current = shadow_get_param(0, "master_fx:latency_comp_enabled");
-        const newVal = (current === "1") ? "0" : "1";
-        shadow_set_param(0, "master_fx:latency_comp_enabled", newVal);
-        cachedLatencyCompEnabled = (newVal === "1");
-        saveMasterFxChainConfig();
-        return;
-    }
-    if (setting.key === "usbc_out_persist") {
-        const current = shadow_get_param(0, "master_fx:usbc_out_persist");
-        const newVal = (current === "1") ? "0" : "1";
-        shadow_set_param(0, "master_fx:usbc_out_persist", newVal);
-        cachedUsbcOutPersist = (newVal === "1");
-        saveMasterFxChainConfig();
-        return;
-    }
+    /* master_fx_midi_channel is a MASTER FX setting, not a Global Settings one,
+     * so it stays after the Global Settings keys moved into the contract
+     * (shadow_ui_global_grid.mjs). It arrived on main in #266 while this branch
+     * was deleting its neighbours -- carried across the merge deliberately. */
     if (setting.key === "master_fx_midi_channel") {
         const raw = shadow_get_param(0, "master_fx:midi_channel");
         /* A failed read must not produce a write. Stepping from a value we
@@ -14004,202 +14807,6 @@ function adjustMasterFxSetting(setting, delta) {
         shadow_set_param(0, "master_fx:midi_channel", String(newVal));
         cachedMasterFxMidiChannel = newVal;
         saveMasterFxChainConfig();
-        return;
-    }
-    if (setting.key === "resample_bridge") {
-        const current = parseResampleBridgeMode(shadow_get_param(0, "master_fx:resample_bridge"));
-        const values = (Array.isArray(setting.values) && setting.values.length > 0)
-            ? setting.values
-            : RESAMPLE_BRIDGE_VALUES;
-        let idx = values.indexOf(current);
-        if (idx < 0) idx = 0;
-        const nextIdx = (idx + (delta > 0 ? 1 : values.length - 1)) % values.length;
-        shadow_set_param(0, "master_fx:resample_bridge", String(values[nextIdx]));
-        cachedResampleBridgeMode = values[nextIdx];
-        saveMasterFxChainConfig();
-        if (values[nextIdx] === 2) {
-            warningTitle = "Schwung Mix";
-            warningLines = wrapText("Replaces Mic and Line-in with ME + Move Audio", 18);
-            warningActive = true;
-        }
-        return;
-    }
-    if (setting.key === "overlay_knobs" && typeof overlay_knobs_set_mode === "function") {
-        const current = typeof overlay_knobs_get_mode === "function" ? overlay_knobs_get_mode() : 0;
-        const count = setting.values.length;
-        const next = ((current + (delta > 0 ? 1 : count - 1)) % count);
-        overlay_knobs_set_mode(next);
-        saveMasterFxChainConfig();
-        return;
-    }
-
-    if (setting.key === "display_mirror" && typeof display_mirror_set === "function") {
-        /* Toggle boolean */
-        const current = typeof display_mirror_get === "function" ? display_mirror_get() : false;
-        display_mirror_set(!current ? 1 : 0);
-        return;
-    }
-
-    if (setting.key === "screen_reader_enabled" && typeof tts_set_enabled === "function") {
-        /* Toggle boolean */
-        const current = typeof tts_get_enabled === "function" ? tts_get_enabled() : true;
-        tts_set_enabled(!current);
-        return;
-    }
-
-    if (setting.key === "screen_reader_engine" && typeof tts_set_engine === "function") {
-        const current = typeof tts_get_engine === "function" ? tts_get_engine() : "espeak";
-        const values = setting.values;
-        let idx = values.indexOf(current);
-        if (idx < 0) idx = 0;
-        const nextIdx = (idx + (delta > 0 ? 1 : values.length - 1)) % values.length;
-        tts_set_engine(values[nextIdx]);
-        return;
-    }
-
-    if (setting.key === "screen_reader_speed" && typeof tts_set_speed === "function") {
-        let val = typeof tts_get_speed === "function" ? tts_get_speed() : 1.0;
-        val += delta * setting.step;
-        val = Math.max(setting.min, Math.min(setting.max, val));
-        tts_set_speed(val);
-        return;
-    }
-
-    if (setting.key === "screen_reader_pitch" && typeof tts_set_pitch === "function") {
-        let val = typeof tts_get_pitch === "function" ? tts_get_pitch() : 110.0;
-        val += delta * setting.step;
-        val = Math.max(setting.min, Math.min(setting.max, val));
-        tts_set_pitch(val);
-        return;
-    }
-
-    if (setting.key === "screen_reader_volume" && typeof tts_set_volume === "function") {
-        let val = typeof tts_get_volume === "function" ? tts_get_volume() : 70;
-        val += delta * setting.step;
-        val = Math.max(setting.min, Math.min(setting.max, val));
-        tts_set_volume(Math.round(val));
-        return;
-    }
-
-    if (setting.key === "screen_reader_debounce" && typeof tts_set_debounce === "function") {
-        let val = typeof tts_get_debounce === "function" ? tts_get_debounce() : 300;
-        val += delta * setting.step;
-        val = Math.max(setting.min, Math.min(setting.max, val));
-        tts_set_debounce(Math.round(val));
-        return;
-    }
-
-    if (setting.key === "set_pages_enabled" && typeof set_pages_set === "function") {
-        const current = typeof set_pages_get === "function" ? set_pages_get() : true;
-        set_pages_set(!current ? 1 : 0);
-        return;
-    }
-
-    if (setting.key === "shadow_ui_trigger") {
-        if (typeof shadow_ui_trigger_set !== "function") return;
-        const current = typeof shadow_ui_trigger_get === "function" ? shadow_ui_trigger_get() : 2;
-        const values = (setting && Array.isArray(setting.values) && setting.values.length > 0)
-            ? setting.values
-            : [0, 1, 2];
-        let idx = values.indexOf(current);
-        if (idx < 0) idx = values.length - 1;
-        const nextIdx = (idx + (delta > 0 ? 1 : values.length - 1)) % values.length;
-        shadow_ui_trigger_set(values[nextIdx]);
-        return;
-    }
-
-    if (setting.key === "skipback_shortcut") {
-        if (typeof skipback_shortcut_set !== "function") return;
-        const current = typeof skipback_shortcut_get === "function" ? (skipback_shortcut_get() ? 1 : 0) : 0;
-        const values = setting.values;
-        let idx = values.indexOf(current);
-        if (idx < 0) idx = 0;
-        const nextIdx = (idx + (delta > 0 ? 1 : values.length - 1)) % values.length;
-        skipback_shortcut_set(values[nextIdx]);
-        return;
-    }
-
-    if (setting.key === "skipback_seconds") {
-        if (typeof skipback_seconds_set !== "function") return;
-        const current = typeof skipback_seconds_get === "function" ? skipback_seconds_get() : 30;
-        const values = setting.values;
-        let idx = values.indexOf(current);
-        if (idx < 0) idx = 0;
-        const nextIdx = (idx + (delta > 0 ? 1 : values.length - 1)) % values.length;
-        skipback_seconds_set(values[nextIdx]);
-        return;
-    }
-
-    if (setting.key === "auto_update_check") {
-        autoUpdateCheckEnabled = !autoUpdateCheckEnabled;
-        saveAutoUpdateConfig();
-        return;
-    }
-
-    if (setting.key === "browser_preview") {
-        previewEnabled = !previewEnabled;
-        if (!previewEnabled) previewStopIfPlaying();
-        saveBrowserPreviewConfig();
-        return;
-    }
-
-    if (setting.key === "pad_typing") {
-        setPadSelectGlobal(!padSelectGlobal);
-        savePadTypingConfig();
-        return;
-    }
-
-    if (setting.key === "text_preview") {
-        setTextPreviewGlobal(!textPreviewGlobal);
-        saveTextPreviewConfig();
-        return;
-    }
-
-    if (setting.key === "param_view") {
-        paramViewGlobal = paramViewGlobal === 1 ? 0 : 1;
-        saveParamViewConfig();
-        announce(paramViewGlobal === 1 ? "Param View Knobs" : "Param View List");
-        return;
-    }
-
-    if (setting.key === "filebrowser_enabled") {
-        filebrowserEnabled = !filebrowserEnabled;
-        const flagPath = "/data/UserData/schwung/filebrowser_enabled";
-        if (filebrowserEnabled) {
-            host_write_file(flagPath, "1");
-            /* Start filebrowser now */
-            if (typeof host_system_cmd === "function") {
-                host_system_cmd("sh -c '/data/UserData/schwung/bin/filebrowser --noauth --address 0.0.0.0 --port 404 --root /data/UserData --database /data/UserData/schwung/filebrowser.db --disableThumbnails --disablePreviewResize --disableExec --disableTypeDetectionByHeader >/dev/null 2>&1 &'");
-            }
-        } else {
-            host_remove_dir(flagPath);
-            /* Stop filebrowser now */
-            if (typeof host_system_cmd === "function") {
-                host_system_cmd("sh -c 'killall filebrowser 2>/dev/null'");
-            }
-        }
-        saveFilebrowserConfig();
-        warningTitle = "File Browser";
-        warningLines = filebrowserEnabled
-            ? wrapText("On. Access at http://move.local:404", 18)
-            : ["Off."];
-        warningActive = true;
-        return;
-    }
-
-    if (setting.key === "analytics_enabled") {
-        if (typeof host_set_analytics_enabled === "function") {
-            const current = typeof host_get_analytics_enabled === "function" && host_get_analytics_enabled();
-            host_set_analytics_enabled(current ? 0 : 1);
-        }
-        return;
-    }
-
-    if (setting.key === "midi_indicator_enabled") {
-        midiIndicatorEnabled = !midiIndicatorEnabled;
-        if (typeof midi_indicator_set === "function") {
-            midi_indicator_set(midiIndicatorEnabled ? 1 : 0);
-        }
         return;
     }
 }
@@ -14639,6 +15246,8 @@ function handleJog(delta, shift = isShiftHeld()) {
         case VIEWS.OVERTAKE_MODULE:
             /* Overtake module handles its own jog input */
             break;
+        /* The settings themselves are a contract on the page chrome now
+         * (enterGlobalSettingsGrid); this view is only the help viewer's host. */
         case VIEWS.GLOBAL_SETTINGS:
             if (helpDetailScrollState) {
                 handleScrollableTextJog(helpDetailScrollState, delta);
@@ -14646,25 +15255,6 @@ function handleJog(delta, shift = isShiftHeld()) {
                 const frame = helpNavStack[helpNavStack.length - 1];
                 frame.selectedIndex = Math.max(0, Math.min(frame.items.length - 1, frame.selectedIndex + delta));
                 announce(frame.items[frame.selectedIndex].title);
-            } else if (globalSettingsInSection) {
-                const section = GLOBAL_SETTINGS_SECTIONS[globalSettingsSectionIndex];
-                if (globalSettingsEditing) {
-                    /* Adjust value with jog */
-                    const item = section.items[globalSettingsItemIndex];
-                    adjustMasterFxSetting(item, delta);
-                    const newVal = getMasterFxSettingValue(item);
-                    announceParameter(item.label, newVal);
-                } else {
-                    /* Navigate items within section */
-                    globalSettingsItemIndex = Math.max(0, Math.min(section.items.length - 1, globalSettingsItemIndex + delta));
-                    const item = section.items[globalSettingsItemIndex];
-                    const value = item.type === "action" ? "" : getMasterFxSettingValue(item);
-                    announceMenuItem(item.label, value);
-                }
-            } else {
-                /* Navigate sections at top level */
-                globalSettingsSectionIndex = Math.max(0, Math.min(GLOBAL_SETTINGS_SECTIONS.length - 1, globalSettingsSectionIndex + delta));
-                announce(GLOBAL_SETTINGS_SECTIONS[globalSettingsSectionIndex].label);
             }
             break;
     }
@@ -15085,7 +15675,8 @@ function handleSelect() {
                     cameFromParamPages = false;
                     exitHierarchyEditor();
                     enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey),
-                        null, null, paramPagesChromeFor(componentKey));
+                        null, componentParamPagesIo(slotIndex, componentKey),
+                        paramPagesChromeFor(componentKey));
                 } else {
                     /* No children - enter preset edit mode to show params/swap */
                     hierEditorPresetEditMode = true;
@@ -15483,6 +16074,7 @@ function handleSelect() {
         case VIEWS.OVERTAKE_MODULE:
             /* Overtake module handles its own select input */
             break;
+        /* Help only — see the jog arm. */
         case VIEWS.GLOBAL_SETTINGS:
             if (helpDetailScrollState) {
                 if (isActionSelected(helpDetailScrollState)) {
@@ -15507,35 +16099,6 @@ function handleSelect() {
                     });
                     needsRedraw = true;
                     announce(item.title + ". " + item.lines.join(". "));
-                }
-            } else if (globalSettingsInSection) {
-                const section = GLOBAL_SETTINGS_SECTIONS[globalSettingsSectionIndex];
-                const item = section.items[globalSettingsItemIndex];
-                if (globalSettingsEditing) {
-                    /* Exit editing */
-                    globalSettingsEditing = false;
-                } else if (item.type === "action") {
-                    handleGlobalSettingsAction(item.key);
-                } else if (item.type === "bool" || item.type === "enum") {
-                    adjustMasterFxSetting(item, 1);
-                    const newVal = getMasterFxSettingValue(item);
-                    announceParameter(item.label, newVal);
-                } else if (item.type === "float" || item.type === "int") {
-                    globalSettingsEditing = !globalSettingsEditing;
-                }
-            } else {
-                const section = GLOBAL_SETTINGS_SECTIONS[globalSettingsSectionIndex];
-                if (section.isAction) {
-                    /* Direct action section (Help) */
-                    handleGlobalSettingsAction(section.id);
-                } else {
-                    /* Enter section */
-                    globalSettingsInSection = true;
-                    globalSettingsItemIndex = 0;
-                    const firstItem = section.items[0];
-                    const value = firstItem.type === "action" ? "" : getMasterFxSettingValue(firstItem);
-                    announce(section.label + ", " + firstItem.label + (value ? ": " + value : ""));
-                    if (section.id === "audio") warnIfLinkDisabled();
                 }
             }
             break;
@@ -15956,6 +16519,10 @@ function handleBack() {
             /* Overtake module handles its own back input.
              * Use Shift+Vol+Jog Click to exit overtake mode. */
             break;
+        /* Help only — see the jog arm. Popping the last frame leaves the stack
+         * empty and maybeReturnToGlobalGrid takes it from there; Back at the
+         * top of the SETTINGS themselves is the page chrome's exit intent
+         * (chrome.onExit), not this. */
         case VIEWS.GLOBAL_SETTINGS:
             if (helpDetailScrollState) {
                 helpDetailScrollState = null;
@@ -15968,27 +16535,10 @@ function handleBack() {
                 if (helpNavStack.length > 0) {
                     const frame = helpNavStack[helpNavStack.length - 1];
                     announce(frame.title + ", " + frame.items[frame.selectedIndex].title);
-                } else {
-                    announce("Settings, " + GLOBAL_SETTINGS_SECTIONS[globalSettingsSectionIndex].label);
                 }
-            } else if (globalSettingsEditing) {
-                /* Exit editing mode */
-                globalSettingsEditing = false;
-                needsRedraw = true;
-                const section = GLOBAL_SETTINGS_SECTIONS[globalSettingsSectionIndex];
-                const item = section.items[globalSettingsItemIndex];
-                const val = getMasterFxSettingValue(item);
-                announce(item.label + (val ? ", " + val : ""));
-            } else if (globalSettingsInSection) {
-                /* Return to section list */
-                globalSettingsInSection = false;
-                needsRedraw = true;
-                announce("Settings, " + GLOBAL_SETTINGS_SECTIONS[globalSettingsSectionIndex].label);
-            } else {
-                /* Exit Global Settings → exit shadow mode */
-                if (typeof shadow_request_exit === "function") {
-                    shadow_request_exit();
-                }
+            } else if (typeof shadow_request_exit === "function") {
+                /* Nothing left on this view to back out of. */
+                shadow_request_exit();
             }
             break;
     }
@@ -16333,7 +16883,7 @@ function drawComponentEdit() {
         const errorX = Math.floor((SCREEN_WIDTH - errorText.length * 5) / 2);
         print(errorX, centerY + 2, errorText, 1);
 
-        drawFooter({left: "Back: done"});
+        drawFooter(["Back: done"]);
         return;
     }
 
@@ -16371,7 +16921,7 @@ function drawComponentEdit() {
     }
 
     /* Show hint at bottom */
-    drawFooter({left: "Back: done", right: "Jog: preset"});
+    drawFooter(["Back: done", "Jog: preset"]);
 }
 
 /* Draw chain settings view */
@@ -16381,10 +16931,6 @@ function drawComponentEdit() {
 function drawKnobEditor() {
     clear_screen();
     drawHeader(`S${knobEditorSlot + 1} Knobs`);
-
-    const listY = LIST_TOP_Y;
-    const lineHeight = 10;
-    const maxVisible = Math.floor((FOOTER_RULE_Y - LIST_TOP_Y) / lineHeight);
 
     /* List all 8 knobs */
     const items = [];
@@ -16396,35 +16942,21 @@ function drawKnobEditor() {
         });
     }
 
-    /* Calculate scroll offset */
-    let scrollOffset = 0;
-    if (knobEditorIndex >= maxVisible) {
-        scrollOffset = knobEditorIndex - maxVisible + 1;
-    }
+    /* No editMode: the knob editor has no in-place editing state -- a click
+     * opens the param picker instead. */
+    drawMenuList({
+        items,
+        selectedIndex: knobEditorIndex,
+        getLabel: (item) => item.label,
+        getValue: (item) => item.type === "knob"
+            ? truncateText(getKnobAssignmentLabel(item.assignment), 12)
+            : "",
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+        valueAlignRight: true,
+        prioritizeSelectedValue: true
+    });
 
-    for (let i = 0; i < maxVisible && (i + scrollOffset) < items.length; i++) {
-        const itemIdx = i + scrollOffset;
-        const item = items[itemIdx];
-        const y = listY + i * lineHeight;
-        const isSelected = itemIdx === knobEditorIndex;
-
-        if (isSelected) {
-            fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
-        }
-
-        const labelColor = isSelected ? 0 : 1;
-        print(LIST_LABEL_X, y, item.label, labelColor);
-
-        /* Show assignment on the right */
-        if (item.type === "knob") {
-            const value = getKnobAssignmentLabel(item.assignment);
-            const truncValue = truncateText(value, 12);
-            const valueX = SCREEN_WIDTH - truncValue.length * 5 - 4;
-            print(valueX, y, truncValue, labelColor);
-        }
-    }
-
-    drawFooter({left: "Back: cancel", right: "Click: edit"});
+    drawFooter(["Back: cancel", "Click: edit"]);
 }
 
 /* Draw param picker - select target then param for knob assignment */
@@ -16445,7 +16977,7 @@ function drawKnobParamPicker() {
             getValue: () => ""
         });
 
-        drawFooter({left: "Back: cancel", right: "Click: select"});
+        drawFooter(["Back: cancel", "Click: select"]);
     } else if (knobParamPickerHierarchy && knobParamPickerLevel) {
         /* Hierarchy mode - show current level */
         const levelDef = knobParamPickerHierarchy.levels[knobParamPickerLevel];
@@ -16461,7 +16993,7 @@ function drawKnobParamPicker() {
         });
 
         const hasNav = knobParamPickerParams.some(p => p.type === "nav");
-        drawFooter(hasNav ? {left: "Back: up", right: "Click: select"} : {left: "Back: up", right: "Click: assign"});
+        drawFooter(hasNav ? ["Back: up", "Click: select"] : ["Back: up", "Click: assign"]);
     } else {
         /* Flat mode - show params for selected target */
         drawHeader(`Knob ${knobNum} Param`);
@@ -16479,7 +17011,7 @@ function drawKnobParamPicker() {
             getValue: () => ""
         });
 
-        drawFooter({left: "Back: targets", right: "Click: assign"});
+        drawFooter(["Back: targets", "Click: assign"]);
     }
 }
 
@@ -16495,7 +17027,7 @@ function drawDynamicParamPicker() {
             getLabel: (item) => item.label || item.key || "",
             getValue: () => ""
         });
-        drawFooter({left: "Back: targets", right: "Click: select"});
+        drawFooter(["Back: targets", "Click: select"]);
     } else {
         drawHeader("Select Target");
         drawMenuList({
@@ -16505,7 +17037,7 @@ function drawDynamicParamPicker() {
             getLabel: (item) => item.label || item.id || "",
             getValue: () => ""
         });
-        drawFooter({left: "Back: cancel", right: "Click: select"});
+        drawFooter(["Back: cancel", "Click: select"]);
     }
 }
 
@@ -16689,6 +17221,13 @@ function drawHelpDetail() {
     _ctx.loadChainConfigFromSlot = (...args) => loadChainConfigFromSlot(...args);
     _ctx.getSlotStateWithRetry = (...args) => getSlotStateWithRetry(...args);
     _ctx.showWarning = (...args) => showWarning(...args);
+    /* User-preset record hooks for shadow_ui_presets.mjs — see the note above
+     * onUserPresetSaved. */
+    _ctx.onPresetSaved = (...args) => onUserPresetSaved(...args);
+    _ctx.onPresetLoaded = (...args) => onUserPresetLoaded(...args);
+    _ctx.onPresetDeleted = (...args) => onUserPresetDeleted(...args);
+    /* The header's user-preset mark — see userPresetHeaderMark's own note. */
+    _ctx.userPresetHeaderMark = (...args) => userPresetHeaderMark(...args);
 
     /* Master FX functions */
     _ctx.scanForAudioFxModules = (...args) => scanForAudioFxModules(...args);
@@ -16901,23 +17440,14 @@ function drawHelpDetail() {
     Object.defineProperty(_ctx, 'editingChainSettingValue', {
         get() { return editingChainSettingValue; }, enumerable: true
     });
+    /* The audition gate (Global Settings -> Audition). Read through ctx like
+     * every other host fact the view modules need, so the presets list does not
+     * reach for a host global directly. */
+    _ctx.auditionEnabled = () => previewEnabled;
     _ctx.getChainSettingsItems = (...args) => getChainSettingsItems(...args);
     _ctx.getChainSettingValue = (...args) => getChainSettingValue(...args);
 
     /* Global settings state */
-    Object.defineProperty(_ctx, 'globalSettingsInSection', {
-        get() { return globalSettingsInSection; }, enumerable: true
-    });
-    Object.defineProperty(_ctx, 'globalSettingsSectionIndex', {
-        get() { return globalSettingsSectionIndex; }, enumerable: true
-    });
-    Object.defineProperty(_ctx, 'globalSettingsItemIndex', {
-        get() { return globalSettingsItemIndex; }, enumerable: true
-    });
-    Object.defineProperty(_ctx, 'globalSettingsEditing', {
-        get() { return globalSettingsEditing; }, enumerable: true
-    });
-    _ctx.GLOBAL_SETTINGS_SECTIONS = GLOBAL_SETTINGS_SECTIONS;
 
     /* View transitions - bound lazily since some may be defined after this block */
     _ctx.enterChainEdit = (...args) => enterChainEdit(...args);
@@ -17351,40 +17881,16 @@ function drawLfoEdit() {
     }
     drawHeader(truncateText(title, 22));
 
-    const items = getLfoItems();
-    const lineHeight = 9;
-    const maxVisible = Math.floor((FOOTER_RULE_Y - LIST_TOP_Y) / lineHeight);
-
-    let scrollOffset = 0;
-    if (selectedLfoItem >= maxVisible) {
-        scrollOffset = selectedLfoItem - maxVisible + 1;
-    }
-
-    for (let i = 0; i < maxVisible && (i + scrollOffset) < items.length; i++) {
-        const itemIdx = i + scrollOffset;
-        const y = LIST_TOP_Y + i * lineHeight;
-        const item = items[itemIdx];
-        const isSelected = itemIdx === selectedLfoItem;
-
-        if (isSelected) {
-            fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
-        }
-
-        const labelColor = isSelected ? 0 : 1;
-        print(LIST_LABEL_X, y, item.label, labelColor);
-
-        const value = getLfoDisplayValue(item);
-        if (value) {
-            const valueX = SCREEN_WIDTH - value.length * 5 - 4;
-            if (isSelected && editingLfoValue) {
-                print(valueX - 8, y, "<", 0);
-                print(valueX, y, value, 0);
-                print(valueX + value.length * 5 + 2, y, ">", 0);
-            } else {
-                print(valueX, y, value, labelColor);
-            }
-        }
-    }
+    drawMenuList({
+        items: getLfoItems(),
+        selectedIndex: selectedLfoItem,
+        getLabel: (item) => item.label,
+        getValue: (item) => getLfoDisplayValue(item) || "",
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+        valueAlignRight: true,
+        prioritizeSelectedValue: true,
+        editMode: editingLfoValue
+    });
 }
 
 /* LFO target picker: step 1 - select component */
@@ -17603,8 +18109,6 @@ globalThis.init = function() {
     scanModulesForType("synth");
     scanModulesForType("midiFx");
 
-    /* Load auto-update preference */
-    loadAutoUpdateConfig();
     loadBrowserPreviewConfig();
     loadPadTypingConfig();
     loadTextPreviewConfig();
@@ -17678,6 +18182,12 @@ globalThis.init = function() {
                     if (chain && chain.synth && chain.synth.bypassed) {
                         setSlotParam(i, "synth:bypassed", "1");
                     }
+                    /* Restore which user preset each component was on. Absent
+                     * is the common case — every patch written before this
+                     * existed, and every component nobody has loaded a preset
+                     * into — and must CLEAR any stale record rather than leave
+                     * one behind from a previous load into this slot. */
+                    syncUserPresetRecordsFromChain(i, chain);
                     /*
                      * BOTH lists, and bounded by the CAP rather than by a
                      * number that used to be the cap.
@@ -17850,7 +18360,7 @@ function dispatchCoRunDraw() {
          * browser, items list, mode select, child selector) belongs to the
          * list editor, which drawParamPages declines by returning false. */
         case VIEWS.PARAM_PAGES:
-            if (!drawParamPages()) { enterHierarchyEditorFromParamPages(); drawHierarchyEditor(); }
+            if (!drawParamPages()) { if (enterHierarchyEditorFromParamPages()) drawHierarchyEditor(); }
             break;
         case VIEWS.CANVAS:               drawCanvasPreview(); break;
         case VIEWS.KNOB_EDITOR:          drawKnobEditor(); break;
@@ -17943,6 +18453,10 @@ globalThis.tick = function() {
     if (paramTallyArmed()) paramTallyTick();
     /* One staggered param read per frame while the grid is up. */
     if (view === VIEWS.PARAM_PAGES) tickParamPages();
+    /* The debounced `*` refresh (see tickUserPresetStale's own note) — driven
+     * from the tick, never from a draw function, and cheap to poll when
+     * nothing is pending (one boolean test). */
+    tickUserPresetStale();
 
     /* Splash screen on boot */
     if (splashActive) {
@@ -18312,11 +18826,27 @@ globalThis.tick = function() {
                         } else {
                             debugLog("SET_CHANGED: slot " + (i + 1) + " not restored (load timeout)");
                         }
+                        /* load_file (native) restores the DSP side but not
+                         * this pure-JS bookkeeping -- same gap the boot-restore
+                         * loop's bypass comment describes. The map is keyed
+                         * (slot, prefix), not by set, so without this a preset
+                         * record from the OUTGOING set's slot i survives onto
+                         * the INCOMING set's slot i and gets written into ITS
+                         * autosave. Sync (and clear on parse failure) either way. */
+                        try {
+                            const parsed = JSON.parse(raw);
+                            const chain = (parsed && parsed.chain) ? parsed.chain : parsed;
+                            syncUserPresetRecordsFromChain(i, chain);
+                        } catch (e) {
+                            syncUserPresetRecordsFromChain(i, null);
+                        }
                     } else {
                         debugLog("SET_CHANGED: slot " + (i + 1) + " empty state (already cleared)");
+                        syncUserPresetRecordsFromChain(i, null);
                     }
                 } else {
                     debugLog("SET_CHANGED: slot " + (i + 1) + " no state file (already cleared)");
+                    syncUserPresetRecordsFromChain(i, null);
                 }
             }
             /* Refresh UI state immediately so display reflects new slot contents */
@@ -18858,6 +19388,14 @@ globalThis.tick = function() {
     /* The Master FX half of the same reconcile. Its modals live under
      * VIEWS.MASTER_FX rather than a settings view of their own. */
     if (view === VIEWS.MASTER_FX) maybeReturnToMasterGrid();
+    /* ...and the Global Settings half. VIEWS.GLOBAL_SETTINGS is nothing but the
+     * help viewer's host now, so "the surface is idle again" means the help
+     * stack has emptied. */
+    if (view === VIEWS.GLOBAL_SETTINGS) maybeReturnToGlobalGrid();
+    /* ...and the component-actions half. These hand-offs are navigations, not
+     * overlays, so "idle again" is arrival back at VIEWS.CHAIN_EDIT rather than
+     * staying on the view the grid left. See maybeReturnToComponentGrid. */
+    if (view === VIEWS.CHAIN_EDIT) maybeReturnToComponentGrid();
 
     /* Guarded: a throw in any draw function would otherwise repeat every
      * frame — frozen screen with no recovery, since the C loop keeps
@@ -18915,7 +19453,7 @@ globalThis.tick = function() {
          * items list, mode select, child selector) belongs to the list editor,
          * which drawParamPages declines by returning false. */
         case VIEWS.PARAM_PAGES:
-            if (!drawParamPages()) { enterHierarchyEditorFromParamPages(); drawHierarchyEditor(); }
+            if (!drawParamPages()) { if (enterHierarchyEditorFromParamPages()) drawHierarchyEditor(); }
             break;
         case VIEWS.CANVAS:
             drawCanvasPreview();
@@ -19163,7 +19701,23 @@ globalThis.onMidiMessageInternal = function(data) {
     /* Knob-grid view consumes the controls it owns. One early-out rather than a
      * case in each of the per-view switches: the grid's input mapping lives in
      * shared/param_pages/page_input.mjs and is tested there. */
-    if (view === VIEWS.PARAM_PAGES && paramPagesActive()) {
+    /* The message overlay outranks the page, because a write ON the page is what
+     * raises it (Schwung Mix, Link Audio, File Browser — all three are Global
+     * Settings writes now). Asked as "IS A MODAL OPEN?" rather than as a list of
+     * the keys that raise one, which is the rule runMasterFxActionFromGrid
+     * records: it is what keeps a fourth modal-raising setting from being
+     * silently unanswerable. Left the overlay up with the grid eating every
+     * button and there is no press that can clear it. */
+    /* The KEYBOARD outranks the page for the same reason, and the early-out is
+     * what makes it need saying: the text-entry handler is ~100 lines below,
+     * so the grid would otherwise be offered the event first. That was safe
+     * only while no keyboard could be raised over PARAM_PAGES. User Presets is
+     * now a trailing page INSIDE the grid and enterPresetSaveAs opens the
+     * keyboard without calling setView, so `view` is still PARAM_PAGES — the
+     * jog paged the grid drawn UNDERNEATH the keyboard while pad typing kept
+     * working, because decodeInput claims CC 14 but returns null for pads. */
+    if (view === VIEWS.PARAM_PAGES && paramPagesActive() && !isTextEntryActive()) {
+        if (maybeDismissWarningFromInput(status, d1, d2)) { needsRedraw = true; return; }
         if (handleParamPagesMidi(data)) { needsRedraw = true; return; }
     }
 
@@ -19275,14 +19829,7 @@ globalThis.onMidiMessageInternal = function(data) {
     }
 
     /* Dismiss warning overlay on button presses, but not knob turns. */
-    if (warningActive && (status & 0xF0) === 0xB0 && d2 > 0) {
-        const isMainKnobTurn = d1 === MoveMainKnob;
-        const isParamKnobTurn = d1 >= KNOB_CC_START && d1 <= KNOB_CC_END;
-        if (!isMainKnobTurn && !isParamKnobTurn) {
-            dismissWarning();
-            return;  /* Consumed - don't process further */
-        }
-    }
+    if (maybeDismissWarningFromInput(status, d1, d2)) return;  /* Consumed */
 
     /* When a module UI is loaded, route MIDI to it (except Back button) */
     if (view === VIEWS.COMPONENT_EDIT && loadedModuleUi) {

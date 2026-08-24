@@ -6,9 +6,10 @@
  */
 import { ctx } from './shadow_ui_ctx.mjs';
 import {
-    SCREEN_WIDTH,
-    LIST_TOP_Y, LIST_LINE_HEIGHT, LIST_HIGHLIGHT_HEIGHT,
-    LIST_LABEL_X, LIST_VALUE_X,
+    /* Row geometry (SCREEN_WIDTH, LIST_LINE_HEIGHT, LIST_HIGHLIGHT_HEIGHT,
+     * LIST_LABEL_X, LIST_VALUE_X) is gone from this file: nothing here draws a
+     * row any more, drawMenuList does. */
+    LIST_TOP_Y,
     FOOTER_RULE_Y,
     truncateText
 } from '/data/UserData/schwung/shared/chain_ui_views.mjs';
@@ -231,45 +232,24 @@ export function drawSlotSettings() {
     clear_screen();
     drawHeader(`Slot ${selectedSlot + 1}`);
 
-    const listY = LIST_TOP_Y;
-    const lineHeight = LIST_LINE_HEIGHT;
-    const maxVisible = Math.max(1, Math.floor((FOOTER_RULE_Y - LIST_TOP_Y) / lineHeight));
-    let startIdx = 0;
-    const maxSelectedRow = maxVisible - 1;
-    if (selectedSetting > maxSelectedRow) {
-        startIdx = selectedSetting - maxSelectedRow;
-    }
-    const endIdx = Math.min(startIdx + maxVisible, SLOT_SETTINGS.length);
-
-    for (let i = startIdx; i < endIdx; i++) {
-        const y = listY + (i - startIdx) * lineHeight;
-        const setting = SLOT_SETTINGS[i];
-        const isSelected = i === selectedSetting;
-
-        if (isSelected) {
-            fill_rect(0, y - 1, SCREEN_WIDTH, LIST_HIGHLIGHT_HEIGHT, 1);
-        }
-
-        const color = isSelected ? 0 : 1;
-        let prefix = "  ";
-        if (isSelected) {
-            prefix = editingSettingValue ? "* " : "> ";
-        }
-
-        const value = getSlotSettingValue(selectedSlot, setting);
-        let valueStr = truncateText(value, 10);
-        if (isSelected && editingSettingValue && setting.type !== "action") {
-            valueStr = `[${valueStr}]`;
-        }
-
-        print(LIST_LABEL_X, y, `${prefix}${setting.label}:`, color);
-        print(LIST_VALUE_X - 8, y, valueStr, color);
-    }
+    /* The hand-drawn "> " / "* " prefix is gone: drawMenuList supplies the
+     * caret and editMode carries the editing marker. */
+    drawMenuList({
+        items: SLOT_SETTINGS,
+        selectedIndex: selectedSetting,
+        getLabel: (setting) => `${setting.label}:`,
+        getValue: (setting) => truncateText(
+            getSlotSettingValue(selectedSlot, setting), 10),
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+        valueAlignRight: true,
+        prioritizeSelectedValue: true,
+        editMode: editingSettingValue
+    });
 
     if (editingSettingValue) {
-        drawFooter({left: "Click: done", right: "Jog: adjust"});
+        drawFooter(["Click: done", "Jog: adjust"]);
     } else {
-        drawFooter({left: "Back: slots", right: "Click: edit"});
+        drawFooter(["Back: slots", "Click: edit"]);
     }
 }
 
