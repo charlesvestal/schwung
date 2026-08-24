@@ -885,24 +885,35 @@ export function drawSwitch(ctx, rect, key, values, metaIndex) {
  * as a separate line — which stays the highest-contrast thing in the column
  * whether the sample is loud or quiet there.
  *
- * No decoded audio is available here (see docs/plans/2026-08-16-next-sessions.md
- * item 7 — WAV/AIFF parsing is its own, larger task), so `points` is a
- * representative envelope shape rather than the real waveform; the marker
- * technique itself is real Movy, not a placeholder.
+ * The envelope is the file's real peaks, decoded by wav_peaks.mjs and advanced
+ * from the tick. When there are none, there is no envelope — see below.
  */
 export function drawSample(ctx, rect, roles, values, metaIndex) {
     const x0 = rect.x, w = rect.w;
     const { topY, botY, midY, amp } = band(rect);
 
     /*
-     * REAL PEAKS when we have them, a representative shape when we do not.
+     * REAL PEAKS OR NOTHING. There is no representative shape.
      *
-     * The fallback is not decoration. wavPeaks fills in progressively, so the
-     * first frames after a sample loads have no data yet, and a cell that drew
-     * nothing would flicker empty on every sample change. It also covers an
-     * unreadable or non-audio file, where the picture must degrade to "a
-     * waveform-shaped thing with a correct cursor" rather than to a blank
-     * cell — the cursor and the brackets are still true.
+     * There used to be one: `sin(t*PI) * (0.55 + 0.35*sin(t*23))`, a
+     * waveform-shaped thing drawn whenever the peaks were missing. It was
+     * justified as degrading gracefully — the cursor and brackets are still
+     * true, so why blank the cell — and that reasoning is wrong in the way
+     * this codebase has a standing rule about: a read that did not produce an
+     * answer must never produce a PICTURE. The rule is written down for
+     * parameter reads (see the tri-state contract) and it is the same rule
+     * here.
+     *
+     * What it cost: granny declares `sample_path` in its hierarchy but puts it
+     * on no knob, so the sample cell had no file to point at on ANY page and
+     * drew the synthetic envelope every time — a picture of a sample that was
+     * never loaded, on the flagship granular module. Reported from the device
+     * as "no sample was loaded, not sure why it was showing a waveform".
+     *
+     * A missing envelope now draws the baseline only (halfAt = 0 lights one
+     * pixel per column), which is honest and still carries the cursor and the
+     * brackets. It also self-corrects: wavPeaks fills in progressively, so the
+     * flicker the fallback existed to hide is a few ticks of a centre line.
      *
      * Normalised against the running PEAK, not against full scale, so a quiet
      * sample still uses the full height of the cell. Guarded, because peak is
@@ -915,10 +926,8 @@ export function drawSample(ctx, rect, roles, values, metaIndex) {
     const pts = (pk && !pk.error && pk.points.length) ? resamplePeaks(pk.points, w) : null;
     const scale = (pk && pk.peak > 0) ? 1 / pk.peak : 1;
     const halfAt = (i) => {
-        if (pts) return Math.round(clamp01(pts[Math.min(pts.length - 1, i)] * scale) * amp);
-        const t = i / Math.max(1, w);
-        const v = Math.abs(Math.sin(t * Math.PI)) * (0.55 + 0.35 * Math.sin(t * 23));
-        return Math.round(clamp01(v) * amp);
+        if (!pts) return 0;
+        return Math.round(clamp01(pts[Math.min(pts.length - 1, i)] * scale) * amp);
     };
     for (let i = 0; i < w; i++) {
         const h = halfAt(i);

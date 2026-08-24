@@ -607,7 +607,7 @@ function isSprayMeta(key, meta) {
         && !!meta && meta.type === "float" && meta.min === 0 && meta.max === 1;
 }
 
-function detectSample(pool) {
+function detectSample(pool, metaIndex) {
     /* Prefer a playback cursor as the anchor; fall back to any marker, so an
      * all-loop page still gets the graphic. */
     let anchor = null;
@@ -658,13 +658,34 @@ function detectSample(pool) {
     }
 
     /*
+     * THE FILE NEED NOT BE ON THE PAGE. Searching only the pool was the whole
+     * granny bug: `sample_path` is declared, is type filepath, and is on NO
+     * knobs list — it is reached through the hierarchy — so every page that
+     * carries `position` found no file and drew a sample it could not name.
+     *
+     * A file that is off-page is still the file this marker indexes, so it
+     * informs the picture. It does NOT join `keys`: keys claim cells, and a
+     * key that is not on the page has no cell to claim. It rides in
+     * `extraKeys` instead, which the controller adds to the value rotation as
+     * one extra stop — the same idiom the preset-name read already uses.
+     */
+    let offPageFile = null;
+    if (!fileItem && metaIndex && Array.isArray(metaIndex.keys)) {
+        for (const k of metaIndex.keys) {
+            if (declaredFile) { if (k === declaredFile) { offPageFile = k; break; } continue; }
+            const m = metaIndex.getOrGuess(k);
+            if (m && (m.type === "filepath" || m.type === "file")) { offPageFile = k; break; }
+        }
+    }
+
+    /*
      * Every other marker on the SAME sample joins the graphic — by the
      * module's own `view_group` when it declares one, otherwise by naming the
      * same file. They belong on one picture: three separate knobs cannot show
      * that a loop sits inside the region that plays.
      */
     const group = anchor.meta.view_group || anchor.meta.viewGroup || null;
-    const fileKey = fileItem ? fileItem.key : declaredFile;
+    const fileKey = fileItem ? fileItem.key : (declaredFile || offPageFile);
     const members = [anchor];
     for (const item of pool) {
         if (item === anchor || !isMarkerMeta(item.meta)) continue;
@@ -706,6 +727,7 @@ function detectSample(pool) {
      */
     const roles = {};
     if (fileItem) roles.value = fileItem.key;
+    else if (offPageFile) roles.value = offPageFile;
     if (sprayItem) roles.spray = sprayItem.key;
     for (const it of members) {
         const kind = markerKind(it.key, it.meta);
@@ -714,11 +736,23 @@ function detectSample(pool) {
 
     /*
      * The CELLS: the longest adjacent run containing the anchor, the same rule
-     * detectEnvelope uses. The spray is never a candidate — it is a modifier of
-     * the cursor rather than a position on the sample, so it has nothing to
-     * draw in a cell of its own and keeps its arc.
+     * detectEnvelope uses.
+     *
+     * THE SPRAY IS A CANDIDATE, which it did not used to be. The old reasoning
+     * — it modifies the cursor rather than being a position, so it has nothing
+     * to draw in a cell of its own — described the parameter correctly and the
+     * LAYOUT wrongly. It drew spray's fences onto a cell belonging to
+     * `position` while spray itself kept an unrelated-looking arc three knobs
+     * away, which is what it looks like from the device: "spray is unrelated
+     * but there".
+     *
+     * Being a candidate costs nothing where the spray is not already adjacent
+     * to the cursor — the run rule still gives span 1, as it did for granny
+     * before the gather pass. It is what lets `gatherGroupMembers` widen the
+     * graphic once the two are seated together, exactly like the four knobs of
+     * an ADSR sharing one envelope.
      */
-    const claimable = [fileItem, ...members].filter(Boolean)
+    const claimable = [fileItem, sprayItem, ...members].filter(Boolean)
         .slice().sort((a, b) => a.slot - b.slot);
     let run = [], best = [];
     for (const it of claimable) {
@@ -728,10 +762,14 @@ function detectSample(pool) {
     }
     if (best.indexOf(anchor) < 0) best = [anchor];
 
-    return [{
+    const g = {
         kind: VIZ_SAMPLE, group: null, roles, keys: best.map((it) => it.key),
         ...span(best.map((it) => it.slot)), source: VIZ_SOURCE_DETECTED,
-    }];
+    };
+    /* Off-page only. An on-page file is already in the rotation via keys, and
+     * asking for it twice would spend a read per frame to learn nothing. */
+    if (offPageFile) g.extraKeys = [offPageFile];
+    return [g];
 }
 
 /* Priority order — see the module doc comment. Each function returns the
@@ -933,6 +971,96 @@ export function alignGroupsToRows(keys, metaIndex) {
             if (lost) continue;
             return { keys: cand, moved: true, from: g.slotStart, to, span: g.slotSpan };
         }
+    }
+    return none;
+}
+
+/**
+ * Seat a graphic's scattered members together so the picture gets the width
+ * its controls warrant.
+ *
+ * `alignGroupsToRows` rescues a group that is ALREADY contiguous but straddles
+ * the row break. This is the other half: members that are on the page, belong
+ * to the same picture, and are simply not next to each other. granny is the
+ * case — `spray` sits three knobs from `position`, so the fences drew on a
+ * 30px cell while the knob controlling them sat elsewhere looking unrelated.
+ *
+ * Measured over the 95-module fleet, exactly three pages change:
+ *
+ *     granny   / root     span 1 -> 2   (position, spray)
+ *     granny   / main     span 1 -> 2
+ *     mrsample / sample   span 1 -> 3   (sample_start, loop_start, loop_end)
+ *
+ * The other six sample groups have nothing scattered and are untouched. That
+ * narrowness is the point: this is not a layout engine that re-seats every
+ * page, it is a nudge for the pages whose author wrote the members apart.
+ *
+ * The guarantees are `alignGroupsToRows`'s, deliberately, because they are the
+ * ones that make a reorder safe to perform behind an author's back:
+ *
+ *   * WHICH keys are on the page never changes, so no knob is pushed to
+ *     another page and no orphan page appears;
+ *   * the result must stay inside ONE ROW, because a shape spanning the break
+ *     would draw through the label band;
+ *   * the REAL detector verifies the outcome — the widened group must exist
+ *     afterwards, and no group that already drew may be lost.
+ *
+ * @param {Array<string|null>} keys  the page's 8 knob slots
+ * @param {object} metaIndex
+ * @returns {{keys: Array, moved: boolean, span: number}}
+ */
+export function gatherGroupMembers(keys, metaIndex) {
+    const none = { keys, moved: false, span: 0 };
+    if (!keys || !metaIndex) return none;
+
+    const sigOf = (gs) => new Set(gs.map((g) => g.keys.join(" ")));
+    const before = resolveViz({ keys, metaIndex }).groups || [];
+    const drawn = sigOf(before);
+
+    for (const g of before) {
+        /* Only a graphic whose members can be READ from off-cell has anything
+         * to gather; that is the sample cell today. An envelope's roles are
+         * its cells by construction. */
+        if (g.kind !== VIZ_SAMPLE) continue;
+
+        /* On this page, belongs to this picture, is not already a cell of it. */
+        const scattered = [...new Set(Object.values(g.roles))]
+            .filter((k) => keys.indexOf(k) >= 0 && g.keys.indexOf(k) < 0);
+        if (scattered.length === 0) continue;
+
+        const wantSpan = g.keys.length + scattered.length;
+        if (wantSpan > ROW_WIDTH) continue;
+
+        /* Seat them immediately after the run that already draws, preserving
+         * the author's relative order among the ones being moved. */
+        const anchorLast = g.slotStart + g.slotSpan - 1;
+        const moving = keys.filter((k) => k && scattered.indexOf(k) >= 0);
+        const rest = keys.filter((k) => !k || moving.indexOf(k) < 0);
+        const insertAt = rest.indexOf(keys[anchorLast]) + 1;
+        if (insertAt <= 0) continue;
+        const cand = rest.slice(0, insertAt).concat(moving, rest.slice(insertAt));
+
+        /* One row, or the shape draws through the label band. */
+        const start = cand.indexOf(keys[g.slotStart]);
+        if (start < 0) continue;
+        if (rowOf(start) !== rowOf(start + wantSpan - 1)) continue;
+
+        const afterGroups = resolveViz({ keys: cand, metaIndex }).groups || [];
+        /* It must actually have widened — the detector, not the arithmetic,
+         * decides whether these cells form one graphic. */
+        if (!afterGroups.some((x) => x.kind === VIZ_SAMPLE && x.slotSpan === wantSpan)) continue;
+        const after = sigOf(afterGroups);
+        let lost = false;
+        for (const d of drawn) {
+            if (after.has(d)) continue;
+            /* The group we deliberately widened is EXPECTED to have a new
+             * signature; anything else going missing is a regression. */
+            if (d === g.keys.join(" ")) continue;
+            lost = true; break;
+        }
+        if (lost) continue;
+
+        return { keys: cand, moved: true, span: wantSpan };
     }
     return none;
 }
