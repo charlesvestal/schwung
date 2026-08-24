@@ -40,6 +40,7 @@ import { LAYOUT_MOVY, normalizedOf }
  * drawn cell, and roughly where its parameter sits. */
 import { updateKnobLEDs, clearKnobLEDs, resetKnobLedCache, NUM_KNOB_LEDS }
     from '/data/UserData/schwung/shared/param_pages/knob_leds.mjs';
+import { invalidateLedCache } from '/data/UserData/schwung/shared/input_filter.mjs';
 /* NOTE: wav_io_qjs.mjs — which registers the QuickJS file IO wav_peaks.mjs
  * needs — is imported from shadow_ui.js, NOT from here. This file IS loaded
  * under node by test_param_pages_view.sh and test_param_pages_io_forwarding.sh,
@@ -268,6 +269,11 @@ export function exitParamPages() {
     if (typeof shadow_restore_knob_leds === "function") shadow_restore_knob_leds();
     else clearKnobLEDs();   /* older shim: dark is still better than wrong */
     resetKnobLedCache();
+    /* The shim is about to repaint the surface from Move's own cache, so the
+     * shared cache in input_filter is now claiming colours the hardware will
+     * not be showing. Anything still on screen — the chain editor's track
+     * LEDs — has to be free to draw itself back over the top. */
+    invalidateLedCache();
     controller = null;
     controllerIo = null;
 }

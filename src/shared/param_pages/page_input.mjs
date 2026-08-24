@@ -172,6 +172,22 @@ export function applyInput(controller, intent, { nowMs, reveal } = {}) {
 
         case "back":
             if (controller.dismissHint && controller.dismissHint()) return null;
+            /*
+             * THE PEEK IS A LAYER, so Back takes it down and stops there.
+             *
+             * It went straight through to `exit` and left the module, which
+             * reads as a wildly disproportionate response to a panel that was
+             * about to disappear on its own — reported from the device as
+             * "if i hit back during autopeek it exits the module".
+             *
+             * It costs nothing to close: the detent has already written, so
+             * unlike the picker there is no edit to cancel, and unlike the
+             * menu there is no level to step out of. Back here means "I have
+             * read it, go away", which is the same thing the timeout means and
+             * the same one-layer-at-a-time rule the picker and the menu follow
+             * below.
+             */
+            if (controller.dismissPeek && controller.dismissPeek()) return null;
             /* Back closes the picker first, then steps out of an entered menu,
              * then leaves the view — one layer at a time, matching the rest of
              * Move. A menu you have entered is a layer exactly like the picker
