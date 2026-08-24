@@ -6604,6 +6604,11 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
          * immediately behind it at +248; at the 256 bound the last iteration
          * read that word as a 32nd event and, whenever it looked like a
          * filtered control, ZEROED it. */
+        /* Power-button SysEx run-length: set when the lookahead below matches
+         * the message's first packet, decremented as its remaining 3 packets
+         * are walked. Function-local and re-zeroed every call (one SPI frame
+         * each), so it only ever spans packets within a single frame. */
+        int power_sysex_remaining = 0;
         for (int j = 0; j < SHADOW_MIDI_IN_BYTES; j += 8) {
             uint8_t cin = hw_midi[j] & 0x0F;
             uint8_t cable = (hw_midi[j] >> 4) & 0x0F;
@@ -6611,6 +6616,34 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             uint8_t type = status & 0xF0;
             uint8_t d1 = hw_midi[j + 2];
             uint8_t d2 = hw_midi[j + 3];
+
+            /* Power button: F0 00 21 1D 01 01 3A <id> <val> 00 F7, four USB-MIDI
+             * packets (cin 0x4, 0x4, 0x4, 0x6). Unlike every other overtake
+             * button, this one is not a routable CC/note (docs/CORUN.md) — it
+             * only shows up as this SysEx, and the mode-2/mode-1 "status>=0x80"
+             * suppression below zeroes its lead packet (0xF0 counts as a
+             * status byte here) same as it would any other cable-0 SysEx,
+             * corrupting the one message Move's own shutdown-prompt flow needs
+             * intact. The id byte at offset 17 varies (observed 0x2A on a tap,
+             * 0x3A on a ~1.5-2s hold); match on the fixed header + subcommand
+             * only. Lookahead, not a stateful match at the subcommand packet,
+             * because a corrective *retroactive* un-filter of already-written
+             * sh_midi slots would need to special-case every filter site
+             * above instead of the one line below. */
+            int power_sysex_hit = 0;
+            if (power_sysex_remaining > 0) {
+                power_sysex_remaining--;
+                power_sysex_hit = 1;
+            } else if (cable == 0x00 && cin == 0x04 &&
+                       status == 0xF0 && d1 == 0x00 && d2 == 0x21 &&
+                       j + 24 < SHADOW_MIDI_IN_BYTES &&
+                       (hw_midi[j + 8] & 0x0F) == 0x04 &&
+                       hw_midi[j + 9] == 0x1D && hw_midi[j + 10] == 0x01 && hw_midi[j + 11] == 0x01 &&
+                       (hw_midi[j + 16] & 0x0F) == 0x04 && hw_midi[j + 17] == 0x3A &&
+                       (hw_midi[j + 24] & 0x0F) == 0x06) {
+                power_sysex_hit = 1;
+                power_sysex_remaining = 3;
+            }
 
             int filter = 0;
 
@@ -6716,6 +6749,10 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     }
                 }
             }
+
+            /* Let the power-button SysEx through intact regardless of which
+             * overtake-mode branch above ran — see the lookahead comment. */
+            if (power_sysex_hit) filter = 0;
 
             if (filter) {
                 /* Zero the packet dword in the shadow buffer (slot becomes
@@ -7711,6 +7748,16 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 if (cin < 0x08 || cin > 0x0E) continue;
                 if (cable != 0x00) continue;  /* Only internal cable 0 (Move hardware) */
             }
+            /* Cable 14 ("system") carries internal signaling — e.g. the power
+             * button's CC, whose value on a long hold (0x3A = 58) happens to
+             * collide with Move's own Loop-button CC number. It was never
+             * meant to reach a module's regular MIDI dispatch as an ordinary
+             * button press (movy's onMidiMessageInternal receives [status,
+             * d1, d2] with no cable byte to tell the two apart, per
+             * docs/MODULES.md's module contract), so it never should have.
+             * Confirmed on-device: a power-button hold entered movy's Loop
+             * mode via this path. */
+            if (cable == 0x0E) continue;
 
             uint8_t status = src[j + 1];
             uint8_t type = status & 0xF0;
