@@ -334,6 +334,25 @@ export const MOD_FAST_READS_PER_TICK = 1;
  */
 export const TURN_CLAIM_MS = 1200;
 
+/*
+ * How long the enum option list stays up after the last detent.
+ *
+ * A knob steps an enum one option at a time, which is fine for Off/On and
+ * useless for a 47-model macro oscillator: you cannot see what is coming. The
+ * picker (hold, then click) is one answer; the PEEK is the other, and it costs
+ * no gesture at all — the turn raises it.
+ *
+ * A deadline is the only way out, because a turn has no release event coming:
+ * a knob can be moved without the capacitive touch ever registering, which is
+ * the same reason TURN_CLAIM_MS exists just above.
+ *
+ * 700 matches the chain editor card's KNOB_CARD_DECAY_MS. Deliberately NOT the
+ * same variable: that card lives in the chain editor and this list on the knob
+ * grid, so they never coexist, and one constant shared across two screens is a
+ * coupling that reads as intent and is not.
+ */
+export const ENUM_PEEK_MS = 700;
+
 /** How many times a page will re-read the contract waiting for late metadata. */
 export const META_RETRY_LIMIT = 8;
 /** Ticks between those attempts (~1 s at the shadow UI's 344 Hz tick).
@@ -585,6 +604,12 @@ export function createController(io = {}) {
         /* ms at which a TURN claimed the header with nothing held, or 0.
          * Only such a claim expires — see TURN_CLAIM_MS. */
         turnClaimMs: 0,
+        /* { key, title, options, index, at } while a divable enum is being
+         * turned; null otherwise. See ENUM_PEEK_MS and enumPeek().
+         *
+         * Holds no value of its own — `index` is the knob engine's, which is
+         * why the whole overlay costs no IPC read. */
+        peek: null,
         /* Name of the menu page currently ENTERED, or null. */
         menuEntered: null,
         /*
@@ -1180,7 +1205,20 @@ export function createController(io = {}) {
         /* One extra stop in the rotation reads the preset name, which a
          * hardware synth would put in its display and which no module declares
          * as a param. */
-        const stops = p.keys.length + 1;
+        /*
+         * ...and one stop per viz EXTRA KEY: a value the picture needs that is
+         * not on the page, so the ordinary per-key rotation never asks for it.
+         * granny is the case — `sample_path` is on no knobs list, so the sample
+         * cell had no filename to decode and drew a synthetic waveform for a
+         * sample that was never loaded.
+         *
+         * Bounded by construction: only detectSample sets extraKeys, only when
+         * the file is off-page, and only ever one of them. It is a stop in the
+         * rotation, not a read per frame — the same bargain the preset name
+         * takes.
+         */
+        const extraKeys = vizEnabled ? vizExtraKeys() : [];
+        const stops = p.keys.length + 1 + extraKeys.length;
         const at = s.cursor % stops;
         s.cursor = (s.cursor + 1) % stops;
 
@@ -1192,6 +1230,17 @@ export function createController(io = {}) {
         if (at === p.keys.length) {
             const pn = getParam(`${s.prefix}:preset_name`);
             s.presetName = (pn && pn.length) ? pn : null;
+            return null;
+        }
+        if (at > p.keys.length) {
+            /* A plain read: an extra key is a filename, never modulated and
+             * never turned, so it skips the modulation and settle lanes. The
+             * tri-state still applies — a failed read must not become "" and
+             * then become "no sample". */
+            const ek = extraKeys[at - p.keys.length - 1];
+            if (!ek) return null;
+            const ev = getParam(fullKey(ek));
+            if (ev !== null && ev !== undefined && ev !== "") s.values[ek] = ev;
             return null;
         }
         const key = p.keys[at];
@@ -1902,6 +1951,9 @@ export function createController(io = {}) {
     /** Jog: pages. With shift: whole levels, skipping continuations. */
     function onJog(delta, { shift = false } = {}) {
         if (s.hintLines) dismissHint();
+        /* Paging away takes the parameter off the screen; the list goes with
+         * it. (Also covers the section picker, which opens over the grid.) */
+        s.peek = null;
         if (s.pickerOpen) {
             const n = s.pickerEntries.length;
             if (!n) return s.pageIndex;
@@ -2091,6 +2143,47 @@ export function createController(io = {}) {
         const value = knobStep(st, meta, direction, t, fine);
         const wire = formatParamForSet(value, meta);
 
+        /*
+         * THE PEEK: an enum's option list, raised by the turn itself.
+         *
+         * It writes nothing and reads nothing. `value` is the index the knob
+         * engine has just produced and `meta.options` came from cached
+         * chain_params, so the overlay is free — which matters, because an IPC
+         * read (~2.8 ms) costs more than rendering the entire screen (1.68 ms).
+         * test_enum_peek.sh asserts the zero.
+         *
+         * Two options is the floor: a one-option enum is not a list, and an
+         * enum declaring none has nothing to show. readOnly and writeOnly are
+         * already excluded by meta.divable.
+         *
+         * The else branch is not tidiness. Turning a NEIGHBOUR must take the
+         * list down — left up it would be describing a parameter your hand has
+         * left, which is a wrong reading rather than a stale-looking one.
+         */
+        /*
+         * A KEY THE PAGE ALREADY DRAWS BIG DOES NOT PEEK.
+         *
+         * The peek exists because a 30px cell cannot show a list or a
+         * waveform. When the graphic has been given more than one cell — see
+         * gatherGroupMembers — it has the room, and covering the page with a
+         * panel would replace something legible with something no more
+         * informative, while hiding the rest of the row.
+         */
+        if (meta.divable && meta.kind === KIND_ENUM
+            && !drawnWide(key)
+            && Array.isArray(meta.options) && meta.options.length >= 2) {
+            const pi = Math.round(Number(value));
+            s.peek = {
+                key,
+                title: meta.name || key,
+                options: meta.options,
+                index: (isFinite(pi) && pi >= 0 && pi < meta.options.length) ? pi : 0,
+                at: t,
+            };
+        } else {
+            s.peek = null;
+        }
+
         s.values[key] = wire;
         s.settleUntil[key] = s.tickCount + SETTLE_TICKS;
         /* Throttled — see SETPARAM_THROTTLE_MS. A miss is never lost: it is
@@ -2269,6 +2362,9 @@ export function createController(io = {}) {
      */
     function onKnobTouch(slot, down) {
         if (s.hintLines) dismissHint();
+        /* A finger on a knob means you are aiming, not reading — and if it is a
+         * different knob the list is describing a parameter you have left. */
+        s.peek = null;
         /* Reaching for a knob is an unambiguous "I want the grid", so it
          * dismisses the picker rather than leaving you in a modal you have to
          * back out of first. */
@@ -2483,6 +2579,37 @@ export function createController(io = {}) {
         const p = s.pending;
         s.pending = null;
         return p;
+    }
+
+    /**
+     * The live enum peek, or null. See ENUM_PEEK_MS.
+     *
+     * Expiry is evaluated on READ rather than on a timer, for the same reason
+     * knobCardActive does it: there is no tick guaranteed to run between the
+     * last detent and the next draw, so a timer-cleared peek could still be
+     * drawn once after it expired. A stale overlay drawn once is a wrong
+     * reading, not a late one.
+     *
+     * Costs nothing: every field was resolved by the turn that set it.
+     */
+    function enumPeek() {
+        if (!s.peek) return null;
+        if (now() - s.peek.at > ENUM_PEEK_MS) { s.peek = null; return null; }
+        return s.peek;
+    }
+
+    /**
+     * Take the peek down. True if there was one, so Back can consume the press.
+     *
+     * Goes through enumPeek() rather than testing `s.peek` directly: an expired
+     * peek is not a layer, and treating it as one would eat a Back the user
+     * meant for the view — the same wrong-reading-not-late-reading distinction
+     * enumPeek exists to make.
+     */
+    function dismissPeek() {
+        if (!enumPeek()) return false;
+        s.peek = null;
+        return true;
     }
 
     /* --------------------------------------------------------- presentation */
@@ -2788,6 +2915,35 @@ export function createController(io = {}) {
         return groups;
     }
 
+    /**
+     * Keys a graphic on this page needs but the page does not carry.
+     *
+     * Read off the same cache vizGroups() fills, so asking every tick costs a
+     * lookup rather than a re-detect.
+     */
+    /**
+     * Is this key a cell of a graphic that spans more than one cell?
+     *
+     * The question the peek asks: "is what the user can already see too small
+     * to read". Span, not kind — a one-cell sample cell is as cramped as a
+     * one-cell enum, and a three-cell one is not.
+     */
+    function drawnWide(key) {
+        for (const g of vizGroups()) {
+            if (g.slotSpan > 1 && Array.isArray(g.keys) && g.keys.indexOf(key) >= 0) return true;
+        }
+        return false;
+    }
+
+    function vizExtraKeys() {
+        const out = [];
+        for (const g of vizGroups()) {
+            if (!Array.isArray(g.extraKeys)) continue;
+            for (const k of g.extraKeys) if (k && out.indexOf(k) < 0) out.push(k);
+        }
+        return out;
+    }
+
     /** Read the current page aloud — the gesture that replaces a glance. */
     function announceContents() {
         announce(announcePageContents(page(), s.metaIndex, s.values, s.decorations));
@@ -2812,6 +2968,13 @@ export function createController(io = {}) {
          * race. Books the settle; costs nothing until it comes due. */
         selectionChanged: armContractSettle,
         onJog, goToPage, restorePage, pageLabel, onKnobTurn, onKnobTouch, onClick, takePending, commitEnum,
+        enumPeek,
+        dismissPeek,
+        /* The resolved graphics for the current page. Exposed so the host can
+         * advance a sample's peak-envelope job from its TICK without planning
+         * a second time -- the result is cached per fingerprint+page, so
+         * asking every tick is free. */
+        vizGroups,
         openPicker, closePicker, pickerSelect, showHint, dismissHint,
         menuEntry, menuIndex: () => menuIndex(page()),
         menuEntered, enterMenu, exitMenu, clearTouch,

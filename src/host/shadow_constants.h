@@ -192,6 +192,23 @@ typedef struct shadow_control_t {
      * because of corun.led_keep_mask above; CONTROL_BUFFER_SIZE was bumped to
      * match (shim creates the SHM and shadow_ui maps it via the same macro). */
     volatile uint8_t overtake_suppress_sysex;
+    /* 1 = hand the eight encoder-ring LEDs (CC 71-78) back to Move.
+     *
+     * The knob grid paints those rings to say which physical encoder drives
+     * which drawn cell. Leaving the grid used to turn them OFF, which is not
+     * the same as giving them back: come out of the grid into a Schwung track
+     * and Move's own eight rings stayed dark, because Move only writes an LED
+     * when its value changes and nothing had changed.
+     *
+     * Overtake already solves this with a full snapshot/restore keyed on the
+     * overtake-mode transition. The knob grid is not overtake, and does not
+     * need the full thing — it touches exactly eight CC LEDs and nothing else,
+     * so the restore is "replay Move's own last value for those eight", which
+     * shadow_led_queue.c has been accumulating in move_cc_led_state all along.
+     *
+     * Set by JS on leaving the grid; the shim consumes it and clears it, so it
+     * is an edge and not a state. */
+    volatile uint8_t restore_knob_leds;
 } shadow_control_t;
 
 /* Co-run control-surface groups. A co-running overtake tool declares which

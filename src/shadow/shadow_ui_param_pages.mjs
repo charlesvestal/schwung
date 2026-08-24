@@ -37,7 +37,23 @@ export { LAYOUT_LIST };
 export { CONTRACT_SETTLE_MS };
 import { decodeInput, applyInput } from '/data/UserData/schwung/shared/param_pages/page_input.mjs';
 import { PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS } from '/data/UserData/schwung/shared/param_pages/page_plan.mjs';
-import { LAYOUT_MOVY } from '/data/UserData/schwung/shared/param_pages/render_page_movy.mjs';
+import { LAYOUT_MOVY, normalizedOf }
+    from '/data/UserData/schwung/shared/param_pages/render_page_movy.mjs';
+/* Knob indicator ring LEDs (CC 71-78): which physical encoder drives which
+ * drawn cell, and roughly where its parameter sits. */
+import { updateKnobLEDs, clearKnobLEDs, resetKnobLedCache, NUM_KNOB_LEDS }
+    from '/data/UserData/schwung/shared/param_pages/knob_leds.mjs';
+import { invalidateLedCache } from '/data/UserData/schwung/shared/input_filter.mjs';
+/* NOTE: wav_io_qjs.mjs — which registers the QuickJS file IO wav_peaks.mjs
+ * needs — is imported from shadow_ui.js, NOT from here. This file IS loaded
+ * under node by test_param_pages_view.sh and test_param_pages_io_forwarding.sh,
+ * and wav_io_qjs names the `std`/`os` modules, which node has no idea about.
+ * shadow_ui.js is the only file in the shadow UI that node never imports. */
+import { wavPeaksTick } from '/data/UserData/schwung/shared/param_pages/wav_peaks.mjs';
+import { VIZ_SAMPLE } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
+/* The enum option screen, shared with the picker view in shadow_ui.js — one
+ * screen, two entries, opposite commit semantics. See enum_list.mjs. */
+import { drawEnumList } from '/data/UserData/schwung/shared/param_pages/enum_list.mjs';
 import { announce } from '/data/UserData/schwung/shared/screen_reader.mjs';
 import { log, isLoggingEnabled } from '/data/UserData/schwung/shared/logger.mjs';
 
@@ -294,6 +310,36 @@ export function enterParamPages(slot, component, prefix, restorePageName, io, ch
 }
 
 export function exitParamPages() {
+    /*
+     * GIVE THE RINGS BACK, DO NOT JUST TURN THEM OFF.
+     *
+     * This used to call clearKnobLEDs(), on the reasoning that the grid is
+     * going away and its knobs no longer do anything. That is true of the
+     * GRID and false of the hardware: leave the grid into a Schwung track and
+     * Move's own eight rings stayed dark, because Move writes an LED only when
+     * its value changes and none of them had changed while we held them.
+     * Reported from the device as "if i go from within a schwung track, the
+     * LEDs dont restore — we need to do the same thing we do with
+     * overtake/tools".
+     *
+     * So do the same thing: the shim replays Move's own last value for CC
+     * 71-78 (service_knob_led_restore in shadow_led_queue.c), from the cache it
+     * already accumulates for overtake's snapshot/restore. Where Move never
+     * wrote a ring, off is the honest answer and off is what it gets.
+     *
+     * Reset the cache regardless: the next view may clear the LEDs by another
+     * route, and a cache that outlived that clear would claim colours the
+     * hardware no longer shows — the exact failure this module keeps its own
+     * cache to avoid.
+     */
+    if (typeof shadow_restore_knob_leds === "function") shadow_restore_knob_leds();
+    else clearKnobLEDs();   /* older shim: dark is still better than wrong */
+    resetKnobLedCache();
+    /* The shim is about to repaint the surface from Move's own cache, so the
+     * shared cache in input_filter is now claiming colours the hardware will
+     * not be showing. Anything still on screen — the chain editor's track
+     * LEDs — has to be free to draw itself back over the top. */
+    invalidateLedCache();
     controller = null;
     controllerIo = null;
 }
@@ -401,6 +447,58 @@ export function tickParamPages() {
     controller.setReveal(shiftIsHeld());
 
     controller.tick();
+
+    /*
+     * KNOB LEDS, from the values the controller is ALREADY holding.
+     *
+     * s.values is the cache the grid renders from, so this costs no IPC — the
+     * only reason it can run every tick. Reading 8 parameters here would be
+     * ~22 ms against a 16 ms frame, i.e. it would halve the frame rate of the
+     * screen it is decorating.
+     *
+     * Only on a knob page. A menu, preset or items page binds no encoders, and
+     * leaving colours lit there would say eight knobs do something when none
+     * of them does — the opposite of what the lighting is for.
+     */
+    /*
+     * Advance the sample's peak envelope, on the TICK and never on the draw.
+     * The draw runs inside the redraw throttle and may be skipped, so a job
+     * driven from there would stall exactly when the screen was quiet — which
+     * is when it should be making progress. One bounded batch per tick.
+     *
+     * The path comes from the viz group the grid already resolved, so this
+     * costs no IPC and no extra planning: if there is no sample cell on the
+     * page there is nothing to advance.
+     */
+    const vg = typeof controller.vizGroups === 'function' ? controller.vizGroups() : null;
+    if (vg) {
+        for (const g of vg) {
+            if (g.kind !== VIZ_SAMPLE || !g.roles.value) continue;
+            const path = controller.state.values[g.roles.value];
+            if (path) wavPeaksTick(String(path));
+            break;      /* one sample cell per page */
+        }
+    }
+
+    const kpage = controller.page;
+    const st = controller.state;
+    /* metaIndex is null until the contract resolves, and this runs from the
+     * first tick — before it does there is nothing to light, and an unlit knob
+     * is the honest reading of a page we cannot describe yet. */
+    if (kpage && kpage.kind === PAGE_KNOBS && kpage.keys && st.metaIndex) {
+        const norm = new Array(NUM_KNOB_LEDS).fill(null);
+        for (let i = 0; i < NUM_KNOB_LEDS; i++) {
+            const key = kpage.keys[i];
+            if (!key) continue;
+            /* normalizedOf returns null for an unread value, and knobLedColor
+             * turns that into an unlit knob rather than one sitting confidently
+             * at the bottom of its range. */
+            norm[i] = normalizedOf(st.metaIndex.getOrGuess(key), st.values[key]);
+        }
+        updateKnobLEDs(norm);
+    } else {
+        clearKnobLEDs();
+    }
 }
 let wasLoading = false;
 /* is_loading is an edge that fires once per module load; polling it every tick
@@ -805,6 +903,41 @@ export function drawParamPages() {
         },
         { title: headerTitle(), footer: footerHints() }
     ));
+
+    /*
+     * THE ENUM PEEK, over the grid.
+     *
+     * Deliberately not a view. The detent that raised it has ALREADY written,
+     * so there is nothing for Back to cancel and no state to unwind — it just
+     * stops being drawn. Routing it through VIEWS.ENUM_PICKER would give the
+     * same screen two meanings for Back, one of them a lie.
+     *
+     * Full-screen rather than a card: while you are turning a knob you are not
+     * reading the rest of the grid, and a card-sized rect would show fewer
+     * options than the picker does, which is the whole thing the list is for.
+     * Sharing enum_list.mjs is what keeps the two one screen; the only
+     * difference is the header word.
+     *
+     * Drawn AFTER the grid and over it, so a frame in which the peek expires
+     * falls back to a complete page rather than to a hole.
+     */
+    const peek = controller.enumPeek();
+    if (peek) {
+        clear_screen();
+        drawEnumList({ fillRect: fill_rect, print, textWidth: text_width }, {
+            title: peek.title,
+            /* Not "SELECT". Nothing is being selected — the value is already
+             * set — and naming a gesture the screen does not have is how a
+             * user learns to press a button that does nothing. */
+            headerRight: "TURNING",
+            options: peek.options,
+            index: peek.index,
+            /* Cursor and live value are the SAME here, unlike the picker where
+             * the `*` marks what Back would return you to. */
+            markIndex: peek.index,
+            footer: [["TURN", "SET"]],
+        });
+    }
     return true;
 }
 

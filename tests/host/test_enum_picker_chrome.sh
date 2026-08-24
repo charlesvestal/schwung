@@ -65,6 +65,14 @@ const fail = (m) => { console.log("FAIL: " + m); failures++; };
    switched off. Nothing is guarded here; a missing name throws. */
 const uiSrc = readFileSync("src/shadow/shadow_ui.js", "utf8");
 const ppSrc = readFileSync("src/shadow/shadow_ui_param_pages.mjs", "utf8");
+/* The DRAW moved to enum_list.mjs, so that drawEnumPicker and the knob grid`s
+   turn-raised PEEK are one screen -- they have opposite commit semantics (the
+   peek`s detent has already written, so its Back has nothing to cancel) and so
+   cannot be one view. Everything this file asserts is unchanged; it just has
+   two source files to look in now. enum_list.mjs imports through the DEVICE
+   absolute paths and cannot be imported under node, so it is lifted like the
+   rest. */
+const elSrc = readFileSync("src/shared/param_pages/enum_list.mjs", "utf8");
 function liftFrom(src, what, name, deps) {
   const at = src.indexOf("function " + name + "(");
   if (at < 0) { fail(name + " is gone from " + what); return () => () => {}; }
@@ -86,23 +94,31 @@ const enumPickerFooterHints = liftFrom(ppSrc, "shadow_ui_param_pages.mjs",
 /* The two rect constants are read out of the source rather than restated, so a
    future change to them moves this test`s expectations with it instead of
    quietly disagreeing. */
-function constOf(name) {
-  const m = uiSrc.match(new RegExp("const\\s+" + name + "\\s*=\\s*([^;]+);"));
-  if (!m) { fail("shadow_ui.js no longer defines " + name); return null; }
+function constOf(src, what, name) {
+  const m = src.match(new RegExp("const\\s+" + name + "\\s*=\\s*([^;]+);"));
+  if (!m) { fail(what + " no longer defines " + name); return null; }
   return m[1].trim();
 }
-const TOP_Y = Number(constOf("ENUM_PICKER_LIST_TOP_Y"));
-if (!isFinite(TOP_Y)) fail("ENUM_PICKER_LIST_TOP_Y is not a literal any more");
-if (constOf("ENUM_PICKER_LIST_BOTTOM_Y") !== "MOVY_RULE_Y - 1")
+const TOP_Y = Number(constOf(elSrc, "enum_list.mjs", "ENUM_LIST_TOP_Y"));
+if (!isFinite(TOP_Y)) fail("ENUM_LIST_TOP_Y is not a literal any more");
+if (constOf(elSrc, "enum_list.mjs", "ENUM_LIST_BOTTOM_Y") !== "RULE_Y - 1")
   fail("the list bottom must be DERIVED from the footer rule, not restated -- " +
        "a second copy of 54 is how the list comes to overrun the footer again");
 const BOTTOM_Y = RM.RULE_Y - 1;
 
+/* The shared draw, lifted with the real widgets under it. */
+const LIST_DEPS = ["drawHeader", "drawFooter", "drawMenuList", "LIST_LABEL_X",
+  "ENUM_LIST_TOP_Y", "ENUM_LIST_BOTTOM_Y"];
+const drawEnumList = liftFrom(elSrc, "enum_list.mjs", "drawEnumList", LIST_DEPS)(
+  RM.drawHeader, RM.drawFooter, drawMenuList, LIST_LABEL_X, TOP_Y, BOTTOM_Y);
+
+/* drawEnumPicker is now the CALLER: it supplies the title, the two indices and
+   the footer, and delegates the drawing. That is the whole change this file
+   had to absorb -- the header word, the `*` and the rect all still come out
+   the same, which is what the pixel sections below check. */
 const DRAW_DEPS = ["clear_screen", "fill_rect", "print", "text_width",
-  "drawMovyHeader", "drawMovyFooter", "drawMenuList",
-  "LIST_LABEL_X", "ENUM_PICKER_LIST_TOP_Y", "ENUM_PICKER_LIST_BOTTOM_Y",
-  "enumPickerFooterHints", "enumPickerTitle", "enumPickerOptions",
-  "enumPickerIndex", "enumPickerOpenIndex"];
+  "drawEnumList", "enumPickerFooterHints", "enumPickerTitle",
+  "enumPickerOptions", "enumPickerIndex", "enumPickerOpenIndex"];
 const mkDraw = lift("drawEnumPicker", DRAW_DEPS);
 
 /* ----------------------------------------------------------------- rendering */
@@ -130,8 +146,7 @@ function render(c) {
   for (const k of GLOBAL_NAMES) globalThis[k] = g[k];
   try {
     mkDraw(() => fb.clearScreen(), fb.fillRect, fb.print, fb.textWidth,
-      RM.drawHeader, RM.drawFooter, drawMenuList,
-      LIST_LABEL_X, TOP_Y, BOTTOM_Y, enumPickerFooterHints,
+      drawEnumList, enumPickerFooterHints,
       c.title, c.options, c.index, c.openIndex)();
   } finally {
     for (const k of GLOBAL_NAMES) delete globalThis[k];
@@ -326,15 +341,28 @@ const TITLE = "Reverb Mode";
   /* The source still calls the shared widget. One list widget is a hard
      requirement -- a second one is exactly how Master FX and the chain editor
      came to look like different products. */
-  const at0 = uiSrc.indexOf("function drawEnumPicker(");
-  const body = uiSrc.slice(at0, uiSrc.indexOf("\n}\n", at0));
+  const at0 = elSrc.indexOf("function drawEnumList(");
+  const body = elSrc.slice(at0, elSrc.indexOf("\n}\n", at0));
   if (!/drawMenuList\(/.test(body))
-    fail("drawEnumPicker no longer calls drawMenuList -- this change was chrome " +
+    fail("drawEnumList no longer calls drawMenuList -- this change was chrome " +
          "only, and a second list widget is the drift it must not cause");
   if (!/announce:\s*false/.test(body))
-    fail("drawEnumPicker stopped passing announce:false -- the screen emits its " +
+    fail("drawEnumList stopped passing announce:false -- the screen emits its " +
          "own richer TTS (\"Room, 2 of 17\"), so the list must not also say " +
          "\"Room: *\"");
+
+  /* And drawEnumPicker must still go THROUGH it. Extracting the draw only buys
+     one screen for as long as both entries use the extraction; a picker that
+     grew its own drawMenuList back would be the two-list-widgets drift with an
+     extra file. */
+  const pAt = uiSrc.indexOf("function drawEnumPicker(");
+  const pBody = uiSrc.slice(pAt, uiSrc.indexOf("\n}\n", pAt));
+  if (!/drawEnumList\(/.test(pBody))
+    fail("drawEnumPicker no longer delegates to drawEnumList -- the peek and " +
+         "the picker have to stay one screen");
+  if (/drawMenuList\(/.test(pBody))
+    fail("drawEnumPicker draws its own list again -- that is the second list " +
+         "widget the extraction exists to prevent");
 
   /* The `*`, on the pixels. Chosen so the marked row is NOT the selected one:
      a selected row is inverted full-width, which would light the value column
