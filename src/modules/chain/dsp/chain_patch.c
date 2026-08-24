@@ -751,20 +751,10 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
                             }
                         }
                     } else if (*sv == '"') {
-                        /* Extract state as opaque string (non-JSON formats) */
-                        const char *str_start = sv + 1;
-                        const char *str_end = str_start;
-                        while (*str_end && *str_end != '"') {
-                            if (*str_end == '\\' && *(str_end + 1)) str_end++;
-                            str_end++;
-                        }
-                        if (*str_end == '"') {
-                            int len = str_end - str_start;
-                            if (len > 0 && len < MAX_SYNTH_STATE_LEN) {
-                                strncpy(patch->synth_state, str_start, len);
-                                patch->synth_state[len] = '\0';
-                            }
-                        }
+                        /* JSON.stringify escapes opaque module state. Decode
+                         * it before handing the bytes back to the plugin. */
+                        json_decode_quoted_string(sv, NULL, patch->synth_state,
+                                                  sizeof(patch->synth_state));
                     }
                 }
             }
@@ -877,19 +867,9 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
                                     }
                                 } else if (*sv == '"') {
                                     /* Extract state as opaque string (non-JSON formats like key=val;...) */
-                                    const char *str_start = sv + 1;
-                                    const char *str_end = str_start;
-                                    while (str_end < params_end && *str_end != '"') {
-                                        if (*str_end == '\\' && *(str_end + 1)) str_end++; /* skip escaped chars */
-                                        str_end++;
-                                    }
-                                    if (*str_end == '"') {
-                                        int slen = str_end - str_start;
-                                        if (slen > 0 && slen < MAX_FX_STATE_LEN) {
-                                            strncpy(cfg->state, str_start, slen);
-                                            cfg->state[slen] = '\0';
-                                            parse_debug_log("[parse] Extracted audio_fx state string");
-                                        }
+                                    if (json_decode_quoted_string(sv, params_end, cfg->state,
+                                                                  sizeof(cfg->state)) >= 0) {
+                                        parse_debug_log("[parse] Extracted audio_fx state string");
                                     }
                                 }
                             }
@@ -1097,19 +1077,9 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
                                          * though the save side had written it
                                          * and the load side would have applied
                                          * it. */
-                                        const char *str_start = sv + 1;
-                                        const char *str_end = str_start;
-                                        while (str_end < params_end && *str_end != '"') {
-                                            if (*str_end == '\\' && *(str_end + 1)) str_end++;  /* skip escaped chars */
-                                            str_end++;
-                                        }
-                                        if (*str_end == '"') {
-                                            int slen = str_end - str_start;
-                                            if (slen > 0 && slen < MAX_FX_STATE_LEN) {
-                                                strncpy(cfg->state, str_start, slen);
-                                                cfg->state[slen] = '\0';
-                                                parse_debug_log("[parse] Extracted midi_fx state string");
-                                            }
+                                        if (json_decode_quoted_string(sv, params_end, cfg->state,
+                                                                      sizeof(cfg->state)) >= 0) {
+                                            parse_debug_log("[parse] Extracted midi_fx state string");
                                         }
                                     }
                                 }
@@ -1610,5 +1580,3 @@ int v2_load_patch(chain_instance_t *inst, int patch_idx) {
     }
     return rc;
 }
-
-

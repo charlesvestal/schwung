@@ -260,30 +260,58 @@ function world() {
      callback fires straight away); holding it parks the pick behind an open
      modal, which is the state the optimistic model is visible in. */
   w.gate = { auto: true, pending: null };
+  /* applyChainComponentPick is the tail end of applyComponentSelection,
+     pulled into its own function (see src/shadow/shadow_ui.js) so a "Remove
+     Module" row elsewhere in the UI can reach the same sequence without going
+     through the picker. Lifted the same way applyComponentSelectionConfirmed
+     is above it -- its call happens INSIDE applyComponentSelection now, so
+     leaving it unlifted would make that call a ReferenceError the moment the
+     lifted body runs. `w.chainComponentPickEntries` counts real entries (via
+     the resetLfoTargetLabels slot, which the real function calls
+     unconditionally before any branch) so a future dependency-list drift that
+     makes the call silently no-op is caught rather than measured as budget. */
+  w.chainComponentPickEntries = 0;
+  const countedResetLfoTargetLabels = () => { w.chainComponentPickEntries++; };
+  const applyChainComponentPick = lift("applyChainComponentPick",
+    ["slotChainComponentIndex", "slotChainComponents", "chainConfigs", "createEmptyChainConfig",
+     "withPendingChainInsert", "applyPickerChoiceToChain", "invalidateChainConfig",
+     "slotUserCleared", "chainHasAnyModule", "resetLfoTargetLabels", "chainComponentParamKey",
+     "host_get_module_metadata", "host_log", "maybeConfirmForModule",
+     "applyComponentSelectionConfirmed", "loadChainConfigFromSlot", "setView", "VIEWS",
+     "needsRedraw"])(
+    slotChainComponentIndex, slotChainComponents, w.chainConfigs, createEmptyChainConfig,
+    pend.withPendingChainInsert, applyPickerChoiceToChain, invalidateChainConfig,
+    w.slotUserCleared, chainHasAnyModule, countedResetLfoTargetLabels, chainComponentParamKey,
+    undefined, undefined,
+    (meta, cb) => { if (w.gate.auto) cb(true); else w.gate.pending = cb; },
+    applyComponentSelectionConfirmed, loadChainConfigFromSlot, noop, VIEWS, false);
+  w.applyChainComponentPick = applyChainComponentPick;
+
+  /* applyComponentSelection own dependency list is trimmed to what its
+     body (the picker non-shape branches, plus handing off to
+     applyChainComponentPick) actually references post-extraction --
+     createEmptyChainConfig, applyPickerChoiceToChain, invalidateChainConfig,
+     slotUserCleared, chainHasAnyModule, resetLfoTargetLabels,
+     chainComponentParamKey, host_get_module_metadata, host_log,
+     maybeConfirmForModule, applyComponentSelectionConfirmed,
+     loadChainConfigFromSlot, print and withPendingChainInsert all moved into
+     applyChainComponentPick with it. Verified against the source slice, not
+     guessed. */
   w.applyComponentSelection = () => lift("applyComponentSelection",
     ["slotChainComponents", "selectedSlot", "selectedChainComponent", "availableModules",
      "selectedModuleIndex", "isChainModuleKey", "setView", "VIEWS", "getChainComponentModule",
      "chainConfigs", "enterPresetBrowser", "getComponentParamPrefix", "enterStorePicker",
      "moveChainComponent", "slotChainTarget", "slotChainComponentIndex", "chainEditorKeyAt",
      "lastChainComponent",
-     "announce", "needsRedraw", "createEmptyChainConfig", "applyPickerChoiceToChain",
-     "invalidateChainConfig", "slotUserCleared", "chainHasAnyModule", "resetLfoTargetLabels",
-     "chainComponentParamKey", "host_get_module_metadata", "host_log",
-     "maybeConfirmForModule", "applyComponentSelectionConfirmed", "loadChainConfigFromSlot",
-     "print", "pendingChainInsertFor", "cancelPendingChainInsert",
-     "withPendingChainInsert"])(
+     "announce", "needsRedraw", "pendingChainInsertFor", "cancelPendingChainInsert",
+     "applyChainComponentPick"])(
     slotChainComponents, 0, w.picker.selectedChainComponent, w.picker.availableModules,
     w.picker.selectedModuleIndex, isChainModuleKey, noop, VIEWS, getChainComponentModule,
     w.chainConfigs, noop, getComponentParamPrefix, noop,
     w.moveChainComponent, slotChainTarget, slotChainComponentIndex, chainEditorKeyAt,
     w.lastChainComponent,
-    noop, false, createEmptyChainConfig, applyPickerChoiceToChain,
-    invalidateChainConfig, w.slotUserCleared, chainHasAnyModule, noop,
-    chainComponentParamKey, undefined, undefined,
-    (meta, cb) => { if (w.gate.auto) cb(true); else w.gate.pending = cb; },
-    applyComponentSelectionConfirmed, loadChainConfigFromSlot,
-    noop, pend.pendingChainInsertFor, pend.cancelPendingChainInsert,
-    pend.withPendingChainInsert)();
+    noop, false, pend.pendingChainInsertFor, pend.cancelPendingChainInsert,
+    applyChainComponentPick)();
 
   /*
    * The `+` click, lifted out of the CHAIN_EDIT jog-click switch.
@@ -653,6 +681,13 @@ const sectionOf = (w, prefix) => {
   if (sectionOf(w, "midi_fx") !== "chord,arp")
     fail("D1: the MIDI `+` is the leftmost box but its module landed at " +
          sectionOf(w, "midi_fx") + " (it should be chord,arp)");
+  /* Proof the lifted applyChainComponentPick was actually ENTERED, not just
+     defined -- a future dependency-list drift that leaves it unreachable
+     (see the knob-card note above about typeof guards making a block dead)
+     would still leave D1 green through some other path, so this checks the
+     function itself ran rather than just its downstream effect. */
+  if (w.chainComponentPickEntries < 1)
+    fail("D1: applyChainComponentPick was never entered -- the lift is dead");
 }
 
 /* D2. ...and the audio `+`, drawn at the right, still APPENDS. The asymmetry is
