@@ -531,6 +531,9 @@ typedef struct shadow_midi_dsp_t {
  *   - Shim:    schwung_shim.c overtake-entry "shift off"
  *   - Shim:    schwung_shim.c overtake-exit 4× CC release
  *   - Shim:    shadow_midi.c:shadow_chain_midi_inject (cable-2 forwarder)
+ * Overtake DSP midi_inject_to_move is intentionally separate; see
+ * shadow_overtake_midi.c. While overtake is active this shared queue has a
+ * different single consumer: the takeover test-bus publisher.
  *
  * Consumer (single, in shim's SPI thread, ~344 Hz):
  *   - shadow_midi.c:shadow_drain_midi_inject

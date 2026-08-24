@@ -165,7 +165,7 @@ Display: `host_flush_display`, `host_set_refresh_rate(hz)`, `host_get_refresh_ra
 
 Filesystem: `host_file_exists`, `host_read_file`, `host_write_file`, `host_http_download`, `host_extract_tar(_strip)`, `host_ensure_dir`, `host_remove_dir`.
 
-Tool lifecycle: `host_exit_module()`. MIDI injection: `move_midi_inject_to_move([type, status, d1, d2])`. Sampler: `host_sampler_start(path)`, `host_sampler_stop()`, `host_sampler_is_recording()`.
+Tool lifecycle: `host_exit_module()`. MIDI injection: `move_midi_inject_to_move([type, status, d1, d2])`. Overtake DSP `midi_inject_to_move` uses its own bounded queue so native Move output remains active without consuming the takeover test bus; UIs can detect this with `shadow_overtake_move_inject_active()`. Sampler: `host_sampler_start(path)`, `host_sampler_stop()`, `host_sampler_is_recording()`.
 
 CC 79 is the host volume knob by default. Modules can claim it via `capabilities.claims_master_knob: true`.
 

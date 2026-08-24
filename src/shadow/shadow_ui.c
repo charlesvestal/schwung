@@ -239,6 +239,14 @@ static JSValue js_shadow_inbound_pad_midi_active(JSContext *ctx, JSValueConst th
     return JS_NewInt32(ctx, 1);
 }
 
+/* shadow_overtake_move_inject_active() -> int
+ * Capability sentinel: an overtake DSP's midi_inject_to_move callback uses a
+ * dedicated queue that continues into Move while the takeover is active. */
+static JSValue js_shadow_overtake_move_inject_active(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    return JS_NewInt32(ctx, 1);
+}
+
 /* shadow_overtake_send_external_async_active() -> int
  * Returns 1 if this build of the shim performs the ROUTE_EXTERNAL SPI
  * ioctl off the audio thread (Phase 2 worker). Capability sentinel for
@@ -2755,6 +2763,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_ui_flags", JS_NewCFunction(ctx, js_shadow_get_ui_flags, "shadow_get_ui_flags", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_clear_ui_flags", JS_NewCFunction(ctx, js_shadow_clear_ui_flags, "shadow_clear_ui_flags", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_inbound_pad_midi_active", JS_NewCFunction(ctx, js_shadow_inbound_pad_midi_active, "shadow_inbound_pad_midi_active", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_overtake_move_inject_active", JS_NewCFunction(ctx, js_shadow_overtake_move_inject_active, "shadow_overtake_move_inject_active", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_overtake_send_external_async_active", JS_NewCFunction(ctx, js_shadow_overtake_send_external_async_active, "shadow_overtake_send_external_async_active", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_corun_begin", JS_NewCFunction(ctx, js_shadow_corun_begin, "shadow_corun_begin", 3));
     JS_SetPropertyStr(ctx, global_obj, "shadow_corun_end", JS_NewCFunction(ctx, js_shadow_corun_end, "shadow_corun_end", 0));

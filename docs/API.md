@@ -261,6 +261,7 @@ shadow_load_ui_module(path)
 shadow_log(msg)
 shadow_control_restart()
 shadow_inbound_pad_midi_active()              // -> bool: host delivers Move's internal pad MIDI to the overtake DSP's on_midi hook
+shadow_overtake_move_inject_active()           // -> bool: overtake DSP midi_inject_to_move reaches Move while the takeover is active
 shadow_overtake_send_external_async_active()  // -> bool: overtake DSP's midi_send_external uses the audio-thread-safe async ring
 
 // Global setting bindings (shadow_ui only)
