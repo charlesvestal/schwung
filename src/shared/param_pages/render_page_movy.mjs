@@ -855,6 +855,64 @@ function drawModDot(ctx, kx, ky, normVal) {
     ctx.fillRect(x, y + 1, 1, 1, 1);
 }
 
+/**
+ * A parameter's value as 0..1, or null when it has not been read.
+ *
+ * Extracted from drawKnobWidget, where it was an inline expression, because the
+ * knob LEDs light from the same number (knob_leds.mjs). Two copies would let a
+ * knob whose arc sits at three-quarters light as if it were at a third, and
+ * nothing on screen would say which of them was lying.
+ *
+ * NULL IS NOT ZERO. An unserved key reads back as "" and Number("") is 0, which
+ * is finite — so a parameter that was never answered would confidently
+ * normalise to the bottom of its range. That is the same collapse the tri-state
+ * read contract exists to prevent, so it is refused here and each caller says
+ * what it wants: the arc points at 0 (it must point somewhere), the LED goes
+ * dark (an unlit knob already means "nothing to turn here").
+ *
+ * An ENUM normalises across its OPTIONS, not its min/max — it usually declares
+ * neither, and "option 3 of 5" is the only reading of an enum that a brightness
+ * can carry.
+ *
+ * NOT render_page.mjs's fractionOf, and the two must not be merged without
+ * deciding which of these they are:
+ *
+ *   fractionOf   "where on the declared RANGE does this value sit", for the
+ *                VIZ shapes — an envelope, a filter curve, a fader. It returns
+ *                0 on failure because a shape has to be drawn somewhere, and
+ *                it measures an enum against min/max, which for the shapes is
+ *                what their geometry expects.
+ *   normalizedOf "how full is this control, or unknown", for the KNOB — arc,
+ *                modulation dot, indicator LED. It measures an enum across its
+ *                option list, because "option 3 of 5" is the only reading a
+ *                pointer or a brightness can carry, and it distinguishes
+ *                unread from zero because the LED must go dark rather than
+ *                claim the bottom of the range.
+ *
+ * Their pixels are separately baselined; collapsing them would move the viz
+ * shapes to answer a question they were not drawn for.
+ */
+export function normalizedOf(meta, raw) {
+    if (!meta) return null;
+    if (raw === null || raw === undefined || raw === "") return null;
+    if (Array.isArray(meta.options) && meta.options.length > 0) {
+        /* enumIndexOf, NOT Number(): a plugin may report an enum by NAME, and
+         * Number("Room") is NaN. Getting this wrong would have left every
+         * name-reporting enum unlit — the exact class of bug the chord wire
+         * format already cost this codebase once. */
+        const idx = enumIndexOf(meta, raw);
+        if (idx < 0) return null;
+        if (meta.options.length === 1) return 0;
+        return Math.max(0, Math.min(1, idx / (meta.options.length - 1)));
+    }
+    const num = Number(raw);
+    if (!isFinite(num)) return null;
+    const min = typeof meta.min === "number" ? meta.min : 0;
+    const max = typeof meta.max === "number" ? meta.max : 1;
+    if (!(max > min)) return null;
+    return Math.max(0, Math.min(1, (num - min) / (max - min)));
+}
+
 function drawArcKnob(ctx, kx, ky, normVal) {
     const cx = kx + KNOB_R, cy = ky + KNOB_R, r = KNOB_R;
     if (typeof ctx.drawArc === "function") {
@@ -1118,6 +1176,102 @@ function drawEnumSquare(ctx, kx, ky, text) {
  * used to draw the same solid box as an enum square, which meant a door and a
  * turnable enum were pixel-identical — you found out which was which by
  * turning one and having nothing happen. */
+/*
+ * A FRAMED NUMBER, for octave offsets, transposes and voice counts.
+ *
+ * An arc answers "how far along its range is this", which is right for a cutoff
+ * and wrong for an octave: -1 and +1 are two detents apart on a -24..24
+ * transpose and read as two nearly identical arcs. For a small integer the
+ * number IS the value, so draw the number.
+ *
+ * THE BOUND IS THE WHOLE DESIGN, and it has to be tight.
+ *
+ * Measured against the fleet, a span limit of 128 frames 1392 parameters across
+ * 60 modules — including obxd volume [0..100], 9w9 tune [0..127] and minijv
+ * macro_cutoff [0..127]. Those are continuous AMOUNTS that happen to be typed
+ * int, and an arc is the right picture of them. Framing everything is the same
+ * mistake divable_mark already records: a mark on almost every cell is a mark
+ * on none, and it would destroy the contrast that makes a framed number
+ * readable in the first place.
+ *
+ * The discriminator is span. A small range means the number IS the reading
+ * ("octave +2", "8 voices", "channel 10"); a wide one is a sweep, and its
+ * position on an arc is what you actually want.
+ *
+ * A BIPOLAR range earns more room, because the SIGN is information an arc
+ * physically cannot show: -1 and +1 sit two detents apart on a -24..24
+ * transpose and draw as two nearly identical arcs. That is the case this cell
+ * exists for, so it is worth a wider bound than a one-sided count.
+ *
+ * At 24/48 this frames 273 parameters and refuses every 0..127 amount.
+ *
+ * An int with no declared range is refused too: nothing bounds how many digits
+ * could arrive, and the cell has room for about three.
+ */
+export const BIG_NUM_MAX_SPAN = 24;
+export const BIG_NUM_BIPOLAR_MAX_SPAN = 48;
+
+export function shouldDrawBigNumber(meta) {
+    if (!meta) return false;
+    if (meta.kind === KIND_ENUM || meta.kind === KIND_OPAQUE) return false;
+    if (meta.type !== "int") return false;
+    if (typeof meta.min !== "number" || typeof meta.max !== "number") return false;
+    if (!isFinite(meta.min) || !isFinite(meta.max)) return false;
+    const span = meta.max - meta.min;
+    return span <= (meta.min < 0 ? BIG_NUM_BIPOLAR_MAX_SPAN : BIG_NUM_MAX_SPAN);
+}
+
+/*
+ * THE SIGN IS THE POINT, and only on a range that HAS a negative side. A bare
+ * "2" on a -24..24 transpose is ambiguous in exactly the way this cell exists
+ * to fix; a "+4" on a 1..8 voice count is noise, because there is nothing for
+ * it to contrast with.
+ *
+ * An unread value is "--", never 0: a parameter that was never answered
+ * reporting a confident zero is the collapse the tri-state read contract exists
+ * to prevent, and Number("") is 0 and finite.
+ */
+export function bigNumberText(meta, raw) {
+    if (raw === null || raw === undefined || raw === "") return "--";
+    const n = Math.round(Number(raw));
+    if (!isFinite(n)) return "--";
+    const bipolar = !!meta && typeof meta.min === "number" && meta.min < 0;
+    return (n > 0 && bipolar) ? "+" + n : String(n);
+}
+
+/*
+ * The SAME box the enum square draws — same width, same height, same frame, one
+ * centred line of 4x5. Sharing it is the point: these are the two "a value, in
+ * a box" cells on the grid, sitting side by side, and two frames drawn by two
+ * functions is how a pair like that comes to differ by a pixel that nobody
+ * meant. Their pixels are covered by the movy geometry baseline together.
+ */
+/*
+ * A BIG NUMBER, NOT A FRAMED ONE.
+ *
+ * This drew the enum square's box with the number inside it, on the reasoning
+ * that they are the two "a value, in a box" cells and should share one frame.
+ * That reasoning is about pixels; the problem is about meaning. The box IS the
+ * enum affordance — every enum that declares options is divable, and the
+ * corner brackets plus that square are what say "there is a list behind this".
+ * A small int has no list and can never have one, so framing it made the cell
+ * claim to be a door that does not open.
+ *
+ * Movy draws these as plain large numerals and that is the right call. The
+ * value gets the device font (6x7) instead of the enum square's condensed 4x5,
+ * so it is bigger AND stops lying — the two things that were in tension only
+ * while it was wearing the box.
+ *
+ * @param {number} cx  the CELL CENTRE, matching drawButton — the glyph width
+ *                     varies with the digits and the sign, so only this
+ *                     function can centre it.
+ */
+export function drawBigNumber(ctx, cx, ky, text) {
+    const s = String(text);
+    const w = tzWidth(s);
+    tzPrint(ctx, cx - Math.floor(w / 2), ky + Math.floor((BOX_H - TZ_H) / 2), s, 1);
+}
+
 function drawOpaqueBox(ctx, kx, ky, value, override) {
     const h = BOX_H;
     const shown = (override === null || override === undefined)
@@ -1249,11 +1403,21 @@ function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, cellText,
         drawEnumSquare(ctx, cellLeft(g, col) + Math.floor((g.cellW - ENUM_W) / 2), ky, text);
         return;
     }
-    const min = typeof meta.min === "number" ? meta.min : 0;
-    const max = typeof meta.max === "number" ? meta.max : 1;
-    const num = Number(raw);
-    const normVal = (max > min && isFinite(num)) ? Math.max(0, Math.min(1, (num - min) / (max - min))) : 0;
-    drawArcKnob(ctx, kx, ky, normVal);
+    /*
+     * A SMALL INT IS A NUMBER, not a position on a range — see
+     * shouldDrawBigNumber. Checked here, after the opaque/writeOnly/enum branches
+     * that own their cells outright, and before the arc it replaces.
+     */
+    if (shouldDrawBigNumber(meta)) {
+        drawBigNumber(ctx, cellLeft(g, col) + Math.floor(g.cellW / 2), ky,
+                      bigNumberText(meta, raw));
+        return;
+    }
+    /* `?? 0` because the ARC has to point somewhere: an unread value draws its
+     * "--" in the label cell below, and a knob with no pointer at all would
+     * read as a missing widget rather than a missing value. The LED, which
+     * shares this normaliser, treats null differently — see knob_leds.mjs. */
+    drawArcKnob(ctx, kx, ky, normalizedOf(meta, raw) ?? 0);
     /*
      * The dot is drawn whenever a source is driving this parameter, INCLUDING
      * when the live value has landed exactly on the base.
@@ -1270,11 +1434,13 @@ function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, cellText,
      * the row beneath; the dot is the mark you actually read on the knob.
      */
     if (modRaw !== null && modRaw !== undefined) {
-        const mnum = Number(modRaw);
-        if (isFinite(mnum) && max > min) {
-            const modNorm = Math.max(0, Math.min(1, (mnum - min) / (max - min)));
-            drawModDot(ctx, kx, ky, modNorm);
-        }
+        /* The SAME normaliser as the pointer above. The dot and the pointer are
+         * read against each other -- "how far the LFO has pulled it from where
+         * you set it" -- so two mappings would make that distance meaningless.
+         * null (unread, or a range that cannot be normalised) draws no dot,
+         * which is right: there is nothing to compare. */
+        const modNorm = normalizedOf(meta, modRaw);
+        if (modNorm !== null) drawModDot(ctx, kx, ky, modNorm);
     }
 }
 
