@@ -2150,15 +2150,42 @@ function maybeReturnToComponentGrid() {
  * unconditionally: it is a no-op when the grid is not the thing that asked
  * (e.g. a save committed from the module-picker's own preset browser).
  */
-function onUserPresetSaved(slot, prefix, name, stateJson) {
-    setUserPresetRecord(slot, prefix, makeRecord(name, stateJson));
+/*
+ * Record the preset as loaded/saved, hashing what the DEVICE now reports —
+ * NOT the blob we just handed it.
+ *
+ * Reported from hardware: loading the preset you are already on restored the
+ * values but never cleared the `*`, and it stayed on after loading a second
+ * preset and coming back. The cause is that these hashed `stateJson`, the
+ * string we WROTE. A module is free to normalise state on the way in — reorder
+ * keys, reformat floats, fill in defaults it did not receive — so the very
+ * next read of `<prefix>:state` is a different string with a different hash,
+ * and `isModified` is true forever with nothing the user can do about it.
+ * Pressing Save to clear it would then bake the normalised form in, which is
+ * the one repair that looks like it works.
+ *
+ * So read it back and hash THAT, which is what every later comparison sees.
+ * One extra IPC read on an explicit Load or Save — never on a draw path, and
+ * not a hot path: the read budget rule is about per-frame cost, not about a
+ * key the user pressed. Refreshing the cache here also means the header mark
+ * agrees immediately instead of waiting for the next settle.
+ *
+ * A FAILED read leaves the hash null, and `isModified` reports NOT modified
+ * for an unknown hash — the honest answer, and the safe one: no `*` you cannot
+ * clear.
+ */
+function recordUserPresetFromDevice(slot, prefix, name) {
+    refreshUserPresetLiveBlob(slot, prefix);
+    setUserPresetRecord(slot, prefix,
+        makeRecord(name, cachedUserPresetBlob(slot, prefix)));
     paramPagesRefreshTrailing();
     needsRedraw = true;
 }
+function onUserPresetSaved(slot, prefix, name, stateJson) {
+    recordUserPresetFromDevice(slot, prefix, name);
+}
 function onUserPresetLoaded(slot, prefix, name, stateJson) {
-    setUserPresetRecord(slot, prefix, makeRecord(name, stateJson));
-    paramPagesRefreshTrailing();
-    needsRedraw = true;
+    recordUserPresetFromDevice(slot, prefix, name);
 }
 function onUserPresetDeleted(slot, prefix, name) {
     /* Only when the DELETED name matches the one currently loaded — deleting
