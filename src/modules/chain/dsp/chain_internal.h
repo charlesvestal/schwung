@@ -526,6 +526,8 @@ CHAIN_INTERNAL int json_get_bool_in_section(const char *json, const char *sectio
 CHAIN_INTERNAL int json_get_section_bounds(const char *json, const char *section_key, const char **out_start, const char **out_end);
 CHAIN_INTERNAL int json_get_string(const char *json, const char *key, char *out, int out_len);
 CHAIN_INTERNAL int json_get_string_in_section(const char *json, const char *section_key, const char *key, char *out, int out_len);
+CHAIN_INTERNAL int json_decode_quoted_string(const char *quoted, const char *limit,
+                                             char *out, int out_len);
 
 /* chain_params.c */
 CHAIN_INTERNAL float dsp_value_to_float(const char *val_str, chain_param_info_t *pinfo, float fallback);

@@ -6,6 +6,111 @@
 
 #include "chain_internal.h"
 
+static int json_hex_digit(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static int json_read_hex4(const char *p, const char *limit, uint32_t *value) {
+    uint32_t result = 0;
+    for (int i = 0; i < 4; i++) {
+        if ((limit && p + i >= limit) || !p[i]) return 0;
+        int digit = json_hex_digit(p[i]);
+        if (digit < 0) return 0;
+        result = (result << 4) | (uint32_t)digit;
+    }
+    *value = result;
+    return 1;
+}
+
+static int json_append_utf8(uint32_t codepoint, char *out, int out_len, int *used) {
+    unsigned char bytes[4];
+    int count;
+    if (codepoint == 0 || codepoint > 0x10ffff ||
+        (codepoint >= 0xd800 && codepoint <= 0xdfff)) return 0;
+    if (codepoint <= 0x7f) {
+        bytes[0] = (unsigned char)codepoint;
+        count = 1;
+    } else if (codepoint <= 0x7ff) {
+        bytes[0] = (unsigned char)(0xc0 | (codepoint >> 6));
+        bytes[1] = (unsigned char)(0x80 | (codepoint & 0x3f));
+        count = 2;
+    } else if (codepoint <= 0xffff) {
+        bytes[0] = (unsigned char)(0xe0 | (codepoint >> 12));
+        bytes[1] = (unsigned char)(0x80 | ((codepoint >> 6) & 0x3f));
+        bytes[2] = (unsigned char)(0x80 | (codepoint & 0x3f));
+        count = 3;
+    } else {
+        bytes[0] = (unsigned char)(0xf0 | (codepoint >> 18));
+        bytes[1] = (unsigned char)(0x80 | ((codepoint >> 12) & 0x3f));
+        bytes[2] = (unsigned char)(0x80 | ((codepoint >> 6) & 0x3f));
+        bytes[3] = (unsigned char)(0x80 | (codepoint & 0x3f));
+        count = 4;
+    }
+    if (*used + count >= out_len) return 0;
+    for (int i = 0; i < count; i++) out[(*used)++] = (char)bytes[i];
+    return 1;
+}
+
+/* Decode one JSON string value. `limit` is the first byte outside the parent
+ * object, or NULL for a NUL-terminated top-level scan. State is later handed
+ * to plugins as a C string, so an escaped NUL is rejected instead of silently
+ * truncating the snapshot. */
+int json_decode_quoted_string(const char *quoted, const char *limit,
+                              char *out, int out_len) {
+    if (!out || out_len < 1) return -1;
+    out[0] = '\0';
+    if (!quoted || *quoted != '"') return -1;
+    const char *p = quoted + 1;
+    int used = 0;
+    while (*p && (!limit || p < limit)) {
+        unsigned char c = (unsigned char)*p++;
+        if (c == '"') {
+            out[used] = '\0';
+            return used;
+        }
+        if (c == '\\') {
+            if (!*p || (limit && p >= limit)) goto fail;
+            c = (unsigned char)*p++;
+            switch (c) {
+                case '"': c = '"'; break;
+                case '\\': c = '\\'; break;
+                case '/': c = '/'; break;
+                case 'b': c = '\b'; break;
+                case 'f': c = '\f'; break;
+                case 'n': c = '\n'; break;
+                case 'r': c = '\r'; break;
+                case 't': c = '\t'; break;
+                case 'u': {
+                    uint32_t codepoint;
+                    if (!json_read_hex4(p, limit, &codepoint)) goto fail;
+                    p += 4;
+                    if (codepoint >= 0xd800 && codepoint <= 0xdbff) {
+                        uint32_t low;
+                        if ((limit && p + 6 > limit) || p[0] != '\\' || p[1] != 'u' ||
+                            !json_read_hex4(p + 2, limit, &low) ||
+                            low < 0xdc00 || low > 0xdfff) goto fail;
+                        codepoint = 0x10000 + ((codepoint - 0xd800) << 10) + (low - 0xdc00);
+                        p += 6;
+                    }
+                    if (!json_append_utf8(codepoint, out, out_len, &used)) goto fail;
+                    continue;
+                }
+                default: goto fail;
+            }
+        } else if (c < 0x20) {
+            goto fail;
+        }
+        if (used + 1 >= out_len) goto fail;
+        out[used++] = (char)c;
+    }
+fail:
+    out[0] = '\0';
+    return -1;
+}
+
 /* Simple JSON string extraction - finds "key": "value" and returns value */
 int json_get_string(const char *json, const char *key, char *out, int out_len) {
     char search[128];
@@ -221,4 +326,3 @@ const char *bounded_strstr(const char *start, const char *end, const char *needl
     const char *result = strstr(start, needle);
     return (result && result < end) ? result : NULL;
 }
-
