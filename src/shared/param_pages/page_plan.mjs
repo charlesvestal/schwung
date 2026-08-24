@@ -21,7 +21,7 @@
 
 import { hasChildren, childCount } from "./child_key.mjs";
 
-import { alignGroupsToRows } from "./viz.mjs";
+import { alignGroupsToRows, gatherGroupMembers } from "./viz.mjs";
 import { buildMetaIndex } from "./param_meta.mjs";
 export const KNOBS_PER_PAGE = 8;
 
@@ -167,7 +167,16 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved } 
      * wonder why a knob moved. */
     const realigned = [];
     const alignKnobs = (ks, where) => {
-        const r = alignGroupsToRows(ks, metaIndexOnce());
+        /* GATHER FIRST, THEN ALIGN. Gathering makes a scattered group
+         * contiguous; aligning moves an already-contiguous group off the row
+         * break. Running align first would find nothing to rescue, because a
+         * group whose members are three knobs apart is not straddling — it is
+         * not a group yet. */
+        const gathered = gatherGroupMembers(ks, metaIndexOnce());
+        if (gathered.moved) {
+            realigned.push({ page: where, from: -1, to: -1, span: gathered.span });
+        }
+        const r = alignGroupsToRows(gathered.keys, metaIndexOnce());
         if (r.moved) realigned.push({ page: where, from: r.from, to: r.to, span: r.span });
         return r.keys;
     };

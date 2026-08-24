@@ -29,7 +29,7 @@ fi
 node --input-type=module -e '
 import { resolveViz, VIZ_SAMPLE } from "./src/shared/param_pages/viz.mjs";
 import { buildMetaIndex } from "./src/shared/param_pages/param_meta.mjs";
-import { drawVizGroup } from "./src/shared/param_pages/viz_draw.mjs";
+import { drawVizGroup, VIZ_ROWS } from "./src/shared/param_pages/viz_draw.mjs";
 import { createFramebuffer, drawContext } from "./tools/param-pages/harness.mjs";
 
 let fail = 0;
@@ -37,6 +37,13 @@ const ok = (c, m) => { console.log((c ? "PASS" : "FAIL") + ": " + m); if (!c) fa
 
 /* The harness exposes a flat pixel array, not a getter. */
 const at = (fb, x, y) => fb.pixels[y * fb.width + x];
+
+/* THE BAND CENTRE, DERIVED. It was hardcoded as topY + 7 and the real
+   centre is topY + 6 -- wrong since the file was written, and green,
+   because the synthetic envelope cleared a tall band around the cursor and
+   the off-by-one landed inside it. Deleting the synthetic envelope is what
+   exposed it. Derive geometry; never restate it. */
+const midYof = (rect) => rect.y + 1 + ((VIZ_ROWS - 1) >> 1);
 
 const idx = (chainParams, keys) => buildMetaIndex({
   hierarchy: { modes: null, levels: { root: {
@@ -136,7 +143,7 @@ const groupOf = (cp, keys) => {
      "the closing bracket tip points INTO the loop (left)");
 
   /* The cursor is the envelope COMPLEMENT: cleared inside the body. */
-  const midY = topY + 7;
+  const midY = midYof(rect);
   const mx = colOf(0.5);
   ok(at(fb, mx, midY) === 0, "the playback cursor cuts the sample out at its column");
 
@@ -159,7 +166,7 @@ const groupOf = (cp, keys) => {
   const rect = { x: 0, y: 16, w: 128, h: 16 };
   drawVizGroup(drawContext(fb), rect, g,
     { sample_path: "/x.wav", position: "0.5", loop_start: "0.5" }, mi);
-  const midY = rect.y + 8, mx = Math.floor(0.5 * rect.w);
+  const midY = midYof(rect), mx = Math.floor(0.5 * rect.w);
   ok(at(fb, mx, midY) === 0,
      "with a bound on the SAME column, the cursor is still cut in -- it is drawn last");
 }
@@ -207,11 +214,44 @@ const groupOf = (cp, keys) => {
   const keys = ["position", "spray", "spread", null, null, null, null, null];
   const { g, mi } = groupOf(cp, keys);
   ok(g && g.roles.spray === "spray", "spray binds as the spread role");
-  ok(g && g.keys.indexOf("spray") < 0,
-     "spray does NOT claim a cell -- it is a modifier of the cursor, and it "
-     + "keeps its own arc");
+  /*
+   * SPRAY CLAIMS ITS CELL WHEN IT IS ADJACENT, and only then.
+   *
+   * It used to never claim one, on the reasoning that it modifies the cursor
+   * rather than being a position on the sample. That describes the PARAMETER
+   * correctly and the LAYOUT wrongly: the fences drew onto a cell belonging to
+   * `position` while spray itself sat elsewhere with an arc that looked
+   * unrelated to them. Reported from the device in exactly those words.
+   *
+   * Adjacency is what makes it safe. Where the author already wrote the two
+   * together the graphic simply gets the width, like the four knobs of an
+   * ADSR; where they are apart the run rule still gives span 1 and nothing
+   * moves until gatherGroupMembers seats them.
+   */
+  ok(g && g.keys.indexOf("spray") >= 0,
+     "an ADJACENT spray claims its cell and widens the graphic");
+  ok(g && g.slotSpan === 2, "so the picture spans both, got " + (g && g.slotSpan));
   ok(g && g.roles.spray !== "spread",
      "spread does not win over spray when both are present");
+
+  /* SCATTERED, IT DOES NOT. granny declares position at knob 1 and spray at
+     knob 4, so claiming across the gap would swallow two unrelated knobs. */
+  {
+    const far = ["position", "size_ms", "density", "spray", null, null, null, null];
+    const cpf = [
+      { key: "position", name: "Position", type: "wav_position", min: 0, max: 1 },
+      { key: "size_ms",  name: "Size",     type: "float", min: 0, max: 1 },
+      { key: "density",  name: "Density",  type: "float", min: 0, max: 1 },
+      { key: "spray",    name: "Spray",    type: "float", min: 0, max: 1 },
+    ];
+    const { g: gf } = groupOf(cpf, far);
+    ok(gf && gf.slotSpan === 1,
+       "a spray three knobs away leaves the graphic one cell wide, got "
+       + (gf && gf.slotSpan));
+    ok(gf && gf.roles.spray === "spray",
+       "and it STILL informs the picture -- roles are read from every member, "
+       + "only the adjacent run claims cells");
+  }
 
 
   const rect = { x: 0, y: 16, w: 128, h: 16 };

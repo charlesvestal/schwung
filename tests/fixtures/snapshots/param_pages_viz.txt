@@ -184,9 +184,9 @@ granny	ADSR Envelope	fader	detected	amp_decay_ms
 granny	ADSR Envelope	fader	detected	amp_release_ms
 granny	ADSR Envelope	fader	detected	amp_sustain
 granny	Main	fader	detected	grain_gain
-granny	Main	sample	detected	position
+granny	Main	sample	detected	position,spray
 granny	Main - 2	fader	detected	grain_gain
-granny	Main - 2	sample	detected	position
+granny	Main - 2	sample	detected	position,spray,sample_path
 granny	Scan	switch	detected	scan_enable
 granny	Window / Tone	fader	detected	grain_gain
 granular	Advanced	fader	detected	gain
@@ -337,7 +337,7 @@ mrsample	Global	fader	detected	gain
 mrsample	Main	fader	detected	gain
 mrsample	Main	filter	detected	filter_cutoff,filter_res
 mrsample	Main	sample	detected	sample_start
-mrsample	Sample	sample	detected	sample_start
+mrsample	Sample	sample	detected	sample_start,loop_start,loop_end,sample_path
 mrsample	Sample	switch	detected	loop_mode
 mverb	Main	fader	detected	gain
 nam	Main	fader	detected	input_level
