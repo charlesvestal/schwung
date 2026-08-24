@@ -27,15 +27,42 @@
  *   being turned and for a short settling window afterwards.
  */
 
-import { planPages, PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS } from "./page_plan.mjs";
+import { planPages, PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS,
+         buildTrailingPages, makeClaimer } from "./page_plan.mjs";
 import { resolveChildKey } from "./child_key.mjs";
 import { buildMetaIndex, inferFromValue, isTurnable, enumIndexOf, KIND_ENUM, KIND_OPAQUE } from "./param_meta.mjs";
 import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page.mjs";
 import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
-         drawBrackets, drawPresetBody, RULE_Y, LAYOUT_MOVY } from "./render_page_movy.mjs";
+         drawBrackets, drawPresetBody, displayValue, RULE_Y, LAYOUT_MOVY,
+         MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W } from "./render_page_movy.mjs";
 import { resolveViz } from "./viz.mjs";
+import { drawMenuList } from "../menu_layout.mjs";
 
 export { LAYOUT_MOVY };
+
+/**
+ * The knob page as FIVE ROWS instead of eight cells.
+ *
+ * A layout, not an engine. Everything a page is — which params are on it
+ * (page_plan), what type and range they have (param_meta), how a value reads
+ * (the exported displayValue), how a detent moves it (knob_engine, reached
+ * through this controller's own onKnobTurn), what is spoken (announce_page) and
+ * the chrome around it (render_page_movy) — is the same code under both. The
+ * ONLY difference is pixel arrangement, which is the one difference the design
+ * calls irreducible.
+ *
+ * That is the whole reason it lives here rather than in a renderer beside
+ * render_page_movy.mjs. The five-row list already exists in this file and
+ * already draws three page kinds through drawPageChromeList; a knobs page shown
+ * as a list is that same list fed the page's PARAMS instead of its entries. A
+ * mode flag threaded through render_page_movy's 1600 lines would be the `geom`
+ * all-or-nothing trap in another costume.
+ *
+ * NOT yet selected by `param_view` — wiring that seam is a separate act with the
+ * whole fleet behind it (see §4.1 of the design). Reachable today only through
+ * setLayout(LAYOUT_LIST).
+ */
+export const LAYOUT_LIST = "list";
 import { step, stepLevel, reanchor, firstGrid, jumpIndex, groupIndex } from "./page_nav.mjs";
 
 /*
@@ -54,10 +81,13 @@ import { step, stepLevel, reanchor, firstGrid, jumpIndex, groupIndex } from "./p
  * x=10 and its right-aligned values end at x=118, so nothing collides and
  * nothing touches the screen edge.
  */
-/* Exported because other screens in the page chrome — the module picker, for
- * one — must sit in exactly this rect or the two look subtly unlike each
- * other. One definition, not a matching pair of magic numbers. */
-export const MENU_LIST_X = 8, MENU_LIST_Y = 10, MENU_LIST_W = 112;
+/* The rect itself now lives with the rest of the movy chrome, in
+ * render_page_movy.mjs beside HEADER_H and RULE_Y — its consumers are
+ * RENDERERS, and menu_layout.mjs was importing this 2300-line controller (and
+ * the whole engine behind it) to obtain two integers, which is real parse cost
+ * on the device's QuickJS. Re-exported under the same names so every existing
+ * importer is untouched; still one definition. */
+export { MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W } from "./render_page_movy.mjs";
 /*
  * The frame lives in the list margin, one pixel clear of the dividers.
  *
@@ -65,7 +95,7 @@ export const MENU_LIST_X = 8, MENU_LIST_Y = 10, MENU_LIST_W = 112;
  * the text (starts x=10) and the right-aligned values (end x=118).
  *
  * Vertically there looked to be no room — five rows at a 9px stride is 45 of
- * the 47 rows between the bank bar and the footer rule. But renderPicker only
+ * the 47 rows between the bank bar and the footer rule. But the list only
  * FILLS a row when it is selected, and an inert menu has nothing selected, so
  * the only occupied rows are the glyphs themselves:
  *
@@ -84,7 +114,143 @@ export const MENU_LIST_X = 8, MENU_LIST_Y = 10, MENU_LIST_W = 112;
 const MENU_FRAME_X = 4, MENU_FRAME_Y = 9, MENU_FRAME_W = 120;
 /* One clear row above the frame and one below, hence the 1 on each side. */
 const MENU_FRAME_BOTTOM_INSET = 1;
-const MENU_BRACKET_LEN = 7;
+/* 4, matching the divable-cell bracket in render_page_movy. It was 7, whose
+ * top-left arm ran x=4..10 on row 9 -- directly over where the first list row
+ * begins now that the caret is gone, so the two merged into one blob in the
+ * corner. Shorter arms clear the text AND read the same: a bracket is a corner
+ * tick, not a border. */
+const MENU_BRACKET_LEN = 4;
+
+/*
+ * The scroll-arrow column for a page-chrome list.
+ *
+ * drawMenuList's default is 120, which is right for a list that owns the whole
+ * 128px screen: the arrow occupies 120..124 and nothing else is out there. This
+ * list does not own the screen — MENU_FRAME's right arm is the column x=123,
+ * rows 47..53, and an INERT menu longer than five entries draws both (the
+ * brackets and a down arrow at 120..124, rows 52..54). They would land on top of
+ * each other in the bottom-right corner and read as a smudge, not as two marks.
+ *
+ * The frame's exclusion zone on the right is x >= 117 on rows 9 and 53 (the
+ * corner arms) plus the whole column x=123. 114 is NOT far enough — rendered
+ * and looked at: the down arrow's foot lands on row 53 at x=115 and x=117, one
+ * pixel off the arm and then on it, and the two read as a single blob in the
+ * corner. 110 clears the arm by three columns and the arrow reads as an arrow.
+ *
+ * drawMenuList derives the right-hand value edge from this, so values pull in to
+ * 108 while an arrow is on screen and go back out to 118 when it is not.
+ */
+const MENU_LIST_INDICATOR_X = 122;
+
+/*
+ * THE ONE LIST, as a page-chrome list.
+ *
+ * Every row on a menu page, an items page and the section picker is drawn here,
+ * by the same drawMenuList that draws the slot editor, Master FX, the file
+ * browser and the enum picker. Before this it was renderPicker, which was
+ * *similar* — same rect, same five rows, same 9px stride — and similar is what
+ * this project exists to end.
+ *
+ * WHAT MOVED, so nobody has to rediscover it from a photograph:
+ *
+ * 1. THE SCROLL WINDOW. renderPicker centred the cursor:
+ *        first = clamp(cur - floor(rows/2), 0, total - rows)
+ *    drawMenuList reserves the last row instead (`keepOffLastRow`):
+ *        first = max(0, sel - (rows - 2))
+ *    For a 10-entry list in a 5-row window:
+ *        sel=0  picker 0..4  (sel on row 0)   list 0..4  (sel row 0)   same
+ *        sel=3  picker 1..5  (sel on row 2)   list 0..4  (sel row 3)
+ *        sel=5  picker 3..7  (sel on row 2)   list 2..6  (sel row 3)
+ *        sel=9  picker 5..9  (sel on row 4)   list 6..9  (sel row 3)
+ *    So: the cursor now settles on the FOURTH row rather than the middle one,
+ *    and at the very end of a list the window shows four entries with the fifth
+ *    row blank rather than five with the cursor on the bottom row. That is
+ *    accepted, not incidental — it is how every other list in the shadow UI
+ *    already scrolls, and one list means one scroll rule.
+ *
+ * 2. Rows gain a "> " cursor prefix, the selected row's fill spans the whole
+ *    128px width rather than stopping at the rect, and scroll arrows appear
+ *    (renderPicker drew none at all, so a long list gave no sign it continued).
+ *
+ * 3. Labels truncate a little sooner: drawMenuList budgets a fixed 6px per glyph
+ *    and pays 2 glyphs for the cursor prefix, where renderPicker measured the
+ *    proportional font with fitText. ~14 chars against ~21 on a valueless row.
+ *
+ * `announce: false` is not optional. This controller already announces every
+ * menu / items / section move itself (announceEntry, announcePageChange, the
+ * picker's own announce) with position and value; letting drawMenuList announce
+ * as well would say everything twice to a screen-reader user.
+ *
+ * EXPORTED, and chain_editor_chrome.mjs's module picker draws through it too.
+ * That file already imports MENU_LIST_X/Y/W from here, with the note "imported
+ * rather than restated: the two pickers must occupy the SAME rectangle, and a
+ * second copy of 'x 8, y 10, w 112' is how they would come to stop doing so".
+ * The row renderer is the same argument one level up: converting the page
+ * chrome and leaving the module picker on renderPicker would put two different
+ * lists in one rectangle, which is the drift this whole exercise exists to end.
+ * The picker draws no bracket frame, so the arrow column is more conservative
+ * there than it needs to be — identical is worth more than six pixels.
+ */
+/*
+ * `editMode` is drawMenuList's OWN affordance — the selected row's value prints
+ * as `[value]` — not a new one. §3.2 of the design named it the survivor of the
+ * four spellings (`< value >`, `[value]`, a bracketed LABEL, and nothing at all)
+ * that the six hand-rolled row loops had drifted into, so the knob page drawn as
+ * a list inherits it rather than inventing a fifth.
+ */
+export function drawPageChromeList(ctx, rect, entries, index, { editMode = false } = {}) {
+    drawMenuList({
+        ctx,
+        items: entries || [],
+        editMode: !!editMode,
+        selectedIndex: (index | 0) < 0 ? -1 : (index | 0),
+        listArea: { topY: rect.y, bottomY: rect.y + rect.h },
+        labelX: rect.x,
+        indicatorX: MENU_LIST_INDICATOR_X,
+        indicatorBottomY: rect.y + rect.h,
+        getLabel: (e) => (e && e.name != null ? String(e.name) : ""),
+        /* A menu entry carries a value; a section carries a page count, and a
+         * one-page section says nothing rather than "1". */
+        getValue: (e) => {
+            if (!e) return "";
+            if (e.value !== undefined && e.value !== null && e.value !== "") return String(e.value);
+            return e.pages > 1 ? String(e.pages) : "";
+        },
+        valueAlignRight: true,
+        /* The label floor below makes long values truncate, which on a knobs
+         * page is most of them: "1/2 bar" becomes "1/2...", "kick_01.wav"
+         * becomes "kick...". That is the right trade for the UNSELECTED rows —
+         * a readable label beats a readable value when you are choosing which
+         * row to act on — but it would leave the row you are actually ON
+         * unreadable too, and there is no other way to see the full value from
+         * here. So the selected row's value marquees, exactly as its label
+         * already does. Costs nothing when the value fits. */
+        scrollSelectedValue: true,
+        /* `valueX` is the LEFT FLOOR a right-aligned value may not cross, and
+         * its default (92) is calibrated for a value edge at 126. Here the edge
+         * is 118, or 108 with an arrow on screen, and the floor then wins: "Off"
+         * right-aligned to 108 wants x=90, gets pushed to 92, and is truncated
+         * to fit the 16px left over — it rendered as "Of". renderPicker had no
+         * floor at all (it right-aligned and fitted the LABEL to what was left),
+         * so the floor goes to the list's own left edge and the label budget,
+         * which drawMenuList already derives from the value's position, does the
+         * work. Found by rendering it and looking, not by reading it.
+         *
+         * Handing the floor over like this is also why this is the ONE list that
+         * needed drawMenuList's `minLabelChars` — with no value-column floor of
+         * its own, a wide value took the whole row and left `A...` / `B...` for
+         * two different samples. The general floor is drawMenuList's default, so
+         * nothing is passed here; see THE LABEL FLOOR in menu_layout.mjs and
+         * tests/host/test_list_label_floor.sh. */
+        valueX: rect.x,
+        /* Values end at x=118, not the 126 a full-width list uses: the frame's
+         * right arm is the column x=123 and it runs through the first and last
+         * glyph rows. This is the number renderPicker used (r.x + r.w - 2) and
+         * the number the MENU_FRAME comment above is written against. */
+        valuePaddingRight: 10,
+        announce: false,
+    });
+}
 import { knobInit, knobStep } from "../knob_engine.mjs";
 import { formatParamForSet, learnEnumWireFormat, enumWireValue } from "../param_format.mjs";
 import { announcePage, announceTouch, announceTurn, announcePageContents } from "./announce_page.mjs";
@@ -312,6 +478,17 @@ export function createController(io = {}) {
      * release — see viz.mjs resolveViz. */
     const vizEnabled = io.enableViz !== false;
     const vizOverrides = io.vizOverrides || null;
+    /*
+     * The trailing pages, re-evaluated on every plan.
+     *
+     * A function rather than an array because the rows are conditional — Save
+     * and Delete mean nothing with no preset loaded — and the page set outlives
+     * those conditions. Same shape as SLOT_GRID_ACTIONS' always-or-hasPreset
+     * filter, just evaluated by the host instead of filtered here: the
+     * controller does not know what a preset is.
+     */
+    const trailingMenus = () =>
+        (typeof io.trailingMenus === "function" ? (io.trailingMenus() || []) : []);
 
     const s = {
         slot: 0,
@@ -412,6 +589,16 @@ export function createController(io = {}) {
         /* Cursor per MENU page, keyed by page name for the same reason
          * sectionMemory is: a rebuild moves every index. */
         menuCursor: Object.create(null),
+        /* Cursor per KNOBS page under LAYOUT_LIST, keyed by page name for that
+         * same reason. Indexes knobRows(), not p.keys directly — a sparse page
+         * has holes and a list has none, so the row carries the SLOT it came
+         * from and every edit is dispatched by slot. */
+        knobCursor: Object.create(null),
+        /* The entered knob list has handed the jog to the VALUE under the
+         * cursor rather than to the row cursor. One flag, not per page: it is
+         * cleared on every enter, and nothing reads it unless the page it
+         * belongs to is entered. */
+        knobEditing: false,
         /* Every knob currently held, oldest first. See onKnobTouch. */
         touchOrder: [],
         /* ms at which a TURN claimed the header with nothing held, or 0.
@@ -615,7 +802,7 @@ export function createController(io = {}) {
             ? (sameComponent ? s.chainParams : null)
             : parse(rawChain);
         if (chainFailed && sameComponent) armContractSettle();
-        const planned = planPages({ hierarchy, chainParams, mode, visible });
+        const planned = planPages({ hierarchy, chainParams, mode, visible, trailingMenus: trailingMenus() });
         /* Retained so a visibility re-plan costs no extra device reads. */
         s.hierarchy = hierarchy;
         s.chainParams = chainParams;
@@ -665,8 +852,21 @@ export function createController(io = {}) {
      * (re)planned. It is one-shot: once honoured, or once the user has moved
      * somewhere themselves, it is dropped rather than fighting them.
      */
-    function restorePage(name) {
+    /*
+     * `enter` says whether the door OPENS on arrival, and the caller decides
+     * because only the caller knows why we came back.
+     *
+     * A door you were SENT to opens; a door you FINISHED with closes. Backing
+     * out of a browser without choosing anything never really left the menu,
+     * so it returns you inside it. Completing the thing you came for — loading
+     * a preset, saving one — is done, so it hands the jog back to paging.
+     * Deleting is management: you are likely to do more of it, so it stays in.
+     *
+     * Default false, which is what this did before the option existed.
+     */
+    function restorePage(name, { enter = false } = {}) {
         s.restoreName = (typeof name === "string" && name) ? name : null;
+        s.restoreEnter = !!enter;
         applyPendingRestore();
     }
 
@@ -677,6 +877,25 @@ export function createController(io = {}) {
             if (pages[i] && pages[i].name === s.restoreName) {
                 s.pageIndex = i;
                 s.restoreName = null;
+                /*
+                 * Open the door only when the CALLER said to — see restorePage.
+                 *
+                 * This used to open on every restore, on the reasoning that an
+                 * arrival you asked for should not need a second gesture. That
+                 * is right for backing out of a browser without choosing
+                 * anything (reported from hardware: Load... with nothing saved,
+                 * then Back, left the jog outside the menu you had just come
+                 * from) and for a delete, which is management you are likely to
+                 * continue. It is wrong for finishing: after loading or saving
+                 * a preset you are done with the menu and want the jog back.
+                 *
+                 * Entering costs nothing and writes nothing either way — a
+                 * preset browser auditions on TURN, not on entry. A knob page
+                 * is not a door, so the ordinary come-back-where-I-was restore
+                 * is unaffected whatever the caller asks for.
+                 */
+                if (s.restoreEnter && isDoor(page()) && !menuEntered()) enterMenu();
+                else if (!s.restoreEnter && menuEntered()) exitMenu();
                 return;
             }
         }
@@ -1443,6 +1662,138 @@ export function createController(io = {}) {
         return (p.entries || [])[menuIndex(p)] || null;
     }
 
+    /* ------------------------------------------------- knobs, as a list */
+
+    /** Is THIS page a knob page being drawn as rows? Layout plus page kind. */
+    function knobsAsList(p) {
+        const pg = p === undefined ? page() : p;
+        return !!(s.layout === LAYOUT_LIST && pg && pg.kind === PAGE_KNOBS
+                  && Array.isArray(pg.keys) && pg.keys.some(Boolean));
+    }
+
+    /*
+     * The page's params as rows, each carrying the KNOB SLOT it came from.
+     *
+     * A page's `keys` can be sparse — branchage's fourth page leaves knob
+     * positions unassigned, and the grid draws those as gaps. A list has no
+     * gaps, so row 3 of the list is not knob 3 of the page. Carrying the slot is
+     * what lets every edit below be dispatched through the grid's own
+     * onKnobTurn(slot, ...) instead of a parallel write path.
+     */
+    function knobRows(p) {
+        const pg = p === undefined ? page() : p;
+        if (!pg || pg.kind !== PAGE_KNOBS || !Array.isArray(pg.keys)) return [];
+        const out = [];
+        for (let i = 0; i < pg.keys.length; i++) {
+            if (pg.keys[i]) out.push({ slot: i, key: pg.keys[i] });
+        }
+        return out;
+    }
+    function knobRowIndex(p) {
+        const pg = p === undefined ? page() : p;
+        if (!pg) return 0;
+        const n = knobRows(pg).length;
+        return Math.max(0, Math.min(n - 1, s.knobCursor[pg.name] || 0));
+    }
+    function setKnobRowIndex(p, i) {
+        const pg = p === undefined ? page() : p;
+        if (!pg) return;
+        const n = knobRows(pg).length;
+        s.knobCursor[pg.name] = Math.max(0, Math.min(n - 1, i));
+    }
+
+    /*
+     * A row's value, as a string.
+     *
+     * `displayValue` is the renderer's own — the same function that fills the
+     * grid's label band under a held knob and the held-knob header strip — so
+     * there is exactly one reading of a value in the engine and the two layouts
+     * cannot drift. It is deliberately reached by IMPORT rather than reproduced:
+     * a second formatter here is the failure the whole one-list exercise exists
+     * to prevent, and it would be invisible until someone declared a `unit`.
+     *
+     * The host formatter is asked for its "header" form, not its "cell" form,
+     * for the same reason renderPageMovy asks the header for one: this is a
+     * surface with room. That is the same split `short_options` makes for enums,
+     * and it is the mechanism §5.5 relies on rather than a per-surface case.
+     *
+     * NO DEVICE READ HAPPENS HERE. Values come out of `s.values`, filled by the
+     * staggered read cursor, exactly as the grid's do — a param read is ~2.8ms
+     * against a 1.68ms whole-page render, so reading on the draw path would cost
+     * more than the screen.
+     */
+    function knobRowValue(key) {
+        const meta = s.metaIndex ? s.metaIndex.getOrGuess(key) : null;
+        const raw = s.values[key] === undefined ? null : s.values[key];
+        if (formatValue) {
+            const resolved = formatValue(fullKey(key), raw, "header");
+            if (resolved !== null && resolved !== undefined) return String(resolved);
+        }
+        return displayValue(raw, meta);
+    }
+
+    function knobListEntries(p) {
+        const pg = p === undefined ? page() : p;
+        return knobRows(pg).map(({ key }) => {
+            const meta = s.metaIndex ? s.metaIndex.getOrGuess(key) : null;
+            /* The FULL label, not labelForCell's five-character mnemonic: that
+             * budget is a property of a 32px cell, and this row has ~90px. */
+            return { name: (meta && (meta.label || meta.key)) || key,
+                     value: knobRowValue(key) };
+        });
+    }
+
+    /*
+     * Landing on a row says what TOUCHING that knob says, plus the position.
+     *
+     * announceTouch is the shared utterance — name, value, and "click to open"
+     * for an opaque one — so the list and the grid describe a param identically.
+     * Position is appended because a list has one and a grid does not.
+     */
+    function announceKnobRow(p, at) {
+        const pg = p === undefined ? page() : p;
+        const rows = knobRows(pg);
+        const r = rows[at];
+        if (!r) return;
+        const meta = s.metaIndex ? s.metaIndex.getOrGuess(r.key) : null;
+        let spoken = s.values[r.key];
+        if (formatValue) {
+            const resolved = formatValue(fullKey(r.key), spoken, "header");
+            if (resolved !== null && resolved !== undefined) spoken = resolved;
+        }
+        const dec = s.decorations ? s.decorations[r.slot] : null;
+        announce(`${announceTouch(meta, spoken, r.slot, dec)}, ${at + 1} of ${rows.length}`);
+    }
+
+    /** Move the row cursor. No write — the value is not touched by moving to it. */
+    function stepKnobRow(p, delta) {
+        const pg = p === undefined ? page() : p;
+        if (!knobRows(pg).length) return false;
+        const before = knobRowIndex(pg);
+        setKnobRowIndex(pg, before + delta);
+        const at = knobRowIndex(pg);
+        if (at === before) return false;
+        announceKnobRow(pg, at);
+        return true;
+    }
+
+    /**
+     * Editing: the jog IS the knob.
+     *
+     * Not "like" the knob — it calls onKnobTurn with the row's own slot, so the
+     * acceleration curve, the enum seeding, the write throttle, the settle
+     * window, the pending-write flush, the visible_if re-plan and the throttled
+     * announcement are all the ones the grid turn uses, because they are the
+     * same call. There is no second step function and no second write path to
+     * keep in step with it.
+     */
+    function knobEditStep(p, delta) {
+        const pg = p === undefined ? page() : p;
+        const r = knobRows(pg)[knobRowIndex(pg)];
+        if (!r) return false;
+        return onKnobTurn(r.slot, delta > 0 ? 1 : -1) !== null;
+    }
+
     /*
      * A menu page is INERT until you enter it.
      *
@@ -1466,7 +1817,22 @@ export function createController(io = {}) {
      * preset it passed. The jog means one thing everywhere — it pages — until
      * you have said otherwise by clicking in.
      */
+    /*
+     * A knob page is the fourth, and ONLY when it is drawn as a list.
+     *
+     * On the grid there is nothing to enter: the jog pages, the eight knobs are
+     * the controls, and a click dives the cell under your hand. Drawn as rows
+     * there IS a cursor, and handing the jog to it on arrival would give the jog
+     * two meanings depending on which page you were on — the invisible mode this
+     * whole door rule exists to prevent, and the reason paging past a preset
+     * browser no longer auditions every preset it crosses.
+     *
+     * Deciding it here rather than at each of the six call sites is the point:
+     * menuEntered, enterMenu, exitMenu, goToPage's enterIfDoor and the bracket
+     * frame all follow from the one answer.
+     */
     function isDoor(p) {
+        if (p && p.kind === PAGE_KNOBS) return knobsAsList(p);
         return !!(p && (p.kind === PAGE_MENU || p.kind === PAGE_PRESET
                         || p.kind === PAGE_ITEMS));
     }
@@ -1484,6 +1850,13 @@ export function createController(io = {}) {
             if (!st || !st.list.length) return false;   /* nothing to choose from */
         }
         s.menuEntered = p.name;
+        if (p.kind === PAGE_KNOBS) {
+            /* Entering hands over the ROW cursor, never the value: an arrival
+             * writes nothing, the same rule a preset browser follows. */
+            s.knobEditing = false;
+            announceKnobRow(p, knobRowIndex(p));
+            return true;
+        }
         if (p.kind === PAGE_PRESET) {
             announce(`${p.name}, ${presetSpoken()}`);
             return true;
@@ -1502,6 +1875,15 @@ export function createController(io = {}) {
     /** Leave the menu without activating anything. */
     function exitMenu() {
         if (!menuEntered()) return false;
+        /* Back steps out ONE level. Editing a value is inside the list, so the
+         * first Back gives the jog back to the row cursor and the second leaves
+         * the list — otherwise a mis-click would drop you off the page with the
+         * jog still in edit mode as far as the user could tell. */
+        if (s.knobEditing) {
+            s.knobEditing = false;
+            announceKnobRow(page(), knobRowIndex(page()));
+            return true;
+        }
         s.menuEntered = null;
         announcePageChange();
         return true;
@@ -1587,6 +1969,14 @@ export function createController(io = {}) {
          * the entries are what you are navigating. Shift still pages out, so
          * the menu is never a trap. */
         const mp = page();
+        /* Entered knob list: the jog is the row cursor, or — once a row has
+         * been opened for editing — the knob itself. Shift still pages out, so
+         * the page set is never unreachable. */
+        if (knobsAsList(mp) && menuEntered() && !shift) {
+            if (s.knobEditing) knobEditStep(mp, delta);
+            else stepKnobRow(mp, delta > 0 ? 1 : -1);
+            return s.pageIndex;
+        }
         /* Entered items page: the jog moves the highlight. Nothing is written
          * until you click, so scrolling a soundfont list is free. */
         if (mp && mp.kind === PAGE_ITEMS && menuEntered() && !shift) {
@@ -1883,6 +2273,7 @@ export function createController(io = {}) {
             hierarchy: s.hierarchy, chainParams: s.chainParams,
             mode: s.lastLoadOpts && s.lastLoadOpts.mode,
             visible: s.lastLoadOpts && s.lastLoadOpts.visible,
+            trailingMenus: trailingMenus(),
         });
         if (!planned.pages.length) return;   /* never plan from nothing */
         s.pages = planned.pages;
@@ -1894,6 +2285,37 @@ export function createController(io = {}) {
         s.pageIndex = firstGrid(s.pages);
     }
 
+    /*
+     * Re-evaluate ONLY the trailing pages, in place.
+     *
+     * Not a re-plan: replanForMode resets pageIndex to firstGrid and
+     * replanIfCondition reanchors, and both would move you off the page you
+     * are standing on — which is exactly the page whose rows just changed,
+     * because you are the one who changed them (pressing Save on a "User
+     * Presets" page). Costs no device reads: the rows come from the host's
+     * own state, not from the module.
+     *
+     * Reuses buildTrailingPages/makeClaimer rather than re-deriving the
+     * trailing pages by hand, so the entry transform and the name-collision
+     * loop stay defined exactly once, in page_plan.mjs.
+     */
+    function refreshTrailing() {
+        /* Mirrors replanForMode's own guard: with no hierarchy there is
+         * nothing this component declared to rebuild against, and s.pages
+         * defaults to [] — without this a call before load() would replace
+         * that empty set with a lone trailing page and no non-trailing pages
+         * under it. */
+        if (!s.hierarchy) return;
+        const nonTrailing = s.pages.filter((p) => !p.trailing);
+        const claim = makeClaimer(new Set(nonTrailing.map((p) => p.name)));
+        /* built.warnings is dropped here, same as at every other plan site in
+         * this file — page_controller.mjs never surfaces planPages' warnings
+         * array; only validate_contract.mjs and preview.mjs consume it. */
+        const built = buildTrailingPages(trailingMenus(), claim);
+        s.pages = nonTrailing.concat(built.pages);
+        if (s.pageIndex >= s.pages.length) s.pageIndex = Math.max(0, s.pages.length - 1);
+    }
+
     function replanIfCondition(key) {
         if (!s.conditionKeys.has(key)) return;
         const oldPages = s.pages, oldIndex = s.pageIndex;
@@ -1901,6 +2323,7 @@ export function createController(io = {}) {
             hierarchy: s.hierarchy, chainParams: s.chainParams,
             mode: s.lastLoadOpts && s.lastLoadOpts.mode,
             visible: s.lastLoadOpts && s.lastLoadOpts.visible,
+            trailingMenus: trailingMenus(),
         });
         if (planned.pages.length !== oldPages.length ||
             planned.pages.some((p, i) => (p.keys || []).join() !== ((oldPages[i] || {}).keys || []).join())) {
@@ -2035,6 +2458,52 @@ export function createController(io = {}) {
             s.pending = { action: "menu", entry: e, level: mp.level };
             return s.pending;
         }
+        /*
+         * A knob page drawn as a LIST. The click means exactly what it means on
+         * the grid — it just takes its param from the CURSOR instead of from
+         * the knob under your hand, because on this layout there is no hand on a
+         * knob to take it from.
+         *
+         * So the ladder below is not a second interaction model:
+         *
+         *   shut          click opens the list (a door, see isDoor)
+         *   a TRIGGER     fires, exactly as the grid's cell does
+         *   a DIVABLE     opens its editor or its enum picker, same pending
+         *                 intent, same options payload, so the host opens the
+         *                 same screen from either layout
+         *   anything else turnable hands the jog to the value, which is the one
+         *                 thing the grid does with a physical knob and a list
+         *                 has to say some other way
+         *
+         * An OPAQUE row therefore has NO jog behaviour at all, which is the same
+         * answer the grid gives: isTurnable is false for it, onKnobTurn already
+         * swallows the motion, and the click that opens its editor is the whole
+         * interaction. It is not made turnable here to give the jog something to
+         * do — inventing an interaction for one layout is how the two surfaces
+         * would come apart.
+         */
+        if (knobsAsList(mp)) {
+            if (!menuEntered()) { enterMenu(); return null; }
+            const r = knobRows(mp)[knobRowIndex(mp)];
+            if (!r) return null;
+            if (s.knobEditing) {
+                /* Done. Values are written as they move, so there is nothing to
+                 * commit — this only gives the jog back to the row cursor. */
+                s.knobEditing = false;
+                announceKnobRow(mp, knobRowIndex(mp));
+                return null;
+            }
+            const rmeta = s.metaIndex ? s.metaIndex.getOrGuess(r.key) : null;
+            if (rmeta && !rmeta.writeOnly && !rmeta.divable && isTurnable(rmeta)) {
+                s.knobEditing = true;
+                announceKnobRow(mp, knobRowIndex(mp));
+                return null;
+            }
+            /* Trigger or divable: fall through to the grid's own handling with
+             * the cursor's slot. */
+            slot = r.slot;
+        }
+
         const key = keyAt(slot);
         const meta = metaAt(slot);
         if (!key || !meta) return null;
@@ -2219,9 +2688,47 @@ export function createController(io = {}) {
      * dial/bar grid has no footer band reserved and would draw over its last
      * label row.
      */
+    /*
+     * A knob page as five rows, in the page chrome every other kind wears.
+     *
+     * Nothing here is new geometry: MENU_LIST_* is the rect the menu, items and
+     * section-picker pages already occupy, and MENU_FRAME_* is the bracket frame
+     * already drawn around an un-entered one. Two lists in one rectangle that
+     * were merely SIMILAR is the drift this file's drawPageChromeList comment
+     * spends twenty lines on; a second rect for this layout would be that again.
+     *
+     * The BRACKETS are load-bearing rather than decorative: they are what says
+     * this page is something you can go into, and they are the same mark a
+     * divable cell and an un-entered menu wear.
+     */
+    function drawKnobsAsList(ctx, title, footer) {
+        const mp = page();
+        drawHeaderMovy(ctx, title || "", pageLabel(mp), false);
+        drawBankBar(ctx, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
+        const bottom = footer ? RULE_Y : 64;
+        const entered = menuEntered();
+        drawPageChromeList(ctx,
+            { x: MENU_LIST_X, y: MENU_LIST_Y, w: MENU_LIST_W, h: bottom - MENU_LIST_Y },
+            knobListEntries(mp),
+            entered ? knobRowIndex(mp) : -1,
+            { editMode: entered && s.knobEditing });
+        if (!entered) {
+            drawBrackets(ctx, MENU_FRAME_X, MENU_FRAME_Y, MENU_FRAME_W,
+                         bottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
+                         MENU_BRACKET_LEN);
+        }
+        if (footer) drawFooter(ctx, footer);
+    }
+
     function render(ctx, { title, rect, footer } = {}) {
-        if (s.layout === LAYOUT_MOVY) {
-            const drawGrid = () => renderPageMovy(ctx, {
+        /* LAYOUT_LIST is LAYOUT_MOVY with one page kind arranged differently, so
+         * it takes the same branch: the header, bank bar, footer, section
+         * picker, menu, items and preset pages are all literally the same draws.
+         * Only the knob page forks, and only at the last step. */
+        if (s.layout === LAYOUT_MOVY || s.layout === LAYOUT_LIST) {
+            const drawGrid = () => {
+            if (knobsAsList()) { drawKnobsAsList(ctx, title, footer); return; }
+            renderPageMovy(ctx, {
                 page: page(), metaIndex: s.metaIndex, values: s.values,
                 title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
                 touched: s.hintLines ? -1 : s.touched,
@@ -2248,6 +2755,7 @@ export function createController(io = {}) {
                 nowMs: now(),
                 footer,
             });
+            };
             if (s.hintLines) {
                 drawGrid();
                 renderHint(ctx, { rect, lines: s.hintLines.lines, title: s.hintLines.title });
@@ -2265,13 +2773,10 @@ export function createController(io = {}) {
                 const pbottom = footer ? RULE_Y : 64;
                 drawHeaderMovy(ctx, title || "", "SECTIONS", false);
                 drawBankBar(ctx, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
-                renderPicker(ctx, {
-                    rect: { x: MENU_LIST_X, y: MENU_LIST_Y,
-                            w: MENU_LIST_W, h: pbottom - MENU_LIST_Y },
-                    entries: s.pickerEntries,
-                    index: s.pickerIndex,
-                    header: false,
-                });
+                drawPageChromeList(ctx,
+                    { x: MENU_LIST_X, y: MENU_LIST_Y,
+                      w: MENU_LIST_W, h: pbottom - MENU_LIST_Y },
+                    s.pickerEntries, s.pickerIndex);
                 if (footer) drawFooter(ctx, footer);
                 return;
             }
@@ -2285,10 +2790,10 @@ export function createController(io = {}) {
                 const ibottom = footer ? RULE_Y : 64;
                 const ist = itemsState(mp) || { list: [], cursor: 0, current: -1 };
                 const entered = menuEntered();
-                renderPicker(ctx, {
-                    rect: { x: MENU_LIST_X, y: MENU_LIST_Y,
-                            w: MENU_LIST_W, h: ibottom - MENU_LIST_Y },
-                    entries: ist.list.length
+                drawPageChromeList(ctx,
+                    { x: MENU_LIST_X, y: MENU_LIST_Y,
+                      w: MENU_LIST_W, h: ibottom - MENU_LIST_Y },
+                    ist.list.length
                         ? ist.list.map((it) => ({
                             name: it.label,
                             /* The one in force marks itself where a menu page
@@ -2296,9 +2801,7 @@ export function createController(io = {}) {
                             value: it.index === ist.current ? "*" : "",
                           }))
                         : [{ name: "(none)", value: "" }],
-                    index: entered ? ist.cursor : -1,
-                    header: false,
-                });
+                    entered ? ist.cursor : -1);
                 if (!entered) {
                     drawBrackets(ctx, MENU_FRAME_X, MENU_FRAME_Y, MENU_FRAME_W,
                                  ibottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
@@ -2353,15 +2856,12 @@ export function createController(io = {}) {
                  */
                 const listRect = { x: MENU_LIST_X, y: MENU_LIST_Y,
                                    w: MENU_LIST_W, h: bottom - MENU_LIST_Y };
-                renderPicker(ctx, {
-                    rect: listRect,
-                    entries: (mp.entries || []).map((e) => ({ name: e.label, value: e.value })),
+                drawPageChromeList(ctx, listRect,
+                    (mp.entries || []).map((e) => ({ name: e.label, value: e.value })),
                     /* Inert: nothing is highlighted, because nothing is selected
                      * yet — the page is something you can go INTO, not something
                      * you are already in. */
-                    index: entered ? menuIndex(mp) : -1,
-                    header: false,
-                });
+                    entered ? menuIndex(mp) : -1);
                 if (!entered) {
                     drawBrackets(ctx, MENU_FRAME_X, MENU_FRAME_Y, MENU_FRAME_W,
                                  bottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
@@ -2462,7 +2962,7 @@ export function createController(io = {}) {
     }
 
     return {
-        load, reloadIfChanged, tick,
+        load, reloadIfChanged, tick, refreshTrailing,
         /* For a selection made OUTSIDE the controller — the list editor drives
          * the same modules through its own preset browser and has the same
          * race. Books the settle; costs nothing until it comes due. */
@@ -2478,6 +2978,23 @@ export function createController(io = {}) {
         openPicker, closePicker, pickerSelect, showHint, dismissHint,
         menuEntry, menuIndex: () => menuIndex(page()),
         menuEntered, enterMenu, exitMenu, clearTouch,
+        /* IS THIS PAGE A DOOR — one definition, exported because page_input.mjs
+         * needs the same answer to route a plain click.
+         *
+         * It used to keep its own copy, spelled as a literal list of kinds
+         * ("menu" || "preset" || "items"). When PAGE_KNOBS became a door in the
+         * list layout that copy was not updated, so clicking a knobs-as-list
+         * page fell through to the no-knob-held branch and opened the SECTION
+         * PICKER instead of entering the list — the page was unusable, and
+         * nothing failed. Ask the controller; do not restate the kinds. */
+        isDoor: (p) => isDoor(p === undefined ? page() : p),
+        /* The knob page as rows (LAYOUT_LIST). Read-only views, for the host's
+         * footer hints and for tests — the rows carry the knob SLOT each came
+         * from, which is what every edit is dispatched through. */
+        knobRows: () => knobRows(),
+        knobRowIndex: () => knobRowIndex(),
+        knobListEntries: () => knobListEntries(),
+        get knobEditing() { return s.knobEditing; },
         get pickerOpen() { return s.pickerOpen; },
         get pickerEntries() { return s.pickerEntries; },
         get pickerIndex() { return s.pickerIndex; },

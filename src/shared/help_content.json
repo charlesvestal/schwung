@@ -37,6 +37,39 @@
           ]
         },
         {
+          "title": "Global Settings",
+          "lines": [
+            "Shift+Vol+Step 2,",
+            "or Shift + hold",
+            "Step 2.",
+            "",
+            "Seven pages, one",
+            "per section:",
+            " Display, Audio,",
+            " Screen Reader,",
+            " Set Pages,",
+            " Shortcuts,",
+            " Services, Updates",
+            "",
+            "Jog: change page",
+            "Shift+Jog: pick a",
+            " section by name",
+            "Click: open the",
+            " page you are on",
+            "Back: leave ME",
+            "",
+            "Params View (in",
+            "Display) chooses",
+            "knobs or a list.",
+            "The screen reader",
+            "always gets the",
+            "list.",
+            "",
+            "[Help...] is on",
+            "the Updates page."
+          ]
+        },
+        {
           "title": "Connecting Tracks",
           "lines": [
             "Set each Move track",
@@ -122,6 +155,30 @@
             "as the value rises.",
             "Dark means nothing",
             "is mapped there."
+          ]
+        },
+        {
+          "title": "Component Actions",
+          "lines": [
+            "Jog past a loaded",
+            "module's last knob",
+            "page for two more:",
+            "",
+            "My Presets: shows",
+            "the loaded preset",
+            "(* = changed since",
+            "load), then Load,",
+            "Save, Save As,",
+            "Delete.",
+            "",
+            "Module: Swap Module",
+            "or Remove Module.",
+            "",
+            "Both are lists -",
+            "jog to an entry and",
+            "click to run it.",
+            "Jogging past does",
+            "not fire anything."
           ]
         },
         {

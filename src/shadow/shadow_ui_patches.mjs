@@ -314,7 +314,7 @@ export function drawPatches() {
                 return isCurrent ? `* ${item.name}` : item.name;
             }
         });
-        drawFooter({left: "Back: settings", right: "Click: load"});
+        drawFooter(["Back: settings", "Click: load"]);
     }
 }
 
@@ -357,7 +357,7 @@ export function drawPatchDetail() {
         }
     }
 
-    drawFooter({left: "Back: list", right: "Click: edit"});
+    drawFooter(["Back: list", "Click: edit"]);
 }
 
 export function drawComponentParams() {
@@ -408,9 +408,9 @@ export function drawComponentParams() {
     }
 
     if (editingValue) {
-        drawFooter({left: "Click: done", right: "Jog: adjust"});
+        drawFooter(["Click: done", "Jog: adjust"]);
     } else {
-        drawFooter({left: "Back: detail", right: "Click: edit"});
+        drawFooter(["Back: detail", "Click: edit"]);
     }
 }
 

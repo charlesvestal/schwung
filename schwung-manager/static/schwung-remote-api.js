@@ -32,6 +32,10 @@
     // (and carries the slot); window.top === window.self is the fallback.
     var query = new URLSearchParams(window.location.search);
     var standalone = query.get("schwungStandalone") === "1" || window.top === window.self;
+    // Which chain component this page drives. The manager appends it to the
+    // iframe URL, so an audio FX panel asks for fx1/fx2 metadata rather than
+    // the synth's. Defaults to synth for pages predating the flag.
+    var component = query.get("component") || "synth";
 
     if (!standalone) {
         // ----------------------------------------------------------------
@@ -60,7 +64,37 @@
             });
         }
 
+        // Tell the parent how tall this page actually is, so the iframe can be
+        // sized to its content instead of to a guess. Every embedded module
+        // gets this without opting in — the alternative is each module posting
+        // its own height, which means the ones that never do stay cropped.
+        //
+        // documentElement.scrollHeight, not body's: the body may be shorter
+        // than a floated/absolutely-positioned child, and cropping is exactly
+        // what we are fixing. Rounded up, because a fractional height the
+        // parent floors reintroduces a 1px scrollbar, which changes the width,
+        // which can change the height — a loop that never settles.
+        var lastHeight = 0;
+        function reportHeight() {
+            var h = Math.ceil(document.documentElement.scrollHeight);
+            if (!h || Math.abs(h - lastHeight) < 2) return;
+            lastHeight = h;
+            window.parent.postMessage({ type: "height", height: h }, "*");
+        }
+        if (typeof ResizeObserver === "function") {
+            new ResizeObserver(reportHeight).observe(document.documentElement);
+        } else {
+            window.addEventListener("resize", reportHeight);
+        }
+        window.addEventListener("load", reportHeight);
+        /* Fonts and late layout land after load; a few cheap re-checks cost
+         * nothing and save a permanently short frame. */
+        setTimeout(reportHeight, 100);
+        setTimeout(reportHeight, 600);
+
         window.schwungRemote = {
+            /** Chain component this page drives ("synth", "fx1", …). */
+            component: component,
             /**
              * Get the current value of a parameter.
              * @param {string} key - Parameter key, e.g. "synth:cutoff"
@@ -180,14 +214,14 @@
                 }
                 break;
             case "hierarchy":
-                // Only the synth component drives the custom UI.
-                if (msg.component === "synth") {
+                // Take the metadata for the component this page drives.
+                if (msg.component === component) {
                     hierarchyData = msg.data;
                     resolveWaiters(hierarchyWaiters, hierarchyData);
                 }
                 break;
             case "chain_params":
-                if (msg.component === "synth") {
+                if (msg.component === component) {
                     chainParamsData = msg.data;
                     resolveWaiters(chainParamsWaiters, chainParamsData);
                 }
@@ -228,6 +262,8 @@
     connect();
 
     window.schwungRemote = {
+        /** Chain component this page drives ("synth", "fx1", …). */
+        component: component,
         getParam: function (key) {
             // Resolve from the local cache. Values stream in via param_update
             // shortly after subscribe, so early reads may be undefined — the

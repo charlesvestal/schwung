@@ -1,0 +1,86 @@
+{
+  "planPath": "docs/superpowers/plans/2026-08-23-one-list-engine.md",
+  "specPath": "docs/superpowers/specs/2026-08-23-one-list-engine-design.md",
+  "note": "Full step-by-step bodies with complete code live in the plan .md. Phase 1 is gated on a BEHAVIOUR contract, not pixel identity: every list changes appearance by design, so an identity gate would fail on success. Each description carries Goal/Files/Acceptance Criteria/Verify plus its json:metadata fence, which is what TaskGet returns to an implementing subagent.",
+  "tasks": [
+    {
+      "id": 1,
+      "subject": "Task 1: Behaviour harness for the one list",
+      "status": "completed",
+      "description": "**Goal:** Assert what must survive the re-skin — items, ordering, selection movement, scroll boundary, value text, edit mode — WITHOUT asserting pixels.\n\n> **USER-ORDERED GATE — NON-SKIPPABLE.** This task was requested by the user in the current conversation. It MUST NOT be closed by walking around it, by declaring it \"verified inline\", or by substituting a cheaper check. Close only after every item in `acceptanceCriteria` has been re-validated independently, with output captured.\n\n**Why not pixels:** Phase 1 changes every list's chrome on purpose. A pixel-identity gate would fail on success and pass only if the work were skipped. Order still matters: write these against the list as it behaves TODAY. Commit before Task 2.\n\n**Files:**\n- Create: `tests/host/test_list_behavior.sh`\n- Create: `tools/param-pages/list_probe.mjs`\n\n**Acceptance Criteria:**\n- probe captures labels, values, selected index, edit brackets\n- assertions cover 3-item, 12-item at 0/6/11, empty value, action item, editMode\n- probe records TEXT, never x/y\n- all pass against today's drawMenuList\n- commit touches only test + probe\n\n**Verify:** `bash tests/host/test_list_behavior.sh`\n\n```json:metadata\n{\"files\": [\"tests/host/test_list_behavior.sh\", \"tools/param-pages/list_probe.mjs\"], \"verifyCommand\": \"bash tests/host/test_list_behavior.sh\", \"acceptanceCriteria\": [\"probe captures labels, values, selected index and edit brackets per draw\", \"assertions cover 3-item, 12-item at index 0/6/11, empty value, action item, editMode\", \"probe records text only, no x/y assertions\", \"all assertions pass against today's drawMenuList before any re-skin\", \"commit touches only the test and the probe, not menu_layout.mjs\"], \"modelTier\": \"standard\", \"userGate\": true, \"tags\": [\"user-gate\"], \"gateScope\": \"ordering\", \"failurePolicy\": \"block\"}\n```"
+    },
+    {
+      "id": 2,
+      "subject": "Task 2: Re-skin drawMenuList to the movy chrome",
+      "status": "completed",
+      "blockedBy": [
+        1
+      ],
+      "description": "**Goal:** One list wearing the page-chrome look, so all 53 callers — slots, Master FX, the file picker — get it at once.\n\n**Files:**\n- Modify: `src/shared/menu_layout.mjs`\n\n**Acceptance Criteria:**\n- drawMenuHeader draws the movy 7px band\n- list rect defaults to MENU_LIST_Y..RULE_Y\n- row capacity asserted not to drop (device clips silently)\n- behaviour test still passes\n- no new list-geometry constant\n- rendered list read as text art\n\n**Verify:** `bash tests/host/test_list_behavior.sh`\n\n```json:metadata\n{\"files\": [\"src/shared/menu_layout.mjs\", \"tests/host/test_list_behavior.sh\"], \"verifyCommand\": \"bash tests/host/test_list_behavior.sh\", \"acceptanceCriteria\": [\"drawMenuHeader draws the movy 7px band\", \"list rect defaults to MENU_LIST_Y..RULE_Y\", \"row capacity asserted not to drop via MIN_WINDOW\", \"behaviour test still passes through the re-skin\", \"no new list-geometry constant introduced\", \"rendered list read as text art\"], \"modelTier\": \"deep\"}\n```"
+    },
+    {
+      "id": 3,
+      "subject": "Task 3: Six stragglers join the one list",
+      "status": "completed",
+      "blockedBy": [
+        2
+      ],
+      "description": "**Goal:** Nothing in `src/` draws its own list row.\n\n**Files:**\n- Modify: `src/shared/menu_layout.mjs` (drawNamePreview), `shadow_ui_settings.mjs`, `shadow_ui_master_fx.mjs`, `shadow_ui_slots.mjs`, `shadow_ui.js`\n\n**Acceptance Criteria:**\n- drawNamePreview exists once, serves both Save-As sites\n- four draw functions render rows via drawMenuList\n- all four edit affordances converge on editMode\n- behaviour test passes\n- every converted screen read as text art\n\n**Verify:** `bash tests/host/test_list_behavior.sh`\n\n```json:metadata\n{\"files\": [\"src/shared/menu_layout.mjs\", \"src/shadow/shadow_ui_settings.mjs\", \"src/shadow/shadow_ui_master_fx.mjs\", \"src/shadow/shadow_ui_slots.mjs\", \"src/shadow/shadow_ui.js\"], \"verifyCommand\": \"bash tests/host/test_list_behavior.sh\", \"acceptanceCriteria\": [\"drawNamePreview exists once and serves both Save-As sites\", \"four draw functions render rows via drawMenuList\", \"all four edit affordances converge on editMode\", \"behaviour test passes\", \"every converted screen read as text art\"], \"modelTier\": \"standard\"}\n```"
+    },
+    {
+      "id": 4,
+      "subject": "Task 4: Page chrome delegates rows; pin zero",
+      "status": "completed",
+      "blockedBy": [
+        3
+      ],
+      "description": "**Goal:** `page_controller` draws rows through the same widget, so the page chrome and every other screen are identical rather than similar — and a guard stops new copies.\n\n> **USER-ORDERED GATE — NON-SKIPPABLE.** This task was requested by the user in the current conversation. It MUST NOT be closed by walking around it, by declaring it \"verified inline\", or by substituting a cheaper check. Close only after every item in `acceptanceCriteria` has been re-validated independently, with output captured.\n\n**Files:**\n- Modify: `src/shared/param_pages/page_controller.mjs`\n- Create: `tests/host/test_no_handrolled_list_rows.sh`\n\n**Acceptance Criteria:**\n- no fill_rect+LIST_HIGHLIGHT_HEIGHT outside menu_layout.mjs\n- page_controller delegates rows to drawMenuList\n- brackets and bank bar still render (brackets are load-bearing)\n- guard proven to fail, then reverted\n- full host suite compared against clean checkout\n- HARDWARE: eight surfaces incl. the file picker show one look\n\n**Verify:** `bash tests/host/test_no_handrolled_list_rows.sh && bash tests/host/test_list_behavior.sh`\n\n```json:metadata\n{\"files\": [\"src/shared/param_pages/page_controller.mjs\", \"tests/host/test_no_handrolled_list_rows.sh\"], \"verifyCommand\": \"bash tests/host/test_no_handrolled_list_rows.sh && bash tests/host/test_list_behavior.sh\", \"acceptanceCriteria\": [\"no fill_rect+LIST_HIGHLIGHT_HEIGHT outside menu_layout.mjs\", \"page_controller delegates menu/preset/items rows to drawMenuList\", \"bracket frame and bank bar still render\", \"guard proven to fail by reintroducing a loop, then reverted\", \"full host suite run and compared against clean checkout\", \"all eight surfaces incl. the file picker show one consistent list look on device\"], \"modelTier\": \"deep\", \"userGate\": true, \"tags\": [\"user-gate\"], \"gateScope\": \"hardware\", \"failurePolicy\": \"block\", \"requireEvidenceTokens\": [[\"guard-fired\", \"GOOD: guard fired\"], [\"guard-passes\", \"PASS: one list\"]]}\n```"
+    },
+    {
+      "id": 5,
+      "subject": "Task 5: PAGE_KNOBS renders as a list layout",
+      "status": "completed",
+      "blockedBy": [
+        4
+      ],
+      "description": "**Goal:** `page_controller.mjs` can draw a `PAGE_KNOBS` page as five label+value rows, using the geometry and helpers it already owns. There is NO new renderer file.\n\n**Files:**\n- Modify: `src/shared/param_pages/page_controller.mjs`\n- Create: `tests/host/test_knobs_list_layout.sh`\n\n**Acceptance Criteria:**\n- `LAYOUT_LIST` exported alongside `LAYOUT_MOVY`\n- knobs page renders at `MENU_LIST_X/Y/W`; no new geometry constant\n- list value == grid long-form value for EVERY fixture param, NO allow-list\n- formatter accessors are thin wrappers over the grid's existing call\n- jog-to-edit uses the same `knobStep` + `io.write` as the grid turn\n\n**Verify:** `bash tests/host/test_knobs_list_layout.sh`\n\n```json:metadata\n{\"files\": [\"src/shared/param_pages/page_controller.mjs\", \"tests/host/test_knobs_list_layout.sh\"], \"verifyCommand\": \"bash tests/host/test_knobs_list_layout.sh\", \"acceptanceCriteria\": [\"LAYOUT_LIST exported alongside LAYOUT_MOVY\", \"knobs page renders at MENU_LIST_X/Y/W with no new geometry constant\", \"list value equals grid long-form value for every fixture param, no allow-list\", \"formatter accessors are thin wrappers over the grid's existing call\", \"jog-to-edit uses the same knobStep and io.write as the grid turn\"], \"modelTier\": \"deep\"}\n```"
+    },
+    {
+      "id": 6,
+      "subject": "Task 6: param_view selects the layout",
+      "status": "completed",
+      "blockedBy": [
+        5
+      ],
+      "description": "**Goal:** The List/Knobs setting picks a layout inside one engine; the TTS seam is left untouched.\n\n> **USER-ORDERED GATE — NON-SKIPPABLE.** This task was requested by the user in the current conversation. It MUST NOT be closed by walking around it, by declaring it \"verified inline\", or by substituting a cheaper check. Close only after every item in `acceptanceCriteria` has been re-validated independently, with output captured.\n\n**Files:**\n- Modify: `src/shadow/shadow_ui_param_pages.mjs`\n\n**Acceptance Criteria:**\n- param_view=List renders the list layout in the page chrome, not the hierarchy editor\n- `paramPagesEnabled()`'s TTS branch UNCHANGED — it is a global seam moving the whole fleet at once\n- no per-contract opt-in flag introduced\n- layout passed at the draw call site, never threaded into widget code\n- HARDWARE: both layouts plus screen-reader mode verified\n\n**Verify:** `for t in tests/host/*.sh; do bash \"$t\"; done` → no new failures\n\n```json:metadata\n{\"files\": [\"src/shadow/shadow_ui_param_pages.mjs\"], \"verifyCommand\": \"for t in tests/host/*.sh; do bash \\\"$t\\\" || echo FAILED: $t; done\", \"acceptanceCriteria\": [\"param_view=List renders the list layout inside the page chrome, not the hierarchy editor\", \"paramPagesEnabled TTS branch unchanged and still reaches the hierarchy editor\", \"no per-contract opt-in flag introduced\", \"layout passed at the draw call site, not threaded into widget code\", \"host suite shows no new failures vs clean checkout\", \"both layouts plus screen-reader mode verified on device\"], \"modelTier\": \"standard\", \"userGate\": true, \"tags\": [\"user-gate\"], \"gateScope\": \"hardware\", \"failurePolicy\": \"block\", \"requireEvidenceTokens\": [[\"knobs-layout\", \"param_view=Knobs\", \"grid\"], [\"list-layout\", \"param_view=List\", \"list\"], [\"tts-unchanged\", \"screen reader\", \"hierarchy editor\"]]}\n```"
+    },
+    {
+      "id": 7,
+      "subject": "Task 7: Global Settings contract module",
+      "status": "completed",
+      "blockedBy": [
+        6
+      ],
+      "description": "**Goal:** `shadow_ui_global_grid.mjs` declares the seven sections as levels, pure and testable with no UI.\n\n**Files:**\n- Create: `src/shadow/shadow_ui_global_grid.mjs`\n- Create: `tests/host/test_global_settings_contract.sh`\n- Reference: `src/shadow/shadow_ui_slot_grid.mjs`, `src/shadow/shadow_ui.js:2456-2532`\n\n**Acceptance Criteria:**\n- seven levels; `updates` is PAGE_MENU, the other six PAGE_KNOBS\n- every knobs section ≤8 params (audio has exactly 8)\n- every enum has `options`, plus `short_options` where the long form exceeds 3 chars, lengths matching\n- `usbc_out_persist` carries the wire annotation in its LONG options — no per-surface case\n- module reads no globals at import or build time\n- `validateContract` returns no errors\n\n**Verify:** `bash tests/host/test_global_settings_contract.sh`\n\n```json:metadata\n{\"files\": [\"src/shadow/shadow_ui_global_grid.mjs\", \"tests/host/test_global_settings_contract.sh\"], \"verifyCommand\": \"bash tests/host/test_global_settings_contract.sh\", \"acceptanceCriteria\": [\"seven levels present with correct page kinds\", \"updates is PAGE_MENU, other six are PAGE_KNOBS\", \"every knobs section has 8 params or fewer\", \"every enum has options, and short_options where the long form exceeds 3 chars with matching length\", \"usbc_out_persist long options carry the wire annotation\", \"module reads no globals at import or build time\", \"validateContract returns no errors\"], \"modelTier\": \"deep\"}\n```"
+    },
+    {
+      "id": 8,
+      "subject": "Task 8: Accessor routing with persistence pinned",
+      "status": "completed",
+      "blockedBy": [
+        7
+      ],
+      "description": "**Goal:** Reads and writes reach the right backend, and every write that must persist does.\n\n`adjustMasterFxSetting` (`shadow_ui.js:13912`) is delta-based and side-effectful: most branches also call `saveMasterFxChainConfig()` and set a cached var. A writeParam that skips either sets the param and loses it on reboot — silently.\n\n**Files:**\n- Modify: `src/shadow/shadow_ui_global_grid.mjs` (PERSISTING_KEYS, writeGlobalParam)\n- Modify: `src/shadow/shadow_ui.js` (globalGridIoFor near slotGridIoFor ~9640)\n- Modify: `tests/host/test_global_settings_contract.sh`\n\n**Acceptance Criteria:**\n- each key routes to its correct backend\n- all six MUST_PERSIST keys call persist() on write\n- cache vars still written\n- test fails when a persisting key skips its persistence call\n- key→(persist?, cacheVar) table recorded as a comment\n\n**Verify:** `bash tests/host/test_global_settings_contract.sh`\n\n```json:metadata\n{\"files\": [\"src/shadow/shadow_ui_global_grid.mjs\", \"src/shadow/shadow_ui.js\", \"tests/host/test_global_settings_contract.sh\"], \"verifyCommand\": \"bash tests/host/test_global_settings_contract.sh\", \"acceptanceCriteria\": [\"each key routes to its correct backend\", \"all six MUST_PERSIST keys call persist() on write\", \"cache vars still written\", \"test fails when a persisting key skips its persistence call\", \"key to persist/cacheVar table recorded as a comment\"], \"modelTier\": \"standard\"}\n```"
+    },
+    {
+      "id": 9,
+      "subject": "Task 9: Wire up, hand off modals, delete bespoke path",
+      "status": "completed",
+      "blockedBy": [
+        8
+      ],
+      "description": "**Goal:** Global Settings runs on the contract; the old state vars, switch arms and draw body are gone.\n\n> **USER-ORDERED GATE — NON-SKIPPABLE.** This task was requested by the user in the current conversation. It MUST NOT be closed by walking around it, by declaring it \"verified inline\", or by substituting a cheaper check. Close only after every item in `acceptanceCriteria` has been re-validated independently, with output captured.\n\n**Files:**\n- Modify: `src/shadow/shadow_ui.js` (entry ~9720 pattern; deletions ~2456, ~2537, ~14590, ~15434, ~15907)\n- Modify: `src/shadow/shadow_ui_settings.mjs`\n- Modify: `CLAUDE.md`, `src/shared/help_content.json`, `../schwung-catalog-site/manual.html`\n\n**Acceptance Criteria:**\n- opens into the page chrome from Shift+Vol+Step2\n- resample_bridge and link_audio_* modals raise and return to the page\n- the four globalSettings* state vars gone (grep → 0); all three switch arms gone\n- [Help...] still reaches the help stack; full host suite green\n- HARDWARE: Link Audio toggled, device rebooted, setting stuck (this is what catches a dropped saveMasterFxChainConfig)\n- docs updated per the release checklist\n\n**Verify:** `command grep -c 'globalSettingsInSection' src/shadow/shadow_ui.js` → 0; full host suite green\n\n```json:metadata\n{\"files\": [\"src/shadow/shadow_ui.js\", \"src/shadow/shadow_ui_settings.mjs\", \"CLAUDE.md\", \"src/shared/help_content.json\"], \"verifyCommand\": \"command grep -c 'globalSettingsInSection' src/shadow/shadow_ui.js; for t in tests/host/*.sh; do bash \\\"$t\\\" || echo FAILED: $t; done\", \"acceptanceCriteria\": [\"Global Settings opens into the page chrome from Shift+Vol+Step2\", \"resample_bridge and link_audio_* modals raise and return to the page\", \"the four globalSettings* state vars no longer exist\", \"all three switch arms deleted\", \"[Help...] still reaches the help stack\", \"full host suite green\", \"Link Audio toggled then device rebooted with the setting still stuck\", \"docs updated per the release checklist\"], \"modelTier\": \"deep\", \"userGate\": true, \"tags\": [\"user-gate\"], \"gateScope\": \"hardware\", \"failurePolicy\": \"block\", \"requireEvidenceTokens\": [[\"before-reboot\", \"toggled\", \"set to On\"], [\"after-reboot\", \"rebooted\", \"still On\"]]}\n```"
+    }
+  ],
+  "lastUpdated": "2026-08-23"
+}

@@ -104,7 +104,7 @@ node --input-type=module -e '
 const CHROME = await import("./src/shared/chain_editor_chrome.mjs");
 const CHROME_SHIFT_HINTS = CHROME.shiftHintsFor;
 const CHROME_REST_HINTS = CHROME.CHAIN_HINTS_AT_REST;
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { createFramebuffer, drawContext } from "./tools/param-pages/harness.mjs";
 import { drawChainDiagram, DEFAULT_Y as DIAGRAM_Y, BOX_H as DIAGRAM_BOX_H }
@@ -598,10 +598,18 @@ const addSettings = (id, o) => settingsCases.push({
 
 /* The VALUES page: one cell, and that is the point. A page with fewer than
    eight params draws fewer than eight cells (arp is baselined at four), so a
-   lone Volume knob is the smallest case of an existing shape rather than a
-   half-drawn grid -- and this case is what would notice if it ever became one. */
-addSettings("settings/master/main", { page: "Main", volume: "0.85", presetName: "Glue Bus" });
-addSettings("settings/master/main-unity", { page: "Main", volume: "1.00" });
+   lone MIDI Ch knob is the smallest case of an existing shape rather than a
+   half-drawn grid -- and this case is what would notice if it ever became one.
+
+   THE PAIR USED TO VARY VOLUME AND NOW VARIES THE CHANNEL. master_fx:volume
+   was removed because nothing served it end to end (see MASTER_GRID_PARAMS);
+   with it gone the two cases differed only in presetName, which the values
+   page does not draw, so they rendered identically -- caught by the
+   same-pixels check below rather than by review, which is the check earning
+   its keep. All vs a numbered channel keeps the pair varying the one cell that
+   is left, and exercises the wire -> option-index mapping in both branches. */
+addSettings("settings/master/main-all", { page: "Main", midiChannel: "-1", presetName: "Glue Bus" });
+addSettings("settings/master/main-ch10", { page: "Main", midiChannel: "9" });
 
 /* An LFO page in each of its two states. The pair matters because ONE rate
    cell is on the page at a time -- rate_hz when Free, rate_div when Sync -- and
@@ -1041,6 +1049,21 @@ run(settingsCases, renderSettings, "settings");
 
 const ids = Object.keys(current);
 if (ids.length < 50) fail("only " + ids.length + " cases -- the matrix has collapsed");
+
+/* LOOK at cases as pictures: DUMP_PNG=/some/dir [DUMP_CASE=picker/] bash ...
+ *
+ * Text art hides overlaps -- a scroll arrow drawn into the corner of the
+ * bracket frame reads as a plausible corner in half-blocks and as a smudge on
+ * the OLED. Half the point of a pixel baseline is that a human can review the
+ * change before regenerating it, and that review has to be visual. */
+if (process.env.DUMP_PNG) {
+  const dir = process.env.DUMP_PNG;
+  mkdirSync(dir, { recursive: true });
+  for (const id of Object.keys(current)) {
+    if (process.env.DUMP_CASE && id.indexOf(process.env.DUMP_CASE) < 0) continue;
+    writeFileSync(dir + "/" + id.replace(/\//g, "_") + ".png", current[id].fb.toPng(5));
+  }
+}
 
 /* Eyeball one case: DUMP_CASE=chain/len5/sel-fx4 bash tests/host/... */
 if (process.env.DUMP_CASE) {

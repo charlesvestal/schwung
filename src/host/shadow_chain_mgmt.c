@@ -14,7 +14,9 @@
 
 #include "shadow_chain_mgmt.h"
 #include "shadow_fx_key.h"    /* shadow_key_is_fx_module — header-only so tests/host can run it */
+#include "shim_worker.h"   /* shim_rt_audit_note_module */
 #include "master_fx_key.h"    /* master_fx_route_* — header-only so tests/host can run it */
+#include "master_fx_saved_state.h" /* object or opaque-string state at boot */
 #include "fx_midi_filter.h"   /* fx_midi_channel_accepts — header-only so tests/host can run it */
 #include "chain_permute.h"    /* insert/remove/move as an array permutation; shared with the chain DSP */
 #include "shadow_set_pages.h"
@@ -24,6 +26,21 @@
 #include "shadow_midi.h"
 #include "unified_log.h"
 #include "schwung_trace.h"   /* Phase 2b: emit param.serve as a child of the JS param.get span */
+
+
+/* Weak no-op for the RT-thread audit's module attribution.
+ *
+ * The shim worker owns the real one; its strong definition overrides this
+ * whenever it is in the link. This exists because the host tests compile
+ * shadow_chain_mgmt.c on its own, and a hard reference to a worker symbol made
+ * test_master_fx_cache_ownership fail to link — a diagnostic must not force
+ * every consumer of the chain manager to drag in the worker and its deps.
+ *
+ * A weak DECLARATION is the more obvious shape and is ELF-only: Darwin does
+ * not resolve an undefined weak symbol to null, so that version linked in CI
+ * and failed on the dev machine. A weak definition works on both.
+ */
+__attribute__((weak)) void shim_rt_audit_note_module(const char *id) { (void)id; }
 
 /* ============================================================================
  * Globals
@@ -1612,28 +1629,22 @@ int shadow_inprocess_load_chain(void) {
 
         master_fx_slot_t *s = &shadow_master_fx_slots[mfx];
 
-        /* Restore state if available */
-        char *state_start = strstr(mjson, "\"state\":");
-        if (state_start && s->api && s->instance && s->api->set_param) {
-            char *obj_start = strchr(state_start, '{');
-            if (obj_start) {
-                int depth = 1;
-                char *obj_end = obj_start + 1;
-                while (*obj_end && depth > 0) {
-                    if (*obj_end == '{') depth++;
-                    else if (*obj_end == '}') depth--;
-                    obj_end++;
-                }
-                int slen = obj_end - obj_start;
-                char *state_buf = malloc(slen + 1);
-                if (state_buf) {
-                    memcpy(state_buf, obj_start, slen);
-                    state_buf[slen] = '\0';
+        /* Restore structured or opaque-string state. The saved file can be no
+         * larger than msize, so one bounded buffer covers either representation. */
+        int state_restored = 0;
+        if (s->api && s->instance && s->api->set_param) {
+            char *state_buf = malloc((size_t)msize + 1);
+            if (state_buf) {
+                int state_len = master_fx_saved_state_copy(
+                    mjson, state_buf, (size_t)msize + 1);
+                if (state_len > 0) {
                     s->api->set_param(s->instance, "state", state_buf);
-                    free(state_buf);
+                    state_restored = 1;
                 }
+                free(state_buf);
             }
-        } else if (params_start && s->api && s->instance && s->api->set_param) {
+        }
+        if (!state_restored && params_start && s->api && s->instance && s->api->set_param) {
             /* Fall back to individual params */
             char *obj_start = strchr(params_start, '{');
             if (obj_start) {
@@ -1697,7 +1708,7 @@ int shadow_inprocess_load_chain(void) {
             char msg[256];
             snprintf(msg, sizeof(msg), "MFX boot: slot %d loaded %s%s",
                      mfx, s->module_id,
-                     state_start ? " (with state)" : (strstr(mjson, "\"params\":") ? " (with params)" : ""));
+                     state_restored ? " (with state)" : (params_start ? " (with params)" : ""));
             shadow_log(msg);
         }
         free(mjson);
@@ -3352,10 +3363,28 @@ void shadow_inprocess_handle_param_request(void) {
             strncpy(value_copy, shadow_param->value, sizeof(value_copy) - 1);
             value_copy[sizeof(value_copy) - 1] = '\0';
 
+            /* A `<prefix>:module` write is where the chain host dlopens the
+             * sub-plugin and calls its create_instance — synchronously, right
+             * here, on the SPI callback. So it is also the only moment at
+             * which a thread the module spawns can be attributed to it by
+             * name. Name it for the RT-thread audit across the call and clear
+             * it after; costs a bounded strcmp per param write when the audit
+             * is disarmed, which is every normal session. */
+            if (strcmp(key_copy, "synth:module") == 0 ||
+                shadow_key_is_fx_module(key_copy)) {
+                shim_rt_audit_note_module(value_copy[0] ? value_copy : "(unload)");
+            }
+
             shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance,
                                         key_copy, value_copy);
             shadow_param->error = 0;
             shadow_param->result_len = 0;
+
+            /* Deliberately NOT cleared after the write. The audit runs on the
+             * worker at ~1 Hz, so a thread created during this call is seen up
+             * to a second later — clearing now would strip the attribution off
+             * every finding it is meant to carry. The next module load
+             * overwrites it, which is the correct lifetime. */
 
             if (strcmp(key_copy, "synth:module") == 0) {
                 if (value_copy[0] != '\0') {

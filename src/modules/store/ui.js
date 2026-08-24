@@ -668,7 +668,7 @@ function drawCategories() {
         getValue: (item) => item.value
     });
 
-    drawMenuFooter({left: "Back: exit", right: "Jog: browse"});
+    drawMenuFooter(["Back: exit", "Jog: browse"]);
 }
 
 /* Draw host update confirmation screen */
@@ -722,7 +722,7 @@ function drawUpdateAll() {
         getValue: (item) => item.value
     });
 
-    drawMenuFooter({left: "Back: cancel", right: "Jog: select"});
+    drawMenuFooter(["Back: cancel", "Jog: select"]);
 }
 
 /* Draw module list screen */
