@@ -1311,6 +1311,17 @@
       "default_branch": "main",
       "asset_name": "capicola-module.tar.gz",
       "min_host_version": "0.3.0"
+    },
+    {
+      "id": "4k-eq",
+      "name": "4K EQ",
+      "description": "British console EQ for the master bus: four calibrated bands, stepped high- and low-pass filters, and the Brown and Black circuit revisions with their own control laws and band interactions. About 6.6% of one core at the 2x default.",
+      "author": "4K EQ 2 by Dusk Audio (GPL-3.0) \u00b7 port: athousanddetails",
+      "component_type": "audio_fx",
+      "github_repo": "athousanddetails/schwung-4keq",
+      "default_branch": "main",
+      "asset_name": "4k-eq-module.tar.gz",
+      "min_host_version": "0.12.1"
     }
   ]
 }
