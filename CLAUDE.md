@@ -38,7 +38,17 @@ pushes are blocked** — work on a branch and open a PR (see `CONTRIBUTING.md`;
 install the fast local checks with `./scripts/install-hooks.sh`). The broader
 `tests/{shadow,store,build}` suites are **not** run by CI — ~20 stale failures pin
 since-moved code (see the cleanup review doc). On-hardware behavior is verified
-manually. Enable the unified logger:
+manually.
+
+**`gh pr merge` reports a failure it did not have when `main` is checked out in
+a worktree.** The merge lands on GitHub, then `gh` tries to update the local
+checkout and dies with `fatal: 'main' is already used by worktree at ...` —
+which also skips `--delete-branch`, leaving the remote branch behind. Confirm
+with `gh pr view <n> --json state,mergeCommit` rather than the exit status, and
+delete the branch yourself. Re-running the merge on the strength of that error
+is the actual hazard.
+
+Enable the unified logger:
 
 ```bash
 ssh ableton@move.local "touch /data/UserData/schwung/debug_log_on"
@@ -648,6 +658,36 @@ unreachable v1 plugin path.)
 ## Shadow Mode
 
 Shim intercepts hardware I/O to mix shadow audio with Move's output.
+
+### Whatever is drawn LAST must be fed FIRST
+
+`onMidiMessageInternal` (`src/shadow/shadow_ui.js`) is a run of early-outs ahead
+of the per-view switch, and the draw path is a switch with the overlays painted
+after it. **The two orders are the reverse of each other**, so an overlay added
+to the bottom of the draw path has to be added to the TOP of the input path, and
+nothing about either site says so.
+
+The knob grid's early-out is the one that bites, because it is first and it
+claims the jog. Text entry sits ~100 lines below it. That was safe only while no
+keyboard could be raised over `PARAM_PAGES` — and then User Presets became a
+trailing page INSIDE the grid, `enterPresetSaveAs` opened the keyboard without
+calling `setView` (its sibling `enterPresetDeleteConfirm` does), so `view` stayed
+`PARAM_PAGES` and the grid ate the jog while the keyboard was drawn on top of it.
+
+**The symptom pointed at the wrong subsystem.** Pad typing kept working, so it
+read as a keyboard bug: `decodeInput` (`shared/param_pages/page_input.mjs`)
+returns `null` for notes 68–99, so pads fall through, but it decodes CC 14 as
+navigation and consumes it. A half-working overlay is the signature of a
+dispatch-order bug, not a broken handler — check what is *upstream* of the
+handler before reading the handler.
+
+Guard the grid block (`&& !isTextEntryActive()`) rather than hoisting the
+overlay to the top: the feedback-gate and canvas-steal blocks sit between the
+two, and the feedback gate is a safety modal that must keep outranking
+everything. Precedence among overlays is deliberate, so moving one is a change
+in its own right. `tests/host/test_text_entry_outranks_grid.sh` pins the order,
+and pins the `decodeInput` jog-vs-pads asymmetry separately so a future change
+that starts claiming pad notes fails loudly instead of silently.
 
 ### A param read has THREE answers, not two
 
