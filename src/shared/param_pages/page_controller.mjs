@@ -839,6 +839,24 @@ export function createController(io = {}) {
             if (pages[i] && pages[i].name === s.restoreName) {
                 s.pageIndex = i;
                 s.restoreName = null;
+                /*
+                 * A restore is an arrival you ASKED for, so the door opens —
+                 * the same rule goToPage's enterIfDoor applies to picking a
+                 * section or following a navigate_to, and for the same reason:
+                 * one deliberate gesture should not need a second to take
+                 * effect.
+                 *
+                 * Reported from hardware: Load... on a component with nothing
+                 * saved yet, then Back, landed on My Presets with the jog still
+                 * outside it, so you had to click in again to reach the rows
+                 * you had just come from.
+                 *
+                 * Entering costs nothing and writes nothing: a preset browser
+                 * auditions on TURN, not on entry, so this hands over the jog
+                 * without loading anything. A knob page is not a door, so the
+                 * ordinary "come back where I was" restore is unchanged.
+                 */
+                if (isDoor(page()) && !menuEntered()) enterMenu();
                 return;
             }
         }
