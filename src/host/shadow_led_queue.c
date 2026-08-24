@@ -288,6 +288,50 @@ static void discard_pending_shadow_leds(void) {
     cancel_move_sysex_restore_and_thaw();
 }
 
+/* The eight encoder rings, in CC order. Not a slice of hw_cc_leds: that array
+ * is ordered for a full-surface walk and a future edit to it must not silently
+ * change which LEDs this restores. */
+#define KNOB_LED_CC_FIRST 71
+#define KNOB_LED_COUNT    8
+
+/*
+ * Hand the encoder rings back to Move.
+ *
+ * The knob grid paints CC 71-78 to say which physical encoder drives which
+ * drawn cell. Turning them OFF on the way out is not the same as giving them
+ * back — Move writes an LED only when its value changes, so leaving the grid
+ * into a Schwung track left Move's own eight rings dark indefinitely.
+ *
+ * `move_cc_led_state` is Move's last value for each CC, accumulated from its
+ * MIDI_OUT every frame in the scan below. That scan runs BEFORE shadow's own
+ * packets are injected into the mailbox (see the call site in schwung_shim.c,
+ * "Free buffer space before inject"), so the cache holds Move's writes and
+ * never our own — which is the same property overtake's snapshot/restore has
+ * relied on all along.
+ *
+ * -1 means Move never wrote that ring, and 0 (off) is the honest answer there:
+ * we cannot restore a value that never existed, and off is where it was.
+ *
+ * SPI-callback safe: queue writes only, no I/O, no allocation, no locks.
+ */
+static void service_knob_led_restore(shadow_control_t *ctrl) {
+    if (!ctrl || !ctrl->restore_knob_leds) return;
+    ctrl->restore_knob_leds = 0;   /* an edge, not a state */
+
+    shadow_init_led_queue();
+    const uint8_t *passthrough = host.passthrough_ccs;
+    for (int k = 0; k < KNOB_LED_COUNT; k++) {
+        int cc = KNOB_LED_CC_FIRST + k;
+        /* A passthrough CC is being driven live by Move; the hardware already
+         * matches the firmware and a replay would only fight it. */
+        if (passthrough && passthrough[cc]) continue;
+        int color = move_cc_led_state[cc];
+        shadow_pending_cc_color[cc] = (color >= 0) ? color : 0;
+        shadow_pending_cc_status[cc] = (color >= 0) ? move_cc_led_status[cc] : 0xB0;
+        shadow_pending_cc_cin[cc] = (color >= 0) ? move_cc_led_cin[cc] : 0x0B;
+    }
+}
+
 void shadow_clear_move_leds_if_overtake(void) {
     shadow_control_t *ctrl = host.shadow_control ? *host.shadow_control : NULL;
     int cur_overtake = (ctrl && ctrl->overtake_mode >= 2) ? 1 : 0;
@@ -332,6 +376,10 @@ void shadow_clear_move_leds_if_overtake(void) {
             }
         }
     }
+
+    /* AFTER the scan, so the cache is this frame's, and only outside overtake,
+     * which owns the whole surface and runs its own snapshot/restore. */
+    if (!cur_overtake) service_knob_led_restore(ctrl);
 
     /* On transition into overtake: snapshot LED state, then clear (or restore).
      * Two passes to catch any Move re-asserts between frames.
