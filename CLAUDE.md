@@ -38,7 +38,17 @@ pushes are blocked** — work on a branch and open a PR (see `CONTRIBUTING.md`;
 install the fast local checks with `./scripts/install-hooks.sh`). The broader
 `tests/{shadow,store,build}` suites are **not** run by CI — ~20 stale failures pin
 since-moved code (see the cleanup review doc). On-hardware behavior is verified
-manually. Enable the unified logger:
+manually.
+
+**`gh pr merge` reports a failure it did not have when `main` is checked out in
+a worktree.** The merge lands on GitHub, then `gh` tries to update the local
+checkout and dies with `fatal: 'main' is already used by worktree at ...` —
+which also skips `--delete-branch`, leaving the remote branch behind. Confirm
+with `gh pr view <n> --json state,mergeCommit` rather than the exit status, and
+delete the branch yourself. Re-running the merge on the strength of that error
+is the actual hazard.
+
+Enable the unified logger:
 
 ```bash
 ssh ableton@move.local "touch /data/UserData/schwung/debug_log_on"
@@ -221,7 +231,16 @@ half an event, and never stabilised for reasons it recorded as unknown.
 
 ## Realtime Safety
 
-SPI callback runs SCHED_FIFO 90 on core 3. Budget ~900µs/frame after the ~2ms transfer.
+SPI callback runs on core 3. Budget ~900µs/frame after the ~2ms transfer.
+
+**Priority: FIFO 70, not 90.** Measured 2026-08-22 with the RT-thread audit —
+nothing anywhere in the MoveOriginal process is above 70. This file said 90
+here and "the shim runs in MoveOriginal's FIFO 70 threads" two lines down; the
+second one is right. What the hardware runs, with no module loaded, is 23
+threads of which 11 are realtime: `MoveOriginal` at 10, **`Link Main` at 35**,
+three `Audio Worker` at 70, and six threads named `Audio Main/SPI` at 70 (one
+at 45). Arm it and look before reasoning about priorities:
+`touch /data/UserData/schwung/rt_thread_audit_on`.
 
 **Never in the SPI callback path:** `unified_log()`, `fprintf()`, `fopen()`, any file I/O; allocation; locks held by non-RT threads.
 
@@ -240,8 +259,12 @@ lives at the top of `src/host/plugin_api_v1.h`, in `docs/MODULES.md`, and as
 rule 4 of `docs/REALTIME_SAFETY.md` — **keep all three in sync.**
 
 Two consequences worth remembering: `pthread_create` from those entry points
-inherits **FIFO 90** (at least 14 modules do this; Move's own `Link Main` is
-FIFO 35, so it starves), and a **`get_param` that scans a directory is served
+inherits the callback's priority — **FIFO 70** (Move's own `Link Main` is FIFO
+35, so it starves). A source audit put this at seven modules; measuring it
+found five, and not the same five — see
+`docs/plans/2026-08-22-rt-thread-audit-findings.md`. **Existence is not the
+harm**: a worker that parks on a condvar starves nobody, so the number that
+matters is CPU burned at realtime priority, which is what the audit reports, and a **`get_param` that scans a directory is served
 once per repaint**, which makes it worse than the equivalent `set_param`.
 
 ## Deployment Layout
@@ -499,6 +522,69 @@ Slot Settings and Master FX Settings, which are synthesised contracts with no
 `ui_hierarchy` to enter, and it keeps the slot io's own mappings (Fwd's offset,
 MPE's compound write) applied rather than bypassed.
 
+### The knob grid is the DEFAULT param view, and it reflows to stay drawable
+
+`paramViewGlobal` defaults to 1 (the grid). The hierarchy list is still there
+under Global Settings → Display → Param View, and it remains the better view for
+the 11 modules that publish no `ui_hierarchy` at all — a knob grid over a flat
+paginated param list is worse than a list of them.
+
+`param_view.json` is written **only by the toggle**. That is what lets the
+default change at all: a device that never touched the setting has no file and
+follows the new default, and one where the user explicitly chose List keeps
+List. Save it anywhere else — init, a load, an autosave — and every existing
+install is pinned to whatever it booted with, forever.
+`tests/host/test_param_view_default.sh` asserts the call COUNT, because a
+second call site *is* the whole failure.
+
+**A graphic must sit inside ONE ROW.** Row 0's knobs draw at y=10 with their
+LABELS at y=25..32 and row 1 starts at y=33, so a shape spanning both would
+draw straight through the label band. That is geometry, not a tunable.
+
+The consequence was not acceptable: 26 fleet groups were rejected for LAYOUT
+alone — the ADSR on the Main page of obxd, hush1, minijv, moog, surge, rex and
+osirus, plus twelve surge LFO pages. An author writing attack/decay/sustain/
+release in the obvious order lands on slots 3..6 and gets four separate dials.
+`planPages` now moves such a block into a row (`alignGroupsToRows`), 24 pages
+across the fleet.
+
+Three rules keep that from being vandalism:
+
+- **it is a permutation WITHIN a page.** No knob is pushed to another page and
+  no orphan page holding one control is created. Max group span is 4 and a row
+  is 4 wide, so a group always fits.
+- **row two is preferred, but only for a block that must move.** "Always put
+  the envelope on row two" is wrong: 29 envelopes already sit inside row one
+  and draw correctly, many on pages that exist FOR that envelope
+  (obxd/Filter Env, hera/Envelope, tablor/Env) where row two would leave the
+  top half empty. An always-rule makes 29 pages worse to fix 24. For a block
+  that IS straddling, moving it DOWN leaves the head of the page alone —
+  minijv keeps `macro_cutoff` on knob 1, where a nearest-fit rule pushed it
+  to knob 5.
+- **the real detector confirms the result**, and a move that loses a group
+  that already drew is rejected.
+
+An earlier version scored by keys covered with no cost bound and did what that
+invites: schwung-filter moved cutoff from knob 1 to knob 6 — five knobs
+displaced on a FILTER module — to pull one `mode` key into a group that already
+drew. It was also 37ms on minijv, twelve times the rest of the plan. Driving
+the search from the counterfactual "what would group if the row rule were
+lifted?" is both correct and 6.5ms.
+
+**A detector role is OPTIONAL or REQUIRED, and the difference is a whole
+group.** `detectFilter` built its slot run from cutoff, resonance AND whichever
+of mode/slope it found, then required the lot to be contiguous — so a Mode knob
+parked at the far end of the page deleted the corroborated pair. Optionals are
+now dropped when they do not fit; `detectEnvelope` takes the longest adjacent
+RUN rather than demanding every role found be adjacent.
+
+**`present` is filtered by ROLE and must never be assumed to contain any
+particular one.** `drawPartialEnv` computed its attack rise unconditionally, so
+surge's twelve hold/sustain/release LFO pages — no attack at all — produced NaN
+coordinates, and NaN reaches `line()`'s `for(;;)` whose equality break is never
+satisfied. A HANG, not a wrong picture, and unreachable until alignment made
+those pages drawable.
+
 ### A turn PEEKS the list; a cell that is already big does not
 
 Turning a divable enum raises its option list over the grid for ~700ms
@@ -617,7 +703,6 @@ replays the whole surface instead.)
 `invalidateLedCache()` is called with it: `input_filter`'s cache suppresses a
 write matching what it believes the hardware shows, which is only sound while
 it is the only writer — and the shim is about to repaint underneath it.
-
 ### A door you were SENT to opens; one you PAGED past stays shut
 
 Preset browsers, items lists and menu pages are **doors**: the jog pages until
@@ -652,6 +737,35 @@ rather than inventing a `navigate_to: {level, kind}` form is deliberate — only
 three modules declare `navigate_to` at all, and new vocabulary repeats the
 `options_as_string` lesson: documented for months, set by nobody.
 
+### An editor returns to whoever OPENED it, through EVERY door
+
+Diving into a parameter from the knob grid can land you in three different
+places — the filepath browser, the canvas view, or the hierarchy editor with
+the row opened (edit mode). Each of those has to hand the screen back to the
+grid, and each has more than one way out. Miss one and the user comes back
+somewhere they did not ask for, one Back away from where they were.
+
+`closeOwnViewEditorToCaller()` is the single answer: it consults
+`paramEditorOpenedFromGrid` and returns true if it handled the return. All the
+exits go through it — `closeHierarchyFilepathBrowser`, `closeCanvasPreview`,
+and **both** ways out of edit mode.
+
+That last one is the trap. **Edit mode is not a view**, so it has no close
+function to fix; it is the hierarchy editor with the row opened, and for a
+float carrying a waveform strip that strip IS what a user calls "the wave
+editor" (granny's `position`). Back out of it already returned to the grid;
+the jog-click TOGGLE in `openHierarchyParamEditor` did not — so the gesture
+that OPENS the editor was the one that could not close it back. Fixing the two
+real views first changed nothing observable, which read as "not deployed".
+
+`tests/host/test_editor_returns_to_caller.sh` drives all three under both flag
+states. For the toggle it deliberately leaves the identifiers past the early
+return undeclared, so falling through throws instead of passing quietly.
+
+The LFO/knob-mapping target picker is **not** part of this: it is not opened
+through `paramEditorOpenedFromGrid` and has its own `lfoTargetFromGrid` /
+`returnToSlotGridFromLfoTarget`. Do not merge the two.
+
 ### Recording / capture
 
 Audio capture is shim-side: the Quantized Sampler (Shift+Sample) and Skipback
@@ -662,6 +776,36 @@ unreachable v1 plugin path.)
 ## Shadow Mode
 
 Shim intercepts hardware I/O to mix shadow audio with Move's output.
+
+### Whatever is drawn LAST must be fed FIRST
+
+`onMidiMessageInternal` (`src/shadow/shadow_ui.js`) is a run of early-outs ahead
+of the per-view switch, and the draw path is a switch with the overlays painted
+after it. **The two orders are the reverse of each other**, so an overlay added
+to the bottom of the draw path has to be added to the TOP of the input path, and
+nothing about either site says so.
+
+The knob grid's early-out is the one that bites, because it is first and it
+claims the jog. Text entry sits ~100 lines below it. That was safe only while no
+keyboard could be raised over `PARAM_PAGES` — and then User Presets became a
+trailing page INSIDE the grid, `enterPresetSaveAs` opened the keyboard without
+calling `setView` (its sibling `enterPresetDeleteConfirm` does), so `view` stayed
+`PARAM_PAGES` and the grid ate the jog while the keyboard was drawn on top of it.
+
+**The symptom pointed at the wrong subsystem.** Pad typing kept working, so it
+read as a keyboard bug: `decodeInput` (`shared/param_pages/page_input.mjs`)
+returns `null` for notes 68–99, so pads fall through, but it decodes CC 14 as
+navigation and consumes it. A half-working overlay is the signature of a
+dispatch-order bug, not a broken handler — check what is *upstream* of the
+handler before reading the handler.
+
+Guard the grid block (`&& !isTextEntryActive()`) rather than hoisting the
+overlay to the top: the feedback-gate and canvas-steal blocks sit between the
+two, and the feedback gate is a safety modal that must keep outranking
+everything. Precedence among overlays is deliberate, so moving one is a change
+in its own right. `tests/host/test_text_entry_outranks_grid.sh` pins the order,
+and pins the `decodeInput` jog-vs-pads asymmetry separately so a future change
+that starts claiming pad notes fails loudly instead of silently.
 
 ### A param read has THREE answers, not two
 
@@ -699,6 +843,45 @@ means absent. The tri-state exists only where the wire is visible.
 (granny's read fails because it loads a WAV synchronously inside `set_param`, on
 the SPI thread that serves param requests. That realtime violation lives in its
 own repo and is not fixed here.)
+
+### Global Settings is a SYNTHESISED CONTRACT, not a screen
+
+It runs on the same page engine as a module, a slot's settings and Master FX's
+settings — one list, one chrome, one set of widgets. The declaration is
+`src/shadow/shadow_ui_global_grid.mjs` (pure, no host globals, tested with no
+device by `tests/host/test_global_settings_contract.sh`); the concrete backends
+and the cache-var writes that cannot leave `shadow_ui.js` are `globalGridIoFor()`
+there. Entry is `enterGlobalSettingsGrid()`, modelled on
+`enterMasterFxSettingsGrid`.
+
+**Seven sections are seven PAGES**, jogged through on one axis with the section
+picker on click — Display, Audio, Screen Reader, Set Pages, Shortcuts, Services,
+Updates. Six are knob pages; Updates is a menu page. **One section, one page** is
+load-bearing: a ninth param in any section paginates silently and the bank bar
+takes over a split nobody chose. Audio sits at exactly eight. The contract test
+pins the per-section counts rather than trusting the shapes.
+
+Three consequences worth knowing:
+
+- **`[Help...]` lives on the Updates page**, one row under `[Module Store]`. It
+  used to be a peer of the sections; it cannot be a page of its own (that is an
+  eighth page, pinned against twice) and a one-entry menu page is the shape
+  Master FX already records as a mistake. See `UPDATES_ACTIONS`.
+- **`VIEWS.GLOBAL_SETTINGS` is now only the help viewer's host.** The section
+  list, the in-section list, the four `globalSettings*` state vars and the three
+  switch arms that drove them are gone. `runGlobalActionFromGrid` /
+  `maybeReturnToGlobalGrid` are the third instance of the slot / Master FX modal
+  hand-off, and reconcile the same way rather than hooking each exit.
+- **The screen reader forces the LIST layout** (`paramPagesLayout()`), because
+  Global Settings enters the page chrome even with TTS on — it has no hierarchy
+  editor behind it, and it is the screen you go to to turn TTS off.
+  `paramPagesEnabled()` still refuses the chrome for every *component*; that
+  seam is unchanged.
+
+Persistence is **three** things and conflating them loses a write silently: a
+shared `saveMasterFxChainConfig()` sink (derived from the routing table, never
+hand-listed), a key-specific saver welded to the assignment, or backend-owned.
+Stored values are **not** indexes — `resample_bridge` stores 0 and **2**.
 
 ### Shortcuts
 
@@ -830,7 +1013,129 @@ Each of the 4 slots has:
 
 ### User Presets
 
-Per-component preset snapshots for any chain module (synth, audio FX, or MIDI FX). Reached from a component's module-swap list in the shadow UI — an indented `[User Presets]` row tucked under the loaded module. A preset captures that component's opaque `<prefix>:state` blob (`synth` / `fx1`..`fx4` / `midi_fx1`) — the same string slot autosave and chain patches use — saved to `/data/UserData/schwung/presets/<module-id>/<name>.json`. Keyed by **module id**, so a preset saved on a module in one slot is offered wherever that module is loaded (cross-slot reuse). Scrolling the list **auditions live** (debounced); Back reverts to the slot's original state, the detail screen's Load commits. Autosave is suppressed while auditioning (`isPresetPreviewActive()`) so an uncommitted preview is never persisted into `slot_N.json`. Impl: `src/shadow/shadow_ui_presets.mjs` (view module). Developer state-contract notes in `docs/MODULES.md`.
+Per-component preset snapshots for any chain module (synth, audio FX, or MIDI FX). Reached from a component's module-swap list in the shadow UI — an indented `[User Presets]` row tucked under the loaded module, or the component's own knob-grid "My Presets" page's `Load…` action. A preset captures that component's opaque `<prefix>:state` blob (`synth` / `fx1`..`fx4` / `midi_fx1`) — the same string slot autosave and chain patches use — saved to `/data/UserData/schwung/presets/<module-id>/<name>.json`. Keyed by **module id**, so a preset saved on a module in one slot is offered wherever that module is loaded (cross-slot reuse).
+
+**The browser is exactly ONE thing: choose a preset.** Picking a row LOADS it
+immediately and commits — there is no per-preset Load/Delete detail screen.
+Save, Save As and Delete are not offered here at all; they live on the
+component's own "My Presets" grid page (see below). This was three separate
+hardware reports, one cause: the verbs had moved to the grid page but the
+browser still offered its own copies — *"loading a preset shouldnt show
+load/delete, it should just load it (delete is on the main menu)"*, *"after
+deleting i get to a menu of [save current] not the preset (none) page"*,
+*"i also see [save current] if i load without saving"*. Scrolling the list
+**auditions live** (debounced) **when Global Settings → Audition is on**;
+Back reverts to the slot's original state. That gate (`browser_preview`,
+shared with the file browser's WAV preview) **defaults to OFF**: auditioning
+applies state to the live slot, and this list stopped being hard to reach the
+moment it became reachable from a page at the end of every component. Off
+disables the audition, not the list — a pick still loads, and with it off the
+browser pays no `:state` read on entry. Autosave is suppressed while
+auditioning (`isPresetPreviewActive()`) so an uncommitted preview is never
+persisted into `slot_N.json`. Impl: `src/shadow/shadow_ui_presets.mjs` (view
+module). Developer state-contract notes in `docs/MODULES.md`.
+
+A committed Load, or a completed Delete (still reached exclusively from the
+grid's My Presets page, via `enterPresetDeleteConfirm` — the SAME
+confirm-delete screen as before, just with no detail screen left in front of
+it), both exit through `VIEWS.CHAIN_EDIT`. `maybeReturnToComponentGrid` (see
+below) is what routes a grid-driven arrival back onto the My Presets page
+specifically, by NAME; a `[User Presets]`-row arrival (no grid open) lands
+plainly on the chain editor, as it always did.
+
+### Every component's knob grid ends with two pages it never declared
+
+Load a synth, audio FX or MIDI FX in one of the 4 slots and its knob-grid jog
+sequence ends with two pages neither the module nor its author put there:
+**My Presets** (row 1 a readout — `Preset` / `(none)` or `Name` / `* Name` —
+then `Load…`, `Save` and `Delete` only with a preset loaded, `Save As`
+always) and **Module** (`Swap Module`, `Remove Module`). Both are doors: a
+`PAGE_MENU` must be entered before an entry fires, so jogging past the end
+cannot fire Remove Module by accident.
+
+**Named "My Presets", not "User Presets"** — the header's right side is a
+MEASURED share against a `HEADER_MIN_LEFT` floor (70px), and "USER PRESETS"
+(56px) is past it and truncates to "USER PRESE". "My Presets" (46px) fits.
+"Presets" alone would be worse: 27 modules in the fleet already plan a page
+called that (obxd, sfz, hush1, minijv, sf2, hera, tablor, noisemaker, …), so
+`claimName` would dedupe this one to "Presets - 2". Reported from hardware —
+rendered PNGs, not text art, are what actually showed the truncation.
+
+**The `*` follows a knob write within one settle, not just a page
+re-entry.** Turning a knob on any OTHER page of the same component changes
+the live `<prefix>:state` blob the mark compares against, and nothing used to
+notice until the page was re-entered — *"changed a knob and * didnt appear
+until i exited and re entered the module"*. Fixed without adding a
+draw-path read: `componentParamPagesIo`'s `setParam` marks the write pending
+(`markComponentParamWrite`); `tickUserPresetStale`, driven from the main
+tick (never a draw function) alongside `tickParamPages`, waits out
+`CONTRACT_SETTLE_MS` and then asks ONCE — via `paramPagesRefreshTrailing()`,
+the same call Save/Load/Delete already use — and only when the grid is still
+open on the exact `(slot, component)` that wrote. One read per settle, never
+per detent, none once the user has moved on.
+
+**The header shows the loaded USER preset, with the same mark, on every
+page of the component** — `S1 > tst` clean, `S1 > * tst` dirty — falling
+back to the module's own patch name and then its abbreviation exactly as
+before when no user preset is loaded. Asked for on hardware and shipped:
+*"should we change the preset in the header from the system preset to the
+user preset? (Init -> tst) and then show the * there too?"*. Reads a CACHE
+(`userPresetLiveBlobCache`, keyed per slot+prefix), never the DSP —
+`userPresetHeaderMark` in `shadow_ui.js`, wired through `ctx` to
+`headerTitle()` in `shadow_ui_param_pages.mjs` — so this costs nothing beyond
+the read the My Presets page already pays for, and it answers `null`
+harmlessly for a synthesised contract (Slot/Master FX/Global Settings) or a
+Master FX component, none of which populate a record for their key.
+
+**They are appended by the PLANNER, after the whole walk — not injected into
+a level's hierarchy — because injection cannot work for this fleet.** A
+level's own `menu:` field (the same PAGE_MENU kind) lands right after that
+level's OWN grids, not last: Slot Settings dodges that by giving its menu a
+level of its own, which only works because it synthesises its whole
+hierarchy end to end. We do not own a module's. And three fleet shapes rule
+out injection outright: 11 of the 95 modules in
+`tests/fixtures/module-contracts.json` publish no `levels` object at all
+(chain_params pagination fallback), minijv has `levels` but no `root`, and
+with `modes` present the walk root is whichever mode is active. There is no
+level guaranteed to exist that "append to the end" could target.
+`planPages({ trailingMenus })` in `src/shared/param_pages/page_plan.mjs`
+appends after the walk instead — see `buildTrailingPages`/`appendTrailing`
+there and `io.trailingMenus()`/`refreshTrailing()` in
+`src/shared/param_pages/page_controller.mjs`.
+
+**A failed contract read cannot manufacture them.** `planPages` returns no
+pages at all when `unresolved`, so the append only ever lands on a resolved
+plan — the same rule as "a plan is a statement about what a module declares"
+above.
+
+**Scope is exactly the 4 chain slots' real components.** Master FX chain
+components are excluded — `__user_presets__` is injected in
+`enterComponentSelect` only, so Master FX has no user presets today and this
+inherits that gap rather than widening it. Slot Settings and Master FX
+Settings are excluded because they are settings, not modules: no module id to
+key a preset folder on, nothing to swap. The exclusion lives in ONE helper,
+`componentParamPagesIo` in `src/shadow/shadow_ui.js`, called from every
+component `enterParamPages` site, so a new call site cannot silently opt
+Master FX in. Grid view only — the list view (`param_view = 0`) is a separate
+code path with no pages to jog through and keeps its existing Shift+Click
+route.
+
+**The `*` leads the name**, e.g. `* Fat Brass` not `Fat Brass *`, because the
+list renderer truncates the TAIL: rendered on obxd, `"Fat Brass *"` drew as
+`"Fat Br…"` and the one character carrying the information was the first
+thing lost. See `presetRowValue` in `src/shared/param_pages/current_preset.mjs`.
+It costs no draw-path read — it compares the live `<prefix>:state` blob
+against a stored hash at PLAN time and on explicit refresh, never per frame
+(`trailingMenus()` has exactly 4 call sites, none inside `render()`).
+
+**Save overwrites; Save As does not.** `overwriteUserPreset` refuses when the
+`:state` read returns `null` — a FAILED read, not empty state — because
+writing it would replace a good preset with nothing. **Remove Module IS the
+picker's `None`**: it goes through `applyChainComponentPick`, the same
+function the picker uses, because removal is not one write — it closes the
+gap and renumbers everything downstream via a `remove` verb that permutes the
+DSP arrays rather than reloading modules (see "Chain shape edits are a
+PERMUTATION" above).
 
 ### MIDI Cable Filtering
 

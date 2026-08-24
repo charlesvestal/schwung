@@ -70,8 +70,21 @@ want(/view === VIEWS\.PARAM_PAGES && paramPagesActive\(\)[\s\S]{0,200}handlePara
      "the view never receives MIDI");
 
 /* ---- the setting is real, defaults to the list, and persists ---------- */
-want(/key: "param_view"[\s\S]{0,120}options: \["List", "Knobs"\]/, "the Param View setting is not in the menu");
-want(/let paramViewGlobal = 0;/, "Param View must default to 0 (the list) — this ships as an opt-in preview");
+/* Read the DECLARATION from the CONTRACT, not from shadow_ui.js. Global
+ * Settings used to be a literal (GLOBAL_SETTINGS_SECTIONS) scraped out of
+ * shadow_ui.js; it is a synthesised module contract now, so that is where the
+ * declaration lives. */
+const g = fs.readFileSync("src/shadow/shadow_ui_global_grid.mjs", "utf8");
+want(/key: "param_view"[\s\S]{0,120}options: \["List", "Knobs"\]/, "the Param View setting is not in the menu", g);
+/* The DEFAULT itself, and the migration around it, live in
+ * test_param_view_default.sh -- it flipped to the knob grid once the grid could
+ * draw everything the list could (mode selectors, child levels, enum pickers,
+ * and a fleet fixture recaptured at 95 modules to prove the coverage).
+ *
+ * Kept here as a wiring check only: the setting must still be a real, readable
+ * global. Pinning the VALUE in two places is how a deliberate change turns into
+ * a CI failure in a file nobody was looking at. */
+want(/let paramViewGlobal = [01];/, "the Param View global is gone — the view module reads it through param_view_get_mode");
 want(/globalThis\.param_view_get_mode/, "the view module reads the setting through a global that is not defined");
 want(/function saveParamViewConfig/, "the setting does not persist");
 want(/loadParamViewConfig\(\);/, "the setting is never loaded at init");
@@ -187,7 +200,7 @@ want(/function slotChainComponents\(slotIndex\) \{\s*\n\s*return chainEditorComp
 want(/\{[^}]*chainComponents[^}]*\}\s*\n?\s*from [^\n]*chain_model\.mjs/,
      "shadow_ui.js does not import chainComponents from the chain model");
 
-console.log("PASS: shadow wiring — parses, view dispatched/ticked/fed, setting defaults to List, " +
+console.log("PASS: shadow wiring — parses, view dispatched/ticked/fed, setting is wired, " +
             "hand-off cannot loop, screen reader keeps the list, device keys use the prefix, " +
             "LFO targets resolve to names");
 '

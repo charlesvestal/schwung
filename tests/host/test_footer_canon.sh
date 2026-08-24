@@ -108,7 +108,14 @@ for (const f of FILES) {
         }
       }
     }
-    if (seenPairs === hereBefore && /\[\s*"[A-Z]/.test(call)) emptyCalls.push(call);
+    /* The probe for "this call HAS a hint literal" must look for a movy PAIR,
+     * i.e. an ALL-CAPS key followed by a comma or a close. A looser `["[A-Z]`
+     * also matches the OLD text footer, whose drawMenuFooter is imported into
+     * shadow_ui.js under the alias `drawFooter` and now takes an ordered array
+     * of hint strings: `drawFooter(["Back: exit", "Jog: select"])`. Those are
+     * sentence-case hints for a different renderer, not pairs, so yielding no
+     * pair from them is correct and flagging it is a false alarm. */
+    if (seenPairs === hereBefore && /\[\s*"[A-Z0-9]+"\s*[,\]]/.test(call)) emptyCalls.push(call);
   }
 }
 

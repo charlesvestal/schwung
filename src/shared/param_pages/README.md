@@ -185,6 +185,29 @@ close to a problem — measured on device, a whole page render is 1.62 ms, about
 [`src/shared/draw_bench.mjs`](../draw_bench.mjs); do not optimise draw calls
 without re-running it.
 
+`LAYOUT_MOVY` is what the device draws today: the eight-cell knob grid, with
+graphics resolved by `viz.mjs`.
+
+`LAYOUT_LIST` is that same page as five rows of label-and-value, drawn by the
+controller through the one `drawMenuList` every other list on the screen uses.
+It is a LAYOUT, not a second engine — which params are on the page, their type
+and range, the value string, the step a detent takes, what is announced and the
+chrome around it are all the same code under both, and the only difference is
+pixel arrangement. Jog-to-edit calls the controller's own `onKnobTurn` with the
+row's knob slot, so there is no second write path to keep in step.
+
+Under it a knob page becomes a DOOR: inert on arrival with the bracket frame,
+the jog still pages, a click hands the jog to the row cursor, and a second click
+either opens a divable param's editor (identical intent to the grid's cell
+click) or gives the jog to the value, which prints as `[value]`. Back steps out
+one level at a time. An opaque param has no jog behaviour at all, exactly as it
+has none on the grid.
+
+Not yet selected by `param_view` — see §4.1 of
+`docs/superpowers/specs/2026-08-23-one-list-engine-design.md`; that seam is
+global and gets its own act. Preview it with
+`node tools/param-pages/preview.mjs <id> --layout list [--enter|--edit]`.
+
 **Rebuild when `fingerprint` changes.** It covers the hierarchy, the param count
 and the mode, which is what moves when a module finishes loading and republishes
 a bigger tree, or when minijv switches between patch and performance. Use

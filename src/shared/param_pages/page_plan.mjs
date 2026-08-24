@@ -117,6 +117,76 @@ function chunk(arr, size) {
     return out;
 }
 
+/* Shared by a level's own `menu` and the caller-supplied `trailingMenus`: both
+ * are lists of {label, action?, level?, value?} and both render through the
+ * same PAGE_MENU. A raw entry with no `label` is dropped — a menu row with no
+ * text is not a control, it is a hole — which is why the CALLER must check the
+ * length of what this returns, not the length of what it was given. */
+function mapMenuEntries(rawEntries) {
+    return (Array.isArray(rawEntries) ? rawEntries : []).map((e) => ({
+        label: String((e && e.label) || ""),
+        action: (e && e.action) || null,
+        target: (e && e.level) || null,
+        value: (e && e.value) !== undefined ? e.value : null,
+    })).filter((e) => e.label);
+}
+
+/*
+ * A page name is the only handle the user has on the module, and it is what
+ * reanchor() matches on after a rebuild, so uniqueness is not cosmetic (see
+ * claimName's fuller note at its call site). Two independent claimers are
+ * needed rather than one: the fallback (`chain_params`, no `levels`) return
+ * happens BEFORE `claimName` exists lexically, so it needs its own `Set` —
+ * but that only justifies two Sets, not two copies of the numbering loop.
+ */
+export function makeClaimer(used) {
+    return (base) => {
+        if (!used.has(base)) { used.add(base); return base; }
+        for (let n = 2; ; n++) {
+            const candidate = `${base} - ${n}`;
+            if (!used.has(candidate)) { used.add(candidate); return candidate; }
+        }
+    };
+}
+
+/*
+ * The caller-supplied trailingMenus, turned into PAGE_MENU page objects.
+ *
+ * Extracted out of appendTrailing (below) so page_controller.mjs's
+ * refreshTrailing can rebuild ONLY the trailing pages — after a Save/Delete
+ * changes what a "My Presets" row offers — without a second copy of the
+ * entry transform or the name-collision loop. `claim` is a naming function
+ * from makeClaimer, already bound to whatever names must not collide.
+ */
+export function buildTrailingPages(trailingMenus, claim) {
+    const built = [];
+    const warnings = [];
+    for (const m of (trailingMenus || [])) {
+        if (!m) continue;
+        /*
+         * The guard must run on the MAPPED result, not the raw one: an
+         * entry whose only items lack a `label` (a typo'd or missing
+         * field) still has a nonzero raw length, so a length check on
+         * `m.entries` before mapping lets it through and produces a
+         * real, empty, inert PAGE_MENU page — silently, since nothing
+         * downstream flags an empty entry list as wrong.
+         */
+        const entries = mapMenuEntries(m.entries);
+        if (entries.length === 0) {
+            warnings.push(`trailingMenus "${m.name || "Menu"}" produced no usable entries — skipped`);
+            continue;
+        }
+        built.push({
+            kind: PAGE_MENU,
+            name: claim(String(m.name || "Menu")),
+            level: null,
+            trailing: true,
+            entries,
+        });
+    }
+    return { pages: built, warnings };
+}
+
 /**
  * Split into the same number of pages a greedy fill would use, but spread
  * evenly — 9 keys become 5+4 rather than 8+1.
@@ -148,9 +218,15 @@ function balancedChunk(arr, size) {
  *                                  evaluator without the planner reading params.
  *                                  Default: everything visible (fail-open, which
  *                                  is what the native evaluator does too).
+ * @param {Array}    [o.trailingMenus] Caller-supplied PAGE_MENU pages appended
+ *                                  AFTER the whole walk — e.g. "My Presets"
+ *                                  and "Module". Opt-in: absent for a tool
+ *                                  embedding this grid with no slot to swap a
+ *                                  module in. See the note above appendTrailing.
  * @returns {{pages: Array, fingerprint: string, warnings: string[]}}
  */
-export function planPages({ hierarchy, chainParams, mode, visible, unresolved } = {}) {
+export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
+                            trailingMenus } = {}) {
     const warnings = [];
     /*
      * Built once per plan so knob pages can be nudged into a drawable layout —
@@ -228,18 +304,50 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved } 
      * have no such statement, so we make none.
      */
     if (unresolved) {
+        /* Left alone, deliberately: trailingMenus is never appended here.
+         * A failed read must never manufacture a "Remove Module" button — a
+         * plan is a statement about what a module declares, and a failed read
+         * has no statement to make. */
         return {
             pages: [], fingerprint, conditionKeys: new Set(), unresolved: true,
             warnings: ["ui_hierarchy unresolved — the contract read failed"],
         };
     }
 
+    /*
+     * Pages appended after the WHOLE walk, supplied by the caller.
+     *
+     * Not a level's `menu`: a level emits its menu straight after its own
+     * grids and before any level it navigates to, so a menu on root lands
+     * second. Slot Settings gives its menu its own level to dodge that
+     * (shadow_ui_slot_grid.mjs), which works only because it synthesises its
+     * whole hierarchy. We do not own a module's, and three fleet shapes make
+     * injection impossible anyway: 11 of 95 modules publish no `levels` object,
+     * minijv has no `root`, and with `modes` the walk root is the active mode.
+     *
+     * Opt-in, because a tool embedding this grid for parameter locks has no
+     * slot to swap a module in. The planner never learns what an action MEANS
+     * — that stays with the host, the same boundary that keeps actions out of
+     * the editors.
+     */
+    const appendTrailing = (pages, claim) => {
+        const built = buildTrailingPages(trailingMenus, claim);
+        for (const w of built.warnings) warnings.push(w);
+        for (const p of built.pages) pages.push(p);
+        return pages;
+    };
+
     const levels = (hierarchy && hierarchy.levels && typeof hierarchy.levels === "object")
         ? hierarchy.levels : null;
 
     /* No hierarchy at all — 4 modules in the fleet (branchage, belt-in,
      * po32-drum, smack-in) publish chain_params and nothing else. Paginate the
-     * declared params so they are not a blank screen. */
+     * declared params so they are not a blank screen.
+     *
+     * The "no hierarchy AND no chain_params" branch below is left alone,
+     * deliberately: it already produces nothing, and a view made only of
+     * trailing pages is a shape no consumer expects. The Shift+Click route
+     * still reaches Swap/Remove there. */
     if (!levels) {
         const keys = (chainParams || []).map((p) => p && p.key).filter(Boolean);
         if (keys.length === 0) return { pages: [], fingerprint, warnings: ["no ui_hierarchy and no chain_params"], conditionKeys: new Set() };
@@ -249,7 +357,11 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved } 
             return { kind: PAGE_KNOBS, name, level: null,
                      keys: alignKnobs(ks, name), authored: false };
         });
-        return { pages, fingerprint, warnings, realigned };
+        /* No `claimName` in scope here — this branch never names by level, so
+         * give the append its own local claim over the names already used
+         * (see makeClaimer's note: two Sets, not two copies of the loop). */
+        const fallbackClaim = makeClaimer(new Set(pages.map((p) => p.name)));
+        return { pages: appendTrailing(pages, fallbackClaim), fingerprint, warnings, realigned };
     }
 
     for (const lvl of Object.values(levels)) {
@@ -301,13 +413,7 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved } 
      * cosmetic.
      */
     const usedNames = new Set();
-    const claimName = (base) => {
-        if (!usedNames.has(base)) { usedNames.add(base); return base; }
-        for (let n = 2; ; n++) {
-            const candidate = `${base} - ${n}`;
-            if (!usedNames.has(candidate)) { usedNames.add(candidate); return candidate; }
-        }
-    };
+    const claimName = makeClaimer(usedNames);
 
     /* Mode select (minijv only in the fleet): with `modes` present the level
      * names ARE the mode names, so the active mode picks the walk root. */
@@ -338,6 +444,9 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved } 
     }
     if (!levels[rootKey]) {
         const first = Object.keys(levels)[0];
+        /* Left alone, deliberately, same as the no-chain_params branch above:
+         * `pages` is empty here, and trailing pages with nothing else on the
+         * view is a shape no consumer expects. */
         if (!first) return { pages, fingerprint, warnings: warnings.concat("no levels") };
         warnings.push(`no "${rootKey}" level — starting at "${first}"`);
         rootKey = first;
@@ -553,17 +662,15 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved } 
          * the opposite — Save/Delete are what you do when you have finished, so
          * landing on them is not where anyone wants to start. */
         if (Array.isArray(lvl.menu) && lvl.menu.length) {
-            pages.push({
-                kind: PAGE_MENU,
-                name: claimName(lvl.menu_label || `${base} Menu`),
-                level: levelKey,
-                entries: lvl.menu.map((m) => ({
-                    label: String((m && m.label) || ""),
-                    action: (m && m.action) || null,
-                    target: (m && m.level) || null,
-                    value: (m && m.value) !== undefined ? m.value : null,
-                })).filter((m) => m.label),
-            });
+            const menuEntries = mapMenuEntries(lvl.menu);
+            if (menuEntries.length > 0) {
+                pages.push({
+                    kind: PAGE_MENU,
+                    name: claimName(lvl.menu_label || `${base} Menu`),
+                    level: levelKey,
+                    entries: menuEntries,
+                });
+            }
         }
     }
 
@@ -626,7 +733,8 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved } 
         visit(key, null, false);
     }
 
-    return { pages, fingerprint, warnings, conditionKeys, realigned };
+    return { pages: appendTrailing(pages, claimName), fingerprint, warnings,
+             conditionKeys, realigned };
 }
 
 /**

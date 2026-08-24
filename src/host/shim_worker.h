@@ -23,6 +23,7 @@
 #define SHIM_FLAG_SPI_SNAP       (1u << 0)  /* spi_snap_trigger */
 #define SHIM_FLAG_XMOS_LOG       (1u << 1)  /* log_xmos_sysex_on */
 #define SHIM_FLAG_SPI_MIDI_LOG   (1u << 2)  /* spi_midi_log_on */
+#define SHIM_FLAG_RT_AUDIT       (1u << 3)  /* rt_thread_audit_on */
 
 /* One-shot flags: worker unlinks the trigger file and sets the bit; the
  * RT consumer clears it with shim_debug_flag_consume(). */
@@ -75,6 +76,24 @@ extern volatile int shim_usbc_out_replay;
 #define SHIM_EVT_OVERTAKE_DSP_FREE  10 /* destroy_instance + dlclose a retired overtake module */
 
 void shim_worker_post(uint8_t evt);
+
+/* Name the module currently being loaded, so the RT-thread audit can say WHICH
+ * module a newly-realtime thread appeared behind.
+ *
+ * shadow_chain_mgmt.c calls this, and the host tests compile that file on its
+ * own without the shim worker — a hard reference made
+ * test_master_fx_cache_ownership fail to link. It carries a WEAK no-op
+ * definition next to that call site, which this strong one overrides whenever
+ * the worker is in the link. A weak *declaration* would have been the obvious
+ * fix and only works on ELF: Darwin does not resolve an undefined weak symbol
+ * to null, so the local suite failed to link where CI passed. A weak
+ * definition works on both.
+ *
+ * Called from the SPI callback (module loading runs there), so it must stay
+ * RT-safe: a bounded copy into a static buffer, no allocation, no lock. A torn
+ * read at worst mislabels one log line, which is why the audit reports the
+ * name as context rather than as proof. Pass NULL when the load finishes. */
+void shim_rt_audit_note_module(const char *id);
 
 /* Hook table for events whose implementations live in schwung_shim.c /
  * shadow_sampler.c (worker can't see their statics). Registered once at
