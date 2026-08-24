@@ -19733,7 +19733,15 @@ globalThis.onMidiMessageInternal = function(data) {
      * records: it is what keeps a fourth modal-raising setting from being
      * silently unanswerable. Left the overlay up with the grid eating every
      * button and there is no press that can clear it. */
-    if (view === VIEWS.PARAM_PAGES && paramPagesActive()) {
+    /* The KEYBOARD outranks the page for the same reason, and the early-out is
+     * what makes it need saying: the text-entry handler is ~100 lines below,
+     * so the grid would otherwise be offered the event first. That was safe
+     * only while no keyboard could be raised over PARAM_PAGES. User Presets is
+     * now a trailing page INSIDE the grid and enterPresetSaveAs opens the
+     * keyboard without calling setView, so `view` is still PARAM_PAGES — the
+     * jog paged the grid drawn UNDERNEATH the keyboard while pad typing kept
+     * working, because decodeInput claims CC 14 but returns null for pads. */
+    if (view === VIEWS.PARAM_PAGES && paramPagesActive() && !isTextEntryActive()) {
         if (maybeDismissWarningFromInput(status, d1, d2)) { needsRedraw = true; return; }
         if (handleParamPagesMidi(data)) { needsRedraw = true; return; }
     }
