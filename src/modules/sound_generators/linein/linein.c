@@ -606,6 +606,20 @@ static int parse_enum(const char *val, const char **options, int count) {
     return idx;
 }
 
+static int json_get_number(const char *json, const char *key, double *out) {
+    char search[64];
+    snprintf(search, sizeof(search), "\"%s\":", key);
+    const char *value = strstr(json, search);
+    if (!value) return 0;
+    value += strlen(search);
+    while (*value == ' ' || *value == '\t') value++;
+    char *end = NULL;
+    double parsed = strtod(value, &end);
+    if (end == value) return 0;
+    *out = parsed;
+    return 1;
+}
+
 /* ------------------------------------------------------------------ */
 /*  set_param                                                          */
 /* ------------------------------------------------------------------ */
@@ -614,6 +628,23 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
     linein_instance_t *inst = (linein_instance_t *)instance;
     if (!inst || !key || !val) return;
 
+    if (strcmp(key, "state") == 0) {
+        static const char *const state_keys[] = {
+            "input_type", "input_mode", "input_trim", "output_trim",
+            "gate_mode", "gate_amount", "gate_threshold", "gate_attack",
+            "gate_hold", "gate_release", "gate_range", "hpf_freq",
+            "safety_limiter", "cable_comp", "soft_clip", "riaa_eq",
+            "subsonic_freq", "hum_notch", "hum_freq", "hum_filter"
+        };
+        for (size_t i = 0; i < sizeof(state_keys) / sizeof(state_keys[0]); i++) {
+            double value;
+            if (!json_get_number(val, state_keys[i], &value)) continue;
+            char scalar[32];
+            snprintf(scalar, sizeof(scalar), "%.9g", value);
+            v2_set_param(inst, state_keys[i], scalar);
+        }
+        return;
+    }
     if (strcmp(key, "input_type") == 0) {
         int new_type = parse_enum(val, input_type_options, INPUT_TYPE_COUNT);
         if (new_type != inst->input_type) {
@@ -728,8 +759,31 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
 
 static int v2_get_param(void *instance, const char *key, char *buf, int buf_len) {
     linein_instance_t *inst = (linein_instance_t *)instance;
-    if (!key) return -1;
+    if (!key || !buf || buf_len < 1) return -1;
 
+    if (strcmp(key, "state") == 0) {
+        if (!inst) return -1;
+        int written = snprintf(buf, buf_len,
+            "{\"version\":1,\"input_type\":%d,\"input_mode\":%d,"
+            "\"input_trim\":%.4f,\"output_trim\":%.4f,"
+            "\"gate_mode\":%d,\"gate_amount\":%.4f,"
+            "\"gate_threshold\":%.4f,\"gate_attack\":%.4f,"
+            "\"gate_hold\":%.4f,\"gate_release\":%.4f,\"gate_range\":%.4f,"
+            "\"hpf_freq\":%d,\"safety_limiter\":%d,"
+            "\"cable_comp\":%d,\"soft_clip\":%d,"
+            "\"riaa_eq\":%d,\"subsonic_freq\":%d,"
+            "\"hum_notch\":%d,\"hum_freq\":%d,\"hum_filter\":%d}",
+            inst->input_type, inst->input_mode,
+            inst->input_trim_db, inst->output_trim_db,
+            inst->gate_mode, inst->gate_amount,
+            inst->gate_threshold_db, inst->gate_attack_ms,
+            inst->gate_hold_ms, inst->gate_release_ms, inst->gate_range_db,
+            inst->hpf_freq_idx, inst->safety_limiter,
+            inst->cable_comp, inst->soft_clip,
+            inst->riaa_eq, inst->subsonic_freq_idx,
+            inst->hum_notch, inst->hum_freq, inst->hum_filter);
+        return written >= 0 && written < buf_len ? written : -1;
+    }
     if (strcmp(key, "input_type") == 0) {
         int idx = inst ? inst->input_type : 0;
         if (idx < 0 || idx >= INPUT_TYPE_COUNT) idx = 0;
