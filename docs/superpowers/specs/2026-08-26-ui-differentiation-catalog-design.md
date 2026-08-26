@@ -4,9 +4,10 @@
 **Branch:** `charlesv/sch-50-differentiate-the-ui-and-icons-from-elektron`
 **Issue:** SCH-50 — *Differentiate the UI and icons from Elektron*
 
-This issue produces a **rendered option catalog**, not a change to the shipping
-UI. Nothing in `src/shared/param_pages/` that the device draws today is
-modified. Choosing from the catalog is a separate follow-up.
+This issue produces a **rendered option catalog and a ranked preference
+dataset**, not a change to the shipping UI. Nothing in
+`src/shared/param_pages/` that the device draws today is modified.
+Implementing the preferred options is a separate follow-up.
 
 ---
 
@@ -271,10 +272,14 @@ is a mild argument in their favour.
 130 options x 2 renders is ~260 PNGs — too much binary for the repo.
 
 - **Committed:** the spec, the thirteen contact sheets, `styles/`, the catalog
-  tool, the new test.
+  tool, the A/B server, the ranking script, the new test, and
+  **`preferences.json` once judging is done** — the dataset is the point of the
+  exercise and belongs in the repo.
 - **Not committed:** full render output, to a gitignored `catalog-out/`.
 
-Contact sheets are delivered directly for review.
+`preferences.json` lives in `catalog-out/` while it is being written and is
+copied to `docs/superpowers/specs/2026-08-26-ui-differentiation-preferences.json`
+when the run finishes, so the ignored directory stays purely derived output.
 
 ---
 
@@ -285,15 +290,47 @@ file) gains a per-set catalog section as the sets are built: contact sheet
 inlined, ten options named with axis position and rationale, plus a note on
 that set's inherent constraints.
 
-### 4.1 How to choose
+### 4.1 How to choose — pairwise A/B, not a grid
 
-The axis is shared, so the natural first decision is a **distance** —
-"everything at 4–6" — with per-set overrides after.
+Picking one from a 10-up contact sheet is a bad ask: ten-way choice is hard,
+and it yields a single pick with no information about anything else. **Review
+is pairwise instead**, producing a ranked preference dataset per set.
+
+This also demotes the minimal → radical axis from an assumption to a
+hypothesis. The axis orders the options as authored; the preference data can
+contradict it, and that disagreement is itself a finding.
+
+**Tool:** `tools/param-pages/ab_server.mjs` — a local node server (no deps)
+serving a single-page comparator. Two in-context renders side by side, keyboard
+`←`/`→` to choose, `space` to skip a pair that is too close to call. Each
+judgement is appended to `catalog-out/preferences.json` as it happens, so
+results are readable live and nothing depends on an export step. Local only,
+not portable, deliberately.
+
+**Scheme:** ~16 pairs per set, ~200 judgements total. Pairs are randomised but
+weighted toward options whose standing is least certain, so time goes where it
+resolves the most. Scores are fitted with **Bradley-Terry**
+(`tools/param-pages/rank.mjs`), giving a strength per option plus a confidence
+interval.
+
+Properties that matter: **stopping early is safe** — a partial dataset still
+ranks, just with wider intervals — and every additional judgement improves the
+fit rather than being wasted. A skipped pair is recorded as a skip, not
+discarded; a set with many skips is telling you its options are
+indistinguishable, which is a result.
+
+**Two phases.** Phase 1 is within-set (knob vs knob). Comparing a knob to a
+font is meaningless. Phase 2, once per-set leaders exist, compares **whole-page
+composites** of coherent combinations — that is where cross-set consistency is
+actually judged, and it is a much shorter run.
 
 **Cross-set constraints exist and are recorded per set.** The font pick changes
 what fits in a 32px label cell, so it constrains sets 4 (enum square, `ENUM_W`
 is 20) and 5 (label cell). Font is therefore built first despite being the
 largest.
+
+Contact sheets are still generated and committed, but as the **record** of what
+was in the catalog, not as the review mechanism.
 
 ### 4.2 Out of scope for SCH-50
 
@@ -310,6 +347,13 @@ largest.
 4. **Viz 7–10** — share one treatment vocabulary, generated together once it
    is settled.
 5. **Animation (13)** — frame strips, last.
+6. **A/B run** — server up, ~200 judgements, Bradley-Terry fit, dataset
+   committed.
+
+The A/B tooling does not depend on all thirteen sets existing. It reads
+whatever `styles/` exports, so judging can start as soon as the first few sets
+render rather than waiting for the whole catalog — which also surfaces problems
+with the comparator early, while they are cheap to fix.
 
 ---
 
