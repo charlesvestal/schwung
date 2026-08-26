@@ -214,7 +214,38 @@ export function advanceLinear(pos, target, dtMs, ms) {
 }
 
 /**
+ * How many time constants an exponential decay needs to reach the snap.
+ *
+ * DERIVED FROM SNAP_PAGES, NEVER WRITTEN AS A NUMBER, because the two are the
+ * same fact seen twice: the decay is `exp(-t/tau)` and `advanceEased` arrives
+ * when the remaining distance falls to SNAP_PAGES, so arrival is at
+ * `t = tau * ln(1 / SNAP_PAGES)` — today ln(256) = 5.545.
+ *
+ * Hardcode 5.545 and a future change to the snap threshold silently changes
+ * what every duration in the codebase MEANS, with no test touching either
+ * constant and nothing to read that says so. The coupling is the reason this
+ * line exists.
+ */
+const EASED_TAUS_TO_SNAP = Math.log(1 / SNAP_PAGES);
+
+/**
  * Exponential advance: velocity proportional to the distance left.
+ *
+ * `ms` IS THE SETTLE TIME — the moment the position lands exactly on the
+ * target — and that is a correction, not a restatement.
+ *
+ * It used to be `tau = ms / 3`, on the reasoning that three time constants is
+ * 95% of the travel and therefore "about `ms`". The remaining 5% is not free:
+ * it still has to walk down to SNAP_PAGES, which is another 2.5 time
+ * constants, so the real settle was 1.85x the number written at the call site.
+ * Filming it at the device's true cadence is what exposed this
+ * (tools/param-pages/movie.mjs) — a nominal 200ms measured 364ms over 20
+ * frames, SEVEN of which had moved less than half a pixel and so were
+ * pixel-identical repaints at two full page renders each.
+ *
+ * That made `ms` incomparable between the two advances: advanceLinear's 200
+ * really was 200. Now both mean the same thing, which is what lets SLIDE_MS be
+ * a single number rather than a number plus a note about which curve it is for.
  *
  * Frame-rate independent by construction (`1 - exp(-dt/tau)`), which matters
  * here because this device's clock is quantized to ~11-12ms and the tick
@@ -225,9 +256,7 @@ export function advanceEased(pos, target, dtMs, ms) {
     if (cannotPace(pos, dtMs, ms)) return target;
     const d = target - pos;
     if (Math.abs(d) <= SNAP_PAGES) return target;
-    /* tau chosen so the visible motion is over in about `ms`: three time
-     * constants is 95% of the distance. */
-    const next = pos + d * (1 - Math.exp(-dtMs / (ms / 3)));
+    const next = pos + d * (1 - Math.exp(-dtMs / (ms / EASED_TAUS_TO_SNAP)));
     return Math.abs(target - next) <= SNAP_PAGES ? target : next;
 }
 
@@ -254,13 +283,19 @@ export function drawSlide(ctx, { fromDx, toDx, drawFrom, drawTo, drawChrome }) {
  *
  * Chosen from filmed GIFs at the device's real cadence, not from a preview at
  * a frame rate the hardware cannot produce -- this device's clock is quantized
- * to ~11-12ms and the grid ticks at ~55Hz, so a 128px slide is about a dozen
- * real frames of ~12px each. See tools/param-pages/movie.mjs.
+ * to ~11-12ms and the grid ticks at ~55Hz. See tools/param-pages/movie.mjs.
+ *
+ * 90ms IS ABOUT FIVE FRAMES, AND THAT IS THE POINT: the brief was "just enough
+ * to get a feel for what's happening". The eased curve front-loads the travel,
+ * so the first frame covers roughly half the screen and the rest is the tail —
+ * which reads as snap rather than as motion, and was chosen over the linear
+ * 90ms (an even ~26px per frame, filmed as slide-090-linear) with that
+ * difference visible in both GIFs.
  *
  * These are constants, not settings: there is no setter and no caller that
  * passes anything else. SLIDE_MS is the value a Global Settings toggle would
  * drive if one is ever added, and 0 is the value that would disable the
  * animation (see advanceLinear -- a duration of 0 arrives immediately).
  */
-export const SLIDE_MS = 200;
-export const advanceScroll = advanceLinear;
+export const SLIDE_MS = 90;
+export const advanceScroll = advanceEased;

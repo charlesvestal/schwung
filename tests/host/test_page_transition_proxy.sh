@@ -25,7 +25,7 @@ fi
 
 node --input-type=module -e '
 import { translateCtx, slideOffsets, scrollFrame, advanceLinear, advanceEased,
-         advanceScroll, isSliding, drawSlide }
+         advanceScroll, isSliding, drawSlide, SLIDE_MS }
   from "./src/shared/param_pages/page_transition.mjs";
 
 let fail = 0;
@@ -209,6 +209,43 @@ for (const [name, adv] of [["linear", advanceLinear], ["eased", advanceEased],
   ok(adv(0, 1, NaN, 200) === 1, name + ": a NaN dt settles rather than propagating");
   ok(adv(0, 1, Infinity, 200) === 1, name + ": an infinite dt settles");
 }
+
+/* `ms` MEANS THE SETTLE TIME, FOR BOTH ADVANCES, AND NOTHING ELSE PINS IT.
+   advanceEased used to run at tau = ms/3 -- three time constants, 95% of the
+   travel -- and called that "about ms". The last 5% still has to reach
+   SNAP_PAGES, another 2.5 time constants, so the real settle was 1.85x the
+   number at the call site: a nominal 200 filmed at 364ms. Nothing was red.
+   Every existing assertion above drives an advance to completion and checks
+   that it LANDS; not one of them looks at WHEN, so the tau could mean anything
+   and the file stayed green.
+
+   Measured at the device cadence rather than a round number, because that is
+   the clock the constant will actually be paced by. The tolerance is ONE FRAME
+   -- arrival is quantized to a tick, so a tighter bound would be asserting
+   something the hardware cannot express, and a looser one (say two frames)
+   would pass the ms/3 mutation at the shortest durations. */
+const TICK = 1000 / 55;
+const settleOf = (adv, ms) => {
+  let pos = 0, n = 0;
+  while (pos !== 1 && n < 5000) { pos = adv(pos, 1, TICK, ms); n++; }
+  return n * TICK;
+};
+for (const [name, adv] of [["linear", advanceLinear], ["eased", advanceEased],
+                           ["scroll", advanceScroll]]) {
+  for (const ms of [90, 160, 200, 280]) {
+    const got = settleOf(adv, ms);
+    ok(Math.abs(got - ms) <= TICK,
+       name + ": ms=" + ms + " settles at " + Math.round(got) +
+       "ms, within one frame of the duration it names");
+  }
+}
+/* The consequence worth stating in its own right: the two curves are now
+   comparable, which is what lets SLIDE_MS be one number instead of a number
+   plus a note about which advance it was measured against. */
+ok(Math.abs(settleOf(advanceLinear, SLIDE_MS) - settleOf(advanceEased, SLIDE_MS)) <= TICK,
+   "the two advances settle at the same time for the same ms");
+ok(SLIDE_MS > 0 && settleOf(advanceScroll, SLIDE_MS) <= SLIDE_MS + TICK,
+   "the SHIPPING duration and advance settle within one frame of SLIDE_MS");
 
 /* Composite order: both pages, then the fixed chrome ON TOP.
    AND WHICH OFFSET EACH PAGE GETS. Recording only the strings would pin the
