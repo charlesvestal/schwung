@@ -1275,10 +1275,26 @@ Kinds and their roles:
 | `lfo` | `shape`, `rate`, `depth`, optional `phase` | `shape` should be an enum of waveform names. |
 | `waveform` | *(single param)* | An enum of waveform names, drawn as silhouettes. |
 | `fader` | *(single param)* | A level/volume, drawn as a fader rather than a dial. |
-| `switch` | *(single param)* | A `toggle` or two-option enum, drawn as an on/off switch. |
+| `switch` | *(single param)* | A `toggle` or **boolean-flavoured** two-option enum, drawn as an on/off switch. See the note below — not every two-option enum qualifies, and it changes the behaviour as well as the picture. |
 | `sample` | *(single param)* + optional `position` | A `filepath`; a companion `wav_position` param marks playback position on the waveform. |
 
-Two rules worth knowing:
+**A `switch` is not just a picture — it suppresses the option list.** Turning an
+enum knob normally flashes its options up over the grid for ~700ms. A switch
+does not, because it already draws both of its states: the track is one and its
+inversion is the other, so a list of `Off`/`On` says what the cell says.
+
+That makes the Off/On wording load-bearing. A two-option enum whose values are a
+straight **choice** rather than a boolean — `Mix`/`Reverb`, `Saw`/`Square`,
+`Legato`/`Trig`, `Time`/`Rate` — is deliberately *not* detected as a switch: it
+draws as an enum square showing one word, and the other word is exactly what the
+list is for. 134 cells across the fleet are in that group against 212 real
+switches, so this is a live distinction, not an edge case.
+
+Practical upshot: if your parameter genuinely means on/off, name the options so
+it reads that way and it will get the switch and lose the list. If it is a
+choice between two named things, leave it as a plain enum.
+
+Two more rules worth knowing:
 
 - **A group's params must land contiguously on one row.** This is a hard gate,
   not a style preference: a page is two rows of four, and a graphic can span
