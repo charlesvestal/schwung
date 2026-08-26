@@ -154,6 +154,58 @@ function encodeGif(dir, gif, fps) {
 const DEVICE_TICK_MS = 1000 / 55;
 const DEVICE_CLOCK_QUANTUM_MS = 12;
 
+/*
+ * THIS SCENE ONCE CARRIED A LOCAL RETUNE OF advanceEased, AND IT IS GONE
+ * BECAUSE THE MODULE WAS FIXED INSTEAD.
+ *
+ * The first round of filming found that advanceEased ran at tau = ms/3 -- 95%
+ * of the travel -- so a nominal 200ms actually settled at 364ms, and `ms` was
+ * incomparable between the two advances. The tool briefly compensated by
+ * passing a scaled duration. That compensation is now WRONG, not merely
+ * redundant: advanceEased derives its tau from SNAP_PAGES and `ms` is the
+ * settle time, so scaling here would double-apply and film something no device
+ * will ever do.
+ *
+ * The general rule this is an instance of: a filming tool that corrects for a
+ * defect in the thing it films stops being evidence about the thing it films.
+ *
+ * Every line this scene prints still reports MEASURED moving frames and
+ * measured settle time rather than the nominal `ms` -- that is what caught it,
+ * and it is cheap to keep.
+ */
+
+/*
+ * CUBIC EASE-IN-OUT -- THE SIBLING PRODUCT'S CURVE, AND IT IS NOT SHIPPABLE AS
+ * AN ADVANCE.
+ *
+ * vimana2-rust does this same transition with the `easer` crate's cubic
+ * ease-in-out over 10 frames. That curve ACCELERATES as well as decelerates,
+ * and acceleration is a statement about where the motion STARTED -- which our
+ * (pos, target, dtMs, ms) advance signature cannot see. So this cannot be an
+ * advance function; it is a stateful driver carrying `from` and a progress `t`,
+ * and it lives here in the filming tool purely so the two feels can be compared
+ * side by side. See the report for what adopting it would cost.
+ */
+function makeCubicInOut() {
+    let from = 0, t = 0, tgt = 0;
+    return (pos, target, dtMs, ms) => {
+        if (!(ms > 0) || !(dtMs >= 0) || !isFinite(pos)) return target;
+        /* A retarget restarts the curve FROM WHERE WE ARE -- this is the chase
+         * case, and it is why `from` is set to `pos` and not to an index. */
+        if (target !== tgt) { tgt = target; from = pos; t = 0; }
+        if (pos === target) return target;
+        t = Math.min(1, t + dtMs / ms);
+        const e = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+        return t >= 1 ? target : from + (target - from) * e;
+    };
+}
+
+/*
+ * `adv` is a plain function; `makeAdv` is a factory called once per variant for
+ * the drivers that carry state. Only the cubic comparison needs the latter --
+ * both shipping advances are pure, which is the property that lets the
+ * controller store nothing but `pos`.
+ */
 const SLIDE_VARIANTS = [
     { name: "slide-160-linear", ms: 160, adv: advanceLinear },
     { name: "slide-200-linear", ms: 200, adv: advanceLinear },
@@ -161,6 +213,23 @@ const SLIDE_VARIANTS = [
     { name: "slide-160-eased", ms: 160, adv: advanceEased },
     { name: "slide-200-eased", ms: 200, adv: advanceEased },
     { name: "slide-280-eased", ms: 280, adv: advanceEased },
+
+    /* Round two: the user asked for shorter and snappier, "just enough to get
+     * a feel for what's happening".
+     *
+     * slide-090-eased IS THE SHIPPING BEHAVIOUR -- SLIDE_MS is 90 and
+     * advanceScroll is advanceEased -- so it is filmed through the module's own
+     * function with no arithmetic of its own. There is exactly one 90ms eased
+     * variant on purpose: while the retune was local there were two, differing
+     * only in a scale factor, and a folder holding both invites comparing the
+     * shipping curve against a tool-only one. */
+    { name: "slide-090-eased", ms: 90, adv: advanceEased },
+    { name: "slide-090-linear", ms: 90, adv: advanceLinear },
+    { name: "slide-120-eased", ms: 120, adv: advanceEased },
+
+    /* Not shippable in this form -- see makeCubicInOut. 167ms is the sibling's
+     * 10 frames at 60Hz; at our 55Hz it is ten of ours too. */
+    { name: "slide-167-cubicinout", ms: 167, makeAdv: makeCubicInOut },
 ];
 
 /* A beat of stillness at each end. Motion is judged against rest, and a GIF
@@ -213,9 +282,12 @@ function renderSlideVariant(v) {
      * A film that computed t = (now - start)/ms would be testing a different
      * mechanism than the one that ships — in particular it could not show a
      * retarget chasing, which is why the position model exists. */
+    const adv = v.makeAdv ? v.makeAdv() : v.adv;
     let pos = 0;
     let prevClock = 0;
     let slideFrames = 0;
+    let lastFrom = 0;
+    const steps = [];
 
     for (let i = 0; i < nFrames; i++) {
         const wall = i * DEVICE_TICK_MS;
@@ -223,7 +295,7 @@ function renderSlideVariant(v) {
         const dt = clock - prevClock;
         prevClock = clock;
         const target = clock < SLIDE_HOLD_MS ? 0 : 1;
-        pos = v.adv(pos, target, dt, v.ms);
+        pos = adv(pos, target, dt, v.ms);
 
         const fb = createFramebuffer();
         const ctx = drawContext(fb);
@@ -241,6 +313,12 @@ function renderSlideVariant(v) {
         } else {
             slideFrames++;
             const off = slideOffsets(frac, 128);
+            /* The per-frame TRAVEL, in real pixels. The mean is what a frame
+             * count implies; for an eased curve it is the wrong number to
+             * judge by, because the first step is the one the eye reads as
+             * speed and the last few are sub-pixel. Report the range. */
+            steps.push(-off.from - lastFrom);
+            lastFrom = -off.from;
             drawSlide(ctx, {
                 fromDx: off.from, toDx: off.to,
                 drawFrom: drawOne(at(base)),
@@ -262,12 +340,31 @@ function renderSlideVariant(v) {
         fs.writeFileSync(path.join(dir, String(i).padStart(4, "0") + ".png"), fb.toPng(4));
     }
 
+    /* The film must END SETTLED, or the GIF loops out of a moving frame and
+     * the motion reads as faster than it is. It is not hypothetical: an eased
+     * advance settles at ~1.85x its nominal ms, so a hold sized to the nominal
+     * would truncate every eased variant. Loud, because a truncated film is
+     * still a plausible-looking GIF. */
+    if (pos !== 1) {
+        console.error("  !! " + v.name + " did not settle within " + total +
+                      "ms (pos " + pos.toFixed(4) + ") — lengthen SLIDE_HOLD_MS");
+    }
+
     const fps = Math.round(1000 / DEVICE_TICK_MS);
     const gif = path.join(OUT, v.name + ".gif");
     encodeGif(dir, gif, fps);
-    console.log(v.name.padEnd(18) + " " + nFrames + " frames @" + fps + "fps, " +
-        v.ms + "ms slide = " + slideFrames + " moving frames of ~" +
-        Math.round(128 / Math.max(1, slideFrames)) + "px" +
+    /* MEASURED, never nominal — see EASED_SETTLE_FACTOR. */
+    const settleMs = Math.round(slideFrames * DEVICE_TICK_MS);
+    const px = steps.map((s) => Math.round(s));
+    console.log(v.name.padEnd(21) + String(slideFrames).padStart(2) + " moving frames" +
+        ", settle " + String(settleMs).padStart(3) + "ms" +
+        " (nominal " + String(v.ms).padStart(3) + ")" +
+        ", px/frame " + Math.min(...px) + ".." + Math.max(...px) +
+        " mean " + Math.round(128 / Math.max(1, slideFrames)) +
+        /* A zero-travel frame is a DUPLICATE picture that still costs two full
+         * page renders. The eased tail is made of them, which is the cost side
+         * of the settle overrun and is invisible in a frame count. */
+        ", " + px.filter((s) => s === 0).length + " still" +
         "  -> " + path.relative(ROOT, gif));
     return gif;
 }
