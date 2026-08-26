@@ -59,7 +59,6 @@ CMD set -e && \
     echo "=== Build Artifacts ===" && \
     file /build/build/schwung && \
     file /build/build/schwung-shim.so && \
-    file /build/build/modules/sf2/dsp.so 2>/dev/null || echo "SF2 module DSP: not found" && \
     echo "" && \
     echo "=== Package Created ===" && \
     ls -lh /build/schwung.tar.gz && \
