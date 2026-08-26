@@ -12,23 +12,65 @@ watch.
 Three bands, from `list_geometry.mjs`: header rows 0–6, the bank bar at row 7,
 the body rows 9–54, the footer rows 57–63.
 
-**Rows 0–54 slide as one unit, travelling one screen width (128px). The bank
-bar and the footer stay fixed.**
+**The body (rows 9–54) slides one screen width. The page NAME slides within
+its own right-hand header column (~58px) over the same duration. The module
+title, the bank bar and the footer are all FIXED.**
 
-The header travels with the body because the page name lives there and it is
-part of the page. Sliding the name *alone* was rejected: it is right-aligned,
-so a full-width travel takes it off the left edge early and brings the
-incoming one in late, leaving roughly a third of the transition with no page
-name at all. Giving it a narrower travel inside its own column fixes that and
-costs a second moving region with its own geometry. Moving the whole header
-instead means the module title occupies that space throughout, so nothing is
-ever empty. The title is usually identical page to page, so it slides out and
-an identical one slides in — that reads as the page moving, which is what is
-happening.
+This was decided twice, and the second decision came from looking at the
+filmed frames rather than at a description.
 
-The bank bar is the exception because it is the page *indicator*. It cannot
-travel with the page it indicates without being unreadable for the whole
-transition, which is the one element whose job is to answer "where am I".
+The first version slid the whole header with the body, on the argument that
+the page name lives there and is part of the page. What that actually
+produces is this:
+
+```
+LFO 1 T1 > OSIRUS      <- "LFO 1" is page A's name leaving,
+                          "T1 > OSIRUS" is page B's TITLE arriving
+```
+
+The title is identical on every page of a module. Sliding it out and sliding
+a byte-identical copy back in is motion that carries no information — it
+makes the header wobble while saying nothing. Only the page name changes, so
+only the page name moves.
+
+**The name gets a SHORTER travel than the body, and that is not a
+decoration.** It is right-aligned, so a full-width travel takes it off the
+left edge early and brings the incoming one in late: at the chosen 90ms, that
+is roughly two of the five frames with no page name on screen at all. Sliding
+it within its own column means something is always legible there. Body and
+name move together over one duration; the name simply has less ground to
+cover.
+
+**Clipping the name needs a FILLED ERASE, not an overdraw — and the first
+version of this document got that wrong.**
+
+It claimed the outgoing name's left edge would be clipped by drawing the
+fixed module title over it, "the same trick the rest of the feature uses".
+It is not the same trick and it does not work. `drawHeader`'s un-inverted
+branch paints **no background**: it prints glyphs and nothing else (the
+*inverted* branch is the one that fills). Overdrawing therefore clips only
+where the title happens to have ink, and a title is text with gaps between
+its letters — a name sliding leftward would show through them.
+
+The rest of the feature's clipping is real: `js_display_set_pixel`
+(`src/host/js_display.c`) *discards* writes outside the buffer. That is a
+genuine clip. Painting something on top is a different mechanism wearing the
+same name, and it only clips if the thing on top is opaque.
+
+So the header column gets an explicit `fillRect(…, 0)` over the title's span
+before the title is printed. On a 1-bit panel that is one cheap rect.
+
+**The column is not a fixed width, either.** `drawHeader` measures the RIGHT
+side first and gives the left the remainder, floored at `HEADER_MIN_LEFT`
+(70px) — so both the column's width and its x-origin depend on the specific
+page name. Two different names produce two different columns, and names
+sliding within different geometries do not abut. The transition must fix ONE
+column geometry for its whole duration: the destination name's, so the layout
+the user ends on is the correct one.
+
+The bank bar is fixed because it is the page *indicator*. It cannot travel
+with the page it indicates without being unreadable for the whole transition,
+which is the one element whose job is to answer "where am I".
 
 ## Mechanism
 
@@ -92,9 +134,14 @@ in `s`, so drawing a non-current index needs no new state.
 `render()` becomes:
 
 - no transition → `drawPage(ctx, s.pageIndex, …)`
-- transition → `drawPage(proxy(ctx, -N), fromIndex, { chrome: false })`,
-  `drawPage(proxy(ctx, 128-N), toIndex, { chrome: false })`, then the fixed
-  bank bar and footer.
+- transition → two body passes at `chrome: false, header: false`, then the
+  fixed chrome: the two page NAMES at column-relative offsets, the module
+  title drawn over them, then the bank bar and the footer.
+
+The order inside the chrome pass is load-bearing. The names are drawn first
+and the title over them, because the title's opaque redraw is what clips the
+outgoing name's left edge — there is no clip rectangle anywhere in this
+feature.
 
 Overlays — hint, section picker, knob card, enum peek — are drawn after the
 composite and never slide.
@@ -154,9 +201,36 @@ and a plausible stale number beats a blank.
 `s.values` is keyed by param key and already shared across pages, so no cache
 restructuring is required.
 
-## Motion parameters
+## Motion parameters — DECIDED
 
-Duration and easing are **decided from filmed GIFs, not from this document**.
+**90ms, eased (exponential ease-out).** `SLIDE_MS = 90`,
+`advanceScroll = advanceEased`. Five real frames.
+
+Chosen from the filmed GIFs after two rounds. The first round offered
+160/200/280ms; all read as slower than wanted. 90ms is deliberately at the
+floor of what the panel can draw — "just enough to get a feel for what's
+happening".
+
+**`ms` MEANS THE SETTLE TIME, and it did not at first.** `advanceEased`
+originally used `tau = ms / 3`, which makes `ms` mean 95% of the travel — so
+a nominal 200ms actually settled at 364ms and a nominal 90 at 164. The
+filming exposed it by measuring settle times instead of trusting labels. The
+honest tau is derived from the snap threshold: arrival is when the remaining
+distance reaches `SNAP_PAGES`, so `T = tau · ln(1 / SNAP_PAGES)`. The divisor
+is derived from `SNAP_PAGES` in code rather than written as a literal,
+because the two are coupled and a change to the snap threshold must not
+silently change what every duration means.
+
+A measured trade-off worth recording: at a 90ms budget, **linear uses the
+time better than eased does**. Eased front-loads 52% of the travel into the
+first frame and spends the remaining four on the last 20%, so only one frame
+is a genuine both-pages picture; linear's even 17–34px steps put both pages
+substantially on screen for three of its five frames. Eased was chosen anyway,
+with that known.
+
+### How the duration was filmed
+
+Duration and easing were **decided from filmed GIFs, not from this document**.
 
 The film must be honest about a hardware constraint recorded in
 `shadow_ui_param_pages.mjs`: this device's clock is quantized to roughly
