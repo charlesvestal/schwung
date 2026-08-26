@@ -40,7 +40,7 @@ const MS_PER_FRAME = 1000 / FPS;
 
 /* The page every scene is filmed on, with a trigger and two switches present
  * so one fixture serves every widget. */
-function loadPage() {
+function loadPage(overrides = {}) {
     const j = JSON.parse(fs.readFileSync(FIXTURE, "utf8"));
     let cp = j.chain_params;
     if (typeof cp === "string") cp = JSON.parse(cp);
@@ -48,6 +48,7 @@ function loadPage() {
         if (p.key === "lfo1_env_mode") { p.type = "enum"; p.options = ["off", "on"]; }
         if (p.key === "lfo1_keytrigger") { p.type = "enum"; p.options = ["off", "on"]; }
         if (p.key === "lfo1_keyfollow") { p.access = "write"; }
+        if (overrides[p.key]) { p.type = "enum"; p.options = overrides[p.key]; }
     }
     const metaIndex = buildMetaIndex({ hierarchy: j.hierarchy, chainParams: cp });
     const { groups } = resolveViz({ keys: j.page.keys, metaIndex });
@@ -62,12 +63,24 @@ function loadPage() {
  */
 const SCENES = {
     enum: {
-        ms: 2600,
-        caption: "enum square — value changes width",
+        ms: 3200,
+        caption: "enum square — the frame sizes itself to the value",
+        /*
+         * `lfo1_mode` is the only real enum SQUARE on this page — lfo1_shape is
+         * an enum too but the viz layer claims it and draws a waveform, so a
+         * scene driving that filmed the wrong widget entirely. Its own options
+         * are Poly/Mono, two values 2px apart, which demonstrates nothing.
+         *
+         * So the options are OVERRIDDEN for this scene to span the range the
+         * widget actually has to cover: the 15px floor to the 28px cap. That is
+         * a synthetic value list and is called out here rather than left to be
+         * mistaken for something a module declares.
+         */
+        options: { lfo1_mode: ["ON", "TRI", "POLY", "MONO", "MMMM"] },
         at: (t, base) => {
-            const seq = ["sine", "tri", "saw", "square", "sine"];
-            const i = Math.min(seq.length - 1, Math.floor(t / 520));
-            return { ...base, lfo1_shape: String(i % 4) };
+            const n = 5;
+            const i = Math.min(n - 1, Math.floor(t / 640));
+            return { ...base, lfo1_mode: String(i) };
         },
     },
     shape: {
@@ -104,7 +117,7 @@ const SCENES = {
 };
 
 function renderScene(name, scene) {
-    const { j, metaIndex, groups } = loadPage();
+    const { j, metaIndex, groups } = loadPage(scene.options || {});
     const dir = path.join(OUT, name);
     fs.mkdirSync(dir, { recursive: true });
     for (const f of fs.readdirSync(dir)) fs.unlinkSync(path.join(dir, f));
