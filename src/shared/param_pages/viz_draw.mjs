@@ -1139,14 +1139,23 @@ export function drawFader(ctx, rect, key, values, metaIndex) {
 const PILL_H = 9, SLUG_W = 5, SLUG_H = 5, SLUG_INSET = 2;
 
 /*
- * TRAVEL: ~120ms, eased out. The track is 16px and the two seats are 2px in
- * from each wall, so the slug crosses about 7px — far enough to read as
- * movement, short enough that the switch never feels like it is thinking about
- * it. Everything between the seats is interpolated, so the slug is never
- * anywhere the two static states could not put it: it cannot touch a wall,
- * which is the defect the 2px inset exists to prevent.
+ * THE SLUG DOES NOT TRAVEL. It is at its destination seat on the frame the
+ * value changes, and only the fill animates.
+ *
+ * It used to interpolate between the seats over 120ms, which is defensible in
+ * the abstract and wrong here: the seats are 2px in from each wall of a 16px
+ * track, so the whole journey is about 7px. Seven pixels spread over seven
+ * frames is not a movement, it is a smear — and it made the switch look like it
+ * was deciding. Snapping it costs nothing, because the thing that reads as the
+ * transition is the fill, and the fill is still there.
+ *
+ * FILL: ~70ms, eased out — about four frames at the shadow UI's 60Hz. Short
+ * enough to feel like a consequence of the press rather than a separate event,
+ * long enough that the direction is legible; at one or two frames a wipe is
+ * indistinguishable from an instant inversion and there is no reason to keep
+ * the machinery.
  */
-const SWITCH_TRAVEL_MS = 120;
+const SWITCH_FILL_MS = 70;
 
 export function drawSwitch(ctx, rect, key, values, metaIndex, anim, nowMs) {
     const raw = values ? values[key] : undefined;
@@ -1172,44 +1181,42 @@ export function drawSwitch(ctx, rect, key, values, metaIndex, anim, nowMs) {
     const sy = y + SLUG_INSET;
 
     /*
-     * THE TRACK BELONGS TO THE DESTINATION FROM FRAME ONE — it inverts on the
-     * flip and the slug catches up.
+     * THE SLUG BELONGS TO THE DESTINATION FROM FRAME ONE — it flips on the
+     * press, and the fill catches up to it.
      *
-     * Mid-travel the track has to be either filled-with-a-knockout (ON) or
-     * outlined-with-a-solid-slug (OFF); there is no half-inverted track on a
-     * 1-bit display, and dithering one would invent a third state. Giving those
-     * frames to the ORIGIN would mean the widget shows the old value for 120ms
-     * after the value changed, i.e. it lies about the state for the whole
-     * animation and then snaps. The value has already changed, so the ink that
-     * CARRIES the value changes with it; the slug's position is the part that
-     * is allowed to be in between, because a position in between is a real
-     * thing to look at. Practically it also reads better: the inversion is the
-     * event, and the travel is the follow-through.
+     * That is the important half of the contract, whichever thing is doing the
+     * moving: the widget must never show the OLD value after the value has
+     * changed. The slug's seat is the part of this drawing that a glance reads
+     * as the state, so it is not allowed to lag; the fill is decoration on top
+     * of an already-correct reading, so it is the part allowed to be in
+     * between. An interpolated boundary is a real thing to look at, and unlike
+     * the track's polarity it does not have to pick a side — there is no
+     * half-inverted track on a 1-bit display, but there is a perfectly good
+     * half-swept one.
      */
     /*
-     * ONE progress value drives both the slug and the fill, and it is what
-     * makes the settled states come out exactly right.
-     *
-     * p = 0 is fully OFF, p = 1 is fully ON. The slug sits at lerp(seat), and
-     * the fill reaches lerp(left wall, right wall) — so at p = 1 the fill hits
-     * the wall rather than stopping at the slug's trailing edge, which is what
-     * a literal "fill up to the slug" rule does and which left the last two
-     * columns of a settled ON switch drawn as outline. The pinned baseline
-     * caught that immediately: a static state is not allowed to change.
+     * `p` is the FILL only — 0 is fully OFF, 1 is fully ON — and it is what
+     * makes the settled states come out exactly right: at p = 1 the fill
+     * reaches the far wall rather than stopping at the slug's trailing edge,
+     * which is what a literal "fill up to the slug" rule does and which left
+     * the last two columns of a settled ON switch drawn as outline. The pinned
+     * baseline caught that immediately: a static state is not allowed to
+     * change.
      */
     let p = on ? 1 : 0;
     if (anim && typeof nowMs === "number") {
-        const tr = observe(anim, "switch:" + key, on ? 1 : 0, nowMs, SWITCH_TRAVEL_MS);
+        const tr = observe(anim, "switch:" + key, on ? 1 : 0, nowMs, SWITCH_FILL_MS);
         const from = Number(tr.from);
         if (tr.moving && Number.isFinite(from)) {
             /* `from` is a FRACTION of the way across, not a seat: observe()
-             * re-bases a numeric mid-flight so a switch flipped back before it
-             * arrived carries on from where it visually is instead of jumping
-             * to the far seat and starting again. */
+             * re-bases a numeric mid-flight so a switch flipped back before the
+             * fill finished carries on from where the boundary visually IS
+             * instead of snapping to the far wall and draining again. */
             p = lerp(from, on ? 1 : 0, easeOut(tr.t));
         }
     }
-    const sx = Math.round(lerp(seatOff, seatOn, p));
+    /* The seat, not an interpolation — see SWITCH_FILL_MS. */
+    const sx = on ? seatOn : seatOff;
     /*
      * ONE key and ONE duration now. The burst needed a second (300ms against
      * the travel's 120ms) because a flash outlives the movement that triggers
@@ -1219,15 +1226,15 @@ export function drawSwitch(ctx, rect, key, values, metaIndex, anim, nowMs) {
      */
 
     /*
-     * THE FILL IS WHATEVER THE SLUG HAS SWEPT.
+     * THE FILL IS A WIPE, AND IT RUNS BOTH WAYS.
      *
-     * One rule, and it runs both ways: the track is inverted from its left edge
-     * to the slug's trailing edge, and everything to the right of that is the
-     * outlined state. Turning ON, the slug travels left to right and the fill
-     * grows in behind it; turning OFF it travels back and the fill drains away
-     * with it. At rest the rule degenerates to the two static states — slug at
-     * the right means fully filled, slug at the left means fully outlined — so
-     * nothing special-cases the settled case.
+     * One rule: the track is inverted from its left wall out to a boundary, and
+     * everything to the right of that boundary is the outlined state. Turning
+     * ON the boundary travels left to right and the fill grows in; turning OFF
+     * it travels back and the fill drains away. At rest the rule degenerates to
+     * the two static states — boundary at the far wall means fully filled, at
+     * the near wall means fully outlined — so nothing special-cases the settled
+     * case.
      *
      * This replaces a burst. The burst was a decoration bolted onto the flip
      * and it had two faults the frames made obvious: on an ON flip the track is
@@ -1238,9 +1245,9 @@ export function drawSwitch(ctx, rect, key, values, metaIndex, anim, nowMs) {
      * and it says what the state change actually is, which a flash never did.
      */
     /* Wall to wall, not seat to seat: at p=1 this is x+w so the whole track is
-     * filled, and at p=0 it is x so none of it is. It tracks the slug closely
-     * enough to read as the fill following it, without inheriting the slug's
-     * inset at the endpoints. */
+     * filled, and at p=0 it is x so none of it is. Anchoring it to the slug's
+     * seats instead would inherit the 2px inset and leave the settled states
+     * two columns short at each end. */
     const sweepX = Math.round(lerp(x, x + w, p));
 
     /* Left of the sweep: the ON rendering. Right of it: the OFF rendering.

@@ -93,7 +93,7 @@ const SCENES = {
     },
     switch: {
         ms: 2400,
-        caption: "switch — slug travels, flip bursts",
+        caption: "switch — slug flips on the frame, fill wipes after it",
         at: (t, base) => ({
             ...base,
             lfo1_env_mode: t > 1800 ? "1" : (t > 1200 ? "0" : (t > 600 ? "1" : "0")),
