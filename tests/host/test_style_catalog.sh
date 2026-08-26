@@ -134,5 +134,37 @@ Promise.all([
     }
   }
   console.log("PASS: draw options stay in their boxes");
+
+  /* ---- Bradley-Terry recovers a ranking it was given ----
+   * A fit that silently returned input order, or noise, would otherwise look
+   * fine on real data where nobody knows the true answer. */
+  const R = await import("./tools/param-pages/rank.mjs");
+  const rows = [];
+  let seed = 12345;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  for (let i = 0; i < 400; i++) {
+    const a = Math.floor(rnd() * 5), b = Math.floor(rnd() * 5);
+    if (a === b) continue;
+    const better = a > b ? "a" : "b";
+    const worse = better === "a" ? "b" : "a";
+    rows.push({ set: "t", a: "o" + a, b: "o" + b, winner: rnd() < 0.9 ? better : worse });
+  }
+  const fitted = R.fit(rows);
+  const order = fitted.map((f) => f.id);
+  if (order[0] !== "o4" || order[order.length - 1] !== "o0")
+    fail("bradley-terry did not recover the planted order, got " + order.join(" > "));
+
+  /* skips must not count as evidence for either side */
+  const withSkips = rows.concat(Array.from({ length: 200 }, () =>
+    ({ set: "t", a: "o0", b: "o4", winner: "skip" })));
+  const fitted2 = R.fit(withSkips);
+  if (fitted2.map((f) => f.id).join() !== order.join())
+    fail("skips changed the ranking, they must be counted but not fitted");
+
+  /* zero judgements must not crash */
+  const empty = R.fit([]);
+  if (!Array.isArray(empty)) fail("fit([]) did not return an array");
+
+  console.log("PASS: bradley-terry recovers a known ranking");
 }).catch((e) => { console.log("FAIL: " + (e && e.stack || e)); process.exit(1); });
 '
