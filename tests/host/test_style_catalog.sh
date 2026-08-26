@@ -135,6 +135,115 @@ Promise.all([
   }
   console.log("PASS: draw options stay in their boxes");
 
+  /* ---- font options must not reproduce the shipping Elektron glyphs ----
+   * font4x5.mjs documents nine letterforms as read straight off Elektron
+   * screen. Replacing them is the concrete part of this issue, so it is
+   * asserted rather than assumed. */
+  const F4 = await import("./src/shared/param_pages/font4x5.mjs");
+  const fontSet = S.SETS.find((s) => s.kind === S.KIND_FONT);
+  if (fontSet) {
+    const CH = F4.CHARS;
+    const ELEKTRON = "ADEILMPTU";
+    for (const o of fontSet.options) {
+      if (o.glyphs.length !== CH.length)
+        fail(o.id + ": " + o.glyphs.length + " glyphs, want " + CH.length);
+      for (const g of o.glyphs) {
+        if (!Array.isArray(g) || g.length < 4)
+          fail(o.id + ": a glyph is malformed");
+      }
+      for (const letter of ELEKTRON) {
+        const i = CH.indexOf(letter);
+        if (i < 0) continue;
+        if (JSON.stringify(o.glyphs[i]) === JSON.stringify(F4.GLYPHS_FOR_TEST[i]))
+          fail(o.id + ": glyph " + letter + " is byte-identical to font4x5, which is the thing being replaced");
+      }
+    }
+    console.log("PASS: font sets differ from font4x5");
+  }
+
+  /* ---- a glyph must be able to DRAW what it declares ----
+   *
+   * A table is data, and the two ways it goes wrong are both invisible in a
+   * rendered specimen. A row bit set past the declared width draws nothing at
+   * all, because the blit scans while col < w -- so the glyph silently loses
+   * a stroke. A row count that disagrees with h reads undefined off the end,
+   * which is falsy, so every glyph in the option quietly drops its last row
+   * and a font one row short still looks like a font.
+   *
+   * The advance check is the third: an advance equal to the body width welds
+   * every glyph to its neighbour, and the shipping measurement function
+   * subtracts one from the total on the assumption that the advance already
+   * carries the inter-glyph gap. */
+  if (fontSet) {
+    for (const o of fontSet.options) {
+      for (let i = 0; i < o.glyphs.length; i++) {
+        const g = o.glyphs[i];
+        const adv = g[0], w = g[2], h = g[3];
+        const at = o.id + ": glyph " + JSON.stringify(F4.CHARS[i]);
+        /* A zero-width glyph is the space: font4x5 spells it [3, 0, 0, 5],
+         * h rows of nothing, and the blit reads undefined for each of them
+         * and skips. Only a glyph with a BODY has to carry its rows. */
+        if (w > 0 && g.length !== 4 + h)
+          fail(at + " declares h=" + h + " but carries " + (g.length - 4) + " row(s)");
+        if (w > 0 && adv <= w)
+          fail(at + " has advance " + adv + " for a " + w + "px body, so it would touch its neighbour");
+        for (let r = 0; r < h; r++)
+          if (g[4 + r] >> w)
+            fail(at + " row " + r + " sets a bit past its declared width " + w);
+      }
+    }
+    console.log("PASS: font glyph tables are self-consistent");
+  }
+
+  /* ---- the picture and the numbers must still agree ----
+   *
+   * Every row in those tables carries the authored form as a trailing
+   * comment, and the legend at the top of each file says the numbers are
+   * derived FROM the picture. That is a claim about two representations of
+   * the same glyph living in one line, and the failure mode is the ordinary
+   * one: somebody nudges a bit to fix a letterform and leaves the picture
+   * describing the letter that used to be there. Nothing downstream reads
+   * the comment, so the drift is silent and permanent, and the next person
+   * to edit that glyph is working from a wrong drawing.
+   *
+   * Checked against the SOURCE rather than the imported table, because the
+   * comment does not survive the import. */
+  {
+    const fs = await import("node:fs");
+    const dir = "./src/shared/param_pages/styles/font";
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith(".mjs") &&
+                                                    f !== "index.mjs" && f !== "blit.mjs");
+    if (files.length !== 10) fail("expected 10 font variant files, found " + files.length);
+    let checked = 0;
+    for (const f of files) {
+      const src = fs.readFileSync(dir + "/" + f, "utf8");
+      for (const line of src.split("\n")) {
+        const m = line.match(/^\s*\[([0-9,\s]+)\],\s*\/\*\s*(\S+)\s+([#.\s]+?)\s*\*\/\s*$/);
+        if (!m) continue;
+        const nums = m[1].split(",").map((n) => parseInt(n, 10));
+        const rows = m[3].split(/\s+/);
+        const w = nums[2], h = nums[3];
+        if (rows.length !== h)
+          fail(f + " " + m[2] + ": picture has " + rows.length + " row(s), table says h=" + h);
+        for (let r = 0; r < h; r++) {
+          let bits = 0;
+          if (rows[r].length !== w)
+            fail(f + " " + m[2] + ": picture row " + r + " is " + rows[r].length +
+                 "px, table says w=" + w);
+          for (let c = 0; c < w; c++) if (rows[r][c] === "#") bits |= (1 << c);
+          if (bits !== nums[4 + r])
+            fail(f + " " + m[2] + " row " + r + ": picture says " + bits +
+                 ", table says " + nums[4 + r] + " -- the two have drifted apart");
+        }
+        checked++;
+      }
+    }
+    /* 10 files x 58 glyphs: CHARS is 59 long and the space carries no
+     * picture, so it is not one of them. */
+    if (checked !== 580) fail("matched " + checked + " glyph lines, expected 580");
+    console.log("PASS: font glyph pictures match their numbers");
+  }
+
   /* ---- Bradley-Terry recovers a ranking it was given ----
    * A fit that silently returned input order, or noise, would otherwise look
    * fine on real data where nobody knows the true answer. */

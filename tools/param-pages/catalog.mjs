@@ -27,6 +27,8 @@ import { createFramebuffer, drawContext, SCREEN_WIDTH, SCREEN_HEIGHT } from "./h
 import * as S from "../../src/shared/param_pages/styles/index.mjs";
 import * as RM from "../../src/shared/param_pages/render_page_movy.mjs";
 import { buildMetaIndex } from "../../src/shared/param_pages/param_meta.mjs";
+import { fontPrint } from "../../src/shared/param_pages/styles/font/blit.mjs";
+import { GLYPHS_FOR_TEST as FONT4X5_GLYPHS } from "../../src/shared/param_pages/font4x5.mjs";
 import { resolveViz } from "../../src/shared/param_pages/viz.mjs";
 
 const ROOT = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))));
@@ -153,7 +155,41 @@ function paintProbe(set, ctx, draw, v) {
     draw(ctx, Math.floor((RM.CELL_W - RM.KW) / 2), 0, v);
 }
 
+/*
+ * THE SPECIMEN, for a KIND_FONT set.
+ *
+ * A font cannot be judged from a swatch of one glyph, and it cannot be judged
+ * from a pangram either: what has to be legible here is the specific strings
+ * this UI puts on a 128x64 screen. font4x5.mjs records the failure it was
+ * written to fix -- the 3-wide font before it "rendered MAIN as 'MAIK', SINE
+ * as 'SIKE', SAW as 'SAU'" -- so those three strings are drawn for every
+ * option and looked at, along with AMPLITUDE, which is the string the
+ * original Elektron measurement was taken from and which has to fit 128px.
+ *
+ * Each line is drawn at the LEFT MARGIN rather than centred, so the widths of
+ * ten options are directly comparable down a contact sheet, and the line that
+ * overruns 128px is the one that visibly runs off the right-hand edge instead
+ * of being quietly re-centred. Overrun is also counted: `clipped()` is summed
+ * by renderSet exactly as it is for a draw option, so a font too wide for the
+ * header fails the catalog run rather than looking merely cramped.
+ */
+const SPEC_PITCH = 7;   /* 5 rows of glyph, 2 clear -- the label band's own spacing */
+const SPEC_X = 1;
+
+function specimenStrings(set) {
+    return set.specimen || ["AMPLITUDE", "MAIN", "SINE", "SAW", "ATTACK", "KICK", "0123456789"];
+}
+
+function renderSpecimen(glyphs, set) {
+    const lines = specimenStrings(set);
+    const { fb, ctx } = surface(SCREEN_WIDTH, lines.length * SPEC_PITCH);
+    for (let i = 0; i < lines.length; i++)
+        fontPrint(ctx, SPEC_X, i * SPEC_PITCH, lines[i], 1, glyphs);
+    return fb;
+}
+
 function renderSwatch(opt, set) {
+    if (set.kind === S.KIND_FONT) return renderSpecimen(opt.glyphs, set);
     const size = probeSizeOf(set);
     const { fb, ctx } = surface(size.w, size.h);
     if (set.kind === S.KIND_DRAW) paintProbe(set, ctx, opt.draw, 0.62);
@@ -225,6 +261,15 @@ function renderSet(set, pageCase) {
         writePng(basePage.fb, path.join(dir, "baseline-page.png"), 4);
     }
 
+    if (set.kind === S.KIND_FONT) {
+        /* The NOW row is the shipping font drawn through the same specimen,
+         * which is the only way the nine traced letterforms are visible next
+         * to their replacements. */
+        const base = renderSpecimen(FONT4X5_GLYPHS, set);
+        writePng(base, path.join(dir, "baseline.png"), 4);
+        sheetFrames.push(sheetRow(base, "NOW"));
+    }
+
     let clippedTotal = 0;
     for (const opt of [...set.options].sort((a, b) => a.position - b.position)) {
         const tag = String(opt.position).padStart(2, "0") + "-" + opt.id;
@@ -233,6 +278,15 @@ function renderSet(set, pageCase) {
         writePng(sw, path.join(dir, tag + "-swatch.png"), 4);
         sheetFrames.push(sheetRow(sw, String(opt.position).padStart(2, "0")));
         clippedTotal += sw.clipped();
+
+        /* A KIND_FONT option gets no in-context render. renderPageMovy prints
+         * its labels through font4x5's own closed-over table, so substituting
+         * one would mean plumbing a font through the shipping renderer for
+         * the sake of a preview -- and the page would come back byte-identical
+         * ten times over, which reads as ten renders that all worked. The
+         * specimen is the judged surface here, and it is measured for overrun
+         * against the same 128px the header has. */
+        if (set.kind === S.KIND_FONT) continue;
 
         const pg = renderInContext(opt, set, pageCase, slots);
         writePng(pg, path.join(dir, tag + "-page.png"), 4);
