@@ -38,6 +38,7 @@ import { createController, LAYOUT_MOVY, LAYOUT_LIST }
     from "../../src/shared/param_pages/page_controller.mjs";
 import { createFramebuffer, drawContext } from "./harness.mjs";
 import { createHash } from "node:crypto";
+import { pathToFileURL } from "node:url";
 
 /*
  * A HASH per scenario, not the frame.
@@ -58,9 +59,37 @@ const digest = (fb) => createHash("sha256").update(Buffer.from(fb.pixels)).diges
 const KEYS = [];
 for (let i = 0; i < 24; i++) KEYS.push("p" + i);
 
-export const CHAIN_PARAMS = KEYS.map((k, i) => ({
-    key: k, name: "P" + i, type: "float", min: 0, max: 1, step: 0.01,
-}));
+/*
+ * ADSR + an enum + a filter pair, so resolveViz actually RESOLVES something.
+ *
+ * 24 plain floats produce no groups at all, which left the `viz:` plumbing
+ * threaded through drawPage in none of the recorded frames -- the fixture would
+ * have been green with that option dropped entirely. attack/decay/sustain/
+ * release are adjacent so the envelope detector takes them as one run, and
+ * cutoff/resonance give the filter detector its corroborated pair.
+ */
+const VIZ_KEYS = ["attack", "decay", "sustain", "release",
+                  "cutoff", "resonance", "lfo_shape", "sync"];
+
+export const CHAIN_PARAMS = [
+    ...KEYS.map((k, i) => ({
+        key: k, name: "P" + i, type: "float", min: 0, max: 1, step: 0.01,
+    })),
+    ...["attack", "decay", "sustain", "release", "cutoff", "resonance"].map((k) => ({
+        key: k, name: k[0].toUpperCase() + k.slice(1),
+        type: "float", min: 0, max: 1, step: 0.01,
+    })),
+    { key: "lfo_shape", name: "Shape", type: "enum",
+      options: ["Sine", "Tri", "Saw", "Square"] },
+    { key: "sync", name: "Sync", type: "enum", options: ["Off", "On"] },
+    /* The child level`s parameters. Metadata stays keyed by the BARE name --
+     * only the wire key is rewritten by childResolve -- so they are declared
+     * unprefixed here, which is what the real contracts do. */
+    ...["tune", "level"].map((k) => ({
+        key: k, name: k[0].toUpperCase() + k.slice(1),
+        type: "float", min: 0, max: 1, step: 0.01,
+    })),
+];
 
 export const HIER = {
     modes: null,
@@ -68,7 +97,11 @@ export const HIER = {
         root: {
             label: "T",
             knobs: KEYS,
-            params: CHAIN_PARAMS.map((p) => ({ key: p.key })),
+            params: [
+                ...KEYS.map((k) => ({ key: k })),
+                { level: "shape", label: "Shape" },
+                { level: "parts", label: "Parts" },
+            ],
             /* A MENU page. */
             menu: [{ level: "stuff", label: "Stuff" }],
             /* A PRESET page. */
@@ -78,6 +111,28 @@ export const HIER = {
         },
         /* An ITEMS page. */
         stuff: { label: "Stuff", items_param: "thing_list", select_param: "thing_index" },
+        /* A knob page whose graphics are REAL: an envelope, a filter pair and
+         * two enum squares. */
+        shape: {
+            label: "Shape",
+            knobs: VIZ_KEYS,
+            params: VIZ_KEYS.map((k) => ({ key: k })),
+        },
+        /*
+         * A CHILD LEVEL. pageLabel(mp) is the one signature this refactor
+         * changed -- it is what forced the test_child_levels.sh re-pin -- and
+         * its non-trivial branch (childLevel, s.pages.filter, childIndexFor)
+         * is only reachable from a level like this one. Without it the fixture
+         * exercised pageLabel`s `return pg.name` line and nothing else.
+         */
+        parts: {
+            label: "Parts",
+            child_count: 4,
+            child_prefix: "part",
+            child_label: "Part",
+            knobs: ["tune", "level"],
+            params: [{ key: "tune" }, { key: "level" }],
+        },
     },
 };
 
@@ -92,6 +147,18 @@ export const TITLE = "T";
 export function makeStore() {
     const store = {};
     for (const k of KEYS) store[k] = "0.5";
+    for (const k of VIZ_KEYS) store[k] = "0.5";
+    store.lfo_shape = "1";
+    store.sync = "1";
+    /* Both the bare and the child-resolved forms: childResolve rewrites the
+     * WIRE key, so a child page reads `part1_tune` while its metadata is still
+     * keyed `tune`. */
+    for (const k of ["tune", "level"]) {
+        store[k] = "0.5";
+        /* resolveChildKey`s index is 0-based (`<prefix><index>_<key>`), so the
+         * four instances are part0_ .. part3_ and NOT part1_ .. part4_. */
+        for (let i = 0; i < 4; i++) store[`part${i}_${k}`] = String(0.2 + 0.15 * i);
+    }
     store.preset = "0";
     store.preset_count = "12";
     store.preset_name = "Fat Bass";
@@ -142,21 +209,32 @@ export function frames() {
         }
 
         for (let i = 0; i < ctl.state.pages.length; i++) {
-            /* goToPage restores the SECTION, so it can land on a different
-             * page of it than the index handed over. Ask where we landed. */
-            ctl.goToPage(i);
+            /*
+             * `remember: false`, AND IT IS THE DIFFERENCE BETWEEN COVERING FOUR
+             * PAGES AND COVERING ALL OF THEM.
+             *
+             * goToPage restores the SECTION by default, so the six requests
+             * 0..5 landed on 0, 1, 1, 1, 4, 5 -- pages 2 and 3 were never
+             * rendered at all, and 42 scenario lines held 16 distinct frames.
+             * What that missed is the worst thing here to miss: 1/2/3 are one
+             * level`s three knob pages, i.e. a bank-bar GROUP spanning three
+             * positions, and drawBankBar(ctx, index, ...) is exactly what this
+             * refactor rethreaded. Only position 1 of it was recorded.
+             *
+             * Naming the frames after the requested index papered over that --
+             * it fixed the collision and left the coverage hole reading as
+             * coverage. Land on the page instead, and assert it.
+             */
+            ctl.goToPage(i, { remember: false });
             for (let n = 0; n < 6; n++) { clockRef.t += 18; ctl.tick(); }
             const j = ctl.state.pageIndex;
+            if (j !== i) throw new Error(`page ${i} did not land: got ${j}`);
             const pg = ctl.state.pages[j];
-            /* The name carries the REQUESTED index as well as the one we
-             * landed on: goToPage restores the section, so several requests
-             * resolve to the same page and a name built from `j` alone
-             * collides. A colliding name silently shrinks the baseline. */
 
             const fb = createFramebuffer();
             ctl.render(drawContext(fb), { title: TITLE, footer: FOOTER });
             out.push({
-                name: `${layoutName}/req${i}/${j}/${pg.kind}/plain`,
+                name: `${layoutName}/${j}/${pg.kind}/plain`,
                 frame: digest(fb),
             });
 
@@ -165,9 +243,24 @@ export function frames() {
             const fbNF = createFramebuffer();
             ctl.render(drawContext(fbNF), { title: TITLE });
             out.push({
-                name: `${layoutName}/req${i}/${j}/${pg.kind}/nofooter`,
+                name: `${layoutName}/${j}/${pg.kind}/nofooter`,
                 frame: digest(fbNF),
             });
+
+            /*
+             * An ENTERED door. Every door recorded above is inert, so the
+             * entered arm of each kind -- a highlighted row and no brackets --
+             * appeared in no frame of the baseline at all.
+             */
+            if (ctl.enterMenu()) {
+                const fbE = createFramebuffer();
+                ctl.render(drawContext(fbE), { title: TITLE, footer: FOOTER });
+                out.push({
+                    name: `${layoutName}/${j}/${pg.kind}/entered`,
+                    frame: digest(fbE),
+                });
+                ctl.exitMenu();
+            }
 
             /* The section picker: an overlay on the page set, drawn outside
              * drawPage and keeping its unconditional chrome. */
@@ -175,7 +268,7 @@ export function frames() {
             const fbP = createFramebuffer();
             ctl.render(drawContext(fbP), { title: TITLE, footer: FOOTER });
             out.push({
-                name: `${layoutName}/req${i}/${j}/${pg.kind}/picker`,
+                name: `${layoutName}/${j}/${pg.kind}/picker`,
                 frame: digest(fbP),
             });
             ctl.closePicker();
@@ -198,22 +291,27 @@ export function frames() {
      * behaviour instead.
      */
     for (const [layoutName, layout] of [["movy", LAYOUT_MOVY], ["list", LAYOUT_LIST]]) {
-        for (let i = 0; i < 8; i++) {
+        /* One controller per page: showHint LATCHES (dismissHint sets
+         * s.hintShown and every later showHint refuses), so the loop cannot
+         * reuse one. Bounded by the page count, never by a literal -- an
+         * `i < 8` cap here would silently stop recording past page 8. */
+        for (let i = 0; ; i++) {
             const clockRef = { t: 1000 };
             const ctl = makeController(clockRef, makeStore());
             ctl.setLayout(layout);
             ctl.load({ prefix: "synth" });
             for (let n = 0; n < 60; n++) { clockRef.t += 18; ctl.tick(); }
             if (i >= ctl.state.pages.length) break;
-            ctl.goToPage(i);
+            ctl.goToPage(i, { remember: false });
             for (let n = 0; n < 18; n++) { clockRef.t += 18; ctl.tick(); }
             const j = ctl.state.pageIndex;
+            if (j !== i) throw new Error(`hint page ${i} did not land: got ${j}`);
             if (ctl.state.pages[j].kind !== "knobs") continue;
             ctl.showHint(["one", "two"], "H");
             const fb = createFramebuffer();
             ctl.render(drawContext(fb), { title: TITLE, footer: FOOTER });
             out.push({
-                name: `${layoutName}/req${i}/${j}/knobs/hint`,
+                name: `${layoutName}/${j}/knobs/hint`,
                 frame: digest(fb),
             });
         }
@@ -223,6 +321,8 @@ export function frames() {
 }
 
 /* Run directly to emit a baseline. `name<TAB>sha256` per line. */
-if (process.argv[1] && process.argv[1].endsWith("page_frames.mjs")) {
+/* import.meta.url, not the basename of argv[1]: an `endsWith` on the name
+ * fires for any other file that happens to be called page_frames.mjs. */
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
     for (const f of frames()) console.log(f.name + "\t" + f.frame);
 }

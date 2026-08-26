@@ -30,69 +30,29 @@ import { createController, LAYOUT_MOVY, LAYOUT_LIST }
 import { createFramebuffer, drawContext } from "./tools/param-pages/harness.mjs";
 import { BAR_Y } from "./src/shared/param_pages/render_page_movy.mjs";
 import { RULE_Y } from "./src/shared/list_geometry.mjs";
-import { frames } from "./tools/param-pages/page_frames.mjs";
-import { makeController, makeStore, TITLE, FOOTER } from "./tools/param-pages/page_frames.mjs";
+/* ONE fixture, shared with the baseline driver. This file used to redefine
+   KEYS / CHAIN_PARAMS / HIER / the store / the controller factory alongside
+   these imports -- two definitions of one thing in one file, which is the drift
+   this repo keeps writing notes about, and it meant the assertions here and the
+   recorded baseline could describe different modules. */
+import { frames, makeController, makeStore, HIER, CHAIN_PARAMS, TITLE, FOOTER }
+  from "./tools/param-pages/page_frames.mjs";
 import { readFileSync } from "node:fs";
 
 let fail = 0;
 const ok = (c, m) => { console.log((c ? "PASS" : "FAIL") + ": " + m); if (!c) fail++; };
 
-const FOOT = [["CLK", "OPEN"]];
-const OPTS = () => ({ title: "T", footer: FOOT });
+const OPTS = () => ({ title: TITLE, footer: FOOTER });
 
-/* Enough params for three knob pages, so there is a page to slide to and a
-   third to chase onto. The menu / items / preset pages are declared alongside
-   them so ONE fixture exercises all four kinds -- chrome:false was gated per
-   kind at five separate call sites, so a fixture with only knob pages would
-   leave four of them unmeasured. */
-const KEYS = [];
-for (let i = 0; i < 24; i++) KEYS.push("p" + i);
-const CHAIN_PARAMS = KEYS.map((k, i) => ({
-  key: k, name: "P" + i, type: "float", min: 0, max: 1, step: 0.01,
-}));
-const HIER = {
-  modes: null,
-  levels: {
-    root: {
-      label: "T",
-      knobs: KEYS,
-      params: CHAIN_PARAMS.map((p) => ({ key: p.key })),
-      menu: [{ level: "stuff", label: "Stuff" }],
-    },
-    /* An ITEMS page: a selection level. */
-    stuff: { label: "Stuff", items_param: "thing_list", select_param: "thing_index" },
-  },
-};
-/* A PRESET page: a level carrying list/count/name params. */
-HIER.levels.root.list_param = "preset";
-HIER.levels.root.count_param = "preset_count";
-HIER.levels.root.name_param = "preset_name";
-
-let clock = 1000;
-const store = {};
-for (const k of KEYS) store[k] = "0.5";
-store.preset = "0";
-store.preset_count = "12";
-store.preset_name = "Fat Bass";
-store.thing_list = JSON.stringify(["Alpha", "Beta", "Gamma"]);
-store.thing_index = "1";
-
-const mkCtl = () => createController({
-  getParam: (k) => {
-    const b = String(k).replace(/^[^:]+:/, "");
-    if (b === "ui_hierarchy") return JSON.stringify(HIER);
-    if (b === "chain_params") return JSON.stringify(CHAIN_PARAMS);
-    return b in store ? store[b] : "";
-  },
-  setParam: () => {},
-  announce: () => {},
-  now: () => clock,
-});
+const clockRef = { t: 1000 };
+let clock = 1000;                        /* kept in step with clockRef below */
+const bump = (n) => { clock += n; clockRef.t = clock; };
+const mkCtl = () => makeController(clockRef, makeStore());
 
 const ctl = mkCtl();
 ctl.setLayout(LAYOUT_MOVY);
 ctl.load({ prefix: "synth" });
-for (let i = 0; i < 60; i++) { clock += 18; ctl.tick(); }
+for (let i = 0; i < 60; i++) { bump(18); ctl.tick(); }
 
 ok(ctl.state.pages.length >= 3, "the fixture plans at least three pages");
 
@@ -136,7 +96,13 @@ ok(key(drawAt(cur)) === key(shot()),
    bar position, the entered flag, pageLabel. A mere "the two frames differ"
    check passes with any of those still wrong. */
 const kinds = {};
-for (let i = 0; i < ctl.state.pages.length; i++) kinds[ctl.state.pages[i].kind] = i;
+for (let i = 0; i < ctl.state.pages.length; i++) {
+  /* FIRST index of each kind, not the last. Last-wins put kinds.knobs at the
+     final knob page, and settle() -- which restored the section -- then landed
+     back on the first, so indices 2 and 3 were never drawn by this loop at all,
+     the same coverage hole the baseline driver had. */
+  if (!(ctl.state.pages[i].kind in kinds)) kinds[ctl.state.pages[i].kind] = i;
+}
 const kindNames = Object.keys(kinds).sort();
 ok(kindNames.length >= 3,
    "the fixture covers several page kinds (" + kindNames.join(",") + ")");
@@ -149,24 +115,33 @@ ok(kindNames.length >= 3,
    two, which is the whole point of the check: the residue after warming can
    only be the index. */
 for (let i = 0; i < ctl.state.pages.length; i++) {
-  ctl.goToPage(i);
-  for (let n = 0; n < 12; n++) { clock += 18; ctl.tick(); }
+  ctl.goToPage(i, { remember: false });
+  for (let n = 0; n < 12; n++) { bump(18); ctl.tick(); }
 }
-ctl.goToPage(cur);
-for (let n = 0; n < 12; n++) { clock += 18; ctl.tick(); }
+ctl.goToPage(cur, { remember: false });
+for (let n = 0; n < 12; n++) { bump(18); ctl.tick(); }
 
 /* GO FIRST, THEN ASK WHERE YOU LANDED. goToPage restores the section, so with
    `remember` on it can land on a different page of the section than the index
    handed to it -- that is documented behaviour, and taking the argument as the
    destination silently compared two different knob pages here. */
+/* `remember: false` so the index asked for is the index reached -- section
+   restore is what collapsed six requests onto four pages. Every caller below
+   still checks where it landed, because a clamp can also move it. */
 const settle = (i) => {
-  ctl.goToPage(i);
-  for (let n = 0; n < 6; n++) { clock += 18; ctl.tick(); }
+  ctl.goToPage(i, { remember: false });
+  for (let n = 0; n < 6; n++) { bump(18); ctl.tick(); }
   return ctl.state.pageIndex;
 };
 
-for (const kind of kindNames) {
-  const j = settle(kinds[kind]);
+/* EVERY page, not one per kind. One kind per page misses the interior pages of
+   a multi-page level, which is exactly where the bank-bar group spans. */
+const everyIndex = [];
+for (let i = 0; i < ctl.state.pages.length; i++) everyIndex.push(i);
+for (const want of everyIndex) {
+  const kind = ctl.state.pages[want].kind + "@" + want;
+  const j = settle(want);
+  ok(j === want, kind + ": settled on the page that was named");
   const on = key(shot());                     /* drawn while current */
   /* Leave, then draw the same page from where we are now. */
   const away = settle(j === cur ? kinds.menu : cur);
@@ -204,7 +179,7 @@ for (const kind of kindNames) {
 const ctlL = mkCtl();
 ctlL.setLayout(LAYOUT_LIST);
 ctlL.load({ prefix: "synth" });
-for (let i = 0; i < 60; i++) { clock += 18; ctlL.tick(); }
+for (let i = 0; i < 60; i++) { bump(18); ctlL.tick(); }
 let listIdx = -1;
 for (let i = 0; i < ctlL.state.pages.length; i++) {
   if (ctlL.state.pages[i].kind === "knobs") { listIdx = i; break; }
@@ -214,7 +189,7 @@ ok(listIdx >= 0, "the list-layout fixture has a knob page to draw as rows");
   const fbC = createFramebuffer();
   ctlL.drawPage(drawContext(fbC), listIdx, OPTS());
   ctlL.goToPage(listIdx);
-  for (let n = 0; n < 4; n++) { clock += 18; ctlL.tick(); }
+  for (let n = 0; n < 4; n++) { bump(18); ctlL.tick(); }
   const fbR = createFramebuffer();
   ctlL.render(drawContext(fbR), OPTS());
   ok(key(fbC) === key(fbR), "knobs-as-list: drawPage equals the ordinary render");
@@ -338,10 +313,16 @@ ok(listIdx >= 0, "the list-layout fixture has a knob page to draw as rows");
   const inert = new Map();
   for (const d of doors) inert.set(d, key(drawAt(d)));
 
+  /* COUNT WHAT WAS ACTUALLY EXERCISED. Both `continue`s below are silent: if
+     section restore moved every door, or nothing could be entered, this block
+     ran zero assertions and passed -- which is the failure mode this file`s
+     commit message says it fixed, reintroduced one layer out. */
+  let exercised = 0;
   for (const host of doors) {
     const j = settle(host);
     if (j !== host) continue;              /* landed elsewhere; skip this host */
     if (!ctl.enterMenu()) continue;        /* nothing to enter on this one */
+    exercised++;
     ok(ctl.state.pageIndex === j, "the entered door page is still the current one");
     for (const d of doors) {
       if (d === j) continue;
@@ -351,6 +332,8 @@ ok(listIdx >= 0, "the list-layout fixture has a knob page to draw as rows");
     }
     ctl.exitMenu();
   }
+  ok(exercised >= 2,
+     "the entered-qualifier case was actually set up, on " + exercised + " door(s)");
 
   /* And the knobs-as-list fork, which is a fifth site with its own copy of the
      qualifier: enter one knob page in LAYOUT_LIST, draw another from it. */
@@ -361,7 +344,7 @@ ok(listIdx >= 0, "the list-layout fixture has a knob page to draw as rows");
   ok(lk.length >= 2, "the list fixture has two knob pages");
   const settleL = (i) => {
     ctlL.goToPage(i);
-    for (let n = 0; n < 6; n++) { clock += 18; ctlL.tick(); }
+    for (let n = 0; n < 6; n++) { bump(18); ctlL.tick(); }
     return ctlL.state.pageIndex;
   };
   ctlL.exitMenu();
@@ -415,6 +398,10 @@ ok(listIdx >= 0, "the list-layout fixture has a knob page to draw as rows");
   for (let i = 0; i < h.state.pages.length; i++) {
     if (h.state.pages[i].kind === "knobs" && knobIdx < 0) knobIdx = i;
   }
+  /* Without this, knobIdx stays -1, drawPage draws nothing, and `vsMenu >
+     vsKnobs` compares the menu against a near-blank frame -- which it beats
+     easily, for no reason connected to the hint. */
+  ok(knobIdx >= 0, "the hint fixture has a knob page to contrast against");
   const plainKnobs = createFramebuffer();
   h.drawPage(drawContext(plainKnobs), knobIdx, { title: TITLE, footer: FOOTER });
 
@@ -439,6 +426,103 @@ ok(listIdx >= 0, "the list-layout fixture has a knob page to draw as rows");
   ok(vsMenu > vsKnobs,
      "a hint over a MENU page draws the menu underneath, not the knob grid (" +
      vsMenu + " rows match the menu vs " + vsKnobs + " the grid)");
+}
+
+/* ------------------------------------------------------------------------ *
+ * AN INDEX OFF THE END DRAWS NOTHING.
+ *
+ * pageLabel falls back to `p || page()`, so a null page reached it and it
+ * answered with the CURRENT page`s label: an out-of-range draw emitted a header
+ * band of ink over an empty body -- the wrong page`s name, confidently.
+ *
+ * The slide composite asks for `base` and `base + 1`, so it hits -1 and
+ * s.pages.length at the two ends of the page set every time somebody jogs past
+ * either. Asserted as ZERO INK on the pixel buffer, since "it returned early"
+ * is not observable and "it did not throw" was already true of the bug.
+ * ------------------------------------------------------------------------ */
+{
+  const inkOf = (idx) => {
+    const fb = createFramebuffer();
+    ctl.drawPage(drawContext(fb), idx, OPTS());
+    let n = 0;
+    for (let i = 0; i < fb.pixels.length; i++) if (fb.pixels[i]) n++;
+    return n;
+  };
+  const last = ctl.state.pages.length;
+  ok(inkOf(-1) === 0, "drawPage(-1) draws nothing at all (" + inkOf(-1) + " px)");
+  ok(inkOf(last) === 0,
+     "drawPage(length) draws nothing at all (" + inkOf(last) + " px)");
+  ok(inkOf(99) === 0, "drawPage(99) draws nothing at all (" + inkOf(99) + " px)");
+  /* And a real index still draws, so "zero ink" is not passing because the
+     whole draw path is broken. */
+  ok(inkOf(cur) > 0, "a real index still draws (" + inkOf(cur) + " px)");
+}
+
+/* ------------------------------------------------------------------------ *
+ * A CHILD-LEVEL PAGE RESOLVES ITS KEYS AGAINST ITS OWN LEVEL.
+ *
+ * childResolve read page() unconditionally. Invisible while every caller drew
+ * the current page; a real defect once drawPage takes an index, because the
+ * host formatter is then asked about `synth:tune` -- or worse, about the
+ * CURRENT child`s `synth:part1_tune` -- for a page belonging to part 2.
+ *
+ * Driven through the formatter, which is the only place the resolved wire key
+ * is observable: record every key it is asked about while drawing the child
+ * page from somewhere else, and require them to carry that page`s own prefix.
+ * ------------------------------------------------------------------------ */
+{
+  const asked = [];
+  const clk = { t: 1000 };
+  const store = makeStore();
+  const c = createController({
+    getParam: (k) => {
+      const b = String(k).replace(/^[^:]+:/, "");
+      if (b === "ui_hierarchy") return JSON.stringify(HIER);
+      if (b === "chain_params") return JSON.stringify(CHAIN_PARAMS);
+      return b in store ? store[b] : "";
+    },
+    setParam: () => {},
+    announce: () => {},
+    now: () => clk.t,
+    formatValue: (fk, raw) => { asked.push(fk); return raw; },
+  });
+  c.setLayout(LAYOUT_MOVY);
+  c.load({ prefix: "synth" });
+  for (let n = 0; n < 60; n++) { clk.t += 18; c.tick(); }
+
+  /* The child level plans a selector page and then its parameter pages. Find a
+     knob page that belongs to it. */
+  let childPage = -1;
+  for (let i = 0; i < c.state.pages.length; i++) {
+    const pg = c.state.pages[i];
+    if (pg.kind === "knobs" && pg.childLevel) { childPage = i; break; }
+  }
+  ok(childPage >= 0, "the fixture plans a child-level knob page");
+
+  /* Stand somewhere that is NOT the child page and NOT on its level. */
+  let elsewhere = -1;
+  for (let i = 0; i < c.state.pages.length; i++) {
+    const pg = c.state.pages[i];
+    if (pg.kind === "knobs" && !pg.childLevel) { elsewhere = i; break; }
+  }
+  ok(elsewhere >= 0, "and an ordinary knob page to stand on");
+  c.goToPage(elsewhere, { remember: false });
+  for (let n = 0; n < 12; n++) { clk.t += 18; c.tick(); }
+  ok(c.state.pageIndex === elsewhere, "standing off the child level");
+
+  asked.length = 0;
+  const fb = createFramebuffer();
+  c.drawPage(drawContext(fb), childPage, OPTS());
+  const childKeys = c.state.pages[childPage].keys.filter(Boolean);
+  ok(asked.length > 0, "the formatter was consulted while drawing the child page");
+  const unresolved = asked.filter(
+    (fk) => childKeys.some((k) => fk === "synth:" + k));
+  ok(unresolved.length === 0,
+     "no key reached the formatter UNRESOLVED (" + unresolved.join(",") + ")");
+  const resolved = asked.filter((fk) => /^synth:part\d+_/.test(fk));
+  ok(resolved.length > 0,
+     "the child page`s keys reached the formatter child-resolved (" +
+     resolved.slice(0, 3).join(",") + ")");
 }
 
 process.exit(fail ? 1 : 0);
