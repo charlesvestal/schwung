@@ -142,11 +142,27 @@ export function slideOffsets(frac, width) {
 }
 
 /**
- * How close to the target counts as arrived: HALF A PIXEL at the rendered
- * width, which is exactly the point where `slideOffsets`' `Math.round` stops
- * producing a different offset. Below it we would be "still moving" while
- * rendering a pixel-identical frame -- and each of those frames costs two full
- * page renders for no visible change.
+ * How close to the target counts as arrived: ONE PIXEL at the rendered width.
+ *
+ * IT WAS HALF A PIXEL, AND THAT WAS REPORTED FROM THE DEVICE AS THE PAGE
+ * "GOING ONE PIXEL TOO FAR AND SNAPPING BACK". The old reasoning sounded right
+ * and was subtly wrong: half a pixel is where `slideOffsets`' `Math.round`
+ * stops producing a different offset, so below it the frame is pixel-identical
+ * and the motion really is over.
+ *
+ * What it misses is the band JUST ABOVE it. While the remaining travel sits
+ * between 0.5px and 1.5px, Math.round renders the incoming page ONE PIXEL
+ * SHORT of home -- correct arithmetic, and a picture with a 1px sliver of the
+ * OUTGOING page still showing at the left edge. An exponential tail dawdles
+ * through that band: at 160ms it drew x=1 for two consecutive frames (~34ms)
+ * and then jumped the last pixel. Held-then-jumped is what the eye reads as an
+ * overshoot.
+ *
+ * One pixel is the honest threshold, because one pixel is the smallest thing
+ * the panel can express.
+ *
+ * `EASED_TAUS_TO_SNAP` derives from this, so changing it changes what every
+ * duration means -- intended, and why the derivation is in code not a literal.
  *
  * 128 is hardcoded here while `slideOffsets` takes `width` as a parameter.
  * That asymmetry is deliberate and bounded: 128 is the only width this ships
@@ -154,7 +170,7 @@ export function slideOffsets(frac, width) {
  * so explicitly rather than so the width can vary. If a second width ever
  * appears, thread it through instead of scaling this constant.
  */
-const SNAP_PAGES = 0.5 / 128;
+const SNAP_PAGES = 1 / 128;
 
 /** Is a page change still in flight at scroll position `pos`? */
 export function isSliding(pos) {
@@ -216,7 +232,22 @@ export function advanceLinear(pos, target, dtMs, ms) {
     if (Math.abs(d) <= SNAP_PAGES) return target;
     const step = dtMs / ms;
     if (step >= Math.abs(d)) return target;
-    return d > 0 ? pos + step : pos - step;
+    const next = d > 0 ? pos + step : pos - step;
+    /*
+     * A STEP THAT CANNOT MOVE THE PICTURE ENDS THE SLIDE.
+     *
+     * The distance threshold is not enough on its own: an exponential tail
+     * keeps returning positions further than a pixel from home while the STEP
+     * between them has already fallen below one pixel, so Math.round renders
+     * two consecutive frames identically. Measured at 280ms eased: ...3 2 2 1 0.
+     *
+     * Steps are non-increasing for both advances (constant for linear, decaying
+     * for eased), so once one step is invisible every later one is too -- there
+     * is no progress left to draw. A duration so long that even the FIRST step
+     * is sub-pixel correctly becomes a cut; at 16.7ms/frame that is past 2s.
+     */
+    if (Math.abs(next - pos) < SNAP_PAGES) return target;
+    return next;
 }
 
 /**
@@ -263,7 +294,22 @@ export function advanceEased(pos, target, dtMs, ms) {
     const d = target - pos;
     if (Math.abs(d) <= SNAP_PAGES) return target;
     const next = pos + d * (1 - Math.exp(-dtMs / (ms / EASED_TAUS_TO_SNAP)));
-    return Math.abs(target - next) <= SNAP_PAGES ? target : next;
+    if (Math.abs(target - next) <= SNAP_PAGES) return target;
+    /*
+     * A STEP THAT CANNOT MOVE THE PICTURE ENDS THE SLIDE.
+     *
+     * The distance threshold is not enough on its own: an exponential tail
+     * keeps returning positions further than a pixel from home while the STEP
+     * between them has already fallen below one pixel, so Math.round renders
+     * two consecutive frames identically. Measured at 280ms eased: ...3 2 2 1 0.
+     *
+     * Steps are non-increasing for both advances (constant for linear, decaying
+     * for eased), so once one step is invisible every later one is too -- there
+     * is no progress left to draw. A duration so long that even the FIRST step
+     * is sub-pixel correctly becomes a cut; at 16.7ms/frame that is past 2s.
+     */
+    if (Math.abs(next - pos) < SNAP_PAGES) return target;
+    return next;
 }
 
 /**
@@ -303,5 +349,5 @@ export function drawSlide(ctx, { fromDx, toDx, drawFrom, drawTo, drawChrome }) {
  * drive if one is ever added, and 0 is the value that would disable the
  * animation (see advanceLinear -- a duration of 0 arrives immediately).
  */
-export const SLIDE_MS = 90;
+export const SLIDE_MS = 160;
 export const advanceScroll = advanceEased;
