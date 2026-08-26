@@ -131,13 +131,41 @@ static void loader_thread_demote(void) {
     struct sched_param sp;
     memset(&sp, 0, sizeof(sp));
 
+    /*
+     * BOTH CALLS, THEN VERIFY — and the verification is the point.
+     *
+     * The first version called only sched_setscheduler() and trusted it. On
+     * hardware 2026-08-27 it did not take: the audit reported this very thread
+     * as `schwung-loader` at SCHED_FIFO 45 — realtime, and above Move's
+     * `Link Main` at 35, i.e. precisely the harm this whole file exists to
+     * remove. The affinity call two lines below succeeded on the same thread in
+     * the same function, so this was not a missing _GNU_SOURCE or a
+     * non-Linux build; the scheduler call itself failed, silently, and
+     * everything downstream assumed it had worked.
+     *
+     * The comment above already warned that "the two mechanisms fail
+     * differently and neither one reports failing" — and then nothing checked.
+     * That was the actual defect, so now it checks and says so.
+     *
+     * pthread_setschedparam() is tried first because it is the call minijv
+     * uses on this same device, from this same context, successfully.
+     */
+    pthread_setschedparam(pthread_self(), SCHED_OTHER, &sp);
 #ifdef __linux__
     sched_setscheduler(0, SCHED_OTHER, &sp);
-#else
-    /* Dev machines (macOS) have no sched_setscheduler; the POSIX per-thread
-     * call says the same thing. The device is Linux, so the line above is the
-     * one that matters — this keeps the file buildable for the host tests. */
-    pthread_setschedparam(pthread_self(), SCHED_OTHER, &sp);
+
+    {
+        int pol = sched_getscheduler(0);
+        if (pol != -1 && pol != SCHED_OTHER) {
+            /* Loud, once per loader thread. A realtime loader silently
+             * re-creates the bug for every plugin thread born from create. */
+            char msg[160];
+            snprintf(msg, sizeof(msg),
+                     "chain loader: FAILED to leave realtime (policy %d) — "
+                     "plugin threads created here will inherit it", pol);
+            chain_loader_note_demote_failed(msg);
+        }
+    }
 #endif
 
 #ifdef __linux__
