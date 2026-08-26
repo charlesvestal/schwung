@@ -930,6 +930,84 @@ shared `saveMasterFxChainConfig()` sink (derived from the routing table, never
 hand-listed), a key-specific saver welded to the assignment, or backend-owned.
 Stored values are **not** indexes — `resample_bridge` stores 0 and **2**.
 
+### A timed-out read empties NOTHING, and latches nothing
+
+`loadChainConfigFromSlot`'s `readPosition` was `moduleId && moduleId !== ""`,
+which puts `null` (the read did not complete) in the same branch as `""` (the
+position is empty) — the comment there said so, having considered only the
+unserved case. Loading a module blocks the SPI callback (the thread that also
+serves param requests) and `applyComponentSelectionConfirmed` re-syncs
+**immediately after its fire-and-forget module write**, i.e. inside that
+window. So the position read `null`, was recorded as EMPTY, and
+`chainConfigFresh[slot] = true` declared it authoritative — *"clean by
+definition once it returns"* was true of the call, not of the answer.
+
+An empty box in the diagram is a `+`, so the position the user had just filled
+opened the **module picker** instead of the editor.
+
+**It takes a SECOND defect to make that permanent**, and this is the part worth
+remembering: the module signature is a separate set of reads taken milliseconds
+later, and they straddled the end of the load. The config read stale-empty; the
+signature read the real module. `applySlotModuleSignature` reloads the config
+only when the signature **changes** — so the *correct* read is what did the
+damage, by matching, and a correct signature never changes again. Osirus logged
+a clean 124 ms load at 13:48:53.700–.824 and the editor still drew the position
+empty fifteen seconds later, while slot settings — same key, different path —
+said "Synth Virus".
+
+Now: a failed read keeps the position it had, leaves the slot **un-fresh** so
+the next frame re-reads, and `getSlotModuleSignature` answers **null** rather
+than inventing an empty chain (`applySlotModuleSignature` refuses null). A
+failed `*_count` keeps the section length — 0 from a timeout truncates the whole
+section, not one position.
+
+Falling out of it for free: the picker writes the chosen module into
+`chainConfigs` **before** the DSP write, so "what we already had" during the
+load window *is* the module just picked — the box shows it throughout, and
+there is no loading state to maintain. `tests/host/test_chain_config_read_failure.sh`
+lifts the real functions and drives that sequence, reads failing on frame 1 and
+landing on frame 2.
+
+### A component editor WAITS; it does not decide from one read
+
+Opening a component's editor used to be one read of `<prefix>:ui_hierarchy` and
+`if (!hierarchy) enterComponentEditFallback(...)` — which is the three-answers
+defect one layer above the controller that solves it, and the fallback is
+irreversible. For MiniJV and Osirus, the two slowest things in the fleet to
+come up, that drew an editor with **nothing in it**: neither ships a
+`ui_chain.js`, so the fallback lands on the bare preset browser, and the preset
+reads it makes there fail for the same reason the hierarchy read did.
+
+What made the entry the wrong place to give up is that **everything which knows
+how to wait is behind it** — the grid's `Loading...` hold, its bounded contract
+retry, its ten-second recovery probe, the list editor's `is_loading` re-fetch.
+
+`src/shared/component_load_gate.mjs` answers **ENTER / HOLD / FALLBACK**, and
+`openComponentEditor` (`shadow_ui.js`) is the one gate both editors — slot
+chain and Master FX — enter through. HOLD raises `VIEWS.COMPONENT_LOADING`
+("Loading...", `Back: exit`) and asks again: ~0.5 s apart for ~20 s, then every
+ten seconds for as long as the screen is up. **There is no give-up-and-show-the
+-fallback ending**, on purpose — a blank editor is the failure being fixed.
+
+**The empty answer needs a second question.** A module that declares no
+hierarchy and a position whose module has not finished arriving BOTH answer
+`""`. `<prefix>_module` separates them: the chain host publishes the name only
+after `create_instance` returns (`chain_host.c:504`). Named + no hierarchy
+falls back **immediately**, so the well-behaved fleet never sees the hold, and
+entering still costs the one read it always did (`module` and `is_loading` are
+read lazily, on the ambiguous branch only).
+
+The wait is view-agnostic — it sits in front of the destination choice, so it
+works with Param View on Knobs or List and with the screen reader on — and it
+is drawn and serviced on **both** draw paths, main and co-run. The probe runs
+*before* the dispatch, so a probe that lands opens the editor on that frame.
+`tests/host/test_component_load_hold_wiring.sh` pins all of that from source;
+`test_component_load_gate.sh` unit-tests the decision, including that a named
+module with no hierarchy is **not** held.
+
+Not a regression: the old gate is byte-identical at `v0.11.6`. What changed is
+how long these two modules take to answer.
+
 ### Shortcuts
 
 Shadow UI access gated by **Global Settings → Shortcuts → Shadow UI Trigger** (`shadow_ui_trigger` in `features.json`): `Both` (default) / `Long Press` / `Shift+Vol`.
