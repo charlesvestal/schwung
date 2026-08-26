@@ -708,11 +708,33 @@ export function drawMenuList({
      */
     if (startIdx > 0 || endIdx < totalItems) {
         const trackX = SCREEN_WIDTH - 2;
-        const trackH = resolvedBottomY - resolvedTopY;
+        /*
+         * THE TRACK COVERS THE ROWS, NOT THE RECT.
+         *
+         * Run to resolvedBottomY and it overhangs: the rect is 10..54 but the
+         * last row's glyphs end at 52, so the final dot sat two rows below
+         * anything it was measuring, flush at the top and adrift at the bottom.
+         * Reported from a whole-screen render — and only visible there, which
+         * is why the earlier crop missed it.
+         *
+         * The row ink height is DERIVED from the highlight rather than restated:
+         * the highlight covers the glyphs plus `highlightOffset` above and
+         * below, so the glyphs themselves are `highlightHeight - 2 * offset`.
+         * A caller that changes either moves the track with them.
+         *
+         * Measured on the WINDOW, not on the items currently visible. At the
+         * end of a list keepOffLastRow draws one row fewer, and a track that
+         * shortened as you reached the bottom would read as the list itself
+         * shrinking.
+         */
+        const rowInk = Math.max(1, itemHighlightHeight - 2 * highlightOffset);
+        const trackBottom = Math.min(resolvedBottomY,
+            resolvedTopY + (effectiveMaxVisible - 1) * itemHeight + rowInk);
+        const trackH = trackBottom - resolvedTopY;
         /* Dotted, so the track reads as the extent of the list and the thumb as
          * a solid object on it. A solid track would make a second rule down the
          * edge of every scrolling screen. */
-        for (let y = resolvedTopY; y < resolvedBottomY; y += 2) px(ctx, trackX, y, 1);
+        for (let y = resolvedTopY; y < trackBottom; y += 2) px(ctx, trackX, y, 1);
         const visible = endIdx - startIdx;
         const thumbH = Math.max(2, Math.round((visible / totalItems) * trackH));
         const maxStart = totalItems - visible;
