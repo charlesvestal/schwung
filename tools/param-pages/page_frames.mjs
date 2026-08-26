@@ -189,6 +189,28 @@ export function makeController(clockRef, store) {
  * chrome, so if the bank bar or the footer stopped being drawn here, they
  * stopped being drawn on the device.
  */
+
+/*
+ * LET THE SLIDE FINISH INSIDE THE TICKS WE ALREADY TAKE.
+ *
+ * A page change starts a slide, so a frame captured too early is a MID-SLIDE
+ * composite and every baseline hash moves at once -- which reads as a
+ * rendering regression and is a still-moving page.
+ *
+ * The obvious fix, ticking until it settles, is WRONG here: every tick is also
+ * one parameter read, so extra ticks populate more of `s.values` and the page
+ * genuinely draws different values. The tick count in this driver is
+ * load-bearing and must not change.
+ *
+ * So jump the CLOCK instead and let the first of the existing ticks see a huge
+ * dt: the advance lands on its target in one step. Same ticks, same reads,
+ * settled picture. Harmless on the pre-refactor tree, which has no slide and
+ * whose read cursor is driven by tick COUNT, not by the clock.
+ */
+function preSettleClock(clockRef) {
+    clockRef.t += 1000;
+}
+
 export function frames() {
     const out = [];
 
@@ -226,6 +248,7 @@ export function frames() {
              * coverage. Land on the page instead, and assert it.
              */
             ctl.goToPage(i, { remember: false });
+            preSettleClock(clockRef);
             for (let n = 0; n < 6; n++) { clockRef.t += 18; ctl.tick(); }
             const j = ctl.state.pageIndex;
             if (j !== i) throw new Error(`page ${i} did not land: got ${j}`);
@@ -303,6 +326,7 @@ export function frames() {
             for (let n = 0; n < 60; n++) { clockRef.t += 18; ctl.tick(); }
             if (i >= ctl.state.pages.length) break;
             ctl.goToPage(i, { remember: false });
+            preSettleClock(clockRef);
             for (let n = 0; n < 18; n++) { clockRef.t += 18; ctl.tick(); }
             const j = ctl.state.pageIndex;
             if (j !== i) throw new Error(`hint page ${i} did not land: got ${j}`);

@@ -134,10 +134,31 @@ for (let n = 0; n < 12; n++) { bump(18); ctl.tick(); }
 /* `remember: false` so the index asked for is the index reached -- section
    restore is what collapsed six requests onto four pages. Every caller below
    still checks where it landed, because a clamp can also move it. */
+/*
+ * SETTLE ON THE CONDITION, NEVER ON A TICK COUNT.
+ *
+ * This was `for (n = 0; n < 6; n++)`, which is enough frames for a 90ms slide
+ * and not for a 160ms one -- so changing SLIDE_MS turned eight assertions red
+ * with a diff that looked like a rendering regression and was actually a
+ * still-moving page. A count couples every pixel assertion in this file to a
+ * constant it does not name, and the failure blames the wrong thing.
+ *
+ * The bound is a backstop against a non-settling advance, not a duration: it
+ * is asserted separately, so a slide that never lands fails as itself rather
+ * than as a wrong picture.
+ */
+const settleWith = (c) => {
+  let n = 0;
+  while (c.state.scrollPos !== c.state.pageIndex && n < 200) { bump(18); c.tick(); n++; }
+  if (n >= 200) fail("a slide did not settle in 200 ticks -- the advance is not landing");
+  /* One extra tick past arrival: the read rotation and the prefetch lane both
+     act on the tick AFTER the page change, and some assertions read values. */
+  bump(18); c.tick();
+  return c.state.pageIndex;
+};
 const settle = (i) => {
   ctl.goToPage(i, { remember: false });
-  for (let n = 0; n < 6; n++) { bump(18); ctl.tick(); }
-  return ctl.state.pageIndex;
+  return settleWith(ctl);
 };
 
 /* EVERY page, not one per kind. One kind per page misses the interior pages of
@@ -374,8 +395,7 @@ ok(listIdx >= 0, "the list-layout fixture has a knob page to draw as rows");
   ok(lk.length >= 2, "the list fixture has two knob pages");
   const settleL = (i) => {
     ctlL.goToPage(i);
-    for (let n = 0; n < 6; n++) { bump(18); ctlL.tick(); }
-    return ctlL.state.pageIndex;
+    return settleWith(ctlL);
   };
   ctlL.exitMenu();
   settleL(lk[1]);
@@ -935,8 +955,7 @@ ok(listIdx >= 0, "the list-layout fixture has a knob page to draw as rows");
   }
   const settleS = (i) => {
     S.goToPage(i, { remember: false });
-    for (let n = 0; n < 12; n++) { bump(18); S.tick(); }
-    return S.state.pageIndex;
+    return settleWith(S);
   };
   const shotS = () => {
     const fb = createFramebuffer();
