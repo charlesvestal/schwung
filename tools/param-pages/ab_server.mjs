@@ -256,6 +256,7 @@ function revealPayload(setId, aId, bId) {
 
 function progressPayload() {
     return {
+        build: BUILD,
         target: TARGET_PER_SET,
         total: JUDGEMENTS.filter((j) => !j.lock).length,
         sets: CATALOG.ready.map((s) => {
@@ -377,7 +378,7 @@ const server = http.createServer((req, res) => {
     const p = url.pathname;
 
     if (req.method === 'GET' && (p === '/' || p === '/index.html')) {
-        const body = Buffer.from(PAGE);
+        const body = Buffer.from(PAGE.replace('__BUILD__', BUILD));
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': body.length, 'Cache-Control': 'no-store' });
         return res.end(body);
     }
@@ -400,6 +401,18 @@ const server = http.createServer((req, res) => {
 });
 
 // ---------------------------------------------------------------- page
+
+/*
+ * A build stamp, so "have you reloaded?" is answerable by looking.
+ *
+ * The page sets no-store, but that does not reload a tab that is already open,
+ * and a tab left open across a server restart keeps running the old client
+ * against the new API. That cost a round of debugging: the server was rotating
+ * between sets correctly while the browser sat on a stale count, and neither
+ * side looked wrong on its own. The client polls this and says so when it
+ * drifts.
+ */
+const BUILD = String(Date.now());
 
 const PAGE = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>SCH-50 A/B</title>
@@ -438,6 +451,7 @@ footer { padding:10px 16px; color:#888; border-top:1px solid #333; display:flex;
   <span class="muted" id="count"></span>
   <label class="muted">set <select id="setSel"></select></label>
   <span class="muted" id="mode">in-context</span>
+  <span class="muted" id="totals"></span>
   <span class="muted" id="missing"></span>
 </header>
 <div id="bar"><div></div></div>
@@ -456,6 +470,7 @@ footer { padding:10px 16px; color:#888; border-top:1px solid #333; display:flex;
 <div id="msg"></div>
 <script>
 let cur = null, busy = false, mode = 'page';
+const MY_BUILD = '__BUILD__';
 const $ = (id) => document.getElementById(id);
 
 function show(p) {
@@ -463,10 +478,35 @@ function show(p) {
   if (p.error) { $('msg').textContent = p.error + ' — render some sets with tools/param-pages/catalog.mjs first.'; return; }
   $('msg').textContent = '';
   $('setTitle').textContent = p.title;
-  $('count').textContent = p.judged + ' / ' + p.target;
+  /* Over target is legitimate but only ever because a set is PINNED -- on auto
+   * a set at target drops out of rotation. Saying which it is turns a number
+   * that looks broken into one that explains itself. */
+  const over = p.judged >= p.target;
+  $('count').textContent = p.judged + ' / ' + p.target
+    + (over ? ($('setSel').value ? '  (pinned, past target)' : '  (past target)') : '');
+  $('count').style.color = over ? '#c93' : '';
   $('bar').firstElementChild.style.width = Math.min(100, 100 * p.judged / p.target) + '%';
+  $('bar').firstElementChild.style.background = over ? '#c93' : '#4c8';
   $('imgA').src = p.a[mode]; $('imgB').src = p.b[mode];
   $('mode').textContent = mode === 'page' ? 'in-context' : 'swatch';
+  refreshTotals();
+}
+
+/* Global progress, so the header is never the only signal. A single set count
+ * cannot distinguish "this set is done" from "the session is stuck on it". */
+let totalsBusy = false;
+async function refreshTotals() {
+  if (totalsBusy) return;
+  totalsBusy = true;
+  try {
+    const pr = await (await fetch('/api/progress')).json();
+    const done = pr.sets.filter((s) => s.lock || s.judged >= s.target).length;
+    $('totals').textContent = pr.total + ' judgement(s) | ' + done + '/' + pr.sets.length + ' set(s) done';
+    if (pr.build && pr.build !== MY_BUILD) {
+      $('msg').innerHTML = '<b style="color:#fc6">This page is stale.</b> The server restarted since it was loaded '
+        + '— reload (Cmd-Shift-R) before judging, or you are driving an old client against a new API.';
+    }
+  } finally { totalsBusy = false; }
 }
 
 async function pair(setId) {
