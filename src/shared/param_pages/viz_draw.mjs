@@ -34,6 +34,51 @@ import {
 } from "./viz.mjs";
 import { enumIndexOf } from "./param_meta.mjs";
 import { wavPeaks, resamplePeaks } from "./wav_peaks.mjs";
+import { observe, easeOut, lerp } from "./anim_state.mjs";
+
+/* ------------------------------------------------------------- animation --
+ *
+ * EVERY ANIMATION HERE IS OPTIONAL, and that is a hard contract rather than a
+ * convenience. `anim` (a store from anim_state.mjs) and `nowMs` arrive as
+ * TRAILING parameters on drawVizGroup and on the two widgets that move; with
+ * neither supplied every widget draws exactly the pixels it drew before, which
+ * is what lets the pinned baselines, the host tests and the device stay
+ * untouched until a caller opts in. A missing `anim` is the normal case, not an
+ * error — do not "fix" it by defaulting to a fresh store, which would make the
+ * renderer stateful and every first frame animate.
+ */
+
+/*
+ * THE 8-RAY BURST, COPIED FROM `buttonRays` IN render_page_movy.mjs.
+ *
+ * It is a copy and not an import because this file cannot import from that one
+ * (that would be a cycle: render_page_movy imports drawVizGroup from here).
+ * The constants are lifted verbatim — BTN_RAYS 8, BTN_RAY_GAP 2, BTN_RAY_LEN 2,
+ * BTN_RAY_TRAVEL 4, BTN_FLASH_MS 300 — so a switch burst is the same figure at
+ * the same speed as a button burst. FOLLOW-UP: unify these into one module that
+ * both files import; if they drift, a switch flip stops looking like a button
+ * press for no reason anyone can name.
+ *
+ * `gap`, `len` and `travel` are parameters only so a caller with less room can
+ * shrink the figure to fit its cell (see drawSwitch), never so it can restyle
+ * it.
+ */
+const RAY_COUNT = 8;
+const RAY_GAP = 2;
+const RAY_LEN = 2;
+const RAY_TRAVEL = 4;
+const RAY_FLASH_MS = 300;
+
+function rayBurst(ctx, cx, cy, rx, ry, progress, gap = RAY_GAP, len = RAY_LEN, travel = RAY_TRAVEL) {
+    const out = gap + Math.round(progress * travel);
+    for (let i = 0; i < RAY_COUNT; i++) {
+        const a = (Math.PI * 2 * i) / RAY_COUNT;
+        const ux = Math.cos(a), uy = Math.sin(a);
+        const x0 = cx + ux * (rx + out), y0 = cy + uy * (ry + out);
+        const x1 = cx + ux * (rx + out + len), y1 = cy + uy * (ry + out + len);
+        line(ctx, Math.round(x0), Math.round(y0), Math.round(x1), Math.round(y1), 1);
+    }
+}
 
 /* -------------------------------------------------------------- primitives */
 
@@ -879,9 +924,27 @@ export function drawLfo(ctx, rect, roles, values, metaIndex) {
  * the riser in the loop. A saw simply ramps and stops, which is what a saw
  * looks like.
  */
-function drawWaveCell(ctx, x, y, w, h, shape, cycles) {
+function drawWaveCell(ctx, x, y, w, h, shape, cycles, morphFrom = null, morphT = 1) {
     const mid = y + (h - 1) / 2, amp = (h - 1) / 2;
-    const yAt = (px) => Math.round(mid - lfoShapeSample(shape, ((px - x) / w) * cycles) * amp);
+    /*
+     * ONE CLOSURE, AND THE MORPH LIVES INSIDE IT.
+     *
+     * The stroke below, the CHECKER mass through fillCurveMass, and the parity
+     * assertions in test_param_pages_movy.sh all derive from `yAt` — that is
+     * the whole reason the fill and the line cannot disagree about where the
+     * curve is. Blending the two shapes at the SAMPLE, before the closure, keeps
+     * that property for free; computing the morph a second time anywhere else
+     * would break it silently and only at intermediate frames, which is the
+     * hardest kind of wrong picture to notice.
+     *
+     * With `morphFrom` null this is byte-for-byte the expression it replaced.
+     */
+    const sampleAt = (px) => {
+        const ph = ((px - x) / w) * cycles;
+        const to = lfoShapeSample(shape, ph);
+        return morphFrom === null ? to : lerp(lfoShapeSample(morphFrom, ph), to, morphT);
+    };
+    const yAt = (px) => Math.round(mid - sampleAt(px) * amp);
     const vline = (px, a, b) => ctx.fillRect(px, Math.min(a, b), 1, Math.abs(a - b) + 1, 1);
 
     /*
@@ -921,13 +984,48 @@ function drawWaveCell(ctx, x, y, w, h, shape, cycles) {
  * this size is the entire point (a stepped shape only reads as stepped when
  * its levels are more than a pixel apart).
  */
-export function drawWaveform(ctx, rect, key, values, metaIndex) {
+/*
+ * ~100ms, THREE OR FOUR FRAMES, and short is the requirement rather than a
+ * performance concession.
+ *
+ * A morph passes through curves that are neither shape — halfway between a
+ * square and a saw is a thing with a step in it — and anything on screen long
+ * enough to be read as a value WILL be read as one. A slow morph does not look
+ * like a transition, it looks like a third waveform in the list. The failure
+ * mode of too-fast is that the morph is missed; the failure mode of too-slow is
+ * that it lies.
+ */
+const WAVE_MORPH_MS = 100;
+
+export function drawWaveform(ctx, rect, key, values, metaIndex, anim, nowMs) {
     const name = optionText(metaIndex, key, values);
     const shape = lfoShapeIdOf(name);
     const pad = 2;
     const x = rect.x + pad, w = rect.w - pad * 2;
     const y = rect.y + 1, h = VIZ_ROWS;
-    if (w > 0) drawWaveCell(ctx, x, y, w, h, shape, 1);
+
+    let morphFrom = null, morphT = 1;
+    if (anim && typeof nowMs === "number") {
+        /*
+         * TAGGED "s2", NEVER THE BARE NUMBER 2.
+         *
+         * observe() re-bases a NUMERIC value to where it visually sits when it
+         * is retargeted mid-flight, which is right for a slug and catastrophic
+         * for a shape id: a fast scroll would hand back 2.4, lfoShapeSample
+         * falls through its default at anything unrecognised, and the cell
+         * would morph out of a SINE that was never on screen. A non-numeric
+         * token makes that re-base return the previous shape untouched, so a
+         * retarget morphs from the shape it was heading to — the last thing
+         * actually drawn — which at 100ms is at most one frame stale.
+         */
+        const tr = observe(anim, "wave:" + key, "s" + shape, nowMs, WAVE_MORPH_MS);
+        if (tr.moving && typeof tr.from === "string") {
+            const f = Number(tr.from.slice(1));
+            if (Number.isFinite(f) && f !== shape) { morphFrom = f; morphT = easeOut(tr.t); }
+        }
+    }
+
+    if (w > 0) drawWaveCell(ctx, x, y, w, h, shape, 1, morphFrom, morphT);
 }
 
 /* --------------------------------------------------------------------- eq */
@@ -1071,7 +1169,17 @@ export function drawFader(ctx, rect, key, values, metaIndex) {
  */
 const PILL_H = 9, SLUG_W = 5, SLUG_H = 5, SLUG_INSET = 2;
 
-export function drawSwitch(ctx, rect, key, values, metaIndex) {
+/*
+ * TRAVEL: ~120ms, eased out. The track is 16px and the two seats are 2px in
+ * from each wall, so the slug crosses about 7px — far enough to read as
+ * movement, short enough that the switch never feels like it is thinking about
+ * it. Everything between the seats is interpolated, so the slug is never
+ * anywhere the two static states could not put it: it cannot touch a wall,
+ * which is the defect the 2px inset exists to prevent.
+ */
+const SWITCH_TRAVEL_MS = 120;
+
+export function drawSwitch(ctx, rect, key, values, metaIndex, anim, nowMs) {
     const raw = values ? values[key] : undefined;
     /* Resolves a name-reporting plugin's value too — see enumIndexOf.
      *
@@ -1091,8 +1199,48 @@ export function drawSwitch(ctx, rect, key, values, metaIndex) {
      * floored against the rect so a narrow one still gets a track. */
     const w = Math.min(16, rect.w - 4);
     const x = cx - (w >> 1), y = topY + 1, h = PILL_H;
-    const sx = on ? x + w - SLUG_INSET - SLUG_W : x + SLUG_INSET;
+    const seatOff = x + SLUG_INSET, seatOn = x + w - SLUG_INSET - SLUG_W;
     const sy = y + SLUG_INSET;
+
+    /*
+     * THE TRACK BELONGS TO THE DESTINATION FROM FRAME ONE — it inverts on the
+     * flip and the slug catches up.
+     *
+     * Mid-travel the track has to be either filled-with-a-knockout (ON) or
+     * outlined-with-a-solid-slug (OFF); there is no half-inverted track on a
+     * 1-bit display, and dithering one would invent a third state. Giving those
+     * frames to the ORIGIN would mean the widget shows the old value for 120ms
+     * after the value changed, i.e. it lies about the state for the whole
+     * animation and then snaps. The value has already changed, so the ink that
+     * CARRIES the value changes with it; the slug's position is the part that
+     * is allowed to be in between, because a position in between is a real
+     * thing to look at. Practically it also reads better: the inversion is the
+     * event, and the travel is the follow-through.
+     */
+    let sx = on ? seatOn : seatOff;
+    let burstAt = -1;
+    if (anim && typeof nowMs === "number") {
+        const tr = observe(anim, "switch:" + key, on ? 1 : 0, nowMs, SWITCH_TRAVEL_MS);
+        const from = Number(tr.from);
+        if (tr.moving && Number.isFinite(from)) {
+            /* `from` is a FRACTION of the way across, not a seat: observe()
+             * re-bases a numeric mid-flight so a switch flipped back before it
+             * arrived carries on from where it visually is instead of jumping
+             * to the far seat and starting again. */
+            const p = lerp(from, on ? 1 : 0, easeOut(tr.t));
+            sx = Math.round(lerp(seatOff, seatOn, p));
+        }
+        /*
+         * A SECOND KEY, because the burst outlives the travel: 300ms against
+         * 120ms, the same split drawButton makes between BTN_PRESS_MS and
+         * BTN_FLASH_MS, and one key can only carry one duration. A caller that
+         * gates its redraw on anim_state's `settled()` must therefore ask with
+         * the LONGER duration or it will stop drawing part-way through the
+         * burst.
+         */
+        const fl = observe(anim, "switchflash:" + key, on ? 1 : 0, nowMs, RAY_FLASH_MS);
+        if (fl.moving && fl.from !== null) burstAt = fl.t;
+    }
 
     if (on) {
         ctx.fillRect(x, y, w, h, 1);
@@ -1114,6 +1262,37 @@ export function drawSwitch(ctx, rect, key, values, metaIndex) {
         notchCorners(ctx, x, y, w, h);
         ctx.fillRect(sx, sy, SLUG_W, SLUG_H, 1);
         notchCorners(ctx, sx, sy, SLUG_W, SLUG_H);
+    }
+
+    /*
+     * The burst, LAST so it is never overwritten by the pill, and radiating
+     * from the seat the slug is heading TO — the destination is what the flip
+     * means, and a burst at the origin would point away from the new state.
+     *
+     * BOUNDED BY THE CELL, NOT BY THE WIDGET, and the bound really binds. The
+     * button gets gap 2 and 4px of travel because it sits alone in its cell;
+     * the slug centre is only ~6 rows from the top of a 15-row rect, so the
+     * same figure would put its outermost stub several pixels into the row
+     * above. `budget` is the smallest distance from the burst centre to any
+     * edge of the rect and the travel is whatever is left after the slug's own
+     * radius, the gap and the stub length — about ONE pixel in the grid's
+     * 32x15 cell. The burst therefore reads as a flash that nudges outward
+     * rather than as the button's radiation, which is the honest consequence of
+     * putting it on a 16x9 widget. It is computed, not hardcoded, so a roomier
+     * cell gets a bigger burst for free.
+     */
+    if (burstAt >= 0) {
+        /* The DESTINATION seat, not `sx`. Anchoring on the travelling slug
+         * drags the whole figure across the widget and reads as a comet; the
+         * burst is supposed to mark where the value landed, so it stands still
+         * at the new seat while the slug arrives under it. */
+        const bcx = (on ? seatOn : seatOff) + ((SLUG_W - 1) >> 1), bcy = sy + ((SLUG_H - 1) >> 1);
+        const r = (SLUG_W - 1) / 2;
+        const budget = Math.min(bcx - rect.x, rect.x + rect.w - 1 - bcx,
+                                bcy - rect.y, rect.y + rect.h - 1 - bcy);
+        const gap = 1;
+        const travel = Math.max(0, Math.min(RAY_TRAVEL, budget - r - gap - RAY_LEN));
+        if (budget >= r + gap + RAY_LEN) rayBurst(ctx, bcx, bcy, r, r, burstAt, gap, RAY_LEN, travel);
     }
 }
 
@@ -1291,15 +1470,26 @@ const DRAW = {
     [VIZ_FILTER]: (ctx, rect, group, values, metaIndex) => drawFilter(ctx, rect, group.roles, values, metaIndex),
     [VIZ_LFO]: (ctx, rect, group, values, metaIndex) => drawLfo(ctx, rect, group.roles, values, metaIndex),
     [VIZ_EQ]: (ctx, rect, group, values, metaIndex) => drawEq(ctx, rect, group.roles, values, metaIndex),
-    [VIZ_WAVEFORM]: (ctx, rect, group, values, metaIndex) => drawWaveform(ctx, rect, group.roles.value, values, metaIndex),
+    [VIZ_WAVEFORM]: (ctx, rect, group, values, metaIndex, anim, nowMs) =>
+        drawWaveform(ctx, rect, group.roles.value, values, metaIndex, anim, nowMs),
     [VIZ_FADER]: (ctx, rect, group, values, metaIndex) => drawFader(ctx, rect, group.roles.value, values, metaIndex),
-    [VIZ_SWITCH]: (ctx, rect, group, values, metaIndex) => drawSwitch(ctx, rect, group.roles.value, values, metaIndex),
+    [VIZ_SWITCH]: (ctx, rect, group, values, metaIndex, anim, nowMs) =>
+        drawSwitch(ctx, rect, group.roles.value, values, metaIndex, anim, nowMs),
     [VIZ_SAMPLE]: (ctx, rect, group, values, metaIndex) => drawSample(ctx, rect, group.roles, values, metaIndex),
 };
 
-/** Draw a resolved group (from viz.resolveViz) into `rect`. Unknown kinds are
- * silently skipped, not thrown, so a future kind never crashes an old caller. */
-export function drawVizGroup(ctx, rect, group, values, metaIndex) {
+/**
+ * Draw a resolved group (from viz.resolveViz) into `rect`. Unknown kinds are
+ * silently skipped, not thrown, so a future kind never crashes an old caller.
+ *
+ * `anim` (an anim_state.mjs store) and `nowMs` are OPTIONAL TRAILING
+ * parameters, appended rather than folded into an options object because these
+ * functions are called from several places and none of the existing parameters
+ * may be reordered or removed. Omit both and every widget draws exactly the
+ * pixels it always did — the animations are opt-in per caller, which is what
+ * keeps the harness, the pinned baselines and the device unaffected.
+ */
+export function drawVizGroup(ctx, rect, group, values, metaIndex, anim, nowMs) {
     const fn = DRAW[group.kind];
-    if (fn) fn(ctx, rect, group, values, metaIndex);
+    if (fn) fn(ctx, rect, group, values, metaIndex, anim, nowMs);
 }
