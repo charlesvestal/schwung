@@ -139,6 +139,10 @@ import { register as registerFills } from "./fills.mjs";
 import { register as registerOpaqueBox } from "./opaque_box.mjs";
 import { register as registerVizSwitch } from "./viz_switch.mjs";
 import { register as registerFont } from "./font/index.mjs";
+import { register as registerVizEnvelope } from "./viz_envelope.mjs";
+import { register as registerVizFilter } from "./viz_filter.mjs";
+import { register as registerVizLfo } from "./viz_lfo.mjs";
+import { register as registerVizSample } from "./viz_sample.mjs";
 
 registerKnob();
 registerFader();
@@ -146,3 +150,7 @@ registerFills();
 registerOpaqueBox();
 registerVizSwitch();
 registerFont();
+registerVizEnvelope();
+registerVizFilter();
+registerVizLfo();
+registerVizSample();

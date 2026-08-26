@@ -275,5 +275,63 @@ Promise.all([
   if (!Array.isArray(empty)) fail("fit([]) did not return an array");
 
   console.log("PASS: bradley-terry recovers a known ranking");
+
+  /* ---- the four curve sets render ONE curve ----
+   *
+   * Sets 7-10 vary treatment only: the shape of an ADSR, a filter response, an
+   * LFO wave and a sample waveform is a picture of the maths and is not this
+   * catalog to change. The mechanism is that all four register the SAME
+   * treatment functions from viz_treatments.mjs and inject their own heights,
+   * so an option cannot reach the curve. Both the mechanism and the property
+   * are asserted, because they fail differently: a wrapper added in a set
+   * module breaks identity, and a treatment that drew from something other
+   * than the array it was handed breaks the profile.
+   */
+  const HN = await import("./tools/param-pages/harness.mjs");
+  const VT = await import("./src/shared/param_pages/styles/viz_treatments.mjs");
+  const CURVE_SETS = ["viz_envelope", "viz_filter", "viz_lfo", "viz_sample"];
+  const curveSets = CURVE_SETS.map((id) => S.setById(id) || fail("missing curve set " + id));
+
+  const CW = 128, BAND = 13;
+  const CH2 = Array.from({ length: CW }, (_, i) => 0.5 + 0.45 * Math.sin((i / (CW - 1)) * Math.PI * 2.5));
+  const COPTS = { baseFrac: 0.5, mirror: false };
+
+  const renderCurve = (draw) => {
+    const cfb = HN.createFramebuffer(CW, 15);
+    draw(HN.drawContext(cfb), { x: 0, y: 0, w: CW, h: BAND }, CH2, COPTS);
+    if (cfb.clipped()) fail("a curve treatment drew outside its band");
+    return cfb;
+  };
+  /* Topmost lit pixel per column: the curve, independent of whatever fill sits
+   * under it. Two treatments that differ only in fill share this exactly. */
+  const profileOf = (draw) => {
+    const pfb = renderCurve(draw);
+    const top = new Array(CW).fill(-1);
+    for (let x = 0; x < CW; x++)
+      for (let y = 0; y < 15; y++) if (pfb.pixels[y * CW + x]) { top[x] = y; break; }
+    return top.join(",");
+  };
+
+  for (let pos = 1; pos <= S.OPTIONS_PER_SET; pos++) {
+    const opts = curveSets.map((s) => s.options.find((o) => o.position === pos)
+      || fail(s.id + " has no option at position " + pos));
+    const ids = new Set(opts.map((o) => o.id));
+    if (ids.size !== 1) fail("position " + pos + " is a different treatment per set: " + [...ids].join(", "));
+    if (new Set(opts.map((o) => o.draw)).size !== 1)
+      fail("position " + pos + " (" + [...ids][0] + ") is not one shared draw function");
+    const profiles = new Set(opts.map((o) => profileOf(o.draw)));
+    if (profiles.size !== 1)
+      fail("position " + pos + " (" + [...ids][0] + ") draws a different curve in different sets");
+    if ([...profiles][0].split(",").every((v) => v === "-1")) fail("position " + pos + " drew nothing");
+  }
+
+  /* All ten being one function would also satisfy everything above, which is
+   * the failure mode of a copy-paste. Ten distinct functions, and enough
+   * distinct ink for the set to be an axis rather than a repetition. */
+  if (new Set(VT.VIZ_TREATMENTS.map((t) => t.draw)).size !== S.OPTIONS_PER_SET)
+    fail("the ten treatments are not ten distinct functions");
+  const inks = new Set(VT.VIZ_TREATMENTS.map((t) => renderCurve(t.draw).countLit()));
+  if (inks.size < 5) fail("the ten treatments are barely distinguishable: " + inks.size + " distinct ink counts");
+  console.log("PASS: four curve sets share one curve and ten distinct treatments");
 }).catch((e) => { console.log("FAIL: " + (e && e.stack || e)); process.exit(1); });
 '
