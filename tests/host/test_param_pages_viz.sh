@@ -24,12 +24,29 @@ cd "$(dirname "$0")/../.."
 #     device, that made schwung-movy's actual envelope/filter/lfo curves
 #     (real Bresenham lines, ported verbatim — see viz_draw.mjs) look wrong.
 #     Visual correctness against the ported reference wins. The ceiling below
-#     is ~1.6x the worst measured today (bar 306, dial 518) — loose enough
-#     that it does not fight the real geometry, tight enough to catch an
-#     actual regression (an infinite point list, a detector grouping the
-#     whole page). If a real device chokes on the real numbers, THAT is the
-#     fact to design a tighter budget around — see
-#     docs/plans/2026-08-16-next-sessions.md Session C.
+#     is ~1.6x the worst measured — loose enough that it does not fight the
+#     real geometry, tight enough to catch an actual regression (an infinite
+#     point list, a detector grouping the whole page). If a real device chokes
+#     on the real numbers, THAT is the fact to design a tighter budget around
+#     — see docs/plans/2026-08-16-next-sessions.md Session C.
+#
+#     RAISED FOR SCH-50 `ghost-fill`, with the cost measured rather than
+#     waved through. The four curve graphs now fill the mass under the curve
+#     with CHECKER, and a 50% lattice cannot be coalesced into rectangles in
+#     EITHER axis — lit pixels are stride-2 along rows and along columns
+#     alike — so a filled curve costs one fillRect per lit pixel by
+#     construction. That is inherent to the treatment, not an implementation
+#     that can be tightened.
+#
+#         worst bar   306 -> 710
+#         worst dial  518 -> 759
+#
+#     At the measured ~490ns per binding crossing (src/shared/draw_bench.mjs)
+#     the worst page gains ~0.35ms, against a whole-page render of 1.68ms and
+#     a 60Hz tick with 16.6ms to spend. It is real and it is affordable: about
+#     an eighth of a single parameter IPC read, which this layer already
+#     spends several of per frame. Ceiling set at ~1.6x the new worst, the
+#     same margin the old one used.
 #
 # viz is opt-in (renderPage only draws what o.viz gives it), so the existing
 # param_pages.txt / render budget snapshot are untouched by this file.
@@ -55,7 +72,7 @@ Promise.all([
 
   /* ---- 1. fleet detector snapshot --------------------------------------- */
   const lines = [];
-  const SANITY = { bar: 500, dial: 850 };
+  const SANITY = { bar: 1100, dial: 1200 };
   const worst = { bar: 0, dial: 0 };
   const clipped = [], missing = new Set(), overSanity = [];
 

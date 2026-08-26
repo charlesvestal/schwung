@@ -135,30 +135,53 @@ Promise.all([
   }
   console.log("PASS: draw options stay in their boxes");
 
-  /* ---- font options must not reproduce the shipping Elektron glyphs ----
-   * font4x5.mjs documents nine letterforms as read straight off Elektron
-   * screen. Replacing them is the concrete part of this issue, so it is
-   * asserted rather than assumed. */
+  /* ---- nobody may reproduce the nine Elektron glyphs, SHIPPING INCLUDED ----
+   *
+   * font4x5.mjs used to draw nine letterforms read straight off an Elektron
+   * screen. SCH-50 replaced them (the `metric-matched` option was adopted), so
+   * the shipping table can no longer serve as the definition of "the thing
+   * being replaced" -- comparing against it would now assert that no catalog
+   * option matches the ADOPTED one, which is backwards and would fail on the
+   * option that was chosen.
+   *
+   * The nine forms are therefore pinned LITERALLY here, copied out of the
+   * pre-SCH-50 table, and the assertion runs over the catalog options AND over
+   * font4x5 itself. That is the assertion the comment always meant: what must
+   * not come back is the Elektron drawing, not whatever font4x5 holds today.
+   * (No apostrophes in this file -- the node script is a single-quoted bash
+   * string and one apostrophe ends it.) */
   const F4 = await import("./src/shared/param_pages/font4x5.mjs");
+  const ELEKTRON_GLYPHS = {
+    A: [5, 0, 4, 5, 6, 9, 15, 9, 9],
+    D: [5, 0, 4, 5, 7, 9, 9, 9, 7],
+    E: [5, 0, 4, 5, 15, 1, 7, 1, 15],
+    I: [2, 0, 1, 5, 1, 1, 1, 1, 1],
+    L: [5, 0, 4, 5, 1, 1, 1, 1, 15],
+    M: [6, 0, 5, 5, 17, 27, 21, 17, 17],
+    P: [5, 0, 4, 5, 7, 9, 7, 1, 1],
+    T: [4, 0, 3, 5, 7, 2, 2, 2, 2],
+    U: [5, 0, 4, 5, 9, 9, 9, 9, 6],
+  };
   const fontSet = S.SETS.find((s) => s.kind === S.KIND_FONT);
   if (fontSet) {
     const CH = F4.CHARS;
-    const ELEKTRON = "ADEILMPTU";
-    for (const o of fontSet.options) {
-      if (o.glyphs.length !== CH.length)
-        fail(o.id + ": " + o.glyphs.length + " glyphs, want " + CH.length);
-      for (const g of o.glyphs) {
+    const tables = fontSet.options.map((o) => [o.id, o.glyphs]);
+    tables.push(["font4x5.mjs (SHIPPING)", F4.GLYPHS_FOR_TEST]);
+    for (const [id, glyphs] of tables) {
+      if (glyphs.length !== CH.length)
+        fail(id + ": " + glyphs.length + " glyphs, want " + CH.length);
+      for (const g of glyphs) {
         if (!Array.isArray(g) || g.length < 4)
-          fail(o.id + ": a glyph is malformed");
+          fail(id + ": a glyph is malformed");
       }
-      for (const letter of ELEKTRON) {
+      for (const letter of Object.keys(ELEKTRON_GLYPHS)) {
         const i = CH.indexOf(letter);
         if (i < 0) continue;
-        if (JSON.stringify(o.glyphs[i]) === JSON.stringify(F4.GLYPHS_FOR_TEST[i]))
-          fail(o.id + ": glyph " + letter + " is byte-identical to font4x5, which is the thing being replaced");
+        if (JSON.stringify(glyphs[i]) === JSON.stringify(ELEKTRON_GLYPHS[letter]))
+          fail(id + ": glyph " + letter + " is byte-identical to the Elektron letterform, which is the thing being replaced");
       }
     }
-    console.log("PASS: font sets differ from font4x5");
+    console.log("PASS: " + tables.length + " font tables (incl. shipping) are free of the Elektron letterforms");
   }
 
   /* ---- a metric-matched option must actually match the metrics ----
