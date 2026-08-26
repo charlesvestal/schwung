@@ -26,6 +26,8 @@ volatile int shim_inject_boot_jack = -1;
 volatile int shim_jack_persist = -1;
 volatile int shim_usbc_out_persist = -1;
 volatile int shim_usbc_out_replay = -1;
+volatile int shim_usbc_out_level = -1;
+volatile int shim_usbc_monitor = -1;
 
 /* Persisted jack state (last CC 115 value). Survives reboot so the worker can
  * re-assert it to Move at boot — XMOS doesn't report jack-in at boot, so an
@@ -543,9 +545,27 @@ static void *worker_main(void *arg) {
             if (act.replay) {
                 shim_usbc_out_replay = act.replay_value;
                 unified_log("shim", LOG_LEVEL_DEBUG,
-                            "USB-C out: Move asserted Mic over a stored Main Out — re-asserting");
+                            "USB-C out: Move asserted Mic over a stored Main Out (boot) — re-asserting");
             }
             if (act.persist) usbc_out_state_write(act.persist_value);
+        }
+
+        /* Defend against Move's sampling page clearing monitoring behind our
+         * back. It emits a lone 37 12 to set bit0 (the USB-C input select) and
+         * carries bit1 from its own stale "Mic" UI state, which reverts the
+         * hardware while 37 14 still reads Main Out — so there is no edge for
+         * the observe path above to see. Debounced inside the gate so the
+         * leading half of a split 37 12 / 37 14 Mic selection is not mistaken
+         * for it. */
+        {
+            usbc_gate_out_t act = {0};
+            usbc_gate_tick_monitor(&usbc_gate, shim_usbc_out_level,
+                                   shim_usbc_monitor, &act);
+            if (act.replay && usbc_out_persist_enabled) {
+                shim_usbc_out_replay = act.replay_value;
+                unified_log("shim", LOG_LEVEL_DEBUG,
+                            "USB-C out: monitoring cleared by a lone 37 12 — re-asserting Main Out");
+            }
         }
 
         /* Backstop: on a boot where Move never asserts at all, the gate would

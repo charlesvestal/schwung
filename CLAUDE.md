@@ -1001,6 +1001,28 @@ Out reaches USB-C (the XMOS mutes the speakers while it's set, to prevent
 feedback). `37 14` is the dedicated out-source bit. This resolves open question
 Q2 in the movesniff findings doc, which listed `0x14` as unreversed.
 
+**Move's sampling page emits a LONE `37 12`, and it clears bit1.** Captured
+2026-08-26: changing the sampling source sent `37 12 01` then `37 12 00`, with
+no `37 14` anywhere near either. The original 2026-08-18 capture recorded bit0
+as `0` throughout and concluded "the pair is atomic" — true of the *out-source*
+control, false of the sampling page, which that capture never exercised.
+Because bit1 is what actually routes Main Out to USB-C, a sampling-source
+change silently reverted USB-C out to Mic while `37 14` still read Main Out, so
+nothing re-asserted. That is the **in-session** half of "sometimes reverts to
+the microphone"; the boot gate below is the across-reboot half.
+
+`xmos_audio_state_t.monitor` therefore tracks bit1 in its own right (it is
+deliberately NOT folded into `scan`'s `changed` return — that flag means "the
+out-source selection moved", and this is not a selection), and
+`usbc_gate_tick_monitor` re-asserts on `usbc_out == 1 && monitor == 0`. The
+`37 14` half of that test is what keeps it off a deliberate Mic selection,
+which moves both. **The debounce is load-bearing**: the pair can split across
+SPI frames (16 of 20 MIDI_OUT slots), so acting on a single tick would fight
+the leading half of a split Mic selection. Two consecutive worker ticks
+(~400 ms) against ~3 ms frames settles that. Verified on hardware — Move's
+`37 12 01` at f75529, our `37 12 03` at f75635 (**bit0 preserved, bit1
+restored**), then quiet.
+
 Flow: the SPI pre-transfer callback scans MIDI_OUT via `xmos_audio_scan`; the
 worker persists the value to `/data/UserData/schwung/usbc_out_state`; ~5 s after
 boot the worker arms a replay, which the SPI callback emits one message per

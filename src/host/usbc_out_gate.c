@@ -26,6 +26,9 @@ void usbc_gate_init(usbc_gate_t *g, int stored)
     g->phase = USBC_GATE_PHASE_PRE_REPLAY;
     g->replays_left = USBC_GATE_MAX_REPLAYS;
     g->saw_mic_assert = 0;
+    g->last_monitor = -1;
+    g->monitor_pending = 0;
+    g->monitor_replays_left = USBC_GATE_MAX_REPLAYS;
 }
 
 void usbc_gate_boot_replay(usbc_gate_t *g, usbc_gate_out_t *out)
@@ -100,6 +103,50 @@ void usbc_gate_observe(usbc_gate_t *g, int observed, usbc_gate_out_t *out)
         if (v != g->stored) gate_persist(g, out, v);
         return;
     }
+}
+
+void usbc_gate_tick_monitor(usbc_gate_t *g, int usbc_out, int monitor,
+                            usbc_gate_out_t *out)
+{
+    /* Boot arbitration owns the wire until it settles — it is already
+     * re-asserting on its own budget, and two defences bidding at once would
+     * double-spend. */
+    if (g->phase != USBC_GATE_PHASE_SETTLED || g->stored != 1) {
+        g->monitor_pending = 0;
+        return;
+    }
+
+    if (monitor != g->last_monitor) {
+        g->last_monitor = (int8_t)monitor;
+        g->monitor_pending = 0;
+        /* A fresh loss is a new event and gets a full budget — otherwise the
+         * fourth sampling-source change of a session would go undefended
+         * because the first three drained the counter. */
+        if (monitor == 0) g->monitor_replays_left = USBC_GATE_MAX_REPLAYS;
+    }
+
+    /* A deliberate Mic selection moves 37 14 as well, and is not ours to
+     * fight. Only "37 14 still says Main Out but monitoring is gone" is the
+     * lone-37-12 signature. */
+    if (usbc_out != 1 || monitor != 0) {
+        g->monitor_pending = 0;
+        return;
+    }
+
+    /* Hysteresis: the pair can split across SPI frames, so one tick of
+     * agreement is not enough to tell a lone 37 12 from the leading half of a
+     * split Mic selection. Frames are ~3 ms against a 200 ms tick, so a split
+     * has always resolved by the second. */
+    if (g->monitor_pending < USBC_GATE_MONITOR_DEBOUNCE - 1) {
+        g->monitor_pending++;
+        return;
+    }
+    g->monitor_pending = 0;
+
+    if (g->monitor_replays_left == 0) return;
+    g->monitor_replays_left--;
+    out->replay = 1;
+    out->replay_value = 1;
 }
 
 void usbc_gate_force_settle(usbc_gate_t *g)
