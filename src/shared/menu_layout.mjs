@@ -384,21 +384,21 @@ export function drawMenuList({
      * valuePaddingRight (2) runs to x=126 and is drawn straight THROUGH them —
      * an item valued "v9" renders with the arrow crossing the glyphs.
      *
-     * The clearance applies ONLY when an arrow is actually drawn. Reserving 8px
-     * of the value column on every list to guard against an arrow that is not
-     * there would narrow (and so truncate) values on every non-scrolling
-     * screen. The two arrow conditions are the same expressions used at the
-     * bottom of this function; they are derivable here because startIdx /
-     * endIdx / totalItems are all already settled. */
-    const hasScrollArrow = (startIdx > 0) || (endIdx < totalItems);
-    /* Derived from indicatorX rather than restated, so a caller that moves the
-     * arrow column moves the value edge with it. At the default indicatorX=120
-     * this is 118, i.e. exactly SCREEN_WIDTH - VALUE_RIGHT_CLEARANCE — the
-     * constant is kept as the statement of the 10px budget and as the ceiling
-     * on how far right a value may ever sit. */
+     * THE SCROLLBAR CHANGES THE SHAPE OF THIS RESERVATION, and cheaply.
+     *
+     * The arrows were 5px wide and touched two rows, so the clearance was 10px
+     * charged per-row to exactly those two. The bar is ONE column and spans
+     * every row, so it is charged to every row — but it is 2px instead of 10.
+     * The two rows that used to pull in to 108 now get 125; the rest give up
+     * one pixel. That is the trade, and it is the right way round.
+     *
+     * VALUE_RIGHT_CLEARANCE is kept as the ceiling a value may never pass; the
+     * bar sits outside it by construction (126 against a 118 edge). */
     const valueRightEdgeClear = SCREEN_WIDTH - valuePaddingRight;
-    const valueRightEdgeArrow = Math.min(indicatorX - 2,
-                                         SCREEN_WIDTH - VALUE_RIGHT_CLEARANCE);
+    const scrolls = (startIdx > 0) || (endIdx < totalItems);
+    /* -3: the bar owns SCREEN_WIDTH-2, and a value butted straight against it
+     * would read as touching the track. */
+    const valueRightEdgeBar = Math.min(valueRightEdgeClear, SCREEN_WIDTH - 3);
     /*
      * THE CLEARANCE IS CHARGED PER ROW, not to the whole list.
      *
@@ -417,15 +417,14 @@ export function drawMenuList({
      * under an arrow still pull in to 108, which is the only place the
      * collision was ever possible.
      */
-    const upArrowRow   = (startIdx > 0) ? startIdx : -1;
-    const downArrowRow = (endIdx < totalItems) ? endIdx - 1 : -1;
-    const valueRightEdgeFor = (i) =>
-        (i === upArrowRow || i === downArrowRow) ? valueRightEdgeArrow
-                                                 : valueRightEdgeClear;
+    /* Uniform across rows now — the bar spans them all, so there is no
+     * row-specific case left. A list that does not scroll draws no bar and
+     * gives up nothing. */
+    const valueRightEdgeFor = () => (scrolls ? valueRightEdgeBar : valueRightEdgeClear);
 
     /* The no-value label column needs no equivalent: its budget is
-     * `indicatorX - labelX - labelGap`, which stops at 120 whether or not an
-     * arrow is there, so it cannot collide. */
+     * `indicatorX - labelX - labelGap`, which stops at 120 either way, so it
+     * cannot reach the bar. */
 
     /* Get label scroller for selected item and tick it */
     const labelScroller = getMenuLabelScroller();
@@ -664,15 +663,39 @@ export function drawMenuList({
         }
     }
 
-    if (startIdx > 0) {
-        drawArrowUp(indicatorX, resolvedTopY, ctx);
-    }
-    if (endIdx < totalItems) {
-        /* -3, not -2: the arrow is 3 rows tall, so -2 put its tip ON
-         * resolvedBottomY. Under the old chrome that row was blank screen;
-         * under the movy chrome the bottom of the rect IS the footer rule, and
-         * the arrow read as growing out of it. */
-        drawArrowDown(indicatorX, resolvedBottomY - 3, ctx);
+    /*
+     * A SCROLLBAR, NOT ARROWS — it says everything they said and two things
+     * more, in a narrower column.
+     *
+     * The arrows report only "there is more, that way". The bar reports that,
+     * plus HOW MUCH more and WHERE you are in it, which is the question a
+     * 47-model list actually raises. Keeping both would be drawing the same
+     * fact twice.
+     *
+     * It is also cheaper in the only currency this screen has. The arrows are
+     * 5px wide at indicatorX and force a 10px per-row clearance on the two rows
+     * they touch, so a value on those rows is truncated to make room for a
+     * glyph beside it. The bar owns ONE column at the far edge and overlaps no
+     * row, so that reservation goes away entirely — see valueRightEdgeArrow,
+     * which is now only ever the clear edge.
+     *
+     * THE THUMB HAS A 2px FLOOR. At 47 items in 5 rows its true height is 1.4px
+     * and a 1px thumb is indistinguishable from a tick of the track: it would
+     * report position and lose extent, which is half of what a bar is for.
+     */
+    if (startIdx > 0 || endIdx < totalItems) {
+        const trackX = SCREEN_WIDTH - 2;
+        const trackH = resolvedBottomY - resolvedTopY;
+        /* Dotted, so the track reads as the extent of the list and the thumb as
+         * a solid object on it. A solid track would make a second rule down the
+         * edge of every scrolling screen. */
+        for (let y = resolvedTopY; y < resolvedBottomY; y += 2) px(ctx, trackX, y, 1);
+        const visible = endIdx - startIdx;
+        const thumbH = Math.max(2, Math.round((visible / totalItems) * trackH));
+        const maxStart = totalItems - visible;
+        const ty = resolvedTopY + (maxStart > 0
+            ? Math.round((startIdx / maxStart) * (trackH - thumbH)) : 0);
+        ctx.fillRect(trackX, ty, 1, thumbH, 1);
     }
 }
 
