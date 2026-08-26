@@ -50,6 +50,36 @@ Promise.all([
     if (row.every((v) => v === row[0])) fail(name + " looks constant along x");
   }
 
+  /* ---- the DIAGONAL is the point, and density cannot see it ----
+   *
+   * Every assertion above is invariant to orientation. Mistype DIAG_LIGHT as
+   * (x % 4) === 0 and you get vertical stripes that still measure exactly
+   * 0.25, are still pure, and still vary along x: the whole suite passes on a
+   * visibly wrong fill. So assert the property these patterns exist FOR.
+   *
+   * The (x + y) family is constant along the anti-diagonal, because moving
+   * +1 in x and -1 in y leaves the sum unchanged. No axis-aligned pattern
+   * satisfies that, which is exactly what makes it the discriminating test. */
+  for (const [name, pred] of [["CHECKER", D.CHECKER], ["DIAG_LIGHT", D.DIAG_LIGHT],
+                              ["DIAG_HEAVY", D.DIAG_HEAVY], ["DIAG_THIRD", D.DIAG_THIRD]]) {
+    for (let x = 3; x < 12; x++) for (let y = 3; y < 12; y++) {
+      if (pred(x + 1, y - 1) !== pred(x, y))
+        fail(name + " is not constant along the anti-diagonal at " + x + "," + y +
+             " -- it is axis-aligned, not a diagonal hatch");
+    }
+  }
+
+  /* DOTS is a lattice rather than a hatch, so it must NOT satisfy the above.
+   * Asserting the negative keeps the check honest: a predicate that returned
+   * a constant would pass the diagonal test for every pattern at once. */
+  {
+    const d = D.DOTS(3);
+    let same = true;
+    for (let x = 3; x < 12 && same; x++) for (let y = 3; y < 12; y++)
+      if (d(x + 1, y - 1) !== d(x, y)) { same = false; break; }
+    if (same) fail("DOTS(3) behaves like a diagonal hatch, so the diagonal test proves nothing");
+  }
+
   /* ---- fillDithered never clears ---- */
   const H = await import("./tools/param-pages/harness.mjs");
   const fb = H.createFramebuffer(16, 16);
