@@ -363,6 +363,72 @@ export function hbar(ctx, x, y, w, h, frac, color) {
 
 export function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
 
+/* ------------------------------------------------ 1-bit surface primitives --
+ *
+ * The SCH-50 house vocabulary: on a 1-bit display "colour" is pixel DENSITY,
+ * and one ladder with fixed meanings is what makes a page read as one design
+ * language rather than as a pile of unrelated fills.
+ *
+ *   100%  solid       active, selected, primary
+ *    75%  DIAG_HEAVY  emphasised secondary  (the fader's interior)
+ *    50%  CHECKER     muted, ghosted        (the mass under every curve)
+ *    25%  DIAG_LIGHT  background, hint, range
+ *
+ * They live HERE, not in render_page_movy.mjs, because viz_draw.mjs needs them
+ * too and render_page_movy already imports viz_draw — putting them there would
+ * be a cycle, and copying them into both is how two halves of one page end up
+ * with two lattices that do not line up.
+ *
+ * Predicates take ABSOLUTE screen coordinates, never rect-relative ones. That
+ * is what makes two neighbouring filled shapes share one lattice instead of
+ * showing a seam, and what stops a moving shape from shimmering as its fill
+ * re-phases underneath it.
+ */
+
+export const CHECKER = (x, y) => ((x + y) % 2) === 0;
+export const DIAG_LIGHT = (x, y) => ((x + y) % 4) === 0;
+export const DIAG_HEAVY = (x, y) => ((x + y) % 4) !== 0;
+
+/**
+ * Fill a rect through a pattern. Only ever SETS pixels — a dithered fill
+ * composites over whatever is beneath it rather than punching a hole in it.
+ */
+export function fillDithered(ctx, x, y, w, h, pattern) {
+    for (let dy = 0; dy < h; dy++) {
+        for (let dx = 0; dx < w; dx++) {
+            const px = x + dx, py = y + dy;
+            if (pattern(px, py)) ctx.fillRect(px, py, 1, 1, 1);
+        }
+    }
+}
+
+/** A dashed vertical rule. `dash` rows on, `gap` rows off. */
+export function dashedVRule(ctx, x, y, h, dash = 1, gap = 1) {
+    const cycle = dash + gap;
+    for (let i = 0; i < h; i++) if ((i % cycle) < dash) ctx.fillRect(x, y + i, 1, 1, 1);
+}
+
+/**
+ * Knock the four corner pixels out of a box — the "rounded corner" idiom.
+ *
+ * At one pixel and two colours there is no second way to soften a corner, which
+ * is why SCH-50 kept converging on it and why the spec records it as a keeper
+ * rather than as one option among ten. Every filled or framed box on the movy
+ * grid wears it: the enum square, the label strip, the opaque cell's door
+ * frame, the footer pills, the fader's box and the switch pill.
+ *
+ * CLEARS pixels, so it must run AFTER whatever it is notching, and it must not
+ * be used on a shape drawn in the ground colour — knocking a corner out of a
+ * hole fills the corner in, which is the opposite of the intent. The knocked-out
+ * slug in `drawSwitch` therefore notches in reverse, by SETTING four pixels.
+ */
+export function notchCorners(ctx, x, y, w, h) {
+    ctx.fillRect(x, y, 1, 1, 0);
+    ctx.fillRect(x + w - 1, y, 1, 1, 0);
+    ctx.fillRect(x, y + h - 1, 1, 1, 0);
+    ctx.fillRect(x + w - 1, y + h - 1, 1, 1, 0);
+}
+
 /*
  * An enum may report its value as the option NAME rather than as an index, so
  * resolve it the way every other reader in this layer does before treating it

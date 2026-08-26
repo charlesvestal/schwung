@@ -28,7 +28,7 @@
 
 import { KIND_ENUM, KIND_OPAQUE, enumIndexOf } from "./param_meta.mjs";
 import { formatParamValue } from "../param_format.mjs";
-import { asciiFold, fitText, shortenLabel, line, circle } from "./render_page.mjs";
+import { asciiFold, fitText, shortenLabel, line, circle, notchCorners } from "./render_page.mjs";
 import { drawVizGroup } from "./viz_draw.mjs";
 import { enumSquareLines } from "./font5x3.mjs";
 import { fontPrint as tzPrint, fontWidth as tzWidth, HEIGHT as TZ_H } from "./font_tamzen6x12.mjs";
@@ -44,9 +44,10 @@ import { SCREEN_WIDTH as W, HEADER_H, RULE_Y, FOOTER_Y, FOOTER_H,
  * use font4x5.
  *
  * On hardware the 5-row font read as too small — legibility mattered more
- * than knob size, and the Move panel is physically smaller than the Elektron
- * one this grid was measured against, so matching its pixel geometry does not
- * reproduce its apparent size. The device font is 40% taller (7 rows vs 5).
+ * than knob size. Pixel geometry alone does not settle apparent size: the
+ * Move panel is small, and a row count that looks comfortable in a preview at
+ * 4x is not the same thing behind this bezel. The device font is 40% taller
+ * (7 rows vs 5).
  *
  * That was the state until 2026-08-20, when the hint FOOTER needed eight rows
  * and the label bands were the only non-widget source of them. Labels went back
@@ -90,7 +91,8 @@ import { SCREEN_WIDTH as W, HEADER_H, RULE_Y, FOOTER_Y, FOOTER_H,
  */
 export const LABEL_CHARS = 5;
 
-/** Uppercase, ascii-folded — the Elektron register. font4x5 has no lowercase. */
+/** Uppercase, ascii-folded — the register this grid sets in. font4x5 has no
+ *  lowercase, so a mixed-case name would silently lose glyphs. */
 function caps(s) { return asciiFold(String(s == null ? "" : s)).toUpperCase(); }
 /** fitText/shortenLabel measure through ctx.textWidth; hand them Tamzen. */
 const TZ_MEASURE = { textWidth: tzWidth };
@@ -131,9 +133,10 @@ export function displayValue(raw, meta) {
  * The synth vocabulary, abbreviated the way hardware does it.
  *
  * A character budget alone is not an abbreviation: truncating "Attack" to four
- * gives "ATTA", which is worse than useless next to "ATTE"nuation. Elektron
- * ships a fixed mnemonic per concept — ATK, DEC, SUS, REL — and that is what
- * makes a row of four-letter labels scannable rather than a row of stumps.
+ * gives "ATTA", which is worse than useless next to "ATTE"nuation. What makes
+ * a row of four-letter labels scannable rather than a row of stumps is a fixed
+ * mnemonic per concept — ATK, DEC, SUS, REL — chosen once and reused, so the
+ * reader learns the token instead of re-parsing a truncation every time.
  *
  * These are applied per WORD and then handed to the existing shortenLabel,
  * which already knows how to squeeze a multi-word name (initials for the
@@ -406,41 +409,53 @@ function preAbbreviate(label, budget) {
 export const LAYOUT_MOVY = "movy";
 
 /*
- * Vertical rhythm, re-cut against Elektron's measured bands.
+ * Vertical rhythm, cut against OUR panel: 64 rows behind a physical bezel.
  *
- * Movy's original constants assumed a 7-row font and packed the bands flush:
- * LBL0_Y(27) + 8 === ROW1_Y(35), i.e. a label and the knob row below it
- * touched with a ZERO-pixel gutter, while five rows sat unused at the bottom
- * of the screen. All the slack existed; it was in the wrong place.
+ * THIS REPLACES AN INHERITED GEOMETRY. The bands were once a set of 1-3px
+ * gutters carried over wholesale from an earlier layout, on the assumption
+ * that spacing which reads well anywhere reads well here. It does not follow:
+ * the spacing that reads well is the spacing that fits the panel you own, and
+ * those numbers left SEVEN rows carrying no ink at all — 0, 6, 9, 24, 32, 55
+ * and 56. Five of them were pure slack, and slack nobody can account for is
+ * the one kind of layout decision that cannot be defended on its own terms.
+ * So the rhythm below is re-derived from the two constraints we actually have.
  *
- * Elektron's screen, recovered from a 4x capture, puts a 1-3px gutter between
- * every band. With font4x5 the label band drops from 8 rows to 6, which pays
- * for a 2px gutter on both sides of every label.
+ * CONSTRAINT ONE: the widget and label heights are fixed by their contents,
+ * not by taste. BOX_H is 15 because a viz body occupies rect.y+1..+14 and
+ * anything under 15 stands the graphics down (the minimum-cell rule in
+ * render_page.mjs); LBL_H is 7 because font4x5 is 5 rows and an inverted band
+ * needs one clear row on each side. Both are ODD so an odd content height
+ * centres exactly. Neither moves here — this re-cut moves BANDS, it does not
+ * resize them.
  *
- * THE FOOTER (2026-08-20) is bought from that rhythm rather than from the
- * widgets. Before it, the screen was exactly full — LBL1_Y(55) + LBL_H(9) ===
- * 64 — so a hint bar had to come from somewhere, and the two candidates were
- * the widget rows and the label bands. Shrinking the widget rows is the one
- * change that cannot be made: a viz body occupies rect.y+1..+14 and a box is
- * BOX_H(15), so anything under 15 stands the graphics down (see the minimum-cell
- * rule in render_page.mjs). The label bands can pay instead, by going back to
- * font4x5 — 5 glyph rows, so LBL_H 9 -> 7 with a clear row each side — and the
- * gutters give up the rest:
+ * CONSTRAINT TWO: there is no need for an on-screen margin. The OLED sits
+ * behind a bezel, so the top and bottom rows are already visually inset and a
+ * pixel row of air spent against either edge buys nothing you can see. That is
+ * what pays for the re-cut: the header's glyphs move to y=0 (band 7 -> 6) and
+ * the hint pills go flush to row 63 (FOOTER_H 8 -> 7). Two rows, plus the
+ * three already loose, is what makes the gutters equal.
  *
- *      0..6    header      (7)   text at y=0, 7 tall
- *      7       bank bar    (1)
- *      8..9    gutter      (2)   was 4
- *     10..24   knob row 0  (15)  UNCHANGED height — graphics still fit
- *     25..31   label row 0 (7)   was 9 (tamzen); font4x5 + 1 clear row each side
- *     32       gutter      (1)   was 2
- *     33..47   knob row 1  (15)  UNCHANGED height
- *     48..54   label row 1 (7)   was 9
- *     55       rule        (1)
- *     56..63   FOOTER      (8)
+ *      0..5    header      (6)   font4x5 at y=0, one clear row under it
+ *      6       bank bar    (1)   the CURRENT page's segment is 2 rows, so it
+ *                                borrows the first row of the gutter below
+ *      7..8    gutter      (2)
+ *      9..23   knob row 0  (15)  BOX_H
+ *     24..30   label row 0 (7)   LBL_H, glyphs on 25..29
+ *     31..32   gutter      (2)   was 1 — the two rows now match
+ *     33..47   knob row 1  (15)
+ *     48..54   label row 1 (7)   glyphs on 49..53
+ *     55       rule        (1)   one clear row above it (54) and below it (56)
+ *     57..63   FOOTER      (7)   pill flush to the bottom edge, glyphs 58..62
  *
- * Eight rows found, none of them taken from a widget. The knob itself is only
- * ~12 rows tall now that the arc is open at the bottom, so a knob row carries
- * more air below it than a graphic row does; the 15 is held for the graphics.
+ * Every one of the 64 rows now belongs to a band, and the only rows without
+ * ink on a plain page are the ones a band deliberately keeps clear: the gutters
+ * and the single air rows either side of the rule. The two widget/label pairs
+ * get IDENTICAL treatment — 2 rows of gutter, 15 of widget, 7 of label — which
+ * the recovered geometry never did (2 above the first row, 1 above the second).
+ *
+ * The knob itself is only ~12 rows tall now that the arc is open at the bottom,
+ * so a knob row carries more air below it than a graphic row does; the 15 is
+ * held for the graphics.
  */
 /*
  * The canvas, the header BAND, the footer rule and the list rect are DEFINED in
@@ -457,14 +472,32 @@ export const LAYOUT_MOVY = "movy";
  * It sits one row below HEADER_H so row HEADER_H is always dark — without it
  * the bar butted straight against the bottom row of every glyph, and with the
  * header inverted band and bar merged into one thick smudge.
+ *
+ * THE RE-CUT LIVES IN list_geometry.mjs NOW, AND THAT WIDENS IT.
+ *
+ * The vertical rhythm was re-cut against the panel — header band 7 rows to 6
+ * with the glyphs moving to y=0, footer to the bottom edge, and the two
+ * widget/label pairs given equal gutters. That work was done while these
+ * constants were the knob grid's alone.
+ *
+ * They are not any more. Every list screen in the shadow UI reads them, so the
+ * re-cut now moves slots, settings, master FX, patches, tools, store and the
+ * menus as well as the grid. That is deliberate — one definition is the point
+ * of the leaf module, and a grid-private copy would re-introduce exactly the
+ * two-definitions bug it was written to remove — but it means the re-cut is
+ * only verified where it was rendered, which was the knob grid and the chain
+ * editor. The list screens are HARDWARE-VERIFIED, not test-verified: this
+ * module's own history is a re-skin that its test declared green while the
+ * device showed an 8-row dead band.
  */
 export { W, HEADER_H, RULE_Y, FOOTER_Y, FOOTER_H,
          MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W };
 export const BAR_Y = HEADER_H;       /* no separator row — the band has its own */
-/* One row of gutter here, not two — the bank bar is itself a separator, so
- * this is the cheapest row on the screen to give back to the header. */
-export const ROW0_Y = 10;
-export const LBL0_Y = 25;
+/* Two rows of gutter above each knob row, and the SAME two above both. The
+ * first row used to get 2 and the second 1, which is the kind of asymmetry
+ * nothing reads as deliberate — it read as one row tight and one loose. */
+export const ROW0_Y = 9;
+export const LBL0_Y = 24;
 export const ROW1_Y = 33;
 export const LBL1_Y = 48;
 export const CELL_W = 32;
@@ -502,7 +535,23 @@ const cellLeft = (g, col) => g.x0 + col * g.cellW;
  * geometry and their consumers are renderers; they moved down when
  * chain_ui_views.mjs turned out to need them too. page_controller.mjs still
  * re-exports MENU_LIST_* under the same names, so nothing that imported them
- * from there had to change. */
+ * from there had to change.
+ *
+ * What the re-cut did to them, since the reasoning is not visible from a
+ * three-integer diff in a leaf module:
+ *
+ * The rule gets a clear row on BOTH sides — 54 is the last label band's own
+ * bottom margin, 56 is left empty — so it reads as a boundary rather than as
+ * an underline on the labels or a lid on the pills. The band under it is 7
+ * rows, which is exactly the pill (font4x5 plus one row of ground above and
+ * below), so the pill lands on 57..63 and the footer reaches the bottom edge
+ * of the panel.
+ *
+ * FOOTER_H used to be 8 and the pill sat on 56..62, leaving row 63 dark. The
+ * `pair` helper in styles/fills.mjs argued that dark row was the ground its
+ * bottom corner notches read against; it is now the bezel that does that job,
+ * for the same reason the header's glyphs sit on row 0. The nine rows
+ * RULE_Y..63 that the fills catalog budgets against are unchanged. */
 /*
  * ODD, for the same reason BOX_H is: 5 glyph rows centred in the band leave a
  * remainder that only splits evenly when the band is odd. At 6 the touched
@@ -538,8 +587,16 @@ export const KW = 17;
  * ring in a 16px box is already the right weight.
  */
 export const ENUM_W = 20;
-/** Frame (1) + margin (1) on each side. */
-export const ENUM_TEXT_W = ENUM_W - 4;
+/**
+ * The line the square can set: the frame column on each side, and nothing else.
+ *
+ * SCH-50 `thin-frame` closed up the extra 1px margin this used to hold inside
+ * the frame (`ENUM_W - 4`, 16px). Three characters is the whole budget, and
+ * measured on the `enumSquareLines` split, 16px cuts "PAS" to "PA" while 18px
+ * keeps it. The cost is that a bowl now sits one pixel off the border and the
+ * two touch at a glance.
+ */
+export const ENUM_TEXT_W = ENUM_W - 2;
 /*
  * Height of a text-bearing box, and it is ODD on purpose.
  *
@@ -582,6 +639,11 @@ function centreX(x0, span, w) {
     return x0 + Math.floor((span - w) / 2);
 }
 
+/* `notchCorners` — the rounded-corner idiom every filled box on this grid wears
+ * — lives in render_page.mjs so viz_draw.mjs can share the same one. Re-exported
+ * here because this is the module the grid's own callers already import. */
+export { notchCorners };
+
 /**
  * Tamzen 6x12, trimmed to its cap window — 7 rows, 6px advance, which is
  * metrically IDENTICAL to the device 5x7 it replaces. Same band height, same
@@ -601,7 +663,7 @@ const FONT_H = TZ_H;
 const LBL_FONT_H = FONT4_HEIGHT;
 const LBL_MEASURE = FONT4_MEASURE;
 
-function centeredText(ctx, x0, span, y, text, color) {
+export function centeredText(ctx, x0, span, y, text, color) {
     const t = caps(text);
     tzPrint(ctx, centreX(x0, span, tzWidth(t)), y, t, color);
 }
@@ -609,13 +671,9 @@ function centeredText(ctx, x0, span, y, text, color) {
 /**
  * schwung-movy renderer/header.ts drawHeader, ported.
  *
- * Movy's own HEADER_H (7) matches ITS font's glyph height. Schwung's device
- * font is a 5x7 bitmap printed one row lower (`print(x, 1, ...)`, to clear
- * the top edge of the display), so its glyphs occupy rows 1-7 while a 7-row
- * inverted band covers only rows 0-6 — the bottom row of every character
- * fell outside the highlight and read as a black bar under the text. The
- * band is therefore drawn one row taller than the font, the same fix
- * render_page.mjs's drawTouchStrip already uses.
+ * Movy's own HEADER_H (7) matched ITS font's glyph height. Schwung's band is
+ * six rows around a 5-row font4x5, with the spare row below the glyphs — see
+ * HEADER_H for why it goes below and not above.
  *
  * The header is also where the width matters most: it carries the touched
  * knob's FULL parameter name next to its value, which is the answer to a
@@ -630,10 +688,10 @@ export function drawHeader(ctx, left, right, inverted = false) {
     /* font4x5, not the label face: the header is secondary text (the slot
      * title, the page name, and the touched parameter's full name and value),
      * so it can afford to be smaller than the thing you read at a glance. A
-     * 5-row glyph at y=1 sits in a 7-row band with one clear row above and
-     * one below — which is what the touched HIGHLIGHT needs to be legible,
-     * and what it did not have while a 7-row font filled an 8-row band edge
-     * to edge.
+     * 5-row glyph at y=0 sits in a 6-row band with one clear row below it and
+     * the bezel above — which is what the touched HIGHLIGHT needs to be
+     * legible, and what it did not have while a 7-row font filled an 8-row
+     * band edge to edge.
      *
      * Tamzen's own 5-row face was the obvious candidate and is the wrong one:
      * its advance equals its ink width, so adjacent glyphs touch, and the
@@ -673,8 +731,8 @@ export function drawHeader(ctx, left, right, inverted = false) {
         rw = r ? fontWidth4x5(r) : 0;
     }
     const l = fit5(left, W - 4 - (rw ? rw + HEADER_GAP : 0));
-    fontPrint4x5(ctx, 2, 1, l, color);
-    if (r) fontPrint4x5(ctx, W - rw - 2, 1, r, color);
+    fontPrint4x5(ctx, 2, 0, l, color);
+    if (r) fontPrint4x5(ctx, W - rw - 2, 0, r, color);
 }
 
 /**
@@ -747,8 +805,7 @@ export function drawBankBar(ctx, pageIndex, pageCount, groups) {
  * with the OLED is how the original bug survived review.
  *
  * The track is an OPEN ARC, not a closed ring, and the pointer FLOATS clear
- * of both the centre and the rim. Both come from the Elektron UI this grid
- * imitates, and both carry information a circle does not:
+ * of both the centre and the rim. Both carry information a circle does not:
  *
  *   - The gap marks the ends of travel. Drawing a full 360 ring while the
  *     pointer only sweeps 300 leaves 60 degrees of track the value can never
@@ -756,24 +813,29 @@ export function drawBankBar(ctx, pageIndex, pageCount, groups) {
  *     pointer's own numbers (KNOB_START_DEG / KNOB_SWEEP_DEG) makes the two
  *     agree by construction.
  *   - A pointer welded from the exact centre to the rim reads as a clock hand
- *     or a pie slice. Elektron's is a short stroke floating between about a
- *     quarter and four-fifths of the radius, which reads as an indicator.
+ *     or a pie slice. A short stroke floating between roughly a quarter and
+ *     four-fifths of the radius reads as an indicator aimed at a scale.
+ *
+ * The gap is also forced, not only chosen: at KNOB_R 8 a CLOSED ring needs 17
+ * rows and the widget box is 15, so the bottom of the circle has nowhere to go.
+ * Opening the arc where the travel already ends spends that constraint on
+ * something that means one thing.
  */
 /*
- * Measured off Elektron's screen (128x64, recovered from a 4x capture):
+ * The four angles, and why they are not the same pair twice:
  *
- *   track    14px across, open at the bottom. The last drawn pixels sit at
- *            dx=+-5.5, dy=+3.5 from the centre — 237.5 degrees — and the row
- *            below, which a closed circle would fill, is empty. That puts the
- *            arc boundary between 226 and 237.5, so ~230 start / ~260 sweep.
- *   pointer  a stroke from the CENTRE outward to about 0.85r, not a floating
- *            segment: their DEC knob at midpoint is a 6px vertical run
- *            starting one pixel off centre. Travel bottoms out at 225 (their
- *            ATK pointer tip is exactly on that diagonal), so 270 degrees.
+ *   track    ARC_START_DEG 230 / ARC_SWEEP_DEG 260. 14px across at KNOB_R 8,
+ *            open at the bottom. The last drawn pixels land at dx=+-5.5,
+ *            dy=+3.5 from the centre; the row below stays empty, which is what
+ *            keeps the shape 15 rows tall and inside the box.
+ *   pointer  KNOB_START_DEG 225 / KNOB_SWEEP_DEG 270. Travel bottoms out on
+ *            the 225 diagonal, so a pointer at either extreme sits on a clean
+ *            45-degree run rather than on a rounding-dependent angle.
  *
- * The 5-degree inset between the pointer travel and the track is theirs, not
- * a rounding artefact: at either extreme the pointer aims just past the end
- * of the track, into the gap.
+ * The 5-degree inset between the pointer travel and the track is deliberate,
+ * not a rounding artefact: at either extreme the pointer aims just PAST the end
+ * of the track, into the gap, so "fully closed" and "fully open" are visibly
+ * ends rather than merely the last position before one.
  */
 export const KNOB_R = 8;
 const KNOB_START_DEG = 225;
@@ -781,7 +843,26 @@ const KNOB_SWEEP_DEG = 270;
 const ARC_START_DEG = 230;
 const ARC_SWEEP_DEG = 260;
 const POINTER_INNER = 0.0;
-const POINTER_OUTER = 0.85;
+/*
+ * SCH-50 `arc-short`. Was 0.85r, which is Movy's number.
+ *
+ * At 0.85 the tip is 6.8px from the centre against a track at 8: one clear
+ * pixel at best, and none at the shoulders, where `drawArc`'s distance-rounded
+ * rasteriser thickens the ring. The marker merged with the rim and read as a
+ * lump growing off it rather than as a pointer aimed at it. Pulling back to
+ * 5.4px leaves two clear pixels of track at every angle, so the pointer and the
+ * scale it points at stay separate shapes.
+ *
+ * The cost is real: a shorter pointer is a smaller marker, so the angle is
+ * carried by less ink across a page of eight.
+ *
+ * It also improves the modulation dot for free. `MOD_DOT_R` is 6 and the plus
+ * spans r=5..7; a 0.85r pointer runs straight through that band, a 0.68r one
+ * stops at its inner edge. Twenty alternative knobs were drawn and rejected
+ * before this one-pixel change to the incumbent was accepted — the
+ * arc-and-pointer is not where the resemblance lives.
+ */
+const POINTER_OUTER = 0.68;
 /*
  * Modulation dot centre radius.
  *
@@ -812,7 +893,7 @@ const MOD_DOT_R = KNOB_R - 2;
  * than floating. The size and shape are argued in the body — both follow from
  * the fact that an even-sized mark cannot centre on a pixel.
  */
-function drawModDot(ctx, kx, ky, normVal) {
+export function drawModDot(ctx, kx, ky, normVal) {
     const cx = kx + KNOB_R, cy = ky + KNOB_R;
     /*
      * INSIDE the ring, not on it. Centred on the arc radius the 2x2 straddles
@@ -913,7 +994,10 @@ export function normalizedOf(meta, raw) {
     return Math.max(0, Math.min(1, (num - min) / (max - min)));
 }
 
-function drawArcKnob(ctx, kx, ky, normVal) {
+/* Exported for tools/param-pages — the catalog renders the shipping widget as
+ * the baseline every option is compared against, and the composite draws it
+ * into a real page. Nothing on the device imports it from outside this file. */
+export function drawArcKnob(ctx, kx, ky, normVal) {
     const cx = kx + KNOB_R, cy = ky + KNOB_R, r = KNOB_R;
     if (typeof ctx.drawArc === "function") {
         ctx.drawArc(cx, cy, r, ARC_START_DEG, ARC_SWEEP_DEG, 1);
@@ -1148,34 +1232,88 @@ function buttonPhase(fired, now, held) {
     return { pressed, filled: held || bursts.length > 0, bursts };
 }
 
-function drawEnumSquare(ctx, kx, ky, text) {
+/*
+ * SCH-50 `thin-frame`. Two changes from Movy's construction, both small:
+ *
+ *   - The corners are NOTCHED. See `notchCorners` — the one idiom the whole
+ *     catalog converged on, and the only thing on this widget that is ours.
+ *   - The text box runs to the INSIDE OF THE FRAME (ENUM_TEXT_W, 18px) instead
+ *     of holding a further 2px margin off it (16px). At three characters that
+ *     is not cosmetic: it is the difference between "PAS" and "PA".
+ *
+ * Effectively a no-change vote, and taken as one deliberately. An enum square
+ * is a framed box containing a word, which is about as generic as a widget
+ * gets, so there is probably no house style in it worth changing. What matters
+ * is the CROSS-SET constraint: `drawOpaqueBox` must stay distinguishable from
+ * this, and it is — it is bracketed-and-broken where this is closed and framed.
+ *
+ * The accepted collision is with the FADER, which SCH-50 also made a framed
+ * notched box (`outline-fill`, viz_draw.mjs). A page mixing continuous faders
+ * with enums now distinguishes the two by CONTENT, not by silhouette. That was
+ * declined-alternative-and-kept, not an oversight: a frameless enum square was
+ * available and would have dissolved it. If it reads badly on hardware, the
+ * cheap fix is this widget, not the fader.
+ */
+export function drawEnumSquare(ctx, kx, ky, text) {
     const w = ENUM_W, h = BOX_H;
     ctx.fillRect(kx, ky, w, 1, 1);
     ctx.fillRect(kx, ky + h - 1, w, 1, 1);
     ctx.fillRect(kx, ky, 1, h, 1);
     ctx.fillRect(kx + w - 1, ky, 1, h, 1);
+    notchCorners(ctx, kx, ky, w, h);
 
     const [raw1, raw2] = enumSquareLines(text);
     const line1 = fitLine(raw1, ENUM_TEXT_W);
     const line2 = fitLine(raw2, ENUM_TEXT_W);
     const totalH = line2.length > 0 ? 11 : 5;
     const startY = ky + 1 + Math.floor((h - 2 - totalH) / 2);
-    /* Centre within the TEXT area (inside the margins), not the interior, so
-     * an odd remainder can never round back onto the frame. */
-    const tx = (lw) => centreX(kx + 2, ENUM_TEXT_W, lw);
+    /* Centre within the TEXT area, which is now the interior itself — an odd
+     * remainder still cannot round back onto the frame, because centreX always
+     * gives the extra pixel to the right and the span starts inside it. */
+    const tx = (lw) => centreX(kx + 1, ENUM_TEXT_W, lw);
     fontPrint4x5(ctx, tx(fontWidth4x5(line1)), startY, line1, 1);
     if (line2.length > 0) fontPrint4x5(ctx, tx(fontWidth4x5(line2)), startY + 6, line2, 1);
 }
 
-/** A knob that cannot be turned (filepath/canvas/wav_position/string), showing
- * the value's tail. Not part of Movy's vocabulary (its modules do not carry
- * this param type in the fleet this was built against) but needed so an opaque
- * param on a Movy-style page is a door to its existing editor.
+/**
+ * A knob that cannot be turned (filepath/canvas/string), showing the value's
+ * head. Not part of Movy's vocabulary — its modules do not carry this param
+ * type in the fleet this was built against — but needed so an opaque param on a
+ * Movy-style page is a door to its existing editor.
  *
- * It draws NO frame: the divable brackets (drawDivableMark) are its frame. It
- * used to draw the same solid box as an enum square, which meant a door and a
- * turnable enum were pixel-identical — you found out which was which by
- * turning one and having nothing happen. */
+ * SCH-50 `door-open`. IT NOW DRAWS ITS OWN FRAME, and that is a swap, not an
+ * addition: it used to draw none at all and wear the divable brackets as its
+ * frame instead. `drawKnobRow` therefore suppresses the bracket for this kind —
+ * see the `divable_mark` call site — so the two never double up.
+ *
+ * The frame is a notched 1px box with its RIGHT EDGE CUT AWAY for five rows and
+ * a 3-row chevron sitting in the gap, with the value set left of it. Three
+ * things follow from that shape:
+ *
+ *   - It is the only cell on the page that says which DIRECTION its door goes.
+ *     An opaque cell's whole job is to be a door — roughly FIVE params in the
+ *     entire fleet against ~135 enums — so marking the door explicitly is worth
+ *     a cell this rare spending pixels on.
+ *   - The broken edge means it can never be confused with an enum square
+ *     however the widths fall, which matters now that the enum square
+ *     (`thin-frame`) and the fader (`outline-fill`) are BOTH closed framed
+ *     boxes.
+ *   - It spans the CELL, not the KW widget box, which is what buys the room for
+ *     a filename beside a chevron. `cellOf` recovers the cell from `kx` rather
+ *     than taking it as an argument, so the signature is unchanged.
+ *
+ * ACCEPTED COST, recorded because it is the pick most likely to be reversed:
+ * a 1px pictogram either reads instantly or reads as debris, and that is not
+ * decidable from code or from a 4x render. Watch it on hardware.
+ *
+ * DELIBERATE DIVERGENCE FROM THE CATALOG OPTION: the text still comes from
+ * `displayValue`, not from the option's own ad-hoc formatter. Two behaviours
+ * live in `displayValue` that the catalog dropped because a swatch never
+ * exercised them — it takes the BASENAME of a path ("/x/kick.wav" -> "kick.wav")
+ * and it renders an empty or absent value as "--" rather than as nothing. A
+ * canvas param reports "", and a door with no text in it looks broken. Porting
+ * the option's formatter would have quietly reintroduced both.
+ */
 /*
  * A FRAMED NUMBER, for octave offsets, transposes and voice counts.
  *
@@ -1272,13 +1410,40 @@ export function drawBigNumber(ctx, cx, ky, text) {
     tzPrint(ctx, cx - Math.floor(w / 2), ky + Math.floor((BOX_H - TZ_H) / 2), s, 1);
 }
 
-function drawOpaqueBox(ctx, kx, ky, value, override) {
-    const h = BOX_H;
+export function drawOpaqueBox(ctx, kx, ky, value, override) {
+    /* The cell this widget box is centred in. Mirrors drawKnobWidget's own
+     * `cellLeft(g, col) + floor((cellW - KW) / 2)`, inverted. */
+    const cellX = kx - Math.floor((CELL_W - KW) / 2);
+    const x = cellX + 1, y = ky, w = CELL_W - 2, h = BOX_H;
     const shown = (override === null || override === undefined)
         ? displayValue(value === undefined ? null : value, { kind: KIND_OPAQUE })
         : String(override);
-    centeredText(ctx, kx + 2, KW - 4,
-        ky + 1 + Math.floor((h - 2 - FONT_H) / 2), fitDev(ctx, shown, KW - 4), 1);
+
+    const gapY = y + ((h - 5) >> 1);
+    ctx.fillRect(x, y, w, 1, 1);
+    ctx.fillRect(x, y + h - 1, w, 1, 1);
+    ctx.fillRect(x, y, 1, h, 1);
+    ctx.fillRect(x + w - 1, y, 1, gapY - y, 1);
+    ctx.fillRect(x + w - 1, gapY + 5, 1, y + h - (gapY + 5), 1);
+    notchCorners(ctx, x, y, w, h);
+
+    /* The chevron sits IN the gap, not beyond it — a mark outside the cell
+     * would land on the neighbouring column, and this grid does not repaint a
+     * neighbour when this cell changes. */
+    const ax = x + w - 4;
+    for (let i = 0; i < 3; i++) {
+        ctx.fillRect(ax + i, gapY + i, 1, 1, 1);
+        ctx.fillRect(ax + i, gapY + 4 - i, 1, 1, 1);
+    }
+
+    /* Set LEFT, in the 4x5 label face rather than the taller device font: the
+     * value has to clear the chevron, and at 5x7 it would not. */
+    const budget = w - 9;
+    let t = String(shown == null ? "" : shown).toUpperCase();
+    while (t.length > 1 && fontWidth4x5(t) > budget) t = t.slice(0, -1);
+    if (fontWidth4x5(t) <= budget) {
+        fontPrint4x5(ctx, x + 3, ky + Math.floor((h - FONT4_HEIGHT) / 2), t, 1);
+    }
 }
 
 /*
@@ -1341,7 +1506,7 @@ function drawDivableMark(ctx, g, col, rowY) {
     drawBrackets(ctx, cellLeft(g, col) + 1, rowY, g.cellW - 2, BOX_H);
 }
 
-function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, cellText, btnPhase) {
+export function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, cellText, btnPhase) {
     const kx = cellLeft(g, col) + Math.floor((g.cellW - KW) / 2), ky = rowY;
     /* Anything that cannot show two values at once shows the live one, so it
      * animates under modulation instead of freezing on the base. */
@@ -1467,9 +1632,48 @@ function drawWaveMark(ctx, x, y, on) {
  * two questions — collapsing them is what made the removed gesture hard to
  * express in the first place.
  */
-function drawLabelCell(ctx, g, col, lblY, label, displayValue, showValue, inverted, modulated) {
+/*
+ * SCH-50 `half-strip`. The strip is now sized to the VALUE plus one pixel each
+ * side, centred and notched, instead of spanning the whole 32px cell.
+ *
+ * Chosen for the notch — *"I like the rounded edge in the selection"* — and
+ * kept for the sizing. A row of held knobs becomes blocks of DIFFERENT widths,
+ * so the page shows how long each value is before you read any of them, and
+ * "ON" stops claiming the same 32px as "-24.0".
+ *
+ * It is the closest option to the incumbent in kind and the furthest in
+ * behaviour, because THE SHAPE NOW MOVES AS THE VALUE CHANGES: turning through
+ * 9 -> 10 -> 11 makes the block grow and shrink under your finger. Whether that
+ * is useful feedback or fidget is not decidable from a still and is the thing
+ * to watch on hardware.
+ *
+ * THE 30px BUDGET AND THE 1px SHOULDERS ARE ONE DECISION, not two.
+ *
+ * The budget applies to the RESTING LABEL as well as to the held value, which
+ * no per-set contact sheet could show: at the 26px this option was first drawn
+ * with, LKYTRG, LKYFLL and LSYMMT all lost a character whether or not the knob
+ * was being touched. The strip is the text plus its shoulders and it must still
+ * fit `CELL_W`, so 30 + 1 + 1 = 32 exactly. 30px with 2px shoulders would be 34
+ * and overflow; 28px with 2px rescues only two of the three labels. One pixel
+ * of shoulder is what buys the third.
+ *
+ * At full width the strip spans the whole cell, so two adjacent held knobs
+ * abut. The different-widths reading survives where it matters — a short value
+ * still draws a short block.
+ *
+ * The strip keeps the incumbent's FULL seven rows. The variable here is width;
+ * shortening it as well would put two changes in one option, and `LBL_H` is odd
+ * precisely so a 5-row face gets one clear row above and below.
+ */
+export function drawLabelCell(ctx, g, col, lblY, label, displayValue, showValue, inverted, modulated) {
     const cellX = cellLeft(g, col);
-    const text = showValue ? displayValue : label;
+    let text = String((showValue ? displayValue : label) ?? "");
+    /* Trim MEASURED, never by character count — the face is proportional (I is
+     * 1px, W is 5), so "six characters" is not a width. The budget leaves one
+     * pixel of shoulder on each side of the strip. */
+    const budget = g.cellW - 2;
+    while (text.length > 1 && fontWidth4x5(text) > budget) text = text.slice(0, -1);
+    if (fontWidth4x5(text) > budget) text = "";
     const tw = fontWidth4x5(text);
     /* Same rule as every other centred run — `floor(CELL_W/2) - floor(tw/2)`
      * biases the other way on odd widths, which made a label and the box above
@@ -1477,15 +1681,36 @@ function drawLabelCell(ctx, g, col, lblY, label, displayValue, showValue, invert
     const tx = centreX(cellX, g.cellW, tw);
     /* One clear row above and below the glyphs inside the band — see LBL_H. */
     const ty = lblY + Math.floor((LBL_H - LBL_FONT_H) / 2);
-    if (inverted) {
-        ctx.fillRect(cellX, lblY, g.cellW, LBL_H, 1);
+    /* An empty run has no strip to draw: a 2px block under an untouched-looking
+     * cell is noise, not a highlight. */
+    const strip = inverted && tw > 0;
+    if (strip) {
+        ctx.fillRect(tx - 1, lblY, tw + 2, LBL_H, 1);
+        notchCorners(ctx, tx - 1, lblY, tw + 2, LBL_H);
         fontPrint4x5(ctx, tx, ty, text, 0);
     } else {
         fontPrint4x5(ctx, tx, ty, text, 1);
     }
     if (modulated) {
         const wx = Math.max(cellX, tx - 6);
-        drawWaveMark(ctx, wx, lblY + 1, inverted ? 0 : 1);
+        /*
+         * Polarity follows what the tilde actually LANDS ON, and this is a
+         * deliberate divergence from the catalog option, which keyed it on
+         * `inverted` alone.
+         *
+         * With a full-width strip those were the same question — everything in
+         * the band was on the strip. With a strip sized to the text they are
+         * not: the mark sits six pixels left of the run, which is outside the
+         * strip for any value shorter than the cell. The option therefore drew
+         * the tilde in colour 0 on black ground, i.e. INVISIBLE, on exactly the
+         * cells that need it most — a modulated parameter whose knob is being
+         * held. No per-set contact sheet shows that, because it needs the
+         * touched state and the modulated state at once.
+         *
+         * Pinned by the held-and-modulated case in tests/host/test_param_pages_movy.sh.
+         */
+        const onStrip = strip && wx >= tx - 1;
+        drawWaveMark(ctx, wx, lblY + 1, onStrip ? 0 : 1);
     }
 }
 
@@ -1613,17 +1838,31 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
                            cellText, btnPhase);
         }
 
-        /* Budget in CHARACTERS, not pixels: Elektron's labels are 3-4 glyphs
-         * whether or not more would technically fit, which is what keeps a row
-         * of them scannable. `M` is the widest glyph, so measuring that many
-         * of it gives a width no LABEL_CHARS-long label can exceed. */
+        /* Budget in CHARACTERS, not pixels: 3-4 glyphs is what keeps a row of
+         * labels scannable at this cell width, whether or not more would
+         * technically fit — a ragged row of 4s and 6s costs more to read than
+         * the extra letters buy. `M` is the widest glyph, so measuring that
+         * many of it gives a width no LABEL_CHARS-long label can exceed. */
         /* AFTER the widget and OUTSIDE the `covered` test: a viz group that
          * spans the cell (mrsample's SMP waveform) is still divable, and the
          * mark is the only thing that says so. */
         /* `divable_mark`, NOT `divable` — an enum opens a picker but is not
          * bracketed. See param_meta.mjs normalize() for why the mark cannot
-         * simply follow divability. */
-        if (meta.divable_mark) drawDivableMark(ctx, g, col, rowY);
+         * simply follow divability.
+         *
+         * EXCEPT on an opaque cell, which since SCH-50 `door-open` draws its
+         * own notched frame with a chevron in the broken edge. The brackets
+         * used to BE that widget's frame; now they would sit one pixel outside
+         * a frame that already exists, on the same rect, and read as a doubled
+         * border rather than as a mark. The affordance is not lost — the
+         * chevron states it more explicitly than the brackets ever did.
+         *
+         * This is a narrower exclusion than "opaque cells are not marked".
+         * granny's `wav_position` is a ranged number a knob turns perfectly
+         * well AND has a waveform editor worth opening, so it is `divable_mark`
+         * without being `KIND_OPAQUE`: it draws as a KNOB and keeps its
+         * brackets, which is the whole reason the two flags are separate. */
+        if (meta.divable_mark && meta.kind !== KIND_OPAQUE) drawDivableMark(ctx, g, col, rowY);
 
 
         const label = labelForCell(meta.label || meta.key, g.cellW);
@@ -1713,8 +1952,29 @@ export const FOOTER_CANON = Object.freeze({
     backActions: Object.freeze(["EXIT", "OUT"]),
 });
 
+/*
+ * SCH-50 `no-rule`. THE RULE IS GONE.
+ *
+ * `RULE_Y` used to carry a solid hairline across all 128 columns. Nothing else
+ * moved: the three clear rows between the last label band and the pills are now
+ * the only separator, and on a screen this dense that is a real proposition
+ * rather than a lazy one — the pills are already inverted blocks, so the row is
+ * unmistakably a different kind of thing with nothing drawn above it.
+ *
+ * Locked during judging and confirmed afterwards, because the option numbered
+ * next to it is `dotted-rule`, which HAS a rule, just a light one. "The one
+ * without the rule" and the number disagreed; the description won.
+ *
+ * It is also the most minimal pick in the whole catalog, chosen for the one
+ * STRUCTURAL element while the fader, the label strip and all four curve
+ * treatments took fills. That is the pattern rather than an inconsistency:
+ * texture inside widgets, minimal chrome around them.
+ *
+ * `RULE_Y` is kept — it is the top of the band the footer owns, and callers
+ * clear `RULE_Y .. FOOTER_Y + FOOTER_H` to erase it. It is no longer a row that
+ * gets drawn on.
+ */
 export function drawFooter(ctx, hints) {
-    ctx.fillRect(0, RULE_Y, W, 1, 1);
     if (!hints || !hints.length) return 0;
     const ty = FOOTER_Y + Math.floor((FOOTER_H - FONT4_HEIGHT) / 2);
 
@@ -1731,7 +1991,20 @@ export function drawFooter(ctx, hints) {
     const drawPair = (x, h) => {
         const key = caps(h[0]), action = caps(h[1]);
         const kw = fontWidth4x5(key);
-        ctx.fillRect(x, ty - 1, kw + HINT_PAD * 2, FONT4_HEIGHT + 2, 1);
+        const pw = kw + HINT_PAD * 2, ph = FONT4_HEIGHT + 2;
+        ctx.fillRect(x, ty - 1, pw, ph, 1);
+        /*
+         * ALL FOUR corners notched, including the bottom pair, which sit on the
+         * last row of the panel.
+         *
+         * The top two were done first, on the reasoning that a bottom corner
+         * has no ground to read against. What actually makes it work is the
+         * same thing that lets the header's glyphs start on row 0: the panel is
+         * INSET IN PLASTIC, so the ground a bottom corner reads against is the
+         * bezel, and a notch against the bezel reads exactly as a notch against
+         * a dark row.
+         */
+        if (pw >= 3) notchCorners(ctx, x, ty - 1, pw, ph);
         fontPrint4x5(ctx, x + HINT_PAD, ty, key, 0);
         fontPrint4x5(ctx, x + kw + HINT_PAD + HINT_GAP, ty, action, 1);
     };

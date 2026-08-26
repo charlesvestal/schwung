@@ -25,7 +25,10 @@
  * to that caller.
  */
 
-import { clamp01, fractionOf, line } from "./render_page.mjs";
+import {
+    clamp01, fractionOf, line,
+    CHECKER, DIAG_HEAVY, fillDithered, dashedVRule, notchCorners,
+} from "./render_page.mjs";
 import {
     VIZ_ENVELOPE, VIZ_FILTER, VIZ_LFO, VIZ_WAVEFORM, VIZ_FADER, VIZ_SWITCH, VIZ_EQ, VIZ_SAMPLE,
 } from "./viz.mjs";
@@ -284,15 +287,21 @@ export const VIZ_ROWS = 13;
 /*
  * The narrowest cell a graphic can be drawn into.
  *
- * Every other body scales horizontally against `rect.w`, but `drawSwitch` is a
- * tabulated sprite ported pixel-for-pixel from Movy — 26 columns wide, fixed,
- * because it is a circle and a circle rasterised at one size cannot be
- * stretched to another and stay round. Below 26 it does not narrow, it hangs
- * out of the cell on both sides.
+ * It used to be a hard requirement of `drawSwitch`, which was a tabulated
+ * sprite ported pixel-for-pixel from Movy: 26 columns wide, FIXED, because it
+ * was a rounded rectangle rasterised at one size and a rasterised curve cannot
+ * be stretched and stay round. Below 26 it did not narrow, it hung out of the
+ * cell on both sides.
+ *
+ * SCH-50 `pill-inverted` replaced that sprite with a rectangular pill whose
+ * width is `min(24, rect.w - 4)`, so the switch now genuinely scales and the
+ * overhang cannot happen. The floor is kept anyway: 26 is about where the rest
+ * of the vocabulary — a filter curve, an ADSR — stops being readable, and a
+ * caller that has less room than this should stand the graphics down rather
+ * than draw a picture nobody can use.
  *
  * The full screen gives a 32px cell, so this only binds on a caller that
- * passes a narrower `rect` — see render_page.mjs, which stands the graphics
- * down rather than let one overhang.
+ * passes a narrower `rect` — see render_page.mjs, which does exactly that.
  */
 export const VIZ_MIN_W = 26;
 
@@ -300,6 +309,94 @@ function band(rect) {
     const topY = rect.y + 1;
     const botY = topY + VIZ_ROWS - 1;
     return { topY, botY, midY: topY + ((VIZ_ROWS - 1) >> 1), amp: (VIZ_ROWS - 1) / 2 };
+}
+
+/* ------------------------------------------------------------- ghost fill --
+ *
+ * SCH-50 `ghost-fill`, and THE ONE THING THAT MATTERS ABOUT IT IS THAT THERE IS
+ * EXACTLY ONE OF IT.
+ *
+ * The envelope, the filter response, the LFO and the sample waveform are
+ * pictures of the maths. An ADSR that does not look like an ADSR is simply
+ * wrong, and nobody owns the shape of an exponential decay — so the four graphs
+ * are allowed to differ in SHAPE and must not differ in TREATMENT. In the
+ * catalog that was enforced mechanically: one function object registered in all
+ * four sets, so they could not drift. Here it is enforced by there being one
+ * `fillCurveMass` and four callers.
+ *
+ * DO NOT give one graph its own copy to tune. A filter graph that fills
+ * differently from an envelope is a filter graph that can misrepresent the
+ * filter, which is the failure this construction exists to prevent.
+ *
+ * It won ALL FOUR sets independently — the single strongest result in the
+ * catalog — while the treatment that shipped before it (`thin-stroke`, a bare
+ * hairline) ranked 10th / 8th / 7th / 8th. That is the useful finding: the
+ * treatment being replaced was not merely undistinctive, it was not liked, so
+ * the change is not a cosmetic tax paid for its own sake.
+ *
+ * The curve becomes an AREA, which is the reading a musician wants — how much
+ * of the note is loud, how much of the spectrum passes — rather than a boundary
+ * they have to integrate by eye. CHECKER (50%) is the highest density at which
+ * the 1px stroke drawn on top stays visibly separate from its own fill.
+ *
+ * ACCEPTED COST: at a high sustain the mass covers most of a 13-row band, and
+ * twelve rows of checker at true size is grey, not texture. The page gets
+ * noticeably heavier.
+ *
+ * NO NOTCHED CORNERS HERE, deliberately, though they are the house idiom
+ * everywhere else. A box's corners are a design decision; the corners of a
+ * filled curve are DATA — the left edge of a passband, the floor a release
+ * lands on — and rounding them off is exactly the misrepresentation above.
+ */
+
+/**
+ * Fill the mass of a column-defined curve through CHECKER, between the curve
+ * and its zero line.
+ *
+ * @param yAt      (px) => y, the same closure the stroke is drawn from, so the
+ *                 fill can never disagree with the line about where the curve is
+ * @param baseY    the graph's zero row: the floor for a unipolar graph
+ *                 (envelope, filter), the centre for a bipolar one (LFO)
+ * @param mirrorAt optional (px) => y for a graph symmetric about its zero line
+ *                 (the sample waveform), so the mass spans crest to trough
+ *
+ * The span is SIGNED for a bipolar graph: a trough below the centre line fills
+ * downward. That is the honest reading and the only one that keeps the fill
+ * attached to the curve — filling always down to the floor would detach the
+ * shape from its ink on every negative half cycle.
+ *
+ * Runs BEFORE the stroke at every call site. The stroke is solid and the fill
+ * is not, so drawing the fill second would punch its lattice through the line.
+ */
+/**
+ * Turn a polyline's breakpoints into the `yAt` closure `fillCurveMass` wants.
+ *
+ * The envelope is the one graph that is NOT defined per column — it is four
+ * straight segments between five vertices — so its fill has to be told the same
+ * vertices the strokes are drawn from rather than deriving the shape a second
+ * time. Anything past the last vertex rests on the zero line, which is what
+ * makes a short release leave the tail of the cell empty instead of filled.
+ */
+function segmentsYAt(pts, restY) {
+    return (px) => {
+        for (let i = 0; i < pts.length - 1; i++) {
+            const [ax, ay] = pts[i], [bx, by] = pts[i + 1];
+            if (px < ax || px > bx) continue;
+            if (bx === ax) return Math.round(by);
+            return Math.round(ay + (by - ay) * ((px - ax) / (bx - ax)));
+        }
+        return restY;
+    };
+}
+
+function fillCurveMass(ctx, x0, xEnd, yAt, baseY, topY, botY, mirrorAt = null) {
+    const clip = (y) => (y < topY ? topY : (y > botY ? botY : y));
+    for (let x = x0; x < xEnd; x++) {
+        const a = clip(yAt(x));
+        const b = clip(mirrorAt ? mirrorAt(x) : baseY);
+        const lo = a < b ? a : b, hi = a < b ? b : a;
+        for (let y = lo; y <= hi; y++) if (CHECKER(x, y)) ctx.fillRect(x, y, 1, 1, 1);
+    }
 }
 
 function frac(metaIndex, key, values) {
@@ -368,6 +465,14 @@ function drawFullAdsr(ctx, x0, x1, topY, baseY, roles, values, metaIndex) {
     const susY = baseY - Math.round(s * usableH);
     let relEndX = gateX + W * (4 / 128) + Math.round(r * W * (33 / 128));
     if (relEndX > x1 - 1) relEndX = x1 - 1;
+
+    /* The mass, under the same four segments the strokes draw. `segmentsYAt`
+     * interpolates the SAME breakpoints rather than re-deriving the envelope,
+     * so the fill cannot disagree with the line about where the curve is —
+     * which is the whole contract of fillCurveMass. */
+    fillCurveMass(ctx, x0, x1, segmentsYAt([
+        [x0, baseY], [peakX, topY], [sustStartX, susY], [gateX, susY], [relEndX, baseY],
+    ], baseY), baseY, topY, baseY);
 
     drawLine(ctx, x0, baseY, peakX, topY);            // attack rise
     drawLine(ctx, peakX, topY, sustStartX, susY);     // decay fall
@@ -442,6 +547,10 @@ function drawPartialEnv(ctx, leftX, xEnd, topY, baseY, present, roles, values, m
         const endX = Math.min(rightX, cur + 4 + Math.round(val.release * span * 0.4));
         pts.push([endX, baseY]);
     }
+
+    /* Same mass, same vertices — a 2- or 3-role envelope is the same kind of
+     * object as a 4-role one and must not read as a different treatment. */
+    fillCurveMass(ctx, leftX, xEnd, segmentsYAt(pts, baseY), baseY, topY, baseY);
 
     for (let i = 0; i < pts.length - 1; i++) drawLine(ctx, pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1]);
     for (const [px, py] of pts) dot(ctx, Math.min(xEnd - 2, Math.max(leftX, px - 1)), Math.max(topY, py - 1));
@@ -518,6 +627,12 @@ export function drawFilter(ctx, rect, roles, values, metaIndex) {
         const g = filterGainAt((px - x0) / spanW, mode, cutoff, resonance, steep);
         return Math.max(topY, Math.min(botY, Math.round(botY - g * h)));
     };
+
+    /* The passband as mass, under the response curve. Unipolar: the zero line
+     * is the floor, so this is literally the area under the curve. A column
+     * already on the floor fills nothing, which is what keeps a stopband empty
+     * rather than giving it a one-row lid. */
+    fillCurveMass(ctx, x0, xEnd - 1, yAt, botY, topY, botY);
 
     /* Skip runs that lie flat on the bottom axis so the curve ends where it
      * reaches the floor instead of continuing along it. Inset one pixel on
@@ -653,8 +768,9 @@ function drawLinearWave(ctx, x0, xEnd, shape, cycles, phase, yOf, color = 1) {
  * shallow slopes by construction — a triangle ramp covers 12 rows in 43
  * columns. No drawing technique changes that on a 1-bit display; the lever is
  * geometry (a 2-slot wave is 1.8 px/row and reads as a diagonal, a 4-slot one
- * is 3.6 and reads as a staircase). Elektron's own waveform glyphs look clean
- * because they are nearly square, not because they are drawn differently.
+ * is 3.6 and reads as a staircase). Waveform glyphs that look clean on other
+ * small displays are nearly SQUARE; they are not drawn any more cleverly, they
+ * just are not being asked to cross 128 columns in 13 rows.
  */
 export function drawLfo(ctx, rect, roles, values, metaIndex) {
     const x0 = rect.x, xEnd = rect.x + rect.w;
@@ -721,6 +837,18 @@ export function drawLfo(ctx, rect, roles, values, metaIndex) {
         const v = unipolar ? (sample + 1) / 2 : sample;
         return Math.round(baseY - v * amp);
     };
+
+    /* The mass, between the wave and its baseline. Bipolar fills SIGNED — a
+     * trough below the centre line fills downward — which is the only reading
+     * that keeps the fill attached to the wave through a negative half cycle.
+     * Unipolar rests on the floor and fills upward, same as the envelope.
+     *
+     * Driven off `yAt` for every shape including the ramps, which the STROKE
+     * draws through `drawLinearWave` instead. That is not a disagreement: yAt
+     * and drawLinearWave evaluate the same `lfoShapeSample` at the same phase,
+     * and a fill sampled per column is exactly what a stroke drawn as segments
+     * encloses. */
+    fillCurveMass(ctx, x0, xEnd - 1, yAt, baseY, topY, botY);
 
     /* A ramp is straight between its breakpoints, so draw it as real segments;
      * everything else goes per column, because a coarse uniform polyline turns
@@ -826,33 +954,85 @@ export function drawEq(ctx, rect, roles, values, metaIndex) {
 
 /* ------------------------------------------------------------------ fader */
 
-/** schwung-movy renderer/knob.ts drawFader, ported: dotted rails + a filled
- * column + a 1px head, always filling from the bottom. */
+/**
+ * SCH-50 `outline-fill`. Movy's construction was dashed rails, a 3px solid
+ * column and a 1px head; the fill is now a BOX — 7px wide, 1px frame, a
+ * DIAG_HEAVY (75%) interior, corners notched — standing on the same rails.
+ *
+ * The strongest fader result in the catalog, 4-0.
+ *
+ * THE ACCEPTED COLLISION. This borrows the page's own box vocabulary instead of
+ * the mixer's, so a fader and an enum square stop being separable by
+ * SILHOUETTE — both are now notched framed boxes. Its own note predicted that
+ * before any judging, and picking `thin-frame` for the enum square made it live
+ * rather than hypothetical: an osirus page renders four framed faders beside a
+ * framed MODE/POLY cell.
+ *
+ * Taken deliberately, with the escape available and declined — a frameless enum
+ * square was the runner-up in that set and would have dissolved it. On a page
+ * mixing continuous faders with enums the two are distinguishable by CONTENT,
+ * not by shape. If that reads badly on hardware the cheap fix is the enum
+ * square, not this.
+ *
+ * REJECTED: `stepped`, six 2-row blocks over the full range, which stays
+ * distinct from everything on the page. Declined for what its own note already
+ * said — five detents in six move nothing on screen, which is fine for a level
+ * grabbed roughly and bad for anything nudged.
+ */
 export function drawFader(ctx, rect, key, values, metaIndex) {
     const meta = metaIndex.getOrGuess(key);
     const normVal = fractionOf(meta, values ? values[key] : undefined);
     const { topY: top, botY: bot } = band(rect); const h = bot - top;
-    const cx = rect.x + rect.w / 2;
+    const cx = Math.round(rect.x + rect.w / 2);
 
-    for (let y = top; y <= bot; y += 2) {
-        ctx.fillRect(Math.round(cx - 4), y, 1, 1, 1);
-        ctx.fillRect(Math.round(cx + 4), y, 1, 1, 1);
-    }
+    dashedVRule(ctx, cx - 4, top, h + 1, 1, 1);
+    dashedVRule(ctx, cx + 4, top, h + 1, 1, 1);
+
     const y = Math.round(bot - clamp01(normVal) * h);
-    if (y < bot) ctx.fillRect(Math.round(cx - 1), y, 3, bot - y + 1, 1);
-    ctx.fillRect(Math.round(cx - 3), y, 7, 1, 1);
+    const bh = bot - y + 1, bx = cx - 3, bw = 7;
+    ctx.fillRect(bx, y, bw, 1, 1);
+    ctx.fillRect(bx, bot, bw, 1, 1);
+    ctx.fillRect(bx, y, 1, bh, 1);
+    ctx.fillRect(bx + bw - 1, y, 1, bh, 1);
+    /* At very low values there is no interior left, so it degrades to a 7x2 bar
+     * rather than to a frame with a hole punched in it — and the notch is
+     * skipped with it, because notching a 2-row box eats half of it. */
+    if (bh >= 3) {
+        fillDithered(ctx, bx + 1, y + 1, bw - 2, bh - 2, DIAG_HEAVY);
+        notchCorners(ctx, bx, y, bw, bh);
+    }
 }
 
 /* ----------------------------------------------------------------- switch */
 
-/* schwung-movy renderer/knob.ts drawSwitch: one circle at three radii,
- * tabulated because it redraws every frame for every knob. */
-const SW_X = [4, 2, 1, 1, 0, 0, 0, 1, 1, 2, 4];
-const SW_W = [18, 22, 24, 24, 26, 26, 26, 24, 24, 22, 18];
-const SW_IN_X = [3, 1, 1, 0, 0, 0, 1, 1, 3];
-const SW_IN_W = [18, 22, 22, 24, 24, 24, 22, 22, 18];
-const SW_KN_X = [3, 1, 1, 0, 0, 0, 1, 1, 3];
-const SW_KN_W = [3, 7, 7, 9, 9, 9, 7, 7, 3];
+/*
+ * SCH-50 `pill-inverted`. Replaces Movy's tabulated rounded-rectangle sprite.
+ *
+ * Won its set 5-0 — but the interesting result is second place. `movy-sprite`,
+ * the pixel-for-pixel port and the most directly-derived widget in the whole
+ * fleet, ALSO scored 5-0 and lost by 0.05 log-strength. On the one control where
+ * the resemblance is most concrete, the incumbent is genuinely well-liked. That
+ * this option won anyway is what makes the differentiation here free: it is
+ * independently authored, it beat the port on its own merits, and no legibility
+ * was traded to get there.
+ *
+ * THE TRACK CARRIES THE STATE, NOT THE SLUG. ON fills the whole track and knocks
+ * the slug out of it; OFF leaves the track an empty frame with a solid slug. So
+ * the two states differ by most of the widget's AREA rather than by the position
+ * of a 9px block, and the cell stays legible at a distance where a slug-only
+ * pill is a grey lozenge with a bump.
+ *
+ * ACCEPTED COST: ON is a dark cell, so a page with several switches on is a row
+ * of black blocks.
+ *
+ * THE 3px INSET IS THE FIX THAT MADE IT WORK AT ALL. Seated one pixel from the
+ * wall the slug is 8-connected to it on the row it sits on and the two merge:
+ * OFF stopped reading as "a block parked at one end of a track" and started
+ * reading as "the left half of this box is thick" — the same picture at both
+ * seats, and therefore no switch. Three pixels leaves a clear column at the
+ * outer end and the slug is visibly a separate object at both ends of travel.
+ */
+const PILL_H = 11, SLUG_W = 8, SLUG_H = 7, SLUG_INSET = 3;
 
 export function drawSwitch(ctx, rect, key, values, metaIndex) {
     const raw = values ? values[key] : undefined;
@@ -867,14 +1047,37 @@ export function drawSwitch(ctx, rect, key, values, metaIndex) {
     const meta = metaIndex ? metaIndex.getOrGuess(key) : null;
     const idx = meta ? enumIndexOf(meta, raw) : Math.round(Number(raw));
     const on = idx === 1;
-    const kx = Math.round(rect.x + rect.w / 2 - 8), ky = rect.y;
 
-    const x = kx - 5, y = ky + 2;
-    for (let i = 0; i < 11; i++) ctx.fillRect(x + SW_X[i], y + i, SW_W[i], 1, 1);
-    if (!on) for (let i = 0; i < 9; i++) ctx.fillRect(x + 1 + SW_IN_X[i], y + 1 + i, SW_IN_W[i], 1, 0);
-    const seat = on ? x + 16 : x + 1;
-    const v = on ? 0 : 1;
-    for (let i = 0; i < 9; i++) ctx.fillRect(seat + SW_KN_X[i], y + 1 + i, SW_KN_W[i], 1, v);
+    const { topY } = band(rect);
+    const cx = Math.round(rect.x + rect.w / 2);
+    /* Capped at 24 so the pill never fills a wide cell edge to edge, and
+     * floored against the rect so a narrow one still gets a track. */
+    const w = Math.min(24, rect.w - 4);
+    const x = cx - (w >> 1), y = topY + 1, h = PILL_H;
+    const sx = on ? x + w - SLUG_INSET - SLUG_W : x + SLUG_INSET;
+    const sy = y + 2;
+
+    if (on) {
+        ctx.fillRect(x, y, w, h, 1);
+        notchCorners(ctx, x, y, w, h);
+        ctx.fillRect(sx, sy, SLUG_W, SLUG_H, 0);
+        /* The knockout gets the notch too, IN REVERSE — four SET pixels at its
+         * corners. `notchCorners` clears, and clearing a corner of a hole fills
+         * it in. Without this the hole is the only square-cornered shape on a
+         * page where every filled box is softened. */
+        ctx.fillRect(sx, sy, 1, 1, 1);
+        ctx.fillRect(sx + SLUG_W - 1, sy, 1, 1, 1);
+        ctx.fillRect(sx, sy + SLUG_H - 1, 1, 1, 1);
+        ctx.fillRect(sx + SLUG_W - 1, sy + SLUG_H - 1, 1, 1, 1);
+    } else {
+        ctx.fillRect(x, y, w, 1, 1);
+        ctx.fillRect(x, y + h - 1, w, 1, 1);
+        ctx.fillRect(x, y, 1, h, 1);
+        ctx.fillRect(x + w - 1, y, 1, h, 1);
+        notchCorners(ctx, x, y, w, h);
+        ctx.fillRect(sx, sy, SLUG_W, SLUG_H, 1);
+        notchCorners(ctx, sx, sy, SLUG_W, SLUG_H);
+    }
 }
 
 /* ----------------------------------------------------------------- sample */
@@ -929,11 +1132,31 @@ export function drawSample(ctx, rect, roles, values, metaIndex) {
         if (!pts) return 0;
         return Math.round(clamp01(pts[Math.min(pts.length - 1, i)] * scale) * amp);
     };
-    for (let i = 0; i < w; i++) {
-        const h = halfAt(i);
-        if (h <= 0) ctx.fillRect(x0 + i, midY, 1, 1, 1);
-        else ctx.fillRect(x0 + i, midY - h, 1, 2 * h + 1, 1);
-    }
+    /*
+     * SCH-50 `ghost-fill`, and this is the set where the AXIS IS INVERTED: the
+     * waveform already drew SOLID, so `solid-mass` was the incumbent here while
+     * being the radical option in the other three. It was the clearest of the
+     * candidates at both loud and quiet gain and it was still declined —
+     * choosing it would have left the sample cell unchanged while its three
+     * siblings all changed, which is the opposite of the coherence this pick
+     * exists for. An envelope, a filter, an LFO and a sample now read as the
+     * same kind of object.
+     *
+     * `terrain` was the option this case eliminated, exactly as its own note
+     * warned: it fills to the BOTTOM EDGE, so on a MIRRORED graph the quieter
+     * the material the MORE of the cell it covers. At 28% gain it was still a
+     * hatched slab with the waveform gone entirely. That is backwards, and
+     * quiet material is the common case for samples rather than an edge case —
+     * it took rendering the comparison at two gains to see it at all.
+     */
+    const crestAt = (px) => midY - halfAt(px - x0);
+    const troughAt = (px) => midY + halfAt(px - x0);
+    fillCurveMass(ctx, x0, x0 + w, crestAt, midY, topY, botY, troughAt);
+    /* Both flanks stroked. `drawStepCurve` rather than a pixel per column: at a
+     * steep transient adjacent columns differ by several rows, and a bare pixel
+     * each would read as a dotted outline rather than as the edge of a body. */
+    drawStepCurve(ctx, x0, x0 + w, crestAt, 1);
+    drawStepCurve(ctx, x0, x0 + w, troughAt, 1);
 
     /* Column i covers frames [i/w, (i+1)/w), so a marker belongs in
      * floor(p*w). The obvious round(p*(w-1)) disagrees for a quarter of all

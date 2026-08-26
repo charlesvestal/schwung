@@ -1,0 +1,136 @@
+{
+  "planPath": "docs/superpowers/plans/2026-08-26-ui-differentiation-catalog.md",
+  "tasks": [
+    {
+      "id": 0,
+      "subject": "Task 1: Export widget draw functions",
+      "status": "completed",
+      "description": "**Goal:** See docs/superpowers/plans/2026-08-26-ui-differentiation-catalog.md for the full task body.\n\n**Files:**\n- src/shared/param_pages/render_page_movy.mjs\n\n**Acceptance Criteria:**\n- [ ] As specified in the plan document for this task\n\n**Verify:** bash tests/host/test_knob_card.sh && bash tests/host/test_param_pages_movy.sh && bash tests/host/test_enum_picker_chrome.sh && bash tests/host/test_chain_edit_read_budget.sh\n\n```json:metadata\n{\"files\":[\"src/shared/param_pages/render_page_movy.mjs\"],\"verifyCommand\":\"bash tests/host/test_knob_card.sh && bash tests/host/test_param_pages_movy.sh && bash tests/host/test_enum_picker_chrome.sh && bash tests/host/test_chain_edit_read_budget.sh\",\"acceptanceCriteria\":[\"see plan document\"],\"modelTier\":\"mechanical\"}\n```"
+    },
+    {
+      "id": 1,
+      "subject": "Task 2: Option registry and validation",
+      "status": "completed",
+      "blockedBy": [
+        0
+      ],
+      "description": "**Goal:** See docs/superpowers/plans/2026-08-26-ui-differentiation-catalog.md for the full task body.\n\n**Files:**\n- src/shared/param_pages/styles/index.mjs\n\n**Acceptance Criteria:**\n- [ ] As specified in the plan document for this task\n\n**Verify:** bash tests/host/test_style_catalog.sh\n\n```json:metadata\n{\"files\":[\"src/shared/param_pages/styles/index.mjs\"],\"verifyCommand\":\"bash tests/host/test_style_catalog.sh\",\"acceptanceCriteria\":[\"see plan document\"],\"modelTier\":\"standard\"}\n```"
+    },
+    {
+      "id": 2,
+      "subject": "Task 3: Shared dither predicates",
+      "status": "completed",
+      "blockedBy": [
+        1
+      ],
+      "description": "**Goal:** See docs/superpowers/plans/2026-08-26-ui-differentiation-catalog.md for the full task body.\n\n**Files:**\n- src/shared/param_pages/styles/dither.mjs\n\n**Acceptance Criteria:**\n- [ ] As specified in the plan document for this task\n\n**Verify:** bash tests/host/test_style_catalog.sh\n\n```json:metadata\n{\"files\":[\"src/shared/param_pages/styles/dither.mjs\"],\"verifyCommand\":\"bash tests/host/test_style_catalog.sh\",\"acceptanceCriteria\":[\"see plan document\"],\"modelTier\":\"standard\"}\n```"
+    },
+    {
+      "id": 3,
+      "subject": "Task 4: Catalog render tool",
+      "status": "completed",
+      "blockedBy": [
+        0,
+        1
+      ],
+      "description": "**Goal:** See docs/superpowers/plans/2026-08-26-ui-differentiation-catalog.md for the full task body.\n\n**Files:**\n- tools/param-pages/catalog.mjs\n\n**Acceptance Criteria:**\n- [ ] As specified in the plan document for this task\n\n**Verify:** node tools/param-pages/catalog.mjs --list\n\n```json:metadata\n{\"files\":[\"tools/param-pages/catalog.mjs\"],\"verifyCommand\":\"node tools/param-pages/catalog.mjs --list\",\"acceptanceCriteria\":[\"see plan document\"],\"modelTier\":\"standard\"}\n```"
+    },
+    {
+      "id": 4,
+      "subject": "Task 5: Set 1 arc knob ten options",
+      "status": "completed",
+      "blockedBy": [
+        2,
+        3
+      ],
+      "description": "**Goal:** See docs/superpowers/plans/2026-08-26-ui-differentiation-catalog.md for the full task body.\n\n**Files:**\n- src/shared/param_pages/styles/knob.mjs\n\n**Acceptance Criteria:**\n- [ ] As specified in the plan document for this task\n\n**Verify:** bash tests/host/test_style_catalog.sh && node tools/param-pages/catalog.mjs --set knob\n\n```json:metadata\n{\"files\":[\"src/shared/param_pages/styles/knob.mjs\"],\"verifyCommand\":\"bash tests/host/test_style_catalog.sh && node tools/param-pages/catalog.mjs --set knob\",\"acceptanceCriteria\":[\"see plan document\"],\"modelTier\":\"standard\"}\n```"
+    },
+    {
+      "id": 5,
+      "subject": "Task 6: Sets 2 3 6 11 fader fills box switch",
+      "status": "completed",
+      "blockedBy": [
+        4
+      ],
+      "description": "**Goal:** See docs/superpowers/plans/2026-08-26-ui-differentiation-catalog.md for the full task body.\n\n**Files:**\n- src/shared/param_pages/styles/fader.mjs\n\n**Acceptance Criteria:**\n- [ ] As specified in the plan document for this task\n\n**Verify:** bash tests/host/test_style_catalog.sh && node tools/param-pages/catalog.mjs --all\n\n```json:metadata\n{\"files\":[\"src/shared/param_pages/styles/fader.mjs\"],\"verifyCommand\":\"bash tests/host/test_style_catalog.sh && node tools/param-pages/catalog.mjs --all\",\"acceptanceCriteria\":[\"see plan document\"],\"modelTier\":\"standard\"}\n```"
+    },
+    {
+      "id": 6,
+      "subject": "Task 7: Set 12 ten complete 4x5 fonts",
+      "status": "in_progress",
+      "blockedBy": [
+        3
+      ],
+      "description": "**Goal:** See docs/superpowers/plans/2026-08-26-ui-differentiation-catalog.md for the full task body.\n\n**Files:**\n- src/shared/param_pages/styles/font/index.mjs\n\n**Acceptance Criteria:**\n- [ ] As specified in the plan document for this task\n\n**Verify:** bash tests/host/test_style_catalog.sh\n\n```json:metadata\n{\"files\":[\"src/shared/param_pages/styles/font/index.mjs\"],\"verifyCommand\":\"bash tests/host/test_style_catalog.sh\",\"acceptanceCriteria\":[\"see plan document\"],\"modelTier\":\"standard\"}\n```"
+    },
+    {
+      "id": 7,
+      "subject": "Task 8: Sets 4 5 enum square and label cell",
+      "status": "pending",
+      "blockedBy": [
+        6
+      ],
+      "description": "**Goal:** See docs/superpowers/plans/2026-08-26-ui-differentiation-catalog.md for the full task body.\n\n**Files:**\n- src/shared/param_pages/styles/enum_square.mjs\n\n**Acceptance Criteria:**\n- [ ] As specified in the plan document for this task\n\n**Verify:** bash tests/host/test_style_catalog.sh && node tools/param-pages/catalog.mjs --all\n\n```json:metadata\n{\"files\":[\"src/shared/param_pages/styles/enum_square.mjs\"],\"verifyCommand\":\"bash tests/host/test_style_catalog.sh && node tools/param-pages/catalog.mjs --all\",\"acceptanceCriteria\":[\"see plan document\"],\"modelTier\":\"standard\"}\n```"
+    },
+    {
+      "id": 8,
+      "subject": "Task 9: Sets 7-10 viz treatments",
+      "status": "in_progress",
+      "blockedBy": [
+        3
+      ],
+      "description": "**Goal:** See docs/superpowers/plans/2026-08-26-ui-differentiation-catalog.md for the full task body.\n\n**Files:**\n- src/shared/param_pages/styles/viz_treatments.mjs\n\n**Acceptance Criteria:**\n- [ ] As specified in the plan document for this task\n\n**Verify:** bash tests/host/test_style_catalog.sh\n\n```json:metadata\n{\"files\":[\"src/shared/param_pages/styles/viz_treatments.mjs\"],\"verifyCommand\":\"bash tests/host/test_style_catalog.sh\",\"acceptanceCriteria\":[\"see plan document\"],\"modelTier\":\"standard\"}\n```"
+    },
+    {
+      "id": 9,
+      "subject": "Task 10: Set 13 value-change motion",
+      "status": "pending",
+      "blockedBy": [
+        3
+      ],
+      "description": "**Goal:** See docs/superpowers/plans/2026-08-26-ui-differentiation-catalog.md for the full task body.\n\n**Files:**\n- src/shared/param_pages/styles/anim.mjs\n\n**Acceptance Criteria:**\n- [ ] As specified in the plan document for this task\n\n**Verify:** bash tests/host/test_style_catalog.sh\n\n```json:metadata\n{\"files\":[\"src/shared/param_pages/styles/anim.mjs\"],\"verifyCommand\":\"bash tests/host/test_style_catalog.sh\",\"acceptanceCriteria\":[\"see plan document\"],\"modelTier\":\"standard\"}\n```"
+    },
+    {
+      "id": 10,
+      "subject": "Task 11: A/B comparator server",
+      "status": "completed",
+      "blockedBy": [
+        4
+      ],
+      "description": "**Goal:** See docs/superpowers/plans/2026-08-26-ui-differentiation-catalog.md for the full task body.\n\n**Files:**\n- tools/param-pages/ab_server.mjs\n\n**Acceptance Criteria:**\n- [ ] As specified in the plan document for this task\n\n**Verify:** node tools/param-pages/ab_server.mjs\n\n```json:metadata\n{\"files\":[\"tools/param-pages/ab_server.mjs\"],\"verifyCommand\":\"node tools/param-pages/ab_server.mjs\",\"acceptanceCriteria\":[\"see plan document\"],\"modelTier\":\"standard\"}\n```"
+    },
+    {
+      "id": 11,
+      "subject": "Task 12: Bradley-Terry ranking",
+      "status": "completed",
+      "blockedBy": [
+        10
+      ],
+      "description": "**Goal:** See docs/superpowers/plans/2026-08-26-ui-differentiation-catalog.md for the full task body.\n\n**Files:**\n- tools/param-pages/rank.mjs\n\n**Acceptance Criteria:**\n- [ ] As specified in the plan document for this task\n\n**Verify:** bash tests/host/test_style_catalog.sh\n\n```json:metadata\n{\"files\":[\"tools/param-pages/rank.mjs\"],\"verifyCommand\":\"bash tests/host/test_style_catalog.sh\",\"acceptanceCriteria\":[\"see plan document\"],\"modelTier\":\"standard\"}\n```"
+    },
+    {
+      "id": 12,
+      "subject": "Task 13: Run A/B session commit dataset",
+      "status": "pending",
+      "blockedBy": [
+        5,
+        7,
+        8,
+        9,
+        10,
+        11
+      ],
+      "description": "**Goal:** See docs/superpowers/plans/2026-08-26-ui-differentiation-catalog.md for the full task body.\n\n**Files:**\n- docs/superpowers/specs/2026-08-26-ui-differentiation-preferences.json\n\n**Acceptance Criteria:**\n- [ ] As specified in the plan document for this task\n\n**Verify:** node tools/param-pages/rank.mjs\n\n```json:metadata\n{\"files\":[\"docs/superpowers/specs/2026-08-26-ui-differentiation-preferences.json\"],\"verifyCommand\":\"node tools/param-pages/rank.mjs\",\"acceptanceCriteria\":[\"see plan document\"],\"modelTier\":\"standard\"}\n```"
+    },
+    {
+      "id": 13,
+      "subject": "Task 14: Open the PR",
+      "status": "pending",
+      "blockedBy": [
+        12
+      ],
+      "description": "**Goal:** See docs/superpowers/plans/2026-08-26-ui-differentiation-catalog.md for the full task body.\n\n**Files:**\n- none\n\n**Acceptance Criteria:**\n- [ ] As specified in the plan document for this task\n\n**Verify:** gh pr checks\n\n```json:metadata\n{\"files\":[],\"verifyCommand\":\"gh pr checks\",\"acceptanceCriteria\":[\"see plan document\"],\"modelTier\":\"mechanical\"}\n```"
+    }
+  ],
+  "lastUpdated": "2026-08-25T22:00:00.000Z"
+}

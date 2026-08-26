@@ -16,15 +16,23 @@ cd "$(dirname "$0")/../.."
 # render_page_movy draws corner brackets on a cell to say "you can go into
 # this". There are 135 enum params in the fleet against 5 filepath/string/canvas
 # ones, so bracketing every enum would put the mark on almost every cell on
-# almost every page and it would stop meaning anything. Worse, the brackets are
-# STRUCTURAL for an opaque cell: drawOpaqueBox draws no frame of its own (see
-# render_page_movy.mjs:626), so the brackets ARE its frame.
+# almost every page and it would stop meaning anything.
 #
 # So `divable` (does clicking open something) and the MARK are decoupled, and
-# this pins BOTH DIRECTIONS on the actual pixel buffer:
+# this pins ALL THREE CASES on the actual pixel buffer:
 #
 #   - an enum cell draws NO brackets
-#   - a filepath / canvas / string / wav_position cell still DOES
+#   - a wav_position cell still DOES -- it is divable_mark without being
+#     KIND_OPAQUE, draws as a KNOB, and so has no frame but the brackets
+#   - a filepath / canvas / string cell is a DOOR: since SCH-50 `door-open` it
+#     draws its own notched frame with the right edge broken and a chevron in
+#     the gap, and therefore no brackets. It used to have no frame at all,
+#     which is why the brackets were structural for it; an option that removes
+#     them has to replace them, and this one does. The rule being pinned is
+#     "an opaque cell is visibly a door", not "an opaque cell is bracketed".
+#
+# All three are checked POSITIVELY. An assertion that only looked for absent
+# brackets would pass on a widget that drew nothing at all.
 #
 # A test that only checked "no mark on an enum" would pass trivially if the
 # mark were broken everywhere, which is the failure mode this file exists for.
@@ -165,16 +173,62 @@ for (const k of ["file", "view", "name", "pos"])
          "fleet`s params are enums against 5 opaque ones, so bracketing them all " +
          "makes the mark mean nothing. The affordance is the footer`s CLK OPEN.");
   }
-  /* Everything that was marked before still is. Asserted per type, because a
-   * single representative would not notice the mark being lost for one kind. */
-  for (const [col, what] of [[1, "filepath"], [2, "canvas"], [3, "wav_position"]]) {
-    if (!marked(col)) {
-      const dark = corners(col).filter(([x, y]) => !at(x, y)).map((c) => c[2]);
-      fail("the " + what + " cell has lost its divable brackets (" + dark.join(", ") +
-           "). For an opaque cell those brackets are its ONLY frame -- " +
-           "drawOpaqueBox draws none of its own -- so the value floats loose.");
-    }
+  /*
+   * wav_position STILL wears the brackets, and it is the whole reason the two
+   * flags are separate. It is `divable_mark` without being KIND_OPAQUE: a
+   * ranged number a knob turns perfectly well that ALSO has a waveform editor
+   * worth opening. It draws as a knob, so it has no frame of its own and the
+   * brackets remain its only mark.
+   */
+  if (!marked(3)) {
+    const dark = corners(3).filter(([x, y]) => !at(x, y)).map((c) => c[2]);
+    fail("the wav_position cell has lost its divable brackets (" + dark.join(", ") +
+         "). It draws as a KNOB -- it is divable_mark but not KIND_OPAQUE -- so " +
+         "the brackets are the only thing saying it opens an editor.");
   }
+
+  /*
+   * THE OPAQUE TYPES NO LONGER WEAR BRACKETS, and that is a swap rather than a
+   * loss.
+   *
+   * The premise this block used to assert -- "drawOpaqueBox draws no frame of
+   * its own, so the brackets ARE its frame" -- stopped being true with SCH-50
+   * `door-open`. The cell now draws a notched frame with its RIGHT EDGE BROKEN
+   * and a chevron in the gap, which is a stronger statement of the same
+   * affordance: it is the only cell on the page that says which DIRECTION its
+   * door goes. Brackets on top of that frame would sit on the same rect and
+   * read as a doubled border.
+   *
+   * So the rule that must not move is not "opaque cells are bracketed", it is
+   * "an opaque cell is visibly a door". Asserted on the pixels as: corners
+   * notched, a frame present, the right edge OPEN over the chevron rows, and a
+   * chevron in the opening. Checking only the absence of brackets would pass if
+   * the widget drew nothing at all, which is the failure mode this whole file
+   * exists for.
+   */
+  function doorOk(atFn, col, what) {
+    const x = col * RM.CELL_W + 1, y = RM.ROW0_Y;
+    const w = RM.CELL_W - 2, h = RM.BOX_H;
+    const gapY = y + ((h - 5) >> 1);
+    for (const [cx, cy, which] of corners(col))
+      if (atFn(cx, cy)) fail("the " + what + " door frame is not notched at its " + which + " corner");
+    if (!atFn(x + Math.floor(w / 2), y))
+      fail("the " + what + " cell drew no top frame edge -- it is not a door, it is nothing");
+    if (!atFn(x, y + Math.floor(h / 2)))
+      fail("the " + what + " cell drew no left frame edge");
+    for (let i = 0; i < 5; i++)
+      if (atFn(x + w - 1, gapY + i))
+        fail("the " + what + " door has no opening -- its right edge is closed at row " + (gapY + i));
+    if (!atFn(x + w - 1, gapY - 1) || !atFn(x + w - 1, gapY + 5))
+      fail("the " + what + " door opening is not bounded by the right edge above and below it");
+    let chevron = 0;
+    for (let dx = 0; dx < 3; dx++)
+      for (let i = 0; i < 5; i++) if (atFn(x + w - 4 + dx, gapY + i)) chevron++;
+    if (chevron < 5)
+      fail("the " + what + " door opening has only " + chevron + " chevron pixel(s) in it -- " +
+           "the mark that says which way the door goes is missing");
+  }
+  for (const [col, what] of [[1, "filepath"], [2, "canvas"]]) doorOk(at, col, what);
 
   /* And a `string`, which is opaque too but is what an LFO Target declares. */
   {
@@ -183,11 +237,9 @@ for (const k of ["file", "view", "name", "pos"])
       { page: { kind: "knobs", keys: ["name", null, null, null, null, null, null, null] },
         metaIndex: mi, values: { name: "fx1" }, touched: -1 },
       0, RM.ROW0_Y, RM.LBL0_Y);
-    const at2 = (x, y) => fb2.pixels[y * fb2.width + x];
-    for (const [x, y, which] of corners(0))
-      if (!at2(x, y)) fail("a `string` cell lost its " + which + " bracket");
+    doorOk((x, y) => fb2.pixels[y * fb2.width + x], 0, "string");
   }
-  if (failures === 0) console.log("PASS: the mark is on the opaque types and off the enums");
+  if (failures === 0) console.log("PASS: enums are unmarked, wav_position keeps its brackets, opaque cells are doors");
 }
 
 /* ======================================================================= 3 ==

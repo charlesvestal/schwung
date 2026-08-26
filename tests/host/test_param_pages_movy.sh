@@ -190,10 +190,10 @@ Promise.all([
      *   - flat caps at the compass points, because that is where the tangent
      *     is flat. A midpoint walk puts a single pixel there instead, one row
      *     proud of the run behind it, which reads as a spike.
-     *   - the GAP at the bottom: the last three rows empty, matching
-     *     the Elektron track, which stops at dy=+3.5 of its 6.5 radius. A
-     *     closed ring would draw track the pointer can never reach and imply
-     *     the control wraps around. */
+     *   - the GAP at the bottom: the last three rows empty, the track
+     *     stopping at dy=+3.5 of its 6.5 radius. A closed ring would draw
+     *     track the pointer can never reach and imply the control wraps
+     *     around -- and at this radius it would not fit the box either. */
     const want = [
       "......##.##......",
       "....##.....##....",
@@ -273,14 +273,30 @@ Promise.all([
     }
   }
 
-  /* ---- 4b. enum square text stays inside its frame, with a margin -------- */
+  /* ---- 4b. enum square text stays inside its frame ---------------------- */
   {
-    /* This is what a "1px margin" has to mean mechanically: no text pixel on
-     * the frame columns, and none on the column just inside them either. The
-     * bug it guards was worse than a tight margin — a three-glyph line in a
-     * proportional font can measure 15px in a 14px interior ("LOW" has a
-     * 5-wide W), and the centring then rounded to a NEGATIVE offset that
-     * started the first glyph on top of the left frame column. */
+    /*
+     * The bug this guards: a three-glyph line in a proportional font can
+     * measure 15px in a 14px interior ("LOW" has a 5-wide W), and the centring
+     * then rounds to a NEGATIVE offset that starts the first glyph ON TOP OF
+     * the left frame column. That is a text run escaping its box, and it is
+     * still forbidden.
+     *
+     * WHAT CHANGED. This used to also require the column just INSIDE each frame
+     * column to be clear — a 1px margin on top of the frame. SCH-50
+     * `thin-frame` spends exactly that margin: the text box now runs to the
+     * inside of the border (18px instead of 16), which is the difference
+     * between "PAS" and "PA" at three characters, and its own note records the
+     * cost as "glyphs now sit one pixel off the frame". Asserting the margin
+     * would be asserting the option was not adopted.
+     *
+     * So the assertion narrows to the invariant that survives: NO TEXT PIXEL ON
+     * A FRAME COLUMN. It cannot be read off the page directly, because the
+     * frame draws those columns by design — so the text is isolated by
+     * differencing a render against a frame-only render of the same cell. What
+     * is left is exactly the glyphs, and none of it may sit on x = bx or
+     * x = bx + ENUM_W - 1.
+     */
     const shapes = ["Low Pass", "High Quality", "Parallel", "Wow Wow", "MMM", "Off", "Sine", "-12"];
     const meta = { key: "m", label: "Mode", type: "enum", kind: "enum", options: shapes, min: 0, max: shapes.length - 1 };
     const page = { kind: P.PAGE_KNOBS, name: "E", level: "root", keys: ["m"] };
@@ -292,15 +308,67 @@ Promise.all([
       });
       const bx = Math.floor((RM.CELL_W - RM.ENUM_W) / 2), by = RM.ROW0_Y;
       const lit = (x, y) => !!fb.pixels[y * fb.width + x];
-      /* The frame columns (bx, bx+W-1) are drawn by design. The margin is the
-       * column just inside each of them, which must be clear on every row
-       * between the top and bottom frame rows. */
-      for (let y = by + 1; y < by + RM.BOX_H - 1; y++) {
-        for (const x of [bx + 1, bx + RM.ENUM_W - 2]) {
-          if (lit(x, y)) fail("enum square for " + JSON.stringify(shapes[i]) +
-            ": text reaches the margin column x=" + x + " (row " + y + "), so it is " +
-            "flush against the frame");
+
+      /* The same cell drawn with an EMPTY value: frame, notches and nothing
+       * else. Anything lit in the real render and not in this one is text. */
+      const bare = H.createFramebuffer();
+      RM.drawEnumSquare(H.drawContext(bare), bx, by, "");
+      const bareLit = (x, y) => !!bare.pixels[y * bare.width + x];
+
+      for (let y = by; y < by + RM.BOX_H; y++) {
+        for (const x of [bx, bx + RM.ENUM_W - 1]) {
+          if (lit(x, y) && !bareLit(x, y))
+            fail("enum square for " + JSON.stringify(shapes[i]) +
+              ": a text pixel landed ON the frame column x=" + x + " (row " + y +
+              "), so the line is wider than the box and the centring went negative");
         }
+      }
+      /*
+       * ...and the arithmetic behind it, over the WHOLE FLEET rather than these
+       * eight strings.
+       *
+       * The pixel check above cannot currently fail, and saying so is the point.
+       * `enumSquareLines` splits a value into lines of at most three characters,
+       * and three of the widest glyph this face has ("MMM") measures 17px — one
+       * short of the 18px interior. So no reachable value can reach the frame,
+       * and a pixel assertion over any fixed list of strings is a check that
+       * passes because its input is too weak, which is the failure mode this
+       * repo has shipped before.
+       *
+       * What CAN change is the budget. `thin-frame` widened ENUM_TEXT_W from
+       * ENUM_W - 4 to ENUM_W - 2, which is exactly the interior; one more step
+       * and the fitter would permit a line the box cannot hold. So the invariant
+       * is asserted directly, and the widest line the fleet can actually produce
+       * is measured against it rather than assumed.
+       */
+      if (i === 0) {
+        const interior = RM.ENUM_W - 2;
+        if (RM.ENUM_TEXT_W > interior)
+          fail("ENUM_TEXT_W is " + RM.ENUM_TEXT_W + " but the box interior is only " + interior +
+               "px — the fitter will pass a line the frame cannot hold, and the centring goes negative");
+        let widest = 0, worst = "";
+        for (const mod of fx.modules) {
+          const metaIndex = M.buildMetaIndex({ hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params });
+          const { pages } = P.planPages({ hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params });
+          for (const page of pages) {
+            if (page.kind !== P.PAGE_KNOBS) continue;
+            for (const k of (page.keys || [])) {
+              if (!k) continue;
+              for (const o of (metaIndex.getOrGuess(k).options || [])) {
+                for (const ln of F5.enumSquareLines(String(o))) {
+                  const w = F4.fontWidth4x5(ln);
+                  if (w > widest) { widest = w; worst = ln; }
+                }
+              }
+            }
+          }
+        }
+        if (widest > interior)
+          fail("the fleet produces an enum line " + JSON.stringify(worst) + " measuring " + widest +
+               "px, wider than the " + interior + "px box interior");
+        if (widest < 8)
+          fail("the widest enum line in the fleet is only " + widest + "px — the sweep found nothing, " +
+               "so this assertion is measuring an empty set");
       }
       /* Vertical margins must match. Both contents are an ODD number of rows
        * (one line 5, two lines 11), so an even interior can never split its
@@ -383,7 +451,22 @@ Promise.all([
      * entirely BELOW: zero clear rows on top, so the letters ran into the edge
      * of the highlight and the strip read as a smudge. An odd band splits its
      * remainder evenly. Text sits in colour 0 on a filled band, so a
-     * "text row" here is one containing an UNLIT pixel. */
+     * "text row" here is one containing an UNLIT pixel.
+     *
+     * THE SCAN IS BOUNDED BY THE STRIP, NOT BY THE CELL, and that distinction
+     * is the whole reason this block needed rewriting for SCH-50 `half-strip`.
+     * The strip used to span all 32 columns, so "an unlit pixel anywhere in the
+     * cell" and "an unlit pixel inside the highlight" were the same question.
+     * Now the strip is sized to the VALUE, so the cell is mostly unlit ground
+     * either side of it — scanning the cell reported every row as a text row,
+     * giving 0 clear above and 0 below on a layout that is in fact unchanged.
+     * A measurement can break without the thing it measures breaking.
+     *
+     * The strip extent is recovered as the union of lit pixels in the band,
+     * and the two outermost columns are then excluded: the corners are NOTCHED
+     * (four deliberately-cleared pixels), and counting a notch as a glyph would
+     * mark the strip own top and bottom rows as text and reintroduce exactly
+     * the false negative above. */
     const keys = ["a", "b", "c", "d"];
     const metas = Object.fromEntries(keys.map((k) => [k,
       { key: k, label: k, type: "float", kind: "number", min: 0, max: 1, step: 0.01 }]));
@@ -396,10 +479,19 @@ Promise.all([
         title: "T", pageIndex: 0, pageCount: 1, touched: slot, viz: [],
       });
       const cx = slot * RM.CELL_W;
+      let sx = Infinity, ex = -Infinity;
+      for (let y = RM.LBL0_Y; y < RM.LBL0_Y + RM.LBL_H; y++) {
+        for (let x = cx; x < cx + RM.CELL_W; x++) {
+          if (fb.pixels[y * fb.width + x]) { if (x < sx) sx = x; if (x > ex) ex = x; }
+        }
+      }
+      if (!isFinite(sx)) fail("touched highlight for slot " + slot + " drew no strip at all");
+      if (ex - sx < 2) fail("touched highlight for slot " + slot + " is only " +
+        (ex - sx + 1) + " column(s) wide — too narrow to carry a value");
       const rows = [];
       for (let y = RM.LBL0_Y; y < RM.LBL0_Y + RM.LBL_H; y++) {
         let hasText = false;
-        for (let x = cx; x < cx + RM.CELL_W; x++) if (!fb.pixels[y * fb.width + x]) { hasText = true; break; }
+        for (let x = sx + 1; x <= ex - 1; x++) if (!fb.pixels[y * fb.width + x]) { hasText = true; break; }
         rows.push(hasText);
       }
       const first = rows.indexOf(true), last = rows.lastIndexOf(true);
@@ -413,6 +505,51 @@ Promise.all([
       if (above !== below) {
         fail("touched highlight for slot " + slot + " is not vertically centred: " +
              above + " above, " + below + " below. LBL_H must be odd.");
+      }
+    }
+
+    /*
+     * ---- 4e. the modulation tilde survives a cell that is BOTH held and
+     * modulated, which is the state neither swatch nor page render shows.
+     *
+     * The tilde is drawn six pixels left of the value run. While the strip
+     * spanned the whole cell it was always ON the strip, so drawing it in
+     * colour 0 was right and `inverted` was the only question. SCH-50
+     * `half-strip` sizes the strip to the value, so for anything shorter than
+     * the cell the mark now lands on BLACK GROUND — and colour 0 there is
+     * invisible. The catalog option has exactly that bug; the shipping widget
+     * keys the polarity on the strip extent instead.
+     *
+     * Asserted as "some ink appears where the mark goes", against the same cell
+     * rendered unmodulated, so it cannot pass by counting the strip.
+     */
+    {
+      const keys2 = ["a", "b", "c", "d"];
+      const metas2 = Object.fromEntries(keys2.map((k) => [k,
+        { key: k, label: k, type: "float", kind: "number", min: 0, max: 1, step: 0.01 }]));
+      const render = (mod) => {
+        const fb = H.createFramebuffer();
+        RM.renderPageMovy(H.drawContext(fb), {
+          page: { kind: P.PAGE_KNOBS, name: "M", level: "root", keys: keys2 },
+          metaIndex: { getOrGuess: (k) => metas2[k] },
+          values: { a: "1.00", b: "1.00", c: "1.00", d: "1.00" },
+          title: "T", pageIndex: 0, pageCount: 1, touched: 0, viz: [],
+          modulated: mod ? () => true : undefined,
+        });
+        return fb;
+      };
+      const plain = render(false), marked2 = render(true);
+      let extra = 0;
+      for (let y = RM.LBL0_Y; y < RM.LBL0_Y + RM.LBL_H; y++) {
+        for (let x = 0; x < RM.CELL_W; x++) {
+          const i = y * plain.width + x;
+          if (!!marked2.pixels[i] !== !!plain.pixels[i]) extra++;
+        }
+      }
+      if (extra < 4) {
+        fail("a cell that is both HELD and MODULATED shows only " + extra + " pixel(s) of " +
+             "difference from the unmodulated one — the modulation tilde is being drawn in " +
+             "the ground colour on ground, so it has vanished on exactly the cells that need it");
       }
     }
   }
@@ -463,21 +600,61 @@ Promise.all([
      * one. For gaps the raw profile is the safe direction — a constant-row
      * axis can only ever mask a discontinuity, never invent one. */
 
-    /* A square wave must have VERTICAL edges. Before drawStepCurve its
-     * transition was smeared diagonally across a whole ~5px sample step. */
+    /*
+     * A square wave must have VERTICAL edges. Before drawStepCurve its
+     * transition was smeared diagonally across a whole ~5px sample step.
+     *
+     * SCH-50 `ghost-fill` BROKE THE MEASUREMENT, not the drawing. This used to
+     * count LIT PIXELS PER COLUMN, on the assumption that a column`s lit set is
+     * the curve and nothing else. The graph now fills its mass with CHECKER
+     * between the curve and the baseline, so every column has a handful of lit
+     * pixels and the old count reported 126 partial steps on a square that is
+     * still perfectly square. Reading the old numbers as a regression and
+     * "fixing" the renderer would have been the wrong move entirely.
+     *
+     * Two measures replace it, both valid with a fill and without one:
+     *
+     *   runLen  the longest CONTIGUOUS lit run in a column. A checker fill
+     *           alternates, so it can never exceed 2; a vertical riser is drawn
+     *           SOLID, so it is the band height. The two do not overlap.
+     *   curveY  the lit pixel FURTHEST FROM THE AXIS in a column. The fill only
+     *           ever lies between the curve and the axis, so the extreme is on
+     *           the curve by construction — with a fill or without one.
+     *
+     * A true square puts every column at the same extreme (the two plateaux are
+     * symmetric about the axis), so a diagonal smear shows up as columns whose
+     * extreme sits short of it. That is the same defect the old count caught,
+     * measured on the shape instead of on the ink.
+     */
+    const AMP_SLACK = 1;
     for (const rate of [0, 0.25, 0.5, 0.75, 1]) {
-      const cols = profile(draw(3, rate), true);
+      const fb = draw(3, rate);
+      const runs = [], dist = [];
+      for (let x = 0; x < WIDTH; x++) {
+        let best = 0, cur = 0, far = -1;
+        for (let y = 0; y < 16; y++) {
+          const on = !!fb.pixels[y * fb.width + x];
+          cur = on ? cur + 1 : 0;
+          if (cur > best) best = cur;
+          if (!on) continue;
+          if (y === AXIS_Y && x % 2 === 0) continue;   /* dotted axis */
+          const d = Math.abs(y - AXIS_Y);
+          if (d > far) far = d;
+        }
+        runs.push(best); dist.push(far);
+      }
       /* One interior edge at a single cycle (the wrap is off-screen), more as
        * rate raises the cycle count. */
-      const tall = cols.filter((ys) => ys.length >= 10).length;
+      const tall = runs.filter((n) => n >= 10).length;
       if (tall < 1) {
         fail("the square LFO at rate " + rate + " has " + tall + " full-height column(s) — " +
              "its edges are being drawn as diagonals instead of vertical risers");
       }
-      const wide = cols.filter((ys) => ys.length > 1 && ys.length < 10).length;
-      if (wide > 8) {
-        fail("the square LFO at rate " + rate + " has " + wide + " partially-stepped columns — " +
-             "a square has two edges, not a staircase");
+      const amp = Math.max.apply(null, dist);
+      const short = dist.filter((d) => d >= 0 && d < amp - AMP_SLACK).length;
+      if (short > 8) {
+        fail("the square LFO at rate " + rate + " has " + short + " column(s) whose curve sits " +
+             "short of the plateau (amplitude " + amp + ") — a square has two edges, not a staircase");
       }
     }
 
@@ -556,7 +733,22 @@ Promise.all([
         fail("the saw silhouette lights " + n + " pixels across " + body + " columns — a 1px " +
              "staircase needs about one per column, so the line is being drawn double-width");
       }
-      /* The same shape through the LFO renderer, which has its own riser. */
+      /*
+       * The same shape through the LFO renderer, which has its own riser.
+       *
+       * COUNTED BY PARITY, because SCH-50 `ghost-fill` put a CHECKER mass under
+       * the curve and a total-ink budget can no longer tell a double-width
+       * staircase from a fill. Checker lights only pixels where (x + y) is
+       * EVEN, so every ODD-parity lit pixel is stroke — the fill cannot
+       * contribute one. Measured across all four shapes the odd-parity stroke
+       * ink is 58-68 where the whole stroke is ~149, i.e. almost exactly half,
+       * which is what the budget below is halved against. A staircase drawn
+       * double-width doubles the stroke and lands near 130, so the two stay far
+       * apart.
+       *
+       * The silhouette check above needs none of this: drawWaveform is not one
+       * of the four graphs that took a fill, so its ink is still all stroke.
+       */
       const fb2 = H.createFramebuffer(128, 16);
       VD.drawVizGroup(H.drawContext(fb2), { x: 0, y: 0, w: 128, h: 16 },
         { kind: V.VIZ_LFO, roles: { shape: "sh", rate: "r", depth: "d" }, slotStart: 0, slotSpan: 4 },
@@ -566,12 +758,13 @@ Promise.all([
         for (let x = 0; x < 128; x++) {
           if (!fb2.pixels[y * fb2.width + x]) continue;
           if (y === AXIS_Y && x % 2 === 0) continue;   /* dotted axis */
+          if ((x + y) % 2 === 0) continue;             /* could be the checker fill */
           m++;
         }
       }
-      if (m > 128 + VD.VIZ_ROWS + 8) {
-        fail("the saw LFO lights " + m + " pixels across 128 columns — the riser is re-drawing " +
-             "the row its run already covered, so the staircase is double-width");
+      if (m > Math.ceil((128 + VD.VIZ_ROWS + 8) / 2) + 4) {
+        fail("the saw LFO lights " + m + " odd-parity (stroke-only) pixels across 128 columns — " +
+             "the riser is re-drawing the row its run already covered, so the staircase is double-width");
       }
     }
 
