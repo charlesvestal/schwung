@@ -9,7 +9,10 @@
 **Tech Stack:** Plain ES modules (`.mjs`) run under QuickJS on device and Node in tests; `tests/host/*.sh` shell tests driving the real controller through `tools/param-pages/harness.mjs`; `tools/param-pages/movie.mjs` + ffmpeg for GIFs.
 
 **User decisions (already made):**
-- "Body only" then refined by the user to: **header + body slide as one 128px unit; the bank bar and footer stay fixed.** The bank bar is the page indicator and cannot travel with the page it indicates.
+- ~~"Body only", then "header + body as one 128px unit"~~ — **REVISED 2026-08-27 after looking at the filmed frames.** Final: **the body slides 128px; the page NAME slides within its own ~58px header column over the same duration; the module title, bank bar and footer are FIXED.** The title is identical on every page of a module, so sliding an identical copy in and out is motion carrying no information. The name gets a shorter travel because it is right-aligned — a full-width travel leaves ~2 of the 5 frames with no page name on screen.
+- **Motion: 90ms, eased** (`SLIDE_MS = 90`, `advanceScroll = advanceEased`), five real frames. Chosen from filmed GIFs over two rounds. Known and accepted: at this budget linear uses the time better (three both-pages frames vs one), because eased front-loads 52% of the travel into frame one.
+- **`ms` must mean the SETTLE time.** The original `tau = ms/3` made it mean 95% of travel, so nominal 90 settled at 164. Divisor derived from `SNAP_PAGES`, not written as a literal.
+- **DO NOT BUILD OR DEPLOY TO THE DEVICE** until explicitly told. Stated 2026-08-27: the human is using the hardware for other work. Task 8 is on hold; everything else completes without it.
 - **Every page change slides** — plain jog, Shift+jog level steps, and section-picker jumps. Distance is always one screen width regardless of how many pages were crossed.
 - **Chase, not queue** — a jog arriving mid-slide retargets the incoming page and continues from the current offset.
 - **Warm neighbours while idle** — prefetch adjacent pages' uncached keys on spare rotation stops, not with a blocking read at jog time.
@@ -1013,6 +1016,30 @@ are LEAVING, and by then it is no longer s.pageIndex."
 
 ---
 
+## Task 4b: Split drawHeader — fixed title, sliding name
+
+**Added 2026-08-27**, after the filmed frames showed the module title sliding
+out and a byte-identical copy sliding back in. Full task text lives in the
+harness task list (`Task 4b`); the short of it:
+
+`drawHeader` (`render_page_movy.mjs:723`) draws the title and the name
+together and **measures the right side first, giving the left the remainder**
+— so the split DEPENDS on the name, and two different names mid-transition
+would move the title. Decompose it into title-only and name-only draws
+sharing ONE split computation, and pin that split to the DESTINATION name.
+
+`drawPage` gains `header: false` so a sliding pass leaves rows 0–6 untouched.
+The composite then draws the two names at column-relative offsets and the
+fixed title over them — the title's opaque redraw is what clips the outgoing
+name's left edge.
+
+The name travels its COLUMN width (~58px), not 128px. At 90ms a full-width
+travel leaves roughly two of the five frames with no page name at all.
+
+Blocks Task 5.
+
+---
+
 ## Task 5: Run the slide
 
 **Goal:** A page change starts a transition; the frame composites two pages with fixed chrome; a jog mid-slide chases.
@@ -1223,14 +1250,32 @@ Replace the final `drawPage(ctx, s.pageIndex, { title, footer });` in the MOVY/L
                 const off = slideOffsets(frac, SCREEN_WIDTH);
                 drawSlide(ctx, {
                     fromDx: off.from, toDx: off.to,
-                    drawFrom: (c) => drawPage(c, base, { title, footer, chrome: false }),
-                    drawTo: (c) => drawPage(c, base + 1, { title, footer, chrome: false }),
-                    /* The indicator and the hints do not travel, and the
-                     * indicator reports s.pageIndex — where input already is —
-                     * rather than the scroll position, so it never lags the
-                     * gesture it is reporting. Drawn LAST and unproxied, over
-                     * whatever passed underneath. */
+                    /* Body only. `header: false` because the header does not
+                     * travel with the page — see Task 4b: the module title is
+                     * identical on every page and only the NAME changes. */
+                    drawFrom: (c) => drawPage(c, base, { title, footer, chrome: false, header: false }),
+                    drawTo: (c) => drawPage(c, base + 1, { title, footer, chrome: false, header: false }),
+                    /*
+                     * The fixed chrome, drawn LAST and unproxied.
+                     *
+                     * ORDER IS LOAD-BEARING: the two page names first, then
+                     * the module title OVER them. The title's opaque redraw is
+                     * what clips the outgoing name's left edge — there is no
+                     * clip rectangle anywhere in this feature.
+                     *
+                     * The name travels its COLUMN width, not the screen width:
+                     * it is right-aligned, and at 90ms a full-width travel
+                     * leaves two of the five frames with no page name at all.
+                     *
+                     * The indicator reports s.pageIndex — where input already
+                     * is — rather than the scroll position, so it never lags
+                     * the gesture it is reporting.
+                     */
                     drawChrome: (c) => {
+                        const nameOff = slideOffsets(frac, headerNameTravel(title, toName));
+                        drawHeaderName(translateCtx(c, nameOff.from), title, toName, fromName);
+                        drawHeaderName(translateCtx(c, nameOff.to), title, toName, toName);
+                        drawHeaderTitle(c, title, toName);
                         drawBankBar(c, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
                         if (footer) drawFooter(c, footer);
                     },
