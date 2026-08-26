@@ -136,14 +136,30 @@ int link_audio_read_channel_shm(link_audio_in_shm_t *shm, int slot_idx,
         return 0;
     }
 
-    /* Catch-up: if producer got ahead by more than 12 blocks (~70 ms), jump
-     * to the most recent block. Every catch-up is an audible drop, so the
-     * threshold has to tolerate real producer-thread jitter — the Link audio
-     * SDK thread can pause ~25 ms and then flush buffered audio. Raised from
-     * need*4 (1024 samples) to need*12 (3072) after instrumentation showed
-     * observed bursts were consistently <30 ms. If true long-term drift
-     * exists, max_avail_seen will rise steadily and surface in the logger. */
-    if (avail > need * 12) {
+    /* Catch-up: if the producer gets far enough ahead, jump to the most recent
+     * block. Every catch-up is an audible drop, so the threshold has to
+     * tolerate real producer jitter.
+     *
+     * THE THRESHOLD MUST EXCEED THE BURST, OR IT DISCARDS THE FIX FOR THE
+     * STALL. It was `need * 12` = 3072 samples = 35 ms, chosen when
+     * "observed bursts were consistently <30 ms". That stopped being true.
+     * Measured 2026-08-27 (see link_audio.h for the full numbers): Move stalls
+     * ~92 ms on all four channels at once, then delivers ~30 blocks back to
+     * back. So the ring drained, the burst refilled it past 35 ms, and
+     * catch-up threw the refill away — ~76,000 stereo samples per 5 s window,
+     * about 17% of the audio — which guaranteed the next stall starved too.
+     * Starve, burst, discard, starve.
+     *
+     * LINK_AUDIO_IN_CATCHUP_SAMPLES is derived from the ring rather than
+     * written as a number, so resizing the ring cannot leave the two
+     * disagreeing. At 64 blocks it is 12288 samples = 139 ms: above the worst
+     * observed `avail` (149 ms is a lapped producer, not a burst we can keep)
+     * while still bounded well inside the ring, so a genuinely runaway
+     * producer is still caught.
+     *
+     * If true long-term drift exists, max_avail_seen rises steadily and
+     * surfaces in the logger. */
+    if (avail > LINK_AUDIO_IN_CATCHUP_SAMPLES) {
         uint32_t new_rp = wp - need;
         __atomic_fetch_add(&slot->catchup_samples_dropped,
                            (new_rp - rp), __ATOMIC_RELAXED);
