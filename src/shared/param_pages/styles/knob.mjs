@@ -48,13 +48,28 @@
  * observation — option 10 narrows the gap and had to be checked row by row
  * (its lowest lit pixel is ky+14, the last legal row).
  *
- * NO ctx.drawArc, anywhere. Its rasteriser is a distance-rounded union of a row
- * scan and a column scan, and near the top and bottom five consecutive columns
- * round to the same row: a five-pixel flat cap, so a small circle reads as a
- * rounded rectangle. Every arc option in round 2 inherited that and it is the
- * whole of why the set was called sloppy. `styles/ring.mjs` is hand-tabulated
- * and every option here goes through it, so a partial track is a pixel-exact
- * subset of the whole one and a 2px band shares the 1px band's silhouette.
+ * ctx.drawArc THROUGHOUT, and the story of why is worth keeping.
+ *
+ * The set was reported as "sloppy" and drawArc was blamed: its rasteriser is a
+ * distance-rounded union of a row scan and a column scan, and at r=6 five
+ * consecutive columns round to the same row — a five-pixel flat cap, so a small
+ * circle reads as a rounded rectangle. A hand-tabulated ring was built to fix
+ * it.
+ *
+ * The measurement was taken at THE WRONG RADIUS. This knob is KNOB_R = 8:
+ *
+ *     drawArc r=8    cap 5, then 4, then 2...   a taper
+ *     tabulated      cap 3, then 6, then 2...   a 3-to-6 jump in one row
+ *
+ * So the hand-tuned version is arguably worse at the size that actually ships,
+ * and on a whole page the two are near indistinguishable. The flat cap is not a
+ * defect here; it reads as a slightly wider gauge, which is what this knob has
+ * always looked like — and that is the verdict from the device, not from me.
+ *
+ * Recorded rather than quietly reverted, because "hand-tabulate the circle" is
+ * a plausible-sounding fix somebody will propose again. It is the right answer
+ * at small radii — drawSwitch tabulates for exactly that reason — and the wrong
+ * one at eight.
  *
  * MODULATION, which the contact sheet CANNOT show you. `drawModDot` rides a
  * 5px plus centred at KNOB_R-2 = 6, so it occupies r=5..7 at whatever angle the
@@ -72,7 +87,33 @@
 
 import { registerSet, KIND_DRAW } from "./index.mjs";
 import { KW, BOX_H, KNOB_R } from "../render_page_movy.mjs";
-import { ring, ringBand } from "./ring.mjs";
+/*
+ * Drawn on ctx.drawArc, the shipping primitive, after a tabulated ring was
+ * built to replace it and then measured and dropped.
+ *
+ * The set was reported as looking "sloppy" and drawArc was blamed: at r=6 its
+ * distance-rounded rasteriser gives a 5px flat cap, so a circle reads as a
+ * rounded rectangle. That measurement was taken at THE WRONG RADIUS. The knob
+ * is KNOB_R = 8, and at r=8 the two rasterisers compare like this:
+ *
+ *     drawArc r=8   cap 5, then 4, then 2...   a taper
+ *     tabulated     cap 3, then 6, then 2...   a 3-to-6 jump in one row
+ *
+ * So the hand-tuned version is arguably WORSE at the size that ships, and on a
+ * whole page the two are near indistinguishable. The flat cap is not a defect
+ * at this radius; it reads as a slightly wider gauge, which is what the
+ * shipping knob has always looked like.
+ *
+ * Kept as a note rather than deleted silently, because "hand-tabulate the
+ * circle" is a plausible-sounding fix that someone will propose again. It is
+ * the right answer at small radii -- drawSwitch tabulates for exactly that
+ * reason -- and the wrong one here.
+ */
+
+/** A 2px track: two adjacent radii, since drawArc draws a 1px outline. */
+function band(ctx, cx, cy, rIn, rOut, start, sweep, color = 1) {
+    for (let r = rIn; r <= rOut; r++) ctx.drawArc(cx, cy, r, start, sweep, color);
+}
 
 /* The shipping numbers, repeated rather than imported because they are not
  * exported from render_page_movy.mjs. An option is allowed to disagree with
@@ -165,7 +206,7 @@ function radial2(ctx, cx, cy, rIn, rOut, deg) {
 function drawArcPointer(ctx, kx, ky, normVal) {
     const v = clamp01(normVal);
     const cx = kx + KNOB_R, cy = ky + KNOB_R;
-    ring(ctx, cx, cy, KNOB_R, ARC_START, ARC_SWEEP, 1);
+    ctx.drawArc(cx, cy, KNOB_R, ARC_START, ARC_SWEEP, 1);
     radial(ctx, cx, cy, 0, KNOB_R * 0.85, ptrDeg(v));
 }
 
@@ -188,7 +229,7 @@ function drawArcPointer(ctx, kx, ky, normVal) {
 function drawArcShort(ctx, kx, ky, normVal) {
     const v = clamp01(normVal);
     const cx = kx + KNOB_R, cy = ky + KNOB_R;
-    ring(ctx, cx, cy, KNOB_R, ARC_START, ARC_SWEEP, 1);
+    ctx.drawArc(cx, cy, KNOB_R, ARC_START, ARC_SWEEP, 1);
     radial(ctx, cx, cy, 0, KNOB_R * 0.68, ptrDeg(v));
 }
 
@@ -210,7 +251,7 @@ function drawArcShort(ctx, kx, ky, normVal) {
 function drawArcFloat(ctx, kx, ky, normVal) {
     const v = clamp01(normVal);
     const cx = kx + KNOB_R, cy = ky + KNOB_R;
-    ring(ctx, cx, cy, KNOB_R, ARC_START, ARC_SWEEP, 1);
+    ctx.drawArc(cx, cy, KNOB_R, ARC_START, ARC_SWEEP, 1);
     radial(ctx, cx, cy, KNOB_R * 0.34, KNOB_R * 0.74, ptrDeg(v));
 }
 
@@ -235,7 +276,7 @@ function drawArcFloat(ctx, kx, ky, normVal) {
 function drawArcHub(ctx, kx, ky, normVal) {
     const v = clamp01(normVal);
     const cx = kx + KNOB_R, cy = ky + KNOB_R;
-    ring(ctx, cx, cy, KNOB_R, ARC_START, ARC_SWEEP, 1);
+    ctx.drawArc(cx, cy, KNOB_R, ARC_START, ARC_SWEEP, 1);
     ctx.fillRect(cx - 1, cy - 1, 3, 3, 1);
     radial(ctx, cx, cy, 2, KNOB_R * 0.74, ptrDeg(v));
 }
@@ -258,7 +299,7 @@ function drawArcHub(ctx, kx, ky, normVal) {
 function drawArcHeavy(ctx, kx, ky, normVal) {
     const v = clamp01(normVal);
     const cx = kx + KNOB_R, cy = ky + KNOB_R;
-    ringBand(ctx, cx, cy, KNOB_R - 1, KNOB_R, ARC_START, ARC_SWEEP);
+    band(ctx, cx, cy, KNOB_R - 1, KNOB_R, ARC_START, ARC_SWEEP);
     radial(ctx, cx, cy, 0, KNOB_R * 0.62, ptrDeg(v));
 }
 
@@ -279,7 +320,7 @@ function drawArcHeavy(ctx, kx, ky, normVal) {
 function drawArcBold(ctx, kx, ky, normVal) {
     const v = clamp01(normVal);
     const cx = kx + KNOB_R, cy = ky + KNOB_R;
-    ring(ctx, cx, cy, KNOB_R, ARC_START, ARC_SWEEP, 1);
+    ctx.drawArc(cx, cy, KNOB_R, ARC_START, ARC_SWEEP, 1);
     radial2(ctx, cx, cy, 0, KNOB_R * 0.66, ptrDeg(v));
 }
 
@@ -302,7 +343,7 @@ function drawArcBold(ctx, kx, ky, normVal) {
 function drawArcCaps(ctx, kx, ky, normVal) {
     const v = clamp01(normVal);
     const cx = kx + KNOB_R, cy = ky + KNOB_R;
-    ring(ctx, cx, cy, KNOB_R, ARC_START, ARC_SWEEP, 1);
+    ctx.drawArc(cx, cy, KNOB_R, ARC_START, ARC_SWEEP, 1);
     radial(ctx, cx, cy, KNOB_R - 2, KNOB_R, ARC_START);
     radial(ctx, cx, cy, KNOB_R - 2, KNOB_R, ARC_START + ARC_SWEEP);
     radial(ctx, cx, cy, 0, KNOB_R * 0.68, ptrDeg(v));
@@ -327,7 +368,7 @@ function drawArcCaps(ctx, kx, ky, normVal) {
 function drawArcDetent(ctx, kx, ky, normVal) {
     const v = clamp01(normVal);
     const cx = kx + KNOB_R, cy = ky + KNOB_R;
-    ring(ctx, cx, cy, KNOB_R, ARC_START, ARC_SWEEP, 1);
+    ctx.drawArc(cx, cy, KNOB_R, ARC_START, ARC_SWEEP, 1);
     radial(ctx, cx, cy, KNOB_R - 3, KNOB_R - 2, 0);
     radial(ctx, cx, cy, 0, KNOB_R * 0.68, ptrDeg(v));
 }
@@ -355,8 +396,8 @@ function drawArcDetent(ctx, kx, ky, normVal) {
 function drawArcTravelled(ctx, kx, ky, normVal) {
     const v = clamp01(normVal);
     const cx = kx + KNOB_R, cy = ky + KNOB_R;
-    ring(ctx, cx, cy, KNOB_R, ARC_START, ARC_SWEEP, 1);
-    ringBand(ctx, cx, cy, KNOB_R - 1, KNOB_R, ARC_START, v * ARC_SWEEP);
+    ctx.drawArc(cx, cy, KNOB_R, ARC_START, ARC_SWEEP, 1);
+    band(ctx, cx, cy, KNOB_R - 1, KNOB_R, ARC_START, v * ARC_SWEEP);
     radial(ctx, cx, cy, 0, KNOB_R * 0.68, ptrDeg(v));
 }
 
@@ -387,7 +428,7 @@ const COLLAR_START = 215, COLLAR_SWEEP = 290;
 function drawArcCollar(ctx, kx, ky, normVal) {
     const v = clamp01(normVal);
     const cx = kx + KNOB_R, cy = ky + KNOB_R;
-    ring(ctx, cx, cy, KNOB_R, COLLAR_START, COLLAR_SWEEP, 1);
+    ctx.drawArc(cx, cy, KNOB_R, COLLAR_START, COLLAR_SWEEP, 1);
     radial(ctx, cx, cy, 0, KNOB_R * 0.74, ptrDeg(v, COLLAR_START - 5, COLLAR_SWEEP + 10));
 }
 
