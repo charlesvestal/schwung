@@ -2706,12 +2706,22 @@ export function createController(io = {}) {
      * this page is something you can go into, and they are the same mark a
      * divable cell and an un-entered menu wear.
      */
-    function drawKnobsAsList(ctx, title, footer) {
-        const mp = page();
+    /*
+     * `index` rather than `page()`: the page slide draws the page being LEFT,
+     * which by then is no longer current. `chrome` is false on a sliding pass —
+     * the bank bar is the page INDICATOR and must not travel with the page it
+     * indicates, and the footer stays put with it.
+     */
+    function drawKnobsAsList(ctx, index, title, footer, chrome) {
+        const mp = s.pages[index] || null;
         drawHeaderMovy(ctx, title || "", pageLabel(mp), false);
-        drawBankBar(ctx, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
+        if (chrome) drawBankBar(ctx, index | 0, Math.max(1, s.pages.length), pageGroups());
         const bottom = footer ? RULE_Y : 64;
-        const entered = menuEntered();
+        /* "Entered" is a property of the page you are ON. A page sliding away
+         * must not draw itself as entered, and the page arriving is not
+         * entered yet — menuEntered() answers about page(), so the index has
+         * to be reconciled with it here. */
+        const entered = menuEntered() && index === s.pageIndex;
         drawPageChromeList(ctx,
             { x: MENU_LIST_X, y: MENU_LIST_Y, w: MENU_LIST_W, h: bottom - MENU_LIST_Y },
             knobListEntries(mp),
@@ -2722,7 +2732,172 @@ export function createController(io = {}) {
                          bottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
                          MENU_BRACKET_LEN);
         }
-        if (footer) drawFooter(ctx, footer);
+        if (chrome && footer) drawFooter(ctx, footer);
+    }
+
+    /**
+     * Draw ONE page, by index, into the given ctx.
+     *
+     * Parameterised by index rather than reading s.pageIndex because the page
+     * slide has to draw the page you are LEAVING, which by then is no longer
+     * current (see page_transition.mjs). Per-page state — the menu cursor, the
+     * items list, the preset browser — is already keyed by page NAME in `s`, so
+     * drawing a non-current index needs no new state, and none was added.
+     *
+     * `chrome` is false on a sliding pass: the bank bar is the page INDICATOR
+     * and does not travel with the page it indicates, and the footer stays put
+     * with it. Both are drawn afterwards by the caller, unproxied. Note that
+     * the BODY geometry is unchanged by `chrome` — `footer ? RULE_Y : 64` still
+     * reserves the footer band, because a sliding page must be the same picture
+     * as the settled one, merely translated.
+     *
+     * Overlays — the hint panel, the section picker, the knob card, the enum
+     * peek — are NOT drawn here. They belong to the screen, not to a page, and
+     * they must never slide.
+     */
+    function drawPage(ctx, index, { title, footer, chrome = true } = {}) {
+        const mp = s.pages[index] || null;
+        if (knobsAsList(mp)) { drawKnobsAsList(ctx, index, title, footer, chrome); return; }
+        if (mp && mp.kind === PAGE_ITEMS) {
+            /* A real list, so it draws like a menu page: same chrome, same
+             * five rows, same rect. Inert it highlights nothing — the page
+             * is something you can go INTO, not something you are in. */
+            drawHeaderMovy(ctx, title || "", mp.name, false);
+            if (chrome) drawBankBar(ctx, index | 0, Math.max(1, s.pages.length), pageGroups());
+            const ibottom = footer ? RULE_Y : 64;
+            const ist = itemsState(mp) || { list: [], cursor: 0, current: -1 };
+            const entered = menuEntered() && index === s.pageIndex;
+            drawPageChromeList(ctx,
+                { x: MENU_LIST_X, y: MENU_LIST_Y,
+                  w: MENU_LIST_W, h: ibottom - MENU_LIST_Y },
+                ist.list.length
+                    ? ist.list.map((it) => ({
+                        name: it.label,
+                        /* The one in force marks itself where a menu page
+                         * puts a value, same as the module picker. */
+                        value: it.index === ist.current ? "*" : "",
+                      }))
+                    : [{ name: "(none)", value: "" }],
+                entered ? ist.cursor : -1);
+            if (!entered) {
+                drawBrackets(ctx, MENU_FRAME_X, MENU_FRAME_Y, MENU_FRAME_W,
+                             ibottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
+                             MENU_BRACKET_LEN);
+            }
+            if (chrome && footer) drawFooter(ctx, footer);
+            return;
+        }
+        if (mp && mp.kind === PAGE_PRESET) {
+            /* Same chrome as a grid page — module name, page name, bank
+             * bar and footer all stay put, so the preset browser reads as
+             * one of this module's pages rather than as somewhere else.
+             * That is the whole point: it used to eject into the list
+             * editor, which looks nothing like this. */
+            drawHeaderMovy(ctx, title || "", mp.name, false);
+            if (chrome) drawBankBar(ctx, index | 0, Math.max(1, s.pages.length), pageGroups());
+            const pbottom = footer ? RULE_Y : 64;
+            const prect = { x: MENU_FRAME_X, y: MENU_FRAME_Y,
+                            w: MENU_FRAME_W, h: pbottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET };
+            const pst = presetState(mp) || {};
+            const entered = menuEntered() && index === s.pageIndex;
+            drawPresetBody(ctx, prect, {
+                name: pst.name, index: pst.index, count: pst.count,
+                entered,
+            });
+            /* Inert: it wears the same brackets a divable cell and an
+             * un-entered menu wear, because it is the same offer. */
+            if (!entered) {
+                drawBrackets(ctx, MENU_FRAME_X, MENU_FRAME_Y, MENU_FRAME_W,
+                             pbottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
+                             MENU_BRACKET_LEN);
+            }
+            if (chrome && footer) drawFooter(ctx, footer);
+            return;
+        }
+        if (mp && mp.kind === PAGE_MENU) {
+            /* Same chrome as a grid page — the module name, the page name
+             * and the bank bar all stay put, so a menu reads as one of this
+             * module's pages rather than as somewhere else. header:false
+             * because that header is already drawn. */
+            drawHeaderMovy(ctx, title || "", mp.name, false);
+            if (chrome) drawBankBar(ctx, index | 0, Math.max(1, s.pages.length), pageGroups());
+            const bottom = footer ? RULE_Y : 64;
+            const entered = menuEntered() && index === s.pageIndex;
+            /*
+             * ONE list rect for both states. Shrinking it to make room for
+             * the brackets cost a row (4 vs 5 everywhere else) and made the
+             * rows jump as you entered. Instead the list is inset far enough
+             * that the brackets sit OUTSIDE it: the top arm lands on row 8
+             * and the bottom on row 54, both clear of the row fills
+             * (9..53), and the side arms clear the text at x+2 and the
+             * right-aligned values at x+w-2.
+             */
+            const listRect = { x: MENU_LIST_X, y: MENU_LIST_Y,
+                               w: MENU_LIST_W, h: bottom - MENU_LIST_Y };
+            drawPageChromeList(ctx, listRect,
+                (mp.entries || []).map((e) => ({ name: e.label, value: e.value })),
+                /* Inert: nothing is highlighted, because nothing is selected
+                 * yet — the page is something you can go INTO, not something
+                 * you are already in. */
+                entered ? menuIndex(mp) : -1);
+            if (!entered) {
+                drawBrackets(ctx, MENU_FRAME_X, MENU_FRAME_Y, MENU_FRAME_W,
+                             bottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
+                             MENU_BRACKET_LEN);
+            }
+            if (chrome && footer) drawFooter(ctx, footer);
+            return;
+        }
+        renderPageMovy(ctx, {
+            page: mp, metaIndex: s.metaIndex, values: s.values,
+            title: title || "", pageIndex: index, pageCount: s.pages.length,
+            touched: s.hintLines ? -1 : s.touched,
+            displayFor: formatValue
+                ? (key, raw, surface) => formatValue(fullKey(key), raw, surface)
+                : null,
+            /* Every knob under a finger inverts its label, not just the one
+             * the header is following. */
+            touchedSlots: s.hintLines ? [] : s.touchOrder,
+            modulated: (key) => !!s.modCache[key],
+            modValues: s.modValues,
+            pageGroups: pageGroups(),
+            pageLabel: pageLabel(mp),
+            viz: vizEnabled ? vizGroupsFor(index) : [],
+            /*
+             * The trigger button's press animation. Both of these have to
+             * come from here: the renderer is pure and reads the clock off
+             * `o`, so without them every button draws in its idle phase
+             * forever -- which is exactly what shipped, because the test
+             * handed the renderer both directly and so only ever proved
+             * the renderer, never the wiring.
+             */
+            triggerFiredAt: s.triggerFiredAt,
+            /*
+             * THE WIDGET ANIMATION STORE, and its absence is why none of
+             * them ever moved on hardware.
+             *
+             * `nowMs` alone is not enough: every animated widget guards on
+             * `anim && typeof nowMs === "number"`, so an undefined store
+             * silently draws the settled frame forever. createAnimState was
+             * written, exported, unit-tested and never CALLED — the switch
+             * fill, the waveform morph and the enum square's resize were all
+             * inert from the day they shipped.
+             *
+             * Exactly the failure the note above `triggerFiredAt` describes,
+             * one field away: the renderer tests hand these in directly, so
+             * they prove the renderer and never the wiring. The trigger
+             * flash had this bug, it was fixed, the note was written — and
+             * the animations that arrived later reproduced it.
+             *
+             * One store per controller, so a page change does not restart
+             * every transition and two slots do not share phase.
+             */
+            anim: s.anim,
+            nowMs: now(),
+            /* The bar and the band are the caller's on a sliding pass. */
+            bankBar: chrome,
+            footer: chrome ? footer : null,
+        });
     }
 
     function render(ctx, { title, rect, footer } = {}) {
@@ -2731,59 +2906,8 @@ export function createController(io = {}) {
          * picker, menu, items and preset pages are all literally the same draws.
          * Only the knob page forks, and only at the last step. */
         if (s.layout === LAYOUT_MOVY || s.layout === LAYOUT_LIST) {
-            const drawGrid = () => {
-            if (knobsAsList()) { drawKnobsAsList(ctx, title, footer); return; }
-            renderPageMovy(ctx, {
-                page: page(), metaIndex: s.metaIndex, values: s.values,
-                title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
-                touched: s.hintLines ? -1 : s.touched,
-                displayFor: formatValue
-                    ? (key, raw, surface) => formatValue(fullKey(key), raw, surface)
-                    : null,
-                /* Every knob under a finger inverts its label, not just the one
-                 * the header is following. */
-                touchedSlots: s.hintLines ? [] : s.touchOrder,
-                modulated: (key) => !!s.modCache[key],
-                modValues: s.modValues,
-                pageGroups: pageGroups(),
-                pageLabel: pageLabel(),
-                viz: vizEnabled ? vizGroups() : [],
-                /*
-                 * The trigger button's press animation. Both of these have to
-                 * come from here: the renderer is pure and reads the clock off
-                 * `o`, so without them every button draws in its idle phase
-                 * forever -- which is exactly what shipped, because the test
-                 * handed the renderer both directly and so only ever proved
-                 * the renderer, never the wiring.
-                 */
-                triggerFiredAt: s.triggerFiredAt,
-                /*
-                 * THE WIDGET ANIMATION STORE, and its absence is why none of
-                 * them ever moved on hardware.
-                 *
-                 * `nowMs` alone is not enough: every animated widget guards on
-                 * `anim && typeof nowMs === "number"`, so an undefined store
-                 * silently draws the settled frame forever. createAnimState was
-                 * written, exported, unit-tested and never CALLED — the switch
-                 * fill, the waveform morph and the enum square's resize were all
-                 * inert from the day they shipped.
-                 *
-                 * Exactly the failure the note above `triggerFiredAt` describes,
-                 * one field away: the renderer tests hand these in directly, so
-                 * they prove the renderer and never the wiring. The trigger
-                 * flash had this bug, it was fixed, the note was written — and
-                 * the animations that arrived later reproduced it.
-                 *
-                 * One store per controller, so a page change does not restart
-                 * every transition and two slots do not share phase.
-                 */
-                anim: s.anim,
-                nowMs: now(),
-                footer,
-            });
-            };
             if (s.hintLines) {
-                drawGrid();
+                drawPage(ctx, s.pageIndex, { title, footer });
                 renderHint(ctx, { rect, lines: s.hintLines.lines, title: s.hintLines.title });
                 return;
             }
@@ -2795,6 +2919,11 @@ export function createController(io = {}) {
                  * that did not look like a page. Same header band, same bank
                  * bar, same list rect and same five rows as a menu page — the
                  * only difference is what the list holds.
+                 *
+                 * NOT a page, so it is not drawn through drawPage and its
+                 * drawBankBar stays unconditional: the picker is an OVERLAY on
+                 * the page set, it never slides, and there is no sliding pass
+                 * that would want its indicator suppressed.
                  */
                 const pbottom = footer ? RULE_Y : 64;
                 drawHeaderMovy(ctx, title || "", "SECTIONS", false);
@@ -2806,97 +2935,7 @@ export function createController(io = {}) {
                 if (footer) drawFooter(ctx, footer);
                 return;
             }
-            const mp = page();
-            if (mp && mp.kind === PAGE_ITEMS) {
-                /* A real list, so it draws like a menu page: same chrome, same
-                 * five rows, same rect. Inert it highlights nothing — the page
-                 * is something you can go INTO, not something you are in. */
-                drawHeaderMovy(ctx, title || "", mp.name, false);
-                drawBankBar(ctx, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
-                const ibottom = footer ? RULE_Y : 64;
-                const ist = itemsState(mp) || { list: [], cursor: 0, current: -1 };
-                const entered = menuEntered();
-                drawPageChromeList(ctx,
-                    { x: MENU_LIST_X, y: MENU_LIST_Y,
-                      w: MENU_LIST_W, h: ibottom - MENU_LIST_Y },
-                    ist.list.length
-                        ? ist.list.map((it) => ({
-                            name: it.label,
-                            /* The one in force marks itself where a menu page
-                             * puts a value, same as the module picker. */
-                            value: it.index === ist.current ? "*" : "",
-                          }))
-                        : [{ name: "(none)", value: "" }],
-                    entered ? ist.cursor : -1);
-                if (!entered) {
-                    drawBrackets(ctx, MENU_FRAME_X, MENU_FRAME_Y, MENU_FRAME_W,
-                                 ibottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
-                                 MENU_BRACKET_LEN);
-                }
-                if (footer) drawFooter(ctx, footer);
-                return;
-            }
-            if (mp && mp.kind === PAGE_PRESET) {
-                /* Same chrome as a grid page — module name, page name, bank
-                 * bar and footer all stay put, so the preset browser reads as
-                 * one of this module's pages rather than as somewhere else.
-                 * That is the whole point: it used to eject into the list
-                 * editor, which looks nothing like this. */
-                drawHeaderMovy(ctx, title || "", mp.name, false);
-                drawBankBar(ctx, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
-                const pbottom = footer ? RULE_Y : 64;
-                const prect = { x: MENU_FRAME_X, y: MENU_FRAME_Y,
-                                w: MENU_FRAME_W, h: pbottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET };
-                const pst = presetState(mp) || {};
-                drawPresetBody(ctx, prect, {
-                    name: pst.name, index: pst.index, count: pst.count,
-                    entered: menuEntered(),
-                });
-                /* Inert: it wears the same brackets a divable cell and an
-                 * un-entered menu wear, because it is the same offer. */
-                if (!menuEntered()) {
-                    drawBrackets(ctx, MENU_FRAME_X, MENU_FRAME_Y, MENU_FRAME_W,
-                                 pbottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
-                                 MENU_BRACKET_LEN);
-                }
-                if (footer) drawFooter(ctx, footer);
-                return;
-            }
-            if (mp && mp.kind === PAGE_MENU) {
-                /* Same chrome as a grid page — the module name, the page name
-                 * and the bank bar all stay put, so a menu reads as one of this
-                 * module's pages rather than as somewhere else. header:false
-                 * because that header is already drawn. */
-                drawHeaderMovy(ctx, title || "", mp.name, false);
-                drawBankBar(ctx, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
-                const bottom = footer ? RULE_Y : 64;
-                const entered = menuEntered();
-                /*
-                 * ONE list rect for both states. Shrinking it to make room for
-                 * the brackets cost a row (4 vs 5 everywhere else) and made the
-                 * rows jump as you entered. Instead the list is inset far enough
-                 * that the brackets sit OUTSIDE it: the top arm lands on row 8
-                 * and the bottom on row 54, both clear of the row fills
-                 * (9..53), and the side arms clear the text at x+2 and the
-                 * right-aligned values at x+w-2.
-                 */
-                const listRect = { x: MENU_LIST_X, y: MENU_LIST_Y,
-                                   w: MENU_LIST_W, h: bottom - MENU_LIST_Y };
-                drawPageChromeList(ctx, listRect,
-                    (mp.entries || []).map((e) => ({ name: e.label, value: e.value })),
-                    /* Inert: nothing is highlighted, because nothing is selected
-                     * yet — the page is something you can go INTO, not something
-                     * you are already in. */
-                    entered ? menuIndex(mp) : -1);
-                if (!entered) {
-                    drawBrackets(ctx, MENU_FRAME_X, MENU_FRAME_Y, MENU_FRAME_W,
-                                 bottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
-                                 MENU_BRACKET_LEN);
-                }
-                if (footer) drawFooter(ctx, footer);
-                return;
-            }
-            drawGrid();
+            drawPage(ctx, s.pageIndex, { title, footer });
             return;
         }
 
@@ -2930,16 +2969,33 @@ export function createController(io = {}) {
         });
     }
 
-    let vizCache = null;
-    function vizGroups() {
-        const p = page();
+    /*
+     * TWO entries, not one, and the reason is the slide.
+     *
+     * A sliding frame draws two DIFFERENT page indices, so a single-entry cache
+     * would miss on every call and re-run resolveViz twice per frame — the
+     * detector walk is not free, and it is the one thing in the draw path that
+     * is not a pixel write. Two entries hold both pages of a slide; a page
+     * change evicts the older of the two, which is exactly the one leaving.
+     *
+     * Keyed on fingerprint AND index because the page set can be replanned
+     * under a stable index.
+     */
+    let vizCache = [];
+    function vizGroupsFor(index) {
+        const p = s.pages[index] || null;
         if (!p || p.kind !== PAGE_KNOBS || !s.metaIndex) return [];
-        const cacheKey = `${s.fingerprint}#${s.pageIndex}`;
-        if (vizCache && vizCache.key === cacheKey) return vizCache.groups;
+        const cacheKey = `${s.fingerprint}#${index}`;
+        for (const e of vizCache) if (e.key === cacheKey) return e.groups;
         const { groups } = resolveViz({ keys: p.keys, metaIndex: s.metaIndex, overrides: vizOverrides });
-        vizCache = { key: cacheKey, groups };
+        vizCache.unshift({ key: cacheKey, groups });
+        if (vizCache.length > 2) vizCache.length = 2;
         return groups;
     }
+    /* The CURRENT page's graphics. Every other consumer — the peek, the extra
+     * keys, the LED lane, the host's peak-envelope job — asks about the page
+     * the user is ON, so they keep a no-argument entry point. */
+    function vizGroups() { return vizGroupsFor(s.pageIndex); }
 
     /**
      * Keys a graphic on this page needs but the page does not carry.
@@ -3052,6 +3108,11 @@ export function createController(io = {}) {
         get pickerEntries() { return s.pickerEntries; },
         get pickerIndex() { return s.pickerIndex; },
         setLayout, setReveal, setDecorations, render, announceContents,
+        /* Draw ONE page by index, into a ctx that may be translated. Exposed
+         * so the slide can composite the page being LEFT — which by then is no
+         * longer s.pageIndex — beside the one arriving. Overlays are NOT drawn
+         * here; they belong to the screen and must not travel. */
+        drawPage,
         get state() { return s; },
         get page() { return page(); },
         get pages() { return s.pages; },
