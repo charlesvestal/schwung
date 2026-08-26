@@ -34,6 +34,7 @@ import { enumSquareLines } from "./font5x3.mjs";
 import { fontPrint as tzPrint, fontWidth as tzWidth, HEIGHT as TZ_H } from "./font_tamzen6x12.mjs";
 import { fontWidth4x5, fontPrint4x5, FONT4_HEIGHT, FONT4_MEASURE } from "./font4x5.mjs";
 import { fontWidth5x3, fontPrint5x3 } from "./font5x3.mjs";
+import { observe as animObserve, easeOut, lerp } from "./anim_state.mjs";
 /* The one definition of the chrome geometry (see the band comment below). */
 import { SCREEN_WIDTH as W, HEADER_H, RULE_Y, FOOTER_Y, FOOTER_H,
          MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W } from "../list_geometry.mjs";
@@ -612,6 +613,23 @@ export const ENUM_W = 28;
  * the cell has to provide it.
  */
 export const ENUM_TEXT_W = ENUM_W - 4;
+/**
+ * The narrowest the square is ever drawn.
+ *
+ * `ENUM_W` is the WIDEST four characters, so it is the CAP, not the size: a box
+ * sized to its own value tells you how long that value is before you read it —
+ * the same argument that won `half-strip` for the label band — and `TRI` in a
+ * box built for `MONO` sits in 5px of dead air each side saying nothing.
+ *
+ * The floor holds TWO characters: 2 glyphs at the 5px worst-case advance plus
+ * the 1px gap between them is 11px of text, and 11 + 2 margin + 2 frame = 15.
+ * Below that a one- or two-character value ("2", "ON") stops reading as a box
+ * and starts reading as a slot — a vertical bar with something in it — which is
+ * a different widget. So a short value gets a small square, never a sliver.
+ */
+export const ENUM_MIN_W = 15;
+/** How long the frame takes to travel between two widths. */
+export const ENUM_ANIM_MS = 120;
 /*
  * Height of a text-bearing box, and it is ODD on purpose.
  *
@@ -1271,6 +1289,38 @@ function buttonPhase(fired, now, held) {
     return { pressed, filled: held || bursts.length > 0, bursts };
 }
 
+/**
+ * Break a value into its one or two lines, ALWAYS against the full budget.
+ *
+ * The predicate `enumSquareLines` takes decides WHETHER a value breaks, and it
+ * must be answered from the value's own natural width — never from whatever
+ * width the frame happens to be drawn at this frame. Measuring against the
+ * animating width would split "POLY" onto two lines for the few frames the box
+ * is narrower than 28 and rejoin it when the box arrives, so a line count would
+ * flicker mid-flight on a value that has not changed since the swap.
+ *
+ * So: line COUNT is a function of the value alone; only truncation (fitLine at
+ * the call site) knows about the current width.
+ */
+function enumSquareNaturalLines(text) {
+    const [raw1, raw2] = enumSquareLines(text, (s) => fontWidth4x5(s) <= ENUM_TEXT_W);
+    return [fitLine(raw1, ENUM_TEXT_W), fitLine(raw2, ENUM_TEXT_W)];
+}
+
+/**
+ * How wide this value's square wants to be: text + 1px margin + 1px frame each
+ * side, floored at `ENUM_MIN_W` and capped at `ENUM_W`.
+ *
+ * A two-line value sizes to the WIDER of its two lines — the narrower one is
+ * simply centred in the same interior, exactly as it is today.
+ */
+export function enumSquareWidth(text) {
+    const [line1, line2] = enumSquareNaturalLines(text);
+    const tw = Math.max(fontWidth4x5(line1), fontWidth4x5(line2));
+    const w = tw + 4;
+    return w < ENUM_MIN_W ? ENUM_MIN_W : (w > ENUM_W ? ENUM_W : w);
+}
+
 /*
  * SCH-50 `thin-frame`. Two changes from Movy's construction, both small:
  *
@@ -1292,36 +1342,84 @@ function buttonPhase(fired, now, held) {
  * declined-alternative-and-kept, not an oversight: a frameless enum square was
  * available and would have dissolved it. If it reads badly on hardware, the
  * cheap fix is this widget, not the fader.
+ *
+ * THE WIDTH IS THE VALUE'S, NOT THE CELL'S. `kx` still names the left edge of
+ * the nominal `ENUM_W` slot the caller centred in the cell — the signature is
+ * unchanged and the catalog tooling still calls it with four arguments — and
+ * the narrower box is centred inside that slot, which is the same as centring
+ * it in the cell.
+ *
+ * `anim` and `nowMs` are OPTIONAL and trailing. Without them the square is
+ * drawn at its natural width and nothing moves, which is the whole point of the
+ * ordering: the static sizing is the improvement and the motion is a by-product
+ * of it. Every existing caller — the knob card, `composite.mjs`, `catalog.mjs`,
+ * the device before a controller opts in — gets the better static box and no
+ * behaviour it did not ask for. A missing `anim` is the normal case, not an
+ * error.
  */
-export function drawEnumSquare(ctx, kx, ky, text) {
-    const w = ENUM_W, h = BOX_H;
-    ctx.fillRect(kx, ky, w, 1, 1);
-    ctx.fillRect(kx, ky + h - 1, w, 1, 1);
-    ctx.fillRect(kx, ky, 1, h, 1);
-    ctx.fillRect(kx + w - 1, ky, 1, h, 1);
-    notchCorners(ctx, kx, ky, w, h);
+export function drawEnumSquare(ctx, kx, ky, text, anim, nowMs, animKey) {
+    const h = BOX_H;
+    const target = enumSquareWidth(text);
 
-    const [raw1, raw2] = enumSquareLines(text, (s) => fontWidth4x5(s) <= ENUM_TEXT_W);
-    const line1 = fitLine(raw1, ENUM_TEXT_W);
-    const line2 = fitLine(raw2, ENUM_TEXT_W);
+    /*
+     * Only the FRAME travels; the glyphs swap outright on the value change.
+     * Morphing glyphs is not on the table — there is no between-state for a
+     * letterform at this size — so what animates is the one thing that has a
+     * continuum, and the text is simply the new text from the first frame.
+     */
+    let w = target;
+    if (anim && typeof nowMs === "number" && animKey) {
+        const a = animObserve(anim, "enumw:" + animKey, target, nowMs, ENUM_ANIM_MS);
+        if (a.moving && typeof a.from === "number") {
+            w = Math.round(lerp(a.from, target, easeOut(a.t)));
+            if (w < ENUM_MIN_W) w = ENUM_MIN_W;
+            if (w > ENUM_W) w = ENUM_W;
+        }
+    }
+
+    /* Centred in the slot the caller reserved, so a shrinking box closes in
+     * from both sides rather than sliding off its own cell. */
+    const bx = kx + Math.floor((ENUM_W - w) / 2);
+
+    ctx.fillRect(bx, ky, w, 1, 1);
+    ctx.fillRect(bx, ky + h - 1, w, 1, 1);
+    ctx.fillRect(bx, ky, 1, h, 1);
+    ctx.fillRect(bx + w - 1, ky, 1, h, 1);
+    notchCorners(ctx, bx, ky, w, h);
+
+    /*
+     * THE MARGIN SURVIVES EVERY WIDTH. It is not decoration: a bowl — O, C, G,
+     * D — one pixel off the border touches it at a glance. So the text budget
+     * is `w - 4` at whatever `w` currently is, exactly as it is `ENUM_W - 4` at
+     * full width, and the truncation that keeps it is measured per frame.
+     *
+     * Truncating rather than overflowing is what makes a GROWING box safe: the
+     * new value is already the full-width one, so for the few frames the frame
+     * is still narrow the text is served short and completes as the box
+     * arrives. The floor guarantees at least two characters throughout, so it
+     * is never empty.
+     */
+    const budget = w - 4;
+    const [nat1, nat2] = enumSquareNaturalLines(text);
+    const line1 = fitLine(nat1, budget);
+    const line2 = fitLine(nat2, budget);
     const totalH = line2.length > 0 ? 11 : 5;
     const startY = ky + 1 + Math.floor((h - 2 - totalH) / 2);
     /*
      * Centre within the INTERIOR, not within the text budget.
      *
      * These are two different spans now that the budget carries a margin:
-     * the interior is ENUM_W - 2 (26) and the budget is ENUM_W - 4 (24).
-     * Centring in the budget put its span at kx+1 and left the 2px difference
-     * entirely on the right, so every value sat two pixels left of centre —
-     * uniformly, which is what made it read as a drawing mistake rather than a
-     * rounding one.
+     * the interior is w - 2 and the budget is w - 4. Centring in the budget put
+     * its span at bx+1 and left the 2px difference entirely on the right, so
+     * every value sat two pixels left of centre — uniformly, which is what made
+     * it read as a drawing mistake rather than a rounding one.
      *
      * The margin does not need to be centred in; it falls out of centring in
      * the interior as long as the text fits the budget, which fitLine above
      * guarantees. An odd remainder still cannot round onto the frame, because
      * centreX gives the extra pixel to the right and the span starts inside it.
      */
-    const tx = (lw) => centreX(kx + 1, ENUM_W - 2, lw);
+    const tx = (lw) => centreX(bx + 1, w - 2, lw);
     fontPrint4x5(ctx, tx(fontWidth4x5(line1)), startY, line1, 1);
     if (line2.length > 0) fontPrint4x5(ctx, tx(fontWidth4x5(line2)), startY + 6, line2, 1);
 }
@@ -1557,7 +1655,14 @@ function drawDivableMark(ctx, g, col, rowY) {
     drawBrackets(ctx, cellLeft(g, col) + 1, rowY, g.cellW - 2, BOX_H);
 }
 
-export function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, cellText, btnPhase) {
+/*
+ * `anim` / `nowMs` / `animKey` are OPTIONAL and TRAILING, never a reorder: this
+ * is exported and called from outside. Absent, every widget draws exactly as it
+ * does today apart from the enum square's new static width, which is what keeps
+ * the harness, the tests and the device unaffected until a caller opts in.
+ */
+export function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, cellText, btnPhase,
+                               anim, nowMs, animKey) {
     const kx = cellLeft(g, col) + Math.floor((g.cellW - KW) / 2), ky = rowY;
     /* Anything that cannot show two values at once shows the live one, so it
      * animates under modulation instead of freezing on the base. */
@@ -1615,8 +1720,10 @@ export function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, ce
             ? String(shortOpts[idx])
             : ((Array.isArray(meta.options) && meta.options[idx] !== undefined)
                 ? String(meta.options[idx]) : String(shown ?? ""));
-        /* Its own centring — it is ENUM_W wide, not KW. */
-        drawEnumSquare(ctx, cellLeft(g, col) + Math.floor((g.cellW - ENUM_W) / 2), ky, text);
+        /* Its own centring — it reserves an ENUM_W slot, not KW, and sizes
+         * itself inside it. */
+        drawEnumSquare(ctx, cellLeft(g, col) + Math.floor((g.cellW - ENUM_W) / 2), ky, text,
+                       anim, nowMs, animKey);
         return;
     }
     /*
@@ -1886,7 +1993,10 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
             drawKnobWidget(ctx, g, col, rowY, meta, raw,
                            modValues ? modValues[key] : undefined,
                            liveValues ? liveValues[key] : undefined,
-                           cellText, btnPhase);
+                           cellText, btnPhase,
+                           /* Optional: absent `o.anim` means no motion at all,
+                            * and every widget still draws. */
+                           o.anim, o.nowMs, key);
         }
 
         /* Budget in CHARACTERS, not pixels: 3-4 glyphs is what keeps a row of
