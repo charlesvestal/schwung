@@ -83,6 +83,10 @@ import { runDrawBench } from '/data/UserData/schwung/shared/draw_bench.mjs';
 import { installParamTally, paramTallyTick, paramTallyArmed } from '/data/UserData/schwung/shared/param_tally.mjs';
 import { knobInit, knobStep } from '/data/UserData/schwung/shared/knob_engine.mjs';
 import {
+    decideComponentEntry, holdProbeIntervalTicks,
+    ENTRY_ENTER, ENTRY_HOLD,
+} from '/data/UserData/schwung/shared/component_load_gate.mjs';
+import {
     formatParamValue as ufFormatParamValue,
     formatParamForSet as ufFormatParamForSet,
 } from '/data/UserData/schwung/shared/param_format.mjs';
@@ -397,7 +401,8 @@ const VIEWS = {
     ANALYTICS_PROMPT: "analyticsprompt",       // First-run analytics opt-out prompt
     LFO_TARGET_COMPONENT: "lfotargetcomp",    // LFO target picker step 1: component
     LFO_TARGET_PARAM: "lfotargetparam",       // LFO target picker step 2: parameter
-    ENUM_PICKER: "enumpick"                   // Option list for an enum param
+    ENUM_PICKER: "enumpick",                  // Option list for an enum param
+    COMPONENT_LOADING: "comploading"          // "Loading..." while a component's contract arrives
 };
 
 /* ==== CO-RUN VIEW ADDRESSING ====
@@ -984,6 +989,13 @@ function setView(newView, customLabel) {
      * already down on a knob it knows about. */
     knobCardClose();
     knobTouched.fill(false);
+    /* A wait belongs to the screen it is drawn on. Leaving by ANY route — Back,
+     * the gate opening the editor, or a dismiss that drops straight to
+     * VIEWS.SLOTS — ends it, so a stale hold cannot be resurrected by a later
+     * arrival and cannot go on probing behind a screen nobody is looking at. */
+    if (view === VIEWS.COMPONENT_LOADING && newView !== VIEWS.COMPONENT_LOADING) {
+        componentLoadHold = null;
+    }
     view = newView;
     needsRedraw = true;
 
@@ -4712,11 +4724,56 @@ function loadChainConfigFromSlot(slotIndex) {
 
     /* Read current patch configuration from DSP
      * Note: get_param uses underscores (synth_module), set_param uses colons (synth:module) */
-    /* An unserved key answers "" rather than null, which reads the same as an
-     * empty position — both mean "nothing loaded here". */
-    const readPosition = (id) => {
+    /*
+     * A POSITION READ HAS THREE ANSWERS, and only two of them are news about
+     * the chain:
+     *
+     *   "<id>"  a module is loaded here
+     *   ""      the position is empty
+     *   null    the read did not complete
+     *
+     * This used to be `moduleId && moduleId !== ""`, which put null in the same
+     * branch as "" — the comment here even said so, having considered only the
+     * unserved case. So a read that merely TIMED OUT emptied the position, and
+     * the freshness latch below then declared that authoritative.
+     *
+     * Not hypothetical, and not a flicker. Loading Osirus blocks the SPI
+     * callback — the thread that also serves param requests — for the ~124 ms
+     * of dlopen + create_instance, and applyComponentSelectionConfirmed
+     * re-syncs immediately after its fire-and-forget module write, i.e. inside
+     * that window. Captured on device 2026-08-26: the load logged clean at
+     * 13:48:53.700-.824, and fifteen seconds later the chain editor still drew
+     * the synth position EMPTY and its picker announced "Select Synth, None",
+     * while the slot-settings screen, reading the same key on a different path,
+     * correctly said "Synth Virus".
+     *
+     * A failed read therefore keeps the position we already had. Stale-but-
+     * right beats an emptiness we were never told about — and because the
+     * picker puts the chosen module into chainConfigs BEFORE writing it to the
+     * DSP, "what we already had" during that window is exactly the module the
+     * user just picked. `incomplete` stops the latch, so the next frame reads
+     * again instead of believing this one.
+     *
+     * ONCE IT HAS REFUSED, STOP ASKING. A refusing channel has nothing further
+     * to tell us this pass, and every read costs its full timeout — so the
+     * first failure short-circuits the rest and the whole pass keeps what it
+     * had for one read instead of `3 + chain length` of them.
+     *
+     * That is not an optimisation, it is the fix for a delay this very change
+     * introduced: keeping the previous COUNT (rather than the old truncate-to-
+     * zero) made readSection issue that many more reads, all of them timing
+     * out, in the handler that runs between picking a module and returning to
+     * the chain editor. Reported from the device as exactly that pause.
+     */
+    let incomplete = false;
+    const readPosition = (id, previous) => {
+        if (incomplete) return previous || null;
         const moduleId = getSlotParam(slotIndex, `${id}_module`);
-        return moduleId && moduleId !== ""
+        if (moduleId === null || moduleId === undefined) {
+            incomplete = true;
+            return previous || null;
+        }
+        return moduleId !== ""
             ? { module: moduleId.toLowerCase(), params: {} } : null;
     };
     /*
@@ -4728,9 +4785,15 @@ function loadChainConfigFromSlot(slotIndex) {
      * on every frame at ~2.8ms per IPC round trip, which is more per frame than
      * rendering the entire page. An unserved key answers "", and Number("") is
      * 0, so the parse is explicit about its fallback.
+     *
+     * A COUNT read fails the same way a position read does, and a count of 0
+     * from a timeout truncates the whole section — every FX in the slot gone,
+     * not just one. Keep the length we already had.
      */
-    const readCount = (key, cap) => {
+    const readCount = (key, cap, previous) => {
+        if (incomplete) return previous;
         const raw = getSlotParam(slotIndex, key);
+        if (raw === null || raw === undefined) { incomplete = true; return previous; }
         const n = parseInt(raw, 10);
         return (isNaN(n) || n < 0) ? 0 : Math.min(n, cap);
     };
@@ -4748,19 +4811,22 @@ function loadChainConfigFromSlot(slotIndex) {
      * A legacy patch with a hole therefore draws its hole, once, and closes it
      * the first time the user changes the order.
      */
-    const readSection = (idAt, count) => {
+    const readSection = (idAt, count, prevList) => {
         const list = [];
-        for (let i = 0; i < count; i++) list.push(readPosition(idAt(i)));
+        for (let i = 0; i < count; i++) list.push(readPosition(idAt(i), prevList[i]));
         while (list.length && !list[list.length - 1]) list.pop();
         return list;
     };
 
     const oldFx = cfg.fx;
+    const oldMidiFx = cfg.midiFx;
 
-    cfg.synth = readPosition("synth");
+    cfg.synth = readPosition("synth", cfg.synth);
     cfg.midiFx = readSection((i) => `midi_fx${i + 1}`,
-                             readCount("midi_fx_count", CHAIN_CAP.midiFx));
-    cfg.fx = readSection((i) => `fx${i + 1}`, readCount("fx_count", CHAIN_CAP.fx));
+                             readCount("midi_fx_count", CHAIN_CAP.midiFx, oldMidiFx.length),
+                             oldMidiFx);
+    cfg.fx = readSection((i) => `fx${i + 1}`,
+                         readCount("fx_count", CHAIN_CAP.fx, oldFx.length), oldFx);
 
     /* Clear display_name cache when FX modules change (prevents stale
      * announcement on swap). Also drop the poll backoff: a different module may
@@ -4777,9 +4843,18 @@ function loadChainConfigFromSlot(slotIndex) {
     }
 
     chainConfigs[slotIndex] = cfg;
-    /* This IS the reload every other path invalidates towards, so the slot is
-     * clean by definition once it returns. */
-    chainConfigFresh[slotIndex] = true;
+    /*
+     * This IS the reload every other path invalidates towards — but only when
+     * it actually READ the chain. "Clean by definition once it returns" was
+     * true of the call and not of the answer: a load in which every read timed
+     * out latched the slot as authoritative, and nothing re-read it until the
+     * module signature happened to change again.
+     *
+     * Leaving it stale costs one more pass on the next frame, which is what
+     * drawChainEdit already does for an invalidated slot, and only for as long
+     * as the channel is refusing.
+     */
+    chainConfigFresh[slotIndex] = !incomplete;
     return cfg;
 }
 
@@ -5189,10 +5264,38 @@ function withPendingChainInsert(choice, pending) {
  * Length comes from the published counts, so a slot holding nothing is three
  * reads rather than a walk of the cap.
  */
+/*
+ * Returns null when ANY of its reads failed.
+ *
+ * The signature's whole job is to say "the chain changed, reload the config",
+ * so a signature built from timeouts is the one input that must never be
+ * believed: `|| ""` turned a failed read into "this position is empty", which
+ * is a perfectly well-formed signature describing a chain that does not exist.
+ *
+ * That is the second half of the Osirus blank-position bug — see the note in
+ * loadChainConfigFromSlot. The config reads and these reads are taken
+ * milliseconds apart and straddled the end of the load: the config read
+ * stale-empty, the signature read the real "osirus". It was the FRESH one that
+ * did the damage, by MATCHING — applySlotModuleSignature reloads the config
+ * only when the signature changes, and a signature that is already correct
+ * never changes again.
+ */
 function getSlotModuleSignature(slotIndex) {
-    const read = (id) => getSlotParam(slotIndex, `${id}_module`) || "";
+    /* Short-circuits on the first refusal, for the same reason
+     * loadChainConfigFromSlot does: the answer is already null, and this runs
+     * in the handler between picking a module and returning to the editor. */
+    let failed = false;
+    const read = (id) => {
+        if (failed) return "";
+        const v = getSlotParam(slotIndex, `${id}_module`);
+        if (v === null || v === undefined) { failed = true; return ""; }
+        return v;
+    };
     const count = (key, cap) => {
-        const n = parseInt(getSlotParam(slotIndex, key), 10);
+        if (failed) return 0;
+        const raw = getSlotParam(slotIndex, key);
+        if (raw === null || raw === undefined) { failed = true; return 0; }
+        const n = parseInt(raw, 10);
         return (isNaN(n) || n < 0) ? 0 : Math.min(n, cap);
     };
     const parts = [read("synth")];
@@ -5203,7 +5306,7 @@ function getSlotModuleSignature(slotIndex) {
     parts.push("/");
     const nFx = count("fx_count", CHAIN_CAP.fx);
     for (let i = 0; i < nFx; i++) parts.push(read(`fx${i + 1}`));
-    return parts.join("|");
+    return failed ? null : parts.join("|");
 }
 
 /* Refresh module signature for a slot and invalidate knob cache on changes */
@@ -5225,6 +5328,11 @@ function refreshSlotModuleSignature(slotIndex) {
  */
 function applySlotModuleSignature(slotIndex, signature) {
     if (slotIndex < 0 || slotIndex >= SHADOW_UI_SLOTS) return false;
+    /* null is "we could not read the chain", not "the chain is different".
+     * Latching it would compare every later signature against a non-answer —
+     * and declaring NO change is what this function does for a signature that
+     * matches, which is how a stale config survives. */
+    if (signature === null || signature === undefined) return false;
     if (signature !== lastSlotModuleSignatures[slotIndex]) {
         lastSlotModuleSignatures[slotIndex] = signature;
         loadChainConfigFromSlot(slotIndex);
@@ -10052,9 +10160,25 @@ function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, c
     /* Force sync chainConfigs from DSP and reset caches after module change.
      * Without this, the knob overlay can show the old module's name and params
      * because the periodic refreshSlotModuleSignature (every 30 ticks) hasn't
-     * run yet to sync the in-memory state with DSP. */
+     * run yet to sync the in-memory state with DSP.
+     *
+     * THIS RE-SYNC RACES THE LOAD IT IS SYNCING, and cannot not: the module
+     * write above is fire-and-forget, and the DSP applies it by blocking the
+     * SPI callback for as long as the dlopen + create_instance takes (~124 ms
+     * for Osirus). So these reads land inside that window and come back null.
+     *
+     * Both halves are null-safe now — loadChainConfigFromSlot keeps the
+     * position and leaves the slot un-fresh, getSlotModuleSignature answers
+     * null — but the SIGNATURE must also not be latched: a latched null
+     * compares unequal to every real signature forever, which would make the
+     * periodic refresh reload the config on every single pass. Latch nothing,
+     * and the next refresh compares a real signature against the pre-write one,
+     * differs, and reloads exactly once. */
     loadChainConfigFromSlot(slotIndex);
-    lastSlotModuleSignatures[slotIndex] = getSlotModuleSignature(slotIndex);
+    {
+        const sig = getSlotModuleSignature(slotIndex);
+        if (sig !== null) lastSlotModuleSignatures[slotIndex] = sig;
+    }
     invalidateKnobContextCache();
     /* A removal shortened the list, so the remembered index can now point past
      * its end — and the CHAIN_EDIT handlers read `comps[selection].key` without
@@ -11580,13 +11704,152 @@ function enterHierarchyEditor(slotIndex, componentKey) {
     const mfx = masterFxIndexFromComponentKey(componentKey);
     if (mfx >= 0) { enterMasterFxHierarchyEditor(mfx); return; }
 
-    const hierarchy = getComponentHierarchy(slotIndex, componentKey);
-    if (!hierarchy) {
-        /* No hierarchy - fall back to simple preset browser */
-        enterComponentEditFallback(slotIndex, componentKey);
+    openComponentEditor(slotIndex, componentKey, -1);
+}
+
+/* ============================================================
+ * The component-editor entry gate, and the hold in front of it
+ * ============================================================ */
+
+/*
+ * A component whose contract has not arrived yet.
+ *
+ *   { slot, componentKey, mfxIndex, attempts, ticks }
+ *
+ * Non-null only while VIEWS.COMPONENT_LOADING is up. `attempts` is what slows
+ * the probe down (holdProbeIntervalTicks); `ticks` counts toward the next one.
+ */
+let componentLoadHold = null;
+
+/*
+ * The three RAW wire values the gate may consult, read lazily.
+ *
+ * Raw, deliberately: `null` (the read did not complete) and `""` (served, but
+ * nothing there) are different answers and the gate is the last place that can
+ * still tell them apart. `getComponentHierarchy` collapses them, which is
+ * exactly the bug this gate exists to stop repeating — so it is not used here.
+ */
+function componentEntryReader(slotIndex, componentKey, mfxIndex) {
+    if (mfxIndex >= 0) {
+        const fxKey = masterFxComponentKey(mfxIndex);
+        return {
+            hierarchy: () => chainTargetGetParam(MASTER_CHAIN_TARGET, fxKey, "ui_hierarchy"),
+            /* The get spelling, which for Master FX is the colon form — see
+             * getHierarchyActiveModuleId, whose two spellings these mirror. */
+            module: () => getSlotParam(MASTER_CHAIN_TARGET.slot, `master_fx:${fxKey}:module`),
+            isLoading: () => chainTargetGetParam(MASTER_CHAIN_TARGET, fxKey, "is_loading"),
+        };
+    }
+    const target = slotChainTarget(slotIndex);
+    const prefix = getComponentParamPrefix(componentKey);
+    return {
+        hierarchy: () => chainTargetGetParam(target, componentKey, "ui_hierarchy"),
+        /* get_param uses underscores (synth_module); set_param uses colons. */
+        module: () => (prefix ? getSlotParam(slotIndex, `${prefix}_module`) : ""),
+        isLoading: () => chainTargetGetParam(target, componentKey, "is_loading"),
+    };
+}
+
+/*
+ * Open a component's editor, or wait until it can be opened.
+ *
+ * Both editors (slot chain and Master FX) enter through here, and both of the
+ * destinations behind it — the knob grid and the list — are chosen further in,
+ * by enterHierarchyEditorWith. So the wait is view-agnostic: it works the same
+ * with Param View on Knobs or on List, and with the screen reader on.
+ *
+ * Re-entrant by design: the hold's probe calls this again, and an ENTER or a
+ * FALLBACK from that call is what ends the hold.
+ */
+function openComponentEditor(slotIndex, componentKey, mfxIndex) {
+    const decision = decideComponentEntry(
+        componentEntryReader(slotIndex, componentKey, mfxIndex),
+        (json) => { try { return JSON.parse(json); } catch (e) { return null; } });
+
+    if (decision.action === ENTRY_HOLD) {
+        holdForComponentLoad(slotIndex, componentKey, mfxIndex, decision.reason);
         return;
     }
-    enterHierarchyEditorWith(slotIndex, componentKey, hierarchy);
+
+    componentLoadHold = null;
+
+    if (decision.action === ENTRY_ENTER) {
+        if (mfxIndex >= 0) enterMasterFxHierarchyEditorWith(mfxIndex, decision.hierarchy);
+        else enterHierarchyEditorWith(slotIndex, componentKey, decision.hierarchy);
+        return;
+    }
+
+    /* FALLBACK — the module is in and declares no hierarchy. Unchanged
+     * behaviour for both editors, including Master FX's "do nothing, the
+     * module selection is still available". */
+    if (mfxIndex >= 0) return;
+    enterComponentEditFallback(slotIndex, componentKey);
+}
+
+function componentLoadHoldLabel() {
+    if (!componentLoadHold) return "";
+    const h = componentLoadHold;
+    if (h.mfxIndex >= 0) return `MFX ${h.mfxIndex + 1}`;
+    const cfg = chainConfigs[h.slot];
+    const moduleData = cfg ? getChainComponentModule(cfg, h.componentKey) : null;
+    /* From the in-memory config, never a fresh read: the channel this screen is
+     * waiting on is the one that would have to serve it. */
+    return moduleData && moduleData.module
+        ? getModuleAbbrev(moduleData.module)
+        : String(h.componentKey || "").toUpperCase();
+}
+
+function holdForComponentLoad(slotIndex, componentKey, mfxIndex, reason) {
+    const same = componentLoadHold &&
+                 componentLoadHold.slot === slotIndex &&
+                 componentLoadHold.componentKey === componentKey &&
+                 componentLoadHold.mfxIndex === mfxIndex;
+    if (!same) {
+        componentLoadHold = { slot: slotIndex, componentKey, mfxIndex, attempts: 0, ticks: 0 };
+        debugLog(`openComponentEditor: holding slot=${slotIndex} component=${componentKey} (${reason})`);
+        announce(`${componentLoadHoldLabel()}, loading`);
+    }
+    setView(VIEWS.COMPONENT_LOADING);
+    needsRedraw = true;
+}
+
+/*
+ * Ask again, on the cadence the gate publishes.
+ *
+ * Costs one read per interval and only while the screen is up, so a component
+ * that answers on the first probe costs nothing at all. The probe SLOWS rather
+ * than stopping — see the note in component_load_gate.mjs — so a module that
+ * takes far longer than expected still opens on its own rather than needing the
+ * user to back out and come in again.
+ */
+function serviceComponentLoadHold() {
+    if (!componentLoadHold || view !== VIEWS.COMPONENT_LOADING) return;
+    const h = componentLoadHold;
+    h.ticks++;
+    if (h.ticks < holdProbeIntervalTicks(h.attempts)) return;
+    h.ticks = 0;
+    h.attempts++;
+    openComponentEditor(h.slot, h.componentKey, h.mfxIndex);
+}
+
+/* Back out of the wait. The component is left exactly as it was — nothing has
+ * been written, and nothing was loaded on the way in. */
+function cancelComponentLoadHold() {
+    const wasMasterFx = componentLoadHold && componentLoadHold.mfxIndex >= 0;
+    componentLoadHold = null;
+    setView(wasMasterFx ? VIEWS.MASTER_FX : VIEWS.CHAIN_EDIT);
+    needsRedraw = true;
+}
+
+function drawComponentLoading() {
+    clear_screen();
+    const label = componentLoadHoldLabel();
+    drawHeader(label ? `${label}` : "Module");
+    const msg = "Loading...";
+    print(Math.max(0, (SCREEN_WIDTH - text_width(msg)) >> 1), 28, msg, 1);
+    /* The canon spelling — see the other drawFooter sites and
+     * tests/shadow/test_footer_verb_consistency.sh. */
+    drawFooter(["Back: exit"]);
 }
 
 /*
@@ -11824,12 +12087,15 @@ function enterHierarchyEditorWith(slotIndex, componentKey, hierarchy) {
 /* Enter hierarchy-based parameter editor for a Master FX slot */
 function enterMasterFxHierarchyEditor(fxSlot) {
     if (fxSlot < 0 || fxSlot >= MASTER_FX_SLOTS) return;
+    /* Through the same gate as the slot chain — a Master FX position holds the
+     * same modules and comes up just as slowly. openComponentEditor calls back
+     * into enterMasterFxHierarchyEditorWith once the contract has arrived. */
+    openComponentEditor(MASTER_CHAIN_TARGET.slot, masterFxComponentKey(fxSlot), fxSlot);
+}
 
-    const hierarchy = getMasterFxHierarchy(fxSlot);
-    if (!hierarchy) {
-        /* No hierarchy - just return, module selection is available */
-        return;
-    }
+function enterMasterFxHierarchyEditorWith(fxSlot, hierarchy) {
+    if (fxSlot < 0 || fxSlot >= MASTER_FX_SLOTS) return;
+    if (!hierarchy) return;
 
     dismissOverlayForHierarchyEntry();
 
@@ -16250,6 +16516,15 @@ function handleBack() {
             announce("Chain Editor");
             needsRedraw = true;
             break;
+        case VIEWS.COMPONENT_LOADING:
+            /* Stop waiting. Nothing was written on the way in, so there is
+             * nothing to unwind — the module carries on loading regardless. */
+            {
+                const wasMasterFx = componentLoadHold && componentLoadHold.mfxIndex >= 0;
+                cancelComponentLoadHold();
+                announce(wasMasterFx ? "Master FX" : "Chain Editor");
+            }
+            break;
         case VIEWS.FILEPATH_BROWSER:
             closeHierarchyFilepathBrowser();
             {
@@ -18332,6 +18607,9 @@ function runCoRunChainEdit(fn) {
  * draw function. drawSlots() only renders the top-level slot LIST — we must
  * dispatch every reachable view explicitly. */
 function dispatchCoRunDraw() {
+    /* Same reason as the main draw path: probe before dispatching, so a
+     * component that becomes readable is drawn on this frame. */
+    serviceComponentLoadHold();
     switch (view) {
         /* Addressable-view overlay roots (CORUN_ENTRIES) — the co-run draw path
          * must render these too, not just the chain-editor subtree. */
@@ -18356,6 +18634,7 @@ function dispatchCoRunDraw() {
             drawComponentEdit();
             break;
         case VIEWS.HIERARCHY_EDITOR:     drawHierarchyEditor(); break;
+        case VIEWS.COMPONENT_LOADING:    drawComponentLoading(); break;
         /* The grid draws grids; every other page kind it plans (preset
          * browser, items list, mode select, child selector) belongs to the
          * list editor, which drawParamPages declines by returning false. */
@@ -19397,6 +19676,11 @@ globalThis.tick = function() {
      * staying on the view the grid left. See maybeReturnToComponentGrid. */
     if (view === VIEWS.CHAIN_EDIT) maybeReturnToComponentGrid();
 
+    /* Probe a component we are waiting on BEFORE the switch, not inside its
+     * draw case: a probe that lands changes `view`, and doing it here means the
+     * editor it opens is drawn on this frame rather than one frame later. */
+    serviceComponentLoadHold();
+
     /* Guarded: a throw in any draw function would otherwise repeat every
      * frame — frozen screen with no recovery, since the C loop keeps
      * calling tick() regardless. (The OVERTAKE_MODULE case has its own
@@ -19445,6 +19729,9 @@ globalThis.tick = function() {
                 /* Fall back to simple preset browser */
                 drawComponentEdit();
             }
+            break;
+        case VIEWS.COMPONENT_LOADING:
+            drawComponentLoading();
             break;
         case VIEWS.HIERARCHY_EDITOR:
             drawHierarchyEditor();
