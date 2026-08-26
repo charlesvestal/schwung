@@ -164,23 +164,73 @@ Promise.all([
   const fontSet = S.SETS.find((s) => s.kind === S.KIND_FONT);
   if (fontSet) {
     const CH = F4.CHARS;
+    /*
+     * THE SHIPPING TABLE IS EXEMPT, AND THAT IS THE POINT OF THIS COMMENT.
+     *
+     * This asserted non-identity over every table INCLUDING font4x5 itself,
+     * and the assertion caused the damage it was meant to prevent. At 4x5 with
+     * an advance pinned to the old value, these letters have essentially one
+     * legible form: a 1px-wide I is a 5px vertical bar and there is no second
+     * drawing of it. Forcing difference forced WRONGNESS -- shipped as a T with
+     * a doubled crossbar that read as a 2, an I a row short of the baseline, an
+     * A and an E with the middle bar one row high, an M that lost its apex and
+     * a U squared into a box. Every defect was the same move, and every one
+     * passed this suite, because the sibling assertion checks the ASCII picture
+     * against the numbers and both were wrong together.
+     *
+     * The spec already carries the argument that resolves it, in the section on
+     * convergent idioms: the 1px corner notch is kept because "the constraint,
+     * not the designer, produced it". A letterform the cell admits only one of
+     * is the same case. That reasoning was applied to notches and not to
+     * glyphs, which is how an absolute got written here.
+     *
+     * So: the CATALOG options must still differ -- they exist to offer
+     * alternatives, and an alternative identical to the incumbent is not one.
+     * The shipping table is judged on legibility instead, which is what the
+     * device actually cares about, and which the structural checks below and
+     * the picture/number check cover.
+     */
     const tables = fontSet.options.map((o) => [o.id, o.glyphs]);
-    tables.push(["font4x5.mjs (SHIPPING)", F4.GLYPHS_FOR_TEST]);
-    for (const [id, glyphs] of tables) {
+    for (const [id, glyphs] of tables.concat([["font4x5.mjs (SHIPPING)", F4.GLYPHS_FOR_TEST]])) {
       if (glyphs.length !== CH.length)
         fail(id + ": " + glyphs.length + " glyphs, want " + CH.length);
       for (const g of glyphs) {
         if (!Array.isArray(g) || g.length < 4)
           fail(id + ": a glyph is malformed");
       }
+    }
+    for (const [id, glyphs] of tables) {
       for (const letter of Object.keys(RETIRED_GLYPHS)) {
         const i = CH.indexOf(letter);
         if (i < 0) continue;
         if (JSON.stringify(glyphs[i]) === JSON.stringify(RETIRED_GLYPHS[letter]))
-          fail(id + ": glyph " + letter + " is byte-identical to the retired letterform, which is the thing being replaced");
+          fail(id + ": glyph " + letter + " is byte-identical to the retired letterform; a catalog OPTION has design freedom and must use it");
       }
     }
-    console.log("PASS: " + tables.length + " font tables (incl. shipping) are free of the retired letterforms");
+
+    /*
+     * What the shipping table is held to instead: no letter may sit off the
+     * baseline, and no full-width bar may be doubled. Those are the two shapes
+     * every one of the shipped defects took, so this is the assertion that
+     * would have caught them.
+     */
+    const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    for (const c of LETTERS) {
+      const i = CH.indexOf(c);
+      if (i < 0) continue;
+      const g = F4.GLYPHS_FOR_TEST[i];
+      const w = g[2], rows = g.slice(4);
+      if (rows.length && rows[rows.length - 1] === 0)
+        fail("shipping glyph " + c + " has a blank BOTTOM row, so it sits high off the shared baseline");
+      if (rows.length && rows[0] === 0)
+        fail("shipping glyph " + c + " has a blank TOP row, so it sits low against its neighbours");
+      const full = (1 << w) - 1;
+      for (let k = 1; k < rows.length; k++)
+        if (rows[k] === full && rows[k - 1] === full && w >= 3)
+          fail("shipping glyph " + c + " has a DOUBLED full-width bar at rows " + (k - 1) + "/" + k +
+               "; that is what made T read as a 2");
+    }
+    console.log("PASS: catalog fonts differ from the retired forms, shipping font is legible");
   }
 
   /* ---- a metric-matched option must actually match the metrics ----
