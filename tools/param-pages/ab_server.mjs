@@ -355,13 +355,16 @@ main { display:flex; gap:16px; padding:20px 16px; align-items:flex-start; justif
 .card img { width:100%; height:auto; image-rendering:pixelated; display:block; background:#000; }
 .card .key { margin-top:8px; color:#777; letter-spacing:.08em; }
 footer { padding:10px 16px; color:#888; border-top:1px solid #333; display:flex; gap:18px; flex-wrap:wrap; }
-#reveal { position:fixed; inset:auto 0 0 0; background:#181818; border-top:2px solid #4c8; padding:14px 16px; display:none; }
-#reveal.on { display:block; }
+/* The reveal is a LOG of the judgement just made, not a gate in front of the
+ * next one. It never blocks: the next pair is already on screen above it.
+ * Fixed height so the cards do not jump when it first appears. */
+#reveal { border-top:1px solid #333; background:#161616; padding:8px 16px; min-height:74px; }
+#reveal .lead { color:#555; font-size:11px; letter-spacing:.08em; margin-bottom:4px; }
 #reveal .cols { display:flex; gap:18px; }
 #reveal .col { flex:1 1 0; }
-#reveal h3 { margin:0 0 4px; font-size:13px; color:#fff; }
-#reveal .pos { color:#4c8; }
-#reveal .note { color:#999; font-size:12px; max-height:8.5em; overflow:auto; }
+#reveal h3 { margin:0 0 2px; font-size:12px; color:#fff; }
+#reveal .pos { color:#4c8; font-size:11px; }
+#reveal .note { color:#888; font-size:11px; max-height:3.2em; overflow:auto; }
 #reveal .win { color:#4c8; }
 #reveal .lose { color:#666; }
 #msg { padding:20px 16px; color:#c66; }
@@ -379,15 +382,15 @@ footer { padding:10px 16px; color:#888; border-top:1px solid #333; display:flex;
   <div class="card" id="cardB"><img id="imgB" alt="option B"><div class="key">RIGHT &#8594;</div></div>
 </main>
 <footer>
-  <span>&#8592;/&#8594; pick</span><span>SPACE skip</span><span>S swatch/in-context</span><span>Any key dismisses the reveal</span>
+  <span>&#8592;/&#8594; pick</span><span>SPACE skip</span><span>S swatch/in-context</span>
 </footer>
-<div id="reveal"><div class="cols">
+<div id="reveal"><div class="lead" id="rlead">what you just picked appears here</div><div class="cols">
   <div class="col"><h3 id="rnA"></h3><div class="pos" id="rpA"></div><div class="note" id="rtA"></div></div>
   <div class="col"><h3 id="rnB"></h3><div class="pos" id="rpB"></div><div class="note" id="rtB"></div></div>
 </div></div>
 <div id="msg"></div>
 <script>
-let cur = null, busy = false, mode = 'page', revealTimer = null;
+let cur = null, busy = false, mode = 'page';
 const $ = (id) => document.getElementById(id);
 
 function show(p) {
@@ -406,12 +409,16 @@ async function pair(setId) {
   show(await (await fetch('/api/pair' + q)).json());
 }
 
-function hideReveal() {
-  clearTimeout(revealTimer); revealTimer = null;
-  $('reveal').classList.remove('on');
-}
-
-function reveal(r, winner, next) {
+/*
+ * Populate the log strip. This NEVER gates the next pair.
+ *
+ * It used to: a 4500ms timer held the reveal up and only then advanced. Over a
+ * two hundred judgement session that is fifteen minutes of sitting still, and
+ * it made a fast pass impossible even though the reveal is informational --
+ * you are told what you already chose. Now the next pair is on screen before
+ * this runs, and the strip simply reports the previous one.
+ */
+function reveal(r, winner) {
   const put = (k, o, won) => {
     $('rn' + k).textContent = o.name;
     $('rn' + k).className = won ? 'win' : 'lose';
@@ -420,31 +427,31 @@ function reveal(r, winner, next) {
   };
   put('A', r.a, winner === 'a');
   put('B', r.b, winner === 'b');
-  $('reveal').classList.add('on');
-  revealTimer = setTimeout(() => { hideReveal(); show(next); }, 4500);
-  window.__pendingNext = next;
+  $('rlead').textContent = winner === 'skip' ? 'SKIPPED - recorded as too close to call' : 'you picked:';
 }
 
 async function judge(winner) {
   if (busy || !cur || cur.error) return;
   busy = true;
+  const asked = cur;
   try {
     const res = await fetch('/api/judge', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ set: cur.set, a: cur.a.id, b: cur.b.id, winner })
+      body: JSON.stringify({ set: asked.set, a: asked.a.id, b: asked.b.id, winner })
     });
     const j = await res.json();
     if (!res.ok) { $('msg').textContent = j.error || 'judge failed'; return; }
-    reveal(j.reveal, winner, j.next);
+    /* Next pair first, so the wait is the round trip and nothing else. */
+    show(j.next);
+    reveal(j.reveal, winner);
   } finally { busy = false; }
 }
 
+/* No dismiss branch here any more. While the reveal was a blocking panel, the
+ * first key after every judgement was eaten dismissing it -- so a fast run of
+ * arrow presses silently dropped every other one. The strip is passive now, so
+ * every key goes straight to a judgement. */
 document.addEventListener('keydown', (e) => {
-  if ($('reveal').classList.contains('on')) {
-    e.preventDefault(); hideReveal();
-    if (window.__pendingNext) { show(window.__pendingNext); window.__pendingNext = null; }
-    return;
-  }
   if (e.key === 'ArrowLeft') { e.preventDefault(); judge('a'); }
   else if (e.key === 'ArrowRight') { e.preventDefault(); judge('b'); }
   else if (e.key === ' ') { e.preventDefault(); judge('skip'); }
@@ -452,7 +459,7 @@ document.addEventListener('keydown', (e) => {
 });
 $('cardA').onclick = () => judge('a');
 $('cardB').onclick = () => judge('b');
-$('setSel').onchange = (e) => { hideReveal(); pair(e.target.value); };
+$('setSel').onchange = (e) => pair(e.target.value);
 
 (async () => {
   const pr = await (await fetch('/api/progress')).json();
