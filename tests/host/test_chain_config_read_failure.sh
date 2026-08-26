@@ -130,6 +130,34 @@ const loaded   = (k) => (k === "synth_module" ? "osirus"
         cfg.fx.length && cfg.fx[0].module, "freeverb");
 }
 
+/* ---- 4b. a refusing channel costs ONE read, not one per position ------ *
+ *
+ * Keeping the previous COUNT (rather than truncating to zero, which is what
+ * the collapsing version did by accident) makes readSection ask for that many
+ * positions -- and on a channel that is refusing, every one of those is a full
+ * timeout. In the handler that runs between picking a module and returning to
+ * the chain editor, that is a visible pause; reported from the device as one.
+ *
+ * So the first refusal short-circuits the pass. Asserted as a COUNT, because
+ * "it still works" is true of the slow version too.
+ */
+{
+  const w = world(allNull);
+  w.chainConfigs[0] = { synth: { module: "osirus", params: {} },
+                        midiFx: [{ module: "arp", params: {} }],
+                        fx: [{ module: "freeverb", params: {} },
+                             { module: "cloudseed", params: {} }] };
+  const cfg = w.load(0);
+  check("a refusing channel is asked exactly once", w.reads.length, 1);
+  check("...and the whole chain is kept anyway",
+        [cfg.synth.module, cfg.midiFx.length, cfg.fx.length], ["osirus", 1, 2]);
+
+  const w2 = world(allNull);
+  w2.sig(0);
+  check("the signature also asks a refusing channel exactly once",
+        w2.reads.length, 1);
+}
+
 /* ---- 5. the signature refuses to answer from a failed read ------------ */
 {
   check("a signature built from a failed read is null", world(allNull).sig(0), null);
