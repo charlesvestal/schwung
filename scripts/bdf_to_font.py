@@ -131,7 +131,23 @@ def override_pixels(rows, top):
     return out
 
 
-def main(path, tag):
+def main(path, tag, chars=None):
+    # A restricted charset is not an optimisation, it is a CORRECTNESS bound.
+    #
+    # OVERRIDES below are hand-drawn at SEVEN rows, because that is the window
+    # the 6x12 cut settled on and those glyphs are taller than it. Generate a
+    # taller font and every one of them is wrong by construction -- silently, in
+    # nine characters nobody would think to look at. Passing the exact charset a
+    # caller needs keeps the generated file honest: it contains what it has been
+    # cut for, and `missingGlyphs` reports anything else instead of drawing it
+    # badly. The number font uses "0123456789+-" and none of those is overridden.
+    global CHARS
+    if chars:
+        CHARS = chars
+        bad = sorted(set(chars) & set(OVERRIDES))
+        if bad:
+            sys.exit("refusing: %s are hand-drawn at 7 rows and cannot be "
+                     "generated at another height -- redraw them first" % bad)
     g = parse(path)
     have = {c: pixels(g[ord(c)]) for c in CHARS if ord(c) in g}
     # Trim to the CAP window (measured on H), not to every glyph. Only Q
@@ -256,4 +272,4 @@ export const MEASURE = { textWidth: fontWidth };
     print("wrote src/shared/param_pages/font_%s.mjs  height=%d" % (tag, height))
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2])
+    main(sys.argv[1], sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None)

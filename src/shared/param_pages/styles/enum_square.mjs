@@ -371,7 +371,7 @@ export function register() {
                 note: "A solid rule along the bottom instead of a box, inset one pixel each side. It keeps option 2s full 20px line — a rule under a word is the only framing idiom that costs nothing horizontally — while still saying field rather than caption. Survives every variant except dot-matrix. The weakness is vertical: the rule takes three of fifteen rows out of the text box, so a two-line value sits high in the cell and the option looks unbalanced next to a single-line neighbour in the same row.",
             },
             {
-                position: 4, id: "bracket", name: "Bracket", draw: drawBracketFrame, textW: ENUM_W - 4, overflowFonts: ["wide", "dot-matrix"],
+                position: 4, id: "bracket", name: "Bracket", draw: drawBracketFrame, textW: ENUM_W - 4, overflowFonts: ["dot-matrix"],
                 note: "The frame reduced to four corners. This is not a neutral choice: corner brackets are already this grids grammar for you-can-go-into-this, and since every enum with declared options now opens a picker, the reading is CORRECT. The argument against is that divable_mark was deliberately withheld from the ~135 enums so the mark would keep meaning something on the ~5 opaque params, and this spends it. Line budget 16px, the same as the incumbent: overflows wide (17px for PAS) and dot-matrix.",
             },
             {
@@ -379,7 +379,7 @@ export function register() {
                 note: "Solid cell, notched, word knocked out. The most legible thing in the set from across a room and the least usable in quantity — a page can carry four enums, and four solid blocks is a chequerboard rather than a grid of parameters. It also spends a signal that is already committed twice over: a touched label strip inverts and a bypassed module inverts, so a screen with all three has three different meanings sharing one appearance. Line budget 18px; overflows dot-matrix only.",
             },
             {
-                position: 6, id: "heavy-frame", name: "Heavy frame", draw: drawHeavyFrame, textW: ENUM_W - 4, overflowFonts: ["wide", "dot-matrix"],
+                position: 6, id: "heavy-frame", name: "Heavy frame", draw: drawHeavyFrame, textW: ENUM_W - 4, overflowFonts: ["dot-matrix"],
                 note: "Two pixels of edge, notched. The most direct answer to the frame-is-too-Elektron complaint — keep the frame, change its weight — and the only option whose difference survives being seen off the panel at an angle. It is also the worst trade in the set arithmetically: 16px of line, no better than the incumbent, with none of the incumbents 2px of air between glyph and border, so at a two-line value the cell is visibly congested. Overflows wide and dot-matrix.",
             },
             {
@@ -391,11 +391,11 @@ export function register() {
                 note: "Top and sides, no floor, top corners notched. The only option that says anything about the enums RELATION to anything else: the open bottom points into the label band below, tying the word to the name of the parameter it belongs to. It is also the one most likely to be read as a bug, because an unclosed box on a 1-bit panel is exactly what a clipped box looks like — and this codebase has shipped a clipped box before. Line budget 18px; overflows dot-matrix only.",
             },
             {
-                position: 9, id: "dither-ground", name: "Dither ground", draw: drawDitherGround, textW: ENUM_W - 4, overflowFonts: ["wide", "dot-matrix"],
+                position: 9, id: "dither-ground", name: "Dither ground", draw: drawDitherGround, textW: ENUM_W - 4, overflowFonts: ["dot-matrix"],
                 note: "DIAG_LIGHT across the cell with the text on a cleared plate, no frame anywhere. Gains a surface without gaining an edge, which is the gentlest available way to mark the cell as a different kind of thing, and it does it without spending inversion. The plate is what makes it legible and also what caps it: clearing two pixels around each line means on the two-line probe the visible hatch is a thin ring rather than a field, and this option is at its best on single-line values and its worst on three-plus-three. Line budget 16px; overflows wide and dot-matrix.",
             },
             {
-                position: 10, id: "slab", name: "Slab", draw: drawSlab, textW: ENUM_W - 4, overflowFonts: ["wide", "dot-matrix"],
+                position: 10, id: "slab", name: "Slab", draw: drawSlab, textW: ENUM_W - 4, overflowFonts: ["dot-matrix"],
                 note: "A solid plinth sized to the WORD rather than to the cell, on a CHECKER shoulder so it has something to sit against. That is the whole distinction from option 5 and it earns the slot only on short values: the row gains a varying silhouette, so you see how much value there is before reading any of it. On the two-line probe the slab is 13 of 15 rows and 18 of 20 columns and has collapsed into option 5 with a border — an honest weakness, visible in the contact sheet. Line budget 16px; overflows wide and dot-matrix.",
             },
         ],
