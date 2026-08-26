@@ -155,9 +155,75 @@ typedef struct {
 /* Use the same block size as the pub side for symmetry. */
 #define LINK_AUDIO_IN_BLOCK_FRAMES   LINK_AUDIO_PUB_BLOCK_FRAMES
 #define LINK_AUDIO_IN_BLOCK_SAMPLES  LINK_AUDIO_PUB_BLOCK_SAMPLES
-#define LINK_AUDIO_IN_RING_BLOCKS    LINK_AUDIO_PUB_SHM_BLOCKS
+
+/*
+ * THE IN RING IS SIZED FOR MOVE'S JITTER, NOT FOR SYMMETRY WITH THE PUB RING.
+ *
+ * It used to be `LINK_AUDIO_PUB_SHM_BLOCKS` (16 blocks = 4096 stereo samples =
+ * 46 ms), inherited from the publish side because the two sit next to each
+ * other in this header. The two directions do not have the same problem. We
+ * write the pub ring on a metronome — one block per SPI frame. Move writes
+ * this one in bursts.
+ *
+ * Measured on hardware 2026-08-27 with the sidecar's own delivery telemetry
+ * (`cb slot=N max_gap=... max_burst_run=...`), under a load that made it
+ * misbehave — osirus in a slot, drum kit on the Move track:
+ *
+ *     max_gap        = 92 ms      Move publishes nothing at all
+ *     max_burst_run  = 30 blocks  then 30 callbacks back to back (~85 ms)
+ *     avail max      = 13128 stereo samples = 149 ms
+ *
+ * All four channels stalled within 5 ms of each other, so it is one shared
+ * stall in Move's publisher rather than per-channel jitter.
+ *
+ * A 46 ms ring cannot absorb a 92 ms stall — it is empty less than halfway
+ * through — and it cannot hold the 85 ms burst that follows, so the producer
+ * laps the consumer (`would_overrun` was ~51 per 5 s window). The result was
+ * ~16% of frames with no Move audio at all.
+ *
+ * 64 blocks = 16384 stereo samples = 8192 frames = 186 ms, which is ~2x the
+ * worst observed stall and ~1.25x the worst observed `avail`. Cost is 4 slots
+ * x 32 KB = 128 KB of SHM, up from 32 KB.
+ *
+ * This does NOT add steady-state latency. The consumer sets the pace: it takes
+ * one block per SPI frame whatever the ring holds, so mean `avail` stays where
+ * Move's delivery puts it (~16 ms measured). A deeper ring only changes what
+ * happens during a burst — absorbed instead of discarded.
+ *
+ * MUST stay a power of two: LINK_AUDIO_IN_RING_MASK is used as `& mask` by
+ * both the sidecar's writer and the shim's reader.
+ */
+#define LINK_AUDIO_IN_RING_BLOCKS    64
 #define LINK_AUDIO_IN_RING_SAMPLES   (LINK_AUDIO_IN_BLOCK_SAMPLES * LINK_AUDIO_IN_RING_BLOCKS)
 #define LINK_AUDIO_IN_RING_MASK      (LINK_AUDIO_IN_RING_SAMPLES - 1)
+
+/* The mask is only a valid substitute for a modulo if the ring is a power of
+ * two, and this is the kind of constant somebody rounds to 50 later. */
+#if (LINK_AUDIO_IN_RING_SAMPLES & LINK_AUDIO_IN_RING_MASK) != 0
+#error "LINK_AUDIO_IN_RING_SAMPLES must be a power of two (see LINK_AUDIO_IN_RING_MASK)"
+#endif
+
+/*
+ * Catch-up threshold: how far the producer may get ahead before the reader
+ * gives up on the backlog and jumps to the newest block, dropping whatever
+ * sat between. Every catch-up is an audible discontinuity.
+ *
+ * DERIVED from the ring, never written as a literal, because the two have to
+ * move together: a threshold above the ring can never fire (the producer laps
+ * us first and the data is already corrupt), and one far below the burst size
+ * discards the very refill that was about to cover the next stall. The old
+ * value was a bare `need * 12` at the call site, which is how it came to be
+ * calibrated for a 30 ms burst and left there when bursts reached 85 ms.
+ *
+ * 3/4 of the ring: high enough to absorb Move's measured burst, low enough
+ * that a runaway producer is still caught before it laps the reader.
+ */
+#define LINK_AUDIO_IN_CATCHUP_SAMPLES \
+    (LINK_AUDIO_IN_RING_SAMPLES - (LINK_AUDIO_IN_RING_SAMPLES / 4))
+
+#if LINK_AUDIO_IN_CATCHUP_SAMPLES >= LINK_AUDIO_IN_RING_SAMPLES
+#error "catch-up threshold must sit inside the ring, or it can never fire"
+#endif
 
 /* Slots 0-3: per-track audio from Move. Slot 4 (Main) is reserved but
  * unsubscribed by link_subscriber to keep Move's Audio Worker threads free
@@ -186,13 +252,33 @@ typedef struct {
     uint32_t          _stats_pad[1];            /* keep 8-byte alignment */
 } link_audio_in_slot_t;
 
+/*
+ * `magic` and `version` MUST stay the first two fields.
+ *
+ * The shim maps `sizeof(link_audio_in_shm_t)` from a segment the sidecar
+ * owns. If a sidecar from an older build is still running, that segment is
+ * SMALLER than the mapping, and touching the tail of an undersized mapping is
+ * SIGBUS, not a read of zeroes. Reading offsets 0 and 4 is always safe (page
+ * zero exists either way), so the version check below can reject the segment
+ * and munmap before anything reaches `slots[]`. Move these fields to the end
+ * and a sidecar/shim version skew becomes a crash loop instead of a warning.
+ */
 typedef struct {
     volatile uint32_t magic;    /* 0x4C41494E = "LAIN" */
-    volatile uint32_t version;  /* 2 */
+    volatile uint32_t version;
     link_audio_in_slot_t slots[LINK_AUDIO_IN_SLOT_COUNT];
 } link_audio_in_shm_t;
 
 #define LINK_AUDIO_IN_SHM_MAGIC   0x4C41494E
-#define LINK_AUDIO_IN_SHM_VERSION 2
+
+/*
+ * BUMP THIS WHENEVER THE LAYOUT OR THE RING SIZE CHANGES.
+ *
+ * 3: LINK_AUDIO_IN_RING_BLOCKS 16 -> 64 (46 ms -> 186 ms). The struct grew
+ *    from 32 KB to 128 KB, so a v2 segment left behind by an old sidecar is
+ *    not merely stale, it is too short for the new mapping.
+ * 2: earlier layout.
+ */
+#define LINK_AUDIO_IN_SHM_VERSION 3
 
 #endif /* LINK_AUDIO_H */

@@ -55,6 +55,11 @@
 #include "host/shadow_dbus.h"
 #include "host/shadow_chain_mgmt.h"
 #include "host/shadow_link_audio.h"
+#include "host/align_capture.h"
+
+/* Defined further down with the other shim globals; used from the mixer,
+ * which sits above that block. */
+extern align_capture_t g_align_capture;
 #include "host/shadow_process.h"
 #include "host/shadow_resample.h"
 #include "host/shadow_overlay.h"
@@ -2357,43 +2362,34 @@ static void shadow_inprocess_mix_from_buffer(void) {
                     synth_src = synth_delayed;
                 }
 
-                /* Latency alignment dump (slot 0 only). Touch
-                 * /data/UserData/schwung/align_dump_trigger to arm;
-                 * captures 300 blocks (~870 ms) of:
+                /* Latency alignment capture (slot 0 only). Touch
+                 * /data/UserData/schwung/align_dump_trigger to arm; the file's
+                 * contents are the duration in seconds (default 30, clamped by
+                 * ALIGN_CAPTURE_MAX_SAMPLES). Produces:
                  *   slot0_move_track.pcm  — Move Link Audio (post-nudge)
                  *   slot0_synth_src.pcm   — Schwung synth (post-delay if
                  *                            comp active)
-                 * Both s16le stereo @44.1k. Cross-correlate them to
-                 * measure the actual sample offset between Move and
-                 * Schwung audio paths. */
+                 * Both s16le stereo @44.1k, sample-aligned with each other.
+                 *
+                 * This is memcpy ONLY. It used to fopen/fwrite right here, on
+                 * the SPI callback — a realtime violation for the whole length
+                 * of the capture, which meant the instrument could perturb the
+                 * timing fault it was measuring. See align_capture.h. Arming
+                 * and writing both live on the worker now.
+                 *
+                 * A starved frame writes SILENCE into move_track rather than
+                 * skipping it. Skipping spliced the file across the gap, so a
+                 * starve appeared as a waveform discontinuity indistinguishable
+                 * from a real one — which cost real time on 2026-08-27 before
+                 * the equal file lengths gave it away. */
                 if (s == 0) {
-                    static FILE *align_move_f  = NULL;
-                    static FILE *align_synth_f = NULL;
-                    static int align_dump_frames = 0;
-                    if (align_dump_frames == 0 &&
-                        shim_debug_flag_consume(SHIM_FLAG_ALIGN_DUMP)) {
-                        /* Worker already unlinked the trigger file. */
-                        align_move_f = fopen(
-                            "/data/UserData/schwung/slot0_move_track.pcm", "wb");
-                        align_synth_f = fopen(
-                            "/data/UserData/schwung/slot0_synth_src.pcm", "wb");
-                        align_dump_frames = 1000;  /* ~2.9 s */
-                    }
-                    if (align_dump_frames > 0) {
-                        if (align_move_f && have_move_track) {
-                            fwrite(move_track, sizeof(int16_t),
-                                   FRAMES_PER_BLOCK * 2, align_move_f);
-                        }
-                        if (align_synth_f) {
-                            fwrite(synth_src, sizeof(int16_t),
-                                   FRAMES_PER_BLOCK * 2, align_synth_f);
-                        }
-                        align_dump_frames--;
-                        if (align_dump_frames == 0) {
-                            if (align_move_f)  { fclose(align_move_f);  align_move_f = NULL; }
-                            if (align_synth_f) { fclose(align_synth_f); align_synth_f = NULL; }
-                        }
-                    }
+                    static const int16_t align_silence[FRAMES_PER_BLOCK * 2] = {0};
+                    align_capture_record(&g_align_capture, 0,
+                                         have_move_track ? move_track
+                                                         : align_silence,
+                                         FRAMES_PER_BLOCK * 2);
+                    align_capture_record(&g_align_capture, 1, synth_src,
+                                         FRAMES_PER_BLOCK * 2);
                 }
 
                 /* Active slot: combine synth + Link Audio, run through FX */
@@ -2441,6 +2437,18 @@ static void shadow_inprocess_mix_from_buffer(void) {
                     /* Run FX chain */
                     shadow_chain_process_fx(shadow_chain_slots[s].instance,
                                             fx_buf, MOVE_FRAMES_PER_BLOCK);
+
+                    /* Stream 2: slot 0 AFTER its FX chain. Streams 0 and 1 are
+                     * the two things summed INTO this, so an artifact present
+                     * here but in neither of them was introduced by the sum or
+                     * by the FX chain — i.e. by us. Capturing only the inputs
+                     * cannot distinguish "Move sent us bad audio" from "we
+                     * damaged good audio", and on 2026-08-27 a whole session
+                     * measured only inputs. */
+                    if (s == 0) {
+                        align_capture_record(&g_align_capture, 2, fx_buf,
+                                             FRAMES_PER_BLOCK * 2);
+                    }
 
                     if (main_dump_frames > 0) {
                         if (mpost_f[s])
@@ -2801,6 +2809,12 @@ skip_la_rebuild:
             speaker_eq_process(mailbox_audio, FRAMES_PER_BLOCK);
         }
     }
+
+    /* Stream 3: the finished mailbox — master volume and speaker EQ applied,
+     * i.e. what actually goes to the DAC. The last stop where an artifact can
+     * be introduced without appearing in any of streams 0-2. */
+    align_capture_record(&g_align_capture, 3, mailbox_audio,
+                         FRAMES_PER_BLOCK * 2);
 
     /* Poll sampler commands from shadow UI (via shared memory) */
     if (shadow_control) {
@@ -4959,6 +4973,10 @@ static volatile spi_timing_snapshot_t spi_snap = {0};
 
 /* Link Audio path-flip counters (single-writer from SPI path, single-reader
  * from the background logger thread). Declared extern where incremented. */
+/* Audio capture for the align dump. Armed and drained by the worker;
+ * the SPI callback only memcpys into it. See align_capture.h. */
+align_capture_t g_align_capture;
+
 volatile uint32_t shim_la_rebuild_flip_count = 0;
 volatile uint32_t shim_la_starve_fallback_count = 0;
 
