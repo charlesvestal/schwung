@@ -24,7 +24,8 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 node --input-type=module -e '
-import { translateCtx, slideOffsets, scrollFrame, advanceLinear, advanceEased, drawSlide }
+import { translateCtx, slideOffsets, scrollFrame, advanceLinear, advanceEased,
+         advanceScroll, isSliding, drawSlide }
   from "./src/shared/param_pages/page_transition.mjs";
 
 let fail = 0;
@@ -37,60 +38,88 @@ const rec = {
   print: (...a) => calls.push(["print", ...a]),
   textWidth: (t) => { calls.push(["textWidth", t]); return 7; },
   setPixel: (...a) => calls.push(["setPixel", ...a]),
-  drawRect: (...a) => calls.push(["drawRect", ...a]),
   line: (...a) => calls.push(["line", ...a]),
-  drawLine: (...a) => calls.push(["drawLine", ...a]),
   fillCircle: (...a) => calls.push(["fillCircle", ...a]),
+  drawCircle: (...a) => calls.push(["drawCircle", ...a]),
   drawArc: (...a) => calls.push(["drawArc", ...a]),
 };
 
 const p = translateCtx(rec, 10);
 
-calls.length = 0; p.fillRect(5, 20, 3, 4, 1);
-ok(calls[0][1] === 15 && calls[0][2] === 20, "fillRect shifts x, leaves y");
+/* EVERY METHOD IS PROBED THROUGH THIS, and the typeof check is the point.
+   Calling a method the proxy omitted THROWS, which aborts the whole node
+   script: the mutant dies, but it takes every later assertion with it and
+   prints no FAIL line at all. Verified by dropping drawCircle from the table
+   -- the run ended in a TypeError having reported zero failures. Returning
+   null instead turns a missing entry into exactly one clean FAIL and lets the
+   rest of the file keep measuring. */
+const probe = (name, ...args) => {
+  calls.length = 0;
+  if (typeof p[name] !== "function") return null;
+  const ret = p[name](...args);
+  return { c: calls[0], ret };
+};
 
-calls.length = 0; p.print(5, 20, "AB", 1);
-ok(calls[0][1] === 15 && calls[0][2] === 20, "print shifts x, leaves y");
+let r = probe("fillRect", 5, 20, 3, 4, 1);
+ok(r && r.c[1] === 15 && r.c[2] === 20, "fillRect shifts x, leaves y");
 
-calls.length = 0; const w = p.textWidth("AB");
-ok(w === 7 && calls[0][1] === "AB", "textWidth passes through unshifted");
+r = probe("print", 5, 20, "AB", 1);
+ok(r && r.c[1] === 15 && r.c[2] === 20, "print shifts x, leaves y");
 
-calls.length = 0; p.setPixel(5, 20, 1);
-ok(calls[0][1] === 15 && calls[0][2] === 20, "setPixel shifts x, leaves y");
+r = probe("textWidth", "AB");
+ok(r && r.ret === 7 && r.c[1] === "AB", "textWidth passes through unshifted");
 
-calls.length = 0; p.drawRect(5, 20, 3, 4, 1);
-ok(calls[0][1] === 15 && calls[0][2] === 20, "drawRect shifts x, leaves y");
+r = probe("setPixel", 5, 20, 1);
+ok(r && r.c[1] === 15 && r.c[2] === 20, "setPixel shifts x, leaves y");
 
-calls.length = 0; p.line(5, 20, 8, 30, 1);
-ok(calls[0][1] === 15 && calls[0][2] === 20 && calls[0][3] === 18 && calls[0][4] === 30,
+r = probe("line", 5, 20, 8, 30, 1);
+ok(r && r.c[1] === 15 && r.c[2] === 20 && r.c[3] === 18 && r.c[4] === 30,
    "line shifts BOTH x endpoints, leaves both y");
 
-calls.length = 0; p.drawLine(5, 20, 8, 30, 1);
-ok(calls[0][1] === 15 && calls[0][3] === 18, "drawLine shifts both x endpoints");
-
-calls.length = 0; p.fillCircle(5, 20, 3, 1);
-ok(calls[0][1] === 15 && calls[0][2] === 20 && calls[0][3] === 3,
+r = probe("fillCircle", 5, 20, 3, 1);
+ok(r && r.c[1] === 15 && r.c[2] === 20 && r.c[3] === 3,
    "fillCircle shifts cx, leaves cy and r");
 
-calls.length = 0; p.drawArc(5, 20, 3, 90, 180, 1);
-ok(calls[0][1] === 15 && calls[0][2] === 20 && calls[0][3] === 3 &&
-   calls[0][4] === 90 && calls[0][5] === 180,
+/* Wrapped although no renderer calls it: both real contexts provide it, and
+   render_page_movy carries a stale comment claiming it prefers this binding
+   over drawArc. If that preference returns, an unwrapped one draws at the
+   wrong x -- and nothing raises. */
+r = probe("drawCircle", 5, 20, 3, 1);
+ok(r && r.c[1] === 15 && r.c[2] === 20 && r.c[3] === 3,
+   "drawCircle shifts cx, leaves cy and r");
+
+r = probe("drawArc", 5, 20, 3, 90, 180, 1);
+ok(r && r.c[1] === 15 && r.c[2] === 20 && r.c[3] === 3 &&
+   r.c[4] === 90 && r.c[5] === 180,
    "drawArc shifts cx, leaves cy, r, start and sweep");
 
 /* Omission, not passthrough. A method nobody taught the table about must not
    reach the renderer at all -- the guarded fallback then draws it correctly
    through fillRect, which IS translated. */
-const odd = { fillRect: () => {}, somethingNew: () => {} };
+const odd = { fillRect: () => {}, somethingNew: () => {},
+              drawRect: () => {}, drawLine: () => {} };
 const op = translateCtx(odd, 10);
 ok(typeof op.somethingNew !== "function",
    "an unknown method is OMITTED from the proxy, not passed through untranslated");
+
+/* drawRect and drawLine are provided by NEITHER real context -- the device
+   binds its native draw_line to the key `line` -- so they were dropped from
+   the table as dead entries. Pinned so a future reader does not add them back
+   on the assumption they were an oversight. */
+ok(typeof op.drawRect !== "function" && typeof op.drawLine !== "function",
+   "drawRect and drawLine are not in the table: no real context provides them");
 
 /* Identity at zero: no wrapper allocated, so the no-transition path pays
    nothing and cannot be subtly different from the un-proxied one. */
 ok(translateCtx(rec, 0) === rec, "dx of 0 returns the original ctx object");
 
 /* Offsets abut exactly, at every frac -- this is what makes clipping
-   unnecessary, so it is asserted across the range rather than at the ends. */
+   unnecessary, so it is asserted across the range rather than at the ends.
+   NOT A TAUTOLOGY, though the current implementation makes it look like one:
+   it guards the natural symmetrical refactor that rounds `to` in its own
+   right, as -Math.round((frac - 1) * width). Those two roundings can disagree
+   by one, giving a 127 or 129 gap -- a one-pixel seam of stale ink between
+   the pages, or a one-pixel column of one page overwritten by the other. */
 let abut = true;
 for (let i = 0; i <= 40; i++) {
   const o = slideOffsets(i / 40, 128);
@@ -112,11 +141,41 @@ for (let i = 0; i < 50; i++) {
 }
 ok(fracInRange, "frac stays in [0, 1) across a whole page of travel");
 
+/* THE EPSILON, tested on the values that can distinguish it from a bare
+   Math.floor. The clean 2.00..2.98 walk above cannot: every value there is
+   far from an integer. Defensive rather than observed -- no current advance
+   can produce 2.9999999, because both snap onto the integer target at a
+   SNAP_PAGES three orders of magnitude coarser -- so it is pinned here or it
+   is not pinned at all. */
+const fHi = scrollFrame(2.9999999);
+ok(fHi.base === 3 && fHi.frac === 0,
+   "a position a hair BELOW an integer reads as that integer, not as frac 0.9999");
+const fLo = scrollFrame(3.0000001);
+ok(fLo.base === 3 && fLo.frac === 0,
+   "a position a hair ABOVE an integer reads as that integer too");
+const fNeg = scrollFrame(-1.25);
+ok(fNeg.base === -2 && Math.abs(fNeg.frac - 0.75) < 1e-6,
+   "a negative position still floors downward with frac in [0, 1)");
+
+/* isSliding is the callers gate for stop compositing -- a composited frame is
+   TWO full page renders, and at frac 0 the second is drawn entirely offscreen
+   at dx 128, so it is pure waste. */
+ok(isSliding(2.5) === true, "isSliding is true mid-travel");
+ok(isSliding(3) === false, "isSliding is false at rest on a page");
+ok(isSliding(2.9999999) === false,
+   "isSliding agrees with scrollFrame at the epsilon, rather than deciding again");
+ok(isSliding(NaN) === false, "isSliding refuses to composite on a NaN position");
+
 /* THE ADVANCE MUST LAND EXACTLY, not approach forever.
    An eased chase is naturally asymptotic, and a position that is 0.0001 of a
    page from home leaves the transition running for ever: two renders per frame
    and a page that never settles. */
-for (const [name, adv] of [["linear", advanceLinear], ["eased", advanceEased]]) {
+/* advanceScroll IS IN THE LOOP because it is the one that actually ships.
+   The alias is re-pointed when the duration and easing are chosen from the
+   filmed GIFs, and at that moment the shipping function would otherwise be
+   the only one here with no test -- with both existing tests still green. */
+for (const [name, adv] of [["linear", advanceLinear], ["eased", advanceEased],
+                           ["scroll", advanceScroll]]) {
   let pos = 0;
   let steps = 0;
   while (pos !== 1 && steps < 500) { pos = adv(pos, 1, 18, 200); steps++; }
@@ -134,18 +193,41 @@ for (const [name, adv] of [["linear", advanceLinear], ["eased", advanceEased]]) 
 
   ok(adv(2, 2, 18, 200) === 2, name + ": a position already at its target does not move");
   ok(adv(0, 1, 18, 0) === 1, name + ": a zero duration arrives immediately");
+
+  /* A BACKWARDS CLOCK IS A SETTLE, NOT A VELOCITY.
+     Unguarded, 1 - exp(+dt/tau) is unbounded below: advanceEased(0, 1, -500,
+     200) measured -1807. anim_state.mjs already treats a backwards clock as a
+     settle for exactly this reason, and this is the same shape. */
+  ok(adv(0, 1, -18, 200) === 1, name + ": a small backwards dt settles rather than reversing");
+  ok(adv(0, 1, -500, 200) === 1, name + ": a large backwards dt cannot explode the position");
+
+  /* NaN IS ABSORBING, and pos is stored state: once it is NaN both escape
+     hatches fail open (Math.abs(NaN) <= SNAP is false, step >= Math.abs(d) is
+     false) and every later frame is NaN too, permanently. Settling makes it
+     self-heal on the very next frame. */
+  ok(adv(NaN, 1, 18, 200) === 1, name + ": a NaN position self-heals to the target");
+  ok(adv(0, 1, NaN, 200) === 1, name + ": a NaN dt settles rather than propagating");
+  ok(adv(0, 1, Infinity, 200) === 1, name + ": an infinite dt settles");
 }
 
-/* Composite order: both pages, then the fixed chrome ON TOP. */
+/* Composite order: both pages, then the fixed chrome ON TOP.
+   AND WHICH OFFSET EACH PAGE GETS. Recording only the strings would pin the
+   order and nothing else -- it would pass with fromDx and toDx swapped, which
+   is exactly the mutation that inverts the slide direction. So each callback
+   draws through the ctx it was handed and the recorded x is asserted. */
 const order = [];
+calls.length = 0;
 drawSlide(rec, {
   fromDx: -40, toDx: 88,
-  drawFrom: () => order.push("from"),
-  drawTo: () => order.push("to"),
-  drawChrome: () => order.push("chrome"),
+  drawFrom: (c) => { order.push("from"); c.fillRect(0, 0, 1, 1, 1); },
+  drawTo: (c) => { order.push("to"); c.fillRect(0, 0, 1, 1, 1); },
+  drawChrome: (c) => { order.push("chrome"); c.fillRect(0, 0, 1, 1, 1); },
 });
 ok(order.join(",") === "from,to,chrome",
    "drawSlide draws both pages then the fixed chrome over them");
+ok(calls[0][1] === -40, "the OUTGOING page is drawn at fromDx, not at toDx");
+ok(calls[1][1] === 88, "the INCOMING page is drawn at toDx");
+ok(calls[2][1] === 0, "the chrome is drawn unproxied, at no offset");
 
 process.exit(fail ? 1 : 0);
 '
