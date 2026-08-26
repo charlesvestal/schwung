@@ -161,6 +161,34 @@ Promise.all([
     console.log("PASS: font sets differ from font4x5");
   }
 
+  /* ---- a metric-matched option must actually match the metrics ----
+   *
+   * One option in the set is defined by a promise about its NUMBERS rather
+   * than about its shapes: every advance equal to the shipping advance for the
+   * same character, so adopting it moves no text anywhere in the product. That
+   * is the whole reason it exists, and it is invisible -- a specimen sheet
+   * cannot show it, and a glyph nudged by one column looks fine and quietly
+   * costs KEYTRIG the 32px cell it fits in today.
+   *
+   * Keyed off the flag rather than off the id, so a second metric-matched
+   * option inherits the check instead of needing the test edited. */
+  if (fontSet) {
+    let checkedMM = 0;
+    for (const o of fontSet.options) {
+      if (!o.metricMatched) continue;
+      for (let i = 0; i < F4.CHARS.length; i++) {
+        const got = o.glyphs[i][0], want = F4.GLYPHS_FOR_TEST[i][0];
+        if (got !== want)
+          fail(o.id + " declares metricMatched but glyph " + JSON.stringify(F4.CHARS[i]) +
+               " advances " + got + " where font4x5 advances " + want);
+      }
+      checkedMM++;
+    }
+    if (checkedMM === 0)
+      fail("no font option declares metricMatched -- the option that pins the shipping advances is gone");
+    console.log("PASS: " + checkedMM + " metric-matched font option(s) match font4x5 advances exactly");
+  }
+
   /* ---- a glyph must be able to DRAW what it declares ----
    *
    * A table is data, and the two ways it goes wrong are both invisible in a
@@ -213,7 +241,7 @@ Promise.all([
     const dir = "./src/shared/param_pages/styles/font";
     const files = fs.readdirSync(dir).filter((f) => f.endsWith(".mjs") &&
                                                     f !== "index.mjs" && f !== "blit.mjs");
-    if (files.length !== 10) fail("expected 10 font variant files, found " + files.length);
+    if (files.length !== 11) fail("expected 11 font variant files, found " + files.length);
     let checked = 0;
     for (const f of files) {
       const src = fs.readFileSync(dir + "/" + f, "utf8");
@@ -238,9 +266,9 @@ Promise.all([
         checked++;
       }
     }
-    /* 10 files x 58 glyphs: CHARS is 59 long and the space carries no
+    /* 11 files x 58 glyphs: CHARS is 59 long and the space carries no
      * picture, so it is not one of them. */
-    if (checked !== 580) fail("matched " + checked + " glyph lines, expected 580");
+    if (checked !== 638) fail("matched " + checked + " glyph lines, expected 638");
     console.log("PASS: font glyph pictures match their numbers");
   }
 
@@ -334,7 +362,7 @@ Promise.all([
   if (inks.size < 5) fail("the ten treatments are barely distinguishable: " + inks.size + " distinct ink counts");
   console.log("PASS: four curve sets share one curve and ten distinct treatments");
 
-  /* ---- the TWO TEXT-BEARING sets are measured against ALL TEN FACES ----
+  /* ---- the TWO TEXT-BEARING sets are measured against EVERY FACE ----
    *
    * enum_square and label_cell are the only sets whose options are sized
    * around a string, and set 12 replaces the letterforms outright. So a pick
@@ -356,8 +384,9 @@ Promise.all([
   const BL = await import("./src/shared/param_pages/styles/font/blit.mjs");
   const F53 = await import("./src/shared/param_pages/font5x3.mjs");
   if (!fontSet) fail("the font set is required to check text fit across faces");
-  if (fontSet.options.length !== S.OPTIONS_PER_SET)
-    fail("expected " + S.OPTIONS_PER_SET + " font variants to measure against");
+  const FONT_N = Number.isInteger(fontSet.optionCount) ? fontSet.optionCount : S.OPTIONS_PER_SET;
+  if (fontSet.options.length !== FONT_N)
+    fail("expected " + FONT_N + " font variants to measure against");
 
   /* An enum square does not print its value -- it prints the two short lines
    * enumSquareLines splits it into, so the string that has to fit is a LINE.
@@ -389,7 +418,7 @@ Promise.all([
              measured.join(",") + "] but declares [" + declared.join(",") + "]");
     }
   }
-  console.log("PASS: text-bearing options measured against all 10 font variants");
+  console.log("PASS: text-bearing options measured against all " + FONT_N + " font variants");
 
   /* ---- a label option must not touch the row above its band ----
    *

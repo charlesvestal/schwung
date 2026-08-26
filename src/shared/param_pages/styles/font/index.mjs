@@ -1,5 +1,5 @@
 /**
- * styles/font/index.mjs — SET 12: ten complete replacements for font4x5.
+ * styles/font/index.mjs — SET 12: eleven complete replacements for font4x5.
  *
  * This is the one set in the catalog that is not about style. font4x5.mjs
  * says of itself, in its own header, that its A M I T U D E P L were
@@ -30,6 +30,13 @@
  *         measures the claim rather than repeating it.
  *   8-10  wider than the shipping font: a 2px lattice, a diagonal-free
  *         geometry, and a five-column body.
+ *   11    OFF the axis, deliberately. Every advance is pinned to the shipping
+ *         value, so it is neither narrower nor wider by construction and only
+ *         the skeletons change. It was authored last, after the first ten were
+ *         measured and every legible one of them turned out 3-5px wider on a
+ *         long string -- enough for KEYTRIG to cross the 32px knob cell it
+ *         currently fits. That is an advance-width problem rather than a
+ *         letterform problem, and this is the option that separates the two.
  *
  * WHAT THE MARKS ARE. Punctuation and the digits are supplied per width
  * family (3, 4 and 5 wide) rather than per option, and several coincide with
@@ -57,6 +64,7 @@ import { GLYPHS as CONDENSED_CAPS } from "./condensed_caps.mjs";
 import { GLYPHS as DOT_MATRIX } from "./dot_matrix.mjs";
 import { GLYPHS as GEOMETRIC } from "./geometric.mjs";
 import { GLYPHS as WIDE } from "./wide.mjs";
+import { GLYPHS as METRIC_MATCHED } from "./metric_matched.mjs";
 
 /**
  * The specimen. Not arbitrary, and not a pangram.
@@ -83,6 +91,10 @@ export function register() {
         title: "Label font — the 4x5 letterforms, nine of which are Elektron's",
         kind: KIND_FONT,
         replaces: "font4x5.mjs",
+        /* Eleven, and declared: option 11 is off the narrow -> wide axis the
+         * other ten share, so it is an addition to the set rather than a
+         * renumbering of it. validateSet refuses an undeclared count. */
+        optionCount: 11,
         specimen: SPECIMEN,
         options: [
             {
@@ -124,6 +136,11 @@ export function register() {
             {
                 position: 10, id: "wide", name: "Wide", glyphs: WIDE,
                 note: "Five columns of body on a 6px advance, so every bowl has a real three-pixel counter and N M W V need no special case -- the only face here where a diagonal moves one column per row. The opposite bet to narrow, and its cost is arithmetic rather than aesthetic: a 32px knob cell holds about five characters instead of seven, so adopting it means shortening labels, not just redrawing them.",
+            },
+            {
+                position: 11, id: "metric-matched", name: "Metric-matched", glyphs: METRIC_MATCHED,
+                metricMatched: true,
+                note: "Every advance pinned to the shipping value, to the pixel: AMPLITUDE is still 42px, KEYTRIG still 30, so adopting it is a diff to one table and no layout pass at all. The letterforms inside those boxes are top-loaded instead of centred -- crossbars ride at row 1, stemmed letters take a full-width flat head, and feet are cut back, which reads as a small tight head over a long leg rather than as two equal halves. Two overrides are stated: U closes flat because a cut-back U is the AMPLITVDE failure this directory has already had once, and I is a 1px column at advance 2 where a full stem IS the shipping glyph, so it takes its cut as a short foot. The property is asserted by the test suite off the metricMatched flag, not assumed.",
             },
         ],
     });

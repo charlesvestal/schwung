@@ -94,6 +94,7 @@
 import { registerSet, KIND_DRAW } from "./index.mjs";
 import { KW, BOX_H, KNOB_R } from "../render_page_movy.mjs";
 import { notchCorners } from "./dither.mjs";
+import { ring, ringBand } from "./ring.mjs";
 
 /* The shipping numbers, repeated rather than imported because they are not
  * exported — and because an option is allowed to disagree with them. */
@@ -110,12 +111,21 @@ const rad = (deg) => deg * Math.PI / 180;
 
 /* ---------------------------------------------------------- primitives --
  *
- * `line` / `drawArc` are optional on a draw context (render_page_movy takes a
- * different path when the caller omits them), so every use here goes through
- * a wrapper with the same JS fallback the device binding is ported from. A
- * catalog that only ever exercised the native path would be a preview that
- * can disagree with the OLED, which is the specific way a knob-ring bug got
- * through here before. */
+ * `line` is optional on a draw context (render_page_movy takes a different
+ * path when the caller omits them), so every use here goes through a wrapper
+ * with the same JS fallback the device binding is ported from. A catalog that
+ * only ever exercised the native path would be a preview that can disagree
+ * with the OLED, which is the specific way a knob-ring bug got through here
+ * before.
+ *
+ * `drawArc` is no longer used AT ALL — see styles/ring.mjs. Its rasteriser is
+ * a distance-rounded union of a row scan and a column scan, and near the top
+ * and bottom of a circle the column scan puts five consecutive pixels on one
+ * row: a five-pixel flat cap, so a radius-6 circle reads as a rounded
+ * rectangle. Every option in the arc family inherited that, and it is the
+ * whole of why the set was reported back as looking sloppy. The rings are
+ * tabulated instead, which is what `drawSwitch` in viz_draw.mjs already does
+ * for exactly this reason. Nothing about the designs changed. */
 
 function seg(ctx, x0, y0, x1, y1, color = 1) {
     x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
@@ -132,54 +142,16 @@ function seg(ctx, x0, y0, x1, y1, color = 1) {
     }
 }
 
-function arc(ctx, cx, cy, r, start, sweep, color = 1) {
-    if (r < 0 || sweep <= 0) return;
-    if (typeof ctx.drawArc === "function") { ctx.drawArc(cx, cy, r, start, sweep, color); return; }
-    const inSweep = (dx, dy) => {
-        if (sweep >= 360) return true;
-        let a = Math.atan2(dx, -dy) * 180 / Math.PI;
-        if (a < 0) a += 360;
-        let d = a - ((start % 360) + 360) % 360;
-        if (d < 0) d += 360;
-        return d <= sweep;
-    };
-    const plot = (dx, dy) => { if (inSweep(dx, dy)) ctx.fillRect(cx + dx, cy + dy, 1, 1, color); };
-    for (let dy = -r; dy <= r; dy++) {
-        const dx = Math.round(Math.sqrt(r * r - dy * dy));
-        plot(dx, dy); if (dx !== 0) plot(-dx, dy);
-    }
-    for (let dx = -r; dx <= r; dx++) {
-        const dy = Math.round(Math.sqrt(r * r - dx * dx));
-        plot(dx, dy); if (dy !== 0) plot(dx, -dy);
-    }
-}
-
 /**
- * A band of arc between two radii, plotted by SAMPLING the angle rather than
- * by stacking `drawArc` calls.
+ * A solid pie from the hub, plotted by SAMPLING the angle.
  *
- * `drawArc` scans rows and columns and keeps the pixel whose distance rounds
- * to r, which is right for a whole ring and wrong for a 20-degree piece of
- * one: each radius picks up a different number of pixels at the ends, so
- * concentric short arcs come out ragged and no two segments of the same
- * nominal size look alike. Sampling the angle finely enough to hit every
- * pixel gives a band with clean square ends, which is what a fill has to have
- * for its END to be readable as the value.
+ * Not tabulated, and it does not need to be: the pie's only curved edge is its
+ * outer rim, which is covered by the tabulated track drawn one pixel outside
+ * it, so no cap of the pie is ever the silhouette of the widget. Sampling
+ * finely enough that consecutive samples never skip a pixel is what gives its
+ * two RADIAL edges — the part a wedge is actually read by — clean straight
+ * ends.
  */
-function arcBand(ctx, cx, cy, rIn, rOut, start, sweep) {
-    if (sweep <= 0 || rOut < rIn) return;
-    /* Two samples per pixel of outer arc length — enough that consecutive
-     * samples never skip a pixel. */
-    const steps = Math.max(2, Math.ceil(sweep * Math.PI / 180 * rOut * 2));
-    for (let i = 0; i <= steps; i++) {
-        const a = rad(start + sweep * i / steps);
-        const s = Math.sin(a), c = Math.cos(a);
-        for (let r = rIn; r <= rOut; r++)
-            ctx.fillRect(Math.round(cx + r * s), Math.round(cy - r * c), 1, 1, 1);
-    }
-}
-
-/** A solid pie from the hub, same sampling argument as arcBand. */
 function pie(ctx, cx, cy, r, start, sweep) {
     if (r <= 0) return;
     const steps = Math.max(2, Math.ceil(Math.max(sweep, 1) * Math.PI / 180 * r * 2));
@@ -240,7 +212,7 @@ function stub(ctx, cx, cy, rIn, rOut, deg) {
  */
 function drawArcPointer(ctx, kx, ky, normVal) {
     const v = clamp01(normVal);
-    arc(ctx, kx + KNOB_R, ky + KNOB_R, KNOB_R, ARC_START, ARC_SWEEP, 1);
+    ring(ctx, kx + KNOB_R, ky + KNOB_R, KNOB_R, ARC_START, ARC_SWEEP, 1);
     const tip = polar(kx, ky, v, KNOB_R * 0.74);
     seg(ctx, kx + KNOB_R, ky + KNOB_R, tip.x, tip.y, 1);
 }
@@ -260,7 +232,7 @@ function drawArcPointer(ctx, kx, ky, normVal) {
 function drawArcDot(ctx, kx, ky, normVal) {
     const v = clamp01(normVal);
     const cx = kx + KNOB_R, cy = ky + KNOB_R;
-    arc(ctx, cx, cy, KNOB_R, ARC_START, ARC_SWEEP, 1);
+    ring(ctx, cx, cy, KNOB_R, ARC_START, ARC_SWEEP, 1);
     const p = polar(kx, ky, v, 5);
     ctx.fillRect(cx, cy, 1, 1, 1);
     dot(ctx, p.x, p.y);
@@ -290,14 +262,14 @@ function drawArcFill(ctx, kx, ky, normVal) {
      * debris rather than as an empty gauge. Keeping the track costs one thin
      * arc and buys a v=0 that is unmistakably a control at rest.
      */
-    arc(ctx, cx, cy, KNOB_R, ARC_START, ARC_SWEEP, 1);
+    ring(ctx, cx, cy, KNOB_R, ARC_START, ARC_SWEEP, 1);
     /* The fill grows INWARD from the same outer radius, so the track is never
      * erased or moved — the silhouette is constant and only its weight
      * changes. Three pixels rather than two: against a 1px track, 2px reads as
      * a slightly darker stretch of the same line, and 3:1 is the ratio at
      * which the boundary between filled and unfilled becomes the thing you
      * see first. */
-    arcBand(ctx, cx, cy, KNOB_R - 2, KNOB_R, ARC_START, v * ARC_SWEEP);
+    ringBand(ctx, cx, cy, KNOB_R - 2, KNOB_R, ARC_START, v * ARC_SWEEP);
 }
 
 /**
@@ -316,7 +288,7 @@ function drawArcFill(ctx, kx, ky, normVal) {
 function drawArcThick(ctx, kx, ky, normVal) {
     const v = clamp01(normVal);
     const cx = kx + KNOB_R, cy = ky + KNOB_R;
-    arcBand(ctx, cx, cy, KNOB_R - 1, KNOB_R, ARC_START, ARC_SWEEP);
+    ringBand(ctx, cx, cy, KNOB_R - 1, KNOB_R, ARC_START, ARC_SWEEP);
     const a = rad(PTR_START + v * PTR_SWEEP);
     const inner = { x: cx + KNOB_R * 0.30 * Math.sin(a), y: cy - KNOB_R * 0.30 * Math.cos(a) };
     const outer = { x: cx + KNOB_R * 0.62 * Math.sin(a), y: cy - KNOB_R * 0.62 * Math.cos(a) };
@@ -355,9 +327,9 @@ function drawArcThick(ctx, kx, ky, normVal) {
 function drawRingFill(ctx, kx, ky, normVal) {
     const v = clamp01(normVal);
     const cx = kx + KNOB_R, cy = ky + RING_CY;
-    arc(ctx, cx, cy, RING_R, 0, 360, 1);
+    ring(ctx, cx, cy, RING_R, 0, 360, 1);
     ctx.fillRect(cx, cy, 1, 1, 1);
-    arcBand(ctx, cx, cy, RING_R - 2, RING_R, 0, v * 360);
+    ringBand(ctx, cx, cy, RING_R - 2, RING_R, 0, v * 360);
 }
 
 /* --------------------------------------------------------------- 6..7 --
@@ -418,7 +390,7 @@ function drawNeedleOnly(ctx, kx, ky, normVal) {
 function drawWedge(ctx, kx, ky, normVal) {
     const v = clamp01(normVal);
     const cx = kx + KNOB_R, cy = ky + KNOB_R;
-    arc(ctx, cx, cy, KNOB_R, ARC_START, ARC_SWEEP, 1);
+    ring(ctx, cx, cy, KNOB_R, ARC_START, ARC_SWEEP, 1);
     pie(ctx, cx, cy, KNOB_R - 2, PTR_START, v * PTR_SWEEP);
 }
 
@@ -510,7 +482,7 @@ function drawNotchRing(ctx, kx, ky, normVal) {
      */
     const NOTCH = 56;
     const at = PTR_START + v * PTR_SWEEP;
-    arcBand(ctx, cx, cy, RING_R - 1, RING_R, at + NOTCH / 2, 360 - NOTCH);
+    ringBand(ctx, cx, cy, RING_R - 1, RING_R, at + NOTCH / 2, 360 - NOTCH);
     /* The hub pip anchors the hole. Without it the widget is a broken circle,
      * and a broken circle with no centre reads as a drawing error rather than
      * as a reading off a scale. */
