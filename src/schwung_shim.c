@@ -5118,8 +5118,13 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
                 xmos_audio_build(&xmos_audio_observed, replay, pending[0], pending[1]);
                 pending_count = 2;
                 pending_next = 0;
-                shadow_log(replay ? "USB-C out: boot re-assert Main Out"
-                                  : "USB-C out: boot re-assert Mic");
+                /* Neutral wording on purpose: this path serves the boot replay
+                 * AND the monitor-loss defence, and the shim cannot tell them
+                 * apart — the worker arms both through the same variable. It
+                 * logs the specific reason before arming, so saying "boot"
+                 * here mislabelled every mid-session re-assert. */
+                shadow_log(replay ? "USB-C out: re-asserting Main Out"
+                                  : "USB-C out: re-asserting Mic");
             } else if (shim_pending_sysex_inject >= 0) {
                 int val_byte = shim_pending_sysex_inject;
                 shim_pending_sysex_inject = -1;
@@ -5289,6 +5294,14 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
      * observed change (see shim_worker.c's tick >= 35 gate). */
     if (xmos_audio_scan(shadow + MIDI_OUT_OFFSET, 80, &xmos_audio_observed))
         shim_usbc_out_persist = xmos_audio_observed.usbc_out;
+
+    /* Republish both bits as levels every frame. scan() only reports an
+     * out-source EDGE, and Move's sampling page changes nothing about the out
+     * source — it emits a lone 37 12 that clears monitoring, which reverts the
+     * hardware to Mic with no edge to report. Two stores; the worker polls
+     * them at 5 Hz and decides (see usbc_gate_tick_monitor). */
+    shim_usbc_out_level = xmos_audio_observed.usbc_out;
+    shim_usbc_monitor   = xmos_audio_observed.monitor;
 
     /* Ensure subsystems are initialized on first call */
     if (!shim_subsystems_initialized) {

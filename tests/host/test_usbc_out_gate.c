@@ -181,6 +181,125 @@ static void test_stored_tracks_writes(void)
     CHECK(OUT.persist == 0, "tracks: no redundant write");
 }
 
+/* ---- monitor-loss defence -------------------------------------------- */
+
+static void mon(usbc_gate_t *g, int usbc_out, int monitor)
+{
+    clr();
+    usbc_gate_tick_monitor(g, usbc_out, monitor, &OUT);
+}
+
+/* Drive a gate to SETTLED with Main Out stored and monitoring live, the way
+ * the wire does. */
+static void settle_main_out(usbc_gate_t *g)
+{
+    usbc_gate_init(g, 1);
+    observe(g, 0);        /* Move's boot default */
+    boot_replay(g);
+    observe(g, 1);        /* our re-assert lands -> settled */
+    mon(g, 1, 1);         /* monitoring live */
+}
+
+/* The hardware case: sampling-source change emits a lone 37 12 with bit1
+ * clear, so monitor drops while 37 14 still says Main Out. */
+static void test_monitor_loss_triggers_reassert(void)
+{
+    usbc_gate_t g;
+    settle_main_out(&g);
+
+    mon(&g, 1, 0);
+    CHECK(OUT.replay == 0, "monloss: does not fire on the first tick (debounce)");
+
+    mon(&g, 1, 0);
+    CHECK(OUT.replay == 1 && OUT.replay_value == 1,
+          "monloss: re-asserts Main Out once the condition holds");
+    CHECK(OUT.persist == 0, "monloss: re-asserting persists nothing");
+}
+
+/* A deliberate Mic selection moves 37 14 too. If the pair splits across SPI
+ * frames we may see monitor=0 one tick before usbc_out=0 — that must never
+ * become a re-assert, or we would fight the user. */
+static void test_split_mic_selection_is_not_fought(void)
+{
+    usbc_gate_t g;
+    settle_main_out(&g);
+
+    mon(&g, 1, 0);        /* first frame of the split pair */
+    CHECK(OUT.replay == 0, "split: no action on the first tick");
+
+    observe(&g, 0);       /* 37 14 00 arrives -> user really chose Mic */
+    mon(&g, 0, 0);
+    CHECK(OUT.replay == 0, "split: a real Mic selection is never fought");
+
+    mon(&g, 0, 0);
+    CHECK(OUT.replay == 0, "split: still not fought on later ticks");
+}
+
+static void test_monitor_healthy_does_nothing(void)
+{
+    usbc_gate_t g;
+    settle_main_out(&g);
+    for (int i = 0; i < 5; i++) {
+        mon(&g, 1, 1);
+        CHECK(OUT.replay == 0 && OUT.persist == 0, "healthy: monitoring live, no action");
+    }
+}
+
+static void test_monitor_loss_not_defended_when_mic_stored(void)
+{
+    usbc_gate_t g;
+    usbc_gate_init(&g, 0);
+    boot_replay(&g);      /* stored Mic settles immediately */
+    for (int i = 0; i < 4; i++) {
+        mon(&g, 1, 0);
+        CHECK(OUT.replay == 0, "mic-stored: nothing to defend");
+    }
+}
+
+/* Boot arbitration owns the wire; the monitor defence must not cut in. */
+static void test_monitor_defence_inert_before_settling(void)
+{
+    usbc_gate_t g;
+    usbc_gate_init(&g, 1);
+    for (int i = 0; i < 4; i++) {
+        mon(&g, 1, 0);
+        CHECK(OUT.replay == 0, "pre-settle: monitor defence is inert");
+    }
+    boot_replay(&g);
+    for (int i = 0; i < 4; i++) {
+        mon(&g, 1, 0);
+        CHECK(OUT.replay == 0, "defending: monitor defence is inert");
+    }
+}
+
+static void test_monitor_reasserts_are_bounded(void)
+{
+    usbc_gate_t g;
+    settle_main_out(&g);
+
+    int replays = 0;
+    for (int i = 0; i < (USBC_GATE_MAX_REPLAYS + 5) * USBC_GATE_MONITOR_DEBOUNCE; i++) {
+        mon(&g, 1, 0);
+        if (OUT.replay) replays++;
+    }
+    CHECK(replays == USBC_GATE_MAX_REPLAYS, "monbound: re-asserts stop at the cap");
+}
+
+/* A fourth sampling-source change must still be defended, so the budget
+ * re-arms on each fresh 1->0 transition rather than draining for the session. */
+static void test_monitor_budget_rearms_on_fresh_loss(void)
+{
+    usbc_gate_t g;
+    settle_main_out(&g);
+
+    for (int round = 0; round < 4; round++) {
+        mon(&g, 1, 1);                     /* our re-assert took effect */
+        mon(&g, 1, 0);                     /* fresh loss: debounce tick */
+        mon(&g, 1, 0);
+        CHECK(OUT.replay == 1, "rearm: every fresh monitor loss is defended");
+    }
+}
+
 int main(void)
 {
     test_late_move_assert_does_not_clobber();
@@ -191,6 +310,13 @@ int main(void)
     test_force_settle_backstop();
     test_force_settle_writes_nothing();
     test_stored_tracks_writes();
+    test_monitor_loss_triggers_reassert();
+    test_split_mic_selection_is_not_fought();
+    test_monitor_healthy_does_nothing();
+    test_monitor_loss_not_defended_when_mic_stored();
+    test_monitor_defence_inert_before_settling();
+    test_monitor_reasserts_are_bounded();
+    test_monitor_budget_rearms_on_fresh_loss();
 
     if (fails) {
         fprintf(stderr, "%d check(s) failed\n", fails);

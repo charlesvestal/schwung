@@ -55,11 +55,21 @@ typedef enum {
     USBC_GATE_PHASE_SETTLED    = 2,
 } usbc_gate_phase_t;
 
+/* Ticks the monitor-loss condition must hold before we act. One tick of
+ * hysteresis, i.e. ~400 ms at the worker's 200 ms cadence. See
+ * usbc_gate_tick_monitor. */
+#define USBC_GATE_MONITOR_DEBOUNCE 2
+
 typedef struct {
     int8_t  stored;          /* the persisted preference: -1 unknown, 0 Mic, 1 Main Out */
     uint8_t phase;           /* usbc_gate_phase_t */
     uint8_t replays_left;
     uint8_t saw_mic_assert;  /* Move has asserted Mic at least once this boot */
+
+    /* Monitor-loss defence, independent of the boot budget above. */
+    int8_t  last_monitor;
+    uint8_t monitor_pending;
+    uint8_t monitor_replays_left;
 } usbc_gate_t;
 
 /* What the caller must do as a result of a gate call. Both may be set. */
@@ -82,6 +92,30 @@ void usbc_gate_boot_replay(usbc_gate_t *g, usbc_gate_out_t *out);
 
 /* Call whenever the wire reports a value (0 = Mic, 1 = Main Out). */
 void usbc_gate_observe(usbc_gate_t *g, int observed, usbc_gate_out_t *out);
+
+/* Call once per worker tick with the last values seen on the wire (-1 =
+ * unknown): `usbc_out` from 37 14, `monitor` from bit1 of 37 12.
+ *
+ * Defends against a second, separate way the preference is lost. Move's
+ * sampling page emits a **lone 37 12** to set bit0 (the USB-C input select)
+ * and carries bit1 from its own permanently-stale "Mic" UI state. Observed on
+ * hardware 2026-08-26: `37 12 01` then `37 12 00`, with no 37 14 anywhere near
+ * either. Monitoring is *how* Main Out reaches USB-C, so clearing it reverts
+ * the hardware — while 37 14 still says Main Out, so nothing re-asserts and
+ * the revert is silent. Changing the sampling source therefore killed USB-C
+ * out, which is the in-session half of the original bug report.
+ *
+ * `usbc_out == 1 && monitor == 0` is what separates this from a deliberate Mic
+ * selection, where 37 14 moves too. The pair CAN split across SPI frames
+ * (16 of 20 MIDI_OUT slots — concurrent LED traffic forces a split), so acting
+ * on the first frame of a split Mic selection would fight the user. Hence the
+ * USBC_GATE_MONITOR_DEBOUNCE hysteresis: frames are ~3 ms and the worker ticks
+ * every 200 ms, so a split resolves long before two consecutive ticks agree.
+ *
+ * Bounded like the boot replay, and re-armed on each fresh 1->0 transition so
+ * a fourth sampling-source change is still defended. */
+void usbc_gate_tick_monitor(usbc_gate_t *g, int usbc_out, int monitor,
+                            usbc_gate_out_t *out);
 
 /* Backstop: force the gate open. The caller applies this on a generous
  * deadline so that a boot where Move never speaks at all cannot leave the
