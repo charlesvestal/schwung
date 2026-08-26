@@ -930,6 +930,44 @@ shared `saveMasterFxChainConfig()` sink (derived from the routing table, never
 hand-listed), a key-specific saver welded to the assignment, or backend-owned.
 Stored values are **not** indexes — `resample_bridge` stores 0 and **2**.
 
+### A timed-out read empties NOTHING, and latches nothing
+
+`loadChainConfigFromSlot`'s `readPosition` was `moduleId && moduleId !== ""`,
+which puts `null` (the read did not complete) in the same branch as `""` (the
+position is empty) — the comment there said so, having considered only the
+unserved case. Loading a module blocks the SPI callback (the thread that also
+serves param requests) and `applyComponentSelectionConfirmed` re-syncs
+**immediately after its fire-and-forget module write**, i.e. inside that
+window. So the position read `null`, was recorded as EMPTY, and
+`chainConfigFresh[slot] = true` declared it authoritative — *"clean by
+definition once it returns"* was true of the call, not of the answer.
+
+An empty box in the diagram is a `+`, so the position the user had just filled
+opened the **module picker** instead of the editor.
+
+**It takes a SECOND defect to make that permanent**, and this is the part worth
+remembering: the module signature is a separate set of reads taken milliseconds
+later, and they straddled the end of the load. The config read stale-empty; the
+signature read the real module. `applySlotModuleSignature` reloads the config
+only when the signature **changes** — so the *correct* read is what did the
+damage, by matching, and a correct signature never changes again. Osirus logged
+a clean 124 ms load at 13:48:53.700–.824 and the editor still drew the position
+empty fifteen seconds later, while slot settings — same key, different path —
+said "Synth Virus".
+
+Now: a failed read keeps the position it had, leaves the slot **un-fresh** so
+the next frame re-reads, and `getSlotModuleSignature` answers **null** rather
+than inventing an empty chain (`applySlotModuleSignature` refuses null). A
+failed `*_count` keeps the section length — 0 from a timeout truncates the whole
+section, not one position.
+
+Falling out of it for free: the picker writes the chosen module into
+`chainConfigs` **before** the DSP write, so "what we already had" during the
+load window *is* the module just picked — the box shows it throughout, and
+there is no loading state to maintain. `tests/host/test_chain_config_read_failure.sh`
+lifts the real functions and drives that sequence, reads failing on frame 1 and
+landing on frame 2.
+
 ### A component editor WAITS; it does not decide from one read
 
 Opening a component's editor used to be one read of `<prefix>:ui_hierarchy` and
