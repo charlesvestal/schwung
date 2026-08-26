@@ -24,7 +24,7 @@ import { resolveViz } from "../../src/shared/param_pages/viz.mjs";
 
 /* The decisions, by set id -> option id. `null` = keep what ships. */
 export const PICKS = {
-    knob: null,                    /* current is preferred; nothing chosen */
+    knob: "arc-short",
     fader: "outline-fill",
     fills: "no-rule",
     enum_square: "thin-frame",

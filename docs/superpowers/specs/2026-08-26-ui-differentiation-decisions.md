@@ -54,6 +54,56 @@ worked is a framed enum against a framed opaque cell — e.g. `dotted-frame` wit
 
 ---
 
+## Arc knob — `arc-short` (option 02), after three rounds
+
+**Decision:** the incumbent geometry with the pointer pulled back from 0.85r to
+0.68r, so the tip stops merging with the rim.
+
+### Why it took three rounds, which is the finding
+
+- **Round 1** was briefed minimal → radical and produced NOVELTY, not quality: a
+  stipple that read as punctuation, a sunburst, digits over a dither. Verdict:
+  *"knobs are all pretty shitty."*
+- **Round 2** was briefed clean and legible and produced ten competent but
+  UNRELATED widgets — wedge, bars, needle, notch-ring. Verdict after judging all
+  ten: *"the current is the best and anything else seems like reaching."*
+- **Round 3** stopped arguing with that and produced ten REFINEMENTS of the
+  arc-and-pointer. `arc-short` won.
+
+**Twenty alternatives were rejected before a one-pixel change to the incumbent
+was accepted.** That is worth recording as a result rather than as three failed
+attempts: the arc-and-pointer is the obvious way to show a bounded value, and
+the knob is not where the resemblance to Elektron lives. The catalog's job was
+to establish that, and it did.
+
+### The renderer mattered more than any design
+
+Reported as "sloppy" across the whole set, and it was the primitive. `drawArc`
+is a distance-rounded union of one pixel per row and one per column, which at
+r=6 gives a **five-pixel flat cap top and bottom** — a circle that reads as a
+rounded rectangle. Every arc-family option inherited it.
+
+`styles/ring.mjs` tabulates the ring instead, giving a 3px cap, which is what
+`drawSwitch` in `viz_draw.mjs` has always done for the same reason: at these
+radii an algorithm cannot draw a clean circle.
+
+**This is a finding for the implementation issue, not just for the catalog.**
+Any future arc-based widget drawn with `drawArc` inherits the same cap.
+
+### Modulation dot
+
+`arc-short` is one of the five options clear of the dot (which rides at r=6).
+Options 05, 06 and 09 collide, 07 and 08 partially — all fixable by moving
+`MOD_DOT_R` from 6 to 5, which this pick does NOT require.
+
+### Near-identical pairs, recorded so the set is not oversold
+
+07 and 08 are 02 plus a tick. 09 is **identical to 02 at v=0** and separates
+only over the top two-thirds of travel. 05 and 09-at-full-travel coincide by
+construction. Ten options, fewer than ten genuinely distinct choices.
+
+---
+
 ## Fader — `outline-fill` (option 06)
 
 **Fitted rank:** 1st of 10, 4–0. The strongest fader result.
