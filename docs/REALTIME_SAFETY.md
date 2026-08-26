@@ -122,6 +122,22 @@ Sources removed:
 
 Frame budget: 2900µs (128 frames @ 44.1kHz).
 
+**The "SPI ioctl baseline ~2ms" row above is inherited, not measured**, and it
+is the number the ~900µs budget is derived from. 768 bytes at 20 MHz is ~307µs
+of wire time, so the two disagree by roughly 6×. ablspi stamps the real
+per-transfer duration into the mmap'd page on every frame — arm the SPI frame
+tally (`touch /data/UserData/schwung/spi_tally_on`, see CLAUDE.md) and read
+`tx avg` / `headroom` rather than re-quoting either figure.
+
+**An overrun does not drop a frame — it queues.** ablspi's IRQ is a counting
+semaphore (`atomic_inc` in the ISR, `atomic_dec` in the wait), so frames that
+fire while we are busy are serviced back-to-back afterwards. Two consequences
+worth holding onto when reading the table above and the module-load section
+below: "232 consecutive dropped frames" is really 232 frames of *deferral* that
+Move then works off in a burst; and a burst arriving at a downstream consumer
+(Link Audio, the JACK bridge) is evidence *for* one of our own overruns, not
+against it. `backlog` in the tally is that queue, measured.
+
 ## What NOT to do
 
 - Never call unified_log from the SPI callback path

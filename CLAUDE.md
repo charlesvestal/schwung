@@ -75,6 +75,39 @@ JS: `console.log()` (auto-routed) or import `shared/logger.mjs`. C: `LOG_DEBUG("
   draws << ticks means something gates the redraw; draws == ticks and both low
   means the tick is slow or its pacing is wrong.
 
+**SPI frame tally** (`touch /data/UserData/schwung/spi_tally_on`, off by
+default) reports at ~1 Hz:
+
+```
+spi-tally: 44 frames / 44 irq  tx avg 312us (max 1904us)  headroom 2590us  backlog 0
+spi-tally: LATE 3 irq(s) arrived while busy — frames queued, not dropped (backlog 3, worst window 3)
+```
+
+Both numbers come from ablspi itself, which ships in Ableton's GPL source drop
+(see `docs/SPI_PROTOCOL.md`). `tx` is the driver's own `spi_tx_time`, stamped
+after every transfer into `struct ablspi_sys_info` at the END of the mmap'd page
+— one aligned 8-byte load of memory the shim already maps, no syscall. `irq` is
+`/proc/ableton/ablspi0.0/irq_count`, read on the worker because it is file I/O.
+
+**The gap between them is the point, and it exists because ablspi's IRQ is a
+counting semaphore rather than a flag** (`atomic_inc` in the ISR, `atomic_dec`
+in the wait). Overrun the budget and the frame is **not dropped** — it queues,
+and the next waits return immediately, replaying back-to-back. So a late frame
+never appears as a gap; it appears as a **burst**, which is exactly the shape
+that gets attributed to somebody else's producer misbehaving. `backlog` is that
+queue. Point it at the Link Audio dropouts before blaming Move's `Link Main`.
+
+`headroom` is nominal period (2.902 ms) minus measured transfer, i.e. what is
+actually left for our work — **measure it before quoting the "~900µs" budget
+below**, which predates any measurement of the transfer itself.
+
+Pure accumulator in `src/host/spi_tally.c` (no I/O, so `spi_tally_record` is
+SPI-callback-safe and the whole thing is host-tested by
+`tests/host/test_spi_tally.c`); `/proc` read and reporting in `shim_worker.c`.
+The IRQ delta is a **32-bit** subtraction on purpose — that counter is printed
+from an `int`, goes negative past 2^31 (~13.5 h) and wraps at 2^32, and only
+modular arithmetic survives both. Widening it is the regression the test fails on.
+
 **When the UI feels slow, check the tick rate FIRST.** The shadow UI loop is
 paced to an absolute deadline (60 Hz); it previously slept a fixed 16 ms
 *after* the work, making the real rate `1/(work + 16ms)` — so every parameter
