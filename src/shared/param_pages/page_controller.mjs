@@ -492,6 +492,19 @@ export function createController(io = {}) {
      */
     const formatValue = io.formatValue || null;
     const now = io.now || (() => Date.now());
+    /*
+     * The slide duration, overridable by the host.
+     *
+     * It exists so the SHIPPED constant and the TESTED one can differ. The
+     * feature is parked with SLIDE_MS = 0 (off) while the feel is unresolved,
+     * and without this seam every slide test would have to be deleted or
+     * skipped to keep the branch green -- a parked branch that is red is a
+     * trap for whoever resumes it.
+     *
+     * It is also the seam a Global Settings toggle needs, so this is the shape
+     * that was going to be required anyway rather than a testing back door.
+     */
+    const slideMs = () => (io.slideMs === undefined ? SLIDE_MS : io.slideMs);
     /* Graphics default on; a caller can pass `enableViz: false` to keep the
      * plain grid (a tool that wants every cell individually addressable), and
      * `vizOverrides` to correct a wrong detector guess without a module
@@ -1276,7 +1289,7 @@ export function createController(io = {}) {
             const t = now();
             const dt = Math.max(0, t - (s.scrollLastMs || t));
             s.scrollLastMs = t;
-            s.scrollPos = advanceScroll(s.scrollPos, s.pageIndex, dt, SLIDE_MS);
+            s.scrollPos = advanceScroll(s.scrollPos, s.pageIndex, dt, slideMs());
         }
         s.tickCount++;
         flushDueWrites();
@@ -2285,12 +2298,12 @@ export function createController(io = {}) {
      */
     function aimScroll(fromIndex, toIndex) {
         /*
-         * SLIDE_MS 0 IS THE OFF SWITCH, and it has to be honoured here as well
+         * A DURATION OF 0 IS THE OFF SWITCH, and it has to be honoured here as well
          * as in the advance: `frac` must be exactly 0 on the very frame the
          * page changes, or the first frame after a jog composites once before
          * the advance settles it.
          */
-        if (!(SLIDE_MS > 0)) { s.scrollPos = toIndex; s.scrollLastMs = 0; return; }
+        if (!(slideMs() > 0)) { s.scrollPos = toIndex; s.scrollLastMs = 0; return; }
         if (Math.abs(toIndex - fromIndex) > 1) {
             /* A distant target. Close the position up to one page away — and
              * only when it is FURTHER than that, so a jump made while a slide

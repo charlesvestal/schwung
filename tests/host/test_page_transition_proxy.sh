@@ -279,8 +279,23 @@ for (const [name, adv] of [["linear", advanceLinear], ["eased", advanceEased],
    plus a note about which advance it was measured against. */
 ok(Math.abs(settleOf(advanceLinear, SLIDE_MS) - settleOf(advanceEased, SLIDE_MS)) <= TICK,
    "the two advances settle at the same time for the same ms");
-ok(SLIDE_MS > 0 && settleOf(advanceScroll, SLIDE_MS) <= SLIDE_MS + TICK,
-   "the SHIPPING duration and advance settle within one frame of SLIDE_MS");
+/* THE SHIPPED CONSTANT IS EITHER A REAL DURATION OR THE OFF SWITCH.
+ *
+ * The feature is parked with SLIDE_MS = 0 while the feel is unresolved, so an
+ * unconditional `SLIDE_MS > 0` would fail for the parked state -- and deleting
+ * the assertion would stop pinning the duration when it comes BACK. Both arms
+ * are asserted instead, so whichever the constant is, it has to be coherent.
+ *
+ * 0 must genuinely mean off: the advance returns the target on the first call
+ * whatever the dt, which is what makes every frame the ordinary un-composited
+ * draw. */
+if (SLIDE_MS === 0) {
+  ok(advanceScroll(0, 1, 0, SLIDE_MS) === 1 && advanceScroll(0, 1, 17, SLIDE_MS) === 1,
+     "SLIDE_MS is 0 (parked): the shipping advance arrives immediately, at any dt");
+} else {
+  ok(settleOf(advanceScroll, SLIDE_MS) <= SLIDE_MS + TICK,
+     "the SHIPPING duration and advance settle within one frame of SLIDE_MS");
+}
 
 /* Composite order: both pages, then the fixed chrome ON TOP.
    AND WHICH OFFSET EACH PAGE GETS. Recording only the strings would pin the
