@@ -134,5 +134,13 @@ export function validateAll() {
  * initialised.
  */
 import { register as registerKnob } from "./knob.mjs";
+import { register as registerFader } from "./fader.mjs";
+import { register as registerFills } from "./fills.mjs";
+import { register as registerOpaqueBox } from "./opaque_box.mjs";
+import { register as registerVizSwitch } from "./viz_switch.mjs";
 
 registerKnob();
+registerFader();
+registerFills();
+registerOpaqueBox();
+registerVizSwitch();
