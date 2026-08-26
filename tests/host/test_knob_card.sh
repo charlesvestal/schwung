@@ -182,18 +182,46 @@ Promise.all([
       }
       return { x: lo, w: hi - lo + 1 };
     };
+    /*
+     * THE PROBE IS THE STRIP CENTRING, not the strip width.
+     *
+     * This used to assert `bandWidth === cellW`, which worked because the
+     * touched strip spanned the whole cell: measuring the band measured the
+     * cell. SCH-50 `half-strip` sizes the strip to the VALUE plus one pixel
+     * each side, so the band no longer reports the cell width and that
+     * assertion measured the wrong thing rather than a broken thing.
+     *
+     * What still tests both halves of the geometry is WHERE the strip sits.
+     * It is centred in its cell, so:
+     *
+     *   x0     wrong -> the strip lands outside the cell entirely
+     *   cellW  wrong -> the strip is centred against the wrong width, so the
+     *                   clear margins either side of it stop being equal
+     *
+     * A one-pixel asymmetry is legal (an odd leftover cannot split evenly, and
+     * centreX always gives the extra pixel to the right), so the tolerance is
+     * 1 -- and centring against CELL_W=32 instead of cellW=29 skews it by 3,
+     * which is well outside that.
+     */
     for (const geo of [{ x0: 0, cellW: RM.CELL_W }, { x0: 0, cellW: 29 },
                        { x0: 6, cellW: 29 }, { x0: 3, cellW: 30 }]) {
       const got = bandRun(geo);
-      if (got.w !== geo.cellW)
-        fail("cell 3 is " + got.w + "px wide at cellW=" + geo.cellW +
-             " -- the width is not threaded through");
-      if (got.x !== geo.x0 + 3 * geo.cellW)
-        fail("cell 3 starts at x=" + got.x + " for x0=" + geo.x0 + " cellW=" + geo.cellW +
-             " -- expected " + (geo.x0 + 3 * geo.cellW));
+      const cellX = geo.x0 + 3 * geo.cellW;
+      if (got.x < cellX || got.x + got.w > cellX + geo.cellW)
+        fail("cell 3 strip spans " + got.x + ".." + (got.x + got.w - 1) + " but its cell is " +
+             cellX + ".." + (cellX + geo.cellW - 1) + " -- the origin or width is not threaded through");
+      if (got.w >= geo.cellW)
+        fail("cell 3 strip is " + got.w + "px at cellW=" + geo.cellW +
+             " -- it is spanning the cell, so it is not sized to its value");
+      const left = got.x - cellX, right = (cellX + geo.cellW) - (got.x + got.w);
+      if (Math.abs(left - right) > 1)
+        fail("cell 3 strip is not centred at x0=" + geo.x0 + " cellW=" + geo.cellW +
+             ": " + left + "px clear on the left, " + right + " on the right -- " +
+             "it is being centred against some other width");
     }
     const dflt = bandRun(undefined);
-    if (dflt.x !== 3 * RM.CELL_W || dflt.w !== RM.CELL_W)
+    const dfltCellX = 3 * RM.CELL_W;
+    if (dflt.x < dfltCellX || dflt.x + dflt.w > dfltCellX + RM.CELL_W)
       fail("an omitted geom did not fall back to the grid");
     console.log("PASS: cell origin and width both honoured");
   }
@@ -253,43 +281,68 @@ Promise.all([
    * other assertion in this file. Driving the card through cellW of 27 and 28
    * left the whole suite green.
    *
-   * So measure it, the same way the row test above does: a touched cell fills
-   * its label band with a solid run of exactly cellW pixels at row lblY and
-   * prints its glyphs one row lower, so that row is an unbroken run whose
-   * START is the cell origin and whose LENGTH is the cell width. Column 0 is
-   * touched and it is the only populated key, so it is the only lit run. */
+   * So measure it -- but measure the PITCH, not one cell.
+   *
+   * This used to lean on the touched cell filling its label band with a solid
+   * run of exactly cellW pixels, so the run START was the cell origin and its
+   * LENGTH was the cell width. SCH-50 `half-strip` sizes that strip to the
+   * VALUE instead of to the cell, so its length is now a fact about the text
+   * and says nothing about the geometry.
+   *
+   * Two cells carrying the SAME label are immune to that. Whatever each label
+   * measures, both sit at the same offset inside their own cell, so the
+   * distance between where they start IS cellW exactly -- and it stays exact
+   * whether the strip spans the cell, hugs the value, or is not drawn at all.
+   * Neither cell is touched, so what is being measured is plain label text and
+   * the assertion no longer depends on the inversion existing.
+   *
+   * A cell one pixel narrow still moves the second label one pixel left, which
+   * is the failure the old check was written to catch (cellW 27 and 28 left the
+   * whole suite green) and this one catches it the same way. */
   {
     const mi = M.buildMetaIndex({ hierarchy: null, chainParams: [
-      { key: "a", name: "Alpha", type: "float", min: 0, max: 1, step: 0.01 },
+      { key: "a", name: "AA", type: "float", min: 0, max: 1, step: 0.01 },
+      { key: "b", name: "AA", type: "float", min: 0, max: 1, step: 0.01 },
     ] });
     const fb = H.createFramebuffer();
     KC.drawKnobCard(H.drawContext(fb), {
-      name: "ALPHA", value: "0.20", row: 0, touched: 0,
-      page: { kind: "knobs", keys: ["a", null, null, null, null, null, null, null] },
-      metaIndex: mi, values: { a: 0.2 },
+      name: "AA", value: "0.20", row: 0, touched: -1,
+      page: { kind: "knobs", keys: ["a", "b", null, null, null, null, null, null] },
+      metaIndex: mi, values: { a: 0.2, b: 0.2 },
     });
     const r = KC.knobCardRect(true);
     /* content top + header band + the gap row = the widget row; its label band
-     * sits LBL0_Y - ROW0_Y further down */
+     * sits LBL0_Y - ROW0_Y further down, plus the one clear row inside it */
     const lblRow = r.y + KC.BORDER_W + KC.GAP_W + KC.HEADER_BAND_H + KC.GAP_W
-                 + (RM.LBL0_Y - RM.ROW0_Y);
+                 + (RM.LBL0_Y - RM.ROW0_Y) + 1;
     /* Scan the CONTENT span only. The cards own border columns are lit on
-     * every interior row, so a full-width scan finds the border and calls
-     * everything between it one ragged run. */
+     * every interior row, so a full-width scan finds the border too. */
     const contentX = r.x + KC.BORDER_W + KC.GAP_W;
-    let lo = -1, hi = -1;
+    /* Cluster the lit columns: glyphs are not contiguous, but the gap BETWEEN
+     * two cells labels is far wider than any gap inside a word. */
+    const GAP = 6;
+    const runs = [];
+    let start = -1, last = -2;
     for (let x = contentX; x < contentX + KC.knobCardContentW(); x++) {
-      if (fb.pixels[lblRow * fb.width + x]) { if (lo < 0) lo = x; hi = x; }
+      if (!fb.pixels[lblRow * fb.width + x]) continue;
+      if (x - last > GAP) { if (start >= 0) runs.push([start, last]); start = x; }
+      last = x;
     }
-    if (lo < 0) fail("the touched cell drew no inverted label band at row " + lblRow);
-    for (let x = lo; x <= hi; x++) {
-      if (!fb.pixels[lblRow * fb.width + x]) fail("the inverted band has a hole in it");
-    }
-    if (lo !== contentX)
-      fail("cell 0 starts at x=" + lo + ", expected the content origin " + contentX);
-    if (hi - lo + 1 !== 29)
-      fail("cell 0 is " + (hi - lo + 1) + "px wide, expected 29 -- four cells " +
-           "must fill the 116px content exactly");
+    if (start >= 0) runs.push([start, last]);
+    if (runs.length !== 2)
+      fail("expected two label runs at row " + lblRow + ", found " + runs.length +
+           " -- the probe is not measuring what it thinks it is");
+    const pitch = runs[1][0] - runs[0][0];
+    if (pitch !== 29)
+      fail("cell pitch is " + pitch + "px, expected 29 -- four cells must fill " +
+           "the 116px content exactly");
+    /* ...and the first cell is where the content starts, which pitch alone
+     * cannot tell you: a card whose cells were all shifted right would keep a
+     * correct pitch. The label is centred, so allow its own clear margin. */
+    const label0Off = runs[0][0] - contentX;
+    if (label0Off < 0 || label0Off > 29)
+      fail("cell 0 label starts " + label0Off + "px into the cell -- the first " +
+           "cell is not at the content origin " + contentX);
     console.log("PASS: cell width measured at 29px");
   }
 

@@ -28,7 +28,7 @@
 
 import { KIND_ENUM, KIND_OPAQUE, enumIndexOf } from "./param_meta.mjs";
 import { formatParamValue } from "../param_format.mjs";
-import { asciiFold, fitText, shortenLabel, line, circle } from "./render_page.mjs";
+import { asciiFold, fitText, shortenLabel, line, circle, notchCorners } from "./render_page.mjs";
 import { drawVizGroup } from "./viz_draw.mjs";
 import { enumSquareLines } from "./font5x3.mjs";
 import { fontPrint as tzPrint, fontWidth as tzWidth, HEIGHT as TZ_H } from "./font_tamzen6x12.mjs";
@@ -535,8 +535,16 @@ export const KW = 17;
  * ring in a 16px box is already the right weight.
  */
 export const ENUM_W = 20;
-/** Frame (1) + margin (1) on each side. */
-export const ENUM_TEXT_W = ENUM_W - 4;
+/**
+ * The line the square can set: the frame column on each side, and nothing else.
+ *
+ * SCH-50 `thin-frame` closed up the extra 1px margin this used to hold inside
+ * the frame (`ENUM_W - 4`, 16px). Three characters is the whole budget, and
+ * measured on the `enumSquareLines` split, 16px cuts "PAS" to "PA" while 18px
+ * keeps it. The cost is that a bowl now sits one pixel off the border and the
+ * two touch at a glance.
+ */
+export const ENUM_TEXT_W = ENUM_W - 2;
 /*
  * Height of a text-bearing box, and it is ODD on purpose.
  *
@@ -578,6 +586,11 @@ function drawLine(ctx, x0, y0, x1, y1) {
 function centreX(x0, span, w) {
     return x0 + Math.floor((span - w) / 2);
 }
+
+/* `notchCorners` — the rounded-corner idiom every filled box on this grid wears
+ * — lives in render_page.mjs so viz_draw.mjs can share the same one. Re-exported
+ * here because this is the module the grid's own callers already import. */
+export { notchCorners };
 
 /**
  * Tamzen 6x12, trimmed to its cap window — 7 rows, 6px advance, which is
@@ -774,7 +787,26 @@ const KNOB_SWEEP_DEG = 270;
 const ARC_START_DEG = 230;
 const ARC_SWEEP_DEG = 260;
 const POINTER_INNER = 0.0;
-const POINTER_OUTER = 0.85;
+/*
+ * SCH-50 `arc-short`. Was 0.85r, which is Movy's number.
+ *
+ * At 0.85 the tip is 6.8px from the centre against a track at 8: one clear
+ * pixel at best, and none at the shoulders, where `drawArc`'s distance-rounded
+ * rasteriser thickens the ring. The marker merged with the rim and read as a
+ * lump growing off it rather than as a pointer aimed at it. Pulling back to
+ * 5.4px leaves two clear pixels of track at every angle, so the pointer and the
+ * scale it points at stay separate shapes.
+ *
+ * The cost is real: a shorter pointer is a smaller marker, so the angle is
+ * carried by less ink across a page of eight.
+ *
+ * It also improves the modulation dot for free. `MOD_DOT_R` is 6 and the plus
+ * spans r=5..7; a 0.85r pointer runs straight through that band, a 0.68r one
+ * stops at its inner edge. Twenty alternative knobs were drawn and rejected
+ * before this one-pixel change to the incumbent was accepted — the
+ * arc-and-pointer is not where the resemblance lives.
+ */
+const POINTER_OUTER = 0.68;
 /*
  * Modulation dot centre radius.
  *
@@ -1083,41 +1115,122 @@ function buttonPhase(fired, now, held) {
     return { pressed, filled: held || bursts.length > 0, bursts };
 }
 
+/*
+ * SCH-50 `thin-frame`. Two changes from Movy's construction, both small:
+ *
+ *   - The corners are NOTCHED. See `notchCorners` — the one idiom the whole
+ *     catalog converged on, and the only thing on this widget that is ours.
+ *   - The text box runs to the INSIDE OF THE FRAME (ENUM_TEXT_W, 18px) instead
+ *     of holding a further 2px margin off it (16px). At three characters that
+ *     is not cosmetic: it is the difference between "PAS" and "PA".
+ *
+ * Effectively a no-change vote, and taken as one deliberately. An enum square
+ * is a framed box containing a word, which is about as generic as a widget
+ * gets, so there is probably no house style in it worth changing. What matters
+ * is the CROSS-SET constraint: `drawOpaqueBox` must stay distinguishable from
+ * this, and it is — it is bracketed-and-broken where this is closed and framed.
+ *
+ * The accepted collision is with the FADER, which SCH-50 also made a framed
+ * notched box (`outline-fill`, viz_draw.mjs). A page mixing continuous faders
+ * with enums now distinguishes the two by CONTENT, not by silhouette. That was
+ * declined-alternative-and-kept, not an oversight: a frameless enum square was
+ * available and would have dissolved it. If it reads badly on hardware, the
+ * cheap fix is this widget, not the fader.
+ */
 export function drawEnumSquare(ctx, kx, ky, text) {
     const w = ENUM_W, h = BOX_H;
     ctx.fillRect(kx, ky, w, 1, 1);
     ctx.fillRect(kx, ky + h - 1, w, 1, 1);
     ctx.fillRect(kx, ky, 1, h, 1);
     ctx.fillRect(kx + w - 1, ky, 1, h, 1);
+    notchCorners(ctx, kx, ky, w, h);
 
     const [raw1, raw2] = enumSquareLines(text);
     const line1 = fitLine(raw1, ENUM_TEXT_W);
     const line2 = fitLine(raw2, ENUM_TEXT_W);
     const totalH = line2.length > 0 ? 11 : 5;
     const startY = ky + 1 + Math.floor((h - 2 - totalH) / 2);
-    /* Centre within the TEXT area (inside the margins), not the interior, so
-     * an odd remainder can never round back onto the frame. */
-    const tx = (lw) => centreX(kx + 2, ENUM_TEXT_W, lw);
+    /* Centre within the TEXT area, which is now the interior itself — an odd
+     * remainder still cannot round back onto the frame, because centreX always
+     * gives the extra pixel to the right and the span starts inside it. */
+    const tx = (lw) => centreX(kx + 1, ENUM_TEXT_W, lw);
     fontPrint4x5(ctx, tx(fontWidth4x5(line1)), startY, line1, 1);
     if (line2.length > 0) fontPrint4x5(ctx, tx(fontWidth4x5(line2)), startY + 6, line2, 1);
 }
 
-/** A knob that cannot be turned (filepath/canvas/wav_position/string), showing
- * the value's tail. Not part of Movy's vocabulary (its modules do not carry
- * this param type in the fleet this was built against) but needed so an opaque
- * param on a Movy-style page is a door to its existing editor.
+/**
+ * A knob that cannot be turned (filepath/canvas/string), showing the value's
+ * head. Not part of Movy's vocabulary — its modules do not carry this param
+ * type in the fleet this was built against — but needed so an opaque param on a
+ * Movy-style page is a door to its existing editor.
  *
- * It draws NO frame: the divable brackets (drawDivableMark) are its frame. It
- * used to draw the same solid box as an enum square, which meant a door and a
- * turnable enum were pixel-identical — you found out which was which by
- * turning one and having nothing happen. */
+ * SCH-50 `door-open`. IT NOW DRAWS ITS OWN FRAME, and that is a swap, not an
+ * addition: it used to draw none at all and wear the divable brackets as its
+ * frame instead. `drawKnobRow` therefore suppresses the bracket for this kind —
+ * see the `divable_mark` call site — so the two never double up.
+ *
+ * The frame is a notched 1px box with its RIGHT EDGE CUT AWAY for five rows and
+ * a 3-row chevron sitting in the gap, with the value set left of it. Three
+ * things follow from that shape:
+ *
+ *   - It is the only cell on the page that says which DIRECTION its door goes.
+ *     An opaque cell's whole job is to be a door — roughly FIVE params in the
+ *     entire fleet against ~135 enums — so marking the door explicitly is worth
+ *     a cell this rare spending pixels on.
+ *   - The broken edge means it can never be confused with an enum square
+ *     however the widths fall, which matters now that the enum square
+ *     (`thin-frame`) and the fader (`outline-fill`) are BOTH closed framed
+ *     boxes.
+ *   - It spans the CELL, not the KW widget box, which is what buys the room for
+ *     a filename beside a chevron. `cellOf` recovers the cell from `kx` rather
+ *     than taking it as an argument, so the signature is unchanged.
+ *
+ * ACCEPTED COST, recorded because it is the pick most likely to be reversed:
+ * a 1px pictogram either reads instantly or reads as debris, and that is not
+ * decidable from code or from a 4x render. Watch it on hardware.
+ *
+ * DELIBERATE DIVERGENCE FROM THE CATALOG OPTION: the text still comes from
+ * `displayValue`, not from the option's own ad-hoc formatter. Two behaviours
+ * live in `displayValue` that the catalog dropped because a swatch never
+ * exercised them — it takes the BASENAME of a path ("/x/kick.wav" -> "kick.wav")
+ * and it renders an empty or absent value as "--" rather than as nothing. A
+ * canvas param reports "", and a door with no text in it looks broken. Porting
+ * the option's formatter would have quietly reintroduced both.
+ */
 export function drawOpaqueBox(ctx, kx, ky, value, override) {
-    const h = BOX_H;
+    /* The cell this widget box is centred in. Mirrors drawKnobWidget's own
+     * `cellLeft(g, col) + floor((cellW - KW) / 2)`, inverted. */
+    const cellX = kx - Math.floor((CELL_W - KW) / 2);
+    const x = cellX + 1, y = ky, w = CELL_W - 2, h = BOX_H;
     const shown = (override === null || override === undefined)
         ? displayValue(value === undefined ? null : value, { kind: KIND_OPAQUE })
         : String(override);
-    centeredText(ctx, kx + 2, KW - 4,
-        ky + 1 + Math.floor((h - 2 - FONT_H) / 2), fitDev(ctx, shown, KW - 4), 1);
+
+    const gapY = y + ((h - 5) >> 1);
+    ctx.fillRect(x, y, w, 1, 1);
+    ctx.fillRect(x, y + h - 1, w, 1, 1);
+    ctx.fillRect(x, y, 1, h, 1);
+    ctx.fillRect(x + w - 1, y, 1, gapY - y, 1);
+    ctx.fillRect(x + w - 1, gapY + 5, 1, y + h - (gapY + 5), 1);
+    notchCorners(ctx, x, y, w, h);
+
+    /* The chevron sits IN the gap, not beyond it — a mark outside the cell
+     * would land on the neighbouring column, and this grid does not repaint a
+     * neighbour when this cell changes. */
+    const ax = x + w - 4;
+    for (let i = 0; i < 3; i++) {
+        ctx.fillRect(ax + i, gapY + i, 1, 1, 1);
+        ctx.fillRect(ax + i, gapY + 4 - i, 1, 1, 1);
+    }
+
+    /* Set LEFT, in the 4x5 label face rather than the taller device font: the
+     * value has to clear the chevron, and at 5x7 it would not. */
+    const budget = w - 9;
+    let t = String(shown == null ? "" : shown).toUpperCase();
+    while (t.length > 1 && fontWidth4x5(t) > budget) t = t.slice(0, -1);
+    if (fontWidth4x5(t) <= budget) {
+        fontPrint4x5(ctx, x + 3, ky + Math.floor((h - FONT4_HEIGHT) / 2), t, 1);
+    }
 }
 
 /*
@@ -1294,9 +1407,48 @@ function drawWaveMark(ctx, x, y, on) {
  * two questions — collapsing them is what made the removed gesture hard to
  * express in the first place.
  */
+/*
+ * SCH-50 `half-strip`. The strip is now sized to the VALUE plus one pixel each
+ * side, centred and notched, instead of spanning the whole 32px cell.
+ *
+ * Chosen for the notch — *"I like the rounded edge in the selection"* — and
+ * kept for the sizing. A row of held knobs becomes blocks of DIFFERENT widths,
+ * so the page shows how long each value is before you read any of them, and
+ * "ON" stops claiming the same 32px as "-24.0".
+ *
+ * It is the closest option to the incumbent in kind and the furthest in
+ * behaviour, because THE SHAPE NOW MOVES AS THE VALUE CHANGES: turning through
+ * 9 -> 10 -> 11 makes the block grow and shrink under your finger. Whether that
+ * is useful feedback or fidget is not decidable from a still and is the thing
+ * to watch on hardware.
+ *
+ * THE 30px BUDGET AND THE 1px SHOULDERS ARE ONE DECISION, not two.
+ *
+ * The budget applies to the RESTING LABEL as well as to the held value, which
+ * no per-set contact sheet could show: at the 26px this option was first drawn
+ * with, LKYTRG, LKYFLL and LSYMMT all lost a character whether or not the knob
+ * was being touched. The strip is the text plus its shoulders and it must still
+ * fit `CELL_W`, so 30 + 1 + 1 = 32 exactly. 30px with 2px shoulders would be 34
+ * and overflow; 28px with 2px rescues only two of the three labels. One pixel
+ * of shoulder is what buys the third.
+ *
+ * At full width the strip spans the whole cell, so two adjacent held knobs
+ * abut. The different-widths reading survives where it matters — a short value
+ * still draws a short block.
+ *
+ * The strip keeps the incumbent's FULL seven rows. The variable here is width;
+ * shortening it as well would put two changes in one option, and `LBL_H` is odd
+ * precisely so a 5-row face gets one clear row above and below.
+ */
 export function drawLabelCell(ctx, g, col, lblY, label, displayValue, showValue, inverted, modulated) {
     const cellX = cellLeft(g, col);
-    const text = showValue ? displayValue : label;
+    let text = String((showValue ? displayValue : label) ?? "");
+    /* Trim MEASURED, never by character count — the face is proportional (I is
+     * 1px, W is 5), so "six characters" is not a width. The budget leaves one
+     * pixel of shoulder on each side of the strip. */
+    const budget = g.cellW - 2;
+    while (text.length > 1 && fontWidth4x5(text) > budget) text = text.slice(0, -1);
+    if (fontWidth4x5(text) > budget) text = "";
     const tw = fontWidth4x5(text);
     /* Same rule as every other centred run — `floor(CELL_W/2) - floor(tw/2)`
      * biases the other way on odd widths, which made a label and the box above
@@ -1304,15 +1456,36 @@ export function drawLabelCell(ctx, g, col, lblY, label, displayValue, showValue,
     const tx = centreX(cellX, g.cellW, tw);
     /* One clear row above and below the glyphs inside the band — see LBL_H. */
     const ty = lblY + Math.floor((LBL_H - LBL_FONT_H) / 2);
-    if (inverted) {
-        ctx.fillRect(cellX, lblY, g.cellW, LBL_H, 1);
+    /* An empty run has no strip to draw: a 2px block under an untouched-looking
+     * cell is noise, not a highlight. */
+    const strip = inverted && tw > 0;
+    if (strip) {
+        ctx.fillRect(tx - 1, lblY, tw + 2, LBL_H, 1);
+        notchCorners(ctx, tx - 1, lblY, tw + 2, LBL_H);
         fontPrint4x5(ctx, tx, ty, text, 0);
     } else {
         fontPrint4x5(ctx, tx, ty, text, 1);
     }
     if (modulated) {
         const wx = Math.max(cellX, tx - 6);
-        drawWaveMark(ctx, wx, lblY + 1, inverted ? 0 : 1);
+        /*
+         * Polarity follows what the tilde actually LANDS ON, and this is a
+         * deliberate divergence from the catalog option, which keyed it on
+         * `inverted` alone.
+         *
+         * With a full-width strip those were the same question — everything in
+         * the band was on the strip. With a strip sized to the text they are
+         * not: the mark sits six pixels left of the run, which is outside the
+         * strip for any value shorter than the cell. The option therefore drew
+         * the tilde in colour 0 on black ground, i.e. INVISIBLE, on exactly the
+         * cells that need it most — a modulated parameter whose knob is being
+         * held. No per-set contact sheet shows that, because it needs the
+         * touched state and the modulated state at once.
+         *
+         * Pinned by the held-and-modulated case in tests/host/test_param_pages_movy.sh.
+         */
+        const onStrip = strip && wx >= tx - 1;
+        drawWaveMark(ctx, wx, lblY + 1, onStrip ? 0 : 1);
     }
 }
 
@@ -1449,8 +1622,21 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
          * mark is the only thing that says so. */
         /* `divable_mark`, NOT `divable` — an enum opens a picker but is not
          * bracketed. See param_meta.mjs normalize() for why the mark cannot
-         * simply follow divability. */
-        if (meta.divable_mark) drawDivableMark(ctx, g, col, rowY);
+         * simply follow divability.
+         *
+         * EXCEPT on an opaque cell, which since SCH-50 `door-open` draws its
+         * own notched frame with a chevron in the broken edge. The brackets
+         * used to BE that widget's frame; now they would sit one pixel outside
+         * a frame that already exists, on the same rect, and read as a doubled
+         * border rather than as a mark. The affordance is not lost — the
+         * chevron states it more explicitly than the brackets ever did.
+         *
+         * This is a narrower exclusion than "opaque cells are not marked".
+         * granny's `wav_position` is a ranged number a knob turns perfectly
+         * well AND has a waveform editor worth opening, so it is `divable_mark`
+         * without being `KIND_OPAQUE`: it draws as a KNOB and keeps its
+         * brackets, which is the whole reason the two flags are separate. */
+        if (meta.divable_mark && meta.kind !== KIND_OPAQUE) drawDivableMark(ctx, g, col, rowY);
 
 
         const label = labelForCell(meta.label || meta.key, g.cellW);
@@ -1540,8 +1726,29 @@ export const FOOTER_CANON = Object.freeze({
     backActions: Object.freeze(["EXIT", "OUT"]),
 });
 
+/*
+ * SCH-50 `no-rule`. THE RULE IS GONE.
+ *
+ * `RULE_Y` used to carry a solid hairline across all 128 columns. Nothing else
+ * moved: the three clear rows between the last label band and the pills are now
+ * the only separator, and on a screen this dense that is a real proposition
+ * rather than a lazy one — the pills are already inverted blocks, so the row is
+ * unmistakably a different kind of thing with nothing drawn above it.
+ *
+ * Locked during judging and confirmed afterwards, because the option numbered
+ * next to it is `dotted-rule`, which HAS a rule, just a light one. "The one
+ * without the rule" and the number disagreed; the description won.
+ *
+ * It is also the most minimal pick in the whole catalog, chosen for the one
+ * STRUCTURAL element while the fader, the label strip and all four curve
+ * treatments took fills. That is the pattern rather than an inconsistency:
+ * texture inside widgets, minimal chrome around them.
+ *
+ * `RULE_Y` is kept — it is the top of the band the footer owns, and callers
+ * clear `RULE_Y .. FOOTER_Y + FOOTER_H` to erase it. It is no longer a row that
+ * gets drawn on.
+ */
 export function drawFooter(ctx, hints) {
-    ctx.fillRect(0, RULE_Y, W, 1, 1);
     if (!hints || !hints.length) return 0;
     const ty = FOOTER_Y + Math.floor((FOOTER_H - FONT4_HEIGHT) / 2);
 
@@ -1558,7 +1765,20 @@ export function drawFooter(ctx, hints) {
     const drawPair = (x, h) => {
         const key = caps(h[0]), action = caps(h[1]);
         const kw = fontWidth4x5(key);
-        ctx.fillRect(x, ty - 1, kw + HINT_PAD * 2, FONT4_HEIGHT + 2, 1);
+        const pw = kw + HINT_PAD * 2, ph = FONT4_HEIGHT + 2;
+        ctx.fillRect(x, ty - 1, pw, ph, 1);
+        /*
+         * ALL FOUR corners notched, including the bottom pair, which sit on the
+         * last row of the panel.
+         *
+         * The top two were done first, on the reasoning that a bottom corner
+         * has no ground to read against. What actually makes it work is the
+         * same thing that lets the header's glyphs start on row 0: the panel is
+         * INSET IN PLASTIC, so the ground a bottom corner reads against is the
+         * bezel, and a notch against the bezel reads exactly as a notch against
+         * a dark row.
+         */
+        if (pw >= 3) notchCorners(ctx, x, ty - 1, pw, ph);
         fontPrint4x5(ctx, x + HINT_PAD, ty, key, 0);
         fontPrint4x5(ctx, x + kw + HINT_PAD + HINT_GAP, ty, action, 1);
     };
