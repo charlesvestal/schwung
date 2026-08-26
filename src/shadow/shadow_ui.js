@@ -989,6 +989,13 @@ function setView(newView, customLabel) {
      * already down on a knob it knows about. */
     knobCardClose();
     knobTouched.fill(false);
+    /* A wait belongs to the screen it is drawn on. Leaving by ANY route — Back,
+     * the gate opening the editor, or a dismiss that drops straight to
+     * VIEWS.SLOTS — ends it, so a stale hold cannot be resurrected by a later
+     * arrival and cannot go on probing behind a screen nobody is looking at. */
+    if (view === VIEWS.COMPONENT_LOADING && newView !== VIEWS.COMPONENT_LOADING) {
+        componentLoadHold = null;
+    }
     view = newView;
     needsRedraw = true;
 

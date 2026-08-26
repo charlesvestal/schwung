@@ -930,6 +930,46 @@ shared `saveMasterFxChainConfig()` sink (derived from the routing table, never
 hand-listed), a key-specific saver welded to the assignment, or backend-owned.
 Stored values are **not** indexes — `resample_bridge` stores 0 and **2**.
 
+### A component editor WAITS; it does not decide from one read
+
+Opening a component's editor used to be one read of `<prefix>:ui_hierarchy` and
+`if (!hierarchy) enterComponentEditFallback(...)` — which is the three-answers
+defect one layer above the controller that solves it, and the fallback is
+irreversible. For MiniJV and Osirus, the two slowest things in the fleet to
+come up, that drew an editor with **nothing in it**: neither ships a
+`ui_chain.js`, so the fallback lands on the bare preset browser, and the preset
+reads it makes there fail for the same reason the hierarchy read did.
+
+What made the entry the wrong place to give up is that **everything which knows
+how to wait is behind it** — the grid's `Loading...` hold, its bounded contract
+retry, its ten-second recovery probe, the list editor's `is_loading` re-fetch.
+
+`src/shared/component_load_gate.mjs` answers **ENTER / HOLD / FALLBACK**, and
+`openComponentEditor` (`shadow_ui.js`) is the one gate both editors — slot
+chain and Master FX — enter through. HOLD raises `VIEWS.COMPONENT_LOADING`
+("Loading...", `Back: exit`) and asks again: ~0.5 s apart for ~20 s, then every
+ten seconds for as long as the screen is up. **There is no give-up-and-show-the
+-fallback ending**, on purpose — a blank editor is the failure being fixed.
+
+**The empty answer needs a second question.** A module that declares no
+hierarchy and a position whose module has not finished arriving BOTH answer
+`""`. `<prefix>_module` separates them: the chain host publishes the name only
+after `create_instance` returns (`chain_host.c:504`). Named + no hierarchy
+falls back **immediately**, so the well-behaved fleet never sees the hold, and
+entering still costs the one read it always did (`module` and `is_loading` are
+read lazily, on the ambiguous branch only).
+
+The wait is view-agnostic — it sits in front of the destination choice, so it
+works with Param View on Knobs or List and with the screen reader on — and it
+is drawn and serviced on **both** draw paths, main and co-run. The probe runs
+*before* the dispatch, so a probe that lands opens the editor on that frame.
+`tests/host/test_component_load_hold_wiring.sh` pins all of that from source;
+`test_component_load_gate.sh` unit-tests the decision, including that a named
+module with no hierarchy is **not** held.
+
+Not a regression: the old gate is byte-identical at `v0.11.6`. What changed is
+how long these two modules take to answer.
+
 ### Shortcuts
 
 Shadow UI access gated by **Global Settings → Shortcuts → Shadow UI Trigger** (`shadow_ui_trigger` in `features.json`): `Both` (default) / `Long Press` / `Shift+Vol`.
