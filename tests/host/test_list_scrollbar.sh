@@ -88,12 +88,37 @@ if (!top || !mid || !end) {
     if (!(top.y < mid.y && mid.y < end.y))
         bad("the thumb does not advance with the selection: top y=" + top.y +
             ", middle y=" + mid.y + ", end y=" + end.y);
-    if (top.y !== TOP)
+    /*
+     * The ends are measured against the TRACK the renderer drew, not against
+     * the list rect. The track covers the ROWS, which stop short of the rect --
+     * the rect is 10..54 and the last row of glyphs ends at 52 -- so asserting
+     * the rect would pin the overhang that was just removed.
+     */
+    const trackEnds = (r) => {
+        let lo = Infinity, hi = -Infinity;
+        for (const f of r.bar) { if (f.y < lo) lo = f.y; if (f.y + f.h > hi) hi = f.y + f.h; }
+        return [lo, hi];
+    };
+    const [t0] = trackEnds(render(N, 0));
+    const [, t1] = trackEnds(render(N, N - 1));
+    if (top.y !== t0)
         bad("at the start of a list the thumb should sit at the top of the track (" +
-            TOP + "), got " + top.y);
-    if (end.y + end.h !== BOT)
+            t0 + "), got " + top.y);
+    if (end.y + end.h !== t1)
         bad("at the end of a list the thumb should reach the bottom of the track (" +
-            BOT + "), got " + (end.y + end.h));
+            t1 + "), got " + (end.y + end.h));
+
+    /* And the track must not overhang the rows it measures. */
+    {
+        const { fb } = render(N, 0);
+        let contentBottom = -1;
+        for (let y = TOP; y < BOT; y++)
+            for (let x = 0; x < TRACK_X - 1; x++)
+                if (fb.pixels[y * fb.width + x]) { contentBottom = y; break; }
+        if (t1 - 1 > contentBottom)
+            bad("the track runs to y=" + (t1 - 1) + " but the list content ends at y=" +
+                contentBottom + " -- the bar overhangs what it is measuring");
+    }
 
     /* 3. The floor. Proportionally this thumb is ~1.4px. */
     if (top.h < 2)
