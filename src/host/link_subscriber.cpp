@@ -96,6 +96,64 @@ static std::atomic<uint32_t> g_cb_count[LINK_AUDIO_IN_SLOT_COUNT];
 static std::atomic<uint32_t> g_cb_gap_seq[LINK_AUDIO_IN_SLOT_COUNT];
 static std::atomic<uint32_t> g_cb_gap_us[LINK_AUDIO_IN_SLOT_COUNT];
 
+/* ---- continuity of Move's OWN stream, measured before our ring exists -----
+ *
+ * The question this settles: does Move hand us audio whose consecutive
+ * buffers do not join, or do we damage joined audio somewhere downstream?
+ *
+ * Everything else is measured after the ring, so it cannot tell those apart.
+ * This compares the FIRST sample of each incoming buffer against the LAST
+ * sample of the previous one for the same slot, and counts the joins where
+ * that step dwarfs the signal's own local slope. It is the earliest possible
+ * observation point — before the ring, before read_pos, before the mixer.
+ *
+ * RT-safe: a handful of loads and one comparison per callback. No allocation,
+ * no logging, no locks; the 5 s report is drained on the main loop.
+ */
+static std::atomic<int32_t>  g_cont_last[LINK_AUDIO_IN_SLOT_COUNT];   /* last sample */
+static std::atomic<int32_t>  g_cont_slope[LINK_AUDIO_IN_SLOT_COUNT];  /* |diff| avg x16 */
+static std::atomic<uint32_t> g_cont_joins[LINK_AUDIO_IN_SLOT_COUNT];  /* joins seen */
+static std::atomic<uint32_t> g_cont_breaks[LINK_AUDIO_IN_SLOT_COUNT]; /* joins that broke */
+static std::atomic<uint32_t> g_cont_seen[LINK_AUDIO_IN_SLOT_COUNT];   /* has a previous */
+
+static inline void link_cb_note_continuity(int slot, const int16_t *samples,
+                                           size_t num_frames)
+{
+    if (num_frames < 4) return;
+    /* Left channel only; the two are interleaved and a break shows in both. */
+    const int32_t first = samples[0];
+    const int32_t last  = samples[(num_frames - 1) * 2];
+
+    /* Local slope INSIDE this buffer, as the scale to judge the join against.
+     * Averaged over 8 steps: cheap, and enough to separate a transient from a
+     * splice without an absolute threshold (an absolute one cannot tell a kick
+     * drum from a dropout — that mistake cost a day). */
+    int32_t slope = 0;
+    for (int i = 1; i <= 8 && (size_t)i < num_frames; i++) {
+        int32_t d = (int32_t)samples[i * 2] - (int32_t)samples[(i - 1) * 2];
+        slope += (d < 0) ? -d : d;
+    }
+    slope /= 8;
+    if (slope < 1) slope = 1;
+
+    if (g_cont_seen[slot].load(std::memory_order_relaxed)) {
+        const int32_t prev = g_cont_last[slot].load(std::memory_order_relaxed);
+        int32_t step = first - prev;
+        if (step < 0) step = -step;
+        /* Judge against the larger of this buffer's slope and the previous
+         * one's, so a join into a genuinely loud attack is not counted. */
+        int32_t prev_slope = g_cont_slope[slot].load(std::memory_order_relaxed);
+        int32_t scale = (slope > prev_slope) ? slope : prev_slope;
+        g_cont_joins[slot].fetch_add(1, std::memory_order_relaxed);
+        if (step > scale * 4) {
+            g_cont_breaks[slot].fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    g_cont_last[slot].store(last, std::memory_order_relaxed);
+    g_cont_slope[slot].store(slope, std::memory_order_relaxed);
+    g_cont_seen[slot].store(1, std::memory_order_relaxed);
+}
+
 static inline void link_cb_note_delivery(int slot)
 {
     struct timespec ts;
@@ -485,6 +543,9 @@ int main()
                                 if (num_frames == 0) return;
                                 if (!samples) return;
 
+                                link_cb_note_continuity(slot_idx_cap,
+                                                        samples, num_frames);
+
                                 link_audio_in_slot_t *slot =
                                     &in_shm_cap->slots[slot_idx_cap];
 
@@ -686,6 +747,16 @@ int main()
                 LOG_INFO(LINK_SUB_LOG_SOURCE,
                          "cb slot=%d n=%u max_gap=%u us (%.1f ms) max_burst_run=%u",
                          i, n, max_gap, (double)max_gap / 1000.0, max_run);
+                uint32_t joins  = g_cont_joins[i].exchange(0, std::memory_order_relaxed);
+                uint32_t breaks = g_cont_breaks[i].exchange(0, std::memory_order_relaxed);
+                if (joins) {
+                    LOG_INFO(LINK_SUB_LOG_SOURCE,
+                             "continuity slot=%d joins=%u breaks=%u (%.2f%%) "
+                             "-- breaks here mean MOVE's stream is discontinuous, "
+                             "upstream of our ring",
+                             i, joins, breaks,
+                             100.0 * (double)breaks / (double)joins);
+                }
             }
         }
 
