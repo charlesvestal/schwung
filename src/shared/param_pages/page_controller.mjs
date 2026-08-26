@@ -2728,9 +2728,9 @@ export function createController(io = {}) {
      * the bank bar is the page INDICATOR and must not travel with the page it
      * indicates, and the footer stays put with it.
      */
-    function drawKnobsAsList(ctx, index, title, footer, chrome) {
+    function drawKnobsAsList(ctx, index, title, footer, chrome, header) {
         const mp = s.pages[index] || null;
-        drawHeaderMovy(ctx, title || "", pageLabel(mp), false);
+        if (header) drawHeaderMovy(ctx, title || "", pageLabel(mp), false);
         if (chrome) drawBankBar(ctx, index | 0, Math.max(1, s.pages.length), pageGroups());
         const bottom = footer ? RULE_Y : 64;
         /* "Entered" is a property of the page you are ON. A page sliding away
@@ -2785,11 +2785,23 @@ export function createController(io = {}) {
      * reserves the footer band, because a sliding page must be the same picture
      * as the settled one, merely translated.
      *
+     * `header` is false on a sliding pass for a DIFFERENT reason, and it is a
+     * separate option rather than another thing `chrome` implies. The bar and
+     * the footer stay put because they report the screen; the header is half
+     * fixed and half moving — the module title is identical on every page of a
+     * module, so sliding it is motion carrying no information, while the page
+     * NAME is the one thing that does change. So the band is suppressed here
+     * and the caller composites it with drawHeaderSlide, which slides the name
+     * within its own column and leaves the title alone. Rows 0..HEADER_H-1 are
+     * left completely untouched by a `header: false` draw, on every page kind:
+     * five call sites, and gating four of them leaves a travelling title on the
+     * fifth.
+     *
      * Overlays — the hint panel, the section picker, the knob card, the enum
      * peek — are NOT drawn here. They belong to the screen, not to a page, and
      * they must never slide.
      */
-    function drawPage(ctx, index, { title, footer, chrome = true } = {}) {
+    function drawPage(ctx, index, { title, footer, chrome = true, header = true } = {}) {
         const mp = s.pages[index] || null;
         /*
          * AN INDEX OFF THE END DRAWS NOTHING, and it has to be said here.
@@ -2803,12 +2815,12 @@ export function createController(io = {}) {
          * of the page set, every time somebody jogs past either.
          */
         if (!mp) return;
-        if (knobsAsList(mp)) { drawKnobsAsList(ctx, index, title, footer, chrome); return; }
+        if (knobsAsList(mp)) { drawKnobsAsList(ctx, index, title, footer, chrome, header); return; }
         if (mp && mp.kind === PAGE_ITEMS) {
             /* A real list, so it draws like a menu page: same chrome, same
              * five rows, same rect. Inert it highlights nothing — the page
              * is something you can go INTO, not something you are in. */
-            drawHeaderMovy(ctx, title || "", mp.name, false);
+            if (header) drawHeaderMovy(ctx, title || "", mp.name, false);
             if (chrome) drawBankBar(ctx, index | 0, Math.max(1, s.pages.length), pageGroups());
             const ibottom = footer ? RULE_Y : 64;
             const ist = itemsState(mp) || { list: [], cursor: 0, current: -1 };
@@ -2839,7 +2851,7 @@ export function createController(io = {}) {
              * one of this module's pages rather than as somewhere else.
              * That is the whole point: it used to eject into the list
              * editor, which looks nothing like this. */
-            drawHeaderMovy(ctx, title || "", mp.name, false);
+            if (header) drawHeaderMovy(ctx, title || "", mp.name, false);
             if (chrome) drawBankBar(ctx, index | 0, Math.max(1, s.pages.length), pageGroups());
             const pbottom = footer ? RULE_Y : 64;
             const prect = { x: MENU_FRAME_X, y: MENU_FRAME_Y,
@@ -2865,7 +2877,7 @@ export function createController(io = {}) {
              * and the bank bar all stay put, so a menu reads as one of this
              * module's pages rather than as somewhere else. header:false
              * because that header is already drawn. */
-            drawHeaderMovy(ctx, title || "", mp.name, false);
+            if (header) drawHeaderMovy(ctx, title || "", mp.name, false);
             if (chrome) drawBankBar(ctx, index | 0, Math.max(1, s.pages.length), pageGroups());
             const bottom = footer ? RULE_Y : 64;
             const entered = menuEntered() && index === s.pageIndex;
@@ -2945,6 +2957,9 @@ export function createController(io = {}) {
             nowMs: now(),
             /* The bar and the band are the caller's on a sliding pass. */
             bankBar: chrome,
+            /* And so is the header -- the title does not travel, only the page
+             * name does, in its own column. See drawHeaderSlide. */
+            header,
             footer: chrome ? footer : null,
         });
     }
