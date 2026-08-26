@@ -1,132 +1,100 @@
 /**
- * styles/knob.mjs — SET 1: ten alternatives to the arc knob.
+ * styles/knob.mjs — SET 1: ten REFINEMENTS of the arc-and-pointer.
  *
- * The shipping widget (`drawArcKnob`, render_page_movy.mjs) is the single most
- * Elektron-shaped thing on the screen, and it says so in its own comments: its
- * 230-degree start and 260-degree sweep were "measured off Elektron's screen
- * (128x64, recovered from a 4x capture)". If any one widget has to move for
- * this UI to stop reading as a clone, it is this one.
+ * WHY THIS SET IS NOT TEN ALTERNATIVES.
  *
- * ORDERING IS BY FAMILY, NOT BY DISTANCE. The first cut of this set was
- * ordered minimal -> radical, and ordering by distance is what produced it:
- * position 10 has to be the furthest thing from the baseline, so the tail of
- * the set was chosen for novelty and novelty is not quality. That set was
- * reported back as "all pretty shitty", which was right — a stipple that reads
- * as punctuation, a sunburst you cannot read a value off, digits over a
- * checker ground. None of that is fixable by tuning; it was the wrong brief.
+ * Two previous rounds were. The first was briefed minimal -> radical and
+ * produced novelty rather than quality — a stipple that read as punctuation, a
+ * sunburst you cannot take a value off, digits over a dither — and came back as
+ * "all pretty shitty". The second was briefed clean and legible and produced
+ * ten competent but unrelated widgets: a wedge, two bars, a VU needle, a notch
+ * ring. Every one of them was judged, on a fixed ring rasteriser, and the
+ * verdict was:
  *
- * So this set is ten designs that could ship, grouped by construction:
+ *     "Knobs think the current is the best and anything else seems like
+ *      reaching."
  *
- *   1-5   ARC FAMILY. An open or closed track with the value carried by a
- *         pointer, a dot, a fill or a notch.
- *   6-7   CENTRE-RADIATING. No track — the value is the angle of something
- *         drawn out of the hub.
- *   8-9   LINEAR. A framed bar, vertical then horizontal.
- *   10    GEOMETRIC. A closed ring whose value is a hole in it.
+ * Twenty variants across two rounds and the shipping arc-and-pointer beat all
+ * of them. That is not a failure to find the answer, it IS the answer: an arc
+ * with a pointer is the obvious way to draw a bounded continuous value, and
+ * both earlier rounds kept answering a question nobody asked.
  *
- * Every option here obeys the same four rules, and they are rules rather than
- * preferences because each one is a way the previous set failed:
+ * So this round stops arguing. EVERY option here keeps the arc-and-pointer
+ * silhouette — an open track, a radial marker inside it — and varies only
+ * execution:
  *
- *   - SOLID INK ONLY. No dither anywhere inside the widget. At 17x15 a 50%
- *     ground laps at a 1px stroke and the whole cell turns to mush; dither is
- *     for the large grounds and fills elsewhere in this catalog.
- *   - v=0 AND v=1 MUST BE UNMISTAKABLE, and unmistakably different from each
- *     other. Anything that draws nothing at one end fails, so every option
- *     carries a permanent frame, track or end mark.
- *   - MONOTONE TRAVEL, verified by eye at v = 0, .25, .5, .75, 1 rather than
- *     assumed from the maths.
- *   - NOTHING THAT READS AS A GLYPH. If a cell can be mistaken for a comma, a
- *     bracket or a rendering fault, it is not a control.
+ *     stroke weight of the track          (1, 5)
+ *     pointer length and whether it reaches the hub or the rim   (1, 2, 3, 6)
+ *     whether there is a hub, and how big (4)
+ *     rim treatment: end caps, centre detent                     (7, 8)
+ *     whether travelled track is distinguished from untravelled  (9)
+ *     the width of the gap at the bottom  (10)
  *
- * GEOMETRY. Every option gets a box of KW (17) by BOX_H (15) at (kx, ky), and
- * must not put a pixel outside it. One row of overflow lands on the label
- * band, which the grid does not repaint — it would persist on hardware and
- * appear nowhere in a preview of a single widget.
+ * The test this set has to pass is: ten versions of one knob, and one of them
+ * is best — not ten different widgets. If any option here makes a reader ask
+ * "why is this a knob at all", it is the wrong option.
  *
- * Two centres are in use, and the difference is forced rather than stylistic.
- * The OPEN-ARC options inherit the shipping centre (kx+8, ky+8) at r=8, which
- * fits a 15-row box only because the track is open at the bottom: a closed
- * circle at that radius would need 17 rows. The CLOSED-RING options therefore
- * sit at (kx+8, ky+7) with r=7, which spans exactly ky..ky+14. Raising the
- * radius by one, or dropping the centre by one, clips — silently, on hardware
- * only, which is what `tests/host/test_style_catalog.sh` asserts against.
+ * POSITION 1 IS THE INCUMBENT. Same centre, same radius, same 230/260 track,
+ * same hub-to-0.85r pointer as `drawArcKnob` in render_page_movy.mjs, drawn on
+ * the tabulated ring instead of `ctx.drawArc`. It is the baseline the other
+ * nine are refinements of, and it is allowed to win.
  *
- * MODULATION, and this is the part the catalog CANNOT show you. `drawModDot`
- * rides a 5px plus centred at radius KNOB_R-2 = 6, so it occupies r=5..7.
- * `renderInContext` clears the widget box and draws only the option, so no
- * page in catalog-out/ has a modulation dot on it. Verdicts from the geometry:
+ * GEOMETRY. Box is KW (17) by BOX_H (15) at (kx, ky) and NOTHING may fall
+ * outside it — one row of overflow lands on the label band, which the grid does
+ * not repaint, so it persists on hardware and appears in no single-widget
+ * preview. Centre is (kx+8, ky+8) at r=8 throughout, which fits fifteen rows
+ * only because the track is OPEN AT THE BOTTOM: the ring's bottom rows all fall
+ * inside the gap and are never plotted. That is a live constraint, not an
+ * observation — option 10 narrows the gap and had to be checked row by row
+ * (its lowest lit pixel is ky+14, the last legal row).
  *
- *   1 arc-pointer   clear. Pointer stops at 0.74r, inside the dot's band, but
- *                   they coincide only when the live value equals the base —
- *                   which is true of the shipping widget too.
- *   2 arc-dot       COLLIDES by construction: this option's own dot rides at
- *                   r=5, straight through the modulation band. Adopting it
- *                   means giving the two marks different shapes (a filled dot
- *                   for the value, the existing plus for modulation) or
- *                   different radii.
- *   3 arc-fill      clear. The fill is r=7..8, the dot spans r=5..7 — they
- *                   share one radius, so the mark reads as a bump on the
- *                   inside of the fill. Legible but not clean; MOD_DOT_R 6->5
- *                   separates them.
- *   4 arc-thick     COLLIDES. The 2px track is r=7..8 and the dot's outer arm
- *                   is at r=7. Same fix as 3.
- *   5 ring-fill     COLLIDES on the filled span (r=5..7) and is clear on the
- *                   rest, so the mark would blink as the value passed it.
- *   6 needle-only   NO HOST, and not for want of room — its pivot is at
- *                   (kx+8, ky+12) and its sweep is 124 degrees, so a dot on
- *                   the shipping centre and radius would sit in the middle of
- *                   the needle's travel and mean nothing. A VU meter's
- *                   modulation mark is a second, shorter needle.
- *   7 wedge         COLLIDES. The pie is solid out to r=6.
- *   8, 9            NO HOST. A linear bar needs a linear modulation mark — a
- *                   tick outside the frame, or a second thumb.
- *   10 notch-ring   clear. The ring is r=7 exactly and the dot's outer arm is
- *                   r=7, so they touch; one pixel of radius on either fixes
- *                   it, and unlike 4 there is no 2px band to shrink.
+ * NO ctx.drawArc, anywhere. Its rasteriser is a distance-rounded union of a row
+ * scan and a column scan, and near the top and bottom five consecutive columns
+ * round to the same row: a five-pixel flat cap, so a small circle reads as a
+ * rounded rectangle. Every arc option in round 2 inherited that and it is the
+ * whole of why the set was called sloppy. `styles/ring.mjs` is hand-tabulated
+ * and every option here goes through it, so a partial track is a pixel-exact
+ * subset of the whole one and a 2px band shares the 1px band's silhouette.
  *
- * That is a real cost and it is not a reason to drop any of these: the dot is
- * ~20 lines and moves with whatever widget wins. It is a reason not to read
- * this catalog as ten drop-in replacements.
+ * MODULATION, which the contact sheet CANNOT show you. `drawModDot` rides a
+ * 5px plus centred at KNOB_R-2 = 6, so it occupies r=5..7 at whatever angle the
+ * live value is. `renderInContext` clears the box and draws only the option, so
+ * no page in catalog-out/ has one on it. Each option's note states its own
+ * verdict; the summary is that a 1px track at r=8 with a pointer stopping at or
+ * below 0.74r (5.9px) is clear, and anything that puts ink in the r=5..7 band —
+ * a 2px track, an inward rim mark, a long pointer — touches it. Every collision
+ * here is fixable by moving MOD_DOT_R to 5, which is a one-line change in the
+ * production file; none of them is a reason to reject an option, but a reader
+ * should know which ones carry that cost.
  *
  * Nothing here ships. Production draw code imports nothing from this file.
  */
 
 import { registerSet, KIND_DRAW } from "./index.mjs";
 import { KW, BOX_H, KNOB_R } from "../render_page_movy.mjs";
-import { notchCorners } from "./dither.mjs";
 import { ring, ringBand } from "./ring.mjs";
 
 /* The shipping numbers, repeated rather than imported because they are not
- * exported — and because an option is allowed to disagree with them. */
+ * exported from render_page_movy.mjs. An option is allowed to disagree with
+ * them — option 10 is the one that does — but position 1 must not. */
 const ARC_START = 230, ARC_SWEEP = 260;   /* the track */
-const PTR_START = 225, PTR_SWEEP = 270;   /* the pointer's travel, 5 degrees proud at each end */
+const PTR_START = 225, PTR_SWEEP = 270;   /* pointer travel, 5 degrees proud at each end */
 
-/* The closed-ring geometry. See the header: r=7 about (kx+8, ky+7) is the
- * largest full circle that fits fifteen rows. */
-const RING_R = 7;
-const RING_CY = 7;
-
-const clamp01 = (v) => (v > 1 ? 1 : v < 0 ? 0 : (typeof v === "number" && v === v ? v : 0));
+const clamp01 = (v) =>
+    (typeof v === "number" && v === v) ? (v < 0 ? 0 : v > 1 ? 1 : v) : 0;
 const rad = (deg) => deg * Math.PI / 180;
 
-/* ---------------------------------------------------------- primitives --
- *
- * `line` is optional on a draw context (render_page_movy takes a different
- * path when the caller omits them), so every use here goes through a wrapper
- * with the same JS fallback the device binding is ported from. A catalog that
- * only ever exercised the native path would be a preview that can disagree
- * with the OLED, which is the specific way a knob-ring bug got through here
- * before.
- *
- * `drawArc` is no longer used AT ALL — see styles/ring.mjs. Its rasteriser is
- * a distance-rounded union of a row scan and a column scan, and near the top
- * and bottom of a circle the column scan puts five consecutive pixels on one
- * row: a five-pixel flat cap, so a radius-6 circle reads as a rounded
- * rectangle. Every option in the arc family inherited that, and it is the
- * whole of why the set was reported back as looking sloppy. The rings are
- * tabulated instead, which is what `drawSwitch` in viz_draw.mjs already does
- * for exactly this reason. Nothing about the designs changed. */
+/* ---------------------------------------------------------- primitives -- */
 
+/**
+ * A line, via the native binding when the context offers one.
+ *
+ * `line` is optional on a draw context — render_page_movy takes a different
+ * path when the caller omits it — so this carries the same JS fallback the
+ * device binding is ported from. A catalog that only ever exercised one of the
+ * two paths is a preview that can disagree with the OLED, which is the specific
+ * way a knob-ring bug got through here before.
+ */
 function seg(ctx, x0, y0, x1, y1, color = 1) {
     x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
     if (typeof ctx.line === "function") { ctx.line(x0, y0, x1, y1, color); return; }
@@ -142,351 +110,285 @@ function seg(ctx, x0, y0, x1, y1, color = 1) {
     }
 }
 
+/** The point at radius `rr` on the dial, at angle `deg` (0 = twelve o'clock). */
+function at(cx, cy, rr, deg) {
+    const a = rad(deg);
+    return { x: cx + rr * Math.sin(a), y: cy - rr * Math.cos(a) };
+}
+
+/** The pointer's angle at `v`, on a given travel. */
+const ptrDeg = (v, start = PTR_START, sweep = PTR_SWEEP) => start + v * sweep;
+
+/** A 1px radial stroke between two radii at one angle. */
+function radial(ctx, cx, cy, rIn, rOut, deg) {
+    const p0 = at(cx, cy, rIn, deg), p1 = at(cx, cy, rOut, deg);
+    seg(ctx, p0.x, p0.y, p1.x, p1.y, 1);
+}
+
 /**
- * A solid pie from the hub, plotted by SAMPLING the angle.
+ * A 2px radial stroke, thickened along ONE AXIS.
  *
- * Not tabulated, and it does not need to be: the pie's only curved edge is its
- * outer rim, which is covered by the tabulated track drawn one pixel outside
- * it, so no cap of the pie is ever the silhouette of the widget. Sampling
- * finely enough that consecutive samples never skip a pixel is what gives its
- * two RADIAL edges — the part a wedge is actually read by — clean straight
- * ends.
+ * Never along the true perpendicular. The perpendicular is the obvious choice
+ * and it is wrong on a raster: at 45 degrees it is (1,-1), which is the one
+ * direction a 45-degree Bresenham line is invariant under, so the copy lands
+ * exactly on the original's anti-diagonal neighbours and the two strokes come
+ * out as parallel hairlines with a lit gap between them — a hollow wedge, not a
+ * 2px pointer.
+ *
+ * A pure (1,0) or (0,1) displacement always yields a solid double stroke,
+ * because a Bresenham line and the same line shifted one pixel along an axis
+ * are 8-connected everywhere. Pick the axis the stroke is NOT running along, or
+ * the copy lands on top of the original and thickens nothing.
  */
-function pie(ctx, cx, cy, r, start, sweep) {
-    if (r <= 0) return;
-    const steps = Math.max(2, Math.ceil(Math.max(sweep, 1) * Math.PI / 180 * r * 2));
-    for (let i = 0; i <= steps; i++) {
-        const a = rad(start + sweep * i / steps);
-        const s = Math.sin(a), c = Math.cos(a);
-        for (let rr = 0; rr <= r; rr++)
-            ctx.fillRect(Math.round(cx + rr * s), Math.round(cy - rr * c), 1, 1, 1);
-    }
+function radial2(ctx, cx, cy, rIn, rOut, deg) {
+    const a = rad(deg);
+    const steep = Math.abs(Math.cos(a)) >= Math.abs(Math.sin(a));
+    const ox = steep ? 1 : 0, oy = steep ? 0 : -1;
+    const p0 = at(cx, cy, rIn, deg), p1 = at(cx, cy, rOut, deg);
+    seg(ctx, p0.x, p0.y, p1.x, p1.y, 1);
+    seg(ctx, p0.x + ox, p0.y + oy, p1.x + ox, p1.y + oy, 1);
 }
 
-/** Point on the dial at `t` (0..1) along the pointer's travel, radius `rr`. */
-function polar(kx, ky, t, rr, startDeg = PTR_START, sweepDeg = PTR_SWEEP, cyOff = KNOB_R) {
-    const a = rad(startDeg + t * sweepDeg);
-    return { x: kx + KNOB_R + rr * Math.sin(a), y: ky + cyOff - rr * Math.cos(a) };
-}
+/* ------------------------------------------------------------- 1 ------ */
 
 /**
- * A solid 3x3 bead.
+ * 1. arc-pointer — the incumbent, on the tabulated ring.
  *
- * ODD-SIZED, not a 2x2, and that is not a taste call: an even-sized mark has
- * its centroid on a pixel BOUNDARY, so whichever way it rounds it lands half a
- * pixel off the angle it is showing, and at the cardinal angles floating point
- * decides the tie — at exactly 50% sin() returns -2.4e-16 rather than 0 and the
- * block rounds a whole pixel to the left of the knob centre.
+ * Open track r=8 over 230/260, pointer from the exact centre out to 0.85r, over
+ * a travel of 225/270 so that each extreme sits five degrees proud of the end
+ * of the track. Nothing about the design is changed; the only difference from
+ * what ships today is that the circle is hand-tabulated rather than produced by
+ * `ctx.drawArc`, so the shoulders are 3px caps instead of 5px flats.
  *
- * SOLID, not the five-pixel plus `drawModDot` uses. The plus is right for a
- * mark that has to stay legible while overlapping a ring; this one has two
- * pixels of clear track on either side, so it can afford to be a bead, and at
- * 4x the plus read as sparse — four separated pixels rather than one mark.
- */
-function dot(ctx, x, y) {
-    ctx.fillRect(Math.round(x) - 1, Math.round(y) - 1, 3, 3, 1);
-}
-
-/** A short radial stub between two radii — the scale mark idiom here. */
-function stub(ctx, cx, cy, rIn, rOut, deg) {
-    const s = Math.sin(rad(deg)), c = Math.cos(rad(deg));
-    for (let r = rIn; r <= rOut; r++)
-        ctx.fillRect(Math.round(cx + r * s), Math.round(cy - r * c), 1, 1, 1);
-}
-
-/* --------------------------------------------------------------- 1..5 --
- * The arc family. */
-
-/**
- * 1. arc-pointer — the classic, refined.
- *
- * Open track at r=8, needle from the hub out to 0.74r. The one change from the
- * shipping widget is that outer stop: at the shipping 0.85r (6.8px against a
- * ring at 8) the needle's tip lands adjacent to the track and merges with it,
- * so the marker reads as a lump growing off the rim rather than as a pointer.
- * 0.74r leaves a clear pixel of track at every angle.
- *
- * This is the control against which the other nine are judged. If none of them
- * beats it, the honest outcome of the exercise is to keep the dial and change
- * something else.
+ * This is the control. It won twenty comparisons already.
  */
 function drawArcPointer(ctx, kx, ky, normVal) {
     const v = clamp01(normVal);
-    ring(ctx, kx + KNOB_R, ky + KNOB_R, KNOB_R, ARC_START, ARC_SWEEP, 1);
-    const tip = polar(kx, ky, v, KNOB_R * 0.74);
-    seg(ctx, kx + KNOB_R, ky + KNOB_R, tip.x, tip.y, 1);
+    const cx = kx + KNOB_R, cy = ky + KNOB_R;
+    ring(ctx, cx, cy, KNOB_R, ARC_START, ARC_SWEEP, 1);
+    radial(ctx, cx, cy, 0, KNOB_R * 0.85, ptrDeg(v));
 }
 
+/* ------------------------------------------------------------- 2..3 --- */
+
 /**
- * 2. arc-dot — the value is a bead riding inside the track.
+ * 2. arc-short — the same knob with the pointer pulled back off the rim.
  *
- * Same track, no needle: a 5px dot at r=5, which is far enough in that a clear
- * ring of unlit pixels separates it from the track at every angle, and far
- * enough out that it is unambiguously travelling rather than sitting on the
- * hub. The hub pip is not decoration — without it the widget at any value is
- * one arc and one blob, and the blob has no centre to be measured against.
+ * 0.68r instead of 0.85r. At 0.85 the tip is 6.8px from the centre against a
+ * track at 8, which after rounding is one clear pixel at best and none at the
+ * shoulders: the marker merges with the track and reads as a lump growing off
+ * the rim rather than as a pointer aimed at it. Pulling back to 5.4px leaves
+ * two clear pixels of track at every angle, so the pointer and the scale it
+ * points at stay separate shapes.
  *
- * Reads as a lighter, calmer dial than the pointer: at a page of eight the
- * difference is that the eye tracks eight beads instead of eight angles.
+ * The cost is real and it is the thing to judge: a shorter pointer is a smaller
+ * marker, so the angle is carried by less ink and reads less strongly at a
+ * glance across a page of eight.
  */
-function drawArcDot(ctx, kx, ky, normVal) {
+function drawArcShort(ctx, kx, ky, normVal) {
     const v = clamp01(normVal);
     const cx = kx + KNOB_R, cy = ky + KNOB_R;
     ring(ctx, cx, cy, KNOB_R, ARC_START, ARC_SWEEP, 1);
-    const p = polar(kx, ky, v, 5);
-    ctx.fillRect(cx, cy, 1, 1, 1);
-    dot(ctx, p.x, p.y);
+    radial(ctx, cx, cy, 0, KNOB_R * 0.68, ptrDeg(v));
 }
 
 /**
- * 3. arc-fill — the travelled portion of the track, and nothing else.
+ * 3. arc-float — the pointer as a floating stub, clear of both centre and rim.
  *
- * A 2px band grown from the start of travel to the value, with a 4px radial
- * stop at each end of the sweep. The stops are what make this legible at the
- * bottom of the range: a fill alone draws nothing at v=0, and a cell that
- * draws nothing is indistinguishable from an unpopulated one. With them, v=0
- * is a visibly EMPTY gauge — which is a value, not an absence.
+ * 0.34r to 0.74r: it touches neither end. Both other pointer options are
+ * SPOKES, anchored at the centre, and a spoke's inner half carries no
+ * information — every value draws it, so it is ink that never changes. Cutting
+ * it out leaves only the part that moves.
  *
- * The most direct reading of the four arc options: there is no marker to
- * locate, only a quantity of ink, so the page can be scanned rather than read.
+ * What that costs is the convergence point. With a hollow centre the eye has to
+ * infer the angle from the stub alone rather than reading it off a line that
+ * starts somewhere known, and at the extremes of travel — where the stub is
+ * down near the gap — it can read as a detached tick rather than as a pointer.
+ * That is precisely the trade option 4 answers by putting something back at the
+ * middle.
  */
-function drawArcFill(ctx, kx, ky, normVal) {
+function drawArcFloat(ctx, kx, ky, normVal) {
     const v = clamp01(normVal);
     const cx = kx + KNOB_R, cy = ky + KNOB_R;
-    /*
-     * The UNTRAVELLED range stays drawn, as the 1px track. Two rounds were
-     * spent trying to honour "the travelled portion and nothing else", and
-     * both failed at the bottom of the range for the same reason: with nothing
-     * behind the fill, v=0 is whatever end marks you invented to stop the cell
-     * being empty, and a pair of 4px radial stubs on a black field reads as
-     * debris rather than as an empty gauge. Keeping the track costs one thin
-     * arc and buys a v=0 that is unmistakably a control at rest.
-     */
     ring(ctx, cx, cy, KNOB_R, ARC_START, ARC_SWEEP, 1);
-    /* The fill grows INWARD from the same outer radius, so the track is never
-     * erased or moved — the silhouette is constant and only its weight
-     * changes. Three pixels rather than two: against a 1px track, 2px reads as
-     * a slightly darker stretch of the same line, and 3:1 is the ratio at
-     * which the boundary between filled and unfilled becomes the thing you
-     * see first. */
-    ringBand(ctx, cx, cy, KNOB_R - 2, KNOB_R, ARC_START, v * ARC_SWEEP);
+    radial(ctx, cx, cy, KNOB_R * 0.34, KNOB_R * 0.74, ptrDeg(v));
 }
 
+/* ------------------------------------------------------------- 4 ------ */
+
 /**
- * 4. arc-thick — a heavy track with a short stub pointer.
+ * 4. arc-hub — a 3x3 hub with the pointer growing out of it.
  *
- * The answer to the real complaint about eight 1px dials in a row: they turn
- * to grey mush at true size before anyone gets as far as calling them
- * derivative. The track is 2px (r=7..8) and the pointer is a 2px stub floating
- * between 0.30r and 0.62r, so the widget's weight is in the frame and the
- * marker is a deliberate, blunt mark inside it rather than a hair.
+ * The hub is a shaft, and it is the one addition here that changes what the
+ * widget IS rather than how heavily it is drawn: with a solid centre the thing
+ * reads as a knob seen from above — a cap with a pointer on it — rather than as
+ * a gauge with a needle across it. It also fixes option 3's complaint for free,
+ * because the stub now has an anchor to be at an angle to.
  *
- * The stub stops well short of the track (5.0 against 7) so that at no angle
- * do the two shapes touch — a fat pointer welded to a fat ring is a keyhole,
- * not a control.
+ * ODD-SIZED, 3x3 and not 2x2, and that is not taste. An even-sized mark has its
+ * centroid on a pixel BOUNDARY, so however it rounds it sits half a pixel off
+ * the centre it is supposed to be, and at the cardinals floating point picks the
+ * tie — at exactly 50% `sin()` returns -2.4e-16 rather than 0 and the block
+ * jumps a whole pixel left. Nine pixels is heavy for a knob of radius eight,
+ * which is the honest argument against this option.
  */
-function drawArcThick(ctx, kx, ky, normVal) {
+function drawArcHub(ctx, kx, ky, normVal) {
+    const v = clamp01(normVal);
+    const cx = kx + KNOB_R, cy = ky + KNOB_R;
+    ring(ctx, cx, cy, KNOB_R, ARC_START, ARC_SWEEP, 1);
+    ctx.fillRect(cx - 1, cy - 1, 3, 3, 1);
+    radial(ctx, cx, cy, 2, KNOB_R * 0.74, ptrDeg(v));
+}
+
+/* ------------------------------------------------------------- 5..6 --- */
+
+/**
+ * 5. arc-heavy — a 2px track, pointer unchanged in weight.
+ *
+ * The one complaint about the incumbent that is about legibility rather than
+ * provenance: eight 1px dials in a row turn to grey mush at true size on a
+ * 128x64 OLED viewed from a metre away. Doubling the track (r=7..8) puts the
+ * widget's weight in the frame, where it is constant, rather than in the
+ * marker, where it moves.
+ *
+ * The pointer stays a hairline to 0.62r deliberately. Thickening both — which
+ * is what option 6 does to the pointer alone — gives a fat spoke welded to a
+ * fat ring, and that reads as a keyhole rather than as a control.
+ */
+function drawArcHeavy(ctx, kx, ky, normVal) {
     const v = clamp01(normVal);
     const cx = kx + KNOB_R, cy = ky + KNOB_R;
     ringBand(ctx, cx, cy, KNOB_R - 1, KNOB_R, ARC_START, ARC_SWEEP);
-    const a = rad(PTR_START + v * PTR_SWEEP);
-    const inner = { x: cx + KNOB_R * 0.30 * Math.sin(a), y: cy - KNOB_R * 0.30 * Math.cos(a) };
-    const outer = { x: cx + KNOB_R * 0.62 * Math.sin(a), y: cy - KNOB_R * 0.62 * Math.cos(a) };
-    /*
-     * Thicken along ONE AXIS, never along the true perpendicular.
-     *
-     * The perpendicular is the obvious choice and it is wrong on a raster: at
-     * 45 degrees it is (1,-1), so the copy is displaced along the ANTI-
-     * diagonal — which is the one direction a 45-degree Bresenham line is
-     * invariant under. The two strokes come out as parallel hairlines with a
-     * lit gap between them: a hollow wedge, not a 2px pointer.
-     *
-     * A pure (1,0) or (0,1) displacement always yields a solid double stroke,
-     * because a Bresenham line and the same line shifted one pixel along an
-     * axis are 8-connected everywhere. Pick the axis the stroke is NOT running
-     * along, or the copy lands on top of the original and thickens nothing.
-     */
-    const steep = Math.abs(Math.cos(a)) >= Math.abs(Math.sin(a));
-    const ox = steep ? 1 : 0, oy = steep ? 0 : -1;
-    seg(ctx, inner.x, inner.y, outer.x, outer.y, 1);
-    seg(ctx, inner.x + ox, inner.y + oy, outer.x + ox, outer.y + oy, 1);
+    radial(ctx, cx, cy, 0, KNOB_R * 0.62, ptrDeg(v));
 }
 
 /**
- * 5. ring-fill — a closed collar filled clockwise from twelve o'clock.
+ * 6. arc-bold — a 1px track with a 2px pointer.
  *
- * The only option in the set that uses the whole circle, which is what makes
- * it distinct from 3 at a glance rather than on inspection: 3 is an open gauge
- * with two feet, this is a complete O whose rim thickens. The thin ring is
- * always there, so the unused range stays visible and v=0 is an outline rather
- * than a blank.
+ * The mirror image of option 5: put the weight in the part that MOVES. The
+ * argument for it is that the track is redundant once you have seen it — it is
+ * identical on all eight cells of a page — whereas the pointer is the only
+ * thing carrying information, so if one of the two shapes gets the extra ink it
+ * should be that one.
  *
- * Radius drops to 7 about a centre one row higher, because a closed circle at
- * the shipping r=8 needs seventeen rows and the box has fifteen.
+ * The argument against is that a 2px stroke at r<6 is a wedge, not a line: near
+ * the hub the two strokes are angularly far apart and the marker is visibly
+ * fatter at its base than at its tip. Stopping at 0.66r keeps it clear of the
+ * track, which matters more here than for a hairline.
  */
-function drawRingFill(ctx, kx, ky, normVal) {
-    const v = clamp01(normVal);
-    const cx = kx + KNOB_R, cy = ky + RING_CY;
-    ring(ctx, cx, cy, RING_R, 0, 360, 1);
-    ctx.fillRect(cx, cy, 1, 1, 1);
-    ringBand(ctx, cx, cy, RING_R - 2, RING_R, 0, v * 360);
-}
-
-/* --------------------------------------------------------------- 6..7 --
- * Centre-radiating: no track at all. */
-
-/**
- * 6. needle-only — a VU needle over a base rule.
- *
- * "No arc at all — just a clean needle from centre, plus a base mark" went
- * through three rounds as a needle at the centre of an INVISIBLE circle, and
- * all three failed in context for one reason: a stroke needs something to be
- * at an angle TO. Three marks where the ring would have been read as dirt;
- * five read as noise; adding a hub helped and did not fix it. On the page
- * every cell was a diagonal lying next to some specks, and not one of them
- * said "control".
- *
- * The base rule fixes it, because a horizontal line is a reference the eye
- * accepts without being told. Pivot on the rule, sweep 124 degrees above it,
- * and the construction is a VU meter — which is the one gauge that has never
- * drawn its own arc and has never needed to.
- *
- * It is also the most distinct silhouette in the set by a distance: nine of
- * these are round or rectangular, and this is a triangle.
- */
-const VU_HALF = 62;    /* degrees either side of vertical */
-const VU_LEN = 9;      /* 9*sin(62) = 7.9, which is the widest a 17px cell allows */
-function drawNeedleOnly(ctx, kx, ky, normVal) {
-    const v = clamp01(normVal);
-    const cx = kx + KNOB_R, cy = ky + BOX_H - 3;
-    /*
-     * The rule sits one row PROUD of the bottom of the box, and stops a pixel
-     * short at each end. On the last row and at full width it is directly
-     * against the label band, where it stops being this widget's base and
-     * becomes an underline on the parameter name — visible on the page render
-     * and nowhere else. One clear row and two clear columns reattach it.
-     */
-    ctx.fillRect(kx + 1, ky + BOX_H - 2, KW - 2, 1, 1);
-    const a = rad(-VU_HALF + v * 2 * VU_HALF);
-    seg(ctx, cx, cy, cx + VU_LEN * Math.sin(a), cy - VU_LEN * Math.cos(a), 1);
-    /* A 3x3 pivot. Without it the needle meets the rule at a bare point and
-     * the two read as one bent line rather than as a pointer on a scale. */
-    ctx.fillRect(cx - 1, cy - 1, 3, 3, 1);
-}
-
-/**
- * 7. wedge — the value as a solid pie swept out of the hub.
- *
- * The heaviest option, and the one that reads from furthest away: value is
- * carried by AREA rather than by the position of a mark, so it survives being
- * glanced at, seen out of focus, or photographed badly. The open track at r=8
- * stays, one clear pixel outside the pie, so the wedge always has a scale to
- * be read against and the ends of travel are marked.
- *
- * At v=0 the pie degenerates to a single radial line at the start of travel,
- * which is correct rather than a special case — zero area is zero value — and
- * the track behind it is what stops that reading as an empty cell.
- */
-function drawWedge(ctx, kx, ky, normVal) {
+function drawArcBold(ctx, kx, ky, normVal) {
     const v = clamp01(normVal);
     const cx = kx + KNOB_R, cy = ky + KNOB_R;
     ring(ctx, cx, cy, KNOB_R, ARC_START, ARC_SWEEP, 1);
-    pie(ctx, cx, cy, KNOB_R - 2, PTR_START, v * PTR_SWEEP);
+    radial2(ctx, cx, cy, 0, KNOB_R * 0.66, ptrDeg(v));
 }
 
-/* --------------------------------------------------------------- 8..9 --
- * Linear. */
+/* ------------------------------------------------------------- 7..8 --- */
 
 /**
- * 8. bar-vertical — a fader in a notched frame, filling upward.
+ * 7. arc-caps — end caps at both limits of travel.
  *
- * The most universally legible construction there is, and the one that needs
- * no explanation to anybody who has seen a mixer. Corner notches, because a
- * framed box in this UI is a notched box — the idiom recurs across the catalog
- * rather than being one option's trick.
+ * Two inward radial stubs (r=6..8) at the ends of the track, so the gauge has
+ * feet. What they buy is the bottom of the range: with a plain open arc, v=0
+ * and "the pointer happens to be near the bottom left" look the same, and there
+ * is nothing on screen that says where travel STOPS. With caps, v=0 is the
+ * pointer sitting against a stop, which is a different picture from the pointer
+ * approaching one.
  *
- * The frame is 9px wide in a 17px cell, so the widget is a tall column with
- * air either side. That is deliberate: it keeps the cell's silhouette
- * different from the ENUM SQUARE, which is a wide framed rectangle, so a
- * continuous cell and a discrete one still read apart at a glance.
+ * They also square off the ends of the arc, which is worth having on its own: a
+ * hand-tabulated ring ends wherever the angular filter cuts it, and a radial
+ * stub is a deliberate termination rather than an incidental one.
  */
-function drawBarVertical(ctx, kx, ky, normVal) {
+function drawArcCaps(ctx, kx, ky, normVal) {
     const v = clamp01(normVal);
-    const bx = kx + 4, by = ky, bw = 9, bh = BOX_H;
-    ctx.fillRect(bx, by, bw, 1, 1);
-    ctx.fillRect(bx, by + bh - 1, bw, 1, 1);
-    ctx.fillRect(bx, by, 1, bh, 1);
-    ctx.fillRect(bx + bw - 1, by, 1, bh, 1);
-    notchCorners(ctx, bx, by, bw, bh);
-    /* One clear pixel between the frame and the fill on all four sides, so a
-     * full bar is a bar inside a box rather than a solid block. */
-    const tx = bx + 2, ty = by + 2, tw = bw - 4, th = bh - 4;
-    const fh = Math.round(v * th);
-    if (fh > 0) ctx.fillRect(tx, ty + th - fh, tw, fh, 1);
+    const cx = kx + KNOB_R, cy = ky + KNOB_R;
+    ring(ctx, cx, cy, KNOB_R, ARC_START, ARC_SWEEP, 1);
+    radial(ctx, cx, cy, KNOB_R - 2, KNOB_R, ARC_START);
+    radial(ctx, cx, cy, KNOB_R - 2, KNOB_R, ARC_START + ARC_SWEEP);
+    radial(ctx, cx, cy, 0, KNOB_R * 0.68, ptrDeg(v));
 }
 
 /**
- * 9. bar-horizontal — the same construction laid down, filling rightward.
+ * 8. arc-detent — a centre mark at twelve o'clock.
  *
- * Worth having as a separate option rather than as a rotation of 8: the two
- * are read differently. A vertical bar is a LEVEL and its neighbours form a
- * skyline, so a page of eight can be compared in one look. A horizontal bar is
- * a PROGRESS and each one is read on its own, which suits a page where the
- * parameters are unrelated to each other.
+ * A 2px inward tick (r=5..6) at the top of the track, one clear pixel below the
+ * rim so it reads as a mark ON the scale rather than as a thickening OF it.
+ * This is the bipolar case and it is a real one — pan, tune, bipolar
+ * modulation depth all have a meaningful centre, and on the incumbent widget
+ * dead centre looks like any other value. With a detent, "is this at zero" is
+ * answered by whether the pointer covers the tick.
  *
- * It also spans the full cell width, so it is the highest-contrast option here
- * at a distance — and the one most likely to be confused with the enum square.
- * That trade is the point of putting both in front of a human.
+ * The pointer stops at 0.68r, whose tip lands at the tick's inner end, so at
+ * centre the two join into a single stroke to the rim. That is the intended
+ * reading — snapped — and it is also why this option is only right for params
+ * that HAVE a centre: on a unipolar cutoff the tick is a mark that means
+ * nothing, and 50% of a sweep is not a landmark.
  */
-function drawBarHorizontal(ctx, kx, ky, normVal) {
+function drawArcDetent(ctx, kx, ky, normVal) {
     const v = clamp01(normVal);
-    const bx = kx, by = ky + 3, bw = KW, bh = 9;
-    ctx.fillRect(bx, by, bw, 1, 1);
-    ctx.fillRect(bx, by + bh - 1, bw, 1, 1);
-    ctx.fillRect(bx, by, 1, bh, 1);
-    ctx.fillRect(bx + bw - 1, by, 1, bh, 1);
-    notchCorners(ctx, bx, by, bw, bh);
-    const tx = bx + 2, ty = by + 2, tw = bw - 4, th = bh - 4;
-    const fw = Math.round(v * tw);
-    if (fw > 0) ctx.fillRect(tx, ty, fw, th, 1);
+    const cx = kx + KNOB_R, cy = ky + KNOB_R;
+    ring(ctx, cx, cy, KNOB_R, ARC_START, ARC_SWEEP, 1);
+    radial(ctx, cx, cy, KNOB_R - 3, KNOB_R - 2, 0);
+    radial(ctx, cx, cy, 0, KNOB_R * 0.68, ptrDeg(v));
 }
 
-/* ----------------------------------------------------------------- 10 --
- * Geometric. */
+/* ------------------------------------------------------------- 9 ------ */
 
 /**
- * 10. notch-ring — a closed ring with one hole in it, and the hole is the value.
+ * 9. arc-travelled — the travelled span of the track thickened.
  *
- * The inverse of every other option: nothing is drawn AT the value, the value
- * is where the ring stops. That is a real advantage on a 1-bit display, where
- * a hole in a continuous stroke is about the most reliably visible thing there
- * is — it needs no clearance from anything, because it IS clearance.
+ * The track stays whole at 1px so the untravelled range is still visible and
+ * the silhouette never changes; the span from the start of travel up to the
+ * value is grown INWARD to 2px. Two readings on one widget: the pointer gives
+ * you a precise angle, the weighted span gives you a quantity you can scan a
+ * whole page for without resolving any single mark.
  *
- * The notch travels the pointer's 270 degrees rather than a full circle, so
- * v=0 puts it at the lower left and v=1 at the lower right and the two are
- * plainly different. A 44-degree notch is ~5px of arc at r=7: unmistakably a
- * gap, where the 26 degrees this was first drawn at is 3px and reads as a
- * rasterisation wobble.
+ * Growing inward rather than outward is what keeps this a refinement instead of
+ * a second widget — the outer edge is constant, so eight of these still form a
+ * row of identical circles with a marker in each, which was the whole failure
+ * mode of round 2.
+ *
+ * The honest cost: at low values the thickened span is a couple of pixels near
+ * the bottom left, and at v=0 there is none at all, so the extra reading only
+ * really works over the top two thirds of the range.
  */
-function drawNotchRing(ctx, kx, ky, normVal) {
+function drawArcTravelled(ctx, kx, ky, normVal) {
     const v = clamp01(normVal);
-    const cx = kx + KNOB_R, cy = ky + RING_CY;
-    /*
-     * A 2px ring with a 56-degree notch, not a 1px ring with 44.
-     *
-     * A hole is only readable against the stroke it interrupts. On a 1px ring
-     * a 44-degree bite is ~5px of missing hairline, which at true size is a
-     * ring that looks very slightly imperfect — you have to hunt for the value
-     * rather than see it. Doubling the stroke and widening the notch makes the
-     * ring heavy enough that the gap is the brightest event in the cell.
-     */
-    const NOTCH = 56;
-    const at = PTR_START + v * PTR_SWEEP;
-    ringBand(ctx, cx, cy, RING_R - 1, RING_R, at + NOTCH / 2, 360 - NOTCH);
-    /* The hub pip anchors the hole. Without it the widget is a broken circle,
-     * and a broken circle with no centre reads as a drawing error rather than
-     * as a reading off a scale. */
-    ctx.fillRect(cx, cy, 1, 1, 1);
+    const cx = kx + KNOB_R, cy = ky + KNOB_R;
+    ring(ctx, cx, cy, KNOB_R, ARC_START, ARC_SWEEP, 1);
+    ringBand(ctx, cx, cy, KNOB_R - 1, KNOB_R, ARC_START, v * ARC_SWEEP);
+    radial(ctx, cx, cy, 0, KNOB_R * 0.68, ptrDeg(v));
+}
+
+/* ------------------------------------------------------------- 10 ----- */
+
+/**
+ * 10. arc-collar — the gap at the bottom closed down to 70 degrees.
+ *
+ * Same construction, one number changed: the track runs 215/290 instead of
+ * 230/260, so it wraps most of the way round and the widget reads as a collar
+ * with a notch rather than as a horseshoe. Travel widens with it (210/290) so
+ * the pointer still sits five degrees proud at each end.
+ *
+ * Two things this buys. The circle is more of a circle, which at 17x15 among
+ * rectangular enum cells is a stronger silhouette; and the two extremes end up
+ * further apart in angle, so v=0 and v=1 are less alike than on the incumbent.
+ * What it costs is the gap itself — the notch is the thing that tells you which
+ * way is "down", and at 70 degrees it is closer to being an interruption in a
+ * ring than an opening in a gauge.
+ *
+ * This one is on the edge of the box and had to be checked row by row. With the
+ * 230/260 gap the ring's bottom three rows all fall inside it and are never
+ * plotted; at 215/290 row dy=+6 (y = ky+14, the LAST legal row) comes into
+ * sweep at both shoulders. Widen the sweep any further and it clips — silently,
+ * onto the label band, on hardware only.
+ */
+const COLLAR_START = 215, COLLAR_SWEEP = 290;
+function drawArcCollar(ctx, kx, ky, normVal) {
+    const v = clamp01(normVal);
+    const cx = kx + KNOB_R, cy = ky + KNOB_R;
+    ring(ctx, cx, cy, KNOB_R, COLLAR_START, COLLAR_SWEEP, 1);
+    radial(ctx, cx, cy, 0, KNOB_R * 0.74, ptrDeg(v, COLLAR_START - 5, COLLAR_SWEEP + 10));
 }
 
 /**
@@ -497,49 +399,49 @@ function drawNotchRing(ctx, kx, ky, normVal) {
 export function register() {
     return registerSet({
     id: "knob",
-    title: "Arc knob — the continuous-value widget",
+    title: "Arc knob — ten refinements of the arc-and-pointer",
     kind: KIND_DRAW,
     replaces: "drawArcKnob",
     options: [
         {
             position: 1, id: "arc-pointer", name: "Arc pointer", draw: drawArcPointer,
-            note: "The shipping construction with the one defect taken out: the needle stops at 0.74r instead of 0.85r, so its tip no longer merges with the track and the marker reads as a pointer rather than as a lump on the rim. This is the control the other nine are judged against — if none of them beats it, the honest outcome is to keep the dial and differentiate somewhere else.",
+            note: "THE INCUMBENT, unchanged: r=8 track over 230/260, pointer from the exact centre to 0.85r over a 225/270 travel. The only difference from what ships is that the circle comes from the hand-tabulated ring rather than ctx.drawArc, so the shoulders are 3px caps instead of the rasteriser's 5px flats. Everything else in this set is a refinement of this, and after twenty rejected alternatives across two rounds it is allowed to win again. Modulation dot: CLEAR — the dot's band is r=5..7 and the pointer crosses it, but they coincide only when live value equals base, which is true of the shipping widget too.",
         },
         {
-            position: 2, id: "arc-dot", name: "Arc dot", draw: drawArcDot,
-            note: "The same track with the needle replaced by a 5px bead riding at r=5, plus a hub pip to measure it against. A clear ring of unlit pixels separates bead from track at every angle. Lighter than the pointer and read differently — a page of eight is eight positions rather than eight angles — but it collides with the modulation dot, which is the same shape at nearly the same radius.",
+            position: 2, id: "arc-short", name: "Arc short pointer", draw: drawArcShort,
+            note: "Position 1 with the pointer pulled back from 0.85r to 0.68r. At 0.85 the tip is 6.8px against a track at 8, which rounds to one clear pixel at best and none at the shoulders, so the marker merges with the rim and reads as a lump growing off it. Two clear pixels at every angle keeps pointer and scale as separate shapes. Costs ink: a shorter marker carries the angle less strongly across a page of eight. Modulation dot: CLEAR, and cleaner than position 1 — the tip stops at r=5.4, at the inner edge of the dot's band rather than through it.",
         },
         {
-            position: 3, id: "arc-fill", name: "Arc fill", draw: drawArcFill,
-            note: "Only the travelled part of the track is drawn, as a 2px band, between two 4px radial end stops. There is no marker to locate, only a quantity of ink, so a page can be scanned instead of read. The stops are load-bearing: without them v=0 draws nothing and an empty gauge is indistinguishable from an unpopulated cell.",
+            position: 3, id: "arc-float", name: "Arc floating pointer", draw: drawArcFloat,
+            note: "Position 2 with the inner half of the pointer cut away: a stub floating 0.34r..0.74r, touching neither hub nor rim. The argument is that a spoke's inner half is ink that every value draws, so it carries nothing. The cost is the convergence point — with a hollow centre the angle has to be inferred from the stub alone, and near the ends of travel it can read as a detached tick. Position 4 is the same idea with the anchor put back. Modulation dot: CLEAR of the hub, but the stub spans r=2.7..5.9 and the dot spans r=5..7, so they overlap at the tip exactly as in position 2.",
         },
         {
-            position: 4, id: "arc-thick", name: "Arc thick", draw: drawArcThick,
-            note: "A 2px track with a 2px stub pointer floating at 0.30r..0.62r. The answer to the real complaint about eight 1px dials in a row, which is that they turn to grey mush at true size well before anyone calls them derivative. The stub stops far short of the track on purpose — a fat pointer welded to a fat ring reads as a keyhole.",
+            position: 4, id: "arc-hub", name: "Arc with hub", draw: drawArcHub,
+            note: "A 3x3 hub with the pointer growing out of it to 0.74r. The one addition that changes what the widget IS rather than how heavily it is drawn: a solid centre makes it a knob cap seen from above rather than a needle across a gauge, and it gives position 3's floating stub the anchor it lacks. Odd-sized because an even mark's centroid is on a pixel boundary and at the cardinals floating point decides which way it rounds. Nine pixels is heavy for a radius-8 knob and that is the honest argument against it. Modulation dot: CLEAR — hub is r<=1, dot is r=5..7, nothing between them.",
         },
         {
-            position: 5, id: "ring-fill", name: "Ring fill", draw: drawRingFill,
-            note: "A closed collar at r=7, filled clockwise from twelve o'clock by thickening the rim inward. The only option that uses the whole circle, which is what separates it from the arc fill at a glance rather than on inspection: that one is an open gauge with two feet, this is a complete O. Maps directly onto the LED collars around the physical encoders this fleet emulates.",
+            position: 5, id: "arc-heavy", name: "Arc heavy track", draw: drawArcHeavy,
+            note: "A 2px track (r=7..8) with the pointer left as a hairline to 0.62r. This answers the only complaint about the incumbent that is about legibility rather than provenance: eight 1px dials in a row go to grey mush at true size at a metre. Weight goes in the frame, which is constant, not in the marker, which moves. Thickening both would give a fat spoke welded to a fat ring, which is a keyhole — that is why position 6 thickens the pointer INSTEAD, not as well. Modulation dot: COLLIDES. The track occupies r=7..8 and the dot's outer arm is r=7, so the mark touches the rim at every angle. MOD_DOT_R 6->5 fixes it.",
         },
         {
-            position: 6, id: "needle-only", name: "Needle only", draw: drawNeedleOnly,
-            note: "A VU needle pivoting on a base rule, sweeping 124 degrees above it. Three earlier cuts drew a needle at the centre of an invisible circle with marks where the track would have been, and all three read on the page as a diagonal lying next to some specks — a stroke needs something to be at an angle TO, and a horizontal rule is a reference the eye accepts without being told. The most distinct silhouette in the set: nine of these are round or rectangular and this one is a triangle.",
+            position: 6, id: "arc-bold", name: "Arc bold pointer", draw: drawArcBold,
+            note: "The mirror of position 5: 1px track, 2px pointer to 0.66r. Put the extra ink in the part that moves, since the track is identical on all eight cells of a page and the pointer is the only thing carrying information. Against it: a 2px stroke below r=6 is a wedge rather than a line — the two strokes are angularly far apart near the hub, so the marker is visibly fatter at its base than at its tip. Modulation dot: COLLIDES, worse than position 2 — a 2px marker reaching r=5.3 puts ink in the dot's band at two adjacent angles rather than one.",
         },
         {
-            position: 7, id: "wedge", name: "Wedge", draw: drawWedge,
-            note: "Value as AREA: a solid pie swept out of the hub inside the open track. The heaviest option and the one that survives being glanced at, seen out of focus or photographed badly, because there is no mark whose position has to be resolved. At v=0 the pie degenerates to a single radial line, which is correct rather than a special case — the track behind it is what keeps that from reading as an empty cell.",
+            position: 7, id: "arc-caps", name: "Arc with end caps", draw: drawArcCaps,
+            note: "Position 2 plus inward radial stubs (r=6..8) at both limits of travel, so the gauge has feet. What they buy is the bottom of the range: on a plain open arc, v=0 and 'the pointer is somewhere near the bottom left' look the same and nothing says where travel STOPS, whereas with caps v=0 is the pointer against a stop. They also square off the ends of the track, which a tabulated ring otherwise leaves wherever the angular filter happens to cut. Modulation dot: COLLIDES at the two ends only — the caps sit in the r=6..8 band, so the mark merges with a cap when the live value is at an extreme, and is clear everywhere else.",
         },
         {
-            position: 8, id: "bar-vertical", name: "Bar vertical", draw: drawBarVertical,
-            note: "A mixer fader in a corner-notched frame, filling upward, 9px wide in a 17px cell. Universally legible and needs no explanation. The narrow frame is deliberate — it keeps the cell's silhouette distinct from the enum square, which is a WIDE framed rectangle, so continuous and discrete cells still read apart at a glance.",
+            position: 8, id: "arc-detent", name: "Arc with centre detent", draw: drawArcDetent,
+            note: "Position 2 plus a 2px inward tick (r=5..6) at twelve o'clock, one clear pixel below the rim so it reads as a mark on the scale rather than a thickening of it. This is the bipolar case, and it is a real one: pan, tune and bipolar mod depth all have a meaningful centre, and on the incumbent dead centre looks like any other value. The pointer's tip lands on the tick's inner end, so at centre the two join into one stroke to the rim — that snapped reading is the point. Only right for params that HAVE a centre; on a unipolar cutoff it is a landmark that means nothing. Modulation dot: COLLIDES at centre — the tick is inside the dot's r=5..7 band, so a mark parked near twelve o'clock swallows it.",
         },
         {
-            position: 9, id: "bar-horizontal", name: "Bar horizontal", draw: drawBarHorizontal,
-            note: "The same frame laid down and filling rightward across the full cell. Not a rotation of option 8 but a different reading: a vertical bar is a level and eight of them form a comparable skyline, a horizontal bar is a progress and each is read on its own. Highest contrast at a distance, and the most likely of the ten to be confused with the enum square.",
+            position: 9, id: "arc-travelled", name: "Arc travelled span", draw: drawArcTravelled,
+            note: "Position 2 with the travelled span of the track grown inward to 2px while the whole track stays drawn at 1px. Two readings on one widget: the pointer for a precise angle, the weight for a quantity you can scan a page for without resolving any single mark. Growing INWARD is what keeps it a refinement rather than a second widget — the outer edge never changes, so a row of these is still a row of identical circles. Cost: at low values the thickened span is a few pixels at the bottom left and at v=0 there is none, so the second reading only works over the top two thirds. Modulation dot: COLLIDES over the travelled span (band reaches r=7) and is clear beyond it, so the mark would visibly change weight as the value passed it.",
         },
         {
-            position: 10, id: "notch-ring", name: "Notch ring", draw: drawNotchRing,
-            note: "The inverse of every other option: nothing is drawn at the value, the value is where the ring stops. A hole in a continuous stroke is about the most reliably visible thing on a 1-bit display, because it needs no clearance from anything — it IS clearance. The notch travels the pointer's 270 degrees rather than a full circle, so the two extremes sit at the lower left and lower right and are plainly different.",
+            position: 10, id: "arc-collar", name: "Arc narrow gap", draw: drawArcCollar,
+            note: "One number changed from position 1: the track runs 215/290 instead of 230/260, closing the gap at the bottom to 70 degrees, with travel widened to match so the pointer stays five degrees proud at each end. The circle is more of a circle, which is a stronger silhouette among rectangular enum cells, and the two extremes end up further apart in angle so v=0 and v=1 are less alike. What it costs is the notch itself — at 70 degrees it reads more as an interruption in a ring than as the opening of a gauge, and the opening is what tells you which way is down. Also the tightest option in the box: row dy=+6 (y = ky+14, the last legal row) comes into sweep at both shoulders, and any wider clips onto the label band. Modulation dot: CLEAR, same as position 1.",
         },
     ],
     });
