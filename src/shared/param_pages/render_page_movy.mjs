@@ -34,7 +34,7 @@ import { enumSquareLines } from "./font5x3.mjs";
 import { fontPrint as tzPrint, fontWidth as tzWidth, HEIGHT as TZ_H } from "./font_tamzen6x12.mjs";
 import {
     fontPrint as numPrint, fontWidth as numWidth, HEIGHT as NUM_H,
-} from "./font_tamzen8x16_num.mjs";
+} from "./font_big_num.mjs";
 import { fontWidth4x5, fontPrint4x5, FONT4_HEIGHT, FONT4_MEASURE } from "./font4x5.mjs";
 import { fontWidth5x3, fontPrint5x3 } from "./font5x3.mjs";
 import { observe as animObserve, easeOut, lerp } from "./anim_state.mjs";
@@ -1579,11 +1579,18 @@ export function bigNumberText(meta, raw) {
  * BIGGER MEANS A BIGGER FONT, NOT A SCALED ONE. Doubling the 6x12 was the
  * obvious move and is the wrong one: an integer-scaled bitmap is the same
  * letterform with every flaw doubled, and it caps at 2 glyphs (a scaled "+12"
- * is 40px in a 30px cell). Tamzen is vendored at seven sizes, so this takes the
- * 8x16 cut — 9 rows against 7, a real design at its own size, and "-24" still
- * only 23px.
+ * is 40px in a 30px cell).
  *
- * That font is generated for "0123456789+-" ALONE, which is exactly what
+ * Tamzen 8x16 was the second answer and it is not the right one either. Tamzen
+ * is a TERMINAL face: 1px stems at every size on disk, and a slashed zero in
+ * all seven cuts. At 9 rows in a 15-row box it still read thin.
+ *
+ * This uses the face movy draws its PRESET NUMBER with — a Nokia 13px bitmap at
+ * cap-height 11, 2px stems, plain bowl on the zero. See font_big_num.mjs, which
+ * records where it came from and what is and is not known about its
+ * provenance. 11 rows of the 15, and "-24" is 27px of the 30 available.
+ *
+ * That font carries "0123456789+-" ALONE, which is exactly what
  * bigNumberText can emit. The generator's hand-drawn OVERRIDES are cut at seven
  * rows, so a taller font would carry nine silently-wrong glyphs; restricting
  * the charset means the file contains only what it has been cut for. See
