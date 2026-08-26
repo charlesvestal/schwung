@@ -688,20 +688,23 @@ export function drawHeader(ctx, left, right, inverted = false) {
     /* font4x5, not the label face: the header is secondary text (the slot
      * title, the page name, and the touched parameter's full name and value),
      * so it can afford to be smaller than the thing you read at a glance. A
-     * 5-row glyph at y=0 sits in a 6-row band with one clear row below it and
-     * the bezel above — which is what the touched HIGHLIGHT needs to be
-     * legible, and what it did not have while a 7-row font filled an 8-row
-     * band edge to edge.
+     * 5-row glyph at y=1 sits in a 7-row band with one clear row ABOVE and one
+     * BELOW — which is what the touched HIGHLIGHT needs to be legible, and what
+     * it did not have while a 7-row font filled an 8-row band edge to edge.
+     *
+     * Both clear rows are load-bearing, and the reason is inversion. Touched,
+     * the band fills solid and these glyphs are knocked out of it; a glyph
+     * flush against either edge runs its ink into the boundary and the
+     * highlight bleeds into the border. The band was briefly 6 rows with the
+     * glyphs at y=0, on the argument that the bezel already insets the top row.
+     * That holds for the BAND against the panel edge and not for the GLYPHS
+     * against the band — inverted, the top row separates text from its own
+     * highlight, not the screen from its surround. Seen on hardware, put back.
      *
      * Tamzen's own 5-row face was the obvious candidate and is the wrong one:
      * its advance equals its ink width, so adjacent glyphs touch, and the
      * header string overflowed 124px of usable width at 129. font4x5 is
-     * proportional with a real gap and the same string measures 106.
-     *
-     * Two rows come back from this — one from the shorter band, one from the
-     * separator row below it, which is no longer needed: the band already
-     * carries a clear row under its glyphs, so nothing butts against the bank
-     * bar. Both go to the gutter above the first widget row. */
+     * proportional with a real gap and the same string measures 106. */
     if (inverted) {
         ctx.fillRect(0, 0, W, HEADER_H, 1);
         /*
@@ -710,17 +713,19 @@ export function drawHeader(ctx, left, right, inverted = false) {
          * the convergent 1-bit idiom the spec keeps: at one pixel and two
          * colours there is no second way to soften a corner.
          *
-         * All four, not two. The band spans the full width and starts on row 0,
-         * so its top corners are against the bezel and its bottom two against
-         * the page — and a notch against the bezel reads exactly as one against
-         * a dark row, which is the same reasoning that lets the glyphs start on
-         * row 0 at all. Notching only the pair with pixels under them would
-         * make the band look lopsided for a reason nothing on screen explains.
+         * TOP TWO ONLY. The band is not a floating object like a pill or a
+         * label strip — it is the top EDGE of the screen, and it runs the full
+         * width. Its top corners meet the bezel, where a notch softens the
+         * corner of the picture. Its bottom corners meet the page, where the
+         * band is a boundary between two regions rather than a shape sitting on
+         * one; notching those rounds nothing and just puts two stray dark
+         * pixels on a straight edge. Judged on the device with all four.
+         *
+         * The footer pills go the other way and get all four, because they ARE
+         * floating objects — a pill has page on every side of it.
          */
         ctx.fillRect(0, 0, 1, 1, 0);
         ctx.fillRect(W - 1, 0, 1, 1, 0);
-        ctx.fillRect(0, HEADER_H - 1, 1, 1, 0);
-        ctx.fillRect(W - 1, HEADER_H - 1, 1, 1, 0);
     }
     const color = inverted ? 0 : 1;
     const fit5 = (t, maxW) => caps(fitText(FONT4_MEASURE, caps(t), maxW));
@@ -750,8 +755,8 @@ export function drawHeader(ctx, left, right, inverted = false) {
         rw = r ? fontWidth4x5(r) : 0;
     }
     const l = fit5(left, W - 4 - (rw ? rw + HEADER_GAP : 0));
-    fontPrint4x5(ctx, 2, 0, l, color);
-    if (r) fontPrint4x5(ctx, W - rw - 2, 0, r, color);
+    fontPrint4x5(ctx, 2, 1, l, color);
+    if (r) fontPrint4x5(ctx, W - rw - 2, 1, r, color);
 }
 
 /**
