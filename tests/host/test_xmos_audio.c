@@ -407,6 +407,61 @@ static void test_emit_byte_exact_against_capture(void) {
     CHECK(memcmp(buf, expected, sizeof expected) == 0, "emit byte-exact: matches captured framing");
 }
 
+/* Bit1 of 37 12 is monitoring — the mechanism that actually routes Main Out to
+ * USB-C — so it has to be tracked in its own right, not inferred from 37 14. */
+static void test_monitor_bit_tracked_from_route(void) {
+    uint8_t buf[MIDI_OUT_LEN];
+    xmos_audio_state_t st = XMOS_AUDIO_STATE_INIT;
+    int slot;
+
+    CHECK(st.monitor == -1, "monitor: starts unknown, not 0");
+
+    memset(buf, 0, sizeof buf); slot = 0;
+    put_msg(buf, &slot, XMOS_AUDIO_KEY_ROUTE, 0x02);   /* monitor on */
+    xmos_audio_scan(buf, MIDI_OUT_LEN, &st);
+    CHECK(st.monitor == 1, "monitor: 37 12 02 sets monitor");
+
+    memset(buf, 0, sizeof buf); slot = 0;
+    put_msg(buf, &slot, XMOS_AUDIO_KEY_ROUTE, 0x00);   /* monitor off */
+    xmos_audio_scan(buf, MIDI_OUT_LEN, &st);
+    CHECK(st.monitor == 0, "monitor: 37 12 00 clears monitor");
+
+    /* bit0 set, bit1 clear — the exact byte Move's sampling page sent. */
+    memset(buf, 0, sizeof buf); slot = 0;
+    put_msg(buf, &slot, XMOS_AUDIO_KEY_ROUTE, 0x01);
+    xmos_audio_scan(buf, MIDI_OUT_LEN, &st);
+    CHECK(st.monitor == 0, "monitor: bit0 alone does not read as monitoring");
+
+    memset(buf, 0, sizeof buf); slot = 0;
+    put_msg(buf, &slot, XMOS_AUDIO_KEY_ROUTE, 0x03);   /* both bits */
+    xmos_audio_scan(buf, MIDI_OUT_LEN, &st);
+    CHECK(st.monitor == 1, "monitor: bit1 read independently of bit0");
+}
+
+/* The hardware capture, 2026-08-26: changing the sampling source emits a LONE
+ * 37 12 with bit1 clear. usbc_out must not move (nothing said anything about
+ * the out source) while monitor must — that difference is the whole signal. */
+static void test_lone_route_clears_monitor_without_touching_usbc_out(void) {
+    uint8_t buf[MIDI_OUT_LEN];
+    xmos_audio_state_t st = XMOS_AUDIO_STATE_INIT;
+    int slot;
+
+    /* Establish Main Out the way the wire does: 37 12 02 then 37 14 01. */
+    memset(buf, 0, sizeof buf); slot = 0;
+    put_msg(buf, &slot, XMOS_AUDIO_KEY_ROUTE, 0x02);
+    put_msg(buf, &slot, XMOS_AUDIO_KEY_OUT_SRC, 0x01);
+    xmos_audio_scan(buf, MIDI_OUT_LEN, &st);
+    CHECK(st.usbc_out == 1 && st.monitor == 1, "lone: Main Out established");
+
+    /* Sampling page selects the USB-C input: 37 12 01, no 37 14. */
+    memset(buf, 0, sizeof buf); slot = 0;
+    put_msg(buf, &slot, XMOS_AUDIO_KEY_ROUTE, 0x01);
+    int changed = xmos_audio_scan(buf, MIDI_OUT_LEN, &st);
+    CHECK(st.usbc_out == 1, "lone: a lone 37 12 must not move usbc_out");
+    CHECK(st.monitor == 0, "lone: a lone 37 12 DOES clear monitoring");
+    CHECK(changed == 0, "lone: no usbc_out change is reported");
+}
+
 int main(void) {
     test_main_out();
     test_mic();
@@ -429,6 +484,8 @@ int main(void) {
     test_emit_refuses_when_free_slots_not_contiguous();
     test_emit_refuses_when_unterminated_sysex_present();
     test_emit_byte_exact_against_capture();
+    test_monitor_bit_tracked_from_route();
+    test_lone_route_clears_monitor_without_touching_usbc_out();
 
     if (fails) {
         fprintf(stderr, "%d check(s) failed\n", fails);
