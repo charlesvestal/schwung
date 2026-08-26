@@ -17,6 +17,8 @@
 #include "spi_tally.h"
 #include "shadow_set_pages.h"
 #include "unified_log.h"
+#include "usbc_out_gate.h"
+#include "shadow_resample.h"   /* usbc_out_persist_enabled */
 
 volatile uint32_t shim_debug_flags = 0;
 volatile int shim_pending_sysex_inject = -1;
@@ -498,8 +500,14 @@ static void *worker_main(void *arg) {
     int last_persisted = boot_jack;
     int boot_reasserted = 0;
 
-    int boot_usbc_out = usbc_out_state_read();  /* -1 if never persisted */
-    int last_usbc_out = boot_usbc_out;
+    /* USB-C audio-out arbitration. The gate decides what is Move's boot
+     * default and what is the user; see usbc_out_gate.h for why that cannot be
+     * a deadline. `usbc_last_fed` is the edge detector for the level the RT
+     * path publishes — it only ever writes on a change, so feeding the gate
+     * once per distinct value is exactly one call per real transition. */
+    usbc_gate_t usbc_gate;
+    usbc_gate_init(&usbc_gate, usbc_out_state_read());  /* -1 if never persisted */
+    int usbc_last_fed = -1;
 
     for (;;) {
         usleep(200 * 1000);             /* 200 ms cadence */
@@ -513,24 +521,37 @@ static void *worker_main(void *arg) {
             jack_state_write(jp);
         }
 
-        /* Persist the USB-C audio-out source when the RT path reports a change —
-         * but only once the boot window has fully settled. Two things put
-         * unintended values on the wire early: (1) Move's own firmware asserts
-         * its Mic default at ~0.6 s into every boot, regardless of what the
-         * user last chose; (2) our own boot re-assert (armed below, ~5 s) is
-         * itself observed by the same scan() that feeds this variable, since
-         * the shim's SysEx emit runs earlier in the same pre_transfer than its
-         * scan (see the scan call site in schwung_shim.c). Persisting either
-         * would silently clobber the stored preference on every reboot. Gate
-         * on tick >= 35 (~7 s) — after both Move's assert and our own replay
-         * echo — so only genuine post-boot user changes are written. Known,
-         * accepted trade-off: a setting change made in the first ~7 s of boot
-         * is not persisted. */
+        /* Feed the USB-C arbitration gate. Two things put values on the wire
+         * that carry no user intent: Move's own Mic default at boot, and our
+         * re-assert echoing back (the shim's SysEx emit runs earlier in the
+         * same pre_transfer than its scan, so scan cannot tell our bytes from
+         * Move's). Neither may reach the state file.
+         *
+         * This used to be a ~7 s deadline, which raced Move's assert: the
+         * worker's clock starts when MoveOriginal opens the SPI device, while
+         * Move's assert floats with boot load, so a slow boot landed it on the
+         * trusting side and wrote Mic over a stored Main Out — reverting in
+         * session and forgetting across the reboot. The gate replaces the
+         * deadline with the one thing that genuinely separates the two: we
+         * only ever re-assert Main Out, so during the boot window an observed
+         * Mic can only have come from Move. */
         int up = shim_usbc_out_persist;
-        if (tick >= 35 && up >= 0 && up != last_usbc_out) {
-            last_usbc_out = up;
-            usbc_out_state_write(up);
+        if (up >= 0 && up != usbc_last_fed) {
+            usbc_last_fed = up;
+            usbc_gate_out_t act = {0};
+            usbc_gate_observe(&usbc_gate, up, &act);
+            if (act.replay) {
+                shim_usbc_out_replay = act.replay_value;
+                unified_log("shim", LOG_LEVEL_DEBUG,
+                            "USB-C out: Move asserted Mic over a stored Main Out — re-asserting");
+            }
+            if (act.persist) usbc_out_state_write(act.persist_value);
         }
+
+        /* Backstop: on a boot where Move never asserts at all, the gate would
+         * otherwise stay closed and silently swallow every user change for the
+         * rest of the session. Opening it persists nothing by itself. */
+        if (tick == 300) usbc_gate_force_settle(&usbc_gate);   /* ~60 s */
 
         /* Re-assert jack state to Move once, ~5 s after start (Move's firmware
          * is up by then). Prefer the value XMOS actually reported THIS boot
@@ -542,16 +563,24 @@ static void *worker_main(void *arg) {
             int v = (shim_jack_persist >= 0) ? shim_jack_persist : boot_jack;
             if (v >= 0) shim_inject_boot_jack = v;
 
-            /* Re-assert the USB-C audio-out source too. Skip entirely when the
-             * stored value is Mic — that's Move's own boot default, so there is
-             * nothing to correct and no reason to put SysEx on the wire. */
-            if (boot_usbc_out == 1) shim_usbc_out_replay = 1;
-
-            /* Discard anything observed during the boot window before the
-             * persistence gate (tick >= 35) opens — Move's own boot-default
-             * assert and, shortly, our own replay echo have no user intent
-             * behind them and must not be queued up to write the file. */
-            shim_usbc_out_persist = -1;
+            /* Re-assert the USB-C audio-out source too. The gate puts nothing
+             * on the wire when the stored value is Mic — that's Move's own
+             * boot default, so there is nothing to correct.
+             *
+             * With restore switched off in Global Settings the shim drops the
+             * replay, so defending would mean guarding a re-assert that never
+             * reaches the wire: the gate would spend its whole budget on
+             * Move's assert and stay shut meanwhile. Restore-off still
+             * *remembers* (the setting governs only whether we re-assert), so
+             * open the gate instead and let the ordinary differs-from-stored
+             * test run from the start. */
+            if (usbc_out_persist_enabled) {
+                usbc_gate_out_t act = {0};
+                usbc_gate_boot_replay(&usbc_gate, &act);
+                if (act.replay) shim_usbc_out_replay = act.replay_value;
+            } else {
+                usbc_gate_force_settle(&usbc_gate);
+            }
         }
 
         if (tick % 5 == 0) poll_flags();          /* ~1 Hz */
