@@ -639,8 +639,18 @@ function loadSlot(w, opts) {
        the configs */
     const after = src.slice(m.index, m.index + 900);
     /* writeChainOrder counts: it invalidates for its callers, and B2 above
-       proves it does so even when it writes no module ids at all. */
-    const ok = /chainConfigFresh\[slotIndex\] = true/.test(after.slice(0, 300)) ||
+       proves it does so even when it writes no module ids at all.
+
+       The freshness assignment is matched on the LEFT-HAND SIDE only, not on
+       `= true`. The one in the loader is conditional now -- `= !incomplete` --
+       because a load whose reads timed out has not read the chain and must not
+       latch as authoritative (see loadChainConfigFromSlot). What this check is
+       for is a site that says NOTHING about the cache; a site that says "clean
+       only if it worked" is saying more than one that hardcodes true, not less.
+
+       It also uses the full window rather than 300 chars, since that reasoning
+       is written out between the assignment and the flag. */
+    const ok = /chainConfigFresh\[slotIndex\]\s*=/.test(after) ||
                /invalidateChainConfig\(/.test(after) ||
                /writeChainShape\(/.test(after.slice(0, 400));
     if (!ok) sites.push(lineNo + ": " + m[0].trim());
