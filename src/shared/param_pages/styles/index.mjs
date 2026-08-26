@@ -82,6 +82,22 @@ export function validateSet(set) {
     return bad;
 }
 
+/**
+ * Every set, plus the one problem that only exists BETWEEN sets.
+ *
+ * Thirteen sets are registered from six different authoring tasks, so an id
+ * collision is plausible. Per-set validation cannot see it, and the symptom is
+ * silent: both sets validate clean, `setById` returns whichever registered
+ * first, and the other never renders. A missing contact sheet is easy to
+ * mistake for a set that was not written yet.
+ */
 export function validateAll() {
-    return SETS.flatMap(validateSet);
+    const bad = SETS.flatMap(validateSet);
+    const seen = new Set();
+    for (const s of SETS) {
+        if (!s || !s.id) continue;
+        if (seen.has(s.id)) bad.push("duplicate set id " + s.id + " — one of them will never render");
+        else seen.add(s.id);
+    }
+    return bad;
 }
