@@ -1311,16 +1311,39 @@ function enumSquareNaturalLines(text) {
 }
 
 /**
- * How wide this value's square wants to be: text + 1px margin + 1px frame each
+ * How wide this value's square wants to be: text + margin + 1px frame each
  * side, floored at `ENUM_MIN_W` and capped at `ENUM_W`.
  *
  * A two-line value sizes to the WIDER of its two lines — the narrower one is
  * simply centred in the same interior, exactly as it is today.
  */
+/*
+ * A SINGLE LINE GETS 3px OF SIDE MARGIN, NOT 1.
+ *
+ * At 1px "RATE" and "NORMAL" sit hard against their own frame and read as
+ * cramped — reported from the device. The extra 2px a side is the cheapest fix
+ * available because it costs nothing that is in use: the box is already sized
+ * to its VALUE and centred in the cell, so a narrow value has the room lying
+ * idle either side of it.
+ *
+ * WHEN WE CAN, and the cap enforces that on its own rather than by a branch.
+ * A value near `ENUM_W` simply cannot take the whole 8 and clamps to whatever
+ * fits, so the margin degrades smoothly from 3px to 1px to none as the text
+ * grows, and the widest values draw exactly as they did.
+ *
+ * TWO-LINE VALUES ARE EXCLUDED. A value only wraps because it did not fit on
+ * one line, so it is at or near the cap already — there is nothing to give it,
+ * and asking would just add a branch that never fires. It is stated here rather
+ * than left implicit because "why doesn't the wrapped one have the margin" is
+ * the obvious question to ask of this code later.
+ */
+const ENUM_PAD_1LINE = 8;   /* 1px frame + 3px margin, both sides */
+const ENUM_PAD_2LINE = 4;   /* 1px frame + 1px margin, both sides */
+
 export function enumSquareWidth(text) {
     const [line1, line2] = enumSquareNaturalLines(text);
     const tw = Math.max(fontWidth4x5(line1), fontWidth4x5(line2));
-    const w = tw + 4;
+    const w = tw + (line2 ? ENUM_PAD_2LINE : ENUM_PAD_1LINE);
     return w < ENUM_MIN_W ? ENUM_MIN_W : (w > ENUM_W ? ENUM_W : w);
 }
 
