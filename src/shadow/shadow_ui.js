@@ -4724,11 +4724,44 @@ function loadChainConfigFromSlot(slotIndex) {
 
     /* Read current patch configuration from DSP
      * Note: get_param uses underscores (synth_module), set_param uses colons (synth:module) */
-    /* An unserved key answers "" rather than null, which reads the same as an
-     * empty position — both mean "nothing loaded here". */
-    const readPosition = (id) => {
+    /*
+     * A POSITION READ HAS THREE ANSWERS, and only two of them are news about
+     * the chain:
+     *
+     *   "<id>"  a module is loaded here
+     *   ""      the position is empty
+     *   null    the read did not complete
+     *
+     * This used to be `moduleId && moduleId !== ""`, which put null in the same
+     * branch as "" — the comment here even said so, having considered only the
+     * unserved case. So a read that merely TIMED OUT emptied the position, and
+     * the freshness latch below then declared that authoritative.
+     *
+     * Not hypothetical, and not a flicker. Loading Osirus blocks the SPI
+     * callback — the thread that also serves param requests — for the ~124 ms
+     * of dlopen + create_instance, and applyComponentSelectionConfirmed
+     * re-syncs immediately after its fire-and-forget module write, i.e. inside
+     * that window. Captured on device 2026-08-26: the load logged clean at
+     * 13:48:53.700-.824, and fifteen seconds later the chain editor still drew
+     * the synth position EMPTY and its picker announced "Select Synth, None",
+     * while the slot-settings screen, reading the same key on a different path,
+     * correctly said "Synth Virus".
+     *
+     * A failed read therefore keeps the position we already had. Stale-but-
+     * right beats an emptiness we were never told about — and because the
+     * picker puts the chosen module into chainConfigs BEFORE writing it to the
+     * DSP, "what we already had" during that window is exactly the module the
+     * user just picked. `incomplete` stops the latch, so the next frame reads
+     * again instead of believing this one.
+     */
+    let incomplete = false;
+    const readPosition = (id, previous) => {
         const moduleId = getSlotParam(slotIndex, `${id}_module`);
-        return moduleId && moduleId !== ""
+        if (moduleId === null || moduleId === undefined) {
+            incomplete = true;
+            return previous || null;
+        }
+        return moduleId !== ""
             ? { module: moduleId.toLowerCase(), params: {} } : null;
     };
     /*
@@ -4740,9 +4773,14 @@ function loadChainConfigFromSlot(slotIndex) {
      * on every frame at ~2.8ms per IPC round trip, which is more per frame than
      * rendering the entire page. An unserved key answers "", and Number("") is
      * 0, so the parse is explicit about its fallback.
+     *
+     * A COUNT read fails the same way a position read does, and a count of 0
+     * from a timeout truncates the whole section — every FX in the slot gone,
+     * not just one. Keep the length we already had.
      */
-    const readCount = (key, cap) => {
+    const readCount = (key, cap, previous) => {
         const raw = getSlotParam(slotIndex, key);
+        if (raw === null || raw === undefined) { incomplete = true; return previous; }
         const n = parseInt(raw, 10);
         return (isNaN(n) || n < 0) ? 0 : Math.min(n, cap);
     };
@@ -4760,19 +4798,22 @@ function loadChainConfigFromSlot(slotIndex) {
      * A legacy patch with a hole therefore draws its hole, once, and closes it
      * the first time the user changes the order.
      */
-    const readSection = (idAt, count) => {
+    const readSection = (idAt, count, prevList) => {
         const list = [];
-        for (let i = 0; i < count; i++) list.push(readPosition(idAt(i)));
+        for (let i = 0; i < count; i++) list.push(readPosition(idAt(i), prevList[i]));
         while (list.length && !list[list.length - 1]) list.pop();
         return list;
     };
 
     const oldFx = cfg.fx;
+    const oldMidiFx = cfg.midiFx;
 
-    cfg.synth = readPosition("synth");
+    cfg.synth = readPosition("synth", cfg.synth);
     cfg.midiFx = readSection((i) => `midi_fx${i + 1}`,
-                             readCount("midi_fx_count", CHAIN_CAP.midiFx));
-    cfg.fx = readSection((i) => `fx${i + 1}`, readCount("fx_count", CHAIN_CAP.fx));
+                             readCount("midi_fx_count", CHAIN_CAP.midiFx, oldMidiFx.length),
+                             oldMidiFx);
+    cfg.fx = readSection((i) => `fx${i + 1}`,
+                         readCount("fx_count", CHAIN_CAP.fx, oldFx.length), oldFx);
 
     /* Clear display_name cache when FX modules change (prevents stale
      * announcement on swap). Also drop the poll backoff: a different module may
@@ -4789,9 +4830,18 @@ function loadChainConfigFromSlot(slotIndex) {
     }
 
     chainConfigs[slotIndex] = cfg;
-    /* This IS the reload every other path invalidates towards, so the slot is
-     * clean by definition once it returns. */
-    chainConfigFresh[slotIndex] = true;
+    /*
+     * This IS the reload every other path invalidates towards — but only when
+     * it actually READ the chain. "Clean by definition once it returns" was
+     * true of the call and not of the answer: a load in which every read timed
+     * out latched the slot as authoritative, and nothing re-read it until the
+     * module signature happened to change again.
+     *
+     * Leaving it stale costs one more pass on the next frame, which is what
+     * drawChainEdit already does for an invalidated slot, and only for as long
+     * as the channel is refusing.
+     */
+    chainConfigFresh[slotIndex] = !incomplete;
     return cfg;
 }
 
@@ -5201,10 +5251,33 @@ function withPendingChainInsert(choice, pending) {
  * Length comes from the published counts, so a slot holding nothing is three
  * reads rather than a walk of the cap.
  */
+/*
+ * Returns null when ANY of its reads failed.
+ *
+ * The signature's whole job is to say "the chain changed, reload the config",
+ * so a signature built from timeouts is the one input that must never be
+ * believed: `|| ""` turned a failed read into "this position is empty", which
+ * is a perfectly well-formed signature describing a chain that does not exist.
+ *
+ * That is the second half of the Osirus blank-position bug — see the note in
+ * loadChainConfigFromSlot. The config reads and these reads are taken
+ * milliseconds apart and straddled the end of the load: the config read
+ * stale-empty, the signature read the real "osirus". It was the FRESH one that
+ * did the damage, by MATCHING — applySlotModuleSignature reloads the config
+ * only when the signature changes, and a signature that is already correct
+ * never changes again.
+ */
 function getSlotModuleSignature(slotIndex) {
-    const read = (id) => getSlotParam(slotIndex, `${id}_module`) || "";
+    let failed = false;
+    const read = (id) => {
+        const v = getSlotParam(slotIndex, `${id}_module`);
+        if (v === null || v === undefined) { failed = true; return ""; }
+        return v;
+    };
     const count = (key, cap) => {
-        const n = parseInt(getSlotParam(slotIndex, key), 10);
+        const raw = getSlotParam(slotIndex, key);
+        if (raw === null || raw === undefined) { failed = true; return 0; }
+        const n = parseInt(raw, 10);
         return (isNaN(n) || n < 0) ? 0 : Math.min(n, cap);
     };
     const parts = [read("synth")];
@@ -5215,7 +5288,7 @@ function getSlotModuleSignature(slotIndex) {
     parts.push("/");
     const nFx = count("fx_count", CHAIN_CAP.fx);
     for (let i = 0; i < nFx; i++) parts.push(read(`fx${i + 1}`));
-    return parts.join("|");
+    return failed ? null : parts.join("|");
 }
 
 /* Refresh module signature for a slot and invalidate knob cache on changes */
@@ -5237,6 +5310,11 @@ function refreshSlotModuleSignature(slotIndex) {
  */
 function applySlotModuleSignature(slotIndex, signature) {
     if (slotIndex < 0 || slotIndex >= SHADOW_UI_SLOTS) return false;
+    /* null is "we could not read the chain", not "the chain is different".
+     * Latching it would compare every later signature against a non-answer —
+     * and declaring NO change is what this function does for a signature that
+     * matches, which is how a stale config survives. */
+    if (signature === null || signature === undefined) return false;
     if (signature !== lastSlotModuleSignatures[slotIndex]) {
         lastSlotModuleSignatures[slotIndex] = signature;
         loadChainConfigFromSlot(slotIndex);
@@ -10064,9 +10142,25 @@ function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, c
     /* Force sync chainConfigs from DSP and reset caches after module change.
      * Without this, the knob overlay can show the old module's name and params
      * because the periodic refreshSlotModuleSignature (every 30 ticks) hasn't
-     * run yet to sync the in-memory state with DSP. */
+     * run yet to sync the in-memory state with DSP.
+     *
+     * THIS RE-SYNC RACES THE LOAD IT IS SYNCING, and cannot not: the module
+     * write above is fire-and-forget, and the DSP applies it by blocking the
+     * SPI callback for as long as the dlopen + create_instance takes (~124 ms
+     * for Osirus). So these reads land inside that window and come back null.
+     *
+     * Both halves are null-safe now — loadChainConfigFromSlot keeps the
+     * position and leaves the slot un-fresh, getSlotModuleSignature answers
+     * null — but the SIGNATURE must also not be latched: a latched null
+     * compares unequal to every real signature forever, which would make the
+     * periodic refresh reload the config on every single pass. Latch nothing,
+     * and the next refresh compares a real signature against the pre-write one,
+     * differs, and reloads exactly once. */
     loadChainConfigFromSlot(slotIndex);
-    lastSlotModuleSignatures[slotIndex] = getSlotModuleSignature(slotIndex);
+    {
+        const sig = getSlotModuleSignature(slotIndex);
+        if (sig !== null) lastSlotModuleSignatures[slotIndex] = sig;
+    }
     invalidateKnobContextCache();
     /* A removal shortened the list, so the remembered index can now point past
      * its end — and the CHAIN_EDIT handlers read `comps[selection].key` without
