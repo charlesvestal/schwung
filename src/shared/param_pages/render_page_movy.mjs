@@ -564,7 +564,7 @@ const FONT_H = TZ_H;
 const LBL_FONT_H = FONT4_HEIGHT;
 const LBL_MEASURE = FONT4_MEASURE;
 
-function centeredText(ctx, x0, span, y, text, color) {
+export function centeredText(ctx, x0, span, y, text, color) {
     const t = caps(text);
     tzPrint(ctx, centreX(x0, span, tzWidth(t)), y, t, color);
 }
@@ -775,7 +775,7 @@ const MOD_DOT_R = KNOB_R - 2;
  * than floating. The size and shape are argued in the body — both follow from
  * the fact that an even-sized mark cannot centre on a pixel.
  */
-function drawModDot(ctx, kx, ky, normVal) {
+export function drawModDot(ctx, kx, ky, normVal) {
     const cx = kx + KNOB_R, cy = ky + KNOB_R;
     /*
      * INSIDE the ring, not on it. Centred on the arc radius the 2x2 straddles
@@ -818,7 +818,7 @@ function drawModDot(ctx, kx, ky, normVal) {
     ctx.fillRect(x, y + 1, 1, 1, 1);
 }
 
-function drawArcKnob(ctx, kx, ky, normVal) {
+export function drawArcKnob(ctx, kx, ky, normVal) {
     const cx = kx + KNOB_R, cy = ky + KNOB_R, r = KNOB_R;
     if (typeof ctx.drawArc === "function") {
         ctx.drawArc(cx, cy, r, ARC_START_DEG, ARC_SWEEP_DEG, 1);
@@ -1053,7 +1053,7 @@ function buttonPhase(fired, now, held) {
     return { pressed, filled: held || bursts.length > 0, bursts };
 }
 
-function drawEnumSquare(ctx, kx, ky, text) {
+export function drawEnumSquare(ctx, kx, ky, text) {
     const w = ENUM_W, h = BOX_H;
     ctx.fillRect(kx, ky, w, 1, 1);
     ctx.fillRect(kx, ky + h - 1, w, 1, 1);
@@ -1081,7 +1081,7 @@ function drawEnumSquare(ctx, kx, ky, text) {
  * used to draw the same solid box as an enum square, which meant a door and a
  * turnable enum were pixel-identical — you found out which was which by
  * turning one and having nothing happen. */
-function drawOpaqueBox(ctx, kx, ky, value, override) {
+export function drawOpaqueBox(ctx, kx, ky, value, override) {
     const h = BOX_H;
     const shown = (override === null || override === undefined)
         ? displayValue(value === undefined ? null : value, { kind: KIND_OPAQUE })
@@ -1150,7 +1150,7 @@ function drawDivableMark(ctx, g, col, rowY) {
     drawBrackets(ctx, cellLeft(g, col) + 1, rowY, g.cellW - 2, BOX_H);
 }
 
-function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, cellText, btnPhase) {
+export function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, cellText, btnPhase) {
     const kx = cellLeft(g, col) + Math.floor((g.cellW - KW) / 2), ky = rowY;
     /* Anything that cannot show two values at once shows the live one, so it
      * animates under modulation instead of freezing on the base. */
@@ -1264,7 +1264,7 @@ function drawWaveMark(ctx, x, y, on) {
  * two questions — collapsing them is what made the removed gesture hard to
  * express in the first place.
  */
-function drawLabelCell(ctx, g, col, lblY, label, displayValue, showValue, inverted, modulated) {
+export function drawLabelCell(ctx, g, col, lblY, label, displayValue, showValue, inverted, modulated) {
     const cellX = cellLeft(g, col);
     const text = showValue ? displayValue : label;
     const tw = fontWidth4x5(text);
