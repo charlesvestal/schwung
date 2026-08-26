@@ -966,6 +966,38 @@ function drawWaveCell(ctx, x, y, w, h, shape, cycles, morphFrom = null, morphT =
  */
 const WAVE_MORPH_MS = 100;
 
+/*
+ * THE TRIANGLE IS DRAWN AT A WIDTH ITS SLOPE DIVIDES, NOT AT THE CELL'S.
+ *
+ * What reads as jagged is not the step SIZE, it is the step size CHANGING. A
+ * triangle traverses 4*amp = 24 rows per cycle, so its staircase is uniform
+ * only when the drawn width is a multiple of 24. At the grid cell's 28 drawn
+ * columns it gets 20 steps of 1 and 4 of 2; at 24 it is 24 steps of 1, and the
+ * apex stops being a plateau.
+ *
+ * Reported from the device as the triangle looking "wrong", and worth stating
+ * plainly that it was never the morph: a settled triangle is byte-identical to
+ * the last frame of a morph into one, so the jag was there with animation off.
+ *
+ * A TABLE OF ONE, AND THE ENTRY THAT IS NOT IN IT IS THE FINDING. The saw
+ * traverses 2*amp per cycle and looks like the obvious second entry — it was,
+ * until the widths were measured against the cells that actually exist rather
+ * than against a round number:
+ *
+ *   drawn 28 (grid, cell 32)   saw {1:1, 2:9, 3:3}  ->  quantized {1:1, 2:10, 3:1}
+ *   drawn 25 (knob card, 29)   saw {1:1, 2:12}      ->  quantized {1:1, 2:10, 3:1}
+ *
+ * A mild gain at one width and a LOSS at the other, for 4px of width each
+ * time. The triangle is exactly uniform at every width tested, which is the
+ * difference between a rule and a coincidence. Sine has no constant slope for a
+ * quantum to fix and square has no slope at all, so neither was ever a
+ * candidate.
+ *
+ * (The first pass had the saw in, on numbers taken against the 30px cell — a
+ * width with no pad subtracted and no cell of that size in the tree.)
+ */
+const WAVE_QUANTUM_ROWS = { 1: 4 };   /* shape id -> cycle travel, in units of `amp` */
+
 export function drawWaveform(ctx, rect, key, values, metaIndex, anim, nowMs) {
     const name = optionText(metaIndex, key, values);
     const shape = lfoShapeIdOf(name);
@@ -994,7 +1026,27 @@ export function drawWaveform(ctx, rect, key, values, metaIndex, anim, nowMs) {
         }
     }
 
-    if (w > 0) drawWaveCell(ctx, x, y, w, h, shape, 1, morphFrom, morphT);
+    /*
+     * Centred, and floored at one quantum so a cell too narrow to hold a whole
+     * one keeps its full width rather than collapsing to nothing. Snapping DOWN
+     * costs at most q-1 columns — 6 of 30 for a triangle, invisible in context
+     * because the cell already carries 2px of pad on each side.
+     *
+     * KEYED ON THE DESTINATION SHAPE, INCLUDING MID-MORPH. `shape` is already
+     * the destination on the morph's first frame, so the width is constant for
+     * the whole blend and changes only at the instant the value does — when
+     * every pixel in the cell is changing anyway. Skipping the quantum while
+     * morphing looks like the more conservative choice and is the opposite: it
+     * would snap the width when the morph settled, which is a second animation
+     * nobody asked for, arriving after the one they did.
+     */
+    let qx = x, qw = w;
+    const q = (WAVE_QUANTUM_ROWS[shape] || 0) * ((h - 1) / 2);
+    if (q > 0 && w >= q) {
+        qw = Math.floor(w / q) * q;
+        qx = x + Math.floor((w - qw) / 2);
+    }
+    if (qw > 0) drawWaveCell(ctx, qx, y, qw, h, shape, 1, morphFrom, morphT);
 }
 
 /* --------------------------------------------------------------------- eq */
