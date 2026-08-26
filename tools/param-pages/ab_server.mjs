@@ -151,24 +151,46 @@ function appendJudgement(row) {
     JUDGEMENTS.push(row);
 }
 
-const forSet = (id) => JUDGEMENTS.filter((j) => j.set === id);
+/* Comparisons only. A lock row carries no a/b, so letting it through here would
+ * put undefined into every appearance count and pair key downstream. */
+const forSet = (id) => JUDGEMENTS.filter((j) => j.set === id && !j.lock);
+const lockFor = (id) => {
+    const rows = JUDGEMENTS.filter((j) => j.set === id && j.lock);
+    return rows.length ? rows[rows.length - 1].lock : null;
+};
 const pairKey = (a, b) => (a < b ? a + '|' + b : b + '|' + a);
 
 // ---------------------------------------------------------------- pairing
 
 function pickRandom(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
-// Fewest judgements relative to target, ties broken randomly. A set already at
-// target is still offerable -- it just sorts last.
+/*
+ * Fewest judgements first, ties broken randomly.
+ *
+ * Locked sets are OUT: the decision is made, so asking again spends judgements
+ * that another set needs. Sets at or over target are also out while any set is
+ * still short — otherwise a session tops up one set past its target while
+ * others sit at zero, which is exactly what happened when the judge handler
+ * fed its own set back in as the request. Only once every set is done or
+ * locked does the pool reopen, so a long session can keep going rather than
+ * dead-ending.
+ *
+ * An explicit pin always wins, including on a locked set: asking for one by
+ * name is a deliberate act.
+ */
 function chooseSet(requested) {
     if (requested) {
         const s = setOf(requested);
         if (s) return s;
     }
     if (!CATALOG.ready.length) return null;
-    const scored = CATALOG.ready.map((s) => ({ s, n: forSet(s.id).length }));
-    const min = Math.min(...scored.map((x) => x.n));
-    return pickRandom(scored.filter((x) => x.n === min)).s;
+    const open = CATALOG.ready.filter((s) => !lockFor(s.id));
+    if (!open.length) return null;
+    const scored = open.map((s) => ({ s, n: forSet(s.id).length }));
+    const short = scored.filter((x) => x.n < TARGET_PER_SET);
+    const pool = short.length ? short : scored;
+    const min = Math.min(...pool.map((x) => x.n));
+    return pickRandom(pool.filter((x) => x.n === min)).s;
 }
 
 // Weight toward the least-seen options. Over ~16 draws uniform random pairing
@@ -204,7 +226,12 @@ function imgUrl(setId, file) { return `/img/${setId}/${file}`; }
 
 function pairPayload(requestedSet) {
     const set = chooseSet(requestedSet);
-    if (!set) return { error: 'no rendered sets', missing: CATALOG.missing };
+    if (!set) {
+        const anyOpen = CATALOG.ready.some((s) => !lockFor(s.id));
+        return anyOpen
+            ? { error: 'no rendered sets', missing: CATALOG.missing }
+            : { error: 'every set is locked — nothing left to judge', done: true };
+    }
     const [a, b] = choosePair(set);
     const side = (o) => ({ id: o.id, page: imgUrl(set.id, o.page), swatch: imgUrl(set.id, o.swatch) });
     return {
@@ -230,7 +257,7 @@ function revealPayload(setId, aId, bId) {
 function progressPayload() {
     return {
         target: TARGET_PER_SET,
-        total: JUDGEMENTS.length,
+        total: JUDGEMENTS.filter((j) => !j.lock).length,
         sets: CATALOG.ready.map((s) => {
             const rows = forSet(s.id);
             return {
@@ -240,6 +267,7 @@ function progressPayload() {
                 judged: rows.length,
                 skipped: rows.filter((r) => r.winner === 'skip').length,
                 target: TARGET_PER_SET,
+                lock: lockFor(s.id),
             };
         }),
         missing: CATALOG.missing,
@@ -295,7 +323,7 @@ function readBody(req) {
 async function handleJudge(req, res) {
     let body;
     try { body = JSON.parse(await readBody(req) || '{}'); } catch { return sendJson(res, 400, { error: 'bad json' }); }
-    const { set, a, b, winner } = body || {};
+    const { set, a, b, winner, pin } = body || {};
     const s = setOf(set);
     if (!s) return sendJson(res, 400, { error: 'unknown set' });
     const ids = new Set(s.options.map((o) => o.id));
@@ -305,7 +333,42 @@ async function handleJudge(req, res) {
     const row = { ts: new Date().toISOString(), set, a, b, winner };
     try { appendJudgement(row); } catch (e) { return sendJson(res, 500, { error: 'write failed: ' + e.message }); }
 
-    sendJson(res, 200, { ok: true, recorded: row, reveal: revealPayload(set, a, b), next: pairPayload(set) });
+    /*
+     * `pin`, not `set`.
+     *
+     * This used to hand the set just judged straight back as the requested set,
+     * so the session never rotated: one set ran past its target forever while
+     * twelve others stayed at zero. Passing the user pin (empty when the picker
+     * is on auto) lets chooseSet do the job it was written for.
+     */
+    sendJson(res, 200, {
+        ok: true, recorded: row,
+        reveal: revealPayload(set, a, b),
+        next: pairPayload(pin || null),
+    });
+}
+
+/*
+ * Lock a set: this option wins, stop asking about it.
+ *
+ * When the answer is already obvious there is no reason to spend a dozen more
+ * comparisons confirming it, and a session that keeps asking after the decision
+ * is made is a session that gets abandoned. A lock is recorded as its own row
+ * so the ranking can report it as a DECISION rather than silently folding it
+ * into strengths derived from far fewer comparisons.
+ */
+async function handleLock(req, res) {
+    let body;
+    try { body = JSON.parse(await readBody(req) || '{}'); } catch { return sendJson(res, 400, { error: 'bad json' }); }
+    const { set, id, pin } = body || {};
+    const s = setOf(set);
+    if (!s) return sendJson(res, 400, { error: 'unknown set' });
+    if (!s.options.some((o) => o.id === id)) return sendJson(res, 400, { error: 'unknown option' });
+
+    const row = { ts: new Date().toISOString(), set, lock: id };
+    try { appendJudgement(row); } catch (e) { return sendJson(res, 500, { error: 'write failed: ' + e.message }); }
+
+    sendJson(res, 200, { ok: true, recorded: row, locked: id, next: pairPayload(pin || null) });
 }
 
 const server = http.createServer((req, res) => {
@@ -327,6 +390,7 @@ const server = http.createServer((req, res) => {
         return sendJson(res, 200, progressPayload());
     }
     if (req.method === 'POST' && p === '/api/judge') return handleJudge(req, res);
+    if (req.method === 'POST' && p === '/api/lock') return handleLock(req, res);
     if (req.method === 'GET' && p.startsWith('/img/')) {
         const parts = p.slice(5).split('/');
         if (parts.length !== 2) return sendText(res, 400, 'bad image path');
@@ -372,7 +436,7 @@ footer { padding:10px 16px; color:#888; border-top:1px solid #333; display:flex;
 <header>
   <span class="title" id="setTitle">loading…</span>
   <span class="muted" id="count"></span>
-  <label class="muted">set <select id="setSel"><option value="">auto (fewest first)</option></select></label>
+  <label class="muted">set <select id="setSel"></select></label>
   <span class="muted" id="mode">in-context</span>
   <span class="muted" id="missing"></span>
 </header>
@@ -383,6 +447,7 @@ footer { padding:10px 16px; color:#888; border-top:1px solid #333; display:flex;
 </main>
 <footer>
   <span>&#8592;/&#8594; pick</span><span>SPACE skip</span><span>S swatch/in-context</span>
+  <span style="color:#4c8">SHIFT+&#8592;/&#8594; lock this one and close the set</span>
 </footer>
 <div id="reveal"><div class="lead" id="rlead">what you just picked appears here</div><div class="cols">
   <div class="col"><h3 id="rnA"></h3><div class="pos" id="rpA"></div><div class="note" id="rtA"></div></div>
@@ -437,7 +502,8 @@ async function judge(winner) {
   try {
     const res = await fetch('/api/judge', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ set: asked.set, a: asked.a.id, b: asked.b.id, winner })
+      body: JSON.stringify({ set: asked.set, a: asked.a.id, b: asked.b.id, winner,
+                             pin: $('setSel').value || '' })
     });
     const j = await res.json();
     if (!res.ok) { $('msg').textContent = j.error || 'judge failed'; return; }
@@ -447,11 +513,36 @@ async function judge(winner) {
   } finally { busy = false; }
 }
 
+/* Declare a winner and drop the set out of rotation. When the answer is
+ * already obvious, another dozen comparisons confirming it is time taken from
+ * the twelve sets that still need it. */
+async function lockIn(side) {
+  if (busy || !cur || cur.error) return;
+  busy = true;
+  const asked = cur;
+  const chosen = side === 'a' ? asked.a.id : asked.b.id;
+  try {
+    const res = await fetch('/api/lock', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ set: asked.set, id: chosen, pin: $('setSel').value || '' })
+    });
+    const j = await res.json();
+    if (!res.ok) { $('msg').textContent = j.error || 'lock failed'; return; }
+    show(j.next);
+    $('rlead').textContent = 'LOCKED: ' + chosen + ' wins ' + asked.set + ' — set closed';
+    $('rnA').textContent = ''; $('rpA').textContent = ''; $('rtA').textContent = '';
+    $('rnB').textContent = ''; $('rpB').textContent = ''; $('rtB').textContent = '';
+    await refreshSets();
+  } finally { busy = false; }
+}
+
 /* No dismiss branch here any more. While the reveal was a blocking panel, the
  * first key after every judgement was eaten dismissing it -- so a fast run of
  * arrow presses silently dropped every other one. The strip is passive now, so
  * every key goes straight to a judgement. */
 document.addEventListener('keydown', (e) => {
+  if (e.shiftKey && e.key === 'ArrowLeft') { e.preventDefault(); lockIn('a'); return; }
+  if (e.shiftKey && e.key === 'ArrowRight') { e.preventDefault(); lockIn('b'); return; }
   if (e.key === 'ArrowLeft') { e.preventDefault(); judge('a'); }
   else if (e.key === 'ArrowRight') { e.preventDefault(); judge('b'); }
   else if (e.key === ' ') { e.preventDefault(); judge('skip'); }
@@ -461,14 +552,28 @@ $('cardA').onclick = () => judge('a');
 $('cardB').onclick = () => judge('b');
 $('setSel').onchange = (e) => pair(e.target.value);
 
-(async () => {
+/* Rebuilt after a lock so the picker shows what is closed. Keeps the current
+ * selection if it still exists, so pinning a set survives the refresh. */
+async function refreshSets() {
   const pr = await (await fetch('/api/progress')).json();
+  const keep = $('setSel').value;
+  $('setSel').innerHTML = '';
+  const auto = document.createElement('option');
+  auto.value = ''; auto.textContent = 'auto (fewest first)';
+  $('setSel').appendChild(auto);
   for (const s of pr.sets) {
     const o = document.createElement('option');
-    o.value = s.set; o.textContent = s.set + ' (' + s.judged + '/' + s.target + ')';
+    o.value = s.set;
+    o.textContent = s.set + (s.lock ? '  LOCKED: ' + s.lock : ' (' + s.judged + '/' + s.target + ')');
     $('setSel').appendChild(o);
   }
+  $('setSel').value = keep;
   if (pr.missing.length) $('missing').textContent = 'not offered: ' + pr.missing.map((m) => m.set + ' — ' + m.why).join('; ');
+  return pr;
+}
+
+(async () => {
+  await refreshSets();
   await pair('');
 })();
 </script></body></html>`;
