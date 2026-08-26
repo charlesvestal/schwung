@@ -775,10 +775,16 @@ export function headerSplit(left, right) {
     const leftW = W - 4 - (rw ? rw + HEADER_GAP : 0);
     const l = fit5(left, leftW);
     /*
-     * colX is derived from leftW, not from rw, so an EMPTY name still yields a
-     * column -- an empty right side gives the title the whole bar, and a slide
-     * from or to a page with no name would otherwise have a zero-width column
-     * and a travel of zero, i.e. no animation and a name that never moves.
+     * colX is exactly where the title`s allowance stops, so the two spans abut
+     * with no pixel belonging to both. That is all it is: it reduces to
+     * `W - 2 - (rw ? rw + HEADER_GAP : 0)`, a function of rw alone, and it is
+     * written via leftW only because leftW is the number the title was fitted
+     * against and the two must not be able to drift apart.
+     *
+     * IT DOES NOT RESCUE AN EMPTY NAME. With rw 0 the column is 2px wide (6 if
+     * the gap were counted, which is the only thing this derivation changes),
+     * and neither is an animation. drawHeaderSlide handles that case by
+     * declining to slide at all -- see the early return there.
      */
     const colX = 2 + leftW;
     return { left, right, l, r, rw, nameX: W - rw - 2, colX, colW: W - colX };
@@ -798,10 +804,17 @@ export function headerSplit(left, right) {
  * them. Asserted on pixels in tests/host/test_page_slide_composite.sh.
  *
  * It defaults ON because a caller reaching for the title alone is compositing.
- * drawHeader passes `false`: it owns the whole band, so there is nothing
- * underneath to hide, and in the inverted case a 0-fill would punch a hole
- * straight through the highlight it has just drawn. Keeping drawHeader on
- * exactly its old draw calls is also what holds the 77 baseline frame hashes.
+ * drawHeader passes `false`, and the reason is NOT that a 0-fill would punch
+ * through the inverted highlight -- it never 0-fills when inverted, the value
+ * is `inverted ? 1 : 0` one line down, so that scenario cannot arise.
+ *
+ * The real hazard is one pixel. Inverted, drawHeader fills the band and then
+ * cuts the two top CORNER NOTCHES, and a 1-fill over [0, colX) repaints (0, 0)
+ * from 0 back to 1 -- the top-left notch is destroyed, on the touched-knob
+ * band, visibly. Un-inverted the 0-fill is merely a no-op on a band drawHeader
+ * has to itself. So `erase: false` is correctness on one path and economy on
+ * the other; it is also what holds the 77 baseline frame hashes, but that is
+ * the consequence, not the reason.
  */
 export function drawHeaderTitle(ctx, split, { inverted = false, erase = true } = {}) {
     if (erase) ctx.fillRect(0, 0, split.colX, HEADER_H, inverted ? 1 : 0);
@@ -815,9 +828,23 @@ export function drawHeaderTitle(ctx, split, { inverted = false, erase = true } =
  * what lets a slide draw the outgoing name inside the destination`s geometry.
  * The departing name may be cut shorter than it was a frame ago; that is the
  * price of one fixed column, and it is paid by the string that is leaving.
+ *
+ * THREE ANSWERS, NOT TWO -- the same rule this codebase keeps for a param read
+ * (see the note in CLAUDE.md), and it was collapsed here first time round:
+ *
+ *   undefined   no override: draw the split`s own name
+ *   null / ""   there IS no name: draw nothing
+ *   a string    draw that, refitted to the column
+ *
+ * Folding null into "no override" is not a nicety. pageLabel can return null
+ * (page_controller.mjs), so a slide from a page with no name drew the
+ * DESTINATION name as the departing one -- two byte-identical copies sliding
+ * past each other, which is precisely the wobble this whole feature removes,
+ * reintroduced by a defaulting branch.
  */
 export function drawHeaderName(ctx, split, text, inverted = false) {
-    if (text === undefined || text === null || text === split.right) {
+    if (text === null || text === "") return;
+    if (text === undefined || text === split.right) {
         if (split.r) fontPrint4x5(ctx, split.nameX, 1, split.r, inverted ? 0 : 1);
         return;
     }
@@ -845,15 +872,54 @@ export function drawHeaderName(ctx, split, text, inverted = false) {
  * The right edge needs nothing -- that is the screen bound, and the display
  * discards writes past it.
  *
- * No `inverted`: the inverted band is the touched-knob readout, whose two sides
- * are a parameter`s label and its value. Neither is a page name and neither
- * slides.
+ * WHICH SLOT A NAME OCCUPIES AND WHICH NAME OWNS THE GEOMETRY ARE TWO
+ * DIFFERENT QUESTIONS, and a `fromName`/`toName` pair conflates them into one
+ * -- which is a real bug, not a naming quibble. slideOffsets is
+ * direction-agnostic: `from` is the LEFT slot and `to = from + width` the
+ * right, always. But scrollFrame puts the destination at `base` on a BACKWARDS
+ * page change, i.e. in the left slot, so mirroring the body means the
+ * destination is `from`. With one pair of names the geometry then pins to
+ * whichever end the body happens to have put on the left, and a backwards
+ * slide lays the title out against the OUTGOING name -- the exact thing the
+ * destination-pinning rule exists to prevent, in the one direction nobody
+ * looks at. So: `leftName`/`rightName` say where, `destName` says which one
+ * owns the column, and Task 5 supplies all three.
+ *
+ * `leftName === rightName` does not degenerate -- it slides two identical
+ * strings colW apart, which looks like a nudge rather than a change -- and it
+ * cannot occur today anyway: claimName dedupes page names and pageLabel
+ * appends a child ordinal.
+ *
+ * No `inverted`. The inverted band is the touched-knob readout, whose two
+ * sides are a parameter`s label and its value; neither is a page name. It is
+ * CLEARED at the start of a page change (both onJog and goToPage set
+ * s.touched = -1) but not impossible during one: s.touchOrder survives, and
+ * turning a knob that is still held re-sets s.touched, so a two-handed gesture
+ * can restore the inverted band for the rest of the ~90ms window while this
+ * keeps drawing un-inverted. Cosmetic and brief; owned by Task 5.
  */
-export function drawHeaderSlide(ctx, { title, fromName, toName, frac }) {
-    const split = headerSplit(title, toName);
+export function drawHeaderSlide(ctx, { title, leftName, rightName, destName, frac }) {
+    const split = headerSplit(title, destName);
+    /*
+     * A DESTINATION WITH NO NAME DOES NOT SLIDE, and this is the honest
+     * answer rather than a special case bolted on.
+     *
+     * With no name the column is 2px wide, so "sliding" is a 2px travel and
+     * the departing name -- refitted to max(0, colW - 2 - HEADER_GAP) = 0 --
+     * fits to a single character which then lands inside the erase span and is
+     * painted straight out. Measured: zero ink right of colX on EVERY frame.
+     * The animation was not degraded, it was absent, and it cost two draws a
+     * frame to be absent. Erase the band and draw the title; the name is gone
+     * because there is no name to go to.
+     *
+     * The alternative -- pinning the column to the wider of the two names --
+     * animates a name out of a column the settled frame does not have, so the
+     * header would reflow the instant the slide ended.
+     */
+    if (!split.r) { drawHeaderTitle(ctx, split); return; }
     const { from, to } = slideOffsets(frac, split.colW);
-    drawHeaderName(translateCtx(ctx, from), split, fromName);
-    drawHeaderName(translateCtx(ctx, to), split, toName);
+    drawHeaderName(translateCtx(ctx, from), split, leftName);
+    drawHeaderName(translateCtx(ctx, to), split, rightName);
     drawHeaderTitle(ctx, split);
 }
 
