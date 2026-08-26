@@ -34,7 +34,11 @@ import { buildMetaIndex, inferFromValue, isTurnable, enumIndexOf, KIND_ENUM, KIN
 import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page.mjs";
 import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
          drawBrackets, drawPresetBody, displayValue, RULE_Y, LAYOUT_MOVY,
+         drawHeaderSlide,
          MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W } from "./render_page_movy.mjs";
+import { SCREEN_WIDTH } from "../list_geometry.mjs";
+import { drawSlide, slideOffsets, scrollFrame, advanceScroll, SLIDE_MS }
+    from "./page_transition.mjs";
 import { resolveViz, VIZ_SWITCH } from "./viz.mjs";
 import { createAnimState } from "./anim_state.mjs";
 import { drawMenuList } from "../menu_layout.mjs";
@@ -64,6 +68,12 @@ export { LAYOUT_MOVY };
  * setLayout(LAYOUT_LIST).
  */
 export const LAYOUT_LIST = "list";
+
+/* "Nothing is held on this page." Shared and frozen rather than a fresh []
+ * per draw: a slide asks for it once a frame, for ever. Frozen because a
+ * renderer that pushed into it would silently give every page a phantom
+ * touched knob. */
+const EMPTY_SLOTS = Object.freeze([]);
 import { step, stepLevel, reanchor, firstGrid, jumpIndex, groupIndex } from "./page_nav.mjs";
 
 /*
@@ -606,6 +616,26 @@ export function createController(io = {}) {
         knobEditing: false,
         /* Every knob currently held, oldest first. See onKnobTouch. */
         touchOrder: [],
+        /*
+         * THE SLIDE IS A POSITION, NOT A FROM/TO PAIR.
+         *
+         * `pageIndex` is the LOGICAL page — what input, the knob LEDs and the
+         * screen reader belong to, updated the instant the jog lands.
+         * `scrollPos` is what is DRAWN, in page units, and it eases toward it.
+         * When they are equal nothing is moving and the frame is the ordinary
+         * un-composited draw.
+         *
+         * A from/to pair cannot chase: retargeting mid-slide starts its
+         * outgoing page at 0 while the page actually on screen is out at
+         * +80px, so the picture snaps up to a screen width backwards. Here the
+         * target changes and the position simply carries on from where it is.
+         *
+         * `scrollLastMs` is the clock the advance paces against — 0 means "no
+         * frame has been timed yet", which the advance reads as dt 0 rather
+         * than as an enormous jump from the epoch.
+         */
+        scrollPos: 0,
+        scrollLastMs: 0,
         /* ms at which a TURN claimed the header with nothing held, or 0.
          * Only such a claim expires — see TURN_CLAIM_MS. */
         turnClaimMs: 0,
@@ -789,6 +819,7 @@ export function createController(io = {}) {
             s.values = Object.create(null);
             s.cursor = 0;
             s.pageIndex = 0;
+            scrollHome();
             s.metaRetries = 0;
             s.isLoadingSupported = null;
             s.knobStates = Object.create(null);
@@ -847,6 +878,7 @@ export function createController(io = {}) {
         /* A rebuild after a module finishes loading shifts every index, so land
          * by name rather than by position; a first load lands on a grid. */
         s.pageIndex = oldPages.length ? reanchor(oldPages, oldIndex, s.pages) : firstGrid(s.pages);
+        scrollHome();
         /* A restore that could not be honoured yet gets its chance here.
          * See restorePage(): the pages may not have existed when the caller
          * asked. */
@@ -895,6 +927,7 @@ export function createController(io = {}) {
         for (let i = 0; i < pages.length; i++) {
             if (pages[i] && pages[i].name === s.restoreName) {
                 s.pageIndex = i;
+                scrollHome();
                 s.restoreName = null;
                 /*
                  * Open the door only when the CALLER said to — see restorePage.
@@ -1165,6 +1198,28 @@ export function createController(io = {}) {
     }
 
     function tick() {
+        /*
+         * THE SLIDE ADVANCES ABOVE EVERY EARLY RETURN, and the position is the
+         * first thing this function touches.
+         *
+         * tick() returns early on EVERY items page and EVERY preset page —
+         * entered or not, their own read rotations own the rest of the frame —
+         * and again on any page that is not a knob grid. An advance further
+         * down would freeze a slide half way across the screen for as long as
+         * one of those was current, which is a page every jog through the set
+         * lands on.
+         *
+         * Paced on the CLOCK, not per tick: this device`s tick interval is not
+         * constant and its clock is quantized to ~11-12ms, so a fixed step per
+         * tick would travel at a speed that depended on how the rounding fell.
+         * A first frame (scrollLastMs 0) is worth dt 0, not dt-since-the-epoch.
+         */
+        if (s.scrollPos !== s.pageIndex) {
+            const t = now();
+            const dt = Math.max(0, t - (s.scrollLastMs || t));
+            s.scrollLastMs = t;
+            s.scrollPos = advanceScroll(s.scrollPos, s.pageIndex, dt, SLIDE_MS);
+        }
         s.tickCount++;
         flushDueWrites();
         expireTurnClaim();
@@ -2030,6 +2085,7 @@ export function createController(io = {}) {
         s.pageIndex = shift ? restoreSection(stepLevel(s.pages, s.pageIndex, delta))
                             : step(s.pages, s.pageIndex, delta);
         if (s.pageIndex !== before) {
+            aimScroll(s.pageIndex);
             s.cursor = 0;
             s.touched = -1;
             s.turnClaimMs = 0;
@@ -2063,6 +2119,70 @@ export function createController(io = {}) {
      * utters the item you chose, then the page name, then the entered list,
      * and only the last is news.
      */
+    /**
+     * The page set moved under us: put the drawn position where the logical
+     * page is, with no animation.
+     *
+     * A REPLAN IS NOT A PAGE CHANGE. load(), applyPendingRestore,
+     * replanForMode, refreshTrailing and replanIfCondition all assign
+     * `s.pageIndex` for reasons that have nothing to do with the user paging:
+     * a module finished loading and every index shifted, a caller asked to
+     * land on a page by name, a visible_if condition rebuilt the set. Left to
+     * itself the position would then be lagging a page it was never sent to
+     * and the next frame would slide in from a page that no longer exists at
+     * that index.
+     *
+     * `scrollLastMs` is cleared with it. Belt and braces rather than a
+     * mechanism: aimScroll stamps the clock itself, and the invariant that
+     * every assignment to `pageIndex` goes through one of the two means a lag
+     * can only be created there. It is here so the field cannot be left
+     * describing a slide that no longer exists.
+     */
+    function scrollHome() {
+        s.scrollPos = s.pageIndex;
+        s.scrollLastMs = 0;
+    }
+
+    /**
+     * The page index moved; aim the scroll at it.
+     *
+     * Nothing is needed for CHASE — the position is continuous, so a jog
+     * during a slide changes only where it is heading and the picture carries
+     * on from where it is. The teleport below is for the other case.
+     *
+     * THE TELEPORT THRESHOLD IS 2, NOT 1, AND THE DIFFERENCE IS A VISIBLE SNAP.
+     *
+     * A section-picker jump of nine pages must not scroll nine pages past at
+     * nine times the speed, so a genuinely distant target is closed up to one
+     * page away and the ordinary advance covers the rest: one screen width,
+     * however far you jumped.
+     *
+     * At a threshold of 1 that same rule fires on an ordinary FAST SPIN, which
+     * is the gesture chase exists to smooth. Position 2.4 heading for 3, one
+     * more detent makes the target 4, `d` is 1.6 — and the position is dragged
+     * 2.4 -> 3.0, a 0.6-page jump FORWARDS on the retarget frame. A
+     * "never moves backwards" assertion does not see that at all, which is why
+     * the test bounds the displacement in both directions.
+     *
+     * Two pages of lag is the most an in-range spin can build up (each detent
+     * adds one and the eased advance eats most of it before the next), and
+     * because that advance is proportional to the distance remaining, a lag
+     * catches itself up rather than accumulating.
+     */
+    function aimScroll(toIndex) {
+        /*
+         * SLIDE_MS 0 IS THE OFF SWITCH, and it has to be honoured here as well
+         * as in the advance: `frac` must be exactly 0 on the very frame the
+         * page changes, or the first frame after a jog composites once before
+         * the advance settles it.
+         */
+        if (!(SLIDE_MS > 0)) { s.scrollPos = toIndex; s.scrollLastMs = 0; return; }
+        const d = toIndex - s.scrollPos;
+        if (d > 2) s.scrollPos = toIndex - 1;
+        else if (d < -2) s.scrollPos = toIndex + 1;
+        s.scrollLastMs = now();
+    }
+
     function goToPage(index, { remember = true, enterIfDoor = false } = {}) {
         /* Paging away cannot leave a menu entered — returning later would
          * silently hand the jog back to the list. (Page names are unique, so
@@ -2079,6 +2199,7 @@ export function createController(io = {}) {
         rememberSection();
         const target = Math.max(0, Math.min(s.pages.length - 1, index));
         s.pageIndex = remember ? restoreSection(target) : target;
+        aimScroll(s.pageIndex);
         s.cursor = 0;
         s.touched = -1;
         s.turnClaimMs = 0;
@@ -2304,6 +2425,7 @@ export function createController(io = {}) {
         s.knobStates = Object.create(null);
         s.cursor = 0;
         s.pageIndex = firstGrid(s.pages);
+        scrollHome();
     }
 
     /*
@@ -2335,6 +2457,7 @@ export function createController(io = {}) {
         const built = buildTrailingPages(trailingMenus(), claim);
         s.pages = nonTrailing.concat(built.pages);
         if (s.pageIndex >= s.pages.length) s.pageIndex = Math.max(0, s.pages.length - 1);
+        scrollHome();
     }
 
     function replanIfCondition(key) {
@@ -2351,6 +2474,7 @@ export function createController(io = {}) {
             s.pages = planned.pages;
             s.conditionKeys = planned.conditionKeys || new Set();
             s.pageIndex = reanchor(oldPages, oldIndex, s.pages);
+            scrollHome();
             s.cursor = 0;
         }
     }
@@ -2761,17 +2885,29 @@ export function createController(io = {}) {
      * drawing a non-current index needs no new state, and none was added.
      *
      * THAT LAST SENTENCE IS ONLY TRUE OF THE STATE KEYED BY NAME. Four fields
-     * are per-slot or per-key and belong to the page the user is ON, and they
-     * are passed to renderPageMovy below UNQUALIFIED by index:
+     * are per-slot or per-key and belong to the page the user is ON, and the
+     * split between them is what decides which ones need qualifying:
      *
-     *   s.touched / s.touchOrder   which knob is under a finger
-     *   s.modCache                 modulation flags, filled by the read cursor
-     *   s.triggerFiredAt           the trigger flash
+     *   s.touched / s.touchOrder   PER SLOT — a knob position, 0..7, which
+     *                              names a different parameter on every page.
+     *                              Passed through only for the CURRENT index.
+     *   s.modCache                 per KEY. A page only ever asks about its
+     *   s.modValues                own keys, so the lookup is page-correct
+     *   s.triggerFiredAt           already and must NOT be suppressed — the
+     *                              trigger you just pressed is on the page now
+     *                              sliding AWAY, and blanking it there would
+     *                              delete the flash exactly when it plays.
      *
-     * Correct today, because every caller draws the current page. During a
-     * slide the OUTGOING page will wear the incoming page`s touch highlights.
-     * Deliberately left for the task that runs the slide; do not read the
-     * paragraph above as saying this is already handled.
+     * The per-slot pair is the one that bites. onJog sets `s.touched = -1` but
+     * does NOT clear `s.touchOrder` (clearTouch does, and it is only called on
+     * a view handoff), so a knob still held across a page change keeps its slot
+     * in the order — and both pages of the slide would be handed it as
+     * `touchedSlots`. The departing page would draw an inverted label for a
+     * knob the finger has left, on a parameter that is not the one being held.
+     *
+     * NEUTRAL VALUES, NOT NEW STATE: -1 and the shared EMPTY array say "no
+     * knob is held on this page", which is true of every page that is not the
+     * current one.
      *
      * Note also that this is a "draw" function that WRITES to `s`: itemsState
      * and presetState create their per-page record on first sight, so drawing
@@ -2906,10 +3042,13 @@ export function createController(io = {}) {
             if (chrome && footer) drawFooter(ctx, footer);
             return;
         }
+        /* Per-SLOT state belongs to the page under the finger. See the note
+         * above: a page that is not current is drawn with nothing held. */
+        const onThisPage = index === s.pageIndex;
         renderPageMovy(ctx, {
             page: mp, metaIndex: s.metaIndex, values: s.values,
             title: title || "", pageIndex: index, pageCount: s.pages.length,
-            touched: s.hintLines ? -1 : s.touched,
+            touched: (s.hintLines || !onThisPage) ? -1 : s.touched,
             /* `mp`, not the current page: a child-level page resolves its keys
              * against its OWN level, or the host formatter is asked about the
              * wrong parameter. See childResolve. */
@@ -2918,7 +3057,7 @@ export function createController(io = {}) {
                 : null,
             /* Every knob under a finger inverts its label, not just the one
              * the header is following. */
-            touchedSlots: s.hintLines ? [] : s.touchOrder,
+            touchedSlots: (s.hintLines || !onThisPage) ? EMPTY_SLOTS : s.touchOrder,
             modulated: (key) => !!s.modCache[key],
             modValues: s.modValues,
             pageGroups: pageGroups(),
@@ -3024,6 +3163,69 @@ export function createController(io = {}) {
                       w: MENU_LIST_W, h: pbottom - MENU_LIST_Y },
                     s.pickerEntries, s.pickerIndex);
                 if (footer) drawFooter(ctx, footer);
+                return;
+            }
+            /*
+             * THE COMPOSITE. Two body pages, then the chrome that does not
+             * travel, drawn over them.
+             *
+             * `frac === 0` is the settled case and takes the ordinary path
+             * below — the un-composited draw, byte for byte, which is what
+             * lets the transition hand over with no seam and what keeps the
+             * pre-refactor baseline frames unmoved.
+             *
+             * THE `s.pages[base] && s.pages[base + 1]` GUARD IS NOT BELT AND
+             * BRACES. `base` is -1 and `base + 1` is s.pages.length at the two
+             * ends of the page set, and a scroll position stranded past the
+             * end of a SHORTENED page set reaches further still. drawPage
+             * early-returns on a missing page, so the frame would merely be
+             * half empty rather than throw — a slide that silently drew one
+             * page and a blank, which is harder to notice than a crash.
+             */
+            const { base, frac } = scrollFrame(s.scrollPos);
+            if (frac !== 0 && s.pages[base] && s.pages[base + 1]) {
+                const off = slideOffsets(frac, SCREEN_WIDTH);
+                drawSlide(ctx, {
+                    fromDx: off.from, toDx: off.to,
+                    /* Body only. `chrome: false` drops the bank bar and the
+                     * footer; `header: false` drops the band, which the chrome
+                     * pass below composites itself. */
+                    drawFrom: (c) => drawPage(c, base, { title, footer, chrome: false, header: false }),
+                    drawTo: (c) => drawPage(c, base + 1, { title, footer, chrome: false, header: false }),
+                    /*
+                     * The fixed chrome, drawn LAST and unproxied.
+                     *
+                     * drawHeaderSlide keeps the module TITLE still and slides
+                     * only the page NAME, within its own right-hand column —
+                     * the title is identical on every page of a module, so
+                     * travelling with the body is motion carrying no
+                     * information. `destName` is the page the user is heading
+                     * for, which is what the column geometry is pinned to;
+                     * left/right merely say which slot each name occupies, and
+                     * on a BACKWARDS change the destination is the left one.
+                     *
+                     * It is s.pageIndex that names the destination, not
+                     * `base + 1`: a fast spin can retarget past the pair
+                     * currently on screen, and the header must lay out for
+                     * where you are going rather than for whatever the body
+                     * happens to be crossing.
+                     *
+                     * The bank bar reports s.pageIndex too — where input
+                     * already is — so the indicator never lags the gesture it
+                     * is reporting.
+                     */
+                    drawChrome: (c) => {
+                        drawHeaderSlide(c, {
+                            title: title || "",
+                            leftName: pageLabel(s.pages[base]),
+                            rightName: pageLabel(s.pages[base + 1]),
+                            destName: pageLabel(s.pages[s.pageIndex]),
+                            frac,
+                        });
+                        drawBankBar(c, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
+                        if (footer) drawFooter(c, footer);
+                    },
+                });
                 return;
             }
             drawPage(ctx, s.pageIndex, { title, footer });
