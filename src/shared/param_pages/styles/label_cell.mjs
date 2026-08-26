@@ -14,8 +14,8 @@
  * Every draw below takes the shipping `showValue` / `inverted` pair and every
  * probe renders both, stacked.
  *
- * THERE IS NO GUTTER ABOVE THIS BAND. `ROW0_Y` is 10 and `BOX_H` is 15, so the
- * widget box ends at row 24 and `LBL0_Y` is 25. One row of overflow lands on the
+ * THERE IS NO GUTTER ABOVE THIS BAND. `LBL0_Y` is exactly `ROW0_Y + BOX_H` —
+ * 9 + 15 = 24 — and `LBL1_Y` is `ROW1_Y + BOX_H`. One row of overflow lands on the
  * bottom of a knob, a fader or a filter curve, and the grid does not repaint the
  * widget when the label changes — so the damage persists until something else
  * forces a redraw. Every option here is therefore bounded to `[lblY, lblY+6]`
