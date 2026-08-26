@@ -130,46 +130,58 @@ typedef struct chain_loader chain_loader_t;
  * request was accepted (the caller must NOT also load synchronously), or -1 if
  * deferred loading is unavailable, in which case the caller should fall back to
  * the synchronous path. Supersedes any request not yet committed. */
-int  chain_loader_request_synth(chain_instance_t *inst, const char *module_name);
+/*
+ * All of these are CHAIN_INTERNAL (hidden visibility), like every other
+ * cross-TU function in the chain host. dsp.so exports exactly the five
+ * chain entry points plus the unified_log family, and nothing else — a
+ * dlopen'd sub-plugin that happened to define `chain_loader_commit` would
+ * otherwise bind to ours, or ours to theirs.
+ *
+ * tests/host/test_chain_host_file_split.sh pins that exported set, but it
+ * is guarded on the built dsp.so existing — which CI's host-tests job does
+ * not produce. So it only fires for someone who has run a local ARM build,
+ * and these shipped exported until one did.
+ */
+CHAIN_INTERNAL int  chain_loader_request_synth(chain_instance_t *inst, const char *module_name);
 
 /* Publish a completed load, if there is one. Call from the render path. Cheap
  * (one atomic load) when nothing is pending. */
-void chain_loader_commit(chain_instance_t *inst);
+CHAIN_INTERNAL void chain_loader_commit(chain_instance_t *inst);
 
 /* 1 while a request is outstanding — i.e. the honest answer to
  * `<prefix>:is_loading`. Must be reported as exactly "1" or "0": any other
  * answer latches the component as not-implementing-it in the shadow UI. */
-int  chain_loader_synth_busy(const chain_instance_t *inst);
+CHAIN_INTERNAL int  chain_loader_synth_busy(const chain_instance_t *inst);
 
 /* Hand a detached module triple to the loader for teardown. Safe to call with
  * no loader running, in which case it tears down inline — that is the
  * synchronous path's existing behaviour, unchanged. */
-void chain_loader_retire(chain_instance_t *inst, const chain_retired_module_t *r);
+CHAIN_INTERNAL void chain_loader_retire(chain_instance_t *inst, const chain_retired_module_t *r);
 
 /* --- lifecycle (create/destroy of the chain instance itself) --- */
 
-void chain_loader_shutdown(chain_instance_t *inst);
+CHAIN_INTERNAL void chain_loader_shutdown(chain_instance_t *inst);
 
 /* --- provided by chain_host.c, called from both threads --- */
 
 /* Build a synth instance into `out`. LOADER THREAD (or the synchronous
  * fallback). Touches nothing reachable from a render path. */
-void chain_synth_stage(chain_instance_t *inst, const char *module_name,
+CHAIN_INTERNAL void chain_synth_stage(chain_instance_t *inst, const char *module_name,
                        chain_staged_synth_t *out);
 
 /* Publish a staged load into the live position, handing back whatever it
  * displaced. SPI THREAD ONLY. Pointer swaps; no large copies. */
-void chain_synth_commit(chain_instance_t *inst, chain_staged_synth_t *staged,
+CHAIN_INTERNAL void chain_synth_commit(chain_instance_t *inst, chain_staged_synth_t *staged,
                         chain_retired_module_t *retired_out);
 
 /* destroy_instance + dlclose. Never call from the SPI thread. */
-void chain_synth_destroy_triple(chain_retired_module_t *r);
+CHAIN_INTERNAL void chain_synth_destroy_triple(chain_retired_module_t *r);
 
 /* Retire ring overflow — logs. Not on any hot path. */
-void chain_loader_note_retire_overflow(chain_instance_t *inst);
+CHAIN_INTERNAL void chain_loader_note_retire_overflow(chain_instance_t *inst);
 
 /* The loader thread could not leave realtime. Logs. Takes no instance because
  * it is called from the loader thread before it has one in hand. */
-void chain_loader_note_demote_failed(const char *msg);
+CHAIN_INTERNAL void chain_loader_note_demote_failed(const char *msg);
 
 #endif /* CHAIN_LOADER_H */

@@ -15,6 +15,7 @@
 #include "shim_worker.h"
 #include "rt_thread_audit.h"
 #include "spi_tally.h"
+#include "align_capture.h"
 #include "shadow_set_pages.h"
 #include "unified_log.h"
 #include "usbc_out_gate.h"
@@ -100,7 +101,6 @@ static const flag_spec_t FLAGS[] = {
     { "/data/UserData/schwung/log_xmos_sysex_on",    SHIM_FLAG_XMOS_LOG,     0 },
     { "/data/UserData/schwung/spi_midi_log_on",      SHIM_FLAG_SPI_MIDI_LOG, 0 },
     { "/data/UserData/schwung/slot_fx_dump_trigger", SHIM_FLAG_SLOT_FX_DUMP, 1 },
-    { "/data/UserData/schwung/align_dump_trigger",   SHIM_FLAG_ALIGN_DUMP,   1 },
     { "/data/UserData/schwung/main_fx_dump_trigger", SHIM_FLAG_MAIN_FX_DUMP, 1 },
     { "/data/UserData/schwung/rt_thread_audit_on",   SHIM_FLAG_RT_AUDIT,     0 },
     { "/data/UserData/schwung/spi_tally_on",         SHIM_FLAG_SPI_TALLY,    0 },
@@ -345,6 +345,59 @@ static void rt_audit_tick(void)
  * do; correctness does not depend on when the change is observed. */
 extern int shim_touch_trace_on;
 void shim_touch_trace_drain(void);
+
+/* ---- align capture ---------------------------------------------------- */
+
+/* The align dump is armed HERE, not on the SPI callback, because arming
+ * allocates. The callback only memcpys (align_capture_record); this side does
+ * the malloc, the fopen and the fwrite. See align_capture.h.
+ *
+ * The trigger file's contents are the capture length in seconds; empty or
+ * unparseable means ALIGN_CAPTURE_DEFAULT_SECONDS. A single 2.9 s snapshot was
+ * too short to tell a real signal from run-to-run variance — the measured
+ * splice ratio moved between 1.01x and 5.61x across five consecutive captures
+ * of the same configuration.
+ */
+#define ALIGN_CAPTURE_TRIGGER_PATH "/data/UserData/schwung/align_dump_trigger"
+#define ALIGN_CAPTURE_DEFAULT_SECONDS 30
+
+extern align_capture_t g_align_capture;
+
+static void align_capture_tick(void) {
+    /* Finish any capture already in flight before starting another. */
+    align_capture_poll(&g_align_capture);
+
+    if (access(ALIGN_CAPTURE_TRIGGER_PATH, F_OK) != 0) return;
+
+    int seconds = 0;
+    FILE *f = fopen(ALIGN_CAPTURE_TRIGGER_PATH, "r");
+    if (f) {
+        if (fscanf(f, "%d", &seconds) != 1) seconds = 0;
+        fclose(f);
+    }
+    unlink(ALIGN_CAPTURE_TRIGGER_PATH);
+    if (seconds <= 0) seconds = ALIGN_CAPTURE_DEFAULT_SECONDS;
+
+    /* Four streams: the two summands, the slot's post-FX output, and the
+     * finished mailbox. Inputs alone cannot tell "Move sent bad audio" from
+     * "we damaged good audio" — capture the chain, not its ends. */
+    static const char *const paths[4] = {
+        "/data/UserData/schwung/slot0_move_track.pcm",
+        "/data/UserData/schwung/slot0_synth_src.pcm",
+        "/data/UserData/schwung/slot0_post_fx.pcm",
+        "/data/UserData/schwung/mailbox_out.pcm",
+    };
+    uint32_t samples = (uint32_t)seconds * 44100u * 2u;
+    if (align_capture_arm(&g_align_capture, paths, 4, samples) == 0) {
+        unified_log("shim", LOG_LEVEL_INFO,
+                    "align capture armed: %d s per stream", seconds);
+    } else {
+        /* Almost always "a capture is already running" — say so rather than
+         * leaving the user to wonder why the trigger did nothing. */
+        unified_log("shim", LOG_LEVEL_WARN,
+                    "align capture NOT armed (already running, or out of memory)");
+    }
+}
 
 static void poll_flags(void) {
     shim_touch_trace_on =
@@ -606,6 +659,7 @@ static void *worker_main(void *arg) {
         if (tick % 5 == 0) poll_flags();          /* ~1 Hz */
         if (tick % 5 == 0) rt_audit_tick();       /* ~1 Hz, no-op unless armed */
         if (tick % 5 == 0) spi_tally_tick();      /* ~1 Hz, no-op unless armed */
+        align_capture_tick();                    /* 5 Hz: arm on trigger, drain when full */
         if (tick % 7 == 0) shadow_poll_current_set(); /* ~1.4 s FS scan */
         tick++;
     }

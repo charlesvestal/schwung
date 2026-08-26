@@ -139,12 +139,28 @@ jobs:
             file "$f" | grep -q 'aarch64' || { echo "WRONG ARCH"; file "$f"; exit 1; }
             echo "ok"
           done
-          # Conditional: only built when the libs/link submodule is present
-          # (it is, because of `submodules: recursive` above).
-          test -f build/link-subscriber && \
-            file build/link-subscriber | grep -q 'aarch64' || \
-            { echo "WARN: link-subscriber not built (submodule missing?)"; }
+          # link-subscriber is the SOLE reception path for Move->Schwung
+          # audio, and this check used to be a warning:
+          #     ... || { echo "WARN: link-subscriber not built"; }
+          # It is not conditional here — `submodules: recursive` above
+          # guarantees libs/link — so a warning could only ever mean the build
+          # silently stopped producing it, which is exactly what happened.
+          # On a dev machine with an uninitialised submodule, build.sh printed
+          # "Warning: Link SDK not found ... skipping link-subscriber", exited
+          # 0, package.sh omitted it, and install.sh only ever KILLS it. The
+          # sidecar on the test device went unreplaced for weeks and rode
+          # through a three-version bisect as the one thing nobody varied.
+          # A soft check on the one file that can rot invisibly is no check.
+          printf '%-48s ' build/link-subscriber
+          test -f build/link-subscriber || { echo "MISSING"; exit 1; }
+          file build/link-subscriber | grep -q 'aarch64' || \
+            { echo "WRONG ARCH"; file build/link-subscriber; exit 1; }
+          echo "ok"
       - name: Verify packaged tarball
         run: |
           test -f schwung.tar.gz
           tar -tzf schwung.tar.gz | grep -q 'schwung$'
+          # package.sh adds the sidecar only "if it was built", so the tarball
+          # is where a silent skip actually reaches users.
+          tar -tzf schwung.tar.gz | grep -q 'schwung/link-subscriber$' || {
+            echo "tarball has no link-subscriber — Move->Schwung audio would be dead"; exit 1; }
