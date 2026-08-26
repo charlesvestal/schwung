@@ -378,12 +378,17 @@ static void align_capture_tick(void) {
     unlink(ALIGN_CAPTURE_TRIGGER_PATH);
     if (seconds <= 0) seconds = ALIGN_CAPTURE_DEFAULT_SECONDS;
 
-    static const char *const paths[2] = {
+    /* Four streams: the two summands, the slot's post-FX output, and the
+     * finished mailbox. Inputs alone cannot tell "Move sent bad audio" from
+     * "we damaged good audio" — capture the chain, not its ends. */
+    static const char *const paths[4] = {
         "/data/UserData/schwung/slot0_move_track.pcm",
         "/data/UserData/schwung/slot0_synth_src.pcm",
+        "/data/UserData/schwung/slot0_post_fx.pcm",
+        "/data/UserData/schwung/mailbox_out.pcm",
     };
     uint32_t samples = (uint32_t)seconds * 44100u * 2u;
-    if (align_capture_arm(&g_align_capture, paths, 2, samples) == 0) {
+    if (align_capture_arm(&g_align_capture, paths, 4, samples) == 0) {
         unified_log("shim", LOG_LEVEL_INFO,
                     "align capture armed: %d s per stream", seconds);
     } else {

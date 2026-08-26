@@ -1,221 +1,167 @@
-# Move → Schwung audio breakup — MEASURED, and it is not osirus
+# Move → Schwung audio breakup — measured, half fixed, one-line repro
 
-**Status: root cause found. Move's Link Audio stream is spliced when a
-CPU-heavy module is loaded; the cause is total CPU capacity, not scheduling
-priority, and osirus is exonerated as a source of the artifact. The remedy is
-undecided (§6a).** Supersedes the 2026-08-27 morning version of this file,
-which framed it as an osirus/host bisect.
+**Status: still OPEN as an audible fault, but no longer mysterious.** One of the
+two mechanisms is found and fixed (PR #306). The other is reproducible in one
+command and is characterised below. Supersedes the 2026-08-27 morning version,
+which framed this as an osirus/host bisect.
 
 ---
 
-## 1. The one-line answer
-
-**When a CPU-heavy module is loaded, Move's Link Audio stream becomes spliced:
-~4% of its 125-frame blocks do not continue the previous one, ~15 times a
-second.** The `Move → Schwung` toggle does not create those splices — it
-decides whether you *listen* to them, because it switches the shim from passing
-Move's own mailbox mix to **rebuilding the mailbox from Link Audio**. Off, you
-hear Move's clean output. On, you hear the Link Audio reconstruction, splices
-included. With a cheap module in the slot there are no splices to hear (§6).
-
-That accounts for every fact the previous session could not:
-
-| Fact | Explained by |
-|---|---|
-| Fine until Move→Schwung is on | the toggle selects the LA reconstruction as the audio you hear |
-| Survives a cold boot | nothing accumulates; the stream is like this from the start |
-| Reproduces on main, PR #303 **and** v0.11.6 | none of them touch Move's publisher |
-| Reproduces on osirus 0.5.0 / 0.6.0 / 0.6.1 | osirus contributes none of it |
-| Only "osirus's" audio breaks up | in rebuild mode Move's track is **summed into the slot** before FX |
-| Muting the Move track fixes it | that removes the spliced source from the sum |
-| Happens with a synth pad too | it is not drum transients |
-
-## 2. The measurement — reproduce it in five minutes
-
-`align_dump_trigger` dumps the two inputs to the slot sum *separately*, at the
-exact point they are combined:
+## 1. THE REPRO — start here, it needs no module and no listening
 
 ```bash
-ssh ableton@move.local "cd /data/UserData/schwung && \
-  rm -f slot0_move_track.pcm slot0_synth_src.pcm && touch align_dump_trigger"
-# ~3 s later both files exist: s16le stereo 44.1k, 2.9 s each
+ssh root@move.local
+cat > /data/UserData/spin.sh <<'EOF'
+while :; do :; done
+EOF
+taskset 0x7 sh /data/UserData/spin.sh &
+chrt -f -p 20 $!          # FIFO 20, cores 0-2
 ```
 
-Then run the **phase test**, which is immune to the drum-transient confound
-that fooled the first pass here. For every candidate phase `p`, take the mean
-`|diff|` of samples at positions `≡ p (mod 125)`:
+**A busy loop that does nothing** takes Move's Link Audio delivery from
+`max_gap 8.7 ms / burst 2` to `max_gap 377 ms / burst 127`, and it reverts the
+instant you kill it. That is the whole fault, with no module involved.
 
-```
-slot0_move_track.pcm   BEST phase = 112   mean|diff| 5.61x overall
-                       every other phase  1.00 - 1.02x
-                       control period 128 -> 1.77x   (smear of the same spike)
-                       control period 127 -> 1.75x
-slot0_synth_src.pcm    BEST phase 1.05x, std 0.020   -> FLAT. CLEAN.
-```
+**DO NOT run the spinner at FIFO 70.** It starves `sshd` on cores 0-2 and the
+device has to be power-cycled. FIFO 20 reproduces it fine. (Learned the hard
+way; core 3 is free but sshd's threads are not pinned there.)
 
-A transient cannot prefer one phase-of-125. **125 frames is Move's Link Audio
-block** (`max_frames=125` on every telemetry line; 44100/125 = 352.8 blocks/s,
-which is exactly the observed `produced_count`).
+Watch it with the sidecar's continuity counter (see §3):
 
-Shape of the splice, at the boundary:
-
-```
-frame 7612:  2376 2328 2280 2233 2183 2138 2092 [1001] 1028 1056 1083
-             descending smoothly ................... ^ jumps AND reverses
-
-exact repeat of >=2 frames across boundary:   0 / 1022     -> not duplication
-median boundary step 36  vs  median local slope 34         -> 96% of boundaries clean
-boundaries with step > 3x local slope:        4.2%         -> ~15 / second
+```bash
+touch /data/UserData/schwung/debug_log_on   # ~100 s before the gate opens, see §6
+grep 'continuity slot' /data/UserData/schwung/debug.log
 ```
 
-Not a repeat, not clipping, not a level jump. Audio is **missing**.
+## 2. What it is NOT — every one of these was measured, do not re-test
 
-## 3. What is NOT the cause — do not re-test these
-
-| Variable | Evidence |
+| Suspect | Verdict |
 |---|---|
-| **osirus** | its own output measured **0 discontinuities**, phase-flat at 1.05x, max sample-to-sample delta 508 on a peak of 8100 |
-| osirus CPU | burns 82% of a core and reports `ur=0` for minutes at a time — it is not short of CPU |
-| osirus thread priority | tested at FIFO 70 **and** FIFO 20; see §4 |
-| our mixing / clipping | the splice is present in `slot0_move_track.pcm` **before** the sum; `synth_src` is clean |
-| our ring reader | the splice is locked to the producer's **125**-frame phase, not our 128-frame read |
-| the sidecar's writer | ring write → `__sync_synchronize()` → release-store `write_pos` is correct, and `produced_count` = 352.8/s means **no callback is missed** |
-| starve / catchup / would_overrun | all quiet during the measurement — this is not a ring-management fault |
-| the stale sidecar (§5) | the missing commit is **108 insertions, 0 deletions** — pure telemetry |
+| **osirus** | its own output is **clean in every configuration**: 1.02–1.07x phase-flat, 0 discontinuities, max sample delta 508 on a peak of 8100 |
+| osirus CPU starvation | burns 82% of a core and reports `ur=0` for minutes |
+| module thread priority | tested at FIFO **70**, FIFO **20**, and pinned to **core 3**. All equivalent |
+| core placement | pinning the module to core 3 made it **audibly worse** (core 3 is 42.6% busy, not idle; it went to 95%) |
+| **our sidecar's thread priority** | SCHED_OTHER vs **FIFO 45**: `breaks 0.61–1.46%` vs `0.32–1.18%`, `max_gap 282–366 ms` vs `359–478 ms`. **No help** |
+| raw CPU capacity | ~54% across four cores at the time of failure. Not saturated |
+| UDP / socket buffers | `Udp6InErrors=0`, `Udp6RcvbufErrors=0` under load. Nothing dropped in the kernel |
+| our ring management | since PR #306: starve, catchup, would_overrun, la_starve_fallback **all zero** |
+| our mixing | the artifact is present in `slot0_move_track.pcm` **before** the sum; `synth_src` is clean |
+| our ring reader | the artifact is locked to the producer's **125**-frame phase, not our 128-frame read |
+| the sidecar's writer | ring write → fence → release-store is correct, and `produced_count` = 352.8/s means no callback is missed |
 
-## 4. The priority hypothesis, and why it died
+**Three host versions and four osirus versions all reproduced it** because none
+of them changes CPU load on cores 0-2.
 
-osirus is fork-parallel. Its DSP child (`ppid` = MoveOriginal, `comm` inherited
-as `Audio Main/SPI`, worker thread named `DSP`) inherits scheduling from
-whatever forked it. Measured:
+## 3. The instrument that settled "us or them"
 
-```
-913   949  FF  35  10.5   Link Main          <- Move's LA publisher
-977   980  FF  70  79.7   DSP                <- osirus, ABOVE Link Main
-```
-
-That is a real contract violation and it is worth fixing on its own merits —
-it is also **the burn number §2.3 of the PR #303 handoff said had never been
-measured**: 16.3 s of CPU in 20 s, i.e. 81.5% of a core, at realtime priority.
-
-But it is not this bug:
-
-| | osirus underruns | LA starve | audible |
-|---|---|---|---|
-| FIFO 70, cores 0–3 | ~12 / 10 min | 44 starves, 1857 would-overrun | breakup |
-| FIFO 20, cores 0–2 | **88 / second** | ~1–2 / 15 s | **worse** |
-
-At FIFO 20 osirus starves itself (pitch/speed wobble, matching its `ur` counter
-and matching #303's note that SCHED_OTHER made this child audibly underrun).
-Neither rung removes the crackle, because the crackle is in the Link Audio data.
-
-**Why PR #303 "reproduced":** its deferred loader covers a `synth:module`
-*write* only. `v2_load_synth` is still used for "patch load, boot restore", so
-a module already in the slot at boot is loaded synchronously on the SPI
-callback and its children still inherit FIFO 70 on cores 0–3. Verified on
-device: after a cold boot on the #303 build there is **no `schwung-loader`
-thread at all** and the DSP child reads `FIFO 70, aff 0-3`. Re-pick the module
-in the UI and it becomes `FIFO 20, aff 0-2`. Both states were confirmed with
-`chrt -p` before listening.
-
-## 5. Build bug found on the way — the sidecar was never being shipped
-
-`libs/link` is an **uninitialised submodule**. Consequence chain:
+`link_cb_note_continuity` in `src/host/link_subscriber.cpp` compares the FIRST
+sample of each incoming buffer against the LAST of the previous one for the
+same slot, judged against the signal's own local slope. It runs **inside the
+source callback** — before our ring, before `read_pos`, before the mixer — so
+it observes Move's stream at the earliest point that exists.
 
 ```
-git submodule status  ->  -e9a2e414... libs/link      (leading '-')
-build.sh              ->  "Warning: Link SDK not found at libs/link/,
-                           skipping link-subscriber"     ... and exits 0
-package.sh            ->  only adds ./link-subscriber "if it was built"
-install.sh            ->  only KILLS link-subscriber; never installs it
+continuity slot=0  joins=1929  breaks=34  (1.76%)   <- Move track 1, playing
+continuity slot=1  joins=1929  breaks=9   (0.47%)
+continuity slot=2  joins=1929  breaks=0   (0.00%)   <- silent track
+continuity slot=3  joins=1929  breaks=0   (0.00%)   <- silent track
 ```
 
-So the Link Audio sidecar — the sole reception path for Move→Schwung audio —
-was frozen at whatever binary was placed on the device once, and rode
-unchanged through every deploy, including all three host versions bisected on
-2026-08-27. The deployed binary did not contain `max_burst_run` at all.
+The two silent tracks reading **0.00%** are the built-in control: the detector
+is not merely counting drum transients, or it would fire on everything.
 
-It is **not** the cause (the missing commit is pure telemetry) but it is why
-nobody could see this: the callback-delivery instrumentation added in
-`d0e90664` was never on the device. Fixed for this session by
-`git submodule update --init --recursive libs/link` and a rebuild; the tarball
-then contains `schwung/link-subscriber` and the deployed md5 matches.
+**Caveat on the word "upstream".** Breaks here prove the audio is already
+discontinuous when our callback receives it. They do **not** prove Move's
+firmware is at fault — the Link SDK's receiver runs **inside our own sidecar
+process**, so the socket options, the thread scheduling and the subscription
+are all ours. "Before our ring" is not "before anything we own", and conflating
+the two is how this got called an Ableton bug twice (see memory
+`link_audio_producer_burst_dropouts`, where the same wrong call was made and
+corrected).
 
-**This needs a real fix**: a silent skip that produces a working-looking
-tarball is the same class of failure as the empty `version.txt`. Either make
-the submodule a hard build requirement, or fail the build, or at minimum have
-`install.sh` refuse to proceed when the tarball has no sidecar.
+## 4. FIXED, and shipped in PR #306: the ring was 46 ms
 
-## 6. It is OURS: CPU capacity, not scheduling priority
+`LINK_AUDIO_IN_RING_BLOCKS` was `LINK_AUDIO_PUB_SHM_BLOCKS` — inherited from
+the publish side because they sit next to each other in the header. We write
+the pub ring on a metronome; **Move writes this one in bursts.** Against a
+measured 92 ms stall and 85 ms burst, a 46 ms ring is empty less than halfway
+through and cannot hold the refill. Catch-up made it worse by discarding at
+35 ms — below the burst — so every refill that could have covered the next
+stall was thrown away. Starve, burst, discard, starve.
 
-The controlling experiment was run. Same Move, same routing, same sidecar, same
-shim — only the module in slot 1 changed:
+Now 186 ms with the threshold derived from the ring. Result on hardware:
 
-```
-                    phase-125 lock     verdict
-osirus  move_track     5.61x           hard structural splice
-braids  move_track     1.02x           NONE
-either  synth_src      1.05x / 1.16x   the module itself is clean
-```
+| | before | after |
+|---|---|---|
+| Starved frames / 30 s | 145 runs, **2.53%** of audio missing | **0**, 0.095% |
+| osirus underruns / 30 s | 598 | **0** |
+| Move's own `max_gap` | 92 ms | 14–32 ms |
 
-**Swap osirus for braids and Move's Link Audio stream stops being spliced.** So
-Move's publisher is not inherently lossy; we are starving it.
+**This did not fix the audible fault** — the reporter reports it as no better —
+but it was a real bug and it was masking the other one.
 
-Read the **phase ratio**, not a splice count. Where there is no phase lock the
-`step > 3x local slope` fraction just counts ordinary transients at an
-arbitrary phase — `osirus: synth_src` scores "20.3/s" by that metric while
-being provably clean at 1.05x. That is the same trap as the absolute-threshold
-detector in §7.
+## 5. What is still open
 
-**The lever is not priority.** The osirus dump above was taken at **FIFO 20 on
-cores 0–2** — already below `Link Main` (FIFO 35), already off the SPI core —
-and it starved Move's publisher anyway. This corrects the mechanism recorded in
-memory `link_audio_producer_burst_dropouts` ("our DSP at 70 starves Link Main
-at 35"): the rung is not what matters. What matters is that osirus consumes
-~82% of one core out of four, and Move's audio engine cannot make its deadline
-alongside that. Cache/memory-bandwidth contention is a candidate mechanism that
-has NOT been measured.
+Move's publisher degrades under **any** sustained realtime CPU load on cores
+0-2, regardless of who holds it, at what priority, or what we run our own
+receiver at. Not yet tried:
 
-Note also that our own SPI-callback cost roughly doubles when routing comes on
-(`pre avg 160µs → 338µs`), all of it inside Move's FIFO-70 thread. That is a
-second, independent contribution that has not been separated from the module's.
+1. **Reduce the load.** dake's multi-core render split for osirus. Note it
+   spreads work across MORE cores, which may not help contention even though
+   it shortens total time — measure with the spinner rig before assuming.
+2. **Keep cores free.** The spinner used `taskset 0x7` (cores 0-2). Test
+   whether load confined to ONE core still breaks delivery — if Move's
+   publisher only needs one uncontended core, an affinity policy is a fix.
+3. **Look at how we subscribe.** `SourceProcessor` / channel-request TTL and
+   the socket options are ours. `d0e90664` tested the 5 s renewal theory and
+   disproved it, but the buffer sizes on the receive socket have never been
+   examined.
+4. **Admission control.** If we cannot keep Move's publisher healthy under
+   load, refuse to engage `rebuild_from_la` and stay on Move's own mailbox mix
+   with a visible reason. Degrades a feature instead of the audio.
 
-Prior art, and it is a **different** phenomenon — do not merge the two:
-`d0e90664`'s commit message recorded rare (~1 per 5–40 s) ~205 ms stalls on all
-four slots simultaneously with Move's `Link Main` showing a 172 ms continuous
-sleep, and placed those in Move's firmware publisher. This bug is constant
-~15/s block splices under load.
+## 6. Traps that cost real time today
 
-## 6a. What to do about it — not yet decided
+- **`unified_log` rechecks `debug_log_on` every 100 CALLS, not on a timer.**
+  For a subsystem logging once a second that is ~100 seconds of silence after
+  arming. Budget three minutes before concluding a flag is broken.
+- **An absolute click threshold cannot tell a splice from a kick drum.** Score
+  by PHASE mod 125 (`tools/link-audio/analyze_capture.py`). The first pass here
+  used `|diff| > 2000` and reported drums.
+- **Report phase ABSOLUTE, never per-window.** A 3 s window is 132300 samples
+  ≡ 50 (mod 125), so consecutive windows of the same steady artifact print
+  59, 122, 0, 0… and look like drift.
+- **The splice-rate percentage is meaningless without a phase lock.** With no
+  lock it counts ordinary transients — a provably clean `synth_src` scores
+  "20.3/s" that way.
+- **Three probes measured the wrong thing today**, each caught only by running
+  a control: an offset search that included `k=0` (comparing a segment to
+  itself, so it "proved" everything was contiguous); a junction-badness
+  detector that could not recover a KNOWN 3/11/40-sample cut; and the
+  absolute-threshold detector above. **Write the control first.** See memory
+  `probes_that_measured_the_wrong_thing`.
+- **A 2.9 s capture is too short.** The same configuration scored 5.61x, 1.84x,
+  1.01x, 2.58x and 2.94x across five consecutive snapshots. Captures are 30 s
+  now (`echo 30 > align_dump_trigger`).
+- **`chrt` and `taskset` need root** on the module's threads. `ssh root@` works.
+- **PR #303's deferred loader does not cover boot restore.** A module already
+  in the slot at boot loads synchronously on the SPI callback and its children
+  inherit FIFO 70 on cores 0-3. Verified with `chrt -p` on the `DSP` thread:
+  cold boot gives 70/0-3, re-picking the module in the UI gives 20/0-2. That
+  is why #303 looked like it changed nothing.
 
-Options, none tested:
+## 7. Related
 
-1. **Reduce osirus's cost.** A contributor (dake) reports a multi-core render
-   split with >2x improvement. It requires modules to have no shared mutable
-   statics between instances — that requirement needs writing into
-   `docs/MODULES.md`.
-2. **Admission control.** If total module CPU exceeds a threshold, refuse to
-   engage `rebuild_from_la` and stay on Move's clean mailbox mix, with a
-   visible reason. Degrades a feature rather than the audio.
-3. **Reduce our own per-frame SPI cost** in rebuild mode (the 160→338 µs).
-4. **Do nothing and document it** as a capacity limit of the platform.
+- PR **#306** — the ring fix, the RT-safe capture, and the build fixes below.
+- `docs/plans/2026-08-27-rt-safe-module-loading-handoff.md` — PR #303.
+- Memory `link_audio_producer_burst_dropouts` — the same bug, first recorded
+  2026-08-19, with the same wrong conclusion drawn and corrected.
 
-Measure before choosing: separate the module's contribution from the shim's by
-re-running §2 with osirus loaded but `rebuild_from_la` cost minimised.
-
-## 7. Instruments that work, and one that lies
-
-- `align_dump_trigger` — the decisive one. Separates the two summands.
-  **Caveat:** it only writes `move_track` when `have_move_track` is true, so a
-  starved frame is *skipped* and the file splices across it. Check both files
-  are the same length before trusting a discontinuity near a starve.
-- The **phase test** (§2), not an absolute-threshold click detector. The first
-  pass here used `|diff| > 2000` and could not distinguish a splice from a
-  kick drum. See memory `probes_that_measured_the_wrong_thing`.
-- `chrt -p <tid>` on the `DSP`-named thread — a version oracle that cannot lie
-  about whether a loader change took.
-- osirus's own `virus_debug.log` `ur=` counter — free, always on, and it is
-  what exonerated osirus.
-- **`unified_log` only rechecks `debug_log_on` every 100 CALLS**, not on a
-  timer. For a subsystem that logs once a second that is ~100 seconds of
-  silence after arming. Budget ~3 minutes before concluding a flag is broken.
+**Build bugs found underneath this, all fixed in #306:** `libs/link`
+uninitialised made `build.sh` warn and exit 0, `package.sh` omit the sidecar,
+and `install.sh` only ever kill it — so the sidecar was frozen on the device
+for weeks and rode through the whole bisect as the one thing nobody varied.
+And in the Dockerfile, a vestigial `file .../sf2/dsp.so || echo "not found"`
+for a module that left this repo long ago **always** failed, so the `||`
+**always** fired and masked the exit status of the entire build chain. Every
+build failure ever run was swallowed.
