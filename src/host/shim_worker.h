@@ -64,6 +64,14 @@ extern volatile int shim_usbc_out_persist;
  * then); the RT consumer emits the SysEx pair and swaps it back to -1. */
 extern volatile int shim_usbc_out_replay;
 
+/* Live view of the two bits that together decide whether Main Out actually
+ * reaches USB-C, republished by the RT path every frame (-1 until observed).
+ * Unlike shim_usbc_out_persist these are levels, not edges: the worker polls
+ * them to notice Move's sampling page clearing monitoring behind our back with
+ * a lone 37 12. See usbc_gate_tick_monitor. */
+extern volatile int shim_usbc_out_level;   /* 37 14: 0 = Mic, 1 = Main Out */
+extern volatile int shim_usbc_monitor;     /* 37 12 bit1: monitoring engaged */
+
 /* Deferred events (RT-safe to post; worker executes within ~200 ms). */
 #define SHIM_EVT_OVERTAKE_EXIT_HOOK 1
 #define SHIM_EVT_RESTART_MOVE       2
