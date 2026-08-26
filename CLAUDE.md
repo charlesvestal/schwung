@@ -75,6 +75,53 @@ JS: `console.log()` (auto-routed) or import `shared/logger.mjs`. C: `LOG_DEBUG("
   draws << ticks means something gates the redraw; draws == ticks and both low
   means the tick is slow or its pacing is wrong.
 
+**SPI frame tally** (`touch /data/UserData/schwung/spi_tally_on`, off by
+default) reports at ~1 Hz:
+
+```
+spi-tally: 345 frames / 345 irq  tx avg 389us (max 447us)  headroom 2513us  backlog 8
+spi-tally: LATE 1 irq(s) arrived while busy — frames queued, not dropped (backlog 8, worst window 1)
+```
+
+(345/s is right: the block rate is **344.5 Hz**, not 44 — 128 frames per block
+at 44.1 kHz, 2.902 ms per block.)
+
+Both numbers come from ablspi itself, which ships in Ableton's GPL source drop
+(see `docs/SPI_PROTOCOL.md`). `tx` is the driver's own `spi_tx_time`, stamped
+after every transfer into `struct ablspi_sys_info` at the END of the mmap'd page
+— one aligned 8-byte load of memory the shim already maps, no syscall. `irq` is
+`/proc/ableton/ablspi0.0/irq_count`, read on the worker because it is file I/O.
+
+**The gap between them is the point, and it exists because ablspi's IRQ is a
+counting semaphore rather than a flag** (`atomic_inc` in the ISR, `atomic_dec`
+in the wait). Overrun the budget and the frame is **not dropped** — it queues,
+and the next waits return immediately, replaying back-to-back. So a late frame
+never appears as a gap; it appears as a **burst**, which is exactly the shape
+that gets attributed to somebody else's producer misbehaving. `backlog` is that
+queue. Point it at the Link Audio dropouts before blaming Move's `Link Main`.
+
+**Measured 2026-08-26, and it corrects the budget below.** The ioctl takes
+2569µs but only **389µs of that is the transfer** — the other ~2180µs is
+`wait_event_interruptible` blocking for the next XMOS IRQ, i.e. frame pacing,
+not work and not the wire. With ~140µs of our own compute (`pre` 97 + `post`
+43), real slack is **~2370µs, not ~900µs**. See docs/REALTIME_SAFETY.md.
+
+A corollary worth holding: **`total_us` is not a load signal.** Our work
+growing shrinks the driver's wait by the same amount, so the loop total sits
+near the period whatever we do. The old overrun counter compared it against
+2000µs — below the 2902µs period — and so counted *every* frame: 43,986
+"overruns" in two minutes on an idle device. Now `OVERRUN_THRESHOLD_US`.
+
+Pure accumulator in `src/host/spi_tally.c` (no I/O, so `spi_tally_record` is
+SPI-callback-safe and the whole thing is host-tested by
+`tests/host/test_spi_tally.c`); `/proc` read and reporting in `shim_worker.c`.
+**Arming gotchas, the measured table, and the two experiments still owed are in
+`docs/plans/2026-08-26-spi-tally-followups.md`** — read it before re-measuring;
+the tally stays silent for ~20 s after arming, which looks like a broken build.
+The IRQ delta is a **32-bit** subtraction on purpose — that counter is printed
+from an `int`, goes negative past 2^31 (~72 days) and wraps at 2^32, and only
+modular arithmetic survives both. Widening it is the regression the test fails on.
+
 **When the UI feels slow, check the tick rate FIRST.** The shadow UI loop is
 paced to an absolute deadline (60 Hz); it previously slept a fixed 16 ms
 *after* the work, making the real rate `1/(work + 16ms)` — so every parameter

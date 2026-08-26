@@ -14,6 +14,7 @@
 
 #include "shim_worker.h"
 #include "rt_thread_audit.h"
+#include "spi_tally.h"
 #include "shadow_set_pages.h"
 #include "unified_log.h"
 
@@ -98,7 +99,86 @@ static const flag_spec_t FLAGS[] = {
     { "/data/UserData/schwung/align_dump_trigger",   SHIM_FLAG_ALIGN_DUMP,   1 },
     { "/data/UserData/schwung/main_fx_dump_trigger", SHIM_FLAG_MAIN_FX_DUMP, 1 },
     { "/data/UserData/schwung/rt_thread_audit_on",   SHIM_FLAG_RT_AUDIT,     0 },
+    { "/data/UserData/schwung/spi_tally_on",         SHIM_FLAG_SPI_TALLY,    0 },
 };
+
+/* ---- SPI frame tally --------------------------------------------------- */
+
+/* Pairs the kernel's per-transfer spi_tx_time (accumulated on the SPI callback,
+ * see spi_tally.h) with /proc/ableton/<dev>/irq_count, which only the worker
+ * may read — it is file I/O. Off unless armed:
+ *     touch /data/UserData/schwung/spi_tally_on
+ */
+
+#define ABLSPI_IRQ_COUNT_PATH "/proc/ableton/ablspi0.0/irq_count"
+
+/* Returns 0 and fills *out on success. The counter is printed from an int that
+ * only ever increments, so it eventually prints negative; parse it wide, then
+ * narrow to exactly 32 bits so spi_tally_fold's modular subtraction sees the
+ * same width the kernel counts in. */
+static int ablspi_irq_count_read(uint32_t *out)
+{
+    FILE *f = fopen(ABLSPI_IRQ_COUNT_PATH, "r");
+    if (!f) return -1;
+    long v = 0;
+    int got = (fscanf(f, "%ld", &v) == 1);
+    fclose(f);
+    if (!got) return -1;
+    *out = (uint32_t)v;
+    return 0;
+}
+
+static void spi_tally_tick(void)
+{
+    static spi_tally_state_t state;
+    static int armed = 0;
+
+    if (!(shim_debug_flags & SHIM_FLAG_SPI_TALLY)) {
+        /* Disarmed: drop the accumulator so a later session does not inherit
+         * this one's peak transfer time or backlog. */
+        if (armed) {
+            spi_tally_reset(&shim_spi_tally, &state);
+            armed = 0;
+        }
+        return;
+    }
+
+    /* Same rule as the RT-thread audit: do not start measuring into a log that
+     * is still dropping writes, or the whole session reads as "armed, nothing
+     * found" — which is indistinguishable from a clean result. */
+    if (!unified_log_enabled()) return;
+
+    if (!armed) {
+        spi_tally_reset(&shim_spi_tally, &state);
+        armed = 1;
+    }
+
+    uint32_t irqs = 0;
+    if (ablspi_irq_count_read(&irqs) != 0) {
+        /* A tally that cannot read the counter must SAY so — reporting frames
+         * with no IRQ side would look like a clean zero-backlog result while
+         * measuring only half of the comparison that is the entire point. */
+        static int moaned = 0;
+        if (!moaned) {
+            moaned = 1;
+            unified_log("shim", LOG_LEVEL_ERROR,
+                        "spi-tally: armed but " ABLSPI_IRQ_COUNT_PATH
+                        " is unreadable — NO backlog measurement is running");
+        }
+        return;
+    }
+
+    spi_tally_sample_t s;
+    spi_tally_fold(&state, &shim_spi_tally, irqs, &s);
+
+    char line[256];
+    if (s.late) {
+        spi_tally_format_late(&s, line, sizeof(line));
+        unified_log("shim", LOG_LEVEL_WARN, line);
+    }
+    spi_tally_format(&s, line, sizeof(line));
+    unified_log("shim", LOG_LEVEL_INFO, line);
+}
 
 /* ---- realtime-thread audit ------------------------------------------- */
 
@@ -476,6 +556,7 @@ static void *worker_main(void *arg) {
 
         if (tick % 5 == 0) poll_flags();          /* ~1 Hz */
         if (tick % 5 == 0) rt_audit_tick();       /* ~1 Hz, no-op unless armed */
+        if (tick % 5 == 0) spi_tally_tick();      /* ~1 Hz, no-op unless armed */
         if (tick % 7 == 0) shadow_poll_current_set(); /* ~1.4 s FS scan */
         tick++;
     }

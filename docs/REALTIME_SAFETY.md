@@ -122,6 +122,38 @@ Sources removed:
 
 Frame budget: 2900µs (128 frames @ 44.1kHz).
 
+### The "~2ms transfer" is mostly the shim sitting idle — MEASURED 2026-08-26
+
+The "SPI ioctl baseline ~2ms" row above is the *ioctl call*, not the transfer,
+and the ~900µs budget derived from it is wrong. ablspi stamps the real transfer
+duration into the mmap'd page every frame; reading it (`spi_tally_on`) against
+the existing `[spi_timing]` line, on an idle device with three empty slots:
+
+| | µs |
+|---|---|
+| Frame period (128 @ 44.1 kHz, **344.5 Hz** block rate) | 2902 |
+| `ioctl` call, as the shim measures it | 2569 |
+| …of which **actual transfer** (ablspi `spi_tx_time`) | **389** (max 447) |
+| …of which **blocked in `wait_event_interruptible`** | **~2180** |
+| Our compute (`pre` 97 + `post` 43) | ~140 |
+| **Real slack** | **~2370** |
+
+Most of that ioctl is the driver waiting for the *next* XMOS IRQ — it is the
+frame pacing, not work and not the wire. So the budget is ~2.4 ms, not ~900 µs.
+
+`total_us` is pinned near the period for the same reason: our work growing
+shrinks the wait by the same amount. **It is not a load signal** — use
+`mix_buf`/`render` in `[spi_timing] Pre/Post`, or the tally's `backlog`.
+
+**An overrun does not drop a frame — it queues.** ablspi's IRQ is a counting
+semaphore (`atomic_inc` in the ISR, `atomic_dec` in the wait), so frames that
+fire while we are busy are serviced back-to-back afterwards. Two consequences
+worth holding onto when reading the table above and the module-load section
+below: "232 consecutive dropped frames" is really 232 frames of *deferral* that
+Move then works off in a burst; and a burst arriving at a downstream consumer
+(Link Audio, the JACK bridge) is evidence *for* one of our own overruns, not
+against it. `backlog` in the tally is that queue, measured.
+
 ## What NOT to do
 
 - Never call unified_log from the SPI callback path
