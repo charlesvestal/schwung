@@ -51,6 +51,7 @@
 #include "host/shadow_transport.h"
 #include "host/shadow_set_pages.h"
 #include "host/shim_worker.h"
+#include "host/spi_tally.h"
 #include "host/shadow_dbus.h"
 #include "host/shadow_chain_mgmt.h"
 #include "host/shadow_link_audio.h"
@@ -6341,6 +6342,20 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
     /* Root span for the post-ioctl half of the SPI frame. */
     TRACE_SCOPE("spi.post");
 
+    /* SPI frame telemetry from the kernel's own counters. One aligned 8-byte
+     * load of the transfer time ablspi already stamped at the end of the page
+     * (see spi_tally.h) — no syscall, no /proc, nothing added to the wire.
+     * The worker pairs it with irq_count and reports at ~1 Hz.
+     * Dormant unless /data/UserData/schwung/spi_tally_on exists. */
+    if ((shim_debug_flags & SHIM_FLAG_SPI_TALLY) && hw) {
+        uint64_t tx_ns;
+        memcpy(&tx_ns, hw + SCHWUNG_OFF_SPI_TX_TIME, sizeof(tx_ns));
+        /* Clamp rather than truncate: a bogus wide value must not alias to a
+         * plausible-looking microsecond figure. */
+        spi_tally_record(&shim_spi_tally,
+                         tx_ns > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)tx_ns);
+    }
+
     /*
      * Knob-touch ground truth, UNCONDITIONALLY.
      *
@@ -8168,8 +8183,24 @@ post_timing:
     if (ioctl_us > spi_ioctl_max) spi_ioctl_max = ioctl_us;
     if (post_us > spi_post_max) spi_post_max = post_us;
 
-    /* Track overruns (no I/O — just update snapshot) */
-    if (total_us > 2000) {
+    /* Track overruns (no I/O — just update snapshot).
+     *
+     * The threshold is the frame PERIOD, not some fraction of it. `total_us` is
+     * the whole loop iteration and the loop is paced by the blocking ioctl, so
+     * it sits at the period (~2710-2830 us measured) no matter how much or how
+     * little work we do — our work grows, the wait inside the ioctl shrinks by
+     * the same amount. It only exceeds the period when we genuinely blew it.
+     *
+     * The old threshold here was 2000 us, i.e. BELOW the 2902 us period, so it
+     * counted every frame as an overrun: 43,986 of them in two minutes on an
+     * idle device with three empty slots. A counter that fires on 100% of
+     * frames reads as catastrophic and carries no information. Matches
+     * OVERRUN_THRESHOLD_US, which was already calibrated this way (2850 =
+     * "98% of budget", where budget means the period).
+     *
+     * Arm the SPI frame tally for the number this one cannot give you: how
+     * much of the period is the transfer, and whether IRQs are queueing. */
+    if (total_us > OVERRUN_THRESHOLD_US) {
         static uint32_t hook_overrun_count = 0;
         hook_overrun_count++;
         spi_snap.overrun_count = hook_overrun_count;

@@ -24,6 +24,7 @@
 #define SHIM_FLAG_XMOS_LOG       (1u << 1)  /* log_xmos_sysex_on */
 #define SHIM_FLAG_SPI_MIDI_LOG   (1u << 2)  /* spi_midi_log_on */
 #define SHIM_FLAG_RT_AUDIT       (1u << 3)  /* rt_thread_audit_on */
+#define SHIM_FLAG_SPI_TALLY      (1u << 4)  /* spi_tally_on */
 
 /* One-shot flags: worker unlinks the trigger file and sets the bit; the
  * RT consumer clears it with shim_debug_flag_consume(). */
