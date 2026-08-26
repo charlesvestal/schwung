@@ -83,6 +83,10 @@ import { runDrawBench } from '/data/UserData/schwung/shared/draw_bench.mjs';
 import { installParamTally, paramTallyTick, paramTallyArmed } from '/data/UserData/schwung/shared/param_tally.mjs';
 import { knobInit, knobStep } from '/data/UserData/schwung/shared/knob_engine.mjs';
 import {
+    decideComponentEntry, holdProbeIntervalTicks,
+    ENTRY_ENTER, ENTRY_HOLD,
+} from '/data/UserData/schwung/shared/component_load_gate.mjs';
+import {
     formatParamValue as ufFormatParamValue,
     formatParamForSet as ufFormatParamForSet,
 } from '/data/UserData/schwung/shared/param_format.mjs';
@@ -397,7 +401,8 @@ const VIEWS = {
     ANALYTICS_PROMPT: "analyticsprompt",       // First-run analytics opt-out prompt
     LFO_TARGET_COMPONENT: "lfotargetcomp",    // LFO target picker step 1: component
     LFO_TARGET_PARAM: "lfotargetparam",       // LFO target picker step 2: parameter
-    ENUM_PICKER: "enumpick"                   // Option list for an enum param
+    ENUM_PICKER: "enumpick",                  // Option list for an enum param
+    COMPONENT_LOADING: "comploading"          // "Loading..." while a component's contract arrives
 };
 
 /* ==== CO-RUN VIEW ADDRESSING ====
@@ -11580,13 +11585,152 @@ function enterHierarchyEditor(slotIndex, componentKey) {
     const mfx = masterFxIndexFromComponentKey(componentKey);
     if (mfx >= 0) { enterMasterFxHierarchyEditor(mfx); return; }
 
-    const hierarchy = getComponentHierarchy(slotIndex, componentKey);
-    if (!hierarchy) {
-        /* No hierarchy - fall back to simple preset browser */
-        enterComponentEditFallback(slotIndex, componentKey);
+    openComponentEditor(slotIndex, componentKey, -1);
+}
+
+/* ============================================================
+ * The component-editor entry gate, and the hold in front of it
+ * ============================================================ */
+
+/*
+ * A component whose contract has not arrived yet.
+ *
+ *   { slot, componentKey, mfxIndex, attempts, ticks }
+ *
+ * Non-null only while VIEWS.COMPONENT_LOADING is up. `attempts` is what slows
+ * the probe down (holdProbeIntervalTicks); `ticks` counts toward the next one.
+ */
+let componentLoadHold = null;
+
+/*
+ * The three RAW wire values the gate may consult, read lazily.
+ *
+ * Raw, deliberately: `null` (the read did not complete) and `""` (served, but
+ * nothing there) are different answers and the gate is the last place that can
+ * still tell them apart. `getComponentHierarchy` collapses them, which is
+ * exactly the bug this gate exists to stop repeating — so it is not used here.
+ */
+function componentEntryReader(slotIndex, componentKey, mfxIndex) {
+    if (mfxIndex >= 0) {
+        const fxKey = masterFxComponentKey(mfxIndex);
+        return {
+            hierarchy: () => chainTargetGetParam(MASTER_CHAIN_TARGET, fxKey, "ui_hierarchy"),
+            /* The get spelling, which for Master FX is the colon form — see
+             * getHierarchyActiveModuleId, whose two spellings these mirror. */
+            module: () => getSlotParam(MASTER_CHAIN_TARGET.slot, `master_fx:${fxKey}:module`),
+            isLoading: () => chainTargetGetParam(MASTER_CHAIN_TARGET, fxKey, "is_loading"),
+        };
+    }
+    const target = slotChainTarget(slotIndex);
+    const prefix = getComponentParamPrefix(componentKey);
+    return {
+        hierarchy: () => chainTargetGetParam(target, componentKey, "ui_hierarchy"),
+        /* get_param uses underscores (synth_module); set_param uses colons. */
+        module: () => (prefix ? getSlotParam(slotIndex, `${prefix}_module`) : ""),
+        isLoading: () => chainTargetGetParam(target, componentKey, "is_loading"),
+    };
+}
+
+/*
+ * Open a component's editor, or wait until it can be opened.
+ *
+ * Both editors (slot chain and Master FX) enter through here, and both of the
+ * destinations behind it — the knob grid and the list — are chosen further in,
+ * by enterHierarchyEditorWith. So the wait is view-agnostic: it works the same
+ * with Param View on Knobs or on List, and with the screen reader on.
+ *
+ * Re-entrant by design: the hold's probe calls this again, and an ENTER or a
+ * FALLBACK from that call is what ends the hold.
+ */
+function openComponentEditor(slotIndex, componentKey, mfxIndex) {
+    const decision = decideComponentEntry(
+        componentEntryReader(slotIndex, componentKey, mfxIndex),
+        (json) => { try { return JSON.parse(json); } catch (e) { return null; } });
+
+    if (decision.action === ENTRY_HOLD) {
+        holdForComponentLoad(slotIndex, componentKey, mfxIndex, decision.reason);
         return;
     }
-    enterHierarchyEditorWith(slotIndex, componentKey, hierarchy);
+
+    componentLoadHold = null;
+
+    if (decision.action === ENTRY_ENTER) {
+        if (mfxIndex >= 0) enterMasterFxHierarchyEditorWith(mfxIndex, decision.hierarchy);
+        else enterHierarchyEditorWith(slotIndex, componentKey, decision.hierarchy);
+        return;
+    }
+
+    /* FALLBACK — the module is in and declares no hierarchy. Unchanged
+     * behaviour for both editors, including Master FX's "do nothing, the
+     * module selection is still available". */
+    if (mfxIndex >= 0) return;
+    enterComponentEditFallback(slotIndex, componentKey);
+}
+
+function componentLoadHoldLabel() {
+    if (!componentLoadHold) return "";
+    const h = componentLoadHold;
+    if (h.mfxIndex >= 0) return `MFX ${h.mfxIndex + 1}`;
+    const cfg = chainConfigs[h.slot];
+    const moduleData = cfg ? getChainComponentModule(cfg, h.componentKey) : null;
+    /* From the in-memory config, never a fresh read: the channel this screen is
+     * waiting on is the one that would have to serve it. */
+    return moduleData && moduleData.module
+        ? getModuleAbbrev(moduleData.module)
+        : String(h.componentKey || "").toUpperCase();
+}
+
+function holdForComponentLoad(slotIndex, componentKey, mfxIndex, reason) {
+    const same = componentLoadHold &&
+                 componentLoadHold.slot === slotIndex &&
+                 componentLoadHold.componentKey === componentKey &&
+                 componentLoadHold.mfxIndex === mfxIndex;
+    if (!same) {
+        componentLoadHold = { slot: slotIndex, componentKey, mfxIndex, attempts: 0, ticks: 0 };
+        debugLog(`openComponentEditor: holding slot=${slotIndex} component=${componentKey} (${reason})`);
+        announce(`${componentLoadHoldLabel()}, loading`);
+    }
+    setView(VIEWS.COMPONENT_LOADING);
+    needsRedraw = true;
+}
+
+/*
+ * Ask again, on the cadence the gate publishes.
+ *
+ * Costs one read per interval and only while the screen is up, so a component
+ * that answers on the first probe costs nothing at all. The probe SLOWS rather
+ * than stopping — see the note in component_load_gate.mjs — so a module that
+ * takes far longer than expected still opens on its own rather than needing the
+ * user to back out and come in again.
+ */
+function serviceComponentLoadHold() {
+    if (!componentLoadHold || view !== VIEWS.COMPONENT_LOADING) return;
+    const h = componentLoadHold;
+    h.ticks++;
+    if (h.ticks < holdProbeIntervalTicks(h.attempts)) return;
+    h.ticks = 0;
+    h.attempts++;
+    openComponentEditor(h.slot, h.componentKey, h.mfxIndex);
+}
+
+/* Back out of the wait. The component is left exactly as it was — nothing has
+ * been written, and nothing was loaded on the way in. */
+function cancelComponentLoadHold() {
+    const wasMasterFx = componentLoadHold && componentLoadHold.mfxIndex >= 0;
+    componentLoadHold = null;
+    setView(wasMasterFx ? VIEWS.MASTER_FX : VIEWS.CHAIN_EDIT);
+    needsRedraw = true;
+}
+
+function drawComponentLoading() {
+    clear_screen();
+    const label = componentLoadHoldLabel();
+    drawHeader(label ? `${label}` : "Module");
+    const msg = "Loading...";
+    print(Math.max(0, (SCREEN_WIDTH - text_width(msg)) >> 1), 28, msg, 1);
+    /* The canon spelling — see the other drawFooter sites and
+     * tests/shadow/test_footer_verb_consistency.sh. */
+    drawFooter(["Back: exit"]);
 }
 
 /*
@@ -11824,12 +11968,15 @@ function enterHierarchyEditorWith(slotIndex, componentKey, hierarchy) {
 /* Enter hierarchy-based parameter editor for a Master FX slot */
 function enterMasterFxHierarchyEditor(fxSlot) {
     if (fxSlot < 0 || fxSlot >= MASTER_FX_SLOTS) return;
+    /* Through the same gate as the slot chain — a Master FX position holds the
+     * same modules and comes up just as slowly. openComponentEditor calls back
+     * into enterMasterFxHierarchyEditorWith once the contract has arrived. */
+    openComponentEditor(MASTER_CHAIN_TARGET.slot, masterFxComponentKey(fxSlot), fxSlot);
+}
 
-    const hierarchy = getMasterFxHierarchy(fxSlot);
-    if (!hierarchy) {
-        /* No hierarchy - just return, module selection is available */
-        return;
-    }
+function enterMasterFxHierarchyEditorWith(fxSlot, hierarchy) {
+    if (fxSlot < 0 || fxSlot >= MASTER_FX_SLOTS) return;
+    if (!hierarchy) return;
 
     dismissOverlayForHierarchyEntry();
 
@@ -16250,6 +16397,15 @@ function handleBack() {
             announce("Chain Editor");
             needsRedraw = true;
             break;
+        case VIEWS.COMPONENT_LOADING:
+            /* Stop waiting. Nothing was written on the way in, so there is
+             * nothing to unwind — the module carries on loading regardless. */
+            {
+                const wasMasterFx = componentLoadHold && componentLoadHold.mfxIndex >= 0;
+                cancelComponentLoadHold();
+                announce(wasMasterFx ? "Master FX" : "Chain Editor");
+            }
+            break;
         case VIEWS.FILEPATH_BROWSER:
             closeHierarchyFilepathBrowser();
             {
@@ -18332,6 +18488,9 @@ function runCoRunChainEdit(fn) {
  * draw function. drawSlots() only renders the top-level slot LIST — we must
  * dispatch every reachable view explicitly. */
 function dispatchCoRunDraw() {
+    /* Same reason as the main draw path: probe before dispatching, so a
+     * component that becomes readable is drawn on this frame. */
+    serviceComponentLoadHold();
     switch (view) {
         /* Addressable-view overlay roots (CORUN_ENTRIES) — the co-run draw path
          * must render these too, not just the chain-editor subtree. */
@@ -18356,6 +18515,7 @@ function dispatchCoRunDraw() {
             drawComponentEdit();
             break;
         case VIEWS.HIERARCHY_EDITOR:     drawHierarchyEditor(); break;
+        case VIEWS.COMPONENT_LOADING:    drawComponentLoading(); break;
         /* The grid draws grids; every other page kind it plans (preset
          * browser, items list, mode select, child selector) belongs to the
          * list editor, which drawParamPages declines by returning false. */
@@ -19397,6 +19557,11 @@ globalThis.tick = function() {
      * staying on the view the grid left. See maybeReturnToComponentGrid. */
     if (view === VIEWS.CHAIN_EDIT) maybeReturnToComponentGrid();
 
+    /* Probe a component we are waiting on BEFORE the switch, not inside its
+     * draw case: a probe that lands changes `view`, and doing it here means the
+     * editor it opens is drawn on this frame rather than one frame later. */
+    serviceComponentLoadHold();
+
     /* Guarded: a throw in any draw function would otherwise repeat every
      * frame — frozen screen with no recovery, since the C loop keeps
      * calling tick() regardless. (The OVERTAKE_MODULE case has its own
@@ -19445,6 +19610,9 @@ globalThis.tick = function() {
                 /* Fall back to simple preset browser */
                 drawComponentEdit();
             }
+            break;
+        case VIEWS.COMPONENT_LOADING:
+            drawComponentLoading();
             break;
         case VIEWS.HIERARCHY_EDITOR:
             drawHierarchyEditor();
