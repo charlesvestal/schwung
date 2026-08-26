@@ -74,7 +74,10 @@ fi
 # counts -- MENU_FRAME_X/Y/W share one.
 declared=$(command grep "^const [A-Z][A-Z0-9_]* = " src/shared/param_pages/page_controller.mjs \
            | command grep -o "[A-Z][A-Z0-9_]* = " | sed 's/ = //' | sort -u | tr '\n' ' ')
-expected="MENU_BRACKET_LEN MENU_FRAME_BOTTOM_INSET MENU_FRAME_W MENU_FRAME_X MENU_FRAME_Y MENU_LIST_INDICATOR_X TRIGGER_BURST_KEEP_MS TRIGGER_BURST_MAX "
+# EMPTY_SLOTS is not geometry: it is the frozen "nothing is held on this page"
+# array the slide hands to a page that is not the current one. Listed rather
+# than exempted by pattern, so the pin keeps its whole job.
+expected="EMPTY_SLOTS MENU_BRACKET_LEN MENU_FRAME_BOTTOM_INSET MENU_FRAME_W MENU_FRAME_X MENU_FRAME_Y MENU_LIST_INDICATOR_X TRIGGER_BURST_KEEP_MS TRIGGER_BURST_MAX "
 if [ "$declared" != "$expected" ]; then
     echo "FAIL: page_controller.mjs's module constants changed."
     echo "  declared: ${declared}"

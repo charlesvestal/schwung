@@ -541,7 +541,23 @@ function renderSettings(c) {
     const v = store[cond.param] !== undefined ? store[cond.param] : "";
     return String(v) === String(cond.equals);
   };
-  const ctl = createController(Object.assign({ announce: noop }, io));
+  /*
+   * AN INJECTED CLOCK, BECAUSE A SNAPSHOT WANTS THE SETTLED PICTURE.
+   *
+   * goToPage below starts a page SLIDE (see page_transition.mjs), which the
+   * tick loop advances against the clock -- and the default clock is
+   * Date.now(), which moves a few milliseconds across 400 synchronous ticks.
+   * So the scroll position stalled a fraction of a page short of home and
+   * every case rendered a COMPOSITE: two pages 128px apart, half of it off
+   * the display, which the clipped() guard below reported as an overrun. It
+   * also made which cases failed depend on how fast the machine ran the loop.
+   *
+   * A fake clock at the device`s own ~18ms cadence settles the slide in five
+   * ticks and leaves every other timer reading exactly what it read before --
+   * the baseline hashes are unmoved by this.
+   */
+  let __t = 1000;
+  const ctl = createController(Object.assign({ announce: noop, now: () => __t }, io));
   ctl.load({ slot: 0, component: "master_settings", prefix: "master_settings",
              visible: io.visible });
   ctl.setLayout(LAYOUT_MOVY);
@@ -553,7 +569,7 @@ function renderSettings(c) {
   /* The controller reads ONE param per tick on purpose (a round trip is ~2.8ms
      on device), so a render straight after load would draw a page of blanks.
      Wound forward until every declared key has been picked up. */
-  for (let i = 0; i < 400; i++) ctl.tick();
+  for (let i = 0; i < 400; i++) { __t += 18; ctl.tick(); }
   ctl.render(drawContext(fb), {
     title: "MFX > Settings",
     footer: SETTINGS_FOOTER[ctl.page.kind] || SETTINGS_FOOTER.knobs,

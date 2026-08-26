@@ -33,6 +33,9 @@ import { BAR_Y, HEADER_H, W as SW, drawHeader, headerSplit, drawHeaderTitle,
          drawHeaderName, drawHeaderSlide }
   from "./src/shared/param_pages/render_page_movy.mjs";
 import { RULE_Y } from "./src/shared/list_geometry.mjs";
+import { scrollFrame, isSliding, advanceEased, advanceLinear, slideOffsets,
+         translateCtx }
+  from "./src/shared/param_pages/page_transition.mjs";
 /* ONE fixture, shared with the baseline driver. This file used to redefine
    KEYS / CHAIN_PARAMS / HIER / the store / the controller factory alongside
    these imports -- two definitions of one thing in one file, which is the drift
@@ -878,6 +881,619 @@ ok(listIdx >= 0, "the list-layout fixture has a knob page to draw as rows");
   drawHeaderName(drawContext(filled), sp, "ANOTHER NAME", true);
   ok(bandInk(filled, sp.colX, SW) < before,
      "an inverted override name is KNOCKED OUT of the band, not printed onto it");
+}
+
+/* ------------------------------------------------------------------------ *
+ * TASK 5: THE SLIDE ACTUALLY RUNS.
+ *
+ * Everything above proves the PARTS -- drawPage by index, chrome and header
+ * suppression, the header compositor. None of it proves the WIRING, which is
+ * the failure this repo keeps having: createAnimState was written, exported,
+ * unit-tested and never called, and every widget animation shipped inert for
+ * months (see tests/host/test_anim_wiring.sh). So this section drives the real
+ * controller -- onJog, tick, render -- and asserts on the pixel buffer.
+ *
+ * A FRESH controller: the blocks above enter doors, hold nothing and leave
+ * `ctl` parked wherever the last loop finished. Sharing it would make every
+ * assertion here depend on the order of the file.
+ * ------------------------------------------------------------------------ */
+{
+  const S = mkCtl();
+  S.setLayout(LAYOUT_MOVY);
+  S.load({ prefix: "synth" });
+  for (let i = 0; i < 60; i++) { bump(18); S.tick(); }
+  /* Warm every page: a kind reads its own CONTENT on arrival, so a page drawn
+     cold would differ from the same page drawn warm for reasons that have
+     nothing to do with the slide. */
+  for (let i = 0; i < S.state.pages.length; i++) {
+    S.goToPage(i, { remember: false });
+    for (let n = 0; n < 12; n++) { bump(18); S.tick(); }
+  }
+  const settleS = (i) => {
+    S.goToPage(i, { remember: false });
+    for (let n = 0; n < 12; n++) { bump(18); S.tick(); }
+    return S.state.pageIndex;
+  };
+  const shotS = () => {
+    const fb = createFramebuffer();
+    S.render(drawContext(fb), OPTS());
+    return fb;
+  };
+  /* The page as the ordinary un-composited draw makes it -- what the user
+     lands on. drawPage, because render() only ever draws s.pageIndex. */
+  const settledAt = (idx) => {
+    const fb = createFramebuffer();
+    S.drawPage(drawContext(fb), idx, OPTS());
+    return fb;
+  };
+  const rows = (fb, y0, y1) =>
+    Buffer.from(fb.pixels.slice(y0 * SW, y1 * SW)).toString("base64");
+  const box = (fb, y0, y1, x0, x1) => {
+    const out = [];
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) out.push(fb.pixels[y * SW + x]);
+    return Buffer.from(out).toString("base64");
+  };
+
+
+  /* --- WHAT A COMPOSITED FRAME MUST BE, REPRODUCED FROM THE PRIMITIVES ----
+   * Both of these rebuild the expected picture from the same pieces the
+   * controller has -- slideOffsets at the SCREEN width, translateCtx,
+   * drawHeaderSlide, drawPage with the chrome and the header suppressed -- and
+   * require an exact match. A mere "it differs from the endpoints" test passes
+   * for a composite that animates only the header, that parks the outgoing
+   * page at 0, or that lets one of the two pages carry a header of its own.
+   */
+  const bandMatches = (fb, f) => {
+    const e = createFramebuffer();
+    drawHeaderSlide(drawContext(e), {
+      title: TITLE,
+      leftName: S.pageLabel(S.state.pages[f.base]),
+      rightName: S.pageLabel(S.state.pages[f.base + 1]),
+      destName: S.pageLabel(S.state.pages[S.state.pageIndex]),
+      frac: f.frac,
+    });
+    return rows(fb, 0, HEADER_H) === rows(e, 0, HEADER_H);
+  };
+  const bodyMatches = (fb, f) => {
+    const off = slideOffsets(f.frac, SW);
+    const e = createFramebuffer();
+    const ec = drawContext(e);
+    S.drawPage(translateCtx(ec, off.from), f.base,
+               { title: TITLE, footer: FOOTER, chrome: false, header: false });
+    S.drawPage(translateCtx(ec, off.to), f.base + 1,
+               { title: TITLE, footer: FOOTER, chrome: false, header: false });
+    return rows(fb, BAR_Y + 2, RULE_Y) === rows(e, BAR_Y + 2, RULE_Y);
+  };
+
+  /* Two ADJACENT knob pages, so the touch assertion further down has a knob
+     row to invert on both sides of the change. */
+  let pairAt = -1;
+  for (let i = 0; i + 1 < S.state.pages.length; i++) {
+    if (S.state.pages[i].kind === "knobs" && S.state.pages[i + 1].kind === "knobs") { pairAt = i; break; }
+  }
+  ok(pairAt >= 0, "the fixture has two adjacent knob pages to slide between");
+
+  const from = settleS(pairAt);
+  ok(from === pairAt, "the slide fixture settled where it was sent");
+  ok(S.state.scrollPos === from, "a settled controller has scrollPos on pageIndex");
+  const beforeKey = key(settledAt(from));
+
+  /* --- the slide starts ------------------------------------------------- */
+  bump(18);
+  S.onJog(1);
+  const to = S.state.pageIndex;
+  ok(to === from + 1, "the jog moved the page index one page on");
+  ok(S.state.scrollPos !== to,
+     "the scroll position LAGS the page index -- that gap IS the slide (" +
+     S.state.scrollPos + " vs " + to + ")");
+  ok(S.state.scrollPos === from,
+     "and it starts from the page that was on screen, not from nowhere");
+
+  /* --- mid-flight -------------------------------------------------------- *
+   * Advanced through tick(), the way the device does -- NOT by poking
+   * scrollPos. Two 12ms ticks is ~24ms of a 90ms eased settle, so the
+   * position is a clear two thirds of a page short of home. 18ms x 5 would
+   * land exactly ON the target and every assertion below would be comparing
+   * the destination against itself. */
+  for (let i = 0; i < 2; i++) { bump(12); S.tick(); }
+  ok(S.state.scrollPos !== to, "still mid-slide two ticks in (" + S.state.scrollPos + ")");
+  /* The frame the composite is drawing FROM -- captured here, because every
+     assertion about this frame has to be laid out against the same pair of
+     pages and the same frac, and a later tick would move both. */
+  const midFrame = scrollFrame(S.state.scrollPos);
+  const mid = shotS();
+  const settledTo = settledAt(to);
+  const afterKey = key(settledTo);
+  ok(afterKey !== beforeKey, "the two pages of the fixture really do differ");
+  ok(key(mid) !== beforeKey && key(mid) !== afterKey,
+     "a mid-slide frame differs from BOTH endpoints -- with the composite " +
+     "missing, every frame after a jog is already the destination");
+
+  /* --- the chrome does not travel ---------------------------------------- *
+   * Compared as BANDS on the pixel buffer against the settled destination.
+   * A composite that passed the two pages through unsuppressed chrome would
+   * draw two bank bars and two footers at 128px apart, and the visible one
+   * would be at the wrong offset. */
+  /* --- AND THE BODY REALLY IS TWO PAGES, AT THE RIGHT OFFSETS ------------ *
+   * "the frame differs from both endpoints" does NOT say this: a composite
+   * that animated only the header, or that parked the outgoing page at dx 0
+   * and pushed the incoming one clean off the screen, differs from both
+   * endpoints on every frame. So the body band is reproduced from the same
+   * primitives -- slideOffsets at the SCREEN width, translateCtx, drawPage
+   * with the chrome and the header suppressed -- and required to match
+   * exactly. Pinning it to slideOffsets is the point: the offsets must abut at
+   * one screen width, which is what makes the two pages cover [0, 128) with no
+   * seam and no overlap. */
+  {
+    ok(bodyMatches(mid, midFrame),
+       "the body band is the two pages, one screen width apart");
+    /* And neither page ALONE is the body, or the equality above would be
+       satisfied by a frame that never travelled. */
+    ok(rows(mid, BAR_Y + 2, RULE_Y) !== rows(settledTo, BAR_Y + 2, RULE_Y),
+       "the body is not simply the destination drawn at rest");
+    ok(rows(mid, BAR_Y + 2, RULE_Y) !== rows(settledAt(from), BAR_Y + 2, RULE_Y),
+       "nor simply the outgoing page drawn at rest");
+  }
+
+  ok(rows(mid, BAR_Y, BAR_Y + 2) === rows(settledTo, BAR_Y, BAR_Y + 2),
+     "the bank-bar rows are identical to the settled destination mid-slide");
+  ok(rows(mid, RULE_Y, 64) === rows(settledTo, RULE_Y, 64),
+     "the footer rows are identical to the settled destination mid-slide");
+
+  /* THE MODULE TITLE IS FIXED TOO, and it is a separate assertion from the
+     bar and the footer because it is a separate mechanism: those are simply
+     not drawn on a sliding pass, while the title is drawn OVER the two
+     travelling names by drawHeaderSlide, and its opaque erase is what clips
+     the outgoing one. Measured on the title span of the destination split. */
+  const destName = S.pageLabel(S.state.pages[to]);
+  const spl = headerSplit(TITLE, destName);
+  ok(spl.colX > 0, "the destination split has a title span to compare (" + spl.colX + ")");
+  ok(box(mid, 0, HEADER_H, 0, spl.colX) === box(settledTo, 0, HEADER_H, 0, spl.colX),
+     "the module title is the settled picture mid-slide");
+  /* And the NAME column is NOT -- otherwise the header is simply not
+     animating and the assertion above passes for a frozen header. */
+  ok(box(mid, 0, HEADER_H, spl.colX, SW) !== box(settledTo, 0, HEADER_H, spl.colX, SW),
+     "the page name IS mid-travel in its column at the same moment");
+
+  ok(bandMatches(mid, midFrame),
+     "the header band mid-slide is EXACTLY the composited one -- no page " +
+     "carries a header of its own");
+
+  /* --- and it lands, EXACTLY --------------------------------------------- *
+   * An eased chase is asymptotic by nature. A position a thousandth of a page
+   * from home leaves two full page renders running every frame on a screen
+   * that has visibly stopped. */
+  for (let i = 0; i < 60; i++) { bump(18); S.tick(); }
+  ok(S.state.scrollPos === to, "the scroll lands EXACTLY on the target (" + S.state.scrollPos + ")");
+  ok(key(shotS()) === afterKey, "and the settled frame is the plain destination page");
+
+  /* --- BACKWARDS, which is not the mirror of forwards --------------------- *
+   * scrollFrame puts the DESTINATION at `base` -- the left slot -- when the
+   * position is decreasing, so the body`s from/to slots swap roles and the
+   * header`s destName no longer coincides with `base + 1`. A composite that
+   * pinned the header to the right-hand slot lays the title out against the
+   * OUTGOING name, in the one direction nobody looks at. */
+  bump(18);
+  S.onJog(-1);
+  const back = S.state.pageIndex;
+  ok(back === from, "the backwards jog returned to the first page");
+  ok(S.state.scrollPos > back,
+     "the position lags on the OTHER side going backwards (" + S.state.scrollPos + ")");
+  for (let i = 0; i < 2; i++) { bump(12); S.tick(); }
+  const midBFrame = scrollFrame(S.state.scrollPos);
+  const midB = shotS();
+  const settledBack = settledAt(back);
+  ok(key(midB) !== key(settledBack) && key(midB) !== afterKey,
+     "a mid-slide frame going backwards differs from both endpoints");
+  ok(rows(midB, BAR_Y, BAR_Y + 2) === rows(settledBack, BAR_Y, BAR_Y + 2),
+     "backwards: the bank-bar rows are the settled destination");
+  ok(rows(midB, RULE_Y, 64) === rows(settledBack, RULE_Y, 64),
+     "backwards: the footer rows are the settled destination");
+  const splB = headerSplit(TITLE, S.pageLabel(S.state.pages[back]));
+  ok(box(midB, 0, HEADER_H, 0, splB.colX) === box(settledBack, 0, HEADER_H, 0, splB.colX),
+     "backwards: the module title is the settled picture mid-slide");
+  /* Backwards the DESTINATION is the left-hand slot, so this is also what
+     pins leftName/rightName to the body`s slots rather than to the direction
+     of travel -- swap them and the two names trade places while the geometry
+     stays put. */
+  ok(bandMatches(midB, midBFrame) && bodyMatches(midB, midBFrame),
+     "backwards: the header band and the body are EXACTLY the composited ones");
+  for (let i = 0; i < 60; i++) { bump(18); S.tick(); }
+  ok(S.state.scrollPos === back, "backwards: the scroll lands exactly on the target");
+  ok(key(shotS()) === key(settledBack), "backwards: the settled frame is the plain page");
+
+  /* --- EVERY FRAME OF A SLIDE, NOT ONE OF THEM --------------------------- *
+   * ONE SAMPLE IS NOT ENOUGH, and the reason is specific rather than a
+   * general preference for more coverage.
+   *
+   * The chrome is drawn LAST, and drawHeaderTitle`s erase paints out the
+   * title span [0, colX) after the two pages have drawn. So a sliding pass
+   * that wrongly carries its OWN header is INVISIBLE while its band lands
+   * inside that span -- which is most of the travel, because the outgoing
+   * page is by then 60 to 100 pixels to the left. Mutating `header: false` to
+   * `true` on the outgoing pass alone survived a single mid-slide sample
+   * taken at frac 0.77; at frac 0.06 the ghost name sits just right of colX
+   * and it fails. An early frame is the one that sees it.
+   *
+   * Sampled at deliberately UNEVEN small dt: the first frame after a jog is
+   * whenever the tick happens to fall, and the eased curve front-loads the
+   * travel, so a regular cadence would only ever visit the late half. */
+  {
+    settleS(pairAt);
+    bump(18);
+    S.onJog(1);
+    let bad = [], seen = 0, earliest = 1;
+    for (const dt of [1, 2, 3, 6, 12, 18, 24]) {
+      bump(dt); S.tick();
+      const f = scrollFrame(S.state.scrollPos);
+      if (f.frac === 0) break;               /* settled: nothing to composite */
+      seen++;
+      if (f.frac < earliest) earliest = f.frac;
+      const fb = shotS();
+      if (!bandMatches(fb, f) || !bodyMatches(fb, f)) bad.push(f.frac.toFixed(3));
+    }
+    ok(seen >= 5, "the sweep saw several frames of one slide (" + seen + ")");
+    ok(earliest < 0.1,
+       "including an EARLY one, where the outgoing header is not yet inside " +
+       "the title erase (" + earliest.toFixed(3) + ")");
+    ok(bad.length === 0,
+       "every frame of the slide is exactly the composited picture (bad at " +
+       bad.join(",") + ")");
+    for (let i = 0; i < 60; i++) { bump(18); S.tick(); }
+    settleS(pairAt);
+  }
+
+  /* --- CHASE, NOT QUEUE, AND NOT A TELEPORT EITHER ------------------------ *
+   * A from/to pair cannot chase: retargeting starts its outgoing page at 0
+   * while the page on screen is out at +80px, so the picture snaps a whole
+   * screen width BACKWARDS on the retarget frame.
+   *
+   * "Never moves backwards" is NOT enough, and that is the trap this
+   * assertion exists for. With a teleport threshold of 1 -- the obvious value
+   * -- an ordinary fast spin fires it: position 2.4 heading for 3, one more
+   * detent makes the target 4, `d` is 1.6, and the position is dragged
+   * 2.4 -> 3.0. That is a 0.6-page jump FORWARDS, on exactly the gesture
+   * chase exists to smooth, and a >= assertion waves it through. So bound the
+   * displacement in BOTH directions: a retarget must not move the drawn
+   * position at all. */
+  bump(18);
+  S.onJog(1);
+  for (let i = 0; i < 2; i++) { bump(12); S.tick(); }
+  const posBefore = S.state.scrollPos;
+  ok(posBefore !== S.state.pageIndex, "the chase case is set up mid-slide");
+  S.onJog(1);
+  ok(S.state.scrollPos === posBefore,
+     "a jog mid-slide RETARGETS without displacing the drawn position (" +
+     posBefore + " -> " + S.state.scrollPos + ")");
+  ok(S.state.pageIndex - posBefore > 1,
+     "and it really was more than one page of lag, which is what a threshold " +
+     "of 1 would have teleported (" + (S.state.pageIndex - posBefore) + ")");
+  let monotone = true, prev = S.state.scrollPos;
+  for (let i = 0; i < 40; i++) {
+    bump(18); S.tick();
+    if (S.state.scrollPos < prev) monotone = false;
+    prev = S.state.scrollPos;
+  }
+  ok(monotone, "and it keeps travelling forward until it settles");
+  ok(S.state.scrollPos === S.state.pageIndex, "the chased slide settled");
+
+  /* --- A MULTI-PAGE JUMP IS STILL ONE SCREEN WIDTH ------------------------ *
+   * Without the teleport the section picker would scroll through every page
+   * it crossed, at whatever speed nine pages in 90ms is. */
+  {
+    const jumpFrom = settleS(0);
+    const far = S.state.pages.length - 1;
+    ok(far - jumpFrom >= 3, "the fixture is long enough for a real jump (" +
+       (far - jumpFrom) + " pages)");
+    bump(18);
+    S.goToPage(far, { remember: false });
+    ok(S.state.pageIndex === far, "the jump landed");
+    ok(Math.abs(far - S.state.scrollPos) <= 1 + 1e-9,
+       "a jump of " + (far - jumpFrom) + " pages still slides exactly one width (" +
+       S.state.scrollPos + ")");
+    /* And it is a SLIDE, not a cut: the position must still lag by a whole
+       page, or "<= 1" would pass for a teleport straight onto the target. */
+    ok(Math.abs(far - S.state.scrollPos) > 0.5,
+       "and it does slide -- the position is a full page short, not on target");
+    for (let i = 0; i < 60; i++) { bump(18); S.tick(); }
+    ok(S.state.scrollPos === far, "the jumped slide settled exactly");
+  }
+
+  /* --- THE OUTGOING PAGE DOES NOT WEAR THE CURRENT PAGE`S TOUCH ----------- *
+   * s.touched and s.touchOrder are per SLOT, not per key, so a slot means a
+   * different parameter on every page. onJog clears `touched` but NOT
+   * `touchOrder` -- clearTouch does that and is only called on a view handoff
+   * -- so a knob still held across a page change keeps its slot in the order,
+   * and an unqualified pass hands it to BOTH pages of the slide. The
+   * departing page then draws an inverted label for a knob the finger has
+   * left, on a parameter that is not the one being held.
+   *
+   * Asserted at drawPage, which is where the qualification lives and the only
+   * place the outgoing page is separable from the composite. */
+  {
+    const a = settleS(pairAt);
+    ok(a === pairAt, "the touch fixture settled on the first knob page");
+    S.clearTouch();
+    const inertA = key(settledAt(a));
+    const inertB = key(settledAt(a + 1));
+
+    /* A slot that carries a key on BOTH pages, so the control below is not
+       vacuous. */
+    let slot = -1;
+    for (let i = 0; i < 8; i++) {
+      if ((S.state.pages[a].keys || [])[i] && (S.state.pages[a + 1].keys || [])[i]) { slot = i; break; }
+    }
+    ok(slot >= 0, "both knob pages carry a key on the same slot (" + slot + ")");
+
+    S.onKnobTouch(slot, true);
+    ok(S.state.touchOrder.indexOf(slot) >= 0, "the knob is registered as held");
+    /* THE CONTROL. Without it, "the outgoing page is inert" passes for a
+       touchOrder that draws nothing at all -- and then the assertion is
+       measuring nothing. The page under the finger must visibly change. */
+    ok(key(settledAt(a)) !== inertA,
+       "a held knob visibly changes the page it is held on (the control)");
+
+    bump(18);
+    S.onJog(1);
+    ok(S.state.pageIndex === a + 1, "the jog moved on with the knob still held");
+    ok(S.state.touchOrder.indexOf(slot) >= 0,
+       "and onJog did NOT clear touchOrder -- which is the whole hazard");
+    ok(key(settledAt(a)) === inertA,
+       "the OUTGOING page is drawn with nothing held");
+    ok(key(settledAt(a + 1)) !== inertB,
+       "while the page arriving under the finger still shows it (so the " +
+       "suppression is per index, not a blanket)");
+    S.onKnobTouch(slot, false);
+    S.clearTouch();
+    for (let i = 0; i < 60; i++) { bump(18); S.tick(); }
+  }
+
+  /* --- A SLIDE ONTO AN ENTERED DOOR STILL ADVANCES ------------------------ *
+   * tick() returns early on EVERY items page and EVERY preset page -- their
+   * own read rotations own the rest of the frame -- so the advance has to sit
+   * at the very TOP of tick(), above every early return, or a slide that
+   * lands on one freezes half way across the screen.
+   *
+   * Entered here as well as landed on, because that is the harder case and it
+   * is reachable: goToPage(enterIfDoor) aims the scroll and then enters the
+   * door in the same call, which is what the section picker and every
+   * navigate_to do. */
+  {
+    let door = -1;
+    for (let i = 0; i < S.state.pages.length; i++) {
+      const k = S.state.pages[i].kind;
+      if (k === "items" || k === "preset") { door = i; break; }
+    }
+    ok(door >= 0, "the fixture has an items or preset page to land on");
+    settleS(door === 0 ? door + 1 : 0);
+    bump(18);
+    S.goToPage(door, { remember: false, enterIfDoor: true });
+    ok(S.state.pageIndex === door, "the enterIfDoor jump landed on the door");
+    ok(S.menuEntered(), "and entered it, which is what arms tick`s early return");
+    ok(S.state.scrollPos !== door, "the slide is in flight onto an entered door");
+    const frozen = S.state.scrollPos;
+    bump(12); S.tick();
+    ok(S.state.scrollPos !== frozen,
+       "the position advances through tick even with the door entered (" +
+       frozen + " -> " + S.state.scrollPos + ")");
+    for (let i = 0; i < 60; i++) { bump(18); S.tick(); }
+    ok(S.state.scrollPos === door, "and it settles rather than sticking");
+    S.exitMenu();
+  }
+
+  /* --- A POSITION OFF THE END OF THE PAGE SET ---------------------------- *
+   * The composite asks for `base` and `base + 1`. scrollHome() keeps a
+   * stranded position from arising through any code path there is today, so
+   * this forces one: drawPage early-returns on a missing page, which means the
+   * unguarded failure is not a crash but a frame with ONE page drawn and the
+   * other half blank -- much harder to notice. Asserted as the frame. */
+  {
+    const last = S.state.pages.length - 1;
+    settleS(last);
+    S.state.scrollPos = last + 0.5;        /* deliberately impossible */
+    ok(key(shotS()) === key(settledAt(last)),
+       "a position past the end falls back to the plain page, not half a frame");
+    S.state.scrollPos = last;
+  }
+
+  /* --- A REPLAN IS NOT A PAGE CHANGE ------------------------------------- *
+   * load() reanchors s.pageIndex BY NAME when a module finishes loading and
+   * every index shifts. Left alone the position would then lag a page it was
+   * never sent to, and the next frame would slide in from whatever now sits
+   * at the old index.
+   *
+   * THE OBVIOUS PROBE FOR THIS IS DEAD CODE. Calling load() again with the
+   * same contract early-returns without touching pageIndex, so "scrollPos
+   * still equals pageIndex" passes with the reanchor site unguarded -- which
+   * is exactly what happened: deleting scrollHome() from the load path
+   * survived it. The contract has to genuinely CHANGE, and the index has to
+   * genuinely MOVE, and both are asserted before the invariant is.
+   * ------------------------------------------------------------------------ */
+  {
+    /* Two hierarchies differing only in how many knob pages the root plans
+       (24 keys is three pages, 8 is one), so every level after it shifts by
+       two while keeping its NAME -- which is what reanchor lands by. */
+    const rootKeys = (n) => {
+      const out = [];
+      for (let i = 0; i < n; i++) out.push("p" + i);
+      return out;
+    };
+    const hierWith = (n) => ({
+      modes: null,
+      levels: {
+        root: { label: "T", knobs: rootKeys(n),
+                params: rootKeys(n).map((k) => ({ key: k }))
+                          .concat([{ level: "shape", label: "Shape" }]) },
+        shape: { label: "Shape", knobs: ["cutoff", "resonance"],
+                 params: [{ key: "cutoff" }, { key: "resonance" }] },
+      },
+    });
+    let hier = hierWith(24);
+    const st = makeStore();
+    const clk = { t: 1000 };
+    const R = createController({
+      getParam: (k) => {
+        const b = String(k).replace(/^[^:]+:/, "");
+        if (b === "ui_hierarchy") return JSON.stringify(hier);
+        if (b === "chain_params") return JSON.stringify(CHAIN_PARAMS);
+        return b in st ? st[b] : "";
+      },
+      setParam: () => {}, announce: () => {}, now: () => clk.t,
+    });
+    R.setLayout(LAYOUT_MOVY);
+    R.load({ prefix: "synth" });
+    for (let n = 0; n < 60; n++) { clk.t += 18; R.tick(); }
+    let shapeAt = -1;
+    for (let i = 0; i < R.state.pages.length; i++) {
+      if (R.state.pages[i].name === "Shape") { shapeAt = i; break; }
+    }
+    ok(shapeAt > 1, "the replan fixture plans a Shape page after the root pages (" +
+       shapeAt + ")");
+    R.goToPage(shapeAt, { remember: false });
+    for (let n = 0; n < 12; n++) { clk.t += 18; R.tick(); }
+    ok(R.state.pageIndex === shapeAt && R.state.scrollPos === shapeAt,
+       "settled on it with the position home");
+
+    hier = hierWith(8);
+    R.load({ prefix: "synth" });
+    ok(R.state.pageIndex !== shapeAt,
+       "the reload really did move the index (" + shapeAt + " -> " +
+       R.state.pageIndex + ") -- otherwise the invariant below is dead code");
+    ok(R.state.scrollPos === R.state.pageIndex,
+       "a reanchoring reload leaves the position HOME, not lagging a page it " +
+       "was never sent to (" + R.state.scrollPos + " vs " + R.state.pageIndex + ")");
+  }
+
+  /* --- THE ENDS OF THE PAGE SET ------------------------------------------ *
+   * The composite asks for `base` and `base + 1`. At the last page that is
+   * length-1 and length; at the first, going backwards, -1 and 0. drawPage
+   * early-returns on a missing page, so the guard`s absence is not a crash --
+   * it is a frame with one page missing, which is why this is asserted as
+   * frames rather than as "it did not throw". */
+  {
+    const last = S.state.pages.length - 1;
+    settleS(last);
+    bump(18);
+    S.onJog(1);                       /* nowhere to go: step clamps */
+    ok(S.state.pageIndex === last, "a jog past the end stays on the last page");
+    ok(S.state.scrollPos === last, "and starts no slide");
+    ok(key(shotS()) === key(settledAt(last)),
+       "the last page still renders as the plain page after a jog past the end");
+
+    const first = settleS(0);
+    ok(first === 0, "settled on the first page");
+    bump(18);
+    S.onJog(-1);
+    ok(S.state.pageIndex === 0, "a jog before the start stays on the first page");
+    ok(key(shotS()) === key(settledAt(0)),
+       "the first page still renders as the plain page after a jog before the start");
+  }
+}
+
+/* ------------------------------------------------------------------------ *
+ * SLIDE_MS = 0 SWITCHES THE ANIMATION OFF -- and this cannot be asserted on
+ * pixels from here.
+ *
+ * SLIDE_MS is a module-level const in page_transition.mjs and page_controller
+ * closes over the imported binding, so no test in this process can set it to
+ * 0 without a loader hook. What CAN be checked is the code that reads it, and
+ * the two halves it depends on:
+ *
+ *   the ADVANCE   advanceEased/advanceLinear with ms 0 return the target
+ *                 immediately, so a position can never be left short;
+ *   the AIM       aimScroll assigns the target outright rather than leaving a
+ *                 lag for the advance to eat, so `frac` is 0 on the very frame
+ *                 the page changes and render() never composites once.
+ *
+ * The second is the one that would rot silently, so it is LIFTED out of the
+ * real source and driven with SLIDE_MS 0 -- the same technique
+ * tests/host/test_chain_edit_read_budget.sh uses. Reading the shipped text
+ * means a future edit to aimScroll is tested, which a restatement of it here
+ * would not be. The PIXELS do not prove any of this; nothing in this block
+ * draws.
+ * ------------------------------------------------------------------------ */
+{
+  const src = readFileSync("src/shared/param_pages/page_controller.mjs", "utf8");
+  const at = src.indexOf("function aimScroll(toIndex)");
+  ok(at >= 0, "aimScroll is where the lift expects it");
+  /* Brace-match the function body, so the lift cannot silently take half of
+     it (which would evaluate, and pass, with the SLIDE_MS guard missing). */
+  let i = src.indexOf("{", at), depth = 0, end = -1;
+  for (let j = i; j < src.length; j++) {
+    if (src[j] === "{") depth++;
+    else if (src[j] === "}") { depth--; if (depth === 0) { end = j + 1; break; } }
+  }
+  ok(end > at, "the lift brace-matched a complete function body");
+  const body = src.slice(at, end);
+  ok(/SLIDE_MS/.test(body), "the lifted aimScroll reads SLIDE_MS at all");
+  const make = (ms) => {
+    const st = { scrollPos: 0 };
+    const fn = new Function("SLIDE_MS", "s", "now", body + "; return aimScroll;")(
+      ms, st, () => 1000);
+    return { st, fn };
+  };
+  const off = make(0);
+  off.st.scrollPos = 3;
+  off.fn(4);
+  ok(off.st.scrollPos === 4,
+     "SLIDE_MS 0: the aim lands the position on the target outright (" +
+     off.st.scrollPos + ")");
+  const on = make(90);
+  on.st.scrollPos = 3;
+  on.fn(4);
+  ok(on.st.scrollPos === 3,
+     "SLIDE_MS 90: the same aim leaves the position where it was, to be eased");
+
+  /* And a settled position never composites: scrollFrame(integer).frac is 0,
+     which is the condition render() branches on. */
+  ok(scrollFrame(4).frac === 0 && !isSliding(4),
+     "an integer position is not sliding, so render takes the plain path");
+  ok(advanceEased(0, 1, 18, 0) === 1 && advanceLinear(0, 1, 18, 0) === 1,
+     "and a zero duration arrives immediately in both advances");
+}
+
+/* ------------------------------------------------------------------------ *
+ * EVERY ASSIGNMENT TO s.pageIndex EITHER AIMS THE SCROLL OR SENDS IT HOME.
+ *
+ * Source-invariant, and it is here because the alternative is one behavioural
+ * probe per replan site -- applyPendingRestore, replanForMode,
+ * refreshTrailing, replanIfCondition -- each needing a contract change that
+ * reaches exactly that branch. The reanchoring-reload probe above covers
+ * load(); this covers the rest, and covers a site that does not exist yet.
+ *
+ * The failure it names is real and quiet: a replan that moves the index
+ * without moving the position leaves the very next frame compositing two
+ * pages from a page set that has already changed underneath it.
+ *
+ * PIXELS CANNOT SEE THIS ONE. It is a rule about the shape of the source, so
+ * it is asserted as one, and the COUNT is pinned as well -- a new assignment
+ * site is exactly the thing that would otherwise slip through.
+ * ------------------------------------------------------------------------ */
+{
+  const src = readFileSync("src/shared/param_pages/page_controller.mjs", "utf8")
+                .split("\n");
+  const sites = [];
+  for (let i = 0; i < src.length; i++) {
+    /* Anywhere on the line, not just at the start of one: a new site written
+       inline (`function f() { s.pageIndex = 0; }`) is exactly the shape a
+       start-anchored pattern misses, and it slipped past the first version of
+       this check. Comment lines are dropped by hand; `!==`, `>=` and `| 0` are
+       excluded by the `=[^=]` on the right. */
+    const line = src[i].trim();
+    if (line.startsWith("*") || line.startsWith("//") || line.startsWith("/*")) continue;
+    if (/s\.pageIndex\s*=[^=]/.test(src[i])) sites.push(i);
+  }
+  ok(sites.length === 8,
+     "every s.pageIndex assignment is accounted for (" + sites.length + " found)");
+  const orphan = sites.filter((i) => {
+    for (let j = i; j <= i + 4 && j < src.length; j++) {
+      if (/scrollHome\(\);|aimScroll\(/.test(src[j])) return false;
+    }
+    return true;
+  });
+  ok(orphan.length === 0,
+     "no assignment leaves the scroll position behind (lines " +
+     orphan.map((i) => i + 1).join(",") + ")");
 }
 
 process.exit(fail ? 1 : 0);
