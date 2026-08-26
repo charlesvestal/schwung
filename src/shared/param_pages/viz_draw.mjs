@@ -884,6 +884,21 @@ function drawWaveCell(ctx, x, y, w, h, shape, cycles) {
     const yAt = (px) => Math.round(mid - lfoShapeSample(shape, ((px - x) / w) * cycles) * amp);
     const vline = (px, a, b) => ctx.fillRect(px, Math.min(a, b), 1, Math.abs(a - b) + 1, 1);
 
+    /*
+     * The same CHECKER mass the four curve graphs carry, about the same zero
+     * line, through the same helper and the same `yAt` closure the stroke uses.
+     *
+     * This cell is a SHAPE SILHOUETTE — it says which LFO waveform is selected,
+     * not what a value is — and it was left plain when the graphs took the fill,
+     * on the reasoning that those are two different jobs. On a page they are two
+     * different jobs drawn in the same band, next to each other, and the odd one
+     * out reads as the one that did not get finished.
+     *
+     * Bipolar, so the fill is signed about the centre: a trough fills downward.
+     * Before the stroke, because the stroke is solid and the fill is not.
+     */
+    fillCurveMass(ctx, x, x + w, yAt, Math.round(mid), y, y + h - 1);
+
     let py = yAt(x);
     vline(x, py, py);
     for (let px = x + 1; px < x + w; px++) {
@@ -1032,7 +1047,29 @@ export function drawFader(ctx, rect, key, values, metaIndex) {
  * seats, and therefore no switch. Three pixels leaves a clear column at the
  * outer end and the slug is visibly a separate object at both ends of travel.
  */
-const PILL_H = 11, SLUG_W = 8, SLUG_H = 7, SLUG_INSET = 3;
+/*
+ * 16 x 9, DOWN FROM 24 x 11, and the inversion is what paid for it.
+ *
+ * At 24 x 11 this was the heaviest object on a page — wider than the enum
+ * square beside it and, in the ON state, a solid block competing with the
+ * inverted label strip a held knob puts directly under it. That is a lot of
+ * screen for a value with two states.
+ *
+ * Shrinking a slug-slides-along-a-track switch is risky, because the whole
+ * signal is WHERE the slug sits and a shorter track moves it less. This one
+ * does not rely on that: ON fills the track and knocks the slug out of it, so
+ * the two states differ in INK as well as in position and are separable from
+ * across the room at any size. Judged with both states on one page, which is
+ * the only view that can answer it — a render of one state cannot.
+ *
+ * The 2px inset is the floor, not a preference. At 1px the slug is 8-connected
+ * to the wall on its own row and the two merge: OFF stops reading as a block
+ * parked at one end of a track and starts reading as "the left half of this box
+ * is thick", which is the same picture at both seats and therefore no switch at
+ * all. That defect had to be fixed once already; 2px keeps a clear column at
+ * the outer end at both ends of travel.
+ */
+const PILL_H = 9, SLUG_W = 5, SLUG_H = 5, SLUG_INSET = 2;
 
 export function drawSwitch(ctx, rect, key, values, metaIndex) {
     const raw = values ? values[key] : undefined;
@@ -1050,12 +1087,12 @@ export function drawSwitch(ctx, rect, key, values, metaIndex) {
 
     const { topY } = band(rect);
     const cx = Math.round(rect.x + rect.w / 2);
-    /* Capped at 24 so the pill never fills a wide cell edge to edge, and
+    /* Capped at 16 so the pill never fills a wide cell edge to edge, and
      * floored against the rect so a narrow one still gets a track. */
-    const w = Math.min(24, rect.w - 4);
+    const w = Math.min(16, rect.w - 4);
     const x = cx - (w >> 1), y = topY + 1, h = PILL_H;
     const sx = on ? x + w - SLUG_INSET - SLUG_W : x + SLUG_INSET;
-    const sy = y + 2;
+    const sy = y + SLUG_INSET;
 
     if (on) {
         ctx.fillRect(x, y, w, h, 1);
