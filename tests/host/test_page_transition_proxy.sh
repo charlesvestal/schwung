@@ -229,5 +229,68 @@ ok(calls[0][1] === -40, "the OUTGOING page is drawn at fromDx, not at toDx");
 ok(calls[1][1] === 88, "the INCOMING page is drawn at toDx");
 ok(calls[2][1] === 0, "the chrome is drawn unproxied, at no offset");
 
+/* THE BANK BAR IS SUPPRESSED BY AN OPTION, NOT BY A LIE.
+   drawBankBar returns early when pageCount <= 1, so passing pageCount: 1 would
+   also blank it -- and would be telling the renderer the page set has one page
+   in order to obtain a drawing side effect. Every other thing that reads
+   pageCount (and anything that later will) would be reading a fiction.
+
+   Same abort hazard as probe() above: a missing export makes RM.BAR_Y
+   undefined, and rowInk over an undefined row would read NaN indices and
+   report a silent zero rather than a failure. So the export is asserted
+   FIRST, and the row assertions are skipped when it is absent -- one clean
+   FAIL instead of a run that either crashes or passes vacuously. */
+const RM = await import("./src/shared/param_pages/render_page_movy.mjs");
+const H = await import("./tools/param-pages/harness.mjs");
+
+const PAGE = { kind: 0, name: "P", keys: ["a", "b"], level: "root" };
+const META = { getOrGuess: () => ({ key: "a", label: "A", kind: 0, min: 0, max: 1, step: 0.01 }) };
+const shotPage = (extra) => {
+  const fb = H.createFramebuffer();
+  RM.renderPageMovy(H.drawContext(fb), {
+    page: PAGE, metaIndex: META, values: { a: "0.5", b: "0.5" },
+    title: "T", pageIndex: 1, pageCount: 5, touched: -1, viz: [], ...extra,
+  });
+  return fb;
+};
+const rowInk = (fb, y) => {
+  let n = 0;
+  for (let x = 0; x < 128; x++) if (fb.pixels[y * 128 + x]) n++;
+  return n;
+};
+
+const barYExported = typeof RM.BAR_Y === "number";
+ok(barYExported, "render_page_movy exports BAR_Y, the indicator row");
+if (barYExported) {
+  const withBar = shotPage({});
+  const noBar = shotPage({ bankBar: false });
+  ok(rowInk(withBar, RM.BAR_Y) > 0, "the bank bar draws ink by default");
+  ok(rowInk(noBar, RM.BAR_Y) === 0, "bankBar:false leaves the indicator row empty");
+  /* Byte-identical, not "the bar is there": the gate sits in the middle of the
+     render, so a wrong guard could change the frame in ways an ink count on
+     one row cannot see. */
+  ok(Buffer.from(withBar.pixels).toString("base64") ===
+     Buffer.from(shotPage({ bankBar: undefined }).pixels).toString("base64"),
+     "omitting the option is byte-identical to before");
+
+  /* THE PREVIOUS ASSERTION COMPARES TWO SPELLINGS OF THE SAME OPTION, so a
+     gate stuck at ALWAYS SUPPRESS passes it -- both frames lose the bar
+     together. Mutation-tested: `if (false)` killed only the ink count. This
+     pins the rest of the frame instead: suppression must change the indicator
+     band and NOTHING else, so a guard that suppresses too much (or draws in
+     the wrong place) shows up as a differing row somewhere it has no
+     business touching. */
+  const noBarPx = noBar.pixels, withBarPx = withBar.pixels;
+  let diffRows = [];
+  for (let y = 0; y < 64; y++) {
+    for (let x = 0; x < 128; x++) {
+      if (withBarPx[y * 128 + x] !== noBarPx[y * 128 + x]) { diffRows.push(y); break; }
+    }
+  }
+  ok(diffRows.length > 0, "suppressing the bar changes the frame at all");
+  ok(diffRows.every((y) => y >= RM.BAR_Y && y < RM.BAR_Y + 3),
+     "suppression touches only the indicator band, no other row");
+}
+
 process.exit(fail ? 1 : 0);
 '

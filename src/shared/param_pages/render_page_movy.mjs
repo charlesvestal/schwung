@@ -2313,7 +2313,19 @@ export function renderPageMovy(ctx, o) {
                        : (page ? page.name : null),
                    false);
     }
-    drawBankBar(ctx, o.pageIndex | 0, Math.max(1, o.pageCount | 0), o.pageGroups);
+    /* A sliding page does not carry the indicator. The bar reports WHICH page
+     * you are on, so travelling with the page it reports would leave it
+     * unreadable for the whole transition -- page_transition.mjs slides rows
+     * 0..54 and redraws the bank bar and the footer, fixed, on top.
+     *
+     * An explicit option, not `pageCount: 1`. That would blank it too, in one
+     * line and with no renderer change, via drawBankBar's early return -- by
+     * telling the renderer the page set has one page in it purely to obtain a
+     * drawing side effect. Everything else that reads pageCount, now or later,
+     * would then be reading a fiction. */
+    if (o.bankBar !== false) {
+        drawBankBar(ctx, o.pageIndex | 0, Math.max(1, o.pageCount | 0), o.pageGroups);
+    }
 
     if (!page || !page.keys) return;
     const hasParams = page.keys.some(Boolean);
