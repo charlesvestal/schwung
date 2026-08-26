@@ -2085,7 +2085,7 @@ export function createController(io = {}) {
         s.pageIndex = shift ? restoreSection(stepLevel(s.pages, s.pageIndex, delta))
                             : step(s.pages, s.pageIndex, delta);
         if (s.pageIndex !== before) {
-            aimScroll(s.pageIndex);
+            aimScroll(before, s.pageIndex);
             s.cursor = 0;
             s.touched = -1;
             s.turnClaimMs = 0;
@@ -2148,28 +2148,35 @@ export function createController(io = {}) {
      *
      * Nothing is needed for CHASE — the position is continuous, so a jog
      * during a slide changes only where it is heading and the picture carries
-     * on from where it is. The teleport below is for the other case.
+     * on from where it is. The teleport is for the other case.
      *
-     * THE TELEPORT THRESHOLD IS 2, NOT 1, AND THE DIFFERENCE IS A VISIBLE SNAP.
+     * TWO DIFFERENT FACTS, AND ONE NUMBER CANNOT CARRY BOTH.
      *
-     * A section-picker jump of nine pages must not scroll nine pages past at
-     * nine times the speed, so a genuinely distant target is closed up to one
-     * page away and the ordinary advance covers the rest: one screen width,
-     * however far you jumped.
+     * The teleport wants "the TARGET is distant" — a genuine multi-page jump,
+     * which must still arrive in one screen width rather than scrolling nine
+     * pages past at nine times the speed. That is `toIndex` against
+     * `fromIndex`, the page you were on: a picker jump, a Shift+jog level
+     * step, a navigate_to.
      *
-     * At a threshold of 1 that same rule fires on an ordinary FAST SPIN, which
-     * is the gesture chase exists to smooth. Position 2.4 heading for 3, one
-     * more detent makes the target 4, `d` is 1.6 — and the position is dragged
-     * 2.4 -> 3.0, a 0.6-page jump FORWARDS on the retarget frame. A
-     * "never moves backwards" assertion does not see that at all, which is why
-     * the test bounds the displacement in both directions.
+     * `toIndex - s.scrollPos` measures something else: "the POSITION is
+     * lagging". A fast spin makes that large without the target being distant
+     * at all — position 2.4 heading for 3, one more detent makes the target 4
+     * and the gap is 1.6 — and teleporting on it drags the picture 2.4 -> 3.0,
+     * a 0.6-page jump FORWARDS on exactly the gesture chase exists to smooth.
+     * A "never moves backwards" assertion does not see that, which is why the
+     * test bounds the displacement in both directions.
      *
-     * Two pages of lag is the most an in-range spin can build up (each detent
-     * adds one and the eased advance eats most of it before the next), and
-     * because that advance is proportional to the distance remaining, a lag
-     * catches itself up rather than accumulating.
+     * Gating on the first and only then closing up the second gives both: a
+     * spin can NEVER teleport (every detent moves the index by one), and a
+     * jump always travels exactly one width however far it went.
+     *
+     * A BOUND OF 2 ON THE GAP ALONE WAS THE FIRST FIX AND IT WAS WRONG. It
+     * stopped the spin snap, and at a jump of exactly TWO pages neither branch
+     * fired — the position sat two widths out and eased the whole way, so the
+     * intermediate page flashed past at double speed. Measured: jumps of 1, 3
+     * and 9 travelled one width, a jump of 2 travelled two.
      */
-    function aimScroll(toIndex) {
+    function aimScroll(fromIndex, toIndex) {
         /*
          * SLIDE_MS 0 IS THE OFF SWITCH, and it has to be honoured here as well
          * as in the advance: `frac` must be exactly 0 on the very frame the
@@ -2177,9 +2184,15 @@ export function createController(io = {}) {
          * the advance settles it.
          */
         if (!(SLIDE_MS > 0)) { s.scrollPos = toIndex; s.scrollLastMs = 0; return; }
-        const d = toIndex - s.scrollPos;
-        if (d > 2) s.scrollPos = toIndex - 1;
-        else if (d < -2) s.scrollPos = toIndex + 1;
+        if (Math.abs(toIndex - fromIndex) > 1) {
+            /* A distant target. Close the position up to one page away — and
+             * only when it is FURTHER than that, so a jump made while a slide
+             * is already most of the way there is not dragged backwards to
+             * make room for a full-width travel nobody asked for. */
+            const gap = toIndex - s.scrollPos;
+            if (gap > 1) s.scrollPos = toIndex - 1;
+            else if (gap < -1) s.scrollPos = toIndex + 1;
+        }
         s.scrollLastMs = now();
     }
 
@@ -2198,8 +2211,9 @@ export function createController(io = {}) {
         }
         rememberSection();
         const target = Math.max(0, Math.min(s.pages.length - 1, index));
+        const cameFrom = s.pageIndex;
         s.pageIndex = remember ? restoreSection(target) : target;
-        aimScroll(s.pageIndex);
+        aimScroll(cameFrom, s.pageIndex);
         s.cursor = 0;
         s.touched = -1;
         s.turnClaimMs = 0;
@@ -2449,6 +2463,23 @@ export function createController(io = {}) {
          * that empty set with a lone trailing page and no non-trailing pages
          * under it. */
         if (!s.hierarchy) return;
+        /*
+         * A REBUILD THAT CHANGES NOTHING MUST NOT CANCEL A SLIDE.
+         *
+         * This is driven by tickUserPresetStale on a CONTRACT_SETTLE_MS (500)
+         * timer after a knob write, and it usually rebuilds the same two
+         * trailing pages under the same two names. Homing the scroll
+         * unconditionally therefore cut any slide that happened to be in
+         * flight when the timer fired -- a jog landing ~410-500ms after a knob
+         * turn, which is a narrow window but an ordinary gesture -- and the
+         * page change arrived as a hard frame instead.
+         *
+         * The names, not just the count: a preset going from clean to dirty
+         * renames its row, not the page, so the shape this compares is the
+         * page SET, which is what the position indexes into.
+         */
+        const beforeIndex = s.pageIndex;
+        const beforeShape = s.pages.map((p) => p.name).join("\u0000");
         const nonTrailing = s.pages.filter((p) => !p.trailing);
         const claim = makeClaimer(new Set(nonTrailing.map((p) => p.name)));
         /* built.warnings is dropped here, same as at every other plan site in
@@ -2457,7 +2488,9 @@ export function createController(io = {}) {
         const built = buildTrailingPages(trailingMenus(), claim);
         s.pages = nonTrailing.concat(built.pages);
         if (s.pageIndex >= s.pages.length) s.pageIndex = Math.max(0, s.pages.length - 1);
-        scrollHome();
+        /* Moved the index or the page set? then home; see above. */
+        if (s.pageIndex !== beforeIndex ||
+            s.pages.map((p) => p.name).join("\u0000") !== beforeShape) scrollHome();
     }
 
     function replanIfCondition(key) {
@@ -3042,8 +3075,21 @@ export function createController(io = {}) {
             if (chrome && footer) drawFooter(ctx, footer);
             return;
         }
-        /* Per-SLOT state belongs to the page under the finger. See the note
-         * above: a page that is not current is drawn with nothing held. */
+        /*
+         * ONLY THE PER-SLOT FIELDS ARE SUPPRESSED. DO NOT "COMPLETE" THIS.
+         *
+         * `touched` and `touchOrder` name a knob POSITION (0..7), which is a
+         * different parameter on every page, so handing them to a page that is
+         * not current draws an inverted label for a knob the finger has left.
+         * Those two are qualified below.
+         *
+         * `modulated`, `modValues` and `triggerFiredAt` are keyed by PARAM
+         * KEY, and a page only ever asks about its own keys — they are
+         * page-correct already. Suppressing them for symmetry would DELETE A
+         * VISIBLE ANIMATION: the trigger you just pressed is on the page now
+         * sliding AWAY, so blanking it there kills the flash exactly when it
+         * plays. That was proposed and rejected; see the note above drawPage.
+         */
         const onThisPage = index === s.pageIndex;
         renderPageMovy(ctx, {
             page: mp, metaIndex: s.metaIndex, values: s.values,

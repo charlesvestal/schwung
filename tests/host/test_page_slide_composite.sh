@@ -1179,24 +1179,52 @@ ok(listIdx >= 0, "the list-layout fixture has a knob page to draw as rows");
 
   /* --- A MULTI-PAGE JUMP IS STILL ONE SCREEN WIDTH ------------------------ *
    * Without the teleport the section picker would scroll through every page
-   * it crossed, at whatever speed nine pages in 90ms is. */
+   * it crossed, at whatever speed nine pages in 90ms is.
+   *
+   * MEASURED AS TOTAL TRAVEL, NOT AS THE GAP AFTER THE AIM, and A JUMP OF
+   * EXACTLY TWO IS TESTED FIRST. The first version of this test asserted the
+   * gap and guarded itself with `far - jumpFrom >= 3` -- which excluded the
+   * only case that was broken. The teleport was bounded on
+   * `toIndex - scrollPos > 2`, so at a jump of two neither branch fired, the
+   * position sat two widths out and eased the whole way, and the intermediate
+   * page flashed past at double speed. Jumps of 1, 3 and 9 all travelled one
+   * width, so every case the guard admitted passed.
+   *
+   * Summing |delta| across the frames is what makes "one width" mean the
+   * distance the picture actually moves rather than where it happened to
+   * start. */
   {
-    const jumpFrom = settleS(0);
-    const far = S.state.pages.length - 1;
-    ok(far - jumpFrom >= 3, "the fixture is long enough for a real jump (" +
-       (far - jumpFrom) + " pages)");
-    bump(18);
-    S.goToPage(far, { remember: false });
-    ok(S.state.pageIndex === far, "the jump landed");
-    ok(Math.abs(far - S.state.scrollPos) <= 1 + 1e-9,
-       "a jump of " + (far - jumpFrom) + " pages still slides exactly one width (" +
-       S.state.scrollPos + ")");
-    /* And it is a SLIDE, not a cut: the position must still lag by a whole
-       page, or "<= 1" would pass for a teleport straight onto the target. */
-    ok(Math.abs(far - S.state.scrollPos) > 0.5,
-       "and it does slide -- the position is a full page short, not on target");
-    for (let i = 0; i < 60; i++) { bump(18); S.tick(); }
-    ok(S.state.scrollPos === far, "the jumped slide settled exactly");
+    const jumpTravel = (fromIdx, toIdx) => {
+      settleS(fromIdx);
+      bump(18);
+      S.goToPage(toIdx, { remember: false });
+      if (S.state.pageIndex !== toIdx) return null;   /* clamped or restored */
+      let travel = 0, prev = S.state.scrollPos, guard = 0;
+      while (S.state.scrollPos !== S.state.pageIndex && guard++ < 200) {
+        bump(12); S.tick();
+        travel += Math.abs(S.state.scrollPos - prev);
+        prev = S.state.scrollPos;
+      }
+      /* The travel from the AIM, plus the leg already taken before it -- which
+         for a jump is zero, since the aim happens on a settled position. */
+      return travel;
+    };
+    const first = 0;
+    const cases = [1, 2, 3, S.state.pages.length - 1 - first];
+    ok(cases[3] >= 4, "the fixture is long enough for a far jump (" + cases[3] + ")");
+    let over = [];
+    for (const n of cases) {
+      const t = jumpTravel(first, first + n);
+      if (t === null) { ok(false, "the jump of " + n + " pages did not land"); continue; }
+      ok(t > 0.5, "a jump of " + n + " pages SLIDES rather than cutting (" +
+         t.toFixed(3) + " widths)");
+      if (t > 1 + 1e-6) over.push(n + ":" + t.toFixed(3));
+    }
+    ok(over.length === 0,
+       "every jump travels at most ONE screen width -- including the jump of " +
+       "TWO, where a gap-based bound leaves the position two widths out (" +
+       over.join(", ") + ")");
+    settleS(pairAt);
   }
 
   /* --- THE OUTGOING PAGE DOES NOT WEAR THE CURRENT PAGE`S TOUCH ----------- *
@@ -1294,6 +1322,29 @@ ok(listIdx >= 0, "the list-layout fixture has a knob page to draw as rows");
     ok(key(shotS()) === key(settledAt(last)),
        "a position past the end falls back to the plain page, not half a frame");
     S.state.scrollPos = last;
+  }
+
+  /* --- BUT A REBUILD THAT CHANGES NOTHING IS NOT A REPLAN EITHER ---------- *
+   * refreshTrailing is driven by tickUserPresetStale on a 500ms timer after a
+   * knob write, and it usually rebuilds the same trailing pages under the same
+   * names. It homed the scroll unconditionally, so a jog landing in the
+   * ~410-500ms window after a knob turn had its slide cut to a hard frame.
+   *
+   * Asserted as: the position is where it was AND still lagging, so this
+   * cannot pass by the slide having quietly settled instead. */
+  {
+    settleS(pairAt);
+    bump(18);
+    S.onJog(1);
+    for (let i = 0; i < 2; i++) { bump(12); S.tick(); }
+    const mid0 = S.state.scrollPos;
+    const idx0 = S.state.pageIndex;
+    ok(mid0 !== idx0, "a slide is in flight when the trailing rebuild fires");
+    S.refreshTrailing();
+    ok(S.state.scrollPos === mid0 && S.state.pageIndex === idx0,
+       "a no-op trailing rebuild leaves the slide running (" + mid0 + " -> " +
+       S.state.scrollPos + ")");
+    for (let i = 0; i < 60; i++) { bump(18); S.tick(); }
   }
 
   /* --- A REPLAN IS NOT A PAGE CHANGE ------------------------------------- *
@@ -1414,7 +1465,7 @@ ok(listIdx >= 0, "the list-layout fixture has a knob page to draw as rows");
  * ------------------------------------------------------------------------ */
 {
   const src = readFileSync("src/shared/param_pages/page_controller.mjs", "utf8");
-  const at = src.indexOf("function aimScroll(toIndex)");
+  const at = src.indexOf("function aimScroll(");
   ok(at >= 0, "aimScroll is where the lift expects it");
   /* Brace-match the function body, so the lift cannot silently take half of
      it (which would evaluate, and pass, with the SLIDE_MS guard missing). */
@@ -1434,13 +1485,13 @@ ok(listIdx >= 0, "the list-layout fixture has a knob page to draw as rows");
   };
   const off = make(0);
   off.st.scrollPos = 3;
-  off.fn(4);
+  off.fn(3, 4);
   ok(off.st.scrollPos === 4,
      "SLIDE_MS 0: the aim lands the position on the target outright (" +
      off.st.scrollPos + ")");
   const on = make(90);
   on.st.scrollPos = 3;
-  on.fn(4);
+  on.fn(3, 4);
   ok(on.st.scrollPos === 3,
      "SLIDE_MS 90: the same aim leaves the position where it was, to be eased");
 
