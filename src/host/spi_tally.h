@@ -99,7 +99,7 @@ void spi_tally_reset(spi_tally_t *t, spi_tally_state_t *s);
 /* Fold one worker sample. `irqs` is the raw /proc counter.
  *
  * That counter is printed from an `int` that only ever increments, so it goes
- * NEGATIVE past 2^31 (~13.5 h at 44 Hz) and wraps at 2^32.
+ * NEGATIVE past 2^31 (~72 days at the 344.5 Hz block rate) and wraps at 2^32.
  *
  * What makes the delta survive both is the WIDTH, not the signedness: the
  * subtraction has to happen in exactly 32 bits, matching the counter. Two's

@@ -5,7 +5,8 @@
  * ways the comparison can lie:
  *
  *   - the /proc counter is printed from an int and goes negative past 2^31, so
- *     a signed delta invents a multi-billion backlog roughly once a day;
+ *     the delta must stay a 32-bit subtraction of 32-bit operands; widening
+ *     either side turns the wrap into a 4-billion-IRQ window;
  *   - the driver leaves spi_tx_time at zero until the first transfer, so
  *     folding that in pins the mean low;
  *   - `irqs < frames` is the backlog DRAINING, not a negative backlog, and an
@@ -168,10 +169,10 @@ static void test_the_proc_counter_wrapping_is_not_a_spike(void)
     spi_tally_state_t s;
     spi_tally_sample_t out;
 
-    /* The irq_count file under /proc/ableton is printed from an `int` that
-     * only ever increments, so at ~44 Hz it crosses 2^31 after ~13.5 hours and
-     * prints negative from then on, then wraps 2^32 -> 0. Both transitions
-     * must read as an ordinary 44-IRQ window. */
+    /* The irq_count file under /proc/ableton is printed from an `int` that only
+     * ever increments. At Move's 344.5 Hz block rate it crosses 2^31 after ~72
+     * days and prints negative from then on, then wraps 2^32 -> 0. Both
+     * transitions must read as an ordinary window. */
     const uint32_t sign_flip = 0x7FFFFFFFu;   /* INT_MAX, next print is negative */
     spi_tally_reset(&t, &s);
     spi_tally_fold(&s, &t, sign_flip - 22u, &out);   /* baseline */

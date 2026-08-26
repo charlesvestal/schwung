@@ -122,12 +122,28 @@ Sources removed:
 
 Frame budget: 2900µs (128 frames @ 44.1kHz).
 
-**The "SPI ioctl baseline ~2ms" row above is inherited, not measured**, and it
-is the number the ~900µs budget is derived from. 768 bytes at 20 MHz is ~307µs
-of wire time, so the two disagree by roughly 6×. ablspi stamps the real
-per-transfer duration into the mmap'd page on every frame — arm the SPI frame
-tally (`touch /data/UserData/schwung/spi_tally_on`, see CLAUDE.md) and read
-`tx avg` / `headroom` rather than re-quoting either figure.
+### The "~2ms transfer" is mostly the shim sitting idle — MEASURED 2026-08-26
+
+The "SPI ioctl baseline ~2ms" row above is the *ioctl call*, not the transfer,
+and the ~900µs budget derived from it is wrong. ablspi stamps the real transfer
+duration into the mmap'd page every frame; reading it (`spi_tally_on`) against
+the existing `[spi_timing]` line, on an idle device with three empty slots:
+
+| | µs |
+|---|---|
+| Frame period (128 @ 44.1 kHz, **344.5 Hz** block rate) | 2902 |
+| `ioctl` call, as the shim measures it | 2569 |
+| …of which **actual transfer** (ablspi `spi_tx_time`) | **389** (max 447) |
+| …of which **blocked in `wait_event_interruptible`** | **~2180** |
+| Our compute (`pre` 97 + `post` 43) | ~140 |
+| **Real slack** | **~2370** |
+
+Most of that ioctl is the driver waiting for the *next* XMOS IRQ — it is the
+frame pacing, not work and not the wire. So the budget is ~2.4 ms, not ~900 µs.
+
+`total_us` is pinned near the period for the same reason: our work growing
+shrinks the wait by the same amount. **It is not a load signal** — use
+`mix_buf`/`render` in `[spi_timing] Pre/Post`, or the tally's `backlog`.
 
 **An overrun does not drop a frame — it queues.** ablspi's IRQ is a counting
 semaphore (`atomic_inc` in the ISR, `atomic_dec` in the wait), so frames that
