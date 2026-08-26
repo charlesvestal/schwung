@@ -72,7 +72,9 @@ jobs:
             tests/host/test_chain_deferred_load.c \
             src/modules/chain/dsp/chain_loader.c \
             -o build/tests/tsan_deferred_load -lpthread
-          TSAN_OPTIONS="halt_on_error=1" ./build/tests/tsan_deferred_load
+          # suppressions: exactly the seqlock payload copy, see tsan.supp
+          TSAN_OPTIONS="halt_on_error=1:suppressions=$PWD/tests/host/tsan.supp" \
+            ./build/tests/tsan_deferred_load
       - name: AddressSanitizer — use-after-free across the handoff
         run: |
           set -e
