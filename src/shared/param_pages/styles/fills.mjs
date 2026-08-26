@@ -123,14 +123,20 @@ function pair(ctx, x, ty, h, o) {
     ctx.fillRect(x, pillY, pillW, pillH, pillC);
 
     /*
-     * TOP corners notched, bottom left square.
+     * ALL FOUR corners notched.
      *
      * The 1px notch is the convergent idiom this catalog keeps (see the spec):
      * at one pixel and two colours there is no second way to soften a corner.
-     * But only the top two are knocked out here, because the pill sits on the
-     * last rows of the screen — its bottom corners are against the physical
-     * edge of the display, where there is no ground for a notch to read
-     * against. Notching all four would spend two pixels producing nothing.
+     *
+     * The top two were done first on the reasoning that the pill sits on the
+     * last rows of the screen and its bottom corners have no ground to read
+     * against. That was wrong, and measuring settles it: HINT_Y is 57, padTop
+     * is 1, and the pill is FONT4_HEIGHT + 2 = 7 rows, so it occupies 56..62
+     * and **row 63 is black beneath it**. There is a full row of ground under
+     * every pill, so the bottom notches read exactly as the top ones do.
+     *
+     * Guarded on height so a padding-squeezed pill (the double-rule option
+     * drops to padY 0) does not have its corners eaten into illegibility.
      *
      * Skipped when the pill is drawn in the ground colour (the inverted-band
      * option, where `pill` is 0): knocking a corner out of a hole fills it in,
@@ -139,6 +145,8 @@ function pair(ctx, x, ty, h, o) {
     if (pillC && pillH >= 3 && pillW >= 3) {
         ctx.fillRect(x, pillY, 1, 1, 0);
         ctx.fillRect(x + pillW - 1, pillY, 1, 1, 0);
+        ctx.fillRect(x, pillY + pillH - 1, 1, 1, 0);
+        ctx.fillRect(x + pillW - 1, pillY + pillH - 1, 1, 1, 0);
     }
 
     fontPrint4x5(ctx, x + HINT_PAD, ty, key, keyC);
