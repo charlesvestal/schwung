@@ -365,7 +365,35 @@ Move's per-track audio round-trips with ~5–14 ms unpredictable drift. Slot syn
 
 Toggle mid-playback → ~16 ms artifact (audio hole on OFF→ON, dup on ON→OFF) as ring resets.
 
-Telemetry: `touch /data/UserData/schwung/link_audio_avail_log_on` for 5 s slot avail logs; `touch /data/UserData/schwung/align_dump_trigger` for ~2.9 s of raw s16le PCM dumps in `/data/UserData/schwung/`.
+Telemetry: `touch /data/UserData/schwung/link_audio_avail_log_on` for 5 s slot avail logs. For raw audio, `echo 30 > /data/UserData/schwung/align_dump_trigger` writes that many seconds of s16le stereo to `slot0_move_track.pcm` (Move's Link Audio) and `slot0_synth_src.pcm` (the module's own output) — the two summands of a slot's mix, captured separately at the point they are combined. Score them with `tools/link-audio/analyze_capture.py`.
+
+**The capture is RT-safe and the dump length is not cosmetic.** It used to `fopen`/`fwrite` on the SPI callback for the whole capture, so the instrument could perturb the timing fault it was measuring; `src/host/align_capture.{c,h}` now memcpys into a preallocated buffer and the worker writes it. And 2.9 s was too short to tell signal from variance — the same configuration measured 5.61x, 1.84x, 1.01x, 2.58x and 2.94x across five consecutive snapshots.
+
+**A starved frame is captured as SILENCE, not skipped.** Skipping spliced the file across the gap, so a starve read as a waveform discontinuity indistinguishable from a real one.
+
+### The IN ring is sized for Move's jitter, not for symmetry
+
+`LINK_AUDIO_IN_RING_BLOCKS` was `LINK_AUDIO_PUB_SHM_BLOCKS` (16 blocks = 4096 stereo samples = **46 ms**), inherited from the publish side because the two sit next to each other in `link_audio.h`. The directions do not have the same problem: we write the pub ring on a metronome, one block per SPI frame; **Move writes this one in bursts.**
+
+Measured 2026-08-27 with the sidecar's `cb slot=N max_gap=... max_burst_run=...` telemetry, under a load that provoked it:
+
+```
+max_gap       = 92 ms       Move publishes nothing at all
+max_burst_run = 30 blocks   then 30 callbacks back-to-back (~85 ms)
+avail max     = 13128 stereo samples = 149 ms
+```
+
+All four channels stalled within 5 ms of each other — one shared stall in Move's publisher, not per-channel jitter. A 46 ms ring is empty less than halfway through a 92 ms stall and cannot hold the burst that follows, so the producer lapped the consumer. **~16% of frames had no Move audio at all.**
+
+Worse, catch-up was **fighting** the burst: the threshold was a bare `need * 12` at the call site (3072 samples ≈ 35 ms), chosen when "observed bursts were consistently <30 ms". Every refill that could have covered the next stall was discarded — ~76,000 stereo samples per 5 s window, ~17% of the audio — guaranteeing the next stall starved too. Starve, burst, discard, starve.
+
+Now 64 blocks (**186 ms**), with `LINK_AUDIO_IN_CATCHUP_SAMPLES` **derived** from the ring (3/4 of it) rather than written beside it, so a resize cannot leave the two disagreeing. This adds no steady-state latency — the consumer sets the pace, taking one block per SPI frame whatever the ring holds, so mean `avail` stays where Move's delivery puts it (~16 ms). It only changes what happens during a burst: absorbed instead of discarded. After: starve, catchup, would_overrun and la_starve_fallback all **zero**, and Move's own `max_gap` fell to 14–32 ms.
+
+**`LINK_AUDIO_IN_SHM_VERSION` must be bumped with any resize** (now 3). The struct grew 32 KB → 128 KB, so a segment left by an older sidecar is not merely stale, it is *too short* for the new mapping — and touching the tail of an undersized mapping is SIGBUS. `magic` and `version` must stay the **first two fields** so the version check itself can be read safely off a short segment. `tests/host/test_link_audio_ring_sizing.sh` pins the margins against the measured numbers, not the constants.
+
+### build.sh used to skip the sidecar silently
+
+`libs/link` is a submodule. Uninitialised, `build.sh` printed a warning, **exited 0**, `package.sh` added the sidecar only "if it was built", and `install.sh` only ever *kills* `link-subscriber` — it never installs one. So the copy on the device never changed, and rode through weeks of deploys and a three-host-version bisect of a Link Audio bug as the one component nobody was varying. It is a hard build failure now (`SCHWUNG_ALLOW_NO_LINK_SDK=1` to opt out), CI verifies the binary and the tarball entry rather than warning, and the moral is general: **a build step that can be skipped silently defeats every bisect that follows.**
 
 ## Signal Chain Module
 
