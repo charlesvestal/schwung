@@ -19,6 +19,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import os from 'node:os';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..', '..');
@@ -26,7 +27,6 @@ const OUT_DIR = path.join(REPO, 'catalog-out');
 const PREFS = path.join(OUT_DIR, 'preferences.json');
 const STYLES = path.join(REPO, 'src', 'shared', 'param_pages', 'styles', 'index.mjs');
 
-const HOST = '127.0.0.1';
 const TARGET_PER_SET = 16;
 
 /*
@@ -42,8 +42,32 @@ const TARGET_PER_SET = 16;
  * is busy too.
  */
 let PORT = 7789;
+
+/*
+ * Loopback by default; `--lan` opens it to the local network.
+ *
+ * Opt-in rather than default because there is no auth here at all: anything
+ * that can reach the port can read the catalog and, more to the point, POST
+ * judgements into the dataset. On a home network that is fine and being able
+ * to judge from a phone or a second machine is worth having. On a shared or
+ * public network it is not, so it takes a deliberate flag.
+ */
+let LAN = false;
 for (let i = 2; i < process.argv.length; i++) {
     if (process.argv[i] === '--port') PORT = parseInt(process.argv[i + 1], 10) || PORT;
+    if (process.argv[i] === '--lan') LAN = true;
+}
+const HOST = LAN ? '0.0.0.0' : '127.0.0.1';
+
+/** The first non-internal IPv4 address, for printing a reachable URL. */
+function lanAddress() {
+    const nets = os.networkInterfaces();
+    for (const name of Object.keys(nets)) {
+        for (const ni of nets[name] || []) {
+            if (ni.family === 'IPv4' && !ni.internal) return ni.address;
+        }
+    }
+    return null;
 }
 
 // ---------------------------------------------------------------- catalog
@@ -462,7 +486,17 @@ server.on('error', (e) => {
 
 server.listen(PORT, HOST, () => {
     const n = CATALOG.ready.length;
-    console.log(`A/B comparator on http://${HOST}:${PORT}  (${n} set(s), ${JUDGEMENTS.length} judgement(s) loaded)`);
-    console.log(`  Use that address, not localhost -- localhost may resolve to ::1.`);
+    const lan = LAN ? lanAddress() : null;
+    console.log(`A/B comparator  (${n} set(s), ${JUDGEMENTS.length} judgement(s) loaded)`);
+    console.log(`  http://127.0.0.1:${PORT}`);
+    if (LAN) {
+        if (lan) console.log(`  http://${lan}:${PORT}   <- this machine on the LAN`);
+        else console.log(`  bound to 0.0.0.0 but no external IPv4 address was found`);
+        console.log(`  Open to the local network and there is NO auth: anyone who can`);
+        console.log(`  reach this port can post judgements into the dataset.`);
+    } else {
+        console.log(`  Loopback only. Pass --lan to reach it from another device.`);
+    }
+    console.log(`  Use the numeric address, not localhost -- localhost may resolve to ::1.`);
     for (const m of CATALOG.missing) console.log(`  not offered: ${m.set} — ${m.why}`);
 });
