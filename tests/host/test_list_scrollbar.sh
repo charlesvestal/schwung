@@ -116,6 +116,38 @@ if (!top || !mid || !end) {
         bad(fb.clipped() + " pixel(s) drawn outside the display");
 }
 
+/*
+ * 6. NO PHANTOM THUMB. This one is measured on PIXELS on purpose -- the draw
+ *    calls cannot see it, because the offending ink belongs to the selection
+ *    highlight and not to the bar.
+ *
+ *    The highlight is 9 rows of solid full-width fill. Run it under the track
+ *    column and it reads as a second thumb, taller than the real one and parked
+ *    wherever the selection is -- worse than the bar merely vanishing, because
+ *    it actively reports a position that is not the scroll position. The fix is
+ *    a gutter the highlight does not enter; this asserts the result rather than
+ *    the gutter, so any other way of colliding fails too.
+ *
+ *    The tallest solid run in the track column must be the thumb itself.
+ */
+{
+    const { fb, thumb: t } = render(N, 23);
+    let run = 0, longest = 0;
+    for (let y = TOP; y < BOT; y++) {
+        if (fb.pixels[y * fb.width + TRACK_X]) { run++; if (run > longest) longest = run; }
+        else run = 0;
+    }
+    /* Slack of exactly 2: the track is dotted on a 2px pitch, so depending on
+     * where the thumb lands a track dot can sit immediately above it and
+     * another immediately below, joining the run at each end. Three or more is
+     * not reachable that way and means solid ink from somewhere else. */
+    if (!t) bad("no thumb to compare the track ink against");
+    else if (longest > t.h + 2)
+        bad("the track column has a solid run of " + longest + "px but the thumb is " +
+            t.h + "px -- something else is filling that column (the selection " +
+            "highlight), and it reads as a second, wrong thumb");
+}
+
 if (fail === 0) {
     console.log("PASS: the scrollbar appears only when the list scrolls, and its thumb " +
         "tracks both position and extent");
