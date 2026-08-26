@@ -28,7 +28,9 @@ node --input-type=module -e '
 import { createController, LAYOUT_MOVY, LAYOUT_LIST }
   from "./src/shared/param_pages/page_controller.mjs";
 import { createFramebuffer, drawContext } from "./tools/param-pages/harness.mjs";
-import { BAR_Y } from "./src/shared/param_pages/render_page_movy.mjs";
+import { BAR_Y, HEADER_H, W as SW, drawHeader, headerSplit, drawHeaderTitle,
+         drawHeaderName, drawHeaderSlide }
+  from "./src/shared/param_pages/render_page_movy.mjs";
 import { RULE_Y } from "./src/shared/list_geometry.mjs";
 /* ONE fixture, shared with the baseline driver. This file used to redefine
    KEYS / CHAIN_PARAMS / HIER / the store / the controller factory alongside
@@ -523,6 +525,205 @@ ok(listIdx >= 0, "the list-layout fixture has a knob page to draw as rows");
   ok(resolved.length > 0,
      "the child page`s keys reached the formatter child-resolved (" +
      resolved.slice(0, 3).join(",") + ")");
+}
+
+/* ------------------------------------------------------------------------ *
+ * THE HEADER IS HALF FIXED AND HALF MOVING.
+ *
+ * The module title is IDENTICAL on every page of a module, so sliding it out
+ * and sliding a byte-identical copy back in is motion carrying no information
+ * -- it just makes the header wobble. Caught by looking at filmed frames, not
+ * by reading the code. So: the body slides 128px, the page NAME slides within
+ * its own right-hand column, and the title, bank bar and footer are FIXED.
+ *
+ * Everything below is asserted on the pixel buffer, and every assertion here
+ * was checked by MUTATING the implementation to break exactly what it names
+ * and confirming it goes red. Nine tasks in this plan have shipped a probe
+ * that reported green while the thing it named was broken; an assertion nobody
+ * has seen fail is not evidence.
+ * ------------------------------------------------------------------------ */
+
+/* ROWS 0..HEADER_H-1 ARE UNTOUCHED BY A header:false DRAW.
+ *
+ * "No ink in the band" is NOT the assertion, and the difference is the erase:
+ * a draw that painted the band to 0 leaves no ink and has still destroyed what
+ * the compositor put there. So the band is pre-filled with a CHECKERBOARD and
+ * required to survive byte for byte -- a stray print (1) disturbs the dark
+ * squares and a stray fill (0) disturbs the light ones. */
+{
+  const sentinel = (fb) => {
+    for (let y = 0; y < HEADER_H; y++)
+      for (let x = 0; x < SW; x++) fb.pixels[y * SW + x] = (x + y) % 2;
+  };
+  const bandKey = (fb) =>
+    Buffer.from(fb.pixels.slice(0, HEADER_H * SW)).toString("base64");
+  const drawOnSentinel = (c, idx, extra) => {
+    const fb = createFramebuffer();
+    sentinel(fb);
+    c.drawPage(drawContext(fb), idx, Object.assign(OPTS(), extra || {}));
+    return fb;
+  };
+  const clean = createFramebuffer();
+  sentinel(clean);
+  const want = bandKey(clean);
+
+  for (const kind of kindNames) {
+    const i = kinds[kind];
+    ok(bandKey(drawOnSentinel(ctl, i, { header: false })) === want,
+       kind + ": header:false leaves rows 0.." + (HEADER_H - 1) + " untouched");
+    /* The control. Without it "untouched" would pass for a drawPage that had
+       stopped drawing anything at all, and for a `header` option that was
+       accepted and ignored in BOTH directions. */
+    ok(bandKey(drawOnSentinel(ctl, i, { header: true })) !== want,
+       kind + ": the default still draws a header (so the sentinel can move)");
+
+    /* And it is a SUPPRESSION, not a blank page. Below the band only, since
+       the band is now full of sentinel. */
+    const fb = drawOnSentinel(ctl, i, { header: false });
+    let bodyInk = 0;
+    for (let y = BAR_Y + 2; y < RULE_Y; y++)
+      for (let x = 0; x < SW; x++) if (fb.pixels[y * SW + x]) bodyInk++;
+    ok(bodyInk > 0, kind + ": header:false still draws the page body");
+  }
+
+  /* The knobs-as-list fork is the fifth header call site. Gating four of five
+     leaves a travelling title on the one that was missed. */
+  ok(bandKey(drawOnSentinel(ctlL, listIdx, { header: false })) === want,
+     "knobs-as-list: header:false leaves the header band untouched");
+  ok(bandKey(drawOnSentinel(ctlL, listIdx, { header: true })) !== want,
+     "knobs-as-list: the default still draws a header");
+}
+
+/* ONE SPLIT, TWO DRAWS.
+ *
+ * The title and the name are drawn by separate calls during a slide, and two
+ * calls must not mean two measurements -- a title measured against the
+ * outgoing name and a name measured against the incoming one disagree about
+ * where the boundary is, and the title jumps by the difference on the arrival
+ * frame. Asserted as: the two halves over ONE split compose byte-identically
+ * to drawHeader, which is also what pins drawHeader unchanged for every
+ * existing caller. */
+{
+  const CASES = [
+    ["S1 > OSIRUS", "LFO 1"],              /* the ordinary shape */
+    ["MFX", "BRIGHTAMBIENCE3"],            /* a long name, title gives ground */
+    ["A VERY LONG MODULE TITLE INDEED", "A VERY LONG PAGE NAME TOO"],
+                                           /* both long: the MIN_LEFT floor */
+    ["T1 > OSIRUS", ""],                   /* no name at all */
+    ["", "MAIN"],                          /* no title at all */
+  ];
+  let bad = 0;
+  for (const [l, r] of CASES) {
+    for (const inverted of [false, true]) {
+      const a = createFramebuffer();
+      drawHeader(drawContext(a), l, r, inverted);
+      const b = createFramebuffer();
+      const bc = drawContext(b);
+      /* The band fill is drawHeader`s own; the split halves draw text only. */
+      if (inverted) {
+        bc.fillRect(0, 0, SW, HEADER_H, 1);
+        bc.fillRect(0, 0, 1, 1, 0);
+        bc.fillRect(SW - 1, 0, 1, 1, 0);
+      }
+      const sp = headerSplit(l, r);
+      drawHeaderTitle(bc, sp, { inverted, erase: false });
+      drawHeaderName(bc, sp, undefined, inverted);
+      if (key(a) !== key(b)) bad++;
+    }
+  }
+  ok(bad === 0,
+     "title + name over one split composes to drawHeader in every case (" +
+     bad + " differ)");
+
+  /* And the measuring logic is genuinely ONE copy, not two that happen to
+     agree today. Source-invariant, because byte-identity cannot tell a shared
+     computation from a duplicated one. */
+  const src = readFileSync("src/shared/param_pages/render_page_movy.mjs", "utf8");
+  const once = (needle) => src.split(needle).length - 1;
+  ok(once("HEADER_MIN_LEFT - HEADER_GAP") === 1,
+     "the MIN_LEFT floor is computed in exactly one place");
+  ok(once("Math.floor(W * 0.6)") === 1,
+     "the right side is measured in exactly one place");
+}
+
+/* THE SLIDING HEADER ITSELF.
+ *
+ * Fixture chosen so all three failures are visible: a title long enough that
+ * the column width changes what fits, a destination name short enough to leave
+ * a wide title span, and an outgoing name that would produce a DIFFERENT
+ * column if the geometry followed it. */
+{
+  const T = "MFX > BRIGHTAMBIENCE";
+  const OUT = "MODULATION MATRIX";
+  const DEST = "OSCILLATOR";
+  const sp = headerSplit(T, DEST);
+  ok(sp.colX > 0 && sp.colW > 0 && sp.colX + sp.colW === SW,
+     "the destination split yields a column (" + sp.colX + ".." + SW + ")");
+  ok(headerSplit(T, OUT).colX !== sp.colX,
+     "the two names really do produce different columns (the case that bites)");
+
+  /* The settled destination header -- what the user lands on. */
+  const settled = createFramebuffer();
+  drawHeader(drawContext(settled), T, DEST, false);
+
+  const slide = (frac, opts) => {
+    const fb = createFramebuffer();
+    drawHeaderSlide(drawContext(fb), Object.assign(
+      { title: T, fromName: OUT, toName: DEST, frac }, opts || {}));
+    return fb;
+  };
+  const region = (fb, x0, x1) => {
+    const out = [];
+    for (let y = 0; y < HEADER_H; y++)
+      for (let x = x0; x < x1; x++) out.push(fb.pixels[y * SW + x]);
+    return Buffer.from(out).toString("base64");
+  };
+
+  const FRACS = [0, 0.2, 0.4, 0.5, 0.6, 0.8, 1];
+
+  /* (a) THE TITLE NEVER MOVES AND NOTHING SHOWS THROUGH IT.
+     Both failures land in one comparison, which is why it is a region equality
+     rather than an ink count: the title span must be exactly the settled
+     picture on every frame. Overdraw alone does NOT achieve that -- the
+     un-inverted header paints no background, so it clips only where the title
+     has ink, and a title is text with gaps between its letters. Remove the
+     fillRect in drawHeaderTitle and the outgoing name shows through those gaps
+     (measured: 4 to 36 stray pixels across these fracs). Point the split at
+     `fromName` instead and the title itself is fitted differently. */
+  let titleBad = [];
+  for (const f of FRACS) {
+    if (region(slide(f), 0, sp.colX) !== region(settled, 0, sp.colX)) titleBad.push(f);
+  }
+  ok(titleBad.length === 0,
+     "the title span is the settled picture on every frame -- fixed, and " +
+     "nothing shows through it (" + titleBad.join(",") + ")");
+
+  /* (b) THE NAME TRAVELS ITS COLUMN, NOT 128px.
+     At 128 the two names are both off their column for the middle of the
+     transition -- an empty right-hand side on most of a 90ms five-frame
+     animation. Measured with the travel mutated to 128: colInk 0 at fracs
+     0.4, 0.5 and 0.6. */
+  let empty = [];
+  for (const f of FRACS) {
+    const fb = slide(f);
+    let ink = 0;
+    for (let y = 0; y < HEADER_H; y++)
+      for (let x = sp.colX; x < SW; x++) if (fb.pixels[y * SW + x]) ink++;
+    if (!ink) empty.push(f);
+  }
+  ok(empty.length === 0,
+     "the name column carries ink on every frame of the slide (empty at " +
+     empty.join(",") + ")");
+
+  /* (c) THE ARRIVAL FRAME IS THE SETTLED FRAME, across the whole band. The
+     transition has to hand over to the ordinary render with no seam. */
+  ok(key(slide(1)) === key(settled),
+     "frac 1 is byte-identical to the settled destination header");
+
+  /* And the departing name is really on screen at the start, or (b) would be
+     satisfied by the incoming name alone and the slide would be a fade-in. */
+  ok(region(slide(0), sp.colX, SW) !== region(settled, sp.colX, SW),
+     "frac 0 shows the OUTGOING name in the column, not the destination");
 }
 
 process.exit(fail ? 1 : 0);

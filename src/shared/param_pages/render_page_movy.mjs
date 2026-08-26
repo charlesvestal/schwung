@@ -38,6 +38,11 @@ import {
 import { fontWidth4x5, fontPrint4x5, FONT4_HEIGHT, FONT4_MEASURE } from "./font4x5.mjs";
 import { fontWidth5x3, fontPrint5x3 } from "./font5x3.mjs";
 import { observe as animObserve, easeOut, lerp } from "./anim_state.mjs";
+/* The header slides on the same two primitives the body does -- in particular
+ * slideOffsets, whose `to = from + width` derivation is what guarantees the two
+ * names abut exactly. Deriving the second offset independently here would
+ * reintroduce the one-pixel seam that comment exists to prevent. */
+import { translateCtx, slideOffsets } from "./page_transition.mjs";
 /* The one definition of the chrome geometry (see the band comment below). */
 import { SCREEN_WIDTH as W, HEADER_H, RULE_Y, FOOTER_Y, FOOTER_H,
          MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W } from "../list_geometry.mjs";
@@ -720,6 +725,138 @@ export const HEADER_GAP = 4;
 /** The title's floor: the old fixed 55%, so the worst case is what shipped. */
 export const HEADER_MIN_LEFT = Math.floor(W * 0.55);
 
+/**
+ * WHERE THE TWO SIDES SIT — computed ONCE, drawn by two callers.
+ *
+ * The split is measured (see the long comment inside), and during a page slide
+ * the title and the page name are drawn by two SEPARATE calls: the title is
+ * fixed and the name travels. Two calls must not mean two measurements. If the
+ * title measured itself against the outgoing name and the name against the
+ * incoming one, the two would disagree about where the boundary is and the
+ * title would jump by the difference on the arrival frame -- which is precisely
+ * the wobble the sliding-header design exists to remove.
+ *
+ * The returned COLUMN is the name`s territory: [colX, W). Its left edge is
+ * where the title`s allowance stops, so the title span is [0, colX) and the
+ * two abut with HEADER_GAP of the column`s width kept clear of glyphs.
+ *
+ * Both edges depend on the specific name -- a long one pushes colX left, and
+ * the fit itself can shorten it -- so a transition must pin the geometry to ONE
+ * of the two names. It pins to the DESTINATION, so the layout the user lands on
+ * is the correct one and only the departing name is drawn in borrowed space.
+ */
+export function headerSplit(left, right) {
+    const fit5 = (t, maxW) => caps(fitText(FONT4_MEASURE, caps(t), maxW));
+
+    /*
+     * The split between the two sides is MEASURED, not fixed.
+     *
+     * It used to be a flat 55% for the left and 60% for the right, which is
+     * two problems. The right side is usually a page name and those are
+     * short -- 29px at the fleet median -- so the left was capped at 70px
+     * while a third of the bar sat empty, and a long title was cut for room
+     * nobody was using. That is what made an airwindows effect read as
+     * "MFX > BRIGHTAMBI": the name is 94px and there was 104px of bar.
+     *
+     * And 55 + 60 is 115%, so with a long page name the two sides OVERLAPPED
+     * and drew glyphs through each other. Measuring the right first and
+     * giving the left the remainder makes that unrepresentable.
+     *
+     * HEADER_MIN_LEFT is the floor, so a very long page name cannot squeeze
+     * the title to nothing -- the right gives ground first. It is the old
+     * 55%, so the worst case is exactly what shipped before.
+     */
+    let r = right ? fit5(right, Math.floor(W * 0.6)) : "";
+    let rw = r ? fontWidth4x5(r) : 0;
+    if (rw && W - 4 - rw - HEADER_GAP < HEADER_MIN_LEFT) {
+        r = fit5(right, Math.max(0, W - 4 - HEADER_MIN_LEFT - HEADER_GAP));
+        rw = r ? fontWidth4x5(r) : 0;
+    }
+    const leftW = W - 4 - (rw ? rw + HEADER_GAP : 0);
+    const l = fit5(left, leftW);
+    /*
+     * colX is derived from leftW, not from rw, so an EMPTY name still yields a
+     * column -- an empty right side gives the title the whole bar, and a slide
+     * from or to a page with no name would otherwise have a zero-width column
+     * and a travel of zero, i.e. no animation and a name that never moves.
+     */
+    const colX = 2 + leftW;
+    return { left, right, l, r, rw, nameX: W - rw - 2, colX, colW: W - colX };
+}
+
+/**
+ * The title side alone.
+ *
+ * `erase` PAINTS THE TITLE SPAN OUT before printing, and it is the mechanism
+ * that stops an outgoing page name showing through the fixed title during a
+ * slide. It is NOT the same trick as the rest of this feature: everywhere else
+ * the clip is real, because js_display_set_pixel (src/host/js_display.c)
+ * discards out-of-bounds writes. Here the two objects are both on screen, and
+ * the un-inverted header paints NO background -- it prints glyphs only. Drawing
+ * the title over the name therefore clips only where the title has ink, and a
+ * title is text with gaps between its letters, so the name is visible through
+ * them. Asserted on pixels in tests/host/test_page_slide_composite.sh.
+ *
+ * It defaults ON because a caller reaching for the title alone is compositing.
+ * drawHeader passes `false`: it owns the whole band, so there is nothing
+ * underneath to hide, and in the inverted case a 0-fill would punch a hole
+ * straight through the highlight it has just drawn. Keeping drawHeader on
+ * exactly its old draw calls is also what holds the 77 baseline frame hashes.
+ */
+export function drawHeaderTitle(ctx, split, { inverted = false, erase = true } = {}) {
+    if (erase) ctx.fillRect(0, 0, split.colX, HEADER_H, inverted ? 1 : 0);
+    fontPrint4x5(ctx, 2, 1, split.l, inverted ? 0 : 1);
+}
+
+/**
+ * The page-name side alone, right-aligned in `split`'s column.
+ *
+ * `text` overrides the split`s own name and is REFITTED to the column, which is
+ * what lets a slide draw the outgoing name inside the destination`s geometry.
+ * The departing name may be cut shorter than it was a frame ago; that is the
+ * price of one fixed column, and it is paid by the string that is leaving.
+ */
+export function drawHeaderName(ctx, split, text, inverted = false) {
+    if (text === undefined || text === null || text === split.right) {
+        if (split.r) fontPrint4x5(ctx, split.nameX, 1, split.r, inverted ? 0 : 1);
+        return;
+    }
+    const t = caps(fitText(FONT4_MEASURE, caps(text), Math.max(0, split.colW - 2 - HEADER_GAP)));
+    if (t) fontPrint4x5(ctx, W - fontWidth4x5(t) - 2, 1, t, inverted ? 0 : 1);
+}
+
+/**
+ * One frame of the header during a page slide: the title FIXED, the name
+ * travelling within its own column.
+ *
+ * The original design slid the whole header with the body. Filmed, that is
+ * motion carrying no information: the module title is IDENTICAL on every page
+ * of a module, so sliding it out and sliding a byte-identical copy back in just
+ * makes the header wobble. Only the name changes, so only the name moves.
+ *
+ * TRAVEL IS THE COLUMN WIDTH, NOT THE SCREEN WIDTH. At 128 the two names would
+ * both be off their column for most of the transition -- an empty right-hand
+ * side on the middle frames, on a 90ms/five-frame animation where that is most
+ * of it. The column is what the name occupies, so the column is how far it goes.
+ *
+ * Order is load-bearing: names first, title LAST, because the title`s erase is
+ * what clips the column at its left edge (see drawHeaderTitle). It also covers
+ * the backwards direction, where the incoming name arrives THROUGH that edge.
+ * The right edge needs nothing -- that is the screen bound, and the display
+ * discards writes past it.
+ *
+ * No `inverted`: the inverted band is the touched-knob readout, whose two sides
+ * are a parameter`s label and its value. Neither is a page name and neither
+ * slides.
+ */
+export function drawHeaderSlide(ctx, { title, fromName, toName, frac }) {
+    const split = headerSplit(title, toName);
+    const { from, to } = slideOffsets(frac, split.colW);
+    drawHeaderName(translateCtx(ctx, from), split, fromName);
+    drawHeaderName(translateCtx(ctx, to), split, toName);
+    drawHeaderTitle(ctx, split);
+}
+
 export function drawHeader(ctx, left, right, inverted = false) {
     /* font4x5, not the label face: the header is secondary text (the slot
      * title, the page name, and the touched parameter's full name and value),
@@ -763,36 +900,15 @@ export function drawHeader(ctx, left, right, inverted = false) {
         ctx.fillRect(0, 0, 1, 1, 0);
         ctx.fillRect(W - 1, 0, 1, 1, 0);
     }
-    const color = inverted ? 0 : 1;
-    const fit5 = (t, maxW) => caps(fitText(FONT4_MEASURE, caps(t), maxW));
-
     /*
-     * The split between the two sides is MEASURED, not fixed.
-     *
-     * It used to be a flat 55% for the left and 60% for the right, which is
-     * two problems. The right side is usually a page name and those are
-     * short -- 29px at the fleet median -- so the left was capped at 70px
-     * while a third of the bar sat empty, and a long title was cut for room
-     * nobody was using. That is what made an airwindows effect read as
-     * "MFX > BRIGHTAMBI": the name is 94px and there was 104px of bar.
-     *
-     * And 55 + 60 is 115%, so with a long page name the two sides OVERLAPPED
-     * and drew glyphs through each other. Measuring the right first and
-     * giving the left the remainder makes that unrepresentable.
-     *
-     * HEADER_MIN_LEFT is the floor, so a very long page name cannot squeeze
-     * the title to nothing -- the right gives ground first. It is the old
-     * 55%, so the worst case is exactly what shipped before.
+     * ONE split, then the two halves -- the same two functions the slide
+     * composites, so a settled header and a mid-transition one cannot lay out
+     * differently. `erase: false` keeps this path on exactly the draw calls it
+     * always made: it owns the band, and inverted it has just FILLED it.
      */
-    let r = right ? fit5(right, Math.floor(W * 0.6)) : "";
-    let rw = r ? fontWidth4x5(r) : 0;
-    if (rw && W - 4 - rw - HEADER_GAP < HEADER_MIN_LEFT) {
-        r = fit5(right, Math.max(0, W - 4 - HEADER_MIN_LEFT - HEADER_GAP));
-        rw = r ? fontWidth4x5(r) : 0;
-    }
-    const l = fit5(left, W - 4 - (rw ? rw + HEADER_GAP : 0));
-    fontPrint4x5(ctx, 2, 1, l, color);
-    if (r) fontPrint4x5(ctx, W - rw - 2, 1, r, color);
+    const split = headerSplit(left, right);
+    drawHeaderTitle(ctx, split, { inverted, erase: false });
+    drawHeaderName(ctx, split, undefined, inverted);
 }
 
 /**
@@ -2294,24 +2410,38 @@ export function renderPageMovy(ctx, o) {
     const page = o.page;
     const touched = typeof o.touched === "number" ? o.touched : -1;
 
-    if (touched >= 0 && page && page.keys && page.keys[touched] && o.metaIndex) {
-        const hk = page.keys[touched];
-        const m = o.metaIndex.getOrGuess(hk);
-        const v = o.values ? o.values[hk] : null;
-        /* "header", not "cell": this is the surface with room, and the whole
-         * reason a host-resolved value has two forms at all. */
-        const hv = o.displayFor ? o.displayFor(hk, v, "header") : null;
-        drawHeader(ctx, m.label || m.key,
-                   (hv === null || hv === undefined) ? displayValue(v, m) : String(hv), true);
-    } else {
-        /* pageLabel, not page.name: a page belonging to a CHILD level is
-         * named after WHICH CHILD it is showing, which the planned name
-         * cannot know. Falls back to the name for every other page. */
-        drawHeader(ctx, o.title || "",
-                   (o.pageLabel !== undefined && o.pageLabel !== null)
-                       ? o.pageLabel
-                       : (page ? page.name : null),
-                   false);
+    /* A sliding page does not carry its own header either. The module title is
+     * IDENTICAL on every page of a module, so travelling with the body would
+     * slide it out and slide a byte-identical copy back in -- motion carrying
+     * no information, which reads as the header wobbling. The compositor draws
+     * the band itself with drawHeaderSlide: fixed title, name travelling in its
+     * own column.
+     *
+     * An explicit option, for the reason recorded at bankBar below: the
+     * suppression must not be obtained by lying to the renderer about an input
+     * (an empty title would blank it in one line and leave everything else that
+     * reads o.title reading a fiction). */
+    if (o.header !== false) {
+        if (touched >= 0 && page && page.keys && page.keys[touched] && o.metaIndex) {
+            const hk = page.keys[touched];
+            const m = o.metaIndex.getOrGuess(hk);
+            const v = o.values ? o.values[hk] : null;
+            /* "header", not "cell": this is the surface with room, and the whole
+             * reason a host-resolved value has two forms at all. */
+            const hv = o.displayFor ? o.displayFor(hk, v, "header") : null;
+            drawHeader(ctx, m.label || m.key,
+                       (hv === null || hv === undefined)
+                           ? displayValue(v, m) : String(hv), true);
+        } else {
+            /* pageLabel, not page.name: a page belonging to a CHILD level is
+             * named after WHICH CHILD it is showing, which the planned name
+             * cannot know. Falls back to the name for every other page. */
+            drawHeader(ctx, o.title || "",
+                       (o.pageLabel !== undefined && o.pageLabel !== null)
+                           ? o.pageLabel
+                           : (page ? page.name : null),
+                       false);
+        }
     }
     /* A sliding page does not carry the indicator. The bar reports WHICH page
      * you are on, so travelling with the page it reports would leave it
