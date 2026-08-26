@@ -833,14 +833,38 @@ Author all ten before running the catalog. Every `draw` must clamp `v` to 0..1 a
 
 - [ ] **Step 2: Register the set**
 
-In `src/shared/param_pages/styles/index.mjs`, add at the bottom of the file, after `validateAll`:
+Each set file exports a named `register()` and `index.mjs` **calls** it at the
+bottom of the module:
 
 ```js
-/* Sets self-register on import. Import order is catalog order. */
-import "./knob.mjs";
+/* in knob.mjs */
+export function register() {
+    return registerSet({ id: "knob", title: "Arc knob", kind: KIND_DRAW, /* ... */ });
+}
+
+/* at the bottom of index.mjs */
+import { register as registerKnob } from "./knob.mjs";
+registerKnob();
 ```
 
-Note: this creates a cycle (`knob.mjs` imports `registerSet` from `index.mjs`). ES modules handle it because `registerSet` is a hoisted function declaration and `SETS` is initialised before the side-effect imports run. Keep the side-effect imports at the **bottom** of the file — moving them above `export const SETS = []` makes `SETS` undefined at registration time.
+**Self-registration on import does not work here, and the reason is worth
+knowing because both obvious spellings fail.** The set file imports
+`registerSet` and the `KIND_*` constants from `index.mjs`, so the two modules
+are a cycle.
+
+- `import "./knob.mjs";` at the bottom — **import declarations are hoisted**, so
+  bottom placement does not delay evaluation. The set runs before `index.mjs`'s
+  body and finds `SETS` and `KIND_DRAW` in the temporal dead zone:
+  `ReferenceError` at import time, nothing registered. Only `registerSet`
+  survives, because a function declaration hoists too — which is exactly what
+  makes this easy to talk yourself into.
+- `await import("./knob.mjs");` — **deadlocks.** The set statically imports
+  `index.mjs`, so its evaluation waits on ours while ours waits on its. Node
+  reports "Detected unsettled top-level await" and exits 13.
+
+A named export called after the body has run has neither problem: the set file
+only *declares* functions at evaluation time, so the hoisted import of it is
+harmless, and by the time `register()` runs every binding above is initialised.
 
 - [ ] **Step 3: Add the clipping assertion to the test**
 
@@ -967,15 +991,25 @@ These draw the bottom band. Signature `(ctx, hints)` matching `drawFooter`. Axis
 
 - [ ] **Step 4: Register all four**
 
-At the bottom of `index.mjs`:
+Follow the `register()` pattern from Task 5 Step 2 — **not** a side-effect
+import, which throws a `ReferenceError` from the temporal dead zone. At the
+bottom of `index.mjs`:
 
 ```js
-import "./knob.mjs";
-import "./fader.mjs";
-import "./fills.mjs";
-import "./opaque_box.mjs";
-import "./viz_switch.mjs";
+import { register as registerKnob } from "./knob.mjs";
+import { register as registerFader } from "./fader.mjs";
+import { register as registerFills } from "./fills.mjs";
+import { register as registerOpaqueBox } from "./opaque_box.mjs";
+import { register as registerVizSwitch } from "./viz_switch.mjs";
+
+registerKnob();
+registerFader();
+registerFills();
+registerOpaqueBox();
+registerVizSwitch();
 ```
+
+Call order is catalog order.
 
 - [ ] **Step 5: Extend the clipping assertion to non-widget kinds**
 
