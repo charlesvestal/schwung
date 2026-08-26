@@ -44,6 +44,7 @@
  * which is a separate contract from what is drawn.
  */
 import { LIST_LINE_HEIGHT } from '../../src/shared/menu_layout.mjs';
+import { SCREEN_WIDTH } from '../../src/shared/list_geometry.mjs';
 
 export function probe(drawFn) {
     const rows = [];
@@ -79,8 +80,23 @@ export function probe(drawFn) {
      * `LIST_LINE_HEIGHT` is imported from the real module rather than
      * hardcoded so this stays anchored to whatever line height the re-skin
      * actually uses. */
+    /*
+     * A HIGHLIGHT IS WIDE. Any lit fill used to count, which was true while the
+     * only fills in the list rect were the selection bar and the scroll arrows
+     * (drawn as single pixels through px(), not fill_rect). The scrollbar that
+     * replaced those arrows IS a fill_rect -- one column at the far edge,
+     * spanning many rows -- so every visible row started reporting as selected
+     * and findIndex returned the first one. The failure read as a scrolling
+     * regression: "expected Item 7 selected, got Item 6".
+     *
+     * The real highlight is drawn full-width (menu_layout: fillRect(0, ...,
+     * SCREEN_WIDTH, ...)), so requiring half the screen separates the two by a
+     * wide margin and cannot be satisfied by an edge marker of any plausible
+     * width.
+     */
     const rowFilled = (y) => fills.some((f) => {
         if (f.color === 0) return false;
+        if (f.w < SCREEN_WIDTH / 2) return false;
         const span = Math.min(f.h, LIST_LINE_HEIGHT);
         return y >= f.y && y < f.y + span;
     });
