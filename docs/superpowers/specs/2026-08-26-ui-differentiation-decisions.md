@@ -127,6 +127,32 @@ hardware.
 **Font constraint:** budget 26px — overflows `wide` and `dot-matrix`. Neither is
 the font pick (see below), so this is currently satisfied.
 
+### The truncation cost, confirmed against alternatives and accepted
+
+The 26px budget applies to the RESTING label as well as the held value, which
+the per-set contact sheet could not show. On a real page:
+
+| option | `-> OSC1` | `KEYTRIG` | budget |
+|---|---|---|---|
+| **half-strip** (chosen) | `-> OSC` | `KEYTRI` | 26px |
+| thin-strip | full | full | 30px |
+| double-strip | `-> OS` | `KEYTRI` | 24px |
+| boxed-value | `-> OSC` | `KEYTRI` | 26px |
+| dotted-strip | full | full | 30px |
+
+`dotted-strip` was put up as the direct alternative and declined: it is notched
+too (the rounded edge this option was chosen for), keeps full labels, and its
+checker shoulders match the texture-in-widgets pattern in every other pick — its
+own note concedes it is "half-strip with a textured margin".
+
+**Kept anyway, deliberately**, for the one thing only `half-strip` does: the
+strip is sized to the value, so a row of held knobs shows how long each value is
+before you read any of them, and the block grows and shrinks under your finger
+as you turn. One character on the longest labels is the price.
+
+Whether that movement is useful feedback or fidget is still not settled by any
+still, and remains the thing to watch on hardware.
+
 ---
 
 ## Opaque cell — `door-open` (option 08)
