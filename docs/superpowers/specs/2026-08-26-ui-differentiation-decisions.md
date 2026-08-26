@@ -278,27 +278,43 @@ current look is not merely derivative, it is not liked.
 
 ---
 
-## Sample — `solid-mass` or `terrain` (UNDECIDED)
+## Sample — `ghost-fill` (option 05)
 
-**Fitted rank:** `ghost-fill` 1st, `solid-mass` 2nd (up 7 places), `terrain` 6th.
-**Status:** open — Charles named two candidates and did not settle.
+**Fitted rank:** 1st of 10.
+**Decision:** taken after rendering the top five against loud AND quiet
+material, which is what settled it.
 
-Sample is the one curve set where the axis means something different, and the
-option notes already record why:
+**All four curve sets now share one treatment**, so an envelope, a filter, an
+LFO and a sample read as the same kind of object. That coherence is the reason
+to prefer it over `solid-mass`, which was the other candidate and was equally
+legible.
 
-- **`solid-mass` is what SHIPS for sample.** `drawSample` is solid today, so
-  position 9 is the incumbent here and position 1 is the radical option — the
-  axis is inverted relative to every other set. Choosing it is a no-change vote.
-- **`terrain` came 2nd in envelope, filter and sample but 8th in LFO**, because
-  the LFO's zero line runs through the middle rather than along the bottom, so
-  "mass below the curve" means something different there. Sample is mirrored
-  about a centre line too, which is why its terrain note warns that a QUIET
-  sample puts seven of thirteen rows under hatch and the cell renders as a slab.
+### `terrain` was eliminated by the quiet case, exactly as its note warned
 
-**Recommendation when this is picked up:** `terrain` differentiates and
-`solid-mass` does not, but `terrain`'s failure case is the common one for
-samples — quiet material — and it is the heavier of the two. Worth rendering
-both against a real quiet sample before deciding.
+Rendered at full gain it is a hatched slab filling the band; rendered at 28%
+gain **it is still a hatched slab** — the waveform is gone entirely. It fills to
+the bottom edge, so on a MIRRORED graph the quieter the material the more of the
+cell it covers. That is backwards, and quiet material is the common case for
+samples rather than an edge case.
+
+A single mid-level render would have hidden this completely. The comparison had
+to be drawn twice, at two gains, to see it at all.
+
+### `solid-mass` rejected, and why the reason is not legibility
+
+It was the clearest of the five at both gains and best at showing an attack
+transient. But **`drawSample` already draws solid**, so it is the incumbent for
+this set — the axis is inverted here relative to every other set, with position
+9 being what ships and position 1 the radical one. Choosing it would have left
+the sample cell unchanged while its three siblings all changed, which is the
+opposite of the coherence argument above.
+
+### Also rejected
+
+`hatch-fill` (07) and `light-fill` (06) both survive the quiet case and are both
+fine. They are also near-indistinguishable from each other — a hatch pitch of 3
+against 4 — so a preference between those two is not something this data can
+support, and the viz module header already says so.
 
 ---
 
