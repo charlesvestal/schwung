@@ -35,7 +35,8 @@ import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page
 import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
          drawBrackets, drawPresetBody, displayValue, RULE_Y, LAYOUT_MOVY,
          MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W } from "./render_page_movy.mjs";
-import { resolveViz } from "./viz.mjs";
+import { resolveViz, VIZ_SWITCH } from "./viz.mjs";
+import { createAnimState } from "./anim_state.mjs";
 import { drawMenuList } from "../menu_layout.mjs";
 
 export { LAYOUT_MOVY };
@@ -491,6 +492,9 @@ export function createController(io = {}) {
         (typeof io.trailingMenus === "function" ? (io.trailingMenus() || []) : []);
 
     const s = {
+        /* Per-controller, and it outlives a page change on purpose — see the
+         * `anim` field at the renderPageMovy call. */
+        anim: createAnimState(),
         slot: 0,
         component: "synth",
         prefix: "synth",
@@ -2171,7 +2175,7 @@ export function createController(io = {}) {
          * informative, while hiding the rest of the row.
          */
         if (meta.divable && meta.kind === KIND_ENUM
-            && !drawnWide(key)
+            && !drawnWide(key) && !drawnAsSwitch(key)
             && Array.isArray(meta.options) && meta.options.length >= 2) {
             const pi = Math.round(Number(value));
             s.peek = {
@@ -2753,6 +2757,27 @@ export function createController(io = {}) {
                  * the renderer, never the wiring.
                  */
                 triggerFiredAt: s.triggerFiredAt,
+                /*
+                 * THE WIDGET ANIMATION STORE, and its absence is why none of
+                 * them ever moved on hardware.
+                 *
+                 * `nowMs` alone is not enough: every animated widget guards on
+                 * `anim && typeof nowMs === "number"`, so an undefined store
+                 * silently draws the settled frame forever. createAnimState was
+                 * written, exported, unit-tested and never CALLED — the switch
+                 * fill, the waveform morph and the enum square's resize were all
+                 * inert from the day they shipped.
+                 *
+                 * Exactly the failure the note above `triggerFiredAt` describes,
+                 * one field away: the renderer tests hand these in directly, so
+                 * they prove the renderer and never the wiring. The trigger
+                 * flash had this bug, it was fixed, the note was written — and
+                 * the animations that arrived later reproduced it.
+                 *
+                 * One store per controller, so a page change does not restart
+                 * every transition and two slots do not share phase.
+                 */
+                anim: s.anim,
                 nowMs: now(),
                 footer,
             });
@@ -2932,6 +2957,33 @@ export function createController(io = {}) {
     function drawnWide(key) {
         for (const g of vizGroups()) {
             if (g.slotSpan > 1 && Array.isArray(g.keys) && g.keys.indexOf(key) >= 0) return true;
+        }
+        return false;
+    }
+
+    /*
+     * A SWITCH ALREADY SHOWS ITS WHOLE VOCABULARY, so it must not peek.
+     *
+     * The peek exists because a 30px cell cannot show a list. A switch has two
+     * options and draws BOTH of them — the track is one state and its inversion
+     * is the other, which is the entire reason drawSwitch was chosen over a
+     * two-item enum square. Covering the screen with a list of Off/On to
+     * describe a widget whose current and alternate values are both already on
+     * the cell replaces something legible with something no more informative,
+     * and hides the rest of the row to do it.
+     *
+     * It is also the widget most likely to be flipped repeatedly, so it is the
+     * one where a full-screen panel on every detent costs most. Reported from
+     * the device.
+     *
+     * Distinct from `drawnWide`, and deliberately a separate predicate: that
+     * one is about a graphic having enough ROOM, this one is about the graphic
+     * already being the list. A switch is one cell wide and would pass the
+     * width test.
+     */
+    function drawnAsSwitch(key) {
+        for (const g of vizGroups()) {
+            if (g.kind === VIZ_SWITCH && Array.isArray(g.keys) && g.keys.indexOf(key) >= 0) return true;
         }
         return false;
     }

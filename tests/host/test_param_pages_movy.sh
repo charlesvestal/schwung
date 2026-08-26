@@ -700,15 +700,28 @@ Promise.all([
       VD.drawVizGroup(H.drawContext(fb), { x: 0, y: 0, w: 32, h: 16 },
         { kind: V.VIZ_WAVEFORM, roles: { value: "w" }, slotStart: 0, slotSpan: 1 },
         { w: String(idx) }, { getOrGuess: () => wsh });
-      const colHeight = (x) => {
+      /*
+       * ODD PARITY ONLY, for the same reason the LFO budget below is halved:
+       * the silhouette now carries the CHECKER mass too, and CHECKER lights
+       * only where (x + y) is EVEN — so every odd-parity pixel is stroke and
+       * the fill cannot contribute one.
+       *
+       * Counting all ink here made the SAW fail: at the left edge its curve is
+       * at the extreme, so the fill legitimately spans from there to the centre
+       * line and reads as a bar to a total-ink check. What this assertion is
+       * actually for is a CLOSED CYCLE — a full-height stroke down the box edge
+       * framing the shape — and that is 13 rows, about 6 of them odd, so the
+       * same threshold still catches it while ignoring the fill.
+       */
+      const colStroke = (x) => {
         let n = 0;
-        for (let y = 0; y < 16; y++) if (fb.pixels[y * fb.width + x]) n++;
+        for (let y = 0; y < 16; y++) if (fb.pixels[y * fb.width + x] && ((x + y) & 1)) n++;
         return n;
       };
       /* drawWaveform insets by 2, so the body runs x=2..29 */
       for (const x of [2, 29]) {
-        if (colHeight(x) > 3) {
-          fail("the " + name + " silhouette has a " + colHeight(x) + "px vertical bar at its " +
+        if (colStroke(x) > 3) {
+          fail("the " + name + " silhouette has a " + colStroke(x) + "px vertical STROKE at its " +
                (x === 2 ? "left" : "right") + " edge (column " + x + ") — the cycle is being " +
                "closed at the box edge, which frames the shape instead of drawing it");
         }
@@ -727,11 +740,16 @@ Promise.all([
       VD.drawVizGroup(H.drawContext(fb), { x: 0, y: 0, w: 32, h: 16 },
         { kind: V.VIZ_WAVEFORM, roles: { value: "w" }, slotStart: 0, slotSpan: 1 },
         { w: String(SAW) }, { getOrGuess: () => wsh });
+      /* Odd parity, halved budget — same reasoning as the edge check above and
+       * the LFO budget below: the fill is even-parity by construction, so this
+       * counts stroke only and a double-width staircase still doubles it. */
       let n = 0;
-      for (let y = 0; y < 16; y++) for (let x = 0; x < 32; x++) if (fb.pixels[y * fb.width + x]) n++;
-      if (n > body + 2) {
-        fail("the saw silhouette lights " + n + " pixels across " + body + " columns — a 1px " +
-             "staircase needs about one per column, so the line is being drawn double-width");
+      for (let y = 0; y < 16; y++) for (let x = 0; x < 32; x++)
+        if (fb.pixels[y * fb.width + x] && ((x + y) & 1)) n++;
+      if (n > (body + 2) / 2) {
+        fail("the saw silhouette lights " + n + " odd-parity (stroke) pixels across " + body +
+             " columns — a 1px staircase needs about one per two columns at this parity, so the " +
+             "line is being drawn double-width");
       }
       /*
        * The same shape through the LFO renderer, which has its own riser.

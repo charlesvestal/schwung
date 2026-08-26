@@ -709,6 +709,26 @@ Not hypothetical — 12 enum cells in the fleet sit inside a wide graphic, every
 one a filter type or an LFO shape, where turning the knob already redraws the
 curve better than a list of words can.
 
+**Nor does a SWITCH** (`drawnAsSwitch`) — a separate predicate on purpose:
+`drawnWide` is about a graphic having enough ROOM, this is about the graphic
+already BEING the list. A switch draws both of its states (the track is one and
+its inversion is the other, which is why `drawSwitch` exists instead of a
+two-item enum square), so a full-screen Off/On says what the cell already says,
+on the control most likely to be flipped repeatedly.
+
+**Suppressed on the WIDGET, never on the option count.** "Two options" is the
+obvious test and is wrong for **134 cells** in the fleet — every two-way CHOICE
+that is not a boolean: `Mix/Reverb`, `Saw/Square`, `Legato/Trig`, `Time/Rate`,
+`Bipolar/Unipolar`. Those draw as enum squares showing ONE word, so the other
+word is exactly what a peek is for. 212 are switches and stop; 134 keep peeking.
+`tests/host/test_enum_peek.sh` pins both sides.
+
+Known and not fixed: 933 of 958 enum cells peek, and the peek is instant while
+the enum square's resize and the waveform morph take ~100ms — so those two
+animations are covered by the list at the moment they play. A short delay before
+raising the peek would let a single detent show the morph while a sustained
+scroll still gets the names.
+
 ### The sample cell draws the file it HAS, or nothing
 
 The envelope is the file's real peaks (`wav_peaks.mjs`, streamed and bounded,
@@ -865,6 +885,76 @@ return undeclared, so falling through throws instead of passing quietly.
 The LFO/knob-mapping target picker is **not** part of this: it is not opened
 through `paramEditorOpenedFromGrid` and has its own `lfoTargetFromGrid` /
 `returnToSlotGridFromLfoTarget`. Do not merge the two.
+
+### Every scrolling list draws a SCROLLBAR, and no list draws arrows
+
+One dotted column at `SCREEN_WIDTH - 2`, solid thumb, in `drawMenuList` — so
+every list in the tree has it: main menu, settings, slots, patches, tools,
+store, chain views, the enum picker, the hierarchy editor and the file browser.
+A list that fits its window draws nothing.
+
+It **replaced** the up/down arrows rather than joining them. The arrows reported
+"there is more, that way"; the thumb reports that plus HOW MUCH and WHERE, which
+is the question a 47-model list actually raises. Keeping both draws one fact
+twice — the same argument retired the file browser's own `13/30` header counter.
+
+**It is also cheaper, and the shape of the saving is the point.** The arrows were
+5px wide and touched exactly two rows, so the clearance was 10px charged per-row
+to those two — a value on the first or last visible row was truncated to make
+room for a glyph beside it, reported from the device twice. The bar is ONE column
+spanning every row: 2px charged to all rows instead of 10px to two. Those rows
+went from 108 to 125.
+
+Three geometry rules, each of which was wrong first:
+
+- **The thumb has a 2px floor.** At 47 items in 5 rows its true height is 1.4px,
+  and a 1px thumb is indistinguishable from a tick of the track — position
+  without extent, which is half the point.
+- **The track covers the ROWS, not the rect.** The rect is 10..54 but the last
+  row of glyphs ends at 52, so running to `resolvedBottomY` left the final dot
+  two rows below anything it measured. Row ink is derived from the highlight
+  (`highlightHeight - 2 * offset`), and measured on the WINDOW rather than the
+  visible items — `keepOffLastRow` draws one row fewer at the end of a list, and
+  a track that shortened as you reached the bottom would read as the list
+  shrinking.
+- **The selection highlight stops short of a `BAR_GUTTER`.** Full width it runs
+  under the bar, and since the bar is drawn after the rows, white on white. Not
+  merely invisible: nine rows of solid ink in the track column reads as a SECOND
+  thumb, parked wherever the selection is. Nothing can be XOR-ed — the draw API
+  is write-only — so the fix is geometric, and one constant serves both the
+  highlight and the value edge.
+
+`tests/host/test_list_scrollbar.sh` asserts the GEOMETRY (position advances,
+both ends reached, a shorter list gives a TALLER thumb) rather than ink, and
+pins the phantom-thumb case on pixels because the draw calls cannot see it.
+
+### Widget animation, and the wiring that carries it
+
+`src/shared/param_pages/anim_state.mjs` is the per-key frame store: the page
+renderer is stateless, so nothing in it can know what a value was a moment ago.
+`observe(state, key, value, now, ms)` returns `{from, to, t, moving}`; a first
+sighting is stamped already-past, because an arrival is not a change.
+
+Animated today: the switch's inverse fill (160ms — the slug SNAPS, only the fill
+moves), the waveform morph (100ms), the enum square's resize, and the trigger
+flash. Time is passed IN, never read — no `Date.now()` anywhere in the renderer,
+which is what makes `tools/param-pages/movie.mjs` able to film a page
+deterministically.
+
+**THE STORE MUST BE PASSED FROM THE CONTROLLER, AND FOR MONTHS IT WAS NOT.**
+Every widget guards on `anim && typeof nowMs === "number"`, so an undefined
+store draws the settled frame forever — silently, and identically to a correct
+render of a value that is not moving. `createAnimState` was written, exported,
+unit-tested and never CALLED; every animation shipped inert.
+
+The same failure is recorded one field away at the same call site, for the
+trigger flash: *the renderer tests hand these in directly, so they prove the
+renderer and never the wiring*. A comment did not defend it.
+`tests/host/test_anim_wiring.sh` does — it drives the real controller and
+requires a frame 60ms into a flip to DIFFER from the settled one. Two ways it
+passes vacuously: forgetting `setLayout(LAYOUT_MOVY)` (the default is
+`LAYOUT_DIAL`, which has no animated widget at all), and asserting a particular
+picture instead of a difference between two frames.
 
 ### Recording / capture
 

@@ -43,14 +43,18 @@ export const SCREEN_HEIGHT = 64;
 
 /* ---- The three bands ----------------------------------------------------
  *
- * HEADER_H = 6: glyphs printed at y=0 (the OLED bezel already insets the top
- * row, so a margin row there buys nothing), leaving ONE spare row below the
- * text — row 5 — so whatever sits under the band never butts against a glyph.
+ * HEADER_H = 7: a 5-row glyph at y=1, with ONE CLEAR ROW ABOVE AND BELOW it.
  *
- * It was 7 with two spare rows below. The second bought nothing the first did
- * not, and the row it freed went into the knob grid's gutters, which were
- * asymmetric: the first widget row got two rows of air above it and the second
- * got one. Now both get two.
+ * Both rows are load-bearing and the reason is the INVERTED header. When a knob
+ * is touched the band fills solid and the glyphs are knocked out of it, so a
+ * glyph flush against either edge has its ink running into the boundary — the
+ * highlight bleeds into the border and the text stops having a shape.
+ *
+ * This was briefly 6, with the glyphs at y=0 on the argument that the bezel
+ * already insets the top row so a margin there buys nothing. That is true of
+ * the BAND against the panel edge and false of the GLYPHS against the band:
+ * inverted, the thing the top row separates is text from its own highlight,
+ * not the screen from its surround. Seen on hardware, put back.
  *
  * FOOTER_H = 7 at FOOTER_Y = 57, so the hint pills end on row 63 — the last
  * scanline — for the same bezel reason. The panel is inset in plastic, so a
@@ -60,28 +64,27 @@ export const SCREEN_HEIGHT = 64;
  *
  * THESE ARE SHARED. Changing them moves every list screen in the shadow UI —
  * slots, settings, master FX, patches, tools, store, menus — not just the knob
- * grid, which is the whole point of this module being one definition. The
- * re-cut above was rendered and checked on the knob grid and the chain editor;
- * the list screens are verified on HARDWARE. This module exists because a
- * re-skin once passed its own test while the device showed an 8-row dead band,
- * so a green suite is not evidence about them.
+ * grid, which is the whole point of this module being one definition. Anything
+ * changed here is verified on HARDWARE, not by the suite: this module exists
+ * because a re-skin once passed its own test while the device showed an 8-row
+ * dead band, so green is not evidence about those screens. The 6-row header
+ * above is the second time that has been demonstrated.
  */
-export const HEADER_H = 6;
+export const HEADER_H = 7;
 export const RULE_Y = 55;
 export const FOOTER_Y = 57;
 export const FOOTER_H = 7;
 
 /* ---- The list rect, between the header band and that rule ----------------
  *
- * Five rows at a 9px stride: y = 9, 18, 27, 36, 45, glyphs ending at 51 and
- * the selected row's fill spanning 8..52, two clear rows short of RULE_Y.
+ * Five rows at a 9px stride: y = 10, 19, 28, 37, 46, glyphs ending at 52 and
+ * the selected row's fill spanning 9..53, one clear row short of RULE_Y.
  *
- * It moved 10 -> 9 with the header band, which lost a row. Holding it at 10
- * would have opened a four-row gap under the band where there had been three,
- * so the list would drift away from the header while the knob grid's first row
- * moved up to meet it — the two would stop reading as the same chrome, which
- * is the thing this module exists to prevent. Capacity is 5 either way; the
- * move is about the gap, not the count.
+ * It tracks HEADER_H rather than standing alone: three clear rows between the
+ * band and the first row. It briefly went to 9 while the band was 6, and came
+ * back with it. test_list_behavior.sh asserts the GAP for that reason — a
+ * literal here would fail a change that preserved the spacing and pass one
+ * that broke it.
  *
  * The knob grid's menu pages and drawMenuList — i.e. every list in the shadow
  * UI — occupy exactly this rect, or the two look subtly unlike each other.
@@ -90,7 +93,7 @@ export const FOOTER_H = 7;
  * It was 8 to leave room for a "> " caret that no longer exists -- the
  * selected row is inverted, which says it already. With the caret gone the
  * label starts here, and x=5..7 stopped being empty for no reason. */
-export const MENU_LIST_X = 9, MENU_LIST_Y = 9, MENU_LIST_W = 111;
+export const MENU_LIST_X = 9, MENU_LIST_Y = 10, MENU_LIST_W = 111;
 
 /* ---- Header / footer text rows ------------------------------------------
  *
