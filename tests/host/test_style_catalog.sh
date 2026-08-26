@@ -333,5 +333,109 @@ Promise.all([
   const inks = new Set(VT.VIZ_TREATMENTS.map((t) => renderCurve(t.draw).countLit()));
   if (inks.size < 5) fail("the ten treatments are barely distinguishable: " + inks.size + " distinct ink counts");
   console.log("PASS: four curve sets share one curve and ten distinct treatments");
+
+  /* ---- the TWO TEXT-BEARING sets are measured against ALL TEN FACES ----
+   *
+   * enum_square and label_cell are the only sets whose options are sized
+   * around a string, and set 12 replaces the letterforms outright. So a pick
+   * in one set can break a pick in the other, silently and only on hardware:
+   * the option that fitted in the catalog was measured against the shipping
+   * face, and the face is exactly what the font set proposes to change.
+   *
+   * Measured, not estimated. Each option declares the pixel budget its draw
+   * function actually leaves for text, and this walks every font variant with
+   * that set realistic probe string. Where an option genuinely cannot hold the
+   * string on a variant, the variant is DECLARED on the option, and the
+   * comparison is an exact set match rather than a floor -- a floor would pass
+   * by being loose, and an option that quietly started overflowing one more
+   * face would never be noticed.
+   *
+   * Both directions fail. Declaring an overflow that is not real is as wrong
+   * as missing one, because the note beside it tells a reviewer which faces
+   * the option survives. */
+  const BL = await import("./src/shared/param_pages/styles/font/blit.mjs");
+  const F53 = await import("./src/shared/param_pages/font5x3.mjs");
+  if (!fontSet) fail("the font set is required to check text fit across faces");
+  if (fontSet.options.length !== S.OPTIONS_PER_SET)
+    fail("expected " + S.OPTIONS_PER_SET + " font variants to measure against");
+
+  /* An enum square does not print its value -- it prints the two short lines
+   * enumSquareLines splits it into, so the string that has to fit is a LINE.
+   * A label band prints the whole run, and it prints two different ones: the
+   * name at rest and the value while held. */
+  const probeStrings = (set) => {
+    if (Array.isArray(set.fontProbe)) return set.fontProbe;
+    return F53.enumSquareLines(set.fontProbe).filter((s) => s && s.length);
+  };
+
+  for (const id of ["enum_square", "label_cell"]) {
+    const tset = S.setById(id) || fail("missing text-bearing set " + id);
+    if (!tset.fontProbe) fail(id + ": no fontProbe declared, so nothing can be measured");
+    const strings = probeStrings(tset);
+    if (!strings.length) fail(id + ": fontProbe produced no strings");
+    for (const o of tset.options) {
+      if (!Number.isFinite(o.textW))
+        fail(id + "/" + o.id + ": no textW budget declared");
+      if (o.textW <= 0) fail(id + "/" + o.id + ": textW budget is not positive");
+      const measured = [];
+      for (const fo of fontSet.options) {
+        let w = 0;
+        for (const s of strings) w = Math.max(w, BL.fontWidth(fo.glyphs, s));
+        if (w > o.textW) measured.push(fo.id);
+      }
+      const declared = Array.isArray(o.overflowFonts) ? o.overflowFonts.slice() : [];
+      if (measured.slice().sort().join(",") !== declared.sort().join(","))
+        fail(id + "/" + o.id + " (budget " + o.textW + "px) overflows [" +
+             measured.join(",") + "] but declares [" + declared.join(",") + "]");
+    }
+  }
+  console.log("PASS: text-bearing options measured against all 10 font variants");
+
+  /* ---- a label option must not touch the row above its band ----
+   *
+   * There is no gutter: BOX_H ends and LBL_H begins, and the grid does not
+   * repaint a widget when only its label changes. One row of overflow lands on
+   * the bottom of a knob and STAYS there, which is a defect visible on
+   * hardware and nowhere else -- not in a swatch, not in code review.
+   *
+   * The sentinel is a pattern rather than a solid row, and it is compared
+   * pixel for pixel, because the two ways to damage it are opposite: a strip
+   * SETS pixels there and a notch or a cleared plate CLEARS them. A row that
+   * was all lit would only catch the second, and a row that was all dark would
+   * only catch the first. Both states of the cell are driven, since the
+   * touched treatment is where every option grows. */
+  {
+    const lset = S.setById("label_cell");
+    const geom = { x0: 0, cellW: RM.CELL_W };
+    const SURF_H = RM.LBL_H + 2;
+    for (const o of lset.options) {
+      for (const inv of [false, true]) {
+        const lfb = H.createFramebuffer(RM.CELL_W, SURF_H);
+        const lctx = H.drawContext(lfb);
+        for (let x = 0; x < RM.CELL_W; x++) {
+          if ((x % 3) !== 0) continue;
+          lctx.fillRect(x, 0, 1, 1, 1);
+          lctx.fillRect(x, SURF_H - 1, 1, 1, 1);
+        }
+        const above = [], below = [];
+        for (let x = 0; x < RM.CELL_W; x++) {
+          above.push(lfb.pixels[x]);
+          below.push(lfb.pixels[(SURF_H - 1) * RM.CELL_W + x]);
+        }
+        o.draw(lctx, geom, 0, 1, "CUTOF", "-24.0", inv, inv, true);
+        for (let x = 0; x < RM.CELL_W; x++) {
+          if (lfb.pixels[x] !== above[x])
+            fail("label_cell/" + o.id + (inv ? " touched" : " resting") +
+                 " changed the widget row above its band at x=" + x);
+          if (lfb.pixels[(SURF_H - 1) * RM.CELL_W + x] !== below[x])
+            fail("label_cell/" + o.id + (inv ? " touched" : " resting") +
+                 " changed the row below its band at x=" + x);
+        }
+        if (lfb.clipped() !== 0)
+          fail("label_cell/" + o.id + " drew outside the surface entirely");
+      }
+    }
+    console.log("PASS: no label option encroaches on the widget row above it");
+  }
 }).catch((e) => { console.log("FAIL: " + (e && e.stack || e)); process.exit(1); });
 '
