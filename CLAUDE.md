@@ -1009,11 +1009,30 @@ nothing to correct and nothing goes on the wire.
 
 Two behaviours worth knowing:
 
-- **Persistence is gated for ~7 s after boot.** Move asserts its Mic default at
-  ~0.6 s, and the shim observes its *own* replay too (emit runs earlier in the
-  same `pre_transfer` than scan). Persisting either would clobber the stored
-  preference on every reboot. Trade-off: a change made in the first ~7 s of boot
-  is not persisted.
+- **Persistence is gated CAUSALLY, not on a deadline** (`src/host/usbc_out_gate.c`).
+  Move asserts its Mic default at ~0.6 s, and the shim observes its *own* replay
+  too (emit runs earlier in the same `pre_transfer` than scan) — neither carries
+  user intent and persisting either clobbers the stored preference.
+
+  This was a ~7 s deadline, and **that deadline was a bug**. The worker's clock
+  starts when MoveOriginal opens the SPI device; Move's assert floats with boot
+  load. A slow boot put the assert on the trusting side of the line, so Mic was
+  written over a stored Main Out — reverting in session *and* forgetting across
+  the reboot, one mechanism producing both halves of the symptom, intermittent
+  by construction. Confirmed on hardware: one boot logging `USB-C out: boot
+  re-assert Main Out` and the state file later reading `0` with no user action.
+
+  The discriminator is not time. **We only ever re-assert Main Out, so during
+  the boot window an observed Mic can only have come from Move.** The gate
+  stays closed until Move has had its say *and* we have re-asserted over it —
+  pre-replay observations are recorded but never persisted; while defending, an
+  observed Mic is countered (bounded by `USBC_GATE_MAX_REPLAYS`) rather than
+  believed; an observed Main Out only settles the gate once Move has actually
+  asserted Mic this boot, so our own echo cannot settle it early on a slow boot.
+  A ~60 s `usbc_gate_force_settle` backstop covers a boot where Move never
+  speaks (opening the gate persists nothing by itself). Trade-off, unchanged in
+  kind but now bounded by events: a change made before the ~5 s re-assert is not
+  persisted. Unit tests: `tests/host/test_usbc_out_gate.sh`.
 - **Move's own Settings screen keeps reading "Mic"** even when the hardware is on
   Main Out — Move doesn't adopt the replayed value into its UI state. The audio
   is correct; the screen is not. Selecting "Main Out" there is harmless;
@@ -1032,7 +1051,10 @@ before the ~5 s replay and the restore needs no runtime propagation.
 Impl: `src/host/shadow_xmos_audio.c` (pure codec — no I/O, allocation or locks,
 so it is both SPI-callback-safe and host-testable; unit tests in
 `tests/host/test_xmos_audio.sh`), observed and emitted in `schwung_shim.c`'s
-pre-transfer callback, persisted and armed in `src/host/shim_worker.c`.
+pre-transfer callback, persisted and armed in `src/host/shim_worker.c`. The
+boot arbitration is split out as `src/host/usbc_out_gate.c` — also pure state,
+with no clock of its own, which is what makes the boot orderings testable
+without a device.
 
 `xmos_audio_emit` is also the only sanctioned way to put SysEx into MIDI_OUT: it
 requires a **contiguous** run of free slots, refuses while any cable-0 SysEx is
