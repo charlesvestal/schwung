@@ -119,7 +119,28 @@ function pair(ctx, x, ty, h, o) {
     const keyC = o.keyText === undefined ? 0 : o.keyText;
     const actC = o.actionText === undefined ? 1 : o.actionText;
 
-    ctx.fillRect(x, ty - padTop, kw + HINT_PAD * 2, FONT4_HEIGHT + padTop + padBot, pillC);
+    const pillY = ty - padTop, pillW = kw + HINT_PAD * 2, pillH = FONT4_HEIGHT + padTop + padBot;
+    ctx.fillRect(x, pillY, pillW, pillH, pillC);
+
+    /*
+     * TOP corners notched, bottom left square.
+     *
+     * The 1px notch is the convergent idiom this catalog keeps (see the spec):
+     * at one pixel and two colours there is no second way to soften a corner.
+     * But only the top two are knocked out here, because the pill sits on the
+     * last rows of the screen — its bottom corners are against the physical
+     * edge of the display, where there is no ground for a notch to read
+     * against. Notching all four would spend two pixels producing nothing.
+     *
+     * Skipped when the pill is drawn in the ground colour (the inverted-band
+     * option, where `pill` is 0): knocking a corner out of a hole fills it in,
+     * which is the opposite of the intent.
+     */
+    if (pillC && pillH >= 3 && pillW >= 3) {
+        ctx.fillRect(x, pillY, 1, 1, 0);
+        ctx.fillRect(x + pillW - 1, pillY, 1, 1, 0);
+    }
+
     fontPrint4x5(ctx, x + HINT_PAD, ty, key, keyC);
 
     const ax = x + kw + HINT_PAD + HINT_GAP;
