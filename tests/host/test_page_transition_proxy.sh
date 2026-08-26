@@ -253,9 +253,25 @@ for (const [name, adv] of [["linear", advanceLinear], ["eased", advanceEased],
     ok(got - ms <= TICK,
        name + ": ms=" + ms + " settles at " + Math.round(got) +
        "ms, never LATER than the duration it names");
-    ok(ms - got <= ms * 0.2,
-       name + ": ms=" + ms + " settles at " + Math.round(got) +
-       "ms, and not more than 20% early -- only the sub-pixel tail may be cut");
+    /*
+     * How early is acceptable depends on the CURVE, and one bound for both
+     * would hide the difference that matters when choosing between them.
+     *
+     * LINEAR travels at a constant rate, so its sub-pixel tail is one frame at
+     * most and `ms` really is the settle time -- measured within 6% at every
+     * duration. That is asserted tightly, because a linear slide finishing
+     * early would mean something else is wrong.
+     *
+     * EASED decays, so the stretch that cannot move a pixel grows with the
+     * duration: measured 9% early at 200ms, 22% at 280, 27% at 400. That is
+     * the animation genuinely being over, not the constant lying -- but it
+     * does mean `ms` is a nominal duration for eased and a real one for
+     * linear, which is worth knowing before picking one.
+     */
+    const earlyBudget = (adv === advanceLinear) ? 0.10 : 0.30;
+    ok(ms - got <= ms * earlyBudget,
+       name + ": ms=" + ms + " settles at " + Math.round(got) + "ms, within " +
+       Math.round(earlyBudget * 100) + "% -- only the sub-pixel tail may be cut");
   }
 }
 /* The consequence worth stating in its own right: the two curves are now
@@ -438,6 +454,27 @@ for (const [label, adv] of [["linear", advanceLinear], ["eased", advanceEased], 
   ok(worst >= 6,
      label + ": the slide survives a dt=0 first frame at EVERY clock phase -- " +
      "worst case " + worst + " frames, not 1");
+}
+
+
+/* A SHORT TICK IS NOT THE END OF THE SLIDE.
+ *
+ * The termination above asks whether a whole FRAME at this rate could move a
+ * pixel. Judging the raw step instead breaks linear, whose step is dt/ms: a
+ * 1ms tick moves 0.006 of a page, which is sub-pixel because barely any time
+ * passed -- not because the motion is over. Measured, that ended a 160ms
+ * linear slide on its first frame.
+ *
+ * The composite test caught this and this file did not, so it is pinned here
+ * too: the two failures were in a page-render assertion whose connection to
+ * the advance is several layers away, which is a slow way to find out. */
+for (const [label, adv] of [["linear", advanceLinear], ["eased", advanceEased], ["shipping", advanceScroll]]) {
+  for (const firstDt of [1, 2, 3]) {
+    let pos = adv(0, 1, firstDt, 160);
+    ok(pos !== 1,
+       label + ": a " + firstDt + "ms first tick does not end the slide (a short tick " +
+       "means little time passed, not that the motion is over)");
+  }
 }
 
 process.exit(fail ? 1 : 0);
