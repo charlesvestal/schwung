@@ -48,37 +48,6 @@ import { observe, easeOut, lerp } from "./anim_state.mjs";
  * renderer stateful and every first frame animate.
  */
 
-/*
- * THE 8-RAY BURST, COPIED FROM `buttonRays` IN render_page_movy.mjs.
- *
- * It is a copy and not an import because this file cannot import from that one
- * (that would be a cycle: render_page_movy imports drawVizGroup from here).
- * The constants are lifted verbatim — BTN_RAYS 8, BTN_RAY_GAP 2, BTN_RAY_LEN 2,
- * BTN_RAY_TRAVEL 4, BTN_FLASH_MS 300 — so a switch burst is the same figure at
- * the same speed as a button burst. FOLLOW-UP: unify these into one module that
- * both files import; if they drift, a switch flip stops looking like a button
- * press for no reason anyone can name.
- *
- * `gap`, `len` and `travel` are parameters only so a caller with less room can
- * shrink the figure to fit its cell (see drawSwitch), never so it can restyle
- * it.
- */
-const RAY_COUNT = 8;
-const RAY_GAP = 2;
-const RAY_LEN = 2;
-const RAY_TRAVEL = 4;
-const RAY_FLASH_MS = 300;
-
-function rayBurst(ctx, cx, cy, rx, ry, progress, gap = RAY_GAP, len = RAY_LEN, travel = RAY_TRAVEL) {
-    const out = gap + Math.round(progress * travel);
-    for (let i = 0; i < RAY_COUNT; i++) {
-        const a = (Math.PI * 2 * i) / RAY_COUNT;
-        const ux = Math.cos(a), uy = Math.sin(a);
-        const x0 = cx + ux * (rx + out), y0 = cy + uy * (ry + out);
-        const x1 = cx + ux * (rx + out + len), y1 = cy + uy * (ry + out + len);
-        line(ctx, Math.round(x0), Math.round(y0), Math.round(x1), Math.round(y1), 1);
-    }
-}
 
 /* -------------------------------------------------------------- primitives */
 
@@ -1217,8 +1186,18 @@ export function drawSwitch(ctx, rect, key, values, metaIndex, anim, nowMs) {
      * thing to look at. Practically it also reads better: the inversion is the
      * event, and the travel is the follow-through.
      */
-    let sx = on ? seatOn : seatOff;
-    let burstAt = -1;
+    /*
+     * ONE progress value drives both the slug and the fill, and it is what
+     * makes the settled states come out exactly right.
+     *
+     * p = 0 is fully OFF, p = 1 is fully ON. The slug sits at lerp(seat), and
+     * the fill reaches lerp(left wall, right wall) — so at p = 1 the fill hits
+     * the wall rather than stopping at the slug's trailing edge, which is what
+     * a literal "fill up to the slug" rule does and which left the last two
+     * columns of a settled ON switch drawn as outline. The pinned baseline
+     * caught that immediately: a static state is not allowed to change.
+     */
+    let p = on ? 1 : 0;
     if (anim && typeof nowMs === "number") {
         const tr = observe(anim, "switch:" + key, on ? 1 : 0, nowMs, SWITCH_TRAVEL_MS);
         const from = Number(tr.from);
@@ -1227,73 +1206,82 @@ export function drawSwitch(ctx, rect, key, values, metaIndex, anim, nowMs) {
              * re-bases a numeric mid-flight so a switch flipped back before it
              * arrived carries on from where it visually is instead of jumping
              * to the far seat and starting again. */
-            const p = lerp(from, on ? 1 : 0, easeOut(tr.t));
-            sx = Math.round(lerp(seatOff, seatOn, p));
+            p = lerp(from, on ? 1 : 0, easeOut(tr.t));
         }
-        /*
-         * A SECOND KEY, because the burst outlives the travel: 300ms against
-         * 120ms, the same split drawButton makes between BTN_PRESS_MS and
-         * BTN_FLASH_MS, and one key can only carry one duration. A caller that
-         * gates its redraw on anim_state's `settled()` must therefore ask with
-         * the LONGER duration or it will stop drawing part-way through the
-         * burst.
-         */
-        const fl = observe(anim, "switchflash:" + key, on ? 1 : 0, nowMs, RAY_FLASH_MS);
-        if (fl.moving && fl.from !== null) burstAt = fl.t;
     }
-
-    if (on) {
-        ctx.fillRect(x, y, w, h, 1);
-        notchCorners(ctx, x, y, w, h);
-        ctx.fillRect(sx, sy, SLUG_W, SLUG_H, 0);
-        /* The knockout gets the notch too, IN REVERSE — four SET pixels at its
-         * corners. `notchCorners` clears, and clearing a corner of a hole fills
-         * it in. Without this the hole is the only square-cornered shape on a
-         * page where every filled box is softened. */
-        ctx.fillRect(sx, sy, 1, 1, 1);
-        ctx.fillRect(sx + SLUG_W - 1, sy, 1, 1, 1);
-        ctx.fillRect(sx, sy + SLUG_H - 1, 1, 1, 1);
-        ctx.fillRect(sx + SLUG_W - 1, sy + SLUG_H - 1, 1, 1, 1);
-    } else {
-        ctx.fillRect(x, y, w, 1, 1);
-        ctx.fillRect(x, y + h - 1, w, 1, 1);
-        ctx.fillRect(x, y, 1, h, 1);
-        ctx.fillRect(x + w - 1, y, 1, h, 1);
-        notchCorners(ctx, x, y, w, h);
-        ctx.fillRect(sx, sy, SLUG_W, SLUG_H, 1);
-        notchCorners(ctx, sx, sy, SLUG_W, SLUG_H);
-    }
+    const sx = Math.round(lerp(seatOff, seatOn, p));
+    /*
+     * ONE key and ONE duration now. The burst needed a second (300ms against
+     * the travel's 120ms) because a flash outlives the movement that triggers
+     * it, and one key carries one duration — which also meant a caller gating
+     * redraws on `settled()` had to know to ask with the longer of the two. The
+     * sweep IS the travel, so that whole hazard goes with it.
+     */
 
     /*
-     * The burst, LAST so it is never overwritten by the pill, and radiating
-     * from the seat the slug is heading TO — the destination is what the flip
-     * means, and a burst at the origin would point away from the new state.
+     * THE FILL IS WHATEVER THE SLUG HAS SWEPT.
      *
-     * BOUNDED BY THE CELL, NOT BY THE WIDGET, and the bound really binds. The
-     * button gets gap 2 and 4px of travel because it sits alone in its cell;
-     * the slug centre is only ~6 rows from the top of a 15-row rect, so the
-     * same figure would put its outermost stub several pixels into the row
-     * above. `budget` is the smallest distance from the burst centre to any
-     * edge of the rect and the travel is whatever is left after the slug's own
-     * radius, the gap and the stub length — about ONE pixel in the grid's
-     * 32x15 cell. The burst therefore reads as a flash that nudges outward
-     * rather than as the button's radiation, which is the honest consequence of
-     * putting it on a 16x9 widget. It is computed, not hardcoded, so a roomier
-     * cell gets a bigger burst for free.
+     * One rule, and it runs both ways: the track is inverted from its left edge
+     * to the slug's trailing edge, and everything to the right of that is the
+     * outlined state. Turning ON, the slug travels left to right and the fill
+     * grows in behind it; turning OFF it travels back and the fill drains away
+     * with it. At rest the rule degenerates to the two static states — slug at
+     * the right means fully filled, slug at the left means fully outlined — so
+     * nothing special-cases the settled case.
+     *
+     * This replaces a burst. The burst was a decoration bolted onto the flip
+     * and it had two faults the frames made obvious: on an ON flip the track is
+     * filled, so the rays inside the pill were white on white and the figure
+     * came out lopsided; and bounding it to a 32x15 cell left about one pixel
+     * of travel, so it read as a twitch rather than a radiation. A wipe has
+     * neither problem because it is not drawn ON the widget, it IS the widget —
+     * and it says what the state change actually is, which a flash never did.
      */
-    if (burstAt >= 0) {
-        /* The DESTINATION seat, not `sx`. Anchoring on the travelling slug
-         * drags the whole figure across the widget and reads as a comet; the
-         * burst is supposed to mark where the value landed, so it stands still
-         * at the new seat while the slug arrives under it. */
-        const bcx = (on ? seatOn : seatOff) + ((SLUG_W - 1) >> 1), bcy = sy + ((SLUG_H - 1) >> 1);
-        const r = (SLUG_W - 1) / 2;
-        const budget = Math.min(bcx - rect.x, rect.x + rect.w - 1 - bcx,
-                                bcy - rect.y, rect.y + rect.h - 1 - bcy);
-        const gap = 1;
-        const travel = Math.max(0, Math.min(RAY_TRAVEL, budget - r - gap - RAY_LEN));
-        if (budget >= r + gap + RAY_LEN) rayBurst(ctx, bcx, bcy, r, r, burstAt, gap, RAY_LEN, travel);
+    /* Wall to wall, not seat to seat: at p=1 this is x+w so the whole track is
+     * filled, and at p=0 it is x so none of it is. It tracks the slug closely
+     * enough to read as the fill following it, without inheriting the slug's
+     * inset at the endpoints. */
+    const sweepX = Math.round(lerp(x, x + w, p));
+
+    /* Left of the sweep: the ON rendering. Right of it: the OFF rendering.
+     * Both are drawn whole and then masked by column, so neither has to know
+     * about the other and a partially-swept track is always two coherent
+     * halves rather than an invented third state. */
+    const inSweep = (px) => px < sweepX;
+
+    /* ON half — solid ground. */
+    for (let px = x; px < x + w; px++) {
+        if (inSweep(px)) ctx.fillRect(px, y, 1, h, 1);
     }
+    /* OFF half — top and bottom rails plus the right wall. */
+    for (let px = x; px < x + w; px++) {
+        if (inSweep(px)) continue;
+        ctx.fillRect(px, y, 1, 1, 1);
+        ctx.fillRect(px, y + h - 1, 1, 1, 1);
+    }
+    if (!inSweep(x)) ctx.fillRect(x, y, 1, h, 1);            /* left wall */
+    if (!inSweep(x + w - 1)) ctx.fillRect(x + w - 1, y, 1, h, 1);
+    notchCorners(ctx, x, y, w, h);
+
+    /*
+     * The slug takes the colour of the ground it is standing on, per column.
+     * Inside the sweep the ground is solid so the slug is a knockout; outside
+     * it the ground is empty so the slug is ink. A slug that straddles the
+     * boundary is therefore half hole and half block, which is exactly what it
+     * should look like at the moment the fill is passing it.
+     */
+    for (let px = sx; px < sx + SLUG_W; px++) {
+        ctx.fillRect(px, sy, 1, SLUG_H, inSweep(px) ? 0 : 1);
+    }
+    /* The slug's own corners, in whichever direction softens them against the
+     * ground each corner sits on. `notchCorners` clears, which rounds a solid
+     * slug; a knockout needs the reverse, four SET pixels, or the hole is the
+     * only square-cornered shape on a page where every filled box is softened. */
+    for (const [px, py] of [[sx, sy], [sx + SLUG_W - 1, sy],
+                            [sx, sy + SLUG_H - 1], [sx + SLUG_W - 1, sy + SLUG_H - 1]]) {
+        ctx.fillRect(px, py, 1, 1, inSweep(px) ? 1 : 0);
+    }
+
 }
 
 /* ----------------------------------------------------------------- sample */
