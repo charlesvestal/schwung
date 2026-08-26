@@ -1955,10 +1955,15 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
         /* The widget band's height is the gap between the row and its label,
          * not a constant -- LBL0_Y - ROW0_Y is only correct for the grid's
          * own two rows because both of the grid's gaps happen to be 15px. */
+        /* `anim` then `nowMs`, matching viz_draw's published signature. Both
+         * are optional there: with no store the switch and the waveform draw
+         * exactly as they always have, which is what keeps every caller that
+         * does not animate — the catalog, the composite, the pinned baselines —
+         * pixel-identical. */
         drawVizGroup(ctx, {
             x: cellLeft(g, localStart), y: rowY,
             w: group.slotSpan * g.cellW, h: lblY - rowY,
-        }, group, liveValues, metaIndex);
+        }, group, liveValues, metaIndex, o.anim, o.nowMs);
     }
 
     for (let col = 0; col < 4; col++) {
