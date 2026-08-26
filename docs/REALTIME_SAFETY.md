@@ -43,9 +43,24 @@ SPI runs at FIFO 90 on core 3. Other threads landing there cause cache/memory co
 ### 4. Module entry points ARE the SPI callback
 
 This rule is about third-party modules, and it is the one the ecosystem gets
-wrong. `create_instance`, `destroy_instance`, `set_param`, `get_param`,
-`on_midi`/`process_midi` and `render_block`/`process_block`/`tick` all run on
-the SPI callback. There is no control thread.
+wrong. `set_param`, `get_param`, `on_midi`/`process_midi` and
+`render_block`/`process_block`/`tick` all run on the SPI callback. There is no
+control thread.
+
+**`create_instance` / `destroy_instance` are the exception, as of 2026-08, and
+only for a chain slot's SOUND GENERATOR** — those are built on a normal-priority
+loader thread (`src/modules/chain/dsp/chain_loader.c`) and published by the
+audio thread. Audio FX, MIDI FX and Master FX still create inline. A module
+must therefore assume **either** thread: it may block in create, it may not
+touch anything a render can reach, and it may be destroyed without ever having
+rendered. The full rule is in `plugin_api_v1.h` — including which host
+callbacks are safe from a loader thread (`log` and the scalar queries) and
+which are create-forbidden (the MIDI and modulation callbacks).
+
+That change also disarms the inheritance trap below for anything a sound
+generator spawns at create. It does **not** disarm it for `set_param` or
+`render_block`, and it does not help a module that sets its own priority
+rather than inheriting one — minijv asks for FIFO 45 explicitly.
 
 A 2026-08 audit of all 113 catalogued modules found ~150 confirmed violations.
 The instructive part is not the count, it is that several modules **document the
@@ -216,6 +231,35 @@ the number was 673 ms.
 detach-then-defer free for overtake modules, including a deliberate
 leak-on-timeout because "a leak is recoverable; a use-after-free in the audio
 path is not". The chain path never adopted it. See residual 2.6.
+
+### FIXED for the synth position (2026-08-27)
+
+`src/modules/chain/dsp/chain_loader.c`. A `synth:module` write now *asks*; a
+SCHED_OTHER loader thread builds the instance into a staging record no render
+path can reach; `v2_render_block` publishes it by swapping pointers. The
+outgoing module keeps rendering for the whole load, so a swap costs no silence.
+
+Two properties are load-bearing and worth not undoing:
+
+- **Neither side takes a lock.** An RT thread blocking on a mutex held by a
+  SCHED_OTHER thread is unbounded priority inversion — the defect the
+  2026-08-22 audit flagged in minijv's `ring_mutex`. The SPI-side entry points
+  are atomic stores and nothing else: no mutex, no condvar, no semaphore, no
+  syscall. The loader is woken by polling, which costs a wakeup every 20 ms
+  against a load measured in hundreds.
+- **No field has two writers.** A first version kept one `state` word both
+  threads wrote; it lost requests and leaked handles depending on which store
+  landed first. Work is derived from generation counters, each advanced by one
+  side only. `tests/host/test_chain_deferred_load.sh` pins both, and pins that
+  a `synth:module` write actually reaches the loader.
+
+This also gives `synth:is_loading` its first real implementation — the shadow
+UI has consumed that key for months against a host that never served it.
+
+**Still on the synchronous path:** audio FX, MIDI FX (both chain positions) and
+Master FX slots. `load_patch` and boot restore also still load inline, which is
+deliberate — they are not interactive, and the patch path is already
+fade-masked to silence.
 
 **What makes the port non-trivial** (all verified, not assumed):
 - The module triple (`handle` / `plugin_v2` / `instance`) is a check-then-call
