@@ -65,14 +65,43 @@ lawyer has something concrete to look at, not as a conclusion about liability.
 concrete half ships unchanged. This is why font is in the catalog (§2) despite
 not being in the issue's bullet list.
 
-### 1.3 Stylistic resemblance — the issue's list
+### 1.3 Convergent idioms — resemblance that is not evidence
+
+Some elements look Elektron-ish because **the constraint admits one sensible
+answer**, and everyone working at 128x64 and 1 bit arrives at it independently.
+
+The clearest case is the **1px corner notch**. Elektron uses it. vimana uses it
+and calls it out as its signature move — *"on a 1-bit display this single
+missing pixel transforms a harsh box into something that feels designed."* It
+recurs across 1-bit UIs generally. That is not imitation; it is what happens
+when you have one pixel and two colours and a filled box reads as harsh. There
+is no second way to round a corner at this resolution.
+
+Others in the same category: a dotted rule as a light separator (a solid rule
+at 1 bit is too loud, and 50% is the only lighter option that stays even), an
+inverted bar as the selection state (there is no third colour), a downward
+triangle as a pointer.
+
+**These are kept, deliberately.** Removing a functional idiom because a
+competitor also arrived at it makes the product worse and improves nothing:
+convergent solutions are weak grounds for a claim precisely because the
+constraint, not the designer, produced them. It is a different kind of thing
+from nine glyph bitmaps read off a screenshot.
+
+Practical consequence for the catalog: corner notches appear **across** options
+in several sets rather than being isolated as one "notched" option to accept or
+reject. The choice being offered is what the notch is applied to, not whether
+the product is allowed to have rounded corners.
+
+### 1.4 Stylistic resemblance — the issue's list
 
 Arc knob, fader, bottom fills, label strips, animations. Independently authored
 code that evokes a house look. Real, and the bulk of the catalog.
 
-### 1.4 Documented residual
+### 1.5 Documented residual
 
-The catalog is **widget-internal only** (§3.2): options change what is drawn
+The catalog is **widget-internal only** (§3.2, and see §1.3 for what is
+deliberately kept): options change what is drawn
 inside a cell, never where cells are. Therefore **the recovered band geometry
 survives this issue unchanged** — `ROW0_Y=10`, `LBL0_Y=25`, `ROW1_Y=33`,
 `LBL1_Y=48`, `HEADER_H=7`, `BOX_H=15`, `LBL_H=7`, `RULE_Y=55`, `FOOTER_Y=56`,
@@ -238,7 +267,8 @@ is asserted in the test below rather than left to authorial discipline.
 
 ### 3.5 Test surface
 
-Production draw code is untouched, so **nothing pinned moves**:
+Production draw code changes only by the seven added `export` keywords (§3.6),
+so **nothing pinned moves**:
 `movy-geom-baseline.txt`, `test_enum_picker_chrome.sh`,
 `test_chain_edit_read_budget.sh`, `test_knob_card.sh`,
 `test_master_fx_diagram_fit.sh` all stay green unmodified.
@@ -258,14 +288,36 @@ Note for whoever writes it: the node script inside a `tests/host/*.sh` is a
 single-quoted bash string, so **no apostrophes** in any comment or message
 inside it.
 
-### 3.6 Known caveat: `drawArc`
+### 3.6 Fidelity, and the one production change
 
-`drawArc` is a native primitive with a JS fallback, and the two are not
-guaranteed pixel-identical. The catalog renders under the JS path, so an
-arc-based option could differ slightly on device. Each option records whether
-it depends on `drawArc`; any arc-based pick needs a device check before it
-ships. Options built only from `fillRect`/`line` do not carry this risk, which
-is a mild argument in their favour.
+**`drawArc` is not a risk.** An earlier draft of this spec claimed the harness
+renders arcs through a JS fallback that could diverge from the device. That is
+wrong. `drawContext` in `harness.mjs` implements `drawArc` as a deliberate
+replication of `js_display_draw_arc` — the same union of one pixel per row and
+one per column at a distance-rounded radius, carrying the same comment about
+why neither a fillCircle difference nor a midpoint walk is correct. The harness
+header states the intent plainly: *"Previews are therefore pixel-identical to
+the OLED, not an approximation — which is the whole point: layout decisions
+made here hold on hardware."* Arc-based options need no special device check
+beyond what any option needs.
+
+**One additive production change is required.** The widget draw functions are
+module-private:
+
+| Exported | Not exported |
+|---|---|
+| `drawKnobRow`, `drawFooter`, `renderPageMovy`, `drawHeader`, `drawBankBar`, `drawBrackets` | `drawArcKnob`, `drawEnumSquare`, `drawLabelCell`, `drawOpaqueBox`, `drawKnobWidget`, `drawModDot`, `centeredText` |
+
+The catalog needs them for two things: rendering the **current** widget as the
+baseline every option is compared against, and substituting an option into a
+real page. The alternative — rendering a full page then clearing and
+overdrawing the widget rects — is fragile and would silently drift from what
+the page actually draws.
+
+So the plan adds the `export` keyword to those seven functions and nothing
+else. No behaviour change, no signature change, no call-site change; every
+pinned test is blind to it. This is a deliberate, bounded exception to
+"production untouched", recorded here rather than slipped in.
 
 ### 3.7 Output policy
 
