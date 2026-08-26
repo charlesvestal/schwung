@@ -903,6 +903,116 @@ passes vacuously: forgetting `setLayout(LAYOUT_MOVY)` (the default is
 `LAYOUT_DIAL`, which has no animated widget at all), and asserting a particular
 picture instead of a difference between two frames.
 
+### Pages SLIDE, and the slide needs no clip rectangle
+
+A page change — jog, Shift+jog, or a section-picker jump — slides horizontally
+over **90ms**, which at the grid's ~55Hz tick is **five real frames**. The body
+travels one screen width; the page NAME travels its own header column; the
+**module title, the bank bar and the footer stay put**.
+
+Two of those three are deliberate and were decided from filmed frames, not from
+a description. The **title is identical on every page of a module**, so sliding
+an identical copy out and back in is motion carrying no information — it just
+makes the header wobble. The **bank bar is the page INDICATOR** and cannot be
+unreadable for the duration of the page change it is reporting; it also reports
+`s.pageIndex`, where input already is, not the scroll position, so it never lags
+the gesture. The name gets a **shorter travel than the body** because it is
+right-aligned: a full-width travel takes it off the left edge early and brings
+the next one in late, leaving two of the five frames with no page name at all.
+
+`src/shared/param_pages/page_transition.mjs` is the whole mechanism and it is
+pure. Both renderers draw through the injected `ctx`, and `js_display_set_pixel`
+already discards anything off-screen, so rendering the outgoing page at
+`dx = -N` and the incoming at `dx = 128 - N` puts them at `[-N, 128-N)` and
+`[128-N, 256-N)`: **they abut exactly** and the screen bounds do the clipping.
+No clip rect, no C change, no offscreen buffer, no JS blit. Measured cost: a
+composite frame is **1.96×** a settled one — the extra *is* the second page
+render and essentially nothing else.
+
+**Overdraw is NOT a clip, and the design doc claimed it was.** The header's
+outgoing name is clipped on its left by an explicit `fillRect(…, 0)`, because
+`drawHeader`'s un-inverted branch paints **no background** — it prints glyphs
+only, so painting the title on top would clip only where the title has ink and
+the name would show through the gaps between letters. Off-screen clipping is
+real (`set_pixel` discards); painting something over something else is a
+different mechanism wearing the same name.
+
+**An unknown draw method is OMITTED from the translating proxy, never passed
+through.** Both renderers guard `line`/`drawArc` with a `typeof` check and fall
+back to a JS Bresenham drawn through `fillRect`, which IS translated — so a
+forgotten method degrades to correct-but-slower, while an untranslated
+passthrough draws in the wrong place. Neither raises, which is why
+`tests/host/test_page_transition_proxy.sh` asserts translation **per method**.
+
+**The slide is a POSITION (`s.scrollPos`) eased toward `s.pageIndex`, never a
+from/to pair.** A pair cannot chase: retargeting mid-slide starts its outgoing
+page at 0 while the page actually on screen is out at +80px, so the picture
+snaps up to a screen width BACKWARDS on the retarget frame. `s.pageIndex` is the
+logical page — input, knob LEDs, the screen reader — and `scrollPos` is only
+what is drawn.
+
+**The teleport gates on "the target is distant", not on "the position is
+lagging".** Those are different facts and conflating them into one threshold is
+a bug in both directions: gate on the *gap* and a fast spin snaps forward by up
+to 77px; raise the gap threshold to fix that and a **two-page jump travels two
+screen widths at double speed**. `aimScroll` takes the page being LEFT and gates
+on `|toIndex - fromIndex| > 1`, so a fast spin (one index per detent) can never
+teleport however far the position has fallen behind.
+
+**`ms` MEANS the settle time**, and it did not at first: `tau = ms/3` made it
+mean 95% of the travel, so a nominal 200ms settled at 364. The divisor is
+derived from `SNAP_PAGES` in code rather than written as a literal, because the
+two are the same fact and a change to the snap threshold must not silently
+change what every duration means. Both advances **snap exactly** onto the
+target — an eased chase is asymptotic, and a position a thousandth of a page
+from home would leave two page renders running every frame on a screen that has
+visibly stopped.
+
+`render()` draws by INDEX (`drawPage(ctx, index, { title, footer, chrome,
+header })`), because the slide must draw the page you are LEAVING and by then it
+is no longer `s.pageIndex`. **`chrome` and `header` suppress the DRAW, never the
+geometry** — `footer ? RULE_Y : 64` still reserves the band, so a sliding page
+is the settled picture merely translated. Only the per-SLOT state is suppressed
+for a non-current index (`touched`, `touchOrder`); `modulated`, `modValues` and
+`triggerFiredAt` are keyed by param KEY and already page-correct, and
+suppressing them would delete the trigger flash on the page sliding away.
+
+**The incoming page arrives populated because the neighbours are warmed while
+idle.** The `tick()` rotation spends a **conditional** stop on an uncached key
+of page ±1, held off for one full pass after a page change and entirely while
+anything is settling. Only uncached keys, only two pages, so it goes quiet and
+stays quiet — `tests/host/test_neighbour_prefetch.sh` asserts that as a read
+**count**, because "the values are there" passes just as well with a lane that
+reads every tick forever, at ~2.8ms a read against a 1.68ms whole-page render.
+Rejected: a blocking prefetch at jog time, ~22ms of dead time on a page's first
+visit. Stale values are accepted deliberately — the ordinary rotation corrects
+them within ~150ms of arrival, and a plausible stale number beats a blank.
+
+**Two probes stop working on a transition frame, and both looked fine.**
+`fb.clipped()` counts out-of-bounds writes, which a transition produces **by
+design** — that is how the pages get clipped at the edges — so transition scenes
+must not consult it. And a test that changes page and then asserts on pixels is
+measuring a **mid-slide composite** unless its clock advances: a run of
+synchronous `ctl.tick()` calls moves `Date.now()` by a couple of milliseconds,
+so the slide never settles. That produced a 2-in-6 intermittent failure that
+reads exactly like machine load. Two tests carry an injected ~18ms-per-tick
+clock for this (`test_param_pages_controller.sh`,
+`test_chain_editor_snapshot.sh`); the rest of the class was swept by raising
+`SLIDE_MS` so no slide can settle and checking which tests go red.
+
+Duration and easing were chosen from filmed GIFs, not from a preview:
+`node tools/param-pages/movie.mjs --scene slide` films at the device's real
+cadence with the clock quantized to its ~11-12ms quantum, because a smooth 30fps
+film shows a motion the panel cannot produce. Known and accepted: at 90ms
+**linear uses the time better than eased** — eased front-loads 52% of the travel
+into the first frame, so only one frame is a genuine both-pages picture against
+linear's three. Eased was chosen anyway, for feel.
+
+**`VIZ_CACHE_ENTRIES` is 4 and 3 is a hard floor.** Per tick the distinct page
+indices are `{pageIndex, base, base+1}`, and the prefetch lane adds one. One
+past the bound is a cyclic miss loop — a full `resolveViz` per lookup, measured
+at ~90× — and nothing fails, it just gets slow.
+
 ### Recording / capture
 
 Audio capture is shim-side: the Quantized Sampler (Shift+Sample) and Skipback
