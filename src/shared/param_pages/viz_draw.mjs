@@ -938,11 +938,15 @@ function drawWaveCell(ctx, x, y, w, h, shape, cycles, morphFrom = null, morphT =
         /* Draw only the rows this column NEWLY occupies. Spanning py..ny
          * inclusive re-draws py, which the previous column already covered, so
          * every step came out two columns wide and a shallow ramp read as a
-         * chunky zigzag instead of a line. Excluding py leaves a true 1px
-         * staircase, and a steep step still gets its full riser. */
+         * chunky zigzag instead of a line.
+         *
+         * An EDGE is the exception and keeps py — see EDGE_ROWS. The previous
+         * column covered py at px-1, not at px, so on a hard vertical the riser
+         * met the rail only diagonally and the corner was chamfered. */
+        const edge = Math.abs(ny - py) >= EDGE_ROWS;
         if (ny === py) vline(px, ny, ny);
-        else if (ny < py) vline(px, ny, py - 1);
-        else vline(px, py + 1, ny);
+        else if (ny < py) vline(px, ny, edge ? py : py - 1);
+        else vline(px, edge ? py : py + 1, ny);
         py = ny;
     }
 }
@@ -965,6 +969,29 @@ function drawWaveCell(ctx, x, y, w, h, shape, cycles, morphFrom = null, morphT =
  * that it lies.
  */
 const WAVE_MORPH_MS = 100;
+
+/*
+ * A STEP OF THIS MANY ROWS IS AN EDGE, AND AN EDGE KEEPS ITS CORNER.
+ *
+ * The stroke draws only the rows a column NEWLY occupies, which is what makes a
+ * shallow ramp a true 1px staircase instead of a two-column-wide zigzag. At a
+ * 1-row step the omitted pixel IS the staircase and must stay omitted.
+ *
+ * At a 12-row step it is a nick out of a hard vertical edge: the square's
+ * falling edge started one row BELOW the top it falls from, so the corner was
+ * chamfered and the top rail looked like it stopped a pixel early. Reported
+ * from the device as the square missing a pixel at its first turn — and it
+ * was, in the sense that matters, though nothing was missing from the top rail
+ * itself.
+ *
+ * TWO is the threshold and it is measured, not chosen for tidiness. At the
+ * shipped 24 drawn columns the steps are: square [12], triangle all 1s, saw all
+ * 1s, sine 1s with three 2s. So this rule adds exactly ONE pixel to the square
+ * and three to the sine, where it is invisible — rendered both ways to confirm
+ * that rather than assumed. Dropping to 1 would add 19 pixels to the sine and
+ * 23 to the triangle and bring the zigzag back on every shape.
+ */
+const EDGE_ROWS = 2;
 
 /*
  * THE TRIANGLE IS DRAWN AT A WIDTH ITS SLOPE DIVIDES, NOT AT THE CELL'S.
