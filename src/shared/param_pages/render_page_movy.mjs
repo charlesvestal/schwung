@@ -586,17 +586,32 @@ export const KW = 17;
  * The knob keeps KW: it is a circle with nothing to overflow, and 15px of
  * ring in a 16px box is already the right weight.
  */
-export const ENUM_W = 20;
-/**
- * The line the square can set: the frame column on each side, and nothing else.
+/*
+ * Wide enough for the WIDEST four characters, not for three.
  *
- * SCH-50 `thin-frame` closed up the extra 1px margin this used to hold inside
- * the frame (`ENUM_W - 4`, 16px). Three characters is the whole budget, and
- * measured on the `enumSquareLines` split, 16px cuts "PAS" to "PA" while 18px
- * keeps it. The cost is that a bowl now sits one pixel off the border and the
- * two touch at a glance.
+ * This was 20 (an 18px interior), inherited from a square drawn in a 3px-wide
+ * face where three characters and the interior were the same measurement. In
+ * the 4x5 proportional face they are not: four characters is 23px worst case —
+ * M, V and W all advance 5, so MMMM is the bound — and at 18px a four-letter
+ * value like POLY or MONO was folded onto two lines even when it fitted.
+ *
+ * 28 = 1px frame + 1px margin + 24px of text + 1px margin + 1px frame. The text
+ * budget clears the 23px worst case by a pixel, and 2px of cell is left either
+ * side of the square. The cell is 32 and nothing else competes for it.
+ *
+ * Still under the knob card's 29px cell, which is the other consumer of this
+ * width.
  */
-export const ENUM_TEXT_W = ENUM_W - 2;
+export const ENUM_W = 28;
+/**
+ * The line the square can set: the frame column and a MARGIN column each side.
+ *
+ * The margin is not decoration. Without it a bowl — O, C, G, D — sits one pixel
+ * off the border and the two touch at a glance, which is what `ENUM_W - 2`
+ * looked like on hardware. A 4x5 face carries no side bearing of its own, so
+ * the cell has to provide it.
+ */
+export const ENUM_TEXT_W = ENUM_W - 4;
 /*
  * Height of a text-bearing box, and it is ODD on purpose.
  *
@@ -1286,15 +1301,27 @@ export function drawEnumSquare(ctx, kx, ky, text) {
     ctx.fillRect(kx + w - 1, ky, 1, h, 1);
     notchCorners(ctx, kx, ky, w, h);
 
-    const [raw1, raw2] = enumSquareLines(text);
+    const [raw1, raw2] = enumSquareLines(text, (s) => fontWidth4x5(s) <= ENUM_TEXT_W);
     const line1 = fitLine(raw1, ENUM_TEXT_W);
     const line2 = fitLine(raw2, ENUM_TEXT_W);
     const totalH = line2.length > 0 ? 11 : 5;
     const startY = ky + 1 + Math.floor((h - 2 - totalH) / 2);
-    /* Centre within the TEXT area, which is now the interior itself — an odd
-     * remainder still cannot round back onto the frame, because centreX always
-     * gives the extra pixel to the right and the span starts inside it. */
-    const tx = (lw) => centreX(kx + 1, ENUM_TEXT_W, lw);
+    /*
+     * Centre within the INTERIOR, not within the text budget.
+     *
+     * These are two different spans now that the budget carries a margin:
+     * the interior is ENUM_W - 2 (26) and the budget is ENUM_W - 4 (24).
+     * Centring in the budget put its span at kx+1 and left the 2px difference
+     * entirely on the right, so every value sat two pixels left of centre —
+     * uniformly, which is what made it read as a drawing mistake rather than a
+     * rounding one.
+     *
+     * The margin does not need to be centred in; it falls out of centring in
+     * the interior as long as the text fits the budget, which fitLine above
+     * guarantees. An odd remainder still cannot round onto the frame, because
+     * centreX gives the extra pixel to the right and the span starts inside it.
+     */
+    const tx = (lw) => centreX(kx + 1, ENUM_W - 2, lw);
     fontPrint4x5(ctx, tx(fontWidth4x5(line1)), startY, line1, 1);
     if (line2.length > 0) fontPrint4x5(ctx, tx(fontWidth4x5(line2)), startY + 6, line2, 1);
 }

@@ -173,7 +173,7 @@ export function fontPrint5x3(ctx, x, y, str, color) {
  * (an octave, a voice count) stays whole on the first line rather than being
  * split, so "-3" is never mistaken for "3".
  */
-export function enumSquareLines(value) {
+export function enumSquareLines(value, fits) {
     const num = String(value == null ? "" : value).trim();
     if (/^[+-]?\d+$/.test(num)) return [num, ""];
     /*
@@ -186,6 +186,25 @@ export function enumSquareLines(value) {
         .replace(/_/g, " ")
         .replace(/(?<=[A-Z0-9])-(?=[A-Z0-9])/g, " ")
         .trim().split(/\s+/);
+
+    /*
+     * DOES IT NEED TO BREAK AT ALL? Asked once, before any rule below.
+     *
+     * Everything after this point decides WHERE a break lands. None of it
+     * decides WHETHER there is one, and running those rules unconditionally is
+     * how "POLY" became POL over Y and "I+II" became I+ over II — both of which
+     * fit the interior whole, and neither of which reads as itself once split.
+     *
+     * The whole normalised string is what gets measured and what gets drawn, so
+     * an underscore-separated value shows as "LOW PASS" on one line when there
+     * is room for it and stacks only when there is not.
+     *
+     * Without a `fits` predicate every rule below applies exactly as it did
+     * before, so a caller that does not measure is unaffected.
+     */
+    const flat = parts.join(" ");
+    if (typeof fits === "function" && fits(flat)) return [flat, ""];
+
     if (parts.length >= 2) {
         return [parts[0].substring(0, 3), parts[1].substring(0, 3)];
     }
@@ -219,5 +238,19 @@ export function enumSquareLines(value) {
             : [w.substring(0, 3), ("+" + right).substring(0, 3)];
     }
 
+    /*
+     * The last resort: a blind 3+3 slice, for a word that fits nothing and
+     * offers no break.
+     *
+     * The three is a PIXEL budget wearing a character count. Movy drew this
+     * square in its own 3px-wide face, where three characters and the interior
+     * were the same number, so slicing at 3 and measuring were one operation.
+     * This renderer uses the proportional 4x5 face and they came apart — which
+     * is why the `fits` check above exists and why it is checked first.
+     *
+     * `fits` is supplied by the caller because only the caller knows the face
+     * and the interior width; with no predicate the old count-based rule
+     * stands, so nothing that calls this without one changes.
+     */
     return [w.substring(0, 3), w.substring(3, 6)];
 }
