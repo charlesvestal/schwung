@@ -214,6 +214,33 @@ function cannotPace(pos, dtMs, ms) {
     return !(ms > 0) || !(dtMs >= 0) || !isFinite(pos) || !isFinite(dtMs);
 }
 
+/** A nominal frame at the UI tick rate: what "one frame of travel" means. */
+const NOMINAL_FRAME_MS = 1000 / 60;
+
+/**
+ * Would a WHOLE FRAME at this rate still fail to move the picture?
+ *
+ * The question has to be asked per-frame-of-travel, not per-tick, and getting
+ * that wrong broke both advances in different ways.
+ *
+ * Judging the raw step is wrong for LINEAR, whose step is `dt / ms`: a short
+ * tick gives a small step because little time passed, not because the motion
+ * is over. Measured at 160ms linear, a 1ms tick moves 0.006 of a page --
+ * sub-pixel -- and ended the slide on its first frame.
+ *
+ * Ignoring it entirely is wrong for EASED, whose step decays with the distance
+ * left: it keeps returning positions more than a pixel from home whose steps
+ * are already sub-pixel, so Math.round draws two frames identically (280ms
+ * drew ...3 2 2 1 0) and the page visibly holds then jumps.
+ *
+ * Extrapolating the step to a nominal frame answers both: for linear it is
+ * `NOMINAL / ms`, constant and independent of dt, so it never fires; for eased
+ * it shrinks with the remaining distance, so it fires exactly at the tail.
+ */
+function stalled(pos, next, dtMs) {
+    return Math.abs(next - pos) * (NOMINAL_FRAME_MS / dtMs) < SNAP_PAGES;
+}
+
 /**
  * Constant-velocity advance: one page per `ms`.
  *
@@ -253,7 +280,7 @@ export function advanceLinear(pos, target, dtMs, ms) {
      * the same quantum. Conflating the two ended the slide on the first frame
      * of most page changes: measured on hardware as dt=0ms with the position
      * jumping straight to the target, drawing zero composited frames. */
-    if (dtMs > 0 && Math.abs(next - pos) < SNAP_PAGES) return target;
+    if (dtMs > 0 && stalled(pos, next, dtMs)) return target;
     return next;
 }
 
@@ -322,7 +349,7 @@ export function advanceEased(pos, target, dtMs, ms) {
      * the same quantum. Conflating the two ended the slide on the first frame
      * of most page changes: measured on hardware as dt=0ms with the position
      * jumping straight to the target, drawing zero composited frames. */
-    if (dtMs > 0 && Math.abs(next - pos) < SNAP_PAGES) return target;
+    if (dtMs > 0 && stalled(pos, next, dtMs)) return target;
     return next;
 }
 
@@ -364,4 +391,4 @@ export function drawSlide(ctx, { fromDx, toDx, drawFrom, drawTo, drawChrome }) {
  * animation (see advanceLinear -- a duration of 0 arrives immediately).
  */
 export const SLIDE_MS = 160;
-export const advanceScroll = advanceEased;
+export const advanceScroll = advanceLinear;
