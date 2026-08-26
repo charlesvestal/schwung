@@ -396,9 +396,13 @@ export function drawMenuList({
      * bar sits outside it by construction (126 against a 118 edge). */
     const valueRightEdgeClear = SCREEN_WIDTH - valuePaddingRight;
     const scrolls = (startIdx > 0) || (endIdx < totalItems);
-    /* -3: the bar owns SCREEN_WIDTH-2, and a value butted straight against it
-     * would read as touching the track. */
-    const valueRightEdgeBar = Math.min(valueRightEdgeClear, SCREEN_WIDTH - 3);
+    /* The bar owns SCREEN_WIDTH-2; the gutter is that column plus one clear
+     * pixel, so nothing is drawn butted against the track. ONE constant, used
+     * by both the value edge and the selection highlight — they are the two
+     * things that reach the right edge, and if they disagreed the bar would be
+     * legible on some rows and not others. */
+    const BAR_GUTTER = 3;
+    const valueRightEdgeBar = Math.min(valueRightEdgeClear, SCREEN_WIDTH - BAR_GUTTER);
     /*
      * THE CLEARANCE IS CHARGED PER ROW, not to the whole list.
      *
@@ -632,7 +636,26 @@ export function drawMenuList({
         }
 
         if (isSelected) {
-            ctx.fillRect(0, y - highlightOffset, SCREEN_WIDTH, itemHighlightHeight, 1);
+            /*
+             * THE HIGHLIGHT STOPS SHORT OF THE SCROLLBAR'S GUTTER.
+             *
+             * Full width, it runs straight under the bar — and because the bar
+             * is drawn after the rows, white on white. That is not merely
+             * invisible: the highlight is 9 rows of solid ink in the track
+             * column, so it reads as a SECOND THUMB, larger than the real one
+             * and parked wherever the selection is. Reported from a render as
+             * the selected row looking wrong at the edge.
+             *
+             * Nothing can be XOR-ed here — the draw API is write-only, with no
+             * way to read the pixel underneath — so the fix is geometric: the
+             * bar gets a gutter that content does not enter, which is what the
+             * value edge already does.
+             *
+             * Only when the list actually scrolls, matching valueRightEdgeFor.
+             * A list with no bar keeps the full-width highlight it always had.
+             */
+            ctx.fillRect(0, y - highlightOffset, SCREEN_WIDTH - (scrolls ? BAR_GUTTER : 0),
+                         itemHighlightHeight, 1);
             ctx.print(labelX, y, label, 0);
             if (displayValue) {
                 /* Show brackets around value when in edit mode */
