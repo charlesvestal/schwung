@@ -5,23 +5,21 @@ cd "$(dirname "$0")/../.."
 
 # THE BIG NUMBER HAS ITS OWN FONT, CUT FOR DIGITS AND NOTHING ELSE.
 #
-# Unframed at the body font's 7 rows the cell read as bare. It now uses the
-# Tamzen 8x16 cut (9 rows) rather than a 2x scale of the 6x12 -- an
-# integer-scaled bitmap is the same letterform with every flaw doubled, and it
-# caps at two glyphs.
+# Unframed at the body font's 7 rows the cell read as bare. It uses the face
+# movy draws its preset number with -- a Nokia 13px bitmap at cap-height 11,
+# 2px stems -- rather than a 2x scale of the body font, which would be the same
+# letterform with every flaw doubled and would cap at two glyphs.
 #
 # TWO BOUNDS, AND THE FLEET IS SWEPT AGAINST BOTH, because the span rule bounds
 # the RANGE and not the digit count: an int 100..120 is span 20 and three digits
 # wide, so "no value overflows" cannot be reasoned about from the rule and has
-# to be measured over every value of every cell.
+# to be measured over every value of every cell. It is a live constraint, not a
+# theoretical one -- the widest value in the fleet now sits at 28 of 30px.
 #
-# THE CHARSET IS THE OTHER HALF, and it is the one that fails silently. The
-# generator's OVERRIDES are hand-drawn at SEVEN rows for glyphs taller than that
-# window; generated at nine they would be wrong, in nine characters nobody would
-# look at. So the number font is generated for "0123456789+-" alone and this
-# asserts that bigNumberText can emit nothing outside it -- including the "--"
-# an unread value draws, which is the case a digits-only charset most easily
-# forgets.
+# THE CHARSET IS THE OTHER HALF, and it is the one that fails silently. The font
+# carries "0123456789+-" and nothing else, so anything bigNumberText can emit
+# outside that set would draw as a hole. Includes the "--" an unread value
+# draws, which is the case a digits-only charset most easily forgets.
 #
 # NO APOSTROPHES inside the node script: single-quoted bash string.
 
@@ -35,7 +33,7 @@ import fs from "node:fs";
 import { shouldDrawBigNumber, bigNumberText, CELL_W, BOX_H }
     from "./src/shared/param_pages/render_page_movy.mjs";
 import { fontWidth, HEIGHT, missingGlyphs }
-    from "./src/shared/param_pages/font_tamzen8x16_num.mjs";
+    from "./src/shared/param_pages/font_big_num.mjs";
 import { buildMetaIndex } from "./src/shared/param_pages/param_meta.mjs";
 import { planPages } from "./src/shared/param_pages/page_plan.mjs";
 
