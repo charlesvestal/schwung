@@ -133,14 +133,44 @@ const EASE_BACK = (t) => { const u = t - 1; return 1 + C3 * u * u * u + C1 * u *
 const SPRING_D = 4.2, SPRING_F = 2 * Math.PI * 1.25;
 const EASE_SPRING = (t) => 1 - Math.exp(-t * SPRING_D) * Math.cos(t * SPRING_F);
 
-/* --------------------------------------------------------- trajectories -- */
+/* --------------------------------------------------------- trajectories --
+ *
+ * THE SET IS FOUR, NOT TEN, AND THE SIX THAT WERE CUT ARE STILL HERE.
+ *
+ * Ten were authored and six were withdrawn from the catalog before any human
+ * judged them, because a still frame strip cannot carry what separates them:
+ *
+ *   ease-2 / ease-4 / ease-8   differ ONLY in duration, and a strip renders
+ *                              duration as a frame COUNT. A person comparing
+ *                              them is reading a number off a chart, not
+ *                              feeling a motion.
+ *   spring                     shares its first peak with overshoot by
+ *                              construction; what distinguishes it is an
+ *                              undershoot of roughly one pixel of pointer
+ *                              angle, invisible below about 9x.
+ *   tick                       is only visible on a change SMALLER than the
+ *                              frame count. Over the catalog sweep each frame
+ *                              advances about two quanta and it reads as a
+ *                              plain linear slide, so the strip UNDERSELLS it.
+ *   instant                    is legible, but only as "nothing happens".
+ *
+ * Shipping those into a pairwise comparator would have produced preference
+ * data that looked real and was not: the human would rank the picture, and the
+ * picture is not the thing. They are exported rather than deleted because the
+ * follow-up issue has to give the renderer per-key frame state anyway, and at
+ * that point duration can be settled on hardware where it can be felt. The
+ * spring in particular carries a settle clamp that was expensive to get right
+ * and is invisible in any still.
+ */
 
 const framesInstant = (from, to, n) => ramp(from, to, n, 1, LINEAR);
-const framesEase2 = (from, to, n) => ramp(from, to, n, 2, LINEAR);
-const framesEase4 = (from, to, n) => ramp(from, to, n, 4, EASE_OUT);
-const framesEase8 = (from, to, n) => ramp(from, to, n, 8, EASE_OUT);
 const framesOvershoot = (from, to, n) => ramp(from, to, n, 6, EASE_BACK);
-const framesSpring = (from, to, n) => ramp(from, to, n, 10, EASE_SPRING);
+
+/* Withdrawn from the catalog; kept for the on-hardware follow-up. */
+export const framesEase2 = (from, to, n) => ramp(from, to, n, 2, LINEAR);
+export const framesEase4 = (from, to, n) => ramp(from, to, n, 4, EASE_OUT);
+export const framesEase8 = (from, to, n) => ramp(from, to, n, 8, EASE_OUT);
+export const framesSpring = (from, to, n) => ramp(from, to, n, 10, EASE_SPRING);
 
 /**
  * 10. tick — the value crosses in fixed quantised steps.
@@ -165,7 +195,8 @@ const framesSpring = (from, to, n) => ramp(from, to, n, 10, EASE_SPRING);
  * need its own branch for a value going down.
  */
 const TICK_Q = 16;
-function framesTick(from, to, n) {
+/* Withdrawn from the catalog; kept for the on-hardware follow-up. */
+export function framesTick(from, to, n) {
     const raw = ramp(from, to, n, 6, LINEAR);
     const lo = Math.min(from, to), hi = Math.max(from, to);
     for (let i = 1; i < raw.length - 1; i++) {
@@ -219,56 +250,27 @@ export function register() {
     title: "Value-change motion — how a control reacts when its value moves",
     kind: KIND_MOTION,
     replaces: "nothing — the render layer is stateless and has no motion to replace",
+    optionCount: 4,
     options: [
         {
-            position: 1, id: "instant", name: "Instant", frames: framesInstant,
-            behaviour: "The value is simply drawn where it now is. No lag, no mark, no memory. This is what the UI does today and it is in the set as the control: if none of the nine below beats it in a pairwise judgement, the honest conclusion is that motion is not what makes this UI feel like somebody else's, and the effort belongs elsewhere.",
-            note: "The current behaviour, and the only option that costs nothing. Every other option requires the renderer to gain per-key frame state and to keep repainting while a control settles, which turns an idle page from zero draws per tick into a draw per tick for the duration of every turn.",
-        },
-        {
-            position: 2, id: "ease-2", name: "Ease 2", frames: framesEase2,
-            behaviour: "The control takes two frames to catch up: one frame at the halfway point, then the target. At ~44 ticks/sec that is about 45ms of lag — under the threshold where a person reads it as delay, which is the point. It is meant to be felt as SOFTNESS rather than seen as movement.",
-            note: "The smallest change that is not zero. On a strip it is one intermediate frame, which is almost indistinguishable from Instant and completely indistinguishable from a strip drawn one frame out of phase — this is the option a still catalog is least able to judge, and that is a finding about the method rather than about the option.",
-        },
-        {
-            position: 3, id: "ease-4", name: "Ease 4", frames: framesEase4,
-            behaviour: "Four frames of ease-out: most of the travel happens in the first two, then it eases in to the target. ~90ms. This is the conventional UI easing duration and it is here as the safe middle of the lag range.",
-            note: "The bunched spacing at the end of the run is what distinguishes an ease from a linear slide, and it IS visible in a strip — the frames crowd towards the target. Whether four frames feels better than two is not something a strip can answer.",
-        },
-        {
-            position: 4, id: "ease-8", name: "Ease 8", frames: framesEase8,
-            behaviour: "Eight frames of the same ease-out — ~180ms, long enough that the lag is deliberately visible. The control is doing something rather than merely being smooth, and on a page of eight knobs one moving control stays legible as the one that moved for a fifth of a second after the turn.",
-            note: "The cost is real and is the reason to put it in front of a human rather than to assume it: the value under the pointer disagrees with the encoder for a fifth of a second, so a fast series of small turns leaves the display persistently behind the hardware. That is the failure mode of every over-eased UI.",
-        },
-        {
-            position: 5, id: "overshoot", name: "Overshoot", frames: framesOvershoot,
+            position: 1, id: "overshoot", name: "Overshoot", frames: framesOvershoot,
             behaviour: "Eases PAST the target by about a fifth of the travel, then settles back over six frames. The control reads as having weight — it was thrown rather than moved — and the overshoot itself is what makes the change noticeable without any extra mark being drawn.",
             note: "Overshoot has to be clipped at the ends of travel, and a clipped overshoot is no overshoot at all: at the top of a range the pointer simply parks on the stop. So the effect is present in the middle of a range and silently absent at both extremes, which is where a value is most often being nudged. That inconsistency is the argument against it.",
         },
         {
-            position: 6, id: "spring", name: "Spring", frames: framesSpring,
-            behaviour: "A damped oscillation, 1 - exp(-t*d)*cos(t*f): over, under, over, settle. The same first peak as Overshoot, so the two differ only in what happens after it — one recovery versus a decaying wobble. The most physical of the ten and the most conspicuous.",
-            note: "This is the option whose maths needs the settle clamp: the oscillator only ever approaches its target, so without an explicit final frame the parameter rests a fraction off the value the encoder was turned to. Invisible in a strip, wrong on hardware. It is also the option most likely to be judged charming once and irritating on the two hundredth turn.",
-        },
-        {
-            position: 7, id: "flash", name: "Flash", frames: framesInstant, overlay: overlayFlash,
+            position: 2, id: "flash", name: "Flash", frames: framesInstant, overlay: overlayFlash,
             behaviour: "The value snaps — no lag at all — and the whole cell inverts for two frames. The change is announced rather than animated, so the number under the pointer is never wrong, which is the objection to every option from 2 to 6.",
             note: "Cheapest of the nine to implement: the value path is exactly what ships today and the renderer only needs to know that a key changed and how many ticks ago. Its risk is the opposite of subtlety — eight knobs turned in sequence is eight cells strobing, and inversion is the loudest thing available on a 1-bit display.",
         },
         {
-            position: 8, id: "trail", name: "Trail", frames: framesInstant, ghost: ghostTrail,
+            position: 3, id: "trail", name: "Trail", frames: framesInstant, ghost: ghostTrail,
             behaviour: "The value snaps, and a ghost of the PREVIOUS position is left behind, fading SOLID -> DIAG_HEAVY -> CHECKER -> DIAG_LIGHT over four frames. The motion is carried by a second mark rather than by the value, so the control shows both where it is and where it came from.",
             note: "The only option that conveys DIRECTION as well as change — a ghost behind the pointer says the value went up. Its problem is geometric and the rendered strip shows it plainly: on the arc knob, a 0.15 -> 0.85 change puts ghost and pointer at opposite ends of a near-horizontal diameter, and the two strokes read as ONE bar drawn straight through the dial rather than as a pointer with a trail behind it. A small turn fails the other way, with the ghost merging into the pointer as a fat stroke. Either way it needs a widget with somewhere to put a second mark, which is a constraint on the knob set as much as on this one.",
         },
         {
-            position: 9, id: "dissolve", name: "Dissolve", frames: framesInstant, ghost: ghostDissolve,
+            position: 4, id: "dissolve", name: "Dissolve", frames: framesInstant, ghost: ghostDissolve,
             behaviour: "The same construction as Trail, one step quieter and one frame shorter: the previous position fades SOLID -> CHECKER -> DIAG_LIGHT and is gone in three frames. Uses the established density ladder as a time axis, which is an idiom this UI already has and does not currently use for anything temporal.",
             note: "Deliberately paired with Trail so the human is asked one question rather than two — is a decaying ghost worth having at all, and if so how loud. Densities on a 1-bit display are the only volume control available, so if either of these wins the follow-up question is only where on the ladder to sit. In the rendered strip the difference between the two is a single frame and one rung of the ladder, and it is very nearly invisible; that is a warning about the pair, not about the idea.",
-        },
-        {
-            position: 10, id: "tick", name: "Tick", frames: framesTick,
-            behaviour: "The value marches to the target in fixed sixteenth-of-range steps regardless of how fast the encoder was turned, then lands exactly on the target. A small change is one step; a large one visibly clicks through several. Mechanical rather than smooth — the display behaves like a detented control even when the parameter is continuous.",
-            note: "The furthest from the current behaviour and the only option whose motion is a function of DISTANCE rather than of time, so a slow careful turn and a fast flick look the same. That is either the whole appeal or the whole objection. The final frame is unquantised on purpose: a control that could only rest on sixteenths would be a different and much more destructive feature. The strip UNDERSELLS it: over the catalog's 0.15 -> 0.85 change each of the six frames advances by about two quanta, so the march comes out evenly spaced and reads as a plain linear slide. The quantisation is only visible on a change SMALLER than the frame count, which is the case a 12-frame strip of a full-range sweep cannot show.",
         },
     ],
     });
