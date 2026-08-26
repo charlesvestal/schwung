@@ -7,57 +7,86 @@
     {
       "id": 1,
       "subject": "Task 1: Transition module (proxy, offsets, advance)",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** A pure module that can translate any draw context horizontally and composite two page draws into one frame.\n\n**Files:**\n- Create: `src/shared/param_pages/page_transition.mjs`\n- Test: `tests/host/test_page_transition_proxy.sh`\n\n**Acceptance Criteria:**\n- [ ] `translateCtx(ctx, dx)` shifts x on every wrapped method, leaves y untouched\n- [ ] `translateCtx(ctx, 0)` returns the original ctx object identically\n- [ ] A method present on ctx but absent from the wrap table is OMITTED, never passed through untranslated\n- [ ] `scrollFrame(pos)` splits into `{base, frac}` with frac in [0,1)\n- [ ] `slideOffsets(frac, width)`: `to - from === width` for every frac\n- [ ] `advanceLinear`/`advanceEased` both SNAP EXACTLY onto the target, never overshoot, work backwards\n- [ ] `drawSlide` calls drawFrom, drawTo, drawChrome once each in that order\n\n**Verify:** `bash tests/host/test_page_transition_proxy.sh` -> all PASS, exit 0\n\n**Steps:** Write the failing test (full code in plan) -> run it fail -> write the module -> run it pass -> chmod +x, commit.\n\nKey design: the slide is a POSITION, not a from/to pair -- a pair cannot chase (retarget snaps the outgoing page up to 128px backwards). Unknown ctx methods are omitted because both renderers guard line/drawArc with typeof and fall back through fillRect, which IS translated: omission degrades to correct-but-slower, passthrough draws wrong pixels, and neither raises.\n\n```json:metadata\n{\"files\": [\"src/shared/param_pages/page_transition.mjs\", \"tests/host/test_page_transition_proxy.sh\"], \"verifyCommand\": \"bash tests/host/test_page_transition_proxy.sh\", \"acceptanceCriteria\": [\"translateCtx shifts x per method and leaves y alone\", \"dx 0 returns the original ctx object\", \"unknown methods are omitted not passed through\", \"slideOffsets abut exactly at every frac\", \"both advances snap exactly onto the target\", \"drawSlide order is from, to, chrome\"], \"modelTier\": \"standard\"}\n```"
     },
     {
       "id": 2,
       "subject": "Task 2: bankBar:false on renderPageMovy",
-      "status": "pending",
-      "blockedBy": [1],
+      "status": "completed",
+      "blockedBy": [
+        1
+      ],
       "description": "**Goal:** `renderPageMovy` can be asked not to draw the page indicator, so the sliding passes leave it to the fixed chrome.\n\n**Files:**\n- Modify: `src/shared/param_pages/render_page_movy.mjs:2316` (the unconditional `drawBankBar` call), plus `export` on the `BAR_Y` constant\n- Test: `tests/host/test_page_transition_proxy.sh` (extend -- same subject, no new file)\n\n**Acceptance Criteria:**\n- [ ] `renderPageMovy(ctx, { ..., bankBar: false })` draws nothing on the bank-bar row\n- [ ] Omitting the option draws the bar exactly as before (byte-identical frame)\n- [ ] `pageCount: 1` is NOT used to achieve suppression\n\n**Verify:** `bash tests/host/test_page_transition_proxy.sh` -> all PASS, exit 0\n\n**Steps:** Find BAR_Y -> append the failing pixel assertions -> run fail -> gate the call behind `o.bankBar !== false` and export BAR_Y -> run pass -> sweep the movy/knob-card/enum-peek tests -> commit.\n\n`drawBankBar` returns early when `pageCount <= 1`, so `pageCount: 1` would blank it too -- rejected because it tells the renderer the page set has one page in order to obtain a drawing side effect.\n\n```json:metadata\n{\"files\": [\"src/shared/param_pages/render_page_movy.mjs\", \"tests/host/test_page_transition_proxy.sh\"], \"verifyCommand\": \"bash tests/host/test_page_transition_proxy.sh\", \"acceptanceCriteria\": [\"bankBar:false leaves the indicator row empty\", \"omitting the option is byte-identical to before\", \"pageCount:1 is not used as the mechanism\"], \"modelTier\": \"mechanical\"}\n```"
     },
     {
       "id": 3,
       "subject": "Task 3: Film the slide, pick duration + advance",
-      "status": "pending",
-      "blockedBy": [1, 2],
+      "status": "completed",
+      "blockedBy": [
+        1,
+        2
+      ],
       "description": "**Goal:** Real GIFs at the device's true cadence, from which the user chooses `SLIDE_MS` and the `advanceScroll` alias.\n\n**Files:**\n- Modify: `tools/param-pages/movie.mjs`\n\n**Acceptance Criteria:**\n- [ ] A `slide` scene films a page change using `drawSlide`/`scrollFrame`/`advance*` from `page_transition.mjs` -- not a reimplementation\n- [ ] The scene is driven by a POSITION advanced by elapsed time each tick, exactly as the controller drives it -- not a progress computed from a start stamp\n- [ ] Frames sampled at ~55Hz with the clock quantized to ~12ms, NOT a smooth continuous 30fps\n- [ ] 3 durations x 2 advances produced\n- [ ] The scene does NOT assert `clipped() === 0`\n- [ ] GIFs land in `catalog-out/movies/` and are shown to the user with SendUserFile\n\n**Verify:** `node tools/param-pages/movie.mjs --scene slide` -> six lines each naming a `.gif`, files exist\n\n**Steps:** Add imports + `renderSlideVariant` + SLIDE_VARIANTS (full code in plan) -> wire into `main()` and `--list` -> run -> LOOK AT A MID FRAME before showing anything (two pages side by side, bank bar and footer still) -> SendUserFile + AskUserQuestion stating ms, advance, and the REAL frame count `round(ms/18.2)` per variant -> apply the decision to `page_transition.mjs` -> commit.\n\n**Why this decision is open:** it is the one question that cannot be answered in text. The user asked for \"real pngs, and gifs\" rather than mockups, and `movie.mjs`'s own header records six of ten SCH-50 animation options being withdrawn because a still strip renders duration as a frame count.\n\nA 30fps film would flatter the motion into something the panel cannot produce -- the clock is quantized to ~11-12ms and the grid ticks at ~55Hz, so 200ms is about 11 frames of ~12px.\n\n```json:metadata\n{\"files\": [\"tools/param-pages/movie.mjs\", \"src/shared/param_pages/page_transition.mjs\"], \"verifyCommand\": \"node tools/param-pages/movie.mjs --scene slide\", \"acceptanceCriteria\": [\"the scene reuses drawSlide rather than reimplementing the composite\", \"driven by a position advanced by elapsed time, as the controller does\", \"sampled at the device cadence with a quantized clock\", \"six variants produced\", \"no clipped()===0 assertion\", \"GIFs shown to the user and a decision applied\"], \"modelTier\": \"standard\"}\n```"
     },
     {
       "id": 4,
       "subject": "Task 4: render() draws by page INDEX",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** Extract `drawPage(ctx, index, opts)` from `render()`'s MOVY/LIST branch, with no behaviour change, so the outgoing page can be drawn once it is no longer current.\n\n**Files:**\n- Modify: `src/shared/param_pages/page_controller.mjs:2728-2901` (the `LAYOUT_MOVY || LAYOUT_LIST` branch of `render`), `:2709` (`drawKnobsAsList`), `:2937` (`vizGroups`)\n- Test: `tests/host/test_page_slide_composite.sh` (created here, extended in Task 5)\n\n**Acceptance Criteria:**\n- [ ] `drawPage(ctx, index, { title, footer, chrome })` renders the page at `index`, not the current one, for all four kinds (PAGE_KNOBS, PAGE_MENU, PAGE_ITEMS, PAGE_PRESET)\n- [ ] `chrome: false` draws neither bank bar nor footer\n- [ ] With no slide running the frame is byte-identical to before the refactor (asserted: drawPage at the current index === the ordinary render)\n- [ ] `vizGroupsFor(index)` still caches (no re-detect per frame)\n- [ ] `drawPage` is exposed on the controller\n\n**Verify:** `bash tests/host/test_page_slide_composite.sh` -> all PASS, exit 0\n\n**Steps:** Write the test (full code in plan) -> run fail -> 3a parameterise `vizGroups` -> 3b parameterise `drawKnobsAsList` -> 3c extract `drawPage` using the mechanical mapping table in the plan -> 3d slim `render()` -> 3e export -> run pass -> full host suite regression sweep -> commit.\n\nOverlays (hint, picker, knob card, enum peek) are NOT drawn in drawPage: they belong to the screen, not to a page, and must never slide.\n\n```json:metadata\n{\"files\": [\"src/shared/param_pages/page_controller.mjs\", \"tests/host/test_page_slide_composite.sh\"], \"verifyCommand\": \"bash tests/host/test_page_slide_composite.sh\", \"acceptanceCriteria\": [\"drawPage at a different index draws a different page\", \"drawPage at the current index reproduces the ordinary render exactly\", \"chrome:false draws no bank bar and no footer\", \"the full host suite shows no new failures\"], \"modelTier\": \"standard\"}\n```"
     },
     {
       "id": 5,
       "subject": "Task 5: Run the slide",
       "status": "pending",
-      "blockedBy": [3, 4],
+      "blockedBy": [
+        3,
+        4,
+        9
+      ],
       "description": "**Goal:** A page change starts a slide; the frame composites two pages with fixed chrome; a jog mid-slide chases.\n\n**Files:**\n- Modify: `src/shared/param_pages/page_controller.mjs` (state init, `onJog:1957-2028`, `goToPage:2050-2072`, top of `tick()`, `render`)\n- Test: `tests/host/test_page_slide_composite.sh` (extend)\n\n**Acceptance Criteria:**\n- [ ] A page index change leaves `s.scrollPos` behind `s.pageIndex`, so a slide is in progress\n- [ ] A mid-slide frame differs from BOTH the outgoing and the incoming settled frames\n- [ ] The bank-bar row and the footer rows mid-slide are byte-identical to the settled destination frame\n- [ ] The scroll lands EXACTLY on the target and the settled frame equals the plain destination frame\n- [ ] A jog mid-slide never moves `s.scrollPos` backwards, and it keeps travelling forward until it settles\n- [ ] A jump of more than one page still slides exactly one screen width\n- [ ] `SLIDE_MS = 0` disables the animation entirely\n\n**Verify:** `bash tests/host/test_page_slide_composite.sh` -> all PASS, exit 0\n\n**Steps:** Append the failing assertions (full code in plan) -> run fail -> add `scrollPos`/`scrollLastMs` + `aimScroll` (teleport for multi-page jumps) -> call from `onJog` and `goToPage`, and set `scrollPos = pageIndex` on load -> advance the position at the TOP of `tick()`, above every early return (tick returns early on preset and items pages, and a slide that stopped advancing there would freeze mid-travel) -> composite in `render()` with the `s.pages[base+1]` guard -> run pass -> confirm the disable path -> regression sweep -> commit.\n\nThe bank bar reports `s.pageIndex`, not the scroll position -- the indicator must not lag the gesture it is reporting.\n\n```json:metadata\n{\"files\": [\"src/shared/param_pages/page_controller.mjs\", \"tests/host/test_page_slide_composite.sh\"], \"verifyCommand\": \"bash tests/host/test_page_slide_composite.sh\", \"acceptanceCriteria\": [\"a mid-slide frame differs from both endpoints\", \"bank bar and footer rows are identical to the settled destination mid-slide\", \"the scroll lands exactly on the target\", \"a jog mid-slide never moves the position backwards\", \"a multi-page jump still slides one screen width\", \"SLIDE_MS 0 disables it\"], \"modelTier\": \"standard\"}\n```"
     },
     {
       "id": 6,
       "subject": "Task 6: Warm the neighbouring pages",
       "status": "pending",
-      "blockedBy": [5],
+      "blockedBy": [
+        5
+      ],
       "description": "**Goal:** Adjacent pages' uncached values are read on spare rotation stops, so the incoming page arrives populated.\n\n**Files:**\n- Modify: `src/shared/param_pages/page_controller.mjs:1225-1250` (the read rotation in `tick()`)\n- Test: `tests/host/test_neighbour_prefetch.sh`\n\n**Acceptance Criteria:**\n- [ ] After settling, keys of pages +/-1 absent from `s.values` get read\n- [ ] Once warm the lane issues NO further reads -- asserted as a read COUNT over 200 idle ticks, not as \"the values are present\"\n- [ ] The lane does not run during the first full pass after a page change\n- [ ] The lane does not run while any key is inside its settle window\n- [ ] Jogging to a warmed page issues zero reads at jog time\n\n**Verify:** `bash tests/host/test_neighbour_prefetch.sh` -> all PASS, exit 0\n\n**Steps:** Write the test (full code in plan) -> run fail -> add `neighbourPrefetchKey(cur)` + the conditional extra stop in the rotation -> arm `s.prefetchHoldUntil` on every page change -> run pass -> confirm the slide test still passes -> chmod +x, commit.\n\nWhy a read COUNT: \"the incoming page has its values\" passes just as well with a lane that reads every tick forever, and a read is ~2.8ms against a ~18ms tick -- more than the 1.68ms whole-page render it decorates. The tri-state applies: a read that did not complete must not be cached.\n\n```json:metadata\n{\"files\": [\"src/shared/param_pages/page_controller.mjs\", \"tests/host/test_neighbour_prefetch.sh\"], \"verifyCommand\": \"bash tests/host/test_neighbour_prefetch.sh\", \"acceptanceCriteria\": [\"every key of the next page is cached without visiting it\", \"once warm the lane issues no further neighbour reads\", \"the jog itself issues no reads\", \"the first full pass after a page change reads only the arrived page\"], \"modelTier\": \"standard\"}\n```"
     },
     {
       "id": 7,
       "subject": "Task 7: Documentation",
       "status": "pending",
-      "blockedBy": [6],
+      "blockedBy": [
+        6
+      ],
       "description": "**Goal:** The repo's Release Checklist items for user-visible behaviour are done.\n\n**Files:**\n- Modify: `CLAUDE.md` (new subsection after \"Widget animation, and the wiring that carries it\")\n- Modify: `../schwung-catalog-site/manual.html`\n\n**Acceptance Criteria:**\n- [ ] `CLAUDE.md` records: what slides and what does not and why; that the mechanism needs no clip rect and why; that unknown ctx methods are omitted not passed through; that `clipped()` is not a correctness probe on transition frames; position-not-pair and why a pair cannot chase; the multi-page teleport and the exact snap; the neighbour lane's read-count invariant\n- [ ] `manual.html` mentions the slide in user-facing terms\n- [ ] Neither claims hardware verification that has not happened\n\n**Verify:** `command grep -n \"page_transition\" CLAUDE.md` -> at least one hit; `command grep -in \"slide\" ../schwung-catalog-site/manual.html` -> at least one hit\n\n**Steps:** Add the CLAUDE.md section (full text in plan) -> add one user-facing sentence to manual.html -> verify with grep -> commit in both repos separately (the catalog site is its own repo).\n\n```json:metadata\n{\"files\": [\"CLAUDE.md\", \"../schwung-catalog-site/manual.html\"], \"verifyCommand\": \"command grep -n page_transition CLAUDE.md\", \"acceptanceCriteria\": [\"CLAUDE.md documents the mechanism, the two dead probes, chase, and the prefetch invariant\", \"manual.html mentions the slide\", \"no unverified hardware claims\"], \"modelTier\": \"mechanical\"}\n```"
     },
     {
       "id": 8,
       "subject": "Task 8: Hardware verification and PR",
       "status": "pending",
-      "blockedBy": [7],
+      "blockedBy": [
+        7
+      ],
       "description": "**Goal:** Confirm on a real Move that the slide looks right and the values arrive populated, then open the PR.\n\n**Files:** none\n\n**Acceptance Criteria:**\n- [ ] Deployed and the grid still renders\n- [ ] A jog slides; the bank bar and footer do not move\n- [ ] A fast spin keeps up rather than lagging\n- [ ] An unvisited page arrives with values, not blanks or zeros\n- [ ] `param_pages fps:` in `debug.log` has not dropped materially (draws ~= ticks, mid-50s)\n- [ ] `debug_log_on` disarmed afterwards\n- [ ] PR opened against protected `main`\n\n**Verify:** visual, on device, plus the `param_pages fps:` line in `debug.log`\n\n**Steps:** ASK BEFORE DEPLOYING -- install.sh restarts the service under whatever the user is doing -> `./scripts/build.sh` then `./scripts/install.sh local --skip-modules --skip-confirmation` (never scp individual files) -> arm `debug_log_on`, tail for `param_pages` -> jog forward/back, Shift+jog, picker jump, fast spin, then jog onto a page never visited this session -> disarm `debug_log_on` -> push and `gh pr create`.\n\n`gh pr merge` reports a failure it did not have when `main` is checked out in a worktree -- confirm with `gh pr view <n> --json state,mergeCommit` rather than the exit status, and delete the remote branch yourself.\n\n```json:metadata\n{\"files\": [], \"verifyCommand\": \"ssh ableton@move.local \\\"tail -n 40 /data/UserData/schwung/debug.log\\\" | command grep param_pages\", \"acceptanceCriteria\": [\"the slide runs on hardware with the bank bar and footer still\", \"a fast spin keeps up\", \"an unvisited page arrives populated\", \"param_pages fps has not dropped materially\", \"debug_log_on disarmed\", \"PR opened\"], \"modelTier\": \"standard\"}\n```"
+    },
+    {
+      "id": 9,
+      "subject": "Task 4b: Split drawHeader - fixed title, sliding name",
+      "status": "pending",
+      "blockedBy": [
+        4
+      ],
+      "description": "See harness task #9 and the plan section `## Task 4b`. Three traps recorded there: overdraw does NOT clip (drawHeader un-inverted paints no background, so an erase rect is required); the name column width and origin depend on the specific name, so the geometry must be pinned to the destination; renderPageMovy needs a `header: false` option or the title drags regardless.\n\n```json:metadata\n{\"files\": [\"src/shared/param_pages/render_page_movy.mjs\", \"src/shared/param_pages/page_controller.mjs\", \"tests/host/test_page_slide_composite.sh\"], \"verifyCommand\": \"bash tests/host/test_page_slide_composite.sh\", \"acceptanceCriteria\": [\"drawHeader output unchanged for existing callers\", \"column geometry pinned to the destination name\", \"the title span is erased, not merely overdrawn\", \"name travels its column width\"], \"modelTier\": \"standard\"}\n```"
     }
   ],
-  "lastUpdated": "2026-08-27"
+  "lastUpdated": "2026-08-27",
+  "decisions": {
+    "motion": "90ms eased; SLIDE_MS=90, advanceScroll=advanceEased; ms MEANS settle time (tau derived from SNAP_PAGES)",
+    "header": "body slides 128px; page NAME slides its own column; module title, bank bar and footer FIXED",
+    "device": "DO NOT BUILD OR DEPLOY until explicitly told (2026-08-27)"
+  }
 }
