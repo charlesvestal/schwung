@@ -107,10 +107,18 @@ want(/suppressParamPagesOnce = false;/, "the guard is never cleared, so the grid
  * Checked INSIDE the master entry point, not as a file-wide count: a second
  * occurrence anywhere would satisfy a count while the master screen went on
  * ignoring the setting.
+ *
+ * "The master entry point" is now enterMasterFxHierarchyEditorWith. The outer
+ * enterMasterFxHierarchyEditor became the read half — it goes through
+ * openComponentEditor, which waits on a contract that has not arrived rather
+ * than deciding from one read — and hands the hierarchy to this function. The
+ * gate travelled with the part that opens a view, which is where it belongs.
+ * Note the name is a PREFIX of the outer one, so this must not be an indexOf
+ * of the shorter spelling: that finds the read half, whose body has no gate.
  */
 {
-  const at = s.indexOf("function enterMasterFxHierarchyEditor(");
-  if (at < 0) fail("enterMasterFxHierarchyEditor is gone");
+  const at = s.indexOf("function enterMasterFxHierarchyEditorWith(");
+  if (at < 0) fail("enterMasterFxHierarchyEditorWith is gone");
   const end = s.indexOf("\n}\n", at);
   const body = s.slice(at, end < 0 ? s.length : end);
   if (!/paramPagesEnabled\(\) && !suppressParamPagesOnce/.test(body))
