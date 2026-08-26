@@ -12,10 +12,11 @@ cd "$(dirname "$0")/../.."
 # a highlight all light the same pixel and a draw-call assertion can pass while
 # the picture is wrong.
 #
-# Task 4 scope: drawPage can draw an ARBITRARY page index, chrome:false
-# suppresses the bank bar and the footer for EVERY page kind, and drawing the
-# current index is byte-identical to the ordinary render. Task 5 extends this
-# file with the slide itself.
+# Task 4 scope: drawPage can draw an ARBITRARY page index; chrome:false
+# suppresses the bank bar and the footer and header:false suppresses the band,
+# for EVERY page kind; drawing the current index is byte-identical to the
+# ordinary render; and the header slides its NAME only, in both directions.
+# Task 5 wires the body slide to the controller.
 #
 # NO APOSTROPHES inside the node script: single-quoted bash string.
 
@@ -648,28 +649,27 @@ ok(listIdx >= 0, "the list-layout fixture has a knob page to draw as rows");
 
 /* THE SLIDING HEADER ITSELF.
  *
- * Fixture chosen so all three failures are visible: a title long enough that
- * the column width changes what fits, a destination name short enough to leave
- * a wide title span, and an outgoing name that would produce a DIFFERENT
- * column if the geometry followed it. */
+ * Fixture chosen so every failure is visible: a title long enough that the
+ * column width changes what fits, a destination name short enough to leave a
+ * wide title span, and an other name that would produce a DIFFERENT column if
+ * the geometry followed it. */
 {
   const T = "MFX > BRIGHTAMBIENCE";
-  const OUT = "MODULATION MATRIX";
+  const OTHER = "MODULATION MATRIX";
   const DEST = "OSCILLATOR";
   const sp = headerSplit(T, DEST);
   ok(sp.colX > 0 && sp.colW > 0 && sp.colX + sp.colW === SW,
      "the destination split yields a column (" + sp.colX + ".." + SW + ")");
-  ok(headerSplit(T, OUT).colX !== sp.colX,
+  ok(headerSplit(T, OTHER).colX !== sp.colX,
      "the two names really do produce different columns (the case that bites)");
 
   /* The settled destination header -- what the user lands on. */
   const settled = createFramebuffer();
   drawHeader(drawContext(settled), T, DEST, false);
 
-  const slide = (frac, opts) => {
+  const slide = (o) => {
     const fb = createFramebuffer();
-    drawHeaderSlide(drawContext(fb), Object.assign(
-      { title: T, fromName: OUT, toName: DEST, frac }, opts || {}));
+    drawHeaderSlide(drawContext(fb), Object.assign({ title: T }, o));
     return fb;
   };
   const region = (fb, x0, x1) => {
@@ -678,52 +678,206 @@ ok(listIdx >= 0, "the list-layout fixture has a knob page to draw as rows");
       for (let x = x0; x < x1; x++) out.push(fb.pixels[y * SW + x]);
     return Buffer.from(out).toString("base64");
   };
+  const colInk = (fb) => {
+    let n = 0;
+    for (let y = 0; y < HEADER_H; y++)
+      for (let x = sp.colX; x < SW; x++) if (fb.pixels[y * SW + x]) n++;
+    return n;
+  };
 
   const FRACS = [0, 0.2, 0.4, 0.5, 0.6, 0.8, 1];
 
-  /* (a) THE TITLE NEVER MOVES AND NOTHING SHOWS THROUGH IT.
-     Both failures land in one comparison, which is why it is a region equality
-     rather than an ink count: the title span must be exactly the settled
-     picture on every frame. Overdraw alone does NOT achieve that -- the
-     un-inverted header paints no background, so it clips only where the title
-     has ink, and a title is text with gaps between its letters. Remove the
-     fillRect in drawHeaderTitle and the outgoing name shows through those gaps
-     (measured: 4 to 36 stray pixels across these fracs). Point the split at
-     `fromName` instead and the title itself is fitted differently. */
-  let titleBad = [];
-  for (const f of FRACS) {
-    if (region(slide(f), 0, sp.colX) !== region(settled, 0, sp.colX)) titleBad.push(f);
-  }
-  ok(titleBad.length === 0,
-     "the title span is the settled picture on every frame -- fixed, and " +
-     "nothing shows through it (" + titleBad.join(",") + ")");
+  /*
+   * BOTH DIRECTIONS, AND THEY ARE NOT SYMMETRICAL.
+   *
+   * slideOffsets is direction-agnostic -- `from` is the LEFT slot and
+   * `to = from + width` the right -- while scrollFrame puts the destination at
+   * `base` on a BACKWARDS change, i.e. on the left. So the destination is the
+   * RIGHT name going forwards and the LEFT name going backwards, and its
+   * arrival frame is frac 1 forwards and frac 0 backwards. A single
+   * from/to pair cannot express that without pinning the geometry to whichever
+   * end the body happened to put on the left, which is why destName is its own
+   * argument. Testing only the forward case leaves the backwards slide laid out
+   * against the outgoing name, invisibly.
+   */
+  const DIRS = [
+    { name: "forwards",  arrive: 1, at: (f) => ({ leftName: OTHER, rightName: DEST, destName: DEST, frac: f }) },
+    { name: "backwards", arrive: 0, at: (f) => ({ leftName: DEST, rightName: OTHER, destName: DEST, frac: f }) },
+  ];
 
-  /* (b) THE NAME TRAVELS ITS COLUMN, NOT 128px.
-     At 128 the two names are both off their column for the middle of the
-     transition -- an empty right-hand side on most of a 90ms five-frame
-     animation. Measured with the travel mutated to 128: colInk 0 at fracs
-     0.4, 0.5 and 0.6. */
-  let empty = [];
-  for (const f of FRACS) {
-    const fb = slide(f);
-    let ink = 0;
+  for (const d of DIRS) {
+    /* (a) THE TITLE NEVER MOVES AND NOTHING SHOWS THROUGH IT.
+       Both failures land in one comparison, which is why it is a region
+       equality rather than an ink count: the title span must be exactly the
+       settled picture on every frame. Overdraw alone does NOT achieve that --
+       the un-inverted header paints no background, so it clips only where the
+       title has ink, and a title is text with gaps between its letters. Remove
+       the fillRect in drawHeaderTitle and the other name shows through those
+       gaps (measured: 4 to 36 stray pixels). Pin the split to the slot rather
+       than to destName and the BACKWARDS half of this fires, alone. */
+    let titleBad = [];
+    for (const f of FRACS) {
+      if (region(slide(d.at(f)), 0, sp.colX) !== region(settled, 0, sp.colX)) titleBad.push(f);
+    }
+    ok(titleBad.length === 0,
+       d.name + ": the title span is the settled picture on every frame (" +
+       titleBad.join(",") + ")");
+
+    /* (b) THE NAME TRAVELS ITS COLUMN, NOT 128px. At 128 both names are off
+       their column for the middle of the transition -- an empty right-hand
+       side on most of a 90ms five-frame animation. */
+    let empty = [];
+    for (const f of FRACS) if (!colInk(slide(d.at(f)))) empty.push(f);
+    ok(empty.length === 0,
+       d.name + ": the name column carries ink on every frame (empty at " +
+       empty.join(",") + ")");
+
+    /* (c) THE ARRIVAL FRAME IS THE SETTLED FRAME, across the whole band -- the
+       transition hands over to the ordinary render with no seam. Note the
+       arrival frac differs by direction; asserting frac 1 for both would be
+       asserting the DEPARTURE frame backwards, and it would fail for a
+       correct implementation. */
+    ok(key(slide(d.at(d.arrive))) === key(settled),
+       d.name + ": the arrival frame (frac " + d.arrive +
+       ") is byte-identical to the settled header");
+
+    /* And the other name is really on screen at the far end, or (b) would be
+       satisfied by the arriving name alone and the slide would be a fade-in. */
+    const far = d.arrive === 1 ? 0 : 1;
+    ok(region(slide(d.at(far)), sp.colX, SW) !== region(settled, sp.colX, SW),
+       d.name + ": frac " + far + " shows the OTHER name in the column");
+  }
+
+  /* A PAGE WITH NO NAME IS NOT A PAGE WITH THE DESTINATION`S NAME.
+     pageLabel can return null, and folding null into "no override" made the
+     departing name default to split.r -- so the slide drew two byte-identical
+     copies of the destination name passing each other, which is the wobble
+     this feature exists to remove, reintroduced by a defaulting branch. */
+  {
+    const nul = slide({ leftName: null, rightName: DEST, destName: DEST, frac: 0.5 });
+    const dup = slide({ leftName: DEST, rightName: DEST, destName: DEST, frac: 0.5 });
+    ok(key(nul) !== key(dup),
+       "a null departing name draws NOTHING, not a copy of the destination");
+    /* And it is specifically the arriving name alone -- one name in the
+       column, not two. Counted against the same frame with a real departing
+       name, which must have more. */
+    ok(colInk(nul) < colInk(slide(
+         { leftName: OTHER, rightName: DEST, destName: DEST, frac: 0.5 })),
+       "a null departing name leaves less ink in the column than a real one");
+  }
+
+  /* A DESTINATION WITH NO NAME DOES NOT SLIDE AT ALL.
+     The column is 2px wide, the departing name refits to nothing, and what
+     survives lands inside the erase span -- measured as zero ink right of colX
+     on every frame. So the animation was absent, at two draws a frame. It now
+     declines explicitly and hands over the settled picture immediately. */
+  {
+    const noName = createFramebuffer();
+    drawHeader(drawContext(noName), T, "", false);
+    let bad = [];
+    for (const f of FRACS) {
+      const fb = slide({ leftName: OTHER, rightName: "", destName: "", frac: f });
+      if (key(fb) !== key(noName)) bad.push(f);
+    }
+    ok(bad.length === 0,
+       "an unnamed destination draws the settled header on every frame (" +
+       bad.join(",") + ")");
+
+    /*
+     * AND IT DECLINES BEFORE DOING THE WORK -- which no pixel assertion can
+     * see, and saying so matters more than the assertion.
+     *
+     * Deleting the early return leaves the picture byte-identical: the
+     * departing name refits to a column of 0 usable width and whatever
+     * survives lands inside the erase span and is painted out. So the frames
+     * above pin the OUTCOME (option (i): no slide, settled header) and are
+     * blind to whether we got there by choosing or by accident, at two
+     * translated contexts and two name draws a frame.
+     *
+     * Counted through a getter on ctx.fillRect, because translateCtx reads the
+     * method off the ctx once per call to bind it. Equal to what
+     * drawHeaderTitle alone reads means neither translated context was ever
+     * built.
+     */
+    const counting = () => {
+      const base = drawContext(createFramebuffer());
+      const st = { gets: 0 };
+      const o = {};
+      for (const k of Object.keys(base)) {
+        if (k === "fillRect") {
+          Object.defineProperty(o, "fillRect", {
+            get() { st.gets++; return base.fillRect; }, enumerable: true });
+        } else o[k] = base[k];
+      }
+      return { ctx: o, st };
+    };
+    const a = counting();
+    drawHeaderSlide(a.ctx, { title: T, leftName: OTHER, rightName: "",
+                             destName: "", frac: 0.5 });
+    const b = counting();
+    drawHeaderTitle(b.ctx, headerSplit(T, ""));
+    ok(a.st.gets === b.st.gets,
+       "an unnamed destination builds no translated contexts (" +
+       a.st.gets + " vs " + b.st.gets + " fillRect binds)");
+  }
+
+}
+
+/* ------------------------------------------------------------------------ *
+ * THE INVERTED PATHS ARE UNREACHABLE TODAY, WHICH IS EXACTLY WHY THEY NEED
+ * ASSERTIONS.
+ *
+ * drawHeader passes erase:false and drawHeaderSlide passes no `inverted`, so
+ * `erase && inverted` has no caller and drawHeaderName`s override branch is
+ * never asked for colour 0. Both were confirmed dead: mutating the erase fill
+ * to a hard 0, and the override print to a hard colour 1, survived this file,
+ * the proxy suite, test_header_split.sh AND the 77-frame baseline -- which
+ * covers un-inverted headers only. An unreachable path with no test is a trap
+ * for whoever makes it reachable, and Task 5 may well want an inverted slide.
+ * ------------------------------------------------------------------------ */
+{
+  const sp = headerSplit("S1 > OSIRUS", "LFO 1");
+  const bandInk = (fb, x0, x1) => {
+    let n = 0;
     for (let y = 0; y < HEADER_H; y++)
-      for (let x = sp.colX; x < SW; x++) if (fb.pixels[y * SW + x]) ink++;
-    if (!ink) empty.push(f);
-  }
-  ok(empty.length === 0,
-     "the name column carries ink on every frame of the slide (empty at " +
-     empty.join(",") + ")");
+      for (let x = x0; x < x1; x++) if (fb.pixels[y * SW + x]) n++;
+    return n;
+  };
 
-  /* (c) THE ARRIVAL FRAME IS THE SETTLED FRAME, across the whole band. The
-     transition has to hand over to the ordinary render with no seam. */
-  ok(key(slide(1)) === key(settled),
-     "frac 1 is byte-identical to the settled destination header");
+  /* The erase fills to ONE when inverted -- it restores the highlight, it does
+     not punch a hole in it. Mutate the fill value to a hard 0 and this drops
+     to zero ink, because the glyphs are knocked out in colour 0 as well. */
+  const inv = createFramebuffer();
+  drawHeaderTitle(drawContext(inv), sp, { inverted: true, erase: true });
+  const span = sp.colX * HEADER_H;
+  ok(bandInk(inv, 0, sp.colX) > span / 2,
+     "erase + inverted FILLS the title span (" + bandInk(inv, 0, sp.colX) +
+     " of " + span + " px)");
+  ok(bandInk(inv, 0, sp.colX) < span,
+     "and the title glyphs are knocked back out of it");
 
-  /* And the departing name is really on screen at the start, or (b) would be
-     satisfied by the incoming name alone and the slide would be a fade-in. */
-  ok(region(slide(0), sp.colX, SW) !== region(settled, sp.colX, SW),
-     "frac 0 shows the OUTGOING name in the column, not the destination");
+  /* THE ONE-PIXEL REASON drawHeader PASSES erase:false. Inverted, it fills the
+     band and then cuts the top corner notches; a 1-fill over [0, colX)
+     repaints (0,0) and destroys the top-left one. This asserts the mechanism
+     the comment claims, because the comment used to claim a different one. */
+  const notched = createFramebuffer();
+  drawHeader(drawContext(notched), "S1 > OSIRUS", "LFO 1", true);
+  ok(notched.pixels[0] === 0, "drawHeader inverted cuts the top-left notch");
+  drawHeaderTitle(drawContext(notched), sp, { inverted: true, erase: true });
+  ok(notched.pixels[0] === 1,
+     "and an erase over it would destroy that notch -- which is why " +
+     "drawHeader passes erase:false");
+
+  /* drawHeaderName`s OVERRIDE branch must honour `inverted` too. The
+     non-override branch is covered by the composition test above; this one is
+     reached only by a slide, which never inverts today. */
+  const filled = createFramebuffer();
+  for (let y = 0; y < HEADER_H; y++)
+    for (let x = 0; x < SW; x++) filled.pixels[y * SW + x] = 1;
+  const before = bandInk(filled, sp.colX, SW);
+  drawHeaderName(drawContext(filled), sp, "ANOTHER NAME", true);
+  ok(bandInk(filled, sp.colX, SW) < before,
+     "an inverted override name is KNOCKED OUT of the band, not printed onto it");
 }
 
 process.exit(fail ? 1 : 0);
