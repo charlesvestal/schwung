@@ -57,6 +57,30 @@ function dottedV(ctx, x, y0, y1) {
     const lo = Math.min(y0, y1), hi = Math.max(y0, y1);
     for (let y = lo; y <= hi; y += 2) ctx.fillRect(x, y, 1, 1, 1);
 }
+
+/*
+ * A BOUNDARY INSIDE A DITHERED MASS IS A GAP, NOT A LINE.
+ *
+ * The envelope's section markers were `dottedV`, drawn over the CHECKER mass —
+ * and a dotted line over a 50% checker is never dotted. dottedV steps by 2, so
+ * every pixel it draws shares one parity of y; CHECKER lights (x+y)%2===0. So
+ * the whole marker either coincides with the mass and VANISHES, or falls
+ * entirely in its gaps and the column comes out SOLID WHITE. Which of the two
+ * you get is decided by the parity of (x + susY) — it changes as the value
+ * moves the boundary one pixel, so the same marker flickers between invisible
+ * and a hard white rule as a knob is turned. Reported from the device as a
+ * white line appearing where sections collide.
+ *
+ * Clearing instead of drawing is parity-independent by construction: black over
+ * anything is black. It also matches what the rest of the page already does
+ * with a mark on filled ground — the switch's slug is a knockout, the corner
+ * notches are knockouts.
+ */
+function knockoutV(ctx, x, y0, y1) {
+    const lo = Math.min(y0, y1), hi = Math.max(y0, y1);
+    if (hi < lo) return;
+    ctx.fillRect(x, lo, 1, hi - lo + 1, 0);
+}
 function dottedH(ctx, x0, x1, y) {
     const lo = Math.min(x0, x1), hi = Math.max(x0, x1);
     for (let x = lo; x <= hi; x += 2) ctx.fillRect(x, y, 1, 1, 1);
@@ -493,8 +517,8 @@ function drawFullAdsr(ctx, x0, x1, topY, baseY, roles, values, metaIndex) {
     drawLine(ctx, sustStartX, susY, gateX, susY);     // sustain plateau
     drawLine(ctx, gateX, susY, relEndX, baseY);       // release fall
 
-    dottedV(ctx, sustStartX, susY, baseY);
-    dottedV(ctx, gateX, susY, baseY);
+    knockoutV(ctx, sustStartX, susY + 1, baseY - 1);
+    knockoutV(ctx, gateX, susY + 1, baseY - 1);
 
     dot(ctx, Math.max(x0, peakX - 1), topY);
     dot(ctx, sustStartX - 1, Math.max(topY, susY - 1));
@@ -568,7 +592,14 @@ function drawPartialEnv(ctx, leftX, xEnd, topY, baseY, present, roles, values, m
 
     for (let i = 0; i < pts.length - 1; i++) drawLine(ctx, pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1]);
     for (const [px, py] of pts) dot(ctx, Math.min(xEnd - 2, Math.max(leftX, px - 1)), Math.max(topY, py - 1));
-    if (has("sustain")) dottedV(ctx, Math.min(xEnd - 2, cur), susY, baseY);
+    /*
+     * Only where the plateau actually ENDS inside the cell. With no release the
+     * plateau runs to rightX, so the marker was clamped to xEnd-2 and drew a
+     * rule one pixel in from the edge, dividing the mass from nothing — which is
+     * where braids showed it, since braids declares attack/decay/sustain and no
+     * release. A boundary at the boundary of the picture marks nothing.
+     */
+    if (has("sustain") && cur < rightX - 1) knockoutV(ctx, cur, susY + 1, baseY - 1);
 }
 
 /* ----------------------------------------------------------------- filter */
