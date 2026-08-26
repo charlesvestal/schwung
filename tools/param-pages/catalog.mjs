@@ -130,12 +130,33 @@ function sheetRow(sw, label) {
     return out;
 }
 
+/*
+ * THE PROBE.
+ *
+ * Only the arc-knob set has the signature `(ctx, kx, ky, value)`. A fader takes
+ * a viz rect and a metaIndex, a footer takes a hint list, an opaque cell takes a
+ * value and an override -- so a set that replaces one of those declares its own
+ * surface (`probeSize`) and its own call (`probe`), and everything here that
+ * used to assume the knob shape asks the set instead.
+ *
+ * The same pair drives the CLIPPING assertion in tests/host/test_style_catalog.sh.
+ * That is deliberate: the surface an option is judged on and the surface it is
+ * allowed to draw in must be the same one, or the test proves nothing about what
+ * the sheet shows.
+ */
+function probeSizeOf(set) {
+    return set.probeSize || { w: RM.CELL_W, h: SWATCH_H };
+}
+
+function paintProbe(set, ctx, draw, v) {
+    if (typeof set.probe === "function") { set.probe(ctx, draw, v); return; }
+    draw(ctx, Math.floor((RM.CELL_W - RM.KW) / 2), 0, v);
+}
+
 function renderSwatch(opt, set) {
-    const { fb, ctx } = surface(RM.CELL_W, SWATCH_H);
-    if (set.kind === S.KIND_DRAW) {
-        const kx = Math.floor((RM.CELL_W - RM.KW) / 2);
-        opt.draw(ctx, kx, 0, 0.62);
-    }
+    const size = probeSizeOf(set);
+    const { fb, ctx } = surface(size.w, size.h);
+    if (set.kind === S.KIND_DRAW) paintProbe(set, ctx, opt.draw, 0.62);
     return fb;
 }
 
@@ -152,11 +173,11 @@ function renderSwatch(opt, set) {
  * that does not draw its own will lose them on a bracketed cell. The fixture
  * page has none.
  */
-function renderInContext(opt, set, pageCase, slots) {
-    const { fb, ctx } = surface();
-    RM.renderPageMovy(ctx, pageCase);
-    if (set.kind !== S.KIND_DRAW) return fb;
-
+function paintInContext(set, ctx, draw, pageCase, slots) {
+    /* A set whose widget is not the knob says where it goes -- the footer band
+     * is one call at the bottom of the page, a viz cell is a rect rather than a
+     * (kx, ky). The default below stays exactly what it was. */
+    if (typeof set.context === "function") { set.context(ctx, draw, { RM, slots, pageCase }); return; }
     for (const slot of slots) {
         const row = slot < 4 ? 0 : 1;
         const col = slot % 4;
@@ -167,8 +188,15 @@ function renderInContext(opt, set, pageCase, slots) {
         /* A spread of values across the row, so one page shows the option at
          * the bottom, the middle and the top of its travel at once. */
         const v = (slot + 1) / 9;
-        opt.draw(ctx, kx, rowY, v);
+        draw(ctx, kx, rowY, v);
     }
+}
+
+function renderInContext(opt, set, pageCase, slots) {
+    const { fb, ctx } = surface();
+    RM.renderPageMovy(ctx, pageCase);
+    if (set.kind !== S.KIND_DRAW) return fb;
+    paintInContext(set, ctx, opt.draw, pageCase, slots);
     return fb;
 }
 
@@ -179,14 +207,21 @@ function renderSet(set, pageCase) {
     const slots = knobSlots(pageCase);
 
     if (set.kind === S.KIND_DRAW) {
-        const base = surface(RM.CELL_W, SWATCH_H);
-        const bkx = Math.floor((RM.CELL_W - RM.KW) / 2);
-        RM.drawArcKnob(base.ctx, bkx, 0, 0.62);
+        /* The NOW row is the widget this set replaces, drawn through the SAME
+         * probe every option gets. A baseline rendered any other way is not
+         * comparable with the ten rows under it -- which matters most for the
+         * opaque cell, whose frame is drawn by the grid rather than by the
+         * widget, and would be missing from a baseline that called the shipping
+         * function directly. */
+        const bsize = probeSizeOf(set);
+        const base = surface(bsize.w, bsize.h);
+        paintProbe(set, base.ctx, set.baseline || RM.drawArcKnob, 0.62);
         writePng(base.fb, path.join(dir, "baseline.png"), 4);
         sheetFrames.push(sheetRow(base.fb, "NOW"));
 
         const basePage = surface();
         RM.renderPageMovy(basePage.ctx, pageCase);
+        if (set.baseline) paintInContext(set, basePage.ctx, set.baseline, pageCase, slots);
         writePng(basePage.fb, path.join(dir, "baseline-page.png"), 4);
     }
 

@@ -98,17 +98,34 @@ Promise.all([
 
   console.log("PASS: dither densities");
 
-  /* ---- every draw option stays inside its widget box ----
-   * One row of overflow lands on the label row, which the grid does not
-   * repaint, so it shows up on hardware and nowhere else. */
+  /* ---- every draw option stays inside its own surface ----
+   *
+   * For a knob that surface is the KW x BOX_H widget box: one row of overflow
+   * lands on the label row, which the grid does not repaint, so it shows up on
+   * hardware and nowhere else.
+   *
+   * Not every set replaces a knob, and the ones that do not have neither that
+   * signature nor that surface -- a fader takes a viz rect and a metaIndex, a
+   * footer takes a hint list, an opaque cell takes a value and an override. So
+   * a set declares `probeSize` and `probe`, and this asserts against WHAT THE
+   * SET SAYS ITS SURFACE IS. That is the same pair the catalog renders its
+   * swatch through, deliberately: if the judged surface and the asserted
+   * surface could differ, this test would prove nothing about what the contact
+   * sheet shows.
+   *
+   * The footer set is where this earns its keep. Its surface is the nine rows
+   * RULE_Y..63, so an option that reaches up into the label strip or down off
+   * the bottom of the screen fails here rather than silently overprinting. */
   const RM = await import("./src/shared/param_pages/render_page_movy.mjs");
   for (const set of S.SETS) {
     if (set.kind !== S.KIND_DRAW) continue;
+    const size = set.probeSize || { w: RM.KW, h: RM.BOX_H };
     for (const o of set.options) {
       for (const v of [0, 0.25, 0.5, 0.75, 1]) {
-        const wfb = H.createFramebuffer(RM.KW, RM.BOX_H);
+        const wfb = H.createFramebuffer(size.w, size.h);
         const wctx = H.drawContext(wfb);
-        o.draw(wctx, 0, 0, v);
+        if (typeof set.probe === "function") set.probe(wctx, o.draw, v);
+        else o.draw(wctx, 0, 0, v);
         if (wfb.clipped() !== 0)
           fail(set.id + "/" + o.id + " at v=" + v + " drew " + wfb.clipped() + " pixel(s) outside its box");
         if (wfb.countLit() === 0)
