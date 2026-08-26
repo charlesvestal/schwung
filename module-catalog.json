@@ -169,6 +169,17 @@
       "min_host_version": "0.7.13"
     },
     {
+      "id": "ruminant",
+      "name": "Ruminant",
+      "description": "Frequency-shifting feedback delay for metallic echoes, phasing, flanging, and inharmonic dub textures",
+      "author": "mestela",
+      "component_type": "audio_fx",
+      "github_repo": "mestela/schwung-ruminant",
+      "default_branch": "main",
+      "asset_name": "ruminant-module.tar.gz",
+      "min_host_version": "0.12.1"
+    },
+    {
       "id": "junologue-chorus",
       "name": "Junologue Chorus",
       "description": "Junologue Chorus - Juno-60 chorus emulation (I, I+II, II modes)",
