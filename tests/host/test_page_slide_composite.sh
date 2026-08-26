@@ -30,6 +30,9 @@ import { createController, LAYOUT_MOVY, LAYOUT_LIST }
 import { createFramebuffer, drawContext } from "./tools/param-pages/harness.mjs";
 import { BAR_Y } from "./src/shared/param_pages/render_page_movy.mjs";
 import { RULE_Y } from "./src/shared/list_geometry.mjs";
+import { frames } from "./tools/param-pages/page_frames.mjs";
+import { makeController, makeStore, TITLE, FOOTER } from "./tools/param-pages/page_frames.mjs";
+import { readFileSync } from "node:fs";
 
 let fail = 0;
 const ok = (c, m) => { console.log((c ? "PASS" : "FAIL") + ": " + m); if (!c) fail++; };
@@ -115,8 +118,16 @@ const drawAt = (idx, extra) => {
 const cur = ctl.state.pageIndex;
 ok(key(drawAt(cur)) !== key(drawAt(cur + 1)),
    "drawPage at a different index draws a different page, not the current one");
+
+/* THIS ONE IS A TAUTOLOGY AND IS KEPT ONLY AS A SMOKE TEST.
+   render() CALLS drawPage, so both sides move together and it says nothing
+   about the frame being what it was BEFORE the refactor. It was believed to
+   say that, and it does not: flipping drawPage`s `chrome` default from true to
+   false -- which strips the bank bar and the footer from every page of the
+   real UI -- passed this and every other assertion in the file. The real
+   byte-identity gate is the pre-refactor baseline below. */
 ok(key(drawAt(cur)) === key(shot()),
-   "drawPage at the current index reproduces the ordinary render exactly");
+   "drawPage at the current index agrees with render (smoke, not a baseline)");
 
 /* THE INDEX MUST REACH EVERY KIND, not just the knob grid.
    Drawing index i must equal what the ordinary render draws once the cursor is
@@ -235,12 +246,6 @@ ok(listIdx >= 0, "the list-layout fixture has a knob page to draw as rows");
     ok(entered, "the fixture door page can be entered");
     ok(key(drawAt(j)) !== inert,
        "entering the CURRENT page changes how drawPage draws it");
-    /* Now leave it, without exiting: the menu state stays keyed by page name.
-       Drawn from another index, the same page must be inert again. */
-    const away = settle(j === cur ? kinds.knobs : cur);
-    ok(away !== j, "the door test can stand somewhere else");
-    ok(key(drawAt(j)) === inert,
-       "a page drawn while NOT current is never drawn as entered");
     ctl.exitMenu();
   }
 }
@@ -250,14 +255,190 @@ ok(listIdx >= 0, "the list-layout fixture has a knob page to draw as rows");
    a one-entry cache would thrash and re-detect twice a frame. Measured by
    counting resolutions through the metaIndex the resolver reads. */
 {
-  const seen = [];
-  const idx = kinds.knobs !== undefined ? kinds.knobs : cur;
-  ctl.goToPage(idx);
-  for (let n = 0; n < 4; n++) { clock += 18; ctl.tick(); }
-  const g1 = ctl.vizGroups();
-  const g2 = ctl.vizGroups();
-  ok(g1 === g2, "vizGroups returns the SAME array object on a repeat call (cached)");
-  seen.push(g1);
+  /* TWO DIFFERENT INDICES, ALTERNATING -- asking twice at the same index is
+     what the OLD single-entry cache already did correctly, so that assertion
+     could not fail and did not measure the widening at all. A slide draws A
+     and B within one frame, so the sequence that matters is A, B, A: with one
+     entry, B evicts A and the third call rebuilds a fresh array. */
+  const knobIdx = [];
+  for (let i = 0; i < ctl.state.pages.length; i++) {
+    if (ctl.state.pages[i].kind === "knobs") knobIdx.push(i);
+  }
+  ok(knobIdx.length >= 2, "the fixture has two knob pages to alternate between");
+  const A = knobIdx[0], B = knobIdx[1];
+  const a1 = ctl.vizGroupsFor(A);
+  ok(a1 === ctl.vizGroupsFor(A), "vizGroupsFor caches a repeat call at one index");
+  const b1 = ctl.vizGroupsFor(B);
+  ok(b1 !== a1, "the two pages resolve to different group objects");
+  ok(ctl.vizGroupsFor(A) === a1,
+     "A, B, A returns the ORIGINAL A -- a one-entry cache would rebuild it");
+  ok(ctl.vizGroupsFor(B) === b1, "and B is still cached too: both pages of a slide fit");
+}
+
+/* ------------------------------------------------------------------------ *
+ * THE ACTUAL BYTE-IDENTITY GATE.
+ *
+ * Everything above compares the new controller against itself. This compares
+ * it against a baseline generated from the PARENT of the refactor commit --
+ * real pre-refactor code, driven by the same scenario file
+ * (tools/param-pages/page_frames.mjs), covering all four page kinds in both
+ * layouts, with and without a footer, plus the section picker and the hint
+ * over a knob page: 42 frames.
+ *
+ * This is the assertion that kills the chrome-default mutant. A caller of
+ * render() cannot ask for chrome, so if drawPage stopped defaulting it on, the
+ * bank bar and the footer would vanish from every page of the real UI -- and
+ * every self-comparison above would still pass, because both of their sides
+ * would have moved together.
+ * ------------------------------------------------------------------------ */
+{
+  const want = new Map();
+  for (const line of readFileSync("tests/fixtures/page-render-baseline.txt", "utf8")
+                      .trim().split("\n")) {
+    const [name, hash] = line.split("\t");
+    want.set(name, hash);
+  }
+  const got = frames();
+  ok(got.length === want.size && got.length > 0,
+     "the baseline covers every scenario the driver produces (" + got.length + ")");
+  let bad = [];
+  for (const f of got) if (want.get(f.name) !== f.frame) bad.push(f.name);
+  ok(bad.length === 0,
+     "every frame is byte-identical to the PRE-REFACTOR baseline" +
+     (bad.length ? " -- differs: " + bad.join(", ") : ""));
+}
+
+/* ------------------------------------------------------------------------ *
+ * THE ENTERED QUALIFIER, IN THE STATE IT EXISTS FOR.
+ *
+ * `menuEntered() && index === s.pageIndex` only does work when a page IS
+ * entered and we are drawing a DIFFERENT index. The earlier version of this
+ * test left the entered page via goToPage -- which clears s.menuEntered
+ * whenever the destination name differs -- so menuEntered() was already false
+ * by the time it drew and the qualifier was never consulted. Dropping
+ * `&& index === s.pageIndex` from all four call sites, one at a time, left it
+ * green four times out of four.
+ *
+ * So: enter a door page, LEAVE IT CURRENT, and draw the other door pages from
+ * there. Without the qualifier each of them draws itself as entered -- a
+ * highlighted row and no brackets -- which is what a page sliding in or out
+ * would have done on every frame of every slide.
+ * ------------------------------------------------------------------------ */
+{
+  const doors = [];
+  for (let i = 0; i < ctl.state.pages.length; i++) {
+    const k = ctl.state.pages[i].kind;
+    if (k === "menu" || k === "items" || k === "preset") doors.push(i);
+  }
+  ok(doors.length >= 2, "the fixture has several door pages (" + doors.length + ")");
+
+  /* Inert reference for each door, taken with NOTHING entered anywhere. */
+  ctl.exitMenu();
+  settle(cur);
+  const inert = new Map();
+  for (const d of doors) inert.set(d, key(drawAt(d)));
+
+  for (const host of doors) {
+    const j = settle(host);
+    if (j !== host) continue;              /* landed elsewhere; skip this host */
+    if (!ctl.enterMenu()) continue;        /* nothing to enter on this one */
+    ok(ctl.state.pageIndex === j, "the entered door page is still the current one");
+    for (const d of doors) {
+      if (d === j) continue;
+      ok(key(drawAt(d)) === inert.get(d),
+         ctl.state.pages[d].kind + " drawn while " + ctl.state.pages[j].kind +
+         " is entered is still INERT");
+    }
+    ctl.exitMenu();
+  }
+
+  /* And the knobs-as-list fork, which is a fifth site with its own copy of the
+     qualifier: enter one knob page in LAYOUT_LIST, draw another from it. */
+  const lk = [];
+  for (let i = 0; i < ctlL.state.pages.length; i++) {
+    if (ctlL.state.pages[i].kind === "knobs") lk.push(i);
+  }
+  ok(lk.length >= 2, "the list fixture has two knob pages");
+  const settleL = (i) => {
+    ctlL.goToPage(i);
+    for (let n = 0; n < 6; n++) { clock += 18; ctlL.tick(); }
+    return ctlL.state.pageIndex;
+  };
+  ctlL.exitMenu();
+  settleL(lk[1]);
+  const inertL = (() => {
+    const fb = createFramebuffer();
+    ctlL.drawPage(drawContext(fb), lk[1], OPTS());
+    return key(fb);
+  })();
+  const hostL = settleL(lk[0]);
+  if (hostL === lk[0] && ctlL.enterMenu()) {
+    const fb = createFramebuffer();
+    ctlL.drawPage(drawContext(fb), lk[1], OPTS());
+    ok(key(fb) === inertL,
+       "knobs-as-list drawn while ANOTHER knob page is entered is still INERT");
+    ctlL.exitMenu();
+  } else {
+    ok(false, "the list fixture could not enter a knob page to set up the case");
+  }
+}
+
+/* ------------------------------------------------------------------------ *
+ * THE HINT UNDERLAY IS THE REAL PAGE. A deliberate behaviour change, pinned.
+ *
+ * The old render() put the hint early-out ABOVE the per-kind dispatch and drew
+ * the knob grid underneath, so a hint over a menu page showed the wrong page
+ * wearing the right chrome. Now it dispatches by kind first. Asserted as
+ * "the underlay equals the page itself", not merely "it changed" -- the latter
+ * would pass for any other underlay, including a second wrong one.
+ * ------------------------------------------------------------------------ */
+{
+  const clockRef = { t: 1000 };
+  const h = makeController(clockRef, makeStore());
+  h.setLayout(LAYOUT_MOVY);
+  h.load({ prefix: "synth" });
+  for (let n = 0; n < 60; n++) { clockRef.t += 18; h.tick(); }
+  let menuIdx = -1;
+  for (let i = 0; i < h.state.pages.length; i++) {
+    if (h.state.pages[i].kind === "menu") menuIdx = i;
+  }
+  ok(menuIdx >= 0, "the hint fixture has a menu page");
+  h.goToPage(menuIdx);
+  for (let n = 0; n < 18; n++) { clockRef.t += 18; h.tick(); }
+  const j = h.state.pageIndex;
+  ok(h.state.pages[j].kind === "menu", "the hint fixture settled on the menu page");
+
+  /* The menu page, and a knob page, each drawn plainly. */
+  const plainMenu = createFramebuffer();
+  h.drawPage(drawContext(plainMenu), j, { title: TITLE, footer: FOOTER });
+  let knobIdx = -1;
+  for (let i = 0; i < h.state.pages.length; i++) {
+    if (h.state.pages[i].kind === "knobs" && knobIdx < 0) knobIdx = i;
+  }
+  const plainKnobs = createFramebuffer();
+  h.drawPage(drawContext(plainKnobs), knobIdx, { title: TITLE, footer: FOOTER });
+
+  /* Now with the hint up. Compare only the rows the hint panel does NOT cover,
+     which is what "the underlay" means -- the panel itself is identical either
+     way and would swamp a whole-frame comparison. */
+  h.showHint(["one", "two"], "H");
+  const hinted = createFramebuffer();
+  h.render(drawContext(hinted), { title: TITLE, footer: FOOTER });
+
+  const rowsMatching = (a, b) => {
+    let n = 0;
+    for (let y = 0; y < 64; y++) {
+      let same = true;
+      for (let x = 0; x < 128; x++) if (a.pixels[y * 128 + x] !== b.pixels[y * 128 + x]) { same = false; break; }
+      if (same) n++;
+    }
+    return n;
+  };
+  const vsMenu = rowsMatching(hinted, plainMenu);
+  const vsKnobs = rowsMatching(hinted, plainKnobs);
+  ok(vsMenu > vsKnobs,
+     "a hint over a MENU page draws the menu underneath, not the knob grid (" +
+     vsMenu + " rows match the menu vs " + vsKnobs + " the grid)");
 }
 
 process.exit(fail ? 1 : 0);
