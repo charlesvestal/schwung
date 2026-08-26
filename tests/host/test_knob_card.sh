@@ -261,12 +261,13 @@ Promise.all([
     const full = KC.knobCardRect(true), short = KC.knobCardRect(false);
     const eq = (a, b, what) => { if (a !== b) fail(what + ": expected " + b + ", got " + a); };
     eq(full.x, 3, "full.x"); eq(full.y, 12, "full.y"); eq(full.w, 122, "full.w"); eq(full.h, 38, "full.h");
-    /* short.y was 24 while HEADER_H was 7. The card is CENTRED in
-       HEADER_H+1..RULE_Y, so a one-row-shorter header moves the odd remainder
-       by one; the full card, whose remainder is even, does not move at all.
+    /* short.y tracks HEADER_H: the card is CENTRED in HEADER_H+1..RULE_Y, so a
+       one-row-shorter header moves the odd remainder by one while the full
+       card, whose remainder is even, does not move at all. It read 23 for the
+       one release the header band was 6 rows, and 24 either side of that.
        Both numbers stay literal on purpose -- deriving them here would restate
        knobCardRect rather than pin it. */
-    eq(short.x, 3, "short.x"); eq(short.y, 23, "short.y"); eq(short.w, 122, "short.w"); eq(short.h, 15, "short.h");
+    eq(short.x, 3, "short.x"); eq(short.y, 24, "short.y"); eq(short.w, 122, "short.w"); eq(short.h, 15, "short.h");
     if (full.y + full.h > RM.RULE_Y) fail("full card overlaps the footer rule");
     if (full.y < RM.HEADER_H + 1) fail("full card overlaps the screen header");
     eq(KC.knobCardContentW(), 116, "knobCardContentW");
