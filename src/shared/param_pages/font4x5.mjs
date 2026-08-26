@@ -37,7 +37,7 @@
  * screen. The rest are authored to match their weight and construction.
  */
 
-const CHARS = " !\"'()+,-./:0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ%<>=?*#&_\\^";
+export const CHARS = " !\"'()+,-./:0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ%<>=?*#&_\\^";
 
 /* Row bit values, 4-wide: col0=1 col1=2 col2=4 col3=8
  *   ....=0  #...=1  .#..=2  ##..=3  ..#.=4  #.#.=5  .##.=6  ###.=7
@@ -162,3 +162,10 @@ export function missingGlyphs4x5(str) {
 /** Measuring stand-in for render_page.mjs's fitText/shortenLabel, which
  *  measure through `ctx.textWidth`. */
 export const FONT4_MEASURE = { textWidth: fontWidth4x5 };
+
+/* Test-only: tests/host/test_style_catalog.sh asserts that no SCH-50 font
+ * option reproduces the nine glyphs this file documents as Elektron
+ * letterforms. The assertion cannot be written without reading the table it
+ * compares against, and there is no other reader — nothing on the draw path
+ * imports either of these two names. Additive; no behaviour changes. */
+export const GLYPHS_FOR_TEST = G;
