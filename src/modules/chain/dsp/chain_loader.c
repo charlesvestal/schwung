@@ -157,6 +157,28 @@ static void loader_thread_demote(void) {
 #endif
 }
 
+/*
+ * The seqlock PAYLOAD copy, isolated into two named functions purely so a
+ * ThreadSanitizer suppression can name them and nothing else.
+ *
+ * A seqlock reader deliberately reads bytes that may be concurrently written
+ * and then DISCARDS what it read if the sequence counter moved. That is the
+ * algorithm working, not a bug — but by the letter of the C11 model the copy
+ * itself is a data race, and TSan has no way to see the validation that
+ * follows. It is the well-known seqlock blind spot.
+ *
+ * Keeping these two lines in functions of their own means the suppression in
+ * tests/host/tsan.supp covers exactly the copy and stays out of the way of any
+ * real race elsewhere in the request path. Do not inline them back.
+ */
+static void seqlock_write_payload(char *dst, size_t dst_len, const char *src) {
+    snprintf(dst, dst_len, "%s", src);
+}
+
+static void seqlock_read_payload(char *dst, size_t dst_len, const char *src) {
+    snprintf(dst, dst_len, "%s", src);
+}
+
 /* Copy the outstanding request out of the seqlock. Returns 0 if a stable
  * reading was obtained. */
 static int loader_read_request(chain_loader_t *ld, char *out, int out_len,
@@ -164,7 +186,7 @@ static int loader_read_request(chain_loader_t *ld, char *out, int out_len,
     for (int spin = 0; spin < 1000; spin++) {
         unsigned s1 = ld_acq(&ld->req_seq);
         if (s1 & 1u) continue;              /* writer mid-update */
-        snprintf(out, (size_t)out_len, "%s", ld->req_module);
+        seqlock_read_payload(out, (size_t)out_len, ld->req_module);
         unsigned g = ld_acq(&ld->req_gen);
         unsigned s2 = ld_acq(&ld->req_seq);
         if (s1 == s2) { *gen_out = g; return 0; }
@@ -293,7 +315,7 @@ int chain_loader_request_synth(chain_instance_t *inst, const char *module_name) 
     /* Seqlock write. The SPI thread never waits here — that is the point.
      * Sole writer, so the read-modify-writes need no atomic RMW. */
     st_rel(&ld->req_seq, ld->req_seq + 1);          /* odd: writing */
-    snprintf(ld->req_module, sizeof(ld->req_module), "%s", module_name);
+    seqlock_write_payload(ld->req_module, sizeof(ld->req_module), module_name);
     /* INSIDE the seqlock, so a reader gets the name and the generation that
      * belong together. Bumping it after the even marker would let the loader
      * pair a new name with the old generation, discover the mismatch only
