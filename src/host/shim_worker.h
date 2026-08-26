@@ -29,7 +29,10 @@
 /* One-shot flags: worker unlinks the trigger file and sets the bit; the
  * RT consumer clears it with shim_debug_flag_consume(). */
 #define SHIM_FLAG_SLOT_FX_DUMP   (1u << 8)  /* slot_fx_dump_trigger */
-#define SHIM_FLAG_ALIGN_DUMP     (1u << 9)  /* align_dump_trigger */
+/* (1u << 9) was SHIM_FLAG_ALIGN_DUMP. The align dump moved off the SPI
+ * callback entirely — the worker arms and drains it (align_capture.h), so
+ * there is nothing for the RT side to consume. Left as a hole on purpose:
+ * reusing the bit would make a stale build read one trigger as another. */
 #define SHIM_FLAG_MAIN_FX_DUMP   (1u << 10) /* main_fx_dump_trigger */
 
 extern volatile uint32_t shim_debug_flags;

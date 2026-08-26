@@ -83,6 +83,7 @@ if [ -z "$CROSS_PREFIX" ] && [ ! -f "/.dockerenv" ]; then
         -e DISABLE_SCREEN_READER="$DISABLE_SCREEN_READER" \
         -e REQUIRE_SCREEN_READER="$REQUIRE_SCREEN_READER" \
         -e SCHWUNG_BUILD_TEST_MODULES="${SCHWUNG_BUILD_TEST_MODULES:-}" \
+        -e SCHWUNG_ALLOW_NO_LINK_SDK="${SCHWUNG_ALLOW_NO_LINK_SDK:-0}" \
         "$IMAGE_NAME"
 
     echo ""
@@ -246,6 +247,7 @@ if needs_rebuild build/schwung-shim.so \
     src/host/unified_log.c src/host/shim_worker.c \
     src/host/rt_thread_audit.c src/host/rt_thread_audit.h \
     src/host/spi_tally.c src/host/spi_tally.h \
+    src/host/align_capture.c src/host/align_capture.h \
     src/host/shadow_shm_util.c src/host/schwung_trace.c src/host/shadow_test_stream.c src/host/shadow_test_stream.h \
     $SHIM_TTS_SRC \
     src/host/shadow_constants.h src/host/shadow_midi_inject_writer.h src/host/shadow_midi.h src/host/shadow_sampler.h \
@@ -283,6 +285,7 @@ if needs_rebuild build/schwung-shim.so \
         src/host/shim_worker.c \
         src/host/rt_thread_audit.c \
         src/host/spi_tally.c \
+        src/host/align_capture.c \
         src/host/shadow_shm_util.c \
         src/host/schwung_trace.c \
         src/host/shadow_test_stream.c \
@@ -380,7 +383,31 @@ if [ -d "./libs/link/include/ableton" ]; then
         echo "Skipping Link Audio subscriber (up to date)"
     fi
 else
-    echo "Warning: Link SDK not found at libs/link/, skipping link-subscriber"
+    # A WARNING HERE IS NOT ENOUGH, and this is why.
+    #
+    # link-subscriber is the sole reception path for Move->Schwung audio.
+    # package.sh adds it only "if it was built", and install.sh only ever
+    # KILLS it — it never installs one. So an uninitialised libs/link submodule
+    # produced a working-looking tarball with no sidecar in it, and the copy on
+    # the device simply never changed. It sat there from July through weeks of
+    # deploys, and through a three-host-version bisect of a Link Audio bug as
+    # the one component nobody was varying. The build said so, once, in a line
+    # that scrolled past.
+    #
+    # Fail instead. SCHWUNG_ALLOW_NO_LINK_SDK=1 is the deliberate opt-out for
+    # anyone who really does want a build without it.
+    if [ "${SCHWUNG_ALLOW_NO_LINK_SDK:-0}" = "1" ]; then
+        echo "Warning: Link SDK not found at libs/link/, skipping link-subscriber"
+        echo "         (SCHWUNG_ALLOW_NO_LINK_SDK=1 — Move->Schwung audio will not work)"
+    else
+        echo "ERROR: Link SDK not found at libs/link/ — cannot build link-subscriber." >&2
+        echo "       Move->Schwung (Link Audio) has no reception path without it, and" >&2
+        echo "       the tarball would silently ship without one." >&2
+        echo "" >&2
+        echo "       Fix:  git submodule update --init --recursive libs/link" >&2
+        echo "       Or:   SCHWUNG_ALLOW_NO_LINK_SDK=1 ./scripts/build.sh" >&2
+        exit 1
+    fi
 fi
 
 # Build MIDI inject test tool
