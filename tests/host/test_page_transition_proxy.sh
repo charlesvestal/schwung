@@ -384,5 +384,61 @@ for (const [label, adv] of [["linear", advanceLinear], ["eased", advanceEased], 
   }
 }
 
+
+/* A ZERO dt MUST NOT END THE SLIDE, and on this device dt is OFTEN zero.
+ *
+ * Date.now() here is quantized to ~11-12ms against a ~17ms tick, so two
+ * consecutive ticks regularly read the SAME clock value. A step of zero
+ * therefore means NO TIME HAS PASSED -- not "there is no progress left to
+ * draw", which is what the sub-pixel termination means. Conflating them ended
+ * the slide on the first frame of most page changes; measured on hardware as
+ * dt=0ms with the position snapping to the target and zero composited frames.
+ *
+ * Driven through a QUANTIZED clock rather than a clean one, because a test
+ * that hands the advance a tidy 17ms every time cannot see this at all -- and
+ * did not: every other assertion in this file was green while the animation
+ * was invisible on the panel. */
+for (const [label, adv] of [["linear", advanceLinear], ["eased", advanceEased], ["shipping", advanceScroll]]) {
+  ok(adv(0, 1, 0, 160) === 0,
+     label + ": a dt of ZERO leaves the position alone (it must not settle)");
+
+  /*
+   * The real shape, taken from the hardware log rather than invented.
+   *
+   * The dt that matters is NOT tick-to-tick -- a 17ms tick always crosses a
+   * 12ms quantum, so that gap is never zero and a probe built on it cannot see
+   * this bug (my first one could not, and reported 0 zero-dt ticks).
+   *
+   * It is JOG-to-TICK: aimScroll stamps the clock when the page changes, and
+   * the very next tick reads Date.now() a few milliseconds later -- inside the
+   * SAME quantum, so dt is 0. That is the first frame of the slide, and
+   * ending it there is ending the whole animation.
+   */
+  const QUANTUM = 12;
+  const q = (t) => Math.floor(t / QUANTUM) * QUANTUM;
+  let zeros = 0, worst = 0;
+  for (let offsetIntoQuantum = 0; offsetIntoQuantum < QUANTUM; offsetIntoQuantum++) {
+    let realT = 1000 + offsetIntoQuantum;
+    const stamp = q(realT);            /* aimScroll, at jog time */
+    let pos = 0, frames = 0, last = stamp;
+    for (let i = 0; i < 400 && pos !== 1; i++) {
+      realT += (i === 0) ? 4 : 17;     /* the first tick lands ~4ms after the jog */
+      const clock = q(realT);
+      const dt = clock - last;
+      last = clock;
+      if (i === 0 && dt === 0) zeros++;
+      pos = adv(pos, 1, dt, 160);
+      frames++;
+    }
+    if (worst === 0 || frames < worst) worst = frames;
+  }
+  ok(zeros > 0,
+     label + ": the jog-to-tick gap really does land inside one clock quantum (" +
+     zeros + " of " + QUANTUM + " phases give dt=0)");
+  ok(worst >= 6,
+     label + ": the slide survives a dt=0 first frame at EVERY clock phase -- " +
+     "worst case " + worst + " frames, not 1");
+}
+
 process.exit(fail ? 1 : 0);
 '

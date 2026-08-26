@@ -246,7 +246,14 @@ export function advanceLinear(pos, target, dtMs, ms) {
      * is no progress left to draw. A duration so long that even the FIRST step
      * is sub-pixel correctly becomes a cut; at 16.7ms/frame that is past 2s.
      */
-    if (Math.abs(next - pos) < SNAP_PAGES) return target;
+    /* ...but ONLY when time actually advanced. A zero-size step from dt=0
+     * means NO TIME HAS PASSED, not "the animation is over" -- and dt=0 is
+     * the COMMON case here, because this device's clock is quantized to
+     * ~11-12ms against a ~17ms tick, so a jog and its tick often land inside
+     * the same quantum. Conflating the two ended the slide on the first frame
+     * of most page changes: measured on hardware as dt=0ms with the position
+     * jumping straight to the target, drawing zero composited frames. */
+    if (dtMs > 0 && Math.abs(next - pos) < SNAP_PAGES) return target;
     return next;
 }
 
@@ -308,7 +315,14 @@ export function advanceEased(pos, target, dtMs, ms) {
      * is no progress left to draw. A duration so long that even the FIRST step
      * is sub-pixel correctly becomes a cut; at 16.7ms/frame that is past 2s.
      */
-    if (Math.abs(next - pos) < SNAP_PAGES) return target;
+    /* ...but ONLY when time actually advanced. A zero-size step from dt=0
+     * means NO TIME HAS PASSED, not "the animation is over" -- and dt=0 is
+     * the COMMON case here, because this device's clock is quantized to
+     * ~11-12ms against a ~17ms tick, so a jog and its tick often land inside
+     * the same quantum. Conflating the two ended the slide on the first frame
+     * of most page changes: measured on hardware as dt=0ms with the position
+     * jumping straight to the target, drawing zero composited frames. */
+    if (dtMs > 0 && Math.abs(next - pos) < SNAP_PAGES) return target;
     return next;
 }
 
