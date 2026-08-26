@@ -97,5 +97,25 @@ Promise.all([
   if (fb2.pixels[0 * 8 + 0]) fail("fillTerrain filled above the curve");
 
   console.log("PASS: dither densities");
+
+  /* ---- every draw option stays inside its widget box ----
+   * One row of overflow lands on the label row, which the grid does not
+   * repaint, so it shows up on hardware and nowhere else. */
+  const RM = await import("./src/shared/param_pages/render_page_movy.mjs");
+  for (const set of S.SETS) {
+    if (set.kind !== S.KIND_DRAW) continue;
+    for (const o of set.options) {
+      for (const v of [0, 0.25, 0.5, 0.75, 1]) {
+        const wfb = H.createFramebuffer(RM.KW, RM.BOX_H);
+        const wctx = H.drawContext(wfb);
+        o.draw(wctx, 0, 0, v);
+        if (wfb.clipped() !== 0)
+          fail(set.id + "/" + o.id + " at v=" + v + " drew " + wfb.clipped() + " pixel(s) outside its box");
+        if (wfb.countLit() === 0)
+          fail(set.id + "/" + o.id + " at v=" + v + " drew nothing at all");
+      }
+    }
+  }
+  console.log("PASS: draw options stay in their boxes");
 }).catch((e) => { console.log("FAIL: " + (e && e.stack || e)); process.exit(1); });
 '
