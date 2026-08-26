@@ -124,18 +124,23 @@ let framed = false;
 for (let y = Y; y < Y + BOX_H; y++) if (rowRun(y) >= 14) framed = true;
 ok(!framed, "no horizontal rule is drawn -- this cell has no frame");
 
-/* IT IS THE BIG FONT. The whole point of dropping the box is that the value
-   gets the device 6x7 rather than the enum square condensed 4x5, so the glyphs
-   must be TALLER than 5 rows. Measured as the span of lit rows. */
+/* IT IS THE BIG FONT, AND IT IS BIGGER THAN THE BODY FONT.
+   This used to bound the glyphs at the device font height, on the reasoning
+   that dropping the box promoted the value from the 4x5 enum font to the 6x7
+   body font. Unframed at 7 rows the cell then read as BARE, so it now takes the
+   Tamzen 8x16 cut and the upper bound is the WIDGET BOX -- which is what
+   actually constrains it. The lower bound moves with it: no taller than the
+   body font would now be a regression, not a limit. */
 let top = -1, bot = -1;
 for (let y = 0; y < fb.height; y++)
   for (let x = 0; x < fb.width; x++)
     if (fb.pixels[y * fb.width + x]) { if (top < 0) top = y; bot = y; }
 ok(top >= 0, "something was drawn");
-ok(bot - top + 1 > 5,
-   "the glyphs are taller than the 4x5 enum font, got " + (bot - top + 1) + " rows");
-ok(bot - top + 1 <= HEIGHT,
-   "and no taller than the device font, got " + (bot - top + 1));
+ok(bot - top + 1 > HEIGHT,
+   "the glyphs are taller than the " + HEIGHT + "-row body font, got " +
+   (bot - top + 1) + " rows -- otherwise the cell is bare again");
+ok(bot - top + 1 <= BOX_H,
+   "and inside the widget box, got " + (bot - top + 1) + " of " + BOX_H);
 
 /* CENTRED ON THE CELL, not left-aligned at it -- the width changes with the
    sign and the digit count, so only drawBigNumber can place it. */
@@ -160,6 +165,7 @@ process.exit(fail ? 1 : 0);
 node --input-type=module -e '
 import { createFramebuffer, drawContext } from "./tools/param-pages/harness.mjs";
 import * as RM from "./src/shared/param_pages/render_page_movy.mjs";
+import { HEIGHT as NUM_H } from "./src/shared/param_pages/font_big_num.mjs";
 
 let fail = 0;
 const ok = (c, m) => { console.log((c ? "PASS" : "FAIL") + ": " + m); if (!c) fail++; };
@@ -193,13 +199,20 @@ const arced  = render(amt, "64");
 
 /*
  * An ARC is a ring: it lights pixels in the widget rows well away from the
- * cell centre line. A big number is glyphs on one text baseline. So count lit
- * pixels in the top third of the widget box -- the arc has them, the number
- * does not, because it is centred in a 15px box at 7px tall.
+ * cell centre line. A big number is glyphs on one text baseline, centred in the
+ * box, so the rows ABOVE it are empty.
+ *
+ * The band is DERIVED from the font height, not fixed at three rows. It was
+ * three, which encoded "a 7px glyph centred in a 15px box leaves 4 clear rows"
+ * -- a proxy that silently became wrong the moment the cell took a taller face,
+ * and failed as though the number had grown a ring. What is actually being
+ * asserted is that the number does not reach where the arc does, so the empty
+ * band has to move with the glyphs.
  */
+const CLEAR_ROWS = Math.floor((RM.BOX_H - NUM_H) / 2);
 const upperLit = (fb) => {
   let n = 0;
-  for (let y = RM.ROW0_Y; y < RM.ROW0_Y + 3; y++)
+  for (let y = RM.ROW0_Y; y < RM.ROW0_Y + CLEAR_ROWS; y++)
     for (let x = 0; x < RM.CELL_W; x++) if (at(fb, x, y) === 1) n++;
   return n;
 };
@@ -208,8 +221,33 @@ ok(upperLit(arced) > 0,
 ok(upperLit(framed) === 0,
    "a small bipolar int does NOT -- it is one line of glyphs, not a ring "
    + "(got " + upperLit(framed) + " lit)");
-ok(framed.countLit() > 0 && framed.countLit() < arced.countLit(),
-   "and it really drew something, fewer pixels than the arc");
+/*
+ * Non-empty, and confined to its own glyph band.
+ *
+ * This used to require FEWER pixels than the arc, which was never the property
+ * being defended -- it was an accident of a 7px, 1px-stem face. A 2px-stem
+ * 11-row number legitimately carries more ink than a thin ring (84 against 56),
+ * so that clause started failing on a change that made the cell better.
+ *
+ * What actually separates the two is EXTENT, not quantity: the number occupies
+ * one text band, the arc spans the box.
+ */
+/* Bounded to the WIDGET BOX. `render` draws a whole page, so an unbounded walk
+ * measures the header down to the label row -- 29 rows for both cells, which
+ * says nothing about either. */
+const vExtent = (fb) => {
+  let lo = -1, hi = -1;
+  for (let y = RM.ROW0_Y; y < RM.ROW0_Y + RM.BOX_H; y++)
+    for (let x = 0; x < RM.CELL_W; x++)
+      if (at(fb, x, y) === 1) { if (lo < 0) lo = y; hi = y; break; }
+  return lo < 0 ? 0 : hi - lo + 1;
+};
+ok(framed.countLit() > 0, "and it really drew something");
+ok(vExtent(framed) <= NUM_H,
+   "the number is one band of glyphs, got " + vExtent(framed) + " rows for a " +
+   NUM_H + "-row font");
+ok(vExtent(arced) > NUM_H,
+   "the arc spans more than a text band, got " + vExtent(arced) + " rows");
 
 process.exit(fail ? 1 : 0);
 '

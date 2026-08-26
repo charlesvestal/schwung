@@ -44,17 +44,20 @@ const CHAIN_PARAMS = [
     options: ["Sine", "Tri", "Saw", "Square", "Noise"] },
   { key: "onoff", name: "Gate",  type: "enum", options: ["Off", "On"] },
   { key: "solo",  name: "Solo",  type: "enum", options: ["Only"] },  /* one option */
+  /* Two options that are a CHOICE, not a boolean -- drawn as an enum square,
+     so both words are NOT on the cell. Modelled on minijv chorus output. */
+  { key: "chorusout", name: "Chorus Out", type: "enum", options: ["Mix", "Reverb"] },
   { key: "bare",  name: "Bare",  type: "enum" },                  /* no options */
   { key: "gain",  name: "Gain",  type: "float", min: 0, max: 1, step: 0.01 },
 ];
 const HIER = { modes: null, levels: { root: { label: "T",
-  knobs: ["shape", "onoff", "solo", "bare", "gain"],
+  knobs: ["shape", "onoff", "solo", "chorusout", "bare", "gain"],
   params: CHAIN_PARAMS.map((p) => ({ key: p.key })) } } };
 
 let clock = 1000;
 function mk() {
   clock = 1000;
-  const store = { shape: "0", onoff: "0", solo: "0", bare: "0", gain: "0.5" };
+  const store = { shape: "0", onoff: "0", solo: "0", chorusout: "0", bare: "0", gain: "0.5" };
   const reads = [];
   const ctl = createController({
     getParam: (k) => {
@@ -138,9 +141,43 @@ const spin = (ctl, slot, n) => {
        "a ONE-option enum is not a list either -- there is nothing to scroll");
   }
   {
+    /* A SWITCH MUST NOT PEEK -- and the test is the WIDGET, not the option
+     * count.
+     *
+     * This used to assert that a two-option enum peeks ("Off/On is worth
+     * seeing"), which is true of a list in the abstract and false of this
+     * widget. A switch draws BOTH of its states: the track is one and its
+     * inversion is the other, which is the whole reason drawSwitch exists
+     * instead of a two-item enum square. A full-screen list of Off/On covers
+     * the row to say what the cell already says, on the widget most likely to
+     * be flipped repeatedly. Reported from the device. */
     const { ctl, slotOf } = mk();
     spin(ctl, slotOf("onoff"), 6);
-    ok(ctl.enumPeek() !== null, "a two-option enum DOES peek -- Off/On is worth seeing");
+    ok(ctl.enumPeek() === null,
+       "an Off/On enum is drawn as a SWITCH, which shows both states already");
+  }
+  {
+    /* THE COUNTERPART, AND IT IS THE IMPORTANT ONE. Suppressing on "two
+     * options" instead of on "is a switch" would look identical on the case
+     * above and be wrong for 134 cells in the fleet -- every two-way CHOICE
+     * that is not a boolean: Mix/Reverb, Saw/Square, Legato/Trig, Time/Rate,
+     * Bipolar/Unipolar. Those draw as enum squares showing ONE word, so the
+     * other word is exactly what a peek is for.
+     *
+     * `chorusout` is minijv:nvram_patchCommon_chorusoutput, named on the device
+     * as the case that must keep peeking. */
+    const { ctl, slotOf } = mk();
+    spin(ctl, slotOf("chorusout"), 6);
+    ok(ctl.enumPeek() !== null,
+       "a two-option CHOICE (Mix/Reverb) is not a switch and must still peek");
+  }
+  {
+    /* And a long enum, unchanged: its graphic shows the current shape but not
+     * the four names you could turn to. */
+    const { ctl, slotOf } = mk();
+    spin(ctl, slotOf("shape"), 6);
+    ok(ctl.enumPeek() !== null,
+       "a five-option enum still peeks -- its graphic shows one value, not the list");
   }
 }
 

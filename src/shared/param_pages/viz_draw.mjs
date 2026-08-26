@@ -27,13 +27,27 @@
 
 import {
     clamp01, fractionOf, line,
-    CHECKER, DIAG_HEAVY, fillDithered, dashedVRule, notchCorners,
+    CHECKER, fillDithered, dashedVRule, notchCorners,
 } from "./render_page.mjs";
 import {
     VIZ_ENVELOPE, VIZ_FILTER, VIZ_LFO, VIZ_WAVEFORM, VIZ_FADER, VIZ_SWITCH, VIZ_EQ, VIZ_SAMPLE,
 } from "./viz.mjs";
 import { enumIndexOf } from "./param_meta.mjs";
 import { wavPeaks, resamplePeaks } from "./wav_peaks.mjs";
+import { observe, easeOut, lerp } from "./anim_state.mjs";
+
+/* ------------------------------------------------------------- animation --
+ *
+ * EVERY ANIMATION HERE IS OPTIONAL, and that is a hard contract rather than a
+ * convenience. `anim` (a store from anim_state.mjs) and `nowMs` arrive as
+ * TRAILING parameters on drawVizGroup and on the two widgets that move; with
+ * neither supplied every widget draws exactly the pixels it drew before, which
+ * is what lets the pinned baselines, the host tests and the device stay
+ * untouched until a caller opts in. A missing `anim` is the normal case, not an
+ * error — do not "fix" it by defaulting to a fresh store, which would make the
+ * renderer stateful and every first frame animate.
+ */
+
 
 /* -------------------------------------------------------------- primitives */
 
@@ -42,6 +56,30 @@ function dot(ctx, x, y) { ctx.fillRect(x, y, 2, 2, 1); }
 function dottedV(ctx, x, y0, y1) {
     const lo = Math.min(y0, y1), hi = Math.max(y0, y1);
     for (let y = lo; y <= hi; y += 2) ctx.fillRect(x, y, 1, 1, 1);
+}
+
+/*
+ * A BOUNDARY INSIDE A DITHERED MASS IS A GAP, NOT A LINE.
+ *
+ * The envelope's section markers were `dottedV`, drawn over the CHECKER mass —
+ * and a dotted line over a 50% checker is never dotted. dottedV steps by 2, so
+ * every pixel it draws shares one parity of y; CHECKER lights (x+y)%2===0. So
+ * the whole marker either coincides with the mass and VANISHES, or falls
+ * entirely in its gaps and the column comes out SOLID WHITE. Which of the two
+ * you get is decided by the parity of (x + susY) — it changes as the value
+ * moves the boundary one pixel, so the same marker flickers between invisible
+ * and a hard white rule as a knob is turned. Reported from the device as a
+ * white line appearing where sections collide.
+ *
+ * Clearing instead of drawing is parity-independent by construction: black over
+ * anything is black. It also matches what the rest of the page already does
+ * with a mark on filled ground — the switch's slug is a knockout, the corner
+ * notches are knockouts.
+ */
+function knockoutV(ctx, x, y0, y1) {
+    const lo = Math.min(y0, y1), hi = Math.max(y0, y1);
+    if (hi < lo) return;
+    ctx.fillRect(x, lo, 1, hi - lo + 1, 0);
 }
 function dottedH(ctx, x0, x1, y) {
     const lo = Math.min(x0, x1), hi = Math.max(x0, x1);
@@ -479,8 +517,8 @@ function drawFullAdsr(ctx, x0, x1, topY, baseY, roles, values, metaIndex) {
     drawLine(ctx, sustStartX, susY, gateX, susY);     // sustain plateau
     drawLine(ctx, gateX, susY, relEndX, baseY);       // release fall
 
-    dottedV(ctx, sustStartX, susY, baseY);
-    dottedV(ctx, gateX, susY, baseY);
+    knockoutV(ctx, sustStartX, susY + 1, baseY - 1);
+    knockoutV(ctx, gateX, susY + 1, baseY - 1);
 
     dot(ctx, Math.max(x0, peakX - 1), topY);
     dot(ctx, sustStartX - 1, Math.max(topY, susY - 1));
@@ -554,7 +592,14 @@ function drawPartialEnv(ctx, leftX, xEnd, topY, baseY, present, roles, values, m
 
     for (let i = 0; i < pts.length - 1; i++) drawLine(ctx, pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1]);
     for (const [px, py] of pts) dot(ctx, Math.min(xEnd - 2, Math.max(leftX, px - 1)), Math.max(topY, py - 1));
-    if (has("sustain")) dottedV(ctx, Math.min(xEnd - 2, cur), susY, baseY);
+    /*
+     * Only where the plateau actually ENDS inside the cell. With no release the
+     * plateau runs to rightX, so the marker was clamped to xEnd-2 and drew a
+     * rule one pixel in from the edge, dividing the mass from nothing — which is
+     * where braids showed it, since braids declares attack/decay/sustain and no
+     * release. A boundary at the boundary of the picture marks nothing.
+     */
+    if (has("sustain") && cur < rightX - 1) knockoutV(ctx, cur, susY + 1, baseY - 1);
 }
 
 /* ----------------------------------------------------------------- filter */
@@ -879,10 +924,43 @@ export function drawLfo(ctx, rect, roles, values, metaIndex) {
  * the riser in the loop. A saw simply ramps and stops, which is what a saw
  * looks like.
  */
-function drawWaveCell(ctx, x, y, w, h, shape, cycles) {
+function drawWaveCell(ctx, x, y, w, h, shape, cycles, morphFrom = null, morphT = 1) {
     const mid = y + (h - 1) / 2, amp = (h - 1) / 2;
-    const yAt = (px) => Math.round(mid - lfoShapeSample(shape, ((px - x) / w) * cycles) * amp);
+    /*
+     * ONE CLOSURE, AND THE MORPH LIVES INSIDE IT.
+     *
+     * The stroke below, the CHECKER mass through fillCurveMass, and the parity
+     * assertions in test_param_pages_movy.sh all derive from `yAt` — that is
+     * the whole reason the fill and the line cannot disagree about where the
+     * curve is. Blending the two shapes at the SAMPLE, before the closure, keeps
+     * that property for free; computing the morph a second time anywhere else
+     * would break it silently and only at intermediate frames, which is the
+     * hardest kind of wrong picture to notice.
+     *
+     * With `morphFrom` null this is byte-for-byte the expression it replaced.
+     */
+    const sampleAt = (px) => {
+        const ph = ((px - x) / w) * cycles;
+        const to = lfoShapeSample(shape, ph);
+        return morphFrom === null ? to : lerp(lfoShapeSample(morphFrom, ph), to, morphT);
+    };
+    const yAt = (px) => Math.round(mid - sampleAt(px) * amp);
     const vline = (px, a, b) => ctx.fillRect(px, Math.min(a, b), 1, Math.abs(a - b) + 1, 1);
+
+    /*
+     * The same CHECKER mass the four curve graphs carry, about the same zero
+     * line, through the same helper and the same `yAt` closure the stroke uses.
+     *
+     * This cell is a SHAPE SILHOUETTE — it says which LFO waveform is selected,
+     * not what a value is — and it was left plain when the graphs took the fill,
+     * on the reasoning that those are two different jobs. On a page they are two
+     * different jobs drawn in the same band, next to each other, and the odd one
+     * out reads as the one that did not get finished.
+     *
+     * Bipolar, so the fill is signed about the centre: a trough fills downward.
+     * Before the stroke, because the stroke is solid and the fill is not.
+     */
+    fillCurveMass(ctx, x, x + w, yAt, Math.round(mid), y, y + h - 1);
 
     let py = yAt(x);
     vline(x, py, py);
@@ -891,11 +969,15 @@ function drawWaveCell(ctx, x, y, w, h, shape, cycles) {
         /* Draw only the rows this column NEWLY occupies. Spanning py..ny
          * inclusive re-draws py, which the previous column already covered, so
          * every step came out two columns wide and a shallow ramp read as a
-         * chunky zigzag instead of a line. Excluding py leaves a true 1px
-         * staircase, and a steep step still gets its full riser. */
+         * chunky zigzag instead of a line.
+         *
+         * An EDGE is the exception and keeps py — see EDGE_ROWS. The previous
+         * column covered py at px-1, not at px, so on a hard vertical the riser
+         * met the rail only diagonally and the corner was chamfered. */
+        const edge = Math.abs(ny - py) >= EDGE_ROWS;
         if (ny === py) vline(px, ny, ny);
-        else if (ny < py) vline(px, ny, py - 1);
-        else vline(px, py + 1, ny);
+        else if (ny < py) vline(px, ny, edge ? py : py - 1);
+        else vline(px, edge ? py : py + 1, ny);
         py = ny;
     }
 }
@@ -906,13 +988,123 @@ function drawWaveCell(ctx, x, y, w, h, shape, cycles) {
  * this size is the entire point (a stepped shape only reads as stepped when
  * its levels are more than a pixel apart).
  */
-export function drawWaveform(ctx, rect, key, values, metaIndex) {
+/*
+ * ~100ms, THREE OR FOUR FRAMES, and short is the requirement rather than a
+ * performance concession.
+ *
+ * A morph passes through curves that are neither shape — halfway between a
+ * square and a saw is a thing with a step in it — and anything on screen long
+ * enough to be read as a value WILL be read as one. A slow morph does not look
+ * like a transition, it looks like a third waveform in the list. The failure
+ * mode of too-fast is that the morph is missed; the failure mode of too-slow is
+ * that it lies.
+ */
+const WAVE_MORPH_MS = 100;
+
+/*
+ * A STEP OF THIS MANY ROWS IS AN EDGE, AND AN EDGE KEEPS ITS CORNER.
+ *
+ * The stroke draws only the rows a column NEWLY occupies, which is what makes a
+ * shallow ramp a true 1px staircase instead of a two-column-wide zigzag. At a
+ * 1-row step the omitted pixel IS the staircase and must stay omitted.
+ *
+ * At a 12-row step it is a nick out of a hard vertical edge: the square's
+ * falling edge started one row BELOW the top it falls from, so the corner was
+ * chamfered and the top rail looked like it stopped a pixel early. Reported
+ * from the device as the square missing a pixel at its first turn — and it
+ * was, in the sense that matters, though nothing was missing from the top rail
+ * itself.
+ *
+ * TWO is the threshold and it is measured, not chosen for tidiness. At the
+ * shipped 24 drawn columns the steps are: square [12], triangle all 1s, saw all
+ * 1s, sine 1s with three 2s. So this rule adds exactly ONE pixel to the square
+ * and three to the sine, where it is invisible — rendered both ways to confirm
+ * that rather than assumed. Dropping to 1 would add 19 pixels to the sine and
+ * 23 to the triangle and bring the zigzag back on every shape.
+ */
+const EDGE_ROWS = 2;
+
+/*
+ * THE TRIANGLE IS DRAWN AT A WIDTH ITS SLOPE DIVIDES, NOT AT THE CELL'S.
+ *
+ * What reads as jagged is not the step SIZE, it is the step size CHANGING. A
+ * triangle traverses 4*amp = 24 rows per cycle, so its staircase is uniform
+ * only when the drawn width is a multiple of 24. At the grid cell's 28 drawn
+ * columns it gets 20 steps of 1 and 4 of 2; at 24 it is 24 steps of 1, and the
+ * apex stops being a plateau.
+ *
+ * Reported from the device as the triangle looking "wrong", and worth stating
+ * plainly that it was never the morph: a settled triangle is byte-identical to
+ * the last frame of a morph into one, so the jag was there with animation off.
+ *
+ * A TABLE OF ONE, AND THE ENTRY THAT IS NOT IN IT IS THE FINDING. The saw
+ * traverses 2*amp per cycle and looks like the obvious second entry — it was,
+ * until the widths were measured against the cells that actually exist rather
+ * than against a round number:
+ *
+ *   drawn 28 (grid, cell 32)   saw {1:1, 2:9, 3:3}  ->  quantized {1:1, 2:10, 3:1}
+ *   drawn 25 (knob card, 29)   saw {1:1, 2:12}      ->  quantized {1:1, 2:10, 3:1}
+ *
+ * A mild gain at one width and a LOSS at the other, for 4px of width each
+ * time. The triangle is exactly uniform at every width tested, which is the
+ * difference between a rule and a coincidence. Sine has no constant slope for a
+ * quantum to fix and square has no slope at all, so neither was ever a
+ * candidate.
+ *
+ * (The first pass had the saw in, on numbers taken against the 30px cell — a
+ * width with no pad subtracted and no cell of that size in the tree.)
+ */
+const WAVE_QUANTUM_ROWS = { 1: 4 };   /* shape id -> cycle travel, in units of `amp` */
+
+export function drawWaveform(ctx, rect, key, values, metaIndex, anim, nowMs) {
     const name = optionText(metaIndex, key, values);
     const shape = lfoShapeIdOf(name);
     const pad = 2;
     const x = rect.x + pad, w = rect.w - pad * 2;
     const y = rect.y + 1, h = VIZ_ROWS;
-    if (w > 0) drawWaveCell(ctx, x, y, w, h, shape, 1);
+
+    let morphFrom = null, morphT = 1;
+    if (anim && typeof nowMs === "number") {
+        /*
+         * TAGGED "s2", NEVER THE BARE NUMBER 2.
+         *
+         * observe() re-bases a NUMERIC value to where it visually sits when it
+         * is retargeted mid-flight, which is right for a slug and catastrophic
+         * for a shape id: a fast scroll would hand back 2.4, lfoShapeSample
+         * falls through its default at anything unrecognised, and the cell
+         * would morph out of a SINE that was never on screen. A non-numeric
+         * token makes that re-base return the previous shape untouched, so a
+         * retarget morphs from the shape it was heading to — the last thing
+         * actually drawn — which at 100ms is at most one frame stale.
+         */
+        const tr = observe(anim, "wave:" + key, "s" + shape, nowMs, WAVE_MORPH_MS);
+        if (tr.moving && typeof tr.from === "string") {
+            const f = Number(tr.from.slice(1));
+            if (Number.isFinite(f) && f !== shape) { morphFrom = f; morphT = easeOut(tr.t); }
+        }
+    }
+
+    /*
+     * Centred, and floored at one quantum so a cell too narrow to hold a whole
+     * one keeps its full width rather than collapsing to nothing. Snapping DOWN
+     * costs at most q-1 columns — 6 of 30 for a triangle, invisible in context
+     * because the cell already carries 2px of pad on each side.
+     *
+     * KEYED ON THE DESTINATION SHAPE, INCLUDING MID-MORPH. `shape` is already
+     * the destination on the morph's first frame, so the width is constant for
+     * the whole blend and changes only at the instant the value does — when
+     * every pixel in the cell is changing anyway. Skipping the quantum while
+     * morphing looks like the more conservative choice and is the opposite: it
+     * would snap the width when the morph settled, which is a second animation
+     * nobody asked for, arriving after the one they did.
+     */
+    let qx = x, qw = w;
+    const q = (WAVE_QUANTUM_ROWS[shape] || 0) * ((h - 1) / 2);
+    if (q > 0 && w >= q) {
+        qw = Math.floor(w / q) * q;
+        qx = x + Math.floor((w - qw) / 2);
+    }
+    if (qw > 0) drawWaveCell(ctx, qx, y, qw, h, shape, 1, morphFrom, morphT);
 }
 
 /* --------------------------------------------------------------------- eq */
@@ -988,7 +1180,42 @@ export function drawFader(ctx, rect, key, values, metaIndex) {
     dashedVRule(ctx, cx - 4, top, h + 1, 1, 1);
     dashedVRule(ctx, cx + 4, top, h + 1, 1, 1);
 
-    const y = Math.round(bot - clamp01(normVal) * h);
+    /*
+     * THE INTERIOR LATTICE IS PHASED BY THE SUB-ROW REMAINDER.
+     *
+     * The bar is 7px wide in a 13-row band, so a 128-step parameter gets about
+     * ten detents per row of travel and NINE IN TEN MOVE NOTHING — measured at
+     * 12 of 127 over a full sweep, 13 distinct pictures out of 128. That is the
+     * fault the catalog rejected `stepped` for ("five detents in six move
+     * nothing on screen"), which the shipped fader turns out to have had worse,
+     * and nothing in the still frames the catalog was judged from could show it.
+     *
+     * `exact` is the fill height before it is rounded to a row, and the
+     * fraction thrown away by that rounding is what the phase carries.
+     * DIAG_HEAVY has a period of 4, so four phases sit between one row and the
+     * next: a detent too small to move the boundary still moves the texture.
+     * Measured, that takes 12 of 127 to 44 of 127.
+     *
+     * It costs nothing to compute — the phase is a function of the value the
+     * cell already has, so there is no extra parameter read, and a read is
+     * ~2.8ms against a 1.68ms whole-page render.
+     *
+     * SUBTRACTED, not added, so a rising value shifts the lattice the way the
+     * boundary is heading. Adding it reads as the texture sliding DOWN while
+     * the bar grows up, which looks like a defect rather than a finer scale.
+     *
+     * KNOWINGLY BREAKS THE ABSOLUTE-COORDINATE RULE, which exists so a moving
+     * shape does not shimmer as its fill re-phases underneath it. Here the
+     * re-phasing IS the signal. The cost is that two faders side by side no
+     * longer share one lattice; they are separate cells with a rail and a gap
+     * between them, so there is no seam for the mismatch to show at.
+     */
+    const exact = clamp01(normVal) * h;
+    const frac = exact - Math.floor(exact);
+    const phase = Math.floor(frac * 4) % 4;
+    const pattern = (px, py) => ((((px + py - phase) % 4) + 4) % 4) !== 0;
+
+    const y = Math.round(bot - exact);
     const bh = bot - y + 1, bx = cx - 3, bw = 7;
     ctx.fillRect(bx, y, bw, 1, 1);
     ctx.fillRect(bx, bot, bw, 1, 1);
@@ -998,7 +1225,7 @@ export function drawFader(ctx, rect, key, values, metaIndex) {
      * rather than to a frame with a hole punched in it — and the notch is
      * skipped with it, because notching a 2-row box eats half of it. */
     if (bh >= 3) {
-        fillDithered(ctx, bx + 1, y + 1, bw - 2, bh - 2, DIAG_HEAVY);
+        fillDithered(ctx, bx + 1, y + 1, bw - 2, bh - 2, pattern);
         notchCorners(ctx, bx, y, bw, bh);
     }
 }
@@ -1032,9 +1259,56 @@ export function drawFader(ctx, rect, key, values, metaIndex) {
  * seats, and therefore no switch. Three pixels leaves a clear column at the
  * outer end and the slug is visibly a separate object at both ends of travel.
  */
-const PILL_H = 11, SLUG_W = 8, SLUG_H = 7, SLUG_INSET = 3;
+/*
+ * 16 x 9, DOWN FROM 24 x 11, and the inversion is what paid for it.
+ *
+ * At 24 x 11 this was the heaviest object on a page — wider than the enum
+ * square beside it and, in the ON state, a solid block competing with the
+ * inverted label strip a held knob puts directly under it. That is a lot of
+ * screen for a value with two states.
+ *
+ * Shrinking a slug-slides-along-a-track switch is risky, because the whole
+ * signal is WHERE the slug sits and a shorter track moves it less. This one
+ * does not rely on that: ON fills the track and knocks the slug out of it, so
+ * the two states differ in INK as well as in position and are separable from
+ * across the room at any size. Judged with both states on one page, which is
+ * the only view that can answer it — a render of one state cannot.
+ *
+ * The 2px inset is the floor, not a preference. At 1px the slug is 8-connected
+ * to the wall on its own row and the two merge: OFF stops reading as a block
+ * parked at one end of a track and starts reading as "the left half of this box
+ * is thick", which is the same picture at both seats and therefore no switch at
+ * all. That defect had to be fixed once already; 2px keeps a clear column at
+ * the outer end at both ends of travel.
+ */
+const PILL_H = 9, SLUG_W = 5, SLUG_H = 5, SLUG_INSET = 2;
 
-export function drawSwitch(ctx, rect, key, values, metaIndex) {
+/*
+ * THE SLUG DOES NOT TRAVEL. It is at its destination seat on the frame the
+ * value changes, and only the fill animates.
+ *
+ * It used to interpolate between the seats over 120ms, which is defensible in
+ * the abstract and wrong here: the seats are 2px in from each wall of a 16px
+ * track, so the whole journey is about 7px. Seven pixels spread over seven
+ * frames is not a movement, it is a smear — and it made the switch look like it
+ * was deciding. Snapping it costs nothing, because the thing that reads as the
+ * transition is the fill, and the fill is still there.
+ *
+ * FILL: 160ms, eased out — about nine frames at the shadow UI's 60Hz. Chosen
+ * against 70 and 260 with all three rendered from this renderer: 70 is over
+ * before the eye finds it and reads as an instant inversion, 260 is slow
+ * enough that you watch it rather than notice it, which for a widget you flip
+ * repeatedly becomes a wait.
+ *
+ * Note the two decisions are not independent, which is why they were judged
+ * together: the travel was only bad BECAUSE it was fast, and at 160+ it has
+ * room to read. It still loses — seven pixels is not enough journey to be
+ * worth splitting attention with the wipe — but a fast travel and a slow one
+ * are different proposals and only the fast one was ever obviously wrong.
+ */
+const SWITCH_FILL_MS = 160;
+
+export function drawSwitch(ctx, rect, key, values, metaIndex, anim, nowMs) {
     const raw = values ? values[key] : undefined;
     /* Resolves a name-reporting plugin's value too — see enumIndexOf.
      *
@@ -1050,34 +1324,122 @@ export function drawSwitch(ctx, rect, key, values, metaIndex) {
 
     const { topY } = band(rect);
     const cx = Math.round(rect.x + rect.w / 2);
-    /* Capped at 24 so the pill never fills a wide cell edge to edge, and
+    /* Capped at 16 so the pill never fills a wide cell edge to edge, and
      * floored against the rect so a narrow one still gets a track. */
-    const w = Math.min(24, rect.w - 4);
+    const w = Math.min(16, rect.w - 4);
     const x = cx - (w >> 1), y = topY + 1, h = PILL_H;
-    const sx = on ? x + w - SLUG_INSET - SLUG_W : x + SLUG_INSET;
-    const sy = y + 2;
+    const seatOff = x + SLUG_INSET, seatOn = x + w - SLUG_INSET - SLUG_W;
+    const sy = y + SLUG_INSET;
 
-    if (on) {
-        ctx.fillRect(x, y, w, h, 1);
-        notchCorners(ctx, x, y, w, h);
-        ctx.fillRect(sx, sy, SLUG_W, SLUG_H, 0);
-        /* The knockout gets the notch too, IN REVERSE — four SET pixels at its
-         * corners. `notchCorners` clears, and clearing a corner of a hole fills
-         * it in. Without this the hole is the only square-cornered shape on a
-         * page where every filled box is softened. */
-        ctx.fillRect(sx, sy, 1, 1, 1);
-        ctx.fillRect(sx + SLUG_W - 1, sy, 1, 1, 1);
-        ctx.fillRect(sx, sy + SLUG_H - 1, 1, 1, 1);
-        ctx.fillRect(sx + SLUG_W - 1, sy + SLUG_H - 1, 1, 1, 1);
-    } else {
-        ctx.fillRect(x, y, w, 1, 1);
-        ctx.fillRect(x, y + h - 1, w, 1, 1);
-        ctx.fillRect(x, y, 1, h, 1);
-        ctx.fillRect(x + w - 1, y, 1, h, 1);
-        notchCorners(ctx, x, y, w, h);
-        ctx.fillRect(sx, sy, SLUG_W, SLUG_H, 1);
-        notchCorners(ctx, sx, sy, SLUG_W, SLUG_H);
+    /*
+     * THE SLUG BELONGS TO THE DESTINATION FROM FRAME ONE — it flips on the
+     * press, and the fill catches up to it.
+     *
+     * That is the important half of the contract, whichever thing is doing the
+     * moving: the widget must never show the OLD value after the value has
+     * changed. The slug's seat is the part of this drawing that a glance reads
+     * as the state, so it is not allowed to lag; the fill is decoration on top
+     * of an already-correct reading, so it is the part allowed to be in
+     * between. An interpolated boundary is a real thing to look at, and unlike
+     * the track's polarity it does not have to pick a side — there is no
+     * half-inverted track on a 1-bit display, but there is a perfectly good
+     * half-swept one.
+     */
+    /*
+     * `p` is the FILL only — 0 is fully OFF, 1 is fully ON — and it is what
+     * makes the settled states come out exactly right: at p = 1 the fill
+     * reaches the far wall rather than stopping at the slug's trailing edge,
+     * which is what a literal "fill up to the slug" rule does and which left
+     * the last two columns of a settled ON switch drawn as outline. The pinned
+     * baseline caught that immediately: a static state is not allowed to
+     * change.
+     */
+    let p = on ? 1 : 0;
+    if (anim && typeof nowMs === "number") {
+        const tr = observe(anim, "switch:" + key, on ? 1 : 0, nowMs, SWITCH_FILL_MS);
+        const from = Number(tr.from);
+        if (tr.moving && Number.isFinite(from)) {
+            /* `from` is a FRACTION of the way across, not a seat: observe()
+             * re-bases a numeric mid-flight so a switch flipped back before the
+             * fill finished carries on from where the boundary visually IS
+             * instead of snapping to the far wall and draining again. */
+            p = lerp(from, on ? 1 : 0, easeOut(tr.t));
+        }
     }
+    /* The seat, not an interpolation — see SWITCH_FILL_MS. */
+    const sx = on ? seatOn : seatOff;
+    /*
+     * ONE key and ONE duration now. The burst needed a second (300ms against
+     * the travel's 120ms) because a flash outlives the movement that triggers
+     * it, and one key carries one duration — which also meant a caller gating
+     * redraws on `settled()` had to know to ask with the longer of the two. The
+     * sweep IS the travel, so that whole hazard goes with it.
+     */
+
+    /*
+     * THE FILL IS A WIPE, AND IT RUNS BOTH WAYS.
+     *
+     * One rule: the track is inverted from its left wall out to a boundary, and
+     * everything to the right of that boundary is the outlined state. Turning
+     * ON the boundary travels left to right and the fill grows in; turning OFF
+     * it travels back and the fill drains away. At rest the rule degenerates to
+     * the two static states — boundary at the far wall means fully filled, at
+     * the near wall means fully outlined — so nothing special-cases the settled
+     * case.
+     *
+     * This replaces a burst. The burst was a decoration bolted onto the flip
+     * and it had two faults the frames made obvious: on an ON flip the track is
+     * filled, so the rays inside the pill were white on white and the figure
+     * came out lopsided; and bounding it to a 32x15 cell left about one pixel
+     * of travel, so it read as a twitch rather than a radiation. A wipe has
+     * neither problem because it is not drawn ON the widget, it IS the widget —
+     * and it says what the state change actually is, which a flash never did.
+     */
+    /* Wall to wall, not seat to seat: at p=1 this is x+w so the whole track is
+     * filled, and at p=0 it is x so none of it is. Anchoring it to the slug's
+     * seats instead would inherit the 2px inset and leave the settled states
+     * two columns short at each end. */
+    const sweepX = Math.round(lerp(x, x + w, p));
+
+    /* Left of the sweep: the ON rendering. Right of it: the OFF rendering.
+     * Both are drawn whole and then masked by column, so neither has to know
+     * about the other and a partially-swept track is always two coherent
+     * halves rather than an invented third state. */
+    const inSweep = (px) => px < sweepX;
+
+    /* ON half — solid ground. */
+    for (let px = x; px < x + w; px++) {
+        if (inSweep(px)) ctx.fillRect(px, y, 1, h, 1);
+    }
+    /* OFF half — top and bottom rails plus the right wall. */
+    for (let px = x; px < x + w; px++) {
+        if (inSweep(px)) continue;
+        ctx.fillRect(px, y, 1, 1, 1);
+        ctx.fillRect(px, y + h - 1, 1, 1, 1);
+    }
+    if (!inSweep(x)) ctx.fillRect(x, y, 1, h, 1);            /* left wall */
+    if (!inSweep(x + w - 1)) ctx.fillRect(x + w - 1, y, 1, h, 1);
+    notchCorners(ctx, x, y, w, h);
+
+    /*
+     * The slug takes the colour of the ground it is standing on, per column.
+     * Inside the sweep the ground is solid so the slug is a knockout; outside
+     * it the ground is empty so the slug is ink. A slug that straddles the
+     * boundary is therefore half hole and half block, which is exactly what it
+     * should look like at the moment the fill is passing it.
+     */
+    for (let px = sx; px < sx + SLUG_W; px++) {
+        ctx.fillRect(px, sy, 1, SLUG_H, inSweep(px) ? 0 : 1);
+    }
+    /* The slug's own corners, in whichever direction softens them against the
+     * ground each corner sits on. `notchCorners` clears, which rounds a solid
+     * slug; a knockout needs the reverse, four SET pixels, or the hole is the
+     * only square-cornered shape on a page where every filled box is softened. */
+    for (const [px, py] of [[sx, sy], [sx + SLUG_W - 1, sy],
+                            [sx, sy + SLUG_H - 1], [sx + SLUG_W - 1, sy + SLUG_H - 1]]) {
+        ctx.fillRect(px, py, 1, 1, inSweep(px) ? 1 : 0);
+    }
+
 }
 
 /* ----------------------------------------------------------------- sample */
@@ -1254,15 +1616,26 @@ const DRAW = {
     [VIZ_FILTER]: (ctx, rect, group, values, metaIndex) => drawFilter(ctx, rect, group.roles, values, metaIndex),
     [VIZ_LFO]: (ctx, rect, group, values, metaIndex) => drawLfo(ctx, rect, group.roles, values, metaIndex),
     [VIZ_EQ]: (ctx, rect, group, values, metaIndex) => drawEq(ctx, rect, group.roles, values, metaIndex),
-    [VIZ_WAVEFORM]: (ctx, rect, group, values, metaIndex) => drawWaveform(ctx, rect, group.roles.value, values, metaIndex),
+    [VIZ_WAVEFORM]: (ctx, rect, group, values, metaIndex, anim, nowMs) =>
+        drawWaveform(ctx, rect, group.roles.value, values, metaIndex, anim, nowMs),
     [VIZ_FADER]: (ctx, rect, group, values, metaIndex) => drawFader(ctx, rect, group.roles.value, values, metaIndex),
-    [VIZ_SWITCH]: (ctx, rect, group, values, metaIndex) => drawSwitch(ctx, rect, group.roles.value, values, metaIndex),
+    [VIZ_SWITCH]: (ctx, rect, group, values, metaIndex, anim, nowMs) =>
+        drawSwitch(ctx, rect, group.roles.value, values, metaIndex, anim, nowMs),
     [VIZ_SAMPLE]: (ctx, rect, group, values, metaIndex) => drawSample(ctx, rect, group.roles, values, metaIndex),
 };
 
-/** Draw a resolved group (from viz.resolveViz) into `rect`. Unknown kinds are
- * silently skipped, not thrown, so a future kind never crashes an old caller. */
-export function drawVizGroup(ctx, rect, group, values, metaIndex) {
+/**
+ * Draw a resolved group (from viz.resolveViz) into `rect`. Unknown kinds are
+ * silently skipped, not thrown, so a future kind never crashes an old caller.
+ *
+ * `anim` (an anim_state.mjs store) and `nowMs` are OPTIONAL TRAILING
+ * parameters, appended rather than folded into an options object because these
+ * functions are called from several places and none of the existing parameters
+ * may be reordered or removed. Omit both and every widget draws exactly the
+ * pixels it always did — the animations are opt-in per caller, which is what
+ * keeps the harness, the pinned baselines and the device unaffected.
+ */
+export function drawVizGroup(ctx, rect, group, values, metaIndex, anim, nowMs) {
     const fn = DRAW[group.kind];
-    if (fn) fn(ctx, rect, group, values, metaIndex);
+    if (fn) fn(ctx, rect, group, values, metaIndex, anim, nowMs);
 }
