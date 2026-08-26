@@ -33,7 +33,7 @@ export const PICKS = {
     viz_envelope: "ghost-fill",
     viz_filter: "ghost-fill",
     viz_lfo: "ghost-fill",
-    viz_sample: null,              /* open: solid-mass or terrain */
+    viz_sample: "ghost-fill",
     viz_switch: "pill-inverted",
     font: "metric-matched",
     anim: null,                    /* deferred to hardware */
