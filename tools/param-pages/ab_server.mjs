@@ -29,7 +29,19 @@ const STYLES = path.join(REPO, 'src', 'shared', 'param_pages', 'styles', 'index.
 const HOST = '127.0.0.1';
 const TARGET_PER_SET = 16;
 
-let PORT = 7788;
+/*
+ * 7789, not 7788, and the difference is a silent wrong-page failure.
+ *
+ * A long-running `node tools/webui_serve.mjs --port 7788` binds the IPv6
+ * wildcard. Binding 127.0.0.1:7788 alongside it SUCCEEDS -- the more specific
+ * IPv4 address does not collide with `*` on v6 -- so nothing appears wrong from
+ * here. But a browser given `localhost:7788` resolves ::1 first on macOS and
+ * lands on the OTHER server, showing a working page that is not this one.
+ *
+ * A port this tool owns avoids the whole class. `--port` remains for when 7789
+ * is busy too.
+ */
+let PORT = 7789;
 for (let i = 2; i < process.argv.length; i++) {
     if (process.argv[i] === '--port') PORT = parseInt(process.argv[i + 1], 10) || PORT;
 }
@@ -416,8 +428,24 @@ $('setSel').onchange = (e) => { hideReveal(); pair(e.target.value); };
 // ---------------------------------------------------------------- boot
 
 loadJudgements();
+
+/* Say it once, loudly, rather than exiting silently into a shell that scrolled
+ * away. EADDRINUSE here means something else already owns the port, and the
+ * failure mode this guards against is judging against the wrong page. */
+server.on('error', (e) => {
+    if (e && e.code === 'EADDRINUSE') {
+        console.error(`ab_server: port ${PORT} is already in use.`);
+        console.error(`  Something else is listening. Pick another: --port ${PORT + 1}`);
+        console.error(`  (See the note above the PORT constant -- a browser can silently`);
+        console.error(`   reach a DIFFERENT server on a port this one appears to share.)`);
+        process.exit(1);
+    }
+    throw e;
+});
+
 server.listen(PORT, HOST, () => {
     const n = CATALOG.ready.length;
     console.log(`A/B comparator on http://${HOST}:${PORT}  (${n} set(s), ${JUDGEMENTS.length} judgement(s) loaded)`);
+    console.log(`  Use that address, not localhost -- localhost may resolve to ::1.`);
     for (const m of CATALOG.missing) console.log(`  not offered: ${m.set} — ${m.why}`);
 });
