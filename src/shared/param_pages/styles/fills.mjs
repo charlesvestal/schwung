@@ -25,12 +25,12 @@
  * options here shift `ty` or drop the pill padding rather than growing the
  * band upward.
  *
- * NOTHING may reach row 7. That is the bank bar's row, and it is the reason
- * the enum picker's list starts at y=9 rather than at MENU_LIST_Y (10) — this
- * codebase has already lost a menu row to something drawn over that band. No
- * option here goes above 55, which is 48 rows clear, but the rule is written
- * down so the next author of a "grow the footer upward" option knows where the
- * wall is.
+ * NOTHING may reach BAR_Y. That is the bank bar's row, and it is the reason
+ * the enum picker's list starts one row below it rather than at MENU_LIST_Y
+ * (10) — this codebase has already lost a menu row to something drawn over
+ * that band. No option here goes above RULE_Y, which is 48 rows clear, but the
+ * rule is written down so the next author of a "grow the footer upward" option
+ * knows where the wall is.
  *
  * ACTIVE CELL. Options 8, 9 and 10 point at one of the four columns. Which one
  * is not available from `(ctx, hints)` — the shipping signature carries no
@@ -130,10 +130,12 @@ function pair(ctx, x, ty, h, o) {
      *
      * The top two were done first on the reasoning that the pill sits on the
      * last rows of the screen and its bottom corners have no ground to read
-     * against. That was wrong, and measuring settles it: HINT_Y is 57, padTop
-     * is 1, and the pill is FONT4_HEIGHT + 2 = 7 rows, so it occupies 56..62
-     * and **row 63 is black beneath it**. There is a full row of ground under
-     * every pill, so the bottom notches read exactly as the top ones do.
+     * against. At the time that was wrong on the measurement — the pill sat on
+     * 56..62 with a black row 63 under it. Since the bands were re-cut it sits
+     * on 57..63 and the measurement no longer saves it; what does is the same
+     * thing that lets the header's glyphs start on row 0. The panel is inset in
+     * plastic, so the ground a bottom corner reads against is the bezel, and a
+     * notch against the bezel reads exactly as a notch against a dark row.
      *
      * Guarded on height so a padding-squeezed pill (the double-rule option
      * drops to padY 0) does not have its corners eaten into illegibility.
@@ -160,7 +162,7 @@ function pair(ctx, x, ty, h, o) {
     fontPrint4x5(ctx, ax, ty, action, actC);
 }
 
-const HINT_Y = FOOTER_Y + 1;   /* 57 — where drawFooter puts the glyphs */
+const HINT_Y = FOOTER_Y + 1;   /* 58 — where drawFooter puts the glyphs */
 
 /* --------------------------------------------------------------- 1..5 --
  * The boundary is still a rule. */
@@ -173,14 +175,19 @@ function drawThinRule(ctx, hints) {
 /**
  * 2. no-rule — the boundary carried by SPACE alone.
  *
- * The rule is removed and the hints drop one row, so the gap between the last
- * label row (LBL1_Y..54) and the pills is the only separator. On a screen this
- * dense that is a real question rather than a lazy one: the pills are already
- * inverted blocks, so the row is unmistakably a different kind of thing even
- * with nothing drawn between it and the body.
+ * The rule is removed and nothing else moves, so the three clear rows between
+ * the last label band (LBL1_Y..54) and the pills are the only separator. On a
+ * screen this dense that is a real question rather than a lazy one: the pills
+ * are already inverted blocks, so the row is unmistakably a different kind of
+ * thing even with nothing drawn between it and the body.
+ *
+ * This used to drop the hints a row as well, back when the shipping footer sat
+ * on 56..62 and there was a spare row at the bottom to drop into. The pills are
+ * flush to row 63 now, so there is nowhere to go — and the pixels are the same
+ * either way, because the row it dropped into is the row they start on.
  */
 function drawNoRule(ctx, hints) {
-    for (const { x, h } of layout(hints)) pair(ctx, x, HINT_Y + 1, h, {});
+    for (const { x, h } of layout(hints)) pair(ctx, x, HINT_Y, h, {});
 }
 
 /**
@@ -246,7 +253,7 @@ function drawInvertedBand(ctx, hints) {
     ctx.fillRect(0, FOOTER_Y, W, FOOTER_H, 1);
     notchCorners(ctx, 0, FOOTER_Y, W, FOOTER_H);
     for (const { x, h } of layout(hints))
-        pair(ctx, x, HINT_Y + 1, h, { pill: 0, keyText: 1, actionText: 0 });
+        pair(ctx, x, HINT_Y, h, { pill: 0, keyText: 1, actionText: 0 });
 }
 
 /**
@@ -266,7 +273,7 @@ function drawDitherBand(ctx, hints) {
     ctx.fillRect(0, RULE_Y, W, 1, 1);
     fillDithered(ctx, 0, FOOTER_Y, W, FOOTER_H, DIAG_LIGHT);
     for (const { x, h } of layout(hints))
-        pair(ctx, x, HINT_Y + 1, h, { plate: true });
+        pair(ctx, x, HINT_Y, h, { plate: true });
 }
 
 /* -------------------------------------------------------------- 8..10 --
@@ -283,16 +290,19 @@ function drawDitherBand(ctx, hints) {
  * Requires a focus argument the shipping signature does not carry.
  */
 function drawTabBand(ctx, hints) {
-    ctx.fillRect(0, FOOTER_Y + 1, W, FOOTER_H - 1, 1);
-    notchCorners(ctx, 0, FOOTER_Y + 1, W, FOOTER_H - 1);
-    ctx.fillRect(ACTIVE_X, RULE_Y, CELL_W, 2, 1);
+    ctx.fillRect(0, FOOTER_Y, W, FOOTER_H, 1);
+    notchCorners(ctx, 0, FOOTER_Y, W, FOOTER_H);
+    /* The tab bridges RULE_Y..FOOTER_Y-1, so it meets the band rather than
+     * floating above it. That is two rows at the current geometry; it was one
+     * row and a hardcoded `+1` on the band before the bands were re-cut. */
+    ctx.fillRect(ACTIVE_X, RULE_Y, CELL_W, FOOTER_Y - RULE_Y, 1);
     /* Only the tab's TOP corners are notched. Notching the bottom pair would
      * cut two holes where the tab meets the band, which reads as a rendering
      * fault rather than as a softened corner. */
     ctx.fillRect(ACTIVE_X, RULE_Y, 1, 1, 0);
     ctx.fillRect(ACTIVE_X + CELL_W - 1, RULE_Y, 1, 1, 0);
     for (const { x, h } of layout(hints))
-        pair(ctx, x, HINT_Y + 1, h, { pill: 0, keyText: 1, actionText: 0 });
+        pair(ctx, x, HINT_Y, h, { pill: 0, keyText: 1, actionText: 0 });
 }
 
 /**

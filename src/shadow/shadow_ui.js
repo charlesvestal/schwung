@@ -17469,27 +17469,33 @@ function enumPickerJog(delta) {
 }
 
 /*
- * THE LIST RECT, and why it is nine and not ten.
+ * THE LIST RECT, and why its top is above MENU_LIST_Y.
  *
  * The movy bands cost vertical space the old chrome did not: a footer rule at
- * 55 with an 8-row hint band under it takes the bottom of the screen, where
+ * RULE_Y with a hint band under it takes the bottom of the screen, where
  * drawMenuList's default indicator row (62) used to sit. Left at its defaults
  * the list would have run its last row and its down-arrow straight through the
  * footer, and the device clips silently — nothing would have said so.
  *
  * The obvious top is MENU_LIST_Y (10), the rect the knob grid's own menu pages
  * use. It costs a row: 10..54 is 44px, and at a 9px line that is FOUR options
- * where the old chrome showed FIVE. One row up is 45px and buys the fifth back,
- * and it is free here because this header is NOT inverted — drawHeader only
- * fills the band when told to, so under a plain header the glyphs stop at row 5
- * and the selected row's highlight starting at row 8 still has clear air above
- * it. (A menu page cannot do the same: its bank bar owns row 7.)
+ * where the old chrome showed FIVE. Going up buys the fifth back, and it is
+ * free here because this header is NOT inverted — drawHeader only fills the
+ * band when told to, so under a plain header the glyphs stop at row 4 and the
+ * selected row's highlight still has clear air above it. (A menu page cannot
+ * do the same: its bank bar owns BAR_Y.)
+ *
+ * The value is one row below the bank bar's row, which is where it came from
+ * and is why it moved with it when the movy bands were re-cut against the
+ * panel — the bar went from row 7 to row 6, so this went from 9 to 8. The
+ * capacity is 5 either way; keeping the derivation is what stops the next
+ * re-cut from silently costing the row.
  *
  * Losing the last option of a list to a band drawn over it is a failure this
  * codebase has hit before, which is why test_enum_picker_chrome.sh asserts the
  * row COUNT and clipped() === 0 rather than just eyeballing the render.
  */
-const ENUM_PICKER_LIST_TOP_Y = 9;
+const ENUM_PICKER_LIST_TOP_Y = 8;
 const ENUM_PICKER_LIST_BOTTOM_Y = MOVY_RULE_Y - 1;
 
 /*

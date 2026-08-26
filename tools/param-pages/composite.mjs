@@ -147,7 +147,10 @@ export function renderComposite(pageCase) {
     }
 
     if (fillsOpt) {
-        ctx.fillRect(0, RM.RULE_Y, RM.W, RM.FOOTER_H + 1, 0);
+        /* The whole band the footer owns, RULE_Y..63 — derived, not
+         * RULE_Y + FOOTER_H + 1, which stopped clearing the last row the
+         * moment the bands were re-cut and FOOTER_H stopped being 8. */
+        ctx.fillRect(0, RM.RULE_Y, RM.W, RM.FOOTER_Y + RM.FOOTER_H - RM.RULE_Y, 0);
         /* pageCase.footer, in the shape drawFooter expects -- [[key, action],
          * ...]. Flattening it to a list of words made the footer render as
          * single letters. */

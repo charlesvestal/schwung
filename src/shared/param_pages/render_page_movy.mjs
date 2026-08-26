@@ -378,60 +378,79 @@ function preAbbreviate(label, budget) {
 export const LAYOUT_MOVY = "movy";
 
 /*
- * Vertical rhythm, re-cut against Elektron's measured bands.
+ * Vertical rhythm, cut against OUR panel: 64 rows behind a physical bezel.
  *
- * Movy's original constants assumed a 7-row font and packed the bands flush:
- * LBL0_Y(27) + 8 === ROW1_Y(35), i.e. a label and the knob row below it
- * touched with a ZERO-pixel gutter, while five rows sat unused at the bottom
- * of the screen. All the slack existed; it was in the wrong place.
+ * THIS REPLACES A DERIVED GEOMETRY. The bands used to be measured off
+ * Elektron's screen, recovered from a 4x capture — 1-3px gutters copied
+ * wholesale, on the assumption that a hardware UI that reads well has its
+ * spacing to thank. It does, but the spacing that reads well is the spacing
+ * that fits the panel you own, and the numbers that came back from that
+ * capture left SEVEN rows carrying no ink at all: 0, 6, 9, 24, 32, 55 and 56.
+ * Five of them were slack, and slack copied from someone else's screen is the
+ * one kind of layout decision that cannot be defended on its own terms. So
+ * the rhythm below is re-derived from the two constraints we actually have.
  *
- * Elektron's screen, recovered from a 4x capture, puts a 1-3px gutter between
- * every band. With font4x5 the label band drops from 8 rows to 6, which pays
- * for a 2px gutter on both sides of every label.
+ * CONSTRAINT ONE: the widget and label heights are fixed by their contents,
+ * not by taste. BOX_H is 15 because a viz body occupies rect.y+1..+14 and
+ * anything under 15 stands the graphics down (the minimum-cell rule in
+ * render_page.mjs); LBL_H is 7 because font4x5 is 5 rows and an inverted band
+ * needs one clear row on each side. Both are ODD so an odd content height
+ * centres exactly. Neither moves here — this re-cut moves BANDS, it does not
+ * resize them.
  *
- * THE FOOTER (2026-08-20) is bought from that rhythm rather than from the
- * widgets. Before it, the screen was exactly full — LBL1_Y(55) + LBL_H(9) ===
- * 64 — so a hint bar had to come from somewhere, and the two candidates were
- * the widget rows and the label bands. Shrinking the widget rows is the one
- * change that cannot be made: a viz body occupies rect.y+1..+14 and a box is
- * BOX_H(15), so anything under 15 stands the graphics down (see the minimum-cell
- * rule in render_page.mjs). The label bands can pay instead, by going back to
- * font4x5 — 5 glyph rows, so LBL_H 9 -> 7 with a clear row each side — and the
- * gutters give up the rest:
+ * CONSTRAINT TWO: there is no need for an on-screen margin. The OLED sits
+ * behind a bezel, so the top and bottom rows are already visually inset and a
+ * pixel row of air spent against either edge buys nothing you can see. That is
+ * what pays for the re-cut: the header's glyphs move to y=0 (band 7 -> 6) and
+ * the hint pills go flush to row 63 (FOOTER_H 8 -> 7). Two rows, plus the
+ * three already loose, is what makes the gutters equal.
  *
- *      0..6    header      (7)   text at y=0, 7 tall
- *      7       bank bar    (1)
- *      8..9    gutter      (2)   was 4
- *     10..24   knob row 0  (15)  UNCHANGED height — graphics still fit
- *     25..31   label row 0 (7)   was 9 (tamzen); font4x5 + 1 clear row each side
- *     32       gutter      (1)   was 2
- *     33..47   knob row 1  (15)  UNCHANGED height
- *     48..54   label row 1 (7)   was 9
- *     55       rule        (1)
- *     56..63   FOOTER      (8)
+ *      0..5    header      (6)   font4x5 at y=0, one clear row under it
+ *      6       bank bar    (1)   the CURRENT page's segment is 2 rows, so it
+ *                                borrows the first row of the gutter below
+ *      7..8    gutter      (2)
+ *      9..23   knob row 0  (15)  BOX_H
+ *     24..30   label row 0 (7)   LBL_H, glyphs on 25..29
+ *     31..32   gutter      (2)   was 1 — the two rows now match
+ *     33..47   knob row 1  (15)
+ *     48..54   label row 1 (7)   glyphs on 49..53
+ *     55       rule        (1)   one clear row above it (54) and below it (56)
+ *     57..63   FOOTER      (7)   pill flush to the bottom edge, glyphs 58..62
  *
- * Eight rows found, none of them taken from a widget. The knob itself is only
- * ~12 rows tall now that the arc is open at the bottom, so a knob row carries
- * more air below it than a graphic row does; the 15 is held for the graphics.
+ * Every one of the 64 rows now belongs to a band, and the only rows without
+ * ink on a plain page are the ones a band deliberately keeps clear: the gutters
+ * and the single air rows either side of the rule. The two widget/label pairs
+ * get IDENTICAL treatment — 2 rows of gutter, 15 of widget, 7 of label — which
+ * the recovered geometry never did (2 above the first row, 1 above the second).
+ *
+ * The knob itself is only ~12 rows tall now that the arc is open at the bottom,
+ * so a knob row carries more air below it than a graphic row does; the 15 is
+ * held for the graphics.
  */
 export const W = 128;
 /*
- * The header BAND. Glyphs are printed at y=0 rather than y=1: the OLED has a
- * physical bezel, so the top row of the screen is already visually inset and
- * spending a pixel row on margin there buys nothing. That leaves the band one
- * row taller than the 7-row font, with the spare row BELOW the text.
+ * The header BAND: six rows, with the font4x5 glyphs on 0..4 and the spare row
+ * BELOW them.
  *
- * BAR_Y is then one further row down, so row HEADER_H is always dark. Without
- * it the bank bar butted straight against the bottom row of every glyph, and
- * with the header inverted the solid band merged into the bar into one thick
- * smudge.
+ * The spare row is asymmetric on purpose, and which side it goes is the whole
+ * argument. BELOW, it separates the band from the bank bar — without it the bar
+ * butted straight against the bottom row of every glyph, and with the header
+ * inverted the solid band merged into the bar into one thick smudge. ABOVE, it
+ * would separate the glyphs from... the bezel, which is already a margin. The
+ * OLED is inset in plastic, so row 0 reads as the edge of a framed picture, not
+ * as a crop; an inverted band's top row against the bezel is exactly as legible
+ * as it is against a clear pixel row, and it costs nothing.
+ *
+ * That is where one of the two rows this re-cut spends came from. It used to be
+ * 7 with the glyphs at y=1.
  */
-export const HEADER_H = 7;
+export const HEADER_H = 6;
 export const BAR_Y = HEADER_H;       /* no separator row — the band has its own */
-/* One row of gutter here, not two — the bank bar is itself a separator, so
- * this is the cheapest row on the screen to give back to the header. */
-export const ROW0_Y = 10;
-export const LBL0_Y = 25;
+/* Two rows of gutter above each knob row, and the SAME two above both. The
+ * first row used to get 2 and the second 1, which is the kind of asymmetry
+ * nothing reads as deliberate — it read as one row tight and one loose. */
+export const ROW0_Y = 9;
+export const LBL0_Y = 24;
 export const ROW1_Y = 33;
 export const LBL1_Y = 48;
 export const CELL_W = 32;
@@ -462,10 +481,25 @@ export const GRID_GEOM = Object.freeze({ x0: 0, cellW: CELL_W });
  * future geometry needs to stay at or above ENUM_W.
  */
 const cellLeft = (g, col) => g.x0 + col * g.cellW;
-/* The hint footer, and the rule that separates it from the last label band. */
+/*
+ * The hint footer, and the rule that separates it from the last label band.
+ *
+ * The rule gets a clear row on BOTH sides — 54 is the last label band's own
+ * bottom margin, 56 is left empty — so it reads as a boundary rather than as
+ * an underline on the labels or a lid on the pills. The band under it is 7
+ * rows, which is exactly the pill (font4x5 + one row of ground above and
+ * below), so the pill lands on 57..63 and the footer reaches the bottom edge
+ * of the panel.
+ *
+ * FOOTER_H used to be 8 and the pill sat on 56..62, leaving row 63 dark. The
+ * `pair` helper in styles/fills.mjs argued that dark row was the ground its
+ * bottom corner notches read against; it is now the bezel that does that job,
+ * for the same reason the header's glyphs sit on row 0. The nine rows
+ * RULE_Y..63 that the fills catalog budgets against are unchanged.
+ */
 export const RULE_Y = 55;
-export const FOOTER_Y = 56;
-export const FOOTER_H = 8;
+export const FOOTER_Y = 57;
+export const FOOTER_H = 7;
 /*
  * ODD, for the same reason BOX_H is: 5 glyph rows centred in the band leave a
  * remainder that only splits evenly when the band is odd. At 6 the touched
@@ -572,13 +606,9 @@ export function centeredText(ctx, x0, span, y, text, color) {
 /**
  * schwung-movy renderer/header.ts drawHeader, ported.
  *
- * Movy's own HEADER_H (7) matches ITS font's glyph height. Schwung's device
- * font is a 5x7 bitmap printed one row lower (`print(x, 1, ...)`, to clear
- * the top edge of the display), so its glyphs occupy rows 1-7 while a 7-row
- * inverted band covers only rows 0-6 — the bottom row of every character
- * fell outside the highlight and read as a black bar under the text. The
- * band is therefore drawn one row taller than the font, the same fix
- * render_page.mjs's drawTouchStrip already uses.
+ * Movy's own HEADER_H (7) matched ITS font's glyph height. Schwung's band is
+ * six rows around a 5-row font4x5, with the spare row below the glyphs — see
+ * HEADER_H for why it goes below and not above.
  *
  * The header is also where the width matters most: it carries the touched
  * knob's FULL parameter name next to its value, which is the answer to a
@@ -593,10 +623,10 @@ export function drawHeader(ctx, left, right, inverted = false) {
     /* font4x5, not the label face: the header is secondary text (the slot
      * title, the page name, and the touched parameter's full name and value),
      * so it can afford to be smaller than the thing you read at a glance. A
-     * 5-row glyph at y=1 sits in a 7-row band with one clear row above and
-     * one below — which is what the touched HIGHLIGHT needs to be legible,
-     * and what it did not have while a 7-row font filled an 8-row band edge
-     * to edge.
+     * 5-row glyph at y=0 sits in a 6-row band with one clear row below it and
+     * the bezel above — which is what the touched HIGHLIGHT needs to be
+     * legible, and what it did not have while a 7-row font filled an 8-row
+     * band edge to edge.
      *
      * Tamzen's own 5-row face was the obvious candidate and is the wrong one:
      * its advance equals its ink width, so adjacent glyphs touch, and the
@@ -636,8 +666,8 @@ export function drawHeader(ctx, left, right, inverted = false) {
         rw = r ? fontWidth4x5(r) : 0;
     }
     const l = fit5(left, W - 4 - (rw ? rw + HEADER_GAP : 0));
-    fontPrint4x5(ctx, 2, 1, l, color);
-    if (r) fontPrint4x5(ctx, W - rw - 2, 1, r, color);
+    fontPrint4x5(ctx, 2, 0, l, color);
+    if (r) fontPrint4x5(ctx, W - rw - 2, 0, r, color);
 }
 
 /**
