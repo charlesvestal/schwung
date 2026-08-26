@@ -13,9 +13,13 @@
  * what this file measures:
  *
  *   - stage runs on a thread that is NOT the caller's        (inheritance source)
- *   - that thread is SCHED_OTHER                             (what is inherited)
- *   - a thread spawned FROM stage is SCHED_OTHER             (the actual harm)
+ *   - that thread is BELOW Link Main's priority              (what is inherited)
+ *   - a thread spawned FROM stage is below it too            (the actual harm)
  *   - the request returns long before the load finishes      (the 673 ms stall)
+ *
+ * "Below Link Main", not "SCHED_OTHER": demoting that far was measured on
+ * hardware to break modules silently relying on inherited realtime to keep up.
+ * See CHAIN_LOADER_RT_PRIORITY in chain_loader.h.
  *
  * `chain_synth_stage` / `chain_synth_commit` / `chain_synth_destroy_triple` are
  * stubbed here rather than linked from chain_host.c. That is deliberate: the
@@ -52,7 +56,9 @@ static pthread_t g_main_thread;
 
 static pthread_t g_stage_thread;
 static int       g_stage_policy      = -1;
+static int       g_stage_prio        = -1;
 static int       g_worker_policy     = -1;
+static int       g_worker_prio       = -1;
 static int       g_stage_calls       = 0;
 static int       g_destroy_calls     = 0;
 static int       g_commit_calls      = 0;
@@ -70,6 +76,18 @@ static uint64_t now_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+}
+
+/* Priority of Move's Link Audio publisher. The loader — and therefore every
+ * plugin thread born from create_instance — must stay BELOW it. */
+#define LINK_MAIN_PRIORITY 35
+
+static int self_priority(void) {
+    int policy = -1;
+    struct sched_param sp;
+    memset(&sp, 0, sizeof(sp));
+    if (pthread_getschedparam(pthread_self(), &policy, &sp) != 0) return -1;
+    return sp.sched_priority;
 }
 
 static int self_policy(void) {
@@ -90,6 +108,7 @@ static void *plugin_worker(void *arg) {
     (void)arg;
     pthread_mutex_lock(&g_obs);
     g_worker_policy = self_policy();
+    g_worker_prio   = self_priority();
     pthread_mutex_unlock(&g_obs);
     return NULL;
 }
@@ -103,6 +122,7 @@ void chain_synth_stage(chain_instance_t *inst, const char *module_name,
     g_stage_calls++;
     g_stage_thread = pthread_self();
     g_stage_policy = self_policy();
+    g_stage_prio   = self_priority();
     pthread_mutex_unlock(&g_obs);
 
     /* A real create_instance spawns its worker here. */
@@ -161,6 +181,7 @@ static void reset_obs(void) {
     pthread_mutex_lock(&g_obs);
     g_stage_calls = g_destroy_calls = g_commit_calls = 0;
     g_stage_policy = g_worker_policy = -1;
+    g_stage_prio = g_worker_prio = -1;
     g_last_committed[0] = '\0';
     pthread_mutex_unlock(&g_obs);
 }
@@ -180,7 +201,7 @@ static int pump_until_committed(chain_instance_t *inst, int timeout_ms) {
 }
 
 static void test_load_happens_off_the_caller_thread(void) {
-    printf("\n-- a load runs off the calling thread, at normal priority --\n");
+    printf("\n-- a load runs off the calling thread, below Link Main --\n");
     chain_instance_t *inst = fresh_instance();
     reset_obs();
 
@@ -204,22 +225,36 @@ static void test_load_happens_off_the_caller_thread(void) {
     pthread_mutex_lock(&g_obs);
     int    calls  = g_stage_calls;
     int    spol   = g_stage_policy;
+    int    sprio  = g_stage_prio;
     int    wpol   = g_worker_policy;
+    int    wprio  = g_worker_prio;
     pthread_t st  = g_stage_thread;
     pthread_mutex_unlock(&g_obs);
 
     CHECK(calls == 1, "stage ran exactly once");
 
     /*
-     * THE INHERITANCE FIX. A worker inherits the policy of whoever created it,
-     * so "create ran somewhere other than the audio thread" is the property
-     * that makes every one of the fleet's inherited threads harmless.
+     * THE INHERITANCE FIX. A worker inherits the policy AND PRIORITY of
+     * whoever created it, so what the loader runs at is what the whole fleet
+     * runs at.
+     *
+     * The invariant is NOT "SCHED_OTHER". Demoting that far was measured on
+     * hardware 2026-08-27 to break modules that were silently relying on
+     * inherited realtime to keep up — osirus's forked DSP child underran. What
+     * must hold is that nothing lands at or above Move's Link Audio publisher,
+     * because that is what starves the device.
+     *
+     * Both answers are legitimate here: on the device the loader asks for
+     * SCHED_FIFO 20, and on a dev machine or in CI the request is usually
+     * refused for lack of privilege and it falls back to SCHED_OTHER.
      */
     CHECK(!pthread_equal(st, g_main_thread),
           "create_instance ran on a DIFFERENT thread from the caller");
-    CHECK(spol == SCHED_OTHER, "the loader thread is SCHED_OTHER (got %d)", spol);
-    CHECK(wpol == SCHED_OTHER,
-          "a thread spawned FROM create_instance is SCHED_OTHER (got %d)", wpol);
+    CHECK(spol == SCHED_OTHER || sprio < LINK_MAIN_PRIORITY,
+          "the loader is below Link Main (policy %d prio %d)", spol, sprio);
+    CHECK(wpol == SCHED_OTHER || wprio < LINK_MAIN_PRIORITY,
+          "a thread spawned FROM create_instance is below Link Main "
+          "(policy %d prio %d)", wpol, wprio);
 
     CHECK(chain_loader_synth_busy(inst) == 0, "is_loading reports 0 once committed");
 
