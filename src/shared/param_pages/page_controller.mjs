@@ -2906,6 +2906,33 @@ export function createController(io = {}) {
          * picker, menu, items and preset pages are all literally the same draws.
          * Only the knob page forks, and only at the last step. */
         if (s.layout === LAYOUT_MOVY || s.layout === LAYOUT_LIST) {
+            /*
+             * A HINT NOW DRAWS THE PAGE THAT IS ACTUALLY THERE, AND THAT IS A
+             * DELIBERATE BEHAVIOUR CHANGE — the one place the drawPage
+             * extraction is not a pure refactor.
+             *
+             * This early-out used to sit ABOVE the per-kind dispatch and call
+             * `drawGrid()` directly, and drawGrid was the KNOB renderer. So a
+             * hint raised over a menu, items or preset page drew a knob grid
+             * underneath it: the wrong page, wearing the right chrome. Measured
+             * against the pre-refactor controller, `preset`, `menu` and `items`
+             * all differ under a hint and `knobs` is identical, which is the
+             * signature of exactly that bug and of nothing else.
+             *
+             * Nobody intended it. The hint panel is an OVERLAY — it is drawn
+             * over whatever you were looking at, and what you were looking at
+             * was a menu. Routing it through drawPage dispatches by kind first
+             * and the underlay is now the real page. Kept rather than
+             * reproduced, and cheap to keep: showHint is caller-supplied API
+             * with no production caller in this tree, so no shipped screen
+             * changes today.
+             *
+             * tests/host/test_page_slide_composite.sh pins the NEW behaviour
+             * (a hint over a menu page draws the menu, not the grid), and
+             * tests/fixtures/page-render-baseline.txt deliberately records the
+             * hint over KNOB pages only — recording the door kinds would have
+             * frozen the bug into the baseline.
+             */
             if (s.hintLines) {
                 drawPage(ctx, s.pageIndex, { title, footer });
                 renderHint(ctx, { rect, lines: s.hintLines.lines, title: s.hintLines.title });
@@ -3084,6 +3111,11 @@ export function createController(io = {}) {
          * a second time -- the result is cached per fingerprint+page, so
          * asking every tick is free. */
         vizGroups,
+        /* The same, for an ARBITRARY page — what the slide composite needs,
+         * since it draws two indices per frame. Exposed alongside vizGroups
+         * rather than replacing it: every other consumer asks about the page
+         * the user is ON and should not have to say so. */
+        vizGroupsFor,
         openPicker, closePicker, pickerSelect, showHint, dismissHint,
         menuEntry, menuIndex: () => menuIndex(page()),
         menuEntered, enterMenu, exitMenu, clearTouch,
