@@ -115,6 +115,9 @@ near the period whatever we do. The old overrun counter compared it against
 Pure accumulator in `src/host/spi_tally.c` (no I/O, so `spi_tally_record` is
 SPI-callback-safe and the whole thing is host-tested by
 `tests/host/test_spi_tally.c`); `/proc` read and reporting in `shim_worker.c`.
+**Arming gotchas, the measured table, and the two experiments still owed are in
+`docs/plans/2026-08-26-spi-tally-followups.md`** — read it before re-measuring;
+the tally stays silent for ~20 s after arming, which looks like a broken build.
 The IRQ delta is a **32-bit** subtraction on purpose — that counter is printed
 from an `int`, goes negative past 2^31 (~72 days) and wraps at 2^32, and only
 modular arithmetic survives both. Widening it is the regression the test fails on.
