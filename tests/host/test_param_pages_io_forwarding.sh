@@ -53,7 +53,9 @@ let failures = 0;
 const fail = (m) => { console.error("FAIL: " + m); failures++; };
 
 for (const n of ["print","fill_rect","clear_screen","text_width","draw_line",
-                 "draw_circle","fill_circle","draw_arc","flush_display"]) {
+                 "draw_circle","fill_circle","draw_arc","flush_display",
+                 /* the knob indicator ring LEDs go out through this one */
+                 "move_midi_internal_send"]) {
   globalThis[n] = () => 0;
 }
 globalThis.param_view_get_mode = () => 1;      /* Knobs */

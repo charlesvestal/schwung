@@ -288,6 +288,45 @@ static void discard_pending_shadow_leds(void) {
     cancel_move_sysex_restore_and_thaw();
 }
 
+/*
+ * Hand the encoder rings back to Move.
+ *
+ * THE COLOUR IS IN THE SYSEX, NOT IN THE CC. The first version of this
+ * replayed move_cc_led_state[71..78] and every ring came back BLANK, because
+ * that cache does not hold what it looks like it holds: this file already says
+ * so a few hundred lines down, in the Move sysex cache header --
+ *
+ *     "Move firmware emits RGB LED colors for the track row, KNOB LEDS,
+ *      transport, etc. via ... sysex. The CC packets are just latch triggers
+ *      — the actual color comes from the sysex."
+ *
+ * So move_cc_led_state[71..78] is a latch or nothing at all, restoring it
+ * restored a latch or a zero, and dark is what you get. I read that comment
+ * before writing the first version and used the CC cache anyway.
+ *
+ * The right cache is move_sysex_led_cache, and the right call is the one
+ * overtake exit already makes — which is exactly what was asked for: "we need
+ * to do the same thing we do with overtake/tools". It replays every LED Move
+ * has told us about, the rings among them, at Move's own last colour.
+ *
+ * WHY THE WHOLE SURFACE AND NOT JUST THE EIGHT. The sysex addresses LEDs by an
+ * index whose mapping to the encoders is not recorded anywhere in this tree,
+ * and the capture facility that could establish it (led_queue_set_capture_
+ * enabled) has no caller and no dump path. Replaying everything needs no such
+ * mapping and is the proven path. It is also harmless where it lands: the
+ * grid is exited either into the chain editor, which repaints its own LEDs
+ * from the next tick, or out of shadow altogether, where Move's state IS the
+ * correct state.
+ *
+ * SPI-callback safe: this only arms the restore; the packets go out over the
+ * following frames from led_queue_flush_move_sysex_restore.
+ */
+static void service_knob_led_restore(shadow_control_t *ctrl) {
+    if (!ctrl || !ctrl->restore_knob_leds) return;
+    ctrl->restore_knob_leds = 0;   /* an edge, not a state */
+    led_queue_restore_move_sysex_leds();
+}
+
 void shadow_clear_move_leds_if_overtake(void) {
     shadow_control_t *ctrl = host.shadow_control ? *host.shadow_control : NULL;
     int cur_overtake = (ctrl && ctrl->overtake_mode >= 2) ? 1 : 0;
@@ -332,6 +371,10 @@ void shadow_clear_move_leds_if_overtake(void) {
             }
         }
     }
+
+    /* AFTER the scan, so the cache is this frame's, and only outside overtake,
+     * which owns the whole surface and runs its own snapshot/restore. */
+    if (!cur_overtake) service_knob_led_restore(ctrl);
 
     /* On transition into overtake: snapshot LED state, then clear (or restore).
      * Two passes to catch any Move re-asserts between frames.

@@ -46,7 +46,8 @@ export const VIZ_SOURCE_DECLARED = "declared";
 export const VIZ_SOURCE_OVERRIDE = "override";
 export const VIZ_SOURCE_DETECTED = "detected";
 
-const ENVELOPE_ROLE_ORDER = ["attack", "decay", "sustain", "release"];
+/* Time order, which is also draw order: A H D S R. */
+const ENVELOPE_ROLE_ORDER = ["attack", "hold", "decay", "sustain", "release"];
 const FILTER_ROLE_ORDER = ["cutoff", "resonance", "mode", "slope"];
 const LFO_ROLE_ORDER = ["shape", "rate", "depth", "phase"];
 const EQ_ROLE_ORDER = ["low", "mid", "high"];
@@ -65,10 +66,14 @@ function rowOf(slot) { return Math.floor(slot / ROW_WIDTH); }
  * gap between row 0 and row 1, and a non-contiguous set (roles scattered
  * across a page) cannot be drawn as one shape at all.
  */
+/* `ignoreRows` is used by alignGroupsToRows to ask the counterfactual "what
+ * would group if the row constraint were lifted?" — it is never used to DRAW,
+ * because a shape cannot span the row-0 label band. */
+let IGNORE_ROWS = false;
 function isAdjacentRun(slots) {
     if (slots.length === 0) return false;
     const sorted = [...slots].sort((a, b) => a - b);
-    if (rowOf(sorted[0]) !== rowOf(sorted[sorted.length - 1])) return false;
+    if (!IGNORE_ROWS && rowOf(sorted[0]) !== rowOf(sorted[sorted.length - 1])) return false;
     for (let i = 1; i < sorted.length; i++) if (sorted[i] !== sorted[i - 1] + 1) return false;
     return true;
 }
@@ -101,6 +106,35 @@ const WAVEFORM_NAMES = /\b(sine|sin|tri|triangle|saw|sawtooth|square|pulse|ramp|
 /* Exported so knob_engine.mjs turns exactly the controls detectSwitch draws as a
  * switch — the feel and the picture must agree on what a boolean is. */
 export const BOOL_OPTION = /^(off|on|no|yes|0|1|false|true|disabled|enabled)$/i;
+
+/**
+ * A boolean, however its author spelled it.
+ *
+ * Two spellings mean the same control. `enum` with Off/On options is the one
+ * this file recognised; `int` with min 0 and max 1 is the one it did not, and
+ * that is 61 parameters across 11 modules — obxd alone declares 25 of them
+ * (unison, osc1_saw, osc1_pulse...), dexed 8, and it is how ambiotica spells
+ * its Tempo Sync. All of them drew as a NUMBER, which is the one widget that
+ * tells you nothing: "1" does not say what the other state is, or that there
+ * are only two.
+ *
+ * Deliberately NOT float 0..1 — that is a mix or an amount, the single most
+ * common continuous range in the fleet, and treating it as a switch would
+ * collapse hundreds of real dials into on/off.
+ *
+ * A range of exactly 1 is required rather than `max <= 1`, so a 0..0
+ * degenerate declaration is left alone rather than drawn as a switch that
+ * cannot move.
+ */
+export function isBooleanMeta(meta) {
+    if (!meta) return false;
+    const opts = Array.isArray(meta.options) ? meta.options.map(String) : null;
+    if (opts && opts.length === 2)
+        return opts.every((o) => BOOL_OPTION.test(o.trim()));
+    if (opts) return false;      /* an options list of any other length is a list */
+    const isInt = meta.type === "int" || meta.kind === "int";
+    return !!isInt && meta.min === 0 && meta.max === 1;
+}
 
 /**
  * Strip the matched role word out of a key, leaving whatever names the
@@ -228,6 +262,18 @@ function inferKindFromRoles(roles) {
 
 const ROLE_WORD = {
     attack: /attack/, decay: /decay/, sustain: /sustain/, release: /release/,
+    /*
+     * HOLD is the one role that needs a boundary. The others are bare
+     * substrings and can afford to be, but "threshold" ENDS IN "hold" -- and
+     * gate declares `threshold` on knob 1 and `hold` on knob 3, so a bare
+     * /hold/ would bind the hold role to the threshold, which is the first
+     * match in the pool. The group would then be built out of the wrong knob
+     * and drawn as a plateau whose height is a dB threshold.
+     *
+     * (^|_) matches `hold`, `gate_hold`, `lfo0_hold`; it does not match
+     * `threshold`.
+     */
+    hold: /(^|_)hold/,
 };
 
 function detectEnvelope(pool) {
@@ -238,8 +284,17 @@ function detectEnvelope(pool) {
         else if (!byRole.decay && ROLE_WORD.decay.test(k)) byRole.decay = { ...item, stem: stemOf(k, ROLE_WORD.decay) };
         else if (!byRole.sustain && ROLE_WORD.sustain.test(k)) byRole.sustain = { ...item, stem: stemOf(k, ROLE_WORD.sustain) };
         else if (!byRole.release && ROLE_WORD.release.test(k)) byRole.release = { ...item, stem: stemOf(k, ROLE_WORD.release) };
+        /*
+         * Hold is accepted only if it is a NUMBER. Every other role is
+         * numeric-checked after the fact, and failing that check rejects the
+         * WHOLE envelope -- so a non-numeric hold would not merely be skipped,
+         * it would delete an otherwise perfect ADSR. "arp_hold" (chordism,
+         * osirus) is a switch, and it sits on pages that have real envelopes
+         * on them.
+         */
+        else if (!byRole.hold && ROLE_WORD.hold.test(k) && isNumeric(item.meta)) byRole.hold = { ...item, stem: stemOf(k, ROLE_WORD.hold) };
     }
-    const present = ENVELOPE_ROLE_ORDER.filter((r) => byRole[r]);
+    let present = ENVELOPE_ROLE_ORDER.filter((r) => byRole[r]);
     if (present.length < 2) return [];
     /* Every role param must be a turnable number — an enum called "attack"
      * would not be a time or level. */
@@ -247,6 +302,33 @@ function detectEnvelope(pool) {
     /* "f_attack"/"f_decay" belong together; "amp_attack"/"filter_decay" do
      * not, whatever the adjacency looks like. */
     if (!stemsAgree(present.map((r) => byRole[r]))) return [];
+
+    /*
+     * Take the longest ADJACENT RUN of roles, rather than requiring every role
+     * found on the page to be adjacent.
+     *
+     * Requiring all of them means one stray role deletes a group that is
+     * otherwise perfect. linein is the case: its Gate Settings page declares
+     * threshold/attack/release/range on knobs, and `gate_hold` is undeclared,
+     * so the planner appends it at the END. Slots [1, 4, 2] are not a run, and
+     * an attack/release pair sitting side by side stopped being an envelope
+     * because of a knob four positions away.
+     *
+     * Same shape as the optional-role bug in detectFilter, and worth fixing as
+     * the general rule rather than as another special case: what corroborates
+     * a group is roles that are TOGETHER, so the answer is to find them, not
+     * to give up because something else also matched.
+     */
+    const bySlot = present.slice().sort((a, b) => byRole[a].slot - byRole[b].slot);
+    let best = [], run = [];
+    for (const r of bySlot) {
+        if (run.length && byRole[r].slot !== byRole[run[run.length - 1]].slot + 1) run = [];
+        run.push(r);
+        if (run.length > best.length) best = run.slice();
+    }
+    if (best.length < 2) return [];
+    /* Back to time order for the roles map and the draw. */
+    present = ENVELOPE_ROLE_ORDER.filter((r) => best.includes(r));
     const slots = present.map((r) => byRole[r].slot);
     if (!isAdjacentRun(slots)) return [];
     return [{
@@ -278,16 +360,47 @@ function detectFilter(pool) {
     }
     if (!cutoff || !resonance) return [];
     if (!isNumeric(cutoff.meta) || !isNumeric(resonance.meta)) return [];
-    const roles = { cutoff: cutoff.key, resonance: resonance.key };
-    const items = [cutoff, resonance];
-    if (mode) { roles.mode = mode.key; items.push(mode); }
-    if (slope && (isNumeric(slope.meta) || isEnum(slope.meta))) { roles.slope = slope.key; items.push(slope); }
     /* Cutoff and resonance sharing no stem ("hp_cutoff" next to a totally
      * unrelated "eq_resonance") is not a filter, just two knobs that landed
      * beside each other. */
     if (!stemsAgree([cutoff, resonance])) return [];
+
+    const roles = { cutoff: cutoff.key, resonance: resonance.key };
+    const items = [cutoff, resonance];
+    if (!isAdjacentRun(items.map((i) => i.slot))) return [];
+
+    /*
+     * mode and slope are OPTIONAL, so a non-adjacent one is DROPPED -- it must
+     * not disqualify the pair that does corroborate.
+     *
+     * It used to. schwung-filter puts cutoff and resonance on knobs 1 and 2
+     * and its Mode enum on knob 8, so the slot run was [0, 1, 7], the
+     * adjacency check failed, and the module whose entire purpose is a filter
+     * drew two unrelated dials. 303, whose root page has no mode key at all,
+     * grouped correctly off the identical cutoff/resonance pair -- so the
+     * failure looked like something specific to schwung-filter rather than
+     * what it was: an optional role behaving like a required one.
+     *
+     * Added one at a time in slot order, keeping each only while the run stays
+     * contiguous, so a mode that IS adjacent still joins the group. */
+    const optional = [];
+    if (mode) optional.push(["mode", mode]);
+    if (slope && (isNumeric(slope.meta) || isEnum(slope.meta))) optional.push(["slope", slope]);
+    optional.sort((a, b) => a[1].slot - b[1].slot);
+    for (const [role, item] of optional) {
+        const widened = items.concat([item]);
+        if (!isAdjacentRun(widened.map((i) => i.slot))) continue;
+        /* No stem check on the optionals. It was tried and it is wrong here:
+         * noisemaker names its pair bare ("cutoff", "resonance") and its mode
+         * "filter_type", so the stems disagree and the mode was dropped from a
+         * group it plainly belongs to. Adjacency is the corroboration -- a
+         * mode sitting directly beside a cutoff/resonance pair is that pair's
+         * mode. */
+        roles[role] = item.key;
+        items.push(item);
+    }
+    items.sort((a, b) => a.slot - b.slot);
     const slots = items.map((i) => i.slot);
-    if (!isAdjacentRun(slots)) return [];
     return [{
         kind: VIZ_FILTER, group: null, roles, keys: items.map((i) => i.key),
         ...span(slots), source: VIZ_SOURCE_DETECTED,
@@ -386,10 +499,7 @@ function detectFader(pool) {
 function detectSwitch(pool) {
     const out = [];
     for (const item of pool) {
-        if (!isEnum(item.meta)) continue;
-        const opts = (item.meta.options || []).map(String);
-        if (opts.length !== 2) continue;
-        if (!opts.every((o) => BOOL_OPTION.test(o.trim()))) continue;
+        if (!isBooleanMeta(item.meta)) continue;
         out.push({
             kind: VIZ_SWITCH, group: null, roles: { value: item.key }, keys: [item.key],
             slotStart: item.slot, slotSpan: 1, source: VIZ_SOURCE_DETECTED,
@@ -398,8 +508,20 @@ function detectSwitch(pool) {
     return out;
 }
 
+/*
+ * The band words require a separator, which is what keeps "lowpass" and
+ * "highpass" out of the EQ detector. The `[lmh]gain` forms are the exception
+ * that has to be spelled out: ottx declares lgain / mgain / hgain, adjacent
+ * and all -30..30 dB — a textbook three-band EQ that matched none of the
+ * patterns because there is no separator to anchor on.
+ *
+ * Anchored whole-string and restricted to the single letter plus "gain", so it
+ * cannot reach for "lfo_gain" or "make_gain".
+ */
 const EQ_BAND_WORD = {
-    low: /(^|_)(low|lo|bass)($|_)/, mid: /(^|_)mid($|_)/, high: /(^|_)(high|hi|treble)($|_)/,
+    low: /(^|_)(low|lo|bass)($|_)|^lgain$/,
+    mid: /(^|_)mid($|_)|^mgain$/,
+    high: /(^|_)(high|hi|treble)($|_)|^hgain$/,
 };
 
 function detectEq(pool) {
@@ -427,29 +549,227 @@ function detectEq(pool) {
     }];
 }
 
+/*
+ * Ported from schwung-movy src/model/wav-viz.ts detectWavViz, with permission.
+ *
+ * ANCHORED ON THE MARKER, NOT THE FILE. The first version required a filepath
+ * param on the same page, so a page of nothing but Start / Loop Start / Loop
+ * End — the page that needs the picture MOST, because three separate knobs
+ * cannot show that a loop sits inside the region that plays — drew nothing at
+ * all. The marker is what indexes into a sample, so the marker is the anchor.
+ */
+
+/** The file a marker says it indexes, or null. */
+function markerFileKey(meta) {
+    return (meta && (meta.filepath_param || meta.filepathParam)) || null;
+}
+
+/*
+ * A marker is either TYPED `wav_position`, or a plain number that NAMES the
+ * file it indexes. mrsample types its Start and Loop Start as floats and
+ * declares `filepath_param: sample_path`; that declaration is the module
+ * telling us the knob is a position into that sample, and it is a stronger
+ * signal than a type string it never set.
+ */
+function isMarkerMeta(meta) {
+    if (!meta) return false;
+    if (meta.type === "wav_position") return true;
+    if (meta.type !== "float" && meta.type !== "int") return false;
+    return !!markerFileKey(meta);
+}
+
+/*
+ * Loop bounds draw as BRACKETS rather than as a cursor, so they have to be
+ * told apart from the playback position — by name, like everything else here
+ * infers. "to" is anchored because it is two letters and would otherwise match
+ * inside any word ("automation", "photo").
+ */
+const MARKER_LOOP_WORD = /loop/;
+const MARKER_END_WORD = /end|stop|finish|(^|[\s_])to($|[\s_])/;
+function markerKind(key, meta) {
+    const t = (String(key) + " " + String((meta && meta.name) || "")).toLowerCase();
+    if (!MARKER_LOOP_WORD.test(t)) return "position";
+    return MARKER_END_WORD.test(t) ? "loopEnd" : "loopStart";
+}
+
+/*
+ * The granular read spread, matched on the EXACT key.
+ *
+ * That narrowness is the design, not an oversight. "Spread", "Scatter" and
+ * "Diffuse" are all over the fleet and not one of them is a read-position
+ * spread: granny's OWN `spread` is stereo width between voices,
+ * fizzik/nusaw/freak spread is stereo, chordism's is chord voicing,
+ * cloudseed's diffusion is a reverb control. Matching any of them would draw a
+ * region on the sample that the DSP never reads a grain from.
+ */
+function isSprayMeta(key, meta) {
+    return String(key).toLowerCase() === "spray"
+        && !!meta && meta.type === "float" && meta.min === 0 && meta.max === 1;
+}
+
 function detectSample(pool, metaIndex) {
-    const out = [];
+    /* Prefer a playback cursor as the anchor; fall back to any marker, so an
+     * all-loop page still gets the graphic. */
+    let anchor = null;
     for (const item of pool) {
-        if (item.meta.type !== "filepath" && item.meta.type !== "file") continue;
-        /* The companion position marker is a `wav_position` param that may or
-         * may not be on this same page — search the whole module, not just
-         * the pool, the way the module contract intends a "position" role to
-         * work. Prefer one whose key shares a stem with the sample key. */
-        let position = null;
-        const stem = item.key.replace(/(path|file|sample)$/i, "");
-        for (const k of metaIndex.keys) {
-            const m = metaIndex.get(k);
-            if (!m || m.type !== "wav_position") continue;
-            if (!position || (stem && k.startsWith(stem))) position = k;
-        }
-        const roles = { value: item.key };
-        if (position) roles.position = position;
-        out.push({
-            kind: VIZ_SAMPLE, group: null, roles, keys: [item.key],
-            slotStart: item.slot, slotSpan: 1, source: VIZ_SOURCE_DETECTED,
-        });
+        if (!isMarkerMeta(item.meta)) continue;
+        if (markerKind(item.key, item.meta) === "position") { anchor = item; break; }
     }
-    return out;
+    if (!anchor) {
+        for (const item of pool) {
+            if (isMarkerMeta(item.meta)) { anchor = item; break; }
+        }
+    }
+    /*
+     * NO MARKER, BUT A FILE: draw the waveform alone.
+     *
+     * Deferred from the marker-anchoring change, deliberately. While the
+     * envelope was SYNTHETIC this cell was a fabricated picture of a file --
+     * it looked like the sample's shape and was not one -- so breakbeat,
+     * gesture-test and mrdrums' Pad Settings were better off showing their
+     * filename. Now that the peaks are real, a waveform with no cursor is
+     * genuine information about what is loaded, so they get it back.
+     */
+    if (!anchor) {
+        /* EVERY file, not the first: breakbeat loads two samples side by side
+         * (A_sample_path and B_sample_path) and each is its own picture. */
+        const out = [];
+        for (const item of pool) {
+            if (item.meta.type !== "filepath" && item.meta.type !== "file") continue;
+            out.push({
+                kind: VIZ_SAMPLE, group: null, roles: { value: item.key },
+                keys: [item.key], slotStart: item.slot, slotSpan: 1,
+                source: VIZ_SOURCE_DETECTED,
+            });
+        }
+        return out;
+    }
+
+    /*
+     * Prefer the module's OWN declaration of which file this marker indexes
+     * over "the first file param on the page" — a page holding both a preset
+     * path and a sample path would otherwise be a coin toss.
+     */
+    let fileItem = null;
+    const declaredFile = markerFileKey(anchor.meta);
+    for (const item of pool) {
+        if (declaredFile) { if (item.key === declaredFile) { fileItem = item; break; } }
+        else if (item.meta.type === "filepath" || item.meta.type === "file") { fileItem = item; break; }
+    }
+
+    /*
+     * THE FILE NEED NOT BE ON THE PAGE. Searching only the pool was the whole
+     * granny bug: `sample_path` is declared, is type filepath, and is on NO
+     * knobs list — it is reached through the hierarchy — so every page that
+     * carries `position` found no file and drew a sample it could not name.
+     *
+     * A file that is off-page is still the file this marker indexes, so it
+     * informs the picture. It does NOT join `keys`: keys claim cells, and a
+     * key that is not on the page has no cell to claim. It rides in
+     * `extraKeys` instead, which the controller adds to the value rotation as
+     * one extra stop — the same idiom the preset-name read already uses.
+     */
+    let offPageFile = null;
+    if (!fileItem && metaIndex && Array.isArray(metaIndex.keys)) {
+        for (const k of metaIndex.keys) {
+            if (declaredFile) { if (k === declaredFile) { offPageFile = k; break; } continue; }
+            const m = metaIndex.getOrGuess(k);
+            if (m && (m.type === "filepath" || m.type === "file")) { offPageFile = k; break; }
+        }
+    }
+
+    /*
+     * Every other marker on the SAME sample joins the graphic — by the
+     * module's own `view_group` when it declares one, otherwise by naming the
+     * same file. They belong on one picture: three separate knobs cannot show
+     * that a loop sits inside the region that plays.
+     */
+    const group = anchor.meta.view_group || anchor.meta.viewGroup || null;
+    const fileKey = fileItem ? fileItem.key : (declaredFile || offPageFile);
+    const members = [anchor];
+    for (const item of pool) {
+        if (item === anchor || !isMarkerMeta(item.meta)) continue;
+        const itemGroup = item.meta.view_group || item.meta.viewGroup || null;
+        const sameGroup = !!group && itemGroup === group;
+        const sameFile = !!fileKey && markerFileKey(item.meta) === fileKey;
+        if (sameGroup || sameFile) members.push(item);
+    }
+    /* Only a PLAYBACK cursor has a spread — a loop bound does not. */
+    let sprayItem = null;
+    if (markerKind(anchor.key, anchor.meta) === "position") {
+        for (const item of pool) {
+            if (item !== anchor && isSprayMeta(item.key, item.meta)) { sprayItem = item; break; }
+        }
+    }
+
+    /*
+     * ROLES COME FROM EVERY MEMBER; ONLY THE ADJACENT RUN CLAIMS CELLS.
+     *
+     * These are two different questions and collapsing them broke both real
+     * modules on the fleet. A graphic must be CONTIGUOUS — it cannot be drawn
+     * across a foreign cell or across the row-0 label band — but what it can
+     * SHOW is not limited that way: a loop bound or a spread is read out of the
+     * value, not out of the neighbouring pixels.
+     *
+     * mrsample is the case for the bounds: it declares view_group "loop" on
+     * sample_start, loop_start and loop_end, exactly as intended — and puts
+     * `loop_mode` between them. Trimming the roles to the run left the flagship
+     * loop-bracket module with no brackets.
+     *
+     * granny is the case for the spray, and worse: `spray` sits three knobs
+     * from `position`, so the fences would never have drawn on the ONE module
+     * in the fleet that has a spray at all.
+     *
+     * A member outside the run keeps its own knob and also informs the picture.
+     * That redundancy is fine, and better than the alternatives: you can still
+     * turn the knob and read its number, and the graphic still tells you where
+     * the region sits.
+     */
+    const roles = {};
+    if (fileItem) roles.value = fileItem.key;
+    else if (offPageFile) roles.value = offPageFile;
+    if (sprayItem) roles.spray = sprayItem.key;
+    for (const it of members) {
+        const kind = markerKind(it.key, it.meta);
+        if (!roles[kind]) roles[kind] = it.key;   /* first one wins per role */
+    }
+
+    /*
+     * The CELLS: the longest adjacent run containing the anchor, the same rule
+     * detectEnvelope uses.
+     *
+     * THE SPRAY IS A CANDIDATE, which it did not used to be. The old reasoning
+     * — it modifies the cursor rather than being a position, so it has nothing
+     * to draw in a cell of its own — described the parameter correctly and the
+     * LAYOUT wrongly. It drew spray's fences onto a cell belonging to
+     * `position` while spray itself kept an unrelated-looking arc three knobs
+     * away, which is what it looks like from the device: "spray is unrelated
+     * but there".
+     *
+     * Being a candidate costs nothing where the spray is not already adjacent
+     * to the cursor — the run rule still gives span 1, as it did for granny
+     * before the gather pass. It is what lets `gatherGroupMembers` widen the
+     * graphic once the two are seated together, exactly like the four knobs of
+     * an ADSR sharing one envelope.
+     */
+    const claimable = [fileItem, sprayItem, ...members].filter(Boolean)
+        .slice().sort((a, b) => a.slot - b.slot);
+    let run = [], best = [];
+    for (const it of claimable) {
+        if (run.length && !isAdjacentRun([...run.map((r) => r.slot), it.slot])) run = [];
+        run.push(it);
+        if (run.indexOf(anchor) >= 0 && run.length > best.length) best = run.slice();
+    }
+    if (best.indexOf(anchor) < 0) best = [anchor];
+
+    const g = {
+        kind: VIZ_SAMPLE, group: null, roles, keys: best.map((it) => it.key),
+        ...span(best.map((it) => it.slot)), source: VIZ_SOURCE_DETECTED,
+    };
+    /* Off-page only. An on-page file is already in the rotation via keys, and
+     * asking for it twice would spend a read per frame to learn nothing. */
+    if (offPageFile) g.extraKeys = [offPageFile];
+    return [g];
 }
 
 /* Priority order — see the module doc comment. Each function returns the
@@ -458,7 +778,7 @@ function detectSample(pool, metaIndex) {
 const DETECTORS = [
     detectEnvelope, detectFilter, detectLfo, detectWaveform,
     detectFader, detectSwitch, detectEq,
-    (pool, metaIndex) => detectSample(pool, metaIndex),
+    detectSample,
 ];
 
 /* ---------------------------------------------------------------- resolve */
@@ -475,8 +795,17 @@ const DETECTORS = [
  *   adjacent) — validate.mjs surfaces these so an author can see why nothing
  *   appeared.
  */
-export function resolveViz({ keys, metaIndex, overrides } = {}) {
+export function resolveViz({ keys, metaIndex, overrides, ignoreRows } = {}) {
     if (!keys || !metaIndex) return { groups: [], invalid: [] };
+    IGNORE_ROWS = !!ignoreRows;
+    try {
+        return resolveVizInner({ keys, metaIndex, overrides });
+    } finally {
+        IGNORE_ROWS = false;
+    }
+}
+
+function resolveVizInner({ keys, metaIndex, overrides }) {
     const invalid = [];
     const { groups: declared, excluded } = collectDeclared(keys, metaIndex, invalid);
 
@@ -544,4 +873,194 @@ export function resolveViz({ keys, metaIndex, overrides } = {}) {
 
     out.sort((a, b) => a.slotStart - b.slotStart);
     return { groups: out, invalid };
+}
+
+/**
+ * Nudge a page's knob order so a group that is one slot from being drawable
+ * becomes drawable.
+ *
+ * A graphic must sit inside ONE ROW (isAdjacentRun) because row 0's knobs are
+ * drawn at y=10 with their LABELS at y=25..32 and row 1 starts at y=33 — a
+ * shape spanning both would draw straight through the label band. That is a
+ * real constraint, not a tunable one.
+ *
+ * The consequence, measured on the 95-module fleet: 26 groups are rejected for
+ * LAYOUT alone, and they are the flagship case — the ADSR on the Main page of
+ * obxd, hush1, minijv, moog, surge, rex, osirus, helm, braids and sfz, plus
+ * twelve surge LFO pages. An author writing `attack, decay, sustain, release`
+ * in the obvious order lands on slots 3..6 and gets four separate dials.
+ *
+ * WHAT THIS DOES NOT DO is as important as what it does:
+ *
+ *   * it never changes WHICH keys are on the page, so no knob is pushed to
+ *     another page and no orphan page is created. Max group span is 4 and a
+ *     row is 4 wide, so a group always fits somewhere in the 8 — measured, 25
+ *     of the 26 displace exactly ONE knob and one displaces two.
+ *   * it never reorders for cosmetics. The move must strictly increase the
+ *     number of keys covered by a group; a page whose groups already draw is
+ *     returned untouched.
+ *   * it preserves relative order. The candidate is a BLOCK MOVE, so the
+ *     author's sequence survives apart from the block that moved.
+ *
+ * It is still us overruling a hand-written layout, so page_plan records it and
+ * validate_contract surfaces it — an author who wonders why their cutoff moved
+ * gets an answer instead of a mystery.
+ *
+ * @param {Array} keys       page.keys, up to KNOBS_PER_PAGE, may contain nulls
+ * @param {object} metaIndex from param_meta.buildMetaIndex
+ * @returns {{keys: Array, moved: boolean, from: number, to: number, span: number}}
+ */
+/* Aligning a block inside a row of four never needs more than three shifts, so
+ * anything beyond that is not alignment. */
+export const MAX_ALIGN_DISPLACE = 3;
+
+export function alignGroupsToRows(keys, metaIndex) {
+    const none = { keys, moved: false, from: -1, to: -1, span: 0 };
+    if (!keys || !metaIndex || keys.length <= ROW_WIDTH) return none;
+
+    const sig = (gs) => new Set(gs.map((g) => g.keys.join("\u0000")));
+    const drawn = sig(resolveViz({ keys, metaIndex }).groups || []);
+    /* The counterfactual: what would group if a shape could span the rows. */
+    const wanted = (resolveViz({ keys, metaIndex, ignoreRows: true }).groups || [])
+        .filter((g) => !drawn.has(g.keys.join("\u0000")))
+        /* A non-contiguous candidate is not a layout problem, it is a
+         * different page; only a run that straddles the row break is
+         * rescuable by moving it. */
+        .filter((g) => g.slotSpan === g.keys.length && g.slotSpan <= ROW_WIDTH)
+        .sort((a, b) => b.slotSpan - a.slotSpan);
+    if (wanted.length === 0) return none;
+
+    const move = (arr, from, span, to) => {
+        const block = arr.slice(from, from + span);
+        const rest = arr.slice(0, from).concat(arr.slice(from + span));
+        return rest.slice(0, to).concat(block, rest.slice(to));
+    };
+
+    for (const g of wanted) {
+        /*
+         * ROW TWO IS PREFERRED, BUT ONLY FOR A BLOCK THAT HAS TO MOVE.
+         *
+         * "Always put the envelope on row two" is tempting and wrong: 29
+         * envelopes in the fleet already sit inside row one and draw
+         * correctly, and many of them are on pages that exist FOR that
+         * envelope -- obxd/Filter Env, hush1/Amp Envelope, hera/Envelope,
+         * tablor/Env -- where slots 0..3 is exactly where it belongs and row
+         * one would otherwise be empty. An always-rule makes 29 pages worse to
+         * fix 24.
+         *
+         * For a block that is straddling and must move regardless, row two is
+         * the better destination: it keeps whatever the author put FIRST
+         * (cutoff and resonance, almost always) on knobs 1 and 2. minijv is
+         * the case — its ADSR sits at slots 2..5, and moving it down keeps
+         * macro_cutoff on knob 1, where a nearest-fit search moved it to
+         * knob 5.
+         */
+        const targets = [ROW_WIDTH, 2 * ROW_WIDTH - g.slotSpan, 0, ROW_WIDTH - g.slotSpan];
+        for (const to of targets) {
+            if (to < 0 || to + g.slotSpan > keys.length) continue;
+            if (rowOf(to) !== rowOf(to + g.slotSpan - 1)) continue;
+            if (Math.abs(to - g.slotStart) > MAX_ALIGN_DISPLACE) continue;
+            const cand = move(keys, g.slotStart, g.slotSpan, to);
+            /* Verify against the REAL detector. The counterfactual said this
+             * group wants to exist; only the real pass can say it now does,
+             * and that it did not cost an existing one. */
+            const after = sig(resolveViz({ keys: cand, metaIndex }).groups || []);
+            if (!after.has(g.keys.join("\u0000"))) continue;
+            let lost = false;
+            for (const d of drawn) if (!after.has(d)) { lost = true; break; }
+            if (lost) continue;
+            return { keys: cand, moved: true, from: g.slotStart, to, span: g.slotSpan };
+        }
+    }
+    return none;
+}
+
+/**
+ * Seat a graphic's scattered members together so the picture gets the width
+ * its controls warrant.
+ *
+ * `alignGroupsToRows` rescues a group that is ALREADY contiguous but straddles
+ * the row break. This is the other half: members that are on the page, belong
+ * to the same picture, and are simply not next to each other. granny is the
+ * case — `spray` sits three knobs from `position`, so the fences drew on a
+ * 30px cell while the knob controlling them sat elsewhere looking unrelated.
+ *
+ * Measured over the 95-module fleet, exactly three pages change:
+ *
+ *     granny   / root     span 1 -> 2   (position, spray)
+ *     granny   / main     span 1 -> 2
+ *     mrsample / sample   span 1 -> 3   (sample_start, loop_start, loop_end)
+ *
+ * The other six sample groups have nothing scattered and are untouched. That
+ * narrowness is the point: this is not a layout engine that re-seats every
+ * page, it is a nudge for the pages whose author wrote the members apart.
+ *
+ * The guarantees are `alignGroupsToRows`'s, deliberately, because they are the
+ * ones that make a reorder safe to perform behind an author's back:
+ *
+ *   * WHICH keys are on the page never changes, so no knob is pushed to
+ *     another page and no orphan page appears;
+ *   * the result must stay inside ONE ROW, because a shape spanning the break
+ *     would draw through the label band;
+ *   * the REAL detector verifies the outcome — the widened group must exist
+ *     afterwards, and no group that already drew may be lost.
+ *
+ * @param {Array<string|null>} keys  the page's 8 knob slots
+ * @param {object} metaIndex
+ * @returns {{keys: Array, moved: boolean, span: number}}
+ */
+export function gatherGroupMembers(keys, metaIndex) {
+    const none = { keys, moved: false, span: 0 };
+    if (!keys || !metaIndex) return none;
+
+    const sigOf = (gs) => new Set(gs.map((g) => g.keys.join(" ")));
+    const before = resolveViz({ keys, metaIndex }).groups || [];
+    const drawn = sigOf(before);
+
+    for (const g of before) {
+        /* Only a graphic whose members can be READ from off-cell has anything
+         * to gather; that is the sample cell today. An envelope's roles are
+         * its cells by construction. */
+        if (g.kind !== VIZ_SAMPLE) continue;
+
+        /* On this page, belongs to this picture, is not already a cell of it. */
+        const scattered = [...new Set(Object.values(g.roles))]
+            .filter((k) => keys.indexOf(k) >= 0 && g.keys.indexOf(k) < 0);
+        if (scattered.length === 0) continue;
+
+        const wantSpan = g.keys.length + scattered.length;
+        if (wantSpan > ROW_WIDTH) continue;
+
+        /* Seat them immediately after the run that already draws, preserving
+         * the author's relative order among the ones being moved. */
+        const anchorLast = g.slotStart + g.slotSpan - 1;
+        const moving = keys.filter((k) => k && scattered.indexOf(k) >= 0);
+        const rest = keys.filter((k) => !k || moving.indexOf(k) < 0);
+        const insertAt = rest.indexOf(keys[anchorLast]) + 1;
+        if (insertAt <= 0) continue;
+        const cand = rest.slice(0, insertAt).concat(moving, rest.slice(insertAt));
+
+        /* One row, or the shape draws through the label band. */
+        const start = cand.indexOf(keys[g.slotStart]);
+        if (start < 0) continue;
+        if (rowOf(start) !== rowOf(start + wantSpan - 1)) continue;
+
+        const afterGroups = resolveViz({ keys: cand, metaIndex }).groups || [];
+        /* It must actually have widened — the detector, not the arithmetic,
+         * decides whether these cells form one graphic. */
+        if (!afterGroups.some((x) => x.kind === VIZ_SAMPLE && x.slotSpan === wantSpan)) continue;
+        const after = sigOf(afterGroups);
+        let lost = false;
+        for (const d of drawn) {
+            if (after.has(d)) continue;
+            /* The group we deliberately widened is EXPECTED to have a new
+             * signature; anything else going missing is a regression. */
+            if (d === g.keys.join(" ")) continue;
+            lost = true; break;
+        }
+        if (lost) continue;
+
+        return { keys: cand, moved: true, span: wantSpan };
+    }
+    return none;
 }

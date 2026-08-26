@@ -27,14 +27,33 @@
  */
 
 import { ctx } from './shadow_ui_ctx.mjs';
-import { createController, CONTRACT_SETTLE_MS } from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
+import { createController, CONTRACT_SETTLE_MS, LAYOUT_LIST } from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
+/* Re-exported so a contract can PIN its layout in the chrome it already hands
+ * over (see paramPagesLayout). Global Settings does; slot and Master FX
+ * settings deliberately do not. */
+export { LAYOUT_LIST };
 /* Re-exported so the LIST editor waits out the same module-side debounce the
  * grid does, from the same number. Two hand-written 500s would drift. */
 export { CONTRACT_SETTLE_MS };
 import { decodeInput, applyInput } from '/data/UserData/schwung/shared/param_pages/page_input.mjs';
 import { PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS } from '/data/UserData/schwung/shared/param_pages/page_plan.mjs';
-import { LAYOUT_BAR, LAYOUT_DIAL } from '/data/UserData/schwung/shared/param_pages/render_page.mjs';
-import { LAYOUT_MOVY } from '/data/UserData/schwung/shared/param_pages/render_page_movy.mjs';
+import { LAYOUT_MOVY, normalizedOf }
+    from '/data/UserData/schwung/shared/param_pages/render_page_movy.mjs';
+/* Knob indicator ring LEDs (CC 71-78): which physical encoder drives which
+ * drawn cell, and roughly where its parameter sits. */
+import { updateKnobLEDs, clearKnobLEDs, resetKnobLedCache, NUM_KNOB_LEDS }
+    from '/data/UserData/schwung/shared/param_pages/knob_leds.mjs';
+import { invalidateLedCache } from '/data/UserData/schwung/shared/input_filter.mjs';
+/* NOTE: wav_io_qjs.mjs — which registers the QuickJS file IO wav_peaks.mjs
+ * needs — is imported from shadow_ui.js, NOT from here. This file IS loaded
+ * under node by test_param_pages_view.sh and test_param_pages_io_forwarding.sh,
+ * and wav_io_qjs names the `std`/`os` modules, which node has no idea about.
+ * shadow_ui.js is the only file in the shadow UI that node never imports. */
+import { wavPeaksTick } from '/data/UserData/schwung/shared/param_pages/wav_peaks.mjs';
+import { VIZ_SAMPLE } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
+/* The enum option screen, shared with the picker view in shadow_ui.js — one
+ * screen, two entries, opposite commit semantics. See enum_list.mjs. */
+import { drawEnumList } from '/data/UserData/schwung/shared/param_pages/enum_list.mjs';
 import { announce } from '/data/UserData/schwung/shared/screen_reader.mjs';
 import { log, isLoggingEnabled } from '/data/UserData/schwung/shared/logger.mjs';
 
@@ -104,17 +123,68 @@ export const PARAM_VIEW_LIST = 0;
 export const PARAM_VIEW_KNOBS = 1;
 
 /**
- * Whether the knob grid should be used at all.
+ * Whether the page chrome may run at all.
  *
- * The screen reader forces the list regardless of the setting. A grid has eight
- * cells and nothing selected, so it is only navigable by ear once the announce
- * calls below are proven on hardware — until then the list, whose reading order
- * is its navigation order, stays the accessible surface.
+ * ONE question, and it is no longer "is the grid on". `param_view` used to be
+ * answered here too, which made choosing List fork the user into an entirely
+ * separate engine — the hierarchy editor in shadow_ui.js, ~34 functions and
+ * ~506 references. Now that PAGE_KNOBS has a list LAYOUT (LAYOUT_LIST), List is
+ * an arrangement inside this engine, so it is paramPagesLayout()'s to answer
+ * and this function no longer looks at it.
+ *
+ * What remains is the screen reader, and it is UNCHANGED on purpose. A grid has
+ * eight cells and nothing selected, and the controller's list layout has
+ * announcements nobody has validated on hardware; until they are, TTS keeps
+ * reaching the hierarchy editor exactly as before. Flipping that is a single
+ * deliberate act with the whole fleet behind it (design §6), not a side effect
+ * of splitting this seam.
  */
 export function paramPagesEnabled() {
     if (typeof tts_get_enabled === 'function' && tts_get_enabled()) return false;
+    return true;
+}
+
+/**
+ * WHICH arrangement the page chrome draws — the other half of the split above.
+ *
+ * The two layouts share everything a page is (page_plan, param_meta,
+ * knob_engine, param_format, announce_page, the chrome in render_page_movy);
+ * they differ only in pixel arrangement, which is the one difference the design
+ * calls irreducible. So this is a value handed to the controller AT THE DRAW
+ * CALL SITE, never a flag threaded down into widget code — that is the `geom`
+ * all-or-nothing trap in another costume.
+ *
+ * THE SCREEN READER FORCES THE LIST, and that rule lives here rather than at a
+ * call site. paramPagesEnabled() above keeps TTS users on the hierarchy editor
+ * for every COMPONENT, so this looks redundant — but Global Settings is a
+ * contract with no other path at all (its bespoke list is gone), and it is the
+ * screen you go to in order to turn the screen reader OFF. Reaching it with TTS
+ * on and getting eight cells with nothing selected would be the one place a
+ * blind user cannot get back out of. A grid announces a page; a list announces
+ * a row.
+ */
+/*
+ * A contract may PIN its layout, and Global Settings does.
+ *
+ * Param View is a preference about module parameters — cutoff, resonance,
+ * decay — where eight cells you can grab at once is the whole point. Global
+ * Settings is not that. Every one of its 25 params is a set-once toggle, and
+ * several are destructive to brush past: link_audio_routing re-routes Move's
+ * audio, resample_bridge replaces the sampler's input, param_view changes the
+ * screen you are standing on. A knob has no detent to tell you that you have
+ * changed something.
+ *
+ * So the pin is a property of the CONTRACT, not of the user's preference, and
+ * it lives in the chrome the contract already hands over rather than in a
+ * `component === "global_settings"` test here — this function must not learn
+ * the names of screens. Slot Settings and Master FX Settings deliberately do
+ * NOT pin: their Volume, Mute and Solo genuinely are performance controls.
+ */
+export function paramPagesLayout() {
+    if (currentChrome && currentChrome.layout) return currentChrome.layout;
+    if (typeof tts_get_enabled === 'function' && tts_get_enabled()) return LAYOUT_LIST;
     const mode = typeof param_view_get_mode === 'function' ? param_view_get_mode() : PARAM_VIEW_LIST;
-    return mode === PARAM_VIEW_KNOBS;
+    return mode === PARAM_VIEW_KNOBS ? LAYOUT_MOVY : LAYOUT_LIST;
 }
 
 /**
@@ -146,10 +216,12 @@ export function paramPagesEnabled() {
  *   default. Slot settings needs it: a slot publishes no ui_hierarchy and its
  *   params do not share one prefix, so the contract and the mapping are handed
  *   in (see shadow_ui_slot_grid.mjs) rather than read off a component.
- * @param {object} [chrome]  {label, moduleKey, returnView} — see currentChrome.
+ * @param {object} [chrome]  {label, name, moduleKey, returnView, onExit} — see
+ *   currentChrome. onExit replaces returnView for a contract with no view above
+ *   it (Global Settings); it is called instead of setView on Back.
  *   Omitted means the slot-chain defaults.
  */
-export function enterParamPages(slot, component, prefix, restorePageName, io, chrome) {
+export function enterParamPages(slot, component, prefix, restorePageName, io, chrome, restoreOpts) {
     currentSlot = slot;
     currentComponent = component;
     currentPrefix = prefix || component;
@@ -205,9 +277,15 @@ export function enterParamPages(slot, component, prefix, restorePageName, io, ch
         visible: (io && io.visible) ? io.visible : ctx.evaluateVisibilityCondition,
     });
     /* "Knobs" IS schwung-movy's own knob-page layout now, not Schwung's
-     * earlier dial/bar grid — see render_page_movy.mjs. The setting stays a
-     * plain List/Knobs toggle; this is what "Knobs" draws. */
-    controller.setLayout(LAYOUT_MOVY);
+     * earlier dial/bar grid — see render_page_movy.mjs. "List" is the same
+     * engine with the knob page arranged as five rows (LAYOUT_LIST). The
+     * setting stays a plain List/Knobs toggle; this is which one it draws.
+     *
+     * Set here as well as on the draw path because INPUT can arrive before the
+     * first frame does, and the controller's jog/click model reads its layout
+     * (a list has a row cursor; a grid does not). The draw path is what keeps
+     * it live if the setting changes while the view is up. */
+    controller.setLayout(paramPagesLayout());
     /*
      * Hand the NAME to the controller rather than resolving it here.
      *
@@ -223,13 +301,64 @@ export function enterParamPages(slot, component, prefix, restorePageName, io, ch
      * planned, and drops it once the contract settles without producing that
      * page.
      */
-    if (restorePageName) controller.restorePage(restorePageName);
+    /* restoreOpts.enter decides whether the restored page's door OPENS --
+     * see restorePage. Only the caller knows whether we are coming back from
+     * finishing something (jog back to paging) or from merely looking (stay
+     * inside the menu you never really left). */
+    if (restorePageName) controller.restorePage(restorePageName, restoreOpts || {});
     ctx.setView(ctx.VIEWS.PARAM_PAGES);
 }
 
 export function exitParamPages() {
+    /*
+     * GIVE THE RINGS BACK, DO NOT JUST TURN THEM OFF.
+     *
+     * This used to call clearKnobLEDs(), on the reasoning that the grid is
+     * going away and its knobs no longer do anything. That is true of the
+     * GRID and false of the hardware: leave the grid into a Schwung track and
+     * Move's own eight rings stayed dark, because Move writes an LED only when
+     * its value changes and none of them had changed while we held them.
+     * Reported from the device as "if i go from within a schwung track, the
+     * LEDs dont restore — we need to do the same thing we do with
+     * overtake/tools".
+     *
+     * So do the same thing: the shim replays Move's own last value for CC
+     * 71-78 (service_knob_led_restore in shadow_led_queue.c), from the cache it
+     * already accumulates for overtake's snapshot/restore. Where Move never
+     * wrote a ring, off is the honest answer and off is what it gets.
+     *
+     * Reset the cache regardless: the next view may clear the LEDs by another
+     * route, and a cache that outlived that clear would claim colours the
+     * hardware no longer shows — the exact failure this module keeps its own
+     * cache to avoid.
+     */
+    if (typeof shadow_restore_knob_leds === "function") shadow_restore_knob_leds();
+    else clearKnobLEDs();   /* older shim: dark is still better than wrong */
+    resetKnobLedCache();
+    /* The shim is about to repaint the surface from Move's own cache, so the
+     * shared cache in input_filter is now claiming colours the hardware will
+     * not be showing. Anything still on screen — the chain editor's track
+     * LEDs — has to be free to draw itself back over the top. */
+    invalidateLedCache();
     controller = null;
     controllerIo = null;
+}
+
+/*
+ * Rebuild ONLY the trailing pages ("My Presets" / "Module"), in place —
+ * after a Save or Delete changes what the My Presets rows offer, so the
+ * grid reflects it without moving the user off the page they are standing
+ * on. No-op when the grid is not up (e.g. a save committed from the
+ * module-picker's own preset browser, which never opened the grid).
+ */
+/* Close the menu on the page that is up, without leaving the page. Save acts
+ * in place -- it never navigates -- so it has no return path to carry the
+ * "you are finished here" disposition. This is that disposition. */
+export function paramPagesExitMenu() {
+    if (controller && typeof controller.exitMenu === 'function') controller.exitMenu();
+}
+export function paramPagesRefreshTrailing() {
+    if (controller) controller.refreshTrailing();
 }
 
 export function paramPagesActive() {
@@ -318,6 +447,58 @@ export function tickParamPages() {
     controller.setReveal(shiftIsHeld());
 
     controller.tick();
+
+    /*
+     * KNOB LEDS, from the values the controller is ALREADY holding.
+     *
+     * s.values is the cache the grid renders from, so this costs no IPC — the
+     * only reason it can run every tick. Reading 8 parameters here would be
+     * ~22 ms against a 16 ms frame, i.e. it would halve the frame rate of the
+     * screen it is decorating.
+     *
+     * Only on a knob page. A menu, preset or items page binds no encoders, and
+     * leaving colours lit there would say eight knobs do something when none
+     * of them does — the opposite of what the lighting is for.
+     */
+    /*
+     * Advance the sample's peak envelope, on the TICK and never on the draw.
+     * The draw runs inside the redraw throttle and may be skipped, so a job
+     * driven from there would stall exactly when the screen was quiet — which
+     * is when it should be making progress. One bounded batch per tick.
+     *
+     * The path comes from the viz group the grid already resolved, so this
+     * costs no IPC and no extra planning: if there is no sample cell on the
+     * page there is nothing to advance.
+     */
+    const vg = typeof controller.vizGroups === 'function' ? controller.vizGroups() : null;
+    if (vg) {
+        for (const g of vg) {
+            if (g.kind !== VIZ_SAMPLE || !g.roles.value) continue;
+            const path = controller.state.values[g.roles.value];
+            if (path) wavPeaksTick(String(path));
+            break;      /* one sample cell per page */
+        }
+    }
+
+    const kpage = controller.page;
+    const st = controller.state;
+    /* metaIndex is null until the contract resolves, and this runs from the
+     * first tick — before it does there is nothing to light, and an unlit knob
+     * is the honest reading of a page we cannot describe yet. */
+    if (kpage && kpage.kind === PAGE_KNOBS && kpage.keys && st.metaIndex) {
+        const norm = new Array(NUM_KNOB_LEDS).fill(null);
+        for (let i = 0; i < NUM_KNOB_LEDS; i++) {
+            const key = kpage.keys[i];
+            if (!key) continue;
+            /* normalizedOf returns null for an unread value, and knobLedColor
+             * turns that into an unlit knob rather than one sitting confidently
+             * at the bottom of its range. */
+            norm[i] = normalizedOf(st.metaIndex.getOrGuess(key), st.values[key]);
+        }
+        updateKnobLEDs(norm);
+    } else {
+        clearKnobLEDs();
+    }
 }
 let wasLoading = false;
 /* is_loading is an edge that fires once per module load; polling it every tick
@@ -603,11 +784,28 @@ export function headerTitle() {
             : (ctx.getModuleAbbrev ? ctx.getModuleAbbrev(moduleRef)
                                    : currentComponent.toUpperCase());
     }
-    /* A hardware synth puts the PATCH name in its display, not the model
+    /*
+     * A loaded USER preset takes priority over the module's own patch name --
+     * asked for and answered yes on hardware ("should we change the preset in
+     * the header from the system preset to the user preset? (Init -> tst)
+     * and then show the * there too?"). Marked the SAME way the My Presets
+     * page's own row is (`* ` leading, never trailing -- see
+     * current_preset.mjs presetRowValue), and read from a cache
+     * (userPresetHeaderMark), never the DSP, so this costs nothing beyond the
+     * read the My Presets page already pays for.
+     *
+     * A synthesised contract (Slot Settings, Master FX/Global Settings) or a
+     * Master FX component never has a record for its key, so this answers
+     * null there and falls through unaffected.
+     *
+     * A hardware synth puts the PATCH name in its display, not the model
      * number — and the module's identity is already visible in the chain
      * editor you came from. Falls back to the abbreviation until the read
      * cursor has picked the name up, and for modules with no presets. */
-    const name = (controller && controller.presetName) || _abbrevCache;
+    const userMark = (typeof ctx.userPresetHeaderMark === 'function')
+        ? ctx.userPresetHeaderMark(currentSlot, currentComponent) : null;
+    const name = userMark ? `${userMark.dirty ? '* ' : ''}${userMark.name}`
+        : (controller && controller.presetName) || _abbrevCache;
     /* "MFX", never "S1", on the master bus: it is ADDRESSED at IPC slot 0 by
      * convention and is not instrument slot 1. */
     const label = (currentChrome && currentChrome.label) || `S${currentSlot + 1}`;
@@ -692,6 +890,10 @@ export function drawParamPages() {
      * the knob ring wants; `fill_circle` is a solid disk. They are not
      * interchangeable — subtracting one disk from another does not give a
      * ring (see render_page_movy.mjs drawArcKnob). */
+    /* THE LAYOUT IS SELECTED HERE, at the page-draw call site — one value handed
+     * to the controller, not a mode flag woven through the renderer. Re-applied
+     * every frame so toggling Param View takes effect without re-entering. */
+    controller.setLayout(paramPagesLayout());
     traced("js.grid.draw", () => controller.render(
         {
             fillRect: fill_rect, print, textWidth: text_width, line: draw_line,
@@ -701,6 +903,41 @@ export function drawParamPages() {
         },
         { title: headerTitle(), footer: footerHints() }
     ));
+
+    /*
+     * THE ENUM PEEK, over the grid.
+     *
+     * Deliberately not a view. The detent that raised it has ALREADY written,
+     * so there is nothing for Back to cancel and no state to unwind — it just
+     * stops being drawn. Routing it through VIEWS.ENUM_PICKER would give the
+     * same screen two meanings for Back, one of them a lie.
+     *
+     * Full-screen rather than a card: while you are turning a knob you are not
+     * reading the rest of the grid, and a card-sized rect would show fewer
+     * options than the picker does, which is the whole thing the list is for.
+     * Sharing enum_list.mjs is what keeps the two one screen; the only
+     * difference is the header word.
+     *
+     * Drawn AFTER the grid and over it, so a frame in which the peek expires
+     * falls back to a complete page rather than to a hole.
+     */
+    const peek = controller.enumPeek();
+    if (peek) {
+        clear_screen();
+        drawEnumList({ fillRect: fill_rect, print, textWidth: text_width }, {
+            title: peek.title,
+            /* Not "SELECT". Nothing is being selected — the value is already
+             * set — and naming a gesture the screen does not have is how a
+             * user learns to press a button that does nothing. */
+            headerRight: "TURNING",
+            options: peek.options,
+            index: peek.index,
+            /* Cursor and live value are the SAME here, unlike the picker where
+             * the `*` marks what Back would return you to. */
+            markIndex: peek.index,
+            footer: [["TURN", "SET"]],
+        });
+    }
     return true;
 }
 
@@ -772,9 +1009,16 @@ export function handleParamPagesMidi(data) {
     if (todo.action === 'exit') {
         /* Back to the editor you came IN through. Read BEFORE exitParamPages so
          * the destination cannot depend on what the teardown leaves behind. */
-        const back = (currentChrome && currentChrome.returnView) || ctx.VIEWS.CHAIN_EDIT;
+        const chrome = currentChrome;
+        const back = (chrome && chrome.returnView) || ctx.VIEWS.CHAIN_EDIT;
         exitParamPages();
-        ctx.setView(back);
+        /* A contract that is the TOP of its own stack has no view to go back
+         * to — Global Settings' Back leaves shadow mode entirely — so it hands
+         * in an onExit instead of a returnView. Expressed as a callback rather
+         * than a sentinel view id because "leave shadow mode" is not a view and
+         * pretending it is one would need a fake case in every switch. */
+        if (chrome && typeof chrome.onExit === 'function') chrome.onExit();
+        else ctx.setView(back);
         return true;
     }
     if (todo.action === 'menu') {
@@ -847,11 +1091,6 @@ export function handleParamPagesMidi(data) {
 /** Read the page aloud — the gesture that stands in for a glance. */
 export function announceParamPageContents() {
     if (controller) controller.announceContents();
-}
-
-/** Layout preference, for the settings menu. */
-export function setParamPagesLayout(layout) {
-    if (controller) controller.setLayout(layout === 'bar' ? LAYOUT_BAR : LAYOUT_DIAL);
 }
 
 /**

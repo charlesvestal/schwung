@@ -108,6 +108,12 @@ export const Black = 0;
 export const LightGrey = 118;
 export const DarkGrey = 119;
 export const DarkGrey2 = 124;
+/* The two greys the palette lists as duplicates. They are not duplicates of
+ * each other, and both sit in gaps a brightness ramp needs: #404040 between
+ * DarkGrey (#1A1A1A) and LightGrey (#595959), and #CCCCCC between LightGrey
+ * and White. See knob_leds.mjs WHITE_LEVELS. */
+export const DarkGrey3 = 123;
+export const OffWhite = 122;
 export const White = 120;
 
 // --- BRIGHT COLOURS 1–26 WITH DIM/DARK PARTNERS ---

@@ -152,15 +152,19 @@ export function applyInput(controller, intent, { nowMs, reveal } = {}) {
             /* A DOOR page owns the plain click: first press enters it, and on
              * a menu the second activates the highlighted entry. Nothing is
              * "held" on one, so this must come before the no-knob-held branch
-             * below or the section picker would swallow it.
+             * below or the section picker would swallow it. Shift+click above
+             * still reaches the section list from inside a door, which is what
+             * keeps one from being a trap.
              *
-             * Three kinds are doors — a menu, a preset browser and a runtime
-             * item list. Shift+click
-             * above still reaches the section list from inside either, which is
-             * what keeps them from being traps. */
-            const mpage = controller.page;
-            if (mpage && (mpage.kind === "menu" || mpage.kind === "preset"
-                          || mpage.kind === "items")) {
+             * ASK THE CONTROLLER which pages are doors. This used to restate
+             * the kinds as a literal list — "menu" || "preset" || "items" — a
+             * second definition of a rule the controller already owned. When
+             * PAGE_KNOBS became a door in the list layout, only the
+             * controller's copy learned it: a plain click on a knobs-as-list
+             * page fell past this branch to the no-knob-held one below and
+             * opened the SECTION PICKER, so the list could not be entered at
+             * all. Nothing failed; the page was simply inert. */
+            if (controller.isDoor && controller.isDoor()) {
                 const opened = controller.onClick(-1);
                 return opened ? controller.takePending() : null;
             }
@@ -172,6 +176,22 @@ export function applyInput(controller, intent, { nowMs, reveal } = {}) {
 
         case "back":
             if (controller.dismissHint && controller.dismissHint()) return null;
+            /*
+             * THE PEEK IS A LAYER, so Back takes it down and stops there.
+             *
+             * It went straight through to `exit` and left the module, which
+             * reads as a wildly disproportionate response to a panel that was
+             * about to disappear on its own — reported from the device as
+             * "if i hit back during autopeek it exits the module".
+             *
+             * It costs nothing to close: the detent has already written, so
+             * unlike the picker there is no edit to cancel, and unlike the
+             * menu there is no level to step out of. Back here means "I have
+             * read it, go away", which is the same thing the timeout means and
+             * the same one-layer-at-a-time rule the picker and the menu follow
+             * below.
+             */
+            if (controller.dismissPeek && controller.dismissPeek()) return null;
             /* Back closes the picker first, then steps out of an entered menu,
              * then leaves the view — one layer at a time, matching the rest of
              * Move. A menu you have entered is a layer exactly like the picker

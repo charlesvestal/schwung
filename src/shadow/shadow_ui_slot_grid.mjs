@@ -459,22 +459,60 @@ export function createSlotGridIo(io) {
 export const MASTER_KEY_PREFIX = "master_fx:";
 
 /*
+ * The Master FX listen channel, as an ENUM with two representations.
+ *
+ * The wire (`master_fx:midi_channel`, shadow_config.json, and the shim's
+ * master_fx_midi_channel) carries the REAL channel: -1 for All, 0..15 for MIDI
+ * channels 1..16, matching the status byte's low nibble so the filter can
+ * compare without arithmetic. An enum cell, though, is addressed by OPTION
+ * INDEX — 0..16 here. The two are off by one and disagree about All, so the
+ * conversion is pinned to the io boundary below rather than left for each call
+ * site to remember.
+ */
+export const MFX_MIDI_CHANNEL_KEY = MASTER_KEY_PREFIX + "midi_channel";
+export const MFX_MIDI_CHANNEL_ALL_WIRE = -1;
+export const MFX_MIDI_CHANNEL_OPTIONS = ["All"].concat(
+    Array.from({ length: 16 }, (_, i) => String(i + 1)));
+
+/** Wire value (-1 / 0..15) -> option index (0..16). Anything else is All. */
+export function mfxMidiChannelToIndex(wire) {
+    const ch = parseInt(wire, 10);
+    return (Number.isFinite(ch) && ch >= 0 && ch <= 15) ? ch + 1 : 0;
+}
+
+/** Option index (0..16) -> wire value. Index 0 is All. */
+export function mfxMidiChannelFromIndex(index) {
+    const i = parseInt(index, 10);
+    return (Number.isFinite(i) && i >= 1 && i <= 16) ? i - 1 : MFX_MIDI_CHANNEL_ALL_WIRE;
+}
+
+/*
  * ONE value, and that is the whole page.
  *
  * The grid draws fewer than eight cells whenever a page has fewer (see
  * branchage in the render snapshots — a sparse page marks its unused positions
- * rather than leaving them blank), so a single Volume knob is a deliberate
- * page, not a broken one. The alternative — folding Volume into the actions
- * menu to avoid a thin page — would put the one turnable thing on the master
- * bus somewhere a knob cannot reach it.
+ * rather than leaving them blank), so a single knob here is a deliberate page,
+ * not a broken one.
  *
- * Range 0..1 step 0.05, matching the list editor's own master_volume entry, or
- * the same setting would have two ceilings. Rendered as a percentage because
- * that is what the list has always shown.
+ * IT USED TO BE TWO, AND THE FIRST ONE WAS INERT. `master_fx:volume` had no
+ * handler anywhere: shadow_chain_mgmt.c serves `slot:volume` but has no master
+ * case, so a key with no `fxN:` prefix fell through to mfx_slot 0 / param_key
+ * "volume" and was written into whatever module happened to be loaded in
+ * Master FX slot 1, as THAT module's own volume. The shim's
+ * shim_handle_param_special does not serve it either, so the read came back
+ * empty and the list's `if (!val) return "100%"` fallback drew a confident
+ * fake 100%. A row that reads a lie and writes somewhere else is worse than no
+ * row, so it is gone rather than wired up — the master bus level is Move's own
+ * volume knob, which already reaches it.
+ *
+ * MIDI Ch below is the real one: the shim reads master_fx_midi_channel every
+ * frame. Do not remove it by symmetry.
  */
 export const MASTER_GRID_PARAMS = [
-    { key: MASTER_KEY_PREFIX + "volume", name: "Volume", type: "float",
-      min: 0, max: 1, step: 0.05, default: 1, display_format: ".0%" },
+    /* Divable like every other enum that declares options, which is what makes
+     * 17 choices usable from a knob at all. */
+    { key: MFX_MIDI_CHANNEL_KEY, name: "MIDI Ch", type: "enum",
+      options: MFX_MIDI_CHANNEL_OPTIONS, default: 0 },
 ];
 
 /** Actions, in the order they appear on the menu page. */
@@ -495,7 +533,7 @@ export const MASTER_GRID_ACTIONS = [
 ];
 
 /**
- * Page order is Volume, LFO 1, LFO 2, Actions — the slot's order with the
+ * Page order is Master, LFO 1, LFO 2, Actions — the slot's order with the
  * values page shorter and Knob Mapping absent (the master bus has no knob
  * mapping table; §6 of the variable-length design records that as the one
  * genuinely easier thing about it).
@@ -522,7 +560,7 @@ export function masterGridHierarchy(hasPreset) {
     return { modes: null, levels };
 }
 
-/** Every declared param across the volume page and both LFO pages. */
+/** Every declared param across the root page and both LFO pages. */
 export function allMasterGridParams() {
     return MASTER_GRID_PARAMS
         .concat(lfoParams(1, MASTER_KEY_PREFIX))
@@ -561,12 +599,20 @@ export function createMasterGridIo(io) {
             const k = bare(fullKey);
             if (k === "ui_hierarchy") return JSON.stringify(masterGridHierarchy(!!io.hasPreset()));
             if (k === "chain_params") return JSON.stringify(allMasterGridParams());
+            /* Wire -> option index. A failed read must stay a failed read: the
+             * grid distinguishes null from "", and turning either into index 0
+             * would silently assert "All" for a channel we never saw. */
+            if (k === MFX_MIDI_CHANNEL_KEY) {
+                const raw = io.readParam(k);
+                if (raw === null || raw === "") return raw;
+                return String(mfxMidiChannelToIndex(raw));
+            }
             return io.readParam(k);
         },
 
         /*
          * Only an LFO param can be modulated — the other LFO can drive it.
-         * master_fx:volume is not a modulation target, and letting the host's
+         * The listen channel is not a modulation target, and letting the host's
          * generic oracle answer for it would cost up to three IPC round trips
          * per tick to conclude "no", then wrongly conclude "yes": an unserved
          * `<key>:base` reads back as "" rather than null, which compares
@@ -590,7 +636,13 @@ export function createMasterGridIo(io) {
         },
 
         setParam(fullKey, value) {
-            io.writeParam(bare(fullKey), String(value));
+            const k = bare(fullKey);
+            /* Option index -> wire, the inverse of getParam's mapping. */
+            if (k === MFX_MIDI_CHANNEL_KEY) {
+                io.writeParam(k, String(mfxMidiChannelFromIndex(value)));
+                return;
+            }
+            io.writeParam(k, String(value));
         },
 
         runAction(action) {

@@ -34,6 +34,9 @@ import { enumSquareLines } from "./font5x3.mjs";
 import { fontPrint as tzPrint, fontWidth as tzWidth, HEIGHT as TZ_H } from "./font_tamzen6x12.mjs";
 import { fontWidth4x5, fontPrint4x5, FONT4_HEIGHT, FONT4_MEASURE } from "./font4x5.mjs";
 import { fontWidth5x3, fontPrint5x3 } from "./font5x3.mjs";
+/* The one definition of the chrome geometry (see the band comment below). */
+import { SCREEN_WIDTH as W, HEADER_H, RULE_Y, FOOTER_Y, FOOTER_H,
+         MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W } from "../list_geometry.mjs";
 
 /**
  * Text is set in caps with labels abbreviated to a mnemonic. The HEADER and the
@@ -106,8 +109,19 @@ function fitDev(ctx, s, maxWidth) { return caps(fitText(TZ_MEASURE, caps(s), max
  *
  * An opaque value is a path or a string: show its tail, which is the part that
  * identifies it, and "--" when there is nothing set.
+ *
+ * EXPORTED because it is THE value string, not this renderer's private one. The
+ * cell's label band, the held-knob header strip and the knob page drawn as a
+ * LIST (page_controller.mjs, LAYOUT_LIST) all show the same reading of the same
+ * value; a second formatter beside this one is the exact failure the one-list
+ * work exists to prevent, and tests/host/test_knobs_list_layout.sh pins that the
+ * two surfaces agree for every param in the fleet fixture.
+ *
+ * `short_options` is deliberately NOT consulted here — it belongs to the 3-char
+ * enum square alone (see drawKnobWidget). Every surface with room gets the long
+ * `options` form, which is the whole point of there being two declarations.
  */
-function displayValue(raw, meta) {
+export function displayValue(raw, meta) {
     if (raw === null || raw === undefined) return "--";
     if (meta && meta.kind === KIND_OPAQUE) {
         return String(raw).split("/").pop() || "--";
@@ -133,6 +147,16 @@ function displayValue(raw, meta) {
  * recurs across the fleet, not every possible name.
  */
 const WORD_ABBREV = {
+    /* Added when the fleet capture went from 76 to 95 modules. Each of these
+     * was rendering as a vowel-stripped run -- BNDPSS, DSTNTN, CMPLXT -- which
+     * is what the table exists to prevent. */
+    bandpass: "BPF", highpass: "HPF", lowpass: "LPF", bandwidth: "BW",
+    bitcrusher: "CRU", crusher: "CRU", character: "CHR", channels: "CHN",
+    complexity: "CPX", destination: "DES", multiplier: "MUL",
+    modulations: "MOD", generations: "GNS", progression: "PRG",
+    recordings: "REC", resonators: "RSN", smoothing: "SMO",
+    passthru: "PTH", passthrough: "PTH", fallthrough: "FAL",
+    configuration: "CFG", soundfont: "SF", category: "CAT",
     attack: "ATK", decay: "DEC", sustain: "SUS", release: "REL", hold: "HLD",
     envelope: "ENV", env: "ENV", amount: "AMT", amt: "AMT", depth: "DPT",
     cutoff: "CUT", frequency: "FRQ", freq: "FRQ", resonance: "RES", reso: "RES",
@@ -201,6 +225,10 @@ const WORD_ABBREV = {
  */
 export const ABBREV_SYNONYMS = Object.freeze([
     ["envelope", "env"],
+    ["modulations", "modulation"],
+    ["channels", "channel"],
+    ["bitcrusher", "crusher"],
+    ["passthru", "passthrough"],
     ["amount", "amt"],
     ["frequency", "freq"],
     ["resonance", "reso", "resonant", "reson"],
@@ -429,24 +457,41 @@ export const LAYOUT_MOVY = "movy";
  * so a knob row carries more air below it than a graphic row does; the 15 is
  * held for the graphics.
  */
-export const W = 128;
 /*
- * The header BAND: six rows, with the font4x5 glyphs on 0..4 and the spare row
- * BELOW them.
+ * The canvas, the header BAND, the footer rule and the list rect are DEFINED in
+ * ../list_geometry.mjs and re-exported here under their existing names, so the
+ * ~15 modules that import them from this file are untouched. They moved down
+ * because chain_ui_views.mjs and menu_layout.mjs need the same numbers and
+ * cannot reach this file without dragging the whole page engine (five font
+ * tables, viz_draw, param_meta) into every host module that draws a list —
+ * and because menu_layout imports truncateText FROM chain_ui_views, so any
+ * arrangement where the geometry lives above them risks a cycle. A leaf below
+ * all three cannot.
  *
- * The spare row is asymmetric on purpose, and which side it goes is the whole
- * argument. BELOW, it separates the band from the bank bar — without it the bar
- * butted straight against the bottom row of every glyph, and with the header
- * inverted the solid band merged into the bar into one thick smudge. ABOVE, it
- * would separate the glyphs from... the bezel, which is already a margin. The
- * OLED is inset in plastic, so row 0 reads as the edge of a framed picture, not
- * as a crop; an inverted band's top row against the bezel is exactly as legible
- * as it is against a clear pixel row, and it costs nothing.
+ * BAR_Y stays here: it is the knob grid's bank bar, not chrome any list shares.
+ * It sits one row below HEADER_H so row HEADER_H is always dark — without it
+ * the bar butted straight against the bottom row of every glyph, and with the
+ * header inverted band and bar merged into one thick smudge.
  *
- * That is where one of the two rows this re-cut spends came from. It used to be
- * 7 with the glyphs at y=1.
+ * THE RE-CUT LIVES IN list_geometry.mjs NOW, AND THAT WIDENS IT.
+ *
+ * The vertical rhythm was re-cut against the panel — header band 7 rows to 6
+ * with the glyphs moving to y=0, footer to the bottom edge, and the two
+ * widget/label pairs given equal gutters. That work was done while these
+ * constants were the knob grid's alone.
+ *
+ * They are not any more. Every list screen in the shadow UI reads them, so the
+ * re-cut now moves slots, settings, master FX, patches, tools, store and the
+ * menus as well as the grid. That is deliberate — one definition is the point
+ * of the leaf module, and a grid-private copy would re-introduce exactly the
+ * two-definitions bug it was written to remove — but it means the re-cut is
+ * only verified where it was rendered, which was the knob grid and the chain
+ * editor. The list screens are HARDWARE-VERIFIED, not test-verified: this
+ * module's own history is a re-skin that its test declared green while the
+ * device showed an 8-row dead band.
  */
-export const HEADER_H = 6;
+export { W, HEADER_H, RULE_Y, FOOTER_Y, FOOTER_H,
+         MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W };
 export const BAR_Y = HEADER_H;       /* no separator row — the band has its own */
 /* Two rows of gutter above each knob row, and the SAME two above both. The
  * first row used to get 2 and the second 1, which is the kind of asymmetry
@@ -483,13 +528,22 @@ export const GRID_GEOM = Object.freeze({ x0: 0, cellW: CELL_W });
  * future geometry needs to stay at or above ENUM_W.
  */
 const cellLeft = (g, col) => g.x0 + col * g.cellW;
-/*
- * The hint footer, and the rule that separates it from the last label band.
+/* The hint footer and its rule (RULE_Y / FOOTER_Y / FOOTER_H), and the list
+ * rect between the bank bar and that rule (MENU_LIST_X/Y/W), are defined in
+ * ../list_geometry.mjs and re-exported at the top of this file. They were
+ * written here, with HEADER_H, because the three bands are one piece of
+ * geometry and their consumers are renderers; they moved down when
+ * chain_ui_views.mjs turned out to need them too. page_controller.mjs still
+ * re-exports MENU_LIST_* under the same names, so nothing that imported them
+ * from there had to change.
+ *
+ * What the re-cut did to them, since the reasoning is not visible from a
+ * three-integer diff in a leaf module:
  *
  * The rule gets a clear row on BOTH sides — 54 is the last label band's own
  * bottom margin, 56 is left empty — so it reads as a boundary rather than as
  * an underline on the labels or a lid on the pills. The band under it is 7
- * rows, which is exactly the pill (font4x5 + one row of ground above and
+ * rows, which is exactly the pill (font4x5 plus one row of ground above and
  * below), so the pill lands on 57..63 and the footer reaches the bottom edge
  * of the panel.
  *
@@ -497,11 +551,7 @@ const cellLeft = (g, col) => g.x0 + col * g.cellW;
  * `pair` helper in styles/fills.mjs argued that dark row was the ground its
  * bottom corner notches read against; it is now the bezel that does that job,
  * for the same reason the header's glyphs sit on row 0. The nine rows
- * RULE_Y..63 that the fills catalog budgets against are unchanged.
- */
-export const RULE_Y = 55;
-export const FOOTER_Y = 57;
-export const FOOTER_H = 7;
+ * RULE_Y..63 that the fills catalog budgets against are unchanged. */
 /*
  * ODD, for the same reason BOX_H is: 5 glyph rows centred in the band leave a
  * remainder that only splits evenly when the band is odd. At 6 the touched
@@ -886,6 +936,67 @@ export function drawModDot(ctx, kx, ky, normVal) {
     ctx.fillRect(x, y + 1, 1, 1, 1);
 }
 
+/**
+ * A parameter's value as 0..1, or null when it has not been read.
+ *
+ * Extracted from drawKnobWidget, where it was an inline expression, because the
+ * knob LEDs light from the same number (knob_leds.mjs). Two copies would let a
+ * knob whose arc sits at three-quarters light as if it were at a third, and
+ * nothing on screen would say which of them was lying.
+ *
+ * NULL IS NOT ZERO. An unserved key reads back as "" and Number("") is 0, which
+ * is finite — so a parameter that was never answered would confidently
+ * normalise to the bottom of its range. That is the same collapse the tri-state
+ * read contract exists to prevent, so it is refused here and each caller says
+ * what it wants: the arc points at 0 (it must point somewhere), the LED goes
+ * dark (an unlit knob already means "nothing to turn here").
+ *
+ * An ENUM normalises across its OPTIONS, not its min/max — it usually declares
+ * neither, and "option 3 of 5" is the only reading of an enum that a brightness
+ * can carry.
+ *
+ * NOT render_page.mjs's fractionOf, and the two must not be merged without
+ * deciding which of these they are:
+ *
+ *   fractionOf   "where on the declared RANGE does this value sit", for the
+ *                VIZ shapes — an envelope, a filter curve, a fader. It returns
+ *                0 on failure because a shape has to be drawn somewhere, and
+ *                it measures an enum against min/max, which for the shapes is
+ *                what their geometry expects.
+ *   normalizedOf "how full is this control, or unknown", for the KNOB — arc,
+ *                modulation dot, indicator LED. It measures an enum across its
+ *                option list, because "option 3 of 5" is the only reading a
+ *                pointer or a brightness can carry, and it distinguishes
+ *                unread from zero because the LED must go dark rather than
+ *                claim the bottom of the range.
+ *
+ * Their pixels are separately baselined; collapsing them would move the viz
+ * shapes to answer a question they were not drawn for.
+ */
+export function normalizedOf(meta, raw) {
+    if (!meta) return null;
+    if (raw === null || raw === undefined || raw === "") return null;
+    if (Array.isArray(meta.options) && meta.options.length > 0) {
+        /* enumIndexOf, NOT Number(): a plugin may report an enum by NAME, and
+         * Number("Room") is NaN. Getting this wrong would have left every
+         * name-reporting enum unlit — the exact class of bug the chord wire
+         * format already cost this codebase once. */
+        const idx = enumIndexOf(meta, raw);
+        if (idx < 0) return null;
+        if (meta.options.length === 1) return 0;
+        return Math.max(0, Math.min(1, idx / (meta.options.length - 1)));
+    }
+    const num = Number(raw);
+    if (!isFinite(num)) return null;
+    const min = typeof meta.min === "number" ? meta.min : 0;
+    const max = typeof meta.max === "number" ? meta.max : 1;
+    if (!(max > min)) return null;
+    return Math.max(0, Math.min(1, (num - min) / (max - min)));
+}
+
+/* Exported for tools/param-pages — the catalog renders the shipping widget as
+ * the baseline every option is compared against, and the composite draws it
+ * into a real page. Nothing on the device imports it from outside this file. */
 export function drawArcKnob(ctx, kx, ky, normVal) {
     const cx = kx + KNOB_R, cy = ky + KNOB_R, r = KNOB_R;
     if (typeof ctx.drawArc === "function") {
@@ -1203,6 +1314,102 @@ export function drawEnumSquare(ctx, kx, ky, text) {
  * canvas param reports "", and a door with no text in it looks broken. Porting
  * the option's formatter would have quietly reintroduced both.
  */
+/*
+ * A FRAMED NUMBER, for octave offsets, transposes and voice counts.
+ *
+ * An arc answers "how far along its range is this", which is right for a cutoff
+ * and wrong for an octave: -1 and +1 are two detents apart on a -24..24
+ * transpose and read as two nearly identical arcs. For a small integer the
+ * number IS the value, so draw the number.
+ *
+ * THE BOUND IS THE WHOLE DESIGN, and it has to be tight.
+ *
+ * Measured against the fleet, a span limit of 128 frames 1392 parameters across
+ * 60 modules — including obxd volume [0..100], 9w9 tune [0..127] and minijv
+ * macro_cutoff [0..127]. Those are continuous AMOUNTS that happen to be typed
+ * int, and an arc is the right picture of them. Framing everything is the same
+ * mistake divable_mark already records: a mark on almost every cell is a mark
+ * on none, and it would destroy the contrast that makes a framed number
+ * readable in the first place.
+ *
+ * The discriminator is span. A small range means the number IS the reading
+ * ("octave +2", "8 voices", "channel 10"); a wide one is a sweep, and its
+ * position on an arc is what you actually want.
+ *
+ * A BIPOLAR range earns more room, because the SIGN is information an arc
+ * physically cannot show: -1 and +1 sit two detents apart on a -24..24
+ * transpose and draw as two nearly identical arcs. That is the case this cell
+ * exists for, so it is worth a wider bound than a one-sided count.
+ *
+ * At 24/48 this frames 273 parameters and refuses every 0..127 amount.
+ *
+ * An int with no declared range is refused too: nothing bounds how many digits
+ * could arrive, and the cell has room for about three.
+ */
+export const BIG_NUM_MAX_SPAN = 24;
+export const BIG_NUM_BIPOLAR_MAX_SPAN = 48;
+
+export function shouldDrawBigNumber(meta) {
+    if (!meta) return false;
+    if (meta.kind === KIND_ENUM || meta.kind === KIND_OPAQUE) return false;
+    if (meta.type !== "int") return false;
+    if (typeof meta.min !== "number" || typeof meta.max !== "number") return false;
+    if (!isFinite(meta.min) || !isFinite(meta.max)) return false;
+    const span = meta.max - meta.min;
+    return span <= (meta.min < 0 ? BIG_NUM_BIPOLAR_MAX_SPAN : BIG_NUM_MAX_SPAN);
+}
+
+/*
+ * THE SIGN IS THE POINT, and only on a range that HAS a negative side. A bare
+ * "2" on a -24..24 transpose is ambiguous in exactly the way this cell exists
+ * to fix; a "+4" on a 1..8 voice count is noise, because there is nothing for
+ * it to contrast with.
+ *
+ * An unread value is "--", never 0: a parameter that was never answered
+ * reporting a confident zero is the collapse the tri-state read contract exists
+ * to prevent, and Number("") is 0 and finite.
+ */
+export function bigNumberText(meta, raw) {
+    if (raw === null || raw === undefined || raw === "") return "--";
+    const n = Math.round(Number(raw));
+    if (!isFinite(n)) return "--";
+    const bipolar = !!meta && typeof meta.min === "number" && meta.min < 0;
+    return (n > 0 && bipolar) ? "+" + n : String(n);
+}
+
+/*
+ * The SAME box the enum square draws — same width, same height, same frame, one
+ * centred line of 4x5. Sharing it is the point: these are the two "a value, in
+ * a box" cells on the grid, sitting side by side, and two frames drawn by two
+ * functions is how a pair like that comes to differ by a pixel that nobody
+ * meant. Their pixels are covered by the movy geometry baseline together.
+ */
+/*
+ * A BIG NUMBER, NOT A FRAMED ONE.
+ *
+ * This drew the enum square's box with the number inside it, on the reasoning
+ * that they are the two "a value, in a box" cells and should share one frame.
+ * That reasoning is about pixels; the problem is about meaning. The box IS the
+ * enum affordance — every enum that declares options is divable, and the
+ * corner brackets plus that square are what say "there is a list behind this".
+ * A small int has no list and can never have one, so framing it made the cell
+ * claim to be a door that does not open.
+ *
+ * Movy draws these as plain large numerals and that is the right call. The
+ * value gets the device font (6x7) instead of the enum square's condensed 4x5,
+ * so it is bigger AND stops lying — the two things that were in tension only
+ * while it was wearing the box.
+ *
+ * @param {number} cx  the CELL CENTRE, matching drawButton — the glyph width
+ *                     varies with the digits and the sign, so only this
+ *                     function can centre it.
+ */
+export function drawBigNumber(ctx, cx, ky, text) {
+    const s = String(text);
+    const w = tzWidth(s);
+    tzPrint(ctx, cx - Math.floor(w / 2), ky + Math.floor((BOX_H - TZ_H) / 2), s, 1);
+}
+
 export function drawOpaqueBox(ctx, kx, ky, value, override) {
     /* The cell this widget box is centred in. Mirrors drawKnobWidget's own
      * `cellLeft(g, col) + floor((cellW - KW) / 2)`, inverted. */
@@ -1361,11 +1568,21 @@ export function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, ce
         drawEnumSquare(ctx, cellLeft(g, col) + Math.floor((g.cellW - ENUM_W) / 2), ky, text);
         return;
     }
-    const min = typeof meta.min === "number" ? meta.min : 0;
-    const max = typeof meta.max === "number" ? meta.max : 1;
-    const num = Number(raw);
-    const normVal = (max > min && isFinite(num)) ? Math.max(0, Math.min(1, (num - min) / (max - min))) : 0;
-    drawArcKnob(ctx, kx, ky, normVal);
+    /*
+     * A SMALL INT IS A NUMBER, not a position on a range — see
+     * shouldDrawBigNumber. Checked here, after the opaque/writeOnly/enum branches
+     * that own their cells outright, and before the arc it replaces.
+     */
+    if (shouldDrawBigNumber(meta)) {
+        drawBigNumber(ctx, cellLeft(g, col) + Math.floor(g.cellW / 2), ky,
+                      bigNumberText(meta, raw));
+        return;
+    }
+    /* `?? 0` because the ARC has to point somewhere: an unread value draws its
+     * "--" in the label cell below, and a knob with no pointer at all would
+     * read as a missing widget rather than a missing value. The LED, which
+     * shares this normaliser, treats null differently — see knob_leds.mjs. */
+    drawArcKnob(ctx, kx, ky, normalizedOf(meta, raw) ?? 0);
     /*
      * The dot is drawn whenever a source is driving this parameter, INCLUDING
      * when the live value has landed exactly on the base.
@@ -1382,11 +1599,13 @@ export function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, ce
      * the row beneath; the dot is the mark you actually read on the knob.
      */
     if (modRaw !== null && modRaw !== undefined) {
-        const mnum = Number(modRaw);
-        if (isFinite(mnum) && max > min) {
-            const modNorm = Math.max(0, Math.min(1, (mnum - min) / (max - min)));
-            drawModDot(ctx, kx, ky, modNorm);
-        }
+        /* The SAME normaliser as the pointer above. The dot and the pointer are
+         * read against each other -- "how far the LFO has pulled it from where
+         * you set it" -- so two mappings would make that distance meaningless.
+         * null (unread, or a range that cannot be normalised) draws no dot,
+         * which is right: there is nothing to compare. */
+        const modNorm = normalizedOf(meta, modRaw);
+        if (modNorm !== null) drawModDot(ctx, kx, ky, modNorm);
     }
 }
 
