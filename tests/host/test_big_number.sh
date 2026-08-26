@@ -124,18 +124,23 @@ let framed = false;
 for (let y = Y; y < Y + BOX_H; y++) if (rowRun(y) >= 14) framed = true;
 ok(!framed, "no horizontal rule is drawn -- this cell has no frame");
 
-/* IT IS THE BIG FONT. The whole point of dropping the box is that the value
-   gets the device 6x7 rather than the enum square condensed 4x5, so the glyphs
-   must be TALLER than 5 rows. Measured as the span of lit rows. */
+/* IT IS THE BIG FONT, AND IT IS BIGGER THAN THE BODY FONT.
+   This used to bound the glyphs at the device font height, on the reasoning
+   that dropping the box promoted the value from the 4x5 enum font to the 6x7
+   body font. Unframed at 7 rows the cell then read as BARE, so it now takes the
+   Tamzen 8x16 cut and the upper bound is the WIDGET BOX -- which is what
+   actually constrains it. The lower bound moves with it: no taller than the
+   body font would now be a regression, not a limit. */
 let top = -1, bot = -1;
 for (let y = 0; y < fb.height; y++)
   for (let x = 0; x < fb.width; x++)
     if (fb.pixels[y * fb.width + x]) { if (top < 0) top = y; bot = y; }
 ok(top >= 0, "something was drawn");
-ok(bot - top + 1 > 5,
-   "the glyphs are taller than the 4x5 enum font, got " + (bot - top + 1) + " rows");
-ok(bot - top + 1 <= HEIGHT,
-   "and no taller than the device font, got " + (bot - top + 1));
+ok(bot - top + 1 > HEIGHT,
+   "the glyphs are taller than the " + HEIGHT + "-row body font, got " +
+   (bot - top + 1) + " rows -- otherwise the cell is bare again");
+ok(bot - top + 1 <= BOX_H,
+   "and inside the widget box, got " + (bot - top + 1) + " of " + BOX_H);
 
 /* CENTRED ON THE CELL, not left-aligned at it -- the width changes with the
    sign and the digit count, so only drawBigNumber can place it. */
