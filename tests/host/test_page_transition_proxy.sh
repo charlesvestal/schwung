@@ -234,9 +234,28 @@ for (const [name, adv] of [["linear", advanceLinear], ["eased", advanceEased],
                            ["scroll", advanceScroll]]) {
   for (const ms of [90, 160, 200, 280]) {
     const got = settleOf(adv, ms);
-    ok(Math.abs(got - ms) <= TICK,
+    /*
+     * NEVER LATE, and never early by more than the invisible tail.
+     *
+     * This was a symmetric +/- one frame, and the step-based termination broke
+     * it honestly: once a frame can no longer move the picture the slide ends,
+     * so a long eased duration finishes EARLY -- 280ms lands at 236. That is
+     * the animation actually being over, not the constant lying, and cutting
+     * dead frames is the fix for the "one pixel too far, then snap" report.
+     *
+     * So the two directions are asserted differently, because they mean
+     * different things. LATE is still a hard failure at one frame: it would
+     * mean tau no longer matches the snap threshold, which is the ms/3
+     * regression this assertion exists to catch. EARLY is bounded at 20%,
+     * which the exponential tail can reach and a broken tau cannot fake --
+     * the ms/3 mutant runs LONG, not short.
+     */
+    ok(got - ms <= TICK,
        name + ": ms=" + ms + " settles at " + Math.round(got) +
-       "ms, within one frame of the duration it names");
+       "ms, never LATER than the duration it names");
+    ok(ms - got <= ms * 0.2,
+       name + ": ms=" + ms + " settles at " + Math.round(got) +
+       "ms, and not more than 20% early -- only the sub-pixel tail may be cut");
   }
 }
 /* The consequence worth stating in its own right: the two curves are now
@@ -335,6 +354,34 @@ if (barYExported) {
      one looks like. */
   ok(diffRows.every((y) => y >= RM.BAR_Y && y < RM.BAR_Y + 3),
      "suppression touches only the indicator band, no other row");
+}
+
+
+/* NO TWO FRAMES OF A SLIDE MAY RENDER THE SAME PICTURE.
+ *
+ * Reported from the device as the page "going one pixel too far and snapping
+ * back". It was not an overshoot: with the snap at half a pixel, the remaining
+ * travel sits between 0.5px and 1.5px for two consecutive frames, Math.round
+ * renders the incoming page ONE PIXEL SHORT of home in both, and then it jumps
+ * that last pixel. Held-then-jumped is what reads as an overshoot.
+ *
+ * Asserted on the RENDERED OFFSET, not on the position: the position is
+ * strictly monotone in both cases, so a position-based check passes while the
+ * screen holds still. Mutating SNAP_PAGES back to 0.5/128 fails this. */
+for (const [label, adv] of [["linear", advanceLinear], ["eased", advanceEased], ["shipping", advanceScroll]]) {
+  for (const ms of [90, 160, 200, 280]) {
+    let pos = 0, n = 0, repeats = 0, prev = null, seq = [];
+    while (pos !== 1 && n < 200) {
+      pos = adv(pos, 1, 16.7, ms); n++;
+      /* what the composite actually draws: the incoming page x */
+      const x = pos === 1 ? 0 : 128 - Math.round(pos * 128);
+      if (prev !== null && x === prev) repeats++;
+      prev = x; seq.push(x);
+    }
+    ok(repeats === 0, label + "@" + ms + "ms: every frame of the slide draws a DIFFERENT picture (" +
+       repeats + " repeated, x = " + seq.join(" ") + ")");
+    ok(seq[seq.length - 1] === 0, label + "@" + ms + "ms: the last frame is home, not one pixel short");
+  }
 }
 
 process.exit(fail ? 1 : 0);
