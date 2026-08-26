@@ -49,6 +49,37 @@
  * of milliseconds, and it buys a zero-syscall RT path. */
 #define CHAIN_LOADER_POLL_MS 20
 
+/*
+ * The loader thread's realtime priority — and picking the RUNG is the whole
+ * design, so read this before changing it.
+ *
+ * Threads and forked children INHERIT this. That is not a side effect to be
+ * tolerated, it is the mechanism: a plugin that spawns a worker or forks a DSP
+ * process from create_instance gets whatever the loader has, and most of the
+ * fleet does exactly that without knowing it.
+ *
+ * So the number decides the fleet's behaviour:
+ *
+ *   70  what it used to inherit (Schwung's SPI callback). ABOVE Move's own
+ *       Link Audio publisher `Link Main` at 35, so a module doing sustained
+ *       work starves Move's audio device-wide. This is the bug.
+ *    0  SCHED_OTHER. Fixes the starvation and BREAKS the modules that were
+ *       silently relying on inherited realtime to keep up — measured on
+ *       hardware 2026-08-27, osirus's forked DSP child audibly underran.
+ *   20  realtime, so those modules still keep up, but BELOW 35 so none of
+ *       them can outrank Move's publisher. Nothing in the fleet needs a patch.
+ *
+ * Do not raise this to 35 or above: that is the starvation regime the whole
+ * file exists to leave. Anything a module genuinely needs above its own
+ * loader, it must ask for explicitly.
+ */
+#define CHAIN_LOADER_RT_PRIORITY 20
+
+/* Move's Link Audio publisher. Documented here because it is the ceiling the
+ * value above is chosen against, and it is not otherwise visible from this
+ * file. Measured on hardware 2026-08-22 and again 2026-08-27. */
+#define CHAIN_LOADER_LINK_MAIN_PRIORITY 35
+
 /* How many retired module triples can await teardown before we leak one.
  * Commits are bounded by load completions, which are slow, so this is never
  * reached in practice — it exists so the overflow path is "leak and say so"
