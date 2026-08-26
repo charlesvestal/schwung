@@ -2438,6 +2438,18 @@ static void shadow_inprocess_mix_from_buffer(void) {
                     shadow_chain_process_fx(shadow_chain_slots[s].instance,
                                             fx_buf, MOVE_FRAMES_PER_BLOCK);
 
+                    /* Stream 2: slot 0 AFTER its FX chain. Streams 0 and 1 are
+                     * the two things summed INTO this, so an artifact present
+                     * here but in neither of them was introduced by the sum or
+                     * by the FX chain — i.e. by us. Capturing only the inputs
+                     * cannot distinguish "Move sent us bad audio" from "we
+                     * damaged good audio", and on 2026-08-27 a whole session
+                     * measured only inputs. */
+                    if (s == 0) {
+                        align_capture_record(&g_align_capture, 2, fx_buf,
+                                             FRAMES_PER_BLOCK * 2);
+                    }
+
                     if (main_dump_frames > 0) {
                         if (mpost_f[s])
                             fwrite(fx_buf, sizeof(int16_t),
@@ -2797,6 +2809,12 @@ skip_la_rebuild:
             speaker_eq_process(mailbox_audio, FRAMES_PER_BLOCK);
         }
     }
+
+    /* Stream 3: the finished mailbox — master volume and speaker EQ applied,
+     * i.e. what actually goes to the DAC. The last stop where an artifact can
+     * be introduced without appearing in any of streams 0-2. */
+    align_capture_record(&g_align_capture, 3, mailbox_audio,
+                         FRAMES_PER_BLOCK * 2);
 
     /* Poll sampler commands from shadow UI (via shared memory) */
     if (shadow_control) {
