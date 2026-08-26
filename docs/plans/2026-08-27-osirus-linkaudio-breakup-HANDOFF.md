@@ -100,25 +100,76 @@ Now 186 ms with the threshold derived from the ring. Result on hardware:
 **This did not fix the audible fault** — the reporter reports it as no better —
 but it was a real bug and it was masking the other one.
 
+## 4a. THE CONFIGURATION SPACE IS EXHAUSTED — it is a capacity wall
+
+Do not spend another session on priorities or affinities. Every combination was
+measured with the §1 spinner rig, and the result is a strict either/or.
+
+Load placement, measuring BOTH sides (Link Audio delivery and our own SPI path):
+
+```
+                     LinkAudio gap  burst   SPI frame max   SPI tx max   frames/s
+baseline                12,700 us      4       2,487 us       563 us       345
+load on cores 0-2      390,286 us    114       2,537 us       588 us       345
+load on CORE 3 ONLY     54,818 us      3      54,001 us    51,855 us       328
+load on cores 0-1      389,445 us    128            --            --        --
+load on core 0 ONLY  1.5-5.7 SEC     134            --            --        --
+load on cores 0-3      316-382 ms   93-114           --            --        --
+```
+
+- **cores 0-2** (current policy): our audio is FINE, Move's Link Audio collapses.
+  This is the shipped configuration and today's symptom.
+- **core 3**: Move's Link Audio is fine, **our SPI path collapses** — 54 ms
+  frames, 51.9 ms transfers, and frames/s falls 345 → 328, i.e. real dropped
+  audio frames.
+- **spreading to 0-3**: no better than 0-2.
+- **confining to one core**: much worse (1.5-5.7 s gaps).
+
+Scheduling priority, every axis:
+
+```
+module DSP at FIFO 70 / FIFO 20 / SCHED_OTHER      all equivalent
+sidecar at SCHED_OTHER / FIFO 25 / FIFO 45         all equivalent (340-400 ms)
+sidecar affinity 0-2 vs 0-3                        all equivalent
+```
+
+Also checked and clean: `sched_rt_runtime_us` = 950000/1000000 (RT throttling
+ON, 95%), `ksoftirqd` SCHED_OTHER on all four cores, NET_RX softirqs spread
+across all four, `lo` with **0 drops in 2.9M packets**, `Udp6InErrors` and
+`Udp6RcvbufErrors` both 0 under load.
+
+**Conclusion: the device cannot run a heavy realtime module and Move's Link
+Audio publishing at the same time.** There is no placement or priority that
+satisfies both. What remains is a product decision, not a scheduling fix.
+
+One trap worth naming: the two `MoveOriginal` threads restricted to cores 0-2
+(`FIFO 10` and `SCHED_OTHER`) are **ours** — `snap_worker_main` in
+`schwung_shim.c` and the shim worker. A thread inherits its parent's `comm`, so
+they report as `MoveOriginal` and look like Move firmware threads being
+starved. They are not. Every one of Move's own threads is `0-3`.
+
 ## 5. What is still open
 
 Move's publisher degrades under **any** sustained realtime CPU load on cores
 0-2, regardless of who holds it, at what priority, or what we run our own
 receiver at. Not yet tried:
 
-1. **Reduce the load.** dake's multi-core render split for osirus. Note it
-   spreads work across MORE cores, which may not help contention even though
-   it shortens total time — measure with the spinner rig before assuming.
-2. **Keep cores free.** The spinner used `taskset 0x7` (cores 0-2). Test
-   whether load confined to ONE core still breaks delivery — if Move's
-   publisher only needs one uncontended core, an affinity policy is a fix.
-3. **Look at how we subscribe.** `SourceProcessor` / channel-request TTL and
-   the socket options are ours. `d0e90664` tested the 5 s renewal theory and
-   disproved it, but the buffer sizes on the receive socket have never been
-   examined.
-4. **Admission control.** If we cannot keep Move's publisher healthy under
-   load, refuse to engage `rebuild_from_la` and stay on Move's own mailbox mix
-   with a visible reason. Degrades a feature instead of the audio.
+Given §4a, the remaining options are product decisions, not scheduling fixes:
+
+1. **Reduce module CPU.** dake's multi-core render split. **Measure it on the
+   spinner rig first** — it spreads work across cores 0-2, which is precisely
+   the placement that breaks Move's publisher, so a shorter total time may not
+   help and could hurt.
+2. **Admission control.** When total module load is high, decline to engage
+   `rebuild_from_la` and stay on Move's own mailbox mix, with a visible reason.
+   Degrades a feature instead of the audio. This is the only option that is
+   fully in our control and cannot make anything worse.
+3. **Document the limit** and let users choose between a heavy synth and
+   Move→Schwung.
+4. **Not yet examined:** the receive socket's buffer sizes (`SO_RCVBUF`) and
+   how we subscribe. `d0e90664` disproved the 5 s channel-request renewal
+   theory, but the socket options have never been looked at. Low expected
+   value given no UDP drops are recorded, but it is the one stone left.
 
 ## 6. Traps that cost real time today
 
