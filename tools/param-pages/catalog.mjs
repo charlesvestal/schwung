@@ -164,8 +164,8 @@ function paintProbe(set, ctx, draw, v) {
  * this UI puts on a 128x64 screen. font4x5.mjs records the failure it was
  * written to fix -- the 3-wide font before it "rendered MAIN as 'MAIK', SINE
  * as 'SIKE', SAW as 'SAU'" -- so those three strings are drawn for every
- * option and looked at, along with AMPLITUDE, which is the string the
- * original Elektron measurement was taken from and which has to fit 128px.
+ * option and looked at, along with AMPLITUDE, which is the longest label the
+ * header is asked to carry and which has to fit 128px.
  *
  * Each line is drawn at the LEFT MARGIN rather than centred, so the widths of
  * ten options are directly comparable down a contact sheet, and the line that

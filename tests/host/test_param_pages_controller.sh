@@ -322,7 +322,7 @@ Promise.all([
     if (ctl2.menuEntered()) fail("PAGING onto a door must still leave it shut");
   }
 
-  /* ---- 9d. Elektron patterns: fine adjust, reset, section memory -------- */
+  /* ---- 9d. precision gestures: fine adjust, reset, section memory ------- */
   {
     /* Find a float with a declared default — 744 params across 39 modules
      * declare one, and it is the only way back short of reloading the preset. */

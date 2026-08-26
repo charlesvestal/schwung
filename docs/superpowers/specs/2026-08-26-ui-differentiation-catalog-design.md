@@ -1,6 +1,11 @@
 # UI differentiation catalog (SCH-50)
 
-**Status:** design accepted 2026-08-26. Catalog not yet built.
+**Status:** design accepted 2026-08-26. Catalog built; the derived assets this
+document identifies have since been REPLACED — see
+`2026-08-26-ui-differentiation-decisions.md`. **This is a historical record of
+the assessment, not a description of the current code.** Every quotation from
+the source tree below is quoted as it stood *before* that work; the files no
+longer read that way.
 **Branch:** `charlesv/sch-50-differentiate-the-ui-and-icons-from-elektron`
 **Issue:** SCH-50 — *Differentiate the UI and icons from Elektron*
 
@@ -34,6 +39,12 @@ This is enforced mechanically (§3.4), not by discipline.
 ### 1.2 Derived assets — the concrete exposure
 
 Not in the issue's list, and the most consequential finding of the assessment.
+
+> **Resolved.** Both items below have been replaced: `font4x5.mjs` now carries
+> the metric-matched redraw (all 57 characters, no form carried forward), and
+> the movy vertical rhythm was re-cut against our own panel. The quotations
+> that follow are the *evidence as it stood*, retained because the finding is
+> what justified the work. They no longer describe the source tree.
 
 **`src/shared/param_pages/font4x5.mjs`** — nine glyphs (`A D E I L M P T U`)
 are Elektron letterforms. The file says so itself:

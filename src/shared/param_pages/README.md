@@ -164,8 +164,9 @@ it. That is the design: a new param type gets a page kind, not an exception.
 | Mute + touch a knob | reset that param to the default its module declared |
 | Back | close the picker, then leave the view |
 
-Returning to a section lands on the sub-page you were last using there, the way
-an Elektron page button does — but a plain jog still walks the set in order.
+Returning to a section lands on the sub-page you were last using there, because
+naming a section is a request for a place and the place you mean is the one you
+left — but a plain jog still walks the set in order.
 
 A first-run panel lists these once and is cleared by the first input. Its text
 comes from the caller — the gestures belong to whoever owns the input mapping.

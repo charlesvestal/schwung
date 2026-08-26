@@ -72,9 +72,10 @@ worked is a framed enum against a framed opaque cell — e.g. `dotted-frame` wit
 
 **Twenty alternatives were rejected before a one-pixel change to the incumbent
 was accepted.** That is worth recording as a result rather than as three failed
-attempts: the arc-and-pointer is the obvious way to show a bounded value, and
-the knob is not where the resemblance to Elektron lives. The catalog's job was
-to establish that, and it did.
+attempts: the arc-and-pointer is the obvious way to show a bounded value — the
+constraint admits few answers — so the knob was never where the resemblance the
+issue was raised about actually lived. The catalog's job was to establish that,
+and it did.
 
 ### The renderer mattered more than any design
 
@@ -271,10 +272,10 @@ The four sets share one treatment implementation by construction (the same
 function objects are registered in each), so choosing one treatment for three of
 them costs nothing and keeps the page coherent.
 
-**The current treatment, `thin-stroke`, ranked 10th / 8th / 7th / 8th across the
-four.** The thing shipping today was near-bottom everywhere it appeared. For an
-issue about differentiating from Elektron, that is the useful finding: the
-current look is not merely derivative, it is not liked.
+**The incumbent treatment, `thin-stroke`, ranked 10th / 8th / 7th / 8th across
+the four.** What was shipping at the time was near-bottom everywhere it
+appeared. That is the useful finding, and it is why the change is not a
+cosmetic tax: the outgoing look was not merely undistinctive, it was not liked.
 
 ---
 

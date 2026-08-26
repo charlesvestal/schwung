@@ -383,12 +383,13 @@ export function createController(io = {}) {
          * Cheaper and more exact than polling: only these keys can change what
          * is visible, and we already read every key on the page. */
         conditionKeys: new Set(),
-        /* Per-section memory of the sub-page you were last on. Elektron's page
-         * buttons work this way — pressing [FLTR] returns you to the FLTR page
-         * you were using, not to FLTR 1 — and it matters most on the modules
-         * where it is most tedious to get back (minijv's tone subtrees are 15
-         * pages each). Applies to SECTION jumps only; a fine jog still steps
-         * linearly, or you could never walk the set in order. */
+        /* Per-section memory of the sub-page you were last on. Naming a
+         * section returns you to the page of it you were using, not to its
+         * first page — a jump is a request for a PLACE, and the place you mean
+         * is the one you left. It matters most on the modules where it is most
+         * tedious to get back (minijv's tone subtrees are 15 pages each).
+         * Applies to SECTION jumps only; a fine jog still steps linearly, or
+         * you could never walk the set in order. */
         sectionMemory: Object.create(null),
         /* Cursor per MENU page, keyed by page name for the same reason
          * sectionMemory is: a rebuild moves every index. */
@@ -1687,7 +1688,7 @@ export function createController(io = {}) {
         }
 
         /*
-         * Fine adjust: Elektron's [FUNC]+encoder. Holding shift already reveals
+         * Fine adjust, on shift. Holding shift already reveals
          * every value, so precision mode and "show me the numbers" are the same
          * gesture -- which is what you want when chasing a value.
          *

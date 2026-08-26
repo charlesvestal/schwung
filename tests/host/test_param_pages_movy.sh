@@ -190,10 +190,10 @@ Promise.all([
      *   - flat caps at the compass points, because that is where the tangent
      *     is flat. A midpoint walk puts a single pixel there instead, one row
      *     proud of the run behind it, which reads as a spike.
-     *   - the GAP at the bottom: the last three rows empty, matching
-     *     the Elektron track, which stops at dy=+3.5 of its 6.5 radius. A
-     *     closed ring would draw track the pointer can never reach and imply
-     *     the control wraps around. */
+     *   - the GAP at the bottom: the last three rows empty, the track
+     *     stopping at dy=+3.5 of its 6.5 radius. A closed ring would draw
+     *     track the pointer can never reach and imply the control wraps
+     *     around -- and at this radius it would not fit the box either. */
     const want = [
       "......##.##......",
       "....##.....##....",
