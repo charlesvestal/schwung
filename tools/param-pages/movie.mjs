@@ -30,6 +30,8 @@ import * as RM from "../../src/shared/param_pages/render_page_movy.mjs";
 import { buildMetaIndex } from "../../src/shared/param_pages/param_meta.mjs";
 import { resolveViz } from "../../src/shared/param_pages/viz.mjs";
 import { createAnimState } from "../../src/shared/param_pages/anim_state.mjs";
+import { drawSlide, slideOffsets, scrollFrame, advanceLinear, advanceEased }
+    from "../../src/shared/param_pages/page_transition.mjs";
 
 const ROOT = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))));
 const OUT = path.join(ROOT, "catalog-out", "movies");
@@ -116,6 +118,160 @@ const SCENES = {
     },
 };
 
+/* ffmpeg with an explicit palette: a 1-bit page has two colours and the
+ * default 256-colour quantiser dithers the edges into grey mush.
+ *
+ * Shared by the single-page scenes and the slide variants because they differ
+ * only in FPS — and the slide's FPS is NOT 30 (see below), so a second copy of
+ * this would be a second place for the two cadences to be confused. */
+function encodeGif(dir, gif, fps) {
+    execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-framerate", String(fps),
+        "-i", path.join(dir, "%04d.png"),
+        "-vf", "palettegen=max_colors=2:reserve_transparent=0:stats_mode=single",
+        "-frames:v", "1", path.join(dir, "pal.png")]);
+    execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-framerate", String(fps),
+        "-i", path.join(dir, "%04d.png"), "-i", path.join(dir, "pal.png"),
+        "-lavfi", "paletteuse=dither=none", "-loop", "0", gif]);
+}
+
+/*
+ * THE DEVICE CANNOT PRODUCE A SMOOTH 30FPS SLIDE, SO FILMING ONE IS THE WRONG
+ * PROBE.
+ *
+ * Two hardware facts, both recorded in shadow_ui_param_pages.mjs: this
+ * device's clock is quantized to roughly 11-12ms (proven there by 20
+ * back-to-back Date.now() calls returning the identical value), and the grid
+ * ticks at ~55Hz. A 128px slide over 200ms is therefore about eleven real
+ * frames of ~12px each, and the animation reads the clock through that
+ * quantum. A film at a continuous 30fps would flatter the motion into
+ * something the panel cannot show, and would report green on a slide that
+ * stutters in the hand.
+ *
+ * So: sample at DEVICE_TICK_MS and quantize the clock the advance is handed to
+ * DEVICE_CLOCK_QUANTUM_MS. The GIF is re-timed to the sampled cadence for
+ * playback, so what plays back is what the panel would show.
+ */
+const DEVICE_TICK_MS = 1000 / 55;
+const DEVICE_CLOCK_QUANTUM_MS = 12;
+
+const SLIDE_VARIANTS = [
+    { name: "slide-160-linear", ms: 160, adv: advanceLinear },
+    { name: "slide-200-linear", ms: 200, adv: advanceLinear },
+    { name: "slide-280-linear", ms: 280, adv: advanceLinear },
+    { name: "slide-160-eased", ms: 160, adv: advanceEased },
+    { name: "slide-200-eased", ms: 200, adv: advanceEased },
+    { name: "slide-280-eased", ms: 280, adv: advanceEased },
+];
+
+/* A beat of stillness at each end. Motion is judged against rest, and a GIF
+ * that loops straight from the last frame back to the first reads as faster
+ * than the transition actually is. */
+const SLIDE_HOLD_MS = 260;
+
+/* A transition films TWO pages, so it does not fit the single-page `SCENES`
+ * shape (one `at(t)` returning one set of values) and gets its own renderer. */
+function renderSlideVariant(v) {
+    const { j, metaIndex } = loadPage({});
+    const dir = path.join(OUT, v.name);
+    fs.mkdirSync(dir, { recursive: true });
+    for (const f of fs.readdirSync(dir)) fs.unlinkSync(path.join(dir, f));
+
+    /*
+     * Two visibly different pages, so the motion is legible rather than one
+     * identical grid sliding over another.
+     *
+     * The viz groups are resolved PER PAGE rather than shared. A group is a
+     * run of COLUMN indices, so reusing page A's groups on a page whose keys
+     * are in a different order draws the right graphic over the wrong knobs —
+     * which would look like a compositing bug and is not one.
+     */
+    const pages = [
+        { page: j.page, label: j.page.name },
+        { page: { ...j.page, name: "AMP", keys: j.page.keys.slice().reverse() }, label: "AMP" },
+    ];
+    for (const p of pages) p.viz = resolveViz({ keys: p.page.keys, metaIndex }).groups;
+    /* pos only ever travels 0 -> 1 here, so base is 0 or 1; clamped anyway so
+     * a future backwards variant cannot index off the end. */
+    const at = (b) => pages[Math.max(0, Math.min(pages.length - 1, b))];
+
+    const total = SLIDE_HOLD_MS + v.ms + SLIDE_HOLD_MS;
+    const nFrames = Math.round(total / DEVICE_TICK_MS);
+
+    /* The sliding pass, with both suppressions the device makes: no bank bar
+     * (the compositor redraws it fixed) and no footer (it does not travel, and
+     * the body's ink stops at row 54 so there is room for it). */
+    const drawOne = (p) => (c) => RM.renderPageMovy(c, {
+        page: p.page, metaIndex, values: j.values, title: j.title,
+        pageIndex: j.pageIndex, pageCount: j.pageCount, touched: -1,
+        viz: p.viz, pageLabel: p.label,
+        bankBar: false, footer: null,
+        nowMs: 0, anim: createAnimState(),
+    });
+
+    /* Driven exactly as the controller will drive it: a POSITION advanced by
+     * the elapsed time each tick, not a progress computed from a start stamp.
+     * A film that computed t = (now - start)/ms would be testing a different
+     * mechanism than the one that ships — in particular it could not show a
+     * retarget chasing, which is why the position model exists. */
+    let pos = 0;
+    let prevClock = 0;
+    let slideFrames = 0;
+
+    for (let i = 0; i < nFrames; i++) {
+        const wall = i * DEVICE_TICK_MS;
+        const clock = Math.floor(wall / DEVICE_CLOCK_QUANTUM_MS) * DEVICE_CLOCK_QUANTUM_MS;
+        const dt = clock - prevClock;
+        prevClock = clock;
+        const target = clock < SLIDE_HOLD_MS ? 0 : 1;
+        pos = v.adv(pos, target, dt, v.ms);
+
+        const fb = createFramebuffer();
+        const ctx = drawContext(fb);
+        const { base, frac } = scrollFrame(pos);
+
+        if (frac === 0) {
+            /* At rest: the ordinary un-proxied draw, chrome and all. The first
+             * and last frames of every variant are this. */
+            RM.renderPageMovy(ctx, {
+                page: at(base).page, metaIndex, values: j.values, title: j.title,
+                pageIndex: j.pageIndex + base, pageCount: j.pageCount,
+                touched: -1, viz: at(base).viz, pageLabel: at(base).label,
+                footer: j.footer, nowMs: clock, anim: createAnimState(),
+            });
+        } else {
+            slideFrames++;
+            const off = slideOffsets(frac, 128);
+            drawSlide(ctx, {
+                fromDx: off.from, toDx: off.to,
+                drawFrom: drawOne(at(base)),
+                drawTo: drawOne(at(base + 1)),
+                drawChrome: (c) => {
+                    /* The indicator reports the TARGET, which is where input
+                     * already is — it does not travel and it does not lag. */
+                    RM.drawBankBar(c, j.pageIndex + target, j.pageCount, undefined);
+                    if (j.footer) RM.drawFooter(c, j.footer);
+                },
+            });
+        }
+        /* NO clipped() ASSERTION HERE, AND NOT AN OVERSIGHT. A transition
+         * frame produces out-of-bounds writes BY DESIGN — that is exactly how
+         * the two pages get clipped at the screen edges without a clip rect.
+         * The probe would fire on every composited frame, so it measures the
+         * wrong thing on this scene and is deliberately not consulted. The
+         * cost is real: this scene has no check against genuine overflow. */
+        fs.writeFileSync(path.join(dir, String(i).padStart(4, "0") + ".png"), fb.toPng(4));
+    }
+
+    const fps = Math.round(1000 / DEVICE_TICK_MS);
+    const gif = path.join(OUT, v.name + ".gif");
+    encodeGif(dir, gif, fps);
+    console.log(v.name.padEnd(18) + " " + nFrames + " frames @" + fps + "fps, " +
+        v.ms + "ms slide = " + slideFrames + " moving frames of ~" +
+        Math.round(128 / Math.max(1, slideFrames)) + "px" +
+        "  -> " + path.relative(ROOT, gif));
+    return gif;
+}
+
 function renderScene(name, scene) {
     const { j, metaIndex, groups } = loadPage(scene.options || {});
     const dir = path.join(OUT, name);
@@ -141,16 +297,8 @@ function renderScene(name, scene) {
         fs.writeFileSync(path.join(dir, String(i).padStart(4, "0") + ".png"), fb.toPng(4));
     }
 
-    /* ffmpeg with an explicit palette: a 1-bit page has two colours and the
-     * default 256-colour quantiser dithers the edges into grey mush. */
     const gif = path.join(OUT, name + ".gif");
-    execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-framerate", String(FPS),
-        "-i", path.join(dir, "%04d.png"),
-        "-vf", "palettegen=max_colors=2:reserve_transparent=0:stats_mode=single", "-frames:v", "1",
-        path.join(dir, "pal.png")]);
-    execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-framerate", String(FPS),
-        "-i", path.join(dir, "%04d.png"), "-i", path.join(dir, "pal.png"),
-        "-lavfi", "paletteuse=dither=none", "-loop", "0", gif]);
+    encodeGif(dir, gif, FPS);
 
     console.log(name.padEnd(9) + " " + nFrames + " frames, " + scene.ms + "ms" +
         (clipped ? "  CLIPPED " + clipped : "") + "  -> " + path.relative(ROOT, gif));
@@ -161,12 +309,17 @@ function main() {
     const argv = process.argv.slice(2);
     if (argv.includes("--list") || argv.length === 0) {
         for (const [k, s] of Object.entries(SCENES)) console.log(k.padEnd(9) + s.caption);
+        /* `slide` is not in SCENES — it films two pages, not one — so it is
+         * listed by hand rather than left invisible to --list. */
+        console.log("slide".padEnd(9) + "page slide transition — " +
+                    SLIDE_VARIANTS.length + " duration/advance variants");
         return;
     }
     fs.mkdirSync(OUT, { recursive: true });
     const only = argv.includes("--scene") ? argv[argv.indexOf("--scene") + 1] : null;
-    const names = only ? [only] : Object.keys(SCENES);
+    const names = only ? [only] : Object.keys(SCENES).concat("slide");
     for (const n of names) {
+        if (n === "slide") { for (const v of SLIDE_VARIANTS) renderSlideVariant(v); continue; }
         if (!SCENES[n]) { console.error("no such scene: " + n); process.exit(1); }
         renderScene(n, SCENES[n]);
     }
