@@ -2124,8 +2124,12 @@ export function createController(io = {}) {
      * page is, with no animation.
      *
      * A REPLAN IS NOT A PAGE CHANGE. load(), applyPendingRestore,
-     * replanForMode, refreshTrailing and replanIfCondition all assign
-     * `s.pageIndex` for reasons that have nothing to do with the user paging:
+     * replanForMode and replanIfCondition all assign `s.pageIndex` for reasons
+     * that have nothing to do with the user paging, and call this
+     * unconditionally. (refreshTrailing calls it too, but only when the index
+     * or the page-set shape actually moved — it fires on a 500ms timer after
+     * a knob write and usually rebuilds the identical set, so homing on every
+     * call cut any slide that happened to be in flight.) The reasons are:
      * a module finished loading and every index shifted, a caller asked to
      * land on a page by name, a visible_if condition rebuilt the set. Left to
      * itself the position would then be lagging a page it was never sent to
@@ -2193,6 +2197,14 @@ export function createController(io = {}) {
             if (gap > 1) s.scrollPos = toIndex - 1;
             else if (gap < -1) s.scrollPos = toIndex + 1;
         }
+        /*
+         * KNOWN COST, not a bug: a retarget arriving BETWEEN ticks discards
+         * the travel already earned since the last one -- up to ~18ms of a
+         * 90ms slide. The alternative is to leave the stamp alone and let the
+         * next advance charge that time to a target it was not travelling
+         * toward, which is worse: it front-loads the new leg by whatever the
+         * jog happened to be late by. Bounded by one frame either way.
+         */
         s.scrollLastMs = now();
     }
 
@@ -2917,7 +2929,7 @@ export function createController(io = {}) {
      * items list, the preset browser — is already keyed by page NAME in `s`, so
      * drawing a non-current index needs no new state, and none was added.
      *
-     * THAT LAST SENTENCE IS ONLY TRUE OF THE STATE KEYED BY NAME. Four fields
+     * THAT LAST SENTENCE IS ONLY TRUE OF THE STATE KEYED BY NAME. Five fields
      * are per-slot or per-key and belong to the page the user is ON, and the
      * split between them is what decides which ones need qualifying:
      *
@@ -3317,11 +3329,32 @@ export function createController(io = {}) {
      * is not a pixel write. A page change evicts the least recently asked for,
      * which during a slide is the page that has finished leaving.
      *
-     * SIZED 3, NOT 2, because the neighbour prefetch is coming: the slide
-     * itself needs two, and prefetching index ± 1 makes it three to four
-     * distinct indices in a frame. At 2 that thrashes straight back to
-     * re-detecting every frame and says nothing while it does it. The bound is
-     * named so the next person to add a consumer can see what it is counting.
+     * SIZED 4, AND 3 IS A HARD FLOOR TODAY. The distinct indices asked for in
+     * one tick are exactly `{ s.pageIndex, base, base + 1 }` — the read
+     * cursor`s vizExtraKeys() plus the slide`s two pages. There is no
+     * headroom, so the neighbour prefetch (which adds index ± 1) would have
+     * taken it straight past a cache that has none.
+     *
+     * ONE INDEX PAST THE BOUND IS A ~50x CLIFF, not a gentle taper: every
+     * lookup misses and the whole detector walk runs again. Measured here,
+     * after this change — 2, 3 and 4 alternating indices cost 0.00038,
+     * 0.00059 and 0.00056 ms per rotation, and FIVE costs 0.02809. At the old
+     * size of 3 the same step happened at four, which is what the prefetch was
+     * about to ask for. A miss loop is silent: nothing gets slower in a way
+     * any test can see, the page simply costs a resolveViz per draw.
+     *
+     * The hit now PROMOTES, and NO TEST DISTINGUISHES THAT — say so rather
+     * than let the next reader assume it is pinned. `unshift`-on-miss-only was
+     * a FIFO wearing an LRU`s name, and for every access pattern this code
+     * actually produces the two agree: while the working set fits, neither
+     * evicts anything after warm-up, and one index past the bound is a cyclic
+     * miss loop under both. Removing the promotion is a surviving mutant.
+     *
+     * It is kept because the comment above already claims "least recently
+     * asked for" and it now costs one splice on a hit, not because it was
+     * measured to help. What it would help is a TRANSIENT index intruding on a
+     * working set smaller than the bound — which is the shape a fourth
+     * consumer would most likely have.
      *
      * KNOWN HOLE in the key. It is `fingerprint#index`, and the fingerprint
      * covers only [hierarchy, chainParams, mode] — but refreshTrailing and
@@ -3330,13 +3363,20 @@ export function createController(io = {}) {
      * key. No repro was built for it and it predates this cache being widened,
      * so it is recorded rather than fixed; do not read the key as sound.
      */
-    const VIZ_CACHE_ENTRIES = 3;
+    const VIZ_CACHE_ENTRIES = 4;
     let vizCache = [];
     function vizGroupsFor(index) {
         const p = s.pages[index] || null;
         if (!p || p.kind !== PAGE_KNOBS || !s.metaIndex) return [];
         const cacheKey = `${s.fingerprint}#${index}`;
-        for (const e of vizCache) if (e.key === cacheKey) return e.groups;
+        for (let i = 0; i < vizCache.length; i++) {
+            if (vizCache[i].key !== cacheKey) continue;
+            /* Promote, so "least recently asked for" is what it says. The
+             * returned array is the SAME object either way — consumers compare
+             * it by identity (see test_page_slide_composite.sh). */
+            if (i) vizCache.unshift(vizCache.splice(i, 1)[0]);
+            return vizCache[0].groups;
+        }
         const { groups } = resolveViz({ keys: p.keys, metaIndex: s.metaIndex, overrides: vizOverrides });
         vizCache.unshift({ key: cacheKey, groups });
         if (vizCache.length > VIZ_CACHE_ENTRIES) vizCache.length = VIZ_CACHE_ENTRIES;

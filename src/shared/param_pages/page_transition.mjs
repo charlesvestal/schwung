@@ -159,13 +159,19 @@ const SNAP_PAGES = 0.5 / 128;
 /** Is a page change still in flight at scroll position `pos`? */
 export function isSliding(pos) {
     /*
-     * The caller's gate for "stop compositing", the same role settled() plays
-     * in anim_state.mjs -- which calls the idle redraw "the single largest
-     * cost of animating anything here". Ours is larger still: a composited
-     * frame is TWO full page renders, and at frac 0 the second one is drawn
-     * entirely offscreen at dx 128, so it is pure waste. The module is what
-     * knows the answer; leaving the caller to work it out is how the double
-     * render becomes permanent.
+     * The gate for "stop compositing", the same role settled() plays in
+     * anim_state.mjs -- which calls the idle redraw "the single largest cost
+     * of animating anything here". Ours is larger still: a composited frame is
+     * TWO full page renders (measured at 1.96x a settled one), and at frac 0
+     * the second is drawn entirely offscreen at dx 128, so it is pure waste.
+     *
+     * THE TEST-FACING SPELLING OF THAT GATE, and nothing more -- do not read
+     * it as the production one. page_controller.mjs`s render() needs `base`
+     * and `frac` anyway, so it destructures scrollFrame and tests
+     * `frac !== 0` inline; calling this as well would be a second scrollFrame
+     * per frame to learn what it already knows. It stays because a caller that
+     * only wants the yes/no should not have to know that frac 0 is the
+     * settled case, and because the tests say `isSliding` where they mean it.
      */
     return isFinite(pos) && scrollFrame(pos).frac !== 0;
 }

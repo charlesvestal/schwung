@@ -549,6 +549,13 @@ let _abbrevCache = null;
  * be 32 in the first place, guarding against a draw cost (1.68ms/page) that
  * was never the problem, and it then became the binding constraint on the
  * whole view.
+ *
+ * AND IT NOW HAS A SECOND COST. The page slide is 90ms of animation
+ * (SLIDE_MS in param_pages/page_transition.mjs), which at the grid`s ~55Hz is
+ * about five frames. A throttle of 32 would leave it THREE, and a composited
+ * frame is ~1.96x a settled one, so the frames it does draw are the expensive
+ * ones. Reinstating this does not merely pace the view; it cuts the
+ * transition in half.
  */
 const MOVY_REDRAW_MIN_MS = 0;
 let lastDrawMs = 0;
