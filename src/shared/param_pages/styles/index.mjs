@@ -143,6 +143,8 @@ import { register as registerVizEnvelope } from "./viz_envelope.mjs";
 import { register as registerVizFilter } from "./viz_filter.mjs";
 import { register as registerVizLfo } from "./viz_lfo.mjs";
 import { register as registerVizSample } from "./viz_sample.mjs";
+import { register as registerEnumSquare } from "./enum_square.mjs";
+import { register as registerLabelCell } from "./label_cell.mjs";
 
 registerKnob();
 registerFader();
@@ -154,3 +156,5 @@ registerVizEnvelope();
 registerVizFilter();
 registerVizLfo();
 registerVizSample();
+registerEnumSquare();
+registerLabelCell();
