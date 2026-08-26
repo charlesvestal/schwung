@@ -171,7 +171,11 @@ Promise.all([
 # The label has to reach the RENDERER, not merely exist on the controller.
 # Dropping `pageLabel:` from the render options leaves every unit assertion
 # green while the screen goes back to "EDIT PARTS -".
-command grep -q "pageLabel: pageLabel()," src/shared/param_pages/page_controller.mjs || {
+# It takes the PAGE now (`pageLabel(mp)`), because drawPage is parameterised by
+# index for the page slide and must label the page it was ASKED for, not the
+# current one. Pinned as a prefix so the argument can change again without
+# silently un-pinning the thing that matters, which is that the option is there.
+command grep -q "pageLabel: pageLabel(" src/shared/param_pages/page_controller.mjs || {
   echo "FAIL: the render options no longer carry pageLabel" >&2; exit 1; }
 command grep -q "o.pageLabel" src/shared/param_pages/render_page_movy.mjs || {
   echo "FAIL: renderPageMovy ignores pageLabel and draws page.name" >&2; exit 1; }
