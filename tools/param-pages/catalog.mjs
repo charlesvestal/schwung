@@ -30,6 +30,7 @@ import { buildMetaIndex } from "../../src/shared/param_pages/param_meta.mjs";
 import { fontPrint } from "../../src/shared/param_pages/styles/font/blit.mjs";
 import { GLYPHS_FOR_TEST as FONT4X5_GLYPHS } from "../../src/shared/param_pages/font4x5.mjs";
 import { resolveViz } from "../../src/shared/param_pages/viz.mjs";
+import * as D from "../../src/shared/param_pages/styles/dither.mjs";
 
 const ROOT = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))));
 const OUT_ROOT = path.join(ROOT, "catalog-out");
@@ -188,8 +189,53 @@ function renderSpecimen(glyphs, set) {
     return fb;
 }
 
+/*
+ * THE STRIP, for a KIND_MOTION option: n frames of the widget, left to right.
+ *
+ * `frames` is the primary trajectory. `ghost` and `overlay` are the optional
+ * secondary channels — a ghost is the SAME widget drawn at the previous
+ * position and masked through a density from the shared ladder, so the fade is
+ * the ladder rather than a second construction.
+ *
+ * Written at 9x, not the 4x every other set uses. At 4x the differences these
+ * four options turn on stop being visible, and a sheet that cannot show the
+ * difference is worse than no sheet: it invites a judgement on a picture that
+ * does not contain the thing being judged.
+ */
+const STRIP_N = 12, STRIP_FROM = 0.15, STRIP_TO = 0.85;
+
+function renderStrip(opt, frames) {
+    const n = frames.length;
+    const from = frames[0], to = frames[n - 1];
+    const cw = RM.KW + 3;
+    const fb = createFramebuffer(cw * n, RM.BOX_H);
+    const ctx = drawContext(fb);
+    const ghost = typeof opt.ghost === "function" ? opt.ghost(from, to, n) : null;
+    const overlay = typeof opt.overlay === "function" ? opt.overlay(from, to, n) : null;
+    for (let i = 0; i < n; i++) {
+        const cellX = i * cw, kx = cellX + 1;
+        const g = ghost && ghost[i];
+        if (g) {
+            const gf = createFramebuffer(RM.KW, RM.BOX_H);
+            RM.drawArcKnob(drawContext(gf), 0, 0, g.value);
+            const pat = D[g.fill] || D.SOLID;
+            for (let y = 0; y < RM.BOX_H; y++)
+                for (let x = 0; x < RM.KW; x++)
+                    if (gf.pixels[y * RM.KW + x] && pat(kx + x, y)) fb.setPixel(kx + x, y, 1);
+        }
+        RM.drawArcKnob(ctx, kx, 0, frames[i]);
+        if (overlay && overlay[i] === "invert")
+            for (let y = 0; y < RM.BOX_H; y++)
+                for (let x = cellX; x < cellX + cw; x++)
+                    fb.setPixel(x, y, fb.pixels[y * fb.width + x] ? 0 : 1);
+    }
+    return fb;
+}
+
 function renderSwatch(opt, set) {
     if (set.kind === S.KIND_FONT) return renderSpecimen(opt.glyphs, set);
+    if (set.kind === S.KIND_MOTION)
+        return renderStrip(opt, opt.frames(STRIP_FROM, STRIP_TO, STRIP_N));
     const size = probeSizeOf(set);
     const { fb, ctx } = surface(size.w, size.h);
     if (set.kind === S.KIND_DRAW) paintProbe(set, ctx, opt.draw, 0.62);
@@ -275,7 +321,11 @@ function renderSet(set, pageCase) {
         const tag = String(opt.position).padStart(2, "0") + "-" + opt.id;
 
         const sw = renderSwatch(opt, set);
-        writePng(sw, path.join(dir, tag + "-swatch.png"), 4);
+        /* Motion goes out at 9x. What separates these four is a mark or a
+         * position of a few pixels, and at 4x two of them collapse into their
+         * neighbours -- a sheet that cannot show the difference invites a
+         * judgement on a picture that does not contain the thing being judged. */
+        writePng(sw, path.join(dir, tag + "-swatch.png"), set.kind === S.KIND_MOTION ? 9 : 4);
         sheetFrames.push(sheetRow(sw, String(opt.position).padStart(2, "0")));
         clippedTotal += sw.clipped();
 
@@ -286,7 +336,10 @@ function renderSet(set, pageCase) {
          * ten times over, which reads as ten renders that all worked. The
          * specimen is the judged surface here, and it is measured for overrun
          * against the same 128px the header has. */
-        if (set.kind === S.KIND_FONT) continue;
+        /* A KIND_MOTION option has no in-context render either: the page is a
+         * still and the option IS a sequence, so a single frame of it would be
+         * the shipping page with nothing added. */
+        if (set.kind === S.KIND_FONT || set.kind === S.KIND_MOTION) continue;
 
         const pg = renderInContext(opt, set, pageCase, slots);
         writePng(pg, path.join(dir, tag + "-page.png"), 4);
@@ -310,10 +363,15 @@ function main() {
 
     if (argv.includes("--list") || argv.length === 0) {
         if (!S.SETS.length) { console.log("catalog: no sets registered yet"); return; }
-        for (const s of S.SETS)
+        /* Against the set OWN declared count, not the default. A set that
+         * deliberately carries fewer (anim is four) otherwise lists as 4/10 and
+         * reads as six missing rather than four by design. */
+        for (const s of S.SETS) {
+            const want = Number.isInteger(s.optionCount) ? s.optionCount : S.OPTIONS_PER_SET;
             console.log(s.id.padEnd(16) + " " + s.kind.padEnd(7) + " " +
-                        String(s.options.length).padStart(2) + "/" + S.OPTIONS_PER_SET +
+                        String(s.options.length).padStart(2) + "/" + want +
                         " option(s)  " + s.title);
+        }
         return;
     }
 

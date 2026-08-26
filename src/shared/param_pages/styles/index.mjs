@@ -47,8 +47,24 @@ export function validateSet(set) {
     if (!KINDS.includes(set.kind)) bad.push(where + ": kind must be one of " + KINDS.join("/"));
     if (!Array.isArray(set.options)) return bad.concat(where + ": options is not an array");
 
-    if (set.options.length !== OPTIONS_PER_SET)
-        bad.push(where + ": has " + set.options.length + " options, want " + OPTIONS_PER_SET);
+    /*
+     * Ten unless the set DECLARES otherwise, and the declaration is the point.
+     *
+     * The motion set carries four, because six of its ten were behaviours a
+     * still frame strip cannot convey — three that differ only in duration,
+     * which a strip renders as a frame count, and three more separated by about
+     * a pixel. Judging those produces preference data that looks real and is
+     * not, so they were cut rather than shipped into the comparator.
+     *
+     * `optionCount` must be written down for that to be legal. A set that
+     * silently LOSES an option is the failure this check exists for, and
+     * defaulting to "however many there are" would retire the check entirely.
+     */
+    const want = Number.isInteger(set.optionCount) ? set.optionCount : OPTIONS_PER_SET;
+    if (want < 2) bad.push(where + ": optionCount " + want + " is too few to compare");
+    if (set.options.length !== want)
+        bad.push(where + ": has " + set.options.length + " options, want " + want
+                 + (set.optionCount ? " (declared)" : ""));
 
     const seenId = new Set();
     const seenPos = new Set();
@@ -62,8 +78,8 @@ export function validateSet(set) {
         if (!o.name) bad.push(where + "/" + oid + ": no name");
         if (!o.note) bad.push(where + "/" + oid + ": no note (the catalog rationale line)");
 
-        if (!Number.isInteger(o.position) || o.position < 1 || o.position > OPTIONS_PER_SET)
-            bad.push(where + "/" + oid + ": position must be an integer 1.." + OPTIONS_PER_SET);
+        if (!Number.isInteger(o.position) || o.position < 1 || o.position > want)
+            bad.push(where + "/" + oid + ": position must be an integer 1.." + want);
         else if (seenPos.has(o.position)) bad.push(where + ": duplicate position " + o.position);
         else seenPos.add(o.position);
 
@@ -145,6 +161,7 @@ import { register as registerVizLfo } from "./viz_lfo.mjs";
 import { register as registerVizSample } from "./viz_sample.mjs";
 import { register as registerEnumSquare } from "./enum_square.mjs";
 import { register as registerLabelCell } from "./label_cell.mjs";
+import { register as registerAnim } from "./anim.mjs";
 
 registerKnob();
 registerFader();
@@ -158,3 +175,4 @@ registerVizLfo();
 registerVizSample();
 registerEnumSquare();
 registerLabelCell();
+registerAnim();
