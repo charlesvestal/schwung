@@ -33,6 +33,14 @@ typedef struct {
     uint8_t  route[XMOS_AUDIO_MSG_LEN]; /* last observed 37 12 envelope */
     uint8_t  have_route;                /* 1 once route[] is populated */
     int8_t   usbc_out;                  /* -1 unknown, 0 = Mic, 1 = Main Out */
+    /* Bit1 of the last observed 37 12, tracked separately from usbc_out
+     * because Move's sampling page emits a LONE 37 12 to set bit0 (the USB-C
+     * input select) and carries bit1 from its own permanently-stale "Mic" UI
+     * state. Observed on hardware 2026-08-26: `37 12 01` then `37 12 00`, with
+     * no 37 14 in the frame or anywhere near it. That clears monitoring — and
+     * monitoring is *how* Main Out reaches USB-C — so the hardware reverts to
+     * Mic while usbc_out still reads 1 and nothing re-asserts. -1 = unknown. */
+    int8_t   monitor;
     uint32_t seq;                       /* bumped on every usbc_out change */
 
     /* Reassembly state. Persisted here (not on the call stack) because a
@@ -48,7 +56,7 @@ typedef struct {
  * state reads usbc_out == 0, which is indistinguishable from an observed Mic
  * selection and would suppress the first real change. Always init state with
  * this macro rather than {0} or memset. */
-#define XMOS_AUDIO_STATE_INIT { .usbc_out = -1 }
+#define XMOS_AUDIO_STATE_INIT { .usbc_out = -1, .monitor = -1 }
 
 /* Scan a MIDI_OUT region (len bytes, 4-byte USB-MIDI slots) and fold any
  * audio-IO envelopes into st. Only cable-0 packets (Move's own firmware)

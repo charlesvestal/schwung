@@ -69,6 +69,13 @@ int xmos_audio_scan(const uint8_t *midi_out, int len, xmos_audio_state_t *st) {
         if (st->rx_buf[7] == XMOS_AUDIO_KEY_ROUTE) {
             memcpy(st->route, st->rx_buf, XMOS_AUDIO_MSG_LEN);
             st->have_route = 1;
+            /* Track bit1 separately. It is not redundant with usbc_out: Move's
+             * sampling page sends a LONE 37 12 to set bit0 and carries bit1
+             * from its own stale "Mic" state, which clears monitoring and so
+             * reverts the hardware to Mic with no 37 14 to show for it.
+             * Deliberately NOT folded into `changed` — that flag means "the
+             * out-source selection moved", and this is not a selection. */
+            st->monitor = (st->rx_buf[8] & XMOS_AUDIO_ROUTE_BIT_MONITOR) ? 1 : 0;
         } else if (st->rx_buf[7] == XMOS_AUDIO_KEY_OUT_SRC) {
             int8_t out = (st->rx_buf[8] & 0x01) ? 1 : 0;
             if (st->usbc_out != out) {
