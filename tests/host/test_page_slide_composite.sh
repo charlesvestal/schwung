@@ -254,6 +254,30 @@ ok(listIdx >= 0, "the list-layout fixture has a knob page to draw as rows");
   ok(ctl.vizGroupsFor(A) === a1,
      "A, B, A returns the ORIGINAL A -- a one-entry cache would rebuild it");
   ok(ctl.vizGroupsFor(B) === b1, "and B is still cached too: both pages of a slide fit");
+
+  /* AND FOUR DISTINCT INDICES FIT, which is the bound the neighbour prefetch
+     needs. One past the cache size is not a gentle taper: EVERY lookup misses
+     and the whole resolveViz walk runs again, ~50x, and it is invisible --
+     nothing fails, the page just costs a detect per draw. Asserted by IDENTITY
+     across a full rotation, because a miss returns a fresh array that is equal
+     in every other respect. */
+  {
+    const idx = knobIdx.slice(0, 4);
+    if (idx.length < 4) {
+      ok(false, "the fixture needs four knob pages to pin the cache bound");
+    } else {
+      const first = idx.map((i) => ctl.vizGroupsFor(i));
+      let stable = true;
+      for (let r = 0; r < 3; r++) {
+        for (let k = 0; k < idx.length; k++) {
+          if (ctl.vizGroupsFor(idx[k]) !== first[k]) stable = false;
+        }
+      }
+      ok(stable,
+         "four alternating page indices all stay cached -- {pageIndex, base, " +
+         "base+1} is three with no headroom, and the prefetch adds a fourth");
+    }
+  }
 }
 
 /* ------------------------------------------------------------------------ *
@@ -1227,6 +1251,47 @@ ok(listIdx >= 0, "the list-layout fixture has a knob page to draw as rows");
     settleS(pairAt);
   }
 
+  /* --- A JUMP THAT IS ALREADY NEARLY HOME IS NOT DRAGGED BACK ------------- *
+   * The teleport closes the position up to ONE page from the target -- but
+   * only when it is further away than that. Without the inner test it would
+   * also SHOVE a position that is already closer, backwards, to make room for
+   * a full-width travel nobody asked for.
+   *
+   * Every jump measured above starts from a SETTLED position, so the gap
+   * always equals the jump and the inner branch never sees its off-path. The
+   * case needs the position ahead of the index, which is what a BACKWARDS
+   * slide gives: two quick back-jogs leave the index two pages below a
+   * position that has barely moved, and a picker jump forwards to where the
+   * position already is enters the branch with a gap well under one page.
+   * ------------------------------------------------------------------------ */
+  {
+    const top = Math.min(S.state.pages.length - 1, pairAt + 3);
+    if (top - 2 < 0) {
+      ok(false, "the fixture is too short to set up the near-target jump");
+    } else {
+      settleS(top);
+      bump(18);
+      S.onJog(-1);                       /* index top-1, position still top */
+      bump(3); S.tick();                 /* barely moved: ~0.17 of a page */
+      S.onJog(-1);                       /* index top-2, position untouched */
+      const near = S.state.scrollPos;
+      ok(S.state.pageIndex === top - 2,
+         "the index is two pages below the position (" + S.state.pageIndex +
+         " vs " + near.toFixed(3) + ")");
+      ok(near > top - 1 && near < top,
+         "and the position is WITHIN one page of the jump target, which is " +
+         "the off-path (" + near.toFixed(3) + ")");
+      bump(18);
+      S.goToPage(top, { remember: false });
+      ok(S.state.pageIndex === top, "the near-target jump landed");
+      ok(S.state.scrollPos === near,
+         "a jump to where the position already is does NOT drag it backwards " +
+         "(" + near.toFixed(3) + " -> " + S.state.scrollPos.toFixed(3) + ")");
+      for (let i = 0; i < 60; i++) { bump(18); S.tick(); }
+      settleS(pairAt);
+    }
+  }
+
   /* --- THE OUTGOING PAGE DOES NOT WEAR THE CURRENT PAGE`S TOUCH ----------- *
    * s.touched and s.touchOrder are per SLOT, not per key, so a slot means a
    * different parameter on every page. onJog clears `touched` but NOT
@@ -1345,6 +1410,60 @@ ok(listIdx >= 0, "the list-layout fixture has a knob page to draw as rows");
        "a no-op trailing rebuild leaves the slide running (" + mid0 + " -> " +
        S.state.scrollPos + ")");
     for (let i = 0; i < 60; i++) { bump(18); S.tick(); }
+  }
+
+  /* --- AND ONE THAT CHANGES THE PAGE SET STILL HOMES ---------------------- *
+   * THE HAZARD IS s.pages, NOT s.pageIndex. The invariant this feature rests
+   * on is that the position never indexes into a page set that has moved under
+   * it -- and a trailing rebuild can rename or re-count pages while leaving
+   * the index exactly where it was. Guarding on the index alone therefore
+   * looks right and is not: it survives the no-op assertion above, which is
+   * the only one that existed, and leaves a slide compositing `base` and
+   * `base + 1` of a set that no longer has those pages.
+   *
+   * Its own controller, because io.trailingMenus has to be MUTABLE to change
+   * the set out from under a slide. */
+  {
+    let trailing = [{ name: "Alpha", entries: [{ label: "One" }, { label: "Two" }] }];
+    const st2 = makeStore();
+    const clk2 = { t: 1000 };
+    const T = createController({
+      getParam: (k) => {
+        const b = String(k).replace(/^[^:]+:/, "");
+        if (b === "ui_hierarchy") return JSON.stringify(HIER);
+        if (b === "chain_params") return JSON.stringify(CHAIN_PARAMS);
+        return b in st2 ? st2[b] : "";
+      },
+      setParam: () => {}, announce: () => {}, now: () => clk2.t,
+      trailingMenus: () => trailing,
+    });
+    T.setLayout(LAYOUT_MOVY);
+    T.load({ prefix: "synth" });
+    for (let n = 0; n < 60; n++) { clk2.t += 18; T.tick(); }
+    ok(T.state.pages.some((p) => p.name === "Alpha"),
+       "the trailing fixture planned its trailing page");
+
+    T.goToPage(1, { remember: false });
+    for (let n = 0; n < 20; n++) { clk2.t += 18; T.tick(); }
+    clk2.t += 18;
+    T.onJog(1);
+    for (let n = 0; n < 2; n++) { clk2.t += 12; T.tick(); }
+    const idxT = T.state.pageIndex;
+    ok(T.state.scrollPos !== idxT, "a slide is in flight on the trailing fixture");
+    const namesBefore = T.state.pages.map((p) => p.name).join(",");
+
+    /* Rename it. Same COUNT and same index -- so an index-only guard sees
+       nothing at all, and only a check on the page-set shape fires. */
+    trailing = [{ name: "Omega", entries: [{ label: "One" }, { label: "Two" }] }];
+    T.refreshTrailing();
+    ok(T.state.pages.map((p) => p.name).join(",") !== namesBefore,
+       "the rebuild really did change the page set");
+    ok(T.state.pageIndex === idxT,
+       "and did NOT change the index -- which is what makes an index-only " +
+       "guard look correct");
+    ok(T.state.scrollPos === T.state.pageIndex,
+       "a rebuild that changes the page SET homes the position (" +
+       T.state.scrollPos + " vs " + T.state.pageIndex + ")");
   }
 
   /* --- A REPLAN IS NOT A PAGE CHANGE ------------------------------------- *
@@ -1504,47 +1623,85 @@ ok(listIdx >= 0, "the list-layout fixture has a knob page to draw as rows");
 }
 
 /* ------------------------------------------------------------------------ *
- * EVERY ASSIGNMENT TO s.pageIndex EITHER AIMS THE SCROLL OR SENDS IT HOME.
+ * NOTHING MOVES THE PAGE SET OR THE INDEX WITHOUT SETTLING THE SCROLL.
  *
- * Source-invariant, and it is here because the alternative is one behavioural
- * probe per replan site -- applyPendingRestore, replanForMode,
- * refreshTrailing, replanIfCondition -- each needing a contract change that
- * reaches exactly that branch. The reanchoring-reload probe above covers
- * load(); this covers the rest, and covers a site that does not exist yet.
+ * TWO SCANS, BECAUSE THE HAZARD IS s.pages AND THE OBVIOUS SCAN IS s.pageIndex.
+ * The failure is a position that indexes into a page set which has moved under
+ * it -- `base` and `base + 1` naming pages that are no longer there. Every
+ * s.pages assignment today happens to sit beside an index assignment, so a
+ * scan for the index alone covers the real hazard BY COINCIDENCE, and a future
+ * `s.pages = ...` that leaves the index where it is would evade it entirely.
  *
- * The failure it names is real and quiet: a replan that moves the index
- * without moving the position leaves the very next frame compositing two
- * pages from a page set that has already changed underneath it.
+ * Source-invariant, because the alternative is one behavioural probe per
+ * replan site -- applyPendingRestore, replanForMode, refreshTrailing,
+ * replanIfCondition -- each needing a contract change that reaches exactly
+ * that branch. The reanchoring-reload and the trailing-rename probes above
+ * cover two of them precisely; this covers the rest, and covers a site that
+ * does not exist yet.
  *
- * PIXELS CANNOT SEE THIS ONE. It is a rule about the shape of the source, so
- * it is asserted as one, and the COUNT is pinned as well -- a new assignment
- * site is exactly the thing that would otherwise slip through.
+ * SCOPED TO THE ENCLOSING FUNCTION, NOT TO A LINE WINDOW. The window was four
+ * lines, which is one comment away from a false failure at the one multi-line
+ * assignment (it already used three of the four), and it cannot reach the load
+ * path at all, where the s.pages assignment is eleven lines above its
+ * scrollHome. So: find the function, require the call inside it.
+ *
+ * WHAT THIS DOES AND DOES NOT PROVE. It proves a settle EXISTS on the path;
+ * it cannot see whether it is conditional, or whether the condition is right
+ * -- refreshTrailing`s is deliberately conditional, and both of its arms are
+ * pinned behaviourally above. The name says "reachable", not "unconditional".
+ *
+ * PIXELS CANNOT SEE ANY OF THIS. Nothing in this block draws.
  * ------------------------------------------------------------------------ */
 {
   const src = readFileSync("src/shared/param_pages/page_controller.mjs", "utf8")
                 .split("\n");
-  const sites = [];
-  for (let i = 0; i < src.length; i++) {
-    /* Anywhere on the line, not just at the start of one: a new site written
-       inline (`function f() { s.pageIndex = 0; }`) is exactly the shape a
-       start-anchored pattern misses, and it slipped past the first version of
-       this check. Comment lines are dropped by hand; `!==`, `>=` and `| 0` are
-       excluded by the `=[^=]` on the right. */
-    const line = src[i].trim();
-    if (line.startsWith("*") || line.startsWith("//") || line.startsWith("/*")) continue;
-    if (/s\.pageIndex\s*=[^=]/.test(src[i])) sites.push(i);
-  }
-  ok(sites.length === 8,
-     "every s.pageIndex assignment is accounted for (" + sites.length + " found)");
-  const orphan = sites.filter((i) => {
-    for (let j = i; j <= i + 4 && j < src.length; j++) {
-      if (/scrollHome\(\);|aimScroll\(/.test(src[j])) return false;
+  const isComment = (t) =>
+    t.startsWith("*") || t.startsWith("//") || t.startsWith("/*");
+  /* The body of the function containing line `i`, as one string. Functions in
+     this closure are declared at four spaces, so their close is a line that is
+     exactly "    }". */
+  const enclosing = (i) => {
+    let start = i;
+    while (start > 0 && !/^    function /.test(src[start])) start--;
+    let end = i;
+    while (end < src.length && src[end] !== "    }") end++;
+    return src.slice(start, end + 1).join("\n");
+  };
+  const scan = (re) => {
+    const out = [];
+    for (let i = 0; i < src.length; i++) {
+      const line = src[i].trim();
+      if (isComment(line)) continue;
+      if (re.test(src[i])) out.push(i);
     }
-    return true;
-  });
-  ok(orphan.length === 0,
-     "no assignment leaves the scroll position behind (lines " +
-     orphan.map((i) => i + 1).join(",") + ")");
+    return out;
+  };
+  /* `[-+]?=` so `+=` and `-=` are caught; `[^=]` on the right keeps `!==`,
+     `>=` and `===` out. `++`/`--` are matched separately -- neither appears
+     today, and a scan that silently could not see them would be worse than
+     one that says so. */
+  const IDX = /s\.pageIndex\s*(?:[-+]?=[^=]|\+\+|--)/;
+  const PGS = /s\.pages\s*(?:[-+]?=[^=]|\+\+|--)/;
+  const idxSites = scan(IDX);
+  const pgsSites = scan(PGS);
+  ok(idxSites.length === 8,
+     "every s.pageIndex assignment is accounted for (" + idxSites.length + ")");
+  ok(pgsSites.length === 5,
+     "every s.pages assignment is accounted for (" + pgsSites.length + ")");
+  const orphans = (sites) => sites.filter((i) =>
+    !/scrollHome\(\);|aimScroll\(/.test(enclosing(i)));
+  const badIdx = orphans(idxSites), badPgs = orphans(pgsSites);
+  ok(badIdx.length === 0,
+     "no s.pageIndex assignment leaves the scroll unsettled (lines " +
+     badIdx.map((i) => i + 1).join(",") + ")");
+  ok(badPgs.length === 0,
+     "no s.pages assignment leaves the scroll unsettled (lines " +
+     badPgs.map((i) => i + 1).join(",") + ")");
+  /* The scan must be able to FAIL. An `enclosing` that returned the whole file
+     -- one bad regex away -- would report every site clean for ever. */
+  ok(!/scrollHome\(\);|aimScroll\(/.test(enclosing(src.findIndex(
+       (l) => /^    function drawPage\(/.test(l)) + 1)),
+     "the enclosing-function scan is bounded (drawPage settles nothing)");
 }
 
 process.exit(fail ? 1 : 0);
