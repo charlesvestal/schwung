@@ -63,11 +63,28 @@ function scanCatalog() {
         if (!fs.existsSync(dir)) { missing.push({ set: set.id, why: 'no catalog-out/' + set.id }); continue; }
         const opts = [];
         const absent = [];
+        /*
+         * A page render is required only where one MEANS anything.
+         *
+         * A font option and a motion option deliberately have no in-context
+         * page: renderPageMovy prints through font4x5 own closed-over table, so
+         * ten font substitutions would come back byte-identical; and a page is a
+         * still while a motion option IS a sequence. For both, the swatch --
+         * the specimen, the strip -- is the judged surface.
+         *
+         * Demanding both files silently excluded exactly those two sets, and
+         * the symptom read as "not rendered yet" rather than as a bug. The two
+         * most consequential sets in the catalog were the ones dropped.
+         */
+        const needsPage = set.kind === "draw";
         for (const o of set.options) {
             const page = `${pad2(o.position)}-${o.id}-page.png`;
             const swatch = `${pad2(o.position)}-${o.id}-swatch.png`;
-            if (fs.existsSync(path.join(dir, page)) && fs.existsSync(path.join(dir, swatch))) {
-                opts.push({ id: o.id, name: o.name, position: o.position, note: o.note, page, swatch });
+            const hasSwatch = fs.existsSync(path.join(dir, swatch));
+            const hasPage = fs.existsSync(path.join(dir, page));
+            if (hasSwatch && (hasPage || !needsPage)) {
+                opts.push({ id: o.id, name: o.name, position: o.position, note: o.note,
+                            page: hasPage ? page : swatch, swatch });
             } else {
                 absent.push(o.id);
             }
