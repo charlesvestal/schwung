@@ -4753,9 +4753,21 @@ function loadChainConfigFromSlot(slotIndex) {
      * DSP, "what we already had" during that window is exactly the module the
      * user just picked. `incomplete` stops the latch, so the next frame reads
      * again instead of believing this one.
+     *
+     * ONCE IT HAS REFUSED, STOP ASKING. A refusing channel has nothing further
+     * to tell us this pass, and every read costs its full timeout — so the
+     * first failure short-circuits the rest and the whole pass keeps what it
+     * had for one read instead of `3 + chain length` of them.
+     *
+     * That is not an optimisation, it is the fix for a delay this very change
+     * introduced: keeping the previous COUNT (rather than the old truncate-to-
+     * zero) made readSection issue that many more reads, all of them timing
+     * out, in the handler that runs between picking a module and returning to
+     * the chain editor. Reported from the device as exactly that pause.
      */
     let incomplete = false;
     const readPosition = (id, previous) => {
+        if (incomplete) return previous || null;
         const moduleId = getSlotParam(slotIndex, `${id}_module`);
         if (moduleId === null || moduleId === undefined) {
             incomplete = true;
@@ -4779,6 +4791,7 @@ function loadChainConfigFromSlot(slotIndex) {
      * not just one. Keep the length we already had.
      */
     const readCount = (key, cap, previous) => {
+        if (incomplete) return previous;
         const raw = getSlotParam(slotIndex, key);
         if (raw === null || raw === undefined) { incomplete = true; return previous; }
         const n = parseInt(raw, 10);
@@ -5268,13 +5281,18 @@ function withPendingChainInsert(choice, pending) {
  * never changes again.
  */
 function getSlotModuleSignature(slotIndex) {
+    /* Short-circuits on the first refusal, for the same reason
+     * loadChainConfigFromSlot does: the answer is already null, and this runs
+     * in the handler between picking a module and returning to the editor. */
     let failed = false;
     const read = (id) => {
+        if (failed) return "";
         const v = getSlotParam(slotIndex, `${id}_module`);
         if (v === null || v === undefined) { failed = true; return ""; }
         return v;
     };
     const count = (key, cap) => {
+        if (failed) return 0;
         const raw = getSlotParam(slotIndex, key);
         if (raw === null || raw === undefined) { failed = true; return 0; }
         const n = parseInt(raw, 10);
