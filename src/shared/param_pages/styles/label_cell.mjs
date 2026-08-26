@@ -284,12 +284,29 @@ function drawDoubleStrip(ctx, g, col, lblY, label, displayValue, showValue, inve
  * still.
  */
 function drawHalfStrip(ctx, g, col, lblY, label, displayValue, showValue, inverted, modulated) {
-    const r = run(g, col, label, displayValue, showValue, g.cellW - 6);
+    /*
+     * 30px of text with 1px shoulders, not 26px with 2px.
+     *
+     * The original 26px budget applied to the RESTING label as well as the held
+     * value, which no per-set contact sheet could show: on a real page LKYTRG,
+     * LKYFLL and LSYMMT all lost a character whether or not the knob was being
+     * touched. Widened on the strength of that, measured rather than guessed.
+     *
+     * The pair is forced. The strip is the text plus its shoulders and it must
+     * still fit CELL_W, so 30 + 1 + 1 = 32 exactly; 30px with 2px shoulders
+     * would be 34 and overflow, and 28px with 2px only rescues two of the three
+     * labels. One pixel of shoulder is what buys the third.
+     *
+     * At full width the strip now spans the whole cell, so two adjacent held
+     * knobs abut. The different-widths reading this option exists for survives
+     * where it matters -- a short value like ON still draws a short block.
+     */
+    const r = run(g, col, label, displayValue, showValue, g.cellW - 2);
     if (inverted && r.w > 0) {
         /* FULL band height. The variable here is WIDTH, so the strip keeps the
          * incumbent's seven rows and its clear row above and below the glyphs;
          * shortening it too would put two changes in one option. */
-        const sx = r.tx - 2, sw = r.w + 4;
+        const sx = r.tx - 1, sw = r.w + 2;
         ctx.fillRect(sx, lblY, sw, LBL_H, 1);
         notchCorners(ctx, sx, lblY, sw, LBL_H);
         fontPrint4x5(ctx, r.tx, lblY + 1, r.t, 0);
@@ -486,7 +503,9 @@ export function register() {
                 note: "Seven rows of band and five of face leaves exactly two spare rows, and this spends both: a full-width rule top and bottom with the five-row core inset two pixels each side, so a black gutter opens between them. That is the only inset border this geometry can hold — a ring drawn inside a 7-row strip lands on the first and last rows of the glyphs. It is HEAVIER than the incumbent, not lighter, and it argues the strip should be more deliberate rather than less. The 4px inset makes it the tightest budget here at 24px, and the only option that loses a realistic value on humanist and rounded as well as on wide and dot-matrix.",
             },
             {
-                position: 7, id: "half-strip", name: "Half strip", draw: drawHalfStrip, textW: CELL_W - 6, overflowFonts: ["wide", "dot-matrix"],
+                /* Widening 26 -> 30 also bought a font: `wide` fits now and only
+                 * `dot-matrix` still overflows. */
+                position: 7, id: "half-strip", name: "Half strip", draw: drawHalfStrip, textW: CELL_W - 2, overflowFonts: ["dot-matrix"],
                 note: "The solid inversion, sized to the text plus two pixels each side and centred. A row of held knobs becomes blocks of different widths, so the page shows how long each value is before you read any, and ON stops claiming the same 32px as -24.0. Closest option to the incumbent in kind and the furthest in behaviour: the shape now MOVES as the value changes, so turning through 9-10-11 makes the block grow and shrink under your finger. Useful feedback or visual noise, and a still cannot settle it. Budget 26px: overflows wide and dot-matrix.",
             },
             {
