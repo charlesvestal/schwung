@@ -1,14 +1,14 @@
 /**
  * styles/font/index.mjs — SET 12: eleven complete replacements for font4x5.
  *
- * This is the one set in the catalog that is not about style. font4x5.mjs
- * says of itself, in its own header, that its A M I T U D E P L were
- * "measured off Elektron's own UI rather than guessed", recovered from a 4x
- * screenshot of their 128x64 screen, and that "the rest are authored to match
- * their weight and construction". Nine glyphs carry an inline `(Elektron)`
- * annotation in the table.
+ * This is the one set in the catalog that is not about style. Nine of the
+ * letterforms font4x5.mjs shipped at the time this set was written — A M I T U
+ * D E P L — had been traced from another product's screen rather than drawn,
+ * and the file said so in its own header and annotated the nine in its table.
+ * (It no longer does: the `metric-matched` option below was adopted, and
+ * font4x5.mjs now carries its own forms and its own rationale.)
  *
- * That is reproduction of specific expression rather than evocation of a
+ * Tracing is reproduction of specific expression rather than evocation of a
  * style, which is what separates this set from the knob, fader and fill sets.
  * It is also why replacing the nine is not the fix: the other forty-seven
  * letters were drawn to sit with them, so the SYSTEM is derived even where no
@@ -88,7 +88,7 @@ export const SPECIMEN = ["AMPLITUDE", "MAIN", "SINE", "SAW", "ATTACK", "KICK", "
 export function register() {
     return registerSet({
         id: "font",
-        title: "Label font — the 4x5 letterforms, nine of which are Elektron's",
+        title: "Label font — complete 4x5 tables, replacing nine traced letterforms",
         kind: KIND_FONT,
         replaces: "font4x5.mjs",
         /* Eleven, and declared: option 11 is off the narrow -> wide axis the

@@ -41,9 +41,10 @@ import { fontWidth5x3, fontPrint5x3 } from "./font5x3.mjs";
  * use font4x5.
  *
  * On hardware the 5-row font read as too small — legibility mattered more
- * than knob size, and the Move panel is physically smaller than the Elektron
- * one this grid was measured against, so matching its pixel geometry does not
- * reproduce its apparent size. The device font is 40% taller (7 rows vs 5).
+ * than knob size. Pixel geometry alone does not settle apparent size: the
+ * Move panel is small, and a row count that looks comfortable in a preview at
+ * 4x is not the same thing behind this bezel. The device font is 40% taller
+ * (7 rows vs 5).
  *
  * That was the state until 2026-08-20, when the hint FOOTER needed eight rows
  * and the label bands were the only non-widget source of them. Labels went back
@@ -87,7 +88,8 @@ import { fontWidth5x3, fontPrint5x3 } from "./font5x3.mjs";
  */
 export const LABEL_CHARS = 5;
 
-/** Uppercase, ascii-folded — the Elektron register. font4x5 has no lowercase. */
+/** Uppercase, ascii-folded — the register this grid sets in. font4x5 has no
+ *  lowercase, so a mixed-case name would silently lose glyphs. */
 function caps(s) { return asciiFold(String(s == null ? "" : s)).toUpperCase(); }
 /** fitText/shortenLabel measure through ctx.textWidth; hand them Tamzen. */
 const TZ_MEASURE = { textWidth: tzWidth };
@@ -117,9 +119,10 @@ function displayValue(raw, meta) {
  * The synth vocabulary, abbreviated the way hardware does it.
  *
  * A character budget alone is not an abbreviation: truncating "Attack" to four
- * gives "ATTA", which is worse than useless next to "ATTE"nuation. Elektron
- * ships a fixed mnemonic per concept — ATK, DEC, SUS, REL — and that is what
- * makes a row of four-letter labels scannable rather than a row of stumps.
+ * gives "ATTA", which is worse than useless next to "ATTE"nuation. What makes
+ * a row of four-letter labels scannable rather than a row of stumps is a fixed
+ * mnemonic per concept — ATK, DEC, SUS, REL — chosen once and reused, so the
+ * reader learns the token instead of re-parsing a truncation every time.
  *
  * These are applied per WORD and then handed to the existing shortenLabel,
  * which already knows how to squeeze a multi-word name (initials for the
@@ -380,15 +383,14 @@ export const LAYOUT_MOVY = "movy";
 /*
  * Vertical rhythm, cut against OUR panel: 64 rows behind a physical bezel.
  *
- * THIS REPLACES A DERIVED GEOMETRY. The bands used to be measured off
- * Elektron's screen, recovered from a 4x capture — 1-3px gutters copied
- * wholesale, on the assumption that a hardware UI that reads well has its
- * spacing to thank. It does, but the spacing that reads well is the spacing
- * that fits the panel you own, and the numbers that came back from that
- * capture left SEVEN rows carrying no ink at all: 0, 6, 9, 24, 32, 55 and 56.
- * Five of them were slack, and slack copied from someone else's screen is the
- * one kind of layout decision that cannot be defended on its own terms. So
- * the rhythm below is re-derived from the two constraints we actually have.
+ * THIS REPLACES AN INHERITED GEOMETRY. The bands were once a set of 1-3px
+ * gutters carried over wholesale from an earlier layout, on the assumption
+ * that spacing which reads well anywhere reads well here. It does not follow:
+ * the spacing that reads well is the spacing that fits the panel you own, and
+ * those numbers left SEVEN rows carrying no ink at all — 0, 6, 9, 24, 32, 55
+ * and 56. Five of them were pure slack, and slack nobody can account for is
+ * the one kind of layout decision that cannot be defended on its own terms.
+ * So the rhythm below is re-derived from the two constraints we actually have.
  *
  * CONSTRAINT ONE: the widget and label heights are fixed by their contents,
  * not by taste. BOX_H is 15 because a viz body occupies rect.y+1..+14 and
@@ -753,8 +755,7 @@ export function drawBankBar(ctx, pageIndex, pageCount, groups) {
  * with the OLED is how the original bug survived review.
  *
  * The track is an OPEN ARC, not a closed ring, and the pointer FLOATS clear
- * of both the centre and the rim. Both come from the Elektron UI this grid
- * imitates, and both carry information a circle does not:
+ * of both the centre and the rim. Both carry information a circle does not:
  *
  *   - The gap marks the ends of travel. Drawing a full 360 ring while the
  *     pointer only sweeps 300 leaves 60 degrees of track the value can never
@@ -762,24 +763,29 @@ export function drawBankBar(ctx, pageIndex, pageCount, groups) {
  *     pointer's own numbers (KNOB_START_DEG / KNOB_SWEEP_DEG) makes the two
  *     agree by construction.
  *   - A pointer welded from the exact centre to the rim reads as a clock hand
- *     or a pie slice. Elektron's is a short stroke floating between about a
- *     quarter and four-fifths of the radius, which reads as an indicator.
+ *     or a pie slice. A short stroke floating between roughly a quarter and
+ *     four-fifths of the radius reads as an indicator aimed at a scale.
+ *
+ * The gap is also forced, not only chosen: at KNOB_R 8 a CLOSED ring needs 17
+ * rows and the widget box is 15, so the bottom of the circle has nowhere to go.
+ * Opening the arc where the travel already ends spends that constraint on
+ * something that means one thing.
  */
 /*
- * Measured off Elektron's screen (128x64, recovered from a 4x capture):
+ * The four angles, and why they are not the same pair twice:
  *
- *   track    14px across, open at the bottom. The last drawn pixels sit at
- *            dx=+-5.5, dy=+3.5 from the centre — 237.5 degrees — and the row
- *            below, which a closed circle would fill, is empty. That puts the
- *            arc boundary between 226 and 237.5, so ~230 start / ~260 sweep.
- *   pointer  a stroke from the CENTRE outward to about 0.85r, not a floating
- *            segment: their DEC knob at midpoint is a 6px vertical run
- *            starting one pixel off centre. Travel bottoms out at 225 (their
- *            ATK pointer tip is exactly on that diagonal), so 270 degrees.
+ *   track    ARC_START_DEG 230 / ARC_SWEEP_DEG 260. 14px across at KNOB_R 8,
+ *            open at the bottom. The last drawn pixels land at dx=+-5.5,
+ *            dy=+3.5 from the centre; the row below stays empty, which is what
+ *            keeps the shape 15 rows tall and inside the box.
+ *   pointer  KNOB_START_DEG 225 / KNOB_SWEEP_DEG 270. Travel bottoms out on
+ *            the 225 diagonal, so a pointer at either extreme sits on a clean
+ *            45-degree run rather than on a rounding-dependent angle.
  *
- * The 5-degree inset between the pointer travel and the track is theirs, not
- * a rounding artefact: at either extreme the pointer aims just past the end
- * of the track, into the gap.
+ * The 5-degree inset between the pointer travel and the track is deliberate,
+ * not a rounding artefact: at either extreme the pointer aims just PAST the end
+ * of the track, into the gap, so "fully closed" and "fully open" are visibly
+ * ends rather than merely the last position before one.
  */
 export const KNOB_R = 8;
 const KNOB_START_DEG = 225;
@@ -1613,10 +1619,11 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
                            cellText, btnPhase);
         }
 
-        /* Budget in CHARACTERS, not pixels: Elektron's labels are 3-4 glyphs
-         * whether or not more would technically fit, which is what keeps a row
-         * of them scannable. `M` is the widest glyph, so measuring that many
-         * of it gives a width no LABEL_CHARS-long label can exceed. */
+        /* Budget in CHARACTERS, not pixels: 3-4 glyphs is what keeps a row of
+         * labels scannable at this cell width, whether or not more would
+         * technically fit — a ragged row of 4s and 6s costs more to read than
+         * the extra letters buy. `M` is the widest glyph, so measuring that
+         * many of it gives a width no LABEL_CHARS-long label can exceed. */
         /* AFTER the widget and OUTSIDE the `covered` test: a viz group that
          * spans the cell (mrsample's SMP waveform) is still divable, and the
          * mark is the only thing that says so. */

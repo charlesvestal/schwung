@@ -1,5 +1,13 @@
 # UI Differentiation Catalog Implementation Plan
 
+> **HISTORICAL — this plan has been executed.** The catalog was built, the
+> preference session run, and the picks applied to the shipping renderer. The
+> derived assets it sets out to replace (the traced letterforms in
+> `font4x5.mjs`, the inherited movy vertical rhythm) are **gone**. Source
+> quotations and code snippets below reproduce those files *as they stood
+> before* that work and no longer describe the tree. Outcomes are recorded in
+> `../specs/2026-08-26-ui-differentiation-decisions.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers-extended-cc:subagent-driven-development (recommended) or superpowers-extended-cc:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a catalog of 130 UI design options (13 sets x 10) rendered to PNG, plus a local pairwise A/B comparator that produces a ranked preference dataset.

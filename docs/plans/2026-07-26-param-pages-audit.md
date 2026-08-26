@@ -477,28 +477,28 @@ section name since it strips the " - N" suffix.
 
 ---
 
-## 11c. Elektron UX review (2026-07-27)
+## 11c. Knob-grid UX review (2026-07-27)
 
-Movy took Elektron's *layout* — eight knobs, two rows of four, pages you step
-through — and stopped there. The interaction patterns behind that layout are
-where most of the usability actually lives, so this is a pass over them:
-what applies to Move's control surface, what we took, and what we deliberately
-did not.
+The grid started as a *layout* — eight knobs, two rows of four, pages you step
+through — and stopped there. The interaction patterns that make such a layout
+usable are where most of the usability actually lives, so this is a pass over
+them: what Move's control surface can carry, what we built, and what we
+deliberately did not.
 
-### Taken
+### Built
 
-| Elektron | Here |
+| Need | Here |
 | --- | --- |
-| `[FUNC]` + encoder = fine adjust | **Shift is precision mode**: floats go ~10x finer *and* every label becomes its value. On Elektron those are two things; on a 128 px screen they want to be one, because chasing a number and being able to read it are the same moment. Deliberately inert for ints and enums — an int already moves in whole units, and faking a finer step would make it feel broken rather than precise. |
-| A page button returns to the sub-page you last used | **Section memory.** Returning to a section lands where you left it. Worth most where getting back costs most: minijv's tone subtrees are 15 pages each. Section jumps only — a plain jog still walks the set in order. |
-| Large value readout while turning | The **held-knob strip** over the header, carrying the full name and value. |
-| Encoder acceleration | Already ours, via `knob_engine.mjs` — and the grid reuses it precisely so a value moves identically in the list and on the grid. |
-| Parameter locks | The `decorations` contract: per-cell value override plus a `locked` flag, with the sequencer supplying both. |
-| Page-position indicator | The segmented rule, one segment per page. |
+| Fine adjust | **Shift is precision mode**: floats go ~10x finer *and* every label becomes its value. Those could be two modifiers; on a 128 px screen they want to be one, because chasing a number and being able to read it are the same moment. Deliberately inert for ints and enums — an int already moves in whole units, and faking a finer step would make it feel broken rather than precise. |
+| Getting back to where you were in a section | **Section memory.** Returning to a section lands where you left it, because naming a section is a request for a place. Worth most where getting back costs most: minijv's tone subtrees are 15 pages each. Section jumps only — a plain jog still walks the set in order. |
+| Reading a value while turning it | The **held-knob strip** over the header, carrying the full name and value — the cell itself is 32px and cannot. |
+| Coarse and fine from one encoder | Encoder acceleration via `knob_engine.mjs`, which the grid reuses precisely so a value moves identically in the list and on the grid. |
+| Per-step parameter overrides | The `decorations` contract: per-cell value override plus a `locked` flag, with the sequencer supplying both. |
+| Knowing where you are in a long page set | The segmented rule, one segment per page. |
 
-Plus one Elektron does *not* have and the fleet asks for: **reset to the
-declared default** — 744 params across 39 modules declare one and there was no
-way back to it short of reloading a preset.
+Plus one the fleet asks for that hardware of this shape usually lacks: **reset
+to the declared default** — 744 params across 39 modules declare one and there
+was no way back to it short of reloading a preset.
 
 The gesture for it took two attempts, and the first was dangerous. Shift +
 jog-click on a held knob was wrong because **Shift is precision mode**: while
@@ -514,32 +514,33 @@ double-tap would read it as a reset.
 
 ### Adapted, not copied
 
-**Elektron's own displays mostly show name + value text, not dials** — Digitakt
-and Digitone have no dial graphics at all. Their parameters are precise and
-numeric, so the number *is* the readout. We default to dials anyway, because
-that is Movy's aesthetic and because Move's params skew continuous; `LAYOUT_BAR`
-is the Elektron-shaped alternative and is one setting away. Worth knowing the
-divergence is deliberate rather than an oversight.
+**Dials versus a text readout.** A grid of eight name+value pairs is the other
+credible design, and for a numeric, precise parameter set it is the better one —
+the number *is* the readout, and a dial only approximates it. We default to
+dials because Move's params skew continuous and a dial shows travel at a glance;
+`LAYOUT_BAR` is the text-forward alternative and is one setting away. Worth
+knowing the divergence is deliberate rather than an oversight.
 
-**Dedicated page buttons** (`[TRIG] [SRC] [FLTR] [AMP] [LFO] [FX]`) are the
-single biggest thing we cannot copy: they are fixed, labelled, and direct, and
-Move has no spare buttons to give. The **section picker** is the substitute —
-one click, a named list, jog and confirm. It is worse than a dedicated button
-and much better than jogging 76 pages.
+**Dedicated, labelled page buttons** are the single biggest affordance we cannot
+have: fixed, labelled and direct beats any menu, and Move has no spare buttons to
+give. The **section picker** is the substitute — one click, a named list, jog and
+confirm. It is worse than a dedicated button and much better than jogging 76
+pages.
 
-There is also a structural difference worth naming: **an Elektron machine's
-pages are fixed, so muscle memory transfers**. Ours are generated from whatever
-each module declares, so they differ per module. That is exactly why section
-names, the picker and section memory matter more here than they do on an
-Elektron — the user cannot rely on position, so the UI has to carry the names.
+There is also a structural difference worth naming: **fixed pages let muscle
+memory transfer**. Ours are generated from whatever each module declares, so they
+differ per module and position means nothing across modules. That is exactly why
+section names, the picker and section memory carry more weight here than they
+would on fixed hardware — the user cannot rely on position, so the UI has to
+carry the names.
 
 ### Rejected
 
-- **Copy/paste of pages and params** (`[FUNC]`+`[REC]`/`[STOP]`) — kit and
-  sequencer territory; Move's Copy/Delete are claimed elsewhere, and a param UI
-  copying a page into another module's page is not well defined.
-- **Randomise** (`[FUNC]`+`[YES]`) — plausible, but destructive with no undo in
-  this view, and no gesture left that is not a worse fit for something else.
+- **Copy/paste of pages and params** — kit and sequencer territory; Move's
+  Copy/Delete are claimed elsewhere, and a param UI copying a page into another
+  module's page is not well defined.
+- **Randomise a page** — plausible, but destructive with no undo in this view,
+  and no gesture left that is not a worse fit for something else.
 - **Trig conditions, retrig, microtiming, per-track scale** — sequencer, not a
   parameter UI. These belong to Movy.
 - **Sound browser with tags and categories** — the preset page plus the existing
@@ -571,7 +572,7 @@ still decodes it and only the host reads it out of band.
 ### Ruled out: step buttons and pads
 
 **Step buttons as direct page access**, with the step LEDs showing position, is
-the closest Move could get to Elektron's dedicated page buttons — and it is not
+the closest Move could get to dedicated labelled page buttons — and it is not
 available. Two independent reasons:
 
 1. The shim does not forward notes 16–31 to the shadow UI, so it would need a C

@@ -163,9 +163,9 @@ void js_display_draw_circle(int cx, int cy, int r, int value) {
  * travels 210..510 draws its track with the identical numbers and the open
  * gap lands at the bottom, marking the ends of travel.
  *
- * That gap is not decoration. A closed ring says the control wraps; an
- * Elektron-style knob does not, and the missing arc is what tells you where
- * minimum and maximum are.
+ * That gap is not decoration. A closed ring says the control wraps; a bounded
+ * parameter does not, and the missing arc is what tells you where minimum and
+ * maximum are.
  */
 /* One candidate pixel of an arc, gated on the sweep. Angles are measured the
  * way a knob is read: 0 at twelve o'clock, increasing clockwise. */

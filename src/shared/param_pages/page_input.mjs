@@ -100,7 +100,7 @@ export function applyInput(controller, intent, { nowMs, reveal } = {}) {
         case "knob":
             /* Shift is precision mode: it reveals every value AND makes the
              * encoders fine. Chasing a number and being able to read it are the
-             * same moment. (Elektron's [FUNC]+encoder.) */
+             * same moment, so they are one modifier and not two. */
             controller.onKnobTurn(intent.slot, intent.direction > 0 ? 1 : -1, nowMs,
                                   { fine: !!intent.fine });
             return null;

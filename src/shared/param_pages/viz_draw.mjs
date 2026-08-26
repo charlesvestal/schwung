@@ -329,9 +329,9 @@ function band(rect) {
  *
  * It won ALL FOUR sets independently — the single strongest result in the
  * catalog — while the treatment that shipped before it (`thin-stroke`, a bare
- * hairline) ranked 10th / 8th / 7th / 8th. For an exercise about differentiating
- * from Elektron, that is the useful finding: the old look was not merely
- * derivative, it was not liked.
+ * hairline) ranked 10th / 8th / 7th / 8th. That is the useful finding: the
+ * treatment being replaced was not merely undistinctive, it was not liked, so
+ * the change is not a cosmetic tax paid for its own sake.
  *
  * The curve becomes an AREA, which is the reading a musician wants — how much
  * of the note is loud, how much of the spectrum passes — rather than a boundary
@@ -726,8 +726,9 @@ function drawLinearWave(ctx, x0, xEnd, shape, cycles, phase, yOf, color = 1) {
  * shallow slopes by construction — a triangle ramp covers 12 rows in 43
  * columns. No drawing technique changes that on a 1-bit display; the lever is
  * geometry (a 2-slot wave is 1.8 px/row and reads as a diagonal, a 4-slot one
- * is 3.6 and reads as a staircase). Elektron's own waveform glyphs look clean
- * because they are nearly square, not because they are drawn differently.
+ * is 3.6 and reads as a staircase). Waveform glyphs that look clean on other
+ * small displays are nearly SQUARE; they are not drawn any more cleverly, they
+ * just are not being asked to cross 128 columns in 13 rows.
  */
 export function drawLfo(ctx, rect, roles, values, metaIndex) {
     const x0 = rect.x, xEnd = rect.x + rect.w;

@@ -1,15 +1,17 @@
 /**
- * font4x5.mjs — a proportional 5-tall font for the Movy/Elektron knob grid.
+ * font4x5.mjs — a proportional 5-tall font for the Movy knob grid.
  *
- * Measured off Elektron's own UI rather than guessed. Recovering their 128x64
- * screen from a 4x screenshot and segmenting the header text gives:
+ * The metrics are cut for this grid and for nothing else. A 128px header has
+ * to carry a real parameter name, so: five rows tall, proportional advance
+ * with the 1px inter-glyph gap folded in, a typical cap 4 wide on a 5px
+ * advance. The number in brackets is the glyph WIDTH; the advance is one more.
  *
  *      A(4)   M(5)   I(1)  T(3)   U(4)      5 rows tall
- *      .##.   #...#   #    ###    #..#      proportional width, 1px gap
- *      #..#   ##.##   #    .#.    #..#      typical cap 4 wide -> 5px advance
- *      ####   #.#.#   #    .#.    #..#
+ *      .##.   ##.##   #    ###    #..#      proportional width, 1px gap
+ *      ####   #.#.#   #    ###    #..#      typical cap 4 wide -> 5px advance
  *      #..#   #...#   #    .#.    #..#
- *      #..#   #...#   #    .#.    .##.
+ *      #..#   #...#   #    .#.    #..#
+ *      #..#   #...#   .    .#.    ####
  *
  * This sits deliberately between the two fonts this grid tried first, both of
  * which were wrong in opposite directions:
@@ -33,15 +35,14 @@
  * two stacked lines in a 16px box need 3-wide glyphs to fit three characters
  * per line, which 4-wide cannot.
  *
- * THE LETTERFORMS ARE OURS (SCH-50). They were Elektron's — A M I T U D E P L
- * read straight off their screen, the rest authored to match. The skeletons
- * below are the `metric-matched` option from the SCH-50 catalog, adopted
- * because it is the only redraw in that set that costs no layout pass: **every
- * advance equals the advance it replaced, to the pixel**, so every string in
- * the product renders at exactly the width it did before. The metrics are
- * still the Elektron measurements — a 4-wide cap on a 5px advance is the
- * geometry the grid was cut for, and changing it moves text everywhere. What
- * changed is what fills that box.
+ * THE LETTERFORMS (SCH-50). The skeletons below are the `metric-matched`
+ * option from the SCH-50 catalog, adopted because it is the only redraw in
+ * that set that costs no layout pass: **every advance equals the advance it
+ * replaced, to the pixel**, so every string in the product renders at exactly
+ * the width it did before. The metrics above did not move and must not — a
+ * 4-wide cap on a 5px advance is the geometry every cell in this grid was cut
+ * for, and changing it moves text everywhere. What changed is what fills that
+ * box.
  *
  * THE CONSTRUCTION RULE: top-loaded. The face this replaces was a neutral
  * grotesque with its waist dead centre and a matching bar at each terminal;
@@ -198,9 +199,9 @@ export function missingGlyphs4x5(str) {
  *  measure through `ctx.textWidth`. */
 export const FONT4_MEASURE = { textWidth: fontWidth4x5 };
 
-/* Test-only: tests/host/test_style_catalog.sh asserts that no SCH-50 font
- * option reproduces the nine glyphs this file documents as Elektron
- * letterforms. The assertion cannot be written without reading the table it
- * compares against, and there is no other reader — nothing on the draw path
- * imports either of these two names. Additive; no behaviour changes. */
+/* Test-only: tests/host/test_style_catalog.sh asserts that no font option —
+ * this shipping table included — reproduces any of the nine retired
+ * letterforms SCH-50 replaced. The assertion cannot be written without reading
+ * the table it compares against, and there is no other reader — nothing on the
+ * draw path imports either of these two names. Additive; no behaviour changes. */
 export const GLYPHS_FOR_TEST = G;
