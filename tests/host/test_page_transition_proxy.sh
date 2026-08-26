@@ -249,7 +249,14 @@ const shotPage = (extra) => {
   const fb = H.createFramebuffer();
   RM.renderPageMovy(H.drawContext(fb), {
     page: PAGE, metaIndex: META, values: { a: "0.5", b: "0.5" },
-    title: "T", pageIndex: 1, pageCount: 5, touched: -1, viz: [], ...extra,
+    /* A FOOTER IS SUPPLIED SO THAT THE BAND-CONTAINMENT ASSERTION HAS SOMETHING
+       TO CATCH. Without it drawFooter returns at its own no-hints guard, so a
+       mutant that wrongly gated the footer behind bankBar drew nothing either
+       way and the assertion reported green -- verified, it survived. The
+       footer is the nearest band to the sliding region and the one Task 5 also
+       redraws fixed, which makes it the realistic over-suppression target. */
+    title: "T", pageIndex: 1, pageCount: 5, touched: -1, viz: [],
+    footer: ["BACK EXIT", "CLK OPEN"], ...extra,
   });
   return fb;
 };
@@ -273,13 +280,11 @@ if (barYExported) {
      Buffer.from(shotPage({ bankBar: undefined }).pixels).toString("base64"),
      "omitting the option is byte-identical to before");
 
-  /* THE PREVIOUS ASSERTION COMPARES TWO SPELLINGS OF THE SAME OPTION, so a
-     gate stuck at ALWAYS SUPPRESS passes it -- both frames lose the bar
-     together. Mutation-tested: `if (false)` killed only the ink count. This
-     pins the rest of the frame instead: suppression must change the indicator
-     band and NOTHING else, so a guard that suppresses too much (or draws in
-     the wrong place) shows up as a differing row somewhere it has no
-     business touching. */
+  /* OVER-SUPPRESSION IS THE UNCOVERED FAILURE, and nothing above can see it.
+     Every assertion so far looks at row BAR_Y alone or compares two spellings
+     of the same option, so a guard that also swallowed the footer, or the
+     second knob row, would pass all four. Suppression must change the
+     indicator band and NOTHING else. */
   const noBarPx = noBar.pixels, withBarPx = withBar.pixels;
   let diffRows = [];
   for (let y = 0; y < 64; y++) {
@@ -287,7 +292,10 @@ if (barYExported) {
       if (withBarPx[y * 128 + x] !== noBarPx[y * 128 + x]) { diffRows.push(y); break; }
     }
   }
-  ok(diffRows.length > 0, "suppressing the bar changes the frame at all");
+  /* No companion "the frames differ at all" check: with ink at BAR_Y by
+     default and none with the option, they differ at BAR_Y by construction --
+     it could only fail alongside an assertion above, which is what a vacuous
+     one looks like. */
   ok(diffRows.every((y) => y >= RM.BAR_Y && y < RM.BAR_Y + 3),
      "suppression touches only the indicator band, no other row");
 }
