@@ -691,7 +691,28 @@ Promise.all([
       },
     };
     const CP = [{ key: "cutoff", name: "Cutoff", type: "float", min: 0, max: 1, step: 0.01 }];
+    /*
+     * AN INJECTED CLOCK, BECAUSE THIS BLOCK RENDERS AND ASSERTS ON PIXELS.
+     *
+     * This controller used to take the default `now`, i.e. Date.now(). A page
+     * change starts a 90ms SLIDE, and the slide is advanced from the CLOCK --
+     * so a run of synchronous ctl.tick() calls advances it by however long
+     * those few calls happened to take, which on a fast machine is a couple of
+     * milliseconds. The composite then draws two pages 128px apart, legally
+     * runs off both edges, and the `clipped() > 0` assertion below caught it:
+     * two failures in six runs, varying with machine speed, which is exactly
+     * what "transient" looks like from the inside.
+     *
+     * 18ms per tick is what the device does, so five ticks settle a 90ms slide
+     * and every assertion here measures a SETTLED frame. The assertion itself
+     * is right and must not be loosened -- clipped() === 0 on a settled frame
+     * is a real probe; it is only meaningless on a frame captured mid-slide.
+     *
+     * Same fix as test_chain_editor_snapshot.sh, which hit this first.
+     */
+    let clock = 1000;
     const ctl = C.createController({
+      now: () => clock,
       getParam: (k) => {
         reads.push(k);
         const bare = String(k).replace(/^[^:]+:/, "");
@@ -710,6 +731,10 @@ Promise.all([
       announce: () => {},
     });
     ctl.load({ slot: 0, component: "synth" });
+    /* Every tick in this block advances the clock, not just the ones before a
+     * render: a slide left in flight by an earlier goToPage is still in flight
+     * when the pixel assertions below run. */
+    const tick = (n = 1) => { for (let i = 0; i < n; i++) { clock += 18; ctl.tick(); } };
 
     const presetAt = ctl.pages.findIndex((p) => p.kind === "preset");
     if (presetAt < 0) fail("a level with list_param/count_param should plan a preset page");
@@ -723,10 +748,10 @@ Promise.all([
      * tick — three round trips in one frame is most of a frame. */
     for (let i = 0; i < 3; i++) {
       reads.length = 0;
-      ctl.tick();
+      tick();
       if (reads.length > 1) fail("a preset tick issued " + reads.length + " reads, must be at most 1");
     }
-    for (let i = 0; i < 6; i++) ctl.tick();
+    tick(6);
 
     /* ---- INERT: the jog pages, and nothing is loaded ------------------- */
     writes.length = 0;
@@ -735,7 +760,7 @@ Promise.all([
     if (ctl.pageIndex === before) fail("the jog did not page off an un-entered preset page");
     if (writes.length) fail("jogging past a preset page LOADED a preset: " + JSON.stringify(writes));
     ctl.goToPage(presetAt, { remember: false });
-    for (let i = 0; i < 6; i++) ctl.tick();
+    tick(6);
 
     /* ---- ENTERED: the click goes in, and now the jog browses ----------- */
     if (ctl.menuEntered()) fail("a preset page must start inert");
@@ -818,7 +843,7 @@ Promise.all([
     {
       ctl.setLayout(C.LAYOUT_MOVY);
       ctl.goToPage(presetAt, { remember: false });
-      for (let i = 0; i < 9; i++) ctl.tick();
+      tick(9);
       const draw = () => {
         const fb = H.createFramebuffer();
         ctl.render(H.drawContext(fb), { title: "S1 > SF2", footer: [["JOG", "PAGE"]] });
