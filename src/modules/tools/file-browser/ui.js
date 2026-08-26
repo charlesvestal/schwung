@@ -563,15 +563,6 @@ function drawList(items, selectedIdx, topY) {
     });
 }
 
-/* Draw item count indicator in header area */
-function drawItemCount(count, selectedIdx) {
-    if (count > MAX_VISIBLE) {
-        var countStr = (selectedIdx + 1) + "/" + count;
-        var w = text_width(countStr);
-        print(SCREEN_W - w - 2, 2, countStr, 1);
-    }
-}
-
 function drawRootPicker() {
     clear_screen();
     drawHeader("File Browser");
@@ -615,10 +606,17 @@ function drawBrowser() {
         return;
     }
 
-    /* Item count in header */
-    drawItemCount(browserState.items.length, browserState.selectedIndex);
-
-    /* Draw items */
+    /*
+     * NO ITEM COUNT. The shared list now draws a scrollbar, whose thumb reports
+     * position AND extent -- the same two facts "13/30" carried, in a column
+     * nothing else wants. Drawing both states it twice, and the header is the
+     * scarcer space: it holds the path, which truncates.
+     *
+     * Same argument that removed the scroll arrows. `drawItemCount` went with
+     * it rather than being left unused for a screen that might want it later:
+     * the root picker and the action sheets are short enough not to scroll, so
+     * that need does not exist today and a dead function is not a plan.
+     */
     drawList(browserState.items, browserState.selectedIndex, 15);
 
     /* Footer — shift+click works on everything */
