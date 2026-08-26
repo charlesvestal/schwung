@@ -32,6 +32,9 @@ import { asciiFold, fitText, shortenLabel, line, circle, notchCorners } from "./
 import { drawVizGroup } from "./viz_draw.mjs";
 import { enumSquareLines } from "./font5x3.mjs";
 import { fontPrint as tzPrint, fontWidth as tzWidth, HEIGHT as TZ_H } from "./font_tamzen6x12.mjs";
+import {
+    fontPrint as numPrint, fontWidth as numWidth, HEIGHT as NUM_H,
+} from "./font_tamzen8x16_num.mjs";
 import { fontWidth4x5, fontPrint4x5, FONT4_HEIGHT, FONT4_MEASURE } from "./font4x5.mjs";
 import { fontWidth5x3, fontPrint5x3 } from "./font5x3.mjs";
 import { observe as animObserve, easeOut, lerp } from "./anim_state.mjs";
@@ -1545,9 +1548,25 @@ export function bigNumberText(meta, raw) {
  * claim to be a door that does not open.
  *
  * Movy draws these as plain large numerals and that is the right call. The
- * value gets the device font (6x7) instead of the enum square's condensed 4x5,
- * so it is bigger AND stops lying — the two things that were in tension only
- * while it was wearing the box.
+ * value stops lying the moment the box goes — but unframed at the body font's
+ * 7 rows it then read as BARE, which is the complaint that followed: a cell
+ * holding two small glyphs in a 15-row box, next to knobs and graphics that
+ * fill theirs.
+ *
+ * BIGGER MEANS A BIGGER FONT, NOT A SCALED ONE. Doubling the 6x12 was the
+ * obvious move and is the wrong one: an integer-scaled bitmap is the same
+ * letterform with every flaw doubled, and it caps at 2 glyphs (a scaled "+12"
+ * is 40px in a 30px cell). Tamzen is vendored at seven sizes, so this takes the
+ * 8x16 cut — 9 rows against 7, a real design at its own size, and "-24" still
+ * only 23px.
+ *
+ * That font is generated for "0123456789+-" ALONE, which is exactly what
+ * bigNumberText can emit. The generator's hand-drawn OVERRIDES are cut at seven
+ * rows, so a taller font would carry nine silently-wrong glyphs; restricting
+ * the charset means the file contains only what it has been cut for. See
+ * scripts/bdf_to_font.py, which now refuses the combination outright.
+ *
+ * The "--" an unread value shows is two hyphens, both in that set.
  *
  * @param {number} cx  the CELL CENTRE, matching drawButton — the glyph width
  *                     varies with the digits and the sign, so only this
@@ -1555,8 +1574,8 @@ export function bigNumberText(meta, raw) {
  */
 export function drawBigNumber(ctx, cx, ky, text) {
     const s = String(text);
-    const w = tzWidth(s);
-    tzPrint(ctx, cx - Math.floor(w / 2), ky + Math.floor((BOX_H - TZ_H) / 2), s, 1);
+    const w = numWidth(s);
+    numPrint(ctx, cx - Math.floor(w / 2), ky + Math.floor((BOX_H - NUM_H) / 2), s, 1);
 }
 
 export function drawOpaqueBox(ctx, kx, ky, value, override) {
