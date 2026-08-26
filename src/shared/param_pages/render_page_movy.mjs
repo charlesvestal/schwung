@@ -702,7 +702,26 @@ export function drawHeader(ctx, left, right, inverted = false) {
      * separator row below it, which is no longer needed: the band already
      * carries a clear row under its glyphs, so nothing butts against the bank
      * bar. Both go to the gutter above the first widget row. */
-    if (inverted) ctx.fillRect(0, 0, W, HEADER_H, 1);
+    if (inverted) {
+        ctx.fillRect(0, 0, W, HEADER_H, 1);
+        /*
+         * The same 1px corner notch every other filled shape on this screen
+         * wears — the label strip, the footer pills, the enum square. It is
+         * the convergent 1-bit idiom the spec keeps: at one pixel and two
+         * colours there is no second way to soften a corner.
+         *
+         * All four, not two. The band spans the full width and starts on row 0,
+         * so its top corners are against the bezel and its bottom two against
+         * the page — and a notch against the bezel reads exactly as one against
+         * a dark row, which is the same reasoning that lets the glyphs start on
+         * row 0 at all. Notching only the pair with pixels under them would
+         * make the band look lopsided for a reason nothing on screen explains.
+         */
+        ctx.fillRect(0, 0, 1, 1, 0);
+        ctx.fillRect(W - 1, 0, 1, 1, 0);
+        ctx.fillRect(0, HEADER_H - 1, 1, 1, 0);
+        ctx.fillRect(W - 1, HEADER_H - 1, 1, 1, 0);
+    }
     const color = inverted ? 0 : 1;
     const fit5 = (t, maxW) => caps(fitText(FONT4_MEASURE, caps(t), maxW));
 
