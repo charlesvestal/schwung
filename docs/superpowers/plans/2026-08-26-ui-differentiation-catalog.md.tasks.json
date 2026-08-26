@@ -4,13 +4,13 @@
     {
       "id": 0,
       "subject": "Task 1: Export widget draw functions",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** See docs/superpowers/plans/2026-08-26-ui-differentiation-catalog.md for the full task body.\n\n**Files:**\n- src/shared/param_pages/render_page_movy.mjs\n\n**Acceptance Criteria:**\n- [ ] As specified in the plan document for this task\n\n**Verify:** bash tests/host/test_knob_card.sh && bash tests/host/test_param_pages_movy.sh && bash tests/host/test_enum_picker_chrome.sh && bash tests/host/test_chain_edit_read_budget.sh\n\n```json:metadata\n{\"files\":[\"src/shared/param_pages/render_page_movy.mjs\"],\"verifyCommand\":\"bash tests/host/test_knob_card.sh && bash tests/host/test_param_pages_movy.sh && bash tests/host/test_enum_picker_chrome.sh && bash tests/host/test_chain_edit_read_budget.sh\",\"acceptanceCriteria\":[\"see plan document\"],\"modelTier\":\"mechanical\"}\n```"
     },
     {
       "id": 1,
       "subject": "Task 2: Option registry and validation",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         0
       ],
@@ -19,7 +19,7 @@
     {
       "id": 2,
       "subject": "Task 3: Shared dither predicates",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         1
       ],
@@ -28,7 +28,7 @@
     {
       "id": 3,
       "subject": "Task 4: Catalog render tool",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         0,
         1
@@ -38,7 +38,7 @@
     {
       "id": 4,
       "subject": "Task 5: Set 1 arc knob ten options",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         2,
         3
@@ -48,7 +48,7 @@
     {
       "id": 5,
       "subject": "Task 6: Sets 2 3 6 11 fader fills box switch",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         4
       ],
@@ -57,7 +57,7 @@
     {
       "id": 6,
       "subject": "Task 7: Set 12 ten complete 4x5 fonts",
-      "status": "pending",
+      "status": "in_progress",
       "blockedBy": [
         3
       ],
@@ -75,7 +75,7 @@
     {
       "id": 8,
       "subject": "Task 9: Sets 7-10 viz treatments",
-      "status": "pending",
+      "status": "in_progress",
       "blockedBy": [
         3
       ],
@@ -93,7 +93,7 @@
     {
       "id": 10,
       "subject": "Task 11: A/B comparator server",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         4
       ],
@@ -102,7 +102,7 @@
     {
       "id": 11,
       "subject": "Task 12: Bradley-Terry ranking",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         10
       ],
@@ -132,5 +132,5 @@
       "description": "**Goal:** See docs/superpowers/plans/2026-08-26-ui-differentiation-catalog.md for the full task body.\n\n**Files:**\n- none\n\n**Acceptance Criteria:**\n- [ ] As specified in the plan document for this task\n\n**Verify:** gh pr checks\n\n```json:metadata\n{\"files\":[],\"verifyCommand\":\"gh pr checks\",\"acceptanceCriteria\":[\"see plan document\"],\"modelTier\":\"mechanical\"}\n```"
     }
   ],
-  "lastUpdated": "2026-08-26T00:00:00.000Z"
+  "lastUpdated": "2026-08-25T22:00:00.000Z"
 }
