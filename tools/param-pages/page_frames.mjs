@@ -167,8 +167,15 @@ export function makeStore() {
     return store;
 }
 
-export function makeController(clockRef, store) {
+/*
+ * `extraIo` lets a caller drive an explicit slide duration. The BASELINE
+ * driver must never pass one: it has to run unchanged against the
+ * pre-refactor tree, which knows nothing about slides, and the frames it
+ * records are settled ones either way.
+ */
+export function makeController(clockRef, store, extraIo) {
     return createController({
+        ...(extraIo || {}),
         getParam: (k) => {
             const b = String(k).replace(/^[^:]+:/, "");
             if (b === "ui_hierarchy") return JSON.stringify(HIER);

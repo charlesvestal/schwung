@@ -45,6 +45,9 @@ import { frames, makeController, makeStore, HIER, CHAIN_PARAMS, TITLE, FOOTER }
   from "./tools/param-pages/page_frames.mjs";
 import { readFileSync } from "node:fs";
 
+/* Drive an explicit duration: the SHIPPED constant is 0 while the feature
+   is parked, and these tests are about the slide itself. */
+const TEST_SLIDE_MS = 160;
 let fail = 0;
 const ok = (c, m) => { console.log((c ? "PASS" : "FAIL") + ": " + m); if (!c) fail++; };
 
@@ -53,7 +56,7 @@ const OPTS = () => ({ title: TITLE, footer: FOOTER });
 const clockRef = { t: 1000 };
 let clock = 1000;                        /* kept in step with clockRef below */
 const bump = (n) => { clock += n; clockRef.t = clock; };
-const mkCtl = () => makeController(clockRef, makeStore());
+const mkCtl = () => makeController(clockRef, makeStore(), { slideMs: TEST_SLIDE_MS });
 
 const ctl = mkCtl();
 ctl.setLayout(LAYOUT_MOVY);
@@ -427,7 +430,7 @@ ok(listIdx >= 0, "the list-layout fixture has a knob page to draw as rows");
  * ------------------------------------------------------------------------ */
 {
   const clockRef = { t: 1000 };
-  const h = makeController(clockRef, makeStore());
+  const h = makeController(clockRef, makeStore(), { slideMs: TEST_SLIDE_MS });
   h.setLayout(LAYOUT_MOVY);
   h.load({ prefix: "synth" });
   for (let n = 0; n < 60; n++) { clockRef.t += 18; h.tick(); }
@@ -524,7 +527,7 @@ ok(listIdx >= 0, "the list-layout fixture has a knob page to draw as rows");
   const asked = [];
   const clk = { t: 1000 };
   const store = makeStore();
-  const c = createController({
+  const c = createController({ slideMs: TEST_SLIDE_MS,
     getParam: (k) => {
       const b = String(k).replace(/^[^:]+:/, "");
       if (b === "ui_hierarchy") return JSON.stringify(HIER);
@@ -1446,7 +1449,7 @@ ok(listIdx >= 0, "the list-layout fixture has a knob page to draw as rows");
     let trailing = [{ name: "Alpha", entries: [{ label: "One" }, { label: "Two" }] }];
     const st2 = makeStore();
     const clk2 = { t: 1000 };
-    const T = createController({
+    const T = createController({ slideMs: TEST_SLIDE_MS,
       getParam: (k) => {
         const b = String(k).replace(/^[^:]+:/, "");
         if (b === "ui_hierarchy") return JSON.stringify(HIER);
@@ -1520,7 +1523,7 @@ ok(listIdx >= 0, "the list-layout fixture has a knob page to draw as rows");
     let hier = hierWith(24);
     const st = makeStore();
     const clk = { t: 1000 };
-    const R = createController({
+    const R = createController({ slideMs: TEST_SLIDE_MS,
       getParam: (k) => {
         const b = String(k).replace(/^[^:]+:/, "");
         if (b === "ui_hierarchy") return JSON.stringify(hier);
@@ -1614,11 +1617,20 @@ ok(listIdx >= 0, "the list-layout fixture has a knob page to draw as rows");
   }
   ok(end > at, "the lift brace-matched a complete function body");
   const body = src.slice(at, end);
-  ok(/SLIDE_MS/.test(body), "the lifted aimScroll reads SLIDE_MS at all");
+  /* The duration comes from slideMs() now, not the constant directly -- the
+     host can override it, and the shipped constant is 0 while the feature is
+     parked. Pinning the CALL rather than the constant keeps the assertion
+     about "aimScroll consults a duration", which is what matters. */
+  ok(/slideMs\(\)/.test(body), "the lifted aimScroll consults the slide duration at all");
   const make = (ms) => {
     const st = { scrollPos: 0 };
-    const fn = new Function("SLIDE_MS", "s", "now", body + "; return aimScroll;")(
-      ms, st, () => 1000);
+    /* Inject slideMs, not SLIDE_MS: aimScroll consults the resolver so the
+       host can override the duration. Leaving the old name injected would
+       have made this lift throw -- which it did, and a throw prints NO FAIL
+       line, so the run reported 211 passes and exit 1. Deliberately not
+       wrapped in a try: a lift that cannot evaluate must be loud. */
+    const fn = new Function("slideMs", "s", "now", body + "; return aimScroll;")(
+      () => ms, st, () => 1000);
     return { st, fn };
   };
   const off = make(0);

@@ -390,5 +390,5 @@ export function drawSlide(ctx, { fromDx, toDx, drawFrom, drawTo, drawChrome }) {
  * drive if one is ever added, and 0 is the value that would disable the
  * animation (see advanceLinear -- a duration of 0 arrives immediately).
  */
-export const SLIDE_MS = 160;
+export const SLIDE_MS = 0;
 export const advanceScroll = advanceLinear;
