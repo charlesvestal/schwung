@@ -656,13 +656,27 @@ export function createController(io = {}) {
         const at = s.childIndex[level];
         return (typeof at === "number" && at >= 0) ? at : 0;
     };
-    const childResolve = (key) => {
-        const p = page();
+    /*
+     * WHICH PAGE the key belongs to, not which page is CURRENT.
+     *
+     * This read `page()` unconditionally, which was invisible while every
+     * caller was drawing the current page and is a real defect now that
+     * drawPage takes an index: sliding from a child-level page to a page on
+     * another level, the leaving page`s keys are not in the arriving page`s
+     * `keys`, so the guard below falls through and the host formatter is asked
+     * about `synth:p3` instead of `synth:part2_p3` -- a value formatted for the
+     * wrong parameter, silently.
+     *
+     * Same shape as pageLabel(p): the argument defaults to the current page, so
+     * the two dozen call sites that genuinely mean "now" are unchanged.
+     */
+    const childResolve = (key, pg) => {
+        const p = pg === undefined ? page() : pg;
         if (!p || !p.childLevel || !Array.isArray(p.keys)) return key;
         if (p.keys.indexOf(key) < 0) return key;
         return resolveChildKey(p.childLevel, childIndexFor(p.level), key) || key;
     };
-    const fullKey = (key) => `${s.prefix}:${childResolve(key)}`;
+    const fullKey = (key, pg) => `${s.prefix}:${childResolve(key, pg)}`;
     const page = () => s.pages[s.pageIndex] || null;
 
     /*
@@ -1727,11 +1741,13 @@ export function createController(io = {}) {
      * against a 1.68ms whole-page render, so reading on the draw path would cost
      * more than the screen.
      */
-    function knobRowValue(key) {
+    function knobRowValue(key, pg) {
         const meta = s.metaIndex ? s.metaIndex.getOrGuess(key) : null;
         const raw = s.values[key] === undefined ? null : s.values[key];
         if (formatValue) {
-            const resolved = formatValue(fullKey(key), raw, "header");
+            /* `pg` so a row of a NON-current page resolves its child key
+             * against its own level -- see childResolve. */
+            const resolved = formatValue(fullKey(key, pg), raw, "header");
             if (resolved !== null && resolved !== undefined) return String(resolved);
         }
         return displayValue(raw, meta);
@@ -1744,7 +1760,7 @@ export function createController(io = {}) {
             /* The FULL label, not labelForCell's five-character mnemonic: that
              * budget is a property of a 32px cell, and this row has ~90px. */
             return { name: (meta && (meta.label || meta.key)) || key,
-                     value: knobRowValue(key) };
+                     value: knobRowValue(key, pg) };
         });
     }
 
@@ -2744,6 +2760,24 @@ export function createController(io = {}) {
      * items list, the preset browser — is already keyed by page NAME in `s`, so
      * drawing a non-current index needs no new state, and none was added.
      *
+     * THAT LAST SENTENCE IS ONLY TRUE OF THE STATE KEYED BY NAME. Four fields
+     * are per-slot or per-key and belong to the page the user is ON, and they
+     * are passed to renderPageMovy below UNQUALIFIED by index:
+     *
+     *   s.touched / s.touchOrder   which knob is under a finger
+     *   s.modCache                 modulation flags, filled by the read cursor
+     *   s.triggerFiredAt           the trigger flash
+     *
+     * Correct today, because every caller draws the current page. During a
+     * slide the OUTGOING page will wear the incoming page`s touch highlights.
+     * Deliberately left for the task that runs the slide; do not read the
+     * paragraph above as saying this is already handled.
+     *
+     * Note also that this is a "draw" function that WRITES to `s`: itemsState
+     * and presetState create their per-page record on first sight, so drawing
+     * an arbitrary index materialises state for it. Pre-existing and harmless
+     * (the records are empty and keyed by name), but it is not a pure read.
+     *
      * `chrome` is false on a sliding pass: the bank bar is the page INDICATOR
      * and does not travel with the page it indicates, and the footer stays put
      * with it. Both are drawn afterwards by the caller, unproxied. Note that
@@ -2757,6 +2791,18 @@ export function createController(io = {}) {
      */
     function drawPage(ctx, index, { title, footer, chrome = true } = {}) {
         const mp = s.pages[index] || null;
+        /*
+         * AN INDEX OFF THE END DRAWS NOTHING, and it has to be said here.
+         *
+         * pageLabel falls back to `p || page()`, so a null page reached it and
+         * it answered with the CURRENT page`s label: drawPage(ctx, 99) emitted
+         * 224 ink pixels, all of them the wrong header over an empty body.
+         *
+         * Not hypothetical for the slide -- the composite draws `base` and
+         * `base + 1`, so it asks for -1 and for s.pages.length at the two ends
+         * of the page set, every time somebody jogs past either.
+         */
+        if (!mp) return;
         if (knobsAsList(mp)) { drawKnobsAsList(ctx, index, title, footer, chrome); return; }
         if (mp && mp.kind === PAGE_ITEMS) {
             /* A real list, so it draws like a menu page: same chrome, same
@@ -2852,8 +2898,11 @@ export function createController(io = {}) {
             page: mp, metaIndex: s.metaIndex, values: s.values,
             title: title || "", pageIndex: index, pageCount: s.pages.length,
             touched: s.hintLines ? -1 : s.touched,
+            /* `mp`, not the current page: a child-level page resolves its keys
+             * against its OWN level, or the host formatter is asked about the
+             * wrong parameter. See childResolve. */
             displayFor: formatValue
-                ? (key, raw, surface) => formatValue(fullKey(key), raw, surface)
+                ? (key, raw, surface) => formatValue(fullKey(key, mp), raw, surface)
                 : null,
             /* Every knob under a finger inverts its label, not just the one
              * the header is following. */
@@ -2997,17 +3046,28 @@ export function createController(io = {}) {
     }
 
     /*
-     * TWO entries, not one, and the reason is the slide.
+     * MORE THAN ONE ENTRY, and the reason is the slide.
      *
      * A sliding frame draws two DIFFERENT page indices, so a single-entry cache
      * would miss on every call and re-run resolveViz twice per frame — the
      * detector walk is not free, and it is the one thing in the draw path that
-     * is not a pixel write. Two entries hold both pages of a slide; a page
-     * change evicts the older of the two, which is exactly the one leaving.
+     * is not a pixel write. A page change evicts the least recently asked for,
+     * which during a slide is the page that has finished leaving.
      *
-     * Keyed on fingerprint AND index because the page set can be replanned
-     * under a stable index.
+     * SIZED 3, NOT 2, because the neighbour prefetch is coming: the slide
+     * itself needs two, and prefetching index ± 1 makes it three to four
+     * distinct indices in a frame. At 2 that thrashes straight back to
+     * re-detecting every frame and says nothing while it does it. The bound is
+     * named so the next person to add a consumer can see what it is counting.
+     *
+     * KNOWN HOLE in the key. It is `fingerprint#index`, and the fingerprint
+     * covers only [hierarchy, chainParams, mode] — but refreshTrailing and
+     * replanIfCondition both replan the page set without touching any of the
+     * three, so an index can come to mean a different page under an unchanged
+     * key. No repro was built for it and it predates this cache being widened,
+     * so it is recorded rather than fixed; do not read the key as sound.
      */
+    const VIZ_CACHE_ENTRIES = 3;
     let vizCache = [];
     function vizGroupsFor(index) {
         const p = s.pages[index] || null;
@@ -3016,7 +3076,7 @@ export function createController(io = {}) {
         for (const e of vizCache) if (e.key === cacheKey) return e.groups;
         const { groups } = resolveViz({ keys: p.keys, metaIndex: s.metaIndex, overrides: vizOverrides });
         vizCache.unshift({ key: cacheKey, groups });
-        if (vizCache.length > 2) vizCache.length = 2;
+        if (vizCache.length > VIZ_CACHE_ENTRIES) vizCache.length = VIZ_CACHE_ENTRIES;
         return groups;
     }
     /* The CURRENT page's graphics. Every other consumer — the peek, the extra
