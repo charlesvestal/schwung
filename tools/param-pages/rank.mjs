@@ -266,6 +266,18 @@ export function spearman(xs, ys) {
  *                set is in the log but not in the registry.
  */
 export function analyseSet(setId, rows, setMeta) {
+    /*
+     * A LOCK is a decision, not evidence.
+     *
+     * The comparator lets a set be closed outright once the answer is obvious
+     * ("this one wins, stop asking"). That row carries no a/b, so it must not
+     * reach the fit — and it must not be quietly folded into strengths either,
+     * because a declared winner and a winner inferred from twelve comparisons
+     * are different claims and the reader is entitled to know which this is.
+     * Reported separately, alongside whatever comparisons were made first.
+     */
+    const locks = rows.filter((r) => r.lock);
+    const lock = locks.length ? locks[locks.length - 1].lock : null;
     const judged = rows.filter((r) => r.winner === 'a' || r.winner === 'b');
     const skipped = rows.filter((r) => r.winner === 'skip');
     const known = new Map((setMeta && setMeta.options || []).map((o) => [o.id, o]));
@@ -330,9 +342,19 @@ export function analyseSet(setId, rows, setMeta) {
     if (ranked.length && !converged)
         caveats.push('fit hit the ' + MAX_ITER + '-iteration cap without converging to ' + TOL);
 
+    if (lock) {
+        const name = known.has(lock) ? known.get(lock).name : lock;
+        caveats.unshift('LOCKED: "' + name + '" was declared the winner and the set was closed. '
+            + (judged.length
+                ? 'The ' + judged.length + ' comparison(s) below were made before that and are shown for context, '
+                  + 'but the decision is the lock, not the fit.'
+                : 'No comparisons were made, so there is no ranking here at all -- only the decision.'));
+    }
+
     return {
         set: setId,
         title: setMeta ? setMeta.title : null,
+        lock,
         judgements: judged.length,
         skips: skipped.length,
         skipFraction,
@@ -358,7 +380,12 @@ export function loadRows(file) {
         if (!t) continue;
         try {
             const j = JSON.parse(t);
-            if (j && j.set && j.a && j.b) rows.push(j);
+            /* Two row shapes: a comparison {set,a,b,winner} and a lock
+             * {set,lock}. Requiring a/b silently dropped every lock, so a set
+             * the judge had DECIDED reported as "no judgements yet -- nothing
+             * to rank", which reads as untouched rather than as settled. */
+            if (!j || !j.set) continue;
+            if (j.lock || (j.a && j.b)) rows.push(j);
         } catch { /* a truncated tail line is not fatal */ }
     }
     return rows;
