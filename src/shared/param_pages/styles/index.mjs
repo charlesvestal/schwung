@@ -101,3 +101,38 @@ export function validateAll() {
     }
     return bad;
 }
+
+/*
+ * ------------------------------------------------------------- the sets --
+ *
+ * Each set lives in its own file and is registered HERE, by a call, at the
+ * bottom of this module. Call order is catalog order. New sets join this
+ * block; do not invent a second way in.
+ *
+ * A set imports `registerSet` and the KIND_* constants from this file, so the
+ * two modules are a cycle, and the obvious two spellings of "self-register on
+ * import" both fail:
+ *
+ *   import "./knob.mjs";         Import declarations are HOISTED, so this is
+ *                                not evaluated at the bottom of the file. The
+ *                                set runs before this module's body and finds
+ *                                `SETS` and `KIND_DRAW` still in the temporal
+ *                                dead zone — ReferenceError at import time,
+ *                                nothing registered. Only `registerSet`
+ *                                survives, because a function declaration is
+ *                                hoisted too, which is what makes this easy to
+ *                                talk yourself out of.
+ *
+ *   await import("./knob.mjs");  Deadlocks. The set statically imports this
+ *                                module, so its evaluation waits on ours while
+ *                                ours waits on its — "Detected unsettled
+ *                                top-level await", and the process exits 13.
+ *
+ * A named export called after the body has run has neither problem: the set
+ * file only DECLARES functions at evaluation time, so the hoisted import of it
+ * is harmless, and by the time `register()` runs every binding above is
+ * initialised.
+ */
+import { register as registerKnob } from "./knob.mjs";
+
+registerKnob();
