@@ -240,10 +240,17 @@ typedef struct {
  * V2 Instance-Based API
  * ============================================================================ */
 
+/* Deferred module loading; see chain_loader.h. Opaque here on purpose — the
+ * only thing chain_instance_t needs to know is that it owns one. */
+typedef struct chain_loader chain_loader_t;
+
 /* Chain instance state - contains all per-instance data for v2 API */
 typedef struct chain_instance {
     /* Module directory */
     char module_dir[MAX_PATH_LEN];
+
+    /* NULL until the first deferred load; see chain_loader.h. */
+    chain_loader_t *loader;
 
     /* Sub-plugin state - Synth */
     void *synth_handle;
@@ -264,8 +271,18 @@ typedef struct chain_instance {
     /* Optional MIDI handler for audio FX (discovered via dlsym) */
     void (*fx_on_midi[MAX_AUDIO_FX])(void *instance, const uint8_t *msg, int len, int source);
 
-    /* Module parameter info */
-    chain_param_info_t synth_params[MAX_CHAIN_PARAMS];
+    /*
+     * Module parameter info. A POINTER for the same reason the FX blocks below
+     * are, arrived at from the other direction: the synth is never permuted, so
+     * it stayed inline until deferred loading needed to PUBLISH a block built
+     * on another thread. Copying ~1.1 MB into place at commit would cost more
+     * than the frame it lands in; swapping the pointer is 8 bytes.
+     *
+     * Allocated eagerly in chain_alloc_position_storage and never NULL, so the
+     * ~13 sites that read `inst->synth_params[i]` are unchanged — and none of
+     * them took its sizeof, which is what made this safe to move.
+     */
+    chain_param_info_t *synth_params;
     int synth_param_count;
     /*
      * POINTERS, not inline arrays, and the reason is the reorder.
@@ -462,6 +479,7 @@ static inline int chain_params_answer_is_useful(const char *buf, int result) {
 
 static inline void chain_free_position_storage(chain_instance_t *inst) {
     if (!inst) return;
+    free(inst->synth_params); inst->synth_params = NULL;
     for (int i = 0; i < MAX_AUDIO_FX; i++) {
         free(inst->fx_params[i]);        inst->fx_params[i] = NULL;
         free(inst->fx_ui_hierarchy[i]);  inst->fx_ui_hierarchy[i] = NULL;
@@ -475,6 +493,9 @@ static inline void chain_free_position_storage(chain_instance_t *inst) {
 static inline int chain_alloc_position_storage(chain_instance_t *inst) {
     if (!inst) return 0;
     int ok = 1;
+    inst->synth_params = (chain_param_info_t *)calloc(MAX_CHAIN_PARAMS,
+                                                      sizeof(chain_param_info_t));
+    if (!inst->synth_params) ok = 0;
     for (int i = 0; i < MAX_AUDIO_FX; i++) {
         inst->fx_params[i] = (chain_param_info_t *)calloc(MAX_CHAIN_PARAMS,
                                                           sizeof(chain_param_info_t));
