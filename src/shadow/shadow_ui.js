@@ -9088,6 +9088,112 @@ function masterFxShimValue(slotIndex, field) {
     }
 }
 
+/*
+ * The whole master chain in ONE read: [{id, path}, ...] in position order.
+ *
+ * Replaces 8 `:name` reads plus one `:module` per loaded position — ~22ms of
+ * IPC on the autosave frame, which is the frame the one-slot-per-tick split
+ * exists to keep clean (see the autosave comment near the tick). At ~2.8ms a
+ * read, an IPC round trip costs more than redrawing the entire screen, so the
+ * count is the thing to fix, not the schedule.
+ *
+ * It also makes the id and the path ONE fact. Read separately they are two
+ * round trips that can fail independently, and a state file pairing this
+ * position's id with the previous module's path restores the wrong module in
+ * silence — the boot loader parses `module_path` and never reads `module_id`.
+ *
+ * Returns null for every failure — no answer, an error, unparseable, or not an
+ * array — because all of them mean the same thing to the caller: THE SHIM DID
+ * NOT TELL US, which is not "the chain is empty". Callers must fall back, never
+ * adopt. Null is also what a shim older than this JS answers (unknown key ->
+ * error), which is a real field state: the web updater mirrors the shim
+ * separately and can leave the two at different versions.
+ */
+function masterFxShimSnapshot() {
+    if (typeof shadow_get_param !== "function") return null;
+    let raw;
+    try {
+        raw = shadow_get_param(0, "master_fx:modules");
+    } catch (e) {
+        return null;
+    }
+    if (raw === null || raw === undefined || raw === "") return null;
+    let arr;
+    try {
+        arr = JSON.parse(raw);
+    } catch (e) {
+        return null;
+    }
+    return Array.isArray(arr) ? arr : null;
+}
+
+/*
+ * What the shim has in one position: {id, path}, or null for "did not answer".
+ *
+ * `snapshot` is the one-read array when it was served. The per-position reads
+ * are the fallback for a shim that predates `master_fx:modules`, and they are
+ * kept deliberately: without them an id/JS version skew silently reverts to the
+ * data-loss bug this whole path was written to fix.
+ */
+function masterFxShimSlot(snapshot, slotIdx) {
+    if (snapshot) {
+        const entry = snapshot[slotIdx];
+        if (!entry || typeof entry !== "object") return null;
+        return { id: entry.id || "", path: entry.path || "" };
+    }
+    const id = masterFxShimValue(slotIdx, "name");
+    if (id === null) return null;
+    /* The path is a SECOND round trip on this path, so it can fail on its own.
+     * A null there means we know the id and not the path — take the id and let
+     * the caller resolve the path from its own scan, rather than pairing this
+     * id with whatever the previous read happened to return. */
+    const path = masterFxShimValue(slotIdx, "module");
+    return { id, path: (path === null) ? "" : path };
+}
+
+/*
+ * Adopt the shim's answer into the mirror.
+ *
+ * The invalidation is not optional bookkeeping: every other site that assigns
+ * masterFxConfig[key].module does exactly this (loadMasterFxChainConfig,
+ * clearMasterFx, and the three branches of loadMasterFxChainFromConfig),
+ * because the display-name cache is keyed by position and not by module — so a
+ * position that adopts a different module keeps LABELLING and ANNOUNCING as the
+ * one before it until something else happens to evict it.
+ */
+function adoptMasterFxShimModule(key, shimId) {
+    const had = masterFxConfig[key]?.module || "";
+    if (shimId === had) return false;
+    debugLog(`MFX save: ${key} adopting shim state "${shimId}" (mirror had "${had}")`);
+    masterFxConfig[key].module = shimId;
+    /* Different module — it may implement display_name even if the
+     * last one didn't, so poll it at full rate again. */
+    delete fxDisplayNameCache[`master:${key}`];
+    delete fxDisplayNameSkip[`master:${key}`];
+    delete fxDisplayNameBackoff[`master:${key}`];
+    needsRedraw = true;
+    return true;
+}
+
+/*
+ * When each position's module was last WRITTEN from here, so the adopt above
+ * can decline to believe a read that raced it.
+ *
+ * shadow_set_param is a blocking round trip everywhere except overtake, where
+ * it is fire-and-forget (shadow_ui.c, shadow_set_param_common). A save reached
+ * from an overtake tool through the published ctx — which is exactly what Movy
+ * does — can therefore read the position BEFORE its own write has landed, adopt
+ * the previous module, and write that back over both the mirror and the state
+ * file: the module the user just picked, silently reverted.
+ *
+ * Same settle bargain as userPresetWriteAt: wait out CONTRACT_SETTLE_MS, and
+ * during it the mirror is authoritative. That is safe on the blocking paths
+ * too, because every caller of setMasterFxSlotModule updates the mirror
+ * alongside the write — so declining to adopt for half a second cannot leave
+ * the mirror wrong there, it just declines to re-learn what it already knows.
+ */
+const masterFxModuleWriteAt = {};
+
 /* Get a parameter from a master FX slot (0..MASTER_FX_SLOTS-1).
  * Index-taking wrapper over the shared chain-target accessor. The "" rather
  * than null is this caller's convention and is preserved here. */
@@ -9116,6 +9222,10 @@ function setMasterFxSlotModule(slotIndex, dspPath) {
      * load, clear) without each of them having to remember.
      */
     masterFxChainLength = -1;
+    /* Stamped BEFORE the write, not after: under overtake the write is
+     * fire-and-forget, so the window the saver must not read through opens the
+     * moment we ask, not the moment we return. */
+    masterFxModuleWriteAt[masterFxComponentKey(slotIndex)] = Date.now();
     return chainTargetSetParam(MASTER_CHAIN_TARGET, masterFxComponentKey(slotIndex),
                                "module", dspPath || "");
 }
@@ -9284,30 +9394,37 @@ function saveMasterFxChainConfig() {
                 masterFxLfoConfig = lfos;
             }
         }
+        /* The SHIM decides what is loaded, not this mirror.
+         *
+         * masterFxConfig only learns about a position when something in this
+         * file puts it there, so anything that loads a master module by writing
+         * `master_fx:fxN:module` to the shim directly was invisible here — an
+         * overtake tool, most visibly Movy, but also any Remote UI client, since
+         * schwung-manager's handleSetMasterFxParam forwards whatever key it is
+         * given. The mirror still read empty, the empty-position branch below
+         * wrote "{}" over a position the shim genuinely had loaded, and the
+         * whole master chain was gone on the next boot. It drifted the other way
+         * too: a position cleared through the shim was written back from the
+         * stale mirror.
+         *
+         * ONE read for all of it (see masterFxShimSnapshot). A null snapshot
+         * means the read did not complete, which is NOT the same as an empty
+         * chain — adopting it would erase every loaded position on a busy
+         * device, the failure the per-position snapshot guard below exists to
+         * prevent — so the per-position fallback answers, and where that fails
+         * too the mirror stands. */
+        const shimSnapshot = masterFxShimSnapshot();
+        const nowMs = Date.now();
         for (let i = 1; i <= MASTER_FX_SLOTS; i++) {
             const key = `fx${i}`;
             const slotIdx = i - 1;
-            /* The SHIM decides what is loaded, not this mirror.
-             *
-             * masterFxConfig only learns about a slot when something in this
-             * file puts it there, so anything that loads a master module by
-             * writing `master_fx:fxN:module` to the shim directly — an overtake
-             * tool, most visibly Movy — was invisible here. The mirror still
-             * read empty, the empty-slot branch below wrote "{}" over a slot
-             * the shim genuinely had loaded, and the whole master chain was
-             * gone on the next boot. It drifted the other way too: a slot
-             * cleared through the shim was written back from the stale mirror.
-             *
-             * A null answer means the read failed (timeout), which is NOT the
-             * same as an empty slot — adopting it would erase a good slot on a
-             * busy device, the failure the snapshot guard below exists to
-             * prevent. Only a real answer is adopted. */
-            const shimId = masterFxShimValue(slotIdx, "name");
-            if (shimId !== null && shimId !== (masterFxConfig[key]?.module || "")) {
-                debugLog(`MFX save: ${key} adopting shim state "${shimId}" ` +
-                         `(mirror had "${masterFxConfig[key]?.module || ""}")`);
-                masterFxConfig[key].module = shimId;
-            }
+            const shim = masterFxShimSlot(shimSnapshot, slotIdx);
+            /* A write we made ourselves may still be in flight — under overtake
+             * it is fire-and-forget — so a read taken inside the settle window
+             * describes the module we just replaced, not the one we picked. */
+            const writeSettling =
+                (nowMs - (masterFxModuleWriteAt[key] || 0)) < CONTRACT_SETTLE_MS;
+            if (shim && !writeSettling) adoptMasterFxShimModule(key, shim.id);
             const moduleId = masterFxConfig[key]?.module || "";
             const stateFilePath = activeSlotStateDir + "/master_fx_" + slotIdx + ".json";
 
@@ -9322,12 +9439,21 @@ function saveMasterFxChainConfig() {
             }
 
             /* Prefer the path the shim actually dlopen'd. MASTER_FX_OPTIONS is
-             * scanned at startup, so a module installed since then is missing
-             * from it and resolved to "" — a state file that looks saved and
-             * restores nothing, because the boot loader needs the path. Falls
-             * back to the scan when the shim does not answer. */
+             * scanned at startup and after a store install reached from this
+             * picker, so a module installed any other way — over the web
+             * manager, which does not restart shadow_ui — is missing from it and
+             * resolved to "" : a state file that looks saved and restores
+             * nothing, because the boot loader restores by PATH.
+             *
+             * Taken from the SAME answer as the id, and only when that answer
+             * describes the module we are about to write. Read independently
+             * they can disagree — this position's id beside the previous
+             * module's path — and the boot loader would then load the path and
+             * never notice the id it was filed under. Falls back to the scan
+             * whenever the pair cannot be trusted as a pair. */
             const opt = MASTER_FX_OPTIONS.find(o => o.id === moduleId);
-            const dspPath = masterFxShimValue(slotIdx, "module") || opt?.dspPath || "";
+            const shimPath = (shim && shim.id === moduleId) ? shim.path : "";
+            const dspPath = shimPath || opt?.dspPath || "";
             const slotConfig = {
                 id: moduleId,
                 path: dspPath
@@ -9380,6 +9506,18 @@ function saveMasterFxChainConfig() {
             }
 
             config.master_fx_chain[key] = slotConfig;
+
+            /* A position with no PATH restores nothing, so writing one over a
+             * good file is the same erase as writing "{}" — the boot loader
+             * skips an entry whose module_path is absent. Reachable when the
+             * shim named a module the startup scan has never seen (installed
+             * over the web manager, which does not restart shadow_ui) and the
+             * path half of the answer did not arrive. Preserve instead, and let
+             * the next pass write a complete pair. */
+            if (!dspPath) {
+                debugLog(`MFX save: skipping ${key} write — id "${moduleId}" with no path`);
+                continue;
+            }
 
             /* Guard against clobbering a good state file with empty data.
              * If every state/chain_params query came back empty (shim stalled,
