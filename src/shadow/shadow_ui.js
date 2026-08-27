@@ -2755,6 +2755,9 @@ function returnToParamPagesFromEditor() {
     const returnPage = paramEditorReturnPage;
     paramEditorOpenedFromGrid = false;
     paramEditorReturnPage = "";
+    /* Same rule, same reason: the grid's knob row describes the page we dived
+     * from, so it must not survive into a later list-originated session. */
+    hierEditorKnobsFromPage = null;
     exitHierarchyEditor();
     enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey), returnPage,
                     componentParamPagesIo(slotIndex, componentKey), paramPagesChromeFor(componentKey));
@@ -2958,6 +2961,11 @@ function openParamEditorFromGrid(slotIndex, fullKey, meta) {
     const page = currentParamPage();
     const level = page && page.level;
     paramEditorReturnPage = (page && page.name) || "";
+    /* Carry the page's knob ORDER in with us — see hierEditorKnobsFromPage.
+     * Captured here for the same reason `level` is: exitParamPages tears the
+     * controller down and the page is gone after it. */
+    hierEditorKnobsFromPage = (page && Array.isArray(page.keys))
+        ? { level: level || "", keys: page.keys.slice() } : null;
     /* The grid builds every fullKey as `${prefix}:${key}`, so strip THAT exact
      * prefix rather than "everything up to the first colon". Master FX's prefix
      * contains a colon of its own ("master_fx:fx2"), and the old rule left
@@ -3660,6 +3668,26 @@ let hierEditorChildCount = 0;     // number of child entries for child_prefix le
 let hierEditorChildLabel = "";    // label for child entries (e.g., "Tone")
 let hierEditorParams = [];        // current level's params
 let hierEditorKnobs = [];         // current level's knob-mapped params
+/*
+ * THE KNOB ROW OF THE PAGE YOU CAME FROM, when you arrived from the grid.
+ *
+ * A level's declared `knobs` array is not the order the user was just looking
+ * at. The grid re-seats keys for LAYOUT -- gatherGroupMembers pulls granny's
+ * `spray` next to `position` so the waveform can span both cells -- so diving
+ * into the wave editor changed which physical knob was which, silently, one
+ * click apart. Reported from the device: "the editor should be using the same
+ * knobs as the entered page. using main is confusing, it's a hidden order no
+ * one has reference to."
+ *
+ * That is the whole argument: the declared order is invisible, and the page
+ * on screen a moment ago is the only reference the user has.
+ *
+ * Null except on a grid-originated dive. NOT compacted and NOT filtered --
+ * holes are preserved, because a hole means "this knob does nothing" and
+ * removing it would shift every knob after it, which is the same class of
+ * surprise this fixes.
+ */
+let hierEditorKnobsFromPage = null;
 let hierEditorAllParams = [];     // unfiltered current level params
 let hierEditorAllKnobs = [];      // unfiltered current level knobs
 let hierEditorSelectedIdx = 0;
@@ -4250,7 +4278,19 @@ function applyHierarchyVisibilityFilters(levelDef) {
                 .map(extractHierarchyParamKey)
                 .filter(k => k && k !== SWAP_MODULE_ACTION)
         );
-        if (visibleKeys.size === 0) {
+        if (hierEditorKnobsFromPage
+                && hierEditorKnobsFromPage.level === hierEditorLevel) {
+            /* The grid's own row wins — see hierEditorKnobsFromPage. Taken
+             * verbatim: no visibility filter, because the grid already applied
+             * one when it planned the page, and no compaction, because a hole
+             * must stay a hole.
+             *
+             * Gated on the LEVEL it was captured from. Navigate somewhere else
+             * inside the editor and the row you came in with is no longer a
+             * description of anything, so the level's own knobs take over
+             * again — which is also what makes this safe to leave set. */
+            hierEditorKnobs = hierEditorKnobsFromPage.keys.slice();
+        } else if (visibleKeys.size === 0) {
             /* Root/page-select level: no editable params visible (only nav links)
              * → keep all knobs so they control the first page's params */
             hierEditorKnobs = [...hierEditorAllKnobs];
@@ -18048,6 +18088,18 @@ function drawHelpDetail() {
         if (view !== VIEWS.HIERARCHY_EDITOR) return null;
         if (!hierEditorEditMode) return null;
         return isInWavPositionEditor() ? "wav_position" : "value";
+    };
+    /* WHICH PARAM A PHYSICAL KNOB DRIVES, by index.
+     *
+     * Narrower than the context object on purpose: the key is the fact, and
+     * the rest is this file's business. Exposed for the same reason
+     * activeParamEditor above is -- the mapping was not observable from
+     * outside, so "the editor uses a different knob row than the page you
+     * entered from" could only be found by turning a knob on hardware and
+     * reading a debug log. */
+    _ctx.knobParamKey = (i) => {
+        const c = getKnobContext(i);
+        return (c && c.key) ? c.key : null;
     };
     _ctx.isParamModulated = (slot, fullKey) => isHierarchyParamModulated(slot, fullKey);
     _ctx.isMuteHeld = () => hostMuteHeld;

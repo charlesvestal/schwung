@@ -777,6 +777,56 @@ function gotoSlotFor(name) {
   values.spray = savedSpray;
 }
 
+/* ---- N. the editor inherits the PAGE knob row ---------------------------
+ *
+ * A declared `knobs` array is not the order the user was just looking at. The
+ * grid re-seats keys for LAYOUT -- gatherGroupMembers pulls granny spray next
+ * to position so the waveform can span both cells -- so diving into the wave
+ * editor silently changed which physical knob was which, one click apart.
+ *
+ * Found on hardware by turning what looked like the spray knob and watching
+ * the log resolve it to `synth:size_ms`. Reported as: "the editor should be
+ * using the same knobs as the entered page. using main is confusing, its a
+ * hidden order no one has reference to."
+ *
+ * Asserted through the knob MAPPING rather than by reading hierEditorKnobs:
+ * the array is an implementation detail, and which param a physical knob
+ * drives is the behaviour.
+ *
+ * The fixture earns this by declaring knobs and params in DIFFERENT orders --
+ * with both the same, the test passes whether or not the override exists.
+ */
+{
+  openGrid();
+  const slot = gotoSlotFor("position");
+  if (slot < 0) {
+    fail("position never reached the grid for the knob-row case");
+  } else {
+    const pg = V.currentParamPage();
+    const pageKeys = ((pg && pg.keys) || []).slice();
+    feed(noteOn(slot));
+    feed(click());
+    if (ctx.activeParamEditor() !== "wav_position") {
+      fail("the knob-row case did not reach the waveform editor");
+    } else if (typeof ctx.knobParamKey !== "function") {
+      fail("ctx.knobParamKey is missing -- the knob mapping is unobservable again");
+    } else {
+      const mismatches = [];
+      for (let i = 0; i < pageKeys.length && i < 8; i++) {
+        const want = pageKeys[i];
+        if (!want) continue;
+        const got = ctx.knobParamKey(i);
+        if (got !== want) mismatches.push("knob " + (i + 1) + ": page=" + want + " editor=" + got);
+      }
+      if (mismatches.length) {
+        fail("the editor knob row does not match the page it was entered from: " +
+             mismatches.join(" | "));
+      }
+      feed(back());
+    }
+  }
+}
+
 if (failures) process.exit(1);
 console.log("PASS: editor routing — a wav_position opens the waveform, a filepath opens " +
             "the browser, a plain number stays put, and Back returns to the grid from each");
