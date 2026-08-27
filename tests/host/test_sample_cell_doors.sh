@@ -346,6 +346,70 @@ ok(ctl.onClick(sSize) === null,
      JSON.stringify(failed.state.values.sample_path) + ")");
 }
 
+/* ---- 6. an ON-PAGE empty filepath is stored too ------------------------
+ *
+ * The other half of the same collapse, and the one that actually bit.
+ *
+ * The ordinary per-key read treats "" as a MISS -- right for a number (an
+ * unserved key answering "" once showed Volume as Number("") = 0) and wrong
+ * for a filepath, where "" is the module saying there is no file.
+ *
+ * Reported as a sequence, which is what named it: "it showed none, i clicked
+ * into it, went back and it showed --", permanently. On granny the file is
+ * off-page on the ROOT page, so the viz extra-key stop stored "" and put NONE
+ * on screen; values accumulate across pages, so that survived a jog to the
+ * page where the file IS a key. Returning from the browser rebuilds the
+ * controller, emptying values -- and on that page the read comes through the
+ * ordinary path, which threw the answer away every rotation.
+ *
+ * Invisible in the device log, because the read SUCCEEDS: across 41MB
+ * sample_path never once appears in a param_giveup.
+ *
+ * Driven with the file ON the page, which is the case the extra-key test
+ * cannot cover.
+ */
+{
+  const HIER3 = JSON.stringify({ modes: null, levels: { root: {
+    label: "G", knobs: ["position", "spray", "size"],
+    params: [{ key: "position" }, { key: "spray" }, { key: "size" },
+             { key: "sample_path" }] } } });
+  const mk3 = (pathValue, sizeValue) => {
+    const c3 = C.createController({
+      getParam: (k) => {
+        const b = String(k).replace(/^[^:]+:/, "");
+        if (b === "ui_hierarchy") return HIER3;
+        if (b === "chain_params") return JSON.stringify(CHAIN_PARAMS);
+        if (b === "sample_path") return pathValue;
+        if (b === "size") return sizeValue;
+        if (b === "preset_name") return null;
+        return "0.5";
+      },
+      setParam: () => {}, announce: () => {},
+    });
+    c3.load({ slot: 0, component: "synth" });
+    for (let i = 0; i < 60; i++) c3.tick();
+    return c3;
+  };
+
+  const onPage = mk3("", "0.5");
+  ok((onPage.page.keys || []).indexOf("sample_path") >= 0,
+     "this fixture puts the file ON the page, so it uses the ordinary read");
+  ok(onPage.state.values.sample_path === "",
+     "an empty filepath read from the PAGE is stored -- discarding it leaves " +
+     "undefined, which is the permanent -- (got " +
+     JSON.stringify(onPage.state.values.sample_path) + ")");
+
+  /* The number rule must NOT have moved. An unserved numeric key answering ""
+   * is still a miss; storing it would show Number("") = 0, which is the
+   * slot-settings Volume bug. */
+  const numEmpty = mk3("/x/kick.wav", "");
+  ok(numEmpty.state.values.size === undefined,
+     "an empty NUMBER is still a miss (got " +
+     JSON.stringify(numEmpty.state.values.size) + ")");
+  ok(numEmpty.state.values.sample_path === "/x/kick.wav",
+     "and a real filepath still reads normally");
+}
+
 if (fail) { console.log("FAIL: " + fail + " assertion(s)"); process.exit(1); }
 console.log("PASS: the sample graphic is one door, and the file is its own");
 '

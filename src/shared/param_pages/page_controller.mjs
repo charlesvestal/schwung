@@ -1331,10 +1331,46 @@ export function createController(io = {}) {
          * mistaken for one that answered zero.
          */
         if (raw === null || raw === undefined || raw === "") raw = getParam(fullKey(key));
-        if (raw === null || raw === undefined || raw === "") return null;
+
+        const meta = s.metaIndex.getOrGuess(key);
+        /*
+         * ...and for an OPAQUE key, "" is a VALUE.
+         *
+         * The miss rule above is right for a number and wrong for a filepath.
+         * An empty filepath is the module saying there is no file — the exact
+         * thing NONE exists to report — and discarding it left
+         * `s.values[key]` undefined forever, which renders "--".
+         *
+         * THE REPRO NAMED IT. "It showed none, I clicked into it, went back
+         * and it showed --", on granny, permanently. Every piece fits only
+         * this:
+         *
+         *   - granny declares sample_path in `main.params` but not in
+         *     `main.knobs`, so on the ROOT page it is OFF-page and arrives
+         *     through the viz extra-key stop, which does store "". That read
+         *     is what put NONE on the screen, and `s.values` accumulates
+         *     across pages, so it survived the jog to "Main - 2".
+         *   - returning from the filepath browser REBUILDS the controller
+         *     (a fresh io object per componentParamPagesIo call), emptying
+         *     `s.values`.
+         *   - on "Main - 2" the file IS a page key, so it comes through THIS
+         *     path — which threw the answer away every rotation. The root
+         *     page's extra-key stop never runs while you are on Main - 2, so
+         *     nothing ever refilled it.
+         *
+         * And it is invisible in the log: the read SUCCEEDS every time, so
+         * `sample_path` never appears in a param_giveup — across 41MB it never
+         * once does. A value being discarded looks exactly like a value being
+         * read.
+         *
+         * Scoped to KIND_OPAQUE. For a number or an enum an empty answer is
+         * still a miss, which is what keeps the slot-settings Volume bug
+         * fixed: "" sailing through as a reading showed Number("") = 0.
+         */
+        if (raw === null || raw === undefined) return null;
+        if (raw === "" && meta.kind !== KIND_OPAQUE) return null;
 
         /* First successful read repairs a guessed range, once. */
-        const meta = s.metaIndex.getOrGuess(key);
         /*
          * ...and teaches an enum which wire format its plugin speaks. This is
          * THE read detection is allowed to use: it comes from the device, it is
