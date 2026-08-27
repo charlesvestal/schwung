@@ -35,6 +35,8 @@ import { buildMetaIndex, KIND_OPAQUE, alsoOpens, opensOnClick }
 import { resolveViz, VIZ_SAMPLE } from "../../src/shared/param_pages/viz.mjs";
 import { planPages, PAGE_KNOBS } from "../../src/shared/param_pages/page_plan.mjs";
 import { setWavPeaksIO, wavPeaksTick } from "../../src/shared/param_pages/wav_peaks.mjs";
+import { createAnimState } from "../../src/shared/param_pages/anim_state.mjs";
+import { drawMenuList } from "../../src/shared/menu_layout.mjs";
 import os from "node:os";
 
 const ROOT = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))));
@@ -118,11 +120,62 @@ function strip(nCells, draw) {
     return fb;
 }
 
+
+/*
+ * A horizontal band of a rendered screen, as its own framebuffer.
+ *
+ * The chrome pieces draw in ABSOLUTE screen coordinates — the footer at
+ * FOOTER_Y, the rule at RULE_Y — so they cannot be rendered into a
+ * band-sized buffer the way a cell widget can. Render the whole screen, then
+ * take the rows that matter.
+ */
+function cropRows(fb, y0, y1) {
+    const h = y1 - y0;
+    const out = createFramebuffer(128, h);
+    const octx = drawContext(out);
+    for (let y = y0; y < y1; y++)
+        for (let x = 0; x < fb.width; x++)
+            if (fb.pixels[y * fb.width + x]) octx.fillRect(x, y - y0, 1, 1, 1);
+    return out;
+}
+
 function cellLabels(ctx, g, n, labels) {
     for (let i = 0; i < n; i++) {
         if (!labels[i]) continue;
         RM.drawLabelCell(ctx, g, i, RM.LBL0_Y - RM.ROW0_Y, labels[i], "", false, false, false);
     }
+}
+
+
+/* ---------------------------------------------------------------- motion */
+
+/*
+ * A FILMSTRIP: the same widget, N cells across, each drawn one `dt` later.
+ *
+ * Motion cannot be shown in a still, and the alternative — an animated GIF —
+ * is unreviewable in a diff and unreadable at 1x. Frames side by side are
+ * both, and they are also how the renderer is already tested: time is passed
+ * IN, never read, so a frame at t=60ms is a pure function call rather than a
+ * recording.
+ *
+ * ONE anim store across the whole strip, which is the entire trick. The store
+ * is what remembers the previous value; a fresh one per frame would stamp
+ * every sighting as already-past and draw the settled frame N times — the
+ * exact failure mode that let every animation in this subsystem ship inert for
+ * months (createAnimState was written, exported, unit-tested and never
+ * CALLED). If a strip below ever looks like N copies of one picture, that is
+ * this bug and not a widget that does not move.
+ */
+function filmstrip(nFrames, dtMs, drawFrame) {
+    const anim = createAnimState();
+    return strip(nFrames, (ctx, g) => {
+        for (let i = 0; i < nFrames; i++) {
+            /* x0 shifted rather than a new framebuffer per frame: every draw
+             * function here takes its origin from the geometry, so this is the
+             * real widget at the real cell width, just repeated along a row. */
+            drawFrame(ctx, { x0: i * CELL_W, cellW: CELL_W }, i * dtMs, anim);
+        }
+    });
 }
 
 /* ------------------------------------------------------------- fleet counts */
@@ -312,6 +365,109 @@ function build() {
          { key: "sample_path", name: "File", type: "filepath" }],
         ["position", "spray", "sample_path"],
         { position: "0.45", spray: "0.12", sample_path: writeSampleWav() }, 2));
+
+
+    /* --- chrome ------------------------------------------------------------ */
+
+    add("chrome-header", (() => {
+        const fb = createFramebuffer(128, RM.ROW0_Y);
+        const ctx = drawContext(fb);
+        RM.drawHeader(ctx, "S1 > OBXD", "FILTER", false);
+        return fb;
+    })());
+
+    add("chrome-header-held", (() => {
+        const fb = createFramebuffer(128, RM.ROW0_Y);
+        const ctx = drawContext(fb);
+        RM.drawHeader(ctx, "Cutoff", "4.20 kHz", true);
+        return fb;
+    })());
+
+    add("chrome-bank-bar", (() => {
+        const fb = createFramebuffer(128, 10);
+        const ctx = drawContext(fb);
+        RM.drawBankBar(ctx, 2, 7);
+        return fb;
+    })());
+
+    /*
+     * PAIRS, not a flat list. drawFooter takes [[key, action], ...] and
+     * inverts the KEY into a pill; handed four loose strings it drew
+     * "J o P a C L O p" — every other character pilled, which is what a
+     * mis-shaped argument looks like rather than an error.
+     *
+     * Drawn into a full 128x64 because the footer works in absolute screen
+     * coordinates, then cropped to the band so the swatch is the footer and
+     * not 50 rows of black above it.
+     */
+    add("chrome-footer", (() => {
+        const full = createFramebuffer(128, 64);
+        RM.drawFooter(drawContext(full), [["JOG", "SEL"], ["CLK", "LOAD"], ["BACK", "EXIT"]]);
+        return cropRows(full, RM.RULE_Y - 1, 64);
+    })());
+
+    add("chrome-label-cell", strip(3, (ctx, g) => {
+        RM.drawLabelCell(ctx, g, 0, RM.LBL0_Y - RM.ROW0_Y, "CUTOFF", "0.42", false, false, false);
+        RM.drawLabelCell(ctx, g, 1, RM.LBL0_Y - RM.ROW0_Y, "CUTOFF", "0.42", true, true, false);
+        RM.drawLabelCell(ctx, g, 2, RM.LBL0_Y - RM.ROW0_Y, "CUTOFF", "0.42", false, false, true);
+    }));
+
+    add("chrome-list", (() => {
+        const fb = createFramebuffer(128, 64);
+        const ctx = drawContext(fb);
+        const items = Array.from({ length: 24 }, (_, i) => ({ n: "Preset " + (i + 1) }));
+        drawMenuList({
+            ctx, items, selectedIndex: 9,
+            listArea: { topY: 10, bottomY: 54 },
+            getLabel: (it) => it.n,
+            getValue: () => "",
+            announce: false,
+        });
+        return fb;
+    })());
+
+    /* --- motion ------------------------------------------------------------ */
+
+    const SW = [{ key: "sync", name: "Sync", type: "enum", options: ["Off", "On"] }];
+    const swMi = buildMetaIndex({ chainParams: SW });
+    const swGroup = resolveViz({ keys: ["sync"], metaIndex: swMi }).groups[0];
+    add("motion-switch", filmstrip(5, 40, (ctx, g, t, anim) => {
+        /* Frame 0 primes the store with the OLD value; the flip happens at the
+         * same instant, so the strip reads left-to-right as one gesture. */
+        const v = { sync: t === 0 ? "0" : "1" };
+        if (t === 0) drawVizGroup(ctx, { x: g.x0, y: 0, w: CELL_W, h: RM.BOX_H },
+                                  swGroup, { sync: "0" }, swMi, anim, 0);
+        else drawVizGroup(ctx, { x: g.x0, y: 0, w: CELL_W, h: RM.BOX_H },
+                          swGroup, v, swMi, anim, t);
+    }));
+
+    const WV = [{ key: "osc_wave", name: "Wave", type: "enum",
+                  options: ["Sine", "Triangle", "Saw", "Square"] }];
+    const wvMi = buildMetaIndex({ chainParams: WV });
+    const wvGroup = resolveViz({ keys: ["osc_wave"], metaIndex: wvMi }).groups[0];
+    add("motion-waveform", filmstrip(5, 25, (ctx, g, t, anim) => {
+        const v = { osc_wave: t === 0 ? "0" : "3" };
+        drawVizGroup(ctx, { x: g.x0, y: 0, w: CELL_W, h: RM.BOX_H },
+                     wvGroup, t === 0 ? { osc_wave: "0" } : v, wvMi, anim, t);
+    }));
+
+    const enumMeta = META({ key: "mode", name: "Mode", type: "enum",
+                            options: ["LP", "Band Pass"] });
+    add("motion-enum", filmstrip(5, 30, (ctx, g, t, anim) => {
+        const val = t === 0 ? "0" : "1";
+        RM.drawKnobWidget(ctx, g, 0, 0, enumMeta, val, undefined, undefined, null, null,
+                          anim, t, "mode");
+    }));
+
+    const trigMeta = META({ key: "clear", name: "Clear", type: "enum",
+                            options: ["\u2014", "Rnd!"], access: "write" });
+    add("motion-button", filmstrip(5, 70, (ctx, g, t, anim) => {
+        /* buttonPhase is the renderer's own, not restated here: a second copy
+         * of "how long is a press" is how the sheet would come to document an
+         * animation the device does not play. */
+        RM.drawKnobWidget(ctx, g, 0, 0, trigMeta, "\u2014", undefined, undefined, null,
+                          RM.buttonPhase([0], t, false));
+    }));
 
     return { images, cells, viz };
 }
@@ -555,6 +711,138 @@ that wrap.
 - There is **no representative shape**. A read that did not answer must never
   become a picture — the synthetic waveform that used to fill in for missing
   peaks drew a sample that was never loaded.
+
+---
+
+## Chrome
+
+The frame around the widgets. Every piece here draws in **absolute screen
+coordinates**, which is why these swatches are whole screens cropped to a band
+rather than cells.
+
+### Header
+
+![chrome-header](images/widgets/chrome-header.png)
+
+At rest: where you are on the left, which page on the right. The right side is
+a **measured share** against a \`HEADER_MIN_LEFT\` floor, not a fixed column —
+which is why the trailing preset page is named "My Presets" and not "User
+Presets" (56px, past the floor, truncating to "USER PRESE").
+
+![chrome-header-held](images/widgets/chrome-header-held.png)
+
+**Holding a knob** inverts the band and replaces it with that parameter's full
+name and value. This is where a value has room to be read, which is why
+\`short_options\` is consulted by the enum square *only* — the header keeps the
+full spelling.
+
+Set in the 4x5 face with one clear row above and below. Both rows are
+load-bearing and only when inverted: a glyph flush against either edge runs its
+ink into the boundary and the highlight bleeds into the border. Seen on
+hardware, put back.
+
+### Bank bar
+
+![chrome-bank-bar](images/widgets/chrome-bank-bar.png)
+
+One tick per page, the current one filled. It owns row 7, which is why a menu
+page cannot start its list at y=9 the way the enum picker does.
+
+### Footer
+
+![chrome-footer](images/widgets/chrome-footer.png)
+
+Hint pairs, each with its **key inverted into a pill** and its action plain, so
+a pair reads as one thing — without the pill a row of hints is an unparseable
+run: \`JOG PAGE CLK MENU BACK EXIT\`.
+
+**Fit-aware, in priority order.** Three pairs only fit when every word is ≤4
+characters; anything longer drops a pair rather than overflowing. \`JOG SEL /
+CLK LOAD / BACK EXIT\` is 126px and fits, which is why it is the swatch — \`JOG
+PAGE / CLK OPEN / BACK EXIT\` does not, and silently drops the middle pair. A
+back hint is pinned right.
+
+The hints come from the **caller**, never from the renderer: which gesture does
+what is the input mapping's business, and this library does not own input.
+
+### Label cell
+
+![chrome-label-cell](images/widgets/chrome-label-cell.png)
+
+Under every widget: the name at rest, the **value** while the knob is held
+(inverted into a strip), and a **tilde** prefix while the parameter is
+modulated. Labels are budgeted in *characters*, not pixels — a ragged row of
+4s and 6s costs more to read than the extra letters buy.
+
+### List and scrollbar
+
+![chrome-list](images/widgets/chrome-list.png)
+
+One dotted column at \`SCREEN_WIDTH - 2\` with a solid thumb, in \`drawMenuList\`
+— so every list in the tree has it: menus, settings, slots, patches, the enum
+picker, the file browser. A list that fits its window draws nothing.
+
+It **replaced** the up/down arrows rather than joining them: the arrows said
+"there is more, that way", the thumb says that plus how much and where. It is
+also cheaper in the shape that matters — the arrows were 5px charged to two
+rows, the bar is 1px charged to all of them, so those two rows went from 108px
+of value to 125px.
+
+Three rules, each of which was wrong first: the thumb has a **2px floor** (at
+47 items in 5 rows its true height is 1.4px, and a 1px thumb is a tick of the
+track); the track covers the **rows**, not the rect; and the selection
+highlight stops short of a gutter, or it runs under the bar and draws a
+phantom second thumb wherever the selection is.
+
+---
+
+## Motion
+
+Four widgets animate. Time is passed **in**, never read — there is no
+\`Date.now()\` anywhere in the renderer — which is what makes these strips a pure
+function call rather than a recording, and what lets a page be filmed
+deterministically.
+
+Each strip is one gesture, left to right, sharing a single animation store.
+
+**Every one of these shipped inert for months.** The store must be passed from
+the controller, and \`createAnimState\` was written, exported, unit-tested and
+never *called*. Every widget guards on \`anim && typeof nowMs === "number"\`, so
+an undefined store draws the settled frame forever — silently, and identically
+to a correct render of a value that is not moving. If a strip here ever looks
+like five copies of one picture, that is this bug and not a widget that does
+not move.
+
+### Switch — 160ms
+
+![motion-switch](images/widgets/motion-switch.png)
+
+The slug **snaps**; only the fill moves. That asymmetry is the design: the
+state changed instantly because it did, and the fill sweeping after it is what
+makes the change legible without a frame of ambiguity about which way it went.
+
+### Waveform morph — 100ms
+
+![motion-waveform](images/widgets/motion-waveform.png)
+
+Sine to square, interpolated. Known and not fixed: the enum peek is instant
+while this takes ~100ms, so the option list covers the morph at the moment it
+plays.
+
+### Enum square resize — 120ms
+
+![motion-enum](images/widgets/motion-enum.png)
+
+The square sizes itself to its text and grows into the new width rather than
+jumping. \`LP\` to \`BAN PAS\` is close to the widest case.
+
+### Trigger burst — 300ms
+
+![motion-button](images/widgets/motion-button.png)
+
+Press (120ms), then rings travelling out (300ms). Bursts **append** rather than
+replace, so a fast double-tap throws two rings instead of restarting one — two
+events look like two events. Fired by a jog click or a knob detent.
 `;
 }
 
