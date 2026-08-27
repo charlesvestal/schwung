@@ -30,6 +30,10 @@ import { KIND_ENUM, KIND_OPAQUE, enumIndexOf } from "./param_meta.mjs";
 import { formatParamValue } from "../param_format.mjs";
 import { asciiFold, fitText, shortenLabel, line, circle, notchCorners } from "./render_page.mjs";
 import { drawVizGroup } from "./viz_draw.mjs";
+/* The DOOR rule, not a detector: this renderer never resolves viz (the caller
+ * hands the groups in), it only asks whether a cell it is already drawing is
+ * a way in, and which cells share it. See vizDoorId. */
+import { vizDiveTarget } from "./viz.mjs";
 import { enumSquareLines } from "./font5x3.mjs";
 import { fontPrint as tzPrint, fontWidth as tzWidth, HEIGHT as TZ_H } from "./font_tamzen6x12.mjs";
 import {
@@ -128,7 +132,32 @@ function fitDev(ctx, s, maxWidth) { return caps(fitText(TZ_MEASURE, caps(s), max
 export function displayValue(raw, meta) {
     if (raw === null || raw === undefined) return "--";
     if (meta && meta.kind === KIND_OPAQUE) {
-        return String(raw).split("/").pop() || "--";
+        /*
+         * NOTHING CHOSEN says EMPTY; a read that has not answered says "--".
+         *
+         * Both used to say "--", which is the tri-state collapsed one more
+         * time and in the place it is most visible: a sample slot with no file
+         * looked exactly like a sample slot whose name had not arrived yet.
+         * Asked for from the device — *"we also need a better sample file
+         * state, maybe just the words EMPTY"* — and it belongs HERE, on the
+         * filepath's own cell, rather than written across the waveform beside
+         * it: *"why is spray showing empty? Sample file should be empty."*
+         *
+         * `raw === ""` only. A failed read keeps "--", because "there is no
+         * file" is a fact about the module and we do not have it.
+         *
+         * "NONE" and not "EMPTY", which is the word that was asked for and
+         * does not fit: measured in the box's own 4x5 face it is 23px against
+         * a 21px budget, and it rendered as "EMPT" with the chevron jammed
+         * against it. The budget is what it is because the value has to clear
+         * the chevron in the right edge, and widening it for one word would
+         * narrow that clearance on every opaque cell in the fleet. "NONE" is
+         * 19px, and it is already this tree's word for an empty selection —
+         * `none_label || "(none)"` in the hierarchy editor, `(none)` on the
+         * preset row.
+         */
+        if (raw === "") return "NONE";
+        return String(raw).split("/").pop() || "NONE";
     }
     return formatParamValue(raw, meta);
 }
@@ -2013,6 +2042,43 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
             x: cellLeft(g, localStart), y: rowY,
             w: group.slotSpan * g.cellW, h: lblY - rowY,
         }, group, liveValues, metaIndex, o.anim, o.nowMs);
+        /*
+         * ONE MARK FOR THE WHOLE GRAPHIC.
+         *
+         * A cell inside a graphic is not standing on its own, so it does not
+         * take the per-cell mark below; the picture's mark is drawn here, once,
+         * across the span. Since the filepath stopped claiming a cell (see
+         * detectSample) every cell of a sample graphic is a position within
+         * one file and opens one editor, so one bracket is the honest count.
+         *
+         * Rendered per-cell first, and that is only visible in a render:
+         * granny's cells read as three boxes butted together and mrsample's as
+         * four across one row of waveform — several affordances for one
+         * picture.
+         *
+         * MARK-WORTHY, not `divable`. `divable` is far wider — every enum
+         * declaring options opens a picker — and keying off it framed
+         * mrsample's Loop SWITCH, which is the "bracket them all and every
+         * cell on every page is marked" failure the two flags exist to keep
+         * apart. A cell counts if it would have been marked standing alone, or
+         * if it is redirected into the picture, which is spray.
+         *
+         * Clipped to the row. slotSpan is authoritative for the graphic, but a
+         * group that runs to the end of a row must not draw a bracket arm into
+         * the next one.
+         */
+        const lastCol = Math.min(localStart + group.slotSpan, 4);
+        let groupIsDoor = false;
+        for (let s2 = localStart; s2 < lastCol && !groupIsDoor; s2++) {
+            const gk = page.keys[slotBase + s2];
+            if (!gk) continue;
+            const gm = metaIndex.getOrGuess(gk);
+            groupIsDoor = gm.divable_mark || !!vizDiveTarget(viz, gk, metaIndex);
+        }
+        if (groupIsDoor) {
+            drawBrackets(ctx, cellLeft(g, localStart) + 1, rowY,
+                         (lastCol - localStart) * g.cellW - 2, BOX_H);
+        }
     }
 
     for (let col = 0; col < 4; col++) {
@@ -2058,10 +2124,10 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
          * technically fit — a ragged row of 4s and 6s costs more to read than
          * the extra letters buy. `M` is the widest glyph, so measuring that
          * many of it gives a width no LABEL_CHARS-long label can exceed. */
-        /* AFTER the widget and OUTSIDE the `covered` test: a viz group that
-         * spans the cell (mrsample's SMP waveform) is still divable, and the
-         * mark is the only thing that says so. */
-        /* `divable_mark`, NOT `divable` — an enum opens a picker but is not
+        /*
+         * The DIVABLE MARK, for a cell standing on its own.
+         *
+         * `divable_mark`, NOT `divable` — an enum opens a picker but is not
          * bracketed. See param_meta.mjs normalize() for why the mark cannot
          * simply follow divability.
          *
@@ -2078,18 +2144,22 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
          * without being `KIND_OPAQUE`: it draws as a KNOB and keeps its
          * brackets, which is the whole reason the two flags are separate.
          *
-         * ...and the exclusion is void on a COVERED cell, which is the case
-         * that made it wrong. It is stated in terms of a frame the opaque
-         * widget draws — but a viz group suppresses that widget entirely
-         * (`if (!covered[col])` above), so on granny's "Main - 2" the filepath
-         * `sample_path` sits inside the sample waveform with no frame, no
-         * chevron and no brackets: NOTHING said the middle of that strip was
-         * a door, and it read as more of the spray fences either side of it.
-         * Reported from the device as "empty sample selection is
-         * indistinguishable from the spray control". Covered means the frame
-         * this defers to does not exist, so the mark is the only affordance
-         * left and must be drawn. */
-        if (meta.divable_mark && (covered[col] || meta.kind !== KIND_OPAQUE)) {
+         * AND IT IS SKIPPED WHEN COVERED, because a cell inside a graphic is
+         * not standing on its own: the graphic's own bracket, drawn once
+         * across the whole span up in the viz loop, is its mark. Marking here
+         * as well drew the span's brackets AND a set inside them.
+         *
+         * This is the second time the `covered` test has been wrong in this
+         * one line, in opposite directions, which is worth remembering: it was
+         * first written OUTSIDE the test (so an opaque cell swallowed by a
+         * waveform lost its frame, its chevron and its brackets all at once —
+         * "empty sample selection is indistinguishable from the spray
+         * control"), and the fix for that put the mark on every covered door
+         * separately, which drew three boxes where there is one picture. A
+         * covered cell's affordance belongs to the GROUP; only an uncovered
+         * one is its own door.
+         */
+        if (!covered[col] && meta.divable_mark && meta.kind !== KIND_OPAQUE) {
             drawDivableMark(ctx, g, col, rowY);
         }
 

@@ -326,7 +326,12 @@ if ! grep -q 'click: "PUSH"' <<<"$wo"; then
   exit 1
 fi
 # The neighbouring vocabulary must not have moved with it.
-dv=$(awk '/if \(meta && meta.divable\)/,/^        }/' "$pp")
+#
+# The branch also covers a cell that is divable only THROUGH the picture it is
+# drawn in (granny's spray -- see vizDiveTarget), so it tests two things now.
+# Anchored on the orderedHints call rather than on the condition, because the
+# condition is the part that grew.
+dv=$(awk '/meta.divable\) \|\|$/,/^        }/' "$pp")
 if ! grep -q 'click: "OPEN"' <<<"$dv"; then
   echo "FAIL: a held divable no longer advertises CLK OPEN" >&2
   exit 1

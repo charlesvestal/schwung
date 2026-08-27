@@ -745,34 +745,108 @@ keeps it safe; where the two are apart the run rule still gives span 1.
 `position` on both `root` and `main` — and the graphic then appears on both.
 That is the contract, not the detector.)
 
-**A door SWALLOWED by the picture keeps its brackets.** `divable_mark` excludes
-`KIND_OPAQUE` because since SCH-50 `drawOpaqueBox` draws its own notched frame
-with a chevron, and brackets one pixel outside it read as a doubled border. But
-that exclusion is stated in terms of a frame the *widget* draws, and a viz group
-suppresses the widget entirely — so on granny's "Main - 2", where `sample_path`
-sits inside the waveform between `position` and `spray`, the cell had no frame,
-no chevron and no brackets. Nothing said the middle of that strip was a door,
-and the only marks near it were the spray fences: *"empty sample selection is
-indistinguishable from the spray control"*. The exclusion is now void on a
-covered cell. Fleet-wide that is **8 cells across 6 modules** (granny,
-mrsample, mrdrums, tablor, breakbeat, gesture-test), every one a filepath
-inside a waveform.
+### The sample graphic is ONE door, and the FILE is not part of it
 
-`tests/host/test_divable_mark_covered.sh` asserts it on PIXELS, and the
-discriminators are the interesting part: the brackets and the opaque frame
-occupy the **identical rect**, so "all 24 bracket pixels lit" cannot tell them
-apart. Brackets are "all 24 lit AND the middle of the top edge dark"; a frame
-is "that middle lit AND all four corners dark", because `notchCorners` knocks
-the corners out. Consequently the test's framebuffer **must honour colour 0 as
-an erase** — an ink-list model makes a frame and a frame-with-brackets
-identical, which is exactly the doubled-border regression.
+Four reports in a row, each falsifying the fix for the one before. The end
+state is small; the path to it is the part worth keeping.
 
-Also worth stating because it is the question the report opened with: **`spray`
-is not divable and should not be.** `position` is `wav_position`, an opaque
-type, so it is a door onto the waveform editor *and* a knob-turnable ranged
-number — the reason `divable`, `divable_mark` and `kind` are three separate
-flags. `spray` is a plain float: there is nothing behind it to open, and
-turning it is its whole interface.
+1. *"empty sample selection is indistinguishable from the spray control"* —
+   `sample_path` was **swallowed** by granny's waveform. `divable_mark` excludes
+   `KIND_OPAQUE` because `drawOpaqueBox` draws its own notched frame and
+   chevron, but a viz group suppresses that widget entirely, so the cell had no
+   frame, no chevron, no brackets and no filename.
+2. *"shouldn't the whole thing be divable?"* — `spray` opened nothing, so one
+   picture had a door on the left third and nothing in the middle.
+3. *"sample file isn't part of the continuum because it goes to a different
+   editor"* and *"why is there a line that spans between them?"* — the real
+   one, and it retires most of 1 and 2.
+
+**The file no longer claims a cell** (`detectSample`). It is still
+`roles.value` — the waveform is drawn FROM it, never ON it — and the value is
+still read, because the page cursor walks `page.keys`, not `group.keys`.
+Released, the cell draws as the ordinary opaque box: notched frame, chevron,
+and **the filename**, which is information the graphic was throwing away. That
+is the honest answer to report 1: the fix was never to bracket the cell, it was
+to stop swallowing it.
+
+**`spray` dives to the graphic's anchor** (`vizDiveTarget`), so a click
+anywhere in the picture opens the waveform editor. Derived, never named — the
+rule is "a member of the picture with nothing behind it", so the `self.divable`
+bail is what keeps the filepath's own door. Scoped to `VIZ_SAMPLE`: an envelope
+has no editor behind it, so a redirect there would invent a destination. ONE
+definition, three consumers — the click, the footer hint and the brackets.
+
+**One bracket per graphic**, drawn across the span in the viz loop; covered
+cells take no per-cell mark. Rendered per-cell first and it read as three boxes
+butted together (four on mrsample). Keyed on **mark-worthiness, not
+`divable`** — every enum declaring options is divable, and keying off that
+framed mrsample's Loop *switch*.
+
+**`gatherGroupMembers` had to learn the same thing, and its failure was
+silent.** `scattered` was built from every role, which after the change
+overstated `wantSpan` by one — and since the widened result is verified against
+that number by the real detector, the check could never pass, so the gather was
+abandoned *entirely* and granny's "Main - 2" collapsed to a one-cell waveform
+with the spray arc back three knobs away. Nothing about the failure said "the
+file"; the group simply stopped widening. Caught only by the fleet snapshot.
+
+Fleet effect is exactly two lines of `param_pages_viz.txt` (granny, mrsample)
+and three pages of the pixel baseline.
+
+**`displayValue` now separates "no file" from "no answer".** Both were `"--"`,
+which is the tri-state collapsed in the most visible place: an empty slot
+looked identical to a slot whose name had not arrived. `""` → `NONE`, `null` →
+`--`. It reads **NONE and not EMPTY**, which is the word that was asked for and
+does not fit — 23px in the box's 4x5 face against a 21px budget, rendering as
+`EMPT` with the chevron jammed against it. The budget exists so the value
+clears the chevron; widening it for one word narrows that clearance on every
+opaque cell in the fleet. `NONE` is 19px and is already this tree's word for an
+empty selection (`none_label || "(none)"`, the preset row's `(none)`).
+
+`drawSample` returns early on `file === ""` — no cursor, no fences, no loop
+brackets, since those are all positions *within* a file. `""` **only**: `null`
+is a read that has not completed, and blanking the markers for that would make
+a slow module look like an empty one.
+
+`tests/host/test_sample_cell_doors.sh` pins the lot. Two things in it were
+wrong first and are worth not repeating: the "no spanning line" probe measured
+ink at midY in the file cell (the chevron and the filename glyphs both live
+there) and then the length of the run starting in the waveform (a spray fence
+breaks it around x=35, long before the boundary — it **passed under the
+mutation**). The assertion that works is the single gutter column between the
+graphic and the box. And the framebuffer **must honour colour 0 as an erase**:
+brackets and the opaque frame occupy the identical rect, and only
+`notchCorners` distinguishes them.
+
+### The wave editor draws the spray fences
+
+Once a click on `spray` opens the fullscreen `wav_position` editor, that editor
+has to show it — diving from a control onto a screen that does not contain it
+is the blank-editor failure in miniature. The word `spray` previously appeared
+nowhere in `shadow_ui.js`.
+
+Same two dotted columns `viz_draw.mjs` draws in the cell, same semantics:
+wrapping, and clamped to the file edges at `spray >= 0.5` (past that ±0.5
+already reaches every frame, and a wrapped fence would crawl back *inward* as
+the region grew). Drawn **before** the cursor so the solid cursor wins where
+they coincide, and gated on the spray value alone rather than on `preview.ok` —
+the cursor draws unconditionally, and two marks describing one playhead must
+appear and vanish together.
+
+**Read ONCE, on the way in** (`seedWavEditorSpray`, from
+`beginHierarchyParamEdit`), then maintained from the writes — the editor frame
+is already the most expensive screen here and a draw-path IPC read is ~2.8ms.
+The knob write updates it, or the fences freeze at their entry value and read
+as a dead knob. `isSprayMeta` is **imported** from `viz.mjs`: a second
+predicate would disagree with the cell the user just clicked out of the first
+time either is widened.
+
+Pinned functionally in `test_shadow_param_editor_routing.sh`, which captures
+`set_pixel` and separates dotted from solid. **The cursor sits at ratio 0
+there** — no real WAV, so no duration to map a position against — which puts
+the case squarely on the *wrapping* path, the arithmetic most likely to be
+wrong. Driven at two spray values, because one is satisfied by a hard-coded
+pair.
 
 ### Small ints are BIG NUMBERS, not framed ones
 

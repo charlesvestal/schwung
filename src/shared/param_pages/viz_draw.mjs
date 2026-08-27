@@ -1520,6 +1520,29 @@ export function drawSample(ctx, rect, roles, values, metaIndex) {
     drawStepCurve(ctx, x0, x0 + w, crestAt, 1);
     drawStepCurve(ctx, x0, x0 + w, troughAt, 1);
 
+    /*
+     * NO FILE: draw the baseline and stop.
+     *
+     * No cursor, no spray fences, no loop brackets — those are all positions
+     * WITHIN a file, and there is no file, so drawn anyway they are a playhead
+     * pointing into nothing.
+     *
+     * The WORD "EMPTY" is deliberately not here. It was, centred on the
+     * graphic, and centred on the graphic is over the SPRAY cell: *"why is
+     * spray showing empty? Sample file should be empty."* The emptiness is a
+     * fact about the file, so it is reported on the file's own cell — see
+     * displayValue in render_page_movy.mjs, which no longer answers "--" for
+     * both "no file" and "no answer yet".
+     *
+     * `file === ""` ONLY, and that is the whole safety of this early return:
+     * `""` is the channel answering "there is no file", while `null` is a read
+     * that has not completed — the contract retry, the first frames after a
+     * component loads, granny's own synchronous WAV load blocking the thread
+     * that serves param reads. Blanking the markers for THOSE would make a
+     * slow module look like an empty one.
+     */
+    if (file === "") return;
+
     /* Column i covers frames [i/w, (i+1)/w), so a marker belongs in
      * floor(p*w). The obvious round(p*(w-1)) disagrees for a quarter of all
      * positions and lands a pixel off the column that will actually play. */
