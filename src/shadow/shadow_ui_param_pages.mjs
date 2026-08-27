@@ -49,7 +49,7 @@ import { invalidateLedCache } from '/data/UserData/schwung/shared/input_filter.m
  * under node by test_param_pages_view.sh and test_param_pages_io_forwarding.sh,
  * and wav_io_qjs names the `std`/`os` modules, which node has no idea about.
  * shadow_ui.js is the only file in the shadow UI that node never imports. */
-import { wavPeaksTick } from '/data/UserData/schwung/shared/param_pages/wav_peaks.mjs';
+import { wavPeaksTick, wavPeaksDone } from '/data/UserData/schwung/shared/param_pages/wav_peaks.mjs';
 import { VIZ_SAMPLE } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
 /* The enum option screen, shared with the picker view in shadow_ui.js — one
  * screen, two entries, opposite commit semantics. See enum_list.mjs. */
@@ -472,11 +472,27 @@ export function tickParamPages() {
      */
     const vg = typeof controller.vizGroups === 'function' ? controller.vizGroups() : null;
     if (vg) {
+        /*
+         * The first graphic that is NOT finished, not the first graphic.
+         *
+         * This used to `break` on the first sample cell, on the assumption of
+         * one per page. detectSample returns a graphic per FILE — breakbeat's
+         * Main page carries A SMP and B SMP side by side — so B's envelope was
+         * never advanced and its cell drew as an empty bracketed rectangle
+         * forever, whatever was loaded into it.
+         *
+         * Skipping the settled ones keeps the budget the `break` was there to
+         * protect: still ONE bounded batch per tick, still no I/O on the draw
+         * path. A completes, then B, and each stops costing anything once its
+         * envelope is built.
+         */
         for (const g of vg) {
             if (g.kind !== VIZ_SAMPLE || !g.roles.value) continue;
             const path = controller.state.values[g.roles.value];
-            if (path) wavPeaksTick(String(path));
-            break;      /* one sample cell per page */
+            if (!path) continue;
+            if (wavPeaksDone(String(path))) continue;
+            wavPeaksTick(String(path));
+            break;      /* one bounded batch per tick */
         }
     }
 

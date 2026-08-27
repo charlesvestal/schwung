@@ -2082,17 +2082,36 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
          * position or a loop bound draws whatever the file situation is; one
          * that is only a filepath needs the filepath.
          *
-         * `""` ONLY for the file-only case — a definite "there is no file".
-         * `null`/`undefined` is a read that has not landed, and suppressing
-         * THAT changes the cell's whole widget rather than its contents: a box
-         * would appear and be replaced by a waveform a frame later, on every
-         * page entry. A failed read empties nothing.
+         * ANY falsy file suppresses the FILE-ONLY case — `""`, and equally a
+         * read that has not landed.
+         *
+         * This was `=== ""` first, on the rule that a failed read empties
+         * nothing and must never change a cell's WIDGET. That rule is right,
+         * and it does not reach this case. Elsewhere the widget is a statement
+         * about the parameter and the value is its contents, so swapping it on
+         * a late read is a lie about the control. Here the file IS the
+         * graphic: with no path there is no waveform to draw, whether we know
+         * there is no file or merely do not know the file yet. Both produced
+         * the bracketed empty rectangle this suppression exists to remove, and
+         * `""` alone left the second one on screen — which is the state
+         * breakbeat's B SMP is in for as long as its read is outstanding, i.e.
+         * the reported "sample cell drawing blank on the grid".
+         *
+         * What replaces it is the widget the cell would have had anyway, and
+         * it carries the distinction rather than losing it: `NONE` for empty,
+         * `--` for unanswered. So the tri-state survives where a reader can
+         * actually see it, instead of in a rectangle that looks the same
+         * either way.
+         *
+         * A MARKER-bearing graphic still draws with no file — granny's
+         * position + spray is a real two-cell widget whose values are yours to
+         * set before choosing a sample.
          */
         if (group.kind === VIZ_SAMPLE) {
             const roles = group.roles || {};
             const hasMarker = !!(roles.position || roles.loopStart || roles.loopEnd);
             const fileKey = roles.value;
-            if (!hasMarker && fileKey && values && values[fileKey] === "") continue;
+            if (!hasMarker && fileKey && !(values && values[fileKey])) continue;
         }
         const localStart = group.slotStart - slotBase;
         for (let s = localStart; s < localStart + group.slotSpan && s < 4; s++) covered[s] = true;
