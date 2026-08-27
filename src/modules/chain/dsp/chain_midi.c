@@ -815,6 +815,9 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
                     }
 
                     knob_forward_value(inst, target, param, val_str);
+                    /* Relative: the sender moved by a delta and has no idea
+                     * where that landed, so it needs the absolute answer. */
+                    knob_emit_cc_out(inst, i);
                     return;
                 }
             }
@@ -844,6 +847,13 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
                     else        snprintf(val_str, sizeof(val_str), "%.3f", abs_val);
 
                     knob_forward_value(inst, target, param, val_str);
+                    /* Deliberately no knob_emit_cc_out() here. The sender set
+                     * this value, so echoing it back is at best redundant and
+                     * at worst a loop: a controller configured to echo its own
+                     * output (common — it is how a motorised unit hears itself)
+                     * would fight the user's fingers mid-turn. Record what the
+                     * sender already knows so later change detection is honest. */
+                    inst->knob_mappings[i].last_cc_out = msg[2];
                     return;
                 }
             }
