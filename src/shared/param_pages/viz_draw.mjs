@@ -1521,27 +1521,20 @@ export function drawSample(ctx, rect, roles, values, metaIndex) {
     drawStepCurve(ctx, x0, x0 + w, troughAt, 1);
 
     /*
-     * NO FILE: draw the baseline and stop.
+     * NO FILE still draws the MARKERS.
      *
-     * No cursor, no spray fences, no loop brackets — those are all positions
-     * WITHIN a file, and there is no file, so drawn anyway they are a playhead
-     * pointing into nothing.
+     * This used to return early, on the reasoning that a cursor with no file
+     * is a playhead pointing into nothing. That is true of the playhead and
+     * false of the widget: the empty track, its cursor and its spray fences
+     * are the picture of two controls that still exist and are still yours to
+     * set. "When no sample is loaded it should be the empty two column
+     * widget."
      *
-     * The WORD "EMPTY" is deliberately not here. It was, centred on the
-     * graphic, and centred on the graphic is over the SPRAY cell: *"why is
-     * spray showing empty? Sample file should be empty."* The emptiness is a
-     * fact about the file, so it is reported on the file's own cell — see
-     * displayValue in render_page_movy.mjs, which no longer answers "--" for
-     * both "no file" and "no answer yet".
-     *
-     * `file === ""` ONLY, and that is the whole safety of this early return:
-     * `""` is the channel answering "there is no file", while `null` is a read
-     * that has not completed — the contract retry, the first frames after a
-     * component loads, granny's own synchronous WAV load blocking the thread
-     * that serves param reads. Blanking the markers for THOSE would make a
-     * slow module look like an empty one.
+     * The emptiness is reported where it belongs — on the file's own cell,
+     * which reads NONE (see displayValue in render_page_movy.mjs). It is not
+     * written across the graphic, because centred on the graphic is over the
+     * SPRAY cell: "why is spray showing empty? Sample file should be empty."
      */
-    if (file === "") return;
 
     /* Column i covers frames [i/w, (i+1)/w), so a marker belongs in
      * floor(p*w). The obvious round(p*(w-1)) disagrees for a quarter of all
