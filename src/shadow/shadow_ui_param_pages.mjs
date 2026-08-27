@@ -727,7 +727,16 @@ function footerHints() {
         if (meta && meta.writeOnly) {
             return orderedHints({ jog: "PAGE", click: "PUSH", extra: fine });
         }
-        if (meta && meta.divable) {
+        /*
+         * ...or divable THROUGH the picture it is drawn in: granny's `spray`
+         * has no door of its own and opens the waveform editor because the
+         * strip it sits in does. Same accessor the click uses, for the reason
+         * the paragraph above records — this is the third time a cell has
+         * become a door and the footer has had to be told separately, and the
+         * first two are both written up as promise-versus-behaviour bugs.
+         */
+        if ((meta && meta.divable) ||
+            (controller.diveTargetAt && controller.diveTargetAt(held))) {
             return orderedHints({ jog: "PAGE", click: "OPEN", extra: fine });
         }
     }

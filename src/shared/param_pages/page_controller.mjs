@@ -35,7 +35,7 @@ import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page
 import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
          drawBrackets, drawPresetBody, displayValue, RULE_Y, LAYOUT_MOVY,
          MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W } from "./render_page_movy.mjs";
-import { resolveViz, VIZ_SWITCH } from "./viz.mjs";
+import { resolveViz, vizDiveTarget, VIZ_SWITCH } from "./viz.mjs";
 import { createAnimState } from "./anim_state.mjs";
 import { drawMenuList } from "../menu_layout.mjs";
 
@@ -2595,15 +2595,32 @@ export function createController(io = {}) {
             slot = r.slot;
         }
 
-        const key = keyAt(slot);
-        const meta = metaAt(slot);
+        let key = keyAt(slot);
+        let meta = metaAt(slot);
         if (!key || !meta) return null;
 
         /* A TRIGGER fires — a click is the whole interaction, with no
          * cooldown, because one press is one gesture. See fireTrigger. */
         if (meta.writeOnly) { fireTrigger(key, meta, now()); return null; }
 
-        if (!meta.divable) return null;
+        /*
+         * A cell with no door of its own, drawn as part of a sample graphic,
+         * opens the GRAPHIC'S door — granny's `spray`, which is a plain float
+         * inside the waveform strip. See vizDiveTarget: the redirect is one
+         * definition shared with the footer hint and the corner brackets, so
+         * all three agree about which cells are doors.
+         *
+         * The intent that goes out names the ANCHOR, not the cell clicked, so
+         * every consumer downstream — the editor entry, the return-to-caller
+         * bookkeeping, the announcement — is the unchanged position path and
+         * knows nothing about this.
+         */
+        if (!meta.divable) {
+            const via = diveTargetAt(slot);
+            if (!via) return null;
+            key = via;
+            meta = s.metaIndex.getOrGuess(via);
+        }
         s.pending = { action: "open", key, fullKey: fullKey(key), meta };
         /*
          * An enum opens a list of its OPTIONS, so the intent carries the list
@@ -3036,6 +3053,23 @@ export function createController(io = {}) {
         return false;
     }
 
+    /**
+     * The key this SLOT opens when its own cell has no door — see
+     * vizDiveTarget. Null for every ordinary cell, including one that opens
+     * itself.
+     *
+     * A slot accessor rather than a key one because both callers hold a slot
+     * (the click and the footer hint, which keys off `state.touched`), and
+     * because the answer is a property of the PAGE's layout: the same
+     * parameter on a page where it is not seated next to the cursor is not a
+     * door at all.
+     */
+    function diveTargetAt(slot) {
+        const key = keyAt(slot);
+        if (!key || !s.metaIndex) return null;
+        return vizDiveTarget(vizGroups(), key, s.metaIndex);
+    }
+
     function vizExtraKeys() {
         const out = [];
         for (const g of vizGroups()) {
@@ -3116,7 +3150,7 @@ export function createController(io = {}) {
          *  failure. */
         get contractUnresolved() { return s.contractUnresolved; },
         get triggerFiredAt() { return s.triggerFiredAt; },
-        keyAt, metaAt,
+        keyAt, metaAt, diveTargetAt,
         jumpIndex: () => jumpIndex(s.pages),
         groupIndex: () => groupIndex(s.pages),
     };

@@ -119,8 +119,17 @@ const groupOf = (cp, keys) => {
   ok(g && g.roles.position === "position", "the cursor is the position");
   ok(g && g.roles.loopStart === "loop_start" && g.roles.loopEnd === "loop_end",
      "both bounds join it");
-  ok(g && g.keys.length === 4, "all four keys are claimed by the one graphic");
-  ok(g && g.slotStart === 0 && g.slotSpan === 4, "it spans the whole run");
+  /* THREE, not four: the FILE does not claim a cell. It is still roles.value
+   * -- the waveform is drawn from it -- but it dives to the file browser while
+   * every other member dives to the wave editor, so drawing one continuous
+   * picture across it put a boundary in the middle of a shape that reads as
+   * one thing. Reported from the device as "sample file isnt part of the
+   * continuum because it goes to a different editor" and then "why is there a
+   * line that spans between them?". See detectSample. */
+  ok(g && g.keys.length === 3, "the three POSITIONS are claimed by the one graphic");
+  ok(g && (g.keys || []).indexOf("sample_path") < 0, "and the file is not");
+  ok(g && g.roles.value === "sample_path", "though it is still what the waveform is drawn FROM");
+  ok(g && g.slotStart === 1 && g.slotSpan === 3, "so the graphic starts after the file cell");
 
   /* ---------------------------------------------------------- the pixels */
   const fb = createFramebuffer();

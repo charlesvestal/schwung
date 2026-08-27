@@ -66,7 +66,7 @@ import { drawChainEditorBands, drawChainPicker, shiftHintsFor, CHAIN_HINTS_AT_RE
  * covers. Both are pure and both are already on the device for the knob grid. */
 import { drawKnobCard } from '/data/UserData/schwung/shared/param_pages/knob_card.mjs';
 import { buildMetaIndex } from '/data/UserData/schwung/shared/param_pages/param_meta.mjs';
-import { resolveViz } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
+import { resolveViz, isSprayMeta } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
 import { listKnobInit, listKnobStep } from '/data/UserData/schwung/shared/param_pages/list_knob.mjs';
 /* Which user preset a component is currently on, and whether the live state
  * has moved away from it since — the "My Presets" trailing page's row 1
@@ -12858,7 +12858,49 @@ function beginHierarchyParamEdit(key) {
 
     hierEditorEditKey = fullKey;
     hierEditorEditValue = String((baseVal !== null) ? baseVal : liveVal);
+    seedWavEditorSpray(key, meta);
     return true;
+}
+
+/*
+ * The spray that belongs to the wav_position about to be edited, and its
+ * value, resolved ONCE on the way in.
+ *
+ * The fullscreen editor draws the same fences the grid cell does, so it needs
+ * a second parameter's value -- and the draw path is the one place that must
+ * not read. An editor frame is already the most expensive screen here (it
+ * resamples the WAV), and a per-frame IPC read is ~2.8ms against a 1.68ms
+ * whole-page render. So: one read here, then the value is maintained locally
+ * from the writes, exactly as hierEditorEditValue is for the position itself.
+ *
+ * Nulled for anything that is not a wav_position with a spray sibling, which
+ * is every module in the fleet but granny -- so the fences cost nothing and
+ * draw nothing wherever they do not apply.
+ */
+let wavEditorSpray = null;   /* { fullKey, value } */
+function seedWavEditorSpray(key, meta) {
+    wavEditorSpray = null;
+    if (!meta || meta.ui_type !== "wav_position") return;
+    if (!Array.isArray(hierEditorParams)) return;
+    for (const p of hierEditorParams) {
+        const k = (typeof p === "string") ? p : (p && p.key ? p.key : null);
+        if (!k || k === key) continue;
+        const m = getParamMetadata(k);
+        /* isSprayMeta, imported -- the grid's own definition of what a spray
+         * is. A second predicate here would disagree with the cell the user
+         * just clicked out of the first time either is widened. */
+        if (!isSprayMeta(k, m)) continue;
+        const fullKey = buildHierarchyParamKey(k);
+        const raw = getSlotParam(hierEditorSlot, fullKey);
+        /* A FAILED read is not a zero. Leaving it null draws no fences, which
+         * is honest; inventing 0 would draw two fences on top of the cursor
+         * and state a spread of nothing. */
+        if (raw === null || raw === "") return;
+        const v = parseFloat(raw);
+        if (isNaN(v)) return;
+        wavEditorSpray = { fullKey, value: v };
+        return;
+    }
 }
 
 function shouldRefreshDynamicRateMeta(key) {
@@ -13725,6 +13767,15 @@ function processPendingHierKnob() {
         hierEditorEditValue = formattedKnobVal;
     }
 
+    /* Same reason, one parameter across: the SPRAY whose fences that editor is
+     * drawing. Turning spray while the wave editor is up must widen the fences
+     * as you turn, and the editor never reads -- so the write is the only place
+     * that can tell it. Without this the fences sit at the value they had on
+     * entry and look frozen, which reads as the knob being dead. */
+    if (wavEditorSpray && ctx.fullKey === wavEditorSpray.fullKey) {
+        wavEditorSpray.value = newVal;
+    }
+
     /* Skip refreshHierarchyVisibility for float/int turns — it does IPC
      * (evaluateVisibilityCondition) and invalidates the context cache
      * (triggering 16+ IPC reads to rebuild). Only enum changes can affect
@@ -14508,6 +14559,54 @@ function drawWavPositionEditor(selectedKey, selectedMeta) {
             }
         }
     } else {
+        /*
+         * THE SPRAY FENCES, at full-screen scale.
+         *
+         * The same two dotted columns the grid cell draws (viz_draw.mjs
+         * drawSample), and the same semantics, because they are a picture of
+         * the same thing: granny reads a grain from anywhere in
+         * `pos ± spray` of the WHOLE file, wrapping, so the fences wrap too
+         * and clamp to the file edges once spray >= 0.5 -- past that, ±0.5
+         * already reaches every frame and a wrapped fence would crawl back
+         * INWARD as the region grew, which is the opposite of what happened.
+         *
+         * DOTTED, and the cursor stays solid: the cursor is where a grain is
+         * read from, the fences are a boundary it may wander past. They are
+         * drawn BEFORE the cursor so that where the two land on the same
+         * column the cursor wins -- at spray 0 both fences sit exactly on it,
+         * and a dotted column over a solid one would make the play position
+         * flicker at the value where the spread is off.
+         *
+         * Zoom-aware through the same zoomStart/zoomRange the cursor uses, and
+         * simply not drawn when a fence falls outside the window. An edge
+         * marker like the multi-marker arrows would claim a boundary sits at
+         * the edge of the view when it does not.
+         */
+        /* Gated on the spray VALUE alone, not on preview.ok. The cursor just
+         * below draws unconditionally, and a fence that disappeared while the
+         * cursor stayed would read as the spray being off rather than as the
+         * file being unreadable -- two marks describing one playhead must
+         * appear and vanish together. */
+        if (wavEditorSpray && wavEditorSpray.value > 0) {
+            const spray = Math.max(0, Math.min(1, wavEditorSpray.value));
+            const full = spray >= 0.5;
+            for (const side of [-1, 1]) {
+                let at;
+                if (full) {
+                    at = side < 0 ? 0 : 1;
+                } else {
+                    at = ratio + side * spray;
+                    at -= Math.floor(at);          /* wrap into [0,1) */
+                }
+                if (at < zoomStart || at > zoomEnd) continue;
+                const fx = plotX + 1 +
+                    Math.round(((at - zoomStart) / zoomRange) * (innerW - 1));
+                for (let y = plotY + 1; y < plotY + plotH - 1; y++) {
+                    if (((y + fx) & 1) !== 0) continue;
+                    set_pixel(fx, y, 1);
+                }
+            }
+        }
         /* Single-marker legacy: just the active cursor. */
         for (let y = plotY + 1; y < plotY + plotH - 1; y++) {
             set_pixel(cursorX, y, 1);
