@@ -119,51 +119,65 @@ static void sleep_ms(int ms) {
  * v2_create_instance, which is ITSELF on the SPI callback, so inheriting FIFO
  * 70 is the DEFAULT outcome and it would silently defeat this entire file —
  * every plugin worker would still be born realtime and the only symptom would
- * be the dropouts we are trying to remove. The pthread_attr in
- * chain_loader_start says SCHED_OTHER explicitly; this says it again from
- * inside the thread, because the two mechanisms fail differently and neither
- * one reports failing.
+ * be the dropouts we are trying to remove.
  *
- * It is also, deliberately, the exact three lines the fleet-repo patch asks
- * module authors to add to their own workers.
+ * NOT to SCHED_OTHER — to CHAIN_LOADER_RT_PRIORITY, and the difference is the
+ * whole fleet. Everything a plugin spawns from create_instance inherits this
+ * thread's scheduling, so dropping to SCHED_OTHER does not merely stop the
+ * starvation, it takes realtime away from modules that were silently relying
+ * on it to keep up. Measured on hardware 2026-08-27: osirus's forked DSP child
+ * audibly underran. See the constant's comment in chain_loader.h for the three
+ * rungs and why 20 is the one.
  */
-static void loader_thread_demote(void) {
+static void loader_thread_set_priority(void) {
     struct sched_param sp;
     memset(&sp, 0, sizeof(sp));
+    sp.sched_priority = CHAIN_LOADER_RT_PRIORITY;
 
     /*
-     * BOTH CALLS, THEN VERIFY — and the verification is the point.
+     * ASK, THEN VERIFY — and the verification is the point.
      *
-     * The first version called only sched_setscheduler() and trusted it. On
-     * hardware 2026-08-27 it did not take: the audit reported this very thread
-     * as `schwung-loader` at SCHED_FIFO 45 — realtime, and above Move's
-     * `Link Main` at 35, i.e. precisely the harm this whole file exists to
-     * remove. The affinity call two lines below succeeded on the same thread in
-     * the same function, so this was not a missing _GNU_SOURCE or a
-     * non-Linux build; the scheduler call itself failed, silently, and
-     * everything downstream assumed it had worked.
-     *
-     * The comment above already warned that "the two mechanisms fail
-     * differently and neither one reports failing" — and then nothing checked.
-     * That was the actual defect, so now it checks and says so.
+     * The first version called one setter and trusted it. On hardware
+     * 2026-08-27 it did not take: the audit reported this very thread as
+     * `schwung-loader` at SCHED_FIFO 45, inherited straight from the caller —
+     * realtime, above Move's `Link Main` at 35, i.e. precisely the harm this
+     * file exists to remove. It was not a missing _GNU_SOURCE or a non-Linux
+     * build: sched_setaffinity() succeeded on the same thread two lines later.
+     * The scheduler call failed silently and everything downstream carried on
+     * as though it had worked.
      *
      * pthread_setschedparam() is tried first because it is the call minijv
-     * uses on this same device, from this same context, successfully.
+     * makes from this same context on this same device, successfully.
      */
-    pthread_setschedparam(pthread_self(), SCHED_OTHER, &sp);
+    pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
 #ifdef __linux__
-    sched_setscheduler(0, SCHED_OTHER, &sp);
+    sched_setscheduler(0, SCHED_FIFO, &sp);
 
     {
         int pol = sched_getscheduler(0);
-        if (pol != -1 && pol != SCHED_OTHER) {
-            /* Loud, once per loader thread. A realtime loader silently
-             * re-creates the bug for every plugin thread born from create. */
-            char msg[160];
+        struct sched_param got;
+        memset(&got, 0, sizeof(got));
+        sched_getparam(0, &got);
+
+        /*
+         * The only thing that must never be true: sitting at or above Move's
+         * Link Audio publisher. Anything else is a degradation we can live
+         * with, so it is reported rather than retried.
+         */
+        if (pol != -1 && pol != SCHED_OTHER &&
+            got.sched_priority >= CHAIN_LOADER_LINK_MAIN_PRIORITY) {
+            char msg[192];
             snprintf(msg, sizeof(msg),
-                     "chain loader: FAILED to leave realtime (policy %d) — "
-                     "plugin threads created here will inherit it", pol);
+                     "chain loader: STILL ABOVE Link Main (policy %d prio %d) — "
+                     "plugin threads created here will inherit it and can "
+                     "starve Move's audio", pol, got.sched_priority);
             chain_loader_note_demote_failed(msg);
+
+            /* Last resort: normal priority is worse for a module that needs
+             * to keep up, but it cannot starve the device. */
+            memset(&sp, 0, sizeof(sp));
+            pthread_setschedparam(pthread_self(), SCHED_OTHER, &sp);
+            sched_setscheduler(0, SCHED_OTHER, &sp);
         }
     }
 #endif
@@ -233,7 +247,7 @@ static void loader_drain_retires(chain_loader_t *ld) {
 
 static void *loader_thread_main(void *arg) {
     chain_loader_t *ld = (chain_loader_t *)arg;
-    loader_thread_demote();
+    loader_thread_set_priority();
 
     while (!ld_acq(&ld->quit)) {
         loader_drain_retires(ld);
@@ -311,18 +325,31 @@ static int chain_loader_start(chain_instance_t *inst) {
                                                      sizeof(chain_param_info_t));
     if (!ld->staged.params) { free(ld); return -1; }
 
-    /* EXPLICIT_SCHED, or the thread inherits the SPI callback's FIFO 70 —
-     * see loader_thread_demote() for why this is said twice. */
+    /* EXPLICIT_SCHED, or the thread simply inherits the SPI callback's FIFO 70
+     * — which is what actually happened on hardware, hence the belt-and-braces
+     * in loader_thread_set_priority() and the check that follows it there. */
     pthread_attr_t attr;
     pthread_attr_init(&attr);
 #ifdef __linux__
     struct sched_param sp;
     memset(&sp, 0, sizeof(sp));
+    sp.sched_priority = CHAIN_LOADER_RT_PRIORITY;
     pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED);
-    pthread_attr_setschedpolicy(&attr, SCHED_OTHER);
+    pthread_attr_setschedpolicy(&attr, SCHED_FIFO);
     pthread_attr_setschedparam(&attr, &sp);
 #endif
     int rc = pthread_create(&ld->thread, &attr, loader_thread_main, ld);
+#ifdef __linux__
+    if (rc != 0) {
+        /* Refused the realtime request (no privilege). Normal priority is a
+         * worse loader but a working one, and it is strictly safer than the
+         * FIFO 70 this would otherwise inherit. */
+        pthread_attr_setschedpolicy(&attr, SCHED_OTHER);
+        memset(&sp, 0, sizeof(sp));
+        pthread_attr_setschedparam(&attr, &sp);
+        rc = pthread_create(&ld->thread, &attr, loader_thread_main, ld);
+    }
+#endif
     pthread_attr_destroy(&attr);
 
     if (rc != 0) {
