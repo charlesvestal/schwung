@@ -1471,6 +1471,71 @@ which unloads in place and leaves a hole. Adding those (and the permutation
 that must come with them) is residual 2.2 Step 4, and it is a new feature, not
 a port of `chain_reorder.c`.
 
+### The SHIM says what is loaded, and it says it ONCE
+
+`masterFxConfig` is an in-file mirror that only learns about a position when
+something in `shadow_ui.js` puts it there. Anything that loads a master module
+by writing `master_fx:fxN:module` **straight to the shim** was therefore
+invisible to `saveMasterFxChainConfig()` — an overtake tool (movy is the visible
+case), or any Remote UI client, since schwung-manager's
+`handleSetMasterFxParam` forwards whatever key it is handed with no allowlist.
+The saver took its empty branch, wrote `{}` over a position the shim genuinely
+had loaded, and **the whole master chain was gone on the next boot** (two
+Discord reports; PR #221). It drifted the other way too: a position cleared
+through the shim was written back from the stale mirror.
+
+So the saver asks the shim. **`master_fx:modules`** (GET only) answers with the
+whole chain in one string — `[{"id":…,"path":…},…]`, one entry per position,
+built by `src/host/master_fx_snapshot.h`. Three properties the reader depends
+on and cannot check for itself, all pinned by
+`tests/host/test_master_fx_snapshot.c`:
+
+- **positional, never compacted.** An unloaded position is an empty entry. Omit
+  it and position 3's module lands on position 1 the moment anything ahead of it
+  is empty — a wrong module at boot, not a missing one.
+- **it refuses rather than truncates.** A short array parses perfectly and reads
+  as "those positions are empty", which is the erase this exists to prevent.
+- **quotes and backslashes are escaped.** Not for the odd filename's sake: the
+  reader treats unparseable exactly as it treats a failed read, so one strange
+  path would silently stop the whole chain persisting.
+
+**One read, not sixteen.** The first cut asked `fxN:name` per position plus
+`fxN:module` per loaded one — 8+ IPC round trips at ~2.8ms landing on the
+autosave frame, which is the frame the one-slot-per-tick split exists to keep
+clean. An IPC read costs more than redrawing the entire screen, so the count is
+the thing to fix, not the schedule.
+
+**It also makes the id and the path ONE fact.** Read separately they are two
+round trips that fail independently, and a state file pairing this position's id
+with the previous module's path restores the wrong module in silence — the boot
+loader parses `module_path` and never looks at `module_id`. The path is taken
+from the same answer as the id and only when it describes the module being
+written; otherwise the startup scan answers. And an id with **no** path is not
+written at all: it restores nothing, so putting it over a good file is the same
+erase as `{}`.
+
+Three things guard the read itself, all in `saveMasterFxChainConfig`:
+
+- **a null snapshot adopts NOTHING.** Failed is not empty — see "A param read
+  has THREE answers". The per-position reads stay as the fallback, because a
+  shim older than the JS answers this key with an error and the web updater
+  mirrors the shim separately: without the fallback, version skew silently
+  restores the data-loss bug.
+- **a write still in flight is not read back over.** `shadow_set_param` is
+  fire-and-forget under overtake, so a save reached from a tool through `ctx`
+  can read the position before its own write lands and adopt the module the user
+  just replaced. `masterFxModuleWriteAt` + `CONTRACT_SETTLE_MS`, the same bargain
+  as `userPresetWriteAt`.
+- **adopting invalidates the display-name caches**, like every other site that
+  assigns `.module`. They are keyed by POSITION, not by module, so a position
+  that adopts a different module goes on labelling and announcing as the last
+  one.
+
+`tests/host/test_master_fx_save_reads_shim.sh` drives the real function through
+a fixed dependency list rather than grepping for it — the version that shipped
+with #221 was five `rg -q` source pins in `tests/shadow`, a directory **CI does
+not run**, so deleting the fix would not have failed anything anywhere.
+
 ### A STEP button is not a note, and audio FX were told it was
 
 Audio FX are fed from **three** places, and the only guard any of them had was
