@@ -22,7 +22,7 @@ cd "$(dirname "$0")/../.."
 # this pins ALL THREE CASES on the actual pixel buffer:
 #
 #   - an enum cell draws NO brackets
-#   - a wav_position cell still DOES -- it is divable_mark without being
+#   - a wav_position cell still DOES -- it is an opaque TYPE without being
 #     KIND_OPAQUE, draws as a KNOB, and so has no frame but the brackets
 #   - a filepath / canvas / string cell is a DOOR: since SCH-50 `door-open` it
 #     draws its own notched frame with the right edge broken and a chevron in
@@ -175,7 +175,7 @@ for (const k of ["file", "view", "name", "pos"])
   }
   /*
    * wav_position STILL wears the brackets, and it is the whole reason the two
-   * flags are separate. It is `divable_mark` without being KIND_OPAQUE: a
+   * fields are separate. It is an opaque TYPE without being KIND_OPAQUE: a
    * ranged number a knob turns perfectly well that ALSO has a waveform editor
    * worth opening. It draws as a knob, so it has no frame of its own and the
    * brackets remain its only mark.
@@ -183,7 +183,7 @@ for (const k of ["file", "view", "name", "pos"])
   if (!marked(3)) {
     const dark = corners(3).filter(([x, y]) => !at(x, y)).map((c) => c[2]);
     fail("the wav_position cell has lost its divable brackets (" + dark.join(", ") +
-         "). It draws as a KNOB -- it is divable_mark but not KIND_OPAQUE -- so " +
+         "). It draws as a KNOB -- an opaque type but not KIND_OPAQUE -- so " +
          "the brackets are the only thing saying it opens an editor.");
   }
 

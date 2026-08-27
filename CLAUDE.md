@@ -564,14 +564,42 @@ model with forty-seven. `VIEWS.ENUM_PICKER`, `drawEnumPicker` in
 (`enumPickerFooterHints` in `shadow_ui_param_pages.mjs` — the hint vocabulary is
 a canon, so the wording is built there and not at the draw site).
 
-**`meta.divable` and `meta.divable_mark` are separate on purpose.** The corner
-brackets key on `divable_mark`, which stays exactly where it was: the opaque
-types. ~135 enums in the fleet against ~5 opaque params — bracket them all and
-every cell on every page is marked, which is the same as marking none; and for
-an opaque cell the brackets are STRUCTURAL, because `drawOpaqueBox` draws no
-frame of its own. Net pixel change on the grid is zero. The affordance for an
-enum is the footer, which flips to `CLK OPEN` off `divable` for free. An enum
-with no declared options has no list, so it is not a door.
+**THE CELL MARKS DO NOT MEAN "DIVABLE."** Measured over the fleet: **967
+divable cells on knob pages, 953 of them (99%) wearing NO mark at all** —
+because almost every divable cell is an enum. Divability is a FOOTER fact:
+hold the knob and it reads `CLK OPEN`. Marking 135 enums would erase what a
+mark means.
+
+The two marks split something narrower, cleanly, with zero overlap:
+
+| mark | cells | turnable? | means |
+|---|---|---|---|
+| corner brackets | 7 | always | the knob works, AND it opens something |
+| chevron box | 7 | never | there is no knob here — only a door |
+
+So **the chevron is not a mark, it is the WIDGET**: an opaque cell has no
+value-shape to draw, so `drawOpaqueBox`'s notched frame with a chevron in its
+broken edge is what that cell looks like. The brackets are an annotation on a
+working widget, and in practice mean exactly one thing — a **ranged
+`wav_position`**, a number a knob turns that also has a waveform editor behind
+it.
+
+That is why they must never be unified. Bracketing the opaque cells puts two
+frames on one rect (a doubled border) and still leaves 953 enums unmarked, so
+it unifies nothing; putting the chevron on every divable cell puts it on 953
+enums. Reported as *"is it confusing we have brackets and carats that both mean
+divable"* — the answer is that they never meant the same thing, but the flag
+name said they did.
+
+Hence the naming, which is the fix: `meta.opaque_type` is a fact about the
+DECLARATION, and `alsoOpens()` in `param_meta.mjs` is the bracket rule,
+single-sourced. It used to be open-coded as `divable_mark && kind !==
+KIND_OPAQUE` at each draw site — three terms of subtlety repeated per caller,
+and one site is the per-cell mark while the other is a whole viz group's, so
+they drifted the moment either was touched. `alsoOpens` also requires
+`divable`, so a read-only declaration cannot wear a mark promising a door that
+`onClick` will refuse to open (21 fleet params either way, so provably a
+no-op today — it is there so the mark cannot start lying).
 
 **The picker wears the movy chrome from BOTH entry points** — the knob grid, and
 a jog-click on an enum row in the hierarchy list editor — and reuses the one

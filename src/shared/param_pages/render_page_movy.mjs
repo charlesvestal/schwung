@@ -26,7 +26,7 @@
  * device's own print(), same as the dial/bar grid.
  */
 
-import { KIND_ENUM, KIND_OPAQUE, enumIndexOf } from "./param_meta.mjs";
+import { KIND_ENUM, KIND_OPAQUE, enumIndexOf, alsoOpens, opensOnClick } from "./param_meta.mjs";
 import { formatParamValue } from "../param_format.mjs";
 import { asciiFold, fitText, shortenLabel, line, circle, notchCorners } from "./render_page.mjs";
 import { drawVizGroup } from "./viz_draw.mjs";
@@ -1488,7 +1488,7 @@ export function drawEnumSquare(ctx, kx, ky, text, anim, nowMs, animKey) {
  * SCH-50 `door-open`. IT NOW DRAWS ITS OWN FRAME, and that is a swap, not an
  * addition: it used to draw none at all and wear the divable brackets as its
  * frame instead. `drawKnobRow` therefore suppresses the bracket for this kind —
- * see the `divable_mark` call site — so the two never double up.
+ * see the alsoOpens() call site — so the two never double up.
  *
  * The frame is a notched 1px box with its RIGHT EDGE CUT AWAY for five rows and
  * a 3-row chevron sitting in the gap, with the value set left of it. Three
@@ -1532,7 +1532,7 @@ export function drawEnumSquare(ctx, kx, ky, text, anim, nowMs, animKey) {
  * 60 modules — including obxd volume [0..100], 9w9 tune [0..127] and minijv
  * macro_cutoff [0..127]. Those are continuous AMOUNTS that happen to be typed
  * int, and an arc is the right picture of them. Framing everything is the same
- * mistake divable_mark already records: a mark on almost every cell is a mark
+ * mistake alsoOpens() already records: a mark on almost every cell is a mark
  * on none, and it would destroy the contrast that makes a framed number
  * readable in the first place.
  *
@@ -1696,17 +1696,20 @@ export function drawOpaqueBox(ctx, kx, ky, value, override) {
  * ~8px of clear corner a 32px cell has, it does not resolve into a box and an
  * arrow, it resolves into a smudge.
  *
- * Keyed on meta.divable_mark, which is NOT kind === OPAQUE and is no longer
- * meta.divable either. Three different questions:
+ * Keyed on alsoOpens() — see param_meta.mjs, where the rule lives so the two
+ * draw sites (this per-cell one and the viz group's) cannot drift.
  *
- *   kind === OPAQUE   a knob cannot turn it. granny's wav_position is a ranged
- *                     number a knob turns perfectly well AND has a waveform
- *                     editor worth opening, so it draws as a KNOB wearing
- *                     brackets; keying the mark on opaqueness made it dead.
- *   divable           a click opens something. Every enum does now.
- *   divable_mark      it wears these brackets. Opaque types only — bracketing
- *                     135 enums would erase the mark's meaning, and the footer
- *                     already says CLK OPEN while such a knob is held.
+ * THE BRACKETS AND THE CHEVRON DO NOT MEAN THE SAME THING, and the old name
+ * for the flag ("divable_mark") said they did. Measured over the fleet: 967
+ * divable cells on knob pages, 953 of them wearing NO mark at all, because
+ * every enum with options opens a list. Divability is a FOOTER fact.
+ *
+ *   corner brackets   7 cells, ALL turnable    "the knob works, AND it opens"
+ *   chevron box       7 cells, NONE turnable   "there is no knob; only a door"
+ *
+ * So the chevron is not a mark at all — it is the WIDGET drawOpaqueBox draws
+ * for a cell that has no value-shape to show. Do not describe it as a divable
+ * mark; that is the confusion this comment exists to stop.
  *
  * MUST stay inside rowY..rowY+BOX_H-1. One row of overflow lands on LBL0_Y and
  * the brackets merge into the label below.
@@ -1736,7 +1739,7 @@ export function drawBrackets(ctx, x, y, w, h, len = BRACKET_LEN) {
     }
 }
 
-function drawDivableMark(ctx, g, col, rowY) {
+function drawAlsoOpensMark(ctx, g, col, rowY) {
     drawBrackets(ctx, cellLeft(g, col) + 1, rowY, g.cellW - 2, BOX_H);
 }
 
@@ -2110,7 +2113,14 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
             const gk = page.keys[slotBase + s2];
             if (!gk) continue;
             const gm = metaIndex.getOrGuess(gk);
-            groupIsDoor = gm.divable_mark || !!vizDiveTarget(viz, gk, metaIndex);
+            /* opensOnClick, NOT alsoOpens: the per-cell mark annotates a
+             * working widget, so it excludes KIND_OPAQUE. Here the widget is
+             * not drawn at all — the graphic covers it — so the span's mark is
+             * the only thing left, and it has to appear for a KIND_OPAQUE
+             * member too. mrdrums is the case: `pad_start` is a non-ranged
+             * wav_position. Narrowing this to alsoOpens silently unmarked that
+             * page and showed up only in the pixel baseline. */
+            groupIsDoor = opensOnClick(gm) || !!vizDiveTarget(viz, gk, metaIndex);
         }
         if (groupIsDoor) {
             drawBrackets(ctx, cellLeft(g, localStart) + 1, rowY,
@@ -2164,7 +2174,7 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
         /*
          * The DIVABLE MARK, for a cell standing on its own.
          *
-         * `divable_mark`, NOT `divable` — an enum opens a picker but is not
+         * alsoOpens(), NOT `divable` — an enum opens a picker but is not
          * bracketed. See param_meta.mjs normalize() for why the mark cannot
          * simply follow divability.
          *
@@ -2177,9 +2187,9 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
          *
          * This is a narrower exclusion than "opaque cells are not marked".
          * granny's `wav_position` is a ranged number a knob turns perfectly
-         * well AND has a waveform editor worth opening, so it is `divable_mark`
+         * well AND has a waveform editor worth opening, so it is an opaque TYPE
          * without being `KIND_OPAQUE`: it draws as a KNOB and keeps its
-         * brackets, which is the whole reason the two flags are separate.
+         * brackets, which is the whole reason the fields are separate.
          *
          * AND IT IS SKIPPED WHEN COVERED, because a cell inside a graphic is
          * not standing on its own: the graphic's own bracket, drawn once
@@ -2196,9 +2206,7 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
          * covered cell's affordance belongs to the GROUP; only an uncovered
          * one is its own door.
          */
-        if (!covered[col] && meta.divable_mark && meta.kind !== KIND_OPAQUE) {
-            drawDivableMark(ctx, g, col, rowY);
-        }
+        if (!covered[col] && alsoOpens(meta)) drawAlsoOpensMark(ctx, g, col, rowY);
 
 
         const label = labelForCell(meta.label || meta.key, g.cellW);

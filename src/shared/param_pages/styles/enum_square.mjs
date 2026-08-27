@@ -177,7 +177,7 @@ function drawUnderline(ctx, kx, ky, text) {
  * real decision rather than a free one: it makes the enum LOOK divable, and
  * since every enum with declared options now IS divable — hold, click, pick
  * from a list — that reading is correct. The counter-argument is that
- * `divable_mark` was deliberately restricted to the ~5 opaque params precisely
+ * the bracket mark was deliberately restricted to the ~5 opaque params precisely
  * so the mark would keep meaning something, and this option spends it on ~135
  * enums.
  */
@@ -372,7 +372,7 @@ export function register() {
             },
             {
                 position: 4, id: "bracket", name: "Bracket", draw: drawBracketFrame, textW: ENUM_W - 4, overflowFonts: ["dot-matrix"],
-                note: "The frame reduced to four corners. This is not a neutral choice: corner brackets are already this grids grammar for you-can-go-into-this, and since every enum with declared options now opens a picker, the reading is CORRECT. The argument against is that divable_mark was deliberately withheld from the ~135 enums so the mark would keep meaning something on the ~5 opaque params, and this spends it. Line budget 16px, the same as the incumbent: overflows wide (17px for PAS) and dot-matrix.",
+                note: "The frame reduced to four corners. This is not a neutral choice: corner brackets are already this grids grammar for you-can-go-into-this, and since every enum with declared options now opens a picker, the reading is CORRECT. The argument against is that the bracket mark was deliberately withheld from the ~135 enums so it would keep meaning something on the ~5 opaque params, and this spends it. Line budget 16px, the same as the incumbent: overflows wide (17px for PAS) and dot-matrix.",
             },
             {
                 position: 5, id: "inverted", name: "Inverted", draw: drawInverted, textW: ENUM_W - 2, overflowFonts: ["dot-matrix"],
