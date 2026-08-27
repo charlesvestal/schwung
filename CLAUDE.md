@@ -337,8 +337,11 @@ at 45). Arm it and look before reasoning about priorities:
 **CPU pinning:** Keep core 3 free for SPI. Pin compute-heavy procs (RNBO) to cores 0–2 (`taskset 0x7`). See `docs/REALTIME_SAFETY.md`.
 
 **Module entry points ARE the SPI callback — and the ecosystem does not know
-it.** `create_instance`, `destroy_instance`, `set_param`, `get_param`,
-`on_midi`/`process_midi` and `render_block`/`tick` all run there. A 2026-08
+it.** `set_param`, `get_param`, `on_midi`/`process_midi` and
+`render_block`/`tick` all run there. **`create_instance`/`destroy_instance` no
+longer do, for a chain slot's SYNTH** — see "Module loading is deferred" below;
+every other position still creates inline, so a module must assume either
+thread. A 2026-08
 audit of all 113 catalogued modules found ~150 confirmed violations, several
 carrying comments asserting the opposite in so many words ("control-thread
 only", "NEVER from process_block — so this malloc is realtime-safe"). Authors
@@ -354,6 +357,56 @@ found five, and not the same five — see
 harm**: a worker that parks on a condvar starves nobody, so the number that
 matters is CPU burned at realtime priority, which is what the audit reports, and a **`get_param` that scans a directory is served
 once per repaint**, which makes it worse than the equivalent `set_param`.
+
+### Module loading is DEFERRED (synth position only)
+
+A `synth:module` write used to `dlopen` + `create_instance` on the SPI callback
+— **measured 672.9 ms for minijv, ~232 consecutive dropped frames** — and,
+because `PTHREAD_INHERIT_SCHED` is the POSIX default, every thread the plugin
+spawned there was born **FIFO 70** and starved Move's FIFO-35 `Link Main`.
+
+`src/modules/chain/dsp/chain_loader.c` **stages, it does not swap**: a
+SCHED_OTHER loader thread builds the instance into a record no render path can
+reach, and `v2_render_block` publishes it by swapping pointers. So *"only the
+SPI thread ever mutates a chain instance"* survives verbatim, a module's own
+state is never reached from two threads, and **neither side takes a lock** — an
+RT thread blocking on a mutex held by a SCHED_OTHER thread is unbounded
+priority inversion, which is the defect the audit flagged in minijv's
+`ring_mutex`. The loader is woken by **polling** rather than signalled, because
+`sem_post` from the audio callback would be a futex syscall to save latency on
+an operation that takes hundreds of milliseconds.
+
+**No field has two writers**, and that rule was bought. A first version kept one
+`state` word both threads wrote: the loader storing READY just after the SPI
+thread stored QUEUED **lost the newer request permanently** (the position simply
+never loads, nothing logged), and the opposite order stranded a staged module
+commit could never reach, leaking a dlopen handle per swap. Work is now derived
+from generation counters, each advanced by one side only, and "is a load
+outstanding" is `req_gen != committed_gen` — one question with one answer.
+
+Consequences worth knowing:
+
+- **The outgoing module renders for the whole load**, so a swap costs no
+  silence. It also means `<prefix>_module` keeps reporting the **committed**
+  name, never the pending one — `component_load_gate.mjs` reads "named + no
+  hierarchy" as *fall back immediately*.
+- **`synth:is_loading` is implemented for the first time.** The shadow UI has
+  probed that key for months (`page_controller.mjs`, the component load gate)
+  against a host that never served it, because loading was synchronous and
+  there was never a moment when the honest answer was `"1"`. It must be exactly
+  `"1"`/`"0"`; anything else latches the component as not-implementing-it.
+- **`synth_params` is now an owned buffer**, like its FX siblings — ~1.1 MB, so
+  commit swaps the pointer rather than copying it into the frame.
+- **Nothing is freed on the SPI thread.** Retires go to the loader through a
+  4-slot ring; on overflow it leaks and logs, because a leak is recoverable and
+  a use-after-free in the audio path is not.
+- **This does not fix minijv**, which asks for FIFO 45 explicitly rather than
+  inheriting. Only its own repo can.
+
+Still synchronous: audio FX, MIDI FX, Master FX slots, `load_patch` and boot
+restore. `tests/host/test_chain_deferred_load.sh` measures where create runs
+and pins the wiring; the contract lives in `plugin_api_v1.h`, `docs/MODULES.md`
+and `docs/REALTIME_SAFETY.md` — **keep all three in sync.**
 
 ## Deployment Layout
 
