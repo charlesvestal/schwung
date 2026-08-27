@@ -909,7 +909,7 @@ The span bound is load-bearing: an earlier version bounded at 128 and drew 1392
 params big across 60 modules, including `volume [0..100]` and `tune [0..127]`,
 which are sweeps where an arc is the honest picture.
 
-### A momentary fires from the KNOB too, and that is what needs a cooldown
+### A momentary fires from the KNOB too, and it LATCHES per gesture
 
 A trigger is `access: "write"` on an ordinary enum — there is no `trigger` type
 — and it draws as a push button (`drawButton`), because the module reports a
@@ -925,15 +925,22 @@ hand off the knob and onto the jog. Now a **detent fires it, in EITHER
 direction** — a direction-sensitive momentary would make half of every spin
 read as a dead knob.
 
-**The cooldown is the whole safety argument, and it is KNOB-ONLY.** A click is
-one gesture per press and may repeat as fast as a finger can manage. One flick
-of an encoder is a dozen detents, and a trigger is by definition something that
-DOES a thing: euclidrum's `rnd_preset` would randomise a kit twelve times and
-magneto's `["Play","Save"]` would write a file per detent.
-`TRIGGER_KNOB_COOLDOWN_MS` is 250 — longer than the 120ms press animation,
-shorter than the 300ms burst, so a deliberate second flick still reads as a
-second event. It is applied at the knob CALLER, never inside the fire itself,
-so a click can never be rate-limited by a knob's window.
+**A LATCH, not a rate limit, and that distinction IS the bug.** The first cut
+was "at most once per 250ms", which still fires eight times across a two-second
+spin — reported from the device as *"gesture test fires repeatedly on detent"*.
+The docs already promised the right behaviour ("a whole flick of the encoder
+counts as one press"), so the implementation was what disagreed.
+
+The stamp is therefore the last **detent**, not the last fire: every detent
+extends the gesture, and the latch clears only once the knob has been still for
+`TRIGGER_KNOB_GESTURE_GAP_MS` (400). Written *before* the early return, which is
+what makes the clock run on stillness rather than on elapsed time.
+
+**It is KNOB-ONLY.** A click is one gesture per press and may repeat as fast as
+a finger can manage. One flick of an encoder is a dozen detents, and a trigger
+is by definition something that DOES a thing: magneto's `["Play","Save"]` would
+write a file per detent. Applied at the knob CALLER, never inside the fire, so
+a click can never be gated by a knob's latch.
 
 **Both knob surfaces do this and the constant is duplicated, so it is pinned
 against drift.** `page_controller.mjs` (the knob grid) and `shadow_ui.js`
@@ -947,8 +954,9 @@ byte-identical, that the window is checked BEFORE the write, and that neither
 click path mentions the constant at all. `tests/host/test_param_access.sh`
 drives the real controller and asserts the SEQUENCE — one fire, then eight
 swallowed detents, then a fire past the window, then the reverse direction,
-then two unthrottled clicks — because a missing fire and a missing cooldown
-both pass a one-detent test.
+then two ungated clicks — because each half passes a shorter test alone, and a
+RATE LIMIT passes any test whose detents are spaced wider than its window. The
+spin in the test is 2 seconds of detents 30ms apart for exactly that reason.
 
 A **readout** (`access: "read"`) still refuses the turn: there is nothing to
 set. Both guards must precede the enum stepper's value read, which is asserted

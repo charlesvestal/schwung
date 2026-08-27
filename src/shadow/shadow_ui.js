@@ -1219,23 +1219,29 @@ const TRIGGER_ENUM_TURN_THRESHOLD = 1;  // Positive detents required before firi
 const TRIGGER_ENUM_WINDOW_MS = 700;     // Pause longer than this to start a new trigger gesture
 
 /*
- * How often a KNOB may fire an `access: "write"` trigger. Must stay equal to
- * TRIGGER_KNOB_COOLDOWN_MS in page_controller.mjs -- the knob grid and this
- * surface drive the same physical knob against the same parameter, and a user
- * switching Param View must not find the encoder behaving differently.
+ * How long the knob must be STILL before a trigger will fire again. Must stay
+ * equal to TRIGGER_KNOB_GESTURE_GAP_MS in page_controller.mjs -- the knob grid
+ * and this surface drive the same physical knob against the same parameter,
+ * and a user switching Param View must not find the encoder behaving
+ * differently.
+ *
+ * A LATCH, not a rate limit. "At most once per N ms" still fires eight times
+ * across a two-second spin, which is what came back from the device. Every
+ * detent extends the gesture; only stillness ends it.
+ *
  * Deliberately NOT applied to the jog click or the knob-card press: one press
- * is one gesture, and rate-limiting those would be a bug.
+ * is one gesture, and limiting those would be a bug.
  */
-const TRIGGER_KNOB_COOLDOWN_MS = 250;
+const TRIGGER_KNOB_GESTURE_GAP_MS = 400;
 
 /* Time tracking for knob acceleration */
 let triggerEnumAccum = [0, 0, 0, 0, 0, 0, 0, 0];
 let triggerEnumLastMs = [0, 0, 0, 0, 0, 0, 0, 0];
 let triggerEnumLatched = [false, false, false, false, false, false, false, false];
-/* Per-knob cooldown for the above. Keyed by knob AND by the parameter that
- * knob was pointing at, so re-mapping a knob (a new component, a new page)
- * cannot leave a stale window suppressing the first detent on a different
- * trigger. */
+/* Per-knob gesture stamp for the above. Keyed by knob AND by the parameter
+ * that knob was pointing at, so re-mapping a knob (a new component, a new
+ * page) cannot leave a stale gesture suppressing the first detent on a
+ * different trigger. */
 let triggerKnobLastMs = [0, 0, 0, 0, 0, 0, 0, 0];
 let triggerKnobLastKey = [null, null, null, null, null, null, null, null];
 
@@ -13580,8 +13586,8 @@ function processPendingHierKnob() {
     }
 
     /*
-     * A TRIGGER fires on a detent, in either direction, at most once per
-     * TRIGGER_KNOB_COOLDOWN_MS.
+     * A TRIGGER fires on a detent, in either direction, ONCE PER GESTURE --
+     * see TRIGGER_KNOB_GESTURE_GAP_MS.
      *
      * This used to refuse the turn entirely, on the grounds that scrubbing an
      * enum walks THROUGH the fire value. That reasoning is about the enum
@@ -13590,12 +13596,12 @@ function processPendingHierKnob() {
      * hand off the knob and onto the jog. Asked for from the device --
      * "momentary switches should be triggerable with knobs too".
      *
-     * The cooldown is what makes that safe, and it is a KNOB-only concern: a
-     * click is one gesture per press and may repeat as fast as a finger can
-     * manage, while one flick of an encoder is a dozen detents and a trigger
-     * is by definition something that DOES a thing. Same constant and same
-     * either-direction rule as the knob grid (page_controller.mjs), because
-     * the same physical knob on the same parameter must not behave
+     * The gesture LATCH is what makes that safe, and it is a KNOB-only
+     * concern: a click is one gesture per press and may repeat as fast as a
+     * finger can manage, while one flick of an encoder is a dozen detents and
+     * a trigger is by definition something that DOES a thing. Same constant
+     * and same either-direction rule as the knob grid (page_controller.mjs),
+     * because the same physical knob on the same parameter must not behave
      * differently depending on which param view is on screen.
      *
      * Fires through triggerFireValue and re-seeds the cache exactly as the
@@ -13607,9 +13613,13 @@ function processPendingHierKnob() {
         const t = Date.now();
         const last = triggerKnobLastMs[knobIndex] || 0;
         const sameKey = triggerKnobLastKey[knobIndex] === ctx.fullKey;
-        if (sameKey && (t - last) < TRIGGER_KNOB_COOLDOWN_MS) return;
+        /* The stamp is the last DETENT, not the last fire — every detent
+         * extends the gesture, so the clock only runs while the knob is still.
+         * Written before the early return for exactly that reason. */
+        const startsGesture = !sameKey || (t - last) >= TRIGGER_KNOB_GESTURE_GAP_MS;
         triggerKnobLastMs[knobIndex] = t;
         triggerKnobLastKey[knobIndex] = ctx.fullKey;
+        if (!startsGesture) return;
         const fire = triggerFireValue(ctx.meta, getKnobCachedValue(knobIndex, ctx));
         if (fire !== null) {
             setSlotParam(ctx.slot, ctx.fullKey, fire);

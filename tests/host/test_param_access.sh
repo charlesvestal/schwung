@@ -103,16 +103,23 @@ Promise.all([
          "a bare index is exactly what destroys euclidrum kits");
 
   /*
-   * ---- turning a trigger FIRES it, at most once per cooldown -------------
+   * ---- turning a trigger FIRES it, ONCE PER GESTURE ----------------------
    *
    * A momentary has no value to walk, so refusing the turn only forced the
    * hand off the knob and onto the jog. What makes it safe is that one flick
-   * of an encoder is a dozen detents and a trigger DOES a thing, so the knob
-   * path -- and only the knob path -- collapses a spin into one fire.
+   * of an encoder is a dozen detents and a trigger DOES a thing.
    *
-   * Asserted as a SEQUENCE rather than a single call, because the two halves
-   * fail in opposite directions: a missing fire and a missing cooldown both
-   * pass a one-detent test.
+   * A LATCH, NOT A RATE LIMIT, and the difference is the whole test. "At most
+   * once per 250ms" was the first implementation and it still fired eight
+   * times across a two-second spin -- reported from the device as "gesture
+   * test fires repeatedly on detent". Every detent extends the gesture; only
+   * stillness ends it.
+   *
+   * Asserted as a SEQUENCE, because each half passes a shorter test on its
+   * own: a missing fire and a missing latch both look fine at one detent, and
+   * a RATE LIMIT passes any test whose detents are spaced further apart than
+   * the window. The long spin below is spaced at 30ms deliberately -- under a
+   * rate limit of any plausible size it would fire several times.
    */
   writes.length = 0;
   ctl.onKnobTurn(trigSlot, 1, 5000);
@@ -122,30 +129,38 @@ Promise.all([
     fail("a knob-fired trigger wrote " + JSON.stringify(writes[0][1]) + ", expected \"Rnd!\" — " +
          "the knob must put the same value on the wire as the click");
 
-  /* The rest of the same flick: still inside the window, so nothing more. */
+  /* A LONG spin -- two seconds of detents 30ms apart, far longer than any
+   * fixed window. One gesture, so no more fires. */
   writes.length = 0;
-  for (const t of [5030, 5060, 5090, 5120, 5150, 5180, 5210, 5240]) ctl.onKnobTurn(trigSlot, 1, t);
+  for (let t = 5030; t <= 7000; t += 30) ctl.onKnobTurn(trigSlot, 1, t);
   if (writes.length)
-    fail("a spin fired the trigger " + writes.length + " extra times — the knob cooldown is gone");
+    fail("a 2-second spin fired the trigger " + writes.length + " extra times — " +
+         "this is a rate limit, not a gesture latch");
 
-  /* Past the window, a deliberate second flick is a second event. */
+  /* Still inside the gap after the last detent: still the same gesture. */
   writes.length = 0;
-  ctl.onKnobTurn(trigSlot, 1, 5600);
-  if (writes.length !== 1) fail("a second flick after the cooldown did not fire");
+  ctl.onKnobTurn(trigSlot, 1, 7300);
+  if (writes.length)
+    fail("a detent 300ms after the spin started a new gesture — the gap is too short");
+
+  /* Past the gap, a deliberate second flick is a second event. */
+  writes.length = 0;
+  ctl.onKnobTurn(trigSlot, 1, 7800);
+  if (writes.length !== 1) fail("a second flick after the gesture gap did not fire");
 
   /* EITHER direction: a trigger has no up and no down, and a direction-
    * sensitive one would make half of every spin read as a dead knob. */
   writes.length = 0;
-  ctl.onKnobTurn(trigSlot, -1, 6200);
+  ctl.onKnobTurn(trigSlot, -1, 8400);
   if (writes.length !== 1) fail("turning a trigger the other way did not fire it");
 
-  /* A CLICK is never rate-limited: one press is one gesture, and a shared
-   * timer between the two paths is exactly how that regresses. */
+  /* A CLICK is never latched: one press is one gesture, and a shared timer
+   * between the two paths is exactly how that regresses. */
   writes.length = 0;
   ctl.onClick(trigSlot);
   ctl.onClick(trigSlot);
   if (writes.length !== 2)
-    fail("clicks were rate-limited by the knob cooldown: " + JSON.stringify(writes));
+    fail("clicks were gated by the knob gesture latch: " + JSON.stringify(writes));
 
   /* A readout: click opens nothing, turn writes nothing. */
   writes.length = 0;
@@ -297,7 +312,7 @@ Promise.all([
   console.log("  ok  default is readwrite; plain enums and floats unaffected");
   console.log("  ok  readout: not turnable, not divable, never written");
   console.log("  ok  trigger: fires on click and on a detent, through the module wire (\"Rnd!\")");
-  console.log("  ok  trigger: knob detents collapse to one fire per cooldown; clicks do not");
+  console.log("  ok  trigger: a whole spin is ONE fire; a second flick is a second; clicks are never gated");
   console.log("PASS: access read/write/readwrite");
 });
 '

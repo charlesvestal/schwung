@@ -47,32 +47,41 @@ command grep -q "if (isTriggerParam(ctx.meta)) {" <<<"$turn" || \
   fail "the knob turn does not check access:write"
 command grep -q "if (isReadoutParam(ctx.meta)) {" <<<"$turn" || \
   fail "the knob turn does not check access:read"
-command grep -q "TRIGGER_KNOB_COOLDOWN_MS" <<<"$turn" || \
-  fail "a knob detent fires a trigger with NO cooldown -- one flick runs the action a dozen times"
+command grep -q "TRIGGER_KNOB_GESTURE_GAP_MS" <<<"$turn" || \
+  fail "a knob detent fires a trigger with NO gesture latch -- one flick runs the action a dozen times"
 command grep -q "triggerFireValue(ctx.meta" <<<"$turn" || \
   fail "the knob fire does not use the module wire value -- a bare index destroys euclidrum kits"
-# The cooldown must be checked BEFORE the write, not after it.
+# The gesture test must be evaluated BEFORE the write, not after it.
 # `|| true` on every lookup: with `set -euo pipefail` a grep that finds nothing
 # kills the script at the assignment, so the fail() message below -- the only
 # thing that says WHICH invariant broke -- never prints. An unexplained exit 1
 # is how a deliberate change gets mistaken for a broken harness.
-cl=$( { command grep -n "TRIGGER_KNOB_COOLDOWN_MS) return;" "$file" || true; } | head -n 1 | cut -d: -f1)
+cl=$( { command grep -n "if (!startsGesture) return;" "$file" || true; } | head -n 1 | cut -d: -f1)
 fl=$( { command grep -n "setSlotParam(ctx.slot, ctx.fullKey, fire)" "$file" || true; } | head -n 1 | cut -d: -f1)
 [ -n "$cl" ] && [ -n "$fl" ] && [ "$cl" -lt "$fl" ] || \
-  fail "the knob cooldown is checked AFTER the fire (window $cl, write $fl) -- it gates nothing"
+  fail "the gesture latch is evaluated AFTER the fire (gate $cl, write $fl) -- it gates nothing"
+# THE STAMP MUST BE WRITTEN BEFORE THE BAIL. That one line is the whole
+# difference between a latch and a rate limit: stamping only on a fire makes
+# the clock measure elapsed time, so a long spin fires every window. Stamping
+# on every DETENT makes it measure stillness, which is the promise the docs
+# make ("a whole flick counts as one press"). Reported from the device as
+# "gesture test fires repeatedly on detent".
+st=$( { command grep -n "triggerKnobLastMs\[knobIndex\] = t;" "$file" || true; } | head -n 1 | cut -d: -f1)
+[ -n "$st" ] && [ "$st" -lt "$cl" ] || \
+  fail "the detent stamp is written AFTER the bail (stamp $st, bail $cl) -- that is a rate limit, not a latch"
 # ORDER is the whole point: both guards must precede the enum stepper's read.
 g=$( { command grep -n "if (isTriggerParam(ctx.meta)) {" "$file" || true; } | head -n 1 | cut -d: -f1)
 r=$( { command grep -n "if (isReadoutParam(ctx.meta)) {" "$file" || true; } | head -n 1 | cut -d: -f1)
 w=$( { command grep -n "const currentVal = getKnobCachedValue" "$file" || true; } | head -n 1 | cut -d: -f1)
 [ -n "$g" ] && [ -n "$r" ] && [ -n "$w" ] && [ "$g" -lt "$w" ] && [ "$r" -lt "$w" ] || \
   fail "an access guard runs AFTER the value is read (trigger $g, readout $r, read $w)"
-# The COOLDOWN IS KNOB-ONLY. A click is one gesture per press, and the two
-# click paths must not consult the window -- a shared timer is exactly how
-# "clicking twice quickly only fired once" gets introduced.
+# The LATCH IS KNOB-ONLY. A click is one gesture per press, and the two
+# click paths must not consult it -- a shared timer is exactly how "clicking
+# twice quickly only fired once" gets introduced.
 for fn in "A held TRIGGER is fired by the click" "A TRIGGER is pushed, not opened"; do
   blk=$(awk -v pat="$fn" 'index($0, pat) {n=1} n && n++ <= 40' "$file")
-  command grep -q "TRIGGER_KNOB_COOLDOWN_MS" <<<"$blk" && \
-    fail "the click path \"$fn\" is rate-limited by the KNOB cooldown"
+  command grep -q "TRIGGER_KNOB_GESTURE_GAP_MS" <<<"$blk" && \
+    fail "the click path \"$fn\" is gated by the KNOB gesture latch"
 done
 
 # --- and the two surfaces must agree on how long that window is --------------
@@ -82,15 +91,15 @@ done
 # setting the user can flip. Two copies of the number is two behaviours, and
 # the disagreement would only ever be noticed as "it fires differently in List
 # view", which nobody would think to report as a constant.
-a=$( { command grep -oE "^const TRIGGER_KNOB_COOLDOWN_MS = [0-9]+" "$file" || true; } | head -n 1)
-b=$( { command grep -oE "^const TRIGGER_KNOB_COOLDOWN_MS = [0-9]+" \
+a=$( { command grep -oE "^const TRIGGER_KNOB_GESTURE_GAP_MS = [0-9]+" "$file" || true; } | head -n 1)
+b=$( { command grep -oE "^const TRIGGER_KNOB_GESTURE_GAP_MS = [0-9]+" \
          src/shared/param_pages/page_controller.mjs || true; } | head -n 1)
-[ -n "$a" ] || fail "shadow_ui.js does not declare TRIGGER_KNOB_COOLDOWN_MS"
-[ -n "$b" ] || fail "page_controller.mjs does not declare TRIGGER_KNOB_COOLDOWN_MS"
-[ "$a" = "$b" ] || fail "the knob trigger cooldown has drifted: shadow_ui \"$a\" vs grid \"$b\""
+[ -n "$a" ] || fail "shadow_ui.js does not declare TRIGGER_KNOB_GESTURE_GAP_MS"
+[ -n "$b" ] || fail "page_controller.mjs does not declare TRIGGER_KNOB_GESTURE_GAP_MS"
+[ "$a" = "$b" ] || fail "the knob trigger gesture gap has drifted: shadow_ui \"$a\" vs grid \"$b\""
 
-echo "  ok  a knob detent fires a trigger once per cooldown; a readout still writes nothing"
-echo "  ok  both knob surfaces share one cooldown value"
+echo "  ok  a knob detent fires a trigger once per GESTURE; a readout still writes nothing"
+echo "  ok  both knob surfaces share one gesture-gap value"
 
 # --- the click must fire a trigger, not open a picker ------------------------
 click=$(awk '/A TRIGGER is pushed, not opened/,/openEnumPicker\(\{/' "$file")
