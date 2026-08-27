@@ -16,6 +16,7 @@
  *
  *   node tools/param-pages/widget_sheet.mjs          write docs/WIDGETS.md + images
  *   node tools/param-pages/widget_sheet.mjs --check  fail if it would change
+ *   node tools/param-pages/widget_sheet.mjs --manual sync the manual's section too
  *
  * --check is what a test uses: it regenerates into memory and diffs, so a
  * widget change that nobody documented shows up as a failure rather than as a
@@ -595,9 +596,211 @@ you something changed, and which way.
  * extension in the key so one map holds both kinds. */
 const fileFor = (name) => (name.endsWith(".gif") ? name : name + ".png");
 
+
+/* ------------------------------------------------------------------ manual */
+
+/*
+ * The compact version, written into the user manual in the SIBLING REPO.
+ *
+ * The manual already tells the reader that each cell is "drawn as the control
+ * it actually is — a dial, a fader, an envelope, a switch". That sentence is
+ * describing pictures, so it should be showing them.
+ *
+ * A SUBSET, not the sheet. manual.html is prose with exactly one image in it
+ * (the logo); twenty-five would change what the page is. These fourteen are
+ * the ones prose is worst at.
+ *
+ * Between MARKERS, and generated, because the alternative is a hand-copied
+ * block in another repo that silently stops matching the device — which is the
+ * failure the whole generator exists to avoid, made worse by being one repo
+ * further away.
+ *
+ * OPT-IN (--manual) and skipped when the sibling repo is absent: the host test
+ * runs on machines that only have schwung checked out, and a missing
+ * ../schwung-catalog-site must not be a failure.
+ */
+/*
+ * Found by walking UP, not by "../schwung-catalog-site".
+ *
+ * That relative path is right for a normal checkout and wrong inside a git
+ * worktree, where ROOT is .claude/worktrees/<name> and the parent is the
+ * worktree directory. The failure is silent and misleading: the tool reports
+ * the sibling repo as "not checked out" while it sits three levels up.
+ */
+function findManualRoot() {
+    let dir = ROOT;
+    for (let i = 0; i < 6; i++) {
+        const c = path.join(path.dirname(dir), "schwung-catalog-site");
+        if (fs.existsSync(path.join(c, "manual.html"))) return c;
+        const up = path.dirname(dir);
+        if (up === dir) break;
+        dir = up;
+    }
+    return path.join(path.dirname(ROOT), "schwung-catalog-site");   /* for the message */
+}
+const MANUAL_ROOT = findManualRoot();
+const MANUAL_HTML = path.join(MANUAL_ROOT, "manual.html");
+const MANUAL_IMG = path.join(MANUAL_ROOT, "images", "widgets");
+const BEGIN = "<!-- BEGIN generated widgets";
+const END = "<!-- END generated widgets -->";
+
+const MANUAL_PICKS = {
+    values: [
+        ["arc-knob", "<strong>Knob</strong> — a continuous value, swept from minimum to maximum."],
+        ["big-number", "<strong>Number</strong> — a small whole number reads better as itself."],
+        ["enum-square", "<strong>Choice</strong> — a value that is a word. Click to open the list."],
+        ["viz-switch", "<strong>Switch</strong> — on/off, with both states drawn."],
+        ["button", "<strong>Action</strong> — does something rather than holding a value."],
+        ["opaque-box", "<strong>Editor</strong> — contents live on another screen. <em>NONE</em> means empty."],
+    ],
+    pictures: [
+        ["viz-envelope", "<strong>Envelope</strong> — attack, decay, sustain and release as the shape they make."],
+        ["viz-filter", "<strong>Filter</strong> — the response curve, from cutoff and resonance."],
+        ["viz-lfo", "<strong>LFO</strong> — the actual waveform, at its rate and depth."],
+        ["viz-sample", "<strong>Sample</strong> — the file's real waveform, play position and loop points."],
+    ],
+    motion: [
+        ["motion-switch.gif", "The slug snaps; the fill sweeps after it."],
+        ["motion-waveform.gif", "One shape bends into the next."],
+        ["motion-enum.gif", "The square grows to fit the new word."],
+        ["motion-button.gif", "Presses, and throws a ring."],
+    ],
+};
+
+
+/*
+ * The pixel width of an encoded image, read back from its own bytes.
+ *
+ * Needed because the swatches are NOT all the same size — a four-cell knob row
+ * is 512px and a one-cell switch is 128px — and `width: 100%` in a grid blew
+ * the switch up to the width of the knob row, so a single cell rendered four
+ * times the size of a cell. Sizing each figure from its natural width keeps
+ * the scale honest across the whole section: one cell looks like one cell.
+ *
+ * Read rather than tracked, so nothing has to be threaded through the image
+ * map: PNG carries width at byte 16 of IHDR, GIF at byte 6 of the screen
+ * descriptor.
+ */
+function naturalWidth(buf) {
+    const b = Buffer.from(buf);
+    if (b[0] === 0x89 && b[1] === 0x50) return b.readUInt32BE(16);   /* PNG */
+    if (b[0] === 0x47 && b[1] === 0x49) return b.readUInt16LE(6);    /* GIF */
+    throw new Error("unrecognised image");
+}
+
+function manualFragment(images) {
+    /* Real ALT text, derived from the caption with its markup stripped.
+     * alt="" says "decorative", and these are the opposite -- the page is
+     * telling you what a control looks like, so the picture IS the content.
+     * Derived rather than written twice so the two cannot disagree. */
+    const alt = (cap) => cap.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim()
+                            .replace(/"/g, "&quot;");
+    const fig = ([name, cap]) => {
+        /* Half of natural: the swatches are drawn at 4x device pixels, so
+         * this shows them at 2x — large enough to read a 5x3 glyph, small
+         * enough that a four-cell row still fits a phone column. */
+        const w = Math.round(naturalWidth(
+            images.get(name.endsWith(".gif") ? name : name)) / 2);
+        return (
+        `                        <figure class="wg-fig">\n` +
+        `                            <img src="images/widgets/${fileFor(name)}" alt="${alt(cap)}" width="${w}">\n` +
+        `                            <figcaption>${cap}</figcaption>\n` +
+        `                        </figure>`);
+    };
+    const grid = (items) =>
+        `                    <div class="wg-grid">\n${items.map(fig).join("\n")}\n                    </div>`;
+
+    /* Scoped styles rather than an edit to style.css: this block is generated
+     * and the stylesheet is not, so keeping them in one file keeps the
+     * regeneration honest. `image-rendering: pixelated` is not optional — these
+     * are 1-bit device frames scaled 4x, and smoothing turns a crisp pixel
+     * widget into a grey smear. */
+    return `${BEGIN}. Written by schwung's tools/param-pages/widget_sheet.mjs
+                         --manual, from the same code the device draws with.
+                         Do not hand-edit between these markers. -->
+                    <style>
+                    .wg-grid { display: grid; gap: 1rem; margin: 1.25rem 0;
+                               grid-template-columns: repeat(auto-fit, minmax(160px, max-content));
+                               align-items: start; }
+                    .wg-fig { margin: 0; }
+                    .wg-fig img { max-width: 100%; height: auto; display: block;
+                                  image-rendering: pixelated;
+                                  border: 1px solid var(--border); border-radius: 3px;
+                                  background: #000; }
+                    .wg-fig figcaption { margin-top: .4rem; font-size: .85rem;
+                                         color: var(--text-muted); line-height: 1.35; }
+                    </style>
+
+                    <p>You never choose these — a module declares what a parameter
+                    <em>is</em>, and the right control follows.</p>
+${grid(MANUAL_PICKS.values)}
+
+                    <p>Where several knobs describe one thing, Schwung draws the thing
+                    instead of the knobs, across the cells they occupy.</p>
+${grid(MANUAL_PICKS.pictures)}
+
+                    <p>Four of them move when their value changes, so a change is visible
+                    rather than just present. <em>(Slowed 5&times; here — on the device
+                    these take a fraction of a second.)</em></p>
+${grid(MANUAL_PICKS.motion)}
+
+                    <p class="note">A full reference to every widget, including the page
+                    chrome, is in
+                    <a href="https://github.com/charlesvestal/schwung/blob/main/docs/WIDGETS.md"
+                       target="_blank" rel="noopener">WIDGETS.md</a>.</p>
+                    ${END}`;
+}
+
+function syncManual(images, check) {
+    if (!fs.existsSync(MANUAL_HTML)) {
+        console.log("skip: " + MANUAL_HTML + " not found (sibling repo not checked out)");
+        return true;
+    }
+    const html = fs.readFileSync(MANUAL_HTML, "utf8");
+    const i = html.indexOf(BEGIN), j = html.indexOf(END);
+    if (i < 0 || j < 0) {
+        console.error("FAIL: the widget markers are missing from manual.html");
+        return false;
+    }
+    const next = html.slice(0, i) + manualFragment(images) + html.slice(j + END.length);
+
+    const names = [...MANUAL_PICKS.values, ...MANUAL_PICKS.pictures, ...MANUAL_PICKS.motion]
+        .map(([n]) => fileFor(n));
+    let stale = [];
+    if (next !== html) stale.push("manual.html");
+    for (const n of names) {
+        const dst = path.join(MANUAL_IMG, n);
+        const src = images.get(n.endsWith(".gif") ? n : n.replace(/\.png$/, ""));
+        if (!src) { console.error("FAIL: manual wants " + n + ", which the sheet does not produce"); return false; }
+        if (!fs.existsSync(dst) || Buffer.compare(fs.readFileSync(dst), Buffer.from(src)) !== 0)
+            stale.push("images/widgets/" + n);
+    }
+
+    if (check) {
+        if (stale.length) {
+            console.error("FAIL: the manual's widget section is stale — regenerate with");
+            console.error("      node tools/param-pages/widget_sheet.mjs --manual");
+            for (const t of stale) console.error("      " + t);
+            return false;
+        }
+        console.log("PASS: the manual's widget section is current");
+        return true;
+    }
+
+    fs.mkdirSync(MANUAL_IMG, { recursive: true });
+    for (const n of names) {
+        const src = images.get(n.endsWith(".gif") ? n : n.replace(/\.png$/, ""));
+        fs.writeFileSync(path.join(MANUAL_IMG, n), src);
+    }
+    fs.writeFileSync(MANUAL_HTML, next);
+    console.log("wrote the manual's widget section and " + names.length + " images");
+    return true;
+}
+
 /* ---------------------------------------------------------------------- main */
 
 const check = process.argv.includes("--check");
+const doManual = process.argv.includes("--manual");
 const images = build();
 const md = markdown();
 
@@ -624,6 +827,7 @@ if (check) {
         process.exit(1);
     }
     console.log("PASS: docs/WIDGETS.md is current (" + images.size + " swatches)");
+    if (doManual && !syncManual(images, true)) process.exit(1);
 } else {
     fs.mkdirSync(IMG_DIR, { recursive: true });
     const wanted = new Set([...images.keys()].map(fileFor));
@@ -633,4 +837,5 @@ if (check) {
     for (const [name, png] of images) fs.writeFileSync(path.join(IMG_DIR, fileFor(name)), png);
     fs.writeFileSync(MD, md);
     console.log("wrote docs/WIDGETS.md and " + images.size + " swatches to " + IMG_REL + "/");
+    if (doManual && !syncManual(images, false)) process.exit(1);
 }

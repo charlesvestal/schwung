@@ -1913,6 +1913,10 @@ Release: bump `src/module.json` version → commit → `git tag v0.2.0 && git pu
   tools/param-pages/widget_sheet.mjs`, pinned by
   `tests/host/test_widget_sheet.sh` (which also fails on an ORPHANED image, so
   a renamed swatch cannot leave a picture of a widget that no longer exists).
+  `--manual` additionally writes a 14-image subset into `manual.html` between
+  markers, with each figure sized from the image's own natural width — a
+  one-cell switch stretched to a grid column renders four times the size of a
+  cell, which is what `width: 100%` did.
   Not the SCH-50 catalog (`tools/param-pages/catalog.mjs`), which renders ten
   *alternatives* per widget for choosing between and is gitignored — this
   renders the one that won.
@@ -1929,7 +1933,7 @@ Release: bump `src/module.json` version → commit → `git tag v0.2.0 && git pu
 1. **Build**: `./scripts/build.sh` succeeds
 2. **Deploy + test**: `./scripts/install.sh local --skip-modules --skip-confirmation`, verify on hardware
 3. **Version**: bump `src/host/version.txt` and `module-catalog.json` (host `latest_version` + download URL)
-4. **Docs**: update `CLAUDE.md`, `docs/API.md`, `docs/MODULES.md`, `src/shared/help_content.json`, and `../schwung-catalog-site/manual.html` for new features / changed behavior. If a knob-grid widget changed, regenerate `docs/WIDGETS.md` (`node tools/param-pages/widget_sheet.mjs`) — `tests/host/test_widget_sheet.sh` fails until you do.
+4. **Docs**: update `CLAUDE.md`, `docs/API.md`, `docs/MODULES.md`, `src/shared/help_content.json`, and `../schwung-catalog-site/manual.html` for new features / changed behavior. If a knob-grid widget changed, regenerate the sheet with `node tools/param-pages/widget_sheet.mjs --manual` — `tests/host/test_widget_sheet.sh` fails until the `docs/` half is current, and `--manual` also rewrites the manual's generated widget section and its images (skipped silently when the sibling repo is not checked out, so it is safe on any machine).
 5. **Help files**: update `help.json` in modified tool modules
 6. **Module catalog**: bump `min_host_version` for modules depending on new host features
 7. **Commit + tag**: `git tag v0.X.0 && git push --tags`
