@@ -205,6 +205,35 @@ typedef struct host_api_v1 {
      * Appended in 2026-07; may be NULL on older hosts, always guard. */
     double (*get_beat_position)(void);
 
+    /* Reserved tail — a RUN OF NULLS, and it is load-bearing.
+     *
+     * Every field above is guarded by callers as `if (host->fn) host->fn()`,
+     * which is only sound while a read inside the struct is the only read that
+     * can happen. It isn't. A module linked from object files compiled against
+     * two different revisions of this header resolves the SAME call at two
+     * different offsets, and the larger one reads past the last field.
+     *
+     * That is not hypothetical. breakbeat 0.2.x calls get_bpm() at +88 from
+     * bb_render_block and at +120 from bb_create_instance; +120 is one past
+     * get_beat_position. The struct a chain sub-plugin gets is
+     * chain_instance_t::subplugin_host_api, so +120 read the NEXT MEMBER of
+     * that instance — non-NULL, so the module's own guard passed, and the blr
+     * jumped into the heap. SIGSEGV on the SPI callback at load, which takes
+     * MoveOriginal down with it and boot-loops the device if the slot is
+     * restored.
+     *
+     * Zeroed by construction: every instance of this struct is a static or a
+     * member of a calloc'd instance, and chain_host memcpy's sizeof(). So an
+     * over-read by up to 64 bytes finds NULL and the caller's existing guard
+     * does what it was always written to do.
+     *
+     * This does NOT make the ABI extensible. Appending a real field still
+     * requires modules to be rebuilt; the reserved run only buys a safe
+     * failure instead of a crash. Shrink it and old binaries start reaching
+     * past it again — so consume from the FRONT when adding a field, and
+     * never reduce the total. */
+    void *reserved[8];
+
 } host_api_v1_t;
 
 /*

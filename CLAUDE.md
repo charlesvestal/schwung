@@ -200,6 +200,42 @@ extern "C" plugin_api_v2_t* move_plugin_init_v2(const host_api_v1_t *host);
 
 **v1 (deprecated, singleton)** — kept for legacy modules. Audio: 44100 Hz, 128 frames/block, stereo interleaved int16.
 
+### `host_api_v1_t` ends in a run of NULLs, and that is not padding
+
+Every module guards its host calls as `if (host->fn) host->fn()`. That is only
+sound while a read *inside* the struct is the only read that can happen — and
+it isn't. **A module linked from object files compiled against two revisions of
+`plugin_api_v1.h` resolves the same call at two different offsets**, and the
+larger one runs off the end.
+
+breakbeat 0.2.x is the case: `get_bpm()` at **+88** from `bb_render_block` and
+at **+120** from `bb_create_instance`, in one binary. +120 was one past
+`get_beat_position`. The struct a chain sub-plugin receives is
+`chain_instance_t::subplugin_host_api`, so +120 read **the next member of that
+heap instance** — non-NULL, so the module's own guard passed, and the `blr`
+jumped into a `rw-p` page. SIGSEGV on the SPI callback at load, which takes
+MoveOriginal with it and **boot-loops the device**, because the slot is restored
+every boot and crashes before the UI can be used to remove it.
+
+`void *reserved[8]` at the end absorbs 64 bytes of that drift, so an over-read
+finds NULL and the caller's existing guard does what it was written to do. Every
+instance is zeroed by construction (`mm_init` memsets, `shadow_host_api` is BSS,
+`overtake_host_api` is a static, `chain_host` memcpy's `sizeof()`).
+
+**It does not make the ABI extensible** — appending a real field still requires
+rebuilds. It buys a safe failure instead of a crash. So **consume `reserved`
+from the front** when adding a field and never reduce the total;
+`tests/host/test_host_api_reserved_tail.c` fails on a shrunken tail, on a field
+appended *after* `reserved`, and on +120 specifically.
+
+**The diagnosis needed the load base.** The shim's SIGSEGV handler prints `pc`,
+`lr` and `sp` plus a `/proc/self/maps` dump to
+`/data/UserData/schwung/crash_maps.txt` (async-signal-safe `open`/`read`/`write`
+— the unified logger buffers, so a line logged *before* the crash is lost with
+it). `v2_load_synth` logs the dlopen'd module's `dlinfo` base, which is what
+turns a raw `lr` into `lr - base` and an `addr2line` offset. Without both halves
+the address is unattributable under ASLR.
+
 ### JS Host Functions
 
 Module management: `host_list_modules`, `host_load_module`, `host_load_ui_module`, `host_unload_module`, `host_return_to_menu`, `host_module_set_param/get_param/send_midi`, `host_is_module_loaded`, `host_get_current_module`, `host_rescan_modules`, `host_get_module_metadata(id)`.
