@@ -803,20 +803,37 @@ clears the chevron; widening it for one word narrows that clearance on every
 opaque cell in the fleet. `NONE` is 19px and is already this tree's word for an
 empty selection (`none_label || "(none)"`, the preset row's `(none)`).
 
-`drawSample` returns early on `file === ""` — no cursor, no fences, no loop
-brackets, since those are all positions *within* a file. `""` **only**: `null`
-is a read that has not completed, and blanking the markers for that would make
-a slow module look like an empty one.
+**A sample graphic with no file is not drawn AT ALL** — *"you should see the
+loaded break, but not an empty waveform"*, reported against breakbeat, whose
+`A SMP`/`B SMP` cells are graphics built from a filepath alone and were a
+bracketed rectangle containing nothing. The group is **suppressed** in
+`renderPageMovy`'s viz loop rather than drawn blank, so the cells fall back to
+their own widgets: the filepath becomes the opaque box reading `NONE`, and
+granny's position and spray become plain knobs. With no sample there is nothing
+for a cursor to point into, and the values are still yours to set.
 
-`tests/host/test_sample_cell_doors.sh` pins the lot. Two things in it were
-wrong first and are worth not repeating: the "no spanning line" probe measured
-ink at midY in the file cell (the chevron and the filename glyphs both live
-there) and then the length of the run starting in the waveform (a spray fence
-breaks it around x=35, long before the boundary — it **passed under the
-mutation**). The assertion that works is the single gutter column between the
-graphic and the box. And the framebuffer **must honour colour 0 as an erase**:
-brackets and the opaque frame occupy the identical rect, and only
-`notchCorners` distinguishes them.
+`""` **only**. `null`/`undefined` is a read that has not landed, and
+suppressing that changes the cell's whole WIDGET rather than its contents — a
+knob would appear and be replaced by a waveform a frame later, on every page
+entry. The file is frequently off-page (granny and mrdrums declare it on no
+knob, so it arrives through the extra-key rotation), which makes the unanswered
+window the common case, not an edge one. `drawSample` keeps the same early
+return for callers that do not suppress.
+
+`tests/host/test_sample_cell_doors.sh` pins the lot, and **three of its probes
+were wrong first** — all three looked right, which is the point:
+
+- the "no spanning line" probe measured ink at midY in the file cell. The
+  chevron and the filename glyphs both live there. Then it measured the length
+  of the run starting in the waveform — a spray fence breaks that around x=35,
+  long before the boundary, so it **passed under the mutation**. What works is
+  the single gutter column between the graphic and the box.
+- "brackets vs frame" used the middle of the top edge. An arc knob's curve
+  reaches the top of its cell too, so a bracketed KNOB failed for having a
+  widget in it. The column just past the bracket arm is outside the knob (17px
+  centred in 32) and on any frame that spans the cell.
+- the framebuffer **must honour colour 0 as an erase**: brackets and the opaque
+  frame occupy the identical rect, and only `notchCorners` distinguishes them.
 
 ### The wave editor draws the spray fences
 
