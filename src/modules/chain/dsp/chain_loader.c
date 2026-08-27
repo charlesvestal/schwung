@@ -67,7 +67,12 @@
 struct chain_loader {
     pthread_t        thread;
     int              thread_started;
-    volatile int     quit;
+    /* Atomic, not merely volatile: `volatile` orders nothing and is not an
+     * atomic type, so a plain store here racing the loop's plain load below is
+     * a data race by the C11 model even though a naturally-aligned int cannot
+     * tear on ARM64. TSan flags it, correctly. Every other cross-thread field
+     * in this struct goes through the acquire/release helpers; so does this. */
+    volatile unsigned quit;
 
     /* --- request: seqlock, written by SPI, read by loader --- */
     volatile unsigned req_seq;                  /* odd while being written */
@@ -180,7 +185,7 @@ static void *loader_thread_main(void *arg) {
     chain_loader_t *ld = (chain_loader_t *)arg;
     loader_thread_demote();
 
-    while (!ld->quit) {
+    while (!ld_acq(&ld->quit)) {
         loader_drain_retires(ld);
 
         unsigned want = ld_acq(&ld->req_gen);
@@ -387,7 +392,7 @@ void chain_loader_shutdown(chain_instance_t *inst) {
      * Worst case we wait out one in-flight create_instance — on the teardown
      * path, off the audio thread.
      */
-    ld->quit = 1;
+    st_rel(&ld->quit, 1);
     if (ld->thread_started) pthread_join(ld->thread, NULL);
 
     /* Anything the loader staged but never committed is ours to destroy. */
