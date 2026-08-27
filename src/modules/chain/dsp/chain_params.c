@@ -1008,7 +1008,6 @@ void knob_emit_cc_out(chain_instance_t *inst, int idx) {
     int cc_val = knob_value_to_cc(km->current_value, pinfo);
     if (cc_val < 0) return;
     if (cc_val == km->last_cc_out) return;          /* change detection at CC resolution */
-    km->last_cc_out = cc_val;
 
     /* USB-MIDI: cable 2 (external), CIN 0x0B (CC). */
     const uint8_t msg[4] = {
@@ -1017,7 +1016,18 @@ void knob_emit_cc_out(chain_instance_t *inst, int idx) {
         (uint8_t)(KNOB_ABS_CC_START + knob),
         (uint8_t)cc_val
     };
-    inst->host->midi_send_external(msg, 4);
+
+    /* Record what the controller knows ONLY if it actually went out. The ring
+     * drops-newest when full, and it shares the 20-slot-per-block mailbox
+     * budget with LEDs, sequencer notes and JACK MIDI, so a drop under load is
+     * expected rather than exceptional. Recording a dropped value would leave
+     * last_cc_out claiming the controller is up to date; if the knob then
+     * stopped moving, its motor would stay wrong indefinitely — the exact
+     * staleness this feature exists to remove. Leaving it unrecorded makes the
+     * next emit for this knob retry, so a drop self-heals. */
+    if (inst->host->midi_send_external(msg, 4) > 0) {
+        km->last_cc_out = cc_val;
+    }
 }
 
 void knob_emit_cc_out_all(chain_instance_t *inst) {

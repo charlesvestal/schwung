@@ -63,8 +63,11 @@ static uint8_t cap[CAP_MAX][4];
 static int cap_count = 0;
 static int g_recv_ch = 3;
 
+static int g_send_fails = 0;   /* 1 = pretend the ring is full */
+
 static int fake_send_external(const uint8_t *msg, int len) {
     if (len != 4) return 0;
+    if (g_send_fails) return 0;   /* ring full: drops-newest, returns 0 */
     if (cap_count < CAP_MAX) memcpy(cap[cap_count], msg, 4);
     cap_count++;
     return len;
@@ -218,6 +221,27 @@ int main(void) {
     check(cap_count == 0, "unchanged, so the per-knob path stays quiet");
     knob_emit_cc_out_all(inst);
     check(cap_count == 8, "the dump sends anyway -- motors show the old patch");
+
+    /* 8. A DROPPED PACKET MUST NOT BE REMEMBERED AS SENT.
+     * The ring drops-newest when full and returns 0. Recording that value
+     * anyway would leave the knob's motor wrong until the value happened to
+     * change again — which, for a knob the user has stopped touching, is
+     * forever. Found by a four-slot load test that overflowed the ring. */
+    printf("a drop does not count as delivered\n");
+    inst->knob_mapping_count = 0;
+    map_knob(inst, 0, KNOB_CC_START, "cutoff", 0.25f);
+    cap_reset();
+    g_send_fails = 1;
+    knob_emit_cc_out(inst, 0);
+    check(cap_count == 0, "nothing captured while the ring is full");
+    check(inst->knob_mappings[0].last_cc_out == -1,
+          "a dropped value is NOT recorded as known to the controller");
+
+    g_send_fails = 0;
+    knob_emit_cc_out(inst, 0);
+    check(cap_count == 1, "the retry goes out once the ring drains");
+    check(cap[0][3] == 32, "and it carries the value that was dropped");
+    check(inst->knob_mappings[0].last_cc_out == 32, "now it is recorded");
 
     free(inst);
     if (failures) {
