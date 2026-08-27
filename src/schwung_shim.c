@@ -5651,7 +5651,20 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
      * shadow_swap_display() hands the frame back to Move on plain volume
      * touch in overtake too, so we scan the volume bar regardless of
      * overtake_mode — otherwise audio scales to whatever volume was active
-     * when overtake engaged. */
+     * when overtake engaged.
+     *
+     * THE PLAIN-VOLUME-TOUCH TERM MUST TRACK shadow_swap_display() EXACTLY.
+     * It is the same predicate, and it is here for one reason: that function
+     * decides whether the pixels in the mmap'd display region are Move's or
+     * Schwung's, and the scanner below is looking for MOVE's volume bar in
+     * them. Let the two drift and the scanner reads Schwung's own OLED, where
+     * a false bar match writes shadow_master_volume — i.e. mailbox gain, an
+     * audible jump, from a screen that was never Move's to read.
+     *
+     * overtake_suppress_master_volume is the drift that already happened:
+     * shadow_volume_knob_touched is tracked from the HARDWARE buffer,
+     * independent of the MIDI_IN filter, so it still goes to 1 while the flag
+     * excludes Move from the touch entirely and the shadow UI stays up. */
     int pin_challenge = shadow_control && shadow_control->pin_challenge_active == 1;
     int corun_owns_native_oled = shadow_control &&
         shadow_control->shadow_display_owner == DISPLAY_OWNER_MOVE_FIRMWARE;
@@ -5659,7 +5672,8 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
                                  (shadow_display_mode &&
                                   shadow_volume_knob_touched &&
                                   !shadow_shift_held &&
-                                  shadow_control) ||
+                                  shadow_control &&
+                                  !shadow_control->overtake_suppress_master_volume) ||
                                  corun_owns_native_oled ||
                                  pin_challenge;
 
@@ -6590,12 +6604,6 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
         /* Run overtake exit hook if it exists (modules install their own cleanup).
          * Skip if suspend_overtake is set — JACK keeps running. */
         if (prev_overtake_mode != 0 && overtake_mode == 0) {
-            /* Belt-and-braces: a stuck suppression permanently breaks the
-             * master volume knob for every module loaded after this one
-             * (unlike overtake_suppress_sysex's equivalent stuck state,
-             * which only affects LEDs). Clear it unconditionally on exit
-             * rather than relying solely on the tool's own endDivert(). */
-            if (shadow_control) shadow_control->overtake_suppress_master_volume = 0;
             if (shadow_control && shadow_control->suspend_overtake) {
                 shadow_control->suspend_overtake = 0;  /* consumed */
                 /* Freeze sysex cache so RNBO's init batch on resume
@@ -6613,6 +6621,24 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 /* Clear JACK LED cache on clean exit */
                 led_queue_clear_jack_cache();
             }
+        }
+        /* Belt-and-braces: clear master-volume suppression on ANY overtake-mode
+         * change, not just on exit. It is a momentary flag — a tool raises it
+         * for the duration of one gesture — so no mode transition can be
+         * carrying a legitimately-set one, and every transition can strand it:
+         *
+         *   2 -> 0  the tool is gone and cannot lower it. A stuck flag then
+         *           breaks the master volume knob for every module loaded
+         *           afterwards (unlike overtake_suppress_sysex's equivalent
+         *           stuck state, which only costs an LED cache).
+         *   2 -> 1  the tool went back to the Tools menu with the flag up, and
+         *           mode 1 honours it too — so the shadow menu's own volume
+         *           knob is dead until full exit.
+         *   0 -> 2  a fresh module inherits a predecessor's suppression.
+         *
+         * Deliberately not relying solely on the tool's own endDivert(). */
+        if (prev_overtake_mode != overtake_mode && shadow_control) {
+            shadow_control->overtake_suppress_master_volume = 0;
         }
         prev_overtake_mode = overtake_mode;
     }
@@ -6678,9 +6704,22 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
              * suppression below zeroes its lead packet (0xF0 counts as a
              * status byte here) same as it would any other cable-0 SysEx,
              * corrupting the one message Move's own shutdown-prompt flow needs
-             * intact. The id byte at offset 17 varies (observed 0x2A on a tap,
-             * 0x3A on a ~1.5-2s hold); match on the fixed header + subcommand
-             * only. Lookahead, not a stateful match at the subcommand packet,
+             * intact.
+             *
+             * Offsets: USB-MIDI packs SysEx three payload bytes per packet, so
+             * at an 8-byte MIDI_IN stride stream byte 6 — the COMMAND, 0x3A
+             * here, structurally the same slot 0x3B occupies in the LED SysEx
+             * documented at shadow_led_queue.c:908 — lands at j+17, and the
+             * varying id sits at j+18 where nothing below matches. (The
+             * original comment here read "the id byte at offset 17 varies",
+             * which is off by one. Left as a caveat because only the HOLD case
+             * is device-verified: if the 0x2A-on-tap / 0x3A-on-hold reading
+             * was taken at j+17 rather than j+18 then this match fires on a
+             * hold only, and a tap's SysEx is still corrupted — which is
+             * main's pre-existing behaviour, not a regression, since Move's
+             * shutdown prompt needs a hold anyway.)
+             *
+             * Lookahead, not a stateful match at the subcommand packet,
              * because a corrective *retroactive* un-filter of already-written
              * sh_midi slots would need to special-case every filter site
              * above instead of the one line below. */
@@ -6710,19 +6749,17 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                  * - mode 1 (menu): allow only volume touch/turn passthrough */
                 if (overtake_mode == 2) {
                     if (status >= 0x80) filter = 1;
-                    /* Let volume knob CC and touch through so Move shows volume overlay
-                     * — unless a tool has claimed the gesture for itself (movy:
-                     * hold a track button + turn master volume) and asked to
-                     * suppress it via overtake_suppress_master_volume, in which
-                     * case this behaves like any other cable-0 event. */
-                    if (cin == 0x0B && type == 0xB0 && d1 == CC_MASTER_KNOB &&
-                        !shadow_control->overtake_suppress_master_volume) {
+                    /* Let volume knob CC and touch through so Move shows volume
+                     * overlay. A tool can claim the gesture instead via
+                     * overtake_suppress_master_volume — handled in the
+                     * precedence tail below, not here, so that it also
+                     * outranks the passthrough and co-run clauses. */
+                    if (cin == 0x0B && type == 0xB0 && d1 == CC_MASTER_KNOB) {
                         filter = 0;
                     }
                     if ((cin == 0x09 || cin == 0x08) &&
                         (type == 0x90 || type == 0x80) &&
-                        d1 == 8 &&
-                        !shadow_control->overtake_suppress_master_volume) {
+                        d1 == 8) {
                         filter = 0;
                     }
                     /* Per-CC passthrough list (from the module's
@@ -6756,14 +6793,12 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     }
                 } else if (overtake_mode == 1) {
                     filter = 1;
-                    if (cin == 0x0B && type == 0xB0 && d1 == CC_MASTER_KNOB &&
-                        !shadow_control->overtake_suppress_master_volume) {
+                    if (cin == 0x0B && type == 0xB0 && d1 == CC_MASTER_KNOB) {
                         filter = 0;
                     }
                     if ((cin == 0x09 || cin == 0x08) &&
                         (type == 0x90 || type == 0x80) &&
-                        d1 == 8 &&
-                        !shadow_control->overtake_suppress_master_volume) {
+                        d1 == 8) {
                         filter = 0;
                     }
                     /* Same per-CC passthrough list applies at mode 1 (tool
@@ -6810,6 +6845,37 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         filter = 1;
                     }
                 }
+            }
+
+            /* === PRECEDENCE TAIL ===
+             * Everything above assigns `filter` inside one mode branch on a
+             * last-writer-wins basis. The clauses below run after ALL of them
+             * and are ordered deliberately: append here only when you mean
+             * "this outranks every branch above, including the ones that
+             * unconditionally clear filter" — the button_passthrough list and
+             * the move-native co-run cede. Anything narrower belongs in a
+             * branch, where the next reader will look for it.
+             * The two tail clauses are disjoint (a SysEx packet is never a CC
+             * or a note), so their relative order does not matter today; keep
+             * them commented as a sequence anyway so it stays that way. */
+
+            /* A tool that has claimed the master-volume gesture for itself
+             * (movy: hold a track button + turn master volume) excludes Move
+             * from CC 79 and master-touch note 8 outright, for as long as the
+             * flag is up. This MUST outrank the two exemptions in the branches
+             * above — but also button_passthrough and co-run, or a tool that
+             * happens to list CC 79 in capabilities.button_passthrough, or to
+             * cede CORUN_GRP_MASTER / CORUN_GRP_TOUCH, would silently get no
+             * suppression at all with nothing on screen or in the log to say
+             * why. overtake_mode is required: at mode 0 note 8 is deliberately
+             * passed to Move so track+volume and native volume workflows keep
+             * working while the shadow UI is up. */
+            if (cable == 0x00 && overtake_mode &&
+                shadow_control->overtake_suppress_master_volume &&
+                ((cin == 0x0B && type == 0xB0 && d1 == CC_MASTER_KNOB) ||
+                 ((cin == 0x09 || cin == 0x08) &&
+                  (type == 0x90 || type == 0x80) && d1 == 8))) {
+                filter = 1;
             }
 
             /* Let the power-button SysEx through intact regardless of which
