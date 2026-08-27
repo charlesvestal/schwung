@@ -1810,6 +1810,16 @@ static void shadow_overtake_dsp_unload(void) {
      * inert here and a non-atomic reset is safe. */
     overtake_ext_ring.head = 0;
     overtake_ext_ring.tail = 0;
+
+    /* Same for the dedicated Move-injection ring. It is a shim-lifetime static,
+     * so without this the NEXT overtake module's first frames drain the
+     * departed module's queued notes into Move's MIDI_IN as if it had played
+     * them. Note what this does NOT fix: packets that already went out during
+     * the takeover are gone, so a DSP that queued a note-on and was exited
+     * before its note-off still leaves a note ringing in Move. That wants an
+     * all-notes-off on the overtake->0 edge, which is a change to the one
+     * transition documented as SIGABRT-prone and is not being made blind. */
+    shadow_overtake_midi_discard();
 }
 
 /* Per-slot render breakdown counters (added 2026-05-15 for render spike hunt).
@@ -8106,8 +8116,11 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
          * So in overtake mode the inject ring is drained HERE instead, onto
          * exactly the route a hardware press takes: publish to the shadow UI,
          * and hand note events to the overtake DSP. shadow_drain_midi_inject
-         * returns early while overtake_mode is set, so the ring keeps its
-         * single consumer.
+         * skips THIS ring while overtake_mode is set, so it keeps its single
+         * consumer. (It no longer returns early -- it drains the dedicated
+         * overtake ring in both modes, which is a different ring with a
+         * different consumer. The invariant is unchanged; the sentence that
+         * used to state it was not.)
          *
          * Realtime: peek/pop are lock-free atomic loads over a preallocated
          * ring, and the loop is bounded, so this adds no allocation and no
