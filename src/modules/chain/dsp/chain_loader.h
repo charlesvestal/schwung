@@ -137,4 +137,8 @@ void chain_synth_destroy_triple(chain_retired_module_t *r);
 /* Retire ring overflow — logs. Not on any hot path. */
 void chain_loader_note_retire_overflow(chain_instance_t *inst);
 
+/* The loader thread could not leave realtime. Logs. Takes no instance because
+ * it is called from the loader thread before it has one in hand. */
+void chain_loader_note_demote_failed(const char *msg);
+
 #endif /* CHAIN_LOADER_H */

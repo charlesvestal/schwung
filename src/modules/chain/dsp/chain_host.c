@@ -652,6 +652,10 @@ void chain_synth_destroy_triple(chain_retired_module_t *r) {
     r->instance = NULL;
 }
 
+void chain_loader_note_demote_failed(const char *msg) {
+    chain_log(msg);
+}
+
 void chain_loader_note_retire_overflow(chain_instance_t *inst) {
     v2_chain_log(inst, "chain loader: retire ring full — leaking a module "
                        "(safe; a use-after-free in the audio path is not)");
