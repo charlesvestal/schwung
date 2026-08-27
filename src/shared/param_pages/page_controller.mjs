@@ -443,6 +443,21 @@ export const CONTRACT_RECOVER_INTERVAL_TICKS = 600;
  * to bound the list — the renderer decides what it actually draws. */
 const TRIGGER_BURST_KEEP_MS = 400;
 const TRIGGER_BURST_MAX = 4;
+/*
+ * A knob detent fires a trigger too, and THAT is what needs a cooldown.
+ *
+ * A jog click is one gesture per press, so it may repeat as fast as a finger
+ * can manage and nothing rate-limits it. An encoder is not: one flick of the
+ * wrist is a dozen detents, and a trigger is by definition something that DOES
+ * a thing — euclidrum's `rnd_preset` would randomise a kit twelve times, and
+ * magneto's `["Play","Save"]` would write a file per detent. So the knob path,
+ * and only the knob path, collapses a spin into one fire per window.
+ *
+ * 250ms is a little longer than the 120ms press animation and a little shorter
+ * than the 300ms burst, so a deliberate second flick reads as a second event
+ * while a single sweep cannot.
+ */
+const TRIGGER_KNOB_COOLDOWN_MS = 250;
 
 export function createController(io = {}) {
     const getParam = io.getParam || (() => null);
@@ -566,6 +581,10 @@ export function createController(io = {}) {
         contractGaveUp: false,
         /* key -> ms when a trigger last fired, for the bang flash. */
         triggerFiredAt: Object.create(null),
+        /* key -> ms of the last KNOB-driven fire, for the knob cooldown only.
+         * Deliberately separate from triggerFiredAt: that one is a LIST the
+         * renderer trims, and a click must never be rate-limited by it. */
+        triggerKnobLastMs: Object.create(null),
         contractRetries: 0,
         /* Wall-clock ms at which a selection-driven contract re-read comes
          * due, or 0 for none pending. Re-armed per detent — see
@@ -2071,6 +2090,42 @@ export function createController(io = {}) {
         return s.pageIndex;
     }
 
+    /*
+     * Fire a write-only param, and stamp it so the button widget can flash.
+     *
+     * The wire value that fires it is the module's business
+     * (["idle","trigger"], ["—","Rnd!"], ["Play","Save"] are all in the
+     * fleet), so option 1 goes out through the ordinary enum wire, which
+     * speaks whichever convention that module uses. Writing a bare "1" here is
+     * exactly the bug that makes euclidrum randomise a kit when asked to do
+     * nothing.
+     *
+     * The stamp APPENDS, it does not overwrite. A press must not cancel the
+     * bursts already travelling — a fast double-tap should throw two rings,
+     * not restart one. Trimmed to what can still be on screen, so the list
+     * cannot grow.
+     *
+     * ONE function for both gestures on purpose. A click and a detent must put
+     * the same value on the wire and the same stamp on screen; the ONLY thing
+     * that differs between them is the cooldown, and that is applied by the
+     * knob caller rather than here — so a click can never be rate-limited by
+     * a knob's window, which is the regression a shared timer would invite.
+     */
+    function fireTrigger(key, meta, t) {
+        if (meta.kind === KIND_ENUM && Array.isArray(meta.options) && meta.options.length > 1) {
+            setParam(fullKey(key), enumWireValue(meta, 1));
+            announce(`${meta.label}, ${meta.options[1]}`);
+        } else {
+            setParam(fullKey(key), "1");
+            announce(`${meta.label}`);
+        }
+        const prev = s.triggerFiredAt[key] || [];
+        s.triggerFiredAt[key] = prev
+            .filter((p) => t - p < TRIGGER_BURST_KEEP_MS)
+            .slice(-TRIGGER_BURST_MAX + 1)
+            .concat(t);
+    }
+
     /**
      * A physical knob moved. Applies the shared knob_engine so a value moves
      * identically here and in the list editor, writes through, and holds off
@@ -2081,6 +2136,37 @@ export function createController(io = {}) {
         const key = keyAt(slot);
         if (!key) return null;
         const meta = s.metaIndex.getOrGuess(key);
+
+        /*
+         * A TRIGGER fires on a detent, in EITHER direction.
+         *
+         * It has no value to walk, so there is no "up" and no "down" — the
+         * momentary is the whole control, and reaching it should not require
+         * the jog when your hand is already on the knob. Direction-sensitivity
+         * would be worse than useless here: it would make half of every spin
+         * do nothing, which reads as a dead knob.
+         *
+         * This sits AHEAD of the isTurnable swallow below because a trigger is
+         * writeOnly and therefore not turnable — falling through would silently
+         * eat the motion, which is exactly what it used to do.
+         *
+         * The cooldown lives HERE and nowhere else: see
+         * TRIGGER_KNOB_COOLDOWN_MS. Note it is applied BEFORE the header claim
+         * as well, deliberately — a swallowed detent is not an interaction, and
+         * letting it move the header would make a spin look like it was doing
+         * something on every click of the encoder.
+         */
+        if (meta.writeOnly) {
+            const t = nowMs === undefined ? now() : nowMs;
+            const last = s.triggerKnobLastMs[key];
+            if (last !== undefined && t - last < TRIGGER_KNOB_COOLDOWN_MS) return null;
+            s.triggerKnobLastMs[key] = t;
+            if (!s.touchOrder.length) { s.touched = slot; s.turnClaimMs = t; }
+            else if (s.touchOrder.indexOf(slot) >= 0) s.touched = slot;
+            fireTrigger(key, meta, t);
+            return null;
+        }
+
         /* A filepath or canvas cannot be turned — it opens. Swallow the motion
          * rather than writing nonsense into it. */
         if (!isTurnable(meta)) return null;
@@ -2513,47 +2599,9 @@ export function createController(io = {}) {
         const meta = metaAt(slot);
         if (!key || !meta) return null;
 
-        /*
-         * A TRIGGER fires. It is not a value to open or scrub — the module
-         * reports a constant and acts on the write, so a click is the whole
-         * interaction.
-         *
-         * The wire value that fires it is the module's business
-         * (["idle","trigger"], ["—","Rnd!"], ["Play","Save"] are all in the
-         * fleet), so option 1 goes out through the ordinary enum wire, which
-         * speaks whichever convention that module uses. Writing a bare "1"
-         * here is exactly the bug that makes euclidrum randomise a kit when
-         * asked to do nothing.
-         */
-        if (meta.writeOnly) {
-            if (meta.kind === KIND_ENUM && Array.isArray(meta.options) && meta.options.length > 1) {
-                setParam(fullKey(key), enumWireValue(meta, 1));
-                announce(`${meta.label}, ${meta.options[1]}`);
-            } else {
-                setParam(fullKey(key), "1");
-                announce(`${meta.label}`);
-            }
-            /*
-             * Stamp the fire time so the bang can flash. OVERWRITING is the
-             * point: clicking again mid-flash restarts the animation from the
-             * beginning rather than being swallowed by the one in progress, so
-             * two clicks look like two events. The renderer derives everything
-             * from this one number, so there is no animation state to clear.
-             */
-            /*
-             * APPEND, do not overwrite. A press must not cancel the bursts
-             * already travelling — a fast double-tap should throw two rings,
-             * not restart one. Trimmed to what can still be on screen, so the
-             * list cannot grow.
-             */
-            const t = now();
-            const prev = s.triggerFiredAt[key] || [];
-            s.triggerFiredAt[key] = prev
-                .filter((p) => t - p < TRIGGER_BURST_KEEP_MS)
-                .slice(-TRIGGER_BURST_MAX + 1)
-                .concat(t);
-            return null;
-        }
+        /* A TRIGGER fires — a click is the whole interaction, with no
+         * cooldown, because one press is one gesture. See fireTrigger. */
+        if (meta.writeOnly) { fireTrigger(key, meta, now()); return null; }
 
         if (!meta.divable) return null;
         s.pending = { action: "open", key, fullKey: fullKey(key), meta };
