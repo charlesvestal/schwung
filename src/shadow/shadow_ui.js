@@ -1692,6 +1692,10 @@ let knobEditorCcOut = 0;         // Cached knob_cc_out for the slot being edited
                                  // Cached rather than read per repaint: a
                                  // get_param is served once per draw, and this
                                  // row would otherwise pay that on every frame.
+                                 // null = the read did not complete. NOT the
+                                 // same as Off: this row is a TOGGLE, so a
+                                 // failed read shown as "Off" makes the next
+                                 // click write the value it already had.
 let knobParamPickerFolder = null; // null = main (targets), string = target name for params
 let knobParamPickerIndex = 0;    // Selected index in param picker
 let knobParamPickerParams = [];  // Available params in current folder
@@ -11188,9 +11192,12 @@ function loadKnobAssignments(slot) {
         const param = getSlotParam(slot, `knob_${i + 1}_param`) || "";
         knobEditorAssignments.push({ target, param });
     }
-    /* Absent on a chain DSP older than this feature — treat as Off. */
+    /* Three answers, not two (CLAUDE.md). "" is a chain DSP older than this
+     * feature — genuinely Off. null is a read that did not complete, and it
+     * must not become a value: this row is a toggle, so believing a false
+     * "Off" makes the click write 1 to a slot that was already on. */
     const ccOut = getSlotParam(slot, "knob_cc_out");
-    knobEditorCcOut = (ccOut !== null && parseInt(ccOut)) ? 1 : 0;
+    knobEditorCcOut = (ccOut === null) ? null : (parseInt(ccOut) ? 1 : 0);
 }
 
 /* Get available targets for knob assignment (components with modules loaded) */
@@ -15601,7 +15608,7 @@ function handleJog(delta, shift = isShiftHeld()) {
             /* Navigate the 8 knobs plus the trailing Knob CC Out toggle. */
             knobEditorIndex = Math.max(0, Math.min(NUM_KNOBS, knobEditorIndex + delta));
             if (knobEditorIndex === NUM_KNOBS) {
-                announceMenuItem("Knob CC Out", knobEditorCcOut ? "On" : "Off");
+                announceMenuItem("Knob CC Out", knobCcOutLabel());
             } else {
                 /* Announce knob and current assignment */
                 const knobNum = knobEditorIndex + 1;
@@ -16339,10 +16346,25 @@ function handleSelect() {
         case VIEWS.KNOB_EDITOR:
             if (knobEditorIndex === NUM_KNOBS) {
                 /* Flip Knob CC Out. Turning it on makes the DSP dump every
-                 * mapped knob, so the controller starts in sync. */
+                 * mapped knob, so the controller starts in sync.
+                 *
+                 * A toggle cannot flip a state it does not know. If the cached
+                 * read failed, ask once more and act only on a real answer —
+                 * writing a guess here would silently turn the feature OFF for
+                 * someone who had it on, which is the failure this feature
+                 * exists to avoid. */
+                if (knobEditorCcOut === null) {
+                    const retry = getSlotParam(knobEditorSlot, "knob_cc_out");
+                    if (retry === null) {
+                        announceMenuItem("Knob CC Out", "Unavailable");
+                        needsRedraw = true;
+                        break;
+                    }
+                    knobEditorCcOut = parseInt(retry) ? 1 : 0;
+                }
                 knobEditorCcOut = knobEditorCcOut ? 0 : 1;
                 setSlotParam(knobEditorSlot, "knob_cc_out", String(knobEditorCcOut));
-                announceMenuItem("Knob CC Out", knobEditorCcOut ? "On" : "Off");
+                announceMenuItem("Knob CC Out", knobCcOutLabel());
                 needsRedraw = true;
             } else {
                 /* Edit this knob's assignment */
@@ -17435,6 +17457,13 @@ function drawComponentEdit() {
 /* drawChainSettings() -> shadow_ui_settings.mjs */
 
 /* Draw knob assignment editor - list of 8 knobs with their assignments */
+/* The toggle's value column. "--" is the third state: the read did not
+ * complete, so we do not know and must not claim Off. */
+function knobCcOutLabel() {
+    if (knobEditorCcOut === null) return "--";
+    return knobEditorCcOut ? "On" : "Off";
+}
+
 function drawKnobEditor() {
     clear_screen();
     drawHeader(`S${knobEditorSlot + 1} Knobs`);
@@ -17462,7 +17491,7 @@ function drawKnobEditor() {
         getLabel: (item) => item.label,
         getValue: (item) => item.type === "knob"
             ? truncateText(getKnobAssignmentLabel(item.assignment), 12)
-            : (item.type === "toggle" ? (knobEditorCcOut ? "On" : "Off") : ""),
+            : (item.type === "toggle" ? knobCcOutLabel() : ""),
         listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
         valueAlignRight: true,
         prioritizeSelectedValue: true
