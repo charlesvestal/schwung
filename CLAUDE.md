@@ -932,9 +932,26 @@ The docs already promised the right behaviour ("a whole flick of the encoder
 counts as one press"), so the implementation was what disagreed.
 
 The stamp is therefore the last **detent**, not the last fire: every detent
-extends the gesture, and the latch clears only once the knob has been still for
+extends the gesture, and the latch clears once the knob has been still for
 `TRIGGER_KNOB_GESTURE_GAP_MS` (400). Written *before* the early return, which is
 what makes the clock run on stillness rather than on elapsed time.
+
+**A RELEASE clears it immediately**, on both surfaces. The gap is only a
+fallback for a cap sensor that never registered — letting go is the real
+gesture boundary, and without it you fire, let go, take hold again and the next
+detent is swallowed for up to 400ms, which reads as a broken control rather
+than as a safety.
+
+**The footer says `CLK FIRE` / `KNB FIRE`.** It said `CLK PUSH`, deliberately —
+"name the GESTURE the picture is asking for", and the picture is a push button.
+That held while the click was the only way to fire it, and stopped holding when
+a detent started firing it too: you do not push a knob you are turning, so no
+single gesture-name covers both keys and the honest word is the consequence.
+Two pairs rather than a compound `CLK/KNB` key, which measures 3px narrower and
+reads well but is new vocabulary — `FOOTER_CANON.keys` name a PHYSICAL control
+and `test_footer_canon.sh` enforces it. `KNB PUSH` does **not** fit: the face is
+proportional, PUSH is wider than FIRE, and the third pair was silently dropped.
+"If it fits" had to be answered by rendering it.
 
 **It is KNOB-ONLY.** A click is one gesture per press and may repeat as fast as
 a finger can manage. One flick of an encoder is a dozen detents, and a trigger

@@ -725,7 +725,31 @@ function footerHints() {
          * self-explanatory once it looks like a button.
          */
         if (meta && meta.writeOnly) {
-            return orderedHints({ jog: "PAGE", click: "PUSH", extra: fine });
+            /*
+             * BOTH keys, ONE verb.
+             *
+             * It said CLK PUSH, deliberately: "the hint vocabulary should name
+             * the GESTURE the picture is asking for", and the picture is a push
+             * button. That held while the click was the only way to fire it.
+             * It stopped holding when a knob DETENT started firing it too — you
+             * do not push a knob you are turning, so a single gesture-name
+             * cannot cover both keys, and the honest word is the consequence.
+             *
+             * Reported as exactly that: "clk and turn should be FIRE since
+             * they're the same action."
+             *
+             * Two pairs rather than one compound `CLK/KNB` key, which measures
+             * 3px narrower and reads well — but FOOTER_CANON.keys name a
+             * PHYSICAL CONTROL, and test_footer_canon.sh enforces it. A slashed
+             * pseudo-key is new vocabulary for a saving of three pixels.
+             *
+             * Measured: JOG PAGE / CLK FIRE / KNB FIRE is 119px and fits.
+             * KNB PUSH does NOT — the face is proportional, so PUSH is wider
+             * than FIRE and the third pair was silently dropped. "If it fits"
+             * had to be answered by rendering it, not by counting characters.
+             */
+            return orderedHints({ jog: "PAGE", click: "FIRE",
+                                  extra: [["KNB", "FIRE"], ...(fine || [])] });
         }
         /*
          * ...or divable THROUGH the picture it is drawn in: granny's `spray`

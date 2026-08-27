@@ -20981,6 +20981,18 @@ globalThis.onMidiMessageInternal = function(data) {
         if (d1 >= MoveKnob1Touch && d1 <= MoveKnob8Touch) {
             const knobIndex = d1 - MoveKnob1Touch;
             knobTouched[knobIndex] = false;
+            /*
+             * LETTING GO ENDS A TRIGGER GESTURE, immediately.
+             *
+             * TRIGGER_KNOB_GESTURE_GAP_MS is a fallback for a cap sensor that
+             * never registered; a release is the real boundary. Without this
+             * you fire, let go, take hold again, and the next detent is
+             * swallowed for up to 400ms -- which reads as a broken control
+             * rather than as a safety. Same rule as the knob grid
+             * (page_controller.mjs onKnobTouch).
+             */
+            triggerKnobLastMs[knobIndex] = 0;
+            triggerKnobLastKey[knobIndex] = null;
             /* Process hierarchy knob delta */
             if (pendingHierKnobIndex === knobIndex) {
                 processPendingHierKnob();
