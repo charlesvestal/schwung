@@ -52,7 +52,7 @@
  * MIDI_OUT must be bounded by this to avoid corrupting the display. */
 #define HW_MIDI_OUT_SIZE    80
 #define DISPLAY_BUFFER_SIZE 1024  /* 128x64 @ 1bpp = 1024 bytes */
-#define CONTROL_BUFFER_SIZE 84  /* overtake_suppress_master_volume added into existing trailing pad byte; static-asserted below */
+#define CONTROL_BUFFER_SIZE 84  /* corun masks widened to uint32 + flags byte (cede-default model); static-asserted below */
 #define SHADOW_UI_BUFFER_SIZE     512
 #define SHADOW_PARAM_BUFFER_SIZE  65664  /* Large buffer for complex ui_hierarchy */
 #define SHADOW_MIDI_OUT_BUFFER_SIZE 512  /* MIDI out buffer from shadow UI (128 packets) */
@@ -218,7 +218,22 @@ typedef struct shadow_control_t {
      * duration of that gesture so Move is excluded entirely instead of
      * quietly tracking the turn on its own copy of the value. Opt-in per
      * tool (shadow_set_overtake_suppress_master_volume); default 0 leaves
-     * the existing passthrough unchanged. */
+     * the existing passthrough unchanged. This byte consumes existing
+     * trailing padding — CONTROL_BUFFER_SIZE was NOT bumped for it, and its
+     * 84 still derives from the corun mask widening above.
+     *
+     * Enforced in the PRECEDENCE TAIL of the cable-0 filter loop, not in the
+     * mode branches, so it also outranks capabilities.button_passthrough and
+     * the move-native co-run cede (CORUN_GRP_MASTER / CORUN_GRP_TOUCH) — both
+     * of which clear `filter` unconditionally and would otherwise defeat it
+     * silently. Cleared by the shim on ANY overtake-mode change.
+     *
+     * KNOWN GAP, not fixed: raising or lowering the flag BETWEEN a note-8
+     * on and its off filters the touch asymmetrically, so Move sees the press
+     * and never the release and latches volume-touch state. The overtake-exit
+     * path already compensates for exactly this with an injected vol_touch_off
+     * (schwung_shim.c); a mid-session flip has no equivalent. A tool should
+     * raise and lower the flag OUTSIDE a held master-volume touch. */
     volatile uint8_t overtake_suppress_master_volume;
 } shadow_control_t;
 

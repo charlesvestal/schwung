@@ -268,6 +268,22 @@ stripping **all** cable-0 sysex via `shadow_set_overtake_suppress_sysex(1)` to
 take true full LED control; it defaults off and the framework clears it on
 overtake exit.
 
+**Master volume.** CC 79 and master-touch note 8 are passed to Move
+unconditionally in both overtake modes, so Move can draw its native volume
+overlay. A tool with its own master-volume gesture (movy: hold a track button +
+turn master volume) takes them outright with
+`shadow_set_overtake_suppress_master_volume(1)`, which also stops
+`shadow_swap_display()` handing the OLED back for the duration of the touch.
+
+It is enforced in the filter loop's **precedence tail**, so it outranks both
+`capabilities.button_passthrough` and a ceded `CORUN_GRP_MASTER` /
+`CORUN_GRP_TOUCH` — declaring either alongside the flag does not quietly
+re-admit Move. Defaults off, and the shim clears it on any overtake-mode
+change, so it cannot strand. Raise and lower it **outside** a held master-volume
+touch: flipping it between note 8's on and off filters the touch
+asymmetrically and Move latches the press (see the field comment in
+`shadow_constants.h`).
+
 ## Single source of truth
 
 A single predicate, `corun_event_owner(ctrl, type, d1) -> {TOOL, PEER, BOTH,
