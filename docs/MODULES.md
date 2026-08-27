@@ -1809,25 +1809,44 @@ reports an error:
 Prefer accepting both conventions and rejecting anything else loudly enough to
 show up in a log.
 
+#### Which widget a cell draws
+
+`drawKnobWidget` (`render_page_movy.mjs`) is one ordered dispatch, and the
+order is the specification — each branch owns its cell outright:
+
+| # | test | widget |
+|---|---|---|
+| 1 | `kind === KIND_OPAQUE` | opaque box (chevron) |
+| 2 | `writeOnly` (a trigger) | button |
+| 3 | `kind === KIND_ENUM` | enum square |
+| 4 | `shouldDrawBigNumber` | big number |
+| 5 | *(otherwise)* | arc knob |
+
+A **viz graphic** pre-empts all of it: a resolved group covers its cells and
+draws one picture across them, and the per-cell widget is skipped.
+
+Authors do not pick a widget. Declare `type`, a range and `options`; the widget
+follows. See [WIDGETS.md](WIDGETS.md) for what each one looks like.
+
 #### Divability, and the two cell marks
 
 Every enum with a non-empty `options` array is **divable**: on the knob grid,
 holding its knob and clicking opens a scrolling option list. You get this for
 free — there is nothing to declare, and nothing to declare it away.
 
-**The cell marks do not mean "divable."** Measured over the fleet: 967 divable
-cells on knob pages, and **953 of them (99%) wear no mark at all**, because
-almost every divable cell is an enum. Divability is announced by the **footer**
-— hold the knob and it reads `CLK OPEN`. Marking 135 enums would erase what a
-mark means.
+**The cell marks do not mean "divable."** Measured over the fleet (2026-08):
+967 divable cells on knob pages, and **953 of them — 99% — wear no mark at
+all**, because almost every divable cell is an enum. Divability is announced by
+the **footer**: hold the knob and it reads `CLK OPEN`. Marking every enum would
+erase what a mark means.
 
 The two marks you *will* see distinguish something narrower, with no overlap
-anywhere in the fleet:
+anywhere in the fleet — a handful of cells each:
 
-| mark | cells | knob turns it? | means |
-|---|---|---|---|
-| corner brackets | 7 | always | the knob works, **and** it opens something |
-| chevron box | 7 | never | there is no knob here — only a door |
+| mark | knob turns it? | means |
+|---|---|---|
+| corner brackets | always | the knob works, **and** it opens something |
+| chevron box | never | there is no knob here — only a door |
 
 The **chevron is not a mark at all**: it is the *widget*. An opaque param
 (`filepath`/`file`, `string`, `canvas`, non-ranged `wav_position`, the two
