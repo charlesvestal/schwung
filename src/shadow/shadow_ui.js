@@ -2780,14 +2780,21 @@ function openHierarchyParamEditor(selectedKey, meta, forceOpen) {
                  * a preset from a Save cell left them sitting in a list of
                  * rows, on a page they did not navigate to, with the grid they
                  * were working on gone.
+                 *
+                 * Through the SHARED helper rather than an inline copy of it.
+                 * This is the fourth own-view editor to want this branch, and
+                 * the third was missed precisely because it was open-coded --
+                 * see closeOwnViewEditorToCaller. The keyboard is not a view,
+                 * so it has no close function of its own to fix; its two
+                 * callbacks ARE its exits, and they are what the test drives.
                  */
-                if (paramEditorOpenedFromGrid) returnToParamPagesFromEditor();
+                closeOwnViewEditorToCaller();
             },
             onCancel: () => {
                 needsRedraw = true;
                 /* Cancel returns the same way: backing out of the keyboard
                  * should undo the hand-off, not complete it. */
-                if (paramEditorOpenedFromGrid) returnToParamPagesFromEditor();
+                closeOwnViewEditorToCaller();
             }
         });
         return;
