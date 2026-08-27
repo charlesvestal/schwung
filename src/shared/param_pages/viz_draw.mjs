@@ -1149,13 +1149,19 @@ const PILL_H = 9, SLUG_W = 5, SLUG_H = 5, SLUG_INSET = 2;
  * was deciding. Snapping it costs nothing, because the thing that reads as the
  * transition is the fill, and the fill is still there.
  *
- * FILL: ~70ms, eased out — about four frames at the shadow UI's 60Hz. Short
- * enough to feel like a consequence of the press rather than a separate event,
- * long enough that the direction is legible; at one or two frames a wipe is
- * indistinguishable from an instant inversion and there is no reason to keep
- * the machinery.
+ * FILL: 160ms, eased out — about nine frames at the shadow UI's 60Hz. Chosen
+ * against 70 and 260 with all three rendered from this renderer: 70 is over
+ * before the eye finds it and reads as an instant inversion, 260 is slow
+ * enough that you watch it rather than notice it, which for a widget you flip
+ * repeatedly becomes a wait.
+ *
+ * Note the two decisions are not independent, which is why they were judged
+ * together: the travel was only bad BECAUSE it was fast, and at 160+ it has
+ * room to read. It still loses — seven pixels is not enough journey to be
+ * worth splitting attention with the wipe — but a fast travel and a slow one
+ * are different proposals and only the fast one was ever obviously wrong.
  */
-const SWITCH_FILL_MS = 70;
+const SWITCH_FILL_MS = 160;
 
 export function drawSwitch(ctx, rect, key, values, metaIndex, anim, nowMs) {
     const raw = values ? values[key] : undefined;
