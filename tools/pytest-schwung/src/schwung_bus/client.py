@@ -741,10 +741,25 @@ class SchwungBus:
             f"counter={frozen_at_value} within {timeout}s"
         )
 
+    # The daemon's reply when the shim answers a param GET with error 14 —
+    # no handler claimed the key (schwung_shim.c). That is the genuine
+    # "host predates __ready" case, and it is deliberately NOT one of
+    # _PARAM_TRANSIENT_ERRORS, so it propagates on the first attempt with
+    # no retry delay. Contention ("param GET timeout", "param SHM busy")
+    # burns three retries and then re-raises the SAME exception type, so
+    # the two are separable only by message.
+    _PARAM_UNKNOWN_KEY_ERROR = "param GET error from peer"
+
+    # How long to look for the start of a load when overtake_mode is
+    # already OVERTAKE_MODULE on entry. See the gate 1b comment below.
+    RELOAD_SETTLE_S = 0.5
+
     def wait_for_overtake_dsp(
         self,
         timeout: float = 10.0,
         poll_interval: float = 0.1,
+        ready_timeout: Optional[float] = None,
+        reload_settle: Optional[float] = None,
     ) -> None:
         """Wait until a module opened by :meth:`set_open_tool` can accept input.
 
@@ -756,6 +771,15 @@ class SchwungBus:
            — the DSP instance actually exists.
 
         Both are required, and the order matters.
+
+        Each gate gets its own budget: ``timeout`` for the mode,
+        ``ready_timeout`` (defaulting to ``timeout``) for the DSP. They
+        are deliberately not one shared deadline — the two gates wait on
+        different things, and sharing one meant a slow mode flip could
+        consume the whole budget and leave gate 2 raising *"DSP still
+        loading"* without ever having issued a single ``__ready`` GET,
+        blaming the module's ``dsp.so`` for pure budget exhaustion.
+        Worst case is therefore ``timeout + ready_timeout``.
 
         The mode alone is not enough. The DSP load runs on the shim
         worker rather than the SPI thread (``dlopen()`` +
@@ -782,25 +806,35 @@ class SchwungBus:
 
         Hosts predating the ``__ready`` param raise on the GET; that is
         treated as ready, mirroring shadow_ui's own ``catch`` fallback,
-        so this helper stays safe against older device firmware.
+        so this helper stays safe against older device firmware. Only
+        that specific error is treated that way — see
+        ``_PARAM_UNKNOWN_KEY_ERROR``.
 
-        Raises :class:`SchwungBusError` if either gate misses
-        ``timeout``.
+        Raises :class:`SchwungBusError` if either gate misses its
+        budget.
         """
-        deadline = time.monotonic() + timeout
+        if ready_timeout is None:
+            ready_timeout = timeout
+        if reload_settle is None:
+            reload_settle = self.RELOAD_SETTLE_S
 
         # Gate 1: the host has accepted the load request.
+        gate1_deadline = time.monotonic() + timeout
         mode: Optional[int] = None
         reached_module = False
-        while time.monotonic() < deadline:
+        observed_non_module = False
+        while time.monotonic() < gate1_deadline:
             try:
                 st = self.state()
                 mode = st.overtake_mode
                 if mode == BusState.OVERTAKE_MODULE:
                     reached_module = True
                     break
+                observed_non_module = True
             except SchwungBusError:
-                # shadow_ui can be briefly unresponsive mid-load.
+                # shadow_ui can be briefly unresponsive mid-load. Note
+                # this does NOT count as evidence of a transition — an
+                # error tells us nothing about the mode.
                 pass
             time.sleep(poll_interval)
         if not reached_module:
@@ -811,20 +845,71 @@ class SchwungBus:
                 f"module id?"
             )
 
+        # Gate 1b: a reload whose start we never saw.
+        #
+        # If the mode was ALREADY OVERTAKE_MODULE on the first poll it
+        # carries no information. unloadModuleUi() does not reset the
+        # overtake mode, and the open_tool_cmd handler's unload+load pair
+        # runs inside ONE synchronous shadow_ui tick — so a module ->
+        # module switch never presents an observable 2 -> x -> 2
+        # transition. Both gates would otherwise pass immediately against
+        # the OUTGOING module's state, which is the same lost-first-press
+        # failure this helper exists to prevent.
+        #
+        # The only observable marker of a load actually starting is
+        # __ready going "0" (the shim sets overtake_dsp_loading when the
+        # load is queued). Wait a bounded window for that edge rather
+        # than trusting a mode that cannot answer the question.
+        if not observed_non_module:
+            settle_deadline = time.monotonic() + reload_settle
+            while time.monotonic() < settle_deadline:
+                try:
+                    if self.get_param("__ready") == "0":
+                        break
+                except SchwungBusError as e:
+                    if self._PARAM_UNKNOWN_KEY_ERROR in str(e):
+                        return
+                    # Contention. Keep looking for the edge.
+                time.sleep(poll_interval)
+            # Falling out without seeing "0" is NOT an error. A module
+            # with no dsp.so never requests a load, so it never drives
+            # __ready to "0" and is indistinguishable from a stale mode;
+            # that case degrades to the pre-existing behaviour. Telling
+            # the two apart needs a signal the bus does not expose today:
+            # shadow_ui auto-clears shadow_control.open_tool_cmd when it
+            # picks the command up, which is exactly the edge, but the
+            # daemon offers no way to read that byte back.
+
         # Gate 2: the DSP instance exists.
+        gate2_deadline = time.monotonic() + ready_timeout
         ready: Optional[str] = None
-        while time.monotonic() < deadline:
+        polled = False
+        while time.monotonic() < gate2_deadline:
             try:
                 ready = self.get_param("__ready")
-            except SchwungBusError:
-                # Unknown param => host predates __ready. Nothing to
-                # wait for; the load was synchronous on those builds.
-                return
+                polled = True
+            except SchwungBusError as e:
+                if self._PARAM_UNKNOWN_KEY_ERROR in str(e):
+                    # Unknown param => host predates __ready. Nothing to
+                    # wait for; the load was synchronous on those builds.
+                    return
+                # Transient param-SHM contention, which is MOST likely
+                # exactly here: the shim worker is in dlopen() while
+                # shadow_ui ticks. Catching the base class read this as
+                # an old host and returned "ready" mid-load.
+                time.sleep(poll_interval)
+                continue
             if ready != "0":
                 return
             time.sleep(poll_interval)
+        if not polled:
+            raise SchwungBusError(
+                f"wait_for_overtake_dsp: no successful overtake_dsp:__ready "
+                f"read within {ready_timeout}s — the param channel is not "
+                f"answering; check that shadow_ui is alive"
+            )
         raise SchwungBusError(
-            f"wait_for_overtake_dsp: DSP still loading after {timeout}s "
+            f"wait_for_overtake_dsp: DSP still loading after {ready_timeout}s "
             f"(overtake_dsp:__ready={ready!r}) — the module's dsp.so may "
             f"have failed to load; check the shim log"
         )
