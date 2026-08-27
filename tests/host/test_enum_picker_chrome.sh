@@ -180,9 +180,14 @@ const TITLE = "Reverb Mode";
   const ref = createFramebuffer();
   RM.drawHeader(drawContext(ref), TITLE, "SELECT", false);
 
-  /* Rows 0..7: the 7-row band plus the clear row under it, everything above the
-     first list row`s highlight. */
-  if (band(fb, 0, 7) !== band(ref, 0, 7))
+  /* The band plus the clear row under it: everything above the first list
+     row`s highlight, which starts one row above TOP_Y. DERIVED from HEADER_H,
+     not the literal 0..7 this used to be -- when the movy bands were re-cut
+     against the panel the header went from 7 rows to 6 and the list came up
+     with it, so a hardcoded 7 caught the top row of the highlight and reported
+     it as "the picker is not wearing the movy header". */
+  const HDR_LAST = RM.HEADER_H;
+  if (band(fb, 0, HDR_LAST) !== band(ref, 0, HDR_LAST))
     fail("the picker`s top band is not render_page_movy`s drawHeader. It drew " +
          "the generic device chrome (drawHeader`s 5x7 title + a rule at y=12), " +
          "which is what made the screen you reach from the knob grid look like " +

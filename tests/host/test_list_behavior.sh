@@ -50,6 +50,7 @@ const {
 } = await import(R + "/src/shared/menu_layout.mjs");
 const { probe } = await import(R + "/tools/param-pages/list_probe.mjs");
 const CV = await import(R + "/src/shared/chain_ui_views.mjs");
+const LG = await import(R + "/src/shared/list_geometry.mjs");
 
 let failures = 0;
 const fail = (m) => { console.error("FAIL: " + m); failures++; };
@@ -73,10 +74,25 @@ for (const [name, mine, theirs] of [
              "what every shadow view module actually imports -- says " + theirs +
              "; this test would be measuring a rect no screen renders with");
 }
-if (LIST_TOP_Y !== 10)
-    fail("LIST_TOP_Y must be the movy value 10 (list rect 10..55, header band " +
-         "ends at row 6); got " + LIST_TOP_Y + ". 15 is the pre-re-skin value, " +
-         "and it leaves an 8-row dead band under the header and fits only 4 rows");
+/* DERIVED from the header band, not a literal.
+ *
+ * This asserted 10 with the reasoning "header band ends at row 6". Both halves
+ * were true and the pair was not stable: the band was re-cut from 7 rows to 6,
+ * so it now ends at row 5 and the list sits at 9 — the SAME three-row gap the
+ * literal was standing in for. A hardcoded 10 would have failed a change that
+ * preserved exactly the property it exists to protect, while a change that
+ * moved the header and left the list behind would have passed.
+ *
+ * The gap is what matters, so the gap is what is checked. 15 — the pre-re-skin
+ * value this test was written to catch — is a 9-row hole under the band and
+ * still fails.
+ */
+const HEADER_GAP = LIST_TOP_Y - LG.HEADER_H;
+if (HEADER_GAP !== 3)
+    fail("the list must start 3 rows below the header band (band is HEADER_H=" +
+         LG.HEADER_H + " rows, so rows 0.." + (LG.HEADER_H - 1) + "); LIST_TOP_Y=" +
+         LIST_TOP_Y + " leaves " + HEADER_GAP + ". 15 was the pre-re-skin value and " +
+         "left a dead band under the header with room for only 4 rows");
 
 const items = (n) => Array.from({ length: n }, (_, i) => ({ label: "Item " + (i + 1) }));
 

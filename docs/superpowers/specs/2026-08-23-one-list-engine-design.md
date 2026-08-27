@@ -201,7 +201,7 @@ merged**, and the reason is a date:
 |---|---|
 | `menu-style-v2` — design and all 12 commits | **2026-04-19**, in one day |
 | movy grid first landed | 2026-08-16 |
-| movy re-cut against its Elektron reference | 2026-08-19 |
+| movy grid re-cut against its visual reference | 2026-08-19 |
 
 **v2 predates the movy design language by four months.** Its geometry was
 reverse-engineered from `capture_2.json` mockups before movy existed, so it was

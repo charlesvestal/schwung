@@ -25,3 +25,6 @@ libs/memfault-firmware-sdk/
 
 # Code-graph tooling output (graphify) — never commit
 graphify-out/
+
+# SCH-50 UI differentiation catalog renders (contact sheets are committed)
+catalog-out/
