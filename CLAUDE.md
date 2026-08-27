@@ -569,6 +569,34 @@ Slot Settings and Master FX Settings, which are synthesised contracts with no
 `ui_hierarchy` to enter, and it keeps the slot io's own mappings (Fwd's offset,
 MPE's compound write) applied rather than bypassed.
 
+### A filepath param opens a browser, and the knob scrolls THAT too
+
+Diving a `filepath` param from the grid — mrsample's Sample cell is the case —
+lands in `VIEWS.FILEPATH_BROWSER`, and the gesture that got you there leaves
+your hand on the knob. It now scrolls the file list through the same
+`listKnobStep` accumulator the enum picker uses, and a knob TOUCH raises
+nothing over it, for the same reason: the card covers the rows being scrolled.
+
+**This was not a missing affordance, it was a write.** With no route, the turn
+fell through `adjustKnobAndShow` (which returns false — `buildKnobContextForKnob`
+matches no view here) to `handleKnobTurn`, which writes `knob_N_adjust` into the
+**selected slot's global knob mapping**. Behind a full-screen browser, so the
+only visible symptom was the legacy "Knob 1" overlay drawn over the file list —
+which reads as a cosmetic glitch and is not one. Identical in kind to the bug
+the picker's branch fixed, and the filepath browser was the last list dived into
+from the grid that still leaked.
+
+`filepathBrowserJog(delta)` is shared by the jog case and the knob branch on
+purpose: the live-preview arm and the `announceMenuItem` live in it, and two
+copies is how a knob ends up scrolling without auditioning or speaking.
+`tests/host/test_filepath_browser_knob.sh` pins the routing order from source
+*and* lifts the helper to drive it — scroll, audition, announce, clamp, and
+clearing the pending audition when the highlight lands on a directory.
+
+Still unrouted, and each is its own decision: `TOOL_FILE_BROWSER`,
+`KNOB_PARAM_PICKER`, `LFO_TARGET_*` and `DYNAMIC_PARAM_PICKER` are all lists
+whose knob turns still reach `handleKnobTurn`.
+
 ### The knob grid is the DEFAULT param view, and it reflows to stay drawable
 
 `paramViewGlobal` defaults to 1 (the grid). The hierarchy list is still there
