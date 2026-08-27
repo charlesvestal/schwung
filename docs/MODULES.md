@@ -800,16 +800,37 @@ For audio synthesis/processing, create a native plugin implementing the C API.
 
 ### Threading: there is no control thread
 
-**Read this before writing a line of DSP.** Every plugin entry point runs on the
-SPI audio callback — SCHED_FIFO 90, core 3, ~900 µs of budget per block:
+**Read this before writing a line of DSP.** Almost every plugin entry point runs
+on the SPI audio callback — SCHED_FIFO 70, core 3, ~2370 µs of budget per block:
 
 | Entry point | Runs on the SPI callback? |
 |---|---|
-| `create_instance` / `destroy_instance` | **yes** |
+| `create_instance` / `destroy_instance` | **sometimes** — see below |
 | `set_param` | **yes** |
 | `get_param` | **yes** |
 | `on_midi` / `process_midi` | **yes** |
 | `render_block` / `process_block` / `tick` | **yes** |
+
+**The create/destroy exception, since 2026-08.** A chain slot's *sound
+generator* is built on a normal-priority loader thread and published by the
+audio thread once it is finished. Audio FX, MIDI FX and Master FX positions are
+not converted yet and still create inline, and older hosts create everything
+inline. **So write create to be correct on either thread:**
+
+- **You may block.** Loading a ROM or a sample set at create is legitimate for a
+  sound generator. It is still rude everywhere else, and it is never OK in
+  `set_param`.
+- **You may not touch anything a render can reach** until create returns. That
+  your instance is unreachable while you build it is the only guarantee.
+- **You may call `host->log`** (it trylocks and drops, so it never blocks) and
+  the scalar queries (`get_bpm`, `get_clock_status`, `get_beat_position`,
+  `slot_recv_channel`). You may **not** call `midi_send_internal`,
+  `midi_send_external`, `midi_inject_to_move`, `mod_emit_value` or
+  `mod_clear_source`, and you may not write through `mapped_memory` — those
+  touch structures the audio thread owns. Defer them to your first
+  `render_block`.
+- **You may be destroyed without ever rendering**, on the loader thread, if the
+  user picks another module before yours finishes.
 
 There is no separate control thread, no UI thread, and no "MIDI thread". A
 2026-08 audit of all 113 catalogued modules found ~150 confirmed realtime
@@ -833,12 +854,14 @@ The symptom is not a glitch in your module: it is a **device-wide** audio
 dropout, because you are holding the thread that services every other module's
 audio and Move's own.
 
-#### Threads inherit SCHED_FIFO 90
+#### Threads inherit the creator's priority
 
 `pthread_create()` from any of those entry points gives your worker the audio
-callback's realtime priority. Move's own `Link Main` publisher runs at **FIFO
-35**, so an inherited-priority worker starves Move's audio and causes the very
-dropouts you went off-thread to avoid. Demote as the worker's first action:
+callback's realtime priority — **SCHED_FIFO 70** — because
+`PTHREAD_INHERIT_SCHED` is the POSIX default. Move's own `Link Main` publisher
+runs at **FIFO 35**, so an inherited-priority worker starves Move's audio and
+causes the very dropouts you went off-thread to avoid. Demote, pin and **name**
+as the worker's first actions:
 
 ```c
 static void *worker(void *arg) {
@@ -848,13 +871,35 @@ static void *worker(void *arg) {
     cpu_set_t set; CPU_ZERO(&set);                 /* keep core 3 free for SPI */
     CPU_SET(0, &set); CPU_SET(1, &set); CPU_SET(2, &set);
     sched_setaffinity(0, sizeof(set), &set);
+
+    pthread_setname_np(pthread_self(), "mymod-worker");   /* see below */
     ...
 }
 ```
 
+**Keep doing this even though create now often runs at normal priority.** It
+costs nothing when the thread is already `SCHED_OTHER`, it is what keeps you
+correct on an older host, and a thread created from `set_param` or
+`render_block` still inherits realtime today. It also needs **no
+`min_host_version` bump** — it is a syscall on a thread you own, so it is a fix
+on old hosts and a no-op on new ones.
+
+**Name your threads.** An unnamed thread inherits its parent's `comm`, so an
+inherited worker appears as `Audio Main/SPI` — indistinguishable from the real
+SPI thread in `top`, in a thread list, or to you. That invisibility is why these
+survived, and it defeated the audit that went looking for them.
+
+**Existence is not the harm.** `Link Main` gets whatever CPU a FIFO 70 thread
+leaves it, so what starves it is a worker that *runs*. A worker that parks on a
+condvar costs nothing even at the wrong priority; two of the five below do
+exactly that. Measure burn, not headcount.
+
 References that do this correctly: `schwung-keydetect`
 (`keyfinder_wrapper.cpp`) and `schwung-airwindows` (`clap_fx.cpp`,
-`loader_thread_fn`). The audit found at least 14 modules that do not.
+`loader_thread_fn`). Measured on hardware 2026-08-22, five modules create
+realtime threads without demoting: **sfz** (5 of them), **osirus**, **minijv**,
+**po32-drum** and **fork**. minijv is the one the host change does not reach —
+it asks for FIFO 45 explicitly rather than merely inheriting.
 
 #### What to do instead
 

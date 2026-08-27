@@ -9,15 +9,61 @@
  * ===========================================================================
  *
  * THERE IS NO CONTROL THREAD. Every entry point below runs on the SPI audio
- * callback: SCHED_FIFO 90, pinned to core 3, with roughly 900 microseconds of
- * budget per 128-frame block after the ~2 ms transfer.
+ * callback: SCHED_FIFO 70, pinned to core 3, with roughly 2370 microseconds of
+ * budget per 128-frame block. (Both numbers were wrong here for a long time:
+ * nothing on the device runs at FIFO 90, and of the ioctl's 2569 us only
+ * ~389 us is the transfer -- the rest is the driver waiting for the next IRQ.)
  *
- *      create_instance     <- yes, this one too
- *      destroy_instance
+ *      create_instance     <- SEE BELOW: this one has moved, partly
+ *      destroy_instance    <- ditto
  *      set_param           <- yes, this one too
  *      get_param           <- yes, this one too
  *      on_midi / process_midi
  *      render_block / process_block / tick
+ *
+ * ---------------------------------------------------------------------------
+ * CREATE AND DESTROY MAY RUN ON A LOADER THREAD. Do not rely on either
+ * answer.
+ * ---------------------------------------------------------------------------
+ *
+ * As of 2026-08, a chain slot's SOUND GENERATOR is built on a normal-priority
+ * loader thread (SCHED_OTHER, cores 0-2) instead of on the audio callback, and
+ * the finished instance is published by the audio thread. Audio FX, MIDI FX and
+ * Master FX positions are NOT yet converted and still create inline.
+ *
+ * So `create_instance` may run on either thread depending on what you are and
+ * which host version you are on. Write it to be correct on both:
+ *
+ *   - You may block. Loading a ROM or a sample set at create is now legitimate
+ *     for a sound generator, and was always what authors assumed. It is still
+ *     rude everywhere else.
+ *   - You may NOT touch anything a render can reach until create returns. The
+ *     host guarantees your instance is unreachable while you build it, and
+ *     that is the ONLY thing it guarantees.
+ *   - You may call host->log (see below) and the scalar queries. You may NOT
+ *     call midi_send_internal, midi_send_external, midi_inject_to_move,
+ *     mod_emit_value or mod_clear_source, and you may not write through
+ *     mapped_memory. Those touch structures the audio thread owns. Defer them
+ *     to your first render_block. (No plugin in the fleet does this today, so
+ *     this rule costs nothing to adopt now and is unenforceable if we wait.)
+ *   - Your instance may be DESTROYED without ever having rendered, on the
+ *     loader thread, if the user picks again before yours finishes.
+ *
+ * Which host callbacks are safe from a loader thread, and why:
+ *
+ *   log                     SAFE. unified_log_v opens with a mutex TRYlock and
+ *                           drops the line if it is held, so concurrent callers
+ *                           never block each other.
+ *   sample_rate,            SAFE. Set once at init, never written again.
+ *   frames_per_block,
+ *   mapped_memory,
+ *   audio_in/out_offset
+ *   get_bpm,                SAFE TO READ. Naturally-aligned words the audio
+ *   get_clock_status,       thread writes; no tearing on ARM64. Worst case you
+ *   get_beat_position,      observe a value one block stale, which you cannot
+ *   slot_recv_channel       distinguish from having been created a block
+ *                           earlier. (get_clock_status is not a pure read --
+ *                           it can duplicate one settings re-read. Benign.)
  *
  * This is the single most misunderstood thing about writing a Schwung module.
  * A 2026-08 audit of all 113 catalogued modules found ~150 confirmed realtime
@@ -44,8 +90,9 @@
  * dropout, because you are holding the thread that services every other
  * module's audio and Move's own.
  *
- * THREADS INHERIT SCHED_FIFO 90. pthread_create() called from any of the
- * above hands your worker the callback's realtime priority. Move's own
+ * THREADS INHERIT THE CREATOR'S PRIORITY. pthread_create() called from any of
+ * the above hands your worker the callback's realtime priority -- SCHED_FIFO
+ * 70 -- because PTHREAD_INHERIT_SCHED is the POSIX default. Move's own
  * `Link Main` thread runs at SCHED_FIFO 35, so an inherited-priority worker
  * starves Move's audio publisher and produces exactly the dropouts you were
  * trying to avoid by going off-thread. Every worker must demote itself as its
@@ -57,11 +104,32 @@
  *      cpu_set_t set; CPU_ZERO(&set);
  *      CPU_SET(0, &set); CPU_SET(1, &set); CPU_SET(2, &set);
  *      sched_setaffinity(0, sizeof(set), &set);
+ *      // and NAME it -- see below:
+ *      pthread_setname_np(pthread_self(), "mymod-worker");
+ *
+ * DO THIS EVEN THOUGH create_instance NOW OFTEN RUNS AT NORMAL PRIORITY. It
+ * costs nothing when it is already SCHED_OTHER, it is what keeps you correct
+ * on an older host, and creating a thread from set_param or render_block still
+ * inherits realtime today.
+ *
+ * NAME YOUR THREADS. A thread with no name inherits its parent's `comm`, so an
+ * inherited worker shows up as `Audio Main/SPI` -- indistinguishable from the
+ * real SPI thread in top, in a thread list, or to its own author. That
+ * invisibility is why these survived so long, and it defeated the very audit
+ * that went looking for them.
+ *
+ * EXISTENCE IS NOT THE HARM. `Link Main` gets whatever CPU a FIFO 70 thread
+ * leaves it, so what starves it is a worker that RUNS, not one that exists. A
+ * worker that parks on a condvar costs nothing even at the wrong priority --
+ * two of the fleet's five do exactly that. Measure burn, not headcount.
  *
  * Reference implementations that get this right: schwung-keydetect
  * (keyfinder_wrapper.cpp -- demotes and pins) and schwung-airwindows
  * (clap_fx.cpp loader_thread_fn -- demotes, with a comment naming the
- * inheritance problem). The audit found at least 14 modules that do not.
+ * inheritance problem). Measured on hardware 2026-08-22, five modules create
+ * realtime threads without demoting: sfz (5 of them), osirus, minijv,
+ * po32-drum and fork. Note minijv is not fixed by the host change above -- it
+ * asks for FIFO 45 explicitly rather than merely inheriting.
  *
  * WHAT TO DO INSTEAD. Load files, allocate buffers and build lists on your own
  * SCHED_OTHER worker thread, and have the audio path pick up the result by
