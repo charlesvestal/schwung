@@ -12702,6 +12702,31 @@ function refreshHierarchyChainParams() {
 }
 
 /* Open generic file browser for a filepath parameter */
+/* Knob-scroll accumulator for the filepath browser, exactly as the enum
+ * picker has one: the JOG stays 1:1 because a jog detent is a deliberate
+ * click, while a knob detent is a fraction of a twist. */
+let filepathBrowserKnob = listKnobInit();
+
+/* Move the browser's highlight by `delta` entries.
+ *
+ * Shared by the jog and the knob so the live-preview arm and the
+ * announcement cannot drift apart between the two inputs — a browser that
+ * scrolled on the knob but did not audition or speak would be a different
+ * bug in the same place. */
+function filepathBrowserJog(delta) {
+    if (!filepathBrowserState) return;
+    moveFilepathBrowserSelection(filepathBrowserState, delta);
+    const selected = filepathBrowserState.items[filepathBrowserState.selectedIndex];
+    if (filepathBrowserState.livePreviewEnabled && selected && selected.kind === "file" && selected.path) {
+        filepathBrowserState.previewPendingPath = selected.path;
+        filepathBrowserState.previewPendingTime = Date.now();
+    } else if (filepathBrowserState.livePreviewEnabled) {
+        filepathBrowserState.previewPendingPath = "";
+        filepathBrowserState.previewPendingTime = 0;
+    }
+    if (selected) announceMenuItem(selected.label || "File", "");
+}
+
 function openHierarchyFilepathBrowser(key, meta) {
     refreshHierarchyChainParams();
     const effectiveMeta = getParamMetadata(key) || meta;
@@ -12727,6 +12752,7 @@ function openHierarchyFilepathBrowser(key, meta) {
     filepathBrowserState.hooksOnCancel = hooks.onCancel;
     filepathBrowserState.hooksOnCommit = hooks.onCommit;
     filepathBrowserState.hookRestoreValues = {};
+    filepathBrowserKnob = listKnobInit();
     applyFilepathHookActions(filepathBrowserState, filepathBrowserState.hooksOnOpen, { path: currentVal });
 
     refreshFilepathBrowser(filepathBrowserState, FILEPATH_BROWSER_FS);
@@ -15827,18 +15853,7 @@ function handleJog(delta, shift = isShiftHeld()) {
             /* Canvas animation is autonomous; jog is forwarded via onMidi hook. */
             break;
         case VIEWS.FILEPATH_BROWSER:
-            if (filepathBrowserState) {
-                moveFilepathBrowserSelection(filepathBrowserState, delta);
-                const selected = filepathBrowserState.items[filepathBrowserState.selectedIndex];
-                if (filepathBrowserState.livePreviewEnabled && selected && selected.kind === "file" && selected.path) {
-                    filepathBrowserState.previewPendingPath = selected.path;
-                    filepathBrowserState.previewPendingTime = Date.now();
-                } else if (filepathBrowserState.livePreviewEnabled) {
-                    filepathBrowserState.previewPendingPath = "";
-                    filepathBrowserState.previewPendingTime = 0;
-                }
-                if (selected) announceMenuItem(selected.label || "File", "");
-            }
+            filepathBrowserJog(delta);
             break;
         case VIEWS.KNOB_EDITOR:
             /* Navigate the 8 knobs plus the trailing Knob CC Out toggle. */
@@ -21022,6 +21037,21 @@ globalThis.onMidiMessageInternal = function(data) {
                 return;
             }
 
+            /* The filepath browser is a list too, and it was the last one
+             * dived into from the grid that still leaked its knob turns.
+             * Same fix and for the same reason as the picker above: falling
+             * through wrote knob_N_adjust into the SELECTED SLOT's global
+             * knob mapping — behind a full-screen browser, so the only
+             * visible sign was the legacy "Knob 1" card sitting on top of the
+             * file list. mrsample's Sample cell is the way in. */
+            if (view === VIEWS.FILEPATH_BROWSER) {
+                const step = listKnobStep(filepathBrowserKnob, delta, Date.now(),
+                                          filepathBrowserState
+                                              ? filepathBrowserState.items.length : 0);
+                if (step) filepathBrowserJog(step);
+                return;
+            }
+
             /* Use shared knob handler for hierarchy/chain editor contexts */
             if (adjustKnobAndShow(knobIndex, delta)) {
                 return;
@@ -21070,7 +21100,7 @@ globalThis.onMidiMessageInternal = function(data) {
              * stays consistent for whatever is underneath when the picker
              * closes; only the drawing is suppressed.
              */
-            if (view === VIEWS.ENUM_PICKER) return;
+            if (view === VIEWS.ENUM_PICKER || view === VIEWS.FILEPATH_BROWSER) return;
 
             /* Multi-marker view overrides the level's knob row:
              *   marker knobs (1..N) → switch active marker + show its value
