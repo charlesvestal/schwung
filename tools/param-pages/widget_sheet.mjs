@@ -46,6 +46,50 @@ import { createAnimState } from "../../src/shared/param_pages/anim_state.mjs";
 import { drawMenuList } from "../../src/shared/menu_layout.mjs";
 import { encodeGif } from "./gif.mjs";
 import os from "node:os";
+import zlib from "node:zlib";
+
+/*
+ * COMPARE THE PICTURE, NOT THE FILE.
+ *
+ * harness.mjs writes its PNGs with zlib.deflateSync, and zlib's output is not
+ * byte-stable across versions — the same framebuffer compresses differently on
+ * a different node. A byte comparison therefore reports "stale" for images that
+ * are pixel-identical, and it does it ONLY somewhere other than the machine
+ * that generated them: green locally, red in CI, with a message telling you to
+ * regenerate files that are already correct. Regenerating on the CI runner
+ * would just move the failure to the next machine.
+ *
+ * So the diff is taken on the INFLATED IDAT — the raw scanlines, which are what
+ * the drawing code actually produced. Dimension changes still show up, because
+ * a different width or height changes the raw length.
+ *
+ * GIFs are compared byte-for-byte: gif.mjs is our own LZW encoder with no
+ * library underneath it, so its output is deterministic by construction.
+ */
+function pngPixels(buf) {
+    if (buf.length < 8 || buf[0] !== 0x89 || buf[1] !== 0x50) return null;
+    const idat = [];
+    let off = 8;
+    while (off + 8 <= buf.length) {
+        const len = buf.readUInt32BE(off);
+        const type = buf.toString("latin1", off + 4, off + 8);
+        if (type === "IDAT") idat.push(buf.subarray(off + 8, off + 8 + len));
+        off += 12 + len;                     /* len + type + data + crc */
+        if (type === "IEND") break;
+    }
+    if (!idat.length) return null;
+    try { return zlib.inflateSync(Buffer.concat(idat)); } catch (e) { return null; }
+}
+
+/** Same drawing? Falls back to a byte compare when either side is not a PNG we
+ *  can decode — a corrupt or truncated file must read as CHANGED, never as
+ *  equal, or the check would pass by failing to look. */
+function sameImage(a, b) {
+    if (Buffer.compare(a, b) === 0) return true;
+    const pa = pngPixels(a), pb = pngPixels(b);
+    if (!pa || !pb) return false;
+    return Buffer.compare(pa, pb) === 0;
+}
 
 const ROOT = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))));
 const MD = path.join(ROOT, "docs", "MODULES.md");
@@ -775,7 +819,7 @@ function syncManual(images, check) {
         const dst = path.join(MANUAL_IMG, n);
         const src = images.get(n.endsWith(".gif") ? n : n.replace(/\.png$/, ""));
         if (!src) { console.error("FAIL: manual wants " + n + ", which the sheet does not produce"); return false; }
-        if (!fs.existsSync(dst) || Buffer.compare(fs.readFileSync(dst), Buffer.from(src)) !== 0)
+        if (!fs.existsSync(dst) || !sameImage(fs.readFileSync(dst), Buffer.from(src)))
             stale.push("images/widgets/" + n);
     }
 
@@ -814,7 +858,7 @@ if (check) {
     if (spliced(cur, md) !== cur) stale.push("docs/MODULES.md");
     for (const [name, png] of images) {
         const p = path.join(IMG_DIR, fileFor(name));
-        if (!fs.existsSync(p) || Buffer.compare(fs.readFileSync(p), Buffer.from(png)) !== 0)
+        if (!fs.existsSync(p) || !sameImage(fs.readFileSync(p), Buffer.from(png)))
             stale.push(`${IMG_REL}/${fileFor(name)}`);
     }
     /* An image the generator no longer produces. Renaming a swatch leaves the
