@@ -107,22 +107,30 @@ function bracketPixels(col, spanCols) {
   return px;
 }
 const on = (lit, x, y) => lit.has(x + "," + y);
-const topMiddle = (col, spanCols) =>
-  [col * CELL_W + Math.floor(spanCols * CELL_W / 2), ROW0_Y];
+/*
+ * The probe point that separates a CONTINUOUS top edge from corner stubs: the
+ * first column past the left bracket arm.
+ *
+ * The obvious point is the middle of the top edge, and it is wrong -- the arc
+ * knobs curve reaches the top of its cell too, so a bracketed KNOB failed the
+ * test for having a widget in it. One column past the arm is outside the knob
+ * entirely (the widget is 17px centred in a 32px cell, so it starts at +7)
+ * while still being on any frame that spans the cell.
+ */
+const topPastArm = (col) => [col * CELL_W + 1 + BRACKET_LEN, ROW0_Y];
 
-/* Brackets: all arms lit AND the middle of the top edge dark (a continuous
- * frame has that middle; corner stubs do not). */
+/* Brackets: all arms lit AND no continuous edge between them. */
 function hasBrackets(lit, col, spanCols) {
-  const tm = topMiddle(col, spanCols);
+  const t = topPastArm(col);
   return bracketPixels(col, spanCols).every(([x, y]) => on(lit, x, y))
-      && !on(lit, tm[0], tm[1]);
+      && !on(lit, t[0], t[1]);
 }
-/* A frame: that middle lit AND all four corners knocked out. Brackets drawn
- * over a frame fill the notch back in, which is the doubled border. */
+/* A frame: that edge lit AND all four corners knocked out. Brackets drawn over
+ * a frame fill the notch back in, which is the doubled border. */
 function hasNotchedFrame(lit, col) {
   const x = col * CELL_W + 1, y = ROW0_Y, w = CELL_W - 2, h = BOX_H;
-  const tm = topMiddle(col, 1);
-  return on(lit, tm[0], tm[1])
+  const t = topPastArm(col);
+  return on(lit, t[0], t[1])
       && !on(lit, x, y) && !on(lit, x + w - 1, y)
       && !on(lit, x, y + h - 1) && !on(lit, x + w - 1, y + h - 1);
 }
@@ -176,6 +184,45 @@ ok(displayValue("/a/b/kick.wav", opaque) === "kick.wav",
 const { fontWidth4x5 } = await import("./src/shared/param_pages/font4x5.mjs");
 ok(fontWidth4x5(displayValue("", opaque)) <= CELL_W - 2 - 9,
    "and it fits the box budget rather than truncating to a stump");
+
+/* ---- 3b. no file, no waveform ------------------------------------------
+ *
+ * "You should see the loaded break, but not an empty waveform" -- reported
+ * against breakbeat, whose A SMP / B SMP cells are graphics built from a
+ * filepath alone, so with nothing loaded they were a bracketed rectangle
+ * containing precisely nothing.
+ *
+ * The graphic is SUPPRESSED rather than drawn blank, so the cells fall back to
+ * their ordinary widgets and the filepath becomes the opaque box saying NONE.
+ *
+ * Asserted for a DEFINITE empty only. An unanswered read must NOT suppress:
+ * the file is frequently off-page (granny and mrdrums declare it on no knob,
+ * so it arrives through the extra-key rotation), and swapping the widget for a
+ * knob and back on every page entry is a flicker in the common case, not an
+ * edge one.
+ */
+{
+  const empty  = render({ position: "0.42", spray: "0.15", sample_path: "", size: "0.5" });
+  const unread = render({ position: "0.42", spray: "0.15", size: "0.5" });
+
+  /* The waveform baseline is the graphic being drawn at all. */
+  const midY2 = ROW0_Y + Math.floor(BOX_H / 2);
+  ok(!on(empty, CELL_W, midY2),
+     "with NO file the sample graphic is not drawn -- an empty waveform is a " +
+     "bracketed rectangle containing nothing");
+  /* The cells fall back to their OWN widgets, which for the cursor means a
+   * one-cell bracket instead of the two-cell span one -- the graphic no longer
+   * covers it, so the per-cell divable mark applies again. Asserting the
+   * one-cell bracket rather than "some ink" is what proves the fallback ran
+   * rather than the whole row going blank. */
+  ok(hasBrackets(empty, 0, 1) && !hasBrackets(empty, 0, 2),
+     "and the cells fall back to their own widgets (one-cell mark, not the span one)");
+  ok(hasNotchedFrame(empty, 2),
+     "with the file still its own box -- now reading NONE");
+  ok(on(unread, CELL_W, midY2),
+     "but an UNANSWERED read still draws it: suppressing that swaps the widget " +
+     "for a knob and back on every page entry, and the file is usually off-page");
+}
 
 /* ---- 4. the whole picture is a door ------------------------------------ */
 

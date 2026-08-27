@@ -33,7 +33,7 @@ import { drawVizGroup } from "./viz_draw.mjs";
 /* The DOOR rule, not a detector: this renderer never resolves viz (the caller
  * hands the groups in), it only asks whether a cell it is already drawing is
  * a way in, and which cells share it. See vizDoorId. */
-import { vizDiveTarget } from "./viz.mjs";
+import { vizDiveTarget, VIZ_SAMPLE } from "./viz.mjs";
 import { enumSquareLines } from "./font5x3.mjs";
 import { fontPrint as tzPrint, fontWidth as tzWidth, HEIGHT as TZ_H } from "./font_tamzen6x12.mjs";
 import {
@@ -1664,7 +1664,14 @@ export function drawOpaqueBox(ctx, kx, ky, value, override) {
     }
 
     /* Set LEFT, in the 4x5 label face rather than the taller device font: the
-     * value has to clear the chevron, and at 5x7 it would not. */
+     * value has to clear the chevron, and at 5x7 it would not.
+     *
+     * The inset and the budget are ONE measurement and must move together —
+     * the frame occupies column x and the chevron x+w-4 .. x+w-2, so x+3 with
+     * a budget of w-9 leaves 2px clear at each end. Briefly tightened to
+     * x+2 / w-7 (1px each end) to squeeze in "EMPTY" as the empty-file marker;
+     * that word was withdrawn in favour of "NONE", which fits at 19px, so the
+     * margins are left alone. Do not narrow them for one string. */
     const budget = w - 9;
     let t = String(shown == null ? "" : shown).toUpperCase();
     while (t.length > 1 && fontWidth4x5(t) > budget) t = t.slice(0, -1);
@@ -2028,6 +2035,36 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
     for (const group of (viz || [])) {
         if (!group || typeof group.slotStart !== "number") continue;
         if (Math.floor(group.slotStart / 4) !== row) continue;
+        /*
+         * A SAMPLE GRAPHIC WITH NO FILE IS NOT DRAWN AT ALL.
+         *
+         * "You should see the loaded break, but not an empty waveform" —
+         * reported against breakbeat, whose A SMP / B SMP cells are graphics
+         * built from a filepath alone, so with nothing loaded they were a
+         * bracketed rectangle containing nothing whatsoever.
+         *
+         * Suppressed rather than drawn blank, so the cells fall back to their
+         * ordinary widgets: the filepath becomes the opaque box (frame,
+         * chevron, and NONE), and granny's position and spray become plain
+         * knobs. Which is the honest picture — with no sample loaded there is
+         * nothing for a cursor to point into, and the values are still yours
+         * to set.
+         *
+         * `""` ONLY — a definite "there is no file". `null`/`undefined` is a
+         * read that has not landed, and suppressing THAT changes the cell's
+         * whole widget rather than its contents: a knob would appear, then be
+         * replaced by a waveform a frame later, on every page entry. The file
+         * is frequently off-page (granny, mrdrums declare it on no knob and it
+         * arrives through the extra-key rotation), so the unanswered window is
+         * the common case, not an edge one. A failed read empties nothing.
+         *
+         * Only VIZ_SAMPLE consults a file at all; every other kind is drawn
+         * from its own cells and cannot be empty in this sense.
+         */
+        if (group.kind === VIZ_SAMPLE) {
+            const fileKey = group.roles && group.roles.value;
+            if (fileKey && values && values[fileKey] === "") continue;
+        }
         const localStart = group.slotStart - slotBase;
         for (let s = localStart; s < localStart + group.slotSpan && s < 4; s++) covered[s] = true;
         /* The widget band's height is the gap between the row and its label,
