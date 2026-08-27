@@ -205,6 +205,42 @@ typedef struct host_api_v1 {
      * Appended in 2026-07; may be NULL on older hosts, always guard. */
     double (*get_beat_position)(void);
 
+    /* Reserved tail — a RUN OF NULLS, and it is load-bearing.
+     *
+     * Every field above is guarded by callers as `if (host->fn) host->fn()`,
+     * which is only sound while a read inside the struct is the only read that
+     * can happen. It isn't: a module's copy of this header can declare a field
+     * we do not have, and the guard then tests memory belonging to somebody
+     * else.
+     *
+     * That is not hypothetical. breakbeat's copy appends
+     * `float (*get_project_bpm)(void)` after get_beat_position -- a callback
+     * NO Schwung has ever provided -- so it resolves to +120, one past our
+     * last field. Its own comment reads "Appended host callbacks. Keep these
+     * at the end for ABI compatibility", which is the right instinct applied
+     * in the wrong direction: appending lets a module be OLDER than the host,
+     * never newer. A module cannot extend this struct from its side.
+     *
+     * The same binary calls the real get_bpm() at +88, so the two offsets sit
+     * side by side in one disassembly. The struct a chain sub-plugin gets is
+     * chain_instance_t::subplugin_host_api, so +120 read the NEXT MEMBER of
+     * that instance — non-NULL, so the module's own guard passed, and the blr
+     * jumped into the heap. SIGSEGV on the SPI callback at load, which takes
+     * MoveOriginal down with it and boot-loops the device if the slot is
+     * restored.
+     *
+     * Zeroed by construction: every instance of this struct is a static or a
+     * member of a calloc'd instance, and chain_host memcpy's sizeof(). So an
+     * over-read by up to 64 bytes finds NULL and the caller's existing guard
+     * does what it was always written to do.
+     *
+     * This does NOT make the ABI extensible. Appending a real field still
+     * requires modules to be rebuilt; the reserved run only buys a safe
+     * failure instead of a crash. Shrink it and old binaries start reaching
+     * past it again — so consume from the FRONT when adding a field, and
+     * never reduce the total. */
+    void *reserved[8];
+
 } host_api_v1_t;
 
 /*

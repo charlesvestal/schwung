@@ -102,10 +102,98 @@ Promise.all([
     fail("a trigger fired with " + JSON.stringify(writes[0][1]) + ", expected \"Rnd!\" — " +
          "a bare index is exactly what destroys euclidrum kits");
 
-  /* Turning a trigger must do nothing at all. */
+  /*
+   * ---- turning a trigger FIRES it, ONCE PER GESTURE ----------------------
+   *
+   * A momentary has no value to walk, so refusing the turn only forced the
+   * hand off the knob and onto the jog. What makes it safe is that one flick
+   * of an encoder is a dozen detents and a trigger DOES a thing.
+   *
+   * A LATCH, NOT A RATE LIMIT, and the difference is the whole test. "At most
+   * once per 250ms" was the first implementation and it still fired eight
+   * times across a two-second spin -- reported from the device as "gesture
+   * test fires repeatedly on detent". Every detent extends the gesture; only
+   * stillness ends it.
+   *
+   * Asserted as a SEQUENCE, because each half passes a shorter test on its
+   * own: a missing fire and a missing latch both look fine at one detent, and
+   * a RATE LIMIT passes any test whose detents are spaced further apart than
+   * the window. The long spin below is spaced at 30ms deliberately -- under a
+   * rate limit of any plausible size it would fire several times.
+   */
   writes.length = 0;
   ctl.onKnobTurn(trigSlot, 1, 5000);
-  if (writes.length) fail("turning a trigger wrote " + JSON.stringify(writes));
+  if (writes.length !== 1)
+    fail("turning a trigger wrote " + writes.length + " times, expected 1");
+  if (writes[0][1] !== "Rnd!")
+    fail("a knob-fired trigger wrote " + JSON.stringify(writes[0][1]) + ", expected \"Rnd!\" — " +
+         "the knob must put the same value on the wire as the click");
+
+  /* A LONG spin -- two seconds of detents 30ms apart, far longer than any
+   * fixed window. One gesture, so no more fires. */
+  writes.length = 0;
+  for (let t = 5030; t <= 7000; t += 30) ctl.onKnobTurn(trigSlot, 1, t);
+  if (writes.length)
+    fail("a 2-second spin fired the trigger " + writes.length + " extra times — " +
+         "this is a rate limit, not a gesture latch");
+
+  /*
+   * The two sides of the gap, with GENEROUS MARGIN on purpose.
+   *
+   * These used to be 300ms and 500ms, which pinned the exact constant: tuning
+   * the gap from 400 to 270 broke the test for no behavioural reason. What is
+   * being asserted is that a gap EXISTS and has two sides, so "clearly inside"
+   * is 100ms and "clearly outside" is a full second. Any sane value between
+   * ~150ms and ~900ms passes, and a genuinely broken latch fails either way.
+   */
+  writes.length = 0;
+  ctl.onKnobTurn(trigSlot, 1, 7100);          /* 100ms after the spin ended */
+  if (writes.length)
+    fail("a detent 100ms after the spin started a new gesture — the gap is far too short");
+
+  /* Past the gap, a deliberate second flick is a second event. */
+  writes.length = 0;
+  ctl.onKnobTurn(trigSlot, 1, 8100);          /* a full second later */
+  if (writes.length !== 1) fail("a second flick a second later did not fire");
+
+  /* EITHER direction: a trigger has no up and no down, and a direction-
+   * sensitive one would make half of every spin read as a dead knob. */
+  writes.length = 0;
+  ctl.onKnobTurn(trigSlot, -1, 9200);
+  if (writes.length !== 1) fail("turning a trigger the other way did not fire it");
+
+  /*
+   * LETTING GO RE-ARMS IT IMMEDIATELY.
+   *
+   * The gap is a fallback for a cap sensor that never registered; a release is
+   * the real gesture boundary and it is unambiguous. Without this you fire,
+   * let go, grab the knob again and the next detent is swallowed for up to
+   * 400ms -- which reads as the control being broken, not as a safety.
+   *
+   * Asserted at a time INSIDE the gap, so it can only pass because of the
+   * release. 8450 is 50ms after the previous fire at 8400.
+   */
+  writes.length = 0;
+  ctl.onKnobTouch(trigSlot, false);
+  ctl.onKnobTurn(trigSlot, 1, 9250);          /* 50ms after the last fire */
+  if (writes.length !== 1)
+    fail("releasing the knob did not re-arm the trigger -- a detent 50ms later " +
+         "was still swallowed by the gesture latch");
+
+  /* ...and the gap still governs when there was NO release, which is what
+   * keeps the fallback honest. */
+  writes.length = 0;
+  ctl.onKnobTurn(trigSlot, 1, 9300);
+  if (writes.length)
+    fail("without a release, a detent 50ms later fired -- the latch is gone");
+
+  /* A CLICK is never latched: one press is one gesture, and a shared timer
+   * between the two paths is exactly how that regresses. */
+  writes.length = 0;
+  ctl.onClick(trigSlot);
+  ctl.onClick(trigSlot);
+  if (writes.length !== 2)
+    fail("clicks were gated by the knob gesture latch: " + JSON.stringify(writes));
 
   /* A readout: click opens nothing, turn writes nothing. */
   writes.length = 0;
@@ -256,7 +344,8 @@ Promise.all([
   console.log("  ok  the press animation reaches the screen through controller.render()");
   console.log("  ok  default is readwrite; plain enums and floats unaffected");
   console.log("  ok  readout: not turnable, not divable, never written");
-  console.log("  ok  trigger: fires once on click, through the module wire (\"Rnd!\"), not turnable");
+  console.log("  ok  trigger: fires on click and on a detent, through the module wire (\"Rnd!\")");
+  console.log("  ok  trigger: a whole spin is ONE fire; a second flick is a second; clicks are never gated");
   console.log("PASS: access read/write/readwrite");
 });
 '
@@ -278,16 +367,36 @@ if [ -z "$wo" ]; then
   echo "FAIL: could not find the held-trigger footer branch in $pp" >&2
   exit 1
 fi
-if ! grep -q 'click: "PUSH"' <<<"$wo"; then
-  echo "FAIL: a held trigger does not advertise CLK PUSH." >&2
-  echo "      The widget is a push button; the hint must name that gesture." >&2
+# BOTH keys, ONE verb. It said CLK PUSH while the click was the only way to
+# fire it -- "name the gesture the picture is asking for". A knob detent fires
+# it too now, and you do not PUSH a knob you are turning, so no single
+# gesture-name covers both keys and the honest word is the consequence.
+if ! grep -q 'click: "FIRE"' <<<"$wo"; then
+  echo "FAIL: a held trigger does not advertise CLK FIRE." >&2
   echo "$wo" >&2
   exit 1
 fi
+if ! grep -q '\["KNB", "FIRE"\]' <<<"$wo"; then
+  echo "FAIL: a held trigger does not advertise KNB FIRE -- turning the knob" >&2
+  echo "      fires it, and nothing on screen says so." >&2
+  echo "$wo" >&2
+  exit 1
+fi
+# The two must not disagree: one action, one verb.
+if grep -q 'click: "PUSH"' <<<"$wo"; then
+  echo "FAIL: the click still says PUSH while the knob says FIRE -- one action," >&2
+  echo "      two verbs" >&2
+  exit 1
+fi
 # The neighbouring vocabulary must not have moved with it.
-dv=$(awk '/if \(meta && meta.divable\)/,/^        }/' "$pp")
+#
+# The branch also covers a cell that is divable only THROUGH the picture it is
+# drawn in (granny's spray -- see vizDiveTarget), so it tests two things now.
+# Anchored on the orderedHints call rather than on the condition, because the
+# condition is the part that grew.
+dv=$(awk '/meta.divable\) \|\|$/,/^        }/' "$pp")
 if ! grep -q 'click: "OPEN"' <<<"$dv"; then
   echo "FAIL: a held divable no longer advertises CLK OPEN" >&2
   exit 1
 fi
-echo "  ok  a held trigger advertises CLK PUSH, divable still CLK OPEN"
+echo "  ok  a held trigger advertises CLK FIRE and KNB FIRE; divable still CLK OPEN"

@@ -3090,11 +3090,105 @@ static void crash_signal_handler(int sig, siginfo_t *si, void *uctx_v)
         for (int i = 0; i < hp; i++) msg[pos++] = hex[i];
     }
 
+    /*
+     * ...and the LINK REGISTER, which is the one that makes a SIGSEGV
+     * actionable.
+     *
+     * A jump to a corrupt function pointer lands with pc == si_addr at an
+     * address that belongs to nothing — it says WHERE we went and nothing
+     * about who sent us. LR (x30) holds the return address of the call that
+     * did it, so it names the caller: match it against the module ranges in
+     * /proc/<pid>/maps, or subtract the base of a dlopen'd .so and feed the
+     * offset to addr2line.
+     *
+     * Learned from a module load that crashed the shim with only
+     * "si_addr=0x7f8ca47520 pc=0x7f8ca47520" to go on — three rounds of static
+     * analysis on the module's source and the answer was still a guess,
+     * because the one fact that identifies the call site was not being
+     * recorded.
+     *
+     * SP is printed with it, so a stack-overflow crash (SP walked off its
+     * guard page) is distinguishable from a bad-pointer call, which look
+     * identical from pc alone.
+     *
+     * Async-signal-safe: register reads and the same hand-rolled hex the rest
+     * of this handler uses. aarch64 only; other arches simply omit it.
+     */
+#if defined(__aarch64__)
+    if (uctx_v) {
+        ucontext_t *uctx = (ucontext_t *)uctx_v;
+        const uintptr_t vals[2] = {
+            (uintptr_t)uctx->uc_mcontext.regs[30],   /* LR — the caller */
+            (uintptr_t)uctx->uc_mcontext.sp,
+        };
+        const char *labels[2] = { " lr=0x", " sp=0x" };
+        for (int v = 0; v < 2; v++) {
+            for (int i = 0; labels[v][i]; i++) msg[pos++] = labels[v][i];
+            uintptr_t x = vals[v];
+            char hex[17]; int hp = 0;
+            if (x == 0) { hex[hp++] = '0'; }
+            else {
+                char tmp[17]; int tp = 0;
+                while (x) { int d = x & 0xf; tmp[tp++] = (char)(d < 10 ? '0'+d : 'a'+(d-10)); x >>= 4; }
+                while (tp > 0) hex[hp++] = tmp[--tp];
+            }
+            for (int i = 0; i < hp; i++) msg[pos++] = hex[i];
+        }
+    }
+#endif
+
     const char *suffix = " - terminating";
     for (int i = 0; suffix[i]; i++) msg[pos++] = suffix[i];
     msg[pos] = '\0';
 
     unified_log_crash(msg);
+
+    /*
+     * THE MEMORY MAP, dumped where it cannot be lost.
+     *
+     * lr and pc are raw runtime addresses and ASLR moves every module on every
+     * run, so on their own they name nothing. The obvious fix — log each
+     * module's load base when it is dlopen'd — does not survive: the unified
+     * logger buffers, and a crash milliseconds later takes the line with it.
+     * That is exactly what happened chasing a module that segfaulted on load;
+     * the "Loading synth" line and the base were both missing from the log
+     * while the crash line was there, because only the crash path is unbuffered.
+     *
+     * So the map is captured HERE, in the handler, from the process that is
+     * about to die. `lr` then resolves: find the line whose range contains it,
+     * subtract the start, and hand the offset to addr2line.
+     *
+     * open/read/write/close are on the async-signal-safe list (POSIX.1-2008),
+     * which is what makes this legal in a signal handler — unlike fopen or
+     * anything that allocates. Best effort throughout: every failure is
+     * ignored, because a diagnostic must never be the reason a crash handler
+     * fails to exit.
+     *
+     * /data, never /tmp — the root FS is ~100% full on this device.
+     */
+    {
+        int in = open("/proc/self/maps", O_RDONLY);
+        if (in >= 0) {
+            int out = open("/data/UserData/schwung/crash_maps.txt",
+                           O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (out >= 0) {
+                char buf[1024];
+                ssize_t n;
+                while ((n = read(in, buf, sizeof(buf))) > 0) {
+                    ssize_t off = 0;
+                    while (off < n) {
+                        ssize_t w = write(out, buf + off, (size_t)(n - off));
+                        if (w <= 0) break;
+                        off += w;
+                    }
+                    if (off < n) break;
+                }
+                close(out);
+            }
+            close(in);
+        }
+    }
+
     _exit(128 + sig);
 }
 

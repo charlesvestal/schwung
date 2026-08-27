@@ -144,8 +144,40 @@ function parseAiff(b, tag) {
 
 /* ------------------------------------------------------------------ job */
 
-let cache = { key: "", width: 0, points: [], peak: 0, done: false, error: "" };
+/*
+ * A page can hold MORE THAN ONE waveform, so this is a small set, not a slot.
+ *
+ * It was a single `cache` and one entry was all any page needed — until
+ * detectSample started returning a graphic per file rather than one per page
+ * ("EVERY file, not the first: breakbeat loads two samples side by side").
+ * With one slot, drawing A and B alternately made each call evict the other's
+ * finished envelope and restart its job, so neither ever completed and both
+ * cells drew as an empty bracketed rectangle. Reported as breakbeat's B SMP
+ * "drawing blank on the grid".
+ *
+ * `job` stays SINGULAR on purpose. The cache is what may hold several files;
+ * the WORK is still one bounded batch per tick, which is the property that
+ * keeps this off the frame budget. The caller advances one incomplete graphic
+ * per tick and lets the rest wait their turn.
+ *
+ * Four entries covers the widest real page (breakbeat's two) with room, and
+ * bounds the memory at four PEAK_WIDTH arrays of small numbers.
+ */
+const CACHE_MAX = 4;
+let caches = [];        /* most-recently-touched first */
 let job = null;
+
+function findCache(key) {
+    for (const c of caches) if (c.key === key) return c;
+    return null;
+}
+
+/* Insert or replace, newest first, evicting the least recently touched. */
+function putCache(entry) {
+    const rest = caches.filter((c) => c.key !== entry.key);
+    caches = [entry, ...rest].slice(0, CACHE_MAX);
+    return entry;
+}
 
 function fileSignature(path) {
     if (!IO || typeof IO.stat !== "function") return null;
@@ -264,36 +296,55 @@ export function wavPeaksTick(path) {
     const width = PEAK_WIDTH;
     const key = fileSignature(path);
     if (!key) {
-        if (cache.key !== `missing:${path}`) {
-            cache = { key: `missing:${path}`, width, points: [], peak: 0,
-                      done: true, error: "file not found" };
+        if (!findCache(`missing:${path}`)) {
+            putCache({ key: `missing:${path}`, width, points: [], peak: 0,
+                       done: true, error: "file not found" });
             return true;
         }
         return false;
     }
-    if (cache.key === key && cache.done) return false;
+    const settled = findCache(key);
+    if (settled && settled.done) return false;
 
     if (!job || job.key !== key) {
         job = startJob(path, width, key);
         if (!job) {
-            cache = { key, width, points: [], peak: 0, done: true, error: "unreadable wav" };
+            putCache({ key, width, points: [], peak: 0, done: true, error: "unreadable wav" });
             return true;
         }
-        cache = { key, width, points: job.points, peak: 0, done: false, error: "" };
+        putCache({ key, width, points: job.points, peak: 0, done: false, error: "" });
     }
 
+    /* The entry SHARES the job's points array, so a partial envelope draws as
+     * it fills. Re-found rather than carried from above: the putCache branch
+     * may not have run this call. */
+    const entry = findCache(key);
     let worked = false;
     for (let i = 0; i < BLOCKS_PER_TICK && job.block < job.totalBlocks; i++) {
         runBlock(job);
         job.block += job.blockStride;
         worked = true;
     }
-    if (worked) cache.peak = job.peak;    /* the scale tracks the data as it fills in */
+    if (worked && entry) entry.peak = job.peak;  /* the scale tracks the data as it fills in */
     if (job.block >= job.totalBlocks) {
-        cache = { key, width, points: job.points, peak: job.peak, done: true, error: "" };
+        putCache({ key, width, points: job.points, peak: job.peak, done: true, error: "" });
         job = null;
     }
     return worked;
+}
+
+/**
+ * Has this path's envelope finished? Distinct from wavPeaks(path) being
+ * non-null, which is also true of a job still in progress.
+ *
+ * This is what lets a caller with SEVERAL waveforms on one page advance them
+ * one at a time without starving any: skip the settled ones, spend the tick on
+ * the first that is not. Returns false for a path never seen, which is the
+ * answer that makes such a caller pick it up.
+ */
+export function wavPeaksDone(path) {
+    const c = wavPeaks(path);
+    return !!(c && c.done);
 }
 
 /**
@@ -304,8 +355,10 @@ export function wavPeaksTick(path) {
  */
 export function wavPeaks(path) {
     if (!path) return null;
-    if (!cache.key.startsWith(`${path}:`) && cache.key !== `missing:${path}`) return null;
-    return cache;
+    for (const c of caches) {
+        if (c.key.startsWith(`${path}:`) || c.key === `missing:${path}`) return c;
+    }
+    return null;
 }
 
 /**
@@ -329,6 +382,6 @@ export function resamplePeaks(points, width) {
 
 /** Test seam: the cache is module-level so a job survives across ticks. */
 export function resetWavPeaks() {
-    cache = { key: "", width: 0, points: [], peak: 0, done: false, error: "" };
+    caches = [];
     job = null;
 }

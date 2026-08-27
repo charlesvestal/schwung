@@ -66,7 +66,7 @@ import { drawChainEditorBands, drawChainPicker, shiftHintsFor, CHAIN_HINTS_AT_RE
  * covers. Both are pure and both are already on the device for the knob grid. */
 import { drawKnobCard } from '/data/UserData/schwung/shared/param_pages/knob_card.mjs';
 import { buildMetaIndex } from '/data/UserData/schwung/shared/param_pages/param_meta.mjs';
-import { resolveViz } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
+import { resolveViz, isSprayMeta } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
 import { listKnobInit, listKnobStep } from '/data/UserData/schwung/shared/param_pages/list_knob.mjs';
 /* Which user preset a component is currently on, and whether the live state
  * has moved away from it since — the "My Presets" trailing page's row 1
@@ -1218,10 +1218,32 @@ const KNOB_BASE_STEP_INT = 1;       // Base step for ints
 const TRIGGER_ENUM_TURN_THRESHOLD = 1;  // Positive detents required before firing trigger action
 const TRIGGER_ENUM_WINDOW_MS = 700;     // Pause longer than this to start a new trigger gesture
 
+/*
+ * How long the knob must be STILL before a trigger will fire again. Must stay
+ * equal to TRIGGER_KNOB_GESTURE_GAP_MS in page_controller.mjs -- the knob grid
+ * and this surface drive the same physical knob against the same parameter,
+ * and a user switching Param View must not find the encoder behaving
+ * differently.
+ *
+ * A LATCH, not a rate limit. "At most once per N ms" still fires eight times
+ * across a two-second spin, which is what came back from the device. Every
+ * detent extends the gesture; only stillness ends it.
+ *
+ * Deliberately NOT applied to the jog click or the knob-card press: one press
+ * is one gesture, and limiting those would be a bug.
+ */
+const TRIGGER_KNOB_GESTURE_GAP_MS = 270;
+
 /* Time tracking for knob acceleration */
 let triggerEnumAccum = [0, 0, 0, 0, 0, 0, 0, 0];
 let triggerEnumLastMs = [0, 0, 0, 0, 0, 0, 0, 0];
 let triggerEnumLatched = [false, false, false, false, false, false, false, false];
+/* Per-knob gesture stamp for the above. Keyed by knob AND by the parameter
+ * that knob was pointing at, so re-mapping a knob (a new component, a new
+ * page) cannot leave a stale gesture suppressing the first detent on a
+ * different trigger. */
+let triggerKnobLastMs = [0, 0, 0, 0, 0, 0, 0, 0];
+let triggerKnobLastKey = [null, null, null, null, null, null, null, null];
 
 /*
  * `access`, on every knob surface that is not the param-pages grid.
@@ -2741,6 +2763,9 @@ function returnToParamPagesFromEditor() {
     const returnPage = paramEditorReturnPage;
     paramEditorOpenedFromGrid = false;
     paramEditorReturnPage = "";
+    /* Same rule, same reason: the grid's knob row describes the page we dived
+     * from, so it must not survive into a later list-originated session. */
+    hierEditorKnobsFromPage = null;
     exitHierarchyEditor();
     enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey), returnPage,
                     componentParamPagesIo(slotIndex, componentKey), paramPagesChromeFor(componentKey));
@@ -2944,6 +2969,11 @@ function openParamEditorFromGrid(slotIndex, fullKey, meta) {
     const page = currentParamPage();
     const level = page && page.level;
     paramEditorReturnPage = (page && page.name) || "";
+    /* Carry the page's knob ORDER in with us — see hierEditorKnobsFromPage.
+     * Captured here for the same reason `level` is: exitParamPages tears the
+     * controller down and the page is gone after it. */
+    hierEditorKnobsFromPage = (page && Array.isArray(page.keys))
+        ? { level: level || "", keys: page.keys.slice() } : null;
     /* The grid builds every fullKey as `${prefix}:${key}`, so strip THAT exact
      * prefix rather than "everything up to the first colon". Master FX's prefix
      * contains a colon of its own ("master_fx:fx2"), and the old rule left
@@ -2998,6 +3028,32 @@ function openParamEditorFromGrid(slotIndex, fullKey, meta) {
         announce((meta && meta.label ? meta.label : "Parameter") + ", opening in list");
         return;
     }
+    /*
+     * BIND THE PAGE'S KNOB ROW TO THE LEVEL WE ACTUALLY LANDED ON.
+     *
+     * The capture above records the level the PAGE was on, and that is not
+     * necessarily where we end up: granny's `root` lists only navigation
+     * entries, so `position` is not in root.params and the search above
+     * relocates us to `main`. The gate in applyHierarchyVisibilityFilters read
+     * that hop as "the user navigated away" and handed the row back — so the
+     * override applied at root, was discarded at main, and spray sat on knob 4
+     * again. Caught by the knobRow log line, after four wrong theories:
+     *
+     *   knobRow: level=root fromPage=root -> [position, spray, size_ms, ...]
+     *   knobRow: level=main fromPage=root -> [position, size_ms, density, spray, ...]
+     *
+     * The hop is part of ENTERING, not of navigating. Anything after this
+     * point is the user moving, and the gate is correct for that — which is
+     * why this rebinds rather than removing the gate.
+     */
+    if (hierEditorKnobsFromPage) {
+        hierEditorKnobsFromPage.level = hierEditorLevel;
+        hierEditorKnobs = hierEditorKnobsFromPage.keys.slice();
+        /* The context cache keys on the LEVEL, which has not changed since it
+         * was last built — so without this the stale row survives the fix. */
+        invalidateKnobContextCache();
+    }
+
     hierEditorSelectedIdx = idx;
     const liveMeta = (typeof getParamMetadata === "function" ? getParamMetadata(bare) : null) || meta;
     announce((liveMeta && (liveMeta.name || liveMeta.label)) || bare);
@@ -3646,6 +3702,26 @@ let hierEditorChildCount = 0;     // number of child entries for child_prefix le
 let hierEditorChildLabel = "";    // label for child entries (e.g., "Tone")
 let hierEditorParams = [];        // current level's params
 let hierEditorKnobs = [];         // current level's knob-mapped params
+/*
+ * THE KNOB ROW OF THE PAGE YOU CAME FROM, when you arrived from the grid.
+ *
+ * A level's declared `knobs` array is not the order the user was just looking
+ * at. The grid re-seats keys for LAYOUT -- gatherGroupMembers pulls granny's
+ * `spray` next to `position` so the waveform can span both cells -- so diving
+ * into the wave editor changed which physical knob was which, silently, one
+ * click apart. Reported from the device: "the editor should be using the same
+ * knobs as the entered page. using main is confusing, it's a hidden order no
+ * one has reference to."
+ *
+ * That is the whole argument: the declared order is invisible, and the page
+ * on screen a moment ago is the only reference the user has.
+ *
+ * Null except on a grid-originated dive. NOT compacted and NOT filtered --
+ * holes are preserved, because a hole means "this knob does nothing" and
+ * removing it would shift every knob after it, which is the same class of
+ * surprise this fixes.
+ */
+let hierEditorKnobsFromPage = null;
 let hierEditorAllParams = [];     // unfiltered current level params
 let hierEditorAllKnobs = [];      // unfiltered current level knobs
 let hierEditorSelectedIdx = 0;
@@ -4236,13 +4312,31 @@ function applyHierarchyVisibilityFilters(levelDef) {
                 .map(extractHierarchyParamKey)
                 .filter(k => k && k !== SWAP_MODULE_ACTION)
         );
-        if (visibleKeys.size === 0) {
+        if (hierEditorKnobsFromPage
+                && hierEditorKnobsFromPage.level === hierEditorLevel) {
+            /* The grid's own row wins — see hierEditorKnobsFromPage. Taken
+             * verbatim: no visibility filter, because the grid already applied
+             * one when it planned the page, and no compaction, because a hole
+             * must stay a hole.
+             *
+             * Gated on the LEVEL it was captured from. Navigate somewhere else
+             * inside the editor and the row you came in with is no longer a
+             * description of anything, so the level's own knobs take over
+             * again — which is also what makes this safe to leave set. */
+            hierEditorKnobs = hierEditorKnobsFromPage.keys.slice();
+        } else if (visibleKeys.size === 0) {
             /* Root/page-select level: no editable params visible (only nav links)
              * → keep all knobs so they control the first page's params */
             hierEditorKnobs = [...hierEditorAllKnobs];
         } else {
             hierEditorKnobs = hierEditorAllKnobs.filter(k => visibleKeys.has(k));
         }
+        /* Which knob row won, and why. The override is gated on a level match
+         * and the resulting row is what getKnobContext maps, so this one line
+         * answers "did the page row take effect" without a hardware guess. */
+        debugLog(`knobRow: level=${hierEditorLevel}` +
+                 ` fromPage=${hierEditorKnobsFromPage ? hierEditorKnobsFromPage.level : "null"}` +
+                 ` -> ${JSON.stringify(hierEditorKnobs)}`);
     } else {
         hierEditorKnobs = [];
     }
@@ -12862,7 +12956,49 @@ function beginHierarchyParamEdit(key) {
 
     hierEditorEditKey = fullKey;
     hierEditorEditValue = String((baseVal !== null) ? baseVal : liveVal);
+    seedWavEditorSpray(key, meta);
     return true;
+}
+
+/*
+ * The spray that belongs to the wav_position about to be edited, and its
+ * value, resolved ONCE on the way in.
+ *
+ * The fullscreen editor draws the same fences the grid cell does, so it needs
+ * a second parameter's value -- and the draw path is the one place that must
+ * not read. An editor frame is already the most expensive screen here (it
+ * resamples the WAV), and a per-frame IPC read is ~2.8ms against a 1.68ms
+ * whole-page render. So: one read here, then the value is maintained locally
+ * from the writes, exactly as hierEditorEditValue is for the position itself.
+ *
+ * Nulled for anything that is not a wav_position with a spray sibling, which
+ * is every module in the fleet but granny -- so the fences cost nothing and
+ * draw nothing wherever they do not apply.
+ */
+let wavEditorSpray = null;   /* { fullKey, value } */
+function seedWavEditorSpray(key, meta) {
+    wavEditorSpray = null;
+    if (!meta || meta.ui_type !== "wav_position") return;
+    if (!Array.isArray(hierEditorParams)) return;
+    for (const p of hierEditorParams) {
+        const k = (typeof p === "string") ? p : (p && p.key ? p.key : null);
+        if (!k || k === key) continue;
+        const m = getParamMetadata(k);
+        /* isSprayMeta, imported -- the grid's own definition of what a spray
+         * is. A second predicate here would disagree with the cell the user
+         * just clicked out of the first time either is widened. */
+        if (!isSprayMeta(k, m)) continue;
+        const fullKey = buildHierarchyParamKey(k);
+        const raw = getSlotParam(hierEditorSlot, fullKey);
+        /* A FAILED read is not a zero. Leaving it null draws no fences, which
+         * is honest; inventing 0 would draw two fences on top of the cursor
+         * and state a spread of nothing. */
+        if (raw === null || raw === "") return;
+        const v = parseFloat(raw);
+        if (isNaN(v)) return;
+        wavEditorSpray = { fullKey, value: v };
+        return;
+    }
 }
 
 function shouldRefreshDynamicRateMeta(key) {
@@ -13542,12 +13678,58 @@ function processPendingHierKnob() {
     }
 
     /*
-     * A trigger is FIRED, never scrubbed: turning walks THROUGH the fire
-     * value, so a nudge runs the action. A readout has nothing to set.
-     * Neither may write from a knob turn -- the grid has refused this since
-     * the access axis landed and this surface never did.
+     * A TRIGGER fires on a detent, in either direction, ONCE PER GESTURE --
+     * see TRIGGER_KNOB_GESTURE_GAP_MS.
+     *
+     * This used to refuse the turn entirely, on the grounds that scrubbing an
+     * enum walks THROUGH the fire value. That reasoning is about the enum
+     * STEPPER, not about the gesture: a momentary has no value to walk, so
+     * there is nothing to scrub past, and reaching it should not force the
+     * hand off the knob and onto the jog. Asked for from the device --
+     * "momentary switches should be triggerable with knobs too".
+     *
+     * The gesture LATCH is what makes that safe, and it is a KNOB-only
+     * concern: a click is one gesture per press and may repeat as fast as a
+     * finger can manage, while one flick of an encoder is a dozen detents and
+     * a trigger is by definition something that DOES a thing. Same constant
+     * and same either-direction rule as the knob grid (page_controller.mjs),
+     * because the same physical knob on the same parameter must not behave
+     * differently depending on which param view is on screen.
+     *
+     * Fires through triggerFireValue and re-seeds the cache exactly as the
+     * knob-card press does -- a trigger is the one parameter whose value moves
+     * for a reason other than the knob, so a stale cache makes press and turn
+     * disagree about the reading.
      */
-    if (isTriggerParam(ctx.meta) || isReadoutParam(ctx.meta)) {
+    if (isTriggerParam(ctx.meta)) {
+        const t = Date.now();
+        const last = triggerKnobLastMs[knobIndex] || 0;
+        const sameKey = triggerKnobLastKey[knobIndex] === ctx.fullKey;
+        /* The stamp is the last DETENT, not the last fire — every detent
+         * extends the gesture, so the clock only runs while the knob is still.
+         * Written before the early return for exactly that reason. */
+        const startsGesture = !sameKey || (t - last) >= TRIGGER_KNOB_GESTURE_GAP_MS;
+        triggerKnobLastMs[knobIndex] = t;
+        triggerKnobLastKey[knobIndex] = ctx.fullKey;
+        if (!startsGesture) return;
+        const fire = triggerFireValue(ctx.meta, getKnobCachedValue(knobIndex, ctx));
+        if (fire !== null) {
+            setSlotParam(ctx.slot, ctx.fullKey, fire);
+            noteTriggerFired(ctx.fullKey);
+            const after = getSlotParam(ctx.slot, ctx.fullKey);
+            knobValueCache[knobIndex] = after;
+            if (knobCardKeys[knobIndex]) knobCardRowValues[knobCardKeys[knobIndex]] = after;
+            showKnobFeedback(knobIndex, ctx.title, after || "", undefined, ctx.cardName);
+            needsRedraw = true;
+        }
+        return;
+    }
+
+    /*
+     * A readout has nothing to set, so a turn shows the reading and writes
+     * nothing.
+     */
+    if (isReadoutParam(ctx.meta)) {
         /*
          * Show the VALUE, not a sentence about the parameter.
          *
@@ -13557,9 +13739,6 @@ function processPendingHierKnob() {
          * -- keydetect exists to be READ. Reported from the device: "we show
          * READ ONLY in the header, that doesn't make sense, it just is a
          * static value".
-         *
-         * A trigger has no value worth reading, but it draws a BUTTON in its
-         * cell and the button is the affordance; the footer already says PUSH.
          */
         const cached = getKnobCachedValue(knobIndex, ctx);
         showKnobFeedback(knobIndex, ctx.title,
@@ -13688,6 +13867,15 @@ function processPendingHierKnob() {
      * and the marker doesn't move when turning the knob. */
     if (hierEditorEditMode && hierEditorEditKey === ctx.fullKey) {
         hierEditorEditValue = formattedKnobVal;
+    }
+
+    /* Same reason, one parameter across: the SPRAY whose fences that editor is
+     * drawing. Turning spray while the wave editor is up must widen the fences
+     * as you turn, and the editor never reads -- so the write is the only place
+     * that can tell it. Without this the fences sit at the value they had on
+     * entry and look frozen, which reads as the knob being dead. */
+    if (wavEditorSpray && ctx.fullKey === wavEditorSpray.fullKey) {
+        wavEditorSpray.value = newVal;
     }
 
     /* Skip refreshHierarchyVisibility for float/int turns — it does IPC
@@ -14473,6 +14661,54 @@ function drawWavPositionEditor(selectedKey, selectedMeta) {
             }
         }
     } else {
+        /*
+         * THE SPRAY FENCES, at full-screen scale.
+         *
+         * The same two dotted columns the grid cell draws (viz_draw.mjs
+         * drawSample), and the same semantics, because they are a picture of
+         * the same thing: granny reads a grain from anywhere in
+         * `pos ± spray` of the WHOLE file, wrapping, so the fences wrap too
+         * and clamp to the file edges once spray >= 0.5 -- past that, ±0.5
+         * already reaches every frame and a wrapped fence would crawl back
+         * INWARD as the region grew, which is the opposite of what happened.
+         *
+         * DOTTED, and the cursor stays solid: the cursor is where a grain is
+         * read from, the fences are a boundary it may wander past. They are
+         * drawn BEFORE the cursor so that where the two land on the same
+         * column the cursor wins -- at spray 0 both fences sit exactly on it,
+         * and a dotted column over a solid one would make the play position
+         * flicker at the value where the spread is off.
+         *
+         * Zoom-aware through the same zoomStart/zoomRange the cursor uses, and
+         * simply not drawn when a fence falls outside the window. An edge
+         * marker like the multi-marker arrows would claim a boundary sits at
+         * the edge of the view when it does not.
+         */
+        /* Gated on the spray VALUE alone, not on preview.ok. The cursor just
+         * below draws unconditionally, and a fence that disappeared while the
+         * cursor stayed would read as the spray being off rather than as the
+         * file being unreadable -- two marks describing one playhead must
+         * appear and vanish together. */
+        if (wavEditorSpray && wavEditorSpray.value > 0) {
+            const spray = Math.max(0, Math.min(1, wavEditorSpray.value));
+            const full = spray >= 0.5;
+            for (const side of [-1, 1]) {
+                let at;
+                if (full) {
+                    at = side < 0 ? 0 : 1;
+                } else {
+                    at = ratio + side * spray;
+                    at -= Math.floor(at);          /* wrap into [0,1) */
+                }
+                if (at < zoomStart || at > zoomEnd) continue;
+                const fx = plotX + 1 +
+                    Math.round(((at - zoomStart) / zoomRange) * (innerW - 1));
+                for (let y = plotY + 1; y < plotY + plotH - 1; y++) {
+                    if (((y + fx) & 1) !== 0) continue;
+                    set_pixel(fx, y, 1);
+                }
+            }
+        }
         /* Single-marker legacy: just the active cursor. */
         for (let y = plotY + 1; y < plotY + plotH - 1; y++) {
             set_pixel(cursorX, y, 1);
@@ -17945,6 +18181,18 @@ function drawHelpDetail() {
         if (!hierEditorEditMode) return null;
         return isInWavPositionEditor() ? "wav_position" : "value";
     };
+    /* WHICH PARAM A PHYSICAL KNOB DRIVES, by index.
+     *
+     * Narrower than the context object on purpose: the key is the fact, and
+     * the rest is this file's business. Exposed for the same reason
+     * activeParamEditor above is -- the mapping was not observable from
+     * outside, so "the editor uses a different knob row than the page you
+     * entered from" could only be found by turning a knob on hardware and
+     * reading a debug log. */
+    _ctx.knobParamKey = (i) => {
+        const c = getKnobContext(i);
+        return (c && c.key) ? c.key : null;
+    };
     _ctx.isParamModulated = (slot, fullKey) => isHierarchyParamModulated(slot, fullKey);
     _ctx.isMuteHeld = () => hostMuteHeld;
 
@@ -20877,6 +21125,18 @@ globalThis.onMidiMessageInternal = function(data) {
         if (d1 >= MoveKnob1Touch && d1 <= MoveKnob8Touch) {
             const knobIndex = d1 - MoveKnob1Touch;
             knobTouched[knobIndex] = false;
+            /*
+             * LETTING GO ENDS A TRIGGER GESTURE, immediately.
+             *
+             * TRIGGER_KNOB_GESTURE_GAP_MS is a fallback for a cap sensor that
+             * never registered; a release is the real boundary. Without this
+             * you fire, let go, take hold again, and the next detent is
+             * swallowed for up to 400ms -- which reads as a broken control
+             * rather than as a safety. Same rule as the knob grid
+             * (page_controller.mjs onKnobTouch).
+             */
+            triggerKnobLastMs[knobIndex] = 0;
+            triggerKnobLastKey[knobIndex] = null;
             /* Process hierarchy knob delta */
             if (pendingHierKnobIndex === knobIndex) {
                 processPendingHierKnob();

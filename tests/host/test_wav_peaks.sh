@@ -83,7 +83,7 @@ TONE="$TMP/tone.wav" TONE24="$TMP/tone24.wav" BIG="$TMP/big.wav" GARBAGE="$TMP/n
 node --input-type=module -e '
 import { openSync, readSync, closeSync, statSync, writeFileSync } from "node:fs";
 import { wavPeaksTick, wavPeaks, resamplePeaks, resetWavPeaks,
-         setWavPeaksIO, PEAK_WIDTH, MAX_BLOCKS, BLOCKS_PER_TICK }
+         setWavPeaksIO, wavPeaksDone, PEAK_WIDTH, MAX_BLOCKS, BLOCKS_PER_TICK }
   from "./src/shared/param_pages/wav_peaks.mjs";
 
 let fail = 0;
@@ -255,6 +255,53 @@ const runToDone = (path, limit = 2000) => {
   const before = reads;
   for (let i = 0; i < 50; i++) wavPeaks(TONE);
   ok(reads === before, "50 wavPeaks() calls performed NO reads, got " + (reads - before));
+}
+
+/* ===================================================================== 8 ==
+ * TWO WAVEFORMS ON ONE PAGE. detectSample returns a graphic per FILE, and
+ * breakbeat carries A SMP and B SMP side by side. A single-slot cache made the
+ * two evict each other: each tick restarted the other file job, neither ever
+ * reached done, and both cells drew as an empty bracketed rectangle. Reported
+ * as B SMP "drawing blank on the grid".
+ *
+ * Driven the way the tick actually drives it -- advance the first UNFINISHED
+ * graphic, one bounded batch per tick -- so this pins the caller contract and
+ * the cache together. Interleaving blindly would pass on a single slot too, by
+ * finishing whichever file happened to go last.
+ */
+{
+  resetWavPeaks();
+  const page = [TONE, TONE24];
+  let guard = 0;
+  while (!page.every((p) => wavPeaksDone(p)) && guard++ < 10000) {
+    for (const p of page) { if (!wavPeaksDone(p)) { wavPeaksTick(p); break; } }
+  }
+
+  ok(page.every((p) => wavPeaksDone(p)),
+     "BOTH files on one page reach done, got " +
+     page.map((p) => wavPeaksDone(p)).join(","));
+
+  /* Both envelopes must be RETRIEVABLE AT ONCE -- the draw asks for each cell
+   * in the same frame, so one being evicted by the other is the bug even if
+   * both completed at some point. */
+  const a = wavPeaks(TONE), b = wavPeaks(TONE24);
+  ok(!!a && !!b, "both envelopes are live simultaneously");
+  ok(!!a && a.points.some((v) => v > 0) && !!b && b.points.some((v) => v > 0),
+     "neither retained envelope is empty");
+
+  /* Distinct files must not share one entry: TONE is silent for its first
+   * half, TONE24 is a sine throughout. Equal arrays would mean one answered
+   * for both, which draws the WRONG waveform rather than none -- quieter than
+   * a blank cell and worse. */
+  ok(!!a && !!b && a.points.join(",") !== b.points.join(","),
+     "the two envelopes are different pictures");
+
+  /* Settled files cost nothing further, which is what lets the caller skip
+   * them and keeps this to one bounded batch per tick. */
+  const before = reads;
+  for (let i = 0; i < 20; i++) { wavPeaksTick(TONE); wavPeaksTick(TONE24); }
+  ok(reads === before,
+     "ticking two SETTLED files performs no reads, got " + (reads - before));
 }
 
 process.exit(fail ? 1 : 0);

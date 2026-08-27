@@ -26,10 +26,14 @@
  * device's own print(), same as the dial/bar grid.
  */
 
-import { KIND_ENUM, KIND_OPAQUE, enumIndexOf } from "./param_meta.mjs";
+import { KIND_ENUM, KIND_OPAQUE, enumIndexOf, alsoOpens, opensOnClick } from "./param_meta.mjs";
 import { formatParamValue } from "../param_format.mjs";
 import { asciiFold, fitText, shortenLabel, line, circle, notchCorners } from "./render_page.mjs";
 import { drawVizGroup } from "./viz_draw.mjs";
+/* The DOOR rule, not a detector: this renderer never resolves viz (the caller
+ * hands the groups in), it only asks whether a cell it is already drawing is
+ * a way in, and which cells share it. See vizDoorId. */
+import { vizDiveTarget, VIZ_SAMPLE } from "./viz.mjs";
 import { enumSquareLines } from "./font5x3.mjs";
 import { fontPrint as tzPrint, fontWidth as tzWidth, HEIGHT as TZ_H } from "./font_tamzen6x12.mjs";
 import {
@@ -128,7 +132,32 @@ function fitDev(ctx, s, maxWidth) { return caps(fitText(TZ_MEASURE, caps(s), max
 export function displayValue(raw, meta) {
     if (raw === null || raw === undefined) return "--";
     if (meta && meta.kind === KIND_OPAQUE) {
-        return String(raw).split("/").pop() || "--";
+        /*
+         * NOTHING CHOSEN says EMPTY; a read that has not answered says "--".
+         *
+         * Both used to say "--", which is the tri-state collapsed one more
+         * time and in the place it is most visible: a sample slot with no file
+         * looked exactly like a sample slot whose name had not arrived yet.
+         * Asked for from the device — *"we also need a better sample file
+         * state, maybe just the words EMPTY"* — and it belongs HERE, on the
+         * filepath's own cell, rather than written across the waveform beside
+         * it: *"why is spray showing empty? Sample file should be empty."*
+         *
+         * `raw === ""` only. A failed read keeps "--", because "there is no
+         * file" is a fact about the module and we do not have it.
+         *
+         * "NONE" and not "EMPTY", which is the word that was asked for and
+         * does not fit: measured in the box's own 4x5 face it is 23px against
+         * a 21px budget, and it rendered as "EMPT" with the chevron jammed
+         * against it. The budget is what it is because the value has to clear
+         * the chevron in the right edge, and widening it for one word would
+         * narrow that clearance on every opaque cell in the fleet. "NONE" is
+         * 19px, and it is already this tree's word for an empty selection —
+         * `none_label || "(none)"` in the hierarchy editor, `(none)` on the
+         * preset row.
+         */
+        if (raw === "") return "NONE";
+        return String(raw).split("/").pop() || "NONE";
     }
     return formatParamValue(raw, meta);
 }
@@ -1277,7 +1306,7 @@ function drawButton(ctx, cx, rowY, phase) {
  * Accepts a bare number as well as a list: a caller that has only ever stamped
  * one time still works.
  */
-function buttonPhase(fired, now, held) {
+export function buttonPhase(fired, now, held) {
     const stamps = Array.isArray(fired) ? fired : (fired > 0 ? [fired] : []);
     const bursts = [];
     let pressed = false;
@@ -1459,7 +1488,7 @@ export function drawEnumSquare(ctx, kx, ky, text, anim, nowMs, animKey) {
  * SCH-50 `door-open`. IT NOW DRAWS ITS OWN FRAME, and that is a swap, not an
  * addition: it used to draw none at all and wear the divable brackets as its
  * frame instead. `drawKnobRow` therefore suppresses the bracket for this kind —
- * see the `divable_mark` call site — so the two never double up.
+ * see the alsoOpens() call site — so the two never double up.
  *
  * The frame is a notched 1px box with its RIGHT EDGE CUT AWAY for five rows and
  * a 3-row chevron sitting in the gap, with the value set left of it. Three
@@ -1503,7 +1532,7 @@ export function drawEnumSquare(ctx, kx, ky, text, anim, nowMs, animKey) {
  * 60 modules — including obxd volume [0..100], 9w9 tune [0..127] and minijv
  * macro_cutoff [0..127]. Those are continuous AMOUNTS that happen to be typed
  * int, and an arc is the right picture of them. Framing everything is the same
- * mistake divable_mark already records: a mark on almost every cell is a mark
+ * mistake alsoOpens() already records: a mark on almost every cell is a mark
  * on none, and it would destroy the contrast that makes a framed number
  * readable in the first place.
  *
@@ -1635,13 +1664,41 @@ export function drawOpaqueBox(ctx, kx, ky, value, override) {
     }
 
     /* Set LEFT, in the 4x5 label face rather than the taller device font: the
-     * value has to clear the chevron, and at 5x7 it would not. */
+     * value has to clear the chevron, and at 5x7 it would not.
+     *
+     * The inset and the budget are ONE measurement and must move together —
+     * the frame occupies column x and the chevron x+w-4 .. x+w-2, so x+3 with
+     * a budget of w-9 leaves 2px clear at each end. Briefly tightened to
+     * x+2 / w-7 (1px each end) to squeeze in "EMPTY" as the empty-file marker;
+     * that word was withdrawn in favour of "NONE", which fits at 19px, so the
+     * margins are left alone. Do not narrow them for one string. */
     const budget = w - 9;
     let t = String(shown == null ? "" : shown).toUpperCase();
     while (t.length > 1 && fontWidth4x5(t) > budget) t = t.slice(0, -1);
-    if (fontWidth4x5(t) <= budget) {
-        fontPrint4x5(ctx, x + 3, ky + Math.floor((h - FONT4_HEIGHT) / 2), t, 1);
-    }
+    if (fontWidth4x5(t) > budget) return;
+
+    /*
+     * A PLACEHOLDER is CENTRED; a value is set left.
+     *
+     * Left is right for a filename: it is truncated from the tail, so the
+     * start is the part worth showing and a ragged right edge is the
+     * truncation being honest. `NONE` and `--` are neither — they are a state,
+     * the whole string is present, and set left they sit hard against the
+     * frame with a gap to the chevron, which reads as a value that failed to
+     * fill rather than as a marker. Reported from the device: "not centered by
+     * the way".
+     *
+     * Centred in the space BEFORE the chevron, not in the box: the chevron
+     * occupies the right edge, so centring on the full width would push the
+     * word into it.
+     */
+    const placeholder = (override === null || override === undefined)
+        && (value === null || value === undefined || value === "");
+    const tw = fontWidth4x5(t);
+    const tx = placeholder
+        ? x + 3 + Math.max(0, Math.floor((budget - tw) / 2))
+        : x + 3;
+    fontPrint4x5(ctx, tx, ky + Math.floor((h - FONT4_HEIGHT) / 2), t, 1);
 }
 
 /*
@@ -1660,17 +1717,20 @@ export function drawOpaqueBox(ctx, kx, ky, value, override) {
  * ~8px of clear corner a 32px cell has, it does not resolve into a box and an
  * arrow, it resolves into a smudge.
  *
- * Keyed on meta.divable_mark, which is NOT kind === OPAQUE and is no longer
- * meta.divable either. Three different questions:
+ * Keyed on alsoOpens() — see param_meta.mjs, where the rule lives so the two
+ * draw sites (this per-cell one and the viz group's) cannot drift.
  *
- *   kind === OPAQUE   a knob cannot turn it. granny's wav_position is a ranged
- *                     number a knob turns perfectly well AND has a waveform
- *                     editor worth opening, so it draws as a KNOB wearing
- *                     brackets; keying the mark on opaqueness made it dead.
- *   divable           a click opens something. Every enum does now.
- *   divable_mark      it wears these brackets. Opaque types only — bracketing
- *                     135 enums would erase the mark's meaning, and the footer
- *                     already says CLK OPEN while such a knob is held.
+ * THE BRACKETS AND THE CHEVRON DO NOT MEAN THE SAME THING, and the old name
+ * for the flag ("divable_mark") said they did. Measured over the fleet: 967
+ * divable cells on knob pages, 953 of them wearing NO mark at all, because
+ * every enum with options opens a list. Divability is a FOOTER fact.
+ *
+ *   corner brackets   7 cells, ALL turnable    "the knob works, AND it opens"
+ *   chevron box       7 cells, NONE turnable   "there is no knob; only a door"
+ *
+ * So the chevron is not a mark at all — it is the WIDGET drawOpaqueBox draws
+ * for a cell that has no value-shape to show. Do not describe it as a divable
+ * mark; that is the confusion this comment exists to stop.
  *
  * MUST stay inside rowY..rowY+BOX_H-1. One row of overflow lands on LBL0_Y and
  * the brackets merge into the label below.
@@ -1700,7 +1760,7 @@ export function drawBrackets(ctx, x, y, w, h, len = BRACKET_LEN) {
     }
 }
 
-function drawDivableMark(ctx, g, col, rowY) {
+function drawAlsoOpensMark(ctx, g, col, rowY) {
     drawBrackets(ctx, cellLeft(g, col) + 1, rowY, g.cellW - 2, BOX_H);
 }
 
@@ -1999,6 +2059,60 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
     for (const group of (viz || [])) {
         if (!group || typeof group.slotStart !== "number") continue;
         if (Math.floor(group.slotStart / 4) !== row) continue;
+        /*
+         * A FILE-ONLY sample graphic with no file is not drawn. One WITH
+         * MARKERS still is.
+         *
+         * "You should see the loaded break, but not an empty waveform" was
+         * reported against breakbeat, whose A SMP / B SMP cells are graphics
+         * built from a filepath ALONE — nothing loaded means nothing to draw,
+         * so they were a bracketed rectangle containing precisely nothing.
+         * Those fall back to the ordinary opaque box: frame, chevron, NONE.
+         *
+         * Suppressing EVERY empty sample graphic was too broad, and granny is
+         * the case that shows why: its graphic is `position` + `spray`, two
+         * real controls whose picture is the track they act on. Empty, the
+         * two-cell widget is still the right drawing — it is where the cursor
+         * and the spray fences live, and those values are yours to set before
+         * a file is chosen. Collapsing it to plain knobs threw away the
+         * relationship between them. Reported as: "when no sample is loaded it
+         * should be the empty two column widget."
+         *
+         * So the test is MARKERS, not emptiness: a graphic that has a
+         * position or a loop bound draws whatever the file situation is; one
+         * that is only a filepath needs the filepath.
+         *
+         * ANY falsy file suppresses the FILE-ONLY case — `""`, and equally a
+         * read that has not landed.
+         *
+         * This was `=== ""` first, on the rule that a failed read empties
+         * nothing and must never change a cell's WIDGET. That rule is right,
+         * and it does not reach this case. Elsewhere the widget is a statement
+         * about the parameter and the value is its contents, so swapping it on
+         * a late read is a lie about the control. Here the file IS the
+         * graphic: with no path there is no waveform to draw, whether we know
+         * there is no file or merely do not know the file yet. Both produced
+         * the bracketed empty rectangle this suppression exists to remove, and
+         * `""` alone left the second one on screen — which is the state
+         * breakbeat's B SMP is in for as long as its read is outstanding, i.e.
+         * the reported "sample cell drawing blank on the grid".
+         *
+         * What replaces it is the widget the cell would have had anyway, and
+         * it carries the distinction rather than losing it: `NONE` for empty,
+         * `--` for unanswered. So the tri-state survives where a reader can
+         * actually see it, instead of in a rectangle that looks the same
+         * either way.
+         *
+         * A MARKER-bearing graphic still draws with no file — granny's
+         * position + spray is a real two-cell widget whose values are yours to
+         * set before choosing a sample.
+         */
+        if (group.kind === VIZ_SAMPLE) {
+            const roles = group.roles || {};
+            const hasMarker = !!(roles.position || roles.loopStart || roles.loopEnd);
+            const fileKey = roles.value;
+            if (!hasMarker && fileKey && !(values && values[fileKey])) continue;
+        }
         const localStart = group.slotStart - slotBase;
         for (let s = localStart; s < localStart + group.slotSpan && s < 4; s++) covered[s] = true;
         /* The widget band's height is the gap between the row and its label,
@@ -2013,6 +2127,50 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
             x: cellLeft(g, localStart), y: rowY,
             w: group.slotSpan * g.cellW, h: lblY - rowY,
         }, group, liveValues, metaIndex, o.anim, o.nowMs);
+        /*
+         * ONE MARK FOR THE WHOLE GRAPHIC.
+         *
+         * A cell inside a graphic is not standing on its own, so it does not
+         * take the per-cell mark below; the picture's mark is drawn here, once,
+         * across the span. Since the filepath stopped claiming a cell (see
+         * detectSample) every cell of a sample graphic is a position within
+         * one file and opens one editor, so one bracket is the honest count.
+         *
+         * Rendered per-cell first, and that is only visible in a render:
+         * granny's cells read as three boxes butted together and mrsample's as
+         * four across one row of waveform — several affordances for one
+         * picture.
+         *
+         * MARK-WORTHY, not `divable`. `divable` is far wider — every enum
+         * declaring options opens a picker — and keying off it framed
+         * mrsample's Loop SWITCH, which is the "bracket them all and every
+         * cell on every page is marked" failure the two flags exist to keep
+         * apart. A cell counts if it would have been marked standing alone, or
+         * if it is redirected into the picture, which is spray.
+         *
+         * Clipped to the row. slotSpan is authoritative for the graphic, but a
+         * group that runs to the end of a row must not draw a bracket arm into
+         * the next one.
+         */
+        const lastCol = Math.min(localStart + group.slotSpan, 4);
+        let groupIsDoor = false;
+        for (let s2 = localStart; s2 < lastCol && !groupIsDoor; s2++) {
+            const gk = page.keys[slotBase + s2];
+            if (!gk) continue;
+            const gm = metaIndex.getOrGuess(gk);
+            /* opensOnClick, NOT alsoOpens: the per-cell mark annotates a
+             * working widget, so it excludes KIND_OPAQUE. Here the widget is
+             * not drawn at all — the graphic covers it — so the span's mark is
+             * the only thing left, and it has to appear for a KIND_OPAQUE
+             * member too. mrdrums is the case: `pad_start` is a non-ranged
+             * wav_position. Narrowing this to alsoOpens silently unmarked that
+             * page and showed up only in the pixel baseline. */
+            groupIsDoor = opensOnClick(gm) || !!vizDiveTarget(viz, gk, metaIndex);
+        }
+        if (groupIsDoor) {
+            drawBrackets(ctx, cellLeft(g, localStart) + 1, rowY,
+                         (lastCol - localStart) * g.cellW - 2, BOX_H);
+        }
     }
 
     for (let col = 0; col < 4; col++) {
@@ -2058,10 +2216,10 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
          * technically fit — a ragged row of 4s and 6s costs more to read than
          * the extra letters buy. `M` is the widest glyph, so measuring that
          * many of it gives a width no LABEL_CHARS-long label can exceed. */
-        /* AFTER the widget and OUTSIDE the `covered` test: a viz group that
-         * spans the cell (mrsample's SMP waveform) is still divable, and the
-         * mark is the only thing that says so. */
-        /* `divable_mark`, NOT `divable` — an enum opens a picker but is not
+        /*
+         * The DIVABLE MARK, for a cell standing on its own.
+         *
+         * alsoOpens(), NOT `divable` — an enum opens a picker but is not
          * bracketed. See param_meta.mjs normalize() for why the mark cannot
          * simply follow divability.
          *
@@ -2074,10 +2232,26 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
          *
          * This is a narrower exclusion than "opaque cells are not marked".
          * granny's `wav_position` is a ranged number a knob turns perfectly
-         * well AND has a waveform editor worth opening, so it is `divable_mark`
+         * well AND has a waveform editor worth opening, so it is an opaque TYPE
          * without being `KIND_OPAQUE`: it draws as a KNOB and keeps its
-         * brackets, which is the whole reason the two flags are separate. */
-        if (meta.divable_mark && meta.kind !== KIND_OPAQUE) drawDivableMark(ctx, g, col, rowY);
+         * brackets, which is the whole reason the fields are separate.
+         *
+         * AND IT IS SKIPPED WHEN COVERED, because a cell inside a graphic is
+         * not standing on its own: the graphic's own bracket, drawn once
+         * across the whole span up in the viz loop, is its mark. Marking here
+         * as well drew the span's brackets AND a set inside them.
+         *
+         * This is the second time the `covered` test has been wrong in this
+         * one line, in opposite directions, which is worth remembering: it was
+         * first written OUTSIDE the test (so an opaque cell swallowed by a
+         * waveform lost its frame, its chevron and its brackets all at once —
+         * "empty sample selection is indistinguishable from the spray
+         * control"), and the fix for that put the mark on every covered door
+         * separately, which drew three boxes where there is one picture. A
+         * covered cell's affordance belongs to the GROUP; only an uncovered
+         * one is its own door.
+         */
+        if (!covered[col] && alsoOpens(meta)) drawAlsoOpensMark(ctx, g, col, rowY);
 
 
         const label = labelForCell(meta.label || meta.key, g.cellW);
