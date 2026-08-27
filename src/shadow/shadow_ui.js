@@ -1218,10 +1218,26 @@ const KNOB_BASE_STEP_INT = 1;       // Base step for ints
 const TRIGGER_ENUM_TURN_THRESHOLD = 1;  // Positive detents required before firing trigger action
 const TRIGGER_ENUM_WINDOW_MS = 700;     // Pause longer than this to start a new trigger gesture
 
+/*
+ * How often a KNOB may fire an `access: "write"` trigger. Must stay equal to
+ * TRIGGER_KNOB_COOLDOWN_MS in page_controller.mjs -- the knob grid and this
+ * surface drive the same physical knob against the same parameter, and a user
+ * switching Param View must not find the encoder behaving differently.
+ * Deliberately NOT applied to the jog click or the knob-card press: one press
+ * is one gesture, and rate-limiting those would be a bug.
+ */
+const TRIGGER_KNOB_COOLDOWN_MS = 250;
+
 /* Time tracking for knob acceleration */
 let triggerEnumAccum = [0, 0, 0, 0, 0, 0, 0, 0];
 let triggerEnumLastMs = [0, 0, 0, 0, 0, 0, 0, 0];
 let triggerEnumLatched = [false, false, false, false, false, false, false, false];
+/* Per-knob cooldown for the above. Keyed by knob AND by the parameter that
+ * knob was pointing at, so re-mapping a knob (a new component, a new page)
+ * cannot leave a stale window suppressing the first detent on a different
+ * trigger. */
+let triggerKnobLastMs = [0, 0, 0, 0, 0, 0, 0, 0];
+let triggerKnobLastKey = [null, null, null, null, null, null, null, null];
 
 /*
  * `access`, on every knob surface that is not the param-pages grid.
@@ -13522,12 +13538,54 @@ function processPendingHierKnob() {
     }
 
     /*
-     * A trigger is FIRED, never scrubbed: turning walks THROUGH the fire
-     * value, so a nudge runs the action. A readout has nothing to set.
-     * Neither may write from a knob turn -- the grid has refused this since
-     * the access axis landed and this surface never did.
+     * A TRIGGER fires on a detent, in either direction, at most once per
+     * TRIGGER_KNOB_COOLDOWN_MS.
+     *
+     * This used to refuse the turn entirely, on the grounds that scrubbing an
+     * enum walks THROUGH the fire value. That reasoning is about the enum
+     * STEPPER, not about the gesture: a momentary has no value to walk, so
+     * there is nothing to scrub past, and reaching it should not force the
+     * hand off the knob and onto the jog. Asked for from the device --
+     * "momentary switches should be triggerable with knobs too".
+     *
+     * The cooldown is what makes that safe, and it is a KNOB-only concern: a
+     * click is one gesture per press and may repeat as fast as a finger can
+     * manage, while one flick of an encoder is a dozen detents and a trigger
+     * is by definition something that DOES a thing. Same constant and same
+     * either-direction rule as the knob grid (page_controller.mjs), because
+     * the same physical knob on the same parameter must not behave
+     * differently depending on which param view is on screen.
+     *
+     * Fires through triggerFireValue and re-seeds the cache exactly as the
+     * knob-card press does -- a trigger is the one parameter whose value moves
+     * for a reason other than the knob, so a stale cache makes press and turn
+     * disagree about the reading.
      */
-    if (isTriggerParam(ctx.meta) || isReadoutParam(ctx.meta)) {
+    if (isTriggerParam(ctx.meta)) {
+        const t = Date.now();
+        const last = triggerKnobLastMs[knobIndex] || 0;
+        const sameKey = triggerKnobLastKey[knobIndex] === ctx.fullKey;
+        if (sameKey && (t - last) < TRIGGER_KNOB_COOLDOWN_MS) return;
+        triggerKnobLastMs[knobIndex] = t;
+        triggerKnobLastKey[knobIndex] = ctx.fullKey;
+        const fire = triggerFireValue(ctx.meta, getKnobCachedValue(knobIndex, ctx));
+        if (fire !== null) {
+            setSlotParam(ctx.slot, ctx.fullKey, fire);
+            noteTriggerFired(ctx.fullKey);
+            const after = getSlotParam(ctx.slot, ctx.fullKey);
+            knobValueCache[knobIndex] = after;
+            if (knobCardKeys[knobIndex]) knobCardRowValues[knobCardKeys[knobIndex]] = after;
+            showKnobFeedback(knobIndex, ctx.title, after || "", undefined, ctx.cardName);
+            needsRedraw = true;
+        }
+        return;
+    }
+
+    /*
+     * A readout has nothing to set, so a turn shows the reading and writes
+     * nothing.
+     */
+    if (isReadoutParam(ctx.meta)) {
         /*
          * Show the VALUE, not a sentence about the parameter.
          *
@@ -13537,9 +13595,6 @@ function processPendingHierKnob() {
          * -- keydetect exists to be READ. Reported from the device: "we show
          * READ ONLY in the header, that doesn't make sense, it just is a
          * static value".
-         *
-         * A trigger has no value worth reading, but it draws a BUTTON in its
-         * cell and the button is the affordance; the footer already says PUSH.
          */
         const cached = getKnobCachedValue(knobIndex, ctx);
         showKnobFeedback(knobIndex, ctx.title,

@@ -2076,8 +2076,22 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
          * granny's `wav_position` is a ranged number a knob turns perfectly
          * well AND has a waveform editor worth opening, so it is `divable_mark`
          * without being `KIND_OPAQUE`: it draws as a KNOB and keeps its
-         * brackets, which is the whole reason the two flags are separate. */
-        if (meta.divable_mark && meta.kind !== KIND_OPAQUE) drawDivableMark(ctx, g, col, rowY);
+         * brackets, which is the whole reason the two flags are separate.
+         *
+         * ...and the exclusion is void on a COVERED cell, which is the case
+         * that made it wrong. It is stated in terms of a frame the opaque
+         * widget draws — but a viz group suppresses that widget entirely
+         * (`if (!covered[col])` above), so on granny's "Main - 2" the filepath
+         * `sample_path` sits inside the sample waveform with no frame, no
+         * chevron and no brackets: NOTHING said the middle of that strip was
+         * a door, and it read as more of the spray fences either side of it.
+         * Reported from the device as "empty sample selection is
+         * indistinguishable from the spray control". Covered means the frame
+         * this defers to does not exist, so the mark is the only affordance
+         * left and must be drawn. */
+        if (meta.divable_mark && (covered[col] || meta.kind !== KIND_OPAQUE)) {
+            drawDivableMark(ctx, g, col, rowY);
+        }
 
 
         const label = labelForCell(meta.label || meta.key, g.cellW);

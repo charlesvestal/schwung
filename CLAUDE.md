@@ -745,6 +745,35 @@ keeps it safe; where the two are apart the run rule still gives span 1.
 `position` on both `root` and `main` — and the graphic then appears on both.
 That is the contract, not the detector.)
 
+**A door SWALLOWED by the picture keeps its brackets.** `divable_mark` excludes
+`KIND_OPAQUE` because since SCH-50 `drawOpaqueBox` draws its own notched frame
+with a chevron, and brackets one pixel outside it read as a doubled border. But
+that exclusion is stated in terms of a frame the *widget* draws, and a viz group
+suppresses the widget entirely — so on granny's "Main - 2", where `sample_path`
+sits inside the waveform between `position` and `spray`, the cell had no frame,
+no chevron and no brackets. Nothing said the middle of that strip was a door,
+and the only marks near it were the spray fences: *"empty sample selection is
+indistinguishable from the spray control"*. The exclusion is now void on a
+covered cell. Fleet-wide that is **8 cells across 6 modules** (granny,
+mrsample, mrdrums, tablor, breakbeat, gesture-test), every one a filepath
+inside a waveform.
+
+`tests/host/test_divable_mark_covered.sh` asserts it on PIXELS, and the
+discriminators are the interesting part: the brackets and the opaque frame
+occupy the **identical rect**, so "all 24 bracket pixels lit" cannot tell them
+apart. Brackets are "all 24 lit AND the middle of the top edge dark"; a frame
+is "that middle lit AND all four corners dark", because `notchCorners` knocks
+the corners out. Consequently the test's framebuffer **must honour colour 0 as
+an erase** — an ink-list model makes a frame and a frame-with-brackets
+identical, which is exactly the doubled-border regression.
+
+Also worth stating because it is the question the report opened with: **`spray`
+is not divable and should not be.** `position` is `wav_position`, an opaque
+type, so it is a door onto the waveform editor *and* a knob-turnable ranged
+number — the reason `divable`, `divable_mark` and `kind` are three separate
+flags. `spray` is a plain float: there is nothing behind it to open, and
+turning it is its whole interface.
+
 ### Small ints are BIG NUMBERS, not framed ones
 
 `shouldDrawBigNumber` / `bigNumberText` / `drawBigNumber` in
@@ -760,6 +789,51 @@ and can never have one, so the frame advertised a door that does not open.
 The span bound is load-bearing: an earlier version bounded at 128 and drew 1392
 params big across 60 modules, including `volume [0..100]` and `tune [0..127]`,
 which are sweeps where an arc is the honest picture.
+
+### A momentary fires from the KNOB too, and that is what needs a cooldown
+
+A trigger is `access: "write"` on an ordinary enum — there is no `trigger` type
+— and it draws as a push button (`drawButton`), because the module reports a
+constant idle spelling that is meaningless as a value (euclidrum's is an
+em-dash the 5x7 atlas cannot draw at all).
+
+Turning its knob used to do **nothing**: `isTurnable` is false for `writeOnly`,
+so `onKnobTurn` swallowed the motion silently and the button did not even
+flicker. The stated reason was that turning walks THROUGH the fire value — but
+that is a fact about the enum STEPPER, not about the gesture. A momentary has
+no value to walk past, so the only thing the refusal achieved was forcing the
+hand off the knob and onto the jog. Now a **detent fires it, in EITHER
+direction** — a direction-sensitive momentary would make half of every spin
+read as a dead knob.
+
+**The cooldown is the whole safety argument, and it is KNOB-ONLY.** A click is
+one gesture per press and may repeat as fast as a finger can manage. One flick
+of an encoder is a dozen detents, and a trigger is by definition something that
+DOES a thing: euclidrum's `rnd_preset` would randomise a kit twelve times and
+magneto's `["Play","Save"]` would write a file per detent.
+`TRIGGER_KNOB_COOLDOWN_MS` is 250 — longer than the 120ms press animation,
+shorter than the 300ms burst, so a deliberate second flick still reads as a
+second event. It is applied at the knob CALLER, never inside the fire itself,
+so a click can never be rate-limited by a knob's window.
+
+**Both knob surfaces do this and the constant is duplicated, so it is pinned
+against drift.** `page_controller.mjs` (the knob grid) and `shadow_ui.js`
+(chain editor knob card, Master FX, hierarchy list editor) drive the same
+physical encoder against the same parameter, and which one is on screen is a
+Param View setting the user can flip — two copies of the number is two
+behaviours, noticed only as "it fires differently in List view", which nobody
+would think to report as a constant.
+`tests/host/test_knob_surfaces_access.sh` requires the two declarations to be
+byte-identical, that the window is checked BEFORE the write, and that neither
+click path mentions the constant at all. `tests/host/test_param_access.sh`
+drives the real controller and asserts the SEQUENCE — one fire, then eight
+swallowed detents, then a fire past the window, then the reverse direction,
+then two unthrottled clicks — because a missing fire and a missing cooldown
+both pass a one-detent test.
+
+A **readout** (`access: "read"`) still refuses the turn: there is nothing to
+set. Both guards must precede the enum stepper's value read, which is asserted
+as a line ORDER.
 
 ### Knob ring LEDs, and giving them back
 

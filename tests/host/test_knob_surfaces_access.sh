@@ -29,16 +29,68 @@ file="src/shadow/shadow_ui.js"
 command grep -q "function isTriggerParam" "$file" || fail "shadow_ui.js has no access:write test"
 command grep -q "function isReadoutParam" "$file" || fail "shadow_ui.js has no access:read test"
 
-# --- the knob turn must bail BEFORE anything is written ----------------------
-turn=$(awk '/A trigger is FIRED, never scrubbed/,/^    if \(ctx.meta && ctx.meta.type === "enum"/' "$file")
-[ -n "$turn" ] || fail "the knob-turn guard is gone from processPendingHierKnob"
-command grep -q "isTriggerParam(ctx.meta) || isReadoutParam(ctx.meta)" <<<"$turn" || \
-  fail "the knob turn does not check access"
-# ORDER is the whole point: the guard must precede the value read and the write.
-g=$(command grep -n "isTriggerParam(ctx.meta) || isReadoutParam" "$file" | head -n 1 | cut -d: -f1)
-w=$(command grep -n "const currentVal = getKnobCachedValue" "$file" | head -n 1 | cut -d: -f1)
-[ -n "$g" ] && [ -n "$w" ] && [ "$g" -lt "$w" ] || \
-  fail "the access guard runs AFTER the value is read (guard $g, read $w) -- a turn still writes"
+# --- the knob turn must branch on ACCESS before the enum stepper -------------
+#
+# A READOUT still bails: there is nothing to set.
+#
+# A TRIGGER no longer bails -- it FIRES, once per cooldown, in either
+# direction. That reverses half of the original fix and the reason is that the
+# original reasoning was about the enum STEPPER ("turning walks through the
+# fire value"), not about the gesture: a momentary has no value to walk past.
+# What keeps a knob from running the action a dozen times per flick is the
+# cooldown, so the cooldown is the thing this file has to pin, and it is
+# pinned as an ORDER (guard, then window, then write) because a fire placed
+# after the window check is a fire with no window at all.
+turn=$(awk '/A TRIGGER fires on a detent, in either direction/,/^    if \(ctx.meta && ctx.meta.type === "enum"/' "$file")
+[ -n "$turn" ] || fail "the knob-turn access branch is gone from processPendingHierKnob"
+command grep -q "if (isTriggerParam(ctx.meta)) {" <<<"$turn" || \
+  fail "the knob turn does not check access:write"
+command grep -q "if (isReadoutParam(ctx.meta)) {" <<<"$turn" || \
+  fail "the knob turn does not check access:read"
+command grep -q "TRIGGER_KNOB_COOLDOWN_MS" <<<"$turn" || \
+  fail "a knob detent fires a trigger with NO cooldown -- one flick runs the action a dozen times"
+command grep -q "triggerFireValue(ctx.meta" <<<"$turn" || \
+  fail "the knob fire does not use the module wire value -- a bare index destroys euclidrum kits"
+# The cooldown must be checked BEFORE the write, not after it.
+# `|| true` on every lookup: with `set -euo pipefail` a grep that finds nothing
+# kills the script at the assignment, so the fail() message below -- the only
+# thing that says WHICH invariant broke -- never prints. An unexplained exit 1
+# is how a deliberate change gets mistaken for a broken harness.
+cl=$( { command grep -n "TRIGGER_KNOB_COOLDOWN_MS) return;" "$file" || true; } | head -n 1 | cut -d: -f1)
+fl=$( { command grep -n "setSlotParam(ctx.slot, ctx.fullKey, fire)" "$file" || true; } | head -n 1 | cut -d: -f1)
+[ -n "$cl" ] && [ -n "$fl" ] && [ "$cl" -lt "$fl" ] || \
+  fail "the knob cooldown is checked AFTER the fire (window $cl, write $fl) -- it gates nothing"
+# ORDER is the whole point: both guards must precede the enum stepper's read.
+g=$( { command grep -n "if (isTriggerParam(ctx.meta)) {" "$file" || true; } | head -n 1 | cut -d: -f1)
+r=$( { command grep -n "if (isReadoutParam(ctx.meta)) {" "$file" || true; } | head -n 1 | cut -d: -f1)
+w=$( { command grep -n "const currentVal = getKnobCachedValue" "$file" || true; } | head -n 1 | cut -d: -f1)
+[ -n "$g" ] && [ -n "$r" ] && [ -n "$w" ] && [ "$g" -lt "$w" ] && [ "$r" -lt "$w" ] || \
+  fail "an access guard runs AFTER the value is read (trigger $g, readout $r, read $w)"
+# The COOLDOWN IS KNOB-ONLY. A click is one gesture per press, and the two
+# click paths must not consult the window -- a shared timer is exactly how
+# "clicking twice quickly only fired once" gets introduced.
+for fn in "A held TRIGGER is fired by the click" "A TRIGGER is pushed, not opened"; do
+  blk=$(awk -v pat="$fn" 'index($0, pat) {n=1} n && n++ <= 40' "$file")
+  command grep -q "TRIGGER_KNOB_COOLDOWN_MS" <<<"$blk" && \
+    fail "the click path \"$fn\" is rate-limited by the KNOB cooldown"
+done
+
+# --- and the two surfaces must agree on how long that window is --------------
+#
+# The knob grid (page_controller.mjs) and this file drive the SAME physical
+# encoder against the SAME parameter; which one is on screen is a Param View
+# setting the user can flip. Two copies of the number is two behaviours, and
+# the disagreement would only ever be noticed as "it fires differently in List
+# view", which nobody would think to report as a constant.
+a=$( { command grep -oE "^const TRIGGER_KNOB_COOLDOWN_MS = [0-9]+" "$file" || true; } | head -n 1)
+b=$( { command grep -oE "^const TRIGGER_KNOB_COOLDOWN_MS = [0-9]+" \
+         src/shared/param_pages/page_controller.mjs || true; } | head -n 1)
+[ -n "$a" ] || fail "shadow_ui.js does not declare TRIGGER_KNOB_COOLDOWN_MS"
+[ -n "$b" ] || fail "page_controller.mjs does not declare TRIGGER_KNOB_COOLDOWN_MS"
+[ "$a" = "$b" ] || fail "the knob trigger cooldown has drifted: shadow_ui \"$a\" vs grid \"$b\""
+
+echo "  ok  a knob detent fires a trigger once per cooldown; a readout still writes nothing"
+echo "  ok  both knob surfaces share one cooldown value"
 
 # --- the click must fire a trigger, not open a picker ------------------------
 click=$(awk '/A TRIGGER is pushed, not opened/,/openEnumPicker\(\{/' "$file")
@@ -106,7 +158,7 @@ command grep -q "the click STOPS HERE either way" <<<"$held" || \
   fail "a click while the card is up can still fall through and dive into the component"
 echo "  ok  a click while the card is up never dives"
 
-echo "  ok  a knob turn cannot write a trigger or a readout, and bails before the read"
+echo "  ok  a knob turn cannot write a readout, and both access guards bail before the read"
 echo "  ok  a click fires a trigger through the module wire, and never opens a picker"
 echo "  ok  a click on a readout opens nothing"
 echo "PASS: every knob surface honours access"
