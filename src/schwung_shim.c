@@ -69,6 +69,7 @@ extern align_capture_t g_align_capture;
 #include "host/shadow_xmos_audio.h"
 #include "host/shadow_midi.h"
 #include "host/shadow_overtake_midi.h"
+#include "host/ext_midi_ring.h"
 #include "host/shadow_midi_filter.h"
 #include "host/fx_midi_filter.h"
 #include "host/shadow_shm_util.h"
@@ -1405,69 +1406,43 @@ static int overtake_midi_send_internal(const uint8_t *msg, int len) {
  * Capability sentinel shadow_overtake_send_external_async_active() lets
  * opt-in tools call this with the audio-thread guarantee. */
 
-#define OVERTAKE_EXT_RING_PACKETS 64           /* 64 slots × 4 bytes USB-MIDI = 256 B */
+/* The ring itself is src/host/ext_midi_ring.h — pure state, so the source-tag
+ * discard below is unit-tested without a device. These are the shim-side
+ * bindings: the instance, the two tagged producer entry points, and the drain
+ * that knows where MIDI_OUT lives. */
 
-typedef struct {
-    uint8_t pkt[OVERTAKE_EXT_RING_PACKETS][4];
-    volatile uint32_t head;  /* producer writes (any audio thread) */
-    volatile uint32_t tail;  /* consumer writes (shim_pre_transfer) */
-} overtake_ext_ring_t;
+static ext_midi_ring_t overtake_ext_ring;
 
-static overtake_ext_ring_t overtake_ext_ring;
-static volatile int overtake_ext_drops = 0;     /* incremented on ring-full; no log from audio thread */
+/* Ring-full count, mirrored into the worker-visible symbol it reports at ~1 Hz.
+ * The RT path must never log; before this the counter was a static nobody could
+ * read, so the one failure mode this path has — a packet dropped, and whatever
+ * it was reporting left stale — was invisible from the device. */
+volatile int shim_ext_midi_drops = 0;
 
-/* Audio-thread producer. Lock-free SPSC enqueue. Drop-newest on full.
- * No logging — runs at FIFO 70 with ~900µs total SPI-callback budget. */
+/* Audio-thread producer for an overtake DSP (host_api midi_send_external). */
 static int overtake_midi_send_external(const uint8_t *msg, int len) {
-    if (!msg || len < 4) return 0;
-
-    uint32_t head = overtake_ext_ring.head;
-    uint32_t tail = overtake_ext_ring.tail;
-    __sync_synchronize();  /* acquire */
-    if ((uint32_t)(head - tail) >= OVERTAKE_EXT_RING_PACKETS) {
-        overtake_ext_drops++;  /* silently — counter only; no get_param binding yet */
-        return 0;
-    }
-    uint32_t idx = head % OVERTAKE_EXT_RING_PACKETS;
-    memcpy(overtake_ext_ring.pkt[idx], msg, 4);
-    __sync_synchronize();   /* release — packet data visible before head bump */
-    overtake_ext_ring.head = head + 1;
-    return len;
+    int rc = ext_midi_ring_push(&overtake_ext_ring, msg, len, EXT_SRC_OVERTAKE);
+    shim_ext_midi_drops = overtake_ext_ring.drops;
+    return rc;
 }
 
-/* Audio-thread consumer. Drains up to 20 packets from the ring into empty
- * 4-byte slots of the MIDI_OUT region (shadow + MIDI_OUT_OFFSET, 80 bytes).
- * Called from shim_pre_transfer once per block, BEFORE the JACK MIDI writer
- * so sequencer notes get slot priority over JACK chain output.
- * Capacity: 20 slots/block * ~344 blocks/sec ≈ 6880 pkt/sec sustained;
- * realistic chord-rate sequencer traffic is well under this. */
+/* Audio-thread producer for the chain host (chain knob CC out). Tagged
+ * separately so an overtake unload cannot silently swallow it — see the
+ * header. */
+static int chain_midi_send_external(const uint8_t *msg, int len) {
+    int rc = ext_midi_ring_push(&overtake_ext_ring, msg, len, EXT_SRC_CHAIN);
+    shim_ext_midi_drops = overtake_ext_ring.drops;
+    return rc;
+}
+
+/* Audio-thread consumer. Called from shim_pre_transfer once per block, BEFORE
+ * the JACK MIDI writer so sequencer notes get slot priority over JACK chain
+ * output. Capacity: 20 slots/block * ~344 blocks/sec ~= 6880 pkt/sec
+ * sustained. */
 static void overtake_ext_drain_into_shadow(uint8_t *shadow) {
     if (!shadow) return;
-    uint32_t tail = overtake_ext_ring.tail;
-    uint32_t head = overtake_ext_ring.head;
-    __sync_synchronize();  /* acquire — see packet data the producer published */
-    if (tail == head) return;
-
-    uint8_t *midi_out = shadow + MIDI_OUT_OFFSET;
-    int slot = 0;
-    while (tail != head) {
-        /* Find next empty 4-byte slot. */
-        while (slot < 80 &&
-               (midi_out[slot] || midi_out[slot+1] ||
-                midi_out[slot+2] || midi_out[slot+3])) {
-            slot += 4;
-        }
-        if (slot >= 80) break;  /* no slots left this block — leave rest in ring */
-        uint32_t idx = tail % OVERTAKE_EXT_RING_PACKETS;
-        midi_out[slot]   = overtake_ext_ring.pkt[idx][0];
-        midi_out[slot+1] = overtake_ext_ring.pkt[idx][1];
-        midi_out[slot+2] = overtake_ext_ring.pkt[idx][2];
-        midi_out[slot+3] = overtake_ext_ring.pkt[idx][3];
-        slot += 4;
-        tail++;
-    }
-    __sync_synchronize();
-    overtake_ext_ring.tail = tail;
+    ext_midi_ring_drain(&overtake_ext_ring, shadow + MIDI_OUT_OFFSET,
+                        HW_MIDI_OUT_SIZE);
 }
 
 /* ---- Off-RT cached remote snapshot (generic opt-in facility) -------------
@@ -1805,20 +1780,28 @@ static void shadow_overtake_dsp_unload(void) {
     /* Discard any ROUTE_EXTERNAL packets the unloaded DSP left in the ring.
      * Without this, the next overtake load would drain the previous module's
      * leftover packets into Move's MIDI_OUT region — up to 64 stray events
-     * shipped to USB-A across the first ~4 audio blocks after load. The
-     * producer (destroyed instance) can no longer fire, so the ring is
-     * inert here and a non-atomic reset is safe. */
-    overtake_ext_ring.head = 0;
-    overtake_ext_ring.tail = 0;
+     * shipped to USB-A across the first ~4 audio blocks after load.
+     *
+     * This used to reset head/tail, justified by "the producer (destroyed
+     * instance) can no longer fire, so the ring is inert here". That stopped
+     * being true when chain knob CC out made the CHAIN a second producer on
+     * the same ring — one that is very much still running. Resetting took its
+     * queued knob CCs with it, and those are the packets that must not be lost
+     * silently: the emitter already recorded them as delivered
+     * (knob_emit_cc_out sets last_cc_out only on a non-zero return), so a
+     * swallowed one leaves that knob's motor wrong until the user happens to
+     * move it again. Discard by source instead. */
+    ext_midi_ring_discard_source(&overtake_ext_ring, EXT_SRC_OVERTAKE);
 
-    /* Same for the dedicated Move-injection ring. It is a shim-lifetime static,
-     * so without this the NEXT overtake module's first frames drain the
-     * departed module's queued notes into Move's MIDI_IN as if it had played
-     * them. Note what this does NOT fix: packets that already went out during
-     * the takeover are gone, so a DSP that queued a note-on and was exited
-     * before its note-off still leaves a note ringing in Move. That wants an
-     * all-notes-off on the overtake->0 edge, which is a change to the one
-     * transition documented as SIGABRT-prone and is not being made blind. */
+    /* Same for the dedicated Move-INJECTION ring, which is a different ring
+     * with a different destination (Move's MIDI_IN, not MIDI_OUT) and only one
+     * producer — so it is emptied wholesale rather than by source. Without
+     * this the NEXT overtake module's first frames drain the departed module's
+     * queued notes into Move as if it had played them. What it does NOT fix:
+     * packets that already went out during the takeover are gone, so a DSP
+     * exited between note-on and note-off still leaves a note ringing. That
+     * wants an all-notes-off on the overtake->0 edge, which is a change to the
+     * one transition documented as SIGABRT-prone and is not made blind. */
     shadow_overtake_midi_discard();
 }
 
@@ -4576,7 +4559,10 @@ static void shim_init_subsystems(void)
             .get_bpm = shim_get_bpm,
             .get_beat_position = shadow_transport_beat_position,
             .on_param_changed = web_param_notify_push,
-            .midi_send_external = overtake_midi_send_external,
+            /* Tagged as EXT_SRC_CHAIN, not the overtake entry point: the chain
+             * outlives an overtake module, so its packets must survive the
+             * discard that overtake unload performs on the shared ring. */
+            .midi_send_external = chain_midi_send_external,
         };
         chain_mgmt_init(&cm_host);
     }

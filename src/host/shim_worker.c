@@ -524,6 +524,26 @@ static void drain_events(void) {
 
 /* ---- thread ------------------------------------------------------------ */
 
+/* Report ROUTE_EXTERNAL ring-full drops at ~1 Hz, and only when there are any.
+ * Silent on an idle device by construction: no drops, no line. Reports the
+ * DELTA and the running total, because "is it still dropping?" is the question
+ * a stale motor raises and a cumulative counter alone cannot answer. */
+static void ext_midi_drop_tick(void)
+{
+    static int last_total = 0;
+    int total = shim_ext_midi_drops;
+    int delta = total - last_total;
+    if (delta <= 0) { last_total = total; return; }
+    last_total = total;
+
+    char msg[128];
+    snprintf(msg, sizeof(msg),
+             "ext-midi: %d MIDI_OUT ring drop(s) this window (%d total) - "
+             "mailbox saturated, external CC out is lagging",
+             delta, total);
+    LOG_DEBUG("shim", msg);
+}
+
 static void *worker_main(void *arg) {
     (void)arg;
 
@@ -660,6 +680,7 @@ static void *worker_main(void *arg) {
         if (tick % 5 == 0) rt_audit_tick();       /* ~1 Hz, no-op unless armed */
         if (tick % 5 == 0) spi_tally_tick();      /* ~1 Hz, no-op unless armed */
         align_capture_tick();                    /* 5 Hz: arm on trigger, drain when full */
+        if (tick % 5 == 0) ext_midi_drop_tick();  /* ~1 Hz, silent unless dropping */
         if (tick % 7 == 0) shadow_poll_current_set(); /* ~1.4 s FS scan */
         tick++;
     }

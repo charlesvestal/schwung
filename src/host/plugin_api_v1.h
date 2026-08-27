@@ -138,6 +138,25 @@ typedef struct host_api_v1 {
      * Returns: bytes queued, or 0 on failure
      */
     int (*midi_send_internal)(const uint8_t *msg, int len);
+
+    /* midi_send_external queues onto the shim's lock-free ROUTE_EXTERNAL ring,
+     * drained into Move's 80-byte MIDI_OUT region once per audio block. Safe
+     * from every entry point (they are all the SPI callback — see the contract
+     * at the top of this file): no allocation, no syscall, no logging.
+     *
+     * IT IS NOT A DELIVERY GUARANTEE, and the 0 return is the whole contract.
+     * The ring drops-newest when full, and those 80 bytes are shared with
+     * Move's own output, the LED queue and the shadow UI. Retry on 0; never
+     * record a packet as delivered on a 0. A caller that mistakes "queued" for
+     * "sent" leaves whatever it was reporting permanently stale.
+     *
+     * CHAIN SUB-PLUGINS GET THIS TOO, as of chain knob CC out — the chain host
+     * copies its own host_api down to every synth, audio FX and MIDI FX it
+     * loads. It was NULL there for years, so a module that guards on NULL has
+     * silently been a no-op inside a chain slot and will now start emitting to
+     * USB-A. If that is not what your module wants in a chain, check
+     * slot_recv_channel() first: it answers -2 when the instance is not
+     * slot-registered. */
     int (*midi_send_external)(const uint8_t *msg, int len);
 
     /* Clock status query for sync-aware plugins.
