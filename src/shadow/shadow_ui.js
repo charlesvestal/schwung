@@ -1232,7 +1232,7 @@ const TRIGGER_ENUM_WINDOW_MS = 700;     // Pause longer than this to start a new
  * Deliberately NOT applied to the jog click or the knob-card press: one press
  * is one gesture, and limiting those would be a bug.
  */
-const TRIGGER_KNOB_GESTURE_GAP_MS = 400;
+const TRIGGER_KNOB_GESTURE_GAP_MS = 270;
 
 /* Time tracking for knob acceleration */
 let triggerEnumAccum = [0, 0, 0, 0, 0, 0, 0, 0];
