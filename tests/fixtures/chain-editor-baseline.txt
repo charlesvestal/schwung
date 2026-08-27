@@ -57,7 +57,7 @@ chain/len2/bypassed-selected b5718b23f85257c6622a1b1bb3af345ca8dbc9ac
 chain/len2/bypassed-synth 1f853942139dff3647b5597cc17748b0b4efadad
 chain/len2/info-preset 31d76021b0ea2b02aa4170c4cf0b0bdeb81b80e6
 chain/len2/info-rnbo d3341c89ef5b39d6c2f1d394713f7a9b43c90356
-chain/len2/knob-card-strip ab078fd619ae0dae8e00d9f07810c516bdc41de7
+chain/len2/knob-card-strip 1bb4a1f1f49a53b7beb882e9fd30de8ad49cecfd
 chain/len2/lfo1 c126e8a01836bd62c37e1784a22b192111764dee
 chain/len2/lfo1+2 17552d1adfba55acdfbacb5600e2278821a04011
 chain/len2/lfo2 e38460131e3d8229f9b247a6cef084ace82f65db
@@ -93,7 +93,7 @@ master/len2/bypassed d39882f381002d4b13dd67859c2a260d7d1d985f
 master/len2/bypassed-selected 36c8ca73f7fc014e9fbe4c57fd18810c5eb6e18f
 master/len2/info-optname ef0ffdb45a0947c44939d8c79291e5d811e6ad6c
 master/len2/info-preset 443009ac9970876d616b8bc4ca415155d2e68095
-master/len2/knob-card-strip 8d2b175c575df3646585777b1c0a04ca512c2ccc
+master/len2/knob-card-strip 6a2c8da3fa8ba70e355cb7b2fcc295b747a4238b
 master/len2/lfo1 5a683c7bff6693c9123303e3fd69ade2d43010c5
 master/len2/lfo1+2 e4b5daa12bc3afded1f2f9a187786a083aafbaea
 master/len2/lfo2 396e56b5eb5bfa2c9f854dfefd03cad4db3458e5
@@ -128,7 +128,7 @@ picker/slot/moves-right 49fa2843fdb72a0d5911fde8d76c6f12595b22ac
 picker/slot/scrolled 0e6455d869e726bef164d1ccf827f43f13b03a43
 settings/master/actions 05bb4a938ed639d6c6f04ad71129f335524a9d9e
 settings/master/actions-nopreset 045aa30be0bc9e14f8e9b3ba1bcd06578463bee6
-settings/master/lfo1-free 8bdce84192e21806f5c7b6be5050be5e470ead03
-settings/master/lfo2-sync 51d7bd5e52f6d2f4e22a6195a4ef9d766039abff
-settings/master/main-all 7191bff67d81f9bca2e568be142fa1857131f59b
-settings/master/main-ch10 6a1166f78eab2a86d7188f84b4fdc4398e24a4bb
+settings/master/lfo1-free 244855c4ac9387477efaf2c6a3bc384a83236f11
+settings/master/lfo2-sync 768e0ca599b36bbe720e1c30e171df20fb8264c6
+settings/master/main-all e7b4b9ef34cc5bca6d9f326ab658387e3f9a608c
+settings/master/main-ch10 08eab3f4800807f5e1078e677cafee2311ff2bac
