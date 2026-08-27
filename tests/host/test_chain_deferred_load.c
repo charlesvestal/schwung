@@ -168,6 +168,13 @@ void chain_synth_destroy_triple(chain_retired_module_t *r) {
 
 void chain_loader_note_retire_overflow(chain_instance_t *inst) { (void)inst; }
 
+/* The demotion-verify path calls this when it cannot get below Link Main.
+ * It lives inside `#ifdef __linux__` in chain_loader.c, so a macOS build
+ * compiles the call away and links happily while Linux fails to link — which
+ * is exactly how it shipped: the call arrived with the demotion verifier and
+ * the stub did not, and only CI could see it. */
+void chain_loader_note_demote_failed(const char *msg) { (void)msg; }
+
 /* ------------------------------------------------------------------- tests */
 
 static chain_instance_t *fresh_instance(void) {
